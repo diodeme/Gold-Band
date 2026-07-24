@@ -1,5 +1,6 @@
 use crate::domain::{NodeOutcome, PauseReason, RunOutcome, SessionMode, VERSION};
 use crate::dsl::{DynamicControlDsl, WorkflowDsl};
+use crate::runtime_error::RuntimeErrorInfo;
 use anyhow::{Result, ensure};
 use camino::Utf8PathBuf;
 use schemars::JsonSchema;
@@ -110,6 +111,10 @@ pub struct DynamicNodeState {
     pub task: String,
     pub status: DynamicNodeStatus,
     pub outcome: Option<NodeOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_reason: Option<PauseReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_error: Option<RuntimeErrorInfo>,
     pub group_id: Option<String>,
     pub chain_id: String,
     pub depth: u32,
@@ -714,6 +719,15 @@ pub fn validate_dynamic_node_state(state: &DynamicNodeState) -> Result<()> {
         !(state.status == DynamicNodeStatus::Completed && state.outcome.is_none()),
         "completed dynamic node must have outcome"
     );
+    ensure!(
+        state.status == DynamicNodeStatus::Paused
+            || (state.pause_reason.is_none() && state.runtime_error.is_none()),
+        "non-paused dynamic node cannot have pauseReason or runtimeError"
+    );
+    ensure!(
+        state.runtime_error.is_none() || state.pause_reason.is_some(),
+        "dynamic node runtimeError requires pauseReason"
+    );
     Ok(())
 }
 
@@ -768,6 +782,8 @@ mod tests {
         let node: DynamicNodeState =
             serde_json::from_str(json).expect("legacy node must deserialize");
         assert!(node.uuid.is_none());
+        assert!(node.pause_reason.is_none());
+        assert!(node.runtime_error.is_none());
     }
 
     /// When present, the uuid field round-trips through serde.
@@ -790,5 +806,43 @@ mod tests {
         }"#;
         let node: DynamicNodeState = serde_json::from_str(json).expect("node must deserialize");
         assert_eq!(node.uuid.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn dynamic_node_pause_reason_and_runtime_error_round_trip() {
+        let json = r#"{
+            "version": "1",
+            "id": "bootstrap",
+            "dynamicRunId": "dr-1",
+            "kind": "worker",
+            "title": "t",
+            "task": "t",
+            "status": "paused",
+            "pauseReason": "runtime-abnormal",
+            "runtimeError": {
+                "code": { "domain": "provider", "code": "provider.acp-error" },
+                "domain": "provider",
+                "recovery": "manual",
+                "retryPolicy": null,
+                "params": { "method": "session/set_config_option" },
+                "diagnostic": "failed to persist config",
+                "raw": null
+            },
+            "chainId": "bootstrap",
+            "depth": 0,
+            "dependsOn": [],
+            "workspace": { "mode": "readonly" },
+            "sessionMode": "new"
+        }"#;
+        let node: DynamicNodeState = serde_json::from_str(json).unwrap();
+        assert_eq!(node.pause_reason, Some(PauseReason::RuntimeAbnormal));
+        assert_eq!(
+            node.runtime_error.as_ref().map(|error| error.code_str()),
+            Some("provider.acp-error")
+        );
+        let restored: DynamicNodeState =
+            serde_json::from_value(serde_json::to_value(&node).unwrap()).unwrap();
+        assert_eq!(restored.pause_reason, node.pause_reason);
+        assert_eq!(restored.runtime_error, node.runtime_error);
     }
 }

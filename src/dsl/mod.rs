@@ -269,6 +269,16 @@ pub struct WorkerNode {
     pub permission_mode: Option<String>,
     #[serde(default)]
     pub manual_check: Option<bool>,
+    #[serde(default)]
+    pub prompt_envelope: PromptEnvelopeMode,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PromptEnvelopeMode {
+    #[default]
+    RuntimeManaged,
+    RawAgent,
 }
 
 #[derive(Debug, Clone, Serialize)]

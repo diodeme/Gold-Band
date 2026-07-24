@@ -90,7 +90,7 @@ import { resetConversationComposerDraft } from '@/lib/conversation-composer-draf
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
-import { applyFont, applyTheme } from './theme';
+import { applyFont, applyTheme, resolveThemePreference, syncDesktopWindowSurface } from './theme';
 import { isConversationRunStopSettled } from '@/lib/conversation-run-stop';
 import { useInterventionNotifications } from './lib/use-intervention-notifications';
 import {
@@ -217,6 +217,7 @@ export function App() {
   const [uiMode, setUiMode] = useState<DesktopUiMode>(initialRoute.uiMode);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof localStorage !== 'undefined' && localStorage.getItem('gold-band-sidebar-collapsed') === 'true');
   const [bootstrap, setBootstrap] = useState<AppBootstrapVm | null>(null);
+  const windowRevealedRef = useRef(false);
   const [primaryModule, setPrimaryModule] = useState<PrimaryModule>(initialRoute.module);
   const [taskPage, setTaskPage] = useState<TaskPage>(initialRoute.taskPage);
   const [conversationPage, setConversationPage] = useState<ConversationPage>(initialRoute.conversationPage);
@@ -397,9 +398,16 @@ export function App() {
   }, [sidebarCollapsed]);
 
   useEffect(() => {
-    if (!isTauriRuntime()) return;
-    getCurrentWindow().setDecorations(false).catch(() => {});
-  }, []);
+    if (!isTauriRuntime() || !bootstrap || windowRevealedRef.current) return;
+    windowRevealedRef.current = true;
+    const revealWindow = async () => {
+      const appWindow = getCurrentWindow();
+      await appWindow.setDecorations(false).catch(() => {});
+      await syncDesktopWindowSurface(resolveThemePreference(preferences.theme));
+      await appWindow.show().catch(() => {});
+    };
+    void revealWindow();
+  }, [bootstrap, preferences.theme]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -1441,9 +1449,20 @@ export function App() {
           onRunModeChange={updateConversationRunMode}
           onLoadProfiles={loadProfiles}
           onSubmit={async (input) => {
-            const nextMode: ConversationRunModeVm = input.runMode === 'auto'
-              ? { mode: 'auto', autoConfig: input.autoConfig ?? conversationRunMode.autoConfig }
-              : { mode: 'workflow', workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId, includeInterview: input.includeInterview ?? conversationRunMode.includeInterview };
+            const nextMode: ConversationRunModeVm = input.runMode === 'direct'
+              ? {
+                mode: 'direct',
+                directConfig: input.directConfig ?? conversationRunMode.directConfig,
+                directPreferences: input.directConfig
+                  ? {
+                    ...conversationRunMode.directPreferences,
+                    [input.directConfig.agentType]: input.directConfig,
+                  }
+                  : conversationRunMode.directPreferences,
+              }
+              : input.runMode === 'auto'
+                ? { mode: 'auto', autoConfig: input.autoConfig ?? conversationRunMode.autoConfig }
+                : { mode: 'workflow', workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId, includeInterview: input.includeInterview ?? conversationRunMode.includeInterview };
             setConversationRunMode(nextMode);
             setBusy(true);
             saveConversationRunMode(input.projectId, nextMode).catch(() => {});
@@ -1477,6 +1496,7 @@ export function App() {
               setBusy(false);
             }
           }}
+          onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
           onWorkspaceChange={(projectId) => {
             resetConversationComposerDraft(composerDraftRef.current);
@@ -1634,6 +1654,7 @@ export function App() {
         onRunModeChange={updateConversationRunMode}
         onLoadProfiles={loadProfiles}
         onSubmit={(_input) => null}
+        onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
         onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
         onWorkspaceChange={(projectId) => {
           resetConversationComposerDraft(composerDraftRef.current);

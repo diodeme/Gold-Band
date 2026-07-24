@@ -126,10 +126,13 @@ export function AppTitleBar({
       />
 
       {policy.showCustomControls ? (
-        <div className="app-titlebar-no-drag flex h-full items-stretch pl-2" data-titlebar-no-drag="true">
+        <div
+          className="app-titlebar-no-drag flex h-full w-max flex-none items-stretch pl-2"
+          data-titlebar-no-drag="true"
+        >
           <button
             type="button"
-            className="flex h-full w-11 items-center justify-center text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground"
+            className="flex h-full w-11 flex-none items-center justify-center text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground"
             onClick={handleMinimize}
             aria-label={t('common.minimizeWindow')}
             title={t('common.minimizeWindow')}
@@ -138,7 +141,7 @@ export function AppTitleBar({
           </button>
           <button
             type="button"
-            className="flex h-full w-11 items-center justify-center text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground"
+            className="flex h-full w-11 flex-none items-center justify-center text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground"
             onClick={handleToggleMaximize}
             aria-label={isMaximized ? t('common.restoreWindow') : t('common.maximizeWindow')}
             title={isMaximized ? t('common.restoreWindow') : t('common.maximizeWindow')}
@@ -147,7 +150,7 @@ export function AppTitleBar({
           </button>
           <button
             type="button"
-            className="flex h-full w-12 items-center justify-center text-titlebar-muted transition-colors hover:bg-destructive hover:text-white"
+            className="flex h-full w-12 flex-none items-center justify-center text-titlebar-muted transition-colors hover:bg-destructive hover:text-white"
             onClick={handleClose}
             aria-label={t('common.closeWindow')}
             title={t('common.closeWindow')}

@@ -1,14 +1,15 @@
 use camino::Utf8PathBuf;
 use gold_band::app::App;
 use gold_band::config::{
-    ConversationAllowedWorkflowRef, ConversationAutoConfig, ConversationDynamicAgentRef,
-    ConversationDynamicControl, ConversationPin, ConversationRunModeEntry,
-    ConversationWorkspaceEntry, DesktopUiMode,
+    ConversationAllowedWorkflowRef, ConversationAutoConfig, ConversationDirectConfig,
+    ConversationDynamicAgentRef, ConversationDynamicControl, ConversationPin, ConversationRunMode,
+    ConversationRunModeEntry, ConversationWorkspaceEntry, DesktopUiMode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use std::str::FromStr;
 use std::time::Instant;
 use tauri::{AppHandle, State};
 use tracing::info;
@@ -22,10 +23,81 @@ use crate::view_models::ContentVm;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationRunModeSettingsVm {
-    pub mode: String,
+    pub mode: ConversationRunMode,
     pub workflow_template_id: Option<String>,
     pub include_interview: Option<bool>,
+    pub direct_config: Option<crate::view_models_conversation::ConversationDirectConfigVm>,
+    #[serde(default)]
+    pub direct_preferences: std::collections::HashMap<
+        String,
+        crate::view_models_conversation::ConversationDirectConfigVm,
+    >,
     pub auto_config: Option<crate::view_models_conversation::ConversationAutoConfigVm>,
+}
+
+fn validate_direct_capabilities(
+    state: &DesktopState,
+    input: &crate::view_models_conversation::ConversationCreateInputVm,
+    result: &mut crate::view_models_conversation::ConversationValidationResultVm,
+) -> CommandResult<()> {
+    if input.run_mode != ConversationRunMode::Direct.as_str() {
+        return Ok(());
+    }
+    let Some(config) = input.direct_config.as_ref() else {
+        return Ok(());
+    };
+    let Ok(agent_type) = gold_band::config::ManagedAgentType::from_str(&config.agent_type) else {
+        return Ok(());
+    };
+    let diagnostics = state.agent_diagnostics().map_err(command_error)?;
+    let Some(diagnostic) = diagnostics.get(&agent_type) else {
+        return Ok(());
+    };
+    if !diagnostic.available {
+        result
+            .missing_items
+            .push(crate::view_models_conversation::ConversationMissingItemVm {
+                code: "direct.agent.unavailable".to_string(),
+                label: "Selected Direct Agent is unavailable".to_string(),
+                recovery_path: "/chat/agents".to_string(),
+            });
+    }
+    let models =
+        gold_band::provider::supported_models_from_capabilities(diagnostic.capabilities.as_ref());
+    if let Some(model_id) = config
+        .model_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        && !models.is_empty()
+        && !models.iter().any(|model| model.id == model_id)
+    {
+        result
+            .missing_items
+            .push(crate::view_models_conversation::ConversationMissingItemVm {
+                code: "direct.model.not-found".to_string(),
+                label: "Selected model is not supported by this Agent".to_string(),
+                recovery_path: "/chat".to_string(),
+            });
+    }
+    let modes =
+        gold_band::provider::supported_modes_from_capabilities(diagnostic.capabilities.as_ref());
+    if let Some(permission_mode) = config
+        .permission_mode
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        && !modes.is_empty()
+        && !modes.iter().any(|mode| mode.id == permission_mode)
+    {
+        result
+            .missing_items
+            .push(crate::view_models_conversation::ConversationMissingItemVm {
+                code: "direct.permission.not-found".to_string(),
+                label: "Selected permission mode is not supported by this Agent".to_string(),
+                recovery_path: "/chat".to_string(),
+            });
+    }
+    result.valid = result.missing_items.is_empty();
+    Ok(())
 }
 
 #[tauri::command]
@@ -112,8 +184,11 @@ pub fn validate_conversation_create(
         ));
     };
     let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
-    crate::view_models_conversation::validate_conversation_create_vm(&workspace_app, &input)
-        .map_err(command_error)
+    let mut result =
+        crate::view_models_conversation::validate_conversation_create_vm(&workspace_app, &input)
+            .map_err(command_error)?;
+    validate_direct_capabilities(state.inner(), &input, &mut result)?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -140,6 +215,22 @@ pub async fn create_conversation_run(
     let project_id_for_current = input.project_id.clone();
     let project_id_for_emit = input.project_id.clone();
     let app = workspace_app;
+    let mut validation =
+        crate::view_models_conversation::validate_conversation_create_vm(&app, &input)
+            .map_err(command_error)?;
+    validate_direct_capabilities(state.inner(), &input, &mut validation)?;
+    if !validation.valid {
+        return Err(CommandErrorVm::new(
+            "conversation.validation-failed",
+            serde_json::json!({
+                "codes": validation
+                    .missing_items
+                    .iter()
+                    .map(|item| item.code.clone())
+                    .collect::<Vec<_>>()
+            }),
+        ));
+    }
     let live_update = crate::commands::acp_live_update_emitter_for_app(
         &app,
         app_handle.clone(),
@@ -355,6 +446,14 @@ pub fn search_conversation_tasks(
                     .map(|r| {
                         let (project_id, workspace_name) =
                             extract_project_from_task_path(&r.task_path, &state);
+                        let metadata = gold_band::storage::read_json::<
+                            crate::view_models_conversation::ConversationMetadata,
+                        >(
+                            &Utf8PathBuf::from(&r.task_path)
+                                .join("authoring")
+                                .join("conversation.json"),
+                        )
+                        .ok();
                         crate::view_models_conversation::ConversationSearchResultVm {
                             project_id,
                             workspace_path: String::new(),
@@ -364,6 +463,19 @@ pub fn search_conversation_tasks(
                             description: Some(r.description),
                             requirement_preview: r.requirement_preview,
                             latest_run: None,
+                            run_mode: metadata
+                                .as_ref()
+                                .map(|metadata| metadata.run_mode.clone())
+                                .unwrap_or_else(|| "workflow".to_string()),
+                            agent_identity: metadata
+                                .as_ref()
+                                .and_then(|metadata| metadata.agent_identity.clone()),
+                            last_activity_at: metadata.as_ref().and_then(|metadata| {
+                                metadata
+                                    .last_activity_at
+                                    .clone()
+                                    .or_else(|| Some(metadata.created_at.clone()))
+                            }),
                         }
                     })
                     .collect()
@@ -497,9 +609,30 @@ pub fn get_conversation_run_mode(
     let state = app.load_state().map_err(command_error)?;
     Ok(state.conversation_run_modes.get(&project_id).map(|entry| {
         crate::view_models_conversation::ConversationRunModeVm {
-            mode: entry.mode.clone(),
+            mode: entry.mode.as_str().to_string(),
             workflow_template_id: entry.workflow_template_id.clone(),
             include_interview: entry.include_interview,
+            direct_config: entry.direct_config.as_ref().map(|config| {
+                crate::view_models_conversation::ConversationDirectConfigVm {
+                    agent_type: config.agent_type.clone(),
+                    model_id: config.model_id.clone(),
+                    permission_mode: config.permission_mode.clone(),
+                }
+            }),
+            direct_preferences: entry
+                .direct_preferences
+                .iter()
+                .map(|(agent_type, config)| {
+                    (
+                        agent_type.clone(),
+                        crate::view_models_conversation::ConversationDirectConfigVm {
+                            agent_type: config.agent_type.clone(),
+                            model_id: config.model_id.clone(),
+                            permission_mode: config.permission_mode.clone(),
+                        },
+                    )
+                })
+                .collect(),
             auto_config: entry.auto_config.as_ref().map(|cfg| {
                 crate::view_models_conversation::ConversationAutoConfigVm {
                     agent_strategy: cfg.agent_strategy.clone(),
@@ -566,6 +699,27 @@ pub fn save_conversation_run_mode(
             mode: settings.mode,
             workflow_template_id: settings.workflow_template_id,
             include_interview: settings.include_interview,
+            direct_config: settings
+                .direct_config
+                .map(|config| ConversationDirectConfig {
+                    agent_type: config.agent_type,
+                    model_id: config.model_id,
+                    permission_mode: config.permission_mode,
+                }),
+            direct_preferences: settings
+                .direct_preferences
+                .into_iter()
+                .map(|(agent_type, config)| {
+                    (
+                        agent_type,
+                        ConversationDirectConfig {
+                            agent_type: config.agent_type,
+                            model_id: config.model_id,
+                            permission_mode: config.permission_mode,
+                        },
+                    )
+                })
+                .collect(),
             auto_config: settings.auto_config.map(|cfg| ConversationAutoConfig {
                 agent_strategy: cfg.agent_strategy,
                 agent_type: cfg.agent_type,
@@ -1557,9 +1711,11 @@ mod tests {
         state.conversation_run_modes.insert(
             "ws-a".to_string(),
             gold_band::config::ConversationRunModeEntry {
-                mode: "auto".to_string(),
+                mode: gold_band::config::ConversationRunMode::Auto,
                 workflow_template_id: None,
                 include_interview: None,
+                direct_config: None,
+                direct_preferences: Default::default(),
                 auto_config: None,
             },
         );

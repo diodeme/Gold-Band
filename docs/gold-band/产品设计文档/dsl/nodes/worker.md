@@ -68,7 +68,8 @@
 当前建议：
 - `worker` 节点必须显式声明 `provider`
 - 桌面作者态 UI 从 Agent 管理页已配置且支持的 agent card 中选择 provider
-- `worker` 节点保存/运行前必须显式声明 `profile`，字段值为 profile `id`，不是角色名称
+- `runtime-managed` worker 保存/运行前必须显式声明 `profile`，字段值为 profile `id`，不是角色名称
+- `raw-agent` worker 不参与 profile 解析，且禁止声明非空 `profile`；这保证 Direct 不会注入 Gold Band 角色或 system prompt
 - 默认 workflow 初始化时先同步默认角色，再把生成出的 profile `id` 写入默认节点；默认 cleanup 节点是普通 worker，不声明输出验证
 
 `profile` 查找优先级：
@@ -78,9 +79,18 @@
 说明：
 - `provider` 与 `profile` 的解析应发生在 runtime / provider invocation 之前
 - provider implementation 不应自行去猜 provider / profile 来源
-- 如果 profile id 不存在，workflow 保存/运行应失败并提示用户重新选择角色
+- 如果 `runtime-managed` worker 的 profile id 不存在，workflow 保存/运行应失败并提示用户重新选择角色
+- 如果 `raw-agent` worker 绑定了 profile，workflow 保存/运行必须直接失败，不能静默忽略
 
 ## 5. 相关文档
 - [DSL 概览](../overview.md)
 - [节点输出产物](../artifacts/节点输出产物.md)
 - [Provider 概览](../../provider/overview.md)
+
+## 6. `prompt_envelope`
+
+- `worker.prompt_envelope` 是冻结执行字段，枚举为 `runtime-managed | raw-agent`，缺省值为 `runtime-managed`。
+- 普通用户可编辑工作流节点始终保存为 `runtime-managed`；WorkflowEditor 不暴露该字段。
+- `raw-agent` 仅用于 Gold Band 创建的 Direct 内部单 Worker workflow，不代表新增用户可见节点类型。
+- profile resolver 只解析 `runtime-managed` worker；`raw-agent` 必须保持 `profile = null`。
+- provider invocation 必须从 workflow snapshot 读取该字段，确保首轮、runtime continue 和 completed-run follow-up 使用同一 prompt 语义。

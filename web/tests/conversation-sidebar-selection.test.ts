@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   canOpenConversationSidebarRunMenu,
   canPauseConversationSidebarRun,
+  conversationSidebarIdentityKind,
   conversationSidebarRunKey,
   conversationSidebarTaskKey,
   isConversationSidebarRunListScopeActive,
@@ -13,6 +14,14 @@ import {
 } from '@/components/conversation/ConversationSidebar';
 
 describe('ConversationSidebar run selection identity', () => {
+  it('uses Agent identity for Direct tasks and runtime status for other modes', () => {
+    expect(conversationSidebarIdentityKind({
+      runMode: 'direct',
+      agentIdentity: { agentType: 'codex-acp', displayName: 'Codex', iconKey: 'codex' },
+    })).toBe('agent-icon');
+    expect(conversationSidebarIdentityKind({ runMode: 'workflow', agentIdentity: null })).toBe('runtime-status');
+    expect(conversationSidebarIdentityKind({ runMode: 'auto', agentIdentity: null })).toBe('runtime-status');
+  });
   it('binds an active run to its parent project and task', () => {
     const activeRunKey = conversationSidebarRunKey('project-a', 'task-a', 'run-003');
 
@@ -53,9 +62,14 @@ describe('ConversationSidebar run selection identity', () => {
   });
 
   it('shows the run list for a task as soon as it has one run', () => {
-    expect(shouldShowConversationSidebarRunList({ runs: [] })).toBe(false);
-    expect(shouldShowConversationSidebarRunList({ runs: [{ runId: 'run-001' }] })).toBe(true);
-    expect(shouldShowConversationSidebarRunList({ runs: [{ runId: 'run-002' }, { runId: 'run-001' }] })).toBe(true);
+    expect(shouldShowConversationSidebarRunList({ runMode: 'workflow', runs: [] })).toBe(false);
+    expect(shouldShowConversationSidebarRunList({ runMode: 'workflow', runs: [{ runId: 'run-001' }] })).toBe(true);
+    expect(shouldShowConversationSidebarRunList({ runMode: 'auto', runs: [{ runId: 'run-002' }, { runId: 'run-001' }] })).toBe(true);
+  });
+
+  it('keeps Direct as one continuous conversation without run rows', () => {
+    expect(shouldShowConversationSidebarRunList({ runMode: 'direct', runs: [{ runId: 'run-001' }] })).toBe(false);
+    expect(shouldShowConversationSidebarRunList({ runMode: 'direct', runs: [{ runId: 'run-002' }, { runId: 'run-001' }] })).toBe(false);
   });
 
   it('keeps pinned and workspace run-list expansion independent', () => {

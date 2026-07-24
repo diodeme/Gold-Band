@@ -1,0 +1,141 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
+import { describe, expect, it } from 'vitest';
+import { desktopThemeOptions } from '../src/theme';
+import type { ConcreteDesktopTheme } from '../src/types';
+
+const expectedThemes = {
+  light: {
+    selector: /:root\[data-theme='light'\]\s*\{([\s\S]*?)\n\}/,
+    background: '#fafafb',
+    surface: '#ffffff',
+    workspace: '#f1f2f5',
+    border: '#e1e3e9',
+    primary: '#5b6ba8',
+    primaryForeground: '#ffffff',
+    foreground: '#191c24',
+    muted: '#667085',
+    success: '#16794b',
+    danger: '#c93c48',
+  },
+  'light-warm': {
+    selector: /:root\[data-theme='light-warm'\]\s*\{([\s\S]*?)\n\}/,
+    background: '#faf9f6',
+    surface: '#fffdfc',
+    workspace: '#f0ede7',
+    border: '#e3ded5',
+    primary: '#8a6a32',
+    primaryForeground: '#ffffff',
+    foreground: '#29251f',
+    muted: '#736b60',
+    success: '#397451',
+    danger: '#b84850',
+  },
+  dark: {
+    selector: /:root,\s*:root\[data-theme='dark'\]\s*\{([\s\S]*?)\n\}/,
+    background: '#181818',
+    surface: '#242424',
+    workspace: '#181818',
+    border: '#333333',
+    primary: '#313131',
+    primaryForeground: '#f5f5f5',
+    foreground: '#e8e8e8',
+    muted: '#9a9a9a',
+    success: '#59b68b',
+    danger: '#df6b6b',
+  },
+  black: {
+    selector: /:root\[data-theme='black'\]\s*\{([\s\S]*?)\n\}/,
+    background: '#111111',
+    surface: '#1b1b1b',
+    workspace: '#111111',
+    border: '#2b2b2b',
+    primary: '#2d2d2d',
+    primaryForeground: '#f2f2f2',
+    foreground: '#e8e8e8',
+    muted: '#929292',
+    success: '#59b68b',
+    danger: '#df6b6b',
+  },
+} as const satisfies Record<ConcreteDesktopTheme, ThemeExpectation>;
+
+describe('desktop theme palettes', () => {
+  const styles = readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
+
+  it.each(Object.entries(expectedThemes))('%s keeps runtime CSS and settings preview aligned', (themeId, palette) => {
+    const theme = themeId as ConcreteDesktopTheme;
+    const themeBlock = styles.match(palette.selector)?.[1] ?? '';
+    const themeOption = desktopThemeOptions.find((option) => option.id === theme);
+
+    expect(themeBlock).toContain(`--background: ${palette.background}`);
+    expect(themeBlock).toContain(`--card: ${palette.surface}`);
+    expect(themeBlock).toContain(`--gold-workspace: ${palette.workspace}`);
+    expect(themeBlock).toContain(`--border: ${palette.border}`);
+    expect(themeBlock).toContain(`--primary: ${palette.primary}`);
+    expect(themeBlock).toContain(`--primary-foreground: ${palette.primaryForeground}`);
+    expect(themeBlock).toContain(`--foreground: ${palette.foreground}`);
+    expect(themeBlock).toContain(`--muted-foreground: ${palette.muted}`);
+    expect(themeBlock).toContain(`--gold-success: ${palette.success}`);
+    expect(themeBlock).toContain(`--gold-danger: ${palette.danger}`);
+    expect(themeOption?.preview).toEqual({
+      background: palette.background,
+      surface: palette.surface,
+      border: palette.border,
+      primary: palette.primary,
+      foreground: palette.foreground,
+      muted: palette.muted,
+      success: palette.success,
+      danger: palette.danger,
+    });
+  });
+
+  it.each(Object.entries(expectedThemes))('%s keeps body, muted, primary and semantic statuses at WCAG AA contrast', (_themeId, palette) => {
+    expect(contrastRatio(palette.foreground, palette.background)).toBeGreaterThanOrEqual(7);
+    expect(contrastRatio(palette.muted, palette.background)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(palette.primaryForeground, palette.primary)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(palette.success, palette.background)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(palette.danger, palette.background)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('keeps the approved default light palette unchanged while removing the previous tinted surfaces from the other themes', () => {
+    const lightBlock = styles.match(expectedThemes.light.selector)?.[1] ?? '';
+    const warmBlock = styles.match(expectedThemes['light-warm'].selector)?.[1] ?? '';
+    const darkBlock = styles.match(expectedThemes.dark.selector)?.[1] ?? '';
+    const blackBlock = styles.match(expectedThemes.black.selector)?.[1] ?? '';
+
+    expect(lightBlock).toContain('--background: #fafafb');
+    expect(lightBlock).toContain('--primary: #5b6ba8');
+    expect(warmBlock).not.toContain('#f7f2e8');
+    expect(darkBlock).not.toContain('#4d9fff');
+    expect(blackBlock).not.toContain('#a1aacb');
+  });
+});
+
+interface ThemeExpectation {
+  selector: RegExp;
+  background: string;
+  surface: string;
+  workspace: string;
+  border: string;
+  primary: string;
+  primaryForeground: string;
+  foreground: string;
+  muted: string;
+  success: string;
+  danger: string;
+}
+
+function contrastRatio(foreground: string, background: string) {
+  const lighter = Math.max(relativeLuminance(foreground), relativeLuminance(background));
+  const darker = Math.min(relativeLuminance(foreground), relativeLuminance(background));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function relativeLuminance(hex: string) {
+  const channels = hex.slice(1).match(/../g)?.map((channel) => Number.parseInt(channel, 16) / 255) ?? [];
+  const [red = 0, green = 0, blue = 0] = channels.map((channel) =>
+    channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
+  );
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}

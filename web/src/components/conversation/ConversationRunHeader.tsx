@@ -5,6 +5,7 @@ import type { ConversationRunVm, ConversationSessionLeafVm } from '../../types';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 
 interface ConversationRunHeaderProps {
   run: ConversationRunVm;
@@ -35,6 +36,7 @@ export function ConversationRunHeader({
 }: ConversationRunHeaderProps) {
   const { t } = useTranslation();
   const isRunning = run.runStatus === 'running';
+  const isDirect = run.runMode === 'direct';
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState(run.title);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -82,13 +84,22 @@ export function ConversationRunHeader({
             title={t('conversation.runtime.titleEdit')}
           >
             <h1 className="min-w-0 truncate text-sm font-semibold leading-6 text-foreground">{run.title}</h1>
-            <span className="shrink-0 text-[10px] text-muted-foreground/60">{run.runId}</span>
+            {!isDirect ? <span className="shrink-0 text-[10px] text-muted-foreground/60">{run.runId}</span> : null}
             <Pencil className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
           </button>
         )}
 
         {/* Session switcher toggle */}
-        <Button
+        {isDirect && run.agentIdentity ? (
+          <div className="flex min-w-0 items-center gap-2 rounded-full bg-muted/45 px-2.5 py-1 text-[11px] text-muted-foreground">
+            <img src={agentIconSrc(run.agentIdentity.iconKey)} alt="" className={agentIconClass(run.agentIdentity.iconKey, 'size-4 shrink-0')} />
+            <span className="max-w-36 truncate font-medium text-foreground/85">{run.agentIdentity.displayName}</span>
+            {run.directConfig?.modelId ? <span className="max-w-32 truncate">· {run.directConfig.modelId}</span> : null}
+            {run.directConfig?.permissionMode ? <span className="max-w-28 truncate">· {run.directConfig.permissionMode}</span> : null}
+          </div>
+        ) : null}
+
+        {!isDirect ? <Button
           variant="ghost"
           size="sm"
           className="h-5.5 gap-1 px-1.5 text-[11px]"
@@ -109,7 +120,7 @@ export function ConversationRunHeader({
             {run.sessionTree.selectedSessionKey ?? t('conversation.runtime.sessionSwitcher')}
           </span>
           <ChevronDown className={cn('size-3 transition-transform', sessionSwitcherOpen && 'rotate-180')} />
-        </Button>
+        </Button> : null}
 
         {/* Actions */}
         <div className="flex shrink-0 items-center gap-0.5">
@@ -135,7 +146,7 @@ export function ConversationRunHeader({
             </Tooltip>
           ) : null}
 
-          <Tooltip>
+          {!isDirect ? <Tooltip>
             <TooltipTrigger asChild>
               <Button variant="ghost" size="icon" className="size-5.5" onClick={onRerun}>
                 <RotateCcw className="size-3.5" />
@@ -144,7 +155,7 @@ export function ConversationRunHeader({
             <TooltipContent>
               {isRunning ? t('conversation.runtime.rerunConfirmAction') : t('conversation.runtime.rerun')}
             </TooltipContent>
-          </Tooltip>
+          </Tooltip> : null}
 
           {onOpenInFileManager ? (
             <Tooltip>

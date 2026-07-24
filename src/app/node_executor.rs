@@ -514,6 +514,7 @@ pub(crate) fn build_worker_invocation(
         invocation_kind,
         cold_artifacts,
         cold_attachments,
+        prompt_envelope,
     ) = match node_dsl {
         NodeDsl::Worker(worker) => (
             worker.profile.clone(),
@@ -524,6 +525,7 @@ pub(crate) fn build_worker_invocation(
             InvocationKind::WorkerGeneric,
             Vec::new(),
             Vec::new(),
+            worker.prompt_envelope,
         ),
         NodeDsl::AiDynamic(_) => {
             bail!("ai-dynamic nodes must be executed by the dynamic orchestrator")
@@ -562,6 +564,7 @@ pub(crate) fn build_worker_invocation(
 
     Ok(WorkerInvocation {
         invocation_kind,
+        prompt_envelope,
         profile,
         profile_content,
         requirement_path: Some(app.paths.requirement_file(task_id)),
@@ -1301,6 +1304,7 @@ mod tests {
                 success_condition: None,
                 permission_mode: None,
                 manual_check: None,
+                prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
             })],
             edges: vec![crate::dsl::EdgeDsl {
                 from: "dev".to_string(),

@@ -11,6 +11,17 @@ const browserFontCandidates = [
 type LocalFontData = { family: string };
 type LocalFontWindow = Window & { queryLocalFonts?: () => Promise<LocalFontData[]> };
 
+const browserConversationRuns = new Map<string, ConversationRunVm>();
+
+function browserAgentIdentity(agentType: string) {
+  const agent = mockAgentRegistry.agents.find((candidate) => candidate.agentType === agentType);
+  return agent ? {
+    agentType: agent.agentType,
+    displayName: agent.displayName,
+    iconKey: agent.iconKey,
+  } : null;
+}
+
 export const browserApi: RuntimeApi = {
   checkLocalClaude() {
     return Promise.resolve({ found: false, path: null });
@@ -363,6 +374,8 @@ export const browserApi: RuntimeApi = {
   },
   getConversationRun(_projectId, _taskId, runId) {
     if (runId === 'run-051') return Promise.resolve(mockErrorBlockedConversationRun);
+    const created = browserConversationRuns.get(runId);
+    if (created) return Promise.resolve(created);
     const run: ConversationRunVm = {
       projectId: 'default',
       taskId: 'mock-task',
@@ -400,6 +413,9 @@ export const browserApi: RuntimeApi = {
       title: input.content.slice(0, 12) || 'New Task',
       autoTitle: true,
       runMode: input.runMode,
+      directConfig: input.directConfig,
+      agentIdentity: input.directConfig ? browserAgentIdentity(input.directConfig.agentType) : null,
+      lastActivityAt: new Date().toISOString(),
       runStatus: 'running',
       sessionTree: { rounds: [], selectedSessionKey: null },
       selectedSession: null,
@@ -413,6 +429,7 @@ export const browserApi: RuntimeApi = {
       resumable: false,
       runtimeErrorMessage: null,
     };
+    browserConversationRuns.set(run.runId, run);
     return Promise.resolve(run);
   },
   rerunConversationTask(_projectId, _taskId) {

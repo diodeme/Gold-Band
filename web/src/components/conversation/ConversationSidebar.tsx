@@ -10,6 +10,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
@@ -374,8 +375,14 @@ export function canOpenConversationSidebarRunMenu(scope: 'task' | 'run') {
   return scope === 'run';
 }
 
-export function shouldShowConversationSidebarRunList(task: { runs: unknown[] }) {
-  return task.runs.length >= 1;
+export function shouldShowConversationSidebarRunList(
+  task: Pick<ConversationTaskRowVm, 'runMode' | 'runs'>,
+) {
+  return task.runMode !== 'direct' && task.runs.length >= 1;
+}
+
+export function conversationSidebarIdentityKind(task: Pick<ConversationTaskRowVm, 'runMode' | 'agentIdentity'>) {
+  return task.runMode === 'direct' && task.agentIdentity ? 'agent-icon' : 'runtime-status';
 }
 
 export type ConversationSidebarRunListScope = 'pinned' | 'workspace';
@@ -479,9 +486,12 @@ function TaskRow({
   const hasRuns = shouldShowConversationSidebarRunList(task);
 
   const latestRun = task.latestRun;
+  const isDirect = task.runMode === 'direct';
+  const useAgentIdentity = conversationSidebarIdentityKind(task) === 'agent-icon';
   const latestColor = latestRun ? runStatusColor(latestRun) : 'bg-muted-foreground/30';
-  const relativeTime = latestRun && latestRun.status !== 'running'
-    ? formatRelativeTime(latestRun.updatedAt, t)
+  const relativeTimeSource = isDirect ? task.lastActivityAt : latestRun?.updatedAt;
+  const relativeTime = relativeTimeSource && (isDirect || latestRun?.status !== 'running')
+    ? formatRelativeTime(relativeTimeSource, t)
     : null;
 
   const handleRowClick = () => {
@@ -534,7 +544,18 @@ function TaskRow({
       )}
       onClick={handleRowClick}
     >
-      <span className={cn('size-1.5 shrink-0 rounded-full', latestColor, task.latestRun?.status === 'running' && 'border border-muted-foreground/40')} />
+      <span className="flex size-4 shrink-0 items-center justify-center">
+        {useAgentIdentity && task.agentIdentity ? (
+          <img
+            src={agentIconSrc(task.agentIdentity.iconKey)}
+            alt=""
+            title={task.agentIdentity.displayName}
+            className={agentIconClass(task.agentIdentity.iconKey, 'size-3')}
+          />
+        ) : (
+          <span className={cn('size-1.5 rounded-full', latestColor, task.latestRun?.status === 'running' && 'border border-muted-foreground/40')} />
+        )}
+      </span>
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden group-hover:pr-20">
         {editing ? (
           <input
@@ -601,7 +622,7 @@ function TaskRow({
                   className={cn(
                     'flex items-center gap-2 rounded-md px-2 py-1 cursor-pointer text-xs',
                     isConversationSidebarRunActive(activeRunKey, task.projectId, task.taskId, run.runId)
-                      ? 'bg-sidebar-accent text-sidebar-primary'
+                      ? 'bg-sidebar-accent text-sidebar-accent-foreground'
                       : 'hover:bg-sidebar-accent',
                   )}
                   onPointerDown={(event) => event.preventDefault()}
@@ -667,7 +688,7 @@ function SidebarButton({
       className={cn(
         compact ? 'h-7 gap-2 justify-start rounded-md px-2 text-[14px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
           : 'h-7 justify-start gap-2.5 rounded-lg px-2.5 text-[14px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-        active && 'bg-sidebar-accent text-sidebar-primary',
+        active && 'bg-sidebar-accent text-sidebar-accent-foreground',
       )}
       onClick={onClick}
     >

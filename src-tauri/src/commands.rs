@@ -8,8 +8,8 @@ use gold_band::acp::permission::{
     write_permission_response_if_pending,
 };
 use gold_band::app::{
-    App, AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError, ProfileEntry,
-    ProfileInput, ProfileList, RuntimeInterventionKind, RuntimeLifecycleEvent,
+    AcpTurnOutcome, App, AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError,
+    ProfileEntry, ProfileInput, ProfileList, RuntimeInterventionKind, RuntimeLifecycleEvent,
     WorkflowTemplateStore,
 };
 use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
@@ -311,6 +311,91 @@ fn runtime_continue_required(
         return Ok(true);
     }
     Ok(false)
+}
+
+fn acp_turn_outcome(run: &client::AcpPromptRun) -> AcpTurnOutcome {
+    acp_turn_outcome_for_stop_reason(run.stop_reason.as_deref())
+}
+
+fn acp_turn_outcome_for_stop_reason(stop_reason: Option<&str>) -> AcpTurnOutcome {
+    match stop_reason
+        .map(|reason| reason.trim().to_ascii_lowercase().replace('_', "-"))
+        .as_deref()
+    {
+        Some("cancelled" | "canceled") => AcpTurnOutcome::Cancelled,
+        Some("interrupted") => AcpTurnOutcome::Failed,
+        _ => AcpTurnOutcome::Completed,
+    }
+}
+
+fn acp_turn_agent_label(app: &App, locator: &AttemptLocator) -> String {
+    let provider = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (locator.outer_node_id(), locator.outer_attempt_id())
+    {
+        read_json::<gold_band::dynamic::DynamicNodeState>(&app.paths.dynamic_node_file(
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &locator.node_id,
+        ))
+        .ok()
+        .and_then(|node| node.provider)
+    } else {
+        read_json::<NodeState>(&app.paths.node_file(
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+        ))
+        .ok()
+        .and_then(|node| {
+            node.resolved_config
+                .get("provider")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+    };
+    provider
+        .as_deref()
+        .and_then(|provider| app.managed_agent(provider).ok())
+        .map(|(_, config)| config.adapter.display_name.clone())
+        .filter(|label| !label.trim().is_empty())
+        .or(provider)
+        .unwrap_or_else(|| locator.node_id.clone())
+}
+
+fn emit_acp_turn_finished(
+    app: &App,
+    locator: &AttemptLocator,
+    turn_id: &str,
+    agent_label: &str,
+    outcome: AcpTurnOutcome,
+) {
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::AcpTurnFinished {
+        event_id: gold_band::app::make_turn_dedup_key(
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            turn_id,
+        ),
+        occurred_at: current_timestamp(),
+        task_id: locator.task_id.clone(),
+        run_id: locator.run_id.clone(),
+        round_id: locator.round_id.clone(),
+        node_id: locator.node_id.clone(),
+        attempt_id: locator.attempt_id.clone(),
+        turn_id: turn_id.to_string(),
+        agent_label: agent_label.to_string(),
+        outcome,
+        task_title: app
+            .task_show(&locator.task_id)
+            .ok()
+            .and_then(|task| task.title),
+    });
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1662,6 +1747,8 @@ pub async fn submit_conversation_prompt(
         outer_node_id,
         outer_attempt_id,
     );
+    crate::view_models_conversation::touch_conversation_activity(&app, &locator.task_id)
+        .map_err(command_error)?;
     let run = app
         .run_status(&locator.task_id, &locator.run_id)
         .map_err(command_error)?;
@@ -1781,6 +1868,11 @@ pub async fn send_acp_prompt(
             ));
         }
     }
+    let turn_id = prompt_id
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("turn-{}", uuid::Uuid::new_v4().simple()));
+    let prompt_id = Some(turn_id.clone());
+    let agent_label = acp_turn_agent_label(&app, &locator);
     let project_id_for_emit = project_id.clone();
     let project_id_for_spawn = project_id_for_emit.clone();
     let task_id_for_emit = task_id.clone();
@@ -1792,7 +1884,7 @@ pub async fn send_acp_prompt(
     let outer_attempt_id_for_emit = outer_attempt_id.clone();
     let app_for_emit = app.clone_for_background();
     let app_handle_for_task = app_handle.clone();
-    let session = tauri::async_runtime::spawn_blocking(move || {
+    let execution = tauri::async_runtime::spawn_blocking(move || -> CommandResult<_> {
         if let (Some(outer_node_id), Some(outer_attempt_id)) =
             (outer_node_id.as_deref(), outer_attempt_id.as_deref())
         {
@@ -1895,7 +1987,7 @@ pub async fn send_acp_prompt(
                 outer_node_id_for_live.clone(),
                 outer_attempt_id_for_live.clone(),
             ));
-            client::run_prompt(
+            let prompt_run = client::run_prompt(
                 provider,
                 &agent_config.adapter,
                 app.paths.repo_root.clone(),
@@ -1946,7 +2038,8 @@ pub async fn send_acp_prompt(
                 }),
             )
             .map_err(command_error)?;
-            return dynamic_acp_session_vm(
+            let outcome = acp_turn_outcome(&prompt_run);
+            let session = dynamic_acp_session_vm(
                 &app,
                 &task_id,
                 &run_id,
@@ -1958,7 +2051,8 @@ pub async fn send_acp_prompt(
                 None,
                 None,
             )
-            .map_err(command_error);
+            .map_err(command_error)?;
+            return Ok((session, outcome));
         }
         let attempt_dir =
             app.paths
@@ -2041,7 +2135,7 @@ pub async fn send_acp_prompt(
             None,
         ));
         let model = current_acp_session_model(&attempt_dir);
-        client::run_prompt(
+        let prompt_run = client::run_prompt(
             provider,
             &agent_config.adapter,
             app.paths.repo_root.clone(),
@@ -2091,7 +2185,8 @@ pub async fn send_acp_prompt(
             }),
         )
         .map_err(command_error)?;
-        acp_session_vm(
+        let outcome = acp_turn_outcome(&prompt_run);
+        let session = acp_session_vm(
             &app,
             &task_id,
             &run_id,
@@ -2101,10 +2196,36 @@ pub async fn send_acp_prompt(
             None,
             None,
         )
-        .map_err(command_error)
+        .map_err(command_error)?;
+        Ok((session, outcome))
     })
-    .await
-    .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))??;
+    .await;
+    let (session, outcome) = match execution {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => {
+            emit_acp_turn_finished(
+                &app_for_emit,
+                &locator,
+                &turn_id,
+                &agent_label,
+                AcpTurnOutcome::Failed,
+            );
+            return Err(error);
+        }
+        Err(_) => {
+            emit_acp_turn_finished(
+                &app_for_emit,
+                &locator,
+                &turn_id,
+                &agent_label,
+                AcpTurnOutcome::Failed,
+            );
+            return Err(CommandErrorVm::new(
+                "app.task-join-failed",
+                serde_json::json!({}),
+            ));
+        }
+    };
     emit_acp_session_update(
         &app_handle,
         &app_for_emit,
@@ -2118,6 +2239,7 @@ pub async fn send_acp_prompt(
         outer_attempt_id_for_emit.clone(),
         session.clone(),
     );
+    emit_acp_turn_finished(&app_for_emit, &locator, &turn_id, &agent_label, outcome);
 
     // Fire-and-forget: index this attempt for cross-session search
     spawn_index_attempt(
@@ -3823,6 +3945,81 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[test]
+    fn acp_turn_outcome_distinguishes_user_cancel_from_transport_failure() {
+        assert_eq!(
+            acp_turn_outcome_for_stop_reason(Some("cancelled")),
+            AcpTurnOutcome::Cancelled
+        );
+        assert_eq!(
+            acp_turn_outcome_for_stop_reason(Some("canceled")),
+            AcpTurnOutcome::Cancelled
+        );
+        assert_eq!(
+            acp_turn_outcome_for_stop_reason(Some("interrupted")),
+            AcpTurnOutcome::Failed
+        );
+        assert_eq!(
+            acp_turn_outcome_for_stop_reason(Some("end_turn")),
+            AcpTurnOutcome::Completed
+        );
+        assert_eq!(
+            acp_turn_outcome_for_stop_reason(None),
+            AcpTurnOutcome::Completed
+        );
+    }
+
+    #[test]
+    fn acp_turn_finished_event_preserves_turn_identity_and_outcome() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-acp-turn-event-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(root.clone()).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_subscriber = seen.clone();
+        let app = App::new(repo_root).with_inline_lifecycle_subscriber(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::AcpTurnFinished { .. } = event {
+                seen_for_subscriber.lock().unwrap().push(event);
+            }
+        }));
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "node-001".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+
+        emit_acp_turn_finished(&app, &locator, "turn-002", "Claude", AcpTurnOutcome::Failed);
+
+        let events = seen.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            RuntimeLifecycleEvent::AcpTurnFinished {
+                event_id,
+                turn_id,
+                agent_label,
+                outcome,
+                ..
+            } => {
+                assert_eq!(
+                    event_id,
+                    "run-001:round-001:node-001:attempt-001:turn-002:acp-turn-finished"
+                );
+                assert_eq!(turn_id, "turn-002");
+                assert_eq!(agent_label, "Claude");
+                assert_eq!(*outcome, AcpTurnOutcome::Failed);
+            }
+            event => panic!("expected AcpTurnFinished, got {event:?}"),
+        }
+        drop(events);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn acp_live_event_context_preserves_standard_attempt_locator() {
         let context = acp_live_event_context(
             "task-001",
@@ -3896,6 +4093,7 @@ mod tests {
                 node_label: "plan".to_string(),
                 outcome: RunOutcome::Success,
                 task_title: None,
+                completion_agent_label: None,
             })
             .unwrap();
         assert_eq!(completed.status, RunStatus::Completed);

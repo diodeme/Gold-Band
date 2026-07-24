@@ -123,7 +123,7 @@ function SessionLeaf({
       type="button"
       className={cn(
         'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs hover:bg-sidebar-accent',
-        selected && 'bg-sidebar-accent text-sidebar-primary',
+        selected && 'bg-sidebar-accent text-sidebar-accent-foreground',
       )}
       onClick={onSelect}
     >

@@ -152,8 +152,14 @@ round 详情
 - 共享顶栏除按钮、输入等交互控件外都属于窗口拖拽命中区；Windows/Linux 使用 Tauri `startDragging` 与 WebView app-region 共同保证拖拽稳定性，交互控件必须显式退出拖拽区
 - 侧边栏折叠/展开使用平滑宽度过渡，不做瞬时消失；内容透明度可略早于宽度收起，以减少视觉突兀
 - 顶栏与侧边栏默认共用同一 surface 底色，并去掉强横向分割线；右侧主区使用更弱的 top/left 边界与左上圆角衔接，主区圆角后方露出的底色继续复用 sidebar surface，而不是把侧边栏自身裁成圆角，避免角后方出现异色小方块
-- 桌面根壳层需要通过 overlay 提供主题化 1px 窗口外轮廓，顶部轮廓使用独立 token 略强于左右/底部边界，弥补 Windows 10 在无原生 decorations 时缺少 Win11 圆角/阴影所导致的顶部边界丢失
+- 桌面外轮廓、阴影与圆角统一由宿主窗口 compositor 管理；应用根壳不得再绘制整窗 border、圆角或高层级伪元素。CSS 圆角与 Win11 DWM 圆角存在独立半径和抗锯齿路径，叠加会产生突出的双层轮廓；Windows 无边框窗口保留 native shadow，以获得系统提供的 1px frame 与圆角。
 - Windows/Linux 顶栏右侧承载窗口最小化、最大化/还原、关闭操作；macOS 使用系统原生左上角 traffic lights，顶栏不重复渲染自定义窗口按钮
+- Windows/Linux 自定义窗口控制组使用 `w-max + flex-none` 保持 intrinsic width，组内最小化、最大化/还原、关闭三个按钮也必须分别使用 `flex-none`，禁止嵌套 Flex 在窄窗口下压缩按钮宽度；关闭按钮按 Windows 原生标题栏习惯贴紧右侧窗口边缘，不额外设置右侧 gutter。
+- 桌面窗口最小尺寸只由 Tauri Window 配置管理；`html/body/#root` 不得重复设置固定 `min-width/min-height`。WebView 必须始终服从真实 viewport 尺寸并继续触发响应式布局，禁止在达到 CSS 最小宽度后保持旧布局、由原生窗口直接裁切右侧内容。
+- 桌面壳内的二级布局必须基于实际内容容器宽度决定分栏，而不是直接复用整窗 `md/lg/xl` breakpoint。侧边栏、section 标题列、抽屉和详情 inspector 都会减少真实可用宽度；嵌套区域优先使用 Tailwind container query，固定画布/表格则必须提供明确的换行、堆叠或横向滚动降级策略。
+- Windows 无边框窗口使用 WebView2 composition 路径承载连续边缘 resize：Tauri Window 在 Windows 平台启用透明控制器，但 `html/body/#root` 与应用壳始终绘制不透明主题 surface，不向用户呈现实际透明效果。宿主 Window 背景随主题同步，WebView 层保持 composition 模式，禁止为了遮盖黑带重新设为不透明控制器。
+- 主窗口初始隐藏；bootstrap、主题和宿主背景准备完成后由前端显式显示，避免 transparent composition 窗口在首帧 CSS 尚未就绪时闪现。Windows 自定义无边框模式保留 native shadow，由 DWM 在 Win11 提供系统圆角；macOS 恢复 native decorations、shadow 与 traffic lights。
+- 上下文管理的角色卡片网格按列表容器实际宽度决定列数，而不是只依赖整窗 viewport：窄容器单列、中等容器双列、足够宽时三列。卡片底部操作区允许整组换行，系统显示缩放、字体增大或翻译文案变长时不得越过卡片边界或覆盖相邻卡片。
 
 ### 6.4 运行态生命周期
 - Round 详情页的“继续运行”只在当前 run / round / node 处于可恢复暂停态时出现；成功、失败或 killed 的终局 round 不展示该入口。
@@ -172,13 +178,15 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - Tauri commands `choose_workspace` / `select_recent_workspace` 负责切换 workspace，并将最近列表写入用户级配置；`remove_recent_workspace` 只移除最近列表项并返回刷新后的 bootstrap。
 - `choose_workspace` 与会话侧 `add_conversation_workspace` 必须统一复用非阻塞目录选择封装，避免同类原生弹窗行为分叉。
 - 桌面端必须为 `choose_workspace` / `select_recent_workspace` 记录结构化系统日志，至少覆盖“打开目录选择器”“用户取消”“目录返回”“切换完成”四个阶段，便于排查 macOS 原生目录选择器卡死或切换后状态未刷新问题。
-- Tauri window 默认尺寸为 1280x800，最小尺寸为 1040x680。
+- Tauri window 默认尺寸为 1280x800，最小尺寸为 1040x680；这是桌面窗口最小尺寸的唯一事实源，Web 层不得镜像同一固定值。
 - 应用壳不提供命令输入、slash command、terminal input 或 chat input。
 - 2026-05-03 起应用壳使用 Tailwind CSS v4 + shadcn/ui Button、Tooltip、Separator 等现成组件重构；侧边栏 IA、workspace 切换入口和右侧页面栈行为不变。
 - 2026-06-08 起新旧 UI 共用 `web/src/components/AppTitleBar.tsx` 共享顶栏；Tauri 基础配置关闭 WebView file-drop，避免与 composer 附件拖拽上传争抢文件 drop。
 - 2026-06-19 起桌面 bootstrap 暴露 `platform` 作为前端唯一平台事实源：macOS 启用原生 traffic lights + overlay 标题栏并隐藏系统标题文本；Windows/Linux 继续关闭整窗 decorations，由共享顶栏右侧自定义窗口控制接管最小化、最大化/还原和关闭。
-- 2026-06-29 起共享顶栏拖拽命中升级为“整条顶栏默认可拖，交互控件显式 no-drag”，并由根壳层 overlay 提供主题化外轮廓；顶部轮廓单独加强，保证 Windows 10/11 在无原生 decorations 下都有可感知窗口边界。
+- 2026-06-29 起共享顶栏拖拽命中升级为“整条顶栏默认可拖，交互控件显式 no-drag”；早期根壳 overlay 外轮廓方案已由 2026-07-23 的 native compositor 方案替换。
 - 2026-07-22 起共享顶栏隐藏 Workbench / Conversation toggle，根路径统一进入会话主页；旧工作台仅保留显式 deep link，供观察期继续验证而不暴露产品入口。
+- 2026-07-23 起共享顶栏取消 Windows/Linux 窗口控制组的末尾 gutter，并固定控制组及每个按钮的 intrinsic width；删除 Web 层 `1040x680` 最小尺寸镜像，让真实 viewport 持续驱动响应式布局。角色管理卡片网格改为容器查询升列，卡片操作区支持换行，以覆盖 Win10 1080p 显示缩放和最小窗口场景。
+- 2026-07-23 Windows 边缘缩放修正：采用 Tauri/WebView2 transparent composition workaround，并复用 AionUi 的“窗口初始隐藏、首帧完成后显示”启动策略；保留 native shadow 以获得 Win11 DWM 原生圆角和边框，删除根壳的整窗 border、CSS 圆角与高层级伪元素。
 
 ---
 

@@ -170,7 +170,7 @@ function handleNavLinkClick(event: React.MouseEvent<HTMLAnchorElement>, onClick?
 function ShellNavButton({ active, disabled, href, icon, label, trailing, onClick }: { active?: boolean; disabled?: boolean; href?: string; icon: React.ReactNode; label: string; trailing?: React.ReactNode; onClick?: () => void }) {
   const className = cn(
     'h-10 justify-between rounded-lg px-3 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-    active && 'bg-sidebar-accent text-sidebar-primary',
+    active && 'bg-sidebar-accent text-sidebar-accent-foreground',
   );
   const content = (
     <>

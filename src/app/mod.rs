@@ -11,7 +11,7 @@ mod transition_context;
 
 pub use self::notification::{
     InterventionNotification, InterventionType, NotificationDedup, make_dedup_key,
-    make_dedup_key_with_suffix, reason_key,
+    make_dedup_key_with_suffix, make_turn_dedup_key, reason_key,
 };
 
 use crate::acp::client as acp_client;
@@ -207,6 +207,7 @@ fn default_workflow_dsl(
             }),
             permission_mode: Some("bypassPermissions".to_string()),
             manual_check: manual_check.then_some(true),
+            prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
         })
     }
 
@@ -544,6 +545,15 @@ impl From<RuntimeInterventionKind> for PauseReason {
     }
 }
 
+/// ACP 单次 prompt turn 的终态。该状态独立于 workflow run/node 终态：
+/// 手动追问完成后 run 可能早已结束，但 turn 仍需要稳定的完成、失败与停止语义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpTurnOutcome {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
 #[derive(Debug, Clone)]
 pub enum RuntimeLifecycleEvent {
     /// A node has started executing. The orchestrator is about to invoke the
@@ -633,6 +643,25 @@ pub enum RuntimeLifecycleEvent {
         attempt_id: String,
         node_label: String,
         outcome: RunOutcome,
+        task_title: Option<String>,
+        /// Direct 首轮以 Agent 回复语义展示；普通 Workflow/AUTO 为 None。
+        completion_agent_label: Option<String>,
+    },
+    /// 非 runtime-continue 的 ACP prompt turn 已结束。
+    ///
+    /// Direct 后续对话以及 Workflow/AUTO 节点完成后的手动追问统一走该事件；
+    /// runtime 自身继续执行仍由 RunCompleted/InterventionRequested 表达，避免双重通知。
+    AcpTurnFinished {
+        event_id: String,
+        occurred_at: String,
+        task_id: String,
+        run_id: String,
+        round_id: String,
+        node_id: String,
+        attempt_id: String,
+        turn_id: String,
+        agent_label: String,
+        outcome: AcpTurnOutcome,
         task_title: Option<String>,
     },
 }
@@ -2340,6 +2369,8 @@ impl App {
             if dynamic_node.status != DynamicNodeStatus::Completed {
                 dynamic_node.status = DynamicNodeStatus::Paused;
                 dynamic_node.outcome = None;
+                dynamic_node.pause_reason = Some(pause_reason);
+                dynamic_node.runtime_error = None;
                 dynamic_node.finished_at = Some(now_rfc3339_like());
             }
         }
@@ -3356,6 +3387,7 @@ mod tests {
                 success_condition: None,
                 output: None,
                 manual_check: None,
+                prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
             })],
             edges: vec![crate::dsl::EdgeDsl {
                 from: "dev".to_string(),
@@ -3652,6 +3684,8 @@ mod tests {
             task: id.to_string(),
             status,
             outcome: None,
+            pause_reason: None,
+            runtime_error: None,
             group_id: None,
             chain_id: id.to_string(),
             depth: 1,

@@ -51,6 +51,10 @@
 - `RunPaused` 与 `RunCompleted` 现在都会通过 `gold-band://conversation-run-state-updated` 触发前端刷新当前 run 与 sidebar；人工 check 从 `launching-next-node` 中间态收敛到 `manual_check_pending` 等待态依赖后端第二帧权威通知，不在前端按 manual check 写补丁判断。
 - `RuntimeStopProbe` 在 attempt-level paused/outcome=null 判断中排除 `manual_check_pending=true`，避免人工 check 判定门被误认为用户停止，普通 ACP 追问可继续发送给 agent，同时 runtime 仍保持 paused 等待成功/失败判定。
 - ACP completed 后继续追问被定义为通用 same-session 新 turn：旧 terminal snapshot 不能压掉当前本地 turn 的发送中/处理中/计时状态；submit 返回 rejected、空 session 或 terminal 且未接受 prompt 时必须显式收敛 optimistic 状态，不能永久卡在“发送中”。
+- AUTO 并行 AI-DYNAMIC 的异常归属已从事件日志提升为状态事实：`DynamicNodeState` 新增结构化 `pauseReason/runtimeError`，leaf 异常时立即持久化；graph 在 sibling 仍运行时保持 running，最后一个 sibling 结束后从 paused leaf 聚合真实原因，不再硬编码 `process-interrupted`。
+- Conversation lifecycle、workflow graph 与选中会话错误展示已改为 leaf-first：优先读取 dynamic leaf 的暂停原因和完整错误链，旧 graph/run reason 与 ACP cancelled 仅作为历史数据回退。恢复目标 leaf 时同步清除其旧错误，其他 paused sibling 不受影响。
+- 共享 ACP adapter 的 session 配置增加 connection-scoped 事务锁，将模型与权限设置作为一个不可交错序列执行，消除 Codex 并行 session 同时写 `config.toml` 的概率性竞争；锁不覆盖后续 prompt 流式执行。
+- 回归测试覆盖：旧 dynamic node JSON 兼容、结构化错误 serde、并行 leaf 异常持久化、sibling 完成后的 graph 原因继承、目标 leaf 恢复清理、ACP 配置事务互斥、完整 anyhow 错误链，以及 Conversation leaf-first 生命周期/错误展示。
 
 ## 最终架构
 
@@ -86,6 +90,7 @@
 - 删除 `App.intervention_notifier`、`with_intervention_notifier`、`notify_intervention` 和 orchestrator 里直接读取 `app.intervention_notifier` 的逻辑。
 - metrics 改成 lifecycle bus 的 subscriber，继续消费 `NodeStarted/NodeCompleted`。
 - intervention notification 改成 lifecycle bus 的 subscriber，只消费语义化通知事件：`InterventionRequested` 与 `RunCompleted`。`RunPaused` 只保留运行时暂停事实，不再直接等价为系统通知。
+- 2026-07-24 补齐非 runtime ACP turn 通知：通知 subscriber 额外消费 `AcpTurnFinished`。Direct 后续追问与 Workflow/AUTO 节点完成后的手动追问按 turnId 分别发送“Agent 回复完成/失败”；用户主动停止不通知。runtime continue 不发该事件，继续只由 workflow lifecycle 表达，避免与 `RunCompleted` 双重通知。
 - lifecycle/session UI refresh 可以作为 subscriber 或统一 emit 触发点，但只能通知前端重新取/合并后端 lifecycle，不能在 subscriber 里重新定义业务状态。
 
 边界：
@@ -434,3 +439,11 @@ RuntimeLifecycleBus
 - 不继续让 dynamic inner `send_acp_prompt` 直接调用 `client::run_prompt`。
 - 不通过简单删除 `suppressStaleRuntimeActive` 解决空白状态；真正的状态归属要移到后端。
 - 不保留 lifecycle 双轨、prompt submit 双轨或 intervention 通知专用回调。
+
+## 2026-07-23：completed-run ACP follow-up 生命周期持久化
+
+- 根因确认：旧实现只看持久化 session status，并在 runtime terminal 时无条件压制 ACP active；前端只能用组件本地 `awaitingResponse` 补齐，因此页面切换后丢失思考中、计时和停止能力。
+- 修复：provider control 以 attempt 为键暴露 `Starting / Running / CancelRequested`。连接启动前即注册 Starting，terminal session snapshot 写入前标记 finished。
+- lifecycle composer 继续是唯一业务状态源：terminal runtime + live prompt 仍派生为 active/stopping；terminal runtime + 无 live prompt 才压制 stale `running`。
+- `activeSessions`、selected leaf、composer、停止按钮和页面重挂载统一消费该 lifecycle；前端 optimistic 状态仅覆盖 command 往返窗口。
+- 已增加 Rust lifecycle matrix 与 Web composer 回归，覆盖 completed + Starting/Running/CancelRequested 以及无 optimistic state 的重挂载恢复。

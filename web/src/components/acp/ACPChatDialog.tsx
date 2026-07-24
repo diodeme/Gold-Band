@@ -208,6 +208,7 @@ interface ACPChatDialogProps {
   runtimeComposerContext?: AcpRuntimeComposerContext;
   manualCheckPending?: boolean;
   systemPromptOptions?: Array<{ attemptId: string; prompt?: string | null }>;
+  showSystemPromptAction?: boolean;
   eventIdPrefix?: string;
   eventPageSize?: number;
   liveUpdatesPaused?: boolean;
@@ -487,6 +488,7 @@ export const ACPChatDialog = forwardRef<
     runtimeComposerContext,
     manualCheckPending = false,
     systemPromptOptions,
+    showSystemPromptAction = true,
     eventIdPrefix,
     eventPageSize,
     liveUpdatesPaused: externalLiveUpdatesPaused = false,
@@ -2350,6 +2352,7 @@ export const ACPChatDialog = forwardRef<
         session={effective}
         rawActive={canvasMode === "raw"}
         rawLoading={rawLoading}
+        showSystemPromptAction={showSystemPromptAction}
         systemPromptAvailable={
           Boolean(effective.systemPromptAppend?.trim()) ||
           Boolean(systemPromptOptions?.some((option) => option.prompt?.trim()))
@@ -3063,6 +3066,7 @@ export function ACPSessionHeader({
   session,
   rawActive,
   rawLoading,
+  showSystemPromptAction = true,
   systemPromptAvailable,
   onToggleRaw,
   onOpenSystemPrompt,
@@ -3070,6 +3074,7 @@ export function ACPSessionHeader({
   session: AcpSessionVm;
   rawActive: boolean;
   rawLoading: boolean;
+  showSystemPromptAction?: boolean;
   systemPromptAvailable?: boolean;
   onToggleRaw: () => void;
   onOpenSystemPrompt: () => void;
@@ -3099,16 +3104,18 @@ export function ACPSessionHeader({
           {session.sessionId ?? t("acp.noSessionId")}
         </span>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-5.5 gap-1 border-border/60 bg-background/22 px-2 text-[10px] font-normal text-foreground/80 hover:bg-background/38"
-            onClick={onOpenSystemPrompt}
-            disabled={!hasSystemPrompt}
-          >
-            <FileText className="size-3" />
-            {t("acp.systemPrompt")}
-          </Button>
+          {showSystemPromptAction ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-5.5 gap-1 border-border/60 bg-background/22 px-2 text-[10px] font-normal text-foreground/80 hover:bg-background/38"
+              onClick={onOpenSystemPrompt}
+              disabled={!hasSystemPrompt}
+            >
+              <FileText className="size-3" />
+              {t("acp.systemPrompt")}
+            </Button>
+          ) : null}
           <Button
             size="sm"
             variant={rawActive ? "default" : "outline"}

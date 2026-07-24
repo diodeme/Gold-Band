@@ -6,6 +6,7 @@ import { searchConversationTasks } from '../../api';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 
 interface ConversationSearchDialogProps {
   open: boolean;
@@ -91,7 +92,16 @@ export function ConversationSearchDialog({ open, onOpenChange, onSelectResult }:
                     onOpenChange(false);
                   }}
                 >
-                  <span className={`size-2 shrink-0 rounded-full ${statusColor(result.latestRun?.outcome)}`} />
+                  {result.runMode === 'direct' && result.agentIdentity ? (
+                    <img
+                      src={agentIconSrc(result.agentIdentity.iconKey)}
+                      alt=""
+                      title={result.agentIdentity.displayName}
+                      className={agentIconClass(result.agentIdentity.iconKey, 'size-4 shrink-0')}
+                    />
+                  ) : (
+                    <span className={`size-2 shrink-0 rounded-full ${statusColor(result.latestRun?.outcome)}`} />
+                  )}
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium">{result.title}</div>
                     <div className="truncate text-xs text-muted-foreground">{result.requirementPreview}</div>

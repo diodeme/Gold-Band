@@ -1,7 +1,12 @@
-import type { ConversationAutoConfigVm, ConversationRunModeVm } from '@/types';
+import type { ConversationAutoConfigVm, ConversationDirectConfigVm, ConversationRunModeVm } from '@/types';
 
 export const DEFAULT_CONVERSATION_RUN_MODE: ConversationRunModeVm = { mode: 'auto' };
 export const DEFAULT_WORKFLOW_TEMPLATE_ID = 'default';
+export const CONVERSATION_RUN_MODE_ORDER: ConversationRunModeVm['mode'][] = ['direct', 'workflow', 'auto'];
+
+export function canOpenRunModeManagement(mode: ConversationRunModeVm['mode']): boolean {
+  return mode !== 'direct';
+}
 
 export function conversationRunModeOrDefault(
   mode: ConversationRunModeVm | null | undefined,
@@ -28,6 +33,26 @@ export function normalizeConversationAutoConfigForSubmit(
   };
 }
 
+export function normalizeConversationDirectConfigForSubmit(
+  config: ConversationDirectConfigVm | null | undefined,
+): ConversationDirectConfigVm | undefined {
+  if (!config?.agentType.trim()) return undefined;
+  return {
+    agentType: config.agentType.trim(),
+    modelId: normalizeOptionalRunModeText(config.modelId),
+    permissionMode: normalizeOptionalRunModeText(config.permissionMode),
+  };
+}
+
+export function directConfigForAgent(
+  mode: ConversationRunModeVm,
+  agentType: string,
+): ConversationDirectConfigVm {
+  return mode.directPreferences?.[agentType]
+    ?? (mode.directConfig?.agentType === agentType ? mode.directConfig : undefined)
+    ?? { agentType };
+}
+
 export function mergeConversationRunMode(
   current: ConversationRunModeVm,
   patch: ConversationRunModeVm,
@@ -40,6 +65,10 @@ export function mergeConversationRunMode(
     includeInterview: patch.includeInterview === undefined
       ? current.includeInterview
       : patch.includeInterview,
+    directConfig: patch.directConfig === undefined ? current.directConfig : patch.directConfig,
+    directPreferences: patch.directPreferences === undefined
+      ? current.directPreferences
+      : patch.directPreferences,
     autoConfig: patch.autoConfig === undefined ? current.autoConfig : patch.autoConfig,
   };
 }

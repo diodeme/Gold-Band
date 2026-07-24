@@ -3,6 +3,7 @@ import type { ConversationAutoConfigVm, ConversationDirectConfigVm, Conversation
 export const DEFAULT_CONVERSATION_RUN_MODE: ConversationRunModeVm = { mode: 'auto' };
 export const DEFAULT_WORKFLOW_TEMPLATE_ID = 'default';
 export const CONVERSATION_RUN_MODE_ORDER: ConversationRunModeVm['mode'][] = ['direct', 'workflow', 'auto'];
+export type ConversationRunModesByWorkspace = Record<string, ConversationRunModeVm>;
 
 export function canOpenRunModeManagement(mode: ConversationRunModeVm['mode']): boolean {
   return mode !== 'direct';
@@ -12,6 +13,24 @@ export function conversationRunModeOrDefault(
   mode: ConversationRunModeVm | null | undefined,
 ): ConversationRunModeVm {
   return mode ?? DEFAULT_CONVERSATION_RUN_MODE;
+}
+
+export function conversationRunModeForWorkspace(
+  modes: ConversationRunModesByWorkspace,
+  projectId: string,
+): ConversationRunModeVm {
+  return conversationRunModeOrDefault(modes[projectId]);
+}
+
+export function setConversationRunModeForWorkspace(
+  modes: ConversationRunModesByWorkspace,
+  projectId: string,
+  mode: ConversationRunModeVm,
+): ConversationRunModesByWorkspace {
+  return {
+    ...modes,
+    [projectId]: mode,
+  };
 }
 
 export function optionalRunModeText(value: string | null | undefined): string | undefined {

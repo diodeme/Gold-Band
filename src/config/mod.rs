@@ -712,9 +712,9 @@ impl RuntimeConfig {
 #[cfg(test)]
 mod tests {
     use super::{
-        ConsoleThemeName, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
-        DesktopUpdateBadgeState, ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig,
-        StateConfig,
+        ConsoleThemeName, ConversationDirectConfig, ConversationRunMode, ConversationRunModeEntry,
+        DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
+        ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
     };
     use std::str::FromStr;
 
@@ -1067,6 +1067,58 @@ mod tests {
         assert_eq!(
             config.skills_dir_name(ManagedAgentType::ClaudeAcp),
             "custom-claude"
+        );
+    }
+
+    #[test]
+    fn direct_preferences_roundtrip_independently_by_workspace_and_agent() {
+        let mut state = StateConfig::default();
+        for (workspace, model, permission) in [
+            ("workspace-a", "sonnet", "ask"),
+            ("workspace-b", "opus", "bypassPermissions"),
+        ] {
+            let config = ConversationDirectConfig {
+                agent_type: "claude-acp".to_string(),
+                model_id: Some(model.to_string()),
+                permission_mode: Some(permission.to_string()),
+            };
+            state.conversation_run_modes.insert(
+                workspace.to_string(),
+                ConversationRunModeEntry {
+                    mode: ConversationRunMode::Direct,
+                    workflow_template_id: None,
+                    include_interview: None,
+                    direct_config: Some(config.clone()),
+                    direct_preferences: [("claude-acp".to_string(), config)].into(),
+                    auto_config: None,
+                },
+            );
+        }
+
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        let roundtripped: StateConfig = serde_json::from_str(&json).unwrap();
+        let workspace_a = roundtripped
+            .conversation_run_modes
+            .get("workspace-a")
+            .unwrap();
+        let workspace_b = roundtripped
+            .conversation_run_modes
+            .get("workspace-b")
+            .unwrap();
+
+        assert_eq!(
+            workspace_a
+                .direct_preferences
+                .get("claude-acp")
+                .and_then(|config| config.model_id.as_deref()),
+            Some("sonnet")
+        );
+        assert_eq!(
+            workspace_b
+                .direct_preferences
+                .get("claude-acp")
+                .and_then(|config| config.permission_mode.as_deref()),
+            Some("bypassPermissions")
         );
     }
 }

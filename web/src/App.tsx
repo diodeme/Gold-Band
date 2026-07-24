@@ -102,7 +102,14 @@ import {
   shouldAutoOpenWorkspacePicker,
   shouldRenderWorkspacePicker,
 } from '@/lib/workspace-picker-scope';
-import { conversationRunModeOrDefault, mergeConversationRunMode } from '@/lib/conversation-run-mode-config';
+import {
+  conversationRunModeForWorkspace,
+  conversationRunModeOrDefault,
+  mergeConversationRunMode,
+  setConversationRunModeForWorkspace,
+  type ConversationRunModesByWorkspace,
+} from '@/lib/conversation-run-mode-config';
+import { ConversationRunModePersistence } from '@/lib/conversation-run-mode-persistence';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
@@ -224,8 +231,12 @@ export function App() {
   const [conversationSidebar, setConversationSidebar] = useState<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const conversationSidebarRef = useRef<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
-  const [conversationRunMode, setConversationRunMode] = useState<ConversationRunModeVm>({ mode: 'auto' });
-  const conversationRunModeRequestRef = useRef(0);
+  const [conversationRunModesByWorkspace, setConversationRunModesByWorkspace] = useState<ConversationRunModesByWorkspace>({});
+  const conversationRunModesRef = useRef<ConversationRunModesByWorkspace>({});
+  const conversationRunModeRequestRef = useRef(new Map<string, number>());
+  const [conversationRunModePersistence] = useState(
+    () => new ConversationRunModePersistence(saveConversationRunMode),
+  );
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const [conversationRunStopping, setConversationRunStopping] = useState(false);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
@@ -302,6 +313,7 @@ export function App() {
     : (draftConversationWorkspaceId ?? effectiveWorkspaceId);
   const defaultProjectId = draftWorkspace?.projectId ?? 'default';
   const defaultWorkspaceName = draftWorkspace?.name ?? 'Default Workspace';
+  const conversationRunMode = conversationRunModeForWorkspace(conversationRunModesByWorkspace, defaultProjectId);
   const [roundSelection, setRoundSelection] = useState<RoundSelection>({ kind: 'round' });
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
   const [profiles, setProfiles] = useState<ProfileVm[]>([]);
@@ -317,17 +329,25 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
 
   const loadConversationRunMode = useCallback((projectId: string) => {
-    const requestId = ++conversationRunModeRequestRef.current;
-    return getConversationRunMode(projectId)
+    const requestId = (conversationRunModeRequestRef.current.get(projectId) ?? 0) + 1;
+    conversationRunModeRequestRef.current.set(projectId, requestId);
+    return conversationRunModePersistence.waitFor(projectId)
+      .then(() => getConversationRunMode(projectId))
       .then((mode) => {
         const nextMode = conversationRunModeOrDefault(mode);
-        if (requestId === conversationRunModeRequestRef.current) {
-          setConversationRunMode(nextMode);
+        if (requestId === conversationRunModeRequestRef.current.get(projectId)) {
+          const nextModes = setConversationRunModeForWorkspace(
+            conversationRunModesRef.current,
+            projectId,
+            nextMode,
+          );
+          conversationRunModesRef.current = nextModes;
+          setConversationRunModesByWorkspace(nextModes);
         }
         return nextMode;
       })
       .catch(() => undefined);
-  }, []);
+  }, [conversationRunModePersistence]);
   const [updateAnnouncementOpen, setUpdateAnnouncementOpen] = useState(false);
   const backgroundRefreshInFlightRef = useRef(false);
 
@@ -970,10 +990,18 @@ export function App() {
   };
 
   const updateConversationRunMode = (mode: ConversationRunModeVm, projectId = defaultProjectId) => {
-    conversationRunModeRequestRef.current += 1;
-    const nextMode = mergeConversationRunMode(conversationRunMode, mode);
-    setConversationRunMode(nextMode);
-    return saveConversationRunMode(projectId, nextMode).catch(() => {});
+    const requestVersion = (conversationRunModeRequestRef.current.get(projectId) ?? 0) + 1;
+    conversationRunModeRequestRef.current.set(projectId, requestVersion);
+    const currentMode = conversationRunModeForWorkspace(conversationRunModesRef.current, projectId);
+    const nextMode = mergeConversationRunMode(currentMode, mode);
+    const nextModes = setConversationRunModeForWorkspace(
+      conversationRunModesRef.current,
+      projectId,
+      nextMode,
+    );
+    conversationRunModesRef.current = nextModes;
+    setConversationRunModesByWorkspace(nextModes);
+    return conversationRunModePersistence.enqueue(projectId, nextMode).catch(() => {});
   };
 
   const onStopRun = (taskId: string, runId: string) => {
@@ -1463,9 +1491,8 @@ export function App() {
               : input.runMode === 'auto'
                 ? { mode: 'auto', autoConfig: input.autoConfig ?? conversationRunMode.autoConfig }
                 : { mode: 'workflow', workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId, includeInterview: input.includeInterview ?? conversationRunMode.includeInterview };
-            setConversationRunMode(nextMode);
             setBusy(true);
-            saveConversationRunMode(input.projectId, nextMode).catch(() => {});
+            void updateConversationRunMode(nextMode, input.projectId);
             try {
               const validation = await validateConversationCreate(input);
               if (!validation.valid) {

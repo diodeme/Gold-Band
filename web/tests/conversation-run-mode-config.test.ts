@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   canOpenRunModeManagement,
   CONVERSATION_RUN_MODE_ORDER,
+  conversationRunModeForWorkspace,
   conversationRunModeOrDefault,
   directConfigForAgent,
   includeInterviewForSubmit,
@@ -12,6 +13,7 @@ import {
   normalizeOptionalRunModeText,
   optionalRunModeText,
   shouldShowInterviewToggle,
+  setConversationRunModeForWorkspace,
 } from '../src/lib/conversation-run-mode-config';
 
 describe('conversation run mode config text fields', () => {
@@ -116,6 +118,65 @@ describe('conversation run mode config text fields', () => {
       permissionMode: 'full-access',
     });
     expect(directConfigForAgent(mode, 'gemini')).toEqual({ agentType: 'gemini' });
+  });
+
+  it('isolates Direct Agent preferences by workspace', () => {
+    const workspaceA = {
+      mode: 'direct' as const,
+      directConfig: { agentType: 'claude-acp', modelId: 'sonnet', permissionMode: 'ask' },
+      directPreferences: {
+        'claude-acp': { agentType: 'claude-acp', modelId: 'sonnet', permissionMode: 'ask' },
+      },
+    };
+    const workspaceB = {
+      mode: 'direct' as const,
+      directConfig: { agentType: 'claude-acp', modelId: 'opus', permissionMode: 'bypassPermissions' },
+      directPreferences: {
+        'claude-acp': { agentType: 'claude-acp', modelId: 'opus', permissionMode: 'bypassPermissions' },
+      },
+    };
+    const modes = setConversationRunModeForWorkspace(
+      setConversationRunModeForWorkspace({}, 'workspace-a', workspaceA),
+      'workspace-b',
+      workspaceB,
+    );
+
+    expect(directConfigForAgent(
+      conversationRunModeForWorkspace(modes, 'workspace-a'),
+      'claude-acp',
+    )).toEqual(workspaceA.directConfig);
+    expect(directConfigForAgent(
+      conversationRunModeForWorkspace(modes, 'workspace-b'),
+      'claude-acp',
+    )).toEqual(workspaceB.directConfig);
+    expect(conversationRunModeForWorkspace(modes, 'workspace-missing')).toEqual({ mode: 'auto' });
+  });
+
+  it('keeps existing Workflow and AUTO memories isolated when another workspace uses Direct', () => {
+    const workflow = {
+      mode: 'workflow' as const,
+      workflowTemplateId: 'workflow-review',
+      includeInterview: false,
+    };
+    const auto = {
+      mode: 'auto' as const,
+      autoConfig: {
+        agentStrategy: 'fixed',
+        agentType: 'codex-acp',
+        modelId: 'gpt-5',
+        permissionMode: 'full-access',
+        globalGoal: 'review the repository',
+      },
+    };
+    let modes = setConversationRunModeForWorkspace({}, 'workspace-workflow', workflow);
+    modes = setConversationRunModeForWorkspace(modes, 'workspace-auto', auto);
+    modes = setConversationRunModeForWorkspace(modes, 'workspace-direct', {
+      mode: 'direct',
+      directConfig: { agentType: 'claude-acp', modelId: 'sonnet', permissionMode: 'ask' },
+    });
+
+    expect(conversationRunModeForWorkspace(modes, 'workspace-workflow')).toEqual(workflow);
+    expect(conversationRunModeForWorkspace(modes, 'workspace-auto')).toEqual(auto);
   });
 
   it('preserves Direct preferences while switching through Workflow and AUTO', () => {

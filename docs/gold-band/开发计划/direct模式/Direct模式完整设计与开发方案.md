@@ -1268,3 +1268,23 @@ web/tests/*
 - `cargo check -p gold-band -p gold-band-desktop`：通过。
 - 通知、attention policy、turn outcome 与 lifecycle event 定向测试：通过。
 - `cargo test --workspace`：通过；核心库 322 项、桌面端 115 项及全部 integration/doc tests 无失败。
+
+## 25. 2026-07-24 多轮 permission / elicitation 通知修正
+
+状态：已完成实现与全量 Rust 回归验证。
+
+Direct 与节点完成后的手动追问复用同一个 ACP attempt。原通知桥接虽然已经能把 `permissionRequest / elicitationRequest` 转成 lifecycle 事件，但桌面通知 subscriber 丢弃了上游 `eventId`，重新按 `run / round / node / attempt / reason` 构造去重键。因此同一 attempt 第一次请求通知后，后续 AskUserQuestion 或权限请求会被误判为重复。
+
+修正方案：
+
+- lifecycle `InterventionRequested.eventId` 是唯一 canonical 去重身份，通知层直接采用，不再二次推导。
+- ACP permission/elicitation 的 eventId 增加 `AcpUiEvent.id`，形成 request-scoped key。
+- 同一 request 的重复 pending update 仍去重；同一 Direct 长会话中的不同 request 分别通知。
+- 当前目标 session 正在前台可见时仍不发送 OS 通知；切换会话、失焦、最小化或隐藏后才提醒。
+- intervention 通知正文使用 Direct conversation metadata 中的 Agent display name，例如 `Claude 等待你的回答`、`Codex 需要授权`，不展示内部 `direct-agent` node id。
+
+验证结果：
+
+- 核心通知模型 19 项定向测试通过。
+- 连续 elicitation、连续 permission 与非 pending 事件过滤测试通过。
+- `cargo test --workspace`：通过；核心库 326 项、桌面端 120 项及全部 integration/doc tests 无失败。

@@ -55,6 +55,8 @@ use crate::view_models_conversation::{
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
 const CONVERSATION_RUN_STATE_EVENT: &str = "gold-band://conversation-run-state-updated";
+const PERMISSION_REQUESTED_DEDUP_SUFFIX: &str = "permission-requested";
+const ELICITATION_REQUESTED_DEDUP_SUFFIX: &str = "elicitation-requested";
 
 pub type CommandResult<T> = Result<T, CommandErrorVm>;
 
@@ -524,7 +526,12 @@ pub(crate) fn acp_live_update_emitter_for_app(
     project_id: Option<String>,
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, AcpUiEvent) -> anyhow::Result<()> + Send + Sync>
 {
-    acp_live_update_emitter(app_handle, project_id, Some(app.lifecycle_bus.clone()))
+    acp_live_update_emitter(
+        app_handle,
+        project_id,
+        Some(app.clone_for_background()),
+        Some(app.lifecycle_bus.clone()),
+    )
 }
 
 fn resolve_command_app_with_emitters(
@@ -1401,13 +1408,24 @@ pub fn save_metrics_settings(
 pub(crate) fn acp_live_update_emitter(
     app_handle: AppHandle,
     project_id: Option<String>,
+    notification_app: Option<App>,
     lifecycle_bus: Option<gold_band::app::observability::RuntimeLifecycleBus>,
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, AcpUiEvent) -> anyhow::Result<()> + Send + Sync>
 {
     Arc::new(move |context, event| {
         if let Some(lifecycle_bus) = lifecycle_bus.as_ref() {
-            maybe_emit_permission_intervention(lifecycle_bus, &context, &event);
-            maybe_emit_elicitation_intervention(lifecycle_bus, &context, &event);
+            maybe_emit_permission_intervention(
+                lifecycle_bus,
+                notification_app.as_ref(),
+                &context,
+                &event,
+            );
+            maybe_emit_elicitation_intervention(
+                lifecycle_bus,
+                notification_app.as_ref(),
+                &context,
+                &event,
+            );
         }
         emit_acp_event_update(
             &app_handle,
@@ -1427,11 +1445,12 @@ pub(crate) fn acp_live_update_emitter(
 
 /// 路径 B：旁路监听 `permissionRequest` 事件流，强制 `PermissionRequested` 发干预通知。
 ///
-/// 仅当 `event.kind == "permissionRequest" && status == "pending"` 时触发。文案用一般性
-/// 描述（node_label 用 node_id、task_title 留 None），不查 App、不改主干 context（方案
-/// §6.2/§9.4）。dedup 与路径 A 共享同一 `DesktopState.notification_dedup` 实例。
+/// 仅当 `event.kind == "permissionRequest" && status == "pending"` 时触发。node_label
+/// 优先使用 Direct 会话 Agent identity，其次使用节点实际 provider 展示名，最后才回退 node_id。
+/// event_id 包含 request id：同一请求的重复 update 去重，同一 attempt 的后续请求独立通知。
 fn maybe_emit_permission_intervention(
     lifecycle_bus: &gold_band::app::observability::RuntimeLifecycleBus,
+    app: Option<&App>,
     context: &gold_band::app::AcpLiveEventContext,
     event: &AcpUiEvent,
 ) {
@@ -1447,12 +1466,10 @@ fn maybe_emit_permission_intervention(
         return;
     }
     lifecycle_bus.emit(RuntimeLifecycleEvent::InterventionRequested {
-        event_id: gold_band::app::make_dedup_key(
-            &context.run_id,
-            &context.round_id,
-            &context.node_id,
-            &context.attempt_id,
-            PauseReason::PermissionRequested,
+        event_id: request_scoped_intervention_event_id(
+            context,
+            event,
+            PERMISSION_REQUESTED_DEDUP_SUFFIX,
         ),
         occurred_at: current_timestamp(),
         task_id: context.task_id.clone(),
@@ -1460,7 +1477,7 @@ fn maybe_emit_permission_intervention(
         round_id: context.round_id.clone(),
         node_id: context.node_id.clone(),
         attempt_id: context.attempt_id.clone(),
-        node_label: context.node_id.clone(),
+        node_label: acp_intervention_node_label(app, context),
         kind: RuntimeInterventionKind::PermissionRequested,
         task_title: None,
     });
@@ -1468,6 +1485,7 @@ fn maybe_emit_permission_intervention(
 
 fn maybe_emit_elicitation_intervention(
     lifecycle_bus: &gold_band::app::observability::RuntimeLifecycleBus,
+    app: Option<&App>,
     context: &gold_band::app::AcpLiveEventContext,
     event: &AcpUiEvent,
 ) {
@@ -1483,12 +1501,10 @@ fn maybe_emit_elicitation_intervention(
         return;
     }
     lifecycle_bus.emit(RuntimeLifecycleEvent::InterventionRequested {
-        event_id: gold_band::app::make_dedup_key_with_suffix(
-            &context.run_id,
-            &context.round_id,
-            &context.node_id,
-            &context.attempt_id,
-            "elicitation-requested",
+        event_id: request_scoped_intervention_event_id(
+            context,
+            event,
+            ELICITATION_REQUESTED_DEDUP_SUFFIX,
         ),
         occurred_at: current_timestamp(),
         task_id: context.task_id.clone(),
@@ -1496,10 +1512,56 @@ fn maybe_emit_elicitation_intervention(
         round_id: context.round_id.clone(),
         node_id: context.node_id.clone(),
         attempt_id: context.attempt_id.clone(),
-        node_label: context.node_id.clone(),
+        node_label: acp_intervention_node_label(app, context),
         kind: RuntimeInterventionKind::ElicitationRequested,
         task_title: None,
     });
+}
+
+fn acp_intervention_node_label(
+    app: Option<&App>,
+    context: &gold_band::app::AcpLiveEventContext,
+) -> String {
+    let Some(app) = app else {
+        return context.node_id.clone();
+    };
+    if let Some(agent_label) =
+        gold_band::app::direct_conversation_agent_label(app, &context.task_id)
+    {
+        return agent_label;
+    }
+    acp_turn_agent_label(
+        app,
+        &AttemptLocator::new(
+            context.task_id.clone(),
+            context.run_id.clone(),
+            context.round_id.clone(),
+            context.node_id.clone(),
+            context.attempt_id.clone(),
+            context.outer_node_id.clone(),
+            context.outer_attempt_id.clone(),
+        ),
+    )
+}
+
+fn request_scoped_intervention_event_id(
+    context: &gold_band::app::AcpLiveEventContext,
+    event: &AcpUiEvent,
+    kind_suffix: &str,
+) -> String {
+    let request_id = event.id.trim();
+    let suffix = if request_id.is_empty() {
+        kind_suffix.to_string()
+    } else {
+        format!("{kind_suffix}:{request_id}")
+    };
+    gold_band::app::make_dedup_key_with_suffix(
+        &context.run_id,
+        &context.round_id,
+        &context.node_id,
+        &context.attempt_id,
+        &suffix,
+    )
 }
 
 pub(crate) fn acp_session_update_emitter(
@@ -1975,6 +2037,7 @@ pub async fn send_acp_prompt(
             let live_update = acp_live_update_emitter(
                 app_handle_for_live.clone(),
                 project_id_for_spawn.clone(),
+                Some(app.clone_for_background()),
                 Some(app.lifecycle_bus.clone()),
             );
             let session_update = app.acp_session_update_for(acp_live_event_context(
@@ -2122,6 +2185,7 @@ pub async fn send_acp_prompt(
         let live_update = acp_live_update_emitter(
             app_handle_for_live.clone(),
             project_id_for_spawn.clone(),
+            Some(app.clone_for_background()),
             Some(app.lifecycle_bus.clone()),
         );
         let session_update = app.acp_session_update_for(acp_live_event_context(
@@ -4515,17 +4579,45 @@ mod tests {
 
     #[test]
     fn maybe_emit_elicitation_intervention_for_pending_request() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-direct-intervention-label-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
+        write_json(
+            &app.paths
+                .task_dir("task-001")
+                .join("authoring")
+                .join("conversation.json"),
+            &serde_json::json!({
+                "runMode": "direct",
+                "agentIdentity": { "displayName": "Claude" },
+                "directConfig": { "agentType": "claude-acp" }
+            }),
+        )
+        .unwrap();
         let bus = gold_band::app::observability::RuntimeLifecycleBus::new();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_for_handler = seen.clone();
         bus.subscribe_inline(Arc::new(move |event| {
-            if let RuntimeLifecycleEvent::InterventionRequested { kind, event_id, .. } = event {
-                seen_for_handler.lock().unwrap().push((kind, event_id));
+            if let RuntimeLifecycleEvent::InterventionRequested {
+                kind,
+                event_id,
+                node_label,
+                ..
+            } = event
+            {
+                seen_for_handler
+                    .lock()
+                    .unwrap()
+                    .push((kind, event_id, node_label));
             }
         }));
 
         maybe_emit_elicitation_intervention(
             &bus,
+            Some(&app),
             &gold_band::app::AcpLiveEventContext {
                 task_id: "task-001".to_string(),
                 run_id: "run-001".to_string(),
@@ -4553,13 +4645,114 @@ mod tests {
                 raw: None,
             },
         );
+        maybe_emit_elicitation_intervention(
+            &bus,
+            Some(&app),
+            &gold_band::app::AcpLiveEventContext {
+                task_id: "task-001".to_string(),
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                node_id: "plan".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            },
+            &AcpUiEvent {
+                kind: "elicitationRequest".to_string(),
+                id: "elicit-002".to_string(),
+                seq: 2,
+                timestamp: "2Z".to_string(),
+                session_id: None,
+                status: Some("pending".to_string()),
+                title: None,
+                content: None,
+                tool_call_id: None,
+                started_seq: None,
+                ended_seq: None,
+                started_at: Some("2Z".to_string()),
+                ended_at: None,
+                timing: None,
+                raw: None,
+            },
+        );
 
         let events = seen.lock().unwrap();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert_eq!(events[0].0, RuntimeInterventionKind::ElicitationRequested);
         assert_eq!(
             events[0].1,
-            "run-001:round-001:plan:attempt-001:elicitation-requested"
+            "run-001:round-001:plan:attempt-001:elicitation-requested:elicit-001"
+        );
+        assert_eq!(
+            events[1].1,
+            "run-001:round-001:plan:attempt-001:elicitation-requested:elicit-002"
+        );
+        assert_eq!(events[0].2, "Claude");
+        assert_eq!(events[1].2, "Claude");
+        drop(events);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn maybe_emit_permission_intervention_keeps_requests_distinct() {
+        let bus = gold_band::app::observability::RuntimeLifecycleBus::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_handler = seen.clone();
+        bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::InterventionRequested { kind, event_id, .. } = event {
+                seen_for_handler.lock().unwrap().push((kind, event_id));
+            }
+        }));
+        let context = gold_band::app::AcpLiveEventContext {
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "plan".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        };
+        let permission_event = |id: &str, seq: u64| AcpUiEvent {
+            kind: "permissionRequest".to_string(),
+            id: id.to_string(),
+            seq,
+            timestamp: format!("{seq}Z"),
+            session_id: None,
+            status: Some("pending".to_string()),
+            title: None,
+            content: None,
+            tool_call_id: None,
+            started_seq: None,
+            ended_seq: None,
+            started_at: Some(format!("{seq}Z")),
+            ended_at: None,
+            timing: None,
+            raw: None,
+        };
+
+        maybe_emit_permission_intervention(
+            &bus,
+            None,
+            &context,
+            &permission_event("permission-1", 1),
+        );
+        maybe_emit_permission_intervention(
+            &bus,
+            None,
+            &context,
+            &permission_event("permission-2", 2),
+        );
+
+        let events = seen.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].0, RuntimeInterventionKind::PermissionRequested);
+        assert_eq!(
+            events[0].1,
+            "run-001:round-001:plan:attempt-001:permission-requested:permission-1"
+        );
+        assert_eq!(
+            events[1].1,
+            "run-001:round-001:plan:attempt-001:permission-requested:permission-2"
         );
     }
 
@@ -4576,6 +4769,7 @@ mod tests {
 
         maybe_emit_elicitation_intervention(
             &bus,
+            None,
             &gold_band::app::AcpLiveEventContext {
                 task_id: "task-001".to_string(),
                 run_id: "run-001".to_string(),

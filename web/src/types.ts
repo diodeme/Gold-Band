@@ -1132,6 +1132,7 @@ export interface ConversationSearchResultVm {
   title: string;
   description?: string | null;
   requirementPreview: string;
+  matchPreview: string;
   latestRun?: ConversationRunSummaryVm | null;
   runMode: 'direct' | 'auto' | 'workflow';
   agentIdentity?: ConversationAgentIdentityVm | null;

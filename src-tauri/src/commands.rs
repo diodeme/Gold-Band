@@ -1002,14 +1002,15 @@ pub fn get_task_detail(
 }
 
 #[tauri::command]
-pub fn create_task(
+pub async fn create_task(
     state: State<'_, DesktopState>,
     input: CreateTaskInputVm,
 ) -> CommandResult<WorkflowVm> {
     ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
-    let summary = app
-        .create_task_from_requirement(CreateTaskInput {
+    let background_app = app.clone_for_background();
+    let summary = tauri::async_runtime::spawn_blocking(move || {
+        background_app.create_task_from_requirement(CreateTaskInput {
             title: input.title,
             description: input.description,
             requirement_file_name: input.requirement_file_name,
@@ -1017,12 +1018,10 @@ pub fn create_task(
             workflow: input.workflow,
             workflow_template_id: input.workflow_template_id,
         })
-        .map_err(command_error)?;
-    let task_id = summary.task.id.clone();
-    let task_dir = app.paths.task_dir(&task_id);
-    tauri::async_runtime::spawn_blocking(move || {
-        sqlite::index_task_with_retry(&task_dir, &task_id);
-    });
+    })
+    .await
+    .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
+    .map_err(command_error)?;
     workflow_vm(&app, &summary.task.id).map_err(command_error)
 }
 

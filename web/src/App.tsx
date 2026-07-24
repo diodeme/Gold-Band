@@ -110,6 +110,7 @@ import {
   type ConversationRunModesByWorkspace,
 } from '@/lib/conversation-run-mode-config';
 import { ConversationRunModePersistence } from '@/lib/conversation-run-mode-persistence';
+import { conversationPageForSearchResult } from '@/lib/conversation-search';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
@@ -1420,9 +1421,8 @@ export function App() {
         open={conversationSearchOpen}
         onOpenChange={setConversationSearchOpen}
         onSelectResult={(result) => {
-          if (result.latestRun) {
-            setConversationPage({ kind: 'conversation-run', projectId: result.projectId, taskId: result.taskId, runId: result.latestRun.runId });
-          }
+          const page = conversationPageForSearchResult(result);
+          if (page) setConversationPage(page);
         }}
       />
     </Shell>

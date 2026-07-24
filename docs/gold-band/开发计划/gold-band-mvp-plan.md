@@ -680,3 +680,18 @@ attempt-001/
 - 快速会话、runtime header、侧边栏和搜索完成 Direct 交互；Agent/model/permission 只在快速会话配置并按 workspace + Agent 记忆，运行模式管理仅保留工作流与 AUTO，Direct 历史使用 Agent icon 与 `lastActivityAt`。
 - Direct 内部 `raw-agent` worker 不参与 profile 解析且禁止绑定 profile，避免角色解析阻断创建或向空 system prompt 注入 Gold Band 上下文。
 - 回归范围包含 prompt、lifecycle、创建/config、前端 composer 状态、tab 顺序和 sidebar identity；合入前要求 Rust workspace、Web tests/build 与 `/chat`、Direct run deep link 实际验证通过。
+
+---
+
+## 2026-07-24：新会话搜索索引生命周期收敛
+
+- 根因修复：侧栏继续以文件系统为权威事实源，SQLite 仍为派生搜索索引；task 创建和元数据更新统一由 `App` 核心生命周期刷新索引，不再由任务工作台或会话 UI 各自补调用。
+- 跨 workspace 身份：task ID 只在项目内递增，SQLite schema v2 改用 `task_path` 作为主键；迁移保留现有索引行但不扫描旧任务，避免不同项目的 `task-001` 相互覆盖，删除也只清理目标路径。
+- workspace 路由：项目 ID 统一复用 `GoldBandPaths::project_id`，Windows 对历史 drive letter 大小写差异兼容匹配；搜索命中后使用状态中已有的规范 project ID 组装路由，避免索引有结果但 workspace 解析失败后被过滤。
+- 搜索 workspace 范围：会话搜索只覆盖当前侧边栏的默认 workspace 和 `conversationWorkspaces`，不包含已移除或未注册的历史 workspace；允许的 task 目录在 SQLite FTS 排序与 `LIMIT` 之前过滤，避免范围外命中挤占可见结果。
+- 中英文子串搜索：SQLite task FTS 升级为内置 trigram tokenizer；3 字符以上关键词支持标题、描述、需求正文任意位置匹配，1～2 字符关键词在 sidebar workspace 范围内使用字面包含匹配，修复“你好可命中但随便无法命中随便用askUserQuestion”的分词缺陷。用户输入统一按普通文本转义，多关键词使用 AND 语义，标题命中优先排序。
+- 命中上下文展示：搜索接口新增 `matchPreview`，从真正命中的标题、描述或完整需求正文中截取上下文；短内容完整展示，只有长文本才在关键词前最多保留 10 个字符，避免短内容被误截断并保证关键词在单行内可见。关键词使用无底色、高对比 `foreground` 文字和轻量下划线高亮，兼容亮色与深色主题。
+- 新数据范围：本次不扫描、不重建既有 `tasks` 索引缺口；修复发布后新建的会话，以及之后更新标题/描述的 task，可按标题、描述和 requirement 搜索。
+- 可导航结果：会话搜索根据索引中的 `task_path` 解析 workspace，并从文件事实源补齐最新 Run；只返回能够形成 `projectId/taskId/runId` 路由的结果，点击后直接打开最近 Run。
+- 错误语义：搜索索引不可用或查询失败返回结构化错误码，前端展示搜索失败，不再伪装成“没有匹配结果”。
+- 回归固化：Rust 测试覆盖“创建 task 即可搜索、元数据更新刷新索引”、“搜索结果包含最新 Run”、“侧边栏 workspace 范围在 `LIMIT` 之前生效”和“随便/askUser/你好等中英文子串、短查询及命中摘要”；Web 测试覆盖 Tauri 搜索接口参数、搜索结果路由映射与关键词字面高亮，并要求桌面端完成“新建会话 → 搜索 → 查看命中上下文 → 打开”验证。

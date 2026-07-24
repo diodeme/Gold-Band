@@ -1,7 +1,11 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { ACPSessionHeader } from '@/components/acp/ACPChatDialog';
+import {
+  ACPSessionHeader,
+  formatAcpSessionIdForDisplay,
+  reduceAcpSessionIdTooltipState,
+} from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { AcpSessionVm } from '@/types';
 
@@ -38,6 +42,27 @@ function renderHeader(props: React.ComponentProps<typeof ACPSessionHeader>) {
 }
 
 describe('ACPSessionHeader', () => {
+  it('shortens long session ids while preserving compact ids', () => {
+    expect(formatAcpSessionIdForDisplay('019f9417-0b0f-75c2-a79a-739cd4c94238'))
+      .toBe('019f9417…4238');
+    expect(formatAcpSessionIdForDisplay('session-1')).toBe('session-1');
+  });
+
+  it('keeps copied feedback during tooltip close before returning to the full id', () => {
+    const copied = reduceAcpSessionIdTooltipState(
+      { open: false, phase: 'idle' },
+      { type: 'copy-succeeded' },
+    );
+    const closing = reduceAcpSessionIdTooltipState(copied, { type: 'feedback-elapsed' });
+
+    expect(copied).toEqual({ open: true, phase: 'copied' });
+    expect(closing).toEqual({ open: false, phase: 'closing' });
+    expect(reduceAcpSessionIdTooltipState(closing, { type: 'open-changed', open: true }))
+      .toBe(closing);
+    expect(reduceAcpSessionIdTooltipState(closing, { type: 'close-settled' }))
+      .toEqual({ open: false, phase: 'idle' });
+  });
+
   it('hides the system prompt action for Direct sessions', () => {
     const html = renderHeader({
       session: session(),
@@ -71,6 +96,10 @@ describe('ACPSessionHeader', () => {
     expect(html).toContain('Claude');
     expect(html).toContain('session-1');
     expect(html).toContain('aria-label="复制 session ID"');
+    expect(html).toContain('items-baseline');
+    expect(html).toContain('gap-1.5');
+    expect(html).toContain('text-[10px] leading-5');
+    expect(html).not.toContain('px-1 py-0.5 text-[10px]');
     expect(html).not.toContain('Bypass Permissions');
     expect(html).not.toContain('权限');
   });
@@ -96,10 +125,25 @@ describe('ACPSessionHeader', () => {
     expect(html).toContain('aria-label="打开目录"');
     expect(html).toContain('py-0.5');
     expect(html).toContain('gap-1');
-    expect(html).toContain('min-w-0 max-w-[40%] shrink');
+    expect(html).toContain('mr-2 min-w-0 max-w-[40%] shrink');
     expect(html).not.toContain('lucide-pencil');
-    expect(html).not.toContain('mr-2');
     expect(html).toContain('data-slot="tooltip-trigger"');
     expect(html).not.toContain('title="修改标题"');
+  });
+
+  it('shows a compact session id in the header', () => {
+    const value = session();
+    value.sessionId = '019f9417-0b0f-75c2-a79a-739cd4c94238';
+
+    const html = renderHeader({
+      session: value,
+      rawActive: false,
+      rawLoading: false,
+      onToggleRaw: () => undefined,
+      onOpenSystemPrompt: () => undefined,
+    });
+
+    expect(html).toContain('019f9417…4238');
+    expect(html).not.toContain('>019f9417-0b0f-75c2-a79a-739cd4c94238</button>');
   });
 });

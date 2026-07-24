@@ -12,11 +12,13 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Bot,
   ChevronDown,
   CircleAlert,
   CircleStop,
   Clock,
   FileText,
+  FolderOpen,
   Image as ImageIcon,
   ListTodo,
   Loader2,
@@ -29,6 +31,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Collapsible,
@@ -71,6 +74,8 @@ import {
   type ToolPart,
 } from "@/components/prompt-kit/tool";
 import { cn } from "@/lib/utils";
+import { agentIconClass, agentIconSrc } from "@/lib/agent-icons";
+import { EditableConversationTitle } from "@/components/conversation/EditableConversationTitle";
 import { loadArtifactMarkdownRender, saveArtifactMarkdownRender } from "@/lib/artifact-markdown-pref";
 import { goldThemedScrollbarClassName } from "@/lib/themed-scrollbar";
 import {
@@ -195,6 +200,12 @@ export interface ACPChatDialogHandle {
   openArtifactsDialog: (asset?: AssetItemVm) => void;
 }
 
+export interface AcpDirectSessionHeaderProps {
+  title: string;
+  onTitleChange?: (title: string) => void;
+  onOpenInFileManager?: () => void;
+}
+
 interface ACPChatDialogProps {
   session?: AcpSessionVm | null;
   projectId: string;
@@ -209,6 +220,7 @@ interface ACPChatDialogProps {
   manualCheckPending?: boolean;
   systemPromptOptions?: Array<{ attemptId: string; prompt?: string | null }>;
   showSystemPromptAction?: boolean;
+  directSessionHeader?: AcpDirectSessionHeaderProps;
   eventIdPrefix?: string;
   eventPageSize?: number;
   liveUpdatesPaused?: boolean;
@@ -489,6 +501,7 @@ export const ACPChatDialog = forwardRef<
     manualCheckPending = false,
     systemPromptOptions,
     showSystemPromptAction = true,
+    directSessionHeader,
     eventIdPrefix,
     eventPageSize,
     liveUpdatesPaused: externalLiveUpdatesPaused = false,
@@ -2353,6 +2366,7 @@ export const ACPChatDialog = forwardRef<
         rawActive={canvasMode === "raw"}
         rawLoading={rawLoading}
         showSystemPromptAction={showSystemPromptAction}
+        directSessionHeader={directSessionHeader}
         systemPromptAvailable={
           Boolean(effective.systemPromptAppend?.trim()) ||
           Boolean(systemPromptOptions?.some((option) => option.prompt?.trim()))
@@ -3067,6 +3081,7 @@ export function ACPSessionHeader({
   rawActive,
   rawLoading,
   showSystemPromptAction = true,
+  directSessionHeader,
   systemPromptAvailable,
   onToggleRaw,
   onOpenSystemPrompt,
@@ -3075,34 +3090,101 @@ export function ACPSessionHeader({
   rawActive: boolean;
   rawLoading: boolean;
   showSystemPromptAction?: boolean;
+  directSessionHeader?: AcpDirectSessionHeaderProps;
   systemPromptAvailable?: boolean;
   onToggleRaw: () => void;
   onOpenSystemPrompt: () => void;
 }) {
   const { t } = useTranslation();
-  const mode = session.config?.currentModeName ?? session.config?.currentModeId;
+  const [sessionIdCopied, setSessionIdCopied] = useState(false);
+  const [sessionIdTooltipOpen, setSessionIdTooltipOpen] = useState(false);
+  const copyFeedbackTimerRef = useRef<number | null>(null);
   const hasSystemPrompt =
     systemPromptAvailable ?? Boolean(session.systemPromptAppend?.trim());
+
+  useEffect(() => () => {
+    if (copyFeedbackTimerRef.current !== null) {
+      window.clearTimeout(copyFeedbackTimerRef.current);
+    }
+  }, []);
+
+  const handleCopySessionId = useCallback(async () => {
+    const sessionId = session.sessionId?.trim();
+    if (!sessionId) return;
+
+    try {
+      await navigator.clipboard.writeText(sessionId);
+    } catch {
+      return;
+    }
+
+    if (copyFeedbackTimerRef.current !== null) {
+      window.clearTimeout(copyFeedbackTimerRef.current);
+    }
+    setSessionIdCopied(true);
+    setSessionIdTooltipOpen(true);
+    copyFeedbackTimerRef.current = window.setTimeout(() => {
+      setSessionIdCopied(false);
+      setSessionIdTooltipOpen(false);
+      copyFeedbackTimerRef.current = null;
+    }, SESSION_ID_COPY_FEEDBACK_MS);
+  }, [session.sessionId]);
+
   return (
-    <div className="shrink-0 border-b border-border/60 bg-gold-surface-high/60 px-5 pb-1 pt-0 shadow-[inset_0_-1px_0_color-mix(in_srgb,var(--gold-line-soft)_56%,transparent)]">
-      <div className="flex min-w-0 items-center gap-1.5">
+    <div className={cn(
+      "shrink-0 border-b border-border/60 bg-gold-surface-high/60 px-5 shadow-[inset_0_-1px_0_color-mix(in_srgb,var(--gold-line-soft)_56%,transparent)]",
+      directSessionHeader ? "py-0.5" : "pb-1 pt-0",
+    )}>
+      <div className={cn(
+        "flex min-w-0 items-center",
+        directSessionHeader ? "gap-1" : "gap-1.5",
+      )}>
+        {directSessionHeader ? (
+          <EditableConversationTitle
+            title={directSessionHeader.title}
+            className="min-w-0 max-w-[40%] shrink"
+            showEditIcon={false}
+            onTitleChange={directSessionHeader.onTitleChange}
+          />
+        ) : null}
+        {session.adapterIconKey ? (
+          <img
+            src={agentIconSrc(session.adapterIconKey)}
+            alt=""
+            className={agentIconClass(session.adapterIconKey, "size-3.5 shrink-0")}
+          />
+        ) : (
+          <Bot aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
         <span className="min-w-0 truncate text-[13px] font-medium leading-5 text-foreground/88">
           {session.adapterDisplayName ?? session.provider}
         </span>
-        {mode ? (
-          <Badge
-            variant="outline"
-            className="max-w-full gap-1 rounded-full border-border/60 bg-background/30 px-1.5 py-0 text-[10px] font-normal text-foreground/78"
+        {session.sessionId ? (
+          <Tooltip
+            open={sessionIdTooltipOpen}
+            onOpenChange={(open) => {
+              if (!sessionIdCopied) setSessionIdTooltipOpen(open);
+            }}
           >
-            <span className="shrink-0 text-muted-foreground">
-              {t("acp.permissionMode")}
-            </span>
-            <span className="min-w-0 truncate text-foreground">{mode}</span>
-          </Badge>
-        ) : null}
-        <span className="truncate text-[10px] text-muted-foreground/82">
-          {session.sessionId ?? t("acp.noSessionId")}
-        </span>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="min-w-0 truncate rounded px-1 py-0.5 text-[10px] text-muted-foreground/82 transition-colors hover:bg-muted/45 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                aria-label={t("acp.copySessionId")}
+                onClick={handleCopySessionId}
+              >
+                {session.sessionId}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              {sessionIdCopied ? t("acp.sessionIdCopied") : t("acp.copySessionId")}
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          <span className="truncate text-[10px] text-muted-foreground/82">
+            {t("acp.noSessionId")}
+          </span>
+        )}
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {showSystemPromptAction ? (
             <Button
@@ -3131,11 +3213,29 @@ export function ACPSessionHeader({
             {rawLoading ? <Loader2 className="size-3 animate-spin" /> : null}
             {t("acp.rawFrames")}
           </Button>
+          {directSessionHeader?.onOpenInFileManager ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-5.5"
+                  aria-label={t("conversation.runtime.openInFileManager")}
+                  onClick={directSessionHeader.onOpenInFileManager}
+                >
+                  <FolderOpen className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t("conversation.runtime.openInFileManager")}</TooltipContent>
+            </Tooltip>
+          ) : null}
         </div>
       </div>
     </div>
   );
 }
+
+const SESSION_ID_COPY_FEEDBACK_MS = 1200;
 
 const SystemPromptDialog = memo(function SystemPromptDialog({
   open,

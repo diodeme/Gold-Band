@@ -815,6 +815,8 @@ const resources = {
       acp: {
         restored: "已恢复",
         noSessionId: "无 session id",
+        copySessionId: "复制 session ID",
+        sessionIdCopied: "已复制",
         eventsCount: "{{count}} 条事件",
         errorsCount: "{{count}} 个错误",
         systemPrompt: "系统提示",
@@ -2094,6 +2096,8 @@ const resources = {
       acp: {
         restored: "Restored",
         noSessionId: "No session id",
+        copySessionId: "Copy session ID",
+        sessionIdCopied: "Copied",
         eventsCount: "{{count}} events",
         errorsCount: "{{count}} errors",
         systemPrompt: "System prompt",

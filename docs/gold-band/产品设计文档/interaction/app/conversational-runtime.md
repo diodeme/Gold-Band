@@ -253,15 +253,16 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 
 ## 会话信息栏（ACPSessionHeader）
 
-- 单行布局：模型名 + 权限模式 Badge + sessionId + 操作按钮
+- 单行布局：Agent icon + Agent 名称 + 可复制 sessionId + 操作按钮；权限模式属于可变运行配置，不在会话身份栏中展示
 - 会话信息栏与运行标题栏保持同一套紧凑节奏：缩小上下 padding、降低主标题字号、压低按钮高度，减少双层头部对内容区的挤压
-- 第二行作为元信息层，视觉权重需低于第一行：更小字号、更轻字重、更弱对比度，不与任务标题竞争主次
+- 可编辑会话标题的悬浮提示统一使用项目内置 shadcn Tooltip，禁止使用 HTML `title` 触发 Windows/WebView 原生 tooltip；鼠标悬浮与键盘聚焦共享主题化提示样式
+- Workflow/AUTO 的第二行作为元信息层，视觉权重需低于第一行：更小字号、更轻字重、更弱对比度，不与任务标题竞争主次；Direct 使用下述单层组合页头
 - 用户消息气泡避免使用高饱和整块主色填充；在深色主题下优先使用主色混入 card/background 的柔和底色，保证信息突出但不刺眼
 - ACP 会话主消息流、raw frames 面板和 prompt-kit 聊天滚动容器使用 Gold Band 主题化滚动条；滚动条颜色必须来自主题 token（主色、muted、surface），浅暖色主题下呈现低饱和暖棕，不回退为系统默认灰色。
 - Gold Band runtime prompt 中的 `<hidden data-gold-band-hidden="true">` 段在用户消息气泡内默认折叠展示，折叠块与可见 requirement/goal 同属一个 bubble；展开后展示隐藏原文，再次点击收起。该规则适用于 workflow new 和 workflow resume，并覆盖会话态与旧工作台复用的 ACPChatDialog；用户手动追问和 runtime repair 不注入 hidden runtime context。hidden 后面的可见片段只在展示层去掉开头换行，真实 prompt 事件内容不变。
 - 产物来源固定为当前选中 session（含 AI-DYNAMIC 内部节点）的 artifacts / attachments，不使用 run 级聚合占位数据
 - 产物弹窗遮罩使用轻量弱化遮罩（低透明深色 + blur），主体面板保持半透明而不过度强调，不做厚重黑色卡片
-- sessionId 与模型名、权限模式同行，不再单独占行
+- sessionId 与 Agent 身份同行，不再单独占行；点击 sessionId 直接复制完整值，并显示会自动消失的轻量“已复制”提示
 
 ## 产物/附件信息区
 
@@ -321,7 +322,7 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 ## Direct 运行时呈现
 
 - Direct 对用户呈现为一个持续 Agent 对话，不展示 workflow、round/node/attempt path、run outcome、session switcher、重跑或工作流查看/编辑入口。
-- 顶部保留会话标题，并展示 Agent icon、名称、创建时选定的 model 与 permission mode；`runId` 只保留在高级诊断数据中。
+- Direct 不保留独立运行标题栏；组合页头左侧按内容自然宽度紧邻展示可编辑会话标题、Agent icon/名称、可复制 sessionId，右侧通过独立操作区展示原始帧与目录按钮。紧凑态标题不预留隐藏编辑图标的布局宽度，标题只在过长时截断，不得用伸展布局把 Agent 身份推向中部；页头不重复展示 model 或 permission mode，`runId` 只保留在高级诊断数据中。
 - Direct ACP header 不展示“系统提示”按钮；Direct 的 system prompt 本就为空，不保留无效或禁用态入口。原始帧与其他诊断能力继续保留。
 - 消息、thought、plan、tool call、permission、elicitation、附件、raw frame、token、cost、context 和耗时继续复用现有 ACP/prompt-kit 管道。
 - composer 内的发送中、思考中、工具执行中、回复中、停止中和计时仍由 canonical lifecycle 驱动，不新增 Direct 专用 chat 组件。

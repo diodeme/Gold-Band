@@ -627,6 +627,8 @@ pub struct AcpSessionVm {
     pub provider: String,
     pub adapter_id: Option<String>,
     pub adapter_display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adapter_icon_key: Option<String>,
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_cwd: Option<String>,
@@ -3337,6 +3339,7 @@ pub fn dynamic_acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
+    let adapter_icon_key = provider_icon_key(&provider);
     let session_timing = resolve_acp_session_timing(
         &status,
         acp_session_timing_from_snapshot(&session),
@@ -3379,6 +3382,7 @@ pub fn dynamic_acp_session_vm(
             .or_else(|| session.get("adapterId").and_then(|value| value.as_str()))
             .map(str::to_string),
         adapter_display_name,
+        adapter_icon_key,
         cwd,
         provider_cwd,
         status,
@@ -3637,6 +3641,7 @@ pub fn acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
+    let adapter_icon_key = provider_icon_key(&provider);
     let session_timing = resolve_acp_session_timing(
         &status,
         acp_session_timing_from_snapshot(&session),
@@ -3680,6 +3685,7 @@ pub fn acp_session_vm(
             .or_else(|| session.get("adapterId").and_then(|value| value.as_str()))
             .map(str::to_string),
         adapter_display_name,
+        adapter_icon_key,
         cwd,
         provider_cwd,
         status,

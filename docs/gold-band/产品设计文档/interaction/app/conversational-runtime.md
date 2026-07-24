@@ -342,3 +342,18 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - Direct 首轮仍由内部单 Worker run 驱动，但 `RunCompleted` 事件必须携带从 `authoring/conversation.json` 固化的 Agent 展示身份。通知订阅器不得根据 `direct-agent` 等节点 ID 判断 Direct，也不得依赖当前 UI 工作区回读元数据。
 - 当前窗口失焦、最小化、隐藏，或用户正在查看其他 task/run/session 时发送通知；当前目标 session 正在前台可见时抑制通知。permission 与 elicitation 继续沿用即时通知，不等待 turn 结束。
 - 通知正文不包含 Agent 回复原文、工具参数或附件内容，避免在操作系统通知中心泄露会话正文；点击“查看详情”仍定位到对应 task/run/attempt。
+
+## ACP 斜杠命令目录与输入交互
+
+- Gold Band 将 Agent 通过 ACP `available_commands_update` 公布的条目称为“ACP 原生命令”。ACP 没有标准 SKILL 发现接口，因此该列表不是最终命令目录；Doctor 还要从当前 Agent 的 Skill 读取目录扫描用户级与 workspace 级 `skills/*/SKILL.md`，只解析 `name / description` 元数据，不读取正文，也不进行 prompt injection。
+- 每个 Agent 统一维护 `AgentSkillDirectoryPolicy { writeDirNames, readDirNames }`。写列表只定义 SKILL 管理同步目标；读列表定义 Agent 实际发现位置。默认策略为 Claude `.claude -> .claude`，Codex `.codex -> .codex + .agents`，Cursor `.cursor -> .cursor + .agents`，Gemini `.gemini -> .gemini + .agents`，OpenCode `.opencode -> .opencode + .agents`；`skillsDirOverride` 替换主读写目录，非 Claude Agent 仍追加 `.agents` 兼容读取。
+- 最终目录按 `ACP 原生命令 > 读取目录发现的 SKILL` 合并，并以命令名不区分大小写去重。ACP 条目保留 `description / inputHint`，SKILL 条目使用 frontmatter 的 `name / description`；扫描支持 Agent 根目录下的 `skills` 以及 `.codex/skills/.system` 这类一层容器目录和 Skill 符号链接。
+- 命令目录的数据模型为 `AcpCommandCatalog { agentType, workspaceKey, acpCommands?, commands, updatedAt }`，其中 `acpCommands` 保存未混入 SKILL 的原始 ACP 列表，`commands` 保存最终列表，命令项为 `AcpCommandItem { name, description, inputHint? }`。目录必须以 `{agentType, workspace}` 为联合身份，因为同一 Agent 在不同 workspace 可发现不同的项目级 SKILL；查询目录时从原始 ACP 列表重新扫描，保证 Skill 增删不会被旧合并结果残留。
+- 桌面端把目录持久化到 `~/.gold-band/desktop/agent-command-catalogs.json`。自动 Agent doctor、手动 doctor、活跃 ACP 会话的 `available_commands_update` 都会更新原始 ACP 列表并重建最终目录；SKILL 创建、删除或同步目标变更成功后异步刷新当前 workspace 的已配置 Agent，不阻塞 SKILL 保存链路。旧目录文件没有 `acpCommands` 时兼容读取，并在下一次 Doctor 后迁移为可精确重扫的新结构。
+- doctor 的 `session/new` 与命令通知存在并发窗口。连接层必须为尚未注册 route 的 session frame 提供有界、带 TTL 的早到缓冲，并在 route 注册时按序补投；不得依赖固定 sleep 掩盖消息丢失。doctor 在 session 建立后只追加一个有上限的命令发现等待窗口，随后立即清理诊断 session。
+- 快速对话仅在 Direct 或固定 Agent 的 AUTO 模式中展示该 Agent 的目录；动态 AUTO 和尚未解析 Agent 的 Workflow 不展示 Agent 专属命令。会话详情页使用当前 ACP session 的 provider 与 provider cwd/workspace 查询目录。
+- 输入内容仅匹配独立的 `/query` 时打开菜单，命令字符支持 Unicode 字母/数字以及 `.`、`_`、`:`、`-`，因此中文 Skill 名不会被目录或输入过滤丢弃。标签解析必须先读取最长合法命令 token，再检查其后的首字符是否为分隔符；不得因 `-`、`.`、`:` 同属 Unicode 标点而回溯成较短命令。输入空格、`,`、`，` 等分隔符后匹配立即失效并关闭菜单；若分隔符前是当前目录中的完整命令，则输入区把该命令前缀投影为标签。标签绝对定位在首行，通过共享 `ResizeObserver` hook 测量真实宽度并只设置 textarea 的首行 `text-indent`；textarea 自身始终保持完整宽度，因此显式换行和自动折行从输入区左边缘开始，不得形成贯穿所有行的标签列。标签与 textarea 首行共享基于 `rem` 的排版节奏和顶部基线，不依赖物理像素，随系统缩放、窗口 DPI 与根字号变化；颜色只使用 `secondary / secondary-foreground / border` 语义 token，摘要通过共享 shadcn Tooltip 展示。分隔符与后续正文继续由原生 textarea 编辑。删除分隔符、破坏命令名或切换到不含该命令的 Agent 后立即恢复普通文本，再次形成“完整命令 + 分隔符”时重新标签化。方向键移动时选中项必须跟随可见滚动区域；Esc 或点击菜单外关闭，但保留输入中的 `/`，用户删除并重新输入后可再次打开。选中后写入 `/${name} `，标签只属于前端显示投影，发送给 ACP 的值仍是完整普通文本。
+- 菜单使用共享的 shadcn `Popover + Command` copy-in 组合，`CommandList` 是唯一滚动容器；命令名、描述、输入提示使用紧凑的小字号层级，`inputHint` 使用弱化标签而不是与描述拼成一段文本。键盘与鼠标选中态统一由 cmdk `data-selected` 驱动，并同时使用透明背景、内描边和左侧短强调条三层主题语义信号；浅色主题使用低透明度 `primary` 蓝色，深色主题使用 `foreground` 叠层，保证风格统一且均可辨识。切换 Agent/workspace 时以目录联合身份隔离快照，旧 Agent 的命令不得在新目录加载期间闪现。
+- 快速对话的命令列表使用同一 `Command` 内容，在首行输入下方以带圆角的绝对定位覆盖层展开，不参与 composer 高度计算，因此打开菜单时主输入框整体尺寸保持不变；列表左右边缘与快速对话主输入框外边缘对齐。会话详情继续使用 composer 上方的 Popover，并以 Radix anchor 实际宽度作为菜单宽度，使两侧与 composer 严格对齐。
+- 用户通过 Esc、点击外部等方式关闭当前 `/query` 后，关闭状态按稳定的 `{agentType, workspace}` 目录身份与当前输入值保留在前端运行期；切换页面再返回不会因为组件重新挂载而重开。输入值改变或删除后允许重新触发；切换 Agent 时清除新 Agent 上的关闭状态并展示其命令。
+- 方向键改变选中项后，菜单通过直接持有的 `CommandList` ref 调整唯一滚动容器的 `scrollTop`，选中项位置只相对该容器计算并执行最小滚动；不得叠加第二层滚动组件、动态查找 DOM 父节点或使用跨父节点的 `offsetTop`。

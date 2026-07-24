@@ -19,6 +19,11 @@ export function getAgentRegistry() {
   return getRuntimeApi().getAgentRegistry();
 }
 
+export function getAgentCommandCatalog(agentType: string, workspacePath: string) {
+  return getRuntimeApi().getAgentCommandCatalog(agentType, workspacePath);
+}
+
+
 export function createAgent(agentType: string, input: Parameters<ReturnType<typeof getRuntimeApi>['createAgent']>[1]) {
   return getRuntimeApi().createAgent(agentType, input);
 }

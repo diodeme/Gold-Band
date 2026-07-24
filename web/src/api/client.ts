@@ -106,6 +106,7 @@ export interface RuntimeApi {
   getAppBootstrap(): Promise<AppBootstrapVm>;
   getSystemFonts(): Promise<string[]>;
   getAgentRegistry(): Promise<AgentRegistryVm>;
+  getAgentCommandCatalog(agentType: string, workspacePath: string): Promise<import('../types').AcpCommandCatalogVm | null>;
   createAgent(agentType: string, input: ManagedAgentInput): Promise<AgentRegistryVm>;
   updateAgent(agentType: string, input: ManagedAgentInput): Promise<AgentRegistryVm>;
   deleteAgent(agentType: string): Promise<AgentRegistryVm>;

@@ -22,6 +22,88 @@ function browserAgentIdentity(agentType: string) {
   } : null;
 }
 
+function browserCompletedConversationRun(): ConversationRunVm {
+  const run = structuredClone(mockErrorBlockedConversationRun);
+  run.runId = 'run-052';
+  run.title = '斜杠命令预览';
+  run.runMode = 'direct';
+  run.directConfig = { agentType: 'claude-acp' };
+  run.agentIdentity = browserAgentIdentity('claude-acp');
+  run.runStatus = 'completed';
+  run.runOutcome = 'success';
+  run.pauseReason = null;
+  run.runtimeErrorMessage = null;
+  run.selectedSession = {
+    ...mockErrorBlockedConversationSession,
+    sessionId: 'browser-session-052',
+    roundId: 'round-001',
+    nodeId: 'dev',
+    attemptId: 'attempt-001',
+    providerCwd: 'D:/Projects/code/ai/Gold-Band',
+    cwd: 'D:/Projects/code/ai/Gold-Band',
+    status: 'completed',
+    stopReason: 'end_turn',
+    config: {
+      modelOverrideId: null,
+      currentModelId: 'default',
+      currentModelName: 'Default (recommended)',
+      currentModeId: 'bypassPermissions',
+      currentModeName: 'Bypass Permissions',
+      configOptions: [
+        {
+          id: 'model',
+          category: 'model',
+          options: [
+            { value: 'default', name: 'Default (recommended)' },
+            { value: 'glm-5.2-hs', name: 'GLM 5.2' },
+          ],
+        },
+        {
+          id: 'mode',
+          category: 'mode',
+          options: [
+            { value: 'bypassPermissions', name: 'Bypass Permissions' },
+          ],
+        },
+      ],
+    },
+  };
+  const attempt = run.sessionTree.rounds[0]?.nodes[0]?.attempts[0];
+  if (attempt?.lifecycle) {
+    attempt.status = 'completed';
+    attempt.outcome = 'success';
+    attempt.lifecycle = {
+      ...attempt.lifecycle,
+      runtime: {
+        ...attempt.lifecycle.runtime,
+        status: 'completed',
+        outcome: 'success',
+        pauseReason: null,
+        active: false,
+        continuable: false,
+        phase: 'completed',
+      },
+      acp: {
+        ...attempt.lifecycle.acp,
+        status: 'completed',
+        active: false,
+        stopping: false,
+        terminal: true,
+      },
+      displayStatus: 'success',
+      composer: {
+        mode: 'normal',
+        submitTarget: 'acp-prompt',
+        processingKind: 'responding',
+        statusKey: null,
+        canStop: false,
+        lockInput: false,
+      },
+    };
+  }
+  return run;
+}
+
 export const browserApi: RuntimeApi = {
   checkLocalClaude() {
     return Promise.resolve({ found: false, path: null });
@@ -38,6 +120,35 @@ export const browserApi: RuntimeApi = {
   },
   getAgentRegistry() {
     return Promise.resolve(mockAgentRegistry);
+  },
+  getAgentCommandCatalog(agentType: string, workspacePath: string) {
+    const commands = agentType === 'codex-acp'
+      ? [
+        { name: 'review', description: 'Review my current changes and find issues' },
+        { name: 'review-branch', description: 'Review the code changes against a specific branch', inputHint: 'branch name' },
+        { name: 'review-commit', description: 'Review the code changes introduced by a commit', inputHint: 'commit sha' },
+        { name: 'init', description: 'Create an AGENTS.md file with instructions for Codex' },
+        { name: 'compact', description: 'Summarize the conversation to preserve context' },
+        { name: 'logout', description: 'Log out of Codex' },
+      ]
+      : [
+        { name: 'pretext', description: 'Measure and lay out multiline text without DOM reflow' },
+        { name: 'deep-research', description: 'Research, verify sources, and synthesize a cited report' },
+        { name: 'design-sync', description: 'Push the current React design system to Claude Design', inputHint: 'project hint' },
+        { name: 'update-config', description: 'Update Claude Code settings, permissions, hooks, or environment' },
+        { name: 'verify', description: 'Run the app and verify that the current change works' },
+        { name: 'debug', description: 'Enable debug logging and diagnose an issue', inputHint: 'issue' },
+        { name: 'code-review', description: 'Review the current diff for correctness and maintainability', inputHint: 'target' },
+        { name: 'simplify', description: 'Simplify and clean up the current changes' },
+        { name: 'security-review', description: 'Perform a security review of the pending changes' },
+        { name: 'reload-skills', description: 'Reload skills added or changed on disk' },
+      ];
+    return Promise.resolve({
+      agentType,
+      workspaceKey: workspacePath,
+      updatedAt: localTimestamp(),
+      commands,
+    });
   },
   createAgent(_agentType: string, _input: ManagedAgentInput) {
     return Promise.resolve(mockAgentRegistry);
@@ -374,6 +485,7 @@ export const browserApi: RuntimeApi = {
   },
   getConversationRun(_projectId, _taskId, runId) {
     if (runId === 'run-051') return Promise.resolve(mockErrorBlockedConversationRun);
+    if (runId === 'run-052') return Promise.resolve(browserCompletedConversationRun());
     const created = browserConversationRuns.get(runId);
     if (created) return Promise.resolve(created);
     const run: ConversationRunVm = {
@@ -400,6 +512,7 @@ export const browserApi: RuntimeApi = {
   },
   switchConversationSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
     if (_runId === 'run-051') return Promise.resolve({ selectedSession: mockErrorBlockedConversationSession, artifacts: [], attachments: [] });
+    if (_runId === 'run-052') return Promise.resolve({ selectedSession: browserCompletedConversationRun().selectedSession, artifacts: [], attachments: [] });
     return Promise.resolve({ selectedSession: null, artifacts: [], attachments: [] });
   },
   validateConversationCreate(_input) {

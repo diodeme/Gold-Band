@@ -104,6 +104,11 @@ import {
 } from "@/lib/acp-session-assets-panel";
 import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-service";
 import { AttachmentChipsList, AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
+import { SlashCommandMenu } from "@/components/conversation/SlashCommandMenu";
+import { SlashCommandInputTag } from "@/components/conversation/SlashCommandInputTag";
+import { parseCommittedSlashCommand } from "@/lib/slash-command";
+import { useAgentCommands } from "@/hooks/useAgentCommands";
+import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
 import { AcpUsagePanel } from "@/components/acp/AcpUsagePanel";
 import { HiddenPromptMessageContent } from "@/components/acp/HiddenPromptMessageContent";
@@ -877,6 +882,20 @@ export const ACPChatDialog = forwardRef<
   const effective = useMemo(
     () => mergeOptimisticSession(visibleSession, optimisticEvents),
     [visibleSession, optimisticEvents],
+  );
+  const agentCommands = useAgentCommands(
+    effective?.provider,
+    effective?.providerCwd ?? effective?.cwd,
+  );
+  const slashCommands = useSlashCommandController({
+    input: prompt,
+    commands: agentCommands.commands,
+    contextKey: agentCommands.catalogKey,
+    onInputChange: setPrompt,
+  });
+  const committedSlashCommand = useMemo(
+    () => parseCommittedSlashCommand(prompt, agentCommands.commands),
+    [agentCommands.commands, prompt],
   );
   const sessionConfigViewModel = useMemo(
     () => createAcpSessionConfigViewModel(effective?.config),
@@ -2568,30 +2587,46 @@ export const ACPChatDialog = forwardRef<
                         {fileError}
                       </div>
                     ) : null}
-                    <PromptInput
-                      value={prompt}
-                      onValueChange={setPrompt}
-                      onSubmit={send}
-                      isLoading={sending}
-                      className="rounded-2xl bg-card/80 shadow-sm shadow-background/30 transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
+                    <SlashCommandMenu
+                      open={slashCommands.isOpen}
+                      commands={slashCommands.filteredCommands}
+                      activeIndex={slashCommands.activeIndex}
+                      onActiveIndexChange={slashCommands.setActiveIndex}
+                      onDismiss={slashCommands.dismiss}
+                      onSelect={(index) => { slashCommands.selectByIndex(index); }}
                     >
-                      {showComposerStatus && !usageCompact ? (
-                        <AcpComposerStatus
-                          kind={composerProcessingKind}
-                          active={composerStatusActive}
-                          sessionSeconds={composerSessionSeconds}
+                      <PromptInput
+                        value={prompt}
+                        onValueChange={setPrompt}
+                        onSubmit={send}
+                        isLoading={sending}
+                        className="rounded-2xl bg-card/80 shadow-sm shadow-background/30 transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
+                      >
+                        {showComposerStatus && !usageCompact ? (
+                          <AcpComposerStatus
+                            kind={composerProcessingKind}
+                            active={composerStatusActive}
+                            sessionSeconds={composerSessionSeconds}
+                          />
+                        ) : null}
+                        <PromptInputTextarea
+                          className="min-h-16 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
+                          valuePrefix={committedSlashCommand?.prefix}
+                          leadingAdornment={committedSlashCommand ? (
+                            <SlashCommandInputTag
+                              prefix={committedSlashCommand.prefix}
+                              description={committedSlashCommand.command.description}
+                            />
+                          ) : null}
+                          placeholder={composerPlaceholder}
+                          textareaDisabled={composerInputDisabled}
+                          onKeyDown={slashCommands.onKeyDown}
+                          onDragEnter={dropZoneHandlers.onDragEnter}
+                          onDragOver={dropZoneHandlers.onDragOver}
+                          onDrop={dropZoneHandlers.onDrop}
+                          onPaste={extractPasteFiles}
                         />
-                      ) : null}
-                      <PromptInputTextarea
-                        className="min-h-16 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
-                        placeholder={composerPlaceholder}
-                        textareaDisabled={composerInputDisabled}
-                        onDragEnter={dropZoneHandlers.onDragEnter}
-                        onDragOver={dropZoneHandlers.onDragOver}
-                        onDrop={dropZoneHandlers.onDrop}
-                        onPaste={extractPasteFiles}
-                      />
-                      <div className="mt-1.5 flex items-center justify-between gap-4 px-2 pb-1">
+                        <div className="mt-1.5 flex items-center justify-between gap-4 px-2 pb-1">
                         <div className="flex items-center gap-2">
                           <input
                             ref={fileInputRef}
@@ -2658,14 +2693,15 @@ export const ACPChatDialog = forwardRef<
                             </Button>
                           </PromptInputAction>
                         </PromptInputActions>
-                      </div>
-                      <AcpSessionConfigBar
-                        scopeKey={sessionIdentity}
-                        viewModel={sessionConfigViewModel}
-                        onModelChange={handleAcpSessionModelChange}
-                        onPermissionModeChange={handleAcpSessionPermissionModeChange}
-                      />
-                    </PromptInput>
+                        </div>
+                        <AcpSessionConfigBar
+                          scopeKey={sessionIdentity}
+                          viewModel={sessionConfigViewModel}
+                          onModelChange={handleAcpSessionModelChange}
+                          onPermissionModeChange={handleAcpSessionPermissionModeChange}
+                        />
+                      </PromptInput>
+                    </SlashCommandMenu>
                   </div>
             )}
           </div>

@@ -3,6 +3,7 @@
 import { Textarea } from "@/components/ui/textarea"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import { useLeadingAdornmentTextIndent } from "@/hooks/useLeadingAdornmentTextIndent"
 import React, {
   createContext,
   useContext,
@@ -103,6 +104,9 @@ function PromptInput({
 export type PromptInputTextareaProps = {
   disableAutosize?: boolean
   textareaDisabled?: boolean
+  valuePrefix?: string
+  leadingAdornment?: React.ReactNode
+  containerClassName?: string
 } & React.ComponentProps<typeof Textarea>
 
 function PromptInputTextarea({
@@ -110,11 +114,19 @@ function PromptInputTextarea({
   onKeyDown,
   disableAutosize = false,
   textareaDisabled,
+  valuePrefix = "",
+  leadingAdornment,
+  containerClassName,
+  style,
   ...props
 }: PromptInputTextareaProps) {
   const { value, setValue, maxHeight, onSubmit, disabled, textareaRef } =
     usePromptInput()
   const effectiveDisabled = textareaDisabled ?? disabled
+  const effectiveValuePrefix = valuePrefix && value.startsWith(valuePrefix) ? valuePrefix : ""
+  const textareaValue = effectiveValuePrefix ? value.slice(effectiveValuePrefix.length) : value
+  const hasLeadingAdornment = Boolean(leadingAdornment && effectiveValuePrefix)
+  const leadingAdornmentLayout = useLeadingAdornmentTextIndent(hasLeadingAdornment)
 
   const adjustHeight = (el: HTMLTextAreaElement | null) => {
     if (!el || disableAutosize) return
@@ -145,35 +157,55 @@ function PromptInputTextarea({
       el.style.height = `min(${el.scrollHeight}px, ${maxHeight})`
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value, maxHeight, disableAutosize])
+  }, [textareaValue, maxHeight, disableAutosize])
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     adjustHeight(e.target)
-    setValue(e.target.value)
+    setValue(`${effectiveValuePrefix}${e.target.value}`)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    onKeyDown?.(e)
+    if (e.defaultPrevented) return
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault()
       onSubmit?.()
     }
-    onKeyDown?.(e)
   }
 
-  return (
+  const textarea = (
     <Textarea
       ref={handleRef}
-      value={value}
+      value={textareaValue}
+      style={{ ...style, ...leadingAdornmentLayout.textareaStyle }}
       onChange={handleChange}
       onKeyDown={handleKeyDown}
       className={cn(
-        "text-primary min-h-[44px] w-full resize-none border-none bg-transparent shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0",
+        "text-primary min-h-[44px] min-w-0 flex-1 resize-none border-none bg-transparent shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0",
+        hasLeadingAdornment && "px-0 py-0",
         className
       )}
       rows={1}
       disabled={effectiveDisabled}
       {...props}
     />
+  )
+
+  if (!hasLeadingAdornment) return textarea
+
+  return (
+    <div
+      data-slot="prompt-input-textarea-with-adornment"
+      className={cn("relative min-w-0 px-3 py-2", containerClassName)}
+    >
+      <span
+        ref={leadingAdornmentLayout.adornmentRef}
+        className="absolute left-3 top-2 z-10 inline-flex"
+      >
+        {leadingAdornment}
+      </span>
+      {textarea}
+    </div>
   )
 }
 

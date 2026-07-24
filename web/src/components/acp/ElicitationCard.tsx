@@ -31,6 +31,13 @@ export interface ElicitationCardProps {
   onDecline?: () => void;
 }
 
+const ELICITATION_OPTION_INTERACTION_CLASS =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70";
+const ELICITATION_SELECTED_OPTION_CLASS =
+  "border-accent-foreground/55 bg-accent text-accent-foreground shadow-[inset_3px_0_0_var(--accent-foreground)]";
+const ELICITATION_SELECTED_MARK_CLASS =
+  "border-accent-foreground bg-accent-foreground text-background";
+
 export function elicitationOptions(
   prop: ElicitationPropertySchema,
 ): Array<{ value: string; label: string }> | undefined {
@@ -280,9 +287,9 @@ export function ElicitationCard({
           className={cn(
             "size-1.5 rounded-full transition-colors",
             i < currentStep
-              ? "bg-primary/40"
+              ? "bg-foreground/40"
               : i === currentStep
-                ? "bg-primary"
+                ? "bg-foreground"
                 : "bg-muted-foreground/20",
           )}
         />
@@ -309,7 +316,7 @@ export function ElicitationCard({
     ) : null;
 
   return (
-    <Card className="my-2 gap-0 border-primary/30 py-0">
+    <Card className="my-2 gap-0 border-border/70 py-0">
       <CardContent className="space-y-2.5 px-5 py-4">
         {/* 进度指示器 */}
         {ProgressDots}
@@ -334,17 +341,24 @@ export function ElicitationCard({
             {currentField.options!.map((o) => {
               const sel = !customActive && selectedValue === o.value;
               return (<button key={o.value} type="button"
+                  aria-pressed={sel}
                   onClick={() => { setSelectedValue(o.value); setCustomActive(false); setCustomText(""); }}
                   className={cn("w-full flex items-center justify-between text-left rounded-md border px-3 py-2 text-[13px] leading-5 transition-all",
-                    sel ? "border-primary bg-primary/5 shadow-sm" : "hover:border-primary/40 hover:bg-muted/50",
+                    sel ? ELICITATION_SELECTED_OPTION_CLASS : "hover:border-accent-foreground/35 hover:bg-accent/60",
+                    ELICITATION_OPTION_INTERACTION_CLASS,
                     "active:scale-[0.995]", "disabled:opacity-50 disabled:cursor-not-allowed")}
                 ><span className="font-medium">{o.label}</span>
-                  {sel ? <Check className="size-4 text-primary shrink-0" /> : <ChevronRight className="size-4 opacity-0 transition-opacity group-hover:opacity-50 text-muted-foreground" />}</button>);
+                  {sel ? (
+                    <span className={cn("flex size-5 shrink-0 items-center justify-center rounded-full border", ELICITATION_SELECTED_MARK_CLASS)}>
+                      <Check className="size-3.5" strokeWidth={3} />
+                    </span>
+                  ) : <ChevronRight className="size-4 opacity-0 transition-opacity group-hover:opacity-50 text-muted-foreground" />}</button>);
             })}
             {currentField.hasCustomVariant && !customActive && (
               <button type="button" onClick={() => { setCustomActive(true); setSelectedValue(null); }}
                 className={cn("w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-[13px] text-muted-foreground transition-colors",
-                  "hover:border-primary hover:text-foreground")}
+                  "hover:border-accent-foreground/40 hover:text-foreground",
+                  ELICITATION_OPTION_INTERACTION_CLASS)}
               ><Pencil className="size-4" /><span>{t("acp.elicitation.customPlaceholder", "其他答案...")}</span></button>
             )}
             {currentField.hasCustomVariant && customActive && (
@@ -372,6 +386,7 @@ export function ElicitationCard({
                 <button
                   key={option.value}
                   type="button"
+                  aria-pressed={selected}
                   onClick={() =>
                     setMultiValues((prev) =>
                       selected
@@ -382,8 +397,9 @@ export function ElicitationCard({
                   className={cn(
                     "w-full flex items-center gap-2.5 text-left rounded-md border px-3 py-2 text-[13px] leading-5 transition-all",
                     selected
-                      ? "border-primary bg-primary/5"
-                      : "hover:bg-muted/50",
+                      ? ELICITATION_SELECTED_OPTION_CLASS
+                      : "hover:border-accent-foreground/35 hover:bg-accent/60",
+                    ELICITATION_OPTION_INTERACTION_CLASS,
                     "active:scale-[0.995]",
                     "disabled:opacity-50",
                   )}
@@ -392,12 +408,12 @@ export function ElicitationCard({
                     className={cn(
                       "size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors",
                       selected
-                        ? "border-primary bg-primary"
+                        ? ELICITATION_SELECTED_MARK_CLASS
                         : "border-muted-foreground/30",
                     )}
                   >
                     {selected && (
-                      <Check className="size-3 text-primary-foreground" />
+                      <Check className="size-3" strokeWidth={3} />
                     )}
                   </span>
                   <span>{option.label}</span>
@@ -416,7 +432,8 @@ export function ElicitationCard({
                 onClick={() => setCustomActive(true)}
                 className={cn(
                   "w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-[13px] text-muted-foreground transition-colors",
-                  "hover:border-primary hover:text-foreground",
+                  "hover:border-accent-foreground/40 hover:text-foreground",
+                  ELICITATION_OPTION_INTERACTION_CLASS,
                   "disabled:opacity-50",
                 )}
               >

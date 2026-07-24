@@ -16,25 +16,31 @@ const expectedThemes = {
     primaryForeground: '#ffffff',
     selection: '#cdd2e3',
     selectionForeground: '#191c24',
+    messageUser: '#f0f1f5',
+    messageUserForeground: '#191c24',
+    contentHeader: '#ffffff',
     foreground: '#191c24',
     muted: '#667085',
     success: '#16794b',
     danger: '#c93c48',
   },
-  'light-warm': {
-    selector: /:root\[data-theme='light-warm'\]\s*\{([\s\S]*?)\n\}/,
-    background: '#faf9f6',
-    surface: '#fffdfc',
-    workspace: '#f0ede7',
-    border: '#e3ded5',
-    primary: '#8a6a32',
+  'light-gray': {
+    selector: /:root\[data-theme='light-gray'\]\s*\{([\s\S]*?)\n\}/,
+    background: '#ffffff',
+    surface: '#ffffff',
+    workspace: '#ffffff',
+    border: '#e5e5e5',
+    primary: '#2f2f2f',
     primaryForeground: '#ffffff',
-    selection: '#d9d1bd',
-    selectionForeground: '#29251f',
-    foreground: '#29251f',
-    muted: '#736b60',
-    success: '#397451',
-    danger: '#b84850',
+    selection: '#d9d9d9',
+    selectionForeground: '#202020',
+    messageUser: '#f3f3f3',
+    messageUserForeground: '#202020',
+    contentHeader: '#ffffff',
+    foreground: '#2b2b2b',
+    muted: '#666666',
+    success: '#2e7954',
+    danger: '#c23b4a',
   },
   dark: {
     selector: /:root,\s*:root\[data-theme='dark'\]\s*\{([\s\S]*?)\n\}/,
@@ -46,6 +52,9 @@ const expectedThemes = {
     primaryForeground: '#f5f5f5',
     selection: '#555555',
     selectionForeground: '#ffffff',
+    messageUser: '#2d2d2d',
+    messageUserForeground: '#f2f2f2',
+    contentHeader: '#202020',
     foreground: '#e8e8e8',
     muted: '#9a9a9a',
     success: '#59b68b',
@@ -61,6 +70,9 @@ const expectedThemes = {
     primaryForeground: '#f2f2f2',
     selection: '#4d4d4d',
     selectionForeground: '#ffffff',
+    messageUser: '#252525',
+    messageUserForeground: '#f2f2f2',
+    contentHeader: '#191919',
     foreground: '#e8e8e8',
     muted: '#929292',
     success: '#59b68b',
@@ -84,6 +96,9 @@ describe('desktop theme palettes', () => {
     expect(themeBlock).toContain(`--primary-foreground: ${palette.primaryForeground}`);
     expect(themeBlock).toContain(`--text-selection: ${palette.selection}`);
     expect(themeBlock).toContain(`--text-selection-foreground: ${palette.selectionForeground}`);
+    expect(themeBlock).toContain(`--message-user: ${palette.messageUser}`);
+    expect(themeBlock).toContain(`--message-user-foreground: ${palette.messageUserForeground}`);
+    expect(themeBlock).toContain(`--content-header: ${palette.contentHeader}`);
     expect(themeBlock).toContain(`--foreground: ${palette.foreground}`);
     expect(themeBlock).toContain(`--muted-foreground: ${palette.muted}`);
     expect(themeBlock).toContain(`--gold-success: ${palette.success}`);
@@ -105,21 +120,38 @@ describe('desktop theme palettes', () => {
     expect(contrastRatio(palette.muted, palette.background)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(palette.primaryForeground, palette.primary)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(palette.selectionForeground, palette.selection)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(palette.messageUserForeground, palette.messageUser)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(palette.success, palette.background)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(palette.danger, palette.background)).toBeGreaterThanOrEqual(4.5);
   });
 
-  it('keeps the approved default light palette unchanged while removing the previous tinted surfaces from the other themes', () => {
+  it('keeps the approved porcelain palette unchanged and replaces the warm palette with neutral technology gray', () => {
     const lightBlock = styles.match(expectedThemes.light.selector)?.[1] ?? '';
-    const warmBlock = styles.match(expectedThemes['light-warm'].selector)?.[1] ?? '';
+    const grayBlock = styles.match(expectedThemes['light-gray'].selector)?.[1] ?? '';
     const darkBlock = styles.match(expectedThemes.dark.selector)?.[1] ?? '';
     const blackBlock = styles.match(expectedThemes.black.selector)?.[1] ?? '';
 
     expect(lightBlock).toContain('--background: #fafafb');
     expect(lightBlock).toContain('--primary: #5b6ba8');
-    expect(warmBlock).not.toContain('#f7f2e8');
+    expect(grayBlock).toContain('--sidebar: #f3f3f3');
+    expect(grayBlock).toContain('--sidebar-foreground: #171717');
+    expect(grayBlock).toContain('--sidebar-accent: #e7e7e7');
+    expect(grayBlock).toContain('--sidebar-accent-foreground: #171717');
+    expect(grayBlock).toContain('--title: #171717');
+    expect(grayBlock).not.toContain('#8a6a32');
+    expect(grayBlock).not.toContain('#52677f');
     expect(darkBlock).not.toContain('#4d9fff');
     expect(blackBlock).not.toContain('#a1aacb');
+  });
+
+  it('keeps theme choices name-only and removes the retired warm-light contract', () => {
+    const settingsSource = readFileSync(path.resolve(__dirname, '../src/pages/SettingsPage.tsx'), 'utf8');
+    const i18nSource = readFileSync(path.resolve(__dirname, '../src/i18n.ts'), 'utf8');
+
+    expect(desktopThemeOptions.every((option) => !('descriptionKey' in option))).toBe(true);
+    expect(settingsSource).not.toContain('option.descriptionKey');
+    expect(i18nSource).not.toMatch(/theme(?:DefaultLight|TechGray|WarmLight|GoldDark|Black)Description/);
+    expect(styles).not.toContain("data-theme='light-warm'");
   });
 });
 
@@ -133,6 +165,9 @@ interface ThemeExpectation {
   primaryForeground: string;
   selection: string;
   selectionForeground: string;
+  messageUser: string;
+  messageUserForeground: string;
+  contentHeader: string;
   foreground: string;
   muted: string;
   success: string;

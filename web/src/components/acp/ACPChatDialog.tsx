@@ -3201,7 +3201,7 @@ export function ACPSessionHeader({
 
   return (
     <div className={cn(
-      "shrink-0 border-b border-border/60 bg-gold-surface-high/60 px-5 shadow-[inset_0_-1px_0_color-mix(in_srgb,var(--gold-line-soft)_56%,transparent)]",
+      "shrink-0 border-b border-border/60 bg-content-header px-5",
       directSessionHeader ? "py-0.5" : "pb-1 pt-0",
     )}>
       <div className={cn(
@@ -4119,13 +4119,14 @@ const MessageBubble = memo(function MessageBubble({
       >
         {showMessageBubble ? (
           <MessageContent
+            variant={isUser ? "user" : "assistant"}
             className={cn(
-              "rounded-2xl border px-4 py-3 text-sm leading-6 shadow-sm [overflow-wrap:anywhere]",
+              "rounded-2xl px-4 py-3 text-sm leading-6 [overflow-wrap:anywhere]",
               isUser
-                ? "w-fit max-w-full rounded-br-md border-[color-mix(in_srgb,var(--primary)_26%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_16%,var(--card))] text-foreground shadow-[0_8px_24px_color-mix(in_srgb,var(--primary)_10%,transparent)]"
-                : "rounded-bl-md border-border/70 bg-card text-card-foreground",
+                ? "w-fit max-w-full rounded-br-md shadow-none"
+                : "rounded-bl-md shadow-none",
               failed &&
-                "border border-destructive/40 bg-destructive/10 text-destructive",
+                "!border !border-destructive/40 !bg-destructive/10 !text-destructive",
             )}
           >
             {isUser ? (

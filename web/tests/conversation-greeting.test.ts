@@ -65,8 +65,8 @@ describe('conversation greeting rendering contract', () => {
 
   it('isolates time state from the composer and refreshes only at boundaries or resume events', () => {
     expect(homeSource).toContain('<ConversationGreeting />');
-    expect(greetingSource).toContain('text-foreground/80');
-    expect(greetingSource).not.toContain('tracking-tight text-foreground"');
+    expect(greetingSource).toContain('tracking-tight text-title');
+    expect(greetingSource).not.toContain('text-foreground/80');
     expect(greetingSource).not.toContain('ConversationHelloMark');
     expect(greetingSource).toContain('window.setTimeout');
     expect(greetingSource).not.toContain('setInterval');

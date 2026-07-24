@@ -1,4 +1,4 @@
-export type DesktopThemePreference = 'system' | 'light' | 'light-warm' | 'dark' | 'black';
+export type DesktopThemePreference = 'system' | 'light' | 'light-gray' | 'dark' | 'black';
 export type ConcreteDesktopTheme = Exclude<DesktopThemePreference, 'system'>;
 export type DesktopThemeMode = 'light' | 'dark';
 export type DesktopFontPreference = string;

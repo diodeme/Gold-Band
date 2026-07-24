@@ -262,9 +262,11 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - 会话信息栏与运行标题栏保持同一套紧凑节奏：缩小上下 padding、降低主标题字号、压低按钮高度，减少双层头部对内容区的挤压
 - 可编辑会话标题的悬浮提示统一使用项目内置 shadcn Tooltip，禁止使用 HTML `title` 触发 Windows/WebView 原生 tooltip；鼠标悬浮与键盘聚焦共享主题化提示样式
 - Workflow/AUTO 的第二行作为元信息层，视觉权重需低于第一行：更小字号、更轻字重、更弱对比度，不与任务标题竞争主次；Direct 使用下述单层组合页头
-- 用户消息气泡避免使用高饱和整块主色填充；在深色主题下优先使用主色混入 card/background 的柔和底色，保证信息突出但不刺眼
-- ACP 会话主消息流、raw frames 面板和 prompt-kit 聊天滚动容器使用 Gold Band 主题化滚动条；滚动条颜色必须来自主题 token（主色、muted、surface），浅暖色主题下呈现低饱和暖棕，不回退为系统默认灰色。
-- Gold Band runtime prompt 中的 `<hidden data-gold-band-hidden="true">` 段在用户消息气泡内默认折叠展示，折叠块与可见 requirement/goal 同属一个 bubble；展开后展示隐藏原文，再次点击收起。该规则适用于 workflow new 和 workflow resume，并覆盖会话态与旧工作台复用的 ACPChatDialog；用户手动追问和 runtime repair 不注入 hidden runtime context。hidden 后面的可见片段只在展示层去掉开头换行，真实 prompt 事件内容不变。
+- 浅色主题下运行标题栏与 ACP session header 使用纯白 `content-header`，只保留轻量分隔线；灰色仅属于窗口框架和侧栏，不得在主内容顶部形成连续灰带。深色主题由同一 token 映射到对应低层 surface。
+- 用户消息气泡使用独立的 `message-user` / `message-user-foreground` 语义 token，不复用 `primary` 混色。科技灰下采用 `#f3f3f3` 浅灰底与 `#202020` 深色正文，不显示可感知边框和投影；长消息仍应保持轻盈，不能形成大面积中灰实体面板。深色主题使用同源的中性高层 surface 与高对比文字。
+- assistant 自然语言正文直接显示在页面背景上，使用实色 `foreground`，不再包裹白色卡片、灰色边框或投影。工具、思考、代码块和控制输出仍可使用必要的结构化 surface，从而让主阅读路径保持高白度与高黑度。
+- ACP 会话主消息流、raw frames 面板和 prompt-kit 聊天滚动容器使用 Gold Band 主题化滚动条；滚动条颜色必须来自主题 token（主色、muted、surface），科技灰主题使用无彩石墨与中性 surface 混合，不回退为系统默认灰色，也不引入蓝灰色偏。
+- Gold Band runtime prompt 中的 `<hidden data-gold-band-hidden="true">` 段在用户消息气泡内默认折叠展示，折叠块与可见 requirement/goal 同属一个 bubble；展开后展示隐藏原文，再次点击收起。折叠块使用当前文字色的极低透明 surface，不使用白色 `background` 在浅灰气泡内再造一层亮卡片。隐藏上下文标题始终 `w-full` 铺满当前气泡；折叠状态通过 inline-size containment 隔离整个隐藏区的 intrinsic width 贡献，使气泡宽度只由可见正文决定；展开状态解除 containment，隐藏正文采用受 `max-w-full` 限制的 max-content 宽度，并在需要时把整个气泡扩展到消息列允许范围，收起后恢复正文宽度。该规则适用于 workflow new 和 workflow resume，并覆盖会话态与旧工作台复用的 ACPChatDialog；用户手动追问和 runtime repair 不注入 hidden runtime context。hidden 后面的可见片段只在展示层去掉开头换行，真实 prompt 事件内容不变。
 - 产物来源固定为当前选中 session（含 AI-DYNAMIC 内部节点）的 artifacts / attachments，不使用 run 级聚合占位数据
 - 产物弹窗遮罩使用轻量弱化遮罩（低透明深色 + blur），主体面板保持半透明而不过度强调，不做厚重黑色卡片
 - sessionId 与 Agent 身份同行，不再单独占行；长值采用“前 8 位…后 4 位”的紧凑投影，点击仍复制完整值，悬浮显示完整值，并在复制后显示会自动消失的轻量“已复制”提示

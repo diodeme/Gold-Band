@@ -7,7 +7,7 @@ import { desktopThemeWindowSurface } from '../src/theme';
 describe('desktop window surface', () => {
   it('maps every concrete theme to the workspace surface used during native resize', () => {
     expect(desktopThemeWindowSurface('light')).toBe('#f1f2f5');
-    expect(desktopThemeWindowSurface('light-warm')).toBe('#f0ede7');
+    expect(desktopThemeWindowSurface('light-gray')).toBe('#ffffff');
     expect(desktopThemeWindowSurface('dark')).toBe('#181818');
     expect(desktopThemeWindowSurface('black')).toBe('#111111');
   });

@@ -57,6 +57,8 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-text-selection: var(--text-selection);
+  --color-text-selection-foreground: var(--text-selection-foreground);
   --color-title: var(--title);
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
@@ -109,6 +111,8 @@
   --border: #333333;
   --input: #3a3a3a;
   --ring: #8a8a8a;
+  --text-selection: #555555;
+  --text-selection-foreground: #ffffff;
   --sidebar: #202020;
   --sidebar-foreground: #e8e8e8;
   --sidebar-primary: #313131;
@@ -157,6 +161,8 @@
   --border: #2b2b2b;
   --input: #333333;
   --ring: #777777;
+  --text-selection: #4d4d4d;
+  --text-selection-foreground: #ffffff;
   --sidebar: #191919;
   --sidebar-foreground: #e8e8e8;
   --sidebar-primary: #2d2d2d;
@@ -204,6 +210,8 @@
   --border: #e1e3e9;
   --input: #d9dce5;
   --ring: #5b6ba8;
+  --text-selection: #cdd2e3;
+  --text-selection-foreground: #191c24;
   --sidebar: #f4f5f8;
   --sidebar-foreground: #191c24;
   --sidebar-primary: #5b6ba8;
@@ -251,6 +259,8 @@
   --border: #e3ded5;
   --input: #d8d1c6;
   --ring: #8a6a32;
+  --text-selection: #d9d1bd;
+  --text-selection-foreground: #29251f;
   --sidebar: #f5f2ec;
   --sidebar-foreground: #29251f;
   --sidebar-primary: #8a6a32;
@@ -357,7 +367,8 @@
   }
 
   ::selection {
-    @apply bg-primary/30 text-foreground;
+    background: var(--text-selection);
+    color: var(--text-selection-foreground);
   }
 }
 

@@ -14,6 +14,8 @@ const expectedThemes = {
     border: '#e1e3e9',
     primary: '#5b6ba8',
     primaryForeground: '#ffffff',
+    selection: '#cdd2e3',
+    selectionForeground: '#191c24',
     foreground: '#191c24',
     muted: '#667085',
     success: '#16794b',
@@ -27,6 +29,8 @@ const expectedThemes = {
     border: '#e3ded5',
     primary: '#8a6a32',
     primaryForeground: '#ffffff',
+    selection: '#d9d1bd',
+    selectionForeground: '#29251f',
     foreground: '#29251f',
     muted: '#736b60',
     success: '#397451',
@@ -40,6 +44,8 @@ const expectedThemes = {
     border: '#333333',
     primary: '#313131',
     primaryForeground: '#f5f5f5',
+    selection: '#555555',
+    selectionForeground: '#ffffff',
     foreground: '#e8e8e8',
     muted: '#9a9a9a',
     success: '#59b68b',
@@ -53,6 +59,8 @@ const expectedThemes = {
     border: '#2b2b2b',
     primary: '#2d2d2d',
     primaryForeground: '#f2f2f2',
+    selection: '#4d4d4d',
+    selectionForeground: '#ffffff',
     foreground: '#e8e8e8',
     muted: '#929292',
     success: '#59b68b',
@@ -74,6 +82,8 @@ describe('desktop theme palettes', () => {
     expect(themeBlock).toContain(`--border: ${palette.border}`);
     expect(themeBlock).toContain(`--primary: ${palette.primary}`);
     expect(themeBlock).toContain(`--primary-foreground: ${palette.primaryForeground}`);
+    expect(themeBlock).toContain(`--text-selection: ${palette.selection}`);
+    expect(themeBlock).toContain(`--text-selection-foreground: ${palette.selectionForeground}`);
     expect(themeBlock).toContain(`--foreground: ${palette.foreground}`);
     expect(themeBlock).toContain(`--muted-foreground: ${palette.muted}`);
     expect(themeBlock).toContain(`--gold-success: ${palette.success}`);
@@ -94,6 +104,7 @@ describe('desktop theme palettes', () => {
     expect(contrastRatio(palette.foreground, palette.background)).toBeGreaterThanOrEqual(7);
     expect(contrastRatio(palette.muted, palette.background)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(palette.primaryForeground, palette.primary)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(palette.selectionForeground, palette.selection)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(palette.success, palette.background)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(palette.danger, palette.background)).toBeGreaterThanOrEqual(4.5);
   });
@@ -120,6 +131,8 @@ interface ThemeExpectation {
   border: string;
   primary: string;
   primaryForeground: string;
+  selection: string;
+  selectionForeground: string;
   foreground: string;
   muted: string;
   success: string;

@@ -303,7 +303,7 @@ function NodeDetailSheet({ vm, nodeDetail, open, activeTab, appConfig, workspace
           <SheetHeader className="shrink-0 gap-0 border-b bg-muted/10 px-5 py-2.5 text-left">
             <SheetTitle className="sr-only">{nodeDetail?.label ?? t('roundDetail.nodeDetail')}</SheetTitle>
             <SheetDescription className="sr-only">{t('roundDetail.detailDrawerDescription')}</SheetDescription>
-            <TabsList className="h-8 w-fit rounded-full border bg-background/70 p-1 shadow-sm">
+            <TabsList variant="bare" className="h-8 w-fit rounded-full border bg-background/70 p-1 shadow-sm">
               <TabsTrigger value="detail" className="h-6 rounded-full px-3 text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">
                 {t('roundDetail.detailTab')}
               </TabsTrigger>

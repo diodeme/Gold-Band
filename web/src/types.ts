@@ -599,6 +599,7 @@ export interface AcpSessionVm {
   provider: string;
   adapterId?: string | null;
   adapterDisplayName?: string | null;
+  adapterIconKey?: string | null;
   cwd?: string | null;
   providerCwd?: string | null;
   status: string;

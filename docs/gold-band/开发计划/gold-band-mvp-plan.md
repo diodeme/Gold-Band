@@ -695,3 +695,14 @@ attempt-001/
 - 可导航结果：会话搜索根据索引中的 `task_path` 解析 workspace，并从文件事实源补齐最新 Run；只返回能够形成 `projectId/taskId/runId` 路由的结果，点击后直接打开最近 Run。
 - 错误语义：搜索索引不可用或查询失败返回结构化错误码，前端展示搜索失败，不再伪装成“没有匹配结果”。
 - 回归固化：Rust 测试覆盖“创建 task 即可搜索、元数据更新刷新索引”、“搜索结果包含最新 Run”、“侧边栏 workspace 范围在 `LIMIT` 之前生效”和“随便/askUser/你好等中英文子串、短查询及命中摘要”；Web 测试覆盖 Tauri 搜索接口参数、搜索结果路由映射与关键词字面高亮，并要求桌面端完成“新建会话 → 搜索 → 查看命中上下文 → 打开”验证。
+
+---
+
+## 2026-07-24：会话页头身份信息收敛
+
+- Direct 运行标题栏移除重复的 Agent、model、permission mode，仅保留目录按钮；Agent 身份统一由共享 ACP 会话信息栏承担。
+- `AcpSessionVm` 增加由后端 provider 注册信息派生的 `adapterIconKey`，前端不通过展示名称猜测图标；未知 provider 使用通用 Agent 图标。
+- 共享会话信息栏展示 Agent icon + 名称，移除会在会话中途变化的权限模式；session ID 支持点击复制，并通过自动消失的 Tooltip 提示复制成功。
+- 回归要求覆盖 Direct 页头不再渲染旧配置元数据、共享 ACP 页头图标/权限隐藏/复制入口，以及 Web build 与 Direct deep-link 实际交互。
+- Direct 在 session 就绪后不再渲染独立运行标题栏，而由 ACP 会话头组合标题、Agent/session 身份、原始帧与目录操作为单行；左侧身份组按自然宽度紧邻排列，Direct 标题不为透明编辑图标预留宽度，右侧操作组独立贴右，session 启动阶段仍保留运行标题占位，避免页头闪失。
+- 会话标题编辑提示从 HTML `title` 切换到 shadcn Tooltip，统一 Direct、Workflow、AUTO 的主题样式与键盘可访问行为，不再出现 Windows 原生提示框。

@@ -4103,8 +4103,9 @@ const MessageBubble = memo(function MessageBubble({
   const showMessageBubble = isUser || streamingDraft || messageText.trim().length > 0;
   return (
     <Message
+      data-acp-message-row={isUser ? "user" : "assistant"}
       className={cn(
-        "min-w-0 items-start gap-2",
+        "min-w-0 items-start gap-2 [container-type:inline-size]",
         isUser ? "justify-end" : "justify-start",
       )}
     >
@@ -4113,7 +4114,7 @@ const MessageBubble = memo(function MessageBubble({
       ) : null}
       <div
         className={cn(
-          "min-w-0 max-w-[82%] space-y-1",
+          "min-w-0 max-w-[var(--conversation-message-max-inline-size)] space-y-1",
           isUser && "flex flex-col items-end",
         )}
       >

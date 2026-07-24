@@ -52,6 +52,7 @@
 - 高级调度 / 多 run 并发 orchestration
 
 ### 桌面端 MVP 增量
+- 2026-07-25：用户消息中的隐藏 runtime context 改为由当前可见内容统一驱动气泡宽度。隐藏根节点、Trigger、Content 使用无百分比宽度的嵌套 grid stretch；`82cqi` 只保留为消息列最大测量宽度。组件在该上限内以不可见副本进行真实排版，通过 `Range.getClientRects()` 获取各文本行宽度，折叠态取标签/可见正文最大值，展开态再纳入隐藏正文；ResizeObserver、展开状态和字体加载触发重测。由此删除固定 `rem` 与线性 `65cqi` 最终宽度，避免客户端越宽、气泡尾部空白越大的问题。
 - 2026-07-22：默认工作流“需求采访”开关收敛为 workspace 级偏好，仅在内置 `default` 模板显示；自定义模板拓扑不受影响。elicitation 回答后不再生成独立用户消息气泡，保留 `AskUserQuestion` 工具卡片；response signal 改由 runtime 完成 JSON-RPC 回包后清理，修复 completed run follow-up 提交后卡在“发送中”。
 - 使用 Tauri 2.x + Vite + React + TypeScript 生成桌面端应用。
 - `src-tauri/` 作为桌面后端，通过 path dependency 复用 Rust core 的 `App`、runtime、storage 与 config。

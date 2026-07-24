@@ -116,6 +116,7 @@
 - 默认模板为 `interview -> plan -> dev -> review -> test -> accept -> cleanup -> $end`，不再默认生成 `worker` 节点或 `节点输出产物` 产物；interview 是普通节点，通过深度访谈产出 `interview-spec.md` 作为 plan 节点输入，节点完成即默认成功、无需人工判定；review/test/accept 使用 worker JSON 输出验证决定 success/failure 分支，accept failure 开启新 Round 且下一轮从 `dev` 节点开始，cleanup 是普通 worker 节点，不启用 AI 输出验证。默认节点 goal 跟随桌面语言生成中文或英文文案，不允许继续硬编码单一语言。默认模板的 `max_attempts` 与 `max_rounds` 为空，表示默认不限制。
 - 默认模板为 `plan -> dev -> review -> test -> accept -> cleanup -> $end`，不再默认生成 `worker` 节点或 `节点输出产物` 产物；review/test/accept 使用 worker JSON 输出验证决定 success/failure 分支，accept failure 开启新 Round 且下一轮从 `dev` 节点开始，cleanup 是普通 worker 节点，不启用 AI 输出验证。默认节点 goal 跟随桌面语言生成中文或英文文案，不允许继续硬编码单一语言。默认模板的 `max_attempts` 与 `max_rounds` 为空，表示默认不限制。
 - 内置访谈角色（profile id `pf-builtin-interview`）用于 plan 节点前的需求澄清：通过苏格拉底式深度访谈把模糊需求转化为清晰规格，产物为 `interview-spec.md`（无 output contract、无结构化判定），节点完成判定为默认成功，无需人工判定；`interview-spec.md` 的目标、约束、非目标、验收标准和技术上下文作为 plan 节点的输入依据，plan 角色 prompt 在存在前序访谈节点时优先读取该产物。访谈使用 ACP elicitation 一次只问一个问题，向用户询问代码库相关问题前必须先用节点自身文件搜索能力收集事实。
+- 内置拷问角色（profile id `pf-builtin-grill`）用于独立的深度拷问场景：围绕用户的计划、决策或想法进行毫不留情、全面深入的访谈，直到双方达成共同理解；产出 `grill-consensus.md` 共识文档（含决策树、暴露的假设、被拒绝的替代方案和未解决问题），在用户确认共识前不采取任何行动。该角色为内置可选角色，不在默认工作流模板中使用，用户可在角色选择器中手动选择。
 - 工作流模式下创建任务时，采访开关只在选择后端内置 `default` 模板时出现，默认开启；偏好按 workspace 持久化。切换到自定义模板时隐藏开关但不清空偏好，切回默认模板恢复上次选择。关闭后仅对本次从默认模板创建的任务移除入口 interview 阶段，并从其唯一 success 后继（当前为 plan）开始；自定义模板的节点、边和入口永远不受该偏好影响，运行模式管理页始终编辑模板的完整真实拓扑。
 - 创建任务 Sheet 负责轻量模板维护：模板下拉顶部提供“新增模板”按钮进入空白画布，行内提供删除按钮，默认模板不可删除；修改非默认模板后可直接“保存修改”覆盖当前模板，默认模板改动与空白画布通过“另存为新模板”沉淀；创建任务本身由 Sheet 标题栏右侧“保存任务”提交，避免与模板保存混淆；模板保存成功提示短暂展示后自动消失，错误提示持续展示直到用户修正或手动关闭。
 - 默认 review/test/accept 的 JSON 输出约束使用简化 AI 面向结构：`{"reason":"String","result":"boolean"}`；旧完整 JSON Schema 不再兼容。
@@ -298,6 +299,7 @@ MVP 中任务工作流页由 Tauri command `get_workflow` 提供 view model，�
 - 2026-05-09 验收修正：运行记录 Header 承载新建 Run、筛选和排序；Run/Round 列表增加 Run/Round、状态、当前进度、上下文、操作的稳定列头。展开态使用中性增强表面、缩进时间线和独立 Round 行背景加强父子层级，避免大面积白底导致页面过轻。
 - 2026-05-05 起页面可见 UI 文案走桌面端 i18n，中文模式除 AI、Java、JSON、workflow.json、真实 id 和日志原文等技术词外均显示中文，英文模式均显示英文。
 - 2026-05-18 起工作流编辑器的 profile 字段从自由文本改为角色选择器，按名称、ID、摘要和正文检索；选中后仅把 profile `id` 写入 workflow DSL，运行时解析内建 / 用户级 Markdown profile 并把正文注入 provider prompt。
+- 2026-07-22 新增内置拷问角色（profile id \pf-builtin-grill\），用于独立的深度拷问场景；该角色不在默认工作流模板中使用，仅在角色选择器中手动可选。该角色最终产出 `grill-consensus.md` 共识文档。
 
 ---
 

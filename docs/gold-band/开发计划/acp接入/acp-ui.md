@@ -88,6 +88,8 @@ Gold Band 需要吸收的是 Jockey 的 ACP 事件归一化和 Chat/Session UI �
 - `Agent` 工具调用的子 Agent 分组是前端 timeline projection：前端根据 `Agent` tool call 的 start seq 与 terminal update seq 计算生命周期窗口，将窗口内子事件框定展示，不新增后端 ACP UI event kind。
 - 未识别事件应进入诊断区或系统提示，不应破坏会话流。
 - 初始 `get_acp_session` 返回 `null`（attempt 目录尚未写入 ACP 文件）时前端不立即显示 "ACP 会话失败"，而是以 120ms / 300ms / 700ms / 1200ms 递增间隔短暂重试，避免与后端首次 snapshot 写入形成竞争；所有重试耗尽仍为空时才降级为失败态。
+- ACP adapter 关闭时序已收口为 `open → draining → closed`：关闭连接前先将其移出复用池并拒绝新 prompt，再取消待处理 permission/elicitation、发送 session cancel，并按 ACP session id 有界等待活跃 prompt worker 收敛；排空后执行 `session/close`，最后关闭 transport。draining 期间保留在途 response 的写权限，避免 AskUserQuestion/permission worker 被唤醒后向已关闭 stdin 写入。若排空超时，后续 transport 错误统一映射为 `interrupted`，不写入 `ACP prompt failed` diagnostics。
+- 关闭恢复的单元验收固定覆盖：draining 拒绝新普通请求但允许 shutdown request；AskUserQuestion 等待中关闭会先生成 decline 并完成 prompt drain；worker 不收敛时等待必须按 timeout 返回；draining/closed 结构化错误必须被 prompt runtime 识别为 transport interruption。
 
 ## 4. Gold Band 会话信息架构
 

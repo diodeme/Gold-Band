@@ -262,7 +262,7 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - 会话信息栏与运行标题栏保持同一套紧凑节奏：缩小上下 padding、降低主标题字号、压低按钮高度，减少双层头部对内容区的挤压
 - 可编辑会话标题的悬浮提示统一使用项目内置 shadcn Tooltip，禁止使用 HTML `title` 触发 Windows/WebView 原生 tooltip；鼠标悬浮与键盘聚焦共享主题化提示样式
 - Workflow/AUTO 的第二行作为元信息层，视觉权重需低于第一行：更小字号、更轻字重、更弱对比度，不与任务标题竞争主次；Direct 使用下述单层组合页头
-- 浅色主题下运行标题栏与 ACP session header 使用纯白 `content-header`，只保留轻量分隔线；灰色仅属于窗口框架和侧栏，不得在主内容顶部形成连续灰带。深色主题由同一 token 映射到对应低层 surface。
+- 运行标题栏与 ACP session header 统一消费独立的 `content-header` token 并只保留轻量底部分隔线；四套主题当前都将该 token 映射为 `var(--sidebar)`，使标题栏与侧边栏组成连续应用框架，并与消息阅读区明确分层。保留独立 token 是为了未来可只改色板映射，不改变组件接口；标题栏不得增加独立卡片、投影或嵌套灰块。
 - 用户消息气泡使用独立的 `message-user` / `message-user-foreground` 语义 token，不复用 `primary` 混色。科技灰下采用 `#f3f3f3` 浅灰底与 `#202020` 深色正文，不显示可感知边框和投影；长消息仍应保持轻盈，不能形成大面积中灰实体面板。深色主题使用同源的中性高层 surface 与高对比文字。
 - assistant 自然语言正文直接显示在页面背景上，使用实色 `foreground`，不再包裹白色卡片、灰色边框或投影。工具、思考、代码块和控制输出仍可使用必要的结构化 surface，从而让主阅读路径保持高白度与高黑度。
 - ACP 会话主消息流、raw frames 面板和 prompt-kit 聊天滚动容器使用 Gold Band 主题化滚动条；滚动条颜色必须来自主题 token（主色、muted、surface），科技灰主题使用无彩石墨与中性 surface 混合，不回退为系统默认灰色，也不引入蓝灰色偏。

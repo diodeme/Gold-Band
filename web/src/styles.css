@@ -122,7 +122,7 @@
   --text-selection-foreground: #ffffff;
   --message-user: #2d2d2d;
   --message-user-foreground: #f2f2f2;
-  --content-header: #202020;
+  --content-header: var(--sidebar);
   --sidebar: #202020;
   --sidebar-foreground: #e8e8e8;
   --sidebar-primary: #313131;
@@ -175,7 +175,7 @@
   --text-selection-foreground: #ffffff;
   --message-user: #252525;
   --message-user-foreground: #f2f2f2;
-  --content-header: #191919;
+  --content-header: var(--sidebar);
   --sidebar: #191919;
   --sidebar-foreground: #e8e8e8;
   --sidebar-primary: #2d2d2d;
@@ -227,7 +227,7 @@
   --text-selection-foreground: #191c24;
   --message-user: #f0f1f5;
   --message-user-foreground: #191c24;
-  --content-header: #ffffff;
+  --content-header: var(--sidebar);
   --sidebar: #f4f5f8;
   --sidebar-foreground: #191c24;
   --sidebar-primary: #5b6ba8;
@@ -279,7 +279,7 @@
   --text-selection-foreground: #202020;
   --message-user: #f3f3f3;
   --message-user-foreground: #202020;
-  --content-header: #ffffff;
+  --content-header: var(--sidebar);
   --sidebar: #f3f3f3;
   --sidebar-foreground: #171717;
   --sidebar-primary: #343434;

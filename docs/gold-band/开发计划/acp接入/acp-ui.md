@@ -145,7 +145,7 @@ ACP 专属组件只做协议事件映射和业务状态组合：
 - Task-level input attachments 是新 ACP session 的初始化上下文，只随 `SessionMode::New` 首次发送；同一个 session 内 resume/continue 不自动重发这些 task inputs，也不在后续用户气泡下重复展示。用户在 composer 中本轮显式选择的附件仍作为本轮 same-session prompt attachments 单独发送和展示。
 - Gold Band 生成的 `<hidden data-gold-band-hidden="true">` 段在用户气泡内默认折叠，hidden 段和可见 requirement/goal 保持在同一个 user bubble 中，不拆成独立消息；展开后展示原文，再次点击收起。用户消息内容容器使用 intrinsic sizing，隐藏标题始终 `w-full` 铺满当前气泡；折叠时对整个隐藏区启用 inline-size containment，使其不参与父气泡宽度计算，气泡宽度只由可见正文决定；展开时解除 containment，隐藏正文使用 `w-max + max-w-full` 扩展整个气泡并继续受消息最大宽度约束。hidden 后面的可见片段只在展示层去掉开头换行，避免折叠块和正文间距被 prompt 模板空行放大；真实 prompt 内容和事件记录不变。普通用户手写的 `<hidden>` 文本不折叠。
 - 用户气泡由 prompt-kit `MessageContent` 的 user 变体统一呈现，并消费主题级 `message-user` / `message-user-foreground` token。浅色主题使用接近参考图的轻浅灰背景、深色正文、无可感知边框和无投影；hidden 折叠区只在同一色调内轻微压暗，禁止恢复大面积 `primary` 混色或灰块套白块。
-- assistant 文本消息由同一 prompt-kit `MessageContent` 的 assistant 变体呈现，但采用透明背景、实色正文、无边框和无投影；会话标题栏消费 `content-header`，浅色下保持纯白。主内容区只允许用户气泡和结构化工具/思考对象使用灰色 surface，避免白卡片、灰边框和浅文字叠加成灰雾。
+- assistant 文本消息由同一 prompt-kit `MessageContent` 的 assistant 变体呈现，但采用透明背景、实色正文、无边框和无投影；会话标题栏消费独立 `content-header`，四套主题当前都将它映射为 `var(--sidebar)`，并通过轻量底边界与消息区分层。标题栏不增加卡片或投影，主阅读区只允许用户气泡和结构化工具/思考对象使用必要的灰色 surface，避免灰块堆叠成灰雾。
 - 用户在已停止 / 已完成 ACP session 中手动追问时属于普通 user message，后端直接发送用户原文，不注入 Gold Band hidden runtime context，也不包装成 `# Goal`。
 - 当前 run 因 `process-interrupted` 暂停且用户在 composer 中输入补充内容时，提交仍走 runtime `continue` 主链路而不是普通 ACP prompt；但 `run_continue()` 必须把这类“停止后用户继续”判定为 `UserMessage` 渲染语义，只把用户原文发送给 provider。只有 workflow 自身恢复执行、没有用户显式追问时，才判定为 `WorkflowResume` 并发送 hidden runtime context + `# Goal`。
 - 当 node 处于 `waiting_for_user_input`、permission pending、adapter disconnected 等状态时，composer 应显示明确状态。

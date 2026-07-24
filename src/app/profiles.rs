@@ -15,7 +15,7 @@ use crate::frontmatter::{
 };
 use crate::prompts::{
     PROFILE_ACCEPT_EN, PROFILE_ACCEPT_ZH_CN, PROFILE_CLEAN_EN, PROFILE_CLEAN_ZH_CN, PROFILE_DEV_EN,
-    PROFILE_DEV_ZH_CN, PROFILE_INTERVIEW_EN, PROFILE_INTERVIEW_ZH_CN, PROFILE_PLAN_EN,
+    PROFILE_DEV_ZH_CN, PROFILE_GRILLME_EN, PROFILE_GRILLME_ZH_CN, PROFILE_INTERVIEW_EN, PROFILE_INTERVIEW_ZH_CN, PROFILE_PLAN_EN,
     PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN, PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN,
     PROFILE_TEST_ZH_CN, prompt_by_language,
 };
@@ -170,6 +170,12 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
         id: "pf-builtin-interview",
         name: "访谈",
         summary: "访谈角色，用于需求澄清，通过深度访谈把模糊需求转化为清晰规格。",
+    },
+    DefaultProfileSeed {
+        key: "grill",
+        id: "pf-builtin-grill",
+        name: "拷问",
+        summary: "拷问角色，围绕计划或决策进行毫不留情的深度访谈，直到达成共同理解。",
     },
 ];
 
@@ -333,6 +339,7 @@ fn built_in_profile_content(key: &str, language: DesktopLanguage) -> &'static st
         "accept" => prompt_by_language(language, PROFILE_ACCEPT_ZH_CN, PROFILE_ACCEPT_EN),
         "cleanup" => prompt_by_language(language, PROFILE_CLEAN_ZH_CN, PROFILE_CLEAN_EN),
         "interview" => prompt_by_language(language, PROFILE_INTERVIEW_ZH_CN, PROFILE_INTERVIEW_EN),
+        "grill" => prompt_by_language(language, PROFILE_GRILLME_ZH_CN, PROFILE_GRILLME_EN),
         _ => "",
     }
 }
@@ -688,5 +695,38 @@ profile body
         let profiles = read_profile_dir(&paths, ProfileScope::User).unwrap();
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].id, "pf-bom");
+    }
+
+    #[test]
+    fn grill_profile_is_built_in_but_not_in_default_workflow() {
+        // The grill profile must appear in the built-in profile list.
+        let built_in = built_in_profiles(DesktopLanguage::ZhCn);
+        let grill = built_in.iter().find(|p| p.id == "pf-builtin-grill");
+        assert!(grill.is_some(), "grill profile should be built-in");
+        let grill = grill.unwrap();
+        assert!(grill.is_built_in);
+        assert_eq!(grill.scope, ProfileScope::BuiltIn);
+        assert!(!grill.content.is_empty(), "grill profile content must not be empty");
+
+        // The grill profile id must NOT be resolvable via the default workflow
+        // profile-id map. The default workflow only references: interview, plan,
+        // dev, review, test, accept, cleanup.
+        let ids = ensure_default_user_profiles(&GoldBandPaths::new(
+            Utf8PathBuf::from_path_buf(std::env::temp_dir().join("gb-grill-test")).unwrap(),
+        ))
+        .unwrap();
+        // The map still contains the key (it lists all built-in ids), but the
+        // default workflow never references "grill".
+        assert_eq!(ids.get("grill"), Some("pf-builtin-grill"));
+        // Verify the default workflow does not embed the grill profile id.
+        let dsl = crate::app::default_workflow_dsl("claude-acp", &ids, DesktopLanguage::ZhCn);
+        let serialized = serde_json::to_string(&dsl).unwrap();
+        assert!(
+            !serialized.contains("pf-builtin-grill"),
+            "default workflow must not embed the grill profile"
+        );
+
+        // Clean up temp dir
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("gb-grill-test"));
     }
 }

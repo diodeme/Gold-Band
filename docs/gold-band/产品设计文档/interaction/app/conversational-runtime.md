@@ -71,6 +71,7 @@
 - 当 runtime attempt 已因 `process-interrupted / runtime-abnormal / waiting-for-user-input` 进入可继续暂停时，session tree 与 composer 的用户态状态必须继续展示为可继续暂停；其中 `runtime-abnormal` 使用危险色/异常图标提醒，但 `blockingError=false` 且可输入继续。当 runtime attempt 因 `error-blocked` 暂停时，session tree 必须保留错误阻塞状态并由 composer 展示 `runtime-error`；此时 ACP snapshot/session 被写成 `failed` 或 `cancelled` 只代表底层会话传输已结束，不能覆盖 runtime 的暂停或错误事实
 - 若 provider/ACP `failed/error` 先于 runtime 异常归一化结果到达，而当前 attempt 仍是 `paused + outcome=null + current` 且没有明确 `pauseReason`，Conversation VM 必须把该状态派生为 runtime 仍在收敛中的锁定态；不得短暂展示“当前会话运行失败”。待后端写出 `runtime-abnormal` 后，composer 再切换为可继续输入。
 - ACP diagnostics 中的 `lastError` 可以作为顶部 banner、日志、详情和消息流诊断来源，用来告诉用户 provider/ACP 为什么失败；但它不能驱动 composer 进入 `runtime-error`，也不能覆盖 workflow runtime lifecycle。用户修复外部条件并继续后，如果同一会话产生了后续正常响应，banner 应按诊断可见性规则自然消失。
+- 桌面客户端退出、workspace/provider 重载等主动关闭路径必须使用 ACP 两阶段有界关闭：连接先从 `open` 进入 `draining` 并立即停止接收新的普通请求；随后取消目标 session 的 permission、elicitation 和 prompt，允许已经在途的 JSON-RPC response 在 draining 阶段完成，并按 session 等待 active prompt 有界归零；最后才发送 `session/close` 并关闭 adapter transport。等待超时后可以强制关闭，但 draining/closed 导致的 transport 不可用必须归一化为 `interrupted`，不得落盘为 `ACP prompt failed` 或触发会话失败 banner。
 - AI-DYNAMIC leaf 已持久化 `runtimeError` 时，当前选中 leaf 的错误展示优先使用该结构化错误的完整 diagnostic；不得只展示 outer provider context，也不得被 graph/run 的泛化暂停原因覆盖。
 - 每个 attempt leaf 必须暴露真实 `artifactCount / attachmentCount`，计数来源与当前选中 session 底部资源条使用同一套后端资源列表规则；计数不能写死或由前端推断，避免 session tree 与资源条对同一 attempt 的文件事实不一致。
 

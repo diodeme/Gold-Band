@@ -268,6 +268,102 @@ pub enum AdapterConnectionOutcome {
     ReplacedStale,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdapterConnectionState {
+    Open,
+    Draining,
+    Closed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpConnectionUnavailable {
+    Draining,
+    Closed,
+}
+
+impl std::fmt::Display for AcpConnectionUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Draining => "ACP adapter connection is draining",
+            Self::Closed => "ACP adapter transport is closed",
+        })
+    }
+}
+
+impl std::error::Error for AcpConnectionUnavailable {}
+
+fn request_unavailability(
+    state: AdapterConnectionState,
+    allow_draining: bool,
+) -> Option<AcpConnectionUnavailable> {
+    match state {
+        AdapterConnectionState::Open => None,
+        AdapterConnectionState::Draining if allow_draining => None,
+        AdapterConnectionState::Draining => Some(AcpConnectionUnavailable::Draining),
+        AdapterConnectionState::Closed => Some(AcpConnectionUnavailable::Closed),
+    }
+}
+
+#[derive(Debug, Default)]
+struct ActivePromptTracker {
+    counts: Mutex<HashMap<String, usize>>,
+    drained: Condvar,
+}
+
+impl ActivePromptTracker {
+    fn mark_active(&self, session_id: &str) {
+        if let Ok(mut counts) = self.counts.lock() {
+            let count = counts.entry(session_id.to_string()).or_default();
+            *count = count.saturating_add(1);
+        }
+    }
+
+    fn mark_inactive(&self, session_id: &str) {
+        if let Ok(mut counts) = self.counts.lock() {
+            if let Some(count) = counts.get_mut(session_id) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    counts.remove(session_id);
+                }
+            }
+        }
+        self.drained.notify_all();
+    }
+
+    fn count(&self) -> usize {
+        self.counts
+            .lock()
+            .map(|counts| counts.values().copied().sum())
+            .unwrap_or(0)
+    }
+
+    fn count_for_session(&self, session_id: &str) -> usize {
+        self.counts
+            .lock()
+            .ok()
+            .and_then(|counts| counts.get(session_id).copied())
+            .unwrap_or(0)
+    }
+
+    fn wait_for_sessions(&self, session_ids: &[String], timeout: Duration) -> Result<bool> {
+        let counts = self
+            .counts
+            .lock()
+            .map_err(|_| anyhow!("ACP active prompt lock poisoned"))?;
+        let (counts, _) = self
+            .drained
+            .wait_timeout_while(counts, timeout, |counts| {
+                session_ids
+                    .iter()
+                    .any(|session_id| counts.get(session_id).copied().unwrap_or(0) > 0)
+            })
+            .map_err(|_| anyhow!("ACP active prompt lock poisoned"))?;
+        Ok(!session_ids
+            .iter()
+            .any(|session_id| counts.get(session_id).copied().unwrap_or(0) > 0))
+    }
+}
+
 impl AdapterConnectionOutcome {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -310,11 +406,23 @@ pub struct AdapterConnection {
     session_routes: Mutex<HashMap<String, SessionRouteSender>>,
     unrouted_warnings: Mutex<HashMap<String, UnroutedWarningState>>,
     initialized_capabilities: Mutex<Option<Value>>,
-    active_prompts: Mutex<usize>,
+    active_prompts: ActivePromptTracker,
     session_config_transaction: SessionConfigTransaction,
-    transport_closed: Mutex<bool>,
+    state: Mutex<AdapterConnectionState>,
 }
 
+pub struct ActivePromptGuard {
+    connection: Arc<AdapterConnection>,
+    session_id: String,
+}
+
+impl Drop for ActivePromptGuard {
+    fn drop(&mut self) {
+        self.connection
+            .active_prompts
+            .mark_inactive(&self.session_id);
+    }
+}
 #[derive(Debug, Default)]
 struct SessionConfigTransaction {
     lock: Mutex<()>,
@@ -384,9 +492,9 @@ impl AdapterConnection {
             session_routes: Mutex::new(HashMap::new()),
             unrouted_warnings: Mutex::new(HashMap::new()),
             initialized_capabilities: Mutex::new(None),
-            active_prompts: Mutex::new(0),
+            active_prompts: ActivePromptTracker::default(),
             session_config_transaction: SessionConfigTransaction::default(),
-            transport_closed: Mutex::new(false),
+            state: Mutex::new(AdapterConnectionState::Open),
         });
 
         let stdout_connection = Arc::clone(&connection);
@@ -457,9 +565,20 @@ impl AdapterConnection {
     }
 
     pub fn begin_request(&self, method: &str, params: Value) -> Result<PendingRequest> {
-        if self.is_transport_closed() {
-            bail!("ACP adapter transport is closed");
-        }
+        self.begin_request_with_policy(method, params, false)
+    }
+
+    fn begin_shutdown_request(&self, method: &str, params: Value) -> Result<PendingRequest> {
+        self.begin_request_with_policy(method, params, true)
+    }
+
+    fn begin_request_with_policy(
+        &self,
+        method: &str,
+        params: Value,
+        allow_draining: bool,
+    ) -> Result<PendingRequest> {
+        self.ensure_request_allowed(allow_draining)?;
         let id = {
             let mut next_id = self
                 .next_id
@@ -487,6 +606,17 @@ impl AdapterConnection {
         Ok(PendingRequest { id, frame, rx })
     }
 
+    fn ensure_request_allowed(&self, allow_draining: bool) -> Result<()> {
+        let state = *self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("ACP adapter connection state lock poisoned"))?;
+        match request_unavailability(state, allow_draining) {
+            Some(error) => Err(anyhow!(error)),
+            None => Ok(()),
+        }
+    }
+
     pub fn cancel_pending(&self, id: u64) {
         if let Ok(mut pending) = self.pending.lock() {
             pending.remove(&id);
@@ -511,7 +641,7 @@ impl AdapterConnection {
 
     pub fn send_raw_frame(&self, frame: &Value) -> Result<()> {
         if self.is_transport_closed() {
-            bail!("ACP adapter transport is closed");
+            return Err(anyhow!(AcpConnectionUnavailable::Closed));
         }
         let mut stdin = self
             .stdin
@@ -525,7 +655,8 @@ impl AdapterConnection {
         if let Err(error) = write_result {
             drop(stdin);
             self.mark_transport_closed();
-            return Err(error.into());
+            return Err(anyhow!(AcpConnectionUnavailable::Closed)
+                .context(format!("failed to write ACP adapter frame: {error}")));
         }
         Ok(())
     }
@@ -551,32 +682,60 @@ impl AdapterConnection {
         }
     }
 
-    pub fn mark_prompt_active(&self) {
-        if let Ok(mut count) = self.active_prompts.lock() {
-            *count = count.saturating_add(1);
-        }
-    }
-
-    pub fn mark_prompt_inactive(&self) {
-        if let Ok(mut count) = self.active_prompts.lock() {
-            *count = count.saturating_sub(1);
+    pub fn begin_prompt(self: &Arc<Self>, session_id: &str) -> Result<ActivePromptGuard> {
+        let state = *self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("ACP adapter connection state lock poisoned"))?;
+        match request_unavailability(state, false) {
+            None => {
+                self.active_prompts.mark_active(session_id);
+                Ok(ActivePromptGuard {
+                    connection: Arc::clone(self),
+                    session_id: session_id.to_string(),
+                })
+            }
+            Some(error) => Err(anyhow!(error)),
         }
     }
 
     pub fn active_prompt_count(&self) -> usize {
-        self.active_prompts.lock().map(|count| *count).unwrap_or(0)
+        self.active_prompts.count()
+    }
+
+    pub fn active_prompt_count_for_session(&self, session_id: &str) -> usize {
+        self.active_prompts.count_for_session(session_id)
+    }
+
+    pub fn wait_for_prompt_drain(&self, session_ids: &[String], timeout: Duration) -> Result<bool> {
+        self.active_prompts.wait_for_sessions(session_ids, timeout)
+    }
+
+    fn begin_draining(&self) -> Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("ACP adapter connection state lock poisoned"))?;
+        match *state {
+            AdapterConnectionState::Open => {
+                *state = AdapterConnectionState::Draining;
+                Ok(true)
+            }
+            AdapterConnectionState::Draining => Ok(true),
+            AdapterConnectionState::Closed => Ok(false),
+        }
     }
 
     pub fn is_transport_closed(&self) -> bool {
-        self.transport_closed
+        self.state
             .lock()
-            .map(|closed| *closed)
+            .map(|state| *state == AdapterConnectionState::Closed)
             .unwrap_or(true)
     }
 
     fn mark_transport_closed(&self) {
-        if let Ok(mut closed) = self.transport_closed.lock() {
-            *closed = true;
+        if let Ok(mut state) = self.state.lock() {
+            *state = AdapterConnectionState::Closed;
         }
         if let Ok(mut pending) = self.pending.lock() {
             pending.clear();
@@ -632,7 +791,7 @@ impl AdapterConnection {
         timeout: Duration,
         raw_path: Option<&Utf8Path>,
     ) -> Result<()> {
-        let request = self.begin_request(
+        let request = self.begin_shutdown_request(
             "session/close",
             json!({
                 "sessionId": session_id,
@@ -974,6 +1133,21 @@ impl AdapterConnectionManager {
             return Ok(false);
         };
         settle_attempt_for_session_close(attempt_dir);
+        if connection.active_prompt_count_for_session(&session.session_id) > 0 {
+            if let Err(error) = connection.send_cancel_notification(&session.session_id) {
+                warn!(%attempt_dir, %error, "failed to cancel ACP prompt before session close");
+            }
+            let drained = connection
+                .wait_for_prompt_drain(std::slice::from_ref(&session.session_id), timeout)?;
+            if !drained {
+                warn!(
+                    %attempt_dir,
+                    session_id = %session.session_id,
+                    active_prompts = connection.active_prompt_count_for_session(&session.session_id),
+                    "ACP prompt drain timed out before session close"
+                );
+            }
+        }
         connection.close_session_bounded(&session.session_id, timeout)?;
         persist_cancelled_session_snapshot(attempt_dir);
         self.unregister_attempt_session(attempt_dir);
@@ -1028,14 +1202,17 @@ impl AdapterConnectionManager {
         key: &AdapterConnectionKey,
         timeout: Duration,
     ) -> Result<()> {
-        let Some(connection) = self
-            .connections
-            .lock()
-            .map_err(|_| anyhow!("ACP connection manager lock poisoned"))?
-            .get(key)
-            .cloned()
-        else {
-            return Ok(());
+        let connection = {
+            let mut connections = self
+                .connections
+                .lock()
+                .map_err(|_| anyhow!("ACP connection manager lock poisoned"))?;
+            let Some(connection) = connections.get(key).cloned() else {
+                return Ok(());
+            };
+            connection.begin_draining()?;
+            connections.remove(key);
+            connection
         };
         let sessions = self
             .attempt_sessions
@@ -1045,11 +1222,31 @@ impl AdapterConnectionManager {
             .filter(|(_, session)| &session.key == key)
             .map(|(attempt_dir, session)| (attempt_dir.clone(), session.session_id.clone()))
             .collect::<Vec<_>>();
+        let session_ids = sessions
+            .iter()
+            .map(|(_, session_id)| session_id.clone())
+            .collect::<Vec<_>>();
         let mut closed_attempts = Vec::new();
         let mut close_errors = Vec::new();
-        for (attempt_dir, session_id) in sessions {
+        for (attempt_dir, session_id) in &sessions {
             let attempt_path = Utf8PathBuf::from(&attempt_dir);
             settle_attempt_for_session_close(attempt_path.as_path());
+            if connection.active_prompt_count_for_session(session_id) > 0
+                && let Err(error) = connection.send_cancel_notification(session_id)
+            {
+                warn!(%attempt_dir, %session_id, %error, "failed to cancel ACP prompt while draining connection");
+            }
+        }
+        if !connection.wait_for_prompt_drain(&session_ids, timeout)? {
+            warn!(
+                provider = %key.provider_id,
+                workspace = %key.workspace_root,
+                active_prompts = connection.active_prompt_count(),
+                "ACP prompt drain timed out before adapter shutdown"
+            );
+        }
+        for (attempt_dir, session_id) in sessions {
+            let attempt_path = Utf8PathBuf::from(&attempt_dir);
             let raw_path = attempt_path.join("acp.raw.jsonl");
             if let Err(error) = connection.close_session_bounded_with_raw_log(
                 &session_id,
@@ -1066,14 +1263,7 @@ impl AdapterConnectionManager {
                 attempts.remove(&attempt_dir);
             }
         }
-        let removed = self
-            .connections
-            .lock()
-            .map_err(|_| anyhow!("ACP connection manager lock poisoned"))?
-            .remove(key);
-        if let Some(connection) = removed {
-            connection.shutdown();
-        }
+        connection.shutdown();
         if close_errors.is_empty() {
             Ok(())
         } else {
@@ -1167,9 +1357,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        AdapterConnectionKey, SessionConfigTransaction, SessionRouteTryRecvError,
-        persist_cancelled_session_snapshot, record_unrouted_warning, session_id_from_frame,
-        session_route_pair, settle_attempt_for_session_close,
+        AcpConnectionUnavailable, ActivePromptTracker, AdapterConnectionKey,
+        AdapterConnectionState, SessionConfigTransaction, SessionRouteTryRecvError,
+        persist_cancelled_session_snapshot, record_unrouted_warning, request_unavailability,
+        session_id_from_frame, session_route_pair, settle_attempt_for_session_close,
     };
 
     #[test]
@@ -1190,6 +1381,10 @@ mod tests {
     }
     use crate::{
         acp::{
+            elicitation::{
+                ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, PendingElicitationState,
+                wait_for_elicitation_response, write_pending_elicitation,
+            },
             events::{load_timeline_items, permission_request_event, write_timeline_items},
             permission::{pending_permission_file, write_pending_permission},
         },
@@ -1208,6 +1403,85 @@ mod tests {
         assert_eq!(first, second);
         assert_ne!(first, other_provider);
         assert_ne!(first, other_workspace);
+    }
+
+    #[test]
+    fn draining_rejects_new_requests_but_allows_shutdown_requests() {
+        assert_eq!(
+            request_unavailability(AdapterConnectionState::Open, false),
+            None
+        );
+        assert_eq!(
+            request_unavailability(AdapterConnectionState::Draining, false),
+            Some(AcpConnectionUnavailable::Draining)
+        );
+        assert_eq!(
+            request_unavailability(AdapterConnectionState::Draining, true),
+            None
+        );
+        assert_eq!(
+            request_unavailability(AdapterConnectionState::Closed, true),
+            Some(AcpConnectionUnavailable::Closed)
+        );
+    }
+
+    #[test]
+    fn ask_user_question_close_drains_prompt_before_transport_shutdown() {
+        let dir = tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let session_id = "session-ask".to_string();
+        let elicitation_id = "elicit-close";
+        write_pending_elicitation(
+            &attempt_dir,
+            &PendingElicitationState {
+                elicitation_id: elicitation_id.to_string(),
+                jsonrpc_id: json!(1),
+                message: "Choose".to_string(),
+                requested_schema: json!({ "type": "object", "properties": {} }),
+                created_at: "1Z".to_string(),
+            },
+        )
+        .unwrap();
+
+        let prompts = Arc::new(ActivePromptTracker::default());
+        prompts.mark_active(&session_id);
+        let worker_prompts = Arc::clone(&prompts);
+        let worker_attempt_dir = attempt_dir.clone();
+        let worker_session_id = session_id.clone();
+        let worker = thread::spawn(move || {
+            let response = wait_for_elicitation_response(
+                &worker_attempt_dir,
+                elicitation_id,
+                ELICITATION_DEFAULT_TIMEOUT,
+            )
+            .unwrap();
+            worker_prompts.mark_inactive(&worker_session_id);
+            response
+        });
+
+        settle_attempt_for_session_close(&attempt_dir);
+        assert!(
+            prompts
+                .wait_for_sessions(std::slice::from_ref(&session_id), Duration::from_secs(1))
+                .unwrap()
+        );
+        let response = worker.join().unwrap();
+        assert!(matches!(response.action, ElicitationAction::Decline));
+        assert_eq!(prompts.count(), 0);
+    }
+
+    #[test]
+    fn prompt_drain_is_bounded_when_worker_does_not_finish() {
+        let prompts = ActivePromptTracker::default();
+        let session_id = "session-stuck".to_string();
+        prompts.mark_active(&session_id);
+
+        assert!(
+            !prompts
+                .wait_for_sessions(std::slice::from_ref(&session_id), Duration::from_millis(20))
+                .unwrap()
+        );
+        assert_eq!(prompts.count_for_session(&session_id), 1);
     }
 
     #[test]

@@ -16,8 +16,8 @@ struct AcpTimelineStreamState {
 }
 
 use crate::acp::connection::{
-    AdapterConnection, AdapterConnectionKey, AdapterConnectionManager, SessionRouteReceiver,
-    SessionRouteTryRecvError,
+    AcpConnectionUnavailable, AdapterConnection, AdapterConnectionKey, AdapterConnectionManager,
+    SessionRouteReceiver, SessionRouteTryRecvError,
 };
 use crate::acp::elicitation::{
     ELICITATION_DEFAULT_TIMEOUT, PendingElicitationState, cancel_pending_elicitation_requests,
@@ -74,6 +74,11 @@ impl std::fmt::Display for AcpTransportInterrupted {
 }
 
 impl std::error::Error for AcpTransportInterrupted {}
+
+fn is_transport_interruption(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<AcpTransportInterrupted>().is_some()
+        || error.downcast_ref::<AcpConnectionUnavailable>().is_some()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderControlState {
@@ -491,7 +496,7 @@ pub fn run_prompt(
             runtime.shutdown();
             return Ok(run);
         }
-        Err(error) if error.downcast_ref::<AcpTransportInterrupted>().is_some() => {
+        Err(error) if is_transport_interruption(&error) => {
             let run = runtime.interrupted_run(false, "interrupted");
             runtime.shutdown();
             return Ok(run);
@@ -515,7 +520,7 @@ pub fn run_prompt(
             runtime.shutdown();
             return Ok(run);
         }
-        Err(error) if error.downcast_ref::<AcpTransportInterrupted>().is_some() => {
+        Err(error) if is_transport_interruption(&error) => {
             let run = runtime.interrupted_run(false, "interrupted");
             runtime.shutdown();
             return Ok(run);
@@ -571,7 +576,7 @@ pub fn run_prompt(
             let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             ("cancelled", Some("cancelled".to_string()))
         }
-        Err(error) if error.downcast_ref::<AcpTransportInterrupted>().is_some() => {
+        Err(error) if is_transport_interruption(&error) => {
             let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             ("cancelled", Some("interrupted".to_string()))
         }
@@ -1159,7 +1164,7 @@ impl<'a> AcpRuntime<'a> {
                         format!("failed to load ACP session `{session_id}`: {err}"),
                         None,
                     )?;
-                    if err.downcast_ref::<AcpTransportInterrupted>().is_some() {
+                    if is_transport_interruption(&err) {
                         self.set_session_id(session_id.to_string());
                         return Err(err);
                     }
@@ -1697,12 +1702,12 @@ impl<'a> AcpRuntime<'a> {
                 "providerId": provider_id,
             }),
         );
+        let _prompt_guard = self.connection.begin_prompt(session_id)?;
         let request = self.connection.begin_request(
             "session/prompt",
             session_prompt_params(provider_id, session_id, prompt, restored),
         )?;
         self.append_outbound_frame(&request.frame)?;
-        self.connection.mark_prompt_active();
         let result = (|| {
             let mut cancel_started_at: Option<Instant> = None;
             let mut last_title_refresh_at = Instant::now();
@@ -1766,7 +1771,6 @@ impl<'a> AcpRuntime<'a> {
                 }
             }
         })();
-        self.connection.mark_prompt_inactive();
         let status = if result.is_ok() { "ok" } else { "error" };
         let stop_reason = result
             .as_ref()
@@ -2965,13 +2969,15 @@ mod tests {
     use super::{
         AcpRuntime, DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptActivity, PromptBundle, PromptVisibility,
         RuntimeStopProbe, active_timeline_streams, cleanup_doctor_acp_dir_after_success,
-        contributes_to_final_text, merge_tool_raw_input, permission_decision_timeline_event,
-        prompt_activity, register_provider_control, request_prompt_cancel, resolve_permission_mode,
-        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items, session_load_params,
-        session_new_params, session_prompt_params, session_prompt_text,
-        take_pending_live_update_for_stream_switch, unregister_provider_control,
+        contributes_to_final_text, is_transport_interruption, merge_tool_raw_input,
+        permission_decision_timeline_event, prompt_activity, register_provider_control,
+        request_prompt_cancel, resolve_permission_mode, retain_bounded_doctor_acp_failure_bundle,
+        runtime_hot_timeline_items, session_load_params, session_new_params, session_prompt_params,
+        session_prompt_text, take_pending_live_update_for_stream_switch,
+        unregister_provider_control,
     };
     use crate::acp::{
+        connection::AcpConnectionUnavailable,
         events::{AcpTimingState, AcpUiEvent},
         permission::PermissionResponseState,
     };
@@ -2993,6 +2999,19 @@ mod tests {
 
         unregister_provider_control(attempt_dir, &control);
         assert_eq!(prompt_activity(attempt_dir), None);
+    }
+
+    #[test]
+    fn draining_and_closed_connections_are_transport_interruptions() {
+        assert!(is_transport_interruption(&anyhow::anyhow!(
+            AcpConnectionUnavailable::Draining
+        )));
+        assert!(is_transport_interruption(&anyhow::anyhow!(
+            AcpConnectionUnavailable::Closed
+        )));
+        assert!(!is_transport_interruption(&anyhow::anyhow!(
+            "provider rejected prompt"
+        )));
     }
 
     fn timeline_event(

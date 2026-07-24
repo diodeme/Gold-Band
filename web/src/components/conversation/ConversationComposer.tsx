@@ -13,6 +13,12 @@ import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-servic
 import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
+import { useAgentCommands } from '@/hooks/useAgentCommands';
+import { useSlashCommandController } from '@/hooks/useSlashCommandController';
+import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
+import { SlashCommandInputTag } from '@/components/conversation/SlashCommandInputTag';
+import { parseCommittedSlashCommand } from '@/lib/slash-command';
+import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
 
 interface ConversationComposerProps {
   projectId: string;
@@ -101,6 +107,25 @@ export function ConversationComposer({
   const templates = workflowTemplates?.templates ?? [];
   const selectedWorkflowTemplateId = workflowTemplateId || runMode.workflowTemplateId || undefined;
   const showInterviewToggle = shouldShowInterviewToggle(runMode.mode, selectedWorkflowTemplateId);
+  const workspacePath = workspaces.find((workspace) => workspace.projectId === projectId)?.workspacePath;
+  const commandAgentType = isDirect
+    ? selectedDirectAgent
+    : isAuto && !isDynamicAuto
+      ? selectedAgent
+      : null;
+  const agentCommands = useAgentCommands(commandAgentType, workspacePath);
+  const slashCommands = useSlashCommandController({
+    input: content,
+    commands: agentCommands.commands,
+    contextKey: agentCommands.catalogKey,
+    onInputChange: setContent,
+  });
+  const committedSlashCommand = useMemo(
+    () => parseCommittedSlashCommand(content, agentCommands.commands),
+    [agentCommands.commands, content],
+  );
+  const visibleContent = committedSlashCommand?.suffix ?? content;
+  const committedInputLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand));
 
   useEffect(() => {
     const fallbackAgent = runMode.directConfig?.agentType
@@ -232,6 +257,7 @@ export function ConversationComposer({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (slashCommands.onKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>)) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void handleSubmit();
@@ -247,18 +273,39 @@ export function ConversationComposer({
       >
         {/* Main text input */}
         <div className="rounded-2xl border border-border/60 bg-card/60 p-4 shadow-sm transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10">
-          <textarea
-            className="w-full min-h-24 resize-none bg-transparent text-sm leading-6 text-foreground placeholder:text-muted-foreground outline-none"
-            placeholder={t('conversation.home.inputPlaceholder')}
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onPaste={(e) => { void extractPasteFiles(e); }}
-            onDragEnter={dropZoneHandlers.onDragEnter}
-            onDragOver={dropZoneHandlers.onDragOver}
-            onDrop={dropZoneHandlers.onDrop}
-            disabled={busy || submittingAttachments}
-          />
+          <SlashCommandMenu
+            open={slashCommands.isOpen}
+            commands={slashCommands.filteredCommands}
+            activeIndex={slashCommands.activeIndex}
+            onActiveIndexChange={slashCommands.setActiveIndex}
+            onDismiss={slashCommands.dismiss}
+            onSelect={(index) => { slashCommands.selectByIndex(index); }}
+            variant="inline"
+          >
+            <div className="relative min-h-24 min-w-0">
+              {committedSlashCommand ? (
+                <span ref={committedInputLayout.adornmentRef} className="absolute left-0 top-0 z-10 inline-flex">
+                  <SlashCommandInputTag
+                    prefix={committedSlashCommand.prefix}
+                    description={committedSlashCommand.command.description}
+                  />
+                </span>
+              ) : null}
+              <textarea
+                style={committedInputLayout.textareaStyle}
+                className="min-h-24 w-full resize-none bg-transparent p-0 text-sm leading-6 text-foreground placeholder:text-muted-foreground outline-none"
+                placeholder={t('conversation.home.inputPlaceholder')}
+                value={visibleContent}
+                onChange={(e) => setContent(`${committedSlashCommand?.prefix ?? ''}${e.target.value}`)}
+                onKeyDown={handleKeyDown}
+                onPaste={(e) => { void extractPasteFiles(e); }}
+                onDragEnter={dropZoneHandlers.onDragEnter}
+                onDragOver={dropZoneHandlers.onDragOver}
+                onDrop={dropZoneHandlers.onDrop}
+                disabled={busy || submittingAttachments}
+              />
+            </div>
+          </SlashCommandMenu>
           <span className="mt-1 text-xs text-muted-foreground">{t('acp.promptInputHint')}</span>
           <div
             data-slot="conversation-composer-toolbar"

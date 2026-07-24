@@ -110,6 +110,19 @@ export interface AcpModeVm {
   description?: string | null;
 }
 
+export interface AcpCommandItemVm {
+  name: string;
+  description: string;
+  inputHint?: string | null;
+}
+
+export interface AcpCommandCatalogVm {
+  agentType: string;
+  workspaceKey: string;
+  commands: AcpCommandItemVm[];
+  updatedAt: string;
+}
+
 export interface AcpUsageVm {
   used?: number | null;
   size?: number | null;

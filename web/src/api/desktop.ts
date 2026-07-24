@@ -50,6 +50,9 @@ export const desktopApi: RuntimeApi = {
   getAgentRegistry() {
     return invokeCommand('get_agent_registry');
   },
+  getAgentCommandCatalog(agentType: string, workspacePath: string) {
+    return invokeCommand('get_agent_command_catalog', { agentType, workspacePath });
+  },
   createAgent(agentType: string, input: ManagedAgentInput) {
     return invokeCommand('create_agent', { agentType, input });
   },

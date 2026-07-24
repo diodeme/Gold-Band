@@ -284,3 +284,11 @@ docs/gold-band/开发计划/acp接入/acp功能模块todo列表.md
 ## 9. 一句话总结
 
 > Gold Band ACP UI 应是一个 Dialog / Chat UI：用户通过 composer 输入，agent 输出以消息、thought block、tool card、plan block、permission dialog 和诊断视图呈现；UI 的唯一数据源是 ACP 统一事件，而不是 terminal/log 或 Claude Code legacy CLI 输出。
+
+### 斜杠命令验收固化
+
+- Rust：覆盖五类 Agent 的读写目录策略；Codex 同时读取 `.codex / .agents`，Claude 不读取 `.agents`；命令 payload 解析、ACP 优先去重、命名空间与 Unicode Skill 名、Skill 增删重扫和旧持久化目录迁移有单测；通知先于 route 注册时仍能按序送达。
+- Frontend：`/`、`/ckm:design` 可匹配，空格、英文逗号、中文逗号会关闭；过滤、插入文本、完整命令标签解析和键盘选中项滚动计算有纯函数单测。标签解析先消费最长合法命令 token，再判断后续分隔符，必须覆盖 `ckm:design-system`、`review.fix` 等包含 `- / . / :` 的命令，禁止回溯成较短标签。标签必须只识别当前 Agent 目录中的完整命令，保留原始大小写和分隔符，并与 textarea 首行使用一致的 `rem` 排版节奏和顶部基线；标签使用主题语义色适配明暗主题，摘要统一使用 shadcn Tooltip，不使用浏览器原生 `title`。删除分隔符或破坏命令后取消标签，再次补充分隔符后恢复。命令行的鼠标与键盘选中态必须统一使用 cmdk `data-selected`，以背景、内描边和左侧强调条保证可辨识；浅色主题采用低透明度 `primary` 蓝色，深色主题采用 `foreground` 叠层。共享菜单还需验证紧凑字号与 hint 标签层级、点击外部关闭、删除后重开，以及切换 Agent 时不展示旧目录快照。
+- 快速对话验收：命令列表以带圆角、不参与布局的覆盖层紧贴首行输入下方，打开时 composer 高度不变，左右边缘与主输入框对齐；关闭当前 `/query` 后切页返回保持关闭，输入变化后可重新触发，切换 Agent 后新 Agent 菜单重新打开。会话详情仍在 composer 上方显示浮层，浮层宽度使用 composer anchor 实际宽度并与其左右严格对齐。两处 composer 的命令标签显示一致，发送与持久化仍使用包含 `/${name}` 和分隔符的原始文本。标签宽度由共享 `ResizeObserver` hook 测量并只作用于 textarea 首行 `text-indent`，textarea 保持全宽，第二行及后续换行必须从输入区左边缘开始。
+- 键盘滚动验收：`CommandList` 是菜单唯一滚动容器并由组件直接持有 ref；连续按 ArrowDown/ArrowUp 越过当前可见范围时，该容器的 `scrollTop` 必须变化，选中项的实际矩形始终位于容器可见矩形内。测试和实现不得动态发现父级滚动节点，也不得使用跨父节点的 `offsetTop`。
+- 构建：`cargo check -p gold-band-desktop`、目标 Rust 单测、`npm run web:test -- --run web/tests/slash-command.test.ts`、`npm run web:build` 必须通过。

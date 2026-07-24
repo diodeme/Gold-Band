@@ -516,7 +516,9 @@ Gold Band 当前支持的 schema 格式 vs MCP 标准格式：
 - 非最后步骤：用户选择后 → 进入下一步
 - 最后步骤：用户选择后 → 调用 `onRespond(fullContent)` 提交完整答案
 - 进度指示器（可选 P3）
-- 答案逐步积累在内部 state 中（`answers: Record<string, unknown>`）
+- 已确认答案逐步积累在内部 state 中（`answers: Record<string, unknown>`），并作为每题提交与恢复显示的唯一事实源
+- 当前步骤的 `selectedValue` / `multiValues` / `customText` 仅是未确认草稿；返回旧步骤时必须从 `answers` 回填
+- 跳过历史步骤时原子删除主字段和 custom variant 字段；切换回预设选项时同步清理旧 custom variant，最终载荷不得包含陈旧答案
 
 ### P1 — 答案数据与历史展示分层 ✅ 已完成
 
@@ -570,6 +572,16 @@ elicitation 答案是结构化工具交互结果，不是新的用户 prompt。�
 
 检测 `requestedSchema.properties[].optional` 或 MCP `required` 数组，非必答问题提供"跳过"按钮。
 
+### P0 — 多步骤答案恢复与跳过撤回答案 ✅ 已完成（2026-07-24）
+
+**根因**：向导同时维护提交用 `answers` 与当前页控件状态，但步骤切换只清空控件状态，没有从 `answers` 恢复；跳过动作也只推进步骤，没有撤销该题已经确认的答案。两类问题均来源于同一状态模型缺陷。
+
+**收敛方案**：
+- 将 `answers` 定义为已确认答案的唯一事实源，步骤返回时通过统一 draft 映射恢复单选、多选与自定义输入。
+- 题目写入使用“先清理该题全部字段，再写入当前选择”的原子替换语义，避免预设选项与 custom variant 并存。
+- 跳过使用同一字段清理函数撤销主字段和 custom variant，最终提交只遍历清理后的答案集。
+- 单元测试固化“多选 A → 回答 B → 返回 A 仍显示选择”和“返回 A 后跳过 → 最终只提交 B”两条回归路径，并覆盖自定义答案切换为预设选项的陈旧字段清理。
+
 ---
 
 ## 优化总结
@@ -590,6 +602,7 @@ elicitation 答案是结构化工具交互结果，不是新的用户 prompt。�
 | ✅ 已完成 | 删除死代码 format_elicitation_answer | elicitation.rs | — |
 | ✅ 已完成 | 答案文本格式化改用 i18n 分隔符 | ElicitationCard.tsx (formatConfirmedChoice) + i18n.ts | 小 |
 | ✅ 已完成 | 深色主题问答选项选中态对比度增强，统一单选/多选语义与 `aria-pressed` | ElicitationCard.tsx | 小 |
+| ✅ 已完成 | 多步骤返回恢复已确认选择、跳过撤回答案、custom variant 原子替换 | ElicitationCard.tsx + ElicitationCard.test.ts | 小 |
 | P2 | 可配置超时时长 | elicitation.rs + config | 小 |
 | P3 | enum/enumNames 支持 | ElicitationCard.tsx + elicitation.rs | 小 |
 

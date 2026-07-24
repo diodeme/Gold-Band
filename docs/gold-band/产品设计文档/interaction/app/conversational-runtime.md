@@ -140,6 +140,8 @@ ACP 权限请求与 elicitation 提问都必须收敛到统一 intervention noti
 
 ACP elicitation 也复用同一条 session event / timeline 管道：`elicitationRequest` 与 `elicitationResponse` 虽然不直接作为普通消息卡片渲染，但必须保留在当前 session events 中，供 composer 底部的提问卡片推导 pending/answered 状态。已回答状态不能只依赖前端内存 Map，刷新或重进页面后必须能从 `elicitationResponse` 回放恢复。回答提交后交互卡片立即消失，不额外合成用户消息气泡；Agent 原生 `AskUserQuestion` 的 `toolCall/toolCallUpdate` 仍按普通工具卡片展示，并保留 completed 状态、关键参数和工具输出。
 
+多问题 ElicitationCard 的已确认答案必须作为卡片内唯一事实源，当前步骤的单选、多选和自定义输入只属于可丢弃草稿。步骤前进时把当前题答案按字段原子替换进答案集；返回历史步骤时从答案集恢复选中状态；用户对历史步骤执行“跳过”时，必须同时删除该题主字段与自定义伴随字段，最终 `content` 只从清理后的答案集构建。不得分别维护“界面选中值”和“提交答案”而缺少双向同步，也不得让已经跳过或已经被预设选项替换的旧自定义值进入提交载荷。
+
 ElicitationCard 属于高频表单卡片，不使用宽松的营销式留白。卡片本体、步骤指示器、题干、选项行和底部操作区应保持紧凑节奏：优先压缩上下 padding、控制项高度和区块间距，同时保留稳定点击面积与清晰层级，避免在会话消息流中形成过厚的大白块。
 
 ElicitationCard 的单选、多选必须共享同一套选中语义：使用 `accent` 高层 surface、`accent-foreground` 边界与实心勾选标记，并增加轻量内描边强化整行状态；实心标记内部的勾线固定使用 `background` 反色，不得使用可能带透明度的 `accent` surface 色，确保四套主题均可辨识。不得用中性深色 `primary` 同时承担选中背景、边框和图标，否则在石墨深色与终端黑中会失去可辨识度。选中按钮同时暴露 `aria-pressed`，视觉状态与可访问状态保持一致。

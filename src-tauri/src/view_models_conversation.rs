@@ -21,6 +21,7 @@ use gold_band::dsl::{
     EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
 };
 use gold_band::dynamic::DynamicGraphState;
+use gold_band::runtime::RunState;
 use gold_band::storage::{read_json, write_json};
 
 // ── Conversation View Models ──
@@ -342,6 +343,7 @@ pub struct ConversationSearchResultVm {
     pub title: String,
     pub description: Option<String>,
     pub requirement_preview: String,
+    pub match_preview: String,
     pub latest_run: Option<ConversationRunSummaryVm>,
     pub run_mode: String,
     pub agent_identity: Option<ConversationAgentIdentityVm>,
@@ -449,40 +451,17 @@ pub fn conversation_sidebar_vm_from_sources(
                     .map(|metadata| metadata.run_mode.clone())
                     .unwrap_or_else(|| "workflow".to_string());
 
-                let latest_run = summary.latest_run.as_ref().map(|run| {
-                    let resumable = is_run_continuable(run);
-                    ConversationRunSummaryVm {
-                        run_id: run.id.clone(),
-                        status: enum_label(&run.status),
-                        outcome: run.outcome.map(|o| enum_label(&o)),
-                        started_at: run.started_at.clone(),
-                        updated_at: run.updated_at.clone(),
-                        current_round: run.current_round.clone(),
-                        current_node: run.current_node.clone(),
-                        resumable,
-                    }
-                });
+                let latest_run = summary
+                    .latest_run
+                    .as_ref()
+                    .map(|run| conversation_run_summary_vm(run));
 
                 let runs: Vec<ConversationRunSummaryVm> = source
                     .app
                     .run_list(task_id)
                     .map(|run_list| {
-                        let mut vms: Vec<ConversationRunSummaryVm> = run_list
-                            .iter()
-                            .map(|run| {
-                                let resumable = is_run_continuable(run);
-                                ConversationRunSummaryVm {
-                                    run_id: run.id.clone(),
-                                    status: enum_label(&run.status),
-                                    outcome: run.outcome.map(|o| enum_label(&o)),
-                                    started_at: run.started_at.clone(),
-                                    updated_at: run.updated_at.clone(),
-                                    current_round: run.current_round.clone(),
-                                    current_node: run.current_node.clone(),
-                                    resumable,
-                                }
-                            })
-                            .collect();
+                        let mut vms: Vec<ConversationRunSummaryVm> =
+                            run_list.iter().map(conversation_run_summary_vm).collect();
                         vms.sort_by(|a, b| b.started_at.cmp(&a.started_at));
                         vms
                     })
@@ -572,6 +551,19 @@ fn enum_label<T: Serialize>(value: &T) -> String {
         Ok(serde_json::Value::String(label)) => label,
         Ok(value) => value.to_string(),
         Err(_) => "unknown".to_string(),
+    }
+}
+
+pub(crate) fn conversation_run_summary_vm(run: &RunState) -> ConversationRunSummaryVm {
+    ConversationRunSummaryVm {
+        run_id: run.id.clone(),
+        status: enum_label(&run.status),
+        outcome: run.outcome.map(|outcome| enum_label(&outcome)),
+        started_at: run.started_at.clone(),
+        updated_at: run.updated_at.clone(),
+        current_round: run.current_round.clone(),
+        current_node: run.current_node.clone(),
+        resumable: is_run_continuable(run),
     }
 }
 
@@ -4550,11 +4542,5 @@ pub fn update_task_metadata_vm(
     title: &str,
     description: Option<&str>,
 ) -> anyhow::Result<()> {
-    let mut task = app.task_show(task_id)?;
-    task.title = Some(title.to_string());
-    if let Some(desc) = description {
-        task.description = Some(desc.to_string());
-    }
-    gold_band::storage::write_json(&app.paths.task_file(task_id), &task)?;
-    Ok(())
+    app.update_task_metadata(task_id, title, description)
 }

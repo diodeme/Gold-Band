@@ -70,12 +70,12 @@ pub fn index_task_with_retry(task_dir: &Utf8Path, task_id: &str) {
     index.index_task_with_retry(task_dir, task_id);
 }
 
-pub fn delete_task(task_id: &str) {
+pub fn delete_task(task_dir: &Utf8Path) {
     let Some(index) = search_index() else {
         return;
     };
-    if let Err(error) = index.delete_task(task_id) {
-        warn!("sqlite delete_task failed for {}: {:#}", task_id, error);
+    if let Err(error) = index.delete_task(task_dir) {
+        warn!("sqlite delete_task failed for {}: {:#}", task_dir, error);
     }
 }
 
@@ -83,7 +83,7 @@ pub fn delete_task(task_id: &str) {
 
 const MAX_RETRIES: u32 = 3;
 const RETRY_DELAYS_MS: [u64; 3] = [200, 500, 1500];
-const SEARCH_INDEX_SCHEMA_VERSION: i32 = 1;
+const SEARCH_INDEX_SCHEMA_VERSION: i32 = 3;
 
 /// Best-effort SQLite search index for cross-session prompt/timeline retrieval.
 ///
@@ -119,9 +119,69 @@ impl SearchIndex {
 
         if schema_version != SEARCH_INDEX_SCHEMA_VERSION {
             warn!(
-                "sqlite session search index schema version mismatch (found {}, expected {}), rebuilding derived session index tables",
+                "sqlite search index schema version mismatch (found {}, expected {})",
                 schema_version, SEARCH_INDEX_SCHEMA_VERSION
             );
+        }
+
+        let mut task_schema_migrated = false;
+        let tasks_table_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tasks')",
+            [],
+            |row| row.get(0),
+        )?;
+        if tasks_table_exists {
+            let task_path_is_primary_key = {
+                let mut stmt = conn.prepare("PRAGMA table_info(tasks)")?;
+                let columns = stmt
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(1)?, row.get::<_, i32>(5)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                columns
+                    .iter()
+                    .any(|(name, primary_key)| name == "task_path" && *primary_key > 0)
+            };
+            if !task_path_is_primary_key {
+                task_schema_migrated = true;
+                let tx = conn.unchecked_transaction()?;
+                tx.execute_batch(
+                    "DROP TRIGGER IF EXISTS tasks_ai;
+                    DROP TRIGGER IF EXISTS tasks_ad;
+                    DROP TRIGGER IF EXISTS tasks_au;
+                    DROP TABLE IF EXISTS tasks_fts;
+                    ALTER TABLE tasks RENAME TO tasks_legacy;
+                    CREATE TABLE tasks (
+                        task_id      TEXT NOT NULL,
+                        task_path    TEXT NOT NULL PRIMARY KEY,
+                        title        TEXT NOT NULL DEFAULT '',
+                        description  TEXT NOT NULL DEFAULT '',
+                        requirement_text TEXT NOT NULL DEFAULT '',
+                        created_at   TEXT NOT NULL DEFAULT '',
+                        updated_at   TEXT NOT NULL DEFAULT ''
+                    );
+                    INSERT OR REPLACE INTO tasks (
+                        task_id, task_path, title, description, requirement_text, created_at, updated_at
+                    )
+                    SELECT task_id, task_path, title, description, requirement_text, created_at, updated_at
+                    FROM tasks_legacy;
+                    DROP TABLE tasks_legacy;",
+                )?;
+                tx.commit()?;
+            }
+        }
+
+        let rebuild_task_fts = tasks_table_exists && schema_version != SEARCH_INDEX_SCHEMA_VERSION;
+        if rebuild_task_fts && !task_schema_migrated {
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS tasks_ai;
+                DROP TRIGGER IF EXISTS tasks_ad;
+                DROP TRIGGER IF EXISTS tasks_au;
+                DROP TABLE IF EXISTS tasks_fts;",
+            )?;
+        }
+
+        if !matches!(schema_version, 1 | 2 | SEARCH_INDEX_SCHEMA_VERSION) {
             conn.execute_batch(
                 "DROP TRIGGER IF EXISTS session_prompts_ai;
                 DROP TRIGGER IF EXISTS session_prompts_ad;
@@ -134,8 +194,8 @@ impl SearchIndex {
 
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS tasks (
-                task_id      TEXT NOT NULL PRIMARY KEY,
-                task_path    TEXT NOT NULL,
+                task_id      TEXT NOT NULL,
+                task_path    TEXT NOT NULL PRIMARY KEY,
                 title        TEXT NOT NULL DEFAULT '',
                 description  TEXT NOT NULL DEFAULT '',
                 requirement_text TEXT NOT NULL DEFAULT '',
@@ -185,7 +245,14 @@ impl SearchIndex {
             END;
 
             CREATE VIRTUAL TABLE IF NOT EXISTS tasks_fts
-                USING fts5(title, description, requirement_text, content=tasks, content_rowid=rowid);
+                USING fts5(
+                    title,
+                    description,
+                    requirement_text,
+                    content=tasks,
+                    content_rowid=rowid,
+                    tokenize='trigram'
+                );
 
             CREATE TRIGGER IF NOT EXISTS tasks_ai AFTER INSERT ON tasks BEGIN
                 INSERT INTO tasks_fts(rowid, title, description, requirement_text)
@@ -202,6 +269,9 @@ impl SearchIndex {
                 VALUES (new.rowid, new.title, new.description, new.requirement_text);
             END;",
         )?;
+        if task_schema_migrated || rebuild_task_fts {
+            conn.execute("INSERT INTO tasks_fts(tasks_fts) VALUES('rebuild')", [])?;
+        }
         conn.execute_batch(&format!(
             "PRAGMA user_version = {};",
             SEARCH_INDEX_SCHEMA_VERSION
@@ -540,7 +610,8 @@ impl SearchIndex {
         conn.execute(
             "INSERT INTO tasks (task_id, task_path, title, description, requirement_text, created_at, updated_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7)
-             ON CONFLICT(task_id) DO UPDATE SET
+             ON CONFLICT(task_path) DO UPDATE SET
+                task_id=excluded.task_id,
                 title=excluded.title,
                 description=excluded.description,
                 requirement_text=excluded.requirement_text,
@@ -552,12 +623,24 @@ impl SearchIndex {
 
     // ── task search ────────────────────────────────────────────
 
-    pub fn delete_task(&self, task_id: &str) -> Result<(), rusqlite::Error> {
+    pub fn delete_task(&self, task_dir: &Utf8Path) -> Result<(), rusqlite::Error> {
+        let task_path = task_dir.to_string();
         let conn = self.conn.lock().expect("search index lock poisoned");
         let tx = conn.unchecked_transaction()?;
-        tx.execute("DELETE FROM session_prompts WHERE attempt_path IN (SELECT attempt_path FROM sessions WHERE task_id = ?1)", params![task_id])?;
-        tx.execute("DELETE FROM sessions WHERE task_id = ?1", params![task_id])?;
-        tx.execute("DELETE FROM tasks WHERE task_id = ?1", params![task_id])?;
+        tx.execute(
+            "DELETE FROM session_prompts WHERE attempt_path IN (
+                SELECT attempt_path FROM sessions WHERE attempt_path LIKE (?1 || '%')
+            )",
+            params![&task_path],
+        )?;
+        tx.execute(
+            "DELETE FROM sessions WHERE attempt_path LIKE (?1 || '%')",
+            params![&task_path],
+        )?;
+        tx.execute(
+            "DELETE FROM tasks WHERE task_path = ?1",
+            params![&task_path],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -567,27 +650,141 @@ impl SearchIndex {
         query: &str,
         limit: usize,
     ) -> Result<Vec<TaskSearchResult>, rusqlite::Error> {
-        let conn = self.conn.lock().expect("search index lock poisoned");
+        self.search_tasks_with_scope(query, None, limit)
+    }
+
+    /// Search tasks whose indexed path belongs to one of the supplied task roots.
+    ///
+    /// Scope filtering is part of the SQL query so out-of-scope rows cannot consume
+    /// the result limit before callers assemble workspace-specific view models.
+    pub fn search_tasks_in_task_roots(
+        &self,
+        query: &str,
+        task_roots: &[String],
+        limit: usize,
+    ) -> Result<Vec<TaskSearchResult>, rusqlite::Error> {
+        if task_roots.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.search_tasks_with_scope(query, Some(task_roots), limit)
+    }
+
+    fn search_tasks_with_scope(
+        &self,
+        query: &str,
+        task_roots: Option<&[String]>,
+        limit: usize,
+    ) -> Result<Vec<TaskSearchResult>, rusqlite::Error> {
         let normalized = normalize_for_search(query);
-        let mut stmt = conn.prepare(
+        let terms = normalized.split_whitespace().collect::<Vec<_>>();
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let conn = self.conn.lock().expect("search index lock poisoned");
+        let use_trigram = terms.iter().all(|term| term.chars().count() >= 3);
+        let task_path_prefixes = task_roots
+            .unwrap_or_default()
+            .iter()
+            .map(|root| {
+                let root = root.trim_end_matches(['/', '\\']);
+                format!("{root}{}", std::path::MAIN_SEPARATOR)
+            })
+            .collect::<Vec<_>>();
+        let query_parameter_count = if use_trigram { 1 } else { terms.len() };
+        let scope_sql = task_path_prefixes
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                let parameter = query_parameter_count + index + 1;
+                if cfg!(windows) {
+                    format!(
+                        "substr(t.task_path, 1, length(?{parameter})) = ?{parameter} COLLATE NOCASE"
+                    )
+                } else {
+                    format!("substr(t.task_path, 1, length(?{parameter})) = ?{parameter}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let scope_clause = if scope_sql.is_empty() {
+            String::new()
+        } else {
+            format!(" AND ({scope_sql})")
+        };
+        let limit_parameter = query_parameter_count + task_path_prefixes.len() + 1;
+        let (from_and_match, order_by) = if use_trigram {
+            (
+                "FROM tasks_fts fts
+                 JOIN tasks t ON fts.rowid = t.rowid
+                 WHERE tasks_fts MATCH ?1"
+                    .to_string(),
+                "ORDER BY bm25(tasks_fts, 10.0, 3.0, 1.0)".to_string(),
+            )
+        } else {
+            let term_clauses = terms
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    let parameter = index + 1;
+                    format!(
+                        "(instr(lower(t.title), ?{parameter}) > 0
+                          OR instr(lower(t.description), ?{parameter}) > 0
+                          OR instr(lower(t.requirement_text), ?{parameter}) > 0)"
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" AND ");
+            (
+                format!("FROM tasks t WHERE {term_clauses}"),
+                "ORDER BY CASE
+                    WHEN instr(lower(t.title), ?1) > 0 THEN 0
+                    WHEN instr(lower(t.description), ?1) > 0 THEN 1
+                    ELSE 2
+                 END,
+                 t.rowid DESC"
+                    .to_string(),
+            )
+        };
+        let sql = format!(
             "SELECT t.task_id, t.task_path, t.title, t.description,
-                    substr(t.requirement_text, 1, 500)
-             FROM tasks_fts fts
-             JOIN tasks t ON fts.rowid = t.rowid
-             WHERE tasks_fts MATCH ?1
-             ORDER BY rank
-             LIMIT ?2",
-        )?;
-        let rows = stmt.query_map(params![normalized, limit as i64], |row| {
-            Ok(TaskSearchResult {
+                    substr(t.requirement_text, 1, 500),
+                    t.requirement_text
+             {from_and_match}
+             {scope_clause}
+             {order_by}
+             LIMIT ?{limit_parameter}"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        if use_trigram {
+            stmt.raw_bind_parameter(1, compile_literal_fts_query(&terms))?;
+        } else {
+            for (index, term) in terms.iter().enumerate() {
+                stmt.raw_bind_parameter(index + 1, term)?;
+            }
+        }
+        for (index, prefix) in task_path_prefixes.iter().enumerate() {
+            stmt.raw_bind_parameter(query_parameter_count + index + 1, prefix)?;
+        }
+        stmt.raw_bind_parameter(limit_parameter, limit as i64)?;
+
+        let mut rows = stmt.raw_query();
+        let mut results = Vec::new();
+        while let Some(row) = rows.next()? {
+            let title: String = row.get(2)?;
+            let description: String = row.get(3)?;
+            let requirement_text: String = row.get(5)?;
+            results.push(TaskSearchResult {
                 task_id: row.get(0)?,
                 task_path: row.get(1)?,
-                title: row.get(2)?,
-                description: row.get(3)?,
+                match_preview: task_match_preview(&title, &description, &requirement_text, &terms),
+                title,
+                description,
                 requirement_preview: row.get(4)?,
-            })
-        })?;
-        rows.collect()
+            });
+        }
+        Ok(results)
     }
 
     // ── session search ─────────────────────────────────────────
@@ -669,6 +866,66 @@ fn normalize_for_search(text: &str) -> String {
     out.trim().to_string()
 }
 
+fn compile_literal_fts_query(terms: &[&str]) -> String {
+    terms
+        .iter()
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" AND ")
+}
+
+fn task_match_preview(
+    title: &str,
+    description: &str,
+    requirement_text: &str,
+    terms: &[&str],
+) -> String {
+    let compact_title = compact_search_preview(title);
+    let compact_description = compact_search_preview(description);
+    let compact_requirement = compact_search_preview(requirement_text);
+    for term in terms {
+        for candidate in [&compact_title, &compact_description, &compact_requirement] {
+            if let Some(preview) = excerpt_around_search_term(candidate, term) {
+                return preview;
+            }
+        }
+    }
+    compact_requirement.chars().take(96).collect::<String>()
+}
+
+fn compact_search_preview(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn excerpt_around_search_term(text: &str, term: &str) -> Option<String> {
+    const CONTEXT_BEFORE_CHARS: usize = 10;
+    const MAX_PREVIEW_CHARS: usize = 96;
+
+    let normalized_text = text.to_lowercase();
+    let normalized_term = term.to_lowercase();
+    let match_byte = normalized_text.find(&normalized_term)?;
+    let match_start = normalized_text[..match_byte].chars().count();
+    let match_length = normalized_term.chars().count();
+    let chars = text.chars().collect::<Vec<_>>();
+    if chars.len() <= MAX_PREVIEW_CHARS {
+        return Some(text.to_string());
+    }
+    let start = match_start.saturating_sub(CONTEXT_BEFORE_CHARS);
+    let minimum_end = match_start.saturating_add(match_length);
+    let end = start
+        .saturating_add(MAX_PREVIEW_CHARS)
+        .max(minimum_end)
+        .min(chars.len());
+    let mut preview = chars[start..end].iter().collect::<String>();
+    if start > 0 {
+        preview.insert(0, '…');
+    }
+    if end < chars.len() {
+        preview.push('…');
+    }
+    Some(preview)
+}
+
 // ── search result types ─────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -699,6 +956,8 @@ pub struct TaskSearchResult {
     pub description: String,
     /// First 500 chars of requirement content for search result preview
     pub requirement_preview: String,
+    /// Context excerpt selected from the field that matched the current query.
+    pub match_preview: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -762,6 +1021,15 @@ mod tests {
             .unwrap();
         assert_eq!(schema_version, SEARCH_INDEX_SCHEMA_VERSION);
 
+        let task_fts_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(task_fts_sql.contains("tokenize='trigram'"));
+
         let mut stmt = conn.prepare("PRAGMA table_info(session_prompts)").unwrap();
         let column_names = stmt
             .query_map([], |row| row.get::<_, String>(1))
@@ -771,6 +1039,20 @@ mod tests {
 
         assert!(column_names.iter().any(|name| name == "attempt_path"));
 
+        let mut task_stmt = conn.prepare("PRAGMA table_info(tasks)").unwrap();
+        let task_columns = task_stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, i32>(5)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            task_columns
+                .iter()
+                .any(|(name, primary_key)| name == "task_path" && *primary_key > 0)
+        );
+
         let task_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM tasks WHERE task_id = 'task-1'",
@@ -779,5 +1061,213 @@ mod tests {
             )
             .unwrap();
         assert_eq!(task_count, 1);
+        drop(stmt);
+        drop(task_stmt);
+        drop(conn);
+        let migrated_results = index.search_tasks("Task", 10).unwrap();
+        assert_eq!(migrated_results.len(), 1);
+        assert_eq!(migrated_results[0].task_id, "task-1");
+    }
+
+    #[test]
+    fn task_index_identity_is_workspace_path_not_local_task_id() {
+        let dir = tempdir().unwrap();
+        let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+        let index = SearchIndex::open(&db_path).unwrap();
+        let task_a = camino::Utf8PathBuf::from_path_buf(
+            dir.path()
+                .join("projects")
+                .join("a")
+                .join("tasks")
+                .join("task-001"),
+        )
+        .unwrap();
+        let task_b = camino::Utf8PathBuf::from_path_buf(
+            dir.path()
+                .join("projects")
+                .join("b")
+                .join("tasks")
+                .join("task-001"),
+        )
+        .unwrap();
+        for (task_dir, title) in [(&task_a, "Shared Alpha"), (&task_b, "Shared Beta")] {
+            std::fs::create_dir_all(task_dir.join("authoring").as_std_path()).unwrap();
+            crate::storage::write_json(
+                &task_dir.join("task.json"),
+                &TaskState {
+                    version: crate::domain::VERSION.to_string(),
+                    id: "task-001".to_string(),
+                    title: Some(title.to_string()),
+                    description: None,
+                    uuid: None,
+                },
+            )
+            .unwrap();
+            std::fs::write(
+                task_dir
+                    .join("authoring")
+                    .join("requirement.md")
+                    .as_std_path(),
+                "shared requirement",
+            )
+            .unwrap();
+            index.index_task(task_dir, "task-001").unwrap();
+        }
+
+        let results = index.search_tasks("shared", 10).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_ne!(results[0].task_path, results[1].task_path);
+
+        index.delete_task(&task_a).unwrap();
+        let remaining = index.search_tasks("shared", 10).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].task_path, task_b.as_str());
+    }
+
+    #[test]
+    fn scoped_task_search_filters_workspaces_before_applying_limit() {
+        let dir = tempdir().unwrap();
+        let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+        let index = SearchIndex::open(&db_path).unwrap();
+        let projects_dir = camino::Utf8PathBuf::from_path_buf(dir.path().join("projects")).unwrap();
+        let excluded_tasks = projects_dir.join("excluded").join("tasks");
+        let included_tasks = projects_dir.join("included").join("tasks");
+
+        for number in 1..=3 {
+            let task_dir = excluded_tasks.join(format!("task-{number:03}"));
+            std::fs::create_dir_all(task_dir.join("authoring").as_std_path()).unwrap();
+            crate::storage::write_json(
+                &task_dir.join("task.json"),
+                &TaskState {
+                    version: crate::domain::VERSION.to_string(),
+                    id: format!("task-{number:03}"),
+                    title: Some("Needle".to_string()),
+                    description: None,
+                    uuid: None,
+                },
+            )
+            .unwrap();
+            index
+                .index_task(&task_dir, &format!("task-{number:03}"))
+                .unwrap();
+        }
+
+        let included_task = included_tasks.join("task-001");
+        std::fs::create_dir_all(included_task.join("authoring").as_std_path()).unwrap();
+        crate::storage::write_json(
+            &included_task.join("task.json"),
+            &TaskState {
+                version: crate::domain::VERSION.to_string(),
+                id: "task-001".to_string(),
+                title: Some("Needle in sidebar workspace".to_string()),
+                description: None,
+                uuid: None,
+            },
+        )
+        .unwrap();
+        index.index_task(&included_task, "task-001").unwrap();
+
+        let results = index
+            .search_tasks_in_task_roots("needle", &[included_tasks.to_string()], 1)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].task_path, included_task.as_str());
+    }
+
+    #[test]
+    fn task_search_supports_cjk_short_queries_and_mixed_script_substrings() {
+        let dir = tempdir().unwrap();
+        let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+        let index = SearchIndex::open(&db_path).unwrap();
+        let tasks_dir = camino::Utf8PathBuf::from_path_buf(dir.path().join("tasks")).unwrap();
+        let mixed_task = tasks_dir.join("task-001");
+        std::fs::create_dir_all(mixed_task.join("authoring").as_std_path()).unwrap();
+        crate::storage::write_json(
+            &mixed_task.join("task.json"),
+            &TaskState {
+                version: crate::domain::VERSION.to_string(),
+                id: "task-001".to_string(),
+                title: Some("随便用askUserQuestion".to_string()),
+                description: None,
+                uuid: None,
+            },
+        )
+        .unwrap();
+        std::fs::write(
+            mixed_task
+                .join("authoring")
+                .join("requirement.md")
+                .as_std_path(),
+            "随便用askUserQuestion工具问我几个问题",
+        )
+        .unwrap();
+        index.index_task(&mixed_task, "task-001").unwrap();
+
+        let hello_task = tasks_dir.join("task-002");
+        std::fs::create_dir_all(hello_task.join("authoring").as_std_path()).unwrap();
+        crate::storage::write_json(
+            &hello_task.join("task.json"),
+            &TaskState {
+                version: crate::domain::VERSION.to_string(),
+                id: "task-002".to_string(),
+                title: Some("你好".to_string()),
+                description: None,
+                uuid: None,
+            },
+        )
+        .unwrap();
+        index.index_task(&hello_task, "task-002").unwrap();
+
+        for query in ["随便", "askUser", "工具问"] {
+            let results = index
+                .search_tasks_in_task_roots(query, &[tasks_dir.to_string()], 10)
+                .unwrap();
+            assert_eq!(results.len(), 1, "query={query}");
+            assert_eq!(results[0].task_path, mixed_task.as_str(), "query={query}");
+            assert!(
+                results[0]
+                    .match_preview
+                    .to_lowercase()
+                    .contains(&query.to_lowercase()),
+                "query={query}, preview={}",
+                results[0].match_preview
+            );
+            let preview_lower = results[0].match_preview.to_lowercase();
+            let query_lower = query.to_lowercase();
+            let match_byte = preview_lower.find(&query_lower).unwrap();
+            assert!(
+                preview_lower[..match_byte].chars().count() <= 32,
+                "query={query}, preview={}",
+                results[0].match_preview
+            );
+        }
+
+        let hello_results = index
+            .search_tasks_in_task_roots("你好", &[tasks_dir.to_string()], 10)
+            .unwrap();
+        assert_eq!(hello_results.len(), 1);
+        assert_eq!(hello_results[0].task_path, hello_task.as_str());
+        assert_eq!(hello_results[0].match_preview, "你好");
+
+        let issue_results = index
+            .search_tasks_in_task_roots("问题", &[tasks_dir.to_string()], 10)
+            .unwrap();
+        assert_eq!(issue_results.len(), 1);
+        assert_eq!(
+            issue_results[0].match_preview,
+            "随便用askUserQuestion工具问我几个问题"
+        );
+    }
+
+    #[test]
+    fn long_match_preview_keeps_the_keyword_near_the_front() {
+        let text = format!("{}关键词{}", "前置内容".repeat(30), "后置内容".repeat(30));
+        let preview = excerpt_around_search_term(&text, "关键词").unwrap();
+        let match_byte = preview.find("关键词").unwrap();
+
+        assert!(preview.starts_with('…'));
+        assert!(preview[..match_byte].chars().count() <= 11);
+        assert!(preview.ends_with('…'));
     }
 }

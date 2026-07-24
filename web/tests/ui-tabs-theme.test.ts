@@ -14,6 +14,22 @@ describe('themed tabs surface', () => {
     );
     expect(source).not.toContain('default: "bg-muted"');
     expect(source).toContain('line: "gap-1 bg-transparent"');
+    expect(source).toContain('bare: "gap-1 bg-transparent p-0 ring-0"');
     expect(source).toContain('data-[state=active]:bg-background');
+  });
+
+  it('uses the bare variant when tab pills or their container own the boundary', () => {
+    const composer = readFileSync(
+      path.resolve(__dirname, '../src/components/conversation/ConversationComposer.tsx'),
+      'utf8',
+    );
+    const roundDetail = readFileSync(
+      path.resolve(__dirname, '../src/pages/RoundDetailPage.tsx'),
+      'utf8',
+    );
+
+    expect(composer).toContain('<TabsList variant="bare" className="h-10">');
+    expect(roundDetail).toContain('<TabsList variant="bare" className="h-8 w-fit rounded-full border bg-background/70 p-1 shadow-sm">');
+    expect(composer).not.toContain('TabsList className="h-10 gap-1 bg-transparent p-0"');
   });
 });

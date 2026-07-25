@@ -57,6 +57,7 @@
 - 类型：number
 - 含义：第几轮 round
 - `round-001` 对应 `index = 1`
+- 新 round 的 `id` 必须直接由当前 `RoundState.index + 1` 格式化生成；runtime 状态是编号事实源，不扫描 rounds 目录推导另一套编号。
 
 ### `status`
 - 类型：string

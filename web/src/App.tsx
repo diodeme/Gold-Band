@@ -434,48 +434,6 @@ export function App() {
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
     let active = true;
-    let refreshInFlight = false;
-    let refreshPending = false;
-    let unlisten: (() => void) | undefined;
-
-    const refreshAgentRegistry = async () => {
-      if (refreshInFlight) {
-        refreshPending = true;
-        return;
-      }
-      refreshInFlight = true;
-      try {
-        const next = await getAgentRegistry();
-        if (active) setAgentRegistry(next);
-      } catch {
-        // Background diagnostics are best-effort; manual refresh still surfaces errors.
-      } finally {
-        refreshInFlight = false;
-        if (active && refreshPending) {
-          refreshPending = false;
-          void refreshAgentRegistry();
-        }
-      }
-    };
-
-    void listen('gold-band://agent-registry-updated', () => {
-      if (active) void refreshAgentRegistry();
-    }).then((dispose) => {
-      if (active) {
-        unlisten = dispose;
-      } else {
-        dispose();
-      }
-    });
-    return () => {
-      active = false;
-      unlisten?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isTauriRuntime()) return undefined;
-    let active = true;
     const appWindow = getCurrentWindow();
     const convPage = conversationPage.kind === 'conversation-run' ? conversationPage : null;
     const sync = async () => {
@@ -752,6 +710,48 @@ export function App() {
       stopListeningRun?.();
     };
   }, [applyConversationRunSnapshot, applyConversationSidebar, bootstrap, uiMode, conversationPage]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return undefined;
+    let active = true;
+    let refreshInFlight = false;
+    let refreshPending = false;
+    let unlisten: (() => void) | undefined;
+
+    const refreshAgentRegistry = async () => {
+      if (refreshInFlight) {
+        refreshPending = true;
+        return;
+      }
+      refreshInFlight = true;
+      try {
+        const next = await getAgentRegistry();
+        if (active) setAgentRegistry(next);
+      } catch {
+        // The periodic/background diagnostic remains best-effort; manual refresh still surfaces errors.
+      } finally {
+        refreshInFlight = false;
+        if (active && refreshPending) {
+          refreshPending = false;
+          void refreshAgentRegistry();
+        }
+      }
+    };
+
+    void listen('gold-band://agent-commands-updated', () => {
+      if (active) void refreshAgentRegistry();
+    }).then((dispose) => {
+      if (active) {
+        unlisten = dispose;
+      } else {
+        dispose();
+      }
+    });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;

@@ -941,6 +941,7 @@ mod tests {
     #[test]
     fn state_config_roundtrips_json() {
         let state = StateConfig {
+            state_schema_version: 1,
             desktop_update_badges: DesktopUpdateBadgeState {
                 settings_entry_seen_version: Some("1.2.3".to_string()),
                 settings_advanced_seen_version: Some("1.2.3".to_string()),
@@ -957,6 +958,8 @@ mod tests {
         };
         let json = serde_json::to_string_pretty(&state).unwrap();
         let roundtripped: StateConfig = serde_json::from_str(&json).unwrap();
+        assert!(json.contains("\"stateSchemaVersion\": 1"));
+        assert_eq!(roundtripped.state_schema_version, 1);
         assert_eq!(
             roundtripped
                 .desktop_update_badges
@@ -975,6 +978,15 @@ mod tests {
             roundtripped.recent_desktop_workspaces,
             vec!["/path/a", "/path/b"]
         );
+    }
+
+    #[test]
+    fn state_config_defaults_legacy_schema_version_and_omits_zero() {
+        let legacy: StateConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.state_schema_version, 0);
+
+        let json = serde_json::to_value(StateConfig::default()).unwrap();
+        assert!(json.get("stateSchemaVersion").is_none());
     }
 
     #[test]

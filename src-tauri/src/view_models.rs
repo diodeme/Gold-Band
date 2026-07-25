@@ -7993,25 +7993,29 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gb-tl-elapsed-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-        let path = write_timeline_file(
-            &db,
-            "acp.timeline.jsonl",
-            &[
-                gold_band_prompt_at(1_782_903_916),
-                text_event_at(1_782_903_917),
-                metadata_update_at("modeUpdate", "current_mode_update", 1_782_904_743),
-                gold_band_prompt_at(1_782_904_743),
-                text_event_at(1_782_904_746),
-                metadata_update_at(
-                    "availableCommands",
-                    "available_commands_update",
-                    1_782_905_348,
-                ),
-                metadata_update_at("modeUpdate", "current_mode_update", 1_782_905_348),
-                gold_band_prompt_at(1_782_905_348),
-                text_event_at(1_782_905_355),
-            ],
-        );
+        let events = [
+            gold_band_prompt_at(1_782_903_916),
+            text_event_at(1_782_903_917),
+            metadata_update_at("modeUpdate", "current_mode_update", 1_782_904_743),
+            gold_band_prompt_at(1_782_904_743),
+            text_event_at(1_782_904_746),
+            metadata_update_at(
+                "availableCommands",
+                "available_commands_update",
+                1_782_905_348,
+            ),
+            metadata_update_at("modeUpdate", "current_mode_update", 1_782_905_348),
+            gold_band_prompt_at(1_782_905_348),
+            text_event_at(1_782_905_355),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut event)| {
+            event.seq = index as u64 + 1;
+            event
+        })
+        .collect::<Vec<_>>();
+        let path = write_timeline_file(&db, "acp.timeline.jsonl", &events);
 
         let (_, _, elapsed, _, _, _) = parse_timeline_file(&path, false).unwrap();
 

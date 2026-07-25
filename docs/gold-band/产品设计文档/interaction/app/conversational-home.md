@@ -118,6 +118,7 @@
 - `conversationWorkspaces` 是会话模式工作空间列表的唯一事实源；侧边栏、搜索、运行模式、置顶和会话命令都只能解析该列表中的工作空间。`DesktopContext.repo_root` 仅用于桌面启动上下文和构造指定工作空间的 `App.paths.repo_root`，不得作为隐式工作空间注入侧边栏。
 - 工作空间身份由规范路径生成 `projectId`，Windows 下解析历史 ID 时忽略盘符/路径大小写；持久化迁移按规范化路径去重，并同步迁移 `lastConversationWorkspace`、`conversationRunModes` 和 `conversationPins`。若旧状态同时存在规范 key 与历史大小写 key，规范 key 的配置优先。
 - 用户状态使用 `stateSchemaVersion` 执行一次性迁移；达到当前版本后启动直接跳过迁移扫描和写盘。迁移函数同时保持幂等，重复调用不得继续改变状态。
+- `stateSchemaVersion` 是共享 `StateConfig` 数据契约的一部分，按 camelCase 持久化；历史 `state.json` 缺失该字段时反序列化为 `0`，零值不额外写盘。桌面迁移模块不得声明或维护第二份影子版本字段。
 - 置顶区内的工作空间名与工作空间区标题保持同一套小号全大写字重与字距规则，避免同层级标题视觉不一致
 - 置顶标题、置顶区工作空间标题和工作空间区标题的文字起点与会话行标题列对齐；层级主要通过 chevron 和字重表达，不再额外增加标题左缩进
 - 工作空间标题行与“添加工作空间”入口之间保持紧凑连续关系，添加入口更像工作空间区内的末尾动作，而不是远离分组的独立按钮

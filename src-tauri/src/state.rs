@@ -1,10 +1,14 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
+    str::FromStr,
     sync::{Arc, Mutex, MutexGuard},
 };
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
+use gold_band::acp::commands::{
+    AcpCommandCatalog, AcpCommandItem, catalog_key, merge_native_skill_commands, workspace_key,
+};
 use gold_band::acp::events::current_timestamp;
 use gold_band::app::observability::RuntimeLifecycleBus;
 use gold_band::app::{App, NotificationDedup};
@@ -174,6 +178,7 @@ pub struct DesktopState {
     agent_diagnostic_run_lock: Mutex<()>,
     agent_config_diagnostic_commit_lock: Mutex<()>,
     scheduled_agent_diagnostics: Mutex<BTreeMap<ManagedAgentType, u64>>,
+    agent_command_catalogs: Mutex<BTreeMap<String, AcpCommandCatalog>>,
     update_status: Mutex<UpdateStatusVm>,
     pending_critical_update: Mutex<Option<Utf8PathBuf>>,
     notification_attention: Mutex<NotificationAttentionState>,
@@ -187,6 +192,7 @@ pub struct DesktopState {
 impl DesktopState {
     pub fn new(context: DesktopContext) -> Self {
         let persisted_diagnostics = load_persisted_agent_diagnostics(&context);
+        let persisted_command_catalogs = load_persisted_agent_command_catalogs(&context);
         let updater_last_checked_at = context.config.desktop_updater_last_checked_at.clone();
         Self {
             context: Mutex::new(context),
@@ -194,6 +200,7 @@ impl DesktopState {
             agent_diagnostic_run_lock: Mutex::new(()),
             agent_config_diagnostic_commit_lock: Mutex::new(()),
             scheduled_agent_diagnostics: Mutex::new(BTreeMap::new()),
+            agent_command_catalogs: Mutex::new(persisted_command_catalogs),
             update_status: Mutex::new(initial_update_status(updater_last_checked_at)),
             pending_critical_update: Mutex::new(None),
             notification_attention: Mutex::new(NotificationAttentionState::default()),
@@ -442,7 +449,20 @@ impl DesktopState {
             diagnostics.retain(|agent_type, _| managed_agent_types.contains(agent_type));
             diagnostics.clone()
         };
-        self.persist_agent_diagnostics(&snapshot)
+        self.persist_agent_diagnostics(&snapshot)?;
+        let catalogs = {
+            let mut catalogs = self
+                .agent_command_catalogs
+                .lock()
+                .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+            catalogs.retain(|_, catalog| {
+                ManagedAgentType::from_str(&catalog.agent_type)
+                    .ok()
+                    .is_some_and(|agent_type| managed_agent_types.contains(&agent_type))
+            });
+            catalogs.clone()
+        };
+        self.persist_agent_command_catalogs(&catalogs)
     }
 
     pub fn cleanup_agent_diagnostic_processes(&self) -> Result<()> {
@@ -544,12 +564,15 @@ impl DesktopState {
     ) -> Result<AgentDiagnosticState> {
         let expected_config = self.managed_agent_config_revision(agent_type)?;
         let app = self.app()?;
-        let doctor = app.provider_doctor(agent_type.as_str())?;
+        let probe = app.provider_doctor_probe(agent_type.as_str())?;
         let _commit_guard = self.agent_config_diagnostic_commit_guard()?;
         if self.managed_agent_config_revision(agent_type)? != expected_config {
             anyhow::bail!("agent configuration changed during diagnostic");
         }
-        let diagnostic = diagnostic_state_from_result(doctor);
+        if probe.doctor.available {
+            self.record_agent_commands(agent_type, &app.paths.repo_root, probe.commands.clone())?;
+        }
+        let diagnostic = diagnostic_state_from_result(probe.doctor);
         let snapshot = {
             let mut diagnostics = self
                 .agent_diagnostics
@@ -572,7 +595,7 @@ impl DesktopState {
             .map_err(|_| anyhow::anyhow!("agent diagnostic schedule lock poisoned"))?
             .keys()
             .copied()
-            .collect::<std::collections::BTreeSet<_>>();
+            .collect::<BTreeSet<_>>();
         for agent_type in agent_types {
             if scheduled.contains(&agent_type) {
                 continue;
@@ -602,6 +625,172 @@ impl DesktopState {
             .map(serde_json::to_vec)
             .transpose()
             .map_err(Into::into)
+    }
+
+    pub fn agent_command_catalog(
+        &self,
+        agent_type: ManagedAgentType,
+        workspace: &Utf8Path,
+    ) -> Result<Option<AcpCommandCatalog>> {
+        let workspace_key = workspace_key(workspace);
+        let key = catalog_key(agent_type.as_str(), &workspace_key);
+        let policy = self
+            .context()?
+            .config
+            .agents
+            .get(&agent_type)
+            .map(|config| config.skill_directory_policy(agent_type));
+        let (catalog, catalogs_to_persist) = {
+            let mut catalogs = self
+                .agent_command_catalogs
+                .lock()
+                .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+            let Some(mut catalog) = catalogs.get(&key).cloned() else {
+                return Ok(None);
+            };
+            let mut changed = false;
+            if let Some(policy) = policy {
+                // 旧目录文件没有 acp_commands，只能暂用旧 commands 迁移；下一次 Doctor
+                // 会写入 Some(...)，之后所有扫描都从原始 ACP 列表开始，Skill 删除不会残留。
+                let raw_commands = catalog
+                    .acp_commands
+                    .as_ref()
+                    .unwrap_or(&catalog.commands)
+                    .clone();
+                let commands = merge_native_skill_commands(&policy, workspace, raw_commands);
+                if commands != catalog.commands {
+                    catalog.commands = commands;
+                    catalog.updated_at = current_timestamp();
+                    catalogs.insert(key, catalog.clone());
+                    changed = true;
+                }
+            }
+            let snapshot = changed.then(|| catalogs.clone());
+            (catalog, snapshot)
+        };
+        if let Some(catalogs) = catalogs_to_persist {
+            self.persist_agent_command_catalogs(&catalogs)?;
+        }
+        Ok(Some(catalog))
+    }
+
+    pub fn record_agent_commands(
+        &self,
+        agent_type: ManagedAgentType,
+        workspace: &Utf8Path,
+        commands: Vec<AcpCommandItem>,
+    ) -> Result<AcpCommandCatalog> {
+        let acp_commands = commands;
+        let commands = self
+            .context()?
+            .config
+            .agents
+            .get(&agent_type)
+            .map(|config| {
+                merge_native_skill_commands(
+                    &config.skill_directory_policy(agent_type),
+                    workspace,
+                    acp_commands.clone(),
+                )
+            })
+            .unwrap_or_else(|| acp_commands.clone());
+        let workspace_key = workspace_key(workspace);
+        let catalog = AcpCommandCatalog {
+            agent_type: agent_type.as_str().to_string(),
+            workspace_key: workspace_key.clone(),
+            acp_commands: Some(acp_commands),
+            commands,
+            updated_at: current_timestamp(),
+        };
+        let mut catalogs = self
+            .agent_command_catalogs
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?;
+        catalogs.insert(
+            catalog_key(agent_type.as_str(), &workspace_key),
+            catalog.clone(),
+        );
+        while catalogs.len() > 256 {
+            let oldest = catalogs
+                .iter()
+                .min_by_key(|(_, catalog)| catalog.updated_at.as_str())
+                .map(|(key, _)| key.clone());
+            let Some(oldest) = oldest else {
+                break;
+            };
+            catalogs.remove(&oldest);
+        }
+        self.persist_agent_command_catalogs(&catalogs)?;
+        Ok(catalog)
+    }
+
+    pub fn refresh_agent_command_catalog_for_workspace(
+        &self,
+        agent_type: ManagedAgentType,
+        workspace: Utf8PathBuf,
+    ) -> Result<()> {
+        let _run_guard = self.agent_diagnostic_guard()?;
+        self.refresh_agent_command_catalog_for_workspace_unlocked(agent_type, workspace)
+    }
+
+    fn refresh_agent_command_catalog_for_workspace_unlocked(
+        &self,
+        agent_type: ManagedAgentType,
+        workspace: Utf8PathBuf,
+    ) -> Result<()> {
+        let expected_config = self.managed_agent_config_revision(agent_type)?;
+        let config = self.context()?.config;
+        let app = App::with_config(workspace, config);
+        let probe = app.provider_doctor_probe(agent_type.as_str())?;
+        let _commit_guard = self.agent_config_diagnostic_commit_guard()?;
+        if self.managed_agent_config_revision(agent_type)? != expected_config {
+            anyhow::bail!("agent configuration changed during command catalog refresh");
+        }
+        if probe.doctor.available {
+            self.record_agent_commands(agent_type, &app.paths.repo_root, probe.commands)?;
+        }
+        Ok(())
+    }
+
+    pub fn refresh_all_agent_command_catalogs_for_workspace(
+        &self,
+        workspace: Utf8PathBuf,
+    ) -> Result<()> {
+        let _run_guard = self.agent_diagnostic_guard()?;
+        let config = self.context()?.config;
+        let app = App::with_config(workspace.clone(), config);
+        let agent_types = app.managed_agents().keys().copied().collect::<Vec<_>>();
+        for agent_type in agent_types {
+            let _ = self.refresh_agent_command_catalog_for_workspace_unlocked(
+                agent_type,
+                workspace.clone(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn refresh_agent_command_catalogs_for_active_workspaces(&self) -> Result<()> {
+        let context = self.context()?;
+        let app = context.app();
+        let persisted_state = app.load_state()?;
+        let current_workspace_key = workspace_key(&context.repo_root);
+        let mut workspaces = std::collections::BTreeSet::new();
+        if let Some(active_project_id) = persisted_state.last_conversation_workspace.as_deref() {
+            if let Some(active_workspace) = persisted_state
+                .conversation_workspaces
+                .iter()
+                .find(|workspace| workspace.project_id == active_project_id)
+            {
+                let active_workspace = Utf8PathBuf::from(&active_workspace.workspace_path);
+                if workspace_key(&active_workspace) != current_workspace_key {
+                    workspaces.insert(active_workspace);
+                }
+            }
+        }
+        for workspace in workspaces {
+            self.refresh_all_agent_command_catalogs_for_workspace(workspace)?;
+        }
+        Ok(())
     }
 
     pub fn set_workspace(&self, repo_root: Utf8PathBuf) -> Result<DesktopContext> {
@@ -659,6 +848,15 @@ impl DesktopState {
         let path = GoldBandPaths::new(repo_root).agent_diagnostics_file();
         write_json(&path, diagnostics)
     }
+
+    fn persist_agent_command_catalogs(
+        &self,
+        catalogs: &BTreeMap<String, AcpCommandCatalog>,
+    ) -> Result<()> {
+        let repo_root = self.context()?.repo_root;
+        let path = GoldBandPaths::new(repo_root).agent_command_catalogs_file();
+        write_json(&path, &catalogs.values().cloned().collect::<Vec<_>>())
+    }
 }
 
 fn diagnostic_state_from_result(result: DoctorResult) -> AgentDiagnosticState {
@@ -675,6 +873,23 @@ fn load_persisted_agent_diagnostics(
 ) -> BTreeMap<ManagedAgentType, AgentDiagnosticState> {
     read_json(&GoldBandPaths::new(context.repo_root.clone()).agent_diagnostics_file())
         .unwrap_or_default()
+}
+
+fn load_persisted_agent_command_catalogs(
+    context: &DesktopContext,
+) -> BTreeMap<String, AcpCommandCatalog> {
+    read_json::<Vec<AcpCommandCatalog>>(
+        &GoldBandPaths::new(context.repo_root.clone()).agent_command_catalogs_file(),
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .map(|catalog| {
+        (
+            catalog_key(&catalog.agent_type, &catalog.workspace_key),
+            catalog,
+        )
+    })
+    .collect()
 }
 
 fn resolve_initial_workspace(cwd: &Utf8Path) -> Utf8PathBuf {
@@ -727,24 +942,19 @@ fn recent_workspaces(state: &StateConfig, repo_root: &Utf8Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        sync::{Arc, mpsc},
-        time::Duration,
-    };
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
 
-    fn desktop_state() -> DesktopState {
-        let repo_root = Utf8PathBuf::from_path_buf(std::env::temp_dir())
-            .unwrap()
-            .join(format!(
-                "gold-band-agent-state-test-{}",
-                uuid::Uuid::new_v4()
-            ));
-        DesktopState::new(DesktopContext {
+    fn desktop_state() -> (tempfile::TempDir, DesktopState) {
+        let root = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let context = DesktopContext {
             repo_root,
             config: RuntimeConfig::default(),
             recent_workspaces: Vec::new(),
             needs_workspace: false,
-        })
+        };
+        (root, DesktopState::new(context))
     }
 
     fn target() -> NotificationAttentionTarget<'static> {
@@ -796,7 +1006,7 @@ mod tests {
 
     #[test]
     fn agent_diagnostic_queue_coalesces_duplicate_save_requests() {
-        let state = desktop_state();
+        let (_root, state) = desktop_state();
         let agent_type = ManagedAgentType::ClaudeAcp;
 
         assert!(state.queue_agent_diagnostic(agent_type).unwrap());
@@ -808,7 +1018,7 @@ mod tests {
 
     #[test]
     fn agent_config_commit_does_not_wait_for_running_doctor() {
-        let state = desktop_state();
+        let (_root, state) = desktop_state();
         let state = Arc::new(state);
         let (doctor_locked_tx, doctor_locked_rx) = mpsc::channel();
         let (release_doctor_tx, release_doctor_rx) = mpsc::channel();

@@ -15,6 +15,7 @@ pub use self::notification::{
 };
 
 use crate::acp::client as acp_client;
+use crate::acp::commands::AcpCommandItem;
 use crate::acp::elicitation::cancel_pending_elicitation_requests;
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::{
@@ -69,6 +70,12 @@ use self::orchestrator::{
     submit_manual_check as orchestrator_submit_manual_check,
     submit_manual_check_background as orchestrator_submit_manual_check_background,
 };
+
+#[derive(Debug, Clone)]
+pub struct ProviderDoctorProbe {
+    pub doctor: DoctorResult,
+    pub commands: Vec<AcpCommandItem>,
+}
 use self::profile_resolver::resolve_workflow_profiles;
 use self::profiles::{
     DefaultProfileIds, create_profile, delete_profile as delete_profile_file,
@@ -1688,6 +1695,10 @@ impl App {
     }
 
     pub fn provider_doctor(&self, provider: &str) -> Result<DoctorResult> {
+        Ok(self.provider_doctor_probe(provider)?.doctor)
+    }
+
+    pub fn provider_doctor_probe(&self, provider: &str) -> Result<ProviderDoctorProbe> {
         let (agent_type, config) = self.managed_agent(provider)?;
         if !agent_type.is_supported() {
             bail!("agent `{provider}` is not supported yet");
@@ -1698,15 +1709,21 @@ impl App {
             self.config.use_local_claude,
             self.config.require_local_claude_executable,
         ) {
-            Ok(capabilities) => Ok(DoctorResult {
-                available: true,
-                reason: None,
-                capabilities: Some(capabilities),
+            Ok(probe) => Ok(ProviderDoctorProbe {
+                doctor: DoctorResult {
+                    available: true,
+                    reason: None,
+                    capabilities: Some(probe.capabilities),
+                },
+                commands: probe.commands,
             }),
-            Err(err) => Ok(DoctorResult {
-                available: false,
-                reason: Some(err.to_string()),
-                capabilities: None,
+            Err(err) => Ok(ProviderDoctorProbe {
+                doctor: DoctorResult {
+                    available: false,
+                    reason: Some(err.to_string()),
+                    capabilities: None,
+                },
+                commands: Vec::new(),
             }),
         }
     }

@@ -16,6 +16,7 @@ struct AcpTimelineStreamState {
     content: String,
 }
 
+use crate::acp::commands::{AcpCommandItem, parse_available_commands};
 use crate::acp::connection::{
     AcpConnectionUnavailable, AdapterConnection, AdapterConnectionKey, AdapterConnectionManager,
     SessionEventPump, SessionRouteTryRecvError,
@@ -52,6 +53,7 @@ const LIVE_TIMING_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const DOCTOR_DIAGNOSTIC_MAX_SIZE: u64 = 512 * 1024;
 const DOCTOR_DIAGNOSTIC_TARGET_SIZE: u64 = 384 * 1024;
+const DOCTOR_COMMAND_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(500);
 const SESSION_TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const PROMPT_CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
 const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -736,6 +738,7 @@ struct AcpRuntime<'a> {
     modes: Option<Value>,
     config_options: Option<Value>,
     model_override: Option<String>,
+    available_commands: Option<Vec<AcpCommandItem>>,
     system_prompt_append: Option<String>,
     session_title: Option<String>,
     used_tokens: Option<u64>,
@@ -776,13 +779,18 @@ enum SessionUpdatePhase {
     AwaitingTurnStart,
 }
 
+#[derive(Debug, Clone)]
+pub struct AcpDoctorProbe {
+    pub capabilities: Value,
+    pub commands: Vec<AcpCommandItem>,
+}
 
 pub fn doctor(
     config: &AcpAdapterConfig,
     cwd: Utf8PathBuf,
     use_local_claude: bool,
     require_local_claude_executable: bool,
-) -> Result<Value> {
+) -> Result<AcpDoctorProbe> {
     let paths = GoldBandPaths::new(cwd.clone());
     let doctor_acp_dir = paths.doctor_acp_dir();
     cleanup_doctor_acp_dir_before_run(&doctor_acp_dir);
@@ -801,9 +809,14 @@ pub fn doctor(
     let result = (|| {
         let mut capabilities = runtime.initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))?;
         runtime.setup_session("doctor", cwd, None, None, None, "", false, &[])?;
+        runtime.wait_for_available_commands(DOCTOR_COMMAND_DISCOVERY_TIMEOUT)?;
+        let commands = runtime.available_commands.clone().unwrap_or_default();
         runtime.cleanup_diagnostic_session()?;
         runtime.merge_session_config_into_capabilities(&mut capabilities);
-        Ok(capabilities)
+        Ok(AcpDoctorProbe {
+            capabilities,
+            commands,
+        })
     })();
     runtime.shutdown();
     if result.is_ok() {
@@ -1466,6 +1479,7 @@ impl<'a> AcpRuntime<'a> {
             modes: None,
             config_options: None,
             model_override: None,
+            available_commands: None,
             system_prompt_append: None,
             session_title: None,
             used_tokens: prior.used_tokens,
@@ -1976,6 +1990,16 @@ impl<'a> AcpRuntime<'a> {
         Ok(())
     }
 
+    fn wait_for_available_commands(&mut self, timeout: Duration) -> Result<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            self.drain_available_inbound()?;
+            if self.available_commands.is_some() || Instant::now() >= deadline {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 
     fn close_session_bounded(&mut self, session_id: &str, timeout: Duration) -> Result<()> {
         self.request_with_timeout(
@@ -2507,6 +2531,9 @@ impl<'a> AcpRuntime<'a> {
             .map(str::to_string);
         let update = params.get("update").cloned().unwrap_or(params);
 
+        if let Some(commands) = parse_available_commands(&update) {
+            self.available_commands = Some(commands);
+        }
 
         if self.session_update_phase == SessionUpdatePhase::Replaying {
             if !self.runtime_policy.external_session_sync_enabled {

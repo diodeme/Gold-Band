@@ -1879,6 +1879,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-updater",
  "tauri-winrt-notification",
+ "tempfile",
  "tokio",
  "tracing",
  "trash",

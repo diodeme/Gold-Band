@@ -1,4 +1,5 @@
 use gold_band::acp::client;
+use gold_band::acp::commands::{AcpCommandCatalog, parse_available_commands};
 use gold_band::acp::elicitation::{
     ElicitationAction, cancel_pending_elicitation_requests, write_elicitation_response,
 };
@@ -55,6 +56,7 @@ use crate::view_models_conversation::{
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
 const AGENT_REGISTRY_UPDATED_EVENT: &str = "gold-band://agent-registry-updated";
+const AGENT_COMMANDS_UPDATED_EVENT: &str = "gold-band://agent-commands-updated";
 const CONVERSATION_RUN_STATE_EVENT: &str = "gold-band://conversation-run-state-updated";
 const PERMISSION_REQUESTED_DEDUP_SUFFIX: &str = "permission-requested";
 const ELICITATION_REQUESTED_DEDUP_SUFFIX: &str = "elicitation-requested";
@@ -331,8 +333,8 @@ fn acp_turn_outcome_for_stop_reason(stop_reason: Option<&str>) -> AcpTurnOutcome
     }
 }
 
-fn acp_turn_agent_label(app: &App, locator: &AttemptLocator) -> String {
-    let provider = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+fn acp_turn_provider_id(app: &App, locator: &AttemptLocator) -> Option<String> {
+    if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (locator.outer_node_id(), locator.outer_attempt_id())
     {
         read_json::<gold_band::dynamic::DynamicNodeState>(&app.paths.dynamic_node_file(
@@ -360,7 +362,11 @@ fn acp_turn_agent_label(app: &App, locator: &AttemptLocator) -> String {
                 .and_then(|value| value.as_str())
                 .map(str::to_string)
         })
-    };
+    }
+}
+
+fn acp_turn_agent_label(app: &App, locator: &AttemptLocator) -> String {
+    let provider = acp_turn_provider_id(app, locator);
     provider
         .as_deref()
         .and_then(|provider| app.managed_agent(provider).ok())
@@ -846,6 +852,7 @@ pub fn delete_agent(
 
 #[tauri::command]
 pub async fn doctor_agent(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     agent_type: String,
 ) -> CommandResult<AgentRegistryVm> {
@@ -853,6 +860,8 @@ pub async fn doctor_agent(
     state
         .refresh_agent_diagnostic(agent_type)
         .map_err(command_error)?;
+    emit_agent_registry_updated(&app_handle);
+    emit_agent_commands_updated(&app_handle, None);
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     Ok(agent_registry_vm(&app, &diagnostics))
@@ -878,12 +887,39 @@ fn schedule_agent_diagnostic(app_handle: &AppHandle, agent_type: ManagedAgentTyp
             if let Err(error) = state.run_queued_agent_diagnostic(agent_type) {
                 warn!(agent_type = agent_type.as_str(), %error, "automatic agent diagnostic failed");
             }
-            let _ = diagnostic_handle.emit(AGENT_REGISTRY_UPDATED_EVENT, ());
+            emit_agent_registry_updated(&diagnostic_handle);
+            emit_agent_commands_updated(&diagnostic_handle, None);
         })
     {
         let _ = state.cancel_queued_agent_diagnostic(agent_type);
         warn!(agent_type = agent_type.as_str(), %error, "failed to start agent diagnostic thread");
     }
+}
+
+#[tauri::command]
+pub fn get_agent_command_catalog(
+    state: State<'_, DesktopState>,
+    agent_type: String,
+    workspace_path: String,
+) -> CommandResult<Option<AcpCommandCatalog>> {
+    let agent_type = ManagedAgentType::from_str(&agent_type).map_err(command_error)?;
+    state
+        .agent_command_catalog(agent_type, &Utf8PathBuf::from(workspace_path))
+        .map_err(command_error)
+}
+
+pub(crate) fn emit_agent_commands_updated(
+    app_handle: &AppHandle,
+    catalog: Option<&AcpCommandCatalog>,
+) {
+    let payload = catalog
+        .map(|catalog| serde_json::to_value(catalog).unwrap_or_else(|_| serde_json::json!({})))
+        .unwrap_or_else(|| serde_json::json!({ "refresh": true }));
+    let _ = app_handle.emit(AGENT_COMMANDS_UPDATED_EVENT, payload);
+}
+
+pub(crate) fn emit_agent_registry_updated(app_handle: &AppHandle) {
+    let _ = app_handle.emit(AGENT_REGISTRY_UPDATED_EVENT, ());
 }
 
 #[tauri::command]
@@ -1454,6 +1490,7 @@ pub(crate) fn acp_live_update_emitter(
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, AcpUiEvent) -> anyhow::Result<()> + Send + Sync>
 {
     Arc::new(move |context, event| {
+        maybe_record_agent_commands(&app_handle, notification_app.as_ref(), &context, &event);
         if let Some(lifecycle_bus) = lifecycle_bus.as_ref() {
             maybe_emit_permission_intervention(
                 lifecycle_bus,
@@ -1482,6 +1519,42 @@ pub(crate) fn acp_live_update_emitter(
         );
         Ok(())
     })
+}
+
+fn maybe_record_agent_commands(
+    app_handle: &AppHandle,
+    app: Option<&App>,
+    context: &gold_band::app::AcpLiveEventContext,
+    event: &AcpUiEvent,
+) {
+    if event.kind != "availableCommands" {
+        return;
+    }
+    let Some(commands) = event.raw.as_ref().and_then(parse_available_commands) else {
+        return;
+    };
+    let Some(app) = app else {
+        return;
+    };
+    let locator = AttemptLocator::new(
+        context.task_id.clone(),
+        context.run_id.clone(),
+        context.round_id.clone(),
+        context.node_id.clone(),
+        context.attempt_id.clone(),
+        context.outer_node_id.clone(),
+        context.outer_attempt_id.clone(),
+    );
+    let Some(provider) = acp_turn_provider_id(app, &locator) else {
+        return;
+    };
+    let Ok(agent_type) = ManagedAgentType::from_str(&provider) else {
+        return;
+    };
+    let state = app_handle.state::<DesktopState>();
+    if let Ok(catalog) = state.record_agent_commands(agent_type, &app.paths.repo_root, commands) {
+        emit_agent_commands_updated(app_handle, Some(&catalog));
+    }
 }
 
 /// 路径 B：旁路监听 `permissionRequest` 事件流，强制 `PermissionRequested` 发干预通知。
@@ -3908,6 +3981,7 @@ pub fn read_skill(
 
 #[tauri::command]
 pub fn write_skill(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     name: String,
     source: String,
@@ -3919,6 +3993,10 @@ pub fn write_skill(
 ) -> CommandResult<SkillListVm> {
     let app = state.app().map_err(command_error)?;
     let skill_source = parse_skill_source(&source)?;
+    let refresh_workspace = workspace_path
+        .as_deref()
+        .map(Utf8PathBuf::from)
+        .unwrap_or_else(|| app.paths.repo_root.clone());
 
     app.skill_manager()
         .write_instance(
@@ -3932,11 +4010,14 @@ pub fn write_skill(
         )
         .map_err(command_error)?;
 
+    schedule_agent_command_catalog_refresh(app_handle, refresh_workspace);
+
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
 }
 
 #[tauri::command]
 pub fn delete_skill(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     name: String,
     source: String,
@@ -3945,6 +4026,10 @@ pub fn delete_skill(
 ) -> CommandResult<SkillListVm> {
     let app = state.app().map_err(command_error)?;
     let skill_source = parse_skill_source(&source)?;
+    let refresh_workspace = workspace_path
+        .as_deref()
+        .map(Utf8PathBuf::from)
+        .unwrap_or_else(|| app.paths.repo_root.clone());
 
     if let Some(ref dir_path) = directory_path {
         app.cleanup_skill_instance_links(
@@ -3958,6 +4043,7 @@ pub fn delete_skill(
         app.skill_manager()
             .delete_at_path(&dir)
             .map_err(command_error)?;
+        schedule_agent_command_catalog_refresh(app_handle, refresh_workspace);
         return Ok(skill_list_vm(&app.list_skills().map_err(command_error)?));
     }
 
@@ -3977,6 +4063,7 @@ pub fn delete_skill(
             );
             std::fs::remove_dir_all(skill_dir.as_std_path())
                 .map_err(|e| command_error(anyhow::anyhow!(e)))?;
+            schedule_agent_command_catalog_refresh(app_handle, refresh_workspace);
             return Ok(skill_list_vm(&app.list_skills().map_err(command_error)?));
         }
     }
@@ -4002,11 +4089,13 @@ pub fn delete_skill(
     );
     app.delete_skill(&name, skill_source)
         .map_err(command_error)?;
+    schedule_agent_command_catalog_refresh(app_handle, refresh_workspace);
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
 }
 
 #[tauri::command]
 pub fn update_skill_sync_targets(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     name: String,
     source: String,
@@ -4016,6 +4105,10 @@ pub fn update_skill_sync_targets(
 ) -> CommandResult<SkillListVm> {
     let app = state.app().map_err(command_error)?;
     let skill_source = parse_skill_source(&source)?;
+    let refresh_workspace = workspace_path
+        .as_deref()
+        .map(Utf8PathBuf::from)
+        .unwrap_or_else(|| app.paths.repo_root.clone());
     app.reconcile_skill_instance_links(
         &name,
         &directory_path,
@@ -4024,7 +4117,16 @@ pub fn update_skill_sync_targets(
         Some(sync_targets.as_slice()),
     )
     .map_err(command_error)?;
+    schedule_agent_command_catalog_refresh(app_handle, refresh_workspace);
     Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
+}
+
+fn schedule_agent_command_catalog_refresh(app_handle: AppHandle, workspace: Utf8PathBuf) {
+    std::thread::spawn(move || {
+        let state = app_handle.state::<DesktopState>();
+        let _ = state.refresh_all_agent_command_catalogs_for_workspace(workspace);
+        emit_agent_commands_updated(&app_handle, None);
+    });
 }
 
 /// 查询指定 SKILL 在各 agent 目录中的同步状态（软链即状态）

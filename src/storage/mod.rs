@@ -190,6 +190,11 @@ impl GoldBandPaths {
             .join("desktop/agent-diagnostics.json")
     }
 
+    pub fn agent_command_catalogs_file(&self) -> Utf8PathBuf {
+        self.user_gold_band_root
+            .join("desktop/agent-command-catalogs.json")
+    }
+
     pub fn doctor_dir(&self) -> Utf8PathBuf {
         self.user_gold_band_root.join("doctor")
     }

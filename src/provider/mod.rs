@@ -674,10 +674,10 @@ impl ProviderAdapter for AcpProvider {
             self.use_local_claude,
             self.require_local_claude_executable,
         ) {
-            Ok(capabilities) => DoctorResult {
+            Ok(probe) => DoctorResult {
                 available: true,
                 reason: None,
-                capabilities: Some(capabilities),
+                capabilities: Some(probe.capabilities),
             },
             Err(err) => DoctorResult {
                 available: false,

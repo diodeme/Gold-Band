@@ -310,14 +310,20 @@ impl FromStr for DesktopLanguage {
 #[serde(rename_all = "camelCase")]
 pub struct ManagedAgentConfig {
     pub adapter: AcpAdapterConfig,
-    /// 可选覆盖 agent skills 目录名（如 ".claude"、"custom-dir"）
-    /// 未设置时使用 ManagedAgentType::skills_dir_name() 硬编码默认值
+    /// 可选覆盖 Agent 的主 Skill 目录（如 ".claude"、"custom-dir"）。
+    /// 该目录同时作为同步写入目录和首个读取目录；非 Claude Agent 仍会兼容读取 `.agents`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills_dir_override: Option<String>,
     /// 是否允许 Gold Band 根据 Provider revision 重载并导入外部客户端会话历史。
     /// 仅适用于能跨客户端共享同一线性会话上下文的 Agent，默认关闭。
     #[serde(default)]
     pub external_session_sync_enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSkillDirectoryPolicy {
+    pub write_dir_names: Vec<String>,
+    pub read_dir_names: Vec<String>,
 }
 
 impl ManagedAgentConfig {
@@ -334,6 +340,24 @@ impl ManagedAgentConfig {
         self.skills_dir_override
             .as_deref()
             .unwrap_or_else(|| agent_type.skills_dir_name())
+    }
+
+    pub fn skill_directory_policy(
+        &self,
+        agent_type: ManagedAgentType,
+    ) -> AgentSkillDirectoryPolicy {
+        let primary = self.skills_dir_name(agent_type).to_string();
+        let write_dir_names = vec![primary.clone()];
+        let mut read_dir_names = vec![primary];
+        if agent_type != ManagedAgentType::ClaudeAcp
+            && !read_dir_names.iter().any(|dir_name| dir_name == ".agents")
+        {
+            read_dir_names.push(".agents".to_string());
+        }
+        AgentSkillDirectoryPolicy {
+            write_dir_names,
+            read_dir_names,
+        }
     }
 }
 
@@ -1211,6 +1235,41 @@ mod tests {
         assert_eq!(config.acp_max_idle_session_runtimes, 8);
         assert_eq!(config.acp_timeline_compact_patch_ratio, 4);
     }
+
+    #[test]
+    fn skill_directory_policy_separates_write_and_compatible_read_dirs() {
+        use super::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
+        let config = ManagedAgentConfig::new(AcpAdapterConfig::default());
+
+        for (agent_type, primary) in [
+            (ManagedAgentType::ClaudeAcp, ".claude"),
+            (ManagedAgentType::CodexAcp, ".codex"),
+            (ManagedAgentType::Cursor, ".cursor"),
+            (ManagedAgentType::Gemini, ".gemini"),
+            (ManagedAgentType::OpenCode, ".opencode"),
+        ] {
+            let policy = config.skill_directory_policy(agent_type);
+            assert_eq!(policy.write_dir_names, vec![primary]);
+            let expected_reads = if agent_type == ManagedAgentType::ClaudeAcp {
+                vec![primary]
+            } else {
+                vec![primary, ".agents"]
+            };
+            assert_eq!(policy.read_dir_names, expected_reads);
+        }
+    }
+
+    #[test]
+    fn skill_directory_override_replaces_primary_but_keeps_agents_compatibility() {
+        use super::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
+        let mut config = ManagedAgentConfig::new(AcpAdapterConfig::default());
+        config.skills_dir_override = Some("custom-codex".to_string());
+
+        let policy = config.skill_directory_policy(ManagedAgentType::CodexAcp);
+        assert_eq!(policy.write_dir_names, vec!["custom-codex"]);
+        assert_eq!(policy.read_dir_names, vec!["custom-codex", ".agents"]);
+    }
+
     #[test]
     fn direct_preferences_roundtrip_independently_by_workspace_and_agent() {
         let mut state = StateConfig::default();

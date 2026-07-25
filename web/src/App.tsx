@@ -87,6 +87,7 @@ import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
 import { resetConversationComposerDraft } from '@/lib/conversation-composer-draft';
+import { resolveConversationWorkspaceRemovalTransition } from '@/lib/conversation-workspace-removal';
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
@@ -1401,14 +1402,29 @@ export function App() {
       }}
       onConversationRemoveWorkspace={(projectId) => {
         setError(null);
-        removeConversationWorkspace(projectId).then((sidebar) => {
-          if (activeWorkspaceIdRef.current === projectId) {
-            activeWorkspaceIdRef.current = sidebar.lastActiveWorkspaceId ?? null;
-            setActiveWorkspaceId(sidebar.lastActiveWorkspaceId ?? null);
-          }
-          setDraftConversationWorkspaceId((current) => current === projectId ? null : current);
-          applyConversationSidebar(sidebar, sidebar.lastActiveWorkspaceId);
-        }).catch((err) => setError(displayAppError(t, err)));
+        return removeConversationWorkspace(projectId)
+          .then((sidebar) => {
+            const transition = resolveConversationWorkspaceRemovalTransition({
+              removedProjectId: projectId,
+              lastActiveWorkspaceId: sidebar.lastActiveWorkspaceId,
+              activeWorkspaceId: activeWorkspaceIdRef.current,
+              draftWorkspaceId: draftConversationWorkspaceId,
+              page: conversationPage,
+            });
+            activeWorkspaceIdRef.current = transition.activeWorkspaceId;
+            setActiveWorkspaceId(transition.activeWorkspaceId);
+            setDraftConversationWorkspaceId(transition.draftWorkspaceId);
+            if (transition.navigateHome) {
+              conversationRunRef.current = null;
+              setConversationRun(null);
+              setConversationPage({ kind: 'conversation-home' });
+            }
+            applyConversationSidebar(sidebar, transition.activeWorkspaceId);
+          })
+          .catch((err) => {
+            setError(displayAppError(t, err));
+            throw err;
+          });
       }}
     >
       <AlertDialog open={Boolean(error)} onOpenChange={(open) => { if (!open) setError(null); }}>

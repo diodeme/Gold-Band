@@ -4,6 +4,7 @@ mod builtin_mcp;
 mod channel;
 mod commands;
 mod commands_conversation;
+mod conversation_workspace;
 mod i18n;
 mod metrics;
 mod notifications;

@@ -26,7 +26,7 @@ interface ConversationShellProps {
   onDeleteTask: (projectId: string, taskId: string) => void;
   onNewConversationInWorkspace?: (projectId: string) => void;
   onAddWorkspace?: () => void;
-  onRemoveWorkspace?: (projectId: string) => void;
+  onRemoveWorkspace?: (projectId: string) => Promise<void>;
   activeWorkspaceId?: string | null;
   children: React.ReactNode;
 }

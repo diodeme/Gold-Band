@@ -20,6 +20,7 @@ use gold_band::provider::DoctorResult;
 use gold_band::storage::{GoldBandPaths, active_storage_path_config, read_json, write_json};
 use serde::{Deserialize, Serialize};
 
+use crate::conversation_workspace::migrate_conversation_workspace_state;
 use crate::updater::{UpdateInfoVm, UpdateStatusVm, initial_update_status};
 
 #[derive(Debug, Clone)]
@@ -47,7 +48,13 @@ impl DesktopContext {
             .or_else(|| find_workspace_root(&repo_root))
             .unwrap_or(repo_root);
         let paths = GoldBandPaths::new(repo_root.clone());
-        let (settings, state) = load_configs(&paths);
+        let (settings, mut state) = load_configs(&paths);
+        if migrate_conversation_workspace_state(
+            (!needs_workspace).then_some(repo_root.as_path()),
+            &mut state,
+        ) {
+            write_json(&paths.user_state_file(), &state)?;
+        }
         let config = RuntimeConfig::default()
             .apply_settings(&settings)
             .apply_state(&state);

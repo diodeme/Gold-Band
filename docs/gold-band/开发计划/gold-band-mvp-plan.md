@@ -689,7 +689,7 @@ attempt-001/
 - 根因修复：侧栏继续以文件系统为权威事实源，SQLite 仍为派生搜索索引；task 创建和元数据更新统一由 `App` 核心生命周期刷新索引，不再由任务工作台或会话 UI 各自补调用。
 - 跨 workspace 身份：task ID 只在项目内递增，SQLite schema v2 改用 `task_path` 作为主键；迁移保留现有索引行但不扫描旧任务，避免不同项目的 `task-001` 相互覆盖，删除也只清理目标路径。
 - workspace 路由：项目 ID 统一复用 `GoldBandPaths::project_id`，Windows 对历史 drive letter 大小写差异兼容匹配；搜索命中后使用状态中已有的规范 project ID 组装路由，避免索引有结果但 workspace 解析失败后被过滤。
-- 搜索 workspace 范围：会话搜索只覆盖当前侧边栏的默认 workspace 和 `conversationWorkspaces`，不包含已移除或未注册的历史 workspace；允许的 task 目录在 SQLite FTS 排序与 `LIMIT` 之前过滤，避免范围外命中挤占可见结果。
+- 搜索 workspace 范围：会话搜索只覆盖 `conversationWorkspaces` 中显式存在的侧边栏工作空间，不再额外注入 `DesktopContext.repo_root`；不包含已移除或未注册的历史 workspace。允许的 task 目录在 SQLite FTS 排序与 `LIMIT` 之前过滤，避免范围外命中挤占可见结果。
 - 中英文子串搜索：SQLite task FTS 升级为内置 trigram tokenizer；3 字符以上关键词支持标题、描述、需求正文任意位置匹配，1～2 字符关键词在 sidebar workspace 范围内使用字面包含匹配，修复“你好可命中但随便无法命中随便用askUserQuestion”的分词缺陷。用户输入统一按普通文本转义，多关键词使用 AND 语义，标题命中优先排序。
 - 命中上下文展示：搜索接口新增 `matchPreview`，从真正命中的标题、描述或完整需求正文中截取上下文；短内容完整展示，只有长文本才在关键词前最多保留 10 个字符，避免短内容被误截断并保证关键词在单行内可见。关键词使用无底色、高对比 `foreground` 文字和轻量下划线高亮，兼容亮色与深色主题。
 - 新数据范围：本次不扫描、不重建既有 `tasks` 索引缺口；修复发布后新建的会话，以及之后更新标题/描述的 task，可按标题、描述和 requirement 搜索。
@@ -717,3 +717,14 @@ attempt-001/
 - 会话详情在 override 为空时展示“不指定”和 Agent 返回的完整模型目录；选择任意 Agent 模型后写入 override，并从该 session 的下拉列表中移除“不指定”。Agent 的 `default` 作为普通不透明模型 ID 原样保留。
 - runtime continue、AI-DYNAMIC inner continue 和 ACP same-session prompt 统一只读取 `modelOverride`；具体模型继续通过 `session/set_config_option(model)` 应用，未指定则不设置模型并继承 Agent 环境配置。
 - 回归覆盖 Agent `currentModelId = default` 但 Gold Band 未指定时续聊得到 `None`、用户明确选择 Agent `default` 时续聊得到 `Some("default")`、前端配置视图保持“不指定”和 Agent current model 分离，以及 Web build。
+
+---
+
+## 2026-07-24：会话工作空间状态与安全移除修复
+
+- 根因修复：会话工作空间身份此前同时存在持久化 `conversationWorkspaces`、大小写不一致的 `projectId` key 和隐式 `DesktopContext.repo_root` 三条来源，导致 Direct 首轮可运行但追问按精确 key 报 `workspace.not-found`，移除时也可能删不中并重排相邻项。本次收敛为 `conversationWorkspaces` 单一列表来源，保留 workspace-scoped `App.paths.repo_root` 作为执行上下文，不再把桌面启动 workspace 当作会话成员。
+- 状态迁移：新增 `stateSchemaVersion=1`，启动时一次性重新生成规范 `projectId`、按规范化路径去重，并迁移最后活跃工作空间、运行模式和置顶。规范 key 的运行模式覆盖历史大小写 key，确保用户已选择的 Direct Agent/model/permission 不被旧 Workflow 配置覆盖；迁移写入继续使用原子文件替换。版本命中后直接返回，二次调用也不改变 JSON。
+- 统一解析：首轮创建、Direct completed-run follow-up、重跑、历史查看、权限/停止命令、附件、运行模式和置顶统一使用共享 resolver；Windows 历史 drive-letter 大小写可解析到状态中规范 ID，VM 与事件也继续使用规范 ID。
+- 删除语义：后端先解析目标工作空间，再关闭其 ACP 连接并删除持久化列表项，同时清理关联 pins/run modes/last；未知目标返回结构化错误，任何 task/run/session 和工作空间文件都不删除。
+- 删除交互：侧栏移除按钮先打开 shadcn/ui 确认框，展示工作空间名称并明确磁盘文件、历史会话保留；请求 pending 时禁止重复提交、取消和关闭，成功返回前不更新列表。删除当前会话所属工作空间后返回会话主页并选择后端 fallback。
+- 回归固化：Rust 覆盖用户原始大小写冲突状态、规范 Direct 配置优先、迁移仅一次、显式 sidebar/search 范围、大小写 resolver 和关联状态清理；Web 覆盖确认门控、pending 单次提交、当前页 fallback 与最终工作空间为空。生产构建和 `/chat` 视觉验证通过。

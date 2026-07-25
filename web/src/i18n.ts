@@ -1107,6 +1107,7 @@ const resources = {
           runModeManagement: "运行模式管理",
           pinned: "置顶",
           noPinned: "置顶会话会显示在这里",
+          noWorkspaces: "尚未添加工作空间",
           workspaces: "工作空间",
           dragToReorder: "拖拽排序",
           unpin: "取消置顶",
@@ -1118,6 +1119,13 @@ const resources = {
           deleteConfirmAction: "确认删除",
           addWorkspace: "添加工作空间",
           removeWorkspace: "移除工作空间",
+          removeWorkspaceNamed: "移除工作空间 {{name}}",
+          removeWorkspaceTitle: "移除 {{name}}？",
+          removeWorkspaceDescription:
+            "这会将该工作空间从侧栏中移除。磁盘上的文件和历史会话不会被删除。",
+          removeWorkspaceCancel: "取消",
+          removeWorkspaceConfirm: "移除",
+          removingWorkspace: "正在移除…",
           settings: "设置",
         },
         home: {
@@ -2404,6 +2412,7 @@ const resources = {
           runModeManagement: "Run Mode Management",
           pinned: "Pinned",
           noPinned: "Pinned conversations appear here",
+          noWorkspaces: "No workspaces added",
           workspaces: "Workspaces",
           dragToReorder: "Drag to reorder",
           unpin: "Unpin",
@@ -2415,6 +2424,13 @@ const resources = {
           deleteConfirmAction: "Delete",
           addWorkspace: "Add Workspace",
           removeWorkspace: "Remove Workspace",
+          removeWorkspaceNamed: "Remove workspace {{name}}",
+          removeWorkspaceTitle: "Remove {{name}}?",
+          removeWorkspaceDescription:
+            "This removes the workspace from the sidebar. Files on disk and conversation history will not be deleted.",
+          removeWorkspaceCancel: "Cancel",
+          removeWorkspaceConfirm: "Remove",
+          removingWorkspace: "Removing…",
           settings: "Settings",
         },
         home: {

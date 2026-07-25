@@ -3204,6 +3204,7 @@ export function ACPSessionHeader({
     ACP_SESSION_ID_TOOLTIP_INITIAL_STATE,
   );
   const copyFeedbackTimerRef = useRef<number | null>(null);
+  const appWindowActiveRef = useRef(true);
   const hasSystemPrompt =
     systemPromptAvailable ?? Boolean(session.systemPromptAppend?.trim());
 
@@ -3215,6 +3216,25 @@ export function ACPSessionHeader({
   }, []);
 
   useEffect(() => clearCopyFeedbackTimer, [clearCopyFeedbackTimer]);
+
+  useEffect(() => {
+    const handleWindowFocus = () => {
+      appWindowActiveRef.current = true;
+    };
+    const handleWindowBlur = () => {
+      appWindowActiveRef.current = false;
+      clearCopyFeedbackTimer();
+      dispatchSessionIdTooltip({ type: "app-deactivated" });
+    };
+
+    appWindowActiveRef.current = document.hasFocus();
+    window.addEventListener("focus", handleWindowFocus);
+    window.addEventListener("blur", handleWindowBlur);
+    return () => {
+      window.removeEventListener("focus", handleWindowFocus);
+      window.removeEventListener("blur", handleWindowBlur);
+    };
+  }, [clearCopyFeedbackTimer]);
 
   const handleCopySessionId = useCallback(async () => {
     const sessionId = session.sessionId?.trim();
@@ -3246,6 +3266,11 @@ export function ACPSessionHeader({
     clearCopyFeedbackTimer();
     dispatchSessionIdTooltip({ type: "close-settled" });
   }, [clearCopyFeedbackTimer, sessionIdTooltip.phase]);
+
+  const handleSessionIdTriggerDisengaged = useCallback(() => {
+    if (!appWindowActiveRef.current) return;
+    dispatchSessionIdTooltip({ type: "trigger-disengaged" });
+  }, []);
 
   return (
     <div className={cn(
@@ -3288,6 +3313,8 @@ export function ACPSessionHeader({
                   className="min-w-0 truncate rounded px-1 py-0 text-[10px] leading-5 text-muted-foreground/82 transition-colors hover:bg-muted/45 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                   aria-label={t("acp.copySessionId")}
                   onClick={handleCopySessionId}
+                  onBlur={handleSessionIdTriggerDisengaged}
+                  onPointerLeave={handleSessionIdTriggerDisengaged}
                 >
                   {formatAcpSessionIdForDisplay(session.sessionId)}
                 </button>
@@ -3363,17 +3390,21 @@ const SESSION_ID_DISPLAY_SUFFIX_LENGTH = 4;
 type AcpSessionIdTooltipState = {
   open: boolean;
   phase: "idle" | "copied" | "closing";
+  reopenBlocked: boolean;
 };
 
 type AcpSessionIdTooltipEvent =
   | { type: "open-changed"; open: boolean }
   | { type: "copy-succeeded" }
   | { type: "feedback-elapsed" }
-  | { type: "close-settled" };
+  | { type: "close-settled" }
+  | { type: "app-deactivated" }
+  | { type: "trigger-disengaged" };
 
 const ACP_SESSION_ID_TOOLTIP_INITIAL_STATE: AcpSessionIdTooltipState = {
   open: false,
   phase: "idle",
+  reopenBlocked: false,
 };
 
 export function reduceAcpSessionIdTooltipState(
@@ -3382,16 +3413,30 @@ export function reduceAcpSessionIdTooltipState(
 ): AcpSessionIdTooltipState {
   switch (event.type) {
     case "open-changed":
-      if (event.open && state.phase !== "idle") return state;
+      if (event.open && (state.phase !== "idle" || state.reopenBlocked)) return state;
       return { ...state, open: event.open };
     case "copy-succeeded":
-      return { open: true, phase: "copied" };
+      return { open: true, phase: "copied", reopenBlocked: true };
     case "feedback-elapsed":
       return state.phase === "copied"
-        ? { open: false, phase: "closing" }
+        ? { ...state, open: false, phase: "closing" }
         : state;
     case "close-settled":
-      return ACP_SESSION_ID_TOOLTIP_INITIAL_STATE;
+      return {
+        open: false,
+        phase: "idle",
+        reopenBlocked: state.reopenBlocked,
+      };
+    case "app-deactivated":
+      return {
+        open: false,
+        phase: "idle",
+        reopenBlocked: true,
+      };
+    case "trigger-disengaged":
+      return state.reopenBlocked
+        ? { ...state, reopenBlocked: false }
+        : state;
   }
 }
 

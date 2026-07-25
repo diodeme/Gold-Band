@@ -98,6 +98,7 @@ Gold Band 需要吸收的是 Jockey 的 ACP 事件归一化和 Chat/Session UI �
 1. **Session Header**：provider、adapter、session id、cwd、连接状态、恢复状态。
    - Agent 名称与 session id 作为同一身份文本组按 baseline 对齐，并统一使用紧凑行高；图标与右侧操作继续按控件中心对齐，不增加针对单一字体的位移补丁。
    - Direct 标题与 Agent 身份使用独立组间距；长 session id 统一格式化为前 8 位与后 4 位的紧凑文本，Tooltip 和剪贴板仍消费完整值，避免技术标识挤压主标题。
+   - session id 复制反馈与 Tooltip 由同一状态机管理；复制反馈结束或桌面窗口失焦后进入重开锁定，忽略切回应用时 WebView 残留 focus/pointer 产生的 `open=true`，直到鼠标移出或焦点在应用内移走后才解锁。回归测试必须覆盖“复制 → 反馈关闭”和“复制 → 切换应用 → 返回”两条路径。
 2. **Message List**：用户消息、agent 文本消息、系统提示。
 3. **Reasoning / Thought**：思考内容，默认折叠或弱化。
 4. **Tool Calls**：工具调用卡片，作为会话流中的结构化消息块。

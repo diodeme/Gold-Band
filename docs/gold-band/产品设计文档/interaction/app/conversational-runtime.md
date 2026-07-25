@@ -278,6 +278,7 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - 产物弹窗遮罩使用轻量弱化遮罩（低透明深色 + blur），主体面板保持半透明而不过度强调，不做厚重黑色卡片
 - sessionId 与 Agent 身份同行，不再单独占行；长值采用“前 8 位…后 4 位”的紧凑投影，点击仍复制完整值，悬浮显示完整值，并在复制后显示会自动消失的轻量“已复制”提示
 - sessionId Tooltip 的复制反馈采用 `idle -> copied -> closing -> idle` 单一状态生命周期：反馈到期时先保持“已复制”内容关闭 Tooltip，关闭过渡完成后才恢复完整 ID 内容；`closing` 阶段忽略悬浮重开，禁止在关闭动画中闪现完整 ID
+- sessionId Tooltip 的窗口生命周期必须与复制反馈统一管理：应用失焦时立即取消反馈计时并关闭 Tooltip；恢复窗口后不接受 WebView 残留 focus/pointer 导致的自动重开，只有触发器真正离开后的新一次悬浮或键盘聚焦才可再次展示完整 ID
 
 ## 产物/附件信息区
 

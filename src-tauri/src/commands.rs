@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{info, warn};
 
+use crate::conversation_workspace::workspace_entry_for_project;
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
 use crate::state::{DesktopState, NotificationAttentionInput, UpdateBadgeSeenTarget};
@@ -444,19 +445,15 @@ fn resolve_command_app(
         Some(pid) => {
             let global_app = state.app().map_err(command_error)?;
             let app_state = global_app.load_state().map_err(command_error)?;
-            for workspace in &app_state.conversation_workspaces {
-                if workspace.project_id == pid {
-                    let context = state.context().map_err(command_error)?;
-                    return Ok(global_app.with_repo_root(
-                        Utf8PathBuf::from(&workspace.workspace_path),
-                        context.config,
-                    ));
-                }
-            }
-            Err(CommandErrorVm::new(
-                "workspace.not-found",
-                serde_json::json!({ "projectId": pid }),
-            ))
+            let (workspace_path, _) =
+                workspace_entry_for_project(&app_state, pid).ok_or_else(|| {
+                    CommandErrorVm::new(
+                        "workspace.not-found",
+                        serde_json::json!({ "projectId": pid }),
+                    )
+                })?;
+            let context = state.context().map_err(command_error)?;
+            Ok(global_app.with_repo_root(Utf8PathBuf::from(workspace_path), context.config))
         }
     }
 }

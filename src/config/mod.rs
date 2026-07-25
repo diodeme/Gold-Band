@@ -535,6 +535,8 @@ pub struct SettingsConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateConfig {
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub state_schema_version: u32,
     pub desktop_updater_last_checked_at: Option<String>,
     #[serde(default)]
     pub desktop_update_badges: DesktopUpdateBadgeState,
@@ -1321,6 +1323,10 @@ mod tests {
             Some("bypassPermissions")
         );
     }
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

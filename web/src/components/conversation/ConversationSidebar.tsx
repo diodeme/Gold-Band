@@ -1,7 +1,7 @@
-import { Pin, PinOff, MessageSquare, Search, Bot, Boxes, Workflow, Settings, ChevronDown, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Pin, PinOff, MessageSquare, Search, Bot, Boxes, Workflow, Settings, ChevronDown, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useEffect, useRef, useState } from 'react';
-import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm } from '../../types';
+import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
 import { saveConversationPreference } from '../../api';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
@@ -28,7 +28,7 @@ interface ConversationSidebarProps {
   onPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
   onNewConversationInWorkspace?: (projectId: string) => void;
   onAddWorkspace?: () => void;
-  onRemoveWorkspace?: (projectId: string) => void;
+  onRemoveWorkspace?: (projectId: string) => Promise<void>;
 }
 
 export function ConversationSidebar({
@@ -59,6 +59,8 @@ export function ConversationSidebar({
     return false;
   });
   const [collapsedPinnedWorkspaces, setCollapsedPinnedWorkspaces] = useState<Record<string, boolean>>({});
+  const [workspaceToRemove, setWorkspaceToRemove] = useState<ConversationWorkspaceVm | null>(null);
+  const [workspaceRemovalPending, setWorkspaceRemovalPending] = useState(false);
 
   // Sync pinned collapse from persisted preferences when sidebar VM reloads
   useEffect(() => {
@@ -148,9 +150,24 @@ export function ConversationSidebar({
     ));
   };
 
+  const confirmWorkspaceRemoval = async (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    if (!workspaceToRemove || !onRemoveWorkspace || workspaceRemovalPending) return;
+    setWorkspaceRemovalPending(true);
+    try {
+      await onRemoveWorkspace(workspaceToRemove.projectId);
+      setWorkspaceToRemove(null);
+    } catch {
+      // App owns the user-facing error dialog; keep this confirmation open for retry.
+    } finally {
+      setWorkspaceRemovalPending(false);
+    }
+  };
+
   return (
     <TooltipProvider>
-      <aside className="flex min-h-0 h-full flex-col gap-0.5 bg-sidebar px-3 py-3 text-sidebar-foreground">
+      <>
+        <aside className="flex min-h-0 h-full flex-col gap-0.5 bg-sidebar px-3 py-3 text-sidebar-foreground">
         {/* Quick actions */}
         <div className="flex flex-col gap-0.5">
           <SidebarButton
@@ -274,14 +291,24 @@ export function ConversationSidebar({
                     <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
                     <span className="truncate">{ws.name}</span>
                   </button>
-                  <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+                  <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
                     {onNewConversationInWorkspace ? (
                       <Button variant="ghost" size="icon" className="size-5 active:scale-90 transition-transform" onClick={(e) => { e.stopPropagation(); onNewConversationInWorkspace(ws.projectId); }}>
                         <Plus className="size-3" />
                       </Button>
                     ) : null}
                     {onRemoveWorkspace ? (
-                      <Button variant="ghost" size="icon" className="size-5 text-muted-foreground hover:text-destructive active:scale-90 transition-transform" onClick={(e) => { e.stopPropagation(); onRemoveWorkspace(ws.projectId); }}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-5 text-muted-foreground transition-transform hover:text-destructive active:scale-90"
+                        aria-label={t('conversation.sidebar.removeWorkspaceNamed', { name: ws.name })}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setWorkspaceRemovalPending(false);
+                          setWorkspaceToRemove(ws);
+                        }}
+                      >
                         <Trash2 className="size-3" />
                       </Button>
                     ) : null}
@@ -334,7 +361,7 @@ export function ConversationSidebar({
 
             {vm.workspaces.length === 0 ? (
               <div className="px-3 py-4 text-center text-xs text-muted-foreground">
-                {t('conversation.sidebar.noPinned')}
+                {t('conversation.sidebar.noWorkspaces')}
               </div>
             ) : null}
           </div>
@@ -344,7 +371,54 @@ export function ConversationSidebar({
         {/* Settings */}
         <Separator className="mx-1 my-0.75 opacity-45" />
         <SidebarButton icon={<Settings />} label={t('conversation.sidebar.settings')} onClick={() => onSelect({ kind: 'settings' })} />
-      </aside>
+        </aside>
+
+        <AlertDialog
+          open={workspaceToRemove != null}
+          onOpenChange={(open) => {
+            if (!open && !workspaceRemovalPending) setWorkspaceToRemove(null);
+          }}
+        >
+          <AlertDialogContent className="max-w-[480px] gap-5 rounded-3xl border-border/60 p-6 shadow-2xl">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              className="absolute right-4 top-4 size-7 rounded-full text-muted-foreground hover:text-foreground"
+              aria-label={t('common.close')}
+              disabled={workspaceRemovalPending}
+              onClick={() => setWorkspaceToRemove(null)}
+            >
+              <X className="size-4" />
+            </Button>
+            <AlertDialogHeader className="gap-1.5 pr-8">
+              <AlertDialogTitle className="text-lg font-semibold tracking-tight">
+                {t('conversation.sidebar.removeWorkspaceTitle', { name: workspaceToRemove?.name ?? '' })}
+              </AlertDialogTitle>
+              <AlertDialogDescription className="text-sm leading-6">
+                {t('conversation.sidebar.removeWorkspaceDescription')}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter className="gap-1.5">
+              <AlertDialogCancel variant="ghost" size="sm" disabled={workspaceRemovalPending}>
+                {t('conversation.sidebar.removeWorkspaceCancel')}
+              </AlertDialogCancel>
+              <AlertDialogAction
+                variant="ghost"
+                size="sm"
+                className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive"
+                disabled={workspaceRemovalPending}
+                onClick={confirmWorkspaceRemoval}
+              >
+                {workspaceRemovalPending ? <Loader2 className="size-4 animate-spin" /> : null}
+                {t(workspaceRemovalPending
+                  ? 'conversation.sidebar.removingWorkspace'
+                  : 'conversation.sidebar.removeWorkspaceConfirm')}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </>
     </TooltipProvider>
   );
 }

@@ -45,10 +45,11 @@
 - 用户可通过原生目录选择器打开新的 workspace；选择后立即刷新任务编排页面栈。
 - 桌面端原生目录选择器在主线程必须使用非阻塞调用；禁止在 workspace 选择链路使用 blocking dialog API，避免 macOS 上触发 event loop 卡死。
 - 最近使用 workspace 写入用户级本地偏好，不属于 task / run / round canonical state。
-- **新旧 UI 多工作空间职责分离**：旧 UI（工作台模式）仅维护单一全局 workspace（`DesktopContext.repo_root`），所有 task/run 操作均在该 workspace 下执行；新 UI（会话模式）维护独立的多工作空间列表（`conversation_workspaces` + `last_conversation_workspace`），通过 `projectId` 在创建/查看/操作会话时解析到对应 workspace 路径，不依赖旧 UI 的全局 workspace。
+- **新旧 UI 多工作空间职责分离**：旧 UI（工作台模式）仅维护单一全局 workspace（`DesktopContext.repo_root`），所有 task/run 操作均在该 workspace 下执行；新 UI（会话模式）以 `conversation_workspaces` 作为唯一工作空间列表，并以 `last_conversation_workspace` 记录最后活跃项。会话侧栏不得无条件注入 `DesktopContext.repo_root`；每次创建、追问、查看历史、权限处理、停止或附件读取都先用共享 resolver 将 `projectId` 解析为持久化工作空间，再用该路径构造 workspace-scoped `App.paths.repo_root`。
 - **工作台观察期边界**：2026-07-22 起产品内隐藏 Workbench / Conversation 形态切换入口，桌面根路径默认进入 `/chat` 会话主页；旧工作台页面、路由与单 workspace 状态暂时保留，只允许通过显式 `/tasks`、`/agents`、`/contexts`、`/settings` 等 deep link 访问，不再读取历史 UI 模式偏好覆盖默认入口。
 - **持久化边界**：`recent_desktop_workspaces` 仅由旧 UI 管理（`choose_workspace` / `select_recent_workspace` / `remove_recent_workspace`）；`conversation_workspaces` 和 `last_conversation_workspace` 仅由新 UI 管理（`add_conversation_workspace` / 成功创建/重跑后的 `save_last_conversation_workspace` / `remove_conversation_workspace`）。新 UI 添加、查看或草稿选择 workspace 不污染旧 UI 最近列表。
 - **废弃字段边界**：`SettingsConfig.desktop_workspace` 已标记废弃，本阶段仅为旧 Workbench 的单 workspace 启动与最近列表兼容而保留，不删除、不新增消费方。会话 UI 的 workspace canonical state 只允许来自 `conversation_workspaces` 与 `last_conversation_workspace`；待旧 Workbench 删除时再一并移除该字段。
+- **旧状态迁移**：用户状态通过版本化 `stateSchemaVersion` 在桌面上下文初始化时迁移一次。迁移重新生成规范 `projectId`、按规范化路径去重，并同步重写会话运行模式、置顶和最后活跃引用；迁移成功后原子写回。版本已达当前值时不再扫描或写盘，避免每次启动重复修复。
 - **最近列表管理**：旧 UI workspace 选择页的最近列表每行提供打开与移除操作；移除只删除用户级 `recent_desktop_workspaces` 记录，不切换当前 workspace，不删除磁盘目录，也不影响新 UI 的 `conversation_workspaces`。当前正在使用的 workspace 不允许从最近列表移除；有效最近列表只剩一个 workspace 时也禁用移除，避免把工作台置入无当前 workspace 的状态。
 
 ### 3.3 一级菜单

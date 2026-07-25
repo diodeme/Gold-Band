@@ -28,8 +28,8 @@ use gold_band::config::{
 };
 use gold_band::observability::set_runtime_log_level;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
-use tracing::info;
+use tauri::{AppHandle, Emitter, Manager, State};
+use tracing::{info, warn};
 
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
@@ -54,6 +54,7 @@ use crate::view_models_conversation::{
 };
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
+const AGENT_REGISTRY_UPDATED_EVENT: &str = "gold-band://agent-registry-updated";
 const CONVERSATION_RUN_STATE_EVENT: &str = "gold-band://conversation-run-state-updated";
 const PERMISSION_REQUESTED_DEDUP_SUFFIX: &str = "permission-requested";
 const ELICITATION_REQUESTED_DEDUP_SUFFIX: &str = "elicitation-requested";
@@ -625,6 +626,10 @@ pub struct ManagedAgentInput {
     pub env: std::collections::BTreeMap<String, String>,
 }
 
+fn normalize_agent_command(command: &str) -> String {
+    command.trim().to_string()
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateTaskInputVm {
@@ -728,6 +733,7 @@ pub fn get_agent_registry(state: State<'_, DesktopState>) -> CommandResult<Agent
 
 #[tauri::command]
 pub fn create_agent(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     agent_type: String,
     input: ManagedAgentInput,
@@ -746,11 +752,15 @@ pub fn create_agent(
         &app.paths.repo_root,
     )
     .map_err(command_error)?;
+    let config_commit_guard = state
+        .agent_config_diagnostic_commit_guard()
+        .map_err(command_error)?;
+    let app = state.app().map_err(command_error)?;
     let settings = app
         .save_managed_agent(
             agent_type,
             ManagedAgentConfig::new(AcpAdapterConfig {
-                command: input.command,
+                command: normalize_agent_command(&input.command),
                 args: input.args,
                 display_name: input.display_name,
                 env: input.env,
@@ -760,6 +770,11 @@ pub fn create_agent(
     state
         .update_settings_config(&settings)
         .map_err(command_error)?;
+    state
+        .clear_agent_diagnostic(agent_type)
+        .map_err(command_error)?;
+    drop(config_commit_guard);
+    schedule_agent_diagnostic(&app_handle, agent_type);
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     Ok(agent_registry_vm(&app, &diagnostics))
@@ -767,6 +782,7 @@ pub fn create_agent(
 
 #[tauri::command]
 pub fn update_agent(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     agent_type: String,
     input: ManagedAgentInput,
@@ -785,11 +801,15 @@ pub fn update_agent(
         &app.paths.repo_root,
     )
     .map_err(command_error)?;
+    let config_commit_guard = state
+        .agent_config_diagnostic_commit_guard()
+        .map_err(command_error)?;
+    let app = state.app().map_err(command_error)?;
     let settings = app
         .save_managed_agent(
             agent_type,
             ManagedAgentConfig::new(AcpAdapterConfig {
-                command: input.command,
+                command: normalize_agent_command(&input.command),
                 args: input.args,
                 display_name: input.display_name,
                 env: input.env,
@@ -802,6 +822,8 @@ pub fn update_agent(
     state
         .clear_agent_diagnostic(agent_type)
         .map_err(command_error)?;
+    drop(config_commit_guard);
+    schedule_agent_diagnostic(&app_handle, agent_type);
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     Ok(agent_registry_vm(&app, &diagnostics))
@@ -820,11 +842,18 @@ pub fn delete_agent(
         &app.paths.repo_root,
     )
     .map_err(command_error)?;
+    let _config_commit_guard = state
+        .agent_config_diagnostic_commit_guard()
+        .map_err(command_error)?;
+    let app = state.app().map_err(command_error)?;
     let settings = app
         .remove_managed_agent(agent_type)
         .map_err(command_error)?;
     state
         .update_settings_config(&settings)
+        .map_err(command_error)?;
+    state
+        .cancel_queued_agent_diagnostic(agent_type)
         .map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
@@ -843,6 +872,34 @@ pub async fn doctor_agent(
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     Ok(agent_registry_vm(&app, &diagnostics))
+}
+
+fn schedule_agent_diagnostic(app_handle: &AppHandle, agent_type: ManagedAgentType) {
+    let state = app_handle.state::<DesktopState>();
+    match state.queue_agent_diagnostic(agent_type) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            warn!(agent_type = agent_type.as_str(), %error, "failed to queue agent diagnostic");
+            return;
+        }
+    }
+
+    let diagnostic_handle = app_handle.clone();
+    let thread_name = format!("agent-doctor-{}", agent_type.as_str());
+    if let Err(error) = std::thread::Builder::new()
+        .name(thread_name)
+        .spawn(move || {
+            let state = diagnostic_handle.state::<DesktopState>();
+            if let Err(error) = state.run_queued_agent_diagnostic(agent_type) {
+                warn!(agent_type = agent_type.as_str(), %error, "automatic agent diagnostic failed");
+            }
+            let _ = diagnostic_handle.emit(AGENT_REGISTRY_UPDATED_EVENT, ());
+        })
+    {
+        let _ = state.cancel_queued_agent_diagnostic(agent_type);
+        warn!(agent_type = agent_type.as_str(), %error, "failed to start agent diagnostic thread");
+    }
 }
 
 #[tauri::command]
@@ -4087,6 +4144,11 @@ mod tests {
     use camino::Utf8PathBuf;
     use gold_band::storage::write_json;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn managed_agent_command_trims_boundary_whitespace() {
+        assert_eq!(normalize_agent_command("  npx  "), "npx");
+    }
 
     #[test]
     fn acp_follow_up_uses_only_gold_band_model_override() {

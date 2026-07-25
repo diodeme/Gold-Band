@@ -232,6 +232,7 @@ const resources = {
         entries: "项",
         diagnose: "环境诊断",
         diagnosing: "诊断中",
+        savedAndDiagnosing: "配置已保存，正在后台诊断。",
         diagnosticComplete: "环境诊断完成，诊断进程已退出。",
         diagnosticFailed: "环境诊断异常：{{reason}}",
         diagnosticFailedFallback: "请检查 agent 命令、网络和认证状态。",
@@ -1478,6 +1479,7 @@ const resources = {
         entries: "entries",
         diagnose: "Diagnose",
         diagnosing: "Diagnosing",
+        savedAndDiagnosing: "Configuration saved. Diagnosing in the background.",
         diagnosticComplete:
           "Environment check completed and the diagnostic process has exited.",
         diagnosticFailed: "Environment check failed: {{reason}}",

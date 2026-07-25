@@ -46,20 +46,27 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   const [form, setForm] = useState<ManagedAgentInput>(defaultForm);
   const [argsText, setArgsText] = useState('');
   const [envText, setEnvText] = useState('');
+  const [initialEditInput, setInitialEditInput] = useState<ManagedAgentInput | null>(null);
   const [saving, setSaving] = useState(false);
   const [diagnosingType, setDiagnosingType] = useState<string | null>(null);
+  const [automaticDiagnosingType, setAutomaticDiagnosingType] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ManagedAgentVm | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const supportedTypes = vm?.supportedTypes ?? [];
   const configuredTypes = useMemo(() => new Set(vm?.agents.map((agent) => agent.agentType) ?? []), [vm]);
+  const currentInput = useMemo(() => buildAgentInput(form, argsText, envText), [argsText, envText, form]);
+  const hasFormChanges = editorMode === 'create'
+    || initialEditInput === null
+    || hasManagedAgentInputChanged(initialEditInput, currentInput);
 
   useEffect(() => {
     if (!sheetOpen) {
       setForm(defaultForm());
       setArgsText('');
       setEnvText('');
+      setInitialEditInput(null);
       setError(null);
     }
   }, [sheetOpen]);
@@ -70,6 +77,16 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
     return () => window.clearTimeout(timer);
   }, [notice]);
 
+  useEffect(() => {
+    if (!automaticDiagnosingType) return;
+    const diagnostic = vm?.agents.find((agent) => agent.agentType === automaticDiagnosingType)?.diagnostic;
+    if (!diagnostic) return;
+    setAutomaticDiagnosingType(null);
+    setNotice(diagnostic.available
+      ? { tone: 'success', message: t('agentManagement.diagnosticComplete') }
+      : { tone: 'error', message: t('agentManagement.diagnosticFailed', { reason: diagnostic.reason ?? t('agentManagement.diagnosticFailedFallback') }) });
+  }, [automaticDiagnosingType, t, vm]);
+
   const openCreate = (agentType: SupportedAgentTypeVm) => {
     const nextForm = formFromSupportedAgent(agentType);
     setEditorMode('create');
@@ -77,21 +94,26 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
     setForm(nextForm);
     setArgsText(formatArgs(nextForm.args));
     setEnvText(formatEnv(Object.entries(nextForm.env).map(([key, value]) => ({ key, value }))));
+    setInitialEditInput(null);
     setError(null);
     setSheetOpen(true);
   };
 
   const openEdit = (agent: ManagedAgentVm) => {
-    setEditorMode('edit');
-    setSelectedType(agent.agentType);
-    setForm({
+    const nextForm = {
       displayName: agent.displayName,
       command: agent.command,
       args: agent.args,
       env: Object.fromEntries(agent.env.map((entry) => [entry.key, entry.value])),
-    });
-    setArgsText(formatArgs(agent.args));
-    setEnvText(formatEnv(agent.env));
+    };
+    const nextArgsText = formatArgs(agent.args);
+    const nextEnvText = formatEnv(agent.env);
+    setEditorMode('edit');
+    setSelectedType(agent.agentType);
+    setForm(nextForm);
+    setArgsText(nextArgsText);
+    setEnvText(nextEnvText);
+    setInitialEditInput(buildAgentInput(nextForm, nextArgsText, nextEnvText));
     setError(null);
     setSheetOpen(true);
   };
@@ -101,14 +123,19 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
       setError(t('agentManagement.agentTypeRequired'));
       return;
     }
+    if (editorMode === 'edit' && initialEditInput && !hasManagedAgentInputChanged(initialEditInput, currentInput)) {
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
-      const input = buildAgentInput(form, argsText, envText);
       const next = editorMode === 'create'
-        ? await createAgent(selectedType, input)
-        : await updateAgent(selectedType, input);
+        ? await createAgent(selectedType, currentInput)
+        : await updateAgent(selectedType, currentInput);
       onRegistryChange(next);
+      setAutomaticDiagnosingType(selectedType);
+      setNotice({ tone: 'success', message: t('agentManagement.savedAndDiagnosing') });
+      window.setTimeout(onRefresh, 250);
       setSheetOpen(false);
     } catch (nextError) {
       setError(displayAppError(t, nextError));
@@ -206,7 +233,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
             <AgentCard
               key={agent.agentType}
               agent={agent}
-              diagnosing={diagnosingType === agent.agentType}
+              diagnosing={diagnosingType === agent.agentType || automaticDiagnosingType === agent.agentType}
               onEdit={() => openEdit(agent)}
               onDelete={() => setDeleteTarget(agent)}
               onDoctor={() => void runDoctor(agent.agentType)}
@@ -254,7 +281,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
             {error ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">{error}</div> : null}
             <div className="flex justify-end gap-2 pt-1">
               <Button variant="outline" onClick={() => setSheetOpen(false)}>{t('common.close')}</Button>
-              <Button disabled={saving || !selectedType.trim() || !form.displayName.trim() || !form.command.trim()} onClick={() => void submit()}>{t('common.save')}</Button>
+              <Button disabled={saving || !selectedType.trim() || !form.displayName.trim() || !form.command.trim() || !hasFormChanges} onClick={() => void submit()}>{t('common.save')}</Button>
             </div>
           </div>
         </SheetContent>
@@ -311,8 +338,8 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
           {diagnosing ? <LoaderCircle className="animate-spin" /> : <Stethoscope />}
           {diagnosing ? t('agentManagement.diagnosing') : t('agentManagement.diagnose')}
         </Button>
-        <Button size="sm" variant="outline" onClick={onEdit}><Pencil />{t('agentManagement.edit')}</Button>
-        <Button size="sm" variant="outline" onClick={onDelete}><Trash2 />{t('agentManagement.delete')}</Button>
+        <Button size="sm" variant="outline" disabled={diagnosing} onClick={onEdit}><Pencil />{t('agentManagement.edit')}</Button>
+        <Button size="sm" variant="outline" disabled={diagnosing} onClick={onDelete}><Trash2 />{t('agentManagement.delete')}</Button>
       </div>
     </AppCard>
   );
@@ -396,13 +423,26 @@ function Info({ label, value, mono = false }: { label: string; value: string; mo
   );
 }
 
-function buildAgentInput(form: ManagedAgentInput, argsText: string, envText: string): ManagedAgentInput {
+export function buildAgentInput(form: ManagedAgentInput, argsText: string, envText: string): ManagedAgentInput {
   return {
     displayName: form.displayName,
-    command: form.command,
+    command: form.command.trim(),
     args: parseArgs(argsText),
     env: parseEnv(envText),
   };
+}
+
+export function hasManagedAgentInputChanged(initial: ManagedAgentInput, current: ManagedAgentInput): boolean {
+  return managedAgentInputFingerprint(initial) !== managedAgentInputFingerprint(current);
+}
+
+function managedAgentInputFingerprint(input: ManagedAgentInput): string {
+  return JSON.stringify({
+    displayName: input.displayName,
+    command: input.command.trim(),
+    args: input.args,
+    env: Object.entries(input.env).sort(([left], [right]) => left.localeCompare(right)),
+  });
 }
 
 function formatArgs(args: string[]) {

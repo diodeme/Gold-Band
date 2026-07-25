@@ -314,6 +314,10 @@ pub struct ManagedAgentConfig {
     /// 未设置时使用 ManagedAgentType::skills_dir_name() 硬编码默认值
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills_dir_override: Option<String>,
+    /// 是否允许 Gold Band 根据 Provider revision 重载并导入外部客户端会话历史。
+    /// 仅适用于能跨客户端共享同一线性会话上下文的 Agent，默认关闭。
+    #[serde(default)]
+    pub external_session_sync_enabled: bool,
 }
 
 impl ManagedAgentConfig {
@@ -321,6 +325,7 @@ impl ManagedAgentConfig {
         Self {
             adapter,
             skills_dir_override: None,
+            external_session_sync_enabled: false,
         }
     }
 
@@ -490,6 +495,9 @@ pub struct SettingsConfig {
     pub desktop_language: Option<DesktopLanguage>,
     pub desktop_font: Option<DesktopFontPreference>,
     pub desktop_updater_url_override: Option<String>,
+    /// DEPRECATED: 仅供旧 Workbench 单 workspace 启动与最近列表兼容使用。
+    /// 新会话 UI 必须使用 `conversation_workspaces` / `last_conversation_workspace`，
+    /// 不得新增对该字段的依赖；待旧 Workbench 删除时一并移除。
     pub desktop_workspace: Option<String>,
     pub agents: Option<BTreeMap<ManagedAgentType, ManagedAgentConfig>>,
     pub use_local_claude: Option<bool>,
@@ -790,10 +798,12 @@ impl RuntimeConfig {
 #[cfg(test)]
 mod tests {
     use super::{
-        ConsoleThemeName, ConversationDirectConfig, ConversationRunMode, ConversationRunModeEntry,
-        DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
-        ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
+        AcpAdapterConfig, ConsoleThemeName, ConversationDirectConfig, ConversationRunMode,
+        ConversationRunModeEntry, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
+        DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, ProjectAppConfig,
+        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
     };
+    use std::collections::BTreeMap;
     use std::str::FromStr;
 
     #[test]
@@ -1153,6 +1163,36 @@ mod tests {
             config.skills_dir_name(ManagedAgentType::ClaudeAcp),
             "custom-claude"
         );
+    }
+
+    #[test]
+    fn managed_agent_external_session_sync_defaults_off_and_roundtrips() {
+        let legacy: ManagedAgentConfig = serde_json::from_value(serde_json::json!({
+            "adapter": AcpAdapterConfig::default()
+        }))
+        .unwrap();
+        assert!(!legacy.external_session_sync_enabled);
+        assert_eq!(legacy.skills_dir_override, None);
+
+        let mut agents = BTreeMap::new();
+        let mut agent = ManagedAgentConfig::new(AcpAdapterConfig::default());
+        agent.skills_dir_override = Some(".custom-agent".to_string());
+        agent.external_session_sync_enabled = true;
+        agents.insert(ManagedAgentType::ClaudeAcp, agent);
+        let settings = SettingsConfig {
+            agents: Some(agents),
+            ..SettingsConfig::default()
+        };
+
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(
+            value["agents"]["claude-acp"]["externalSessionSyncEnabled"],
+            true
+        );
+        let roundtripped: SettingsConfig = serde_json::from_value(value).unwrap();
+        let agent = &roundtripped.agents.unwrap()[&ManagedAgentType::ClaudeAcp];
+        assert!(agent.external_session_sync_enabled);
+        assert_eq!(agent.skills_dir_override.as_deref(), Some(".custom-agent"));
     }
 
     #[test]

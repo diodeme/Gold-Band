@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { AlertTriangle, CheckCircle2, CircleHelp, LoaderCircle, Pencil, Plus, RefreshCw, Stethoscope, Trash2 } from 'lucide-react';
@@ -30,12 +31,21 @@ type Notice = { tone: 'success' | 'error'; message: string };
 
 const ACP_REGISTRY_URL = 'https://agentclientprotocol.com/get-started/registry';
 
-const defaultForm = (): ManagedAgentInput => ({ displayName: '', command: '', args: [], env: {} });
+const defaultForm = (): ManagedAgentInput => ({
+  displayName: '',
+  command: '',
+  args: [],
+  env: {},
+  skillsDirOverride: null,
+  externalSessionSyncEnabled: false,
+});
 const formFromSupportedAgent = (agentType?: SupportedAgentTypeVm): ManagedAgentInput => agentType ? ({
   displayName: agentType.defaultDisplayName,
   command: agentType.defaultCommand,
   args: agentType.defaultArgs,
   env: Object.fromEntries(agentType.defaultEnv.map((entry) => [entry.key, entry.value])),
+  skillsDirOverride: null,
+  externalSessionSyncEnabled: false,
 }) : defaultForm();
 
 export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }: AgentManagementPageProps) {
@@ -100,12 +110,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   };
 
   const openEdit = (agent: ManagedAgentVm) => {
-    const nextForm = {
-      displayName: agent.displayName,
-      command: agent.command,
-      args: agent.args,
-      env: Object.fromEntries(agent.env.map((entry) => [entry.key, entry.value])),
-    };
+    const nextForm = agentInputFromVm(agent);
     const nextArgsText = formatArgs(agent.args);
     const nextEnvText = formatEnv(agent.env);
     setEditorMode('edit');
@@ -278,6 +283,29 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
                 onChange={(event) => setEnvText(event.target.value)}
               />
             </Field>
+            <Field label={t('agentManagement.skillsDirOverride')} description={t('agentManagement.skillsDirOverrideDescription')}>
+              <TextInput
+                value={form.skillsDirOverride ?? ''}
+                placeholder={t('agentManagement.skillsDirOverridePlaceholder')}
+                onChange={(event: ChangeEvent<HTMLInputElement>) => setForm((current) => ({ ...current, skillsDirOverride: event.target.value }))}
+              />
+            </Field>
+            <div className="flex items-center justify-between gap-5 rounded-xl border border-border/60 bg-muted/10 px-4 py-3">
+              <div className="min-w-0 space-y-1">
+                <ExternalSessionSyncHeading
+                  label={t('agentManagement.externalSessionSync')}
+                  betaLabel={t('agentManagement.externalSessionSyncBeta')}
+                  helpLabel={t('agentManagement.externalSessionSyncHelpLabel')}
+                  helpText={t('agentManagement.externalSessionSyncHelp')}
+                />
+                <div className="text-xs leading-5 text-muted-foreground">{t('agentManagement.externalSessionSyncDescription')}</div>
+              </div>
+              <Switch
+                id="external-session-sync"
+                checked={form.externalSessionSyncEnabled}
+                onCheckedChange={(checked) => setForm((current) => ({ ...current, externalSessionSyncEnabled: checked }))}
+              />
+            </div>
             {error ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">{error}</div> : null}
             <div className="flex justify-end gap-2 pt-1">
               <Button variant="outline" onClick={() => setSheetOpen(false)}>{t('common.close')}</Button>
@@ -328,10 +356,9 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
         </div>
       </div>
       <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-2">
-        <Info label={t('agentManagement.command')} value={agent.command} mono />
-        <Info label={t('agentManagement.args')} value={agent.args.length > 0 ? agent.args.join(' ') : '-'} mono />
-        <Info label={t('agentManagement.env')} value={agent.env.length > 0 ? `${agent.env.length} ${t('agentManagement.entries')}` : '-'} />
-        <Info label={t('agentManagement.lastChecked')} value={formatLocalDateTime(diagnostic?.checkedAt)} />
+        {buildAgentCardSummary(agent, t).map((item) => (
+          <Info key={item.key} label={item.label} value={item.value} mono={item.mono} />
+        ))}
       </div>
       <div className="mt-auto flex flex-wrap justify-end gap-2 pt-1">
         <Button size="sm" variant="outline" disabled={diagnosing} aria-busy={diagnosing} onClick={onDoctor}>
@@ -423,12 +450,73 @@ function Info({ label, value, mono = false }: { label: string; value: string; mo
   );
 }
 
+export function ExternalSessionSyncHeading({
+  label,
+  betaLabel,
+  helpLabel,
+  helpText,
+}: {
+  label: string;
+  betaLabel: string;
+  helpLabel: string;
+  helpText: string;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <label htmlFor="external-session-sync" className="text-sm font-semibold text-foreground">{label}</label>
+      <Badge variant="secondary" className="h-5 rounded-full px-1.5 py-0 text-[10px] font-semibold uppercase tracking-wide">
+        {betaLabel}
+      </Badge>
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-5 rounded-full text-muted-foreground hover:text-foreground"
+              aria-label={helpLabel}
+            >
+              <CircleHelp className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={6} className="max-w-64 text-xs leading-5">
+            {helpText}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    </div>
+  );
+}
+
+export function buildAgentCardSummary(agent: ManagedAgentVm, t: (key: string) => string) {
+  return [
+    { key: 'command', label: t('agentManagement.command'), value: agent.command, mono: true },
+    { key: 'args', label: t('agentManagement.args'), value: agent.args.length > 0 ? agent.args.join(' ') : '-', mono: true },
+    { key: 'env', label: t('agentManagement.env'), value: agent.env.length > 0 ? `${agent.env.length} ${t('agentManagement.entries')}` : '-', mono: false },
+    { key: 'lastChecked', label: t('agentManagement.lastChecked'), value: formatLocalDateTime(agent.diagnostic?.checkedAt), mono: false },
+  ];
+}
+
+function agentInputFromVm(agent: ManagedAgentVm): ManagedAgentInput {
+  return {
+    displayName: agent.displayName,
+    command: agent.command,
+    args: agent.args,
+    env: Object.fromEntries(agent.env.map((entry) => [entry.key, entry.value])),
+    skillsDirOverride: agent.skillsDirOverride ?? null,
+    externalSessionSyncEnabled: agent.externalSessionSyncEnabled,
+  };
+}
+
 export function buildAgentInput(form: ManagedAgentInput, argsText: string, envText: string): ManagedAgentInput {
   return {
     displayName: form.displayName,
     command: form.command.trim(),
     args: parseArgs(argsText),
     env: parseEnv(envText),
+    skillsDirOverride: form.skillsDirOverride?.trim() || null,
+    externalSessionSyncEnabled: form.externalSessionSyncEnabled,
   };
 }
 
@@ -442,6 +530,8 @@ function managedAgentInputFingerprint(input: ManagedAgentInput): string {
     command: input.command.trim(),
     args: input.args,
     env: Object.entries(input.env).sort(([left], [right]) => left.localeCompare(right)),
+    skillsDirOverride: input.skillsDirOverride?.trim() || null,
+    externalSessionSyncEnabled: input.externalSessionSyncEnabled,
   });
 }
 

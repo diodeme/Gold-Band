@@ -1197,12 +1197,13 @@ fn derive_conversation_attempt_lifecycle(
     let runtime_active = is_active_session_status(runtime_status) || unexplained_provider_failure;
     let live_phase = prompt_activity.map(|activity| match activity {
         PromptActivity::Starting => "starting",
+        PromptActivity::Accepted => "accepted",
         PromptActivity::Running => "running",
         PromptActivity::CancelRequested => "cancel-requested",
     });
     let live_active = matches!(
         prompt_activity,
-        Some(PromptActivity::Starting | PromptActivity::Running)
+        Some(PromptActivity::Starting | PromptActivity::Accepted | PromptActivity::Running)
     );
     let acp_stopping = matches!(prompt_activity, Some(PromptActivity::CancelRequested))
         || session_status
@@ -1250,7 +1251,11 @@ fn derive_conversation_attempt_lifecycle(
         "cancelling".to_string()
     } else if matches!(prompt_activity, Some(PromptActivity::Starting)) && !runtime_active {
         "starting".to_string()
-    } else if matches!(prompt_activity, Some(PromptActivity::Running)) && !runtime_active {
+    } else if matches!(
+        prompt_activity,
+        Some(PromptActivity::Accepted | PromptActivity::Running)
+    ) && !runtime_active
+    {
         "running".to_string()
     } else if acp_stopping {
         session_status
@@ -3096,6 +3101,25 @@ mod tests {
         assert_eq!(lifecycle.runtime.phase, "launching-session");
         assert_eq!(lifecycle.composer.processing_kind, "launching");
         assert!(lifecycle.acp.active);
+    }
+
+    #[test]
+    fn completed_runtime_exposes_accepted_follow_up_as_processing() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("running"),
+            Some(PromptActivity::Accepted),
+            "completed",
+            Some("success"),
+            false,
+            None,
+            false,
+            false,
+        );
+
+        assert_eq!(lifecycle.display_status, "running");
+        assert_eq!(lifecycle.acp.phase.as_deref(), Some("accepted"));
+        assert!(lifecycle.acp.active);
+        assert_eq!(lifecycle.composer.processing_kind, "processing");
     }
 
     #[test]

@@ -1755,6 +1755,19 @@ pub fn get_acp_session(
     if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (outer_node_id.as_deref(), outer_attempt_id.as_deref())
     {
+        let attempt_dir = app.paths.dynamic_node_attempt_dir(
+            &task_id,
+            &run_id,
+            &round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &node_id,
+            &attempt_id,
+        );
+        client::renew_session_foreground_lease(
+            &attempt_dir,
+            std::time::Duration::from_secs(app.config.acp_session_foreground_lease_ttl_secs),
+        );
         return dynamic_acp_session_vm(
             &app,
             &task_id,
@@ -1769,6 +1782,13 @@ pub fn get_acp_session(
         )
         .map_err(command_error);
     }
+    let attempt_dir = app
+        .paths
+        .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
+    client::renew_session_foreground_lease(
+        &attempt_dir,
+        std::time::Duration::from_secs(app.config.acp_session_foreground_lease_ttl_secs),
+    );
     acp_session_vm(
         &app,
         &task_id,
@@ -1780,6 +1800,39 @@ pub fn get_acp_session(
         None,
     )
     .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn renew_acp_session_lease(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<u64> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let attempt_dir = resolve_acp_attempt_dir(
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
+    );
+    client::renew_session_foreground_lease(
+        &attempt_dir,
+        std::time::Duration::from_secs(app.config.acp_session_foreground_lease_ttl_secs),
+    );
+    Ok(app
+        .config
+        .acp_session_foreground_lease_renew_interval_secs
+        .saturating_mul(1000))
 }
 
 #[tauri::command]
@@ -2066,6 +2119,7 @@ pub async fn send_acp_prompt(
                 app.config.acp_session_title_refresh_enabled,
                 app.config.acp_raw_max_size_bytes,
                 app.config.acp_raw_target_size_bytes,
+                client::AcpRuntimePolicy::from(&app.config),
                 Some(&|event| {
                     live_update(
                         acp_live_event_context(
@@ -2215,6 +2269,7 @@ pub async fn send_acp_prompt(
             app.config.acp_session_title_refresh_enabled,
             app.config.acp_raw_max_size_bytes,
             app.config.acp_raw_target_size_bytes,
+            client::AcpRuntimePolicy::from(&app.config),
             Some(&|event| {
                 live_update(
                     acp_live_event_context(

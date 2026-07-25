@@ -214,6 +214,13 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 ### 继续输入
 - 当前 session 正常结束后，在会话窗口追问属于 ACP same-session prompt，不要求 authoring workflow 合法
 - 追问发送时，composer 进入本地 turn 的发送中 / 处理中 / 计时状态；结束后只影响该 ACP session 的消息流，不触发工作流 runtime 继续执行
+- Gold Band 本地发起的用户消息仍以调用 provider 前持久化的 synthetic `goldBandPrompt` 为 canonical 事实，并以 `raw.promptId` 标识本轮输入；但 ACP session 允许被 Claude Code、Codex 等外部客户端继续，因此 Provider 在 `session/load` 中回放的 `user_message_chunk` 不能整体丢弃。恢复会话时必须将历史 `goldBandPrompt` 作为有序锚点与 replay user turn 对账：Provider 允许漏回放部分本地 turn，后续 replay 消息只要匹配剩余锚点就仍属于本地回显，并跳过已缺失的本地锚点；完全匹配不到剩余锚点的消息才属于外部客户端。外部 user turn 及其后的 assistant/thought/tool/plan 更新先作为一个完整 turn 暂存，匹配到下一个本地 prompt 后再整组写入，并记录插入该 prompt 之前的逻辑位置；load 结束仍未遇到右锚点的尾部历史只记录已匹配的左锚点。不得因 Provider 漏掉一个重复文本 turn，导致后续本地工具调用被错误导入并与原卡片 identity 冲突。
+- Provider history identity 优先使用 `messageId/toolCallId`；Agent 未提供稳定 ID 时，使用 `session + afterPromptId + gapTurnIndex + kind/itemIndex` 生成稳定身份，使尾部历史在下一次 load 获得 `beforePromptId` 后仍只更新同一 item。ACP replay 不提供原始消息时间时，timeline 只能保存本次同步到达时间和原始 replay 顺序，不伪造历史时间。
+- Claude ACP 当前把 `[Request interrupted by user]` 与 `[Request interrupted by user for tool use]` 作为普通 `user_message_chunk` 返回，且没有结构化 control 标志。现阶段只在 Claude Provider 归一化层对这两个完整字符串做精确隐藏，原始帧继续保留；不得使用 contains/前缀等模糊规则。该规则是上游协议补充结构化 interruption 事件前的临时适配，后续应改为消费结构化字段。
+- prompt lifecycle 明确拆为 `Starting -> Accepted -> Running -> CancelRequested -> terminal`：`Accepted` 表示 synthetic 用户消息已经持久化并可在重启后恢复，`Running` 表示 `session/prompt` 已真正发出。前端在匹配到持久化 `promptId` 后从“发送中”切到“处理中”，不得等待 provider echo。
+- 恢复已有 ACP session 时，runtime 在 `session/load` response 后先 drain 当前 inbound queue，结算暂存的 Provider history turn，再进入 `AwaitingTurnStart`；prompt 前仍处于 replay phase 时必须再次执行同样的 finish 作为兜底。已知历史 identity 在后续阶段仍需抑制，避免旧消息被重复追加或移动到会话末尾。
+- 停止成功后，前端先合并后端最终 session snapshot，再只移除仍为 `optimistic + sending` 的未接受消息。已经出现 durable `goldBandPrompt` 的用户消息必须保留；若停止发生在持久化前，未接受 optimistic 消息应立即消失且不得在重启后复现。
+- 历史版本中未分类、直接写入 timeline 的 provider user echo 继续在读取投影中清理；新版本只有经过 replay 对账确认的外部消息才携带 `source=providerHistory` 并进入聊天时间线。每个外部历史 item 在 `raw.historyPlacement` 中记录 `version/afterPromptId/beforePromptId/gapTurnIndex`，顶层继续记录 `historyItemIndex`；`seq/timestamp` 永远表示审计到达顺序，不因逻辑插入位置改变。后端 session projection 与前端窗口 merge 必须按本地 prompt 锚点构建展示顺序，同一 gap 内按 `historyItemIndex`、审计 seq 排列；分页筛选与 cursor 仍按审计 seq 工作，并以当前窗口审计 seq 的最小/最大值计算边界。读取投影只对缺少 `historyPlacement` 的旧 Provider-history turn 使用文本锚点修复，结构化新历史不得再按文本猜测删除；若 replay patch 与既有非 Provider-history item 使用同一稳定 identity，原始本地 item 优先。raw/timeline 审计记录不重写，placement-only patch 合并时保留首次 `seq/timestamp/start/end/timing`，同时以真实最大 patch revision 继续分配后续序号。
 - Gold Band 在发起 Direct 会话时提供的合成模型选项统一命名为“不指定”（英文 `Unspecified`），其值只存在于 Gold Band UI，提交时固化为 `modelOverride = null`，不得与 Agent 通过 ACP 返回的 `default`、`auto` 等不透明模型 ID 混用。
 - ACP session 同时保留 Agent 报告的 `currentModelId` 和 Gold Band 管理的 `modelOverride`：前者只用于呈现 Agent 当前配置，后者是后续追问是否显式调用 `session/set_config_option(model)` 的唯一事实源。`modelOverride = null` 时追问不设置模型，继续继承 Agent 环境配置。
 - 会话详情在 `modelOverride = null` 时显示“不指定”，并同时展示 Agent 返回的完整模型目录；用户选择任意 Agent 模型（包括 Agent 自己返回的 `default`）后写入显式 override，同一 session 内不再提供“不指定”选项，但仍允许在 Agent 模型之间切换。
@@ -337,6 +344,18 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - completed run 上的 follow-up 仍可能存在实时 ACP prompt。后端必须读取 per-attempt `Starting / Running / CancelRequested` 活动状态；只有没有实时活动时，terminal runtime 才能压制磁盘残留的 stale `running` session snapshot。
 - 前端的 `sending / awaitingResponse / cancelling` 只覆盖命令往返窗口。页面切换或组件重挂载后，输入锁定、停止按钮、计时和 token 展示必须完全由后端 lifecycle/session snapshot 恢复。
 - prompt 写入 terminal session snapshot 前必须先将实时活动标记为 finished，避免终态事件到达后 UI 仍被旧活动状态锁定。
+
+## ACP 会话 attachment、历史同步与有界资源
+
+- ACP adapter process、Provider session attachment 和单次 prompt 是三个不同生命周期。AdapterConnection 以 `provider + adapter workspace` 复用；session runtime 以 attempt locator + ACP sessionId 复用；PromptRun 只覆盖单轮 `session/prompt`。
+- 同一 attached session 的连续追问不得固定执行 `session/load`。发送前先检查 connection generation、本地 session config fingerprint 和 Provider freshness；三者均未变化时直接 `session/prompt`。
+- Provider freshness 优先使用 `session/list.updatedAt`，该字段只作为 opaque revision token 比较，不解析时间先后。revision 变化时先 load/import 外部历史，再发送本轮 prompt；Provider 不返回 `updatedAt` 时，attached session 直接 prompt，detached session 才 load。
+- 本地 MCP/cwd 变化不依赖 Provider revision。MCP server 先规范化对象字段并按稳定 JSON 排序，再参与 session config fingerprint；仅顺序变化不 reload，真实增删改在下一次 prompt 前 reload，并把最新 `mcpServers` 传给 Provider。
+- session route 在 idle attached 期间仍由独立 event pump 持续消费，不能把有界 connection route 留给无人读取的 receiver。事件泵自身保持有界背压；prompt runtime 重新进入时继续从同一 pump 消费。
+- session runtime 使用 foreground lease、idle TTL 与 LRU 有界保留；active prompt、permission/elicitation 处理中和前台 lease 内 session 不参与驱逐。会话详情页按后端返回的 renew interval 续租，页面关闭后自然停止续租。
+- `acp.timeline.jsonl` 是 UI canonical timeline，不是原始传输审计。所有 upsert 先合并既有 canonical item，再计算语义指纹；仅 replay 的 `seq/timestamp` 变化不落盘，内容、状态、工具结果或 history placement 变化才追加 revision。
+- timeline 达到配置化大小、patch/unique ratio 阈值，或读取旧文件时发现同一稳定 ID 存在语义完全相同的重复 revision 后，必须在文件锁内加载 canonical projection，并通过原子文件替换压缩为每个稳定 ID 一条 item。首次 `seq/timestamp/startedSeq` 和 history placement 保持不变；既有重复 replay 在下次打开 timeline 时自动收敛，`acp.raw.jsonl` 继续保存原始到达顺序并沿用独立滚动策略。
+- Direct、Workflow、AUTO、runtime continue/repair 与 AI-DYNAMIC leaf 共享同一 dispatcher/registry 语义，不允许重新引入 Direct 专用的长连接旁路。
 
 ## Agent 单轮回复通知
 

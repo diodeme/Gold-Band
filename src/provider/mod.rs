@@ -617,6 +617,7 @@ pub struct AcpProvider {
     acp_session_title_refresh_enabled: bool,
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
+    runtime_policy: client::AcpRuntimePolicy,
 }
 
 impl AcpProvider {
@@ -637,7 +638,13 @@ impl AcpProvider {
             acp_session_title_refresh_enabled,
             acp_raw_max_size_bytes,
             acp_raw_target_size_bytes,
+            runtime_policy: client::AcpRuntimePolicy::default(),
         }
+    }
+
+    pub fn with_runtime_policy(mut self, runtime_policy: client::AcpRuntimePolicy) -> Self {
+        self.runtime_policy = runtime_policy;
+        self
     }
 }
 
@@ -726,6 +733,7 @@ impl ProviderAdapter for AcpProvider {
             self.acp_session_title_refresh_enabled,
             self.acp_raw_max_size_bytes,
             self.acp_raw_target_size_bytes,
+            self.runtime_policy,
             live_update,
             &req.mcp_servers,
             session_update,
@@ -1373,19 +1381,23 @@ pub fn provider_from_agent(
     acp_session_title_refresh_enabled: bool,
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
+    runtime_policy: client::AcpRuntimePolicy,
 ) -> Result<Box<dyn ProviderAdapter>> {
     if !agent_type.is_supported() {
         bail!("unsupported agent type: {}", agent_type.as_str());
     }
-    Ok(Box::new(AcpProvider::new(
-        agent_type.as_str(),
-        config.adapter.clone(),
-        use_local_claude,
-        require_local_claude_executable,
-        acp_session_title_refresh_enabled,
-        acp_raw_max_size_bytes,
-        acp_raw_target_size_bytes,
-    )))
+    Ok(Box::new(
+        AcpProvider::new(
+            agent_type.as_str(),
+            config.adapter.clone(),
+            use_local_claude,
+            require_local_claude_executable,
+            acp_session_title_refresh_enabled,
+            acp_raw_max_size_bytes,
+            acp_raw_target_size_bytes,
+        )
+        .with_runtime_policy(runtime_policy),
+    ))
 }
 
 pub fn provider_from_id(
@@ -1406,6 +1418,7 @@ pub fn provider_from_id(
         acp_session_title_refresh_enabled,
         acp_raw_max_size_bytes,
         acp_raw_target_size_bytes,
+        client::AcpRuntimePolicy::default(),
     )
 }
 

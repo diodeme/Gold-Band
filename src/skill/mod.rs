@@ -100,18 +100,19 @@ fn configured_agent_skills_dirs_at_root(
 ) -> Vec<AgentSkillDir> {
     let mut dirs = Vec::new();
     for (agent_type, config) in agents {
-        let dir_name = config.skills_dir_name(*agent_type).to_string();
-        let agent_root = resolve_agent_root(root, &dir_name);
-        let skills_dir =
-            Utf8PathBuf::from_path_buf(agent_root.join(SKILLS_DIR_NAME)).unwrap_or_default();
-        if include_missing
-            || (skills_dir.as_std_path().exists() && skills_dir.as_std_path().is_dir())
-        {
-            dirs.push(AgentSkillDir {
-                agent_type: *agent_type,
-                dir_name,
-                skills_dir,
-            });
+        for dir_name in config.skill_directory_policy(*agent_type).write_dir_names {
+            let agent_root = resolve_agent_root(root, &dir_name);
+            let skills_dir =
+                Utf8PathBuf::from_path_buf(agent_root.join(SKILLS_DIR_NAME)).unwrap_or_default();
+            if include_missing
+                || (skills_dir.as_std_path().exists() && skills_dir.as_std_path().is_dir())
+            {
+                dirs.push(AgentSkillDir {
+                    agent_type: *agent_type,
+                    dir_name,
+                    skills_dir,
+                });
+            }
         }
     }
     dirs
@@ -1067,18 +1068,19 @@ fn resolve_skill_dirs(
         {
             continue;
         }
-        let dir_name = config.skills_dir_name(*agent_type).to_string();
-        let agent_root = resolve_agent_root(&root, &dir_name);
-        let skills_dir =
-            Utf8PathBuf::from_path_buf(agent_root.join(SKILLS_DIR_NAME)).unwrap_or_default();
-        if include_missing
-            || (skills_dir.as_std_path().exists() && skills_dir.as_std_path().is_dir())
-        {
-            dirs.push(AgentSkillDir {
-                agent_type: *agent_type,
-                dir_name,
-                skills_dir,
-            });
+        for dir_name in config.skill_directory_policy(*agent_type).write_dir_names {
+            let agent_root = resolve_agent_root(&root, &dir_name);
+            let skills_dir =
+                Utf8PathBuf::from_path_buf(agent_root.join(SKILLS_DIR_NAME)).unwrap_or_default();
+            if include_missing
+                || (skills_dir.as_std_path().exists() && skills_dir.as_std_path().is_dir())
+            {
+                dirs.push(AgentSkillDir {
+                    agent_type: *agent_type,
+                    dir_name,
+                    skills_dir,
+                });
+            }
         }
     }
     dirs

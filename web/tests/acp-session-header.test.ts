@@ -50,17 +50,33 @@ describe('ACPSessionHeader', () => {
 
   it('keeps copied feedback during tooltip close before returning to the full id', () => {
     const copied = reduceAcpSessionIdTooltipState(
-      { open: false, phase: 'idle' },
+      { open: false, phase: 'idle', reopenBlocked: false },
       { type: 'copy-succeeded' },
     );
     const closing = reduceAcpSessionIdTooltipState(copied, { type: 'feedback-elapsed' });
 
-    expect(copied).toEqual({ open: true, phase: 'copied' });
-    expect(closing).toEqual({ open: false, phase: 'closing' });
+    expect(copied).toEqual({ open: true, phase: 'copied', reopenBlocked: true });
+    expect(closing).toEqual({ open: false, phase: 'closing', reopenBlocked: true });
     expect(reduceAcpSessionIdTooltipState(closing, { type: 'open-changed', open: true }))
       .toBe(closing);
     expect(reduceAcpSessionIdTooltipState(closing, { type: 'close-settled' }))
-      .toEqual({ open: false, phase: 'idle' });
+      .toEqual({ open: false, phase: 'idle', reopenBlocked: true });
+  });
+
+  it('does not reopen the session id tooltip when the app regains focus', () => {
+    const deactivated = reduceAcpSessionIdTooltipState(
+      { open: true, phase: 'idle', reopenBlocked: false },
+      { type: 'app-deactivated' },
+    );
+
+    expect(deactivated).toEqual({ open: false, phase: 'idle', reopenBlocked: true });
+    expect(reduceAcpSessionIdTooltipState(deactivated, { type: 'open-changed', open: true }))
+      .toBe(deactivated);
+
+    const disengaged = reduceAcpSessionIdTooltipState(deactivated, { type: 'trigger-disengaged' });
+    expect(disengaged).toEqual({ open: false, phase: 'idle', reopenBlocked: false });
+    expect(reduceAcpSessionIdTooltipState(disengaged, { type: 'open-changed', open: true }))
+      .toEqual({ open: true, phase: 'idle', reopenBlocked: false });
   });
 
   it('hides the system prompt action for Direct sessions', () => {

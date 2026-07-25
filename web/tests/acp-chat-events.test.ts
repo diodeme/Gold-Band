@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildAcpTimeline,
   calculateSessionElapsedSeconds,
+  clearPendingOptimisticPromptsAfterStop,
   createLiveAcpSessionShell,
   createVisibleAcpSession,
   latestLiveSessionTimingFromEvents,
@@ -999,6 +1000,74 @@ describe('ACP chat event handling', () => {
     ]);
 
     expect(timeline).toHaveLength(1);
+  });
+
+  it('keeps repeated external provider-history prompts as separate turns', () => {
+    const timeline = buildAcpTimeline([
+      event({
+        id: 'provider-history-user-session-1-2',
+        seq: 20,
+        kind: 'userTextDelta',
+        content: '继续',
+        status: 'completed',
+        raw: {
+          source: 'providerHistory',
+          historyOrigin: 'external',
+          sessionUpdate: 'user_message_chunk',
+          historyTurnIndex: 2,
+        },
+      }),
+      event({
+        id: 'provider-history-user-session-1-3',
+        seq: 30,
+        kind: 'userTextDelta',
+        content: '继续',
+        status: 'completed',
+        raw: {
+          source: 'providerHistory',
+          historyOrigin: 'external',
+          sessionUpdate: 'user_message_chunk',
+          historyTurnIndex: 3,
+        },
+      }),
+    ]);
+
+    expect(timeline).toHaveLength(2);
+    expect(timeline.map((item) => item.id)).toEqual([
+      'provider-history-user-session-1-2',
+      'provider-history-user-session-1-3',
+    ]);
+  });
+
+  it('removes only pending optimistic prompts after a successful stop', () => {
+    const settled = clearPendingOptimisticPromptsAfterStop([
+      event({
+        id: 'optimistic-pending',
+        kind: 'userTextDelta',
+        status: 'sending',
+        content: 'not accepted',
+        raw: { source: 'goldBandPrompt', optimistic: true, promptId: 'prompt-1' },
+      }),
+      event({
+        id: 'optimistic-completed',
+        kind: 'userTextDelta',
+        status: 'completed',
+        content: 'accepted locally',
+        raw: { source: 'goldBandPrompt', optimistic: true, promptId: 'prompt-2' },
+      }),
+      event({
+        id: 'gold-band-user-prompt-3',
+        kind: 'userTextDelta',
+        status: 'completed',
+        content: 'accepted durably',
+        raw: { source: 'goldBandPrompt', promptId: 'prompt-3' },
+      }),
+    ]);
+
+    expect(settled.map((item) => item.id)).toEqual([
+      'optimistic-completed',
+      'gold-band-user-prompt-3',
+    ]);
   });
 
   it('keeps historical Gold Band prompts without prompt ids as separate turns', () => {

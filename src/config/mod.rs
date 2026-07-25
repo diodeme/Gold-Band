@@ -530,6 +530,14 @@ pub struct ProjectAppConfig {
     pub acp_chat_event_page_size: Option<usize>,
     pub acp_raw_max_size_bytes: Option<u64>,
     pub acp_raw_target_size_bytes: Option<u64>,
+    pub acp_session_foreground_lease_ttl_secs: Option<u64>,
+    pub acp_session_foreground_lease_renew_interval_secs: Option<u64>,
+    pub acp_session_idle_ttl_secs: Option<u64>,
+    pub acp_adapter_connection_idle_ttl_secs: Option<u64>,
+    pub acp_max_idle_session_runtimes: Option<usize>,
+    pub acp_max_idle_adapter_connections: Option<usize>,
+    pub acp_timeline_compact_max_size_bytes: Option<u64>,
+    pub acp_timeline_compact_patch_ratio: Option<usize>,
     pub conversation_auto_title_max_chars: Option<usize>,
     pub require_local_claude_executable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -568,6 +576,14 @@ pub struct RuntimeConfig {
     pub acp_chat_event_page_size: usize,
     pub acp_raw_max_size_bytes: u64,
     pub acp_raw_target_size_bytes: u64,
+    pub acp_session_foreground_lease_ttl_secs: u64,
+    pub acp_session_foreground_lease_renew_interval_secs: u64,
+    pub acp_session_idle_ttl_secs: u64,
+    pub acp_adapter_connection_idle_ttl_secs: u64,
+    pub acp_max_idle_session_runtimes: usize,
+    pub acp_max_idle_adapter_connections: usize,
+    pub acp_timeline_compact_max_size_bytes: u64,
+    pub acp_timeline_compact_patch_ratio: usize,
     pub conversation_auto_title_max_chars: usize,
     pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -604,6 +620,14 @@ impl Default for RuntimeConfig {
             acp_chat_event_page_size: 360,
             acp_raw_max_size_bytes: 5 * 1024 * 1024,
             acp_raw_target_size_bytes: 4 * 1024 * 1024,
+            acp_session_foreground_lease_ttl_secs: 90,
+            acp_session_foreground_lease_renew_interval_secs: 30,
+            acp_session_idle_ttl_secs: 600,
+            acp_adapter_connection_idle_ttl_secs: 600,
+            acp_max_idle_session_runtimes: 8,
+            acp_max_idle_adapter_connections: 4,
+            acp_timeline_compact_max_size_bytes: 8 * 1024 * 1024,
+            acp_timeline_compact_patch_ratio: 4,
             conversation_auto_title_max_chars: DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS,
             permission_mode_mapping: BTreeMap::new(),
             provider_diagnostics: BTreeMap::new(),
@@ -667,6 +691,60 @@ impl RuntimeConfig {
         }
         if let Some(acp_raw_target_size_bytes) = app_config.acp_raw_target_size_bytes {
             self.acp_raw_target_size_bytes = acp_raw_target_size_bytes;
+        }
+        if let Some(value) = app_config
+            .acp_session_foreground_lease_ttl_secs
+            .filter(|value| *value > 0)
+        {
+            self.acp_session_foreground_lease_ttl_secs = value;
+        }
+        if let Some(value) = app_config
+            .acp_session_foreground_lease_renew_interval_secs
+            .filter(|value| *value > 0)
+        {
+            self.acp_session_foreground_lease_renew_interval_secs = value;
+        }
+        if self.acp_session_foreground_lease_renew_interval_secs
+            >= self.acp_session_foreground_lease_ttl_secs
+        {
+            self.acp_session_foreground_lease_renew_interval_secs =
+                (self.acp_session_foreground_lease_ttl_secs / 3).max(1);
+        }
+        if let Some(value) = app_config
+            .acp_session_idle_ttl_secs
+            .filter(|value| *value > 0)
+        {
+            self.acp_session_idle_ttl_secs = value;
+        }
+        if let Some(value) = app_config
+            .acp_adapter_connection_idle_ttl_secs
+            .filter(|value| *value > 0)
+        {
+            self.acp_adapter_connection_idle_ttl_secs = value;
+        }
+        if let Some(value) = app_config
+            .acp_max_idle_session_runtimes
+            .filter(|value| *value > 0)
+        {
+            self.acp_max_idle_session_runtimes = value;
+        }
+        if let Some(value) = app_config
+            .acp_max_idle_adapter_connections
+            .filter(|value| *value > 0)
+        {
+            self.acp_max_idle_adapter_connections = value;
+        }
+        if let Some(value) = app_config
+            .acp_timeline_compact_max_size_bytes
+            .filter(|value| *value > 0)
+        {
+            self.acp_timeline_compact_max_size_bytes = value;
+        }
+        if let Some(value) = app_config
+            .acp_timeline_compact_patch_ratio
+            .filter(|value| *value > 0)
+        {
+            self.acp_timeline_compact_patch_ratio = value;
         }
         if let Some(conversation_auto_title_max_chars) = app_config
             .conversation_auto_title_max_chars
@@ -892,6 +970,9 @@ mod tests {
             acp_chat_event_page_size: Some(240),
             conversation_auto_title_max_chars: Some(20),
             require_local_claude_executable: Some(true),
+            acp_session_idle_ttl_secs: Some(900),
+            acp_max_idle_session_runtimes: Some(12),
+            acp_timeline_compact_patch_ratio: Some(6),
             ..Default::default()
         };
         let json = serde_json::to_string_pretty(&app_config).unwrap();
@@ -900,6 +981,9 @@ mod tests {
         assert_eq!(roundtripped.acp_chat_event_page_size, Some(240));
         assert_eq!(roundtripped.conversation_auto_title_max_chars, Some(20));
         assert_eq!(roundtripped.require_local_claude_executable, Some(true));
+        assert_eq!(roundtripped.acp_session_idle_ttl_secs, Some(900));
+        assert_eq!(roundtripped.acp_max_idle_session_runtimes, Some(12));
+        assert_eq!(roundtripped.acp_timeline_compact_patch_ratio, Some(6));
     }
 
     #[test]
@@ -1071,6 +1155,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn app_config_bounds_acp_runtime_policy_values() {
+        let config = RuntimeConfig::default().apply_app_config(&ProjectAppConfig {
+            acp_session_foreground_lease_ttl_secs: Some(60),
+            acp_session_foreground_lease_renew_interval_secs: Some(90),
+            acp_session_idle_ttl_secs: Some(0),
+            acp_max_idle_session_runtimes: Some(0),
+            acp_timeline_compact_patch_ratio: Some(0),
+            ..Default::default()
+        });
+        assert_eq!(config.acp_session_foreground_lease_ttl_secs, 60);
+        assert_eq!(config.acp_session_foreground_lease_renew_interval_secs, 20);
+        assert_eq!(config.acp_session_idle_ttl_secs, 600);
+        assert_eq!(config.acp_max_idle_session_runtimes, 8);
+        assert_eq!(config.acp_timeline_compact_patch_ratio, 4);
+    }
     #[test]
     fn direct_preferences_roundtrip_independently_by_workspace_and_agent() {
         let mut state = StateConfig::default();

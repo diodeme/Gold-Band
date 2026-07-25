@@ -314,6 +314,7 @@ const HISTORY_LOAD_THRESHOLD_PX = 240;
 const BOTTOM_STICK_THRESHOLD_PX = 48;
 const LIVE_EVENT_FLUSH_MS = 125;
 const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
+const ACP_SESSION_LEASE_RETRY_MS = 30_000;
 
 export const ACP_SESSION_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
   "h-full min-w-0 overflow-y-auto",
@@ -1603,6 +1604,51 @@ export const ACPChatDialog = forwardRef<
   }, [liveFlushDeferRemainingMs, timeline]);
 
   useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const renewLease = getRuntimeApi().renewAcpSessionLease;
+    if (!renewLease) return;
+    let active = true;
+    let timer: number | null = null;
+    const schedule = (delayMs: number) => {
+      if (!active) return;
+      timer = window.setTimeout(() => {
+        void run();
+      }, Math.max(1_000, delayMs));
+    };
+    const run = async () => {
+      try {
+        const nextDelayMs = await renewLease(
+          projectId,
+          taskId,
+          runId,
+          roundId,
+          nodeId,
+          attemptId,
+          outerNodeId,
+          outerAttemptId,
+        );
+        schedule(nextDelayMs);
+      } catch {
+        schedule(ACP_SESSION_LEASE_RETRY_MS);
+      }
+    };
+    void run();
+    return () => {
+      active = false;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [
+    attemptId,
+    nodeId,
+    outerAttemptId,
+    outerNodeId,
+    projectId,
+    roundId,
+    runId,
+    taskId,
+  ]);
+
+  useEffect(() => {
     if (!isTauriRuntime()) {
       setLoadingInitialSession(false);
       return;
@@ -1804,15 +1850,17 @@ export const ACPChatDialog = forwardRef<
       activeTurnPrompt,
       activeTurnPromptId,
     );
-    if (acceptedPrompt && !activeTurnStartedAt)
-      setActiveTurnStartedAt(acceptedPrompt.timestamp);
+    if (acceptedPrompt) {
+      if (!activeTurnStartedAt) setActiveTurnStartedAt(acceptedPrompt.timestamp);
+      if (sending) setSending(false);
+    }
     updateOptimisticEvents((current) => {
       const next = current.filter((event) =>
         shouldMergeOptimisticEvent(loadedEvents, event),
       );
       return next.length === current.length ? current : next;
     });
-  }, [activeTurnPrompt, activeTurnPromptId, activeTurnStartedAt, loadedEvents]);
+  }, [activeTurnPrompt, activeTurnPromptId, activeTurnStartedAt, loadedEvents, sending]);
 
   const preserveScrollPosition = useCallback(() => {}, []);
 
@@ -1824,7 +1872,8 @@ export const ACPChatDialog = forwardRef<
       previousEvents.length === 0
     )
       return;
-    const oldestSeq = originalSeqFromAcpEvent(previousEvents[0]);
+    const { oldestSeq } = acpAuditSeqBounds(previousEvents);
+    if (oldestSeq === null) return;
     const beforeCursor = formatTimelineCursor(oldestSeq);
     const scroller = scrollerElementRef.current;
     prependAnchorRef.current = scroller
@@ -1887,9 +1936,8 @@ export const ACPChatDialog = forwardRef<
       previousEvents.length === 0
     )
       return;
-    const newestSeq = originalSeqFromAcpEvent(
-      previousEvents[previousEvents.length - 1],
-    );
+    const { newestSeq } = acpAuditSeqBounds(previousEvents);
+    if (newestSeq === null) return;
     const afterCursor = formatTimelineCursor(newestSeq);
     loadingNewerRef.current = true;
     try {
@@ -2136,6 +2184,7 @@ export const ACPChatDialog = forwardRef<
         outerAttemptId,
       );
       applySessionUpdate(finalSession);
+      updateOptimisticEvents(clearPendingOptimisticPromptsAfterStop);
       setStopCommandPending(false);
       setSending(false);
       setActiveTurnPrompt(null);
@@ -3005,7 +3054,6 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
     modelOverrideName,
     canSelectUnspecifiedModel,
     currentModelId,
-    currentModelName,
     currentModeId,
     currentModeName,
     modeLabel,
@@ -4922,6 +4970,13 @@ function isGoldBandUserPrompt(event: AcpUiEventVm) {
   );
 }
 
+function isProviderHistoryUserPrompt(event: AcpUiEventVm) {
+  return (
+    event.kind === "userTextDelta" &&
+    rawObject(event.raw)?.source === "providerHistory"
+  );
+}
+
 function isGoldBandManagedPrompt(event: AcpUiEventVm) {
   return (
     event.kind === "userTextDelta" &&
@@ -5493,7 +5548,7 @@ function groupChildAgentTimeline(
         const candidate = events[cursor];
         const candidateStartSeq = candidate.startedSeq ?? candidate.seq;
         if (ownedChildKeys.has(timelineEventKey(candidate))) break;
-        if (isGoldBandUserPrompt(candidate)) break;
+        if (candidate.kind === "userTextDelta") break;
         if (candidateStartSeq <= startSeq) break;
         if (candidateStartSeq >= endSeq) break;
         if (isAgentToolCall(candidate)) break;
@@ -5540,6 +5595,7 @@ function userPromptDedupKey(event: AcpUiEventVm) {
   const attemptId = stringValue(raw?.attemptId) ?? attemptIdFromAcpEvent(event) ?? "current-attempt";
   const promptId = promptIdFromEvent(event);
   if (promptId) return `${attemptId}:prompt:${promptId}`;
+  if (isProviderHistoryUserPrompt(event)) return `${attemptId}:event:${event.id}`;
   if (isGoldBandManagedPrompt(event)) return `${attemptId}:event:${event.id}`;
   return `${attemptId}:text:${text}`;
 }
@@ -5618,9 +5674,22 @@ export function limitAcpEvents(
     : events.slice(0, eventPageSize);
 }
 
+function acpAuditSeqBounds(events: AcpUiEventVm[]) {
+  if (events.length === 0) return { oldestSeq: null, newestSeq: null };
+  let oldestSeq = Number.POSITIVE_INFINITY;
+  let newestSeq = Number.NEGATIVE_INFINITY;
+  for (const event of events) {
+    const seq = originalSeqFromAcpEvent(event);
+    oldestSeq = Math.min(oldestSeq, seq);
+    newestSeq = Math.max(newestSeq, seq);
+  }
+  return { oldestSeq, newestSeq };
+}
+
 function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpSessionVm {
   const first = events[0] ?? null;
   const last = events.at(-1) ?? first;
+  const auditBounds = acpAuditSeqBounds(events);
   const timing = latestSessionTimingFromEvents(events);
   return {
     sessionId: last?.sessionId ?? first?.sessionId ?? null,
@@ -5635,15 +5704,15 @@ function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpS
     eventPage: {
       loadedCount: events.length,
       total: events.length,
-      oldestSeq: first ? originalSeqFromAcpEvent(first) : null,
-      newestSeq: last ? originalSeqFromAcpEvent(last) : null,
+      oldestSeq: auditBounds.oldestSeq,
+      newestSeq: auditBounds.newestSeq,
       hasOlder: false,
       hasNewer: false,
-      oldestCursor: first
-        ? formatTimelineCursor(originalSeqFromAcpEvent(first))
+      oldestCursor: auditBounds.oldestSeq !== null
+        ? formatTimelineCursor(auditBounds.oldestSeq)
         : null,
-      newestCursor: last
-        ? formatTimelineCursor(originalSeqFromAcpEvent(last))
+      newestCursor: auditBounds.newestSeq !== null
+        ? formatTimelineCursor(auditBounds.newestSeq)
         : null,
     },
     pendingPermissions: [],
@@ -5662,8 +5731,7 @@ function createVisibleAcpSession(
 ): AcpSessionVm {
   const mergedEvents = mergeAcpEvents(session.events, liveEvents);
   const limitedEvents = limitAcpEvents(mergedEvents, "start", eventPageSize);
-  const first = limitedEvents[0] ?? null;
-  const last = limitedEvents.at(-1) ?? first;
+  const auditBounds = acpAuditSeqBounds(limitedEvents);
   return {
     ...session,
     events: limitedEvents,
@@ -5671,14 +5739,14 @@ function createVisibleAcpSession(
       ...session.eventPage,
       loadedCount: limitedEvents.length,
       total: Math.max(session.eventPage.total, mergedEvents.length),
-      oldestSeq: first ? originalSeqFromAcpEvent(first) : session.eventPage.oldestSeq,
-      newestSeq: last ? originalSeqFromAcpEvent(last) : session.eventPage.newestSeq,
+      oldestSeq: auditBounds.oldestSeq ?? session.eventPage.oldestSeq,
+      newestSeq: auditBounds.newestSeq ?? session.eventPage.newestSeq,
       hasOlder: session.eventPage.hasOlder || limitedEvents.length < mergedEvents.length,
-      oldestCursor: first
-        ? formatTimelineCursor(originalSeqFromAcpEvent(first))
+      oldestCursor: auditBounds.oldestSeq !== null
+        ? formatTimelineCursor(auditBounds.oldestSeq)
         : session.eventPage.oldestCursor,
-      newestCursor: last
-        ? formatTimelineCursor(originalSeqFromAcpEvent(last))
+      newestCursor: auditBounds.newestSeq !== null
+        ? formatTimelineCursor(auditBounds.newestSeq)
         : session.eventPage.newestCursor,
     },
   };
@@ -6181,6 +6249,7 @@ export {
   queryBlocksFromTool,
   isTopLevelPlanEvent,
   hasMatchingUserPrompt,
+  clearPendingOptimisticPromptsAfterStop,
   reconcileAcpSessionForDisplay,
   stabilizeAcpSessionTimingForDisplay,
   stabilizeAcpSessionTimingPatchForDisplay,
@@ -6221,6 +6290,12 @@ export function optimisticUserEvent(
 
 function isOptimisticEvent(event: AcpUiEventVm) {
   return rawObject(event.raw)?.optimistic === true;
+}
+
+function clearPendingOptimisticPromptsAfterStop(events: AcpUiEventVm[]) {
+  return events.filter(
+    (event) => !(isOptimisticEvent(event) && event.status === "sending"),
+  );
 }
 
 function shouldMergeOptimisticEvent(

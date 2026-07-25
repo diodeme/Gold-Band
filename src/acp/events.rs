@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 
 use anyhow::Result;
+use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -774,12 +775,13 @@ pub fn append_ui_event(path: &Utf8Path, event: &AcpUiEvent) -> Result<()> {
 pub fn write_timeline_items(path: &Utf8Path, items: &[AcpUiEvent]) -> Result<()> {
     with_jsonl_file_lock(path, || {
         ensure_parent_dir(path)?;
-        let mut file = std::fs::File::create(path.as_std_path())?;
+        let mut file = AtomicWriteFile::open(path.as_std_path())?;
         for item in items {
             serde_json::to_writer(&mut file, &AcpTimelineItem { item: item.clone() })?;
             use std::io::Write as _;
             file.write_all(b"\n")?;
         }
+        file.commit()?;
         Ok(())
     })
 }
@@ -790,16 +792,16 @@ pub fn append_timeline_patch(
     revision: u64,
     item: &AcpUiEvent,
 ) -> Result<()> {
-    append_jsonl(
+    let item_id = item_id.into();
+    let mut item = item.clone();
+    item.id = item_id;
+    crate::acp::timeline::upsert_timeline_item(
         path,
-        &AcpTimelinePatch {
-            patch_type: "timelinePatch".to_string(),
-            item_id: item_id.into(),
-            revision,
-            op: "upsert".to_string(),
-            item: item.clone(),
-        },
-    )
+        revision,
+        &item,
+        crate::acp::timeline::TimelineCompactionPolicy::default(),
+    )?;
+    Ok(())
 }
 
 pub fn load_timeline_items(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
@@ -861,13 +863,11 @@ fn utf16_index(content: &str, byte_index: usize) -> usize {
     content[..byte_index].encode_utf16().count()
 }
 
-fn load_timeline_items_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
+pub(crate) fn load_timeline_items_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
     let Ok(file) = std::fs::File::open(path.as_std_path()) else {
         return Ok(Vec::new());
     };
     let mut latest_by_item = HashMap::<String, (u64, AcpUiEvent)>::new();
-    let mut final_items = Vec::<AcpUiEvent>::new();
-    let mut saw_patch = false;
     for line in BufReader::new(file).lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -877,31 +877,216 @@ fn load_timeline_items_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
             if patch.patch_type != "timelinePatch" || patch.op != "upsert" {
                 continue;
             }
-            saw_patch = true;
             let should_replace = latest_by_item
                 .get(&patch.item_id)
                 .map(|(revision, _)| patch.revision >= *revision)
                 .unwrap_or(true);
             if should_replace {
-                latest_by_item.insert(patch.item_id, (patch.revision, patch.item));
+                let item = latest_by_item
+                    .get(&patch.item_id)
+                    .map(|(_, existing)| merge_timeline_item_revision(existing, patch.item.clone()))
+                    .unwrap_or(patch.item);
+                latest_by_item.insert(patch.item_id, (patch.revision, item));
             }
             continue;
         }
         if let Ok(entry) = serde_json::from_str::<AcpTimelineItem>(&line) {
-            latest_by_item.insert(entry.item.id.clone(), (0, entry.item.clone()));
-            final_items.push(entry.item);
+            let item_id = entry.item.id.clone();
+            let should_replace = latest_by_item
+                .get(&item_id)
+                .map(|(revision, _)| *revision == 0)
+                .unwrap_or(true);
+            if should_replace {
+                let item = latest_by_item
+                    .get(&item_id)
+                    .map(|(_, existing)| merge_timeline_item_revision(existing, entry.item.clone()))
+                    .unwrap_or(entry.item);
+                latest_by_item.insert(item_id, (0, item));
+            }
         }
     }
-    if saw_patch {
-        let mut items = latest_by_item
-            .into_values()
-            .map(|(_, item)| item)
-            .collect::<Vec<_>>();
-        items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
-        return Ok(items);
+    let mut items = latest_by_item
+        .into_values()
+        .map(|(_, item)| item)
+        .filter(|item| !is_provider_user_echo_event(item))
+        .collect::<Vec<_>>();
+    items.sort_by_key(|item| (item.started_seq.unwrap_or(item.seq), item.seq));
+    remove_reclassified_local_provider_history(&mut items);
+    Ok(items)
+}
+
+pub(crate) fn merge_timeline_item_revision(
+    existing: &AcpUiEvent,
+    mut incoming: AcpUiEvent,
+) -> AcpUiEvent {
+    if is_provider_history_event(&incoming) && !is_provider_history_event(existing) {
+        return existing.clone();
     }
-    final_items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
-    Ok(final_items)
+    let existing_start = existing.started_seq.unwrap_or(existing.seq);
+    let incoming_start = incoming.started_seq.unwrap_or(incoming.seq);
+    if existing_start > incoming_start {
+        return incoming;
+    }
+
+    let repeated_payload = existing.kind == incoming.kind
+        && existing.content == incoming.content
+        && existing.title == incoming.title
+        && existing.tool_call_id == incoming.tool_call_id
+        && existing.status == incoming.status
+        && raw_equal_ignoring_history_placement(existing.raw.as_ref(), incoming.raw.as_ref());
+    incoming.started_seq = Some(existing_start);
+    incoming.started_at = existing
+        .started_at
+        .clone()
+        .or_else(|| Some(existing.timestamp.clone()));
+    incoming.timestamp = existing.timestamp.clone();
+    if repeated_payload {
+        incoming.seq = existing.seq;
+        incoming.ended_seq = existing.ended_seq;
+        incoming.ended_at = existing.ended_at.clone();
+        incoming.timing = existing.timing.clone();
+    }
+    incoming
+}
+
+fn raw_equal_ignoring_history_placement(
+    existing: Option<&Value>,
+    incoming: Option<&Value>,
+) -> bool {
+    fn without_placement(raw: Option<&Value>) -> Option<Value> {
+        raw.map(|raw| {
+            let mut raw = raw.clone();
+            if let Some(object) = raw.as_object_mut() {
+                object.remove("historyPlacement");
+            }
+            raw
+        })
+    }
+
+    without_placement(existing) == without_placement(incoming)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ProviderHistoryTurnKey {
+    session_id: Option<String>,
+    provider: String,
+    turn_index: u64,
+}
+
+fn remove_reclassified_local_provider_history(items: &mut Vec<AcpUiEvent>) {
+    let mut local_prompts = HashMap::<Option<String>, Vec<String>>::new();
+    for item in items.iter().filter(|item| is_gold_band_prompt_event(item)) {
+        let Some(content) = item.content.as_deref() else {
+            continue;
+        };
+        local_prompts
+            .entry(item.session_id.clone())
+            .or_default()
+            .push(normalize_history_prompt(content));
+    }
+
+    let mut cursors = HashMap::<(Option<String>, String), usize>::new();
+    let mut stale_turns = HashSet::<ProviderHistoryTurnKey>::new();
+    for item in items.iter().filter(|item| {
+        item.kind == "userTextDelta"
+            && is_provider_history_event(item)
+            && !has_provider_history_placement(item.raw.as_ref())
+    }) {
+        let Some(turn) = provider_history_turn_key(item) else {
+            continue;
+        };
+        let Some(content) = item.content.as_deref() else {
+            continue;
+        };
+        let Some(anchors) = local_prompts.get(&turn.session_id) else {
+            continue;
+        };
+        let cursor_key = (turn.session_id.clone(), turn.provider.clone());
+        let cursor = cursors.entry(cursor_key).or_default();
+        let normalized = normalize_history_prompt(content);
+        let Some(relative_index) = anchors[*cursor..]
+            .iter()
+            .position(|anchor| anchor == &normalized)
+        else {
+            continue;
+        };
+        *cursor = cursor.saturating_add(relative_index).saturating_add(1);
+        stale_turns.insert(turn);
+    }
+
+    if stale_turns.is_empty() {
+        return;
+    }
+    items.retain(|item| {
+        provider_history_turn_key(item).is_none_or(|turn| !stale_turns.contains(&turn))
+    });
+}
+
+fn has_provider_history_placement(raw: Option<&Value>) -> bool {
+    raw.and_then(|raw| raw.get("historyPlacement"))
+        .and_then(Value::as_object)
+        .and_then(|placement| placement.get("version"))
+        .and_then(Value::as_u64)
+        == Some(1)
+}
+
+fn is_gold_band_prompt_event(event: &AcpUiEvent) -> bool {
+    event.kind == "userTextDelta"
+        && event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.get("source"))
+            .and_then(Value::as_str)
+            == Some("goldBandPrompt")
+}
+
+fn is_provider_history_event(event: &AcpUiEvent) -> bool {
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("source"))
+        .and_then(Value::as_str)
+        == Some("providerHistory")
+}
+
+fn provider_history_turn_key(event: &AcpUiEvent) -> Option<ProviderHistoryTurnKey> {
+    let raw = event.raw.as_ref()?;
+    if raw.get("source").and_then(Value::as_str) != Some("providerHistory") {
+        return None;
+    }
+    Some(ProviderHistoryTurnKey {
+        session_id: event.session_id.clone(),
+        provider: raw
+            .get("historyProvider")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        turn_index: raw.get("historyTurnIndex").and_then(Value::as_u64)?,
+    })
+}
+
+fn normalize_history_prompt(value: &str) -> String {
+    value
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim()
+        .to_string()
+}
+
+fn is_provider_user_echo_event(event: &AcpUiEvent) -> bool {
+    event.kind == "userTextDelta"
+        && event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.get("source"))
+            .and_then(Value::as_str)
+            != Some("providerHistory")
+        && event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.get("sessionUpdate"))
+            .and_then(Value::as_str)
+            == Some("user_message_chunk")
 }
 
 pub fn initial_acp_event_seq(path: &Utf8Path) -> u64 {
@@ -916,12 +1101,39 @@ pub fn initial_acp_event_seq(path: &Utf8Path) -> u64 {
 }
 
 pub fn latest_timeline_source_seq(path: &Utf8Path) -> u64 {
-    load_timeline_items(path)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|item| item.ended_seq.or(item.started_seq).unwrap_or(item.seq))
-        .max()
-        .unwrap_or(0)
+    with_jsonl_file_lock(path, || {
+        let Ok(file) = std::fs::File::open(path.as_std_path()) else {
+            return Ok(0);
+        };
+        let mut latest = 0;
+        for line in BufReader::new(file).lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(patch) = serde_json::from_str::<AcpTimelinePatch>(&line) {
+                latest = latest.max(patch.revision).max(
+                    patch
+                        .item
+                        .ended_seq
+                        .or(patch.item.started_seq)
+                        .unwrap_or(patch.item.seq),
+                );
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_str::<AcpTimelineItem>(&line) {
+                latest = latest.max(
+                    entry
+                        .item
+                        .ended_seq
+                        .or(entry.item.started_seq)
+                        .unwrap_or(entry.item.seq),
+                );
+            }
+        }
+        Ok(latest)
+    })
+    .unwrap_or(0)
 }
 
 pub fn write_session_metadata(path: &Utf8Path, metadata: &AcpSessionMetadata) -> Result<()> {
@@ -1209,8 +1421,9 @@ mod tests {
     use super::{
         AcpSessionMetadata, AcpTimingState, AcpUiEvent, annotate_latest_runtime_control_output,
         append_raw_frame, append_timeline_patch, elicitation_request_event,
-        elicitation_response_event, extract_usage_fields, kind_to_ui_kind, load_timeline_items,
-        permission_request_event, user_prompt_event, write_timeline_items,
+        elicitation_response_event, extract_usage_fields, kind_to_ui_kind,
+        latest_timeline_source_seq, load_timeline_items, permission_request_event,
+        user_prompt_event, write_timeline_items,
     };
     use serde_json::{Value, json};
 
@@ -1695,6 +1908,254 @@ mod tests {
         assert_eq!(items[0].content.as_deref(), Some("new"));
         assert_eq!(items[1].id, "message-2");
         assert_eq!(items[1].content.as_deref(), Some("keep"));
+    }
+
+    #[test]
+    fn load_timeline_items_keeps_original_position_for_replayed_message() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        let mut original = test_timeline_event("assistant-message-1", 10, "hello");
+        original.started_seq = Some(10);
+        original.ended_seq = Some(12);
+        original.started_at = Some("10Z".to_string());
+        original.ended_at = Some("12Z".to_string());
+        original.raw = Some(serde_json::json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "1"
+        }));
+        append_timeline_patch(&path, original.id.clone(), 12, &original).unwrap();
+
+        let mut replayed = original.clone();
+        replayed.seq = 80;
+        replayed.timestamp = "80Z".to_string();
+        replayed.started_seq = Some(80);
+        replayed.ended_seq = Some(80);
+        replayed.started_at = Some("80Z".to_string());
+        replayed.ended_at = Some("80Z".to_string());
+        append_timeline_patch(&path, replayed.id.clone(), 80, &replayed).unwrap();
+
+        let items = load_timeline_items(&path).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].seq, 10);
+        assert_eq!(items[0].started_seq, Some(10));
+        assert_eq!(items[0].ended_seq, Some(12));
+        assert_eq!(items[0].timestamp, "10Z");
+        assert_eq!(latest_timeline_source_seq(&path), 12);
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 1);
+    }
+
+    #[test]
+    fn placement_only_history_patch_keeps_original_audit_position() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        let mut original = test_timeline_event("provider-user-external", 10, "external");
+        original.kind = "userTextDelta".to_string();
+        original.raw = Some(json!({
+            "source": "providerHistory",
+            "historyProvider": "claude-acp",
+            "historyTurnIndex": 2,
+            "historyItemIndex": 1,
+            "providerHistoryItemId": "provider-user-external",
+            "sessionUpdate": "user_message_chunk"
+        }));
+        append_timeline_patch(&path, original.id.clone(), 10, &original).unwrap();
+
+        let mut placed = original.clone();
+        placed.seq = 80;
+        placed.timestamp = "80Z".to_string();
+        placed.started_seq = Some(80);
+        placed.ended_seq = Some(80);
+        placed.started_at = Some("80Z".to_string());
+        placed.ended_at = Some("80Z".to_string());
+        placed.raw.as_mut().unwrap()["historyPlacement"] = json!({
+            "version": 1,
+            "afterPromptId": "prompt-1",
+            "beforePromptId": "prompt-2",
+            "gapTurnIndex": 1
+        });
+        append_timeline_patch(&path, placed.id.clone(), 80, &placed).unwrap();
+
+        let items = load_timeline_items(&path).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].seq, 10);
+        assert_eq!(items[0].started_seq, Some(10));
+        assert_eq!(items[0].ended_seq, Some(10));
+        assert_eq!(items[0].timestamp, "10Z");
+        assert_eq!(
+            items[0].raw.as_ref().unwrap()["historyPlacement"]["beforePromptId"],
+            json!("prompt-2")
+        );
+        assert_eq!(latest_timeline_source_seq(&path), 80);
+    }
+
+    #[test]
+    fn load_timeline_items_hides_unclassified_echoes_and_keeps_external_history() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        let local = test_timeline_event("gold-band-user-prompt-1", 1, "hello");
+        let mut echoed = test_timeline_event("acp-event-2", 2, "hello");
+        echoed.kind = "userTextDelta".to_string();
+        echoed.raw = Some(serde_json::json!({
+            "sessionUpdate": "user_message_chunk",
+            "messageId": "echo-1"
+        }));
+        let mut interrupted = test_timeline_event(
+            "acp-event-3",
+            3,
+            "[Request interrupted by user for tool use]",
+        );
+        interrupted.kind = "userTextDelta".to_string();
+        interrupted.raw = Some(serde_json::json!({
+            "sessionUpdate": "user_message_chunk",
+            "messageId": "interrupt-1"
+        }));
+        let mut external = test_timeline_event("provider-user-external", 4, "external message");
+        external.kind = "userTextDelta".to_string();
+        external.raw = Some(serde_json::json!({
+            "source": "providerHistory",
+            "historyOrigin": "external",
+            "sessionUpdate": "user_message_chunk",
+            "messageId": "external-1"
+        }));
+        write_timeline_items(
+            &path,
+            &[local.clone(), echoed, interrupted, external.clone()],
+        )
+        .unwrap();
+
+        let items = load_timeline_items(&path).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].id, local.id);
+        assert_eq!(items[1].id, external.id);
+    }
+
+    #[test]
+    fn load_timeline_items_repairs_reclassified_local_provider_turn() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        let mut first_hi = test_timeline_event("gold-band-user-prompt-1", 1, "hi");
+        first_hi.kind = "userTextDelta".to_string();
+        first_hi.raw = Some(json!({ "source": "goldBandPrompt", "promptId": "prompt-1" }));
+        let mut second_hi = test_timeline_event("gold-band-user-prompt-2", 2, "hi");
+        second_hi.kind = "userTextDelta".to_string();
+        second_hi.raw = Some(json!({ "source": "goldBandPrompt", "promptId": "prompt-2" }));
+        let mut ask_prompt = test_timeline_event(
+            "gold-band-user-prompt-3",
+            3,
+            "用askUserQuestion工具随便问几个问题给我",
+        );
+        ask_prompt.kind = "userTextDelta".to_string();
+        ask_prompt.raw = Some(json!({ "source": "goldBandPrompt", "promptId": "prompt-3" }));
+        let mut original_tool = test_timeline_event("tool-call-ask", 4, "");
+        original_tool.kind = "toolCall".to_string();
+        original_tool.title = Some("Asking for your input".to_string());
+        original_tool.tool_call_id = Some("ask".to_string());
+        original_tool.status = Some("completed".to_string());
+        original_tool.raw = Some(json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "ask",
+            "rawInput": { "questions": [{ "question": "Question" }] }
+        }));
+        write_timeline_items(
+            &path,
+            &[first_hi, second_hi, ask_prompt, original_tool.clone()],
+        )
+        .unwrap();
+
+        let mut external = test_timeline_event("provider-user-external", 10, "这是我追加的信息");
+        external.kind = "userTextDelta".to_string();
+        external.raw = Some(json!({
+            "source": "providerHistory",
+            "historyProvider": "claude-acp",
+            "historyTurnIndex": 2,
+            "sessionUpdate": "user_message_chunk"
+        }));
+        append_timeline_patch(&path, external.id.clone(), 10, &external).unwrap();
+
+        let mut stale_ask = test_timeline_event(
+            "provider-user-ask",
+            11,
+            "用askUserQuestion工具随便问几个问题给我",
+        );
+        stale_ask.kind = "userTextDelta".to_string();
+        stale_ask.raw = Some(json!({
+            "source": "providerHistory",
+            "historyProvider": "claude-acp",
+            "historyTurnIndex": 3,
+            "sessionUpdate": "user_message_chunk"
+        }));
+        append_timeline_patch(&path, stale_ask.id.clone(), 11, &stale_ask).unwrap();
+
+        let mut replayed_tool = original_tool.clone();
+        replayed_tool.seq = 12;
+        replayed_tool.started_seq = Some(12);
+        replayed_tool.ended_seq = Some(12);
+        replayed_tool.raw = Some(json!({
+            "source": "providerHistory",
+            "historyProvider": "claude-acp",
+            "historyTurnIndex": 3,
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "ask",
+            "rawOutput": "answered"
+        }));
+        append_timeline_patch(&path, replayed_tool.id.clone(), 12, &replayed_tool).unwrap();
+
+        let mut stale_answer = test_timeline_event("provider-answer-ask", 13, "answered");
+        stale_answer.raw = Some(json!({
+            "source": "providerHistory",
+            "historyProvider": "claude-acp",
+            "historyTurnIndex": 3,
+            "sessionUpdate": "agent_message_chunk"
+        }));
+        append_timeline_patch(&path, stale_answer.id.clone(), 13, &stale_answer).unwrap();
+
+        let items = load_timeline_items(&path).unwrap();
+        assert!(items.iter().any(|item| item.id == external.id));
+        assert!(!items.iter().any(|item| item.id == stale_ask.id));
+        assert!(!items.iter().any(|item| item.id == stale_answer.id));
+        let tool = items
+            .iter()
+            .find(|item| item.id == original_tool.id)
+            .unwrap();
+        assert_eq!(tool.raw, original_tool.raw);
+        assert_eq!(tool.seq, original_tool.seq);
+    }
+
+    #[test]
+    fn structured_external_history_is_not_removed_when_text_matches_local_prompt() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        let mut local = test_timeline_event("gold-band-user-prompt-1", 1, "same text");
+        local.kind = "userTextDelta".to_string();
+        local.raw = Some(json!({ "source": "goldBandPrompt", "promptId": "prompt-1" }));
+        let mut external = test_timeline_event("provider-user-external", 2, "same text");
+        external.kind = "userTextDelta".to_string();
+        external.raw = Some(json!({
+            "source": "providerHistory",
+            "historyProvider": "claude-acp",
+            "historyTurnIndex": 1,
+            "historyItemIndex": 1,
+            "historyPlacement": {
+                "version": 1,
+                "afterPromptId": "prompt-1",
+                "beforePromptId": null,
+                "gapTurnIndex": 1
+            }
+        }));
+        write_timeline_items(&path, &[local, external.clone()]).unwrap();
+
+        let items = load_timeline_items(&path).unwrap();
+        assert!(items.iter().any(|item| item.id == external.id));
     }
 
     #[test]

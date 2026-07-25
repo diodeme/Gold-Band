@@ -728,3 +728,6 @@ attempt-001/
 - 删除语义：后端先解析目标工作空间，再关闭其 ACP 连接并删除持久化列表项，同时清理关联 pins/run modes/last；未知目标返回结构化错误，任何 task/run/session 和工作空间文件都不删除。
 - 删除交互：侧栏移除按钮先打开 shadcn/ui 确认框，展示工作空间名称并明确磁盘文件、历史会话保留；请求 pending 时禁止重复提交、取消和关闭，成功返回前不更新列表。删除当前会话所属工作空间后返回会话主页并选择后端 fallback。
 - 回归固化：Rust 覆盖用户原始大小写冲突状态、规范 Direct 配置优先、迁移仅一次、显式 sidebar/search 范围、大小写 resolver 和关联状态清理；Web 覆盖确认门控、pending 单次提交、当前页 fallback 与最终工作空间为空。生产构建和 `/chat` 视觉验证通过。
+- 编译契约修正：迁移代码使用的 `stateSchemaVersion` 固化到共享 `StateConfig`，补充非零版本 camelCase roundtrip、历史状态缺字段默认为 `0`、零值省略写回的单元测试，避免桌面 crate 与核心 crate 的状态模型再次不同步。
+- Round 编号清理：删除指标功能遗留但从未接入的 `next_round_id` 目录扫描 helper；新 round 继续唯一地由当前 `RoundState.index + 1` 生成 ID，避免文件系统扫描与 runtime 状态形成双事实源。
+- 全量回归修正：ACP timeline 计时测试原先把所有 fixture 事件写成相同 `seq=1`，解析进入 HashMap 后顺序不稳定，导致预期 11 秒而随机得到 1/8 秒；测试数据改为按落盘顺序生成单调递增序号，固化真实 timeline 接口契约，不修改生产计时算法。

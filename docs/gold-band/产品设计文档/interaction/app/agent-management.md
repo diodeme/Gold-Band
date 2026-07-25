@@ -94,7 +94,7 @@ Agent Cards
 - 桌面端启动后自动执行诊断
 - 后台每 60 秒自动诊断一次当前 workspace 下已配置 agent
 - 新增或修改 Agent 配置保存成功后，后台立即自动诊断该 agent 一次，不要求用户再手动点击“环境诊断”
-- 手动诊断、保存后自动诊断和周期诊断共享同一个 doctor 运行边界；配置持久化使用独立的短时提交边界，不能被长时间 doctor 阻塞。诊断提交结果前必须再次校验 Agent 配置版本，旧配置的诊断结果不得覆盖新配置；连续保存产生的同 agent 自动诊断请求必须按版本合并并最终只诊断最新版
+- 手动诊断、保存后自动诊断、周期诊断和命令目录刷新共享同一个 doctor 运行边界；配置持久化使用独立的短时提交边界，不能被长时间 doctor 阻塞。诊断提交结果前必须再次校验 Agent 配置版本，旧配置的诊断结果不得覆盖新配置；连续保存产生的同 agent 自动诊断请求必须按版本合并并最终只诊断最新版，禁止并发清理同一 `doctor/acp` 目录或启动重复 adapter
 - 手动诊断和自动诊断都必须在诊断结束、初始化失败、超时或客户端关闭时关闭 ACP adapter 进程树
 - 诊断对当前已配置的 ACP adapter 通用执行，不再限定 Claude；首次运行 npx 或本地二进制 adapter 可能需要安装依赖，耗时可达到 1 分钟以上
 - 桌面端启动 ACP adapter 前需要自动补全常见用户 bin 目录到子进程 PATH，例如 `~/.nvm/versions/node/*/bin`、`~/.local/bin`、`~/.cargo/bin`、`~/.opencode/bin`、`/opt/homebrew/bin`、`/usr/local/bin`，避免 macOS GUI 进程未继承 shell PATH 时 `npx`、`node`、`claude`、`codex` 无法启动

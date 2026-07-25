@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use anyhow::{Context, Result};
@@ -171,6 +171,9 @@ impl NotificationAttentionState {
 pub struct DesktopState {
     context: Mutex<DesktopContext>,
     agent_diagnostics: Arc<Mutex<BTreeMap<ManagedAgentType, AgentDiagnosticState>>>,
+    agent_diagnostic_run_lock: Mutex<()>,
+    agent_config_diagnostic_commit_lock: Mutex<()>,
+    scheduled_agent_diagnostics: Mutex<BTreeMap<ManagedAgentType, u64>>,
     update_status: Mutex<UpdateStatusVm>,
     pending_critical_update: Mutex<Option<Utf8PathBuf>>,
     notification_attention: Mutex<NotificationAttentionState>,
@@ -188,6 +191,9 @@ impl DesktopState {
         Self {
             context: Mutex::new(context),
             agent_diagnostics: Arc::new(Mutex::new(persisted_diagnostics)),
+            agent_diagnostic_run_lock: Mutex::new(()),
+            agent_config_diagnostic_commit_lock: Mutex::new(()),
+            scheduled_agent_diagnostics: Mutex::new(BTreeMap::new()),
             update_status: Mutex::new(initial_update_status(updater_last_checked_at)),
             pending_critical_update: Mutex::new(None),
             notification_attention: Mutex::new(NotificationAttentionState::default()),
@@ -453,12 +459,96 @@ impl DesktopState {
         Ok(())
     }
 
+    pub fn agent_diagnostic_guard(&self) -> Result<MutexGuard<'_, ()>> {
+        self.agent_diagnostic_run_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("agent diagnostic lock poisoned"))
+    }
+
+    pub fn agent_config_diagnostic_commit_guard(&self) -> Result<MutexGuard<'_, ()>> {
+        self.agent_config_diagnostic_commit_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("agent config/diagnostic commit lock poisoned"))
+    }
+
+    pub fn queue_agent_diagnostic(&self, agent_type: ManagedAgentType) -> Result<bool> {
+        let mut scheduled = self
+            .scheduled_agent_diagnostics
+            .lock()
+            .map_err(|_| anyhow::anyhow!("agent diagnostic schedule lock poisoned"))?;
+        if let Some(generation) = scheduled.get_mut(&agent_type) {
+            *generation = generation.saturating_add(1);
+            Ok(false)
+        } else {
+            scheduled.insert(agent_type, 1);
+            Ok(true)
+        }
+    }
+
+    pub fn cancel_queued_agent_diagnostic(&self, agent_type: ManagedAgentType) -> Result<()> {
+        self.scheduled_agent_diagnostics
+            .lock()
+            .map_err(|_| anyhow::anyhow!("agent diagnostic schedule lock poisoned"))?
+            .remove(&agent_type);
+        Ok(())
+    }
+
+    pub fn run_queued_agent_diagnostic(
+        &self,
+        agent_type: ManagedAgentType,
+    ) -> Result<AgentDiagnosticState> {
+        loop {
+            let requested_generation = self
+                .scheduled_agent_diagnostics
+                .lock()
+                .map_err(|_| anyhow::anyhow!("agent diagnostic schedule lock poisoned"))?
+                .get(&agent_type)
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("agent diagnostic request was cancelled"))?;
+            let result = {
+                let _run_guard = self.agent_diagnostic_guard()?;
+                self.refresh_agent_diagnostic_unlocked(agent_type)
+            };
+            let should_retry = {
+                let mut scheduled = self
+                    .scheduled_agent_diagnostics
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("agent diagnostic schedule lock poisoned"))?;
+                match scheduled.get(&agent_type).copied() {
+                    Some(current_generation) if current_generation != requested_generation => true,
+                    Some(_) => {
+                        scheduled.remove(&agent_type);
+                        false
+                    }
+                    None => false,
+                }
+            };
+            if should_retry {
+                continue;
+            }
+            return result;
+        }
+    }
+
     pub fn refresh_agent_diagnostic(
         &self,
         agent_type: ManagedAgentType,
     ) -> Result<AgentDiagnosticState> {
+        let _run_guard = self.agent_diagnostic_guard()?;
+        self.refresh_agent_diagnostic_unlocked(agent_type)
+    }
+
+    fn refresh_agent_diagnostic_unlocked(
+        &self,
+        agent_type: ManagedAgentType,
+    ) -> Result<AgentDiagnosticState> {
+        let expected_config = self.managed_agent_config_revision(agent_type)?;
         let app = self.app()?;
         let doctor = app.provider_doctor(agent_type.as_str())?;
+        let _commit_guard = self.agent_config_diagnostic_commit_guard()?;
+        if self.managed_agent_config_revision(agent_type)? != expected_config {
+            anyhow::bail!("agent configuration changed during diagnostic");
+        }
         let diagnostic = diagnostic_state_from_result(doctor);
         let snapshot = {
             let mut diagnostics = self
@@ -473,18 +563,45 @@ impl DesktopState {
     }
 
     pub fn refresh_all_agent_diagnostics(&self) -> Result<()> {
+        let _run_guard = self.agent_diagnostic_guard()?;
         let app = self.app()?;
         let agent_types = app.managed_agents().keys().copied().collect::<Vec<_>>();
-        let mut diagnostics = BTreeMap::new();
-        for agent_type in agent_types {
-            let doctor = app.provider_doctor(agent_type.as_str())?;
-            diagnostics.insert(agent_type, diagnostic_state_from_result(doctor));
-        }
-        *self
-            .agent_diagnostics
+        let scheduled = self
+            .scheduled_agent_diagnostics
             .lock()
-            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))? = diagnostics.clone();
-        self.persist_agent_diagnostics(&diagnostics)
+            .map_err(|_| anyhow::anyhow!("agent diagnostic schedule lock poisoned"))?
+            .keys()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        for agent_type in agent_types {
+            if scheduled.contains(&agent_type) {
+                continue;
+            }
+            if let Err(error) = self.refresh_agent_diagnostic_unlocked(agent_type) {
+                let queued = self
+                    .scheduled_agent_diagnostics
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("agent diagnostic schedule lock poisoned"))?
+                    .contains_key(&agent_type);
+                if !queued {
+                    return Err(error);
+                }
+            }
+        }
+        self.prune_agent_diagnostics()
+    }
+
+    fn managed_agent_config_revision(
+        &self,
+        agent_type: ManagedAgentType,
+    ) -> Result<Option<Vec<u8>>> {
+        self.context()?
+            .config
+            .agents
+            .get(&agent_type)
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(Into::into)
     }
 
     pub fn set_workspace(&self, repo_root: Utf8PathBuf) -> Result<DesktopContext> {
@@ -610,6 +727,25 @@ fn recent_workspaces(state: &StateConfig, repo_root: &Utf8Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        sync::{Arc, mpsc},
+        time::Duration,
+    };
+
+    fn desktop_state() -> DesktopState {
+        let repo_root = Utf8PathBuf::from_path_buf(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "gold-band-agent-state-test-{}",
+                uuid::Uuid::new_v4()
+            ));
+        DesktopState::new(DesktopContext {
+            repo_root,
+            config: RuntimeConfig::default(),
+            recent_workspaces: Vec::new(),
+            needs_workspace: false,
+        })
+    }
 
     fn target() -> NotificationAttentionTarget<'static> {
         NotificationAttentionTarget {
@@ -656,5 +792,47 @@ mod tests {
         other.attempt_id = Some("attempt-2".to_string());
         state.update(other);
         assert!(state.should_notify(&target(), true));
+    }
+
+    #[test]
+    fn agent_diagnostic_queue_coalesces_duplicate_save_requests() {
+        let state = desktop_state();
+        let agent_type = ManagedAgentType::ClaudeAcp;
+
+        assert!(state.queue_agent_diagnostic(agent_type).unwrap());
+        assert!(!state.queue_agent_diagnostic(agent_type).unwrap());
+
+        state.cancel_queued_agent_diagnostic(agent_type).unwrap();
+        assert!(state.queue_agent_diagnostic(agent_type).unwrap());
+    }
+
+    #[test]
+    fn agent_config_commit_does_not_wait_for_running_doctor() {
+        let state = desktop_state();
+        let state = Arc::new(state);
+        let (doctor_locked_tx, doctor_locked_rx) = mpsc::channel();
+        let (release_doctor_tx, release_doctor_rx) = mpsc::channel();
+        let doctor_state = state.clone();
+        let doctor_thread = std::thread::spawn(move || {
+            let _guard = doctor_state.agent_diagnostic_guard().unwrap();
+            doctor_locked_tx.send(()).unwrap();
+            release_doctor_rx.recv().unwrap();
+        });
+        doctor_locked_rx.recv().unwrap();
+
+        let (commit_acquired_tx, commit_acquired_rx) = mpsc::channel();
+        let commit_state = state.clone();
+        let commit_thread = std::thread::spawn(move || {
+            let _guard = commit_state.agent_config_diagnostic_commit_guard().unwrap();
+            commit_acquired_tx.send(()).unwrap();
+        });
+
+        let acquired_without_waiting = commit_acquired_rx
+            .recv_timeout(Duration::from_secs(1))
+            .is_ok();
+        release_doctor_tx.send(()).unwrap();
+        doctor_thread.join().unwrap();
+        commit_thread.join().unwrap();
+        assert!(acquired_without_waiting);
     }
 }

@@ -13,7 +13,7 @@
 
 1. Provider 在 `session/load` 时完整回放历史，导致 `acp.timeline.jsonl` 对相同稳定 ID 重复追加 patch，长期存在接近 O(N²) 的存储增长。
 2. 当前每次 prompt 都创建新的 `AcpRuntime`，执行 `initialize -> session/load -> session/prompt`，随后注销 session route；连续追问没有复用已经打开的 ACP session。
-3. Gold Band 与 Claude Code、Codex 等外部客户端共享 Provider session 时，Gold Band 需要在必要时同步外部新增历史，但不能每次 prompt 都无条件 reload。
+3. 部分 Agent 可能允许 Gold Band 与外部客户端共享 Provider session；该能力不能按产品全局假定，而要由每个 Agent 显式声明后才同步外部新增历史。
 
 本方案不是针对 Direct 的局部优化。Direct 后续对话、Workflow/AUTO 节点完成后的手动追问、runtime continue 必须统一使用同一套 ACP session runtime、历史同步和持久化规则。
 
@@ -71,7 +71,7 @@
 - Provider history 使用稳定 ID 对账；相同 canonical 内容不追加 timeline patch。
 - timeline 定期 compaction，文件大小与唯一 UI item 数保持同阶。
 - adapter connection、session runtime 都是有界资源，不能随历史会话数无界增长。
-- 外部客户端修改 session 后，内置 Claude/Codex 能在下一次用户 prompt 前通过 `session/list.updatedAt` 检测并 reload。
+- Agent 显式开启外部会话同步后，Gold Band 才在下一次用户 prompt 前通过 `session/list.updatedAt` 检测并 reload。
 - MCP、cwd 等本地 session-defining 配置变化时，即使 Provider `updatedAt` 未变化，也必须使用最新配置 reload。
 - raw frame 保留原始到达顺序和既有容量滚动，不因 timeline 去重或 compaction 被修改。
 - active prompt、permission、elicitation、cancel/close 中的 session 不得被 TTL/LRU 驱逐。
@@ -79,6 +79,7 @@
 ### 3.2 非目标
 
 - 本阶段不新增“同步 Agent 会话”按钮。
+- 本阶段不默认认定 Claude/Codex 等 Agent 的 ACP 会话与其原生客户端会话属于同一线性分支。
 - 本阶段不为不支持 `session/list.updatedAt` 的第三方 Provider 猜测外部变化。
 - 本阶段不修改 ACP 协议或要求第三方 Provider 实现 Gold Band 私有增量历史协议。
 - 本阶段不让完整历史常驻 `AcpRuntime` 热内存。
@@ -156,6 +157,8 @@ AcpSessionRuntimeEntry
   - foregroundLeaseUntil
   - providerFreshness
   - attachedConfigFingerprint
+  - externalSessionSyncEnabledAtAttach
+  - syncRequired
   - activePrompt
   - pendingPermissionCount
   - pendingElicitationCount
@@ -246,9 +249,26 @@ RuntimeRepair
 规则：
 
 - 所有 origin 使用同一 AcpSessionRuntimeRegistry。
-- 用户触发的 prompt 在 session idle 时执行 freshness probe。
+- 只有 Agent 的 `externalSessionSyncEnabled=true` 时，用户触发的 prompt 才在 session idle 时执行 freshness probe。
 - runtime 内部连续 repair/automatic continue 在同一 attached runtime 上直接 prompt，不额外执行外部 freshness probe。
 - session 不存在、已驱逐或 transport generation 变化时，所有 origin 都必须 attach/load。
+
+### 5.1 Agent 级能力开关
+
+外部会话同步属于 `ManagedAgentConfig`，不属于 `configs/app-config.toml` 的全局运行参数：
+
+```text
+ManagedAgentConfig
+  - adapter
+  - skillsDirOverride?
+  - externalSessionSyncEnabled = false
+```
+
+默认关闭，并以 Beta 能力展示。只有 Agent 明确保证不同客户端连接的是同一条线性上下文，或未来 Gold Band 能显式选择 Provider branch/leaf 时才允许开启。Agent 管理页的修改抽屉必须同时编辑 `adapter`、`skillsDirOverride` 和 `externalSessionSyncEnabled`；同步开关标题右侧展示紧凑 Beta Badge 和可聚焦问号 Tooltip，Tooltip 解释“同步同一个 Session 在其他客户端中发生过的对话”，说明文案明确警告：仅在确认 Agent 支持跨客户端共享同一会话上下文时开启，否则可能造成历史顺序或上下文理解错误。列表主卡片仅保留命令、参数、环境变量和最近检测四项运行摘要，不展示高级配置。
+
+Agent 配置是 Provider 级全局配置，不属于当前 workspace。新增、修改或删除 Agent 前，必须跨所有 workspace 检查该 Provider 是否存在 active prompt；保存前统一 detach 该 Provider 的 idle session runtime，并关闭所有 `provider + workspace` connection，使下一次 prompt 使用新配置，不能只失效当前 `App.paths.repo_root`。
+
+关闭时仍保留长连接与必要恢复：attached session 直接 `session/prompt`；detached/被驱逐/session generation 变化时仍执行 `session/load`，但 load 的 Provider history replay 整体只保留在 raw 审计，不导入 timeline。不能只丢弃 `user_message_chunk`，否则会留下没有用户上下文的 assistant/tool 历史。
 
 ## 6. Reload 判定
 
@@ -315,7 +335,8 @@ needReload =
     session runtime 不存在
     OR session state == Detached/Failed
     OR connection generation 变化
-    OR provider revision 变化
+    OR syncRequired
+    OR (externalSessionSyncEnabled AND provider revision 变化)
     OR desiredSessionConfigFingerprint != attachedSessionConfigFingerprint
 ```
 
@@ -323,6 +344,9 @@ needReload =
 
 | 条件 | 行为 |
 |---|---|
+| 外部同步关闭，runtime attached，config fingerprint 相同 | 不调用 `session/list`，直接 `session/prompt` |
+| 外部同步关闭，runtime detached | 正常 load/resume，但不把整段 Provider history replay 写入 timeline |
+| attached runtime 创建时同步关闭，当前配置首次开启 | 立即设置 `syncRequired`；下一次 prompt 前直接 load，不先调用 `session/list` |
 | runtime attached，revision 相同，config fingerprint 相同 | 直接 `session/prompt` |
 | runtime attached，revision 变化 | session idle 后 reload，导入历史，再 prompt |
 | runtime attached，本地 MCP/cwd/system context fingerprint 变化 | 携带最新配置 reload，再 prompt |
@@ -338,10 +362,18 @@ needReload =
 
 为了区分 Gold Band 自己刚写入的变化和外部客户端后续变化：
 
-1. session new/load 完成后记录一次 Provider revision。
-2. 本地 prompt 完成后 best-effort 再探测一次并保存 revision baseline。
-3. 下一次用户 prompt 前探测；与 baseline 不同才 reload。
-4. post-prompt baseline 探测失败时标记为 `Unknown`，探测恢复后 reload 一次，而不是永久信任未知 baseline。
+以下流程仅在当前 Agent 开启 `externalSessionSyncEnabled` 时执行：
+
+1. attached runtime 必须保存创建时的同步策略。检测到 `false -> true` 时设置 `syncRequired`，该状态优先于 freshness probe。
+2. `syncRequired` 完成前必须成功执行 `session/load` 并完成 replay 收敛；load 失败时终止本轮 prompt，不得回退 `session/new`。
+3. session new/load 完成后记录一次 Provider revision。
+4. 本地 prompt 完成后 best-effort 再探测一次并保存 revision baseline；`syncRequired` 清除前禁止执行该更新，避免本地新 prompt revision 覆盖旧 baseline。
+5. 下一次用户 prompt 前探测；与 baseline 不同才 reload。
+6. post-prompt baseline 探测失败时标记为 `Unknown`，探测恢复后 reload 一次，而不是永久信任未知 baseline。
+
+`session/list` freshness probe 保持单页 5 秒、最多 8 页的有界 best-effort 行为。超时不通过扩大阈值掩盖：普通 attached session 可记录诊断后继续 prompt；首次开启同步等 `syncRequired` 场景根本不进入 probe，而是直接 load。
+
+会话标题刷新可以继续读取 `session/list.title`，但不得因此写入或改变 Provider revision baseline；标题能力与外部历史同步策略是两个独立领域。
 
 并发在两个客户端同时对同一个 Provider session 写 prompt 不属于本阶段保证范围。Gold Band 保证的是串行切换场景下，在下一次用户 prompt 前进行最终一致性同步。
 
@@ -842,5 +874,8 @@ session/connection 被有界驱逐或失效：reload
 - MCP/cwd 使用规范化 session config fingerprint；MCP 数组顺序和对象字段顺序不影响 fingerprint，增删改 MCP 会在下一次 prompt 前触发携带最新 `mcpServers` 的 reload。model/permission mode 不进入 fingerprint，继续使用 session config API。
 - session runtime 和无 attachment 的 adapter connection 均按 TTL + LRU 有界回收；active prompt 与前台 lease 内 session 不参与驱逐。会话详情打开时通过配置化的 lease renew interval 续租。
 - 所有策略值已进入 `configs/app-config.toml`，0 值回退默认值，renew interval 大于等于 lease TTL 时自动收敛到 TTL 的三分之一。
+- 外部会话同步改为 Agent 级 `externalSessionSyncEnabled`，默认关闭，不进入 `configs/app-config.toml`。Agent 管理页与 `ManagedAgentConfig` 对齐，可编辑 adapter、`skillsDirOverride` 与同步开关；关闭时不执行 revision freshness probe，detached load 的 Provider history replay 不写 timeline，当前实时回复、长连接和 TTL/LRU 不受影响。
+- attached runtime 记录创建时的外部同步策略；首次 `false -> true` 设置 `syncRequired`，下一次 prompt 前直接强制 `session/load`，不依赖可能超时的 `session/list`。required sync 成功前禁止 post-prompt revision baseline 更新，load 失败也不回退新建 session。
+- Agent 配置保存边界升级为 Provider 全局失效：跨 workspace 阻断 active prompt，detach 所有该 Provider 的 idle attachment，并关闭所有 Provider connection。
 
-接口回归已覆盖：timeline replay 去重、内容变化 revision、compaction 前后投影等价、旧重复 revision 打开时自动压缩且投影不变、idle event pump、MCP fingerprint 归一化与变更、Provider revision 判定矩阵、配置边界，以及既有 ACP 全量 Rust 单元测试。
+接口回归已覆盖：timeline replay 去重、内容变化 revision、compaction 前后投影等价、旧重复 revision 打开时自动压缩且投影不变、idle event pump、MCP fingerprint 归一化与变更、Provider revision 判定矩阵、首次开启同步时即使 `session/list` 会超时仍优先 load、Provider 跨 workspace 连接筛选、配置边界，以及既有 ACP 全量 Rust 单元测试。

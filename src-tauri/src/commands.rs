@@ -596,20 +596,11 @@ fn ensure_no_active_acp_prompts_in_workspace(
     Ok(())
 }
 
-fn ensure_no_active_acp_prompts_in_provider_workspace(
-    agent_type: ManagedAgentType,
-    workspace_root: &camino::Utf8Path,
-) -> CommandResult<()> {
-    if gold_band::acp::client::has_active_prompts_in_provider_workspace(
-        agent_type.as_str(),
-        workspace_root,
-    ) {
+fn ensure_no_active_acp_prompts_for_provider(agent_type: ManagedAgentType) -> CommandResult<()> {
+    if gold_band::acp::client::has_active_prompts_in_provider(agent_type.as_str()) {
         return Err(CommandErrorVm::new(
             "acp.active-prompt-blocks-config-save",
-            serde_json::json!({
-                "agentType": agent_type.as_str(),
-                "workspaceRoot": workspace_root.as_str(),
-            }),
+            serde_json::json!({ "agentType": agent_type.as_str() }),
         ));
     }
     Ok(())
@@ -624,10 +615,29 @@ pub struct ManagedAgentInput {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub skills_dir_override: Option<String>,
+    #[serde(default)]
+    pub external_session_sync_enabled: bool,
 }
 
-fn normalize_agent_command(command: &str) -> String {
-    command.trim().to_string()
+impl ManagedAgentInput {
+    fn into_config(self) -> ManagedAgentConfig {
+        let skills_dir_override = self
+            .skills_dir_override
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        ManagedAgentConfig {
+            adapter: AcpAdapterConfig {
+                command: self.command.trim().to_string(),
+                args: self.args,
+                display_name: self.display_name,
+                env: self.env,
+            },
+            skills_dir_override,
+            external_session_sync_enabled: self.external_session_sync_enabled,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -746,26 +756,15 @@ pub fn create_agent(
             serde_json::json!({ "agentType": agent_type.as_str() }),
         ));
     }
-    ensure_no_active_acp_prompts_in_provider_workspace(agent_type, &app.paths.repo_root)?;
-    gold_band::acp::client::close_provider_workspace_bounded(
-        agent_type.as_str(),
-        &app.paths.repo_root,
-    )
-    .map_err(command_error)?;
+    ensure_no_active_acp_prompts_for_provider(agent_type)?;
+    gold_band::acp::client::close_provider_connections_bounded(agent_type.as_str())
+        .map_err(command_error)?;
     let config_commit_guard = state
         .agent_config_diagnostic_commit_guard()
         .map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let settings = app
-        .save_managed_agent(
-            agent_type,
-            ManagedAgentConfig::new(AcpAdapterConfig {
-                command: normalize_agent_command(&input.command),
-                args: input.args,
-                display_name: input.display_name,
-                env: input.env,
-            }),
-        )
+        .save_managed_agent(agent_type, input.into_config())
         .map_err(command_error)?;
     state
         .update_settings_config(&settings)
@@ -795,26 +794,15 @@ pub fn update_agent(
             serde_json::json!({ "agentType": agent_type.as_str() }),
         ));
     }
-    ensure_no_active_acp_prompts_in_provider_workspace(agent_type, &app.paths.repo_root)?;
-    gold_band::acp::client::close_provider_workspace_bounded(
-        agent_type.as_str(),
-        &app.paths.repo_root,
-    )
-    .map_err(command_error)?;
+    ensure_no_active_acp_prompts_for_provider(agent_type)?;
+    gold_band::acp::client::close_provider_connections_bounded(agent_type.as_str())
+        .map_err(command_error)?;
     let config_commit_guard = state
         .agent_config_diagnostic_commit_guard()
         .map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let settings = app
-        .save_managed_agent(
-            agent_type,
-            ManagedAgentConfig::new(AcpAdapterConfig {
-                command: normalize_agent_command(&input.command),
-                args: input.args,
-                display_name: input.display_name,
-                env: input.env,
-            }),
-        )
+        .save_managed_agent(agent_type, input.into_config())
         .map_err(command_error)?;
     state
         .update_settings_config(&settings)
@@ -834,14 +822,10 @@ pub fn delete_agent(
     state: State<'_, DesktopState>,
     agent_type: String,
 ) -> CommandResult<AgentRegistryVm> {
-    let app = state.app().map_err(command_error)?;
     let agent_type = ManagedAgentType::from_str(&agent_type).map_err(command_error)?;
-    ensure_no_active_acp_prompts_in_provider_workspace(agent_type, &app.paths.repo_root)?;
-    gold_band::acp::client::close_provider_workspace_bounded(
-        agent_type.as_str(),
-        &app.paths.repo_root,
-    )
-    .map_err(command_error)?;
+    ensure_no_active_acp_prompts_for_provider(agent_type)?;
+    gold_band::acp::client::close_provider_connections_bounded(agent_type.as_str())
+        .map_err(command_error)?;
     let _config_commit_guard = state
         .agent_config_diagnostic_commit_guard()
         .map_err(command_error)?;
@@ -2176,7 +2160,8 @@ pub async fn send_acp_prompt(
                 app.config.acp_session_title_refresh_enabled,
                 app.config.acp_raw_max_size_bytes,
                 app.config.acp_raw_target_size_bytes,
-                client::AcpRuntimePolicy::from(&app.config),
+                client::AcpRuntimePolicy::from(&app.config)
+                    .with_external_session_sync_enabled(agent_config.external_session_sync_enabled),
                 Some(&|event| {
                     live_update(
                         acp_live_event_context(
@@ -2326,7 +2311,8 @@ pub async fn send_acp_prompt(
             app.config.acp_session_title_refresh_enabled,
             app.config.acp_raw_max_size_bytes,
             app.config.acp_raw_target_size_bytes,
-            client::AcpRuntimePolicy::from(&app.config),
+            client::AcpRuntimePolicy::from(&app.config)
+                .with_external_session_sync_enabled(agent_config.external_session_sync_enabled),
             Some(&|event| {
                 live_update(
                     acp_live_event_context(
@@ -4146,8 +4132,24 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[test]
-    fn managed_agent_command_trims_boundary_whitespace() {
-        assert_eq!(normalize_agent_command("  npx  "), "npx");
+    fn managed_agent_input_preserves_all_editable_config_fields() {
+        let input = ManagedAgentInput {
+            display_name: "Claude Custom".to_string(),
+            command: "  npx  ".to_string(),
+            args: vec!["agent".to_string()],
+            env: std::collections::BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
+            skills_dir_override: Some("  .claude-custom  ".to_string()),
+            external_session_sync_enabled: true,
+        };
+
+        let config = input.into_config();
+        assert_eq!(config.adapter.display_name, "Claude Custom");
+        assert_eq!(config.adapter.command, "npx");
+        assert_eq!(
+            config.skills_dir_override.as_deref(),
+            Some(".claude-custom")
+        );
+        assert!(config.external_session_sync_enabled);
     }
 
     #[test]

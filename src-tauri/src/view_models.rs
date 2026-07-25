@@ -103,6 +103,8 @@ pub struct ManagedAgentVm {
     pub env: Vec<AgentEnvEntryVm>,
     pub icon_key: String,
     pub skills_dir_name: String,
+    pub skills_dir_override: Option<String>,
+    pub external_session_sync_enabled: bool,
     pub supported: bool,
     pub diagnostic: Option<ManagedAgentDiagnosticVm>,
     pub supported_modes: Option<Vec<AcpModeVm>>,
@@ -1073,6 +1075,8 @@ fn managed_agent_vm(
             .collect(),
         icon_key: agent_icon_key(agent_type).to_string(),
         skills_dir_name: config.skills_dir_name(agent_type).to_string(),
+        skills_dir_override: config.skills_dir_override.clone(),
+        external_session_sync_enabled: config.external_session_sync_enabled,
         supported: agent_type.is_supported(),
         diagnostic: diagnostic.map(|diagnostic| ManagedAgentDiagnosticVm {
             status: if diagnostic.available {

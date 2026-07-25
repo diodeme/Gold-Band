@@ -1396,7 +1396,9 @@ pub fn provider_from_agent(
             acp_raw_max_size_bytes,
             acp_raw_target_size_bytes,
         )
-        .with_runtime_policy(runtime_policy),
+        .with_runtime_policy(
+            runtime_policy.with_external_session_sync_enabled(config.external_session_sync_enabled),
+        ),
     ))
 }
 

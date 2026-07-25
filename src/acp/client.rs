@@ -241,27 +241,18 @@ pub fn close_all_connections_bounded() -> Result<()> {
     AdapterConnectionManager::shared().close_all_connections_bounded(SESSION_CLOSE_TIMEOUT)
 }
 
-pub fn close_provider_workspace_bounded(
-    provider_id: &str,
-    workspace_root: &Utf8Path,
-) -> Result<()> {
-    AdapterConnectionManager::shared().close_provider_workspace_bounded(
-        provider_id,
-        workspace_root,
-        SESSION_CLOSE_TIMEOUT,
-    )
+pub fn close_provider_connections_bounded(provider_id: &str) -> Result<()> {
+    AcpSessionRuntimeRegistry::shared().detach_provider(provider_id);
+    AdapterConnectionManager::shared()
+        .close_provider_connections_bounded(provider_id, SESSION_CLOSE_TIMEOUT)
 }
 
 pub fn has_active_prompts_in_workspace(workspace_root: &Utf8Path) -> bool {
     AdapterConnectionManager::shared().has_active_prompts_in_workspace(workspace_root)
 }
 
-pub fn has_active_prompts_in_provider_workspace(
-    provider_id: &str,
-    workspace_root: &Utf8Path,
-) -> bool {
-    AdapterConnectionManager::shared()
-        .has_active_prompts_in_provider_workspace(provider_id, workspace_root)
+pub fn has_active_prompts_in_provider(provider_id: &str) -> bool {
+    AdapterConnectionManager::shared().has_active_prompts_in_provider(provider_id)
 }
 
 fn register_provider_control(attempt_dir: &Utf8Path) -> Arc<ProviderControl> {
@@ -393,6 +384,7 @@ pub struct AcpRuntimePolicy {
     pub max_idle_session_runtimes: usize,
     pub max_idle_adapter_connections: usize,
     pub timeline_compaction: TimelineCompactionPolicy,
+    pub external_session_sync_enabled: bool,
 }
 
 impl Default for AcpRuntimePolicy {
@@ -405,6 +397,7 @@ impl Default for AcpRuntimePolicy {
             max_idle_session_runtimes: 8,
             max_idle_adapter_connections: 4,
             timeline_compaction: TimelineCompactionPolicy::default(),
+            external_session_sync_enabled: false,
         }
     }
 }
@@ -426,7 +419,15 @@ impl From<&RuntimeConfig> for AcpRuntimePolicy {
                 max_size_bytes: config.acp_timeline_compact_max_size_bytes,
                 patch_ratio: config.acp_timeline_compact_patch_ratio,
             },
+            external_session_sync_enabled: false,
         }
+    }
+}
+
+impl AcpRuntimePolicy {
+    pub fn with_external_session_sync_enabled(mut self, enabled: bool) -> Self {
+        self.external_session_sync_enabled = enabled;
+        self
     }
 }
 
@@ -446,6 +447,41 @@ enum ProviderFreshnessProbe {
     NotFound,
     Unsupported,
     TemporarilyUnavailable(anyhow::Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachedSessionReusePlan {
+    Reuse,
+    ProbeFreshness,
+    Reload(&'static str),
+}
+
+fn attached_sync_required(
+    attached_sync_enabled: bool,
+    pending_sync_required: bool,
+    current_sync_enabled: bool,
+) -> bool {
+    current_sync_enabled && (pending_sync_required || !attached_sync_enabled)
+}
+
+fn plan_attached_session_reuse(
+    config_changed: bool,
+    sync_required: bool,
+    external_session_sync_enabled: bool,
+    provider_freshness: &ProviderFreshnessBaseline,
+) -> AttachedSessionReusePlan {
+    if config_changed {
+        return AttachedSessionReusePlan::Reload("session-config-changed");
+    }
+    if sync_required {
+        return AttachedSessionReusePlan::Reload("external-session-sync-required");
+    }
+    if external_session_sync_enabled
+        && provider_freshness != &ProviderFreshnessBaseline::Unsupported
+    {
+        return AttachedSessionReusePlan::ProbeFreshness;
+    }
+    AttachedSessionReusePlan::Reuse
 }
 
 fn evaluate_provider_revision(
@@ -484,6 +520,9 @@ struct AttachedSessionRuntime {
     config_options: Option<Value>,
     config_fingerprint: u64,
     provider_freshness: ProviderFreshnessBaseline,
+    connection_key: AdapterConnectionKey,
+    external_session_sync_enabled: bool,
+    sync_required: bool,
     last_activity_at: Instant,
     foreground_lease_until: Instant,
     active: bool,
@@ -584,6 +623,30 @@ impl AcpSessionRuntimeRegistry {
         } else {
             false
         }
+    }
+
+    fn detach_provider(&self, provider_id: &str) -> usize {
+        let detached = self
+            .sessions
+            .lock()
+            .ok()
+            .map(|mut sessions| {
+                let keys = sessions
+                    .iter()
+                    .filter(|(_, entry)| entry.connection_key.provider_id == provider_id)
+                    .map(|(key, _)| key.clone())
+                    .collect::<Vec<_>>();
+                keys.into_iter()
+                    .filter_map(|key| sessions.remove(&key))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let count = detached.len();
+        for entry in detached {
+            entry.event_pump.close();
+            entry.connection.unregister_session_route(&entry.session_id);
+        }
+        count
     }
 
     fn renew_foreground_lease(&self, attempt_dir: &Utf8Path, ttl: Duration) -> bool {
@@ -702,6 +765,7 @@ struct AcpRuntime<'a> {
     runtime_policy: AcpRuntimePolicy,
     attached_config_fingerprint: Option<u64>,
     provider_freshness: ProviderFreshnessBaseline,
+    sync_required: bool,
     retain_session_route: bool,
 }
 
@@ -1431,6 +1495,7 @@ impl<'a> AcpRuntime<'a> {
             runtime_policy,
             attached_config_fingerprint: None,
             provider_freshness: ProviderFreshnessBaseline::Unknown,
+            sync_required: false,
             retain_session_route: false,
         })
     }
@@ -1542,11 +1607,14 @@ impl<'a> AcpRuntime<'a> {
                 return Ok(true);
             }
             self.session_update_phase = SessionUpdatePhase::Replaying;
-            self.provider_history_replay.begin(provider_id, session_id);
+            if self.runtime_policy.external_session_sync_enabled {
+                self.provider_history_replay.begin(provider_id, session_id);
+            }
             let load = self.request(
                 "session/load",
                 session_load_params(&cwd, session_id, adapter_system_prompt, mcp_servers),
             );
+            let required_sync = self.sync_required;
             match load {
                 Ok(result) => {
                     self.capture_session_config(&result);
@@ -1555,6 +1623,7 @@ impl<'a> AcpRuntime<'a> {
                     self.drain_available_inbound()?;
                     self.finish_provider_history_replay(Some(session_id.to_string()))?;
                     self.session_update_phase = SessionUpdatePhase::AwaitingTurnStart;
+                    self.sync_required = false;
                     self.refresh_provider_freshness_best_effort(&cwd);
                     return Ok(true);
                 }
@@ -1569,6 +1638,9 @@ impl<'a> AcpRuntime<'a> {
                     if is_transport_interruption(&err) {
                         self.set_session_id(session_id.to_string());
                         return Err(err);
+                    }
+                    if required_sync {
+                        bail!("failed to synchronize existing ACP session before prompt: {err}");
                     }
                     if strict_continue {
                         bail!("failed to load existing ACP session for continue: {err}");
@@ -1592,6 +1664,7 @@ impl<'a> AcpRuntime<'a> {
             .ok_or_else(|| anyhow!("ACP session/new response missing sessionId"))?;
         self.set_session_id(session_id.to_string());
         self.session_update_phase = SessionUpdatePhase::Live;
+        self.sync_required = false;
         self.apply_session_mode_options(permission_mode, model)?;
         self.refresh_provider_freshness_best_effort(&cwd);
         Ok(false)
@@ -1619,13 +1692,24 @@ impl<'a> AcpRuntime<'a> {
         self.modes = entry.modes.clone();
         self.config_options = entry.config_options.clone();
         self.provider_freshness = entry.provider_freshness.clone();
+        self.sync_required = attached_sync_required(
+            entry.external_session_sync_enabled,
+            entry.sync_required,
+            self.runtime_policy.external_session_sync_enabled,
+        );
         self.retain_session_route = true;
 
-        let mut reload_reason = (entry.config_fingerprint != desired_config_fingerprint)
-            .then_some("session-config-changed");
-        if reload_reason.is_none()
-            && entry.provider_freshness != ProviderFreshnessBaseline::Unsupported
-        {
+        let reuse_plan = plan_attached_session_reuse(
+            entry.config_fingerprint != desired_config_fingerprint,
+            self.sync_required,
+            self.runtime_policy.external_session_sync_enabled,
+            &entry.provider_freshness,
+        );
+        let mut reload_reason = match reuse_plan {
+            AttachedSessionReusePlan::Reload(reason) => Some(reason),
+            AttachedSessionReusePlan::Reuse | AttachedSessionReusePlan::ProbeFreshness => None,
+        };
+        if reuse_plan == AttachedSessionReusePlan::ProbeFreshness {
             match self.probe_session_freshness(cwd) {
                 ProviderFreshnessProbe::Found { revision, title } => {
                     if title.is_some() {
@@ -1998,10 +2082,23 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn refresh_session_title(&mut self, workspace_dir: &Utf8Path) -> Result<()> {
-        self.refresh_provider_freshness(workspace_dir)
+        match self.probe_session_freshness(workspace_dir) {
+            ProviderFreshnessProbe::Found { title, .. } => {
+                self.session_title = title;
+                Ok(())
+            }
+            ProviderFreshnessProbe::Unsupported => Ok(()),
+            ProviderFreshnessProbe::NotFound => {
+                bail!("ACP session was not found by session/list")
+            }
+            ProviderFreshnessProbe::TemporarilyUnavailable(error) => Err(error),
+        }
     }
 
     fn refresh_provider_freshness_best_effort(&mut self, workspace_dir: &Utf8Path) {
+        if !self.runtime_policy.external_session_sync_enabled || self.sync_required {
+            return;
+        }
         if let Err(error) = self.refresh_provider_freshness(workspace_dir) {
             let _ = append_diagnostic(
                 &self.paths.diagnostics,
@@ -2412,6 +2509,9 @@ impl<'a> AcpRuntime<'a> {
 
 
         if self.session_update_phase == SessionUpdatePhase::Replaying {
+            if !self.runtime_policy.external_session_sync_enabled {
+                return Ok(());
+            }
             return self.handle_provider_history_replay(session_id, update);
         }
         if update.get("sessionUpdate").and_then(Value::as_str) == Some("user_message_chunk") {
@@ -2474,6 +2574,9 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn finish_provider_history_replay(&mut self, session_id: Option<String>) -> Result<()> {
+        if !self.runtime_policy.external_session_sync_enabled {
+            return Ok(());
+        }
         let ReplayUpdateDecision::Import { items } = self.provider_history_replay.finish() else {
             return Ok(());
         };
@@ -3234,7 +3337,8 @@ impl<'a> AcpRuntime<'a> {
             self.shutdown();
             return;
         }
-        let (Some(session_id), Some(event_pump), Some(config_fingerprint)) = (
+        let (Some(connection_key), Some(session_id), Some(event_pump), Some(config_fingerprint)) = (
+            self.connection_key.clone(),
             self.session_id.clone(),
             self.rx.clone(),
             self.attached_config_fingerprint,
@@ -3256,6 +3360,9 @@ impl<'a> AcpRuntime<'a> {
                 config_options: self.config_options.clone(),
                 config_fingerprint,
                 provider_freshness: self.provider_freshness.clone(),
+                connection_key,
+                external_session_sync_enabled: self.runtime_policy.external_session_sync_enabled,
+                sync_required: self.sync_required,
                 last_activity_at: now,
                 foreground_lease_until: now + self.runtime_policy.foreground_lease_ttl,
                 active: false,
@@ -3744,22 +3851,72 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        AcpRuntime, DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptActivity, PromptBundle, PromptVisibility,
-        ProviderFreshnessBaseline, RuntimeStopProbe, SessionUpdatePhase, active_timeline_streams,
+        AcpRuntime, AcpRuntimePolicy, AttachedSessionReusePlan, DOCTOR_DIAGNOSTIC_TARGET_SIZE,
+        PromptActivity, PromptBundle, PromptVisibility, ProviderFreshnessBaseline,
+        RuntimeStopProbe, SessionUpdatePhase, active_timeline_streams, attached_sync_required,
         cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
         evaluate_provider_revision, is_transport_interruption, merge_tool_raw_input,
-        permission_decision_timeline_event, prompt_activity, register_provider_control,
-        request_prompt_cancel, resolve_permission_mode, retain_bounded_doctor_acp_failure_bundle,
-        runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
-        session_new_params, session_prompt_params, session_prompt_text,
-        should_suppress_session_update, take_pending_live_update_for_stream_switch,
-        unregister_provider_control,
+        permission_decision_timeline_event, plan_attached_session_reuse, prompt_activity,
+        register_provider_control, request_prompt_cancel, resolve_permission_mode,
+        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
+        session_config_fingerprint, session_load_params, session_new_params, session_prompt_params,
+        session_prompt_text, should_suppress_session_update,
+        take_pending_live_update_for_stream_switch, unregister_provider_control,
     };
     use crate::acp::{
         connection::AcpConnectionUnavailable,
         events::{AcpTimingState, AcpUiEvent},
         permission::PermissionResponseState,
     };
+
+    #[test]
+    fn external_session_sync_policy_is_agent_opt_in() {
+        let default_policy = AcpRuntimePolicy::default();
+        assert!(!default_policy.external_session_sync_enabled);
+
+        let enabled = default_policy.with_external_session_sync_enabled(true);
+        assert!(enabled.external_session_sync_enabled);
+        assert_eq!(enabled.session_idle_ttl, default_policy.session_idle_ttl);
+        assert_eq!(
+            enabled.max_idle_session_runtimes,
+            default_policy.max_idle_session_runtimes
+        );
+    }
+
+    #[test]
+    fn first_enable_sync_still_loads_when_session_list_would_timeout() {
+        let sync_required = attached_sync_required(false, false, true);
+        assert!(sync_required);
+
+        let plan = plan_attached_session_reuse(
+            false,
+            sync_required,
+            true,
+            &ProviderFreshnessBaseline::Unknown,
+        );
+
+        assert_eq!(
+            plan,
+            AttachedSessionReusePlan::Reload("external-session-sync-required")
+        );
+        assert_ne!(plan, AttachedSessionReusePlan::ProbeFreshness);
+    }
+
+    #[test]
+    fn attached_session_reuse_only_probes_freshness_without_required_sync() {
+        assert_eq!(
+            plan_attached_session_reuse(false, false, true, &ProviderFreshnessBaseline::Unknown,),
+            AttachedSessionReusePlan::ProbeFreshness
+        );
+        assert_eq!(
+            plan_attached_session_reuse(false, false, false, &ProviderFreshnessBaseline::Unknown,),
+            AttachedSessionReusePlan::Reuse
+        );
+        assert_eq!(
+            plan_attached_session_reuse(true, false, false, &ProviderFreshnessBaseline::Unknown,),
+            AttachedSessionReusePlan::Reload("session-config-changed")
+        );
+    }
 
     #[test]
     fn provider_control_exposes_prompt_activity_phases() {

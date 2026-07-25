@@ -1545,14 +1545,21 @@ impl AdapterConnectionManager {
         Ok(())
     }
 
-    pub fn close_provider_workspace_bounded(
+    pub fn close_provider_connections_bounded(
         &self,
         provider_id: &str,
-        workspace_root: &Utf8Path,
         timeout: Duration,
     ) -> Result<()> {
-        let key = AdapterConnectionKey::new(provider_id, workspace_root.to_path_buf());
-        self.close_connection_bounded(&key, timeout)
+        let connections = self
+            .connections
+            .lock()
+            .map_err(|_| anyhow!("ACP connection manager lock poisoned"))?;
+        let keys = select_provider_connection_keys(connections.keys(), provider_id);
+        drop(connections);
+        for key in keys {
+            self.close_connection_bounded(&key, timeout)?;
+        }
+        Ok(())
     }
 
     pub fn close_all_connections_bounded(&self, timeout: Duration) -> Result<()> {
@@ -1657,18 +1664,25 @@ impl AdapterConnectionManager {
             .unwrap_or(false)
     }
 
-    pub fn has_active_prompts_in_provider_workspace(
-        &self,
-        provider_id: &str,
-        workspace_root: &Utf8Path,
-    ) -> bool {
-        let key = AdapterConnectionKey::new(provider_id, workspace_root.to_path_buf());
+    pub fn has_active_prompts_in_provider(&self, provider_id: &str) -> bool {
         self.connections
             .lock()
-            .ok()
-            .and_then(|connections| connections.get(&key).cloned())
-            .is_some_and(|connection| connection.active_prompt_count() > 0)
+            .map(|connections| {
+                connections.iter().any(|(key, connection)| {
+                    key.provider_id == provider_id && connection.active_prompt_count() > 0
+                })
+            })
+            .unwrap_or(false)
     }
+}
+
+fn select_provider_connection_keys<'a>(
+    keys: impl Iterator<Item = &'a AdapterConnectionKey>,
+    provider_id: &str,
+) -> Vec<AdapterConnectionKey> {
+    keys.filter(|key| key.provider_id == provider_id)
+        .cloned()
+        .collect()
 }
 
 fn settle_attempt_for_session_close(attempt_dir: &Utf8Path) {
@@ -1734,7 +1748,8 @@ mod tests {
         AdapterConnectionState, EarlySessionFrames, SessionConfigTransaction, SessionEventPump,
         SessionRouteTryRecvError, persist_cancelled_session_snapshot, record_unrouted_warning,
         register_session_route_state, request_unavailability, route_or_buffer_session_frame,
-        session_id_from_frame, session_route_pair, settle_attempt_for_session_close,
+        select_provider_connection_keys, session_id_from_frame, session_route_pair,
+        settle_attempt_for_session_close,
     };
 
     #[test]
@@ -1777,6 +1792,19 @@ mod tests {
         assert_eq!(first, second);
         assert_ne!(first, other_provider);
         assert_ne!(first, other_workspace);
+    }
+
+    #[test]
+    fn provider_connection_selection_spans_workspaces() {
+        let keys = [
+            AdapterConnectionKey::new("claude-acp", Utf8PathBuf::from("/repo-a")),
+            AdapterConnectionKey::new("claude-acp", Utf8PathBuf::from("/repo-b")),
+            AdapterConnectionKey::new("codex-acp", Utf8PathBuf::from("/repo-a")),
+        ];
+
+        let selected = select_provider_connection_keys(keys.iter(), "claude-acp");
+
+        assert_eq!(selected, vec![keys[0].clone(), keys[1].clone()]);
     }
 
     #[test]

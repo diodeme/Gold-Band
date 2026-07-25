@@ -98,6 +98,8 @@ export interface ManagedAgentVm {
   env: AgentEnvEntryVm[];
   iconKey: string;
   skillsDirName: string;
+  skillsDirOverride?: string | null;
+  externalSessionSyncEnabled: boolean;
   supported: boolean;
   diagnostic?: ManagedAgentDiagnosticVm | null;
   supportedModes?: AcpModeVm[] | null;
@@ -164,6 +166,8 @@ export interface ManagedAgentInput {
   command: string;
   args: string[];
   env: Record<string, string>;
+  skillsDirOverride?: string | null;
+  externalSessionSyncEnabled: boolean;
 }
 
 export interface SummaryCardVm {

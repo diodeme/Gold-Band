@@ -425,6 +425,8 @@ export const mockAgentRegistry: AgentRegistryVm = {
       env: [{ key: 'ANTHROPIC_API_KEY', value: '***' }],
       iconKey: 'claude',
       skillsDirName: '.claude',
+      skillsDirOverride: null,
+      externalSessionSyncEnabled: false,
       supported: true,
       diagnostic: {
         status: 'healthy',

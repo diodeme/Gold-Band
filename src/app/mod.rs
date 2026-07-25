@@ -1678,7 +1678,8 @@ impl App {
             self.config.acp_session_title_refresh_enabled,
             self.config.acp_raw_max_size_bytes,
             self.config.acp_raw_target_size_bytes,
-            acp_client::AcpRuntimePolicy::from(&self.config),
+            acp_client::AcpRuntimePolicy::from(&self.config)
+                .with_external_session_sync_enabled(config.external_session_sync_enabled),
         )?))
     }
 

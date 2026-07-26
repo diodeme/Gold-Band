@@ -51,6 +51,8 @@ import type {
   ConversationAttemptLifecycleVm,
   WorkflowTemplateStore,
   WorkflowVm,
+  FeedbackInput,
+  FeedbackResult,
 } from '../types';
 import { browserApi } from './browser';
 import { desktopApi } from './desktop';
@@ -233,6 +235,7 @@ export interface RuntimeApi {
     directoryPath?: string | null,
     syncTargets?: string[] | null,
   ): Promise<string[]>;
+  submitFeedback(input: FeedbackInput): Promise<FeedbackResult>;
 }
 
 export function getRuntimeApi(): RuntimeApi {

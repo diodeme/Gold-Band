@@ -113,7 +113,7 @@ pub fn normalize_metrics_base_url(raw: &str) -> Option<String> {
     Some(normalized)
 }
 
-fn metrics_base_url(config: &RuntimeConfig) -> Option<String> {
+pub(crate) fn metrics_base_url(config: &RuntimeConfig) -> Option<String> {
     let channel_config = current_channel_config();
     config
         .desktop_metrics_base_url
@@ -122,7 +122,7 @@ fn metrics_base_url(config: &RuntimeConfig) -> Option<String> {
         .or_else(|| normalize_metrics_base_url(channel_config.metrics_base_url))
 }
 
-fn endpoint_from_base_url(base_url: &str, path: &str) -> Option<String> {
+pub(crate) fn endpoint_from_base_url(base_url: &str, path: &str) -> Option<String> {
     normalize_metrics_base_url(base_url)
         .map(|base| format!("{}{}", base.trim_end_matches('/'), path))
 }
@@ -241,7 +241,7 @@ pub fn start_heartbeat_polling<R: Runtime>(app: AppHandle<R>) {
     });
 }
 
-fn get_api_key(config: &RuntimeConfig) -> Option<String> {
+pub(crate) fn get_api_key(config: &RuntimeConfig) -> Option<String> {
     let channel_config = current_channel_config();
     config
         .desktop_metrics_api_key

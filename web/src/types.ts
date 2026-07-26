@@ -1199,3 +1199,9 @@ export interface SkillContentVm {
   descriptionSource?: string;
   body: string;
 }
+
+// -- Feedback --
+export interface SessionRef { workspace: string; taskId: string; }
+export interface FeedbackInput { description: string; sessionRef?: SessionRef | null; screenshotPaths: string[]; includeLogs: boolean; }
+export interface FeedbackResult { success: boolean; }
+

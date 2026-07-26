@@ -236,7 +236,7 @@ pub const MANAGED_AGENT_PRESETS: [ManagedAgentPreset; 5] = [
         label: "Codex",
         icon_key: "codex",
         command: "npx",
-        args: &["-y", "@zed-industries/codex-acp@latest"],
+        args: &["-y", "@agentclientprotocol/codex-acp@latest"],
         primary_agent_dir: ".codex",
         compatible_agent_dirs: &[".agents"],
     },
@@ -528,7 +528,10 @@ pub struct SettingsConfig {
     pub context_servers: Option<Vec<McpServerConfig>>,
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 2;
+
+const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
+const CURRENT_CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp@latest";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -558,16 +561,47 @@ impl SettingsConfig {
         let mut migrated = false;
         if version < 1 {
             migrate_managed_agent_directories(settings)?;
+            migrated = true;
+        }
+        if version < 2 {
+            migrate_codex_acp_package(settings)?;
+            migrated = true;
+        }
+        if migrated {
             settings.insert(
                 "settingsSchemaVersion".to_string(),
                 serde_json::json!(CURRENT_SETTINGS_SCHEMA_VERSION),
             );
-            migrated = true;
         }
 
         let config = serde_json::from_value(value)?;
         Ok((config, migrated))
     }
+}
+
+fn migrate_codex_acp_package(
+    settings: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    let Some(args) = settings
+        .get_mut("agents")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|agents| agents.get_mut("codex-acp"))
+        .and_then(|agent| agent.get_mut("adapter"))
+        .and_then(|adapter| adapter.get_mut("args"))
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Ok(());
+    };
+
+    for arg in args {
+        let Some(package) = arg.as_str() else {
+            continue;
+        };
+        if package.starts_with(LEGACY_CODEX_ACP_PACKAGE_PREFIX) {
+            *arg = serde_json::Value::String(CURRENT_CODEX_ACP_PACKAGE.to_string());
+        }
+    }
+    Ok(())
 }
 
 fn migrate_managed_agent_directories(
@@ -922,6 +956,7 @@ mod tests {
         ConversationRunModeEntry, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
         DesktopUpdateBadgeState, MANAGED_AGENT_PRESETS, ManagedAgentConfig, ManagedAgentId,
         ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
+        managed_agent_preset,
     };
     use std::collections::BTreeMap;
     use std::str::FromStr;
@@ -1323,6 +1358,80 @@ mod tests {
         let codex = &agents[&ManagedAgentId::from_str("codex-acp").unwrap()];
         assert_eq!(codex.primary_agent_dir, ".codex");
         assert_eq!(codex.compatible_agent_dirs, vec![".agents"]);
+    }
+
+    #[test]
+    fn settings_v1_migrates_legacy_codex_acp_package() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 1,
+                "agents": {
+                    "codex-acp": {
+                        "adapter": {
+                            "command": "npx",
+                            "args": ["-y", "@zed-industries/codex-acp@0.16.0"],
+                            "displayName": "Codex",
+                            "env": {}
+                        },
+                        "primaryAgentDir": ".codex",
+                        "compatibleAgentDirs": [".agents"],
+                        "externalSessionSyncEnabled": false
+                    }
+                }
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        assert_eq!(
+            settings.settings_schema_version.0,
+            super::CURRENT_SETTINGS_SCHEMA_VERSION
+        );
+        let agents = settings.agents.unwrap();
+        let codex = &agents[&ManagedAgentId::from_str("codex-acp").unwrap()];
+        assert_eq!(
+            codex.adapter.args,
+            vec!["-y", "@agentclientprotocol/codex-acp@latest"]
+        );
+    }
+
+    #[test]
+    fn current_codex_preset_uses_agentclientprotocol_adapter() {
+        let codex = managed_agent_preset(&ManagedAgentId::from_str("codex-acp").unwrap())
+            .unwrap()
+            .default_config();
+
+        assert_eq!(
+            codex.adapter.args,
+            vec!["-y", "@agentclientprotocol/codex-acp@latest"]
+        );
+    }
+
+    #[test]
+    fn settings_v1_preserves_custom_codex_adapter_args() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 1,
+                "agents": {
+                    "codex-acp": {
+                        "adapter": {
+                            "command": "custom-codex-acp.exe",
+                            "args": ["--stdio"],
+                            "displayName": "Custom Codex",
+                            "env": {}
+                        },
+                        "primaryAgentDir": ".codex",
+                        "compatibleAgentDirs": [".agents"],
+                        "externalSessionSyncEnabled": false
+                    }
+                }
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        let agents = settings.agents.unwrap();
+        let codex = &agents[&ManagedAgentId::from_str("codex-acp").unwrap()];
+        assert_eq!(codex.adapter.command, "custom-codex-acp.exe");
+        assert_eq!(codex.adapter.args, vec!["--stdio"]);
     }
 
     #[test]

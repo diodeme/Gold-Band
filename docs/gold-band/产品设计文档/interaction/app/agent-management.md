@@ -54,6 +54,7 @@ Agent Cards
 - 已配置过的 Agent ID 不可重复新增
 - preset 同时提供稳定 ID、名称、图标、推荐命令、参数、主 Agent 目录和兼容 Agent 目录；新增时把完整默认配置写入 `ManagedAgentConfig`，运行时不再根据 Agent ID 推导目录
 - 新增时预填 registry 推荐命令、参数和 display name，用户可按本机安装路径调整；npx 类 agent 使用 registry package，Cursor/OpenCode 默认走 PATH 中的 `cursor-agent acp` / `opencode acp`
+- Codex 的内置推荐参数固定为 `npx -y @agentclientprotocol/codex-acp@latest`，以保留 Codex `itemId` 到 ACP `messageId` 的消息边界
 - agent 图标源文件维护在 `docs\gold-band\资源\icon`，应用实际打包路径为 `web\public\agent-icons`，由 Vite 复制进 `web\dist` 后随 Tauri 应用打包
 
 ---
@@ -90,6 +91,7 @@ Agent Cards
 配置持久化：
 - `settings.json` 使用 `settingsSchemaVersion` 标记结构版本；缺少版本号的旧配置视为版本 `0`
 - 桌面端、CLI、MCP 和应用服务统一通过同一个设置加载入口读取配置；旧 Agent ID、`skillsDirOverride` 和缺失的目录字段只在版本升级时迁移，并通过原子写一次性写回当前版本
+- settings schema v2 将已保存参数中的 `@zed-industries/codex-acp` 包规格一次性替换为 `@agentclientprotocol/codex-acp@latest`；其他自定义 Codex 命令和参数保持不变
 - 当前版本配置在后续启动时只解析和检查版本，不重复迁移或写回；未来版本高于当前程序支持范围时必须明确报错
 - 配置解析或迁移失败不得静默回退为默认设置，避免启动时内存配置与保存时磁盘配置不一致
 

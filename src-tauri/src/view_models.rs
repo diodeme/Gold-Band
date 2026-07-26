@@ -5252,7 +5252,10 @@ fn merge_pending_delta(pending: &mut Option<AcpUiEventVm>, event: &AcpUiEventVm)
     let Some(previous) = pending.as_mut() else {
         return false;
     };
-    if !is_delta_event(event) || previous.kind != event.kind {
+    if !is_delta_event(event)
+        || previous.kind != event.kind
+        || !same_delta_stream_identity(previous, event)
+    {
         return false;
     }
     previous.content = Some(format!(
@@ -5269,6 +5272,26 @@ fn merge_pending_delta(pending: &mut Option<AcpUiEventVm>, event: &AcpUiEventVm)
         .or_else(|| previous.raw.clone())
         .map(compact_raw_value);
     true
+}
+
+fn same_delta_stream_identity(previous: &AcpUiEventVm, event: &AcpUiEventVm) -> bool {
+    match (
+        delta_stream_identity(previous),
+        delta_stream_identity(event),
+    ) {
+        (Some(previous), Some(incoming)) => previous == incoming,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn delta_stream_identity(event: &AcpUiEventVm) -> Option<&str> {
+    event.raw.as_ref().and_then(|raw| {
+        raw.get("providerHistoryItemId")
+            .and_then(|value| value.as_str())
+            .or_else(|| raw.get("messageId").and_then(|value| value.as_str()))
+            .filter(|value| !value.trim().is_empty())
+    })
 }
 
 fn is_delta_event(event: &AcpUiEventVm) -> bool {
@@ -7186,6 +7209,27 @@ mod tests {
         assert_eq!(
             pending.and_then(|event| event.content),
             Some("输出你的工具列表".to_string())
+        );
+    }
+
+    #[test]
+    fn text_delta_with_different_message_ids_does_not_merge_in_scan_window() {
+        let mut first = test_event("textDelta", "warning");
+        first.raw = Some(json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "warning-1"
+        }));
+        let mut pending = Some(first);
+        let mut next = test_event("textDelta", "answer");
+        next.raw = Some(json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "answer-1"
+        }));
+
+        assert!(!merge_pending_delta(&mut pending, &next));
+        assert_eq!(
+            pending.and_then(|event| event.content),
+            Some("warning".to_string())
         );
     }
 

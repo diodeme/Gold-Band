@@ -14,8 +14,8 @@ describe('Agent management input mapping', () => {
       args: ['-y', '@agentclientprotocol/claude-agent-acp@latest'],
       env: [],
       iconKey: 'claude',
-      skillsDirName: '.claude',
-      skillsDirOverride: '.claude-custom',
+      primaryAgentDir: '.claude-custom',
+      compatibleAgentDirs: [],
       externalSessionSyncEnabled: true,
       supported: true,
       diagnostic: null,
@@ -35,29 +35,33 @@ describe('Agent management input mapping', () => {
       command: 'npx',
       args: ['stale'],
       env: { STALE: '1' },
-      skillsDirOverride: '  .claude-custom  ',
+      primaryAgentDir: '  .claude-custom  ',
+      compatibleAgentDirs: ['stale'],
       externalSessionSyncEnabled: true,
-    }, '-y\nagent', 'TOKEN=value')).toEqual({
+    }, '-y\nagent', 'TOKEN=value', ' .agents\n.agents\n.claude-custom ')).toEqual({
       displayName: 'Claude',
       command: 'npx',
       args: ['-y', 'agent'],
       env: { TOKEN: 'value' },
-      skillsDirOverride: '.claude-custom',
+      primaryAgentDir: '.claude-custom',
+      compatibleAgentDirs: ['.agents'],
       externalSessionSyncEnabled: true,
     });
   });
 
-  it('normalizes an empty Skill directory override to null', () => {
+  it('normalizes Agent directories and removes the primary directory from compatibility reads', () => {
     const input = buildAgentInput({
       displayName: 'Codex',
       command: 'codex-acp',
       args: [],
       env: {},
-      skillsDirOverride: '   ',
+      primaryAgentDir: ' .codex ',
+      compatibleAgentDirs: [],
       externalSessionSyncEnabled: false,
-    }, '', '');
+    }, '', '', ' .agents, .codex, .agents ');
 
-    expect(input.skillsDirOverride).toBeNull();
+    expect(input.primaryAgentDir).toBe('.codex');
+    expect(input.compatibleAgentDirs).toEqual(['.agents']);
     expect(input.externalSessionSyncEnabled).toBe(false);
   });
 
@@ -67,7 +71,8 @@ describe('Agent management input mapping', () => {
       command: 'npx',
       args: [],
       env: {},
-      skillsDirOverride: null,
+      primaryAgentDir: '.claude',
+      compatibleAgentDirs: [],
       externalSessionSyncEnabled: false,
     }, '-y\nagent', 'A=1\nB=2');
     const current = buildAgentInput({ ...initial, command: '  npx  ' }, '  -y   agent  ', 'B=2\nA=1');
@@ -81,7 +86,8 @@ describe('Agent management input mapping', () => {
       command: 'npx',
       args: [],
       env: {},
-      skillsDirOverride: null,
+      primaryAgentDir: '.claude',
+      compatibleAgentDirs: [],
       externalSessionSyncEnabled: false,
     }, '-y\nagent', 'TOKEN=value');
 

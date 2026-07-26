@@ -1,6 +1,6 @@
 use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{artifact_uses_json_output, json_artifact_text_from_outputs};
-use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
+use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, managed_agent_preset};
 pub use crate::domain::SessionRef;
 use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode};
 use crate::prompts::{
@@ -1342,19 +1342,16 @@ fn log_prompt_bundle(
 }
 
 pub fn provider_capabilities(provider_id: &str) -> Result<ProviderCapabilities> {
-    let agent_type = ManagedAgentType::from_str(provider_id)?;
-    provider_capabilities_for_type(agent_type)
+    let agent_id = ManagedAgentId::from_str(provider_id)?;
+    provider_capabilities_for_id(&agent_id)
 }
 
-pub fn provider_capabilities_for_type(
-    agent_type: ManagedAgentType,
-) -> Result<ProviderCapabilities> {
-    if !agent_type.is_supported() {
-        bail!("unsupported agent type: {}", agent_type.as_str());
-    }
+pub fn provider_capabilities_for_id(agent_id: &ManagedAgentId) -> Result<ProviderCapabilities> {
+    let preset = managed_agent_preset(agent_id)
+        .ok_or_else(|| anyhow::anyhow!("unsupported managed agent: {}", agent_id.as_str()))?;
     Ok(AcpProvider::new(
-        agent_type.as_str(),
-        agent_type.default_adapter_config(),
+        agent_id.as_str(),
+        preset.default_config().adapter,
         false,
         false,
         false,
@@ -1374,7 +1371,7 @@ pub fn supports_system_prompt(provider_id: &str) -> Result<bool> {
 }
 
 pub fn provider_from_agent(
-    agent_type: ManagedAgentType,
+    agent_id: &ManagedAgentId,
     config: &ManagedAgentConfig,
     use_local_claude: bool,
     require_local_claude_executable: bool,
@@ -1383,12 +1380,11 @@ pub fn provider_from_agent(
     acp_raw_target_size_bytes: u64,
     runtime_policy: client::AcpRuntimePolicy,
 ) -> Result<Box<dyn ProviderAdapter>> {
-    if !agent_type.is_supported() {
-        bail!("unsupported agent type: {}", agent_type.as_str());
-    }
+    managed_agent_preset(agent_id)
+        .ok_or_else(|| anyhow::anyhow!("unsupported managed agent: {}", agent_id.as_str()))?;
     Ok(Box::new(
         AcpProvider::new(
-            agent_type.as_str(),
+            agent_id.as_str(),
             config.adapter.clone(),
             use_local_claude,
             require_local_claude_executable,
@@ -1410,10 +1406,12 @@ pub fn provider_from_id(
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
 ) -> Result<Box<dyn ProviderAdapter>> {
-    let agent_type = ManagedAgentType::from_str(provider_id)?;
-    let config = ManagedAgentConfig::new(agent_type.default_adapter_config());
+    let agent_id = ManagedAgentId::from_str(provider_id)?;
+    let preset = managed_agent_preset(&agent_id)
+        .ok_or_else(|| anyhow::anyhow!("unsupported managed agent: {provider_id}"))?;
+    let config = preset.default_config();
     provider_from_agent(
-        agent_type,
+        &agent_id,
         &config,
         use_local_claude,
         require_local_claude_executable,

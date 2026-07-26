@@ -81,6 +81,8 @@ const resources = {
         agent: {
           "already-exists": "Agent {{agentType}} 已存在。",
           "not-configured": "Agent {{agentType}} 尚未配置。",
+          unsupported: "Agent {{agentType}} 不在当前内置 preset 中。",
+          "primary-directory-required": "请填写主 Agent 目录。",
         },
         acp: {
           "missing-provider": "当前节点缺少 provider 配置。",
@@ -229,9 +231,12 @@ const resources = {
         argsDescription: "按空格或换行分隔参数。",
         env: "环境变量",
         envDescription: "每行一个 KEY=VALUE。",
-        skillsDirOverride: "Skill 目录",
-        skillsDirOverrideDescription: "留空时使用该 Agent 的默认目录。",
-        skillsDirOverridePlaceholder: "使用 Agent 默认目录",
+        primaryAgentDir: "主 Agent 目录",
+        primaryAgentDirDescription: "Gold Band 在该目录下的 skills 子目录中读取、写入和同步 Skill。",
+        primaryAgentDirPlaceholder: ".claude",
+        compatibleAgentDirs: "兼容 Agent 目录",
+        compatibleAgentDirsDescription: "Agent 额外读取的目录，每行一个；Gold Band 不会向这些目录同步 Skill。",
+        compatibleAgentDirsPlaceholder: ".agents",
         externalSessionSync: "同步外部会话",
         externalSessionSyncBeta: "Beta",
         externalSessionSyncHelpLabel: "了解外部会话同步",
@@ -1340,6 +1345,8 @@ const resources = {
         agent: {
           "already-exists": "Agent {{agentType}} already exists.",
           "not-configured": "Agent {{agentType}} is not configured.",
+          unsupported: "Agent {{agentType}} is not available in the built-in presets.",
+          "primary-directory-required": "Enter a primary Agent directory.",
         },
         acp: {
           "missing-provider":
@@ -1494,10 +1501,14 @@ const resources = {
         argsDescription: "Separate arguments with spaces or new lines.",
         env: "Environment",
         envDescription: "One KEY=VALUE per line.",
-        skillsDirOverride: "Skill Directory",
-        skillsDirOverrideDescription:
-          "Leave empty to use this agent's default directory.",
-        skillsDirOverridePlaceholder: "Use agent default",
+        primaryAgentDir: "Primary Agent Directory",
+        primaryAgentDirDescription:
+          "Gold Band reads, writes, and syncs Skills in this directory's skills subdirectory.",
+        primaryAgentDirPlaceholder: ".claude",
+        compatibleAgentDirs: "Compatible Agent Directories",
+        compatibleAgentDirsDescription:
+          "Additional directories read by the Agent, one per line. Gold Band does not sync Skills into them.",
+        compatibleAgentDirsPlaceholder: ".agents",
         externalSessionSync: "Sync External Sessions",
         externalSessionSyncBeta: "Beta",
         externalSessionSyncHelpLabel: "About external session sync",

@@ -21,7 +21,7 @@ use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::{
     ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
-    ManagedAgentType, McpServerConfig, McpServerHealthResult, ProviderDiagnosticSnapshot,
+    ManagedAgentId, McpServerConfig, McpServerHealthResult, ProviderDiagnosticSnapshot,
     RuntimeConfig, RuntimeLogLevel, SettingsConfig, SkillMeta, SkillSource, StateConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
@@ -49,7 +49,8 @@ use crate::runtime::{
     validate_round_state, validate_run_state, validate_task_state, validate_worker_ref_state,
 };
 use crate::storage::{
-    GoldBandPaths, StoragePathConfig, ensure_parent_dir, read_json, sqlite, write_json,
+    GoldBandPaths, StoragePathConfig, ensure_parent_dir, load_settings_file, read_json, sqlite,
+    write_json,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -137,7 +138,7 @@ fn default_workflow_template(
     WorkflowTemplate {
         id: DEFAULT_WORKFLOW_TEMPLATE_ID.to_string(),
         name: "默认工作流".to_string(),
-        workflow: default_workflow_dsl(ManagedAgentType::ClaudeAcp.as_str(), profiles, language),
+        workflow: default_workflow_dsl("claude-acp", profiles, language),
         created_at: now.clone(),
         updated_at: now,
     }
@@ -1000,11 +1001,7 @@ impl App {
     }
 
     pub fn load_settings(&self) -> Result<SettingsConfig> {
-        let path = self.paths.user_settings_file();
-        if !path.exists() {
-            return Ok(SettingsConfig::default());
-        }
-        read_json(&path)
+        load_settings_file(&self.paths.user_settings_file())
     }
 
     pub fn save_settings(&self, settings: &SettingsConfig) -> Result<()> {
@@ -1152,7 +1149,7 @@ impl App {
 
     pub fn set_user_agents(
         &self,
-        agents: std::collections::BTreeMap<ManagedAgentType, ManagedAgentConfig>,
+        agents: std::collections::BTreeMap<ManagedAgentId, ManagedAgentConfig>,
     ) -> Result<SettingsConfig> {
         let mut settings = self.load_settings()?;
         settings.agents = Some(agents);
@@ -1162,26 +1159,26 @@ impl App {
 
     pub fn managed_agents(
         &self,
-    ) -> &std::collections::BTreeMap<ManagedAgentType, ManagedAgentConfig> {
+    ) -> &std::collections::BTreeMap<ManagedAgentId, ManagedAgentConfig> {
         &self.config.agents
     }
 
     pub fn save_managed_agent(
         &self,
-        agent_type: ManagedAgentType,
+        agent_id: ManagedAgentId,
         config: ManagedAgentConfig,
     ) -> Result<SettingsConfig> {
         let mut agents = self.config.agents.clone();
-        if !agent_type.is_supported() {
-            bail!("agent `{}` is not supported yet", agent_type.as_str());
+        if crate::config::managed_agent_preset(&agent_id).is_none() {
+            bail!("agent `{}` is not supported yet", agent_id.as_str());
         }
-        agents.insert(agent_type, config);
+        agents.insert(agent_id, config);
         self.set_user_agents(agents)
     }
 
-    pub fn remove_managed_agent(&self, agent_type: ManagedAgentType) -> Result<SettingsConfig> {
+    pub fn remove_managed_agent(&self, agent_id: &ManagedAgentId) -> Result<SettingsConfig> {
         let mut agents = self.config.agents.clone();
-        agents.remove(&agent_type);
+        agents.remove(agent_id);
         self.set_user_agents(agents)
     }
 
@@ -1662,23 +1659,23 @@ impl App {
         self.save_workflow_template_store(&store)
     }
 
-    pub fn managed_agent(&self, provider: &str) -> Result<(ManagedAgentType, &ManagedAgentConfig)> {
-        let agent_type = ManagedAgentType::from_str(provider)?;
+    pub fn managed_agent(&self, provider: &str) -> Result<(ManagedAgentId, &ManagedAgentConfig)> {
+        let agent_id = ManagedAgentId::from_str(provider)?;
         let config = self
             .config
             .agents
-            .get(&agent_type)
+            .get(&agent_id)
             .ok_or_else(|| anyhow!("agent `{provider}` is not configured"))?;
-        Ok((agent_type, config))
+        Ok((agent_id, config))
     }
 
     pub fn provider_for_id(&self, provider: &str) -> Result<Arc<dyn ProviderAdapter>> {
         if let Some(provider_override) = &self.provider_override {
             return Ok(provider_override.clone());
         }
-        let (agent_type, config) = self.managed_agent(provider)?;
+        let (agent_id, config) = self.managed_agent(provider)?;
         Ok(Arc::from(provider_from_agent(
-            agent_type,
+            &agent_id,
             config,
             self.config.use_local_claude,
             self.config.require_local_claude_executable,
@@ -1699,8 +1696,8 @@ impl App {
     }
 
     pub fn provider_doctor_probe(&self, provider: &str) -> Result<ProviderDoctorProbe> {
-        let (agent_type, config) = self.managed_agent(provider)?;
-        if !agent_type.is_supported() {
+        let (agent_id, config) = self.managed_agent(provider)?;
+        if crate::config::managed_agent_preset(&agent_id).is_none() {
             bail!("agent `{provider}` is not supported yet");
         }
         match acp_client::doctor(
@@ -3057,8 +3054,8 @@ impl App {
     pub fn validate_workflow_agents(&self, workflow: &ValidatedWorkflow) -> Result<()> {
         for node in workflow.nodes_by_id.values() {
             for provider in providers_for_node(node) {
-                let (agent_type, _) = self.managed_agent(&provider)?;
-                if !agent_type.is_supported() {
+                let (agent_id, _) = self.managed_agent(&provider)?;
+                if crate::config::managed_agent_preset(&agent_id).is_none() {
                     bail!("agent `{provider}` is not supported yet");
                 }
             }

@@ -13,7 +13,7 @@ use crate::view_models::{
 use gold_band::acp::client::{PromptActivity, prompt_activity};
 use gold_band::app::{App, CreateTaskInput, DEFAULT_WORKFLOW_TEMPLATE_ID, is_run_continuable};
 use gold_band::config::StateConfig;
-use gold_band::config::{ConversationRunMode, ManagedAgentType};
+use gold_band::config::{ConversationRunMode, ManagedAgentId, managed_agent_preset};
 use gold_band::domain::NodeType;
 use gold_band::domain::RunStatus;
 use gold_band::dsl::{
@@ -377,15 +377,9 @@ fn read_conversation_metadata(app: &App, task_id: &str) -> Option<ConversationMe
 }
 
 fn direct_agent_identity(app: &App, agent_type: &str) -> Option<ConversationAgentIdentityVm> {
-    let parsed = ManagedAgentType::from_str(agent_type).ok()?;
+    let agent_id = ManagedAgentId::from_str(agent_type).ok()?;
     let (_, config) = app.managed_agent(agent_type).ok()?;
-    let icon_key = match parsed {
-        ManagedAgentType::ClaudeAcp => "claude",
-        ManagedAgentType::CodexAcp => "codex",
-        ManagedAgentType::Cursor => "cursor",
-        ManagedAgentType::Gemini => "gemini",
-        ManagedAgentType::OpenCode => "opencode",
-    };
+    let icon_key = managed_agent_preset(&agent_id)?.icon_key;
     Some(ConversationAgentIdentityVm {
         agent_type: agent_type.to_string(),
         display_name: config.adapter.display_name.clone(),

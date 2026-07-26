@@ -424,8 +424,8 @@ export const mockAgentRegistry: AgentRegistryVm = {
       args: ['-y', '@agentclientprotocol/claude-agent-acp@0.37.0'],
       env: [{ key: 'ANTHROPIC_API_KEY', value: '***' }],
       iconKey: 'claude',
-      skillsDirName: '.claude',
-      skillsDirOverride: null,
+      primaryAgentDir: '.claude',
+      compatibleAgentDirs: [],
       externalSessionSyncEnabled: false,
       supported: true,
       diagnostic: {
@@ -446,11 +446,11 @@ export const mockAgentRegistry: AgentRegistryVm = {
     },
   ],
   supportedTypes: [
-    { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', skillsDirName: '.claude', supported: true, configured: true, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: ['-y', '@agentclientprotocol/claude-agent-acp@latest'], defaultEnv: [] },
-    { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', skillsDirName: '.codex', supported: true, configured: false, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: ['-y', '@zed-industries/codex-acp@latest'], defaultEnv: [] },
-    { agentType: 'cursor', label: 'Cursor', iconKey: 'cursor', skillsDirName: '.cursor', supported: true, configured: false, defaultDisplayName: 'Cursor', defaultCommand: '.\\dist-package\\cursor-agent.cmd', defaultArgs: ['acp'], defaultEnv: [] },
-    { agentType: 'gemini', label: 'Gemini', iconKey: 'gemini', skillsDirName: '.gemini', supported: true, configured: false, defaultDisplayName: 'Gemini', defaultCommand: 'npx', defaultArgs: ['-y', '@google/gemini-cli@latest', '--acp'], defaultEnv: [] },
-    { agentType: 'opencode', label: 'OpenCode', iconKey: 'opencode', skillsDirName: '.opencode', supported: true, configured: false, defaultDisplayName: 'OpenCode', defaultCommand: '.\\opencode.exe', defaultArgs: ['acp'], defaultEnv: [] },
+    { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', primaryAgentDir: '.claude', compatibleAgentDirs: [], supported: true, configured: true, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: ['-y', '@agentclientprotocol/claude-agent-acp@latest'], defaultEnv: [] },
+    { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', primaryAgentDir: '.codex', compatibleAgentDirs: ['.agents'], supported: true, configured: false, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: ['-y', '@zed-industries/codex-acp@latest'], defaultEnv: [] },
+    { agentType: 'cursor', label: 'Cursor', iconKey: 'cursor', primaryAgentDir: '.cursor', compatibleAgentDirs: ['.agents'], supported: true, configured: false, defaultDisplayName: 'Cursor', defaultCommand: '.\\dist-package\\cursor-agent.cmd', defaultArgs: ['acp'], defaultEnv: [] },
+    { agentType: 'gemini', label: 'Gemini', iconKey: 'gemini', primaryAgentDir: '.gemini', compatibleAgentDirs: ['.agents'], supported: true, configured: false, defaultDisplayName: 'Gemini', defaultCommand: 'npx', defaultArgs: ['-y', '@google/gemini-cli@latest', '--acp'], defaultEnv: [] },
+    { agentType: 'opencode', label: 'OpenCode', iconKey: 'opencode', primaryAgentDir: '.opencode', compatibleAgentDirs: ['.agents'], supported: true, configured: false, defaultDisplayName: 'OpenCode', defaultCommand: '.\\opencode.exe', defaultArgs: ['acp'], defaultEnv: [] },
   ],
 };
 

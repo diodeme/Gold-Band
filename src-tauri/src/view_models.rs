@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    str::FromStr,
     sync::{LazyLock, Mutex},
     time::SystemTime,
 };
@@ -10,8 +11,8 @@ use anyhow::Result;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, McpServerState, RuntimeConfig,
-    RuntimeLogLevel,
+    DesktopUpdateBadgeState, MANAGED_AGENT_PRESETS, ManagedAgentConfig, ManagedAgentId,
+    McpServerState, RuntimeConfig, RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -103,8 +104,8 @@ pub struct ManagedAgentVm {
     pub args: Vec<String>,
     pub env: Vec<AgentEnvEntryVm>,
     pub icon_key: String,
-    pub skills_dir_name: String,
-    pub skills_dir_override: Option<String>,
+    pub primary_agent_dir: String,
+    pub compatible_agent_dirs: Vec<String>,
     pub external_session_sync_enabled: bool,
     pub supported: bool,
     pub diagnostic: Option<ManagedAgentDiagnosticVm>,
@@ -191,7 +192,8 @@ pub struct SupportedAgentTypeVm {
     pub agent_type: String,
     pub label: String,
     pub icon_key: String,
-    pub skills_dir_name: String,
+    pub primary_agent_dir: String,
+    pub compatible_agent_dirs: Vec<String>,
     pub supported: bool,
     pub configured: bool,
     pub default_display_name: String,
@@ -1014,34 +1016,41 @@ pub fn bootstrap_vm(
 
 pub fn agent_registry_vm(
     app: &App,
-    diagnostics: &std::collections::BTreeMap<ManagedAgentType, AgentDiagnosticState>,
+    diagnostics: &std::collections::BTreeMap<ManagedAgentId, AgentDiagnosticState>,
 ) -> AgentRegistryVm {
     let agents = app
         .managed_agents()
         .iter()
         .map(|(agent_type, config)| {
-            managed_agent_vm(*agent_type, config, diagnostics.get(agent_type))
+            managed_agent_vm(agent_type, config, diagnostics.get(agent_type))
         })
         .collect::<Vec<_>>();
-    let supported_types = ManagedAgentType::ALL
+    let supported_types = MANAGED_AGENT_PRESETS
         .into_iter()
-        .map(|agent_type| {
-            let default_config = agent_type.default_adapter_config();
+        .map(|preset| {
+            let agent_id = preset.agent_id();
+            let default_config = preset.default_config();
             SupportedAgentTypeVm {
-                agent_type: agent_type.as_str().to_string(),
-                label: supported_agent_label(agent_type).to_string(),
-                icon_key: agent_icon_key(agent_type).to_string(),
-                skills_dir_name: app
+                agent_type: agent_id.as_str().to_string(),
+                label: preset.label.to_string(),
+                icon_key: preset.icon_key.to_string(),
+                primary_agent_dir: app
                     .managed_agents()
-                    .get(&agent_type)
-                    .map(|config| config.skills_dir_name(agent_type).to_string())
-                    .unwrap_or_else(|| agent_type.skills_dir_name().to_string()),
-                supported: agent_type.is_supported(),
-                configured: app.managed_agents().contains_key(&agent_type),
-                default_display_name: default_config.display_name,
-                default_command: default_config.command,
-                default_args: default_config.args,
+                    .get(&agent_id)
+                    .map(|config| config.primary_agent_dir.clone())
+                    .unwrap_or_else(|| default_config.primary_agent_dir.clone()),
+                compatible_agent_dirs: app
+                    .managed_agents()
+                    .get(&agent_id)
+                    .map(|config| config.compatible_agent_dirs.clone())
+                    .unwrap_or_else(|| default_config.compatible_agent_dirs.clone()),
+                supported: true,
+                configured: app.managed_agents().contains_key(&agent_id),
+                default_display_name: default_config.adapter.display_name,
+                default_command: default_config.adapter.command,
+                default_args: default_config.adapter.args,
                 default_env: default_config
+                    .adapter
                     .env
                     .into_iter()
                     .map(|(key, value)| AgentEnvEntryVm { key, value })
@@ -1056,12 +1065,12 @@ pub fn agent_registry_vm(
 }
 
 fn managed_agent_vm(
-    agent_type: ManagedAgentType,
+    agent_id: &ManagedAgentId,
     config: &ManagedAgentConfig,
     diagnostic: Option<&AgentDiagnosticState>,
 ) -> ManagedAgentVm {
     ManagedAgentVm {
-        agent_type: agent_type.as_str().to_string(),
+        agent_type: agent_id.as_str().to_string(),
         display_name: config.adapter.display_name.clone(),
         command: config.adapter.command.clone(),
         args: config.adapter.args.clone(),
@@ -1074,11 +1083,14 @@ fn managed_agent_vm(
                 value: value.clone(),
             })
             .collect(),
-        icon_key: agent_icon_key(agent_type).to_string(),
-        skills_dir_name: config.skills_dir_name(agent_type).to_string(),
-        skills_dir_override: config.skills_dir_override.clone(),
+        icon_key: gold_band::config::managed_agent_preset(agent_id)
+            .map(|preset| preset.icon_key)
+            .unwrap_or("agent")
+            .to_string(),
+        primary_agent_dir: config.primary_agent_dir.clone(),
+        compatible_agent_dirs: config.compatible_agent_dirs.clone(),
         external_session_sync_enabled: config.external_session_sync_enabled,
-        supported: agent_type.is_supported(),
+        supported: gold_band::config::managed_agent_preset(agent_id).is_some(),
         diagnostic: diagnostic.map(|diagnostic| ManagedAgentDiagnosticVm {
             status: if diagnostic.available {
                 "healthy"
@@ -1115,35 +1127,9 @@ fn managed_agent_vm(
     }
 }
 
-fn agent_icon_key(agent_type: ManagedAgentType) -> &'static str {
-    match agent_type {
-        ManagedAgentType::ClaudeAcp => "claude",
-        ManagedAgentType::CodexAcp => "codex",
-        ManagedAgentType::Cursor => "cursor",
-        ManagedAgentType::Gemini => "gemini",
-        ManagedAgentType::OpenCode => "opencode",
-    }
-}
-
 fn provider_icon_key(provider: &str) -> Option<String> {
-    match provider {
-        "claude-acp" => Some("claude".to_string()),
-        "codex-acp" => Some("codex".to_string()),
-        "cursor" => Some("cursor".to_string()),
-        "gemini" => Some("gemini".to_string()),
-        "opencode" => Some("opencode".to_string()),
-        _ => None,
-    }
-}
-
-fn supported_agent_label(agent_type: ManagedAgentType) -> &'static str {
-    match agent_type {
-        ManagedAgentType::ClaudeAcp => "Claude",
-        ManagedAgentType::CodexAcp => "Codex",
-        ManagedAgentType::Cursor => "Cursor",
-        ManagedAgentType::Gemini => "Gemini",
-        ManagedAgentType::OpenCode => "OpenCode",
-    }
+    let agent_id = ManagedAgentId::from_str(provider).ok()?;
+    gold_band::config::managed_agent_preset(&agent_id).map(|preset| preset.icon_key.to_string())
 }
 
 pub fn task_list_vm(app: &App) -> Result<TaskListVm> {

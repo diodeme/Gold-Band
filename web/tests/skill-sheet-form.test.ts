@@ -30,8 +30,8 @@ function content(overrides: Partial<SkillContentVm> = {}): SkillContentVm {
 }
 
 const agents: SupportedAgentTypeVm[] = [
-  { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', skillsDirName: '.claude', supported: true, configured: true, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
-  { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', skillsDirName: '.codex', supported: true, configured: true, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
+  { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', primaryAgentDir: '.claude', compatibleAgentDirs: [], supported: true, configured: true, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
+  { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', primaryAgentDir: '.codex', compatibleAgentDirs: ['.agents'], supported: true, configured: true, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
 ];
 
 describe('skill sheet form helpers', () => {

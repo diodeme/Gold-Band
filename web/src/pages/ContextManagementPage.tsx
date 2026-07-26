@@ -39,7 +39,7 @@ import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatLocalDateTime } from '@/lib/datetime';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
-import { selectableSyncAgents, skillAvailableAgentTypes, skillSourceAgent } from '@/lib/skill-agent-display';
+import { selectableSyncAgents, skillAvailableAgentTypes, skillSourceAgents } from '@/lib/skill-agent-display';
 import {
   buildSkillSaveRequest,
   createEmptySkillForm,
@@ -720,7 +720,7 @@ export function ContextManagementPage() {
             {skillList && filteredSkills && filteredSkills.length === 0 && (skillQuery || skillAgentFilter !== 'all') ? <EmptyState>{t('common.noResults', '无匹配结果')}</EmptyState> : null}
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {filteredSkills && filteredSkills.map((skill) => {
-                const sourceAgent = skillSourceAgent(skill, configuredAgents);
+                const sourceAgents = skillSourceAgents(skill, configuredAgents);
                 const syncAgents = selectableSyncAgents(skill, configuredAgents);
                 const syncedAgentTypes = new Set(skill.syncedAgentTypes);
                 return (
@@ -739,25 +739,32 @@ export function ContextManagementPage() {
                     </div>
                     <div className="mt-auto flex h-12 shrink-0 items-center justify-between gap-2 border-t border-border/30 px-2 py-1">
                       <div className="flex min-w-0 items-center gap-1.5 overflow-hidden px-2">
-                        {sourceAgent ? (
-                          <TooltipProvider delayDuration={300}>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span className="flex size-6 shrink-0 items-center justify-center rounded-full">
-                                  <img src={agentIconSrc(sourceAgent.iconKey)} alt={sourceAgent.label} className={agentIconClass(sourceAgent.iconKey, 'size-3.5')} />
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent side="top">{sourceAgent.label}</TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
+                        {sourceAgents.length > 0 ? (
+                          <div className="flex min-w-0 items-center gap-0.5">
+                            {sourceAgents.map((sourceAgent) => (
+                              <TooltipProvider key={sourceAgent.agentType} delayDuration={300}>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="flex size-6 shrink-0 items-center justify-center rounded-full">
+                                      <img src={agentIconSrc(sourceAgent.iconKey)} alt={sourceAgent.label} className={agentIconClass(sourceAgent.iconKey, 'size-3.5')} />
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top">{sourceAgent.label}</TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            ))}
+                          </div>
                         ) : (
                           <span className="truncate text-[11px] text-muted-foreground">{skill.agentSource || '.gold-band'}</span>
                         )}
-                        {sourceAgent && syncAgents.length > 0 ? <span className="h-4 w-px shrink-0 bg-border/70" /> : null}
+                        {sourceAgents.length > 0 && syncAgents.length > 0 ? <span className="h-4 w-px shrink-0 bg-border/70" /> : null}
                         {syncAgents.length > 0 ? (
                           <div className="flex min-w-0 items-center gap-0.5">
                             {syncAgents.map((agent) => {
                               const isSynced = syncedAgentTypes.has(agent.agentType);
+                              const syncActionLabel = isSynced
+                                ? t('contextManagement.skills.unsyncAgent', { agent: agent.label, defaultValue: `取消同步 ${agent.label}` })
+                                : t('contextManagement.skills.syncAgent', { agent: agent.label, defaultValue: `同步到 ${agent.label}` });
                               const pendingKey = `${skill.source}:${skill.directoryPath}:${agent.agentType}`;
                               const isPending = skillSyncPendingKey === pendingKey;
                               return (
@@ -770,6 +777,7 @@ export function ContextManagementPage() {
                                         variant="ghost"
                                         className="relative size-6 rounded-full hover:bg-muted"
                                         disabled={isPending}
+                                        aria-label={syncActionLabel}
                                         onClick={() => void handleSkillSyncToggle(skill, agent.agentType)}
                                       >
                                         {isPending ? (
@@ -786,11 +794,7 @@ export function ContextManagementPage() {
                                         )}
                                       </Button>
                                     </TooltipTrigger>
-                                    <TooltipContent side="top">
-                                      {isSynced
-                                        ? t('contextManagement.skills.unsyncAgent', { agent: agent.label, defaultValue: `取消同步 ${agent.label}` })
-                                        : t('contextManagement.skills.syncAgent', { agent: agent.label, defaultValue: `同步到 ${agent.label}` })}
-                                    </TooltipContent>
+                                    <TooltipContent side="top">{syncActionLabel}</TooltipContent>
                                   </Tooltip>
                                 </TooltipProvider>
                               );

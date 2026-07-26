@@ -36,7 +36,8 @@ const defaultForm = (): ManagedAgentInput => ({
   command: '',
   args: [],
   env: {},
-  skillsDirOverride: null,
+  primaryAgentDir: '',
+  compatibleAgentDirs: [],
   externalSessionSyncEnabled: false,
 });
 const formFromSupportedAgent = (agentType?: SupportedAgentTypeVm): ManagedAgentInput => agentType ? ({
@@ -44,7 +45,8 @@ const formFromSupportedAgent = (agentType?: SupportedAgentTypeVm): ManagedAgentI
   command: agentType.defaultCommand,
   args: agentType.defaultArgs,
   env: Object.fromEntries(agentType.defaultEnv.map((entry) => [entry.key, entry.value])),
-  skillsDirOverride: null,
+  primaryAgentDir: agentType.primaryAgentDir,
+  compatibleAgentDirs: agentType.compatibleAgentDirs,
   externalSessionSyncEnabled: false,
 }) : defaultForm();
 
@@ -56,6 +58,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   const [form, setForm] = useState<ManagedAgentInput>(defaultForm);
   const [argsText, setArgsText] = useState('');
   const [envText, setEnvText] = useState('');
+  const [compatibleAgentDirsText, setCompatibleAgentDirsText] = useState('');
   const [initialEditInput, setInitialEditInput] = useState<ManagedAgentInput | null>(null);
   const [saving, setSaving] = useState(false);
   const [diagnosingType, setDiagnosingType] = useState<string | null>(null);
@@ -66,7 +69,10 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
 
   const supportedTypes = vm?.supportedTypes ?? [];
   const configuredTypes = useMemo(() => new Set(vm?.agents.map((agent) => agent.agentType) ?? []), [vm]);
-  const currentInput = useMemo(() => buildAgentInput(form, argsText, envText), [argsText, envText, form]);
+  const currentInput = useMemo(
+    () => buildAgentInput(form, argsText, envText, compatibleAgentDirsText),
+    [argsText, compatibleAgentDirsText, envText, form],
+  );
   const hasFormChanges = editorMode === 'create'
     || initialEditInput === null
     || hasManagedAgentInputChanged(initialEditInput, currentInput);
@@ -76,6 +82,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
       setForm(defaultForm());
       setArgsText('');
       setEnvText('');
+      setCompatibleAgentDirsText('');
       setInitialEditInput(null);
       setError(null);
     }
@@ -104,6 +111,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
     setForm(nextForm);
     setArgsText(formatArgs(nextForm.args));
     setEnvText(formatEnv(Object.entries(nextForm.env).map(([key, value]) => ({ key, value }))));
+    setCompatibleAgentDirsText(formatAgentDirs(nextForm.compatibleAgentDirs));
     setInitialEditInput(null);
     setError(null);
     setSheetOpen(true);
@@ -113,12 +121,14 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
     const nextForm = agentInputFromVm(agent);
     const nextArgsText = formatArgs(agent.args);
     const nextEnvText = formatEnv(agent.env);
+    const nextCompatibleAgentDirsText = formatAgentDirs(agent.compatibleAgentDirs);
     setEditorMode('edit');
     setSelectedType(agent.agentType);
     setForm(nextForm);
     setArgsText(nextArgsText);
     setEnvText(nextEnvText);
-    setInitialEditInput(buildAgentInput(nextForm, nextArgsText, nextEnvText));
+    setCompatibleAgentDirsText(nextCompatibleAgentDirsText);
+    setInitialEditInput(buildAgentInput(nextForm, nextArgsText, nextEnvText, nextCompatibleAgentDirsText));
     setError(null);
     setSheetOpen(true);
   };
@@ -283,11 +293,19 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
                 onChange={(event) => setEnvText(event.target.value)}
               />
             </Field>
-            <Field label={t('agentManagement.skillsDirOverride')} description={t('agentManagement.skillsDirOverrideDescription')}>
+            <Field label={t('agentManagement.primaryAgentDir')} description={t('agentManagement.primaryAgentDirDescription')}>
               <TextInput
-                value={form.skillsDirOverride ?? ''}
-                placeholder={t('agentManagement.skillsDirOverridePlaceholder')}
-                onChange={(event: ChangeEvent<HTMLInputElement>) => setForm((current) => ({ ...current, skillsDirOverride: event.target.value }))}
+                value={form.primaryAgentDir}
+                placeholder={t('agentManagement.primaryAgentDirPlaceholder')}
+                onChange={(event: ChangeEvent<HTMLInputElement>) => setForm((current) => ({ ...current, primaryAgentDir: event.target.value }))}
+              />
+            </Field>
+            <Field label={t('agentManagement.compatibleAgentDirs')} description={t('agentManagement.compatibleAgentDirsDescription')}>
+              <ConfigTextarea
+                className="min-h-20"
+                value={compatibleAgentDirsText}
+                placeholder={t('agentManagement.compatibleAgentDirsPlaceholder')}
+                onChange={(event) => setCompatibleAgentDirsText(event.target.value)}
               />
             </Field>
             <div className="flex items-center justify-between gap-5 rounded-xl border border-border/60 bg-muted/10 px-4 py-3">
@@ -309,7 +327,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
             {error ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">{error}</div> : null}
             <div className="flex justify-end gap-2 pt-1">
               <Button variant="outline" onClick={() => setSheetOpen(false)}>{t('common.close')}</Button>
-              <Button disabled={saving || !selectedType.trim() || !form.displayName.trim() || !form.command.trim() || !hasFormChanges} onClick={() => void submit()}>{t('common.save')}</Button>
+              <Button disabled={saving || !selectedType.trim() || !form.displayName.trim() || !form.command.trim() || !form.primaryAgentDir.trim() || !hasFormChanges} onClick={() => void submit()}>{t('common.save')}</Button>
             </div>
           </div>
         </SheetContent>
@@ -504,18 +522,25 @@ function agentInputFromVm(agent: ManagedAgentVm): ManagedAgentInput {
     command: agent.command,
     args: agent.args,
     env: Object.fromEntries(agent.env.map((entry) => [entry.key, entry.value])),
-    skillsDirOverride: agent.skillsDirOverride ?? null,
+    primaryAgentDir: agent.primaryAgentDir,
+    compatibleAgentDirs: agent.compatibleAgentDirs,
     externalSessionSyncEnabled: agent.externalSessionSyncEnabled,
   };
 }
 
-export function buildAgentInput(form: ManagedAgentInput, argsText: string, envText: string): ManagedAgentInput {
+export function buildAgentInput(
+  form: ManagedAgentInput,
+  argsText: string,
+  envText: string,
+  compatibleAgentDirsText = formatAgentDirs(form.compatibleAgentDirs),
+): ManagedAgentInput {
   return {
     displayName: form.displayName,
     command: form.command.trim(),
     args: parseArgs(argsText),
     env: parseEnv(envText),
-    skillsDirOverride: form.skillsDirOverride?.trim() || null,
+    primaryAgentDir: form.primaryAgentDir.trim(),
+    compatibleAgentDirs: parseAgentDirs(compatibleAgentDirsText, form.primaryAgentDir),
     externalSessionSyncEnabled: form.externalSessionSyncEnabled,
   };
 }
@@ -530,7 +555,9 @@ function managedAgentInputFingerprint(input: ManagedAgentInput): string {
     command: input.command.trim(),
     args: input.args,
     env: Object.entries(input.env).sort(([left], [right]) => left.localeCompare(right)),
-    skillsDirOverride: input.skillsDirOverride?.trim() || null,
+    primaryAgentDir: input.primaryAgentDir.trim(),
+    compatibleAgentDirs: [...new Set(input.compatibleAgentDirs.map((directory) => directory.trim()).filter(Boolean))]
+      .filter((directory) => directory !== input.primaryAgentDir.trim()),
     externalSessionSyncEnabled: input.externalSessionSyncEnabled,
   });
 }
@@ -541,6 +568,16 @@ function formatArgs(args: string[]) {
 
 function formatEnv(env: ManagedAgentVm['env']) {
   return env.map((entry) => `${entry.key}=${entry.value}`).join('\n');
+}
+
+function formatAgentDirs(directories: string[]) {
+  return directories.join('\n');
+}
+
+function parseAgentDirs(value: string, primaryAgentDir: string) {
+  const primary = primaryAgentDir.trim();
+  return [...new Set(value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean))]
+    .filter((directory) => directory !== primary);
 }
 
 function parseArgs(value: string) {

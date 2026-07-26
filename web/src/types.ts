@@ -97,8 +97,8 @@ export interface ManagedAgentVm {
   args: string[];
   env: AgentEnvEntryVm[];
   iconKey: string;
-  skillsDirName: string;
-  skillsDirOverride?: string | null;
+  primaryAgentDir: string;
+  compatibleAgentDirs: string[];
   externalSessionSyncEnabled: boolean;
   supported: boolean;
   diagnostic?: ManagedAgentDiagnosticVm | null;
@@ -152,7 +152,8 @@ export interface SupportedAgentTypeVm {
   agentType: string;
   label: string;
   iconKey: string;
-  skillsDirName: string;
+  primaryAgentDir: string;
+  compatibleAgentDirs: string[];
   supported: boolean;
   configured: boolean;
   defaultDisplayName: string;
@@ -166,7 +167,8 @@ export interface ManagedAgentInput {
   command: string;
   args: string[];
   env: Record<string, string>;
-  skillsDirOverride?: string | null;
+  primaryAgentDir: string;
+  compatibleAgentDirs: string[];
   externalSessionSyncEnabled: boolean;
 }
 

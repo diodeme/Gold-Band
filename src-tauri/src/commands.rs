@@ -25,7 +25,7 @@ use std::{collections::BTreeSet, str::FromStr, sync::Arc};
 use camino::Utf8PathBuf;
 use gold_band::config::{
     AcpAdapterConfig, ConversationAutoConfig, DesktopFontPreference, DesktopLanguage,
-    DesktopThemePreference, ManagedAgentConfig, ManagedAgentType,
+    DesktopThemePreference, ManagedAgentConfig, ManagedAgentId,
 };
 use gold_band::observability::set_runtime_log_level;
 use serde::{Deserialize, Serialize};
@@ -599,11 +599,11 @@ fn ensure_no_active_acp_prompts_in_workspace(
     Ok(())
 }
 
-fn ensure_no_active_acp_prompts_for_provider(agent_type: ManagedAgentType) -> CommandResult<()> {
-    if gold_band::acp::client::has_active_prompts_in_provider(agent_type.as_str()) {
+fn ensure_no_active_acp_prompts_for_provider(agent_id: &ManagedAgentId) -> CommandResult<()> {
+    if gold_band::acp::client::has_active_prompts_in_provider(agent_id.as_str()) {
         return Err(CommandErrorVm::new(
             "acp.active-prompt-blocks-config-save",
-            serde_json::json!({ "agentType": agent_type.as_str() }),
+            serde_json::json!({ "agentType": agent_id.as_str() }),
         ));
     }
     Ok(())
@@ -619,27 +619,43 @@ pub struct ManagedAgentInput {
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
     #[serde(default)]
-    pub skills_dir_override: Option<String>,
+    pub primary_agent_dir: String,
+    #[serde(default)]
+    pub compatible_agent_dirs: Vec<String>,
     #[serde(default)]
     pub external_session_sync_enabled: bool,
 }
 
 impl ManagedAgentInput {
-    fn into_config(self) -> ManagedAgentConfig {
-        let skills_dir_override = self
-            .skills_dir_override
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        ManagedAgentConfig {
+    fn into_config(self) -> CommandResult<ManagedAgentConfig> {
+        let primary_agent_dir = self.primary_agent_dir.trim().to_string();
+        if primary_agent_dir.is_empty() {
+            return Err(CommandErrorVm::new(
+                "agent.primary-directory-required",
+                serde_json::json!({}),
+            ));
+        }
+        let mut compatible_agent_dirs = Vec::new();
+        for directory in self.compatible_agent_dirs {
+            let directory = directory.trim().to_string();
+            if !directory.is_empty()
+                && directory != primary_agent_dir
+                && !compatible_agent_dirs.contains(&directory)
+            {
+                compatible_agent_dirs.push(directory);
+            }
+        }
+        Ok(ManagedAgentConfig {
             adapter: AcpAdapterConfig {
                 command: self.command.trim().to_string(),
                 args: self.args,
                 display_name: self.display_name,
                 env: self.env,
             },
-            skills_dir_override,
+            primary_agent_dir,
+            compatible_agent_dirs,
             external_session_sync_enabled: self.external_session_sync_enabled,
-        }
+        })
     }
 }
 
@@ -752,31 +768,37 @@ pub fn create_agent(
     input: ManagedAgentInput,
 ) -> CommandResult<AgentRegistryVm> {
     let app = state.app().map_err(command_error)?;
-    let agent_type = ManagedAgentType::from_str(&agent_type).map_err(command_error)?;
-    if app.managed_agents().contains_key(&agent_type) {
+    let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
+    if gold_band::config::managed_agent_preset(&agent_id).is_none() {
         return Err(CommandErrorVm::new(
-            "agent.already-exists",
-            serde_json::json!({ "agentType": agent_type.as_str() }),
+            "agent.unsupported",
+            serde_json::json!({ "agentType": agent_id.as_str() }),
         ));
     }
-    ensure_no_active_acp_prompts_for_provider(agent_type)?;
-    gold_band::acp::client::close_provider_connections_bounded(agent_type.as_str())
+    if app.managed_agents().contains_key(&agent_id) {
+        return Err(CommandErrorVm::new(
+            "agent.already-exists",
+            serde_json::json!({ "agentType": agent_id.as_str() }),
+        ));
+    }
+    ensure_no_active_acp_prompts_for_provider(&agent_id)?;
+    gold_band::acp::client::close_provider_connections_bounded(agent_id.as_str())
         .map_err(command_error)?;
     let config_commit_guard = state
         .agent_config_diagnostic_commit_guard()
         .map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let settings = app
-        .save_managed_agent(agent_type, input.into_config())
+        .save_managed_agent(agent_id.clone(), input.into_config()?)
         .map_err(command_error)?;
     state
         .update_settings_config(&settings)
         .map_err(command_error)?;
     state
-        .clear_agent_diagnostic(agent_type)
+        .clear_agent_diagnostic(&agent_id)
         .map_err(command_error)?;
     drop(config_commit_guard);
-    schedule_agent_diagnostic(&app_handle, agent_type);
+    schedule_agent_diagnostic(&app_handle, agent_id);
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     Ok(agent_registry_vm(&app, &diagnostics))
@@ -790,31 +812,31 @@ pub fn update_agent(
     input: ManagedAgentInput,
 ) -> CommandResult<AgentRegistryVm> {
     let app = state.app().map_err(command_error)?;
-    let agent_type = ManagedAgentType::from_str(&agent_type).map_err(command_error)?;
-    if !app.managed_agents().contains_key(&agent_type) {
+    let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
+    if !app.managed_agents().contains_key(&agent_id) {
         return Err(CommandErrorVm::new(
             "agent.not-configured",
-            serde_json::json!({ "agentType": agent_type.as_str() }),
+            serde_json::json!({ "agentType": agent_id.as_str() }),
         ));
     }
-    ensure_no_active_acp_prompts_for_provider(agent_type)?;
-    gold_band::acp::client::close_provider_connections_bounded(agent_type.as_str())
+    ensure_no_active_acp_prompts_for_provider(&agent_id)?;
+    gold_band::acp::client::close_provider_connections_bounded(agent_id.as_str())
         .map_err(command_error)?;
     let config_commit_guard = state
         .agent_config_diagnostic_commit_guard()
         .map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let settings = app
-        .save_managed_agent(agent_type, input.into_config())
+        .save_managed_agent(agent_id.clone(), input.into_config()?)
         .map_err(command_error)?;
     state
         .update_settings_config(&settings)
         .map_err(command_error)?;
     state
-        .clear_agent_diagnostic(agent_type)
+        .clear_agent_diagnostic(&agent_id)
         .map_err(command_error)?;
     drop(config_commit_guard);
-    schedule_agent_diagnostic(&app_handle, agent_type);
+    schedule_agent_diagnostic(&app_handle, agent_id);
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     Ok(agent_registry_vm(&app, &diagnostics))
@@ -825,22 +847,20 @@ pub fn delete_agent(
     state: State<'_, DesktopState>,
     agent_type: String,
 ) -> CommandResult<AgentRegistryVm> {
-    let agent_type = ManagedAgentType::from_str(&agent_type).map_err(command_error)?;
-    ensure_no_active_acp_prompts_for_provider(agent_type)?;
-    gold_band::acp::client::close_provider_connections_bounded(agent_type.as_str())
+    let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
+    ensure_no_active_acp_prompts_for_provider(&agent_id)?;
+    gold_band::acp::client::close_provider_connections_bounded(agent_id.as_str())
         .map_err(command_error)?;
     let _config_commit_guard = state
         .agent_config_diagnostic_commit_guard()
         .map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
-    let settings = app
-        .remove_managed_agent(agent_type)
-        .map_err(command_error)?;
+    let settings = app.remove_managed_agent(&agent_id).map_err(command_error)?;
     state
         .update_settings_config(&settings)
         .map_err(command_error)?;
     state
-        .cancel_queued_agent_diagnostic(agent_type)
+        .cancel_queued_agent_diagnostic(&agent_id)
         .map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
@@ -853,9 +873,9 @@ pub async fn doctor_agent(
     state: State<'_, DesktopState>,
     agent_type: String,
 ) -> CommandResult<AgentRegistryVm> {
-    let agent_type = ManagedAgentType::from_str(&agent_type).map_err(command_error)?;
+    let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
     state
-        .refresh_agent_diagnostic(agent_type)
+        .refresh_agent_diagnostic(&agent_id)
         .map_err(command_error)?;
     emit_agent_registry_updated(&app_handle);
     emit_agent_commands_updated(&app_handle, None);
@@ -864,32 +884,33 @@ pub async fn doctor_agent(
     Ok(agent_registry_vm(&app, &diagnostics))
 }
 
-fn schedule_agent_diagnostic(app_handle: &AppHandle, agent_type: ManagedAgentType) {
+fn schedule_agent_diagnostic(app_handle: &AppHandle, agent_id: ManagedAgentId) {
     let state = app_handle.state::<DesktopState>();
-    match state.queue_agent_diagnostic(agent_type) {
+    match state.queue_agent_diagnostic(&agent_id) {
         Ok(true) => {}
         Ok(false) => return,
         Err(error) => {
-            warn!(agent_type = agent_type.as_str(), %error, "failed to queue agent diagnostic");
+            warn!(agent_type = agent_id.as_str(), %error, "failed to queue agent diagnostic");
             return;
         }
     }
 
     let diagnostic_handle = app_handle.clone();
-    let thread_name = format!("agent-doctor-{}", agent_type.as_str());
+    let thread_name = format!("agent-doctor-{}", agent_id.as_str());
+    let diagnostic_agent_id = agent_id.clone();
     if let Err(error) = std::thread::Builder::new()
         .name(thread_name)
         .spawn(move || {
             let state = diagnostic_handle.state::<DesktopState>();
-            if let Err(error) = state.run_queued_agent_diagnostic(agent_type) {
-                warn!(agent_type = agent_type.as_str(), %error, "automatic agent diagnostic failed");
+            if let Err(error) = state.run_queued_agent_diagnostic(&diagnostic_agent_id) {
+                warn!(agent_type = diagnostic_agent_id.as_str(), %error, "automatic agent diagnostic failed");
             }
             emit_agent_registry_updated(&diagnostic_handle);
             emit_agent_commands_updated(&diagnostic_handle, None);
         })
     {
-        let _ = state.cancel_queued_agent_diagnostic(agent_type);
-        warn!(agent_type = agent_type.as_str(), %error, "failed to start agent diagnostic thread");
+        let _ = state.cancel_queued_agent_diagnostic(&agent_id);
+        warn!(agent_type = agent_id.as_str(), %error, "failed to start agent diagnostic thread");
     }
 }
 
@@ -899,9 +920,9 @@ pub fn get_agent_command_catalog(
     agent_type: String,
     workspace_path: String,
 ) -> CommandResult<Option<AcpCommandCatalog>> {
-    let agent_type = ManagedAgentType::from_str(&agent_type).map_err(command_error)?;
+    let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
     state
-        .agent_command_catalog(agent_type, &Utf8PathBuf::from(workspace_path))
+        .agent_command_catalog(&agent_id, &Utf8PathBuf::from(workspace_path))
         .map_err(command_error)
 }
 
@@ -1545,11 +1566,11 @@ fn maybe_record_agent_commands(
     let Some(provider) = acp_turn_provider_id(app, &locator) else {
         return;
     };
-    let Ok(agent_type) = ManagedAgentType::from_str(&provider) else {
+    let Ok(agent_id) = ManagedAgentId::from_str(&provider) else {
         return;
     };
     let state = app_handle.state::<DesktopState>();
-    if let Ok(catalog) = state.record_agent_commands(agent_type, &app.paths.repo_root, commands) {
+    if let Ok(catalog) = state.record_agent_commands(&agent_id, &app.paths.repo_root, commands) {
         emit_agent_commands_updated(app_handle, Some(&catalog));
     }
 }
@@ -3082,8 +3103,8 @@ fn ensure_workflow_agents_doctor_ready(
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     for node in &workflow.nodes {
         for provider in providers_for_node(node) {
-            let agent_type = ManagedAgentType::from_str(&provider).map_err(command_error)?;
-            match diagnostics.get(&agent_type) {
+            let agent_id = ManagedAgentId::from_str(&provider).map_err(command_error)?;
+            match diagnostics.get(&agent_id) {
                 Some(diagnostic) if diagnostic.available => {}
                 Some(diagnostic) => {
                     return Err(CommandErrorVm::new(
@@ -4149,24 +4170,24 @@ pub fn get_skill_sync_status(
         })?;
     let mut statuses = Vec::new();
 
-    for (agent_type, config) in &app.config.agents {
-        let dir_name = config.skills_dir_name(*agent_type);
+    for (agent_id, config) in &app.config.agents {
+        let dir_name = &config.primary_agent_dir;
 
         // 检查全局 agent 目录
-        let global_link = home.join(dir_name).join("skills").join(skill_dir_name);
-        let global_synced = is_link_pointing_to(&global_link, &canonical_src);
+        let global_link =
+            gold_band::skill::resolve_agent_skills_dir(&home, dir_name).join(skill_dir_name);
+        let global_synced = is_link_pointing_to(global_link.as_std_path(), &canonical_src);
 
         // ????? agent ?????? workspace_path?
         let project_synced = workspace_path.as_deref().map_or(false, |ws| {
-            let project_link = std::path::Path::new(ws)
-                .join(dir_name)
-                .join("skills")
-                .join(skill_dir_name);
-            is_link_pointing_to(&project_link, &canonical_src)
+            let project_link =
+                gold_band::skill::resolve_agent_skills_dir(std::path::Path::new(ws), dir_name)
+                    .join(skill_dir_name);
+            is_link_pointing_to(project_link.as_std_path(), &canonical_src)
         });
 
         statuses.push(SyncStatusEntryVm {
-            agent_type: agent_type.as_str().to_string(),
+            agent_type: agent_id.as_str().to_string(),
             is_synced: global_synced || project_synced,
         });
     }
@@ -4237,17 +4258,20 @@ mod tests {
             command: "  npx  ".to_string(),
             args: vec!["agent".to_string()],
             env: std::collections::BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
-            skills_dir_override: Some("  .claude-custom  ".to_string()),
+            primary_agent_dir: "  .claude-custom  ".to_string(),
+            compatible_agent_dirs: vec![
+                " .agents ".to_string(),
+                ".agents".to_string(),
+                " ".to_string(),
+            ],
             external_session_sync_enabled: true,
         };
 
-        let config = input.into_config();
+        let config = input.into_config().unwrap();
         assert_eq!(config.adapter.display_name, "Claude Custom");
         assert_eq!(config.adapter.command, "npx");
-        assert_eq!(
-            config.skills_dir_override.as_deref(),
-            Some(".claude-custom")
-        );
+        assert_eq!(config.primary_agent_dir, ".claude-custom");
+        assert_eq!(config.compatible_agent_dirs, vec![".agents"]);
         assert!(config.external_session_sync_enabled);
     }
 

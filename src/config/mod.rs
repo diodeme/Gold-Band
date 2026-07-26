@@ -150,131 +150,129 @@ pub enum DesktopLanguage {
 
 pub type DesktopFontPreference = String;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub enum ManagedAgentType {
-    #[serde(rename = "claude-acp")]
-    ClaudeAcp,
-    #[serde(rename = "codex-acp")]
-    CodexAcp,
-    #[serde(rename = "cursor")]
-    Cursor,
-    #[serde(rename = "gemini")]
-    Gemini,
-    #[serde(rename = "opencode")]
-    OpenCode,
-}
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct ManagedAgentId(String);
 
-impl ManagedAgentType {
-    pub const ALL: [Self; 5] = [
-        Self::ClaudeAcp,
-        Self::CodexAcp,
-        Self::Cursor,
-        Self::Gemini,
-        Self::OpenCode,
-    ];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::ClaudeAcp => "claude-acp",
-            Self::CodexAcp => "codex-acp",
-            Self::Cursor => "cursor",
-            Self::Gemini => "gemini",
-            Self::OpenCode => "opencode",
-        }
-    }
-
-    pub fn is_supported(self) -> bool {
-        matches!(
-            self,
-            Self::ClaudeAcp | Self::CodexAcp | Self::Cursor | Self::Gemini | Self::OpenCode
-        )
-    }
-
-    pub fn default_adapter_config(self) -> AcpAdapterConfig {
-        match self {
-            Self::ClaudeAcp => AcpAdapterConfig {
-                command: "npx".to_string(),
-                args: vec![
-                    "-y".to_string(),
-                    "@agentclientprotocol/claude-agent-acp@latest".to_string(),
-                ],
-                display_name: "Claude".to_string(),
-                env: BTreeMap::new(),
-            },
-            Self::CodexAcp => AcpAdapterConfig {
-                command: "npx".to_string(),
-                args: vec![
-                    "-y".to_string(),
-                    "@zed-industries/codex-acp@latest".to_string(),
-                ],
-                display_name: "Codex".to_string(),
-                env: BTreeMap::new(),
-            },
-            Self::Cursor => AcpAdapterConfig {
-                command: "cursor-agent".to_string(),
-                args: vec!["acp".to_string()],
-                display_name: "Cursor".to_string(),
-                env: BTreeMap::new(),
-            },
-            Self::Gemini => AcpAdapterConfig {
-                command: "npx".to_string(),
-                args: vec![
-                    "-y".to_string(),
-                    "@google/gemini-cli@latest".to_string(),
-                    "--acp".to_string(),
-                ],
-                display_name: "Gemini".to_string(),
-                env: BTreeMap::new(),
-            },
-            Self::OpenCode => AcpAdapterConfig {
-                command: "opencode".to_string(),
-                args: vec!["acp".to_string()],
-                display_name: "OpenCode".to_string(),
-                env: BTreeMap::new(),
-            },
-        }
-    }
-    /// 返回该 agent 的 skills 目录名（硬编码默认值）
-    /// 参考 cc-switch get_app_skills_dir 混合方案：默认值 + ManagedAgentConfig::skills_dir_override 可选覆盖
-    pub fn skills_dir_name(self) -> &'static str {
-        match self {
-            Self::ClaudeAcp => ".claude",
-            Self::CodexAcp => ".codex",
-            Self::Cursor => ".cursor",
-            Self::Gemini => ".gemini",
-            Self::OpenCode => ".opencode",
-        }
+impl ManagedAgentId {
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
-impl FromStr for ManagedAgentType {
+impl FromStr for ManagedAgentId {
     type Err = anyhow::Error;
 
     fn from_str(value: &str) -> Result<Self> {
-        match value {
-            "claude-acp" => Ok(Self::ClaudeAcp),
-            "codex-acp" => Ok(Self::CodexAcp),
-            "cursor" => Ok(Self::Cursor),
-            "gemini" => Ok(Self::Gemini),
-            "opencode" => Ok(Self::OpenCode),
-            _ => Err(anyhow!("unsupported agent type: {value}")),
+        let value = value.trim();
+        if value.is_empty()
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(anyhow!("invalid managed agent id: {value}"));
         }
+        Ok(Self(value.to_string()))
     }
 }
 
-impl<'de> Deserialize<'de> for ManagedAgentType {
+impl<'de> Deserialize<'de> for ManagedAgentId {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        match value.as_str() {
-            "claude-code" => Ok(Self::ClaudeAcp),
-            "codex-cli" => Ok(Self::CodexAcp),
-            "gemini-cli" => Ok(Self::Gemini),
-            _ => Self::from_str(&value).map_err(serde::de::Error::custom),
+        Self::from_str(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ManagedAgentPreset {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub icon_key: &'static str,
+    pub command: &'static str,
+    pub args: &'static [&'static str],
+    pub primary_agent_dir: &'static str,
+    pub compatible_agent_dirs: &'static [&'static str],
+}
+
+impl ManagedAgentPreset {
+    pub fn agent_id(self) -> ManagedAgentId {
+        ManagedAgentId::from_str(self.id).expect("built-in managed agent id is valid")
+    }
+
+    pub fn default_config(self) -> ManagedAgentConfig {
+        ManagedAgentConfig {
+            adapter: AcpAdapterConfig {
+                command: self.command.to_string(),
+                args: self.args.iter().map(|value| (*value).to_string()).collect(),
+                display_name: self.label.to_string(),
+                env: BTreeMap::new(),
+            },
+            primary_agent_dir: self.primary_agent_dir.to_string(),
+            compatible_agent_dirs: self
+                .compatible_agent_dirs
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            external_session_sync_enabled: false,
         }
     }
+}
+
+pub const MANAGED_AGENT_PRESETS: [ManagedAgentPreset; 5] = [
+    ManagedAgentPreset {
+        id: "claude-acp",
+        label: "Claude",
+        icon_key: "claude",
+        command: "npx",
+        args: &["-y", "@agentclientprotocol/claude-agent-acp@latest"],
+        primary_agent_dir: ".claude",
+        compatible_agent_dirs: &[],
+    },
+    ManagedAgentPreset {
+        id: "codex-acp",
+        label: "Codex",
+        icon_key: "codex",
+        command: "npx",
+        args: &["-y", "@zed-industries/codex-acp@latest"],
+        primary_agent_dir: ".codex",
+        compatible_agent_dirs: &[".agents"],
+    },
+    ManagedAgentPreset {
+        id: "cursor",
+        label: "Cursor",
+        icon_key: "cursor",
+        command: "cursor-agent",
+        args: &["acp"],
+        primary_agent_dir: ".cursor",
+        compatible_agent_dirs: &[".agents"],
+    },
+    ManagedAgentPreset {
+        id: "gemini",
+        label: "Gemini",
+        icon_key: "gemini",
+        command: "npx",
+        args: &["-y", "@google/gemini-cli@latest", "--acp"],
+        primary_agent_dir: ".gemini",
+        compatible_agent_dirs: &[".agents"],
+    },
+    ManagedAgentPreset {
+        id: "opencode",
+        label: "OpenCode",
+        icon_key: "opencode",
+        command: "opencode",
+        args: &["acp"],
+        primary_agent_dir: ".opencode",
+        compatible_agent_dirs: &[".agents"],
+    },
+];
+
+pub fn managed_agent_preset(agent_id: &ManagedAgentId) -> Option<&'static ManagedAgentPreset> {
+    MANAGED_AGENT_PRESETS
+        .iter()
+        .find(|preset| preset.id == agent_id.as_str())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,7 +288,7 @@ pub struct AcpAdapterConfig {
 
 impl Default for AcpAdapterConfig {
     fn default() -> Self {
-        ManagedAgentType::ClaudeAcp.default_adapter_config()
+        MANAGED_AGENT_PRESETS[0].default_config().adapter
     }
 }
 
@@ -310,10 +308,11 @@ impl FromStr for DesktopLanguage {
 #[serde(rename_all = "camelCase")]
 pub struct ManagedAgentConfig {
     pub adapter: AcpAdapterConfig,
-    /// 可选覆盖 Agent 的主 Skill 目录（如 ".claude"、"custom-dir"）。
-    /// 该目录同时作为同步写入目录和首个读取目录；非 Claude Agent 仍会兼容读取 `.agents`。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skills_dir_override: Option<String>,
+    /// Gold Band 写入、同步，同时也是 Agent 首个读取位置的主 Agent 目录。
+    pub primary_agent_dir: String,
+    /// Agent 额外读取但 Gold Band 不写入、不作为同步目标的兼容 Agent 目录。
+    #[serde(default)]
+    pub compatible_agent_dirs: Vec<String>,
     /// 是否允许 Gold Band 根据 Provider revision 重载并导入外部客户端会话历史。
     /// 仅适用于能跨客户端共享同一线性会话上下文的 Agent，默认关闭。
     #[serde(default)]
@@ -327,32 +326,27 @@ pub struct AgentSkillDirectoryPolicy {
 }
 
 impl ManagedAgentConfig {
-    pub fn new(adapter: AcpAdapterConfig) -> Self {
+    pub fn new(
+        adapter: AcpAdapterConfig,
+        primary_agent_dir: impl Into<String>,
+        compatible_agent_dirs: Vec<String>,
+    ) -> Self {
         Self {
             adapter,
-            skills_dir_override: None,
+            primary_agent_dir: primary_agent_dir.into(),
+            compatible_agent_dirs,
             external_session_sync_enabled: false,
         }
     }
 
-    /// 解析 agent 的 skills 目录名：override 优先，否则使用硬编码默认值
-    pub fn skills_dir_name(&self, agent_type: ManagedAgentType) -> &str {
-        self.skills_dir_override
-            .as_deref()
-            .unwrap_or_else(|| agent_type.skills_dir_name())
-    }
-
-    pub fn skill_directory_policy(
-        &self,
-        agent_type: ManagedAgentType,
-    ) -> AgentSkillDirectoryPolicy {
-        let primary = self.skills_dir_name(agent_type).to_string();
+    pub fn skill_directory_policy(&self) -> AgentSkillDirectoryPolicy {
+        let primary = self.primary_agent_dir.clone();
         let write_dir_names = vec![primary.clone()];
         let mut read_dir_names = vec![primary];
-        if agent_type != ManagedAgentType::ClaudeAcp
-            && !read_dir_names.iter().any(|dir_name| dir_name == ".agents")
-        {
-            read_dir_names.push(".agents".to_string());
+        for compatible in &self.compatible_agent_dirs {
+            if !read_dir_names.iter().any(|dir_name| dir_name == compatible) {
+                read_dir_names.push(compatible.clone());
+            }
         }
         AgentSkillDirectoryPolicy {
             write_dir_names,
@@ -510,6 +504,8 @@ pub enum SkillSource {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsConfig {
+    #[serde(default)]
+    pub settings_schema_version: SettingsSchemaVersion,
     pub log_level: Option<RuntimeLogLevel>,
     pub log_prompts: Option<bool>,
     pub log_provider_command: Option<bool>,
@@ -523,13 +519,113 @@ pub struct SettingsConfig {
     /// 新会话 UI 必须使用 `conversation_workspaces` / `last_conversation_workspace`，
     /// 不得新增对该字段的依赖；待旧 Workbench 删除时一并移除。
     pub desktop_workspace: Option<String>,
-    pub agents: Option<BTreeMap<ManagedAgentType, ManagedAgentConfig>>,
+    pub agents: Option<BTreeMap<ManagedAgentId, ManagedAgentConfig>>,
     pub use_local_claude: Option<bool>,
     pub desktop_metrics_enabled: Option<bool>,
     pub desktop_metrics_base_url: Option<String>,
     pub desktop_metrics_api_key: Option<String>,
     #[serde(default)]
     pub context_servers: Option<Vec<McpServerConfig>>,
+}
+
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SettingsSchemaVersion(pub u32);
+
+impl Default for SettingsSchemaVersion {
+    fn default() -> Self {
+        Self(CURRENT_SETTINGS_SCHEMA_VERSION)
+    }
+}
+
+impl SettingsConfig {
+    pub fn from_json_value_with_migration(mut value: serde_json::Value) -> Result<(Self, bool)> {
+        let settings = value
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("settings root must be a JSON object"))?;
+        let version = settings
+            .get("settingsSchemaVersion")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        if version > u64::from(CURRENT_SETTINGS_SCHEMA_VERSION) {
+            return Err(anyhow!(
+                "settings schema version {version} is newer than supported version {CURRENT_SETTINGS_SCHEMA_VERSION}"
+            ));
+        }
+
+        let mut migrated = false;
+        if version < 1 {
+            migrate_managed_agent_directories(settings)?;
+            settings.insert(
+                "settingsSchemaVersion".to_string(),
+                serde_json::json!(CURRENT_SETTINGS_SCHEMA_VERSION),
+            );
+            migrated = true;
+        }
+
+        let config = serde_json::from_value(value)?;
+        Ok((config, migrated))
+    }
+}
+
+fn migrate_managed_agent_directories(
+    settings: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    let Some(agents) = settings
+        .get_mut("agents")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return Ok(());
+    };
+
+    let legacy_agents = std::mem::take(agents);
+    for (legacy_id, mut value) in legacy_agents {
+        let canonical_id = match legacy_id.as_str() {
+            "claude-code" => "claude-acp",
+            "codex-cli" => "codex-acp",
+            "gemini-cli" => "gemini",
+            _ => legacy_id.as_str(),
+        };
+        let agent_id = ManagedAgentId::from_str(canonical_id)?;
+        let preset = managed_agent_preset(&agent_id)
+            .ok_or_else(|| anyhow!("cannot migrate unsupported managed agent `{canonical_id}`"))?;
+        let config = value
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("managed agent `{canonical_id}` config must be an object"))?;
+
+        let legacy_override = config
+            .remove("skillsDirOverride")
+            .and_then(|value| value.as_str().map(str::trim).map(str::to_string))
+            .filter(|value| !value.is_empty());
+        if !config.contains_key("primaryAgentDir") {
+            config.insert(
+                "primaryAgentDir".to_string(),
+                serde_json::Value::String(
+                    legacy_override.unwrap_or_else(|| preset.primary_agent_dir.to_string()),
+                ),
+            );
+        }
+        if !config.contains_key("compatibleAgentDirs") {
+            config.insert(
+                "compatibleAgentDirs".to_string(),
+                serde_json::Value::Array(
+                    preset
+                        .compatible_agent_dirs
+                        .iter()
+                        .map(|directory| serde_json::Value::String((*directory).to_string()))
+                        .collect(),
+                ),
+            );
+        }
+        if agents.insert(canonical_id.to_string(), value).is_some() {
+            return Err(anyhow!(
+                "duplicate managed agent `{canonical_id}` after settings migration"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -600,7 +696,7 @@ pub struct RuntimeConfig {
     pub desktop_updater_last_checked_at: Option<String>,
     pub desktop_update_badges: DesktopUpdateBadgeState,
     pub desktop_available_update: Option<DesktopAvailableUpdate>,
-    pub agents: BTreeMap<ManagedAgentType, ManagedAgentConfig>,
+    pub agents: BTreeMap<ManagedAgentId, ManagedAgentConfig>,
     pub use_local_claude: bool,
     pub require_local_claude_executable: bool,
     pub desktop_metrics_enabled: bool,
@@ -627,10 +723,8 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         let mut agents = BTreeMap::new();
-        agents.insert(
-            ManagedAgentType::ClaudeAcp,
-            ManagedAgentConfig::new(AcpAdapterConfig::default()),
-        );
+        let claude_preset = MANAGED_AGENT_PRESETS[0];
+        agents.insert(claude_preset.agent_id(), claude_preset.default_config());
         let base = Self {
             log_level: RuntimeLogLevel::Info,
             log_prompts: true,
@@ -826,8 +920,8 @@ mod tests {
     use super::{
         AcpAdapterConfig, ConsoleThemeName, ConversationDirectConfig, ConversationRunMode,
         ConversationRunModeEntry, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
-        DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, ProjectAppConfig,
-        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
+        DesktopUpdateBadgeState, MANAGED_AGENT_PRESETS, ManagedAgentConfig, ManagedAgentId,
+        ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
     };
     use std::collections::BTreeMap;
     use std::str::FromStr;
@@ -1177,46 +1271,93 @@ mod tests {
     }
 
     #[test]
-    fn managed_agent_type_skills_dir_name_returns_correct_dirs() {
-        use super::ManagedAgentType;
-        assert_eq!(ManagedAgentType::ClaudeAcp.skills_dir_name(), ".claude");
-        assert_eq!(ManagedAgentType::CodexAcp.skills_dir_name(), ".codex");
-        assert_eq!(ManagedAgentType::Cursor.skills_dir_name(), ".cursor");
-        assert_eq!(ManagedAgentType::Gemini.skills_dir_name(), ".gemini");
-        assert_eq!(ManagedAgentType::OpenCode.skills_dir_name(), ".opencode");
+    fn managed_agent_presets_own_default_agent_directories() {
+        let defaults = MANAGED_AGENT_PRESETS
+            .into_iter()
+            .map(|preset| {
+                (
+                    preset.id,
+                    preset.primary_agent_dir,
+                    preset.compatible_agent_dirs,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            defaults,
+            vec![
+                ("claude-acp", ".claude", &[] as &[&str]),
+                ("codex-acp", ".codex", &[".agents"]),
+                ("cursor", ".cursor", &[".agents"]),
+                ("gemini", ".gemini", &[".agents"]),
+                ("opencode", ".opencode", &[".agents"]),
+            ]
+        );
     }
 
     #[test]
-    fn managed_agent_config_skills_dir_name_uses_override_when_set() {
-        use super::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
-        let mut config = ManagedAgentConfig::new(AcpAdapterConfig::default());
-        // 未设置 override，使用硬编码默认值
+    fn legacy_settings_migrate_agent_directories_from_presets() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "agents": {
+                    "claude-acp": {
+                        "adapter": AcpAdapterConfig::default(),
+                        "externalSessionSyncEnabled": false
+                    },
+                    "codex-acp": {
+                        "adapter": MANAGED_AGENT_PRESETS[1].default_config().adapter,
+                        "externalSessionSyncEnabled": false
+                    }
+                }
+            }))
+            .unwrap();
+
+        assert!(migrated);
         assert_eq!(
-            config.skills_dir_name(ManagedAgentType::ClaudeAcp),
-            ".claude"
+            settings.settings_schema_version.0,
+            super::CURRENT_SETTINGS_SCHEMA_VERSION
         );
-        // 设置 override，优先使用 override
-        config.skills_dir_override = Some("custom-claude".to_string());
-        assert_eq!(
-            config.skills_dir_name(ManagedAgentType::ClaudeAcp),
-            "custom-claude"
-        );
+        let agents = settings.agents.unwrap();
+        let claude = &agents[&ManagedAgentId::from_str("claude-acp").unwrap()];
+        assert_eq!(claude.primary_agent_dir, ".claude");
+        assert!(claude.compatible_agent_dirs.is_empty());
+        let codex = &agents[&ManagedAgentId::from_str("codex-acp").unwrap()];
+        assert_eq!(codex.primary_agent_dir, ".codex");
+        assert_eq!(codex.compatible_agent_dirs, vec![".agents"]);
+    }
+
+    #[test]
+    fn legacy_skill_directory_override_becomes_primary_agent_directory() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "agents": {
+                    "codex-cli": {
+                        "adapter": MANAGED_AGENT_PRESETS[1].default_config().adapter,
+                        "skillsDirOverride": "  .custom-codex  "
+                    }
+                }
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        let agents = settings.agents.unwrap();
+        let codex = &agents[&ManagedAgentId::from_str("codex-acp").unwrap()];
+        assert_eq!(codex.primary_agent_dir, ".custom-codex");
+        assert_eq!(codex.compatible_agent_dirs, vec![".agents"]);
+        let serialized = serde_json::to_value(codex).unwrap();
+        assert!(serialized.get("skillsDirOverride").is_none());
     }
 
     #[test]
     fn managed_agent_external_session_sync_defaults_off_and_roundtrips() {
-        let legacy: ManagedAgentConfig = serde_json::from_value(serde_json::json!({
-            "adapter": AcpAdapterConfig::default()
-        }))
-        .unwrap();
-        assert!(!legacy.external_session_sync_enabled);
-        assert_eq!(legacy.skills_dir_override, None);
-
         let mut agents = BTreeMap::new();
-        let mut agent = ManagedAgentConfig::new(AcpAdapterConfig::default());
-        agent.skills_dir_override = Some(".custom-agent".to_string());
+        let mut agent = ManagedAgentConfig::new(
+            AcpAdapterConfig::default(),
+            ".custom-agent",
+            vec![".agents".to_string()],
+        );
         agent.external_session_sync_enabled = true;
-        agents.insert(ManagedAgentType::ClaudeAcp, agent);
+        let agent_id = ManagedAgentId::from_str("claude-acp").unwrap();
+        agents.insert(agent_id.clone(), agent);
         let settings = SettingsConfig {
             agents: Some(agents),
             ..SettingsConfig::default()
@@ -1228,9 +1369,10 @@ mod tests {
             true
         );
         let roundtripped: SettingsConfig = serde_json::from_value(value).unwrap();
-        let agent = &roundtripped.agents.unwrap()[&ManagedAgentType::ClaudeAcp];
+        let agent = &roundtripped.agents.unwrap()[&agent_id];
         assert!(agent.external_session_sync_enabled);
-        assert_eq!(agent.skills_dir_override.as_deref(), Some(".custom-agent"));
+        assert_eq!(agent.primary_agent_dir, ".custom-agent");
+        assert_eq!(agent.compatible_agent_dirs, vec![".agents"]);
     }
 
     #[test]
@@ -1252,34 +1394,24 @@ mod tests {
 
     #[test]
     fn skill_directory_policy_separates_write_and_compatible_read_dirs() {
-        use super::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
-        let config = ManagedAgentConfig::new(AcpAdapterConfig::default());
-
-        for (agent_type, primary) in [
-            (ManagedAgentType::ClaudeAcp, ".claude"),
-            (ManagedAgentType::CodexAcp, ".codex"),
-            (ManagedAgentType::Cursor, ".cursor"),
-            (ManagedAgentType::Gemini, ".gemini"),
-            (ManagedAgentType::OpenCode, ".opencode"),
-        ] {
-            let policy = config.skill_directory_policy(agent_type);
-            assert_eq!(policy.write_dir_names, vec![primary]);
-            let expected_reads = if agent_type == ManagedAgentType::ClaudeAcp {
-                vec![primary]
-            } else {
-                vec![primary, ".agents"]
-            };
+        for preset in MANAGED_AGENT_PRESETS {
+            let config = preset.default_config();
+            let policy = config.skill_directory_policy();
+            assert_eq!(policy.write_dir_names, vec![preset.primary_agent_dir]);
+            let mut expected_reads = vec![preset.primary_agent_dir];
+            expected_reads.extend_from_slice(preset.compatible_agent_dirs);
             assert_eq!(policy.read_dir_names, expected_reads);
         }
     }
 
     #[test]
-    fn skill_directory_override_replaces_primary_but_keeps_agents_compatibility() {
-        use super::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
-        let mut config = ManagedAgentConfig::new(AcpAdapterConfig::default());
-        config.skills_dir_override = Some("custom-codex".to_string());
-
-        let policy = config.skill_directory_policy(ManagedAgentType::CodexAcp);
+    fn skill_directory_policy_deduplicates_primary_and_compatible_directories() {
+        let config = ManagedAgentConfig::new(
+            AcpAdapterConfig::default(),
+            "custom-codex",
+            vec!["custom-codex".to_string(), ".agents".to_string()],
+        );
+        let policy = config.skill_directory_policy();
         assert_eq!(policy.write_dir_names, vec!["custom-codex"]);
         assert_eq!(policy.read_dir_names, vec!["custom-codex", ".agents"]);
     }

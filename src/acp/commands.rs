@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::config::{AgentSkillDirectoryPolicy, SKILL_FILE_NAME, SkillSource};
-use crate::skill::parse_skill_md_public;
+use crate::skill::{parse_skill_md_public, resolve_agent_skills_dir};
 use crate::storage::GoldBandPaths;
 
 pub const MAX_COMMANDS_PER_CATALOG: usize = 512;
@@ -33,6 +33,24 @@ pub struct AcpCommandCatalog {
     pub acp_commands: Option<Vec<AcpCommandItem>>,
     pub commands: Vec<AcpCommandItem>,
     pub updated_at: String,
+}
+
+#[derive(Debug)]
+struct NativeSkillRoot {
+    path: PathBuf,
+    source: SkillSource,
+    agent_source: String,
+    directory_priority: usize,
+    root_priority: usize,
+}
+
+#[derive(Debug)]
+struct NativeSkillCommandCandidate {
+    command: AcpCommandItem,
+    directory_priority: usize,
+    link_priority: usize,
+    root_priority: usize,
+    path_key: String,
 }
 
 pub fn workspace_key(workspace: &Utf8Path) -> String {
@@ -83,19 +101,23 @@ fn merge_native_skill_commands_at_home(
 
     let mut skill_commands = native_skill_roots(policy, workspace.as_std_path(), home)
         .into_iter()
-        .flat_map(|(root, source, agent_source)| {
-            scan_native_skill_root(&root, source, &agent_source, 1)
+        .flat_map(|root| {
+            scan_native_skill_root(
+                &root.path,
+                root.source,
+                &root.agent_source,
+                root.directory_priority,
+                root.root_priority,
+                1,
+            )
         })
         .collect::<Vec<_>>();
-    skill_commands.sort_by(|left, right| {
-        left.name
-            .to_ascii_lowercase()
-            .cmp(&right.name.to_ascii_lowercase())
-    });
-    for command in skill_commands {
+    skill_commands.sort_by(native_skill_candidate_order);
+    for candidate in skill_commands {
         if merged.len() >= MAX_COMMANDS_PER_CATALOG {
             break;
         }
+        let command = candidate.command;
         if names.insert(command.name.to_ascii_lowercase()) {
             merged.push(command);
         }
@@ -107,25 +129,26 @@ fn native_skill_roots(
     policy: &AgentSkillDirectoryPolicy,
     workspace: &Path,
     home: &Path,
-) -> Vec<(PathBuf, SkillSource, String)> {
+) -> Vec<NativeSkillRoot> {
     let mut roots = Vec::new();
     let mut seen = BTreeSet::new();
-    for dir_name in &policy.read_dir_names {
-        let configured = PathBuf::from(dir_name);
-        if configured.is_absolute() {
-            let root = configured.join("skills");
-            if seen.insert(root.clone()) {
-                roots.push((root, SkillSource::Global, dir_name.clone()));
-            }
-            continue;
-        }
-        for (base, source) in [
+    for (directory_priority, dir_name) in policy.read_dir_names.iter().enumerate() {
+        for (scope_priority, (base, source)) in [
             (home, SkillSource::Global),
             (workspace, SkillSource::Project),
-        ] {
-            let root = base.join(&configured).join("skills");
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let root = resolve_agent_skills_dir(base, dir_name).into_std_path_buf();
             if seen.insert(root.clone()) {
-                roots.push((root, source, dir_name.clone()));
+                roots.push(NativeSkillRoot {
+                    path: root,
+                    source,
+                    agent_source: dir_name.clone(),
+                    directory_priority,
+                    root_priority: directory_priority * 2 + scope_priority,
+                });
             }
         }
     }
@@ -136,8 +159,10 @@ fn scan_native_skill_root(
     root: &Path,
     source: SkillSource,
     agent_source: &str,
+    directory_priority: usize,
+    root_priority: usize,
     nested_depth: usize,
-) -> Vec<AcpCommandItem> {
+) -> Vec<NativeSkillCommandCandidate> {
     let Ok(entries) = fs::read_dir(root) else {
         return Vec::new();
     };
@@ -161,10 +186,16 @@ fn scan_native_skill_root(
                 parse_skill_md_public(&raw, default_name, source, &dir_path, agent_source);
             let name = meta.name.trim().trim_start_matches('/').trim();
             if !name.is_empty() && name.chars().all(is_command_char) {
-                commands.push(AcpCommandItem {
-                    name: name.to_string(),
-                    description: meta.description,
-                    input_hint: None,
+                commands.push(NativeSkillCommandCandidate {
+                    command: AcpCommandItem {
+                        name: name.to_string(),
+                        description: meta.description,
+                        input_hint: None,
+                    },
+                    directory_priority,
+                    link_priority: usize::from(is_link_path(&path)),
+                    root_priority,
+                    path_key: path.to_string_lossy().into_owned(),
                 });
             }
         } else if nested_depth > 0 {
@@ -172,11 +203,34 @@ fn scan_native_skill_root(
                 &path,
                 source,
                 agent_source,
+                directory_priority,
+                root_priority,
                 nested_depth - 1,
             ));
         }
     }
     commands
+}
+
+fn is_link_path(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+        || path.read_link().is_ok()
+}
+
+fn native_skill_candidate_order(
+    left: &NativeSkillCommandCandidate,
+    right: &NativeSkillCommandCandidate,
+) -> std::cmp::Ordering {
+    left.command
+        .name
+        .to_ascii_lowercase()
+        .cmp(&right.command.name.to_ascii_lowercase())
+        .then_with(|| left.directory_priority.cmp(&right.directory_priority))
+        .then_with(|| left.link_priority.cmp(&right.link_priority))
+        .then_with(|| left.root_priority.cmp(&right.root_priority))
+        .then_with(|| left.path_key.cmp(&right.path_key))
 }
 
 fn parse_command(value: &Value) -> Option<AcpCommandItem> {
@@ -224,7 +278,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        AcpCommandCatalog, AcpCommandItem, catalog_key, merge_native_skill_commands_at_home,
+        AcpCommandCatalog, AcpCommandItem, NativeSkillCommandCandidate, catalog_key,
+        merge_native_skill_commands_at_home, native_skill_candidate_order,
         parse_available_commands, workspace_key,
     };
     use crate::config::AgentSkillDirectoryPolicy;
@@ -336,6 +391,68 @@ mod tests {
                 .any(|command| command.name == "agent-browser")
         );
         assert!(commands.iter().any(|command| command.name == "openai-docs"));
+    }
+
+    #[test]
+    fn duplicate_skill_menu_entries_prefer_primary_directory_metadata() {
+        let home = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        for (root, folder, description) in [
+            (
+                home.path().join(".codex/skills"),
+                "primary-version",
+                "Primary directory",
+            ),
+            (
+                home.path().join(".agents/skills"),
+                "compatible-version",
+                "Compatible directory",
+            ),
+        ] {
+            let skill_dir = root.join(folder);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: duplicate-skill\ndescription: {description}\n---\n"),
+            )
+            .unwrap();
+        }
+        let workspace = camino::Utf8PathBuf::from_path_buf(workspace.path().to_path_buf()).unwrap();
+        let policy = AgentSkillDirectoryPolicy {
+            write_dir_names: vec![".codex".to_string()],
+            read_dir_names: vec![".codex".to_string(), ".agents".to_string()],
+        };
+
+        let commands =
+            merge_native_skill_commands_at_home(&policy, &workspace, home.path(), Vec::new());
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, "duplicate-skill");
+        assert_eq!(commands[0].description, "Primary directory");
+    }
+
+    #[test]
+    fn duplicate_skill_menu_priority_is_directory_then_entity() {
+        let candidate =
+            |directory_priority, link_priority, path: &str| NativeSkillCommandCandidate {
+                command: AcpCommandItem {
+                    name: "duplicate-skill".to_string(),
+                    description: path.to_string(),
+                    input_hint: None,
+                },
+                directory_priority,
+                link_priority,
+                root_priority: directory_priority * 2,
+                path_key: path.to_string(),
+            };
+        let primary_entity = candidate(0, 0, "primary-entity");
+        let primary_link = candidate(0, 1, "primary-link");
+        let compatible_entity = candidate(1, 0, "compatible-entity");
+        let compatible_link = candidate(1, 1, "compatible-link");
+
+        assert!(native_skill_candidate_order(&primary_entity, &primary_link).is_lt());
+        assert!(native_skill_candidate_order(&primary_link, &compatible_entity).is_lt());
+        assert!(native_skill_candidate_order(&compatible_entity, &compatible_link).is_lt());
     }
 
     #[test]

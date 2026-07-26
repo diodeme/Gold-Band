@@ -375,7 +375,7 @@ You have access to the following Skills — modular capabilities...
 `write_skill` 不直接分散执行创建、覆盖、rename 和同步。Tauri command 只解析入参并委托 `SkillManager::write_instance`，由后端统一执行“预检 → 文件系统变更 → 同步链接 reconcile → 失败回滚”。
 `update_skill_sync_targets` 只处理已有 SKILL 实例的同步链接 reconcile，用于卡片上的快速同步/取消同步，不应修改 `SKILL.md` 内容或触发 rename。
 
-SKILL 写入、删除或同步链接 reconcile 成功后，Tauri command 需要异步触发当前 workspace 的命令目录刷新。每个 Agent 由 `AgentSkillDirectoryPolicy` 分别维护写列表和读列表：写列表是 SKILL 管理同步目标，读列表是 Agent 实际发现来源。Claude 默认只读写 `.claude`；Codex 默认写 `.codex`、读 `.codex + .agents`；Cursor、Gemini、OpenCode 分别写自己的原生目录，并额外读 `.agents`。配置覆盖只替换主目录，非 Claude Agent 仍保留 `.agents` 兼容读取。
+SKILL 写入、删除或同步链接 reconcile 成功后，Tauri command 需要异步触发当前 workspace 的命令目录刷新。每个 `ManagedAgentConfig` 直接保存主 Agent 目录与兼容 Agent 目录，并由此生成 `AgentSkillDirectoryPolicy`：写列表只包含主 Agent 目录，是 SKILL 管理同步目标；读列表包含主目录和去重后的兼容目录，是 Agent 实际发现来源。所有路径解析统一在 Agent 目录后追加 `skills`，不允许调用方分散硬编码。Claude preset 默认主目录 `.claude`、无兼容目录；Codex/Cursor/Gemini/OpenCode 分别使用自己的主目录，并配置 `.agents` 为只读兼容目录。
 
 刷新先通过 Doctor 捕获 Agent 的 ACP `available_commands_update`，再扫描读列表下用户级与 workspace 级 `skills/*/SKILL.md` 的 `name / description` frontmatter，最终按“ACP 原生命令优先、SKILL 补充、命令名不区分大小写去重”生成目录。扫描不读取或注入 `SKILL.md` 正文；用户选择条目后只向 Agent 发送普通 `/${name} ` 文本。刷新失败保留上一次成功目录，且不能阻塞 SKILL 管理操作返回。
 

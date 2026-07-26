@@ -50,11 +50,11 @@ fn validate_direct_capabilities(
     let Some(config) = input.direct_config.as_ref() else {
         return Ok(());
     };
-    let Ok(agent_type) = gold_band::config::ManagedAgentType::from_str(&config.agent_type) else {
+    let Ok(agent_id) = gold_band::config::ManagedAgentId::from_str(&config.agent_type) else {
         return Ok(());
     };
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
-    let Some(diagnostic) = diagnostics.get(&agent_type) else {
+    let Some(diagnostic) = diagnostics.get(&agent_id) else {
         return Ok(());
     };
     if !diagnostic.available {

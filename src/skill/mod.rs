@@ -1,6 +1,6 @@
 pub mod symlink;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -9,7 +9,7 @@ use camino::Utf8PathBuf;
 use tracing::debug;
 
 use crate::config::{
-    GOLD_BAND_DIR_NAME, MAX_SKILL_DESCRIPTION_LEN, ManagedAgentConfig, ManagedAgentType,
+    GOLD_BAND_DIR_NAME, MAX_SKILL_DESCRIPTION_LEN, ManagedAgentConfig, ManagedAgentId,
     SKILL_FILE_NAME, SKILLS_DIR_NAME, SkillMeta, SkillSource,
 };
 use crate::frontmatter::{
@@ -19,9 +19,15 @@ use crate::storage::GoldBandPaths;
 
 #[derive(Debug, Clone)]
 pub struct AgentSkillDir {
-    pub agent_type: ManagedAgentType,
+    pub agent_id: ManagedAgentId,
     pub dir_name: String,
     pub skills_dir: Utf8PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentSkillReadDir {
+    dir_name: String,
+    skills_dir: Utf8PathBuf,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -86,32 +92,30 @@ impl SkillCommandError {
     }
 }
 
-pub fn configured_agent_skills_dirs(
-    agents: &BTreeMap<ManagedAgentType, ManagedAgentConfig>,
-) -> Vec<AgentSkillDir> {
+fn configured_agent_skill_read_dirs(
+    agents: &BTreeMap<ManagedAgentId, ManagedAgentConfig>,
+) -> Vec<AgentSkillReadDir> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    configured_agent_skills_dirs_at_root(&home, agents, false)
+    configured_agent_skill_read_dirs_at_root(&home, agents)
 }
 
-fn configured_agent_skills_dirs_at_root(
+fn configured_agent_skill_read_dirs_at_root(
     root: &Path,
-    agents: &BTreeMap<ManagedAgentType, ManagedAgentConfig>,
-    include_missing: bool,
-) -> Vec<AgentSkillDir> {
+    agents: &BTreeMap<ManagedAgentId, ManagedAgentConfig>,
+) -> Vec<AgentSkillReadDir> {
     let mut dirs = Vec::new();
-    for (agent_type, config) in agents {
-        for dir_name in config.skill_directory_policy(*agent_type).write_dir_names {
-            let agent_root = resolve_agent_root(root, &dir_name);
-            let skills_dir =
-                Utf8PathBuf::from_path_buf(agent_root.join(SKILLS_DIR_NAME)).unwrap_or_default();
-            if include_missing
-                || (skills_dir.as_std_path().exists() && skills_dir.as_std_path().is_dir())
-            {
-                dirs.push(AgentSkillDir {
-                    agent_type: *agent_type,
-                    dir_name,
-                    skills_dir,
-                });
+    let mut seen_paths = BTreeSet::new();
+    for config in agents.values() {
+        for dir_name in config.skill_directory_policy().read_dir_names {
+            let skills_dir = resolve_agent_skills_dir(root, &dir_name);
+            if skills_dir.as_std_path().exists() && skills_dir.as_std_path().is_dir() {
+                let canonical_path = canonicalize_lossy(skills_dir.as_std_path());
+                if seen_paths.insert(canonical_path) {
+                    dirs.push(AgentSkillReadDir {
+                        dir_name,
+                        skills_dir,
+                    });
+                }
             }
         }
     }
@@ -120,13 +124,13 @@ fn configured_agent_skills_dirs_at_root(
 
 pub struct SkillManager {
     paths: GoldBandPaths,
-    agents_config: BTreeMap<ManagedAgentType, ManagedAgentConfig>,
+    agents_config: BTreeMap<ManagedAgentId, ManagedAgentConfig>,
 }
 
 impl SkillManager {
     pub fn new(
         paths: GoldBandPaths,
-        agents_config: BTreeMap<ManagedAgentType, ManagedAgentConfig>,
+        agents_config: BTreeMap<ManagedAgentId, ManagedAgentConfig>,
     ) -> Self {
         Self {
             paths,
@@ -152,7 +156,7 @@ impl SkillManager {
             ".gold-band",
         );
 
-        let agent_dirs = configured_agent_skills_dirs(&self.agents_config);
+        let agent_dirs = configured_agent_skill_read_dirs(&self.agents_config);
         debug!(
             agents_count = self.agents_config.len(),
             found_agent_dirs = agent_dirs.len(),
@@ -172,10 +176,9 @@ impl SkillManager {
             global.extend(agent_skills);
         }
 
-        let project_agent_dirs = configured_agent_skills_dirs_at_root(
+        let project_agent_dirs = configured_agent_skill_read_dirs_at_root(
             self.paths.repo_root.as_std_path(),
             &self.agents_config,
-            false,
         );
         for agent_dir in &project_agent_dirs {
             let agent_skills = scan_skills_dir(
@@ -206,10 +209,9 @@ impl SkillManager {
             SkillSource::Project,
             ".gold-band",
         );
-        let agent_dirs = configured_agent_skills_dirs_at_root(
+        let agent_dirs = configured_agent_skill_read_dirs_at_root(
             workspace_root.as_std_path(),
             &self.agents_config,
-            false,
         );
         for agent_dir in &agent_dirs {
             let agent_skills = scan_skills_dir(
@@ -786,7 +788,7 @@ impl SkillManager {
             .filter_map(|agent_dir| {
                 let candidate = agent_dir.skills_dir.join(skill_dir_name);
                 is_link_pointing_to(candidate.as_std_path(), &source_canonical)
-                    .then(|| agent_dir.agent_type.as_str().to_string())
+                    .then(|| agent_dir.agent_id.as_str().to_string())
             })
             .collect()
     }
@@ -1019,7 +1021,7 @@ fn merge_skill_edit_content(
 
 fn populate_synced_agent_types(
     skills: &mut [SkillMeta],
-    agents: &BTreeMap<ManagedAgentType, ManagedAgentConfig>,
+    agents: &BTreeMap<ManagedAgentId, ManagedAgentConfig>,
     source: SkillSource,
     workspace_path: Option<&str>,
 ) {
@@ -1039,14 +1041,14 @@ fn populate_synced_agent_types(
             .filter_map(|agent_dir| {
                 let candidate = agent_dir.skills_dir.join(skill_dir_name);
                 is_link_pointing_to(candidate.as_std_path(), &canonical_source)
-                    .then(|| agent_dir.agent_type.as_str().to_string())
+                    .then(|| agent_dir.agent_id.as_str().to_string())
             })
             .collect();
     }
 }
 
 fn resolve_skill_dirs(
-    agents: &BTreeMap<ManagedAgentType, ManagedAgentConfig>,
+    agents: &BTreeMap<ManagedAgentId, ManagedAgentConfig>,
     source: SkillSource,
     workspace_path: Option<&str>,
     sync_targets: Option<&[String]>,
@@ -1061,22 +1063,20 @@ fn resolve_skill_dirs(
         return Vec::new();
     };
     let mut dirs = Vec::new();
-    for (agent_type, config) in agents {
+    for (agent_id, config) in agents {
         if sync_targets
-            .map(|targets| !targets.iter().any(|target| target == agent_type.as_str()))
+            .map(|targets| !targets.iter().any(|target| target == agent_id.as_str()))
             .unwrap_or(false)
         {
             continue;
         }
-        for dir_name in config.skill_directory_policy(*agent_type).write_dir_names {
-            let agent_root = resolve_agent_root(&root, &dir_name);
-            let skills_dir =
-                Utf8PathBuf::from_path_buf(agent_root.join(SKILLS_DIR_NAME)).unwrap_or_default();
+        for dir_name in config.skill_directory_policy().write_dir_names {
+            let skills_dir = resolve_agent_skills_dir(&root, &dir_name);
             if include_missing
                 || (skills_dir.as_std_path().exists() && skills_dir.as_std_path().is_dir())
             {
                 dirs.push(AgentSkillDir {
-                    agent_type: *agent_type,
+                    agent_id: agent_id.clone(),
                     dir_name,
                     skills_dir,
                 });
@@ -1093,6 +1093,11 @@ fn resolve_agent_root(root: &Path, dir_name: &str) -> PathBuf {
     } else {
         root.join(configured)
     }
+}
+
+pub fn resolve_agent_skills_dir(root: &Path, agent_dir: &str) -> Utf8PathBuf {
+    Utf8PathBuf::from_path_buf(resolve_agent_root(root, agent_dir).join(SKILLS_DIR_NAME))
+        .unwrap_or_default()
 }
 
 fn is_link_pointing_to(link_path: &Path, expected: &Path) -> bool {
@@ -1133,8 +1138,9 @@ fn skill_sort_key(left: &SkillMeta, right: &SkillMeta) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
+    use crate::config::{MANAGED_AGENT_PRESETS, ManagedAgentConfig, ManagedAgentId};
     use std::fs;
+    use std::str::FromStr;
 
     fn tmp_skill_dir(base: &Path, name: &str) -> PathBuf {
         let skill_dir = base.join(name);
@@ -1148,7 +1154,15 @@ mod tests {
     }
 
     fn claude_acp_config() -> ManagedAgentConfig {
-        ManagedAgentConfig::new(AcpAdapterConfig::default())
+        MANAGED_AGENT_PRESETS[0].default_config()
+    }
+
+    fn codex_acp_config() -> ManagedAgentConfig {
+        MANAGED_AGENT_PRESETS[1].default_config()
+    }
+
+    fn agent_id(value: &str) -> ManagedAgentId {
+        ManagedAgentId::from_str(value).unwrap()
     }
 
     #[test]
@@ -1172,6 +1186,45 @@ mod tests {
         assert_eq!(results[0].agent_source, ".claude");
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn configured_agent_skill_read_dirs_include_compatible_directory_once() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".codex").join("skills")).unwrap();
+        fs::create_dir_all(temp.path().join(".agents").join("skills")).unwrap();
+
+        let mut agents = BTreeMap::new();
+        agents.insert(agent_id("codex-acp"), codex_acp_config());
+        agents.insert(
+            agent_id("cursor"),
+            MANAGED_AGENT_PRESETS[2].default_config(),
+        );
+
+        let dirs = configured_agent_skill_read_dirs_at_root(temp.path(), &agents);
+
+        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs[0].dir_name, ".codex");
+        assert_eq!(dirs[1].dir_name, ".agents");
+    }
+
+    #[test]
+    fn list_by_workspace_reads_skills_from_compatible_agent_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        tmp_skill_dir(
+            &temp.path().join(".agents").join("skills"),
+            "compatible-skill",
+        );
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let mut agents = BTreeMap::new();
+        agents.insert(agent_id("codex-acp"), codex_acp_config());
+        let manager = SkillManager::new(GoldBandPaths::new(repo_root.clone()), agents);
+
+        let skills = manager.list_by_workspace(repo_root.as_str()).unwrap();
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "compatible-skill");
+        assert_eq!(skills[0].agent_source, ".agents");
     }
 
     #[test]
@@ -1232,8 +1285,8 @@ compatibility: claude-code-only
 
         let mut agents = BTreeMap::new();
         let mut claude_config = claude_acp_config();
-        claude_config.skills_dir_override = Some(tmp.join(".claude").to_string_lossy().to_string());
-        agents.insert(ManagedAgentType::ClaudeAcp, claude_config);
+        claude_config.primary_agent_dir = tmp.join(".claude").to_string_lossy().to_string();
+        agents.insert(agent_id("claude-acp"), claude_config);
 
         let manager = SkillManager::new(GoldBandPaths::new("."), agents);
         let conflicts = manager.check_name_conflict(
@@ -1257,7 +1310,7 @@ compatibility: claude-code-only
         tmp_skill_dir(&tmp.join(".claude").join("skills"), "shared-skill");
 
         let mut agents = BTreeMap::new();
-        agents.insert(ManagedAgentType::ClaudeAcp, claude_acp_config());
+        agents.insert(agent_id("claude-acp"), claude_acp_config());
         let manager = SkillManager::new(
             GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.clone()).unwrap()),
             agents,
@@ -1321,12 +1374,11 @@ compatibility: claude-code-only
 
         let mut agents = BTreeMap::new();
         let mut claude_config = claude_acp_config();
-        claude_config.skills_dir_override = Some(tmp.join(".claude").to_string_lossy().to_string());
-        agents.insert(ManagedAgentType::ClaudeAcp, claude_config);
-        let mut codex_config =
-            ManagedAgentConfig::new(ManagedAgentType::CodexAcp.default_adapter_config());
-        codex_config.skills_dir_override = Some(tmp.join(".codex").to_string_lossy().to_string());
-        agents.insert(ManagedAgentType::CodexAcp, codex_config);
+        claude_config.primary_agent_dir = tmp.join(".claude").to_string_lossy().to_string();
+        agents.insert(agent_id("claude-acp"), claude_config);
+        let mut codex_config = codex_acp_config();
+        codex_config.primary_agent_dir = tmp.join(".codex").to_string_lossy().to_string();
+        agents.insert(agent_id("codex-acp"), codex_config);
 
         fs::create_dir_all(tmp.join(".claude").join("skills")).unwrap();
         fs::create_dir_all(tmp.join(".codex").join("skills")).unwrap();
@@ -1377,11 +1429,8 @@ compatibility: claude-code-only
         .unwrap();
 
         let mut agents = BTreeMap::new();
-        agents.insert(ManagedAgentType::ClaudeAcp, claude_acp_config());
-        agents.insert(
-            ManagedAgentType::CodexAcp,
-            ManagedAgentConfig::new(ManagedAgentType::CodexAcp.default_adapter_config()),
-        );
+        agents.insert(agent_id("claude-acp"), claude_acp_config());
+        agents.insert(agent_id("codex-acp"), codex_acp_config());
 
         let manager = SkillManager::new(GoldBandPaths::new(repo_root.clone()), agents);
         manager
@@ -1429,11 +1478,8 @@ compatibility: claude-code-only
         .unwrap();
 
         let mut agents = BTreeMap::new();
-        agents.insert(ManagedAgentType::ClaudeAcp, claude_acp_config());
-        agents.insert(
-            ManagedAgentType::CodexAcp,
-            ManagedAgentConfig::new(ManagedAgentType::CodexAcp.default_adapter_config()),
-        );
+        agents.insert(agent_id("claude-acp"), claude_acp_config());
+        agents.insert(agent_id("codex-acp"), codex_acp_config());
 
         let manager = SkillManager::new(GoldBandPaths::new(repo_root.clone()), agents);
         manager
@@ -1476,11 +1522,10 @@ compatibility: claude-code-only
         .unwrap();
 
         let mut agents = BTreeMap::new();
-        agents.insert(ManagedAgentType::ClaudeAcp, claude_acp_config());
-        let mut codex_config =
-            ManagedAgentConfig::new(ManagedAgentType::CodexAcp.default_adapter_config());
-        codex_config.skills_dir_override = Some(tmp.join(".codex").to_string_lossy().to_string());
-        agents.insert(ManagedAgentType::CodexAcp, codex_config);
+        agents.insert(agent_id("claude-acp"), claude_acp_config());
+        let mut codex_config = codex_acp_config();
+        codex_config.primary_agent_dir = tmp.join(".codex").to_string_lossy().to_string();
+        agents.insert(agent_id("codex-acp"), codex_config);
 
         let manager = SkillManager::new(GoldBandPaths::new(repo_root.clone()), agents);
         manager
@@ -1537,11 +1582,8 @@ compatibility: claude-code-only
         .unwrap();
 
         let mut agents = BTreeMap::new();
-        agents.insert(ManagedAgentType::ClaudeAcp, claude_acp_config());
-        agents.insert(
-            ManagedAgentType::CodexAcp,
-            ManagedAgentConfig::new(ManagedAgentType::CodexAcp.default_adapter_config()),
-        );
+        agents.insert(agent_id("claude-acp"), claude_acp_config());
+        agents.insert(agent_id("codex-acp"), codex_acp_config());
         let manager = SkillManager::new(GoldBandPaths::new(repo_root.clone()), agents);
 
         let error = manager
@@ -1590,11 +1632,8 @@ compatibility: claude-code-only
         .unwrap();
 
         let mut agents = BTreeMap::new();
-        agents.insert(ManagedAgentType::ClaudeAcp, claude_acp_config());
-        agents.insert(
-            ManagedAgentType::CodexAcp,
-            ManagedAgentConfig::new(ManagedAgentType::CodexAcp.default_adapter_config()),
-        );
+        agents.insert(agent_id("claude-acp"), claude_acp_config());
+        agents.insert(agent_id("codex-acp"), codex_acp_config());
         let manager = SkillManager::new(GoldBandPaths::new(repo_root.clone()), agents);
         manager
             .sync_skill_instance(

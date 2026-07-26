@@ -66,6 +66,22 @@ pub struct ConversationWorkspaceSource {
     pub app: App,
 }
 
+pub fn conversation_workspace_vms(state: &StateConfig) -> Vec<ConversationWorkspaceVm> {
+    let mut workspaces = state
+        .conversation_workspaces
+        .iter()
+        .map(|workspace| ConversationWorkspaceVm {
+            project_id: workspace.project_id.clone(),
+            workspace_path: workspace.workspace_path.clone(),
+            name: workspace.name.clone(),
+        })
+        .collect::<Vec<_>>();
+    if let Some(last_workspace) = &state.last_conversation_workspace {
+        workspaces.sort_by_key(|workspace| usize::from(workspace.project_id != *last_workspace));
+    }
+    workspaces
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationRunSummaryVm {
@@ -404,7 +420,6 @@ pub fn touch_conversation_activity(app: &App, task_id: &str) -> anyhow::Result<(
 // ── Builder functions (stubs — full implementation in later phases) ──
 
 pub fn conversation_sidebar_vm_from_sources(
-    state_app: &App,
     state: &StateConfig,
     sources: &[ConversationWorkspaceSource],
 ) -> ConversationSidebarVm {
@@ -428,9 +443,9 @@ pub fn conversation_sidebar_vm_from_sources(
     }
 
     for source in sources {
-        if let Ok(summaries) = source.app.task_summaries() {
-            for summary in &summaries {
-                let task_id = &summary.task.id;
+        if let Ok(tasks) = source.app.task_list() {
+            for task in tasks {
+                let task_id = &task.id;
                 let project_id = &source.workspace.project_id;
                 let pinned = pinned_set.contains(&(project_id.clone(), task_id.clone()));
                 let pin_order = state
@@ -445,30 +460,16 @@ pub fn conversation_sidebar_vm_from_sources(
                     .map(|metadata| metadata.run_mode.clone())
                     .unwrap_or_else(|| "workflow".to_string());
 
-                let latest_run = summary
-                    .latest_run
-                    .as_ref()
-                    .map(|run| conversation_run_summary_vm(run));
-
-                let runs: Vec<ConversationRunSummaryVm> = source
-                    .app
-                    .run_list(task_id)
-                    .map(|run_list| {
-                        let mut vms: Vec<ConversationRunSummaryVm> =
-                            run_list.iter().map(conversation_run_summary_vm).collect();
-                        vms.sort_by(|a, b| b.started_at.cmp(&a.started_at));
-                        vms
-                    })
-                    .unwrap_or_default();
+                let run_list = source.app.run_list(task_id).unwrap_or_default();
+                let latest_run = run_list.last().map(conversation_run_summary_vm);
+                let mut runs: Vec<ConversationRunSummaryVm> =
+                    run_list.iter().map(conversation_run_summary_vm).collect();
+                runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
 
                 let row = ConversationTaskRowVm {
                     project_id: project_id.clone(),
                     task_id: task_id.clone(),
-                    title: summary
-                        .task
-                        .title
-                        .clone()
-                        .unwrap_or_else(|| task_id.clone()),
+                    title: task.title.clone().unwrap_or_else(|| task_id.clone()),
                     auto_title: metadata
                         .as_ref()
                         .is_some_and(|metadata| metadata.title_auto_generated),
@@ -533,10 +534,7 @@ pub fn conversation_sidebar_vm_from_sources(
         pinned_tasks,
         tasks_by_workspace,
         last_active_workspace_id,
-        preferences: state_app
-            .load_state()
-            .map(|s| s.preferences)
-            .unwrap_or_default(),
+        preferences: state.preferences.clone(),
     }
 }
 
@@ -2879,7 +2877,8 @@ mod tests {
         apply_workflow_interview_preference, build_auto_workflow, build_direct_workflow,
         conversation_attempt_lifecycle_vm, conversation_auto_title, conversation_run_vm,
         conversation_sidebar_vm_from_sources, conversation_status_from_session,
-        derive_conversation_attempt_lifecycle, lifecycle_is_active, switch_conversation_session_vm,
+        conversation_workspace_vms, derive_conversation_attempt_lifecycle, lifecycle_is_active,
+        switch_conversation_session_vm,
     };
     use camino::Utf8PathBuf;
     use gold_band::app::{App, CreateTaskInput};
@@ -3785,7 +3784,7 @@ mod tests {
             },
         ];
 
-        let vm = conversation_sidebar_vm_from_sources(&app_a, &state, &sources);
+        let vm = conversation_sidebar_vm_from_sources(&state, &sources);
 
         assert_eq!(vm.workspaces.len(), 2);
         assert_eq!(vm.tasks_by_workspace["workspace-a"][0].task_id, "task-a");
@@ -3827,11 +3826,73 @@ mod tests {
             },
         ];
 
-        let vm = conversation_sidebar_vm_from_sources(&app_a, &state, &sources);
+        let vm = conversation_sidebar_vm_from_sources(&state, &sources);
 
         assert_eq!(vm.last_active_workspace_id.as_deref(), Some("workspace-b"));
         assert_eq!(vm.workspaces[0].project_id, "workspace-b");
         assert_eq!(vm.workspaces[1].project_id, "workspace-a");
+    }
+
+    #[test]
+    fn conversation_workspace_vms_returns_only_workspace_metadata() {
+        let mut state = gold_band::config::StateConfig::default();
+        state.conversation_workspaces = vec![
+            gold_band::config::ConversationWorkspaceEntry {
+                project_id: "workspace-a".to_string(),
+                workspace_path: "D:/Workspace/A".to_string(),
+                name: "Workspace A".to_string(),
+                added_at: "2026-07-26T00:00:00Z".to_string(),
+            },
+            gold_band::config::ConversationWorkspaceEntry {
+                project_id: "workspace-b".to_string(),
+                workspace_path: "D:/Workspace/B".to_string(),
+                name: "Workspace B".to_string(),
+                added_at: "2026-07-26T00:01:00Z".to_string(),
+            },
+        ];
+        state.last_conversation_workspace = Some("workspace-b".to_string());
+
+        let workspaces = conversation_workspace_vms(&state);
+
+        assert_eq!(workspaces.len(), 2);
+        assert_eq!(workspaces[0].project_id, "workspace-b");
+        assert_eq!(workspaces[1].project_id, "workspace-a");
+    }
+
+    #[test]
+    fn conversation_sidebar_keeps_task_when_run_history_is_unreadable() {
+        let repo = temp_repo_root();
+        let app = App::new(repo.clone());
+        write_sidebar_task_fixture(
+            &app,
+            "task-broken-run",
+            "Broken run history",
+            "run-001",
+            "2026-07-26T00:00:00Z",
+        );
+        std::fs::write(
+            app.paths
+                .run_file("task-broken-run", "run-001")
+                .as_std_path(),
+            "{invalid-json",
+        )
+        .unwrap();
+        let state = gold_band::config::StateConfig::default();
+        let sources = vec![ConversationWorkspaceSource {
+            workspace: ConversationWorkspaceVm {
+                project_id: "workspace-a".to_string(),
+                workspace_path: repo.to_string(),
+                name: "Workspace A".to_string(),
+            },
+            app: app.clone_for_background(),
+        }];
+
+        let vm = conversation_sidebar_vm_from_sources(&state, &sources);
+
+        let task = &vm.tasks_by_workspace["workspace-a"][0];
+        assert_eq!(task.task_id, "task-broken-run");
+        assert!(task.latest_run.is_none());
+        assert!(task.runs.is_empty());
     }
 
     #[test]

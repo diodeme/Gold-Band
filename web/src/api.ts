@@ -285,6 +285,10 @@ export function getConversationSidebar() {
   return getRuntimeApi().getConversationSidebar();
 }
 
+export function getConversationWorkspaces() {
+  return getRuntimeApi().getConversationWorkspaces();
+}
+
 export function getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null) {
   return getRuntimeApi().getConversationRun(projectId, taskId, runId, selectedSessionKey);
 }

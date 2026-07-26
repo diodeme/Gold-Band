@@ -15,7 +15,10 @@ use tauri::{AppHandle, State};
 use tracing::info;
 use uuid::Uuid;
 
-use crate::commands::{CommandErrorVm, CommandResult, acp_session_update_emitter, command_error};
+use crate::commands::{
+    CommandErrorVm, CommandResult, acp_session_update_emitter, command_error,
+    spawn_blocking_command,
+};
 use crate::conversation_workspace::{
     app_for_workspace, project_id_for_workspace, project_ids_match, remove_workspace_from_state,
     workspace_entry_for_project,
@@ -117,13 +120,49 @@ pub fn save_desktop_ui_mode(state: State<'_, DesktopState>, mode: String) -> Com
 }
 
 #[tauri::command]
-pub fn get_conversation_sidebar(
+pub async fn get_conversation_sidebar(
     state: State<'_, DesktopState>,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+    let started = Instant::now();
     let context = state.context().map_err(command_error)?;
-    let app = context.app();
-    let state = app.load_state().map_err(command_error)?;
-    conversation_sidebar_for_state(&context, &app, &state)
+    let result = spawn_blocking_command(move || {
+        let app = context.app();
+        let state = app.load_state().map_err(command_error)?;
+        conversation_sidebar_for_state(&context, &app, &state)
+    })
+    .await;
+    info!(
+        target: "gold_band::perf",
+        command = "get_conversation_sidebar",
+        elapsed_ms = started.elapsed().as_millis(),
+        status = if result.is_ok() { "ok" } else { "error" },
+        "conversation sidebar loaded"
+    );
+    result
+}
+
+#[tauri::command]
+pub async fn get_conversation_workspaces(
+    state: State<'_, DesktopState>,
+) -> CommandResult<Vec<crate::view_models_conversation::ConversationWorkspaceVm>> {
+    let started = Instant::now();
+    let context = state.context().map_err(command_error)?;
+    let result = spawn_blocking_command(move || {
+        let app = context.app();
+        let state = app.load_state().map_err(command_error)?;
+        Ok(crate::view_models_conversation::conversation_workspace_vms(
+            &state,
+        ))
+    })
+    .await;
+    info!(
+        target: "gold_band::perf",
+        command = "get_conversation_workspaces",
+        elapsed_ms = started.elapsed().as_millis(),
+        status = if result.is_ok() { "ok" } else { "error" },
+        "conversation workspaces loaded"
+    );
+    result
 }
 
 #[tauri::command]
@@ -382,91 +421,100 @@ pub async fn update_task_metadata(
 }
 
 #[tauri::command]
-pub fn pin_conversation(
+pub async fn pin_conversation(
     state: State<'_, DesktopState>,
     project_id: String,
     task_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app();
-    let mut state = app.load_state().map_err(command_error)?;
-    let (_, resolved_project_id) =
-        workspace_entry_for_project(&state, &project_id).ok_or_else(|| {
-            CommandErrorVm::new(
-                "workspace.not-found",
-                serde_json::json!({ "projectId": project_id }),
-            )
-        })?;
-    if state.conversation_pins.iter().any(|pin| {
-        project_ids_match(&pin.project_id, &resolved_project_id) && pin.task_id == task_id
-    }) {
-        return conversation_sidebar_for_state(&context, &app, &state);
-    }
-    let max_order = state
-        .conversation_pins
-        .iter()
-        .map(|p| p.order)
-        .max()
-        .unwrap_or(0);
-    state.conversation_pins.push(ConversationPin {
-        project_id: resolved_project_id,
-        task_id,
-        order: max_order + 1,
-    });
-    app.save_state(&state).map_err(command_error)?;
-    conversation_sidebar_for_state(&context, &app, &state)
+    spawn_blocking_command(move || {
+        let app = context.app();
+        let mut state = app.load_state().map_err(command_error)?;
+        let (_, resolved_project_id) = workspace_entry_for_project(&state, &project_id)
+            .ok_or_else(|| {
+                CommandErrorVm::new(
+                    "workspace.not-found",
+                    serde_json::json!({ "projectId": project_id }),
+                )
+            })?;
+        if state.conversation_pins.iter().any(|pin| {
+            project_ids_match(&pin.project_id, &resolved_project_id) && pin.task_id == task_id
+        }) {
+            return conversation_sidebar_for_state(&context, &app, &state);
+        }
+        let max_order = state
+            .conversation_pins
+            .iter()
+            .map(|p| p.order)
+            .max()
+            .unwrap_or(0);
+        state.conversation_pins.push(ConversationPin {
+            project_id: resolved_project_id,
+            task_id,
+            order: max_order + 1,
+        });
+        app.save_state(&state).map_err(command_error)?;
+        conversation_sidebar_for_state(&context, &app, &state)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn unpin_conversation(
+pub async fn unpin_conversation(
     state: State<'_, DesktopState>,
     project_id: String,
     task_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app();
-    let mut state = app.load_state().map_err(command_error)?;
-    let (_, resolved_project_id) =
-        workspace_entry_for_project(&state, &project_id).ok_or_else(|| {
-            CommandErrorVm::new(
-                "workspace.not-found",
-                serde_json::json!({ "projectId": project_id }),
-            )
-        })?;
-    state.conversation_pins.retain(|p| {
-        !project_ids_match(&p.project_id, &resolved_project_id) || p.task_id != task_id
-    });
-    app.save_state(&state).map_err(command_error)?;
-    conversation_sidebar_for_state(&context, &app, &state)
+    spawn_blocking_command(move || {
+        let app = context.app();
+        let mut state = app.load_state().map_err(command_error)?;
+        let (_, resolved_project_id) = workspace_entry_for_project(&state, &project_id)
+            .ok_or_else(|| {
+                CommandErrorVm::new(
+                    "workspace.not-found",
+                    serde_json::json!({ "projectId": project_id }),
+                )
+            })?;
+        state.conversation_pins.retain(|p| {
+            !project_ids_match(&p.project_id, &resolved_project_id) || p.task_id != task_id
+        });
+        app.save_state(&state).map_err(command_error)?;
+        conversation_sidebar_for_state(&context, &app, &state)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn reorder_pinned_conversations(
+pub async fn reorder_pinned_conversations(
     state: State<'_, DesktopState>,
     ordered: Vec<gold_band::config::ConversationPin>,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app();
-    let mut state = app.load_state().map_err(command_error)?;
-    let normalized_pins = ordered
-        .into_iter()
-        .enumerate()
-        .map(|(i, mut pin)| {
-            let (_, resolved_project_id) = workspace_entry_for_project(&state, &pin.project_id)
-                .ok_or_else(|| {
-                    CommandErrorVm::new(
-                        "workspace.not-found",
-                        serde_json::json!({ "projectId": pin.project_id }),
-                    )
-                })?;
-            pin.project_id = resolved_project_id;
-            pin.order = i;
-            Ok(pin)
-        })
-        .collect::<CommandResult<Vec<_>>>()?;
-    state.conversation_pins = normalized_pins;
-    app.save_state(&state).map_err(command_error)?;
-    conversation_sidebar_for_state(&context, &app, &state)
+    spawn_blocking_command(move || {
+        let app = context.app();
+        let mut state = app.load_state().map_err(command_error)?;
+        let normalized_pins = ordered
+            .into_iter()
+            .enumerate()
+            .map(|(i, mut pin)| {
+                let (_, resolved_project_id) = workspace_entry_for_project(&state, &pin.project_id)
+                    .ok_or_else(|| {
+                        CommandErrorVm::new(
+                            "workspace.not-found",
+                            serde_json::json!({ "projectId": pin.project_id }),
+                        )
+                    })?;
+                pin.project_id = resolved_project_id;
+                pin.order = i;
+                Ok(pin)
+            })
+            .collect::<CommandResult<Vec<_>>>()?;
+        state.conversation_pins = normalized_pins;
+        app.save_state(&state).map_err(command_error)?;
+        conversation_sidebar_for_state(&context, &app, &state)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -648,7 +696,7 @@ fn conversation_sidebar_for_state(
     state: &gold_band::config::StateConfig,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let sources = conversation_sidebar_sources(context, app, state).map_err(command_error)?;
-    Ok(crate::view_models_conversation::conversation_sidebar_vm_from_sources(app, state, &sources))
+    Ok(crate::view_models_conversation::conversation_sidebar_vm_from_sources(state, &sources))
 }
 
 #[tauri::command]
@@ -853,54 +901,54 @@ pub fn choose_conversation_workspace(
 }
 
 #[tauri::command]
-pub fn add_conversation_workspace(
+pub async fn add_conversation_workspace(
     state: State<'_, DesktopState>,
     path: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let context = state.context().map_err(command_error)?;
-    let gold_band_app = context.app();
+    spawn_blocking_command(move || {
+        let gold_band_app = context.app();
+        let workspace_path = Utf8PathBuf::from(path);
+        let workspace_path_str = workspace_path.as_str().to_string();
+        info!(workspace_path = %workspace_path_str, "conversation workspace picker returned selection");
 
-    let workspace_path = Utf8PathBuf::from(path);
-    let workspace_path_str = workspace_path.as_str().to_string();
-    info!(workspace_path = %workspace_path_str, "conversation workspace picker returned selection");
+        let name = std::path::Path::new(&workspace_path_str)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| workspace_path_str.clone());
+        let project_id = project_id_for_workspace(&workspace_path_str);
+        let mut state = gold_band_app.load_state().map_err(command_error)?;
 
-    let name = std::path::Path::new(&workspace_path_str)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| workspace_path_str.clone());
-    let project_id = project_id_for_workspace(&workspace_path_str);
+        if state
+            .conversation_workspaces
+            .iter()
+            .any(|workspace| project_ids_match(&workspace.project_id, &project_id))
+        {
+            return Err(CommandErrorVm::new(
+                "workspace.already-exists",
+                serde_json::json!({ "name": name }),
+            ));
+        }
 
-    let mut state = gold_band_app.load_state().map_err(command_error)?;
+        state
+            .conversation_workspaces
+            .push(ConversationWorkspaceEntry {
+                project_id: project_id.clone(),
+                workspace_path: workspace_path_str,
+                name: name.clone(),
+                added_at: chrono::Utc::now().to_rfc3339(),
+            });
+        state.last_conversation_workspace = Some(project_id.clone());
+        gold_band_app.save_state(&state).map_err(command_error)?;
+        info!(
+            project_id = %project_id,
+            workspace_count = state.conversation_workspaces.len(),
+            "conversation workspace added"
+        );
 
-    // Check not already added
-    if state
-        .conversation_workspaces
-        .iter()
-        .any(|workspace| project_ids_match(&workspace.project_id, &project_id))
-    {
-        return Err(CommandErrorVm::new(
-            "workspace.already-exists",
-            serde_json::json!({ "name": name }),
-        ));
-    }
-
-    state
-        .conversation_workspaces
-        .push(ConversationWorkspaceEntry {
-            project_id: project_id.clone(),
-            workspace_path: workspace_path_str,
-            name: name.clone(),
-            added_at: chrono::Utc::now().to_rfc3339(),
-        });
-    state.last_conversation_workspace = Some(project_id.clone());
-    gold_band_app.save_state(&state).map_err(command_error)?;
-    info!(
-        project_id = %project_id,
-        workspace_count = state.conversation_workspaces.len(),
-        "conversation workspace added"
-    );
-
-    conversation_sidebar_for_state(&context, &gold_band_app, &state)
+        conversation_sidebar_for_state(&context, &gold_band_app, &state)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -936,22 +984,23 @@ pub fn save_last_conversation_workspace(
 }
 
 #[tauri::command]
-pub fn sync_conversation_workspace(
+pub async fn sync_conversation_workspace(
     state: State<'_, DesktopState>,
     workspace_path: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app();
-    let name = std::path::Path::new(&workspace_path)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| workspace_path.clone());
-    let project_id = project_id_for_workspace(&workspace_path);
+    spawn_blocking_command(move || {
+        let app = context.app();
+        let name = std::path::Path::new(&workspace_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| workspace_path.clone());
+        let project_id = project_id_for_workspace(&workspace_path);
+        let mut state = app.load_state().map_err(command_error)?;
 
-    let mut state = app.load_state().map_err(command_error)?;
-
-    let resolved_project_id =
-        if let Some((_, resolved_project_id)) = workspace_entry_for_project(&state, &project_id) {
+        let resolved_project_id = if let Some((_, resolved_project_id)) =
+            workspace_entry_for_project(&state, &project_id)
+        {
             resolved_project_id
         } else {
             state
@@ -964,90 +1013,99 @@ pub fn sync_conversation_workspace(
                 });
             project_id
         };
-    state.last_conversation_workspace = Some(resolved_project_id);
-    app.save_state(&state).map_err(command_error)?;
+        state.last_conversation_workspace = Some(resolved_project_id);
+        app.save_state(&state).map_err(command_error)?;
 
-    conversation_sidebar_for_state(&context, &app, &state)
+        conversation_sidebar_for_state(&context, &app, &state)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn delete_conversation_task(
+pub async fn delete_conversation_task(
     state: State<'_, DesktopState>,
     project_id: String,
     task_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app();
-    let mut app_state = app.load_state().map_err(command_error)?;
-    let Some((workspace_path, normalized_project_id)) =
-        workspace_entry_for_project(&app_state, &project_id)
-    else {
-        return Err(CommandErrorVm::new(
-            "workspace.not-found",
-            serde_json::json!({ "projectId": project_id }),
-        ));
-    };
-    let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
-    let task_dir = workspace_app.paths.task_dir(&task_id);
-    if !task_dir.exists() {
-        return Err(CommandErrorVm::new(
-            "conversation.task-not-found",
-            serde_json::json!({ "taskId": task_id }),
-        ));
-    }
-    if let Ok(runs) = workspace_app.run_list(&task_id) {
-        if runs
-            .iter()
-            .any(|run| run.status == gold_band::domain::RunStatus::Running)
+    spawn_blocking_command(move || {
+        let app = context.app();
+        let mut app_state = app.load_state().map_err(command_error)?;
+        let Some((workspace_path, normalized_project_id)) =
+            workspace_entry_for_project(&app_state, &project_id)
+        else {
+            return Err(CommandErrorVm::new(
+                "workspace.not-found",
+                serde_json::json!({ "projectId": project_id }),
+            ));
+        };
+        let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+        let task_dir = workspace_app.paths.task_dir(&task_id);
+        if !task_dir.exists() {
+            return Err(CommandErrorVm::new(
+                "conversation.task-not-found",
+                serde_json::json!({ "taskId": task_id }),
+            ));
+        }
+        if let Ok(runs) = workspace_app.run_list(&task_id)
+            && runs
+                .iter()
+                .any(|run| run.status == gold_band::domain::RunStatus::Running)
         {
             return Err(CommandErrorVm::new(
                 "conversation.task-running",
                 serde_json::json!({ "taskId": task_id }),
             ));
         }
-    }
-    trash::delete(task_dir.as_std_path()).map_err(|error| {
-        CommandErrorVm::new(
-            "conversation.task-delete-failed",
-            serde_json::json!({ "taskId": task_id, "message": error.to_string() }),
-        )
-    })?;
-    gold_band::storage::sqlite::delete_task(&task_dir);
-    app_state
-        .conversation_pins
-        .retain(|p| p.project_id != normalized_project_id || p.task_id != task_id);
-    app.save_state(&app_state).map_err(command_error)?;
-    conversation_sidebar_for_state(&context, &app, &app_state)
+        trash::delete(task_dir.as_std_path()).map_err(|error| {
+            CommandErrorVm::new(
+                "conversation.task-delete-failed",
+                serde_json::json!({ "taskId": task_id, "message": error.to_string() }),
+            )
+        })?;
+        gold_band::storage::sqlite::delete_task(&task_dir);
+        app_state
+            .conversation_pins
+            .retain(|p| p.project_id != normalized_project_id || p.task_id != task_id);
+        app.save_state(&app_state).map_err(command_error)?;
+        conversation_sidebar_for_state(&context, &app, &app_state)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn remove_conversation_workspace(
+pub async fn remove_conversation_workspace(
     state: State<'_, DesktopState>,
     project_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let context = state.context().map_err(command_error)?;
-    let app = context.app();
-    let mut state = app.load_state().map_err(command_error)?;
-    let workspace_path = workspace_entry_for_project(&state, &project_id)
-        .map(|(workspace_path, _)| workspace_path)
-        .ok_or_else(|| {
+    spawn_blocking_command(move || {
+        let app = context.app();
+        let mut state = app.load_state().map_err(command_error)?;
+        let workspace_path = workspace_entry_for_project(&state, &project_id)
+            .map(|(workspace_path, _)| workspace_path)
+            .ok_or_else(|| {
+                CommandErrorVm::new(
+                    "conversation.workspace-not-found",
+                    serde_json::json!({ "projectId": project_id }),
+                )
+            })?;
+        gold_band::acp::client::close_workspace_connections_bounded(&Utf8PathBuf::from(
+            workspace_path,
+        ))
+        .map_err(command_error)?;
+
+        remove_workspace_from_state(&mut state, &project_id).ok_or_else(|| {
             CommandErrorVm::new(
                 "conversation.workspace-not-found",
                 serde_json::json!({ "projectId": project_id }),
             )
         })?;
-    gold_band::acp::client::close_workspace_connections_bounded(&Utf8PathBuf::from(workspace_path))
-        .map_err(command_error)?;
+        app.save_state(&state).map_err(command_error)?;
 
-    remove_workspace_from_state(&mut state, &project_id).ok_or_else(|| {
-        CommandErrorVm::new(
-            "conversation.workspace-not-found",
-            serde_json::json!({ "projectId": project_id }),
-        )
-    })?;
-    app.save_state(&state).map_err(command_error)?;
-
-    conversation_sidebar_for_state(&context, &app, &state)
+        conversation_sidebar_for_state(&context, &app, &state)
+    })
+    .await
 }
 
 #[derive(Debug, Clone, Serialize)]

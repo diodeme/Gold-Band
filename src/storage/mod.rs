@@ -1144,6 +1144,48 @@ mod tests {
     }
 
     #[test]
+    fn load_settings_file_migrates_and_persists_legacy_codex_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("settings.json")).unwrap();
+        let legacy = serde_json::json!({
+            "settingsSchemaVersion": 1,
+            "agents": {
+                "codex-acp": {
+                    "adapter": {
+                        "command": "npx",
+                        "args": ["-y", "@zed-industries/codex-acp@latest"],
+                        "displayName": "Codex",
+                        "env": {}
+                    },
+                    "primaryAgentDir": ".codex",
+                    "compatibleAgentDirs": [".agents"],
+                    "externalSessionSyncEnabled": false
+                }
+            }
+        });
+        write_json(&path, &legacy).unwrap();
+
+        let settings = load_settings_file(&path).unwrap();
+
+        let codex_id = ManagedAgentId::from_str("codex-acp").unwrap();
+        let codex = &settings.agents.unwrap()[&codex_id];
+        assert_eq!(
+            codex.adapter.args,
+            vec!["-y", "@agentclientprotocol/codex-acp@latest"]
+        );
+
+        let persisted: serde_json::Value = read_json(&path).unwrap();
+        assert_eq!(
+            persisted["settingsSchemaVersion"],
+            serde_json::json!(CURRENT_SETTINGS_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            persisted["agents"]["codex-acp"]["adapter"]["args"],
+            serde_json::json!(["-y", "@agentclientprotocol/codex-acp@latest"])
+        );
+    }
+
+    #[test]
     fn roll_jsonl_trims_oldest_lines_when_over_max() {
         let dir = tempfile::tempdir().unwrap();
         let path = Utf8PathBuf::from_path_buf(dir.path().join("test.jsonl")).unwrap();

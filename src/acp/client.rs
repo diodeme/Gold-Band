@@ -11,6 +11,7 @@ use tracing::debug;
 #[derive(Debug, Clone)]
 struct AcpTimelineStreamState {
     item_id: String,
+    source_id: Option<String>,
     started_seq: u64,
     started_at: String,
     content: String,
@@ -718,6 +719,7 @@ fn evict_attached_session(entry: AttachedSessionRuntime) {
 }
 
 struct AcpRuntime<'a> {
+    provider_id: String,
     paths: AcpAttemptPaths,
     connection_key: Option<AdapterConnectionKey>,
     connection: Arc<AdapterConnection>,
@@ -1426,7 +1428,7 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn from_connection(
-        _provider_id: &str,
+        provider_id: &str,
         _workspace_dir: Utf8PathBuf,
         connection_key: Option<AdapterConnectionKey>,
         connection: Arc<AdapterConnection>,
@@ -1459,6 +1461,7 @@ impl<'a> AcpRuntime<'a> {
         let timeline_revision = seq;
         let prior = read_prior_session_metrics(&paths.snapshot);
         Ok(Self {
+            provider_id: provider_id.to_string(),
             paths,
             connection_key,
             connection,
@@ -2568,6 +2571,30 @@ impl<'a> AcpRuntime<'a> {
             }
         }
 
+        if is_unscoped_codex_diagnostic_update(
+            &self.provider_id,
+            &self.connection.adapter().args,
+            &update,
+        ) {
+            self.seq += 1;
+            let message = session_update_text(&update)
+                .filter(|message| !message.trim().is_empty())
+                .unwrap_or_else(|| "Codex ACP emitted an unscoped diagnostic".to_string());
+            append_diagnostic(
+                &self.paths.diagnostics,
+                "warn",
+                message,
+                Some(json!({
+                    "code": "codex_acp.warning",
+                    "providerId": self.provider_id,
+                    "sessionId": session_id,
+                    "sourceSeq": self.seq,
+                    "update": update,
+                })),
+            )?;
+            return Ok(());
+        }
+
         self.seq += 1;
         let event = normalize_session_update(self.seq, session_id, &update);
         if contributes_to_final_text(&event.kind) {
@@ -3170,12 +3197,25 @@ impl<'a> AcpRuntime<'a> {
         stream: &mut Option<AcpTimelineStreamState>,
         item: &mut crate::acp::events::AcpUiEvent,
         stable_id: &str,
+        source_id: Option<&str>,
         max_chars: usize,
         seq: u64,
         timestamp: &str,
     ) {
+        let source_changed =
+            stream
+                .as_ref()
+                .is_some_and(|active| match (active.source_id.as_deref(), source_id) {
+                    (Some(active), Some(incoming)) => active != incoming,
+                    (None, None) => false,
+                    _ => true,
+                });
+        if source_changed {
+            *stream = None;
+        }
         let stream = stream.get_or_insert_with(|| AcpTimelineStreamState {
             item_id: stable_id.to_string(),
+            source_id: source_id.map(str::to_string),
             started_seq: seq,
             started_at: timestamp.to_string(),
             content: String::new(),
@@ -3232,10 +3272,12 @@ impl<'a> AcpRuntime<'a> {
         match item.kind.as_str() {
             "textDelta" => {
                 let stable_id = stable_message_item_id(&item);
+                let source_id = stable_message_stream_identity(&item);
                 Self::apply_streaming_delta(
                     &mut self.active_text_stream,
                     &mut item,
                     &stable_id,
+                    source_id.as_deref(),
                     256_000,
                     seq,
                     &timestamp,
@@ -3243,10 +3285,12 @@ impl<'a> AcpRuntime<'a> {
             }
             "thoughtDelta" => {
                 let stable_id = stable_thought_item_id(&item);
+                let source_id = stable_thought_stream_identity(&item);
                 Self::apply_streaming_delta(
                     &mut self.active_thought_stream,
                     &mut item,
                     &stable_id,
+                    source_id.as_deref(),
                     256_000,
                     seq,
                     &timestamp,
@@ -3254,10 +3298,12 @@ impl<'a> AcpRuntime<'a> {
             }
             "plan" => {
                 let stable_id = stable_plan_item_id(&item);
+                let source_id = stable_plan_stream_identity(&item);
                 Self::apply_streaming_delta(
                     &mut self.active_plan_stream,
                     &mut item,
                     &stable_id,
+                    source_id.as_deref(),
                     64_000,
                     seq,
                     &timestamp,
@@ -3516,6 +3562,12 @@ fn active_timeline_streams(
     };
     let stream = || AcpTimelineStreamState {
         item_id: item.id.clone(),
+        source_id: match item.kind.as_str() {
+            "textDelta" => stable_message_stream_identity(item),
+            "thoughtDelta" => stable_thought_stream_identity(item),
+            "plan" => stable_plan_stream_identity(item),
+            _ => None,
+        },
         started_seq: item.started_seq.unwrap_or(item.seq),
         started_at: item
             .started_at
@@ -3591,16 +3643,21 @@ fn initial_acp_source_seq(paths: &AcpAttemptPaths) -> u64 {
 }
 
 fn stable_message_item_id(event: &crate::acp::events::AcpUiEvent) -> String {
+    stable_message_stream_identity(event)
+        .unwrap_or_else(|| format!("assistant-message-{}", event.id))
+}
+
+fn stable_message_stream_identity(event: &crate::acp::events::AcpUiEvent) -> Option<String> {
     if let Some(item_id) = provider_history_item_id(event) {
-        return item_id.to_string();
+        return Some(item_id.to_string());
     }
     event
         .raw
         .as_ref()
         .and_then(|raw| raw.get("messageId"))
         .and_then(Value::as_str)
+        .filter(|message_id| !message_id.trim().is_empty())
         .map(|message_id| format!("assistant-message-{message_id}"))
-        .unwrap_or_else(|| format!("assistant-message-{}", event.id))
 }
 
 fn stable_session_update_item_id(session_id: Option<&str>, update: &Value) -> Option<String> {
@@ -3675,29 +3732,38 @@ fn should_suppress_session_update(
 }
 
 fn stable_thought_item_id(event: &crate::acp::events::AcpUiEvent) -> String {
+    stable_thought_stream_identity(event)
+        .unwrap_or_else(|| format!("assistant-thought-{}", event.id))
+}
+
+fn stable_thought_stream_identity(event: &crate::acp::events::AcpUiEvent) -> Option<String> {
     if let Some(item_id) = provider_history_item_id(event) {
-        return item_id.to_string();
+        return Some(item_id.to_string());
     }
     event
         .raw
         .as_ref()
         .and_then(|raw| raw.get("messageId"))
         .and_then(Value::as_str)
+        .filter(|message_id| !message_id.trim().is_empty())
         .map(|message_id| format!("assistant-thought-{message_id}"))
-        .unwrap_or_else(|| format!("assistant-thought-{}", event.id))
 }
 
 fn stable_plan_item_id(event: &crate::acp::events::AcpUiEvent) -> String {
+    stable_plan_stream_identity(event).unwrap_or_else(|| format!("session-plan-{}", event.id))
+}
+
+fn stable_plan_stream_identity(event: &crate::acp::events::AcpUiEvent) -> Option<String> {
     if let Some(item_id) = provider_history_item_id(event) {
-        return item_id.to_string();
+        return Some(item_id.to_string());
     }
     event
         .raw
         .as_ref()
         .and_then(|raw| raw.get("sessionId"))
         .and_then(Value::as_str)
+        .filter(|session_id| !session_id.trim().is_empty())
         .map(|session_id| format!("session-plan-{session_id}"))
-        .unwrap_or_else(|| format!("session-plan-{}", event.id))
 }
 
 fn provider_history_item_id(event: &crate::acp::events::AcpUiEvent) -> Option<&str> {
@@ -3711,6 +3777,36 @@ fn provider_history_item_id(event: &crate::acp::events::AcpUiEvent) -> Option<&s
 
 fn contributes_to_final_text(kind: &str) -> bool {
     kind == "textDelta"
+}
+
+fn is_unscoped_codex_diagnostic_update(
+    provider_id: &str,
+    adapter_args: &[String],
+    update: &Value,
+) -> bool {
+    provider_id == "codex-acp"
+        && adapter_args
+            .iter()
+            .any(|arg| arg.starts_with("@agentclientprotocol/codex-acp"))
+        && update.get("sessionUpdate").and_then(Value::as_str) == Some("agent_message_chunk")
+        && update
+            .get("messageId")
+            .and_then(Value::as_str)
+            .is_none_or(|message_id| message_id.trim().is_empty())
+        && update.get("providerHistoryItemId").is_none()
+}
+
+fn session_update_text(update: &Value) -> Option<String> {
+    update
+        .pointer("/content/text")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            update
+                .pointer("/content/content/text")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| update.get("text").and_then(Value::as_str))
+        .map(str::to_string)
 }
 
 fn append_bounded(target: &mut String, content: &str, max_chars: usize) {
@@ -3882,9 +3978,9 @@ mod tests {
         PromptActivity, PromptBundle, PromptVisibility, ProviderFreshnessBaseline,
         RuntimeStopProbe, SessionUpdatePhase, active_timeline_streams, attached_sync_required,
         cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
-        evaluate_provider_revision, is_transport_interruption, merge_tool_raw_input,
-        permission_decision_timeline_event, plan_attached_session_reuse, prompt_activity,
-        register_provider_control, request_prompt_cancel, resolve_permission_mode,
+        evaluate_provider_revision, is_transport_interruption, is_unscoped_codex_diagnostic_update,
+        merge_tool_raw_input, permission_decision_timeline_event, plan_attached_session_reuse,
+        prompt_activity, register_provider_control, request_prompt_cancel, resolve_permission_mode,
         retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
         session_config_fingerprint, session_load_params, session_new_params, session_prompt_params,
         session_prompt_text, should_suppress_session_update,
@@ -4239,6 +4335,7 @@ mod tests {
             &mut stream,
             &mut first,
             "assistant-message-1",
+            Some("assistant-message-1"),
             256_000,
             10,
             "10Z",
@@ -4265,6 +4362,7 @@ mod tests {
             &mut stream,
             &mut second,
             "assistant-message-1",
+            Some("assistant-message-1"),
             256_000,
             11,
             "11Z",
@@ -4280,6 +4378,115 @@ mod tests {
         assert_eq!(second.ended_seq, Some(11));
         assert_eq!(second.started_at.as_deref(), Some("10Z"));
         assert_eq!(second.ended_at.as_deref(), Some("11Z"));
+    }
+
+    #[test]
+    fn streaming_delta_starts_a_new_stream_when_message_identity_changes() {
+        let mut stream = None;
+        let mut warning = timeline_event(
+            "event-warning",
+            10,
+            "textDelta",
+            None,
+            Some("warning"),
+            None,
+        );
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut warning,
+            "assistant-message-warning",
+            Some("assistant-message-warning"),
+            256_000,
+            10,
+            "10Z",
+        );
+
+        let mut answer =
+            timeline_event("event-answer", 11, "textDelta", None, Some("answer"), None);
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut answer,
+            "assistant-message-answer",
+            Some("assistant-message-answer"),
+            256_000,
+            11,
+            "11Z",
+        );
+
+        assert_eq!(warning.content.as_deref(), Some("warning"));
+        assert_eq!(answer.id, "assistant-message-answer");
+        assert_eq!(answer.content.as_deref(), Some("answer"));
+        assert_eq!(answer.started_seq, Some(11));
+    }
+
+    #[test]
+    fn streaming_delta_without_provider_identity_keeps_contiguous_fallback_stream() {
+        let mut stream = None;
+        let mut first = timeline_event("event-1", 10, "textDelta", None, Some("hel"), None);
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut first,
+            "assistant-message-event-1",
+            None,
+            256_000,
+            10,
+            "10Z",
+        );
+        let mut second = timeline_event("event-2", 11, "textDelta", None, Some("lo"), None);
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut second,
+            "assistant-message-event-2",
+            None,
+            256_000,
+            11,
+            "11Z",
+        );
+
+        assert_eq!(second.id, "assistant-message-event-1");
+        assert_eq!(second.content.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn agentclientprotocol_codex_unscoped_text_is_a_diagnostic() {
+        let warning = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "provider warning" }
+        });
+        let answer = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "answer-1",
+            "content": { "type": "text", "text": "answer" }
+        });
+        let current_args = vec![
+            "-y".to_string(),
+            "@agentclientprotocol/codex-acp@latest".to_string(),
+        ];
+        let legacy_args = vec![
+            "-y".to_string(),
+            "@zed-industries/codex-acp@latest".to_string(),
+        ];
+
+        assert!(is_unscoped_codex_diagnostic_update(
+            "codex-acp",
+            &current_args,
+            &warning,
+        ));
+        assert!(!is_unscoped_codex_diagnostic_update(
+            "codex-acp",
+            &current_args,
+            &answer,
+        ));
+        assert!(!is_unscoped_codex_diagnostic_update(
+            "codex-acp",
+            &legacy_args,
+            &warning,
+        ));
+        assert!(!is_unscoped_codex_diagnostic_update(
+            "claude-acp",
+            &current_args,
+            &warning,
+        ));
     }
 
     #[test]
@@ -4306,6 +4513,7 @@ mod tests {
             &mut stream,
             &mut first,
             "assistant-thought-1",
+            Some("assistant-thought-1"),
             256_000,
             10,
             "10Z",
@@ -4332,6 +4540,7 @@ mod tests {
             &mut stream,
             &mut second,
             "assistant-thought-1",
+            Some("assistant-thought-1"),
             256_000,
             11,
             "11Z",
@@ -4367,6 +4576,7 @@ mod tests {
             &mut stream,
             &mut first,
             "assistant-thought-1",
+            Some("assistant-thought-1"),
             256_000,
             10,
             "10Z",
@@ -4392,6 +4602,7 @@ mod tests {
             &mut stream,
             &mut second,
             "assistant-thought-1",
+            Some("assistant-thought-1"),
             256_000,
             11,
             "11Z",

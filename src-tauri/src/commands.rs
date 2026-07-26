@@ -64,6 +64,16 @@ const ELICITATION_REQUESTED_DEDUP_SUFFIX: &str = "elicitation-requested";
 
 pub type CommandResult<T> = Result<T, CommandErrorVm>;
 
+pub(crate) async fn spawn_blocking_command<T, F>(operation: F) -> CommandResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> CommandResult<T> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(operation)
+        .await
+        .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
+}
+
 #[derive(Debug, Clone)]
 struct AttemptLocator {
     task_id: String,
@@ -754,10 +764,14 @@ pub fn get_app_bootstrap(
 }
 
 #[tauri::command]
-pub fn get_agent_registry(state: State<'_, DesktopState>) -> CommandResult<AgentRegistryVm> {
-    let app = state.app().map_err(command_error)?;
+pub async fn get_agent_registry(state: State<'_, DesktopState>) -> CommandResult<AgentRegistryVm> {
+    let context = state.context().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
-    Ok(agent_registry_vm(&app, &diagnostics))
+    spawn_blocking_command(move || {
+        let app = context.app();
+        Ok(agent_registry_vm(&app, &diagnostics))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -947,9 +961,9 @@ pub fn get_task_list(state: State<'_, DesktopState>) -> CommandResult<TaskListVm
 }
 
 #[tauri::command]
-pub fn get_profiles(state: State<'_, DesktopState>) -> CommandResult<ProfileList> {
-    let app = state.app().map_err(command_error)?;
-    app.profiles().map_err(command_error)
+pub async fn get_profiles(state: State<'_, DesktopState>) -> CommandResult<ProfileList> {
+    let context = state.context().map_err(command_error)?;
+    spawn_blocking_command(move || context.app().profiles().map_err(command_error)).await
 }
 
 #[tauri::command]
@@ -3781,13 +3795,17 @@ fn open_path(path: &std::path::Path) -> Result<(), String> {
 // ── MCP Server Commands ──
 
 #[tauri::command]
-pub fn list_mcp_servers(state: State<'_, DesktopState>) -> CommandResult<Vec<McpServerVm>> {
-    let app = state.app().map_err(command_error)?;
+pub async fn list_mcp_servers(state: State<'_, DesktopState>) -> CommandResult<Vec<McpServerVm>> {
+    let context = state.context().map_err(command_error)?;
     let health = state.mcp_health_snapshot().unwrap_or_default();
-    Ok(mcp_server_list_vm(
-        &app.list_mcp_servers().map_err(command_error)?,
-        &health,
-    ))
+    spawn_blocking_command(move || {
+        let app = context.app();
+        Ok(mcp_server_list_vm(
+            &app.list_mcp_servers().map_err(command_error)?,
+            &health,
+        ))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3917,22 +3935,30 @@ pub async fn list_mcp_tools(
 // ── SKILL Commands ──
 
 #[tauri::command]
-pub fn list_skills(state: State<'_, DesktopState>) -> CommandResult<SkillListVm> {
-    let app = state.app().map_err(command_error)?;
-    Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
+pub async fn list_skills(state: State<'_, DesktopState>) -> CommandResult<SkillListVm> {
+    let context = state.context().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let app = context.app();
+        Ok(skill_list_vm(&app.list_skills().map_err(command_error)?))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn list_project_skills(
+pub async fn list_project_skills(
     state: State<'_, DesktopState>,
     workspace_path: String,
 ) -> CommandResult<Vec<SkillMetaVm>> {
-    let app = state.app().map_err(command_error)?;
-    let manager = app.skill_manager();
-    let skills = manager
-        .list_by_workspace(&workspace_path)
-        .map_err(command_error)?;
-    Ok(skills.iter().map(|s| skill_meta_vm(s)).collect())
+    let context = state.context().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let app = context.app();
+        let manager = app.skill_manager();
+        let skills = manager
+            .list_by_workspace(&workspace_path)
+            .map_err(command_error)?;
+        Ok(skills.iter().map(skill_meta_vm).collect())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -4250,6 +4276,19 @@ mod tests {
     use camino::Utf8PathBuf;
     use gold_band::storage::write_json;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn blocking_command_runs_outside_the_caller_thread() {
+        let caller_thread = std::thread::current().id();
+
+        let worker_thread = tauri::async_runtime::block_on(async {
+            spawn_blocking_command(|| Ok(std::thread::current().id()))
+                .await
+                .unwrap()
+        });
+
+        assert_ne!(worker_thread, caller_thread);
+    }
 
     #[test]
     fn managed_agent_input_preserves_all_editable_config_fields() {

@@ -483,6 +483,9 @@ export const browserApi: RuntimeApi = {
     };
     return Promise.resolve(sidebar);
   },
+  getConversationWorkspaces() {
+    return Promise.resolve([{ projectId: 'default', workspacePath: '/default', name: 'Default Workspace' }]);
+  },
   getConversationRun(_projectId, _taskId, runId) {
     if (runId === 'run-051') return Promise.resolve(mockErrorBlockedConversationRun);
     if (runId === 'run-052') return Promise.resolve(browserCompletedConversationRun());

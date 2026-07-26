@@ -247,6 +247,9 @@ export const desktopApi: RuntimeApi = {
   getConversationSidebar() {
     return invokeCommand<ConversationSidebarVm>('get_conversation_sidebar');
   },
+  getConversationWorkspaces() {
+    return invokeCommand<ConversationWorkspaceVm[]>('get_conversation_workspaces');
+  },
   getConversationRun(projectId, taskId, runId, selectedSessionKey) {
     return invokeCommand<ConversationRunVm>('get_conversation_run', { projectId, taskId, runId, selectedSessionKey });
   },

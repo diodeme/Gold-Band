@@ -39,7 +39,7 @@ use commands::{
 use commands_conversation::{
     add_conversation_workspace, choose_conversation_workspace, create_conversation_run,
     delete_conversation_task, get_conversation_run, get_conversation_run_mode,
-    get_conversation_sidebar, get_supported_attachment_extensions,
+    get_conversation_sidebar, get_conversation_workspaces, get_supported_attachment_extensions,
     materialize_conversation_attachments, pin_conversation, remove_conversation_workspace,
     reorder_pinned_conversations, rerun_conversation_task, save_conversation_preference,
     save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
@@ -230,6 +230,7 @@ fn run() -> anyhow::Result<()> {
             // Conversation UI
             save_desktop_ui_mode,
             get_conversation_sidebar,
+            get_conversation_workspaces,
             get_conversation_run,
             validate_conversation_create,
             create_conversation_run,

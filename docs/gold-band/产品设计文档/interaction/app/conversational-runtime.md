@@ -246,6 +246,14 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - `permission blocked` 属于 runtime 运行态阻塞，不是独立的 composer 替代视图。前端必须继续渲染同一个 prompt-kit `PromptInput`，用禁用 textarea、运行态 placeholder、权限等待 hint 和停止入口表达“当前会话由 runtime 运行中，暂不可输入”；权限决策卡片可以作为会话交互卡展示，但不得覆盖或替换原输入框。刷新或重进页面后，只要持久化 timeline/session 仍存在 pending permission，就必须恢复同样的锁定 composer 状态。
 - 排查停止状态不得恢复持续性 ACP composer console 日志；如需再次定位停止链路，应优先补充状态矩阵测试或临时一次性断点式诊断，完成排查后必须移除。
 
+### 侧栏加载与桌面 IPC 响应性
+
+- workspace 元数据与完整会话侧栏是两个不同接口。`get_conversation_workspaces` 只读取 `StateConfig.conversationWorkspaces` 并返回 `projectId / workspacePath / name`，供上下文管理、运行模式选择等轻量选择器使用；这些页面不得为了 workspace 列表触发 task/run 扫描。
+- `get_conversation_sidebar` 需要遍历多个 workspace 的 task 与 run 历史，属于阻塞文件 I/O。该命令以及 pin、unpin、reorder、workspace 增删同步、task 删除后返回侧栏的命令必须使用 async Tauri command，并把完整操作放入 `spawn_blocking`；禁止在 Tauri IPC 事件处理线程直接执行侧栏扫描，否则会阻塞自定义标题栏的 `startDragging`、窗口按钮和其他 invoke。
+- 上下文管理的 Profile、Agent registry、MCP 列表、全局 SKILL、项目 SKILL 同样属于文件系统读取入口，统一复用 `spawn_blocking_command`。页面级延迟加载只减少不必要的工作量，blocking pool 边界负责保证确实发生读取时窗口事件仍可被处理，两者缺一不可。
+- 侧栏数据只消费任务身份、会话元数据和 run 摘要，不消费 workflow 合法性、Profile 解析或任务详情。因此构建侧栏时每个 workspace 只读取一次 task 列表，每个 task 只读取一次 run 列表；不能复用会进行 workflow/Profile 校验并重复扫描 run 的通用 `task_summaries()`。
+- 单个 task 的 run 历史损坏时，侧栏仍保留该 task 并把 run 列表降级为空；单个历史文件问题不能导致整个 workspace 从侧栏消失。完整错误仍由进入任务/运行详情后的专用接口返回。
+
 ### 停止
 - 停止并重跑在顶部操作区
 - composer 内也有 stop 按钮（ACP 会话停止）

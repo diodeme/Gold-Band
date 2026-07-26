@@ -175,6 +175,7 @@ export interface RuntimeApi {
   // ── Conversation UI ──
   saveDesktopUiMode(mode: 'conversation' | 'workbench'): Promise<void>;
   getConversationSidebar(): Promise<ConversationSidebarVm>;
+  getConversationWorkspaces(): Promise<ConversationWorkspaceVm[]>;
   getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null): Promise<ConversationRunVm>;
   switchConversationSession(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationSessionSwitchVm>;
   validateConversationCreate(input: ConversationCreateInput): Promise<ConversationValidationResultVm>;

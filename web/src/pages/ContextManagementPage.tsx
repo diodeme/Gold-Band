@@ -9,7 +9,7 @@ import {
   toggleMcpServer, checkMcpServerHealth, listMcpTools,
   listSkills, listProjectSkills, readSkill, writeSkill, deleteSkill, getSkillSyncStatus,
   checkSkillNameConflict, updateSkillSyncTargets,
-  getConversationSidebar, getAgentRegistry,
+  getConversationWorkspaces, getAgentRegistry,
 } from '../api';
 import { displayAppError } from '../i18n';
 import type {
@@ -137,6 +137,7 @@ export function ContextManagementPage() {
   const [skillAgentFilter, setSkillAgentFilter] = useState<string>('all');
   const [selectedWorkspace, setSelectedWorkspace] = useState<string>('');
   const [workspaces, setWorkspaces] = useState<Array<{ projectId: string; workspacePath: string; name: string }>>([]);
+  const needsSkillContext = activeTab === 'skills' || skillSheetMode === 'create';
 
   useEffect(() => {
     if (skillError) {
@@ -236,15 +237,10 @@ export function ContextManagementPage() {
   };
 
   useEffect(() => {
-    getConversationSidebar().then((s) => setWorkspaces(s?.workspaces ?? [])).catch(() => {});
-    getAgentRegistry().then(setAgentRegistry).catch(() => {});
-  }, []);
-  // 切换到 SKILL Tab 或 Sheet 打开时刷新工作空间列表
-  useEffect(() => {
-    if (activeTab === 'skills' || skillSheetMode === 'create') {
-      getConversationSidebar().then((s) => setWorkspaces(s?.workspaces ?? [])).catch(() => {});
-    }
-  }, [activeTab, skillSheetMode]);
+    if (!needsSkillContext) return;
+    getConversationWorkspaces().then(setWorkspaces).catch(() => setWorkspaces([]));
+    getAgentRegistry().then(setAgentRegistry).catch(() => setAgentRegistry(null));
+  }, [needsSkillContext]);
 
   const refresh = async () => {
     setLoading(true);

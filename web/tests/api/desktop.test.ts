@@ -76,4 +76,10 @@ describe('desktopApi', () => {
       limit: 20,
     });
   });
+
+  it('loads workspace options without requesting the full conversation sidebar', async () => {
+    await desktopApi.getConversationWorkspaces();
+
+    expect(invokeCommand).toHaveBeenCalledWith('get_conversation_workspaces');
+  });
 });

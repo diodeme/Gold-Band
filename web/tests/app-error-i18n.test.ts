@@ -3,6 +3,11 @@ import { displayAppError } from '@/i18n';
 import i18n from '@/i18n';
 
 describe('app error i18n', () => {
+  it('uses an actionable message for ACP initialization interruption', () => {
+    expect(i18n.t('acp.sessionInterrupted', { lng: 'zh-CN' })).toBe('会话发起中断，请重跑该任务');
+    expect(i18n.t('acp.sessionInterrupted', { lng: 'en' })).toBe('Session launch was interrupted. Rerun the task.');
+  });
+
   it('renders run mode management section labels', () => {
     expect(i18n.t('runMode.workflowSection', { lng: 'zh-CN' })).toBe('工作流模式');
     expect(i18n.t('runMode.autoSection', { lng: 'zh-CN' })).toBe('AUTO模式');

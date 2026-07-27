@@ -76,6 +76,7 @@ import {
   type ToolPart,
 } from "@/components/prompt-kit/tool";
 import { cn } from "@/lib/utils";
+import { formatTokenCount } from "@/lib/format-token";
 import { agentIconClass, agentIconSrc } from "@/lib/agent-icons";
 import { EditableConversationTitle } from "@/components/conversation/EditableConversationTitle";
 import { loadArtifactMarkdownRender, saveArtifactMarkdownRender } from "@/lib/artifact-markdown-pref";
@@ -108,7 +109,7 @@ import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-servic
 import { AttachmentChipsList, AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
 import { SlashCommandMenu } from "@/components/conversation/SlashCommandMenu";
 import { SlashCommandInputTag } from "@/components/conversation/SlashCommandInputTag";
-import { parseCommittedSlashCommand } from "@/lib/slash-command";
+import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from "@/lib/slash-command";
 import { useAgentCommands } from "@/hooks/useAgentCommands";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
@@ -262,6 +263,7 @@ type AcpProcessingKind =
   | "processing"
   | "thinking"
   | "tool"
+  | "compacting"
   | "responding"
   | "stopping"
   | "launching-next-node";
@@ -322,6 +324,7 @@ const BOTTOM_STICK_THRESHOLD_PX = 48;
 const LIVE_EVENT_FLUSH_MS = 125;
 const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
 const ACP_SESSION_LEASE_RETRY_MS = 30_000;
+const CONTEXT_COMPACTION_DELAYED_AFTER_SECONDS = 120;
 
 export const ACP_SESSION_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
   "h-full min-w-0 overflow-y-auto",
@@ -671,6 +674,7 @@ export const ACPChatDialog = forwardRef<
   const sessionRefreshSeqRef = useRef(0);
   const configGenerationRef = useRef(0);
   const scrollerElementRef = useRef<HTMLDivElement | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const prependAnchorRef = useRef<{ key: string; top: number } | null>(null);
   const pendingLiveEventsRef = useRef<Map<string, AcpUiEventVm>>(new Map());
   const liveEventFlushTimerRef = useRef<number | null>(null);
@@ -897,11 +901,15 @@ export const ACPChatDialog = forwardRef<
     effective?.provider,
     effective?.providerCwd ?? effective?.cwd,
   );
+  const restoreComposerFocus = useCallback(() => {
+    restoreSlashCommandInputFocus(composerTextareaRef);
+  }, []);
   const slashCommands = useSlashCommandController({
     input: prompt,
     commands: agentCommands.commands,
     contextKey: agentCommands.catalogKey,
     onInputChange: setPrompt,
+    onInputFocusRequested: restoreComposerFocus,
   });
   const committedSlashCommand = useMemo(
     () => parseCommittedSlashCommand(prompt, agentCommands.commands),
@@ -2705,6 +2713,7 @@ export const ACPChatDialog = forwardRef<
                           />
                         ) : null}
                         <PromptInputTextarea
+                          ref={composerTextareaRef}
                           className="min-h-16 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
                           valuePrefix={committedSlashCommand?.prefix}
                           leadingAdornment={committedSlashCommand ? (
@@ -3948,6 +3957,8 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
     );
   if (event.kind === "attemptSeparator")
     return <AttemptSeparator event={event} />;
+  if (event.kind === "contextCompaction")
+    return <ContextCompactionRow event={event} />;
   if (event.kind === "textDelta" || event.kind === "userTextDelta")
     return <MessageBubble event={event} streamingMarkdownItemKey={streamingMarkdownItemKey} messageAttachmentLocator={messageAttachmentLocator} onMessageAttachmentClick={onMessageAttachmentClick} />;
   if (event.kind === "thoughtDelta")
@@ -3961,6 +3972,84 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
       </AssistantTimelineRow>
     );
   return null;
+});
+
+const ContextCompactionRow = memo(function ContextCompactionRow({
+  event,
+}: {
+  event: AcpTimelineEvent;
+}) {
+  const { t } = useTranslation();
+  const running = event.status === "running";
+  const interrupted = event.status === "interrupted";
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+
+  const usageBefore = contextCompactionUsageBefore(event);
+  const startedAt = parseAcpTimestamp(event.startedAt ?? event.timestamp);
+  const endedAt = parseAcpTimestamp(event.endedAt);
+  const elapsedSeconds = startedAt == null
+    ? null
+    : Math.max(0, Math.floor(((running ? now : (endedAt ?? startedAt)) - startedAt) / 1_000));
+  const delayed = running
+    && elapsedSeconds != null
+    && elapsedSeconds >= CONTEXT_COMPACTION_DELAYED_AFTER_SECONDS;
+  const label = running
+    ? t("acp.compactionRunning")
+    : interrupted
+      ? t("acp.compactionInterrupted")
+      : t("acp.compactionCompleted");
+  const usage = usageBefore
+    ? t("acp.compactionUsageBefore", usageBefore)
+    : null;
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      className="min-w-0 py-1 pl-10 pr-2"
+    >
+      <div className="max-w-[82%] border-l-2 border-primary/25 py-1 pl-3">
+        <div className="flex min-w-0 items-center gap-2 text-sm">
+          <span
+            aria-hidden="true"
+            className={cn(
+              "flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold",
+              running && "border-2 border-primary/25 border-t-primary text-transparent animate-spin motion-reduce:animate-none",
+              !running && !interrupted && "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
+              interrupted && "bg-destructive/10 text-destructive",
+            )}
+          >
+            {running ? "" : interrupted ? "!" : "✓"}
+          </span>
+          <span className="min-w-0 truncate font-medium text-foreground">
+            {label}
+          </span>
+          {elapsedSeconds != null ? (
+            <span className="ml-1 shrink-0 tabular-nums text-xs text-muted-foreground">
+              {formatElapsedDuration(elapsedSeconds)}
+            </span>
+          ) : null}
+        </div>
+        {usage || delayed ? (
+          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            {usage ? <span className="tabular-nums">{usage}</span> : null}
+            {delayed ? <span>{t("acp.compactionDelayed")}</span> : null}
+          </div>
+        ) : null}
+        {running ? (
+          <div className="mt-2 h-0.5 w-full max-w-72 overflow-hidden rounded-full bg-primary/10">
+            <div className="h-full w-1/2 animate-pulse rounded-full bg-primary/55 motion-reduce:animate-none" />
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
 });
 
 const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
@@ -5163,6 +5252,8 @@ function processingKindFromTimeline(
   if (event.kind === "thoughtDelta") return "thinking";
   if (event.kind === "toolCall" || event.kind === "toolCallUpdate")
     return "tool";
+  if (event.kind === "contextCompaction" && event.status === "running")
+    return "compacting";
   if (event.kind === "textDelta") return "responding";
   return "processing";
 }
@@ -5177,6 +5268,7 @@ function processingLabel(
   if (kind === "launching") return t("acp.launchingClaude");
   if (kind === "thinking") return t("acp.thinkingNow");
   if (kind === "tool") return t("acp.toolRunning");
+  if (kind === "compacting") return t("acp.compactionRunning");
   if (kind === "responding") return t("acp.responding");
   return t("acp.processing");
 }
@@ -5698,6 +5790,29 @@ function rawObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function contextCompactionData(event: AcpUiEventVm) {
+  const raw = rawObject(event.raw);
+  const data = rawObject(raw?.contextCompaction);
+  return {
+    phase: stringValue(data?.phase),
+    contextUsedBefore: numberValue(data?.contextUsedBefore),
+    contextSize: numberValue(data?.contextSize),
+    contextUsedAfter: numberValue(data?.contextUsedAfter),
+    reason: stringValue(data?.reason),
+  };
+}
+
+export function contextCompactionUsageBefore(
+  event: AcpUiEventVm,
+): { used: string; size: string } | null {
+  const data = contextCompactionData(event);
+  if (data.contextUsedBefore == null) return null;
+  return {
+    used: formatTokenCount(data.contextUsedBefore),
+    size: data.contextSize != null ? formatTokenCount(data.contextSize) : "--",
+  };
 }
 
 function arrayValue(value: unknown): unknown[] | null {

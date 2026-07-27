@@ -45,3 +45,30 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - 实时流式会话中，首个 Gold Band 用户消息、系统提示词入口和模型/权限配置在 session-ready 快照到达后立即可见。
 - 停止会话前后，同一消息内容一致。
 - 强刷后从磁盘恢复的会话内容与实时可见内容一致。
+
+## 上下文压缩生命周期事件
+
+Claude-compatible ACP adapter 通过独立的 `agent_message_chunk` 控制文本暴露上下文压缩：
+
+- 独立文本 `Compacting...` 归一化为 `contextCompaction + running`。
+- 独立文本 `Compacting completed.` 归一化为 `contextCompaction + completed`。
+- 仅精确匹配独立控制文本；普通回复中提到 `Compacting...` 时仍保留为 `textDelta`。
+
+`contextCompaction` 是 Gold Band 的结构化 timeline item，不进入 assistant 最终文本。开始与完成使用同一稳定 item id，通过 timeline patch 原位更新。其 `raw.contextCompaction` 字段定义为：
+
+```json
+{
+  "phase": "started | completed | interrupted",
+  "detectionSource": "providerControlMessage",
+  "contextUsedBefore": 169052,
+  "contextSize": 200000,
+  "contextUsedAfter": 23825,
+  "reason": "prompt_finished"
+}
+```
+
+- 开始时记录最近一次有效 `usage_update` 的 `used/size`。
+- 完成信号到达时记录结束时间。若 provider 随后上报 `used=0`，以该事件作为 compaction usage reset 边界，reset 后首个正数 usage 可继续补写 `contextUsedAfter` 作为诊断数据；`used=0` 本身不作为结果。为兼容不发送 reset 的 adapter，低于压缩前占用的首个正数仍可作为降级采样。Claude ACP adapter 当前会在 `usage_update.used` 中混用完整 `getContextUsage` 与普通 turn 的 message-token proxy，因此 `contextUsedAfter` 暂不进入对客 UI，也不作为精确压缩收益验收依据；待上游提供统一、可判别的数据口径后再恢复展示。
+- 如果 prompt 在 active compaction 尚未收到完成信号时结束、取消或失败，item 转为 `interrupted`，不能永久保留 running。
+- runtime 重新附着时，从 timeline 恢复仍在 running、或 completed 但尚待压缩后 usage 的状态；已有 `contextUsedAfter` 或 interrupted 的条目不再进入热状态。
+- ACP 未提供百分比或子阶段，任何前端都不得从耗时推导虚假百分比。

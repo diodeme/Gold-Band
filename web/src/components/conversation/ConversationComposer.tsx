@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Send, Paperclip, Workflow, Bot, Folders, Plus } from 'lucide-react';
 import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../../types';
@@ -23,7 +23,7 @@ import {
   ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS,
   acpComposerConfigTriggerVariants,
 } from '@/components/acp/AcpComposerConfigTrigger';
-import { parseCommittedSlashCommand } from '@/lib/slash-command';
+import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from '@/lib/slash-command';
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
 
 interface ConversationComposerProps {
@@ -75,6 +75,7 @@ export function ConversationComposer({
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
   const [submittingAttachments, setSubmittingAttachments] = useState(false);
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const {
     attachments,
     fileError,
@@ -124,11 +125,15 @@ export function ConversationComposer({
       ? selectedAgent
       : null;
   const agentCommands = useAgentCommands(commandAgentType, workspacePath);
+  const restoreComposerFocus = useCallback(() => {
+    restoreSlashCommandInputFocus(composerTextareaRef);
+  }, []);
   const slashCommands = useSlashCommandController({
     input: content,
     commands: agentCommands.commands,
     contextKey: agentCommands.catalogKey,
     onInputChange: setContent,
+    onInputFocusRequested: restoreComposerFocus,
   });
   const committedSlashCommand = useMemo(
     () => parseCommittedSlashCommand(content, agentCommands.commands),
@@ -309,6 +314,7 @@ export function ConversationComposer({
                 </span>
               ) : null}
               <textarea
+                ref={composerTextareaRef}
                 style={committedInputLayout.textareaStyle}
                 className="min-h-24 w-full resize-none bg-transparent p-0 text-sm leading-6 text-foreground placeholder:text-muted-foreground outline-none"
                 placeholder={t('conversation.home.inputPlaceholder')}

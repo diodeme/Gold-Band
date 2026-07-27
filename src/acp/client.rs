@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, LazyLock, Mutex, mpsc::RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -741,6 +741,7 @@ struct AcpRuntime<'a> {
     config_options: Option<Value>,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
+    config_option_overrides: BTreeMap<String, String>,
     available_commands: Option<Vec<AcpCommandItem>>,
     system_prompt_append: Option<String>,
     session_title: Option<String>,
@@ -811,7 +812,17 @@ pub fn doctor(
     )?;
     let result = (|| {
         let mut capabilities = runtime.initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))?;
-        runtime.setup_session("doctor", cwd, None, None, None, "", false, &[])?;
+        runtime.setup_session(
+            "doctor",
+            cwd,
+            None,
+            None,
+            None,
+            &BTreeMap::new(),
+            "",
+            false,
+            &[],
+        )?;
         runtime.wait_for_available_commands(DOCTOR_COMMAND_DISCOVERY_TIMEOUT)?;
         let commands = runtime.available_commands.clone().unwrap_or_default();
         runtime.cleanup_diagnostic_session()?;
@@ -865,6 +876,7 @@ pub fn run_prompt(
     session_mode: SessionMode,
     permission_mode: Option<String>,
     model: Option<String>,
+    config_options: BTreeMap<String, String>,
     continue_ref: Option<Value>,
     use_local_claude: bool,
     require_local_claude_executable: bool,
@@ -896,6 +908,7 @@ pub fn run_prompt(
     )?;
     runtime.model_override = model.clone();
     runtime.permission_mode_override = permission_mode.clone();
+    runtime.config_option_overrides = config_options.clone();
     let capabilities = match runtime.initialize() {
         Ok(capabilities) => capabilities,
         Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
@@ -917,6 +930,7 @@ pub fn run_prompt(
         continue_ref,
         permission_mode.as_deref(),
         model.as_deref(),
+        &config_options,
         &prompt.system_prompt,
         strict_continue,
         mcp_servers,
@@ -1485,6 +1499,7 @@ impl<'a> AcpRuntime<'a> {
             config_options: None,
             model_override: None,
             permission_mode_override: None,
+            config_option_overrides: BTreeMap::new(),
             available_commands: None,
             system_prompt_append: None,
             session_title: None,
@@ -1595,6 +1610,7 @@ impl<'a> AcpRuntime<'a> {
         continue_ref: Option<Value>,
         permission_mode: Option<&str>,
         model: Option<&str>,
+        config_options: &BTreeMap<String, String>,
         system_prompt: &str,
         strict_continue: bool,
         mcp_servers: &[Value],
@@ -1623,6 +1639,7 @@ impl<'a> AcpRuntime<'a> {
                 desired_config_fingerprint,
                 permission_mode,
                 model,
+                config_options,
             )? {
                 return Ok(true);
             }
@@ -1639,7 +1656,7 @@ impl<'a> AcpRuntime<'a> {
                 Ok(result) => {
                     self.capture_session_config(&result);
                     self.set_session_id(session_id.to_string());
-                    self.apply_session_mode_options(permission_mode, model)?;
+                    self.apply_session_mode_options(permission_mode, model, config_options)?;
                     self.drain_available_inbound()?;
                     self.finish_provider_history_replay(Some(session_id.to_string()))?;
                     self.session_update_phase = SessionUpdatePhase::AwaitingTurnStart;
@@ -1685,7 +1702,7 @@ impl<'a> AcpRuntime<'a> {
         self.set_session_id(session_id.to_string());
         self.session_update_phase = SessionUpdatePhase::Live;
         self.sync_required = false;
-        self.apply_session_mode_options(permission_mode, model)?;
+        self.apply_session_mode_options(permission_mode, model, config_options)?;
         self.refresh_provider_freshness_best_effort(&cwd);
         Ok(false)
     }
@@ -1697,6 +1714,7 @@ impl<'a> AcpRuntime<'a> {
         desired_config_fingerprint: u64,
         permission_mode: Option<&str>,
         model: Option<&str>,
+        config_options: &BTreeMap<String, String>,
     ) -> Result<bool> {
         let Some(entry) = AcpSessionRuntimeRegistry::shared().acquire(
             &self.paths.attempt_dir,
@@ -1778,7 +1796,7 @@ impl<'a> AcpRuntime<'a> {
             return Ok(false);
         }
 
-        self.apply_session_mode_options(permission_mode, model)?;
+        self.apply_session_mode_options(permission_mode, model, config_options)?;
         self.session_update_phase = SessionUpdatePhase::Live;
         let _ = append_diagnostic(
             &self.paths.diagnostics,
@@ -1825,6 +1843,7 @@ impl<'a> AcpRuntime<'a> {
         &mut self,
         permission_mode: Option<&str>,
         model: Option<&str>,
+        config_options: &BTreeMap<String, String>,
     ) -> Result<()> {
         // Some adapters persist both options into one process-global config file.
         // Keep the pair atomic across all sessions sharing this adapter process.
@@ -1836,6 +1855,59 @@ impl<'a> AcpRuntime<'a> {
         if let Some(pm) = permission_mode.filter(|v| !v.trim().is_empty()) {
             self.apply_permission_mode(pm)?;
         }
+        for (config_id, value) in config_options {
+            self.apply_generic_config_option(config_id, value)?;
+        }
+        Ok(())
+    }
+
+    fn apply_generic_config_option(&mut self, config_id: &str, value: &str) -> Result<()> {
+        let config_id = config_id.trim();
+        let value = value.trim();
+        if config_id.is_empty() || value.is_empty() {
+            return Ok(());
+        }
+        let Some(option) = self
+            .config_options
+            .as_ref()
+            .and_then(Value::as_array)
+            .and_then(|options| {
+                options
+                    .iter()
+                    .find(|option| option.get("id").and_then(Value::as_str) == Some(config_id))
+            })
+        else {
+            bail!("ACP session does not expose config option `{config_id}`");
+        };
+        let category = option.get("category").and_then(Value::as_str);
+        if matches!(category, Some("model" | "mode")) {
+            return Ok(());
+        }
+        let valid = option
+            .get("options")
+            .and_then(Value::as_array)
+            .is_some_and(|options| {
+                options
+                    .iter()
+                    .any(|item| item.get("value").and_then(Value::as_str) == Some(value))
+            });
+        if !valid {
+            bail!("ACP config option `{config_id}` does not support value `{value}`");
+        }
+        let session_id = self
+            .session_id
+            .clone()
+            .ok_or_else(|| anyhow!("ACP config selection requires a session id"))?;
+        let result = self.request(
+            "session/set_config_option",
+            json!({
+                "sessionId": session_id,
+                "configId": config_id,
+                "value": value,
+            }),
+        )?;
+        self.capture_session_config(&result);
+        set_config_option_current_value(self.config_options.as_mut(), config_id, value);
         Ok(())
     }
 
@@ -1849,11 +1921,19 @@ impl<'a> AcpRuntime<'a> {
             return Ok(());
         }
         if has_model_config_option(self.config_options.as_ref()) {
+            let config_id = self
+                .config_options
+                .as_ref()
+                .and_then(find_model_config_option)
+                .and_then(|option| option.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("model")
+                .to_string();
             let result = self.request(
                 "session/set_config_option",
                 json!({
                     "sessionId": session_id,
-                    "configId": "model",
+                    "configId": config_id,
                     "value": model,
                 }),
             )?;
@@ -1909,11 +1989,19 @@ impl<'a> AcpRuntime<'a> {
         }
 
         if has_mode_config_option(self.config_options.as_ref()) {
+            let config_id = self
+                .config_options
+                .as_ref()
+                .and_then(find_mode_config_option)
+                .and_then(|option| option.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("mode")
+                .to_string();
             let result = self.request(
                 "session/set_config_option",
                 json!({
                     "sessionId": session_id,
-                    "configId": "mode",
+                    "configId": config_id,
                     "value": permission_mode,
                 }),
             )?;
@@ -2966,6 +3054,7 @@ impl<'a> AcpRuntime<'a> {
             config_options: self.config_options.clone(),
             model_override: self.model_override.clone(),
             permission_mode_override: self.permission_mode_override.clone(),
+            config_option_overrides: self.config_option_overrides.clone(),
             system_prompt_append: self.system_prompt_append.clone(),
             used_tokens: self.used_tokens,
             context_window_size: self.context_window_size,
@@ -3921,6 +4010,24 @@ fn has_mode_config_option(config_options: Option<&Value>) -> bool {
 
 fn has_model_config_option(config_options: Option<&Value>) -> bool {
     config_options.and_then(find_model_config_option).is_some()
+}
+
+fn set_config_option_current_value(
+    config_options: Option<&mut Value>,
+    config_id: &str,
+    value: &str,
+) {
+    let Some(options) = config_options.and_then(Value::as_array_mut) else {
+        return;
+    };
+    if let Some(option) = options
+        .iter_mut()
+        .find(|option| option.get("id").and_then(Value::as_str) == Some(config_id))
+    {
+        if let Some(object) = option.as_object_mut() {
+            object.insert("currentValue".to_string(), Value::String(value.to_string()));
+        }
+    }
 }
 
 fn permission_decision_timeline_event(

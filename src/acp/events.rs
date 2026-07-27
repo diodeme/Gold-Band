@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 
 use anyhow::Result;
@@ -44,6 +44,8 @@ pub struct AcpSessionMetadata {
     pub model_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_override: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_option_overrides: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt_append: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

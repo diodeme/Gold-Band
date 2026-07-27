@@ -8,7 +8,7 @@
 - 会话 UI 已采用 prompt-kit copy-in 组件承载基础交互：`ChatContainer` 负责消息滚动，`Message` 负责用户/agent 气泡，`PromptInput` 负责 composer，`Tool` 负责工具调用卡片，`ChainOfThought` 负责 thought 折叠展示；ACP 专属逻辑只负责事件映射、权限和诊断。
 - 系统提示弹窗正文、原始帧摘要展开详情、子 Agent 结果等长文本区统一跟随应用设置字体；仅在明确需要展示代码或固定宽度标识时才允许局部使用等宽字体。
 - ACP 会话流支持将 `Agent` 工具调用生命周期内的子 Agent transcript 聚合为可展开/收起分组，不再把主 Agent 与子 Agent 输出完全混排。
-- ACP session 初始化与后续追问必须分别维护 Gold Band 显式覆盖和 Agent 当前配置：模型只继承 `modelOverride`，权限模式只继承 `permissionModeOverride`；不得从 Agent 返回的 `currentModelId / currentModeId` 反推 override。Gold Band 发起会话的两个“不指定”分别写为对应 override 为空；用户在会话窗口选择任意 Agent 模型或权限模式后写入具体 override，下一次 same-session prompt、runtime continue 或 AI-DYNAMIC inner continue 继续使用该值。
+- ACP session 初始化与后续追问必须分别维护 Gold Band 显式覆盖和 Agent 当前配置：模型只继承 `modelOverride`，权限模式只继承 `permissionModeOverride`，其余 ACP select 配置继承 `configOptionOverrides[实际 optionId]`；不得从 Agent 返回的 `currentModelId / currentModeId / currentValue` 反推 override。新建对话与会话详情在模型和思考强度均为空时统一显示“不指定”，并允许分别清除；same-session prompt、runtime continue 与 AI-DYNAMIC inner continue 只继续使用显式覆盖。
 - 会话运行区的产物/附件入口已改为与任务列表一致的 `Collapsible` 折叠面板：默认收起展示非零产物/附件计数，展开后点击文件项继续复用现有详情弹窗；当任务列表存在时，产物/附件面板固定在任务列表上方。
 - 节点详情抽屉中的 artifact / attachment 内容以二级详情层打开，返回或关闭产物详情时恢复原节点详情抽屉。
 - 节点详情抽屉顶部只保留紧凑“查看详情 / 查看会话”切换，不重复展示长节点说明。
@@ -105,7 +105,8 @@ Gold Band 需要吸收的是 Jockey 的 ACP 事件归一化和 Chat/Session UI �
 5. **Agent / Sub-agent Group**：`Agent` 工具调用触发的子 Agent transcript 分组，默认完成后收起、运行中展开。
 6. **Plan**：agent 计划与状态，作为独立 plan block。
 7. **Permission**：权限请求与用户响应，用于 ACP `session/request_permission`。
-8. **Composer**：用户输入区，用于继续会话、回答 agent 自由文本问题、提交下一次 `session/prompt`；输入区下方展示 adapter 当前生效的模型与权限模式。只要 `models/modes/configOptions` 中存在可选项就展示配置栏，当前值尚未归一化时显示选择占位，不隐藏整条配置。
+8. **Composer**：用户输入区，用于继续会话、回答 agent 自由文本问题、提交下一次 `session/prompt`；输入区下方展示 ACP 配置。新建对话与详情页复用同一模型选择器：只有模型时渲染普通模型下拉；同时存在 `category=thought_level` 时，模型栏变为单个复合下拉，第一层提供模型和思考强度两个子入口，点击展开且互斥，两个子选项面板在同一使用位置固定向同一侧展开，权限模式继续独立展示。模型和思考均为空时复合触发器显示“不指定”，只选择思考强度时显示 `不指定 · 思考强度`，第一层未选子栏保持空值；UI 保留 Agent 返回的实际 config option ID，不对 `reasoning_effort/effort` 做分支。
+   - 发起会话与追问会话的模型、权限触发器统一显示弱化配置名和当前主值，并复用同一套 composer 配置触发器样式：最终高度 36px，统一宽度、间距、无阴影表面、边框、深色背景、箭头和焦点态；模型复合值仍按 `模型 · 思考强度` 组合，不把思考强度拆成独立触发器。回归必须同时覆盖 shadcn `SelectTrigger` 与 Radix `DropdownMenuTrigger` 的最终 class，避免 primitive 默认的 `shadow-xs`、`w-fit`、dark background 或图标尺寸重新造成视觉差异。
 9. **Terminal / File Details**：命令、cwd、输出、退出码、文件读写路径，作为 tool call 的详情，不作为主输出形态。
 10. **Errors**：ACP error、adapter crash、auth required、timeout。
 11. **Raw / Diagnostics**：原始 ACP frame / transcript 查看，仅用于排障。

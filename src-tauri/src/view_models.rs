@@ -17,7 +17,10 @@ use gold_band::config::{
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::DynamicGraphState;
-use gold_band::provider::{supported_models_from_capabilities, supported_modes_from_capabilities};
+use gold_band::provider::{
+    select_config_options_from_capabilities, supported_models_from_capabilities,
+    supported_modes_from_capabilities,
+};
 use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState};
 
 use crate::channel::current_channel_config;
@@ -111,12 +114,32 @@ pub struct ManagedAgentVm {
     pub diagnostic: Option<ManagedAgentDiagnosticVm>,
     pub supported_modes: Option<Vec<AcpModeVm>>,
     pub supported_models: Option<Vec<AcpModeVm>>,
+    pub config_options: Option<Vec<AcpSelectConfigOptionVm>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpModeVm {
     pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpSelectConfigOptionVm {
+    pub id: String,
+    pub category: Option<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub current_value: Option<String>,
+    pub options: Vec<AcpSelectConfigValueVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpSelectConfigValueVm {
+    pub value: String,
     pub name: String,
     pub description: Option<String>,
 }
@@ -685,6 +708,7 @@ pub struct AcpEventPageVm {
 pub struct AcpSessionConfigVm {
     pub model_override_id: Option<String>,
     pub permission_mode_override_id: Option<String>,
+    pub config_option_overrides: std::collections::BTreeMap<String, String>,
     pub current_model_id: Option<String>,
     pub current_model_name: Option<String>,
     pub current_mode_id: Option<String>,
@@ -1124,6 +1148,28 @@ fn managed_agent_vm(
                 })
                 .collect::<Vec<_>>();
             (!models.is_empty()).then_some(models)
+        }),
+        config_options: diagnostic.and_then(|diagnostic| {
+            let options = select_config_options_from_capabilities(diagnostic.capabilities.as_ref())
+                .into_iter()
+                .map(|option| AcpSelectConfigOptionVm {
+                    id: option.id,
+                    category: option.category,
+                    name: option.name,
+                    description: option.description,
+                    current_value: option.current_value,
+                    options: option
+                        .options
+                        .into_iter()
+                        .map(|value| AcpSelectConfigValueVm {
+                            name: value.name.unwrap_or_else(|| value.value.clone()),
+                            value: value.value,
+                            description: value.description,
+                        })
+                        .collect(),
+                })
+                .collect::<Vec<_>>();
+            (!options.is_empty()).then_some(options)
         }),
     }
 }
@@ -5525,6 +5571,11 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let config_option_overrides: std::collections::BTreeMap<String, String> = session
+        .get("configOptionOverrides")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
     let current_model_id = models
         .as_ref()
         .and_then(|value| value.get("currentModelId"))
@@ -5548,6 +5599,7 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
 
     if model_override_id.is_none()
         && permission_mode_override_id.is_none()
+        && config_option_overrides.is_empty()
         && current_model_id.is_none()
         && current_model_name.is_none()
         && current_mode_id.is_none()
@@ -5562,6 +5614,7 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
     Some(AcpSessionConfigVm {
         model_override_id,
         permission_mode_override_id,
+        config_option_overrides,
         current_model_id,
         current_model_name,
         current_mode_id,

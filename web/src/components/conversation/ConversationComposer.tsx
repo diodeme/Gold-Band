@@ -17,6 +17,12 @@ import { useAgentCommands } from '@/hooks/useAgentCommands';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
 import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
 import { SlashCommandInputTag } from '@/components/conversation/SlashCommandInputTag';
+import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
+import {
+  ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS,
+  ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS,
+  acpComposerConfigTriggerVariants,
+} from '@/components/acp/AcpComposerConfigTrigger';
 import { parseCommittedSlashCommand } from '@/lib/slash-command';
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
 
@@ -60,9 +66,11 @@ export function ConversationComposer({
   const [selectedDirectAgent, setSelectedDirectAgent] = useState(runMode.directConfig?.agentType ?? '');
   const [selectedDirectModel, setSelectedDirectModel] = useState(runMode.directConfig?.modelId ?? '');
   const [selectedDirectPermissionMode, setSelectedDirectPermissionMode] = useState(runMode.directConfig?.permissionMode ?? '');
+  const [selectedDirectConfigOptions, setSelectedDirectConfigOptions] = useState<Record<string, string>>(runMode.directConfig?.configOptions ?? {});
   const [selectedAgent, setSelectedAgent] = useState(runMode.autoConfig?.agentType ?? '');
   const [selectedModel, setSelectedModel] = useState(runMode.autoConfig?.modelId ?? '');
   const [selectedPermissionMode, setSelectedPermissionMode] = useState(runMode.autoConfig?.permissionMode ?? '');
+  const [selectedConfigOptions, setSelectedConfigOptions] = useState<Record<string, string>>(runMode.autoConfig?.configOptions ?? {});
   const [globalGoal, setGlobalGoal] = useState(runMode.autoConfig?.globalGoal ?? '');
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
@@ -102,8 +110,10 @@ export function ConversationComposer({
   const selectedDirectAgentObj = agents.find((agent) => agent.agentType === selectedDirectAgent);
   const directModels = selectedDirectAgentObj?.supportedModels ?? [];
   const directPermissionModes = selectedDirectAgentObj?.supportedModes ?? [];
+  const directThoughtLevel = selectedDirectAgentObj?.configOptions?.find((option) => option.category === 'thought_level') ?? null;
   const models = selectedAgentObj?.supportedModels ?? [];
   const permissionModes = selectedAgentObj?.supportedModes ?? [];
+  const thoughtLevel = selectedAgentObj?.configOptions?.find((option) => option.category === 'thought_level') ?? null;
   const templates = workflowTemplates?.templates ?? [];
   const selectedWorkflowTemplateId = workflowTemplateId || runMode.workflowTemplateId || undefined;
   const showInterviewToggle = shouldShowInterviewToggle(runMode.mode, selectedWorkflowTemplateId);
@@ -135,9 +145,11 @@ export function ConversationComposer({
     setSelectedDirectAgent(fallbackAgent);
     setSelectedDirectModel(directConfig?.modelId ?? '');
     setSelectedDirectPermissionMode(directConfig?.permissionMode ?? '');
+    setSelectedDirectConfigOptions(directConfig?.configOptions ?? {});
     setSelectedAgent(runMode.autoConfig?.agentType ?? '');
     setSelectedModel(runMode.autoConfig?.modelId ?? '');
     setSelectedPermissionMode(runMode.autoConfig?.permissionMode ?? '');
+    setSelectedConfigOptions(runMode.autoConfig?.configOptions ?? {});
     setGlobalGoal(runMode.autoConfig?.globalGoal ?? '');
     setWorkflowTemplateId(runMode.workflowTemplateId ?? workflowTemplates?.lastUsedTemplateId ?? templates[0]?.id ?? '');
   }, [runMode, workflowTemplates, agents]);
@@ -158,6 +170,7 @@ export function ConversationComposer({
     setSelectedDirectAgent(agentType);
     setSelectedDirectModel(remembered.modelId ?? '');
     setSelectedDirectPermissionMode(remembered.permissionMode ?? '');
+    setSelectedDirectConfigOptions(remembered.configOptions ?? {});
     updateDirectConfig(remembered);
   };
 
@@ -174,6 +187,7 @@ export function ConversationComposer({
     const nextAgent = patchedValue(patch, 'agentType', selectedAgent);
     const nextModel = patchedValue(patch, 'modelId', selectedModel);
     const nextPermissionMode = patchedValue(patch, 'permissionMode', selectedPermissionMode);
+    const nextConfigOptions = patchedValue(patch, 'configOptions', selectedConfigOptions);
     const nextGlobalGoal = patchedValue(patch, 'globalGoal', globalGoal);
     if (isDynamicAuto) {
       return {
@@ -182,6 +196,7 @@ export function ConversationComposer({
         agentType: base.agentType || base.bootstrapAgentType || nextAgent || '',
         ...patch,
         permissionMode: nextPermissionMode || undefined,
+        configOptions: nextConfigOptions,
         globalGoal: optionalRunModeText(nextGlobalGoal),
       };
     }
@@ -192,6 +207,7 @@ export function ConversationComposer({
       agentType: nextAgent || '',
       modelId: nextModel || undefined,
       permissionMode: nextPermissionMode || undefined,
+      configOptions: nextConfigOptions,
       globalGoal: optionalRunModeText(nextGlobalGoal),
     };
   };
@@ -214,6 +230,7 @@ export function ConversationComposer({
           agentType: selectedDirectAgent,
           modelId: selectedDirectModel || undefined,
           permissionMode: selectedDirectPermissionMode || undefined,
+          configOptions: selectedDirectConfigOptions,
         })
         : undefined,
       autoConfig: isAuto
@@ -363,36 +380,49 @@ export function ConversationComposer({
             >
               {isDirect ? (
                 <>
-                  {directModels.length > 0 ? (
-                    <Select value={selectedDirectModel || '__default__'} onValueChange={(value) => {
-                      const modelId = value === '__default__' ? '' : value;
+                  <AcpModelThoughtSelects
+                    models={directModels}
+                    modelValue={selectedDirectModel}
+                    thoughtLevel={directThoughtLevel}
+                    thoughtValue={directThoughtLevel ? selectedDirectConfigOptions[directThoughtLevel.id] : null}
+                    onModelChange={(value) => {
+                      const modelId = value ?? '';
                       setSelectedDirectModel(modelId);
                       updateDirectConfig({
                         agentType: selectedDirectAgent,
                         modelId: modelId || undefined,
                         permissionMode: selectedDirectPermissionMode || undefined,
+                        configOptions: selectedDirectConfigOptions,
                       });
-                    }}>
-                      <SelectTrigger className="h-8 min-w-[130px] max-w-[180px] flex-1 rounded-full border-border/50 bg-gold-surface-high/35 text-xs">
-                        <SelectValue placeholder={t('conversation.home.selectModel')} />
-                      </SelectTrigger>
-                      <SelectContent position="popper" align="end">
-                        <SelectItem value="__default__">{t('conversation.home.unspecifiedModel')}</SelectItem>
-                        {directModels.map((model) => <SelectItem value={model.id} key={model.id}>{model.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  ) : null}
+                    }}
+                    onThoughtChange={(optionId, value) => {
+                      const next = { ...selectedDirectConfigOptions };
+                      if (value) next[optionId] = value;
+                      else delete next[optionId];
+                      setSelectedDirectConfigOptions(next);
+                      updateDirectConfig({
+                        agentType: selectedDirectAgent,
+                        modelId: selectedDirectModel || undefined,
+                        permissionMode: selectedDirectPermissionMode || undefined,
+                        configOptions: next,
+                      });
+                    }}
+                  />
                   <Select value={selectedDirectPermissionMode || '__default__'} onValueChange={(value) => {
                     const permissionMode = value === '__default__' ? '' : value;
                     setSelectedDirectPermissionMode(permissionMode);
                     updateDirectConfig({
                       agentType: selectedDirectAgent,
-                      modelId: selectedDirectModel || undefined,
-                      permissionMode: permissionMode || undefined,
+                        modelId: selectedDirectModel || undefined,
+                        permissionMode: permissionMode || undefined,
+                        configOptions: selectedDirectConfigOptions,
                     });
                   }}>
-                    <SelectTrigger className="h-8 min-w-[130px] max-w-[180px] flex-1 rounded-full border-border/50 bg-gold-surface-high/35 text-xs">
-                      <SelectValue placeholder={t('runMode.permissionMode')} />
+                    <SelectTrigger className={acpComposerConfigTriggerVariants()}>
+                      <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{t('acp.permissionMode')}</span>
+                      <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>
+                        <SelectValue placeholder={t('runMode.permissionMode')} />
+                      </span>
                     </SelectTrigger>
                     <SelectContent position="popper" align="end">
                       <SelectItem value="__default__">{t('workflowEditor.permissionModeUnspecified')}</SelectItem>
@@ -504,7 +534,7 @@ export function ConversationComposer({
                     <span className="truncate">{t('conversation.home.dynamicAgent')}</span>
                   </div>
                 ) : (
-                  <Select value={selectedAgent} onValueChange={(v) => { setSelectedAgent(v); setSelectedModel(''); updateAutoSession({ agentType: v, modelId: undefined }); }}>
+                  <Select value={selectedAgent} onValueChange={(v) => { setSelectedAgent(v); setSelectedModel(''); setSelectedConfigOptions({}); updateAutoSession({ agentType: v, modelId: undefined, configOptions: {} }); }}>
                     <SelectTrigger className="h-8 w-[180px] min-w-0 text-xs">
                       <SelectValue placeholder={t('conversation.home.selectAgent')} />
                     </SelectTrigger>
@@ -523,26 +553,33 @@ export function ConversationComposer({
                     </SelectContent>
                   </Select>
                 )}
-                {!isDynamicAuto && selectedAgentObj && models.length > 0 ? (
-                  <Select value={selectedModel} onValueChange={(modelId) => { setSelectedModel(modelId); updateAutoSession({ modelId }); }}>
-                    <SelectTrigger className="h-8 w-[200px] min-w-0 text-xs">
-                      <span className="min-w-0 flex-1 truncate text-left">{models.find((m) => m.id === selectedModel)?.name ?? t('conversation.home.selectModel')}</span>
-                    </SelectTrigger>
-                    <SelectContent position="popper" align="start" className="w-[min(26rem,calc(100vw-2rem))]">
-                      {models.map((m) => (
-                        <SelectItem key={m.id} value={m.id} className="items-start py-2">
-                          <span className="block min-w-0">
-                            <span className="block truncate font-medium">{m.name}</span>
-                            {m.description ? <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">{m.description}</span> : null}
-                          </span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                {!isDynamicAuto && selectedAgentObj ? (
+                  <AcpModelThoughtSelects
+                    models={models}
+                    modelValue={selectedModel}
+                    thoughtLevel={thoughtLevel}
+                    thoughtValue={thoughtLevel ? selectedConfigOptions[thoughtLevel.id] : null}
+                    align="start"
+                    onModelChange={(value) => {
+                      const modelId = value ?? '';
+                      setSelectedModel(modelId);
+                      updateAutoSession({ modelId: modelId || undefined });
+                    }}
+                    onThoughtChange={(optionId, value) => {
+                      const next = { ...selectedConfigOptions };
+                      if (value) next[optionId] = value;
+                      else delete next[optionId];
+                      setSelectedConfigOptions(next);
+                      updateAutoSession({ configOptions: next });
+                    }}
+                  />
                 ) : null}
                 <Select value={selectedPermissionMode || '__default__'} onValueChange={(value) => { const next = value === '__default__' ? '' : value; setSelectedPermissionMode(next); updateAutoSession({ permissionMode: next || undefined }); }}>
-                  <SelectTrigger className="h-8 w-[180px] min-w-0 text-xs">
-                    <SelectValue placeholder={t('runMode.permissionMode')} />
+                  <SelectTrigger className={acpComposerConfigTriggerVariants()}>
+                    <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{t('acp.permissionMode')}</span>
+                    <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>
+                      <SelectValue placeholder={t('runMode.permissionMode')} />
+                    </span>
                   </SelectTrigger>
                   <SelectContent position="popper" align="start">
                     <SelectItem value="__default__">{t('workflowEditor.permissionModeUnspecified')}</SelectItem>

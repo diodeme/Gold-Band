@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow, bail, ensure};
 use camino::Utf8PathBuf;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use tracing::warn;
 
@@ -515,6 +515,7 @@ pub(crate) fn build_worker_invocation(
         cold_artifacts,
         cold_attachments,
         prompt_envelope,
+        configured_options,
     ) = match node_dsl {
         NodeDsl::Worker(worker) => (
             worker.profile.clone(),
@@ -526,6 +527,7 @@ pub(crate) fn build_worker_invocation(
             Vec::new(),
             Vec::new(),
             worker.prompt_envelope,
+            worker.config_options.clone(),
         ),
         NodeDsl::AiDynamic(_) => {
             bail!("ai-dynamic nodes must be executed by the dynamic orchestrator")
@@ -547,6 +549,10 @@ pub(crate) fn build_worker_invocation(
 
     let runtime_context =
         runtime_prompt_context(app, task_id, run_id, round_id, node_id, attempt_id);
+    let mut config_options = configured_options;
+    config_options.extend(current_acp_config_option_overrides(
+        &runtime_context.attempt_dir,
+    ));
     let predecessors =
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
     let new_round_trigger =
@@ -585,6 +591,7 @@ pub(crate) fn build_worker_invocation(
         user_prompt_render_mode,
         permission_mode,
         model,
+        config_options,
         continue_ref,
         resume_prompt,
         resume_prompt_id,
@@ -601,6 +608,23 @@ pub(crate) fn build_worker_invocation(
         input_attachment_paths,
         mcp_servers,
     })
+}
+
+fn current_acp_config_option_overrides(attempt_dir: &camino::Utf8Path) -> BTreeMap<String, String> {
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+    let path = if snapshot_path.exists() {
+        snapshot_path
+    } else if session_path.exists() {
+        session_path
+    } else {
+        return BTreeMap::new();
+    };
+    read_json::<serde_json::Value>(&path)
+        .ok()
+        .and_then(|value| value.get("configOptionOverrides").cloned())
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
 }
 
 pub(crate) fn execute_ai_node(
@@ -1303,6 +1327,7 @@ mod tests {
                 output: None,
                 success_condition: None,
                 permission_mode: None,
+                config_options: Default::default(),
                 manual_check: None,
                 prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
             })],

@@ -104,12 +104,28 @@ export interface ManagedAgentVm {
   diagnostic?: ManagedAgentDiagnosticVm | null;
   supportedModes?: AcpModeVm[] | null;
   supportedModels?: AcpModeVm[] | null;
+  configOptions?: AcpSelectConfigOptionVm[] | null;
 }
 
 export interface AcpModeVm {
   id: string;
   name: string;
   description?: string | null;
+}
+
+export interface AcpSelectConfigValueVm {
+  value: string;
+  name: string;
+  description?: string | null;
+}
+
+export interface AcpSelectConfigOptionVm {
+  id: string;
+  category?: string | null;
+  name?: string | null;
+  description?: string | null;
+  currentValue?: string | null;
+  options: AcpSelectConfigValueVm[];
 }
 
 export interface AcpCommandItemVm {
@@ -668,6 +684,7 @@ export interface AcpEventPageVm {
 export interface AcpSessionConfigVm {
   modelOverrideId?: string | null;
   permissionModeOverrideId?: string | null;
+  configOptionOverrides?: Record<string, string>;
   currentModelId?: string | null;
   currentModelName?: string | null;
   currentModeId?: string | null;
@@ -1098,6 +1115,7 @@ export interface ConversationDirectConfigVm {
   agentType: string;
   modelId?: string | null;
   permissionMode?: string | null;
+  configOptions?: Record<string, string>;
 }
 
 export interface ConversationAgentIdentityVm {
@@ -1114,6 +1132,7 @@ export interface ConversationAutoConfigVm {
   acceptanceModelId?: string | null;
   modelId?: string | null;
   permissionMode?: string | null;
+  configOptions?: Record<string, string>;
   availableAgents?: DynamicAgentRefDsl[];
   routingPrompt?: string | null;
   allowedWorkflows?: AllowedWorkflowRefDsl[];

@@ -726,6 +726,7 @@ pub fn get_conversation_run_mode(
                         agent_type: config.agent_type.clone(),
                         model_id: config.model_id.clone(),
                         permission_mode: config.permission_mode.clone(),
+                        config_options: config.config_options.clone(),
                     }
                 }),
                 direct_preferences: entry
@@ -738,6 +739,7 @@ pub fn get_conversation_run_mode(
                                 agent_type: config.agent_type.clone(),
                                 model_id: config.model_id.clone(),
                                 permission_mode: config.permission_mode.clone(),
+                                config_options: config.config_options.clone(),
                             },
                         )
                     })
@@ -751,6 +753,7 @@ pub fn get_conversation_run_mode(
                         acceptance_model_id: cfg.acceptance_model_id.clone(),
                         model_id: cfg.model_id.clone(),
                         permission_mode: cfg.permission_mode.clone(),
+                        config_options: cfg.config_options.clone(),
                         available_agents: cfg.available_agents.as_ref().map(|agents| {
                             agents
                                 .iter()
@@ -821,6 +824,7 @@ pub fn save_conversation_run_mode(
                     agent_type: config.agent_type,
                     model_id: config.model_id,
                     permission_mode: config.permission_mode,
+                    config_options: config.config_options,
                 }),
             direct_preferences: settings
                 .direct_preferences
@@ -832,6 +836,7 @@ pub fn save_conversation_run_mode(
                             agent_type: config.agent_type,
                             model_id: config.model_id,
                             permission_mode: config.permission_mode,
+                            config_options: config.config_options,
                         },
                     )
                 })
@@ -844,6 +849,7 @@ pub fn save_conversation_run_mode(
                 acceptance_model_id: cfg.acceptance_model_id,
                 model_id: cfg.model_id,
                 permission_mode: cfg.permission_mode,
+                config_options: cfg.config_options,
                 available_agents: cfg.available_agents.map(|agents| {
                     agents
                         .into_iter()

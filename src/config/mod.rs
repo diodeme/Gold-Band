@@ -1536,6 +1536,7 @@ mod tests {
                 agent_type: "claude-acp".to_string(),
                 model_id: Some(model.to_string()),
                 permission_mode: Some(permission.to_string()),
+                config_options: Default::default(),
             };
             state.conversation_run_modes.insert(
                 workspace.to_string(),
@@ -1661,6 +1662,8 @@ pub struct ConversationDirectConfig {
     pub agent_type: String,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_options: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1673,6 +1676,8 @@ pub struct ConversationAutoConfig {
     pub acceptance_model_id: Option<String>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_options: BTreeMap<String, String>,
     pub available_agents: Option<Vec<ConversationDynamicAgentRef>>,
     pub routing_prompt: Option<String>,
     pub allowed_workflows: Option<Vec<ConversationAllowedWorkflowRef>>,

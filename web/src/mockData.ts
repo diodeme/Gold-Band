@@ -443,6 +443,19 @@ export const mockAgentRegistry: AgentRegistryVm = {
         { id: 'bypass', name: 'Bypass' },
         { id: 'allow-edit', name: 'Allow Edit' },
       ],
+      configOptions: [{
+        id: 'effort',
+        category: 'thought_level',
+        name: '思考强度',
+        currentValue: 'default',
+        options: [
+          { value: 'default', name: 'Default' },
+          { value: 'low', name: 'Low' },
+          { value: 'medium', name: 'Medium' },
+          { value: 'high', name: 'High' },
+          { value: 'max', name: 'Max' },
+        ],
+      }],
     },
   ],
   supportedTypes: [

@@ -20,7 +20,7 @@ Rust 层职责边界（当前实现对应 `src/acp/*` 与 `src/provider/mod.rs`�
 - 持久化 synthetic `goldBandPrompt` 用户消息时保留 `promptId` 元数据；session event scan 只允许合并 `textDelta` / `thoughtDelta`，不得把不同轮次的 `userTextDelta` 拼接成一条消息。Tool/text/thought/plan/usage/config/mode/sessionInfo 都属于展示型或状态型 `session/update`，不创建 response 文件；只有 permission request 需要外部确认握手。
 - 接收 `session/update` 并转发给会话详情 ViewModel。
 - 由 ViewModel 扫描 `acp.events.jsonl` 计算 ACP session 累计净处理耗时；该耗时按 Gold Band prompt turn 累加，并扣除 `session/request_permission` pending 到用户选择之间的阻塞式用户决策等待区间。
-- 记录 ACP session id、adapter、capabilities、stop reason、adapter 返回的 session config 快照（`models` / `modes` / `configOptions`）和诊断 metadata。
+- 记录 ACP session id、adapter、capabilities、stop reason、adapter 返回的 session config 快照（`models` / `modes` / `configOptions`）、Gold Band 显式 `configOptionOverrides` 和诊断 metadata。通用 select 配置按 Agent 返回的实际 ID 下发，`category=thought_level` 只用于 UI 语义识别，不替换协议 ID。
 - 使用 `RuntimeConfig.acpAdapter` 配置 adapter command / args / displayName / env，默认命令为 `npx -y @agentclientprotocol/claude-agent-acp@latest`；Windows 运行时仅在启动进程前把 bare `npx` 映射为 `npx.cmd`。
 - Windows 桌面端所有不需要用户交互的后台 CLI 子进程都必须通过统一进程工具启动；Rust 侧直接启动 ACP adapter、Git worktree 命令、MCP stdio 健康检查、MCP stdio `tools/list`、Windows Toast AUMID 注册或 shell fallback 时，必须复用 `background_command()` 以应用 `CREATE_NO_WINDOW`，避免 Win10 出现短暂 `git.exe` / `cmd.exe` / `reg.exe` / PowerShell 控制台窗口。
 - 不解析 Claude Code CLI 文本输出。

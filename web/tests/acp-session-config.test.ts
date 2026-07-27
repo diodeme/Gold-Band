@@ -92,7 +92,7 @@ describe("ACP session config view model", () => {
 
     expect(viewModel.modelOverrideId).toBe("default");
     expect(viewModel.modelOverrideName).toBe("Default (recommended)");
-    expect(viewModel.canSelectUnspecifiedModel).toBe(false);
+    expect(viewModel.canSelectUnspecifiedModel).toBe(true);
   });
 
   it("keeps Gold Band unspecified separate from the Agent current permission mode", () => {
@@ -130,7 +130,7 @@ describe("ACP session config view model", () => {
 
     expect(viewModel.permissionModeOverrideId).toBe("default");
     expect(viewModel.permissionModeOverrideName).toBe("Default");
-    expect(viewModel.canSelectUnspecifiedPermissionMode).toBe(false);
+    expect(viewModel.canSelectUnspecifiedPermissionMode).toBe(true);
   });
 
   it("normalizes grouped model and permission mode options", () => {
@@ -178,5 +178,58 @@ describe("ACP session config view model", () => {
     expect(
       findAcpConfigOption(null, null, "mode", "unknown-mode"),
     ).toMatchObject({ id: "unknown-mode", name: "unknown-mode" });
+  });
+
+  it("keeps model-only Agents free of a thought-level control", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      models: {
+        availableModels: [{ modelId: "gpt-5.6-sol", name: "GPT-5.6-Sol" }],
+      },
+    });
+
+    expect(viewModel.availableModels).toHaveLength(1);
+    expect(viewModel.thoughtLevel).toBeNull();
+  });
+
+  it("discovers thought level by category while preserving the Agent option id", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      configOptionOverrides: { reasoning_effort: "high" },
+      configOptions: [
+        {
+          id: "reasoning_effort",
+          category: "thought_level",
+          type: "select",
+          currentValue: "medium",
+          options: [
+            { value: "low", name: "Low" },
+            { value: "high", name: "High" },
+          ],
+        },
+      ],
+    });
+
+    expect(viewModel.thoughtLevel).toMatchObject({
+      id: "reasoning_effort",
+      category: "thought_level",
+      currentValue: "medium",
+      overrideValue: "high",
+    });
+    expect(viewModel.thoughtLevel?.options.map((option) => option.id)).toEqual(["low", "high"]);
+  });
+
+  it("keeps thought level unspecified even when the Agent has a current value", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      configOptions: [{
+        id: "effort",
+        category: "thought_level",
+        type: "select",
+        currentValue: "max",
+        options: [{ value: "max", name: "Max" }],
+      }],
+    });
+
+    expect(viewModel.thoughtLevel?.id).toBe("effort");
+    expect(viewModel.thoughtLevel?.currentValue).toBe("max");
+    expect(viewModel.thoughtLevel?.overrideValue).toBeNull();
   });
 });

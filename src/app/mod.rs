@@ -216,6 +216,7 @@ fn default_workflow_dsl(
                 expression: "$.result == true".to_string(),
             }),
             permission_mode: Some("bypassPermissions".to_string()),
+            config_options: Default::default(),
             manual_check: manual_check.then_some(true),
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
         })
@@ -3427,6 +3428,7 @@ mod tests {
                 provider: Some("claude-acp".to_string()),
                 profile: None,
                 permission_mode: permission_mode.map(str::to_string),
+                config_options: Default::default(),
                 model: model.map(str::to_string),
                 goal: Some("do work".to_string()),
                 success_condition: None,
@@ -3642,6 +3644,7 @@ mod tests {
                     model: Some("future-model".to_string()),
                 },
                 permission_mode: None,
+                config_options: Default::default(),
                 allowed_profiles: Vec::new(),
                 global_goal: None,
                 control: crate::dsl::DynamicControlDsl::default(),

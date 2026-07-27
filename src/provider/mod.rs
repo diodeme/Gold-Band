@@ -15,6 +15,7 @@ use camino::Utf8PathBuf;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use tracing::debug;
 
@@ -78,6 +79,25 @@ pub struct AcpModeOption {
     pub id: String,
     pub name: Option<String>,
     pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpSelectConfigValue {
+    pub value: String,
+    pub name: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpSelectConfigOption {
+    pub id: String,
+    pub category: Option<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub current_value: Option<String>,
+    pub options: Vec<AcpSelectConfigValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,6 +164,8 @@ pub struct WorkerInvocation {
     pub permission_mode: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_options: BTreeMap<String, String>,
     pub continue_ref: Option<serde_json::Value>,
     pub resume_prompt: Option<String>,
     pub resume_prompt_id: Option<String>,
@@ -585,6 +607,57 @@ pub fn supported_models_from_capabilities(capabilities: Option<&Value>) -> Vec<A
     Vec::new()
 }
 
+/// Extracts generic ACP select configuration options without assuming adapter-specific IDs.
+pub fn select_config_options_from_capabilities(
+    capabilities: Option<&Value>,
+) -> Vec<AcpSelectConfigOption> {
+    capabilities
+        .and_then(|value| value.get("configOptions"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|option| {
+            let id = option.get("id").and_then(Value::as_str)?.trim();
+            if id.is_empty() || option.get("type").and_then(Value::as_str) != Some("select") {
+                return None;
+            }
+            let values = option
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|value| {
+                    let raw_value = value.get("value").and_then(Value::as_str)?.trim();
+                    if raw_value.is_empty() {
+                        return None;
+                    }
+                    Some(AcpSelectConfigValue {
+                        value: raw_value.to_string(),
+                        name: optional_trimmed_string(value.get("name")),
+                        description: optional_trimmed_string(value.get("description")),
+                    })
+                })
+                .collect::<Vec<_>>();
+            (!values.is_empty()).then(|| AcpSelectConfigOption {
+                id: id.to_string(),
+                category: optional_trimmed_string(option.get("category")),
+                name: optional_trimmed_string(option.get("name")),
+                description: optional_trimmed_string(option.get("description")),
+                current_value: optional_trimmed_string(option.get("currentValue")),
+                options: values,
+            })
+        })
+        .collect()
+}
+
+fn optional_trimmed_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 /// Finds the config option with `category == "model"` (AI model selector).
 fn find_model_config_option(capabilities: &Value) -> Option<&Value> {
     capabilities
@@ -727,6 +800,7 @@ impl ProviderAdapter for AcpProvider {
             req.session_mode,
             req.permission_mode.clone(),
             req.model.clone(),
+            req.config_options.clone(),
             req.continue_ref.clone(),
             self.use_local_claude,
             self.require_local_claude_executable,
@@ -1439,6 +1513,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn extracts_generic_thought_level_select_option_without_hardcoded_id() {
+        let capabilities = serde_json::json!({
+            "configOptions": [{
+                "id": "reasoning_effort",
+                "category": "thought_level",
+                "type": "select",
+                "currentValue": "high",
+                "options": [
+                    { "value": "low", "name": "Low" },
+                    { "value": "high", "name": "High", "description": "More reasoning" }
+                ]
+            }]
+        });
+
+        let options = select_config_options_from_capabilities(Some(&capabilities));
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].id, "reasoning_effort");
+        assert_eq!(options[0].category.as_deref(), Some("thought_level"));
+        assert_eq!(options[0].current_value.as_deref(), Some("high"));
+        assert_eq!(options[0].options[1].value, "high");
+    }
+
+    #[test]
     fn render_prompt_bundle_does_not_add_builtin_output_contracts() {
         let runtime_context = PromptRuntimeContext {
             project_id: "project-001".to_string(),
@@ -1483,6 +1580,7 @@ mod tests {
             user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
             permission_mode: None,
             model: None,
+            config_options: Default::default(),
             continue_ref: None,
             resume_prompt: None,
             resume_prompt_id: None,

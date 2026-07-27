@@ -2249,6 +2249,7 @@ pub async fn send_acp_prompt(
                 outer_node_id_for_live.clone(),
                 outer_attempt_id_for_live.clone(),
             ));
+            let config_options = current_acp_session_config_option_overrides(&attempt_dir);
             let prompt_run = client::run_prompt(
                 provider,
                 &agent_config.adapter,
@@ -2259,6 +2260,7 @@ pub async fn send_acp_prompt(
                 session_mode,
                 permission_mode,
                 model,
+                config_options,
                 continue_ref,
                 app.config.use_local_claude,
                 app.config.require_local_claude_executable,
@@ -2395,6 +2397,7 @@ pub async fn send_acp_prompt(
             None,
         ));
         let model = current_acp_session_model_override(&attempt_dir);
+        let config_options = current_acp_session_config_option_overrides(&attempt_dir);
         let prompt_run = client::run_prompt(
             provider,
             &agent_config.adapter,
@@ -2405,6 +2408,7 @@ pub async fn send_acp_prompt(
             session_mode,
             permission_mode,
             model,
+            config_options,
             continue_ref,
             app.config.use_local_claude,
             app.config.require_local_claude_executable,
@@ -3320,6 +3324,26 @@ fn current_acp_session_permission_mode_override(attempt_dir: &Utf8PathBuf) -> Op
     current_acp_session_override(attempt_dir, "permissionModeOverride")
 }
 
+fn current_acp_session_config_option_overrides(
+    attempt_dir: &Utf8PathBuf,
+) -> std::collections::BTreeMap<String, String> {
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+    let path = if snapshot_path.exists() {
+        snapshot_path
+    } else if session_path.exists() {
+        session_path
+    } else {
+        return Default::default();
+    };
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        .and_then(|value| value.get("configOptionOverrides").cloned())
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SearchTasksInput {
@@ -3363,7 +3387,7 @@ pub async fn set_acp_session_model(
     attempt_id: String,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
-    model_id: String,
+    model_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     let attempt_dir = resolve_acp_attempt_dir(
@@ -3400,19 +3424,32 @@ pub async fn set_acp_session_model(
     })?;
 
     if let Some(session) = value.as_object_mut() {
-        session.insert(
-            "modelOverride".to_string(),
-            serde_json::Value::String(model_id.clone()),
-        );
+        if let Some(model_id) = model_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            session.insert(
+                "modelOverride".to_string(),
+                serde_json::Value::String(model_id.to_string()),
+            );
+        } else {
+            session.remove("modelOverride");
+        }
     }
-    // Update models.currentModelId
-    if let Some(models) = value.get_mut("models").and_then(|m| m.as_object_mut()) {
-        models.insert(
-            "currentModelId".to_string(),
-            serde_json::Value::String(model_id.clone()),
-        );
+    if let Some(model_id) = model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(models) = value.get_mut("models").and_then(|m| m.as_object_mut()) {
+            models.insert(
+                "currentModelId".to_string(),
+                serde_json::Value::String(model_id.to_string()),
+            );
+        }
+        set_acp_config_option_current_value(&mut value, "model", model_id);
     }
-    set_acp_config_option_current_value(&mut value, "model", &model_id);
 
     let updated_json = serde_json::to_string_pretty(&value).map_err(|error| {
         CommandErrorVm::new(
@@ -3467,7 +3504,7 @@ pub async fn set_acp_session_permission_mode(
     attempt_id: String,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
-    permission_mode_id: String,
+    permission_mode_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     let attempt_dir = resolve_acp_attempt_dir(
@@ -3504,19 +3541,32 @@ pub async fn set_acp_session_permission_mode(
     })?;
 
     if let Some(session) = value.as_object_mut() {
-        session.insert(
-            "permissionModeOverride".to_string(),
-            serde_json::Value::String(permission_mode_id.clone()),
-        );
+        if let Some(permission_mode_id) = permission_mode_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            session.insert(
+                "permissionModeOverride".to_string(),
+                serde_json::Value::String(permission_mode_id.to_string()),
+            );
+        } else {
+            session.remove("permissionModeOverride");
+        }
     }
-    // Update modes.currentModeId
-    if let Some(modes) = value.get_mut("modes").and_then(|m| m.as_object_mut()) {
-        modes.insert(
-            "currentModeId".to_string(),
-            serde_json::Value::String(permission_mode_id.clone()),
-        );
+    if let Some(permission_mode_id) = permission_mode_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(modes) = value.get_mut("modes").and_then(|m| m.as_object_mut()) {
+            modes.insert(
+                "currentModeId".to_string(),
+                serde_json::Value::String(permission_mode_id.to_string()),
+            );
+        }
+        set_acp_config_option_current_value(&mut value, "mode", permission_mode_id);
     }
-    set_acp_config_option_current_value(&mut value, "mode", &permission_mode_id);
 
     let updated_json = serde_json::to_string_pretty(&value).map_err(|error| {
         CommandErrorVm::new(
@@ -3531,6 +3581,163 @@ pub async fn set_acp_session_permission_mode(
         )
     })?;
 
+    let vm = if let (Some(on), Some(oa)) = (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
+        crate::view_models::dynamic_acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            on,
+            oa,
+            &node_id,
+            &attempt_id,
+            None,
+            Some(value),
+        )
+    } else {
+        crate::view_models::acp_session_vm(
+            &app,
+            &task_id,
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            None,
+            Some(value),
+        )
+    };
+    Ok(vm.map_err(command_error)?)
+}
+
+#[tauri::command]
+pub async fn set_acp_session_config_option(
+    _app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    option_id: String,
+    option_value: Option<String>,
+) -> CommandResult<Option<AcpSessionVm>> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let attempt_dir = resolve_acp_attempt_dir(
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
+    );
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+    let path = if snapshot_path.exists() {
+        snapshot_path
+    } else if session_path.exists() {
+        session_path
+    } else {
+        return Ok(None);
+    };
+    let session_json = std::fs::read_to_string(&path).map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-read-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+    let mut value: serde_json::Value = serde_json::from_str(&session_json).map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-parse-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+    let option_id = option_id.trim();
+    let config_option = value
+        .get("configOptions")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|options| {
+            options.iter().find(|option| {
+                option.get("id").and_then(serde_json::Value::as_str) == Some(option_id)
+            })
+        })
+        .cloned()
+        .ok_or_else(|| {
+            CommandErrorVm::new(
+                "acp.config-option-not-found",
+                serde_json::json!({ "optionId": option_id }),
+            )
+        })?;
+    if config_option
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        != Some("select")
+    {
+        return Err(CommandErrorVm::new(
+            "acp.config-option-not-select",
+            serde_json::json!({ "optionId": option_id }),
+        ));
+    }
+    let normalized_value = option_value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(selected) = normalized_value {
+        let supported = config_option
+            .get("options")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|options| {
+                options.iter().any(|option| {
+                    option.get("value").and_then(serde_json::Value::as_str) == Some(selected)
+                })
+            });
+        if !supported {
+            return Err(CommandErrorVm::new(
+                "acp.config-option-value-unsupported",
+                serde_json::json!({ "optionId": option_id, "value": selected }),
+            ));
+        }
+    }
+    if let Some(session) = value.as_object_mut() {
+        let overrides = session
+            .entry("configOptionOverrides")
+            .or_insert_with(|| serde_json::json!({}));
+        if !overrides.is_object() {
+            *overrides = serde_json::json!({});
+        }
+        if let Some(overrides) = overrides.as_object_mut() {
+            if let Some(selected) = normalized_value {
+                overrides.insert(
+                    option_id.to_string(),
+                    serde_json::Value::String(selected.to_string()),
+                );
+            } else {
+                overrides.remove(option_id);
+            }
+            if overrides.is_empty() {
+                session.remove("configOptionOverrides");
+            }
+        }
+    }
+    if let Some(selected) = normalized_value {
+        set_acp_config_option_current_value(&mut value, option_id, selected);
+    }
+    let updated_json = serde_json::to_string_pretty(&value).map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-serialize-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
+    std::fs::write(&path, &updated_json).map_err(|error| {
+        CommandErrorVm::new(
+            "acp.session-write-error",
+            serde_json::json!({ "error": error.to_string() }),
+        )
+    })?;
     let vm = if let (Some(on), Some(oa)) = (outer_node_id.as_deref(), outer_attempt_id.as_deref()) {
         crate::view_models::dynamic_acp_session_vm(
             &app,
@@ -4356,6 +4563,40 @@ mod tests {
     }
 
     #[test]
+    fn acp_follow_up_reads_generic_config_option_overrides_by_actual_id() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-config-option-override-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "configOptionOverrides": {
+                    "reasoning_effort": "high"
+                },
+                "configOptions": [{
+                    "id": "reasoning_effort",
+                    "category": "thought_level",
+                    "type": "select",
+                    "currentValue": "high"
+                }]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            current_acp_session_config_option_overrides(&attempt_dir),
+            std::collections::BTreeMap::from([(
+                "reasoning_effort".to_string(),
+                "high".to_string(),
+            )])
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn acp_turn_outcome_distinguishes_user_cancel_from_transport_failure() {
         assert_eq!(
             acp_turn_outcome_for_stop_reason(Some("cancelled")),
@@ -4848,6 +5089,7 @@ mod tests {
                 ],
             },
             permission_mode: None,
+            config_options: Default::default(),
             allowed_profiles: Vec::new(),
             global_goal: None,
             control: gold_band::dsl::DynamicControlDsl::default(),

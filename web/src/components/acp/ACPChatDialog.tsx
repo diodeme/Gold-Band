@@ -144,6 +144,7 @@ import {
 } from "@/lib/acp-runtime-composer-state";
 import {
   hasAcpSessionMetadata,
+  isAcpSessionInitializationInterrupted,
   missingAcpSessionRetryDelay,
   resolveAcpSessionShellState,
   shouldCreateLiveAcpSessionShell,
@@ -1189,6 +1190,14 @@ export const ACPChatDialog = forwardRef<
           },
         }
       : runtimeComposerContext?.lifecycle);
+  const sessionInitializationInterrupted = isAcpSessionInitializationInterrupted({
+    runtimeStatus: localLifecycle?.runtime.status ?? runtimeComposerContext?.runtimeStatus,
+    runtimePauseReason: localLifecycle?.runtime.pauseReason,
+    runtimeActive: runtimeActiveFromContext,
+    sessionId: baseSession?.sessionId,
+    baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
+    loadedEventCount: loadedEvents.length,
+  });
   const composerLatestEvent = timeline.at(-1) ?? null;
   const turnAccepted = Boolean(activeTurnStartedAt);
   const hasTurnResponse = hasResponseAfterActiveTurn;
@@ -1693,6 +1702,10 @@ export const ACPChatDialog = forwardRef<
   ]);
 
   useEffect(() => {
+    if (sessionInitializationInterrupted) {
+      setLoadingInitialSession(false);
+      return;
+    }
     if (!isTauriRuntime()) {
       setLoadingInitialSession(false);
       return;
@@ -1843,6 +1856,7 @@ export const ACPChatDialog = forwardRef<
     outerNodeId,
     roundId,
     runId,
+    sessionInitializationInterrupted,
     taskId,
   ]);
 
@@ -2465,8 +2479,13 @@ export const ACPChatDialog = forwardRef<
     baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
     hasLiveSessionShell: Boolean(liveSessionShell),
     initialSessionLoading: loadingInitialSession,
+    initializationInterrupted: sessionInitializationInterrupted,
     runtimeActive: runtimeActiveFromContext,
   });
+
+  if (sessionShellState === 'interrupted') {
+    return <AcpInterruptedState label={t("acp.sessionInterrupted")} />;
+  }
 
   if (sessionShellState === 'loading') {
     return <AcpLoadingState label={t("common.loading")} />;
@@ -2841,6 +2860,14 @@ function AcpLoadingState({ label }: { label: string }) {
         />
         <span>{label}</span>
       </div>
+    </div>
+  );
+}
+
+function AcpInterruptedState({ label }: { label: string }) {
+  return (
+    <div className="flex h-full min-h-0 items-center justify-center bg-background px-6 text-center text-sm font-medium text-muted-foreground">
+      {label}
     </div>
   );
 }

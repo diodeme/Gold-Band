@@ -205,7 +205,7 @@ impl ManagedAgentType {
                 command: "npx".to_string(),
                 args: vec![
                     "-y".to_string(),
-                    "@zed-industries/codex-acp@latest".to_string(),
+                    "@agentclientprotocol/codex-acp@latest".to_string(),
                 ],
                 display_name: "Codex".to_string(),
                 env: BTreeMap::new(),

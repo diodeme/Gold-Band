@@ -71,6 +71,51 @@ pub struct ProviderCapabilities {
     pub supports_continue_session: bool,
     pub supports_system_prompt: bool,
     pub supports_raw_stream: bool,
+    pub supported_mcp_transports: Vec<McpTransportKind>,
+}
+
+/// ACP MCP server transport kind, derived from the serialized MCP server JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum McpTransportKind {
+    Stdio,
+    Http,
+    Sse,
+}
+
+impl McpTransportKind {
+    /// A server without a `type` field is treated as stdio (command-based).
+    pub fn from_acp_server(value: &serde_json::Value) -> Self {
+        match value.get("type").and_then(serde_json::Value::as_str) {
+            Some("http") => Self::Http,
+            Some("sse") => Self::Sse,
+            _ => Self::Stdio,
+        }
+    }
+
+    pub fn all() -> &'static [McpTransportKind] {
+        &[Self::Stdio, Self::Http, Self::Sse]
+    }
+}
+
+/// Keeps only MCP server entries whose transport is supported by the target provider.
+pub fn filter_supported_mcp_servers(
+    servers: &[serde_json::Value],
+    supported: &[McpTransportKind],
+) -> Vec<serde_json::Value> {
+    servers
+        .iter()
+        .filter(|s| supported.contains(&McpTransportKind::from_acp_server(s)))
+        .cloned()
+        .collect()
+}
+
+fn default_supported_mcp_transports(provider_id: &str) -> Vec<McpTransportKind> {
+    match provider_id {
+        // codex-acp delegates MCP to the Codex SDK, which rejects SSE transport.
+        "codex-acp" => vec![McpTransportKind::Stdio, McpTransportKind::Http],
+        _ => McpTransportKind::all().to_vec(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -651,6 +696,7 @@ impl ProviderAdapter for AcpProvider {
                 supports_continue_session: true,
                 supports_system_prompt: self.provider_id == "claude-acp",
                 supports_raw_stream: false,
+                supported_mcp_transports: default_supported_mcp_transports(&self.provider_id),
             },
             is_default: self.provider_id == DEFAULT_PROVIDER,
         }
@@ -698,6 +744,10 @@ impl ProviderAdapter for AcpProvider {
         live_update: Option<AcpLiveUpdate<'_>>,
         session_update: Option<AcpSessionUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
+        let mcp_servers = filter_supported_mcp_servers(
+            &req.mcp_servers,
+            &default_supported_mcp_transports(&self.provider_id),
+        );
         let prompt = render_prompt_bundle(&req)?;
         log_prompt_bundle(
             &prompt,
@@ -727,7 +777,7 @@ impl ProviderAdapter for AcpProvider {
             self.acp_raw_max_size_bytes,
             self.acp_raw_target_size_bytes,
             live_update,
-            &req.mcp_servers,
+            &mcp_servers,
             session_update,
             Some(client::RuntimeStopProbe {
                 run_file: req.runtime_context.run_dir.join("run.json"),
@@ -1424,6 +1474,45 @@ pub fn default_provider() -> Box<dyn ProviderAdapter> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn mcp_transport_kind_classifies_acp_server_json() {
+        let stdio = json!({"name": "local", "command": "node"});
+        let http = json!({"name": "api", "type": "http", "url": "https://x"});
+        let sse = json!({"name": "graph", "type": "sse", "url": "https://y"});
+        assert_eq!(McpTransportKind::from_acp_server(&stdio), McpTransportKind::Stdio);
+        assert_eq!(McpTransportKind::from_acp_server(&http), McpTransportKind::Http);
+        assert_eq!(McpTransportKind::from_acp_server(&sse), McpTransportKind::Sse);
+    }
+
+    #[test]
+    fn filter_supported_mcp_servers_drops_unsupported_transports() {
+        let servers = vec![
+            json!({"name": "local", "command": "node"}),
+            json!({"name": "api", "type": "http", "url": "https://x"}),
+            json!({"name": "graph", "type": "sse", "url": "https://y"}),
+        ];
+        let codex = vec![McpTransportKind::Stdio, McpTransportKind::Http];
+        let kept = filter_supported_mcp_servers(&servers, &codex);
+        assert_eq!(kept.len(), 2);
+        assert!(kept.iter().all(|s| s.get("type").and_then(|v| v.as_str()) != Some("sse")));
+    }
+
+    #[test]
+    fn codex_acp_capabilities_exclude_sse_mcp_transport() {
+        let caps = provider_capabilities("codex-acp").expect("codex-acp capabilities");
+        assert!(!caps.supported_mcp_transports.contains(&McpTransportKind::Sse));
+        assert!(caps
+            .supported_mcp_transports
+            .contains(&McpTransportKind::Stdio));
+    }
+
+    #[test]
+    fn non_codex_providers_keep_all_mcp_transports() {
+        let caps = provider_capabilities("claude-acp").expect("claude-acp capabilities");
+        assert_eq!(caps.supported_mcp_transports, McpTransportKind::all().to_vec());
+    }
 
     #[test]
     fn render_prompt_bundle_does_not_add_builtin_output_contracts() {

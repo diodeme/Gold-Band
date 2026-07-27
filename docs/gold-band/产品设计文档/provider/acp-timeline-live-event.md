@@ -72,3 +72,14 @@ Claude-compatible ACP adapter 通过独立的 `agent_message_chunk` 控制文本
 - 如果 prompt 在 active compaction 尚未收到完成信号时结束、取消或失败，item 转为 `interrupted`，不能永久保留 running。
 - runtime 重新附着时，从 timeline 恢复仍在 running、或 completed 但尚待压缩后 usage 的状态；已有 `contextUsedAfter` 或 interrupted 的条目不再进入热状态。
 - ACP 未提供百分比或子阶段，任何前端都不得从耗时推导虚假百分比。
+
+## 上下文用量状态契约
+
+ACP `usage_update.used` 是上下文窗口的状态量，不是累计 Token 计数。Provider 原始采样与 UI canonical 状态必须分层：
+
+- `acp.raw.jsonl` 原样保留每次 `usage_update`，包括 `used=0`，只用于协议审计与诊断。
+- runtime 维护最后一次确认的正数上下文占用 `confirmed_used`；普通请求、取消、恢复和 compact 过渡期间出现的 `used=0` 不得覆盖该值。
+- compact running 期间冻结压缩前确认值；completed 后以 `used=0` 作为 reset 边界，reset 后首个正数作为新的当前上下文占用。为兼容不发送 reset 的 adapter，低于压缩前占用的首个正数可以作为降级确认。
+- canonical `usageUpdate` timeline item 使用 session 级稳定 ID，只写入确认后的 `used/size/cost`；`acp.snapshot.json.usedTokens` 与 `AcpUsageVm.used` 使用相同确认口径。
+- 从未获得正数确认值时，`used` 为缺省值，UI 展示 `--`，不得把瞬时 0 表达为真实空上下文。
+- `inputTokens / outputTokens / cachedReadTokens / cachedWriteTokens / totalTokens` 是 Provider 返回的消耗计数，与上下文窗口 gauge 独立；不得通过 `used` 的正向差值推导累计消耗。

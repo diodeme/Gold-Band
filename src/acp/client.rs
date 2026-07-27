@@ -29,6 +29,121 @@ struct AcpContextCompactionState {
     saw_post_completion_reset: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+struct AcpContextUsageGauge {
+    confirmed_used: Option<u64>,
+    window_size: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AcpTokenTotals {
+    total_cost_usd: Option<f64>,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    cached_read_tokens: Option<u64>,
+    cached_write_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AcpUsageState {
+    context: AcpContextUsageGauge,
+    totals: AcpTokenTotals,
+    compaction: Option<AcpContextCompactionState>,
+}
+
+impl AcpUsageState {
+    fn from_prior(
+        prior: PriorSessionMetrics,
+        compaction: Option<AcpContextCompactionState>,
+    ) -> Self {
+        Self {
+            context: AcpContextUsageGauge {
+                confirmed_used: prior.used_tokens.filter(|used| *used > 0),
+                window_size: prior.context_window_size.filter(|size| *size > 0),
+            },
+            totals: AcpTokenTotals {
+                total_cost_usd: prior.total_cost_usd,
+                input_tokens: prior.input_tokens,
+                output_tokens: prior.output_tokens,
+                cached_read_tokens: prior.cached_read_tokens,
+                cached_write_tokens: prior.cached_write_tokens,
+                total_tokens: prior.total_tokens,
+            },
+            compaction,
+        }
+    }
+
+    /// Fold one provider sample into the canonical session usage state.
+    ///
+    /// `used=0` is an adapter transition sample, not a confirmed empty context.
+    /// It is retained in `acp.raw.jsonl`, while canonical timeline/snapshot state
+    /// keeps the last confirmed positive gauge until a post-compaction value arrives.
+    fn observe_provider_usage(
+        &mut self,
+        used: Option<u64>,
+        size: Option<u64>,
+        cost: Option<f64>,
+    ) -> Option<u64> {
+        if let Some(size) = size.filter(|size| *size > 0) {
+            self.context.window_size = Some(size);
+        }
+        if let Some(cost) = cost {
+            self.totals.total_cost_usd = Some(cost);
+        }
+
+        let Some(used) = used else {
+            return None;
+        };
+        let Some(compaction) = self.compaction.as_mut() else {
+            if used > 0 {
+                self.context.confirmed_used = Some(used);
+            }
+            return None;
+        };
+
+        if compaction.completed_seq.is_none() {
+            return None;
+        }
+        if used == 0 {
+            compaction.saw_post_completion_reset = true;
+            return None;
+        }
+        let confirmed_after = compaction.saw_post_completion_reset
+            || compaction
+                .context_used_before
+                .is_some_and(|before| used < before);
+        if !confirmed_after {
+            return None;
+        }
+
+        self.context.confirmed_used = Some(used);
+        Some(used)
+    }
+
+    fn normalize_timeline_usage(&self, update: &mut Value) {
+        let Some(object) = update.as_object_mut() else {
+            return;
+        };
+        match self.context.confirmed_used {
+            Some(used) => {
+                object.insert("used".to_string(), Value::from(used));
+            }
+            None => {
+                object.remove("used");
+            }
+        }
+        match self.context.window_size {
+            Some(size) => {
+                object.insert("size".to_string(), Value::from(size));
+            }
+            None => {
+                object.remove("size");
+            }
+        }
+    }
+}
+
 use crate::acp::commands::{AcpCommandItem, parse_available_commands};
 use crate::acp::connection::{
     AcpConnectionUnavailable, AdapterConnection, AdapterConnectionKey, AdapterConnectionManager,
@@ -436,7 +551,6 @@ pub struct AcpPromptRun {
     pub used_tokens: Option<u64>,
     pub context_window_size: Option<u64>,
     pub total_cost_usd: Option<f64>,
-    pub accumulated_used_tokens: u64,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub cached_read_tokens: Option<u64>,
@@ -811,19 +925,10 @@ struct AcpRuntime<'a> {
     available_commands: Option<Vec<AcpCommandItem>>,
     system_prompt_append: Option<String>,
     session_title: Option<String>,
-    used_tokens: Option<u64>,
-    context_window_size: Option<u64>,
-    total_cost_usd: Option<f64>,
-    accumulated_used_tokens: u64,
-    input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
-    cached_read_tokens: Option<u64>,
-    cached_write_tokens: Option<u64>,
-    total_tokens: Option<u64>,
+    usage: AcpUsageState,
     active_text_stream: Option<AcpTimelineStreamState>,
     active_thought_stream: Option<AcpTimelineStreamState>,
     active_plan_stream: Option<AcpTimelineStreamState>,
-    context_compaction: Option<AcpContextCompactionState>,
     timing_state: AcpTimingState,
     live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
     pending_live_update: Option<AcpUiEvent>,
@@ -1116,15 +1221,14 @@ pub fn run_prompt(
         final_text: runtime.final_text.clone(),
         final_outputs: runtime.final_outputs.clone(),
         restored,
-        used_tokens: runtime.used_tokens,
-        context_window_size: runtime.context_window_size,
-        total_cost_usd: runtime.total_cost_usd,
-        accumulated_used_tokens: runtime.accumulated_used_tokens,
-        input_tokens: runtime.input_tokens,
-        output_tokens: runtime.output_tokens,
-        cached_read_tokens: runtime.cached_read_tokens,
-        cached_write_tokens: runtime.cached_write_tokens,
-        total_tokens: runtime.total_tokens,
+        used_tokens: runtime.usage.context.confirmed_used,
+        context_window_size: runtime.usage.context.window_size,
+        total_cost_usd: runtime.usage.totals.total_cost_usd,
+        input_tokens: runtime.usage.totals.input_tokens,
+        output_tokens: runtime.usage.totals.output_tokens,
+        cached_read_tokens: runtime.usage.totals.cached_read_tokens,
+        cached_write_tokens: runtime.usage.totals.cached_write_tokens,
+        total_tokens: runtime.usage.totals.total_tokens,
     };
     runtime.release_managed_session();
     Ok(run)
@@ -1574,19 +1678,10 @@ impl<'a> AcpRuntime<'a> {
             available_commands: None,
             system_prompt_append: None,
             session_title: None,
-            used_tokens: prior.used_tokens,
-            context_window_size: prior.context_window_size,
-            total_cost_usd: prior.total_cost_usd,
-            accumulated_used_tokens: 0,
-            input_tokens: prior.input_tokens,
-            output_tokens: prior.output_tokens,
-            cached_read_tokens: prior.cached_read_tokens,
-            cached_write_tokens: prior.cached_write_tokens,
-            total_tokens: prior.total_tokens,
+            usage: AcpUsageState::from_prior(prior, context_compaction),
             active_text_stream,
             active_thought_stream,
             active_plan_stream,
-            context_compaction,
             timing_state,
             live_update,
             pending_live_update: None,
@@ -1626,15 +1721,14 @@ impl<'a> AcpRuntime<'a> {
             final_text: self.final_text.clone(),
             final_outputs: self.final_outputs.clone(),
             restored,
-            used_tokens: self.used_tokens,
-            context_window_size: self.context_window_size,
-            total_cost_usd: self.total_cost_usd,
-            accumulated_used_tokens: self.accumulated_used_tokens,
-            input_tokens: self.input_tokens,
-            output_tokens: self.output_tokens,
-            cached_read_tokens: self.cached_read_tokens,
-            cached_write_tokens: self.cached_write_tokens,
-            total_tokens: self.total_tokens,
+            used_tokens: self.usage.context.confirmed_used,
+            context_window_size: self.usage.context.window_size,
+            total_cost_usd: self.usage.totals.total_cost_usd,
+            input_tokens: self.usage.totals.input_tokens,
+            output_tokens: self.usage.totals.output_tokens,
+            cached_read_tokens: self.usage.totals.cached_read_tokens,
+            cached_write_tokens: self.usage.totals.cached_write_tokens,
+            total_tokens: self.usage.totals.total_tokens,
         }
     }
 
@@ -2372,11 +2466,13 @@ impl<'a> AcpRuntime<'a> {
         // Capture session-end usage breakdown (inputTokens / outputTokens / …)
         // that the adapter returns alongside the stopReason.
         if let Some(usage) = result.get("usage") {
-            self.input_tokens = usage.get("inputTokens").and_then(Value::as_u64);
-            self.output_tokens = usage.get("outputTokens").and_then(Value::as_u64);
-            self.cached_read_tokens = usage.get("cachedReadTokens").and_then(Value::as_u64);
-            self.cached_write_tokens = usage.get("cachedWriteTokens").and_then(Value::as_u64);
-            self.total_tokens = usage.get("totalTokens").and_then(Value::as_u64);
+            self.usage.totals.input_tokens = usage.get("inputTokens").and_then(Value::as_u64);
+            self.usage.totals.output_tokens = usage.get("outputTokens").and_then(Value::as_u64);
+            self.usage.totals.cached_read_tokens =
+                usage.get("cachedReadTokens").and_then(Value::as_u64);
+            self.usage.totals.cached_write_tokens =
+                usage.get("cachedWriteTokens").and_then(Value::as_u64);
+            self.usage.totals.total_tokens = usage.get("totalTokens").and_then(Value::as_u64);
         }
         if acp_session_title_refresh_enabled {
             self.refresh_session_title_and_persist(
@@ -2694,13 +2790,7 @@ impl<'a> AcpRuntime<'a> {
             .get("sessionId")
             .and_then(Value::as_str)
             .map(str::to_string);
-        let update = params.get("update").cloned().unwrap_or(params);
-        let usage_after_candidate =
-            if update.get("sessionUpdate").and_then(Value::as_str) == Some("usage_update") {
-                crate::acp::events::extract_usage_fields(&update).0
-            } else {
-                None
-            };
+        let mut update = params.get("update").cloned().unwrap_or(params);
 
         if let Some(commands) = parse_available_commands(&update) {
             self.available_commands = Some(commands);
@@ -2719,25 +2809,18 @@ impl<'a> AcpRuntime<'a> {
             return Ok(());
         }
 
-        // Track usage from usage_update events so we can persist them at prompt end.
-        if update.get("sessionUpdate").and_then(Value::as_str) == Some("usage_update") {
-            let (used, size, cost) = crate::acp::events::extract_usage_fields(&update);
-            if let Some(u) = used {
-                // Accumulate positive deltas so compaction-driven resets
-                // don't lose track of the session's total token spend.
-                let prev = self.used_tokens.unwrap_or(0);
-                if u > prev {
-                    self.accumulated_used_tokens += u - prev;
-                }
-                self.used_tokens = Some(u);
-            }
-            if size.is_some() {
-                self.context_window_size = size;
-            }
-            if cost.is_some() {
-                self.total_cost_usd = cost;
-            }
-        }
+        // Fold raw provider samples into a stable context gauge before the event
+        // enters the canonical timeline. The untouched raw frame is already in
+        // acp.raw.jsonl, so transient zeroes never need to leak into UI state.
+        let usage_after_compaction =
+            if update.get("sessionUpdate").and_then(Value::as_str) == Some("usage_update") {
+                let (used, size, cost) = crate::acp::events::extract_usage_fields(&update);
+                let after = self.usage.observe_provider_usage(used, size, cost);
+                self.usage.normalize_timeline_usage(&mut update);
+                after
+            } else {
+                None
+            };
 
         if is_unscoped_codex_diagnostic_update(
             &self.provider_id,
@@ -2797,20 +2880,16 @@ impl<'a> AcpRuntime<'a> {
                 })),
             )?;
         }
-        if let Some(used) = usage_after_candidate {
+        if let Some(used) = usage_after_compaction {
             self.maybe_persist_context_compaction_usage(used)?;
         }
         Ok(())
     }
 
     fn maybe_persist_context_compaction_usage(&mut self, used: u64) -> Result<()> {
-        let Some(mut state) = self.context_compaction.clone() else {
+        let Some(state) = self.usage.compaction.clone() else {
             return Ok(());
         };
-        if !observe_context_compaction_usage(&mut state, used) {
-            self.context_compaction = Some(state);
-            return Ok(());
-        }
         let Some(mut item) = self.timeline_items.get(&state.item_id).cloned() else {
             return Ok(());
         };
@@ -2828,6 +2907,7 @@ impl<'a> AcpRuntime<'a> {
             Some(used),
         );
         self.persist_event(&item)?;
+        self.usage.compaction = None;
         append_diagnostic(
             &self.paths.diagnostics,
             "info",
@@ -2843,7 +2923,7 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn interrupt_active_context_compaction(&mut self, reason: &str) -> Result<()> {
-        let Some(state) = self.context_compaction.clone() else {
+        let Some(state) = self.usage.compaction.clone() else {
             return Ok(());
         };
         if state.completed_seq.is_some() {
@@ -2874,7 +2954,7 @@ impl<'a> AcpRuntime<'a> {
             compaction.insert("reason".to_string(), Value::String(reason.to_string()));
         }
         self.persist_event(&item)?;
-        self.context_compaction = None;
+        self.usage.compaction = None;
         append_diagnostic(
             &self.paths.diagnostics,
             "warn",
@@ -3267,14 +3347,14 @@ impl<'a> AcpRuntime<'a> {
             permission_mode_override: self.permission_mode_override.clone(),
             config_option_overrides: self.config_option_overrides.clone(),
             system_prompt_append: self.system_prompt_append.clone(),
-            used_tokens: self.used_tokens,
-            context_window_size: self.context_window_size,
-            total_cost_usd: self.total_cost_usd,
-            input_tokens: self.input_tokens,
-            output_tokens: self.output_tokens,
-            cached_read_tokens: self.cached_read_tokens,
-            cached_write_tokens: self.cached_write_tokens,
-            total_tokens: self.total_tokens,
+            used_tokens: self.usage.context.confirmed_used,
+            context_window_size: self.usage.context.window_size,
+            total_cost_usd: self.usage.totals.total_cost_usd,
+            input_tokens: self.usage.totals.input_tokens,
+            output_tokens: self.usage.totals.output_tokens,
+            cached_read_tokens: self.usage.totals.cached_read_tokens,
+            cached_write_tokens: self.usage.totals.cached_write_tokens,
+            total_tokens: self.usage.totals.total_tokens,
             timing: self.session_timing_snapshot(status, &now),
             created_at,
             updated_at: now,
@@ -3590,21 +3670,22 @@ impl<'a> AcpRuntime<'a> {
                 item_id: format!("context-compaction-{seq}"),
                 started_seq: seq,
                 started_at: timestamp.to_string(),
-                context_used_before: self.used_tokens,
-                context_size: self.context_window_size,
+                context_used_before: self.usage.context.confirmed_used,
+                context_size: self.usage.context.window_size,
                 completed_seq: None,
                 completed_at: None,
                 saw_post_completion_reset: false,
             }
         } else {
-            self.context_compaction
+            self.usage
+                .compaction
                 .clone()
                 .unwrap_or_else(|| AcpContextCompactionState {
                     item_id: format!("context-compaction-{seq}"),
                     started_seq: seq,
                     started_at: timestamp.to_string(),
-                    context_used_before: self.used_tokens,
-                    context_size: self.context_window_size,
+                    context_used_before: self.usage.context.confirmed_used,
+                    context_size: self.usage.context.window_size,
                     completed_seq: None,
                     completed_at: None,
                     saw_post_completion_reset: false,
@@ -3648,7 +3729,7 @@ impl<'a> AcpRuntime<'a> {
         {
             compaction.insert("reason".to_string(), Value::String(reason));
         }
-        self.context_compaction = context_used_after.is_none().then_some(state);
+        self.usage.compaction = context_used_after.is_none().then_some(state);
     }
 
     fn timeline_item_for_event(
@@ -3703,6 +3784,23 @@ impl<'a> AcpRuntime<'a> {
                 self.active_thought_stream = None;
                 self.active_plan_stream = None;
                 self.apply_context_compaction_event(&mut item, seq, &timestamp);
+            }
+            "usageUpdate" => {
+                item.id = item
+                    .session_id
+                    .as_deref()
+                    .map(|session_id| format!("session-usage-{session_id}"))
+                    .unwrap_or_else(|| "session-usage-current".to_string());
+                Self::finalize_non_streaming_event(
+                    (
+                        &mut self.active_text_stream,
+                        &mut self.active_thought_stream,
+                        &mut self.active_plan_stream,
+                    ),
+                    &mut item,
+                    seq,
+                    &timestamp,
+                );
             }
             "toolCall" | "toolCallUpdate" => {
                 if let Some(tool_call_id) = item.tool_call_id.clone() {
@@ -3888,20 +3986,6 @@ fn upsert_context_compaction_raw(
         "contextSize": context_size,
         "contextUsedAfter": context_used_after,
     });
-}
-
-fn observe_context_compaction_usage(state: &mut AcpContextCompactionState, used: u64) -> bool {
-    if state.completed_seq.is_none() {
-        return false;
-    }
-    if used == 0 {
-        state.saw_post_completion_reset = true;
-        return false;
-    }
-    state.saw_post_completion_reset
-        || state
-            .context_used_before
-            .is_some_and(|before| used < before)
 }
 
 /// Merge `raw.rawInput` and `raw.title` from a previous tool-call timeline
@@ -4468,19 +4552,18 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        AcpContextCompactionState, AcpRuntime, AcpRuntimePolicy, AttachedSessionReusePlan,
-        DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptActivity, PromptBundle, PromptVisibility,
-        ProviderFreshnessBaseline, RuntimeStopProbe, SessionUpdatePhase, active_context_compaction,
-        active_timeline_streams, attached_sync_required, cleanup_doctor_acp_dir_after_success,
-        contributes_to_final_text, drain_frames_until_quiet, evaluate_provider_revision,
-        is_transport_interruption, is_unscoped_codex_diagnostic_update, merge_tool_raw_input,
-        observe_context_compaction_usage, permission_decision_timeline_event,
-        plan_attached_session_reuse, prompt_activity, register_provider_control,
-        request_prompt_cancel, resolve_permission_mode, retain_bounded_doctor_acp_failure_bundle,
-        runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
-        session_new_params, session_prompt_params, session_prompt_text,
-        should_suppress_session_update, take_pending_live_update_for_stream_switch,
-        unregister_provider_control,
+        AcpContextCompactionState, AcpRuntime, AcpRuntimePolicy, AcpUsageState,
+        AttachedSessionReusePlan, DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptActivity, PromptBundle,
+        PromptVisibility, ProviderFreshnessBaseline, RuntimeStopProbe, SessionUpdatePhase,
+        active_context_compaction, active_timeline_streams, attached_sync_required,
+        cleanup_doctor_acp_dir_after_success, contributes_to_final_text, drain_frames_until_quiet,
+        evaluate_provider_revision, is_transport_interruption, is_unscoped_codex_diagnostic_update,
+        merge_tool_raw_input, permission_decision_timeline_event, plan_attached_session_reuse,
+        prompt_activity, register_provider_control, request_prompt_cancel, resolve_permission_mode,
+        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
+        session_config_fingerprint, session_load_params, session_new_params, session_prompt_params,
+        session_prompt_text, should_suppress_session_update,
+        take_pending_live_update_for_stream_switch, unregister_provider_control,
     };
     use crate::acp::{
         connection::AcpConnectionUnavailable,
@@ -5748,9 +5831,8 @@ mod tests {
         assert!(active_context_compaction(&[event("interrupted", None)]).is_none());
     }
 
-    #[test]
-    fn captures_first_positive_usage_after_provider_compaction_reset() {
-        let mut state = AcpContextCompactionState {
+    fn completed_compaction_state() -> AcpContextCompactionState {
+        AcpContextCompactionState {
             item_id: "context-compaction-31".to_string(),
             started_seq: 31,
             started_at: "1785153896Z".to_string(),
@@ -5759,11 +5841,78 @@ mod tests {
             completed_seq: Some(32),
             completed_at: Some("1785153938Z".to_string()),
             saw_post_completion_reset: false,
-        };
+        }
+    }
 
-        assert!(!observe_context_compaction_usage(&mut state, 36_881));
-        assert!(!observe_context_compaction_usage(&mut state, 0));
-        assert!(state.saw_post_completion_reset);
-        assert!(observe_context_compaction_usage(&mut state, 33_792));
+    #[test]
+    fn transient_zero_does_not_replace_confirmed_context_usage() {
+        let mut state = AcpUsageState::default();
+
+        for used in [0, 28_084, 0, 34_791, 0, 34_864, 0] {
+            assert_eq!(
+                state.observe_provider_usage(Some(used), Some(1_000_000), None),
+                None
+            );
+        }
+
+        assert_eq!(state.context.confirmed_used, Some(34_864));
+        assert_eq!(state.context.window_size, Some(1_000_000));
+    }
+
+    #[test]
+    fn compaction_accepts_first_positive_usage_after_reset_even_when_it_increases() {
+        let mut state = AcpUsageState::default();
+        state.context.confirmed_used = Some(32_606);
+        state.context.window_size = Some(1_000_000);
+        state.compaction = Some(completed_compaction_state());
+
+        assert_eq!(
+            state.observe_provider_usage(Some(36_881), Some(1_000_000), None),
+            None
+        );
+        assert_eq!(state.context.confirmed_used, Some(32_606));
+        assert_eq!(
+            state.observe_provider_usage(Some(0), Some(1_000_000), None),
+            None
+        );
+        assert_eq!(
+            state.observe_provider_usage(Some(33_792), Some(1_000_000), None),
+            Some(33_792)
+        );
+        assert_eq!(state.context.confirmed_used, Some(33_792));
+    }
+
+    #[test]
+    fn compaction_accepts_lower_positive_usage_as_no_reset_fallback() {
+        let mut state = AcpUsageState::default();
+        state.context.confirmed_used = Some(169_052);
+        state.compaction = Some(completed_compaction_state());
+
+        assert_eq!(
+            state.observe_provider_usage(Some(23_825), Some(200_000), None),
+            Some(23_825)
+        );
+        assert_eq!(state.context.confirmed_used, Some(23_825));
+    }
+
+    #[test]
+    fn canonical_usage_omits_unconfirmed_zero() {
+        let mut state = AcpUsageState::default();
+        state.observe_provider_usage(Some(0), Some(1_000_000), Some(0.25));
+        let mut update = json!({
+            "sessionUpdate": "usage_update",
+            "used": 0,
+            "size": 1_000_000,
+            "cost": {"amount": 0.25, "currency": "USD"}
+        });
+
+        state.normalize_timeline_usage(&mut update);
+
+        assert_eq!(update.get("used"), None);
+        assert_eq!(update.get("size").and_then(Value::as_u64), Some(1_000_000));
+        assert_eq!(
+            update.pointer("/cost/amount").and_then(Value::as_f64),
+            Some(0.25)
+        );
     }
 }

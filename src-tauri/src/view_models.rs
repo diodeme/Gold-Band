@@ -3452,7 +3452,10 @@ pub fn dynamic_acp_session_vm(
         usage: {
             let mut u = event_scan.usage.unwrap_or_default();
             if u.used.is_none() {
-                u.used = session.get("usedTokens").and_then(|v| v.as_u64());
+                u.used = session
+                    .get("usedTokens")
+                    .and_then(|v| v.as_u64())
+                    .filter(|used| *used > 0);
             }
             if u.size.is_none() {
                 u.size = session.get("contextWindowSize").and_then(|v| v.as_u64());
@@ -3754,7 +3757,10 @@ pub fn acp_session_vm(
             // Merge persisted session usage as fallback for restored sessions
             // where events may not contain a usage_update yet.
             if u.used.is_none() {
-                u.used = session.get("usedTokens").and_then(|v| v.as_u64());
+                u.used = session
+                    .get("usedTokens")
+                    .and_then(|v| v.as_u64())
+                    .filter(|used| *used > 0);
             }
             if u.size.is_none() {
                 u.size = session.get("contextWindowSize").and_then(|v| v.as_u64());
@@ -4063,6 +4069,24 @@ fn scan_acp_timeline(
     )
 }
 
+fn merge_confirmed_usage_observation(
+    usage: &mut Option<AcpUsageVm>,
+    used: Option<u64>,
+    size: Option<u64>,
+    cost_amount_usd: Option<f64>,
+) {
+    let current = usage.get_or_insert_with(AcpUsageVm::default);
+    if let Some(used) = used.filter(|used| *used > 0) {
+        current.used = Some(used);
+    }
+    if let Some(size) = size.filter(|size| *size > 0) {
+        current.size = Some(size);
+    }
+    if let Some(cost_amount_usd) = cost_amount_usd {
+        current.cost_amount_usd = Some(cost_amount_usd);
+    }
+}
+
 fn parse_timeline_file(
     path: &camino::Utf8Path,
     session_active: bool,
@@ -4100,12 +4124,7 @@ fn parse_timeline_file(
                     } else if is_session_update(&patch.item, "usage_update") {
                         let (used, size, cost_amount) =
                             gold_band::acp::events::extract_usage_fields(raw);
-                        usage = Some(AcpUsageVm {
-                            used,
-                            size,
-                            cost_amount_usd: cost_amount,
-                            ..Default::default()
-                        });
+                        merge_confirmed_usage_observation(&mut usage, used, size, cost_amount);
                     }
                 }
                 let should_replace = latest_by_item
@@ -4137,12 +4156,7 @@ fn parse_timeline_file(
                 } else if is_session_update(&final_item.item, "usage_update") {
                     let (used, size, cost_amount) =
                         gold_band::acp::events::extract_usage_fields(raw);
-                    usage = Some(AcpUsageVm {
-                        used,
-                        size,
-                        cost_amount_usd: cost_amount,
-                        ..Default::default()
-                    });
+                    merge_confirmed_usage_observation(&mut usage, used, size, cost_amount);
                 }
             }
             let item_id = final_item.item.id.clone();
@@ -4879,12 +4893,7 @@ fn parse_events_file(
                 } else if is_session_update(&event, "usage_update") {
                     let (used, size, cost_amount) =
                         gold_band::acp::events::extract_usage_fields(raw);
-                    usage = Some(AcpUsageVm {
-                        used,
-                        size,
-                        cost_amount_usd: cost_amount,
-                        ..Default::default()
-                    });
+                    merge_confirmed_usage_observation(&mut usage, used, size, cost_amount);
                 }
             }
             if is_hidden_from_chat(&event) {
@@ -6449,6 +6458,34 @@ mod tests {
             timing: None,
             raw: Some(json!({ "source": "goldBandPrompt" })),
         }
+    }
+
+    #[test]
+    fn usage_projection_keeps_last_confirmed_value_across_transient_zeroes() {
+        let mut usage = None;
+
+        for used in [0, 28_084, 0, 34_791, 0] {
+            merge_confirmed_usage_observation(&mut usage, Some(used), Some(1_000_000), None);
+        }
+
+        let usage = usage.unwrap();
+        assert_eq!(usage.used, Some(34_791));
+        assert_eq!(usage.size, Some(1_000_000));
+    }
+
+    #[test]
+    fn usage_projection_preserves_cost_when_zero_sample_is_ignored() {
+        let mut usage = Some(AcpUsageVm {
+            used: Some(38_223),
+            size: Some(1_000_000),
+            ..Default::default()
+        });
+
+        merge_confirmed_usage_observation(&mut usage, Some(0), Some(1_000_000), Some(0.315532));
+
+        let usage = usage.unwrap();
+        assert_eq!(usage.used, Some(38_223));
+        assert_eq!(usage.cost_amount_usd, Some(0.315532));
     }
 
     fn acp_event_at(

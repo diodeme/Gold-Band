@@ -11,7 +11,7 @@
 - 消息流使用无头像的轻量结构化行，保留 assistant 结构行的横向位置；不使用大卡片、嵌套面板或粗边框。
 - running 状态展示“正在压缩上下文”、压缩前占用、已耗时和不定进度动画；动画必须遵守 `prefers-reduced-motion`。
 - 运行超过 120 秒后展示“耗时较长，仍在等待 Agent”，但仍不得伪造失败或百分比。
-- completed 状态原位更新为“上下文压缩完成”和总耗时，并继续只展示压缩前占用与窗口上限。Claude ACP adapter 当前会把 `getContextUsage` 的完整占用与普通 turn 的 message-token proxy 混用在同一个 `usage_update.used` 字段中，因此 UI 暂不展示压缩后数值；待上游提供统一、可判别的数据口径后再恢复前后对比。
+- completed 状态原位更新为“上下文压缩完成”和总耗时。压缩条目可以继续只展示压缩前占用与窗口上限；会话底部的“上下文窗口”在 runtime 观察到 reset 后首个有效正数时切换为 compact 后 ACP 当前上下文占用。reset 过程中的 `used=0` 不进入 UI，尚未获得有效值时保持上一次确认值或展示 `--`。
 - interrupted 状态展示“上下文压缩已中断”，并由既有 ACP/runtime terminal 生命周期解除 composer 锁定。
 - composer 在 active compaction 期间将泛化 processing kind 切换为 `compacting`，文案为“正在压缩上下文”，停止按钮继续复用现有会话停止语义。
 - 状态变化使用 polite live region 提供无障碍播报。
@@ -21,6 +21,7 @@
 ## 运行时数据与内存边界
 
 - `acp.timeline.jsonl` 是会话展示事件的完整事实源；活动 runtime 内存只保存当前 text/thought/plan 累计流、未终态 tool call、未决 permission/elicitation、session metadata、usage 与 timing aggregate。完成并已持久化的历史事件必须立即从热状态释放，不能按完整会话历史常驻 `HashMap`。
+- usage aggregate 必须区分上下文窗口 gauge 与 Token 消耗 counter：`used/size` 表示 Agent ACP 最新确认的当前上下文，compact 后直接切换为 compact 后值；`input/output/cache/total` 表示 Provider 返回的累计消耗。瞬时 `used=0` 只属于 raw 协议采样或 compact reset 边界，不能覆盖 canonical timeline、snapshot 或 UI。
 - timeline 使用既有 item/patch 格式持续追加，旧文件继续可读；运行期不再依赖从全量内存历史重写 timeline。`AcpTimingState` 按交互 ID 增量观察 permission/elicitation 终态，不能为一次交互复制整份 timeline。
 - 会话树刷新只读取 attempt 的 session metadata 与 lifecycle 摘要；仅当前选中会话读取完整 timeline 事件页。非选中会话的超大或不可读 timeline 不得阻断 run/session tree 刷新；选中会话仍保持既有事件窗口配置、cursor 和终态覆盖语义。
 - 每个 ACP session route 是无损 FIFO 有界队列：最多 4 MiB 且最多 256 帧；队列为空时允许一个超过 4 MiB 的合法单帧进入。达到任一上限后 producer 阻塞等待消费，不合并、不丢弃、不重排；receiver drop、route 注销或连接关闭必须唤醒等待者。

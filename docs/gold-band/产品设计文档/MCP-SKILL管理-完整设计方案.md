@@ -25,6 +25,7 @@
 - SKILL 卡片采用紧凑稳定尺寸结构：卡片使用固定高度，顶部信息区与底部 agent/action 区均固定高度；描述最多两行省略，不能因为描述行数不同导致底部 agent 列表和操作按钮上下跳动，也不能被 grid 行高拉伸出大面积空白。
 - SKILL 管理页的项目级 workspace 选择会记忆上一次有效选择。切回“项目 SKILL”或重新进入上下文管理页时，如果该 workspace 仍存在于当前 workspace 列表中，自动恢复并加载项目 SKILL；如果 workspace 已不存在，清除本地记忆并保持未选择状态。
 - SKILL 创建/编辑抽屉拥有独立表单状态，正文 Markdown 输入、名称/描述编辑和同步目标勾选只重渲染抽屉自身；`ContextManagementPage` 列表页只负责打开目标、接收保存后的列表刷新，避免每个字符触发背后的 SKILL 卡片网格、筛选栏和 tooltip 树重新 render。
+- 上下文管理按领域延迟加载：首次进入“角色管理”只读取 Profile，不读取 Agent registry、SKILL 或会话任务树；只有进入“SKILL 管理”或打开 SKILL 创建抽屉时才并行读取 Agent registry 与 workspace 元数据。workspace 选择器必须调用轻量 `get_conversation_workspaces`，禁止为了取得项目名称复用包含 task/run 历史的 `get_conversation_sidebar`。
 
 
 ---
@@ -62,7 +63,7 @@ src/
 | `skill_catalog_block.md` | `system_prompt.hbs` `<available_skills>` | ✅ 模板对齐 |
 | ContextManagementPage | Agent Panel Settings | ✅ |
 | SkillTool (工具调用) | `SkillTool` (AgentTool trait) | ❌ 架构约束（路径 A 嵌入替代） |
-| 斜杠命令 SKILL | Slash Commands | ❌ 架构约束 |
+| 斜杠命令 SKILL | Slash Commands | ✅ 仅索引元数据并发送普通文本，不注入正文 |
 | Worktree Trust | `TrustedWorktrees` | 🔜 后续 PR |
 
 ---
@@ -375,6 +376,10 @@ You have access to the following Skills — modular capabilities...
 `write_skill` 不直接分散执行创建、覆盖、rename 和同步。Tauri command 只解析入参并委托 `SkillManager::write_instance`，由后端统一执行“预检 → 文件系统变更 → 同步链接 reconcile → 失败回滚”。
 `update_skill_sync_targets` 只处理已有 SKILL 实例的同步链接 reconcile，用于卡片上的快速同步/取消同步，不应修改 `SKILL.md` 内容或触发 rename。
 
+SKILL 写入、删除或同步链接 reconcile 成功后，Tauri command 需要异步触发当前 workspace 的命令目录刷新。每个 `ManagedAgentConfig` 直接保存主 Agent 目录与兼容 Agent 目录，并由此生成 `AgentSkillDirectoryPolicy`：写列表只包含主 Agent 目录，是 SKILL 管理同步目标；读列表包含主目录和去重后的兼容目录，是 Agent 实际发现来源。所有路径解析统一在 Agent 目录后追加 `skills`，不允许调用方分散硬编码。Claude preset 默认主目录 `.claude`、无兼容目录；Codex/Cursor/Gemini/OpenCode 分别使用自己的主目录，并配置 `.agents` 为只读兼容目录。
+
+刷新先通过 Doctor 捕获 Agent 的 ACP `available_commands_update`，再扫描读列表下用户级与 workspace 级 `skills/*/SKILL.md` 的 `name / description` frontmatter，最终按“ACP 原生命令优先、SKILL 补充、命令名不区分大小写去重”生成目录。扫描不读取或注入 `SKILL.md` 正文；用户选择条目后只向 Agent 发送普通 `/${name} ` 文本。刷新失败保留上一次成功目录，且不能阻塞 SKILL 管理操作返回。
+
 ### 3.8 UI 特性
 
 - 全局 Tab：直接展示所有全局 SKILL + 搜索
@@ -395,7 +400,7 @@ You have access to the following Skills — modular capabilities...
 | 50KB Token 预算 | ✅ | `select_catalog_skills()` |
 | 项目隔离 | ✅ | `catalog_skills_for_agent_workspace()` |
 | SkillTool (Agent 工具) | ❌ | 路径 A 内嵌替代 |
-| 斜杠命令 | ❌ | ACP 架构不支持 |
+| 斜杠命令 | ✅ | ACP 原生命令 + Agent 读目录 SKILL 元数据；普通文本发送 |
 | SKILL Mention | ❌ | ACP 架构不支持 |
 | File Watch 自动刷新 | 🔜 | 手动刷新 |
 | 信任门控 | 🔜 | C+1 方案 |
@@ -425,6 +430,10 @@ Page
 │   └── 保存（Close 时自动清 error）
 └── 删除确认 Dialogs
 ```
+
+加载生命周期固定为：Profiles Tab 挂载只执行 `get_profiles`；MCP Tab 首次激活执行 MCP 列表；SKILL Tab 首次激活执行 SKILL 列表，并按需取得 `get_agent_registry + get_conversation_workspaces`。不同 Tab 的数据结构分属不同领域，不允许页面挂载时统一预取。完整会话侧栏属于会话运行领域，即使 App 壳已经缓存，也不能成为上下文管理的 workspace 下拉数据接口。
+
+上述入口都会访问文件系统或目录树，后端必须声明为 async Tauri command，并通过统一的 `spawn_blocking_command` 在 blocking pool 中完成读取和 VM 构建。该约束覆盖 `get_profiles`、`get_agent_registry`、`list_mcp_servers`、`list_skills`、`list_project_skills` 与 `get_conversation_workspaces`，确保任一 Tab 加载期间都不占用桌面 IPC 事件处理线程。
 
 ### 4.2 组件复用
 
@@ -581,7 +590,7 @@ settings.json
 | | Token 预算 | ✅ (50KB) | ✅ (50KB) | — |
 | | 项目隔离 | ✅ (ProjectState) | ✅ (workspace filter) | — |
 | **SKILL — 调用** | SkillTool (Agent 工具) | ✅ | ❌ | 路径 A 替代 |
-| | 斜杠命令 | ✅ | ❌ | ACP 约束 |
+| | 斜杠命令 | ✅ | ✅ | 只索引元数据并发送普通文本，不做正文注入 |
 | | Mention 附件 | ✅ | ❌ | ACP 约束 |
 | | Body 懒加载 | ✅ | ❌ | eager 替代 |
 | **SKILL — 安全** | 项目信任门控 | ✅ | 🔜 | 待实施 |

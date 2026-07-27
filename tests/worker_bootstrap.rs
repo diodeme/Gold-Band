@@ -1203,7 +1203,7 @@ fn run_continue_model_override_uses_current_acp_session_model() {
 }
 
 #[test]
-fn run_continue_permission_override_uses_current_acp_session_mode() {
+fn run_continue_permission_override_uses_explicit_gold_band_override() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-continue-permission";

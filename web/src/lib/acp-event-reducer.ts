@@ -1,5 +1,8 @@
 import type { AcpSessionVm, AcpUiEventVm } from "@/types";
-import { attemptIdFromAcpEvent } from "@/lib/acp-event-normalization";
+import {
+  attemptIdFromAcpEvent,
+  originalSeqFromAcpEvent,
+} from "@/lib/acp-event-normalization";
 import { isAcpTextStreamEventKind, mergeAcpLiveStreamEvent } from "@/lib/acp-live-flush";
 
 type RawObject = Record<string, unknown>;
@@ -73,7 +76,7 @@ export function mergeAcpEventWindows(
       changed = true;
       return mergeAcpEventSnapshots(event, replacement);
     });
-    return changed ? merged : previous;
+    return changed ? orderProviderHistoryByPromptAnchors(merged) : previous;
   }
 
   const previousByKey = new Map<string, AcpUiEventVm>();
@@ -93,7 +96,149 @@ export function mergeAcpEventWindows(
         : { ...event, seq: alignDisplaySeq(event, previous) },
     );
   }
-  return [...byKey.values()].sort((left, right) => left.seq - right.seq);
+  return orderProviderHistoryByPromptAnchors(
+    [...byKey.values()].sort((left, right) => left.seq - right.seq),
+  );
+}
+
+type ProviderHistoryPlacement = {
+  afterPromptId: string | null;
+  beforePromptId: string | null;
+  gapTurnIndex: number;
+  provider: string;
+};
+
+type ProviderHistoryGroup = {
+  slot: number;
+  afterAnchorIndex: number | null;
+  gapTurnIndex: number;
+  auditSeq: number;
+  stableKey: string;
+  items: AcpUiEventVm[];
+};
+
+export function orderProviderHistoryByPromptAnchors(events: AcpUiEventVm[]) {
+  const base: AcpUiEventVm[] = [];
+  const grouped = new Map<
+    string,
+    { placement: ProviderHistoryPlacement; sample: AcpUiEventVm; items: AcpUiEventVm[] }
+  >();
+  for (const event of events) {
+    const placement = providerHistoryPlacement(event);
+    if (!placement) {
+      base.push(event);
+      continue;
+    }
+    const stableKey = JSON.stringify([
+      attemptIdFromAcpEvent(event) ?? "",
+      event.sessionId ?? "",
+      placement.provider,
+      placement.afterPromptId,
+      placement.beforePromptId,
+      placement.gapTurnIndex,
+    ]);
+    const existing = grouped.get(stableKey);
+    if (existing) existing.items.push(event);
+    else grouped.set(stableKey, { placement, sample: event, items: [event] });
+  }
+  if (grouped.size === 0) return events;
+
+  const promptIndexes = new Map<string, number>();
+  base.forEach((event, index) => {
+    if (!isGoldBandPrompt(event)) return;
+    promptIndexes.set(promptAnchorLookupKey(event, promptAnchorId(event)), index);
+  });
+
+  const groups: ProviderHistoryGroup[] = [];
+  for (const [stableKey, group] of grouped) {
+    group.items.sort(
+      (left, right) =>
+        providerHistoryItemIndex(left) - providerHistoryItemIndex(right) ||
+        originalSeqFromAcpEvent(left) - originalSeqFromAcpEvent(right) ||
+        left.seq - right.seq,
+    );
+    const auditSeq = Math.min(...group.items.map(originalSeqFromAcpEvent));
+    const beforeAnchorIndex = group.placement.beforePromptId
+      ? promptIndexes.get(
+          promptAnchorLookupKey(group.sample, group.placement.beforePromptId),
+        ) ?? null
+      : null;
+    const afterAnchorIndex = group.placement.afterPromptId
+      ? promptIndexes.get(
+          promptAnchorLookupKey(group.sample, group.placement.afterPromptId),
+        ) ?? null
+      : null;
+    let slot = beforeAnchorIndex;
+    if (slot === null && afterAnchorIndex !== null) {
+      slot = base.findIndex(
+        (event, index) => index > afterAnchorIndex && isGoldBandPrompt(event),
+      );
+      if (slot < 0) slot = base.length;
+    }
+    if (slot === null) {
+      slot = base.filter((event) => originalSeqFromAcpEvent(event) <= auditSeq).length;
+    }
+    groups.push({
+      slot,
+      afterAnchorIndex,
+      gapTurnIndex: group.placement.gapTurnIndex,
+      auditSeq,
+      stableKey,
+      items: group.items,
+    });
+  }
+  groups.sort(
+    (left, right) =>
+      left.slot - right.slot ||
+      (left.afterAnchorIndex ?? -1) - (right.afterAnchorIndex ?? -1) ||
+      left.gapTurnIndex - right.gapTurnIndex ||
+      left.auditSeq - right.auditSeq ||
+      left.stableKey.localeCompare(right.stableKey),
+  );
+
+  const slots = Array.from({ length: base.length + 1 }, () => [] as AcpUiEventVm[]);
+  for (const group of groups) slots[group.slot]!.push(...group.items);
+  const ordered: AcpUiEventVm[] = [];
+  base.forEach((event, index) => {
+    ordered.push(...slots[index]!, event);
+  });
+  ordered.push(...slots[base.length]!);
+  return ordered;
+}
+
+function providerHistoryPlacement(event: AcpUiEventVm): ProviderHistoryPlacement | null {
+  const raw = rawObject(event.raw);
+  if (raw?.source !== "providerHistory") return null;
+  const placement = rawObject(raw.historyPlacement);
+  if (placement?.version !== 1) return null;
+  return {
+    afterPromptId: stringValue(placement.afterPromptId),
+    beforePromptId: stringValue(placement.beforePromptId),
+    gapTurnIndex: numberValue(placement.gapTurnIndex) ?? 0,
+    provider: stringValue(raw.historyProvider) ?? "",
+  };
+}
+
+function isGoldBandPrompt(event: AcpUiEventVm) {
+  return event.kind === "userTextDelta" && rawObject(event.raw)?.source === "goldBandPrompt";
+}
+
+function promptAnchorId(event: AcpUiEventVm) {
+  const raw = rawObject(event.raw);
+  const scope = rawObject(raw?.goldBandScope);
+  return stringValue(raw?.promptId) ?? stringValue(scope?.originalId) ?? event.id;
+}
+
+function promptAnchorLookupKey(event: AcpUiEventVm, promptId: string) {
+  return JSON.stringify([
+    attemptIdFromAcpEvent(event) ?? "",
+    event.sessionId ?? "",
+    promptId,
+  ]);
+}
+
+function providerHistoryItemIndex(event: AcpUiEventVm) {
+  return numberValue(rawObject(event.raw)?.historyItemIndex) ?? 0;
 }
 
 export function acpEventKey(event: AcpUiEventVm) {
@@ -148,4 +293,8 @@ function rawObject(value: unknown): RawObject | null {
 
 function stringValue(value: unknown) {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function numberValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }

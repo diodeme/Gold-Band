@@ -35,7 +35,7 @@ interface ShellProps {
   onConversationUnpinTask: (projectId: string, taskId: string) => void;
   onConversationNewInWorkspace?: (projectId: string) => void;
   onConversationAddWorkspace?: () => void;
-  onConversationRemoveWorkspace?: (projectId: string) => void;
+  onConversationRemoveWorkspace?: (projectId: string) => Promise<void>;
   activeWorkspaceId?: string | null;
   children: React.ReactNode;
 }

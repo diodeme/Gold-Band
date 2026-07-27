@@ -4,6 +4,8 @@
 
 实时 ACP 会话中，部分 assistant 气泡会出现文本不完整、历史气泡为空、大段 thought 长时间不刷新后集中出现的问题。强刷后从 `acp.timeline.jsonl` 读取内容完整，说明落盘数据正常，问题位于实时事件进入前端状态的合并与 flush 链路。
 
+补充发现 Codex 旧适配器还会把 runtime Warning 和正常回答都降级成无 `messageId` 的 `agent_message_chunk`；Gold Band 的 active stream 又没有比较后续 stable ID，最终导致警告和回答融合为一个气泡。这是 adapter 信息丢失和 timeline accumulator 边界缺失共同造成的设计问题，不能通过警告英文文案过滤解决。
+
 ## 方案
 
 - 明确 UI 层 `textDelta` / `thoughtDelta` / `plan` 是稳定 timeline item 的累计快照，不是原始 token delta。
@@ -12,6 +14,10 @@
 - 非流式事件与 session 切换前同步 flush pending live stream，避免等待停止会话才补齐。
 - 后端 live 节流按稳定 timeline item 边界 flush；text/thought/plan 切换稳定 id 时，旧 pending 快照必须先发出，不能被新 item 覆盖。
 - 保留后端 timeline upsert 设计，补充 Rust 单测锁定累计内容与最新 patch 行为。
+- 将内置 Codex adapter 从 `@zed-industries/codex-acp` 替换为 `@agentclientprotocol/codex-acp`，并通过 settings schema v2 迁移现有默认安装配置。
+- active text/thought/plan stream 同时保存 provider source identity；相同显式身份继续累计，不同显式身份或“有身份/无身份”切换时创建新 stream。两个连续无身份 delta 保留兼容性的本地连续流合并。
+- 对确认来自 `@agentclientprotocol/codex-acp` 的无 `messageId` agent text 归一化为 `codex_acp.warning` 结构化诊断，保存到 diagnostics，不写入 timeline、assistant 最终正文或 UI 消息。
+- legacy events 扫描窗口采用同一身份规则，避免历史读取层再次把不同 `messageId` 拼接。
 
 ## 验收项
 
@@ -22,3 +28,15 @@
 - text 后紧跟 plan/tool 时，text 的最终 live 快照不会被覆盖。
 - `npm run web:test` 通过相关 ACP 测试。
 - Rust ACP / Tauri view model 单测覆盖 streaming delta 与 timeline patch 行为。
+- 同一 `messageId` 的多个 delta 合并；不同 `messageId` 的相邻 text delta 分离。
+- 无 provider identity 的传统 ACP 连续 token 仍可合并，不因边界修复退化成逐 token 气泡。
+- 新 Codex adapter 的无 ID warning 进入结构化 diagnostics，有 ID 正常回答仍进入 assistant 正文。
+- settings v1 中的旧 Codex npm 包规格迁移为新包，自定义非旧包参数不被覆盖。
+
+## 实施状态
+
+- 2026-07-26：完成 Codex adapter preset 与 settings schema v2 迁移。
+- 2026-07-26：完成 provider source identity 驱动的 stream 切分、Codex warning 诊断归一化和 legacy events 身份合并修复。
+- 2026-07-26：Rust core 全量单元测试通过；Codex package 持久化迁移、warning 分类、同/不同消息身份与无身份 fallback 均已固化为接口级测试。
+- 2026-07-26：Tauri 本项相关 view model 测试通过；桌面端全量测试另有既有 `timeline_permission_decision_replaces_pending_by_request_id` 失败，与本次文本 stream 身份改动无调用关系，单独留待 permission timeline 修复。
+- 2026-07-26：前端 ACP/Agent 管理相关测试及生产构建通过；本地启动页面实测新增 Codex 表单显示 `-y @agentclientprotocol/codex-acp@latest`，浏览器控制台无 warning/error，测试服务已清理。本项实现关闭。

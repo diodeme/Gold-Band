@@ -306,7 +306,7 @@ export function ConversationRunPage({
     <TooltipProvider>
       <div className="flex h-full min-h-0 flex-col bg-background">
         <div ref={headerAreaRef} className="shrink-0 relative">
-          <ConversationRunHeader
+          {!isDirect || !selectedLeaf ? <ConversationRunHeader
             run={run}
             selectedSessionLeaf={selectedLeaf}
             canViewWorkflow={canViewWorkflow}
@@ -318,7 +318,7 @@ export function ConversationRunPage({
             onToggleSessionSwitcher={() => setSessionSwitcherOpen((prev) => !prev)}
             sessionSwitcherOpen={sessionSwitcherOpen}
             onTitleChange={onTitleChange}
-          />
+          /> : null}
 
           {/* Session switcher dropdown */}
           {!isDirect && sessionSwitcherOpen ? (
@@ -392,6 +392,11 @@ export function ConversationRunPage({
             runtimeComposerContext={runtimeComposerContext}
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
             showSystemPromptAction={!isDirect}
+            directSessionHeader={isDirect ? {
+              title: run.title,
+              onTitleChange,
+              onOpenInFileManager: handleOpenInFileManager,
+            } : undefined}
             liveUpdatesPaused={workflowSheet.open}
             artifacts={selectedArtifacts}
             attachments={selectedAttachments}

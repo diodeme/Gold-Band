@@ -16,4 +16,15 @@ describe('sidebar selected-state styles', () => {
     expect(source).toContain(selectedStateClass);
     expect(source).not.toContain(invalidSelectedStateClass);
   });
+
+  it('uses sidebar foreground for navigation and section titles while preserving muted metadata', () => {
+    const source = readFileSync(
+      path.resolve(__dirname, '../src/components/conversation/ConversationSidebar.tsx'),
+      'utf8',
+    );
+
+    expect(source).toContain('text-[14px] text-sidebar-foreground hover:bg-sidebar-accent');
+    expect(source).toContain('tracking-[0.12em] text-sidebar-foreground');
+    expect(source).toContain('tabular-nums text-muted-foreground');
+  });
 });

@@ -19,28 +19,24 @@
 
 ## 任务分解
 
-### 任务 1: ManagedAgentType 增加 skills 目录映射
+### 任务 1: ManagedAgentConfig 统一管理 Agent 目录
 
-**目标**: 为每个 agent 类型定义其 skills 目录，参考 cc-switch 混合方案
+**目标**: 每个 Agent 实例显式保存主 Agent 目录与兼容 Agent 目录，Skill 路径由统一 resolver 追加 `skills`
 
 **变更文件**:
 - `src/config/mod.rs`
 
 **具体步骤**:
-1. `ManagedAgentType` 新增 `skills_dir_name()` 方法，返回硬编码默认值：
-   - `ClaudeAcp` → `".claude"`
-   - `CodexAcp` → `".codex"`
-   - `Cursor` → `".cursor"`
-   - `Gemini` → `".gemini"`
-   - `OpenCode` → `".opencode"`
-2. `ManagedAgentConfig` 新增 `skills_dir_override: Option<String>` 字段
-3. 新增 `skills_dir()` 方法：`skills_dir_override` || 硬编码默认值
-4. 新增 `skills_dir_path()` 方法：`{home}/{skills_dir()}/skills/` 或 `{workspace}/{skills_dir()}/skills/`
+1. 使用稳定的 `ManagedAgentId` 作为配置、workflow provider、诊断缓存和命令目录的关联键
+2. 内置 `ManagedAgentPreset` 提供五类 Agent 的默认 adapter、图标、主 Agent 目录和兼容 Agent 目录
+3. `ManagedAgentConfig` 新增必填 `primary_agent_dir` 与 `compatible_agent_dirs`
+4. `skill_directory_policy()` 只根据实例配置生成写目录和读目录，不再接收 Agent 类型
+5. 统一通过 `resolve_agent_skills_dir()` 生成 `{home|workspace}/{agent_dir}/skills/`
 
 **验收标准**:
-- [ ] `ManagedAgentType::skills_dir_name()` 返回正确的目录名
-- [ ] `ManagedAgentConfig::skills_dir()` 优先使用 override
-- [ ] `skills_dir_path(home, workspace)` 返回完整路径
+- [x] preset 返回正确的主目录与兼容目录
+- [x] 主目录只进入写列表一次，兼容目录只进入读列表并去重
+- [x] 所有 Agent Skill 路径由统一 resolver 追加 `skills`
 
 ---
 
@@ -84,20 +80,24 @@
 2. 重构 `scan_skills_dir()` → 接受 `agent_source: &str` 参数
 3. 重构 `SkillManager::list()`:
    - 扫描 `.gold-band/skills/` → 标记 `agent_source = ".gold-band"`
-   - 遍历已配置 agent → 扫描各 agent skills 目录 → 标记对应 `agent_source`
+   - 遍历已配置 agent → 扫描主 Agent 目录和全部兼容 Agent 目录下的 skills → 标记对应 `agent_source`
+   - 多个 Agent 共享 `.agents` 等同一物理读取目录时只扫描一次；创建、同步和冲突检测仍只面向主 Agent 目录
    - 严格过滤：agent 在 settings 中已配置 **AND** 目录实际存在
 4. **双来源去重**: `.gold-band` 管理的 SKILL 与 agent 目录扫描结果取并集，`.gold-band` 优先（按目录路径前缀判断）
 5. 同样更新 `list_by_workspace()` 支持项目级多 agent 扫描
-6. 删除以下函数：
+6. 卡片只以实体目录为主体，软链接不生成独立卡片；左侧图标为完整读取目录覆盖该实体的 Agent，右侧图标为可创建软链接的 Agent及仍保留历史软链接的直读 Agent
+7. 直读 Agent 的历史软链接删除后只从右侧操作区消失，左侧直读状态继续保留；Agent 配置变化只动态重算图标，不自动删除文件系统链接
+8. 删除以下函数：
    - `catalog_skills()` / `catalog_skills_for_workspace()`
    - `catalog_skills_for_agent()` / `catalog_skills_for_agent_workspace()`
    - `render_skill_catalog()` / `render_skill_catalog_for_workspace()`
    - `select_catalog_skills()` / `apply_skill_overrides()` / `MAX_CATALOG_BYTES`
-7. 删除 `parse_skill_md()` 中 `disable_model_invocation` 解析逻辑
+9. 删除 `parse_skill_md()` 中 `disable_model_invocation` 解析逻辑
 
 **验收标准**:
-- [ ] `list()` 返回包含 `.gold-band` + 所有已配置 agent 的 SKILL 列表
-- [ ] 严格过滤：未配置 agent 的目录不被扫描
+- [x] `list()` 返回包含 `.gold-band` + 所有已配置 agent 完整读取目录的 SKILL 列表
+- [x] 严格过滤：未配置 agent 的目录不被扫描
+- [x] 兼容目录参与全局与项目扫描，共享物理目录只扫描一次
 - [ ] 同名 SKILL：`.gold-band` 版本保留，agent 版本丢弃
 - [ ] agent 目录不存在时不报错（静默跳过）
 - [ ] catalog 相关函数全部删除，`cargo check` 无引用
@@ -136,7 +136,7 @@
 - `src-tauri/src/commands.rs`（`write_skill`、`delete_skill` 命令）
 
 **具体步骤**:
-1. 重构 `sync_all()` 签名 — 接受 `target_agents: Vec<ManagedAgentType>` 参数
+1. 重构 `sync_all()` 签名 — 接受稳定 Agent ID 集合参数
 2. 为每个目标 agent 调用 `sync_to_target()`（agent skills 目录作为 target_dir）
 3. 同步逻辑按目标集合对账：创建缺失链接、删除未勾选且指向当前实例的既有链接
 4. 删除 SKILL 时，遍历所有已配置 agent 目录清理对应软链
@@ -263,8 +263,8 @@
 - `src/skill/symlink.rs`（已有部分测试，更新）
 
 **具体步骤**:
-1. 测试 `ManagedAgentType::skills_dir_name()` 每个变体返回值
-2. 测试 `ManagedAgentConfig::skills_dir()` 覆盖逻辑
+1. 测试内置 preset 的主 Agent 目录与兼容 Agent 目录
+2. 测试 `ManagedAgentConfig::skill_directory_policy()` 的读写分离与去重逻辑
 3. 测试 `SkillManager::list()` 多目录扫描 + 去重
 4. 测试同名冲突检测（模拟 agent 目录存在同名 SKILL）
 5. 测试 `symlink::sync_all()` 多目标同步
@@ -279,7 +279,7 @@
 ## 执行依赖
 
 ```
-任务1 (ManagedAgentType 映射)
+任务1 (Agent ID、preset 与实例目录配置)
 ├─→ 任务2 (SkillMeta 字段更新)
 ├─→ 任务3 (SkillManager 重构)
 │   └─→ 任务4 (同名冲突检测)

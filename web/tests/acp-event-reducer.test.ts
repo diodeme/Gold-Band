@@ -131,4 +131,76 @@ describe("ACP event reducer", () => {
 
     expect(acpSessionEventsSignature(before)).not.toBe(acpSessionEventsSignature(after));
   });
+
+  it("reorders placement-only provider history patches before the matching local prompt", () => {
+    const prompt = (id: string, promptId: string, seq: number, content: string) =>
+      event({
+        id,
+        kind: "userTextDelta",
+        seq,
+        content,
+        raw: { source: "goldBandPrompt", promptId },
+      });
+    const externalRaw = (historyItemIndex: number, placement = false) => ({
+      source: "providerHistory",
+      historyProvider: "claude-acp",
+      historyItemIndex,
+      ...(placement
+        ? {
+            historyPlacement: {
+              version: 1,
+              afterPromptId: "prompt-1",
+              beforePromptId: "prompt-2",
+              gapTurnIndex: 1,
+            },
+          }
+        : {}),
+    });
+    const previous = [
+      prompt("gold-band-user-prompt-1", "prompt-1", 1, "hi"),
+      event({ id: "assistant-message-first", kind: "textDelta", seq: 2, content: "hello" }),
+      prompt("gold-band-user-prompt-2", "prompt-2", 29, "ask"),
+      event({ id: "tool-call-ask", kind: "toolCall", seq: 30, toolCallId: "ask" }),
+      event({
+        id: "provider-user-external",
+        kind: "userTextDelta",
+        seq: 101,
+        content: "这是我追加的信息",
+        raw: externalRaw(1),
+      }),
+      event({
+        id: "assistant-message-external",
+        kind: "textDelta",
+        seq: 102,
+        content: "收到",
+        raw: externalRaw(2),
+      }),
+    ];
+    const merged = mergeAcpEventWindows(previous, [
+      event({
+        id: "provider-user-external",
+        kind: "userTextDelta",
+        seq: 101,
+        content: "这是我追加的信息",
+        raw: externalRaw(1, true),
+      }),
+      event({
+        id: "assistant-message-external",
+        kind: "textDelta",
+        seq: 102,
+        content: "收到",
+        raw: externalRaw(2, true),
+      }),
+    ]);
+
+    expect(merged.map((item) => item.id)).toEqual([
+      "gold-band-user-prompt-1",
+      "assistant-message-first",
+      "provider-user-external",
+      "assistant-message-external",
+      "gold-band-user-prompt-2",
+      "tool-call-ask",
+    ]);
+    expect(merged[2]!.seq).toBe(101);
+  });
 });

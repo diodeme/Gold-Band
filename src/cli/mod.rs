@@ -6,7 +6,7 @@ use crate::config::{
 };
 use crate::console::run_console;
 use crate::observability::{init_tracing, touch_log_file_best_effort};
-use crate::storage::{GoldBandPaths, read_json};
+use crate::storage::{GoldBandPaths, load_settings_file, read_json};
 use anyhow::Result;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
@@ -112,7 +112,7 @@ pub async fn run() -> Result<()> {
     let repo_root = Utf8PathBuf::from_path_buf(cwd)
         .map_err(|_| anyhow::anyhow!("working directory is not valid UTF-8"))?;
     let paths = GoldBandPaths::new(repo_root.clone());
-    let settings: SettingsConfig = read_json(&paths.user_settings_file()).unwrap_or_default();
+    let settings = load_settings_file(&paths.user_settings_file()).unwrap_or_default();
     let state: StateConfig = read_json(&paths.user_state_file()).unwrap_or_default();
     let enable_stderr_progress = !matches!(cli.command, Commands::Console { .. });
     let config = resolve_runtime_config(&cli, &settings, &state);

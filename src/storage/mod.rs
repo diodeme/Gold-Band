@@ -1,5 +1,6 @@
 pub mod sqlite;
 
+use crate::config::SettingsConfig;
 use crate::domain::VERSION;
 use anyhow::{Result, anyhow};
 use atomic_write_file::AtomicWriteFile;
@@ -188,6 +189,11 @@ impl GoldBandPaths {
     pub fn agent_diagnostics_file(&self) -> Utf8PathBuf {
         self.user_gold_band_root
             .join("desktop/agent-diagnostics.json")
+    }
+
+    pub fn agent_command_catalogs_file(&self) -> Utf8PathBuf {
+        self.user_gold_band_root
+            .join("desktop/agent-command-catalogs.json")
     }
 
     pub fn doctor_dir(&self) -> Utf8PathBuf {
@@ -799,6 +805,18 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &Utf8Path) -> Result<T> {
     unreachable!("read_json should have returned within retry loop")
 }
 
+pub fn load_settings_file(path: &Utf8Path) -> Result<SettingsConfig> {
+    if !path.exists() {
+        return Ok(SettingsConfig::default());
+    }
+    let value: serde_json::Value = read_json(path)?;
+    let (settings, migrated) = SettingsConfig::from_json_value_with_migration(value)?;
+    if migrated {
+        write_json(path, &settings)?;
+    }
+    Ok(settings)
+}
+
 fn should_retry_json_read(content: &str, error: &serde_json::Error) -> bool {
     content.trim().is_empty()
         || matches!(
@@ -905,6 +923,8 @@ pub fn roll_jsonl_unlocked(path: &Utf8Path, max_size: u64, target_size: u64) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{CURRENT_SETTINGS_SCHEMA_VERSION, MANAGED_AGENT_PRESETS, ManagedAgentId};
+    use std::str::FromStr;
     use tempfile;
 
     #[test]
@@ -1078,6 +1098,91 @@ mod tests {
             .unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].file_name().to_string_lossy(), "state.json");
+    }
+
+    #[test]
+    fn load_settings_file_migrates_and_persists_legacy_agent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("settings.json")).unwrap();
+        let legacy = serde_json::json!({
+            "agents": {
+                "codex-cli": {
+                    "adapter": MANAGED_AGENT_PRESETS[1].default_config().adapter,
+                    "skillsDirOverride": ".custom-codex",
+                    "externalSessionSyncEnabled": false
+                }
+            }
+        });
+        write_json(&path, &legacy).unwrap();
+
+        let settings = load_settings_file(&path).unwrap();
+
+        let codex_id = ManagedAgentId::from_str("codex-acp").unwrap();
+        let codex = &settings.agents.unwrap()[&codex_id];
+        assert_eq!(codex.primary_agent_dir, ".custom-codex");
+        assert_eq!(codex.compatible_agent_dirs, vec![".agents"]);
+
+        let persisted: serde_json::Value = read_json(&path).unwrap();
+        assert_eq!(
+            persisted["settingsSchemaVersion"],
+            serde_json::json!(CURRENT_SETTINGS_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            persisted["agents"]["codex-acp"]["primaryAgentDir"],
+            ".custom-codex"
+        );
+        assert_eq!(
+            persisted["agents"]["codex-acp"]["compatibleAgentDirs"],
+            serde_json::json!([".agents"])
+        );
+        assert!(persisted["agents"].get("codex-cli").is_none());
+        assert!(
+            persisted["agents"]["codex-acp"]
+                .get("skillsDirOverride")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn load_settings_file_migrates_and_persists_legacy_codex_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("settings.json")).unwrap();
+        let legacy = serde_json::json!({
+            "settingsSchemaVersion": 1,
+            "agents": {
+                "codex-acp": {
+                    "adapter": {
+                        "command": "npx",
+                        "args": ["-y", "@zed-industries/codex-acp@latest"],
+                        "displayName": "Codex",
+                        "env": {}
+                    },
+                    "primaryAgentDir": ".codex",
+                    "compatibleAgentDirs": [".agents"],
+                    "externalSessionSyncEnabled": false
+                }
+            }
+        });
+        write_json(&path, &legacy).unwrap();
+
+        let settings = load_settings_file(&path).unwrap();
+
+        let codex_id = ManagedAgentId::from_str("codex-acp").unwrap();
+        let codex = &settings.agents.unwrap()[&codex_id];
+        assert_eq!(
+            codex.adapter.args,
+            vec!["-y", "@agentclientprotocol/codex-acp@latest"]
+        );
+
+        let persisted: serde_json::Value = read_json(&path).unwrap();
+        assert_eq!(
+            persisted["settingsSchemaVersion"],
+            serde_json::json!(CURRENT_SETTINGS_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            persisted["agents"]["codex-acp"]["adapter"]["args"],
+            serde_json::json!(["-y", "@agentclientprotocol/codex-acp@latest"])
+        );
     }
 
     #[test]

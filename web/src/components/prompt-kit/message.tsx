@@ -46,15 +46,20 @@ const MessageAvatar = ({
 export type MessageContentProps = {
   children: React.ReactNode
   className?: string
+  variant?: "default" | "user" | "assistant"
 } & React.HTMLProps<HTMLDivElement>
 
 const MessageContent = ({
   children,
   className,
+  variant = "default",
   ...props
 }: MessageContentProps) => {
   const classNames = cn(
-    "rounded-lg p-2 text-foreground bg-secondary break-words whitespace-normal",
+    "rounded-lg p-2 break-words whitespace-normal",
+    variant === "default" && "bg-secondary text-foreground",
+    variant === "user" && "bg-message-user text-message-user-foreground",
+    variant === "assistant" && "bg-transparent text-foreground",
     className
   )
 

@@ -22,7 +22,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { ChevronDown, CircleHelp, Loader2, Pencil, RotateCcw, Save } from 'lucide-react';
+import { Check, ChevronDown, CircleHelp, Loader2, Pencil, RotateCcw, Save } from 'lucide-react';
 import { checkLocalClaude, getMetricsSettings, getSystemFonts, saveMetricsSettings } from '../api';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
@@ -619,14 +619,13 @@ function ThemeSummaryCard({ eyebrow, option, active = false, buttonLabel, onOpen
     <div className="@container/theme-summary">
       <div className={cn('grid gap-3 rounded-lg border border-border/35 bg-transparent p-3 transition-colors @lg/theme-summary:grid-cols-[auto_minmax(0,1fr)] @lg/theme-summary:items-center @xl/theme-summary:grid-cols-[auto_minmax(0,1fr)_auto]', active && 'border-primary/45 bg-primary/[0.04]')}>
         <TerminalPreview palette={option.preview} compact />
-          <div className="min-w-0 space-y-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs text-muted-foreground">{eyebrow}</span>
-              {active ? <Badge variant="outline" className="px-1.5 py-0 text-[10px]">{t('settings.activeTheme')}</Badge> : null}
-            </div>
-            <div className="text-base font-semibold">{t(option.labelKey)}</div>
-            <div className="break-words text-xs text-muted-foreground">{t(option.descriptionKey)}</div>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">{eyebrow}</span>
+            {active ? <Badge variant="outline" className="px-1.5 py-0 text-[10px]">{t('settings.activeTheme')}</Badge> : null}
           </div>
+          <div className="text-base font-semibold">{t(option.labelKey)}</div>
+        </div>
         <Button variant="outline" className="w-full @lg/theme-summary:col-span-2 @xl/theme-summary:col-span-1 @xl/theme-summary:w-auto" onClick={onOpen}>{buttonLabel}</Button>
       </div>
     </div>
@@ -643,9 +642,9 @@ interface ThemeOptionGroupProps {
 
 function ThemeOptionGroup({ title, options, currentTheme, resolvedTheme, onSelect }: ThemeOptionGroupProps) {
   return (
-    <section className="grid gap-3 py-4 @lg/theme-drawer:grid-cols-[72px_minmax(0,1fr)]">
-      <div className="pt-3 text-sm font-semibold text-muted-foreground">{title}</div>
-      <div className="grid gap-3">
+    <section className="space-y-3 py-4">
+      <div className="text-sm font-semibold text-muted-foreground">{title}</div>
+      <div className="grid gap-3 @2xl/theme-drawer:grid-cols-2">
         {options.map((option) => (
           <ThemeOptionCard
             key={option.id}
@@ -669,24 +668,26 @@ interface ThemeOptionCardProps {
 
 function ThemeOptionCard({ option, selected, synced, onSelect }: ThemeOptionCardProps) {
   const { t } = useTranslation();
+  const active = selected || synced;
   return (
     <button
       type="button"
-      aria-pressed={selected}
+      aria-pressed={active}
       className={cn(
-        'group flex min-h-32 gap-4 rounded-lg border border-border/40 bg-transparent p-3 text-left transition hover:border-primary/60 hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        selected && 'border-primary/65 bg-primary/[0.07] text-primary',
-        !selected && synced && 'border-primary/40',
+        'group flex min-w-0 items-center gap-4 rounded-xl border border-border/45 bg-card p-3 text-left transition-[background-color,border-color,box-shadow] hover:border-primary/35 hover:bg-accent/20 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        active && 'border-primary/45 bg-primary/[0.045] ring-1 ring-inset ring-primary/15',
       )}
       onClick={onSelect}
     >
       <TerminalPreview palette={option.preview} />
-      <div className="flex min-w-0 flex-1 flex-col justify-center gap-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-semibold text-foreground">{t(option.labelKey)}</span>
-          {synced && !selected ? <Badge variant="outline" className="px-1.5 py-0 text-[10px]">{t('settings.activeTheme')}</Badge> : null}
-        </div>
-        <span className="text-xs leading-relaxed text-muted-foreground">{t(option.descriptionKey)}</span>
+      <div className="flex min-w-0 flex-1 flex-col items-start justify-center gap-2">
+        <span className="truncate text-base font-semibold text-foreground">{t(option.labelKey)}</span>
+        {active ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[10px] font-medium text-primary-foreground">
+            <Check className="size-3" aria-hidden="true" />
+            {t('settings.activeTheme')}
+          </span>
+        ) : null}
       </div>
     </button>
   );

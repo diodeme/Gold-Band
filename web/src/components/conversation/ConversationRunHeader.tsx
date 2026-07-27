@@ -1,11 +1,10 @@
-import { Eye, FolderOpen, RotateCcw, Workflow, ChevronDown, Pencil } from 'lucide-react';
+import { Eye, FolderOpen, RotateCcw, Workflow, ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useCallback, useRef, useState } from 'react';
 import type { ConversationRunVm, ConversationSessionLeafVm } from '../../types';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
+import { EditableConversationTitle } from '@/components/conversation/EditableConversationTitle';
 
 interface ConversationRunHeaderProps {
   run: ConversationRunVm;
@@ -37,68 +36,21 @@ export function ConversationRunHeader({
   const { t } = useTranslation();
   const isRunning = run.runStatus === 'running';
   const isDirect = run.runMode === 'direct';
-  const [editingTitle, setEditingTitle] = useState(false);
-  const [titleValue, setTitleValue] = useState(run.title);
-  const inputRef = useRef<HTMLInputElement>(null);
   const selectedSessionDisplay = selectedSessionLeaf?.runtimeDisplay;
   const selectedSessionRunning = selectedSessionDisplay?.tone === 'running';
   const selectedSessionDotClass = runtimeDotClass(selectedSessionDisplay?.tone);
 
-  const startEditing = useCallback(() => {
-    setTitleValue(run.title);
-    setEditingTitle(true);
-    requestAnimationFrame(() => inputRef.current?.select());
-  }, [run.title]);
-
-  const commitTitle = useCallback(() => {
-    setEditingTitle(false);
-    const trimmed = titleValue.trim();
-    if (trimmed && trimmed !== run.title) {
-      onTitleChange?.(trimmed);
-    }
-  }, [titleValue, run.title, onTitleChange]);
-
-  const handleTitleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') { e.preventDefault(); commitTitle(); }
-    if (e.key === 'Escape') { setTitleValue(run.title); setEditingTitle(false); }
-  }, [commitTitle, run.title]);
-
   return (
-    <div className="shrink-0 bg-gold-surface-high/60 px-5 pb-0.5 pt-0.5">
+    <div className="shrink-0 bg-content-header px-5 pb-0.5 pt-0.5">
       <div className="flex min-w-0 items-center gap-2">
-        {/* Title */}
-        {editingTitle ? (
-          <input
-            ref={inputRef}
-            className="min-w-0 flex-1 rounded-md border border-primary/40 bg-background px-2 py-0.5 text-sm font-semibold text-foreground outline-none ring-2 ring-primary/10"
-            value={titleValue}
-            onChange={(e) => setTitleValue(e.target.value)}
-            onBlur={commitTitle}
-            onKeyDown={handleTitleKeyDown}
-          />
-        ) : (
-          <button
-            type="button"
-            className="group -ml-1 flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 py-0.5 transition-colors hover:bg-muted/50"
-            onClick={startEditing}
-            title={t('conversation.runtime.titleEdit')}
-          >
-            <h1 className="min-w-0 truncate text-sm font-semibold leading-6 text-foreground">{run.title}</h1>
-            {!isDirect ? <span className="shrink-0 text-[10px] text-muted-foreground/60">{run.runId}</span> : null}
-            <Pencil className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
-          </button>
-        )}
+        <EditableConversationTitle
+          title={run.title}
+          metadata={!isDirect ? run.runId : null}
+          className="flex-1"
+          onTitleChange={onTitleChange}
+        />
 
         {/* Session switcher toggle */}
-        {isDirect && run.agentIdentity ? (
-          <div className="flex min-w-0 items-center gap-2 rounded-full bg-muted/45 px-2.5 py-1 text-[11px] text-muted-foreground">
-            <img src={agentIconSrc(run.agentIdentity.iconKey)} alt="" className={agentIconClass(run.agentIdentity.iconKey, 'size-4 shrink-0')} />
-            <span className="max-w-36 truncate font-medium text-foreground/85">{run.agentIdentity.displayName}</span>
-            {run.directConfig?.modelId ? <span className="max-w-32 truncate">· {run.directConfig.modelId}</span> : null}
-            {run.directConfig?.permissionMode ? <span className="max-w-28 truncate">· {run.directConfig.permissionMode}</span> : null}
-          </div>
-        ) : null}
-
         {!isDirect ? <Button
           variant="ghost"
           size="sm"
@@ -160,7 +112,13 @@ export function ConversationRunHeader({
           {onOpenInFileManager ? (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="size-5.5" onClick={onOpenInFileManager}>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-5.5"
+                  aria-label={t('conversation.runtime.openInFileManager')}
+                  onClick={onOpenInFileManager}
+                >
                   <FolderOpen className="size-3.5" />
                 </Button>
               </TooltipTrigger>

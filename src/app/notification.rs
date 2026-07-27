@@ -6,7 +6,8 @@
 //!
 //! 生命周期语义见 `.claude/design/system-notification-intervention-reimpl-plan.md`：
 //! 弹窗是一次性提醒，「点掉即消失」，无 resolved 闭环。去重器在用户点掉前拦截
-//! 同节点同原因的重复信号，点掉后清理 key，使同节点可再次弹出。
+//! 同一 canonical event 的重复信号，点掉后清理 key；request-scoped ACP 交互按 request id
+//! 区分，允许同一 attempt 的后续权限/提问继续提醒。
 
 use std::sync::{Mutex, MutexGuard};
 
@@ -67,7 +68,7 @@ pub enum InterventionType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InterventionNotification {
-    /// 去重键，格式 `run:round:node:attempt:reason`（统一路径 A/B，不含 request_id）。
+    /// canonical 去重键：attempt 级干预使用 reason，ACP permission/elicitation 追加 request id。
     pub dedup_key: String,
     pub task_id: String,
     pub task_title: Option<String>,
@@ -105,6 +106,51 @@ impl InterventionNotification {
 
     #[allow(clippy::too_many_arguments)]
     pub fn from_intervention_kind(
+        task_id: &str,
+        task_title: Option<&str>,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        node_label: &str,
+        kind: RuntimeInterventionKind,
+    ) -> Self {
+        Self::from_intervention_kind_with_event_id(
+            None, task_id, task_title, run_id, round_id, node_id, attempt_id, node_label, kind,
+        )
+    }
+
+    /// 从 lifecycle 语义事件构造通知，并直接采用事件的 canonical event_id 去重。
+    /// request-scoped permission/elicitation 因而能区分同一 attempt 内的多次交互，
+    /// 同一请求的重复 live update 仍会收敛为一条通知。
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_intervention_event(
+        event_id: &str,
+        task_id: &str,
+        task_title: Option<&str>,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        node_label: &str,
+        kind: RuntimeInterventionKind,
+    ) -> Self {
+        Self::from_intervention_kind_with_event_id(
+            Some(event_id),
+            task_id,
+            task_title,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            node_label,
+            kind,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_intervention_kind_with_event_id(
+        event_id: Option<&str>,
         task_id: &str,
         task_title: Option<&str>,
         run_id: &str,
@@ -153,10 +199,17 @@ impl InterventionNotification {
                 None,
             ),
         };
-        let dedup_key = dedup_suffix.map_or_else(
-            || make_dedup_key(run_id, round_id, node_id, attempt_id, pause_reason),
-            |suffix| make_dedup_key_with_suffix(run_id, round_id, node_id, attempt_id, suffix),
-        );
+        let dedup_key = event_id
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                dedup_suffix.map_or_else(
+                    || make_dedup_key(run_id, round_id, node_id, attempt_id, pause_reason),
+                    |suffix| {
+                        make_dedup_key_with_suffix(run_id, round_id, node_id, attempt_id, suffix)
+                    },
+                )
+            });
         let task_label = task_title.unwrap_or(task_id);
         let body = format!("{} · {} {}", task_label, node_label, body_template);
 
@@ -302,7 +355,7 @@ pub fn pause_reason_for_intervention(kind: RuntimeInterventionKind) -> PauseReas
 
 /// 读取 Direct 会话的通知展示身份。该判断基于持久化会话领域数据，而不是生成的
 /// workflow/node id；在 lifecycle 事件产生时调用，使跨工作区通知也不依赖当前 UI 上下文。
-pub(crate) fn direct_conversation_agent_label(app: &super::App, task_id: &str) -> Option<String> {
+pub fn direct_conversation_agent_label(app: &super::App, task_id: &str) -> Option<String> {
     let metadata: ConversationNotificationMetadata = crate::storage::read_json(
         &app.paths
             .task_dir(task_id)
@@ -749,6 +802,38 @@ mod tests {
             "run-1:round-1:node-1:attempt-1:elicitation-requested"
         );
         assert_ne!(manual, elicitation);
+    }
+
+    #[test]
+    fn intervention_event_id_keeps_repeated_requests_in_one_attempt_distinct() {
+        let first = InterventionNotification::from_intervention_event(
+            "run-1:round-1:node-1:attempt-1:elicitation-requested:elicit-1",
+            "task-1",
+            Some("登录模块"),
+            "run-1",
+            "round-1",
+            "node-1",
+            "attempt-1",
+            "登录节点",
+            RuntimeInterventionKind::ElicitationRequested,
+        );
+        let second = InterventionNotification::from_intervention_event(
+            "run-1:round-1:node-1:attempt-1:elicitation-requested:elicit-2",
+            "task-1",
+            Some("登录模块"),
+            "run-1",
+            "round-1",
+            "node-1",
+            "attempt-1",
+            "登录节点",
+            RuntimeInterventionKind::ElicitationRequested,
+        );
+        let dedup = NotificationDedup::new();
+
+        assert_ne!(first.dedup_key, second.dedup_key);
+        assert!(dedup.try_send(&first.dedup_key));
+        assert!(!dedup.try_send(&first.dedup_key));
+        assert!(dedup.try_send(&second.dedup_key));
     }
 
     #[test]

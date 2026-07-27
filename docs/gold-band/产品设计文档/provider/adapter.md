@@ -20,6 +20,7 @@ provider adapter 是 provider-specific 差异的隔离层。
 - 在 A() 内部把调用请求整理成 prompt bundle
 - 把 prompt bundle 映射为 ACP 调用：根据 `supports_system_prompt` 决定是否通过 `_meta.systemPrompt.append` 注入稳定 system prompt；不支持时把稳定 system prompt 作为 Gold Band hidden 段内联到 user prompt 前
 - 接收 ACP `session/update`、permission request 与 prompt response
+- 对 `session/update` 做 provider-aware 归一化：消息正文、思考、计划和 provider 诊断必须落入不同领域；诊断不得混入 assistant 正文或最终输出
 - 保存 ACP 会话观测材料、adapter 返回的 session config 快照（`models` / `modes` / `configOptions`）、通过项目级 feature flag 控制的可选 `session/list` 轮询 best-effort 拉取的 session title 缓存与 raw frame
 - 提供 worker reference 与外部 CLI handoff
 - 暴露能力信息
@@ -94,7 +95,16 @@ provider adapter 是 provider-specific 差异的隔离层。
 - provider 不负责把 `outputArtifact.content` parse 成语义对象
 - `sessionEvents` 保持 ACP session event 语义，用于会话详情可视化，不再转换为 Gold Band 自研 `progress.events.jsonl`
 - `rawSession` 只用于 raw viewer / 排障，不作为 UI 主协议
+- 流式正文、思考和计划只有在 provider 稳定身份一致时才能累计到同一 timeline item；两个显式 `messageId` 不同的相邻文本必须切分。对于不提供消息身份的 ACP adapter，仅允许在同 kind 的连续流内使用本地 fallback 身份，不能据此推断跨事件身份
+- provider diagnostic 必须写入 `acp.diagnostics.jsonl`，至少保存稳定 `code`、`level`、原始 message 和 provider/update 上下文；它不参与 assistant `final_text`、`final_outputs` 或聊天消息渲染
 - 若当前节点未声明 `output`，则 `resultPayload` 可以为空或缺省；runtime 不因此报错
+
+### Codex ACP 实现约束
+
+- 内置 `codex-acp` preset 使用维护中的 `@agentclientprotocol/codex-acp`，不再使用会丢失 Codex event/item 身份的 `@zed-industries/codex-acp`
+- `@agentclientprotocol/codex-acp` 的正常 agent text delta 必须携带 `messageId=itemId`；同一 ID 的 delta 累计，不同 ID 的 delta 分离
+- 该 adapter 把 Codex warning 映射为无 `messageId` 的 `agent_message_chunk`。Gold Band 只在确认当前运行的是上述 adapter 实现时，将这种无作用域文本归一化为 `codex_acp.warning` 诊断；不得按英文前缀、具体警告文案或时间间隔过滤
+- 自定义 ACP adapter 或旧 adapter 不得套用“无 `messageId` 即 warning”的 Codex 专属规则，避免误隐藏正常回答
 
 ### `openSession(ref)`
 根据 `worker-ref` 打开某个 provider 的原始会话。

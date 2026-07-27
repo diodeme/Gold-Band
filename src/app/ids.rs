@@ -50,22 +50,6 @@ pub(crate) fn reserve_next_run_dir(runs_dir: &Utf8Path) -> Result<(String, Utf8P
     }
 }
 
-pub(crate) fn next_round_id(rounds_dir: &Utf8Path) -> Result<String> {
-    let mut max_id = 0_u32;
-    if rounds_dir.exists() {
-        for entry in fs::read_dir(rounds_dir.as_std_path())? {
-            let entry = entry?;
-            if let Some(name) = entry.file_name().to_str()
-                && let Some(number) = name.strip_prefix("round-")
-                && let Ok(parsed) = number.parse::<u32>()
-            {
-                max_id = max_id.max(parsed);
-            }
-        }
-    }
-    Ok(format!("round-{max:03}", max = max_id + 1))
-}
-
 pub(crate) fn generate_uuid() -> String {
     Uuid::new_v4().simple().to_string()
 }
@@ -133,23 +117,6 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), 100);
-    }
-
-    #[test]
-    fn next_round_id_empty_dir() {
-        let dir = TempDir::new().unwrap();
-        let p = camino::Utf8Path::from_path(dir.path()).unwrap();
-        assert_eq!(next_round_id(p).unwrap(), "round-001");
-    }
-
-    #[test]
-    fn next_round_id_with_existing() {
-        let dir = TempDir::new().unwrap();
-        let p = camino::Utf8Path::from_path(dir.path()).unwrap();
-        std::fs::create_dir_all(p.join("round-001")).unwrap();
-        std::fs::create_dir_all(p.join("round-002")).unwrap();
-        std::fs::create_dir_all(p.join("round-005")).unwrap();
-        assert_eq!(next_round_id(p).unwrap(), "round-006");
     }
 
     #[test]

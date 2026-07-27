@@ -556,7 +556,7 @@ const resources = {
         permissionMode: "权限模式",
         dynamicPermissionModeHelp:
           "选择一个权限级别（只读 / 询问 / 完全访问），系统自动映射到各 agent 的实际权限模式。AI-DYNAMIC 内部所有派生节点共用该级别。",
-        permissionModeDefault: "默认 / 不设置",
+        permissionModeUnspecified: "不指定",
         permissionModeReadOnly: "只读",
         permissionModeAsk: "询问",
         permissionModeFullAccess: "完全访问",
@@ -1152,6 +1152,7 @@ const resources = {
           selectAgent: "选择 Agent",
           selectModel: "选择模型",
           unspecifiedModel: "不指定",
+          unspecifiedPermissionMode: "不指定",
           selectWorkflowTemplate: "选择工作流模板",
           noAgent: "请先在 Agent 管理中添加 Agent",
           noWorkflowTemplate: "暂无有效工作流模板",
@@ -1842,7 +1843,7 @@ const resources = {
         permissionMode: "Permission mode",
         dynamicPermissionModeHelp:
           "Select a permission level (Read Only / Ask / Full Access). The system maps it to each agent's actual permission mode. All derived nodes within the AI-DYNAMIC node share this level.",
-        permissionModeDefault: "Default / unset",
+        permissionModeUnspecified: "Unspecified",
         permissionModeReadOnly: "Read Only",
         permissionModeAsk: "Ask",
         permissionModeFullAccess: "Full Access",
@@ -2463,6 +2464,7 @@ const resources = {
           selectAgent: "Select agent",
           selectModel: "Select model",
           unspecifiedModel: "Unspecified",
+          unspecifiedPermissionMode: "Unspecified",
           selectWorkflowTemplate: "Select workflow template",
           noAgent: "Add an agent in Agent Management first",
           noWorkflowTemplate: "No valid workflow templates",

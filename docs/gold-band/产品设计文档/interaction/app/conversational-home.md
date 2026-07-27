@@ -159,12 +159,12 @@
 - 快速会话模式固定按 `Direct / 工作流 / AUTO` 排列；三种模式各自保留配置，切换模式不清空正文和附件。
 - Direct 配置区使用 Agent icon 列表。当前 Agent 展示 icon + 名称，其他 Agent 只展示 icon；不可用 Agent 保留诊断提示但不能选中。
 - Direct 没有任何可选 Agent 时，空状态在提示文案旁展示紧凑的“+”按钮；按钮使用现有会话导航进入 Agent 管理页，用户添加完成后可返回继续当前快速会话草稿。
-- Direct 的模型和权限模式位于 composer 右下角、发送按钮之前，不复用 AUTO 的大配置面板。
+- Direct 的模型和权限模式位于 composer 右下角、发送按钮之前，不复用 AUTO 的大配置面板；两者的空选项统一显示为“不指定”，发起会话前允许在具体值与“不指定”之间切换。
 - composer 主体宽度随右侧内容区增长，但保留桌面端可读上限和响应式左右 gutter；底部附件/工作空间组与 Direct 模型/权限/发送组按组参与换行，选择器允许在合理最小宽度内弹性收缩。窗口变窄、侧边栏展开、系统字体或显示缩放增大时，后组应完整下移到下一行，禁止与工作空间控件重叠或溢出输入框。
 - Direct 不在运行模式管理页出现，也不展示指向该页的“去配置 / 修复”按钮；Agent、模型、权限和对应校验均在快速会话 composer 内闭环。
 - Direct 的模型和权限记忆范围是 `workspace + agentType`；切换 Agent 时恢复该 Agent 在当前 workspace 上一次使用的模型和权限。
 - 切换 workspace 后再返回时，必须恢复该 workspace 当前 Direct Agent 及其模型/权限；其他 workspace 的选择不得覆盖当前 workspace。切换期间 composer 的 workspace 与运行模式配置由同一个 App 层 workspace key 驱动，不保留组件内第二份 workspace 选择状态。
-- Direct 会话创建后 Agent 身份不可修改；更换 Agent 等价于创建新的 Direct 会话。
+- Direct 会话创建后 Agent 身份不可修改；更换 Agent 等价于创建新的 Direct 会话。会话内模型与权限模式分别使用独立显式 override：未指定时不干预 Agent 当前配置，选择具体值后不再允许回到“不指定”，但可以继续切换其他具体值。
 - Direct 侧边栏 task 行使用 Agent icon 代替 run 成功/暂停/失败状态点，相对时间来自 `lastActivityAt`。工作流和 AUTO 继续使用 run 状态点。
 - Direct task 行点击后直接进入最近会话，不渲染 `run-00x` 子列表；底层 run 仅作为内部执行与存储结构。
 - Direct 的置顶区、workspace 区和搜索结果使用同一 Agent identity VM，不允许前端组件自行从 metadata 重复推断。

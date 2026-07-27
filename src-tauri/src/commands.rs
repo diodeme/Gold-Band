@@ -2022,7 +2022,7 @@ pub async fn submit_conversation_prompt(
     if submit_target == "runtime-continue" {
         let attempt_dir = locator.attempt_dir(&app);
         let model_override = current_acp_session_model_override(&attempt_dir);
-        let permission_mode_override = current_acp_session_permission_mode(&attempt_dir);
+        let permission_mode_override = current_acp_session_permission_mode_override(&attempt_dir);
         let run = if let (Some(outer_node_id), Some(outer_attempt_id)) =
             (locator.outer_node_id(), locator.outer_attempt_id())
         {
@@ -2180,7 +2180,7 @@ pub async fn send_acp_prompt(
                 CommandErrorVm::new("acp.missing-provider", serde_json::json!({}))
             })?;
             let (_, agent_config) = app.managed_agent(provider).map_err(command_error)?;
-            let permission_mode = current_acp_session_permission_mode(&attempt_dir)
+            let permission_mode = current_acp_session_permission_mode_override(&attempt_dir)
                 .or_else(|| node.permission_mode.clone());
             let model =
                 current_acp_session_model_override(&attempt_dir).or_else(|| node.model.clone());
@@ -2334,12 +2334,7 @@ pub async fn send_acp_prompt(
             .and_then(|value| value.as_str())
             .ok_or_else(|| CommandErrorVm::new("acp.missing-provider", serde_json::json!({})))?;
         let (_, agent_config) = app.managed_agent(provider).map_err(command_error)?;
-        let permission_mode = current_acp_session_permission_mode(&attempt_dir).or_else(|| {
-            node.resolved_config
-                .get("permissionMode")
-                .and_then(|value| value.as_str())
-                .map(str::to_string)
-        });
+        let permission_mode = current_acp_session_permission_mode_override(&attempt_dir);
         let (session_mode, continue_ref) = if worker_ref_path.exists() {
             let worker_ref =
                 read_json::<WorkerRefState>(&worker_ref_path).map_err(command_error)?;
@@ -3294,48 +3289,7 @@ fn set_acp_config_option_current_value(
     }
 }
 
-fn current_acp_session_value(
-    attempt_dir: &Utf8PathBuf,
-    top_level_key: &str,
-    current_key: &str,
-    config_category: &str,
-) -> Option<String> {
-    let snapshot_path = attempt_dir.join("acp.snapshot.json");
-    let session_path = attempt_dir.join("acp.session.json");
-    let path = if snapshot_path.exists() {
-        snapshot_path
-    } else if session_path.exists() {
-        session_path
-    } else {
-        return None;
-    };
-    let value = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())?;
-    value
-        .get(top_level_key)
-        .and_then(|section| section.get(current_key))
-        .and_then(|item| item.as_str())
-        .or_else(|| {
-            value
-                .get("configOptions")
-                .and_then(|options| options.as_array())
-                .and_then(|options| {
-                    options.iter().find(|option| {
-                        option.get("id").and_then(|item| item.as_str()) == Some(config_category)
-                            || option.get("category").and_then(|item| item.as_str())
-                                == Some(config_category)
-                    })
-                })
-                .and_then(|option| option.get("currentValue"))
-                .and_then(|item| item.as_str())
-        })
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn current_acp_session_model_override(attempt_dir: &Utf8PathBuf) -> Option<String> {
+fn current_acp_session_override(attempt_dir: &Utf8PathBuf, override_key: &str) -> Option<String> {
     let snapshot_path = attempt_dir.join("acp.snapshot.json");
     let session_path = attempt_dir.join("acp.session.json");
     let path = if snapshot_path.exists() {
@@ -3350,7 +3304,7 @@ fn current_acp_session_model_override(attempt_dir: &Utf8PathBuf) -> Option<Strin
         .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
         .and_then(|value| {
             value
-                .get("modelOverride")
+                .get(override_key)
                 .and_then(|item| item.as_str())
                 .map(str::trim)
                 .filter(|item| !item.is_empty())
@@ -3358,8 +3312,12 @@ fn current_acp_session_model_override(attempt_dir: &Utf8PathBuf) -> Option<Strin
         })
 }
 
-fn current_acp_session_permission_mode(attempt_dir: &Utf8PathBuf) -> Option<String> {
-    current_acp_session_value(attempt_dir, "modes", "currentModeId", "mode")
+fn current_acp_session_model_override(attempt_dir: &Utf8PathBuf) -> Option<String> {
+    current_acp_session_override(attempt_dir, "modelOverride")
+}
+
+fn current_acp_session_permission_mode_override(attempt_dir: &Utf8PathBuf) -> Option<String> {
+    current_acp_session_override(attempt_dir, "permissionModeOverride")
 }
 
 #[derive(Debug, Deserialize)]
@@ -3545,6 +3503,12 @@ pub async fn set_acp_session_permission_mode(
         )
     })?;
 
+    if let Some(session) = value.as_object_mut() {
+        session.insert(
+            "permissionModeOverride".to_string(),
+            serde_json::Value::String(permission_mode_id.clone()),
+        );
+    }
     // Update modes.currentModeId
     if let Some(modes) = value.get_mut("modes").and_then(|m| m.as_object_mut()) {
         modes.insert(
@@ -4345,6 +4309,46 @@ mod tests {
         .unwrap();
         assert_eq!(
             current_acp_session_model_override(&attempt_dir).as_deref(),
+            Some("default")
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn acp_follow_up_uses_only_gold_band_permission_mode_override() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-permission-mode-override-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "modes": { "currentModeId": "default" },
+                "configOptions": [
+                    { "id": "mode", "currentValue": "default" }
+                ]
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            current_acp_session_permission_mode_override(&attempt_dir),
+            None
+        );
+
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "permissionModeOverride": "default",
+                "modes": { "currentModeId": "default" }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            current_acp_session_permission_mode_override(&attempt_dir).as_deref(),
             Some("default")
         );
 

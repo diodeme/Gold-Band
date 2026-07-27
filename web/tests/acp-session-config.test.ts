@@ -8,6 +8,7 @@ import type { AcpSessionConfigVm } from "@/types";
 function baseConfig(): AcpSessionConfigVm {
   return {
     modelOverrideId: "gpt-5",
+    permissionModeOverrideId: "ask",
     currentModelId: "gpt-5",
     currentModelName: "GPT-5",
     currentModeId: "ask",
@@ -92,6 +93,44 @@ describe("ACP session config view model", () => {
     expect(viewModel.modelOverrideId).toBe("default");
     expect(viewModel.modelOverrideName).toBe("Default (recommended)");
     expect(viewModel.canSelectUnspecifiedModel).toBe(false);
+  });
+
+  it("keeps Gold Band unspecified separate from the Agent current permission mode", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      permissionModeOverrideId: null,
+      currentModeId: "default",
+      currentModeName: "Default",
+      modes: {
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "bypassPermissions", name: "Bypass Permissions" },
+        ],
+      },
+    });
+
+    expect(viewModel.permissionModeOverrideId).toBeNull();
+    expect(viewModel.permissionModeOverrideName).toBeNull();
+    expect(viewModel.canSelectUnspecifiedPermissionMode).toBe(true);
+    expect(viewModel.currentModeId).toBe("default");
+    expect(viewModel.availablePermissionModes.map((option) => option.id)).toEqual([
+      "default",
+      "bypassPermissions",
+    ]);
+  });
+
+  it("treats an Agent default permission mode as explicit after the user selects it", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      permissionModeOverrideId: "default",
+      currentModeId: "default",
+      currentModeName: "Default",
+      modes: {
+        availableModes: [{ id: "default", name: "Default" }],
+      },
+    });
+
+    expect(viewModel.permissionModeOverrideId).toBe("default");
+    expect(viewModel.permissionModeOverrideName).toBe("Default");
+    expect(viewModel.canSelectUnspecifiedPermissionMode).toBe(false);
   });
 
   it("normalizes grouped model and permission mode options", () => {

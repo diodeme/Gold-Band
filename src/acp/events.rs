@@ -42,6 +42,8 @@ pub struct AcpSessionMetadata {
     pub config_options: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode_override: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt_append: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

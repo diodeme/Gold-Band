@@ -45,6 +45,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
     stopReason: 'end_turn',
     config: {
       modelOverrideId: null,
+      permissionModeOverrideId: null,
       currentModelId: 'default',
       currentModelName: 'Default (recommended)',
       currentModeId: 'bypassPermissions',

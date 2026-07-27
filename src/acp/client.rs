@@ -740,6 +740,7 @@ struct AcpRuntime<'a> {
     modes: Option<Value>,
     config_options: Option<Value>,
     model_override: Option<String>,
+    permission_mode_override: Option<String>,
     available_commands: Option<Vec<AcpCommandItem>>,
     system_prompt_append: Option<String>,
     session_title: Option<String>,
@@ -894,6 +895,7 @@ pub fn run_prompt(
         stop_probe,
     )?;
     runtime.model_override = model.clone();
+    runtime.permission_mode_override = permission_mode.clone();
     let capabilities = match runtime.initialize() {
         Ok(capabilities) => capabilities,
         Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
@@ -1482,6 +1484,7 @@ impl<'a> AcpRuntime<'a> {
             modes: None,
             config_options: None,
             model_override: None,
+            permission_mode_override: None,
             available_commands: None,
             system_prompt_append: None,
             session_title: None,
@@ -2962,6 +2965,7 @@ impl<'a> AcpRuntime<'a> {
             modes: self.modes.clone(),
             config_options: self.config_options.clone(),
             model_override: self.model_override.clone(),
+            permission_mode_override: self.permission_mode_override.clone(),
             system_prompt_append: self.system_prompt_append.clone(),
             used_tokens: self.used_tokens,
             context_window_size: self.context_window_size,

@@ -1150,22 +1150,46 @@ pub fn normalize_session_update(
     update: &Value,
 ) -> AcpUiEvent {
     let timestamp = current_timestamp();
-    let kind = update
+    let provider_kind = update
         .get("sessionUpdate")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
-    let raw = Some(update.clone());
+    let compaction_phase = context_compaction_phase(update);
+    let mut raw_value = update.clone();
+    if let Some(phase) = compaction_phase
+        && let Some(object) = raw_value.as_object_mut()
+    {
+        object.insert(
+            "contextCompaction".to_string(),
+            serde_json::json!({
+                "phase": phase,
+                "detectionSource": "providerControlMessage",
+            }),
+        );
+    }
+    let raw = Some(raw_value);
     let id = format!("acp-event-{seq}");
     let mut event = AcpUiEvent {
         id,
         seq,
         timestamp,
-        kind: kind_to_ui_kind(kind).to_string(),
+        kind: compaction_phase
+            .map(|_| "contextCompaction")
+            .unwrap_or_else(|| kind_to_ui_kind(provider_kind))
+            .to_string(),
         session_id,
-        content: extract_text(update),
+        content: compaction_phase
+            .is_none()
+            .then(|| extract_text(update))
+            .flatten(),
         title: extract_title(update),
         tool_call_id: extract_tool_call_id(update),
-        status: extract_status(update),
+        status: compaction_phase
+            .map(|phase| match phase {
+                "started" => "running".to_string(),
+                _ => "completed".to_string(),
+            })
+            .or_else(|| extract_status(update)),
         started_seq: None,
         ended_seq: None,
         started_at: None,
@@ -1176,14 +1200,29 @@ pub fn normalize_session_update(
 
     if event.content.is_none()
         && matches!(
-            kind,
+            provider_kind,
             "agent_message_chunk" | "user_message_chunk" | "agent_thought_chunk"
         )
+        && compaction_phase.is_none()
     {
         event.content = Some(String::new());
     }
 
     event
+}
+
+/// Claude-compatible ACP adapters currently expose context compaction as two
+/// standalone agent control messages. Normalize them at the provider boundary
+/// so consumers do not need to interpret assistant prose.
+pub fn context_compaction_phase(update: &Value) -> Option<&'static str> {
+    if update.get("sessionUpdate").and_then(Value::as_str) != Some("agent_message_chunk") {
+        return None;
+    }
+    match extract_text(update)?.trim() {
+        "Compacting..." => Some("started"),
+        "Compacting completed." => Some("completed"),
+        _ => None,
+    }
 }
 
 pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> AcpUiEvent {
@@ -1424,10 +1463,10 @@ fn extract_status(value: &Value) -> Option<String> {
 mod tests {
     use super::{
         AcpSessionMetadata, AcpTimingState, AcpUiEvent, annotate_latest_runtime_control_output,
-        append_raw_frame, append_timeline_patch, elicitation_request_event,
-        elicitation_response_event, extract_usage_fields, kind_to_ui_kind,
-        latest_timeline_source_seq, load_timeline_items, permission_request_event,
-        user_prompt_event, write_timeline_items,
+        append_raw_frame, append_timeline_patch, context_compaction_phase,
+        elicitation_request_event, elicitation_response_event, extract_usage_fields,
+        kind_to_ui_kind, latest_timeline_source_seq, load_timeline_items, normalize_session_update,
+        permission_request_event, user_prompt_event, write_timeline_items,
     };
     use serde_json::{Value, json};
 
@@ -1557,6 +1596,59 @@ mod tests {
     #[test]
     fn kind_to_ui_empty_string_is_raw_diagnostic() {
         assert_eq!(kind_to_ui_kind(""), "rawDiagnostic");
+    }
+
+    #[test]
+    fn normalizes_context_compaction_control_messages_as_typed_events() {
+        let started_update = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "Compacting..."},
+        });
+        let completed_update = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "\n\nCompacting completed."},
+        });
+
+        assert_eq!(context_compaction_phase(&started_update), Some("started"));
+        assert_eq!(
+            context_compaction_phase(&completed_update),
+            Some("completed")
+        );
+
+        let started = normalize_session_update(7, Some("session-1".to_string()), &started_update);
+        assert_eq!(started.kind, "contextCompaction");
+        assert_eq!(started.status.as_deref(), Some("running"));
+        assert_eq!(started.content, None);
+        assert_eq!(
+            started
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/contextCompaction/phase"))
+                .and_then(Value::as_str),
+            Some("started")
+        );
+
+        let completed =
+            normalize_session_update(8, Some("session-1".to_string()), &completed_update);
+        assert_eq!(completed.kind, "contextCompaction");
+        assert_eq!(completed.status.as_deref(), Some("completed"));
+        assert_eq!(completed.content, None);
+    }
+
+    #[test]
+    fn does_not_reclassify_regular_agent_text_that_mentions_compacting() {
+        let update = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "The log says Compacting... but work continues."},
+        });
+
+        assert_eq!(context_compaction_phase(&update), None);
+        let event = normalize_session_update(9, None, &update);
+        assert_eq!(event.kind, "textDelta");
+        assert_eq!(
+            event.content.as_deref(),
+            Some("The log says Compacting... but work continues.")
+        );
     }
 
     // --- existing tests ---

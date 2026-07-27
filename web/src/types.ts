@@ -992,7 +992,7 @@ export interface ConversationAcpFacetVm {
 export interface ConversationComposerVm {
   mode: 'normal' | 'runtime-active' | 'stopping' | 'interrupted-input' | 'invalid-workflow' | 'runtime-error' | 'permission-blocked' | 'submitting' | string;
   submitTarget: 'acp-prompt' | 'runtime-continue' | 'permission-response' | 'none' | string;
-  processingKind: 'sending' | 'launching' | 'processing' | 'thinking' | 'tool' | 'responding' | 'stopping' | 'launching-next-node' | string;
+  processingKind: 'sending' | 'launching' | 'processing' | 'thinking' | 'tool' | 'compacting' | 'responding' | 'stopping' | 'launching-next-node' | string;
   statusKey?: string | null;
   canStop: boolean;
   lockInput: boolean;

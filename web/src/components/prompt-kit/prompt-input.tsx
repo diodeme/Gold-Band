@@ -111,6 +111,7 @@ export type PromptInputTextareaProps = {
 
 function PromptInputTextarea({
   className,
+  ref: externalRef,
   onKeyDown,
   disableAutosize = false,
   textareaDisabled,
@@ -142,6 +143,11 @@ function PromptInputTextarea({
 
   const handleRef = (el: HTMLTextAreaElement | null) => {
     textareaRef.current = el
+    if (typeof externalRef === "function") {
+      externalRef(el)
+    } else if (externalRef) {
+      externalRef.current = el
+    }
     adjustHeight(el)
   }
 

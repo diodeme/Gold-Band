@@ -327,6 +327,7 @@ struct SessionEventPumpState {
 #[derive(Debug)]
 struct SessionEventPumpInner {
     state: Mutex<SessionEventPumpState>,
+    not_empty: Condvar,
     not_full: Condvar,
 }
 
@@ -339,6 +340,7 @@ impl SessionEventPump {
     fn start(receiver: SessionRouteReceiver) -> Arc<Self> {
         let inner = Arc::new(SessionEventPumpInner {
             state: Mutex::new(SessionEventPumpState::default()),
+            not_empty: Condvar::new(),
             not_full: Condvar::new(),
         });
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -372,6 +374,8 @@ impl SessionEventPump {
                         }
                         state.queued_bytes = state.queued_bytes.saturating_add(bytes);
                         state.queue.push_back(SessionRouteFrame { value, bytes });
+                        drop(state);
+                        inner.not_empty.notify_one();
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -380,6 +384,7 @@ impl SessionEventPump {
             if let Ok(mut state) = inner.state.lock() {
                 state.closed = true;
             }
+            inner.not_empty.notify_all();
             inner.not_full.notify_all();
         });
         pump
@@ -402,11 +407,43 @@ impl SessionEventPump {
         }
     }
 
+    pub fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> std::result::Result<Value, mpsc::RecvTimeoutError> {
+        let deadline = Instant::now() + timeout;
+        let Ok(mut state) = self.inner.state.lock() else {
+            return Err(mpsc::RecvTimeoutError::Disconnected);
+        };
+        loop {
+            if let Some(frame) = state.queue.pop_front() {
+                state.queued_bytes = state.queued_bytes.saturating_sub(frame.bytes);
+                drop(state);
+                self.inner.not_full.notify_all();
+                return Ok(frame.value);
+            }
+            if state.closed {
+                return Err(mpsc::RecvTimeoutError::Disconnected);
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Err(mpsc::RecvTimeoutError::Timeout);
+            };
+            let Ok((next, wait)) = self.inner.not_empty.wait_timeout(state, remaining) else {
+                return Err(mpsc::RecvTimeoutError::Disconnected);
+            };
+            state = next;
+            if wait.timed_out() && state.queue.is_empty() {
+                return Err(mpsc::RecvTimeoutError::Timeout);
+            }
+        }
+    }
+
     pub fn close(&self) {
         self.shutdown.store(true, Ordering::Release);
         if let Ok(mut state) = self.inner.state.lock() {
             state.closed = true;
         }
+        self.inner.not_empty.notify_all();
         self.inner.not_full.notify_all();
     }
 }
@@ -1736,7 +1773,7 @@ static ADAPTER_CONNECTION_MANAGER: LazyLock<AdapterConnectionManager> =
 #[cfg(test)]
 mod tests {
     use camino::Utf8PathBuf;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex, mpsc};
     use std::thread;
@@ -1952,6 +1989,38 @@ mod tests {
             }
         }
         assert_eq!(observed, (0..32).collect::<Vec<_>>());
+        pump.close();
+    }
+
+    #[test]
+    fn session_event_pump_waits_for_frame_arriving_after_response_queue_is_empty() {
+        let (sender, receiver) = session_route_pair("test-adapter", "session-delayed-replay");
+        let pump = SessionEventPump::start(receiver);
+        let producer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            assert!(sender.send(
+                json!({
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "session-delayed-replay",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": { "type": "text", "text": "No response requested." }
+                        }
+                    }
+                }),
+                128,
+            ));
+        });
+
+        let value = pump.recv_timeout(Duration::from_millis(250)).unwrap();
+        assert_eq!(
+            value
+                .pointer("/params/update/content/text")
+                .and_then(Value::as_str),
+            Some("No response requested.")
+        );
+        producer.join().unwrap();
         pump.close();
     }
 

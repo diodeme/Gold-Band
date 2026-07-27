@@ -8,6 +8,10 @@ import {
   formatAcpCompositeSelection,
   nextAcpCompositeSection,
 } from '@/components/acp/AcpModelThoughtSelects';
+import {
+  ACP_COMPOSER_CONFIG_DROPDOWN_MODAL,
+  DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
+} from '@/components/acp/AcpComposerConfigTrigger';
 
 function triggerClass(markup: string, slot: string) {
   const match = markup.match(new RegExp(`data-slot="${slot}"[^>]*class="([^"]+)"`));
@@ -16,6 +20,14 @@ function triggerClass(markup: string, slot: string) {
 }
 
 describe('ACP composite model selector', () => {
+  it('anchors the main menu to the trigger start edge by default', () => {
+    expect(DEFAULT_ACP_COMPOSER_CONFIG_ALIGN).toBe('start');
+  });
+
+  it('keeps the composer menu non-modal so adjacent controls open in one click', () => {
+    expect(ACP_COMPOSER_CONFIG_DROPDOWN_MODAL).toBe(false);
+  });
+
   it('keeps only one nested selector open and ignores stale close events', () => {
     let openSection = nextAcpCompositeSection(null, 'model', true);
     expect(openSection).toBe('model');

@@ -7,6 +7,8 @@ import {
   ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS,
   ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS,
   ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS,
+  ACP_COMPOSER_CONFIG_DROPDOWN_MODAL,
+  DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
   acpComposerConfigTriggerVariants,
 } from '@/components/acp/AcpComposerConfigTrigger';
 import {
@@ -64,7 +66,7 @@ export function AcpModelThoughtSelects({
   onThoughtChange,
   compact = false,
   contentSide = 'bottom',
-  align = 'end',
+  align = DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
 }: Props) {
   const { t } = useTranslation();
   const [openSection, setOpenSection] = useState<string | null>(null);
@@ -113,7 +115,10 @@ export function AcpModelThoughtSelects({
   );
 
   return (
-    <DropdownMenu onOpenChange={() => setOpenSection(null)}>
+    <DropdownMenu
+      modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL}
+      onOpenChange={() => setOpenSection(null)}
+    >
       <DropdownMenuTrigger className={triggerClass}>
         <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{t('acp.currentModel')}</span>
         <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>{compositeLabel}</span>

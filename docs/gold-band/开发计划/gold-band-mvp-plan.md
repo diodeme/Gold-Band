@@ -720,6 +720,16 @@ attempt-001/
 
 ---
 
+## 2026-07-27：ACP 权限模式“不指定”语义统一
+
+- Direct、AUTO 与工作流编辑器中的可空权限模式统一将“默认 / 不设置”改名为“不指定”，英文统一为 `Unspecified`；会话创建前仍允许清回空配置。
+- attempt ACP session metadata 新增 `permissionModeOverride`，与 Agent 返回的 `modes.currentModeId / configOptions.currentValue` 分离。首次未指定权限模式时 override 为空，即使 Agent 报告当前 mode，后续追问也不得把该值反推成 Gold Band 显式选择。
+- 会话详情在权限 override 为空时展示“不指定”和 Agent 返回的完整权限模式目录；选择任意 Agent mode 后写入显式 override，并从该 session 的下拉列表中移除“不指定”，但仍允许在具体 mode 之间切换。
+- runtime continue、AI-DYNAMIC inner continue 和 ACP same-session prompt 统一只读取 `permissionModeOverride`；未指定则不调用权限配置 API，继续继承 Agent 环境配置。模型与权限的 override/current 数据结构、显示和追问语义保持一致。
+- 回归覆盖 Agent `currentModeId = default` 但 Gold Band 未指定时续聊得到 `None`、用户明确选择 Agent `default` 时续聊得到 `Some("default")`、前端配置视图保持“不指定”和 Agent current mode 分离，以及 Rust/Web 测试、Web build 和 Direct deep-link 实际验证。
+
+---
+
 ## 2026-07-24：会话工作空间状态与安全移除修复
 
 - 根因修复：会话工作空间身份此前同时存在持久化 `conversationWorkspaces`、大小写不一致的 `projectId` key 和隐式 `DesktopContext.repo_root` 三条来源，导致 Direct 首轮可运行但追问按精确 key 报 `workspace.not-found`，移除时也可能删不中并重排相邻项。本次收敛为 `conversationWorkspaces` 单一列表来源，保留 workspace-scoped `App.paths.repo_root` 作为执行上下文，不再把桌面启动 workspace 当作会话成员。

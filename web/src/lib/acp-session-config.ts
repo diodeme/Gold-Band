@@ -12,6 +12,9 @@ export type AcpSessionConfigViewModel = {
   modelOverrideId: string | null;
   modelOverrideName: string | null;
   canSelectUnspecifiedModel: boolean;
+  permissionModeOverrideId: string | null;
+  permissionModeOverrideName: string | null;
+  canSelectUnspecifiedPermissionMode: boolean;
   currentModelId: string | null;
   currentModelName: string | null;
   currentModeId: string | null;
@@ -45,6 +48,12 @@ export function createAcpSessionConfigViewModel(
       ?? (currentModelId === modelOverrideId ? currentModelName : null)
       ?? modelOverrideId
     : null;
+  const permissionModeOverrideId = config?.permissionModeOverrideId ?? null;
+  const permissionModeOverrideName = permissionModeOverrideId
+    ? availablePermissionModes.find((option) => option.id === permissionModeOverrideId)?.name
+      ?? (currentModeId === permissionModeOverrideId ? currentModeName : null)
+      ?? permissionModeOverrideId
+    : null;
   const resolvedCurrentModelName = currentModelName ?? (
     currentModelId ? null : singleOptionName(availableModels)
   );
@@ -56,6 +65,9 @@ export function createAcpSessionConfigViewModel(
     modelOverrideId,
     modelOverrideName,
     canSelectUnspecifiedModel: modelOverrideId === null,
+    permissionModeOverrideId,
+    permissionModeOverrideName,
+    canSelectUnspecifiedPermissionMode: permissionModeOverrideId === null,
     currentModelId,
     currentModelName: resolvedCurrentModelName,
     currentModeId,
@@ -105,6 +117,9 @@ function createAcpSessionConfigSignature(
     modelOverrideId: viewModel.modelOverrideId,
     modelOverrideName: viewModel.modelOverrideName,
     canSelectUnspecifiedModel: viewModel.canSelectUnspecifiedModel,
+    permissionModeOverrideId: viewModel.permissionModeOverrideId,
+    permissionModeOverrideName: viewModel.permissionModeOverrideName,
+    canSelectUnspecifiedPermissionMode: viewModel.canSelectUnspecifiedPermissionMode,
     currentModelId: viewModel.currentModelId,
     currentModelName: viewModel.currentModelName,
     currentModeId: viewModel.currentModeId,

@@ -1364,6 +1364,7 @@ export const ACPChatDialog = forwardRef<
       permissionModeId,
     );
     patchSessionConfig({
+      permissionModeOverrideId: permissionModeId,
       currentModeId: permissionModeId,
       currentModeName: selected.name,
     });
@@ -1712,7 +1713,15 @@ export const ACPChatDialog = forwardRef<
           if (incoming && configGenerationRef.current > 0 && latestSessionRef.current?.config) {
             const cfg = latestSessionRef.current.config;
             if (incoming.config) {
-              incoming.config = { ...incoming.config, currentModelId: cfg.currentModelId, currentModelName: cfg.currentModelName, currentModeId: cfg.currentModeId, currentModeName: cfg.currentModeName };
+              incoming.config = {
+                ...incoming.config,
+                modelOverrideId: cfg.modelOverrideId,
+                permissionModeOverrideId: cfg.permissionModeOverrideId,
+                currentModelId: cfg.currentModelId,
+                currentModelName: cfg.currentModelName,
+                currentModeId: cfg.currentModeId,
+                currentModeName: cfg.currentModeName,
+              };
             }
           }
           applySessionUpdate(incoming ?? null, "subscription-session");
@@ -3041,7 +3050,7 @@ type AcpSessionConfigBarProps = {
   onPermissionModeChange?: (permissionModeId: string) => void;
 };
 
-const UNSPECIFIED_MODEL_VALUE = "__gold_band_unspecified__";
+const UNSPECIFIED_CONFIG_VALUE = "__gold_band_unspecified__";
 
 const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
   viewModel,
@@ -3053,17 +3062,18 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
     modelOverrideId,
     modelOverrideName,
     canSelectUnspecifiedModel,
+    permissionModeOverrideId,
+    permissionModeOverrideName,
+    canSelectUnspecifiedPermissionMode,
     currentModelId,
     currentModeId,
-    currentModeName,
-    modeLabel,
     availableModels,
     availablePermissionModes,
   } = viewModel;
 
   const handleModelSelect = useCallback(
     (modelId: string) => {
-      if (modelId === UNSPECIFIED_MODEL_VALUE) return;
+      if (modelId === UNSPECIFIED_CONFIG_VALUE) return;
       onModelChange?.(modelId);
     },
     [onModelChange],
@@ -3071,17 +3081,21 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
 
   const handlePermissionModeSelect = useCallback(
     (permissionModeId: string) => {
+      if (permissionModeId === UNSPECIFIED_CONFIG_VALUE) return;
       onPermissionModeChange?.(permissionModeId);
     },
     [onPermissionModeChange],
   );
 
   const modelLabel = modelOverrideName ?? t('conversation.home.unspecifiedModel');
-  const permissionModeLabel = modeLabel ?? currentModeId ?? t('acp.permissionMode');
+  const permissionModeLabel = permissionModeOverrideName
+    ?? t('conversation.home.unspecifiedPermissionMode');
   const showModels = availableModels.length > 0 || Boolean(currentModelId);
-  const showPermissionModes = availablePermissionModes.length > 0 || Boolean(modeLabel);
+  const showPermissionModes = availablePermissionModes.length > 0 || Boolean(currentModeId);
   const modelCanBeSelected = availableModels.length > 1
     || (canSelectUnspecifiedModel && availableModels.length > 0);
+  const permissionModeCanBeSelected = availablePermissionModes.length > 1
+    || (canSelectUnspecifiedPermissionMode && availablePermissionModes.length > 0);
 
   if (!showModels && !showPermissionModes) return null;
 
@@ -3089,7 +3103,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
     <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-t border-border/50 px-2 py-1.5 text-xs text-muted-foreground">
       {modelCanBeSelected ? (
         <Select
-          value={modelOverrideId ?? UNSPECIFIED_MODEL_VALUE}
+          value={modelOverrideId ?? UNSPECIFIED_CONFIG_VALUE}
           onValueChange={handleModelSelect}
         >
           <SelectTrigger className="h-7 min-w-0 max-w-[min(22rem,100%)] gap-1.5 rounded-full border-border/60 bg-background/50 px-2.5 text-xs font-normal text-foreground shadow-none hover:bg-background/70 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10">
@@ -3106,7 +3120,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
             className="w-[min(22rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]"
           >
             {canSelectUnspecifiedModel ? (
-              <SelectItem value={UNSPECIFIED_MODEL_VALUE}>
+              <SelectItem value={UNSPECIFIED_CONFIG_VALUE}>
                 {t('conversation.home.unspecifiedModel')}
               </SelectItem>
             ) : null}
@@ -3129,8 +3143,11 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
         </Badge>
       ) : null}
       {showPermissionModes ? (
-        availablePermissionModes.length > 1 ? (
-          <Select value={currentModeId ?? ''} onValueChange={handlePermissionModeSelect}>
+        permissionModeCanBeSelected ? (
+          <Select
+            value={permissionModeOverrideId ?? UNSPECIFIED_CONFIG_VALUE}
+            onValueChange={handlePermissionModeSelect}
+          >
             <SelectTrigger className="h-7 min-w-0 max-w-[min(18rem,100%)] gap-1.5 rounded-full border-border/60 bg-background/50 px-2.5 text-xs font-normal text-foreground shadow-none hover:bg-background/70 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10">
               <span className="shrink-0 text-muted-foreground">
                 {t('acp.permissionMode')}
@@ -3144,6 +3161,11 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
               align="start"
               className="w-[min(22rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]"
             >
+              {canSelectUnspecifiedPermissionMode ? (
+                <SelectItem value={UNSPECIFIED_CONFIG_VALUE}>
+                  {t('conversation.home.unspecifiedPermissionMode')}
+                </SelectItem>
+              ) : null}
               {availablePermissionModes.map((m) => (
                 <SelectItem value={m.id} key={m.id} className="items-start py-2">
                   <span className="block min-w-0">

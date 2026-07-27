@@ -684,6 +684,7 @@ pub struct AcpEventPageVm {
 #[serde(rename_all = "camelCase")]
 pub struct AcpSessionConfigVm {
     pub model_override_id: Option<String>,
+    pub permission_mode_override_id: Option<String>,
     pub current_model_id: Option<String>,
     pub current_model_name: Option<String>,
     pub current_mode_id: Option<String>,
@@ -5518,6 +5519,12 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let permission_mode_override_id = session
+        .get("permissionModeOverride")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let current_model_id = models
         .as_ref()
         .and_then(|value| value.get("currentModelId"))
@@ -5540,6 +5547,7 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
     });
 
     if model_override_id.is_none()
+        && permission_mode_override_id.is_none()
         && current_model_id.is_none()
         && current_model_name.is_none()
         && current_mode_id.is_none()
@@ -5553,6 +5561,7 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
 
     Some(AcpSessionConfigVm {
         model_override_id,
+        permission_mode_override_id,
         current_model_id,
         current_model_name,
         current_mode_id,
@@ -7133,6 +7142,7 @@ mod tests {
         .unwrap();
 
         assert!(config.model_override_id.is_none());
+        assert!(config.permission_mode_override_id.is_none());
         assert!(config.current_model_id.is_none());
         assert!(config.current_mode_id.is_none());
         assert_eq!(
@@ -7171,6 +7181,37 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(explicit.model_override_id.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn acp_session_config_separates_gold_band_override_from_agent_current_permission_mode() {
+        let unspecified = acp_session_config_vm(&json!({
+            "modes": {
+                "currentModeId": "default",
+                "availableModes": [
+                    { "id": "default", "name": "Default" },
+                    { "id": "bypassPermissions", "name": "Bypass Permissions" }
+                ]
+            }
+        }))
+        .unwrap();
+        assert!(unspecified.permission_mode_override_id.is_none());
+        assert_eq!(unspecified.current_mode_id.as_deref(), Some("default"));
+
+        let explicit = acp_session_config_vm(&json!({
+            "permissionModeOverride": "default",
+            "modes": {
+                "currentModeId": "default",
+                "availableModes": [
+                    { "id": "default", "name": "Default" }
+                ]
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            explicit.permission_mode_override_id.as_deref(),
+            Some("default")
+        );
     }
 
     #[test]

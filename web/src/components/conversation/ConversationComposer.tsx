@@ -395,7 +395,7 @@ export function ConversationComposer({
                       <SelectValue placeholder={t('runMode.permissionMode')} />
                     </SelectTrigger>
                     <SelectContent position="popper" align="end">
-                      <SelectItem value="__default__">{t('workflowEditor.permissionModeDefault')}</SelectItem>
+                      <SelectItem value="__default__">{t('workflowEditor.permissionModeUnspecified')}</SelectItem>
                       {directPermissionModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
                     </SelectContent>
                   </Select>
@@ -545,7 +545,7 @@ export function ConversationComposer({
                     <SelectValue placeholder={t('runMode.permissionMode')} />
                   </SelectTrigger>
                   <SelectContent position="popper" align="start">
-                    <SelectItem value="__default__">{t('workflowEditor.permissionModeDefault')}</SelectItem>
+                    <SelectItem value="__default__">{t('workflowEditor.permissionModeUnspecified')}</SelectItem>
                     {isDynamicAuto ? (
                       <>
                         <SelectItem value="read_only">{t('workflowEditor.permissionModeReadOnly')}</SelectItem>

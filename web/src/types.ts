@@ -667,6 +667,7 @@ export interface AcpEventPageVm {
 
 export interface AcpSessionConfigVm {
   modelOverrideId?: string | null;
+  permissionModeOverrideId?: string | null;
   currentModelId?: string | null;
   currentModelName?: string | null;
   currentModeId?: string | null;

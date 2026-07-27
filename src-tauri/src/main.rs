@@ -130,8 +130,8 @@ fn run() -> anyhow::Result<()> {
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
             });
-            // 鍚姩鍚庡彴绾跨▼棰勬帰�?MCP 鏈嶅姟鍋ュ悍鐘舵€侊紙鐙珛绾跨▼锛岄伩鍏嶉樆濉?webview 涓荤嚎绋嬶級�?
-            // 瀹㈡埛绔惎鍔ㄥ悗鍗冲紑濮嬫娴嬶紝杩涘�?MCP 绠＄悊椤垫椂鐘舵€佸凡灏辩华锛屾棤闇€鎵嬪姩璇婃柇銆?
+            // 启动后台线程预探测 MCP 服务健康状态（独立线程，避免阻塞 webview 主线程）。
+            // 客户端启动后即开始检测，进入 MCP 管理页时状态已就绪，无需手动诊断。
             let health_handle = app.handle().clone();
             std::thread::spawn(move || {
                 let state = health_handle.state::<DesktopState>();
@@ -151,7 +151,7 @@ fn run() -> anyhow::Result<()> {
                     warn!(%error, "failed to stop running sessions before window close");
                 }
                 let _ = state.cleanup_agent_diagnostic_processes();
-                // 鍏抽敭鏇存柊锛氶€€鍑哄墠瀹夎宸蹭笅杞界殑鍖咃紝鎴愬姛鑷姩鍒犳枃浠?
+                // 关键更新：退出前安装已下载的包，成功自动删文件
                 if let Some(path) = state.take_pending_update() {
                     let handle = window.app_handle().clone();
                     tauri::async_runtime::block_on(async move {
@@ -274,7 +274,6 @@ fn run() -> anyhow::Result<()> {
             update_skill_sync_targets,
             get_skill_sync_status,
             check_skill_name_conflict,
-            feedback::submit_feedback,
         ])
         .run(tauri_context)
         .context("tauri runtime failed")?;

@@ -67,4 +67,19 @@ describe('desktopApi', () => {
       projectId: 'project-1',
     });
   });
+
+  it('forwards conversation search to the desktop command contract', async () => {
+    await desktopApi.searchConversationTasks('hello', 20);
+
+    expect(invokeCommand).toHaveBeenCalledWith('search_conversation_tasks', {
+      query: 'hello',
+      limit: 20,
+    });
+  });
+
+  it('loads workspace options without requesting the full conversation sidebar', async () => {
+    await desktopApi.getConversationWorkspaces();
+
+    expect(invokeCommand).toHaveBeenCalledWith('get_conversation_workspaces');
+  });
 });

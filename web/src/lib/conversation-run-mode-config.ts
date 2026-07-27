@@ -3,6 +3,7 @@ import type { ConversationAutoConfigVm, ConversationDirectConfigVm, Conversation
 export const DEFAULT_CONVERSATION_RUN_MODE: ConversationRunModeVm = { mode: 'auto' };
 export const DEFAULT_WORKFLOW_TEMPLATE_ID = 'default';
 export const CONVERSATION_RUN_MODE_ORDER: ConversationRunModeVm['mode'][] = ['direct', 'workflow', 'auto'];
+export type ConversationRunModesByWorkspace = Record<string, ConversationRunModeVm>;
 
 export function canOpenRunModeManagement(mode: ConversationRunModeVm['mode']): boolean {
   return mode !== 'direct';
@@ -12,6 +13,24 @@ export function conversationRunModeOrDefault(
   mode: ConversationRunModeVm | null | undefined,
 ): ConversationRunModeVm {
   return mode ?? DEFAULT_CONVERSATION_RUN_MODE;
+}
+
+export function conversationRunModeForWorkspace(
+  modes: ConversationRunModesByWorkspace,
+  projectId: string,
+): ConversationRunModeVm {
+  return conversationRunModeOrDefault(modes[projectId]);
+}
+
+export function setConversationRunModeForWorkspace(
+  modes: ConversationRunModesByWorkspace,
+  projectId: string,
+  mode: ConversationRunModeVm,
+): ConversationRunModesByWorkspace {
+  return {
+    ...modes,
+    [projectId]: mode,
+  };
 }
 
 export function optionalRunModeText(value: string | null | undefined): string | undefined {
@@ -27,9 +46,12 @@ export function normalizeConversationAutoConfigForSubmit(
   config: ConversationAutoConfigVm | null | undefined,
 ): ConversationAutoConfigVm | undefined {
   if (!config) return undefined;
+  const configOptions = normalizeConfigOptions(config.configOptions);
+  const { configOptions: _configOptions, ...rest } = config;
   return {
-    ...config,
+    ...rest,
     globalGoal: normalizeOptionalRunModeText(config.globalGoal),
+    ...(configOptions ? { configOptions } : {}),
   };
 }
 
@@ -37,11 +59,23 @@ export function normalizeConversationDirectConfigForSubmit(
   config: ConversationDirectConfigVm | null | undefined,
 ): ConversationDirectConfigVm | undefined {
   if (!config?.agentType.trim()) return undefined;
+  const configOptions = normalizeConfigOptions(config.configOptions);
   return {
     agentType: config.agentType.trim(),
     modelId: normalizeOptionalRunModeText(config.modelId),
     permissionMode: normalizeOptionalRunModeText(config.permissionMode),
+    ...(configOptions ? { configOptions } : {}),
   };
+}
+
+function normalizeConfigOptions(options: Record<string, string> | null | undefined) {
+  if (!options) return undefined;
+  const normalized = Object.fromEntries(
+    Object.entries(options)
+      .map(([key, value]) => [key.trim(), value.trim()] as const)
+      .filter(([key, value]) => key.length > 0 && value.length > 0),
+  );
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 export function directConfigForAgent(

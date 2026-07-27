@@ -16,6 +16,7 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - 同一段 assistant 文本使用稳定 `id`，例如 `assistant-message-{messageId}`。
 - 同一段 thought 使用稳定 `id`，例如 `assistant-thought-{messageId}`。
 - `content` 表示该稳定 item 到当前 `endedSeq` 为止的完整内容。
+- `seq` / `startedSeq` 定义 timeline item 的规范顺序，必须随事件推进单调递增；恢复解析、计时重建和测试夹具都不得依赖 HashMap 遍历顺序或相同序号下的偶然排序。
 - 原始 token delta 只保留在 `acp.raw.jsonl`，不得由前端 chat 渲染重新解释。
 
 ## 后端实时发送规则

@@ -425,6 +425,7 @@ pub fn create_intervention_notification_subscriber(
         };
         let notification = match event {
             RuntimeLifecycleEvent::InterventionRequested {
+                event_id,
                 task_id,
                 task_title,
                 run_id,
@@ -434,7 +435,8 @@ pub fn create_intervention_notification_subscriber(
                 node_label,
                 kind,
                 ..
-            } => Some(InterventionNotification::from_intervention_kind(
+            } => Some(InterventionNotification::from_intervention_event(
+                &event_id,
                 &task_id,
                 task_title.as_deref(),
                 &run_id,

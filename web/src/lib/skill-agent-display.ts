@@ -12,15 +12,18 @@ export const GOLD_BAND_AGENT_META: SkillAgentDisplayMeta = {
   iconKey: 'gold-band',
 };
 
-export function skillSourceAgent(
+export function skillSourceAgents(
   skill: SkillMetaVm,
   configuredAgents: SupportedAgentTypeVm[],
 ) {
   if (skill.agentSource === '.gold-band') {
-    return GOLD_BAND_AGENT_META;
+    return [GOLD_BAND_AGENT_META];
   }
 
-  return configuredAgents.find((agent) => agent.skillsDirName === skill.agentSource) ?? null;
+  return configuredAgents.filter((agent) => (
+    agent.primaryAgentDir === skill.agentSource
+    || agent.compatibleAgentDirs.includes(skill.agentSource)
+  ));
 }
 
 export function skillAvailableAgentTypes(
@@ -28,9 +31,10 @@ export function skillAvailableAgentTypes(
   configuredAgents: SupportedAgentTypeVm[],
 ) {
   const available = new Set(skill.syncedAgentTypes);
-  const sourceMeta = skillSourceAgent(skill, configuredAgents);
-  if (sourceMeta && sourceMeta.agentType !== GOLD_BAND_AGENT_META.agentType) {
-    available.add(sourceMeta.agentType);
+  for (const sourceMeta of skillSourceAgents(skill, configuredAgents)) {
+    if (sourceMeta.agentType !== GOLD_BAND_AGENT_META.agentType) {
+      available.add(sourceMeta.agentType);
+    }
   }
   return [...available];
 }
@@ -42,8 +46,7 @@ export function skillDisplayAgents(
   const display: SkillAgentDisplayMeta[] = [];
   const seen = new Set<string>();
 
-  const sourceMeta = skillSourceAgent(skill, configuredAgents);
-  if (sourceMeta) {
+  for (const sourceMeta of skillSourceAgents(skill, configuredAgents)) {
     display.push(sourceMeta);
     seen.add(sourceMeta.agentType);
   }
@@ -64,9 +67,14 @@ export function selectableSyncAgents(
   skill: SkillMetaVm | null,
   configuredAgents: SupportedAgentTypeVm[],
 ) {
-  const sourceMeta = skill ? skillSourceAgent(skill, configuredAgents) : null;
-  if (!sourceMeta || sourceMeta.agentType === GOLD_BAND_AGENT_META.agentType) {
+  if (!skill || skill.agentSource === '.gold-band') {
     return configuredAgents;
   }
-  return configuredAgents.filter((agent) => agent.agentType !== sourceMeta.agentType);
+  const sourceAgentTypes = new Set(
+    skillSourceAgents(skill, configuredAgents).map((agent) => agent.agentType),
+  );
+  const syncedAgentTypes = new Set(skill.syncedAgentTypes);
+  return configuredAgents.filter((agent) => (
+    !sourceAgentTypes.has(agent.agentType) || syncedAgentTypes.has(agent.agentType)
+  ));
 }

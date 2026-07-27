@@ -18,7 +18,6 @@ export interface DesktopThemeOption {
   mode: DesktopThemeMode;
   windowSurface: string;
   labelKey: string;
-  descriptionKey: string;
   preview: ThemePreviewPalette;
 }
 
@@ -36,7 +35,6 @@ export const desktopThemeOptions = [
     mode: 'light',
     windowSurface: '#f1f2f5',
     labelKey: 'settings.themeDefaultLight',
-    descriptionKey: 'settings.themeDefaultLightDescription',
     preview: {
       background: '#fafafb',
       surface: '#ffffff',
@@ -49,20 +47,19 @@ export const desktopThemeOptions = [
     },
   },
   {
-    id: 'light-warm',
+    id: 'light-gray',
     mode: 'light',
-    windowSurface: '#f0ede7',
-    labelKey: 'settings.themeWarmLight',
-    descriptionKey: 'settings.themeWarmLightDescription',
+    windowSurface: '#ffffff',
+    labelKey: 'settings.themeTechGray',
     preview: {
-      background: '#faf9f6',
-      surface: '#fffdfc',
-      border: '#e3ded5',
-      primary: '#8a6a32',
-      foreground: '#29251f',
-      muted: '#736b60',
-      success: '#397451',
-      danger: '#b84850',
+      background: '#ffffff',
+      surface: '#ffffff',
+      border: '#e5e5e5',
+      primary: '#2f2f2f',
+      foreground: '#2b2b2b',
+      muted: '#666666',
+      success: '#2e7954',
+      danger: '#c23b4a',
     },
   },
   {
@@ -70,7 +67,6 @@ export const desktopThemeOptions = [
     mode: 'dark',
     windowSurface: '#181818',
     labelKey: 'settings.themeGoldDark',
-    descriptionKey: 'settings.themeGoldDarkDescription',
     preview: {
       background: '#181818',
       surface: '#242424',
@@ -87,7 +83,6 @@ export const desktopThemeOptions = [
     mode: 'dark',
     windowSurface: '#111111',
     labelKey: 'settings.themeBlack',
-    descriptionKey: 'settings.themeBlackDescription',
     preview: {
       background: '#111111',
       surface: '#1b1b1b',

@@ -10,17 +10,18 @@ mod state_factory;
 mod transition_context;
 
 pub use self::notification::{
-    InterventionNotification, InterventionType, NotificationDedup, make_dedup_key,
-    make_dedup_key_with_suffix, make_turn_dedup_key, reason_key,
+    InterventionNotification, InterventionType, NotificationDedup, direct_conversation_agent_label,
+    make_dedup_key, make_dedup_key_with_suffix, make_turn_dedup_key, reason_key,
 };
 
 use crate::acp::client as acp_client;
+use crate::acp::commands::AcpCommandItem;
 use crate::acp::elicitation::cancel_pending_elicitation_requests;
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::{
     ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
-    ManagedAgentType, McpServerConfig, McpServerHealthResult, ProviderDiagnosticSnapshot,
+    ManagedAgentId, McpServerConfig, McpServerHealthResult, ProviderDiagnosticSnapshot,
     RuntimeConfig, RuntimeLogLevel, SettingsConfig, SkillMeta, SkillSource, StateConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
@@ -47,7 +48,10 @@ use crate::runtime::{
     NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
     validate_round_state, validate_run_state, validate_task_state, validate_worker_ref_state,
 };
-use crate::storage::{GoldBandPaths, StoragePathConfig, ensure_parent_dir, read_json, write_json};
+use crate::storage::{
+    GoldBandPaths, StoragePathConfig, ensure_parent_dir, load_settings_file, read_json, sqlite,
+    write_json,
+};
 use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::de::DeserializeOwned;
@@ -67,6 +71,12 @@ use self::orchestrator::{
     submit_manual_check as orchestrator_submit_manual_check,
     submit_manual_check_background as orchestrator_submit_manual_check_background,
 };
+
+#[derive(Debug, Clone)]
+pub struct ProviderDoctorProbe {
+    pub doctor: DoctorResult,
+    pub commands: Vec<AcpCommandItem>,
+}
 use self::profile_resolver::resolve_workflow_profiles;
 use self::profiles::{
     DefaultProfileIds, create_profile, delete_profile as delete_profile_file,
@@ -128,7 +138,7 @@ fn default_workflow_template(
     WorkflowTemplate {
         id: DEFAULT_WORKFLOW_TEMPLATE_ID.to_string(),
         name: "默认工作流".to_string(),
-        workflow: default_workflow_dsl(ManagedAgentType::ClaudeAcp.as_str(), profiles, language),
+        workflow: default_workflow_dsl("claude-acp", profiles, language),
         created_at: now.clone(),
         updated_at: now,
     }
@@ -206,6 +216,7 @@ fn default_workflow_dsl(
                 expression: "$.result == true".to_string(),
             }),
             permission_mode: Some("bypassPermissions".to_string()),
+            config_options: Default::default(),
             manual_check: manual_check.then_some(true),
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
         })
@@ -669,6 +680,7 @@ pub enum RuntimeLifecycleEvent {
 pub struct App {
     pub paths: GoldBandPaths,
     pub config: RuntimeConfig,
+    task_search_indexer: Arc<dyn Fn(&Utf8Path, &str) + Send + Sync>,
     provider_override: Option<Arc<dyn ProviderAdapter>>,
     provider_diagnostics:
         Option<Arc<dyn Fn() -> Result<BTreeMap<String, ProviderDiagnosticSnapshot>> + Send + Sync>>,
@@ -679,6 +691,10 @@ pub struct App {
     >,
     acp_session_update: Option<Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>>,
     pub lifecycle_bus: observability::RuntimeLifecycleBus,
+}
+
+fn default_task_search_indexer() -> Arc<dyn Fn(&Utf8Path, &str) + Send + Sync> {
+    Arc::new(sqlite::index_task_with_retry)
 }
 
 #[derive(Debug, Clone)]
@@ -864,6 +880,7 @@ impl App {
         Self {
             paths: self.paths.clone(),
             config: self.config.clone(),
+            task_search_indexer: self.task_search_indexer.clone(),
             provider_override: self.provider_override.clone(),
             provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
@@ -907,6 +924,7 @@ impl App {
         Self {
             paths,
             config,
+            task_search_indexer: self.task_search_indexer.clone(),
             provider_override: self.provider_override.clone(),
             provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
@@ -984,11 +1002,7 @@ impl App {
     }
 
     pub fn load_settings(&self) -> Result<SettingsConfig> {
-        let path = self.paths.user_settings_file();
-        if !path.exists() {
-            return Ok(SettingsConfig::default());
-        }
-        read_json(&path)
+        load_settings_file(&self.paths.user_settings_file())
     }
 
     pub fn save_settings(&self, settings: &SettingsConfig) -> Result<()> {
@@ -1136,7 +1150,7 @@ impl App {
 
     pub fn set_user_agents(
         &self,
-        agents: std::collections::BTreeMap<ManagedAgentType, ManagedAgentConfig>,
+        agents: std::collections::BTreeMap<ManagedAgentId, ManagedAgentConfig>,
     ) -> Result<SettingsConfig> {
         let mut settings = self.load_settings()?;
         settings.agents = Some(agents);
@@ -1146,26 +1160,26 @@ impl App {
 
     pub fn managed_agents(
         &self,
-    ) -> &std::collections::BTreeMap<ManagedAgentType, ManagedAgentConfig> {
+    ) -> &std::collections::BTreeMap<ManagedAgentId, ManagedAgentConfig> {
         &self.config.agents
     }
 
     pub fn save_managed_agent(
         &self,
-        agent_type: ManagedAgentType,
+        agent_id: ManagedAgentId,
         config: ManagedAgentConfig,
     ) -> Result<SettingsConfig> {
         let mut agents = self.config.agents.clone();
-        if !agent_type.is_supported() {
-            bail!("agent `{}` is not supported yet", agent_type.as_str());
+        if crate::config::managed_agent_preset(&agent_id).is_none() {
+            bail!("agent `{}` is not supported yet", agent_id.as_str());
         }
-        agents.insert(agent_type, config);
+        agents.insert(agent_id, config);
         self.set_user_agents(agents)
     }
 
-    pub fn remove_managed_agent(&self, agent_type: ManagedAgentType) -> Result<SettingsConfig> {
+    pub fn remove_managed_agent(&self, agent_id: &ManagedAgentId) -> Result<SettingsConfig> {
         let mut agents = self.config.agents.clone();
-        agents.remove(&agent_type);
+        agents.remove(agent_id);
         self.set_user_agents(agents)
     }
 
@@ -1646,29 +1660,31 @@ impl App {
         self.save_workflow_template_store(&store)
     }
 
-    pub fn managed_agent(&self, provider: &str) -> Result<(ManagedAgentType, &ManagedAgentConfig)> {
-        let agent_type = ManagedAgentType::from_str(provider)?;
+    pub fn managed_agent(&self, provider: &str) -> Result<(ManagedAgentId, &ManagedAgentConfig)> {
+        let agent_id = ManagedAgentId::from_str(provider)?;
         let config = self
             .config
             .agents
-            .get(&agent_type)
+            .get(&agent_id)
             .ok_or_else(|| anyhow!("agent `{provider}` is not configured"))?;
-        Ok((agent_type, config))
+        Ok((agent_id, config))
     }
 
     pub fn provider_for_id(&self, provider: &str) -> Result<Arc<dyn ProviderAdapter>> {
         if let Some(provider_override) = &self.provider_override {
             return Ok(provider_override.clone());
         }
-        let (agent_type, config) = self.managed_agent(provider)?;
+        let (agent_id, config) = self.managed_agent(provider)?;
         Ok(Arc::from(provider_from_agent(
-            agent_type,
+            &agent_id,
             config,
             self.config.use_local_claude,
             self.config.require_local_claude_executable,
             self.config.acp_session_title_refresh_enabled,
             self.config.acp_raw_max_size_bytes,
             self.config.acp_raw_target_size_bytes,
+            acp_client::AcpRuntimePolicy::from(&self.config)
+                .with_external_session_sync_enabled(config.external_session_sync_enabled),
         )?))
     }
 
@@ -1677,8 +1693,12 @@ impl App {
     }
 
     pub fn provider_doctor(&self, provider: &str) -> Result<DoctorResult> {
-        let (agent_type, config) = self.managed_agent(provider)?;
-        if !agent_type.is_supported() {
+        Ok(self.provider_doctor_probe(provider)?.doctor)
+    }
+
+    pub fn provider_doctor_probe(&self, provider: &str) -> Result<ProviderDoctorProbe> {
+        let (agent_id, config) = self.managed_agent(provider)?;
+        if crate::config::managed_agent_preset(&agent_id).is_none() {
             bail!("agent `{provider}` is not supported yet");
         }
         match acp_client::doctor(
@@ -1687,15 +1707,21 @@ impl App {
             self.config.use_local_claude,
             self.config.require_local_claude_executable,
         ) {
-            Ok(capabilities) => Ok(DoctorResult {
-                available: true,
-                reason: None,
-                capabilities: Some(capabilities),
+            Ok(probe) => Ok(ProviderDoctorProbe {
+                doctor: DoctorResult {
+                    available: true,
+                    reason: None,
+                    capabilities: Some(probe.capabilities),
+                },
+                commands: probe.commands,
             }),
-            Err(err) => Ok(DoctorResult {
-                available: false,
-                reason: Some(err.to_string()),
-                capabilities: None,
+            Err(err) => Ok(ProviderDoctorProbe {
+                doctor: DoctorResult {
+                    available: false,
+                    reason: Some(err.to_string()),
+                    capabilities: None,
+                },
+                commands: Vec::new(),
             }),
         }
     }
@@ -1724,6 +1750,7 @@ impl App {
         Self {
             paths,
             config,
+            task_search_indexer: default_task_search_indexer(),
             provider_override: None,
             provider_diagnostics: None,
             acp_live_update: None,
@@ -1811,7 +1838,26 @@ impl App {
         )?;
         write_json(&self.paths.workflow_file(&task_id), &validated.raw)?;
         self.record_created_task_workflow(validated.raw, input.workflow_template_id)?;
-        self.task_summary(&task_id)
+        let summary = self.task_summary(&task_id)?;
+        (self.task_search_indexer)(&self.paths.task_dir(&task_id), &task_id);
+        Ok(summary)
+    }
+
+    pub fn update_task_metadata(
+        &self,
+        task_id: &str,
+        title: &str,
+        description: Option<&str>,
+    ) -> Result<()> {
+        let mut task = self.task_show(task_id)?;
+        task.title = Some(title.to_string());
+        if let Some(description) = description {
+            task.description = Some(description.to_string());
+        }
+        validate_task_state(&task)?;
+        write_json(&self.paths.task_file(task_id), &task)?;
+        (self.task_search_indexer)(&self.paths.task_dir(task_id), task_id);
+        Ok(())
     }
 
     pub fn save_task_workflow(&self, task_id: &str, workflow: WorkflowDsl) -> Result<TaskSummary> {
@@ -3009,8 +3055,8 @@ impl App {
     pub fn validate_workflow_agents(&self, workflow: &ValidatedWorkflow) -> Result<()> {
         for node in workflow.nodes_by_id.values() {
             for provider in providers_for_node(node) {
-                let (agent_type, _) = self.managed_agent(&provider)?;
-                if !agent_type.is_supported() {
+                let (agent_id, _) = self.managed_agent(&provider)?;
+                if crate::config::managed_agent_preset(&agent_id).is_none() {
                     bail!("agent `{provider}` is not supported yet");
                 }
             }
@@ -3296,7 +3342,7 @@ fn is_acp_session_active_status(status: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{AcpLiveEventContext, App, RuntimeLifecycleEvent};
+    use super::{AcpLiveEventContext, App, CreateTaskInput, RuntimeLifecycleEvent};
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
@@ -3315,7 +3361,7 @@ mod tests {
     };
     use crate::observability::touch_log_file_best_effort;
     use crate::runtime::{NodeState, RoundState, RunState, TaskState};
-    use crate::storage::{StoragePathConfig, read_json, write_json};
+    use crate::storage::{StoragePathConfig, read_json, sqlite::SearchIndex, write_json};
     use camino::Utf8PathBuf;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
@@ -3382,6 +3428,7 @@ mod tests {
                 provider: Some("claude-acp".to_string()),
                 profile: None,
                 permission_mode: permission_mode.map(str::to_string),
+                config_options: Default::default(),
                 model: model.map(str::to_string),
                 goal: Some("do work".to_string()),
                 success_condition: None,
@@ -3398,6 +3445,49 @@ mod tests {
             }],
             control: WorkflowControl::default(),
         }
+    }
+
+    #[test]
+    fn task_create_and_metadata_update_refresh_search_index() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let db_path = Utf8PathBuf::from_path_buf(temp.path().join("search.db")).unwrap();
+        let index = Arc::new(SearchIndex::open(&db_path).unwrap());
+        let mut app = test_app(repo_root);
+        app.task_search_indexer = {
+            let index = index.clone();
+            Arc::new(move |task_dir, task_id| index.index_task_with_retry(task_dir, task_id))
+        };
+        let mut workflow = worker_workflow(None, None);
+        let NodeDsl::Worker(worker) = &mut workflow.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        worker.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
+
+        let created = app
+            .create_task_from_requirement(CreateTaskInput {
+                title: Some("Searchable conversation".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "find a project file".to_string(),
+                workflow,
+                workflow_template_id: None,
+            })
+            .unwrap();
+
+        let created_results = index.search_tasks("searchable", 10).unwrap();
+        assert_eq!(created_results.len(), 1);
+        assert_eq!(created_results[0].task_id, created.task.id);
+
+        app.update_task_metadata(&created.task.id, "Renamed conversation", None)
+            .unwrap();
+
+        assert!(index.search_tasks("searchable", 10).unwrap().is_empty());
+        let renamed_results = index.search_tasks("renamed", 10).unwrap();
+        assert_eq!(renamed_results.len(), 1);
+        assert_eq!(renamed_results[0].task_id, created.task.id);
     }
 
     fn sample_run_paused_event() -> RuntimeLifecycleEvent {
@@ -3554,6 +3644,7 @@ mod tests {
                     model: Some("future-model".to_string()),
                 },
                 permission_mode: None,
+                config_options: Default::default(),
                 allowed_profiles: Vec::new(),
                 global_goal: None,
                 control: crate::dsl::DynamicControlDsl::default(),

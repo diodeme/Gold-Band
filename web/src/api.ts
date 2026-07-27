@@ -19,6 +19,11 @@ export function getAgentRegistry() {
   return getRuntimeApi().getAgentRegistry();
 }
 
+export function getAgentCommandCatalog(agentType: string, workspacePath: string) {
+  return getRuntimeApi().getAgentCommandCatalog(agentType, workspacePath);
+}
+
+
 export function createAgent(agentType: string, input: Parameters<ReturnType<typeof getRuntimeApi>['createAgent']>[1]) {
   return getRuntimeApi().createAgent(agentType, input);
 }
@@ -184,11 +189,11 @@ export function sendAcpPrompt(projectId: string | null | undefined, taskId: stri
   return getRuntimeApi().sendAcpPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths);
 }
 
-export function setAcpSessionModel(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+export function setAcpSessionModel(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().setAcpSessionModel(projectId, taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId);
 }
 
-export function setAcpSessionPermissionMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+export function setAcpSessionPermissionMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().setAcpSessionPermissionMode(projectId, taskId, runId, roundId, nodeId, attemptId, permissionModeId, outerNodeId, outerAttemptId);
 }
 
@@ -278,6 +283,14 @@ export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
 
 export function getConversationSidebar() {
   return getRuntimeApi().getConversationSidebar();
+}
+
+export function setAcpSessionConfigOption(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, optionId: string, optionValue: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().setAcpSessionConfigOption(projectId, taskId, runId, roundId, nodeId, attemptId, optionId, optionValue, outerNodeId, outerAttemptId);
+}
+
+export function getConversationWorkspaces() {
+  return getRuntimeApi().getConversationWorkspaces();
 }
 
 export function getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null) {

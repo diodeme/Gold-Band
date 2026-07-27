@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    str::FromStr,
     sync::{LazyLock, Mutex},
     time::SystemTime,
 };
@@ -10,13 +11,16 @@ use anyhow::Result;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentType, McpServerState, RuntimeConfig,
-    RuntimeLogLevel,
+    DesktopUpdateBadgeState, MANAGED_AGENT_PRESETS, ManagedAgentConfig, ManagedAgentId,
+    McpServerState, RuntimeConfig, RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::DynamicGraphState;
-use gold_band::provider::{supported_models_from_capabilities, supported_modes_from_capabilities};
+use gold_band::provider::{
+    select_config_options_from_capabilities, supported_models_from_capabilities,
+    supported_modes_from_capabilities,
+};
 use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState};
 
 use crate::channel::current_channel_config;
@@ -26,6 +30,7 @@ use crate::state::AgentDiagnosticState;
 use crate::updater::{UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, updater_settings};
 use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,17 +107,39 @@ pub struct ManagedAgentVm {
     pub args: Vec<String>,
     pub env: Vec<AgentEnvEntryVm>,
     pub icon_key: String,
-    pub skills_dir_name: String,
+    pub primary_agent_dir: String,
+    pub compatible_agent_dirs: Vec<String>,
+    pub external_session_sync_enabled: bool,
     pub supported: bool,
     pub diagnostic: Option<ManagedAgentDiagnosticVm>,
     pub supported_modes: Option<Vec<AcpModeVm>>,
     pub supported_models: Option<Vec<AcpModeVm>>,
+    pub config_options: Option<Vec<AcpSelectConfigOptionVm>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpModeVm {
     pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpSelectConfigOptionVm {
+    pub id: String,
+    pub category: Option<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub current_value: Option<String>,
+    pub options: Vec<AcpSelectConfigValueVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpSelectConfigValueVm {
+    pub value: String,
     pub name: String,
     pub description: Option<String>,
 }
@@ -188,7 +215,8 @@ pub struct SupportedAgentTypeVm {
     pub agent_type: String,
     pub label: String,
     pub icon_key: String,
-    pub skills_dir_name: String,
+    pub primary_agent_dir: String,
+    pub compatible_agent_dirs: Vec<String>,
     pub supported: bool,
     pub configured: bool,
     pub default_display_name: String,
@@ -627,6 +655,8 @@ pub struct AcpSessionVm {
     pub provider: String,
     pub adapter_id: Option<String>,
     pub adapter_display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adapter_icon_key: Option<String>,
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_cwd: Option<String>,
@@ -676,6 +706,9 @@ pub struct AcpEventPageVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpSessionConfigVm {
+    pub model_override_id: Option<String>,
+    pub permission_mode_override_id: Option<String>,
+    pub config_option_overrides: std::collections::BTreeMap<String, String>,
     pub current_model_id: Option<String>,
     pub current_model_name: Option<String>,
     pub current_mode_id: Option<String>,
@@ -1008,34 +1041,41 @@ pub fn bootstrap_vm(
 
 pub fn agent_registry_vm(
     app: &App,
-    diagnostics: &std::collections::BTreeMap<ManagedAgentType, AgentDiagnosticState>,
+    diagnostics: &std::collections::BTreeMap<ManagedAgentId, AgentDiagnosticState>,
 ) -> AgentRegistryVm {
     let agents = app
         .managed_agents()
         .iter()
         .map(|(agent_type, config)| {
-            managed_agent_vm(*agent_type, config, diagnostics.get(agent_type))
+            managed_agent_vm(agent_type, config, diagnostics.get(agent_type))
         })
         .collect::<Vec<_>>();
-    let supported_types = ManagedAgentType::ALL
+    let supported_types = MANAGED_AGENT_PRESETS
         .into_iter()
-        .map(|agent_type| {
-            let default_config = agent_type.default_adapter_config();
+        .map(|preset| {
+            let agent_id = preset.agent_id();
+            let default_config = preset.default_config();
             SupportedAgentTypeVm {
-                agent_type: agent_type.as_str().to_string(),
-                label: supported_agent_label(agent_type).to_string(),
-                icon_key: agent_icon_key(agent_type).to_string(),
-                skills_dir_name: app
+                agent_type: agent_id.as_str().to_string(),
+                label: preset.label.to_string(),
+                icon_key: preset.icon_key.to_string(),
+                primary_agent_dir: app
                     .managed_agents()
-                    .get(&agent_type)
-                    .map(|config| config.skills_dir_name(agent_type).to_string())
-                    .unwrap_or_else(|| agent_type.skills_dir_name().to_string()),
-                supported: agent_type.is_supported(),
-                configured: app.managed_agents().contains_key(&agent_type),
-                default_display_name: default_config.display_name,
-                default_command: default_config.command,
-                default_args: default_config.args,
+                    .get(&agent_id)
+                    .map(|config| config.primary_agent_dir.clone())
+                    .unwrap_or_else(|| default_config.primary_agent_dir.clone()),
+                compatible_agent_dirs: app
+                    .managed_agents()
+                    .get(&agent_id)
+                    .map(|config| config.compatible_agent_dirs.clone())
+                    .unwrap_or_else(|| default_config.compatible_agent_dirs.clone()),
+                supported: true,
+                configured: app.managed_agents().contains_key(&agent_id),
+                default_display_name: default_config.adapter.display_name,
+                default_command: default_config.adapter.command,
+                default_args: default_config.adapter.args,
                 default_env: default_config
+                    .adapter
                     .env
                     .into_iter()
                     .map(|(key, value)| AgentEnvEntryVm { key, value })
@@ -1050,12 +1090,12 @@ pub fn agent_registry_vm(
 }
 
 fn managed_agent_vm(
-    agent_type: ManagedAgentType,
+    agent_id: &ManagedAgentId,
     config: &ManagedAgentConfig,
     diagnostic: Option<&AgentDiagnosticState>,
 ) -> ManagedAgentVm {
     ManagedAgentVm {
-        agent_type: agent_type.as_str().to_string(),
+        agent_type: agent_id.as_str().to_string(),
         display_name: config.adapter.display_name.clone(),
         command: config.adapter.command.clone(),
         args: config.adapter.args.clone(),
@@ -1068,9 +1108,14 @@ fn managed_agent_vm(
                 value: value.clone(),
             })
             .collect(),
-        icon_key: agent_icon_key(agent_type).to_string(),
-        skills_dir_name: config.skills_dir_name(agent_type).to_string(),
-        supported: agent_type.is_supported(),
+        icon_key: gold_band::config::managed_agent_preset(agent_id)
+            .map(|preset| preset.icon_key)
+            .unwrap_or("agent")
+            .to_string(),
+        primary_agent_dir: config.primary_agent_dir.clone(),
+        compatible_agent_dirs: config.compatible_agent_dirs.clone(),
+        external_session_sync_enabled: config.external_session_sync_enabled,
+        supported: gold_band::config::managed_agent_preset(agent_id).is_some(),
         diagnostic: diagnostic.map(|diagnostic| ManagedAgentDiagnosticVm {
             status: if diagnostic.available {
                 "healthy"
@@ -1104,38 +1149,34 @@ fn managed_agent_vm(
                 .collect::<Vec<_>>();
             (!models.is_empty()).then_some(models)
         }),
-    }
-}
-
-fn agent_icon_key(agent_type: ManagedAgentType) -> &'static str {
-    match agent_type {
-        ManagedAgentType::ClaudeAcp => "claude",
-        ManagedAgentType::CodexAcp => "codex",
-        ManagedAgentType::Cursor => "cursor",
-        ManagedAgentType::Gemini => "gemini",
-        ManagedAgentType::OpenCode => "opencode",
+        config_options: diagnostic.and_then(|diagnostic| {
+            let options = select_config_options_from_capabilities(diagnostic.capabilities.as_ref())
+                .into_iter()
+                .map(|option| AcpSelectConfigOptionVm {
+                    id: option.id,
+                    category: option.category,
+                    name: option.name,
+                    description: option.description,
+                    current_value: option.current_value,
+                    options: option
+                        .options
+                        .into_iter()
+                        .map(|value| AcpSelectConfigValueVm {
+                            name: value.name.unwrap_or_else(|| value.value.clone()),
+                            value: value.value,
+                            description: value.description,
+                        })
+                        .collect(),
+                })
+                .collect::<Vec<_>>();
+            (!options.is_empty()).then_some(options)
+        }),
     }
 }
 
 fn provider_icon_key(provider: &str) -> Option<String> {
-    match provider {
-        "claude-acp" => Some("claude".to_string()),
-        "codex-acp" => Some("codex".to_string()),
-        "cursor" => Some("cursor".to_string()),
-        "gemini" => Some("gemini".to_string()),
-        "opencode" => Some("opencode".to_string()),
-        _ => None,
-    }
-}
-
-fn supported_agent_label(agent_type: ManagedAgentType) -> &'static str {
-    match agent_type {
-        ManagedAgentType::ClaudeAcp => "Claude",
-        ManagedAgentType::CodexAcp => "Codex",
-        ManagedAgentType::Cursor => "Cursor",
-        ManagedAgentType::Gemini => "Gemini",
-        ManagedAgentType::OpenCode => "OpenCode",
-    }
+    let agent_id = ManagedAgentId::from_str(provider).ok()?;
+    gold_band::config::managed_agent_preset(&agent_id).map(|preset| preset.icon_key.to_string())
 }
 
 pub fn task_list_vm(app: &App) -> Result<TaskListVm> {
@@ -3337,6 +3378,7 @@ pub fn dynamic_acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
+    let adapter_icon_key = provider_icon_key(&provider);
     let session_timing = resolve_acp_session_timing(
         &status,
         acp_session_timing_from_snapshot(&session),
@@ -3379,6 +3421,7 @@ pub fn dynamic_acp_session_vm(
             .or_else(|| session.get("adapterId").and_then(|value| value.as_str()))
             .map(str::to_string),
         adapter_display_name,
+        adapter_icon_key,
         cwd,
         provider_cwd,
         status,
@@ -3637,6 +3680,7 @@ pub fn acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
+    let adapter_icon_key = provider_icon_key(&provider);
     let session_timing = resolve_acp_session_timing(
         &status,
         acp_session_timing_from_snapshot(&session),
@@ -3680,6 +3724,7 @@ pub fn acp_session_vm(
             .or_else(|| session.get("adapterId").and_then(|value| value.as_str()))
             .map(str::to_string),
         adapter_display_name,
+        adapter_icon_key,
         cwd,
         provider_cwd,
         status,
@@ -4030,13 +4075,9 @@ fn parse_timeline_file(
     Option<AcpUsageVm>,
 )> {
     let mut latest_by_item = HashMap::<String, (u64, AcpUiEventVm)>::new();
-    let mut latest_permission_events = HashMap::<String, AcpUiEventVm>::new();
     let mut available_commands = None;
     let mut usage = None;
-    let mut session_elapsed = AcpSessionElapsedState::default();
     let mut event_count = 0usize;
-    let mut final_items = Vec::<AcpUiEventVm>::new();
-    let mut saw_legacy_patch = false;
 
     if path.exists() {
         let file = fs::File::open(path.as_std_path())?;
@@ -4045,17 +4086,11 @@ fn parse_timeline_file(
             if line.trim().is_empty() {
                 continue;
             }
-            if let Ok(mut patch) = serde_json::from_str::<AcpTimelinePatchVm>(&line) {
+            if let Ok(patch) = serde_json::from_str::<AcpTimelinePatchVm>(&line) {
                 if patch.patch_type != "timelinePatch" || patch.op != "upsert" {
                     continue;
                 }
-                saw_legacy_patch = true;
                 event_count += 1;
-                patch.item.seq = patch.item.ended_seq.unwrap_or(patch.revision);
-                session_elapsed.observe_event(&patch.item);
-                if patch.item.kind == "permissionRequest" {
-                    insert_latest_permission_event(&mut latest_permission_events, &patch.item);
-                }
                 if let Some(raw) = patch.item.raw.as_ref() {
                     if is_session_update(&patch.item, "available_commands_update") {
                         available_commands = raw
@@ -4073,32 +4108,26 @@ fn parse_timeline_file(
                         });
                     }
                 }
-                if is_hidden_from_chat(&patch.item) || !is_session_timeline_event(&patch.item) {
-                    continue;
-                }
                 let should_replace = latest_by_item
                     .get(&patch.item_id)
                     .map(|(revision, _)| patch.revision >= *revision)
                     .unwrap_or(true);
                 if should_replace {
-                    latest_by_item.insert(patch.item_id, (patch.revision, patch.item));
+                    let item = latest_by_item
+                        .get(&patch.item_id)
+                        .map(|(_, existing)| {
+                            merge_timeline_item_revision_vm(existing, patch.item.clone())
+                        })
+                        .unwrap_or(patch.item);
+                    latest_by_item.insert(patch.item_id, (patch.revision, item));
                 }
                 continue;
             }
 
-            let Ok(mut final_item) = serde_json::from_str::<AcpTimelineItemVm>(&line) else {
+            let Ok(final_item) = serde_json::from_str::<AcpTimelineItemVm>(&line) else {
                 continue;
             };
             event_count += 1;
-            final_item.item.seq = final_item
-                .item
-                .ended_seq
-                .or(final_item.item.started_seq)
-                .unwrap_or(final_item.item.seq);
-            session_elapsed.observe_event(&final_item.item);
-            if final_item.item.kind == "permissionRequest" {
-                insert_latest_permission_event(&mut latest_permission_events, &final_item.item);
-            }
             if let Some(raw) = final_item.item.raw.as_ref() {
                 if is_session_update(&final_item.item, "available_commands_update") {
                     available_commands = raw
@@ -4116,28 +4145,43 @@ fn parse_timeline_file(
                     });
                 }
             }
-            if is_hidden_from_chat(&final_item.item) || !is_session_timeline_event(&final_item.item)
-            {
-                continue;
+            let item_id = final_item.item.id.clone();
+            let should_replace = latest_by_item
+                .get(&item_id)
+                .map(|(revision, _)| *revision == 0)
+                .unwrap_or(true);
+            if should_replace {
+                let item = latest_by_item
+                    .get(&item_id)
+                    .map(|(_, existing)| {
+                        merge_timeline_item_revision_vm(existing, final_item.item.clone())
+                    })
+                    .unwrap_or(final_item.item);
+                latest_by_item.insert(item_id, (0, item));
             }
-            latest_by_item.insert(final_item.item.id.clone(), (0, final_item.item.clone()));
-            final_items.push(final_item.item);
         }
     }
 
-    let mut all_events = if saw_legacy_patch {
-        let mut merged = latest_by_item;
-        for item in final_items {
-            merged.entry(item.id.clone()).or_insert((0, item));
+    let mut canonical_events = latest_by_item
+        .into_values()
+        .map(|(_, event)| event)
+        .collect::<Vec<_>>();
+    canonical_events.sort_by_key(|event| (event.started_seq.unwrap_or(event.seq), event.seq));
+    remove_reclassified_local_provider_history_vm(&mut canonical_events);
+
+    let mut session_elapsed = AcpSessionElapsedState::default();
+    let mut latest_permission_events = HashMap::<String, AcpUiEventVm>::new();
+    for event in &canonical_events {
+        session_elapsed.observe_event(event);
+        if event.kind == "permissionRequest" {
+            insert_latest_permission_event(&mut latest_permission_events, event);
         }
-        merged
-            .into_values()
-            .map(|(_, event)| event)
-            .collect::<Vec<_>>()
-    } else {
-        final_items
-    };
-    all_events.sort_by_key(|event| event.started_seq.unwrap_or(event.seq));
+    }
+
+    let all_events = canonical_events
+        .into_iter()
+        .filter(|event| !is_hidden_from_chat(event) && is_session_timeline_event(event))
+        .collect::<Vec<_>>();
 
     Ok((
         all_events,
@@ -4147,6 +4191,352 @@ fn parse_timeline_file(
         available_commands,
         usage,
     ))
+}
+
+fn merge_timeline_item_revision_vm(
+    existing: &AcpUiEventVm,
+    mut incoming: AcpUiEventVm,
+) -> AcpUiEventVm {
+    if is_provider_history_event_vm(&incoming) && !is_provider_history_event_vm(existing) {
+        return existing.clone();
+    }
+    let existing_start = existing.started_seq.unwrap_or(existing.seq);
+    let incoming_start = incoming.started_seq.unwrap_or(incoming.seq);
+    if existing_start > incoming_start {
+        return incoming;
+    }
+
+    let repeated_payload = existing.kind == incoming.kind
+        && existing.content == incoming.content
+        && existing.title == incoming.title
+        && existing.tool_call_id == incoming.tool_call_id
+        && existing.status == incoming.status
+        && raw_equal_ignoring_history_placement_vm(existing.raw.as_ref(), incoming.raw.as_ref());
+    incoming.started_seq = Some(existing_start);
+    incoming.started_at = existing
+        .started_at
+        .clone()
+        .or_else(|| Some(existing.timestamp.clone()));
+    incoming.timestamp = existing.timestamp.clone();
+    if repeated_payload {
+        incoming.seq = existing.seq;
+        incoming.ended_seq = existing.ended_seq;
+        incoming.ended_at = existing.ended_at.clone();
+        incoming.timing = existing.timing.clone();
+    }
+    incoming
+}
+
+fn raw_equal_ignoring_history_placement_vm(
+    existing: Option<&Value>,
+    incoming: Option<&Value>,
+) -> bool {
+    fn without_placement(raw: Option<&Value>) -> Option<Value> {
+        raw.map(|raw| {
+            let mut raw = raw.clone();
+            if let Some(object) = raw.as_object_mut() {
+                object.remove("historyPlacement");
+            }
+            raw
+        })
+    }
+
+    without_placement(existing) == without_placement(incoming)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ProviderHistoryTurnKeyVm {
+    session_id: Option<String>,
+    provider: String,
+    turn_index: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ProviderHistoryPlacementKeyVm {
+    session_id: Option<String>,
+    provider: String,
+    after_prompt_id: Option<String>,
+    before_prompt_id: Option<String>,
+    gap_turn_index: u64,
+}
+
+#[derive(Debug)]
+struct PlacedProviderHistoryGroupVm {
+    slot: usize,
+    after_anchor_index: Option<usize>,
+    gap_turn_index: u64,
+    audit_seq: u64,
+    stable_key: String,
+    items: Vec<AcpUiEventVm>,
+}
+
+fn remove_reclassified_local_provider_history_vm(items: &mut Vec<AcpUiEventVm>) {
+    let mut local_prompts = HashMap::<Option<String>, Vec<String>>::new();
+    for item in items
+        .iter()
+        .filter(|item| is_gold_band_user_prompt_event(item))
+    {
+        let Some(content) = item.content.as_deref() else {
+            continue;
+        };
+        local_prompts
+            .entry(item.session_id.clone())
+            .or_default()
+            .push(normalize_provider_history_prompt(content));
+    }
+
+    let mut cursors = HashMap::<(Option<String>, String), usize>::new();
+    let mut stale_turns = HashSet::<ProviderHistoryTurnKeyVm>::new();
+    for item in items.iter().filter(|item| {
+        item.kind == "userTextDelta"
+            && is_provider_history_event_vm(item)
+            && !has_provider_history_placement_vm(item.raw.as_ref())
+    }) {
+        let Some(turn) = provider_history_turn_key_vm(item) else {
+            continue;
+        };
+        let Some(content) = item.content.as_deref() else {
+            continue;
+        };
+        let Some(anchors) = local_prompts.get(&turn.session_id) else {
+            continue;
+        };
+        let cursor_key = (turn.session_id.clone(), turn.provider.clone());
+        let cursor = cursors.entry(cursor_key).or_default();
+        let normalized = normalize_provider_history_prompt(content);
+        let Some(relative_index) = anchors[*cursor..]
+            .iter()
+            .position(|anchor| anchor == &normalized)
+        else {
+            continue;
+        };
+        *cursor = cursor.saturating_add(relative_index).saturating_add(1);
+        stale_turns.insert(turn);
+    }
+
+    if stale_turns.is_empty() {
+        return;
+    }
+    items.retain(|item| {
+        provider_history_turn_key_vm(item).is_none_or(|turn| !stale_turns.contains(&turn))
+    });
+}
+
+fn has_provider_history_placement_vm(raw: Option<&Value>) -> bool {
+    raw.and_then(|raw| raw.get("historyPlacement"))
+        .and_then(Value::as_object)
+        .and_then(|placement| placement.get("version"))
+        .and_then(Value::as_u64)
+        == Some(1)
+}
+
+fn is_provider_history_event_vm(event: &AcpUiEventVm) -> bool {
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("source"))
+        .and_then(|value| value.as_str())
+        == Some("providerHistory")
+}
+
+fn provider_history_turn_key_vm(event: &AcpUiEventVm) -> Option<ProviderHistoryTurnKeyVm> {
+    let raw = event.raw.as_ref()?;
+    if raw.get("source").and_then(|value| value.as_str()) != Some("providerHistory") {
+        return None;
+    }
+    Some(ProviderHistoryTurnKeyVm {
+        session_id: event.session_id.clone(),
+        provider: raw
+            .get("historyProvider")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        turn_index: raw
+            .get("historyTurnIndex")
+            .and_then(|value| value.as_u64())?,
+    })
+}
+
+fn normalize_provider_history_prompt(value: &str) -> String {
+    value
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim()
+        .to_string()
+}
+
+fn order_provider_history_by_prompt_anchors_vm(items: &mut Vec<AcpUiEventVm>) {
+    let mut base = Vec::with_capacity(items.len());
+    let mut grouped = HashMap::<ProviderHistoryPlacementKeyVm, Vec<AcpUiEventVm>>::new();
+    for item in items.drain(..) {
+        let Some(key) = provider_history_placement_key_vm(&item) else {
+            base.push(item);
+            continue;
+        };
+        grouped.entry(key).or_default().push(item);
+    }
+    if grouped.is_empty() {
+        *items = base;
+        return;
+    }
+
+    let prompt_indexes = base
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| is_gold_band_user_prompt_event(event))
+        .map(|(index, event)| {
+            (
+                (event.session_id.clone(), prompt_anchor_id_vm(event)),
+                index,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut groups = grouped
+        .into_iter()
+        .map(|(key, mut history_items)| {
+            history_items.sort_by_key(|event| {
+                (
+                    provider_history_item_index_vm(event),
+                    event.started_seq.unwrap_or(event.seq),
+                    event.seq,
+                )
+            });
+            let audit_seq = history_items
+                .iter()
+                .map(|event| event.started_seq.unwrap_or(event.seq))
+                .min()
+                .unwrap_or_default();
+            let before_anchor_index = key
+                .before_prompt_id
+                .as_ref()
+                .and_then(|prompt_id| {
+                    prompt_indexes.get(&(key.session_id.clone(), prompt_id.clone()))
+                })
+                .copied();
+            let after_anchor_index = key
+                .after_prompt_id
+                .as_ref()
+                .and_then(|prompt_id| {
+                    prompt_indexes.get(&(key.session_id.clone(), prompt_id.clone()))
+                })
+                .copied();
+            let slot = before_anchor_index
+                .or_else(|| {
+                    after_anchor_index.map(|after_index| {
+                        base.iter()
+                            .enumerate()
+                            .skip(after_index.saturating_add(1))
+                            .find(|(_, event)| is_gold_band_user_prompt_event(event))
+                            .map(|(index, _)| index)
+                            .unwrap_or(base.len())
+                    })
+                })
+                .unwrap_or_else(|| {
+                    base.iter()
+                        .take_while(|event| event.started_seq.unwrap_or(event.seq) <= audit_seq)
+                        .count()
+                });
+            let stable_key = format!(
+                "{}:{}:{}:{}:{}",
+                key.session_id.as_deref().unwrap_or_default(),
+                key.provider,
+                key.after_prompt_id.as_deref().unwrap_or_default(),
+                key.before_prompt_id.as_deref().unwrap_or_default(),
+                key.gap_turn_index,
+            );
+            PlacedProviderHistoryGroupVm {
+                slot,
+                after_anchor_index,
+                gap_turn_index: key.gap_turn_index,
+                audit_seq,
+                stable_key,
+                items: history_items,
+            }
+        })
+        .collect::<Vec<_>>();
+    groups.sort_by(|left, right| {
+        (
+            left.slot,
+            left.after_anchor_index,
+            left.gap_turn_index,
+            left.audit_seq,
+            left.stable_key.as_str(),
+        )
+            .cmp(&(
+                right.slot,
+                right.after_anchor_index,
+                right.gap_turn_index,
+                right.audit_seq,
+                right.stable_key.as_str(),
+            ))
+    });
+
+    let mut slots = (0..=base.len())
+        .map(|_| Vec::<AcpUiEventVm>::new())
+        .collect::<Vec<_>>();
+    for group in groups {
+        slots[group.slot].extend(group.items);
+    }
+    let mut ordered = Vec::with_capacity(base.len() + slots.iter().map(Vec::len).sum::<usize>());
+    for (index, event) in base.into_iter().enumerate() {
+        ordered.append(&mut slots[index]);
+        ordered.push(event);
+    }
+    ordered.append(&mut slots.last_mut().expect("history slots are never empty"));
+    *items = ordered;
+}
+
+fn provider_history_placement_key_vm(
+    event: &AcpUiEventVm,
+) -> Option<ProviderHistoryPlacementKeyVm> {
+    let raw = event.raw.as_ref()?;
+    if raw.get("source").and_then(Value::as_str) != Some("providerHistory") {
+        return None;
+    }
+    let placement = raw.get("historyPlacement")?.as_object()?;
+    if placement.get("version").and_then(Value::as_u64) != Some(1) {
+        return None;
+    }
+    Some(ProviderHistoryPlacementKeyVm {
+        session_id: event.session_id.clone(),
+        provider: raw
+            .get("historyProvider")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        after_prompt_id: placement
+            .get("afterPromptId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        before_prompt_id: placement
+            .get("beforePromptId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        gap_turn_index: placement
+            .get("gapTurnIndex")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+    })
+}
+
+fn prompt_anchor_id_vm(event: &AcpUiEventVm) -> String {
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("promptId"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(event.id.as_str())
+        .to_string()
+}
+
+fn provider_history_item_index_vm(event: &AcpUiEventVm) -> u64 {
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("historyItemIndex"))
+        .and_then(Value::as_u64)
+        .unwrap_or_default()
 }
 
 fn paginate_timeline(
@@ -4197,11 +4587,13 @@ fn paginate_timeline(
         .collect();
     include_latest_permission_events(&mut filtered, latest_permission_events);
     let oldest_seq = filtered
-        .first()
-        .map(|event| event.started_seq.unwrap_or(event.seq));
+        .iter()
+        .map(|event| event.started_seq.unwrap_or(event.seq))
+        .min();
     let newest_seq = filtered
-        .last()
-        .map(|event| event.ended_seq.unwrap_or(event.seq));
+        .iter()
+        .map(|event| event.ended_seq.unwrap_or(event.seq))
+        .max();
     let oldest_index = oldest_seq.and_then(|seq| {
         all_events
             .iter()
@@ -4222,6 +4614,7 @@ fn paginate_timeline(
         oldest_cursor: oldest_seq.map(format_timeline_cursor),
         newest_cursor: newest_seq.map(format_timeline_cursor),
     };
+    order_provider_history_by_prompt_anchors_vm(&mut filtered);
 
     Ok(AcpEventScan {
         events: filtered,
@@ -4906,7 +5299,10 @@ fn merge_pending_delta(pending: &mut Option<AcpUiEventVm>, event: &AcpUiEventVm)
     let Some(previous) = pending.as_mut() else {
         return false;
     };
-    if !is_delta_event(event) || previous.kind != event.kind {
+    if !is_delta_event(event)
+        || previous.kind != event.kind
+        || !same_delta_stream_identity(previous, event)
+    {
         return false;
     }
     previous.content = Some(format!(
@@ -4923,6 +5319,26 @@ fn merge_pending_delta(pending: &mut Option<AcpUiEventVm>, event: &AcpUiEventVm)
         .or_else(|| previous.raw.clone())
         .map(compact_raw_value);
     true
+}
+
+fn same_delta_stream_identity(previous: &AcpUiEventVm, event: &AcpUiEventVm) -> bool {
+    match (
+        delta_stream_identity(previous),
+        delta_stream_identity(event),
+    ) {
+        (Some(previous), Some(incoming)) => previous == incoming,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn delta_stream_identity(event: &AcpUiEventVm) -> Option<&str> {
+    event.raw.as_ref().and_then(|raw| {
+        raw.get("providerHistoryItemId")
+            .and_then(|value| value.as_str())
+            .or_else(|| raw.get("messageId").and_then(|value| value.as_str()))
+            .filter(|value| !value.trim().is_empty())
+    })
 }
 
 fn is_delta_event(event: &AcpUiEventVm) -> bool {
@@ -4955,10 +5371,16 @@ fn is_session_timeline_event(event: &AcpUiEventVm) -> bool {
         return true;
     };
     let session_update = raw.get("sessionUpdate").and_then(|value| value.as_str());
+    if session_update == Some("user_message_chunk")
+        && raw.get("source").and_then(|value| value.as_str()) == Some("providerHistory")
+    {
+        return true;
+    }
     !matches!(
         session_update,
         Some(
-            "available_commands_update"
+            "user_message_chunk"
+                | "available_commands_update"
                 | "usage_update"
                 | "session_info_update"
                 | "current_mode_update"
@@ -5137,6 +5559,23 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
     let models = session.get("models").cloned();
     let modes = session.get("modes").cloned();
     let config_options = session.get("configOptions").cloned();
+    let model_override_id = session
+        .get("modelOverride")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let permission_mode_override_id = session
+        .get("permissionModeOverride")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let config_option_overrides: std::collections::BTreeMap<String, String> = session
+        .get("configOptionOverrides")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
     let current_model_id = models
         .as_ref()
         .and_then(|value| value.get("currentModelId"))
@@ -5158,7 +5597,10 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
             .or_else(|| config_option_display_name(config_options.as_ref(), "mode", mode_id))
     });
 
-    if current_model_id.is_none()
+    if model_override_id.is_none()
+        && permission_mode_override_id.is_none()
+        && config_option_overrides.is_empty()
+        && current_model_id.is_none()
         && current_model_name.is_none()
         && current_mode_id.is_none()
         && current_mode_name.is_none()
@@ -5170,6 +5612,9 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
     }
 
     Some(AcpSessionConfigVm {
+        model_override_id,
+        permission_mode_override_id,
+        config_option_overrides,
         current_model_id,
         current_model_name,
         current_mode_id,
@@ -6749,6 +7194,8 @@ mod tests {
         }))
         .unwrap();
 
+        assert!(config.model_override_id.is_none());
+        assert!(config.permission_mode_override_id.is_none());
         assert!(config.current_model_id.is_none());
         assert!(config.current_mode_id.is_none());
         assert_eq!(
@@ -6758,6 +7205,65 @@ mod tests {
                 .and_then(|value| value.as_array())
                 .map(Vec::len),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn acp_session_config_separates_gold_band_override_from_agent_current_model() {
+        let unspecified = acp_session_config_vm(&json!({
+            "models": {
+                "currentModelId": "default",
+                "availableModels": [
+                    { "modelId": "default", "name": "Default (recommended)" },
+                    { "modelId": "glm-5.2-hs", "name": "GLM 5.2" }
+                ]
+            }
+        }))
+        .unwrap();
+        assert!(unspecified.model_override_id.is_none());
+        assert_eq!(unspecified.current_model_id.as_deref(), Some("default"));
+
+        let explicit = acp_session_config_vm(&json!({
+            "modelOverride": "default",
+            "models": {
+                "currentModelId": "default",
+                "availableModels": [
+                    { "modelId": "default", "name": "Default (recommended)" }
+                ]
+            }
+        }))
+        .unwrap();
+        assert_eq!(explicit.model_override_id.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn acp_session_config_separates_gold_band_override_from_agent_current_permission_mode() {
+        let unspecified = acp_session_config_vm(&json!({
+            "modes": {
+                "currentModeId": "default",
+                "availableModes": [
+                    { "id": "default", "name": "Default" },
+                    { "id": "bypassPermissions", "name": "Bypass Permissions" }
+                ]
+            }
+        }))
+        .unwrap();
+        assert!(unspecified.permission_mode_override_id.is_none());
+        assert_eq!(unspecified.current_mode_id.as_deref(), Some("default"));
+
+        let explicit = acp_session_config_vm(&json!({
+            "permissionModeOverride": "default",
+            "modes": {
+                "currentModeId": "default",
+                "availableModes": [
+                    { "id": "default", "name": "Default" }
+                ]
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            explicit.permission_mode_override_id.as_deref(),
+            Some("default")
         );
     }
 
@@ -6797,6 +7303,27 @@ mod tests {
         assert_eq!(
             pending.and_then(|event| event.content),
             Some("输出你的工具列表".to_string())
+        );
+    }
+
+    #[test]
+    fn text_delta_with_different_message_ids_does_not_merge_in_scan_window() {
+        let mut first = test_event("textDelta", "warning");
+        first.raw = Some(json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "warning-1"
+        }));
+        let mut pending = Some(first);
+        let mut next = test_event("textDelta", "answer");
+        next.raw = Some(json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "answer-1"
+        }));
+
+        assert!(!merge_pending_delta(&mut pending, &next));
+        assert_eq!(
+            pending.and_then(|event| event.content),
+            Some("warning".to_string())
         );
     }
 
@@ -7246,29 +7773,373 @@ mod tests {
     }
 
     #[test]
+    fn session_timeline_projection_hides_provider_echoes_and_keeps_replay_position() {
+        let dir =
+            std::env::temp_dir().join(format!("gb-tl-replay-projection-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+
+        let mut prompt = gold_band_prompt_at(1_000);
+        prompt.id = "gold-band-user-prompt-1".to_string();
+        prompt.seq = 1;
+        prompt.started_seq = Some(1);
+        prompt.ended_seq = Some(1);
+
+        let mut provider_echo = acp_event_at(
+            "provider-echo",
+            "userTextDelta",
+            Some("completed"),
+            1_001,
+            Some(json!({ "sessionUpdate": "user_message_chunk" })),
+        );
+        provider_echo.content = Some("hi".to_string());
+        provider_echo.seq = 2;
+        provider_echo.started_seq = Some(2);
+        provider_echo.ended_seq = Some(2);
+
+        let mut interrupted = provider_echo.clone();
+        interrupted.id = "provider-interrupted".to_string();
+        interrupted.content = Some("[Request interrupted by user]".to_string());
+        interrupted.seq = 3;
+        interrupted.started_seq = Some(3);
+        interrupted.ended_seq = Some(3);
+
+        let mut external = provider_echo.clone();
+        external.id = "provider-user-external".to_string();
+        external.content = Some("external question".to_string());
+        external.seq = 4;
+        external.started_seq = Some(4);
+        external.ended_seq = Some(4);
+        external.raw = Some(json!({
+            "source": "providerHistory",
+            "historyOrigin": "external",
+            "sessionUpdate": "user_message_chunk",
+            "messageId": "external-user"
+        }));
+
+        let mut original = acp_event_at(
+            "assistant-message-answer-1",
+            "textDelta",
+            Some("completed"),
+            1_002,
+            Some(json!({
+                "sessionUpdate": "agent_message_chunk",
+                "messageId": "answer-1"
+            })),
+        );
+        original.content = Some("answer".to_string());
+        original.seq = 5;
+        original.started_seq = Some(5);
+        original.ended_seq = Some(5);
+        original.started_at = Some("1002Z".to_string());
+        original.ended_at = Some("1002Z".to_string());
+
+        let mut replayed = original.clone();
+        replayed.seq = 100;
+        replayed.timestamp = "1100Z".to_string();
+        replayed.started_seq = Some(100);
+        replayed.ended_seq = Some(100);
+        replayed.started_at = Some("1100Z".to_string());
+        replayed.ended_at = Some("1100Z".to_string());
+
+        let path = write_timeline_patch_file(
+            &db,
+            "acp.timeline.jsonl",
+            &[
+                (1, "gold-band-user-prompt-1", prompt),
+                (2, "provider-echo", provider_echo),
+                (3, "provider-interrupted", interrupted),
+                (4, "provider-user-external", external),
+                (5, "assistant-message-answer-1", original),
+                (100, "assistant-message-answer-1", replayed),
+            ],
+        );
+
+        let scan = scan_acp_timeline(&path, None, false, 30).unwrap();
+
+        assert_eq!(
+            scan.events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "gold-band-user-prompt-1",
+                "provider-user-external",
+                "assistant-message-answer-1"
+            ]
+        );
+        assert_eq!(scan.events[2].seq, 5);
+        assert_eq!(scan.events[2].started_seq, Some(5));
+        assert_eq!(scan.events[2].timestamp, "1002Z");
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn provider_history_projection_inserts_external_turn_before_prompt_anchor() {
+        let mut first_prompt = gold_band_prompt_at(1_000);
+        first_prompt.id = "gold-band-user-prompt-1".to_string();
+        first_prompt.seq = 1;
+        first_prompt.started_seq = Some(1);
+        first_prompt.ended_seq = Some(1);
+        first_prompt.content = Some("hi".to_string());
+        first_prompt.raw = Some(json!({
+            "source": "goldBandPrompt",
+            "promptId": "prompt-1"
+        }));
+
+        let mut first_answer = text_event_at(1_001);
+        first_answer.id = "assistant-message-first".to_string();
+        first_answer.seq = 2;
+        first_answer.started_seq = Some(2);
+        first_answer.ended_seq = Some(2);
+
+        let mut ask_prompt = gold_band_prompt_at(1_029);
+        ask_prompt.id = "gold-band-user-prompt-2".to_string();
+        ask_prompt.seq = 29;
+        ask_prompt.started_seq = Some(29);
+        ask_prompt.ended_seq = Some(29);
+        ask_prompt.content = Some("用askUserQuestion工具随便问几个问题给我".to_string());
+        ask_prompt.raw = Some(json!({
+            "source": "goldBandPrompt",
+            "promptId": "prompt-2"
+        }));
+
+        let mut ask_tool = acp_event_at(
+            "tool-call-ask",
+            "toolCall",
+            Some("completed"),
+            1_030,
+            Some(json!({ "toolCallId": "ask" })),
+        );
+        ask_tool.seq = 30;
+        ask_tool.started_seq = Some(30);
+        ask_tool.ended_seq = Some(30);
+
+        let placement = json!({
+            "version": 1,
+            "afterPromptId": "prompt-1",
+            "beforePromptId": "prompt-2",
+            "gapTurnIndex": 1
+        });
+        let mut external_user = acp_event_at(
+            "provider-user-external",
+            "userTextDelta",
+            Some("completed"),
+            1_101,
+            Some(json!({
+                "source": "providerHistory",
+                "historyProvider": "claude-acp",
+                "historyItemIndex": 1,
+                "historyPlacement": placement
+            })),
+        );
+        external_user.seq = 101;
+        external_user.started_seq = Some(101);
+        external_user.ended_seq = Some(101);
+        external_user.content = Some("这是我追加的信息".to_string());
+
+        let mut external_answer = text_event_at(1_102);
+        external_answer.id = "assistant-message-external".to_string();
+        external_answer.seq = 102;
+        external_answer.started_seq = Some(102);
+        external_answer.ended_seq = Some(102);
+        external_answer.raw = Some(json!({
+            "source": "providerHistory",
+            "historyProvider": "claude-acp",
+            "historyItemIndex": 2,
+            "historyPlacement": {
+                "version": 1,
+                "afterPromptId": "prompt-1",
+                "beforePromptId": "prompt-2",
+                "gapTurnIndex": 1
+            }
+        }));
+
+        let mut events = vec![
+            first_prompt,
+            first_answer,
+            ask_prompt,
+            ask_tool,
+            external_user,
+            external_answer,
+        ];
+        order_provider_history_by_prompt_anchors_vm(&mut events);
+
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "gold-band-user-prompt-1",
+                "assistant-message-first",
+                "provider-user-external",
+                "assistant-message-external",
+                "gold-band-user-prompt-2",
+                "tool-call-ask",
+            ]
+        );
+    }
+
+    #[test]
+    fn session_timeline_projection_repairs_reclassified_local_tool_turn() {
+        let dir = std::env::temp_dir().join(format!(
+            "gb-tl-reclassified-local-turn-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+
+        let mut prompts = ["hi", "hi", "用askUserQuestion工具随便问几个问题给我"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, content)| {
+                let mut prompt = gold_band_prompt_at(1_000 + index as u64);
+                prompt.id = format!("gold-band-user-prompt-{index}");
+                prompt.seq = index as u64 + 1;
+                prompt.started_seq = Some(prompt.seq);
+                prompt.ended_seq = Some(prompt.seq);
+                prompt.content = Some(content.to_string());
+                prompt
+            })
+            .collect::<Vec<_>>();
+
+        let mut original_tool = acp_event_at(
+            "tool-call-ask",
+            "toolCall",
+            Some("completed"),
+            1_004,
+            Some(json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "ask",
+                "rawInput": { "questions": [{ "question": "Question" }] }
+            })),
+        );
+        original_tool.seq = 4;
+        original_tool.started_seq = Some(4);
+        original_tool.ended_seq = Some(4);
+        original_tool.title = Some("Asking for your input".to_string());
+        original_tool.tool_call_id = Some("ask".to_string());
+
+        let mut external = acp_event_at(
+            "provider-user-external",
+            "userTextDelta",
+            Some("completed"),
+            1_010,
+            Some(json!({
+                "source": "providerHistory",
+                "historyProvider": "claude-acp",
+                "historyTurnIndex": 2,
+                "sessionUpdate": "user_message_chunk"
+            })),
+        );
+        external.seq = 10;
+        external.started_seq = Some(10);
+        external.ended_seq = Some(10);
+        external.content = Some("这是我追加的信息".to_string());
+
+        let mut stale_ask = external.clone();
+        stale_ask.id = "provider-user-ask".to_string();
+        stale_ask.seq = 11;
+        stale_ask.started_seq = Some(11);
+        stale_ask.ended_seq = Some(11);
+        stale_ask.content = Some("用askUserQuestion工具随便问几个问题给我".to_string());
+        stale_ask.raw = Some(json!({
+            "source": "providerHistory",
+            "historyProvider": "claude-acp",
+            "historyTurnIndex": 3,
+            "sessionUpdate": "user_message_chunk"
+        }));
+
+        let mut replayed_tool = original_tool.clone();
+        replayed_tool.seq = 12;
+        replayed_tool.started_seq = Some(12);
+        replayed_tool.ended_seq = Some(12);
+        replayed_tool.raw = Some(json!({
+            "source": "providerHistory",
+            "historyProvider": "claude-acp",
+            "historyTurnIndex": 3,
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "ask",
+            "rawOutput": "answered"
+        }));
+
+        let mut stale_answer = text_event_at(1_013);
+        stale_answer.id = "provider-answer-ask".to_string();
+        stale_answer.seq = 13;
+        stale_answer.started_seq = Some(13);
+        stale_answer.ended_seq = Some(13);
+        stale_answer.content = Some("answered".to_string());
+        stale_answer.raw = Some(json!({
+            "source": "providerHistory",
+            "historyProvider": "claude-acp",
+            "historyTurnIndex": 3,
+            "sessionUpdate": "agent_message_chunk"
+        }));
+
+        let mut patches = prompts
+            .drain(..)
+            .enumerate()
+            .map(|(index, prompt)| (index as u64 + 1, prompt.id.clone(), prompt))
+            .collect::<Vec<_>>();
+        patches.extend([
+            (4, original_tool.id.clone(), original_tool.clone()),
+            (10, external.id.clone(), external.clone()),
+            (11, stale_ask.id.clone(), stale_ask.clone()),
+            (12, replayed_tool.id.clone(), replayed_tool),
+            (13, stale_answer.id.clone(), stale_answer.clone()),
+        ]);
+        let borrowed = patches
+            .iter()
+            .map(|(revision, id, event)| (*revision, id.as_str(), event.clone()))
+            .collect::<Vec<_>>();
+        let path = write_timeline_patch_file(&db, "acp.timeline.jsonl", &borrowed);
+
+        let scan = scan_acp_timeline(&path, None, false, 30).unwrap();
+
+        assert!(scan.events.iter().any(|event| event.id == external.id));
+        assert!(!scan.events.iter().any(|event| event.id == stale_ask.id));
+        assert!(!scan.events.iter().any(|event| event.id == stale_answer.id));
+        let tool = scan
+            .events
+            .iter()
+            .find(|event| event.id == original_tool.id)
+            .unwrap();
+        assert_eq!(tool.raw, original_tool.raw);
+        assert_eq!(tool.seq, original_tool.seq);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn parse_timeline_elapsed_ignores_metadata_updates_before_next_prompt() {
         let dir = std::env::temp_dir().join(format!("gb-tl-elapsed-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-        let path = write_timeline_file(
-            &db,
-            "acp.timeline.jsonl",
-            &[
-                gold_band_prompt_at(1_782_903_916),
-                text_event_at(1_782_903_917),
-                metadata_update_at("modeUpdate", "current_mode_update", 1_782_904_743),
-                gold_band_prompt_at(1_782_904_743),
-                text_event_at(1_782_904_746),
-                metadata_update_at(
-                    "availableCommands",
-                    "available_commands_update",
-                    1_782_905_348,
-                ),
-                metadata_update_at("modeUpdate", "current_mode_update", 1_782_905_348),
-                gold_band_prompt_at(1_782_905_348),
-                text_event_at(1_782_905_355),
-            ],
-        );
+        let events = [
+            gold_band_prompt_at(1_782_903_916),
+            text_event_at(1_782_903_917),
+            metadata_update_at("modeUpdate", "current_mode_update", 1_782_904_743),
+            gold_band_prompt_at(1_782_904_743),
+            text_event_at(1_782_904_746),
+            metadata_update_at(
+                "availableCommands",
+                "available_commands_update",
+                1_782_905_348,
+            ),
+            metadata_update_at("modeUpdate", "current_mode_update", 1_782_905_348),
+            gold_band_prompt_at(1_782_905_348),
+            text_event_at(1_782_905_355),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut event)| {
+            event.seq = index as u64 + 1;
+            event
+        })
+        .collect::<Vec<_>>();
+        let path = write_timeline_file(&db, "acp.timeline.jsonl", &events);
 
         let (_, _, elapsed, _, _, _) = parse_timeline_file(&path, false).unwrap();
 

@@ -404,10 +404,7 @@ impl McpManager {
     // ── private ──
 
     fn load_settings(&self) -> Result<SettingsConfig> {
-        if !self.settings_path.exists() {
-            return Ok(SettingsConfig::default());
-        }
-        crate::storage::read_json(&self.settings_path)
+        crate::storage::load_settings_file(&self.settings_path)
     }
 
     fn save_settings(&self, settings: &SettingsConfig) -> Result<()> {

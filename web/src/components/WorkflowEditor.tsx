@@ -61,7 +61,7 @@ function providerToIconKey(provider: string): string | undefined {
   return mapping[provider];
 }
 
-const DEFAULT_PERMISSION_MODE = '__default_permission_mode__';
+const UNSPECIFIED_PERMISSION_MODE = '__unspecified_permission_mode__';
 
 type EditorTab = 'canvas' | 'json';
 type EdgeOutcome = 'success' | 'failure';
@@ -747,12 +747,12 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
         <ProfilePicker profiles={profiles} value={node.profile ?? null} invalid={errorsFor('profile').length > 0} onChange={(profile) => updateWorker({ profile })} t={t} />
       </Field>
       <Field label={t('workflowEditor.permissionMode')} errors={errorsFor('permission_mode')}>
-        <Select value={node.permission_mode ?? DEFAULT_PERMISSION_MODE} onValueChange={(value) => updateWorker({ permission_mode: value === DEFAULT_PERMISSION_MODE ? null : value })}>
+        <Select value={node.permission_mode ?? UNSPECIFIED_PERMISSION_MODE} onValueChange={(value) => updateWorker({ permission_mode: value === UNSPECIFIED_PERMISSION_MODE ? null : value })}>
           <SelectTrigger className={errorClass(errorsFor('permission_mode'))}>
-            <SelectValue placeholder={t('workflowEditor.permissionModeDefault')} />
+            <SelectValue placeholder={t('workflowEditor.permissionModeUnspecified')} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={DEFAULT_PERMISSION_MODE}>{t('workflowEditor.permissionModeDefault')}</SelectItem>
+            <SelectItem value={UNSPECIFIED_PERMISSION_MODE}>{t('workflowEditor.permissionModeUnspecified')}</SelectItem>
             {permissionModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
           </SelectContent>
         </Select>
@@ -1079,12 +1079,12 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
         </>
       )}
       <Field label={<HelpLabel label={t('workflowEditor.permissionMode')} help={t('workflowEditor.dynamicPermissionModeHelp')} />} errors={errorsFor('permission_mode')}>
-        <Select value={node.permission_mode ?? DEFAULT_PERMISSION_MODE} onValueChange={(value) => updateDynamic({ permission_mode: value === DEFAULT_PERMISSION_MODE ? null : value } as Partial<WorkflowAiDynamicNodeDsl>)}>
+        <Select value={node.permission_mode ?? UNSPECIFIED_PERMISSION_MODE} onValueChange={(value) => updateDynamic({ permission_mode: value === UNSPECIFIED_PERMISSION_MODE ? null : value } as Partial<WorkflowAiDynamicNodeDsl>)}>
           <SelectTrigger className={errorClass(errorsFor('permission_mode'))}>
-            <SelectValue placeholder={t('workflowEditor.permissionModeDefault')} />
+            <SelectValue placeholder={t('workflowEditor.permissionModeUnspecified')} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={DEFAULT_PERMISSION_MODE}>{t('workflowEditor.permissionModeDefault')}</SelectItem>
+            <SelectItem value={UNSPECIFIED_PERMISSION_MODE}>{t('workflowEditor.permissionModeUnspecified')}</SelectItem>
             {isFixedStrategy
               ? agentSpecificModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)
               : (

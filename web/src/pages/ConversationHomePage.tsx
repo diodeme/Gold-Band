@@ -11,7 +11,7 @@ interface ConversationHomePageProps {
   workflowTemplates: WorkflowTemplateStore | null;
   profiles: ProfileVm[];
   busy: boolean;
-  onRunModeChange: (mode: ConversationRunModeVm) => void;
+  onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
   onOpenAgentManagement: () => void;

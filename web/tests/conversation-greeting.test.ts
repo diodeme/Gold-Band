@@ -16,6 +16,10 @@ const homeSource = readFileSync(
   fileURLToPath(new URL('../src/pages/ConversationHomePage.tsx', import.meta.url)),
   'utf8',
 );
+const i18nSource = readFileSync(
+  fileURLToPath(new URL('../src/i18n.ts', import.meta.url)),
+  'utf8',
+);
 
 describe('conversation greeting periods in the system local timezone', () => {
   it.each([
@@ -51,10 +55,18 @@ describe('conversation greeting periods in the system local timezone', () => {
 });
 
 describe('conversation greeting rendering contract', () => {
+  it('keeps English greetings concise and aligned with natural day-part wording', () => {
+    expect(i18nSource.match(/Good morning\. What shall we work on\?/g)).toHaveLength(2);
+    expect(i18nSource.match(/Good afternoon\. What shall we work on\?/g)).toHaveLength(2);
+    expect(i18nSource).toContain('Good evening. What shall we work on?');
+    expect(i18nSource).toContain("It's late. What shall we work on?");
+    expect(i18nSource).not.toContain('What would you like to work on together today?');
+  });
+
   it('isolates time state from the composer and refreshes only at boundaries or resume events', () => {
     expect(homeSource).toContain('<ConversationGreeting />');
-    expect(greetingSource).toContain('text-foreground/80');
-    expect(greetingSource).not.toContain('tracking-tight text-foreground"');
+    expect(greetingSource).toContain('tracking-tight text-title');
+    expect(greetingSource).not.toContain('text-foreground/80');
     expect(greetingSource).not.toContain('ConversationHelloMark');
     expect(greetingSource).toContain('window.setTimeout');
     expect(greetingSource).not.toContain('setInterval');

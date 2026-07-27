@@ -1,6 +1,6 @@
 use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{artifact_uses_json_output, json_artifact_text_from_outputs};
-use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentType};
+use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, managed_agent_preset};
 pub use crate::domain::SessionRef;
 use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode};
 use crate::prompts::{
@@ -15,6 +15,7 @@ use camino::Utf8PathBuf;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use tracing::debug;
 
@@ -125,6 +126,25 @@ pub struct AcpModeOption {
     pub description: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpSelectConfigValue {
+    pub value: String,
+    pub name: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpSelectConfigOption {
+    pub id: String,
+    pub category: Option<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub current_value: Option<String>,
+    pub options: Vec<AcpSelectConfigValue>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoctorResult {
     pub available: bool,
@@ -189,6 +209,8 @@ pub struct WorkerInvocation {
     pub permission_mode: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_options: BTreeMap<String, String>,
     pub continue_ref: Option<serde_json::Value>,
     pub resume_prompt: Option<String>,
     pub resume_prompt_id: Option<String>,
@@ -630,6 +652,57 @@ pub fn supported_models_from_capabilities(capabilities: Option<&Value>) -> Vec<A
     Vec::new()
 }
 
+/// Extracts generic ACP select configuration options without assuming adapter-specific IDs.
+pub fn select_config_options_from_capabilities(
+    capabilities: Option<&Value>,
+) -> Vec<AcpSelectConfigOption> {
+    capabilities
+        .and_then(|value| value.get("configOptions"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|option| {
+            let id = option.get("id").and_then(Value::as_str)?.trim();
+            if id.is_empty() || option.get("type").and_then(Value::as_str) != Some("select") {
+                return None;
+            }
+            let values = option
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|value| {
+                    let raw_value = value.get("value").and_then(Value::as_str)?.trim();
+                    if raw_value.is_empty() {
+                        return None;
+                    }
+                    Some(AcpSelectConfigValue {
+                        value: raw_value.to_string(),
+                        name: optional_trimmed_string(value.get("name")),
+                        description: optional_trimmed_string(value.get("description")),
+                    })
+                })
+                .collect::<Vec<_>>();
+            (!values.is_empty()).then(|| AcpSelectConfigOption {
+                id: id.to_string(),
+                category: optional_trimmed_string(option.get("category")),
+                name: optional_trimmed_string(option.get("name")),
+                description: optional_trimmed_string(option.get("description")),
+                current_value: optional_trimmed_string(option.get("currentValue")),
+                options: values,
+            })
+        })
+        .collect()
+}
+
+fn optional_trimmed_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 /// Finds the config option with `category == "model"` (AI model selector).
 fn find_model_config_option(capabilities: &Value) -> Option<&Value> {
     capabilities
@@ -662,6 +735,7 @@ pub struct AcpProvider {
     acp_session_title_refresh_enabled: bool,
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
+    runtime_policy: client::AcpRuntimePolicy,
 }
 
 impl AcpProvider {
@@ -682,7 +756,13 @@ impl AcpProvider {
             acp_session_title_refresh_enabled,
             acp_raw_max_size_bytes,
             acp_raw_target_size_bytes,
+            runtime_policy: client::AcpRuntimePolicy::default(),
         }
+    }
+
+    pub fn with_runtime_policy(mut self, runtime_policy: client::AcpRuntimePolicy) -> Self {
+        self.runtime_policy = runtime_policy;
+        self
     }
 }
 
@@ -713,10 +793,10 @@ impl ProviderAdapter for AcpProvider {
             self.use_local_claude,
             self.require_local_claude_executable,
         ) {
-            Ok(capabilities) => DoctorResult {
+            Ok(probe) => DoctorResult {
                 available: true,
                 reason: None,
-                capabilities: Some(capabilities),
+                capabilities: Some(probe.capabilities),
             },
             Err(err) => DoctorResult {
                 available: false,
@@ -770,12 +850,14 @@ impl ProviderAdapter for AcpProvider {
             req.session_mode,
             req.permission_mode.clone(),
             req.model.clone(),
+            req.config_options.clone(),
             req.continue_ref.clone(),
             self.use_local_claude,
             self.require_local_claude_executable,
             self.acp_session_title_refresh_enabled,
             self.acp_raw_max_size_bytes,
             self.acp_raw_target_size_bytes,
+            self.runtime_policy,
             live_update,
             &mcp_servers,
             session_update,
@@ -1384,19 +1466,16 @@ fn log_prompt_bundle(
 }
 
 pub fn provider_capabilities(provider_id: &str) -> Result<ProviderCapabilities> {
-    let agent_type = ManagedAgentType::from_str(provider_id)?;
-    provider_capabilities_for_type(agent_type)
+    let agent_id = ManagedAgentId::from_str(provider_id)?;
+    provider_capabilities_for_id(&agent_id)
 }
 
-pub fn provider_capabilities_for_type(
-    agent_type: ManagedAgentType,
-) -> Result<ProviderCapabilities> {
-    if !agent_type.is_supported() {
-        bail!("unsupported agent type: {}", agent_type.as_str());
-    }
+pub fn provider_capabilities_for_id(agent_id: &ManagedAgentId) -> Result<ProviderCapabilities> {
+    let preset = managed_agent_preset(agent_id)
+        .ok_or_else(|| anyhow::anyhow!("unsupported managed agent: {}", agent_id.as_str()))?;
     Ok(AcpProvider::new(
-        agent_type.as_str(),
-        agent_type.default_adapter_config(),
+        agent_id.as_str(),
+        preset.default_config().adapter,
         false,
         false,
         false,
@@ -1416,26 +1495,31 @@ pub fn supports_system_prompt(provider_id: &str) -> Result<bool> {
 }
 
 pub fn provider_from_agent(
-    agent_type: ManagedAgentType,
+    agent_id: &ManagedAgentId,
     config: &ManagedAgentConfig,
     use_local_claude: bool,
     require_local_claude_executable: bool,
     acp_session_title_refresh_enabled: bool,
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
+    runtime_policy: client::AcpRuntimePolicy,
 ) -> Result<Box<dyn ProviderAdapter>> {
-    if !agent_type.is_supported() {
-        bail!("unsupported agent type: {}", agent_type.as_str());
-    }
-    Ok(Box::new(AcpProvider::new(
-        agent_type.as_str(),
-        config.adapter.clone(),
-        use_local_claude,
-        require_local_claude_executable,
-        acp_session_title_refresh_enabled,
-        acp_raw_max_size_bytes,
-        acp_raw_target_size_bytes,
-    )))
+    managed_agent_preset(agent_id)
+        .ok_or_else(|| anyhow::anyhow!("unsupported managed agent: {}", agent_id.as_str()))?;
+    Ok(Box::new(
+        AcpProvider::new(
+            agent_id.as_str(),
+            config.adapter.clone(),
+            use_local_claude,
+            require_local_claude_executable,
+            acp_session_title_refresh_enabled,
+            acp_raw_max_size_bytes,
+            acp_raw_target_size_bytes,
+        )
+        .with_runtime_policy(
+            runtime_policy.with_external_session_sync_enabled(config.external_session_sync_enabled),
+        ),
+    ))
 }
 
 pub fn provider_from_id(
@@ -1446,16 +1530,19 @@ pub fn provider_from_id(
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
 ) -> Result<Box<dyn ProviderAdapter>> {
-    let agent_type = ManagedAgentType::from_str(provider_id)?;
-    let config = ManagedAgentConfig::new(agent_type.default_adapter_config());
+    let agent_id = ManagedAgentId::from_str(provider_id)?;
+    let preset = managed_agent_preset(&agent_id)
+        .ok_or_else(|| anyhow::anyhow!("unsupported managed agent: {provider_id}"))?;
+    let config = preset.default_config();
     provider_from_agent(
-        agent_type,
+        &agent_id,
         &config,
         use_local_claude,
         require_local_claude_executable,
         acp_session_title_refresh_enabled,
         acp_raw_max_size_bytes,
         acp_raw_target_size_bytes,
+        client::AcpRuntimePolicy::default(),
     )
 }
 
@@ -1515,6 +1602,29 @@ mod tests {
     }
 
     #[test]
+    fn extracts_generic_thought_level_select_option_without_hardcoded_id() {
+        let capabilities = serde_json::json!({
+            "configOptions": [{
+                "id": "reasoning_effort",
+                "category": "thought_level",
+                "type": "select",
+                "currentValue": "high",
+                "options": [
+                    { "value": "low", "name": "Low" },
+                    { "value": "high", "name": "High", "description": "More reasoning" }
+                ]
+            }]
+        });
+
+        let options = select_config_options_from_capabilities(Some(&capabilities));
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].id, "reasoning_effort");
+        assert_eq!(options[0].category.as_deref(), Some("thought_level"));
+        assert_eq!(options[0].current_value.as_deref(), Some("high"));
+        assert_eq!(options[0].options[1].value, "high");
+    }
+
+    #[test]
     fn render_prompt_bundle_does_not_add_builtin_output_contracts() {
         let runtime_context = PromptRuntimeContext {
             project_id: "project-001".to_string(),
@@ -1559,6 +1669,7 @@ mod tests {
             user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
             permission_mode: None,
             model: None,
+            config_options: Default::default(),
             continue_ref: None,
             resume_prompt: None,
             resume_prompt_id: None,

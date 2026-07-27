@@ -57,6 +57,11 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-text-selection: var(--text-selection);
+  --color-text-selection-foreground: var(--text-selection-foreground);
+  --color-message-user: var(--message-user);
+  --color-message-user-foreground: var(--message-user-foreground);
+  --color-content-header: var(--content-header);
   --color-title: var(--title);
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
@@ -85,6 +90,10 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
+:root {
+  --conversation-message-max-inline-size: 82cqi;
+}
+
 :root,
 :root[data-theme='dark'] {
   color-scheme: dark;
@@ -109,6 +118,11 @@
   --border: #333333;
   --input: #3a3a3a;
   --ring: #8a8a8a;
+  --text-selection: #555555;
+  --text-selection-foreground: #ffffff;
+  --message-user: #2d2d2d;
+  --message-user-foreground: #f2f2f2;
+  --content-header: var(--sidebar);
   --sidebar: #202020;
   --sidebar-foreground: #e8e8e8;
   --sidebar-primary: #313131;
@@ -157,6 +171,11 @@
   --border: #2b2b2b;
   --input: #333333;
   --ring: #777777;
+  --text-selection: #4d4d4d;
+  --text-selection-foreground: #ffffff;
+  --message-user: #252525;
+  --message-user-foreground: #f2f2f2;
+  --content-header: var(--sidebar);
   --sidebar: #191919;
   --sidebar-foreground: #e8e8e8;
   --sidebar-primary: #2d2d2d;
@@ -204,6 +223,11 @@
   --border: #e1e3e9;
   --input: #d9dce5;
   --ring: #5b6ba8;
+  --text-selection: #cdd2e3;
+  --text-selection-foreground: #191c24;
+  --message-user: #f0f1f5;
+  --message-user-foreground: #191c24;
+  --content-header: var(--sidebar);
   --sidebar: #f4f5f8;
   --sidebar-foreground: #191c24;
   --sidebar-primary: #5b6ba8;
@@ -230,51 +254,56 @@
   --titlebar-hover: rgba(91, 107, 168, 0.08);
 }
 
-:root[data-theme='light-warm'] {
+:root[data-theme='light-gray'] {
   color-scheme: light;
-  --background: #faf9f6;
-  --foreground: #29251f;
-  --title: #171511;
-  --card: #fffdfc;
-  --card-foreground: #29251f;
+  --background: #ffffff;
+  --foreground: #2b2b2b;
+  --title: #171717;
+  --card: #ffffff;
+  --card-foreground: #2b2b2b;
   --popover: #ffffff;
-  --popover-foreground: #29251f;
-  --primary: #8a6a32;
+  --popover-foreground: #2b2b2b;
+  --primary: #2f2f2f;
   --primary-foreground: #ffffff;
-  --secondary: #eeeae3;
-  --secondary-foreground: #3a3328;
-  --muted: #f3f0ea;
-  --muted-foreground: #736b60;
-  --accent: rgba(138, 106, 50, 0.1);
-  --accent-foreground: #755824;
-  --destructive: #b84850;
-  --border: #e3ded5;
-  --input: #d8d1c6;
-  --ring: #8a6a32;
-  --sidebar: #f5f2ec;
-  --sidebar-foreground: #29251f;
-  --sidebar-primary: #8a6a32;
+  --secondary: #eeeeee;
+  --secondary-foreground: #2f2f2f;
+  --muted: #f2f2f2;
+  --muted-foreground: #666666;
+  --accent: #e8e8e8;
+  --accent-foreground: #262626;
+  --destructive: #c23b4a;
+  --border: #e5e5e5;
+  --input: #d8d8d8;
+  --ring: #646464;
+  --text-selection: #d9d9d9;
+  --text-selection-foreground: #202020;
+  --message-user: #f3f3f3;
+  --message-user-foreground: #202020;
+  --content-header: var(--sidebar);
+  --sidebar: #f3f3f3;
+  --sidebar-foreground: #171717;
+  --sidebar-primary: #343434;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: rgba(138, 106, 50, 0.1);
-  --sidebar-accent-foreground: #755824;
-  --sidebar-border: #e4ded4;
-  --sidebar-ring: #8a6a32;
-  --gold-workspace: #f0ede7;
-  --gold-surface-low: #f8f6f2;
-  --gold-surface-high: #ebe7df;
-  --gold-line-soft: rgba(41, 37, 31, 0.08);
-  --gold-running: #5265ad;
-  --gold-success: #397451;
-  --gold-warning: #8a6a32;
-  --gold-danger: #b84850;
+  --sidebar-accent: #e7e7e7;
+  --sidebar-accent-foreground: #171717;
+  --sidebar-border: #e4e4e4;
+  --sidebar-ring: #646464;
+  --gold-workspace: #ffffff;
+  --gold-surface-low: #fafafa;
+  --gold-surface-high: #ededed;
+  --gold-line-soft: rgba(0, 0, 0, 0.08);
+  --gold-running: #4f7fc4;
+  --gold-success: #2e7954;
+  --gold-warning: #966b22;
+  --gold-danger: #c23b4a;
   --gold-scrollbar-track: color-mix(in srgb, var(--gold-surface-high) 48%, transparent);
   --gold-scrollbar-thumb: color-mix(in srgb, var(--primary) 28%, var(--muted-foreground));
   --gold-scrollbar-thumb-hover: color-mix(in srgb, var(--primary) 50%, var(--muted-foreground));
   --titlebar: var(--sidebar);
-  --titlebar-foreground: #29251f;
-  --titlebar-muted: #736b60;
-  --titlebar-border: rgba(41, 37, 31, 0.08);
-  --titlebar-hover: rgba(138, 106, 50, 0.08);
+  --titlebar-foreground: #2f2f2f;
+  --titlebar-muted: #707070;
+  --titlebar-border: rgba(0, 0, 0, 0.08);
+  --titlebar-hover: rgba(0, 0, 0, 0.06);
 }
 
 @layer base {
@@ -357,7 +386,8 @@
   }
 
   ::selection {
-    @apply bg-primary/30 text-foreground;
+    background: var(--text-selection);
+    color: var(--text-selection-foreground);
   }
 }
 

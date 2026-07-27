@@ -2,21 +2,25 @@ import {
   forwardRef,
   memo,
   startTransition,
+  type AnimationEvent,
   useCallback,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Bot,
   ChevronDown,
   CircleAlert,
   CircleStop,
   Clock,
   FileText,
+  FolderOpen,
   Image as ImageIcon,
   ListTodo,
   Loader2,
@@ -29,6 +33,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Collapsible,
@@ -71,6 +76,8 @@ import {
   type ToolPart,
 } from "@/components/prompt-kit/tool";
 import { cn } from "@/lib/utils";
+import { agentIconClass, agentIconSrc } from "@/lib/agent-icons";
+import { EditableConversationTitle } from "@/components/conversation/EditableConversationTitle";
 import { loadArtifactMarkdownRender, saveArtifactMarkdownRender } from "@/lib/artifact-markdown-pref";
 import { goldThemedScrollbarClassName } from "@/lib/themed-scrollbar";
 import {
@@ -99,6 +106,11 @@ import {
 } from "@/lib/acp-session-assets-panel";
 import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-service";
 import { AttachmentChipsList, AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
+import { SlashCommandMenu } from "@/components/conversation/SlashCommandMenu";
+import { SlashCommandInputTag } from "@/components/conversation/SlashCommandInputTag";
+import { parseCommittedSlashCommand } from "@/lib/slash-command";
+import { useAgentCommands } from "@/hooks/useAgentCommands";
+import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
 import { AcpUsagePanel } from "@/components/acp/AcpUsagePanel";
 import { HiddenPromptMessageContent } from "@/components/acp/HiddenPromptMessageContent";
@@ -143,6 +155,7 @@ import {
   respondElicitation,
   submitConversationPrompt,
   setAcpSessionModel,
+  setAcpSessionConfigOption,
   setAcpSessionPermissionMode,
   showArtifact,
   showAttachment,
@@ -151,6 +164,12 @@ import {
   stopActiveSession,
   submitManualCheck,
 } from "@/api";
+import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
+import {
+  ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS,
+  ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS,
+  acpComposerConfigTriggerVariants,
+} from '@/components/acp/AcpComposerConfigTrigger';
 import { subscribeAcpSessionUpdates } from "@/api";
 import { getRuntimeApi } from "@/api/client";
 import { isTauriRuntime } from "@/api/shared";
@@ -195,6 +214,12 @@ export interface ACPChatDialogHandle {
   openArtifactsDialog: (asset?: AssetItemVm) => void;
 }
 
+export interface AcpDirectSessionHeaderProps {
+  title: string;
+  onTitleChange?: (title: string) => void;
+  onOpenInFileManager?: () => void;
+}
+
 interface ACPChatDialogProps {
   session?: AcpSessionVm | null;
   projectId: string;
@@ -209,6 +234,7 @@ interface ACPChatDialogProps {
   manualCheckPending?: boolean;
   systemPromptOptions?: Array<{ attemptId: string; prompt?: string | null }>;
   showSystemPromptAction?: boolean;
+  directSessionHeader?: AcpDirectSessionHeaderProps;
   eventIdPrefix?: string;
   eventPageSize?: number;
   liveUpdatesPaused?: boolean;
@@ -295,6 +321,7 @@ const HISTORY_LOAD_THRESHOLD_PX = 240;
 const BOTTOM_STICK_THRESHOLD_PX = 48;
 const LIVE_EVENT_FLUSH_MS = 125;
 const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
+const ACP_SESSION_LEASE_RETRY_MS = 30_000;
 
 export const ACP_SESSION_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
   "h-full min-w-0 overflow-y-auto",
@@ -489,6 +516,7 @@ export const ACPChatDialog = forwardRef<
     manualCheckPending = false,
     systemPromptOptions,
     showSystemPromptAction = true,
+    directSessionHeader,
     eventIdPrefix,
     eventPageSize,
     liveUpdatesPaused: externalLiveUpdatesPaused = false,
@@ -864,6 +892,20 @@ export const ACPChatDialog = forwardRef<
   const effective = useMemo(
     () => mergeOptimisticSession(visibleSession, optimisticEvents),
     [visibleSession, optimisticEvents],
+  );
+  const agentCommands = useAgentCommands(
+    effective?.provider,
+    effective?.providerCwd ?? effective?.cwd,
+  );
+  const slashCommands = useSlashCommandController({
+    input: prompt,
+    commands: agentCommands.commands,
+    contextKey: agentCommands.catalogKey,
+    onInputChange: setPrompt,
+  });
+  const committedSlashCommand = useMemo(
+    () => parseCommittedSlashCommand(prompt, agentCommands.commands),
+    [agentCommands.commands, prompt],
   );
   const sessionConfigViewModel = useMemo(
     () => createAcpSessionConfigViewModel(effective?.config),
@@ -1274,17 +1316,17 @@ export const ACPChatDialog = forwardRef<
     setCurrentSession(updated);
   }, []);
 
-  const handleAcpSessionModelChange = useCallback((modelId: string) => {
+  const handleAcpSessionModelChange = useCallback((modelId: string | null) => {
     const config = latestSessionRef.current?.config;
-    const selected = findAcpConfigOption(
+    const selected = modelId ? findAcpConfigOption(
       config?.models,
       config?.configOptions,
       "model",
       modelId,
-    );
+    ) : null;
     patchSessionConfig({
-      currentModelId: modelId,
-      currentModelName: selected.name,
+      modelOverrideId: modelId,
+      ...(modelId ? { currentModelId: modelId, currentModelName: selected?.name ?? modelId } : {}),
     });
     setAcpSessionModel(
       projectId,
@@ -1319,17 +1361,17 @@ export const ACPChatDialog = forwardRef<
     taskId,
   ]);
 
-  const handleAcpSessionPermissionModeChange = useCallback((permissionModeId: string) => {
+  const handleAcpSessionPermissionModeChange = useCallback((permissionModeId: string | null) => {
     const config = latestSessionRef.current?.config;
-    const selected = findAcpConfigOption(
+    const selected = permissionModeId ? findAcpConfigOption(
       config?.modes,
       config?.configOptions,
       "mode",
       permissionModeId,
-    );
+    ) : null;
     patchSessionConfig({
-      currentModeId: permissionModeId,
-      currentModeName: selected.name,
+      permissionModeOverrideId: permissionModeId,
+      ...(permissionModeId ? { currentModeId: permissionModeId, currentModeName: selected?.name ?? permissionModeId } : {}),
     });
     setAcpSessionPermissionMode(
       projectId,
@@ -1363,6 +1405,36 @@ export const ACPChatDialog = forwardRef<
     runId,
     taskId,
   ]);
+
+  const handleAcpSessionConfigOptionChange = useCallback((optionId: string, optionValue: string | null) => {
+    const current = latestSessionRef.current?.config?.configOptionOverrides ?? {};
+    const next = { ...current };
+    if (optionValue) next[optionId] = optionValue;
+    else delete next[optionId];
+    patchSessionConfig({ configOptionOverrides: next });
+    setAcpSessionConfigOption(
+      projectId,
+      taskId,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      optionId,
+      optionValue,
+      outerNodeId,
+      outerAttemptId,
+    )
+      .then((updated) => {
+        if (updated) {
+          configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+          applySessionUpdate(updated);
+        }
+      })
+      .catch((error) => {
+        configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+        console.error("Failed to set ACP session config option:", error);
+      });
+  }, [applySessionUpdate, attemptId, nodeId, outerAttemptId, outerNodeId, patchSessionConfig, projectId, roundId, runId, taskId]);
 
   const applyEventUpdates = useCallback((updates: AcpUiEventVm[]) => {
     const normalizedEvents = updates
@@ -1568,6 +1640,51 @@ export const ACPChatDialog = forwardRef<
   }, [liveFlushDeferRemainingMs, timeline]);
 
   useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const renewLease = getRuntimeApi().renewAcpSessionLease;
+    if (!renewLease) return;
+    let active = true;
+    let timer: number | null = null;
+    const schedule = (delayMs: number) => {
+      if (!active) return;
+      timer = window.setTimeout(() => {
+        void run();
+      }, Math.max(1_000, delayMs));
+    };
+    const run = async () => {
+      try {
+        const nextDelayMs = await renewLease(
+          projectId,
+          taskId,
+          runId,
+          roundId,
+          nodeId,
+          attemptId,
+          outerNodeId,
+          outerAttemptId,
+        );
+        schedule(nextDelayMs);
+      } catch {
+        schedule(ACP_SESSION_LEASE_RETRY_MS);
+      }
+    };
+    void run();
+    return () => {
+      active = false;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [
+    attemptId,
+    nodeId,
+    outerAttemptId,
+    outerNodeId,
+    projectId,
+    roundId,
+    runId,
+    taskId,
+  ]);
+
+  useEffect(() => {
     if (!isTauriRuntime()) {
       setLoadingInitialSession(false);
       return;
@@ -1631,7 +1748,15 @@ export const ACPChatDialog = forwardRef<
           if (incoming && configGenerationRef.current > 0 && latestSessionRef.current?.config) {
             const cfg = latestSessionRef.current.config;
             if (incoming.config) {
-              incoming.config = { ...incoming.config, currentModelId: cfg.currentModelId, currentModelName: cfg.currentModelName, currentModeId: cfg.currentModeId, currentModeName: cfg.currentModeName };
+              incoming.config = {
+                ...incoming.config,
+                modelOverrideId: cfg.modelOverrideId,
+                permissionModeOverrideId: cfg.permissionModeOverrideId,
+                currentModelId: cfg.currentModelId,
+                currentModelName: cfg.currentModelName,
+                currentModeId: cfg.currentModeId,
+                currentModeName: cfg.currentModeName,
+              };
             }
           }
           applySessionUpdate(incoming ?? null, "subscription-session");
@@ -1769,15 +1894,17 @@ export const ACPChatDialog = forwardRef<
       activeTurnPrompt,
       activeTurnPromptId,
     );
-    if (acceptedPrompt && !activeTurnStartedAt)
-      setActiveTurnStartedAt(acceptedPrompt.timestamp);
+    if (acceptedPrompt) {
+      if (!activeTurnStartedAt) setActiveTurnStartedAt(acceptedPrompt.timestamp);
+      if (sending) setSending(false);
+    }
     updateOptimisticEvents((current) => {
       const next = current.filter((event) =>
         shouldMergeOptimisticEvent(loadedEvents, event),
       );
       return next.length === current.length ? current : next;
     });
-  }, [activeTurnPrompt, activeTurnPromptId, activeTurnStartedAt, loadedEvents]);
+  }, [activeTurnPrompt, activeTurnPromptId, activeTurnStartedAt, loadedEvents, sending]);
 
   const preserveScrollPosition = useCallback(() => {}, []);
 
@@ -1789,7 +1916,8 @@ export const ACPChatDialog = forwardRef<
       previousEvents.length === 0
     )
       return;
-    const oldestSeq = originalSeqFromAcpEvent(previousEvents[0]);
+    const { oldestSeq } = acpAuditSeqBounds(previousEvents);
+    if (oldestSeq === null) return;
     const beforeCursor = formatTimelineCursor(oldestSeq);
     const scroller = scrollerElementRef.current;
     prependAnchorRef.current = scroller
@@ -1852,9 +1980,8 @@ export const ACPChatDialog = forwardRef<
       previousEvents.length === 0
     )
       return;
-    const newestSeq = originalSeqFromAcpEvent(
-      previousEvents[previousEvents.length - 1],
-    );
+    const { newestSeq } = acpAuditSeqBounds(previousEvents);
+    if (newestSeq === null) return;
     const afterCursor = formatTimelineCursor(newestSeq);
     loadingNewerRef.current = true;
     try {
@@ -2101,6 +2228,7 @@ export const ACPChatDialog = forwardRef<
         outerAttemptId,
       );
       applySessionUpdate(finalSession);
+      updateOptimisticEvents(clearPendingOptimisticPromptsAfterStop);
       setStopCommandPending(false);
       setSending(false);
       setActiveTurnPrompt(null);
@@ -2353,6 +2481,7 @@ export const ACPChatDialog = forwardRef<
         rawActive={canvasMode === "raw"}
         rawLoading={rawLoading}
         showSystemPromptAction={showSystemPromptAction}
+        directSessionHeader={directSessionHeader}
         systemPromptAvailable={
           Boolean(effective.systemPromptAppend?.trim()) ||
           Boolean(systemPromptOptions?.some((option) => option.prompt?.trim()))
@@ -2553,30 +2682,46 @@ export const ACPChatDialog = forwardRef<
                         {fileError}
                       </div>
                     ) : null}
-                    <PromptInput
-                      value={prompt}
-                      onValueChange={setPrompt}
-                      onSubmit={send}
-                      isLoading={sending}
-                      className="rounded-2xl bg-card/80 shadow-sm shadow-background/30 transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
+                    <SlashCommandMenu
+                      open={slashCommands.isOpen}
+                      commands={slashCommands.filteredCommands}
+                      activeIndex={slashCommands.activeIndex}
+                      onActiveIndexChange={slashCommands.setActiveIndex}
+                      onDismiss={slashCommands.dismiss}
+                      onSelect={(index) => { slashCommands.selectByIndex(index); }}
                     >
-                      {showComposerStatus && !usageCompact ? (
-                        <AcpComposerStatus
-                          kind={composerProcessingKind}
-                          active={composerStatusActive}
-                          sessionSeconds={composerSessionSeconds}
+                      <PromptInput
+                        value={prompt}
+                        onValueChange={setPrompt}
+                        onSubmit={send}
+                        isLoading={sending}
+                        className="rounded-2xl bg-card/80 shadow-sm shadow-background/30 transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
+                      >
+                        {showComposerStatus && !usageCompact ? (
+                          <AcpComposerStatus
+                            kind={composerProcessingKind}
+                            active={composerStatusActive}
+                            sessionSeconds={composerSessionSeconds}
+                          />
+                        ) : null}
+                        <PromptInputTextarea
+                          className="min-h-16 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
+                          valuePrefix={committedSlashCommand?.prefix}
+                          leadingAdornment={committedSlashCommand ? (
+                            <SlashCommandInputTag
+                              prefix={committedSlashCommand.prefix}
+                              description={committedSlashCommand.command.description}
+                            />
+                          ) : null}
+                          placeholder={composerPlaceholder}
+                          textareaDisabled={composerInputDisabled}
+                          onKeyDown={slashCommands.onKeyDown}
+                          onDragEnter={dropZoneHandlers.onDragEnter}
+                          onDragOver={dropZoneHandlers.onDragOver}
+                          onDrop={dropZoneHandlers.onDrop}
+                          onPaste={extractPasteFiles}
                         />
-                      ) : null}
-                      <PromptInputTextarea
-                        className="min-h-16 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
-                        placeholder={composerPlaceholder}
-                        textareaDisabled={composerInputDisabled}
-                        onDragEnter={dropZoneHandlers.onDragEnter}
-                        onDragOver={dropZoneHandlers.onDragOver}
-                        onDrop={dropZoneHandlers.onDrop}
-                        onPaste={extractPasteFiles}
-                      />
-                      <div className="mt-1.5 flex items-center justify-between gap-4 px-2 pb-1">
+                        <div className="mt-1.5 flex items-center justify-between gap-4 px-2 pb-1">
                         <div className="flex items-center gap-2">
                           <input
                             ref={fileInputRef}
@@ -2643,14 +2788,16 @@ export const ACPChatDialog = forwardRef<
                             </Button>
                           </PromptInputAction>
                         </PromptInputActions>
-                      </div>
-                      <AcpSessionConfigBar
-                        scopeKey={sessionIdentity}
-                        viewModel={sessionConfigViewModel}
-                        onModelChange={handleAcpSessionModelChange}
-                        onPermissionModeChange={handleAcpSessionPermissionModeChange}
-                      />
-                    </PromptInput>
+                        </div>
+                        <AcpSessionConfigBar
+                          scopeKey={sessionIdentity}
+                          viewModel={sessionConfigViewModel}
+                          onModelChange={handleAcpSessionModelChange}
+                          onConfigOptionChange={handleAcpSessionConfigOptionChange}
+                          onPermissionModeChange={handleAcpSessionPermissionModeChange}
+                        />
+                      </PromptInput>
+                    </SlashCommandMenu>
                   </div>
             )}
           </div>
@@ -2935,90 +3082,85 @@ function AcpErrorBanner({ reason }: { reason: string }) {
 type AcpSessionConfigBarProps = {
   scopeKey: string;
   viewModel: AcpSessionConfigViewModel;
-  onModelChange?: (modelId: string) => void;
-  onPermissionModeChange?: (permissionModeId: string) => void;
+  onModelChange?: (modelId: string | null) => void;
+  onPermissionModeChange?: (permissionModeId: string | null) => void;
+  onConfigOptionChange?: (optionId: string, optionValue: string | null) => void;
 };
+
+const UNSPECIFIED_CONFIG_VALUE = "__gold_band_unspecified__";
 
 const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
   viewModel,
   onModelChange,
+  onConfigOptionChange,
   onPermissionModeChange,
 }: AcpSessionConfigBarProps) {
   const { t } = useTranslation();
   const {
+    modelOverrideId,
+    permissionModeOverrideId,
+    permissionModeOverrideName,
+    canSelectUnspecifiedPermissionMode,
     currentModelId,
-    currentModelName,
     currentModeId,
-    currentModeName,
-    modeLabel,
     availableModels,
     availablePermissionModes,
+    thoughtLevel,
   } = viewModel;
-
-  const handleModelSelect = useCallback(
-    (modelId: string) => {
-      onModelChange?.(modelId);
-    },
-    [onModelChange],
-  );
 
   const handlePermissionModeSelect = useCallback(
     (permissionModeId: string) => {
-      onPermissionModeChange?.(permissionModeId);
+      onPermissionModeChange?.(
+        permissionModeId === UNSPECIFIED_CONFIG_VALUE ? null : permissionModeId,
+      );
     },
     [onPermissionModeChange],
   );
 
-  const modelLabel = currentModelName ?? currentModelId ?? t('conversation.home.selectModel');
-  const permissionModeLabel = modeLabel ?? currentModeId ?? t('acp.permissionMode');
+  const permissionModeLabel = permissionModeOverrideName
+    ?? t('conversation.home.unspecifiedPermissionMode');
   const showModels = availableModels.length > 0 || Boolean(currentModelId);
-  const showPermissionModes = availablePermissionModes.length > 0 || Boolean(modeLabel);
+  const showPermissionModes = availablePermissionModes.length > 0 || Boolean(currentModeId);
+  const permissionModeCanBeSelected = availablePermissionModes.length > 1
+    || (canSelectUnspecifiedPermissionMode && availablePermissionModes.length > 0);
 
-  if (!showModels && !showPermissionModes) return null;
+  if (!showModels && !showPermissionModes && !thoughtLevel) return null;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-t border-border/50 px-2 py-1.5 text-xs text-muted-foreground">
-      {availableModels.length > 1 ? (
-        <Select value={currentModelId ?? ''} onValueChange={handleModelSelect}>
-          <SelectTrigger className="h-7 min-w-0 max-w-[min(22rem,100%)] gap-1.5 rounded-full border-border/60 bg-background/50 px-2.5 text-xs font-normal text-foreground shadow-none hover:bg-background/70 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10">
-            <span className="shrink-0 text-muted-foreground">
-              {t('acp.currentModel')}
-            </span>
-            <span className="min-w-0 flex-1 truncate text-left">{modelLabel}</span>
-          </SelectTrigger>
-          <SelectContent
-            side="top"
-            sideOffset={8}
-            position="popper"
-            align="start"
-            className="w-[min(22rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]"
-          >
-            {availableModels.map((m) => (
-              <SelectItem value={m.id} key={m.id} className="items-start py-2">
-                <span className="block min-w-0">
-                  <span className="block truncate font-medium">{m.name}</span>
-                  {m.description ? (
-                    <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">{m.description}</span>
-                  ) : null}
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      ) : showModels ? (
-        <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
-          <span className="shrink-0 text-muted-foreground">{t('acp.currentModel')}</span>
-          <span className="min-w-0 truncate text-foreground">{modelLabel}</span>
-        </Badge>
-      ) : null}
+      <AcpModelThoughtSelects
+        compact
+        contentSide="top"
+        align="start"
+        models={availableModels}
+        modelValue={modelOverrideId}
+        thoughtLevel={thoughtLevel ? {
+          id: thoughtLevel.id,
+          category: thoughtLevel.category,
+          name: thoughtLevel.name,
+          description: thoughtLevel.description,
+          currentValue: thoughtLevel.currentValue,
+          options: thoughtLevel.options.map((option) => ({
+            value: option.id,
+            name: option.name,
+            description: option.description,
+          })),
+        } : null}
+        thoughtValue={thoughtLevel?.overrideValue}
+        onModelChange={(value) => onModelChange?.(value)}
+        onThoughtChange={(optionId, value) => onConfigOptionChange?.(optionId, value)}
+      />
       {showPermissionModes ? (
-        availablePermissionModes.length > 1 ? (
-          <Select value={currentModeId ?? ''} onValueChange={handlePermissionModeSelect}>
-            <SelectTrigger className="h-7 min-w-0 max-w-[min(18rem,100%)] gap-1.5 rounded-full border-border/60 bg-background/50 px-2.5 text-xs font-normal text-foreground shadow-none hover:bg-background/70 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10">
-              <span className="shrink-0 text-muted-foreground">
+        permissionModeCanBeSelected ? (
+          <Select
+            value={permissionModeOverrideId ?? UNSPECIFIED_CONFIG_VALUE}
+            onValueChange={handlePermissionModeSelect}
+          >
+            <SelectTrigger className={acpComposerConfigTriggerVariants({ compact: true })}>
+              <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>
                 {t('acp.permissionMode')}
               </span>
-              <span className="min-w-0 flex-1 truncate text-left">{permissionModeLabel}</span>
+              <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>{permissionModeLabel}</span>
             </SelectTrigger>
             <SelectContent
               side="top"
@@ -3027,6 +3169,11 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
               align="start"
               className="w-[min(22rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]"
             >
+              {canSelectUnspecifiedPermissionMode ? (
+                <SelectItem value={UNSPECIFIED_CONFIG_VALUE}>
+                  {t('conversation.home.unspecifiedPermissionMode')}
+                </SelectItem>
+              ) : null}
               {availablePermissionModes.map((m) => (
                 <SelectItem value={m.id} key={m.id} className="items-start py-2">
                   <span className="block min-w-0">
@@ -3058,6 +3205,7 @@ function areAcpSessionConfigBarPropsEqual(
     previous.scopeKey === next.scopeKey &&
     previous.viewModel.signature === next.viewModel.signature &&
     previous.onModelChange === next.onModelChange &&
+    previous.onConfigOptionChange === next.onConfigOptionChange &&
     previous.onPermissionModeChange === next.onPermissionModeChange
   );
 }
@@ -3067,6 +3215,7 @@ export function ACPSessionHeader({
   rawActive,
   rawLoading,
   showSystemPromptAction = true,
+  directSessionHeader,
   systemPromptAvailable,
   onToggleRaw,
   onOpenSystemPrompt,
@@ -3075,34 +3224,145 @@ export function ACPSessionHeader({
   rawActive: boolean;
   rawLoading: boolean;
   showSystemPromptAction?: boolean;
+  directSessionHeader?: AcpDirectSessionHeaderProps;
   systemPromptAvailable?: boolean;
   onToggleRaw: () => void;
   onOpenSystemPrompt: () => void;
 }) {
   const { t } = useTranslation();
-  const mode = session.config?.currentModeName ?? session.config?.currentModeId;
+  const [sessionIdTooltip, dispatchSessionIdTooltip] = useReducer(
+    reduceAcpSessionIdTooltipState,
+    ACP_SESSION_ID_TOOLTIP_INITIAL_STATE,
+  );
+  const copyFeedbackTimerRef = useRef<number | null>(null);
+  const appWindowActiveRef = useRef(true);
   const hasSystemPrompt =
     systemPromptAvailable ?? Boolean(session.systemPromptAppend?.trim());
+
+  const clearCopyFeedbackTimer = useCallback(() => {
+    if (copyFeedbackTimerRef.current !== null) {
+      window.clearTimeout(copyFeedbackTimerRef.current);
+      copyFeedbackTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => clearCopyFeedbackTimer, [clearCopyFeedbackTimer]);
+
+  useEffect(() => {
+    const handleWindowFocus = () => {
+      appWindowActiveRef.current = true;
+    };
+    const handleWindowBlur = () => {
+      appWindowActiveRef.current = false;
+      clearCopyFeedbackTimer();
+      dispatchSessionIdTooltip({ type: "app-deactivated" });
+    };
+
+    appWindowActiveRef.current = document.hasFocus();
+    window.addEventListener("focus", handleWindowFocus);
+    window.addEventListener("blur", handleWindowBlur);
+    return () => {
+      window.removeEventListener("focus", handleWindowFocus);
+      window.removeEventListener("blur", handleWindowBlur);
+    };
+  }, [clearCopyFeedbackTimer]);
+
+  const handleCopySessionId = useCallback(async () => {
+    const sessionId = session.sessionId?.trim();
+    if (!sessionId) return;
+
+    try {
+      await navigator.clipboard.writeText(sessionId);
+    } catch {
+      return;
+    }
+
+    clearCopyFeedbackTimer();
+    dispatchSessionIdTooltip({ type: "copy-succeeded" });
+    copyFeedbackTimerRef.current = window.setTimeout(() => {
+      dispatchSessionIdTooltip({ type: "feedback-elapsed" });
+      copyFeedbackTimerRef.current = window.setTimeout(() => {
+        dispatchSessionIdTooltip({ type: "close-settled" });
+        copyFeedbackTimerRef.current = null;
+      }, SESSION_ID_TOOLTIP_CLOSE_SETTLE_MS);
+    }, SESSION_ID_COPY_FEEDBACK_MS);
+  }, [clearCopyFeedbackTimer, session.sessionId]);
+
+  const handleSessionIdTooltipAnimationEnd = useCallback((event: AnimationEvent<HTMLDivElement>) => {
+    if (
+      event.currentTarget.dataset.state !== "closed" ||
+      sessionIdTooltip.phase === "idle"
+    ) return;
+
+    clearCopyFeedbackTimer();
+    dispatchSessionIdTooltip({ type: "close-settled" });
+  }, [clearCopyFeedbackTimer, sessionIdTooltip.phase]);
+
+  const handleSessionIdTriggerDisengaged = useCallback(() => {
+    if (!appWindowActiveRef.current) return;
+    dispatchSessionIdTooltip({ type: "trigger-disengaged" });
+  }, []);
+
   return (
-    <div className="shrink-0 border-b border-border/60 bg-gold-surface-high/60 px-5 pb-1 pt-0 shadow-[inset_0_-1px_0_color-mix(in_srgb,var(--gold-line-soft)_56%,transparent)]">
-      <div className="flex min-w-0 items-center gap-1.5">
-        <span className="min-w-0 truncate text-[13px] font-medium leading-5 text-foreground/88">
-          {session.adapterDisplayName ?? session.provider}
-        </span>
-        {mode ? (
-          <Badge
-            variant="outline"
-            className="max-w-full gap-1 rounded-full border-border/60 bg-background/30 px-1.5 py-0 text-[10px] font-normal text-foreground/78"
-          >
-            <span className="shrink-0 text-muted-foreground">
-              {t("acp.permissionMode")}
-            </span>
-            <span className="min-w-0 truncate text-foreground">{mode}</span>
-          </Badge>
+    <div className={cn(
+      "shrink-0 border-b border-border/60 bg-content-header px-5",
+      directSessionHeader ? "py-0.5" : "pb-1 pt-0",
+    )}>
+      <div className={cn(
+        "flex min-w-0 items-center",
+        directSessionHeader ? "gap-1" : "gap-1.5",
+      )}>
+        {directSessionHeader ? (
+          <EditableConversationTitle
+            title={directSessionHeader.title}
+            className="mr-2 min-w-0 max-w-[40%] shrink"
+            showEditIcon={false}
+            onTitleChange={directSessionHeader.onTitleChange}
+          />
         ) : null}
-        <span className="truncate text-[10px] text-muted-foreground/82">
-          {session.sessionId ?? t("acp.noSessionId")}
-        </span>
+        {session.adapterIconKey ? (
+          <img
+            src={agentIconSrc(session.adapterIconKey)}
+            alt=""
+            className={agentIconClass(session.adapterIconKey, "size-3.5 shrink-0")}
+          />
+        ) : (
+          <Bot aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
+        <div className="flex min-w-0 items-baseline gap-1.5">
+          <span className="min-w-0 truncate text-[13px] font-medium leading-5 text-foreground/88">
+            {session.adapterDisplayName ?? session.provider}
+          </span>
+          {session.sessionId ? (
+            <Tooltip
+              open={sessionIdTooltip.open}
+              onOpenChange={(open) => dispatchSessionIdTooltip({ type: "open-changed", open })}
+            >
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="min-w-0 truncate rounded px-1 py-0 text-[10px] leading-5 text-muted-foreground/82 transition-colors hover:bg-muted/45 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                  aria-label={t("acp.copySessionId")}
+                  onClick={handleCopySessionId}
+                  onBlur={handleSessionIdTriggerDisengaged}
+                  onPointerLeave={handleSessionIdTriggerDisengaged}
+                >
+                  {formatAcpSessionIdForDisplay(session.sessionId)}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent
+                side="top"
+                onAnimationEnd={handleSessionIdTooltipAnimationEnd}
+              >
+                {sessionIdTooltip.phase === "idle" ? session.sessionId : t("acp.sessionIdCopied")}
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <span className="truncate text-[10px] leading-5 text-muted-foreground/82">
+              {t("acp.noSessionId")}
+            </span>
+          )}
+        </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {showSystemPromptAction ? (
             <Button
@@ -3131,10 +3391,92 @@ export function ACPSessionHeader({
             {rawLoading ? <Loader2 className="size-3 animate-spin" /> : null}
             {t("acp.rawFrames")}
           </Button>
+          {directSessionHeader?.onOpenInFileManager ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-5.5"
+                  aria-label={t("conversation.runtime.openInFileManager")}
+                  onClick={directSessionHeader.onOpenInFileManager}
+                >
+                  <FolderOpen className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t("conversation.runtime.openInFileManager")}</TooltipContent>
+            </Tooltip>
+          ) : null}
         </div>
       </div>
     </div>
   );
+}
+
+const SESSION_ID_COPY_FEEDBACK_MS = 1200;
+const SESSION_ID_TOOLTIP_CLOSE_SETTLE_MS = 200;
+const SESSION_ID_DISPLAY_PREFIX_LENGTH = 8;
+const SESSION_ID_DISPLAY_SUFFIX_LENGTH = 4;
+
+type AcpSessionIdTooltipState = {
+  open: boolean;
+  phase: "idle" | "copied" | "closing";
+  reopenBlocked: boolean;
+};
+
+type AcpSessionIdTooltipEvent =
+  | { type: "open-changed"; open: boolean }
+  | { type: "copy-succeeded" }
+  | { type: "feedback-elapsed" }
+  | { type: "close-settled" }
+  | { type: "app-deactivated" }
+  | { type: "trigger-disengaged" };
+
+const ACP_SESSION_ID_TOOLTIP_INITIAL_STATE: AcpSessionIdTooltipState = {
+  open: false,
+  phase: "idle",
+  reopenBlocked: false,
+};
+
+export function reduceAcpSessionIdTooltipState(
+  state: AcpSessionIdTooltipState,
+  event: AcpSessionIdTooltipEvent,
+): AcpSessionIdTooltipState {
+  switch (event.type) {
+    case "open-changed":
+      if (event.open && (state.phase !== "idle" || state.reopenBlocked)) return state;
+      return { ...state, open: event.open };
+    case "copy-succeeded":
+      return { open: true, phase: "copied", reopenBlocked: true };
+    case "feedback-elapsed":
+      return state.phase === "copied"
+        ? { ...state, open: false, phase: "closing" }
+        : state;
+    case "close-settled":
+      return {
+        open: false,
+        phase: "idle",
+        reopenBlocked: state.reopenBlocked,
+      };
+    case "app-deactivated":
+      return {
+        open: false,
+        phase: "idle",
+        reopenBlocked: true,
+      };
+    case "trigger-disengaged":
+      return state.reopenBlocked
+        ? { ...state, reopenBlocked: false }
+        : state;
+  }
+}
+
+export function formatAcpSessionIdForDisplay(sessionId: string) {
+  const compactLength =
+    SESSION_ID_DISPLAY_PREFIX_LENGTH + SESSION_ID_DISPLAY_SUFFIX_LENGTH + 1;
+  if (sessionId.length <= compactLength) return sessionId;
+
+  return `${sessionId.slice(0, SESSION_ID_DISPLAY_PREFIX_LENGTH)}…${sessionId.slice(-SESSION_ID_DISPLAY_SUFFIX_LENGTH)}`;
 }
 
 const SystemPromptDialog = memo(function SystemPromptDialog({
@@ -3885,8 +4227,9 @@ const MessageBubble = memo(function MessageBubble({
   const showMessageBubble = isUser || streamingDraft || messageText.trim().length > 0;
   return (
     <Message
+      data-acp-message-row={isUser ? "user" : "assistant"}
       className={cn(
-        "min-w-0 items-start gap-2",
+        "min-w-0 items-start gap-2 [container-type:inline-size]",
         isUser ? "justify-end" : "justify-start",
       )}
     >
@@ -3895,19 +4238,20 @@ const MessageBubble = memo(function MessageBubble({
       ) : null}
       <div
         className={cn(
-          "min-w-0 max-w-[82%] space-y-1",
+          "min-w-0 max-w-[var(--conversation-message-max-inline-size)] space-y-1",
           isUser && "flex flex-col items-end",
         )}
       >
         {showMessageBubble ? (
           <MessageContent
+            variant={isUser ? "user" : "assistant"}
             className={cn(
-              "rounded-2xl border px-4 py-3 text-sm leading-6 shadow-sm [overflow-wrap:anywhere]",
+              "rounded-2xl px-4 py-3 text-sm leading-6 [overflow-wrap:anywhere]",
               isUser
-                ? "w-fit max-w-full rounded-br-md border-[color-mix(in_srgb,var(--primary)_26%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_16%,var(--card))] text-foreground shadow-[0_8px_24px_color-mix(in_srgb,var(--primary)_10%,transparent)]"
-                : "rounded-bl-md border-border/70 bg-card text-card-foreground",
+                ? "w-fit max-w-full rounded-br-md shadow-none"
+                : "rounded-bl-md shadow-none",
               failed &&
-                "border border-destructive/40 bg-destructive/10 text-destructive",
+                "!border !border-destructive/40 !bg-destructive/10 !text-destructive",
             )}
           >
             {isUser ? (
@@ -4702,6 +5046,13 @@ function isGoldBandUserPrompt(event: AcpUiEventVm) {
   );
 }
 
+function isProviderHistoryUserPrompt(event: AcpUiEventVm) {
+  return (
+    event.kind === "userTextDelta" &&
+    rawObject(event.raw)?.source === "providerHistory"
+  );
+}
+
 function isGoldBandManagedPrompt(event: AcpUiEventVm) {
   return (
     event.kind === "userTextDelta" &&
@@ -5273,7 +5624,7 @@ function groupChildAgentTimeline(
         const candidate = events[cursor];
         const candidateStartSeq = candidate.startedSeq ?? candidate.seq;
         if (ownedChildKeys.has(timelineEventKey(candidate))) break;
-        if (isGoldBandUserPrompt(candidate)) break;
+        if (candidate.kind === "userTextDelta") break;
         if (candidateStartSeq <= startSeq) break;
         if (candidateStartSeq >= endSeq) break;
         if (isAgentToolCall(candidate)) break;
@@ -5320,6 +5671,7 @@ function userPromptDedupKey(event: AcpUiEventVm) {
   const attemptId = stringValue(raw?.attemptId) ?? attemptIdFromAcpEvent(event) ?? "current-attempt";
   const promptId = promptIdFromEvent(event);
   if (promptId) return `${attemptId}:prompt:${promptId}`;
+  if (isProviderHistoryUserPrompt(event)) return `${attemptId}:event:${event.id}`;
   if (isGoldBandManagedPrompt(event)) return `${attemptId}:event:${event.id}`;
   return `${attemptId}:text:${text}`;
 }
@@ -5398,9 +5750,22 @@ export function limitAcpEvents(
     : events.slice(0, eventPageSize);
 }
 
+function acpAuditSeqBounds(events: AcpUiEventVm[]) {
+  if (events.length === 0) return { oldestSeq: null, newestSeq: null };
+  let oldestSeq = Number.POSITIVE_INFINITY;
+  let newestSeq = Number.NEGATIVE_INFINITY;
+  for (const event of events) {
+    const seq = originalSeqFromAcpEvent(event);
+    oldestSeq = Math.min(oldestSeq, seq);
+    newestSeq = Math.max(newestSeq, seq);
+  }
+  return { oldestSeq, newestSeq };
+}
+
 function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpSessionVm {
   const first = events[0] ?? null;
   const last = events.at(-1) ?? first;
+  const auditBounds = acpAuditSeqBounds(events);
   const timing = latestSessionTimingFromEvents(events);
   return {
     sessionId: last?.sessionId ?? first?.sessionId ?? null,
@@ -5415,15 +5780,15 @@ function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpS
     eventPage: {
       loadedCount: events.length,
       total: events.length,
-      oldestSeq: first ? originalSeqFromAcpEvent(first) : null,
-      newestSeq: last ? originalSeqFromAcpEvent(last) : null,
+      oldestSeq: auditBounds.oldestSeq,
+      newestSeq: auditBounds.newestSeq,
       hasOlder: false,
       hasNewer: false,
-      oldestCursor: first
-        ? formatTimelineCursor(originalSeqFromAcpEvent(first))
+      oldestCursor: auditBounds.oldestSeq !== null
+        ? formatTimelineCursor(auditBounds.oldestSeq)
         : null,
-      newestCursor: last
-        ? formatTimelineCursor(originalSeqFromAcpEvent(last))
+      newestCursor: auditBounds.newestSeq !== null
+        ? formatTimelineCursor(auditBounds.newestSeq)
         : null,
     },
     pendingPermissions: [],
@@ -5442,8 +5807,7 @@ function createVisibleAcpSession(
 ): AcpSessionVm {
   const mergedEvents = mergeAcpEvents(session.events, liveEvents);
   const limitedEvents = limitAcpEvents(mergedEvents, "start", eventPageSize);
-  const first = limitedEvents[0] ?? null;
-  const last = limitedEvents.at(-1) ?? first;
+  const auditBounds = acpAuditSeqBounds(limitedEvents);
   return {
     ...session,
     events: limitedEvents,
@@ -5451,14 +5815,14 @@ function createVisibleAcpSession(
       ...session.eventPage,
       loadedCount: limitedEvents.length,
       total: Math.max(session.eventPage.total, mergedEvents.length),
-      oldestSeq: first ? originalSeqFromAcpEvent(first) : session.eventPage.oldestSeq,
-      newestSeq: last ? originalSeqFromAcpEvent(last) : session.eventPage.newestSeq,
+      oldestSeq: auditBounds.oldestSeq ?? session.eventPage.oldestSeq,
+      newestSeq: auditBounds.newestSeq ?? session.eventPage.newestSeq,
       hasOlder: session.eventPage.hasOlder || limitedEvents.length < mergedEvents.length,
-      oldestCursor: first
-        ? formatTimelineCursor(originalSeqFromAcpEvent(first))
+      oldestCursor: auditBounds.oldestSeq !== null
+        ? formatTimelineCursor(auditBounds.oldestSeq)
         : session.eventPage.oldestCursor,
-      newestCursor: last
-        ? formatTimelineCursor(originalSeqFromAcpEvent(last))
+      newestCursor: auditBounds.newestSeq !== null
+        ? formatTimelineCursor(auditBounds.newestSeq)
         : session.eventPage.newestCursor,
     },
   };
@@ -5961,6 +6325,7 @@ export {
   queryBlocksFromTool,
   isTopLevelPlanEvent,
   hasMatchingUserPrompt,
+  clearPendingOptimisticPromptsAfterStop,
   reconcileAcpSessionForDisplay,
   stabilizeAcpSessionTimingForDisplay,
   stabilizeAcpSessionTimingPatchForDisplay,
@@ -6001,6 +6366,12 @@ export function optimisticUserEvent(
 
 function isOptimisticEvent(event: AcpUiEventVm) {
   return rawObject(event.raw)?.optimistic === true;
+}
+
+function clearPendingOptimisticPromptsAfterStop(events: AcpUiEventVm[]) {
+  return events.filter(
+    (event) => !(isOptimisticEvent(event) && event.status === "sending"),
+  );
 }
 
 function shouldMergeOptimisticEvent(

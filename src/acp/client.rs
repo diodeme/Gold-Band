@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, LazyLock, Mutex, mpsc::RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -10,14 +11,16 @@ use tracing::debug;
 #[derive(Debug, Clone)]
 struct AcpTimelineStreamState {
     item_id: String,
+    source_id: Option<String>,
     started_seq: u64,
     started_at: String,
     content: String,
 }
 
+use crate::acp::commands::{AcpCommandItem, parse_available_commands};
 use crate::acp::connection::{
-    AdapterConnection, AdapterConnectionKey, AdapterConnectionManager, SessionRouteReceiver,
-    SessionRouteTryRecvError,
+    AcpConnectionUnavailable, AdapterConnection, AdapterConnectionKey, AdapterConnectionManager,
+    SessionEventPump, SessionRouteTryRecvError,
 };
 use crate::acp::elicitation::{
     ELICITATION_DEFAULT_TIMEOUT, PendingElicitationState, cancel_pending_elicitation_requests,
@@ -26,16 +29,18 @@ use crate::acp::elicitation::{
 };
 use crate::acp::events::{
     AcpAttemptPaths, AcpSessionMetadata, AcpSessionTiming, AcpTimingState, AcpUiEvent,
-    append_diagnostic, append_raw_frame, append_timeline_patch, append_ui_event, current_timestamp,
-    initial_acp_event_seq, latest_timeline_source_seq, load_timeline_items,
-    normalize_session_update, permission_request_event, user_prompt_event, write_session_metadata,
+    append_diagnostic, append_raw_frame, append_ui_event, current_timestamp, initial_acp_event_seq,
+    latest_timeline_source_seq, load_timeline_items, normalize_session_update,
+    permission_request_event, user_prompt_event, write_session_metadata,
 };
+use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::permission::{
     PermissionResponseState, acp_permission_response_result, cancel_pending_permission_requests,
     permission_response_file, remove_permission_signal_files, wait_for_permission_response,
     write_pending_permission,
 };
-use crate::config::AcpAdapterConfig;
+use crate::acp::timeline::{TimelineCompactionPolicy, TimelineStore};
+use crate::config::{AcpAdapterConfig, RuntimeConfig};
 use crate::domain::{SessionMode, VERSION};
 use crate::provider::{
     PromptBundle, PromptVisibility, gold_band_hidden_block, supports_system_prompt,
@@ -49,9 +54,14 @@ const LIVE_TIMING_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const DOCTOR_DIAGNOSTIC_MAX_SIZE: u64 = 512 * 1024;
 const DOCTOR_DIAGNOSTIC_TARGET_SIZE: u64 = 384 * 1024;
+const DOCTOR_COMMAND_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(500);
 const SESSION_TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const PROMPT_CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
 const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
+const SESSION_FRESHNESS_TIMEOUT: Duration = Duration::from_secs(5);
+const SESSION_LIST_MAX_PAGES: usize = 8;
+const SESSION_EVICTION_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
+const SESSION_SYSTEM_CONTEXT_VERSION: u32 = 1;
 
 #[derive(Debug)]
 struct AcpCancelled;
@@ -75,9 +85,23 @@ impl std::fmt::Display for AcpTransportInterrupted {
 
 impl std::error::Error for AcpTransportInterrupted {}
 
+fn is_transport_interruption(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<AcpTransportInterrupted>().is_some()
+        || error.downcast_ref::<AcpConnectionUnavailable>().is_some()
+}
+
+fn session_list_is_unsupported(error: &anyhow::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("method not found")
+        || message.contains("unknown method")
+        || message.contains("unsupported method")
+        || message.contains("-32601")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderControlState {
     Starting,
+    Accepted,
     Running,
     CancelRequested,
     Stopped,
@@ -86,6 +110,7 @@ enum ProviderControlState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptActivity {
     Starting,
+    Accepted,
     Running,
     CancelRequested,
 }
@@ -116,7 +141,9 @@ impl ProviderControl {
             return false;
         };
         match *state {
-            ProviderControlState::Starting | ProviderControlState::Running => {
+            ProviderControlState::Starting
+            | ProviderControlState::Accepted
+            | ProviderControlState::Running => {
                 *state = ProviderControlState::CancelRequested;
                 true
             }
@@ -138,9 +165,20 @@ impl ProviderControl {
 
     fn mark_running(&self) {
         if let Ok(mut state) = self.state.lock()
-            && *state == ProviderControlState::Starting
+            && matches!(
+                *state,
+                ProviderControlState::Starting | ProviderControlState::Accepted
+            )
         {
             *state = ProviderControlState::Running;
+        }
+    }
+
+    fn mark_accepted(&self) {
+        if let Ok(mut state) = self.state.lock()
+            && *state == ProviderControlState::Starting
+        {
+            *state = ProviderControlState::Accepted;
         }
     }
 
@@ -177,6 +215,7 @@ pub fn prompt_activity(attempt_dir: &Utf8Path) -> Option<PromptActivity> {
         .map(|control| control.state())?;
     match state {
         ProviderControlState::Starting => Some(PromptActivity::Starting),
+        ProviderControlState::Accepted => Some(PromptActivity::Accepted),
         ProviderControlState::Running => Some(PromptActivity::Running),
         ProviderControlState::CancelRequested => Some(PromptActivity::CancelRequested),
         ProviderControlState::Stopped => None,
@@ -189,6 +228,9 @@ pub fn cancel_attempt_prompt(attempt_dir: &Utf8Path) -> Result<bool> {
 }
 
 pub fn close_attempt_session_bounded(attempt_dir: &Utf8Path) -> Result<bool> {
+    if AcpSessionRuntimeRegistry::shared().invalidate(attempt_dir) {
+        return Ok(true);
+    }
     AdapterConnectionManager::shared()
         .close_attempt_session_bounded(attempt_dir, SESSION_CLOSE_TIMEOUT)
 }
@@ -202,27 +244,18 @@ pub fn close_all_connections_bounded() -> Result<()> {
     AdapterConnectionManager::shared().close_all_connections_bounded(SESSION_CLOSE_TIMEOUT)
 }
 
-pub fn close_provider_workspace_bounded(
-    provider_id: &str,
-    workspace_root: &Utf8Path,
-) -> Result<()> {
-    AdapterConnectionManager::shared().close_provider_workspace_bounded(
-        provider_id,
-        workspace_root,
-        SESSION_CLOSE_TIMEOUT,
-    )
+pub fn close_provider_connections_bounded(provider_id: &str) -> Result<()> {
+    AcpSessionRuntimeRegistry::shared().detach_provider(provider_id);
+    AdapterConnectionManager::shared()
+        .close_provider_connections_bounded(provider_id, SESSION_CLOSE_TIMEOUT)
 }
 
 pub fn has_active_prompts_in_workspace(workspace_root: &Utf8Path) -> bool {
     AdapterConnectionManager::shared().has_active_prompts_in_workspace(workspace_root)
 }
 
-pub fn has_active_prompts_in_provider_workspace(
-    provider_id: &str,
-    workspace_root: &Utf8Path,
-) -> bool {
-    AdapterConnectionManager::shared()
-        .has_active_prompts_in_provider_workspace(provider_id, workspace_root)
+pub fn has_active_prompts_in_provider(provider_id: &str) -> bool {
+    AdapterConnectionManager::shared().has_active_prompts_in_provider(provider_id)
 }
 
 fn register_provider_control(attempt_dir: &Utf8Path) -> Arc<ProviderControl> {
@@ -345,22 +378,371 @@ pub struct AcpPromptRun {
     pub total_tokens: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcpRuntimePolicy {
+    pub foreground_lease_ttl: Duration,
+    pub foreground_lease_renew_interval: Duration,
+    pub session_idle_ttl: Duration,
+    pub adapter_connection_idle_ttl: Duration,
+    pub max_idle_session_runtimes: usize,
+    pub max_idle_adapter_connections: usize,
+    pub timeline_compaction: TimelineCompactionPolicy,
+    pub external_session_sync_enabled: bool,
+}
+
+impl Default for AcpRuntimePolicy {
+    fn default() -> Self {
+        Self {
+            foreground_lease_ttl: Duration::from_secs(90),
+            foreground_lease_renew_interval: Duration::from_secs(30),
+            session_idle_ttl: Duration::from_secs(600),
+            adapter_connection_idle_ttl: Duration::from_secs(600),
+            max_idle_session_runtimes: 8,
+            max_idle_adapter_connections: 4,
+            timeline_compaction: TimelineCompactionPolicy::default(),
+            external_session_sync_enabled: false,
+        }
+    }
+}
+
+impl From<&RuntimeConfig> for AcpRuntimePolicy {
+    fn from(config: &RuntimeConfig) -> Self {
+        Self {
+            foreground_lease_ttl: Duration::from_secs(config.acp_session_foreground_lease_ttl_secs),
+            foreground_lease_renew_interval: Duration::from_secs(
+                config.acp_session_foreground_lease_renew_interval_secs,
+            ),
+            session_idle_ttl: Duration::from_secs(config.acp_session_idle_ttl_secs),
+            adapter_connection_idle_ttl: Duration::from_secs(
+                config.acp_adapter_connection_idle_ttl_secs,
+            ),
+            max_idle_session_runtimes: config.acp_max_idle_session_runtimes,
+            max_idle_adapter_connections: config.acp_max_idle_adapter_connections,
+            timeline_compaction: TimelineCompactionPolicy {
+                max_size_bytes: config.acp_timeline_compact_max_size_bytes,
+                patch_ratio: config.acp_timeline_compact_patch_ratio,
+            },
+            external_session_sync_enabled: false,
+        }
+    }
+}
+
+impl AcpRuntimePolicy {
+    pub fn with_external_session_sync_enabled(mut self, enabled: bool) -> Self {
+        self.external_session_sync_enabled = enabled;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProviderFreshnessBaseline {
+    Known(String),
+    Unsupported,
+    Unknown,
+}
+
+#[derive(Debug)]
+enum ProviderFreshnessProbe {
+    Found {
+        revision: Option<String>,
+        title: Option<String>,
+    },
+    NotFound,
+    Unsupported,
+    TemporarilyUnavailable(anyhow::Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachedSessionReusePlan {
+    Reuse,
+    ProbeFreshness,
+    Reload(&'static str),
+}
+
+fn attached_sync_required(
+    attached_sync_enabled: bool,
+    pending_sync_required: bool,
+    current_sync_enabled: bool,
+) -> bool {
+    current_sync_enabled && (pending_sync_required || !attached_sync_enabled)
+}
+
+fn plan_attached_session_reuse(
+    config_changed: bool,
+    sync_required: bool,
+    external_session_sync_enabled: bool,
+    provider_freshness: &ProviderFreshnessBaseline,
+) -> AttachedSessionReusePlan {
+    if config_changed {
+        return AttachedSessionReusePlan::Reload("session-config-changed");
+    }
+    if sync_required {
+        return AttachedSessionReusePlan::Reload("external-session-sync-required");
+    }
+    if external_session_sync_enabled
+        && provider_freshness != &ProviderFreshnessBaseline::Unsupported
+    {
+        return AttachedSessionReusePlan::ProbeFreshness;
+    }
+    AttachedSessionReusePlan::Reuse
+}
+
+fn evaluate_provider_revision(
+    baseline: &ProviderFreshnessBaseline,
+    revision: Option<String>,
+) -> (ProviderFreshnessBaseline, Option<&'static str>) {
+    match (baseline, revision) {
+        (ProviderFreshnessBaseline::Known(previous), Some(current)) if previous == &current => {
+            (ProviderFreshnessBaseline::Known(current), None)
+        }
+        (ProviderFreshnessBaseline::Known(_), Some(current)) => (
+            ProviderFreshnessBaseline::Known(current),
+            Some("provider-revision-changed"),
+        ),
+        (ProviderFreshnessBaseline::Unknown, Some(current)) => (
+            ProviderFreshnessBaseline::Known(current),
+            Some("provider-revision-baseline-unknown"),
+        ),
+        (ProviderFreshnessBaseline::Unsupported, Some(current)) => (
+            ProviderFreshnessBaseline::Known(current),
+            Some("provider-revision-capability-recovered"),
+        ),
+        (_, None) => (ProviderFreshnessBaseline::Unsupported, None),
+    }
+}
+
+#[derive(Clone)]
+struct AttachedSessionRuntime {
+    attempt_dir: Utf8PathBuf,
+    connection: Arc<AdapterConnection>,
+    connection_generation: u64,
+    session_id: String,
+    event_pump: Arc<SessionEventPump>,
+    models: Option<Value>,
+    modes: Option<Value>,
+    config_options: Option<Value>,
+    config_fingerprint: u64,
+    provider_freshness: ProviderFreshnessBaseline,
+    connection_key: AdapterConnectionKey,
+    external_session_sync_enabled: bool,
+    sync_required: bool,
+    last_activity_at: Instant,
+    foreground_lease_until: Instant,
+    active: bool,
+}
+
+#[derive(Default)]
+struct AcpSessionRuntimeRegistry {
+    sessions: Mutex<HashMap<String, AttachedSessionRuntime>>,
+    prompt_locks: Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
+}
+
+impl AcpSessionRuntimeRegistry {
+    fn shared() -> &'static Self {
+        static REGISTRY: LazyLock<AcpSessionRuntimeRegistry> =
+            LazyLock::new(AcpSessionRuntimeRegistry::default);
+        &REGISTRY
+    }
+
+    fn prompt_lock(&self, attempt_dir: &Utf8Path) -> Arc<Mutex<()>> {
+        let key = attempt_dir.to_string();
+        let mut locks = self
+            .prompt_locks
+            .lock()
+            .expect("ACP prompt lock registry poisoned");
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(&key).and_then(std::sync::Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(key, Arc::downgrade(&lock));
+        lock
+    }
+
+    fn acquire(
+        &self,
+        attempt_dir: &Utf8Path,
+        session_id: &str,
+        connection: &Arc<AdapterConnection>,
+        policy: AcpRuntimePolicy,
+    ) -> Option<AttachedSessionRuntime> {
+        self.prune(policy);
+        let key = attempt_dir.to_string();
+        let mut sessions = self.sessions.lock().ok()?;
+        let entry = sessions.get_mut(&key)?;
+        if entry.session_id != session_id
+            || entry.connection_generation != connection.generation()
+            || !Arc::ptr_eq(&entry.connection, connection)
+            || connection.is_transport_closed()
+            || connection.is_exited()
+        {
+            let stale = sessions.remove(&key);
+            drop(sessions);
+            if let Some(stale) = stale {
+                evict_attached_session(stale);
+            }
+            return None;
+        }
+        entry.active = true;
+        entry.last_activity_at = Instant::now();
+        Some(entry.clone())
+    }
+
+    fn release(&self, mut entry: AttachedSessionRuntime, policy: AcpRuntimePolicy) {
+        entry.active = false;
+        entry.last_activity_at = Instant::now();
+        entry.foreground_lease_until = Instant::now() + policy.foreground_lease_ttl;
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.insert(entry.attempt_dir.to_string(), entry);
+        }
+        self.prune(policy);
+    }
+
+    fn invalidate(&self, attempt_dir: &Utf8Path) -> bool {
+        let stale = self
+            .sessions
+            .lock()
+            .ok()
+            .and_then(|mut sessions| sessions.remove(attempt_dir.as_str()));
+        if let Some(stale) = stale {
+            evict_attached_session(stale);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn detach_for_reload(&self, attempt_dir: &Utf8Path) -> bool {
+        let stale = self
+            .sessions
+            .lock()
+            .ok()
+            .and_then(|mut sessions| sessions.remove(attempt_dir.as_str()));
+        if let Some(stale) = stale {
+            stale.event_pump.close();
+            stale.connection.unregister_session_route(&stale.session_id);
+            AdapterConnectionManager::shared().unregister_attempt_session(&stale.attempt_dir);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn detach_provider(&self, provider_id: &str) -> usize {
+        let detached = self
+            .sessions
+            .lock()
+            .ok()
+            .map(|mut sessions| {
+                let keys = sessions
+                    .iter()
+                    .filter(|(_, entry)| entry.connection_key.provider_id == provider_id)
+                    .map(|(key, _)| key.clone())
+                    .collect::<Vec<_>>();
+                keys.into_iter()
+                    .filter_map(|key| sessions.remove(&key))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let count = detached.len();
+        for entry in detached {
+            entry.event_pump.close();
+            entry.connection.unregister_session_route(&entry.session_id);
+        }
+        count
+    }
+
+    fn renew_foreground_lease(&self, attempt_dir: &Utf8Path, ttl: Duration) -> bool {
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return false;
+        };
+        let Some(entry) = sessions.get_mut(attempt_dir.as_str()) else {
+            return false;
+        };
+        entry.foreground_lease_until = Instant::now() + ttl;
+        true
+    }
+
+    fn prune(&self, policy: AcpRuntimePolicy) {
+        let now = Instant::now();
+        let mut evicted = Vec::new();
+        if let Ok(mut sessions) = self.sessions.lock() {
+            let expired = sessions
+                .iter()
+                .filter(|(_, entry)| {
+                    !entry.active
+                        && now >= entry.foreground_lease_until
+                        && now.duration_since(entry.last_activity_at) >= policy.session_idle_ttl
+                })
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            for key in expired {
+                if let Some(entry) = sessions.remove(&key) {
+                    evicted.push(entry);
+                }
+            }
+
+            let mut idle = sessions
+                .iter()
+                .filter(|(_, entry)| !entry.active && now >= entry.foreground_lease_until)
+                .map(|(key, entry)| (key.clone(), entry.last_activity_at))
+                .collect::<Vec<_>>();
+            idle.sort_by_key(|(_, last_activity_at)| *last_activity_at);
+            let overflow = idle.len().saturating_sub(policy.max_idle_session_runtimes);
+            for (key, _) in idle.into_iter().take(overflow) {
+                if let Some(entry) = sessions.remove(&key) {
+                    evicted.push(entry);
+                }
+            }
+        }
+        for entry in evicted {
+            evict_attached_session(entry);
+        }
+        AdapterConnectionManager::shared().prune_idle_connections(
+            policy.adapter_connection_idle_ttl,
+            policy.max_idle_adapter_connections,
+        );
+    }
+}
+
+pub fn renew_session_foreground_lease(attempt_dir: &Utf8Path, ttl: Duration) -> bool {
+    AcpSessionRuntimeRegistry::shared().renew_foreground_lease(attempt_dir, ttl)
+}
+
+fn evict_attached_session(entry: AttachedSessionRuntime) {
+    let _ = entry
+        .connection
+        .close_session_bounded(&entry.session_id, SESSION_EVICTION_CLOSE_TIMEOUT);
+    entry.event_pump.close();
+    entry.connection.unregister_session_route(&entry.session_id);
+    AdapterConnectionManager::shared().unregister_attempt_session(&entry.attempt_dir);
+}
+
 struct AcpRuntime<'a> {
+    provider_id: String,
     paths: AcpAttemptPaths,
     connection_key: Option<AdapterConnectionKey>,
     connection: Arc<AdapterConnection>,
-    rx: Option<SessionRouteReceiver>,
+    rx: Option<Arc<SessionEventPump>>,
     seq: u64,
     timeline_revision: u64,
+    timeline_store: TimelineStore,
     timeline_items: HashMap<String, AcpUiEvent>,
     session_id: Option<String>,
     final_text: String,
     final_outputs: Vec<String>,
     collecting_text_output: bool,
-    suppress_session_updates: bool,
+    session_update_phase: SessionUpdatePhase,
+    provider_history_replay: ProviderHistoryReplay,
+    historical_timeline_item_ids: HashSet<String>,
+    current_turn_item_ids: HashSet<String>,
     models: Option<Value>,
     modes: Option<Value>,
     config_options: Option<Value>,
+    model_override: Option<String>,
+    permission_mode_override: Option<String>,
+    config_option_overrides: BTreeMap<String, String>,
+    available_commands: Option<Vec<AcpCommandItem>>,
     system_prompt_append: Option<String>,
     session_title: Option<String>,
     used_tokens: Option<u64>,
@@ -387,6 +769,24 @@ struct AcpRuntime<'a> {
     raw_target_size: u64,
     control: Arc<ProviderControl>,
     stop_probe: Option<RuntimeStopProbe>,
+    runtime_policy: AcpRuntimePolicy,
+    attached_config_fingerprint: Option<u64>,
+    provider_freshness: ProviderFreshnessBaseline,
+    sync_required: bool,
+    retain_session_route: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionUpdatePhase {
+    Live,
+    Replaying,
+    AwaitingTurnStart,
+}
+
+#[derive(Debug, Clone)]
+pub struct AcpDoctorProbe {
+    pub capabilities: Value,
+    pub commands: Vec<AcpCommandItem>,
 }
 
 pub fn doctor(
@@ -394,7 +794,7 @@ pub fn doctor(
     cwd: Utf8PathBuf,
     use_local_claude: bool,
     require_local_claude_executable: bool,
-) -> Result<Value> {
+) -> Result<AcpDoctorProbe> {
     let paths = GoldBandPaths::new(cwd.clone());
     let doctor_acp_dir = paths.doctor_acp_dir();
     cleanup_doctor_acp_dir_before_run(&doctor_acp_dir);
@@ -412,10 +812,25 @@ pub fn doctor(
     )?;
     let result = (|| {
         let mut capabilities = runtime.initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))?;
-        runtime.setup_session("doctor", cwd, None, None, None, "", false, &[])?;
+        runtime.setup_session(
+            "doctor",
+            cwd,
+            None,
+            None,
+            None,
+            &BTreeMap::new(),
+            "",
+            false,
+            &[],
+        )?;
+        runtime.wait_for_available_commands(DOCTOR_COMMAND_DISCOVERY_TIMEOUT)?;
+        let commands = runtime.available_commands.clone().unwrap_or_default();
         runtime.cleanup_diagnostic_session()?;
         runtime.merge_session_config_into_capabilities(&mut capabilities);
-        Ok(capabilities)
+        Ok(AcpDoctorProbe {
+            capabilities,
+            commands,
+        })
     })();
     runtime.shutdown();
     if result.is_ok() {
@@ -461,17 +876,23 @@ pub fn run_prompt(
     session_mode: SessionMode,
     permission_mode: Option<String>,
     model: Option<String>,
+    config_options: BTreeMap<String, String>,
     continue_ref: Option<Value>,
     use_local_claude: bool,
     require_local_claude_executable: bool,
     acp_session_title_refresh_enabled: bool,
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
+    runtime_policy: AcpRuntimePolicy,
     live_update: Option<&dyn Fn(&AcpUiEvent) -> Result<()>>,
     mcp_servers: &[Value],
     session_update: Option<&dyn Fn() -> Result<()>>,
     stop_probe: Option<RuntimeStopProbe>,
 ) -> Result<AcpPromptRun> {
+    let prompt_lock = AcpSessionRuntimeRegistry::shared().prompt_lock(&attempt_dir);
+    let _prompt_guard = prompt_lock
+        .lock()
+        .map_err(|_| anyhow!("ACP session prompt lock poisoned"))?;
     let mut runtime = AcpRuntime::start(
         provider_id,
         config,
@@ -481,9 +902,13 @@ pub fn run_prompt(
         require_local_claude_executable,
         acp_raw_max_size_bytes,
         acp_raw_target_size_bytes,
+        runtime_policy,
         live_update,
         stop_probe,
     )?;
+    runtime.model_override = model.clone();
+    runtime.permission_mode_override = permission_mode.clone();
+    runtime.config_option_overrides = config_options.clone();
     let capabilities = match runtime.initialize() {
         Ok(capabilities) => capabilities,
         Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
@@ -491,7 +916,7 @@ pub fn run_prompt(
             runtime.shutdown();
             return Ok(run);
         }
-        Err(error) if error.downcast_ref::<AcpTransportInterrupted>().is_some() => {
+        Err(error) if is_transport_interruption(&error) => {
             let run = runtime.interrupted_run(false, "interrupted");
             runtime.shutdown();
             return Ok(run);
@@ -505,6 +930,7 @@ pub fn run_prompt(
         continue_ref,
         permission_mode.as_deref(),
         model.as_deref(),
+        &config_options,
         &prompt.system_prompt,
         strict_continue,
         mcp_servers,
@@ -515,7 +941,7 @@ pub fn run_prompt(
             runtime.shutdown();
             return Ok(run);
         }
-        Err(error) if error.downcast_ref::<AcpTransportInterrupted>().is_some() => {
+        Err(error) if is_transport_interruption(&error) => {
             let run = runtime.interrupted_run(false, "interrupted");
             runtime.shutdown();
             return Ok(run);
@@ -536,8 +962,8 @@ pub fn run_prompt(
         .clone()
         .ok_or_else(|| anyhow!("ACP session setup did not return a session id"))?;
     runtime.write_worker_ref(provider_id, &workspace_dir, session_mode, restored, None)?;
-    runtime.record_user_prompt_event(provider_id, prompt, restored, session_update.is_none())?;
-    runtime.control.mark_running();
+    runtime.record_user_prompt_event(provider_id, prompt, restored)?;
+    runtime.control.mark_accepted();
     runtime.write_session("running", restored, None, capabilities.clone())?;
     if acp_session_title_refresh_enabled {
         runtime.refresh_session_title_and_persist(
@@ -559,6 +985,7 @@ pub fn run_prompt(
         &capabilities,
         acp_session_title_refresh_enabled,
     );
+    runtime.refresh_provider_freshness_best_effort(&workspace_dir);
     let (status, stop_reason) = match prompt_result {
         Ok(stop_reason) => {
             let status = if stop_reason.as_deref().is_some_and(|reason| {
@@ -580,7 +1007,7 @@ pub fn run_prompt(
             let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             ("cancelled", Some("cancelled".to_string()))
         }
-        Err(error) if error.downcast_ref::<AcpTransportInterrupted>().is_some() => {
+        Err(error) if is_transport_interruption(&error) => {
             let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             ("cancelled", Some("interrupted".to_string()))
         }
@@ -638,7 +1065,7 @@ pub fn run_prompt(
         cached_write_tokens: runtime.cached_write_tokens,
         total_tokens: runtime.total_tokens,
     };
-    runtime.shutdown();
+    runtime.release_managed_session();
     Ok(run)
 }
 
@@ -681,6 +1108,44 @@ fn session_load_params(
         });
     }
     params
+}
+
+fn session_config_fingerprint(
+    provider_id: &str,
+    cwd: &Utf8Path,
+    _system_prompt: &str,
+    mcp_servers: &[Value],
+) -> Result<u64> {
+    let mut normalized_mcp = mcp_servers
+        .iter()
+        .cloned()
+        .map(canonicalize_json)
+        .collect::<Vec<_>>();
+    normalized_mcp.sort_by_key(|value| serde_json::to_string(value).unwrap_or_default());
+    let canonical = json!({
+        "providerId": provider_id,
+        "cwd": cwd.as_str().replace('\\', "/"),
+        "mcpServers": normalized_mcp,
+        "sessionSystemContextVersion": SESSION_SYSTEM_CONTEXT_VERSION,
+    });
+    let bytes = serde_json::to_vec(&canonical)?;
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Ok(hasher.finish())
+}
+
+fn canonicalize_json(value: Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let sorted = object
+                .into_iter()
+                .map(|(key, value)| (key, canonicalize_json(value)))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            serde_json::to_value(sorted).unwrap_or_else(|_| json!({}))
+        }
+        Value::Array(values) => Value::Array(values.into_iter().map(canonicalize_json).collect()),
+        other => other,
+    }
 }
 
 fn session_prompt_params(
@@ -875,6 +1340,7 @@ impl<'a> AcpRuntime<'a> {
         require_local_claude_executable: bool,
         raw_max_size: u64,
         raw_target_size: u64,
+        runtime_policy: AcpRuntimePolicy,
         live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
         stop_probe: Option<RuntimeStopProbe>,
     ) -> Result<Self> {
@@ -929,6 +1395,7 @@ impl<'a> AcpRuntime<'a> {
             control,
             raw_max_size,
             raw_target_size,
+            runtime_policy,
             live_update,
             stop_probe,
         )
@@ -979,13 +1446,14 @@ impl<'a> AcpRuntime<'a> {
             control,
             raw_max_size,
             raw_target_size,
+            AcpRuntimePolicy::default(),
             live_update,
             stop_probe,
         )
     }
 
     fn from_connection(
-        _provider_id: &str,
+        provider_id: &str,
         _workspace_dir: Utf8PathBuf,
         connection_key: Option<AdapterConnectionKey>,
         connection: Arc<AdapterConnection>,
@@ -993,6 +1461,7 @@ impl<'a> AcpRuntime<'a> {
         control: Arc<ProviderControl>,
         raw_max_size: u64,
         raw_target_size: u64,
+        runtime_policy: AcpRuntimePolicy,
         live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
         stop_probe: Option<RuntimeStopProbe>,
     ) -> Result<Self> {
@@ -1001,30 +1470,46 @@ impl<'a> AcpRuntime<'a> {
             paths.provider_pid.as_std_path(),
             connection.pid().to_string(),
         )?;
+        let timeline_store =
+            TimelineStore::open(paths.timeline.clone(), runtime_policy.timeline_compaction)?;
         let seq = initial_acp_source_seq(&paths);
         let loaded_timeline_items = load_timeline_items(&paths.timeline)?;
         let timing_state = AcpTimingState::from_timeline_item_refs(&loaded_timeline_items);
+        let provider_history_replay = ProviderHistoryReplay::from_timeline(&loaded_timeline_items);
         let (active_text_stream, active_thought_stream, active_plan_stream) =
             active_timeline_streams(&loaded_timeline_items);
+        let historical_timeline_item_ids = loaded_timeline_items
+            .iter()
+            .map(|item| item.id.clone())
+            .collect();
         let timeline_items = runtime_hot_timeline_items(loaded_timeline_items);
         let timeline_revision = seq;
         let prior = read_prior_session_metrics(&paths.snapshot);
         Ok(Self {
+            provider_id: provider_id.to_string(),
             paths,
             connection_key,
             connection,
             rx: None,
             seq,
             timeline_revision,
+            timeline_store,
             timeline_items,
             session_id: None,
             final_text: String::new(),
             final_outputs: Vec::new(),
             collecting_text_output: false,
-            suppress_session_updates: false,
+            session_update_phase: SessionUpdatePhase::Live,
+            provider_history_replay,
+            historical_timeline_item_ids,
+            current_turn_item_ids: HashSet::new(),
             models: None,
             modes: None,
             config_options: None,
+            model_override: None,
+            permission_mode_override: None,
+            config_option_overrides: BTreeMap::new(),
+            available_commands: None,
             system_prompt_append: None,
             session_title: None,
             used_tokens: prior.used_tokens,
@@ -1051,6 +1536,11 @@ impl<'a> AcpRuntime<'a> {
             raw_target_size,
             control,
             stop_probe,
+            runtime_policy,
+            attached_config_fingerprint: None,
+            provider_freshness: ProviderFreshnessBaseline::Unknown,
+            sync_required: false,
+            retain_session_route: false,
         })
     }
 
@@ -1129,6 +1619,7 @@ impl<'a> AcpRuntime<'a> {
         continue_ref: Option<Value>,
         permission_mode: Option<&str>,
         model: Option<&str>,
+        config_options: &BTreeMap<String, String>,
         system_prompt: &str,
         strict_continue: bool,
         mcp_servers: &[Value],
@@ -1143,34 +1634,59 @@ impl<'a> AcpRuntime<'a> {
         } else {
             Some(adapter_system_prompt.to_string())
         };
+        let desired_config_fingerprint =
+            session_config_fingerprint(provider_id, &cwd, adapter_system_prompt, mcp_servers)?;
+        self.attached_config_fingerprint = Some(desired_config_fingerprint);
         if let Some(session_id) = continue_ref
             .as_ref()
             .and_then(|value| value.get("acpSessionId"))
             .and_then(Value::as_str)
         {
-            self.suppress_session_updates = true;
+            if self.try_reuse_attached_session(
+                session_id,
+                &cwd,
+                desired_config_fingerprint,
+                permission_mode,
+                model,
+                config_options,
+            )? {
+                return Ok(true);
+            }
+            self.session_update_phase = SessionUpdatePhase::Replaying;
+            if self.runtime_policy.external_session_sync_enabled {
+                self.provider_history_replay.begin(provider_id, session_id);
+            }
             let load = self.request(
                 "session/load",
                 session_load_params(&cwd, session_id, adapter_system_prompt, mcp_servers),
             );
-            self.suppress_session_updates = false;
+            let required_sync = self.sync_required;
             match load {
                 Ok(result) => {
                     self.capture_session_config(&result);
                     self.set_session_id(session_id.to_string());
-                    self.apply_session_mode_options(permission_mode, model)?;
+                    self.apply_session_mode_options(permission_mode, model, config_options)?;
+                    self.drain_available_inbound()?;
+                    self.finish_provider_history_replay(Some(session_id.to_string()))?;
+                    self.session_update_phase = SessionUpdatePhase::AwaitingTurnStart;
+                    self.sync_required = false;
+                    self.refresh_provider_freshness_best_effort(&cwd);
                     return Ok(true);
                 }
                 Err(err) => {
+                    self.session_update_phase = SessionUpdatePhase::Live;
                     append_diagnostic(
                         &self.paths.diagnostics,
                         "warn",
                         format!("failed to load ACP session `{session_id}`: {err}"),
                         None,
                     )?;
-                    if err.downcast_ref::<AcpTransportInterrupted>().is_some() {
+                    if is_transport_interruption(&err) {
                         self.set_session_id(session_id.to_string());
                         return Err(err);
+                    }
+                    if required_sync {
+                        bail!("failed to synchronize existing ACP session before prompt: {err}");
                     }
                     if strict_continue {
                         bail!("failed to load existing ACP session for continue: {err}");
@@ -1193,15 +1709,122 @@ impl<'a> AcpRuntime<'a> {
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("ACP session/new response missing sessionId"))?;
         self.set_session_id(session_id.to_string());
-        self.apply_session_mode_options(permission_mode, model)?;
+        self.session_update_phase = SessionUpdatePhase::Live;
+        self.sync_required = false;
+        self.apply_session_mode_options(permission_mode, model, config_options)?;
+        self.refresh_provider_freshness_best_effort(&cwd);
         Ok(false)
+    }
+
+    fn try_reuse_attached_session(
+        &mut self,
+        session_id: &str,
+        cwd: &Utf8Path,
+        desired_config_fingerprint: u64,
+        permission_mode: Option<&str>,
+        model: Option<&str>,
+        config_options: &BTreeMap<String, String>,
+    ) -> Result<bool> {
+        let Some(entry) = AcpSessionRuntimeRegistry::shared().acquire(
+            &self.paths.attempt_dir,
+            session_id,
+            &self.connection,
+            self.runtime_policy,
+        ) else {
+            return Ok(false);
+        };
+        self.session_id = Some(entry.session_id.clone());
+        self.rx = Some(Arc::clone(&entry.event_pump));
+        self.models = entry.models.clone();
+        self.modes = entry.modes.clone();
+        self.config_options = entry.config_options.clone();
+        self.provider_freshness = entry.provider_freshness.clone();
+        self.sync_required = attached_sync_required(
+            entry.external_session_sync_enabled,
+            entry.sync_required,
+            self.runtime_policy.external_session_sync_enabled,
+        );
+        self.retain_session_route = true;
+
+        let reuse_plan = plan_attached_session_reuse(
+            entry.config_fingerprint != desired_config_fingerprint,
+            self.sync_required,
+            self.runtime_policy.external_session_sync_enabled,
+            &entry.provider_freshness,
+        );
+        let mut reload_reason = match reuse_plan {
+            AttachedSessionReusePlan::Reload(reason) => Some(reason),
+            AttachedSessionReusePlan::Reuse | AttachedSessionReusePlan::ProbeFreshness => None,
+        };
+        if reuse_plan == AttachedSessionReusePlan::ProbeFreshness {
+            match self.probe_session_freshness(cwd) {
+                ProviderFreshnessProbe::Found { revision, title } => {
+                    if title.is_some() {
+                        self.session_title = title;
+                    }
+                    let (next_baseline, reason) =
+                        evaluate_provider_revision(&entry.provider_freshness, revision);
+                    self.provider_freshness = next_baseline;
+                    reload_reason = reason;
+                }
+                ProviderFreshnessProbe::Unsupported => {
+                    self.provider_freshness = ProviderFreshnessBaseline::Unsupported;
+                }
+                ProviderFreshnessProbe::TemporarilyUnavailable(error) => {
+                    self.provider_freshness = ProviderFreshnessBaseline::Unknown;
+                    let _ = append_diagnostic(
+                        &self.paths.diagnostics,
+                        "warn",
+                        format!("ACP session freshness probe unavailable: {error}"),
+                        Some(json!({ "event": "acp_freshness_probe", "result": "unavailable" })),
+                    );
+                }
+                ProviderFreshnessProbe::NotFound => {
+                    AcpSessionRuntimeRegistry::shared().detach_for_reload(&self.paths.attempt_dir);
+                    self.retain_session_route = false;
+                    self.rx = None;
+                    self.session_id = None;
+                    bail!("ACP session `{session_id}` was not found by session/list");
+                }
+            }
+        } else if entry.provider_freshness == ProviderFreshnessBaseline::Unsupported {
+            self.provider_freshness = ProviderFreshnessBaseline::Unsupported;
+        }
+
+        if let Some(reason) = reload_reason {
+            let _ = append_diagnostic(
+                &self.paths.diagnostics,
+                "info",
+                "ACP session reload required",
+                Some(json!({ "event": "acp_reload_decision", "reason": reason })),
+            );
+            AcpSessionRuntimeRegistry::shared().detach_for_reload(&self.paths.attempt_dir);
+            self.retain_session_route = false;
+            self.rx = None;
+            self.session_id = None;
+            return Ok(false);
+        }
+
+        self.apply_session_mode_options(permission_mode, model, config_options)?;
+        self.session_update_phase = SessionUpdatePhase::Live;
+        let _ = append_diagnostic(
+            &self.paths.diagnostics,
+            "info",
+            "ACP attached session runtime reused",
+            Some(json!({
+                "event": "acp_session_runtime_reused",
+                "sessionId": session_id,
+                "connectionGeneration": self.connection.generation(),
+            })),
+        );
+        Ok(true)
     }
 
     fn set_session_id(&mut self, session_id: String) {
         if let Some(existing) = self.session_id.take() {
             self.connection.unregister_session_route(&existing);
         }
-        self.rx = Some(self.connection.register_session_route(&session_id));
+        self.rx = Some(self.connection.register_session_event_pump(&session_id));
         if let Some(key) = self.connection_key.clone() {
             AdapterConnectionManager::shared().register_attempt_session(
                 &self.paths.attempt_dir,
@@ -1229,6 +1852,7 @@ impl<'a> AcpRuntime<'a> {
         &mut self,
         permission_mode: Option<&str>,
         model: Option<&str>,
+        config_options: &BTreeMap<String, String>,
     ) -> Result<()> {
         // Some adapters persist both options into one process-global config file.
         // Keep the pair atomic across all sessions sharing this adapter process.
@@ -1240,6 +1864,59 @@ impl<'a> AcpRuntime<'a> {
         if let Some(pm) = permission_mode.filter(|v| !v.trim().is_empty()) {
             self.apply_permission_mode(pm)?;
         }
+        for (config_id, value) in config_options {
+            self.apply_generic_config_option(config_id, value)?;
+        }
+        Ok(())
+    }
+
+    fn apply_generic_config_option(&mut self, config_id: &str, value: &str) -> Result<()> {
+        let config_id = config_id.trim();
+        let value = value.trim();
+        if config_id.is_empty() || value.is_empty() {
+            return Ok(());
+        }
+        let Some(option) = self
+            .config_options
+            .as_ref()
+            .and_then(Value::as_array)
+            .and_then(|options| {
+                options
+                    .iter()
+                    .find(|option| option.get("id").and_then(Value::as_str) == Some(config_id))
+            })
+        else {
+            bail!("ACP session does not expose config option `{config_id}`");
+        };
+        let category = option.get("category").and_then(Value::as_str);
+        if matches!(category, Some("model" | "mode")) {
+            return Ok(());
+        }
+        let valid = option
+            .get("options")
+            .and_then(Value::as_array)
+            .is_some_and(|options| {
+                options
+                    .iter()
+                    .any(|item| item.get("value").and_then(Value::as_str) == Some(value))
+            });
+        if !valid {
+            bail!("ACP config option `{config_id}` does not support value `{value}`");
+        }
+        let session_id = self
+            .session_id
+            .clone()
+            .ok_or_else(|| anyhow!("ACP config selection requires a session id"))?;
+        let result = self.request(
+            "session/set_config_option",
+            json!({
+                "sessionId": session_id,
+                "configId": config_id,
+                "value": value,
+            }),
+        )?;
+        self.capture_session_config(&result);
+        set_config_option_current_value(self.config_options.as_mut(), config_id, value);
         Ok(())
     }
 
@@ -1253,11 +1930,19 @@ impl<'a> AcpRuntime<'a> {
             return Ok(());
         }
         if has_model_config_option(self.config_options.as_ref()) {
+            let config_id = self
+                .config_options
+                .as_ref()
+                .and_then(find_model_config_option)
+                .and_then(|option| option.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("model")
+                .to_string();
             let result = self.request(
                 "session/set_config_option",
                 json!({
                     "sessionId": session_id,
-                    "configId": "model",
+                    "configId": config_id,
                     "value": model,
                 }),
             )?;
@@ -1313,11 +1998,19 @@ impl<'a> AcpRuntime<'a> {
         }
 
         if has_mode_config_option(self.config_options.as_ref()) {
+            let config_id = self
+                .config_options
+                .as_ref()
+                .and_then(find_mode_config_option)
+                .and_then(|option| option.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("mode")
+                .to_string();
             let result = self.request(
                 "session/set_config_option",
                 json!({
                     "sessionId": session_id,
-                    "configId": "mode",
+                    "configId": config_id,
                     "value": permission_mode,
                 }),
             )?;
@@ -1400,6 +2093,17 @@ impl<'a> AcpRuntime<'a> {
         Ok(())
     }
 
+    fn wait_for_available_commands(&mut self, timeout: Duration) -> Result<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            self.drain_available_inbound()?;
+            if self.available_commands.is_some() || Instant::now() >= deadline {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn close_session_bounded(&mut self, session_id: &str, timeout: Duration) -> Result<()> {
         self.request_with_timeout(
             "session/close",
@@ -1422,31 +2126,114 @@ impl<'a> AcpRuntime<'a> {
         Ok(())
     }
 
-    fn refresh_session_title(&mut self, workspace_dir: &Utf8Path) -> Result<()> {
+    fn probe_session_freshness(&mut self, workspace_dir: &Utf8Path) -> ProviderFreshnessProbe {
         let Some(session_id) = self.session_id.clone() else {
-            return Ok(());
+            return ProviderFreshnessProbe::NotFound;
         };
-        let result = self.request(
-            "session/list",
-            json!({
-                "cwd": workspace_dir.as_str(),
-            }),
-        )?;
-        let title = result
-            .get("sessions")
-            .and_then(Value::as_array)
-            .and_then(|sessions| {
-                sessions.iter().find(|session| {
-                    session.get("sessionId").and_then(Value::as_str) == Some(session_id.as_str())
-                })
-            })
-            .and_then(|session| session.get("title"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|title| !title.is_empty())
-            .map(str::to_string);
-        self.session_title = title;
-        Ok(())
+        let mut cursor: Option<String> = None;
+        for _ in 0..SESSION_LIST_MAX_PAGES {
+            let mut params = json!({ "cwd": workspace_dir.as_str() });
+            if let Some(cursor) = cursor.as_ref() {
+                params["cursor"] = json!(cursor);
+            }
+            let result = match self.request_with_timeout(
+                "session/list",
+                params,
+                Some(SESSION_FRESHNESS_TIMEOUT),
+            ) {
+                Ok(result) => result,
+                Err(error) if session_list_is_unsupported(&error) => {
+                    return ProviderFreshnessProbe::Unsupported;
+                }
+                Err(error) => return ProviderFreshnessProbe::TemporarilyUnavailable(error),
+            };
+            if let Some(session) =
+                result
+                    .get("sessions")
+                    .and_then(Value::as_array)
+                    .and_then(|sessions| {
+                        sessions.iter().find(|session| {
+                            session.get("sessionId").and_then(Value::as_str)
+                                == Some(session_id.as_str())
+                        })
+                    })
+            {
+                let revision = session
+                    .get("updatedAt")
+                    .or_else(|| session.get("updated_at"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let title = session
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|title| !title.is_empty())
+                    .map(str::to_string);
+                return ProviderFreshnessProbe::Found { revision, title };
+            }
+            cursor = result
+                .get("nextCursor")
+                .or_else(|| result.get("next_cursor"))
+                .and_then(Value::as_str)
+                .filter(|cursor| !cursor.is_empty())
+                .map(str::to_string);
+            if cursor.is_none() {
+                return ProviderFreshnessProbe::NotFound;
+            }
+        }
+        ProviderFreshnessProbe::NotFound
+    }
+
+    fn refresh_provider_freshness(&mut self, workspace_dir: &Utf8Path) -> Result<()> {
+        match self.probe_session_freshness(workspace_dir) {
+            ProviderFreshnessProbe::Found { revision, title } => {
+                self.session_title = title;
+                self.provider_freshness = revision
+                    .map(ProviderFreshnessBaseline::Known)
+                    .unwrap_or(ProviderFreshnessBaseline::Unsupported);
+                Ok(())
+            }
+            ProviderFreshnessProbe::Unsupported => {
+                self.provider_freshness = ProviderFreshnessBaseline::Unsupported;
+                Ok(())
+            }
+            ProviderFreshnessProbe::NotFound => {
+                self.provider_freshness = ProviderFreshnessBaseline::Unknown;
+                bail!("ACP session was not found by session/list")
+            }
+            ProviderFreshnessProbe::TemporarilyUnavailable(error) => {
+                self.provider_freshness = ProviderFreshnessBaseline::Unknown;
+                Err(error)
+            }
+        }
+    }
+
+    fn refresh_session_title(&mut self, workspace_dir: &Utf8Path) -> Result<()> {
+        match self.probe_session_freshness(workspace_dir) {
+            ProviderFreshnessProbe::Found { title, .. } => {
+                self.session_title = title;
+                Ok(())
+            }
+            ProviderFreshnessProbe::Unsupported => Ok(()),
+            ProviderFreshnessProbe::NotFound => {
+                bail!("ACP session was not found by session/list")
+            }
+            ProviderFreshnessProbe::TemporarilyUnavailable(error) => Err(error),
+        }
+    }
+
+    fn refresh_provider_freshness_best_effort(&mut self, workspace_dir: &Utf8Path) {
+        if !self.runtime_policy.external_session_sync_enabled || self.sync_required {
+            return;
+        }
+        if let Err(error) = self.refresh_provider_freshness(workspace_dir) {
+            let _ = append_diagnostic(
+                &self.paths.diagnostics,
+                "warn",
+                format!("failed to probe ACP session freshness via session/list: {error}"),
+                Some(json!({ "event": "acp_freshness_probe", "result": "unavailable" })),
+            );
+        }
     }
 
     fn refresh_session_title_best_effort(&mut self, workspace_dir: &Utf8Path) {
@@ -1477,7 +2264,6 @@ impl<'a> AcpRuntime<'a> {
         provider_id: &str,
         prompt: &PromptBundle,
         restored: bool,
-        emit_live_update: bool,
     ) -> Result<()> {
         let session_id = self
             .session_id
@@ -1492,11 +2278,7 @@ impl<'a> AcpRuntime<'a> {
             prompt.visibility == PromptVisibility::Hidden,
             prompt.attachment_metas.clone(),
         );
-        if emit_live_update {
-            self.persist_event(&user_event)
-        } else {
-            self.persist_event_without_live_update(&user_event)
-        }
+        self.persist_event(&user_event)
     }
 
     fn prompt(
@@ -1696,6 +2478,12 @@ impl<'a> AcpRuntime<'a> {
             self.observe_prompt_cancel_request()?;
             return Err(anyhow!(AcpCancelled));
         }
+        if self.session_update_phase == SessionUpdatePhase::Replaying {
+            self.drain_available_inbound()?;
+            self.finish_provider_history_replay(Some(session_id.to_string()))?;
+            self.session_update_phase = SessionUpdatePhase::AwaitingTurnStart;
+        }
+        self.control.mark_running();
         let diagnostic_started_at = Instant::now();
         self.append_timing_diagnostic(
             "acp_rpc_begin",
@@ -1706,12 +2494,12 @@ impl<'a> AcpRuntime<'a> {
                 "providerId": provider_id,
             }),
         );
+        let _prompt_guard = self.connection.begin_prompt(session_id)?;
         let request = self.connection.begin_request(
             "session/prompt",
             session_prompt_params(provider_id, session_id, prompt, restored),
         )?;
         self.append_outbound_frame(&request.frame)?;
-        self.connection.mark_prompt_active();
         let result = (|| {
             let mut cancel_started_at: Option<Instant> = None;
             let mut last_title_refresh_at = Instant::now();
@@ -1775,7 +2563,6 @@ impl<'a> AcpRuntime<'a> {
                 }
             }
         })();
-        self.connection.mark_prompt_inactive();
         let status = if result.is_ok() { "ok" } else { "error" };
         let stop_reason = result
             .as_ref()
@@ -1840,15 +2627,29 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn handle_session_update(&mut self, value: Value) -> Result<()> {
-        if self.suppress_session_updates {
-            return Ok(());
-        }
         let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
         let session_id = params
             .get("sessionId")
             .and_then(Value::as_str)
             .map(str::to_string);
         let update = params.get("update").cloned().unwrap_or(params);
+
+        if let Some(commands) = parse_available_commands(&update) {
+            self.available_commands = Some(commands);
+        }
+
+        if self.session_update_phase == SessionUpdatePhase::Replaying {
+            if !self.runtime_policy.external_session_sync_enabled {
+                return Ok(());
+            }
+            return self.handle_provider_history_replay(session_id, update);
+        }
+        if update.get("sessionUpdate").and_then(Value::as_str) == Some("user_message_chunk") {
+            return Ok(());
+        }
+        if self.should_suppress_session_replay(&session_id, &update) {
+            return Ok(());
+        }
 
         // Track usage from usage_update events so we can persist them at prompt end.
         if update.get("sessionUpdate").and_then(Value::as_str) == Some("usage_update") {
@@ -1868,6 +2669,30 @@ impl<'a> AcpRuntime<'a> {
             if cost.is_some() {
                 self.total_cost_usd = cost;
             }
+        }
+
+        if is_unscoped_codex_diagnostic_update(
+            &self.provider_id,
+            &self.connection.adapter().args,
+            &update,
+        ) {
+            self.seq += 1;
+            let message = session_update_text(&update)
+                .filter(|message| !message.trim().is_empty())
+                .unwrap_or_else(|| "Codex ACP emitted an unscoped diagnostic".to_string());
+            append_diagnostic(
+                &self.paths.diagnostics,
+                "warn",
+                message,
+                Some(json!({
+                    "code": "codex_acp.warning",
+                    "providerId": self.provider_id,
+                    "sessionId": session_id,
+                    "sourceSeq": self.seq,
+                    "update": update,
+                })),
+            )?;
+            return Ok(());
         }
 
         self.seq += 1;
@@ -1890,7 +2715,69 @@ impl<'a> AcpRuntime<'a> {
         Ok(())
     }
 
+    fn handle_provider_history_replay(
+        &mut self,
+        session_id: Option<String>,
+        update: Value,
+    ) -> Result<()> {
+        let ReplayUpdateDecision::Import { items } = self.provider_history_replay.observe(&update)
+        else {
+            return Ok(());
+        };
+        self.persist_provider_history_imports(session_id, items)
+    }
+
+    fn finish_provider_history_replay(&mut self, session_id: Option<String>) -> Result<()> {
+        if !self.runtime_policy.external_session_sync_enabled {
+            return Ok(());
+        }
+        let ReplayUpdateDecision::Import { items } = self.provider_history_replay.finish() else {
+            return Ok(());
+        };
+        self.persist_provider_history_imports(session_id, items)
+    }
+
+    fn persist_provider_history_imports(
+        &mut self,
+        session_id: Option<String>,
+        items: Vec<ProviderHistoryImport>,
+    ) -> Result<()> {
+        for ProviderHistoryImport { update, event_id } in items {
+            self.seq = self.seq.saturating_add(1);
+            let mut event = normalize_session_update(self.seq, session_id.clone(), &update);
+            if let Some(event_id) = event_id {
+                event.id = event_id;
+            }
+            if event.kind == "userTextDelta" {
+                event.status = Some("completed".to_string());
+                event.title = Some("External user prompt".to_string());
+            }
+            if let Some(identity) =
+                stable_session_update_item_id(event.session_id.as_deref(), &update)
+            {
+                self.historical_timeline_item_ids.insert(identity);
+            }
+            self.persist_event_inner(&event, false)?;
+        }
+        Ok(())
+    }
+
+    fn should_suppress_session_replay(
+        &mut self,
+        session_id: &Option<String>,
+        update: &Value,
+    ) -> bool {
+        should_suppress_session_update(
+            &mut self.session_update_phase,
+            &self.historical_timeline_item_ids,
+            &mut self.current_turn_item_ids,
+            session_id.as_deref(),
+            update,
+        )
+    }
+
     fn handle_permission_request(&mut self, value: Value) -> Result<()> {
+        self.session_update_phase = SessionUpdatePhase::Live;
         let rpc_id = value
             .get("id")
             .cloned()
@@ -1981,6 +2868,7 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn handle_elicitation_request(&mut self, value: Value) -> Result<()> {
+        self.session_update_phase = SessionUpdatePhase::Live;
         let rpc_id = value
             .get("id")
             .cloned()
@@ -2064,7 +2952,7 @@ impl<'a> AcpRuntime<'a> {
             if self.is_prompt_cancel_requested() {
                 self.send_cancel_notification_best_effort();
             }
-            let value = match self.rx.as_ref().map(SessionRouteReceiver::try_recv) {
+            let value = match self.rx.as_ref().map(|receiver| receiver.try_recv()) {
                 Some(Ok(value)) => value,
                 Some(Err(SessionRouteTryRecvError::Empty)) | None => return Ok(()),
                 Some(Err(SessionRouteTryRecvError::Disconnected)) => {
@@ -2173,6 +3061,9 @@ impl<'a> AcpRuntime<'a> {
             models: self.models.clone(),
             modes: self.modes.clone(),
             config_options: self.config_options.clone(),
+            model_override: self.model_override.clone(),
+            permission_mode_override: self.permission_mode_override.clone(),
+            config_option_overrides: self.config_option_overrides.clone(),
             system_prompt_append: self.system_prompt_append.clone(),
             used_tokens: self.used_tokens,
             context_window_size: self.context_window_size,
@@ -2213,13 +3104,6 @@ impl<'a> AcpRuntime<'a> {
 
     fn persist_event(&mut self, event: &crate::acp::events::AcpUiEvent) -> Result<()> {
         self.persist_event_inner(event, true)
-    }
-
-    fn persist_event_without_live_update(
-        &mut self,
-        event: &crate::acp::events::AcpUiEvent,
-    ) -> Result<()> {
-        self.persist_event_inner(event, false)
     }
 
     fn persist_event_inner(
@@ -2296,8 +3180,12 @@ impl<'a> AcpRuntime<'a> {
         item: &crate::acp::events::AcpUiEvent,
         now: Instant,
     ) -> Result<()> {
-        append_timeline_patch(&self.paths.timeline, item.id.clone(), revision, item)?;
-        self.last_timeline_patch_at = Some(now);
+        if !matches!(
+            self.timeline_store.upsert(revision, item)?,
+            crate::acp::timeline::TimelineUpsertOutcome::Unchanged
+        ) {
+            self.last_timeline_patch_at = Some(now);
+        }
         Ok(())
     }
 
@@ -2411,12 +3299,25 @@ impl<'a> AcpRuntime<'a> {
         stream: &mut Option<AcpTimelineStreamState>,
         item: &mut crate::acp::events::AcpUiEvent,
         stable_id: &str,
+        source_id: Option<&str>,
         max_chars: usize,
         seq: u64,
         timestamp: &str,
     ) {
+        let source_changed =
+            stream
+                .as_ref()
+                .is_some_and(|active| match (active.source_id.as_deref(), source_id) {
+                    (Some(active), Some(incoming)) => active != incoming,
+                    (None, None) => false,
+                    _ => true,
+                });
+        if source_changed {
+            *stream = None;
+        }
         let stream = stream.get_or_insert_with(|| AcpTimelineStreamState {
             item_id: stable_id.to_string(),
+            source_id: source_id.map(str::to_string),
             started_seq: seq,
             started_at: timestamp.to_string(),
             content: String::new(),
@@ -2473,10 +3374,12 @@ impl<'a> AcpRuntime<'a> {
         match item.kind.as_str() {
             "textDelta" => {
                 let stable_id = stable_message_item_id(&item);
+                let source_id = stable_message_stream_identity(&item);
                 Self::apply_streaming_delta(
                     &mut self.active_text_stream,
                     &mut item,
                     &stable_id,
+                    source_id.as_deref(),
                     256_000,
                     seq,
                     &timestamp,
@@ -2484,10 +3387,12 @@ impl<'a> AcpRuntime<'a> {
             }
             "thoughtDelta" => {
                 let stable_id = stable_thought_item_id(&item);
+                let source_id = stable_thought_stream_identity(&item);
                 Self::apply_streaming_delta(
                     &mut self.active_thought_stream,
                     &mut item,
                     &stable_id,
+                    source_id.as_deref(),
                     256_000,
                     seq,
                     &timestamp,
@@ -2495,10 +3400,12 @@ impl<'a> AcpRuntime<'a> {
             }
             "plan" => {
                 let stable_id = stable_plan_item_id(&item);
+                let source_id = stable_plan_stream_identity(&item);
                 Self::apply_streaming_delta(
                     &mut self.active_plan_stream,
                     &mut item,
                     &stable_id,
+                    source_id.as_deref(),
                     64_000,
                     seq,
                     &timestamp,
@@ -2586,6 +3493,9 @@ impl<'a> AcpRuntime<'a> {
         debug!(adapter = %self.connection.adapter().adapter_id, "releasing ACP runtime session");
         let _ = self.flush_pending_live_update();
         let _ = self.flush_pending_timeline_patch();
+        if self.connection_key.is_some() {
+            AcpSessionRuntimeRegistry::shared().invalidate(&self.paths.attempt_dir);
+        }
         if let Some(session_id) = self.session_id.as_deref() {
             self.connection.unregister_session_route(session_id);
         }
@@ -2594,13 +3504,66 @@ impl<'a> AcpRuntime<'a> {
         }
         unregister_provider_control(&self.paths.attempt_dir, &self.control);
     }
+
+    fn release_managed_session(mut self) {
+        let _ = self.flush_pending_live_update();
+        let _ = self.flush_pending_timeline_patch();
+        if self.connection_key.is_none() {
+            self.shutdown();
+            return;
+        }
+        let (Some(connection_key), Some(session_id), Some(event_pump), Some(config_fingerprint)) = (
+            self.connection_key.clone(),
+            self.session_id.clone(),
+            self.rx.clone(),
+            self.attached_config_fingerprint,
+        ) else {
+            self.shutdown();
+            return;
+        };
+        self.retain_session_route = true;
+        let now = Instant::now();
+        AcpSessionRuntimeRegistry::shared().release(
+            AttachedSessionRuntime {
+                attempt_dir: self.paths.attempt_dir.clone(),
+                connection: Arc::clone(&self.connection),
+                connection_generation: self.connection.generation(),
+                session_id: session_id.clone(),
+                event_pump,
+                models: self.models.clone(),
+                modes: self.modes.clone(),
+                config_options: self.config_options.clone(),
+                config_fingerprint,
+                provider_freshness: self.provider_freshness.clone(),
+                connection_key,
+                external_session_sync_enabled: self.runtime_policy.external_session_sync_enabled,
+                sync_required: self.sync_required,
+                last_activity_at: now,
+                foreground_lease_until: now + self.runtime_policy.foreground_lease_ttl,
+                active: false,
+            },
+            self.runtime_policy,
+        );
+        let _ = append_diagnostic(
+            &self.paths.diagnostics,
+            "info",
+            "ACP session runtime retained",
+            Some(json!({
+                "event": "acp_session_runtime_attached",
+                "sessionId": session_id,
+                "connectionGeneration": self.connection.generation(),
+            })),
+        );
+    }
 }
 
 impl Drop for AcpRuntime<'_> {
     fn drop(&mut self) {
         let _ = self.flush_pending_live_update();
         let _ = self.flush_pending_timeline_patch();
-        if let Some(session_id) = self.session_id.as_deref() {
+        if !self.retain_session_route
+            && let Some(session_id) = self.session_id.as_deref()
+        {
             self.connection.unregister_session_route(session_id);
         }
         unregister_provider_control(&self.paths.attempt_dir, &self.control);
@@ -2701,6 +3664,12 @@ fn active_timeline_streams(
     };
     let stream = || AcpTimelineStreamState {
         item_id: item.id.clone(),
+        source_id: match item.kind.as_str() {
+            "textDelta" => stable_message_stream_identity(item),
+            "thoughtDelta" => stable_thought_stream_identity(item),
+            "plan" => stable_plan_stream_identity(item),
+            _ => None,
+        },
         started_seq: item.started_seq.unwrap_or(item.seq),
         started_at: item
             .started_at
@@ -2776,37 +3745,170 @@ fn initial_acp_source_seq(paths: &AcpAttemptPaths) -> u64 {
 }
 
 fn stable_message_item_id(event: &crate::acp::events::AcpUiEvent) -> String {
-    event
-        .raw
-        .as_ref()
-        .and_then(|raw| raw.get("messageId"))
-        .and_then(Value::as_str)
-        .map(|message_id| format!("assistant-message-{message_id}"))
+    stable_message_stream_identity(event)
         .unwrap_or_else(|| format!("assistant-message-{}", event.id))
 }
 
-fn stable_thought_item_id(event: &crate::acp::events::AcpUiEvent) -> String {
+fn stable_message_stream_identity(event: &crate::acp::events::AcpUiEvent) -> Option<String> {
+    if let Some(item_id) = provider_history_item_id(event) {
+        return Some(item_id.to_string());
+    }
     event
         .raw
         .as_ref()
         .and_then(|raw| raw.get("messageId"))
         .and_then(Value::as_str)
-        .map(|message_id| format!("assistant-thought-{message_id}"))
+        .filter(|message_id| !message_id.trim().is_empty())
+        .map(|message_id| format!("assistant-message-{message_id}"))
+}
+
+fn stable_session_update_item_id(session_id: Option<&str>, update: &Value) -> Option<String> {
+    if let Some(item_id) = update
+        .get("providerHistoryItemId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Some(item_id.to_string());
+    }
+    match update.get("sessionUpdate").and_then(Value::as_str)? {
+        "agent_message_chunk" => update
+            .get("messageId")
+            .and_then(Value::as_str)
+            .map(|message_id| format!("assistant-message-{message_id}")),
+        "agent_thought_chunk" => update
+            .get("messageId")
+            .and_then(Value::as_str)
+            .map(|message_id| format!("assistant-thought-{message_id}")),
+        "tool_call" | "tool_call_update" => update
+            .get("toolCallId")
+            .and_then(Value::as_str)
+            .map(|tool_call_id| format!("tool-call-{tool_call_id}")),
+        "plan" => session_id.map(|session_id| format!("session-plan-{session_id}")),
+        _ => None,
+    }
+}
+
+fn is_current_turn_content_update(update: &Value) -> bool {
+    matches!(
+        update.get("sessionUpdate").and_then(Value::as_str),
+        Some("agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update")
+    )
+}
+
+fn should_suppress_session_update(
+    phase: &mut SessionUpdatePhase,
+    historical_item_ids: &HashSet<String>,
+    current_turn_item_ids: &mut HashSet<String>,
+    session_id: Option<&str>,
+    update: &Value,
+) -> bool {
+    let identity = stable_session_update_item_id(session_id, update);
+    match *phase {
+        SessionUpdatePhase::Replaying => true,
+        SessionUpdatePhase::AwaitingTurnStart => {
+            let starts_current_turn = is_current_turn_content_update(update)
+                && identity
+                    .as_ref()
+                    .is_none_or(|id| !historical_item_ids.contains(id));
+            if !starts_current_turn {
+                return true;
+            }
+            *phase = SessionUpdatePhase::Live;
+            if let Some(identity) = identity {
+                current_turn_item_ids.insert(identity);
+            }
+            false
+        }
+        SessionUpdatePhase::Live => {
+            let Some(identity) = identity else {
+                return false;
+            };
+            if historical_item_ids.contains(&identity) && !current_turn_item_ids.contains(&identity)
+            {
+                return true;
+            }
+            current_turn_item_ids.insert(identity);
+            false
+        }
+    }
+}
+
+fn stable_thought_item_id(event: &crate::acp::events::AcpUiEvent) -> String {
+    stable_thought_stream_identity(event)
         .unwrap_or_else(|| format!("assistant-thought-{}", event.id))
 }
 
+fn stable_thought_stream_identity(event: &crate::acp::events::AcpUiEvent) -> Option<String> {
+    if let Some(item_id) = provider_history_item_id(event) {
+        return Some(item_id.to_string());
+    }
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("messageId"))
+        .and_then(Value::as_str)
+        .filter(|message_id| !message_id.trim().is_empty())
+        .map(|message_id| format!("assistant-thought-{message_id}"))
+}
+
 fn stable_plan_item_id(event: &crate::acp::events::AcpUiEvent) -> String {
+    stable_plan_stream_identity(event).unwrap_or_else(|| format!("session-plan-{}", event.id))
+}
+
+fn stable_plan_stream_identity(event: &crate::acp::events::AcpUiEvent) -> Option<String> {
+    if let Some(item_id) = provider_history_item_id(event) {
+        return Some(item_id.to_string());
+    }
     event
         .raw
         .as_ref()
         .and_then(|raw| raw.get("sessionId"))
         .and_then(Value::as_str)
+        .filter(|session_id| !session_id.trim().is_empty())
         .map(|session_id| format!("session-plan-{session_id}"))
-        .unwrap_or_else(|| format!("session-plan-{}", event.id))
+}
+
+fn provider_history_item_id(event: &crate::acp::events::AcpUiEvent) -> Option<&str> {
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("providerHistoryItemId"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn contributes_to_final_text(kind: &str) -> bool {
     kind == "textDelta"
+}
+
+fn is_unscoped_codex_diagnostic_update(
+    provider_id: &str,
+    adapter_args: &[String],
+    update: &Value,
+) -> bool {
+    provider_id == "codex-acp"
+        && adapter_args
+            .iter()
+            .any(|arg| arg.starts_with("@agentclientprotocol/codex-acp"))
+        && update.get("sessionUpdate").and_then(Value::as_str) == Some("agent_message_chunk")
+        && update
+            .get("messageId")
+            .and_then(Value::as_str)
+            .is_none_or(|message_id| message_id.trim().is_empty())
+        && update.get("providerHistoryItemId").is_none()
+}
+
+fn session_update_text(update: &Value) -> Option<String> {
+    update
+        .pointer("/content/text")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            update
+                .pointer("/content/content/text")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| update.get("text").and_then(Value::as_str))
+        .map(str::to_string)
 }
 
 fn append_bounded(target: &mut String, content: &str, max_chars: usize) {
@@ -2919,6 +4021,24 @@ fn has_model_config_option(config_options: Option<&Value>) -> bool {
     config_options.and_then(find_model_config_option).is_some()
 }
 
+fn set_config_option_current_value(
+    config_options: Option<&mut Value>,
+    config_id: &str,
+    value: &str,
+) {
+    let Some(options) = config_options.and_then(Value::as_array_mut) else {
+        return;
+    };
+    if let Some(option) = options
+        .iter_mut()
+        .find(|option| option.get("id").and_then(Value::as_str) == Some(config_id))
+    {
+        if let Some(object) = option.as_object_mut() {
+            object.insert("currentValue".to_string(), Value::String(value.to_string()));
+        }
+    }
+}
+
 fn permission_decision_timeline_event(
     seq: u64,
     request_id: &str,
@@ -2969,27 +4089,86 @@ fn permission_decision_timeline_event(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use serde_json::{Value, json};
 
     use super::{
-        AcpRuntime, DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptActivity, PromptBundle, PromptVisibility,
-        RuntimeStopProbe, active_timeline_streams, cleanup_doctor_acp_dir_after_success,
-        contributes_to_final_text, merge_tool_raw_input, permission_decision_timeline_event,
+        AcpRuntime, AcpRuntimePolicy, AttachedSessionReusePlan, DOCTOR_DIAGNOSTIC_TARGET_SIZE,
+        PromptActivity, PromptBundle, PromptVisibility, ProviderFreshnessBaseline,
+        RuntimeStopProbe, SessionUpdatePhase, active_timeline_streams, attached_sync_required,
+        cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
+        evaluate_provider_revision, is_transport_interruption, is_unscoped_codex_diagnostic_update,
+        merge_tool_raw_input, permission_decision_timeline_event, plan_attached_session_reuse,
         prompt_activity, register_provider_control, request_prompt_cancel, resolve_permission_mode,
-        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items, session_load_params,
-        session_new_params, session_prompt_params, session_prompt_text,
+        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
+        session_config_fingerprint, session_load_params, session_new_params, session_prompt_params,
+        session_prompt_text, should_suppress_session_update,
         take_pending_live_update_for_stream_switch, unregister_provider_control,
     };
     use crate::acp::{
+        connection::AcpConnectionUnavailable,
         events::{AcpTimingState, AcpUiEvent},
         permission::PermissionResponseState,
     };
+
+    #[test]
+    fn external_session_sync_policy_is_agent_opt_in() {
+        let default_policy = AcpRuntimePolicy::default();
+        assert!(!default_policy.external_session_sync_enabled);
+
+        let enabled = default_policy.with_external_session_sync_enabled(true);
+        assert!(enabled.external_session_sync_enabled);
+        assert_eq!(enabled.session_idle_ttl, default_policy.session_idle_ttl);
+        assert_eq!(
+            enabled.max_idle_session_runtimes,
+            default_policy.max_idle_session_runtimes
+        );
+    }
+
+    #[test]
+    fn first_enable_sync_still_loads_when_session_list_would_timeout() {
+        let sync_required = attached_sync_required(false, false, true);
+        assert!(sync_required);
+
+        let plan = plan_attached_session_reuse(
+            false,
+            sync_required,
+            true,
+            &ProviderFreshnessBaseline::Unknown,
+        );
+
+        assert_eq!(
+            plan,
+            AttachedSessionReusePlan::Reload("external-session-sync-required")
+        );
+        assert_ne!(plan, AttachedSessionReusePlan::ProbeFreshness);
+    }
+
+    #[test]
+    fn attached_session_reuse_only_probes_freshness_without_required_sync() {
+        assert_eq!(
+            plan_attached_session_reuse(false, false, true, &ProviderFreshnessBaseline::Unknown,),
+            AttachedSessionReusePlan::ProbeFreshness
+        );
+        assert_eq!(
+            plan_attached_session_reuse(false, false, false, &ProviderFreshnessBaseline::Unknown,),
+            AttachedSessionReusePlan::Reuse
+        );
+        assert_eq!(
+            plan_attached_session_reuse(true, false, false, &ProviderFreshnessBaseline::Unknown,),
+            AttachedSessionReusePlan::Reload("session-config-changed")
+        );
+    }
 
     #[test]
     fn provider_control_exposes_prompt_activity_phases() {
         let attempt_dir = camino::Utf8Path::new("test/provider-control-activity");
         let control = register_provider_control(attempt_dir);
         assert_eq!(prompt_activity(attempt_dir), Some(PromptActivity::Starting));
+
+        control.mark_accepted();
+        assert_eq!(prompt_activity(attempt_dir), Some(PromptActivity::Accepted));
 
         control.mark_running();
         assert_eq!(prompt_activity(attempt_dir), Some(PromptActivity::Running));
@@ -3002,6 +4181,128 @@ mod tests {
 
         unregister_provider_control(attempt_dir, &control);
         assert_eq!(prompt_activity(attempt_dir), None);
+    }
+
+    #[test]
+    fn restored_session_suppresses_replay_until_new_turn_identity_arrives() {
+        let historical = HashSet::from([
+            "assistant-message-old".to_string(),
+            "assistant-thought-old".to_string(),
+        ]);
+        let mut current = HashSet::new();
+        let mut phase = SessionUpdatePhase::Replaying;
+        let old_message = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "old",
+            "content": { "type": "text", "text": "old answer" }
+        });
+        assert!(should_suppress_session_update(
+            &mut phase,
+            &historical,
+            &mut current,
+            Some("session-1"),
+            &old_message,
+        ));
+
+        phase = SessionUpdatePhase::AwaitingTurnStart;
+        assert!(should_suppress_session_update(
+            &mut phase,
+            &historical,
+            &mut current,
+            Some("session-1"),
+            &old_message,
+        ));
+        let new_thought = json!({
+            "sessionUpdate": "agent_thought_chunk",
+            "messageId": "new",
+            "content": { "type": "text", "text": "thinking" }
+        });
+        assert!(!should_suppress_session_update(
+            &mut phase,
+            &historical,
+            &mut current,
+            Some("session-1"),
+            &new_thought,
+        ));
+        assert_eq!(phase, SessionUpdatePhase::Live);
+        assert!(current.contains("assistant-thought-new"));
+
+        assert!(should_suppress_session_update(
+            &mut phase,
+            &historical,
+            &mut current,
+            Some("session-1"),
+            &old_message,
+        ));
+    }
+
+    #[test]
+    fn draining_and_closed_connections_are_transport_interruptions() {
+        assert!(is_transport_interruption(&anyhow::anyhow!(
+            AcpConnectionUnavailable::Draining
+        )));
+        assert!(is_transport_interruption(&anyhow::anyhow!(
+            AcpConnectionUnavailable::Closed
+        )));
+        assert!(!is_transport_interruption(&anyhow::anyhow!(
+            "provider rejected prompt"
+        )));
+    }
+
+    #[test]
+    fn session_config_fingerprint_normalizes_mcp_order_and_object_keys() {
+        let cwd = camino::Utf8Path::new("D:/repo");
+        let first = vec![
+            json!({ "name": "b", "env": { "B": "2", "A": "1" } }),
+            json!({ "name": "a", "command": "server" }),
+        ];
+        let second = vec![
+            json!({ "command": "server", "name": "a" }),
+            json!({ "env": { "A": "1", "B": "2" }, "name": "b" }),
+        ];
+        assert_eq!(
+            session_config_fingerprint("claude-acp", cwd, "stable-a", &first).unwrap(),
+            session_config_fingerprint("claude-acp", cwd, "stable-b", &second).unwrap()
+        );
+    }
+
+    #[test]
+    fn session_config_fingerprint_changes_when_mcp_changes() {
+        let cwd = camino::Utf8Path::new("D:/repo");
+        let first = vec![json!({ "name": "server", "command": "one" })];
+        let second = vec![json!({ "name": "server", "command": "two" })];
+        assert_ne!(
+            session_config_fingerprint("claude-acp", cwd, "", &first).unwrap(),
+            session_config_fingerprint("claude-acp", cwd, "", &second).unwrap()
+        );
+    }
+
+    #[test]
+    fn provider_revision_matrix_reuses_equal_and_reloads_changed_or_recovered() {
+        let (_, equal_reason) = evaluate_provider_revision(
+            &ProviderFreshnessBaseline::Known("rev-1".to_string()),
+            Some("rev-1".to_string()),
+        );
+        assert_eq!(equal_reason, None);
+
+        let (_, changed_reason) = evaluate_provider_revision(
+            &ProviderFreshnessBaseline::Known("rev-1".to_string()),
+            Some("rev-2".to_string()),
+        );
+        assert_eq!(changed_reason, Some("provider-revision-changed"));
+
+        let (_, recovered_reason) = evaluate_provider_revision(
+            &ProviderFreshnessBaseline::Unknown,
+            Some("rev-2".to_string()),
+        );
+        assert_eq!(recovered_reason, Some("provider-revision-baseline-unknown"));
+
+        let (unsupported, no_reason) = evaluate_provider_revision(
+            &ProviderFreshnessBaseline::Known("rev-1".to_string()),
+            None,
+        );
+        assert_eq!(unsupported, ProviderFreshnessBaseline::Unsupported);
+        assert_eq!(no_reason, None);
     }
 
     fn timeline_event(
@@ -3154,6 +4455,7 @@ mod tests {
             &mut stream,
             &mut first,
             "assistant-message-1",
+            Some("assistant-message-1"),
             256_000,
             10,
             "10Z",
@@ -3180,6 +4482,7 @@ mod tests {
             &mut stream,
             &mut second,
             "assistant-message-1",
+            Some("assistant-message-1"),
             256_000,
             11,
             "11Z",
@@ -3195,6 +4498,115 @@ mod tests {
         assert_eq!(second.ended_seq, Some(11));
         assert_eq!(second.started_at.as_deref(), Some("10Z"));
         assert_eq!(second.ended_at.as_deref(), Some("11Z"));
+    }
+
+    #[test]
+    fn streaming_delta_starts_a_new_stream_when_message_identity_changes() {
+        let mut stream = None;
+        let mut warning = timeline_event(
+            "event-warning",
+            10,
+            "textDelta",
+            None,
+            Some("warning"),
+            None,
+        );
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut warning,
+            "assistant-message-warning",
+            Some("assistant-message-warning"),
+            256_000,
+            10,
+            "10Z",
+        );
+
+        let mut answer =
+            timeline_event("event-answer", 11, "textDelta", None, Some("answer"), None);
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut answer,
+            "assistant-message-answer",
+            Some("assistant-message-answer"),
+            256_000,
+            11,
+            "11Z",
+        );
+
+        assert_eq!(warning.content.as_deref(), Some("warning"));
+        assert_eq!(answer.id, "assistant-message-answer");
+        assert_eq!(answer.content.as_deref(), Some("answer"));
+        assert_eq!(answer.started_seq, Some(11));
+    }
+
+    #[test]
+    fn streaming_delta_without_provider_identity_keeps_contiguous_fallback_stream() {
+        let mut stream = None;
+        let mut first = timeline_event("event-1", 10, "textDelta", None, Some("hel"), None);
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut first,
+            "assistant-message-event-1",
+            None,
+            256_000,
+            10,
+            "10Z",
+        );
+        let mut second = timeline_event("event-2", 11, "textDelta", None, Some("lo"), None);
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut second,
+            "assistant-message-event-2",
+            None,
+            256_000,
+            11,
+            "11Z",
+        );
+
+        assert_eq!(second.id, "assistant-message-event-1");
+        assert_eq!(second.content.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn agentclientprotocol_codex_unscoped_text_is_a_diagnostic() {
+        let warning = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "provider warning" }
+        });
+        let answer = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "answer-1",
+            "content": { "type": "text", "text": "answer" }
+        });
+        let current_args = vec![
+            "-y".to_string(),
+            "@agentclientprotocol/codex-acp@latest".to_string(),
+        ];
+        let legacy_args = vec![
+            "-y".to_string(),
+            "@zed-industries/codex-acp@latest".to_string(),
+        ];
+
+        assert!(is_unscoped_codex_diagnostic_update(
+            "codex-acp",
+            &current_args,
+            &warning,
+        ));
+        assert!(!is_unscoped_codex_diagnostic_update(
+            "codex-acp",
+            &current_args,
+            &answer,
+        ));
+        assert!(!is_unscoped_codex_diagnostic_update(
+            "codex-acp",
+            &legacy_args,
+            &warning,
+        ));
+        assert!(!is_unscoped_codex_diagnostic_update(
+            "claude-acp",
+            &current_args,
+            &warning,
+        ));
     }
 
     #[test]
@@ -3221,6 +4633,7 @@ mod tests {
             &mut stream,
             &mut first,
             "assistant-thought-1",
+            Some("assistant-thought-1"),
             256_000,
             10,
             "10Z",
@@ -3247,6 +4660,7 @@ mod tests {
             &mut stream,
             &mut second,
             "assistant-thought-1",
+            Some("assistant-thought-1"),
             256_000,
             11,
             "11Z",
@@ -3282,6 +4696,7 @@ mod tests {
             &mut stream,
             &mut first,
             "assistant-thought-1",
+            Some("assistant-thought-1"),
             256_000,
             10,
             "10Z",
@@ -3307,6 +4722,7 @@ mod tests {
             &mut stream,
             &mut second,
             "assistant-thought-1",
+            Some("assistant-thought-1"),
             256_000,
             11,
             "11Z",

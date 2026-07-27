@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { AlertTriangle, CheckCircle2, CircleHelp, LoaderCircle, Pencil, Plus, RefreshCw, Stethoscope, Trash2 } from 'lucide-react';
@@ -30,12 +31,23 @@ type Notice = { tone: 'success' | 'error'; message: string };
 
 const ACP_REGISTRY_URL = 'https://agentclientprotocol.com/get-started/registry';
 
-const defaultForm = (): ManagedAgentInput => ({ displayName: '', command: '', args: [], env: {} });
+const defaultForm = (): ManagedAgentInput => ({
+  displayName: '',
+  command: '',
+  args: [],
+  env: {},
+  primaryAgentDir: '',
+  compatibleAgentDirs: [],
+  externalSessionSyncEnabled: false,
+});
 const formFromSupportedAgent = (agentType?: SupportedAgentTypeVm): ManagedAgentInput => agentType ? ({
   displayName: agentType.defaultDisplayName,
   command: agentType.defaultCommand,
   args: agentType.defaultArgs,
   env: Object.fromEntries(agentType.defaultEnv.map((entry) => [entry.key, entry.value])),
+  primaryAgentDir: agentType.primaryAgentDir,
+  compatibleAgentDirs: agentType.compatibleAgentDirs,
+  externalSessionSyncEnabled: false,
 }) : defaultForm();
 
 export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }: AgentManagementPageProps) {
@@ -46,20 +58,32 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   const [form, setForm] = useState<ManagedAgentInput>(defaultForm);
   const [argsText, setArgsText] = useState('');
   const [envText, setEnvText] = useState('');
+  const [compatibleAgentDirsText, setCompatibleAgentDirsText] = useState('');
+  const [initialEditInput, setInitialEditInput] = useState<ManagedAgentInput | null>(null);
   const [saving, setSaving] = useState(false);
   const [diagnosingType, setDiagnosingType] = useState<string | null>(null);
+  const [automaticDiagnosingType, setAutomaticDiagnosingType] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ManagedAgentVm | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const supportedTypes = vm?.supportedTypes ?? [];
   const configuredTypes = useMemo(() => new Set(vm?.agents.map((agent) => agent.agentType) ?? []), [vm]);
+  const currentInput = useMemo(
+    () => buildAgentInput(form, argsText, envText, compatibleAgentDirsText),
+    [argsText, compatibleAgentDirsText, envText, form],
+  );
+  const hasFormChanges = editorMode === 'create'
+    || initialEditInput === null
+    || hasManagedAgentInputChanged(initialEditInput, currentInput);
 
   useEffect(() => {
     if (!sheetOpen) {
       setForm(defaultForm());
       setArgsText('');
       setEnvText('');
+      setCompatibleAgentDirsText('');
+      setInitialEditInput(null);
       setError(null);
     }
   }, [sheetOpen]);
@@ -70,6 +94,16 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
     return () => window.clearTimeout(timer);
   }, [notice]);
 
+  useEffect(() => {
+    if (!automaticDiagnosingType) return;
+    const diagnostic = vm?.agents.find((agent) => agent.agentType === automaticDiagnosingType)?.diagnostic;
+    if (!diagnostic) return;
+    setAutomaticDiagnosingType(null);
+    setNotice(diagnostic.available
+      ? { tone: 'success', message: t('agentManagement.diagnosticComplete') }
+      : { tone: 'error', message: t('agentManagement.diagnosticFailed', { reason: diagnostic.reason ?? t('agentManagement.diagnosticFailedFallback') }) });
+  }, [automaticDiagnosingType, t, vm]);
+
   const openCreate = (agentType: SupportedAgentTypeVm) => {
     const nextForm = formFromSupportedAgent(agentType);
     setEditorMode('create');
@@ -77,21 +111,24 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
     setForm(nextForm);
     setArgsText(formatArgs(nextForm.args));
     setEnvText(formatEnv(Object.entries(nextForm.env).map(([key, value]) => ({ key, value }))));
+    setCompatibleAgentDirsText(formatAgentDirs(nextForm.compatibleAgentDirs));
+    setInitialEditInput(null);
     setError(null);
     setSheetOpen(true);
   };
 
   const openEdit = (agent: ManagedAgentVm) => {
+    const nextForm = agentInputFromVm(agent);
+    const nextArgsText = formatArgs(agent.args);
+    const nextEnvText = formatEnv(agent.env);
+    const nextCompatibleAgentDirsText = formatAgentDirs(agent.compatibleAgentDirs);
     setEditorMode('edit');
     setSelectedType(agent.agentType);
-    setForm({
-      displayName: agent.displayName,
-      command: agent.command,
-      args: agent.args,
-      env: Object.fromEntries(agent.env.map((entry) => [entry.key, entry.value])),
-    });
-    setArgsText(formatArgs(agent.args));
-    setEnvText(formatEnv(agent.env));
+    setForm(nextForm);
+    setArgsText(nextArgsText);
+    setEnvText(nextEnvText);
+    setCompatibleAgentDirsText(nextCompatibleAgentDirsText);
+    setInitialEditInput(buildAgentInput(nextForm, nextArgsText, nextEnvText, nextCompatibleAgentDirsText));
     setError(null);
     setSheetOpen(true);
   };
@@ -101,14 +138,19 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
       setError(t('agentManagement.agentTypeRequired'));
       return;
     }
+    if (editorMode === 'edit' && initialEditInput && !hasManagedAgentInputChanged(initialEditInput, currentInput)) {
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
-      const input = buildAgentInput(form, argsText, envText);
       const next = editorMode === 'create'
-        ? await createAgent(selectedType, input)
-        : await updateAgent(selectedType, input);
+        ? await createAgent(selectedType, currentInput)
+        : await updateAgent(selectedType, currentInput);
       onRegistryChange(next);
+      setAutomaticDiagnosingType(selectedType);
+      setNotice({ tone: 'success', message: t('agentManagement.savedAndDiagnosing') });
+      window.setTimeout(onRefresh, 250);
       setSheetOpen(false);
     } catch (nextError) {
       setError(displayAppError(t, nextError));
@@ -206,7 +248,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
             <AgentCard
               key={agent.agentType}
               agent={agent}
-              diagnosing={diagnosingType === agent.agentType}
+              diagnosing={diagnosingType === agent.agentType || automaticDiagnosingType === agent.agentType}
               onEdit={() => openEdit(agent)}
               onDelete={() => setDeleteTarget(agent)}
               onDoctor={() => void runDoctor(agent.agentType)}
@@ -251,10 +293,41 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
                 onChange={(event) => setEnvText(event.target.value)}
               />
             </Field>
+            <Field label={t('agentManagement.primaryAgentDir')} description={t('agentManagement.primaryAgentDirDescription')}>
+              <TextInput
+                value={form.primaryAgentDir}
+                placeholder={t('agentManagement.primaryAgentDirPlaceholder')}
+                onChange={(event: ChangeEvent<HTMLInputElement>) => setForm((current) => ({ ...current, primaryAgentDir: event.target.value }))}
+              />
+            </Field>
+            <Field label={t('agentManagement.compatibleAgentDirs')} description={t('agentManagement.compatibleAgentDirsDescription')}>
+              <ConfigTextarea
+                className="min-h-20"
+                value={compatibleAgentDirsText}
+                placeholder={t('agentManagement.compatibleAgentDirsPlaceholder')}
+                onChange={(event) => setCompatibleAgentDirsText(event.target.value)}
+              />
+            </Field>
+            <div className="flex items-center justify-between gap-5 rounded-xl border border-border/60 bg-muted/10 px-4 py-3">
+              <div className="min-w-0 space-y-1">
+                <ExternalSessionSyncHeading
+                  label={t('agentManagement.externalSessionSync')}
+                  betaLabel={t('agentManagement.externalSessionSyncBeta')}
+                  helpLabel={t('agentManagement.externalSessionSyncHelpLabel')}
+                  helpText={t('agentManagement.externalSessionSyncHelp')}
+                />
+                <div className="text-xs leading-5 text-muted-foreground">{t('agentManagement.externalSessionSyncDescription')}</div>
+              </div>
+              <Switch
+                id="external-session-sync"
+                checked={form.externalSessionSyncEnabled}
+                onCheckedChange={(checked) => setForm((current) => ({ ...current, externalSessionSyncEnabled: checked }))}
+              />
+            </div>
             {error ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">{error}</div> : null}
             <div className="flex justify-end gap-2 pt-1">
               <Button variant="outline" onClick={() => setSheetOpen(false)}>{t('common.close')}</Button>
-              <Button disabled={saving || !selectedType.trim() || !form.displayName.trim() || !form.command.trim()} onClick={() => void submit()}>{t('common.save')}</Button>
+              <Button disabled={saving || !selectedType.trim() || !form.displayName.trim() || !form.command.trim() || !form.primaryAgentDir.trim() || !hasFormChanges} onClick={() => void submit()}>{t('common.save')}</Button>
             </div>
           </div>
         </SheetContent>
@@ -301,18 +374,17 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
         </div>
       </div>
       <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-2">
-        <Info label={t('agentManagement.command')} value={agent.command} mono />
-        <Info label={t('agentManagement.args')} value={agent.args.length > 0 ? agent.args.join(' ') : '-'} mono />
-        <Info label={t('agentManagement.env')} value={agent.env.length > 0 ? `${agent.env.length} ${t('agentManagement.entries')}` : '-'} />
-        <Info label={t('agentManagement.lastChecked')} value={formatLocalDateTime(diagnostic?.checkedAt)} />
+        {buildAgentCardSummary(agent, t).map((item) => (
+          <Info key={item.key} label={item.label} value={item.value} mono={item.mono} />
+        ))}
       </div>
       <div className="mt-auto flex flex-wrap justify-end gap-2 pt-1">
         <Button size="sm" variant="outline" disabled={diagnosing} aria-busy={diagnosing} onClick={onDoctor}>
           {diagnosing ? <LoaderCircle className="animate-spin" /> : <Stethoscope />}
           {diagnosing ? t('agentManagement.diagnosing') : t('agentManagement.diagnose')}
         </Button>
-        <Button size="sm" variant="outline" onClick={onEdit}><Pencil />{t('agentManagement.edit')}</Button>
-        <Button size="sm" variant="outline" onClick={onDelete}><Trash2 />{t('agentManagement.delete')}</Button>
+        <Button size="sm" variant="outline" disabled={diagnosing} onClick={onEdit}><Pencil />{t('agentManagement.edit')}</Button>
+        <Button size="sm" variant="outline" disabled={diagnosing} onClick={onDelete}><Trash2 />{t('agentManagement.delete')}</Button>
       </div>
     </AppCard>
   );
@@ -396,13 +468,98 @@ function Info({ label, value, mono = false }: { label: string; value: string; mo
   );
 }
 
-function buildAgentInput(form: ManagedAgentInput, argsText: string, envText: string): ManagedAgentInput {
+export function ExternalSessionSyncHeading({
+  label,
+  betaLabel,
+  helpLabel,
+  helpText,
+}: {
+  label: string;
+  betaLabel: string;
+  helpLabel: string;
+  helpText: string;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <label htmlFor="external-session-sync" className="text-sm font-semibold text-foreground">{label}</label>
+      <Badge variant="secondary" className="h-5 rounded-full px-1.5 py-0 text-[10px] font-semibold uppercase tracking-wide">
+        {betaLabel}
+      </Badge>
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-5 rounded-full text-muted-foreground hover:text-foreground"
+              aria-label={helpLabel}
+            >
+              <CircleHelp className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={6} className="max-w-64 text-xs leading-5">
+            {helpText}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    </div>
+  );
+}
+
+export function buildAgentCardSummary(agent: ManagedAgentVm, t: (key: string) => string) {
+  return [
+    { key: 'command', label: t('agentManagement.command'), value: agent.command, mono: true },
+    { key: 'args', label: t('agentManagement.args'), value: agent.args.length > 0 ? agent.args.join(' ') : '-', mono: true },
+    { key: 'env', label: t('agentManagement.env'), value: agent.env.length > 0 ? `${agent.env.length} ${t('agentManagement.entries')}` : '-', mono: false },
+    { key: 'lastChecked', label: t('agentManagement.lastChecked'), value: formatLocalDateTime(agent.diagnostic?.checkedAt), mono: false },
+  ];
+}
+
+function agentInputFromVm(agent: ManagedAgentVm): ManagedAgentInput {
+  return {
+    displayName: agent.displayName,
+    command: agent.command,
+    args: agent.args,
+    env: Object.fromEntries(agent.env.map((entry) => [entry.key, entry.value])),
+    primaryAgentDir: agent.primaryAgentDir,
+    compatibleAgentDirs: agent.compatibleAgentDirs,
+    externalSessionSyncEnabled: agent.externalSessionSyncEnabled,
+  };
+}
+
+export function buildAgentInput(
+  form: ManagedAgentInput,
+  argsText: string,
+  envText: string,
+  compatibleAgentDirsText = formatAgentDirs(form.compatibleAgentDirs),
+): ManagedAgentInput {
   return {
     displayName: form.displayName,
-    command: form.command,
+    command: form.command.trim(),
     args: parseArgs(argsText),
     env: parseEnv(envText),
+    primaryAgentDir: form.primaryAgentDir.trim(),
+    compatibleAgentDirs: parseAgentDirs(compatibleAgentDirsText, form.primaryAgentDir),
+    externalSessionSyncEnabled: form.externalSessionSyncEnabled,
   };
+}
+
+export function hasManagedAgentInputChanged(initial: ManagedAgentInput, current: ManagedAgentInput): boolean {
+  return managedAgentInputFingerprint(initial) !== managedAgentInputFingerprint(current);
+}
+
+function managedAgentInputFingerprint(input: ManagedAgentInput): string {
+  return JSON.stringify({
+    displayName: input.displayName,
+    command: input.command.trim(),
+    args: input.args,
+    env: Object.entries(input.env).sort(([left], [right]) => left.localeCompare(right)),
+    primaryAgentDir: input.primaryAgentDir.trim(),
+    compatibleAgentDirs: [...new Set(input.compatibleAgentDirs.map((directory) => directory.trim()).filter(Boolean))]
+      .filter((directory) => directory !== input.primaryAgentDir.trim()),
+    externalSessionSyncEnabled: input.externalSessionSyncEnabled,
+  });
 }
 
 function formatArgs(args: string[]) {
@@ -411,6 +568,16 @@ function formatArgs(args: string[]) {
 
 function formatEnv(env: ManagedAgentVm['env']) {
   return env.map((entry) => `${entry.key}=${entry.value}`).join('\n');
+}
+
+function formatAgentDirs(directories: string[]) {
+  return directories.join('\n');
+}
+
+function parseAgentDirs(value: string, primaryAgentDir: string) {
+  const primary = primaryAgentDir.trim();
+  return [...new Set(value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean))]
+    .filter((directory) => directory !== primary);
 }
 
 function parseArgs(value: string) {

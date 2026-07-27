@@ -50,6 +50,9 @@ export const desktopApi: RuntimeApi = {
   getAgentRegistry() {
     return invokeCommand('get_agent_registry');
   },
+  getAgentCommandCatalog(agentType: string, workspacePath: string) {
+    return invokeCommand('get_agent_command_catalog', { agentType, workspacePath });
+  },
   createAgent(agentType: string, input: ManagedAgentInput) {
     return invokeCommand('create_agent', { agentType, input });
   },
@@ -161,6 +164,9 @@ export const desktopApi: RuntimeApi = {
   getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, _fallback, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('get_acp_session', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
   },
+  renewAcpSessionLease(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
+    return invokeCommand<number>('renew_acp_session_lease', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  },
   submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
     return invokeCommand('submit_conversation_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });
   },
@@ -240,6 +246,12 @@ export const desktopApi: RuntimeApi = {
   },
   getConversationSidebar() {
     return invokeCommand<ConversationSidebarVm>('get_conversation_sidebar');
+  },
+  setAcpSessionConfigOption(projectId, taskId, runId, roundId, nodeId, attemptId, optionId, optionValue, outerNodeId, outerAttemptId) {
+    return invokeCommand<AcpSessionVm | null>('set_acp_session_config_option', { projectId, taskId, runId, roundId, nodeId, attemptId, optionId, optionValue, outerNodeId, outerAttemptId });
+  },
+  getConversationWorkspaces() {
+    return invokeCommand<ConversationWorkspaceVm[]>('get_conversation_workspaces');
   },
   getConversationRun(projectId, taskId, runId, selectedSessionKey) {
     return invokeCommand<ConversationRunVm>('get_conversation_run', { projectId, taskId, runId, selectedSessionKey });

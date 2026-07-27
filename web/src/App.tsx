@@ -87,6 +87,7 @@ import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
 import { resetConversationComposerDraft } from '@/lib/conversation-composer-draft';
+import { resolveConversationWorkspaceRemovalTransition } from '@/lib/conversation-workspace-removal';
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
@@ -102,7 +103,15 @@ import {
   shouldAutoOpenWorkspacePicker,
   shouldRenderWorkspacePicker,
 } from '@/lib/workspace-picker-scope';
-import { conversationRunModeOrDefault, mergeConversationRunMode } from '@/lib/conversation-run-mode-config';
+import {
+  conversationRunModeForWorkspace,
+  conversationRunModeOrDefault,
+  mergeConversationRunMode,
+  setConversationRunModeForWorkspace,
+  type ConversationRunModesByWorkspace,
+} from '@/lib/conversation-run-mode-config';
+import { ConversationRunModePersistence } from '@/lib/conversation-run-mode-persistence';
+import { conversationPageForSearchResult } from '@/lib/conversation-search';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
@@ -224,8 +233,12 @@ export function App() {
   const [conversationSidebar, setConversationSidebar] = useState<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const conversationSidebarRef = useRef<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
-  const [conversationRunMode, setConversationRunMode] = useState<ConversationRunModeVm>({ mode: 'auto' });
-  const conversationRunModeRequestRef = useRef(0);
+  const [conversationRunModesByWorkspace, setConversationRunModesByWorkspace] = useState<ConversationRunModesByWorkspace>({});
+  const conversationRunModesRef = useRef<ConversationRunModesByWorkspace>({});
+  const conversationRunModeRequestRef = useRef(new Map<string, number>());
+  const [conversationRunModePersistence] = useState(
+    () => new ConversationRunModePersistence(saveConversationRunMode),
+  );
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const [conversationRunStopping, setConversationRunStopping] = useState(false);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
@@ -302,6 +315,7 @@ export function App() {
     : (draftConversationWorkspaceId ?? effectiveWorkspaceId);
   const defaultProjectId = draftWorkspace?.projectId ?? 'default';
   const defaultWorkspaceName = draftWorkspace?.name ?? 'Default Workspace';
+  const conversationRunMode = conversationRunModeForWorkspace(conversationRunModesByWorkspace, defaultProjectId);
   const [roundSelection, setRoundSelection] = useState<RoundSelection>({ kind: 'round' });
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
   const [profiles, setProfiles] = useState<ProfileVm[]>([]);
@@ -317,17 +331,25 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
 
   const loadConversationRunMode = useCallback((projectId: string) => {
-    const requestId = ++conversationRunModeRequestRef.current;
-    return getConversationRunMode(projectId)
+    const requestId = (conversationRunModeRequestRef.current.get(projectId) ?? 0) + 1;
+    conversationRunModeRequestRef.current.set(projectId, requestId);
+    return conversationRunModePersistence.waitFor(projectId)
+      .then(() => getConversationRunMode(projectId))
       .then((mode) => {
         const nextMode = conversationRunModeOrDefault(mode);
-        if (requestId === conversationRunModeRequestRef.current) {
-          setConversationRunMode(nextMode);
+        if (requestId === conversationRunModeRequestRef.current.get(projectId)) {
+          const nextModes = setConversationRunModeForWorkspace(
+            conversationRunModesRef.current,
+            projectId,
+            nextMode,
+          );
+          conversationRunModesRef.current = nextModes;
+          setConversationRunModesByWorkspace(nextModes);
         }
         return nextMode;
       })
       .catch(() => undefined);
-  }, []);
+  }, [conversationRunModePersistence]);
   const [updateAnnouncementOpen, setUpdateAnnouncementOpen] = useState(false);
   const backgroundRefreshInFlightRef = useRef(false);
 
@@ -692,6 +714,48 @@ export function App() {
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
     let active = true;
+    let refreshInFlight = false;
+    let refreshPending = false;
+    let unlisten: (() => void) | undefined;
+
+    const refreshAgentRegistry = async () => {
+      if (refreshInFlight) {
+        refreshPending = true;
+        return;
+      }
+      refreshInFlight = true;
+      try {
+        const next = await getAgentRegistry();
+        if (active) setAgentRegistry(next);
+      } catch {
+        // The periodic/background diagnostic remains best-effort; manual refresh still surfaces errors.
+      } finally {
+        refreshInFlight = false;
+        if (active && refreshPending) {
+          refreshPending = false;
+          void refreshAgentRegistry();
+        }
+      }
+    };
+
+    void listen('gold-band://agent-commands-updated', () => {
+      if (active) void refreshAgentRegistry();
+    }).then((dispose) => {
+      if (active) {
+        unlisten = dispose;
+      } else {
+        dispose();
+      }
+    });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return undefined;
+    let active = true;
     let unlisten: (() => void) | undefined;
     void listen<UpdateStatusVm>('gold-band://update-status', (event) => {
       if (!active) return;
@@ -970,10 +1034,18 @@ export function App() {
   };
 
   const updateConversationRunMode = (mode: ConversationRunModeVm, projectId = defaultProjectId) => {
-    conversationRunModeRequestRef.current += 1;
-    const nextMode = mergeConversationRunMode(conversationRunMode, mode);
-    setConversationRunMode(nextMode);
-    return saveConversationRunMode(projectId, nextMode).catch(() => {});
+    const requestVersion = (conversationRunModeRequestRef.current.get(projectId) ?? 0) + 1;
+    conversationRunModeRequestRef.current.set(projectId, requestVersion);
+    const currentMode = conversationRunModeForWorkspace(conversationRunModesRef.current, projectId);
+    const nextMode = mergeConversationRunMode(currentMode, mode);
+    const nextModes = setConversationRunModeForWorkspace(
+      conversationRunModesRef.current,
+      projectId,
+      nextMode,
+    );
+    conversationRunModesRef.current = nextModes;
+    setConversationRunModesByWorkspace(nextModes);
+    return conversationRunModePersistence.enqueue(projectId, nextMode).catch(() => {});
   };
 
   const onStopRun = (taskId: string, runId: string) => {
@@ -1330,14 +1402,29 @@ export function App() {
       }}
       onConversationRemoveWorkspace={(projectId) => {
         setError(null);
-        removeConversationWorkspace(projectId).then((sidebar) => {
-          if (activeWorkspaceIdRef.current === projectId) {
-            activeWorkspaceIdRef.current = sidebar.lastActiveWorkspaceId ?? null;
-            setActiveWorkspaceId(sidebar.lastActiveWorkspaceId ?? null);
-          }
-          setDraftConversationWorkspaceId((current) => current === projectId ? null : current);
-          applyConversationSidebar(sidebar, sidebar.lastActiveWorkspaceId);
-        }).catch((err) => setError(displayAppError(t, err)));
+        return removeConversationWorkspace(projectId)
+          .then((sidebar) => {
+            const transition = resolveConversationWorkspaceRemovalTransition({
+              removedProjectId: projectId,
+              lastActiveWorkspaceId: sidebar.lastActiveWorkspaceId,
+              activeWorkspaceId: activeWorkspaceIdRef.current,
+              draftWorkspaceId: draftConversationWorkspaceId,
+              page: conversationPage,
+            });
+            activeWorkspaceIdRef.current = transition.activeWorkspaceId;
+            setActiveWorkspaceId(transition.activeWorkspaceId);
+            setDraftConversationWorkspaceId(transition.draftWorkspaceId);
+            if (transition.navigateHome) {
+              conversationRunRef.current = null;
+              setConversationRun(null);
+              setConversationPage({ kind: 'conversation-home' });
+            }
+            applyConversationSidebar(sidebar, transition.activeWorkspaceId);
+          })
+          .catch((err) => {
+            setError(displayAppError(t, err));
+            throw err;
+          });
       }}
     >
       <AlertDialog open={Boolean(error)} onOpenChange={(open) => { if (!open) setError(null); }}>
@@ -1392,9 +1479,8 @@ export function App() {
         open={conversationSearchOpen}
         onOpenChange={setConversationSearchOpen}
         onSelectResult={(result) => {
-          if (result.latestRun) {
-            setConversationPage({ kind: 'conversation-run', projectId: result.projectId, taskId: result.taskId, runId: result.latestRun.runId });
-          }
+          const page = conversationPageForSearchResult(result);
+          if (page) setConversationPage(page);
         }}
       />
     </Shell>
@@ -1463,9 +1549,8 @@ export function App() {
               : input.runMode === 'auto'
                 ? { mode: 'auto', autoConfig: input.autoConfig ?? conversationRunMode.autoConfig }
                 : { mode: 'workflow', workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId, includeInterview: input.includeInterview ?? conversationRunMode.includeInterview };
-            setConversationRunMode(nextMode);
             setBusy(true);
-            saveConversationRunMode(input.projectId, nextMode).catch(() => {});
+            void updateConversationRunMode(nextMode, input.projectId);
             try {
               const validation = await validateConversationCreate(input);
               if (!validation.valid) {

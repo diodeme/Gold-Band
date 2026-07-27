@@ -4,6 +4,7 @@ mod builtin_mcp;
 mod channel;
 mod commands;
 mod commands_conversation;
+mod conversation_workspace;
 mod feedback;
 mod i18n;
 mod metrics;
@@ -20,25 +21,26 @@ use commands::{
     create_profile, create_task, delete_agent, delete_auto_template, delete_mcp_server,
     delete_profile, delete_skill, delete_workflow_template, dismiss_update_announcement,
     doctor_agent, download_and_install_update, get_acp_raw_frames, get_acp_session,
-    get_agent_registry, get_app_bootstrap, get_auto_templates, get_log_page, get_metrics_settings,
-    get_profile, get_profiles, get_round_detail, get_run_detail, get_skill_sync_status,
-    get_system_fonts, get_task_detail, get_task_list, get_update_status, get_workflow,
-    get_workflow_templates, list_mcp_servers, list_mcp_tools, list_project_skills, list_skills,
-    mark_settings_advanced_update_seen, mark_settings_update_seen, open_in_file_manager, pause_run,
-    read_skill, remove_recent_workspace, replace_auto_templates, respond_acp_permission,
-    respond_elicitation, retry_run, save_auto_template, save_desktop_preferences,
-    save_metrics_settings, save_task_workflow, save_updater_settings, save_workflow_template,
-    search_acp_prompts, search_acp_sessions, search_tasks, select_recent_workspace,
-    send_acp_prompt, set_acp_session_model, set_acp_session_permission_mode, show_artifact,
-    show_attachment, show_worker_ref, start_run, stop_active_session, submit_conversation_prompt,
-    submit_manual_check, toggle_mcp_server, update_agent, update_auto_template, update_mcp_server,
-    update_notification_attention, update_profile, update_skill_sync_targets,
-    update_workflow_template, write_skill,
+    get_agent_command_catalog, get_agent_registry, get_app_bootstrap, get_auto_templates,
+    get_log_page, get_metrics_settings, get_profile, get_profiles, get_round_detail,
+    get_run_detail, get_skill_sync_status, get_system_fonts, get_task_detail, get_task_list,
+    get_update_status, get_workflow, get_workflow_templates, list_mcp_servers, list_mcp_tools,
+    list_project_skills, list_skills, mark_settings_advanced_update_seen,
+    mark_settings_update_seen, open_in_file_manager, pause_run, read_skill,
+    remove_recent_workspace, renew_acp_session_lease, replace_auto_templates,
+    respond_acp_permission, respond_elicitation, retry_run, save_auto_template,
+    save_desktop_preferences, save_metrics_settings, save_task_workflow, save_updater_settings,
+    save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
+    select_recent_workspace, send_acp_prompt, set_acp_session_config_option, set_acp_session_model,
+    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref, start_run,
+    stop_active_session, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
+    update_agent, update_auto_template, update_mcp_server, update_notification_attention,
+    update_profile, update_skill_sync_targets, update_workflow_template, write_skill,
 };
 use commands_conversation::{
     add_conversation_workspace, choose_conversation_workspace, create_conversation_run,
     delete_conversation_task, get_conversation_run, get_conversation_run_mode,
-    get_conversation_sidebar, get_supported_attachment_extensions,
+    get_conversation_sidebar, get_conversation_workspaces, get_supported_attachment_extensions,
     materialize_conversation_attachments, pin_conversation, remove_conversation_workspace,
     reorder_pinned_conversations, rerun_conversation_task, save_conversation_preference,
     save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
@@ -115,12 +117,21 @@ fn run() -> anyhow::Result<()> {
             std::thread::spawn(move || {
                 loop {
                     let state = handle.state::<DesktopState>();
-                    let _ = state.refresh_all_agent_diagnostics();
+                    let diagnostics_refreshed = state.refresh_all_agent_diagnostics().is_ok();
+                    let commands_refreshed = state
+                        .refresh_agent_command_catalogs_for_active_workspaces()
+                        .is_ok();
+                    if diagnostics_refreshed {
+                        commands::emit_agent_registry_updated(&handle);
+                    }
+                    if diagnostics_refreshed || commands_refreshed {
+                        commands::emit_agent_commands_updated(&handle, None);
+                    }
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
             });
-            // 鍚姩鍚庡彴绾跨▼棰勬帰娴?MCP 鏈嶅姟鍋ュ悍鐘舵€侊紙鐙珛绾跨▼锛岄伩鍏嶉樆濉?webview 涓荤嚎绋嬶級銆?
-            // 瀹㈡埛绔惎鍔ㄥ悗鍗冲紑濮嬫娴嬶紝杩涘叆 MCP 绠＄悊椤垫椂鐘舵€佸凡灏辩华锛屾棤闇€鎵嬪姩璇婃柇銆?
+            // 鍚姩鍚庡彴绾跨▼棰勬帰�?MCP 鏈嶅姟鍋ュ悍鐘舵€侊紙鐙珛绾跨▼锛岄伩鍏嶉樆濉?webview 涓荤嚎绋嬶級�?
+            // 瀹㈡埛绔惎鍔ㄥ悗鍗冲紑濮嬫娴嬶紝杩涘�?MCP 绠＄悊椤垫椂鐘舵€佸凡灏辩华锛屾棤闇€鎵嬪姩璇婃柇銆?
             let health_handle = app.handle().clone();
             std::thread::spawn(move || {
                 let state = health_handle.state::<DesktopState>();
@@ -154,6 +165,7 @@ fn run() -> anyhow::Result<()> {
             get_system_fonts,
             check_local_claude,
             get_agent_registry,
+            get_agent_command_catalog,
             create_agent,
             update_agent,
             delete_agent,
@@ -184,9 +196,11 @@ fn run() -> anyhow::Result<()> {
             get_round_detail,
             get_log_page,
             get_acp_session,
+            renew_acp_session_lease,
             submit_conversation_prompt,
             send_acp_prompt,
             set_acp_session_model,
+            set_acp_session_config_option,
             set_acp_session_permission_mode,
             respond_acp_permission,
             respond_elicitation,
@@ -218,6 +232,7 @@ fn run() -> anyhow::Result<()> {
             // Conversation UI
             save_desktop_ui_mode,
             get_conversation_sidebar,
+            get_conversation_workspaces,
             get_conversation_run,
             validate_conversation_create,
             create_conversation_run,

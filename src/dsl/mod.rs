@@ -3,7 +3,7 @@ use crate::provider::supports_continue_session;
 use anyhow::{Result, anyhow, bail, ensure};
 use indexmap::IndexMap;
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 pub const END_NODE: &str = "$end";
 pub const ENTRY_NODE: &str = "$entry";
@@ -267,6 +267,8 @@ pub struct WorkerNode {
     pub success_condition: Option<JsonConditionDsl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_options: BTreeMap<String, String>,
     #[serde(default)]
     pub manual_check: Option<bool>,
     #[serde(default)]
@@ -293,6 +295,8 @@ pub struct AiDynamicNode {
         alias = "permissionMode"
     )]
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_options: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_profiles: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -313,6 +317,8 @@ struct AiDynamicNodeCompat {
     pub provider: Option<String>,
     #[serde(default, rename = "permission_mode", alias = "permissionMode")]
     pub permission_mode: Option<String>,
+    #[serde(default)]
+    pub config_options: BTreeMap<String, String>,
     #[serde(default)]
     pub allowed_profiles: Vec<String>,
     #[serde(default)]
@@ -350,6 +356,7 @@ impl<'de> Deserialize<'de> for AiDynamicNode {
                 .permission_mode
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
+            config_options: raw.config_options,
             allowed_profiles: raw
                 .allowed_profiles
                 .into_iter()

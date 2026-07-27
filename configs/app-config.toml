@@ -2,6 +2,14 @@ acpSessionTitleRefreshEnabled = false
 acpChatEventPageSize = 200
 acpRawMaxSizeBytes = 2097152
 acpRawTargetSizeBytes = 1048576
+acpSessionForegroundLeaseTtlSecs = 90
+acpSessionForegroundLeaseRenewIntervalSecs = 30
+acpSessionIdleTtlSecs = 600
+acpAdapterConnectionIdleTtlSecs = 600
+acpMaxIdleSessionRuntimes = 8
+acpMaxIdleAdapterConnections = 4
+acpTimelineCompactMaxSizeBytes = 8388608
+acpTimelineCompactPatchRatio = 4
 conversationAutoTitleMaxChars = 18
 requireLocalClaudeExecutable = false
 

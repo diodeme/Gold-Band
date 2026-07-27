@@ -31,6 +31,33 @@ export interface ElicitationCardProps {
   onDecline?: () => void;
 }
 
+export interface ElicitationField {
+  key: string;
+  isSelect: boolean;
+  isMulti: boolean;
+  isCustom: boolean;
+  title?: string;
+  description?: string;
+  options?: Array<{ value: string; label: string }>;
+  hasCustomVariant: boolean;
+  customVariantKey?: string;
+  customVariantDescription?: string;
+}
+
+export interface ElicitationFieldDraft {
+  selectedValue: string | null;
+  multiValues: string[];
+  customText: string;
+  customActive: boolean;
+}
+
+const ELICITATION_OPTION_INTERACTION_CLASS =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70";
+const ELICITATION_SELECTED_OPTION_CLASS =
+  "border-accent-foreground/55 bg-accent text-accent-foreground shadow-[inset_3px_0_0_var(--accent-foreground)]";
+const ELICITATION_SELECTED_MARK_CLASS =
+  "border-accent-foreground bg-accent-foreground text-background";
+
 export function elicitationOptions(
   prop: ElicitationPropertySchema,
 ): Array<{ value: string; label: string }> | undefined {
@@ -88,6 +115,102 @@ function shouldShowFieldTitle(
   return trimmedTitle !== questionText.trim();
 }
 
+export function elicitationFieldDraft(
+  answers: Record<string, unknown>,
+  field: ElicitationField,
+): ElicitationFieldDraft {
+  const emptyDraft: ElicitationFieldDraft = {
+    selectedValue: null,
+    multiValues: [],
+    customText: "",
+    customActive: false,
+  };
+  const customValue = field.customVariantKey
+    ? answers[field.customVariantKey]
+    : undefined;
+
+  if (typeof customValue === "string" && customValue.trim()) {
+    return {
+      ...emptyDraft,
+      customText: customValue,
+      customActive: true,
+    };
+  }
+
+  const value = answers[field.key];
+  if (field.isMulti && Array.isArray(value)) {
+    return {
+      ...emptyDraft,
+      multiValues: value.filter(
+        (item): item is string => typeof item === "string",
+      ),
+    };
+  }
+  if (field.isSelect && typeof value === "string") {
+    return { ...emptyDraft, selectedValue: value };
+  }
+  if (field.isCustom && typeof value === "string" && value.trim()) {
+    return {
+      ...emptyDraft,
+      customText: value,
+      customActive: true,
+    };
+  }
+  return emptyDraft;
+}
+
+export function clearElicitationFieldAnswer(
+  answers: Record<string, unknown>,
+  field: ElicitationField,
+): Record<string, unknown> {
+  const nextAnswers = { ...answers };
+  delete nextAnswers[field.key];
+  if (field.customVariantKey) {
+    delete nextAnswers[field.customVariantKey];
+  }
+  return nextAnswers;
+}
+
+export function replaceElicitationFieldAnswer(
+  answers: Record<string, unknown>,
+  field: ElicitationField,
+  value: unknown,
+  fieldKey?: string,
+): Record<string, unknown> {
+  const nextAnswers = clearElicitationFieldAnswer(answers, field);
+  const answerKey = fieldKey ?? field.key;
+  nextAnswers[answerKey] = value;
+  if (answerKey !== field.key) {
+    nextAnswers[field.key] = value;
+  }
+  return nextAnswers;
+}
+
+export function buildElicitationContent(
+  fields: ElicitationField[],
+  answers: Record<string, unknown>,
+): Record<string, unknown> {
+  const content: Record<string, unknown> = {};
+  for (const field of fields) {
+    const value = answers[field.key];
+    if (
+      value !== undefined &&
+      value !== null &&
+      !(typeof value === "string" && value.trim() === "") &&
+      !(Array.isArray(value) && value.length === 0)
+    ) {
+      content[field.key] = value;
+    }
+    if (field.customVariantKey) {
+      const customValue = answers[field.customVariantKey];
+      if (typeof customValue === "string" && customValue.trim()) {
+        content[field.customVariantKey] = customValue;
+      }
+    }
+  }
+  return content;
+}
+
 export function ElicitationCard({
   elicitationId,
   message,
@@ -134,12 +257,7 @@ export function ElicitationCard({
       const t = selA.find((s) => !s.customKey) || selA[0];
       if (!t.customKey) { t.customKey = ck; t.customSchema = cs; }
     }
-    const result: Array<{
-      key: string; isSelect: boolean; isMulti: boolean; isCustom: boolean;
-      title?: string; description?: string;
-      options?: Array<{ value: string; label: string }>;
-      hasCustomVariant: boolean; customVariantKey?: string; customVariantDescription?: string;
-    }> = [];
+    const result: ElicitationField[] = [];
     for (const s of selA) {
       result.push({
         key: s.key, isSelect: true, isMulti: s.isMulti, isCustom: false,
@@ -171,13 +289,15 @@ export function ElicitationCard({
   const currentIsRequired =
     currentField && requiredKeys.has(currentField.key);
 
-  // ── 步骤切换时重置选择状态 ──
+  // 当前页只维护未确认草稿；切换步骤时从已确认答案恢复显示状态。
   useEffect(() => {
-    setSelectedValue(null);
-    setMultiValues([]);
-    setCustomText("");
-    setCustomActive(false);
-  }, [currentStep]);
+    if (!currentField) return;
+    const draft = elicitationFieldDraft(answers, currentField);
+    setSelectedValue(draft.selectedValue);
+    setMultiValues(draft.multiValues);
+    setCustomText(draft.customText);
+    setCustomActive(draft.customActive);
+  }, [answers, currentField, currentStep]);
 
   // elicitationId 变化时完全重置（key prop 已保证重新挂载，此处是兜底）
   useEffect(() => {
@@ -189,65 +309,37 @@ export function ElicitationCard({
     setCustomActive(false);
   }, [elicitationId]);
 
-  // 构建完整 content
-  const buildContent = useCallback(
-    (overrides?: Record<string, unknown>) => {
-      const merged = { ...answers, ...overrides };
-      const content: Record<string, unknown> = {};
-      for (const field of fields) {
-        const val = merged[field.key];
-        if (val !== undefined && val !== null) {
-          if (typeof val === "string" && val.trim() === "") {}
-          else if (Array.isArray(val) && val.length === 0) {}
-          else { content[field.key as string] = val; }
-        }
-        if (field.customVariantKey) {
-          const cv = merged[field.customVariantKey];
-          if (cv !== undefined && cv !== null && typeof cv === "string" && cv.trim() !== "") {
-            content[field.customVariantKey as string] = cv;
-          }
-        }
-      }
-      return content;
-    },
-    [fields, answers],
-  );
-
   // 步骤提交：保存答案 → 下一步或最终提交
   const handleStepSubmit = useCallback(
     (value: unknown, fieldKey?: string) => {
       if (!currentField) return;
-      const ek = fieldKey ?? (currentField.key as string);
-      // When the user types custom text for a select field, the value is
-      // submitted under the _custom variant key. Also set the main field key
-      // to the same value so the agent always receives a non-empty answer
-      // regardless of which key it reads.
-      const isCustomVariant = fieldKey != null && fieldKey !== currentField.key;
-      const overrides: Record<string, unknown> = isCustomVariant
-        ? { [ek]: value, [currentField.key as string]: value }
-        : { [ek]: value };
-      const nextAnswers = { ...answers, ...overrides };
+      const nextAnswers = replaceElicitationFieldAnswer(
+        answers,
+        currentField,
+        value,
+        fieldKey,
+      );
       if (isLastStep) {
-        const content = buildContent(overrides);
-        onRespond?.(content);
+        onRespond?.(buildElicitationContent(fields, nextAnswers));
       } else {
         setAnswers(nextAnswers);
         setCurrentStep((prev) => prev + 1);
       }
     },
-    [answers, currentField, isLastStep, buildContent, onRespond],
+    [answers, currentField, fields, isLastStep, onRespond],
   );
 
   // 跳过当前步骤
   const handleSkip = useCallback(() => {
     if (!currentField) return;
+    const nextAnswers = clearElicitationFieldAnswer(answers, currentField);
     if (isLastStep) {
-      const content = buildContent();
-      onRespond?.(content);
+      onRespond?.(buildElicitationContent(fields, nextAnswers));
     } else {
+      setAnswers(nextAnswers);
       setCurrentStep((prev) => prev + 1);
     }
-  }, [currentField, isLastStep, buildContent, onRespond]);
+  }, [answers, currentField, fields, isLastStep, onRespond]);
 
   // 回退到上一步
   const handleBack = useCallback(() => {
@@ -280,9 +372,9 @@ export function ElicitationCard({
           className={cn(
             "size-1.5 rounded-full transition-colors",
             i < currentStep
-              ? "bg-primary/40"
+              ? "bg-foreground/40"
               : i === currentStep
-                ? "bg-primary"
+                ? "bg-foreground"
                 : "bg-muted-foreground/20",
           )}
         />
@@ -309,7 +401,7 @@ export function ElicitationCard({
     ) : null;
 
   return (
-    <Card className="my-2 gap-0 border-primary/30 py-0">
+    <Card className="my-2 gap-0 border-border/70 py-0">
       <CardContent className="space-y-2.5 px-5 py-4">
         {/* 进度指示器 */}
         {ProgressDots}
@@ -334,17 +426,24 @@ export function ElicitationCard({
             {currentField.options!.map((o) => {
               const sel = !customActive && selectedValue === o.value;
               return (<button key={o.value} type="button"
+                  aria-pressed={sel}
                   onClick={() => { setSelectedValue(o.value); setCustomActive(false); setCustomText(""); }}
                   className={cn("w-full flex items-center justify-between text-left rounded-md border px-3 py-2 text-[13px] leading-5 transition-all",
-                    sel ? "border-primary bg-primary/5 shadow-sm" : "hover:border-primary/40 hover:bg-muted/50",
+                    sel ? ELICITATION_SELECTED_OPTION_CLASS : "hover:border-accent-foreground/35 hover:bg-accent/60",
+                    ELICITATION_OPTION_INTERACTION_CLASS,
                     "active:scale-[0.995]", "disabled:opacity-50 disabled:cursor-not-allowed")}
                 ><span className="font-medium">{o.label}</span>
-                  {sel ? <Check className="size-4 text-primary shrink-0" /> : <ChevronRight className="size-4 opacity-0 transition-opacity group-hover:opacity-50 text-muted-foreground" />}</button>);
+                  {sel ? (
+                    <span className={cn("flex size-5 shrink-0 items-center justify-center rounded-full border", ELICITATION_SELECTED_MARK_CLASS)}>
+                      <Check className="size-3.5" strokeWidth={3} />
+                    </span>
+                  ) : <ChevronRight className="size-4 opacity-0 transition-opacity group-hover:opacity-50 text-muted-foreground" />}</button>);
             })}
             {currentField.hasCustomVariant && !customActive && (
               <button type="button" onClick={() => { setCustomActive(true); setSelectedValue(null); }}
                 className={cn("w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-[13px] text-muted-foreground transition-colors",
-                  "hover:border-primary hover:text-foreground")}
+                  "hover:border-accent-foreground/40 hover:text-foreground",
+                  ELICITATION_OPTION_INTERACTION_CLASS)}
               ><Pencil className="size-4" /><span>{t("acp.elicitation.customPlaceholder", "其他答案...")}</span></button>
             )}
             {currentField.hasCustomVariant && customActive && (
@@ -372,6 +471,7 @@ export function ElicitationCard({
                 <button
                   key={option.value}
                   type="button"
+                  aria-pressed={selected}
                   onClick={() =>
                     setMultiValues((prev) =>
                       selected
@@ -382,8 +482,9 @@ export function ElicitationCard({
                   className={cn(
                     "w-full flex items-center gap-2.5 text-left rounded-md border px-3 py-2 text-[13px] leading-5 transition-all",
                     selected
-                      ? "border-primary bg-primary/5"
-                      : "hover:bg-muted/50",
+                      ? ELICITATION_SELECTED_OPTION_CLASS
+                      : "hover:border-accent-foreground/35 hover:bg-accent/60",
+                    ELICITATION_OPTION_INTERACTION_CLASS,
                     "active:scale-[0.995]",
                     "disabled:opacity-50",
                   )}
@@ -392,12 +493,12 @@ export function ElicitationCard({
                     className={cn(
                       "size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors",
                       selected
-                        ? "border-primary bg-primary"
+                        ? ELICITATION_SELECTED_MARK_CLASS
                         : "border-muted-foreground/30",
                     )}
                   >
                     {selected && (
-                      <Check className="size-3 text-primary-foreground" />
+                      <Check className="size-3" strokeWidth={3} />
                     )}
                   </span>
                   <span>{option.label}</span>
@@ -416,7 +517,8 @@ export function ElicitationCard({
                 onClick={() => setCustomActive(true)}
                 className={cn(
                   "w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-[13px] text-muted-foreground transition-colors",
-                  "hover:border-primary hover:text-foreground",
+                  "hover:border-accent-foreground/40 hover:text-foreground",
+                  ELICITATION_OPTION_INTERACTION_CLASS,
                   "disabled:opacity-50",
                 )}
               >

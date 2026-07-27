@@ -6,12 +6,12 @@ import {
   selectableSyncAgents,
   skillAvailableAgentTypes,
   skillDisplayAgents,
-  skillSourceAgent,
+  skillSourceAgents,
 } from '../src/lib/skill-agent-display';
 
 const configuredAgents: SupportedAgentTypeVm[] = [
-  { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', skillsDirName: '.claude', supported: true, configured: true, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
-  { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', skillsDirName: '.codex', supported: true, configured: true, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
+  { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', primaryAgentDir: '.claude', compatibleAgentDirs: [], supported: true, configured: true, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
+  { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', primaryAgentDir: '.codex', compatibleAgentDirs: ['.agents'], supported: true, configured: true, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
 ];
 
 function makeSkill(overrides: Partial<SkillMetaVm>): SkillMetaVm {
@@ -46,7 +46,7 @@ describe('skill agent display helpers', () => {
       syncedAgentTypes: ['claude-acp'],
     });
 
-    expect(skillSourceAgent(skill, configuredAgents)).toEqual(GOLD_BAND_AGENT_META);
+    expect(skillSourceAgents(skill, configuredAgents)).toEqual([GOLD_BAND_AGENT_META]);
     expect(skillDisplayAgents(skill, configuredAgents)).toEqual([
       GOLD_BAND_AGENT_META,
       configuredAgents[0],
@@ -75,5 +75,30 @@ describe('skill agent display helpers', () => {
 
     expect(selectableSyncAgents(nativeSkill, configuredAgents)).toEqual([configuredAgents[1]]);
     expect(selectableSyncAgents(makeSkill({}), configuredAgents)).toEqual(configuredAgents);
+  });
+
+  it('treats compatible directory readers as native source agents', () => {
+    const skill = makeSkill({
+      agentSource: '.agents',
+      directoryPath: 'C:/Users/test/.agents/skills/test-skill',
+    });
+
+    expect(skillSourceAgents(skill, configuredAgents)).toEqual([configuredAgents[1]]);
+    expect(selectableSyncAgents(skill, configuredAgents)).toEqual([configuredAgents[0]]);
+  });
+
+  it('keeps a native reader in sync actions only while its redundant link exists', () => {
+    const linkedSkill = makeSkill({
+      agentSource: '.agents',
+      directoryPath: 'C:/Users/test/.agents/skills/test-skill',
+      syncedAgentTypes: ['codex-acp'],
+    });
+    const unlinkedSkill = makeSkill({
+      agentSource: '.agents',
+      directoryPath: 'C:/Users/test/.agents/skills/test-skill',
+    });
+
+    expect(selectableSyncAgents(linkedSkill, configuredAgents)).toEqual(configuredAgents);
+    expect(selectableSyncAgents(unlinkedSkill, configuredAgents)).toEqual([configuredAgents[0]]);
   });
 });

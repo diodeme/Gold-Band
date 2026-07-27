@@ -1,4 +1,4 @@
-export type DesktopThemePreference = 'system' | 'light' | 'light-warm' | 'dark' | 'black';
+export type DesktopThemePreference = 'system' | 'light' | 'light-gray' | 'dark' | 'black';
 export type ConcreteDesktopTheme = Exclude<DesktopThemePreference, 'system'>;
 export type DesktopThemeMode = 'light' | 'dark';
 export type DesktopFontPreference = string;
@@ -97,17 +97,48 @@ export interface ManagedAgentVm {
   args: string[];
   env: AgentEnvEntryVm[];
   iconKey: string;
-  skillsDirName: string;
+  primaryAgentDir: string;
+  compatibleAgentDirs: string[];
+  externalSessionSyncEnabled: boolean;
   supported: boolean;
   diagnostic?: ManagedAgentDiagnosticVm | null;
   supportedModes?: AcpModeVm[] | null;
   supportedModels?: AcpModeVm[] | null;
+  configOptions?: AcpSelectConfigOptionVm[] | null;
 }
 
 export interface AcpModeVm {
   id: string;
   name: string;
   description?: string | null;
+}
+
+export interface AcpSelectConfigValueVm {
+  value: string;
+  name: string;
+  description?: string | null;
+}
+
+export interface AcpSelectConfigOptionVm {
+  id: string;
+  category?: string | null;
+  name?: string | null;
+  description?: string | null;
+  currentValue?: string | null;
+  options: AcpSelectConfigValueVm[];
+}
+
+export interface AcpCommandItemVm {
+  name: string;
+  description: string;
+  inputHint?: string | null;
+}
+
+export interface AcpCommandCatalogVm {
+  agentType: string;
+  workspaceKey: string;
+  commands: AcpCommandItemVm[];
+  updatedAt: string;
 }
 
 export interface AcpUsageVm {
@@ -137,7 +168,8 @@ export interface SupportedAgentTypeVm {
   agentType: string;
   label: string;
   iconKey: string;
-  skillsDirName: string;
+  primaryAgentDir: string;
+  compatibleAgentDirs: string[];
   supported: boolean;
   configured: boolean;
   defaultDisplayName: string;
@@ -151,6 +183,9 @@ export interface ManagedAgentInput {
   command: string;
   args: string[];
   env: Record<string, string>;
+  primaryAgentDir: string;
+  compatibleAgentDirs: string[];
+  externalSessionSyncEnabled: boolean;
 }
 
 export interface SummaryCardVm {
@@ -599,6 +634,7 @@ export interface AcpSessionVm {
   provider: string;
   adapterId?: string | null;
   adapterDisplayName?: string | null;
+  adapterIconKey?: string | null;
   cwd?: string | null;
   providerCwd?: string | null;
   status: string;
@@ -646,6 +682,9 @@ export interface AcpEventPageVm {
 }
 
 export interface AcpSessionConfigVm {
+  modelOverrideId?: string | null;
+  permissionModeOverrideId?: string | null;
+  configOptionOverrides?: Record<string, string>;
   currentModelId?: string | null;
   currentModelName?: string | null;
   currentModeId?: string | null;
@@ -1076,6 +1115,7 @@ export interface ConversationDirectConfigVm {
   agentType: string;
   modelId?: string | null;
   permissionMode?: string | null;
+  configOptions?: Record<string, string>;
 }
 
 export interface ConversationAgentIdentityVm {
@@ -1092,6 +1132,7 @@ export interface ConversationAutoConfigVm {
   acceptanceModelId?: string | null;
   modelId?: string | null;
   permissionMode?: string | null;
+  configOptions?: Record<string, string>;
   availableAgents?: DynamicAgentRefDsl[];
   routingPrompt?: string | null;
   allowedWorkflows?: AllowedWorkflowRefDsl[];
@@ -1132,6 +1173,7 @@ export interface ConversationSearchResultVm {
   title: string;
   description?: string | null;
   requirementPreview: string;
+  matchPreview: string;
   latestRun?: ConversationRunSummaryVm | null;
   runMode: 'direct' | 'auto' | 'workflow';
   agentIdentity?: ConversationAgentIdentityVm | null;

@@ -3,10 +3,10 @@ import { useTranslation } from 'react-i18next';
 import { Search } from 'lucide-react';
 import type { ConversationSearchResultVm } from '../../types';
 import { searchConversationTasks } from '../../api';
-import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
+import { conversationSearchHighlightSegments } from '@/lib/conversation-search';
 
 interface ConversationSearchDialogProps {
   open: boolean;
@@ -14,35 +14,63 @@ interface ConversationSearchDialogProps {
   onSelectResult: (result: ConversationSearchResultVm) => void;
 }
 
+function SearchMatchPreview({ text, query }: { text: string; query: string }) {
+  return conversationSearchHighlightSegments(text, query).map((segment, index) =>
+    segment.highlighted ? (
+      <mark
+        key={`${index}-${segment.text}`}
+        className="bg-transparent font-semibold text-foreground underline decoration-foreground/45 decoration-2 underline-offset-2"
+      >
+        {segment.text}
+      </mark>
+    ) : (
+      <span key={`${index}-${segment.text}`}>{segment.text}</span>
+    ),
+  );
+}
+
 export function ConversationSearchDialog({ open, onOpenChange, onSelectResult }: ConversationSearchDialogProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<ConversationSearchResultVm[]>([]);
   const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     if (!open) {
       setQuery('');
       setResults([]);
+      setLoading(false);
+      setFailed(false);
       return;
     }
     const trimmed = query.trim();
     if (trimmed.length < 2) {
       setResults([]);
+      setLoading(false);
+      setFailed(false);
       return;
     }
+    let active = true;
     const timer = setTimeout(async () => {
       setLoading(true);
+      setFailed(false);
       try {
         const data = await searchConversationTasks(trimmed, 20);
-        setResults(data);
+        if (active) setResults(data);
       } catch {
-        setResults([]);
+        if (active) {
+          setResults([]);
+          setFailed(true);
+        }
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     }, 300);
-    return () => clearTimeout(timer);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, [query, open]);
 
   const statusColor = (outcome?: string | null) => {
@@ -73,6 +101,8 @@ export function ConversationSearchDialog({ open, onOpenChange, onSelectResult }:
         <div className="max-h-80 overflow-y-auto border-t">
           {loading ? (
             <div className="px-4 py-6 text-center text-sm text-muted-foreground">{t('common.loading')}</div>
+          ) : failed ? (
+            <div className="px-4 py-6 text-center text-sm text-destructive">{t('conversation.search.failed')}</div>
           ) : results.length === 0 ? (
             <div className="px-4 py-6 text-center text-sm text-muted-foreground">
               {query.trim().length >= 2 ? t('conversation.search.noResults') : t('conversation.search.placeholder')}
@@ -104,7 +134,9 @@ export function ConversationSearchDialog({ open, onOpenChange, onSelectResult }:
                   )}
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium">{result.title}</div>
-                    <div className="truncate text-xs text-muted-foreground">{result.requirementPreview}</div>
+                    <div className="truncate text-xs text-muted-foreground" title={result.matchPreview}>
+                      <SearchMatchPreview text={result.matchPreview} query={query} />
+                    </div>
                   </div>
                   {result.workspaceName ? (
                     <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">

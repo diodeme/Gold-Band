@@ -247,6 +247,9 @@ export const desktopApi: RuntimeApi = {
   getConversationSidebar() {
     return invokeCommand<ConversationSidebarVm>('get_conversation_sidebar');
   },
+  setAcpSessionConfigOption(projectId, taskId, runId, roundId, nodeId, attemptId, optionId, optionValue, outerNodeId, outerAttemptId) {
+    return invokeCommand<AcpSessionVm | null>('set_acp_session_config_option', { projectId, taskId, runId, roundId, nodeId, attemptId, optionId, optionValue, outerNodeId, outerAttemptId });
+  },
   getConversationWorkspaces() {
     return invokeCommand<ConversationWorkspaceVm[]>('get_conversation_workspaces');
   },

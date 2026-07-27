@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
@@ -266,6 +266,8 @@ pub struct ConversationDirectConfigVm {
     pub agent_type: String,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_options: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,6 +288,8 @@ pub struct ConversationAutoConfigVm {
     pub acceptance_model_id: Option<String>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_options: BTreeMap<String, String>,
     pub available_agents: Option<Vec<ConversationDynamicAgentRefVm>>,
     pub routing_prompt: Option<String>,
     pub allowed_workflows: Option<Vec<ConversationAllowedWorkflowRefVm>>,
@@ -2483,6 +2487,9 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
             id: "ai-dynamic".to_string(),
             agent_strategy,
             permission_mode: permission_mode.map(|s| s.to_string()),
+            config_options: config
+                .map(|config| config.config_options.clone())
+                .unwrap_or_default(),
             allowed_profiles: config
                 .and_then(|c| c.allowed_profiles.clone())
                 .unwrap_or_default(),
@@ -2530,6 +2537,7 @@ fn build_direct_workflow(config: &ConversationDirectConfigVm) -> WorkflowDsl {
             output: None,
             success_condition: None,
             permission_mode: config.permission_mode.clone(),
+            config_options: config.config_options.clone(),
             manual_check: Some(false),
             prompt_envelope: PromptEnvelopeMode::RawAgent,
         })],
@@ -3680,6 +3688,7 @@ mod tests {
             acceptance_model_id: Some("accept-model".to_string()),
             model_id: None,
             permission_mode: None,
+            config_options: Default::default(),
             available_agents: Some(vec![ConversationDynamicAgentRefVm {
                 provider: "claude-acp".to_string(),
                 model: Some("worker-model".to_string()),
@@ -3717,6 +3726,7 @@ mod tests {
             agent_type: "codex-acp".to_string(),
             model_id: Some("gpt-direct".to_string()),
             permission_mode: Some("ask".to_string()),
+            config_options: Default::default(),
         });
 
         assert_eq!(workflow.entry, "direct-agent");
@@ -3741,6 +3751,7 @@ mod tests {
             agent_type: "claude-acp".to_string(),
             model_id: None,
             permission_mode: None,
+            config_options: Default::default(),
         });
 
         let created = app.create_task_from_requirement(CreateTaskInput {

@@ -46,9 +46,12 @@ export function normalizeConversationAutoConfigForSubmit(
   config: ConversationAutoConfigVm | null | undefined,
 ): ConversationAutoConfigVm | undefined {
   if (!config) return undefined;
+  const configOptions = normalizeConfigOptions(config.configOptions);
+  const { configOptions: _configOptions, ...rest } = config;
   return {
-    ...config,
+    ...rest,
     globalGoal: normalizeOptionalRunModeText(config.globalGoal),
+    ...(configOptions ? { configOptions } : {}),
   };
 }
 
@@ -56,11 +59,23 @@ export function normalizeConversationDirectConfigForSubmit(
   config: ConversationDirectConfigVm | null | undefined,
 ): ConversationDirectConfigVm | undefined {
   if (!config?.agentType.trim()) return undefined;
+  const configOptions = normalizeConfigOptions(config.configOptions);
   return {
     agentType: config.agentType.trim(),
     modelId: normalizeOptionalRunModeText(config.modelId),
     permissionMode: normalizeOptionalRunModeText(config.permissionMode),
+    ...(configOptions ? { configOptions } : {}),
   };
+}
+
+function normalizeConfigOptions(options: Record<string, string> | null | undefined) {
+  if (!options) return undefined;
+  const normalized = Object.fromEntries(
+    Object.entries(options)
+      .map(([key, value]) => [key.trim(), value.trim()] as const)
+      .filter(([key, value]) => key.length > 0 && value.length > 0),
+  );
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 export function directConfigForAgent(

@@ -152,6 +152,10 @@ export function validateAutoConfig(
     }
   } else {
     requireReadyAgent(config?.agentType, t('runMode.agent'));
+    const agent = config?.agentType ? agentById.get(config.agentType) : undefined;
+    if (agent && !supportsConfigOptionOverrides(agent, config?.configOptions)) {
+      issues.push(t('conversation.validation.config.not-found'));
+    }
   }
 
   const selectedWorkflowIds = config?.allowedWorkflows?.map((item) => item.workflowId.trim()).filter(Boolean) ?? [];
@@ -211,5 +215,18 @@ export function validateDirectConfig(
   if (config?.permissionMode && !(agent.supportedModes ?? []).some((mode) => mode.id === config.permissionMode)) {
     issues.push(t('conversation.validation.permission.not-found'));
   }
+  if (!supportsConfigOptionOverrides(agent, config?.configOptions)) {
+    issues.push(t('conversation.validation.config.not-found'));
+  }
   return issues;
+}
+
+function supportsConfigOptionOverrides(
+  agent: ManagedAgentVm,
+  overrides: Record<string, string> | null | undefined,
+) {
+  return Object.entries(overrides ?? {}).every(([optionId, value]) => {
+    const option = agent.configOptions?.find((candidate) => candidate.id === optionId);
+    return option?.options.some((candidate) => candidate.value === value) ?? false;
+  });
 }

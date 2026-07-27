@@ -155,6 +155,7 @@ import {
   respondElicitation,
   submitConversationPrompt,
   setAcpSessionModel,
+  setAcpSessionConfigOption,
   setAcpSessionPermissionMode,
   showArtifact,
   showAttachment,
@@ -163,6 +164,12 @@ import {
   stopActiveSession,
   submitManualCheck,
 } from "@/api";
+import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
+import {
+  ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS,
+  ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS,
+  acpComposerConfigTriggerVariants,
+} from '@/components/acp/AcpComposerConfigTrigger';
 import { subscribeAcpSessionUpdates } from "@/api";
 import { getRuntimeApi } from "@/api/client";
 import { isTauriRuntime } from "@/api/shared";
@@ -1309,18 +1316,17 @@ export const ACPChatDialog = forwardRef<
     setCurrentSession(updated);
   }, []);
 
-  const handleAcpSessionModelChange = useCallback((modelId: string) => {
+  const handleAcpSessionModelChange = useCallback((modelId: string | null) => {
     const config = latestSessionRef.current?.config;
-    const selected = findAcpConfigOption(
+    const selected = modelId ? findAcpConfigOption(
       config?.models,
       config?.configOptions,
       "model",
       modelId,
-    );
+    ) : null;
     patchSessionConfig({
       modelOverrideId: modelId,
-      currentModelId: modelId,
-      currentModelName: selected.name,
+      ...(modelId ? { currentModelId: modelId, currentModelName: selected?.name ?? modelId } : {}),
     });
     setAcpSessionModel(
       projectId,
@@ -1355,18 +1361,17 @@ export const ACPChatDialog = forwardRef<
     taskId,
   ]);
 
-  const handleAcpSessionPermissionModeChange = useCallback((permissionModeId: string) => {
+  const handleAcpSessionPermissionModeChange = useCallback((permissionModeId: string | null) => {
     const config = latestSessionRef.current?.config;
-    const selected = findAcpConfigOption(
+    const selected = permissionModeId ? findAcpConfigOption(
       config?.modes,
       config?.configOptions,
       "mode",
       permissionModeId,
-    );
+    ) : null;
     patchSessionConfig({
       permissionModeOverrideId: permissionModeId,
-      currentModeId: permissionModeId,
-      currentModeName: selected.name,
+      ...(permissionModeId ? { currentModeId: permissionModeId, currentModeName: selected?.name ?? permissionModeId } : {}),
     });
     setAcpSessionPermissionMode(
       projectId,
@@ -1400,6 +1405,36 @@ export const ACPChatDialog = forwardRef<
     runId,
     taskId,
   ]);
+
+  const handleAcpSessionConfigOptionChange = useCallback((optionId: string, optionValue: string | null) => {
+    const current = latestSessionRef.current?.config?.configOptionOverrides ?? {};
+    const next = { ...current };
+    if (optionValue) next[optionId] = optionValue;
+    else delete next[optionId];
+    patchSessionConfig({ configOptionOverrides: next });
+    setAcpSessionConfigOption(
+      projectId,
+      taskId,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      optionId,
+      optionValue,
+      outerNodeId,
+      outerAttemptId,
+    )
+      .then((updated) => {
+        if (updated) {
+          configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+          applySessionUpdate(updated);
+        }
+      })
+      .catch((error) => {
+        configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+        console.error("Failed to set ACP session config option:", error);
+      });
+  }, [applySessionUpdate, attemptId, nodeId, outerAttemptId, outerNodeId, patchSessionConfig, projectId, roundId, runId, taskId]);
 
   const applyEventUpdates = useCallback((updates: AcpUiEventVm[]) => {
     const normalizedEvents = updates
@@ -2758,6 +2793,7 @@ export const ACPChatDialog = forwardRef<
                           scopeKey={sessionIdentity}
                           viewModel={sessionConfigViewModel}
                           onModelChange={handleAcpSessionModelChange}
+                          onConfigOptionChange={handleAcpSessionConfigOptionChange}
                           onPermissionModeChange={handleAcpSessionPermissionModeChange}
                         />
                       </PromptInput>
@@ -3046,8 +3082,9 @@ function AcpErrorBanner({ reason }: { reason: string }) {
 type AcpSessionConfigBarProps = {
   scopeKey: string;
   viewModel: AcpSessionConfigViewModel;
-  onModelChange?: (modelId: string) => void;
-  onPermissionModeChange?: (permissionModeId: string) => void;
+  onModelChange?: (modelId: string | null) => void;
+  onPermissionModeChange?: (permissionModeId: string | null) => void;
+  onConfigOptionChange?: (optionId: string, optionValue: string | null) => void;
 };
 
 const UNSPECIFIED_CONFIG_VALUE = "__gold_band_unspecified__";
@@ -3055,13 +3092,12 @@ const UNSPECIFIED_CONFIG_VALUE = "__gold_band_unspecified__";
 const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
   viewModel,
   onModelChange,
+  onConfigOptionChange,
   onPermissionModeChange,
 }: AcpSessionConfigBarProps) {
   const { t } = useTranslation();
   const {
     modelOverrideId,
-    modelOverrideName,
-    canSelectUnspecifiedModel,
     permissionModeOverrideId,
     permissionModeOverrideName,
     canSelectUnspecifiedPermissionMode,
@@ -3069,90 +3105,62 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
     currentModeId,
     availableModels,
     availablePermissionModes,
+    thoughtLevel,
   } = viewModel;
-
-  const handleModelSelect = useCallback(
-    (modelId: string) => {
-      if (modelId === UNSPECIFIED_CONFIG_VALUE) return;
-      onModelChange?.(modelId);
-    },
-    [onModelChange],
-  );
 
   const handlePermissionModeSelect = useCallback(
     (permissionModeId: string) => {
-      if (permissionModeId === UNSPECIFIED_CONFIG_VALUE) return;
-      onPermissionModeChange?.(permissionModeId);
+      onPermissionModeChange?.(
+        permissionModeId === UNSPECIFIED_CONFIG_VALUE ? null : permissionModeId,
+      );
     },
     [onPermissionModeChange],
   );
 
-  const modelLabel = modelOverrideName ?? t('conversation.home.unspecifiedModel');
   const permissionModeLabel = permissionModeOverrideName
     ?? t('conversation.home.unspecifiedPermissionMode');
   const showModels = availableModels.length > 0 || Boolean(currentModelId);
   const showPermissionModes = availablePermissionModes.length > 0 || Boolean(currentModeId);
-  const modelCanBeSelected = availableModels.length > 1
-    || (canSelectUnspecifiedModel && availableModels.length > 0);
   const permissionModeCanBeSelected = availablePermissionModes.length > 1
     || (canSelectUnspecifiedPermissionMode && availablePermissionModes.length > 0);
 
-  if (!showModels && !showPermissionModes) return null;
+  if (!showModels && !showPermissionModes && !thoughtLevel) return null;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-t border-border/50 px-2 py-1.5 text-xs text-muted-foreground">
-      {modelCanBeSelected ? (
-        <Select
-          value={modelOverrideId ?? UNSPECIFIED_CONFIG_VALUE}
-          onValueChange={handleModelSelect}
-        >
-          <SelectTrigger className="h-7 min-w-0 max-w-[min(22rem,100%)] gap-1.5 rounded-full border-border/60 bg-background/50 px-2.5 text-xs font-normal text-foreground shadow-none hover:bg-background/70 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10">
-            <span className="shrink-0 text-muted-foreground">
-              {t('acp.currentModel')}
-            </span>
-            <span className="min-w-0 flex-1 truncate text-left">{modelLabel}</span>
-          </SelectTrigger>
-          <SelectContent
-            side="top"
-            sideOffset={8}
-            position="popper"
-            align="start"
-            className="w-[min(22rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]"
-          >
-            {canSelectUnspecifiedModel ? (
-              <SelectItem value={UNSPECIFIED_CONFIG_VALUE}>
-                {t('conversation.home.unspecifiedModel')}
-              </SelectItem>
-            ) : null}
-            {availableModels.map((m) => (
-              <SelectItem value={m.id} key={m.id} className="items-start py-2">
-                <span className="block min-w-0">
-                  <span className="block truncate font-medium">{m.name}</span>
-                  {m.description ? (
-                    <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">{m.description}</span>
-                  ) : null}
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      ) : showModels ? (
-        <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
-          <span className="shrink-0 text-muted-foreground">{t('acp.currentModel')}</span>
-          <span className="min-w-0 truncate text-foreground">{modelLabel}</span>
-        </Badge>
-      ) : null}
+      <AcpModelThoughtSelects
+        compact
+        contentSide="top"
+        align="start"
+        models={availableModels}
+        modelValue={modelOverrideId}
+        thoughtLevel={thoughtLevel ? {
+          id: thoughtLevel.id,
+          category: thoughtLevel.category,
+          name: thoughtLevel.name,
+          description: thoughtLevel.description,
+          currentValue: thoughtLevel.currentValue,
+          options: thoughtLevel.options.map((option) => ({
+            value: option.id,
+            name: option.name,
+            description: option.description,
+          })),
+        } : null}
+        thoughtValue={thoughtLevel?.overrideValue}
+        onModelChange={(value) => onModelChange?.(value)}
+        onThoughtChange={(optionId, value) => onConfigOptionChange?.(optionId, value)}
+      />
       {showPermissionModes ? (
         permissionModeCanBeSelected ? (
           <Select
             value={permissionModeOverrideId ?? UNSPECIFIED_CONFIG_VALUE}
             onValueChange={handlePermissionModeSelect}
           >
-            <SelectTrigger className="h-7 min-w-0 max-w-[min(18rem,100%)] gap-1.5 rounded-full border-border/60 bg-background/50 px-2.5 text-xs font-normal text-foreground shadow-none hover:bg-background/70 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10">
-              <span className="shrink-0 text-muted-foreground">
+            <SelectTrigger className={acpComposerConfigTriggerVariants({ compact: true })}>
+              <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>
                 {t('acp.permissionMode')}
               </span>
-              <span className="min-w-0 flex-1 truncate text-left">{permissionModeLabel}</span>
+              <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>{permissionModeLabel}</span>
             </SelectTrigger>
             <SelectContent
               side="top"
@@ -3197,6 +3205,7 @@ function areAcpSessionConfigBarPropsEqual(
     previous.scopeKey === next.scopeKey &&
     previous.viewModel.signature === next.viewModel.signature &&
     previous.onModelChange === next.onModelChange &&
+    previous.onConfigOptionChange === next.onConfigOptionChange &&
     previous.onPermissionModeChange === next.onPermissionModeChange
   );
 }

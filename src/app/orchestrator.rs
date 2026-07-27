@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
@@ -7854,6 +7854,10 @@ fn build_dynamic_worker_invocation(
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "runtime_context");
     let runtime_context = dynamic_runtime_context(ctx, &node.id, attempt_id);
+    let mut config_options = ctx.dynamic.config_options.clone();
+    config_options.extend(dynamic_acp_config_option_overrides(
+        &runtime_context.attempt_dir,
+    ));
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -8103,6 +8107,7 @@ fn build_dynamic_worker_invocation(
         user_prompt_render_mode,
         permission_mode,
         model,
+        config_options,
         continue_ref,
         resume_prompt,
         resume_prompt_id,
@@ -8130,6 +8135,23 @@ fn build_dynamic_worker_invocation(
         }),
     );
     Ok(invocation)
+}
+
+fn dynamic_acp_config_option_overrides(attempt_dir: &Utf8Path) -> BTreeMap<String, String> {
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+    let path = if snapshot_path.exists() {
+        snapshot_path
+    } else if session_path.exists() {
+        session_path
+    } else {
+        return BTreeMap::new();
+    };
+    crate::storage::read_json::<serde_json::Value>(&path)
+        .ok()
+        .and_then(|value| value.get("configOptionOverrides").cloned())
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
 }
 
 fn dynamic_builtin_profile(
@@ -10576,6 +10598,7 @@ mod tests {
                 model: None,
             },
             permission_mode: None,
+            config_options: Default::default(),
             allowed_profiles: Vec::new(),
             global_goal: None,
             control: DynamicControlDsl::default(),

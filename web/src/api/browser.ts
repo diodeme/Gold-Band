@@ -66,6 +66,18 @@ function browserCompletedConversationRun(): ConversationRunVm {
             { value: 'bypassPermissions', name: 'Bypass Permissions' },
           ],
         },
+        {
+          id: 'effort',
+          category: 'thought_level',
+          type: 'select',
+          currentValue: 'default',
+          options: [
+            { value: 'default', name: 'Default' },
+            { value: 'low', name: 'Low' },
+            { value: 'high', name: 'High' },
+            { value: 'max', name: 'Max' },
+          ],
+        },
       ],
     },
   };
@@ -366,6 +378,9 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve(null);
   },
   setAcpSessionPermissionMode(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _permissionModeId, _outerNodeId, _outerAttemptId) {
+    return Promise.resolve(null);
+  },
+  setAcpSessionConfigOption(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _optionId, _optionValue, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(null);
   },
   respondAcpPermission(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _requestId, _optionId, fallback, _outerNodeId, _outerAttemptId) {

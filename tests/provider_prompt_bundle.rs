@@ -87,6 +87,7 @@ fn invocation() -> WorkerInvocation {
         user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
         permission_mode: None,
         model: None,
+        config_options: Default::default(),
         continue_ref: None,
         resume_prompt: None,
         resume_prompt_id: None,

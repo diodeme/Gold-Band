@@ -71,6 +71,7 @@ mod tests {
                 output: None,
                 success_condition: None,
                 permission_mode: None,
+                config_options: Default::default(),
                 manual_check: None,
                 prompt_envelope,
             })],

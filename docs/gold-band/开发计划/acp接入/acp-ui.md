@@ -105,7 +105,7 @@ Gold Band 需要吸收的是 Jockey 的 ACP 事件归一化和 Chat/Session UI �
 5. **Agent / Sub-agent Group**：`Agent` 工具调用触发的子 Agent transcript 分组，默认完成后收起、运行中展开。
 6. **Plan**：agent 计划与状态，作为独立 plan block。
 7. **Permission**：权限请求与用户响应，用于 ACP `session/request_permission`。
-8. **Composer**：用户输入区，用于继续会话、回答 agent 自由文本问题、提交下一次 `session/prompt`；输入区下方展示 ACP 配置。新建对话与详情页复用同一模型选择器：只有模型时渲染普通模型下拉；同时存在 `category=thought_level` 时，模型栏变为单个复合下拉，第一层提供模型和思考强度两个子入口，点击展开且互斥，两个子选项面板在同一使用位置固定向同一侧展开，权限模式继续独立展示。模型和思考均为空时复合触发器显示“不指定”，只选择思考强度时显示 `不指定 · 思考强度`，第一层未选子栏保持空值；UI 保留 Agent 返回的实际 config option ID，不对 `reasoning_effort/effort` 做分支。
+8. **Composer**：用户输入区，用于继续会话、回答 agent 自由文本问题、提交下一次 `session/prompt`；输入区下方展示 ACP 配置。新建对话与详情页复用同一模型选择器：只有模型时渲染普通模型下拉；同时存在 `category=thought_level` 时，模型栏变为单个复合下拉，第一层提供模型和思考强度两个子入口，点击展开且互斥；主下拉默认与触发器左边缘对齐，并使用非模态菜单，使用户点击相邻权限栏时一次完成关闭模型与打开权限；两个子选项面板在同一使用位置固定向同一侧展开。权限模式继续独立展示。模型和思考均为空时复合触发器显示“不指定”，只选择思考强度时显示 `不指定 · 思考强度`，第一层未选子栏保持空值；UI 保留 Agent 返回的实际 config option ID，不对 `reasoning_effort/effort` 做分支。
    - 发起会话与追问会话的模型、权限触发器统一显示弱化配置名和当前主值，并复用同一套 composer 配置触发器样式：最终高度 36px，统一宽度、间距、无阴影表面、边框、深色背景、箭头和焦点态；模型复合值仍按 `模型 · 思考强度` 组合，不把思考强度拆成独立触发器。回归必须同时覆盖 shadcn `SelectTrigger` 与 Radix `DropdownMenuTrigger` 的最终 class，避免 primitive 默认的 `shadow-xs`、`w-fit`、dark background 或图标尺寸重新造成视觉差异。
 9. **Terminal / File Details**：命令、cwd、输出、退出码、文件读写路径，作为 tool call 的详情，不作为主输出形态。
 10. **Errors**：ACP error、adapter crash、auth required、timeout。

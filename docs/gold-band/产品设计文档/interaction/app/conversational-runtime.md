@@ -321,7 +321,7 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 ## Composer 配置栏
 
 - 新建对话 composer 与会话详情 composer 共享同一套 ACP 配置选择器。Agent 只提供模型时展示普通模型下拉；同时提供 `configOptions[category=thought_level]` 时，模型栏切换为单槽位复合下拉，权限仍是相邻的独立下拉，不按 Codex `reasoning_effort`、Claude `effort` 等具体 ID 写死。
-- 复合下拉的第一层只展示“模型”和“思考强度”两个入口及其已选值，点击后进入各自选项。两个子栏使用受控 click-to-open 交互，同一时刻只允许一个展开，打开其中一个必须自动关闭另一个；同一使用位置的两个子选项面板固定向同一侧展开，避免因选项宽度不同左右跳变。会话详情内列表默认向上弹出，新建对话按可用空间弹出，超出高度时内部滚动。
+- 复合下拉的第一层只展示“模型”和“思考强度”两个入口及其已选值，点击后进入各自选项。主下拉面板默认以触发器左边缘为锚点对齐，面板更宽时向右展开，避免向左悬出并打断相邻控件的阅读顺序。composer 配置菜单使用非模态 DropdownMenu，打开模型菜单后直接点击相邻权限触发器时，必须在同一次点击中关闭模型并打开权限，不得要求第二次点击。两个子栏使用受控 click-to-open 交互，同一时刻只允许一个展开，打开其中一个必须自动关闭另一个；同一使用位置的两个子选项面板固定向同一侧展开，避免因选项宽度不同左右跳变。会话详情内列表默认向上弹出，新建对话按可用空间弹出，超出高度时内部滚动。
 - Gold Band 的模型与思考强度初始均为空，复合触发器统一显示“不指定”，表示不覆盖 Agent 自己的 `currentValue`；只选择模型时显示模型名，只选择思考强度时显示 `不指定 · 思考强度`，两者都选择后显示 `模型 · 思考强度`。用户选择后才分别写入模型显式覆盖和 `configOptionOverrides[实际 optionId]`，并可在对应子栏再次选择“不指定”清除该项覆盖。
 - 模型、思考强度和权限都是当前 ACP session 的可切换配置；选中列表项后立即更新会话快照，并在下一次 prompt 前通过 ACP `session/set_config_option` 或 provider 能力等价路径同步到底层会话。
 - 后续同一 ACP session 的每次追问和 runtime continue 只复用 Gold Band 的显式覆盖：`modelOverride`、`permissionModeOverride` 与 `configOptionOverrides`。不得从 Agent 返回的 `currentModelId/currentModeId/currentValue` 反推用户覆盖；未指定时继续交由 Agent 决定默认值。

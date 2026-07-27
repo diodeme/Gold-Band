@@ -25,8 +25,7 @@ ACP 适配器 → usage_update 事件 → Rust 后端解析 → AcpUsageVm → �
 ```typescript
 // AcpUsageVm（前后端共用）
 interface AcpUsageVm {
-  used?: number | null;          // 当前上下文窗口占用（compaction 后重置）
-  accumulatedUsed?: number | null; // 跨 compaction 累计（后端维护）
+  used?: number | null;          // Agent ACP 最新确认的当前上下文窗口占用
   size?: number | null;          // 上下文窗口总容量
   costAmountUsd?: number | null;
   inputTokens?: number | null;   // 仅 PromptRun 结束后有值
@@ -57,7 +56,7 @@ interface AcpUsageVm {
 | `AcpMessageTokenBadge.tsx` | 整个文件可删除（若无其他引用） |
 | `i18n.ts` | 移除 `acp.messageTokens` key |
 
-**不影响**：后端 `last_used` 和 `accumulated_used_tokens`（client.rs 内部字段）已随 `inject_token_delta` 一起移除。
+**后端同步**：`last_used`、消息级差值计算和 `accumulated_used_tokens` 均删除。上下文窗口不是累计消耗来源，runtime 只保存最后一次确认的正数 `used`；瞬时 0 只保留在 raw ACP 审计中。
 
 ---
 
@@ -85,8 +84,7 @@ Token 用量   输入 8.5K  输出 2.3K  缓存 1.2K  总计 12K
 
 一个 Gold Band **会话窗口**（`AcpConversationVm`）可能包含多个 **ACP 会话**（attempt）。每个 attempt 是一次独立的 `AcpRuntime` 生命周期，拥有独立的：
 
-- `used_tokens`（上下文窗口占用，compaction 后可能重置）
-- `accumulated_used_tokens`（跨 compaction 累计）
+- `used_tokens`（Agent ACP 最新确认的当前上下文窗口占用；compaction 后切换为新的确认值）
 - `input_tokens` / `output_tokens` 等（PromptRun 结束后填充）
 
 当前前端通过 `selectedConversation.activeAttemptId` 选中最新的 attempt，仅展示该 attempt 的 `usage`。当 ACP 会话切换（retry / new attempt）时，前一个 attempt 的 token 数据被丢弃。
@@ -134,7 +132,7 @@ function accumulateUsage(conversation: AcpConversationVm): AcpUsageVm {
 
 **关键规则**：
 - **累加项**：`inputTokens`、`outputTokens`、`cachedReadTokens`、`cachedWriteTokens`、`totalTokens`、`costAmountUsd` — 这些是消耗量，跨 attempt 需求和
-- **不累加项**：`used`、`size` — 这些是上下文窗口状态量，取最新 attempt 的实时值
+- **不累加项**：`used`、`size` — 这些是上下文窗口状态量，取最新 attempt 中最后一次确认的正数；瞬时 0 不覆盖历史确认值
 - **turn_count**：同样跨 attempt 累加
 
 **组件接口变更**：
@@ -280,6 +278,11 @@ usage_update → scan_acp_events → AcpUsageVm
                                   ├─ used/size → 第一行 "上下文窗口"
                                   └─ inputTokens/outputTokens/... → 第二行 "Token 用量"
 
+raw usage_update → runtime usage state → canonical usageUpdate
+  ├─ used > 0：确认当前上下文 gauge
+  ├─ used = 0：仅作为瞬时采样或 compact reset，不进入 UI
+  └─ input/output/cache/total：仅使用 Provider 返回值，不从 used 差值推导
+
 RoundDetailPage → resolveNodeTokenUsage(多会话多attempt累加) → InfoGrid
   ├─ 消耗量(inputTokens等)跨所有attempts累加
   └─ used/size取最新attempt实时值
@@ -318,6 +321,8 @@ RoundDetailPage → resolveNodeTokenUsage(多会话多attempt累加) → InfoGri
 - [x] 两行始终可见，无折叠交互
 - [x] 不展示 turn、accumulatedUsed、费用、进度条
 - [x] `accumulatedUsed` 已从 AcpUsageVm 数据模型中移除
+- [x] `accumulated_used_tokens` 已从 ACP runtime 和 PromptRun 数据模型中删除
+- [x] `used=0` 不覆盖最后一次确认的上下文占用
 - [x] 无 usage 数据时面板不渲染
 
 ### 智能单位格式化
@@ -345,7 +350,7 @@ RoundDetailPage → resolveNodeTokenUsage(多会话多attempt累加) → InfoGri
 
 ## 七、约束与边界
 
-- **仅前端展示层改动为主**：后端改动仅限移除 `inject_token_delta` 和 `accumulated_used`
+- **展示层与状态层共同约束**：前端保持 `AcpUsageVm` 展示接口；后端负责把 provider 原始 usage 归一化为确认后的上下文 gauge，并删除 `inject_token_delta`、`accumulated_used` 与 `accumulated_used_tokens`
 - **不改变 ACP 适配器行为**：不新增事件类型
 - **仅 Claude ACP 适配器**：不扩展至其他 provider
 - **不展示 turn、费用、进度条**：经 Deep Interview 确认移除

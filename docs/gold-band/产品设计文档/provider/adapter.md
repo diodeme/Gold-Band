@@ -33,6 +33,12 @@ provider adapter 是 provider-specific 差异的隔离层。
 - `providerId`
 - `displayName`
 - `capabilities`
+
+`capabilities` 当前包含以下静态 provider 能力（运行期声明，非 doctor 探测结果）：
+- `supports_open_session` / `supports_continue_session`：是否支持新建 / 续接 ACP session；
+- `supports_system_prompt`：是否接受 `session/new` 的 system prompt（claude-acp 支持，codex-acp 不支持）；
+- `supports_raw_stream`：是否支持 raw frame / transcript；
+- `supported_mcp_transports`：provider 支持的 MCP transport 集合，`session/new` 收集 MCP server 时按此过滤掉不支持的 transport。codex-acp 委托 Codex SDK 执行 MCP，不支持 SSE，因此声明为 `[Stdio, Http]`；其余 provider 默认全支持 `[Stdio, Http, Sse]`。
 - `isDefault`
 
 ### `doctor()`

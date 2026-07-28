@@ -28,6 +28,7 @@ use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings};
 use crate::state::AgentDiagnosticState;
 use crate::updater::{UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, updater_settings};
+use crate::window_chrome::{DesktopWindowChromeVm, desktop_window_chrome_vm};
 use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -70,6 +71,7 @@ pub struct AppBootstrapVm {
     pub persisted_available_update: Option<UpdateInfoVm>,
     pub client_version: String,
     pub platform: String,
+    pub window_chrome: DesktopWindowChromeVm,
     pub app_info: AppInfoVm,
     pub app_config: AppConfigVm,
     pub needs_workspace: bool,
@@ -1028,6 +1030,7 @@ pub fn bootstrap_vm(
         ),
         client_version: client_version_string,
         platform: DESKTOP_PLATFORM.to_string(),
+        window_chrome: desktop_window_chrome_vm(),
         app_info: AppInfoVm {
             channel: channel_config.channel.to_string(),
             app_name: channel_config.app_name.to_string(),

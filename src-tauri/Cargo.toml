@@ -39,6 +39,9 @@ tempfile = "3"
 [target.'cfg(windows)'.dependencies]
 # Windows Toast 一等公民：干预通知 + 结构化 action（查看详情/忽略）。
 tauri-winrt-notification = "0.7"
+# 使用 RtlGetVersion 提供未受应用 manifest 影响的真实 Windows build，
+# 用于区分 Win10 的应用轮廓降级与 Win11 的 DWM 原生圆角。
+windows-version = "0.1.7"
 
 [features]
 default = ["native-notification"]

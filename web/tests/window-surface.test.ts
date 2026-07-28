@@ -28,6 +28,17 @@ describe('desktop window surface', () => {
     expect(mainSource).toContain('window.shadow = true;');
   });
 
+  it('selects the Win10 outline fallback from the real Windows build number', () => {
+    const cargo = readFileSync(path.resolve(__dirname, '../../src-tauri/Cargo.toml'), 'utf8');
+    const chromeSource = readFileSync(path.resolve(__dirname, '../../src-tauri/src/window_chrome.rs'), 'utf8');
+
+    expect(cargo).toContain('windows-version = "0.1.7"');
+    expect(chromeSource).toContain('windows_version::OsVersion::current()');
+    expect(chromeSource).toContain('const WINDOWS_11_MINIMUM_BUILD: u32 = 22_000;');
+    expect(chromeSource).toContain('DesktopWindowFrameStyle::AppOutline');
+    expect(chromeSource).toContain('DesktopWindowFrameStyle::NativeCompositor');
+  });
+
   it('grants host background synchronization and first-frame reveal permissions', () => {
     const capability = JSON.parse(readFileSync(path.resolve(__dirname, '../../src-tauri/capabilities/default.json'), 'utf8'));
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { ConversationPage, ConversationSidebarVm, DesktopPlatform } from '../../types';
+import type { ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
 import { ConversationSidebar } from './ConversationSidebar';
 import { saveConversationPreference } from '../../api';
 import { AppTitleBar } from '../AppTitleBar';
@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
 interface ConversationShellProps {
   appName: string;
   platform?: DesktopPlatform | null;
+  windowFrameStyle: DesktopWindowFrameStyle;
   vm: ConversationSidebarVm;
   active: ConversationPage;
   sidebarCollapsed: boolean;
@@ -56,6 +57,7 @@ function loadSidebarWidth(prefs?: Record<string, unknown> | null): number {
 export function ConversationShell({
   appName,
   platform,
+  windowFrameStyle,
   vm,
   active,
   sidebarCollapsed,
@@ -128,6 +130,7 @@ export function ConversationShell({
   return (
     <div
       className={cn('app-window-shell flex h-screen flex-col bg-gold-workspace text-foreground', resizing && 'select-none cursor-col-resize')}
+      data-window-frame-style={windowFrameStyle}
       onContextMenu={(event) => event.preventDefault()}
     >
       <AppTitleBar

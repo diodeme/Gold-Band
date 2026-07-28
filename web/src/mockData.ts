@@ -407,6 +407,7 @@ export const mockBootstrap: AppBootstrapVm = {
   persistedAvailableUpdate: null,
   clientVersion: '',
   platform: 'windows',
+  windowChrome: { frameStyle: 'native-compositor' },
   appInfo: mockAppInfo,
   appConfig: {
     acpSessionTitleRefreshEnabled: false,

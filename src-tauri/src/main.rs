@@ -12,6 +12,7 @@ mod state;
 mod updater;
 mod view_models;
 mod view_models_conversation;
+mod window_chrome;
 
 use anyhow::Context;
 use commands::{

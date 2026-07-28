@@ -31,11 +31,13 @@ uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 base64 = "0.22"
 tempfile = "3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 # macOS / Linux OS 閫氱煡 fallback銆?
 notify-rust = { version = "4", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 # Windows Toast 涓€绛夊叕姘戯細骞查閫氱煡 + 缁撴瀯鍖?action锛堟煡鐪嬭鎯?蹇界暐锛夈€?

@@ -274,6 +274,8 @@ fn run() -> anyhow::Result<()> {
             update_skill_sync_targets,
             get_skill_sync_status,
             check_skill_name_conflict,
+            feedback::submit_feedback,
+            feedback::preview_feedback_session_archive,
         ])
         .run(tauri_context)
         .context("tauri runtime failed")?;

@@ -651,6 +651,9 @@ export const browserApi: RuntimeApi = {
   submitFeedback(_input: import('../types').FeedbackInput): Promise<import('../types').FeedbackResult> {
     return Promise.reject({ code: 'feedback.endpoint-unconfigured', params: {} });
   },
+  previewFeedbackSessionArchive(): Promise<null> {
+    return Promise.resolve(null);
+  },
 };
 
 function browserProfileId() {

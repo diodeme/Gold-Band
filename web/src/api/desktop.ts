@@ -408,4 +408,7 @@ export const desktopApi: RuntimeApi = {
   submitFeedback(input: import('../types').FeedbackInput) {
     return invokeCommand('submit_feedback', { input });
   },
+  previewFeedbackSessionArchive(sessionWorkspace, sessionTaskId) {
+    return invokeCommand('preview_feedback_session_archive', { sessionWorkspace, sessionTaskId });
+  },
 };

@@ -9,11 +9,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-service";
 import { AttachmentChipsList, AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
 import { getRuntimeApi } from "@/api/client";
-import type { FeedbackInput } from "@/types";
+import type { FeedbackInput, FeedbackArchivePreview } from "@/types";
 
 const MAX_DESCRIPTION_CHARS = 2000;
 const MAX_SCREENSHOTS = 4;
 const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024;
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 interface SessionOption {
   value: string;
@@ -25,10 +31,9 @@ interface SessionOption {
 interface FeedbackDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  sessionOptions?: SessionOption[];
 }
 
-export function FeedbackDialog({ open, onOpenChange, sessionOptions = [] }: FeedbackDialogProps) {
+export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps) {
   const { t } = useTranslation();
   const [description, setDescription] = useState("");
   const [sessionValue, setSessionValue] = useState("none");
@@ -36,6 +41,44 @@ export function FeedbackDialog({ open, onOpenChange, sessionOptions = [] }: Feed
   const [submitting, setSubmitting] = useState(false);
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [sessionOptions, setSessionOptions] = useState<SessionOption[]>([]);
+  const [archivePreview, setArchivePreview] = useState<FeedbackArchivePreview | null>(null);
+
+  // Load the cross-workspace conversation list when the dialog opens so the
+  // user can optionally associate a session. Stays empty if there are none.
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    void getRuntimeApi().getConversationSidebar().then((sidebar) => {
+      if (!active) return;
+      const workspaceByProject = new Map(
+        sidebar.workspaces.map((w) => [w.projectId, w] as const),
+      );
+      const multiWorkspace = sidebar.workspaces.length > 1;
+      const options: SessionOption[] = [];
+      for (const [projectId, tasks] of Object.entries(sidebar.tasksByWorkspace)) {
+        const ws = workspaceByProject.get(projectId);
+        if (!ws) continue;
+        for (const task of tasks) {
+          const label = multiWorkspace && ws.name
+            ? `${ws.name} / ${task.title || task.taskId}`
+            : (task.title || task.taskId);
+          options.push({
+            value: `${projectId}::${task.taskId}`,
+            label,
+            workspace: ws.workspacePath,
+            taskId: task.taskId,
+          });
+        }
+      }
+      setSessionOptions(options);
+    }).catch(() => {
+      // Sidebar load is best-effort; absence just hides the dropdown.
+      if (active) setSessionOptions([]);
+    });
+    return () => { active = false; };
+  }, [open]);
+
 
   // Screenshots reuse the same proven attachment pipeline as the conversation
   // composer (clipboard paste on the textarea, native file picker, drag & drop,
@@ -46,13 +89,13 @@ export function FeedbackDialog({ open, onOpenChange, sessionOptions = [] }: Feed
     attachments,
     fileError,
     fileInputRef,
+    addFiles,
     pickFiles,
     handleFilesFromInput,
     removeAttachment,
     clearAttachments,
     resolveAttachmentPaths,
     dropZoneHandlers,
-    extractPasteFiles,
     previewImage,
     setPreviewImage,
     textPreview,
@@ -63,11 +106,56 @@ export function FeedbackDialog({ open, onOpenChange, sessionOptions = [] }: Feed
     maxTotalSize: MAX_SCREENSHOTS * MAX_SCREENSHOT_BYTES,
     acceptMimePrefix: "image/",
   });
+
+  // When the user selects a session, preview the archive size so they know how
+  // much will be uploaded before committing. This is an informed-consent affordance.
+  useEffect(() => {
+    if (sessionValue === "none" || !open) {
+      setArchivePreview(null);
+      return;
+    }
+    const option = sessionOptions.find((o) => o.value === sessionValue);
+    if (!option) {
+      setArchivePreview(null);
+      return;
+    }
+    let active = true;
+    void getRuntimeApi().previewFeedbackSessionArchive(option.workspace, option.taskId).then((preview) => {
+      if (active) setArchivePreview(preview);
+    }).catch(() => {
+      if (active) setArchivePreview(null);
+    });
+    return () => { active = false; };
+  }, [sessionValue, open, sessionOptions]);
+  // Global paste for screenshots: Ctrl+V works anywhere while the dialog is
+  // open, regardless of focus. This replaces the previous per-region onPaste
+  // which conflicted with the click-to-pick-files affordance on the same area.
+  useEffect(() => {
+    if (!open) return;
+    const onPaste = (event: ClipboardEvent) => {
+      const items = event.clipboardData?.items;
+      if (!items) return;
+      const files: File[] = [];
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].kind === "file") {
+          const file = items[i].getAsFile();
+          if (file) files.push(file);
+        }
+      }
+      if (files.length > 0) {
+        event.preventDefault();
+        void addFiles(files);
+      }
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, [open, addFiles]);
   useWindowDragGuard();
 
   const reset = useCallback(() => {
     setDescription("");
     setSessionValue("none");
+    setArchivePreview(null);
     setIncludeLogs(true);
     setErrorKey(null);
     setDone(false);
@@ -155,7 +243,6 @@ export function FeedbackDialog({ open, onOpenChange, sessionOptions = [] }: Feed
             <Textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              onPaste={(e) => { void extractPasteFiles(e); }}
               placeholder={t("common.feedbackDescriptionPlaceholder")}
               maxLength={MAX_DESCRIPTION_CHARS}
               rows={4}
@@ -176,6 +263,14 @@ export function FeedbackDialog({ open, onOpenChange, sessionOptions = [] }: Feed
                   ))}
                 </SelectContent>
               </Select>
+              {archivePreview ? (
+                <span className="text-xs text-muted-foreground">
+                  {t("common.feedbackArchiveHint", {
+                    size: formatBytes(archivePreview.uncompressedBytes),
+                    count: archivePreview.fileCount,
+                  })}
+                </span>
+              ) : null}
             </div>
           ) : null}
 
@@ -192,7 +287,6 @@ export function FeedbackDialog({ open, onOpenChange, sessionOptions = [] }: Feed
             <div
               className="flex min-h-20 cursor-pointer flex-wrap items-center gap-2 rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground"
               onClick={() => { if (!submitting) void pickFiles(); }}
-              onPaste={(e) => { void extractPasteFiles(e); }}
             >
               <UploadCloud className="size-4 shrink-0" />
               <span>{t("common.feedbackScreenshotHint")}</span>

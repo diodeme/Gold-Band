@@ -224,6 +224,14 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
     [t, allowedExts, maxCount, maxTotalSize, acceptMimePrefix],
   );
 
+  // -- Direct add (paste / drop / programmatic) --
+  const addFiles = useCallback(
+    (files: File[], source: AttachmentItem['source'] = 'paste') => {
+      validateAndAdd(filesToItems(files, source));
+    },
+    [validateAndAdd],
+  );
+
   // ── File picker (Tauri dialog on desktop, file input otherwise) ──
   const pickFiles = useCallback(async () => {
     if (isTauriRuntime()) {
@@ -411,6 +419,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
     attachments,
     fileError,
     fileInputRef,
+    addFiles,
     pickFiles,
     handleFilesFromInput,
     removeAttachment,

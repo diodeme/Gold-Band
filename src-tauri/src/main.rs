@@ -71,13 +71,16 @@ fn run() -> anyhow::Result<()> {
     let context = DesktopContext::from_current_dir()?;
     let mut tauri_context = tauri::generate_context!();
     #[cfg(target_os = "windows")]
+    let desktop_window_chrome = window_chrome::desktop_window_chrome_vm();
+    #[cfg(target_os = "windows")]
     if let Some(window) = tauri_context.config_mut().app.windows.first_mut() {
         // WebView2's opaque controller visibly lags behind Win32 edge resizing and exposes
         // black/white bars. Composition mode avoids that artifact while the CSS root still
-        // paints an opaque application surface. Keep the native shadow so DWM continues to
-        // provide the standard rounded corners on Windows 11.
+        // paints an opaque application surface. Windows 11 keeps the DWM shadow for native
+        // rounding; Windows 10 disables TAO's asymmetric undecorated frame and uses the
+        // application-owned inset outline instead.
         window.transparent = true;
-        window.shadow = true;
+        window.shadow = desktop_window_chrome.native_shadow;
     }
     #[cfg(target_os = "macos")]
     if let Some(window) = tauri_context.config_mut().app.windows.first_mut() {

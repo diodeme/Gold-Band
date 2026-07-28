@@ -25,7 +25,8 @@ describe('desktop window surface', () => {
     const mainSource = readFileSync(path.resolve(__dirname, '../../src-tauri/src/main.rs'), 'utf8');
     expect(mainSource).toContain('#[cfg(target_os = "windows")]');
     expect(mainSource).toContain('window.transparent = true;');
-    expect(mainSource).toContain('window.shadow = true;');
+    expect(mainSource).toContain('let desktop_window_chrome = window_chrome::desktop_window_chrome_vm();');
+    expect(mainSource).toContain('window.shadow = desktop_window_chrome.native_shadow;');
   });
 
   it('selects the Win10 outline fallback from the real Windows build number', () => {
@@ -37,6 +38,8 @@ describe('desktop window surface', () => {
     expect(chromeSource).toContain('const WINDOWS_11_MINIMUM_BUILD: u32 = 22_000;');
     expect(chromeSource).toContain('DesktopWindowFrameStyle::AppOutline');
     expect(chromeSource).toContain('DesktopWindowFrameStyle::NativeCompositor');
+    expect(chromeSource).toContain('native_shadow: false');
+    expect(chromeSource).toContain('native_shadow: true');
   });
 
   it('grants host background synchronization and first-frame reveal permissions', () => {

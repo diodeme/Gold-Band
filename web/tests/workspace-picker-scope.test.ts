@@ -46,6 +46,7 @@ const bootstrap = (needsWorkspace: boolean): AppBootstrapVm => ({
   persistedAvailableUpdate: null,
   clientVersion: '0.0.0',
   platform: 'windows',
+  windowChrome: { frameStyle: 'native-compositor' },
   appInfo: {
     channel: 'default',
     appName: 'Gold Band',

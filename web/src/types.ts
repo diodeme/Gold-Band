@@ -4,6 +4,7 @@ export type DesktopThemeMode = 'light' | 'dark';
 export type DesktopFontPreference = string;
 export type DesktopLanguage = 'zh-cn' | 'en';
 export type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'unknown';
+export type DesktopWindowFrameStyle = 'native-compositor' | 'app-outline';
 export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'error';
 
 export interface PreferencesVm {
@@ -57,6 +58,10 @@ export interface UpdateBadgeStateVm {
   announcementClosedVersion?: string | null;
 }
 
+export interface DesktopWindowChromeVm {
+  frameStyle: DesktopWindowFrameStyle;
+}
+
 export interface AppBootstrapVm {
   repoRoot: string;
   recentWorkspaces: string[];
@@ -68,6 +73,7 @@ export interface AppBootstrapVm {
   persistedAvailableUpdate?: UpdateInfoVm | null;
   clientVersion: string;
   platform: DesktopPlatform;
+  windowChrome: DesktopWindowChromeVm;
   appInfo: AppInfoVm;
   appConfig: AppConfigVm;
   needsWorkspace: boolean;

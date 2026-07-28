@@ -7,9 +7,11 @@ describe('App window shell style', () => {
     const styles = readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
 
     expect(styles).toContain('--gold-window-outline');
+    expect(styles).toContain('--gold-window-edge-shadow');
     expect(styles).not.toContain('--gold-window-top-outline');
     expect(styles).toContain(".app-window-shell[data-window-frame-style='app-outline']");
-    expect(styles).toContain('box-shadow: inset 0 0 0 1px var(--gold-window-outline)');
+    expect(styles).toContain('inset 0 0 0 1px var(--gold-window-outline)');
+    expect(styles).toContain('inset 0 0 8px var(--gold-window-edge-shadow)');
     expect(styles).not.toContain('outline-offset: -1px');
     expect(styles).not.toContain('.app-window-shell {');
     expect(styles).not.toContain('.app-window-shell::before');

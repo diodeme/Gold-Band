@@ -13,30 +13,38 @@ pub enum DesktopWindowFrameStyle {
 #[serde(rename_all = "camelCase")]
 pub struct DesktopWindowChromeVm {
     pub frame_style: DesktopWindowFrameStyle,
+    pub native_shadow: bool,
 }
 
 pub fn desktop_window_chrome_vm() -> DesktopWindowChromeVm {
-    DesktopWindowChromeVm {
-        frame_style: current_desktop_window_frame_style(),
-    }
+    current_desktop_window_chrome()
 }
 
 #[cfg(target_os = "windows")]
-fn current_desktop_window_frame_style() -> DesktopWindowFrameStyle {
+fn current_desktop_window_chrome() -> DesktopWindowChromeVm {
     let version = windows_version::OsVersion::current();
-    windows_frame_style(version.major, version.build)
+    windows_window_chrome(version.major, version.build)
 }
 
 #[cfg(not(target_os = "windows"))]
-fn current_desktop_window_frame_style() -> DesktopWindowFrameStyle {
-    DesktopWindowFrameStyle::NativeCompositor
+fn current_desktop_window_chrome() -> DesktopWindowChromeVm {
+    DesktopWindowChromeVm {
+        frame_style: DesktopWindowFrameStyle::NativeCompositor,
+        native_shadow: true,
+    }
 }
 
-fn windows_frame_style(major: u32, build: u32) -> DesktopWindowFrameStyle {
+fn windows_window_chrome(major: u32, build: u32) -> DesktopWindowChromeVm {
     if major > 10 || (major == 10 && build >= WINDOWS_11_MINIMUM_BUILD) {
-        DesktopWindowFrameStyle::NativeCompositor
+        DesktopWindowChromeVm {
+            frame_style: DesktopWindowFrameStyle::NativeCompositor,
+            native_shadow: true,
+        }
     } else {
-        DesktopWindowFrameStyle::AppOutline
+        DesktopWindowChromeVm {
+            frame_style: DesktopWindowFrameStyle::AppOutline,
+            native_shadow: false,
+        }
     }
 }
 
@@ -45,34 +53,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn windows_10_uses_app_outline() {
+    fn windows_10_uses_app_outline_without_asymmetric_native_shadow() {
         assert_eq!(
-            windows_frame_style(10, 19_045),
-            DesktopWindowFrameStyle::AppOutline
+            windows_window_chrome(10, 19_045),
+            DesktopWindowChromeVm {
+                frame_style: DesktopWindowFrameStyle::AppOutline,
+                native_shadow: false,
+            }
         );
     }
 
     #[test]
-    fn windows_11_and_later_use_native_compositor() {
+    fn windows_11_and_later_use_native_compositor_shadow() {
         assert_eq!(
-            windows_frame_style(10, WINDOWS_11_MINIMUM_BUILD),
-            DesktopWindowFrameStyle::NativeCompositor
+            windows_window_chrome(10, WINDOWS_11_MINIMUM_BUILD),
+            DesktopWindowChromeVm {
+                frame_style: DesktopWindowFrameStyle::NativeCompositor,
+                native_shadow: true,
+            }
         );
         assert_eq!(
-            windows_frame_style(11, 0),
-            DesktopWindowFrameStyle::NativeCompositor
+            windows_window_chrome(11, 0),
+            DesktopWindowChromeVm {
+                frame_style: DesktopWindowFrameStyle::NativeCompositor,
+                native_shadow: true,
+            }
         );
     }
 
     #[test]
-    fn frame_style_serializes_as_stable_interface_values() {
+    fn window_chrome_serializes_as_stable_interface_values() {
         assert_eq!(
-            serde_json::to_value(DesktopWindowFrameStyle::NativeCompositor).unwrap(),
-            "native-compositor"
-        );
-        assert_eq!(
-            serde_json::to_value(DesktopWindowFrameStyle::AppOutline).unwrap(),
-            "app-outline"
+            serde_json::to_value(windows_window_chrome(10, 19_045)).unwrap(),
+            serde_json::json!({
+                "frameStyle": "app-outline",
+                "nativeShadow": false,
+            })
         );
     }
 }

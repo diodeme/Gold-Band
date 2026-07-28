@@ -60,6 +60,7 @@ export interface UpdateBadgeStateVm {
 
 export interface DesktopWindowChromeVm {
   frameStyle: DesktopWindowFrameStyle;
+  nativeShadow: boolean;
 }
 
 export interface AppBootstrapVm {

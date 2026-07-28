@@ -1159,7 +1159,7 @@ export function App() {
         metricsSettings: defaultMetricsSettings,
         clientVersion: '',
         platform: 'unknown',
-        windowChrome: { frameStyle: 'native-compositor' },
+        windowChrome: { frameStyle: 'native-compositor', nativeShadow: true },
         appInfo: defaultAppInfo,
         appConfig: defaultAppConfig,
         needsWorkspace: false,

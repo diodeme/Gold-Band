@@ -791,12 +791,15 @@ export interface AcpDiagnosticsVm {
   lastErrorTimestamp?: string | null;
 }
 
+export type AcpRawFrameOrder = "asc" | "desc";
+
 export interface AcpRawFrameQueryInput {
   page?: number;
   pageSize?: number;
   search?: string;
   kind?: string;
   direction?: string;
+  order?: AcpRawFrameOrder;
 }
 
 export interface AcpRawFrameVm {
@@ -816,7 +819,7 @@ export interface AcpRawFramePageVm {
   total: number;
   hasPrevious: boolean;
   hasNext: boolean;
-  order: string;
+  order: AcpRawFrameOrder;
   search?: string | null;
   kind?: string | null;
   direction?: string | null;

@@ -400,7 +400,7 @@ export const browserApi: RuntimeApi = {
       total: 0,
       hasPrevious: false,
       hasNext: false,
-      order: 'latest',
+      order: query?.order ?? 'desc',
       search: query?.search ?? null,
       kind: query?.kind ?? null,
       direction: query?.direction ?? null,

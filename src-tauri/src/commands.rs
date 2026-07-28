@@ -2858,6 +2858,7 @@ pub async fn get_acp_raw_frames(
                     search: None,
                     kind: None,
                     direction: None,
+                    order: None,
                 }),
             )
             .map_err(command_error);
@@ -2875,6 +2876,7 @@ pub async fn get_acp_raw_frames(
                 search: None,
                 kind: None,
                 direction: None,
+                order: None,
             }),
         )
         .map_err(command_error)

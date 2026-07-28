@@ -80,6 +80,11 @@ import { formatTokenCount } from "@/lib/format-token";
 import { agentIconClass, agentIconSrc } from "@/lib/agent-icons";
 import { EditableConversationTitle } from "@/components/conversation/EditableConversationTitle";
 import { loadArtifactMarkdownRender, saveArtifactMarkdownRender } from "@/lib/artifact-markdown-pref";
+import {
+  loadSystemPromptViewMode,
+  saveSystemPromptViewMode,
+  SYSTEM_PROMPT_VIEW_MODES,
+} from "@/lib/system-prompt-view-pref";
 import { goldThemedScrollbarClassName } from "@/lib/themed-scrollbar";
 import {
   decideAcpLiveEventFlush,
@@ -333,12 +338,16 @@ export const ACP_RAW_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
 
 export const ACP_SYSTEM_PROMPT_DIALOG_LAYOUT = {
   dialogContentClassName:
-    "max-h-[86vh] max-w-4xl gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55 flex flex-col",
+    "max-h-[86vh] gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55 flex flex-col sm:max-w-5xl",
   headerClassName: "shrink-0 border-b px-5 py-4",
   scrollContainerClassName: goldThemedScrollbarClassName(
     "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-scroll",
   ),
   bodyClassName: "min-w-0 max-w-full space-y-3 px-5 pb-5 pr-6",
+  toolbarClassName:
+    "flex min-h-8 min-w-0 flex-wrap items-center justify-between gap-3",
+  renderedPromptClassName:
+    "w-full min-w-0 max-w-full overflow-x-hidden rounded-xl border bg-muted/20 p-4 text-foreground/90 [overflow-wrap:anywhere]",
   promptClassName:
     "w-full min-w-0 max-w-full overflow-x-hidden rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-all [overflow-wrap:anywhere]",
 } as const;
@@ -3523,6 +3532,7 @@ const SystemPromptDialog = memo(function SystemPromptDialog({
   const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(
     latestAttemptId,
   );
+  const [viewMode, setViewMode] = useState(loadSystemPromptViewMode);
   useEffect(() => {
     if (!open) return;
     setSelectedAttemptId(latestAttemptId);
@@ -3548,27 +3558,51 @@ const SystemPromptDialog = memo(function SystemPromptDialog({
         </DialogHeader>
         <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.scrollContainerClassName}>
           <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.bodyClassName}>
-            {availableOptions.length > 1 ? (
-              <Select
-                value={selectedAttemptId ?? availableOptions[0]?.attemptId}
-                onValueChange={setSelectedAttemptId}
-              >
-                <SelectTrigger className="h-8 w-[220px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableOptions.map((option) => (
-                    <SelectItem value={option.attemptId} key={option.attemptId}>
-                      {option.attemptId}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : null}
+            <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.toolbarClassName}>
+              {availableOptions.length > 1 ? (
+                <Select
+                  value={selectedAttemptId ?? availableOptions[0]?.attemptId}
+                  onValueChange={setSelectedAttemptId}
+                >
+                  <SelectTrigger className="h-8 w-[220px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableOptions.map((option) => (
+                      <SelectItem value={option.attemptId} key={option.attemptId}>
+                        {option.attemptId}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <span />
+              )}
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span>{t("acp.renderMarkdown")}</span>
+                <Switch
+                  checked={viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered}
+                  onCheckedChange={(rendered) => {
+                    const nextMode = rendered
+                      ? SYSTEM_PROMPT_VIEW_MODES.rendered
+                      : SYSTEM_PROMPT_VIEW_MODES.raw;
+                    setViewMode(nextMode);
+                    saveSystemPromptViewMode(nextMode);
+                  }}
+                  aria-label={t("acp.renderMarkdown")}
+                />
+              </div>
+            </div>
             {content ? (
-              <pre className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.promptClassName}>
-                {content}
-              </pre>
+              viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered ? (
+                <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.renderedPromptClassName}>
+                  <Markdown>{content}</Markdown>
+                </div>
+              ) : (
+                <pre className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.promptClassName}>
+                  {content}
+                </pre>
+              )
             ) : (
               <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">
                 {t("acp.systemPromptEmpty")}

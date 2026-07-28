@@ -153,8 +153,13 @@ export function validateAutoConfig(
   } else {
     requireReadyAgent(config?.agentType, t('runMode.agent'));
     const agent = config?.agentType ? agentById.get(config.agentType) : undefined;
-    if (agent && !supportsConfigOptionOverrides(agent, config?.configOptions)) {
-      issues.push(t('conversation.validation.config.not-found'));
+    if (agent) {
+      const stale = pruneStaleConfigOptionOverrides(agent, config?.configOptions);
+      if (stale.length > 0 && config?.configOptions) {
+        // Agent config options changed since the user last saved (e.g. after an adapter upgrade).
+        // Drop the stale entries instead of blocking the session.
+        for (const optionId of stale) delete config.configOptions[optionId];
+      }
     }
   }
 
@@ -215,18 +220,26 @@ export function validateDirectConfig(
   if (config?.permissionMode && !(agent.supportedModes ?? []).some((mode) => mode.id === config.permissionMode)) {
     issues.push(t('conversation.validation.permission.not-found'));
   }
-  if (!supportsConfigOptionOverrides(agent, config?.configOptions)) {
-    issues.push(t('conversation.validation.config.not-found'));
+  const stale = pruneStaleConfigOptionOverrides(agent, config?.configOptions);
+  if (stale.length > 0 && config?.configOptions) {
+    for (const optionId of stale) delete config.configOptions[optionId];
   }
   return issues;
 }
 
-function supportsConfigOptionOverrides(
+/**
+ * Returns optionIds from `overrides` that the agent no longer exposes (or whose
+ * stored value is no longer valid). Callers prune these from persisted config
+ * rather than blocking the session when an agent upgrades its option set.
+ */
+function pruneStaleConfigOptionOverrides(
   agent: ManagedAgentVm,
   overrides: Record<string, string> | null | undefined,
-) {
-  return Object.entries(overrides ?? {}).every(([optionId, value]) => {
-    const option = agent.configOptions?.find((candidate) => candidate.id === optionId);
-    return option?.options.some((candidate) => candidate.value === value) ?? false;
-  });
+): string[] {
+  return Object.entries(overrides ?? {}) 
+    .filter(([optionId, value]) => {
+      const option = agent.configOptions?.find((candidate) => candidate.id === optionId);
+      return !(option?.options.some((candidate) => candidate.value === value) ?? false);
+    })
+    .map(([optionId]) => optionId);
 }

@@ -167,11 +167,7 @@ import {
   submitManualCheck,
 } from "@/api";
 import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
-import {
-  ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS,
-  ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS,
-  acpComposerConfigTriggerVariants,
-} from '@/components/acp/AcpComposerConfigTrigger';
+import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { subscribeAcpSessionUpdates } from "@/api";
 import { getRuntimeApi } from "@/api/client";
 import { isTauriRuntime } from "@/api/shared";
@@ -3123,8 +3119,6 @@ type AcpSessionConfigBarProps = {
   onConfigOptionChange?: (optionId: string, optionValue: string | null) => void;
 };
 
-const UNSPECIFIED_CONFIG_VALUE = "__gold_band_unspecified__";
-
 const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
   viewModel,
   onModelChange,
@@ -3134,6 +3128,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
   const { t } = useTranslation();
   const {
     modelOverrideId,
+    canSelectUnspecifiedModel,
     permissionModeOverrideId,
     permissionModeOverrideName,
     canSelectUnspecifiedPermissionMode,
@@ -3145,10 +3140,8 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
   } = viewModel;
 
   const handlePermissionModeSelect = useCallback(
-    (permissionModeId: string) => {
-      onPermissionModeChange?.(
-        permissionModeId === UNSPECIFIED_CONFIG_VALUE ? null : permissionModeId,
-      );
+    (permissionModeId: string | null) => {
+      onPermissionModeChange?.(permissionModeId);
     },
     [onPermissionModeChange],
   );
@@ -3183,45 +3176,25 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
           })),
         } : null}
         thoughtValue={thoughtLevel?.overrideValue}
+        showUnspecifiedModel={canSelectUnspecifiedModel}
+        showUnspecifiedThought={thoughtLevel?.canSelectUnspecified ?? true}
         onModelChange={(value) => onModelChange?.(value)}
         onThoughtChange={(optionId, value) => onConfigOptionChange?.(optionId, value)}
       />
       {showPermissionModes ? (
         permissionModeCanBeSelected ? (
-          <Select
-            value={permissionModeOverrideId ?? UNSPECIFIED_CONFIG_VALUE}
+          <AcpSingleConfigMenu
+            compact
+            contentSide="top"
+            align="start"
+            label={t('acp.permissionMode')}
+            value={permissionModeOverrideId}
+            valueLabel={permissionModeLabel}
+            options={availablePermissionModes}
+            unspecifiedLabel={t('conversation.home.unspecifiedPermissionMode')}
+            showUnspecified={canSelectUnspecifiedPermissionMode}
             onValueChange={handlePermissionModeSelect}
-          >
-            <SelectTrigger className={acpComposerConfigTriggerVariants({ compact: true })}>
-              <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>
-                {t('acp.permissionMode')}
-              </span>
-              <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>{permissionModeLabel}</span>
-            </SelectTrigger>
-            <SelectContent
-              side="top"
-              sideOffset={8}
-              position="popper"
-              align="start"
-              className="w-[min(22rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]"
-            >
-              {canSelectUnspecifiedPermissionMode ? (
-                <SelectItem value={UNSPECIFIED_CONFIG_VALUE}>
-                  {t('conversation.home.unspecifiedPermissionMode')}
-                </SelectItem>
-              ) : null}
-              {availablePermissionModes.map((m) => (
-                <SelectItem value={m.id} key={m.id} className="items-start py-2">
-                  <span className="block min-w-0">
-                    <span className="block truncate font-medium">{m.name}</span>
-                    {m.description ? (
-                      <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">{m.description}</span>
-                    ) : null}
-                  </span>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          />
         ) : (
           <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
             <span className="shrink-0 text-muted-foreground">{t('acp.permissionMode')}</span>

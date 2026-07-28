@@ -18,11 +18,7 @@ import { useSlashCommandController } from '@/hooks/useSlashCommandController';
 import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
 import { SlashCommandInputTag } from '@/components/conversation/SlashCommandInputTag';
 import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
-import {
-  ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS,
-  ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS,
-  acpComposerConfigTriggerVariants,
-} from '@/components/acp/AcpComposerConfigTrigger';
+import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from '@/lib/slash-command';
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
 
@@ -114,6 +110,11 @@ export function ConversationComposer({
   const directThoughtLevel = selectedDirectAgentObj?.configOptions?.find((option) => option.category === 'thought_level') ?? null;
   const models = selectedAgentObj?.supportedModels ?? [];
   const permissionModes = selectedAgentObj?.supportedModes ?? [];
+  const autoPermissionModes = isDynamicAuto ? [
+    { id: 'read_only', name: t('workflowEditor.permissionModeReadOnly') },
+    { id: 'ask', name: t('workflowEditor.permissionModeAsk') },
+    { id: 'full_access', name: t('workflowEditor.permissionModeFullAccess') },
+  ] : permissionModes;
   const thoughtLevel = selectedAgentObj?.configOptions?.find((option) => option.category === 'thought_level') ?? null;
   const templates = workflowTemplates?.templates ?? [];
   const selectedWorkflowTemplateId = workflowTemplateId || runMode.workflowTemplateId || undefined;
@@ -414,27 +415,23 @@ export function ConversationComposer({
                       });
                     }}
                   />
-                  <Select value={selectedDirectPermissionMode || '__default__'} onValueChange={(value) => {
-                    const permissionMode = value === '__default__' ? '' : value;
-                    setSelectedDirectPermissionMode(permissionMode);
-                    updateDirectConfig({
-                      agentType: selectedDirectAgent,
+                  <AcpSingleConfigMenu
+                    label={t('acp.permissionMode')}
+                    value={selectedDirectPermissionMode}
+                    options={directPermissionModes}
+                    unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
+                    align="end"
+                    onValueChange={(value) => {
+                      const permissionMode = value ?? '';
+                      setSelectedDirectPermissionMode(permissionMode);
+                      updateDirectConfig({
+                        agentType: selectedDirectAgent,
                         modelId: selectedDirectModel || undefined,
                         permissionMode: permissionMode || undefined,
                         configOptions: selectedDirectConfigOptions,
-                    });
-                  }}>
-                    <SelectTrigger className={acpComposerConfigTriggerVariants()}>
-                      <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{t('acp.permissionMode')}</span>
-                      <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>
-                        <SelectValue placeholder={t('runMode.permissionMode')} />
-                      </span>
-                    </SelectTrigger>
-                    <SelectContent position="popper" align="end">
-                      <SelectItem value="__default__">{t('workflowEditor.permissionModeUnspecified')}</SelectItem>
-                      {directPermissionModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
+                      });
+                    }}
+                  />
                 </>
               ) : null}
               <Button size="sm" className="h-8 shrink-0 gap-1.5 rounded-full px-3" disabled={!canSubmit} onClick={() => { void handleSubmit(); }}>
@@ -580,24 +577,17 @@ export function ConversationComposer({
                     }}
                   />
                 ) : null}
-                <Select value={selectedPermissionMode || '__default__'} onValueChange={(value) => { const next = value === '__default__' ? '' : value; setSelectedPermissionMode(next); updateAutoSession({ permissionMode: next || undefined }); }}>
-                  <SelectTrigger className={acpComposerConfigTriggerVariants()}>
-                    <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{t('acp.permissionMode')}</span>
-                    <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>
-                      <SelectValue placeholder={t('runMode.permissionMode')} />
-                    </span>
-                  </SelectTrigger>
-                  <SelectContent position="popper" align="start">
-                    <SelectItem value="__default__">{t('workflowEditor.permissionModeUnspecified')}</SelectItem>
-                    {isDynamicAuto ? (
-                      <>
-                        <SelectItem value="read_only">{t('workflowEditor.permissionModeReadOnly')}</SelectItem>
-                        <SelectItem value="ask">{t('workflowEditor.permissionModeAsk')}</SelectItem>
-                        <SelectItem value="full_access">{t('workflowEditor.permissionModeFullAccess')}</SelectItem>
-                      </>
-                    ) : permissionModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                <AcpSingleConfigMenu
+                  label={t('acp.permissionMode')}
+                  value={selectedPermissionMode}
+                  options={autoPermissionModes}
+                  unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
+                  onValueChange={(value) => {
+                    const next = value ?? '';
+                    setSelectedPermissionMode(next);
+                    updateAutoSession({ permissionMode: next || undefined });
+                  }}
+                />
                 <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={onOpenRunModeSettings}>
                   <Workflow className="size-3" />
                   {t('conversation.home.configureAuto')}

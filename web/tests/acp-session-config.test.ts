@@ -92,7 +92,7 @@ describe("ACP session config view model", () => {
 
     expect(viewModel.modelOverrideId).toBe("default");
     expect(viewModel.modelOverrideName).toBe("Default (recommended)");
-    expect(viewModel.canSelectUnspecifiedModel).toBe(true);
+    expect(viewModel.canSelectUnspecifiedModel).toBe(false);
   });
 
   it("keeps Gold Band unspecified separate from the Agent current permission mode", () => {
@@ -130,7 +130,7 @@ describe("ACP session config view model", () => {
 
     expect(viewModel.permissionModeOverrideId).toBe("default");
     expect(viewModel.permissionModeOverrideName).toBe("Default");
-    expect(viewModel.canSelectUnspecifiedPermissionMode).toBe(true);
+    expect(viewModel.canSelectUnspecifiedPermissionMode).toBe(false);
   });
 
   it("normalizes grouped model and permission mode options", () => {
@@ -213,6 +213,7 @@ describe("ACP session config view model", () => {
       category: "thought_level",
       currentValue: "medium",
       overrideValue: "high",
+      canSelectUnspecified: false,
     });
     expect(viewModel.thoughtLevel?.options.map((option) => option.id)).toEqual(["low", "high"]);
   });
@@ -231,5 +232,6 @@ describe("ACP session config view model", () => {
     expect(viewModel.thoughtLevel?.id).toBe("effort");
     expect(viewModel.thoughtLevel?.currentValue).toBe("max");
     expect(viewModel.thoughtLevel?.overrideValue).toBeNull();
+    expect(viewModel.thoughtLevel?.canSelectUnspecified).toBe(true);
   });
 });

@@ -4777,37 +4777,52 @@ export function PermissionRequestCard({
   const { t } = useTranslation();
   return (
     <AssistantTimelineRow>
-      <div className="w-full max-w-3xl overflow-hidden rounded-xl border border-primary/20 bg-card/80 px-3 py-2 shadow-sm shadow-background/20">
-        <div className="flex min-w-0 flex-col gap-2.5">
-          <div className="flex min-w-0 items-center gap-2.5">
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <ShieldQuestion className="size-3.5" />
+      <div className="w-full max-w-2xl overflow-hidden rounded-2xl border border-border/55 bg-card/65 px-4 py-3.5 shadow-[0_16px_40px_-32px_rgba(15,23,42,0.65)] ring-1 ring-foreground/[0.025] backdrop-blur-sm">
+        <div className="flex min-w-0 flex-col gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-xl border border-border/50 bg-accent/65 text-accent-foreground shadow-sm shadow-background/20">
+              <ShieldQuestion className="size-4" />
             </span>
             <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-foreground">
+              <div className="truncate text-[13px] font-semibold tracking-[-0.01em] text-foreground">
                 {request.title}
               </div>
-              <div className="truncate text-xs text-muted-foreground">
+              <div className="mt-0.5 truncate text-[11px] leading-4 text-muted-foreground">
                 {t("acp.permissionPending")}
               </div>
             </div>
           </div>
-          <div className="grid min-w-0 grid-cols-1 gap-1.5 pl-9 sm:grid-cols-2 sm:gap-2">
-            {request.options.map((option) => (
-              <Button
-                key={option.optionId}
-                size="sm"
-                variant={
-                  option.kind.startsWith("allow") ? "default" : "outline"
-                }
-                className="h-7 max-w-full justify-center rounded-full px-2.5 text-xs"
-                onClick={() => onSelect(option.optionId)}
-              >
-                <span className="min-w-0 truncate">
-                  {option.name || option.optionId}
-                </span>
-              </Button>
-            ))}
+          <div className="grid min-w-0 grid-cols-1 gap-2 pl-11 sm:grid-cols-2">
+            {request.options.map((option) => {
+              const label = option.name || option.optionId;
+              const isAllowOption = option.kind.startsWith("allow");
+              return (
+                <Tooltip key={option.optionId}>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className={cn(
+                        "h-8 min-w-0 max-w-full justify-center rounded-xl px-3 text-xs font-medium shadow-none",
+                        isAllowOption
+                          ? "border-transparent bg-accent/65 text-accent-foreground hover:border-primary/10 hover:bg-accent"
+                          : "border-border/65 bg-background/45 text-muted-foreground hover:bg-muted/65 hover:text-foreground",
+                      )}
+                      aria-label={label}
+                      onClick={() => onSelect(option.optionId)}
+                    >
+                      <span className="min-w-0 truncate">{label}</span>
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent
+                    sideOffset={8}
+                    className="max-w-[min(30rem,calc(100vw-2rem))] whitespace-normal break-words px-3 py-2 text-left leading-5 [overflow-wrap:anywhere]"
+                  >
+                    {label}
+                  </TooltipContent>
+                </Tooltip>
+              );
+            })}
           </div>
         </div>
       </div>

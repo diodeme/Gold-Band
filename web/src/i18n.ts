@@ -1115,7 +1115,6 @@ const resources = {
           "agent.not-found": "所选 Agent 尚未配置",
           "model.not-found": "所选模型不受当前 Agent 支持",
           "permission.not-found": "所选权限模式不受当前 Agent 支持",
-          "config.not-found": "所选 Agent 配置已不可用，请重新选择",
           "workflow.required": "需要选择工作流模板",
           "workflow.not-found": "所选工作流模板不存在",
           "conversation.attachment-count-exceeded": "附件数量不能超过 10 个",
@@ -2448,7 +2447,6 @@ const resources = {
           "agent.not-found": "Selected Agent is not configured",
           "model.not-found": "Selected model is not supported by this Agent",
           "permission.not-found": "Selected permission mode is not supported by this Agent",
-          "config.not-found": "Selected Agent configuration is no longer available",
           "workflow.required": "Workflow template is required",
           "workflow.not-found": "Selected workflow template not found",
           "conversation.attachment-count-exceeded":

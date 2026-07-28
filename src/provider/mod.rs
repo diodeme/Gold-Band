@@ -4,9 +4,9 @@ use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, manage
 pub use crate::domain::SessionRef;
 use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode};
 use crate::prompts::{
-    RUNTIME_HIDDEN_CONTEXT_EN, RUNTIME_HIDDEN_CONTEXT_ZH_CN, RUNTIME_SYSTEM_EN,
-    RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN, prompt_by_language,
-    render as render_template,
+    PromptExecutionSurface, RUNTIME_HIDDEN_CONTEXT_EN, RUNTIME_HIDDEN_CONTEXT_ZH_CN,
+    RUNTIME_SYSTEM_EN, RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN,
+    profile_template_context, prompt_by_language, render as render_template,
 };
 use crate::runtime_error::{RuntimeErrorInfo, normalize_provider_failure};
 use crate::storage::active_storage_path_config;
@@ -137,8 +137,11 @@ pub struct WorkerInvocation {
     pub invocation_kind: InvocationKind,
     #[serde(default)]
     pub prompt_envelope: crate::dsl::PromptEnvelopeMode,
+    pub execution_surface: PromptExecutionSurface,
     pub profile: Option<String>,
     pub profile_content: Option<String>,
+    #[serde(default)]
+    pub profile_dynamic_template: bool,
     pub requirement_path: Option<Utf8PathBuf>,
     pub requirement_text: Option<String>,
     pub adapter_workspace_dir: Utf8PathBuf,
@@ -920,7 +923,7 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
 
     let (system_prompt, user_prompt) = match req.prompt_envelope {
         crate::dsl::PromptEnvelopeMode::RuntimeManaged => (
-            render_system_prompt(req),
+            render_system_prompt(req)?,
             render_user_prompt(req, &requirement_text),
         ),
         crate::dsl::PromptEnvelopeMode::RawAgent => (
@@ -964,16 +967,15 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     })
 }
 
-fn render_system_prompt(req: &WorkerInvocation) -> String {
+fn render_system_prompt(req: &WorkerInvocation) -> Result<String> {
     render_template(
         prompt_by_language(
             req.runtime_context.language,
             RUNTIME_SYSTEM_ZH_CN,
             RUNTIME_SYSTEM_EN,
         ),
-        runtime_system_context(req),
+        runtime_system_context(req)?,
     )
-    .expect("prompt template renders")
 }
 
 fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String {
@@ -1135,8 +1137,31 @@ struct RuntimeOutputContractTemplateContext {
     success_condition: Option<String>,
 }
 
-fn runtime_system_context(req: &WorkerInvocation) -> RuntimePromptTemplateContext {
-    RuntimePromptTemplateContext {
+fn runtime_system_context(req: &WorkerInvocation) -> Result<RuntimePromptTemplateContext> {
+    let profile_content = match req
+        .profile_content
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(content) if req.profile_dynamic_template => {
+            let session_mode = match req.session_mode {
+                SessionMode::New => "new",
+                SessionMode::Continue => "continue",
+            };
+            Some(render_template(
+                content,
+                profile_template_context(
+                    req.execution_surface,
+                    req.output_contract.is_some(),
+                    session_mode,
+                ),
+            )?)
+        }
+        Some(content) => Some(content.to_string()),
+        None => None,
+    };
+    Ok(RuntimePromptTemplateContext {
         project_id: req.runtime_context.project_id.clone(),
         task_id: req.runtime_context.task_id.clone(),
         run_id: req.runtime_context.run_id.clone(),
@@ -1147,18 +1172,13 @@ fn runtime_system_context(req: &WorkerInvocation) -> RuntimePromptTemplateContex
         extra_system_sections: joined_extra_system_sections(req),
         profile: RuntimeProfileTemplateContext {
             id: req.profile.clone(),
-            content: req
-                .profile_content
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string),
+            content: profile_content,
         },
         output_contract: req
             .output_contract
             .as_ref()
             .map(runtime_output_contract_context),
-    }
+    })
 }
 
 fn runtime_hidden_context(req: &WorkerInvocation) -> RuntimeHiddenContextTemplateContext {
@@ -1560,8 +1580,10 @@ mod tests {
         let mut req = WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
+            execution_surface: PromptExecutionSurface::Workflow,
             profile: None,
             profile_content: None,
+            profile_dynamic_template: false,
             requirement_path: None,
             requirement_text: Some("Need a structured result".to_string()),
             adapter_workspace_dir: Utf8PathBuf::from("/repo"),

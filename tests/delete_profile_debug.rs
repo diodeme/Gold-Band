@@ -11,6 +11,7 @@ fn delete_profile_smoke_test_uses_force_flag_signature() {
             name: "删除冒烟角色".to_string(),
             summary: "用于删除冒烟测试".to_string(),
             content: "临时内容".to_string(),
+            dynamic_template: false,
         })
         .unwrap();
 

@@ -383,6 +383,7 @@ export interface ProfileVm {
   summary: string;
   summarySource?: string;
   content: string;
+  dynamicTemplate: boolean;
   scope: ProfileScope;
   isBuiltIn: boolean;
   createdAt: string;
@@ -398,6 +399,7 @@ export interface ProfileInput {
   name: string;
   summary: string;
   content: string;
+  dynamicTemplate: boolean;
 }
 
 export interface SaveWorkflowInput {

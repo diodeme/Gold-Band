@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use minijinja::{Environment, UndefinedBehavior};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::DesktopLanguage;
 
@@ -61,6 +61,51 @@ pub const AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/ai-dynamic/output_protocol.md");
 pub const AI_DYNAMIC_OUTPUT_PROTOCOL_EN: &str =
     include_str!("prompts/en/runtime/ai-dynamic/output_protocol.md");
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProfileTemplateContext {
+    pub execution: ProfileExecutionTemplateContext,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PromptExecutionSurface {
+    Workflow,
+    AiDynamic,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProfileExecutionTemplateContext {
+    pub surface: PromptExecutionSurface,
+    pub can_route_next: bool,
+    pub has_output_contract: bool,
+    pub session_mode: String,
+}
+
+pub fn profile_template_context(
+    surface: PromptExecutionSurface,
+    has_output_contract: bool,
+    session_mode: &str,
+) -> ProfileTemplateContext {
+    ProfileTemplateContext {
+        execution: ProfileExecutionTemplateContext {
+            surface,
+            can_route_next: surface == PromptExecutionSurface::AiDynamic && has_output_contract,
+            has_output_contract,
+            session_mode: session_mode.to_string(),
+        },
+    }
+}
+
+pub fn profile_template_validation_contexts() -> [ProfileTemplateContext; 4] {
+    [
+        profile_template_context(PromptExecutionSurface::Workflow, false, "new"),
+        profile_template_context(PromptExecutionSurface::Workflow, true, "continue"),
+        profile_template_context(PromptExecutionSurface::AiDynamic, true, "new"),
+        profile_template_context(PromptExecutionSurface::AiDynamic, true, "continue"),
+    ]
+}
+
 pub fn render<T: Serialize>(template: &str, context: T) -> Result<String> {
     let mut env = Environment::new();
     env.set_undefined_behavior(UndefinedBehavior::Strict);

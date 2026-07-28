@@ -38,4 +38,8 @@
 - 先审查计划，再动手写代码
 - 严格按计划步骤执行
 - 遇到阻碍停下来，不要自己猜
+{% if execution.surface == "aiDynamic" %}
+- 使用 hidden context 中 runtime 分配的 workspace；`main`、`worktree`、`readonly` 均以 runtime 能力和当前任务为准，不再额外要求用户确认分支。
+{% else %}
 - 未经用户明确同意，不要在 main/master 分支上操作
+{% endif %}

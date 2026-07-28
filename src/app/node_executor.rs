@@ -11,6 +11,7 @@ use crate::dsl::{
     JsonConditionDsl, JsonPathSegment, NodeDsl, ValidatedWorkflow, WorkerNode, parse_json_path,
 };
 use crate::observability::{ProgressStage, progress};
+use crate::prompts::PromptExecutionSurface;
 use crate::provider::{
     PromptArtifactRef, PromptAttachmentRef, PromptOutputContract, PromptPredecessorContext,
     PromptRuntimeContext, PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode,
@@ -542,10 +543,16 @@ pub(crate) fn build_worker_invocation(
         .filter(|value| !value.is_empty())
         .or(permission_mode);
 
-    let profile_content = profile
+    let profile_entry = profile
         .as_deref()
-        .map(|id| app.profile_show(id).map(|profile| profile.content))
+        .map(|id| app.profile_show(id))
         .transpose()?;
+    let profile_content = profile_entry
+        .as_ref()
+        .map(|profile| profile.content.clone());
+    let profile_dynamic_template = profile_entry
+        .as_ref()
+        .is_some_and(|profile| profile.dynamic_template);
 
     let runtime_context =
         runtime_prompt_context(app, task_id, run_id, round_id, node_id, attempt_id);
@@ -571,8 +578,10 @@ pub(crate) fn build_worker_invocation(
     Ok(WorkerInvocation {
         invocation_kind,
         prompt_envelope,
+        execution_surface: PromptExecutionSurface::Workflow,
         profile,
         profile_content,
+        profile_dynamic_template,
         requirement_path: Some(app.paths.requirement_file(task_id)),
         requirement_text: None,
         adapter_workspace_dir: app.paths.repo_root.clone(),

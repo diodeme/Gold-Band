@@ -48,7 +48,7 @@ use crate::prompts::{
     AI_DYNAMIC_NODE_TASK_ZH_CN, AI_DYNAMIC_OUTPUT_PROTOCOL_EN, AI_DYNAMIC_OUTPUT_PROTOCOL_ZH_CN,
     AI_DYNAMIC_PROPOSAL_REPAIR_EN, AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN, AI_DYNAMIC_SYSTEM_EN,
     AI_DYNAMIC_SYSTEM_ZH_CN, AI_DYNAMIC_WORKFLOW_INVOCATION_EN,
-    AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN, RUNTIME_INVALID_OUTPUT_REPAIR_EN,
+    AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN, PromptExecutionSurface, RUNTIME_INVALID_OUTPUT_REPAIR_EN,
     RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN, prompt_by_language, render as render_template,
 };
 use crate::provider::{
@@ -7874,15 +7874,20 @@ fn build_dynamic_worker_invocation(
     let profile = builtin_profile
         .map(|(profile, _)| profile.to_string())
         .or_else(|| node.profile.clone());
+    let profile_entry = match builtin_profile {
+        Some(_) => None,
+        None => node
+            .profile
+            .as_deref()
+            .and_then(|profile| ctx.app.profile_show(profile).ok()),
+    };
     let profile_content = match builtin_profile {
         Some((_, content)) => Some(content.trim().to_string()),
-        None => node.profile.as_deref().and_then(|profile| {
-            ctx.app
-                .profile_show(profile)
-                .ok()
-                .map(|entry| entry.content)
-        }),
+        None => profile_entry.as_ref().map(|entry| entry.content.clone()),
     };
+    let profile_dynamic_template = profile_entry
+        .as_ref()
+        .is_some_and(|entry| entry.dynamic_template);
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -8080,8 +8085,10 @@ fn build_dynamic_worker_invocation(
     let invocation = WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
         prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
+        execution_surface: PromptExecutionSurface::AiDynamic,
         profile,
         profile_content,
+        profile_dynamic_template,
         requirement_path: None,
         requirement_text: Some(requirement_text),
         adapter_workspace_dir: ctx.app.paths.repo_root.clone(),

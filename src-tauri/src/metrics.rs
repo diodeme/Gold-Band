@@ -207,7 +207,7 @@ async fn send_heartbeat(endpoint: &str, api_key: &str, workspace: &str, version:
     }
 }
 
-fn get_system_username() -> String {
+pub(crate) fn get_system_username() -> String {
     std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
         .unwrap_or_else(|_| "unknown".to_string())

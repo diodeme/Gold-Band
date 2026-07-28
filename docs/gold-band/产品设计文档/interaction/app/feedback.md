@@ -82,17 +82,18 @@
 ## 4. 数据范围与上报内容
 
 ### 4.1 元数据
+- `userId`：系统用户名（与 heartbeat 同源），用于标识反馈来源
 - `client_version`：客户端版本号
 - `reported_at`：本地 ISO-8601 时间戳
-- `workspace`：当前工作空间路径
+- `sessionWorkspace` / `sessionTaskId`：关联会话的工作空间路径与任务 id（可选，平铺在 metadata 顶层）
 
 ### 4.2 日志
 当「上传日志」开启时，读取 `~/.gold-band/logs/runtime.log` 的**尾部 512KB**（按字节截断，防止日志文件过大拖垮上传）。
 
 ### 4.3 会话上下文
 当用户选择「关联会话」时，额外附带：
-- 会话标识：`workspace` + `task_id` + `session_key`
-- 会话快照：该会话的 `acp.snapshot.json`（结构化状态摘要，体积可控）
+- 会话标识：`sessionWorkspace` + `sessionTaskId`（平铺在 metadata 顶层）
+- 会话快照：该会话的 `acp.snapshot.json`（结构化状态摘要，体积可控）。客户端按 `sessionWorkspace` 解析快照路径，支持跨工作空间关联。
 
 不附带 `events.jsonl`、附件、原始 raw frames 等可能很大或含敏感内容的产物。
 

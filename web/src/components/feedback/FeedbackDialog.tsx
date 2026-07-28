@@ -1,29 +1,25 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CircleCheck, UploadCloud, X } from "lucide-react";
+import { CircleCheck, UploadCloud } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-service";
+import { AttachmentChipsList, AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
 import { getRuntimeApi } from "@/api/client";
-import type { FeedbackInput, SessionRef } from "@/types";
+import type { FeedbackInput } from "@/types";
 
 const MAX_DESCRIPTION_CHARS = 2000;
 const MAX_SCREENSHOTS = 4;
 const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024;
 
-interface ScreenshotItem {
-  name: string;
-  size: number;
-  dataBase64: string;
-  previewUrl: string;
-}
-
 interface SessionOption {
   value: string;
   label: string;
-  sessionRef: SessionRef;
+  workspace: string;
+  taskId: string;
 }
 
 interface FeedbackDialogProps {
@@ -32,93 +28,56 @@ interface FeedbackDialogProps {
   sessionOptions?: SessionOption[];
 }
 
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(reader.error ?? new Error("file read failed"));
-    reader.onload = () => {
-      const result = reader.result;
-      if (typeof result !== "string") {
-        reject(new Error("file read failed"));
-        return;
-      }
-      resolve(result.split(",", 2)[1] ?? result);
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
 export function FeedbackDialog({ open, onOpenChange, sessionOptions = [] }: FeedbackDialogProps) {
   const { t } = useTranslation();
   const [description, setDescription] = useState("");
   const [sessionValue, setSessionValue] = useState("none");
-  const [screenshots, setScreenshots] = useState<ScreenshotItem[]>([]);
   const [includeLogs, setIncludeLogs] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const [done, setDone] = useState(false);
-  const pasteZoneRef = useRef<HTMLDivElement>(null);
+
+  // Screenshots reuse the same proven attachment pipeline as the conversation
+  // composer (clipboard paste on the textarea, native file picker, drag & drop,
+  // and materialize-on-submit). The previous hand-rolled path listened at the
+  // window level (unreliable inside a Radix portal) and fetched `asset://`
+  // URLs that never resolve, so both paste and file pick were silently broken.
+  const {
+    attachments,
+    fileError,
+    fileInputRef,
+    pickFiles,
+    handleFilesFromInput,
+    removeAttachment,
+    clearAttachments,
+    resolveAttachmentPaths,
+    dropZoneHandlers,
+    extractPasteFiles,
+    previewImage,
+    setPreviewImage,
+    textPreview,
+    setTextPreview,
+    handlePreviewAttachment,
+  } = useAttachmentPicker({
+    maxCount: MAX_SCREENSHOTS,
+    maxTotalSize: MAX_SCREENSHOTS * MAX_SCREENSHOT_BYTES,
+    acceptMimePrefix: "image/",
+  });
+  useWindowDragGuard();
 
   const reset = useCallback(() => {
     setDescription("");
     setSessionValue("none");
-    setScreenshots([]);
     setIncludeLogs(true);
     setErrorKey(null);
     setDone(false);
     setSubmitting(false);
-  }, []);
+    clearAttachments();
+  }, [clearAttachments]);
 
   useEffect(() => {
     if (open) reset();
   }, [open, reset]);
-
-  const addFiles = useCallback(async (files: File[]) => {
-    const images = files.filter((f) => f.type.startsWith("image/"));
-    setScreenshots((prev) => {
-      const remaining = MAX_SCREENSHOTS - prev.length;
-      if (remaining <= 0) return prev;
-      return [...prev, ...images.slice(0, remaining).map((f) => ({
-        name: f.name,
-        size: f.size,
-        dataBase64: "",
-        previewUrl: URL.createObjectURL(f),
-        file: f,
-      } as ScreenshotItem & { file: File }))];
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!open) return;
-    const zone = pasteZoneRef.current;
-    if (!zone) return;
-    const onPaste = (event: ClipboardEvent) => {
-      const items = event.clipboardData?.items;
-      if (!items) return;
-      const files: File[] = [];
-      for (const item of items) {
-        if (item.kind === "file") {
-          const f = item.getAsFile();
-          if (f) files.push(f);
-        }
-      }
-      if (files.length) {
-        event.preventDefault();
-        void addFiles(files);
-      }
-    };
-    window.addEventListener("paste", onPaste);
-    return () => window.removeEventListener("paste", onPaste);
-  }, [open, addFiles]);
-
-  const removeScreenshot = useCallback((index: number) => {
-    setScreenshots((prev) => {
-      const next = [...prev];
-      const [removed] = next.splice(index, 1);
-      if (removed) URL.revokeObjectURL(removed.previewUrl);
-      return next;
-    });
-  }, []);
 
   const mapErrorCode = useCallback((code: string): string => {
     if (code === "feedback.network-failed") return "common.feedbackErrorNetwork";
@@ -131,38 +90,24 @@ export function FeedbackDialog({ open, onOpenChange, sessionOptions = [] }: Feed
   const handleSubmit = useCallback(async () => {
     setErrorKey(null);
     const trimmed = description.trim();
-    if (!trimmed) {
-      setErrorKey("common.feedbackErrorValidation");
-      return;
-    }
-    if (trimmed.length > MAX_DESCRIPTION_CHARS) {
-      setErrorKey("common.feedbackErrorValidation");
-      return;
-    }
-    const oversized = screenshots.find((s) => s.size > MAX_SCREENSHOT_BYTES);
-    if (oversized) {
+    if (!trimmed || trimmed.length > MAX_DESCRIPTION_CHARS) {
       setErrorKey("common.feedbackErrorValidation");
       return;
     }
 
     setSubmitting(true);
     try {
-      const materialized = screenshots.length > 0
-        ? await getRuntimeApi().materializeConversationAttachments(
-            await Promise.all(screenshots.map(async (s) => {
-              const raw = (s as ScreenshotItem & { file?: File }).file;
-              const dataBase64 = raw ? await fileToBase64(raw) : s.dataBase64;
-              return { name: s.name, mime: null, size: s.size, dataBase64 };
-            })),
-          )
-        : [];
-      const sessionRef = sessionValue !== "none"
-        ? sessionOptions.find((o) => o.value === sessionValue)?.sessionRef ?? null
+      // Materialize any clipboard/browser-sourced screenshots to disk first
+      // (dialog-picked files already carry a real path).
+      const screenshotPaths = await resolveAttachmentPaths();
+      const sessionOption = sessionValue !== "none"
+        ? sessionOptions.find((o) => o.value === sessionValue) ?? null
         : null;
       const input: FeedbackInput = {
         description: trimmed,
-        sessionRef,
-        screenshotPaths: materialized.map((m) => m.path),
+        sessionWorkspace: sessionOption?.workspace ?? null,
+        sessionTaskId: sessionOption?.taskId ?? null,
+        screenshotPaths,
         includeLogs,
       };
       await getRuntimeApi().submitFeedback(input);
@@ -174,23 +119,7 @@ export function FeedbackDialog({ open, onOpenChange, sessionOptions = [] }: Feed
     } finally {
       setSubmitting(false);
     }
-  }, [description, screenshots, sessionValue, sessionOptions, includeLogs, onOpenChange, mapErrorCode]);
-
-  const onPickFiles = useCallback(async () => {
-    const files = await getRuntimeApi().pickAttachmentFiles();
-    if (!files.length) return;
-    const fetched: File[] = [];
-    for (const ref of files) {
-      try {
-        const res = await fetch(`asset://localhost/${encodeURIComponent(ref.path)}`);
-        const blob = await res.blob();
-        fetched.push(new File([blob], ref.name, { type: blob.type || "image/png" }));
-      } catch {
-        // best-effort
-      }
-    }
-    void addFiles(fetched);
-  }, [addFiles]);
+  }, [description, resolveAttachmentPaths, sessionValue, sessionOptions, includeLogs, onOpenChange, mapErrorCode]);
 
   if (done) {
     return (
@@ -214,7 +143,11 @@ export function FeedbackDialog({ open, onOpenChange, sessionOptions = [] }: Feed
           <DialogDescription>{t("common.feedbackSubtitle")}</DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-4">
+        <div
+          data-attachment-dropzone="true"
+          className="flex flex-col gap-4"
+          {...dropZoneHandlers}
+        >
           <div className="flex flex-col gap-1.5">
             <label className="text-sm font-medium text-foreground">
               {t("common.feedbackDescription")} <span className="text-destructive">*</span>
@@ -222,6 +155,7 @@ export function FeedbackDialog({ open, onOpenChange, sessionOptions = [] }: Feed
             <Textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
+              onPaste={(e) => { void extractPasteFiles(e); }}
               placeholder={t("common.feedbackDescriptionPlaceholder")}
               maxLength={MAX_DESCRIPTION_CHARS}
               rows={4}
@@ -247,31 +181,30 @@ export function FeedbackDialog({ open, onOpenChange, sessionOptions = [] }: Feed
 
           <div className="flex flex-col gap-1.5">
             <label className="text-sm font-medium text-foreground">{t("common.feedbackScreenshots")}</label>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={handleFilesFromInput}
+            />
             <div
-              ref={pasteZoneRef}
               className="flex min-h-20 cursor-pointer flex-wrap items-center gap-2 rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground"
-              onClick={onPickFiles}
+              onClick={() => { if (!submitting) void pickFiles(); }}
+              onPaste={(e) => { void extractPasteFiles(e); }}
             >
               <UploadCloud className="size-4 shrink-0" />
               <span>{t("common.feedbackScreenshotHint")}</span>
             </div>
-            {screenshots.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {screenshots.map((s, i) => (
-                  <div key={i} className="relative size-16 overflow-hidden rounded-md border border-border">
-                    <img src={s.previewUrl} alt={s.name} className="size-full object-cover" />
-                    <button
-                      type="button"
-                      className="absolute right-0.5 top-0.5 grid size-5 place-items-center rounded-full bg-background/80 text-foreground hover:bg-background"
-                      onClick={(e) => { e.stopPropagation(); removeScreenshot(i); }}
-                      disabled={submitting}
-                    >
-                      <X className="size-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            ) : null}
+            <AttachmentChipsList
+              attachments={attachments}
+              compact
+              onRemove={removeAttachment}
+              onPreview={handlePreviewAttachment}
+              onClear={clearAttachments}
+              clearLabel={t("common.clear")}
+            />
           </div>
 
           <label className="flex items-center gap-2 text-sm text-foreground">
@@ -283,6 +216,9 @@ export function FeedbackDialog({ open, onOpenChange, sessionOptions = [] }: Feed
             {t("common.feedbackPrivacyNotice")}
           </p>
 
+          {fileError ? (
+            <p className="text-sm text-destructive">{fileError}</p>
+          ) : null}
           {errorKey ? (
             <p className="text-sm text-destructive">{t(errorKey)}</p>
           ) : null}
@@ -297,6 +233,13 @@ export function FeedbackDialog({ open, onOpenChange, sessionOptions = [] }: Feed
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      <AttachmentPreviewDialogs
+        previewImage={previewImage}
+        textPreview={textPreview}
+        onCloseImage={() => setPreviewImage(null)}
+        onCloseText={() => setTextPreview(null)}
+      />
     </Dialog>
   );
 }

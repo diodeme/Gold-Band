@@ -132,6 +132,8 @@
 - 2026-05-20：收敛 provider system prompt：未声明 `output` 的节点会被明确告知无需产出 canonical artifact 或查找 artifact/output 约束；当前节点上下文由 prompt 给出，前序产出仅按 prompt 明确给出的路径读取，`run_dir` 只作为这些路径的父级上下文，避免节点为寻找未声明产物或确认约束主动扫描 run 目录。前序节点结果统一进入 system prompt 的执行链、artifact 路径和 preview，不再以 `Current Feedback` 注入 user prompt；跨 round 链路用 `-$new-round->` 说明新轮次来源。
 - 2026-05-21：ACP session 累计处理耗时改为净耗时，扣除 `session/request_permission` pending 到用户选择之间的阻塞式用户等待；该规则同时覆盖普通工具授权和 `ExitPlanMode` / keep planning 等 plan 决策。
 - 2026-05-21：ACP 会话详情新增“系统提示”入口，从 raw frame 中解析 `session/new._meta.systemPrompt.append` 并用弹窗只读展示实际追加的 system prompt。
+- 2026-07-28：ACP 系统提示弹窗默认使用现有 prompt-kit Markdown 渲染器展示，保留“渲染 Markdown / 原文”切换并通过独立本地偏好记忆，不与产物预览模式或 ACP session 数据耦合；多 attempt 切换继续沿用当前查看模式。
+- 2026-07-28：ACP 系统提示弹窗在桌面断点显式覆盖 shadcn Dialog 默认 `sm:max-w-lg` 为 `sm:max-w-5xl`，解决调用侧普通 `max-w-*` 无法覆盖响应式默认值导致的窄弹窗问题；小窗口继续保留组件默认视口安全边距。
 - 2026-05-23：continue 恢复路径改为重新渲染当前节点 system prompt，并随 `session/load._meta.systemPrompt.append` 传给 Claude Agent ACP；ACP 内部 create session 表示用 SDK `resume` 创建 query 进程，不改变 Gold Band 的 continue 语义。系统提示入口应同时解析 `session/new` 与 `session/load` 的追加内容。
 - 2026-05-23：Codex ACP 0.14.0 会忽略 ACP `_meta.systemPrompt`；Gold Band 对 `codex-acp` 在 `session/prompt` 前内联当前节点 system prompt，避免首次调用丢失节点约束。
 - 2026-05-23：桌面 ACP 会话面板的手动追问入口改为复用当前节点 prompt bundle，`session/load` 恢复旧会话后也重新追加节点 system prompt，避免用户追问时模型忘记输出 DSL。

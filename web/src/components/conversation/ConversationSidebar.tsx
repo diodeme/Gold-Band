@@ -564,7 +564,7 @@ function TaskRow({
   const isDirect = task.runMode === 'direct';
   const useAgentIdentity = conversationSidebarIdentityKind(task) === 'agent-icon';
   const latestColor = latestRun ? runStatusColor(latestRun) : 'bg-muted-foreground/30';
-  const relativeTimeSource = isDirect ? task.lastActivityAt : latestRun?.updatedAt;
+  const relativeTimeSource = task.lastActivityAt;
   const relativeTime = relativeTimeSource && (isDirect || latestRun?.status !== 'running')
     ? formatCompactRelativeTime(relativeTimeSource, t('conversation.runtime.justNow'))
     : null;

@@ -53,6 +53,7 @@ import type {
   WorkflowVm,
   FeedbackInput,
   FeedbackResult,
+  FeedbackArchivePreview,
 } from '../types';
 import { browserApi } from './browser';
 import { desktopApi } from './desktop';
@@ -240,6 +241,7 @@ export interface RuntimeApi {
     syncTargets?: string[] | null,
   ): Promise<string[]>;
   submitFeedback(input: FeedbackInput): Promise<FeedbackResult>;
+  previewFeedbackSessionArchive(sessionWorkspace: string | null, sessionTaskId: string | null): Promise<FeedbackArchivePreview | null>;
 }
 
 export function getRuntimeApi(): RuntimeApi {

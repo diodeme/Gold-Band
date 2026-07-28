@@ -4,6 +4,7 @@
 //! 但领域模型独立：本模块只负责主动反馈，不包含崩溃收集。
 
 use std::fs;
+use std::io::Write;
 
 use camino::Utf8PathBuf;
 use gold_band::config::RuntimeConfig;
@@ -54,6 +55,8 @@ struct FeedbackMetadata {
     session_workspace: Option<String>,
     session_task_id: Option<String>,
     log_attached: bool,
+    archive_attached: bool,
+    archive_bytes: u64,
     screenshot_count: usize,
 }
 
@@ -88,10 +91,10 @@ pub async fn submit_feedback(
     } else {
         None
     };
-    let snapshot_bytes = match (&input.session_workspace, &input.session_task_id) {
+    let archive_bytes = match (&input.session_workspace, &input.session_task_id) {
         (Some(workspace), Some(task_id)) => {
             let session_paths = GoldBandPaths::new(Utf8PathBuf::from(workspace));
-            read_session_snapshot(&session_paths, task_id)
+            archive_task_dir(&session_paths, task_id)
         }
         _ => None,
     };
@@ -103,6 +106,8 @@ pub async fn submit_feedback(
         session_workspace: input.session_workspace.clone(),
         session_task_id: input.session_task_id.clone(),
         log_attached: log_bytes.is_some(),
+        archive_attached: archive_bytes.is_some(),
+        archive_bytes: archive_bytes.as_ref().map(|b| b.len() as u64).unwrap_or(0),
         screenshot_count: input.screenshot_paths.len(),
     };
     let metadata_json = serde_json::to_string(&metadata).unwrap_or_default();
@@ -111,14 +116,14 @@ pub async fn submit_feedback(
         metadata_json,
         input.description.clone(),
         log_bytes.clone(),
-        snapshot_bytes.clone(),
+        archive_bytes.clone(),
         &input.screenshot_paths,
     );
     let form = build_feedback_form(
         &parts,
         &input.description,
         log_bytes.as_deref(),
-        snapshot_bytes.as_deref(),
+        archive_bytes.as_deref(),
         &input.screenshot_paths,
     );
 
@@ -147,6 +152,34 @@ pub async fn submit_feedback(
     }
 }
 
+/// Preview the session archive (uncompressed size + file count) so the
+/// feedback dialog can show the user how much will be uploaded before they
+/// commit. Returns null when the task directory does not exist.
+#[tauri::command]
+pub fn preview_feedback_session_archive(
+    state: State<'_, DesktopState>,
+    session_workspace: Option<String>,
+    session_task_id: Option<String>,
+) -> CommandResult<Option<FeedbackArchivePreview>> {
+    let (Some(workspace), Some(task_id)) = (session_workspace, session_task_id) else {
+        return Ok(None);
+    };
+    let context = state.context().map_err(command_error)?;
+    let _ = context.repo_root.clone();
+    let session_paths = GoldBandPaths::new(Utf8PathBuf::from(workspace));
+    Ok(preview_task_dir(&session_paths, &task_id).map(|(bytes, file_count)| FeedbackArchivePreview {
+        uncompressed_bytes: bytes,
+        file_count,
+    }))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedbackArchivePreview {
+    pub uncompressed_bytes: u64,
+    pub file_count: usize,
+}
+
 fn resolve_endpoint(config: &RuntimeConfig) -> Option<String> {
     metrics_base_url(config)
         .as_deref()
@@ -169,7 +202,7 @@ fn collect_feedback_parts(
     metadata_json: String,
     description: String,
     log_bytes: Option<Vec<u8>>,
-    snapshot_bytes: Option<Vec<u8>>,
+    archive_bytes: Option<Vec<u8>>,
     screenshot_paths: &[String],
 ) -> Vec<PartSpec> {
     let mut parts = vec![
@@ -186,11 +219,11 @@ fn collect_feedback_parts(
             mime: "text/plain".to_string(),
         });
     }
-    if snapshot_bytes.is_some() {
+    if archive_bytes.is_some() {
         parts.push(PartSpec::File {
-            name: "session_snapshot".to_string(),
-            file_name: "acp.snapshot.json".to_string(),
-            mime: "application/json".to_string(),
+            name: "session_archive".to_string(),
+            file_name: "task.zip".to_string(),
+            mime: "application/zip".to_string(),
         });
     }
     for (idx, path) in screenshot_paths.iter().enumerate() {
@@ -211,7 +244,7 @@ fn build_feedback_form(
     parts: &[PartSpec],
     description: &str,
     log_bytes: Option<&[u8]>,
-    snapshot_bytes: Option<&[u8]>,
+    archive_bytes: Option<&[u8]>,
     screenshot_paths: &[String],
 ) -> reqwest::multipart::Form {
     let mut form = reqwest::multipart::Form::new();
@@ -223,7 +256,7 @@ fn build_feedback_form(
             PartSpec::File { name, file_name, mime } => {
                 let bytes: Vec<u8> = match name.as_str() {
                     "log" => log_bytes.map(|b| b.to_vec()).unwrap_or_default(),
-                    "session_snapshot" => snapshot_bytes.map(|b| b.to_vec()).unwrap_or_default(),
+                    "session_archive" => archive_bytes.map(|b| b.to_vec()).unwrap_or_default(),
                     other if other.starts_with("screenshot_") => {
                         let idx: usize = other
                             .trim_start_matches("screenshot_")
@@ -306,22 +339,73 @@ fn read_log_tail(paths: &GoldBandPaths) -> Option<Vec<u8>> {
     Some(bytes[cut..].to_vec())
 }
 
-fn read_session_snapshot(paths: &GoldBandPaths, task_id: &str) -> Option<Vec<u8>> {
+/// Zip the entire task directory into bytes for upload. The console receives
+/// the full session context (task/workflow/run/round/node metadata, events,
+/// snapshots, attachments) so it can reconstruct what happened. This replaces
+/// the previous single-file snapshot upload.
+fn archive_task_dir(paths: &GoldBandPaths, task_id: &str) -> Option<Vec<u8>> {
     let task_dir = paths.task_dir(task_id);
-    let mut latest: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
-    for entry in walkdir(&task_dir) {
-        if entry.file_name().to_str() == Some("acp.snapshot.json") {
-            if let Ok(meta) = entry.metadata() {
-                if let Ok(modified) = meta.modified() {
-                    if latest.as_ref().map_or(true, |(_, t)| modified > *t) {
-                        latest = Some((entry.path().to_path_buf(), modified));
-                    }
+    if !task_dir.is_dir() {
+        return None;
+    }
+    let entries = walkdir(&task_dir);
+    let mut buf: std::io::Cursor<Vec<u8>> = std::io::Cursor::new(Vec::new());
+    {
+        let mut zip = zip::ZipWriter::new(&mut buf);
+        let opts: zip::write::SimpleFileOptions =
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+        for entry in &entries {
+            let path = entry.path();
+            let Ok(rel) = path.strip_prefix(task_dir.as_std_path()) else {
+                continue;
+            };
+            let Some(rel_str) = rel.to_str() else { continue };
+            let zip_name = rel_str.replace('\\', "/");
+            if path.is_file() {
+                if zip.start_file(&zip_name, opts).is_err() {
+                    continue;
                 }
+                if let Ok(data) = fs::read(path) {
+                    let _ = zip.write_all(&data);
+                }
+            } else if rel_str.is_empty() {
+                // skip root
+            }
+        }
+        let _ = zip.finish();
+    }
+    let bytes = buf.into_inner();
+    if bytes.is_empty() {
+        None
+    } else {
+        Some(bytes)
+    }
+}
+
+/// Preview the archive without building it: total uncompressed size + file
+/// count, so the feedback dialog can show the user how much will be uploaded.
+fn preview_task_dir(paths: &GoldBandPaths, task_id: &str) -> Option<(u64, usize)> {
+    let task_dir = paths.task_dir(task_id);
+    if !task_dir.is_dir() {
+        return None;
+    }
+    let entries = walkdir(&task_dir);
+    let mut total: u64 = 0;
+    let mut count: usize = 0;
+    for entry in &entries {
+        if entry.path().is_file() {
+            if let Ok(meta) = entry.metadata() {
+                total += meta.len();
+                count += 1;
             }
         }
     }
-    let (path, _) = latest?;
-    fs::read(&path).ok()
+    if count == 0 {
+        None
+    } else {
+        Some((total, count))
+    }
 }
 
 fn walkdir(root: &Utf8PathBuf) -> Vec<std::fs::DirEntry> {
@@ -474,6 +558,8 @@ mod tests {
             session_workspace: Some("/work/B".to_string()),
             session_task_id: Some("task-015".to_string()),
             log_attached: true,
+            archive_attached: false,
+            archive_bytes: 0,
             screenshot_count: 2,
         };
         let json = serde_json::to_value(&metadata).unwrap();
@@ -495,6 +581,8 @@ mod tests {
             session_workspace: None,
             session_task_id: None,
             log_attached: false,
+            archive_attached: false,
+            archive_bytes: 0,
             screenshot_count: 0,
         };
         let json = serde_json::to_value(&metadata).unwrap();
@@ -504,45 +592,82 @@ mod tests {
         assert!(json["sessionTaskId"].is_null());
     }
 
-    #[test]
-    fn snapshot_resolves_in_session_workspace_not_global_repo_root() {
-        // Regression: read_session_snapshot must look under sessionWorkspace,
-        // not under the global repo_root, so cross-workspace feedback can find
-        // the snapshot.
-        let session_root = tempfile::tempdir().unwrap();
-        let session_paths_config = gold_band::storage::StoragePathConfig {
+    fn session_paths_config() -> gold_band::storage::StoragePathConfig {
+        gold_band::storage::StoragePathConfig {
             app_key: "gold-band",
             config_dir_name: ".gold-band",
             home_env_var: "GOLD_BAND_HOME",
-        };
-        let session_paths = GoldBandPaths::new_with_path_config(
-            camino::Utf8PathBuf::from_path_buf(session_root.path().to_path_buf()).unwrap(),
-            session_paths_config,
-        );
-        // Create a snapshot file inside the session workspace's task dir.
-        let attempt_dir = session_paths
+        }
+    }
+
+    fn session_paths(root: &tempfile::TempDir) -> GoldBandPaths {
+        GoldBandPaths::new_with_path_config(
+            camino::Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap(),
+            session_paths_config(),
+        )
+    }
+
+    #[test]
+    fn archive_packs_whole_task_dir_and_resolves_in_session_workspace() {
+        // Regression: archive_task_dir must look under sessionWorkspace, not
+        // the global repo_root, so cross-workspace feedback can find the task.
+        let root = tempfile::tempdir().unwrap();
+        let paths = session_paths(&root);
+        let attempt_dir = paths
             .task_dir("task-015")
             .join("run-001")
             .join("round-001")
             .join("node-001")
             .join("attempt-001");
         let _ = fs::create_dir_all(attempt_dir.as_std_path());
-        fs::write(
-            attempt_dir.join("acp.snapshot.json").as_std_path(),
-            b"{}",
-        ).unwrap();
-        // Reading with the session workspace's paths finds the snapshot.
-        assert!(read_session_snapshot(&session_paths, "task-015").is_some());
-        // Reading with a different (global) workspace's paths does not.
+        fs::write(attempt_dir.join("acp.snapshot.json").as_std_path(), b"{}").unwrap();
+        fs::write(paths.task_dir("task-015").join("task.json").as_std_path(), b"{}").unwrap();
+
+        let zip_bytes = archive_task_dir(&paths, "task-015").expect("archive should exist");
+        assert!(!zip_bytes.is_empty());
+        // The zip should contain both files we created.
+        let mut reader = std::io::Cursor::new(&zip_bytes);
+        let mut archive = zip::ZipArchive::new(&mut reader).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+            .collect();
+        assert!(names.iter().any(|n| n.contains("task.json")), "names: {names:?}");
+        assert!(names.iter().any(|n| n.contains("acp.snapshot.json")), "names: {names:?}");
+
+        // A different workspace's paths do not find the task.
         let other_root = tempfile::tempdir().unwrap();
-        let other_paths = GoldBandPaths::new_with_path_config(
-            camino::Utf8PathBuf::from_path_buf(other_root.path().to_path_buf()).unwrap(),
-            gold_band::storage::StoragePathConfig {
-                app_key: "gold-band",
-                config_dir_name: ".gold-band",
-                home_env_var: "GOLD_BAND_HOME",
-            },
+        let other_paths = session_paths(&other_root);
+        assert!(archive_task_dir(&other_paths, "task-015").is_none());
+    }
+
+    #[test]
+    fn preview_reports_uncompressed_size_and_file_count() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = session_paths(&root);
+        fs::create_dir_all(paths.task_dir("task-015").as_std_path()).unwrap();
+        fs::write(paths.task_dir("task-015").join("task.json").as_std_path(), b"hello world").unwrap();
+        fs::write(paths.task_dir("task-015").join("events.jsonl").as_std_path(), b"line1\nline2\n").unwrap();
+
+        let (size, count) = preview_task_dir(&paths, "task-015").expect("preview should exist");
+        assert_eq!(count, 2);
+        assert_eq!(size, (b"hello world".len() + b"line1\nline2\n".len()) as u64);
+
+        // Empty / missing task dir returns None.
+        assert!(preview_task_dir(&paths, "task-999").is_none());
+    }
+
+    #[test]
+    fn parts_include_session_archive_when_present() {
+        let parts = collect_feedback_parts(
+            "{}".to_string(),
+            "desc".to_string(),
+            None,
+            Some(vec![1, 2, 3]),
+            &[],
         );
-        assert!(read_session_snapshot(&other_paths, "task-015").is_none());
+        assert!(parts.iter().any(|p| matches!(p, PartSpec::File { name, .. } if name == "session_archive")));
+        // No archive part when absent.
+        let parts2 = collect_feedback_parts("{}".into(), "d".into(), None, None, &[]);
+        assert!(!parts2.iter().any(|p| matches!(p, PartSpec::File { name, .. } if name == "session_archive")));
     }
 }

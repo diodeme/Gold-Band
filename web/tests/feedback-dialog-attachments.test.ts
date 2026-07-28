@@ -19,8 +19,17 @@ describe('FeedbackDialog screenshot pipeline', () => {
     expect(SOURCE).toContain('acceptMimePrefix');
   });
 
-  it('binds paste on the textarea (DOM-native), not on the window', () => {
-    expect(SOURCE).toMatch(/onPaste=\{[^}]*extractPasteFiles/);
+  it('listens for paste globally via document, decoupled from the click target', () => {
+    // Paste (Ctrl+V) works anywhere in the dialog via a document-level
+    // listener, so it no longer conflicts with the click-to-pick-files
+    // affordance on the drop zone. The drop zone itself is click-only.
+    expect(SOURCE).toContain('document.addEventListener("paste"');
+    expect(SOURCE).toContain('addFiles(files)');
+    // The drop zone must NOT also bind onPaste (that was the conflict source).
+    const dropZoneMatch = SOURCE.match(/cursor-pointer[\s\S]*?onClick=\{[^}]*pickFiles[\s\S]*?\}>/);
+    expect(dropZoneMatch, 'drop zone block should be present').toBeTruthy();
+    expect(dropZoneMatch![0]).not.toContain('onPaste');
+    // No legacy window-level or ref-gated listeners.
     expect(SOURCE).not.toContain("window.addEventListener('paste'");
     expect(SOURCE).not.toContain('window.addEventListener("paste"');
     expect(SOURCE).not.toContain('pasteZoneRef');

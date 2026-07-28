@@ -151,7 +151,7 @@ round 详情
 - 应用整窗统一使用共享顶栏，不保留额外原生 header；macOS 仅保留系统左上角 traffic lights，Windows/Linux 使用顶栏右侧自定义窗口按钮
 - 顶栏颜色跟随当前主题切换，浅色与深色主题都维持同一套结构
 - 顶栏左侧只保留一个侧边栏折叠按钮；macOS 在按钮前为原生 traffic lights 预留安全间距；观察期内不展示 Workbench / Conversation 形态切换控件
-- 共享顶栏除按钮、输入等交互控件外都属于窗口拖拽命中区；Windows/Linux 使用 Tauri `startDragging` 与 WebView app-region 共同保证拖拽稳定性，交互控件必须显式退出拖拽区
+- 共享顶栏除按钮、输入等交互控件外都属于窗口拖拽命中区；鼠标拖拽与双击最大化统一由 Tauri `data-tauri-drag-region` 注入脚本管理，WebView2 `app-region: drag` 仅作为 Windows 触摸/触控笔补充。禁止 React `mousedown` 再手动调用 `startDragging()`，避免同一手势重复进入 TAO 原生拖拽生命周期；交互控件必须显式退出拖拽区
 - 侧边栏折叠/展开使用平滑宽度过渡，不做瞬时消失；内容透明度可略早于宽度收起，以减少视觉突兀
 - 顶栏与侧边栏默认共用同一 surface 底色，并去掉强横向分割线；右侧主区使用更弱的 top/left 边界与左上圆角衔接，主区圆角后方露出的底色继续复用 sidebar surface，而不是把侧边栏自身裁成圆角，避免角后方出现异色小方块
 - 桌面外轮廓、阴影与圆角优先由宿主窗口 compositor 管理；Windows 11 及更高版本不得再叠加整窗 border、CSS 圆角或高层级伪元素，避免与 DWM 圆角形成双层轮廓。Windows 10 不具备 DWM 原生圆角能力，由宿主 bootstrap 下发统一的 frame/shadow policy：关闭 TAO undecorated native shadow，应用根壳仅在 `app-outline` 策略下绘制不占布局的主题化 1px 内侧边界，并叠加四边一致的低透明度柔和内阴影，增强独立窗口层次；边界和阴影按主题 token 管理，不得使用可能被 WebView viewport 裁切的 CSS `outline`。Win10 保持系统方角，不伪造与真实窗口区域不一致的 CSS 圆角。
@@ -190,6 +190,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-07-23 起共享顶栏取消 Windows/Linux 窗口控制组的末尾 gutter，并固定控制组及每个按钮的 intrinsic width；删除 Web 层 `1040x680` 最小尺寸镜像，让真实 viewport 持续驱动响应式布局。角色管理卡片网格改为容器查询升列，卡片操作区支持换行，以覆盖 Win10 1080p 显示缩放和最小窗口场景。
 - 2026-07-23 Windows 边缘缩放修正：采用 Tauri/WebView2 transparent composition workaround，并复用 AionUi 的“窗口初始隐藏、首帧完成后显示”启动策略；保留 native shadow 以获得 Win11 DWM 原生圆角和边框，删除 Win11 根壳的整窗 border、CSS 圆角与高层级伪元素。
 - 2026-07-28 Windows 10 窗口边界兼容：不回退 opaque WebView2 controller，也不恢复跨版本通用 CSS 圆角；桌面 bootstrap 基于 `RtlGetVersion` 的真实系统 build 下发 `native-compositor` / `app-outline` frame policy 与 `nativeShadow`。Win10 关闭 TAO undecorated shadow，使用对比度更明确的主题化 1px 内侧边界与四边一致的柔和内阴影，消除三侧 native frame 黑线的同时保留清晰窗口层次；Win11 继续使用 DWM 原生圆角与 shadow。
+- 2026-07-28 Windows 10 最大化拖拽修正：删除共享顶栏重复的 React `startDragging()` 与手动双击切换，鼠标和双击只通过 Tauri `data-tauri-drag-region` 进入一次原生拖拽/最大化流程；保留 WebView2 app-region 作为触摸输入补充，避免最大化窗口拖拽还原时连续发送两次 caption drag 导致窗口移出工作区。
 
 ---
 

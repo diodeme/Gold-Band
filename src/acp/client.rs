@@ -2081,10 +2081,29 @@ impl<'a> AcpRuntime<'a> {
             .session_id
             .clone()
             .ok_or_else(|| anyhow!("ACP model selection requires a session id"))?;
-        let model = model.trim();
-        if model.is_empty() {
-            return Ok(());
-        }
+        let model = match resolve_session_model(model, self.config_options.as_ref()) {
+            SessionModelResolution::Unspecified => return Ok(()),
+            SessionModelResolution::Selected(model) => model,
+            SessionModelResolution::Stale {
+                requested,
+                available,
+            } => {
+                append_diagnostic(
+                    &self.paths.diagnostics,
+                    "warn",
+                    format!(
+                        "configured ACP model `{requested}` is no longer available; using the provider default"
+                    ),
+                    Some(json!({
+                        "event": "acp_model_config_normalized",
+                        "requestedModel": requested,
+                        "availableModels": available,
+                    })),
+                )?;
+                self.model_override = None;
+                return Ok(());
+            }
+        };
         if has_model_config_option(self.config_options.as_ref()) {
             let config_id = self
                 .config_options
@@ -2103,7 +2122,7 @@ impl<'a> AcpRuntime<'a> {
                 }),
             )?;
             self.capture_session_config(&result);
-            self.set_current_model(model);
+            self.set_current_model(&model);
             return Ok(());
         }
         if self.modes.is_some() {
@@ -2115,7 +2134,7 @@ impl<'a> AcpRuntime<'a> {
                 }),
             )?;
             self.capture_session_config(&result);
-            self.set_current_model(model);
+            self.set_current_model(&model);
         }
         Ok(())
     }
@@ -4426,6 +4445,41 @@ fn resolve_permission_mode(
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SessionModelResolution {
+    Unspecified,
+    Selected(String),
+    Stale {
+        requested: String,
+        available: Vec<String>,
+    },
+}
+
+fn resolve_session_model(model: &str, config_options: Option<&Value>) -> SessionModelResolution {
+    let model = model.trim();
+    if model.is_empty() {
+        return SessionModelResolution::Unspecified;
+    }
+    let available = config_options
+        .and_then(find_model_config_option)
+        .and_then(|option| option.get("options"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|option| option.get("value").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if available.is_empty() || available.iter().any(|candidate| candidate == model) {
+        return SessionModelResolution::Selected(model.to_string());
+    }
+    SessionModelResolution::Stale {
+        requested: model.to_string(),
+        available,
+    }
+}
+
 fn available_mode_ids(config_options: Option<&Value>, modes: Option<&Value>) -> Vec<String> {
     if let Some(options) = config_options
         .and_then(find_mode_config_option)
@@ -4554,16 +4608,18 @@ mod tests {
     use super::{
         AcpContextCompactionState, AcpRuntime, AcpRuntimePolicy, AcpUsageState,
         AttachedSessionReusePlan, DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptActivity, PromptBundle,
-        PromptVisibility, ProviderFreshnessBaseline, RuntimeStopProbe, SessionUpdatePhase,
-        active_context_compaction, active_timeline_streams, attached_sync_required,
-        cleanup_doctor_acp_dir_after_success, contributes_to_final_text, drain_frames_until_quiet,
-        evaluate_provider_revision, is_transport_interruption, is_unscoped_codex_diagnostic_update,
-        merge_tool_raw_input, permission_decision_timeline_event, plan_attached_session_reuse,
-        prompt_activity, register_provider_control, request_prompt_cancel, resolve_permission_mode,
-        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
-        session_config_fingerprint, session_load_params, session_new_params, session_prompt_params,
-        session_prompt_text, should_suppress_session_update,
-        take_pending_live_update_for_stream_switch, unregister_provider_control,
+        PromptVisibility, ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution,
+        SessionUpdatePhase, active_context_compaction, active_timeline_streams,
+        attached_sync_required, cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
+        drain_frames_until_quiet, evaluate_provider_revision, is_transport_interruption,
+        is_unscoped_codex_diagnostic_update, merge_tool_raw_input,
+        permission_decision_timeline_event, plan_attached_session_reuse, prompt_activity,
+        register_provider_control, request_prompt_cancel, resolve_permission_mode,
+        resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
+        runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
+        session_new_params, session_prompt_params, session_prompt_text,
+        should_suppress_session_update, take_pending_live_update_for_stream_switch,
+        unregister_provider_control,
     };
     use crate::acp::{
         connection::AcpConnectionUnavailable,
@@ -5555,6 +5611,30 @@ mod tests {
 
         assert!(error.contains("unknown"));
         assert!(error.contains("read-only, auto"));
+    }
+
+    #[test]
+    fn stale_session_model_is_normalized_to_unspecified_before_rpc() {
+        let config_options = json!([{
+            "id": "model",
+            "category": "model",
+            "options": [
+                { "value": "gpt-5.6-sol", "name": "GPT-5.6-Sol" },
+                { "value": "gpt-5.6-terra", "name": "GPT-5.6-Terra" }
+            ]
+        }]);
+
+        assert_eq!(
+            resolve_session_model("gpt-5.4", Some(&config_options)),
+            SessionModelResolution::Stale {
+                requested: "gpt-5.4".to_string(),
+                available: vec!["gpt-5.6-sol".to_string(), "gpt-5.6-terra".to_string()],
+            }
+        );
+        assert_eq!(
+            resolve_session_model("gpt-5.6-sol", Some(&config_options)),
+            SessionModelResolution::Selected("gpt-5.6-sol".to_string())
+        );
     }
 
     #[test]

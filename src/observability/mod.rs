@@ -157,6 +157,8 @@ pub struct RunEventData {
     pub summary: Option<String>,
     pub pause_reason: Option<PauseReason>,
     pub control_failure: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig, enable_stderr_progress: bool) {
@@ -343,6 +345,7 @@ pub fn run_event_data(
         summary,
         pause_reason,
         control_failure: None,
+        details: None,
     }
 }
 

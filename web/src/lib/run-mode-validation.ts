@@ -139,16 +139,12 @@ export function validateAutoConfig(
     if (availableAgents.length === 0) {
       issues.push(t('runMode.validationDynamicAvailableAgentsRequired'));
     }
-    const hasRoutingPrompt = Boolean(config?.routingPrompt?.trim());
     const seen = new Set<string>();
     for (const item of availableAgents) {
       const provider = item.provider.trim();
       if (seen.has(provider)) issues.push(t('runMode.validationDynamicAgentDuplicated', { agent: provider }));
       seen.add(provider);
       requireReadyAgent(provider, t('workflowEditor.dynamicAvailableAgents'));
-      if (!hasRoutingPrompt && !item.model?.trim()) {
-        issues.push(t('runMode.validationDynamicAgentModelRequiredWithoutRouting', { agent: provider }));
-      }
     }
   } else {
     requireReadyAgent(config?.agentType, t('runMode.agent'));

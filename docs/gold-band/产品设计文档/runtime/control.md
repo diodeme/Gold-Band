@@ -12,6 +12,8 @@ Runtime Control 是运行时状态机：它读取当前 worker 节点的 `NodeOu
 
 provider/auth/quota/rate-limit/model/catalog/transport/IO 等异常必须先归一化为 `RuntimeErrorInfo`，再映射到 `runtime-abnormal` 或 `error-blocked`。它们不能写成 `NodeOutcome::Failure`，也不能驱动 `failure` edge。
 
+模型配置过期不属于运行异常。模型目录是 provider 的快速变化能力事实：加载或保存 workflow template、创建或读取 task authoring workflow、以及创建或加载 run snapshot 时，若最新 Agent diagnostics 已提供非空模型目录且明确不再包含配置模型，runtime 将对应字段规范化为“不指定”、持久化回作者态 JSON 与运行快照，并在 run 生命周期记录结构化 `model_config_normalized` 事件；这样 UI、原始 JSON、快照与实际调用不会分叉。若目录缺失或为空，runtime 保留原值，不能把“无法确认”误判为“已经过期”。ACP `session/new/load` 返回权威 config options 后必须再次校验；若此时确认模型过期，则跳过模型配置 RPC、清除本次 override、记录 `acp_model_config_normalized` 诊断并继续使用 provider 默认模型。
+
 ## 3. 控制决策
 
 | 当前 outcome | 决策 |
@@ -84,6 +86,8 @@ ACP invocation 的 continue prompt state 由 runtime 统一决策，普通 workf
 - 事件、timeline、raw frame 等观察性写入失败，且不会改变 workflow 前提条件。
 
 `runtime-abnormal` 与用户停止的 `process-interrupted` 都保留当前 run / round / node / attempt，并允许通过 runtime continue 恢复；区别是前者需要以异常视觉提醒用户排查本地、协议层或 provider/config 条件。用户点击继续且后端接受后，会话输入区立即进入 runtime 控制态并保持锁定，直到 runtime active、停止中、错误或下一次可交互暂停事实到达；后台写入 running 文件前残留的旧 paused / interrupted-input 快照不得让输入区短暂恢复为可输入。错误分类优先使用 runtime 内部 typed error 与 source chain 中的 `std::io::Error` / transport error；只有 adapter、ACP 或第三方库没有稳定错误类型时，才允许在统一 normalization 层用字符串特征作为最后兜底。
+
+若 ACP 在 session-ready、session id 或首批 timeline event 形成前已经进入 `runtime-error`，会话 UI 必须优先展示 runtime diagnostic 错误态并停止初始 loading；不能因为 session snapshot 尚未 ready 而持续显示加载中。已经建立 session 或已有事件的会话仍走正常会话错误展示路径，避免初始化错误规则覆盖可恢复的既有会话。
 
 ## 9. 错误阻塞
 以下情况进入 `paused + error-blocked`：

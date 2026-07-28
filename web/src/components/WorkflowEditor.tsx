@@ -2349,7 +2349,6 @@ function validateAiDynamicNodeForSave(
     if ((node.agentStrategy.availableAgents ?? []).length === 0) {
       addIssue(t('workflowEditor.validationDynamicAvailableAgentsRequired', { node: nodeLabel }), nodeField(node, 'agentStrategy.availableAgents'), node.id);
     }
-    const hasRoutingPrompt = Boolean(node.agentStrategy.routingPrompt?.trim());
     const seenDynamicAgents = new Set<string>();
     (node.agentStrategy.availableAgents ?? []).forEach((agentRef, index) => {
       const provider = agentRef.provider?.trim();
@@ -2364,9 +2363,6 @@ function validateAiDynamicNodeForSave(
       seenDynamicAgents.add(provider);
       if (!agentIds.has(provider)) {
         addIssue(t('workflowEditor.validationNodeProviderUnavailable', { node: nodeLabel }), nodeField(node, `agentStrategy.availableAgents.${index}.provider`), node.id);
-      }
-      if (!hasRoutingPrompt && !agentRef.model?.trim()) {
-        addIssue(t('workflowEditor.validationDynamicAgentModelRequiredWithoutRouting', { node: nodeLabel, agent: provider }), nodeField(node, `agentStrategy.availableAgents.${index}.model`), node.id);
       }
     });
   }

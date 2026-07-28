@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isAcpSessionInitializationFailed,
   isAcpSessionInitializationInterrupted,
   missingAcpSessionRetryDelay,
   resolveAcpSessionShellState,
@@ -41,6 +42,16 @@ describe('shouldCreateLiveAcpSessionShell', () => {
 });
 
 describe('resolveAcpSessionShellState', () => {
+  it('shows runtime initialization errors before the loading shell', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: true,
+      initializationFailed: true,
+    })).toBe('error');
+  });
+
   it('shows an interrupted terminal shell immediately when ACP initialization never established a session', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: true,
@@ -110,6 +121,36 @@ describe('resolveAcpSessionShellState', () => {
       hasLiveSessionShell: false,
       initialSessionLoading: false,
     })).toBe('available');
+  });
+});
+
+describe('isAcpSessionInitializationFailed', () => {
+  const failedInput = {
+    runtimeActive: false,
+    runtimeComposerMode: 'runtime-error',
+    runtimeErrorMessage: 'Configured model is unavailable',
+    sessionId: null,
+    baseSessionReady: false,
+    loadedEventCount: 0,
+  };
+
+  it('identifies runtime errors that happen before ACP session-ready state', () => {
+    expect(isAcpSessionInitializationFailed(failedInput)).toBe(true);
+  });
+
+  it('keeps established or active sessions on the normal conversation path', () => {
+    expect(isAcpSessionInitializationFailed({
+      ...failedInput,
+      sessionId: 'session-1',
+    })).toBe(false);
+    expect(isAcpSessionInitializationFailed({
+      ...failedInput,
+      runtimeActive: true,
+    })).toBe(false);
+    expect(isAcpSessionInitializationFailed({
+      ...failedInput,
+      loadedEventCount: 1,
+    })).toBe(false);
   });
 });
 

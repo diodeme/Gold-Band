@@ -131,15 +131,15 @@ export function findAcpConfigOption(
   category: AcpSessionConfigCategory,
   id: string,
 ): AcpSessionConfigOption {
-  const groupedMatch = groupedConfigOptions(groupedOptions, category).find(
-    (option) => option.id === id,
-  );
-  if (groupedMatch) return groupedMatch;
-
   const configMatch = configOptionValues(configOptions, category).find(
     (option) => option.id === id,
   );
-  return configMatch ?? { id, name: id };
+  if (configMatch) return configMatch;
+
+  const groupedMatch = groupedConfigOptions(groupedOptions, category).find(
+    (option) => option.id === id,
+  );
+  return groupedMatch ?? { id, name: id };
 }
 
 export function normalizeAcpSessionConfigOptions(
@@ -147,9 +147,9 @@ export function normalizeAcpSessionConfigOptions(
   configOptions: unknown,
   category: AcpSessionConfigCategory,
 ): AcpSessionConfigOption[] {
-  const grouped = groupedConfigOptions(groupedOptions, category);
-  if (grouped.length > 0) return grouped;
-  return configOptionValues(configOptions, category);
+  const configured = configOptionValues(configOptions, category);
+  if (configured.length > 0) return configured;
+  return groupedConfigOptions(groupedOptions, category);
 }
 
 function createAcpSessionConfigSignature(

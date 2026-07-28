@@ -133,13 +133,10 @@ describe("ACP session config view model", () => {
     expect(viewModel.canSelectUnspecifiedPermissionMode).toBe(false);
   });
 
-  it("normalizes grouped model and permission mode options", () => {
+  it("prefers generic config options over conflicting legacy grouped options", () => {
     const viewModel = createAcpSessionConfigViewModel(baseConfig());
 
-    expect(viewModel.availableModels.map((option) => option.id)).toEqual([
-      "gpt-5",
-      "gpt-5-mini",
-    ]);
+    expect(viewModel.availableModels.map((option) => option.id)).toEqual(["fallback"]);
     expect(viewModel.availablePermissionModes.map((option) => option.id)).toEqual([
       "ask",
       "full_access",
@@ -188,6 +185,36 @@ describe("ACP session config view model", () => {
     });
 
     expect(viewModel.availableModels).toHaveLength(1);
+    expect(viewModel.thoughtLevel).toBeNull();
+  });
+
+  it("uses the pure model catalog when legacy models expand reasoning variants", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      currentModelId: "gpt-5.6-sol",
+      currentModelName: "GPT-5.6-Sol",
+      models: {
+        currentModelId: "gpt-5.6-sol[max]",
+        availableModels: [
+          { modelId: "gpt-5.6-sol[low]", name: "GPT-5.6-Sol (low)" },
+          { modelId: "gpt-5.6-sol[max]", name: "GPT-5.6-Sol (max)" },
+        ],
+      },
+      configOptions: [{
+        id: "model",
+        category: "model",
+        type: "select",
+        currentValue: "gpt-5.6-sol",
+        options: [
+          { value: "gpt-5.6-sol", name: "GPT-5.6-Sol" },
+          { value: "gpt-5.6-terra", name: "GPT-5.6-Terra" },
+        ],
+      }],
+    });
+
+    expect(viewModel.availableModels).toEqual([
+      { id: "gpt-5.6-sol", name: "GPT-5.6-Sol", description: null },
+      { id: "gpt-5.6-terra", name: "GPT-5.6-Terra", description: null },
+    ]);
     expect(viewModel.thoughtLevel).toBeNull();
   });
 

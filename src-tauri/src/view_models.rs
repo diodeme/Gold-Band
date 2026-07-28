@@ -5585,25 +5585,27 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
-    let current_model_id = models
-        .as_ref()
-        .and_then(|value| value.get("currentModelId"))
-        .and_then(|value| value.as_str())
-        .map(str::to_string)
-        .or_else(|| config_current_value(config_options.as_ref(), "model"));
-    let current_mode_id = modes
-        .as_ref()
-        .and_then(|value| value.get("currentModeId"))
-        .and_then(|value| value.as_str())
-        .map(str::to_string)
-        .or_else(|| config_current_value(config_options.as_ref(), "mode"));
+    let current_model_id = config_current_value(config_options.as_ref(), "model").or_else(|| {
+        models
+            .as_ref()
+            .and_then(|value| value.get("currentModelId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    });
+    let current_mode_id = config_current_value(config_options.as_ref(), "mode").or_else(|| {
+        modes
+            .as_ref()
+            .and_then(|value| value.get("currentModeId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    });
     let current_model_name = current_model_id.as_deref().and_then(|model_id| {
-        model_display_name(models.as_ref(), model_id)
-            .or_else(|| config_option_display_name(config_options.as_ref(), "model", model_id))
+        config_option_display_name(config_options.as_ref(), "model", model_id)
+            .or_else(|| model_display_name(models.as_ref(), model_id))
     });
     let current_mode_name = current_mode_id.as_deref().and_then(|mode_id| {
-        mode_display_name(modes.as_ref(), mode_id)
-            .or_else(|| config_option_display_name(config_options.as_ref(), "mode", mode_id))
+        config_option_display_name(config_options.as_ref(), "mode", mode_id)
+            .or_else(|| mode_display_name(modes.as_ref(), mode_id))
     });
 
     if model_override_id.is_none()
@@ -7243,6 +7245,52 @@ mod tests {
                 .map(Vec::len),
             Some(2)
         );
+    }
+
+    #[test]
+    fn acp_session_config_prefers_config_options_over_conflicting_legacy_state() {
+        let config = acp_session_config_vm(&json!({
+            "models": {
+                "currentModelId": "gpt-5.6-sol[max]",
+                "availableModels": [
+                    { "modelId": "gpt-5.6-sol[low]", "name": "GPT-5.6-Sol (low)" },
+                    { "modelId": "gpt-5.6-sol[max]", "name": "GPT-5.6-Sol (max)" }
+                ]
+            },
+            "modes": {
+                "currentModeId": "legacy-mode",
+                "availableModes": [
+                    { "id": "legacy-mode", "name": "Legacy mode" }
+                ]
+            },
+            "configOptions": [
+                {
+                    "id": "model",
+                    "category": "model",
+                    "type": "select",
+                    "currentValue": "gpt-5.6-sol",
+                    "options": [
+                        { "value": "gpt-5.6-sol", "name": "GPT-5.6-Sol" },
+                        { "value": "gpt-5.6-terra", "name": "GPT-5.6-Terra" }
+                    ]
+                },
+                {
+                    "id": "mode",
+                    "category": "mode",
+                    "type": "select",
+                    "currentValue": "agent",
+                    "options": [
+                        { "value": "agent", "name": "Agent" }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(config.current_model_id.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(config.current_model_name.as_deref(), Some("GPT-5.6-Sol"));
+        assert_eq!(config.current_mode_id.as_deref(), Some("agent"));
+        assert_eq!(config.current_mode_name.as_deref(), Some("Agent"));
     }
 
     #[test]

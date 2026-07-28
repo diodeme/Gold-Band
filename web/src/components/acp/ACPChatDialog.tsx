@@ -330,6 +330,18 @@ export const ACP_RAW_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
   "h-full overflow-y-auto p-5",
 );
 
+export const ACP_SYSTEM_PROMPT_DIALOG_LAYOUT = {
+  dialogContentClassName:
+    "max-h-[86vh] max-w-4xl gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55 flex flex-col",
+  headerClassName: "shrink-0 border-b px-5 py-4",
+  scrollContainerClassName: goldThemedScrollbarClassName(
+    "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-scroll",
+  ),
+  bodyClassName: "min-w-0 max-w-full space-y-3 px-5 pb-5 pr-6",
+  promptClassName:
+    "w-full min-w-0 max-w-full overflow-x-hidden rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-all [overflow-wrap:anywhere]",
+} as const;
+
 function timelineEventKey(event: AcpTimelineItem) {
   if (isChildAgentGroup(event)) return event.id;
   if (
@@ -3524,40 +3536,42 @@ const SystemPromptDialog = memo(function SystemPromptDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         overlayClassName="bg-black/16 backdrop-blur-md"
-        className="max-h-[86vh] max-w-4xl gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55"
+        className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.dialogContentClassName}
       >
-        <DialogHeader className="border-b px-5 py-4">
+        <DialogHeader className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.headerClassName}>
           <DialogTitle className="text-base">
             {t("acp.systemPromptTitle")}
           </DialogTitle>
         </DialogHeader>
-        <div className="min-h-0 space-y-3 px-5 pb-5">
-          {availableOptions.length > 1 ? (
-            <Select
-              value={selectedAttemptId ?? availableOptions[0]?.attemptId}
-              onValueChange={setSelectedAttemptId}
-            >
-              <SelectTrigger className="h-8 w-[220px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {availableOptions.map((option) => (
-                  <SelectItem value={option.attemptId} key={option.attemptId}>
-                    {option.attemptId}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : null}
-          {content ? (
-            <pre className="max-h-[64vh] overflow-auto rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words">
-              {content}
-            </pre>
-          ) : (
-            <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">
-              {t("acp.systemPromptEmpty")}
-            </div>
-          )}
+        <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.scrollContainerClassName}>
+          <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.bodyClassName}>
+            {availableOptions.length > 1 ? (
+              <Select
+                value={selectedAttemptId ?? availableOptions[0]?.attemptId}
+                onValueChange={setSelectedAttemptId}
+              >
+                <SelectTrigger className="h-8 w-[220px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableOptions.map((option) => (
+                    <SelectItem value={option.attemptId} key={option.attemptId}>
+                      {option.attemptId}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
+            {content ? (
+              <pre className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.promptClassName}>
+                {content}
+              </pre>
+            ) : (
+              <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">
+                {t("acp.systemPromptEmpty")}
+              </div>
+            )}
+          </div>
         </div>
       </DialogContent>
     </Dialog>

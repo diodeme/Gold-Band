@@ -1243,7 +1243,6 @@ export interface SkillContentVm {
 }
 
 // -- Feedback --
-export interface SessionRef { workspace: string; taskId: string; }
-export interface FeedbackInput { description: string; sessionRef?: SessionRef | null; screenshotPaths: string[]; includeLogs: boolean; }
+export interface FeedbackInput { description: string; sessionWorkspace?: string | null; sessionTaskId?: string | null; screenshotPaths: string[]; includeLogs: boolean; }
 export interface FeedbackResult { success: boolean; }
 

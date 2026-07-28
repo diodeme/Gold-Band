@@ -21,19 +21,14 @@ pub const MAX_SCREENSHOT_BYTES: usize = 5 * 1024 * 1024;
 pub const LOG_TAIL_BYTES: usize = 512 * 1024;
 pub const FEEDBACK_ENDPOINT_PATH: &str = "/api/client-report/feedback";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionRef {
-    pub workspace: String,
-    pub task_id: String,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeedbackInput {
     pub description: String,
     #[serde(default)]
-    pub session_ref: Option<SessionRef>,
+    pub session_workspace: Option<String>,
+    #[serde(default)]
+    pub session_task_id: Option<String>,
     #[serde(default)]
     pub screenshot_paths: Vec<String>,
     #[serde(default = "default_true")]
@@ -53,10 +48,11 @@ pub struct FeedbackResult {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FeedbackMetadata {
+    user_id: String,
     client_version: String,
     reported_at: String,
-    workspace: String,
-    session_ref: Option<SessionRef>,
+    session_workspace: Option<String>,
+    session_task_id: Option<String>,
     log_attached: bool,
     screenshot_count: usize,
 }
@@ -82,25 +78,30 @@ pub async fn submit_feedback(
         ));
     };
 
-    let paths = GoldBandPaths::new(repo_root.clone());
+    let log_paths = GoldBandPaths::new(repo_root.clone());
     let client_version = app_handle.package_info().version.to_string();
     let reported_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+    let user_id = crate::metrics::get_system_username();
 
     let log_bytes = if input.include_logs {
-        read_log_tail(&paths)
+        read_log_tail(&log_paths)
     } else {
         None
     };
-    let snapshot_bytes = match &input.session_ref {
-        Some(session_ref) => read_session_snapshot(&paths, &session_ref.task_id),
-        None => None,
+    let snapshot_bytes = match (&input.session_workspace, &input.session_task_id) {
+        (Some(workspace), Some(task_id)) => {
+            let session_paths = GoldBandPaths::new(Utf8PathBuf::from(workspace));
+            read_session_snapshot(&session_paths, task_id)
+        }
+        _ => None,
     };
 
     let metadata = FeedbackMetadata {
+        user_id,
         client_version,
         reported_at,
-        workspace: repo_root.to_string(),
-        session_ref: input.session_ref.clone(),
+        session_workspace: input.session_workspace.clone(),
+        session_task_id: input.session_task_id.clone(),
         log_attached: log_bytes.is_some(),
         screenshot_count: input.screenshot_paths.len(),
     };
@@ -350,7 +351,8 @@ mod tests {
     fn input(description: &str) -> FeedbackInput {
         FeedbackInput {
             description: description.to_string(),
-            session_ref: None,
+            session_workspace: None,
+            session_task_id: None,
             screenshot_paths: vec![],
             include_logs: false,
         }
@@ -448,9 +450,99 @@ mod tests {
         );
     }
 
-    #[test]
-    fn endpoint_resolution_returns_none_when_unconfigured() {
+   #[test]
+   fn endpoint_resolution_returns_none_when_unconfigured() {
+        // On channels with a compile-time locked metrics base URL (e.g. "wb"),
+        // metrics_base_url always falls back to the channel config, so
+        // resolve_endpoint can never return None. The "unconfigured -> None"
+        // contract is only reachable on channels that leave the base URL empty.
+        if !crate::channel::current_channel_config().metrics_base_url.is_empty() {
+            return;
+        }
         let config = RuntimeConfig::default();
         assert!(resolve_endpoint(&config).is_none());
+   }
+
+    #[test]
+    fn metadata_flattens_session_ref_and_includes_user_id() {
+        // The console receives a flat metadata JSON: no nested sessionRef,
+        // no outer workspace, and userId is always present.
+        let metadata = FeedbackMetadata {
+            user_id: "alice".to_string(),
+            client_version: "0.9.0".to_string(),
+            reported_at: "2026-07-28T10:00:00".to_string(),
+            session_workspace: Some("/work/B".to_string()),
+            session_task_id: Some("task-015".to_string()),
+            log_attached: true,
+            screenshot_count: 2,
+        };
+        let json = serde_json::to_value(&metadata).unwrap();
+        assert_eq!(json["userId"], "alice");
+        assert_eq!(json["sessionWorkspace"], "/work/B");
+        assert_eq!(json["sessionTaskId"], "task-015");
+        // No legacy nested or outer workspace keys.
+        assert!(json.get("workspace").is_none());
+        assert!(json.get("sessionRef").is_none());
+        assert!(json.get("session_ref").is_none());
+    }
+
+    #[test]
+    fn metadata_omits_session_fields_when_no_session() {
+        let metadata = FeedbackMetadata {
+            user_id: "bob".to_string(),
+            client_version: "0.9.0".to_string(),
+            reported_at: "2026-07-28T10:00:00".to_string(),
+            session_workspace: None,
+            session_task_id: None,
+            log_attached: false,
+            screenshot_count: 0,
+        };
+        let json = serde_json::to_value(&metadata).unwrap();
+        assert_eq!(json["userId"], "bob");
+        // Optional fields serialize as null when absent (serde default).
+        assert!(json["sessionWorkspace"].is_null());
+        assert!(json["sessionTaskId"].is_null());
+    }
+
+    #[test]
+    fn snapshot_resolves_in_session_workspace_not_global_repo_root() {
+        // Regression: read_session_snapshot must look under sessionWorkspace,
+        // not under the global repo_root, so cross-workspace feedback can find
+        // the snapshot.
+        let session_root = tempfile::tempdir().unwrap();
+        let session_paths_config = gold_band::storage::StoragePathConfig {
+            app_key: "gold-band",
+            config_dir_name: ".gold-band",
+            home_env_var: "GOLD_BAND_HOME",
+        };
+        let session_paths = GoldBandPaths::new_with_path_config(
+            camino::Utf8PathBuf::from_path_buf(session_root.path().to_path_buf()).unwrap(),
+            session_paths_config,
+        );
+        // Create a snapshot file inside the session workspace's task dir.
+        let attempt_dir = session_paths
+            .task_dir("task-015")
+            .join("run-001")
+            .join("round-001")
+            .join("node-001")
+            .join("attempt-001");
+        let _ = fs::create_dir_all(attempt_dir.as_std_path());
+        fs::write(
+            attempt_dir.join("acp.snapshot.json").as_std_path(),
+            b"{}",
+        ).unwrap();
+        // Reading with the session workspace's paths finds the snapshot.
+        assert!(read_session_snapshot(&session_paths, "task-015").is_some());
+        // Reading with a different (global) workspace's paths does not.
+        let other_root = tempfile::tempdir().unwrap();
+        let other_paths = GoldBandPaths::new_with_path_config(
+            camino::Utf8PathBuf::from_path_buf(other_root.path().to_path_buf()).unwrap(),
+            gold_band::storage::StoragePathConfig {
+                app_key: "gold-band",
+                config_dir_name: ".gold-band",
+                home_env_var: "GOLD_BAND_HOME",
+            },
+        );
+        assert!(read_session_snapshot(&other_paths, "task-015").is_none());
     }
 }

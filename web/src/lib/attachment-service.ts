@@ -130,6 +130,13 @@ export interface UseAttachmentPickerOptions {
   maxCount?: number;
   maxTotalSize?: number;
   attachments?: AttachmentStateController;
+  /**
+   * When set, only items whose guessed MIME starts with this prefix are
+   * accepted (e.g. "image/" for screenshot-only pickers). When set this is the
+   * authoritative type filter and the backend extension allowlist is bypassed,
+   * so the picker is not coupled to the conversation attachment set.
+   */
+  acceptMimePrefix?: string;
 }
 
 export type AttachmentStateController = [
@@ -160,6 +167,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
 
   const maxCount = options.maxCount ?? MAX_ATTACHMENT_COUNT;
   const maxTotalSize = options.maxTotalSize ?? MAX_ATTACHMENT_TOTAL;
+  const acceptMimePrefix = options.acceptMimePrefix;
 
   // ── Internal: validate & add items ──
   const validateAndAdd = useCallback(
@@ -168,6 +176,13 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
       let err: string | null = null;
 
       const validItems = items.filter((item) => {
+        if (acceptMimePrefix) {
+          if (!item.mime.startsWith(acceptMimePrefix)) {
+            rejected.push(item.name);
+            return false;
+          }
+          return true;
+        }
         if (allowedExts && !isAllowedAttachment(item.name, allowedExts)) {
           rejected.push(item.name);
           return false;
@@ -206,7 +221,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
       }
       if (fileInputRef.current) fileInputRef.current.value = '';
     },
-    [t, allowedExts, maxCount, maxTotalSize],
+    [t, allowedExts, maxCount, maxTotalSize, acceptMimePrefix],
   );
 
   // ── File picker (Tauri dialog on desktop, file input otherwise) ──

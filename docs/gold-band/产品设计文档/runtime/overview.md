@@ -27,7 +27,7 @@ preset -> task -> run -> round/attempt
 - `paused` 只属于 `status`，不属于 `outcome`
 - `ai-dynamic` 内部状态归属外层节点 attempt，外层 round graph 只保留一个复合节点
 - AI-DYNAMIC prompt 分层遵循：runtime 决定的身份、历史、路径、限制、可用资源和输出协议进入 system prompt，并通过 minijinja 模板渲染；requirement 与当前 goal 进入 user prompt
-- 桌面端维护全局 `agent_diagnostics` 缓存并由后台 doctor 定期刷新；workflow 启动命令会要求普通 worker provider、AI-DYNAMIC bootstrap provider 与 dynamic strategy 的 available agents 均有可用 doctor 结果；普通 worker 启动前用当前缓存校验已配置的 model / permissionMode，AI-DYNAMIC schema、prompt 和 permission 校验也读取当前缓存，不在执行中同步 doctor provider capabilities。AI-DYNAMIC prompt 和 schema 中的模型枚举必须使用 ACP `configOptions[].options[].value`，展示名只作为辅助标签；当动态 proposal 需要输出模型但最新缓存没有该 provider 的模型目录时，runtime 在启动 provider session 前进入 `error-blocked`，不允许让 agent 猜模型值。
+- 桌面端维护全局 `agent_diagnostics` 缓存并由后台 doctor 定期刷新；workflow 启动命令会要求普通 worker provider、AI-DYNAMIC bootstrap provider 与 dynamic strategy 的 available agents 均有可用 doctor 结果。permissionMode 先通过项目级中央映射解析为当前 provider 的真实 ACP mode id，再使用 doctor 权威目录校验；例如 Codex `full_access` 当前解析为 `agent-full-access`。模型目录属于快速变化能力事实：作者态 workflow/template 与运行快照中的明确过期模型都统一规范化并持久化为“不指定”，ACP session 返回权威 config options 后再次兜底，不因模型迭代要求用户手工修改配置，也不允许作者态 JSON 与实际调用分叉。AI-DYNAMIC schema、prompt 和权限校验读取当前缓存，不在执行中同步 doctor provider capabilities；prompt 和 schema 中的模型枚举必须使用 ACP `configOptions[].options[].value`，展示名只作为辅助标签。
 - runtime 自身的修复提示也统一放在 `src/prompts/<lang>/runtime/`，例如节点输出不满足 output DSL 时使用 `src/prompts/<lang>/runtime/invalid_output_repair.md` 生成隐藏 repair prompt
 
 ## 4. 子文档结构

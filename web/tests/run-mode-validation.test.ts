@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  validateAutoConfig,
   validateWorkflowTemplateForConversationStart,
   validateWorkflowTemplateForConversationStartWithFreshProfiles,
 } from '../src/lib/run-mode-validation';
@@ -83,6 +84,18 @@ const workflowTemplates: WorkflowTemplateStore = {
 };
 
 describe('run mode validation', () => {
+  it('allows dynamic agents to use the provider default model', () => {
+    const issues = validateAutoConfig({
+      agentStrategy: 'dynamic',
+      agentType: 'claude-acp',
+      bootstrapAgentType: 'claude-acp',
+      availableAgents: [{ provider: 'claude-acp' }],
+      routingPrompt: '',
+    }, agentRegistry, null, t);
+
+    expect(issues).toEqual([]);
+  });
+
   it('blocks invalid workflow templates before starting quick conversation', () => {
     const issues = validateWorkflowTemplateForConversationStart(
       'invalid-template',

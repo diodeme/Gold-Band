@@ -839,6 +839,14 @@ pub struct LogPageVm {
     pub archive_retention_days: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AcpRawFrameOrder {
+    Asc,
+    #[default]
+    Desc,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpRawFrameQueryInput {
@@ -847,6 +855,7 @@ pub struct AcpRawFrameQueryInput {
     pub search: Option<String>,
     pub kind: Option<String>,
     pub direction: Option<String>,
+    pub order: Option<AcpRawFrameOrder>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -870,7 +879,7 @@ pub struct AcpRawFramePageVm {
     pub total: usize,
     pub has_previous: bool,
     pub has_next: bool,
-    pub order: String,
+    pub order: AcpRawFrameOrder,
     pub search: Option<String>,
     pub kind: Option<String>,
     pub direction: Option<String>,
@@ -5847,6 +5856,7 @@ pub fn acp_raw_frame_page_vm_for_path(
     let search = normalized_filter(query.search);
     let kind = normalized_filter(query.kind);
     let direction = normalized_filter(query.direction);
+    let order = query.order.unwrap_or_default();
 
     let total = count_matching_raw_frames(
         path,
@@ -5854,9 +5864,17 @@ pub fn acp_raw_frame_page_vm_for_path(
         kind.as_deref(),
         direction.as_deref(),
     )?;
-    let end = total.saturating_sub(page.saturating_mul(page_size));
-    let start = total.saturating_sub((page + 1).saturating_mul(page_size));
-    let items = collect_matching_raw_frames(
+    let offset = page.saturating_mul(page_size);
+    let bounded_offset = offset.min(total);
+    let bounded_end_offset = offset.saturating_add(page_size).min(total);
+    let (start, end) = match order {
+        AcpRawFrameOrder::Asc => (bounded_offset, bounded_end_offset),
+        AcpRawFrameOrder::Desc => (
+            total.saturating_sub(bounded_end_offset),
+            total.saturating_sub(bounded_offset),
+        ),
+    };
+    let mut items = collect_matching_raw_frames(
         path,
         search.as_deref(),
         kind.as_deref(),
@@ -5864,6 +5882,9 @@ pub fn acp_raw_frame_page_vm_for_path(
         start,
         end,
     )?;
+    if order == AcpRawFrameOrder::Desc {
+        items.reverse();
+    }
 
     Ok(AcpRawFramePageVm {
         items,
@@ -5871,8 +5892,8 @@ pub fn acp_raw_frame_page_vm_for_path(
         page_size,
         total,
         has_previous: page > 0 && total > 0,
-        has_next: start > 0,
-        order: "latest".to_string(),
+        has_next: offset.saturating_add(page_size) < total,
+        order,
         search,
         kind,
         direction,
@@ -6547,6 +6568,85 @@ mod tests {
             timestamp,
             Some(json!({ "sessionUpdate": session_update })),
         )
+    }
+
+    #[test]
+    fn raw_frame_page_defaults_to_descending_and_supports_ascending_order() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gold-band-raw-frame-order-{}-{unique}.jsonl",
+            std::process::id()
+        ));
+        let path = Utf8PathBuf::from_path_buf(path).unwrap();
+        let contents = (1..=30)
+            .map(|index| {
+                json!({
+                    "timestamp": format!("2026-07-28T12:00:{index:02}Z"),
+                    "direction": "inbound",
+                    "frame": {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": { "index": index },
+                    },
+                })
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(path.as_std_path(), contents).unwrap();
+
+        let default_page = acp_raw_frame_page_vm_for_path(
+            &path,
+            AcpRawFrameQueryInput {
+                page: Some(0),
+                page_size: Some(25),
+                search: None,
+                kind: None,
+                direction: None,
+                order: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(default_page.order, AcpRawFrameOrder::Desc);
+        assert_eq!(
+            default_page
+                .items
+                .iter()
+                .map(|item| item.line_number)
+                .collect::<Vec<_>>(),
+            (6..=30).rev().collect::<Vec<_>>()
+        );
+        assert!(!default_page.has_previous);
+        assert!(default_page.has_next);
+
+        let ascending_second_page = acp_raw_frame_page_vm_for_path(
+            &path,
+            AcpRawFrameQueryInput {
+                page: Some(1),
+                page_size: Some(25),
+                search: None,
+                kind: None,
+                direction: None,
+                order: Some(AcpRawFrameOrder::Asc),
+            },
+        )
+        .unwrap();
+        assert_eq!(ascending_second_page.order, AcpRawFrameOrder::Asc);
+        assert_eq!(
+            ascending_second_page
+                .items
+                .iter()
+                .map(|item| item.line_number)
+                .collect::<Vec<_>>(),
+            (26..=30).collect::<Vec<_>>()
+        );
+        assert!(ascending_second_page.has_previous);
+        assert!(!ascending_second_page.has_next);
+
+        fs::remove_file(path.as_std_path()).unwrap();
     }
 
     fn permission_event_at(request_id: &str, status: &str, timestamp: u64) -> AcpUiEventVm {

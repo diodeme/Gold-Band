@@ -730,6 +730,15 @@ attempt-001/
 
 ---
 
+## 2026-07-28：原始帧默认倒序与排序切换
+
+- `AcpRawFrameQueryInput` 增加类型化 `asc / desc` 排序参数，后端默认 `desc`，以 append-only JSONL 行号作为稳定记录时序完成跨页排序；同一时间戳下不依赖不稳定的文本比较。
+- Raw frames 筛选区复用 shadcn/ui `Select` 增加“最新优先 / 最早优先”，切换顺序、搜索或过滤后回到第 0 页；第一页、上一页和下一页文案按当前顺序表达实际时间方向。
+- 破坏式替换旧的“最新页内升序”行为，不保留前端当前页反转或旧 `latest` 字符串兼容路径。
+- Rust 接口层回归覆盖默认倒序、升序第二页、分页边界与返回排序枚举；Web build 和桌面端原始帧 deep link 验证控件默认值、切换结果及分页文案。
+
+---
+
 ## 2026-07-24：会话工作空间状态与安全移除修复
 
 - 根因修复：会话工作空间身份此前同时存在持久化 `conversationWorkspaces`、大小写不一致的 `projectId` key 和隐式 `DesktopContext.repo_root` 三条来源，导致 Direct 首轮可运行但追问按精确 key 报 `workspace.not-found`，移除时也可能删不中并重排相邻项。本次收敛为 `conversationWorkspaces` 单一列表来源，保留 workspace-scoped `App.paths.repo_root` 作为执行上下文，不再把桌面启动 workspace 当作会话成员。

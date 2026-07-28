@@ -175,6 +175,7 @@ import { displayAppError, displayStatus } from "@/i18n";
 import type {
   AcpPermissionRequestVm,
   AcpRawFramePageVm,
+  AcpRawFrameOrder,
   AcpRawFrameQueryInput,
   AcpRawFrameVm,
   AcpSessionTimingVm,
@@ -614,6 +615,7 @@ export const ACPChatDialog = forwardRef<
   const [rawQuery, setRawQuery] = useState<AcpRawFrameQueryInput>({
     page: 0,
     pageSize: 100,
+    order: "desc",
   });
   const [rawLoading, setRawLoading] = useState(false);
   const [loadingInitialSession, setLoadingInitialSession] = useState(
@@ -834,7 +836,7 @@ export const ACPChatDialog = forwardRef<
     setActiveTurnPromptId(promptIdFromEvent(storedPromptEvent));
     setActiveTurnStartedAt(null);
     setRawPage(null);
-    setRawQuery({ page: 0, pageSize: 100 });
+    setRawQuery({ page: 0, pageSize: 100, order: "desc" });
     setLoadingOlder(false);
     setExpandedItems({});
     setHasOlderEvents(session?.eventPage.hasOlder ?? false);
@@ -2435,6 +2437,7 @@ export const ACPChatDialog = forwardRef<
         search: next.search ?? undefined,
         kind: next.kind ?? undefined,
         direction: next.direction ?? undefined,
+        order: next.order,
       });
     } finally {
       setRawLoading(false);
@@ -4865,6 +4868,7 @@ export function RawFrameViewer({
   }, [query.search]);
 
   const pageSize = page?.pageSize ?? query.pageSize ?? 100;
+  const order = page?.order ?? query.order ?? "desc";
   const applyQuery = (next: AcpRawFrameQueryInput) =>
     onQueryChange({ ...query, ...next });
   const applySearch = () =>
@@ -4877,6 +4881,7 @@ export function RawFrameViewer({
       direction: undefined,
       search: undefined,
       kind: undefined,
+      order,
     });
   };
 
@@ -4945,6 +4950,26 @@ export function RawFrameViewer({
                 <SelectItem value="outbound">{t("acp.rawOutbound")}</SelectItem>
               </SelectContent>
             </Select>
+            <Select
+              value={order}
+              onValueChange={(value) =>
+                applyQuery({
+                  page: 0,
+                  order: value as AcpRawFrameOrder,
+                })
+              }
+            >
+              <SelectTrigger
+                aria-label={t("acp.rawSortOrder")}
+                className="h-9 lg:w-40"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="desc">{t("acp.rawSortNewest")}</SelectItem>
+                <SelectItem value="asc">{t("acp.rawSortOldest")}</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
             <span className="min-w-0 truncate">
@@ -4994,7 +5019,7 @@ export function RawFrameViewer({
                 disabled={loading || !page || page.page === 0}
                 onClick={() => applyQuery({ page: 0 })}
               >
-                {t("acp.rawLatest")}
+                {t(order === "desc" ? "acp.rawLatest" : "acp.rawEarliest")}
               </Button>
               <Button
                 size="sm"
@@ -5005,7 +5030,11 @@ export function RawFrameViewer({
                   applyQuery({ page: Math.max(0, (page?.page ?? 0) - 1) })
                 }
               >
-                {t("acp.rawNewer")}
+                {t(
+                  order === "desc"
+                    ? "acp.rawNewer"
+                    : "acp.rawPreviousOlder",
+                )}
               </Button>
               <Button
                 size="sm"
@@ -5014,7 +5043,9 @@ export function RawFrameViewer({
                 disabled={loading || !page?.hasNext}
                 onClick={() => applyQuery({ page: (page?.page ?? 0) + 1 })}
               >
-                {t("acp.rawOlder")}
+                {t(
+                  order === "desc" ? "acp.rawOlder" : "acp.rawNextNewer",
+                )}
               </Button>
             </div>
           </div>
@@ -6758,8 +6789,12 @@ function rawFramePageSummary(
   page: AcpRawFramePageVm | null,
 ) {
   if (!page || page.total === 0) return t("acp.rawMatchCount", { total: 0 });
-  const firstLine = page.items[0]?.lineNumber ?? 0;
-  const lastLine = page.items.at(-1)?.lineNumber ?? firstLine;
+  if (page.items.length === 0) {
+    return t("acp.rawMatchCount", { total: page.total });
+  }
+  const lineNumbers = page.items.map((item) => item.lineNumber);
+  const firstLine = Math.min(...lineNumbers);
+  const lastLine = Math.max(...lineNumbers);
   return t("acp.rawPageSummary", {
     start: firstLine,
     end: lastLine,

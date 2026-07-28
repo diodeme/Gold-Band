@@ -40,7 +40,7 @@ fn metrics_log_path() -> Option<&'static str> {
 
 /// Write a metrics log line to the application data directory.
 /// On Windows this is `%LOCALAPPDATA%\{app_key}\metrics.log`.
-fn metrics_log(msg: &str) {
+pub(crate) fn metrics_log(msg: &str) {
     eprintln!("{}", msg);
     let Some(log_path) = metrics_log_path() else {
         return;

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
 use crate::commands::{CommandErrorVm, CommandResult, command_error};
-use crate::metrics::{endpoint_from_base_url, get_api_key, metrics_base_url};
+use crate::metrics::{endpoint_from_base_url, get_api_key, metrics_base_url, metrics_log};
 use crate::state::DesktopState;
 
 pub const MAX_DESCRIPTION_CHARS: usize = 2000;
@@ -127,6 +127,7 @@ pub async fn submit_feedback(
         &input.screenshot_paths,
     );
 
+    metrics_log(&format!("[feedback] POST {}", &endpoint));
     let client = reqwest::Client::new();
     let mut request = client.post(&endpoint).multipart(form);
     if let Some(api_key) = api_key {
@@ -134,16 +135,19 @@ pub async fn submit_feedback(
     }
 
     match request.send().await {
-        Ok(resp) if resp.status().is_success() => Ok(FeedbackResult { success: true }),
+        Ok(resp) if resp.status().is_success() => {
+            metrics_log(&format!("[feedback] response status={}", resp.status()));
+            Ok(FeedbackResult { success: true })
+        }
         Ok(resp) => {
-            tracing::warn!(status = %resp.status(), "feedback upload non-success");
+            metrics_log(&format!("[feedback] non-success status={}", resp.status()));
             Err(CommandErrorVm::new(
                 "feedback.server-error",
                 serde_json::json!({ "status": resp.status().as_u16() }),
             ))
         }
         Err(err) => {
-            tracing::warn!(%err, "feedback upload network failed");
+            metrics_log(&format!("[feedback] FAILED (ignored): {}", err));
             Err(CommandErrorVm::new(
                 "feedback.network-failed",
                 serde_json::json!({ "message": err.to_string() }),

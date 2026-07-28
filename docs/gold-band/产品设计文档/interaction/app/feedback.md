@@ -129,6 +129,8 @@
 ### 6.1 上报通道
 复用现有 metrics 通道的认证与 base_url 机制（`metrics_base_url` + `X-Maling-Report-Key`），不新建网络层、不新增配置项。
 
+**调用日志**：反馈上报的请求、响应状态、网络失败与 heartbeat、node-metrics 一同写入 `metrics.log`（`%LOCALAPPDATA%\{app_key}\metrics.log`），方便统一排查。
+
 ### 6.2 默认 endpoint
 编译期内置默认反馈上报地址（环境变量 + 代码默认值），用户开箱即用。配置缺失不应成为用户可感知的阻塞：反馈 Dialog 打开即默认可用。
 

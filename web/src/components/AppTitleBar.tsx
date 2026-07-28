@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import type { MouseEvent as ReactMouseEvent } from 'react';
 import { Copy, Minus, PanelLeft, Square, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
@@ -8,8 +7,6 @@ import { isTauriRuntime } from '../api/shared';
 import { resolveWindowControlsPolicy } from '../lib/window-controls';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-
-const titleBarNonDragSelector = 'button, a, input, textarea, select, [role="button"], [data-titlebar-no-drag="true"]';
 
 interface AppTitleBarProps {
   appName: string;
@@ -75,27 +72,12 @@ export function AppTitleBar({
     getCurrentWindow().close().catch(() => {});
   };
 
-  const handleTitleBarDoubleClick = (event: ReactMouseEvent<HTMLElement>) => {
-    const target = event.target as HTMLElement;
-    if (target.closest(titleBarNonDragSelector)) return;
-    handleToggleMaximize();
-  };
-
-  const handleDragMouseDown = (event: ReactMouseEvent<HTMLElement>) => {
-    if (!tauriRuntime || event.button !== 0 || event.detail > 1) return;
-    const target = event.target as HTMLElement;
-    if (target.closest(titleBarNonDragSelector)) return;
-    getCurrentWindow().startDragging().catch(() => {});
-  };
-
   const hasLeadingInset = policy.leadingInsetClassName.length > 0;
 
   return (
     <header
       data-tauri-drag-region
       className="app-titlebar-drag-region flex h-11 shrink-0 select-none items-center bg-titlebar text-titlebar-foreground"
-      onDoubleClick={handleTitleBarDoubleClick}
-      onMouseDown={handleDragMouseDown}
     >
       <div className="flex items-center gap-2 px-2.5">
         {hasLeadingInset ? <div aria-hidden="true" className={cn('shrink-0', policy.leadingInsetClassName)} /> : null}

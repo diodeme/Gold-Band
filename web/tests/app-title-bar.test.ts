@@ -56,6 +56,15 @@ describe('AppTitleBar', () => {
     expect(html).toContain('data-titlebar-no-drag="true"');
   });
 
+  it('delegates titlebar mouse gestures to the single Tauri drag-region owner', () => {
+    const source = readFileSync(path.resolve(__dirname, '../src/components/AppTitleBar.tsx'), 'utf8');
+
+    expect(source).toContain('data-tauri-drag-region');
+    expect(source).not.toContain('.startDragging()');
+    expect(source).not.toContain('onMouseDown={handleDragMouseDown}');
+    expect(source).not.toContain('onDoubleClick={handleTitleBarDoubleClick}');
+  });
+
   it('synchronizes maximize state on native resize and disposes the listener', () => {
     const source = readFileSync(path.resolve(__dirname, '../src/components/AppTitleBar.tsx'), 'utf8');
 

@@ -17,7 +17,7 @@ use crate::prompts::{
     PROFILE_ACCEPT_EN, PROFILE_ACCEPT_ZH_CN, PROFILE_CLEAN_EN, PROFILE_CLEAN_ZH_CN, PROFILE_DEV_EN,
     PROFILE_DEV_ZH_CN, PROFILE_INTERVIEW_EN, PROFILE_INTERVIEW_ZH_CN, PROFILE_PLAN_EN,
     PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN, PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN,
-    PROFILE_TEST_ZH_CN, prompt_by_language,
+    PROFILE_TEST_ZH_CN, profile_template_validation_contexts, prompt_by_language, render,
 };
 use crate::storage::{GoldBandPaths, ensure_parent_dir};
 
@@ -37,6 +37,8 @@ pub struct ProfileInput {
     pub name: String,
     pub summary: String,
     pub content: String,
+    #[serde(default)]
+    pub dynamic_template: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +49,7 @@ pub struct ProfileEntry {
     pub summary: String,
     pub summary_source: String,
     pub content: String,
+    pub dynamic_template: bool,
     pub scope: ProfileScope,
     pub is_built_in: bool,
     pub created_at: String,
@@ -68,6 +71,7 @@ struct ParsedProfile {
     created_at: String,
     updated_at: String,
     content: String,
+    dynamic_template: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +91,7 @@ struct DefaultProfileSeed {
     id: &'static str,
     name: &'static str,
     summary: &'static str,
+    dynamic_template: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -101,6 +106,8 @@ pub enum ProfileCommandError {
         task_count: usize,
         run_count: usize,
     },
+    #[error("profile.dynamic-template-invalid")]
+    InvalidDynamicTemplate { reason: String },
 }
 
 impl ProfileCommandError {
@@ -109,6 +116,7 @@ impl ProfileCommandError {
             Self::ReadonlyBuiltIn => "profile.readonly-built-in",
             Self::BuiltInScopeUnsupported => "profile.built-in-scope-unsupported",
             Self::DeleteConfirmationRequired { .. } => "profile.delete-confirmation-required",
+            Self::InvalidDynamicTemplate { .. } => "profile.dynamic-template-invalid",
         }
     }
 
@@ -124,6 +132,7 @@ impl ProfileCommandError {
                 "taskCount": task_count,
                 "runCount": run_count,
             }),
+            Self::InvalidDynamicTemplate { reason } => json!({ "reason": reason }),
         }
     }
 }
@@ -134,42 +143,49 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
         id: "pf-builtin-plan",
         name: "方案",
         summary: "方案角色，用于需求分析和实施方案设计。",
+        dynamic_template: true,
     },
     DefaultProfileSeed {
         key: "dev",
         id: "pf-builtin-dev",
         name: "开发",
         summary: "开发角色，用于实现需求并维护代码质量。",
+        dynamic_template: true,
     },
     DefaultProfileSeed {
         key: "review",
         id: "pf-builtin-review",
         name: "审查",
         summary: "审查角色，用于检查实现质量、风险和一致性。",
+        dynamic_template: false,
     },
     DefaultProfileSeed {
         key: "test",
         id: "pf-builtin-test",
         name: "测试",
         summary: "测试角色，用于执行验证并反馈质量结果。",
+        dynamic_template: false,
     },
     DefaultProfileSeed {
         key: "accept",
         id: "pf-builtin-accept",
         name: "验收",
         summary: "验收角色，用于对照需求判断交付是否满足目标。",
+        dynamic_template: false,
     },
     DefaultProfileSeed {
         key: "cleanup",
         id: "pf-builtin-cleanup",
         name: "清理",
         summary: "清理角色，用于验收成功后的资源释放、收尾和环境清理。",
+        dynamic_template: false,
     },
     DefaultProfileSeed {
         key: "interview",
         id: "pf-builtin-interview",
         name: "访谈",
         summary: "访谈角色，用于需求澄清，通过深度访谈把模糊需求转化为清晰规格。",
+        dynamic_template: false,
     },
 ];
 
@@ -214,6 +230,7 @@ pub(crate) fn create_profile(paths: &GoldBandPaths, input: ProfileInput) -> Resu
         summary: input.summary.trim().to_string(),
         summary_source: input.summary.trim().to_string(),
         content: input.content,
+        dynamic_template: input.dynamic_template,
         scope: ProfileScope::User,
         is_built_in: false,
         created_at: now.clone(),
@@ -241,6 +258,7 @@ pub(crate) fn update_profile(
         summary: input.summary.trim().to_string(),
         summary_source: input.summary.trim().to_string(),
         content: input.content,
+        dynamic_template: input.dynamic_template,
         scope: ProfileScope::User,
         is_built_in: false,
         created_at: existing.created_at,
@@ -297,6 +315,7 @@ fn built_in_profiles(language: DesktopLanguage) -> Vec<ProfileEntry> {
             summary: seed.summary.to_string(),
             summary_source: seed.summary.to_string(),
             content: built_in_profile_content(seed.key, language).to_string(),
+            dynamic_template: seed.dynamic_template,
             scope: ProfileScope::BuiltIn,
             is_built_in: true,
             created_at: BUILT_IN_PROFILE_TIMESTAMP.to_string(),
@@ -316,6 +335,7 @@ fn built_in_profile_by_id(id: &str, language: DesktopLanguage) -> Option<Profile
             summary: seed.summary.to_string(),
             summary_source: seed.summary.to_string(),
             content: built_in_profile_content(seed.key, language).to_string(),
+            dynamic_template: seed.dynamic_template,
             scope: ProfileScope::BuiltIn,
             is_built_in: true,
             created_at: BUILT_IN_PROFILE_TIMESTAMP.to_string(),
@@ -368,6 +388,7 @@ fn read_profile_dir(paths: &GoldBandPaths, scope: ProfileScope) -> Result<Vec<Pr
             summary: parsed.summary,
             summary_source: parsed.summary_source,
             content: parsed.content,
+            dynamic_template: parsed.dynamic_template,
             scope,
             is_built_in: false,
             created_at: parsed.created_at,
@@ -417,6 +438,9 @@ fn parse_profile_file(path: &Utf8Path) -> Result<ParsedProfile> {
             .map(|value| value.trim().to_string())
             .unwrap_or(now),
         content: document.body,
+        dynamic_template: fields
+            .get("dynamicTemplate")
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("true")),
     })
 }
 
@@ -457,7 +481,12 @@ fn profile_markdown(profile: &ProfileEntry) -> String {
     render_frontmatter_document(&profile_frontmatter_updates(profile), &profile.content)
 }
 
-fn profile_frontmatter_updates(profile: &ProfileEntry) -> [FrontmatterUpdate<'_>; 5] {
+fn profile_frontmatter_updates(profile: &ProfileEntry) -> [FrontmatterUpdate<'_>; 6] {
+    let dynamic_template = if profile.dynamic_template {
+        "true"
+    } else {
+        "false"
+    };
     [
         FrontmatterUpdate {
             key: "id",
@@ -484,6 +513,11 @@ fn profile_frontmatter_updates(profile: &ProfileEntry) -> [FrontmatterUpdate<'_>
             value: &profile.updated_at,
             source: None,
         },
+        FrontmatterUpdate {
+            key: "dynamicTemplate",
+            value: dynamic_template,
+            source: None,
+        },
     ]
 }
 
@@ -493,6 +527,15 @@ fn ensure_profile_input(input: &ProfileInput) -> Result<()> {
     }
     if input.summary.trim().is_empty() {
         bail!("profile summary cannot be empty");
+    }
+    if input.dynamic_template {
+        for context in profile_template_validation_contexts() {
+            render(&input.content, context).map_err(|error| {
+                ProfileCommandError::InvalidDynamicTemplate {
+                    reason: error.to_string(),
+                }
+            })?;
+        }
     }
     Ok(())
 }
@@ -606,6 +649,7 @@ profile body
         assert_eq!(profile.summary, "审查角色， 用于检查实现质量。");
         assert_eq!(profile.summary_source, "审查角色，\n用于检查实现质量。");
         assert_eq!(profile.content, "profile body\n");
+        assert!(!profile.dynamic_template);
     }
 
     #[test]
@@ -628,6 +672,7 @@ profile body
                 name: "review".to_string(),
                 summary: "审查角色，\n用于检查输出质量。".to_string(),
                 content: "new body\n".to_string(),
+                dynamic_template: false,
             },
         )
         .unwrap();
@@ -688,5 +733,109 @@ profile body
         let profiles = read_profile_dir(&paths, ProfileScope::User).unwrap();
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].id, "pf-bom");
+    }
+
+    #[test]
+    fn profile_dynamic_template_round_trips_through_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().join("repo")).unwrap());
+
+        let created = create_profile(
+            &paths,
+            ProfileInput {
+                name: "dynamic role".to_string(),
+                summary: "renders execution context".to_string(),
+                content: "{% if execution.can_route_next %}route{% else %}wait{% endif %}"
+                    .to_string(),
+                dynamic_template: true,
+            },
+        )
+        .unwrap();
+
+        assert!(created.dynamic_template);
+        let saved = fs::read_to_string(created.path).unwrap();
+        assert!(saved.contains("dynamicTemplate: true"));
+        let loaded = show_profile(&paths, &created.id, DesktopLanguage::ZhCn).unwrap();
+        assert!(loaded.dynamic_template);
+    }
+
+    #[test]
+    fn profile_dynamic_template_rejects_unknown_variables_when_enabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().join("repo")).unwrap());
+
+        let error = create_profile(
+            &paths,
+            ProfileInput {
+                name: "broken role".to_string(),
+                summary: "invalid template".to_string(),
+                content: "{{ execution.unknown }}".to_string(),
+                dynamic_template: true,
+            },
+        )
+        .unwrap_err();
+
+        let command_error = error.downcast_ref::<ProfileCommandError>().unwrap();
+        assert_eq!(command_error.code(), "profile.dynamic-template-invalid");
+        assert!(
+            !command_error.params()["reason"]
+                .as_str()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn disabled_profile_allows_literal_template_syntax() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().join("repo")).unwrap());
+
+        let created = create_profile(
+            &paths,
+            ProfileInput {
+                name: "literal role".to_string(),
+                summary: "keeps template text".to_string(),
+                content: "{{ execution.unknown }}".to_string(),
+                dynamic_template: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(created.content, "{{ execution.unknown }}");
+    }
+
+    #[test]
+    fn built_in_profiles_enable_dynamic_templates_only_when_needed() {
+        let profiles = built_in_profiles(DesktopLanguage::ZhCn);
+        let by_id = profiles
+            .iter()
+            .map(|profile| (profile.id.as_str(), profile.dynamic_template))
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(by_id["pf-builtin-plan"], true);
+        assert_eq!(by_id["pf-builtin-dev"], true);
+        assert_eq!(by_id["pf-builtin-review"], false);
+        assert_eq!(by_id["pf-builtin-test"], false);
+        assert_eq!(by_id["pf-builtin-accept"], false);
+        assert_eq!(by_id["pf-builtin-cleanup"], false);
+        assert_eq!(by_id["pf-builtin-interview"], false);
+    }
+
+    #[test]
+    fn enabled_built_in_profiles_render_in_all_supported_contexts() {
+        for profile in built_in_profiles(DesktopLanguage::ZhCn)
+            .into_iter()
+            .chain(built_in_profiles(DesktopLanguage::En))
+            .filter(|profile| profile.dynamic_template)
+        {
+            for context in profile_template_validation_contexts() {
+                render(&profile.content, context).unwrap_or_else(|error| {
+                    panic!("built-in profile {} failed to render: {error}", profile.id)
+                });
+            }
+        }
     }
 }

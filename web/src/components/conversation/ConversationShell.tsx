@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 
 interface ConversationShellProps {
   appName: string;
+  channel?: string;
   platform?: DesktopPlatform | null;
   vm: ConversationSidebarVm;
   active: ConversationPage;
@@ -55,6 +56,7 @@ function loadSidebarWidth(prefs?: Record<string, unknown> | null): number {
 
 export function ConversationShell({
   appName,
+  channel,
   platform,
   vm,
   active,
@@ -132,6 +134,7 @@ export function ConversationShell({
     >
       <AppTitleBar
         appName={appName}
+        channel={channel}
         platform={platform}
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={onToggleSidebar}

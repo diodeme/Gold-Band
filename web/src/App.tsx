@@ -1331,6 +1331,7 @@ export function App() {
       conversationSidebar={conversationSidebar}
       activeWorkspaceId={sidebarFocusWorkspaceId}
       appName={appInfo.appName}
+      channel={appInfo.channel}
       platform={bootstrap?.platform}
       repoRoot={bootstrap?.repoRoot}
       needsWorkspace={bootstrap?.needsWorkspace}

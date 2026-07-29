@@ -15,6 +15,7 @@ const titleBarNonDragSelector = 'button, a, input, textarea, select, [role="butt
 
 interface AppTitleBarProps {
   appName: string;
+  channel?: string;
   platform?: DesktopPlatform | null;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
@@ -22,6 +23,7 @@ interface AppTitleBarProps {
 
 export function AppTitleBar({
   appName,
+  channel = 'default',
   platform,
   sidebarCollapsed,
   onToggleSidebar,
@@ -104,6 +106,7 @@ export function AppTitleBar({
   }, [pendingFeedback, helpMenuOpen]);
 
   const hasLeadingInset = policy.leadingInsetClassName.length > 0;
+  const showHelp = channel === 'wb';
 
   return (
     <>
@@ -146,7 +149,7 @@ export function AppTitleBar({
         data-titlebar-no-drag="true"
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <DropdownMenu open={helpMenuOpen} onOpenChange={setHelpMenuOpen}>
+        {showHelp ? <DropdownMenu open={helpMenuOpen} onOpenChange={setHelpMenuOpen}>
           <DropdownMenuTrigger asChild>
             <button
               type="button"
@@ -169,7 +172,7 @@ export function AppTitleBar({
               {t('common.userFeedback')}
             </DropdownMenuItem>
           </DropdownMenuContent>
-        </DropdownMenu>
+        </DropdownMenu> : null}
       </div>
       {policy.showCustomControls ? (
         <div

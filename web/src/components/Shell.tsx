@@ -14,6 +14,7 @@ interface ShellProps {
   conversationPage: ConversationPage;
   conversationSidebar: ConversationSidebarVm;
   appName: string;
+  channel?: string;
   platform?: DesktopPlatform | null;
   repoRoot?: string;
   needsWorkspace?: boolean;
@@ -40,11 +41,12 @@ interface ShellProps {
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, platform, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, conversationRunStopping = false, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, children }: ShellProps) {
+export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, channel, platform, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, conversationRunStopping = false, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, children }: ShellProps) {
   if (uiMode === 'conversation') {
     return (
       <ConversationShell
         appName={appName}
+        channel={channel}
         platform={platform}
         vm={conversationSidebar}
         active={conversationPage}
@@ -74,6 +76,7 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
     <WorkbenchShell
       active={active}
       appName={appName}
+      channel={channel}
       platform={platform}
       repoRoot={repoRoot}
       needsWorkspace={needsWorkspace}
@@ -93,6 +96,7 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
 interface WorkbenchShellProps {
   active: PrimaryModule;
   appName: string;
+  channel?: string;
   platform?: DesktopPlatform | null;
   repoRoot?: string;
   needsWorkspace?: boolean;
@@ -104,13 +108,14 @@ interface WorkbenchShellProps {
   children: React.ReactNode;
 }
 
-function WorkbenchShell({ active, appName, platform, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar }: WorkbenchShellProps) {
+function WorkbenchShell({ active, appName, channel, platform, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar }: WorkbenchShellProps) {
   const { t } = useTranslation();
   return (
     <TooltipProvider>
       <div className="app-window-shell flex h-screen flex-col bg-gold-workspace text-foreground" onContextMenu={(event) => event.preventDefault()}>
         <AppTitleBar
           appName={appName}
+          channel={channel}
           platform={platform}
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={onToggleSidebar}

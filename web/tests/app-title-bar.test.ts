@@ -12,6 +12,25 @@ vi.mock('react-i18next', () => ({
 }));
 
 describe('AppTitleBar', () => {
+  it('shows Help only on the wb channel', () => {
+    const wbHtml = renderToStaticMarkup(createElement(AppTitleBar, {
+      appName: 'MALING',
+      channel: 'wb',
+      platform: 'windows',
+      sidebarCollapsed: false,
+      onToggleSidebar: () => {},
+    }));
+    const defaultHtml = renderToStaticMarkup(createElement(AppTitleBar, {
+      appName: 'Gold Band',
+      channel: 'default',
+      platform: 'windows',
+      sidebarCollapsed: false,
+      onToggleSidebar: () => {},
+    }));
+
+    expect(wbHtml).toContain('common.help');
+    expect(defaultHtml).not.toContain('common.help');
+  });
   it('reserves native traffic light space on macOS without custom controls', () => {
     const html = renderToStaticMarkup(createElement(AppTitleBar, {
       appName: 'Gold Band',

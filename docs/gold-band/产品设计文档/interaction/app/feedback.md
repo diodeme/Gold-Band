@@ -21,7 +21,7 @@
                   └─ 用户反馈
 ```
 
-当前菜单仅含「用户反馈」一项（带 `MessageSquareWarning` 图标）。该菜单壳为后续「关于 / 检查更新 / 文档」等帮助类入口预留扩展位，新增项只追加 `DropdownMenuItem`，不改菜单结构。
+当前菜单仅含「用户反馈」一项（带 `MessageSquareWarning` 图标）。该入口属于 `wb` 渠道能力：仅当启动信息中的 `appInfo.channel === "wb"` 时显示「帮助」按钮；其他渠道不显示按钮，也不能进入反馈 Dialog。该菜单壳为 `wb` 渠道后续「关于 / 检查更新 / 文档」等帮助类入口预留扩展位，新增项只追加 `DropdownMenuItem`，不改菜单结构。
 
 点击「用户反馈」打开反馈 Dialog。
 

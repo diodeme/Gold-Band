@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { isTauriRuntime } from '@/api/shared';
 import type { TFunction } from 'i18next';
 import { Check, ChevronsUpDown, Edit, Eye, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
@@ -132,6 +134,22 @@ export function ContextManagementPage() {
   const [skillEditWsPath, setSkillEditWsPath] = useState<string | null>(null);
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
   const [mcpDiagnosingAgent, setMcpDiagnosingAgent] = useState<string | null>(null);
+  // 监听 agent 诊断完成事件，实时刷新 per-agent MCP 兼容性（后台诊断完一个 agent 即更新卡片，无需重进页面）
+  useEffect(() => {
+    if (!isTauriRuntime()) return undefined;
+    let disposed = false;
+    let unlisten: UnlistenFn | null = null;
+    void listen('gold-band://agent-registry-updated', () => {
+      if (!disposed) void getAgentRegistry().then(setAgentRegistry).catch(() => {});
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   const [skillTab, setSkillTab] = useState<'global' | 'project'>('global');
   const [skillQuery, setSkillQuery] = useState('');

@@ -94,17 +94,25 @@ export function McpServerCard({
     <Card className={cn('group flex h-40 flex-col overflow-hidden border-border/50 py-0 transition-shadow hover:shadow-sm', !server.enabled && 'opacity-50')}>
       {/* ── 上区：名称 / 传输 / 健康点 / 开关 ── */}
       <div className="flex items-center gap-3 px-4 py-3">
-        <span
-          className={cn(
-            'size-2.5 shrink-0 rounded-full ring-1 ring-offset-1 ring-offset-background',
-            isChecking ? 'bg-yellow-400 ring-yellow-400/30 animate-pulse' :
-            health?.status === 'healthy' ? 'bg-green-500 ring-green-500/30' :
-            health?.status === 'auth_required' ? 'bg-yellow-500 ring-yellow-500/30' :
-            health?.status === 'unhealthy' ? 'bg-red-500 ring-red-500/30' :
-            'bg-gray-400 ring-gray-400/30',
-          )}
-          title={health?.message ?? ''}
-        />
+        <TooltipProvider delayDuration={300}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                className={cn(
+                  'size-2.5 shrink-0 rounded-full ring-1 ring-offset-1 ring-offset-background',
+                  isChecking ? 'bg-yellow-400 ring-yellow-400/30 animate-pulse' :
+                  health?.status === 'healthy' ? 'bg-green-500 ring-green-500/30' :
+                  health?.status === 'auth_required' ? 'bg-yellow-500 ring-yellow-500/30' :
+                  health?.status === 'unhealthy' ? 'bg-red-500 ring-red-500/30' :
+                  'bg-gray-400 ring-gray-400/30',
+                )}
+              />
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-xs whitespace-pre-wrap text-xs leading-relaxed">
+              {health?.message ?? t('contextManagement.mcp.noDiagnostic', '暂无诊断信息')}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-semibold">{server.name}</span>
@@ -161,8 +169,8 @@ export function McpServerCard({
                           aria-label={tip}
                           onClick={clickable ? () => onDiagnoseAgent?.(agent.agentType) : undefined}
                         >
-                          {isDiagnosing ? (
-                            <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+                          {isDiagnosing || status === 'unknown' ? (
+                            <Loader2 className={cn('size-3.5 animate-spin text-muted-foreground/70', clickable && 'cursor-pointer')} />
                           ) : (
                             <span className="relative grid size-5 place-items-center">
                               {status === 'supported' && (
@@ -176,8 +184,6 @@ export function McpServerCard({
                                   cn(
                                     'relative z-0 size-3.5 transition-opacity',
                                     status === 'unsupported' && 'grayscale opacity-35',
-                                    status === 'unknown' && 'opacity-50',
-                                    clickable && 'cursor-pointer hover:opacity-100',
                                   ),
                                 )}
                               />
@@ -191,9 +197,6 @@ export function McpServerCard({
                 );
               })}
             </div>
-          ) : null}
-          {health?.message ? (
-            <p className="truncate text-[11px] text-muted-foreground">{health.message}</p>
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">

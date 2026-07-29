@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
@@ -421,6 +422,49 @@ pub fn touch_conversation_activity(app: &App, task_id: &str) -> anyhow::Result<(
     )
 }
 
+fn conversation_timestamp_millis(value: &str) -> Option<i64> {
+    let trimmed = value.trim();
+    let epoch = trimmed.strip_suffix('Z').unwrap_or(trimmed);
+    if let Ok(seconds) = epoch.parse::<f64>() {
+        return Some((seconds * 1_000.0) as i64);
+    }
+    if let Ok(timestamp) = chrono::DateTime::parse_from_rfc3339(trimmed) {
+        return Some(timestamp.timestamp_millis());
+    }
+    chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .map(|timestamp| timestamp.and_utc().timestamp_millis())
+}
+
+fn compare_conversation_timestamps(left: &str, right: &str) -> Ordering {
+    match (
+        conversation_timestamp_millis(left),
+        conversation_timestamp_millis(right),
+    ) {
+        (Some(left_millis), Some(right_millis)) => {
+            left_millis.cmp(&right_millis).then_with(|| left.cmp(right))
+        }
+        (Some(_), None) => Ordering::Greater,
+        (None, Some(_)) => Ordering::Less,
+        (None, None) => left.cmp(right),
+    }
+}
+
+fn latest_conversation_activity_at(
+    metadata: Option<&ConversationMetadata>,
+    latest_run: Option<&ConversationRunSummaryVm>,
+) -> Option<String> {
+    [
+        metadata.and_then(|metadata| metadata.last_activity_at.as_deref()),
+        metadata.map(|metadata| metadata.created_at.as_str()),
+        latest_run.map(|run| run.updated_at.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .max_by(|left, right| compare_conversation_timestamps(left, right))
+    .map(str::to_owned)
+}
+
 // ── Builder functions (stubs — full implementation in later phases) ──
 
 pub fn conversation_sidebar_vm_from_sources(
@@ -465,10 +509,18 @@ pub fn conversation_sidebar_vm_from_sources(
                     .unwrap_or_else(|| "workflow".to_string());
 
                 let run_list = source.app.run_list(task_id).unwrap_or_default();
-                let latest_run = run_list.last().map(conversation_run_summary_vm);
                 let mut runs: Vec<ConversationRunSummaryVm> =
                     run_list.iter().map(conversation_run_summary_vm).collect();
-                runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+                runs.sort_by(|left, right| {
+                    compare_conversation_timestamps(&right.updated_at, &left.updated_at)
+                        .then_with(|| {
+                            compare_conversation_timestamps(&right.started_at, &left.started_at)
+                        })
+                        .then_with(|| right.run_id.cmp(&left.run_id))
+                });
+                let latest_run = runs.first().cloned();
+                let last_activity_at =
+                    latest_conversation_activity_at(metadata.as_ref(), latest_run.as_ref());
 
                 let row = ConversationTaskRowVm {
                     project_id: project_id.clone(),
@@ -482,12 +534,7 @@ pub fn conversation_sidebar_vm_from_sources(
                     agent_identity: metadata
                         .as_ref()
                         .and_then(|metadata| metadata.agent_identity.clone()),
-                    last_activity_at: metadata.as_ref().and_then(|metadata| {
-                        metadata
-                            .last_activity_at
-                            .clone()
-                            .or_else(|| Some(metadata.created_at.clone()))
-                    }),
+                    last_activity_at,
                     latest_run,
                     runs,
                     pinned,
@@ -508,23 +555,13 @@ pub fn conversation_sidebar_vm_from_sources(
     pinned_tasks.sort_by_key(|t| t.pinned_order.unwrap_or(usize::MAX));
     for tasks in tasks_by_workspace.values_mut() {
         tasks.sort_by(|a, b| {
-            let a_time = if a.run_mode == ConversationRunMode::Direct.as_str() {
-                a.last_activity_at.as_deref().unwrap_or("")
-            } else {
-                a.latest_run
-                    .as_ref()
-                    .map(|run| run.started_at.as_str())
-                    .unwrap_or("")
-            };
-            let b_time = if b.run_mode == ConversationRunMode::Direct.as_str() {
-                b.last_activity_at.as_deref().unwrap_or("")
-            } else {
-                b.latest_run
-                    .as_ref()
-                    .map(|run| run.started_at.as_str())
-                    .unwrap_or("")
-            };
-            b_time.cmp(&a_time)
+            match (a.last_activity_at.as_deref(), b.last_activity_at.as_deref()) {
+                (Some(a_time), Some(b_time)) => compare_conversation_timestamps(b_time, a_time),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            }
+            .then_with(|| b.task_id.cmp(&a.task_id))
         });
     }
 
@@ -3811,6 +3848,97 @@ mod tests {
     }
 
     #[test]
+    fn conversation_sidebar_sorts_all_task_modes_by_normalized_last_activity() {
+        let repo = temp_repo_root();
+        let app = App::new(repo.clone());
+        write_sidebar_task_fixture_with_updated_at(
+            &app,
+            "task-workflow",
+            "Workflow task",
+            "run-001",
+            "1000000000Z",
+            "2000000000Z",
+        );
+        write_sidebar_task_fixture_with_updated_at(
+            &app,
+            "task-direct",
+            "Direct task",
+            "run-001",
+            "2026-07-24T00:00:00Z",
+            "2026-07-24T00:00:00Z",
+        );
+        write_sidebar_conversation_metadata_fixture(
+            &app,
+            "task-direct",
+            "direct",
+            "2026-07-24T00:00:00Z",
+        );
+        let state = gold_band::config::StateConfig::default();
+        let sources = vec![ConversationWorkspaceSource {
+            workspace: ConversationWorkspaceVm {
+                project_id: "workspace-a".to_string(),
+                workspace_path: repo.to_string(),
+                name: "Workspace A".to_string(),
+            },
+            app: app.clone_for_background(),
+        }];
+
+        let vm = conversation_sidebar_vm_from_sources(&state, &sources);
+        let tasks = &vm.tasks_by_workspace["workspace-a"];
+
+        assert_eq!(tasks[0].task_id, "task-workflow");
+        assert_eq!(tasks[0].last_activity_at.as_deref(), Some("2000000000Z"));
+        assert_eq!(tasks[1].task_id, "task-direct");
+    }
+
+    #[test]
+    fn conversation_sidebar_orders_runs_and_latest_run_by_updated_at() {
+        let repo = temp_repo_root();
+        let app = App::new(repo.clone());
+        write_sidebar_task_fixture_with_updated_at(
+            &app,
+            "task-a",
+            "Task A",
+            "run-001",
+            "1000000000Z",
+            "3000000000Z",
+        );
+        write_sidebar_task_fixture_with_updated_at(
+            &app,
+            "task-a",
+            "Task A",
+            "run-002",
+            "2000000000Z",
+            "2500000000Z",
+        );
+        let state = gold_band::config::StateConfig::default();
+        let sources = vec![ConversationWorkspaceSource {
+            workspace: ConversationWorkspaceVm {
+                project_id: "workspace-a".to_string(),
+                workspace_path: repo.to_string(),
+                name: "Workspace A".to_string(),
+            },
+            app: app.clone_for_background(),
+        }];
+
+        let vm = conversation_sidebar_vm_from_sources(&state, &sources);
+        let task = &vm.tasks_by_workspace["workspace-a"][0];
+
+        assert_eq!(
+            task.latest_run.as_ref().map(|run| run.run_id.as_str()),
+            Some("run-001")
+        );
+        assert_eq!(
+            task.runs
+                .iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-001", "run-002"]
+        );
+        assert_eq!(task.last_activity_at.as_deref(), Some("3000000000Z"));
+    }
+
+    #[test]
     fn conversation_sidebar_vm_prioritizes_last_workspace() {
         let repo_a = temp_repo_root();
         let repo_b = temp_repo_root();
@@ -4093,6 +4221,19 @@ mod tests {
         run_id: &str,
         started_at: &str,
     ) {
+        write_sidebar_task_fixture_with_updated_at(
+            app, task_id, title, run_id, started_at, started_at,
+        );
+    }
+
+    fn write_sidebar_task_fixture_with_updated_at(
+        app: &App,
+        task_id: &str,
+        title: &str,
+        run_id: &str,
+        started_at: &str,
+        updated_at: &str,
+    ) {
         std::fs::create_dir_all(app.paths.task_dir(task_id).as_std_path()).unwrap();
         gold_band::storage::write_json(
             &app.paths.task_file(task_id),
@@ -4113,7 +4254,7 @@ mod tests {
                 "status": "completed",
                 "outcome": "success",
                 "started_at": started_at,
-                "updated_at": started_at,
+                "updated_at": updated_at,
                 "workflow_snapshot": "workflow.snapshot.json",
                 "current_round": null,
                 "current_node": null,
@@ -4131,6 +4272,33 @@ mod tests {
                 "version": "1",
                 "source": "conversation-ui",
                 "runMode": "auto"
+            }),
+        )
+        .unwrap();
+    }
+
+    fn write_sidebar_conversation_metadata_fixture(
+        app: &App,
+        task_id: &str,
+        run_mode: &str,
+        last_activity_at: &str,
+    ) {
+        let authoring_dir = app.paths.task_dir(task_id).join("authoring");
+        std::fs::create_dir_all(authoring_dir.as_std_path()).unwrap();
+        gold_band::storage::write_json(
+            &authoring_dir.join("conversation.json"),
+            &json!({
+                "version": "1",
+                "source": "conversation-ui",
+                "runMode": run_mode,
+                "workflowTemplateId": null,
+                "includeInterview": null,
+                "directConfig": null,
+                "agentIdentity": null,
+                "titleAutoGenerated": false,
+                "initialAttachmentNames": null,
+                "createdAt": last_activity_at,
+                "lastActivityAt": last_activity_at
             }),
         )
         .unwrap();

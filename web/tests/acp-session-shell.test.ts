@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isAcpSessionInitializationInterrupted,
   missingAcpSessionRetryDelay,
   resolveAcpSessionShellState,
   shouldCreateLiveAcpSessionShell,
@@ -40,6 +41,16 @@ describe('shouldCreateLiveAcpSessionShell', () => {
 });
 
 describe('resolveAcpSessionShellState', () => {
+  it('shows an interrupted terminal shell immediately when ACP initialization never established a session', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: true,
+      initializationInterrupted: true,
+    })).toBe('interrupted');
+  });
+
   it('keeps session switching in loading state until the target session fetch resolves', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: false,
@@ -99,6 +110,47 @@ describe('resolveAcpSessionShellState', () => {
       hasLiveSessionShell: false,
       initialSessionLoading: false,
     })).toBe('available');
+  });
+});
+
+describe('isAcpSessionInitializationInterrupted', () => {
+  const interruptedInput = {
+    runtimeStatus: 'paused',
+    runtimePauseReason: 'process-interrupted',
+    runtimeActive: false,
+    sessionId: null,
+    baseSessionReady: false,
+    loadedEventCount: 0,
+  };
+
+  it('identifies a stopped runtime attempt that never established an ACP session', () => {
+    expect(isAcpSessionInitializationInterrupted(interruptedInput)).toBe(true);
+  });
+
+  it('keeps established or displayable interrupted sessions on the normal conversation path', () => {
+    expect(isAcpSessionInitializationInterrupted({
+      ...interruptedInput,
+      sessionId: 'session-1',
+    })).toBe(false);
+    expect(isAcpSessionInitializationInterrupted({
+      ...interruptedInput,
+      baseSessionReady: true,
+    })).toBe(false);
+    expect(isAcpSessionInitializationInterrupted({
+      ...interruptedInput,
+      loadedEventCount: 1,
+    })).toBe(false);
+  });
+
+  it('does not replace an active startup or another pause reason with interrupted', () => {
+    expect(isAcpSessionInitializationInterrupted({
+      ...interruptedInput,
+      runtimeActive: true,
+    })).toBe(false);
+    expect(isAcpSessionInitializationInterrupted({
+      ...interruptedInput,
+      runtimePauseReason: 'waiting-for-user-input',
+    })).toBe(false);
   });
 });
 

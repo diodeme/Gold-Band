@@ -376,6 +376,7 @@ fn default_workflow_keeps_seeded_profile_ids_when_user_role_has_same_name() {
             name: "方案".to_string(),
             summary: "用户方案角色".to_string(),
             content: "User plan role".to_string(),
+            dynamic_template: false,
         })
         .unwrap();
 
@@ -451,6 +452,7 @@ fn deleting_unreferenced_profile_succeeds_without_force() {
             name: "未引用角色".to_string(),
             summary: "可直接删除".to_string(),
             content: "role body".to_string(),
+            dynamic_template: false,
         })
         .unwrap();
 
@@ -473,6 +475,7 @@ fn deleting_referenced_profile_requires_confirmation_for_templates_and_tasks() {
             name: "被引用角色".to_string(),
             summary: "template/task reference".to_string(),
             content: "role body".to_string(),
+            dynamic_template: false,
         })
         .unwrap();
 
@@ -520,6 +523,7 @@ fn deleting_referenced_profile_requires_confirmation_for_actionable_runs() {
             name: "可恢复运行角色".to_string(),
             summary: "run snapshot reference".to_string(),
             content: "role body".to_string(),
+            dynamic_template: false,
         })
         .unwrap();
 
@@ -564,6 +568,7 @@ fn force_deleting_referenced_profile_requires_workflow_reset_afterward() {
             name: "强制删除角色".to_string(),
             summary: "force delete".to_string(),
             content: "role body".to_string(),
+            dynamic_template: false,
         })
         .unwrap();
 
@@ -617,6 +622,7 @@ fn force_deleting_referenced_profile_breaks_run_continue() {
             name: "继续运行删除角色".to_string(),
             summary: "break continue".to_string(),
             content: "role body".to_string(),
+            dynamic_template: false,
         })
         .unwrap();
 

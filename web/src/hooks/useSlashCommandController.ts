@@ -8,6 +8,7 @@ import {
   rememberSlashCommandDismissal,
   restoreSlashCommandDismissal,
   slashCommandText,
+  unwrapSelectedSlashCommand,
 } from '@/lib/slash-command';
 
 interface UseSlashCommandControllerOptions {
@@ -15,6 +16,7 @@ interface UseSlashCommandControllerOptions {
   commands: readonly AcpCommandItemVm[];
   contextKey?: string | null;
   onInputChange: (value: string) => void;
+  onInputFocusRequested?: () => void;
 }
 
 export function useSlashCommandController({
@@ -22,6 +24,7 @@ export function useSlashCommandController({
   commands,
   contextKey,
   onInputChange,
+  onInputFocusRequested,
 }: UseSlashCommandControllerOptions) {
   const query = useMemo(() => matchSlashCommandQuery(input), [input]);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -52,8 +55,9 @@ export function useSlashCommandController({
     if (!command) return false;
     onInputChange(slashCommandText(command.name));
     setDismissed(true);
+    onInputFocusRequested?.();
     return true;
-  }, [filteredCommands, onInputChange]);
+  }, [filteredCommands, onInputChange, onInputFocusRequested]);
 
   const dismiss = useCallback(() => {
     rememberSlashCommandDismissal(contextKey, input);
@@ -61,6 +65,21 @@ export function useSlashCommandController({
   }, [contextKey, input]);
 
   const onKeyDown = useCallback((event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'Backspace' && !event.nativeEvent.isComposing) {
+      const unwrappedInput = unwrapSelectedSlashCommand(
+        input,
+        commands,
+        event.currentTarget.selectionStart,
+        event.currentTarget.selectionEnd,
+      );
+      if (unwrappedInput !== null) {
+        event.preventDefault();
+        onInputChange(unwrappedInput);
+        setDismissed(false);
+        onInputFocusRequested?.();
+        return true;
+      }
+    }
     if (!isOpen) return false;
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -82,7 +101,7 @@ export function useSlashCommandController({
       return selectByIndex(activeIndex);
     }
     return false;
-  }, [activeIndex, dismiss, filteredCommands.length, isOpen, selectByIndex]);
+  }, [activeIndex, commands, dismiss, filteredCommands.length, input, isOpen, onInputChange, onInputFocusRequested, selectByIndex]);
 
   return {
     activeIndex,

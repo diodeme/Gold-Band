@@ -6,8 +6,10 @@ import {
   matchSlashCommandQuery,
   parseCommittedSlashCommand,
   rememberSlashCommandDismissal,
+  restoreSlashCommandInputFocus,
   restoreSlashCommandDismissal,
   slashCommandText,
+  unwrapSelectedSlashCommand,
 } from '../src/lib/slash-command';
 
 describe('slash command input contract', () => {
@@ -32,6 +34,62 @@ describe('slash command input contract', () => {
     ];
     expect(filterSlashCommands(commands, 'DES')).toEqual([commands[0]]);
     expect(slashCommandText('/ckm:design')).toBe('/ckm:design ');
+  });
+
+  it('restores composer focus after command selection has committed', () => {
+    let scheduled: (() => void) | null = null;
+    let focusCount = 0;
+    let selection: [number, number] | null = null;
+    const input = {
+      disabled: false,
+      value: 'fix this',
+      focus: () => { focusCount += 1; },
+      setSelectionRange: (start: number, end: number) => { selection = [start, end]; },
+    };
+
+    restoreSlashCommandInputFocus(
+      { current: input },
+      (callback) => { scheduled = callback; },
+    );
+
+    expect(focusCount).toBe(0);
+    expect(scheduled).not.toBeNull();
+    scheduled?.();
+    expect(focusCount).toBe(1);
+    expect(selection).toEqual([8, 8]);
+  });
+
+  it('does not restore focus when the composer becomes disabled', () => {
+    let scheduled: (() => void) | null = null;
+    let focusCount = 0;
+    const input = {
+      disabled: false,
+      focus: () => { focusCount += 1; },
+    };
+
+    restoreSlashCommandInputFocus(
+      { current: input },
+      (callback) => { scheduled = callback; },
+    );
+    input.disabled = true;
+    scheduled?.();
+
+    expect(focusCount).toBe(0);
+  });
+
+  it('unwraps a newly selected command on the first Backspace without deleting its text', () => {
+    const commands = [{ name: 'review', description: 'Review' }];
+
+    expect(unwrapSelectedSlashCommand('/review ', commands, 1, 1)).toBe('/review');
+    expect(unwrapSelectedSlashCommand('/review ', commands, 0, 0)).toBe('/review');
+  });
+
+  it('leaves ordinary Backspace behavior to the textarea after the command tag is unwrapped', () => {
+    const commands = [{ name: 'review', description: 'Review' }];
+
+    expect(unwrapSelectedSlashCommand('/review', commands, 7, 7)).toBeNull();
+    expect(unwrapSelectedSlashCommand('/review fix', commands, 4, 4)).toBeNull();
+    expect(unwrapSelectedSlashCommand('/review ', commands, 0, 1)).toBeNull();
   });
 
   it('decorates only a known leading command after a separator and preserves the raw suffix', () => {

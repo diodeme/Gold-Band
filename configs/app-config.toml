@@ -11,6 +11,7 @@ acpMaxIdleAdapterConnections = 4
 acpTimelineCompactMaxSizeBytes = 8388608
 acpTimelineCompactPatchRatio = 4
 conversationAutoTitleMaxChars = 18
+notificationAutoDismissTargetSecs = 20
 requireLocalClaudeExecutable = false
 
 [permissionModeMapping.claude-acp]

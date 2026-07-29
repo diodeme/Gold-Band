@@ -15,6 +15,7 @@ export type AcpSessionConfigGroup = {
   description: string | null;
   currentValue: string | null;
   overrideValue: string | null;
+  canSelectUnspecified: boolean;
   options: AcpSessionConfigOption[];
 };
 
@@ -79,10 +80,10 @@ export function createAcpSessionConfigViewModel(
   const viewModel = {
     modelOverrideId,
     modelOverrideName,
-    canSelectUnspecifiedModel: true,
+    canSelectUnspecifiedModel: modelOverrideId === null,
     permissionModeOverrideId,
     permissionModeOverrideName,
-    canSelectUnspecifiedPermissionMode: true,
+    canSelectUnspecifiedPermissionMode: permissionModeOverrideId === null,
     currentModelId,
     currentModelName: resolvedCurrentModelName,
     currentModeId,
@@ -110,13 +111,15 @@ export function normalizeAcpSelectConfigGroups(
     const category = stringValue(option?.category)?.trim() || id;
     const options = normalizeConfigOptionList(arrayValue(option?.options), category);
     if (options.length === 0) return [];
+    const overrideValue = overrides?.[id]?.trim() || null;
     return [{
       id,
       category,
       name: stringValue(option?.name)?.trim() || null,
       description: stringValue(option?.description)?.trim() || null,
       currentValue: stringValue(option?.currentValue)?.trim() || null,
-      overrideValue: overrides?.[id]?.trim() || null,
+      overrideValue,
+      canSelectUnspecified: overrideValue === null,
       options,
     }];
   });
@@ -128,15 +131,15 @@ export function findAcpConfigOption(
   category: AcpSessionConfigCategory,
   id: string,
 ): AcpSessionConfigOption {
-  const groupedMatch = groupedConfigOptions(groupedOptions, category).find(
-    (option) => option.id === id,
-  );
-  if (groupedMatch) return groupedMatch;
-
   const configMatch = configOptionValues(configOptions, category).find(
     (option) => option.id === id,
   );
-  return configMatch ?? { id, name: id };
+  if (configMatch) return configMatch;
+
+  const groupedMatch = groupedConfigOptions(groupedOptions, category).find(
+    (option) => option.id === id,
+  );
+  return groupedMatch ?? { id, name: id };
 }
 
 export function normalizeAcpSessionConfigOptions(
@@ -144,9 +147,9 @@ export function normalizeAcpSessionConfigOptions(
   configOptions: unknown,
   category: AcpSessionConfigCategory,
 ): AcpSessionConfigOption[] {
-  const grouped = groupedConfigOptions(groupedOptions, category);
-  if (grouped.length > 0) return grouped;
-  return configOptionValues(configOptions, category);
+  const configured = configOptionValues(configOptions, category);
+  if (configured.length > 0) return configured;
+  return groupedConfigOptions(groupedOptions, category);
 }
 
 function createAcpSessionConfigSignature(
@@ -169,6 +172,7 @@ function createAcpSessionConfigSignature(
       id: viewModel.thoughtLevel.id,
       currentValue: viewModel.thoughtLevel.currentValue,
       overrideValue: viewModel.thoughtLevel.overrideValue,
+      canSelectUnspecified: viewModel.thoughtLevel.canSelectUnspecified,
       options: viewModel.thoughtLevel.options.map(signatureOption),
     } : null,
   });

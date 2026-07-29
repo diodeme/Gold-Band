@@ -28,7 +28,7 @@ export function resolveNodeTokenUsage(detail: NodeDetailVm): AcpUsageVm | null {
       if (usage.cachedReadTokens != null) { acc.cachedReadTokens = (acc.cachedReadTokens ?? 0) + usage.cachedReadTokens; hasAnyBreakdown = true; }
       if (usage.cachedWriteTokens != null) { acc.cachedWriteTokens = (acc.cachedWriteTokens ?? 0) + usage.cachedWriteTokens; hasAnyBreakdown = true; }
       if (usage.totalTokens != null) { acc.totalTokens = (acc.totalTokens ?? 0) + usage.totalTokens; hasAnyBreakdown = true; }
-      if (usage.used != null) latestUsed = usage.used;
+      if (usage.used != null && usage.used > 0) latestUsed = usage.used;
       if (usage.size != null) latestSize = usage.size;
     }
   }

@@ -4,7 +4,7 @@ export interface AcpLiveSessionShellPolicyInput {
   loadedEventCount: number;
 }
 
-export type AcpSessionShellState = 'available' | 'loading' | 'missing';
+export type AcpSessionShellState = 'available' | 'loading' | 'missing' | 'interrupted';
 
 const MISSING_ACP_SESSION_RETRY_DELAYS_MS = [
   120,
@@ -25,7 +25,17 @@ export interface AcpSessionShellStateInput {
   baseSessionReady: boolean;
   hasLiveSessionShell: boolean;
   initialSessionLoading: boolean;
+  initializationInterrupted?: boolean;
   runtimeActive?: boolean;
+}
+
+export interface AcpSessionInitializationInterruptedInput {
+  runtimeStatus?: string | null;
+  runtimePauseReason?: string | null;
+  runtimeActive: boolean;
+  sessionId?: string | null;
+  baseSessionReady: boolean;
+  loadedEventCount: number;
 }
 
 export function shouldCreateLiveAcpSessionShell(input: AcpLiveSessionShellPolicyInput) {
@@ -34,12 +44,28 @@ export function shouldCreateLiveAcpSessionShell(input: AcpLiveSessionShellPolicy
 }
 
 export function resolveAcpSessionShellState(input: AcpSessionShellStateInput): AcpSessionShellState {
+  if (input.initializationInterrupted) return 'interrupted';
   if (input.hasBaseSession && (!input.initialSessionLoading || input.baseSessionReady)) return 'available';
   if (input.hasLiveSessionShell) return 'available';
   if (input.initialSessionLoading) return 'loading';
   if (input.hasBaseSession) return 'available';
   if (input.runtimeActive) return 'loading';
   return 'missing';
+}
+
+export function isAcpSessionInitializationInterrupted(
+  input: AcpSessionInitializationInterruptedInput,
+) {
+  const runtimeStatus = normalizeLifecycleCode(input.runtimeStatus);
+  const pauseReason = normalizeLifecycleCode(input.runtimePauseReason);
+  return (
+    !input.runtimeActive &&
+    runtimeStatus === 'paused' &&
+    pauseReason === 'process-interrupted' &&
+    !input.sessionId?.trim() &&
+    !input.baseSessionReady &&
+    input.loadedEventCount === 0
+  );
 }
 
 export function missingAcpSessionRetryDelay(attempt: number) {
@@ -95,4 +121,8 @@ function hasSelectConfigOption(value: unknown, category: string): boolean {
         return matches && Array.isArray(option.options) && option.options.length > 0;
       }),
   );
+}
+
+function normalizeLifecycleCode(value?: string | null) {
+  return value?.trim().toLowerCase().replace(/_/g, '-') ?? '';
 }

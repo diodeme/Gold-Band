@@ -65,7 +65,7 @@ Direct 模式必须先修复该缺陷，不能通过 Direct 专用前端布尔�
 Direct 与普通 ACP follow-up 共用以下修复：
 
 - Gold Band synthetic `goldBandPrompt` 是本地输入事实；恢复共享 Provider session 时，`user_message_chunk` 与本地 prompt 按有序锚点对账，Provider 漏回放部分本地 turn 时跳过缺失锚点并继续识别后续本地回显。完全匹配不到剩余锚点的外部客户端 turn 连同其 user/assistant/thought/tool 历史先暂存，遇到下一个本地 prompt 后整组标记为插入该 prompt 之前；尾部历史在 load finish 时只锚定到最后一个已匹配本地 prompt。Claude 两条已知 interruption 控制文本暂由 Provider 归一化层精确隐藏并保留 raw frame，等待 ACP 提供结构化 control 标志后替换。
-- restored session 维护 `Replaying -> AwaitingTurnStart -> Live` phase，并以稳定 message/tool identity 区分历史和本轮输出。
+- restored session 维护 `Replaying -> AwaitingTurnStart -> Live` phase。`session/load` response 后不能立即退出 `Replaying`，必须由 event pump 等待回放队列达到有界静默，并在真实 prompt 前再次确认静默；超时则终止本轮，不允许历史和当前 turn 混流。外部同步关闭时静默窗口内所有 replay content 只写 raw，开启时才进入历史 importer；稳定 message/tool identity 仅作为极迟到历史的后续保险，不能承担回放结束判定。
 - prompt 状态区分 `Accepted`（用户消息已持久化）与 `Running`（provider prompt 已发出），composer 以 durable prompt identity 结束“发送中”。
 - Stop 返回后先合并最终 session，只删除仍未接受的 optimistic prompt；已持久化消息在当前 UI 与重启后必须一致。
 - Provider history 使用独立逻辑位置结构：`historyPlacement.version/afterPromptId/beforePromptId/gapTurnIndex` 描述本地 prompt 间隙，`historyItemIndex` 描述组内顺序；`seq/timestamp` 继续作为不可改写的审计到达顺序。后端投影和前端 merge 按锚点构建展示顺序，分页 cursor 仍取窗口审计 seq 的 min/max。重复 load 对同一稳定 ID 只补写 placement patch，并保留首次时间位置；旧版本已污染的 timeline 仅在缺少 placement 时按文本锚点清理误分类整组，Provider-history patch 与既有本地 item identity 冲突时保留原始本地事件和工具卡片，不重写 raw/timeline 审计数据。

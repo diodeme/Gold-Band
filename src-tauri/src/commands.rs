@@ -475,7 +475,10 @@ pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) 
     );
     app.lifecycle_bus.subscribe_named(
         "desktop.notifications",
-        crate::notifications::create_intervention_notification_subscriber(app_handle.clone()),
+        crate::notifications::create_intervention_notification_subscriber(
+            app_handle.clone(),
+            app.config.notification_auto_dismiss_target_secs,
+        ),
     );
     app.lifecycle_bus.subscribe_named(
         "desktop.conversation-run-state",
@@ -2855,6 +2858,7 @@ pub async fn get_acp_raw_frames(
                     search: None,
                     kind: None,
                     direction: None,
+                    order: None,
                 }),
             )
             .map_err(command_error);
@@ -2872,6 +2876,7 @@ pub async fn get_acp_raw_frames(
                 search: None,
                 kind: None,
                 direction: None,
+                order: None,
             }),
         )
         .map_err(command_error)

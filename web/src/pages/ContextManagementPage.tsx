@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
-import { Check, ChevronsUpDown, Edit, Eye, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { Check, ChevronsUpDown, CircleHelp, Edit, Eye, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import {
@@ -33,6 +33,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
@@ -1375,6 +1376,45 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
                     />
                     <FormField
                       control={form.control}
+                      name="dynamicTemplate"
+                      render={({ field }) => (
+                        <FormItem className="flex items-center justify-between gap-4 rounded-lg border px-3 py-3">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1.5">
+                              <FormLabel className="m-0">{t('contextManagement.dynamicTemplate')}</FormLabel>
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <button
+                                      type="button"
+                                      className="text-muted-foreground transition-colors hover:text-foreground"
+                                      aria-label={t('contextManagement.dynamicTemplateHelpLabel')}
+                                    >
+                                      <CircleHelp className="size-4" />
+                                    </button>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top" align="start" className="max-w-sm space-y-2 p-3">
+                                    <p>{t('contextManagement.dynamicTemplateHelp')}</p>
+                                    <ul className="space-y-1 font-mono text-xs">
+                                      <li>{t('contextManagement.dynamicTemplateSurface')}</li>
+                                      <li>{t('contextManagement.dynamicTemplateCanRouteNext')}</li>
+                                      <li>{t('contextManagement.dynamicTemplateHasOutputContract')}</li>
+                                      <li>{t('contextManagement.dynamicTemplateSessionMode')}</li>
+                                    </ul>
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            </div>
+                            <p className="text-xs text-muted-foreground">{t('contextManagement.dynamicTemplateDescription')}</p>
+                          </div>
+                          <FormControl>
+                            <Switch checked={field.value} onCheckedChange={field.onChange} />
+                          </FormControl>
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
                       name="content"
                       render={({ field }) => (
                         <FormItem>
@@ -1392,6 +1432,7 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
                     <CardContent className="grid gap-3 p-3 text-sm md:grid-cols-2">
                       <ProfileMeta label="ID" value={profile.id} />
                       <ProfileMeta label={t('contextManagement.scope')} value={profileScopeLabel(t, profile.scope)} />
+                      <ProfileMeta label={t('contextManagement.dynamicTemplate')} value={profile.dynamicTemplate ? t('common.enabled') : t('common.disabled')} />
                       <ProfileMeta label={t('contextManagement.createdAt')} value={formatLocalDateTime(profile.createdAt)} />
                       <ProfileMeta label={t('contextManagement.updatedAt')} value={formatLocalDateTime(profile.updatedAt)} />
                     </CardContent>
@@ -1522,6 +1563,7 @@ function profileInputDefaults(profile: ProfileVm | null): ProfileInput {
     name: profile?.name ?? '',
     summary: profile?.summarySource ?? profile?.summary ?? '',
     content: profile?.content ?? '',
+    dynamicTemplate: profile?.dynamicTemplate ?? false,
   };
 }
 

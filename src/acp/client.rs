@@ -17,6 +17,133 @@ struct AcpTimelineStreamState {
     content: String,
 }
 
+#[derive(Debug, Clone)]
+struct AcpContextCompactionState {
+    item_id: String,
+    started_seq: u64,
+    started_at: String,
+    context_used_before: Option<u64>,
+    context_size: Option<u64>,
+    completed_seq: Option<u64>,
+    completed_at: Option<String>,
+    saw_post_completion_reset: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AcpContextUsageGauge {
+    confirmed_used: Option<u64>,
+    window_size: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AcpTokenTotals {
+    total_cost_usd: Option<f64>,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    cached_read_tokens: Option<u64>,
+    cached_write_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AcpUsageState {
+    context: AcpContextUsageGauge,
+    totals: AcpTokenTotals,
+    compaction: Option<AcpContextCompactionState>,
+}
+
+impl AcpUsageState {
+    fn from_prior(
+        prior: PriorSessionMetrics,
+        compaction: Option<AcpContextCompactionState>,
+    ) -> Self {
+        Self {
+            context: AcpContextUsageGauge {
+                confirmed_used: prior.used_tokens.filter(|used| *used > 0),
+                window_size: prior.context_window_size.filter(|size| *size > 0),
+            },
+            totals: AcpTokenTotals {
+                total_cost_usd: prior.total_cost_usd,
+                input_tokens: prior.input_tokens,
+                output_tokens: prior.output_tokens,
+                cached_read_tokens: prior.cached_read_tokens,
+                cached_write_tokens: prior.cached_write_tokens,
+                total_tokens: prior.total_tokens,
+            },
+            compaction,
+        }
+    }
+
+    /// Fold one provider sample into the canonical session usage state.
+    ///
+    /// `used=0` is an adapter transition sample, not a confirmed empty context.
+    /// It is retained in `acp.raw.jsonl`, while canonical timeline/snapshot state
+    /// keeps the last confirmed positive gauge until a post-compaction value arrives.
+    fn observe_provider_usage(
+        &mut self,
+        used: Option<u64>,
+        size: Option<u64>,
+        cost: Option<f64>,
+    ) -> Option<u64> {
+        if let Some(size) = size.filter(|size| *size > 0) {
+            self.context.window_size = Some(size);
+        }
+        if let Some(cost) = cost {
+            self.totals.total_cost_usd = Some(cost);
+        }
+
+        let Some(used) = used else {
+            return None;
+        };
+        let Some(compaction) = self.compaction.as_mut() else {
+            if used > 0 {
+                self.context.confirmed_used = Some(used);
+            }
+            return None;
+        };
+
+        if compaction.completed_seq.is_none() {
+            return None;
+        }
+        if used == 0 {
+            compaction.saw_post_completion_reset = true;
+            return None;
+        }
+        let confirmed_after = compaction.saw_post_completion_reset
+            || compaction
+                .context_used_before
+                .is_some_and(|before| used < before);
+        if !confirmed_after {
+            return None;
+        }
+
+        self.context.confirmed_used = Some(used);
+        Some(used)
+    }
+
+    fn normalize_timeline_usage(&self, update: &mut Value) {
+        let Some(object) = update.as_object_mut() else {
+            return;
+        };
+        match self.context.confirmed_used {
+            Some(used) => {
+                object.insert("used".to_string(), Value::from(used));
+            }
+            None => {
+                object.remove("used");
+            }
+        }
+        match self.context.window_size {
+            Some(size) => {
+                object.insert("size".to_string(), Value::from(size));
+            }
+            None => {
+                object.remove("size");
+            }
+        }
+    }
+}
+
 use crate::acp::commands::{AcpCommandItem, parse_available_commands};
 use crate::acp::connection::{
     AcpConnectionUnavailable, AdapterConnection, AdapterConnectionKey, AdapterConnectionManager,
@@ -59,6 +186,8 @@ const SESSION_TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const PROMPT_CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
 const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 const SESSION_FRESHNESS_TIMEOUT: Duration = Duration::from_secs(5);
+const SESSION_REPLAY_QUIET_PERIOD: Duration = Duration::from_millis(200);
+const SESSION_REPLAY_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 const SESSION_LIST_MAX_PAGES: usize = 8;
 const SESSION_EVICTION_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const SESSION_SYSTEM_CONTEXT_VERSION: u32 = 1;
@@ -85,9 +214,61 @@ impl std::fmt::Display for AcpTransportInterrupted {
 
 impl std::error::Error for AcpTransportInterrupted {}
 
+#[derive(Debug)]
+struct AcpSessionReplayDrainTimeout {
+    timeout: Duration,
+}
+
+impl std::fmt::Display for AcpSessionReplayDrainTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "ACP session history replay did not become idle within {} seconds",
+            self.timeout.as_secs()
+        )
+    }
+}
+
+impl std::error::Error for AcpSessionReplayDrainTimeout {}
+
 fn is_transport_interruption(error: &anyhow::Error) -> bool {
     error.downcast_ref::<AcpTransportInterrupted>().is_some()
         || error.downcast_ref::<AcpConnectionUnavailable>().is_some()
+}
+
+fn drain_frames_until_quiet<Receive, Observe>(
+    quiet_period: Duration,
+    timeout: Duration,
+    mut receive: Receive,
+    mut observe: Observe,
+) -> Result<usize>
+where
+    Receive: FnMut(Duration) -> std::result::Result<Value, RecvTimeoutError>,
+    Observe: FnMut(Value) -> Result<()>,
+{
+    let started_at = Instant::now();
+    let mut drained_frames = 0usize;
+    loop {
+        let Some(remaining) = timeout.checked_sub(started_at.elapsed()) else {
+            return Err(anyhow!(AcpSessionReplayDrainTimeout { timeout }));
+        };
+        let wait_for = quiet_period.min(remaining);
+        match receive(wait_for) {
+            Ok(value) => {
+                observe(value)?;
+                drained_frames = drained_frames.saturating_add(1);
+            }
+            Err(RecvTimeoutError::Timeout) if wait_for == quiet_period => {
+                return Ok(drained_frames);
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                return Err(anyhow!(AcpSessionReplayDrainTimeout { timeout }));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(anyhow!(AcpTransportInterrupted));
+            }
+        }
+    }
 }
 
 fn session_list_is_unsupported(error: &anyhow::Error) -> bool {
@@ -370,7 +551,6 @@ pub struct AcpPromptRun {
     pub used_tokens: Option<u64>,
     pub context_window_size: Option<u64>,
     pub total_cost_usd: Option<f64>,
-    pub accumulated_used_tokens: u64,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub cached_read_tokens: Option<u64>,
@@ -745,15 +925,7 @@ struct AcpRuntime<'a> {
     available_commands: Option<Vec<AcpCommandItem>>,
     system_prompt_append: Option<String>,
     session_title: Option<String>,
-    used_tokens: Option<u64>,
-    context_window_size: Option<u64>,
-    total_cost_usd: Option<f64>,
-    accumulated_used_tokens: u64,
-    input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
-    cached_read_tokens: Option<u64>,
-    cached_write_tokens: Option<u64>,
-    total_tokens: Option<u64>,
+    usage: AcpUsageState,
     active_text_stream: Option<AcpTimelineStreamState>,
     active_thought_stream: Option<AcpTimelineStreamState>,
     active_plan_stream: Option<AcpTimelineStreamState>,
@@ -1013,6 +1185,7 @@ pub fn run_prompt(
         }
         Err(error) => {
             let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
+            let _ = runtime.interrupt_active_context_compaction("prompt_failed");
             append_diagnostic(
                 &runtime.paths.diagnostics,
                 "error",
@@ -1042,6 +1215,8 @@ pub fn run_prompt(
         restored,
         stop_reason.clone(),
     )?;
+    runtime
+        .interrupt_active_context_compaction(stop_reason.as_deref().unwrap_or("prompt_finished"))?;
     runtime.control.mark_stopped();
     runtime.write_session(status, restored, stop_reason.clone(), capabilities)?;
     if let Some(session_update) = session_update {
@@ -1055,15 +1230,14 @@ pub fn run_prompt(
         final_text: runtime.final_text.clone(),
         final_outputs: runtime.final_outputs.clone(),
         restored,
-        used_tokens: runtime.used_tokens,
-        context_window_size: runtime.context_window_size,
-        total_cost_usd: runtime.total_cost_usd,
-        accumulated_used_tokens: runtime.accumulated_used_tokens,
-        input_tokens: runtime.input_tokens,
-        output_tokens: runtime.output_tokens,
-        cached_read_tokens: runtime.cached_read_tokens,
-        cached_write_tokens: runtime.cached_write_tokens,
-        total_tokens: runtime.total_tokens,
+        used_tokens: runtime.usage.context.confirmed_used,
+        context_window_size: runtime.usage.context.window_size,
+        total_cost_usd: runtime.usage.totals.total_cost_usd,
+        input_tokens: runtime.usage.totals.input_tokens,
+        output_tokens: runtime.usage.totals.output_tokens,
+        cached_read_tokens: runtime.usage.totals.cached_read_tokens,
+        cached_write_tokens: runtime.usage.totals.cached_write_tokens,
+        total_tokens: runtime.usage.totals.total_tokens,
     };
     runtime.release_managed_session();
     Ok(run)
@@ -1478,6 +1652,7 @@ impl<'a> AcpRuntime<'a> {
         let provider_history_replay = ProviderHistoryReplay::from_timeline(&loaded_timeline_items);
         let (active_text_stream, active_thought_stream, active_plan_stream) =
             active_timeline_streams(&loaded_timeline_items);
+        let context_compaction = active_context_compaction(&loaded_timeline_items);
         let historical_timeline_item_ids = loaded_timeline_items
             .iter()
             .map(|item| item.id.clone())
@@ -1512,15 +1687,7 @@ impl<'a> AcpRuntime<'a> {
             available_commands: None,
             system_prompt_append: None,
             session_title: None,
-            used_tokens: prior.used_tokens,
-            context_window_size: prior.context_window_size,
-            total_cost_usd: prior.total_cost_usd,
-            accumulated_used_tokens: 0,
-            input_tokens: prior.input_tokens,
-            output_tokens: prior.output_tokens,
-            cached_read_tokens: prior.cached_read_tokens,
-            cached_write_tokens: prior.cached_write_tokens,
-            total_tokens: prior.total_tokens,
+            usage: AcpUsageState::from_prior(prior, context_compaction),
             active_text_stream,
             active_thought_stream,
             active_plan_stream,
@@ -1563,15 +1730,14 @@ impl<'a> AcpRuntime<'a> {
             final_text: self.final_text.clone(),
             final_outputs: self.final_outputs.clone(),
             restored,
-            used_tokens: self.used_tokens,
-            context_window_size: self.context_window_size,
-            total_cost_usd: self.total_cost_usd,
-            accumulated_used_tokens: self.accumulated_used_tokens,
-            input_tokens: self.input_tokens,
-            output_tokens: self.output_tokens,
-            cached_read_tokens: self.cached_read_tokens,
-            cached_write_tokens: self.cached_write_tokens,
-            total_tokens: self.total_tokens,
+            used_tokens: self.usage.context.confirmed_used,
+            context_window_size: self.usage.context.window_size,
+            total_cost_usd: self.usage.totals.total_cost_usd,
+            input_tokens: self.usage.totals.input_tokens,
+            output_tokens: self.usage.totals.output_tokens,
+            cached_read_tokens: self.usage.totals.cached_read_tokens,
+            cached_write_tokens: self.usage.totals.cached_write_tokens,
+            total_tokens: self.usage.totals.total_tokens,
         }
     }
 
@@ -1666,9 +1832,8 @@ impl<'a> AcpRuntime<'a> {
                     self.capture_session_config(&result);
                     self.set_session_id(session_id.to_string());
                     self.apply_session_mode_options(permission_mode, model, config_options)?;
-                    self.drain_available_inbound()?;
+                    self.drain_session_replay_until_quiet(session_id)?;
                     self.finish_provider_history_replay(Some(session_id.to_string()))?;
-                    self.session_update_phase = SessionUpdatePhase::AwaitingTurnStart;
                     self.sync_required = false;
                     self.refresh_provider_freshness_best_effort(&cwd);
                     return Ok(true);
@@ -2310,11 +2475,13 @@ impl<'a> AcpRuntime<'a> {
         // Capture session-end usage breakdown (inputTokens / outputTokens / …)
         // that the adapter returns alongside the stopReason.
         if let Some(usage) = result.get("usage") {
-            self.input_tokens = usage.get("inputTokens").and_then(Value::as_u64);
-            self.output_tokens = usage.get("outputTokens").and_then(Value::as_u64);
-            self.cached_read_tokens = usage.get("cachedReadTokens").and_then(Value::as_u64);
-            self.cached_write_tokens = usage.get("cachedWriteTokens").and_then(Value::as_u64);
-            self.total_tokens = usage.get("totalTokens").and_then(Value::as_u64);
+            self.usage.totals.input_tokens = usage.get("inputTokens").and_then(Value::as_u64);
+            self.usage.totals.output_tokens = usage.get("outputTokens").and_then(Value::as_u64);
+            self.usage.totals.cached_read_tokens =
+                usage.get("cachedReadTokens").and_then(Value::as_u64);
+            self.usage.totals.cached_write_tokens =
+                usage.get("cachedWriteTokens").and_then(Value::as_u64);
+            self.usage.totals.total_tokens = usage.get("totalTokens").and_then(Value::as_u64);
         }
         if acp_session_title_refresh_enabled {
             self.refresh_session_title_and_persist(
@@ -2479,7 +2646,7 @@ impl<'a> AcpRuntime<'a> {
             return Err(anyhow!(AcpCancelled));
         }
         if self.session_update_phase == SessionUpdatePhase::Replaying {
-            self.drain_available_inbound()?;
+            self.drain_session_replay_until_quiet(session_id)?;
             self.finish_provider_history_replay(Some(session_id.to_string()))?;
             self.session_update_phase = SessionUpdatePhase::AwaitingTurnStart;
         }
@@ -2632,7 +2799,7 @@ impl<'a> AcpRuntime<'a> {
             .get("sessionId")
             .and_then(Value::as_str)
             .map(str::to_string);
-        let update = params.get("update").cloned().unwrap_or(params);
+        let mut update = params.get("update").cloned().unwrap_or(params);
 
         if let Some(commands) = parse_available_commands(&update) {
             self.available_commands = Some(commands);
@@ -2651,25 +2818,18 @@ impl<'a> AcpRuntime<'a> {
             return Ok(());
         }
 
-        // Track usage from usage_update events so we can persist them at prompt end.
-        if update.get("sessionUpdate").and_then(Value::as_str) == Some("usage_update") {
-            let (used, size, cost) = crate::acp::events::extract_usage_fields(&update);
-            if let Some(u) = used {
-                // Accumulate positive deltas so compaction-driven resets
-                // don't lose track of the session's total token spend.
-                let prev = self.used_tokens.unwrap_or(0);
-                if u > prev {
-                    self.accumulated_used_tokens += u - prev;
-                }
-                self.used_tokens = Some(u);
-            }
-            if size.is_some() {
-                self.context_window_size = size;
-            }
-            if cost.is_some() {
-                self.total_cost_usd = cost;
-            }
-        }
+        // Fold raw provider samples into a stable context gauge before the event
+        // enters the canonical timeline. The untouched raw frame is already in
+        // acp.raw.jsonl, so transient zeroes never need to leak into UI state.
+        let usage_after_compaction =
+            if update.get("sessionUpdate").and_then(Value::as_str) == Some("usage_update") {
+                let (used, size, cost) = crate::acp::events::extract_usage_fields(&update);
+                let after = self.usage.observe_provider_usage(used, size, cost);
+                self.usage.normalize_timeline_usage(&mut update);
+                after
+            } else {
+                None
+            };
 
         if is_unscoped_codex_diagnostic_update(
             &self.provider_id,
@@ -2712,6 +2872,108 @@ impl<'a> AcpRuntime<'a> {
             self.collecting_text_output = false;
         }
         self.persist_event(&event)?;
+        if event.kind == "contextCompaction" {
+            append_diagnostic(
+                &self.paths.diagnostics,
+                "info",
+                format!(
+                    "ACP context compaction {}",
+                    event.status.as_deref().unwrap_or("updated")
+                ),
+                Some(json!({
+                    "code": "acp.context_compaction",
+                    "sessionId": event.session_id,
+                    "sourceSeq": event.seq,
+                    "status": event.status,
+                    "contextCompaction": event.raw.as_ref().and_then(|raw| raw.get("contextCompaction")),
+                })),
+            )?;
+        }
+        if let Some(used) = usage_after_compaction {
+            self.maybe_persist_context_compaction_usage(used)?;
+        }
+        Ok(())
+    }
+
+    fn maybe_persist_context_compaction_usage(&mut self, used: u64) -> Result<()> {
+        let Some(state) = self.usage.compaction.clone() else {
+            return Ok(());
+        };
+        let Some(mut item) = self.timeline_items.get(&state.item_id).cloned() else {
+            return Ok(());
+        };
+        self.seq = self.seq.saturating_add(1);
+        item.seq = self.seq;
+        item.timestamp = current_timestamp();
+        item.status = Some("completed".to_string());
+        item.ended_seq = state.completed_seq;
+        item.ended_at = state.completed_at.clone();
+        upsert_context_compaction_raw(
+            &mut item,
+            "completed",
+            state.context_used_before,
+            state.context_size,
+            Some(used),
+        );
+        self.persist_event(&item)?;
+        self.usage.compaction = None;
+        append_diagnostic(
+            &self.paths.diagnostics,
+            "info",
+            "ACP context compaction usage observed",
+            Some(json!({
+                "code": "acp.context_compaction_usage",
+                "sourceSeq": self.seq,
+                "contextUsedBefore": state.context_used_before,
+                "contextUsedAfter": used,
+                "contextSize": state.context_size,
+            })),
+        )
+    }
+
+    fn interrupt_active_context_compaction(&mut self, reason: &str) -> Result<()> {
+        let Some(state) = self.usage.compaction.clone() else {
+            return Ok(());
+        };
+        if state.completed_seq.is_some() {
+            return Ok(());
+        }
+        let Some(mut item) = self.timeline_items.get(&state.item_id).cloned() else {
+            return Ok(());
+        };
+        self.seq = self.seq.saturating_add(1);
+        let ended_at = current_timestamp();
+        item.seq = self.seq;
+        item.timestamp = ended_at.clone();
+        item.status = Some("interrupted".to_string());
+        item.ended_seq = Some(self.seq);
+        item.ended_at = Some(ended_at);
+        upsert_context_compaction_raw(
+            &mut item,
+            "interrupted",
+            state.context_used_before,
+            state.context_size,
+            None,
+        );
+        if let Some(raw) = item.raw.as_mut().and_then(Value::as_object_mut)
+            && let Some(compaction) = raw
+                .get_mut("contextCompaction")
+                .and_then(Value::as_object_mut)
+        {
+            compaction.insert("reason".to_string(), Value::String(reason.to_string()));
+        }
+        self.persist_event(&item)?;
+        self.usage.compaction = None;
+        append_diagnostic(
+            &self.paths.diagnostics,
+            "warn",
+            "ACP context compaction interrupted",
+            Some(json!({
+                "code": "acp.context_compaction_interrupted",
+                "sourceSeq": self.seq,
+                "reason": reason,
+            })),
+        )?;
         Ok(())
     }
 
@@ -2964,6 +3226,35 @@ impl<'a> AcpRuntime<'a> {
         }
     }
 
+    fn drain_session_replay_until_quiet(&mut self, session_id: &str) -> Result<()> {
+        let receiver = self
+            .rx
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow!("ACP session replay route is unavailable"))?;
+        let started_at = Instant::now();
+        let drained_frames = drain_frames_until_quiet(
+            SESSION_REPLAY_QUIET_PERIOD,
+            SESSION_REPLAY_DRAIN_TIMEOUT,
+            |wait_for| receiver.recv_timeout(wait_for),
+            |value| {
+                self.append_inbound_frame(&value)?;
+                self.handle_inbound(value)
+            },
+        )?;
+        self.append_timing_diagnostic(
+            "acp_session_replay_drained",
+            json!({
+                "event": "acp_session_replay_drained",
+                "sessionId": session_id,
+                "frames": drained_frames,
+                "elapsedMs": started_at.elapsed().as_millis(),
+                "externalSessionSyncEnabled": self.runtime_policy.external_session_sync_enabled,
+            }),
+        );
+        Ok(())
+    }
+
     fn append_outbound_frame(&self, frame: &Value) -> Result<()> {
         append_raw_frame(
             &self.paths.raw,
@@ -3065,14 +3356,14 @@ impl<'a> AcpRuntime<'a> {
             permission_mode_override: self.permission_mode_override.clone(),
             config_option_overrides: self.config_option_overrides.clone(),
             system_prompt_append: self.system_prompt_append.clone(),
-            used_tokens: self.used_tokens,
-            context_window_size: self.context_window_size,
-            total_cost_usd: self.total_cost_usd,
-            input_tokens: self.input_tokens,
-            output_tokens: self.output_tokens,
-            cached_read_tokens: self.cached_read_tokens,
-            cached_write_tokens: self.cached_write_tokens,
-            total_tokens: self.total_tokens,
+            used_tokens: self.usage.context.confirmed_used,
+            context_window_size: self.usage.context.window_size,
+            total_cost_usd: self.usage.totals.total_cost_usd,
+            input_tokens: self.usage.totals.input_tokens,
+            output_tokens: self.usage.totals.output_tokens,
+            cached_read_tokens: self.usage.totals.cached_read_tokens,
+            cached_write_tokens: self.usage.totals.cached_write_tokens,
+            total_tokens: self.usage.totals.total_tokens,
             timing: self.session_timing_snapshot(status, &now),
             created_at,
             updated_at: now,
@@ -3364,6 +3655,92 @@ impl<'a> AcpRuntime<'a> {
         item.ended_at = Some(timestamp.to_string());
     }
 
+    fn apply_context_compaction_event(
+        &mut self,
+        item: &mut crate::acp::events::AcpUiEvent,
+        seq: u64,
+        timestamp: &str,
+    ) {
+        let status = item.status.as_deref().unwrap_or("running");
+        let context_used_after = item
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.pointer("/contextCompaction/contextUsedAfter"))
+            .and_then(Value::as_u64);
+        let interruption_reason = item
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.pointer("/contextCompaction/reason"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+
+        let mut state = if status == "running" {
+            AcpContextCompactionState {
+                item_id: format!("context-compaction-{seq}"),
+                started_seq: seq,
+                started_at: timestamp.to_string(),
+                context_used_before: self.usage.context.confirmed_used,
+                context_size: self.usage.context.window_size,
+                completed_seq: None,
+                completed_at: None,
+                saw_post_completion_reset: false,
+            }
+        } else {
+            self.usage
+                .compaction
+                .clone()
+                .unwrap_or_else(|| AcpContextCompactionState {
+                    item_id: format!("context-compaction-{seq}"),
+                    started_seq: seq,
+                    started_at: timestamp.to_string(),
+                    context_used_before: self.usage.context.confirmed_used,
+                    context_size: self.usage.context.window_size,
+                    completed_seq: None,
+                    completed_at: None,
+                    saw_post_completion_reset: false,
+                })
+        };
+
+        item.id = state.item_id.clone();
+        item.started_seq = Some(state.started_seq);
+        item.started_at = Some(state.started_at.clone());
+        if status == "running" {
+            item.ended_seq = None;
+            item.ended_at = None;
+        } else {
+            state.completed_seq = Some(state.completed_seq.unwrap_or(seq));
+            state.completed_at = Some(
+                state
+                    .completed_at
+                    .clone()
+                    .unwrap_or_else(|| timestamp.to_string()),
+            );
+            item.ended_seq = state.completed_seq;
+            item.ended_at = state.completed_at.clone();
+        }
+        upsert_context_compaction_raw(
+            item,
+            match status {
+                "running" => "started",
+                "interrupted" => "interrupted",
+                _ => "completed",
+            },
+            state.context_used_before,
+            state.context_size,
+            context_used_after,
+        );
+        if let Some(reason) = interruption_reason
+            && let Some(compaction) = item
+                .raw
+                .as_mut()
+                .and_then(|raw| raw.get_mut("contextCompaction"))
+                .and_then(Value::as_object_mut)
+        {
+            compaction.insert("reason".to_string(), Value::String(reason));
+        }
+        self.usage.compaction = context_used_after.is_none().then_some(state);
+    }
+
     fn timeline_item_for_event(
         &mut self,
         event: &crate::acp::events::AcpUiEvent,
@@ -3407,6 +3784,29 @@ impl<'a> AcpRuntime<'a> {
                     &stable_id,
                     source_id.as_deref(),
                     64_000,
+                    seq,
+                    &timestamp,
+                );
+            }
+            "contextCompaction" => {
+                self.active_text_stream = None;
+                self.active_thought_stream = None;
+                self.active_plan_stream = None;
+                self.apply_context_compaction_event(&mut item, seq, &timestamp);
+            }
+            "usageUpdate" => {
+                item.id = item
+                    .session_id
+                    .as_deref()
+                    .map(|session_id| format!("session-usage-{session_id}"))
+                    .unwrap_or_else(|| "session-usage-current".to_string());
+                Self::finalize_non_streaming_event(
+                    (
+                        &mut self.active_text_stream,
+                        &mut self.active_thought_stream,
+                        &mut self.active_plan_stream,
+                    ),
+                    &mut item,
                     seq,
                     &timestamp,
                 );
@@ -3577,6 +3977,26 @@ fn is_non_empty_object(value: &serde_json::Value) -> bool {
     }
 }
 
+fn upsert_context_compaction_raw(
+    item: &mut crate::acp::events::AcpUiEvent,
+    phase: &str,
+    context_used_before: Option<u64>,
+    context_size: Option<u64>,
+    context_used_after: Option<u64>,
+) {
+    let raw = item.raw.get_or_insert_with(|| json!({}));
+    if !raw.is_object() {
+        *raw = json!({});
+    }
+    raw["contextCompaction"] = json!({
+        "phase": phase,
+        "detectionSource": "providerControlMessage",
+        "contextUsedBefore": context_used_before,
+        "contextSize": context_size,
+        "contextUsedAfter": context_used_after,
+    });
+}
+
 /// Merge `raw.rawInput` and `raw.title` from a previous tool-call timeline
 /// item into the current one when the current item doesn't have a non-empty
 /// value. This preserves tool input across adapter updates that overwrite the
@@ -3685,6 +4105,44 @@ fn active_timeline_streams(
     }
 }
 
+fn active_context_compaction(
+    items: &[crate::acp::events::AcpUiEvent],
+) -> Option<AcpContextCompactionState> {
+    let item = items
+        .iter()
+        .filter(|item| item.kind == "contextCompaction")
+        .max_by_key(|item| (item.ended_seq.unwrap_or(item.seq), item.seq))?;
+    if !matches!(item.status.as_deref(), Some("running" | "completed")) {
+        return None;
+    }
+    let raw = item.raw.as_ref()?.get("contextCompaction")?;
+    if raw
+        .get("contextUsedAfter")
+        .and_then(Value::as_u64)
+        .is_some()
+    {
+        return None;
+    }
+    let completed = item.status.as_deref() == Some("completed");
+    Some(AcpContextCompactionState {
+        item_id: item.id.clone(),
+        started_seq: item.started_seq.unwrap_or(item.seq),
+        started_at: item
+            .started_at
+            .clone()
+            .unwrap_or_else(|| item.timestamp.clone()),
+        context_used_before: raw.get("contextUsedBefore").and_then(Value::as_u64),
+        context_size: raw.get("contextSize").and_then(Value::as_u64),
+        completed_seq: completed.then_some(item.ended_seq.unwrap_or(item.seq)),
+        completed_at: completed.then(|| {
+            item.ended_at
+                .clone()
+                .unwrap_or_else(|| item.timestamp.clone())
+        }),
+        saw_post_completion_reset: false,
+    })
+}
+
 fn update_runtime_hot_timeline_items(
     items: &mut HashMap<String, crate::acp::events::AcpUiEvent>,
     item: &crate::acp::events::AcpUiEvent,
@@ -3708,6 +4166,15 @@ fn update_runtime_hot_timeline_items(
 fn retains_runtime_timeline_context(item: &crate::acp::events::AcpUiEvent) -> bool {
     match item.kind.as_str() {
         "toolCall" => !is_terminal_tool_status(item.status.as_deref()),
+        "contextCompaction" => {
+            matches!(item.status.as_deref(), Some("running" | "completed"))
+                && item
+                    .raw
+                    .as_ref()
+                    .and_then(|raw| raw.pointer("/contextCompaction/contextUsedAfter"))
+                    .and_then(Value::as_u64)
+                    .is_none()
+        }
         "permissionRequest" | "elicitationRequest" => item
             .status
             .as_deref()
@@ -4094,10 +4561,11 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        AcpRuntime, AcpRuntimePolicy, AttachedSessionReusePlan, DOCTOR_DIAGNOSTIC_TARGET_SIZE,
-        PromptActivity, PromptBundle, PromptVisibility, ProviderFreshnessBaseline,
-        RuntimeStopProbe, SessionUpdatePhase, active_timeline_streams, attached_sync_required,
-        cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
+        AcpContextCompactionState, AcpRuntime, AcpRuntimePolicy, AcpUsageState,
+        AttachedSessionReusePlan, DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptActivity, PromptBundle,
+        PromptVisibility, ProviderFreshnessBaseline, RuntimeStopProbe, SessionUpdatePhase,
+        active_context_compaction, active_timeline_streams, attached_sync_required,
+        cleanup_doctor_acp_dir_after_success, contributes_to_final_text, drain_frames_until_quiet,
         evaluate_provider_revision, is_transport_interruption, is_unscoped_codex_diagnostic_update,
         merge_tool_raw_input, permission_decision_timeline_event, plan_attached_session_reuse,
         prompt_activity, register_provider_control, request_prompt_cancel, resolve_permission_mode,
@@ -4234,6 +4702,50 @@ mod tests {
             Some("session-1"),
             &old_message,
         ));
+    }
+
+    #[test]
+    fn load_response_does_not_end_replay_before_delayed_agent_chunks_arrive() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender_keepalive = sender.clone();
+        let producer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(15));
+            sender
+                .send(json!({
+                    "sessionUpdate": "agent_message_chunk",
+                    "messageId": "synthetic-after-load-response",
+                    "content": { "type": "text", "text": "No response requested." }
+                }))
+                .unwrap();
+        });
+        let mut phase = SessionUpdatePhase::Replaying;
+        let historical = HashSet::new();
+        let mut current = HashSet::new();
+        let mut suppressed = Vec::new();
+
+        let drained = drain_frames_until_quiet(
+            std::time::Duration::from_millis(40),
+            std::time::Duration::from_secs(1),
+            |wait_for| receiver.recv_timeout(wait_for),
+            |update| {
+                suppressed.push(should_suppress_session_update(
+                    &mut phase,
+                    &historical,
+                    &mut current,
+                    Some("session-1"),
+                    &update,
+                ));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        producer.join().unwrap();
+        drop(sender_keepalive);
+        assert_eq!(drained, 1);
+        assert_eq!(suppressed, vec![true]);
+        assert_eq!(phase, SessionUpdatePhase::Replaying);
+        assert!(current.is_empty());
     }
 
     #[test]
@@ -5288,5 +5800,128 @@ mod tests {
         assert_eq!(prior.input_tokens, None);
         assert_eq!(prior.output_tokens, None);
         assert_eq!(prior.total_tokens, None);
+    }
+
+    #[test]
+    fn restores_running_and_completed_compaction_until_usage_after_is_known() {
+        let event = |status: &str, after: Option<u64>| AcpUiEvent {
+            id: "context-compaction-10".to_string(),
+            seq: 10,
+            timestamp: "100Z".to_string(),
+            kind: "contextCompaction".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: None,
+            title: None,
+            tool_call_id: None,
+            status: Some(status.to_string()),
+            started_seq: Some(10),
+            ended_seq: (status == "completed").then_some(20),
+            started_at: Some("100Z".to_string()),
+            ended_at: (status == "completed").then(|| "120Z".to_string()),
+            timing: None,
+            raw: Some(json!({
+                "contextCompaction": {
+                    "phase": status,
+                    "contextUsedBefore": 169_052,
+                    "contextSize": 200_000,
+                    "contextUsedAfter": after,
+                }
+            })),
+        };
+
+        let running = active_context_compaction(&[event("running", None)]).unwrap();
+        assert_eq!(running.context_used_before, Some(169_052));
+        assert_eq!(running.completed_seq, None);
+
+        let completed = active_context_compaction(&[event("completed", None)]).unwrap();
+        assert_eq!(completed.completed_seq, Some(20));
+
+        assert!(active_context_compaction(&[event("completed", Some(23_825))]).is_none());
+        assert!(active_context_compaction(&[event("interrupted", None)]).is_none());
+    }
+
+    fn completed_compaction_state() -> AcpContextCompactionState {
+        AcpContextCompactionState {
+            item_id: "context-compaction-31".to_string(),
+            started_seq: 31,
+            started_at: "1785153896Z".to_string(),
+            context_used_before: Some(32_606),
+            context_size: Some(1_000_000),
+            completed_seq: Some(32),
+            completed_at: Some("1785153938Z".to_string()),
+            saw_post_completion_reset: false,
+        }
+    }
+
+    #[test]
+    fn transient_zero_does_not_replace_confirmed_context_usage() {
+        let mut state = AcpUsageState::default();
+
+        for used in [0, 28_084, 0, 34_791, 0, 34_864, 0] {
+            assert_eq!(
+                state.observe_provider_usage(Some(used), Some(1_000_000), None),
+                None
+            );
+        }
+
+        assert_eq!(state.context.confirmed_used, Some(34_864));
+        assert_eq!(state.context.window_size, Some(1_000_000));
+    }
+
+    #[test]
+    fn compaction_accepts_first_positive_usage_after_reset_even_when_it_increases() {
+        let mut state = AcpUsageState::default();
+        state.context.confirmed_used = Some(32_606);
+        state.context.window_size = Some(1_000_000);
+        state.compaction = Some(completed_compaction_state());
+
+        assert_eq!(
+            state.observe_provider_usage(Some(36_881), Some(1_000_000), None),
+            None
+        );
+        assert_eq!(state.context.confirmed_used, Some(32_606));
+        assert_eq!(
+            state.observe_provider_usage(Some(0), Some(1_000_000), None),
+            None
+        );
+        assert_eq!(
+            state.observe_provider_usage(Some(33_792), Some(1_000_000), None),
+            Some(33_792)
+        );
+        assert_eq!(state.context.confirmed_used, Some(33_792));
+    }
+
+    #[test]
+    fn compaction_accepts_lower_positive_usage_as_no_reset_fallback() {
+        let mut state = AcpUsageState::default();
+        state.context.confirmed_used = Some(169_052);
+        state.compaction = Some(completed_compaction_state());
+
+        assert_eq!(
+            state.observe_provider_usage(Some(23_825), Some(200_000), None),
+            Some(23_825)
+        );
+        assert_eq!(state.context.confirmed_used, Some(23_825));
+    }
+
+    #[test]
+    fn canonical_usage_omits_unconfirmed_zero() {
+        let mut state = AcpUsageState::default();
+        state.observe_provider_usage(Some(0), Some(1_000_000), Some(0.25));
+        let mut update = json!({
+            "sessionUpdate": "usage_update",
+            "used": 0,
+            "size": 1_000_000,
+            "cost": {"amount": 0.25, "currency": "USD"}
+        });
+
+        state.normalize_timeline_usage(&mut update);
+
+        assert_eq!(update.get("used"), None);
+        assert_eq!(update.get("size").and_then(Value::as_u64), Some(1_000_000));
+        assert_eq!(
+            update.pointer("/cost/amount").and_then(Value::as_f64),
+            Some(0.25)
+        );
     }
 }

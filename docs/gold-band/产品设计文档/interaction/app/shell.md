@@ -151,17 +151,17 @@ round 详情
 - 应用整窗统一使用共享顶栏，不保留额外原生 header；macOS 仅保留系统左上角 traffic lights，Windows/Linux 使用顶栏右侧自定义窗口按钮
 - 顶栏颜色跟随当前主题切换，浅色与深色主题都维持同一套结构
 - 顶栏左侧只保留一个侧边栏折叠按钮；macOS 在按钮前为原生 traffic lights 预留安全间距；观察期内不展示 Workbench / Conversation 形态切换控件
-- 共享顶栏除按钮、输入等交互控件外都属于窗口拖拽命中区；Windows/Linux 使用 Tauri `startDragging` 与 WebView app-region 共同保证拖拽稳定性，交互控件必须显式退出拖拽区
+- 共享顶栏除按钮、输入等交互控件外都属于窗口拖拽命中区；鼠标拖拽与双击最大化统一由 Tauri `data-tauri-drag-region` 注入脚本管理，WebView2 `app-region: drag` 仅作为 Windows 触摸/触控笔补充。禁止 React `mousedown` 再手动调用 `startDragging()`，避免同一手势重复进入 TAO 原生拖拽生命周期；交互控件必须显式退出拖拽区
 - 侧边栏折叠/展开使用平滑宽度过渡，不做瞬时消失；内容透明度可略早于宽度收起，以减少视觉突兀
 - 顶栏与侧边栏默认共用同一 surface 底色，并去掉强横向分割线；右侧主区使用更弱的 top/left 边界与左上圆角衔接，主区圆角后方露出的底色继续复用 sidebar surface，而不是把侧边栏自身裁成圆角，避免角后方出现异色小方块
-- 桌面外轮廓、阴影与圆角统一由宿主窗口 compositor 管理；应用根壳不得再绘制整窗 border、圆角或高层级伪元素。CSS 圆角与 Win11 DWM 圆角存在独立半径和抗锯齿路径，叠加会产生突出的双层轮廓；Windows 无边框窗口保留 native shadow，以获得系统提供的 1px frame 与圆角。
+- 桌面外轮廓、阴影与圆角优先由宿主窗口 compositor 管理；Windows 11 及更高版本不得再叠加整窗 border、CSS 圆角或高层级伪元素，避免与 DWM 圆角形成双层轮廓。Windows 10 不具备 DWM 原生圆角能力，由宿主 bootstrap 下发统一的 frame/shadow policy：关闭 TAO undecorated native shadow，应用根壳仅在 `app-outline` 策略下绘制不占布局的主题化 1px 内侧边界，并叠加四边一致的低透明度柔和内阴影，增强独立窗口层次；边界和阴影按主题 token 管理，不得使用可能被 WebView viewport 裁切的 CSS `outline`。Win10 保持系统方角，不伪造与真实窗口区域不一致的 CSS 圆角。
 - Windows/Linux 顶栏右侧承载窗口最小化、最大化/还原、关闭操作；macOS 使用系统原生左上角 traffic lights，顶栏不重复渲染自定义窗口按钮
 - Windows/Linux 自定义窗口控制组使用 `w-max + flex-none` 保持 intrinsic width，组内最小化、最大化/还原、关闭三个按钮也必须分别使用 `flex-none`，禁止嵌套 Flex 在窄窗口下压缩按钮宽度；关闭按钮按 Windows 原生标题栏习惯贴紧右侧窗口边缘，不额外设置右侧 gutter。
 - `wb` 渠道的顶栏窗口控制按钮组左侧承载常驻「帮助」入口（DropdownMenu），当前仅含「用户反馈」一项，用于一键上报问题描述、截图与运行日志到码灵控制台；非 `wb` 渠道不显示该入口。详见 interaction/app/feedback.md。该菜单壳为 `wb` 渠道后续「关于 / 检查更新 / 文档」等帮助类入口预留扩展位。
 - 桌面窗口最小尺寸只由 Tauri Window 配置管理；`html/body/#root` 不得重复设置固定 `min-width/min-height`。WebView 必须始终服从真实 viewport 尺寸并继续触发响应式布局，禁止在达到 CSS 最小宽度后保持旧布局、由原生窗口直接裁切右侧内容。
 - 桌面壳内的二级布局必须基于实际内容容器宽度决定分栏，而不是直接复用整窗 `md/lg/xl` breakpoint。侧边栏、section 标题列、抽屉和详情 inspector 都会减少真实可用宽度；嵌套区域优先使用 Tailwind container query，固定画布/表格则必须提供明确的换行、堆叠或横向滚动降级策略。
 - Windows 无边框窗口使用 WebView2 composition 路径承载连续边缘 resize：Tauri Window 在 Windows 平台启用透明控制器，但 `html/body/#root` 与应用壳始终绘制不透明主题 surface，不向用户呈现实际透明效果。宿主 Window 背景随主题同步，WebView 层保持 composition 模式，禁止为了遮盖黑带重新设为不透明控制器。
-- 主窗口初始隐藏；bootstrap、主题和宿主背景准备完成后由前端显式显示，避免 transparent composition 窗口在首帧 CSS 尚未就绪时闪现。Windows 自定义无边框模式保留 native shadow，由 DWM 在 Win11 提供系统圆角；macOS 恢复 native decorations、shadow 与 traffic lights。
+- 主窗口初始隐藏；bootstrap、主题和宿主背景准备完成后由前端显式显示，避免 transparent composition 窗口在首帧 CSS 尚未就绪时闪现。Windows 自定义无边框模式按系统能力控制 native shadow：Win11 及更高版本开启，由 DWM 提供系统圆角与边界；Win10 关闭，避免 TAO `top=0 / left-right-bottom=frame_thickness` 的非对称 non-client frame，仅由应用内嵌边界补足可感知轮廓。关闭 Win10 shadow 不移除 `RESIZABLE/WS_SIZEBOX`，TAO 继续通过完整客户区边缘 hit-test 提供四边缩放；macOS 恢复 native decorations、shadow 与 traffic lights。
 - 上下文管理的角色卡片网格按列表容器实际宽度决定列数，而不是只依赖整窗 viewport：窄容器单列、中等容器双列、足够宽时三列。卡片底部操作区允许整组换行，系统显示缩放、字体增大或翻译文案变长时不得越过卡片边界或覆盖相邻卡片。
 
 ### 6.4 运行态生命周期
@@ -189,7 +189,9 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-06-29 起共享顶栏拖拽命中升级为“整条顶栏默认可拖，交互控件显式 no-drag”；早期根壳 overlay 外轮廓方案已由 2026-07-23 的 native compositor 方案替换。
 - 2026-07-22 起共享顶栏隐藏 Workbench / Conversation toggle，根路径统一进入会话主页；旧工作台仅保留显式 deep link，供观察期继续验证而不暴露产品入口。
 - 2026-07-23 起共享顶栏取消 Windows/Linux 窗口控制组的末尾 gutter，并固定控制组及每个按钮的 intrinsic width；删除 Web 层 `1040x680` 最小尺寸镜像，让真实 viewport 持续驱动响应式布局。角色管理卡片网格改为容器查询升列，卡片操作区支持换行，以覆盖 Win10 1080p 显示缩放和最小窗口场景。
-- 2026-07-23 Windows 边缘缩放修正：采用 Tauri/WebView2 transparent composition workaround，并复用 AionUi 的“窗口初始隐藏、首帧完成后显示”启动策略；保留 native shadow 以获得 Win11 DWM 原生圆角和边框，删除根壳的整窗 border、CSS 圆角与高层级伪元素。
+- 2026-07-23 Windows 边缘缩放修正：采用 Tauri/WebView2 transparent composition workaround，并复用 AionUi 的“窗口初始隐藏、首帧完成后显示”启动策略；保留 native shadow 以获得 Win11 DWM 原生圆角和边框，删除 Win11 根壳的整窗 border、CSS 圆角与高层级伪元素。
+- 2026-07-28 Windows 10 窗口边界兼容：不回退 opaque WebView2 controller，也不恢复跨版本通用 CSS 圆角；桌面 bootstrap 基于 `RtlGetVersion` 的真实系统 build 下发 `native-compositor` / `app-outline` frame policy 与 `nativeShadow`。Win10 关闭 TAO undecorated shadow，使用对比度更明确的主题化 1px 内侧边界与四边一致的柔和内阴影，消除三侧 native frame 黑线的同时保留清晰窗口层次；Win11 继续使用 DWM 原生圆角与 shadow。
+- 2026-07-28 Windows 10 最大化拖拽修正：删除共享顶栏重复的 React `startDragging()` 与手动双击切换，鼠标和双击只通过 Tauri `data-tauri-drag-region` 进入一次原生拖拽/最大化流程；保留 WebView2 app-region 作为触摸输入补充，避免最大化窗口拖拽还原时连续发送两次 caption drag 导致窗口移出工作区。
 
 ---
 

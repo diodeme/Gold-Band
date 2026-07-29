@@ -135,6 +135,8 @@
   --gold-surface-low: #202020;
   --gold-surface-high: #2d2d2d;
   --gold-line-soft: rgba(255, 255, 255, 0.08);
+  --gold-window-outline: rgba(255, 255, 255, 0.3);
+  --gold-window-edge-shadow: rgba(0, 0, 0, 0.2);
   --gold-running: #6aa9ff;
   --gold-success: #59b68b;
   --gold-warning: #d98547;
@@ -188,6 +190,8 @@
   --gold-surface-low: #1b1b1b;
   --gold-surface-high: #252525;
   --gold-line-soft: rgba(255, 255, 255, 0.08);
+  --gold-window-outline: rgba(255, 255, 255, 0.32);
+  --gold-window-edge-shadow: rgba(0, 0, 0, 0.28);
   --gold-running: #659ff0;
   --gold-success: #59b68b;
   --gold-warning: #d98547;
@@ -240,6 +244,8 @@
   --gold-surface-low: #f8f9fb;
   --gold-surface-high: #eceef2;
   --gold-line-soft: rgba(25, 28, 36, 0.08);
+  --gold-window-outline: rgba(25, 28, 36, 0.32);
+  --gold-window-edge-shadow: rgba(25, 28, 36, 0.1);
   --gold-running: #5265ad;
   --gold-success: #16794b;
   --gold-warning: #9a6b1f;
@@ -292,6 +298,8 @@
   --gold-surface-low: #fafafa;
   --gold-surface-high: #ededed;
   --gold-line-soft: rgba(0, 0, 0, 0.08);
+  --gold-window-outline: rgba(0, 0, 0, 0.3);
+  --gold-window-edge-shadow: rgba(0, 0, 0, 0.1);
   --gold-running: #4f7fc4;
   --gold-success: #2e7954;
   --gold-warning: #966b22;
@@ -370,6 +378,12 @@
 
   [data-tauri-drag-region] {
     user-select: none;
+  }
+
+  .app-window-shell[data-window-frame-style='app-outline'] {
+    box-shadow:
+      inset 0 0 0 1px var(--gold-window-outline),
+      inset 0 0 8px var(--gold-window-edge-shadow);
   }
 
   .app-titlebar-drag-region {

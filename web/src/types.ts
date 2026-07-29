@@ -105,6 +105,10 @@ export interface ManagedAgentVm {
   supportedModes?: AcpModeVm[] | null;
   supportedModels?: AcpModeVm[] | null;
   configOptions?: AcpSelectConfigOptionVm[] | null;
+  /** 是否支持 streamable HTTP MCP 传输（null=未诊断/未知） */
+  mcpHttpSupported?: boolean | null;
+  /** 是否支持 SSE MCP 传输（null=未诊断/未知） */
+  mcpSseSupported?: boolean | null;
 }
 
 export interface AcpModeVm {

@@ -9,7 +9,7 @@ import {
   toggleMcpServer, checkMcpServerHealth, listMcpTools,
   listSkills, listProjectSkills, readSkill, writeSkill, deleteSkill, getSkillSyncStatus,
   checkSkillNameConflict, updateSkillSyncTargets,
-  getConversationWorkspaces, getAgentRegistry,
+  getConversationWorkspaces, getAgentRegistry, doctorAgent,
 } from '../api';
 import { displayAppError } from '../i18n';
 import type {
@@ -131,6 +131,7 @@ export function ContextManagementPage() {
   const [skillSyncPendingKey, setSkillSyncPendingKey] = useState<string | null>(null);
   const [skillEditWsPath, setSkillEditWsPath] = useState<string | null>(null);
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
+  const [mcpDiagnosingAgent, setMcpDiagnosingAgent] = useState<string | null>(null);
 
   const [skillTab, setSkillTab] = useState<'global' | 'project'>('global');
   const [skillQuery, setSkillQuery] = useState('');
@@ -648,6 +649,26 @@ export function ContextManagementPage() {
                   }}
                   onEdit={s.managed ? undefined : () => { setMcpEditTarget(s); setMcpJsonContent(mcpServerToJson(s)); setMcpTransportTab(s.transport as 'stdio' | 'http' | 'sse'); setMcpSheetOpen(true); }}
                   onDelete={s.managed ? undefined : () => setMcpDeleteTarget(s)}
+                  agentCompatibility={(agentRegistry?.agents ?? []).map((a) => ({
+                    agentType: a.agentType,
+                    label: a.displayName,
+                    iconKey: a.iconKey,
+                    mcpHttpSupported: a.mcpHttpSupported,
+                    mcpSseSupported: a.mcpSseSupported,
+                  }))}
+                  diagnosingAgentType={mcpDiagnosingAgent}
+                  onDiagnoseAgent={async (agentType) => {
+                    if (mcpDiagnosingAgent) return;
+                    setMcpDiagnosingAgent(agentType);
+                    try {
+                      const registry = await doctorAgent(agentType);
+                      setAgentRegistry(registry);
+                    } catch {
+                      // 忽略诊断错误；用户可重试
+                    } finally {
+                      setMcpDiagnosingAgent(null);
+                    }
+                  }}
                 />
               ))}
             </div>

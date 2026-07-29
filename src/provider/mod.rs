@@ -8,7 +8,7 @@ use crate::prompts::{
     RUNTIME_SYSTEM_EN, RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN,
     profile_template_context, prompt_by_language, render as render_template,
 };
-use crate::runtime_error::{RuntimeErrorInfo, normalize_provider_failure};
+use crate::runtime_error::{RuntimeErrorInfo, normalize_provider_runtime_failure};
 use crate::storage::active_storage_path_config;
 use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
@@ -286,6 +286,12 @@ pub enum ProviderRunStatus {
     Interrupted,
     WaitingForUserInput,
     PermissionRequested,
+}
+
+#[derive(Debug)]
+struct ProviderTerminalOutcome {
+    status: ProviderRunStatus,
+    runtime_error: Option<RuntimeErrorInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -830,40 +836,24 @@ impl ProviderAdapter for AcpProvider {
                 attempt_state_file: req.runtime_context.attempt_state_file.clone(),
             }),
         )?;
-        let status = match run.stop_reason.as_deref() {
-            Some("cancelled" | "interrupted" | "max_turn_requests") => {
-                ProviderRunStatus::Interrupted
-            }
-            Some("waiting_for_user_input" | "user_input_required") => {
-                ProviderRunStatus::WaitingForUserInput
-            }
-            Some("permission_requested") => ProviderRunStatus::PermissionRequested,
-            Some("refusal" | "error") => ProviderRunStatus::Failure,
-            _ => ProviderRunStatus::Success,
-        };
-        let runtime_error = (status == ProviderRunStatus::Failure)
-            .then(|| {
-                normalize_provider_failure(
-                    run.stop_reason.as_deref(),
-                    run.final_text.clone(),
-                    Some(serde_json::json!({
-                        "adapterId": run.adapter_id,
-                        "adapterDisplayName": run.adapter_display_name,
-                        "stopReason": run.stop_reason,
-                    })),
-                )
+        let terminal = classify_acp_prompt_run(&run);
+        let result_payload = matches!(
+            terminal.status,
+            ProviderRunStatus::Success | ProviderRunStatus::Interrupted
+        )
+        .then(|| {
+            req.output_contract.as_ref().and_then(|contract| {
+                output_artifact_payload_from_run(contract, &run.final_outputs, &run.final_text)
             })
-            .flatten();
-        let result_payload = req.output_contract.as_ref().and_then(|contract| {
-            output_artifact_payload_from_run(contract, &run.final_outputs, &run.final_text)
-        });
+        })
+        .flatten();
         Ok(ProviderRunResult {
-            status,
+            status: terminal.status,
             exit_code: None,
             result_payload,
             worker_ref_seed: None,
             stream_path: None,
-            runtime_error,
+            runtime_error: terminal.runtime_error,
         })
     }
 
@@ -876,6 +866,83 @@ impl ProviderAdapter for AcpProvider {
 
     fn build_continue_command(&self, _worker_ref: &SessionRef) -> Result<Option<String>> {
         Ok(None)
+    }
+}
+
+fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcome {
+    if let Some(failure) = &run.terminal_failure {
+        return ProviderTerminalOutcome {
+            status: ProviderRunStatus::Failure,
+            runtime_error: Some(normalize_provider_runtime_failure(
+                run.stop_reason.as_deref(),
+                failure.diagnostic(),
+                Some(serde_json::json!({
+                    "adapterId": run.adapter_id,
+                    "adapterDisplayName": run.adapter_display_name,
+                    "stopReason": run.stop_reason,
+                    "terminalFailure": failure,
+                })),
+            )),
+        };
+    }
+
+    let normalized_reason = run
+        .stop_reason
+        .as_deref()
+        .map(|reason| reason.trim().to_ascii_lowercase().replace('_', "-"));
+    match normalized_reason.as_deref() {
+        Some("end-turn") => ProviderTerminalOutcome {
+            status: ProviderRunStatus::Success,
+            runtime_error: None,
+        },
+        Some("cancelled" | "canceled" | "interrupted" | "max-turn-requests" | "max-tokens") => {
+            ProviderTerminalOutcome {
+                status: ProviderRunStatus::Interrupted,
+                runtime_error: None,
+            }
+        }
+        Some("waiting-for-user-input" | "user-input-required") => ProviderTerminalOutcome {
+            status: ProviderRunStatus::WaitingForUserInput,
+            runtime_error: None,
+        },
+        Some("permission-requested") => ProviderTerminalOutcome {
+            status: ProviderRunStatus::PermissionRequested,
+            runtime_error: None,
+        },
+        Some("refusal") => ProviderTerminalOutcome {
+            status: ProviderRunStatus::Failure,
+            runtime_error: None,
+        },
+        Some("error" | "failure") => ProviderTerminalOutcome {
+            status: ProviderRunStatus::Failure,
+            runtime_error: Some(normalize_provider_runtime_failure(
+                run.stop_reason.as_deref(),
+                run.final_text.clone(),
+                Some(serde_json::json!({
+                    "adapterId": run.adapter_id,
+                    "adapterDisplayName": run.adapter_display_name,
+                    "stopReason": run.stop_reason,
+                })),
+            )),
+        },
+        unknown => {
+            let diagnostic = match unknown {
+                Some(reason) => format!("ACP returned unknown prompt stop reason `{reason}`"),
+                None => "ACP prompt response did not include a stop reason".to_string(),
+            };
+            ProviderTerminalOutcome {
+                status: ProviderRunStatus::Failure,
+                runtime_error: Some(normalize_provider_runtime_failure(
+                    run.stop_reason.as_deref(),
+                    diagnostic,
+                    Some(serde_json::json!({
+                        "adapterId": run.adapter_id,
+                        "adapterDisplayName": run.adapter_display_name,
+                        "stopReason": run.stop_reason,
+                    })),
+                )),
+            }
+        }
     }
 }
 
@@ -1531,6 +1598,90 @@ pub fn default_provider() -> Box<dyn ProviderAdapter> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp::client::AcpPromptFailure;
+    use crate::runtime_error::RecoveryMode;
+
+    fn acp_prompt_run(
+        stop_reason: Option<&str>,
+        terminal_failure: Option<AcpPromptFailure>,
+    ) -> client::AcpPromptRun {
+        client::AcpPromptRun {
+            session_id: "session-1".to_string(),
+            adapter_id: "codex-acp".to_string(),
+            adapter_display_name: "Codex".to_string(),
+            stop_reason: stop_reason.map(str::to_string),
+            terminal_failure,
+            final_text: String::new(),
+            final_outputs: Vec::new(),
+            restored: false,
+            used_tokens: None,
+            context_window_size: None,
+            total_cost_usd: None,
+            input_tokens: None,
+            output_tokens: None,
+            cached_read_tokens: None,
+            cached_write_tokens: None,
+            total_tokens: None,
+        }
+    }
+
+    #[test]
+    fn fatal_session_error_overrides_end_turn_success_reason() {
+        let run = acp_prompt_run(
+            Some("end_turn"),
+            Some(AcpPromptFailure {
+                code: "acp.session-system-error".to_string(),
+                message:
+                    "We're currently experiencing high demand, which may cause temporary errors."
+                        .to_string(),
+                details: Some("Reconnecting... 5/5".to_string()),
+                raw: serde_json::json!({ "threadStatus": { "type": "systemError" } }),
+            }),
+        );
+
+        let outcome = classify_acp_prompt_run(&run);
+
+        assert_eq!(outcome.status, ProviderRunStatus::Failure);
+        let error = outcome
+            .runtime_error
+            .expect("fatal error must be preserved");
+        assert_eq!(error.code_str(), "provider.server-unavailable");
+        assert_eq!(error.recovery, RecoveryMode::Auto);
+    }
+
+    #[test]
+    fn end_turn_without_fatal_signal_is_success() {
+        let outcome = classify_acp_prompt_run(&acp_prompt_run(Some("end_turn"), None));
+
+        assert_eq!(outcome.status, ProviderRunStatus::Success);
+        assert!(outcome.runtime_error.is_none());
+    }
+
+    #[test]
+    fn unknown_or_missing_stop_reason_is_protocol_failure() {
+        for stop_reason in [Some("future_reason"), None] {
+            let outcome = classify_acp_prompt_run(&acp_prompt_run(stop_reason, None));
+
+            assert_eq!(outcome.status, ProviderRunStatus::Failure);
+            let error = outcome
+                .runtime_error
+                .expect("unknown terminal state must not become success");
+            assert_eq!(error.recovery, RecoveryMode::Manual);
+            assert_eq!(error.code_str(), "provider.acp-error");
+        }
+    }
+
+    #[test]
+    fn incomplete_and_interactive_stop_reasons_are_not_success() {
+        assert_eq!(
+            classify_acp_prompt_run(&acp_prompt_run(Some("max_tokens"), None)).status,
+            ProviderRunStatus::Interrupted
+        );
+        assert_eq!(
+            classify_acp_prompt_run(&acp_prompt_run(Some("permission_requested"), None)).status,
+            ProviderRunStatus::PermissionRequested
+        );
+    }
 
     #[test]
     fn extracts_generic_thought_level_select_option_without_hardcoded_id() {

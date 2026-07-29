@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::debug;
 
@@ -545,6 +546,7 @@ pub struct AcpPromptRun {
     pub adapter_id: String,
     pub adapter_display_name: String,
     pub stop_reason: Option<String>,
+    pub terminal_failure: Option<AcpPromptFailure>,
     pub final_text: String,
     pub final_outputs: Vec<String>,
     pub restored: bool,
@@ -556,6 +558,102 @@ pub struct AcpPromptRun {
     pub cached_read_tokens: Option<u64>,
     pub cached_write_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpPromptFailure {
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+    pub raw: Value,
+}
+
+impl AcpPromptFailure {
+    pub fn diagnostic(&self) -> String {
+        match self.details.as_deref() {
+            Some(details) if !details.trim().is_empty() && details != self.message => {
+                format!("{}: {details}", self.message)
+            }
+            _ => self.message.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct AcpPromptLifecycle {
+    last_error: Option<AcpPromptFailure>,
+    terminal_failure: Option<AcpPromptFailure>,
+}
+
+impl AcpPromptLifecycle {
+    fn reset(&mut self) {
+        self.last_error = None;
+        self.terminal_failure = None;
+    }
+
+    fn observe_session_update(&mut self, update: &Value) {
+        if let Some(error) = update.pointer("/_meta/codex/error") {
+            let failure = codex_prompt_failure(error);
+            let is_terminal = error.get("willRetry").and_then(Value::as_bool) == Some(false);
+            self.last_error = Some(failure.clone());
+            if is_terminal {
+                self.terminal_failure = Some(failure);
+            }
+        }
+
+        let thread_status = update
+            .pointer("/_meta/codex/threadStatus/type")
+            .and_then(Value::as_str)
+            .map(normalize_stop_code);
+        if thread_status.as_deref() == Some("systemerror") {
+            let last_error = self.last_error.clone();
+            let message = last_error
+                .as_ref()
+                .map(|failure| failure.message.clone())
+                .unwrap_or_else(|| "ACP session entered systemError".to_string());
+            let details = last_error
+                .as_ref()
+                .and_then(|failure| failure.details.clone());
+            self.terminal_failure = Some(AcpPromptFailure {
+                code: "acp.session-system-error".to_string(),
+                message,
+                details,
+                raw: json!({
+                    "terminalUpdate": update,
+                    "lastError": last_error.map(|failure| failure.raw),
+                }),
+            });
+        }
+    }
+}
+
+fn codex_prompt_failure(error: &Value) -> AcpPromptFailure {
+    let message = error
+        .get("additionalDetails")
+        .and_then(Value::as_str)
+        .or_else(|| error.get("message").and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("Codex ACP reported a prompt error")
+        .to_string();
+    let details = error
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty() && *value != message)
+        .map(str::to_string);
+    let code = error
+        .get("codexErrorInfo")
+        .and_then(Value::as_object)
+        .and_then(|info| info.keys().next())
+        .map(|code| format!("codex.{code}"))
+        .unwrap_or_else(|| "codex.prompt-error".to_string());
+    AcpPromptFailure {
+        code,
+        message,
+        details,
+        raw: error.clone(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -912,6 +1010,7 @@ struct AcpRuntime<'a> {
     final_text: String,
     final_outputs: Vec<String>,
     collecting_text_output: bool,
+    prompt_lifecycle: AcpPromptLifecycle,
     session_update_phase: SessionUpdatePhase,
     provider_history_replay: ProviderHistoryReplay,
     historical_timeline_item_ids: HashSet<String>,
@@ -1149,9 +1248,12 @@ pub fn run_prompt(
         acp_session_title_refresh_enabled,
     );
     runtime.refresh_provider_freshness_best_effort(&workspace_dir);
+    let terminal_failure = runtime.prompt_lifecycle.terminal_failure.clone();
     let (status, stop_reason) = match prompt_result {
         Ok(stop_reason) => {
-            let status = if stop_reason.as_deref().is_some_and(|reason| {
+            let status = if terminal_failure.is_some() {
+                "failed"
+            } else if stop_reason.as_deref().is_some_and(|reason| {
                 matches!(
                     normalize_stop_code(reason).as_str(),
                     "cancelled" | "canceled" | "interrupted"
@@ -1218,6 +1320,7 @@ pub fn run_prompt(
         adapter_id: runtime.connection.adapter().adapter_id.clone(),
         adapter_display_name: runtime.connection.adapter().display_name.clone(),
         stop_reason,
+        terminal_failure,
         final_text: runtime.final_text.clone(),
         final_outputs: runtime.final_outputs.clone(),
         restored,
@@ -1665,6 +1768,7 @@ impl<'a> AcpRuntime<'a> {
             final_text: String::new(),
             final_outputs: Vec::new(),
             collecting_text_output: false,
+            prompt_lifecycle: AcpPromptLifecycle::default(),
             session_update_phase: SessionUpdatePhase::Live,
             provider_history_replay,
             historical_timeline_item_ids,
@@ -1718,6 +1822,7 @@ impl<'a> AcpRuntime<'a> {
             adapter_id: self.connection.adapter().adapter_id.clone(),
             adapter_display_name: self.connection.adapter().display_name.clone(),
             stop_reason: Some(stop_reason.to_string()),
+            terminal_failure: None,
             final_text: self.final_text.clone(),
             final_outputs: self.final_outputs.clone(),
             restored,
@@ -2465,6 +2570,7 @@ impl<'a> AcpRuntime<'a> {
         capabilities: &Value,
         acp_session_title_refresh_enabled: bool,
     ) -> Result<Option<String>> {
+        self.prompt_lifecycle.reset();
         let session_id = self
             .session_id
             .clone()
@@ -2827,6 +2933,8 @@ impl<'a> AcpRuntime<'a> {
         if self.should_suppress_session_replay(&session_id, &update) {
             return Ok(());
         }
+
+        self.prompt_lifecycle.observe_session_update(&update);
 
         // Fold raw provider samples into a stable context gauge before the event
         // enters the canonical timeline. The untouched raw frame is already in
@@ -4606,7 +4714,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        AcpContextCompactionState, AcpRuntime, AcpRuntimePolicy, AcpUsageState,
+        AcpContextCompactionState, AcpPromptLifecycle, AcpRuntime, AcpRuntimePolicy, AcpUsageState,
         AttachedSessionReusePlan, DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptActivity, PromptBundle,
         PromptVisibility, ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution,
         SessionUpdatePhase, active_context_compaction, active_timeline_streams,
@@ -4626,6 +4734,89 @@ mod tests {
         events::{AcpTimingState, AcpUiEvent},
         permission::PermissionResponseState,
     };
+
+    #[test]
+    fn prompt_lifecycle_promotes_retry_error_when_session_becomes_system_error() {
+        let mut lifecycle = AcpPromptLifecycle::default();
+        lifecycle.observe_session_update(&json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": {
+                "codex": {
+                    "error": {
+                        "message": "Reconnecting... 5/5",
+                        "additionalDetails": "We're currently experiencing high demand, which may cause temporary errors.",
+                        "codexErrorInfo": {
+                            "responseStreamDisconnected": { "httpStatusCode": null }
+                        },
+                        "willRetry": true
+                    }
+                }
+            }
+        }));
+        assert!(lifecycle.terminal_failure.is_none());
+
+        lifecycle.observe_session_update(&json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": {
+                "codex": {
+                    "threadStatus": { "type": "systemError" }
+                }
+            }
+        }));
+
+        let failure = lifecycle.terminal_failure.unwrap();
+        assert_eq!(failure.code, "acp.session-system-error");
+        assert!(failure.message.contains("high demand"));
+        assert_eq!(failure.details.as_deref(), Some("Reconnecting... 5/5"));
+    }
+
+    #[test]
+    fn prompt_lifecycle_does_not_promote_recovered_retry_signal() {
+        let mut lifecycle = AcpPromptLifecycle::default();
+        lifecycle.observe_session_update(&json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": {
+                "codex": {
+                    "error": {
+                        "message": "Reconnecting... 1/5",
+                        "willRetry": true
+                    }
+                }
+            }
+        }));
+        lifecycle.observe_session_update(&json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": {
+                "codex": {
+                    "threadStatus": { "type": "active", "activeFlags": [] }
+                }
+            }
+        }));
+
+        assert!(lifecycle.terminal_failure.is_none());
+    }
+
+    #[test]
+    fn prompt_lifecycle_promotes_non_retryable_error_immediately() {
+        let mut lifecycle = AcpPromptLifecycle::default();
+        lifecycle.observe_session_update(&json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": {
+                "codex": {
+                    "error": {
+                        "message": "Request failed",
+                        "additionalDetails": "Provider rejected the prompt",
+                        "willRetry": false
+                    }
+                }
+            }
+        }));
+
+        let failure = lifecycle.terminal_failure.expect("terminal failure");
+        assert_eq!(failure.code, "codex.prompt-error");
+        assert_eq!(failure.message, "Provider rejected the prompt");
+        assert_eq!(failure.details.as_deref(), Some("Request failed"));
+    }
 
     #[test]
     fn external_session_sync_policy_is_agent_opt_in() {

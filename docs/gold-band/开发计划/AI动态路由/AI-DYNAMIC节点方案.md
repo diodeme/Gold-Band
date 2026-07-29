@@ -1193,8 +1193,11 @@ V1 先做成功路径，但失败不能隐式。
 建议简单规则：
 
 ```text
-任一 internal node failure
-  -> AI-DYNAMIC paused/error-blocked 或 failure
+任一 internal node 业务 failure
+  -> 按节点业务结果与 graph 控制规则收敛，不与 provider/runtime 异常混用
+
+任一 provider/runtime failure
+  -> 先消费结构化 RuntimeErrorInfo，AI-DYNAMIC paused/runtime-abnormal；不得进入 proposal repair
 
 任一 proposal invalid（无论是非法 JSON 还是业务校验失败）
   -> runtime 先给当前 internal worker 一个隐藏 repair prompt，要求它基于本轮聚合出的全部校验错误一次性自修复；结构错误由本次运行的有效 JSON Schema 诊断并转换为结构化错误对象，业务校验错误继续聚合持久化，repair prompt 渲染为可执行修复说明，包含 code、path、actual、expected、allowed values、suggested repair，并附带当前 provider/model、worker profile ID、allowed workflow ID 参考；非法 JSON / serde parse 错误也进入同一 repair prompt，缺失字段会尽量补细到 `next.merge.task` 这类 JSON path；正常首次执行时，runtime 通过 output contract 注入 `src/prompts/<lang>/runtime/ai-dynamic/output_protocol.md` 中的完整输出协议文本与同一份有效 JSON Schema，作为前置引导；最多重试 3 次，耗尽后才进入 AI-DYNAMIC paused/error-blocked
@@ -1203,7 +1206,7 @@ merge failure
   -> AI-DYNAMIC paused/error-blocked
 
 acceptance provider/runtime failure
-  -> AI-DYNAMIC paused/error-blocked
+  -> AI-DYNAMIC paused/runtime-abnormal；不得进入 proposal repair
 
 acceptance 输出非法 JSON 或非法 proposal
   -> 进入与 worker 相同的 proposal repair 回路

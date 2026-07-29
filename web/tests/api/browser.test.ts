@@ -26,8 +26,10 @@ describe('browserApi', () => {
       name: 'Needs confirmation',
       summary: 'preview role [requires-confirmation]',
       content: 'temp',
+      dynamicTemplate: true,
     });
     expect(created.scope).toBe('user');
+    expect(created.dynamicTemplate).toBe(true);
 
     await expect(browserApi.deleteProfile(created.id)).rejects.toEqual({
       code: 'profile.delete-confirmation-required',

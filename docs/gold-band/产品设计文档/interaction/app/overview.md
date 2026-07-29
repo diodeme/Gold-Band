@@ -325,7 +325,8 @@ MVP 范围：
 编排器在人工确认 / 权限请求 / 执行错误 / 进程中断四类暂停场景下，通过 **OS 系统通知**（Windows Toast，含「查看详情」「忽略」按钮，左上角展示码灵图标）单一表面主动提醒用户：应用未聚焦时仍可触达。Windows Toast 首次发送时会幂等注册 AUMID 与开始菜单快捷方式；该注册属于后台非交互流程，所有 `reg` / PowerShell helper 必须通过统一 process helper 隐藏控制台窗口。
 
 交互约束：
-- 生命周期为**点掉即消失**，无解决闭环。点掉（忽略）或查看详情时由后端清 dedup key，允许同节点再次弹出。
+- 系统通知展示时长由 `configs/app-config.toml` 的 `notificationAutoDismissTargetSecs` 统一管理，当前产品目标为 20 秒。Windows 原生 Toast 只提供 Short（约 7 秒）和 Long（约 25 秒）两档，因此按最近档位解析为非持久的 Long，实际约 25 秒后自动收起；Windows 仍可能按用户的辅助功能通知时长设置调整实际展示时间。未点击的通知保留在通知中心，避免用户错过关键提醒。
+- 通知无解决闭环。点击「忽略」或「查看详情」时由后端清 dedup key，允许同节点再次弹出；横幅自然超时不代表业务问题已处理，不清理 dedup key。
 - 「查看详情」按当前 uiMode deep link 到对应节点：工作台模式定位到 Round 详情并选中节点；会话模式定位到会话 run 并在 sessionTree 内匹配节点 session。
 - 弹窗只承载「提醒 + 跳转」，不承载决策本身——权限/人工确认的 Allow/Reject 仍走主干卡片与命令，与弹窗点掉是两个独立动作。
 

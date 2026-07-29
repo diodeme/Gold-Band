@@ -478,6 +478,7 @@ pub const SKILL_FILE_NAME: &str = "SKILL.md";
 pub const MAX_SKILL_FILE_SIZE: usize = 100 * 1024;
 pub const MAX_SKILL_DESCRIPTION_LEN: usize = 1024;
 pub const DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS: usize = 18;
+pub const DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS: u64 = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -703,6 +704,7 @@ pub struct ProjectAppConfig {
     pub acp_timeline_compact_max_size_bytes: Option<u64>,
     pub acp_timeline_compact_patch_ratio: Option<usize>,
     pub conversation_auto_title_max_chars: Option<usize>,
+    pub notification_auto_dismiss_target_secs: Option<u64>,
     pub require_local_claude_executable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_mapping: Option<BTreeMap<String, BTreeMap<String, String>>>,
@@ -749,6 +751,7 @@ pub struct RuntimeConfig {
     pub acp_timeline_compact_max_size_bytes: u64,
     pub acp_timeline_compact_patch_ratio: usize,
     pub conversation_auto_title_max_chars: usize,
+    pub notification_auto_dismiss_target_secs: u64,
     pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub provider_diagnostics: BTreeMap<String, ProviderDiagnosticSnapshot>,
@@ -791,6 +794,7 @@ impl Default for RuntimeConfig {
             acp_timeline_compact_max_size_bytes: 8 * 1024 * 1024,
             acp_timeline_compact_patch_ratio: 4,
             conversation_auto_title_max_chars: DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS,
+            notification_auto_dismiss_target_secs: DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS,
             permission_mode_mapping: BTreeMap::new(),
             provider_diagnostics: BTreeMap::new(),
         };
@@ -913,6 +917,12 @@ impl RuntimeConfig {
             .filter(|value| *value > 0)
         {
             self.conversation_auto_title_max_chars = conversation_auto_title_max_chars;
+        }
+        if let Some(notification_auto_dismiss_target_secs) = app_config
+            .notification_auto_dismiss_target_secs
+            .filter(|value| *value > 0)
+        {
+            self.notification_auto_dismiss_target_secs = notification_auto_dismiss_target_secs;
         }
         if let Some(require_local_claude_executable) = app_config.require_local_claude_executable {
             self.require_local_claude_executable = require_local_claude_executable;
@@ -1146,6 +1156,7 @@ mod tests {
             acp_session_title_refresh_enabled: Some(true),
             acp_chat_event_page_size: Some(240),
             conversation_auto_title_max_chars: Some(20),
+            notification_auto_dismiss_target_secs: Some(20),
             require_local_claude_executable: Some(true),
             acp_session_idle_ttl_secs: Some(900),
             acp_max_idle_session_runtimes: Some(12),
@@ -1157,6 +1168,7 @@ mod tests {
         assert_eq!(roundtripped.acp_session_title_refresh_enabled, Some(true));
         assert_eq!(roundtripped.acp_chat_event_page_size, Some(240));
         assert_eq!(roundtripped.conversation_auto_title_max_chars, Some(20));
+        assert_eq!(roundtripped.notification_auto_dismiss_target_secs, Some(20));
         assert_eq!(roundtripped.require_local_claude_executable, Some(true));
         assert_eq!(roundtripped.acp_session_idle_ttl_secs, Some(900));
         assert_eq!(roundtripped.acp_max_idle_session_runtimes, Some(12));
@@ -1216,13 +1228,28 @@ mod tests {
             acp_session_title_refresh_enabled: Some(true),
             acp_chat_event_page_size: Some(240),
             conversation_auto_title_max_chars: Some(20),
+            notification_auto_dismiss_target_secs: Some(12),
             require_local_claude_executable: Some(true),
             ..Default::default()
         });
         assert!(config.acp_session_title_refresh_enabled);
         assert_eq!(config.acp_chat_event_page_size, 240);
         assert_eq!(config.conversation_auto_title_max_chars, 20);
+        assert_eq!(config.notification_auto_dismiss_target_secs, 12);
         assert!(config.require_local_claude_executable);
+    }
+
+    #[test]
+    fn app_config_ignores_zero_notification_auto_dismiss_target() {
+        let config = RuntimeConfig::default().apply_app_config(&ProjectAppConfig {
+            notification_auto_dismiss_target_secs: Some(0),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            config.notification_auto_dismiss_target_secs,
+            super::DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS
+        );
     }
 
     #[test]

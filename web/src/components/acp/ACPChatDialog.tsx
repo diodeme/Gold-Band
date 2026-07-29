@@ -76,9 +76,15 @@ import {
   type ToolPart,
 } from "@/components/prompt-kit/tool";
 import { cn } from "@/lib/utils";
+import { formatTokenCount } from "@/lib/format-token";
 import { agentIconClass, agentIconSrc } from "@/lib/agent-icons";
 import { EditableConversationTitle } from "@/components/conversation/EditableConversationTitle";
 import { loadArtifactMarkdownRender, saveArtifactMarkdownRender } from "@/lib/artifact-markdown-pref";
+import {
+  loadSystemPromptViewMode,
+  saveSystemPromptViewMode,
+  SYSTEM_PROMPT_VIEW_MODES,
+} from "@/lib/system-prompt-view-pref";
 import { goldThemedScrollbarClassName } from "@/lib/themed-scrollbar";
 import {
   decideAcpLiveEventFlush,
@@ -108,7 +114,7 @@ import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-servic
 import { AttachmentChipsList, AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
 import { SlashCommandMenu } from "@/components/conversation/SlashCommandMenu";
 import { SlashCommandInputTag } from "@/components/conversation/SlashCommandInputTag";
-import { parseCommittedSlashCommand } from "@/lib/slash-command";
+import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from "@/lib/slash-command";
 import { useAgentCommands } from "@/hooks/useAgentCommands";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
@@ -143,6 +149,7 @@ import {
 } from "@/lib/acp-runtime-composer-state";
 import {
   hasAcpSessionMetadata,
+  isAcpSessionInitializationInterrupted,
   missingAcpSessionRetryDelay,
   resolveAcpSessionShellState,
   shouldCreateLiveAcpSessionShell,
@@ -165,11 +172,7 @@ import {
   submitManualCheck,
 } from "@/api";
 import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
-import {
-  ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS,
-  ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS,
-  acpComposerConfigTriggerVariants,
-} from '@/components/acp/AcpComposerConfigTrigger';
+import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { subscribeAcpSessionUpdates } from "@/api";
 import { getRuntimeApi } from "@/api/client";
 import { isTauriRuntime } from "@/api/shared";
@@ -177,6 +180,7 @@ import { displayAppError, displayStatus } from "@/i18n";
 import type {
   AcpPermissionRequestVm,
   AcpRawFramePageVm,
+  AcpRawFrameOrder,
   AcpRawFrameQueryInput,
   AcpRawFrameVm,
   AcpSessionTimingVm,
@@ -262,6 +266,7 @@ type AcpProcessingKind =
   | "processing"
   | "thinking"
   | "tool"
+  | "compacting"
   | "responding"
   | "stopping"
   | "launching-next-node";
@@ -322,6 +327,7 @@ const BOTTOM_STICK_THRESHOLD_PX = 48;
 const LIVE_EVENT_FLUSH_MS = 125;
 const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
 const ACP_SESSION_LEASE_RETRY_MS = 30_000;
+const CONTEXT_COMPACTION_DELAYED_AFTER_SECONDS = 120;
 
 export const ACP_SESSION_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
   "h-full min-w-0 overflow-y-auto",
@@ -329,6 +335,22 @@ export const ACP_SESSION_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
 export const ACP_RAW_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
   "h-full overflow-y-auto p-5",
 );
+
+export const ACP_SYSTEM_PROMPT_DIALOG_LAYOUT = {
+  dialogContentClassName:
+    "max-h-[86vh] gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55 flex flex-col sm:max-w-5xl",
+  headerClassName: "shrink-0 border-b px-5 py-4",
+  scrollContainerClassName: goldThemedScrollbarClassName(
+    "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-scroll",
+  ),
+  bodyClassName: "min-w-0 max-w-full space-y-3 px-5 pb-5 pr-6",
+  toolbarClassName:
+    "flex min-h-8 min-w-0 flex-wrap items-center justify-between gap-3",
+  renderedPromptClassName:
+    "w-full min-w-0 max-w-full overflow-x-hidden rounded-xl border bg-muted/20 p-4 text-foreground/90 [overflow-wrap:anywhere]",
+  promptClassName:
+    "w-full min-w-0 max-w-full overflow-x-hidden rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-all [overflow-wrap:anywhere]",
+} as const;
 
 function timelineEventKey(event: AcpTimelineItem) {
   if (isChildAgentGroup(event)) return event.id;
@@ -602,6 +624,7 @@ export const ACPChatDialog = forwardRef<
   const [rawQuery, setRawQuery] = useState<AcpRawFrameQueryInput>({
     page: 0,
     pageSize: 100,
+    order: "desc",
   });
   const [rawLoading, setRawLoading] = useState(false);
   const [loadingInitialSession, setLoadingInitialSession] = useState(
@@ -671,6 +694,7 @@ export const ACPChatDialog = forwardRef<
   const sessionRefreshSeqRef = useRef(0);
   const configGenerationRef = useRef(0);
   const scrollerElementRef = useRef<HTMLDivElement | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const prependAnchorRef = useRef<{ key: string; top: number } | null>(null);
   const pendingLiveEventsRef = useRef<Map<string, AcpUiEventVm>>(new Map());
   const liveEventFlushTimerRef = useRef<number | null>(null);
@@ -821,7 +845,7 @@ export const ACPChatDialog = forwardRef<
     setActiveTurnPromptId(promptIdFromEvent(storedPromptEvent));
     setActiveTurnStartedAt(null);
     setRawPage(null);
-    setRawQuery({ page: 0, pageSize: 100 });
+    setRawQuery({ page: 0, pageSize: 100, order: "desc" });
     setLoadingOlder(false);
     setExpandedItems({});
     setHasOlderEvents(session?.eventPage.hasOlder ?? false);
@@ -897,11 +921,15 @@ export const ACPChatDialog = forwardRef<
     effective?.provider,
     effective?.providerCwd ?? effective?.cwd,
   );
+  const restoreComposerFocus = useCallback(() => {
+    restoreSlashCommandInputFocus(composerTextareaRef);
+  }, []);
   const slashCommands = useSlashCommandController({
     input: prompt,
     commands: agentCommands.commands,
     contextKey: agentCommands.catalogKey,
     onInputChange: setPrompt,
+    onInputFocusRequested: restoreComposerFocus,
   });
   const committedSlashCommand = useMemo(
     () => parseCommittedSlashCommand(prompt, agentCommands.commands),
@@ -1181,6 +1209,14 @@ export const ACPChatDialog = forwardRef<
           },
         }
       : runtimeComposerContext?.lifecycle);
+  const sessionInitializationInterrupted = isAcpSessionInitializationInterrupted({
+    runtimeStatus: localLifecycle?.runtime.status ?? runtimeComposerContext?.runtimeStatus,
+    runtimePauseReason: localLifecycle?.runtime.pauseReason,
+    runtimeActive: runtimeActiveFromContext,
+    sessionId: baseSession?.sessionId,
+    baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
+    loadedEventCount: loadedEvents.length,
+  });
   const composerLatestEvent = timeline.at(-1) ?? null;
   const turnAccepted = Boolean(activeTurnStartedAt);
   const hasTurnResponse = hasResponseAfterActiveTurn;
@@ -1685,6 +1721,10 @@ export const ACPChatDialog = forwardRef<
   ]);
 
   useEffect(() => {
+    if (sessionInitializationInterrupted) {
+      setLoadingInitialSession(false);
+      return;
+    }
     if (!isTauriRuntime()) {
       setLoadingInitialSession(false);
       return;
@@ -1835,6 +1875,7 @@ export const ACPChatDialog = forwardRef<
     outerNodeId,
     roundId,
     runId,
+    sessionInitializationInterrupted,
     taskId,
   ]);
 
@@ -2405,6 +2446,7 @@ export const ACPChatDialog = forwardRef<
         search: next.search ?? undefined,
         kind: next.kind ?? undefined,
         direction: next.direction ?? undefined,
+        order: next.order,
       });
     } finally {
       setRawLoading(false);
@@ -2457,8 +2499,13 @@ export const ACPChatDialog = forwardRef<
     baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
     hasLiveSessionShell: Boolean(liveSessionShell),
     initialSessionLoading: loadingInitialSession,
+    initializationInterrupted: sessionInitializationInterrupted,
     runtimeActive: runtimeActiveFromContext,
   });
+
+  if (sessionShellState === 'interrupted') {
+    return <AcpInterruptedState label={t("acp.sessionInterrupted")} />;
+  }
 
   if (sessionShellState === 'loading') {
     return <AcpLoadingState label={t("common.loading")} />;
@@ -2705,6 +2752,7 @@ export const ACPChatDialog = forwardRef<
                           />
                         ) : null}
                         <PromptInputTextarea
+                          ref={composerTextareaRef}
                           className="min-h-16 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
                           valuePrefix={committedSlashCommand?.prefix}
                           leadingAdornment={committedSlashCommand ? (
@@ -2832,6 +2880,14 @@ function AcpLoadingState({ label }: { label: string }) {
         />
         <span>{label}</span>
       </div>
+    </div>
+  );
+}
+
+function AcpInterruptedState({ label }: { label: string }) {
+  return (
+    <div className="flex h-full min-h-0 items-center justify-center bg-background px-6 text-center text-sm font-medium text-muted-foreground">
+      {label}
     </div>
   );
 }
@@ -3087,8 +3143,6 @@ type AcpSessionConfigBarProps = {
   onConfigOptionChange?: (optionId: string, optionValue: string | null) => void;
 };
 
-const UNSPECIFIED_CONFIG_VALUE = "__gold_band_unspecified__";
-
 const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
   viewModel,
   onModelChange,
@@ -3098,6 +3152,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
   const { t } = useTranslation();
   const {
     modelOverrideId,
+    canSelectUnspecifiedModel,
     permissionModeOverrideId,
     permissionModeOverrideName,
     canSelectUnspecifiedPermissionMode,
@@ -3109,10 +3164,8 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
   } = viewModel;
 
   const handlePermissionModeSelect = useCallback(
-    (permissionModeId: string) => {
-      onPermissionModeChange?.(
-        permissionModeId === UNSPECIFIED_CONFIG_VALUE ? null : permissionModeId,
-      );
+    (permissionModeId: string | null) => {
+      onPermissionModeChange?.(permissionModeId);
     },
     [onPermissionModeChange],
   );
@@ -3147,45 +3200,25 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
           })),
         } : null}
         thoughtValue={thoughtLevel?.overrideValue}
+        showUnspecifiedModel={canSelectUnspecifiedModel}
+        showUnspecifiedThought={thoughtLevel?.canSelectUnspecified ?? true}
         onModelChange={(value) => onModelChange?.(value)}
         onThoughtChange={(optionId, value) => onConfigOptionChange?.(optionId, value)}
       />
       {showPermissionModes ? (
         permissionModeCanBeSelected ? (
-          <Select
-            value={permissionModeOverrideId ?? UNSPECIFIED_CONFIG_VALUE}
+          <AcpSingleConfigMenu
+            compact
+            contentSide="top"
+            align="start"
+            label={t('acp.permissionMode')}
+            value={permissionModeOverrideId}
+            valueLabel={permissionModeLabel}
+            options={availablePermissionModes}
+            unspecifiedLabel={t('conversation.home.unspecifiedPermissionMode')}
+            showUnspecified={canSelectUnspecifiedPermissionMode}
             onValueChange={handlePermissionModeSelect}
-          >
-            <SelectTrigger className={acpComposerConfigTriggerVariants({ compact: true })}>
-              <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>
-                {t('acp.permissionMode')}
-              </span>
-              <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>{permissionModeLabel}</span>
-            </SelectTrigger>
-            <SelectContent
-              side="top"
-              sideOffset={8}
-              position="popper"
-              align="start"
-              className="w-[min(22rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]"
-            >
-              {canSelectUnspecifiedPermissionMode ? (
-                <SelectItem value={UNSPECIFIED_CONFIG_VALUE}>
-                  {t('conversation.home.unspecifiedPermissionMode')}
-                </SelectItem>
-              ) : null}
-              {availablePermissionModes.map((m) => (
-                <SelectItem value={m.id} key={m.id} className="items-start py-2">
-                  <span className="block min-w-0">
-                    <span className="block truncate font-medium">{m.name}</span>
-                    {m.description ? (
-                      <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">{m.description}</span>
-                    ) : null}
-                  </span>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          />
         ) : (
           <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
             <span className="shrink-0 text-muted-foreground">{t('acp.permissionMode')}</span>
@@ -3499,6 +3532,7 @@ const SystemPromptDialog = memo(function SystemPromptDialog({
   const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(
     latestAttemptId,
   );
+  const [viewMode, setViewMode] = useState(loadSystemPromptViewMode);
   useEffect(() => {
     if (!open) return;
     setSelectedAttemptId(latestAttemptId);
@@ -3515,40 +3549,66 @@ const SystemPromptDialog = memo(function SystemPromptDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         overlayClassName="bg-black/16 backdrop-blur-md"
-        className="max-h-[86vh] max-w-4xl gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55"
+        className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.dialogContentClassName}
       >
-        <DialogHeader className="border-b px-5 py-4">
+        <DialogHeader className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.headerClassName}>
           <DialogTitle className="text-base">
             {t("acp.systemPromptTitle")}
           </DialogTitle>
         </DialogHeader>
-        <div className="min-h-0 space-y-3 px-5 pb-5">
-          {availableOptions.length > 1 ? (
-            <Select
-              value={selectedAttemptId ?? availableOptions[0]?.attemptId}
-              onValueChange={setSelectedAttemptId}
-            >
-              <SelectTrigger className="h-8 w-[220px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {availableOptions.map((option) => (
-                  <SelectItem value={option.attemptId} key={option.attemptId}>
-                    {option.attemptId}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : null}
-          {content ? (
-            <pre className="max-h-[64vh] overflow-auto rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words">
-              {content}
-            </pre>
-          ) : (
-            <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">
-              {t("acp.systemPromptEmpty")}
+        <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.scrollContainerClassName}>
+          <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.bodyClassName}>
+            <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.toolbarClassName}>
+              {availableOptions.length > 1 ? (
+                <Select
+                  value={selectedAttemptId ?? availableOptions[0]?.attemptId}
+                  onValueChange={setSelectedAttemptId}
+                >
+                  <SelectTrigger className="h-8 w-[220px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableOptions.map((option) => (
+                      <SelectItem value={option.attemptId} key={option.attemptId}>
+                        {option.attemptId}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <span />
+              )}
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span>{t("acp.renderMarkdown")}</span>
+                <Switch
+                  checked={viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered}
+                  onCheckedChange={(rendered) => {
+                    const nextMode = rendered
+                      ? SYSTEM_PROMPT_VIEW_MODES.rendered
+                      : SYSTEM_PROMPT_VIEW_MODES.raw;
+                    setViewMode(nextMode);
+                    saveSystemPromptViewMode(nextMode);
+                  }}
+                  aria-label={t("acp.renderMarkdown")}
+                />
+              </div>
             </div>
-          )}
+            {content ? (
+              viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered ? (
+                <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.renderedPromptClassName}>
+                  <Markdown>{content}</Markdown>
+                </div>
+              ) : (
+                <pre className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.promptClassName}>
+                  {content}
+                </pre>
+              )
+            ) : (
+              <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">
+                {t("acp.systemPromptEmpty")}
+              </div>
+            )}
+          </div>
         </div>
       </DialogContent>
     </Dialog>
@@ -3948,6 +4008,8 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
     );
   if (event.kind === "attemptSeparator")
     return <AttemptSeparator event={event} />;
+  if (event.kind === "contextCompaction")
+    return <ContextCompactionRow event={event} />;
   if (event.kind === "textDelta" || event.kind === "userTextDelta")
     return <MessageBubble event={event} streamingMarkdownItemKey={streamingMarkdownItemKey} messageAttachmentLocator={messageAttachmentLocator} onMessageAttachmentClick={onMessageAttachmentClick} />;
   if (event.kind === "thoughtDelta")
@@ -3961,6 +4023,84 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
       </AssistantTimelineRow>
     );
   return null;
+});
+
+const ContextCompactionRow = memo(function ContextCompactionRow({
+  event,
+}: {
+  event: AcpTimelineEvent;
+}) {
+  const { t } = useTranslation();
+  const running = event.status === "running";
+  const interrupted = event.status === "interrupted";
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+
+  const usageBefore = contextCompactionUsageBefore(event);
+  const startedAt = parseAcpTimestamp(event.startedAt ?? event.timestamp);
+  const endedAt = parseAcpTimestamp(event.endedAt);
+  const elapsedSeconds = startedAt == null
+    ? null
+    : Math.max(0, Math.floor(((running ? now : (endedAt ?? startedAt)) - startedAt) / 1_000));
+  const delayed = running
+    && elapsedSeconds != null
+    && elapsedSeconds >= CONTEXT_COMPACTION_DELAYED_AFTER_SECONDS;
+  const label = running
+    ? t("acp.compactionRunning")
+    : interrupted
+      ? t("acp.compactionInterrupted")
+      : t("acp.compactionCompleted");
+  const usage = usageBefore
+    ? t("acp.compactionUsageBefore", usageBefore)
+    : null;
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      className="min-w-0 py-1 pl-10 pr-2"
+    >
+      <div className="max-w-[82%] border-l-2 border-primary/25 py-1 pl-3">
+        <div className="flex min-w-0 items-center gap-2 text-sm">
+          <span
+            aria-hidden="true"
+            className={cn(
+              "flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold",
+              running && "border-2 border-primary/25 border-t-primary text-transparent animate-spin motion-reduce:animate-none",
+              !running && !interrupted && "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
+              interrupted && "bg-destructive/10 text-destructive",
+            )}
+          >
+            {running ? "" : interrupted ? "!" : "✓"}
+          </span>
+          <span className="min-w-0 truncate font-medium text-foreground">
+            {label}
+          </span>
+          {elapsedSeconds != null ? (
+            <span className="ml-1 shrink-0 tabular-nums text-xs text-muted-foreground">
+              {formatElapsedDuration(elapsedSeconds)}
+            </span>
+          ) : null}
+        </div>
+        {usage || delayed ? (
+          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            {usage ? <span className="tabular-nums">{usage}</span> : null}
+            {delayed ? <span>{t("acp.compactionDelayed")}</span> : null}
+          </div>
+        ) : null}
+        {running ? (
+          <div className="mt-2 h-0.5 w-full max-w-72 overflow-hidden rounded-full bg-primary/10">
+            <div className="h-full w-1/2 animate-pulse rounded-full bg-primary/55 motion-reduce:animate-none" />
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
 });
 
 const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
@@ -4688,37 +4828,52 @@ export function PermissionRequestCard({
   const { t } = useTranslation();
   return (
     <AssistantTimelineRow>
-      <div className="w-full max-w-3xl overflow-hidden rounded-xl border border-primary/20 bg-card/80 px-3 py-2 shadow-sm shadow-background/20">
-        <div className="flex min-w-0 flex-col gap-2.5">
-          <div className="flex min-w-0 items-center gap-2.5">
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <ShieldQuestion className="size-3.5" />
+      <div className="w-full max-w-2xl overflow-hidden rounded-2xl border border-border/55 bg-card/65 px-4 py-3.5 shadow-[0_16px_40px_-32px_rgba(15,23,42,0.65)] ring-1 ring-foreground/[0.025] backdrop-blur-sm">
+        <div className="flex min-w-0 flex-col gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-xl border border-border/50 bg-accent/65 text-accent-foreground shadow-sm shadow-background/20">
+              <ShieldQuestion className="size-4" />
             </span>
             <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-foreground">
+              <div className="truncate text-[13px] font-semibold tracking-[-0.01em] text-foreground">
                 {request.title}
               </div>
-              <div className="truncate text-xs text-muted-foreground">
+              <div className="mt-0.5 truncate text-[11px] leading-4 text-muted-foreground">
                 {t("acp.permissionPending")}
               </div>
             </div>
           </div>
-          <div className="grid min-w-0 grid-cols-1 gap-1.5 pl-9 sm:grid-cols-2 sm:gap-2">
-            {request.options.map((option) => (
-              <Button
-                key={option.optionId}
-                size="sm"
-                variant={
-                  option.kind.startsWith("allow") ? "default" : "outline"
-                }
-                className="h-7 max-w-full justify-center rounded-full px-2.5 text-xs"
-                onClick={() => onSelect(option.optionId)}
-              >
-                <span className="min-w-0 truncate">
-                  {option.name || option.optionId}
-                </span>
-              </Button>
-            ))}
+          <div className="grid min-w-0 grid-cols-1 gap-2 pl-11 sm:grid-cols-2">
+            {request.options.map((option) => {
+              const label = option.name || option.optionId;
+              const isAllowOption = option.kind.startsWith("allow");
+              return (
+                <Tooltip key={option.optionId}>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className={cn(
+                        "h-8 min-w-0 max-w-full justify-center rounded-xl px-3 text-xs font-medium shadow-none",
+                        isAllowOption
+                          ? "border-transparent bg-accent/65 text-accent-foreground hover:border-primary/10 hover:bg-accent"
+                          : "border-border/65 bg-background/45 text-muted-foreground hover:bg-muted/65 hover:text-foreground",
+                      )}
+                      aria-label={label}
+                      onClick={() => onSelect(option.optionId)}
+                    >
+                      <span className="min-w-0 truncate">{label}</span>
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent
+                    sideOffset={8}
+                    className="max-w-[min(30rem,calc(100vw-2rem))] whitespace-normal break-words px-3 py-2 text-left leading-5 [overflow-wrap:anywhere]"
+                  >
+                    {label}
+                  </TooltipContent>
+                </Tooltip>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -4747,6 +4902,7 @@ export function RawFrameViewer({
   }, [query.search]);
 
   const pageSize = page?.pageSize ?? query.pageSize ?? 100;
+  const order = page?.order ?? query.order ?? "desc";
   const applyQuery = (next: AcpRawFrameQueryInput) =>
     onQueryChange({ ...query, ...next });
   const applySearch = () =>
@@ -4759,6 +4915,7 @@ export function RawFrameViewer({
       direction: undefined,
       search: undefined,
       kind: undefined,
+      order,
     });
   };
 
@@ -4827,6 +4984,26 @@ export function RawFrameViewer({
                 <SelectItem value="outbound">{t("acp.rawOutbound")}</SelectItem>
               </SelectContent>
             </Select>
+            <Select
+              value={order}
+              onValueChange={(value) =>
+                applyQuery({
+                  page: 0,
+                  order: value as AcpRawFrameOrder,
+                })
+              }
+            >
+              <SelectTrigger
+                aria-label={t("acp.rawSortOrder")}
+                className="h-9 lg:w-40"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="desc">{t("acp.rawSortNewest")}</SelectItem>
+                <SelectItem value="asc">{t("acp.rawSortOldest")}</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
             <span className="min-w-0 truncate">
@@ -4876,7 +5053,7 @@ export function RawFrameViewer({
                 disabled={loading || !page || page.page === 0}
                 onClick={() => applyQuery({ page: 0 })}
               >
-                {t("acp.rawLatest")}
+                {t(order === "desc" ? "acp.rawLatest" : "acp.rawEarliest")}
               </Button>
               <Button
                 size="sm"
@@ -4887,7 +5064,11 @@ export function RawFrameViewer({
                   applyQuery({ page: Math.max(0, (page?.page ?? 0) - 1) })
                 }
               >
-                {t("acp.rawNewer")}
+                {t(
+                  order === "desc"
+                    ? "acp.rawNewer"
+                    : "acp.rawPreviousOlder",
+                )}
               </Button>
               <Button
                 size="sm"
@@ -4896,7 +5077,9 @@ export function RawFrameViewer({
                 disabled={loading || !page?.hasNext}
                 onClick={() => applyQuery({ page: (page?.page ?? 0) + 1 })}
               >
-                {t("acp.rawOlder")}
+                {t(
+                  order === "desc" ? "acp.rawOlder" : "acp.rawNextNewer",
+                )}
               </Button>
             </div>
           </div>
@@ -5163,6 +5346,8 @@ function processingKindFromTimeline(
   if (event.kind === "thoughtDelta") return "thinking";
   if (event.kind === "toolCall" || event.kind === "toolCallUpdate")
     return "tool";
+  if (event.kind === "contextCompaction" && event.status === "running")
+    return "compacting";
   if (event.kind === "textDelta") return "responding";
   return "processing";
 }
@@ -5177,6 +5362,7 @@ function processingLabel(
   if (kind === "launching") return t("acp.launchingClaude");
   if (kind === "thinking") return t("acp.thinkingNow");
   if (kind === "tool") return t("acp.toolRunning");
+  if (kind === "compacting") return t("acp.compactionRunning");
   if (kind === "responding") return t("acp.responding");
   return t("acp.processing");
 }
@@ -5698,6 +5884,29 @@ function rawObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function contextCompactionData(event: AcpUiEventVm) {
+  const raw = rawObject(event.raw);
+  const data = rawObject(raw?.contextCompaction);
+  return {
+    phase: stringValue(data?.phase),
+    contextUsedBefore: numberValue(data?.contextUsedBefore),
+    contextSize: numberValue(data?.contextSize),
+    contextUsedAfter: numberValue(data?.contextUsedAfter),
+    reason: stringValue(data?.reason),
+  };
+}
+
+export function contextCompactionUsageBefore(
+  event: AcpUiEventVm,
+): { used: string; size: string } | null {
+  const data = contextCompactionData(event);
+  if (data.contextUsedBefore == null) return null;
+  return {
+    used: formatTokenCount(data.contextUsedBefore),
+    size: data.contextSize != null ? formatTokenCount(data.contextSize) : "--",
+  };
 }
 
 function arrayValue(value: unknown): unknown[] | null {
@@ -6614,8 +6823,12 @@ function rawFramePageSummary(
   page: AcpRawFramePageVm | null,
 ) {
   if (!page || page.total === 0) return t("acp.rawMatchCount", { total: 0 });
-  const firstLine = page.items[0]?.lineNumber ?? 0;
-  const lastLine = page.items.at(-1)?.lineNumber ?? firstLine;
+  if (page.items.length === 0) {
+    return t("acp.rawMatchCount", { total: page.total });
+  }
+  const lineNumbers = page.items.map((item) => item.lineNumber);
+  const firstLine = Math.min(...lineNumbers);
+  const lastLine = Math.max(...lineNumbers);
   return t("acp.rawPageSummary", {
     start: firstLine,
     end: lastLine,

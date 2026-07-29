@@ -4,6 +4,7 @@ export type DesktopThemeMode = 'light' | 'dark';
 export type DesktopFontPreference = string;
 export type DesktopLanguage = 'zh-cn' | 'en';
 export type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'unknown';
+export type DesktopWindowFrameStyle = 'native-compositor' | 'app-outline';
 export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'error';
 
 export interface PreferencesVm {
@@ -57,6 +58,11 @@ export interface UpdateBadgeStateVm {
   announcementClosedVersion?: string | null;
 }
 
+export interface DesktopWindowChromeVm {
+  frameStyle: DesktopWindowFrameStyle;
+  nativeShadow: boolean;
+}
+
 export interface AppBootstrapVm {
   repoRoot: string;
   recentWorkspaces: string[];
@@ -68,6 +74,7 @@ export interface AppBootstrapVm {
   persistedAvailableUpdate?: UpdateInfoVm | null;
   clientVersion: string;
   platform: DesktopPlatform;
+  windowChrome: DesktopWindowChromeVm;
   appInfo: AppInfoVm;
   appConfig: AppConfigVm;
   needsWorkspace: boolean;
@@ -376,6 +383,7 @@ export interface ProfileVm {
   summary: string;
   summarySource?: string;
   content: string;
+  dynamicTemplate: boolean;
   scope: ProfileScope;
   isBuiltIn: boolean;
   createdAt: string;
@@ -391,6 +399,7 @@ export interface ProfileInput {
   name: string;
   summary: string;
   content: string;
+  dynamicTemplate: boolean;
 }
 
 export interface SaveWorkflowInput {
@@ -785,12 +794,15 @@ export interface AcpDiagnosticsVm {
   lastErrorTimestamp?: string | null;
 }
 
+export type AcpRawFrameOrder = "asc" | "desc";
+
 export interface AcpRawFrameQueryInput {
   page?: number;
   pageSize?: number;
   search?: string;
   kind?: string;
   direction?: string;
+  order?: AcpRawFrameOrder;
 }
 
 export interface AcpRawFrameVm {
@@ -810,7 +822,7 @@ export interface AcpRawFramePageVm {
   total: number;
   hasPrevious: boolean;
   hasNext: boolean;
-  order: string;
+  order: AcpRawFrameOrder;
   search?: string | null;
   kind?: string | null;
   direction?: string | null;
@@ -992,7 +1004,7 @@ export interface ConversationAcpFacetVm {
 export interface ConversationComposerVm {
   mode: 'normal' | 'runtime-active' | 'stopping' | 'interrupted-input' | 'invalid-workflow' | 'runtime-error' | 'permission-blocked' | 'submitting' | string;
   submitTarget: 'acp-prompt' | 'runtime-continue' | 'permission-response' | 'none' | string;
-  processingKind: 'sending' | 'launching' | 'processing' | 'thinking' | 'tool' | 'responding' | 'stopping' | 'launching-next-node' | string;
+  processingKind: 'sending' | 'launching' | 'processing' | 'thinking' | 'tool' | 'compacting' | 'responding' | 'stopping' | 'launching-next-node' | string;
   statusKey?: string | null;
   canStop: boolean;
   lockInput: boolean;

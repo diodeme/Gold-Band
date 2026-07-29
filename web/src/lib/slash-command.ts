@@ -5,6 +5,19 @@ const LEADING_SLASH_COMMAND_RE = /^\/([\p{L}\p{N}._:-]+)/u;
 const SLASH_COMMAND_SEPARATOR_RE = /^[\s\p{P}]/u;
 const dismissedSlashQueries = new Map<string, string>();
 
+export interface SlashCommandFocusTarget {
+  disabled?: boolean;
+  value?: string;
+  focus: () => void;
+  setSelectionRange?: (start: number, end: number) => void;
+}
+
+export interface SlashCommandFocusRef {
+  readonly current: SlashCommandFocusTarget | null;
+}
+
+export type SlashCommandFocusScheduler = (callback: () => void) => unknown;
+
 export interface CommittedSlashCommand {
   command: AcpCommandItemVm;
   prefix: string;
@@ -29,6 +42,35 @@ export function filterSlashCommands(
 
 export function slashCommandText(commandName: string): string {
   return `/${commandName.trim().replace(/^\/+/, '')} `;
+}
+
+export function restoreSlashCommandInputFocus(
+  inputRef: SlashCommandFocusRef,
+  schedule: SlashCommandFocusScheduler = requestAnimationFrame,
+): void {
+  schedule(() => {
+    const input = inputRef.current;
+    if (!input || input.disabled) return;
+    input.focus();
+    if (typeof input.value === 'string' && input.setSelectionRange) {
+      const caret = input.value.length;
+      input.setSelectionRange(caret, caret);
+    }
+  });
+}
+
+export function unwrapSelectedSlashCommand(
+  input: string,
+  commands: readonly AcpCommandItemVm[],
+  selectionStart: number | null,
+  selectionEnd: number | null,
+): string | null {
+  if (selectionStart === null || selectionEnd === null || selectionStart !== selectionEnd) {
+    return null;
+  }
+  const committed = parseCommittedSlashCommand(input, commands);
+  if (!committed || committed.suffix !== ' ') return null;
+  return committed.prefix;
 }
 
 export function parseCommittedSlashCommand(

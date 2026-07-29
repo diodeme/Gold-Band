@@ -1159,6 +1159,7 @@ export function App() {
         metricsSettings: defaultMetricsSettings,
         clientVersion: '',
         platform: 'unknown',
+        windowChrome: { frameStyle: 'native-compositor', nativeShadow: true },
         appInfo: defaultAppInfo,
         appConfig: defaultAppConfig,
         needsWorkspace: false,
@@ -1333,6 +1334,7 @@ export function App() {
       appName={appInfo.appName}
       channel={appInfo.channel}
       platform={bootstrap?.platform}
+      windowFrameStyle={bootstrap?.windowChrome.frameStyle}
       repoRoot={bootstrap?.repoRoot}
       needsWorkspace={bootstrap?.needsWorkspace}
       showSettingsUpdateDot={showSettingsUpdateDot}

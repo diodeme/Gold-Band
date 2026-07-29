@@ -19,7 +19,7 @@ export function AcpUsagePanel({ usage, isRunning, compact, processingLabel, sess
   const { t } = useTranslation();
 
   const hasData = useMemo(() => {
-    return usage != null && (usage.used != null || usage.size != null);
+    return usage != null && ((usage.used != null && usage.used > 0) || usage.size != null);
   }, [usage]);
 
   const showProcessing = compact && isRunning && processingLabel;
@@ -27,7 +27,7 @@ export function AcpUsagePanel({ usage, isRunning, compact, processingLabel, sess
 
   if (!hasData && !showProcessing && !showTiming) return null;
 
-  const used = usage?.used;
+  const used = usage?.used != null && usage.used > 0 ? usage.used : null;
   const size = usage?.size;
 
   const breakdown = usage ? hasTokenBreakdown(usage) : false;

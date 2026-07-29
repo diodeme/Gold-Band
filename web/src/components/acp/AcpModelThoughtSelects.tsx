@@ -12,6 +12,10 @@ import {
   acpComposerConfigTriggerVariants,
 } from '@/components/acp/AcpComposerConfigTrigger';
 import {
+  AcpSingleConfigMenu,
+  UNSPECIFIED_ACP_CONFIG_VALUE,
+} from '@/components/acp/AcpSingleConfigMenu';
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuRadioGroup,
@@ -21,9 +25,8 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select';
 
-export const UNSPECIFIED_ACP_CONFIG_VALUE = '__gold_band_unspecified__';
+export { UNSPECIFIED_ACP_CONFIG_VALUE } from '@/components/acp/AcpSingleConfigMenu';
 
 export function nextAcpCompositeSection(
   currentSection: string | null,
@@ -52,6 +55,8 @@ type Props = {
   thoughtValue?: string | null;
   onModelChange: (value: string | null) => void;
   onThoughtChange?: (optionId: string, value: string | null) => void;
+  showUnspecifiedModel?: boolean;
+  showUnspecifiedThought?: boolean;
   compact?: boolean;
   contentSide?: 'top' | 'bottom';
   align?: 'start' | 'end';
@@ -64,6 +69,8 @@ export function AcpModelThoughtSelects({
   thoughtValue,
   onModelChange,
   onThoughtChange,
+  showUnspecifiedModel = true,
+  showUnspecifiedThought = true,
   compact = false,
   contentSide = 'bottom',
   align = DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
@@ -77,34 +84,17 @@ export function AcpModelThoughtSelects({
 
   if (!hasThoughtLevel) {
     return models.length > 0 ? (
-      <Select
-        value={modelValue || UNSPECIFIED_ACP_CONFIG_VALUE}
-        onValueChange={(value) => onModelChange(value === UNSPECIFIED_ACP_CONFIG_VALUE ? null : value)}
-      >
-        <SelectTrigger className={triggerClass}>
-          <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{t('acp.currentModel')}</span>
-          <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>
-            {selectedModel?.name ?? t('conversation.home.unspecifiedModel')}
-          </span>
-        </SelectTrigger>
-        <SelectContent
-          side={contentSide}
-          sideOffset={8}
-          position="popper"
-          align={align}
-          className="w-[min(24rem,calc(100vw-2rem))]"
-        >
-          <SelectItem value={UNSPECIFIED_ACP_CONFIG_VALUE}>{t('conversation.home.unspecifiedModel')}</SelectItem>
-          {models.map((model) => (
-            <SelectItem key={model.id} value={model.id} className="items-start py-2">
-              <span className="block min-w-0">
-                <span className="block truncate font-medium">{model.name}</span>
-                {model.description ? <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">{model.description}</span> : null}
-              </span>
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <AcpSingleConfigMenu
+        label={t('acp.currentModel')}
+        value={modelValue}
+        options={models}
+        unspecifiedLabel={t('conversation.home.unspecifiedModel')}
+        onValueChange={onModelChange}
+        showUnspecified={showUnspecifiedModel}
+        compact={compact}
+        contentSide={contentSide}
+        align={align}
+      />
     ) : null;
   }
 
@@ -134,10 +124,7 @@ export function AcpModelThoughtSelects({
           open={openSection === 'model'}
           onOpenChange={(open) => setOpenSection((current) => nextAcpCompositeSection(current, 'model', open))}
         >
-          <DropdownMenuSubTrigger
-            className="py-2"
-            onClick={() => setOpenSection((current) => nextAcpCompositeSection(current, 'model', current !== 'model'))}
-          >
+          <DropdownMenuSubTrigger className="py-2">
             <span className="w-20 shrink-0 text-muted-foreground">{t('acp.currentModel')}</span>
             <span className="min-w-0 flex-1 truncate text-right text-foreground">{selectedModel?.name ?? ''}</span>
           </DropdownMenuSubTrigger>
@@ -149,9 +136,11 @@ export function AcpModelThoughtSelects({
               value={modelValue || UNSPECIFIED_ACP_CONFIG_VALUE}
               onValueChange={(value) => onModelChange(value === UNSPECIFIED_ACP_CONFIG_VALUE ? null : value)}
             >
-              <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE}>
-                {t('conversation.home.unspecifiedModel')}
-              </DropdownMenuRadioItem>
+              {showUnspecifiedModel ? (
+                <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE}>
+                  {t('conversation.home.unspecifiedModel')}
+                </DropdownMenuRadioItem>
+              ) : null}
               {models.map((model) => (
                 <DropdownMenuRadioItem key={model.id} value={model.id} className="items-start py-2">
                   <span className="block min-w-0">
@@ -168,10 +157,7 @@ export function AcpModelThoughtSelects({
           open={openSection === thoughtLevel!.id}
           onOpenChange={(open) => setOpenSection((current) => nextAcpCompositeSection(current, thoughtLevel!.id, open))}
         >
-          <DropdownMenuSubTrigger
-            className="py-2"
-            onClick={() => setOpenSection((current) => nextAcpCompositeSection(current, thoughtLevel!.id, current !== thoughtLevel!.id))}
-          >
+          <DropdownMenuSubTrigger className="py-2">
             <span className="w-20 shrink-0 text-muted-foreground">{t('acp.thoughtLevel')}</span>
             <span className="min-w-0 flex-1 truncate text-right text-foreground">{selectedThought?.name ?? ''}</span>
           </DropdownMenuSubTrigger>
@@ -186,9 +172,11 @@ export function AcpModelThoughtSelects({
                 value === UNSPECIFIED_ACP_CONFIG_VALUE ? null : value,
               )}
             >
-              <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE}>
-                {t('acp.unspecifiedThoughtLevel')}
-              </DropdownMenuRadioItem>
+              {showUnspecifiedThought ? (
+                <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE}>
+                  {t('acp.unspecifiedThoughtLevel')}
+                </DropdownMenuRadioItem>
+              ) : null}
               {thoughtLevel!.options.map((option) => (
                 <DropdownMenuRadioItem key={option.value} value={option.value} className="items-start py-2">
                   <span className="block min-w-0">

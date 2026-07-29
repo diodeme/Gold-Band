@@ -29,7 +29,15 @@ use crate::config::{
 use crate::process::background_command;
 use crate::storage::write_json;
 
-const MCP_PROTOCOL_VERSION: u64 = 1;
+/// MCP 协议版本（现代规范统一用日期字符串；stdio / http / sse 三传输共用，
+/// 消除协议版本格式割裂）。
+const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+/// streamable HTTP 请求头：声明客户端使用的 MCP 协议版本。
+const MCP_VERSION_HEADER: &str = "MCP-Protocol-Version";
+/// streamable HTTP 会话标识响应头：initialize 返回，后续请求回带。
+const MCP_SESSION_HEADER: &str = "mcp-session-id";
+/// streamable HTTP Accept 头：服务端可返回 application/json 或 text/event-stream。
+const ACCEPT_STREAMABLE: &str = "application/json, text/event-stream";
 
 /// 对标 Zed ContextServerStore — MCP 服务器的中枢管理器
 pub struct McpManager {
@@ -463,7 +471,7 @@ fn build_initialize_request() -> Value {
         "method": "initialize",
         "params": {
             "protocolVersion": MCP_PROTOCOL_VERSION,
-            "clientCapabilities": {},
+            "capabilities": {},
             "clientInfo": {
                 "name": "gold-band",
                 "version": crate::domain::VERSION,
@@ -491,8 +499,8 @@ fn parse_initialize_response(response_text: &str) -> Result<McpServerHealthResul
 
     let version = result
         .get("protocolVersion")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+        .map(|v| v.as_str().map(String::from).unwrap_or_else(|| v.to_string()))
+        .unwrap_or_else(|| "unknown".to_string());
 
     Ok(McpServerHealthResult {
         status: "healthy".into(),
@@ -501,6 +509,24 @@ fn parse_initialize_response(response_text: &str) -> Result<McpServerHealthResul
         needs_client_secret: None,
         tools: Vec::new(),
     })
+}
+
+/// 从 streamable HTTP 响应体中提取 JSON-RPC payload。
+/// streamable HTTP 响应可能是 `application/json`（直接 JSON-RPC）或
+/// `text/event-stream`（SSE 封装，需从 `data:` 行提取）。按 Content-Type 分发。
+fn extract_jsonrpc_payload(content_type: &str, body: &str) -> Result<String> {
+    if content_type.contains("text/event-stream") {
+        for line in body.lines() {
+            if let Some(data) = line.trim().strip_prefix("data:") {
+                let data = data.trim();
+                if !data.is_empty() {
+                    return Ok(data.to_string());
+                }
+            }
+        }
+        bail!("event-stream response had no data line");
+    }
+    Ok(body.trim().to_string())
 }
 
 fn verify_stdio_server(
@@ -567,103 +593,225 @@ fn verify_stdio_server(
     parse_initialize_response(&response_line)
 }
 
+/// streamable HTTP 单次请求的返回：JSON-RPC 响应 或 需要认证。
+enum StreamableOutcome {
+    /// 提取后的 JSON-RPC 响应文本（已处理 application/json / text/event-stream 双形态）。
+    Jsonrpc(String),
+    /// 服务端返回 401，已通过 OAuth discovery 解析出授权信息。
+    AuthRequired(McpServerHealthResult),
+}
+
+/// MCP Streamable HTTP 会话客户端。
+/// 封装单端点 POST、`MCP-Protocol-Version` 头、`mcp-session-id` 会话流转，
+/// 以及 application/json / text/event-stream 双形态响应解析。
+struct StreamableHttpClient {
+    client: reqwest::blocking::Client,
+    url: String,
+    headers: BTreeMap<String, String>,
+    oauth: Option<OAuthClientConfig>,
+    session_id: Option<String>,
+}
+
+impl StreamableHttpClient {
+    fn new(
+        url: &str,
+        headers: &BTreeMap<String, String>,
+        oauth: &Option<OAuthClientConfig>,
+    ) -> Result<Self> {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            bail!("invalid URL: must start with http:// or https://");
+        }
+        let client = reqwest::blocking::Client::builder()
+            // 兜底跟随重定向；配置层应已用带尾斜杠 URL 规避 /mcp → /mcp/ 的 301
+            //（reqwest 默认策略会把 301 的 POST 降级为 GET，导致握手失败）。
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .timeout(Duration::from_secs(10))
+            .build()
+            .context("failed to create HTTP client")?;
+        Ok(Self {
+            client,
+            url: url.to_string(),
+            headers: headers.clone(),
+            oauth: oauth.clone(),
+            session_id: None,
+        })
+    }
+
+    /// 发送一个 JSON-RPC 请求，返回提取后的响应文本或认证要求。
+    /// 首次成功响应若带回 `mcp-session-id`，缓存供后续请求回带。
+    fn send(&mut self, request: &Value) -> Result<StreamableOutcome> {
+        let body = serde_json::to_string(request).context("failed to serialize request")?;
+        let mut req = self
+            .client
+            .post(&self.url)
+            .header("Content-Type", "application/json")
+            .header("Accept", ACCEPT_STREAMABLE)
+            .header(MCP_VERSION_HEADER, MCP_PROTOCOL_VERSION)
+            .body(body);
+        for (k, v) in &self.headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+        if let Some(sid) = &self.session_id {
+            req = req.header(MCP_SESSION_HEADER, sid);
+        }
+
+        let resp = match req.send() {
+            Ok(resp) => resp,
+            Err(e) if e.is_connect() => bail!("cannot connect to server: {e}"),
+            Err(e) if e.is_timeout() => bail!("connection timed out"),
+            Err(e) => bail!("HTTP request failed: {e}"),
+        };
+
+        if resp.status() == 401 {
+            let has_static_auth = self
+                .headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("authorization"));
+            if has_static_auth {
+                bail!("server returned 401 — check your Authorization header");
+            }
+            return Ok(StreamableOutcome::AuthRequired(try_oauth_discovery(
+                &self.url,
+                &self.oauth,
+            )?));
+        }
+
+        // 首次成功响应缓存 session-id，后续请求自动回带
+        if self.session_id.is_none() {
+            if let Some(sid) = resp
+                .headers()
+                .get(MCP_SESSION_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+            {
+                self.session_id = Some(sid);
+            }
+        }
+
+        let content_type = resp
+            .headers()
+            .get("Content-Type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let body = resp.text().context("failed to read response body")?;
+        let payload = extract_jsonrpc_payload(&content_type, &body)?;
+        Ok(StreamableOutcome::Jsonrpc(payload))
+    }
+
+    /// 发送一个 JSON-RPC 通知（无 id、无响应）。
+    /// 用于 MCP 规范要求的 initialize 后 `notifications/initialized`。
+    fn notify(&self, method: &str) -> Result<()> {
+        let body = serde_json::json!({ "jsonrpc": "2.0", "method": method });
+        let mut req = self
+            .client
+            .post(&self.url)
+            .header("Content-Type", "application/json")
+            .header("Accept", ACCEPT_STREAMABLE)
+            .header(MCP_VERSION_HEADER, MCP_PROTOCOL_VERSION)
+            .body(serde_json::to_string(&body)?);
+        for (k, v) in &self.headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+        if let Some(sid) = &self.session_id {
+            req = req.header(MCP_SESSION_HEADER, sid);
+        }
+        let resp = req.send()?;
+        let status = resp.status();
+        if !status.is_success() && status.as_u16() != 202 {
+            bail!("notification `{method}` returned {status}");
+        }
+        Ok(())
+    }
+}
+
 fn verify_http_server(
     url: &str,
     headers: &BTreeMap<String, String>,
     oauth: &Option<OAuthClientConfig>,
 ) -> Result<McpServerHealthResult> {
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        bail!("invalid URL: must start with http:// or https://");
+    let mut client = StreamableHttpClient::new(url, headers, oauth)?;
+    match client.send(&build_initialize_request())? {
+        StreamableOutcome::AuthRequired(result) => Ok(result),
+        StreamableOutcome::Jsonrpc(payload) => parse_initialize_response(&payload),
     }
+}
 
-    let initialize_body = serde_json::to_string(&build_initialize_request())
-        .context("failed to serialize initialize request")?;
+/// 一次旧式 SSE 会话：GET 端点拿到 message endpoint，并启动后台线程持续读取事件流。
+struct SseSession {
+    client: reqwest::blocking::Client,
+    endpoint: String,
+    events: mpsc::Receiver<String>,
+}
 
-    let mut req = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
+/// 建立 SSE 会话：GET `url` → 解析 `event: endpoint` → 启动事件流读取线程。
+fn open_sse_session(url: &str, headers: &BTreeMap<String, String>) -> Result<SseSession> {
+    let base_url = url::Url::parse(url).context("invalid SSE URL")?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
         .build()
-        .context("failed to create HTTP client")?
-        .post(url)
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .body(initialize_body);
+        .context("failed to create HTTP client")?;
 
+    let mut req = client.get(url).header("Accept", "text/event-stream");
     for (k, v) in headers {
         req = req.header(k.as_str(), v.as_str());
     }
-
-    let response = req.send();
-
-    match response {
-        Ok(resp) => {
-            let status = resp.status();
-            if status == 401 {
-                let has_static_auth = headers
-                    .keys()
-                    .any(|k| k.eq_ignore_ascii_case("authorization"));
-                if has_static_auth {
-                    bail!("server returned 401 — check your Authorization header")
-                }
-                return try_oauth_discovery(url, oauth);
-            }
-            // 对标 Zed: 解析 MCP initialize 响应
-            let body = resp.text().context("failed to read response body")?;
-            parse_initialize_response(&body)
-        }
-        Err(e) => {
-            if e.is_connect() {
-                bail!("cannot connect to server: {e}")
-            } else if e.is_timeout() {
-                bail!("connection timed out")
-            } else {
-                bail!("HTTP request failed: {e}")
-            }
-        }
+    let mut resp = req.send().context("failed to connect to SSE endpoint")?;
+    if !resp.status().is_success() {
+        bail!("SSE endpoint returned {}", resp.status());
     }
+
+    use std::io::Read;
+    let mut buf = [0u8; 8192];
+    let n = resp
+        .read(&mut buf)
+        .context("failed to read SSE handshake")?;
+    let sse_body = String::from_utf8_lossy(&buf[..n]);
+    let endpoint_url = discover_sse_endpoint(&sse_body, &base_url)
+        .context("SSE handshake did not contain an endpoint event")?;
+
+    let (tx, rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut leftover = String::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match resp.read(&mut buf) {
+                Ok(n) if n > 0 => {
+                    leftover.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    while let Some(nl) = leftover.find('\n') {
+                        let line = leftover[..nl].trim().to_string();
+                        leftover = leftover[nl + 1..].to_string();
+                        if let Some(data) = line.strip_prefix("data:") {
+                            let payload = data.trim().to_string();
+                            if !payload.is_empty() && tx.send(payload).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+                _ => return,
+            }
+        }
+    });
+
+    Ok(SseSession {
+        client,
+        endpoint: endpoint_url,
+        events: rx,
+    })
 }
 
 fn verify_sse_server(
     url: &str,
     headers: &BTreeMap<String, String>,
 ) -> Result<McpServerHealthResult> {
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        bail!("invalid URL: must start with http:// or https://");
-    }
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .context("failed to create HTTP client")?;
-
-    let mut req = client.get(url).header("Accept", "text/event-stream");
-
-    for (k, v) in headers {
-        req = req.header(k.as_str(), v.as_str());
-    }
-
-    match req.send() {
-        Ok(resp) if resp.status().is_success() || resp.status().is_redirection() => {
-            Ok(McpServerHealthResult {
-                status: "healthy".into(),
-                message: Some("SSE server reachable".into()),
-                auth_url: None,
-                needs_client_secret: None,
-                tools: Vec::new(),
-            })
-        }
-        Ok(resp) => {
-            bail!("SSE server returned {}", resp.status())
-        }
-        Err(e) if e.is_connect() => {
-            bail!("cannot connect to SSE server: {e}")
-        }
-        Err(e) if e.is_timeout() => {
-            bail!("SSE connection timed out")
-        }
-        Err(e) => {
-            bail!("SSE request failed: {e}")
-        }
-    }
+    let session = open_sse_session(url, headers)?;
+    post_sse_json(&session.client, &session.endpoint, headers, &build_initialize_request())?;
+    let init = session
+        .events
+        .recv_timeout(Duration::from_secs(10))
+        .context("no initialize response from SSE stream")?;
+    parse_initialize_response(&init)
 }
 
 // ── MCP tools/list ──
@@ -799,6 +947,13 @@ fn fetch_stdio_tools(
         let init_response = recv_jsonrpc_response(&rx, 1, Duration::from_secs(10), "initialize")?;
         parse_initialize_response(&init_response).context("initialize failed")?;
 
+        // MCP 规范：initialize 后发 notifications/initialized（无 id、无响应）
+        let initialized_line = serde_json::to_string(
+            &serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+        )? + "\n";
+        stdin.write_all(initialized_line.as_bytes())?;
+        stdin.flush()?;
+
         // Step 2: tools/list
         let tools_line = serde_json::to_string(&build_tools_list_request())? + "\n";
         stdin.write_all(tools_line.as_bytes())?;
@@ -820,92 +975,42 @@ fn fetch_http_tools(
     url: &str,
     headers: &BTreeMap<String, String>,
 ) -> Result<Vec<crate::config::ToolInfo>> {
-    let tools_body = serde_json::to_string(&build_tools_list_request())?;
-    let mut req = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .context("failed to create HTTP client")?
-        .post(url)
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .body(tools_body);
-    for (k, v) in headers {
-        req = req.header(k.as_str(), v.as_str());
+    let mut client = StreamableHttpClient::new(url, headers, &None)?;
+    match client.send(&build_initialize_request())? {
+        StreamableOutcome::AuthRequired(_) => bail!("server requires authentication"),
+        StreamableOutcome::Jsonrpc(init) => {
+            parse_initialize_response(&init).context("initialize failed")?;
+        }
     }
-    let resp = req.send().context("tools/list HTTP request failed")?;
-    let body = resp.text().context("failed to read tools/list response")?;
-    parse_tools_list_response(&body)
+    // MCP 规范：initialize 后必须发 notifications/initialized，服务端才转入正常请求状态
+    client.notify("notifications/initialized")?;
+    match client.send(&build_tools_list_request())? {
+        StreamableOutcome::AuthRequired(_) => bail!("server requires authentication"),
+        StreamableOutcome::Jsonrpc(tools) => parse_tools_list_response(&tools),
+    }
 }
 
 fn fetch_sse_tools(
     url: &str,
     headers: &BTreeMap<String, String>,
 ) -> Result<Vec<crate::config::ToolInfo>> {
-    let base_url = url::Url::parse(url).context("invalid SSE URL")?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .context("failed to create HTTP client")?;
-
-    // Step 1: GET SSE endpoint — read the first chunk for the endpoint URL
-    let mut req = client.get(url).header("Accept", "text/event-stream");
-    for (k, v) in headers {
-        req = req.header(k.as_str(), v.as_str());
-    }
-    let mut resp = req.send().context("failed to connect to SSE endpoint")?;
-    if !resp.status().is_success() {
-        bail!("SSE endpoint returned {}", resp.status());
-    }
-
-    use std::io::Read;
-    let mut buf = [0u8; 8192];
-    let n = resp
-        .read(&mut buf)
-        .context("failed to read SSE handshake")?;
-    let sse_body = String::from_utf8_lossy(&buf[..n]);
-    let endpoint_url = discover_sse_endpoint(&sse_body, &base_url)
-        .context("SSE handshake did not contain an endpoint event")?;
-
-    // Step 2: Spawn reader thread to keep SSE connection alive and collect
-    // incoming events. The MCP SSE session is tied to this GET connection.
-    let (tx, rx) = mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        let mut leftover = String::new();
-        let mut buf = [0u8; 4096];
-        loop {
-            match resp.read(&mut buf) {
-                Ok(n) if n > 0 => {
-                    leftover.push_str(&String::from_utf8_lossy(&buf[..n]));
-                    // Emit complete lines; keep incomplete tail in leftover
-                    while let Some(nl) = leftover.find('\n') {
-                        let line = leftover[..nl].trim().to_string();
-                        leftover = leftover[nl + 1..].to_string();
-                        if let Some(data) = line.strip_prefix("data:") {
-                            let payload = data.trim().to_string();
-                            if !payload.is_empty() && tx.send(payload).is_err() {
-                                return;
-                            }
-                        }
-                    }
-                }
-                _ => return,
-            }
-        }
-    });
-
-    // Step 3: POST initialize
-    post_sse_json(&client, &endpoint_url, headers, &build_initialize_request())
+    let session = open_sse_session(url, headers)?;
+    post_sse_json(&session.client, &session.endpoint, headers, &build_initialize_request())
         .context("failed to POST initialize to SSE endpoint")?;
-    rx.recv_timeout(Duration::from_secs(10))
+    session
+        .events
+        .recv_timeout(Duration::from_secs(10))
         .context("no initialize response from SSE stream")?;
-
-    // Step 4: POST tools/list
-    post_sse_json(&client, &endpoint_url, headers, &build_tools_list_request())
+    // MCP 规范：initialize 后发 notifications/initialized（通知无响应，SSE 不产生事件）
+    let initialized_notification =
+        serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
+    post_sse_json(&session.client, &session.endpoint, headers, &initialized_notification)?;
+    post_sse_json(&session.client, &session.endpoint, headers, &build_tools_list_request())
         .context("failed to POST tools/list to SSE endpoint")?;
-    let tools_raw = rx
+    let tools_raw = session
+        .events
         .recv_timeout(Duration::from_secs(10))
         .context("no tools/list response from SSE stream")?;
-
     parse_tools_list_response(&tools_raw)
 }
 
@@ -1051,11 +1156,13 @@ fn parse_mcp_json(
                 url,
                 headers: entry.headers,
             },
-            _ => McpTransportConfig::Http {
+            // streamable-http 与 http 同属 streamable HTTP 传输；缺省也按 http 处理
+            Some("streamable-http") | Some("http") | None => McpTransportConfig::Http {
                 url,
                 headers: entry.headers,
                 oauth: entry.oauth,
             },
+            Some(other) => bail!("unsupported transport type: {other}"),
         }
     } else {
         McpTransportConfig::Stdio {
@@ -1195,6 +1302,47 @@ mod tests {
     }
 
     #[test]
+    fn parses_streamable_http_transport() {
+        let (id, transport, _, _) = parse_mcp_json(
+            r#"{
+              "code-graph": {
+                "type": "streamable-http",
+                "url": "https://example.test/mcp"
+              }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(id, "code-graph");
+        match transport {
+            McpTransportConfig::Http { url, .. } => assert_eq!(url, "https://example.test/mcp"),
+            _ => panic!("expected http transport for streamable-http"),
+        }
+    }
+
+    #[test]
+    fn extract_jsonrpc_payload_handles_event_stream() {
+        // application/json 直通
+        let json = extract_jsonrpc_payload(
+            "application/json",
+            r#"{"jsonrpc":"2.0","id":1,"result":{}}"#,
+        )
+        .unwrap();
+        assert!(json.contains(r#""id":1"#));
+
+        // text/event-stream 取首个非空 data: 行
+        let sse = extract_jsonrpc_payload(
+            "text/event-stream",
+            "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(sse, r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+
+        // text/event-stream 无 data 行 → 报错
+        assert!(extract_jsonrpc_payload("text/event-stream", "event: ping\n\n").is_err());
+    }
+
+    #[test]
     fn serializes_servers_to_acp_mcp_schema() {
         let stdio = McpServerConfig {
             id: "stdio-id".into(),
@@ -1289,7 +1437,7 @@ mod tests {
             r#"
 while ($null -ne ($line = [Console]::In.ReadLine())) {
   if ($line -like '*initialize*') {
-    [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"capabilities":{},"serverInfo":{"name":"fixture","version":"1"}}}')
+    [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"fixture","version":"1"}}}')
     [Console]::Out.Flush()
   } elseif ($line -like '*tools/list*') {
     [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"lookup","description":"Lookup","inputSchema":{"type":"object"}}]}}')
@@ -1321,7 +1469,7 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
 while IFS= read -r line; do
   case "$line" in
     *initialize*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"capabilities":{},"serverInfo":{"name":"fixture","version":"1"}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"fixture","version":"1"}}}'
       ;;
     *tools/list*)
       printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"lookup","description":"Lookup","inputSchema":{"type":"object"}}]}}'

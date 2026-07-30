@@ -157,7 +157,7 @@ round 详情
 - 桌面外轮廓、阴影与圆角优先由宿主窗口 compositor 管理；Windows 11 及更高版本不得再叠加整窗 border、CSS 圆角或高层级伪元素，避免与 DWM 圆角形成双层轮廓。Windows 10 不具备 DWM 原生圆角能力，由宿主 bootstrap 下发统一的 frame/shadow policy：关闭 TAO undecorated native shadow，应用根壳仅在 `app-outline` 策略下绘制不占布局的主题化 1px 内侧边界，并叠加四边一致的低透明度柔和内阴影，增强独立窗口层次；边界和阴影按主题 token 管理，不得使用可能被 WebView viewport 裁切的 CSS `outline`。Win10 保持系统方角，不伪造与真实窗口区域不一致的 CSS 圆角。
 - Windows/Linux 顶栏右侧承载窗口最小化、最大化/还原、关闭操作；macOS 使用系统原生左上角 traffic lights，顶栏不重复渲染自定义窗口按钮
 - Windows/Linux 自定义窗口控制组使用 `w-max + flex-none` 保持 intrinsic width，组内最小化、最大化/还原、关闭三个按钮也必须分别使用 `flex-none`，禁止嵌套 Flex 在窄窗口下压缩按钮宽度；关闭按钮按 Windows 原生标题栏习惯贴紧右侧窗口边缘，不额外设置右侧 gutter。
-- `wb` 渠道的顶栏窗口控制按钮组左侧承载常驻「帮助」入口（DropdownMenu），当前仅含「用户反馈」一项，用于一键上报问题描述、截图与运行日志到码灵控制台；非 `wb` 渠道不显示该入口。详见 interaction/app/feedback.md。该菜单壳为 `wb` 渠道后续「关于 / 检查更新 / 文档」等帮助类入口预留扩展位。
+- 顶栏窗口控制按钮组左侧可承载「帮助」入口（DropdownMenu）。是否展示由渠道配置的 `feedbackEnabled` 能力布尔值决定，经 `AppInfoVm` 贯穿应用壳；当前 `wb=true`、默认渠道为 false。前端不根据渠道名称猜能力，后端 command 也必须再次校验。当前菜单仅含「用户反馈」，详见 interaction/app/feedback.md。
 - 桌面窗口最小尺寸只由 Tauri Window 配置管理；`html/body/#root` 不得重复设置固定 `min-width/min-height`。WebView 必须始终服从真实 viewport 尺寸并继续触发响应式布局，禁止在达到 CSS 最小宽度后保持旧布局、由原生窗口直接裁切右侧内容。
 - 桌面壳内的二级布局必须基于实际内容容器宽度决定分栏，而不是直接复用整窗 `md/lg/xl` breakpoint。侧边栏、section 标题列、抽屉和详情 inspector 都会减少真实可用宽度；嵌套区域优先使用 Tailwind container query，固定画布/表格则必须提供明确的换行、堆叠或横向滚动降级策略。
 - Windows 无边框窗口使用 WebView2 composition 路径承载连续边缘 resize：Tauri Window 在 Windows 平台启用透明控制器，但 `html/body/#root` 与应用壳始终绘制不透明主题 surface，不向用户呈现实际透明效果。宿主 Window 背景随主题同步，WebView 层保持 composition 模式，禁止为了遮盖黑带重新设为不透明控制器。

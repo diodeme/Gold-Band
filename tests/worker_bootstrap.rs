@@ -26,6 +26,7 @@ impl ProviderAdapter for RecordingProvider {
                 supports_continue_session: true,
                 supports_system_prompt: true,
                 supports_raw_stream: false,
+                supported_mcp_transports: vec![],
             },
             is_default: false,
         }
@@ -188,6 +189,7 @@ impl ProviderAdapter for InterruptThenSuccessProvider {
                 supports_continue_session: true,
                 supports_system_prompt: true,
                 supports_raw_stream: false,
+                supported_mcp_transports: vec![],
             },
             is_default: false,
         }
@@ -304,6 +306,7 @@ impl ProviderAdapter for AlwaysFailAcceptanceProvider {
                 supports_continue_session: true,
                 supports_system_prompt: true,
                 supports_raw_stream: false,
+                supported_mcp_transports: vec![],
             },
             is_default: false,
         }
@@ -470,6 +473,7 @@ impl ProviderAdapter for MultiAttemptContinueProvider {
                 supports_continue_session: true,
                 supports_system_prompt: true,
                 supports_raw_stream: false,
+                supported_mcp_transports: vec![],
             },
             is_default: false,
         }

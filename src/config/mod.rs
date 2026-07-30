@@ -1240,6 +1240,20 @@ mod tests {
     }
 
     #[test]
+    fn embedded_permission_mode_mapping_uses_current_codex_mode_ids() {
+        let config = RuntimeConfig::default();
+
+        assert_eq!(
+            config.resolve_permission_mode("codex-acp", "full_access"),
+            "agent-full-access"
+        );
+        assert_eq!(
+            config.resolve_permission_mode("claude-acp", "full_access"),
+            "bypassPermissions"
+        );
+    }
+
+    #[test]
     fn app_config_ignores_zero_notification_auto_dismiss_target() {
         let config = RuntimeConfig::default().apply_app_config(&ProjectAppConfig {
             notification_auto_dismiss_target_secs: Some(0),

@@ -4,7 +4,7 @@ export interface AcpLiveSessionShellPolicyInput {
   loadedEventCount: number;
 }
 
-export type AcpSessionShellState = 'available' | 'loading' | 'missing' | 'interrupted';
+export type AcpSessionShellState = 'available' | 'loading' | 'missing' | 'interrupted' | 'error';
 
 const MISSING_ACP_SESSION_RETRY_DELAYS_MS = [
   120,
@@ -26,6 +26,7 @@ export interface AcpSessionShellStateInput {
   hasLiveSessionShell: boolean;
   initialSessionLoading: boolean;
   initializationInterrupted?: boolean;
+  initializationFailed?: boolean;
   runtimeActive?: boolean;
 }
 
@@ -38,12 +39,22 @@ export interface AcpSessionInitializationInterruptedInput {
   loadedEventCount: number;
 }
 
+export interface AcpSessionInitializationFailedInput {
+  runtimeActive: boolean;
+  runtimeComposerMode?: string | null;
+  runtimeErrorMessage?: string | null;
+  sessionId?: string | null;
+  baseSessionReady: boolean;
+  loadedEventCount: number;
+}
+
 export function shouldCreateLiveAcpSessionShell(input: AcpLiveSessionShellPolicyInput) {
   if (!input.allowEventOnlySessionShell) return false;
   return input.runtimeActive || input.loadedEventCount > 0;
 }
 
 export function resolveAcpSessionShellState(input: AcpSessionShellStateInput): AcpSessionShellState {
+  if (input.initializationFailed) return 'error';
   if (input.initializationInterrupted) return 'interrupted';
   if (input.hasBaseSession && (!input.initialSessionLoading || input.baseSessionReady)) return 'available';
   if (input.hasLiveSessionShell) return 'available';
@@ -51,6 +62,17 @@ export function resolveAcpSessionShellState(input: AcpSessionShellStateInput): A
   if (input.hasBaseSession) return 'available';
   if (input.runtimeActive) return 'loading';
   return 'missing';
+}
+
+export function isAcpSessionInitializationFailed(input: AcpSessionInitializationFailedInput) {
+  return (
+    !input.runtimeActive &&
+    normalizeLifecycleCode(input.runtimeComposerMode) === 'runtime-error' &&
+    Boolean(input.runtimeErrorMessage?.trim()) &&
+    !input.sessionId?.trim() &&
+    !input.baseSessionReady &&
+    input.loadedEventCount === 0
+  );
 }
 
 export function isAcpSessionInitializationInterrupted(

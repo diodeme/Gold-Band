@@ -149,6 +149,7 @@ import {
 } from "@/lib/acp-runtime-composer-state";
 import {
   hasAcpSessionMetadata,
+  isAcpSessionInitializationFailed,
   isAcpSessionInitializationInterrupted,
   missingAcpSessionRetryDelay,
   resolveAcpSessionShellState,
@@ -864,7 +865,7 @@ export const ACPChatDialog = forwardRef<
     sessionRefreshSeqRef.current += 1;
     liveBeforeReadyLogCountRef.current = 0;
     setCanvasMode("chat");
-  }, [effectiveLoadedEventBufferLimit, eventWindowKey, session, sessionKey]);
+  }, [effectiveLoadedEventBufferLimit, eventWindowKey, sessionKey]);
 
   useEffect(() => {
     loadedEventsRef.current = loadedEvents;
@@ -1213,6 +1214,14 @@ export const ACPChatDialog = forwardRef<
     runtimeStatus: localLifecycle?.runtime.status ?? runtimeComposerContext?.runtimeStatus,
     runtimePauseReason: localLifecycle?.runtime.pauseReason,
     runtimeActive: runtimeActiveFromContext,
+    sessionId: baseSession?.sessionId,
+    baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
+    loadedEventCount: loadedEvents.length,
+  });
+  const sessionInitializationFailed = isAcpSessionInitializationFailed({
+    runtimeActive: runtimeActiveFromContext,
+    runtimeComposerMode: localLifecycle?.composer.mode,
+    runtimeErrorMessage: runtimeComposerContext?.runtimeError,
     sessionId: baseSession?.sessionId,
     baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
     loadedEventCount: loadedEvents.length,
@@ -1721,7 +1730,7 @@ export const ACPChatDialog = forwardRef<
   ]);
 
   useEffect(() => {
-    if (sessionInitializationInterrupted) {
+    if (sessionInitializationInterrupted || sessionInitializationFailed) {
       setLoadingInitialSession(false);
       return;
     }
@@ -1875,6 +1884,7 @@ export const ACPChatDialog = forwardRef<
     outerNodeId,
     roundId,
     runId,
+    sessionInitializationFailed,
     sessionInitializationInterrupted,
     taskId,
   ]);
@@ -2499,9 +2509,14 @@ export const ACPChatDialog = forwardRef<
     baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
     hasLiveSessionShell: Boolean(liveSessionShell),
     initialSessionLoading: loadingInitialSession,
+    initializationFailed: sessionInitializationFailed,
     initializationInterrupted: sessionInitializationInterrupted,
     runtimeActive: runtimeActiveFromContext,
   });
+
+  if (sessionShellState === 'error') {
+    return <AcpErrorState reason={runtimeComposerContext?.runtimeError ?? t("acp.missingSessionReason")} />;
+  }
 
   if (sessionShellState === 'interrupted') {
     return <AcpInterruptedState label={t("acp.sessionInterrupted")} />;
@@ -4280,7 +4295,6 @@ function ChildAgentMeta({
 
 const AssistantTimelineRow = memo(function AssistantTimelineRow({
   children,
-  timestamp,
   density = "single",
 }: {
   children: React.ReactNode;
@@ -4294,7 +4308,7 @@ const AssistantTimelineRow = memo(function AssistantTimelineRow({
         density !== "single" && "mb-0",
       )}
     >
-      <AcpAvatarWithTime tone="assistant" timestamp={timestamp} />
+      <div className="w-9 shrink-0" aria-hidden="true" />
       <div className="w-full min-w-0 max-w-[82%] flex-1">{children}</div>
     </Message>
   );
@@ -5471,13 +5485,15 @@ export function pendingElicitationFromEvents(
     if (answeredIds.has(event.id)) return null;
     if (event.status === "pending") {
       const raw = rawObject(event.raw) ?? {};
+      const requestedSchema = rawObject(raw.requestedSchema);
+      const schemaSource = requestedSchema ?? raw;
       const schema: ElicitationSchema =
-        typeof raw === "object" && (raw as Record<string, unknown>).type === "object"
-          ? (raw as unknown as ElicitationSchema)
+        schemaSource.type === "object"
+          ? (schemaSource as unknown as ElicitationSchema)
           : { type: "object", properties: {} };
       return {
         elicitationId: event.id,
-        message: event.content ?? "",
+        message: stringValue(raw.message) ?? event.content ?? "",
         requestedSchema: schema,
       };
     }

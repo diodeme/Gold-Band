@@ -14,6 +14,7 @@ import type { FeedbackInput, FeedbackArchivePreview } from "@/types";
 const MAX_DESCRIPTION_CHARS = 2000;
 const MAX_SCREENSHOTS = 4;
 const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024;
+const FEEDBACK_IMAGE_MIMES = ["image/png", "image/jpeg", "image/webp"];
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -24,7 +25,7 @@ function formatBytes(bytes: number): string {
 interface SessionOption {
   value: string;
   label: string;
-  workspace: string;
+  projectId: string;
   taskId: string;
 }
 
@@ -66,7 +67,7 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps) {
           options.push({
             value: `${projectId}::${task.taskId}`,
             label,
-            workspace: ws.workspacePath,
+            projectId,
             taskId: task.taskId,
           });
         }
@@ -90,11 +91,10 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps) {
     fileError,
     fileInputRef,
     addFiles,
-    pickFiles,
     handleFilesFromInput,
     removeAttachment,
     clearAttachments,
-    resolveAttachmentPaths,
+    resolveAttachmentInputs,
     dropZoneHandlers,
     previewImage,
     setPreviewImage,
@@ -104,7 +104,8 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps) {
   } = useAttachmentPicker({
     maxCount: MAX_SCREENSHOTS,
     maxTotalSize: MAX_SCREENSHOTS * MAX_SCREENSHOT_BYTES,
-    acceptMimePrefix: "image/",
+    maxFileSize: MAX_SCREENSHOT_BYTES,
+    acceptedMimes: FEEDBACK_IMAGE_MIMES,
   });
 
   // When the user selects a session, preview the archive size so they know how
@@ -120,7 +121,7 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps) {
       return;
     }
     let active = true;
-    void getRuntimeApi().previewFeedbackSessionArchive(option.workspace, option.taskId).then((preview) => {
+    void getRuntimeApi().previewFeedbackSessionArchive(option.projectId, option.taskId).then((preview) => {
       if (active) setArchivePreview(preview);
     }).catch(() => {
       if (active) setArchivePreview(null);
@@ -172,6 +173,10 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps) {
     if (code === "feedback.server-error") return "common.feedbackErrorServer";
     if (code === "feedback.validation-failed") return "common.feedbackErrorValidation";
     if (code === "feedback.endpoint-unconfigured") return "common.feedbackErrorUnconfigured";
+    if (code === "feedback.disabled") return "common.feedbackErrorUnconfigured";
+    if (code === "feedback.session-not-found") return "common.feedbackErrorSession";
+    if (code === "feedback.attachment-invalid") return "common.feedbackErrorAttachment";
+    if (code === "feedback.payload-too-large") return "common.feedbackErrorTooLarge";
     return "common.feedbackErrorServer";
   }, []);
 
@@ -185,17 +190,18 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps) {
 
     setSubmitting(true);
     try {
-      // Materialize any clipboard/browser-sourced screenshots to disk first
-      // (dialog-picked files already carry a real path).
-      const screenshotPaths = await resolveAttachmentPaths();
+      const screenshots = await resolveAttachmentInputs();
       const sessionOption = sessionValue !== "none"
         ? sessionOptions.find((o) => o.value === sessionValue) ?? null
         : null;
       const input: FeedbackInput = {
         description: trimmed,
-        sessionWorkspace: sessionOption?.workspace ?? null,
-        sessionTaskId: sessionOption?.taskId ?? null,
-        screenshotPaths,
+        projectId: sessionOption?.projectId ?? null,
+        taskId: sessionOption?.taskId ?? null,
+        screenshots: screenshots.map((screenshot) => ({
+          ...screenshot,
+          mime: screenshot.mime ?? "application/octet-stream",
+        })),
         includeLogs,
       };
       await getRuntimeApi().submitFeedback(input);
@@ -207,7 +213,7 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps) {
     } finally {
       setSubmitting(false);
     }
-  }, [description, resolveAttachmentPaths, sessionValue, sessionOptions, includeLogs, onOpenChange, mapErrorCode]);
+  }, [description, resolveAttachmentInputs, sessionValue, sessionOptions, includeLogs, onOpenChange, mapErrorCode]);
 
   if (done) {
     return (
@@ -264,11 +270,16 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps) {
                 </SelectContent>
               </Select>
               {archivePreview ? (
-                <span className="text-xs text-muted-foreground">
-                  {t("common.feedbackArchiveHint", {
-                    size: formatBytes(archivePreview.uncompressedBytes),
-                    count: archivePreview.fileCount,
-                  })}
+                <span className={archivePreview.withinLimits ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>
+                  {archivePreview.withinLimits
+                    ? t("common.feedbackArchiveHint", {
+                        size: formatBytes(archivePreview.uncompressedBytes),
+                        count: archivePreview.fileCount,
+                      })
+                    : t("common.feedbackArchiveTooLarge", {
+                        size: formatBytes(archivePreview.uncompressedBytes),
+                        max: formatBytes(archivePreview.maxUncompressedBytes),
+                      })}
                 </span>
               ) : null}
             </div>
@@ -279,14 +290,14 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps) {
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*"
+              accept={FEEDBACK_IMAGE_MIMES.join(",")}
               multiple
               className="hidden"
               onChange={handleFilesFromInput}
             />
             <div
               className="flex min-h-20 cursor-pointer flex-wrap items-center gap-2 rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground"
-              onClick={() => { if (!submitting) void pickFiles(); }}
+              onClick={() => { if (!submitting) fileInputRef.current?.click(); }}
             >
               <UploadCloud className="size-4 shrink-0" />
               <span>{t("common.feedbackScreenshotHint")}</span>
@@ -322,7 +333,7 @@ export function FeedbackDialog({ open, onOpenChange }: FeedbackDialogProps) {
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={submitting}>
             {t("common.feedbackCancel")}
           </Button>
-          <Button onClick={handleSubmit} disabled={submitting}>
+          <Button onClick={handleSubmit} disabled={submitting || archivePreview?.withinLimits === false}>
             {submitting ? t("common.feedbackSubmitting") : t("common.feedbackSubmit")}
           </Button>
         </DialogFooter>

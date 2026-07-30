@@ -15,9 +15,10 @@ use crate::frontmatter::{
 };
 use crate::prompts::{
     PROFILE_ACCEPT_EN, PROFILE_ACCEPT_ZH_CN, PROFILE_CLEAN_EN, PROFILE_CLEAN_ZH_CN, PROFILE_DEV_EN,
-    PROFILE_DEV_ZH_CN, PROFILE_GRILLME_EN, PROFILE_GRILLME_ZH_CN, PROFILE_INTERVIEW_EN, PROFILE_INTERVIEW_ZH_CN, PROFILE_PLAN_EN,
-    PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN, PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN,
-    PROFILE_TEST_ZH_CN, profile_template_validation_contexts, prompt_by_language, render,
+    PROFILE_DEV_ZH_CN, PROFILE_GRILLME_EN, PROFILE_GRILLME_ZH_CN, PROFILE_INTERVIEW_EN,
+    PROFILE_INTERVIEW_ZH_CN, PROFILE_PLAN_EN, PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN,
+    PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN, PROFILE_TEST_ZH_CN,
+    profile_template_validation_contexts, prompt_by_language, render,
 };
 use crate::storage::{GoldBandPaths, ensure_parent_dir};
 
@@ -855,7 +856,10 @@ profile body
         let grill = grill.unwrap();
         assert!(grill.is_built_in);
         assert_eq!(grill.scope, ProfileScope::BuiltIn);
-        assert!(!grill.content.is_empty(), "grill profile content must not be empty");
+        assert!(
+            !grill.content.is_empty(),
+            "grill profile content must not be empty"
+        );
 
         // The grill profile id must NOT be resolvable via the default workflow
         // profile-id map. The default workflow only references: interview, plan,

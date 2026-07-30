@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  normalizeConfigOptionOverrides,
+  validateAutoConfig,
+  validateDirectConfig,
   validateWorkflowTemplateForConversationStart,
   validateWorkflowTemplateForConversationStartWithFreshProfiles,
 } from '../src/lib/run-mode-validation';
@@ -26,9 +29,17 @@ const agentRegistry: AgentRegistryVm = {
     iconKey: 'claude',
     primaryAgentDir: '.claude',
     compatibleAgentDirs: [],
+    externalSessionSyncEnabled: false,
     supported: true,
     supportedModes: [{ id: 'ask', name: 'Ask' }],
     supportedModels: [],
+    configOptions: [{
+      id: 'thought',
+      name: 'Thought',
+      description: '',
+      category: 'thought_level',
+      options: [{ value: 'high', name: 'High' }],
+    }],
     diagnostic: { status: 'ok', available: true, reason: null, checkedAt: '' },
   }],
   supportedTypes: [],
@@ -83,6 +94,42 @@ const workflowTemplates: WorkflowTemplateStore = {
 };
 
 describe('run mode validation', () => {
+  it('normalizes stale config overrides without mutating the input', () => {
+    const overrides = { thought: 'high', removed: 'legacy' };
+    const snapshot = { ...overrides };
+    const normalized = normalizeConfigOptionOverrides(agentRegistry.agents[0], overrides);
+
+    expect(normalized).toEqual({
+      configOptions: { thought: 'high' },
+      removedOptionIds: ['removed'],
+    });
+    expect(overrides).toEqual(snapshot);
+  });
+
+  it('direct and auto validation tolerate stale overrides without mutation', () => {
+    const direct = { agentType: 'claude-acp', configOptions: { removed: 'legacy' } };
+    const auto = { agentType: 'claude-acp', configOptions: { removed: 'legacy' } };
+    const directSnapshot = structuredClone(direct);
+    const autoSnapshot = structuredClone(auto);
+
+    expect(validateDirectConfig(direct, agentRegistry, t)).toEqual([]);
+    expect(validateAutoConfig(auto, agentRegistry, null, t)).toEqual([]);
+    expect(direct).toEqual(directSnapshot);
+    expect(auto).toEqual(autoSnapshot);
+  });
+
+  it('allows dynamic agents to use the provider default model', () => {
+    const issues = validateAutoConfig({
+      agentStrategy: 'dynamic',
+      agentType: 'claude-acp',
+      bootstrapAgentType: 'claude-acp',
+      availableAgents: [{ provider: 'claude-acp' }],
+      routingPrompt: '',
+    }, agentRegistry, null, t);
+
+    expect(issues).toEqual([]);
+  });
+
   it('blocks invalid workflow templates before starting quick conversation', () => {
     const issues = validateWorkflowTemplateForConversationStart(
       'invalid-template',

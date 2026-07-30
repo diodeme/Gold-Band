@@ -12,7 +12,7 @@ import { cn } from '@/lib/utils';
 
 interface AppTitleBarProps {
   appName: string;
-  channel?: string;
+  feedbackEnabled?: boolean;
   platform?: DesktopPlatform | null;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
@@ -20,7 +20,7 @@ interface AppTitleBarProps {
 
 export function AppTitleBar({
   appName,
-  channel = 'default',
+  feedbackEnabled = false,
   platform,
   sidebarCollapsed,
   onToggleSidebar,
@@ -29,7 +29,6 @@ export function AppTitleBar({
   const [isMaximized, setIsMaximized] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [helpMenuOpen, setHelpMenuOpen] = useState(false);
-  const [pendingFeedback, setPendingFeedback] = useState(false);
   const tauriRuntime = isTauriRuntime();
   const policy = resolveWindowControlsPolicy(platform);
 
@@ -79,14 +78,7 @@ export function AppTitleBar({
     getCurrentWindow().close().catch(() => {});
   };
 
-  useEffect(() => {
-    if (pendingFeedback && !helpMenuOpen) {
-      setPendingFeedback(false);
-      setFeedbackOpen(true);
-    }
-  }, [pendingFeedback, helpMenuOpen]);
   const hasLeadingInset = policy.leadingInsetClassName.length > 0;
-  const showHelp = channel === 'wb';
 
   return (
     <>
@@ -122,7 +114,7 @@ export function AppTitleBar({
         className="min-w-0 flex-1 self-stretch"
       />
 
-      {showHelp ? (
+      {feedbackEnabled ? (
         <div
           className="app-titlebar-no-drag flex items-center"
           data-titlebar-no-drag="true"
@@ -142,8 +134,8 @@ export function AppTitleBar({
             <DropdownMenuContent align="end" className="min-w-40">
               <DropdownMenuItem
                 onSelect={() => {
-                  setPendingFeedback(true);
                   setHelpMenuOpen(false);
+                  requestAnimationFrame(() => setFeedbackOpen(true));
                 }}
                 className="gap-2"
               >

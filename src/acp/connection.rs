@@ -1875,8 +1875,13 @@ mod tests {
             &PendingElicitationState {
                 elicitation_id: elicitation_id.to_string(),
                 jsonrpc_id: json!(1),
-                message: "Choose".to_string(),
-                requested_schema: json!({ "type": "object", "properties": {} }),
+                request: serde_json::from_value(json!({
+                    "mode": "form",
+                    "sessionId": session_id,
+                    "message": "Choose",
+                    "requestedSchema": { "type": "object", "properties": {} }
+                }))
+                .unwrap(),
                 created_at: "1Z".to_string(),
             },
         )

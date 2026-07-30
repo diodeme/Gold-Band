@@ -1,7 +1,4 @@
-use crate::acp::{
-    client,
-    events::{self, AcpUiEvent},
-};
+use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{artifact_uses_json_output, json_artifact_text_from_outputs};
 use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, managed_agent_preset};
 pub use crate::domain::SessionRef;
@@ -75,89 +72,6 @@ pub struct ProviderCapabilities {
     pub supports_continue_session: bool,
     pub supports_system_prompt: bool,
     pub supports_raw_stream: bool,
-    pub supported_mcp_transports: Vec<McpTransportKind>,
-}
-
-/// ACP MCP server transport kind, derived from the serialized MCP server JSON.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum McpTransportKind {
-    Stdio,
-    Http,
-    Sse,
-}
-
-impl McpTransportKind {
-    /// A server without a `type` field is treated as stdio (command-based).
-    pub fn from_acp_server(value: &serde_json::Value) -> Self {
-        match value.get("type").and_then(serde_json::Value::as_str) {
-            Some("http") => Self::Http,
-            Some("sse") => Self::Sse,
-            _ => Self::Stdio,
-        }
-    }
-
-    pub fn all() -> &'static [McpTransportKind] {
-        &[Self::Stdio, Self::Http, Self::Sse]
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkippedMcpServer {
-    pub name: String,
-    pub transport: McpTransportKind,
-    pub code: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct McpPreparationResult {
-    pub accepted: Vec<serde_json::Value>,
-    pub skipped: Vec<SkippedMcpServer>,
-}
-
-/// Prepares the provider-specific MCP list while preserving a structured record
-/// for every server that cannot be forwarded.
-pub fn prepare_mcp_servers(
-    servers: &[serde_json::Value],
-    supported: &[McpTransportKind],
-) -> McpPreparationResult {
-    let mut accepted = Vec::new();
-    let mut skipped = Vec::new();
-    for server in servers {
-        let transport = McpTransportKind::from_acp_server(server);
-        if supported.contains(&transport) {
-            accepted.push(server.clone());
-        } else {
-            let name = server
-                .get("name")
-                .or_else(|| server.get("id"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unnamed")
-                .to_string();
-            skipped.push(SkippedMcpServer {
-                name,
-                transport,
-                code: "acp.mcp-transport-unsupported".to_string(),
-            });
-        }
-    }
-    McpPreparationResult { accepted, skipped }
-}
-
-fn mcp_skip_diagnostic_data(skipped: &[SkippedMcpServer]) -> serde_json::Value {
-    serde_json::json!({
-        "code": "acp.mcp-transport-unsupported",
-        "skippedServers": skipped,
-    })
-}
-
-fn default_supported_mcp_transports(provider_id: &str) -> Vec<McpTransportKind> {
-    match provider_id {
-        // codex-acp delegates MCP to the Codex SDK, which rejects SSE transport.
-        "codex-acp" => vec![McpTransportKind::Stdio, McpTransportKind::Http],
-        _ => McpTransportKind::all().to_vec(),
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -826,7 +740,6 @@ impl ProviderAdapter for AcpProvider {
                 supports_continue_session: true,
                 supports_system_prompt: self.provider_id == "claude-acp",
                 supports_raw_stream: false,
-                supported_mcp_transports: default_supported_mcp_transports(&self.provider_id),
             },
             is_default: self.provider_id == DEFAULT_PROVIDER,
         }
@@ -874,26 +787,6 @@ impl ProviderAdapter for AcpProvider {
         live_update: Option<AcpLiveUpdate<'_>>,
         session_update: Option<AcpSessionUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
-        let mcp_preparation = prepare_mcp_servers(
-            &req.mcp_servers,
-            &default_supported_mcp_transports(&self.provider_id),
-        );
-        if !mcp_preparation.skipped.is_empty() {
-            let paths = events::AcpAttemptPaths::from_attempt_dir(req.attempt_dir.clone());
-            if let Err(error) = events::append_diagnostic(
-                &paths.diagnostics,
-                "warning",
-                "Some MCP servers were skipped because their transport is unsupported",
-                Some(mcp_skip_diagnostic_data(&mcp_preparation.skipped)),
-            ) {
-                debug!(
-                    provider_id = %self.provider_id,
-                    skipped_count = mcp_preparation.skipped.len(),
-                    error = %error,
-                    "failed to persist unsupported MCP transport diagnostic"
-                );
-            }
-        }
         let prompt = render_prompt_bundle(&req)?;
         log_prompt_bundle(
             &prompt,
@@ -925,7 +818,7 @@ impl ProviderAdapter for AcpProvider {
             self.acp_raw_target_size_bytes,
             self.runtime_policy,
             live_update,
-            &mcp_preparation.accepted,
+            &req.mcp_servers,
             session_update,
             Some(client::RuntimeStopProbe {
                 run_file: req.runtime_context.run_dir.join("run.json"),
@@ -1707,70 +1600,6 @@ mod tests {
     use super::*;
     use crate::acp::client::AcpPromptFailure;
     use crate::runtime_error::RecoveryMode;
-    use serde_json::json;
-
-    #[test]
-    fn mcp_transport_kind_classifies_acp_server_json() {
-        let stdio = json!({"name": "local", "command": "node"});
-        let http = json!({"name": "api", "type": "http", "url": "https://x"});
-        let sse = json!({"name": "graph", "type": "sse", "url": "https://y"});
-        assert_eq!(
-            McpTransportKind::from_acp_server(&stdio),
-            McpTransportKind::Stdio
-        );
-        assert_eq!(
-            McpTransportKind::from_acp_server(&http),
-            McpTransportKind::Http
-        );
-        assert_eq!(
-            McpTransportKind::from_acp_server(&sse),
-            McpTransportKind::Sse
-        );
-    }
-
-    #[test]
-    fn mcp_preparation_keeps_supported_and_reports_skipped_transports() {
-        let servers = vec![
-            json!({"name": "local", "command": "node"}),
-            json!({"name": "api", "type": "http", "url": "https://x"}),
-            json!({"name": "graph", "type": "sse", "url": "https://y"}),
-        ];
-        let codex = vec![McpTransportKind::Stdio, McpTransportKind::Http];
-        let prepared = prepare_mcp_servers(&servers, &codex);
-        assert_eq!(prepared.accepted.len(), 2);
-        assert_eq!(prepared.skipped.len(), 1);
-        assert_eq!(prepared.skipped[0].name, "graph");
-        assert_eq!(prepared.skipped[0].transport, McpTransportKind::Sse);
-        assert_eq!(prepared.skipped[0].code, "acp.mcp-transport-unsupported");
-
-        let diagnostic = mcp_skip_diagnostic_data(&prepared.skipped);
-        assert_eq!(diagnostic["code"], "acp.mcp-transport-unsupported");
-        assert_eq!(diagnostic["skippedServers"][0]["name"], "graph");
-        assert_eq!(diagnostic["skippedServers"][0]["transport"], "sse");
-    }
-
-    #[test]
-    fn codex_acp_capabilities_exclude_sse_mcp_transport() {
-        let caps = provider_capabilities("codex-acp").expect("codex-acp capabilities");
-        assert!(
-            !caps
-                .supported_mcp_transports
-                .contains(&McpTransportKind::Sse)
-        );
-        assert!(
-            caps.supported_mcp_transports
-                .contains(&McpTransportKind::Stdio)
-        );
-    }
-
-    #[test]
-    fn non_codex_providers_keep_all_mcp_transports() {
-        let caps = provider_capabilities("claude-acp").expect("claude-acp capabilities");
-        assert_eq!(
-            caps.supported_mcp_transports,
-            McpTransportKind::all().to_vec()
-        );
-    }
 
     fn acp_prompt_run(
         stop_reason: Option<&str>,

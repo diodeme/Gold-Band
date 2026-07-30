@@ -32,6 +32,10 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{info, warn};
 
+use crate::avatar::{
+    AvatarKind, AvatarPreferencesVm, AvatarShape, SaveDesktopAvatarInput, load_avatar_preferences,
+    save_avatar_image, save_avatar_shape, select_recent_avatar,
+};
 use crate::conversation_workspace::workspace_entry_for_project;
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
@@ -3008,7 +3012,42 @@ pub fn save_desktop_preferences(
         font,
         use_local_claude,
         log_level,
+        load_avatar_preferences(&app.paths.user_gold_band_dir()).map_err(avatar_command_error)?,
     ))
+}
+
+#[tauri::command]
+pub fn save_desktop_avatar(
+    state: State<'_, DesktopState>,
+    input: SaveDesktopAvatarInput,
+) -> CommandResult<AvatarPreferencesVm> {
+    let app = state.context().map_err(command_error)?.app();
+    save_avatar_image(&app.paths.user_gold_band_dir(), input).map_err(avatar_command_error)
+}
+
+#[tauri::command]
+pub fn select_recent_desktop_avatar(
+    state: State<'_, DesktopState>,
+    kind: AvatarKind,
+    avatar_id: String,
+) -> CommandResult<AvatarPreferencesVm> {
+    let app = state.context().map_err(command_error)?.app();
+    select_recent_avatar(&app.paths.user_gold_band_dir(), kind, &avatar_id)
+        .map_err(avatar_command_error)
+}
+
+#[tauri::command]
+pub fn save_desktop_avatar_shape(
+    state: State<'_, DesktopState>,
+    kind: AvatarKind,
+    shape: AvatarShape,
+) -> CommandResult<AvatarPreferencesVm> {
+    let app = state.context().map_err(command_error)?.app();
+    save_avatar_shape(&app.paths.user_gold_band_dir(), kind, shape).map_err(avatar_command_error)
+}
+
+fn avatar_command_error(error: crate::avatar::AvatarError) -> CommandErrorVm {
+    CommandErrorVm::new(error.code, error.params)
 }
 
 #[tauri::command]

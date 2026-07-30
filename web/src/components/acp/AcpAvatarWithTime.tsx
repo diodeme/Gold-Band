@@ -1,5 +1,6 @@
-import { Bot, User } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { AvatarDisplay } from '@/components/avatar/AvatarDisplay';
+import { useAvatarPreferences } from '@/components/avatar/AvatarPreferencesContext';
 
 interface AcpAvatarWithTimeProps {
   tone: 'assistant' | 'user';
@@ -31,18 +32,25 @@ function formatMessageTime(raw?: string | null): string {
 }
 
 export function AcpAvatarWithTime({ tone, timestamp, className }: AcpAvatarWithTimeProps) {
-  const Icon = tone === 'assistant' ? Bot : User;
+  const avatars = useAvatarPreferences();
+  const kind = tone === 'assistant' ? 'agent' : 'user';
+  const profile = avatars[kind];
 
   return (
-    <div className={cn('flex flex-col items-center gap-0.5 shrink-0', className)}>
-      <div className={cn(
-        'mt-1 flex size-7 shrink-0 items-center justify-center rounded-full border',
-        tone === 'assistant'
+    <div className={cn('flex shrink-0 flex-col items-center gap-1', className)}>
+      <AvatarDisplay
+        kind={kind}
+        profile={profile}
+        className={cn(
+          'mt-0.5 size-9',
+          tone === 'assistant'
+            ? 'bg-card text-muted-foreground'
+            : 'border-[color-mix(in_srgb,var(--primary)_24%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_12%,var(--card))] text-[color-mix(in_srgb,var(--primary)_72%,white)]',
+        )}
+        fallbackClassName={tone === 'assistant'
           ? 'bg-card text-muted-foreground'
-          : 'border-[color-mix(in_srgb,var(--primary)_24%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_12%,var(--card))] text-[color-mix(in_srgb,var(--primary)_72%,white)]',
-      )}>
-        <Icon className="size-3.5" />
-      </div>
+          : 'bg-[color-mix(in_srgb,var(--primary)_12%,var(--card))] text-[color-mix(in_srgb,var(--primary)_72%,white)]'}
+      />
       <span className="text-[10px] text-muted-foreground/60 leading-none dark:text-muted-foreground/50">
         {formatMessageTime(timestamp)}
       </span>

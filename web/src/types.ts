@@ -3,6 +3,8 @@ export type ConcreteDesktopTheme = Exclude<DesktopThemePreference, 'system'>;
 export type DesktopThemeMode = 'light' | 'dark';
 export type DesktopFontPreference = string;
 export type DesktopLanguage = 'zh-cn' | 'en';
+export type AvatarKind = 'agent' | 'user';
+export type AvatarShape = 'circle' | 'square';
 export type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'unknown';
 export type DesktopWindowFrameStyle = 'native-compositor' | 'app-outline';
 export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'error';
@@ -13,6 +15,31 @@ export interface PreferencesVm {
   font: DesktopFontPreference;
   useLocalClaude: boolean;
   verboseLogging: boolean;
+  avatars: AvatarPreferencesVm;
+}
+
+export interface AvatarImageVm {
+  id: string;
+  dataUrl: string;
+  createdAt: string;
+}
+
+export interface AvatarProfileVm {
+  shape: AvatarShape;
+  selectedAvatarId: string | null;
+  recentAvatars: AvatarImageVm[];
+}
+
+export interface AvatarPreferencesVm {
+  agent: AvatarProfileVm;
+  user: AvatarProfileVm;
+}
+
+export interface SaveDesktopAvatarInput {
+  kind: AvatarKind;
+  shape: AvatarShape;
+  mimeType: string;
+  dataBase64: string;
 }
 
 export interface LocalClaudeStatusVm {

@@ -4295,7 +4295,6 @@ function ChildAgentMeta({
 
 const AssistantTimelineRow = memo(function AssistantTimelineRow({
   children,
-  timestamp,
   density = "single",
 }: {
   children: React.ReactNode;
@@ -4309,7 +4308,7 @@ const AssistantTimelineRow = memo(function AssistantTimelineRow({
         density !== "single" && "mb-0",
       )}
     >
-      <AcpAvatarWithTime tone="assistant" timestamp={timestamp} />
+      <div className="w-9 shrink-0" aria-hidden="true" />
       <div className="w-full min-w-0 max-w-[82%] flex-1">{children}</div>
     </Message>
   );

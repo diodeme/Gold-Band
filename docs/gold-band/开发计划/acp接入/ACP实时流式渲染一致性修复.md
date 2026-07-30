@@ -40,3 +40,24 @@
 - 2026-07-26：Rust core 全量单元测试通过；Codex package 持久化迁移、warning 分类、同/不同消息身份与无身份 fallback 均已固化为接口级测试。
 - 2026-07-26：Tauri 本项相关 view model 测试通过；桌面端全量测试另有既有 `timeline_permission_decision_replaces_pending_by_request_id` 失败，与本次文本 stream 身份改动无调用关系，单独留待 permission timeline 修复。
 - 2026-07-26：前端 ACP/Agent 管理相关测试及生产构建通过；本地启动页面实测新增 Codex 表单显示 `-y @agentclientprotocol/codex-acp@latest`，浏览器控制台无 warning/error，测试服务已清理。本项实现关闭。
+
+## 2026-07-31 Tooltip ref 更新环补充修复
+
+### 根因
+
+- 流式事件批量 flush 会连续重渲染 `ACPChatDialog` 及其顶部标题。
+- 标题使用 shadcn Tooltip 的 `TooltipTrigger asChild`。项目原有 `radix-ui@1.4.3` 内部解析到 `@radix-ui/react-slot@1.2.3`，旧 Slot 在渲染期间重新创建组合 ref；React 19 在 trigger detach/attach 时调用 Tooltip 的内部 state ref，形成 `setRef -> setState -> render -> setRef` 更新环。
+- 流式渲染只是稳定触发高频父级更新，消息 reducer、timeline 数据和 Markdown 内容不是本次错误的事实来源。
+
+### 实现
+
+- 将 `radix-ui` 统一升级为 `1.6.7`，使用其内部 `@radix-ui/react-slot@1.3.3` 与 `@radix-ui/react-tooltip@1.2.16` 稳定 ref 实现。
+- 删除没有源码消费者的 scoped Radix 直依赖，并把 Button 的 Slot 入口统一为 `radix-ui`，避免聚合包与 scoped 包继续产生版本漂移。
+- 引入 jsdom 测试环境，真实挂载会话标题 Tooltip；打开 trigger 后执行 80 次父级重渲染，锁定不会再次出现 maximum update depth。
+
+### 验收
+
+- `npm ls radix-ui @radix-ui/react-slot @radix-ui/react-tooltip --depth=1` 只显示一个 Radix primitive 所有权入口。
+- Tooltip 流式重渲染测试、Button ref、ACP session header 与 conversation header 测试通过。
+- 前端全量单元测试与生产构建通过。
+- `npm run dev` 启动后在实际会话流式输出期间悬停标题，控制台不再出现 `Maximum update depth exceeded`。

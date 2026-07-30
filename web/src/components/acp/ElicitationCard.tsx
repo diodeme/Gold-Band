@@ -16,11 +16,26 @@ export interface ElicitationPropertySchema {
   type: "string" | "array";
   title?: string;
   description?: string;
-  oneOf?: Array<{ const: string; title: string }>;
-  anyOf?: Array<{ const: string; title: string }>;
+  oneOf?: ElicitationEnumOption[];
+  anyOf?: ElicitationEnumOption[];
   items?: {
-    anyOf?: Array<{ const: string; title: string }>;
+    anyOf?: ElicitationEnumOption[];
   };
+  _meta?: Record<string, unknown>;
+}
+
+export interface ElicitationEnumOption {
+  const: string;
+  title: string;
+  description?: string;
+  _meta?: Record<string, unknown>;
+}
+
+export interface ElicitationOption {
+  value: string;
+  label: string;
+  description?: string;
+  preview?: string;
 }
 
 export interface ElicitationCardProps {
@@ -38,7 +53,7 @@ export interface ElicitationField {
   isCustom: boolean;
   title?: string;
   description?: string;
-  options?: Array<{ value: string; label: string }>;
+  options?: ElicitationOption[];
   hasCustomVariant: boolean;
   customVariantKey?: string;
   customVariantDescription?: string;
@@ -60,42 +75,55 @@ const ELICITATION_SELECTED_MARK_CLASS =
 
 export function elicitationOptions(
   prop: ElicitationPropertySchema,
-): Array<{ value: string; label: string }> | undefined {
-  if (prop.oneOf?.length) {
-    return prop.oneOf.map((option) => ({
+): ElicitationOption[] | undefined {
+  const normalizeOption = (option: ElicitationEnumOption): ElicitationOption => {
+    const preview = elicitationOptionPreview(option._meta);
+    return {
       value: option.const,
       label: option.title,
-    }));
+      ...(option.description ? { description: option.description } : {}),
+      ...(preview ? { preview } : {}),
+    };
+  };
+  if (prop.oneOf?.length) {
+    return prop.oneOf.map(normalizeOption);
   }
   const multiOptions = prop.anyOf ?? prop.items?.anyOf;
   if (multiOptions?.length) {
-    return multiOptions.map((option) => ({
-      value: option.const,
-      label: option.title,
-    }));
+    return multiOptions.map(normalizeOption);
   }
   return undefined;
 }
 
-/** 从 schema/message 中提取当前步骤对应的单条问题文本 */
+function elicitationOptionPreview(
+  meta: Record<string, unknown> | undefined,
+): string | undefined {
+  const optionMeta = meta?.["_claude/askUserQuestionOption"];
+  if (!optionMeta || typeof optionMeta !== "object" || Array.isArray(optionMeta)) {
+    return undefined;
+  }
+  const preview = (optionMeta as Record<string, unknown>).preview;
+  return typeof preview === "string" ? preview : undefined;
+}
+
+export function elicitationFormMessage(message: string): string | undefined {
+  const trimmedMessage = message.trim();
+  if (!trimmedMessage || isGenericElicitationMessage(trimmedMessage)) {
+    return undefined;
+  }
+  return trimmedMessage;
+}
+
+/** 兼容调用方：字段说明优先，否则返回完整表单 message，绝不按行拆题。 */
 export function elicitationQuestionText(
   message: string,
   fieldDescription: string | undefined,
-  index: number,
+  _index: number,
   fallback: string,
 ): string {
   const description = fieldDescription?.trim();
   if (description) return description;
-
-  // 尝试从 message 中按换行拆分，匹配当前步骤
-  const trimmedMessage = message.trim();
-  const lines = trimmedMessage.split("\n").map((l) => l.trim()).filter(Boolean);
-  if (lines.length > 0) {
-    if (lines[index] && !isGenericElicitationMessage(lines[index])) return lines[index];
-    if (lines.length === 1 && !isGenericElicitationMessage(lines[0])) return lines[0];
-  }
-  if (trimmedMessage && !isGenericElicitationMessage(trimmedMessage)) return trimmedMessage;
-  return fallback;
+  return elicitationFormMessage(message) ?? fallback;
 }
 
 function isGenericElicitationMessage(value: string): boolean {
@@ -113,6 +141,98 @@ function shouldShowFieldTitle(
   const trimmedTitle = title?.trim();
   if (!trimmedTitle) return false;
   return trimmedTitle !== questionText.trim();
+}
+
+function customAnswerTarget(
+  prop: ElicitationPropertySchema,
+): string | undefined {
+  const marker = prop._meta?.["_askUserQuestionCustomAnswer"];
+  if (!marker || typeof marker !== "object" || Array.isArray(marker)) {
+    return undefined;
+  }
+  const values = marker as Record<string, unknown>;
+  return values.isCustomAnswer === true && typeof values.questionId === "string"
+    ? values.questionId
+    : undefined;
+}
+
+export function normalizeElicitationFields(
+  schema: ElicitationSchema,
+): ElicitationField[] {
+  const entries = Object.entries(schema.properties ?? {});
+  const properties = new Map(entries);
+  const selectEntries = entries.filter(([, prop]) => {
+    const options = elicitationOptions(prop);
+    return Boolean(options?.length);
+  });
+  const selectKeys = new Set(selectEntries.map(([key]) => key));
+  const customByQuestion = new Map<
+    string,
+    { key: string; schema: ElicitationPropertySchema }
+  >();
+  const claimedCustomKeys = new Set<string>();
+
+  // Latest ACP shape: explicit metadata wins over naming conventions.
+  for (const [key, prop] of entries) {
+    const target = customAnswerTarget(prop);
+    if (
+      target &&
+      prop.type === "string" &&
+      selectKeys.has(target) &&
+      !customByQuestion.has(target)
+    ) {
+      customByQuestion.set(target, { key, schema: prop });
+      claimedCustomKeys.add(key);
+    }
+  }
+
+  // Claude Agent ACP 0.45.1+: question_n_custom pairs with question_n.
+  for (const [key] of selectEntries) {
+    if (customByQuestion.has(key)) continue;
+    const customKey = `${key}_custom`;
+    const customSchema = properties.get(customKey);
+    if (
+      customSchema?.type === "string" &&
+      !elicitationOptions(customSchema)?.length
+    ) {
+      customByQuestion.set(key, { key: customKey, schema: customSchema });
+      claimedCustomKeys.add(customKey);
+    }
+  }
+
+  const fields: ElicitationField[] = selectEntries.map(([key, prop]) => {
+    const custom = customByQuestion.get(key);
+    return {
+      key,
+      isSelect: true,
+      isMulti: prop.type === "array",
+      isCustom: false,
+      title: prop.title,
+      description: prop.description,
+      options: elicitationOptions(prop),
+      hasCustomVariant: Boolean(custom),
+      customVariantKey: custom?.key,
+      customVariantDescription:
+        custom?.schema.description ?? custom?.schema.title,
+    };
+  });
+
+  // Legacy global customAnswer and ordinary text fields remain independent.
+  // They must not be guessed as companions for an unrelated select field.
+  for (const [key, prop] of entries) {
+    if (elicitationOptions(prop)?.length || claimedCustomKeys.has(key)) continue;
+    fields.push({
+      key,
+      isSelect: false,
+      isMulti: false,
+      isCustom: true,
+      title: prop.title,
+      description: prop.description,
+      hasCustomVariant: false,
+    });
+  }
+
+  return fields;
 }
 
 export function elicitationFieldDraft(
@@ -180,9 +300,6 @@ export function replaceElicitationFieldAnswer(
   const nextAnswers = clearElicitationFieldAnswer(answers, field);
   const answerKey = fieldKey ?? field.key;
   nextAnswers[answerKey] = value;
-  if (answerKey !== field.key) {
-    nextAnswers[field.key] = value;
-  }
   return nextAnswers;
 }
 
@@ -230,51 +347,7 @@ export function ElicitationCard({
   const [customText, setCustomText] = useState("");
   const [customActive, setCustomActive] = useState(false);
 
-  const fields = useMemo(() => {
-    if (!schema.properties) return [];
-    const entries = Object.entries(schema.properties);
-    const selA: Array<{key: string; prop: any; isMulti: boolean; customKey?: string; customSchema?: any}> = [];
-    const unmat: Array<[string, any]> = [];
-    const claimed = new Set<string>();
-    for (const [k, p] of entries) {
-      const options = elicitationOptions(p);
-      if (options && options.length > 0) {
-        const ck = k + "_custom";
-        const ce = entries.find(([x]) => x === ck);
-        if (ce) claimed.add(ck);
-        selA.push({ key: k, prop: p, isMulti: p.type === "array",
-          customKey: ce ? ck : undefined, customSchema: ce ? (ce[1] as any) : undefined });
-      }
-    }
-    for (const [k, p] of entries) {
-      const options = elicitationOptions(p);
-      if (options && options.length > 0) continue;
-      if (claimed.has(k)) continue;
-      unmat.push([k, p]);
-    }
-    for (const [ck, cs] of unmat) {
-      if (selA.length === 0) break;
-      const t = selA.find((s) => !s.customKey) || selA[0];
-      if (!t.customKey) { t.customKey = ck; t.customSchema = cs; }
-    }
-    const result: ElicitationField[] = [];
-    for (const s of selA) {
-      result.push({
-        key: s.key, isSelect: true, isMulti: s.isMulti, isCustom: false,
-        title: s.prop.title, description: s.prop.description,
-        options: elicitationOptions(s.prop),
-        hasCustomVariant: !!s.customKey, customVariantKey: s.customKey,
-        customVariantDescription: s.customSchema?.description || s.customSchema?.title,
-      });
-    }
-    if (selA.length === 0) {
-      for (const [k, p] of unmat) {
-        result.push({ key: k, isSelect: false, isMulti: false, isCustom: true,
-          title: p.title, description: p.description, hasCustomVariant: false });
-      }
-    }
-    return result;
-  }, [schema]);
+  const fields = useMemo(() => normalizeElicitationFields(schema), [schema]);
 
 
   const isMultiStep = fields.length > 1;
@@ -355,13 +428,16 @@ export function ElicitationCard({
   const actionLabel = isLastStep
     ? t("acp.elicitation.submit", "提交")
     : t("acp.elicitation.next", "下一步");
-  const questionText = elicitationQuestionText(
-    message,
-    currentField.description,
-    currentStep,
-    t("acp.elicitation.questionFallback", "请选择一个答案"),
+  const formMessage = elicitationFormMessage(message);
+  const questionText =
+    currentField.description?.trim() ||
+    (!formMessage
+      ? t("acp.elicitation.questionFallback", "请选择一个答案")
+      : "");
+  const showFieldTitle = shouldShowFieldTitle(
+    currentField.title,
+    questionText || formMessage || "",
   );
-  const showFieldTitle = shouldShowFieldTitle(currentField.title, questionText);
 
   // ── 进度指示器 ──
   const ProgressDots = isMultiStep ? (
@@ -413,6 +489,13 @@ export function ElicitationCard({
           </div>
         )}
 
+        {/* 表单级 message：完整保留，不能按换行拆成步骤。 */}
+        {formMessage && (
+          <div className="text-[13px] leading-6 text-muted-foreground">
+            <Markdown>{formMessage}</Markdown>
+          </div>
+        )}
+
         {/* 当前问题文本 */}
         {questionText && (
           <div className="text-[13px] leading-6 text-muted-foreground">
@@ -432,7 +515,19 @@ export function ElicitationCard({
                     sel ? ELICITATION_SELECTED_OPTION_CLASS : "hover:border-accent-foreground/35 hover:bg-accent/60",
                     ELICITATION_OPTION_INTERACTION_CLASS,
                     "active:scale-[0.995]", "disabled:opacity-50 disabled:cursor-not-allowed")}
-                ><span className="font-medium">{o.label}</span>
+                ><div className="min-w-0 flex-1">
+                    <div className="font-medium">{o.label}</div>
+                    {o.description && (
+                      <div className="mt-0.5 text-xs font-normal text-muted-foreground">
+                        {o.description}
+                      </div>
+                    )}
+                    {sel && o.preview && (
+                      <div className="mt-2 border-t border-border/60 pt-2 text-xs font-normal text-muted-foreground">
+                        <Markdown>{o.preview}</Markdown>
+                      </div>
+                    )}
+                  </div>
                   {sel ? (
                     <span className={cn("flex size-5 shrink-0 items-center justify-center rounded-full border", ELICITATION_SELECTED_MARK_CLASS)}>
                       <Check className="size-3.5" strokeWidth={3} />
@@ -501,10 +596,70 @@ export function ElicitationCard({
                       <Check className="size-3" strokeWidth={3} />
                     )}
                   </span>
-                  <span>{option.label}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium">{option.label}</div>
+                    {option.description && (
+                      <div className="mt-0.5 text-xs font-normal text-muted-foreground">
+                        {option.description}
+                      </div>
+                    )}
+                    {selected && option.preview && (
+                      <div className="mt-2 border-t border-border/60 pt-2 text-xs font-normal text-muted-foreground">
+                        <Markdown>{option.preview}</Markdown>
+                      </div>
+                    )}
+                  </div>
                 </button>
               );
             })}
+            {currentField.hasCustomVariant && !customActive && (
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomActive(true);
+                  setMultiValues([]);
+                }}
+                className={cn(
+                  "w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-[13px] text-muted-foreground transition-colors",
+                  "hover:border-accent-foreground/40 hover:text-foreground",
+                  ELICITATION_OPTION_INTERACTION_CLASS,
+                )}
+              >
+                <Pencil className="size-4" />
+                <span>{t("acp.elicitation.customPlaceholder", "其他答案...")}</span>
+              </button>
+            )}
+            {currentField.hasCustomVariant && customActive && (
+              <div className="space-y-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomActive(false);
+                    setCustomText("");
+                  }}
+                  className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  ← {t("acp.elicitation.backToOptions", "返回选项")}
+                </button>
+                <Input
+                  autoFocus
+                  value={customText}
+                  onChange={(event) => setCustomText(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && customText.trim()) {
+                      handleStepSubmit(
+                        customText.trim(),
+                        currentField.customVariantKey,
+                      );
+                    }
+                  }}
+                  placeholder={
+                    currentField.customVariantDescription ||
+                    t("acp.elicitation.customPlaceholder", "输入答案后按回车...")
+                  }
+                />
+              </div>
+            )}
           </div>
         )}
 

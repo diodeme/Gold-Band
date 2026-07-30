@@ -33,6 +33,8 @@ use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::avatar::{AvatarPreferencesVm, load_avatar_preferences};
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreferencesVm {
@@ -41,6 +43,7 @@ pub struct PreferencesVm {
     pub font: DesktopFontPreference,
     pub use_local_claude: bool,
     pub verbose_logging: bool,
+    pub avatars: AvatarPreferencesVm,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,6 +91,7 @@ pub struct AppConfigVm {
 #[serde(rename_all = "camelCase")]
 pub struct AppInfoVm {
     pub channel: String,
+    pub feedback_enabled: bool,
     pub app_name: String,
     pub app_key: String,
     pub config_dir_name: String,
@@ -959,6 +963,7 @@ pub fn preferences_vm(
     font: DesktopFontPreference,
     use_local_claude: bool,
     log_level: RuntimeLogLevel,
+    avatars: AvatarPreferencesVm,
 ) -> PreferencesVm {
     PreferencesVm {
         theme,
@@ -966,6 +971,7 @@ pub fn preferences_vm(
         font,
         use_local_claude,
         verbose_logging: matches!(log_level, RuntimeLogLevel::Debug | RuntimeLogLevel::Trace),
+        avatars,
     }
 }
 
@@ -1028,6 +1034,7 @@ pub fn bootstrap_vm(
             app.config.desktop_font.clone(),
             app.config.use_local_claude,
             app.config.log_level,
+            load_avatar_preferences(&app.paths.user_gold_band_dir()).unwrap_or_default(),
         ),
         updater_settings: updater_settings(&app.config),
         metrics_settings: metrics_settings(&app.config),
@@ -1042,6 +1049,7 @@ pub fn bootstrap_vm(
         window_chrome: desktop_window_chrome_vm(),
         app_info: AppInfoVm {
             channel: channel_config.channel.to_string(),
+            feedback_enabled: channel_config.feedback_enabled,
             app_name: channel_config.app_name.to_string(),
             app_key: channel_config.app_key.to_string(),
             config_dir_name: channel_config.config_dir_name.to_string(),
@@ -5753,7 +5761,12 @@ fn insert_latest_permission_event(
     let request_id = permission_request_id_from_event(event);
     let should_replace = latest_permission_events
         .get(&request_id)
-        .map(|current| event.seq >= current.seq)
+        .map(|current| {
+            event.seq > current.seq
+                || (event.seq == current.seq
+                    && parse_epoch_timestamp(&event.timestamp).unwrap_or_default()
+                        >= parse_epoch_timestamp(&current.timestamp).unwrap_or_default())
+        })
         .unwrap_or(true);
     if should_replace {
         latest_permission_events.insert(request_id, event.clone());

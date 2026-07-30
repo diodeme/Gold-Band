@@ -1,168 +1,129 @@
 # 用户反馈上报
 
 ## 1. 一句话定义
-用户反馈上报提供桌面端原生入口，让用户把问题描述、截图与运行日志一键打包上报到码灵控制台，用于问题定位与产品改进。
 
-> 当前 MVP 仅实现**主动反馈**；异常崩溃自动收集（panic hook + 下次启动引导上报）不在本期范围，方案预留扩展位。
+用户反馈上报是桌面端的渠道能力：用户主动提交问题描述，可选择截图、运行日志和一个关联会话，由后端在可信边界内解析、规范化并上传到码灵控制台。
+
+当前 MVP 只实现主动反馈；崩溃自动收集不在本期范围。
 
 ---
 
-## 2. 入口设计
+## 2. 能力与入口
 
-### 2.1 位置
-入口位于共享顶栏，窗口控制按钮区（最小化 / 最大化 / 关闭）的左侧，与桌面端原生帮助心智一致。
+- 渠道配置通过 `feedbackEnabled` 显式声明能力：`wb=true`，默认渠道为 `false`。
+- `AppInfoVm.feedbackEnabled` 是前端唯一入口判断，不根据渠道名称猜能力。
+- 共享顶栏仅在能力启用时展示「帮助 → 用户反馈」。
+- Tauri command 在后端再次校验能力；隐藏 UI 不是安全边界，未启用渠道直接返回 `feedback.disabled`。
+- `feedbackEnabled` 是编译期渠道能力，不是用户偏好，不新增运行时开关或兼容入口。
 
-### 2.2 形态
-一个常驻的「帮助」图标按钮，点击展开 `DropdownMenu`：
+---
+
+## 3. Dialog 与交互
+
+Dialog 复用 shadcn/ui `Dialog`、`Textarea`、`Select`、`Switch`、`Button` 和现有附件 copy-in 组件。
+
+| 字段 | 必填 | 约束 |
+| --- | --- | --- |
+| 问题描述 | 是 | 1–2000 字符 |
+| 关联会话 | 否 | 从已注册会话工作空间的任务列表单选 |
+| 截图 | 否 | 0–4 张；PNG/JPEG/WebP；单张输入及规范化输出均 ≤5 MiB |
+| 上传日志 | 否 | 默认开启；只上传运行日志尾部 512 KiB |
+
+截图交互支持隐藏的原生 HTML file input、拖放和剪贴板粘贴。反馈流程不调用返回本地路径的 Tauri 通用文件选择器；提交时只序列化浏览器 `File` 的 `{name,mime,size,dataBase64}`。无法取得 `File` 内容的 path-only 附件不得提交。
+
+选择关联会话后展示归档未压缩大小和文件数。超出客户端策略时显示错误状态并禁用提交；用户可取消关联会话后继续提交纯描述、截图与日志。
+
+上传期间禁止重复提交和关闭。成功后展示简短成功状态并关闭；失败时保留 Dialog 和用户输入，前端按错误码展示本地化文案。
+
+---
+
+## 4. 数据与信任边界
+
+### 4.1 输入模型
+
+前端只传业务标识和内容，不传后端读取路径：
 
 ```text
-顶栏右侧窗口控制按钮区
-… [折叠区] [帮助 ▾] [—] [▢] [✕]
-                  └─ 用户反馈
+FeedbackInput {
+  description
+  projectId? + taskId?
+  screenshots[] { name, mime, size, dataBase64 }
+  includeLogs
+}
 ```
 
-当前菜单仅含「用户反馈」一项（带 `MessageSquareWarning` 图标）。该入口属于 `wb` 渠道能力：仅当启动信息中的 `appInfo.channel === "wb"` 时显示「帮助」按钮；其他渠道不显示按钮，也不能进入反馈 Dialog。该菜单壳为 `wb` 渠道后续「关于 / 检查更新 / 文档」等帮助类入口预留扩展位，新增项只追加 `DropdownMenuItem`，不改菜单结构。
+`projectId` 与 `taskId` 必须同时存在或同时为空。
 
-点击「用户反馈」打开反馈 Dialog。
+### 4.2 会话解析
 
-### 2.3 可见性
-- 帮助按钮始终可见，不随当前 workspace、UI 模式或会话状态隐藏。
-- 反馈入口不依赖任何前置配置；用户开箱即用。
+- 后端从全局 `StateConfig.conversationWorkspaces` 解析 `projectId`，再构造 workspace-scoped `App`。
+- `taskId` 必须是单一安全路径组件，拒绝绝对路径、`.`、`..`、斜杠和反斜杠穿越。
+- 任务目录及每个文件均 canonicalize，并验证仍位于 canonical `tasks_dir/taskId` 下。
+- 目录遍历使用 `walkdir` 且 `follow_links(false)`；符号链接不进入归档。
+- 未知项目、未知任务、已被移除的任务统一返回 `feedback.session-not-found`。
 
----
+### 4.3 截图规范化
 
-## 3. 反馈 Dialog
+- base64 解码前后都执行大小校验，并核对声明 `size`。
+- 只允许实际格式与 MIME 一致的 PNG/JPEG/WebP。
+- 解码器设置最大宽高和内存分配限制，拒绝超大尺寸与解压炸弹。
+- 所有截图重新编码为 PNG，剥离原始元数据；multipart 固定使用 `image/png` 和序号文件名。
 
-### 3.1 布局
-使用 shadcn `Dialog` + `Textarea` + `Select` + `Switch` + 附件区，copy-in 生成，不自研基础控件。
+### 4.4 归档与请求资源策略
 
-```text
-┌─ 问题反馈 ──────────────────────────────── ─┐
-│                                            │
-│  问题描述 *                                 │
-│  ┌──────────────────────────────────────┐  │
-│  │ Textarea（最多 2000 字符）           │  │
-│  └──────────────────────────────────────┘  │
-│                                            │
-│  关联会话（可选）                           │
-│  [Select：选择当前会话 / 不关联 ▾]          │
-│                                            │
-│  截图（可选，最多 4 张，单张 ≤5MB）          │
-│  [拖拽或 Ctrl+V 粘贴 / 点击选择文件]         │
-│  ┌────┐ ┌────┐                             │
-│  │缩略图│ │缩略图│                            │
-│  └────┘ └────┘                             │
-│                                            │
-│  ☑ 同时上传运行日志（最近 512KB）           │
-│                                            │
-│  ⓘ 上传内容含运行日志与会话快照，可能含      │
-│    本地路径、代码等信息，请确认后提交。      │
-│                                            │
-│                          [取消]  [提交反馈] │
-└────────────────────────────────────────────┘
-```
+| 资源 | 上限 |
+| --- | ---: |
+| 描述 | 2000 字符 |
+| 截图数量 | 4 |
+| 单张截图输入/规范化输出 | 5 MiB |
+| 会话归档未压缩总量 | 100 MiB |
+| 会话归档压缩后总量 | 20 MiB |
+| 会话归档文件数 | 5000 |
+| 日志尾部 | 512 KiB |
+| 单次请求有效载荷 | 30 MiB |
 
-### 3.2 字段规则
-
-| 字段 | 必填 | 约束 | 说明 |
-| --- | --- | --- | --- |
-| 问题描述 | 是 | 1–2000 字符 | 用户用文字描述问题 |
-| 关联会话 | 否 | 单选当前会话列表或「不关联」 | 不做强分类；用户能定位到就选，定位不到留空 |
-| 截图 | 否 | 0–4 张，单张 ≤5MB | 粘贴 / 文件选择；不做程序自动截屏 |
-| 上传日志 | 否 | 默认开 | 附带运行日志尾部 512KB |
-
-### 3.3 不做项
-- **不做问题类型强分类**（应用问题 / 会话问题）。原「会话问题」需求改为可选的「关联会话」上下文。后端不靠分类字段做路由分派，统一收件后按内容判断。
-- **不做自动截屏**。仅支持剪贴板粘贴（Ctrl+V）与文件选择。
-- **不做 reportId 展示**。成功后只 toast「反馈已提交，感谢」，不展示工单号或控制台链接。
-- **不做独立开关**。反馈是用户主动触发，用户本身即开关；不新增 `desktop_feedback_enabled` 设置项。
+预览与提交共用同一个 `ArchivePlan` 规则。ZIP 在 blocking worker 中流式写入 `NamedTempFile`，HTTP multipart 通过 `ReaderStream` 读取临时文件，不把完整归档堆入内存；提交时重新检查文件元数据、压缩后大小和总请求大小。
 
 ---
 
-## 4. 数据范围与上报内容
+## 5. Multipart 契约
 
-### 4.1 元数据
-- `userId`：系统用户名（与 heartbeat 同源），用于标识反馈来源
-- `client_version`：客户端版本号
-- `reported_at`：本地 ISO-8601 时间戳
-- `sessionWorkspace` / `sessionTaskId`：关联会话的工作空间路径与任务 id（可选，平铺在 metadata 顶层）
+固定顺序为：
 
-### 4.2 日志
-当「上传日志」开启时，读取 `~/.gold-band/logs/runtime.log` 的**尾部 512KB**（按字节截断，防止日志文件过大拖垮上传）。
+1. `metadata`：JSON 文本，始终存在。
+2. `description`：UTF-8 文本，始终存在。
+3. `log`：可选，`text/plain`。
+4. `session_archive`：可选，`application/zip`。
+5. `screenshot_0..n`：可选，规范化后的 `image/png`。
 
-### 4.3 会话上下文
+metadata 使用 `sessionProjectId` / `sessionTaskId`，不上传用户本地 workspace 绝对路径；同时包含用户标识、客户端版本、上报时间、附件标志和计数。
 
-当用户选择「关联会话」时，额外附带：
-
-- 会话标识：`sessionWorkspace` + `sessionTaskId`（平铺在 metadata 顶层）
-- 会话归档：将该会话整个 `task-xxx` 目录压缩为 zip 后作为 `session_archive` part 上传，包含 `acp.snapshot.json`、`events.jsonl`、附件、原始 raw frames 等全部产物。客户端按 `sessionWorkspace` 解析目录路径，支持跨工作空间关联。
-
-**知情同意**：选择会话后，下拉框下方即时展示归档大小预览（如「会话归档约 12 KB（38 个文件，压缩后上传）」），让用户在提交前知道会上传哪些内容。归档大小不设客户端硬截断，由用户根据预览自行判断是否提交。
-
-### 4.4 截图
-用户提供的图片文件，原样作为 multipart file part 上传。
-
-### 4.5 隐私与知情
-- **不做自动敏感信息过滤**。运行日志与会话快照几乎一定含路径、代码，甚至凭证片段；过滤规则做不准反而制造「已脱敏」的虚假安全感。
-- Dialog 内置一行知情提示（见 3.1 布局），把知情权交给用户，由用户决定是否提交。
+endpoint 与认证复用 metrics 通道：`{metrics_base_url}/api/client-report/feedback` 和 `X-Maling-Report-Key`。HTTP 客户端设置连接超时与请求总超时。诊断写入 `metrics.log`，返回给前端的错误参数不包含 reqwest 原始错误或对客文案。
 
 ---
 
-## 5. 交互流程
+## 6. 错误协议
 
-### 5.1 提交
-1. 用户点帮助 → 用户反馈，打开 Dialog。
-2. 填写描述（必填）、可选关联会话、可选截图、可选关日志。
-3. 点「提交反馈」。
-4. **同步等待**：按钮禁用 + 转圈 + 文案「正在上传…」，前端 `await` 后端 command。
-5. 成功 → toast「反馈已提交，感谢」，关闭 Dialog。
-6. 失败 → toast 报错（基于后端返回的错误码映射文案），Dialog 保持打开，允许重试。
+后端沿用 `CommandErrorVm { code, params }`，前端按 `code` 本地化：
 
-### 5.2 上传中状态
-- 上传中提交按钮禁用，避免重复提交。
-- 上传中关闭 Dialog 需二次确认（当前 MVP 可简化为直接禁用关闭，由实现阶段决定）。
+| code | 场景 |
+| --- | --- |
+| `feedback.disabled` | 当前渠道未启用反馈能力 |
+| `feedback.endpoint-unconfigured` | 上报地址未配置 |
+| `feedback.validation-failed` | 描述、会话组合或基础输入无效 |
+| `feedback.session-not-found` | 项目或任务无法在后端可信状态中解析 |
+| `feedback.attachment-invalid` | base64、MIME、图片格式或解码无效 |
+| `feedback.payload-too-large` | 截图、归档或整次请求超过资源策略 |
+| `feedback.network-failed` | 连接、DNS 或超时失败 |
+| `feedback.server-error` | 服务端非成功响应或客户端内部构造失败 |
 
----
-
-## 6. 通道与配置
-
-### 6.1 上报通道
-复用现有 metrics 通道的认证与 base_url 机制（`metrics_base_url` + `X-Maling-Report-Key`），不新建网络层、不新增配置项。
-
-**调用日志**：反馈上报的请求、响应状态、网络失败与 heartbeat、node-metrics 一同写入 `metrics.log`（`%LOCALAPPDATA%\{app_key}\metrics.log`），方便统一排查。
-
-### 6.2 默认 endpoint
-编译期内置默认反馈上报地址（环境变量 + 代码默认值），用户开箱即用。配置缺失不应成为用户可感知的阻塞：反馈 Dialog 打开即默认可用。
-
-### 6.3 码灵控制台 endpoint
-由码灵后端提供（当前尚未实现，文档先行交付）：
-
-| Endpoint | 方法 | 内容 |
-| --- | --- | --- |
-| `/api/client-report/feedback` | multipart POST | metadata JSON + 日志文件 + 截图 + 会话快照，返回 `{ reportId }` |
+服务端非成功状态可返回数字 `status` 参数；网络错误的原始字符串只写诊断日志，不进入 command 响应。
 
 ---
 
-## 7. 错误处理
+## 7. 非本期
 
-后端只返回结构化错误码（含 `code`、`msg`，`msg` 仅用于日志/开发排查，不对客）。前端根据 `code` 映射对客文案。
-
-主要错误码：
-
-| code | 触发场景 | 前端处理 |
-| --- | --- | --- |
-| `feedback.network-failed` | 网络不通 / 超时 | toast 报错 + 允许重试 |
-| `feedback.server-error` | 服务端 5xx / endpoint 未就绪 | toast 报错 + 允许重试 |
-| `feedback.validation-failed` | 描述为空 / 截图超限 / 超过数量 | Dialog 内字段级提示 |
-| `feedback.endpoint-unconfigured` | 默认 endpoint 也缺失（极端兜底） | toast「暂不可用」+ 禁用提交 |
-
-服务端 endpoint 尚未实现时，统一归类为 `feedback.server-error`，前端以可重试对待，不崩溃。
-
----
-
-## 8. 扩展位（非本期）
-
-- 崩溃自动收集：panic hook 写本地 crash 文件 + 下次启动引导上报，复用同一上报通道。
-- 自动截屏：引入 Tauri 截屏能力，待真实数据证明手动截屏摩擦点过大后再加。
-- reportId / 工单追踪：码灵后台提供用户端查询页后再展示。
-- 企业总开关：「禁止所有对外通信」统一开关，覆盖 metrics + feedback + updater。
+- panic hook 与下次启动崩溃上报。
+- 自动截屏。
+- reportId / 工单追踪入口。
+- 自动敏感信息过滤；当前通过明确知情提示让用户决定是否提交日志和会话归档。

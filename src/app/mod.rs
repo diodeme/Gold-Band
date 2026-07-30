@@ -847,19 +847,7 @@ fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     }
 }
 
-fn worker_models_for_node(node: &NodeDsl) -> Vec<(String, Option<String>)> {
-    match node {
-        NodeDsl::Worker(worker) => worker
-            .provider
-            .as_ref()
-            .map(|p| (p.clone(), worker.model.clone()))
-            .into_iter()
-            .collect(),
-        NodeDsl::AiDynamic(_) => Vec::new(),
-    }
-}
-
-fn worker_permission_modes_for_node(node: &NodeDsl) -> Vec<(String, Option<String>)> {
+fn configured_permission_modes_for_node(node: &NodeDsl) -> Vec<(String, Option<String>)> {
     match node {
         NodeDsl::Worker(worker) => worker
             .provider
@@ -867,8 +855,63 @@ fn worker_permission_modes_for_node(node: &NodeDsl) -> Vec<(String, Option<Strin
             .map(|provider| (provider.clone(), worker.permission_mode.clone()))
             .into_iter()
             .collect(),
-        NodeDsl::AiDynamic(_) => Vec::new(),
+        NodeDsl::AiDynamic(dynamic) => providers_for_node(node)
+            .into_iter()
+            .map(|provider| (provider, dynamic.permission_mode.clone()))
+            .collect(),
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelConfigNormalization {
+    pub node_id: String,
+    pub scope: String,
+    pub provider: Option<String>,
+    pub previous_model: String,
+}
+
+fn provider_model_is_stale(
+    diagnostics: &BTreeMap<String, ProviderDiagnosticSnapshot>,
+    provider: &str,
+    model: &str,
+) -> bool {
+    let supported_models = diagnostics
+        .get(provider)
+        .filter(|diagnostic| diagnostic.available)
+        .map(|diagnostic| supported_models_from_capabilities(diagnostic.capabilities.as_ref()))
+        .unwrap_or_default();
+    !supported_models.is_empty()
+        && !supported_models
+            .iter()
+            .any(|option| option.id == model || option.name.as_deref() == Some(model))
+}
+
+fn clear_stale_model(
+    diagnostics: &BTreeMap<String, ProviderDiagnosticSnapshot>,
+    node_id: &str,
+    scope: &str,
+    provider: &str,
+    model: &mut Option<String>,
+    normalizations: &mut Vec<ModelConfigNormalization>,
+) {
+    let Some(configured) = model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    if !provider_model_is_stale(diagnostics, provider, configured) {
+        return;
+    }
+    normalizations.push(ModelConfigNormalization {
+        node_id: node_id.to_string(),
+        scope: scope.to_string(),
+        provider: Some(provider.to_string()),
+        previous_model: configured.to_string(),
+    });
+    *model = None;
 }
 
 impl App {
@@ -1375,6 +1418,7 @@ impl App {
         }
         let mut store = self.load_workflow_template_store()?;
         let mut workflow = workflow;
+        self.normalize_workflow_models(&mut workflow);
         for attempt in 0..3 {
             workflow.id = next_workflow_id();
             let conflicts = store
@@ -1421,6 +1465,8 @@ impl App {
             bail!("default workflow template cannot be updated");
         }
         let mut store = self.load_workflow_template_store()?;
+        let mut workflow = workflow;
+        self.normalize_workflow_models(&mut workflow);
         let validated = validate_workflow(workflow)?;
         self.validate_workflow_agents(&validated)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
@@ -1611,17 +1657,34 @@ impl App {
             } else {
                 store.templates.insert(0, default_template);
             }
+            self.normalize_workflow_template_store_models(&mut store);
             self.save_workflow_template_store(&store)?;
             return Ok(store);
         }
-        let store = WorkflowTemplateStore {
+        let mut store = WorkflowTemplateStore {
             version: VERSION.to_string(),
             last_used_template_id: Some("default".to_string()),
             last_created_workflow: None,
             templates: vec![default_template],
         };
+        self.normalize_workflow_template_store_models(&mut store);
         self.save_workflow_template_store(&store)?;
         Ok(store)
+    }
+
+    fn normalize_workflow_template_store_models(&self, store: &mut WorkflowTemplateStore) {
+        let now = now_rfc3339_like();
+        for template in &mut store.templates {
+            if !self
+                .normalize_workflow_models(&mut template.workflow)
+                .is_empty()
+            {
+                template.updated_at = now.clone();
+            }
+        }
+        if let Some(workflow) = store.last_created_workflow.as_mut() {
+            self.normalize_workflow_models(workflow);
+        }
     }
 
     fn save_workflow_template_store(&self, store: &WorkflowTemplateStore) -> Result<()> {
@@ -1649,9 +1712,10 @@ impl App {
 
     fn record_created_task_workflow(
         &self,
-        workflow: WorkflowDsl,
+        mut workflow: WorkflowDsl,
         template_id: Option<String>,
     ) -> Result<()> {
+        self.normalize_workflow_models(&mut workflow);
         let mut store = self.load_workflow_template_store()?;
         store.last_created_workflow = Some(workflow);
         if let Some(template_id) = template_id.filter(|value| !value.trim().is_empty()) {
@@ -1793,7 +1857,9 @@ impl App {
             bail!("requirement content cannot be empty");
         }
 
-        let validated = validate_workflow(input.workflow.clone())?;
+        let mut workflow = input.workflow.clone();
+        self.normalize_workflow_models(&mut workflow);
+        let validated = validate_workflow(workflow)?;
         self.validate_workflow_agents(&validated)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         let store = self.load_workflow_template_store()?;
@@ -1862,6 +1928,8 @@ impl App {
 
     pub fn save_task_workflow(&self, task_id: &str, workflow: WorkflowDsl) -> Result<TaskSummary> {
         self.task_show(task_id)?;
+        let mut workflow = workflow;
+        self.normalize_workflow_models(&mut workflow);
         let validated = validate_workflow(workflow)?;
         self.validate_workflow_agents(&validated)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
@@ -3001,30 +3069,7 @@ impl App {
 
     pub fn validate_workflow_node_agent_options(&self, node: &NodeDsl) -> Result<()> {
         let provider_diagnostics = self.provider_diagnostics();
-        for (provider, model) in worker_models_for_node(node) {
-            if let Some(model) = model {
-                if model.trim().is_empty() {
-                    bail!(WorkflowValidationError::AgentModelBlank {
-                        provider: provider.clone(),
-                    });
-                }
-                let supported_models = provider_diagnostics
-                    .get(&provider)
-                    .filter(|diagnostic| diagnostic.available)
-                    .map(|diagnostic| {
-                        supported_models_from_capabilities(diagnostic.capabilities.as_ref())
-                    })
-                    .unwrap_or_default();
-                if !supported_models.is_empty()
-                    && !supported_models.iter().any(|option| {
-                        option.id == model || option.name.as_deref() == Some(model.as_str())
-                    })
-                {
-                    bail!("worker model `{model}` is not supported by provider `{provider}`");
-                }
-            }
-        }
-        for (provider, permission_mode) in worker_permission_modes_for_node(node) {
+        for (provider, permission_mode) in configured_permission_modes_for_node(node) {
             if let Some(permission_mode) = permission_mode {
                 let permission_mode = permission_mode.trim();
                 if permission_mode.is_empty() {
@@ -3050,6 +3095,109 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn normalize_workflow_models(
+        &self,
+        workflow: &mut WorkflowDsl,
+    ) -> Vec<ModelConfigNormalization> {
+        let diagnostics = self.provider_diagnostics();
+        let mut normalizations = Vec::new();
+        for node in &mut workflow.nodes {
+            match node {
+                NodeDsl::Worker(worker) => {
+                    if let Some(provider) = worker.provider.as_deref() {
+                        clear_stale_model(
+                            &diagnostics,
+                            &worker.id,
+                            "worker",
+                            provider,
+                            &mut worker.model,
+                            &mut normalizations,
+                        );
+                    }
+                }
+                NodeDsl::AiDynamic(dynamic) => match &mut dynamic.agent_strategy {
+                    AiDynamicAgentStrategy::Fixed { provider, model } => clear_stale_model(
+                        &diagnostics,
+                        &dynamic.id,
+                        "fixed",
+                        provider,
+                        model,
+                        &mut normalizations,
+                    ),
+                    AiDynamicAgentStrategy::Dynamic {
+                        bootstrap_provider,
+                        bootstrap_model,
+                        acceptance_model,
+                        available_agents,
+                        ..
+                    } => {
+                        clear_stale_model(
+                            &diagnostics,
+                            &dynamic.id,
+                            "bootstrap",
+                            bootstrap_provider,
+                            bootstrap_model,
+                            &mut normalizations,
+                        );
+                        for agent in available_agents.iter_mut() {
+                            clear_stale_model(
+                                &diagnostics,
+                                &dynamic.id,
+                                "available-agent",
+                                &agent.provider,
+                                &mut agent.model,
+                                &mut normalizations,
+                            );
+                        }
+                        let Some(configured) = acceptance_model
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                        else {
+                            continue;
+                        };
+                        let mut providers = vec![bootstrap_provider.as_str()];
+                        for agent in available_agents.iter() {
+                            if !providers.contains(&agent.provider.as_str()) {
+                                providers.push(agent.provider.as_str());
+                            }
+                        }
+                        let providers_with_catalog = providers
+                            .iter()
+                            .filter(|provider| {
+                                diagnostics
+                                    .get(**provider)
+                                    .filter(|diagnostic| diagnostic.available)
+                                    .map(|diagnostic| {
+                                        !supported_models_from_capabilities(
+                                            diagnostic.capabilities.as_ref(),
+                                        )
+                                        .is_empty()
+                                    })
+                                    .unwrap_or(false)
+                            })
+                            .copied()
+                            .collect::<Vec<_>>();
+                        if !providers_with_catalog.is_empty()
+                            && providers_with_catalog.iter().all(|provider| {
+                                provider_model_is_stale(&diagnostics, provider, configured)
+                            })
+                        {
+                            normalizations.push(ModelConfigNormalization {
+                                node_id: dynamic.id.clone(),
+                                scope: "acceptance".to_string(),
+                                provider: None,
+                                previous_model: configured.to_string(),
+                            });
+                            *acceptance_model = None;
+                        }
+                    }
+                },
+            }
+        }
+        normalizations
     }
 
     pub fn validate_workflow_agents(&self, workflow: &ValidatedWorkflow) -> Result<()> {
@@ -3275,10 +3423,13 @@ impl App {
             return Ok((Some("missing authoring/workflow.json".to_string()), None));
         }
 
-        let workflow: WorkflowDsl = match read_json(&path) {
+        let mut workflow: WorkflowDsl = match read_json(&path) {
             Ok(workflow) => workflow,
             Err(err) => return Ok((Some(err.to_string()), None)),
         };
+        if !self.normalize_workflow_models(&mut workflow).is_empty() {
+            write_json(&path, &workflow)?;
+        }
 
         let validated = match validate_workflow(workflow.clone()) {
             Ok(validated) => validated,
@@ -3342,11 +3493,14 @@ fn is_acp_session_active_status(status: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{AcpLiveEventContext, App, CreateTaskInput, RuntimeLifecycleEvent};
+    use super::{
+        AcpLiveEventContext, App, CreateTaskInput, RuntimeLifecycleEvent, WorkflowTemplate,
+        WorkflowTemplateStore,
+    };
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
-        ProviderDiagnosticSnapshot, RuntimeConfig,
+        MANAGED_AGENT_PRESETS, ProviderDiagnosticSnapshot, RuntimeConfig,
     };
     use crate::domain::{
         NodeOutcome, NodeType, PauseReason, RoundTrigger, RunStatus, SessionMode, VERSION,
@@ -3400,20 +3554,35 @@ mod tests {
         repo_root: Utf8PathBuf,
         capabilities: serde_json::Value,
     ) -> App {
+        test_app_with_named_provider_capabilities(repo_root, "claude-acp", capabilities)
+    }
+
+    fn test_app_with_named_provider_capabilities(
+        repo_root: Utf8PathBuf,
+        provider: &str,
+        capabilities: serde_json::Value,
+    ) -> App {
         set_test_home(&repo_root);
+        let mut config = RuntimeConfig::default();
+        if let Some(preset) = MANAGED_AGENT_PRESETS
+            .iter()
+            .find(|preset| preset.id == provider)
+        {
+            config
+                .agents
+                .insert(preset.agent_id(), preset.default_config());
+        }
         App::with_config_and_path_config(
             repo_root,
-            RuntimeConfig::default().with_provider_diagnostics(std::collections::BTreeMap::from([
-                (
-                    "claude-acp".to_string(),
-                    ProviderDiagnosticSnapshot {
-                        available: true,
-                        reason: None,
-                        checked_at: "2026-06-24T00:00:00Z".to_string(),
-                        capabilities: Some(capabilities),
-                    },
-                ),
-            ])),
+            config.with_provider_diagnostics(std::collections::BTreeMap::from([(
+                provider.to_string(),
+                ProviderDiagnosticSnapshot {
+                    available: true,
+                    reason: None,
+                    checked_at: "2026-06-24T00:00:00Z".to_string(),
+                    capabilities: Some(capabilities),
+                },
+            )])),
             test_path_config(),
         )
     }
@@ -3584,7 +3753,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_model_and_permission_mode_validate_against_provider_cache() {
+    fn workflow_agent_validation_allows_stale_models_but_rejects_invalid_permission_modes() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -3612,12 +3781,57 @@ mod tests {
             validate_workflow(worker_workflow(Some("sonnet"), Some("full_access"))).unwrap();
 
         assert!(app.validate_workflow_agents(&accepted).is_ok());
-        assert!(app.validate_workflow_agents(&rejected_model).is_err());
+        assert!(app.validate_workflow_agents(&rejected_model).is_ok());
         assert!(app.validate_workflow_agents(&rejected_mode).is_err());
     }
 
     #[test]
-    fn ai_dynamic_models_are_not_rejected_during_workflow_agent_validation() {
+    fn ai_dynamic_normative_full_access_resolves_to_current_codex_mode() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app_with_named_provider_capabilities(
+            repo_root,
+            "codex-acp",
+            serde_json::json!({
+                "configOptions": [
+                    {
+                        "id": "mode",
+                        "category": "mode",
+                        "options": [
+                            { "value": "read-only", "name": "Read-only" },
+                            { "value": "agent", "name": "Agent" },
+                            { "value": "agent-full-access", "name": "Agent (full access)" }
+                        ]
+                    }
+                ]
+            }),
+        );
+        let node = NodeDsl::AiDynamic(crate::dsl::AiDynamicNode {
+            id: "route".to_string(),
+            agent_strategy: AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider: "codex-acp".to_string(),
+                bootstrap_model: None,
+                acceptance_model: None,
+                routing_prompt: String::new(),
+                available_agents: vec![crate::dsl::DynamicAgentRef {
+                    provider: "codex-acp".to_string(),
+                    model: None,
+                }],
+            },
+            permission_mode: Some("full_access".to_string()),
+            config_options: Default::default(),
+            allowed_profiles: Vec::new(),
+            global_goal: None,
+            control: crate::dsl::DynamicControlDsl::default(),
+            allowed_workflows: Vec::new(),
+        });
+
+        assert!(app.validate_workflow_node_agent_options(&node).is_ok());
+    }
+
+    #[test]
+    fn ai_dynamic_stale_models_are_cleared_in_runtime_snapshot() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -3639,9 +3853,15 @@ mod tests {
             entry: "route".to_string(),
             nodes: vec![NodeDsl::AiDynamic(crate::dsl::AiDynamicNode {
                 id: "route".to_string(),
-                agent_strategy: AiDynamicAgentStrategy::Fixed {
-                    provider: "claude-acp".to_string(),
-                    model: Some("future-model".to_string()),
+                agent_strategy: AiDynamicAgentStrategy::Dynamic {
+                    bootstrap_provider: "claude-acp".to_string(),
+                    bootstrap_model: Some("sonnet".to_string()),
+                    acceptance_model: Some("sonnet".to_string()),
+                    routing_prompt: String::new(),
+                    available_agents: vec![crate::dsl::DynamicAgentRef {
+                        provider: "claude-acp".to_string(),
+                        model: Some("future-model".to_string()),
+                    }],
                 },
                 permission_mode: None,
                 config_options: Default::default(),
@@ -3659,9 +3879,169 @@ mod tests {
             }],
             control: WorkflowControl::default(),
         };
-        let validated = validate_workflow(workflow).unwrap();
+        let mut normalized_workflow = workflow;
+        let normalizations = app.normalize_workflow_models(&mut normalized_workflow);
+        assert_eq!(normalizations.len(), 1);
+        assert_eq!(normalizations[0].scope, "available-agent");
+        assert_eq!(normalizations[0].previous_model, "future-model");
 
-        assert!(app.validate_workflow_agents(&validated).is_ok());
+        let NodeDsl::AiDynamic(dynamic) = &normalized_workflow.nodes[0] else {
+            unreachable!();
+        };
+        let AiDynamicAgentStrategy::Dynamic {
+            available_agents, ..
+        } = &dynamic.agent_strategy
+        else {
+            unreachable!();
+        };
+        assert_eq!(available_agents[0].model, None);
+        assert!(validate_workflow(normalized_workflow).is_ok());
+    }
+
+    #[test]
+    fn workflow_template_and_task_authoring_persist_stale_models_as_unspecified() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app_with_named_provider_capabilities(
+            repo_root,
+            "codex-acp",
+            serde_json::json!({
+                "configOptions": [{
+                    "id": "model",
+                    "category": "model",
+                    "options": [{ "value": "gpt-5.6-sol", "name": "GPT-5.6-Sol" }]
+                }]
+            }),
+        );
+        let stale_workflow = WorkflowDsl {
+            version: "0.1".to_string(),
+            id: "workflow-stale-models".to_string(),
+            entry: "route".to_string(),
+            nodes: vec![
+                NodeDsl::AiDynamic(crate::dsl::AiDynamicNode {
+                    id: "route".to_string(),
+                    agent_strategy: AiDynamicAgentStrategy::Dynamic {
+                        bootstrap_provider: "codex-acp".to_string(),
+                        bootstrap_model: Some("gpt-5.6-sol".to_string()),
+                        acceptance_model: Some("gpt-5.6-sol".to_string()),
+                        routing_prompt: String::new(),
+                        available_agents: vec![crate::dsl::DynamicAgentRef {
+                            provider: "codex-acp".to_string(),
+                            model: Some("gpt-5.4".to_string()),
+                        }],
+                    },
+                    permission_mode: None,
+                    config_options: Default::default(),
+                    allowed_profiles: Vec::new(),
+                    global_goal: None,
+                    control: crate::dsl::DynamicControlDsl::default(),
+                    allowed_workflows: Vec::new(),
+                }),
+                NodeDsl::AiDynamic(crate::dsl::AiDynamicNode {
+                    id: "fixed".to_string(),
+                    agent_strategy: AiDynamicAgentStrategy::Fixed {
+                        provider: "codex-acp".to_string(),
+                        model: Some("gpt-5.4".to_string()),
+                    },
+                    permission_mode: None,
+                    config_options: Default::default(),
+                    allowed_profiles: Vec::new(),
+                    global_goal: None,
+                    control: crate::dsl::DynamicControlDsl::default(),
+                    allowed_workflows: Vec::new(),
+                }),
+            ],
+            edges: vec![
+                crate::dsl::EdgeDsl {
+                    from: "route".to_string(),
+                    to: "fixed".to_string(),
+                    on: crate::dsl::EdgeOutcome::Success,
+                    session: None,
+                    new_round_entry: None,
+                },
+                crate::dsl::EdgeDsl {
+                    from: "fixed".to_string(),
+                    to: crate::dsl::END_NODE.to_string(),
+                    on: crate::dsl::EdgeOutcome::Success,
+                    session: None,
+                    new_round_entry: None,
+                },
+            ],
+            control: WorkflowControl::default(),
+        };
+        let store = WorkflowTemplateStore {
+            version: VERSION.to_string(),
+            last_used_template_id: Some("custom".to_string()),
+            last_created_workflow: Some(stale_workflow.clone()),
+            templates: vec![WorkflowTemplate {
+                id: "custom".to_string(),
+                name: "Custom".to_string(),
+                workflow: stale_workflow.clone(),
+                created_at: "2026-07-28T00:00:00Z".to_string(),
+                updated_at: "2026-07-28T00:00:00Z".to_string(),
+            }],
+        };
+        write_json(&app.paths.workflow_templates_file(), &store).unwrap();
+
+        let loaded = app.workflow_templates().unwrap();
+        let persisted: WorkflowTemplateStore =
+            read_json(&app.paths.workflow_templates_file()).unwrap();
+        for store in [&loaded, &persisted] {
+            let workflow = &store
+                .templates
+                .iter()
+                .find(|template| template.id == "custom")
+                .unwrap()
+                .workflow;
+            let NodeDsl::AiDynamic(route) = &workflow.nodes[0] else {
+                unreachable!();
+            };
+            let AiDynamicAgentStrategy::Dynamic {
+                available_agents, ..
+            } = &route.agent_strategy
+            else {
+                unreachable!();
+            };
+            assert_eq!(available_agents[0].model, None);
+            let NodeDsl::AiDynamic(fixed) = &workflow.nodes[1] else {
+                unreachable!();
+            };
+            let AiDynamicAgentStrategy::Fixed { model, .. } = &fixed.agent_strategy else {
+                unreachable!();
+            };
+            assert_eq!(*model, None);
+        }
+
+        let task = app
+            .create_task_from_requirement(CreateTaskInput {
+                title: Some("Stale model authoring".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "verify authoring normalization".to_string(),
+                workflow: stale_workflow,
+                workflow_template_id: None,
+            })
+            .unwrap();
+        let persisted_authoring: WorkflowDsl =
+            read_json(&app.paths.workflow_file(&task.task.id)).unwrap();
+        let NodeDsl::AiDynamic(route) = &persisted_authoring.nodes[0] else {
+            unreachable!();
+        };
+        let AiDynamicAgentStrategy::Dynamic {
+            available_agents, ..
+        } = &route.agent_strategy
+        else {
+            unreachable!();
+        };
+        assert_eq!(available_agents[0].model, None);
+        let NodeDsl::AiDynamic(fixed) = &persisted_authoring.nodes[1] else {
+            unreachable!();
+        };
+        let AiDynamicAgentStrategy::Fixed { model, .. } = &fixed.agent_strategy else {
+            unreachable!();
+        };
+        assert_eq!(*model, None);
     }
 
     #[test]
@@ -4229,8 +4609,13 @@ mod tests {
             &PendingElicitationState {
                 elicitation_id: "elicit-001".to_string(),
                 jsonrpc_id: serde_json::json!(1),
-                message: "继续吗".to_string(),
-                requested_schema: serde_json::json!({ "type": "object", "properties": {} }),
+                request: serde_json::from_value(serde_json::json!({
+                    "mode": "form",
+                    "sessionId": "session-test",
+                    "message": "继续吗",
+                    "requestedSchema": { "type": "object", "properties": {} }
+                }))
+                .unwrap(),
                 created_at: "1Z".to_string(),
             },
         )

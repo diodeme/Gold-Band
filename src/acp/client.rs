@@ -3,8 +3,9 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, LazyLock, Mutex, mpsc::RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::debug;
 
@@ -545,6 +546,7 @@ pub struct AcpPromptRun {
     pub adapter_id: String,
     pub adapter_display_name: String,
     pub stop_reason: Option<String>,
+    pub terminal_failure: Option<AcpPromptFailure>,
     pub final_text: String,
     pub final_outputs: Vec<String>,
     pub restored: bool,
@@ -556,6 +558,102 @@ pub struct AcpPromptRun {
     pub cached_read_tokens: Option<u64>,
     pub cached_write_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpPromptFailure {
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+    pub raw: Value,
+}
+
+impl AcpPromptFailure {
+    pub fn diagnostic(&self) -> String {
+        match self.details.as_deref() {
+            Some(details) if !details.trim().is_empty() && details != self.message => {
+                format!("{}: {details}", self.message)
+            }
+            _ => self.message.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct AcpPromptLifecycle {
+    last_error: Option<AcpPromptFailure>,
+    terminal_failure: Option<AcpPromptFailure>,
+}
+
+impl AcpPromptLifecycle {
+    fn reset(&mut self) {
+        self.last_error = None;
+        self.terminal_failure = None;
+    }
+
+    fn observe_session_update(&mut self, update: &Value) {
+        if let Some(error) = update.pointer("/_meta/codex/error") {
+            let failure = codex_prompt_failure(error);
+            let is_terminal = error.get("willRetry").and_then(Value::as_bool) == Some(false);
+            self.last_error = Some(failure.clone());
+            if is_terminal {
+                self.terminal_failure = Some(failure);
+            }
+        }
+
+        let thread_status = update
+            .pointer("/_meta/codex/threadStatus/type")
+            .and_then(Value::as_str)
+            .map(normalize_stop_code);
+        if thread_status.as_deref() == Some("systemerror") {
+            let last_error = self.last_error.clone();
+            let message = last_error
+                .as_ref()
+                .map(|failure| failure.message.clone())
+                .unwrap_or_else(|| "ACP session entered systemError".to_string());
+            let details = last_error
+                .as_ref()
+                .and_then(|failure| failure.details.clone());
+            self.terminal_failure = Some(AcpPromptFailure {
+                code: "acp.session-system-error".to_string(),
+                message,
+                details,
+                raw: json!({
+                    "terminalUpdate": update,
+                    "lastError": last_error.map(|failure| failure.raw),
+                }),
+            });
+        }
+    }
+}
+
+fn codex_prompt_failure(error: &Value) -> AcpPromptFailure {
+    let message = error
+        .get("additionalDetails")
+        .and_then(Value::as_str)
+        .or_else(|| error.get("message").and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("Codex ACP reported a prompt error")
+        .to_string();
+    let details = error
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty() && *value != message)
+        .map(str::to_string);
+    let code = error
+        .get("codexErrorInfo")
+        .and_then(Value::as_object)
+        .and_then(|info| info.keys().next())
+        .map(|code| format!("codex.{code}"))
+        .unwrap_or_else(|| "codex.prompt-error".to_string());
+    AcpPromptFailure {
+        code,
+        message,
+        details,
+        raw: error.clone(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -912,6 +1010,7 @@ struct AcpRuntime<'a> {
     final_text: String,
     final_outputs: Vec<String>,
     collecting_text_output: bool,
+    prompt_lifecycle: AcpPromptLifecycle,
     session_update_phase: SessionUpdatePhase,
     provider_history_replay: ProviderHistoryReplay,
     historical_timeline_item_ids: HashSet<String>,
@@ -1158,9 +1257,12 @@ pub fn run_prompt(
         acp_session_title_refresh_enabled,
     );
     runtime.refresh_provider_freshness_best_effort(&workspace_dir);
+    let terminal_failure = runtime.prompt_lifecycle.terminal_failure.clone();
     let (status, stop_reason) = match prompt_result {
         Ok(stop_reason) => {
-            let status = if stop_reason.as_deref().is_some_and(|reason| {
+            let status = if terminal_failure.is_some() {
+                "failed"
+            } else if stop_reason.as_deref().is_some_and(|reason| {
                 matches!(
                     normalize_stop_code(reason).as_str(),
                     "cancelled" | "canceled" | "interrupted"
@@ -1227,6 +1329,7 @@ pub fn run_prompt(
         adapter_id: runtime.connection.adapter().adapter_id.clone(),
         adapter_display_name: runtime.connection.adapter().display_name.clone(),
         stop_reason,
+        terminal_failure,
         final_text: runtime.final_text.clone(),
         final_outputs: runtime.final_outputs.clone(),
         restored,
@@ -1674,6 +1777,7 @@ impl<'a> AcpRuntime<'a> {
             final_text: String::new(),
             final_outputs: Vec::new(),
             collecting_text_output: false,
+            prompt_lifecycle: AcpPromptLifecycle::default(),
             session_update_phase: SessionUpdatePhase::Live,
             provider_history_replay,
             historical_timeline_item_ids,
@@ -1727,6 +1831,7 @@ impl<'a> AcpRuntime<'a> {
             adapter_id: self.connection.adapter().adapter_id.clone(),
             adapter_display_name: self.connection.adapter().display_name.clone(),
             stop_reason: Some(stop_reason.to_string()),
+            terminal_failure: None,
             final_text: self.final_text.clone(),
             final_outputs: self.final_outputs.clone(),
             restored,
@@ -2090,10 +2195,29 @@ impl<'a> AcpRuntime<'a> {
             .session_id
             .clone()
             .ok_or_else(|| anyhow!("ACP model selection requires a session id"))?;
-        let model = model.trim();
-        if model.is_empty() {
-            return Ok(());
-        }
+        let model = match resolve_session_model(model, self.config_options.as_ref()) {
+            SessionModelResolution::Unspecified => return Ok(()),
+            SessionModelResolution::Selected(model) => model,
+            SessionModelResolution::Stale {
+                requested,
+                available,
+            } => {
+                append_diagnostic(
+                    &self.paths.diagnostics,
+                    "warn",
+                    format!(
+                        "configured ACP model `{requested}` is no longer available; using the provider default"
+                    ),
+                    Some(json!({
+                        "event": "acp_model_config_normalized",
+                        "requestedModel": requested,
+                        "availableModels": available,
+                    })),
+                )?;
+                self.model_override = None;
+                return Ok(());
+            }
+        };
         if has_model_config_option(self.config_options.as_ref()) {
             let config_id = self
                 .config_options
@@ -2112,7 +2236,7 @@ impl<'a> AcpRuntime<'a> {
                 }),
             )?;
             self.capture_session_config(&result);
-            self.set_current_model(model);
+            self.set_current_model(&model);
             return Ok(());
         }
         if self.modes.is_some() {
@@ -2124,7 +2248,7 @@ impl<'a> AcpRuntime<'a> {
                 }),
             )?;
             self.capture_session_config(&result);
-            self.set_current_model(model);
+            self.set_current_model(&model);
         }
         Ok(())
     }
@@ -2455,6 +2579,7 @@ impl<'a> AcpRuntime<'a> {
         capabilities: &Value,
         acp_session_title_refresh_enabled: bool,
     ) -> Result<Option<String>> {
+        self.prompt_lifecycle.reset();
         let session_id = self
             .session_id
             .clone()
@@ -2818,6 +2943,8 @@ impl<'a> AcpRuntime<'a> {
             return Ok(());
         }
 
+        self.prompt_lifecycle.observe_session_update(&update);
+
         // Fold raw provider samples into a stable context gauge before the event
         // enters the canonical timeline. The untouched raw frame is already in
         // acp.raw.jsonl, so transient zeroes never need to leak into UI state.
@@ -3135,16 +3262,14 @@ impl<'a> AcpRuntime<'a> {
             .get("id")
             .cloned()
             .ok_or_else(|| anyhow!("ACP elicitation request missing JSON-RPC id"))?;
-        let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
-        let message = params
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let schema = params
-            .get("requestedSchema")
+        let params = value
+            .get("params")
             .cloned()
-            .unwrap_or_else(|| json!({}));
+            .ok_or_else(|| anyhow!("ACP elicitation request missing params"))?;
+        let request = serde_json::from_value::<
+            agent_client_protocol_schema::v1::CreateElicitationRequest,
+        >(params)
+        .context("invalid ACP elicitation/create params")?;
 
         let elicitation_id = format!("elicit-{}", uuid::Uuid::new_v4().simple());
 
@@ -3154,8 +3279,7 @@ impl<'a> AcpRuntime<'a> {
             &PendingElicitationState {
                 elicitation_id: elicitation_id.clone(),
                 jsonrpc_id: rpc_id.clone(),
-                message: message.clone(),
-                requested_schema: schema.clone(),
+                request: request.clone(),
                 created_at: current_timestamp(),
             },
         )?;
@@ -3165,8 +3289,7 @@ impl<'a> AcpRuntime<'a> {
         let event = crate::acp::events::elicitation_request_event(
             self.seq,
             elicitation_id.clone(),
-            message,
-            schema.clone(),
+            &request,
         );
         self.persist_event(&event)?;
 
@@ -4435,6 +4558,41 @@ fn resolve_permission_mode(
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SessionModelResolution {
+    Unspecified,
+    Selected(String),
+    Stale {
+        requested: String,
+        available: Vec<String>,
+    },
+}
+
+fn resolve_session_model(model: &str, config_options: Option<&Value>) -> SessionModelResolution {
+    let model = model.trim();
+    if model.is_empty() {
+        return SessionModelResolution::Unspecified;
+    }
+    let available = config_options
+        .and_then(find_model_config_option)
+        .and_then(|option| option.get("options"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|option| option.get("value").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if available.is_empty() || available.iter().any(|candidate| candidate == model) {
+        return SessionModelResolution::Selected(model.to_string());
+    }
+    SessionModelResolution::Stale {
+        requested: model.to_string(),
+        available,
+    }
+}
+
 fn available_mode_ids(config_options: Option<&Value>, modes: Option<&Value>) -> Vec<String> {
     if let Some(options) = config_options
         .and_then(find_mode_config_option)
@@ -4561,24 +4719,109 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        AcpContextCompactionState, AcpRuntime, AcpRuntimePolicy, AcpUsageState,
+        AcpContextCompactionState, AcpPromptLifecycle, AcpRuntime, AcpRuntimePolicy, AcpUsageState,
         AttachedSessionReusePlan, DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptActivity, PromptBundle,
-        PromptVisibility, ProviderFreshnessBaseline, RuntimeStopProbe, SessionUpdatePhase,
-        active_context_compaction, active_timeline_streams, attached_sync_required,
-        cleanup_doctor_acp_dir_after_success, contributes_to_final_text, drain_frames_until_quiet,
-        evaluate_provider_revision, is_transport_interruption, is_unscoped_codex_diagnostic_update,
-        merge_tool_raw_input, permission_decision_timeline_event, plan_attached_session_reuse,
-        prompt_activity, register_provider_control, request_prompt_cancel, resolve_permission_mode,
-        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
-        session_config_fingerprint, session_load_params, session_new_params, session_prompt_params,
-        session_prompt_text, should_suppress_session_update,
-        take_pending_live_update_for_stream_switch, unregister_provider_control,
+        PromptVisibility, ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution,
+        SessionUpdatePhase, active_context_compaction, active_timeline_streams,
+        attached_sync_required, cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
+        drain_frames_until_quiet, evaluate_provider_revision, is_transport_interruption,
+        is_unscoped_codex_diagnostic_update, merge_tool_raw_input,
+        permission_decision_timeline_event, plan_attached_session_reuse, prompt_activity,
+        register_provider_control, request_prompt_cancel, resolve_permission_mode,
+        resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
+        runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
+        session_new_params, session_prompt_params, session_prompt_text,
+        should_suppress_session_update, take_pending_live_update_for_stream_switch,
+        unregister_provider_control,
     };
     use crate::acp::{
         connection::AcpConnectionUnavailable,
         events::{AcpTimingState, AcpUiEvent},
         permission::PermissionResponseState,
     };
+
+    #[test]
+    fn prompt_lifecycle_promotes_retry_error_when_session_becomes_system_error() {
+        let mut lifecycle = AcpPromptLifecycle::default();
+        lifecycle.observe_session_update(&json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": {
+                "codex": {
+                    "error": {
+                        "message": "Reconnecting... 5/5",
+                        "additionalDetails": "We're currently experiencing high demand, which may cause temporary errors.",
+                        "codexErrorInfo": {
+                            "responseStreamDisconnected": { "httpStatusCode": null }
+                        },
+                        "willRetry": true
+                    }
+                }
+            }
+        }));
+        assert!(lifecycle.terminal_failure.is_none());
+
+        lifecycle.observe_session_update(&json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": {
+                "codex": {
+                    "threadStatus": { "type": "systemError" }
+                }
+            }
+        }));
+
+        let failure = lifecycle.terminal_failure.unwrap();
+        assert_eq!(failure.code, "acp.session-system-error");
+        assert!(failure.message.contains("high demand"));
+        assert_eq!(failure.details.as_deref(), Some("Reconnecting... 5/5"));
+    }
+
+    #[test]
+    fn prompt_lifecycle_does_not_promote_recovered_retry_signal() {
+        let mut lifecycle = AcpPromptLifecycle::default();
+        lifecycle.observe_session_update(&json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": {
+                "codex": {
+                    "error": {
+                        "message": "Reconnecting... 1/5",
+                        "willRetry": true
+                    }
+                }
+            }
+        }));
+        lifecycle.observe_session_update(&json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": {
+                "codex": {
+                    "threadStatus": { "type": "active", "activeFlags": [] }
+                }
+            }
+        }));
+
+        assert!(lifecycle.terminal_failure.is_none());
+    }
+
+    #[test]
+    fn prompt_lifecycle_promotes_non_retryable_error_immediately() {
+        let mut lifecycle = AcpPromptLifecycle::default();
+        lifecycle.observe_session_update(&json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": {
+                "codex": {
+                    "error": {
+                        "message": "Request failed",
+                        "additionalDetails": "Provider rejected the prompt",
+                        "willRetry": false
+                    }
+                }
+            }
+        }));
+
+        let failure = lifecycle.terminal_failure.expect("terminal failure");
+        assert_eq!(failure.code, "codex.prompt-error");
+        assert_eq!(failure.message, "Provider rejected the prompt");
+        assert_eq!(failure.details.as_deref(), Some("Request failed"));
+    }
 
     #[test]
     fn external_session_sync_policy_is_agent_opt_in() {
@@ -5564,6 +5807,30 @@ mod tests {
 
         assert!(error.contains("unknown"));
         assert!(error.contains("read-only, auto"));
+    }
+
+    #[test]
+    fn stale_session_model_is_normalized_to_unspecified_before_rpc() {
+        let config_options = json!([{
+            "id": "model",
+            "category": "model",
+            "options": [
+                { "value": "gpt-5.6-sol", "name": "GPT-5.6-Sol" },
+                { "value": "gpt-5.6-terra", "name": "GPT-5.6-Terra" }
+            ]
+        }]);
+
+        assert_eq!(
+            resolve_session_model("gpt-5.4", Some(&config_options)),
+            SessionModelResolution::Stale {
+                requested: "gpt-5.4".to_string(),
+                available: vec!["gpt-5.6-sol".to_string(), "gpt-5.6-terra".to_string()],
+            }
+        );
+        assert_eq!(
+            resolve_session_model("gpt-5.6-sol", Some(&config_options)),
+            SessionModelResolution::Selected("gpt-5.6-sol".to_string())
+        );
     }
 
     #[test]

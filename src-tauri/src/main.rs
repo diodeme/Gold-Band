@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod avatar;
 mod builtin_mcp;
 mod channel;
 mod commands;
@@ -30,8 +31,9 @@ use commands::{
     mark_settings_update_seen, open_in_file_manager, pause_run, read_skill,
     remove_recent_workspace, renew_acp_session_lease, replace_auto_templates,
     respond_acp_permission, respond_elicitation, retry_run, save_auto_template,
-    save_desktop_preferences, save_metrics_settings, save_task_workflow, save_updater_settings,
-    save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
+    save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
+    save_metrics_settings, save_task_workflow, save_updater_settings, save_workflow_template,
+    search_acp_prompts, search_acp_sessions, search_tasks, select_recent_desktop_avatar,
     select_recent_workspace, send_acp_prompt, set_acp_session_config_option, set_acp_session_model,
     set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref, start_run,
     stop_active_session, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
@@ -220,6 +222,9 @@ fn run() -> anyhow::Result<()> {
             show_attachment,
             show_worker_ref,
             save_desktop_preferences,
+            save_desktop_avatar,
+            select_recent_desktop_avatar,
+            save_desktop_avatar_shape,
             save_updater_settings,
             get_metrics_settings,
             update_notification_attention,

@@ -237,6 +237,18 @@ export function saveDesktopPreferences(theme: Parameters<ReturnType<typeof getRu
   return getRuntimeApi().saveDesktopPreferences(theme, language, font, useLocalClaude, verboseLogging);
 }
 
+export function saveDesktopAvatar(input: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopAvatar']>[0]) {
+  return getRuntimeApi().saveDesktopAvatar(input);
+}
+
+export function selectRecentDesktopAvatar(kind: Parameters<ReturnType<typeof getRuntimeApi>['selectRecentDesktopAvatar']>[0], avatarId: string) {
+  return getRuntimeApi().selectRecentDesktopAvatar(kind, avatarId);
+}
+
+export function saveDesktopAvatarShape(kind: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopAvatarShape']>[0], shape: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopAvatarShape']>[1]) {
+  return getRuntimeApi().saveDesktopAvatarShape(kind, shape);
+}
+
 export function saveUpdaterSettings(overrideUrl: string | null) {
   return getRuntimeApi().saveUpdaterSettings(overrideUrl);
 }

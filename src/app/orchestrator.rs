@@ -106,6 +106,7 @@ struct AcpInvocationPromptState {
 
 const MAX_INVALID_OUTPUT_REPAIR_PROMPTS: u32 = 3;
 const MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS: u32 = 3;
+const DYNAMIC_BOOTSTRAP_NODE_ID: &str = "bootstrap";
 static DYNAMIC_COMPLETION_SCHEMA_CACHE: OnceLock<Mutex<HashMap<String, Arc<JSONSchema>>>> =
     OnceLock::new();
 static DYNAMIC_WORKTREE_GIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -439,7 +440,11 @@ fn prepare_run(
     let workflow_path = workflow_override
         .map(|path| path.to_owned())
         .unwrap_or_else(|| app.paths.workflow_file(task_id));
-    let workflow: WorkflowDsl = read_json(&workflow_path)?;
+    let mut workflow: WorkflowDsl = read_json(&workflow_path)?;
+    let model_normalizations = app.normalize_workflow_models(&mut workflow);
+    if workflow_override.is_none() && !model_normalizations.is_empty() {
+        write_json(&workflow_path, &workflow)?;
+    }
     let validated = validate_workflow_snapshot(workflow)?;
     app.validate_workflow_agents(&validated)?;
     let resolved_profiles =
@@ -555,6 +560,19 @@ fn prepare_run(
             None,
         ),
     );
+    for normalization in model_normalizations {
+        let mut event_data = run_event_data(&ctx, None, None, None, None);
+        event_data.details =
+            Some(serde_json::to_value(normalization).unwrap_or_else(|_| serde_json::json!({})));
+        append_run_event_best_effort(
+            &app.paths,
+            task_id,
+            &run.id,
+            "model_config_normalized",
+            now_rfc3339_like(),
+            event_data,
+        );
+    }
     write_progress_hint(
         &app.paths,
         task_id,
@@ -2670,7 +2688,9 @@ fn freeze_allowed_workflow_snapshots(
             .iter()
             .find(|template| template.workflow.id.trim() == workflow_id)
             .ok_or_else(|| anyhow!("allowed workflow `{workflow_id}` not found"))?;
-        let validated = validate_workflow(template.workflow.clone())?;
+        let mut workflow = template.workflow.clone();
+        app.normalize_workflow_models(&mut workflow);
+        let validated = validate_workflow(workflow)?;
         app.validate_workflow_agents(&validated)?;
         let contains_ai_dynamic = workflow_contains_ai_dynamic(&validated.raw);
         ensure!(
@@ -2830,6 +2850,44 @@ fn dynamic_model_for_provider(dynamic: &AiDynamicNode, provider: &str) -> Option
             .find(|agent_ref| agent_ref.provider == provider)
             .and_then(|agent_ref| agent_ref.model.clone()),
     }
+}
+
+fn resolve_dynamic_invocation_model(
+    dynamic: &AiDynamicNode,
+    node: &DynamicNodeState,
+    model_override: Option<String>,
+) -> Option<String> {
+    model_override
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            if node.id == DYNAMIC_BOOTSTRAP_NODE_ID {
+                return node.model.clone().or_else(|| {
+                    dynamic
+                        .bootstrap_model()
+                        .map(str::trim)
+                        .filter(|model| !model.is_empty())
+                        .map(str::to_string)
+                });
+            }
+            match node.kind {
+                DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => {
+                    dynamic_acceptance_model(dynamic)
+                        .map(ToOwned::to_owned)
+                        .or_else(|| {
+                            node.provider
+                                .as_deref()
+                                .and_then(|provider| dynamic_model_for_provider(dynamic, provider))
+                        })
+                        .or_else(|| node.model.clone())
+                }
+                _ => node
+                    .provider
+                    .as_deref()
+                    .and_then(|provider| dynamic_model_for_provider(dynamic, provider))
+                    .or_else(|| node.model.clone()),
+            }
+        })
 }
 
 fn dynamic_acceptance_model(dynamic: &AiDynamicNode) -> Option<&str> {
@@ -3716,7 +3774,7 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
     let dynamic_run_id = "dynamic-run-001".to_string();
     let bootstrap = DynamicNodeState {
         version: VERSION.to_string(),
-        id: "bootstrap".to_string(),
+        id: DYNAMIC_BOOTSTRAP_NODE_ID.to_string(),
         dynamic_run_id: dynamic_run_id.clone(),
         kind: DynamicNodeKind::Worker,
         title: "AI-DYNAMIC bootstrap".to_string(),
@@ -3726,7 +3784,7 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         pause_reason: None,
         runtime_error: None,
         group_id: None,
-        chain_id: "bootstrap".to_string(),
+        chain_id: DYNAMIC_BOOTSTRAP_NODE_ID.to_string(),
         depth: 0,
         depends_on: Vec::new(),
         workspace: WorkspacePolicy {
@@ -7936,26 +7994,7 @@ fn build_dynamic_worker_invocation(
     );
 
     let step_started_at = dynamic_invocation_build_step_begin(ctx, node, attempt_id, "model");
-    let model = model_override
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| match node.kind {
-            DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => {
-                dynamic_acceptance_model(ctx.dynamic)
-                    .map(ToOwned::to_owned)
-                    .or_else(|| {
-                        node.provider
-                            .as_deref()
-                            .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
-                    })
-                    .or_else(|| node.model.clone())
-            }
-            _ => node
-                .provider
-                .as_deref()
-                .and_then(|provider| dynamic_model_for_provider(ctx.dynamic, provider))
-                .or_else(|| node.model.clone()),
-        });
+    let model = resolve_dynamic_invocation_model(ctx.dynamic, node, model_override);
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -10613,6 +10652,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn dynamic_model_resolution_keeps_bootstrap_model_separate_from_available_agent_model() {
+        let dynamic = AiDynamicNode {
+            id: "ai-dynamic".to_string(),
+            agent_strategy: AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider: "codex-acp".to_string(),
+                bootstrap_model: Some("gpt-5.6-sol".to_string()),
+                acceptance_model: Some("gpt-5.6-sol".to_string()),
+                routing_prompt: String::new(),
+                available_agents: vec![crate::dsl::DynamicAgentRef {
+                    provider: "codex-acp".to_string(),
+                    model: Some("gpt-5.4".to_string()),
+                }],
+            },
+            permission_mode: None,
+            config_options: Default::default(),
+            allowed_profiles: Vec::new(),
+            global_goal: None,
+            control: DynamicControlDsl::default(),
+            allowed_workflows: Vec::new(),
+        };
+        let mut bootstrap = test_worktree_node(DYNAMIC_BOOTSTRAP_NODE_ID);
+        bootstrap.provider = Some("codex-acp".to_string());
+        bootstrap.model = Some("gpt-5.6-sol".to_string());
+
+        assert_eq!(
+            resolve_dynamic_invocation_model(&dynamic, &bootstrap, None).as_deref(),
+            Some("gpt-5.6-sol")
+        );
+
+        let mut worker = test_worktree_node("implementation");
+        worker.provider = Some("codex-acp".to_string());
+        worker.model = Some("gpt-5.5".to_string());
+        assert_eq!(
+            resolve_dynamic_invocation_model(&dynamic, &worker, None).as_deref(),
+            Some("gpt-5.4")
+        );
+
+        worker.kind = DynamicNodeKind::Acceptance;
+        assert_eq!(
+            resolve_dynamic_invocation_model(&dynamic, &worker, None).as_deref(),
+            Some("gpt-5.6-sol")
+        );
+    }
+
     fn test_app_with_provider_capabilities(
         capabilities: serde_json::Value,
     ) -> (tempfile::TempDir, App) {
@@ -10814,8 +10898,13 @@ mod tests {
             &PendingElicitationState {
                 elicitation_id: "elicit-001".to_string(),
                 jsonrpc_id: serde_json::json!(1),
-                message: "请选择".to_string(),
-                requested_schema: serde_json::json!({ "type": "object" }),
+                request: serde_json::from_value(serde_json::json!({
+                    "mode": "form",
+                    "sessionId": "session-test",
+                    "message": "请选择",
+                    "requestedSchema": { "type": "object", "properties": {} }
+                }))
+                .unwrap(),
                 created_at: "1Z".to_string(),
             },
         )

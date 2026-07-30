@@ -1,4 +1,7 @@
-use crate::acp::{client, events::AcpUiEvent};
+use crate::acp::{
+    client,
+    events::{self, AcpUiEvent},
+};
 use crate::artifacts::{artifact_uses_json_output, json_artifact_text_from_outputs};
 use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, managed_agent_preset};
 pub use crate::domain::SessionRef;
@@ -8,7 +11,7 @@ use crate::prompts::{
     RUNTIME_SYSTEM_EN, RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN,
     profile_template_context, prompt_by_language, render as render_template,
 };
-use crate::runtime_error::{RuntimeErrorInfo, normalize_provider_failure};
+use crate::runtime_error::{RuntimeErrorInfo, normalize_provider_runtime_failure};
 use crate::storage::active_storage_path_config;
 use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
@@ -99,16 +102,54 @@ impl McpTransportKind {
     }
 }
 
-/// Keeps only MCP server entries whose transport is supported by the target provider.
-pub fn filter_supported_mcp_servers(
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedMcpServer {
+    pub name: String,
+    pub transport: McpTransportKind,
+    pub code: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpPreparationResult {
+    pub accepted: Vec<serde_json::Value>,
+    pub skipped: Vec<SkippedMcpServer>,
+}
+
+/// Prepares the provider-specific MCP list while preserving a structured record
+/// for every server that cannot be forwarded.
+pub fn prepare_mcp_servers(
     servers: &[serde_json::Value],
     supported: &[McpTransportKind],
-) -> Vec<serde_json::Value> {
-    servers
-        .iter()
-        .filter(|s| supported.contains(&McpTransportKind::from_acp_server(s)))
-        .cloned()
-        .collect()
+) -> McpPreparationResult {
+    let mut accepted = Vec::new();
+    let mut skipped = Vec::new();
+    for server in servers {
+        let transport = McpTransportKind::from_acp_server(server);
+        if supported.contains(&transport) {
+            accepted.push(server.clone());
+        } else {
+            let name = server
+                .get("name")
+                .or_else(|| server.get("id"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unnamed")
+                .to_string();
+            skipped.push(SkippedMcpServer {
+                name,
+                transport,
+                code: "acp.mcp-transport-unsupported".to_string(),
+            });
+        }
+    }
+    McpPreparationResult { accepted, skipped }
+}
+
+fn mcp_skip_diagnostic_data(skipped: &[SkippedMcpServer]) -> serde_json::Value {
+    serde_json::json!({
+        "code": "acp.mcp-transport-unsupported",
+        "skippedServers": skipped,
+    })
 }
 
 fn default_supported_mcp_transports(provider_id: &str) -> Vec<McpTransportKind> {
@@ -331,6 +372,12 @@ pub enum ProviderRunStatus {
     Interrupted,
     WaitingForUserInput,
     PermissionRequested,
+}
+
+#[derive(Debug)]
+struct ProviderTerminalOutcome {
+    status: ProviderRunStatus,
+    runtime_error: Option<RuntimeErrorInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -827,10 +874,26 @@ impl ProviderAdapter for AcpProvider {
         live_update: Option<AcpLiveUpdate<'_>>,
         session_update: Option<AcpSessionUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
-        let mcp_servers = filter_supported_mcp_servers(
+        let mcp_preparation = prepare_mcp_servers(
             &req.mcp_servers,
             &default_supported_mcp_transports(&self.provider_id),
         );
+        if !mcp_preparation.skipped.is_empty() {
+            let paths = events::AcpAttemptPaths::from_attempt_dir(req.attempt_dir.clone());
+            if let Err(error) = events::append_diagnostic(
+                &paths.diagnostics,
+                "warning",
+                "Some MCP servers were skipped because their transport is unsupported",
+                Some(mcp_skip_diagnostic_data(&mcp_preparation.skipped)),
+            ) {
+                debug!(
+                    provider_id = %self.provider_id,
+                    skipped_count = mcp_preparation.skipped.len(),
+                    error = %error,
+                    "failed to persist unsupported MCP transport diagnostic"
+                );
+            }
+        }
         let prompt = render_prompt_bundle(&req)?;
         log_prompt_bundle(
             &prompt,
@@ -862,7 +925,7 @@ impl ProviderAdapter for AcpProvider {
             self.acp_raw_target_size_bytes,
             self.runtime_policy,
             live_update,
-            &mcp_servers,
+            &mcp_preparation.accepted,
             session_update,
             Some(client::RuntimeStopProbe {
                 run_file: req.runtime_context.run_dir.join("run.json"),
@@ -880,40 +943,24 @@ impl ProviderAdapter for AcpProvider {
                 attempt_state_file: req.runtime_context.attempt_state_file.clone(),
             }),
         )?;
-        let status = match run.stop_reason.as_deref() {
-            Some("cancelled" | "interrupted" | "max_turn_requests") => {
-                ProviderRunStatus::Interrupted
-            }
-            Some("waiting_for_user_input" | "user_input_required") => {
-                ProviderRunStatus::WaitingForUserInput
-            }
-            Some("permission_requested") => ProviderRunStatus::PermissionRequested,
-            Some("refusal" | "error") => ProviderRunStatus::Failure,
-            _ => ProviderRunStatus::Success,
-        };
-        let runtime_error = (status == ProviderRunStatus::Failure)
-            .then(|| {
-                normalize_provider_failure(
-                    run.stop_reason.as_deref(),
-                    run.final_text.clone(),
-                    Some(serde_json::json!({
-                        "adapterId": run.adapter_id,
-                        "adapterDisplayName": run.adapter_display_name,
-                        "stopReason": run.stop_reason,
-                    })),
-                )
+        let terminal = classify_acp_prompt_run(&run);
+        let result_payload = matches!(
+            terminal.status,
+            ProviderRunStatus::Success | ProviderRunStatus::Interrupted
+        )
+        .then(|| {
+            req.output_contract.as_ref().and_then(|contract| {
+                output_artifact_payload_from_run(contract, &run.final_outputs, &run.final_text)
             })
-            .flatten();
-        let result_payload = req.output_contract.as_ref().and_then(|contract| {
-            output_artifact_payload_from_run(contract, &run.final_outputs, &run.final_text)
-        });
+        })
+        .flatten();
         Ok(ProviderRunResult {
-            status,
+            status: terminal.status,
             exit_code: None,
             result_payload,
             worker_ref_seed: None,
             stream_path: None,
-            runtime_error,
+            runtime_error: terminal.runtime_error,
         })
     }
 
@@ -926,6 +973,83 @@ impl ProviderAdapter for AcpProvider {
 
     fn build_continue_command(&self, _worker_ref: &SessionRef) -> Result<Option<String>> {
         Ok(None)
+    }
+}
+
+fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcome {
+    if let Some(failure) = &run.terminal_failure {
+        return ProviderTerminalOutcome {
+            status: ProviderRunStatus::Failure,
+            runtime_error: Some(normalize_provider_runtime_failure(
+                run.stop_reason.as_deref(),
+                failure.diagnostic(),
+                Some(serde_json::json!({
+                    "adapterId": run.adapter_id,
+                    "adapterDisplayName": run.adapter_display_name,
+                    "stopReason": run.stop_reason,
+                    "terminalFailure": failure,
+                })),
+            )),
+        };
+    }
+
+    let normalized_reason = run
+        .stop_reason
+        .as_deref()
+        .map(|reason| reason.trim().to_ascii_lowercase().replace('_', "-"));
+    match normalized_reason.as_deref() {
+        Some("end-turn") => ProviderTerminalOutcome {
+            status: ProviderRunStatus::Success,
+            runtime_error: None,
+        },
+        Some("cancelled" | "canceled" | "interrupted" | "max-turn-requests" | "max-tokens") => {
+            ProviderTerminalOutcome {
+                status: ProviderRunStatus::Interrupted,
+                runtime_error: None,
+            }
+        }
+        Some("waiting-for-user-input" | "user-input-required") => ProviderTerminalOutcome {
+            status: ProviderRunStatus::WaitingForUserInput,
+            runtime_error: None,
+        },
+        Some("permission-requested") => ProviderTerminalOutcome {
+            status: ProviderRunStatus::PermissionRequested,
+            runtime_error: None,
+        },
+        Some("refusal") => ProviderTerminalOutcome {
+            status: ProviderRunStatus::Failure,
+            runtime_error: None,
+        },
+        Some("error" | "failure") => ProviderTerminalOutcome {
+            status: ProviderRunStatus::Failure,
+            runtime_error: Some(normalize_provider_runtime_failure(
+                run.stop_reason.as_deref(),
+                run.final_text.clone(),
+                Some(serde_json::json!({
+                    "adapterId": run.adapter_id,
+                    "adapterDisplayName": run.adapter_display_name,
+                    "stopReason": run.stop_reason,
+                })),
+            )),
+        },
+        unknown => {
+            let diagnostic = match unknown {
+                Some(reason) => format!("ACP returned unknown prompt stop reason `{reason}`"),
+                None => "ACP prompt response did not include a stop reason".to_string(),
+            };
+            ProviderTerminalOutcome {
+                status: ProviderRunStatus::Failure,
+                runtime_error: Some(normalize_provider_runtime_failure(
+                    run.stop_reason.as_deref(),
+                    diagnostic,
+                    Some(serde_json::json!({
+                        "adapterId": run.adapter_id,
+                        "adapterDisplayName": run.adapter_display_name,
+                        "stopReason": run.stop_reason,
+                    })),
+                )),
+            }
+        }
     }
 }
 
@@ -1581,6 +1705,8 @@ pub fn default_provider() -> Box<dyn ProviderAdapter> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp::client::AcpPromptFailure;
+    use crate::runtime_error::RecoveryMode;
     use serde_json::json;
 
     #[test]
@@ -1588,37 +1714,144 @@ mod tests {
         let stdio = json!({"name": "local", "command": "node"});
         let http = json!({"name": "api", "type": "http", "url": "https://x"});
         let sse = json!({"name": "graph", "type": "sse", "url": "https://y"});
-        assert_eq!(McpTransportKind::from_acp_server(&stdio), McpTransportKind::Stdio);
-        assert_eq!(McpTransportKind::from_acp_server(&http), McpTransportKind::Http);
-        assert_eq!(McpTransportKind::from_acp_server(&sse), McpTransportKind::Sse);
+        assert_eq!(
+            McpTransportKind::from_acp_server(&stdio),
+            McpTransportKind::Stdio
+        );
+        assert_eq!(
+            McpTransportKind::from_acp_server(&http),
+            McpTransportKind::Http
+        );
+        assert_eq!(
+            McpTransportKind::from_acp_server(&sse),
+            McpTransportKind::Sse
+        );
     }
 
     #[test]
-    fn filter_supported_mcp_servers_drops_unsupported_transports() {
+    fn mcp_preparation_keeps_supported_and_reports_skipped_transports() {
         let servers = vec![
             json!({"name": "local", "command": "node"}),
             json!({"name": "api", "type": "http", "url": "https://x"}),
             json!({"name": "graph", "type": "sse", "url": "https://y"}),
         ];
         let codex = vec![McpTransportKind::Stdio, McpTransportKind::Http];
-        let kept = filter_supported_mcp_servers(&servers, &codex);
-        assert_eq!(kept.len(), 2);
-        assert!(kept.iter().all(|s| s.get("type").and_then(|v| v.as_str()) != Some("sse")));
+        let prepared = prepare_mcp_servers(&servers, &codex);
+        assert_eq!(prepared.accepted.len(), 2);
+        assert_eq!(prepared.skipped.len(), 1);
+        assert_eq!(prepared.skipped[0].name, "graph");
+        assert_eq!(prepared.skipped[0].transport, McpTransportKind::Sse);
+        assert_eq!(prepared.skipped[0].code, "acp.mcp-transport-unsupported");
+
+        let diagnostic = mcp_skip_diagnostic_data(&prepared.skipped);
+        assert_eq!(diagnostic["code"], "acp.mcp-transport-unsupported");
+        assert_eq!(diagnostic["skippedServers"][0]["name"], "graph");
+        assert_eq!(diagnostic["skippedServers"][0]["transport"], "sse");
     }
 
     #[test]
     fn codex_acp_capabilities_exclude_sse_mcp_transport() {
         let caps = provider_capabilities("codex-acp").expect("codex-acp capabilities");
-        assert!(!caps.supported_mcp_transports.contains(&McpTransportKind::Sse));
-        assert!(caps
-            .supported_mcp_transports
-            .contains(&McpTransportKind::Stdio));
+        assert!(
+            !caps
+                .supported_mcp_transports
+                .contains(&McpTransportKind::Sse)
+        );
+        assert!(
+            caps.supported_mcp_transports
+                .contains(&McpTransportKind::Stdio)
+        );
     }
 
     #[test]
     fn non_codex_providers_keep_all_mcp_transports() {
         let caps = provider_capabilities("claude-acp").expect("claude-acp capabilities");
-        assert_eq!(caps.supported_mcp_transports, McpTransportKind::all().to_vec());
+        assert_eq!(
+            caps.supported_mcp_transports,
+            McpTransportKind::all().to_vec()
+        );
+    }
+
+    fn acp_prompt_run(
+        stop_reason: Option<&str>,
+        terminal_failure: Option<AcpPromptFailure>,
+    ) -> client::AcpPromptRun {
+        client::AcpPromptRun {
+            session_id: "session-1".to_string(),
+            adapter_id: "codex-acp".to_string(),
+            adapter_display_name: "Codex".to_string(),
+            stop_reason: stop_reason.map(str::to_string),
+            terminal_failure,
+            final_text: String::new(),
+            final_outputs: Vec::new(),
+            restored: false,
+            used_tokens: None,
+            context_window_size: None,
+            total_cost_usd: None,
+            input_tokens: None,
+            output_tokens: None,
+            cached_read_tokens: None,
+            cached_write_tokens: None,
+            total_tokens: None,
+        }
+    }
+
+    #[test]
+    fn fatal_session_error_overrides_end_turn_success_reason() {
+        let run = acp_prompt_run(
+            Some("end_turn"),
+            Some(AcpPromptFailure {
+                code: "acp.session-system-error".to_string(),
+                message:
+                    "We're currently experiencing high demand, which may cause temporary errors."
+                        .to_string(),
+                details: Some("Reconnecting... 5/5".to_string()),
+                raw: serde_json::json!({ "threadStatus": { "type": "systemError" } }),
+            }),
+        );
+
+        let outcome = classify_acp_prompt_run(&run);
+
+        assert_eq!(outcome.status, ProviderRunStatus::Failure);
+        let error = outcome
+            .runtime_error
+            .expect("fatal error must be preserved");
+        assert_eq!(error.code_str(), "provider.server-unavailable");
+        assert_eq!(error.recovery, RecoveryMode::Auto);
+    }
+
+    #[test]
+    fn end_turn_without_fatal_signal_is_success() {
+        let outcome = classify_acp_prompt_run(&acp_prompt_run(Some("end_turn"), None));
+
+        assert_eq!(outcome.status, ProviderRunStatus::Success);
+        assert!(outcome.runtime_error.is_none());
+    }
+
+    #[test]
+    fn unknown_or_missing_stop_reason_is_protocol_failure() {
+        for stop_reason in [Some("future_reason"), None] {
+            let outcome = classify_acp_prompt_run(&acp_prompt_run(stop_reason, None));
+
+            assert_eq!(outcome.status, ProviderRunStatus::Failure);
+            let error = outcome
+                .runtime_error
+                .expect("unknown terminal state must not become success");
+            assert_eq!(error.recovery, RecoveryMode::Manual);
+            assert_eq!(error.code_str(), "provider.acp-error");
+        }
+    }
+
+    #[test]
+    fn incomplete_and_interactive_stop_reasons_are_not_success() {
+        assert_eq!(
+            classify_acp_prompt_run(&acp_prompt_run(Some("max_tokens"), None)).status,
+            ProviderRunStatus::Interrupted
+        );
+        assert_eq!(
+            classify_acp_prompt_run(&acp_prompt_run(Some("permission_requested"), None)).status,
+            ProviderRunStatus::PermissionRequested
+        );
     }
 
     #[test]

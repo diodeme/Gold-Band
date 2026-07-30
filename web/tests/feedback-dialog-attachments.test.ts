@@ -15,8 +15,9 @@ const SERVICE = readFileSync(
 describe('FeedbackDialog screenshot pipeline', () => {
   it('reuses the shared useAttachmentPicker hook instead of a bespoke path', () => {
     expect(SOURCE).toContain('useAttachmentPicker');
-    expect(SOURCE).toContain('resolveAttachmentPaths');
-    expect(SOURCE).toContain('acceptMimePrefix');
+    expect(SOURCE).toContain('resolveAttachmentInputs');
+    expect(SOURCE).toContain('acceptedMimes: FEEDBACK_IMAGE_MIMES');
+    expect(SOURCE).not.toContain('resolveAttachmentPaths');
   });
 
   it('listens for paste globally via document, decoupled from the click target', () => {
@@ -26,7 +27,7 @@ describe('FeedbackDialog screenshot pipeline', () => {
     expect(SOURCE).toContain('document.addEventListener("paste"');
     expect(SOURCE).toContain('addFiles(files)');
     // The drop zone must NOT also bind onPaste (that was the conflict source).
-    const dropZoneMatch = SOURCE.match(/cursor-pointer[\s\S]*?onClick=\{[^}]*pickFiles[\s\S]*?\}>/);
+    const dropZoneMatch = SOURCE.match(/cursor-pointer[\s\S]*?onClick=\{[^}]*fileInputRef\.current\?\.click\(\)[\s\S]*?\}>/);
     expect(dropZoneMatch, 'drop zone block should be present').toBeTruthy();
     expect(dropZoneMatch![0]).not.toContain('onPaste');
     // No legacy window-level or ref-gated listeners.
@@ -39,8 +40,9 @@ describe('FeedbackDialog screenshot pipeline', () => {
     expect(SOURCE).not.toContain('asset://localhost');
     expect(SOURCE).not.toContain('pickAttachmentFiles');
     expect(SOURCE).toContain('type="file"');
-    expect(SOURCE).toContain('accept="image/*"');
+    expect(SOURCE).toContain('accept={FEEDBACK_IMAGE_MIMES.join(",")}');
     expect(SOURCE).toContain('handleFilesFromInput');
+    expect(SOURCE).toContain('fileInputRef.current?.click()');
   });
 
   it('limits screenshots to 4 images', () => {
@@ -49,14 +51,20 @@ describe('FeedbackDialog screenshot pipeline', () => {
   });
 });
 
-describe('useAttachmentPicker acceptMimePrefix', () => {
-  it('rejects items whose mime does not match the prefix', () => {
-    expect(SERVICE).toContain('acceptMimePrefix?: string');
-    expect(SERVICE).toMatch(/if \(acceptMimePrefix\) \{/);
-    expect(SERVICE).toContain('item.mime.startsWith(acceptMimePrefix)');
+describe('useAttachmentPicker feedback serialization', () => {
+  it('supports an exact MIME allowlist before the generic prefix path', () => {
+    expect(SERVICE).toContain('acceptedMimes?: string[]');
+    expect(SERVICE).toMatch(/if \(acceptedMimes\) \{/);
+    expect(SERVICE).toContain('acceptedMimes.includes(item.mime.toLowerCase())');
     const filterBlock = SERVICE.match(
-      /if \(acceptMimePrefix\) \{[\s\S]*?return true;\s*\}/,
+      /if \(acceptedMimes\) \{[\s\S]*?return true;\s*\}/,
     );
-    expect(filterBlock, 'acceptMimePrefix branch must short-circuit before allowedExts').toBeTruthy();
+    expect(filterBlock, 'acceptedMimes branch must short-circuit before allowedExts').toBeTruthy();
+  });
+
+  it('serializes File bytes and rejects path-only attachment items', () => {
+    expect(SERVICE).toContain('resolveAttachmentInputs');
+    expect(SERVICE).toContain('attachments.some((item) => !item.file)');
+    expect(SERVICE).toContain('dataBase64: await fileToBase64(item.file!)');
   });
 });

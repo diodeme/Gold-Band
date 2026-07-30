@@ -22,8 +22,9 @@ import type {
   WorkflowVm,
   ConversationRunVm,
 } from './types';
+import { createDefaultAvatarPreferences } from './lib/avatar';
 
-const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false };
+const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
 export const mockAppInfo = {
   channel: 'default',
   appName: 'Gold Band',

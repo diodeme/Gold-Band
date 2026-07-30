@@ -432,8 +432,55 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve({ ...mockContent, title: attemptId, kind: 'worker-ref' });
   },
   saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) {
-    const preferences = browserPreviewState.setPreferences({ theme, language, font, useLocalClaude, verboseLogging });
+    const current = browserPreviewState.getPreferences();
+    const preferences = browserPreviewState.setPreferences({ ...current, theme, language, font, useLocalClaude, verboseLogging });
     return Promise.resolve(preferences);
+  },
+  saveDesktopAvatar(input) {
+    const current = browserPreviewState.getPreferences();
+    const id = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `avatar-${Date.now()}`;
+    const profile = current.avatars[input.kind];
+    const recentAvatars = [
+      { id, dataUrl: `data:${input.mimeType};base64,${input.dataBase64}`, createdAt: localTimestamp() },
+      ...profile.recentAvatars.filter((avatar) => avatar.id !== id),
+    ].slice(0, 10);
+    const avatars = {
+      ...current.avatars,
+      [input.kind]: {
+        shape: input.shape,
+        selectedAvatarId: id,
+        recentAvatars,
+      },
+    };
+    browserPreviewState.setPreferences({ ...current, avatars });
+    return Promise.resolve(avatars);
+  },
+  selectRecentDesktopAvatar(kind, avatarId) {
+    const current = browserPreviewState.getPreferences();
+    const profile = current.avatars[kind];
+    const selected = profile.recentAvatars.find((avatar) => avatar.id === avatarId);
+    if (!selected) return Promise.reject({ code: 'avatar.recent-not-found', params: { avatarId } });
+    const avatars = {
+      ...current.avatars,
+      [kind]: {
+        ...profile,
+        selectedAvatarId: avatarId,
+        recentAvatars: [selected, ...profile.recentAvatars.filter((avatar) => avatar.id !== avatarId)],
+      },
+    };
+    browserPreviewState.setPreferences({ ...current, avatars });
+    return Promise.resolve(avatars);
+  },
+  saveDesktopAvatarShape(kind, shape) {
+    const current = browserPreviewState.getPreferences();
+    const avatars = {
+      ...current.avatars,
+      [kind]: { ...current.avatars[kind], shape },
+    };
+    browserPreviewState.setPreferences({ ...current, avatars });
+    return Promise.resolve(avatars);
   },
   saveUpdaterSettings(overrideUrl: string | null) {
     const current = browserPreviewState.getUpdaterSettings();

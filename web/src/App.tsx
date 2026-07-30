@@ -28,9 +28,12 @@ import {
   rerunConversationTask,
   removeRecentWorkspace,
   saveDesktopPreferences,
+  saveDesktopAvatar,
+  saveDesktopAvatarShape,
   saveUpdaterSettings,
   saveTaskWorkflow,
   selectRecentWorkspace,
+  selectRecentDesktopAvatar,
   startRun,
   unpinConversation,
   updateTaskMetadata,
@@ -111,6 +114,8 @@ import {
   type ConversationRunModesByWorkspace,
 } from '@/lib/conversation-run-mode-config';
 import { ConversationRunModePersistence } from '@/lib/conversation-run-mode-persistence';
+import { createDefaultAvatarPreferences } from '@/lib/avatar';
+import { AvatarPreferencesProvider } from '@/components/avatar/AvatarPreferencesContext';
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
 import type {
   AgentRegistryVm,
@@ -144,9 +149,12 @@ import type {
   WorkflowDsl,
   WorkflowVm,
   InterventionNavigateEventVm,
+  AvatarKind,
+  AvatarShape,
+  SaveDesktopAvatarInput,
 } from './types';
 
-const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false };
+const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
 const defaultUpdaterSettings: UpdaterSettingsVm = {
   channel: 'default',
   builtInUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
@@ -1174,6 +1182,57 @@ export function App() {
     }
   };
 
+  const applyAvatarPreferences = useCallback((avatars: PreferencesVm['avatars']) => {
+    setBootstrap((current) => current
+      ? { ...current, preferences: { ...current.preferences, avatars } }
+      : current);
+  }, []);
+
+  const onSaveAvatar = useCallback(async (input: SaveDesktopAvatarInput) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const avatars = await saveDesktopAvatar(input);
+      applyAvatarPreferences(avatars);
+      return avatars;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    } finally {
+      setBusy(false);
+    }
+  }, [applyAvatarPreferences, t]);
+
+  const onSelectRecentAvatar = useCallback(async (kind: AvatarKind, avatarId: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const avatars = await selectRecentDesktopAvatar(kind, avatarId);
+      applyAvatarPreferences(avatars);
+      return avatars;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    } finally {
+      setBusy(false);
+    }
+  }, [applyAvatarPreferences, t]);
+
+  const onSaveAvatarShape = useCallback(async (kind: AvatarKind, shape: AvatarShape) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const avatars = await saveDesktopAvatarShape(kind, shape);
+      applyAvatarPreferences(avatars);
+      return avatars;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    } finally {
+      setBusy(false);
+    }
+  }, [applyAvatarPreferences, t]);
+
   const onSaveUpdaterSettings = async (overrideUrl: string | null) => {
     setBusy(true);
     try {
@@ -1297,6 +1356,9 @@ export function App() {
           clientVersion={bootstrap?.clientVersion ?? ''}
           busy={busy}
           onSave={onSavePreferences}
+          onSaveAvatar={onSaveAvatar}
+          onSelectRecentAvatar={onSelectRecentAvatar}
+          onSaveAvatarShape={onSaveAvatarShape}
           onSaveUpdaterSettings={onSaveUpdaterSettings}
           onCheckUpdate={onCheckUpdate}
           onInstallUpdate={onInstallUpdate}
@@ -1324,6 +1386,7 @@ export function App() {
   };
 
   return (
+    <AvatarPreferencesProvider preferences={preferences.avatars}>
     <ConversationComposerDraftBoundary ref={composerDraftRef}>
     <Shell
       uiMode={uiMode}
@@ -1487,6 +1550,7 @@ export function App() {
       />
     </Shell>
     </ConversationComposerDraftBoundary>
+    </AvatarPreferencesProvider>
   );
 
   function renderConversationContent() {
@@ -1514,6 +1578,9 @@ export function App() {
             clientVersion={bootstrap?.clientVersion ?? ''}
             busy={busy}
             onSave={onSavePreferences}
+            onSaveAvatar={onSaveAvatar}
+            onSelectRecentAvatar={onSelectRecentAvatar}
+            onSaveAvatarShape={onSaveAvatarShape}
             onSaveUpdaterSettings={onSaveUpdaterSettings}
             onCheckUpdate={onCheckUpdate}
             onInstallUpdate={onInstallUpdate}

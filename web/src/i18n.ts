@@ -92,6 +92,16 @@ const resources = {
           "task-join-failed": "后台任务执行失败。",
           unexpected: "操作失败，请重试。{{message}}",
         },
+        avatar: {
+          "unsupported-image-type": "请选择 PNG、JPEG 或 WebP 图片。",
+          "invalid-image-data": "图片数据无效，请重新选择。",
+          "image-too-large": "处理后的头像文件过大，请重新裁剪。",
+          "source-image-too-large": "原图不能超过 10 MB。",
+          "crop-failed": "头像裁剪失败，请重试。",
+          "recent-not-found": "最近头像已不存在，请重新上传。",
+          "load-failed": "头像设置加载失败。",
+          "save-failed": "头像保存失败。",
+        },
         skill: {
           "already-exists": "SKILL {{skillName}} 已存在于 {{directoryPath}}。",
           "sync-conflict": "SKILL {{skillName}} 同步冲突：{{conflicts}}",
@@ -1031,8 +1041,40 @@ const resources = {
         clientVersion: "客户端版本：{{version}}",
         tabs: {
           general: "通用",
-          appearance: "外观",
+          appearance: "个性化",
           advanced: "高级",
+        },
+        avatar: {
+          title: "头像",
+          agent: {
+            title: "Agent 头像",
+            description: "展示在 Agent 回复旁。",
+          },
+          user: {
+            title: "个人头像",
+            description: "展示在你的消息旁。",
+          },
+          openMenu: "设置{{type}}",
+          recent: "使用最近头像",
+          useRecent: "使用此最近头像",
+          noRecent: "暂无最近头像",
+          upload: "上传头像",
+          shape: "头像框",
+          circle: "圆形",
+          square: "方形",
+          cropTitle: "裁剪{{type}}",
+          cropDescription: "拖动图片调整位置，并使用缩放控制取景范围。",
+          zoom: "缩放",
+          apply: "应用头像",
+          errors: {
+            fallback: "头像处理失败，请重试。",
+            avatar: {
+              "unsupported-image-type": "请选择 PNG、JPEG 或 WebP 图片。",
+              "invalid-image-data": "图片数据无效，请重新选择。",
+              "source-image-too-large": "原图不能超过 10 MB。",
+              "crop-failed": "头像裁剪失败，请重试。",
+            },
+          },
         },
         useLocalClaude: {
           label: "使用本地 Claude",
@@ -1380,6 +1422,16 @@ const resources = {
         app: {
           "task-join-failed": "Background task failed.",
           unexpected: "The operation failed. Please try again. {{message}}",
+        },
+        avatar: {
+          "unsupported-image-type": "Choose a PNG, JPEG, or WebP image.",
+          "invalid-image-data": "The image data is invalid. Choose another image.",
+          "image-too-large": "The processed avatar is too large. Crop it again.",
+          "source-image-too-large": "The source image must be 10 MB or smaller.",
+          "crop-failed": "Avatar cropping failed. Please try again.",
+          "recent-not-found": "That recent avatar is no longer available. Upload it again.",
+          "load-failed": "Avatar settings could not be loaded.",
+          "save-failed": "Avatar could not be saved.",
         },
         skill: {
           "already-exists": "SKILL {{skillName}} already exists at {{directoryPath}}.",
@@ -2363,8 +2415,40 @@ const resources = {
         clientVersion: "Client version: {{version}}",
         tabs: {
           general: "General",
-          appearance: "Appearance",
+          appearance: "Personalization",
           advanced: "Advanced",
+        },
+        avatar: {
+          title: "Avatars",
+          agent: {
+            title: "Agent avatar",
+            description: "Shown beside Agent responses.",
+          },
+          user: {
+            title: "Personal avatar",
+            description: "Shown beside your messages.",
+          },
+          openMenu: "Set {{type}}",
+          recent: "Use a recent avatar",
+          useRecent: "Use this recent avatar",
+          noRecent: "No recent avatars",
+          upload: "Upload avatar",
+          shape: "Avatar frame",
+          circle: "Circle",
+          square: "Square",
+          cropTitle: "Crop {{type}}",
+          cropDescription: "Drag the image to position it and use zoom to adjust the framing.",
+          zoom: "Zoom",
+          apply: "Apply avatar",
+          errors: {
+            fallback: "Avatar processing failed. Please try again.",
+            avatar: {
+              "unsupported-image-type": "Choose a PNG, JPEG, or WebP image.",
+              "invalid-image-data": "The image data is invalid. Choose another image.",
+              "source-image-too-large": "The source image must be 10 MB or smaller.",
+              "crop-failed": "Avatar cropping failed. Please try again.",
+            },
+          },
         },
         useLocalClaude: {
           label: "Use local Claude",

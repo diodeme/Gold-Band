@@ -33,6 +33,8 @@ use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::avatar::{AvatarPreferencesVm, load_avatar_preferences};
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreferencesVm {
@@ -41,6 +43,7 @@ pub struct PreferencesVm {
     pub font: DesktopFontPreference,
     pub use_local_claude: bool,
     pub verbose_logging: bool,
+    pub avatars: AvatarPreferencesVm,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -959,6 +962,7 @@ pub fn preferences_vm(
     font: DesktopFontPreference,
     use_local_claude: bool,
     log_level: RuntimeLogLevel,
+    avatars: AvatarPreferencesVm,
 ) -> PreferencesVm {
     PreferencesVm {
         theme,
@@ -966,6 +970,7 @@ pub fn preferences_vm(
         font,
         use_local_claude,
         verbose_logging: matches!(log_level, RuntimeLogLevel::Debug | RuntimeLogLevel::Trace),
+        avatars,
     }
 }
 
@@ -1028,6 +1033,7 @@ pub fn bootstrap_vm(
             app.config.desktop_font.clone(),
             app.config.use_local_claude,
             app.config.log_level,
+            load_avatar_preferences(&app.paths.user_gold_band_dir()).unwrap_or_default(),
         ),
         updater_settings: updater_settings(&app.config),
         metrics_settings: metrics_settings(&app.config),

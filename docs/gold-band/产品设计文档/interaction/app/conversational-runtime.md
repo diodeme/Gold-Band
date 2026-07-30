@@ -43,6 +43,13 @@
 - 整体高度收敛优先通过两行共同压缩上下留白实现，不通过单独挤压第二行的行盒来制造紧凑感
 - 继续收窄时优先轻压第一行的上下留白，并缩短两行之间的垂直缝；第二行文字本身保持稳定，避免 metadata 层被压得过碎
 
+### 流式重渲染下的组件稳定性
+
+- 会话消息的实时 flush 可以触发父级连续重渲染；顶部标题、Tooltip、菜单和按钮等静态交互组件必须在父级高频更新时保持 ref identity 与内部状态收敛，不能由 ref detach/attach 反向驱动无限状态更新。
+- shadcn copy-in 组件统一从项目选定的 `radix-ui` 聚合包消费 primitive；不得同时保留没有源码消费者的 `@radix-ui/react-*` 直依赖，也不得让同一种 Slot/Tooltip primitive 在 lockfile 中由多套直依赖版本共同拥有。
+- Radix 升级必须保留 shadcn copy-in 层的可定制代码、键盘交互、ARIA 和 focus 管理，不通过删除 Tooltip、移除 `asChild` 或增加特定流式条件分支规避组件生命周期问题。
+- 回归验收必须使用真实 DOM 挂载 Tooltip trigger，在 trigger 打开后连续更新父级输入，确认触发器仍挂载且不会产生 `Maximum update depth exceeded`。
+
 ## 顶部操作栏
 
 ### 重跑按钮

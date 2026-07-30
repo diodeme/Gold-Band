@@ -667,6 +667,7 @@ export function ContextManagementPage() {
                   }}
                   onEdit={s.managed ? undefined : () => { setMcpEditTarget(s); setMcpJsonContent(mcpServerToJson(s)); setMcpTransportTab(s.transport as 'stdio' | 'http' | 'sse'); setMcpSheetOpen(true); }}
                   onDelete={s.managed ? undefined : () => setMcpDeleteTarget(s)}
+                  agentCompatLoading={!agentRegistry}
                   agentCompatibility={(agentRegistry?.agents ?? []).map((a) => ({
                     agentType: a.agentType,
                     label: a.displayName,

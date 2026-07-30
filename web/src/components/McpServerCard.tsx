@@ -72,6 +72,8 @@ interface McpServerCardProps {
   onDiagnoseAgent?: (agentType: string) => void;
   /** 正在诊断的 agentType（未知态点击后显示 loading） */
   diagnosingAgentType?: string | null;
+  /** agentRegistry 尚未就绪；此时若无兼容性数据，显示「检测中」占位 */
+  agentCompatLoading?: boolean;
 }
 
 export function McpServerCard({
@@ -85,6 +87,7 @@ export function McpServerCard({
   onEdit,
   onDelete,
   agentCompatibility,
+  agentCompatLoading,
   onDiagnoseAgent,
   diagnosingAgentType,
 }: McpServerCardProps) {
@@ -196,6 +199,11 @@ export function McpServerCard({
                   </TooltipProvider>
                 );
               })}
+            </div>
+          ) : agentCompatLoading ? (
+            <div className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
+              <Loader2 className="size-3 animate-spin" />
+              <span>{t('contextManagement.mcp.compatLoading', '检测 Agent 兼容性…')}</span>
             </div>
           ) : null}
         </div>

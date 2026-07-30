@@ -784,7 +784,8 @@ attempt-001/
 ## 2026-07-30：PR #81 合并修复与反馈安全边界收敛
 
 - 合并策略：保留单一 PR 与原分支，合并最新 main 后同时保留反馈渠道和 main 的 avatar、ACP elicitation、terminal failure 等能力，不拆分提交组。
-- 反馈信任边界：破坏式删除 `sessionWorkspace` / `screenshotPaths` command 契约，改为 `projectId + taskId` 后端解析和截图 File bytes；task id、canonical root、逐文件路径与 symlink 规则统一校验。
+- 反馈信任边界：破坏式删除 `sessionWorkspace` / `screenshotPaths` command 契约，改为 `projectId + taskId` 后端解析和截图 File bytes；task id、canonical root、逐文件路径与 symlink 规则统一校验。task id 的路径分隔符校验显式覆盖 `/` 与 `\\`，不依赖 Windows/Linux 的 `Path` 解析差异。
+- 工作空间状态清理：移除 workspace 时以请求 ID、持久化 ID、路径重算 ID 组成身份别名集合，统一删除 run mode、pin 与 last workspace 引用，固化跨平台大小写差异下的回归测试。
 - 资源生命周期：使用 image/walkdir/tempfile/zip/ReaderStream；截图验证后统一重编码 PNG，任务 ZIP 写临时文件并流式上传；统一限制描述、截图、归档未压缩/压缩/文件数、日志和总请求大小。
 - 渠道能力：`feedbackEnabled` 从 channel JSON 编译到 `AppInfoVm`，前端只透传 boolean，后端二次门控；不再硬编码 `channel === wb`。
 - 错误协议：补齐 disabled、session-not-found、attachment-invalid、payload-too-large 等结构化错误码；网络原始错误只写 metrics.log。

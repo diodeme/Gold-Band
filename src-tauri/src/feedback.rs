@@ -399,6 +399,8 @@ fn validate_task_id(task_id: &str) -> CommandResult<()> {
         matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
     if task_id.trim().is_empty()
         || task_id.len() > 128
+        || task_id.contains('/')
+        || task_id.contains('\\')
         || Path::new(task_id).is_absolute()
         || !single_normal
     {

@@ -276,6 +276,10 @@ export function getMetricsSettings() {
 export function saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) {
   return getRuntimeApi().saveMetricsSettings(enabled, metricsBaseUrl, apiKey);
 }
+
+export function recordActivity() {
+  return getRuntimeApi().recordActivity();
+}
 // ── Conversation UI ──
 export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
   return getRuntimeApi().saveDesktopUiMode(mode);

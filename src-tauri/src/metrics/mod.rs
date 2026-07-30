@@ -1,7 +1,9 @@
+﻿pub mod heartbeat;
+pub mod identity;
+
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::time::Duration;
 
 use camino::Utf8PathBuf;
 use gold_band::app::RuntimeLifecycleEvent;
@@ -14,7 +16,7 @@ use crate::{channel::current_channel_config, state::DesktopState};
 
 /// Cached log path — resolved once, avoids env-var lookup + create_dir_all on every log line.
 static METRICS_LOG_PATH: OnceLock<Option<String>> = OnceLock::new();
-const HEARTBEAT_ENDPOINT_PATH: &str = "/api/client-report/heartbeat";
+pub(crate) const HEARTBEAT_ENDPOINT_PATH: &str = "/api/client-report/heartbeat";
 const NODE_METRICS_ENDPOINT_PATH: &str = "/api/client-report/metrics/batch";
 
 fn metrics_log_path() -> Option<&'static str> {
@@ -144,18 +146,7 @@ pub fn metrics_settings(config: &RuntimeConfig) -> MetricsSettingsVm {
     let node_metrics_endpoint = metrics_base_url
         .as_deref()
         .and_then(|base_url| endpoint_from_base_url(base_url, NODE_METRICS_ENDPOINT_PATH));
-    let api_key = config
-        .desktop_metrics_api_key
-        .clone()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            let k = channel_config.metrics_api_key;
-            if k.is_empty() {
-                None
-            } else {
-                Some(k.to_string())
-            }
-        });
+    let api_key = get_api_key(config);
     MetricsSettingsVm {
         enabled: enabled && metrics_base_url.is_some(),
         toggle_locked: channel_config.metrics_toggle_locked,
@@ -166,79 +157,19 @@ pub fn metrics_settings(config: &RuntimeConfig) -> MetricsSettingsVm {
     }
 }
 
-// ── Heartbeat ────────────────────────────────────────────────────────────────
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HeartbeatPayload {
-    user_id: String,
-    workspace: String,
-    client_version: String,
-    reported_at: String,
-}
-
-async fn send_heartbeat(endpoint: &str, api_key: &str, workspace: &str, version: &str) {
-    let user_id = get_system_username();
-    let reported_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-    let payload = HeartbeatPayload {
-        user_id,
-        workspace: workspace.to_string(),
-        client_version: version.to_string(),
-        reported_at,
-    };
-    let body_str = serde_json::to_string(&payload).unwrap_or_default();
-    metrics_log(&format!("[heartbeat] POST {} body: {}", endpoint, body_str));
-    let client = reqwest::Client::new();
-    let result = client
-        .post(endpoint)
-        .header("X-Maling-Report-Key", api_key)
-        .header("Content-Type", "application/json;charset=UTF-8")
-        .json(&payload)
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await;
-    match result {
-        Ok(resp) => {
-            metrics_log(&format!("[heartbeat] response status={}", resp.status()));
-        }
-        Err(err) => {
-            metrics_log(&format!("[heartbeat] FAILED (ignored): {}", err));
-        }
+/// Build a `HeartbeatSettings` snapshot from the runtime config.
+pub(crate) fn heartbeat_settings(config: &RuntimeConfig) -> heartbeat::HeartbeatSettings {
+    let vm = metrics_settings(config);
+    let channel = current_channel_config();
+    heartbeat::HeartbeatSettings {
+        enabled: vm.enabled && heartbeat_channel_enabled(channel.channel),
+        endpoint: vm.heartbeat_endpoint,
+        api_key: get_api_key(config),
     }
 }
 
-pub(crate) fn get_system_username() -> String {
-    std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .unwrap_or_else(|_| "unknown".to_string())
-}
-
-const HEARTBEAT_INTERVAL_SECS: u64 = 900; // 15 minutes
-
-pub fn start_heartbeat_polling<R: Runtime>(app: AppHandle<R>) {
-    tauri::async_runtime::spawn(async move {
-        loop {
-            if let Some(state) = app.try_state::<DesktopState>() {
-                if let Ok(ctx) = state.context() {
-                    let settings = metrics_settings(&ctx.config);
-                    if settings.enabled {
-                        if let Some(endpoint) = &settings.heartbeat_endpoint {
-                            if let Some(api_key) = get_api_key(&ctx.config) {
-                                let workspace = ctx.repo_root.to_string();
-                                let version = env!("CARGO_PKG_VERSION").to_string();
-                                metrics_log(&format!(
-                                    "[heartbeat] timer fired, sending to {}",
-                                    endpoint
-                                ));
-                                send_heartbeat(endpoint, &api_key, &workspace, &version).await;
-                            }
-                        }
-                    }
-                }
-            }
-            tokio::time::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).await;
-        }
-    });
+fn heartbeat_channel_enabled(channel: &str) -> bool {
+    channel == "wb"
 }
 
 pub(crate) fn get_api_key(config: &RuntimeConfig) -> Option<String> {
@@ -256,6 +187,14 @@ pub(crate) fn get_api_key(config: &RuntimeConfig) -> Option<String> {
             }
         })
 }
+
+/// Resolve the current OS username for reporting (used by feedback and other shared callers).
+pub(crate) fn get_system_username() -> String {
+    use identity::UserIdProvider;
+    WhoamiUserIdProvider.username().unwrap_or_default()
+}
+
+use identity::WhoamiUserIdProvider;
 
 // ── Node Metrics ─────────────────────────────────────────────────────────────
 
@@ -304,7 +243,7 @@ pub async fn send_node_metrics_batch(endpoint: &str, api_key: &str, batch: NodeM
         .header("X-Maling-Report-Key", api_key)
         .header("Content-Type", "application/json;charset=UTF-8")
         .json(&batch)
-        .timeout(Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(10))
         .send()
         .await;
     match result {
@@ -639,7 +578,7 @@ pub fn create_metrics_subscriber<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
-    use super::{metrics_settings, normalize_metrics_base_url};
+    use super::{heartbeat_channel_enabled, metrics_settings, normalize_metrics_base_url};
     use gold_band::config::RuntimeConfig;
 
     #[test]
@@ -683,5 +622,12 @@ mod tests {
             settings.node_metrics_endpoint.as_deref(),
             Some("http://metrics.example.com/api/client-report/metrics/batch")
         );
+    }
+
+    #[test]
+    fn heartbeat_is_restricted_to_wb_channel() {
+        assert!(heartbeat_channel_enabled("wb"));
+        assert!(!heartbeat_channel_enabled("default"));
+        assert!(!heartbeat_channel_enabled("enterprise"));
     }
 }

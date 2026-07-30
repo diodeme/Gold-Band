@@ -767,3 +767,12 @@ attempt-001/
 
 - 仅 `wb` 渠道在顶栏显示「帮助」按钮；复用启动信息中的 `appInfo.channel` 贯穿 Shell 到 AppTitleBar，其他渠道及启动信息未就绪时不渲染入口。
 - Web 回归测试分别固化 `wb` 可见与 `default` 不可见，避免后续渠道配置与 UI 能力再次脱节。
+
+## 2026-07-30：WB 心跳上报状态机修复
+
+- heartbeat 仅在 `wb` 编译渠道启用，default/其他渠道在 Rust 配置层强制关闭。
+- appStarted 使用进程级幂等请求；配置变化只更新 endpoint/API Key，并通过
+  generation 取消旧延迟重试，不更换 heartbeatId。
+- 仅成功解析服务端成功 envelope 的 2xx 视为交付，畸形 2xx 进入有限重试。
+- pointer/keyboard/focus 与 Direct、Workflow、AUTO、继续输入命令统一投影为
+  activity，Rust 层负责 15 分钟节流和 1 分钟失败退避。

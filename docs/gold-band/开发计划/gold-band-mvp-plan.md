@@ -789,6 +789,6 @@ attempt-001/
 - 资源生命周期：使用 image/walkdir/tempfile/zip/ReaderStream；截图验证后统一重编码 PNG，任务 ZIP 写临时文件并流式上传；统一限制描述、截图、归档未压缩/压缩/文件数、日志和总请求大小。
 - 渠道能力：`feedbackEnabled` 从 channel JSON 编译到 `AppInfoVm`，前端只透传 boolean，后端二次门控；不再硬编码 `channel === wb`。
 - 错误协议：补齐 disabled、session-not-found、attachment-invalid、payload-too-large 等结构化错误码；网络原始错误只写 metrics.log。
-- ACP MCP：provider 对不支持 transport 生成 accepted/skipped 结果，并将 skipped server 的结构化 warning 写入 attempt diagnostics，不再静默过滤。
+- MCP 范围收口：transport、Streamable HTTP 和 per-Agent 兼容性由独立 MCP 方案统一维护；本次删除 provider 层按 provider ID 硬编码 transport、预过滤 server 和 attempt warning 的重复实现，避免与 MCP 管理域形成双重事实源。
 - 配置规范化：stale Agent config option 使用纯函数清理，validate 不再 mutation 输入；Direct/AUTO 提交和能力刷新使用规范化结果。
 - 回归要求：Rust workspace、桌面 crate、Web 全量测试、生产构建、default/wb 渠道编译与 wb UI 实际验证全部通过后才允许推送原 PR 分支。

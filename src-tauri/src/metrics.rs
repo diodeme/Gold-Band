@@ -40,7 +40,7 @@ fn metrics_log_path() -> Option<&'static str> {
 
 /// Write a metrics log line to the application data directory.
 /// On Windows this is `%LOCALAPPDATA%\{app_key}\metrics.log`.
-fn metrics_log(msg: &str) {
+pub(crate) fn metrics_log(msg: &str) {
     eprintln!("{}", msg);
     let Some(log_path) = metrics_log_path() else {
         return;
@@ -113,7 +113,7 @@ pub fn normalize_metrics_base_url(raw: &str) -> Option<String> {
     Some(normalized)
 }
 
-fn metrics_base_url(config: &RuntimeConfig) -> Option<String> {
+pub(crate) fn metrics_base_url(config: &RuntimeConfig) -> Option<String> {
     let channel_config = current_channel_config();
     config
         .desktop_metrics_base_url
@@ -122,7 +122,7 @@ fn metrics_base_url(config: &RuntimeConfig) -> Option<String> {
         .or_else(|| normalize_metrics_base_url(channel_config.metrics_base_url))
 }
 
-fn endpoint_from_base_url(base_url: &str, path: &str) -> Option<String> {
+pub(crate) fn endpoint_from_base_url(base_url: &str, path: &str) -> Option<String> {
     normalize_metrics_base_url(base_url)
         .map(|base| format!("{}{}", base.trim_end_matches('/'), path))
 }
@@ -207,7 +207,7 @@ async fn send_heartbeat(endpoint: &str, api_key: &str, workspace: &str, version:
     }
 }
 
-fn get_system_username() -> String {
+pub(crate) fn get_system_username() -> String {
     std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
         .unwrap_or_else(|_| "unknown".to_string())
@@ -241,7 +241,7 @@ pub fn start_heartbeat_polling<R: Runtime>(app: AppHandle<R>) {
     });
 }
 
-fn get_api_key(config: &RuntimeConfig) -> Option<String> {
+pub(crate) fn get_api_key(config: &RuntimeConfig) -> Option<String> {
     let channel_config = current_channel_config();
     config
         .desktop_metrics_api_key

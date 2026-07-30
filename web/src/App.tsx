@@ -185,6 +185,7 @@ const defaultUpdateBadges: UpdateBadgeStateVm = {
 };
 const defaultAppInfo: AppInfoVm = {
   channel: 'default',
+  feedbackEnabled: false,
   appName: 'Gold Band',
   appKey: 'gold-band',
   configDirName: '.gold-band',
@@ -1400,6 +1401,7 @@ export function App() {
       conversationSidebar={conversationSidebar}
       activeWorkspaceId={sidebarFocusWorkspaceId}
       appName={appInfo.appName}
+      feedbackEnabled={appInfo.feedbackEnabled}
       platform={bootstrap?.platform}
       windowFrameStyle={bootstrap?.windowChrome.frameStyle}
       repoRoot={bootstrap?.repoRoot}

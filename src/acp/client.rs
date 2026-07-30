@@ -1217,7 +1217,16 @@ pub fn run_prompt(
             runtime.shutdown();
             return Ok(run);
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            let _ = append_diagnostic(
+                &runtime.paths.diagnostics,
+                "error",
+                format!("ACP session setup failed: {error}"),
+                None,
+            );
+            runtime.shutdown();
+            return Err(error);
+        }
     };
     let session_id = runtime
         .session_id

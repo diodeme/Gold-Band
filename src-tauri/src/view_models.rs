@@ -91,6 +91,7 @@ pub struct AppConfigVm {
 #[serde(rename_all = "camelCase")]
 pub struct AppInfoVm {
     pub channel: String,
+    pub feedback_enabled: bool,
     pub app_name: String,
     pub app_key: String,
     pub config_dir_name: String,
@@ -1048,6 +1049,7 @@ pub fn bootstrap_vm(
         window_chrome: desktop_window_chrome_vm(),
         app_info: AppInfoVm {
             channel: channel_config.channel.to_string(),
+            feedback_enabled: channel_config.feedback_enabled,
             app_name: channel_config.app_name.to_string(),
             app_key: channel_config.app_key.to_string(),
             config_dir_name: channel_config.config_dir_name.to_string(),
@@ -5759,7 +5761,12 @@ fn insert_latest_permission_event(
     let request_id = permission_request_id_from_event(event);
     let should_replace = latest_permission_events
         .get(&request_id)
-        .map(|current| event.seq >= current.seq)
+        .map(|current| {
+            event.seq > current.seq
+                || (event.seq == current.seq
+                    && parse_epoch_timestamp(&event.timestamp).unwrap_or_default()
+                        >= parse_epoch_timestamp(&current.timestamp).unwrap_or_default())
+        })
         .unwrap_or(true);
     if should_replace {
         latest_permission_events.insert(request_id, event.clone());

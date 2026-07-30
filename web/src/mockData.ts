@@ -27,6 +27,7 @@ import { createDefaultAvatarPreferences } from './lib/avatar';
 const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
 export const mockAppInfo = {
   channel: 'default',
+  feedbackEnabled: false,
   appName: 'Gold Band',
   appKey: 'gold-band',
   configDirName: '.gold-band',

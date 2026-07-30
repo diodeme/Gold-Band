@@ -14,6 +14,7 @@
   "bundleTargets": ["nsis"],
   "releaseBaseUrl": "http://maling.weoa.com/api/file/download",
   "metricsEnabled": true,
+  "feedbackEnabled": true,
   "metricsToggleLocked": true,
   "metricsBaseUrl": "http://maling.weoa.com",
   "metricsApiKey": "",

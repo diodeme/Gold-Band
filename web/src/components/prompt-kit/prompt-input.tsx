@@ -36,6 +36,28 @@ function usePromptInput() {
   return useContext(PromptInputContext)
 }
 
+const PROMPT_INPUT_INTERACTIVE_SELECTOR = [
+  "button",
+  "a[href]",
+  "input",
+  "textarea",
+  "select",
+  '[role="button"]',
+  '[role="combobox"]',
+  '[role="menuitem"]',
+  '[contenteditable="true"]',
+  "[data-prompt-input-interactive]",
+].join(",")
+
+export function shouldFocusPromptInputTextarea(target: unknown) {
+  if (!target || typeof target !== "object") return true
+
+  const closest = (target as { closest?: (selector: string) => unknown }).closest
+  if (typeof closest !== "function") return true
+
+  return !closest.call(target, PROMPT_INPUT_INTERACTIVE_SELECTOR)
+}
+
 export type PromptInputProps = {
   isLoading?: boolean
   value?: string
@@ -68,7 +90,9 @@ function PromptInput({
   }
 
   const handleClick: React.MouseEventHandler<HTMLDivElement> = (e) => {
-    if (!disabled) textareaRef.current?.focus()
+    if (!disabled && shouldFocusPromptInputTextarea(e.target)) {
+      textareaRef.current?.focus()
+    }
     onClick?.(e)
   }
 
@@ -111,6 +135,7 @@ export type PromptInputTextareaProps = {
 
 function PromptInputTextarea({
   className,
+  ref: externalRef,
   onKeyDown,
   disableAutosize = false,
   textareaDisabled,
@@ -142,6 +167,11 @@ function PromptInputTextarea({
 
   const handleRef = (el: HTMLTextAreaElement | null) => {
     textareaRef.current = el
+    if (typeof externalRef === "function") {
+      externalRef(el)
+    } else if (externalRef) {
+      externalRef.current = el
+    }
     adjustHeight(el)
   }
 

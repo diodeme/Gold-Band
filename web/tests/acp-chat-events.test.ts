@@ -3,6 +3,7 @@ import {
   buildAcpTimeline,
   calculateSessionElapsedSeconds,
   clearPendingOptimisticPromptsAfterStop,
+  contextCompactionUsageBefore,
   createLiveAcpSessionShell,
   createVisibleAcpSession,
   latestLiveSessionTimingFromEvents,
@@ -215,6 +216,43 @@ describe('ACP chat event handling', () => {
     ];
 
     expect(pendingElicitationFromEvents(events, new Map())?.elicitationId).toBe('elicit-2');
+  });
+
+  it('recovers a pending card from the full typed elicitation request after refresh', () => {
+    const message = 'Round 11 | 歧义：23.5%\n\n管理端 API 与菜单的权限标识如何设计？';
+    const requestedSchema = {
+      type: 'object' as const,
+      properties: {
+        question_0: {
+          type: 'string' as const,
+          title: '管理端权限标识',
+          oneOf: [{ const: 'admin-only', title: 'admin-only' }],
+        },
+      },
+    };
+    const events = [
+      event({
+        id: 'elicit-full-request',
+        seq: 10,
+        kind: 'elicitationRequest',
+        status: 'pending',
+        content: message,
+        raw: {
+          mode: 'form',
+          sessionId: 'session-1',
+          toolCallId: 'call-1',
+          message,
+          requestedSchema,
+          _meta: { source: 'claude-agent-acp' },
+        },
+      }),
+    ];
+
+    expect(pendingElicitationFromEvents(events, new Map())).toEqual({
+      elicitationId: 'elicit-full-request',
+      message,
+      requestedSchema,
+    });
   });
 
   it('does not resurface older pending elicitation requests after a newer one was answered', () => {
@@ -1162,6 +1200,79 @@ describe('ACP chat event handling', () => {
     expect(merged[0]).toMatchObject({
       seq: 10,
       content: '我先建立验收清单并读取当前节点可见的报告文件。',
+    });
+  });
+
+  it('keeps context compaction as one typed timeline item across lifecycle revisions', () => {
+    const started = event({
+      id: 'context-compaction-10',
+      seq: 10,
+      kind: 'contextCompaction',
+      status: 'running',
+      startedSeq: 10,
+      startedAt: '100Z',
+      raw: {
+        contextCompaction: {
+          phase: 'started',
+          contextUsedBefore: 169_052,
+          contextSize: 200_000,
+        },
+      },
+    });
+    const completed = event({
+      id: 'context-compaction-10',
+      seq: 20,
+      kind: 'contextCompaction',
+      status: 'completed',
+      startedSeq: 10,
+      endedSeq: 20,
+      startedAt: '100Z',
+      endedAt: '420Z',
+      raw: {
+        contextCompaction: {
+          phase: 'completed',
+          contextUsedBefore: 169_052,
+          contextSize: 200_000,
+          contextUsedAfter: 23_825,
+        },
+      },
+    });
+
+    const timeline = buildAcpTimeline(mergeAcpEvents([started], [completed]));
+
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]).toMatchObject({
+      id: 'context-compaction-10',
+      kind: 'contextCompaction',
+      status: 'completed',
+      startedSeq: 10,
+      endedSeq: 20,
+      startedAt: '100Z',
+      endedAt: '420Z',
+    });
+    expect(contextCompactionUsageBefore(timeline[0])).toEqual({
+      used: '169.1K',
+      size: '200.0K',
+    });
+  });
+
+  it('does not expose the adapter-derived post-compaction usage in the UI display contract', () => {
+    const completed = event({
+      kind: 'contextCompaction',
+      status: 'completed',
+      raw: {
+        contextCompaction: {
+          phase: 'completed',
+          contextUsedBefore: 47_583,
+          contextSize: 1_000_000,
+          contextUsedAfter: 41_462,
+        },
+      },
+    });
+
+    expect(contextCompactionUsageBefore(completed)).toEqual({
+      used: '47.6K',
+      size: '1.0M',
     });
   });
 

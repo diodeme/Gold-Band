@@ -139,23 +139,15 @@ export function validateAutoConfig(
     if (availableAgents.length === 0) {
       issues.push(t('runMode.validationDynamicAvailableAgentsRequired'));
     }
-    const hasRoutingPrompt = Boolean(config?.routingPrompt?.trim());
     const seen = new Set<string>();
     for (const item of availableAgents) {
       const provider = item.provider.trim();
       if (seen.has(provider)) issues.push(t('runMode.validationDynamicAgentDuplicated', { agent: provider }));
       seen.add(provider);
       requireReadyAgent(provider, t('workflowEditor.dynamicAvailableAgents'));
-      if (!hasRoutingPrompt && !item.model?.trim()) {
-        issues.push(t('runMode.validationDynamicAgentModelRequiredWithoutRouting', { agent: provider }));
-      }
     }
   } else {
     requireReadyAgent(config?.agentType, t('runMode.agent'));
-    const agent = config?.agentType ? agentById.get(config.agentType) : undefined;
-    if (agent && !supportsConfigOptionOverrides(agent, config?.configOptions)) {
-      issues.push(t('conversation.validation.config.not-found'));
-    }
   }
 
   const selectedWorkflowIds = config?.allowedWorkflows?.map((item) => item.workflowId.trim()).filter(Boolean) ?? [];
@@ -215,18 +207,27 @@ export function validateDirectConfig(
   if (config?.permissionMode && !(agent.supportedModes ?? []).some((mode) => mode.id === config.permissionMode)) {
     issues.push(t('conversation.validation.permission.not-found'));
   }
-  if (!supportsConfigOptionOverrides(agent, config?.configOptions)) {
-    issues.push(t('conversation.validation.config.not-found'));
-  }
   return issues;
 }
 
-function supportsConfigOptionOverrides(
+/**
+ * Produces a valid override set without mutating persisted or React-owned
+ * objects. Agent upgrades may remove options or values; those stale entries are
+ * cleanup data, not validation failures.
+ */
+export function normalizeConfigOptionOverrides(
   agent: ManagedAgentVm,
   overrides: Record<string, string> | null | undefined,
-) {
-  return Object.entries(overrides ?? {}).every(([optionId, value]) => {
+): { configOptions: Record<string, string>; removedOptionIds: string[] } {
+  const configOptions: Record<string, string> = {};
+  const removedOptionIds: string[] = [];
+  for (const [optionId, value] of Object.entries(overrides ?? {})) {
     const option = agent.configOptions?.find((candidate) => candidate.id === optionId);
-    return option?.options.some((candidate) => candidate.value === value) ?? false;
-  });
+    if (option?.options.some((candidate) => candidate.value === value)) {
+      configOptions[optionId] = value;
+    } else {
+      removedOptionIds.push(optionId);
+    }
+  }
+  return { configOptions, removedOptionIds };
 }

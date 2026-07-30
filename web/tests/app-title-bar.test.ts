@@ -12,6 +12,25 @@ vi.mock('react-i18next', () => ({
 }));
 
 describe('AppTitleBar', () => {
+  it('shows Help only when the channel capability is enabled', () => {
+    const enabledHtml = renderToStaticMarkup(createElement(AppTitleBar, {
+      appName: 'MALING',
+      feedbackEnabled: true,
+      platform: 'windows',
+      sidebarCollapsed: false,
+      onToggleSidebar: () => {},
+    }));
+    const disabledHtml = renderToStaticMarkup(createElement(AppTitleBar, {
+      appName: 'Gold Band',
+      feedbackEnabled: false,
+      platform: 'windows',
+      sidebarCollapsed: false,
+      onToggleSidebar: () => {},
+    }));
+
+    expect(enabledHtml).toContain('common.help');
+    expect(disabledHtml).not.toContain('common.help');
+  });
   it('reserves native traffic light space on macOS without custom controls', () => {
     const html = renderToStaticMarkup(createElement(AppTitleBar, {
       appName: 'Gold Band',
@@ -54,6 +73,15 @@ describe('AppTitleBar', () => {
     expect(html).toContain('data-tauri-drag-region');
     expect(html).toContain('app-titlebar-no-drag');
     expect(html).toContain('data-titlebar-no-drag="true"');
+  });
+
+  it('delegates titlebar mouse gestures to the single Tauri drag-region owner', () => {
+    const source = readFileSync(path.resolve(__dirname, '../src/components/AppTitleBar.tsx'), 'utf8');
+
+    expect(source).toContain('data-tauri-drag-region');
+    expect(source).not.toContain('.startDragging()');
+    expect(source).not.toContain('onMouseDown={handleDragMouseDown}');
+    expect(source).not.toContain('onDoubleClick={handleTitleBarDoubleClick}');
   });
 
   it('synchronizes maximize state on native resize and disposes the listener', () => {

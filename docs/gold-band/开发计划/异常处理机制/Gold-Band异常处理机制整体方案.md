@@ -449,3 +449,23 @@ Gold Band 异常处理的目标状态是：
 - `cargo check -j 1` 通过。
 - `cargo test -j 1 --test ai_dynamic_node` 中 20/22 通过；2 个失败为 prompt 文本断言固定匹配 `# Requirement\n...`，而当前 Windows 工作树中的 runtime prompt 模板为 CRLF，实际为 `# Requirement\r\n...`，不属于本次异常处理行为失败。
 - 全量 `cargo test` 曾触发 Windows 页面文件不足 / rustc OOM（`os error 1455`、metadata mmap failure），未跑完；这不是测试断言失败。
+
+## 17. 2026-07-29 ACP prompt 终态归约修复
+
+问题根因：Codex ACP 在响应流重连耗尽后先上报 `_meta.codex.threadStatus.type=systemError`，但 `session/prompt` response 仍可能以 `stopReason=end_turn` 收尾。旧实现只消费 `stopReason`，并用 `_ => Success` 兜底，导致 provider runtime error 被误判为成功，随后 AI-DYNAMIC 因缺少 `dynamic-node-completion` 错误进入三轮 proposal repair。
+
+本轮已落地：
+
+1. ACP client 新增本轮 `AcpPromptLifecycle`，每次 prompt 开始时重置，统一收集 retry error signal 与 terminal failure。
+2. Codex `willRetry=true` 只保留为候选错误；`willRetry=false` 或 `threadStatus=systemError` 才提升为结构化 `AcpPromptFailure`。
+3. `AcpPromptRun` 新增 `terminalFailure`，fatal session 状态不再只停留在 timeline/diagnostics。
+4. Provider 新增集中终态归约：terminal failure 优先于 `stopReason`；只有无 fatal signal 的明确 `end_turn` 才成功；未知或缺失 stop reason 按 ACP 协议异常处理。
+5. `max_tokens` / `max_turn_requests` 归为 interrupted，避免把不完整输出当成功 artifact。
+6. output artifact 只在 success/interrupted 路径提取；provider runtime error 在 DSL/artifact 校验前返回，因此 AI-DYNAMIC 不再对此发送 proposal repair。
+7. high demand / temporary errors 统一归一化为 `provider.server-unavailable + recovery=auto`，保留 terminal update 与最近错误 raw evidence。
+
+验收固化：
+
+- ACP 生命周期测试：可重试错误后恢复不产生 terminal failure；重试错误后进入 `systemError` 会提升为 terminal failure。
+- Provider 接口测试：`systemError + end_turn` 必须失败；正常 `end_turn` 成功；未知/缺失 stop reason 协议失败；`max_tokens` 不成功。
+- AI-DYNAMIC 接口测试：bootstrap 返回 Provider runtime error 时仅调用一次 Provider，graph/run 进入 `runtime-abnormal`，不进入 proposal repair。

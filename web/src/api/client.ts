@@ -34,6 +34,10 @@ import type {
   SkillContentVm,
   SkillListVm,
   PreferencesVm,
+  AvatarKind,
+  AvatarPreferencesVm,
+  AvatarShape,
+  SaveDesktopAvatarInput,
   ProfileInput,
   ProfileListVm,
   ProfileVm,
@@ -51,6 +55,9 @@ import type {
   ConversationAttemptLifecycleVm,
   WorkflowTemplateStore,
   WorkflowVm,
+  FeedbackInput,
+  FeedbackResult,
+  FeedbackArchivePreview,
 } from '../types';
 import { browserApi } from './browser';
 import { desktopApi } from './desktop';
@@ -163,6 +170,10 @@ export interface RuntimeApi {
   showConversationMessageAttachment(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, path: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean): Promise<PreferencesVm>;
+  saveDesktopAvatar(input: SaveDesktopAvatarInput): Promise<AvatarPreferencesVm>;
+  selectRecentDesktopAvatar(kind: AvatarKind, avatarId: string): Promise<AvatarPreferencesVm>;
+  saveDesktopAvatarShape(kind: AvatarKind, shape: AvatarShape): Promise<AvatarPreferencesVm>;
+  clearDesktopAvatar(kind: AvatarKind): Promise<AvatarPreferencesVm>;
   saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
   updateNotificationAttention?(input: NotificationAttentionInput): Promise<void>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;
@@ -237,6 +248,8 @@ export interface RuntimeApi {
     directoryPath?: string | null,
     syncTargets?: string[] | null,
   ): Promise<string[]>;
+  submitFeedback(input: FeedbackInput): Promise<FeedbackResult>;
+  previewFeedbackSessionArchive(projectId: string | null, taskId: string | null): Promise<FeedbackArchivePreview | null>;
 }
 
 export function getRuntimeApi(): RuntimeApi {

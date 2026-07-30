@@ -1,6 +1,6 @@
 import { Bot, Boxes, ChevronsUpDown, Command, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopUiMode, PrimaryModule } from '../types';
+import type { ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopUiMode, DesktopWindowFrameStyle, PrimaryModule } from '../types';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -14,7 +14,9 @@ interface ShellProps {
   conversationPage: ConversationPage;
   conversationSidebar: ConversationSidebarVm;
   appName: string;
+  feedbackEnabled?: boolean;
   platform?: DesktopPlatform | null;
+  windowFrameStyle?: DesktopWindowFrameStyle;
   repoRoot?: string;
   needsWorkspace?: boolean;
   showSettingsUpdateDot?: boolean;
@@ -40,12 +42,14 @@ interface ShellProps {
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, platform, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, conversationRunStopping = false, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, children }: ShellProps) {
+export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, conversationRunStopping = false, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, children }: ShellProps) {
   if (uiMode === 'conversation') {
     return (
       <ConversationShell
         appName={appName}
+        feedbackEnabled={feedbackEnabled}
         platform={platform}
+        windowFrameStyle={windowFrameStyle}
         vm={conversationSidebar}
         active={conversationPage}
         sidebarCollapsed={sidebarCollapsed}
@@ -74,7 +78,9 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
     <WorkbenchShell
       active={active}
       appName={appName}
+      feedbackEnabled={feedbackEnabled}
       platform={platform}
+      windowFrameStyle={windowFrameStyle}
       repoRoot={repoRoot}
       needsWorkspace={needsWorkspace}
       showSettingsUpdateDot={showSettingsUpdateDot}
@@ -93,7 +99,9 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
 interface WorkbenchShellProps {
   active: PrimaryModule;
   appName: string;
+  feedbackEnabled?: boolean;
   platform?: DesktopPlatform | null;
+  windowFrameStyle: DesktopWindowFrameStyle;
   repoRoot?: string;
   needsWorkspace?: boolean;
   showSettingsUpdateDot?: boolean;
@@ -104,13 +112,18 @@ interface WorkbenchShellProps {
   children: React.ReactNode;
 }
 
-function WorkbenchShell({ active, appName, platform, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar }: WorkbenchShellProps) {
+function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFrameStyle, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar }: WorkbenchShellProps) {
   const { t } = useTranslation();
   return (
     <TooltipProvider>
-      <div className="app-window-shell flex h-screen flex-col bg-gold-workspace text-foreground" onContextMenu={(event) => event.preventDefault()}>
+      <div
+        className="app-window-shell flex h-screen flex-col bg-gold-workspace text-foreground"
+        data-window-frame-style={windowFrameStyle}
+        onContextMenu={(event) => event.preventDefault()}
+      >
         <AppTitleBar
           appName={appName}
+          feedbackEnabled={feedbackEnabled}
           platform={platform}
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={onToggleSidebar}

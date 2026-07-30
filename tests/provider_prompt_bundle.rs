@@ -1,5 +1,6 @@
 use camino::Utf8PathBuf;
 use gold_band::domain::{InvocationKind, SessionMode};
+use gold_band::prompts::PromptExecutionSurface;
 use gold_band::provider::{
     ColdFileRef, PromptArtifactRef, PromptAttachmentRef, PromptHiddenSection, PromptOutputContract,
     PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, StreamMode,
@@ -41,8 +42,10 @@ fn invocation() -> WorkerInvocation {
     WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
         prompt_envelope: gold_band::dsl::PromptEnvelopeMode::RuntimeManaged,
+        execution_surface: PromptExecutionSurface::Workflow,
         profile: Some("developer".to_string()),
         profile_content: Some("你是负责实现当前节点的开发角色。".to_string()),
+        profile_dynamic_template: false,
         requirement_path: None,
         requirement_text: Some("Need an implementation".to_string()),
         adapter_workspace_dir: Utf8PathBuf::from("/repo"),
@@ -118,9 +121,20 @@ fn invocation() -> WorkerInvocation {
 #[test]
 fn worker_invocation_can_be_serialized_with_context_indexes() {
     let value = serde_json::to_value(invocation()).unwrap();
+    assert_eq!(value["execution_surface"], "workflow");
     assert_eq!(value["output_contract"]["artifact"], "dev-result");
     assert_eq!(value["runtime_context"]["task_id"], "task-001");
     assert_eq!(value["cold_artifacts"][0]["name"], "review-result");
+}
+
+#[test]
+fn worker_invocation_serializes_ai_dynamic_surface_as_camel_case() {
+    let mut req = invocation();
+    req.execution_surface = PromptExecutionSurface::AiDynamic;
+
+    let value = serde_json::to_value(req).unwrap();
+
+    assert_eq!(value["execution_surface"], "aiDynamic");
 }
 
 #[test]
@@ -305,6 +319,63 @@ fn render_prompt_bundle_moves_profile_content_to_system_prompt() {
             .user_prompt
             .contains("你是负责实现当前节点的开发角色")
     );
+}
+
+#[test]
+fn render_prompt_bundle_keeps_disabled_profile_templates_literal() {
+    let mut req = invocation();
+    req.profile_content = Some(
+        "{% if execution.surface == \"workflow\" %}workflow{% else %}dynamic{% endif %}"
+            .to_string(),
+    );
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(prompt.system_prompt.contains("{% if execution.surface"));
+    assert!(prompt.system_prompt.contains("workflow{% else %}dynamic"));
+}
+
+#[test]
+fn render_prompt_bundle_renders_enabled_profile_for_workflow_surface() {
+    let mut req = invocation();
+    req.profile_dynamic_template = true;
+    req.runtime_context.runtime_node_id = Some("identity-must-not-select-surface".to_string());
+    req.profile_content = Some(
+        "{% if execution.surface == \"workflow\" %}workflow-role{% else %}dynamic-role{% endif %}"
+            .to_string(),
+    );
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(prompt.system_prompt.contains("workflow-role"));
+    assert!(!prompt.system_prompt.contains("dynamic-role"));
+    assert!(!prompt.system_prompt.contains("{% if"));
+}
+
+#[test]
+fn render_prompt_bundle_renders_enabled_profile_for_ai_dynamic_surface() {
+    let mut req = invocation();
+    req.profile_dynamic_template = true;
+    req.execution_surface = PromptExecutionSurface::AiDynamic;
+    req.profile_content = Some(
+        "{% if execution.can_route_next %}route-next{% else %}stop-here{% endif %}".to_string(),
+    );
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(prompt.system_prompt.contains("route-next"));
+    assert!(!prompt.system_prompt.contains("stop-here"));
+}
+
+#[test]
+fn render_prompt_bundle_rejects_unknown_enabled_profile_template_variables() {
+    let mut req = invocation();
+    req.profile_dynamic_template = true;
+    req.profile_content = Some("{{ execution.unknown }}".to_string());
+
+    let error = render_prompt_bundle(&req).unwrap_err();
+
+    assert!(!error.to_string().is_empty());
 }
 
 #[test]

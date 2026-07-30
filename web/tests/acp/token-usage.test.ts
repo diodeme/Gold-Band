@@ -316,6 +316,47 @@ describe('resolveNodeTokenUsage', () => {
     expect(result.inputTokens).toBe(8000); // accumulated: 5000 + 3000
     expect(result.totalTokens).toBe(8000); // accumulated: 5000 + 3000
   });
+
+  it('does not let a later transient zero replace confirmed context usage', () => {
+    const detail = makeNodeDetail({
+      acpConversations: [{
+        key: 'conv-1',
+        label: 'Conv 1',
+        sessionMode: 'auto',
+        activeAttemptId: 'a2',
+        attempts: [
+          {
+            nodeId: 'node-1',
+            attemptId: 'a1',
+            status: 'completed',
+            current: false,
+            acpSession: {
+              provider: 'claude',
+              status: 'completed',
+              restored: false,
+              usage: { inputTokens: 5000, totalTokens: 5000, used: 38_223, size: 1_000_000 },
+            },
+          },
+          {
+            nodeId: 'node-1',
+            attemptId: 'a2',
+            status: 'completed',
+            current: true,
+            acpSession: {
+              provider: 'claude',
+              status: 'completed',
+              restored: false,
+              usage: { inputTokens: 3000, totalTokens: 3000, used: 0, size: 1_000_000 },
+            },
+          },
+        ],
+      }],
+    } as any);
+
+    const result = resolveNodeTokenUsage(detail)!;
+    expect(result.used).toBe(38_223);
+    expect(result.size).toBe(1_000_000);
+  });
 });
 
 describe('formatDisplayToken', () => {

@@ -22,10 +22,12 @@ import type {
   WorkflowVm,
   ConversationRunVm,
 } from './types';
+import { createDefaultAvatarPreferences } from './lib/avatar';
 
-const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false };
+const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
 export const mockAppInfo = {
   channel: 'default',
+  feedbackEnabled: false,
   appName: 'Gold Band',
   appKey: 'gold-band',
   configDirName: '.gold-band',
@@ -120,12 +122,13 @@ export const mockWorkflowTemplates: WorkflowTemplateStore = {
 
 export const mockProfileList: ProfileListVm = {
   profiles: [
-    { id: 'pf-builtin-plan', name: '方案', summary: '方案角色，用于需求分析和实施方案设计。', content: '## 方案角色\n\n后续补充完整角色说明。', scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/plan' },
-    { id: 'pf-builtin-dev', name: '开发', summary: '开发角色，用于实现需求并维护代码质量。', content: '## 开发角色\n\n后续补充完整角色说明。', scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/dev' },
-    { id: 'pf-builtin-review', name: '审查', summary: '审查角色，用于检查实现质量、风险和一致性。', content: '## 审查角色\n\n后续补充完整角色说明。', scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/review' },
-    { id: 'pf-builtin-test', name: '测试', summary: '测试角色，用于执行验证并反馈质量结果。', content: '## 测试角色\n\n后续补充完整角色说明。', scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/test' },
-    { id: 'pf-builtin-accept', name: '验收', summary: '验收角色，用于对照需求判断交付是否满足目标。', content: '## 验收角色\n\n后续补充完整角色说明。', scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/accept' },
-    { id: 'pf-builtin-cleanup', name: '清理', summary: '清理角色，用于验收成功后的资源释放、收尾和环境清理。', content: '## 清理角色\n\n后续补充完整角色说明。', scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/cleanup' },
+    { id: 'pf-builtin-plan', name: '方案', summary: '方案角色，用于需求分析和实施方案设计。', content: '## 方案角色\n\n后续补充完整角色说明。', dynamicTemplate: true, scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/plan' },
+    { id: 'pf-builtin-dev', name: '开发', summary: '开发角色，用于实现需求并维护代码质量。', content: '## 开发角色\n\n后续补充完整角色说明。', dynamicTemplate: true, scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/dev' },
+    { id: 'pf-builtin-review', name: '审查', summary: '审查角色，用于检查实现质量、风险和一致性。', content: '## 审查角色\n\n后续补充完整角色说明。', dynamicTemplate: false, scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/review' },
+    { id: 'pf-builtin-test', name: '测试', summary: '测试角色，用于执行验证并反馈质量结果。', content: '## 测试角色\n\n后续补充完整角色说明。', dynamicTemplate: false, scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/test' },
+    { id: 'pf-builtin-accept', name: '验收', summary: '验收角色，用于对照需求判断交付是否满足目标。', content: '## 验收角色\n\n后续补充完整角色说明。', dynamicTemplate: false, scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/accept' },
+    { id: 'pf-builtin-cleanup', name: '清理', summary: '清理角色，用于验收成功后的资源释放、收尾和环境清理。', content: '## 清理角色\n\n后续补充完整角色说明。', dynamicTemplate: false, scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/cleanup' },
+    { id: 'pf-builtin-interview', name: '访谈', summary: '访谈角色，用于需求澄清，通过深度访谈把模糊需求转化为清晰规格。', content: '## 访谈角色\n\n后续补充完整角色说明。', dynamicTemplate: false, scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/interview' },
   ],
 };
 
@@ -407,6 +410,7 @@ export const mockBootstrap: AppBootstrapVm = {
   persistedAvailableUpdate: null,
   clientVersion: '',
   platform: 'windows',
+  windowChrome: { frameStyle: 'native-compositor', nativeShadow: true },
   appInfo: mockAppInfo,
   appConfig: {
     acpSessionTitleRefreshEnabled: false,

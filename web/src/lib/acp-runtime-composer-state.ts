@@ -22,6 +22,7 @@ export type AcpComposerProcessingKind =
   | 'processing'
   | 'thinking'
   | 'tool'
+  | 'compacting'
   | 'responding'
   | 'stopping'
   | 'launching-next-node';
@@ -349,6 +350,7 @@ function normalizeProcessingKind(kind?: string | null): AcpComposerProcessingKin
     normalized === 'processing' ||
     normalized === 'thinking' ||
     normalized === 'tool' ||
+    normalized === 'compacting' ||
     normalized === 'responding' ||
     normalized === 'stopping' ||
     normalized === 'launching-next-node'

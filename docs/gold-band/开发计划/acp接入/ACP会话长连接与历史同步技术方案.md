@@ -877,6 +877,7 @@ session/connection 被有界驱逐或失效：reload
 - 所有策略值已进入 `configs/app-config.toml`，0 值回退默认值，renew interval 大于等于 lease TTL 时自动收敛到 TTL 的三分之一。
 - 外部会话同步改为 Agent 级 `externalSessionSyncEnabled`，默认关闭，不进入 `configs/app-config.toml`。Agent 管理页与 `ManagedAgentConfig` 对齐，可编辑 adapter、`primaryAgentDir`、`compatibleAgentDirs` 与同步开关；关闭时不执行 revision freshness probe，detached load 的 Provider history replay 不写 timeline，当前实时回复、长连接和 TTL/LRU 不受影响。
 - attached runtime 记录创建时的外部同步策略；首次 `false -> true` 设置 `syncRequired`，下一次 prompt 前直接强制 `session/load`，不依赖可能超时的 `session/list`。required sync 成功前禁止 post-prompt revision baseline 更新，load 失败也不回退新建 session。
+- 修复 detached `session/load` 的回放结束竞态：RPC response 与 session event pump 是两条独立到达路径，response 返回时的一次 `try_recv` 不能证明历史已经排空。runtime 现在在 load 后和真实 prompt 前分别等待 replay 队列达到有界静默，静默前保持 `Replaying`；外部同步关闭时所有 replay content 只写 raw，开启时才导入 timeline。等待超过上限时本轮同步失败且不发送 prompt，避免未知历史 `agent_message_chunk` 被误判为实时输出。
 - Agent 配置保存边界升级为 Provider 全局失效：跨 workspace 阻断 active prompt，detach 所有该 Provider 的 idle attachment，并关闭所有 Provider connection。
 
-接口回归已覆盖：timeline replay 去重、内容变化 revision、compaction 前后投影等价、旧重复 revision 打开时自动压缩且投影不变、idle event pump、MCP fingerprint 归一化与变更、Provider revision 判定矩阵、首次开启同步时即使 `session/list` 会超时仍优先 load、Provider 跨 workspace 连接筛选、配置边界，以及既有 ACP 全量 Rust 单元测试。
+接口回归已覆盖：timeline replay 去重、内容变化 revision、compaction 前后投影等价、旧重复 revision 打开时自动压缩且投影不变、idle event pump、load response 后延迟到达的 replay agent chunk 仍保持抑制、MCP fingerprint 归一化与变更、Provider revision 判定矩阵、首次开启同步时即使 `session/list` 会超时仍优先 load、Provider 跨 workspace 连接筛选、配置边界，以及既有 ACP 全量 Rust 单元测试。

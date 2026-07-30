@@ -4,7 +4,7 @@
 
 Gold Band 通过 ACP 协议调用 Claude Code 等 Agent。Agent SDK 内置 `AskUserQuestion` 工具，可向用户提问并获取选择，但在 headless/ACP 模式下该工具默认被禁用。
 
-claude-agent-acp **v0.45+** 原生支持 Elicitation 协议。当客户端在 `initialize` 时声明 `elicitation.form` 能力后，`AskUserQuestion` 工具被自动启用，Agent 的问答请求通过 `elicitation/create` JSON-RPC 方法直达客户端。
+claude-agent-acp **v0.44+** 已可通过 Elicitation 协议桥接 `AskUserQuestion`。当客户端在 `initialize` 时声明 `elicitation.form` 能力后，Agent 的问答请求通过 `elicitation/create` JSON-RPC 方法直达客户端。不同版本主要差异在自定义答案字段和选项附加元数据；Gold Band 按协议形状兼容，不按版本号分支。
 
 ---
 
@@ -151,10 +151,10 @@ cancel_pending_elicitation_requests() → 批量写入 Decline 响应文件
 核心数据结构：
 
 - **`ElicitationAction`** — enum `{ Accept, Decline }`，杜绝字符串硬编码
-- **`PendingElicitationState`** — 持久化的待处理请求（含 `jsonrpc_id`, `message`, `requested_schema`）
+- **`PendingElicitationState`** — 持久化的待处理请求（含 `jsonrpc_id` 与官方类型 `CreateElicitationRequest`，完整保留 scope/schema/meta）
 - **`ElicitationResponseState`** — 持久化的用户响应（含 `action`, `content`）
 
-单元测试覆盖（8/8）：
+单元测试覆盖（12/12）：
 
 | 测试 | 覆盖场景 |
 |------|----------|
@@ -171,7 +171,7 @@ cancel_pending_elicitation_requests() → 批量写入 Decline 响应文件
 
 在 `handle_inbound` 中新增 `"elicitation/create"` 路由，执行 5 步处理：
 
-1. 解析 `params.message` + `params.requestedSchema`，生成 `elicitation_id`
+1. 使用 `agent-client-protocol-schema 1.6.0` 的 `CreateElicitationRequest` 反序列化完整 `params`，生成 `elicitation_id`
 2. `write_pending_elicitation` 持久化
 3. `elicitation_request_event` → `persist_event` 发送 UI 事件
 4. `wait_for_elicitation_response` **同步阻塞**等待
@@ -187,6 +187,8 @@ cancel_pending_elicitation_requests() → 批量写入 Decline 响应文件
 | `elicitationResponse` | `"completed"` | 用户已响应，设 `ended_at`，关闭对应 request |
 
 timeline 处理：`elicitationRequest` 不关闭 text/thought/plan 流，不设结束时间。`elicitationResponse` 设开始/结束时间。
+
+`elicitationRequest.raw` 保存序列化后的完整类型化请求，不再只保存 `requestedSchema`；事件的 `session_id` 与 `tool_call_id` 从 `ElicitationScope` 派生。前端 pending 恢复优先读取 `raw.requestedSchema/raw.message`，并仅为历史 timeline 兼容旧的 `raw = requestedSchema` 形态。
 
 ### 模块四：前端 ACPChatDialog 集成
 
@@ -217,6 +219,35 @@ ACPChatDialog 挂载
         ├─ setAnsweredElicitations → 卡片切换为只读
         └─ respondElicitation() → Tauri command → 写入响应文件
 ```
+
+---
+
+## 版本兼容与结构化展示
+
+### Claude Agent ACP 请求形状
+
+| 版本范围 | 自定义答案形态 | Gold Band 处理 |
+|------|------|------|
+| 0.44 | 全局 `customAnswer` | 作为独立可选文本步骤，响应 key 保持 `customAnswer` |
+| 0.45.1+ | `question_n_custom` | 与同编号 `question_n` 精确配对 |
+| 当前版本 | `_meta._askUserQuestionCustomAnswer` | 按 `questionId` 精确关联，优先级最高 |
+
+兼容判断只依赖 schema 形状。旧版 0.44 请求是当前官方 ACP form schema 的有效子集，因此更新后的 Gold Band 可以直接反序列化用户机器上旧版 Claude Agent ACP 发来的请求，无需同时升级 Agent。
+
+### 卡片渲染规则
+
+- `params.message` 是表单级信息，完整保留换行并整体渲染；不允许按行或步骤下标拆分。
+- `property.title` 是短标题；`property.description` 是多题场景下的题干/帮助文本。
+- 通用 `Please answer the following questions.` 在字段已有 description 时隐藏。
+- `oneOf` 渲染单选，`items.anyOf` 渲染多选。
+- option `description` 作为次级说明；`_meta._claude/askUserQuestionOption.preview` 在选中时展示 Markdown 预览。
+- 未匹配普通文本字段保持独立，不猜测为任意选择题的“其他答案”。
+
+### 回归验收
+
+- Rust fixture 固化生产会话中的 0.44 多行单题，并验证 `message/sessionId/toolCallId/schema/_meta` 的类型化持久化与 timeline 事件。
+- Web 测试覆盖完整多行 message、多题 description、0.44/0.45.1/当前版自定义答案、选项 description/preview、请求响应关联和刷新恢复。
+- 合入前通过 Rust 相关测试、Web 相关测试与生产构建，并在 ACP 会话 deep link 中确认完整题目可见。
 
 ---
 

@@ -132,6 +132,8 @@
 - 2026-05-20：收敛 provider system prompt：未声明 `output` 的节点会被明确告知无需产出 canonical artifact 或查找 artifact/output 约束；当前节点上下文由 prompt 给出，前序产出仅按 prompt 明确给出的路径读取，`run_dir` 只作为这些路径的父级上下文，避免节点为寻找未声明产物或确认约束主动扫描 run 目录。前序节点结果统一进入 system prompt 的执行链、artifact 路径和 preview，不再以 `Current Feedback` 注入 user prompt；跨 round 链路用 `-$new-round->` 说明新轮次来源。
 - 2026-05-21：ACP session 累计处理耗时改为净耗时，扣除 `session/request_permission` pending 到用户选择之间的阻塞式用户等待；该规则同时覆盖普通工具授权和 `ExitPlanMode` / keep planning 等 plan 决策。
 - 2026-05-21：ACP 会话详情新增“系统提示”入口，从 raw frame 中解析 `session/new._meta.systemPrompt.append` 并用弹窗只读展示实际追加的 system prompt。
+- 2026-07-28：ACP 系统提示弹窗默认使用现有 prompt-kit Markdown 渲染器展示，保留“渲染 Markdown / 原文”切换并通过独立本地偏好记忆，不与产物预览模式或 ACP session 数据耦合；多 attempt 切换继续沿用当前查看模式。
+- 2026-07-28：ACP 系统提示弹窗在桌面断点显式覆盖 shadcn Dialog 默认 `sm:max-w-lg` 为 `sm:max-w-5xl`，解决调用侧普通 `max-w-*` 无法覆盖响应式默认值导致的窄弹窗问题；小窗口继续保留组件默认视口安全边距。
 - 2026-05-23：continue 恢复路径改为重新渲染当前节点 system prompt，并随 `session/load._meta.systemPrompt.append` 传给 Claude Agent ACP；ACP 内部 create session 表示用 SDK `resume` 创建 query 进程，不改变 Gold Band 的 continue 语义。系统提示入口应同时解析 `session/new` 与 `session/load` 的追加内容。
 - 2026-05-23：Codex ACP 0.14.0 会忽略 ACP `_meta.systemPrompt`；Gold Band 对 `codex-acp` 在 `session/prompt` 前内联当前节点 system prompt，避免首次调用丢失节点约束。
 - 2026-05-23：桌面 ACP 会话面板的手动追问入口改为复用当前节点 prompt bundle，`session/load` 恢复旧会话后也重新追加节点 system prompt，避免用户追问时模型忘记输出 DSL。
@@ -730,6 +732,15 @@ attempt-001/
 
 ---
 
+## 2026-07-28：原始帧默认倒序与排序切换
+
+- `AcpRawFrameQueryInput` 增加类型化 `asc / desc` 排序参数，后端默认 `desc`，以 append-only JSONL 行号作为稳定记录时序完成跨页排序；同一时间戳下不依赖不稳定的文本比较。
+- Raw frames 筛选区复用 shadcn/ui `Select` 增加“最新优先 / 最早优先”，切换顺序、搜索或过滤后回到第 0 页；第一页、上一页和下一页文案按当前顺序表达实际时间方向。
+- 破坏式替换旧的“最新页内升序”行为，不保留前端当前页反转或旧 `latest` 字符串兼容路径。
+- Rust 接口层回归覆盖默认倒序、升序第二页、分页边界与返回排序枚举；Web build 和桌面端原始帧 deep link 验证控件默认值、切换结果及分页文案。
+
+---
+
 ## 2026-07-24：会话工作空间状态与安全移除修复
 
 - 根因修复：会话工作空间身份此前同时存在持久化 `conversationWorkspaces`、大小写不一致的 `projectId` key 和隐式 `DesktopContext.repo_root` 三条来源，导致 Direct 首轮可运行但追问按精确 key 报 `workspace.not-found`，移除时也可能删不中并重排相邻项。本次收敛为 `conversationWorkspaces` 单一列表来源，保留 workspace-scoped `App.paths.repo_root` 作为执行上下文，不再把桌面启动 workspace 当作会话成员。
@@ -741,3 +752,43 @@ attempt-001/
 - 编译契约修正：迁移代码使用的 `stateSchemaVersion` 固化到共享 `StateConfig`，补充非零版本 camelCase roundtrip、历史状态缺字段默认为 `0`、零值省略写回的单元测试，避免桌面 crate 与核心 crate 的状态模型再次不同步。
 - Round 编号清理：删除指标功能遗留但从未接入的 `next_round_id` 目录扫描 helper；新 round 继续唯一地由当前 `RoundState.index + 1` 生成 ID，避免文件系统扫描与 runtime 状态形成双事实源。
 - 全量回归修正：ACP timeline 计时测试原先把所有 fixture 事件写成相同 `seq=1`，解析进入 HashMap 后顺序不稳定，导致预期 11 秒而随机得到 1/8 秒；测试数据改为按落盘顺序生成单调递增序号，固化真实 timeline 接口契约，不修改生产计时算法。
+
+---
+
+## 2026-07-28：会话侧边栏相对时间边界修正
+
+- 根因修复：原侧边栏以“周数小于 4”切换月份、以“月数小于 12”切换年份，但月份按 30 天、年份按 365 天取整，导致 28–29 天显示 `0mo`，360–364 天显示 `0y`。
+- 领域收敛：相对时间格式化从 React 组件下沉到共享 `datetime` 模块，任务行与 run 行使用同一接口；继续保持侧边栏既有 `m/h/d/w/mo/y` 紧凑展示，不引入改变文案形态的第三方格式化依赖。
+- 连续区间：不足 1 分钟显示“刚刚”，1–59 分钟显示分钟，1–23 小时显示小时，1–6 天显示天，7–29 天显示周，30–364 天显示月，365 天起显示年。
+- 回归固化：前端纯函数测试覆盖所有单位切换边界、Unix 秒时间戳、未来时间与非法输入；生产构建和侧边栏实际展示验证通过后完成验收。
+
+---
+
+## 2026-07-29：用户反馈入口按渠道收口
+
+- 仅 `wb` 渠道在顶栏显示「帮助」按钮；复用启动信息中的 `appInfo.channel` 贯穿 Shell 到 AppTitleBar，其他渠道及启动信息未就绪时不渲染入口。
+- Web 回归测试分别固化 `wb` 可见与 `default` 不可见，避免后续渠道配置与 UI 能力再次脱节。
+
+---
+
+## 2026-07-29：ACP Elicitation 多行题干与跨版本结构兼容
+
+- 根因修复：ElicitationCard 不再把 `params.message` 按换行和步骤下标切题；单题的上下文与实际问题整体展示，多题使用字段 description，通用 provider message 可隐藏。
+- 协议边界：Rust 使用官方 `agent-client-protocol-schema 1.6.0` 的 `CreateElicitationRequest` 反序列化并持久化完整请求，timeline 保留 mode、scope、session/tool identity、schema 与 `_meta`。
+- 版本兼容：按 schema shape 支持 Claude Agent ACP 0.44 全局 `customAnswer`、0.45.1 `question_n_custom` 和当前 `_askUserQuestionCustomAnswer` 元数据，不要求用户机器上的旧 Agent 同步升级。
+- 展示能力：选项 description 与 Claude preview 元数据保持结构化渲染；普通文本字段不再被猜测为首题自定义答案。
+- 回归固化：Rust 覆盖生产 0.44 fixture、pending roundtrip 和完整 timeline request；Web 覆盖多行题干、三类自定义答案、选项元数据及刷新恢复，并要求生产构建和 ACP 会话实际验证通过。
+
+---
+
+## 2026-07-30：PR #81 合并修复与反馈安全边界收敛
+
+- 合并策略：保留单一 PR 与原分支，合并最新 main 后同时保留反馈渠道和 main 的 avatar、ACP elicitation、terminal failure 等能力，不拆分提交组。
+- 反馈信任边界：破坏式删除 `sessionWorkspace` / `screenshotPaths` command 契约，改为 `projectId + taskId` 后端解析和截图 File bytes；task id、canonical root、逐文件路径与 symlink 规则统一校验。task id 的路径分隔符校验显式覆盖 `/` 与 `\\`，不依赖 Windows/Linux 的 `Path` 解析差异。
+- 工作空间状态清理：移除 workspace 时以请求 ID、持久化 ID、路径重算 ID 组成身份别名集合，统一删除 run mode、pin 与 last workspace 引用，固化跨平台大小写差异下的回归测试。
+- 资源生命周期：使用 image/walkdir/tempfile/zip/ReaderStream；截图验证后统一重编码 PNG，任务 ZIP 写临时文件并流式上传；统一限制描述、截图、归档未压缩/压缩/文件数、日志和总请求大小。
+- 渠道能力：`feedbackEnabled` 从 channel JSON 编译到 `AppInfoVm`，前端只透传 boolean，后端二次门控；不再硬编码 `channel === wb`。
+- 错误协议：补齐 disabled、session-not-found、attachment-invalid、payload-too-large 等结构化错误码；网络原始错误只写 metrics.log。
+- MCP 范围收口：transport、Streamable HTTP 和 per-Agent 兼容性由独立 MCP 方案统一维护；本次删除 provider 层按 provider ID 硬编码 transport、预过滤 server 和 attempt warning 的重复实现，避免与 MCP 管理域形成双重事实源。
+- 配置规范化：stale Agent config option 使用纯函数清理，validate 不再 mutation 输入；Direct/AUTO 提交和能力刷新使用规范化结果。
+- 回归要求：Rust workspace、桌面 crate、Web 全量测试、生产构建、default/wb 渠道编译与 wb UI 实际验证全部通过后才允许推送原 PR 分支。

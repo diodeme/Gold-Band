@@ -2,7 +2,8 @@
 //!
 //! 本模块只含弹窗自身逻辑，不触碰主干运行时。生命周期见
 //! `.claude/design/system-notification-intervention-reimpl-plan.md`：
-//! 「点掉即消失」，无 resolved 闭环。发送流程为 dedup → OS 通知 → emit，
+//! Windows 横幅采用系统短时展示策略，超时后自动收起但仍保留在通知中心；
+//! 无 resolved 闭环。发送流程为 dedup → OS 通知 → emit，
 //! 失败一律 `tracing::warn!`，不静默吞错（方案 §6.3/§12）。
 
 use std::sync::{Arc, Once};
@@ -26,6 +27,38 @@ const APP_DISPLAY_NAME: &str = "码灵";
 /// Windows AUMID（系统注册标识，与展示名是两回事），取自 tauri.conf.json identifier。
 #[cfg(windows)]
 const WINDOWS_AUMID: &str = "local.gold-band.desktop";
+
+/// Windows 原生 Toast 只提供 Short（约 7 秒）/Long（约 25 秒）两档。
+#[cfg(windows)]
+const WINDOWS_TOAST_SHORT_DURATION_SECONDS: u64 = 7;
+#[cfg(windows)]
+const WINDOWS_TOAST_LONG_DURATION_SECONDS: u64 = 25;
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowsToastDisplayPolicy {
+    AutoDismissShort,
+    AutoDismissLong,
+}
+
+#[cfg(windows)]
+const fn windows_toast_display_policy(target_seconds: u64) -> WindowsToastDisplayPolicy {
+    let short_distance = target_seconds.abs_diff(WINDOWS_TOAST_SHORT_DURATION_SECONDS);
+    let long_distance = target_seconds.abs_diff(WINDOWS_TOAST_LONG_DURATION_SECONDS);
+    if short_distance < long_distance {
+        WindowsToastDisplayPolicy::AutoDismissShort
+    } else {
+        WindowsToastDisplayPolicy::AutoDismissLong
+    }
+}
+
+#[cfg(windows)]
+const fn expected_windows_toast_auto_dismiss_seconds(policy: WindowsToastDisplayPolicy) -> u64 {
+    match policy {
+        WindowsToastDisplayPolicy::AutoDismissShort => WINDOWS_TOAST_SHORT_DURATION_SECONDS,
+        WindowsToastDisplayPolicy::AutoDismissLong => WINDOWS_TOAST_LONG_DURATION_SECONDS,
+    }
+}
 
 /// 结构化 action 的「查看详情」前缀。
 pub const ACTION_VIEW: &str = "view:";
@@ -146,6 +179,7 @@ fn focus_main_window(app_handle: &AppHandle) {
 pub fn send_intervention_notification(
     app_handle: &AppHandle,
     dedup: &gold_band::app::NotificationDedup,
+    auto_dismiss_target_secs: u64,
     notification: InterventionNotification,
 ) {
     if !dedup.try_send(&notification.dedup_key) {
@@ -156,30 +190,35 @@ pub fn send_intervention_notification(
         );
         return;
     }
-    send_os_notification(app_handle, &notification);
+    send_os_notification(app_handle, auto_dismiss_target_secs, &notification);
 }
 
 /// 发送 OS 原生通知。Windows 走 Toast（含结构化 action），其余平台走 notify-rust。
-fn send_os_notification(app_handle: &AppHandle, notification: &InterventionNotification) {
+fn send_os_notification(
+    app_handle: &AppHandle,
+    auto_dismiss_target_secs: u64,
+    notification: &InterventionNotification,
+) {
     #[cfg(windows)]
     {
-        if let Err(error) = send_windows_toast(app_handle, notification) {
+        if let Err(error) = send_windows_toast(app_handle, auto_dismiss_target_secs, notification) {
             warn!(?error, dedup_key = %notification.dedup_key, "windows toast failed");
         }
         return;
     }
     #[cfg(not(windows))]
     {
-        send_notify_rust(notification);
+        send_notify_rust(auto_dismiss_target_secs, notification);
     }
 }
 
 #[cfg(windows)]
 fn send_windows_toast(
     app_handle: &AppHandle,
+    auto_dismiss_target_secs: u64,
     notification: &InterventionNotification,
 ) -> Result<(), tauri_winrt_notification::Error> {
-    use tauri_winrt_notification::{Duration, IconCrop, Scenario, Toast};
+    use tauri_winrt_notification::{IconCrop, Toast};
 
     ensure_notification_registry();
 
@@ -198,17 +237,16 @@ fn send_windows_toast(
     let dismiss_action = encode_dismiss_action(&dismiss_payload);
 
     let handle = app_handle.clone();
-    let mut toast = Toast::new(WINDOWS_AUMID)
+    let toast = Toast::new(WINDOWS_AUMID)
         .title(&format!("{} - {}", APP_DISPLAY_NAME, notification.title))
         .text1(&notification.body)
-        .duration(Duration::Long)
-        .scenario(Scenario::Reminder)
         .add_button("查看详情", &view_action)
         .add_button("忽略", &dismiss_action)
         .on_activated(move |action: Option<String>| {
             handle_toast_action(&handle, action.as_deref());
             Ok(())
         });
+    let mut toast = apply_windows_toast_display_policy(toast, auto_dismiss_target_secs);
 
     // 显式设置码灵 app 图标，避免落到默认/powershell 图标。
     if let Some(icon_path) = resolve_app_icon_path(app_handle) {
@@ -216,6 +254,23 @@ fn send_windows_toast(
     }
 
     toast.show()
+}
+
+#[cfg(windows)]
+fn apply_windows_toast_display_policy(
+    toast: tauri_winrt_notification::Toast,
+    target_seconds: u64,
+) -> tauri_winrt_notification::Toast {
+    use tauri_winrt_notification::{Duration, Scenario};
+
+    match windows_toast_display_policy(target_seconds) {
+        WindowsToastDisplayPolicy::AutoDismissShort => {
+            toast.duration(Duration::Short).scenario(Scenario::Default)
+        }
+        WindowsToastDisplayPolicy::AutoDismissLong => {
+            toast.duration(Duration::Long).scenario(Scenario::Default)
+        }
+    }
 }
 
 /// 码灵 app 图标（编译期嵌入 `src-tauri/icons/icon.png`）。
@@ -396,14 +451,17 @@ fn create_or_rebuild_shortcut(
 }
 
 #[cfg(not(windows))]
-fn send_notify_rust(notification: &InterventionNotification) {
+fn send_notify_rust(auto_dismiss_target_secs: u64, notification: &InterventionNotification) {
     #[cfg(feature = "native-notification")]
     {
-        use notify_rust::Notification;
+        use notify_rust::{Notification, Timeout};
         if let Err(error) = Notification::new()
             .appname(APP_DISPLAY_NAME)
             .summary(&format!("{} - {}", APP_DISPLAY_NAME, notification.title))
             .body(&notification.body)
+            .timeout(Timeout::from(std::time::Duration::from_secs(
+                auto_dismiss_target_secs,
+            )))
             .show()
         {
             warn!(?error, dedup_key = %notification.dedup_key, "notify-rust failed");
@@ -411,12 +469,14 @@ fn send_notify_rust(notification: &InterventionNotification) {
     }
     #[cfg(not(feature = "native-notification"))]
     {
+        let _ = auto_dismiss_target_secs;
         let _ = notification;
     }
 }
 
 pub fn create_intervention_notification_subscriber(
     app_handle: AppHandle,
+    auto_dismiss_target_secs: u64,
 ) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
     Arc::new(move |event| {
         let Some(state) = app_handle.try_state::<DesktopState>() else {
@@ -512,7 +572,7 @@ pub fn create_intervention_notification_subscriber(
             return;
         }
         let dedup = state.notification_dedup();
-        send_intervention_notification(&app_handle, &dedup, notification);
+        send_intervention_notification(&app_handle, &dedup, auto_dismiss_target_secs, notification);
     })
 }
 
@@ -580,5 +640,25 @@ mod tests {
         });
         assert!(decode_action(&v).unwrap().0);
         assert!(!decode_action(&d).unwrap().0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_toast_policy_maps_target_to_nearest_native_duration() {
+        let short_policy = windows_toast_display_policy(10);
+        let long_policy = windows_toast_display_policy(20);
+
+        assert_eq!(short_policy, WindowsToastDisplayPolicy::AutoDismissShort);
+        assert_eq!(long_policy, WindowsToastDisplayPolicy::AutoDismissLong);
+        assert_eq!(
+            expected_windows_toast_auto_dismiss_seconds(short_policy),
+            WINDOWS_TOAST_SHORT_DURATION_SECONDS
+        );
+        assert_eq!(
+            expected_windows_toast_auto_dismiss_seconds(long_policy),
+            WINDOWS_TOAST_LONG_DURATION_SECONDS
+        );
+        assert_eq!(WINDOWS_TOAST_SHORT_DURATION_SECONDS, 7);
+        assert_eq!(WINDOWS_TOAST_LONG_DURATION_SECONDS, 25);
     }
 }

@@ -165,34 +165,36 @@ export function McpServerCard({
                   <TooltipProvider key={agent.agentType} delayDuration={300}>
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <button
-                          type="button"
-                          className="relative grid size-6 place-items-center rounded-full hover:bg-muted"
-                          disabled={!clickable}
-                          aria-label={tip}
-                          onClick={clickable ? () => onDiagnoseAgent?.(agent.agentType) : undefined}
-                        >
-                          {isDiagnosing || status === 'unknown' ? (
-                            <Loader2 className={cn('size-3.5 animate-spin text-muted-foreground/70', clickable && 'cursor-pointer')} />
-                          ) : (
-                            <span className="relative grid size-5 place-items-center">
-                              {status === 'supported' && (
-                                <span className="pointer-events-none absolute left-0 top-0 z-10 size-1.5 rounded-full bg-emerald-500 ring-1 ring-background" />
-                              )}
-                              <img
-                                src={agentIconSrc(agent.iconKey)}
-                                alt={agent.label}
-                                className={agentIconClass(
-                                  agent.iconKey,
-                                  cn(
-                                    'relative z-0 size-3.5 transition-opacity',
-                                    status === 'unsupported' && 'grayscale opacity-35',
-                                  ),
+                        <span className="inline-grid size-6 place-items-center rounded-full hover:bg-muted">
+                          <button
+                            type="button"
+                            className="relative grid size-6 place-items-center rounded-full disabled:pointer-events-none"
+                            disabled={!clickable}
+                            aria-label={tip}
+                            onClick={clickable ? () => onDiagnoseAgent?.(agent.agentType) : undefined}
+                          >
+                            {isDiagnosing || status === 'unknown' ? (
+                              <Loader2 className={cn('size-3.5 animate-spin text-muted-foreground/70', clickable && 'cursor-pointer')} />
+                            ) : (
+                              <span className="relative grid size-5 place-items-center">
+                                {status === 'supported' && (
+                                  <span className="pointer-events-none absolute left-0 top-0 z-10 size-1.5 rounded-full bg-emerald-500 ring-1 ring-background" />
                                 )}
-                              />
-                            </span>
-                          )}
-                        </button>
+                                <img
+                                  src={agentIconSrc(agent.iconKey)}
+                                  alt={agent.label}
+                                  className={agentIconClass(
+                                    agent.iconKey,
+                                    cn(
+                                      'relative z-0 size-3.5 transition-opacity',
+                                      status === 'unsupported' && 'grayscale opacity-35',
+                                    ),
+                                  )}
+                                />
+                              </span>
+                            )}
+                          </button>
+                        </span>
                       </TooltipTrigger>
                       <TooltipContent side="top">{tip}</TooltipContent>
                     </Tooltip>

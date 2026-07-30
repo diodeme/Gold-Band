@@ -499,7 +499,11 @@ fn parse_initialize_response(response_text: &str) -> Result<McpServerHealthResul
 
     let version = result
         .get("protocolVersion")
-        .map(|v| v.as_str().map(String::from).unwrap_or_else(|| v.to_string()))
+        .map(|v| {
+            v.as_str()
+                .map(String::from)
+                .unwrap_or_else(|| v.to_string())
+        })
         .unwrap_or_else(|| "unknown".to_string());
 
     Ok(McpServerHealthResult {
@@ -511,22 +515,60 @@ fn parse_initialize_response(response_text: &str) -> Result<McpServerHealthResul
     })
 }
 
-/// 从 streamable HTTP 响应体中提取 JSON-RPC payload。
-/// streamable HTTP 响应可能是 `application/json`（直接 JSON-RPC）或
-/// `text/event-stream`（SSE 封装，需从 `data:` 行提取）。按 Content-Type 分发。
-fn extract_jsonrpc_payload(content_type: &str, body: &str) -> Result<String> {
-    if content_type.contains("text/event-stream") {
-        for line in body.lines() {
-            if let Some(data) = line.trim().strip_prefix("data:") {
-                let data = data.trim();
-                if !data.is_empty() {
-                    return Ok(data.to_string());
-                }
-            }
-        }
-        bail!("event-stream response had no data line");
+fn jsonrpc_ids_match(expected: &Value, actual: &Value) -> bool {
+    if expected == actual {
+        return true;
     }
-    Ok(body.trim().to_string())
+    let expected = expected
+        .as_u64()
+        .or_else(|| expected.as_str()?.parse::<u64>().ok());
+    let actual = actual
+        .as_u64()
+        .or_else(|| actual.as_str()?.parse::<u64>().ok());
+    expected.is_some() && expected == actual
+}
+
+fn is_jsonrpc_response_for(value: &Value, expected_id: &Value) -> bool {
+    value.get("method").is_none()
+        && (value.get("result").is_some() || value.get("error").is_some())
+        && value
+            .get("id")
+            .is_some_and(|actual_id| jsonrpc_ids_match(expected_id, actual_id))
+}
+
+/// 按 SSE framing 增量读取事件，忽略请求/通知及其他响应，直到收到目标 JSON-RPC id。
+/// 多个 `data:` 行按 SSE 标准使用换行拼接；不会等待整个 HTTP body EOF。
+fn read_sse_jsonrpc_response(
+    reader: impl BufRead,
+    expected_id: &Value,
+    label: &str,
+) -> Result<String> {
+    let mut data_lines = Vec::new();
+    for line in reader.lines() {
+        let line = line.with_context(|| format!("failed to read {label} event stream"))?;
+        let line = line.strip_suffix('\r').unwrap_or(&line);
+        if line.is_empty() {
+            if data_lines.is_empty() {
+                continue;
+            }
+            let payload = data_lines.join("\n");
+            data_lines.clear();
+            let value: Value = serde_json::from_str(&payload)
+                .with_context(|| format!("invalid JSON-RPC event in {label} stream"))?;
+            if is_jsonrpc_response_for(&value, expected_id) {
+                return Ok(payload);
+            }
+            continue;
+        }
+        if line.starts_with(':') {
+            continue;
+        }
+        let (field, value) = line.split_once(':').unwrap_or((line, ""));
+        if field == "data" {
+            data_lines.push(value.strip_prefix(' ').unwrap_or(value).to_string());
+        }
+    }
+    bail!("{label} event stream closed before JSON-RPC response id {expected_id}")
 }
 
 fn verify_stdio_server(
@@ -593,12 +635,19 @@ fn verify_stdio_server(
     parse_initialize_response(&response_line)
 }
 
-/// streamable HTTP 单次请求的返回：JSON-RPC 响应 或 需要认证。
+/// streamable HTTP 单次请求的返回。
 enum StreamableOutcome {
-    /// 提取后的 JSON-RPC 响应文本（已处理 application/json / text/event-stream 双形态）。
+    /// 与请求 id 匹配的 JSON-RPC 响应文本。
     Jsonrpc(String),
     /// 服务端返回 401，已通过 OAuth discovery 解析出授权信息。
     AuthRequired(McpServerHealthResult),
+    /// 服务端已终止当前 session；调用方必须重新 initialize 后重试。
+    SessionExpired,
+}
+
+enum StreamableNotificationOutcome {
+    Accepted,
+    SessionExpired,
 }
 
 /// MCP Streamable HTTP 会话客户端。
@@ -610,6 +659,7 @@ struct StreamableHttpClient {
     headers: BTreeMap<String, String>,
     oauth: Option<OAuthClientConfig>,
     session_id: Option<String>,
+    protocol_version: String,
 }
 
 impl StreamableHttpClient {
@@ -622,9 +672,8 @@ impl StreamableHttpClient {
             bail!("invalid URL: must start with http:// or https://");
         }
         let client = reqwest::blocking::Client::builder()
-            // 兜底跟随重定向；配置层应已用带尾斜杠 URL 规避 /mcp → /mcp/ 的 301
-            //（reqwest 默认策略会把 301 的 POST 降级为 GET，导致握手失败）。
-            .redirect(reqwest::redirect::Policy::limited(5))
+            // POST 在 301/302 下可能被降级为 GET；要求配置最终 MCP endpoint，避免方法语义漂移。
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(10))
             .build()
             .context("failed to create HTTP client")?;
@@ -634,26 +683,81 @@ impl StreamableHttpClient {
             headers: headers.clone(),
             oauth: oauth.clone(),
             session_id: None,
+            protocol_version: MCP_PROTOCOL_VERSION.to_string(),
         })
     }
 
-    /// 发送一个 JSON-RPC 请求，返回提取后的响应文本或认证要求。
-    /// 首次成功响应若带回 `mcp-session-id`，缓存供后续请求回带。
+    fn reset_session(&mut self) {
+        self.session_id = None;
+        self.protocol_version = MCP_PROTOCOL_VERSION.to_string();
+    }
+
+    fn adopt_negotiated_protocol_version(&mut self, initialize_response: &str) -> Result<()> {
+        let response: Value = serde_json::from_str(initialize_response)
+            .context("invalid JSON response from server")?;
+        let version = response
+            .pointer("/result/protocolVersion")
+            .and_then(Value::as_str)
+            .context("initialize response missing protocolVersion")?;
+        self.protocol_version = version.to_string();
+        Ok(())
+    }
+
+    fn apply_headers(
+        &self,
+        mut req: reqwest::blocking::RequestBuilder,
+    ) -> reqwest::blocking::RequestBuilder {
+        req = req.header(MCP_VERSION_HEADER, self.protocol_version.as_str());
+        for (key, value) in &self.headers {
+            req = req.header(key.as_str(), value.as_str());
+        }
+        if let Some(session_id) = &self.session_id {
+            req = req.header(MCP_SESSION_HEADER, session_id);
+        }
+        req
+    }
+
+    fn http_error(resp: reqwest::blocking::Response, label: &str) -> anyhow::Error {
+        let status = resp.status();
+        let location = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let mut body = resp.text().unwrap_or_default();
+        body.truncate(body.floor_char_boundary(512));
+        if status.is_redirection() {
+            return anyhow::anyhow!(
+                "{label} endpoint redirected with {status} to {}; configure the final MCP endpoint URL",
+                location.as_deref().unwrap_or("an unknown location")
+            );
+        }
+        if body.trim().is_empty() {
+            anyhow::anyhow!("{label} returned HTTP {status}")
+        } else {
+            anyhow::anyhow!("{label} returned HTTP {status}: {}", body.trim())
+        }
+    }
+
+    /// 发送 JSON-RPC request。SSE 响应按 event 增量读取并等待匹配 request id。
     fn send(&mut self, request: &Value) -> Result<StreamableOutcome> {
+        let expected_id = request
+            .get("id")
+            .cloned()
+            .context("streamable HTTP request missing JSON-RPC id")?;
+        let label = request
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("MCP request");
         let body = serde_json::to_string(request).context("failed to serialize request")?;
-        let mut req = self
-            .client
-            .post(&self.url)
-            .header("Content-Type", "application/json")
-            .header("Accept", ACCEPT_STREAMABLE)
-            .header(MCP_VERSION_HEADER, MCP_PROTOCOL_VERSION)
-            .body(body);
-        for (k, v) in &self.headers {
-            req = req.header(k.as_str(), v.as_str());
-        }
-        if let Some(sid) = &self.session_id {
-            req = req.header(MCP_SESSION_HEADER, sid);
-        }
+        let req = self.apply_headers(
+            self.client
+                .post(&self.url)
+                .header("Content-Type", "application/json")
+                .header("Accept", ACCEPT_STREAMABLE)
+                .body(body),
+        );
+        let had_session = self.session_id.is_some();
 
         let resp = match req.send() {
             Ok(resp) => resp,
@@ -662,7 +766,7 @@ impl StreamableHttpClient {
             Err(e) => bail!("HTTP request failed: {e}"),
         };
 
-        if resp.status() == 401 {
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             let has_static_auth = self
                 .headers
                 .keys()
@@ -675,8 +779,15 @@ impl StreamableHttpClient {
                 &self.oauth,
             )?));
         }
+        if resp.status() == reqwest::StatusCode::NOT_FOUND && had_session {
+            self.reset_session();
+            return Ok(StreamableOutcome::SessionExpired);
+        }
+        if !resp.status().is_success() {
+            return Err(Self::http_error(resp, label));
+        }
 
-        // 首次成功响应缓存 session-id，后续请求自动回带
+        // initialize 成功响应缓存 session-id，后续请求自动回带。
         if self.session_id.is_none() {
             if let Some(sid) = resp
                 .headers()
@@ -694,35 +805,78 @@ impl StreamableHttpClient {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let body = resp.text().context("failed to read response body")?;
-        let payload = extract_jsonrpc_payload(&content_type, &body)?;
+        let payload = if content_type.contains("text/event-stream") {
+            read_sse_jsonrpc_response(BufReader::new(resp), &expected_id, label)?
+        } else if content_type.contains("application/json") {
+            let body = resp.text().context("failed to read response body")?;
+            let payload = body.trim().to_string();
+            let value: Value = serde_json::from_str(&payload)
+                .with_context(|| format!("invalid JSON-RPC response for {label}"))?;
+            if !is_jsonrpc_response_for(&value, &expected_id) {
+                bail!("{label} returned a JSON-RPC message with an unexpected id or shape");
+            }
+            payload
+        } else {
+            bail!("{label} returned unsupported Content-Type `{content_type}`");
+        };
         Ok(StreamableOutcome::Jsonrpc(payload))
     }
 
     /// 发送一个 JSON-RPC 通知（无 id、无响应）。
     /// 用于 MCP 规范要求的 initialize 后 `notifications/initialized`。
-    fn notify(&self, method: &str) -> Result<()> {
+    fn notify(&mut self, method: &str) -> Result<StreamableNotificationOutcome> {
         let body = serde_json::json!({ "jsonrpc": "2.0", "method": method });
-        let mut req = self
-            .client
-            .post(&self.url)
-            .header("Content-Type", "application/json")
-            .header("Accept", ACCEPT_STREAMABLE)
-            .header(MCP_VERSION_HEADER, MCP_PROTOCOL_VERSION)
-            .body(serde_json::to_string(&body)?);
-        for (k, v) in &self.headers {
-            req = req.header(k.as_str(), v.as_str());
-        }
-        if let Some(sid) = &self.session_id {
-            req = req.header(MCP_SESSION_HEADER, sid);
-        }
+        let req = self.apply_headers(
+            self.client
+                .post(&self.url)
+                .header("Content-Type", "application/json")
+                .header("Accept", ACCEPT_STREAMABLE)
+                .body(serde_json::to_string(&body)?),
+        );
+        let had_session = self.session_id.is_some();
         let resp = req.send()?;
         let status = resp.status();
-        if !status.is_success() && status.as_u16() != 202 {
-            bail!("notification `{method}` returned {status}");
+        if status == reqwest::StatusCode::NOT_FOUND && had_session {
+            self.reset_session();
+            return Ok(StreamableNotificationOutcome::SessionExpired);
         }
-        Ok(())
+        if !status.is_success() {
+            return Err(Self::http_error(resp, method));
+        }
+        Ok(StreamableNotificationOutcome::Accepted)
     }
+
+    /// 显式释放短生命周期健康检查/工具发现创建的服务端 session。
+    fn terminate(&mut self) -> Result<()> {
+        let Some(session_id) = self.session_id.take() else {
+            return Ok(());
+        };
+        let mut req = self
+            .client
+            .delete(&self.url)
+            .header(MCP_VERSION_HEADER, self.protocol_version.as_str())
+            .header(MCP_SESSION_HEADER, session_id);
+        for (key, value) in &self.headers {
+            req = req.header(key.as_str(), value.as_str());
+        }
+        let resp = req.send()?;
+        if resp.status().is_success()
+            || matches!(
+                resp.status(),
+                reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED
+            )
+        {
+            return Ok(());
+        }
+        Err(Self::http_error(resp, "session termination"))
+    }
+}
+
+fn finish_streamable_session<T>(client: &mut StreamableHttpClient, result: Result<T>) -> Result<T> {
+    if let Err(error) = client.terminate() {
+        tracing::debug!(%error, "failed to terminate short-lived MCP session");
+    }
+    result
 }
 
 fn verify_http_server(
@@ -731,10 +885,18 @@ fn verify_http_server(
     oauth: &Option<OAuthClientConfig>,
 ) -> Result<McpServerHealthResult> {
     let mut client = StreamableHttpClient::new(url, headers, oauth)?;
-    match client.send(&build_initialize_request())? {
+    let result = (|| match client.send(&build_initialize_request())? {
         StreamableOutcome::AuthRequired(result) => Ok(result),
-        StreamableOutcome::Jsonrpc(payload) => parse_initialize_response(&payload),
-    }
+        StreamableOutcome::Jsonrpc(payload) => {
+            let health = parse_initialize_response(&payload)?;
+            client.adopt_negotiated_protocol_version(&payload)?;
+            Ok(health)
+        }
+        StreamableOutcome::SessionExpired => {
+            bail!("initialize unexpectedly reported an expired MCP session")
+        }
+    })();
+    finish_streamable_session(&mut client, result)
 }
 
 /// 一次旧式 SSE 会话：GET 端点拿到 message endpoint，并启动后台线程持续读取事件流。
@@ -806,7 +968,12 @@ fn verify_sse_server(
     headers: &BTreeMap<String, String>,
 ) -> Result<McpServerHealthResult> {
     let session = open_sse_session(url, headers)?;
-    post_sse_json(&session.client, &session.endpoint, headers, &build_initialize_request())?;
+    post_sse_json(
+        &session.client,
+        &session.endpoint,
+        headers,
+        &build_initialize_request(),
+    )?;
     let init = session
         .events
         .recv_timeout(Duration::from_secs(10))
@@ -976,18 +1143,42 @@ fn fetch_http_tools(
     headers: &BTreeMap<String, String>,
 ) -> Result<Vec<crate::config::ToolInfo>> {
     let mut client = StreamableHttpClient::new(url, headers, &None)?;
-    match client.send(&build_initialize_request())? {
-        StreamableOutcome::AuthRequired(_) => bail!("server requires authentication"),
-        StreamableOutcome::Jsonrpc(init) => {
+    let result = (|| {
+        for attempt in 0..2 {
+            client.reset_session();
+            let init = match client.send(&build_initialize_request())? {
+                StreamableOutcome::AuthRequired(_) => bail!("server requires authentication"),
+                StreamableOutcome::Jsonrpc(init) => init,
+                StreamableOutcome::SessionExpired => {
+                    bail!("initialize unexpectedly reported an expired MCP session")
+                }
+            };
             parse_initialize_response(&init).context("initialize failed")?;
+            client.adopt_negotiated_protocol_version(&init)?;
+
+            // MCP 规范：initialize 后必须发 notifications/initialized，服务端才转入正常请求状态。
+            if matches!(
+                client.notify("notifications/initialized")?,
+                StreamableNotificationOutcome::SessionExpired
+            ) {
+                if attempt == 0 {
+                    continue;
+                }
+                bail!("MCP session expired repeatedly during initialization");
+            }
+
+            match client.send(&build_tools_list_request())? {
+                StreamableOutcome::AuthRequired(_) => bail!("server requires authentication"),
+                StreamableOutcome::Jsonrpc(tools) => return parse_tools_list_response(&tools),
+                StreamableOutcome::SessionExpired if attempt == 0 => continue,
+                StreamableOutcome::SessionExpired => {
+                    bail!("MCP session expired repeatedly during tools/list")
+                }
+            }
         }
-    }
-    // MCP 规范：initialize 后必须发 notifications/initialized，服务端才转入正常请求状态
-    client.notify("notifications/initialized")?;
-    match client.send(&build_tools_list_request())? {
-        StreamableOutcome::AuthRequired(_) => bail!("server requires authentication"),
-        StreamableOutcome::Jsonrpc(tools) => parse_tools_list_response(&tools),
-    }
+        unreachable!("streamable HTTP retry loop always returns")
+    })();
+    finish_streamable_session(&mut client, result)
 }
 
 fn fetch_sse_tools(
@@ -995,8 +1186,13 @@ fn fetch_sse_tools(
     headers: &BTreeMap<String, String>,
 ) -> Result<Vec<crate::config::ToolInfo>> {
     let session = open_sse_session(url, headers)?;
-    post_sse_json(&session.client, &session.endpoint, headers, &build_initialize_request())
-        .context("failed to POST initialize to SSE endpoint")?;
+    post_sse_json(
+        &session.client,
+        &session.endpoint,
+        headers,
+        &build_initialize_request(),
+    )
+    .context("failed to POST initialize to SSE endpoint")?;
     session
         .events
         .recv_timeout(Duration::from_secs(10))
@@ -1004,9 +1200,19 @@ fn fetch_sse_tools(
     // MCP 规范：initialize 后发 notifications/initialized（通知无响应，SSE 不产生事件）
     let initialized_notification =
         serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
-    post_sse_json(&session.client, &session.endpoint, headers, &initialized_notification)?;
-    post_sse_json(&session.client, &session.endpoint, headers, &build_tools_list_request())
-        .context("failed to POST tools/list to SSE endpoint")?;
+    post_sse_json(
+        &session.client,
+        &session.endpoint,
+        headers,
+        &initialized_notification,
+    )?;
+    post_sse_json(
+        &session.client,
+        &session.endpoint,
+        headers,
+        &build_tools_list_request(),
+    )
+    .context("failed to POST tools/list to SSE endpoint")?;
     let tools_raw = session
         .events
         .recv_timeout(Duration::from_secs(10))
@@ -1181,6 +1387,56 @@ mod tests {
     use super::*;
     use crate::storage::read_json;
     use std::fs;
+    use std::io::{Cursor, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    fn read_http_request(stream: &mut TcpStream) -> String {
+        let mut bytes = Vec::new();
+        let mut buffer = [0u8; 1024];
+        let header_end = loop {
+            let count = stream.read(&mut buffer).unwrap();
+            assert!(count > 0, "client closed before sending HTTP headers");
+            bytes.extend_from_slice(&buffer[..count]);
+            if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                break index + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&bytes[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        while bytes.len() < header_end + content_length {
+            let count = stream.read(&mut buffer).unwrap();
+            assert!(count > 0, "client closed before sending HTTP body");
+            bytes.extend_from_slice(&buffer[..count]);
+        }
+        String::from_utf8(bytes).unwrap()
+    }
+
+    fn write_http_response(
+        stream: &mut TcpStream,
+        status: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) {
+        write!(stream, "HTTP/1.1 {status}\r\n").unwrap();
+        for (name, value) in headers {
+            write!(stream, "{name}: {value}\r\n").unwrap();
+        }
+        write!(
+            stream,
+            "Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+        stream.flush().unwrap();
+    }
 
     fn settings_path(temp: &tempfile::TempDir) -> Utf8PathBuf {
         Utf8PathBuf::from_path_buf(temp.path().join("settings.json")).unwrap()
@@ -1321,25 +1577,127 @@ mod tests {
     }
 
     #[test]
-    fn extract_jsonrpc_payload_handles_event_stream() {
-        // application/json 直通
-        let json = extract_jsonrpc_payload(
-            "application/json",
-            r#"{"jsonrpc":"2.0","id":1,"result":{}}"#,
-        )
-        .unwrap();
-        assert!(json.contains(r#""id":1"#));
+    fn sse_reader_assembles_multiline_data_and_waits_for_matching_response() {
+        let events = concat!(
+            ": keepalive\r\n\r\n",
+            "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\r\n\r\n",
+            "data: {\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{}}\r\n\r\n",
+            "event: message\r\n",
+            "data: {\"jsonrpc\":\"2.0\",\r\n",
+            "data: \"id\":\"1\",\"result\":{}}\r\n\r\n",
+        );
 
-        // text/event-stream 取首个非空 data: 行
-        let sse = extract_jsonrpc_payload(
-            "text/event-stream",
-            "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\r\n\r\n",
-        )
-        .unwrap();
-        assert_eq!(sse, r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+        let payload =
+            read_sse_jsonrpc_response(Cursor::new(events), &serde_json::json!(1), "initialize")
+                .unwrap();
+        let value: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(value["id"], "1");
+    }
 
-        // text/event-stream 无 data 行 → 报错
-        assert!(extract_jsonrpc_payload("text/event-stream", "event: ping\n\n").is_err());
+    #[test]
+    fn streamable_http_returns_matching_sse_response_before_connection_closes() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut stream);
+            assert!(request.starts_with("POST /mcp HTTP/1.1"));
+            stream
+                .write_all(
+                    concat!(
+                        "HTTP/1.1 200 OK\r\n",
+                        "Content-Type: text/event-stream\r\n",
+                        "Connection: close\r\n\r\n",
+                        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\r\n\r\n",
+                        "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}\r\n\r\n",
+                    )
+                    .as_bytes(),
+            )
+            .unwrap();
+            stream.flush().unwrap();
+            let _ = release_rx.recv_timeout(Duration::from_secs(12));
+        });
+
+        let mut client = StreamableHttpClient::new(&url, &BTreeMap::new(), &None).unwrap();
+        let outcome = client.send(&build_initialize_request());
+        release_tx.send(()).unwrap();
+        server.join().unwrap();
+        let response = match outcome.unwrap() {
+            StreamableOutcome::Jsonrpc(response) => response,
+            _ => panic!("expected JSON-RPC response"),
+        };
+
+        assert_eq!(jsonrpc_response_id(&response), Some(1));
+    }
+
+    #[test]
+    fn streamable_http_reinitializes_expired_session_and_sends_delete() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for step in 0..6 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_http_request(&mut stream);
+                let request_lower = request.to_ascii_lowercase();
+                match step {
+                    0 => {
+                        assert!(!request_lower.contains("mcp-session-id:"));
+                        write_http_response(
+                            &mut stream,
+                            "200 OK",
+                            &[
+                                ("Content-Type", "application/json"),
+                                ("Mcp-Session-Id", "expired-session"),
+                            ],
+                            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"fixture","version":"1"}}}"#,
+                        );
+                    }
+                    1 => {
+                        assert!(request_lower.contains("mcp-session-id: expired-session"));
+                        assert!(request_lower.contains("mcp-protocol-version: 2025-03-26"));
+                        write_http_response(&mut stream, "404 Not Found", &[], "");
+                    }
+                    2 => {
+                        assert!(!request_lower.contains("mcp-session-id:"));
+                        write_http_response(
+                            &mut stream,
+                            "200 OK",
+                            &[
+                                ("Content-Type", "application/json"),
+                                ("Mcp-Session-Id", "active-session"),
+                            ],
+                            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"fixture","version":"1"}}}"#,
+                        );
+                    }
+                    3 => {
+                        assert!(request_lower.contains("mcp-session-id: active-session"));
+                        write_http_response(&mut stream, "202 Accepted", &[], "");
+                    }
+                    4 => {
+                        assert!(request_lower.contains("mcp-session-id: active-session"));
+                        write_http_response(
+                            &mut stream,
+                            "200 OK",
+                            &[("Content-Type", "application/json")],
+                            r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"lookup","description":"Lookup","inputSchema":{"type":"object"}}]}}"#,
+                        );
+                    }
+                    5 => {
+                        assert!(request.starts_with("DELETE /mcp HTTP/1.1"));
+                        assert!(request_lower.contains("mcp-session-id: active-session"));
+                        write_http_response(&mut stream, "200 OK", &[], "");
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        });
+
+        let tools = fetch_http_tools(&url, &BTreeMap::new()).unwrap();
+        server.join().unwrap();
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "lookup");
     }
 
     #[test]

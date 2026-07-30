@@ -1624,7 +1624,7 @@ const resources = {
       },
       contextManagement: {
         title: "Context Management",
-        profileManagement: "Role Management",
+        profileManagement: "Role",
         profileHint:
           "Roles are stored as Markdown files and workflow nodes reference them by globally unique ID.",
         addProfile: "Add Role",

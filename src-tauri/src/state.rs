@@ -197,6 +197,8 @@ pub struct DesktopState {
     lifecycle_bus: RuntimeLifecycleBus,
     /// MCP 服务器健康状态缓存（启动后台线程 + 手动诊断共同写入，列表读取）。
     mcp_health: Mutex<BTreeMap<String, gold_band::config::McpServerState>>,
+    /// 进程级心跳上报器（事件驱动 appStarted/activity）。
+    heartbeat_reporter: Arc<crate::metrics::heartbeat::HeartbeatReporter>,
 }
 
 impl DesktopState {
@@ -217,7 +219,24 @@ impl DesktopState {
             notification_dedup: Arc::new(NotificationDedup::new()),
             lifecycle_bus: RuntimeLifecycleBus::new(),
             mcp_health: Mutex::new(BTreeMap::new()),
+            heartbeat_reporter: crate::metrics::heartbeat::HeartbeatReporter::new(env!("CARGO_PKG_VERSION").to_string()),
         }
+    }
+
+    /// 触发一次活动心跳（由窗口聚焦、pointer/keyboard 交互或业务命令调用）。
+    pub fn record_heartbeat_activity(&self) -> Result<()> {
+        let config = self.context()?;
+        let settings = crate::metrics::heartbeat_settings(&config.config);
+        self.heartbeat_reporter.record_activity(&settings);
+        Ok(())
+    }
+
+    /// 重新评估心跳配置（启动时和设置变更后调用）。
+    pub fn reevaluate_heartbeat_config(&self) -> Result<()> {
+        let config = self.context()?;
+        let settings = crate::metrics::heartbeat_settings(&config.config);
+        self.heartbeat_reporter.handle_config_snapshot(&settings);
+        Ok(())
     }
 
     /// 读取 MCP 健康状态缓存快照（供列表 VM 附加展示）。

@@ -1280,6 +1280,7 @@ pub fn start_run(
     state: State<'_, DesktopState>,
     task_id: String,
 ) -> CommandResult<RunSummaryVm> {
+    let _ = state.record_heartbeat_activity();
     let base_app = state.app().map_err(command_error)?;
     let bg_app = base_app.clone_for_background();
     let live_update = acp_live_update_emitter_for_app(&base_app, app_handle.clone(), None);
@@ -1301,6 +1302,7 @@ pub fn continue_run(
     prompt_id: Option<String>,
     prompt: Option<String>,
 ) -> CommandResult<RunSummaryVm> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     app.run_continue_background(&task_id, &run_id, prompt_id, prompt)
         .map(run_summary_vm)
@@ -1382,6 +1384,7 @@ pub fn submit_manual_check(
     attempt_id: String,
     outcome: String,
 ) -> CommandResult<RunSummaryVm> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let outcome = match outcome.as_str() {
         "success" => NodeOutcome::Success,
@@ -1405,6 +1408,7 @@ pub fn retry_run(
     task_id: String,
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
+    let _ = state.record_heartbeat_activity();
     let base_app = state.app().map_err(command_error)?;
     let bg_app = base_app.clone_for_background();
     let live_update = acp_live_update_emitter_for_app(&base_app, app_handle.clone(), None);
@@ -1494,6 +1498,12 @@ pub fn update_notification_attention(
         .map_err(command_error)
 }
 
+/// Frontend activity signal: pointerdown, keydown, or business command.
+#[tauri::command]
+pub fn record_activity(state: State<'_, DesktopState>) -> CommandResult<()> {
+    state.record_heartbeat_activity().map_err(command_error)
+}
+
 #[tauri::command]
 pub fn save_metrics_settings(
     state: State<'_, DesktopState>,
@@ -1514,6 +1524,7 @@ pub fn save_metrics_settings(
         .update_settings_config(&existing)
         .map_err(command_error)?;
     let updated_context = state.context().map_err(command_error)?;
+    let _ = state.reevaluate_heartbeat_config();
     Ok(metrics_settings(&updated_context.config))
 }
 
@@ -2000,6 +2011,7 @@ pub async fn submit_conversation_prompt(
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<ConversationPromptSubmitVm> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let locator = AttemptLocator::new(
         task_id,
@@ -2104,6 +2116,7 @@ pub async fn send_acp_prompt(
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let locator = AttemptLocator::new(
         task_id.clone(),
@@ -3881,6 +3894,7 @@ pub fn respond_elicitation(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<()> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
 
     let action = match action.as_str() {

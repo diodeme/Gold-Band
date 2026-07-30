@@ -43,6 +43,7 @@ import {
   subscribeAcpSessionUpdates,
   subscribeConversationRunStateUpdates,
   updateNotificationAttention,
+  recordActivity,
 } from './api';
 import { isTauriRuntime } from './api/shared';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -372,6 +373,24 @@ export function App() {
     const mode: ConversationSessionFollowMode = enabled ? 'auto' : 'manual';
     updateConversationSessionFollow(mode, conversationSelectedSessionKeyRef.current);
   }, [conversationPage, updateConversationSessionFollow]);
+
+  // Global activity listener: pointerdown + keydown with 60s debounce.
+  // The Rust layer's 15-minute throttle is the authoritative gate.
+  const activityDebounceRef = useRef(0);
+  useEffect(() => {
+    const onActivity = () => {
+      const now = Date.now();
+      if (now - activityDebounceRef.current < 60_000) return;
+      activityDebounceRef.current = now;
+      recordActivity().catch(() => {});
+    };
+    window.addEventListener('pointerdown', onActivity);
+    window.addEventListener('keydown', onActivity);
+    return () => {
+      window.removeEventListener('pointerdown', onActivity);
+      window.removeEventListener('keydown', onActivity);
+    };
+  }, []);
 
   const loadProfiles = useCallback(async () => {
     const result = await getProfiles();

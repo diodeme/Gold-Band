@@ -242,6 +242,7 @@ pub async fn create_conversation_run(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::ConversationCreateInputVm,
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
+    let _ = state.record_heartbeat_activity();
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
@@ -310,6 +311,7 @@ pub fn rerun_conversation_task(
     project_id: String,
     task_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
+    let _ = state.record_heartbeat_activity();
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;

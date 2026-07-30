@@ -29,6 +29,7 @@ use commands::{
     list_project_skills, list_skills, mark_settings_advanced_update_seen,
     mark_settings_update_seen, open_in_file_manager, pause_run, read_skill,
     remove_recent_workspace, renew_acp_session_lease, replace_auto_templates,
+    record_activity,
     respond_acp_permission, respond_elicitation, retry_run, save_auto_template,
     save_desktop_preferences, save_metrics_settings, save_task_workflow, save_updater_settings,
     save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
@@ -52,7 +53,7 @@ use commands_conversation::{
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
-use metrics::start_heartbeat_polling;
+// Heartbeat reporter is event-driven; initialized via DesktopState::reevaluate_heartbeat_config().
 use state::{DesktopContext, DesktopState};
 use tauri::{Manager, WindowEvent};
 use tracing::{info, warn};
@@ -143,7 +144,7 @@ fn run() -> anyhow::Result<()> {
             });
             retry_pending_startup_install(&app.handle().clone());
             start_update_polling(app.handle().clone());
-            start_heartbeat_polling(app.handle().clone());
+            let _ = app.state::<DesktopState>().reevaluate_heartbeat_config();
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -162,6 +163,10 @@ fn run() -> anyhow::Result<()> {
                         let _ = crate::updater::install_pending_file(&handle, &path).await;
                     });
                 }
+            }
+            if let WindowEvent::Focused(true) = event {
+                let state = window.state::<DesktopState>();
+                let _ = state.record_heartbeat_activity();
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -224,6 +229,7 @@ fn run() -> anyhow::Result<()> {
             get_metrics_settings,
             update_notification_attention,
             save_metrics_settings,
+            record_activity,
             get_update_status,
             mark_settings_update_seen,
             mark_settings_advanced_update_seen,

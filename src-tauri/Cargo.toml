@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "gold-band-desktop"
 version = "0.9.0"
 edition = "2024"
@@ -24,7 +24,7 @@ tauri-plugin-dialog = "2"
 open = "5"
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "rt", "macros"] }
 trash = "5"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
@@ -32,6 +32,7 @@ tracing = "0.1"
 base64 = "0.22"
 tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+whoami = "1"
 # macOS / Linux OS 閫氱煡 fallback銆?
 notify-rust = { version = "4", optional = true }
 
@@ -48,5 +49,5 @@ windows-version = "0.1.7"
 
 [features]
 default = ["native-notification"]
-# 鍚敤 OS 鍘熺敓閫氱煡锛圵indows Toast 濮嬬粓鍙敤锛沵acOS/Linux 缁?notify-rust锛夈€?
+# 鍚敤 OS 鍘熺敓閫氱煡锛圵indows Toast 濮嬬粓鍙敤锛沵acOS/Linux 缁?notify-rust锛夈€?
 native-notification = ["dep:notify-rust"]

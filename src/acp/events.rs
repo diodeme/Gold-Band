@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 
+use agent_client_protocol_schema::v1::{CreateElicitationRequest, ElicitationScope};
 use anyhow::Result;
 use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -1257,18 +1258,25 @@ pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> 
 pub fn elicitation_request_event(
     seq: u64,
     elicitation_id: String,
-    message: String,
-    schema: Value,
+    request: &CreateElicitationRequest,
 ) -> AcpUiEvent {
+    let (session_id, tool_call_id) = match request.scope() {
+        ElicitationScope::Session(scope) => (
+            Some(scope.session_id.to_string()),
+            scope.tool_call_id.as_ref().map(ToString::to_string),
+        ),
+        ElicitationScope::Request(_) => (None, None),
+        _ => (None, None),
+    };
     AcpUiEvent {
         id: elicitation_id,
         seq,
         timestamp: current_timestamp(),
         kind: "elicitationRequest".to_string(),
-        session_id: None,
-        content: Some(message),
+        session_id,
+        content: Some(request.message.clone()),
         title: None,
-        tool_call_id: None,
+        tool_call_id,
         status: Some("pending".to_string()),
         // 不设 ended_seq/ended_at — 保持"进行中"直到用户响应
         started_seq: None,
@@ -1276,7 +1284,9 @@ pub fn elicitation_request_event(
         started_at: None,
         ended_at: None,
         timing: None,
-        raw: Some(schema),
+        raw: Some(
+            serde_json::to_value(request).expect("CreateElicitationRequest must serialize to JSON"),
+        ),
     }
 }
 
@@ -1828,12 +1838,14 @@ mod tests {
     }
 
     fn elicitation_request_event_at(seq: u64, elicitation_id: &str, timestamp: u64) -> AcpUiEvent {
-        let mut event = elicitation_request_event(
-            seq,
-            elicitation_id.to_string(),
-            "Choose".to_string(),
-            json!({ "type": "object" }),
-        );
+        let request = serde_json::from_value(json!({
+            "mode": "form",
+            "sessionId": "session-test",
+            "message": "Choose",
+            "requestedSchema": { "type": "object", "properties": {} }
+        }))
+        .unwrap();
+        let mut event = elicitation_request_event(seq, elicitation_id.to_string(), &request);
         event.timestamp = format!("{timestamp}Z");
         event
     }
@@ -1847,6 +1859,57 @@ mod tests {
         );
         event.timestamp = format!("{timestamp}Z");
         event
+    }
+
+    #[test]
+    fn elicitation_request_event_preserves_the_full_typed_request() {
+        let request = serde_json::from_value(json!({
+            "mode": "form",
+            "sessionId": "session-1",
+            "toolCallId": "tool-1",
+            "message": "Context\n\nComplete question?",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "question_0": {
+                        "type": "string",
+                        "oneOf": [{
+                            "const": "A",
+                            "title": "A",
+                            "description": "First choice",
+                            "_meta": {
+                                "_claude/askUserQuestionOption": {
+                                    "preview": "preview"
+                                }
+                            }
+                        }]
+                    }
+                }
+            },
+            "_meta": { "source": "claude-agent-acp" }
+        }))
+        .unwrap();
+
+        let event = elicitation_request_event(7, "elicit-1".to_string(), &request);
+        let raw = event.raw.unwrap();
+
+        assert_eq!(event.session_id.as_deref(), Some("session-1"));
+        assert_eq!(event.tool_call_id.as_deref(), Some("tool-1"));
+        assert_eq!(
+            event.content.as_deref(),
+            Some("Context\n\nComplete question?")
+        );
+        assert_eq!(raw["mode"], "form");
+        assert_eq!(raw["_meta"]["source"], "claude-agent-acp");
+        assert_eq!(
+            raw["requestedSchema"]["properties"]["question_0"]["oneOf"][0]["description"],
+            "First choice"
+        );
+        assert_eq!(
+            raw["requestedSchema"]["properties"]["question_0"]["oneOf"][0]["_meta"]["_claude/askUserQuestionOption"]
+                ["preview"],
+            "preview"
+        );
     }
 
     #[test]

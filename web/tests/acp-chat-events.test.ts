@@ -218,6 +218,43 @@ describe('ACP chat event handling', () => {
     expect(pendingElicitationFromEvents(events, new Map())?.elicitationId).toBe('elicit-2');
   });
 
+  it('recovers a pending card from the full typed elicitation request after refresh', () => {
+    const message = 'Round 11 | 歧义：23.5%\n\n管理端 API 与菜单的权限标识如何设计？';
+    const requestedSchema = {
+      type: 'object' as const,
+      properties: {
+        question_0: {
+          type: 'string' as const,
+          title: '管理端权限标识',
+          oneOf: [{ const: 'admin-only', title: 'admin-only' }],
+        },
+      },
+    };
+    const events = [
+      event({
+        id: 'elicit-full-request',
+        seq: 10,
+        kind: 'elicitationRequest',
+        status: 'pending',
+        content: message,
+        raw: {
+          mode: 'form',
+          sessionId: 'session-1',
+          toolCallId: 'call-1',
+          message,
+          requestedSchema,
+          _meta: { source: 'claude-agent-acp' },
+        },
+      }),
+    ];
+
+    expect(pendingElicitationFromEvents(events, new Map())).toEqual({
+      elicitationId: 'elicit-full-request',
+      message,
+      requestedSchema,
+    });
+  });
+
   it('does not resurface older pending elicitation requests after a newer one was answered', () => {
     const events = [
       event({

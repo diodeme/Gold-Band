@@ -34,6 +34,14 @@ provider adapter 是 provider-specific 差异的隔离层。
 - `providerId`
 - `displayName`
 - `capabilities`
+
+`capabilities` 当前包含以下静态 provider 能力（运行期声明，非 doctor 探测结果）：
+- `supports_open_session` / `supports_continue_session`：是否支持新建 / 续接 ACP session；
+- `supports_system_prompt`：是否接受 `session/new` 的 system prompt（claude-acp 支持，codex-acp 不支持）；
+- `supports_raw_stream`：是否支持 raw frame / transcript；
+- MCP transport 能力属于 MCP/Agent capability 领域，应以 Agent 通过 ACP `mcpCapabilities` 声明的事实为准；provider adapter 不维护按 provider ID 硬编码的 transport 列表，也不在会话发送前自行过滤 MCP server，避免形成与 MCP 管理层不一致的第二套能力来源。
+
+- Agent 的 `configOptions` 是会随 adapter 升级变化的能力目录。前端使用纯函数对已保存 override 做交集规范化，保留仍存在且 value 有效的项，返回被删除的 option id；校验函数不得修改 React/persisted 输入对象，也不得把 stale override 当成阻塞会话的错误。Direct/AUTO 在提交前使用规范化结果，并在能力目录刷新后同步清理当前配置。
 - `isDefault`
 
 ### `doctor()`

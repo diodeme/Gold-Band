@@ -114,6 +114,7 @@ export interface AppConfigVm {
 
 export interface AppInfoVm {
   channel: string;
+  feedbackEnabled: boolean;
   appName: string;
   appKey: string;
   configDirName: string;
@@ -1280,3 +1281,16 @@ export interface SkillContentVm {
   descriptionSource?: string;
   body: string;
 }
+
+// -- Feedback --
+export interface FeedbackScreenshotInput { name: string; mime: string; size: number; dataBase64: string; }
+export interface FeedbackInput { description: string; projectId?: string | null; taskId?: string | null; screenshots: FeedbackScreenshotInput[]; includeLogs: boolean; }
+export interface FeedbackResult { success: boolean; }
+export interface FeedbackArchivePreview {
+  uncompressedBytes: number;
+  fileCount: number;
+  withinLimits: boolean;
+  maxUncompressedBytes: number;
+  maxFileCount: number;
+}
+

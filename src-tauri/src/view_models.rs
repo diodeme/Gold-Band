@@ -18,8 +18,8 @@ use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::DynamicGraphState;
 use gold_band::provider::{
-    select_config_options_from_capabilities, supported_models_from_capabilities,
-    supported_modes_from_capabilities,
+    mcp_capabilities_from_capabilities, select_config_options_from_capabilities,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState};
 
@@ -121,6 +121,10 @@ pub struct ManagedAgentVm {
     pub supported_modes: Option<Vec<AcpModeVm>>,
     pub supported_models: Option<Vec<AcpModeVm>>,
     pub config_options: Option<Vec<AcpSelectConfigOptionVm>>,
+    /// 是否支持 streamable HTTP MCP 传输（None=未诊断/未知）
+    pub mcp_http_supported: Option<bool>,
+    /// 是否支持 SSE MCP 传输（None=未诊断/未知）
+    pub mcp_sse_supported: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1190,6 +1194,12 @@ fn managed_agent_vm(
                 })
                 .collect::<Vec<_>>();
             (!options.is_empty()).then_some(options)
+        }),
+        mcp_http_supported: diagnostic.and_then(|d| {
+            mcp_capabilities_from_capabilities(d.capabilities.as_ref()).map(|m| m.http)
+        }),
+        mcp_sse_supported: diagnostic.and_then(|d| {
+            mcp_capabilities_from_capabilities(d.capabilities.as_ref()).map(|m| m.sse)
         }),
     }
 }

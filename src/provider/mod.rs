@@ -616,6 +616,28 @@ pub fn supported_models_from_capabilities(capabilities: Option<&Value>) -> Vec<A
     Vec::new()
 }
 
+/// Agent 对 MCP 远程传输的支持情况（stdio 由 ACP 规范保证必支持，不在此列）。
+/// 读取 `agentCapabilities.mcpCapabilities.{http,sse}`（ACP schema `McpCapabilities`，camelCase）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct McpCapabilitiesSummary {
+    /// 是否支持 streamable HTTP 传输
+    pub http: bool,
+    /// 是否支持旧式 SSE 传输
+    pub sse: bool,
+}
+
+/// 从 agent capabilities 提取 MCP 远程传输支持。
+/// 返回 `None` 表示 capabilities 缺失或无 `mcpCapabilities` 字段 —— agent 尚未诊断或未声明。
+pub fn mcp_capabilities_from_capabilities(
+    capabilities: Option<&Value>,
+) -> Option<McpCapabilitiesSummary> {
+    let mcp = capabilities?.get("mcpCapabilities")?;
+    Some(McpCapabilitiesSummary {
+        http: mcp.get("http").and_then(Value::as_bool).unwrap_or(false),
+        sse: mcp.get("sse").and_then(Value::as_bool).unwrap_or(false),
+    })
+}
+
 /// Extracts generic ACP select configuration options without assuming adapter-specific IDs.
 pub fn select_config_options_from_capabilities(
     capabilities: Option<&Value>,

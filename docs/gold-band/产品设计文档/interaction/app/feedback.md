@@ -57,7 +57,7 @@ FeedbackInput {
 ### 4.2 会话解析
 
 - 后端从全局 `StateConfig.conversationWorkspaces` 解析 `projectId`，再构造 workspace-scoped `App`。
-- `taskId` 必须是单一安全路径组件，拒绝绝对路径、`.`、`..`、斜杠和反斜杠穿越。
+- `taskId` 必须是单一安全路径组件；校验不依赖宿主操作系统的路径语义，始终显式拒绝绝对路径、`.`、`..`、斜杠和反斜杠穿越。
 - 任务目录及每个文件均 canonicalize，并验证仍位于 canonical `tasks_dir/taskId` 下。
 - 目录遍历使用 `walkdir` 且 `follow_links(false)`；符号链接不进入归档。
 - 未知项目、未知任务、已被移除的任务统一返回 `feedback.session-not-found`。

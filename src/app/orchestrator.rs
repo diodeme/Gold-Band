@@ -10898,8 +10898,13 @@ mod tests {
             &PendingElicitationState {
                 elicitation_id: "elicit-001".to_string(),
                 jsonrpc_id: serde_json::json!(1),
-                message: "请选择".to_string(),
-                requested_schema: serde_json::json!({ "type": "object" }),
+                request: serde_json::from_value(serde_json::json!({
+                    "mode": "form",
+                    "sessionId": "session-test",
+                    "message": "请选择",
+                    "requestedSchema": { "type": "object", "properties": {} }
+                }))
+                .unwrap(),
                 created_at: "1Z".to_string(),
             },
         )

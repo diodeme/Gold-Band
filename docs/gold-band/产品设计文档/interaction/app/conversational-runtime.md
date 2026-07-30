@@ -156,6 +156,12 @@ ACP 权限请求与 elicitation 提问都必须收敛到统一 intervention noti
 
 ACP elicitation 也复用同一条 session event / timeline 管道：`elicitationRequest` 与 `elicitationResponse` 虽然不直接作为普通消息卡片渲染，但必须保留在当前 session events 中，供 composer 底部的提问卡片推导 pending/answered 状态。已回答状态不能只依赖前端内存 Map，刷新或重进页面后必须能从 `elicitationResponse` 回放恢复。回答提交后交互卡片立即消失，不额外合成用户消息气泡；Agent 原生 `AskUserQuestion` 的 `toolCall/toolCallUpdate` 仍按普通工具卡片展示，并保留 completed 状态、关键参数和工具输出。
 
+`elicitation/create` 的协议边界必须使用官方 `agent-client-protocol-schema` 类型反序列化，不能在 runtime 中手工摘取 `message / requestedSchema`。pending signal 与 `elicitationRequest.raw` 保存完整请求，包含 `mode`、scope、`sessionId`、`toolCallId`、`requestedSchema` 和 `_meta`；event 顶层 session/tool identity 从类型化 scope 派生。前端刷新恢复同时识别完整请求形态与历史上仅保存 schema 的 timeline 形态，但新写入事实统一使用完整请求。
+
+ElicitationCard 不从自然语言猜测题目边界。表单级 `message` 必须整体展示并保留换行；字段级 `title` 作为短标签，`description` 作为该字段题干或帮助文本；多题时 provider 的通用 message 可以隐藏。单题没有字段 description 时，完整 message 就是题干，禁止按 `split("\n")` 或步骤 index 截取其中一行。
+
+AskUserQuestion 自定义答案按请求结构关联，不按 Agent 版本号分支：优先读取字段 `_meta._askUserQuestionCustomAnswer.questionId`，其次识别 `question_n_custom -> question_n`；旧版全局 `customAnswer` 与普通文本字段保持独立步骤并原样提交自己的 key，绝不能把任意未匹配文本字段猜成首个选项题的伴随输入。枚举选项的 `description` 与 `_meta._claude/askUserQuestionOption.preview` 保持结构化展示。该 shape-based 规则覆盖 Claude Agent ACP 0.44、0.45.1 及当前版本，升级 Gold Band 后无需同步升级用户机器上的 Agent 才能正确显示旧请求。
+
 多问题 ElicitationCard 的已确认答案必须作为卡片内唯一事实源，当前步骤的单选、多选和自定义输入只属于可丢弃草稿。步骤前进时把当前题答案按字段原子替换进答案集；返回历史步骤时从答案集恢复选中状态；用户对历史步骤执行“跳过”时，必须同时删除该题主字段与自定义伴随字段，最终 `content` 只从清理后的答案集构建。不得分别维护“界面选中值”和“提交答案”而缺少双向同步，也不得让已经跳过或已经被预设选项替换的旧自定义值进入提交载荷。
 
 ElicitationCard 属于高频表单卡片，不使用宽松的营销式留白。卡片本体、步骤指示器、题干、选项行和底部操作区应保持紧凑节奏：优先压缩上下 padding、控制项高度和区块间距，同时保留稳定点击面积与清晰层级，避免在会话消息流中形成过厚的大白块。

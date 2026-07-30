@@ -5486,13 +5486,15 @@ export function pendingElicitationFromEvents(
     if (answeredIds.has(event.id)) return null;
     if (event.status === "pending") {
       const raw = rawObject(event.raw) ?? {};
+      const requestedSchema = rawObject(raw.requestedSchema);
+      const schemaSource = requestedSchema ?? raw;
       const schema: ElicitationSchema =
-        typeof raw === "object" && (raw as Record<string, unknown>).type === "object"
-          ? (raw as unknown as ElicitationSchema)
+        schemaSource.type === "object"
+          ? (schemaSource as unknown as ElicitationSchema)
           : { type: "object", properties: {} };
       return {
         elicitationId: event.id,
-        message: event.content ?? "",
+        message: stringValue(raw.message) ?? event.content ?? "",
         requestedSchema: schema,
       };
     }

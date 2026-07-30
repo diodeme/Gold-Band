@@ -3,7 +3,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, LazyLock, Mutex, mpsc::RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -3253,16 +3253,14 @@ impl<'a> AcpRuntime<'a> {
             .get("id")
             .cloned()
             .ok_or_else(|| anyhow!("ACP elicitation request missing JSON-RPC id"))?;
-        let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
-        let message = params
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let schema = params
-            .get("requestedSchema")
+        let params = value
+            .get("params")
             .cloned()
-            .unwrap_or_else(|| json!({}));
+            .ok_or_else(|| anyhow!("ACP elicitation request missing params"))?;
+        let request = serde_json::from_value::<
+            agent_client_protocol_schema::v1::CreateElicitationRequest,
+        >(params)
+        .context("invalid ACP elicitation/create params")?;
 
         let elicitation_id = format!("elicit-{}", uuid::Uuid::new_v4().simple());
 
@@ -3272,8 +3270,7 @@ impl<'a> AcpRuntime<'a> {
             &PendingElicitationState {
                 elicitation_id: elicitation_id.clone(),
                 jsonrpc_id: rpc_id.clone(),
-                message: message.clone(),
-                requested_schema: schema.clone(),
+                request: request.clone(),
                 created_at: current_timestamp(),
             },
         )?;
@@ -3283,8 +3280,7 @@ impl<'a> AcpRuntime<'a> {
         let event = crate::acp::events::elicitation_request_event(
             self.seq,
             elicitation_id.clone(),
-            message,
-            schema.clone(),
+            &request,
         );
         self.persist_event(&event)?;
 

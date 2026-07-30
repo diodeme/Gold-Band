@@ -761,3 +761,13 @@ attempt-001/
 - 领域收敛：相对时间格式化从 React 组件下沉到共享 `datetime` 模块，任务行与 run 行使用同一接口；继续保持侧边栏既有 `m/h/d/w/mo/y` 紧凑展示，不引入改变文案形态的第三方格式化依赖。
 - 连续区间：不足 1 分钟显示“刚刚”，1–59 分钟显示分钟，1–23 小时显示小时，1–6 天显示天，7–29 天显示周，30–364 天显示月，365 天起显示年。
 - 回归固化：前端纯函数测试覆盖所有单位切换边界、Unix 秒时间戳、未来时间与非法输入；生产构建和侧边栏实际展示验证通过后完成验收。
+
+---
+
+## 2026-07-29：ACP Elicitation 多行题干与跨版本结构兼容
+
+- 根因修复：ElicitationCard 不再把 `params.message` 按换行和步骤下标切题；单题的上下文与实际问题整体展示，多题使用字段 description，通用 provider message 可隐藏。
+- 协议边界：Rust 使用官方 `agent-client-protocol-schema 1.6.0` 的 `CreateElicitationRequest` 反序列化并持久化完整请求，timeline 保留 mode、scope、session/tool identity、schema 与 `_meta`。
+- 版本兼容：按 schema shape 支持 Claude Agent ACP 0.44 全局 `customAnswer`、0.45.1 `question_n_custom` 和当前 `_askUserQuestionCustomAnswer` 元数据，不要求用户机器上的旧 Agent 同步升级。
+- 展示能力：选项 description 与 Claude preview 元数据保持结构化渲染；普通文本字段不再被猜测为首题自定义答案。
+- 回归固化：Rust 覆盖生产 0.44 fixture、pending roundtrip 和完整 timeline request；Web 覆盖多行题干、三类自定义答案、选项元数据及刷新恢复，并要求生产构建和 ACP 会话实际验证通过。

@@ -3,7 +3,10 @@ export type ConcreteDesktopTheme = Exclude<DesktopThemePreference, 'system'>;
 export type DesktopThemeMode = 'light' | 'dark';
 export type DesktopFontPreference = string;
 export type DesktopLanguage = 'zh-cn' | 'en';
+export type AvatarKind = 'agent' | 'user';
+export type AvatarShape = 'circle' | 'square';
 export type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'unknown';
+export type DesktopWindowFrameStyle = 'native-compositor' | 'app-outline';
 export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'error';
 
 export interface PreferencesVm {
@@ -12,6 +15,31 @@ export interface PreferencesVm {
   font: DesktopFontPreference;
   useLocalClaude: boolean;
   verboseLogging: boolean;
+  avatars: AvatarPreferencesVm;
+}
+
+export interface AvatarImageVm {
+  id: string;
+  dataUrl: string;
+  createdAt: string;
+}
+
+export interface AvatarProfileVm {
+  shape: AvatarShape;
+  selectedAvatarId: string | null;
+  recentAvatars: AvatarImageVm[];
+}
+
+export interface AvatarPreferencesVm {
+  agent: AvatarProfileVm;
+  user: AvatarProfileVm;
+}
+
+export interface SaveDesktopAvatarInput {
+  kind: AvatarKind;
+  shape: AvatarShape;
+  mimeType: string;
+  dataBase64: string;
 }
 
 export interface LocalClaudeStatusVm {
@@ -57,6 +85,11 @@ export interface UpdateBadgeStateVm {
   announcementClosedVersion?: string | null;
 }
 
+export interface DesktopWindowChromeVm {
+  frameStyle: DesktopWindowFrameStyle;
+  nativeShadow: boolean;
+}
+
 export interface AppBootstrapVm {
   repoRoot: string;
   recentWorkspaces: string[];
@@ -68,6 +101,7 @@ export interface AppBootstrapVm {
   persistedAvailableUpdate?: UpdateInfoVm | null;
   clientVersion: string;
   platform: DesktopPlatform;
+  windowChrome: DesktopWindowChromeVm;
   appInfo: AppInfoVm;
   appConfig: AppConfigVm;
   needsWorkspace: boolean;
@@ -80,6 +114,7 @@ export interface AppConfigVm {
 
 export interface AppInfoVm {
   channel: string;
+  feedbackEnabled: boolean;
   appName: string;
   appKey: string;
   configDirName: string;
@@ -380,6 +415,7 @@ export interface ProfileVm {
   summary: string;
   summarySource?: string;
   content: string;
+  dynamicTemplate: boolean;
   scope: ProfileScope;
   isBuiltIn: boolean;
   createdAt: string;
@@ -395,6 +431,7 @@ export interface ProfileInput {
   name: string;
   summary: string;
   content: string;
+  dynamicTemplate: boolean;
 }
 
 export interface SaveWorkflowInput {
@@ -789,12 +826,15 @@ export interface AcpDiagnosticsVm {
   lastErrorTimestamp?: string | null;
 }
 
+export type AcpRawFrameOrder = "asc" | "desc";
+
 export interface AcpRawFrameQueryInput {
   page?: number;
   pageSize?: number;
   search?: string;
   kind?: string;
   direction?: string;
+  order?: AcpRawFrameOrder;
 }
 
 export interface AcpRawFrameVm {
@@ -814,7 +854,7 @@ export interface AcpRawFramePageVm {
   total: number;
   hasPrevious: boolean;
   hasNext: boolean;
-  order: string;
+  order: AcpRawFrameOrder;
   search?: string | null;
   kind?: string | null;
   direction?: string | null;
@@ -996,7 +1036,7 @@ export interface ConversationAcpFacetVm {
 export interface ConversationComposerVm {
   mode: 'normal' | 'runtime-active' | 'stopping' | 'interrupted-input' | 'invalid-workflow' | 'runtime-error' | 'permission-blocked' | 'submitting' | string;
   submitTarget: 'acp-prompt' | 'runtime-continue' | 'permission-response' | 'none' | string;
-  processingKind: 'sending' | 'launching' | 'processing' | 'thinking' | 'tool' | 'responding' | 'stopping' | 'launching-next-node' | string;
+  processingKind: 'sending' | 'launching' | 'processing' | 'thinking' | 'tool' | 'compacting' | 'responding' | 'stopping' | 'launching-next-node' | string;
   statusKey?: string | null;
   canStop: boolean;
   lockInput: boolean;
@@ -1245,3 +1285,16 @@ export interface SkillContentVm {
   descriptionSource?: string;
   body: string;
 }
+
+// -- Feedback --
+export interface FeedbackScreenshotInput { name: string; mime: string; size: number; dataBase64: string; }
+export interface FeedbackInput { description: string; projectId?: string | null; taskId?: string | null; screenshots: FeedbackScreenshotInput[]; includeLogs: boolean; }
+export interface FeedbackResult { success: boolean; }
+export interface FeedbackArchivePreview {
+  uncompressedBytes: number;
+  fileCount: number;
+  withinLimits: boolean;
+  maxUncompressedBytes: number;
+  maxFileCount: number;
+}
+

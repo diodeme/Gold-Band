@@ -28,9 +28,12 @@ use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings};
 use crate::state::AgentDiagnosticState;
 use crate::updater::{UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, updater_settings};
+use crate::window_chrome::{DesktopWindowChromeVm, desktop_window_chrome_vm};
 use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::avatar::{AvatarPreferencesVm, load_avatar_preferences};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +43,7 @@ pub struct PreferencesVm {
     pub font: DesktopFontPreference,
     pub use_local_claude: bool,
     pub verbose_logging: bool,
+    pub avatars: AvatarPreferencesVm,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +74,7 @@ pub struct AppBootstrapVm {
     pub persisted_available_update: Option<UpdateInfoVm>,
     pub client_version: String,
     pub platform: String,
+    pub window_chrome: DesktopWindowChromeVm,
     pub app_info: AppInfoVm,
     pub app_config: AppConfigVm,
     pub needs_workspace: bool,
@@ -86,6 +91,7 @@ pub struct AppConfigVm {
 #[serde(rename_all = "camelCase")]
 pub struct AppInfoVm {
     pub channel: String,
+    pub feedback_enabled: bool,
     pub app_name: String,
     pub app_key: String,
     pub config_dir_name: String,
@@ -841,6 +847,14 @@ pub struct LogPageVm {
     pub archive_retention_days: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AcpRawFrameOrder {
+    Asc,
+    #[default]
+    Desc,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpRawFrameQueryInput {
@@ -849,6 +863,7 @@ pub struct AcpRawFrameQueryInput {
     pub search: Option<String>,
     pub kind: Option<String>,
     pub direction: Option<String>,
+    pub order: Option<AcpRawFrameOrder>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -872,7 +887,7 @@ pub struct AcpRawFramePageVm {
     pub total: usize,
     pub has_previous: bool,
     pub has_next: bool,
-    pub order: String,
+    pub order: AcpRawFrameOrder,
     pub search: Option<String>,
     pub kind: Option<String>,
     pub direction: Option<String>,
@@ -952,6 +967,7 @@ pub fn preferences_vm(
     font: DesktopFontPreference,
     use_local_claude: bool,
     log_level: RuntimeLogLevel,
+    avatars: AvatarPreferencesVm,
 ) -> PreferencesVm {
     PreferencesVm {
         theme,
@@ -959,6 +975,7 @@ pub fn preferences_vm(
         font,
         use_local_claude,
         verbose_logging: matches!(log_level, RuntimeLogLevel::Debug | RuntimeLogLevel::Trace),
+        avatars,
     }
 }
 
@@ -1021,6 +1038,7 @@ pub fn bootstrap_vm(
             app.config.desktop_font.clone(),
             app.config.use_local_claude,
             app.config.log_level,
+            load_avatar_preferences(&app.paths.user_gold_band_dir()).unwrap_or_default(),
         ),
         updater_settings: updater_settings(&app.config),
         metrics_settings: metrics_settings(&app.config),
@@ -1032,8 +1050,10 @@ pub fn bootstrap_vm(
         ),
         client_version: client_version_string,
         platform: DESKTOP_PLATFORM.to_string(),
+        window_chrome: desktop_window_chrome_vm(),
         app_info: AppInfoVm {
             channel: channel_config.channel.to_string(),
+            feedback_enabled: channel_config.feedback_enabled,
             app_name: channel_config.app_name.to_string(),
             app_key: channel_config.app_key.to_string(),
             config_dir_name: channel_config.config_dir_name.to_string(),
@@ -3462,7 +3482,10 @@ pub fn dynamic_acp_session_vm(
         usage: {
             let mut u = event_scan.usage.unwrap_or_default();
             if u.used.is_none() {
-                u.used = session.get("usedTokens").and_then(|v| v.as_u64());
+                u.used = session
+                    .get("usedTokens")
+                    .and_then(|v| v.as_u64())
+                    .filter(|used| *used > 0);
             }
             if u.size.is_none() {
                 u.size = session.get("contextWindowSize").and_then(|v| v.as_u64());
@@ -3764,7 +3787,10 @@ pub fn acp_session_vm(
             // Merge persisted session usage as fallback for restored sessions
             // where events may not contain a usage_update yet.
             if u.used.is_none() {
-                u.used = session.get("usedTokens").and_then(|v| v.as_u64());
+                u.used = session
+                    .get("usedTokens")
+                    .and_then(|v| v.as_u64())
+                    .filter(|used| *used > 0);
             }
             if u.size.is_none() {
                 u.size = session.get("contextWindowSize").and_then(|v| v.as_u64());
@@ -4073,6 +4099,24 @@ fn scan_acp_timeline(
     )
 }
 
+fn merge_confirmed_usage_observation(
+    usage: &mut Option<AcpUsageVm>,
+    used: Option<u64>,
+    size: Option<u64>,
+    cost_amount_usd: Option<f64>,
+) {
+    let current = usage.get_or_insert_with(AcpUsageVm::default);
+    if let Some(used) = used.filter(|used| *used > 0) {
+        current.used = Some(used);
+    }
+    if let Some(size) = size.filter(|size| *size > 0) {
+        current.size = Some(size);
+    }
+    if let Some(cost_amount_usd) = cost_amount_usd {
+        current.cost_amount_usd = Some(cost_amount_usd);
+    }
+}
+
 fn parse_timeline_file(
     path: &camino::Utf8Path,
     session_active: bool,
@@ -4110,12 +4154,7 @@ fn parse_timeline_file(
                     } else if is_session_update(&patch.item, "usage_update") {
                         let (used, size, cost_amount) =
                             gold_band::acp::events::extract_usage_fields(raw);
-                        usage = Some(AcpUsageVm {
-                            used,
-                            size,
-                            cost_amount_usd: cost_amount,
-                            ..Default::default()
-                        });
+                        merge_confirmed_usage_observation(&mut usage, used, size, cost_amount);
                     }
                 }
                 let should_replace = latest_by_item
@@ -4147,12 +4186,7 @@ fn parse_timeline_file(
                 } else if is_session_update(&final_item.item, "usage_update") {
                     let (used, size, cost_amount) =
                         gold_band::acp::events::extract_usage_fields(raw);
-                    usage = Some(AcpUsageVm {
-                        used,
-                        size,
-                        cost_amount_usd: cost_amount,
-                        ..Default::default()
-                    });
+                    merge_confirmed_usage_observation(&mut usage, used, size, cost_amount);
                 }
             }
             let item_id = final_item.item.id.clone();
@@ -4889,12 +4923,7 @@ fn parse_events_file(
                 } else if is_session_update(&event, "usage_update") {
                     let (used, size, cost_amount) =
                         gold_band::acp::events::extract_usage_fields(raw);
-                    usage = Some(AcpUsageVm {
-                        used,
-                        size,
-                        cost_amount_usd: cost_amount,
-                        ..Default::default()
-                    });
+                    merge_confirmed_usage_observation(&mut usage, used, size, cost_amount);
                 }
             }
             if is_hidden_from_chat(&event) {
@@ -5586,25 +5615,27 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
-    let current_model_id = models
-        .as_ref()
-        .and_then(|value| value.get("currentModelId"))
-        .and_then(|value| value.as_str())
-        .map(str::to_string)
-        .or_else(|| config_current_value(config_options.as_ref(), "model"));
-    let current_mode_id = modes
-        .as_ref()
-        .and_then(|value| value.get("currentModeId"))
-        .and_then(|value| value.as_str())
-        .map(str::to_string)
-        .or_else(|| config_current_value(config_options.as_ref(), "mode"));
+    let current_model_id = config_current_value(config_options.as_ref(), "model").or_else(|| {
+        models
+            .as_ref()
+            .and_then(|value| value.get("currentModelId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    });
+    let current_mode_id = config_current_value(config_options.as_ref(), "mode").or_else(|| {
+        modes
+            .as_ref()
+            .and_then(|value| value.get("currentModeId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    });
     let current_model_name = current_model_id.as_deref().and_then(|model_id| {
-        model_display_name(models.as_ref(), model_id)
-            .or_else(|| config_option_display_name(config_options.as_ref(), "model", model_id))
+        config_option_display_name(config_options.as_ref(), "model", model_id)
+            .or_else(|| model_display_name(models.as_ref(), model_id))
     });
     let current_mode_name = current_mode_id.as_deref().and_then(|mode_id| {
-        mode_display_name(modes.as_ref(), mode_id)
-            .or_else(|| config_option_display_name(config_options.as_ref(), "mode", mode_id))
+        config_option_display_name(config_options.as_ref(), "mode", mode_id)
+            .or_else(|| mode_display_name(modes.as_ref(), mode_id))
     });
 
     if model_override_id.is_none()
@@ -5740,7 +5771,12 @@ fn insert_latest_permission_event(
     let request_id = permission_request_id_from_event(event);
     let should_replace = latest_permission_events
         .get(&request_id)
-        .map(|current| event.seq >= current.seq)
+        .map(|current| {
+            event.seq > current.seq
+                || (event.seq == current.seq
+                    && parse_epoch_timestamp(&event.timestamp).unwrap_or_default()
+                        >= parse_epoch_timestamp(&current.timestamp).unwrap_or_default())
+        })
         .unwrap_or(true);
     if should_replace {
         latest_permission_events.insert(request_id, event.clone());
@@ -5843,6 +5879,7 @@ pub fn acp_raw_frame_page_vm_for_path(
     let search = normalized_filter(query.search);
     let kind = normalized_filter(query.kind);
     let direction = normalized_filter(query.direction);
+    let order = query.order.unwrap_or_default();
 
     let total = count_matching_raw_frames(
         path,
@@ -5850,9 +5887,17 @@ pub fn acp_raw_frame_page_vm_for_path(
         kind.as_deref(),
         direction.as_deref(),
     )?;
-    let end = total.saturating_sub(page.saturating_mul(page_size));
-    let start = total.saturating_sub((page + 1).saturating_mul(page_size));
-    let items = collect_matching_raw_frames(
+    let offset = page.saturating_mul(page_size);
+    let bounded_offset = offset.min(total);
+    let bounded_end_offset = offset.saturating_add(page_size).min(total);
+    let (start, end) = match order {
+        AcpRawFrameOrder::Asc => (bounded_offset, bounded_end_offset),
+        AcpRawFrameOrder::Desc => (
+            total.saturating_sub(bounded_end_offset),
+            total.saturating_sub(bounded_offset),
+        ),
+    };
+    let mut items = collect_matching_raw_frames(
         path,
         search.as_deref(),
         kind.as_deref(),
@@ -5860,6 +5905,9 @@ pub fn acp_raw_frame_page_vm_for_path(
         start,
         end,
     )?;
+    if order == AcpRawFrameOrder::Desc {
+        items.reverse();
+    }
 
     Ok(AcpRawFramePageVm {
         items,
@@ -5867,8 +5915,8 @@ pub fn acp_raw_frame_page_vm_for_path(
         page_size,
         total,
         has_previous: page > 0 && total > 0,
-        has_next: start > 0,
-        order: "latest".to_string(),
+        has_next: offset.saturating_add(page_size) < total,
+        order,
         search,
         kind,
         direction,
@@ -6461,6 +6509,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn usage_projection_keeps_last_confirmed_value_across_transient_zeroes() {
+        let mut usage = None;
+
+        for used in [0, 28_084, 0, 34_791, 0] {
+            merge_confirmed_usage_observation(&mut usage, Some(used), Some(1_000_000), None);
+        }
+
+        let usage = usage.unwrap();
+        assert_eq!(usage.used, Some(34_791));
+        assert_eq!(usage.size, Some(1_000_000));
+    }
+
+    #[test]
+    fn usage_projection_preserves_cost_when_zero_sample_is_ignored() {
+        let mut usage = Some(AcpUsageVm {
+            used: Some(38_223),
+            size: Some(1_000_000),
+            ..Default::default()
+        });
+
+        merge_confirmed_usage_observation(&mut usage, Some(0), Some(1_000_000), Some(0.315532));
+
+        let usage = usage.unwrap();
+        assert_eq!(usage.used, Some(38_223));
+        assert_eq!(usage.cost_amount_usd, Some(0.315532));
+    }
+
     fn acp_event_at(
         id: &str,
         kind: &str,
@@ -6515,6 +6591,85 @@ mod tests {
             timestamp,
             Some(json!({ "sessionUpdate": session_update })),
         )
+    }
+
+    #[test]
+    fn raw_frame_page_defaults_to_descending_and_supports_ascending_order() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gold-band-raw-frame-order-{}-{unique}.jsonl",
+            std::process::id()
+        ));
+        let path = Utf8PathBuf::from_path_buf(path).unwrap();
+        let contents = (1..=30)
+            .map(|index| {
+                json!({
+                    "timestamp": format!("2026-07-28T12:00:{index:02}Z"),
+                    "direction": "inbound",
+                    "frame": {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": { "index": index },
+                    },
+                })
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(path.as_std_path(), contents).unwrap();
+
+        let default_page = acp_raw_frame_page_vm_for_path(
+            &path,
+            AcpRawFrameQueryInput {
+                page: Some(0),
+                page_size: Some(25),
+                search: None,
+                kind: None,
+                direction: None,
+                order: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(default_page.order, AcpRawFrameOrder::Desc);
+        assert_eq!(
+            default_page
+                .items
+                .iter()
+                .map(|item| item.line_number)
+                .collect::<Vec<_>>(),
+            (6..=30).rev().collect::<Vec<_>>()
+        );
+        assert!(!default_page.has_previous);
+        assert!(default_page.has_next);
+
+        let ascending_second_page = acp_raw_frame_page_vm_for_path(
+            &path,
+            AcpRawFrameQueryInput {
+                page: Some(1),
+                page_size: Some(25),
+                search: None,
+                kind: None,
+                direction: None,
+                order: Some(AcpRawFrameOrder::Asc),
+            },
+        )
+        .unwrap();
+        assert_eq!(ascending_second_page.order, AcpRawFrameOrder::Asc);
+        assert_eq!(
+            ascending_second_page
+                .items
+                .iter()
+                .map(|item| item.line_number)
+                .collect::<Vec<_>>(),
+            (26..=30).collect::<Vec<_>>()
+        );
+        assert!(ascending_second_page.has_previous);
+        assert!(!ascending_second_page.has_next);
+
+        fs::remove_file(path.as_std_path()).unwrap();
     }
 
     fn permission_event_at(request_id: &str, status: &str, timestamp: u64) -> AcpUiEventVm {
@@ -7216,6 +7371,52 @@ mod tests {
                 .map(Vec::len),
             Some(2)
         );
+    }
+
+    #[test]
+    fn acp_session_config_prefers_config_options_over_conflicting_legacy_state() {
+        let config = acp_session_config_vm(&json!({
+            "models": {
+                "currentModelId": "gpt-5.6-sol[max]",
+                "availableModels": [
+                    { "modelId": "gpt-5.6-sol[low]", "name": "GPT-5.6-Sol (low)" },
+                    { "modelId": "gpt-5.6-sol[max]", "name": "GPT-5.6-Sol (max)" }
+                ]
+            },
+            "modes": {
+                "currentModeId": "legacy-mode",
+                "availableModes": [
+                    { "id": "legacy-mode", "name": "Legacy mode" }
+                ]
+            },
+            "configOptions": [
+                {
+                    "id": "model",
+                    "category": "model",
+                    "type": "select",
+                    "currentValue": "gpt-5.6-sol",
+                    "options": [
+                        { "value": "gpt-5.6-sol", "name": "GPT-5.6-Sol" },
+                        { "value": "gpt-5.6-terra", "name": "GPT-5.6-Terra" }
+                    ]
+                },
+                {
+                    "id": "mode",
+                    "category": "mode",
+                    "type": "select",
+                    "currentValue": "agent",
+                    "options": [
+                        { "value": "agent", "name": "Agent" }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(config.current_model_id.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(config.current_model_name.as_deref(), Some("GPT-5.6-Sol"));
+        assert_eq!(config.current_mode_id.as_deref(), Some("agent"));
+        assert_eq!(config.current_mode_name.as_deref(), Some("Agent"));
     }
 
     #[test]

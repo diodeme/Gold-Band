@@ -209,6 +209,18 @@ export const desktopApi: RuntimeApi = {
   saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) {
     return invokeCommand('save_desktop_preferences', { theme, language, font, useLocalClaude, verboseLogging });
   },
+  saveDesktopAvatar(input) {
+    return invokeCommand('save_desktop_avatar', { input });
+  },
+  selectRecentDesktopAvatar(kind, avatarId) {
+    return invokeCommand('select_recent_desktop_avatar', { kind, avatarId });
+  },
+  saveDesktopAvatarShape(kind, shape) {
+    return invokeCommand('save_desktop_avatar_shape', { kind, shape });
+  },
+  clearDesktopAvatar(kind) {
+    return invokeCommand('clear_desktop_avatar', { kind });
+  },
   saveUpdaterSettings(overrideUrl: string | null) {
     const normalized = overrideUrl?.trim() ? overrideUrl.trim() : null;
     return invokeCommand('save_updater_settings', { overrideUrl: normalized });
@@ -404,5 +416,11 @@ export const desktopApi: RuntimeApi = {
       directoryPath,
       syncTargets,
     });
+  },
+  submitFeedback(input: import('../types').FeedbackInput) {
+    return invokeCommand('submit_feedback', { input });
+  },
+  previewFeedbackSessionArchive(projectId, taskId) {
+    return invokeCommand('preview_feedback_session_archive', { projectId, taskId });
   },
 };

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isAllowedAttachment, isImageMime, useAttachmentExtensions } from './attachments';
 import { materializeConversationAttachments, pickAttachmentFiles } from '@/api';
+import type { MaterializeAttachmentFileInput } from '@/api/client';
 import { isTauriRuntime } from '@/api/shared';
 
 // ── Types ──
@@ -129,7 +130,17 @@ function fileToBase64(file: File): Promise<string> {
 export interface UseAttachmentPickerOptions {
   maxCount?: number;
   maxTotalSize?: number;
+  maxFileSize?: number;
   attachments?: AttachmentStateController;
+  /**
+   * When set, only items whose guessed MIME starts with this prefix are
+   * accepted (e.g. "image/" for screenshot-only pickers). When set this is the
+   * authoritative type filter and the backend extension allowlist is bypassed,
+   * so the picker is not coupled to the conversation attachment set.
+   */
+  acceptMimePrefix?: string;
+  /** Exact MIME allowlist for flows with a narrower backend contract. */
+  acceptedMimes?: string[];
 }
 
 export type AttachmentStateController = [
@@ -160,6 +171,9 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
 
   const maxCount = options.maxCount ?? MAX_ATTACHMENT_COUNT;
   const maxTotalSize = options.maxTotalSize ?? MAX_ATTACHMENT_TOTAL;
+  const maxFileSize = options.maxFileSize;
+  const acceptMimePrefix = options.acceptMimePrefix;
+  const acceptedMimes = options.acceptedMimes;
 
   // ── Internal: validate & add items ──
   const validateAndAdd = useCallback(
@@ -168,6 +182,24 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
       let err: string | null = null;
 
       const validItems = items.filter((item) => {
+        if (maxFileSize !== undefined && item.size > maxFileSize) {
+          rejected.push(item.name);
+          return false;
+        }
+        if (acceptedMimes) {
+          if (!acceptedMimes.includes(item.mime.toLowerCase())) {
+            rejected.push(item.name);
+            return false;
+          }
+          return true;
+        }
+        if (acceptMimePrefix) {
+          if (!item.mime.startsWith(acceptMimePrefix)) {
+            rejected.push(item.name);
+            return false;
+          }
+          return true;
+        }
         if (allowedExts && !isAllowedAttachment(item.name, allowedExts)) {
           rejected.push(item.name);
           return false;
@@ -206,7 +238,15 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
       }
       if (fileInputRef.current) fileInputRef.current.value = '';
     },
-    [t, allowedExts, maxCount, maxTotalSize],
+    [t, allowedExts, maxCount, maxTotalSize, maxFileSize, acceptMimePrefix, acceptedMimes],
+  );
+
+  // -- Direct add (paste / drop / programmatic) --
+  const addFiles = useCallback(
+    (files: File[], source: AttachmentItem['source'] = 'paste') => {
+      validateAndAdd(filesToItems(files, source));
+    },
+    [validateAndAdd],
   );
 
   // ── File picker (Tauri dialog on desktop, file input otherwise) ──
@@ -377,6 +417,29 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
     }
   }, [attachments, showTransientFileError, t]);
 
+  // Serialize browser/native File objects without materializing them to a local
+  // path. Security-sensitive upload flows use this to keep filesystem paths out
+  // of their command contract.
+  const resolveAttachmentInputs = useCallback(async (): Promise<MaterializeAttachmentFileInput[]> => {
+    if (attachments.some((item) => !item.file)) {
+      const message = t('conversation.attachmentMaterializeFailed');
+      showTransientFileError(message);
+      throw new Error(message);
+    }
+    try {
+      return await Promise.all(attachments.map(async (item) => ({
+        name: item.name,
+        mime: item.mime,
+        size: item.size,
+        dataBase64: await fileToBase64(item.file!),
+      })));
+    } catch (error) {
+      const message = t('conversation.attachmentMaterializeFailed');
+      showTransientFileError(message);
+      throw error;
+    }
+  }, [attachments, showTransientFileError, t]);
+
   // ── Preview ──
   const handlePreviewAttachment = useCallback((item: AttachmentItem) => {
     if (isImageMime(item.mime)) {
@@ -396,12 +459,14 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
     attachments,
     fileError,
     fileInputRef,
+    addFiles,
     pickFiles,
     handleFilesFromInput,
     removeAttachment,
     clearAttachments,
     getAttachmentPaths,
     resolveAttachmentPaths,
+    resolveAttachmentInputs,
     dropZoneHandlers,
     extractPasteFiles,
     previewImage,

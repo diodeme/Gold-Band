@@ -6,6 +6,10 @@ Assume the implementing engineer is completely unfamiliar with this repository. 
 
 **Important: you may only produce a plan. You must not modify code.**
 
+{% if execution.can_route_next %}
+You are running on the AI-DYNAMIC scheduling surface. This node still plans only and must not edit code, but it must not wait for a second user confirmation after the plan is complete. If the original user goal includes implementation or modification, the final `dynamic-node-completion` must schedule an implementation worker and pass `tech-plan.md` forward as its execution basis. End the dynamic chain only when the user explicitly requested a plan only, the outer goal is already complete, or a genuine blocker prevents further work.
+{% endif %}
+
 ---
 
 ## Workflow
@@ -15,8 +19,13 @@ Predecessor artifact reading precondition: When the runtime context, current tas
 1. If the predecessor chain or context includes an interview node, `interview-spec.md`, or an interview artifact/path, fetch and read `interview-spec.md` first, using its goal, constraints, non-goals, acceptance criteria, and technical context as the input basis for this plan; otherwise work from the raw requirement. Analyze the current code structure.
 2. Plan file responsibilities, task breakdown, testing strategy, frontend integration verification conditions, and acceptance criteria.
 3. Write the implementation plan to `tech-plan.md`.
+{% if execution.can_route_next %}
+4. Do not wait for another user confirmation. Based on the original goal, schedule an implementation successor in the final `dynamic-node-completion`, or end only when an allowed end condition applies.
+5. This planning node must not modify business code, test code, configuration files, or documentation files; the successor implementation node performs those changes.
+{% else %}
 4. Present the plan and wait for user confirmation. If the user requests changes, update only `tech-plan.md` and present it again.
 5. Before the user confirms, do not modify business code, test code, configuration files, or documentation files.
+{% endif %}
 
 ---
 
@@ -374,6 +383,12 @@ If the self-check finds issues, fix the plan directly before presenting it. The 
 
 ## Output requirements
 
+{% if execution.can_route_next %}
+You must complete two things in the end:
+
+1. Write the full plan to `tech-plan.md`.
+2. Follow the runtime output protocol exactly and output only the `dynamic-node-completion` JSON as the final response. If the original goal requires implementation, `next` must schedule an implementation worker; do not end immediately after planning, show the full plan in the final response, or wait for confirmation.
+{% else %}
 You must complete two things in the end:
 
 1. Write the full plan to `tech-plan.md`.
@@ -389,3 +404,4 @@ I have written the implementation plan to `tech-plan.md`. Please confirm:
 
 Before the user confirms, you must not start modifying business code, test code, configuration files, or documentation files.
 If the user requests adjustments, update only `tech-plan.md` and then show the full updated contents again for confirmation.
+{% endif %}

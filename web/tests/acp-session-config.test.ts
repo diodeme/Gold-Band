@@ -92,7 +92,7 @@ describe("ACP session config view model", () => {
 
     expect(viewModel.modelOverrideId).toBe("default");
     expect(viewModel.modelOverrideName).toBe("Default (recommended)");
-    expect(viewModel.canSelectUnspecifiedModel).toBe(true);
+    expect(viewModel.canSelectUnspecifiedModel).toBe(false);
   });
 
   it("keeps Gold Band unspecified separate from the Agent current permission mode", () => {
@@ -130,16 +130,13 @@ describe("ACP session config view model", () => {
 
     expect(viewModel.permissionModeOverrideId).toBe("default");
     expect(viewModel.permissionModeOverrideName).toBe("Default");
-    expect(viewModel.canSelectUnspecifiedPermissionMode).toBe(true);
+    expect(viewModel.canSelectUnspecifiedPermissionMode).toBe(false);
   });
 
-  it("normalizes grouped model and permission mode options", () => {
+  it("prefers generic config options over conflicting legacy grouped options", () => {
     const viewModel = createAcpSessionConfigViewModel(baseConfig());
 
-    expect(viewModel.availableModels.map((option) => option.id)).toEqual([
-      "gpt-5",
-      "gpt-5-mini",
-    ]);
+    expect(viewModel.availableModels.map((option) => option.id)).toEqual(["fallback"]);
     expect(viewModel.availablePermissionModes.map((option) => option.id)).toEqual([
       "ask",
       "full_access",
@@ -191,6 +188,36 @@ describe("ACP session config view model", () => {
     expect(viewModel.thoughtLevel).toBeNull();
   });
 
+  it("uses the pure model catalog when legacy models expand reasoning variants", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      currentModelId: "gpt-5.6-sol",
+      currentModelName: "GPT-5.6-Sol",
+      models: {
+        currentModelId: "gpt-5.6-sol[max]",
+        availableModels: [
+          { modelId: "gpt-5.6-sol[low]", name: "GPT-5.6-Sol (low)" },
+          { modelId: "gpt-5.6-sol[max]", name: "GPT-5.6-Sol (max)" },
+        ],
+      },
+      configOptions: [{
+        id: "model",
+        category: "model",
+        type: "select",
+        currentValue: "gpt-5.6-sol",
+        options: [
+          { value: "gpt-5.6-sol", name: "GPT-5.6-Sol" },
+          { value: "gpt-5.6-terra", name: "GPT-5.6-Terra" },
+        ],
+      }],
+    });
+
+    expect(viewModel.availableModels).toEqual([
+      { id: "gpt-5.6-sol", name: "GPT-5.6-Sol", description: null },
+      { id: "gpt-5.6-terra", name: "GPT-5.6-Terra", description: null },
+    ]);
+    expect(viewModel.thoughtLevel).toBeNull();
+  });
+
   it("discovers thought level by category while preserving the Agent option id", () => {
     const viewModel = createAcpSessionConfigViewModel({
       configOptionOverrides: { reasoning_effort: "high" },
@@ -213,6 +240,7 @@ describe("ACP session config view model", () => {
       category: "thought_level",
       currentValue: "medium",
       overrideValue: "high",
+      canSelectUnspecified: false,
     });
     expect(viewModel.thoughtLevel?.options.map((option) => option.id)).toEqual(["low", "high"]);
   });
@@ -231,5 +259,6 @@ describe("ACP session config view model", () => {
     expect(viewModel.thoughtLevel?.id).toBe("effort");
     expect(viewModel.thoughtLevel?.currentValue).toBe("max");
     expect(viewModel.thoughtLevel?.overrideValue).toBeNull();
+    expect(viewModel.thoughtLevel?.canSelectUnspecified).toBe(true);
   });
 });

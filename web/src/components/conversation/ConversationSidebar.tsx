@@ -11,6 +11,7 @@ import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
+import { formatCompactRelativeTime } from '@/lib/datetime';
 
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
@@ -563,9 +564,9 @@ function TaskRow({
   const isDirect = task.runMode === 'direct';
   const useAgentIdentity = conversationSidebarIdentityKind(task) === 'agent-icon';
   const latestColor = latestRun ? runStatusColor(latestRun) : 'bg-muted-foreground/30';
-  const relativeTimeSource = isDirect ? task.lastActivityAt : latestRun?.updatedAt;
+  const relativeTimeSource = task.lastActivityAt;
   const relativeTime = relativeTimeSource && (isDirect || latestRun?.status !== 'running')
-    ? formatRelativeTime(relativeTimeSource, t)
+    ? formatCompactRelativeTime(relativeTimeSource, t('conversation.runtime.justNow'))
     : null;
 
   const handleRowClick = () => {
@@ -681,7 +682,7 @@ function TaskRow({
           {task.runs.map((run) => {
             const color = runStatusColor(run);
             const runTime = run.status !== 'running'
-              ? formatRelativeTime(run.updatedAt, t)
+              ? formatCompactRelativeTime(run.updatedAt, t('conversation.runtime.justNow'))
               : null;
             return (
               <RunStopMenu
@@ -770,33 +771,6 @@ function SidebarButton({
       <span>{label}</span>
     </Button>
   );
-}
-
-// ── Helpers ──
-
-function formatRelativeTime(isoString: string, t: (key: string, options?: Record<string, unknown>) => string): string {
-  const now = Date.now();
-  // Handle Unix timestamp format "1749331234Z" used internally
-  let then: number;
-  if (/^\d+Z?$/.test(isoString)) {
-    then = parseInt(isoString, 10) * 1000;
-  } else {
-    then = new Date(isoString).getTime();
-  }
-  if (isNaN(then) || then <= 0) return '';
-  const diffMs = now - then;
-  const minutes = Math.floor(diffMs / 60000);
-  if (minutes < 1) return t('conversation.runtime.justNow') ?? 'now';
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d`;
-  const weeks = Math.floor(days / 7);
-  if (weeks < 4) return `${weeks}w`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months}mo`;
-  return `${Math.floor(days / 365)}y`;
 }
 
 export function prioritizeConversationSidebarWorkspace(sidebar: ConversationSidebarVm, projectId?: string | null): ConversationSidebarVm {

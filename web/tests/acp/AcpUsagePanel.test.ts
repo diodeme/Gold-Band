@@ -36,6 +36,18 @@ describe("AcpUsagePanel", () => {
     expect(html).toContain("32.0K / 1.0M");
     expect(html).toContain("acp.usagePanel.input");
   });
+
+  it("does not present a transient zero as confirmed context usage", () => {
+    const html = renderToStaticMarkup(
+      createElement(AcpUsagePanel, {
+        usage: { used: 0, size: 1_000_000 },
+        isRunning: true,
+      }),
+    );
+
+    expect(html).toContain("-- / 1.0M");
+    expect(html).not.toContain("0 / 1.0M");
+  });
 });
 
 describe("formatTokenCount", () => {

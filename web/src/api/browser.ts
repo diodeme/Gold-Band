@@ -400,7 +400,7 @@ export const browserApi: RuntimeApi = {
       total: 0,
       hasPrevious: false,
       hasNext: false,
-      order: 'latest',
+      order: query?.order ?? 'desc',
       search: query?.search ?? null,
       kind: query?.kind ?? null,
       direction: query?.direction ?? null,
@@ -432,8 +432,64 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve({ ...mockContent, title: attemptId, kind: 'worker-ref' });
   },
   saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) {
-    const preferences = browserPreviewState.setPreferences({ theme, language, font, useLocalClaude, verboseLogging });
+    const current = browserPreviewState.getPreferences();
+    const preferences = browserPreviewState.setPreferences({ ...current, theme, language, font, useLocalClaude, verboseLogging });
     return Promise.resolve(preferences);
+  },
+  saveDesktopAvatar(input) {
+    const current = browserPreviewState.getPreferences();
+    const id = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `avatar-${Date.now()}`;
+    const profile = current.avatars[input.kind];
+    const recentAvatars = [
+      { id, dataUrl: `data:${input.mimeType};base64,${input.dataBase64}`, createdAt: localTimestamp() },
+      ...profile.recentAvatars.filter((avatar) => avatar.id !== id),
+    ].slice(0, 10);
+    const avatars = {
+      ...current.avatars,
+      [input.kind]: {
+        shape: input.shape,
+        selectedAvatarId: id,
+        recentAvatars,
+      },
+    };
+    browserPreviewState.setPreferences({ ...current, avatars });
+    return Promise.resolve(avatars);
+  },
+  selectRecentDesktopAvatar(kind, avatarId) {
+    const current = browserPreviewState.getPreferences();
+    const profile = current.avatars[kind];
+    const selected = profile.recentAvatars.find((avatar) => avatar.id === avatarId);
+    if (!selected) return Promise.reject({ code: 'avatar.recent-not-found', params: { avatarId } });
+    const avatars = {
+      ...current.avatars,
+      [kind]: {
+        ...profile,
+        selectedAvatarId: avatarId,
+        recentAvatars: [selected, ...profile.recentAvatars.filter((avatar) => avatar.id !== avatarId)],
+      },
+    };
+    browserPreviewState.setPreferences({ ...current, avatars });
+    return Promise.resolve(avatars);
+  },
+  saveDesktopAvatarShape(kind, shape) {
+    const current = browserPreviewState.getPreferences();
+    const avatars = {
+      ...current.avatars,
+      [kind]: { ...current.avatars[kind], shape },
+    };
+    browserPreviewState.setPreferences({ ...current, avatars });
+    return Promise.resolve(avatars);
+  },
+  clearDesktopAvatar(kind) {
+    const current = browserPreviewState.getPreferences();
+    const avatars = {
+      ...current.avatars,
+      [kind]: { ...current.avatars[kind], selectedAvatarId: null },
+    };
+    browserPreviewState.setPreferences({ ...current, avatars });
+    return Promise.resolve(avatars);
   },
   saveUpdaterSettings(overrideUrl: string | null) {
     const current = browserPreviewState.getUpdaterSettings();
@@ -648,6 +704,12 @@ export const browserApi: RuntimeApi = {
   updateSkillSyncTargets(_name: string, _source: string, _workspacePath: string | null | undefined, _directoryPath: string, _syncTargets: string[]) { return Promise.resolve({ global: [], project: [] }); },
   getSkillSyncStatus(_name: string, _directoryPath: string, _workspacePath?: string | null) { return Promise.resolve([]); },
   checkSkillNameConflict(_name: string, _source: string, _workspacePath?: string | null, _oldName?: string | null, _directoryPath?: string | null, _syncTargets?: string[] | null) { return Promise.resolve([] as string[]); },
+  submitFeedback(_input: import('../types').FeedbackInput): Promise<import('../types').FeedbackResult> {
+    return Promise.reject({ code: 'feedback.endpoint-unconfigured', params: {} });
+  },
+  previewFeedbackSessionArchive(): Promise<null> {
+    return Promise.resolve(null);
+  },
 };
 
 function browserProfileId() {

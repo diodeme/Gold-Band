@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isAcpSessionInitializationFailed,
+  isAcpSessionInitializationInterrupted,
   missingAcpSessionRetryDelay,
   resolveAcpSessionShellState,
   shouldCreateLiveAcpSessionShell,
@@ -40,6 +42,26 @@ describe('shouldCreateLiveAcpSessionShell', () => {
 });
 
 describe('resolveAcpSessionShellState', () => {
+  it('shows runtime initialization errors before the loading shell', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: true,
+      initializationFailed: true,
+    })).toBe('error');
+  });
+
+  it('shows an interrupted terminal shell immediately when ACP initialization never established a session', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: true,
+      initializationInterrupted: true,
+    })).toBe('interrupted');
+  });
+
   it('keeps session switching in loading state until the target session fetch resolves', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: false,
@@ -99,6 +121,77 @@ describe('resolveAcpSessionShellState', () => {
       hasLiveSessionShell: false,
       initialSessionLoading: false,
     })).toBe('available');
+  });
+});
+
+describe('isAcpSessionInitializationFailed', () => {
+  const failedInput = {
+    runtimeActive: false,
+    runtimeComposerMode: 'runtime-error',
+    runtimeErrorMessage: 'Configured model is unavailable',
+    sessionId: null,
+    baseSessionReady: false,
+    loadedEventCount: 0,
+  };
+
+  it('identifies runtime errors that happen before ACP session-ready state', () => {
+    expect(isAcpSessionInitializationFailed(failedInput)).toBe(true);
+  });
+
+  it('keeps established or active sessions on the normal conversation path', () => {
+    expect(isAcpSessionInitializationFailed({
+      ...failedInput,
+      sessionId: 'session-1',
+    })).toBe(false);
+    expect(isAcpSessionInitializationFailed({
+      ...failedInput,
+      runtimeActive: true,
+    })).toBe(false);
+    expect(isAcpSessionInitializationFailed({
+      ...failedInput,
+      loadedEventCount: 1,
+    })).toBe(false);
+  });
+});
+
+describe('isAcpSessionInitializationInterrupted', () => {
+  const interruptedInput = {
+    runtimeStatus: 'paused',
+    runtimePauseReason: 'process-interrupted',
+    runtimeActive: false,
+    sessionId: null,
+    baseSessionReady: false,
+    loadedEventCount: 0,
+  };
+
+  it('identifies a stopped runtime attempt that never established an ACP session', () => {
+    expect(isAcpSessionInitializationInterrupted(interruptedInput)).toBe(true);
+  });
+
+  it('keeps established or displayable interrupted sessions on the normal conversation path', () => {
+    expect(isAcpSessionInitializationInterrupted({
+      ...interruptedInput,
+      sessionId: 'session-1',
+    })).toBe(false);
+    expect(isAcpSessionInitializationInterrupted({
+      ...interruptedInput,
+      baseSessionReady: true,
+    })).toBe(false);
+    expect(isAcpSessionInitializationInterrupted({
+      ...interruptedInput,
+      loadedEventCount: 1,
+    })).toBe(false);
+  });
+
+  it('does not replace an active startup or another pause reason with interrupted', () => {
+    expect(isAcpSessionInitializationInterrupted({
+      ...interruptedInput,
+      runtimeActive: true,
+    })).toBe(false);
+    expect(isAcpSessionInitializationInterrupted({
+      ...interruptedInput,
+      runtimePauseReason: 'waiting-for-user-input',
+    })).toBe(false);
   });
 });
 

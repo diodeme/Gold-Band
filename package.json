@@ -46,6 +46,7 @@
     "radix-ui": "^1.4.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-easy-crop": "^6.2.3",
     "react-hook-form": "^7.76.0",
     "react-i18next": "^17.0.6",
     "streamdown": "^2.5.0",

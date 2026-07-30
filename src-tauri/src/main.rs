@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod avatar;
 mod builtin_mcp;
 mod channel;
 mod commands;
 mod commands_conversation;
 mod conversation_workspace;
+mod feedback;
 mod i18n;
 mod metrics;
 mod notifications;
@@ -12,24 +14,26 @@ mod state;
 mod updater;
 mod view_models;
 mod view_models_conversation;
+mod window_chrome;
 
 use anyhow::Context;
 use commands::{
     add_mcp_server, cancel_acp_session, check_local_claude, check_mcp_server_health,
-    check_skill_name_conflict, check_update_manual, choose_workspace, continue_run, create_agent,
-    create_profile, create_task, delete_agent, delete_auto_template, delete_mcp_server,
-    delete_profile, delete_skill, delete_workflow_template, dismiss_update_announcement,
-    doctor_agent, download_and_install_update, get_acp_raw_frames, get_acp_session,
-    get_agent_command_catalog, get_agent_registry, get_app_bootstrap, get_auto_templates,
-    get_log_page, get_metrics_settings, get_profile, get_profiles, get_round_detail,
-    get_run_detail, get_skill_sync_status, get_system_fonts, get_task_detail, get_task_list,
-    get_update_status, get_workflow, get_workflow_templates, list_mcp_servers, list_mcp_tools,
-    list_project_skills, list_skills, mark_settings_advanced_update_seen,
+    check_skill_name_conflict, check_update_manual, choose_workspace, clear_desktop_avatar,
+    continue_run, create_agent, create_profile, create_task, delete_agent, delete_auto_template,
+    delete_mcp_server, delete_profile, delete_skill, delete_workflow_template,
+    dismiss_update_announcement, doctor_agent, download_and_install_update, get_acp_raw_frames,
+    get_acp_session, get_agent_command_catalog, get_agent_registry, get_app_bootstrap,
+    get_auto_templates, get_log_page, get_metrics_settings, get_profile, get_profiles,
+    get_round_detail, get_run_detail, get_skill_sync_status, get_system_fonts, get_task_detail,
+    get_task_list, get_update_status, get_workflow, get_workflow_templates, list_mcp_servers,
+    list_mcp_tools, list_project_skills, list_skills, mark_settings_advanced_update_seen,
     mark_settings_update_seen, open_in_file_manager, pause_run, read_skill,
     remove_recent_workspace, renew_acp_session_lease, replace_auto_templates,
     respond_acp_permission, respond_elicitation, retry_run, save_auto_template,
-    save_desktop_preferences, save_metrics_settings, save_task_workflow, save_updater_settings,
-    save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
+    save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
+    save_metrics_settings, save_task_workflow, save_updater_settings, save_workflow_template,
+    search_acp_prompts, search_acp_sessions, search_tasks, select_recent_desktop_avatar,
     select_recent_workspace, send_acp_prompt, set_acp_session_config_option, set_acp_session_model,
     set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref, start_run,
     stop_active_session, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
@@ -70,13 +74,16 @@ fn run() -> anyhow::Result<()> {
     let context = DesktopContext::from_current_dir()?;
     let mut tauri_context = tauri::generate_context!();
     #[cfg(target_os = "windows")]
+    let desktop_window_chrome = window_chrome::desktop_window_chrome_vm();
+    #[cfg(target_os = "windows")]
     if let Some(window) = tauri_context.config_mut().app.windows.first_mut() {
         // WebView2's opaque controller visibly lags behind Win32 edge resizing and exposes
         // black/white bars. Composition mode avoids that artifact while the CSS root still
-        // paints an opaque application surface. Keep the native shadow so DWM continues to
-        // provide the standard rounded corners on Windows 11.
+        // paints an opaque application surface. Windows 11 keeps the DWM shadow for native
+        // rounding; Windows 10 disables TAO's asymmetric undecorated frame and uses the
+        // application-owned inset outline instead.
         window.transparent = true;
-        window.shadow = true;
+        window.shadow = desktop_window_chrome.native_shadow;
     }
     #[cfg(target_os = "macos")]
     if let Some(window) = tauri_context.config_mut().app.windows.first_mut() {
@@ -215,6 +222,10 @@ fn run() -> anyhow::Result<()> {
             show_attachment,
             show_worker_ref,
             save_desktop_preferences,
+            save_desktop_avatar,
+            select_recent_desktop_avatar,
+            save_desktop_avatar_shape,
+            clear_desktop_avatar,
             save_updater_settings,
             get_metrics_settings,
             update_notification_attention,
@@ -273,6 +284,8 @@ fn run() -> anyhow::Result<()> {
             update_skill_sync_targets,
             get_skill_sync_status,
             check_skill_name_conflict,
+            feedback::submit_feedback,
+            feedback::preview_feedback_session_archive,
         ])
         .run(tauri_context)
         .context("tauri runtime failed")?;

@@ -401,6 +401,33 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canSubmit).toBe(true);
   });
 
+  it('surfaces a typed compacting phase from the latest timeline event', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'running',
+          outcome: null,
+          pauseReason: null,
+          resumable: false,
+          current: true,
+          active: true,
+          continuable: false,
+          phase: 'running',
+        },
+        acp: { status: 'running', active: true, stopping: false, terminal: false },
+        displayStatus: 'running',
+        runtimeDisplay: runningDisplay,
+      }),
+      hasTimelineItems: true,
+      hasEffectiveEvents: true,
+      timelineProcessingKind: 'compacting',
+    }));
+
+    expect(state.processingKind).toBe('compacting');
+    expect(state.statusActive).toBe(true);
+    expect(state.canStop).toBe(true);
+  });
+
   it('keeps manual-check waiting state available for regular ACP prompts', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({

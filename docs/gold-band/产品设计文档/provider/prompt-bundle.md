@@ -60,6 +60,27 @@
 
 profile 正文、output DSL、`extra_system_sections` 不放在 `userPrompt` 中；`Cold Artifact Index` / `Cold Attachment Index` 本期从 prompt 中删除。
 
+### 3.3 Profile 动态模板
+
+Profile 数据增加 `dynamicTemplate: boolean`，默认值为 `false`。该字段同时通过角色管理 API 和用户 profile Markdown frontmatter 持久化；缺失字段按关闭处理，不引入模板版本字段。
+
+- `dynamicTemplate=false`：profile 正文作为普通 Markdown 原样注入，不解释其中的 MiniJinja 语法。
+- `dynamicTemplate=true`：runtime 在把 profile 正文注入外层 system prompt 前，使用严格未定义变量策略执行且只执行一次 MiniJinja 渲染；保存角色时也要覆盖所有支持的枚举上下文进行预校验。
+- 动态模板只负责按执行上下文切换角色规则，不替代外层 runtime system/user prompt 模板，也不能访问 requirement、路径、provider 密钥等运行数据。
+
+当前模板上下文固定为：
+
+| 变量 | 类型 / 枚举 | 含义 |
+| --- | --- | --- |
+| `execution.surface` | `workflow \| aiDynamic` | 普通工作流执行面，或 AI-DYNAMIC 内部调度执行面 |
+| `execution.can_route_next` | `boolean` | 当前节点是否具备 output contract 且可以通过 `dynamic-node-completion` 路由后继节点 |
+| `execution.has_output_contract` | `boolean` | 当前 invocation 是否存在 output contract |
+| `execution.session_mode` | `new \| continue` | 当前 ACP session 调用模式 |
+
+`execution.surface` 必须由 invocation 创建入口显式赋值：普通 workflow worker 使用 `workflow`，AI-DYNAMIC 内部 worker / merge / acceptance 使用 `aiDynamic`。枚举值统一采用 camelCase，不得通过 `runtime_node_id`、目录结构、output artifact 名称或其他身份字段反推执行面；`runtime_node_id` 只保留动态节点定位职责。`execution.can_route_next` 在显式执行面为 `aiDynamic` 且当前 invocation 存在 output contract 时为 `true`。
+
+角色编辑页提供“启用动态模板”开关，默认关闭；问号提示展示上述变量和枚举值。自定义角色可以复用同一套判断，不需要复制内置角色或修改 runtime 代码。内置角色扫描结果中，仅 `plan` 和 `dev` 需要根据执行面切换规则，因此两者开启该开关，其余内置角色保持关闭。
+
 ---
 
 ## 4. System Prompt 模板
@@ -263,6 +284,7 @@ workflow resume 请求：
 
 - `profile`
 - `profile_content`
+- `profile_dynamic_template`
 - `output_contract.artifact`
 - `output_contract.kind`
 - `output_contract.schema`

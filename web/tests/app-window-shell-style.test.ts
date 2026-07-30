@@ -3,14 +3,27 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('App window shell style', () => {
-  it('leaves the outer frame and rounded corners to the native window compositor', () => {
+  it('uses a viewport-safe Win10 inset frame without duplicating Win11 native rounding', () => {
     const styles = readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
 
-    expect(styles).not.toContain('--gold-window-outline');
+    expect(styles).toContain('--gold-window-outline');
+    expect(styles).toContain('--gold-window-edge-shadow');
     expect(styles).not.toContain('--gold-window-top-outline');
+    expect(styles).toContain(".app-window-shell[data-window-frame-style='app-outline']");
+    expect(styles).toContain('inset 0 0 0 1px var(--gold-window-outline)');
+    expect(styles).toContain('inset 0 0 8px var(--gold-window-edge-shadow)');
+    expect(styles).not.toContain('outline-offset: -1px');
     expect(styles).not.toContain('.app-window-shell {');
     expect(styles).not.toContain('.app-window-shell::before');
     expect(styles).not.toContain('z-index: 60');
+  });
+
+  it('binds the host-provided frame policy on both desktop shells', () => {
+    const workbenchShell = readFileSync(path.resolve(__dirname, '../src/components/Shell.tsx'), 'utf8');
+    const conversationShell = readFileSync(path.resolve(__dirname, '../src/components/conversation/ConversationShell.tsx'), 'utf8');
+
+    expect(workbenchShell).toContain('data-window-frame-style={windowFrameStyle}');
+    expect(conversationShell).toContain('data-window-frame-style={windowFrameStyle}');
   });
 
   it('lets the WebView follow the real viewport instead of clipping at desktop minimum dimensions', () => {

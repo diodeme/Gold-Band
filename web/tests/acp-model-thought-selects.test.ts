@@ -71,7 +71,7 @@ describe('ACP composite model selector', () => {
     expect(composite).toContain('模型');
     expect(composite).toContain('GPT-5.6-Sol · High');
 
-    const modelOnlyTriggerClass = triggerClass(modelOnly, 'select-trigger');
+    const modelOnlyTriggerClass = triggerClass(modelOnly, 'dropdown-menu-trigger');
     const compositeTriggerClass = triggerClass(composite, 'dropdown-menu-trigger');
     for (const className of [modelOnlyTriggerClass, compositeTriggerClass]) {
       expect(className).toContain('h-9');

@@ -1,5 +1,6 @@
 use std::{fs, thread, time::Duration};
 
+use agent_client_protocol_schema::v1::CreateElicitationRequest;
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
@@ -31,8 +32,7 @@ pub enum ElicitationAction {
 pub struct PendingElicitationState {
     pub elicitation_id: String,
     pub jsonrpc_id: Value,
-    pub message: String,
-    pub requested_schema: Value,
+    pub request: CreateElicitationRequest,
     pub created_at: String,
 }
 
@@ -304,14 +304,76 @@ mod tests {
         (dir, path)
     }
 
+    fn test_elicitation_request(message: &str) -> CreateElicitationRequest {
+        serde_json::from_value(serde_json::json!({
+            "mode": "form",
+            "sessionId": "session-test",
+            "toolCallId": "tool-test",
+            "message": message,
+            "requestedSchema": {
+                "type": "object",
+                "properties": {},
+                "_meta": { "schemaSource": "test" }
+            },
+            "_meta": { "requestSource": "test" }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn deserializes_claude_agent_acp_044_form_request_without_line_parsing() {
+        let message = "Round 11 | 组件：反馈列表管理页 + 反馈详情页 | 歧义：23.5%\n\n管理端 API 与菜单的权限标识如何设计？";
+        let raw = serde_json::json!({
+            "message": message,
+            "mode": "form",
+            "requestedSchema": {
+                "properties": {
+                    "customAnswer": {
+                        "description": "Type your own answer instead of choosing an option above (optional).",
+                        "title": "Other",
+                        "type": "string"
+                    },
+                    "question_0": {
+                        "oneOf": [{
+                            "const": "admin-only 无 perm",
+                            "title": "admin-only 无 perm — 菜单放 admin 块"
+                        }],
+                        "title": "管理端权限标识",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "sessionId": "dff9dc64-77bb-4562-9fa5-960516f8540d",
+            "toolCallId": "call_a05f15e6f68b4cc78b3b4014"
+        });
+
+        let request: CreateElicitationRequest = serde_json::from_value(raw).unwrap();
+        let serialized = serde_json::to_value(&request).unwrap();
+
+        assert_eq!(request.message, message);
+        assert_eq!(
+            serialized["sessionId"],
+            "dff9dc64-77bb-4562-9fa5-960516f8540d"
+        );
+        assert_eq!(serialized["toolCallId"], "call_a05f15e6f68b4cc78b3b4014");
+        assert_eq!(
+            serialized["requestedSchema"]["properties"]["customAnswer"]["title"],
+            "Other"
+        );
+        assert_eq!(
+            serialized["requestedSchema"]["properties"]["question_0"]["oneOf"][0]["const"],
+            "admin-only 无 perm"
+        );
+    }
+
     #[test]
     fn write_and_read_pending_elicitation() {
         let (_dir, attempt_dir) = dummy_attempt_dir();
         let state = PendingElicitationState {
             elicitation_id: "elicit-abc123".to_string(),
             jsonrpc_id: serde_json::json!(42),
-            message: "请选择数据库".to_string(),
-            requested_schema: serde_json::json!({"type": "object"}),
+            request: test_elicitation_request("请选择数据库"),
             created_at: "2026-01-01T00:00:00Z".to_string(),
         };
         write_pending_elicitation(&attempt_dir, &state).unwrap();
@@ -319,7 +381,11 @@ mod tests {
         assert!(path.exists());
         let read_back: PendingElicitationState = read_json(&path).unwrap();
         assert_eq!(read_back.elicitation_id, "elicit-abc123");
-        assert_eq!(read_back.message, "请选择数据库");
+        assert_eq!(read_back.request.message, "请选择数据库");
+        let request = serde_json::to_value(read_back.request).unwrap();
+        assert_eq!(request["toolCallId"], "tool-test");
+        assert_eq!(request["_meta"]["requestSource"], "test");
+        assert_eq!(request["requestedSchema"]["_meta"]["schemaSource"], "test");
     }
 
     #[test]
@@ -362,8 +428,7 @@ mod tests {
             &PendingElicitationState {
                 elicitation_id: elicitation_id.to_string(),
                 jsonrpc_id: serde_json::json!(42),
-                message: "Continue the completed session".to_string(),
-                requested_schema: serde_json::json!({ "type": "object" }),
+                request: test_elicitation_request("Continue the completed session"),
                 created_at: "1Z".to_string(),
             },
         )
@@ -491,8 +556,7 @@ mod tests {
             &PendingElicitationState {
                 elicitation_id: "elicit-cancel-me".to_string(),
                 jsonrpc_id: serde_json::json!(1),
-                message: "test".to_string(),
-                requested_schema: serde_json::json!({}),
+                request: test_elicitation_request("test"),
                 created_at: "t".to_string(),
             },
         )
@@ -529,8 +593,7 @@ mod tests {
             &PendingElicitationState {
                 elicitation_id: elicitation_id.to_string(),
                 jsonrpc_id: serde_json::json!(1),
-                message: "Question".to_string(),
-                requested_schema: serde_json::json!({}),
+                request: test_elicitation_request("Question"),
                 created_at: "1Z".to_string(),
             },
         )

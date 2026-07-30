@@ -656,7 +656,7 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
             bootstrap_provider,
             bootstrap_model,
             acceptance_model,
-            routing_prompt,
+            routing_prompt: _,
             available_agents,
         } => {
             ensure!(
@@ -682,7 +682,6 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
                     node_id: id.to_string(),
                 });
             }
-            let has_routing_prompt = !routing_prompt.trim().is_empty();
             let mut seen_providers = HashSet::new();
             for agent_ref in available_agents {
                 let provider = agent_ref.provider.trim();
@@ -703,11 +702,6 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
                             provider: provider.to_string(),
                         });
                     }
-                } else if !has_routing_prompt {
-                    bail!(WorkflowValidationError::DynamicAgentModelBlank {
-                        node_id: id.to_string(),
-                        provider: provider.to_string(),
-                    });
                 }
             }
         }

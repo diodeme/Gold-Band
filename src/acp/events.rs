@@ -65,6 +65,18 @@ pub struct AcpSessionMetadata {
     pub cached_write_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_tokens: Option<u64>,
+    /// Cumulative token usage across every prompt turn in this ACP attempt.
+    /// The legacy fields above remain the latest prompt snapshot for metrics.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt_output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt_cached_read_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt_cached_write_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt_total_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timing: Option<AcpSessionTiming>,
     pub created_at: String,
@@ -503,6 +515,7 @@ pub struct AcpAttemptPaths {
     pub snapshot: Utf8PathBuf,
     pub events: Utf8PathBuf,
     pub timeline: Utf8PathBuf,
+    pub prompt_usage: Utf8PathBuf,
     pub raw: Utf8PathBuf,
     pub diagnostics: Utf8PathBuf,
     pub provider_pid: Utf8PathBuf,
@@ -515,6 +528,7 @@ impl AcpAttemptPaths {
             snapshot: attempt_dir.join("acp.snapshot.json"),
             events: attempt_dir.join("acp.events.jsonl"),
             timeline: attempt_dir.join("acp.timeline.jsonl"),
+            prompt_usage: attempt_dir.join("acp.prompt-usage.jsonl"),
             raw: attempt_dir.join("acp.raw.jsonl"),
             diagnostics: attempt_dir.join("acp.diagnostics.jsonl"),
             provider_pid: attempt_dir.join("provider.pid"),
@@ -1703,6 +1717,40 @@ mod tests {
                 .get("systemPromptAppend")
                 .and_then(|value| value.as_str()),
             Some("You are Gold Band.")
+        );
+    }
+
+    #[test]
+    fn session_metadata_serializes_cumulative_attempt_token_totals_separately() {
+        let metadata: AcpSessionMetadata = serde_json::from_value(json!({
+            "adapterId": "codex-acp",
+            "adapterDisplayName": "Codex",
+            "cwd": "C:/tmp/attempt",
+            "status": "completed",
+            "restored": true,
+            "stopReason": "end_turn",
+            "capabilities": {},
+            "inputTokens": 7453,
+            "outputTokens": 315,
+            "cachedReadTokens": 16896,
+            "totalTokens": 24664,
+            "attemptInputTokens": 16510,
+            "attemptOutputTokens": 330,
+            "attemptCachedReadTokens": 24576,
+            "attemptTotalTokens": 41416,
+            "createdAt": "1785232749Z",
+            "updatedAt": "1785233025Z"
+        }))
+        .unwrap();
+
+        assert_eq!(metadata.input_tokens, Some(7453));
+        assert_eq!(metadata.attempt_input_tokens, Some(16510));
+        assert_eq!(metadata.attempt_total_tokens, Some(41416));
+
+        let value = serde_json::to_value(metadata).unwrap();
+        assert_eq!(
+            value.get("attemptCachedReadTokens").and_then(Value::as_u64),
+            Some(24576)
         );
     }
 

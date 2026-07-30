@@ -7,3 +7,4 @@ pub mod events;
 pub mod history;
 pub mod permission;
 pub mod timeline;
+pub mod usage;

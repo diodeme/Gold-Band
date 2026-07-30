@@ -395,6 +395,17 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - timeline 达到配置化大小、patch/unique ratio 阈值，或读取旧文件时发现同一稳定 ID 存在语义完全相同的重复 revision 后，必须在文件锁内加载 canonical projection，并通过原子文件替换压缩为每个稳定 ID 一条 item。首次 `seq/timestamp/startedSeq` 和 history placement 保持不变；既有重复 replay 在下次打开 timeline 时自动收敛，`acp.raw.jsonl` 继续保存原始到达顺序并沿用独立滚动策略。
 - Direct、Workflow、AUTO、runtime continue/repair 与 AI-DYNAMIC leaf 共享同一 dispatcher/registry 语义，不允许重新引入 Direct 专用的长连接旁路。
 
+## ACP Attempt Token 累计契约
+
+- 会话详情的最小逻辑与统计单位是 attempt。底部“Token 用量”表示当前 ACP attempt 内所有 Gold Band prompt turn 的累计消耗，不是最近一次 Provider 调用的快照。Direct 多轮、停止后继续、runtime 重建、节点完成后在原 attempt 追问都继续累计；resume 到相同 Provider session 但创建新 attempt 时，从新的 attempt 重新计数。
+- Provider `PromptResponse.usage` 是单轮 prompt 增量。runtime 必须先解析为 `AcpPromptTokenUsage`，再通过唯一的 `AcpAttemptTokenTotals` 状态累加；禁止把单轮值直接覆盖 attempt 累计值，也禁止使用字段 `max()`、上下文窗口 `used` 差值或前端消息窗口估算累计消耗。
+- `acp.snapshot.json` 同时保存两个不同领域的数据：`inputTokens / outputTokens / cachedReadTokens / cachedWriteTokens / totalTokens` 保留最后一轮 prompt 快照，供后续单独讨论的节点指标链路使用；`attemptInputTokens / attemptOutputTokens / attemptCachedReadTokens / attemptCachedWriteTokens / attemptTotalTokens` 保存会话 UI 当前 attempt 用量的物化快照。两组字段不得在正常 UI 投影中互相 fallback 或混用。
+- attempt 目录必须维护独立的 `acp.prompt-usage.jsonl` 写前日志。首次启用时先写一条 `attemptBaseline` 固化已有 snapshot 累计；每轮在调用 Provider 前持久化 `promptStarted(turnId, turnSeq)`，收到成功 `PromptResponse.usage` 后立即持久化 `promptCompleted(turnId, usage)`，随后才能把结果投影到内存状态和 snapshot。日志追加必须持有路径级锁，完成 `flush + sync_data`，并在下一次追加前截断不可解析的半行；完整但缺少换行的尾记录必须保留。
+- `acp.prompt-usage.jsonl` 是 attempt 累计恢复的权威事务记录，`acp.snapshot.json` 只是可重建的物化缓存。runtime 重建或会话读取时按稳定 `turnId` 去重并重放 baseline 与 completed；若崩溃发生在 `acp.raw.jsonl` 已记录 Provider 响应、但 `promptCompleted` 尚未落盘的窗口，则把未完成的 `promptStarted` 与 raw 中的 `session/prompt` 成功响应配对，补写 recovered completion。修复必须幂等，同一 turn 不得重复累计。
+- `acp.raw.jsonl` 可独立滚动，因此 raw 修复只处理 baseline 时间之后的结果；不得用不完整的滚动窗口覆盖或降低已有 baseline。升级前的旧 attempt 若没有 `attempt*` 字段，以最后一轮字段建立不下降的迁移 baseline；这只是一次性持久化迁移，不改变 UI 禁止读取最后一轮字段的契约，也不承诺从已经滚掉的 raw 中还原不可得的历史轮次。
+- runtime 在同一 attempt 内重新创建、停止后继续或节点完成后追问时，从当前 attempt journal 恢复 `AcpAttemptTokenTotals` 后继续累加；保留中的 attached runtime 则在同一内存状态中继续累加。新 attempt 不继承旧 attempt totals，即使两者恢复的是同一个 Provider session。单轮响应缺少 `totalTokens` 但存在分项时，使用输入、输出、缓存读、缓存写的饱和加法计算该轮 total；缺失分项不清空既有累计值。
+- `AcpUsageVm.inputTokens / outputTokens / cachedReadTokens / cachedWriteTokens / totalTokens` 对聊天 UI 投影累计字段。timeline 中的 `usage_update` 只负责 `used / size / cost` 等上下文状态，不得用最近一轮 usage breakdown 覆盖累计字段。
+
 ## Agent 单轮回复通知
 
 - 系统通知区分“workflow run 完成”和“ACP prompt turn 完成”。普通 Workflow/AUTO 的自动运行完成继续使用“任务完成”；Direct 首轮、Direct 后续追问，以及 Workflow/AUTO 节点完成后的手动追问统一使用“{Agent} 回复完成 / 回复失败”。

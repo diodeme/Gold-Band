@@ -3291,6 +3291,7 @@ pub fn dynamic_acp_session_vm(
     let timeline_path = attempt_dir.join("acp.timeline.jsonl");
     let events_path = attempt_dir.join("acp.events.jsonl");
     let raw_path = attempt_dir.join("acp.raw.jsonl");
+    let prompt_usage_path = attempt_dir.join("acp.prompt-usage.jsonl");
     let diagnostics_path = attempt_dir.join("acp.diagnostics.jsonl");
     let has_preloaded = preloaded_session_json.is_some();
     if !has_preloaded
@@ -3338,6 +3339,13 @@ pub fn dynamic_acp_session_vm(
         .as_ref()
         .and_then(|state| state.continue_ref.as_ref());
     let diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
+    let recovered_attempt_usage = gold_band::acp::usage::repair_attempt_usage(
+        &snapshot_path,
+        &timeline_path,
+        &raw_path,
+        &prompt_usage_path,
+        gold_band::acp::client::prompt_activity(&attempt_dir).is_none(),
+    )?;
     let system_prompt_append = session
         .get("systemPromptAppend")
         .and_then(|value| value.as_str())
@@ -3483,21 +3491,8 @@ pub fn dynamic_acp_session_vm(
             if u.cost_amount_usd.is_none() {
                 u.cost_amount_usd = session.get("totalCostUsd").and_then(|v| v.as_f64());
             }
-            if u.input_tokens.is_none() {
-                u.input_tokens = session.get("inputTokens").and_then(|v| v.as_u64());
-            }
-            if u.output_tokens.is_none() {
-                u.output_tokens = session.get("outputTokens").and_then(|v| v.as_u64());
-            }
-            if u.cached_read_tokens.is_none() {
-                u.cached_read_tokens = session.get("cachedReadTokens").and_then(|v| v.as_u64());
-            }
-            if u.cached_write_tokens.is_none() {
-                u.cached_write_tokens = session.get("cachedWriteTokens").and_then(|v| v.as_u64());
-            }
-            if u.total_tokens.is_none() {
-                u.total_tokens = session.get("totalTokens").and_then(|v| v.as_u64());
-            }
+            apply_persisted_attempt_token_totals(&mut u, &session);
+            apply_recovered_attempt_token_totals(&mut u, &recovered_attempt_usage);
             Some(u)
         },
         diagnostics: AcpDiagnosticsVm {
@@ -3561,6 +3556,9 @@ pub fn acp_session_vm(
     query: Option<AcpSessionQueryInput>,
     preloaded_session_json: Option<serde_json::Value>,
 ) -> Result<Option<AcpSessionVm>> {
+    let attempt_dir = app
+        .paths
+        .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
     let snapshot_path = app
         .paths
         .acp_snapshot_file(task_id, run_id, round_id, node_id, attempt_id);
@@ -3576,6 +3574,7 @@ pub fn acp_session_vm(
     let raw_path = app
         .paths
         .acp_raw_file(task_id, run_id, round_id, node_id, attempt_id);
+    let prompt_usage_path = attempt_dir.join("acp.prompt-usage.jsonl");
     let diagnostics_path = app
         .paths
         .acp_diagnostics_file(task_id, run_id, round_id, node_id, attempt_id);
@@ -3632,6 +3631,13 @@ pub fn acp_session_vm(
         .paths
         .node_file(task_id, run_id, round_id, node_id, attempt_id);
     let diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
+    let recovered_attempt_usage = gold_band::acp::usage::repair_attempt_usage(
+        &snapshot_path,
+        &timeline_path,
+        &raw_path,
+        &prompt_usage_path,
+        gold_band::acp::client::prompt_activity(&attempt_dir).is_none(),
+    )?;
     let system_prompt_append = session
         .get("systemPromptAppend")
         .and_then(|value| value.as_str())
@@ -3788,23 +3794,10 @@ pub fn acp_session_vm(
             if u.cost_amount_usd.is_none() {
                 u.cost_amount_usd = session.get("totalCostUsd").and_then(|v| v.as_f64());
             }
-            // Merge session-end breakdown (input/output/cache/total) from session metadata.
-            // These fields are only available after the prompt completes.
-            if u.input_tokens.is_none() {
-                u.input_tokens = session.get("inputTokens").and_then(|v| v.as_u64());
-            }
-            if u.output_tokens.is_none() {
-                u.output_tokens = session.get("outputTokens").and_then(|v| v.as_u64());
-            }
-            if u.cached_read_tokens.is_none() {
-                u.cached_read_tokens = session.get("cachedReadTokens").and_then(|v| v.as_u64());
-            }
-            if u.cached_write_tokens.is_none() {
-                u.cached_write_tokens = session.get("cachedWriteTokens").and_then(|v| v.as_u64());
-            }
-            if u.total_tokens.is_none() {
-                u.total_tokens = session.get("totalTokens").and_then(|v| v.as_u64());
-            }
+            // Token breakdown shown in conversation UI is always the cumulative
+            // ACP-attempt total, never the latest prompt response or timeline sample.
+            apply_persisted_attempt_token_totals(&mut u, &session);
+            apply_recovered_attempt_token_totals(&mut u, &recovered_attempt_usage);
             Some(u)
         },
         diagnostics: AcpDiagnosticsVm {
@@ -4105,6 +4098,38 @@ fn merge_confirmed_usage_observation(
     if let Some(cost_amount_usd) = cost_amount_usd {
         current.cost_amount_usd = Some(cost_amount_usd);
     }
+}
+
+fn apply_persisted_attempt_token_totals(usage: &mut AcpUsageVm, session: &serde_json::Value) {
+    usage.input_tokens = session
+        .get("attemptInputTokens")
+        .and_then(|value| value.as_u64());
+    usage.output_tokens = session
+        .get("attemptOutputTokens")
+        .and_then(|value| value.as_u64());
+    usage.cached_read_tokens = session
+        .get("attemptCachedReadTokens")
+        .and_then(|value| value.as_u64());
+    usage.cached_write_tokens = session
+        .get("attemptCachedWriteTokens")
+        .and_then(|value| value.as_u64());
+    usage.total_tokens = session
+        .get("attemptTotalTokens")
+        .and_then(|value| value.as_u64());
+}
+
+fn apply_recovered_attempt_token_totals(
+    usage: &mut AcpUsageVm,
+    recovery: &gold_band::acp::usage::AcpAttemptUsageRecovery,
+) {
+    if recovery.completed_turns == 0 {
+        return;
+    }
+    usage.input_tokens = recovery.totals.input_tokens;
+    usage.output_tokens = recovery.totals.output_tokens;
+    usage.cached_read_tokens = recovery.totals.cached_read_tokens;
+    usage.cached_write_tokens = recovery.totals.cached_write_tokens;
+    usage.total_tokens = recovery.totals.total_tokens;
 }
 
 fn parse_timeline_file(
@@ -6525,6 +6550,66 @@ mod tests {
         let usage = usage.unwrap();
         assert_eq!(usage.used, Some(38_223));
         assert_eq!(usage.cost_amount_usd, Some(0.315532));
+    }
+
+    #[test]
+    fn conversation_usage_projects_cumulative_attempt_totals_not_latest_prompt() {
+        let mut usage = AcpUsageVm {
+            input_tokens: Some(7_453),
+            output_tokens: Some(315),
+            cached_read_tokens: Some(16_896),
+            total_tokens: Some(24_664),
+            ..Default::default()
+        };
+        let session = json!({
+            "inputTokens": 7_453,
+            "outputTokens": 315,
+            "cachedReadTokens": 16_896,
+            "totalTokens": 24_664,
+            "attemptInputTokens": 16_510,
+            "attemptOutputTokens": 330,
+            "attemptCachedReadTokens": 24_576,
+            "attemptTotalTokens": 41_416
+        });
+
+        apply_persisted_attempt_token_totals(&mut usage, &session);
+
+        assert_eq!(usage.input_tokens, Some(16_510));
+        assert_eq!(usage.output_tokens, Some(330));
+        assert_eq!(usage.cached_read_tokens, Some(24_576));
+        assert_eq!(usage.total_tokens, Some(41_416));
+    }
+
+    #[test]
+    fn conversation_usage_prefers_recovered_usage_journal_over_stale_snapshot() {
+        let mut usage = AcpUsageVm::default();
+        let stale_snapshot = json!({
+            "attemptInputTokens": 60_852,
+            "attemptOutputTokens": 2_673,
+            "attemptCachedReadTokens": 370_176,
+            "attemptTotalTokens": 433_701
+        });
+        apply_persisted_attempt_token_totals(&mut usage, &stale_snapshot);
+        apply_recovered_attempt_token_totals(
+            &mut usage,
+            &gold_band::acp::usage::AcpAttemptUsageRecovery {
+                totals: gold_band::acp::usage::AcpAttemptTokenTotals {
+                    input_tokens: Some(133_877),
+                    output_tokens: Some(4_430),
+                    cached_read_tokens: Some(523_776),
+                    cached_write_tokens: Some(0),
+                    total_tokens: Some(662_083),
+                },
+                latest_prompt: Default::default(),
+                completed_turns: 6,
+                recovered_turns: 3,
+            },
+        );
+
+        assert_eq!(usage.input_tokens, Some(133_877));
+        assert_eq!(usage.output_tokens, Some(4_430));
+        assert_eq!(usage.cached_read_tokens, Some(523_776));
+        assert_eq!(usage.total_tokens, Some(662_083));
     }
 
     fn acp_event_at(

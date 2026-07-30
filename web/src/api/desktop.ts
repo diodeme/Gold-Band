@@ -218,6 +218,9 @@ export const desktopApi: RuntimeApi = {
   saveDesktopAvatarShape(kind, shape) {
     return invokeCommand('save_desktop_avatar_shape', { kind, shape });
   },
+  clearDesktopAvatar(kind) {
+    return invokeCommand('clear_desktop_avatar', { kind });
+  },
   saveUpdaterSettings(overrideUrl: string | null) {
     const normalized = overrideUrl?.trim() ? overrideUrl.trim() : null;
     return invokeCommand('save_updater_settings', { overrideUrl: normalized });

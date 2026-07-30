@@ -23,6 +23,7 @@ import {
   getRoundDetail,
   getTaskList,
   getWorkflow,
+  clearDesktopAvatar,
   pauseRun,
   pinConversation,
   rerunConversationTask,
@@ -1189,7 +1190,6 @@ export function App() {
   }, []);
 
   const onSaveAvatar = useCallback(async (input: SaveDesktopAvatarInput) => {
-    setBusy(true);
     setError(null);
     try {
       const avatars = await saveDesktopAvatar(input);
@@ -1198,13 +1198,10 @@ export function App() {
     } catch (err) {
       setError(displayAppError(t, err));
       return undefined;
-    } finally {
-      setBusy(false);
     }
   }, [applyAvatarPreferences, t]);
 
   const onSelectRecentAvatar = useCallback(async (kind: AvatarKind, avatarId: string) => {
-    setBusy(true);
     setError(null);
     try {
       const avatars = await selectRecentDesktopAvatar(kind, avatarId);
@@ -1213,13 +1210,10 @@ export function App() {
     } catch (err) {
       setError(displayAppError(t, err));
       return undefined;
-    } finally {
-      setBusy(false);
     }
   }, [applyAvatarPreferences, t]);
 
   const onSaveAvatarShape = useCallback(async (kind: AvatarKind, shape: AvatarShape) => {
-    setBusy(true);
     setError(null);
     try {
       const avatars = await saveDesktopAvatarShape(kind, shape);
@@ -1228,8 +1222,18 @@ export function App() {
     } catch (err) {
       setError(displayAppError(t, err));
       return undefined;
-    } finally {
-      setBusy(false);
+    }
+  }, [applyAvatarPreferences, t]);
+
+  const onClearAvatar = useCallback(async (kind: AvatarKind) => {
+    setError(null);
+    try {
+      const avatars = await clearDesktopAvatar(kind);
+      applyAvatarPreferences(avatars);
+      return avatars;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
     }
   }, [applyAvatarPreferences, t]);
 
@@ -1359,6 +1363,7 @@ export function App() {
           onSaveAvatar={onSaveAvatar}
           onSelectRecentAvatar={onSelectRecentAvatar}
           onSaveAvatarShape={onSaveAvatarShape}
+          onClearAvatar={onClearAvatar}
           onSaveUpdaterSettings={onSaveUpdaterSettings}
           onCheckUpdate={onCheckUpdate}
           onInstallUpdate={onInstallUpdate}
@@ -1581,6 +1586,7 @@ export function App() {
             onSaveAvatar={onSaveAvatar}
             onSelectRecentAvatar={onSelectRecentAvatar}
             onSaveAvatarShape={onSaveAvatarShape}
+            onClearAvatar={onClearAvatar}
             onSaveUpdaterSettings={onSaveUpdaterSettings}
             onCheckUpdate={onCheckUpdate}
             onInstallUpdate={onInstallUpdate}

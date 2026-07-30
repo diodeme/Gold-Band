@@ -249,6 +249,10 @@ export function saveDesktopAvatarShape(kind: Parameters<ReturnType<typeof getRun
   return getRuntimeApi().saveDesktopAvatarShape(kind, shape);
 }
 
+export function clearDesktopAvatar(kind: Parameters<ReturnType<typeof getRuntimeApi>['clearDesktopAvatar']>[0]) {
+  return getRuntimeApi().clearDesktopAvatar(kind);
+}
+
 export function saveUpdaterSettings(overrideUrl: string | null) {
   return getRuntimeApi().saveUpdaterSettings(overrideUrl);
 }

@@ -792,3 +792,16 @@ attempt-001/
 - MCP 范围收口：transport、Streamable HTTP 和 per-Agent 兼容性由独立 MCP 方案统一维护；本次删除 provider 层按 provider ID 硬编码 transport、预过滤 server 和 attempt warning 的重复实现，避免与 MCP 管理域形成双重事实源。
 - 配置规范化：stale Agent config option 使用纯函数清理，validate 不再 mutation 输入；Direct/AUTO 提交和能力刷新使用规范化结果。
 - 回归要求：Rust workspace、桌面 crate、Web 全量测试、生产构建、default/wb 渠道编译与 wb UI 实际验证全部通过后才允许推送原 PR 分支。
+
+---
+
+## 2026-07-30：Streamable HTTP MCP 协议与 session 生命周期修复
+
+- 根因修复：废弃“读取完整 HTTP body 后取第一条 `data:`”的错误模型；Streamable HTTP SSE 改为按 event 增量解析，并按 JSON-RPC request id 等待对应 response，允许服务端在此前发送 request、notification、keepalive 或其他 response。
+- SSE framing：多条 `data:` 按标准使用换行拼接，comment 不产生消息；目标 response 到达后立即返回，不依赖服务端关闭 SSE 连接。
+- session 状态：`Mcp-Session-Id` 与协商后的 `protocolVersion` 统一由客户端管理；后续 notification、tools/list 与 DELETE 均携带协商版本和 session header。
+- session 恢复：携带 session 的请求收到 `404` 后，不单独重放失败请求，而是清除旧状态并完整重走 initialize → notifications/initialized → tools/list；连续失效则停止重试并返回错误。
+- 资源释放：健康检查与工具发现属于短生命周期操作，完成或失败后均 best-effort 发送 HTTP DELETE；`404/405` 视为已释放或服务端不支持主动释放。
+- HTTP 方法安全：禁用自动重定向，避免 301/302 将 MCP POST 降级成 GET；要求配置最终 endpoint URL。
+- UI 修复：Agent 兼容性状态的 Tooltip 使用非 disabled 包装触发器，支持/不支持状态仍可 hover 查看说明。
+- 回归固化：Rust 单元测试覆盖多行 SSE、前置 notification/错误 id、目标 response 到达但连接仍保持、session 404 后重新握手、协商版本透传和最终 DELETE。

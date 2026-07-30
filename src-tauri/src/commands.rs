@@ -33,8 +33,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{info, warn};
 
 use crate::avatar::{
-    AvatarKind, AvatarPreferencesVm, AvatarShape, SaveDesktopAvatarInput, load_avatar_preferences,
-    save_avatar_image, save_avatar_shape, select_recent_avatar,
+    AvatarKind, AvatarPreferencesVm, AvatarShape, SaveDesktopAvatarInput, clear_avatar,
+    load_avatar_preferences, save_avatar_image, save_avatar_shape, select_recent_avatar,
 };
 use crate::conversation_workspace::workspace_entry_for_project;
 use crate::i18n::Translator;
@@ -3044,6 +3044,15 @@ pub fn save_desktop_avatar_shape(
 ) -> CommandResult<AvatarPreferencesVm> {
     let app = state.context().map_err(command_error)?.app();
     save_avatar_shape(&app.paths.user_gold_band_dir(), kind, shape).map_err(avatar_command_error)
+}
+
+#[tauri::command]
+pub fn clear_desktop_avatar(
+    state: State<'_, DesktopState>,
+    kind: AvatarKind,
+) -> CommandResult<AvatarPreferencesVm> {
+    let app = state.context().map_err(command_error)?.app();
+    clear_avatar(&app.paths.user_gold_band_dir(), kind).map_err(avatar_command_error)
 }
 
 fn avatar_command_error(error: crate::avatar::AvatarError) -> CommandErrorVm {

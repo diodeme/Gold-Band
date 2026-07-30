@@ -482,6 +482,15 @@ export const browserApi: RuntimeApi = {
     browserPreviewState.setPreferences({ ...current, avatars });
     return Promise.resolve(avatars);
   },
+  clearDesktopAvatar(kind) {
+    const current = browserPreviewState.getPreferences();
+    const avatars = {
+      ...current.avatars,
+      [kind]: { ...current.avatars[kind], selectedAvatarId: null },
+    };
+    browserPreviewState.setPreferences({ ...current, avatars });
+    return Promise.resolve(avatars);
+  },
   saveUpdaterSettings(overrideUrl: string | null) {
     const current = browserPreviewState.getUpdaterSettings();
     const normalized = overrideUrl?.trim() ? overrideUrl.trim() : null;

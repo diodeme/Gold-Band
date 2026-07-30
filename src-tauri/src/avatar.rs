@@ -248,6 +248,13 @@ pub fn save_avatar_shape(
     Ok(avatar_preferences_vm(root, &store))
 }
 
+pub fn clear_avatar(root: &Utf8Path, kind: AvatarKind) -> Result<AvatarPreferencesVm, AvatarError> {
+    let mut store = load_store(root)?;
+    store.profile_mut(kind).selected_avatar_id = None;
+    persist_store(root, &store)?;
+    Ok(avatar_preferences_vm(root, &store))
+}
+
 fn load_store(root: &Utf8Path) -> Result<AvatarStore, AvatarError> {
     let path = avatar_store_file(root);
     if !path.exists() {
@@ -359,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn avatar_upload_select_shape_and_recent_limit_are_persisted() {
+    fn avatar_upload_select_clear_shape_and_recent_limit_are_persisted() {
         let temp = tempdir().unwrap();
         let root = root(&temp);
         let mut first_id = String::new();
@@ -403,6 +410,18 @@ mod tests {
         assert_eq!(
             load_avatar_preferences(&root).unwrap().agent.shape,
             AvatarShape::Circle
+        );
+
+        let recent_count = shaped.agent.recent_avatars.len();
+        let cleared = clear_avatar(&root, AvatarKind::Agent).unwrap();
+        assert!(cleared.agent.selected_avatar_id.is_none());
+        assert_eq!(cleared.agent.recent_avatars.len(), recent_count);
+        assert!(
+            load_avatar_preferences(&root)
+                .unwrap()
+                .agent
+                .selected_avatar_id
+                .is_none()
         );
     }
 

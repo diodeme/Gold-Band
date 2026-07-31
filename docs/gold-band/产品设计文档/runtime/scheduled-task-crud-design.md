@@ -24,7 +24,6 @@
 
 - 调度时间、时区和队列保护策略。
 - model、thought level 和 permission。
-- Workflow/AUTO 的 Agent 选择。
 
 以下修改清除已有 Task 关联，使下一次触发创建新 Task：
 
@@ -32,6 +31,7 @@
 - 附件内容。
 - Workflow authoring 定义。
 - AUTO goal 或 allowed workflows。
+- Workflow/AUTO 的 Agent 身份、Agent 策略或可用 Agent 集合。
 - workspace 或运行模式。
 
 Direct Agent 是定时任务创建时冻结的身份，创建后不可修改。编辑界面只读展示；更新接口不接受 Agent 变更。非法变更返回结构化错误码 `scheduled-task.direct-agent-immutable`。需要更换 Direct Agent 时必须创建新的定时任务。
@@ -44,9 +44,10 @@ Direct Agent 是定时任务创建时冻结的身份，创建后不可修改。�
 - 附件内容哈希。
 - workspace 身份。
 - Workflow authoring 定义，或 AUTO goal / allowed workflows。
+- Workflow/AUTO 的 Agent 身份、Agent 策略和可用 Agent 集合。
 - Direct Agent 身份。
 
-model、thought level、permission、Workflow/AUTO Agent 和 Direct session policy 不进入内容指纹。
+model、thought level、permission 和 Direct session policy 不进入内容指纹。
 
 编辑保存时若新旧内容指纹不同，将 `taskId` 置空；历史 Task/Run 不修改、不迁移、不删除。
 

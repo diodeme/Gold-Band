@@ -12,7 +12,7 @@
 - 相同内容再次执行时，Workflow/AUTO 在同一 task 下创建新的 run。
 - Workflow/AUTO 的每个 run 都冻结自己的 `workflow.snapshot.json`。
 - 修改 instruction、附件、Workflow 定义、AUTO 目标/允许工作流或 workspace 后，下一次触发创建新 task；历史 task 和 run 保留。
-- 修改 model、thought level、permission 或 Workflow/AUTO 的 Agent 选择，只改变后续执行配置，不创建新 task。
+- 修改 model、thought level 或 permission 只改变后续执行配置，不创建新 task；修改 Workflow/AUTO 的 Agent 选择属于 authoring 变化，下一次触发创建新 task。
 - Direct Agent 是 Direct 会话身份的一部分，定时任务创建后不可修改；需要更换 Agent 时创建新的定时任务。
 
 定时任务定义自身可以在首次触发前保持 `taskId = null`。首次触发后记录物化的 task，后续按照内容指纹决定复用或创建新的 task。
@@ -72,18 +72,19 @@
 - instruction 正文
 - 创建时复制到定时任务输入目录的附件内容
 - Workflow authoring 定义，或 AUTO goal / allowed workflows
+- Workflow/AUTO 的 Agent 身份、Agent 策略和可用 Agent 集合
 - workspace 身份
 - Direct 模式的 Direct Agent 身份
 
-model、thought level、permission 和 Workflow/AUTO Agent 选择不进入内容指纹。
+model、thought level 和 permission 不进入内容指纹。
 
 Direct session policy 是执行策略，不进入内容指纹。新会话与持续会话互相切换时保留最近 Task 关联用于队列保护；下一次触发按照新策略决定创建新 Task 或继续最近的可恢复会话。
 
 ## 5.1 编辑约束
 
 - 编辑 Direct 定时任务时只读展示 Agent，不提供修改入口；后端同样拒绝 Agent 变更。
-- instruction、附件、Workflow authoring、AUTO goal / allowed workflows、workspace 或运行模式变化后，将 `taskId` 置空，下一次触发创建新 Task。
-- 调度、时区、队列保护、model、thought level、permission 或 Workflow/AUTO Agent 变化时保留 `taskId`。
+- instruction、附件、Workflow authoring、AUTO goal / allowed workflows、Workflow/AUTO Agent、workspace 或运行模式变化后，将 `taskId` 置空，下一次触发创建新 Task。
+- 调度、时区、队列保护、model、thought level 或 permission 变化时保留 `taskId`。
 - 删除定时任务只删除调度定义和定时输入快照，保留历史 Task、Run、Round、ACP 会话和产物。
 
 ## 6. 队列保护和错过执行

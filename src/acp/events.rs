@@ -96,6 +96,8 @@ pub struct AcpRawFrame {
 pub struct AcpDiagnostic {
     pub timestamp: String,
     pub level: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
@@ -781,7 +783,27 @@ pub fn append_diagnostic(
         &AcpDiagnostic {
             timestamp: current_timestamp(),
             level: level.into(),
+            code: None,
             message: message.into(),
+            data,
+        },
+    )
+}
+
+pub fn append_structured_diagnostic(
+    path: &Utf8Path,
+    level: impl Into<String>,
+    code: impl Into<String>,
+    data: Option<Value>,
+) -> Result<()> {
+    let code = code.into();
+    append_jsonl(
+        path,
+        &AcpDiagnostic {
+            timestamp: current_timestamp(),
+            level: level.into(),
+            code: Some(code.clone()),
+            message: code,
             data,
         },
     )
@@ -1487,12 +1509,42 @@ fn extract_status(value: &Value) -> Option<String> {
 mod tests {
     use super::{
         AcpSessionMetadata, AcpTimingState, AcpUiEvent, annotate_latest_runtime_control_output,
-        append_raw_frame, append_timeline_patch, context_compaction_phase,
-        elicitation_request_event, elicitation_response_event, extract_usage_fields,
-        kind_to_ui_kind, latest_timeline_source_seq, load_timeline_items, normalize_session_update,
-        permission_request_event, user_prompt_event, write_timeline_items,
+        append_raw_frame, append_structured_diagnostic, append_timeline_patch,
+        context_compaction_phase, elicitation_request_event, elicitation_response_event,
+        extract_usage_fields, kind_to_ui_kind, latest_timeline_source_seq, load_timeline_items,
+        normalize_session_update, permission_request_event, user_prompt_event,
+        write_timeline_items,
     };
     use serde_json::{Value, json};
+
+    #[test]
+    fn structured_diagnostic_persists_stable_code_and_params() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = camino::Utf8PathBuf::from_path_buf(temp.path().join("acp.diagnostics.jsonl"))
+            .expect("utf8 path");
+
+        append_structured_diagnostic(
+            &path,
+            "warning",
+            "acp.mcp-transport-unsupported",
+            Some(json!({
+                "agentType": "codex-acp",
+                "skippedServers": [{
+                    "name": "legacy",
+                    "transport": "sse",
+                    "capability": "mcpCapabilities.sse"
+                }]
+            })),
+        )
+        .expect("append diagnostic");
+
+        let line = std::fs::read_to_string(path.as_std_path()).expect("read diagnostic");
+        let value: Value = serde_json::from_str(line.trim()).expect("parse diagnostic");
+        assert_eq!(value["level"], "warning");
+        assert_eq!(value["code"], "acp.mcp-transport-unsupported");
+        assert_eq!(value["message"], "acp.mcp-transport-unsupported");
+        assert_eq!(value["data"]["skippedServers"][0]["transport"], "sse");
+    }
 
     // --- extract_usage_fields ---
 

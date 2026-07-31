@@ -126,6 +126,8 @@ describe('resolveAcpSessionShellState', () => {
 
 describe('isAcpSessionInitializationFailed', () => {
   const failedInput = {
+    runtimeStatus: 'paused',
+    runtimePauseReason: 'error-blocked',
     runtimeActive: false,
     runtimeComposerMode: 'runtime-error',
     runtimeErrorMessage: 'Configured model is unavailable',
@@ -136,6 +138,25 @@ describe('isAcpSessionInitializationFailed', () => {
 
   it('identifies runtime errors that happen before ACP session-ready state', () => {
     expect(isAcpSessionInitializationFailed(failedInput)).toBe(true);
+  });
+
+  it('ends loading when a resumable runtime-abnormal pause happens before session creation', () => {
+    expect(isAcpSessionInitializationFailed({
+      ...failedInput,
+      runtimePauseReason: 'runtime-abnormal',
+      runtimeComposerMode: 'interrupted-input',
+      runtimeErrorMessage: "Codex doesn't support MCP SSE transport protocol",
+    })).toBe(true);
+  });
+
+  it('uses canonical failed runtime status even when no ACP composer error was created', () => {
+    expect(isAcpSessionInitializationFailed({
+      ...failedInput,
+      runtimeStatus: 'failed',
+      runtimePauseReason: null,
+      runtimeComposerMode: 'normal',
+      runtimeErrorMessage: null,
+    })).toBe(true);
   });
 
   it('keeps established or active sessions on the normal conversation path', () => {
@@ -150,6 +171,14 @@ describe('isAcpSessionInitializationFailed', () => {
     expect(isAcpSessionInitializationFailed({
       ...failedInput,
       loadedEventCount: 1,
+    })).toBe(false);
+  });
+
+  it('does not turn non-error pauses into ACP initialization failures', () => {
+    expect(isAcpSessionInitializationFailed({
+      ...failedInput,
+      runtimePauseReason: 'waiting-for-user-input',
+      runtimeComposerMode: 'interrupted-input',
     })).toBe(false);
   });
 });

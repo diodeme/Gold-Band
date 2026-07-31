@@ -40,6 +40,8 @@ export interface AcpSessionInitializationInterruptedInput {
 }
 
 export interface AcpSessionInitializationFailedInput {
+  runtimeStatus?: string | null;
+  runtimePauseReason?: string | null;
   runtimeActive: boolean;
   runtimeComposerMode?: string | null;
   runtimeErrorMessage?: string | null;
@@ -65,10 +67,17 @@ export function resolveAcpSessionShellState(input: AcpSessionShellStateInput): A
 }
 
 export function isAcpSessionInitializationFailed(input: AcpSessionInitializationFailedInput) {
+  const runtimeStatus = normalizeLifecycleCode(input.runtimeStatus);
+  const runtimePauseReason = normalizeLifecycleCode(input.runtimePauseReason);
+  const runtimeStoppedWithFailure =
+    runtimePauseReason === 'runtime-abnormal' ||
+    runtimePauseReason === 'error-blocked' ||
+    ['failed', 'failure', 'error', 'killed'].includes(runtimeStatus);
+  const composerStoppedWithFailure =
+    normalizeLifecycleCode(input.runtimeComposerMode) === 'runtime-error';
   return (
     !input.runtimeActive &&
-    normalizeLifecycleCode(input.runtimeComposerMode) === 'runtime-error' &&
-    Boolean(input.runtimeErrorMessage?.trim()) &&
+    (runtimeStoppedWithFailure || composerStoppedWithFailure) &&
     !input.sessionId?.trim() &&
     !input.baseSessionReady &&
     input.loadedEventCount === 0

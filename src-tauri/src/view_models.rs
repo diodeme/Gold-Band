@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::Result;
+use gold_band::acp::events::normalize_agent_transcript_metadata;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
@@ -5522,6 +5523,9 @@ fn extract_system_prompt_append(path: &camino::Utf8Path) -> Option<String> {
 }
 
 fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {
+    if let Some(raw) = event.raw.as_mut() {
+        normalize_agent_transcript_metadata(raw);
+    }
     event.raw = event.raw.map(compact_raw_value);
     event.content = event
         .content
@@ -5550,6 +5554,7 @@ fn compact_raw_value(value: serde_json::Value) -> serde_json::Value {
         "rawInput",
         "locations",
         "entries",
+        "_meta",
         "source",
         "synthetic",
         "optimistic",
@@ -6545,6 +6550,33 @@ mod tests {
         let usage = usage.unwrap();
         assert_eq!(usage.used, Some(34_791));
         assert_eq!(usage.size, Some(1_000_000));
+    }
+
+    #[test]
+    fn session_view_normalizes_legacy_claude_agent_metadata_for_historical_events() {
+        let mut event = test_event("toolCall", "");
+        event.tool_call_id = Some("call-child".to_string());
+        event.raw = Some(json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call-child",
+            "_meta": {
+                "claudeCode": {
+                    "toolName": "Agent",
+                    "subagent": true,
+                    "parentToolUseId": "call-parent"
+                }
+            }
+        }));
+
+        let event = compact_event_for_session(event);
+        let transcript = event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.pointer("/_meta/agentTranscript"))
+            .expect("normalized transcript metadata");
+
+        assert_eq!(transcript["agentLaunch"], true);
+        assert_eq!(transcript["parentToolCallId"], "call-parent");
     }
 
     #[test]

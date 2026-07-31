@@ -1,6 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { isTauriRuntime } from '@/api/shared';
 import type { TFunction } from 'i18next';
 import { Check, ChevronsUpDown, CircleHelp, Edit, Eye, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
@@ -11,7 +9,7 @@ import {
   toggleMcpServer, checkMcpServerHealth, listMcpTools,
   listSkills, listProjectSkills, readSkill, writeSkill, deleteSkill, getSkillSyncStatus,
   checkSkillNameConflict, updateSkillSyncTargets,
-  getConversationWorkspaces, getAgentRegistry, doctorAgent,
+  getConversationWorkspaces, doctorAgent,
 } from '../api';
 import { displayAppError } from '../i18n';
 import type {
@@ -59,7 +57,12 @@ type ContextTab = 'profiles' | 'mcp' | 'skills';
 type ProfileListTab = 'built-in' | 'custom';
 const pageSizes = [6, 12, 24];
 
-export function ContextManagementPage() {
+interface ContextManagementPageProps {
+  agentRegistry: AgentRegistryVm | null;
+  onAgentRegistryChange: (registry: AgentRegistryVm) => void;
+}
+
+export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: ContextManagementPageProps) {
   const { t } = useTranslation();
   const [vm, setVm] = useState<ProfileListVm | null>(null);
   const [loading, setLoading] = useState(false);
@@ -133,24 +136,7 @@ export function ContextManagementPage() {
   const [skillDeleting, setSkillDeleting] = useState(false);
   const [skillSyncPendingKey, setSkillSyncPendingKey] = useState<string | null>(null);
   const [skillEditWsPath, setSkillEditWsPath] = useState<string | null>(null);
-  const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
   const [mcpDiagnosingAgent, setMcpDiagnosingAgent] = useState<string | null>(null);
-  // 监听 agent 诊断完成事件，实时刷新 per-agent MCP 兼容性（后台诊断完一个 agent 即更新卡片，无需重进页面）
-  useEffect(() => {
-    if (!isTauriRuntime()) return undefined;
-    let disposed = false;
-    let unlisten: UnlistenFn | null = null;
-    void listen('gold-band://agent-registry-updated', () => {
-      if (!disposed) void getAgentRegistry().then(setAgentRegistry).catch(() => {});
-    }).then((stop) => {
-      if (disposed) stop();
-      else unlisten = stop;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
 
   const [skillTab, setSkillTab] = useState<'global' | 'project'>('global');
   const [skillQuery, setSkillQuery] = useState('');
@@ -259,7 +245,6 @@ export function ContextManagementPage() {
   useEffect(() => {
     if (!needsSkillContext) return;
     getConversationWorkspaces().then(setWorkspaces).catch(() => setWorkspaces([]));
-    getAgentRegistry().then(setAgentRegistry).catch(() => setAgentRegistry(null));
   }, [needsSkillContext]);
 
   const refresh = async () => {
@@ -675,6 +660,8 @@ export function ContextManagementPage() {
                     iconKey: a.iconKey,
                     mcpHttpSupported: a.mcpHttpSupported,
                     mcpSseSupported: a.mcpSseSupported,
+                    diagnosticAvailable: a.diagnostic?.available,
+                    diagnosticReason: a.diagnostic?.reason,
                   }))}
                   diagnosingAgentType={mcpDiagnosingAgent}
                   onDiagnoseAgent={async (agentType) => {
@@ -682,7 +669,7 @@ export function ContextManagementPage() {
                     setMcpDiagnosingAgent(agentType);
                     try {
                       const registry = await doctorAgent(agentType);
-                      setAgentRegistry(registry);
+                      onAgentRegistryChange(registry);
                     } catch {
                       // 忽略诊断错误；用户可重试
                     } finally {

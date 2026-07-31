@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 import { cn } from "@/lib/utils"
 import { GOLD_THEMED_SCROLLBAR_CLASS } from "@/lib/themed-scrollbar"
 import {
@@ -33,6 +33,17 @@ export type ChatContainerScrollAnchorProps = {
   className?: string
   ref?: React.RefObject<HTMLDivElement>
 } & React.HTMLAttributes<HTMLDivElement>
+
+export const CHAT_CONTAINER_BOTTOM_REJOIN_TOLERANCE_PX = 2
+
+export function isChatContainerViewportAtBottom(
+  viewport: Pick<HTMLDivElement, "clientHeight" | "scrollHeight" | "scrollTop">,
+) {
+  return (
+    viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <=
+    CHAT_CONTAINER_BOTTOM_REJOIN_TOLERANCE_PX
+  )
+}
 
 function ChatContainerRoot({
   children,
@@ -92,25 +103,48 @@ function ChatContainerLifecycle({
   ChatContainerRootProps,
   "onAtBottomChange" | "onViewportScroll" | "onViewportWheel"
 >) {
-  const { isAtBottom, scrollRef } = useStickToBottomContext()
+  const { isAtBottom, scrollRef, stopScroll } = useStickToBottomContext()
+  const escapedByUserRef = useRef(false)
 
   useEffect(() => {
-    onAtBottomChange?.(isAtBottom)
+    onAtBottomChange?.(escapedByUserRef.current ? false : isAtBottom)
   }, [isAtBottom, onAtBottomChange])
 
   useEffect(() => {
     const viewport = scrollRef.current as HTMLDivElement | null
     if (!viewport) return
 
-    const handleScroll = () => onViewportScroll?.(viewport)
-    const handleWheel = (event: WheelEvent) => onViewportWheel?.(event, viewport)
+    const handleScroll = () => {
+      if (
+        escapedByUserRef.current &&
+        isChatContainerViewportAtBottom(viewport)
+      ) {
+        escapedByUserRef.current = false
+        onAtBottomChange?.(true)
+      }
+      onViewportScroll?.(viewport)
+    }
+    const handleWheel = (event: WheelEvent) => {
+      if (
+        event.deltaY < 0 &&
+        viewport.scrollHeight > viewport.clientHeight
+      ) {
+        escapedByUserRef.current = true
+        stopScroll()
+        onAtBottomChange?.(false)
+      }
+      onViewportWheel?.(event, viewport)
+    }
     viewport.addEventListener("scroll", handleScroll, { passive: true })
-    viewport.addEventListener("wheel", handleWheel, { passive: true })
+    viewport.addEventListener("wheel", handleWheel, {
+      capture: true,
+      passive: true,
+    })
     return () => {
       viewport.removeEventListener("scroll", handleScroll)
-      viewport.removeEventListener("wheel", handleWheel)
+      viewport.removeEventListener("wheel", handleWheel, { capture: true })
     }
-  }, [onViewportScroll, onViewportWheel, scrollRef])
+  }, [onAtBottomChange, onViewportScroll, onViewportWheel, scrollRef, stopScroll])
 
   return null
 }

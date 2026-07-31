@@ -126,7 +126,8 @@
 - 用户通过 session tree 或工作流图入口手动切到任意 session 后，自动跟随立即解除；后续新 running session 只在后台推进，不抢占当前查看中的会话
 - 当前选中 session 因 runtime 自然完成而从 active 变为 terminal 时，如果用户仍在底部且未手动切换，session auto-follow 进入 pending 状态；后续同一 run 的新 active child session 首次 live event 或 lifecycle-only active update 到达时可以切换过去。
 - 自动跟随分为两层：消息列表的贴底 pin 控制当前 session 内流式内容是否滚到最新；session auto-follow 控制是否随 workflow 切到新的 active session。用户滚回当前活跃 session 底部时，恢复贴底 pin 并恢复 session auto-follow；用户滚回历史/非活跃 session 底部时，只恢复当前消息贴底，不切换 session。
-- 消息列表贴底 pin 的事实来源必须是“滚动 viewport + 实际内容尺寸”组成的统一状态机。ACP 主消息区复用 prompt-kit `ChatContainer` / `use-stick-to-bottom`，由内容根节点 `ResizeObserver` 覆盖 timeline 更新、流式 Markdown presentation 帧、图片或折叠内容等真实布局增长；不得再把 `timeline` 变化当成唯一贴底触发器，也不得在业务组件中另存 `pinToBottomRef` 后重复写 `scrollTop = scrollHeight`。用户向上滚动时组件解除贴底锁，重新进入底部邻域后恢复锁，并通过同一 `onAtBottomChange` 信号驱动 session auto-follow。
+- 消息列表贴底 pin 的事实来源必须是“用户滚动意图 + 滚动 viewport + 实际内容尺寸”组成的统一状态机。ACP 主消息区复用 prompt-kit `ChatContainer` / `use-stick-to-bottom`，由内容根节点 `ResizeObserver` 覆盖 timeline 更新、流式 Markdown presentation 帧、图片或折叠内容等真实布局增长；不得再把 `timeline` 变化当成唯一贴底触发器，也不得在业务组件中另存 `pinToBottomRef` 后重复写 `scrollTop = scrollHeight`。任意向上滚动输入都必须立即解除贴底锁，即使视口仍位于第三方组件定义的 bottom-near 阈值内；只有视口真正回到内容底部时才恢复锁，并通过同一 `onAtBottomChange` 信号驱动 session auto-follow。
+- 历史会话初始化可以瞬时定位到底部，但该定位必须允许用户逃逸；不得使用 `ignoreEscapes` 等不可中断选项跨越 Markdown、折叠节点或图片的异步布局阶段。发送新消息等由用户明确触发的“查看最新内容”动作可以主动贴底，但后续向上滚动仍拥有最高优先级。
 - 用户手动查看历史 session 后，只有再次明确选中最新 active/current runtime leaf 并回到底部，才恢复 session auto-follow；仅把历史 session 滚到底部不能恢复 auto，也不能让后续 background active session 抢焦点。
 - 顶部运行中节点 chip 是显式“跟随当前活跃 session”入口：点击 active chip 且消息窗口位于底部时，重新进入自动跟随；live event 到达或完整 run VM 刷新不能单独恢复自动跟随
 - 刷新 run VM 时若未满足自动跟随条件，前端必须继续保留当前 `selectedSessionKey` 与当前 session payload，不能因为其他 session 的 live event 或后端默认 selected key 回退到最新 running attempt；若手动切换与已排队的 live refresh 同时发生，仍以最新手动选择为准

@@ -555,8 +555,12 @@ export function App() {
   }, [applyConversationSidebar, bootstrap, uiMode]);
 
   useEffect(() => {
-    if (!bootstrap || uiMode !== 'conversation') return;
+    if (!bootstrap) return;
     getAgentRegistry().then(setAgentRegistry).catch(() => {});
+  }, [bootstrap]);
+
+  useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation') return;
     loadProfiles().catch(() => setProfiles([]));
     getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
   }, [bootstrap, loadProfiles, uiMode]);
@@ -768,7 +772,7 @@ export function App() {
       }
     };
 
-    void listen('gold-band://agent-commands-updated', () => {
+    void listen('gold-band://agent-registry-updated', () => {
       if (active) void refreshAgentRegistry();
     }).then((dispose) => {
       if (active) {
@@ -1395,7 +1399,7 @@ export function App() {
       : primaryModule === 'agent-management'
         ? <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />
         : primaryModule === 'knowledge-base'
-          ? <ContextManagementPage />
+          ? <ContextManagementPage agentRegistry={agentRegistry} onAgentRegistryChange={setAgentRegistry} />
           : renderTaskContent();
 
   const onSelectConversation = (page: ConversationPage) => {
@@ -1585,7 +1589,7 @@ export function App() {
       return <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />;
     }
     if (conversationPage.kind === 'contexts') {
-      return <ContextManagementPage />;
+      return <ContextManagementPage agentRegistry={agentRegistry} onAgentRegistryChange={setAgentRegistry} />;
     }
     if (conversationPage.kind === 'settings') {
       return (

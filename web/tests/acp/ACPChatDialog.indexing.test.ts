@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildAcpTimeline, collectTimelineItemKeys, createAcpSessionCacheKey, isTopLevelPlanEvent, latestStreamingMarkdownItemKey, latestStreamingMarkdownItemKeyFromEvents, limitAcpEvents, mergeAcpEvents, pruneExpandedTimelineItems, queryBlocksFromTool, restoreAcpLoadedEvents, storeAcpLoadedEvents, timelineEventKey } from '../../src/components/acp/ACPChatDialog';
+import { buildAcpTimeline, buildAcpTimelineProjection, collectTimelineItemKeys, createAcpSessionCacheKey, isTopLevelPlanEvent, latestStreamingMarkdownItemKey, latestStreamingMarkdownItemKeyFromEvents, limitAcpEvents, mergeAcpEvents, pruneExpandedTimelineItems, queryBlocksFromTool, restoreAcpLoadedEvents, storeAcpLoadedEvents, timelineEventKey } from '../../src/components/acp/ACPChatDialog';
 import type { AcpUiEventVm } from '../../src/types';
 
 function event(partial: Partial<AcpUiEventVm> & Pick<AcpUiEventVm, 'id' | 'seq' | 'timestamp' | 'kind'>): AcpUiEventVm {
@@ -115,11 +115,11 @@ describe('ACPChatDialog timeline helpers', () => {
   it('keeps child-agent plan events in timeline', () => {
     const childPlanRaw = {
       entries: [{ content: 'sub task', status: 'in_progress' }],
-      _meta: { claudeCode: { parentToolUseId: 'call-agent-1' } },
+      _meta: { agentTranscript: { parentToolCallId: 'call-agent-1' } },
     };
 
     const timeline = buildAcpTimeline([
-      event({ id: 'agent-start', seq: 1, timestamp: '1Z', kind: 'toolCall', toolCallId: 'call-agent-1', title: 'agent', raw: { toolCall: { rawInput: { description: 'sub task', prompt: 'do it', subagent_type: 'claude' } } } }),
+      event({ id: 'agent-start', seq: 1, timestamp: '1Z', kind: 'toolCall', toolCallId: 'call-agent-1', title: 'agent', raw: { _meta: { agentTranscript: { agentLaunch: true } }, rawInput: { description: 'sub task', prompt: 'do it', subagent_type: 'claude' } } }),
       event({ id: 'child-plan', seq: 2, timestamp: '2Z', kind: 'plan', raw: childPlanRaw }),
       event({ id: 'agent-end', seq: 3, timestamp: '3Z', kind: 'toolCallUpdate', toolCallId: 'call-agent-1', status: 'completed', title: 'agent' }),
     ]);
@@ -141,7 +141,7 @@ describe('ACPChatDialog timeline helpers', () => {
         toolCallId: 'call-outer',
         status: 'running',
         raw: {
-          _meta: { claudeCode: { toolName: 'Agent', subagent: true } },
+          _meta: { agentTranscript: { agentLaunch: true } },
           rawInput: { description: 'outer task', subagent_type: 'general-purpose' },
         },
       }),
@@ -154,10 +154,9 @@ describe('ACPChatDialog timeline helpers', () => {
         status: 'pending',
         raw: {
           _meta: {
-            claudeCode: {
-              toolName: 'Agent',
-              subagent: true,
-              parentToolUseId: 'call-outer',
+            agentTranscript: {
+              agentLaunch: true,
+              parentToolCallId: 'call-outer',
             },
           },
           rawInput: { description: 'inner task', subagent_type: 'general-purpose' },
@@ -183,10 +182,175 @@ describe('ACPChatDialog timeline helpers', () => {
     });
   });
 
+  it('recognizes a compacted agent lifecycle from its terminal tool update metadata', () => {
+    const timeline = buildAcpTimeline([
+      event({
+        id: 'agent-completed', seq: 1, timestamp: '1Z', kind: 'toolCallUpdate',
+        toolCallId: 'call-agent', status: 'completed',
+        raw: { _meta: { agentTranscript: { agentLaunch: true } }, rawInput: { description: 'review' } },
+      }),
+      event({
+        id: 'agent-text', seq: 2, timestamp: '2Z', kind: 'textDelta', content: 'review complete',
+        raw: { _meta: { agentTranscript: { parentToolCallId: 'call-agent' } } },
+      }),
+    ]);
+
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]?.kind).toBe('childAgentGroup');
+    if (timeline[0]?.kind !== 'childAgentGroup') throw new Error('missing child agent group');
+    expect(timeline[0].status).toBe('completed');
+    expect(timeline[0].events.map(timelineEventKey)).toEqual(['textDelta-agent-text']);
+  });
+
+  it('keeps grandchild tool events inside their nested agent branch', () => {
+    const timeline = buildAcpTimeline([
+      event({
+        id: 'outer-agent', seq: 1, timestamp: '1Z', kind: 'toolCall',
+        toolCallId: 'call-outer', status: 'running',
+        raw: { _meta: { agentTranscript: { agentLaunch: true } }, rawInput: { description: 'outer' } },
+      }),
+      event({
+        id: 'inner-agent', seq: 2, timestamp: '2Z', kind: 'toolCall',
+        toolCallId: 'call-inner', status: 'pending',
+        raw: {
+          _meta: { agentTranscript: { agentLaunch: true, parentToolCallId: 'call-outer' } },
+          rawInput: { description: 'inner' },
+        },
+      }),
+      event({
+        id: 'powershell', seq: 3, timestamp: '3Z', kind: 'toolCall',
+        toolCallId: 'call-powershell', status: 'pending', title: 'PowerShell',
+        raw: {
+          _meta: { agentTranscript: { parentToolCallId: 'call-inner' } },
+          rawInput: { command: 'Get-ChildItem -Force' },
+        },
+      }),
+    ]);
+
+    const outer = timeline[0];
+    expect(outer?.kind).toBe('childAgentGroup');
+    if (!outer || outer.kind !== 'childAgentGroup') throw new Error('missing outer agent');
+    const inner = outer.events[0];
+    expect(inner?.kind).toBe('childAgentGroup');
+    if (!inner || inner.kind !== 'childAgentGroup') throw new Error('missing inner agent');
+    expect(inner.status).toBe('running');
+    expect(inner.events.map(timelineEventKey)).toEqual(['tool-call-powershell']);
+  });
+
+  it('projects an unscoped descendant plan into its established child-agent branch', () => {
+    const outerAgent = event({
+      id: 'outer-agent', seq: 1, timestamp: '1Z', kind: 'toolCall',
+      toolCallId: 'call-outer', status: 'running',
+      raw: { _meta: { agentTranscript: { agentLaunch: true } }, rawInput: { description: 'outer' } },
+    });
+    const firstPlan = event({
+      id: 'plan-1', seq: 2, timestamp: '2Z', kind: 'plan',
+      raw: {
+        entries: [{ content: 'Browse repository', status: 'in_progress' }],
+        _meta: { agentTranscript: { parentToolCallId: 'call-outer' } },
+      },
+    });
+    const aggregatePlan = event({
+      id: 'plan-2', seq: 3, timestamp: '3Z', kind: 'plan',
+      raw: {
+        entries: [
+          { content: 'Browse repository', status: 'completed' },
+          { content: 'Map data flow', status: 'in_progress' },
+        ],
+      },
+    });
+
+    const projection = buildAcpTimelineProjection([
+      outerAgent,
+      firstPlan,
+      aggregatePlan,
+    ]);
+    expect(projection.todoEntries).toEqual([]);
+    const outer = projection.timeline[0];
+    expect(outer?.kind).toBe('childAgentGroup');
+    if (!outer || outer.kind !== 'childAgentGroup') throw new Error('missing outer agent');
+    expect(outer.todoEntries).toEqual([
+      { content: 'Browse repository', status: 'completed', priority: undefined },
+      { content: 'Map data flow', status: 'in_progress', priority: undefined },
+    ]);
+    expect(outer.events).toEqual([]);
+    expect(isTopLevelPlanEvent(aggregatePlan, [outerAgent, firstPlan, aggregatePlan])).toBe(false);
+  });
+
+  it('does not inherit a completed child-agent plan lineage after its lifecycle ends', () => {
+    const events = [
+      event({
+        id: 'outer-agent', seq: 1, startedSeq: 1, endedSeq: 3,
+        timestamp: '1Z', kind: 'toolCall', toolCallId: 'call-outer', status: 'completed',
+        raw: { _meta: { agentTranscript: { agentLaunch: true } }, rawInput: { description: 'outer' } },
+      }),
+      event({
+        id: 'child-plan', seq: 2, timestamp: '2Z', kind: 'plan',
+        raw: {
+          entries: [{ content: 'Shared task', status: 'in_progress' }],
+          _meta: { agentTranscript: { parentToolCallId: 'call-outer' } },
+        },
+      }),
+      event({
+        id: 'main-plan', seq: 4, timestamp: '4Z', kind: 'plan',
+        raw: { entries: [{ content: 'Shared task', status: 'pending' }] },
+      }),
+    ];
+
+    const projection = buildAcpTimelineProjection(events);
+    expect(projection.todoEntries).toEqual([
+      { content: 'Shared task', status: 'pending', priority: undefined },
+    ]);
+    expect(isTopLevelPlanEvent(events[2]!, events)).toBe(true);
+  });
+
+  it('keeps nested agent todos inside their owners and removes them from the aggregate root plan', () => {
+    const events = [
+      event({
+        id: 'child-a', seq: 1, timestamp: '1Z', kind: 'toolCall',
+        toolCallId: 'call-a', status: 'running',
+        raw: { rawInput: { description: 'A' }, _meta: { agentTranscript: { agentLaunch: true } } },
+      }),
+      event({
+        id: 'child-b', seq: 2, timestamp: '2Z', kind: 'toolCall',
+        toolCallId: 'call-b', status: 'running',
+        raw: { rawInput: { description: 'B' }, _meta: { agentTranscript: { agentLaunch: true } } },
+      }),
+      event({
+        id: 'aggregate', seq: 3, timestamp: '3Z', kind: 'plan',
+        raw: { entries: [
+          { content: 'A todo', status: 'in_progress' },
+          { content: 'B todo', status: 'pending' },
+          { content: 'Main todo', status: 'pending' },
+        ] },
+      }),
+      event({
+        id: 'plan-a', seq: 4, timestamp: '4Z', kind: 'plan',
+        raw: { entries: [{ content: 'A todo', status: 'in_progress' }], _meta: { agentTranscript: { parentToolCallId: 'call-a' } } },
+      }),
+      event({
+        id: 'plan-b', seq: 5, timestamp: '5Z', kind: 'plan',
+        raw: { entries: [{ content: 'B todo', status: 'pending' }], _meta: { agentTranscript: { parentToolCallId: 'call-b' } } },
+      }),
+    ];
+
+    const projection = buildAcpTimelineProjection(events);
+    expect(projection.todoEntries).toEqual([
+      { content: 'Main todo', status: 'pending', priority: undefined },
+    ]);
+    const groups = projection.timeline.filter(item => item.kind === 'childAgentGroup');
+    expect(groups).toHaveLength(2);
+    if (groups[0]?.kind !== 'childAgentGroup' || groups[1]?.kind !== 'childAgentGroup') {
+      throw new Error('missing child groups');
+    }
+    expect(groups[0].todoEntries.map(entry => entry.content)).toEqual(['A todo']);
+    expect(groups[1].todoEntries.map(entry => entry.content)).toEqual(['B todo']);
+  });
+
   it('isTopLevelPlanEvent returns false for child-agent plans', () => {
     const childPlan = event({
       id: 'p1', seq: 1, timestamp: '1Z', kind: 'plan',
-      raw: { _meta: { claudeCode: { parentToolUseId: 'call-1' } } },
+      raw: { _meta: { agentTranscript: { parentToolCallId: 'call-1' } } },
     });
     expect(isTopLevelPlanEvent(childPlan)).toBe(false);
 

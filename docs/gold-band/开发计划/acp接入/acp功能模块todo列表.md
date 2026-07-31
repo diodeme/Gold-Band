@@ -11,7 +11,8 @@
 - ACP prompt 会在发送 `session/prompt` 前持久化 synthetic `userTextDelta`，用于展示初始 prompt 和继续输入。
 - Raw frames 诊断读取已从普通 session 刷新路径中解耦，普通刷新只统计行数；详情视图按 JSONL 行做后端分页、关键词检索、direction 和 kind/method 过滤，默认打开最新页，不把全量 `acp.raw.jsonl` 传给前端。
 - ACP Message List 已使用内容尺寸监听补齐流式消息增高时的底部贴合，并限制只有非底部顶部预取区才加载更早历史，避免生成回复时误触发 prepend 后跳顶。
-- MCP 管理已支持 stdio / HTTP / SSE 三类 transport、渠道内置 MCP 注入和工具列表查看。内置 MCP 仅由声明 `builtinMcpServers` 的渠道启用；首次注入使用渠道默认 `enabled`，后续启动同步保留用户本机启停状态，只刷新托管配置内容。`tools/list` 走后端接口验收：stdio 在同一子进程会话中等待 initialize 响应后继续读取 tools/list 响应，避免把首个 JSON-RPC 响应误判为工具列表。ACP `session/new|load` 的 `mcpServers` 走独立 wire-format 转换验收：不透传内部 `id` / `transport`，HTTP/SSE 使用 ACP `type` 字段，stdio 的 `env` 与 HTTP/SSE 的 `headers` 均发送 `{ name, value }` 数组。
+- 嵌套 Agent transcript 已收敛为 Gold Band 内部统一关系模型：ACP 事件接入层把当前 Claude ACP 的 `_meta.claudeCode.subagent`、`toolName`、`parentToolUseId` 转换为内部 `_meta.agentTranscript.agentLaunch` 与 `parentToolCallId`，同时兼容未来 adapter 直接提供同名通用字段。实时事件、权限事件和历史 timeline 查询使用同一归一化入口；前端不扫描 Claude 本地 transcript，也不解析 Claude metadata、工具名或 `isolation: worktree`。Gold Band 不要求修改上游 ACP adapter，也不声明私有 capability。
+- MCP 管理已支持 stdio / HTTP / SSE 三类 transport、渠道内置 MCP 注入和工具列表查看。内置 MCP 仅由声明 `builtinMcpServers` 的渠道启用；首次注入使用渠道默认 `enabled`，后续启动同步保留用户本机启停状态，只刷新托管配置内容。`tools/list` 走后端接口验收：stdio 在同一子进程会话中等待 initialize 响应后继续读取 tools/list 响应，避免把首个 JSON-RPC 响应误判为工具列表。ACP `session/new|load` 的 `mcpServers` 走独立 wire-format 转换验收：不透传内部 `id` / `transport`，HTTP/SSE 使用 ACP `type` 字段，stdio 的 `env` 与 HTTP/SSE 的 `headers` 均发送 `{ name, value }` 数组。MCP 卡片的 Agent transport 兼容性已收敛到 App 级持久化 Agent Registry：页面打开立即复用已有 `mcpCapabilities`，doctor 期间保留旧状态并在完成事件后更新；Agent 不健康时展示不可用原因并禁止兼容性诊断，避免把不可用误显示成“尚未检测”。
 
 ## 设计原则
 

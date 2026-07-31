@@ -427,6 +427,26 @@ pub fn prompt_activity(attempt_dir: &Utf8Path) -> Option<PromptActivity> {
     }
 }
 
+pub fn prompt_activity_under(root: &Utf8Path) -> Option<PromptActivity> {
+    let controls = PROVIDER_CONTROLS.lock().ok()?;
+    controls
+        .iter()
+        .filter(|(key, _)| Utf8Path::new(key).starts_with(root))
+        .filter_map(|(_, control)| match control.state() {
+            ProviderControlState::Starting => Some(PromptActivity::Starting),
+            ProviderControlState::Accepted => Some(PromptActivity::Accepted),
+            ProviderControlState::Running => Some(PromptActivity::Running),
+            ProviderControlState::CancelRequested => Some(PromptActivity::CancelRequested),
+            ProviderControlState::Stopped => None,
+        })
+        .max_by_key(|activity| match activity {
+            PromptActivity::Starting => 0,
+            PromptActivity::Accepted => 1,
+            PromptActivity::Running => 2,
+            PromptActivity::CancelRequested => 3,
+        })
+}
+
 pub fn cancel_attempt_prompt(attempt_dir: &Utf8Path) -> Result<bool> {
     cancel_pending_prompt_interactions(attempt_dir, current_timestamp())?;
     AdapterConnectionManager::shared().cancel_attempt_prompt(attempt_dir)
@@ -5122,6 +5142,33 @@ mod tests {
 
         unregister_provider_control(attempt_dir, &control);
         assert_eq!(prompt_activity(attempt_dir), None);
+    }
+
+    #[test]
+    fn provider_control_exposes_activity_below_task_root() {
+        let task_dir = camino::Utf8Path::new("test/provider-control-task");
+        let attempt_dir =
+            task_dir.join("runs/run-001/rounds/round-001/nodes/direct/attempts/attempt-001");
+        let unrelated_dir =
+            camino::Utf8Path::new("test/provider-control-other/runs/run-001/attempt-001");
+        let control = register_provider_control(&attempt_dir);
+        let unrelated = register_provider_control(unrelated_dir);
+
+        control.mark_running();
+        assert_eq!(
+            super::prompt_activity_under(task_dir),
+            Some(PromptActivity::Running)
+        );
+
+        assert!(request_prompt_cancel(&attempt_dir));
+        assert_eq!(
+            super::prompt_activity_under(task_dir),
+            Some(PromptActivity::CancelRequested)
+        );
+
+        unregister_provider_control(&attempt_dir, &control);
+        unregister_provider_control(unrelated_dir, &unrelated);
+        assert_eq!(super::prompt_activity_under(task_dir), None);
     }
 
     #[test]

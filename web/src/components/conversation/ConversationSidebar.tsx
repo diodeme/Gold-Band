@@ -460,6 +460,12 @@ export function conversationSidebarIdentityKind(task: Pick<ConversationTaskRowVm
   return task.runMode === 'direct' && task.agentIdentity ? 'agent-icon' : 'runtime-status';
 }
 
+export function shouldShowConversationSidebarActivity(
+  task: Pick<ConversationTaskRowVm, 'runMode' | 'agentIdentity' | 'activity'>,
+) {
+  return task.runMode === 'direct' && Boolean(task.agentIdentity && task.activity);
+}
+
 export type ConversationSidebarRunListScope = 'pinned' | 'workspace';
 
 export type ConversationSidebarExpandedTaskKeys = Record<ConversationSidebarRunListScope, string | null>;
@@ -563,6 +569,7 @@ function TaskRow({
   const latestRun = task.latestRun;
   const isDirect = task.runMode === 'direct';
   const useAgentIdentity = conversationSidebarIdentityKind(task) === 'agent-icon';
+  const showActivity = shouldShowConversationSidebarActivity(task);
   const latestColor = latestRun ? runStatusColor(latestRun) : 'bg-muted-foreground/30';
   const relativeTimeSource = task.lastActivityAt;
   const relativeTime = relativeTimeSource && (isDirect || latestRun?.status !== 'running')
@@ -621,12 +628,20 @@ function TaskRow({
     >
       <span className="flex size-4 shrink-0 items-center justify-center">
         {useAgentIdentity && task.agentIdentity ? (
-          <img
-            src={agentIconSrc(task.agentIdentity.iconKey)}
-            alt=""
-            title={task.agentIdentity.displayName}
-            className={agentIconClass(task.agentIdentity.iconKey, 'size-3')}
-          />
+          <span className="relative flex size-4 items-center justify-center" data-conversation-activity={showActivity ? task.activity?.phase : undefined}>
+            {showActivity ? (
+              <span
+                aria-hidden="true"
+                className="absolute inset-0 animate-spin rounded-full border border-primary/20 border-t-primary [animation-duration:900ms]"
+              />
+            ) : null}
+            <img
+              src={agentIconSrc(task.agentIdentity.iconKey)}
+              alt=""
+              title={task.agentIdentity.displayName}
+              className={agentIconClass(task.agentIdentity.iconKey, showActivity ? 'size-2.5' : 'size-3')}
+            />
+          </span>
         ) : (
           <span className={cn('size-1.5 rounded-full', latestColor, task.latestRun?.status === 'running' && 'border border-muted-foreground/40')} />
         )}

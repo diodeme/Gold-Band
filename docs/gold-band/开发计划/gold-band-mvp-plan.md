@@ -684,6 +684,13 @@ attempt-001/
 - Direct 内部 `raw-agent` worker 不参与 profile 解析且禁止绑定 profile，避免角色解析阻断创建或向空 system prompt 注入 Gold Band 上下文。
 - 回归范围包含 prompt、lifecycle、创建/config、前端 composer 状态、tab 顺序和 sidebar identity；合入前要求 Rust workspace、Web tests/build 与 `/chat`、Direct run deep link 实际验证通过。
 
+## 2026-07-31：Direct 侧边栏活跃 turn 指示恢复
+
+- 根因修复：Direct 用 Agent icon 替换 run 状态点且隐藏 run 子行后，侧边栏失去运行态入口；同时 completed run 上的后续追问不会把 `latestRun.status` 改回 running，因此不能在前端补一个基于 run status 的特例。
+- 后端 `ConversationTaskRowVm.activity` 统一聚合 task 下 per-attempt live prompt activity 与首轮 runtime running 状态，覆盖 starting、accepted、running、cancel-requested 和 runtime-active。
+- 前端在 Direct Agent icon 外使用轻量 CSS 旋转环；提交/停止返回的 canonical lifecycle snapshot 与 live lifecycle 事件同步更新 workspace、置顶两份 task 行，终态后恢复静态 Agent icon。
+- 回归要求：Rust 单测固化 task root prompt activity 与 runtime fallback，Web 单测固化 lifecycle-to-sidebar 映射和 Direct-only 显示条件；通过 Web build/test、Rust 定向测试并 deep link 启动前端验证侧栏视觉。
+
 ---
 
 ## 2026-07-24：新会话搜索索引生命周期收敛

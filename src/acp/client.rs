@@ -175,9 +175,9 @@ use crate::acp::elicitation::{
 };
 use crate::acp::events::{
     AcpAttemptPaths, AcpSessionMetadata, AcpSessionTiming, AcpTimingState, AcpUiEvent,
-    append_diagnostic, append_raw_frame, append_ui_event, current_timestamp, initial_acp_event_seq,
-    latest_timeline_source_seq, load_timeline_items, normalize_session_update,
-    permission_request_event, user_prompt_event, write_session_metadata,
+    append_diagnostic, append_raw_frame, append_structured_diagnostic, append_ui_event,
+    current_timestamp, initial_acp_event_seq, latest_timeline_source_seq, load_timeline_items,
+    normalize_session_update, permission_request_event, user_prompt_event, write_session_metadata,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::permission::{
@@ -193,7 +193,8 @@ use crate::acp::usage::{
 use crate::config::{AcpAdapterConfig, RuntimeConfig};
 use crate::domain::{SessionMode, VERSION};
 use crate::provider::{
-    PromptBundle, PromptVisibility, gold_band_hidden_block, supports_system_prompt,
+    ACP_MCP_TRANSPORT_UNSUPPORTED_CODE, PromptBundle, PromptVisibility, SkippedAcpMcpServer,
+    gold_band_hidden_block, prepare_acp_mcp_servers, supports_system_prompt,
 };
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
 use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, roll_jsonl, write_json};
@@ -1115,6 +1116,7 @@ pub fn doctor(
             "",
             false,
             &[],
+            &[],
         )?;
         runtime.wait_for_available_commands(DOCTOR_COMMAND_DISCOVERY_TIMEOUT)?;
         let commands = runtime.available_commands.clone().unwrap_or_default();
@@ -1216,6 +1218,7 @@ pub fn run_prompt(
         }
         Err(error) => return Err(error),
     };
+    let mcp_preparation = prepare_acp_mcp_servers(mcp_servers, Some(&capabilities));
     let strict_continue = session_mode == SessionMode::Continue && continue_ref.is_some();
     let restored = match runtime.setup_session(
         provider_id,
@@ -1226,7 +1229,8 @@ pub fn run_prompt(
         &config_options,
         &prompt.system_prompt,
         strict_continue,
-        mcp_servers,
+        &mcp_preparation.accepted,
+        &mcp_preparation.skipped,
     ) {
         Ok(restored) => restored,
         Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
@@ -1944,6 +1948,7 @@ impl<'a> AcpRuntime<'a> {
         system_prompt: &str,
         strict_continue: bool,
         mcp_servers: &[Value],
+        skipped_mcp_servers: &[SkippedAcpMcpServer],
     ) -> Result<bool> {
         let adapter_system_prompt = if supports_system_prompt(provider_id).unwrap_or(false) {
             system_prompt
@@ -1958,6 +1963,7 @@ impl<'a> AcpRuntime<'a> {
         let desired_config_fingerprint =
             session_config_fingerprint(provider_id, &cwd, adapter_system_prompt, mcp_servers)?;
         self.attached_config_fingerprint = Some(desired_config_fingerprint);
+        let mut skipped_mcp_diagnostic_recorded = false;
         if let Some(session_id) = continue_ref
             .as_ref()
             .and_then(|value| value.get("acpSessionId"))
@@ -1977,6 +1983,8 @@ impl<'a> AcpRuntime<'a> {
             if self.runtime_policy.external_session_sync_enabled {
                 self.provider_history_replay.begin(provider_id, session_id);
             }
+            self.record_skipped_mcp_servers(provider_id, skipped_mcp_servers);
+            skipped_mcp_diagnostic_recorded = true;
             let load = self.request(
                 "session/load",
                 session_load_params(&cwd, session_id, adapter_system_prompt, mcp_servers),
@@ -2019,6 +2027,9 @@ impl<'a> AcpRuntime<'a> {
             bail!("ACP continue requires an existing session id");
         }
 
+        if !skipped_mcp_diagnostic_recorded {
+            self.record_skipped_mcp_servers(provider_id, skipped_mcp_servers);
+        }
         let result = self.request(
             "session/new",
             session_new_params(&cwd, adapter_system_prompt, mcp_servers),
@@ -2034,6 +2045,32 @@ impl<'a> AcpRuntime<'a> {
         self.apply_session_mode_options(permission_mode, model, config_options)?;
         self.refresh_provider_freshness_best_effort(&cwd);
         Ok(false)
+    }
+
+    fn record_skipped_mcp_servers(
+        &self,
+        provider_id: &str,
+        skipped_mcp_servers: &[SkippedAcpMcpServer],
+    ) {
+        if skipped_mcp_servers.is_empty() {
+            return;
+        }
+        if let Err(error) = append_structured_diagnostic(
+            &self.paths.diagnostics,
+            "warning",
+            ACP_MCP_TRANSPORT_UNSUPPORTED_CODE,
+            Some(json!({
+                "agentType": provider_id,
+                "skippedServers": skipped_mcp_servers,
+            })),
+        ) {
+            debug!(
+                provider_id,
+                skipped_count = skipped_mcp_servers.len(),
+                %error,
+                "failed to persist skipped MCP transport diagnostic"
+            );
+        }
     }
 
     fn try_reuse_attached_session(
@@ -4810,6 +4847,7 @@ mod tests {
         events::{AcpTimingState, AcpUiEvent},
         permission::PermissionResponseState,
     };
+    use crate::provider::prepare_acp_mcp_servers;
 
     #[test]
     fn attempt_token_totals_accumulate_prompt_turns_even_when_latest_input_drops() {
@@ -5870,6 +5908,35 @@ mod tests {
             load_params["_meta"]["systemPrompt"]["append"],
             "node constraints"
         );
+    }
+
+    #[test]
+    fn session_setup_params_only_include_mcp_servers_accepted_by_live_capabilities() {
+        let servers = vec![
+            json!({"name": "local", "command": "node"}),
+            json!({"type": "http", "name": "docs", "url": "https://example.com/mcp"}),
+            json!({"type": "sse", "name": "legacy", "url": "https://example.com/sse"}),
+        ];
+        let capabilities = json!({
+            "mcpCapabilities": {
+                "http": true,
+                "sse": false
+            }
+        });
+        let prepared = prepare_acp_mcp_servers(&servers, Some(&capabilities));
+
+        let new_params = session_new_params(camino::Utf8Path::new("/repo"), "", &prepared.accepted);
+        let load_params = session_load_params(
+            camino::Utf8Path::new("/repo"),
+            "session-123",
+            "",
+            &prepared.accepted,
+        );
+
+        assert_eq!(new_params["mcpServers"], json!([servers[0], servers[1]]));
+        assert_eq!(load_params["mcpServers"], json!([servers[0], servers[1]]));
+        assert_eq!(prepared.skipped.len(), 1);
+        assert_eq!(prepared.skipped[0].name, "legacy");
     }
 
     #[test]

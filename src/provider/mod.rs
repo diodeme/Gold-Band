@@ -638,6 +638,99 @@ pub fn mcp_capabilities_from_capabilities(
     })
 }
 
+pub const ACP_MCP_TRANSPORT_UNSUPPORTED_CODE: &str = "acp.mcp-transport-unsupported";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AcpMcpTransport {
+    Stdio,
+    Http,
+    Sse,
+}
+
+impl AcpMcpTransport {
+    fn from_server(server: &Value) -> Self {
+        match server.get("type").and_then(Value::as_str) {
+            Some("http") => Self::Http,
+            Some("sse") => Self::Sse,
+            _ => Self::Stdio,
+        }
+    }
+
+    fn capability_path(self) -> Option<&'static str> {
+        match self {
+            Self::Stdio => None,
+            Self::Http => Some("mcpCapabilities.http"),
+            Self::Sse => Some("mcpCapabilities.sse"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedAcpMcpServer {
+    pub name: String,
+    pub transport: AcpMcpTransport,
+    pub capability: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AcpMcpPreparationResult {
+    pub accepted: Vec<Value>,
+    pub skipped: Vec<SkippedAcpMcpServer>,
+}
+
+/// Applies the current Agent's ACP initialize capabilities to the MCP list.
+/// Missing `mcpCapabilities` means the Agent did not declare remote transport
+/// support, so the existing list is preserved instead of guessing.
+pub fn prepare_acp_mcp_servers(
+    servers: &[Value],
+    agent_capabilities: Option<&Value>,
+) -> AcpMcpPreparationResult {
+    let Some(mcp_capabilities) =
+        agent_capabilities.and_then(|capabilities| capabilities.get("mcpCapabilities"))
+    else {
+        return AcpMcpPreparationResult {
+            accepted: servers.to_vec(),
+            skipped: Vec::new(),
+        };
+    };
+
+    let mut accepted = Vec::with_capacity(servers.len());
+    let mut skipped = Vec::new();
+    for server in servers {
+        let transport = AcpMcpTransport::from_server(server);
+        let supported = match transport {
+            AcpMcpTransport::Stdio => true,
+            AcpMcpTransport::Http => {
+                mcp_capabilities.get("http").and_then(Value::as_bool) != Some(false)
+            }
+            AcpMcpTransport::Sse => {
+                mcp_capabilities.get("sse").and_then(Value::as_bool) != Some(false)
+            }
+        };
+        if supported {
+            accepted.push(server.clone());
+            continue;
+        }
+        skipped.push(SkippedAcpMcpServer {
+            name: server
+                .get("name")
+                .or_else(|| server.get("id"))
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or("unnamed")
+                .to_string(),
+            transport,
+            capability: transport
+                .capability_path()
+                .expect("stdio MCP transport is always accepted")
+                .to_string(),
+        });
+    }
+    AcpMcpPreparationResult { accepted, skipped }
+}
+
 /// Extracts generic ACP select configuration options without assuming adapter-specific IDs.
 pub fn select_config_options_from_capabilities(
     capabilities: Option<&Value>,
@@ -1622,6 +1715,81 @@ mod tests {
     use super::*;
     use crate::acp::client::AcpPromptFailure;
     use crate::runtime_error::RecoveryMode;
+
+    #[test]
+    fn prepare_acp_mcp_servers_filters_only_explicitly_unsupported_transports() {
+        let servers = vec![
+            serde_json::json!({"name": "local", "command": "node"}),
+            serde_json::json!({"type": "http", "name": "docs", "url": "https://example.com/mcp"}),
+            serde_json::json!({"type": "sse", "name": "legacy", "url": "https://example.com/sse"}),
+        ];
+        let capabilities = serde_json::json!({
+            "mcpCapabilities": {
+                "http": true,
+                "sse": false
+            }
+        });
+
+        let prepared = prepare_acp_mcp_servers(&servers, Some(&capabilities));
+
+        assert_eq!(prepared.accepted.len(), 2);
+        assert_eq!(prepared.skipped.len(), 1);
+        assert_eq!(prepared.skipped[0].name, "legacy");
+        assert_eq!(prepared.skipped[0].transport, AcpMcpTransport::Sse);
+        assert_eq!(prepared.skipped[0].capability, "mcpCapabilities.sse");
+    }
+
+    #[test]
+    fn prepare_acp_mcp_servers_preserves_servers_when_agent_does_not_declare_capabilities() {
+        let servers = vec![serde_json::json!({
+            "type": "sse",
+            "name": "legacy",
+            "url": "https://example.com/sse"
+        })];
+
+        let prepared = prepare_acp_mcp_servers(&servers, Some(&serde_json::json!({})));
+
+        assert_eq!(prepared.accepted, servers);
+        assert!(prepared.skipped.is_empty());
+    }
+
+    #[test]
+    fn prepare_acp_mcp_servers_preserves_transport_when_specific_flag_is_not_declared() {
+        let servers = vec![serde_json::json!({
+            "type": "sse",
+            "name": "legacy",
+            "url": "https://example.com/sse"
+        })];
+        let capabilities = serde_json::json!({
+            "mcpCapabilities": {
+                "http": true
+            }
+        });
+
+        let prepared = prepare_acp_mcp_servers(&servers, Some(&capabilities));
+
+        assert_eq!(prepared.accepted, servers);
+        assert!(prepared.skipped.is_empty());
+    }
+
+    #[test]
+    fn prepare_acp_mcp_servers_uses_capabilities_instead_of_agent_identity() {
+        let servers = vec![
+            serde_json::json!({"type": "http", "name": "docs", "url": "https://example.com/mcp"}),
+            serde_json::json!({"type": "sse", "name": "legacy", "url": "https://example.com/sse"}),
+        ];
+        let capabilities = serde_json::json!({
+            "mcpCapabilities": {
+                "http": false,
+                "sse": true
+            }
+        });
+
+        let prepared = prepare_acp_mcp_servers(&servers, Some(&capabilities));
+
+        assert_eq!(prepared.accepted, vec![servers[1].clone()]);
+        assert_eq!(prepared.skipped[0].transport, AcpMcpTransport::Http);
+    }
 
     fn acp_prompt_run(
         stop_reason: Option<&str>,

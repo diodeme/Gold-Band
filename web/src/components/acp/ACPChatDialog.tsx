@@ -1234,6 +1234,8 @@ export const ACPChatDialog = forwardRef<
     loadedEventCount: loadedEvents.length,
   });
   const sessionInitializationFailed = isAcpSessionInitializationFailed({
+    runtimeStatus: localLifecycle?.runtime.status ?? runtimeComposerContext?.runtimeStatus,
+    runtimePauseReason: localLifecycle?.runtime.pauseReason,
     runtimeActive: runtimeActiveFromContext,
     runtimeComposerMode: localLifecycle?.composer.mode,
     runtimeErrorMessage: runtimeComposerContext?.runtimeError,

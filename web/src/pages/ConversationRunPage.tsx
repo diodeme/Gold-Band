@@ -297,7 +297,7 @@ export function ConversationRunPage({
         workflowValid: isDirect || run.workflowValid,
         workflowError: isDirect ? undefined : t('conversation.runtime.workflowInvalid'),
         pauseMessage: isDirect ? undefined : translatePauseReason(selectedSessionPauseReason),
-        runtimeError: isDirect ? undefined : selectedRuntimeErrorMessage,
+        runtimeError: selectedRuntimeErrorMessage,
         onRepair: handleRepairWorkflow,
       }
     : undefined;

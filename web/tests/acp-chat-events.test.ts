@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildAcpTimeline,
   calculateSessionElapsedSeconds,
+  canInferPendingInteractionFromWindow,
   clearPendingOptimisticPromptsAfterStop,
   contextCompactionUsageBefore,
   createLiveAcpSessionShell,
@@ -16,6 +17,7 @@ import {
   reconcileAcpSessionForDisplay,
   runtimeControlMessageParts,
   isAcpSessionReadyForInitialDisplay,
+  isAcpConversationAtBottom,
   stabilizeAcpSessionTimingForDisplay,
   stabilizeAcpSessionTimingPatchForDisplay,
   useSessionTimingSeconds,
@@ -74,6 +76,12 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
 }
 
 describe('ACP chat event handling', () => {
+  it('does not treat the end of a truncated event window as the conversation bottom', () => {
+    expect(isAcpConversationAtBottom(true, true)).toBe(false);
+    expect(isAcpConversationAtBottom(true, false)).toBe(true);
+    expect(isAcpConversationAtBottom(false, false)).toBe(false);
+  });
+
   it('shows runtime control failures in the session banner', () => {
     const acpSession = session({
       diagnostics: {
@@ -216,6 +224,84 @@ describe('ACP chat event handling', () => {
     ];
 
     expect(pendingElicitationFromEvents(events, new Map())?.elicitationId).toBe('elicit-2');
+  });
+
+  it('does not infer pending interactions from a terminal session history window', () => {
+    const failedSession = session({
+      status: 'failed',
+      timing: {
+        paused: true,
+        waitReason: 'elicitation',
+      },
+    });
+
+    expect(
+      canInferPendingInteractionFromWindow(
+        failedSession,
+        false,
+        'elicitation',
+      ),
+    ).toBe(false);
+  });
+
+  it('does not infer a stale pending card while newer history pages exist', () => {
+    const runningSession = session({
+      status: 'running',
+      timing: {
+        paused: true,
+        waitReason: 'elicitation',
+      },
+    });
+
+    expect(
+      canInferPendingInteractionFromWindow(
+        runningSession,
+        true,
+        'elicitation',
+      ),
+    ).toBe(false);
+  });
+
+  it('infers only the interaction kind described by the current session wait', () => {
+    const runningSession = session({
+      status: 'running',
+      timing: {
+        paused: true,
+        waitReason: 'elicitation',
+      },
+    });
+
+    expect(
+      canInferPendingInteractionFromWindow(
+        runningSession,
+        false,
+        'elicitation',
+      ),
+    ).toBe(true);
+    expect(
+      canInferPendingInteractionFromWindow(
+        runningSession,
+        false,
+        'permission',
+      ),
+    ).toBe(false);
+  });
+
+  it('does not infer a pending card from an active non-waiting session', () => {
+    const runningSession = session({
+      status: 'running',
+      timing: {
+        paused: false,
+      },
+    });
+
+    expect(
+      canInferPendingInteractionFromWindow(
+        runningSession,
+        false,
+        'elicitation',
+      ),
+    ).toBe(false);
   });
 
   it('recovers a pending card from the full typed elicitation request after refresh', () => {

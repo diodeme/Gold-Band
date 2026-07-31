@@ -144,12 +144,29 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
       });
       expect(atBottomChanges.at(-1)).toBe(true);
 
+      await act(async () => {
+        context?.stopScroll();
+      });
       contentHeight = 360;
       await act(async () => {
         observer?.emitHeight(contentHeight);
         await waitForScrollFrames();
       });
-      expect(scrollTop).toBe(259);
+      expect(scrollTop).toBe(199);
+
+      await act(async () => {
+        scrollTop = 259;
+        viewport?.dispatchEvent(new Event('scroll'));
+        await waitForScrollFrames();
+      });
+      expect(atBottomChanges.at(-1)).toBe(true);
+
+      contentHeight = 420;
+      await act(async () => {
+        observer?.emitHeight(contentHeight);
+        await waitForScrollFrames();
+      });
+      expect(scrollTop).toBe(319);
     } finally {
       await act(async () => {
         root.unmount();

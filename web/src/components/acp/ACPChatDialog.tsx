@@ -325,10 +325,12 @@ type AcpExpansionControls = {
 };
 
 const DEFAULT_EVENT_PAGE_SIZE = 360;
-const DEFAULT_LOADED_EVENT_BUFFER_LIMIT = 360;
+const LOADED_EVENT_BUFFER_PAGE_COUNT = 3;
+const MAX_LOADED_EVENT_BUFFER_LIMIT =
+  DEFAULT_EVENT_PAGE_SIZE * LOADED_EVENT_BUFFER_PAGE_COUNT;
 const MIN_LOADED_EVENT_BUFFER_LIMIT = 30;
 const HISTORY_LOAD_THRESHOLD_PX = 240;
-const NEWER_PAGE_LOAD_THRESHOLD_PX = 48;
+const NEWER_PAGE_LOAD_THRESHOLD_PX = 240;
 const LIVE_EVENT_FLUSH_MS = 125;
 const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
 const ACP_SESSION_LEASE_RETRY_MS = 30_000;
@@ -545,10 +547,14 @@ function normalizeEventPageSize(value?: number) {
     : DEFAULT_EVENT_PAGE_SIZE;
 }
 
-function loadedEventBufferLimit(eventPageSize: number) {
+export function loadedEventBufferLimit(eventPageSize: number) {
   return Math.max(
     MIN_LOADED_EVENT_BUFFER_LIMIT,
-    Math.min(DEFAULT_LOADED_EVENT_BUFFER_LIMIT, eventPageSize * 3),
+    eventPageSize,
+    Math.min(
+      MAX_LOADED_EVENT_BUFFER_LIMIT,
+      eventPageSize * LOADED_EVENT_BUFFER_PAGE_COUNT,
+    ),
   );
 }
 
@@ -709,8 +715,7 @@ export const ACPChatDialog = forwardRef<
     handlePreviewAttachment,
   } = useAttachmentPicker();
   useWindowDragGuard();
-  const loadingOlderRef = useRef(false);
-  const loadingNewerRef = useRef(false);
+  const paginationDirectionRef = useRef<"older" | "newer" | null>(null);
   const preservingScrollRef = useRef(false);
   const chatContainerContextRef = useRef<ChatContainerContext | null>(null);
   const cancelRequestedRef = useRef(false);
@@ -724,7 +729,7 @@ export const ACPChatDialog = forwardRef<
   const sessionRefreshSeqRef = useRef(0);
   const configGenerationRef = useRef(0);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
-  const prependAnchorRef = useRef<{ key: string; top: number } | null>(null);
+  const paginationAnchorRef = useRef<{ key: string; top: number } | null>(null);
   const pendingLiveEventsRef = useRef<Map<string, AcpUiEventVm>>(new Map());
   const liveEventFlushTimerRef = useRef<number | null>(null);
   const liveUpdatesDeferredUntilRef = useRef(0);
@@ -879,10 +884,9 @@ export const ACPChatDialog = forwardRef<
     setExpandedItems({});
     setHasOlderEvents(session?.eventPage.hasOlder ?? false);
     setHasNewerEvents(session?.eventPage.hasNewer ?? false);
-    loadingOlderRef.current = false;
-    loadingNewerRef.current = false;
+    paginationDirectionRef.current = null;
     preservingScrollRef.current = false;
-    prependAnchorRef.current = null;
+    paginationAnchorRef.current = null;
     liveUpdatesDeferredUntilRef.current = 0;
     chatContainerContextRef.current?.scrollToBottom({
       animation: "instant",
@@ -975,15 +979,25 @@ export const ACPChatDialog = forwardRef<
     !hasResponseAfterActiveTurn;
   const localSubmissionPending = sending || waitingForOptimisticPrompt;
   const runtimeActive = runtimeActiveFromContext && !(isSessionCompletedStatus(effective?.status ?? baseSession?.status) && !localSubmissionPending);
+  const canInferPendingPermission = canInferPendingInteractionFromWindow(
+    effective,
+    hasNewerEvents,
+    "permission",
+  );
   const pendingPermission =
     effective?.pendingPermissions?.find(
       (request) => !dismissedPermissionIds.has(request.requestId),
-    ) ?? pendingPermissionFromEvents(effectiveEvents, dismissedPermissionIds);
+    ) ?? (canInferPendingPermission
+      ? pendingPermissionFromEvents(effectiveEvents, dismissedPermissionIds)
+      : null);
   const waitingForPermission = Boolean(pendingPermission);
-  const pendingElicitation = pendingElicitationFromEvents(
-    effectiveEvents,
-    answeredElicitations,
-  );
+  const pendingElicitation = canInferPendingInteractionFromWindow(
+    effective,
+    hasNewerEvents,
+    "elicitation",
+  )
+    ? pendingElicitationFromEvents(effectiveEvents, answeredElicitations)
+    : null;
   const planInterventionOption = pendingPermission
     ? findPlanInterventionOption(pendingPermission)
     : null;
@@ -1614,6 +1628,12 @@ export const ACPChatDialog = forwardRef<
     deferPendingLiveFlush();
   }, [deferPendingLiveFlush]);
 
+  const handleAtBottomChange = useCallback((viewportAtBottom: boolean) => {
+    onAtBottomChange?.(
+      isAcpConversationAtBottom(viewportAtBottom, hasNewerEvents),
+    );
+  }, [hasNewerEvents, onAtBottomChange]);
+
   const enqueueLiveEventUpdate = useCallback(
     (event: AcpUiEventVm) => {
       if (event.kind === "timingUpdate") {
@@ -1666,19 +1686,18 @@ export const ACPChatDialog = forwardRef<
     flushOrSchedulePendingLiveEvents();
   }, [flushOrSchedulePendingLiveEvents, liveUpdatesPaused]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const scroller = chatContainerContextRef.current?.scrollRef.current;
     if (!scroller) return;
-    const anchor = prependAnchorRef.current;
+    const anchor = paginationAnchorRef.current;
     if (anchor) {
-      prependAnchorRef.current = null;
+      paginationAnchorRef.current = null;
       const element = findAcpItemElement(scroller, anchor.key);
       if (element) {
         preservingScrollRef.current = true;
         const delta = element.getBoundingClientRect().top - anchor.top;
+        scroller.scrollTop += delta;
         requestAnimationFrame(() => {
-          const el = chatContainerContextRef.current?.scrollRef.current;
-          if (el) el.scrollTop += delta;
           preservingScrollRef.current = false;
         });
       }
@@ -1963,7 +1982,7 @@ export const ACPChatDialog = forwardRef<
   const loadOlderEvents = async () => {
     const previousEvents = loadedEventsRef.current;
     if (
-      loadingOlderRef.current ||
+      paginationDirectionRef.current !== null ||
       !hasOlderEvents ||
       previousEvents.length === 0
     )
@@ -1972,10 +1991,10 @@ export const ACPChatDialog = forwardRef<
     if (oldestSeq === null) return;
     const beforeCursor = formatTimelineCursor(oldestSeq);
     const scroller = chatContainerContextRef.current?.scrollRef.current;
-    prependAnchorRef.current = scroller
+    paginationAnchorRef.current = scroller
       ? captureVisibleAcpAnchor(scroller)
       : null;
-    loadingOlderRef.current = true;
+    paginationDirectionRef.current = "older";
     chatContainerContextRef.current?.stopScroll();
     setLoadingOlder(true);
     try {
@@ -1999,9 +2018,10 @@ export const ACPChatDialog = forwardRef<
         ),
       );
       if (!updated) {
-        prependAnchorRef.current = null;
+        paginationAnchorRef.current = null;
         return;
       }
+      chatContainerContextRef.current?.stopScroll();
       const merged = mergeAcpEvents(updated.events, previousEvents);
       const limited = limitAcpEvents(
         merged,
@@ -2018,7 +2038,7 @@ export const ACPChatDialog = forwardRef<
       loadedEventsRef.current = limited;
       setLoadedEvents(limited);
     } finally {
-      loadingOlderRef.current = false;
+      paginationDirectionRef.current = null;
       setLoadingOlder(false);
     }
   };
@@ -2026,7 +2046,7 @@ export const ACPChatDialog = forwardRef<
   const loadNewerEvents = async () => {
     const previousEvents = loadedEventsRef.current;
     if (
-      loadingNewerRef.current ||
+      paginationDirectionRef.current !== null ||
       !hasNewerEvents ||
       previousEvents.length === 0
     )
@@ -2034,7 +2054,12 @@ export const ACPChatDialog = forwardRef<
     const { newestSeq } = acpAuditSeqBounds(previousEvents);
     if (newestSeq === null) return;
     const afterCursor = formatTimelineCursor(newestSeq);
-    loadingNewerRef.current = true;
+    const scroller = chatContainerContextRef.current?.scrollRef.current;
+    paginationAnchorRef.current = scroller
+      ? captureVisibleAcpAnchor(scroller)
+      : null;
+    paginationDirectionRef.current = "newer";
+    chatContainerContextRef.current?.stopScroll();
     try {
       const updated = normalizeSessionUpdate(
         await getAcpSession(
@@ -2055,7 +2080,11 @@ export const ACPChatDialog = forwardRef<
           outerAttemptId,
         ),
       );
-      if (!updated) return;
+      if (!updated) {
+        paginationAnchorRef.current = null;
+        return;
+      }
+      chatContainerContextRef.current?.stopScroll();
       const reconciled = reconcileAcpSessionForDisplay(latestSessionRef.current, updated);
       latestSessionRef.current = reconciled;
       setCurrentSession(reconciled);
@@ -2074,7 +2103,7 @@ export const ACPChatDialog = forwardRef<
         return limited;
       });
     } finally {
-      loadingNewerRef.current = false;
+      paginationDirectionRef.current = null;
     }
   };
 
@@ -2481,6 +2510,7 @@ export const ACPChatDialog = forwardRef<
   const handleScrollRef = useRef<((scroller: HTMLDivElement) => void) | null>(null);
   handleScrollRef.current = (scroller) => {
     if (preservingScrollRef.current) return;
+    if (hasNewerEvents) chatContainerContextRef.current?.stopScroll();
     const stickState = chatContainerContextRef.current?.state;
     const libraryManagedScroll = Boolean(
       stickState?.resizeDifference || stickState?.animation,
@@ -2591,7 +2621,7 @@ export const ACPChatDialog = forwardRef<
             resize="instant"
             initial="instant"
             contextRef={chatContainerContextRef}
-            onAtBottomChange={onAtBottomChange}
+            onAtBottomChange={handleAtBottomChange}
             onViewportScroll={handleScroll}
             onViewportWheel={handleLiveStreamUserInteraction}
           >
@@ -5493,6 +5523,29 @@ interface PendingElicitationVm {
   requestedSchema: ElicitationSchema;
 }
 
+type AcpPendingInteractionKind = "permission" | "elicitation";
+
+/**
+ * A bounded history window is not an authoritative source for pending UI.
+ * Only infer a pending interaction from events when the window includes the
+ * latest session edge and the session metadata still describes that wait.
+ */
+export function canInferPendingInteractionFromWindow(
+  session: Pick<AcpSessionVm, "status" | "timing"> | null | undefined,
+  hasNewerEvents: boolean,
+  kind: AcpPendingInteractionKind,
+) {
+  if (
+    !session ||
+    hasNewerEvents ||
+    !isSessionActiveStatus(session.status)
+  )
+    return false;
+  const waitReason = session.timing?.waitReason?.trim().toLowerCase();
+  if (waitReason) return waitReason === kind;
+  return session.timing?.paused !== false;
+}
+
 /**
  * Scan events backward to find the latest unanswered pending elicitation.
  * The request/response events are durable interaction state, while the normal
@@ -6007,6 +6060,13 @@ export function limitAcpEvents(
   return trim === "start"
     ? events.slice(events.length - eventPageSize)
     : events.slice(0, eventPageSize);
+}
+
+export function isAcpConversationAtBottom(
+  viewportAtBottom: boolean,
+  hasNewerEvents: boolean,
+) {
+  return viewportAtBottom && !hasNewerEvents;
 }
 
 function acpAuditSeqBounds(events: AcpUiEventVm[]) {

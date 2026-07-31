@@ -61,6 +61,11 @@ import {
   ChainOfThoughtStep,
   ChainOfThoughtTrigger,
 } from "@/components/prompt-kit/chain-of-thought";
+import {
+  ChatContainerContent,
+  ChatContainerRoot,
+  type ChatContainerContext,
+} from "@/components/prompt-kit/chat-container";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { Message, MessageContent } from "@/components/prompt-kit/message";
 import {
@@ -93,7 +98,6 @@ import {
   isCoalescableAcpLiveEvent,
   mergeAcpLiveStreamEvent,
   mergeAcpLiveToolEvent,
-  shouldAutoScrollAfterAcpTimelineUpdate,
 } from "@/lib/acp-live-flush";
 import {
   createAcpSessionConfigViewModel,
@@ -324,7 +328,7 @@ const DEFAULT_EVENT_PAGE_SIZE = 360;
 const DEFAULT_LOADED_EVENT_BUFFER_LIMIT = 360;
 const MIN_LOADED_EVENT_BUFFER_LIMIT = 30;
 const HISTORY_LOAD_THRESHOLD_PX = 240;
-const BOTTOM_STICK_THRESHOLD_PX = 48;
+const NEWER_PAGE_LOAD_THRESHOLD_PX = 48;
 const LIVE_EVENT_FLUSH_MS = 125;
 const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
 const ACP_SESSION_LEASE_RETRY_MS = 30_000;
@@ -638,7 +642,6 @@ export const ACPChatDialog = forwardRef<
   const [hasNewerEvents, setHasNewerEvents] = useState(
     () => session?.eventPage.hasNewer ?? false,
   );
-  const [isAtBottom, setIsAtBottom] = useState(true);
   const [dismissedPermissionIds, setDismissedPermissionIds] = useState<
     Set<string>
   >(() => new Set());
@@ -682,8 +685,7 @@ export const ACPChatDialog = forwardRef<
   const loadingOlderRef = useRef(false);
   const loadingNewerRef = useRef(false);
   const preservingScrollRef = useRef(false);
-  const programmaticScrollRef = useRef(false);
-  const pinToBottomRef = useRef(true);
+  const chatContainerContextRef = useRef<ChatContainerContext | null>(null);
   const cancelRequestedRef = useRef(false);
   const awaitTerminalStopRef = useRef(false);
   const terminalSessionNotifiedRef = useRef(false);
@@ -694,7 +696,6 @@ export const ACPChatDialog = forwardRef<
   const latestSessionRef = useRef<AcpSessionVm | null>(session ?? null);
   const sessionRefreshSeqRef = useRef(0);
   const configGenerationRef = useRef(0);
-  const scrollerElementRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const prependAnchorRef = useRef<{ key: string; top: number } | null>(null);
   const pendingLiveEventsRef = useRef<Map<string, AcpUiEventVm>>(new Map());
@@ -851,14 +852,15 @@ export const ACPChatDialog = forwardRef<
     setExpandedItems({});
     setHasOlderEvents(session?.eventPage.hasOlder ?? false);
     setHasNewerEvents(session?.eventPage.hasNewer ?? false);
-    setIsAtBottom(true);
     loadingOlderRef.current = false;
     loadingNewerRef.current = false;
     preservingScrollRef.current = false;
-    programmaticScrollRef.current = false;
     prependAnchorRef.current = null;
     liveUpdatesDeferredUntilRef.current = 0;
-    pinToBottomRef.current = true;
+    chatContainerContextRef.current?.scrollToBottom({
+      animation: "instant",
+      ignoreEscapes: true,
+    });
     cancelRequestedRef.current = false;
     awaitTerminalStopRef.current = false;
     terminalSessionNotifiedRef.current = false;
@@ -875,10 +877,6 @@ export const ACPChatDialog = forwardRef<
       effectiveLoadedEventBufferLimit,
     );
   }, [effectiveLoadedEventBufferLimit, eventWindowKey, loadedEvents]);
-
-  useEffect(() => {
-    onAtBottomChange?.(isAtBottom);
-  }, [isAtBottom, onAtBottomChange]);
 
   const baseSession = currentSession ?? session;
   const runtimeActiveFromContext = !runtimeStopAccepted && (runtimeComposerContext?.lifecycle?.runtime.active ?? isRuntimeActiveStatus(runtimeComposerContext?.runtimeStatus));
@@ -1650,7 +1648,7 @@ export const ACPChatDialog = forwardRef<
   }, [flushOrSchedulePendingLiveEvents, liveUpdatesPaused]);
 
   useEffect(() => {
-    const scroller = scrollerElementRef.current;
+    const scroller = chatContainerContextRef.current?.scrollRef.current;
     if (!scroller) return;
     const anchor = prependAnchorRef.current;
     if (anchor) {
@@ -1660,29 +1658,13 @@ export const ACPChatDialog = forwardRef<
         preservingScrollRef.current = true;
         const delta = element.getBoundingClientRect().top - anchor.top;
         requestAnimationFrame(() => {
-          const el = scrollerElementRef.current;
+          const el = chatContainerContextRef.current?.scrollRef.current;
           if (el) el.scrollTop += delta;
           preservingScrollRef.current = false;
         });
       }
-      return;
     }
-    if (shouldAutoScrollAfterAcpTimelineUpdate({
-      pinned: pinToBottomRef.current,
-      deferRemainingMs: liveFlushDeferRemainingMs(),
-    })) {
-      requestAnimationFrame(() => {
-        const el = scrollerElementRef.current;
-        if (el && pinToBottomRef.current) {
-          programmaticScrollRef.current = true;
-          el.scrollTop = el.scrollHeight;
-          requestAnimationFrame(() => {
-            programmaticScrollRef.current = false;
-          });
-        }
-      });
-    }
-  }, [liveFlushDeferRemainingMs, timeline]);
+  }, [timeline]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -1970,13 +1952,12 @@ export const ACPChatDialog = forwardRef<
     const { oldestSeq } = acpAuditSeqBounds(previousEvents);
     if (oldestSeq === null) return;
     const beforeCursor = formatTimelineCursor(oldestSeq);
-    const scroller = scrollerElementRef.current;
+    const scroller = chatContainerContextRef.current?.scrollRef.current;
     prependAnchorRef.current = scroller
       ? captureVisibleAcpAnchor(scroller)
       : null;
     loadingOlderRef.current = true;
-    pinToBottomRef.current = false;
-    setIsAtBottom(false);
+    chatContainerContextRef.current?.stopScroll();
     setLoadingOlder(true);
     try {
       const updated = normalizeSessionUpdate(
@@ -2096,7 +2077,10 @@ export const ACPChatDialog = forwardRef<
     setPrompt("");
     clearAttachments();
     setSendError(null);
-    pinToBottomRef.current = true;
+    chatContainerContextRef.current?.scrollToBottom({
+      animation: "instant",
+      ignoreEscapes: true,
+    });
     setActiveTurnPrompt(effectivePrompt);
     setActiveTurnPromptId(promptId);
     setActiveTurnStartedAt(null);
@@ -2475,32 +2459,27 @@ export const ACPChatDialog = forwardRef<
 
   const scrollFrameRef = useRef<number | null>(null);
 
-  const handleScrollRef = useRef<(() => void) | null>(null);
-  handleScrollRef.current = () => {
+  const handleScrollRef = useRef<((scroller: HTMLDivElement) => void) | null>(null);
+  handleScrollRef.current = (scroller) => {
     if (preservingScrollRef.current) return;
-    const scroller = scrollerElementRef.current;
-    if (!scroller) return;
-    if (!programmaticScrollRef.current) handleLiveStreamUserInteraction();
+    const stickState = chatContainerContextRef.current?.state;
+    const libraryManagedScroll = Boolean(
+      stickState?.resizeDifference || stickState?.animation,
+    );
+    if (!libraryManagedScroll) handleLiveStreamUserInteraction();
     const scrollTop = scroller.scrollTop;
     if (scrollTop < HISTORY_LOAD_THRESHOLD_PX) void loadOlderEvents();
     const distanceFromBottom =
       scroller.scrollHeight - scrollTop - scroller.clientHeight;
-    if (!programmaticScrollRef.current && distanceFromBottom > BOTTOM_STICK_THRESHOLD_PX) {
-      pinToBottomRef.current = false;
+    if (distanceFromBottom < NEWER_PAGE_LOAD_THRESHOLD_PX && hasNewerEvents) {
+      void loadNewerEvents();
     }
-    if (distanceFromBottom < BOTTOM_STICK_THRESHOLD_PX) {
-      pinToBottomRef.current = true;
-    }
-    const atBottom =
-      distanceFromBottom < BOTTOM_STICK_THRESHOLD_PX;
-    setIsAtBottom((current) => (current === atBottom ? current : atBottom));
-    if (atBottom && hasNewerEvents) void loadNewerEvents();
   };
-  const handleScroll = useCallback(() => {
+  const handleScroll = useCallback((scroller: HTMLDivElement) => {
     if (scrollFrameRef.current != null) return;
     scrollFrameRef.current = requestAnimationFrame(() => {
       scrollFrameRef.current = null;
-      handleScrollRef.current?.();
+      handleScrollRef.current?.(scroller);
     });
   }, []);
 
@@ -2588,12 +2567,18 @@ export const ACPChatDialog = forwardRef<
             />
           </div>
         ) : (
-          <div className="relative h-full min-w-0 overflow-hidden">
-            <div
-              ref={scrollerElementRef}
-              className={ACP_SESSION_SCROLL_AREA_CLASS_NAME}
-              onScroll={handleScroll}
-              onWheel={handleLiveStreamUserInteraction}
+          <ChatContainerRoot
+            className="h-full"
+            resize="instant"
+            initial="instant"
+            contextRef={chatContainerContextRef}
+            onAtBottomChange={onAtBottomChange}
+            onViewportScroll={handleScroll}
+            onViewportWheel={handleLiveStreamUserInteraction}
+          >
+            <ChatContainerContent
+              className="min-h-full"
+              scrollClassName={ACP_SESSION_SCROLL_AREA_CLASS_NAME}
             >
               {loadingOlder ? (
                 <AcpListLoading label={t("acp.loadingOlderEvents")} />
@@ -2675,8 +2660,8 @@ export const ACPChatDialog = forwardRef<
                   />
                 ) : null}
               </div>
-            </div>
-          </div>
+            </ChatContainerContent>
+          </ChatContainerRoot>
         )}
         {stopOverlayPending ? <AcpStopOverlay /> : null}
       </div>

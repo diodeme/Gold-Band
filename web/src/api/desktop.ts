@@ -420,4 +420,10 @@ export const desktopApi: RuntimeApi = {
       syncTargets,
     });
   },
+  submitFeedback(input: import('../types').FeedbackInput) {
+    return invokeCommand('submit_feedback', { input });
+  },
+  previewFeedbackSessionArchive(projectId, taskId) {
+    return invokeCommand('preview_feedback_session_archive', { projectId, taskId });
+  },
 };

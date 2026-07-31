@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 
 interface ConversationShellProps {
   appName: string;
+  feedbackEnabled?: boolean;
   platform?: DesktopPlatform | null;
   windowFrameStyle: DesktopWindowFrameStyle;
   vm: ConversationSidebarVm;
@@ -56,6 +57,7 @@ function loadSidebarWidth(prefs?: Record<string, unknown> | null): number {
 
 export function ConversationShell({
   appName,
+  feedbackEnabled,
   platform,
   windowFrameStyle,
   vm,
@@ -135,6 +137,7 @@ export function ConversationShell({
     >
       <AppTitleBar
         appName={appName}
+        feedbackEnabled={feedbackEnabled}
         platform={platform}
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={onToggleSidebar}

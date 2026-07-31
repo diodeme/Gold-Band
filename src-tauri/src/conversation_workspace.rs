@@ -50,20 +50,31 @@ pub(crate) fn remove_workspace_from_state(
     let workspace = find_workspace_entry(state, requested_project_id)?.clone();
     let workspace_key = normalized_workspace_key(Utf8Path::new(&workspace.workspace_path));
     let resolved_project_id = workspace.project_id.clone();
+    let generated_project_id = project_id_for_workspace(&workspace.workspace_path);
+    let related_project_ids = [
+        requested_project_id,
+        resolved_project_id.as_str(),
+        generated_project_id.as_str(),
+    ];
+    let is_related_project = |project_id: &str| {
+        related_project_ids
+            .iter()
+            .any(|related| project_ids_match(project_id, related))
+    };
 
     state.conversation_workspaces.retain(|candidate| {
         normalized_workspace_key(Utf8Path::new(&candidate.workspace_path)) != workspace_key
     });
     state
         .conversation_pins
-        .retain(|pin| !project_ids_match(&pin.project_id, &resolved_project_id));
+        .retain(|pin| !is_related_project(&pin.project_id));
     state
         .conversation_run_modes
-        .retain(|project_id, _| !project_ids_match(project_id, &resolved_project_id));
+        .retain(|project_id, _| !is_related_project(project_id));
     if state
         .last_conversation_workspace
         .as_deref()
-        .is_some_and(|project_id| project_ids_match(project_id, &resolved_project_id))
+        .is_some_and(is_related_project)
     {
         state.last_conversation_workspace = state
             .conversation_workspaces
@@ -340,12 +351,20 @@ mod tests {
             "F--file-ai-training".to_string(),
             run_mode(ConversationRunMode::Direct),
         );
+        state
+            .conversation_pins
+            .push(gold_band::config::ConversationPin {
+                project_id: "F--file-ai-training".to_string(),
+                task_id: "task-001".to_string(),
+                order: 0,
+            });
 
         let removed = remove_workspace_from_state(&mut state, "F--file-ai-training").unwrap();
 
         assert_eq!(removed.workspace_path, "F:/file/ai-training");
         assert!(state.conversation_workspaces.is_empty());
         assert!(state.conversation_run_modes.is_empty());
+        assert!(state.conversation_pins.is_empty());
         assert!(state.last_conversation_workspace.is_none());
     }
 }

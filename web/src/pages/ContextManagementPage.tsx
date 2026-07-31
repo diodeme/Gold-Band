@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { isTauriRuntime } from '@/api/shared';
 import type { TFunction } from 'i18next';
 import { Check, ChevronsUpDown, CircleHelp, Edit, Eye, FolderOpen, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
@@ -9,7 +11,7 @@ import {
   toggleMcpServer, checkMcpServerHealth, listMcpTools,
   listSkills, listProjectSkills, readSkill, writeSkill, deleteSkill, getSkillSyncStatus,
   checkSkillNameConflict, updateSkillSyncTargets,
-  getConversationWorkspaces, getAgentRegistry,
+  getConversationWorkspaces, getAgentRegistry, doctorAgent,
 } from '../api';
 import { displayAppError } from '../i18n';
 import type {
@@ -139,6 +141,23 @@ export function ContextManagementPage() {
   const [skillSyncPendingKey, setSkillSyncPendingKey] = useState<string | null>(null);
   const [skillEditWsPath, setSkillEditWsPath] = useState<string | null>(null);
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
+  const [mcpDiagnosingAgent, setMcpDiagnosingAgent] = useState<string | null>(null);
+  // 监听 agent 诊断完成事件，实时刷新 per-agent MCP 兼容性（后台诊断完一个 agent 即更新卡片，无需重进页面）
+  useEffect(() => {
+    if (!isTauriRuntime()) return undefined;
+    let disposed = false;
+    let unlisten: UnlistenFn | null = null;
+    void listen('gold-band://agent-registry-updated', () => {
+      if (!disposed) void getAgentRegistry().then(setAgentRegistry).catch(() => {});
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   const [skillTab, setSkillTab] = useState<'global' | 'project'>('global');
   const [skillQuery, setSkillQuery] = useState('');
@@ -724,6 +743,27 @@ export function ContextManagementPage() {
                   }}
                   onEdit={s.managed ? undefined : () => { setMcpEditTarget(s); setMcpJsonContent(mcpServerToJson(s)); setMcpTransportTab(s.transport as 'stdio' | 'http' | 'sse'); setMcpSheetOpen(true); }}
                   onDelete={s.managed ? undefined : () => setMcpDeleteTarget(s)}
+                  agentCompatLoading={!agentRegistry}
+                  agentCompatibility={(agentRegistry?.agents ?? []).map((a) => ({
+                    agentType: a.agentType,
+                    label: a.displayName,
+                    iconKey: a.iconKey,
+                    mcpHttpSupported: a.mcpHttpSupported,
+                    mcpSseSupported: a.mcpSseSupported,
+                  }))}
+                  diagnosingAgentType={mcpDiagnosingAgent}
+                  onDiagnoseAgent={async (agentType) => {
+                    if (mcpDiagnosingAgent) return;
+                    setMcpDiagnosingAgent(agentType);
+                    try {
+                      const registry = await doctorAgent(agentType);
+                      setAgentRegistry(registry);
+                    } catch {
+                      // 忽略诊断错误；用户可重试
+                    } finally {
+                      setMcpDiagnosingAgent(null);
+                    }
+                  }}
                 />
               ))}
             </div>

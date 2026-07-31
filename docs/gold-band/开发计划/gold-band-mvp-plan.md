@@ -764,6 +764,13 @@ attempt-001/
 
 ---
 
+## 2026-07-29：用户反馈入口按渠道收口
+
+- 仅 `wb` 渠道在顶栏显示「帮助」按钮；复用启动信息中的 `appInfo.channel` 贯穿 Shell 到 AppTitleBar，其他渠道及启动信息未就绪时不渲染入口。
+- Web 回归测试分别固化 `wb` 可见与 `default` 不可见，避免后续渠道配置与 UI 能力再次脱节。
+
+---
+
 ## 2026-07-29：ACP Elicitation 多行题干与跨版本结构兼容
 
 - 根因修复：ElicitationCard 不再把 `params.message` 按换行和步骤下标切题；单题的上下文与实际问题整体展示，多题使用字段 description，通用 provider message 可隐藏。
@@ -771,3 +778,30 @@ attempt-001/
 - 版本兼容：按 schema shape 支持 Claude Agent ACP 0.44 全局 `customAnswer`、0.45.1 `question_n_custom` 和当前 `_askUserQuestionCustomAnswer` 元数据，不要求用户机器上的旧 Agent 同步升级。
 - 展示能力：选项 description 与 Claude preview 元数据保持结构化渲染；普通文本字段不再被猜测为首题自定义答案。
 - 回归固化：Rust 覆盖生产 0.44 fixture、pending roundtrip 和完整 timeline request；Web 覆盖多行题干、三类自定义答案、选项元数据及刷新恢复，并要求生产构建和 ACP 会话实际验证通过。
+
+---
+
+## 2026-07-30：PR #81 合并修复与反馈安全边界收敛
+
+- 合并策略：保留单一 PR 与原分支，合并最新 main 后同时保留反馈渠道和 main 的 avatar、ACP elicitation、terminal failure 等能力，不拆分提交组。
+- 反馈信任边界：破坏式删除 `sessionWorkspace` / `screenshotPaths` command 契约，改为 `projectId + taskId` 后端解析和截图 File bytes；task id、canonical root、逐文件路径与 symlink 规则统一校验。task id 的路径分隔符校验显式覆盖 `/` 与 `\\`，不依赖 Windows/Linux 的 `Path` 解析差异。
+- 工作空间状态清理：移除 workspace 时以请求 ID、持久化 ID、路径重算 ID 组成身份别名集合，统一删除 run mode、pin 与 last workspace 引用，固化跨平台大小写差异下的回归测试。
+- 资源生命周期：使用 image/walkdir/tempfile/zip/ReaderStream；截图验证后统一重编码 PNG，任务 ZIP 写临时文件并流式上传；统一限制描述、截图、归档未压缩/压缩/文件数、日志和总请求大小。
+- 渠道能力：`feedbackEnabled` 从 channel JSON 编译到 `AppInfoVm`，前端只透传 boolean，后端二次门控；不再硬编码 `channel === wb`。
+- 错误协议：补齐 disabled、session-not-found、attachment-invalid、payload-too-large 等结构化错误码；网络原始错误只写 metrics.log。
+- MCP 范围收口：transport、Streamable HTTP 和 per-Agent 兼容性由独立 MCP 方案统一维护；本次删除 provider 层按 provider ID 硬编码 transport、预过滤 server 和 attempt warning 的重复实现，避免与 MCP 管理域形成双重事实源。
+- 配置规范化：stale Agent config option 使用纯函数清理，validate 不再 mutation 输入；Direct/AUTO 提交和能力刷新使用规范化结果。
+- 回归要求：Rust workspace、桌面 crate、Web 全量测试、生产构建、default/wb 渠道编译与 wb UI 实际验证全部通过后才允许推送原 PR 分支。
+
+---
+
+## 2026-07-30：Streamable HTTP MCP 协议与 session 生命周期修复
+
+- 根因修复：废弃“读取完整 HTTP body 后取第一条 `data:`”的错误模型；Streamable HTTP SSE 改为按 event 增量解析，并按 JSON-RPC request id 等待对应 response，允许服务端在此前发送 request、notification、keepalive 或其他 response。
+- SSE framing：多条 `data:` 按标准使用换行拼接，comment 不产生消息；目标 response 到达后立即返回，不依赖服务端关闭 SSE 连接。
+- session 状态：`Mcp-Session-Id` 与协商后的 `protocolVersion` 统一由客户端管理；后续 notification、tools/list 与 DELETE 均携带协商版本和 session header。
+- session 恢复：携带 session 的请求收到 `404` 后，不单独重放失败请求，而是清除旧状态并完整重走 initialize → notifications/initialized → tools/list；连续失效则停止重试并返回错误。
+- 资源释放：健康检查与工具发现属于短生命周期操作，完成或失败后均 best-effort 发送 HTTP DELETE；`404/405` 视为已释放或服务端不支持主动释放。
+- HTTP 方法安全：禁用自动重定向，避免 301/302 将 MCP POST 降级成 GET；要求配置最终 endpoint URL。
+- UI 修复：Agent 兼容性状态的 Tooltip 使用非 disabled 包装触发器，支持/不支持状态仍可 hover 查看说明。
+- 回归固化：Rust 单元测试覆盖多行 SSE、前置 notification/错误 id、目标 response 到达但连接仍保持、session 404 后重新握手、协商版本透传和最终 DELETE。

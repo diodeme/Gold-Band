@@ -707,6 +707,12 @@ export const browserApi: RuntimeApi = {
   updateSkillSyncTargets(_name: string, _source: string, _workspacePath: string | null | undefined, _directoryPath: string, _syncTargets: string[]) { return Promise.resolve({ global: [], project: [] }); },
   getSkillSyncStatus(_name: string, _directoryPath: string, _workspacePath?: string | null) { return Promise.resolve([]); },
   checkSkillNameConflict(_name: string, _source: string, _workspacePath?: string | null, _oldName?: string | null, _directoryPath?: string | null, _syncTargets?: string[] | null) { return Promise.resolve([] as string[]); },
+  submitFeedback(_input: import('../types').FeedbackInput): Promise<import('../types').FeedbackResult> {
+    return Promise.reject({ code: 'feedback.endpoint-unconfigured', params: {} });
+  },
+  previewFeedbackSessionArchive(): Promise<null> {
+    return Promise.resolve(null);
+  },
 };
 
 function browserProfileId() {

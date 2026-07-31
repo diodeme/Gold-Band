@@ -12,6 +12,7 @@
   "updaterPublicKey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYwQkQwNjYyMTA0MjdDQ0IKUldUTGZFSVFZZ2E5OEN3QnY2eHRkM0xVRnlreC9UMFNpSWdXSC9oK0ZWMlpsWXpuZ0hhbEFnWGQK",
   "allowHttpUpdater": false,
   "metricsEnabled": false,
+  "feedbackEnabled": false,
   "metricsToggleLocked": false,
   "metricsBaseUrl": "",
   "metricsApiKey": ""

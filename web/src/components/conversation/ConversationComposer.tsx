@@ -8,7 +8,7 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForAgent, includeInterviewForSubmit, normalizeConversationAutoConfigForSubmit, normalizeConversationDirectConfigForSubmit, optionalRunModeText, shouldShowInterviewToggle } from '@/lib/conversation-run-mode-config';
-import { selectableAgentOptions, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
+import { normalizeConfigOptionOverrides, selectableAgentOptions, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
@@ -222,6 +222,27 @@ export function ConversationComposer({
     onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession(patch) }, projectId);
   };
 
+  useEffect(() => {
+    if (!isDirect || !selectedDirectAgentObj) return;
+    const normalized = normalizeConfigOptionOverrides(selectedDirectAgentObj, selectedDirectConfigOptions);
+    if (normalized.removedOptionIds.length === 0) return;
+    setSelectedDirectConfigOptions(normalized.configOptions);
+    updateDirectConfig({
+      agentType: selectedDirectAgent,
+      modelId: selectedDirectModel || undefined,
+      permissionMode: selectedDirectPermissionMode || undefined,
+      configOptions: normalized.configOptions,
+    });
+  }, [isDirect, selectedDirectAgentObj, selectedDirectAgent, selectedDirectModel, selectedDirectPermissionMode, selectedDirectConfigOptions]);
+
+  useEffect(() => {
+    if (!isAuto || isDynamicAuto || !selectedAgentObj) return;
+    const normalized = normalizeConfigOptionOverrides(selectedAgentObj, selectedConfigOptions);
+    if (normalized.removedOptionIds.length === 0) return;
+    setSelectedConfigOptions(normalized.configOptions);
+    updateAutoSession({ configOptions: normalized.configOptions });
+  }, [isAuto, isDynamicAuto, selectedAgentObj, selectedConfigOptions]);
+
   const handleSubmit = async () => {
     if (!canSubmit) return;
     const trimmed = content.trim();
@@ -236,11 +257,17 @@ export function ConversationComposer({
           agentType: selectedDirectAgent,
           modelId: selectedDirectModel || undefined,
           permissionMode: selectedDirectPermissionMode || undefined,
-          configOptions: selectedDirectConfigOptions,
+          configOptions: selectedDirectAgentObj
+            ? normalizeConfigOptionOverrides(selectedDirectAgentObj, selectedDirectConfigOptions).configOptions
+            : selectedDirectConfigOptions,
         })
         : undefined,
       autoConfig: isAuto
-        ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession())
+        ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession(
+          !isDynamicAuto && selectedAgentObj
+            ? { configOptions: normalizeConfigOptionOverrides(selectedAgentObj, selectedConfigOptions).configOptions }
+            : {},
+        ))
         : undefined,
     };
     setSubmittingAttachments(true);

@@ -114,6 +114,7 @@ export interface AppConfigVm {
 
 export interface AppInfoVm {
   channel: string;
+  feedbackEnabled: boolean;
   appName: string;
   appKey: string;
   configDirName: string;
@@ -139,6 +140,10 @@ export interface ManagedAgentVm {
   supportedModes?: AcpModeVm[] | null;
   supportedModels?: AcpModeVm[] | null;
   configOptions?: AcpSelectConfigOptionVm[] | null;
+  /** 是否支持 streamable HTTP MCP 传输（null=未诊断/未知） */
+  mcpHttpSupported?: boolean | null;
+  /** 是否支持 SSE MCP 传输（null=未诊断/未知） */
+  mcpSseSupported?: boolean | null;
 }
 
 export interface AcpModeVm {
@@ -1312,3 +1317,16 @@ export interface SkillContentVm {
   descriptionSource?: string;
   body: string;
 }
+
+// -- Feedback --
+export interface FeedbackScreenshotInput { name: string; mime: string; size: number; dataBase64: string; }
+export interface FeedbackInput { description: string; projectId?: string | null; taskId?: string | null; screenshots: FeedbackScreenshotInput[]; includeLogs: boolean; }
+export interface FeedbackResult { success: boolean; }
+export interface FeedbackArchivePreview {
+  uncompressedBytes: number;
+  fileCount: number;
+  withinLimits: boolean;
+  maxUncompressedBytes: number;
+  maxFileCount: number;
+}
+

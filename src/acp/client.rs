@@ -19,6 +19,12 @@ struct AcpTimelineStreamState {
 }
 
 #[derive(Debug, Clone)]
+struct AcpPromptTurnIdentity {
+    id: String,
+    seq: u64,
+}
+
+#[derive(Debug, Clone)]
 struct AcpContextCompactionState {
     item_id: String,
     started_seq: u64,
@@ -37,25 +43,17 @@ struct AcpContextUsageGauge {
 }
 
 #[derive(Debug, Clone, Default)]
-struct AcpTokenTotals {
-    total_cost_usd: Option<f64>,
-    input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
-    cached_read_tokens: Option<u64>,
-    cached_write_tokens: Option<u64>,
-    total_tokens: Option<u64>,
-}
-
-#[derive(Debug, Clone, Default)]
 struct AcpUsageState {
     context: AcpContextUsageGauge,
-    totals: AcpTokenTotals,
+    total_cost_usd: Option<f64>,
+    latest_prompt: AcpPromptTokenUsage,
+    attempt_totals: AcpAttemptTokenTotals,
     compaction: Option<AcpContextCompactionState>,
 }
 
 impl AcpUsageState {
     fn from_prior(
-        prior: PriorSessionMetrics,
+        prior: PriorAttemptMetrics,
         compaction: Option<AcpContextCompactionState>,
     ) -> Self {
         Self {
@@ -63,13 +61,20 @@ impl AcpUsageState {
                 confirmed_used: prior.used_tokens.filter(|used| *used > 0),
                 window_size: prior.context_window_size.filter(|size| *size > 0),
             },
-            totals: AcpTokenTotals {
-                total_cost_usd: prior.total_cost_usd,
+            total_cost_usd: prior.total_cost_usd,
+            latest_prompt: AcpPromptTokenUsage {
                 input_tokens: prior.input_tokens,
                 output_tokens: prior.output_tokens,
                 cached_read_tokens: prior.cached_read_tokens,
                 cached_write_tokens: prior.cached_write_tokens,
                 total_tokens: prior.total_tokens,
+            },
+            attempt_totals: AcpAttemptTokenTotals {
+                input_tokens: prior.attempt_input_tokens,
+                output_tokens: prior.attempt_output_tokens,
+                cached_read_tokens: prior.attempt_cached_read_tokens,
+                cached_write_tokens: prior.attempt_cached_write_tokens,
+                total_tokens: prior.attempt_total_tokens,
             },
             compaction,
         }
@@ -90,7 +95,7 @@ impl AcpUsageState {
             self.context.window_size = Some(size);
         }
         if let Some(cost) = cost {
-            self.totals.total_cost_usd = Some(cost);
+            self.total_cost_usd = Some(cost);
         }
 
         let Some(used) = used else {
@@ -120,6 +125,19 @@ impl AcpUsageState {
 
         self.context.confirmed_used = Some(used);
         Some(used)
+    }
+
+    fn record_prompt_usage(&mut self, prompt_usage: AcpPromptTokenUsage) {
+        self.attempt_totals.accumulate_prompt(&prompt_usage);
+        self.latest_prompt = prompt_usage;
+    }
+
+    fn apply_recovered_attempt_usage(&mut self, recovery: AcpAttemptUsageRecovery) {
+        if recovery.completed_turns == 0 {
+            return;
+        }
+        self.attempt_totals = recovery.totals;
+        self.latest_prompt = recovery.latest_prompt;
     }
 
     fn normalize_timeline_usage(&self, update: &mut Value) {
@@ -168,6 +186,10 @@ use crate::acp::permission::{
     write_pending_permission,
 };
 use crate::acp::timeline::{TimelineCompactionPolicy, TimelineStore};
+use crate::acp::usage::{
+    AcpAttemptTokenTotals, AcpAttemptUsageRecovery, AcpPromptTokenUsage, append_prompt_completed,
+    append_prompt_started, repair_attempt_usage,
+};
 use crate::config::{AcpAdapterConfig, RuntimeConfig};
 use crate::domain::{SessionMode, VERSION};
 use crate::provider::{
@@ -1217,14 +1239,23 @@ pub fn run_prompt(
             runtime.shutdown();
             return Ok(run);
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            let _ = append_diagnostic(
+                &runtime.paths.diagnostics,
+                "error",
+                format!("ACP session setup failed: {error}"),
+                None,
+            );
+            runtime.shutdown();
+            return Err(error);
+        }
     };
     let session_id = runtime
         .session_id
         .clone()
         .ok_or_else(|| anyhow!("ACP session setup did not return a session id"))?;
     runtime.write_worker_ref(provider_id, &workspace_dir, session_mode, restored, None)?;
-    runtime.record_user_prompt_event(provider_id, prompt, restored)?;
+    let prompt_turn = runtime.record_user_prompt_event(provider_id, prompt, restored)?;
     runtime.control.mark_accepted();
     runtime.write_session("running", restored, None, capabilities.clone())?;
     if acp_session_title_refresh_enabled {
@@ -1243,6 +1274,7 @@ pub fn run_prompt(
         provider_id,
         &workspace_dir,
         prompt,
+        &prompt_turn,
         restored,
         &capabilities,
         acp_session_title_refresh_enabled,
@@ -1326,12 +1358,12 @@ pub fn run_prompt(
         restored,
         used_tokens: runtime.usage.context.confirmed_used,
         context_window_size: runtime.usage.context.window_size,
-        total_cost_usd: runtime.usage.totals.total_cost_usd,
-        input_tokens: runtime.usage.totals.input_tokens,
-        output_tokens: runtime.usage.totals.output_tokens,
-        cached_read_tokens: runtime.usage.totals.cached_read_tokens,
-        cached_write_tokens: runtime.usage.totals.cached_write_tokens,
-        total_tokens: runtime.usage.totals.total_tokens,
+        total_cost_usd: runtime.usage.total_cost_usd,
+        input_tokens: runtime.usage.latest_prompt.input_tokens,
+        output_tokens: runtime.usage.latest_prompt.output_tokens,
+        cached_read_tokens: runtime.usage.latest_prompt.cached_read_tokens,
+        cached_write_tokens: runtime.usage.latest_prompt.cached_write_tokens,
+        total_tokens: runtime.usage.latest_prompt.total_tokens,
     };
     runtime.release_managed_session();
     Ok(run)
@@ -1528,18 +1560,26 @@ fn timing_patch_display_values_equal(
 /// Token and cost fields recovered from a prior `acp.snapshot.json` when
 /// resuming a session. All fields default to `None` so that a fresh session
 /// (no prior snapshot) behaves exactly as before.
-struct PriorSessionMetrics {
+struct PriorAttemptMetrics {
     used_tokens: Option<u64>,
     context_window_size: Option<u64>,
     total_cost_usd: Option<f64>,
+    /// Last completed prompt usage. Kept separate because node metrics currently
+    /// consume these legacy snapshot fields.
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
     cached_read_tokens: Option<u64>,
     cached_write_tokens: Option<u64>,
     total_tokens: Option<u64>,
+    /// Canonical cumulative usage for every prompt turn in this ACP attempt.
+    attempt_input_tokens: Option<u64>,
+    attempt_output_tokens: Option<u64>,
+    attempt_cached_read_tokens: Option<u64>,
+    attempt_cached_write_tokens: Option<u64>,
+    attempt_total_tokens: Option<u64>,
 }
 
-impl Default for PriorSessionMetrics {
+impl Default for PriorAttemptMetrics {
     fn default() -> Self {
         Self {
             used_tokens: None,
@@ -1550,21 +1590,26 @@ impl Default for PriorSessionMetrics {
             cached_read_tokens: None,
             cached_write_tokens: None,
             total_tokens: None,
+            attempt_input_tokens: None,
+            attempt_output_tokens: None,
+            attempt_cached_read_tokens: None,
+            attempt_cached_write_tokens: None,
+            attempt_total_tokens: None,
         }
     }
 }
 
-/// Read token/cost fields from an existing `acp.snapshot.json` so that a
-/// resumed session preserves the cumulative token counts from prior turns.
+/// Read token/cost fields from the current attempt's `acp.snapshot.json` so
+/// runtime recreation preserves that attempt's cumulative prompt usage.
 /// Returns `Default` (all `None`) when the file is missing or unreadable.
-fn read_prior_session_metrics(snapshot_path: &Utf8Path) -> PriorSessionMetrics {
+fn read_prior_attempt_metrics(snapshot_path: &Utf8Path) -> PriorAttemptMetrics {
     if !snapshot_path.exists() {
-        return PriorSessionMetrics::default();
+        return PriorAttemptMetrics::default();
     }
     let Ok(meta) = read_json::<crate::acp::events::AcpSessionMetadata>(snapshot_path) else {
-        return PriorSessionMetrics::default();
+        return PriorAttemptMetrics::default();
     };
-    PriorSessionMetrics {
+    PriorAttemptMetrics {
         used_tokens: meta.used_tokens,
         context_window_size: meta.context_window_size,
         total_cost_usd: meta.total_cost_usd,
@@ -1573,6 +1618,11 @@ fn read_prior_session_metrics(snapshot_path: &Utf8Path) -> PriorSessionMetrics {
         cached_read_tokens: meta.cached_read_tokens,
         cached_write_tokens: meta.cached_write_tokens,
         total_tokens: meta.total_tokens,
+        attempt_input_tokens: meta.attempt_input_tokens,
+        attempt_output_tokens: meta.attempt_output_tokens,
+        attempt_cached_read_tokens: meta.attempt_cached_read_tokens,
+        attempt_cached_write_tokens: meta.attempt_cached_write_tokens,
+        attempt_total_tokens: meta.attempt_total_tokens,
     }
 }
 
@@ -1753,7 +1803,16 @@ impl<'a> AcpRuntime<'a> {
             .collect();
         let timeline_items = runtime_hot_timeline_items(loaded_timeline_items);
         let timeline_revision = seq;
-        let prior = read_prior_session_metrics(&paths.snapshot);
+        let prior = read_prior_attempt_metrics(&paths.snapshot);
+        let recovered_usage = repair_attempt_usage(
+            &paths.snapshot,
+            &paths.timeline,
+            &paths.raw,
+            &paths.prompt_usage,
+            true,
+        )?;
+        let mut usage = AcpUsageState::from_prior(prior, context_compaction);
+        usage.apply_recovered_attempt_usage(recovered_usage);
         Ok(Self {
             provider_id: provider_id.to_string(),
             paths,
@@ -1782,7 +1841,7 @@ impl<'a> AcpRuntime<'a> {
             available_commands: None,
             system_prompt_append: None,
             session_title: None,
-            usage: AcpUsageState::from_prior(prior, context_compaction),
+            usage,
             active_text_stream,
             active_thought_stream,
             active_plan_stream,
@@ -1828,12 +1887,12 @@ impl<'a> AcpRuntime<'a> {
             restored,
             used_tokens: self.usage.context.confirmed_used,
             context_window_size: self.usage.context.window_size,
-            total_cost_usd: self.usage.totals.total_cost_usd,
-            input_tokens: self.usage.totals.input_tokens,
-            output_tokens: self.usage.totals.output_tokens,
-            cached_read_tokens: self.usage.totals.cached_read_tokens,
-            cached_write_tokens: self.usage.totals.cached_write_tokens,
-            total_tokens: self.usage.totals.total_tokens,
+            total_cost_usd: self.usage.total_cost_usd,
+            input_tokens: self.usage.latest_prompt.input_tokens,
+            output_tokens: self.usage.latest_prompt.output_tokens,
+            cached_read_tokens: self.usage.latest_prompt.cached_read_tokens,
+            cached_write_tokens: self.usage.latest_prompt.cached_write_tokens,
+            total_tokens: self.usage.latest_prompt.total_tokens,
         }
     }
 
@@ -2544,7 +2603,7 @@ impl<'a> AcpRuntime<'a> {
         provider_id: &str,
         prompt: &PromptBundle,
         restored: bool,
-    ) -> Result<()> {
+    ) -> Result<AcpPromptTurnIdentity> {
         let session_id = self
             .session_id
             .clone()
@@ -2558,7 +2617,17 @@ impl<'a> AcpRuntime<'a> {
             prompt.visibility == PromptVisibility::Hidden,
             prompt.attachment_metas.clone(),
         );
-        self.persist_event(&user_event)
+        self.persist_event(&user_event)?;
+        append_prompt_started(
+            &self.paths.prompt_usage,
+            &user_event.id,
+            user_event.seq,
+            &user_event.timestamp,
+        )?;
+        Ok(AcpPromptTurnIdentity {
+            id: user_event.id,
+            seq: user_event.seq,
+        })
     }
 
     fn prompt(
@@ -2566,6 +2635,7 @@ impl<'a> AcpRuntime<'a> {
         provider_id: &str,
         workspace_dir: &Utf8Path,
         prompt: &PromptBundle,
+        prompt_turn: &AcpPromptTurnIdentity,
         restored: bool,
         capabilities: &Value,
         acp_session_title_refresh_enabled: bool,
@@ -2579,6 +2649,7 @@ impl<'a> AcpRuntime<'a> {
             provider_id,
             &session_id,
             prompt,
+            prompt_turn,
             restored,
             acp_session_title_refresh_enabled.then_some((
                 workspace_dir,
@@ -2588,17 +2659,6 @@ impl<'a> AcpRuntime<'a> {
                 capabilities,
             )),
         )?;
-        // Capture session-end usage breakdown (inputTokens / outputTokens / …)
-        // that the adapter returns alongside the stopReason.
-        if let Some(usage) = result.get("usage") {
-            self.usage.totals.input_tokens = usage.get("inputTokens").and_then(Value::as_u64);
-            self.usage.totals.output_tokens = usage.get("outputTokens").and_then(Value::as_u64);
-            self.usage.totals.cached_read_tokens =
-                usage.get("cachedReadTokens").and_then(Value::as_u64);
-            self.usage.totals.cached_write_tokens =
-                usage.get("cachedWriteTokens").and_then(Value::as_u64);
-            self.usage.totals.total_tokens = usage.get("totalTokens").and_then(Value::as_u64);
-        }
         if acp_session_title_refresh_enabled {
             self.refresh_session_title_and_persist(
                 workspace_dir,
@@ -2754,6 +2814,7 @@ impl<'a> AcpRuntime<'a> {
         provider_id: &str,
         session_id: &str,
         prompt: &PromptBundle,
+        prompt_turn: &AcpPromptTurnIdentity,
         restored: bool,
         title_refresh: Option<(&Utf8Path, &str, bool, Option<String>, &Value)>,
     ) -> Result<Value> {
@@ -2800,6 +2861,21 @@ impl<'a> AcpRuntime<'a> {
                 match request.recv_timeout(wait_for) {
                     Ok(value) => {
                         self.append_inbound_frame(&value)?;
+                        let result = value.get("result").cloned().unwrap_or_else(|| json!({}));
+                        if value.get("error").is_none()
+                            && let Some(prompt_usage) =
+                                AcpPromptTokenUsage::from_prompt_result(&result)
+                        {
+                            append_prompt_completed(
+                                &self.paths.prompt_usage,
+                                &prompt_turn.id,
+                                prompt_turn.seq,
+                                &current_timestamp(),
+                                Some(Value::from(request.id)),
+                                &prompt_usage,
+                            )?;
+                            self.usage.record_prompt_usage(prompt_usage);
+                        }
                         self.drain_available_inbound()?;
                         self.maybe_emit_live_timing_update(Instant::now(), "tick")?;
                         if let Some(error) = value.get("error") {
@@ -2808,7 +2884,6 @@ impl<'a> AcpRuntime<'a> {
                             }
                             break Err(anyhow!("ACP `session/prompt` failed: {error}"));
                         }
-                        let result = value.get("result").cloned().unwrap_or_else(|| json!({}));
                         if cancel_started_at.is_some() && !is_cancel_stop_reason(&result) {
                             break Err(anyhow!(AcpCancelled));
                         }
@@ -3472,12 +3547,17 @@ impl<'a> AcpRuntime<'a> {
             system_prompt_append: self.system_prompt_append.clone(),
             used_tokens: self.usage.context.confirmed_used,
             context_window_size: self.usage.context.window_size,
-            total_cost_usd: self.usage.totals.total_cost_usd,
-            input_tokens: self.usage.totals.input_tokens,
-            output_tokens: self.usage.totals.output_tokens,
-            cached_read_tokens: self.usage.totals.cached_read_tokens,
-            cached_write_tokens: self.usage.totals.cached_write_tokens,
-            total_tokens: self.usage.totals.total_tokens,
+            total_cost_usd: self.usage.total_cost_usd,
+            input_tokens: self.usage.latest_prompt.input_tokens,
+            output_tokens: self.usage.latest_prompt.output_tokens,
+            cached_read_tokens: self.usage.latest_prompt.cached_read_tokens,
+            cached_write_tokens: self.usage.latest_prompt.cached_write_tokens,
+            total_tokens: self.usage.latest_prompt.total_tokens,
+            attempt_input_tokens: self.usage.attempt_totals.input_tokens,
+            attempt_output_tokens: self.usage.attempt_totals.output_tokens,
+            attempt_cached_read_tokens: self.usage.attempt_totals.cached_read_tokens,
+            attempt_cached_write_tokens: self.usage.attempt_totals.cached_write_tokens,
+            attempt_total_tokens: self.usage.attempt_totals.total_tokens,
             timing: self.session_timing_snapshot(status, &now),
             created_at,
             updated_at: now,
@@ -4710,15 +4790,15 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        AcpContextCompactionState, AcpPromptLifecycle, AcpRuntime, AcpRuntimePolicy, AcpUsageState,
-        AttachedSessionReusePlan, DOCTOR_DIAGNOSTIC_TARGET_SIZE, PromptActivity, PromptBundle,
-        PromptVisibility, ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution,
-        SessionUpdatePhase, active_context_compaction, active_timeline_streams,
-        attached_sync_required, cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
-        drain_frames_until_quiet, evaluate_provider_revision, is_transport_interruption,
-        is_unscoped_codex_diagnostic_update, merge_tool_raw_input,
-        permission_decision_timeline_event, plan_attached_session_reuse, prompt_activity,
-        register_provider_control, request_prompt_cancel, resolve_permission_mode,
+        AcpContextCompactionState, AcpPromptLifecycle, AcpPromptTokenUsage, AcpRuntime,
+        AcpRuntimePolicy, AcpUsageState, AttachedSessionReusePlan, DOCTOR_DIAGNOSTIC_TARGET_SIZE,
+        PriorAttemptMetrics, PromptActivity, PromptBundle, PromptVisibility,
+        ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution, SessionUpdatePhase,
+        active_context_compaction, active_timeline_streams, attached_sync_required,
+        cleanup_doctor_acp_dir_after_success, contributes_to_final_text, drain_frames_until_quiet,
+        evaluate_provider_revision, is_transport_interruption, is_unscoped_codex_diagnostic_update,
+        merge_tool_raw_input, permission_decision_timeline_event, plan_attached_session_reuse,
+        prompt_activity, register_provider_control, request_prompt_cancel, resolve_permission_mode,
         resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
         runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
         session_new_params, session_prompt_params, session_prompt_text,
@@ -4730,6 +4810,90 @@ mod tests {
         events::{AcpTimingState, AcpUiEvent},
         permission::PermissionResponseState,
     };
+
+    #[test]
+    fn attempt_token_totals_accumulate_prompt_turns_even_when_latest_input_drops() {
+        let mut state = AcpUsageState::default();
+
+        state.record_prompt_usage(
+            AcpPromptTokenUsage::from_prompt_result(&json!({
+                "usage": {
+                    "inputTokens": 9_057,
+                    "outputTokens": 15,
+                    "cachedReadTokens": 7_680,
+                    "totalTokens": 16_752
+                }
+            }))
+            .unwrap(),
+        );
+        state.record_prompt_usage(
+            AcpPromptTokenUsage::from_prompt_result(&json!({
+                "usage": {
+                    "inputTokens": 7_453,
+                    "outputTokens": 315,
+                    "cachedReadTokens": 16_896,
+                    "totalTokens": 24_664
+                }
+            }))
+            .unwrap(),
+        );
+
+        assert_eq!(state.latest_prompt.input_tokens, Some(7_453));
+        assert_eq!(state.latest_prompt.total_tokens, Some(24_664));
+        assert_eq!(state.attempt_totals.input_tokens, Some(16_510));
+        assert_eq!(state.attempt_totals.output_tokens, Some(330));
+        assert_eq!(state.attempt_totals.cached_read_tokens, Some(24_576));
+        assert_eq!(state.attempt_totals.total_tokens, Some(41_416));
+    }
+
+    #[test]
+    fn restored_attempt_totals_continue_accumulating_after_runtime_recreation() {
+        let mut state = AcpUsageState::from_prior(
+            PriorAttemptMetrics {
+                attempt_input_tokens: Some(9_057),
+                attempt_output_tokens: Some(15),
+                attempt_cached_read_tokens: Some(7_680),
+                attempt_total_tokens: Some(16_752),
+                ..Default::default()
+            },
+            None,
+        );
+
+        state.record_prompt_usage(
+            AcpPromptTokenUsage::from_prompt_result(&json!({
+                "usage": {
+                    "inputTokens": 7_453,
+                    "outputTokens": 315,
+                    "cachedReadTokens": 16_896,
+                    "totalTokens": 24_664
+                }
+            }))
+            .unwrap(),
+        );
+
+        assert_eq!(state.attempt_totals.input_tokens, Some(16_510));
+        assert_eq!(state.attempt_totals.output_tokens, Some(330));
+        assert_eq!(state.attempt_totals.cached_read_tokens, Some(24_576));
+        assert_eq!(state.attempt_totals.total_tokens, Some(41_416));
+    }
+
+    #[test]
+    fn prompt_usage_derives_total_when_provider_omits_total_tokens() {
+        let mut state = AcpUsageState::default();
+        state.record_prompt_usage(
+            AcpPromptTokenUsage::from_prompt_result(&json!({
+                "usage": {
+                    "inputTokens": 100,
+                    "outputTokens": 20,
+                    "cachedReadTokens": 300,
+                    "cachedWriteTokens": 40
+                }
+            }))
+            .unwrap(),
+        );
+
+        assert_eq!(state.attempt_totals.total_tokens, Some(460));
+    }
 
     #[test]
     fn prompt_lifecycle_promotes_retry_error_when_session_becomes_system_error() {
@@ -5995,7 +6159,7 @@ mod tests {
     }
 
     #[test]
-    fn prior_session_metrics_reads_tokens_from_snapshot() {
+    fn prior_attempt_metrics_reads_tokens_from_snapshot() {
         let dir = tempfile::TempDir::new().unwrap();
         let snapshot_path = dir.path().join("acp.snapshot.json");
         std::fs::write(
@@ -6006,12 +6170,15 @@ mod tests {
             "usedTokens":5000,"contextWindowSize":200000,
             "totalCostUsd":0.05,
             "inputTokens":3000,"outputTokens":2000,
-            "cachedReadTokens":500,"cachedWriteTokens":100,"totalTokens":5100
+            "cachedReadTokens":500,"cachedWriteTokens":100,"totalTokens":5100,
+            "attemptInputTokens":7000,"attemptOutputTokens":2500,
+            "attemptCachedReadTokens":1500,"attemptCachedWriteTokens":200,
+            "attemptTotalTokens":11200
         }"#,
         )
         .unwrap();
         let path = camino::Utf8Path::from_path(&snapshot_path).unwrap();
-        let prior = super::read_prior_session_metrics(path);
+        let prior = super::read_prior_attempt_metrics(path);
         assert_eq!(prior.used_tokens, Some(5000));
         assert_eq!(prior.context_window_size, Some(200000));
         assert!((prior.total_cost_usd.unwrap() - 0.05).abs() < 0.0001);
@@ -6020,15 +6187,20 @@ mod tests {
         assert_eq!(prior.cached_read_tokens, Some(500));
         assert_eq!(prior.cached_write_tokens, Some(100));
         assert_eq!(prior.total_tokens, Some(5100));
+        assert_eq!(prior.attempt_input_tokens, Some(7000));
+        assert_eq!(prior.attempt_output_tokens, Some(2500));
+        assert_eq!(prior.attempt_cached_read_tokens, Some(1500));
+        assert_eq!(prior.attempt_cached_write_tokens, Some(200));
+        assert_eq!(prior.attempt_total_tokens, Some(11200));
     }
 
     #[test]
-    fn prior_session_metrics_defaults_when_no_snapshot() {
+    fn prior_attempt_metrics_defaults_when_no_snapshot() {
         let dir = tempfile::TempDir::new().unwrap();
         let snapshot_path = camino::Utf8Path::from_path(dir.path())
             .unwrap()
             .join("nonexistent.snapshot.json");
-        let prior = super::read_prior_session_metrics(&snapshot_path);
+        let prior = super::read_prior_attempt_metrics(&snapshot_path);
         assert_eq!(prior.used_tokens, None);
         assert_eq!(prior.context_window_size, None);
         assert_eq!(prior.total_cost_usd, None);
@@ -6037,10 +6209,15 @@ mod tests {
         assert_eq!(prior.cached_read_tokens, None);
         assert_eq!(prior.cached_write_tokens, None);
         assert_eq!(prior.total_tokens, None);
+        assert_eq!(prior.attempt_input_tokens, None);
+        assert_eq!(prior.attempt_output_tokens, None);
+        assert_eq!(prior.attempt_cached_read_tokens, None);
+        assert_eq!(prior.attempt_cached_write_tokens, None);
+        assert_eq!(prior.attempt_total_tokens, None);
     }
 
     #[test]
-    fn prior_session_metrics_reads_null_token_fields_as_none() {
+    fn prior_attempt_metrics_reads_null_token_fields_as_none() {
         let dir = tempfile::TempDir::new().unwrap();
         let snapshot_path = dir.path().join("acp.snapshot.json");
         std::fs::write(
@@ -6054,7 +6231,7 @@ mod tests {
         )
         .unwrap();
         let path = camino::Utf8Path::from_path(&snapshot_path).unwrap();
-        let prior = super::read_prior_session_metrics(path);
+        let prior = super::read_prior_attempt_metrics(path);
         assert_eq!(prior.input_tokens, None);
         assert_eq!(prior.output_tokens, None);
         assert_eq!(prior.total_tokens, None);

@@ -156,6 +156,11 @@ Expected: PASS for attachment hashes, workspace, Direct Agent, Workflow authorin
 
 Commit: `git add Cargo.toml Cargo.lock src/scheduler/mod.rs src/scheduler/fingerprint.rs && git commit -m "feat: define scheduled task content identity"`
 
+Implementation status (2026-07-31): Steps 2-4 are complete. The canonical
+authoring projection and `ScheduledTaskDefinition.content_snapshot` are now
+covered by focused Rust tests; the remaining unchecked items are subsequent
+CRUD and runtime tasks.
+
 ## Task 2：补齐定义存储的 update/delete 和触发记录
 
 **Files:**

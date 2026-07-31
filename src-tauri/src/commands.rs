@@ -9,9 +9,9 @@ use gold_band::acp::permission::{
     write_permission_response_if_pending,
 };
 use gold_band::app::{
-    AcpTurnOutcome, App, AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError,
-    ProfileEntry, ProfileInput, ProfileList, RuntimeInterventionKind, RuntimeLifecycleEvent,
-    WorkflowTemplateStore,
+    AcpTurnOutcome, App, AutoTemplate, AutoTemplateStore, CreateTaskInput, ImportProfilesInput,
+    ImportProfilesResult, ProfileCommandError, ProfileEntry, ProfileInput, ProfileList,
+    RuntimeInterventionKind, RuntimeLifecycleEvent, WorkflowTemplateStore,
 };
 use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -986,6 +986,18 @@ pub fn create_profile(
 ) -> CommandResult<ProfileEntry> {
     let app = state.app().map_err(command_error)?;
     app.create_profile(input).map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn import_profiles_from_folder(
+    state: State<'_, DesktopState>,
+    input: ImportProfilesInput,
+) -> CommandResult<ImportProfilesResult> {
+    let context = state.context().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        context.app().import_profiles_from_folder(input).map_err(command_error)
+    })
+    .await
 }
 
 #[tauri::command]

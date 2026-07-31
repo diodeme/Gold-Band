@@ -19,7 +19,7 @@ use anyhow::Context;
 use commands::{
     add_mcp_server, cancel_acp_session, check_local_claude, check_mcp_server_health,
     check_skill_name_conflict, check_update_manual, choose_workspace, clear_desktop_avatar,
-    continue_run, create_agent, create_profile, create_task, delete_agent, delete_auto_template,
+    continue_run, create_agent, create_profile, import_profiles_from_folder, create_task, delete_agent, delete_auto_template,
     delete_mcp_server, delete_profile, delete_skill, delete_workflow_template,
     dismiss_update_announcement, doctor_agent, download_and_install_update, get_acp_raw_frames,
     get_acp_session, get_agent_command_catalog, get_agent_registry, get_app_bootstrap,
@@ -179,6 +179,7 @@ fn run() -> anyhow::Result<()> {
             get_profiles,
             get_profile,
             create_profile,
+            import_profiles_from_folder,
             update_profile,
             delete_profile,
             choose_workspace,

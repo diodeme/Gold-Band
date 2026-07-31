@@ -38,6 +38,7 @@ import type {
   AvatarPreferencesVm,
   AvatarShape,
   SaveDesktopAvatarInput,
+  ImportProfilesResult,
   ProfileInput,
   ProfileListVm,
   ProfileVm,
@@ -119,6 +120,7 @@ export interface RuntimeApi {
   getProfiles(): Promise<ProfileListVm>;
   getProfile(id: string): Promise<ProfileVm>;
   createProfile(input: ProfileInput): Promise<ProfileVm>;
+  importProfilesFromFolder(folderPath: string, dynamicTemplate: boolean): Promise<ImportProfilesResult>;
   updateProfile(id: string, input: ProfileInput): Promise<ProfileVm>;
   deleteProfile(id: string, force?: boolean): Promise<ProfileListVm>;
   chooseWorkspace(): Promise<AppBootstrapVm | null>;

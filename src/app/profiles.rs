@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10,8 +10,8 @@ use tracing::warn;
 
 use crate::config::DesktopLanguage;
 use crate::frontmatter::{
-    FrontmatterUpdate, parse_frontmatter_document, render_frontmatter_document,
-    update_frontmatter_document,
+    FrontmatterUpdate, parse_frontmatter_document, parse_optional_frontmatter_document,
+    render_frontmatter_document, update_frontmatter_document,
 };
 use crate::prompts::{
     PROFILE_ACCEPT_EN, PROFILE_ACCEPT_ZH_CN, PROFILE_CLEAN_EN, PROFILE_CLEAN_ZH_CN, PROFILE_DEV_EN,
@@ -63,6 +63,51 @@ pub struct ProfileList {
     pub profiles: Vec<ProfileEntry>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportProfilesInput {
+    pub folder_path: String,
+    #[serde(default)]
+    pub dynamic_template: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImportRecordStatus {
+    Imported,
+    ImportedWithFallbacks,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfileFieldFallback {
+    Name,
+    Summary,
+    FrontmatterMissing,
+    DynamicTemplateDowngraded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedProfileRecord {
+    pub source_path: String,
+    pub status: ImportRecordStatus,
+    pub name: String,
+    pub fallbacks: Vec<ProfileFieldFallback>,
+    pub imported_id: Option<String>,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportProfilesResult {
+    pub total_scanned: usize,
+    pub imported: Vec<ImportedProfileRecord>,
+    pub failed: Vec<ImportedProfileRecord>,
+    pub truncated: bool,
+}
+
 struct ParsedProfile {
     id: String,
     name: String,
@@ -108,6 +153,12 @@ pub enum ProfileCommandError {
     },
     #[error("profile.dynamic-template-invalid")]
     InvalidDynamicTemplate { reason: String },
+    #[error("profile.import.folder-not-found")]
+    ImportFolderNotFound,
+    #[error("profile.import.folder-not-directory")]
+    ImportFolderNotDirectory,
+    #[error("profile.import.no-markdown-files")]
+    ImportNoMarkdownFiles,
 }
 
 impl ProfileCommandError {
@@ -117,12 +168,17 @@ impl ProfileCommandError {
             Self::BuiltInScopeUnsupported => "profile.built-in-scope-unsupported",
             Self::DeleteConfirmationRequired { .. } => "profile.delete-confirmation-required",
             Self::InvalidDynamicTemplate { .. } => "profile.dynamic-template-invalid",
+            Self::ImportFolderNotFound => "profile.import.folder-not-found",
+            Self::ImportFolderNotDirectory => "profile.import.folder-not-directory",
+            Self::ImportNoMarkdownFiles => "profile.import.no-markdown-files",
         }
     }
 
     pub fn params(&self) -> serde_json::Value {
         match self {
-            Self::ReadonlyBuiltIn | Self::BuiltInScopeUnsupported => json!({}),
+            Self::ReadonlyBuiltIn | Self::BuiltInScopeUnsupported
+            | Self::ImportFolderNotFound | Self::ImportFolderNotDirectory
+            | Self::ImportNoMarkdownFiles => json!({}),
             Self::DeleteConfirmationRequired {
                 template_count,
                 task_count,
@@ -240,6 +296,258 @@ pub(crate) fn create_profile(paths: &GoldBandPaths, input: ProfileInput) -> Resu
     entry.path = profile_path(paths, entry.scope, &entry.name, &entry.id)?.to_string();
     write_profile(paths, &entry)?;
     show_profile(paths, &entry.id, DesktopLanguage::ZhCn)
+}
+
+pub(crate) fn import_profiles_from_folder(
+    paths: &GoldBandPaths,
+    input: ImportProfilesInput,
+) -> Result<ImportProfilesResult> {
+    let folder = Utf8PathBuf::from(input.folder_path.as_str());
+    if !folder.exists() {
+        return Err(ProfileCommandError::ImportFolderNotFound.into());
+    }
+    if !folder.is_dir() {
+        return Err(ProfileCommandError::ImportFolderNotDirectory.into());
+    }
+
+    const IMPORT_PROFILE_FILE_CAP: usize = 5000;
+    let mut files = Vec::new();
+    let truncated = collect_md_files(&folder, &mut files, IMPORT_PROFILE_FILE_CAP);
+    files.sort();
+    if files.is_empty() {
+        return Err(ProfileCommandError::ImportNoMarkdownFiles.into());
+    }
+
+    let existing = list_profiles(paths, DesktopLanguage::ZhCn)?;
+    let mut used_names = existing
+        .profiles
+        .iter()
+        .map(|profile| profile.name.clone())
+        .collect::<BTreeSet<String>>();
+
+    let mut imported = Vec::new();
+    let mut failed = Vec::new();
+    for path in &files {
+        match import_one_profile(paths, path, input.dynamic_template, &mut used_names) {
+            Ok(record) => imported.push(record),
+            Err(record) => failed.push(record),
+        }
+    }
+
+    Ok(ImportProfilesResult {
+        total_scanned: files.len(),
+        imported,
+        failed,
+        truncated,
+    })
+}
+
+fn import_one_profile(
+    paths: &GoldBandPaths,
+    path: &Utf8Path,
+    dynamic_template: bool,
+    used_names: &mut BTreeSet<String>,
+) -> Result<ImportedProfileRecord, ImportedProfileRecord> {
+    let source = path.to_string();
+    let file_stem = path
+        .file_stem()
+        .map(|stem| stem.to_string())
+        .unwrap_or_default();
+
+    let content = match fs::read_to_string(path.as_std_path()) {
+        Ok(content) => content,
+        Err(_) => return Err(failed_record(&source, &file_stem, "read-failed")),
+    };
+    if content.trim().is_empty() {
+        return Err(failed_record(&source, &file_stem, "empty-file"));
+    }
+
+    let document = match parse_optional_frontmatter_document(&content) {
+        Ok(document) => document,
+        Err(_) => return Err(failed_record(&source, &file_stem, "read-failed")),
+    };
+
+    let mut fallbacks = Vec::new();
+    if !content_has_frontmatter(&content) {
+        fallbacks.push(ProfileFieldFallback::FrontmatterMissing);
+    }
+
+    let name = match first_non_empty(&document.fields, &["name", "title"]) {
+        Some(name) => name,
+        None => {
+            fallbacks.push(ProfileFieldFallback::Name);
+            if file_stem.trim().is_empty() {
+                return Err(failed_record(&source, &file_stem, "empty-file"));
+            }
+            file_stem.clone()
+        }
+    };
+
+    let summary = match first_non_empty(&document.fields, &["summary", "description"]) {
+        Some(summary) => summary,
+        None => {
+            fallbacks.push(ProfileFieldFallback::Summary);
+            let from_body = summary_from_body(&document.body);
+            if from_body.trim().is_empty() {
+                name.clone()
+            } else {
+                from_body
+            }
+        }
+    };
+
+    let body = document.body;
+    let mut final_dynamic = dynamic_template;
+    if dynamic_template {
+        let mut renders_ok = true;
+        for context in profile_template_validation_contexts() {
+            if render(&body, context).is_err() {
+                renders_ok = false;
+                break;
+            }
+        }
+        if !renders_ok {
+            fallbacks.push(ProfileFieldFallback::DynamicTemplateDowngraded);
+            final_dynamic = false;
+        }
+    }
+
+    let final_name = resolve_unique_name(&name, used_names);
+    used_names.insert(final_name.clone());
+
+    let entry = match create_profile(
+        paths,
+        ProfileInput {
+            name: final_name.clone(),
+            summary: summary.clone(),
+            content: body.clone(),
+            dynamic_template: final_dynamic,
+        },
+    ) {
+        Ok(entry) => entry,
+        Err(_) => return Err(failed_record(&source, &file_stem, "read-failed")),
+    };
+
+    let status = if fallbacks.is_empty() {
+        ImportRecordStatus::Imported
+    } else {
+        ImportRecordStatus::ImportedWithFallbacks
+    };
+    Ok(ImportedProfileRecord {
+        source_path: source,
+        status,
+        name: final_name,
+        fallbacks,
+        imported_id: Some(entry.id),
+        error_code: None,
+    })
+}
+
+fn collect_md_files(dir: &Utf8Path, accumulator: &mut Vec<Utf8PathBuf>, cap: usize) -> bool {
+    let Ok(entries) = fs::read_dir(dir.as_std_path()) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        if accumulator.len() >= cap {
+            return true;
+        }
+        let Some(path) = Utf8PathBuf::from_path_buf(entry.path()).ok() else {
+            continue;
+        };
+        if path.is_dir() {
+            if collect_md_files(&path, accumulator, cap) {
+                return true;
+            }
+        } else if path.extension() == Some("md") {
+            accumulator.push(path);
+        }
+    }
+    false
+}
+
+fn content_has_frontmatter(content: &str) -> bool {
+    let stripped = content.strip_prefix('\u{FEFF}').unwrap_or(content);
+    stripped.starts_with("---\n") || stripped.starts_with("---\r\n")
+}
+
+fn resolve_unique_name(desired: &str, used: &BTreeSet<String>) -> String {
+    let base = desired.trim().to_string();
+    if !used.contains(&base) {
+        return base;
+    }
+    let mut index = 2usize;
+    loop {
+        let candidate = format!("{base}-{index}");
+        if !used.contains(&candidate) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn first_non_empty(fields: &BTreeMap<String, String>, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = fields.get(*key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn summary_from_body(body: &str) -> String {
+    for block in body.split("\n\n") {
+        let cleaned = clean_summary_block(block);
+        if !cleaned.is_empty() {
+            return truncate_text(&cleaned, 80);
+        }
+    }
+    for line in body.lines() {
+        let cleaned = clean_summary_line(line);
+        if !cleaned.is_empty() {
+            return truncate_text(&cleaned, 80);
+        }
+    }
+    String::new()
+}
+
+fn clean_summary_block(block: &str) -> String {
+    block
+        .lines()
+        .map(clean_summary_line)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string()
+}
+
+fn clean_summary_line(line: &str) -> String {
+    line.trim_start_matches('#')
+        .trim_start_matches('>')
+        .trim()
+        .to_string()
+}
+
+fn truncate_text(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_string();
+    }
+    let truncated: String = value.chars().take(limit).collect();
+    format!("{truncated}…")
+}
+
+fn failed_record(source: &str, name: &str, error_code: &str) -> ImportedProfileRecord {
+    ImportedProfileRecord {
+        source_path: source.to_string(),
+        status: ImportRecordStatus::Failed,
+        name: name.to_string(),
+        fallbacks: Vec::new(),
+        imported_id: None,
+        error_code: Some(error_code.to_string()),
+    }
 }
 
 pub(crate) fn update_profile(
@@ -837,5 +1145,253 @@ profile body
                 });
             }
         }
+    }
+
+    fn setup_import_dir() -> (tempfile::TempDir, GoldBandPaths, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().join("repo")).unwrap());
+        fs::create_dir_all(paths.user_context_profiles_dir().as_std_path()).unwrap();
+        let import_dir = tmp.path().join("import");
+        fs::create_dir_all(&import_dir).unwrap();
+        (tmp, paths, import_dir)
+    }
+
+    fn run_import(
+        paths: &GoldBandPaths,
+        import_dir: &std::path::Path,
+        dynamic: bool,
+    ) -> ImportProfilesResult {
+        import_profiles_from_folder(
+            paths,
+            ImportProfilesInput {
+                folder_path: import_dir.to_string_lossy().to_string(),
+                dynamic_template: dynamic,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn import_profile_complete_format() {
+        let (_tmp, paths, import_dir) = setup_import_dir();
+        fs::write(
+            import_dir.join("role-a.md"),
+            "---\nname: 完整角色\nsummary: 完整摘要\n---\n正文内容\n",
+        )
+        .unwrap();
+        let result = run_import(&paths, &import_dir, false);
+        assert_eq!(result.total_scanned, 1);
+        assert_eq!(result.imported.len(), 1);
+        assert!(result.failed.is_empty());
+        let record = &result.imported[0];
+        assert_eq!(record.name, "完整角色");
+        assert_eq!(record.status, ImportRecordStatus::Imported);
+        assert!(record.fallbacks.is_empty());
+        assert!(record.imported_id.is_some());
+    }
+
+    #[test]
+    fn import_profile_missing_frontmatter_falls_back() {
+        let (_tmp, paths, import_dir) = setup_import_dir();
+        fs::write(
+            import_dir.join("plain-role.md"),
+            "# 普通角色\n\n这是正文第一段，用于兜底。\n",
+        )
+        .unwrap();
+        let result = run_import(&paths, &import_dir, false);
+        let record = &result.imported[0];
+        assert_eq!(record.status, ImportRecordStatus::ImportedWithFallbacks);
+        assert!(record.fallbacks.contains(&ProfileFieldFallback::FrontmatterMissing));
+        assert!(record.fallbacks.contains(&ProfileFieldFallback::Name));
+        assert!(record.fallbacks.contains(&ProfileFieldFallback::Summary));
+        assert_eq!(record.name, "plain-role");
+        let entry = show_profile(
+            &paths,
+            record.imported_id.as_ref().unwrap(),
+            DesktopLanguage::ZhCn,
+        )
+        .unwrap();
+        assert_eq!(entry.summary, "普通角色");
+    }
+
+    #[test]
+    fn import_profile_missing_name_uses_filename() {
+        let (_tmp, paths, import_dir) = setup_import_dir();
+        fs::write(
+            import_dir.join("no-name.md"),
+            "---\nsummary: 有摘要但无名字\n---\n正文\n",
+        )
+        .unwrap();
+        let result = run_import(&paths, &import_dir, false);
+        let record = &result.imported[0];
+        assert_eq!(record.name, "no-name");
+        assert!(record.fallbacks.contains(&ProfileFieldFallback::Name));
+        let entry = show_profile(
+            &paths,
+            record.imported_id.as_ref().unwrap(),
+            DesktopLanguage::ZhCn,
+        )
+        .unwrap();
+        assert_eq!(entry.summary, "有摘要但无名字");
+    }
+
+    #[test]
+    fn import_profile_missing_summary_uses_body() {
+        let (_tmp, paths, import_dir) = setup_import_dir();
+        fs::write(
+            import_dir.join("no-summary.md"),
+            "---\nname: 有名字\n---\n正文首段内容\n",
+        )
+        .unwrap();
+        let result = run_import(&paths, &import_dir, false);
+        let record = &result.imported[0];
+        assert!(record.fallbacks.contains(&ProfileFieldFallback::Summary));
+        let entry = show_profile(
+            &paths,
+            record.imported_id.as_ref().unwrap(),
+            DesktopLanguage::ZhCn,
+        )
+        .unwrap();
+        assert_eq!(entry.summary, "正文首段内容");
+    }
+
+    #[test]
+    fn import_profile_compatible_field_names() {
+        let (_tmp, paths, import_dir) = setup_import_dir();
+        fs::write(
+            import_dir.join("ext-role.md"),
+            "---\ntitle: 外部角色\ndescription: 外部描述\n---\n正文\n",
+        )
+        .unwrap();
+        let result = run_import(&paths, &import_dir, false);
+        let record = &result.imported[0];
+        assert_eq!(record.name, "外部角色");
+        assert_eq!(record.status, ImportRecordStatus::Imported);
+        assert!(record.fallbacks.is_empty());
+        let entry = show_profile(
+            &paths,
+            record.imported_id.as_ref().unwrap(),
+            DesktopLanguage::ZhCn,
+        )
+        .unwrap();
+        assert_eq!(entry.summary, "外部描述");
+    }
+
+    #[test]
+    fn import_profile_renames_on_conflict() {
+        let (_tmp, paths, import_dir) = setup_import_dir();
+        create_profile(
+            &paths,
+            ProfileInput {
+                name: "方案".to_string(),
+                summary: "预置".to_string(),
+                content: "x".to_string(),
+                dynamic_template: false,
+            },
+        )
+        .unwrap();
+        fs::write(
+            import_dir.join("a.md"),
+            "---\nname: 方案\nsummary: 导入1\n---\n正文1\n",
+        )
+        .unwrap();
+        fs::write(
+            import_dir.join("b.md"),
+            "---\nname: 方案\nsummary: 导入2\n---\n正文2\n",
+        )
+        .unwrap();
+        let result = run_import(&paths, &import_dir, false);
+        let names: Vec<&str> = result.imported.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"方案-2"));
+        assert!(names.contains(&"方案-3"));
+        assert!(!names.contains(&"方案"));
+    }
+
+    #[test]
+    fn import_profile_empty_file_fails() {
+        let (_tmp, paths, import_dir) = setup_import_dir();
+        fs::write(import_dir.join("empty.md"), "   \n  ").unwrap();
+        let result = run_import(&paths, &import_dir, false);
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(result.failed[0].error_code.as_deref(), Some("empty-file"));
+    }
+
+    #[test]
+    fn import_profile_dynamic_off_ignores_template_syntax() {
+        let (_tmp, paths, import_dir) = setup_import_dir();
+        fs::write(
+            import_dir.join("tpl.md"),
+            "---\nname: 模板角色\nsummary: 摘要\n---\n{% if execution.unknown %}A{% endif %}\n",
+        )
+        .unwrap();
+        let result = run_import(&paths, &import_dir, false);
+        let record = &result.imported[0];
+        assert_eq!(record.status, ImportRecordStatus::Imported);
+        let entry = show_profile(
+            &paths,
+            record.imported_id.as_ref().unwrap(),
+            DesktopLanguage::ZhCn,
+        )
+        .unwrap();
+        assert!(!entry.dynamic_template);
+    }
+
+    #[test]
+    fn import_profile_dynamic_on_valid_template() {
+        let (_tmp, paths, import_dir) = setup_import_dir();
+        fs::write(
+            import_dir.join("tpl.md"),
+            "---\nname: 模板角色\nsummary: 摘要\n---\n{% if execution.can_route_next %}A{% else %}B{% endif %}\n",
+        )
+        .unwrap();
+        let result = run_import(&paths, &import_dir, true);
+        let record = &result.imported[0];
+        assert_eq!(record.status, ImportRecordStatus::Imported);
+        assert!(record.fallbacks.is_empty());
+        let entry = show_profile(
+            &paths,
+            record.imported_id.as_ref().unwrap(),
+            DesktopLanguage::ZhCn,
+        )
+        .unwrap();
+        assert!(entry.dynamic_template);
+    }
+
+    #[test]
+    fn import_profile_dynamic_on_invalid_downgrades() {
+        let (_tmp, paths, import_dir) = setup_import_dir();
+        fs::write(
+            import_dir.join("tpl.md"),
+            "---\nname: 模板角色\nsummary: 摘要\n---\n{% if execution.unknown %}A{% endif %}\n",
+        )
+        .unwrap();
+        let result = run_import(&paths, &import_dir, true);
+        let record = &result.imported[0];
+        assert!(record.fallbacks.contains(&ProfileFieldFallback::DynamicTemplateDowngraded));
+        let entry = show_profile(
+            &paths,
+            record.imported_id.as_ref().unwrap(),
+            DesktopLanguage::ZhCn,
+        )
+        .unwrap();
+        assert!(!entry.dynamic_template);
+    }
+
+    #[test]
+    fn import_profile_folder_not_found_maps_to_error_code() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths =
+            GoldBandPaths::new(Utf8PathBuf::from_path_buf(tmp.path().join("repo")).unwrap());
+        let error = import_profiles_from_folder(
+            &paths,
+            ImportProfilesInput {
+                folder_path: "/no/such/gold-band-dir".to_string(),
+                dynamic_template: false,
+            },
+        )
+        .unwrap_err();
+        let command_error = error.downcast_ref::<ProfileCommandError>().unwrap();
+        assert_eq!(command_error.code(), "profile.import.folder-not-found");
     }
 }

@@ -80,10 +80,12 @@ pub struct ProviderDoctorProbe {
 use self::profile_resolver::resolve_workflow_profiles;
 use self::profiles::{
     DefaultProfileIds, create_profile, delete_profile as delete_profile_file,
-    ensure_default_user_profiles, list_profiles, show_profile, update_profile,
+    ensure_default_user_profiles, import_profiles_from_folder, list_profiles, show_profile,
+    update_profile,
 };
 pub use self::profiles::{
-    ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, ProfileScope,
+    ImportProfilesInput, ImportProfilesResult, ProfileCommandError, ProfileEntry, ProfileInput,
+    ProfileList, ProfileScope,
 };
 
 fn tail_text(text: &str, limit: usize) -> String {
@@ -1383,6 +1385,13 @@ impl App {
 
     pub fn create_profile(&self, input: ProfileInput) -> Result<ProfileEntry> {
         create_profile(&self.paths, input)
+    }
+
+    pub fn import_profiles_from_folder(
+        &self,
+        input: ImportProfilesInput,
+    ) -> Result<ImportProfilesResult> {
+        import_profiles_from_folder(&self.paths, input)
     }
 
     pub fn update_profile(&self, id: &str, input: ProfileInput) -> Result<ProfileEntry> {

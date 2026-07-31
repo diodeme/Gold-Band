@@ -1,5 +1,6 @@
 /target
 /release
+/target-codex-scheduled
 .idea
 .vscode
 /node_modules

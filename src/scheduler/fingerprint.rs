@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+use std::path::Path;
 
 /// The authoring inputs that determine the semantic identity of a scheduled task.
 ///
@@ -206,6 +207,15 @@ pub fn content_fingerprint(input: &ScheduledTaskContentInput) -> anyhow::Result<
 /// Compatibility alias for callers that use an explicit fallible name.
 pub fn try_content_fingerprint(input: &ScheduledTaskContentInput) -> anyhow::Result<String> {
     content_fingerprint(input)
+}
+
+pub fn attachment_hash(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    format!("sha256:{digest:x}")
+}
+
+pub fn attachment_file_hash(path: &Path) -> anyhow::Result<String> {
+    Ok(attachment_hash(&std::fs::read(path)?))
 }
 
 fn canonical_auto_authoring(identity: &AutoAuthoringIdentity) -> Value {

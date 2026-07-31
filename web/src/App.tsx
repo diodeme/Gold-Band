@@ -6,6 +6,7 @@ import {
   chooseWorkspace,
   continueRun,
   createConversationRun,
+  createScheduledTask,
   createTask,
   deleteConversationTask,
   dismissUpdateAnnouncement,
@@ -42,6 +43,7 @@ import {
   saveLastConversationWorkspace,
   subscribeAcpSessionUpdates,
   subscribeConversationRunStateUpdates,
+  subscribeScheduledTaskUpdates,
   updateNotificationAttention,
 } from './api';
 import { isTauriRuntime } from './api/shared';
@@ -83,6 +85,7 @@ import { ConversationRunPage } from './pages/ConversationRunPage';
 import { ConversationSearchDialog } from './components/conversation/ConversationSearchDialog';
 import { prioritizeConversationSidebarWorkspace } from './components/conversation/ConversationSidebar';
 import { RunModeManagementPage } from './pages/RunModeManagementPage';
+import { ScheduledTaskManagementPage } from './pages/ScheduledTaskManagementPage';
 import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
@@ -523,6 +526,26 @@ export function App() {
     getConversationSidebar()
       .then((sidebar) => applyConversationSidebar(sidebar))
       .catch(() => {}); // Silently fail - sidebar will show empty state
+  }, [applyConversationSidebar, bootstrap, uiMode]);
+
+  useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation') return;
+    let active = true;
+    let dispose: (() => void) | undefined;
+    void subscribeScheduledTaskUpdates(() => {
+      void getConversationSidebar()
+        .then((sidebar) => {
+          if (active) applyConversationSidebar(sidebar);
+        })
+        .catch(() => {});
+    }).then((unlisten) => {
+      if (active) dispose = unlisten;
+      else unlisten();
+    }).catch(() => {});
+    return () => {
+      active = false;
+      dispose?.();
+    };
   }, [applyConversationSidebar, bootstrap, uiMode]);
 
   useEffect(() => {
@@ -1308,6 +1331,8 @@ export function App() {
         ? <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />
         : primaryModule === 'knowledge-base'
           ? <ContextManagementPage />
+           : conversationPage.kind === 'scheduled-tasks'
+             ? <ScheduledTaskManagementPage projectId={defaultProjectId} onCreate={() => onSelectConversation({ kind: 'conversation-home' })} />
           : renderTaskContent();
 
   const onSelectConversation = (page: ConversationPage) => {
@@ -1583,6 +1608,9 @@ export function App() {
               setBusy(false);
             }
           }}
+          onCreateScheduledTask={async (input) => {
+            await createScheduledTask(input);
+          }}
           onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
           onWorkspaceChange={(projectId) => {
@@ -1592,6 +1620,9 @@ export function App() {
           }}
         />
       );
+    }
+    if (conversationPage.kind === 'scheduled-tasks') {
+      return <ScheduledTaskManagementPage projectId={defaultProjectId} onCreate={() => onSelectConversation({ kind: 'conversation-home' })} />;
     }
     if (conversationPage.kind === 'run-mode-management') {
       return (

@@ -1,5 +1,5 @@
 import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
-import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi } from './client';
+import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi, ScheduledTaskUpdatedEventVm } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
@@ -246,6 +246,31 @@ export const desktopApi: RuntimeApi = {
   },
   getConversationSidebar() {
     return invokeCommand<ConversationSidebarVm>('get_conversation_sidebar');
+  },
+  async subscribeScheduledTaskUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<ScheduledTaskUpdatedEventVm>('gold-band://scheduled-task-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  listScheduledTasks(projectId) {
+    return invokeCommand<import('../types').ScheduledTaskVm[]>('list_scheduled_tasks', { projectId });
+  },
+  setScheduledTaskEnabled(projectId, scheduledTaskId, enabled) {
+    return invokeCommand<import('../types').ScheduledTaskVm>('set_scheduled_task_enabled', { projectId, scheduledTaskId, enabled });
+  },
+  createScheduledTask(input) {
+    return invokeCommand<import('../types').ScheduledTaskVm>('create_scheduled_task', { input });
+  },
+  getScheduledTask(projectId, scheduledTaskId) {
+    return invokeCommand<import('../types').ScheduledTaskEditVm>('get_scheduled_task', { projectId, scheduledTaskId });
+  },
+  updateScheduledTask(input) {
+    return invokeCommand<import('../types').ScheduledTaskEditVm>('update_scheduled_task', { input });
+  },
+  deleteScheduledTask(projectId, scheduledTaskId) {
+    return invokeCommand<void>('delete_scheduled_task', { projectId, scheduledTaskId });
   },
   setAcpSessionConfigOption(projectId, taskId, runId, roundId, nodeId, attemptId, optionId, optionValue, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('set_acp_session_config_option', { projectId, taskId, runId, roundId, nodeId, attemptId, optionId, optionValue, outerNodeId, outerAttemptId });

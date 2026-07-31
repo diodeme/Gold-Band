@@ -163,7 +163,7 @@ pub struct ScheduledTaskDefinition {
 impl ScheduledTaskDefinition {
     pub fn display_schedule(&self) -> String {
         match &self.schedule.kind {
-            ScheduleKind::At { at } => format!("At {}", at.to_rfc3339()),
+            ScheduleKind::At { at, .. } => format!("At {}", at.to_rfc3339()),
             ScheduleKind::Every { every, .. } => format!(
                 "Every {} {}",
                 every.value,
@@ -283,6 +283,8 @@ impl ScheduledTaskDefinition {
 pub enum ScheduleKind {
     At {
         at: DateTime<Utc>,
+        #[serde(default = "default_timezone")]
+        timezone: String,
     },
     Repeat {
         preset: RepeatPreset,
@@ -293,6 +295,8 @@ pub enum ScheduleKind {
     Every {
         every: EverySpec,
         anchor_at: DateTime<Utc>,
+        #[serde(default = "default_timezone")]
+        timezone: String,
     },
     Cron {
         expression: String,
@@ -302,18 +306,37 @@ pub enum ScheduleKind {
 
 impl ScheduleSpec {
     pub fn every(value: u64, unit: &str, anchor_at: DateTime<Utc>) -> Result<Self, ScheduleError> {
+        Self::every_in_timezone(value, unit, anchor_at, &default_timezone())
+    }
+
+    pub fn every_in_timezone(
+        value: u64,
+        unit: &str,
+        anchor_at: DateTime<Utc>,
+        timezone: &str,
+    ) -> Result<Self, ScheduleError> {
+        parse_timezone(timezone)?;
         Ok(Self {
             kind: ScheduleKind::Every {
                 every: EverySpec::new(value, unit)?,
                 anchor_at,
+                timezone: timezone.to_string(),
             },
         })
     }
 
     pub fn at(at: DateTime<Utc>) -> Self {
-        Self {
-            kind: ScheduleKind::At { at },
-        }
+        Self::at_in_timezone(at, &default_timezone()).expect("default timezone is valid")
+    }
+
+    pub fn at_in_timezone(at: DateTime<Utc>, timezone: &str) -> Result<Self, ScheduleError> {
+        parse_timezone(timezone)?;
+        Ok(Self {
+            kind: ScheduleKind::At {
+                at,
+                timezone: timezone.to_string(),
+            },
+        })
     }
 
     pub fn repeat(
@@ -373,17 +396,24 @@ impl ScheduleSpec {
         unit: &str,
         anchor_at: DateTime<Utc>,
     ) -> Result<Self, ScheduleError> {
+        let timezone = self
+            .timezone()
+            .map(str::to_string)
+            .unwrap_or_else(default_timezone);
         self.kind = ScheduleKind::Every {
             every: EverySpec::new(value, unit)?,
             anchor_at,
+            timezone,
         };
         Ok(self)
     }
 
     pub fn next_occurrence_after(&self, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
         match &self.kind {
-            ScheduleKind::At { at } => (*at > after).then_some(*at),
-            ScheduleKind::Every { every, anchor_at } => {
+            ScheduleKind::At { at, .. } => (*at > after).then_some(*at),
+            ScheduleKind::Every {
+                every, anchor_at, ..
+            } => {
                 let interval = every.duration();
                 let elapsed = after.signed_duration_since(*anchor_at);
                 let periods = if elapsed < Duration::zero() {
@@ -411,9 +441,15 @@ impl ScheduleSpec {
             ScheduleKind::Repeat { timezone, .. } | ScheduleKind::Cron { timezone, .. } => {
                 Some(timezone.as_str())
             }
-            ScheduleKind::At { .. } | ScheduleKind::Every { .. } => None,
+            ScheduleKind::At { timezone, .. } | ScheduleKind::Every { timezone, .. } => {
+                Some(timezone.as_str())
+            }
         }
     }
+}
+
+fn default_timezone() -> String {
+    "Asia/Shanghai".to_string()
 }
 
 fn validate_time(hour: u32, minute: u32) -> Result<(), ScheduleError> {
@@ -540,6 +576,17 @@ mod tests {
             Some(at)
         );
         assert_eq!(schedule.next_occurrence_after(at), None);
+    }
+
+    #[test]
+    fn at_schedule_keeps_the_declared_timezone_for_display_and_round_trip() {
+        let at = Utc.with_ymd_and_hms(2026, 7, 31, 1, 0, 0).unwrap();
+        let schedule = ScheduleSpec::at_in_timezone(at, "America/New_York").unwrap();
+
+        assert_eq!(schedule.timezone(), Some("America/New_York"));
+        let encoded = serde_json::to_value(&schedule).unwrap();
+        let decoded: ScheduleSpec = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.timezone(), Some("America/New_York"));
     }
 
     #[test]

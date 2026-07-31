@@ -1,0 +1,126 @@
+use super::OverlapPolicy;
+use chrono::{DateTime, Duration, Utc};
+
+pub const QUEUE_RETRY_INTERVAL: Duration = Duration::seconds(30);
+pub const QUEUE_MAX_RETRIES: u8 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActiveExecution {
+    Idle,
+    Running,
+    PermissionWaiting,
+    WaitingForUserInput,
+    ResumablePaused,
+}
+
+impl ActiveExecution {
+    pub fn is_active(self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueDecision {
+    StartNow,
+    Skipped,
+    RetryAt(DateTime<Utc>),
+}
+
+pub fn decide_queue(
+    policy: OverlapPolicy,
+    active: ActiveExecution,
+    retry_count: u8,
+    now: DateTime<Utc>,
+) -> QueueDecision {
+    if !active.is_active() {
+        return QueueDecision::StartNow;
+    }
+    match policy {
+        OverlapPolicy::SkipWhenRunning => QueueDecision::Skipped,
+        OverlapPolicy::RetryWhenBusy if retry_count < QUEUE_MAX_RETRIES => {
+            QueueDecision::RetryAt(now + QUEUE_RETRY_INTERVAL)
+        }
+        OverlapPolicy::RetryWhenBusy => QueueDecision::Skipped,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ActiveExecution, QueueDecision, decide_queue};
+    use crate::scheduler::OverlapPolicy;
+    use chrono::{Duration, TimeZone, Utc};
+
+    #[test]
+    fn inactive_task_can_start_immediately_for_both_policies() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 30, 10, 0, 0).unwrap();
+
+        assert_eq!(
+            decide_queue(
+                OverlapPolicy::SkipWhenRunning,
+                ActiveExecution::Idle,
+                0,
+                now
+            ),
+            QueueDecision::StartNow
+        );
+        assert_eq!(
+            decide_queue(OverlapPolicy::RetryWhenBusy, ActiveExecution::Idle, 0, now),
+            QueueDecision::StartNow
+        );
+    }
+
+    #[test]
+    fn skip_policy_marks_an_active_occurrence_skipped() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 30, 10, 0, 0).unwrap();
+
+        assert_eq!(
+            decide_queue(
+                OverlapPolicy::SkipWhenRunning,
+                ActiveExecution::PermissionWaiting,
+                0,
+                now,
+            ),
+            QueueDecision::Skipped
+        );
+    }
+
+    #[test]
+    fn retry_policy_retries_every_thirty_seconds_then_skips_after_three_retries() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 30, 10, 0, 0).unwrap();
+
+        assert_eq!(
+            decide_queue(
+                OverlapPolicy::RetryWhenBusy,
+                ActiveExecution::WaitingForUserInput,
+                2,
+                now,
+            ),
+            QueueDecision::RetryAt(now + Duration::seconds(30))
+        );
+        assert_eq!(
+            decide_queue(
+                OverlapPolicy::RetryWhenBusy,
+                ActiveExecution::ResumablePaused,
+                3,
+                now,
+            ),
+            QueueDecision::Skipped
+        );
+    }
+
+    #[test]
+    fn all_runtime_waiting_states_are_active() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 30, 10, 0, 0).unwrap();
+        for state in [
+            ActiveExecution::Running,
+            ActiveExecution::PermissionWaiting,
+            ActiveExecution::WaitingForUserInput,
+            ActiveExecution::ResumablePaused,
+        ] {
+            assert_ne!(
+                decide_queue(OverlapPolicy::SkipWhenRunning, state, 0, now),
+                QueueDecision::StartNow
+            );
+        }
+    }
+}

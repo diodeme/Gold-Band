@@ -446,7 +446,7 @@ struct ConversationRunStateUpdatedEventVm {
     outcome: Option<RunOutcome>,
 }
 
-fn resolve_command_app(
+pub(crate) fn resolve_command_app(
     state: &DesktopState,
     project_id: Option<&str>,
 ) -> Result<App, CommandErrorVm> {

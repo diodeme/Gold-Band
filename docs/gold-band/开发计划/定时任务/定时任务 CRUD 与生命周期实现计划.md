@@ -412,7 +412,7 @@ In `TaskRow`, render `AlarmClock` in the existing fixed identity slot when `task
 
 - [ ] **Step 3: Verify routes and deep links**
 
-Add route assertions for `/conversation/scheduled-tasks` and a scheduled run deep link. Use the existing Vite server on an available port, open the management route directly, and verify table loading, filters, edit dialog, delete confirmation, refresh icon, sidebar AlarmClock and run header without overlap at desktop and mobile widths.
+Add route assertions for `/chat/scheduled-tasks` and a scheduled run deep link. Use the existing Vite server on an available port, open the management route directly, and verify table loading, filters, edit dialog, delete confirmation, refresh icon, sidebar AlarmClock and run header without overlap at desktop and mobile widths.
 
 - [ ] **Step 4: Run web build and commit**
 
@@ -456,3 +456,11 @@ Stop only the dev server started for this verification, remove temporary test sc
 git add "docs/gold-band/产品设计文档/runtime/scheduled-task.md" "docs/gold-band/产品设计文档/runtime/scheduled-task-crud-design.md" "docs/gold-band/产品设计文档/runtime/state/scheduled-task.json.md" "docs/gold-band/产品设计文档/runtime/scheduled-task-runtime-implementation.md" "docs/gold-band/产品设计文档/interaction/app/scheduled-task-management.md" "docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md" "docs/gold-band/开发计划/定时任务/定时任务全局管理与会话刷新实现计划.md" "docs/gold-band/开发计划/定时任务/定时任务 CRUD 与生命周期实现计划.md"
 git commit -m "docs: record scheduled task CRUD implementation"
 ```
+
+## 完成状态（2026-07-31）
+
+- Task 1-3：结构化 authoring 指纹、定义存储、触发记录、Tauri CRUD 和结构化错误码已落地。
+- Task 4：Direct 新会话每次物化新 Task；Direct 持续会话复用同一 Task/Run/Round/ACP attempt；Workflow/AUTO 内容未变时复用 Task 创建新 Run，authoring 变化时创建新 Task。
+- Task 5-7：桌面端和浏览器 fallback API、App 根层会话刷新、管理页手动 CRUD、Composer 定时入口、AlarmClock 标识和深链已落地；管理页不监听后台调度事件。
+- Task 8：`npm run web:test`（85 个文件、562 个测试）、`npm run web:build`、`cargo test -p gold-band scheduler::tests`、`cargo test -p gold-band-desktop scheduled_runtime` 和 `cargo fmt --all -- --check` 已通过。
+- 后续项：错过时间点的 `missed` 触发记录和补跑策略暂不实现。

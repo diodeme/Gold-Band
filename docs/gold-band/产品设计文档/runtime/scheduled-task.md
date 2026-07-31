@@ -119,4 +119,6 @@ active 包括运行中、等待权限、等待 AskUserQuestion、等待用户恢
 
 创建命令与 Composer 已统一使用扁平调度协议：`kind` 使用 `At`、`Repeat`、`Every`、`Cron`，字段使用 camelCase。创建前复用会话模式校验，后端校验失败会返回具体校验码并由前端展开显示。
 
-创建入口已经位于会话 Composer 的发送按钮下拉操作中。创建时保存 instruction、模式配置、调度定义、队列保护策略、会话策略和附件快照；任务管理页负责启停。定时任务仍然由后续 scheduler loop 负责实际触发，不在创建命令中立即执行。
+创建入口已经位于会话 Composer 的发送按钮下拉操作中。创建时保存 instruction、模式配置、调度定义、队列保护策略、会话策略和附件快照；任务管理页负责启停。后台 scheduler loop 会扫描当前及已登记工作区，在到点后物化 Task 并通过现有 Task/Run/ACP 链路执行；创建命令本身不会立即执行。
+
+当前版本已覆盖 Direct 新会话、Direct 持续会话、Workflow/AUTO 同 Task 新 Run、内容指纹变化后新 Task、队列保护、触发记录和手动管理。错过时间点暂不补跑，也暂不生成 `missed` 触发记录。

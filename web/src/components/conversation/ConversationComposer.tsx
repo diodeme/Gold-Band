@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Send, Paperclip, Workflow, Bot, Folders, Plus } from 'lucide-react';
+import { displayAppError } from '@/i18n';
+import { Send, Paperclip, Workflow, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X } from 'lucide-react';
 import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -21,6 +23,9 @@ import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects'
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from '@/lib/slash-command';
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
+import { ScheduledTaskDialog, type ScheduledTaskConfig } from '@/components/conversation/ScheduledTaskDialog';
+import type { ScheduledScheduleSpec } from '@/types';
+import { validateScheduledConversationInput } from '@/lib/scheduled-task-validation';
 
 interface ConversationComposerProps {
   projectId: string;
@@ -34,6 +39,7 @@ interface ConversationComposerProps {
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
+  onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleSpec; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
@@ -51,6 +57,7 @@ export function ConversationComposer({
   onRunModeChange,
   onLoadProfiles,
   onSubmit,
+  onCreateScheduledTask,
   onOpenAgentManagement,
   onOpenRunModeSettings,
   onWorkspaceChange,
@@ -71,6 +78,9 @@ export function ConversationComposer({
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
   const [submittingAttachments, setSubmittingAttachments] = useState(false);
+  const [scheduledDialogOpen, setScheduledDialogOpen] = useState(false);
+  const [scheduledMode, setScheduledMode] = useState(false);
+  const [scheduledConfig, setScheduledConfig] = useState<ScheduledTaskConfig | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const {
     attachments,
@@ -97,6 +107,15 @@ export function ConversationComposer({
   const showRunModeManagement = canOpenRunModeManagement(runMode.mode);
   const autoStrategy = runMode.autoConfig?.agentStrategy ?? 'fixed';
   const isDynamicAuto = autoStrategy === 'dynamic';
+  const scheduledSummary = scheduledConfig?.schedule.kind === 'Every'
+    ? `每隔 ${scheduledConfig.schedule.every.value} ${scheduledConfig.schedule.every.unit === 'minutes' ? '分钟' : '小时'}`
+    : scheduledConfig?.schedule.kind === 'Cron'
+      ? `Cron ${scheduledConfig.schedule.expression}`
+      : scheduledConfig?.schedule.kind === 'Repeat'
+        ? '重复计划'
+        : scheduledConfig
+          ? '单次计划'
+          : '尚未配置执行计划';
   const canSubmit = content.trim().length > 0 && !busy && !submittingAttachments;
   const agentOptions = useMemo(() => selectableAgentOptions(agentRegistry, t), [agentRegistry, t]);
   const agents = useMemo(
@@ -279,11 +298,54 @@ export function ConversationComposer({
     }
   };
 
+  const scheduledConversationInput = () => ({
+    projectId,
+    content: content.trim(),
+    runMode: runMode.mode,
+    workflowTemplateId: isAuto || isDirect ? undefined : selectedWorkflowTemplateId,
+    includeInterview: includeInterviewForSubmit(runMode, selectedWorkflowTemplateId),
+    directConfig: isDirect ? normalizeConversationDirectConfigForSubmit({ agentType: selectedDirectAgent, modelId: selectedDirectModel || undefined, permissionMode: selectedDirectPermissionMode || undefined, configOptions: selectedDirectConfigOptions }) : undefined,
+    autoConfig: isAuto ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession()) : undefined,
+  });
+
+  const createScheduledTask = async () => {
+    if (busy || submittingAttachments || !onCreateScheduledTask) return;
+    if (!scheduledConfig) {
+      setScheduledDialogOpen(true);
+      return;
+    }
+    const inputBase = scheduledConversationInput();
+    const localIssues = await validateScheduledConversationInput(inputBase, {
+      agentRegistry,
+      workflowTemplates,
+      profiles,
+      loadProfiles: onLoadProfiles,
+      t,
+    });
+    if (localIssues.length > 0) {
+      setRunModeError(localIssues.join('\n'));
+      return;
+    }
+    setSubmittingAttachments(true);
+    try {
+      const paths = await resolveAttachmentPaths();
+      await onCreateScheduledTask({ ...inputBase, ...scheduledConfig, attachmentPaths: paths.length ? paths : undefined });
+      composerDraft.reset();
+      setScheduledMode(false);
+      setScheduledConfig(null);
+      setRunModeError(null);
+    } catch (error) {
+      setRunModeError(displayAppError(t, error));
+    } finally {
+      setSubmittingAttachments(false);
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (slashCommands.onKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>)) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      void handleSubmit();
+      void (scheduledMode ? createScheduledTask() : handleSubmit());
     }
   };
 
@@ -294,6 +356,7 @@ export function ConversationComposer({
         className="flex flex-col gap-4"
         {...dropZoneHandlers}
       >
+        {scheduledMode ? <div className="flex min-h-8 items-center gap-2 px-2 text-xs text-muted-foreground"><AlarmClock className="size-4 text-primary" /><span className="truncate"><strong className="font-medium text-foreground">{scheduledSummary}</strong> · 定时任务创建</span><Button variant="ghost" size="icon" className="ml-auto size-7 rounded-md" aria-label="退出定时任务创建" title="退出定时任务创建" onClick={() => { setScheduledMode(false); setScheduledConfig(null); }}><X className="size-3.5" /></Button></div> : null}
         {/* Main text input */}
         <div className="rounded-2xl border border-border/60 bg-card/60 p-4 shadow-sm transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10">
           <SlashCommandMenu
@@ -434,10 +497,20 @@ export function ConversationComposer({
                   />
                 </>
               ) : null}
-              <Button size="sm" className="h-8 shrink-0 gap-1.5 rounded-full px-3" disabled={!canSubmit} onClick={() => { void handleSubmit(); }}>
-                <Send className="size-3.5" />
-                {t('acp.send')}
-              </Button>
+              {scheduledMode ? (
+                <div className="flex items-center gap-1">
+                  <Button size="sm" className="h-8 shrink-0 gap-1.5 rounded-full px-3" disabled={busy || submittingAttachments || !onCreateScheduledTask} onClick={() => void createScheduledTask()}><AlarmClock className="size-3.5" />创建定时任务</Button>
+                  <Button variant="ghost" size="icon" className="size-8 rounded-full" aria-label="配置定时任务" title="配置定时任务" onClick={() => setScheduledDialogOpen(true)}><Settings2 className="size-3.5" /></Button>
+                </div>
+              ) : (
+                <div className="flex items-center">
+                  <Button size="sm" className="h-8 shrink-0 gap-1.5 rounded-l-full rounded-r-none px-3" disabled={!canSubmit} onClick={() => { void handleSubmit(); }}><Send className="size-3.5" />{t('acp.send')}</Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild><Button size="sm" variant="secondary" className="h-8 rounded-l-none rounded-r-full px-2" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label="更多发送选项"><ChevronDown className="size-3.5" /></Button></DropdownMenuTrigger>
+                    <DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => { setScheduledMode(true); setScheduledConfig(null); }}><AlarmClock className="size-3.5" />创建定时任务</DropdownMenuItem></DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -648,6 +721,7 @@ export function ConversationComposer({
           </div>
         ) : null}
       </div>
+      {onCreateScheduledTask ? <ScheduledTaskDialog allowContinuous={isDirect} open={scheduledDialogOpen} onOpenChange={setScheduledDialogOpen} onSave={async (config) => { setScheduledConfig(config); }} /> : null}
 
       <AttachmentPreviewDialogs
         previewImage={previewImage}

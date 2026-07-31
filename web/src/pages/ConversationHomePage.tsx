@@ -1,6 +1,6 @@
 import { ConversationComposer } from '@/components/conversation/ConversationComposer';
 import { ConversationGreeting } from '@/components/conversation/ConversationGreeting';
-import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../types';
+import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore, ScheduledScheduleSpec } from '../types';
 
 interface ConversationHomePageProps {
   projectId: string;
@@ -14,6 +14,7 @@ interface ConversationHomePageProps {
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
+  onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleSpec; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
@@ -31,6 +32,7 @@ export function ConversationHomePage({
   onRunModeChange,
   onLoadProfiles,
   onSubmit,
+  onCreateScheduledTask,
   onOpenAgentManagement,
   onOpenRunModeSettings,
   onWorkspaceChange,
@@ -53,6 +55,7 @@ export function ConversationHomePage({
           onRunModeChange={onRunModeChange}
           onLoadProfiles={onLoadProfiles}
           onSubmit={onSubmit}
+          onCreateScheduledTask={onCreateScheduledTask}
           onOpenAgentManagement={onOpenAgentManagement}
           onOpenRunModeSettings={onOpenRunModeSettings}
           onWorkspaceChange={onWorkspaceChange}

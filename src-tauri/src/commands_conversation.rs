@@ -234,6 +234,8 @@ pub fn create_scheduled_task(
         direct_config: input.direct_config.clone(),
         auto_config: input.auto_config.clone(),
         attachment_paths: input.attachment_paths.clone(),
+        scheduled_task_id: None,
+        scheduled_content_fingerprint: None,
     };
     let validation =
         crate::view_models_conversation::validate_conversation_create_vm(&app, &validation_input)
@@ -387,6 +389,8 @@ pub fn update_scheduled_task(
         direct_config: input.direct_config.clone(),
         auto_config: input.auto_config.clone(),
         attachment_paths,
+        scheduled_task_id: None,
+        scheduled_content_fingerprint: None,
     };
     let validation =
         crate::view_models_conversation::validate_conversation_create_vm(&app, &validation_input)
@@ -422,6 +426,7 @@ pub fn update_scheduled_task(
         }
     }
 
+    let previous_session_policy = definition.session_policy;
     let new_snapshot =
         crate::view_models_conversation::scheduled_content_snapshot(&app, &validation_input)
             .map_err(scheduled_task_error)?;
@@ -445,7 +450,7 @@ pub fn update_scheduled_task(
         .session_policy;
     definition.session_policy = validated_session_policy;
     definition.mode = scheduled_mode_from_run_mode(&validation_input.run_mode);
-    if content_changed {
+    if content_changed || previous_session_policy != input.session_policy {
         definition.task_id = None;
     }
     definition.execution_config = scheduled_execution_config(

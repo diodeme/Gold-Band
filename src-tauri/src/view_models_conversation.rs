@@ -25,6 +25,325 @@ use gold_band::dynamic::DynamicGraphState;
 use gold_band::runtime::RunState;
 use gold_band::storage::{read_json, write_json};
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTaskVm {
+    pub id: String,
+    pub project_id: String,
+    pub workspace_name: String,
+    pub title: String,
+    pub enabled: bool,
+    pub mode: String,
+    pub session_policy: String,
+    pub schedule: String,
+    pub schedule_label: String,
+    pub timezone_label: String,
+    pub next_at: Option<String>,
+    pub status: String,
+    pub last_trigger_at: Option<String>,
+    pub last_trigger_status: Option<String>,
+    pub last_trigger_label: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateScheduledTaskInputVm {
+    pub project_id: String,
+    pub content: String,
+    pub run_mode: String,
+    pub workflow_template_id: Option<String>,
+    pub include_interview: Option<bool>,
+    pub direct_config: Option<ConversationDirectConfigVm>,
+    pub auto_config: Option<ConversationAutoConfigVm>,
+    pub attachment_paths: Option<Vec<String>>,
+    pub schedule: gold_band::scheduler::ScheduleSpec,
+    pub overlap_policy: gold_band::scheduler::OverlapPolicy,
+    pub session_policy: Option<gold_band::scheduler::SessionPolicy>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTaskEditVm {
+    pub scheduled_task_id: String,
+    pub project_id: String,
+    pub content: String,
+    pub attachment_names: Vec<String>,
+    pub run_mode: String,
+    pub workflow_template_id: Option<String>,
+    pub include_interview: Option<bool>,
+    pub direct_config: Option<ConversationDirectConfigVm>,
+    pub auto_config: Option<ConversationAutoConfigVm>,
+    pub schedule: gold_band::scheduler::ScheduleSpec,
+    pub overlap_policy: gold_band::scheduler::OverlapPolicy,
+    pub session_policy: gold_band::scheduler::SessionPolicy,
+    pub direct_agent_type: Option<String>,
+    pub expected_updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateScheduledTaskInputVm {
+    pub scheduled_task_id: String,
+    pub project_id: String,
+    pub expected_updated_at: String,
+    pub content: String,
+    pub run_mode: String,
+    pub workflow_template_id: Option<String>,
+    pub include_interview: Option<bool>,
+    pub direct_config: Option<ConversationDirectConfigVm>,
+    pub auto_config: Option<ConversationAutoConfigVm>,
+    pub attachment_paths: Option<Vec<String>>,
+    pub schedule: gold_band::scheduler::ScheduleSpec,
+    pub overlap_policy: gold_band::scheduler::OverlapPolicy,
+    pub session_policy: gold_band::scheduler::SessionPolicy,
+}
+
+impl ScheduledTaskVm {
+    pub fn from_definition(definition: &gold_band::scheduler::ScheduledTaskDefinition) -> Self {
+        Self::from_definition_in_workspace(definition, &definition.project_id)
+    }
+
+    pub fn from_definition_in_workspace(
+        definition: &gold_band::scheduler::ScheduledTaskDefinition,
+        workspace_name: &str,
+    ) -> Self {
+        Self {
+            id: definition.id.clone(),
+            project_id: definition.project_id.clone(),
+            workspace_name: workspace_name.to_string(),
+            title: scheduled_task_title(&definition.instruction),
+            enabled: definition.enabled,
+            mode: serde_json::to_value(definition.mode)
+                .ok()
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                .unwrap_or_default(),
+            session_policy: serde_json::to_value(definition.session_policy)
+                .ok()
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                .unwrap_or_default(),
+            schedule: definition.display_schedule(),
+            schedule_label: scheduled_task_schedule_label(definition),
+            timezone_label: scheduled_task_timezone_label(definition),
+            next_at: definition
+                .schedule
+                .next_occurrence_after(chrono::Utc::now())
+                .map(|value| scheduled_task_datetime_label(definition, value)),
+            status: scheduled_task_status(definition),
+            last_trigger_at: definition.last_trigger_at.map(|value| value.to_rfc3339()),
+            last_trigger_status: definition.last_trigger_status.clone(),
+            last_trigger_label: scheduled_task_last_trigger_label(definition),
+            created_at: definition.created_at.to_rfc3339(),
+            updated_at: definition.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+impl ScheduledTaskEditVm {
+    pub fn from_definition(definition: &gold_band::scheduler::ScheduledTaskDefinition) -> Self {
+        let run_mode = definition
+            .execution_config
+            .get("runMode")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| match definition.mode {
+                gold_band::scheduler::ScheduledMode::Direct => "direct".to_string(),
+                gold_band::scheduler::ScheduledMode::Workflow => "workflow".to_string(),
+                gold_band::scheduler::ScheduledMode::Auto => "auto".to_string(),
+            });
+        let workflow_template_id = definition
+            .execution_config
+            .get("workflowTemplateId")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned);
+        let include_interview = definition
+            .execution_config
+            .get("includeInterview")
+            .and_then(serde_json::Value::as_bool);
+        let direct_config = definition
+            .execution_config
+            .get("directConfig")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok());
+        let auto_config = definition
+            .execution_config
+            .get("autoConfig")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok());
+        Self {
+            scheduled_task_id: definition.id.clone(),
+            project_id: definition.project_id.clone(),
+            content: definition.instruction.clone(),
+            attachment_names: definition.attachment_names.clone(),
+            run_mode,
+            workflow_template_id,
+            include_interview,
+            direct_config,
+            auto_config,
+            schedule: definition.schedule.clone(),
+            overlap_policy: definition.overlap_policy,
+            session_policy: definition.session_policy,
+            direct_agent_type: definition.content_snapshot.direct_agent_id.clone(),
+            expected_updated_at: definition.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+pub fn scheduled_task_vms_from_sources(
+    sources: &[ConversationWorkspaceSource],
+    project_id: Option<&str>,
+) -> anyhow::Result<Vec<ScheduledTaskVm>> {
+    let mut tasks = Vec::new();
+    for source in sources {
+        if project_id.is_some_and(|value| value != source.workspace.project_id) {
+            continue;
+        }
+        let store = gold_band::scheduler::store::ScheduledTaskStore::new(source.app.paths.clone());
+        tasks.extend(store.list()?.iter().map(|definition| {
+            ScheduledTaskVm::from_definition_in_workspace(definition, &source.workspace.name)
+        }));
+    }
+    tasks.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    Ok(tasks)
+}
+
+fn scheduled_task_last_trigger_label(
+    definition: &gold_band::scheduler::ScheduledTaskDefinition,
+) -> String {
+    let Some(status) = definition.last_trigger_status.as_deref() else {
+        return "尚未运行".to_string();
+    };
+    let time = definition
+        .last_trigger_at
+        .map(|value| scheduled_task_datetime_label(definition, value));
+    let label = match status {
+        "completed" => "成功",
+        "running" => "运行中",
+        "retrying" => "等待重试",
+        "skipped" if definition.last_error.as_deref() == Some("queue-busy") => "已跳过",
+        "skipped" => "已跳过",
+        "failed" => "执行失败",
+        _ => status,
+    };
+    match time {
+        Some(time) => format!("{label} {time}"),
+        None => label.to_string(),
+    }
+}
+
+pub fn scheduled_task_title(instruction: &str) -> String {
+    let first_line = instruction
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    let normalized = first_line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut title = normalized.chars().take(48).collect::<String>();
+    if normalized.chars().count() > 48 {
+        title.push('…');
+    }
+    if title.is_empty() {
+        "未命名定时任务".to_string()
+    } else {
+        title
+    }
+}
+
+fn scheduled_task_timezone(definition: &gold_band::scheduler::ScheduledTaskDefinition) -> &str {
+    definition.schedule.timezone().unwrap_or("Asia/Shanghai")
+}
+
+pub fn scheduled_task_timezone_label(
+    definition: &gold_band::scheduler::ScheduledTaskDefinition,
+) -> String {
+    match scheduled_task_timezone(definition) {
+        "Asia/Shanghai" => "中国（上海）".to_string(),
+        "Asia/Tokyo" => "日本（东京）".to_string(),
+        "Europe/London" => "英国（伦敦）".to_string(),
+        "America/New_York" => "美国（纽约）".to_string(),
+        timezone => timezone.to_string(),
+    }
+}
+
+fn scheduled_task_datetime_label(
+    definition: &gold_band::scheduler::ScheduledTaskDefinition,
+    value: chrono::DateTime<chrono::Utc>,
+) -> String {
+    value
+        .with_timezone(
+            &scheduled_task_timezone(definition)
+                .parse::<chrono_tz::Tz>()
+                .unwrap_or(chrono_tz::Asia::Shanghai),
+        )
+        .format("%Y-%m-%d %H:%M")
+        .to_string()
+}
+
+pub fn scheduled_task_schedule_label(
+    definition: &gold_band::scheduler::ScheduledTaskDefinition,
+) -> String {
+    use gold_band::scheduler::{EveryUnit, RepeatPreset, ScheduleKind};
+    match &definition.schedule.kind {
+        ScheduleKind::At { at } => {
+            format!("单次 {}", scheduled_task_datetime_label(definition, *at))
+        }
+        ScheduleKind::Every { every, .. } => format!(
+            "每隔 {} {}",
+            every.value,
+            match every.unit {
+                EveryUnit::Minutes => "分钟",
+                EveryUnit::Hours => "小时",
+            }
+        ),
+        ScheduleKind::Repeat {
+            preset,
+            hour,
+            minute,
+            ..
+        } => match preset {
+            RepeatPreset::Hourly => "每小时".to_string(),
+            RepeatPreset::Daily => format!("每天 {:02}:{:02}", hour, minute),
+            RepeatPreset::Weekdays => format!("工作日 {:02}:{:02}", hour, minute),
+            RepeatPreset::Weekly { weekdays } => format!(
+                "每周 {} {:02}:{:02}",
+                weekdays
+                    .iter()
+                    .map(|day| match day {
+                        chrono::Weekday::Mon => "周一",
+                        chrono::Weekday::Tue => "周二",
+                        chrono::Weekday::Wed => "周三",
+                        chrono::Weekday::Thu => "周四",
+                        chrono::Weekday::Fri => "周五",
+                        chrono::Weekday::Sat => "周六",
+                        chrono::Weekday::Sun => "周日",
+                    })
+                    .collect::<Vec<_>>()
+                    .join("、"),
+                hour,
+                minute
+            ),
+        },
+        ScheduleKind::Cron { expression, .. } => format!("Cron {}", expression),
+    }
+}
+
+fn scheduled_task_status(definition: &gold_band::scheduler::ScheduledTaskDefinition) -> String {
+    if !definition.enabled {
+        return "paused".to_string();
+    }
+    if definition.last_trigger_status.as_deref() == Some("failed") {
+        return "failed".to_string();
+    }
+    if definition
+        .schedule
+        .next_occurrence_after(chrono::Utc::now())
+        .is_none()
+    {
+        return "completed".to_string();
+    }
+    "enabled".to_string()
+}
+
 // ── Conversation View Models ──
 
 #[derive(Debug, Clone, Serialize)]
@@ -337,6 +656,97 @@ pub struct ConversationCreateInputVm {
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub attachment_paths: Option<Vec<String>>,
+}
+
+pub fn scheduled_content_snapshot(
+    app: &App,
+    input: &ConversationCreateInputVm,
+) -> anyhow::Result<gold_band::scheduler::ScheduledTaskContentSnapshot> {
+    use gold_band::scheduler::{AutoAuthoringIdentity, ScheduledMode};
+
+    let mode = match input.run_mode.as_str() {
+        "direct" => ScheduledMode::Direct,
+        "workflow" => ScheduledMode::Workflow,
+        "auto" => ScheduledMode::Auto,
+        other => anyhow::bail!("unsupported scheduled task mode: {other}"),
+    };
+    let attachment_hashes = input
+        .attachment_paths
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|path| gold_band::scheduler::fingerprint::attachment_file_hash(Path::new(path)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut snapshot = gold_band::scheduler::ScheduledTaskContentInput::new(
+        mode,
+        input.content.clone(),
+        attachment_hashes,
+        input.project_id.clone(),
+    );
+
+    match mode {
+        ScheduledMode::Direct => {
+            snapshot.direct_agent_id = Some(
+                input
+                    .direct_config
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("direct config is required"))?
+                    .agent_type
+                    .trim()
+                    .to_string(),
+            );
+        }
+        ScheduledMode::Workflow => {
+            let store = app.workflow_templates()?;
+            let template_id = input
+                .workflow_template_id
+                .as_deref()
+                .unwrap_or(DEFAULT_WORKFLOW_TEMPLATE_ID);
+            let mut workflow = store
+                .templates
+                .iter()
+                .find(|template| template.id == template_id)
+                .map(|template| template.workflow.clone())
+                .ok_or_else(|| anyhow::anyhow!("workflow template not found: {template_id}"))?;
+            apply_workflow_interview_preference(
+                template_id,
+                input.include_interview,
+                &mut workflow,
+            )?;
+            snapshot.workflow_authoring = Some(serde_json::to_value(workflow)?);
+        }
+        ScheduledMode::Auto => {
+            let config = input
+                .auto_config
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("auto config is required"))?;
+            let available_agent_types = config
+                .available_agents
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|agent| agent.provider.clone());
+            let allowed_workflow_ids = config
+                .allowed_workflows
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|workflow| workflow.workflow_id.clone());
+            snapshot.auto_authoring = Some(AutoAuthoringIdentity::new(
+                config
+                    .agent_strategy
+                    .clone()
+                    .unwrap_or_else(|| "fixed".to_string()),
+                config.agent_type.clone(),
+                config.bootstrap_agent_type.clone(),
+                available_agent_types,
+                config.global_goal.clone(),
+                allowed_workflow_ids,
+            ));
+        }
+    }
+
+    Ok(snapshot)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2588,10 +2998,10 @@ fn build_direct_workflow(config: &ConversationDirectConfigVm) -> WorkflowDsl {
     }
 }
 
-pub fn create_conversation_run_vm(
+pub fn create_conversation_task_vm(
     app: &App,
     input: &ConversationCreateInputVm,
-) -> anyhow::Result<ConversationRunVm> {
+) -> anyhow::Result<(String, Option<String>, String)> {
     let title =
         conversation_auto_title(&input.content, app.config.conversation_auto_title_max_chars);
 
@@ -2692,6 +3102,15 @@ pub fn create_conversation_run_vm(
             }
         }
     }
+
+    Ok((task_id, task_uuid, title))
+}
+
+pub fn create_conversation_run_vm(
+    app: &App,
+    input: &ConversationCreateInputVm,
+) -> anyhow::Result<ConversationRunVm> {
+    let (task_id, task_uuid, title) = create_conversation_task_vm(app, input)?;
 
     // Start the workflow in the background so the conversation surface can
     // display the session as soon as the first ACP events arrive.
@@ -2917,16 +3336,20 @@ pub fn switch_conversation_session_vm(
 #[cfg(test)]
 mod tests {
     use super::{
-        ConversationAutoConfigVm, ConversationDirectConfigVm, ConversationDynamicAgentRefVm,
-        ConversationWorkspaceSource, ConversationWorkspaceVm, PromptActivity,
-        apply_workflow_interview_preference, build_auto_workflow, build_direct_workflow,
-        conversation_attempt_lifecycle_vm, conversation_auto_title, conversation_run_vm,
-        conversation_sidebar_vm_from_sources, conversation_status_from_session,
-        conversation_workspace_vms, derive_conversation_attempt_lifecycle, lifecycle_is_active,
+        ConversationAutoConfigVm, ConversationCreateInputVm, ConversationDirectConfigVm,
+        ConversationDynamicAgentRefVm, ConversationWorkspaceSource, ConversationWorkspaceVm,
+        PromptActivity, apply_workflow_interview_preference, build_auto_workflow,
+        build_direct_workflow, conversation_attempt_lifecycle_vm, conversation_auto_title,
+        conversation_run_vm, conversation_sidebar_vm_from_sources,
+        conversation_status_from_session, conversation_workspace_vms, create_conversation_task_vm,
+        derive_conversation_attempt_lifecycle, lifecycle_is_active, scheduled_task_schedule_label,
+        scheduled_task_timezone_label, scheduled_task_vms_from_sources,
         switch_conversation_session_vm,
     };
     use camino::Utf8PathBuf;
+    use chrono::TimeZone;
     use gold_band::app::{App, CreateTaskInput};
+    use gold_band::config::ConversationRunMode;
     use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, PromptEnvelopeMode};
     use serde_json::json;
 
@@ -3801,6 +4224,30 @@ mod tests {
         });
 
         assert!(created.is_ok(), "{created:?}");
+    }
+
+    #[test]
+    fn scheduled_task_materialization_creates_task_without_starting_run() {
+        let app = App::new(temp_repo_root());
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: "run this later".to_string(),
+            run_mode: ConversationRunMode::Direct.as_str().to_string(),
+            workflow_template_id: None,
+            include_interview: None,
+            direct_config: Some(ConversationDirectConfigVm {
+                agent_type: "claude-acp".to_string(),
+                model_id: None,
+                permission_mode: None,
+                config_options: Default::default(),
+            }),
+            auto_config: None,
+            attachment_paths: None,
+        };
+
+        let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
+        assert!(app.paths.task_file(&task_id).exists());
+        assert!(!app.paths.runs_dir(&task_id).exists());
     }
 
     #[test]
@@ -4790,6 +5237,98 @@ mod tests {
             }),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn scheduled_task_title_uses_first_instruction_line_and_truncates() {
+        assert_eq!(
+            super::scheduled_task_title("  每天整理日报  \n补充说明"),
+            "每天整理日报"
+        );
+        assert_eq!(super::scheduled_task_title(""), "未命名定时任务");
+        assert_eq!(
+            super::scheduled_task_title(&"x".repeat(60)).chars().count(),
+            49
+        );
+    }
+
+    #[test]
+    fn scheduled_task_management_labels_are_localized_and_timezone_aware() {
+        let definition = gold_band::scheduler::ScheduledTaskDefinition::new(
+            "project-a",
+            "scheduled-1",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::repeat(
+                gold_band::scheduler::RepeatPreset::Daily,
+                9,
+                0,
+                "Asia/Shanghai",
+            )
+            .unwrap(),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        assert_eq!(scheduled_task_schedule_label(&definition), "每天 09:00");
+        assert_eq!(scheduled_task_timezone_label(&definition), "中国（上海）");
+    }
+
+    #[test]
+    fn scheduled_task_management_aggregates_all_workspaces_and_can_filter_one() {
+        let app_a = App::new(temp_repo_root());
+        let app_b = App::new(temp_repo_root());
+        let definition_a = gold_band::scheduler::ScheduledTaskDefinition::new(
+            "workspace-a",
+            "scheduled-a",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::at(
+                chrono::Utc.with_ymd_and_hms(2026, 8, 1, 1, 0, 0).unwrap(),
+            ),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        let definition_b = gold_band::scheduler::ScheduledTaskDefinition::new(
+            "workspace-b",
+            "scheduled-b",
+            "workflow",
+            gold_band::scheduler::ScheduleSpec::at(
+                chrono::Utc.with_ymd_and_hms(2026, 8, 2, 1, 0, 0).unwrap(),
+            ),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        gold_band::scheduler::store::ScheduledTaskStore::new(app_a.paths.clone())
+            .save(&definition_a)
+            .unwrap();
+        gold_band::scheduler::store::ScheduledTaskStore::new(app_b.paths.clone())
+            .save(&definition_b)
+            .unwrap();
+        let sources = vec![
+            ConversationWorkspaceSource {
+                workspace: ConversationWorkspaceVm {
+                    project_id: "workspace-a".to_string(),
+                    workspace_path: app_a.paths.repo_root.to_string(),
+                    name: "Workspace A".to_string(),
+                },
+                app: app_a,
+            },
+            ConversationWorkspaceSource {
+                workspace: ConversationWorkspaceVm {
+                    project_id: "workspace-b".to_string(),
+                    workspace_path: app_b.paths.repo_root.to_string(),
+                    name: "Workspace B".to_string(),
+                },
+                app: app_b,
+            },
+        ];
+
+        let all = scheduled_task_vms_from_sources(&sources, None).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].workspace_name, "Workspace A");
+        assert_eq!(all[1].workspace_name, "Workspace B");
+
+        let filtered = scheduled_task_vms_from_sources(&sources, Some("workspace-b")).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "scheduled-b");
     }
 }
 

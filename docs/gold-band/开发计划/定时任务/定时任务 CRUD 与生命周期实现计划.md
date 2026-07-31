@@ -262,6 +262,11 @@ Expected: PASS for not-found, optimistic conflict, Direct immutability, Workflow
 
 Commit: `git add src-tauri/src/view_models_conversation.rs src-tauri/src/commands_conversation.rs src-tauri/src/main.rs src-tauri/gen/schemas && git commit -m "feat: add scheduled task CRUD commands"`
 
+Implementation status (2026-07-31): Task 3 is complete. Desktop commands now
+expose typed create/read/update/delete/enable operations, use structured
+scheduled-task error codes, persist canonical content snapshots, and enforce
+Direct Agent immutability with optimistic update timestamps.
+
 ## Task 4：修正 scheduler 的 Task/Run/Session 生命周期
 
 **Files:**

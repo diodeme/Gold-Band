@@ -284,7 +284,7 @@ pub fn scheduled_task_schedule_label(
 ) -> String {
     use gold_band::scheduler::{EveryUnit, RepeatPreset, ScheduleKind};
     match &definition.schedule.kind {
-        ScheduleKind::At { at } => {
+        ScheduleKind::At { at, .. } => {
             format!("单次 {}", scheduled_task_datetime_label(definition, *at))
         }
         ScheduleKind::Every { every, .. } => format!(
@@ -379,6 +379,7 @@ pub struct ConversationTaskRowVm {
     pub runs: Vec<ConversationRunSummaryVm>,
     pub pinned: bool,
     pub pinned_order: Option<usize>,
+    pub scheduled_task_id: Option<String>,
 }
 
 pub struct ConversationWorkspaceSource {
@@ -445,6 +446,7 @@ pub struct ConversationRunVm {
     pub resumable: bool,
     pub pause_reason: Option<String>,
     pub runtime_error_message: Option<String>,
+    pub scheduled_task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -656,6 +658,10 @@ pub struct ConversationCreateInputVm {
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub attachment_paths: Option<Vec<String>>,
+    #[serde(default)]
+    pub scheduled_task_id: Option<String>,
+    #[serde(default)]
+    pub scheduled_content_fingerprint: Option<String>,
 }
 
 pub fn scheduled_content_snapshot(
@@ -795,6 +801,10 @@ pub(crate) struct ConversationMetadata {
     pub(crate) initial_attachment_names: Option<Vec<String>>,
     pub(crate) created_at: String,
     pub(crate) last_activity_at: Option<String>,
+    #[serde(default)]
+    pub(crate) scheduled_task_id: Option<String>,
+    #[serde(default)]
+    pub(crate) scheduled_content_fingerprint: Option<String>,
 }
 
 fn read_conversation_metadata(app: &App, task_id: &str) -> Option<ConversationMetadata> {
@@ -805,6 +815,11 @@ fn read_conversation_metadata(app: &App, task_id: &str) -> Option<ConversationMe
             .join("conversation.json"),
     )
     .ok()
+}
+
+pub(crate) fn scheduled_content_fingerprint_for_task(app: &App, task_id: &str) -> Option<String> {
+    read_conversation_metadata(app, task_id)
+        .and_then(|metadata| metadata.scheduled_content_fingerprint)
 }
 
 fn direct_agent_identity(app: &App, agent_type: &str) -> Option<ConversationAgentIdentityVm> {
@@ -949,6 +964,9 @@ pub fn conversation_sidebar_vm_from_sources(
                     runs,
                     pinned,
                     pinned_order: pin_order,
+                    scheduled_task_id: metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.scheduled_task_id.clone()),
                 };
 
                 if pinned {
@@ -2603,6 +2621,9 @@ pub fn conversation_run_vm(
         resumable,
         pause_reason: run.pause_reason.map(|r| enum_label(&r)),
         runtime_error_message,
+        scheduled_task_id: conversation_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.scheduled_task_id.clone()),
     })
 }
 
@@ -3087,6 +3108,8 @@ pub fn create_conversation_task_vm(
         ),
         created_at: created_at.clone(),
         last_activity_at: Some(created_at),
+        scheduled_task_id: input.scheduled_task_id.clone(),
+        scheduled_content_fingerprint: input.scheduled_content_fingerprint.clone(),
     };
     write_json(&authoring_dir.join("conversation.json"), &meta)?;
 
@@ -3155,6 +3178,7 @@ pub fn create_conversation_run_vm(
             resumable: false,
             pause_reason: None,
             runtime_error_message: None,
+            scheduled_task_id: input.scheduled_task_id.clone(),
         })
     })
 }
@@ -3276,6 +3300,7 @@ pub fn rerun_conversation_task_vm(
             resumable: false,
             pause_reason: None,
             runtime_error_message: None,
+            scheduled_task_id: None,
         })
     })
 }
@@ -4243,6 +4268,8 @@ mod tests {
             }),
             auto_config: None,
             attachment_paths: None,
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
         };
 
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();

@@ -935,7 +935,74 @@ export type ConversationPage =
   | { kind: 'run-mode-management' }
   | { kind: 'agents' }
   | { kind: 'contexts' }
+  | { kind: 'scheduled-tasks' }
   | { kind: 'settings' };
+
+export interface ScheduledTaskVm {
+  id: string;
+  projectId: string;
+  workspaceName: string;
+  title: string;
+  enabled: boolean;
+  mode: 'direct' | 'workflow' | 'auto' | string;
+  sessionPolicy: 'new' | 'continuous' | string;
+  schedule: string;
+  scheduleLabel: string;
+  timezoneLabel: string;
+  nextAt?: string | null;
+  status: 'enabled' | 'paused' | 'completed' | 'failed' | string;
+  lastTriggerAt?: string | null;
+  lastTriggerStatus?: string | null;
+  lastTriggerLabel: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ScheduledEveryUnit = 'minutes' | 'hours';
+export type ScheduledScheduleSpec =
+  | { kind: 'At'; at: string; timezone: string }
+  | { kind: 'Every'; every: { value: number; unit: ScheduledEveryUnit }; anchorAt: string; timezone: string }
+  | { kind: 'Repeat'; preset: 'Hourly' | 'Daily' | 'Weekdays' | { Weekly: { weekdays: string[] } }; hour: number; minute: number; timezone: string }
+  | { kind: 'Cron'; expression: string; timezone: string };
+
+export interface CreateScheduledTaskInput extends ConversationCreateInput {
+  schedule: ScheduledScheduleSpec;
+  overlapPolicy: 'skip_when_running' | 'retry_when_busy';
+  sessionPolicy?: 'new' | 'continuous';
+}
+
+export interface ScheduledTaskEditVm {
+  scheduledTaskId: string;
+  projectId: string;
+  content: string;
+  attachmentNames: string[];
+  runMode: 'direct' | 'workflow' | 'auto' | string;
+  workflowTemplateId?: string | null;
+  includeInterview?: boolean | null;
+  directConfig?: ConversationDirectConfigVm | null;
+  autoConfig?: ConversationAutoConfigVm | null;
+  schedule: ScheduledScheduleSpec;
+  overlapPolicy: 'skip_when_running' | 'retry_when_busy';
+  sessionPolicy: 'new' | 'continuous';
+  directAgentType?: string | null;
+  expectedUpdatedAt: string;
+}
+
+export interface UpdateScheduledTaskInput {
+  scheduledTaskId: string;
+  projectId: string;
+  expectedUpdatedAt: string;
+  content: string;
+  runMode: string;
+  workflowTemplateId?: string | null;
+  includeInterview?: boolean | null;
+  directConfig?: ConversationDirectConfigVm | null;
+  autoConfig?: ConversationAutoConfigVm | null;
+  attachmentPaths?: string[] | null;
+  schedule: ScheduledScheduleSpec;
+  overlapPolicy: 'skip_when_running' | 'retry_when_busy';
+  sessionPolicy: 'new' | 'continuous';
+}
 
 export interface ConversationWorkspaceVm {
   projectId: string;
@@ -956,6 +1023,7 @@ export interface ConversationTaskRowVm {
   runs: ConversationRunSummaryVm[];
   pinned: boolean;
   pinnedOrder?: number | null;
+  scheduledTaskId?: string | null;
 }
 
 export interface ConversationRunSummaryVm {
@@ -1091,6 +1159,7 @@ export interface ConversationRunVm {
   resumable: boolean;
   pauseReason?: string | null;
   runtimeErrorMessage?: string | null;
+  scheduledTaskId?: string | null;
 }
 
 export interface ConversationSessionSwitchVm {

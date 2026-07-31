@@ -1,4 +1,4 @@
-import { Eye, FolderOpen, RotateCcw, Workflow, ChevronDown } from 'lucide-react';
+import { AlarmClock, Eye, FolderOpen, RotateCcw, Workflow, ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ConversationRunVm, ConversationSessionLeafVm } from '../../types';
 import { Button } from '@/components/ui/button';
@@ -43,6 +43,7 @@ export function ConversationRunHeader({
   return (
     <div className="shrink-0 bg-content-header px-5 pb-0.5 pt-0.5">
       <div className="flex min-w-0 items-center gap-2">
+        {run.scheduledTaskId ? <span className="inline-flex shrink-0 items-center text-primary" title="定时任务会话" aria-label="定时任务会话"><AlarmClock className="size-3.5" /></span> : null}
         <EditableConversationTitle
           title={run.title}
           metadata={!isDirect ? run.runId : null}

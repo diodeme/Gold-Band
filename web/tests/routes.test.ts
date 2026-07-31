@@ -23,4 +23,12 @@ describe('desktop entry routing', () => {
       taskPage: { kind: 'task-list' },
     });
   });
+
+  it('routes scheduled task management inside the conversation shell', () => {
+    expect(routeFromPath('/chat/scheduled-tasks')).toMatchObject({
+      uiMode: 'conversation',
+      module: 'task-orchestration',
+      conversationPage: { kind: 'scheduled-tasks' },
+    });
+  });
 });

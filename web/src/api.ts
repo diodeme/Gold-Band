@@ -176,6 +176,10 @@ export function subscribeConversationRunStateUpdates(listener: Parameters<NonNul
   return getRuntimeApi().subscribeConversationRunStateUpdates?.(listener) ?? Promise.resolve(() => {});
 }
 
+export function subscribeScheduledTaskUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeScheduledTaskUpdates']>>[0]) {
+  return getRuntimeApi().subscribeScheduledTaskUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
 // 干预通知：OS Toast「查看详情」点击后由后端转发导航事件，前端订阅做 deep-link。
 export function subscribeInterventionNavigate(listener: Parameters<NonNullable<RuntimeApi['subscribeInterventionNavigate']>>[0]) {
   return getRuntimeApi().subscribeInterventionNavigate?.(listener) ?? Promise.resolve(() => {});
@@ -291,6 +295,30 @@ export function setAcpSessionConfigOption(projectId: string | null | undefined, 
 
 export function getConversationWorkspaces() {
   return getRuntimeApi().getConversationWorkspaces();
+}
+
+export function listScheduledTasks(projectId?: string | null) {
+  return getRuntimeApi().listScheduledTasks(projectId);
+}
+
+export function setScheduledTaskEnabled(projectId: string | null | undefined, scheduledTaskId: string, enabled: boolean) {
+  return getRuntimeApi().setScheduledTaskEnabled(projectId, scheduledTaskId, enabled);
+}
+
+export function createScheduledTask(input: Parameters<ReturnType<typeof getRuntimeApi>['createScheduledTask']>[0]) {
+  return getRuntimeApi().createScheduledTask(input);
+}
+
+export function getScheduledTask(projectId: string, scheduledTaskId: string) {
+  return getRuntimeApi().getScheduledTask(projectId, scheduledTaskId);
+}
+
+export function updateScheduledTask(input: Parameters<ReturnType<typeof getRuntimeApi>['updateScheduledTask']>[0]) {
+  return getRuntimeApi().updateScheduledTask(input);
+}
+
+export function deleteScheduledTask(projectId: string, scheduledTaskId: string) {
+  return getRuntimeApi().deleteScheduledTask(projectId, scheduledTaskId);
 }
 
 export function getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null) {

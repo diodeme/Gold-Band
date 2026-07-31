@@ -1,6 +1,6 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, ScheduledTaskEditVm, ScheduledTaskVm, ScheduledScheduleSpec, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
-import type { RuntimeApi } from './client';
+import type { RuntimeApi, ScheduledTaskUpdatedEventVm } from './client';
 import { browserPreviewState } from './browserState';
 import { localTimestamp, toRoundSelectionInput } from './shared';
 
@@ -12,6 +12,54 @@ type LocalFontData = { family: string };
 type LocalFontWindow = Window & { queryLocalFonts?: () => Promise<LocalFontData[]> };
 
 const browserConversationRuns = new Map<string, ConversationRunVm>();
+const browserScheduledTasks: ScheduledTaskVm[] = [];
+const browserScheduledTaskDefinitions = new Map<string, ScheduledTaskEditVm>();
+const browserScheduledTaskListeners = new Set<(event: ScheduledTaskUpdatedEventVm) => void>();
+let browserScheduledTaskSequence = 0;
+
+function emitBrowserScheduledTaskUpdated(task: ScheduledTaskVm) {
+  const event: ScheduledTaskUpdatedEventVm = {
+    projectId: task.projectId,
+    scheduledTaskId: task.id,
+    status: task.status,
+  };
+  browserScheduledTaskListeners.forEach((listener) => listener(event));
+}
+
+function browserTimezoneLabel(timezone: string) {
+  return ({
+    'Asia/Shanghai': '中国（上海）',
+    'Asia/Tokyo': '日本（东京）',
+    'Europe/London': '英国（伦敦）',
+    'America/New_York': '美国（纽约）',
+  } as Record<string, string>)[timezone] ?? timezone;
+}
+
+function browserScheduleLabel(schedule: ScheduledScheduleSpec) {
+  if (schedule.kind === 'At') {
+    try {
+      const formatted = new Intl.DateTimeFormat('zh-CN', {
+        timeZone: schedule.timezone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      }).format(new Date(schedule.at)).replaceAll('/', '-');
+      return `单次 ${formatted}`;
+    } catch {
+      return `单次 ${schedule.at}`;
+    }
+  }
+  if (schedule.kind === 'Every') return `每隔 ${schedule.every.value} ${schedule.every.unit === 'minutes' ? '分钟' : '小时'}`;
+  if (schedule.kind === 'Cron') return `Cron ${schedule.expression}`;
+  const weekdayLabels: Record<string, string> = { Mon: '周一', Tue: '周二', Wed: '周三', Thu: '周四', Fri: '周五', Sat: '周六', Sun: '周日' };
+  const preset = typeof schedule.preset === 'string'
+    ? ({ Hourly: '每小时', Daily: '每天', Weekdays: '工作日' } as Record<string, string>)[schedule.preset] ?? schedule.preset
+    : `每周 ${schedule.preset.Weekly.weekdays.map((day) => weekdayLabels[day] ?? day).join('、')}`;
+  return `${preset} ${String(schedule.hour).padStart(2, '0')}:${String(schedule.minute).padStart(2, '0')}`;
+}
 
 function browserAgentIdentity(agentType: string) {
   const agent = mockAgentRegistry.agents.find((candidate) => candidate.agentType === agentType);
@@ -118,6 +166,10 @@ function browserCompletedConversationRun(): ConversationRunVm {
 }
 
 export const browserApi: RuntimeApi = {
+  async subscribeScheduledTaskUpdates(listener) {
+    browserScheduledTaskListeners.add(listener);
+    return () => browserScheduledTaskListeners.delete(listener);
+  },
   checkLocalClaude() {
     return Promise.resolve({ found: false, path: null });
   },
@@ -498,6 +550,92 @@ export const browserApi: RuntimeApi = {
       tasksByWorkspace: { default: [] },
     };
     return Promise.resolve(sidebar);
+  },
+  listScheduledTasks(projectId) {
+    return Promise.resolve(browserScheduledTasks
+      .filter((task) => !projectId || task.projectId === projectId)
+      .map((task) => ({ ...task })));
+  },
+  setScheduledTaskEnabled(_projectId, scheduledTaskId, enabled) {
+    const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId);
+    if (task) {
+      task.enabled = enabled;
+      task.status = enabled ? 'enabled' : 'paused';
+      task.updatedAt = new Date().toISOString();
+      emitBrowserScheduledTaskUpdated(task);
+      return Promise.resolve({ ...task });
+    }
+    return Promise.resolve({ id: scheduledTaskId, projectId: 'default', workspaceName: 'Default Workspace', title: '示例定时任务', enabled, mode: 'direct', sessionPolicy: 'new', schedule: '', scheduleLabel: '', timezoneLabel: '中国（上海）', nextAt: null, status: enabled ? 'enabled' : 'paused', lastTriggerAt: null, lastTriggerStatus: null, lastTriggerLabel: '尚未运行', createdAt: '', updatedAt: '' });
+  },
+  createScheduledTask(input) {
+    const now = new Date().toISOString();
+    const id = `scheduled-${Date.now()}-${++browserScheduledTaskSequence}`;
+    const timezone = input.schedule.kind === 'At' || input.schedule.kind === 'Every' || input.schedule.kind === 'Repeat' || input.schedule.kind === 'Cron'
+      ? input.schedule.timezone ?? 'Asia/Shanghai'
+      : 'Asia/Shanghai';
+    const task: ScheduledTaskVm = { id, projectId: input.projectId, workspaceName: input.projectId === 'default' ? 'Default Workspace' : input.projectId, title: input.content.split(/\r?\n/)[0].slice(0, 48), enabled: true, mode: input.runMode, sessionPolicy: input.sessionPolicy ?? 'new', schedule: browserScheduleLabel(input.schedule), scheduleLabel: browserScheduleLabel(input.schedule), timezoneLabel: browserTimezoneLabel(timezone), nextAt: null, status: 'enabled', lastTriggerAt: null, lastTriggerStatus: null, lastTriggerLabel: '尚未运行', createdAt: now, updatedAt: now };
+    const definition: ScheduledTaskEditVm = {
+      scheduledTaskId: id,
+      projectId: input.projectId,
+      content: input.content,
+      attachmentNames: [],
+      runMode: input.runMode,
+      workflowTemplateId: input.workflowTemplateId,
+      includeInterview: input.includeInterview,
+      directConfig: input.directConfig,
+      autoConfig: input.autoConfig,
+      schedule: input.schedule,
+      overlapPolicy: input.overlapPolicy,
+      sessionPolicy: input.sessionPolicy ?? 'new',
+      directAgentType: input.directConfig?.agentType ?? null,
+      expectedUpdatedAt: now,
+    };
+    browserScheduledTaskDefinitions.set(id, definition);
+    browserScheduledTasks.push(task);
+    emitBrowserScheduledTaskUpdated(task);
+    return Promise.resolve({ ...task });
+  },
+  getScheduledTask(_projectId, scheduledTaskId) {
+    const definition = browserScheduledTaskDefinitions.get(scheduledTaskId);
+    return definition ? Promise.resolve(structuredClone(definition)) : browserCommandError('scheduled-task.not-found');
+  },
+  updateScheduledTask(input: UpdateScheduledTaskInput) {
+    const definition = browserScheduledTaskDefinitions.get(input.scheduledTaskId);
+    if (!definition) return browserCommandError('scheduled-task.not-found');
+    if (definition.expectedUpdatedAt !== input.expectedUpdatedAt) return browserCommandError('scheduled-task.conflict');
+    const now = new Date().toISOString();
+    const next: ScheduledTaskEditVm = {
+      ...definition,
+      ...input,
+      expectedUpdatedAt: now,
+      directAgentType: input.directConfig?.agentType ?? definition.directAgentType ?? null,
+    };
+    browserScheduledTaskDefinitions.set(input.scheduledTaskId, next);
+    const task = browserScheduledTasks.find((item) => item.id === input.scheduledTaskId);
+    if (task) {
+      const timezone = input.schedule.kind === 'At' || input.schedule.kind === 'Every' || input.schedule.kind === 'Repeat' || input.schedule.kind === 'Cron'
+        ? input.schedule.timezone ?? 'Asia/Shanghai'
+        : 'Asia/Shanghai';
+      Object.assign(task, {
+        title: input.content.split(/\r?\n/)[0].slice(0, 48),
+        mode: input.runMode,
+        sessionPolicy: input.sessionPolicy,
+        schedule: browserScheduleLabel(input.schedule),
+        scheduleLabel: browserScheduleLabel(input.schedule),
+        timezoneLabel: browserTimezoneLabel(timezone),
+        updatedAt: now,
+      });
+      emitBrowserScheduledTaskUpdated(task);
+    }
+    return Promise.resolve(structuredClone(next));
+  },
+  deleteScheduledTask(_projectId, scheduledTaskId) {
+    const index = browserScheduledTasks.findIndex((task) => task.id === scheduledTaskId);
+    if (index < 0) return browserCommandError('scheduled-task.not-found');
+    const [task] = browserScheduledTasks.splice(index, 1);
+    browserScheduledTaskDefinitions.delete(scheduledTaskId);
+    emitBrowserScheduledTaskUpdated({ ...task, status: 'deleted' });
+    return Promise.resolve();
   },
   getConversationWorkspaces() {
     return Promise.resolve([{ projectId: 'default', workspacePath: '/default', name: 'Default Workspace' }]);

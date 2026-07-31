@@ -22,6 +22,7 @@ export function routeFromPath(pathname: string): AppRoute {
     if (segments[1] === 'agents') return { uiMode: 'conversation', module: 'agent-management', taskPage: taskListPage, conversationPage: { kind: 'agents' } };
     if (segments[1] === 'contexts') return { uiMode: 'conversation', module: 'knowledge-base', taskPage: taskListPage, conversationPage: { kind: 'contexts' } };
     if (segments[1] === 'run-modes') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'run-mode-management' } };
+    if (segments[1] === 'scheduled-tasks') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'scheduled-tasks' } };
     if (segments[1] === 'projects' && segments[3] === 'tasks' && segments[5] === 'runs' && segments[6]) {
       return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'conversation-run', projectId: segments[2], taskId: segments[4], runId: segments[6] } };
     }
@@ -48,6 +49,7 @@ export function pathFromRoute(module: PrimaryModule, taskPage: TaskPage, convers
     if (conversationPage.kind === 'agents') return '/chat/agents';
     if (conversationPage.kind === 'contexts') return '/chat/contexts';
     if (conversationPage.kind === 'run-mode-management') return '/chat/run-modes';
+    if (conversationPage.kind === 'scheduled-tasks') return '/chat/scheduled-tasks';
     if (conversationPage.kind === 'conversation-run') return `/chat/projects/${encodeURIComponent(conversationPage.projectId)}/tasks/${encodeURIComponent(conversationPage.taskId)}/runs/${encodeURIComponent(conversationPage.runId)}`;
     return '/chat';
   }

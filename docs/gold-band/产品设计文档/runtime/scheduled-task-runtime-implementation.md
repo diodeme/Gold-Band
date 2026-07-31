@@ -11,11 +11,13 @@
 创建定时任务时只保存定时任务定义、指令、执行配置和附件快照，不创建 Gold Band `Task`，也不启动 `Run`。第一次到点且通过队列保护后，调度器才物化正式 `Task` 并启动 `Run`，随后将 `taskId` 写回定时任务定义。
 
 - Workflow/AUTO：内容未变时复用该 Task，每次到点创建新的 Run。
-- Direct new：复用该 Task 创建新的 Run，但每次 Run 使用新的 ACP 会话。
-- Direct continuous：复用该 Task 和可恢复的 ACP 会话发送新的 prompt。
+- Direct new：每次到点物化新的 Task、Run 和 ACP 会话。
+- Direct continuous：复用该 Task、Run、Round 和可恢复的 ACP attempt 发送新的 prompt；没有可恢复 attempt 时才物化新的 Task 链。
 - 修改 instruction、附件或 workflow/AUTO 内容时创建新的 Task；模型、强度、权限变化不改变 Task。
 
 ## 后台调度器
+
+Tauri 启动单例轮询器，每秒扫描当前及已登记工作区的 enabled 定义。调度器先检查队列保护，再调用现有 Task/Run/ACP 创建或继续接口；它不直接写入 run canonical 状态。每次触发都会写入不可变 trigger record，并更新定义的最近触发状态。当前版本不补跑错过的时间点，也不生成 `missed` trigger。
 
 ## 全局管理与刷新
 

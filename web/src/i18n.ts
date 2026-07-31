@@ -2660,6 +2660,15 @@ export function displayNodeType(t: TFunction, value?: string | null) {
 
 export function displayAppError(t: TFunction, error: unknown) {
   if (isAppError(error)) {
+    if (error.code === "conversation.validation-failed" && Array.isArray(error.params.codes)) {
+      return error.params.codes
+        .filter((code): code is string => typeof code === "string")
+        .map((code) => {
+          const key = `conversation.validation.${code}`;
+          return t(key, { defaultValue: key });
+        })
+        .join("\n");
+    }
     return t(`errors.${error.code}`, {
       ...error.params,
       defaultValue: t("errors.app.unexpected"),

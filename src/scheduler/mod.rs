@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use thiserror::Error;
 
-pub mod store;
-pub mod queue;
 pub mod fingerprint;
+pub mod queue;
+pub mod store;
 
 pub use fingerprint::{
     AutoAuthoringIdentity, ScheduledTaskContentInput, ScheduledTaskContentSnapshot,
@@ -172,7 +172,12 @@ impl ScheduledTaskDefinition {
                     EveryUnit::Hours => "hours",
                 }
             ),
-            ScheduleKind::Repeat { preset, hour, minute, .. } => format!(
+            ScheduleKind::Repeat {
+                preset,
+                hour,
+                minute,
+                ..
+            } => format!(
                 "{} {:02}:{:02}",
                 match preset {
                     RepeatPreset::Hourly => "hourly",
@@ -257,7 +262,7 @@ impl ScheduledTaskDefinition {
     }
 
     pub fn recompute_content_fingerprint(&mut self) -> anyhow::Result<()> {
-        self.content_fingerprint = fingerprint::try_content_fingerprint(&self.content_snapshot)?;
+        self.content_fingerprint = fingerprint::content_fingerprint(&self.content_snapshot)?;
         Ok(())
     }
 
@@ -276,7 +281,9 @@ impl ScheduledTaskDefinition {
 #[serde(tag = "kind")]
 #[serde(rename_all_fields = "camelCase")]
 pub enum ScheduleKind {
-    At { at: DateTime<Utc> },
+    At {
+        at: DateTime<Utc>,
+    },
     Repeat {
         preset: RepeatPreset,
         hour: u32,
@@ -294,11 +301,7 @@ pub enum ScheduleKind {
 }
 
 impl ScheduleSpec {
-    pub fn every(
-        value: u64,
-        unit: &str,
-        anchor_at: DateTime<Utc>,
-    ) -> Result<Self, ScheduleError> {
+    pub fn every(value: u64, unit: &str, anchor_at: DateTime<Utc>) -> Result<Self, ScheduleError> {
         Ok(Self {
             kind: ScheduleKind::Every {
                 every: EverySpec::new(value, unit)?,
@@ -356,8 +359,7 @@ impl ScheduleSpec {
 
     pub fn reset_anchor(mut self, anchor_at: DateTime<Utc>) -> Self {
         if let ScheduleKind::Every {
-            anchor_at: current,
-            ..
+            anchor_at: current, ..
         } = &mut self.kind
         {
             *current = anchor_at;
@@ -412,7 +414,6 @@ impl ScheduleSpec {
             ScheduleKind::At { .. } | ScheduleKind::Every { .. } => None,
         }
     }
-
 }
 
 fn validate_time(hour: u32, minute: u32) -> Result<(), ScheduleError> {
@@ -447,11 +448,7 @@ fn next_repeat_occurrence(
             RepeatPreset::Daily => true,
             RepeatPreset::Weekdays => matches!(
                 weekday,
-                Weekday::Mon
-                    | Weekday::Tue
-                    | Weekday::Wed
-                    | Weekday::Thu
-                    | Weekday::Fri
+                Weekday::Mon | Weekday::Tue | Weekday::Wed | Weekday::Thu | Weekday::Fri
             ),
             RepeatPreset::Weekly { weekdays } => weekdays.contains(&weekday),
         };
@@ -483,12 +480,12 @@ fn next_cron_occurrence(
 
 #[cfg(test)]
 mod tests {
+    use super::RepeatPreset;
     use super::{
         EverySpec, OverlapPolicy, ScheduleError, ScheduleSpec, ScheduledTaskContentSnapshot,
         ScheduledTaskDefinition,
     };
     use chrono::{Duration, TimeZone, Utc, Weekday};
-    use super::RepeatPreset;
 
     #[test]
     fn every_accepts_only_positive_minutes_and_hours() {
@@ -538,7 +535,10 @@ mod tests {
         let at = Utc.with_ymd_and_hms(2026, 7, 31, 1, 0, 0).unwrap();
         let schedule = ScheduleSpec::at(at);
 
-        assert_eq!(schedule.next_occurrence_after(at - Duration::minutes(1)), Some(at));
+        assert_eq!(
+            schedule.next_occurrence_after(at - Duration::minutes(1)),
+            Some(at)
+        );
         assert_eq!(schedule.next_occurrence_after(at), None);
     }
 
@@ -582,7 +582,10 @@ mod tests {
 
         let parsed: ScheduleSpec = serde_json::from_value(value).unwrap();
 
-        assert_eq!(parsed.anchor_at(), Utc.with_ymd_and_hms(2026, 7, 30, 10, 10, 0).unwrap());
+        assert_eq!(
+            parsed.anchor_at(),
+            Utc.with_ymd_and_hms(2026, 7, 30, 10, 10, 0).unwrap()
+        );
     }
 
     #[test]
@@ -637,6 +640,9 @@ mod tests {
             .expect("definition serializes as object")
             .remove("contentSnapshot");
         let restored: ScheduledTaskDefinition = serde_json::from_value(persisted).unwrap();
-        assert_eq!(restored.content_snapshot, ScheduledTaskContentSnapshot::default());
+        assert_eq!(
+            restored.content_snapshot,
+            ScheduledTaskContentSnapshot::default()
+        );
     }
 }

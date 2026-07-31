@@ -196,19 +196,16 @@ pub fn canonical_content_json(input: &ScheduledTaskContentInput) -> Value {
 }
 
 /// Computes a stable SHA-256 identity in the `sha256:<lowercase hex>` format.
-pub fn content_fingerprint(input: &ScheduledTaskContentInput) -> String {
-    let canonical = canonical_content_json(input);
-    let bytes = serde_json::to_vec(&canonical).expect("canonical content serializes");
-    let digest = Sha256::digest(bytes);
-    format!("sha256:{digest:x}")
-}
-
-/// Fallible companion for callers that prefer to propagate serialization errors.
-pub fn try_content_fingerprint(input: &ScheduledTaskContentInput) -> anyhow::Result<String> {
+pub fn content_fingerprint(input: &ScheduledTaskContentInput) -> anyhow::Result<String> {
     let canonical = canonical_content_json(input);
     let bytes = serde_json::to_vec(&canonical)?;
     let digest = Sha256::digest(bytes);
     Ok(format!("sha256:{digest:x}"))
+}
+
+/// Compatibility alias for callers that use an explicit fallible name.
+pub fn try_content_fingerprint(input: &ScheduledTaskContentInput) -> anyhow::Result<String> {
+    content_fingerprint(input)
 }
 
 fn canonical_auto_authoring(identity: &AutoAuthoringIdentity) -> Value {
@@ -378,7 +375,10 @@ mod tests {
             workflow_b,
         );
 
-        assert_ne!(content_fingerprint(&input_a), content_fingerprint(&input_b));
+        assert_ne!(
+            content_fingerprint(&input_a).unwrap(),
+            content_fingerprint(&input_b).unwrap()
+        );
     }
 
     #[test]
@@ -410,7 +410,10 @@ mod tests {
             ),
         );
 
-        assert_ne!(content_fingerprint(&input_a), content_fingerprint(&input_b));
+        assert_ne!(
+            content_fingerprint(&input_a).unwrap(),
+            content_fingerprint(&input_b).unwrap()
+        );
     }
 
     #[test]
@@ -425,11 +428,11 @@ mod tests {
         let mut changed_instruction = baseline.clone();
         changed_instruction.instruction = "inspect a different thing".to_string();
 
-        let original = content_fingerprint(&baseline);
-        assert_ne!(original, content_fingerprint(&changed_agent));
-        assert_ne!(original, content_fingerprint(&changed_attachment));
-        assert_ne!(original, content_fingerprint(&changed_workspace));
-        assert_ne!(original, content_fingerprint(&changed_instruction));
+        let original = content_fingerprint(&baseline).unwrap();
+        assert_ne!(original, content_fingerprint(&changed_agent).unwrap());
+        assert_ne!(original, content_fingerprint(&changed_attachment).unwrap());
+        assert_ne!(original, content_fingerprint(&changed_workspace).unwrap());
+        assert_ne!(original, content_fingerprint(&changed_instruction).unwrap());
     }
 
     #[test]
@@ -465,7 +468,10 @@ mod tests {
         input_c.mode = ScheduledMode::Workflow;
         input_c.direct_agent_id = None;
 
-        assert_eq!(content_fingerprint(&input_b), content_fingerprint(&input_c));
+        assert_eq!(
+            content_fingerprint(&input_b).unwrap(),
+            content_fingerprint(&input_c).unwrap()
+        );
         let canonical = canonical_content_json(&input_b).to_string();
         for excluded in ["model-a", "high", "bypass", "continuous", "foo"] {
             assert!(
@@ -508,6 +514,9 @@ mod tests {
             canonical_content_json(&first),
             canonical_content_json(&second)
         );
-        assert_eq!(content_fingerprint(&first), content_fingerprint(&second));
+        assert_eq!(
+            content_fingerprint(&first).unwrap(),
+            content_fingerprint(&second).unwrap()
+        );
     }
 }

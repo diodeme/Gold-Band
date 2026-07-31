@@ -2,7 +2,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-import { PermissionRequestCard } from '@/components/acp/ACPChatDialog';
+import { PermissionRequestCard, permissionRequestSummary } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 
 function renderPermissionCard() {
@@ -52,5 +52,39 @@ describe('PermissionRequestCard', () => {
     expect(html).toContain('data-slot="tooltip-trigger"');
     expect(html).toContain(`aria-label="${longLabel}"`);
     expect(html).toContain('min-w-0 truncate');
+  });
+
+  it('shows what command the permission decision applies to', () => {
+    const request = {
+      requestId: 'permission-2',
+      title: 'PowerShell',
+      toolCallId: 'call-powershell',
+      raw: {
+        toolCall: {
+          title: 'PowerShell',
+          rawInput: {
+            description: 'List projects under the ai directory',
+            command: 'Get-ChildItem -Force "D:\\Projects\\code\\ai"',
+          },
+        },
+      },
+      options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow' }],
+    };
+
+    expect(permissionRequestSummary(request)).toBe(
+      'List projects under the ai directory · Get-ChildItem -Force "D:\\Projects\\code\\ai"',
+    );
+    const html = renderToStaticMarkup(
+      React.createElement(
+        TooltipProvider,
+        null,
+        React.createElement(PermissionRequestCard, {
+          request,
+          onSelect: () => undefined,
+        }),
+      ),
+    );
+    expect(html).toContain('List projects under the ai directory');
+    expect(html).toContain('Get-ChildItem -Force &quot;D:\\Projects\\code\\ai&quot;');
   });
 });

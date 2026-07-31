@@ -219,6 +219,22 @@ const SESSION_SYSTEM_CONTEXT_VERSION: u32 = 1;
 #[derive(Debug)]
 struct AcpCancelled;
 
+fn initialize_params() -> Value {
+    json!({
+        "protocolVersion": 1,
+        "clientCapabilities": {
+            "elicitation": {
+                "form": {}
+            }
+        },
+        "clientInfo": {
+            "name": "gold-band",
+            "title": "Gold Band",
+            "version": crate::domain::VERSION,
+        }
+    })
+}
+
 impl std::fmt::Display for AcpCancelled {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("ACP prompt cancelled")
@@ -1957,23 +1973,7 @@ impl<'a> AcpRuntime<'a> {
             );
             return Ok(capabilities);
         }
-        let result = self.request_with_timeout(
-            "initialize",
-            json!({
-                "protocolVersion": 1,
-                "clientCapabilities": {
-                    "elicitation": {
-                        "form": {}
-                    }
-                },
-                "clientInfo": {
-                    "name": "gold-band",
-                    "title": "Gold Band",
-                    "version": crate::domain::VERSION,
-                }
-            }),
-            timeout,
-        )?;
+        let result = self.request_with_timeout("initialize", initialize_params(), timeout)?;
         let capabilities = result
             .get("agentCapabilities")
             .cloned()
@@ -4890,10 +4890,11 @@ mod tests {
         ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution, SessionUpdatePhase,
         active_context_compaction, active_timeline_streams, attached_sync_required,
         cleanup_doctor_acp_dir_after_success, contributes_to_final_text, drain_frames_until_quiet,
-        evaluate_provider_revision, is_transport_interruption, is_unscoped_codex_diagnostic_update,
-        merge_tool_raw_input, permission_decision_timeline_event, plan_attached_session_reuse,
-        prompt_activity, register_provider_control, request_prompt_cancel, resolve_permission_mode,
-        resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
+        evaluate_provider_revision, initialize_params, is_transport_interruption,
+        is_unscoped_codex_diagnostic_update, merge_tool_raw_input,
+        permission_decision_timeline_event, plan_attached_session_reuse, prompt_activity,
+        register_provider_control, request_prompt_cancel,
+        resolve_permission_mode, resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
         runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
         session_new_params, session_prompt_params, session_prompt_text,
         should_suppress_session_update, take_pending_live_update_for_stream_switch,
@@ -4905,6 +4906,18 @@ mod tests {
         permission::PermissionResponseState,
     };
     use crate::provider::prepare_acp_mcp_servers;
+
+    #[test]
+    fn initialize_keeps_private_subagent_capabilities_out_of_the_wire_contract() {
+        let params = initialize_params();
+
+        assert!(params.pointer("/clientCapabilities/_meta").is_none());
+        assert!(
+            params
+                .pointer("/clientCapabilities/elicitation/form")
+                .is_some()
+        );
+    }
 
     #[test]
     fn attempt_token_totals_accumulate_prompt_turns_even_when_latest_input_drops() {

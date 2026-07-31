@@ -6,6 +6,11 @@ import { Card } from '@/components/ui/card';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
+import {
+  mcpAgentSupportStatus,
+  shouldShowCompatibilityLoading,
+  type McpAgentCompatibility,
+} from '@/lib/mcp-agent-compatibility';
 import { cn } from '@/lib/utils';
 import type { McpServerVm } from '../types';
 
@@ -13,17 +18,6 @@ interface McpHealthState {
   status: string;
   message?: string | null;
 }
-
-/** 单个 agent 对某 MCP 传输的兼容性（用于卡片展示） */
-export interface McpAgentCompatibility {
-  agentType: string;
-  label: string;
-  iconKey: string;
-  mcpHttpSupported?: boolean | null;
-  mcpSseSupported?: boolean | null;
-}
-
-type AgentSupportStatus = 'supported' | 'unsupported' | 'unknown';
 
 /** 传输 flag 按类型着色（低饱和、适配深色主题） */
 const TRANSPORT_BADGE_CLASS: Record<McpServerVm['transport'], string> = {
@@ -37,22 +31,6 @@ const TRANSPORT_LABEL: Record<McpServerVm['transport'], string> = {
   http: 'HTTP',
   sse: 'SSE',
 };
-
-/** 判断 agent 对某 MCP 传输的支持状态。stdio 由 ACP 规范保证所有 agent 支持。 */
-function agentSupportStatus(
-  transport: McpServerVm['transport'],
-  agent: McpAgentCompatibility,
-): AgentSupportStatus {
-  if (transport === 'stdio') return 'supported';
-  const flag =
-    transport === 'http'
-      ? agent.mcpHttpSupported
-      : transport === 'sse'
-        ? agent.mcpSseSupported
-        : null;
-  if (flag == null) return 'unknown';
-  return flag ? 'supported' : 'unsupported';
-}
 
 interface McpServerCardProps {
   server: McpServerVm;
@@ -152,15 +130,24 @@ export function McpServerCard({
           {agentCompatibility && agentCompatibility.length > 0 ? (
             <div className="flex shrink-0 items-center gap-0.5">
               {agentCompatibility.map((agent) => {
-                const status = agentSupportStatus(server.transport, agent);
+                const status = mcpAgentSupportStatus(server.transport, agent);
                 const isDiagnosing = diagnosingAgentType === agent.agentType;
                 const clickable = status === 'unknown' && !!onDiagnoseAgent && !isDiagnosing;
+                const showLoading = shouldShowCompatibilityLoading(status, isDiagnosing);
                 const tip =
                   status === 'supported'
                     ? t('contextManagement.mcp.agentSupports', { agent: agent.label, transport: transportLabel, defaultValue: '{{agent}} 支持 {{transport}} MCP 传输' })
                     : status === 'unsupported'
                       ? t('contextManagement.mcp.agentNotSupports', { agent: agent.label, transport: transportLabel, defaultValue: '{{agent}} 不支持 {{transport}} MCP 传输' })
-                      : t('contextManagement.mcp.agentUnknown', { agent: agent.label, defaultValue: '{{agent}} 尚未检测，点击检测兼容性' });
+                      : status === 'unavailable'
+                        ? t('contextManagement.mcp.agentUnavailable', {
+                          agent: agent.label,
+                          reason: agent.diagnosticReason ?? t('agentManagement.diagnosticFailedFallback'),
+                          defaultValue: '{{agent}} 当前不可用：{{reason}}',
+                        })
+                        : isDiagnosing
+                          ? t('contextManagement.mcp.agentChecking', { agent: agent.label, defaultValue: '正在更新 {{agent}} 的 MCP 兼容性' })
+                          : t('contextManagement.mcp.agentUnknown', { agent: agent.label, defaultValue: '{{agent}} 尚未声明 MCP 兼容性，点击重新检测' });
                 return (
                   <TooltipProvider key={agent.agentType} delayDuration={300}>
                     <Tooltip>
@@ -170,15 +157,19 @@ export function McpServerCard({
                             type="button"
                             className="relative grid size-6 place-items-center rounded-full disabled:pointer-events-none"
                             disabled={!clickable}
+                            aria-busy={isDiagnosing}
                             aria-label={tip}
                             onClick={clickable ? () => onDiagnoseAgent?.(agent.agentType) : undefined}
                           >
-                            {isDiagnosing || status === 'unknown' ? (
-                              <Loader2 className={cn('size-3.5 animate-spin text-muted-foreground/70', clickable && 'cursor-pointer')} />
+                            {showLoading ? (
+                              <Loader2 className="size-3.5 animate-spin text-muted-foreground/70" />
                             ) : (
                               <span className="relative grid size-5 place-items-center">
                                 {status === 'supported' && (
                                   <span className="pointer-events-none absolute left-0 top-0 z-10 size-1.5 rounded-full bg-emerald-500 ring-1 ring-background" />
+                                )}
+                                {status === 'unavailable' && (
+                                  <span className="pointer-events-none absolute left-0 top-0 z-10 size-1.5 rounded-full bg-red-500 ring-1 ring-background" />
                                 )}
                                 <img
                                   src={agentIconSrc(agent.iconKey)}
@@ -187,7 +178,9 @@ export function McpServerCard({
                                     agent.iconKey,
                                     cn(
                                       'relative z-0 size-3.5 transition-opacity',
-                                      status === 'unsupported' && 'grayscale opacity-35',
+                                      (status === 'unsupported' || status === 'unavailable') && 'grayscale opacity-35',
+                                      status === 'unknown' && 'grayscale opacity-55',
+                                      clickable && 'cursor-pointer',
                                     ),
                                   )}
                                 />

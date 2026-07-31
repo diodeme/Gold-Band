@@ -226,6 +226,9 @@ pub fn invalidate_health(&self, id: &str);
 - 保存 Sheet：保持打开 → "正在连接…" → 成功关闭 / 失败显示具体错误（6 秒自动消失 + ✕ 手动关闭）
 - 诊断按钮：每个服务器卡片的"MCP 服务诊断"按钮
 - 进入 Tab 时自动刷新 + 检查所有 enabled 服务器
+- MCP 卡片的 per-Agent transport 兼容性统一读取 App 级 `AgentRegistryVm`；该 Registry 在应用启动时从持久化的 `agent-diagnostics.json` 恢复，MCP 页面不得维护第二份局部 Registry，也不得因页面重新挂载把已有兼容性退回 loading。
+- Agent doctor 采用 stale-while-refresh 展示语义：检查期间继续展示上一次已知的 `mcpCapabilities`，doctor 完成并发布 `agent-registry-updated` 后一次性替换为新状态；只有从未获得过能力快照的 Agent 才显示诊断 loading。
+- Agent 健康状态优先于 MCP transport capability。不健康 Agent 展示不可用状态与 doctor 失败原因，不触发 MCP 兼容性检查，也不能把“当前不可用”误判为“不支持某 transport”。健康但未声明 `mcpCapabilities` 的 Agent 才展示未知态并允许手动重新诊断。
 
 ### 2.8 Zed 对标达成度
 

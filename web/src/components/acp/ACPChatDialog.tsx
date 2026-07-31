@@ -34,7 +34,6 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Card, CardContent } from "@/components/ui/card";
 import {
   Collapsible,
   CollapsibleContent,
@@ -315,7 +314,19 @@ type AcpChildAgentGroup = {
   title?: string | null;
   toolCallId?: string | null;
   toolEvent: AcpTimelineEvent;
+  todoEntries: AcpTodoEntry[];
   events: AcpTimelineItem[];
+};
+
+type AcpTodoEntry = {
+  content?: string;
+  status?: string;
+  priority?: string;
+};
+
+type AcpTimelineProjection = {
+  timeline: AcpTimelineItem[];
+  todoEntries: AcpTodoEntry[];
 };
 
 type AcpTimelineItem = AcpTimelineEvent | AcpChildAgentGroup;
@@ -360,8 +371,8 @@ export const ACP_SYSTEM_PROMPT_DIALOG_LAYOUT = {
     "w-full min-w-0 max-w-full overflow-x-hidden rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-all [overflow-wrap:anywhere]",
 } as const;
 
-function timelineEventKey(event: AcpTimelineItem) {
-  if (isChildAgentGroup(event)) return event.id;
+function timelineEventKey(event: AcpTimelineItem | AcpUiEventVm) {
+  if (event.kind === "childAgentGroup") return event.id;
   if (
     (event.kind === "toolCall" || event.kind === "toolCallUpdate") &&
     event.toolCallId
@@ -892,7 +903,6 @@ export const ACPChatDialog = forwardRef<
     liveUpdatesDeferredUntilRef.current = 0;
     chatContainerContextRef.current?.scrollToBottom({
       animation: "instant",
-      ignoreEscapes: true,
     });
     cancelRequestedRef.current = false;
     awaitTerminalStopRef.current = false;
@@ -1020,25 +1030,12 @@ export const ACPChatDialog = forwardRef<
   const planInterventionOption = pendingPermission
     ? findPlanInterventionOption(pendingPermission)
     : null;
-  const todoEntries = useMemo(() => {
-    const planEvents = effectiveEvents.filter(
-      (e) => e.kind === "plan" && isTopLevelPlanEvent(e),
-    );
-    if (planEvents.length === 0) return [];
-    const lastPlan = planEvents[planEvents.length - 1];
-    const raw = rawObject(lastPlan.raw);
-    const entries = (raw?.entries ?? []) as Array<{
-      content?: string;
-      status?: string;
-      priority?: string;
-    }>;
-    return entries.filter((e) => e.content);
-  }, [effectiveEvents]);
-  const rebuiltTimeline = useMemo(
-    () => buildAcpTimeline(effectiveEvents),
+  const timelineProjection = useMemo(
+    () => buildAcpTimelineProjection(effectiveEvents),
     [effectiveEvents],
   );
-  const timeline = useStableAcpTimeline(rebuiltTimeline);
+  const todoEntries = timelineProjection.todoEntries;
+  const timeline = useStableAcpTimeline(timelineProjection.timeline);
   const acpSessionActive = isSessionActiveStatus(effective?.status);
   const sessionActive = acpSessionActive || runtimeActive;
   const streamingMarkdownItemKey = sessionActive
@@ -3099,11 +3096,13 @@ function AcpManualCheckPanel({
 
 function AcpTodoPanel({
   entries,
+  variant = "composer",
 }: {
-  entries: Array<{ content?: string; status?: string; priority?: string }>;
+  entries: AcpTodoEntry[];
+  variant?: "composer" | "nested";
 }) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(variant === "nested");
 
   if (entries.length === 0) return null;
 
@@ -3121,12 +3120,20 @@ function AcpTodoPanel({
     <Collapsible
       open={open}
       onOpenChange={setOpen}
-      className="w-full border border-b-0 border-border/60 bg-card/60"
+      className={cn(
+        "w-full",
+        variant === "composer"
+          ? "border border-b-0 border-border/60 bg-card/60"
+          : "overflow-hidden rounded-lg bg-muted/20",
+      )}
     >
       <CollapsibleTrigger asChild>
         <Button
           variant="ghost"
-          className="h-auto w-full justify-between rounded-none border-0 px-3 py-2 font-normal shadow-none hover:bg-transparent focus-visible:border-transparent focus-visible:ring-0"
+          className={cn(
+            "h-auto w-full justify-between border-0 px-3 py-2 font-normal shadow-none hover:bg-muted/30 focus-visible:border-transparent focus-visible:ring-0",
+            variant === "composer" ? "rounded-none hover:bg-transparent" : "rounded-lg",
+          )}
         >
           <span className="flex min-w-0 items-center gap-2 text-xs">
             <ListTodo className="size-3.5 shrink-0 text-muted-foreground" />
@@ -3144,7 +3151,7 @@ function AcpTodoPanel({
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden">
-        <div className="space-y-1 border-t border-border/40 px-3 pb-2 pt-2">
+        <div className="space-y-1 border-t border-border/35 px-3 pb-2 pt-2">
           {entries.map((entry, index) => (
             <div className="flex min-w-0 items-start gap-2 text-xs" key={index}>
               <Badge variant="secondary" className="shrink-0">
@@ -4095,12 +4102,6 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
     return <ThoughtBlock event={event} expansionControls={expansionControls} streamingMarkdownItemKey={streamingMarkdownItemKey} nested={nested} />;
   if (event.kind === "toolCall" || event.kind === "toolCallUpdate")
     return <ToolBlock event={event} expansionControls={expansionControls} nested={nested} />;
-  if (event.kind === "plan")
-    return (
-      <AssistantTimelineRow timestamp={event.timestamp} nested={nested}>
-        <PlanBlock event={event} />
-      </AssistantTimelineRow>
-    );
   return null;
 });
 
@@ -4275,6 +4276,9 @@ const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
                   prompt={input.prompt}
                   onLayoutChange={onLayoutChange}
                 />
+              ) : null}
+              {event.todoEntries.length > 0 ? (
+                <AcpTodoPanel entries={event.todoEntries} variant="nested" />
               ) : null}
               {event.events.length > 0 ? (
                 <div className="min-w-0 max-w-full space-y-3 overflow-hidden">
@@ -4879,43 +4883,6 @@ function toolLabels(t: ReturnType<typeof useTranslation>["t"]): ToolLabels {
   };
 }
 
-export function PlanBlock({ event }: { event: AcpTimelineEvent }) {
-  const { t } = useTranslation();
-  const entries =
-    (
-      event.raw as
-        | {
-            entries?: Array<{
-              content?: string;
-              status?: string;
-              priority?: string;
-            }>;
-          }
-        | undefined
-    )?.entries ?? [];
-  return (
-    <Card className="min-w-0 max-w-full overflow-hidden border-primary/20 bg-primary/5 shadow-none">
-      <CardContent className="space-y-2 p-4">
-        {entries.map((entry, index) => (
-          <div
-            className="flex min-w-0 items-start gap-2 text-sm"
-            key={`${entry.content ?? index}-${index}`}
-          >
-            <Badge variant="secondary">
-              {entry.status
-                ? displayStatus(t, entry.status)
-                : (entry.priority ?? index + 1)}
-            </Badge>
-            <span className="min-w-0 break-words [overflow-wrap:anywhere]">
-              {entry.content}
-            </span>
-          </div>
-        ))}
-      </CardContent>
-    </Card>
-  );
-}
-
 export function PermissionRequestCard({
   request,
   onSelect,
@@ -4924,6 +4891,7 @@ export function PermissionRequestCard({
   onSelect: (optionId: string) => void;
 }) {
   const { t } = useTranslation();
+  const decisionSummary = permissionRequestSummary(request);
   return (
     <AssistantTimelineRow>
       <div className="w-full max-w-2xl overflow-hidden rounded-2xl border border-border/55 bg-card/65 px-4 py-3.5 shadow-[0_16px_40px_-32px_rgba(15,23,42,0.65)] ring-1 ring-foreground/[0.025] backdrop-blur-sm">
@@ -4941,6 +4909,16 @@ export function PermissionRequestCard({
               </div>
             </div>
           </div>
+          {decisionSummary ? (
+            <div className="ml-11 min-w-0 rounded-lg bg-muted/35 px-3 py-2">
+              <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                {t("acp.toolParameters")}
+              </div>
+              <div className="min-w-0 whitespace-pre-wrap break-all font-mono text-[11px] leading-5 text-foreground/85 [overflow-wrap:anywhere]">
+                {decisionSummary}
+              </div>
+            </div>
+          ) : null}
           <div className="grid min-w-0 grid-cols-1 gap-2 pl-11 sm:grid-cols-2">
             {request.options.map((option) => {
               const label = option.name || option.optionId;
@@ -4977,6 +4955,25 @@ export function PermissionRequestCard({
       </div>
     </AssistantTimelineRow>
   );
+}
+
+export function permissionRequestSummary(request: AcpPermissionRequestVm) {
+  const raw = rawObject(request.raw);
+  const toolCall = rawObject(raw?.toolCall) ?? raw;
+  const rawInput =
+    rawObject(toolCall?.rawInput) ?? rawObject(raw?.rawInput) ?? null;
+  const locations =
+    arrayValue(toolCall?.locations) ?? arrayValue(raw?.locations) ?? null;
+  const title = stringValue(toolCall?.title) ?? request.title;
+  const description = stringValue(rawInput?.description);
+  const parameterSummary = toolSummary(
+    queryBlocksFromTool(title, rawInput, locations),
+  );
+  return [description, parameterSummary]
+    .filter((value, index, values): value is string =>
+      Boolean(value) && values.indexOf(value) === index,
+    )
+    .join(" · ") || null;
 }
 
 export function RawFrameViewer({
@@ -5369,14 +5366,10 @@ function isTimelineItemOpen(key: string, controls: AcpExpansionControls) {
   return controls.expandedItems[key] ?? false;
 }
 
-function isAgentToolCall(event: AcpTimelineEvent) {
+function isAgentToolCall(event: AcpUiEventVm) {
   if (event.kind !== "toolCall" && event.kind !== "toolCallUpdate")
     return false;
-  const name = toolDetails(event).name?.trim().toLowerCase();
-  if (name === "agent") return true;
-  if (name !== "task") return false;
-  const input = agentToolInput(event);
-  return Boolean(input.prompt || input.description || input.subagentType);
+  return agentTranscriptMeta(event)?.agentLaunch === true;
 }
 
 function isTerminalToolStatus(status?: string | null) {
@@ -5391,7 +5384,30 @@ function isTerminalToolStatus(status?: string | null) {
   ].includes(status?.toLowerCase() ?? "");
 }
 
-function agentToolInput(event: AcpTimelineEvent) {
+function childAgentStatus(
+  event: AcpUiEventVm,
+  children: AcpUiEventVm[],
+) {
+  const raw = rawObject(event.raw);
+  const status = event.status ?? stringValue(raw?.status);
+  if (
+    children.length > 0 &&
+    (!status || ["pending", "sending"].includes(status.toLowerCase()))
+  ) {
+    return "running";
+  }
+  return status;
+}
+
+function agentTranscriptMeta(event: Pick<AcpUiEventVm, "raw">) {
+  const raw = rawObject(event.raw);
+  const direct = rawObject(rawObject(raw?._meta)?.agentTranscript);
+  if (direct) return direct;
+  const toolCall = rawObject(raw?.toolCall);
+  return rawObject(rawObject(toolCall?._meta)?.agentTranscript);
+}
+
+function agentToolInput(event: AcpUiEventVm) {
   const raw = rawObject(event.raw);
   const toolCall = rawObject(raw?.toolCall) ?? rawObject(raw?.content) ?? raw;
   const rawInput = rawObject(toolCall?.rawInput) ?? rawObject(raw?.rawInput);
@@ -5404,18 +5420,126 @@ function agentToolInput(event: AcpTimelineEvent) {
   };
 }
 
-function parentToolUseId(event: AcpTimelineEvent) {
-  const raw = rawObject(event.raw);
-  const meta = rawObject(raw?._meta);
-  const claudeCode = rawObject(meta?.claudeCode);
-  return stringValue(claudeCode?.parentToolUseId);
+function parentToolCallId(event: Pick<AcpUiEventVm, "raw">) {
+  return stringValue(agentTranscriptMeta(event)?.parentToolCallId);
 }
 
-function isTopLevelPlanEvent(event: AcpUiEventVm) {
-  const raw = rawObject(event.raw);
-  const meta = rawObject(raw?._meta);
-  const claudeCode = rawObject(meta?.claudeCode);
-  return !stringValue(claudeCode?.parentToolUseId);
+function planEntries(event: Pick<AcpUiEventVm, "raw">): AcpTodoEntry[] {
+  const entries = arrayValue(rawObject(event.raw)?.entries) ?? [];
+  return entries
+    .map((entry) => {
+      const value = rawObject(entry);
+      return {
+        content: stringValue(value?.content) ?? undefined,
+        status: stringValue(value?.status) ?? undefined,
+        priority: stringValue(value?.priority) ?? undefined,
+      };
+    })
+    .filter((entry) => Boolean(entry.content));
+}
+
+function planEntryContents(entries: AcpTodoEntry[]) {
+  return new Set(
+    entries
+      .map((entry) => normalizePromptText(entry.content))
+      .filter(Boolean),
+  );
+}
+
+function inferPlanParentToolCallId(
+  entries: AcpTodoEntry[],
+  history: Array<{ entries: AcpTodoEntry[]; parentId: string | null }>,
+  position: number,
+  agentRanges: Map<string, { startedSeq: number; endedSeq?: number }>,
+) {
+  const contents = planEntryContents(entries);
+  if (contents.size === 0) return null;
+  const overlapByParent = new Map<string, number>();
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const candidate = history[index];
+    if (!candidate.parentId) continue;
+    const range = agentRanges.get(candidate.parentId);
+    if (
+      !range ||
+      position < range.startedSeq ||
+      (range.endedSeq != null && position > range.endedSeq)
+    )
+      continue;
+    const overlap = [...planEntryContents(candidate.entries)].filter((content) =>
+      contents.has(content),
+    ).length;
+    if (overlap > 0) {
+      overlapByParent.set(
+        candidate.parentId,
+        Math.max(overlapByParent.get(candidate.parentId) ?? 0, overlap),
+      );
+    }
+  }
+  if (overlapByParent.size !== 1) return null;
+  return overlapByParent.keys().next().value ?? null;
+}
+
+function childAgentLifecycleRanges(events: AcpUiEventVm[]) {
+  const ranges = new Map<
+    string,
+    { startedSeq: number; endedSeq?: number }
+  >();
+  for (const event of events) {
+    if (!isAgentToolCall(event) || !event.toolCallId) continue;
+    const existing = ranges.get(event.toolCallId);
+    const startedSeq = Math.min(
+      existing?.startedSeq ?? Number.POSITIVE_INFINITY,
+      event.startedSeq ?? event.seq,
+    );
+    const status = childAgentStatus(event, []);
+    const endedSeq = isTerminalToolStatus(status)
+      ? Math.max(existing?.endedSeq ?? 0, event.endedSeq ?? event.seq)
+      : existing?.endedSeq;
+    ranges.set(event.toolCallId, { startedSeq, endedSeq });
+  }
+  return ranges;
+}
+
+function resolveAcpEventParentToolCallIds(events: AcpUiEventVm[]) {
+  const resolved = new Map<string, string>();
+  const agentRanges = childAgentLifecycleRanges(events);
+  const planHistory: Array<{
+    entries: AcpTodoEntry[];
+    parentId: string | null;
+  }> = [];
+  for (const event of events) {
+    const explicitParentId = parentToolCallId(event);
+    let resolvedParentId = explicitParentId;
+    if (event.kind === "plan") {
+      const entries = planEntries(event);
+      resolvedParentId ??= inferPlanParentToolCallId(
+        entries,
+        planHistory,
+        timelineEventPosition(event),
+        agentRanges,
+      );
+      planHistory.push({ entries, parentId: resolvedParentId });
+    }
+    if (resolvedParentId) {
+      resolved.set(timelineEventKey(event), resolvedParentId);
+    }
+  }
+  return resolved;
+}
+
+function resolvedParentToolCallId(
+  event: AcpTimelineEvent,
+  resolvedParents: Map<string, string>,
+) {
+  return resolvedParents.get(timelineEventKey(event)) ?? parentToolCallId(event);
+}
+
+function isTopLevelPlanEvent(
+  event: AcpUiEventVm,
+  events: AcpUiEventVm[] = [event],
+) {
+  if (event.kind !== "plan") return false;
+  return !resolveAcpEventParentToolCallIds(events).has(timelineEventKey(event));
 }
 
 function isResponseTimingEvent(event: AcpUiEventVm) {
@@ -5712,6 +5836,7 @@ function stabilizeTimelineItem(
       next.status === previous.status &&
       next.title === previous.title &&
       next.toolCallId === previous.toolCallId &&
+      sameTodoEntries(next.todoEntries, previous.todoEntries) &&
       stabilizeTimelineItem(next.toolEvent, previous.toolEvent) ===
         previous.toolEvent
     ) {
@@ -5726,6 +5851,18 @@ function stabilizeTimelineItem(
   return sameTimelineEvent(next as AcpTimelineEvent, previous as AcpTimelineEvent)
     ? previous
     : next;
+}
+
+function sameTodoEntries(left: AcpTodoEntry[], right: AcpTodoEntry[]) {
+  return (
+    left.length === right.length &&
+    left.every(
+      (entry, index) =>
+        entry.content === right[index]?.content &&
+        entry.status === right[index]?.status &&
+        entry.priority === right[index]?.priority,
+    )
+  );
 }
 
 function sameTimelineEvent(left: AcpTimelineEvent, right: AcpTimelineEvent) {
@@ -5789,11 +5926,87 @@ function timelineEventPosition(event: Pick<AcpUiEventVm, "seq" | "endedSeq">) {
   return event.endedSeq ?? event.seq;
 }
 
-function buildAcpTimeline(events: AcpUiEventVm[]): AcpTimelineItem[] {
-  return groupChildAgentTimeline(buildFlatAcpTimeline(events));
+function latestPlanEntries(
+  events: AcpTimelineEvent[],
+  predicate: (event: AcpTimelineEvent) => boolean = () => true,
+) {
+  let latest: AcpTimelineEvent | null = null;
+  for (const event of events) {
+    if (event.kind !== "plan" || !predicate(event)) continue;
+    if (!latest || timelineEventPosition(event) >= timelineEventPosition(latest)) {
+      latest = event;
+    }
+  }
+  return latest ? planEntries(latest) : [];
 }
 
-function buildFlatAcpTimeline(events: AcpUiEventVm[]) {
+function buildAcpTimelineProjection(
+  events: AcpUiEventVm[],
+): AcpTimelineProjection {
+  const resolvedParents = resolveAcpEventParentToolCallIds(events);
+  const topLevelPlan = events.reduce<AcpUiEventVm | null>((latest, event) => {
+    if (
+      event.kind !== "plan" ||
+      resolvedParents.has(timelineEventKey(event))
+    ) {
+      return latest;
+    }
+    return !latest || timelineEventPosition(event) >= timelineEventPosition(latest)
+      ? event
+      : latest;
+  }, null);
+  const agentRanges = childAgentLifecycleRanges(events);
+  const topLevelPlanPosition = topLevelPlan
+    ? timelineEventPosition(topLevelPlan)
+    : null;
+  const latestChildPlans = new Map<
+    string,
+    { position: number; entries: AcpTodoEntry[] }
+  >();
+  for (const event of events) {
+    if (event.kind !== "plan") continue;
+    const parentId = resolvedParents.get(timelineEventKey(event));
+    if (!parentId) continue;
+    const position = timelineEventPosition(event);
+    const previous = latestChildPlans.get(parentId);
+    if (!previous || position >= previous.position) {
+      latestChildPlans.set(parentId, { position, entries: planEntries(event) });
+    }
+  }
+  const childTodoContents = new Set(
+    [...latestChildPlans.entries()].flatMap(([parentId, { entries }]) => {
+      const range = agentRanges.get(parentId);
+      if (
+        topLevelPlanPosition != null &&
+        range &&
+        (topLevelPlanPosition < range.startedSeq ||
+          (range.endedSeq != null && topLevelPlanPosition > range.endedSeq))
+      ) {
+        return [];
+      }
+      return [...planEntryContents(entries)];
+    }),
+  );
+  const flatTimeline = buildFlatAcpTimeline(events, resolvedParents);
+  return {
+    timeline: groupChildAgentTimeline(flatTimeline, resolvedParents),
+    todoEntries: topLevelPlan
+      ? planEntries(topLevelPlan).filter(
+          (entry) =>
+            !childTodoContents.has(normalizePromptText(entry.content)),
+        )
+      : [],
+  };
+}
+
+function buildAcpTimeline(events: AcpUiEventVm[]): AcpTimelineItem[] {
+  return buildAcpTimelineProjection(events).timeline;
+}
+
+function buildFlatAcpTimeline(
+  events: AcpUiEventVm[],
+  resolvedParents: Map<string, string>,
+) {
   const timeline: AcpTimelineEvent[] = [];
   const toolIndex = new Map<string, AcpTimelineEvent>();
   const seenUserPrompts = new Set<string>();
@@ -5816,6 +6029,7 @@ function buildFlatAcpTimeline(events: AcpUiEventVm[]) {
     }
     if (
       previous &&
+      !isChildAgentGroup(previous) &&
       previous.kind === event.kind &&
       isMergeableDelta(event.kind) &&
       isSameDeltaStream(previous, event)
@@ -5859,7 +6073,11 @@ function buildFlatAcpTimeline(events: AcpUiEventVm[]) {
       continue;
     }
     if (event.kind === "thoughtDelta" && !event.content?.trim()) continue;
-    if (event.kind === "plan" && isTopLevelPlanEvent(event)) continue;
+    if (
+      event.kind === "plan" &&
+      !resolvedParents.has(timelineEventKey(event))
+    )
+      continue;
     timeline.push({
       ...event,
       startedAt: event.startedAt ?? event.timestamp,
@@ -5887,62 +6105,66 @@ function buildFlatAcpTimeline(events: AcpUiEventVm[]) {
 
 function groupChildAgentTimeline(
   events: AcpTimelineEvent[],
+  resolvedParents: Map<string, string>,
 ): AcpTimelineItem[] {
-  const grouped: AcpTimelineItem[] = [];
-  const agentToolCallIds = new Set(
-    events
-      .filter(isAgentToolCall)
-      .map((event) => event.toolCallId)
-      .filter(Boolean),
-  );
-  const ownedChildKeys = new Set<string>();
+  const agentToolCallIds = new Set<string>();
+  for (const event of events) {
+    if (isAgentToolCall(event) && event.toolCallId) {
+      agentToolCallIds.add(event.toolCallId);
+    }
+  }
   const childrenByParent = new Map<string, AcpTimelineEvent[]>();
+  const effectiveParents = new Map(resolvedParents);
 
   for (const event of events) {
-    const parentId = parentToolUseId(event);
+    const parentId = resolvedParentToolCallId(event, effectiveParents);
     if (!parentId || !agentToolCallIds.has(parentId)) continue;
     const children = childrenByParent.get(parentId) ?? [];
     children.push(event);
     childrenByParent.set(parentId, children);
-    ownedChildKeys.add(timelineEventKey(event));
   }
 
   for (let index = 0; index < events.length; index += 1) {
     const event = events[index];
-    if (ownedChildKeys.has(timelineEventKey(event))) continue;
-    if (!isAgentToolCall(event)) {
-      grouped.push(event);
-      continue;
-    }
-
+    if (!isAgentToolCall(event) || !event.toolCallId) continue;
+    if ((childrenByParent.get(event.toolCallId) ?? []).length > 0) continue;
     const startSeq = event.startedSeq ?? event.seq;
     const terminal = isTerminalToolStatus(event.status);
     const endSeq = terminal
       ? (event.endedSeq ?? event.seq)
       : Number.POSITIVE_INFINITY;
-    const ownedChildren = event.toolCallId
-      ? (childrenByParent.get(event.toolCallId) ?? [])
-      : [];
-    const children: AcpTimelineEvent[] = [...ownedChildren];
     let cursor = index + 1;
-    let usedSequenceFallback = false;
-
-    if (children.length === 0) {
-      usedSequenceFallback = true;
-      while (cursor < events.length) {
-        const candidate = events[cursor];
-        const candidateStartSeq = candidate.startedSeq ?? candidate.seq;
-        if (ownedChildKeys.has(timelineEventKey(candidate))) break;
-        if (candidate.kind === "userTextDelta") break;
-        if (candidateStartSeq <= startSeq) break;
-        if (candidateStartSeq >= endSeq) break;
-        if (isAgentToolCall(candidate)) break;
-        children.push(candidate);
-        cursor += 1;
-      }
+    while (cursor < events.length) {
+      const candidate = events[cursor];
+      const candidateKey = timelineEventKey(candidate);
+      const candidateStartSeq = candidate.startedSeq ?? candidate.seq;
+      if (resolvedParentToolCallId(candidate, effectiveParents)) break;
+      if (candidate.kind === "userTextDelta") break;
+      if (candidateStartSeq <= startSeq || candidateStartSeq >= endSeq) break;
+      if (isAgentToolCall(candidate)) break;
+      effectiveParents.set(candidateKey, event.toolCallId);
+      const children = childrenByParent.get(event.toolCallId) ?? [];
+      children.push(candidate);
+      childrenByParent.set(event.toolCallId, children);
+      cursor += 1;
     }
+  }
 
-    grouped.push({
+  const buildItem = (
+    event: AcpTimelineEvent,
+    ancestors: Set<string>,
+  ): AcpTimelineItem => {
+    if (!isAgentToolCall(event) || !event.toolCallId) return event;
+    if (ancestors.has(event.toolCallId)) return event;
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(event.toolCallId);
+    const directChildren = childrenByParent.get(event.toolCallId) ?? [];
+    const visibleChildren = directChildren.filter((child) => child.kind !== "plan");
+    const status = childAgentStatus(event, directChildren);
+    const terminal = isTerminalToolStatus(status);
+    const startSeq = event.startedSeq ?? event.seq;
+    const endSeq = event.endedSeq ?? event.seq;
+    return {
       kind: "childAgentGroup",
       id: `child-agent-${event.toolCallId ?? event.id}-${startSeq}`,
       seq: startSeq,
@@ -5951,13 +6173,21 @@ function groupChildAgentTimeline(
       endedSeq: terminal ? endSeq : undefined,
       startedAt: event.startedAt ?? event.timestamp,
       endedAt: terminal ? event.endedAt : undefined,
-      status: event.status,
+      status,
       title: event.title,
       toolCallId: event.toolCallId,
       toolEvent: event,
-      events: groupChildAgentTimeline(children),
-    });
-    if (usedSequenceFallback) index = cursor - 1;
+      todoEntries: latestPlanEntries(directChildren),
+      events: visibleChildren.map((child) => buildItem(child, nextAncestors)),
+    };
+  };
+
+  const grouped: AcpTimelineItem[] = [];
+  for (const event of events) {
+    if (event.kind === "plan") continue;
+    const parentId = resolvedParentToolCallId(event, effectiveParents);
+    if (parentId && agentToolCallIds.has(parentId)) continue;
+    grouped.push(buildItem(event, new Set()));
   }
   return grouped;
 }
@@ -6654,6 +6884,7 @@ export {
   collectTimelineItemKeys,
   pruneExpandedTimelineItems,
   buildAcpTimeline,
+  buildAcpTimelineProjection,
   latestStreamingMarkdownItemKey,
   latestStreamingMarkdownItemKeyFromEvents,
   calculateSessionElapsedSeconds,
@@ -6793,6 +7024,7 @@ function toolDetails(event: AcpUiEventVm) {
     arrayValue(toolCall?.locations) ?? arrayValue(raw?.locations);
   const meta = rawObject(raw?._meta);
   const claudeCode = rawObject(meta?.claudeCode);
+  const toolResponse = rawObject(claudeCode?.toolResponse);
   const title = stringValue(toolCall?.title) ?? event.title;
   const claudeToolName = stringValue(claudeCode?.toolName);
   const name =
@@ -6801,7 +7033,11 @@ function toolDetails(event: AcpUiEventVm) {
     stringValue(toolCall?.name) ??
     title;
   const output = cleanToolOutput(
-    toolCall?.output ?? raw?.output ?? fields?.output ?? raw?.content,
+    toolCall?.output ??
+      raw?.output ??
+      fields?.output ??
+      toolResponse?.content ??
+      raw?.content,
   );
   const fallbackRawInput = toolCallInput ?? rawInput;
   return {

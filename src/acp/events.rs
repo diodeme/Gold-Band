@@ -13,6 +13,14 @@ use crate::storage::{
     append_jsonl, append_jsonl_unlocked, ensure_parent_dir, with_jsonl_file_lock, write_json,
 };
 
+const AGENT_TRANSCRIPT_META_KEY: &str = "agentTranscript";
+const CLAUDE_CODE_META_KEY: &str = "claudeCode";
+const CLAUDE_AGENT_TOOL_NAMES: [&str; 2] = ["agent", "task"];
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentMeta {
@@ -132,6 +140,21 @@ pub struct AcpUiEvent {
     pub timing: Option<AcpTimingPatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTranscriptRelation {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub agent_launch: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_tool_call_id: Option<String>,
+}
+
+impl AgentTranscriptRelation {
+    fn is_empty(&self) -> bool {
+        !self.agent_launch && self.parent_tool_call_id.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1193,6 +1216,7 @@ pub fn normalize_session_update(
         .unwrap_or("unknown");
     let compaction_phase = context_compaction_phase(update);
     let mut raw_value = update.clone();
+    normalize_agent_transcript_metadata(&mut raw_value);
     if let Some(phase) = compaction_phase
         && let Some(object) = raw_value.as_object_mut()
     {
@@ -1264,6 +1288,7 @@ pub fn context_compaction_phase(update: &Value) -> Option<&'static str> {
 
 pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> AcpUiEvent {
     let mut raw = params;
+    normalize_agent_transcript_metadata(&mut raw);
     if let Some(object) = raw.as_object_mut() {
         object
             .entry("requestId".to_string())
@@ -1289,6 +1314,59 @@ pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> 
         timing: None,
         raw: Some(raw),
     }
+}
+
+pub fn normalize_agent_transcript_metadata(value: &mut Value) -> Option<AgentTranscriptRelation> {
+    let relation = extract_agent_transcript_relation(value)?;
+    let object = value.as_object_mut()?;
+    let meta = object
+        .entry("_meta".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !meta.is_object() {
+        *meta = Value::Object(serde_json::Map::new());
+    }
+    meta.as_object_mut()?.insert(
+        AGENT_TRANSCRIPT_META_KEY.to_string(),
+        serde_json::to_value(&relation).expect("AgentTranscriptRelation must serialize"),
+    );
+    Some(relation)
+}
+
+fn extract_agent_transcript_relation(value: &Value) -> Option<AgentTranscriptRelation> {
+    let standard = value
+        .pointer(&format!("/_meta/{AGENT_TRANSCRIPT_META_KEY}"))
+        .or_else(|| value.pointer(&format!("/toolCall/_meta/{AGENT_TRANSCRIPT_META_KEY}")));
+    let claude = value
+        .pointer(&format!("/_meta/{CLAUDE_CODE_META_KEY}"))
+        .or_else(|| value.pointer(&format!("/toolCall/_meta/{CLAUDE_CODE_META_KEY}")));
+
+    let standard_launch = standard
+        .and_then(|meta| meta.get("agentLaunch"))
+        .and_then(Value::as_bool);
+    let standard_parent = standard
+        .and_then(|meta| meta.get("parentToolCallId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let claude_subagent = claude
+        .and_then(|meta| meta.get("subagent"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let claude_agent_tool = claude
+        .and_then(|meta| meta.get("toolName"))
+        .and_then(Value::as_str)
+        .is_some_and(|name| {
+            CLAUDE_AGENT_TOOL_NAMES.contains(&name.trim().to_ascii_lowercase().as_str())
+        });
+    let claude_parent = claude
+        .and_then(|meta| meta.get("parentToolUseId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let relation = AgentTranscriptRelation {
+        agent_launch: standard_launch.unwrap_or(claude_subagent || claude_agent_tool),
+        parent_tool_call_id: standard_parent.or(claude_parent),
+    };
+    (!relation.is_empty()).then_some(relation)
 }
 
 pub fn elicitation_request_event(
@@ -1724,6 +1802,160 @@ mod tests {
         assert_eq!(
             event.content.as_deref(),
             Some("The log says Compacting... but work continues.")
+        );
+    }
+
+    #[test]
+    fn normalizes_claude_agent_launch_into_internal_transcript_metadata() {
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call-agent",
+            "_meta": {
+                "claudeCode": {
+                    "toolName": "Agent",
+                    "subagent": true
+                }
+            }
+        });
+
+        let event = normalize_session_update(10, Some("session-1".to_string()), &update);
+
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/agentTranscript/agentLaunch"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn normalizes_claude_parent_tool_use_id_for_nested_events() {
+        let update = json!({
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {"type": "text", "text": "Inspecting"},
+            "_meta": {
+                "claudeCode": {
+                    "parentToolUseId": "call-parent"
+                }
+            }
+        });
+
+        let event = normalize_session_update(11, Some("session-1".to_string()), &update);
+
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/agentTranscript/parentToolCallId"))
+                .and_then(Value::as_str),
+            Some("call-parent")
+        );
+    }
+
+    #[test]
+    fn normalizes_nested_claude_agent_launch_with_both_relationship_fields() {
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call-child",
+            "_meta": {
+                "claudeCode": {
+                    "toolName": "Agent",
+                    "subagent": true,
+                    "parentToolUseId": "call-parent"
+                }
+            }
+        });
+
+        let event = normalize_session_update(12, Some("session-1".to_string()), &update);
+        let transcript = event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.pointer("/_meta/agentTranscript"))
+            .expect("normalized transcript metadata");
+
+        assert_eq!(transcript["agentLaunch"], true);
+        assert_eq!(transcript["parentToolCallId"], "call-parent");
+    }
+
+    #[test]
+    fn preserves_standard_agent_transcript_metadata_over_provider_extensions() {
+        let update = json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call-child",
+            "_meta": {
+                "agentTranscript": {
+                    "agentLaunch": false,
+                    "parentToolCallId": "standard-parent"
+                },
+                "claudeCode": {
+                    "toolName": "Agent",
+                    "subagent": true,
+                    "parentToolUseId": "claude-parent"
+                }
+            }
+        });
+
+        let event = normalize_session_update(13, Some("session-1".to_string()), &update);
+        let transcript = event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.pointer("/_meta/agentTranscript"))
+            .expect("normalized transcript metadata");
+
+        assert!(transcript.get("agentLaunch").is_none());
+        assert_eq!(transcript["parentToolCallId"], "standard-parent");
+    }
+
+    #[test]
+    fn normalizes_nested_permission_tool_metadata_at_the_same_boundary() {
+        let event = permission_request_event(
+            14,
+            "permission-1".to_string(),
+            json!({
+                "sessionId": "session-1",
+                "toolCall": {
+                    "toolCallId": "call-bash",
+                    "_meta": {
+                        "claudeCode": {
+                            "toolName": "Bash",
+                            "parentToolUseId": "call-agent"
+                        }
+                    }
+                }
+            }),
+        );
+
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/agentTranscript/parentToolCallId"))
+                .and_then(Value::as_str),
+            Some("call-agent")
+        );
+    }
+
+    #[test]
+    fn leaves_unrelated_provider_metadata_without_agent_transcript_projection() {
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call-read",
+            "_meta": {
+                "claudeCode": {
+                    "toolName": "Read"
+                }
+            }
+        });
+
+        let event = normalize_session_update(15, Some("session-1".to_string()), &update);
+        assert!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/agentTranscript"))
+                .is_none()
         );
     }
 

@@ -104,14 +104,37 @@ describe('resolveAcpSessionShellState', () => {
     })).toBe('missing');
   });
 
-  it('keeps runtime-active empty session owners in loading state', () => {
+  it('shows runtime-active empty session owners in an initializing shell', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: false,
       baseSessionReady: false,
       hasLiveSessionShell: false,
-      initialSessionLoading: false,
+      initialSessionLoading: true,
       runtimeActive: true,
+      showInitializingShell: true,
+    })).toBe('initializing');
+  });
+
+  it('keeps runtime-active session switching in loading without initialization ownership', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: false,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: true,
+      runtimeActive: true,
+      showInitializingShell: false,
     })).toBe('loading');
+  });
+
+  it('keeps a current partial session in the initializing shell until metadata is ready', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: true,
+      runtimeActive: true,
+      showInitializingShell: true,
+    })).toBe('initializing');
   });
 
   it('allows partial base sessions after startup retries are exhausted', () => {

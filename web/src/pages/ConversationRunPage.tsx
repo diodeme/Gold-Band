@@ -389,6 +389,7 @@ export function ConversationRunPage({
             onLifecycleSnapshot={onLifecycleSnapshot}
             onAtBottomChange={handleAtBottomChange}
             allowEventOnlySessionShell={false}
+            showInitializingSessionShell={selectedLeaf.current}
             runtimeComposerContext={runtimeComposerContext}
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
             showSystemPromptAction={!isDirect}

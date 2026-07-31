@@ -1282,7 +1282,7 @@ impl App {
     }
 
     pub fn acp_mcp_servers(&self) -> Result<Vec<serde_json::Value>> {
-        self.mcp_manager().to_acp_mcp_servers()
+        self.mcp_manager().configured_acp_mcp_servers()
     }
 
     // ── SKILL (delegates to skill::SkillManager) ──

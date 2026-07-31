@@ -254,6 +254,7 @@ interface ACPChatDialogProps {
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAtBottomChange?: (atBottom: boolean) => void;
   allowEventOnlySessionShell?: boolean;
+  showInitializingSessionShell?: boolean;
   artifacts?: AssetItemVm[];
   attachments?: AssetItemVm[];
   allArtifacts?: AssetItemVm[];
@@ -587,6 +588,7 @@ export const ACPChatDialog = forwardRef<
     onLifecycleSnapshot,
     onAtBottomChange,
     allowEventOnlySessionShell = true,
+    showInitializingSessionShell = false,
     artifacts = [],
     attachments = [],
     allArtifacts,
@@ -922,6 +924,22 @@ export const ACPChatDialog = forwardRef<
         : null,
     [allowEventOnlySessionShell, loadedEvents, runtimeActiveFromContext],
   );
+  const initializingSessionShell = useMemo(
+    () =>
+      showInitializingSessionShell &&
+      runtimeActiveFromContext &&
+      !baseSession &&
+      !liveSessionShell
+        ? createLiveAcpSessionShell(loadedEvents, "running")
+        : null,
+    [
+      baseSession,
+      liveSessionShell,
+      loadedEvents,
+      runtimeActiveFromContext,
+      showInitializingSessionShell,
+    ],
+  );
   const visibleSession = useMemo(
     () =>
       baseSession
@@ -930,10 +948,11 @@ export const ACPChatDialog = forwardRef<
             loadedEvents,
             effectiveLoadedEventBufferLimit,
           )
-        : liveSessionShell,
+        : (liveSessionShell ?? initializingSessionShell),
     [
       baseSession,
       effectiveLoadedEventBufferLimit,
+      initializingSessionShell,
       liveSessionShell,
       loadedEvents,
     ],
@@ -2540,6 +2559,7 @@ export const ACPChatDialog = forwardRef<
     initializationFailed: sessionInitializationFailed,
     initializationInterrupted: sessionInitializationInterrupted,
     runtimeActive: runtimeActiveFromContext,
+    showInitializingShell: showInitializingSessionShell,
   });
 
   if (sessionShellState === 'error') {

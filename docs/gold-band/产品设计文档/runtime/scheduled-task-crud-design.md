@@ -91,6 +91,11 @@ Direct session policy 是执行策略，不是内容身份，切换时不直接�
 
 ## 8. 验收
 
+Implementation note: the desktop boundary exposes typed scheduled-task
+read/update/delete/enable operations. Updates use `expectedUpdatedAt` for
+optimistic conflict detection; Direct Agent identity is read-only and a
+changed identity is rejected with a structured error code.
+
 - 后台触发不会让管理页整表进入加载态或改变当前筛选。
 - 手动刷新、启停、编辑和删除只更新必要状态。
 - 删除定时任务后历史会话仍可访问，未来不再触发。

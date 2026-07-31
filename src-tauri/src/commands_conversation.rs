@@ -242,6 +242,7 @@ pub async fn create_conversation_run(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::ConversationCreateInputVm,
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
+    let started = Instant::now();
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
@@ -300,6 +301,13 @@ pub async fn create_conversation_run(
     .await
     .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))??;
     persist_last_conversation_workspace(&global_app, &project_id_for_current)?;
+    info!(
+        target: "gold_band::perf",
+        command = "create_conversation_run",
+        project_id = %project_id_for_current,
+        elapsed_ms = started.elapsed().as_millis(),
+        "conversation run created"
+    );
     Ok(run)
 }
 

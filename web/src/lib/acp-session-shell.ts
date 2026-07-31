@@ -4,7 +4,13 @@ export interface AcpLiveSessionShellPolicyInput {
   loadedEventCount: number;
 }
 
-export type AcpSessionShellState = 'available' | 'loading' | 'missing' | 'interrupted' | 'error';
+export type AcpSessionShellState =
+  | 'available'
+  | 'initializing'
+  | 'loading'
+  | 'missing'
+  | 'interrupted'
+  | 'error';
 
 const MISSING_ACP_SESSION_RETRY_DELAYS_MS = [
   120,
@@ -28,6 +34,7 @@ export interface AcpSessionShellStateInput {
   initializationInterrupted?: boolean;
   initializationFailed?: boolean;
   runtimeActive?: boolean;
+  showInitializingShell?: boolean;
 }
 
 export interface AcpSessionInitializationInterruptedInput {
@@ -58,6 +65,12 @@ export function shouldCreateLiveAcpSessionShell(input: AcpLiveSessionShellPolicy
 export function resolveAcpSessionShellState(input: AcpSessionShellStateInput): AcpSessionShellState {
   if (input.initializationFailed) return 'error';
   if (input.initializationInterrupted) return 'interrupted';
+  if (
+    input.showInitializingShell &&
+    input.runtimeActive &&
+    !input.baseSessionReady &&
+    !input.hasLiveSessionShell
+  ) return 'initializing';
   if (input.hasBaseSession && (!input.initialSessionLoading || input.baseSessionReady)) return 'available';
   if (input.hasLiveSessionShell) return 'available';
   if (input.initialSessionLoading) return 'loading';

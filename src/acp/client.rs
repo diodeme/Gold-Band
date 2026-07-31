@@ -7,7 +7,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tracing::debug;
+use tracing::{debug, info};
 
 #[derive(Debug, Clone)]
 struct AcpTimelineStreamState {
@@ -1184,6 +1184,7 @@ pub fn run_prompt(
     session_update: Option<&dyn Fn() -> Result<()>>,
     stop_probe: Option<RuntimeStopProbe>,
 ) -> Result<AcpPromptRun> {
+    let run_prompt_started_at = Instant::now();
     let prompt_lock = AcpSessionRuntimeRegistry::shared().prompt_lock(&attempt_dir);
     let _prompt_guard = prompt_lock
         .lock()
@@ -1204,7 +1205,16 @@ pub fn run_prompt(
     runtime.model_override = model.clone();
     runtime.permission_mode_override = permission_mode.clone();
     runtime.config_option_overrides = config_options.clone();
-    let capabilities = match runtime.initialize() {
+    let initialize_started_at = Instant::now();
+    let initialize_result = runtime.initialize();
+    info!(
+        target: "gold_band::perf",
+        provider_id,
+        elapsed_ms = initialize_started_at.elapsed().as_millis(),
+        status = if initialize_result.is_ok() { "ok" } else { "error" },
+        "ACP initialize completed"
+    );
+    let capabilities = match initialize_result {
         Ok(capabilities) => capabilities,
         Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
             let run = runtime.interrupted_run(false, "cancelled");
@@ -1274,6 +1284,14 @@ pub fn run_prompt(
     if let Some(session_update) = session_update {
         let _ = session_update();
     }
+    info!(
+        target: "gold_band::perf",
+        provider_id,
+        session_id = %session_id,
+        restored,
+        elapsed_ms = run_prompt_started_at.elapsed().as_millis(),
+        "first ready ACP session update emitted"
+    );
     let prompt_result = runtime.prompt(
         provider_id,
         &workspace_dir,
@@ -1695,6 +1713,14 @@ impl<'a> AcpRuntime<'a> {
                 error
             })?;
         let connection = resolution.connection;
+        info!(
+            target: "gold_band::perf",
+            provider_id,
+            workspace_root = cwd.as_str(),
+            outcome = resolution.outcome.as_str(),
+            elapsed_ms = adapter_started_at.elapsed().as_millis(),
+            "ACP adapter connection resolved"
+        );
         let _ = append_diagnostic(
             &paths.diagnostics,
             "info",
@@ -2030,10 +2056,21 @@ impl<'a> AcpRuntime<'a> {
         if !skipped_mcp_diagnostic_recorded {
             self.record_skipped_mcp_servers(provider_id, skipped_mcp_servers);
         }
-        let result = self.request(
+        let session_new_started_at = Instant::now();
+        let session_new_result = self.request(
             "session/new",
             session_new_params(&cwd, adapter_system_prompt, mcp_servers),
-        )?;
+        );
+        info!(
+            target: "gold_band::perf",
+            provider_id,
+            workspace_root = cwd.as_str(),
+            mcp_server_count = mcp_servers.len(),
+            elapsed_ms = session_new_started_at.elapsed().as_millis(),
+            status = if session_new_result.is_ok() { "ok" } else { "error" },
+            "ACP session/new completed"
+        );
+        let result = session_new_result?;
         self.capture_session_config(&result);
         let session_id = result
             .get("sessionId")

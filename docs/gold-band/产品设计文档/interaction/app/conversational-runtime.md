@@ -367,6 +367,13 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - 同标签参数保留多个不同值（如多个路径、多个查询条件）
 - 语义化参数缺失时回退展示原始输入 JSON
 
+## 子 Agent 嵌套会话展示
+
+- `Agent` 工具调用在会话中投影为一条可折叠的嵌套分支，不使用完整工具卡、元数据卡片和结果卡片层层嵌套。收起态只展示子 Agent、类型、任务说明和当前状态，通过缩进引导线表达父子层级。
+- 展开后的子事件继续复用主 ACP timeline 的消息、thought、tool call 和 plan 渲染器；嵌套上下文只移除重复头像占位与主会话 `82%` 宽度限制，不另造一套消息组件。
+- 长 Prompt 默认收起为次级“子 Agent Prompt”入口，用户需要审计时再展开；子 Agent 尚未进入 terminal 状态时不得把 `tool_call.content` 中的输入回显误展示为执行结果。terminal 结果复用主 assistant Markdown 内容样式，不增加独立厚重卡片。
+- timeline 展开状态以稳定 item key 管理。流式更新重建 timeline 时，合法 key 集合必须递归覆盖全部嵌套子 Agent 与其子事件；只能清理整棵树中已经消失的 key，不能只按顶层 item 清理，否则嵌套展开状态会在下一次 live flush 时被关闭。
+
 ## Runtime Control JSON 展示
 
 - Runtime output contract 或 AI-DYNAMIC completion 被后端实际消费为控制 JSON 后，后端会在对应 ACP `textDelta` timeline item 的 `raw.runtimeControlOutputDisplay` 中写入展示标记；前端只消费该标记，不按消息内容全局猜测 JSON。

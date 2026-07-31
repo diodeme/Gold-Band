@@ -236,6 +236,28 @@ impl GoldBandPaths {
         self.runtime_root.join("tasks")
     }
 
+    pub fn scheduled_tasks_dir(&self) -> Utf8PathBuf {
+        self.runtime_root.join("scheduled-tasks")
+    }
+
+    pub fn scheduled_task_dir(&self, scheduled_task_id: &str) -> Utf8PathBuf {
+        self.scheduled_tasks_dir().join(scheduled_task_id)
+    }
+
+    pub fn scheduled_task_file(&self, scheduled_task_id: &str) -> Utf8PathBuf {
+        self.scheduled_task_dir(scheduled_task_id)
+            .join("scheduled-task.json")
+    }
+
+    pub fn scheduled_triggers_dir(&self, scheduled_task_id: &str) -> Utf8PathBuf {
+        self.scheduled_task_dir(scheduled_task_id).join("triggers")
+    }
+
+    pub fn scheduled_trigger_file(&self, scheduled_task_id: &str, trigger_id: &str) -> Utf8PathBuf {
+        self.scheduled_triggers_dir(scheduled_task_id)
+            .join(format!("{trigger_id}.json"))
+    }
+
     pub fn task_dir(&self, task_id: &str) -> Utf8PathBuf {
         self.tasks_dir().join(task_id)
     }

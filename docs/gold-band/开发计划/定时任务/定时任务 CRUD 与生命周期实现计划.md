@@ -206,6 +206,10 @@ Expected: PASS with task history untouched after scheduled-definition deletion.
 
 Commit: `git add src/scheduler/store.rs src/storage/mod.rs && git commit -m "feat: add scheduled task storage CRUD"`
 
+Implementation status (2026-07-31): Task 2 is complete. Definition updates and
+deletes are path-checked, trigger records are immutable and monotonically
+numbered, and enable/disable preserves the materialized Task association.
+
 ## Task 3：实现 typed CRUD 命令和后端错误码
 
 **Files:**

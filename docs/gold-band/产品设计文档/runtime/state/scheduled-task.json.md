@@ -95,4 +95,9 @@ The runtime model now persists a structured `contentSnapshot` beside
 authoring content only; model, thought level, permission, and Direct session
 policy remain execution settings and are excluded from the identity.
 
+Definition deletion removes only the scheduled-task definition, its copied
+inputs, and its trigger records. Materialized Task/Run history remains in the
+project runtime store. Trigger files use monotonically increasing IDs and are
+never rewritten.
+
 `status` 为 `scheduled | running | skipped | missed | completed | failed`。队列重试只增加 `attempts`，不生成新的 trigger。

@@ -88,4 +88,11 @@
 }
 ```
 
+## Implementation note
+
+The runtime model now persists a structured `contentSnapshot` beside
+`contentFingerprint`. The fingerprint is a canonical SHA-256 projection of
+authoring content only; model, thought level, permission, and Direct session
+policy remain execution settings and are excluded from the identity.
+
 `status` 为 `scheduled | running | skipped | missed | completed | failed`。队列重试只增加 `attempts`，不生成新的 trigger。

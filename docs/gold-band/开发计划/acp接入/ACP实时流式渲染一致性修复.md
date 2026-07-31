@@ -61,3 +61,25 @@
 - Tooltip 流式重渲染测试、Button ref、ACP session header 与 conversation header 测试通过。
 - 前端全量单元测试与生产构建通过。
 - `npm run dev` 启动后在实际会话流式输出期间悬停标题，控制台不再出现 `Maximum update depth exceeded`。
+
+## 2026-07-31 ACP 流式消息自动贴底生命周期修复
+
+### 根因
+
+- 2026-07-22 引入的 Markdown presentation controller 会在收到 timeline 累计快照后，继续以约 32ms 的局部帧推进可见前缀并改变真实 DOM 高度。
+- ACP 原滚动实现只在 `timeline` 引用变化时执行一次 `scrollTop = scrollHeight`，没有观察 presentation 后续布局增长；用户重新滑到底部也只会瞬时恢复 `pinToBottomRef`，下一帧内容增长后再次脱离。
+- 消息贴底、session auto-follow、历史分页和程序滚动分别维护布尔 ref，生命周期所有权重复，现有单测又只分别覆盖 live flush 与 Markdown presentation，未覆盖二者的 DOM 集成。
+
+### 实现
+
+- ACP 主消息区迁移到现有 prompt-kit `ChatContainer` 与 `use-stick-to-bottom`，由内容根节点 `ResizeObserver` 持续感知真实高度；保留 timeline canonical / presentation visible offset 分层，不回退实时 Markdown。
+- 删除 `pinToBottomRef`、`programmaticScrollRef`、本地 `isAtBottom` 和 timeline 自动写 `scrollTop` 的旧入口；贴底、用户向上逃逸、回到底部恢复统一由组件状态机管理，并把 `onAtBottomChange` 继续传给 run 级 session auto-follow。
+- 历史向上分页在请求前调用统一 `stopScroll()`，继续使用可见 timeline item 锚点补偿 prepend 高度；向下分页只保留独立的接近底部阈值，不再参与贴底状态判定。
+- interaction quiet window 继续负责合并高频 live event；由 ResizeObserver 产生的程序滚动不再被误判为用户交互。
+
+### 验收
+
+- 新增 jsdom DOM 回归测试，真实触发内容 `ResizeObserver`，固化“内容持续增长时贴底、用户离底后保持位置、用户回到底部后恢复持续跟随”。
+- ACP live flush、Markdown presentation、session follow、主题滚动条与新 ChatContainer 定向测试共 41 项通过。
+- 前端全量 86 个测试文件、576 项测试通过；`npm run web:build` 生产构建通过。
+- 浏览器调试模式通过 `/chat/projects/default/tasks/mock-task/runs/run-052` deep link 验证：消息区保持单一滚动 viewport、内容根节点高度正确、composer 布局无回归，控制台无 warning/error。

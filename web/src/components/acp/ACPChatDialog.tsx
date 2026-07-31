@@ -367,6 +367,33 @@ function timelineEventKey(event: AcpTimelineItem) {
   return `${event.kind}-${event.id}`;
 }
 
+function collectTimelineItemKeys(items: AcpTimelineItem[]) {
+  const keys = new Set<string>();
+  const visit = (item: AcpTimelineItem) => {
+    keys.add(timelineEventKey(item));
+    if (isChildAgentGroup(item)) item.events.forEach(visit);
+  };
+  items.forEach(visit);
+  return keys;
+}
+
+function pruneExpandedTimelineItems(
+  current: AcpExpandedItems,
+  items: AcpTimelineItem[],
+) {
+  const keys = collectTimelineItemKeys(items);
+  let changed = false;
+  const next: AcpExpandedItems = {};
+  for (const [key, open] of Object.entries(current)) {
+    if (!keys.has(key)) {
+      changed = true;
+      continue;
+    }
+    next[key] = open;
+  }
+  return changed ? next : current;
+}
+
 const hiddenSessionUpdates = new Set([
   "available_commands_update",
   "usage_update",
@@ -1167,19 +1194,9 @@ export const ACPChatDialog = forwardRef<
   );
 
   useEffect(() => {
-    const keys = new Set(timeline.map(timelineEventKey));
-    setExpandedItems((current) => {
-      let changed = false;
-      const next: AcpExpandedItems = {};
-      for (const [key, open] of Object.entries(current)) {
-        if (!keys.has(key)) {
-          changed = true;
-          continue;
-        }
-        next[key] = open;
-      }
-      return changed ? next : current;
-    });
+    setExpandedItems((current) =>
+      pruneExpandedTimelineItems(current, timeline),
+    );
   }, [timeline]);
 
   const showManualCheckActions = manualCheckPending && !manualCheckResolved;
@@ -3987,15 +4004,25 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   streamingMarkdownItemKey,
   messageAttachmentLocator,
   onMessageAttachmentClick,
+  nested = false,
 }: {
   event: AcpTimelineItem;
   expansionControls: AcpExpansionControls;
   streamingMarkdownItemKey?: string | null;
   messageAttachmentLocator?: MessageAttachmentLocator;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
+  nested?: boolean;
 }) {
   if (isChildAgentGroup(event))
-    return (
+    return nested ? (
+      <ChildAgentGroupCard
+        event={event}
+        expansionControls={expansionControls}
+        streamingMarkdownItemKey={streamingMarkdownItemKey}
+        messageAttachmentLocator={messageAttachmentLocator}
+        onMessageAttachmentClick={onMessageAttachmentClick}
+      />
+    ) : (
       <AssistantTimelineRow timestamp={event.timestamp ?? event.startedAt}>
         <ChildAgentGroupCard
           event={event}
@@ -4011,14 +4038,14 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   if (event.kind === "contextCompaction")
     return <ContextCompactionRow event={event} />;
   if (event.kind === "textDelta" || event.kind === "userTextDelta")
-    return <MessageBubble event={event} streamingMarkdownItemKey={streamingMarkdownItemKey} messageAttachmentLocator={messageAttachmentLocator} onMessageAttachmentClick={onMessageAttachmentClick} />;
+    return <MessageBubble event={event} streamingMarkdownItemKey={streamingMarkdownItemKey} messageAttachmentLocator={messageAttachmentLocator} onMessageAttachmentClick={onMessageAttachmentClick} nested={nested} />;
   if (event.kind === "thoughtDelta")
-    return <ThoughtBlock event={event} expansionControls={expansionControls} streamingMarkdownItemKey={streamingMarkdownItemKey} />;
+    return <ThoughtBlock event={event} expansionControls={expansionControls} streamingMarkdownItemKey={streamingMarkdownItemKey} nested={nested} />;
   if (event.kind === "toolCall" || event.kind === "toolCallUpdate")
-    return <ToolBlock event={event} expansionControls={expansionControls} />;
+    return <ToolBlock event={event} expansionControls={expansionControls} nested={nested} />;
   if (event.kind === "plan")
     return (
-      <AssistantTimelineRow timestamp={event.timestamp}>
+      <AssistantTimelineRow timestamp={event.timestamp} nested={nested}>
         <PlanBlock event={event} />
       </AssistantTimelineRow>
     );
@@ -4128,8 +4155,7 @@ const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
   const statusLabel = event.status
     ? displayStatus(t, event.status)
     : t("acp.subAgentRunning");
-  const promptPreview = input.prompt ? truncateText(input.prompt, 240) : null;
-  const output = details.output;
+  const output = isTerminalToolStatus(event.status) ? details.output : null;
 
   const statusClass =
     statusTone === "danger"
@@ -4140,7 +4166,7 @@ const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
           ? "bg-primary/10 text-primary"
           : "bg-muted text-muted-foreground";
   return (
-    <div className="min-w-0 max-w-full overflow-hidden rounded-xl border border-primary/20 bg-card/75 shadow-sm shadow-background/30">
+    <div className="min-w-0 max-w-full">
       <Collapsible
         open={open}
         onOpenChange={(next) => {
@@ -4151,34 +4177,27 @@ const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
         <CollapsibleTrigger asChild>
           <Button
             variant="ghost"
-            className="h-auto w-full min-w-0 justify-between overflow-hidden rounded-none px-3 py-2 font-normal hover:bg-muted/20"
+            className="h-auto w-full min-w-0 justify-between overflow-hidden rounded-lg px-2 py-1.5 font-normal hover:bg-muted/30 data-[state=open]:bg-muted/20"
           >
             <div className="flex min-w-0 flex-1 items-center gap-2">
-              <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                <UsersRound className="size-4" />
-              </span>
-              <span className="min-w-0 flex-1 truncate text-left text-sm">
-                <span className="font-semibold text-foreground">
+              <UsersRound className="size-4 shrink-0 text-primary" />
+              <span className="min-w-0 flex-1 truncate text-left text-sm text-muted-foreground">
+                <span className="font-medium text-foreground">
                   {t("acp.subAgent")}
                 </span>
                 {input.subagentType ? (
-                  <span className="ml-2 text-xs text-muted-foreground">
+                  <span className="ml-2 text-xs">
                     {input.subagentType}
                   </span>
                 ) : null}
                 {description ? (
-                  <span className="ml-2 text-xs text-muted-foreground">
+                  <span className="ml-2 text-xs">
                     {description}
                   </span>
                 ) : null}
               </span>
             </div>
-            <span className="ml-3 flex shrink-0 items-center gap-2">
-              {event.events.length > 0 ? (
-                <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                  {t("acp.subAgentEvents", { count: event.events.length })}
-                </span>
-              ) : null}
+            <span className="ml-3 flex shrink-0 items-center gap-1.5">
               <span
                 className={cn(
                   "rounded-full px-2 py-0.5 text-xs font-medium",
@@ -4197,33 +4216,16 @@ const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
           </Button>
         </CollapsibleTrigger>
         {open ? (
-          <CollapsibleContent className="min-w-0 max-w-full overflow-hidden border-t border-border">
-            <div className="min-w-0 max-w-full space-y-3 overflow-hidden bg-background/50 p-3">
-              {input.subagentType || description || promptPreview ? (
-                <div className="grid min-w-0 gap-2 text-xs sm:grid-cols-2">
-                  {input.subagentType ? (
-                    <ChildAgentMeta
-                      label={t("acp.subAgentType")}
-                      value={input.subagentType}
-                    />
-                  ) : null}
-                  {description ? (
-                    <ChildAgentMeta
-                      label={t("acp.subAgentDescription")}
-                      value={description}
-                    />
-                  ) : null}
-                  {promptPreview ? (
-                    <ChildAgentMeta
-                      className="sm:col-span-2"
-                      label={t("acp.subAgentPrompt")}
-                      value={promptPreview}
-                    />
-                  ) : null}
-                </div>
+          <CollapsibleContent className="min-w-0 max-w-full overflow-hidden">
+            <div className="ml-2 min-w-0 max-w-full space-y-3 overflow-hidden border-l border-border/70 py-2 pl-4">
+              {input.prompt ? (
+                <ChildAgentPromptDisclosure
+                  prompt={input.prompt}
+                  onLayoutChange={onLayoutChange}
+                />
               ) : null}
               {event.events.length > 0 ? (
-                <div className="min-w-0 max-w-full space-y-3 overflow-hidden rounded-lg border border-border/60 bg-muted/10 p-3">
+                <div className="min-w-0 max-w-full space-y-3 overflow-hidden">
                   {event.events.map((child) => (
                     <ACPTimelineItemRenderer
                       key={timelineEventKey(child)}
@@ -4232,18 +4234,28 @@ const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
                       streamingMarkdownItemKey={streamingMarkdownItemKey}
                       messageAttachmentLocator={messageAttachmentLocator}
                       onMessageAttachmentClick={onMessageAttachmentClick}
+                      nested
                     />
                   ))}
                 </div>
               ) : null}
               {output ? (
-                <div className="min-w-0 max-w-full overflow-hidden rounded-lg border bg-background/70 p-2.5 text-xs">
-                  <div className="mb-1 font-medium uppercase tracking-wide text-muted-foreground">
+                <div className="min-w-0 max-w-full border-t border-border/60 pt-3">
+                  <div className="mb-1 text-xs font-medium text-muted-foreground">
                     {t("acp.subAgentResult")}
                   </div>
-                  <pre className="max-h-52 min-w-0 overflow-auto whitespace-pre-wrap break-words font-sans text-foreground [overflow-wrap:anywhere]">
-                    {formatToolValue(output)}
-                  </pre>
+                  <MessageContent
+                    variant="assistant"
+                    className="min-w-0 rounded-none p-0 text-sm leading-6 shadow-none [overflow-wrap:anywhere]"
+                  >
+                    {typeof output === "string" ? (
+                      <Markdown>{output}</Markdown>
+                    ) : (
+                      <pre className="max-h-52 min-w-0 overflow-auto whitespace-pre-wrap break-words font-sans text-foreground [overflow-wrap:anywhere]">
+                        {formatToolValue(output)}
+                      </pre>
+                    )}
+                  </MessageContent>
                 </div>
               ) : null}
             </div>
@@ -4254,38 +4266,65 @@ const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
   );
 });
 
-function ChildAgentMeta({
-  label,
-  value,
-  className,
+const ChildAgentPromptDisclosure = memo(function ChildAgentPromptDisclosure({
+  prompt,
+  onLayoutChange,
 }: {
-  label: string;
-  value: string;
-  className?: string;
+  prompt: string;
+  onLayoutChange?: () => void;
 }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
   return (
-    <div
-      className={cn(
-        "min-w-0 overflow-hidden rounded-lg border bg-background/70 px-2.5 py-1.5",
-        className,
-      )}
+    <Collapsible
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        onLayoutChange?.();
+      }}
     >
-      <div className="mb-1 truncate text-muted-foreground">{label}</div>
-      <div className="break-words text-foreground [overflow-wrap:anywhere]">
-        {value}
-      </div>
-    </div>
+      <CollapsibleTrigger asChild>
+        <Button
+          variant="ghost"
+          className="h-7 gap-1.5 rounded-md px-1.5 text-xs font-normal text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+        >
+          <FileText className="size-3.5" />
+          <span>{t("acp.subAgentPrompt")}</span>
+          <ChevronDown
+            className={cn(
+              "size-3.5 transition-transform",
+              open && "rotate-180",
+            )}
+          />
+        </Button>
+      </CollapsibleTrigger>
+      {open ? (
+        <CollapsibleContent className="min-w-0 max-w-full pt-1.5">
+          <Message className="min-w-0 justify-end">
+            <MessageContent
+              variant="user"
+              className="max-w-full rounded-xl rounded-br-sm px-3 py-2 text-xs leading-5 shadow-none [overflow-wrap:anywhere]"
+            >
+              <Markdown>{prompt}</Markdown>
+            </MessageContent>
+          </Message>
+        </CollapsibleContent>
+      ) : null}
+    </Collapsible>
   );
-}
+});
 
 const AssistantTimelineRow = memo(function AssistantTimelineRow({
   children,
   density = "single",
+  nested = false,
 }: {
   children: React.ReactNode;
   timestamp?: string | null;
   density?: "single" | "start" | "middle" | "end";
+  nested?: boolean;
 }) {
+  if (nested) return <div className="min-w-0 max-w-full">{children}</div>;
   return (
     <Message
       className={cn(
@@ -4343,11 +4382,13 @@ const MessageBubble = memo(function MessageBubble({
   streamingMarkdownItemKey,
   messageAttachmentLocator,
   onMessageAttachmentClick,
+  nested = false,
 }: {
   event: AcpTimelineEvent;
   streamingMarkdownItemKey?: string | null;
   messageAttachmentLocator?: MessageAttachmentLocator;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
+  nested?: boolean;
 }) {
   const { t } = useTranslation();
   const isUser = event.kind === "userTextDelta";
@@ -4370,15 +4411,17 @@ const MessageBubble = memo(function MessageBubble({
       className={cn(
         "min-w-0 items-start gap-2 [container-type:inline-size]",
         isUser ? "justify-end" : "justify-start",
+        nested && "w-full",
       )}
     >
-      {!isUser ? (
+      {!isUser && !nested ? (
         <AcpAvatarWithTime tone="assistant" timestamp={event.timestamp} />
       ) : null}
       <div
         className={cn(
           "min-w-0 max-w-[var(--conversation-message-max-inline-size)] space-y-1",
           isUser && "flex flex-col items-end",
+          nested && "w-full max-w-full",
         )}
       >
         {showMessageBubble ? (
@@ -4681,10 +4724,12 @@ const ThoughtBlock = memo(function ThoughtBlock({
   event,
   expansionControls,
   streamingMarkdownItemKey,
+  nested = false,
 }: {
   event: AcpTimelineEvent;
   expansionControls: AcpExpansionControls;
   streamingMarkdownItemKey?: string | null;
+  nested?: boolean;
 }) {
   const { t } = useTranslation();
   if (!event.content?.trim()) return null;
@@ -4693,7 +4738,7 @@ const ThoughtBlock = memo(function ThoughtBlock({
   const streaming = itemKey === streamingMarkdownItemKey;
   const duration = formatThinkingDuration(t, event.durationMs);
   return (
-    <AssistantTimelineRow timestamp={event.timestamp}>
+    <AssistantTimelineRow timestamp={event.timestamp} nested={nested}>
       <ChainOfThought className="min-w-0 max-w-full overflow-hidden rounded-xl border border-border/60 bg-muted/15 px-3.5 py-2 shadow-sm shadow-background/20">
         <ChainOfThoughtStep
           open={open}
@@ -4728,9 +4773,11 @@ const ThoughtBlock = memo(function ThoughtBlock({
 const ToolBlock = memo(function ToolBlock({
   event,
   expansionControls,
+  nested = false,
 }: {
   event: AcpTimelineEvent;
   expansionControls: AcpExpansionControls;
+  nested?: boolean;
 }) {
   const { t } = useTranslation();
   const details = toolDetails(event);
@@ -4755,7 +4802,7 @@ const ToolBlock = memo(function ToolBlock({
   const itemKey = timelineEventKey(event);
   const open = isTimelineItemOpen(itemKey, expansionControls);
   return (
-    <AssistantTimelineRow timestamp={event.timestamp}>
+    <AssistantTimelineRow timestamp={event.timestamp} nested={nested}>
       <Tool
         toolPart={toolPart}
         labels={toolLabels(t)}
@@ -6522,6 +6569,8 @@ function acpSessionMetadataSignature(session: AcpSessionVm) {
 
 export {
   timelineEventKey,
+  collectTimelineItemKeys,
+  pruneExpandedTimelineItems,
   buildAcpTimeline,
   latestStreamingMarkdownItemKey,
   latestStreamingMarkdownItemKeyFromEvents,
@@ -6750,12 +6799,19 @@ function toolIcon(name: string | null | undefined) {
 
 function cleanToolOutput(value: unknown): unknown {
   if (Array.isArray(value) && value.length === 1) {
-    const item = rawObject(value[0]);
-    const content = rawObject(item?.content);
-    const text = stringValue(content?.text);
+    const text = toolContentText(value[0]);
     if (text) return text;
   }
+  const text = toolContentText(value);
+  if (text) return text;
   return value;
+}
+
+function toolContentText(value: unknown) {
+  const item = rawObject(value);
+  const directText = stringValue(item?.text);
+  if (directText) return directText;
+  return stringValue(rawObject(item?.content)?.text);
 }
 
 function formatToolValue(value: unknown) {
@@ -6764,10 +6820,6 @@ function formatToolValue(value: unknown) {
   if (typeof value === "string") return value;
   if (typeof value === "object") return JSON.stringify(value, null, 2);
   return String(value);
-}
-
-function truncateText(value: string, maxLength: number) {
-  return value.length > maxLength ? `${value.slice(0, maxLength)}…` : value;
 }
 
 function displayRawDirection(

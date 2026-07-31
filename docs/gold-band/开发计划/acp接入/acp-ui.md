@@ -196,7 +196,9 @@ Tool call 卡片展示：
 
 Tool call update 应按 attempt-scoped `toolCallId` 更新同一张卡片，而不是生成重复卡片。多 attempt 会话和实时轮询必须共用同一套事件归一化 helper，同时作用到 `event.id`、`toolCallId` 和子 Agent `_meta.claudeCode.parentToolUseId`；实时轮询返回的 attempt-local `seq` 需要映射为会话内 display `seq`，merge key 不得依赖会变化的 `seq`。terminal / file 细节挂载到对应 tool call，不应成为主会话输出。工具卡片使用 prompt-kit `Tool` 承载折叠和状态展示，标题行左对齐显示“操作名 + 次级参数”，例如 `Glob .claude/**/*`、`Read xxx.js`；展开后展示路径、查询等关键参数块与输出摘要；不展示 tool call id、kind、input 或 raw details。工具卡展开/收起属于阅读动作，必须保留当前滚动位置，不能触发会话容器自动滑到底部；长路径、JSON 输出和连续字符必须在工具卡宽度内换行或内层滚动，不能撑宽抽屉。
 
-`Agent` 工具调用不按普通工具卡扁平展示子过程，而是由 `ChildAgentGroupCard` 聚合其生命周期窗口内的子 Agent transcript：普通工具仍使用 prompt-kit `Tool`；`Agent` 工具 header 显示子 Agent 类型、任务说明、状态和子事件数量；展开后内部继续复用 `ACPEventRenderer` 渲染文本、thought、tool call 和 plan；并发发起的多个 `Agent` 工具保持同层并列，不互相嵌套；子 Agent 内部工具优先按 `_meta.claudeCode.parentToolUseId` 归属到对应 Agent，只有缺少该元数据时才回退到 seq 生命周期窗口；如果当前历史窗口缺少 Agent opener，则暂时保持扁平展示，避免误把半截历史归入错误分组。
+`Agent` 工具调用不按普通工具卡扁平展示子过程，而是由 `ChildAgentGroupCard` 聚合其生命周期窗口内的子 Agent transcript：普通工具仍使用 prompt-kit `Tool`；`Agent` header 使用轻量折叠行，只展示子 Agent 类型、任务说明和状态，不再展示子事件数量及类型/说明/Prompt/结果多层面板。展开后以缩进引导线承载分支，内部继续复用 `ACPEventRenderer` 渲染文本、thought、tool call 和 plan；嵌套 renderer 移除重复头像占位与主会话宽度收缩。长 Prompt 默认进入次级折叠入口，terminal 前不展示 `tool_call.content` 输入回显为结果，terminal 结果使用主 assistant Markdown 样式。并发发起的多个 `Agent` 工具保持同层并列；存在 `_meta.claudeCode.parentToolUseId` 的嵌套 Agent 递归归入父分支，缺少元数据时才回退到 seq 生命周期窗口；如果当前历史窗口缺少 Agent opener，则暂时保持扁平展示，避免误把半截历史归入错误分组。展开状态清理必须递归遍历整棵 timeline key 树，保证 live flush 重建期间已展开的嵌套 Agent 不会自动收起。
+
+2026-07-31 已完成子 Agent 分支视觉收敛与流式展开状态修复：删除多层元数据卡片和重复子事件计数，复用主会话消息/Markdown/工具/思考 renderer；新增嵌套 key 递归保留单测，并通过 ACP 定向测试与前端生产构建。
 
 ### 6.5 Permission Request
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildAcpTimeline, createAcpSessionCacheKey, isTopLevelPlanEvent, latestStreamingMarkdownItemKey, latestStreamingMarkdownItemKeyFromEvents, limitAcpEvents, mergeAcpEvents, queryBlocksFromTool, restoreAcpLoadedEvents, storeAcpLoadedEvents, timelineEventKey } from '../../src/components/acp/ACPChatDialog';
+import { buildAcpTimeline, collectTimelineItemKeys, createAcpSessionCacheKey, isTopLevelPlanEvent, latestStreamingMarkdownItemKey, latestStreamingMarkdownItemKeyFromEvents, limitAcpEvents, mergeAcpEvents, pruneExpandedTimelineItems, queryBlocksFromTool, restoreAcpLoadedEvents, storeAcpLoadedEvents, timelineEventKey } from '../../src/components/acp/ACPChatDialog';
 import type { AcpUiEventVm } from '../../src/types';
 
 function event(partial: Partial<AcpUiEventVm> & Pick<AcpUiEventVm, 'id' | 'seq' | 'timestamp' | 'kind'>): AcpUiEventVm {
@@ -129,6 +129,58 @@ describe('ACPChatDialog timeline helpers', () => {
     // Root level should contain child-agent-group, not the plan directly
     expect(rootKeys).not.toContain('plan-child-plan');
     expect(rootKeys.some(k => k.startsWith('child-agent-'))).toBe(true);
+  });
+
+  it('keeps nested child-agent expansion keys while streaming updates rebuild the timeline', () => {
+    const timeline = buildAcpTimeline([
+      event({
+        id: 'outer-agent',
+        seq: 1,
+        timestamp: '1Z',
+        kind: 'toolCall',
+        toolCallId: 'call-outer',
+        status: 'running',
+        raw: {
+          _meta: { claudeCode: { toolName: 'Agent', subagent: true } },
+          rawInput: { description: 'outer task', subagent_type: 'general-purpose' },
+        },
+      }),
+      event({
+        id: 'inner-agent',
+        seq: 2,
+        timestamp: '2Z',
+        kind: 'toolCall',
+        toolCallId: 'call-inner',
+        status: 'pending',
+        raw: {
+          _meta: {
+            claudeCode: {
+              toolName: 'Agent',
+              subagent: true,
+              parentToolUseId: 'call-outer',
+            },
+          },
+          rawInput: { description: 'inner task', subagent_type: 'general-purpose' },
+        },
+      }),
+    ]);
+
+    const outerKey = 'child-agent-call-outer-1';
+    const innerKey = 'child-agent-call-inner-2';
+    expect([...collectTimelineItemKeys(timeline)]).toEqual([
+      outerKey,
+      innerKey,
+    ]);
+
+    const expanded = {
+      [outerKey]: true,
+      [innerKey]: true,
+      'child-agent-removed': true,
+    };
+    expect(pruneExpandedTimelineItems(expanded, timeline)).toEqual({
+      [outerKey]: true,
+      [innerKey]: true,
+    });
   });
 
   it('isTopLevelPlanEvent returns false for child-agent plans', () => {

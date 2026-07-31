@@ -984,10 +984,16 @@ export interface ConversationTaskRowVm {
   workflowTemplateId?: string | null;
   agentIdentity?: ConversationAgentIdentityVm | null;
   lastActivityAt?: string | null;
+  activity?: ConversationTaskActivityVm | null;
   latestRun?: ConversationRunSummaryVm | null;
   runs: ConversationRunSummaryVm[];
   pinned: boolean;
   pinnedOrder?: number | null;
+}
+
+export interface ConversationTaskActivityVm {
+  phase: string;
+  stopping: boolean;
 }
 
 export interface ConversationRunSummaryVm {

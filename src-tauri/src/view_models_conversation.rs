@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::str::FromStr;
 
+use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
 
 use crate::view_models::{
@@ -11,7 +12,7 @@ use crate::view_models::{
     dynamic_acp_session_status, dynamic_acp_session_vm, dynamic_runtime_graph_vm,
     latest_control_failure_vm, round_detail_vm, runtime_display_vm, workflow_graph_vm,
 };
-use gold_band::acp::client::{PromptActivity, prompt_activity};
+use gold_band::acp::client::{PromptActivity, prompt_activity, prompt_activity_under};
 use gold_band::app::{App, CreateTaskInput, DEFAULT_WORKFLOW_TEMPLATE_ID, is_run_continuable};
 use gold_band::config::StateConfig;
 use gold_band::config::{ConversationRunMode, ManagedAgentId, managed_agent_preset};
@@ -56,10 +57,18 @@ pub struct ConversationTaskRowVm {
     pub workflow_template_id: Option<String>,
     pub agent_identity: Option<ConversationAgentIdentityVm>,
     pub last_activity_at: Option<String>,
+    pub activity: Option<ConversationTaskActivityVm>,
     pub latest_run: Option<ConversationRunSummaryVm>,
     pub runs: Vec<ConversationRunSummaryVm>,
     pub pinned: bool,
     pub pinned_order: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTaskActivityVm {
+    pub phase: String,
+    pub stopping: bool,
 }
 
 pub struct ConversationWorkspaceSource {
@@ -465,6 +474,30 @@ fn latest_conversation_activity_at(
     .map(str::to_owned)
 }
 
+fn conversation_task_activity(
+    task_dir: &Utf8Path,
+    latest_run: Option<&ConversationRunSummaryVm>,
+) -> Option<ConversationTaskActivityVm> {
+    if let Some(activity) = prompt_activity_under(task_dir) {
+        return Some(ConversationTaskActivityVm {
+            phase: match activity {
+                PromptActivity::Starting => "starting",
+                PromptActivity::Accepted => "accepted",
+                PromptActivity::Running => "running",
+                PromptActivity::CancelRequested => "cancel-requested",
+            }
+            .to_string(),
+            stopping: activity == PromptActivity::CancelRequested,
+        });
+    }
+    latest_run
+        .filter(|run| normalize_lifecycle_code(&run.status) == "running")
+        .map(|_| ConversationTaskActivityVm {
+            phase: "runtime-active".to_string(),
+            stopping: false,
+        })
+}
+
 // ── Builder functions (stubs — full implementation in later phases) ──
 
 pub fn conversation_sidebar_vm_from_sources(
@@ -521,6 +554,10 @@ pub fn conversation_sidebar_vm_from_sources(
                 let latest_run = runs.first().cloned();
                 let last_activity_at =
                     latest_conversation_activity_at(metadata.as_ref(), latest_run.as_ref());
+                let activity = conversation_task_activity(
+                    &source.app.paths.task_dir(task_id),
+                    latest_run.as_ref(),
+                );
 
                 let row = ConversationTaskRowVm {
                     project_id: project_id.clone(),
@@ -535,6 +572,7 @@ pub fn conversation_sidebar_vm_from_sources(
                         .as_ref()
                         .and_then(|metadata| metadata.agent_identity.clone()),
                     last_activity_at,
+                    activity,
                     latest_run,
                     runs,
                     pinned,
@@ -2918,14 +2956,16 @@ pub fn switch_conversation_session_vm(
 mod tests {
     use super::{
         ConversationAutoConfigVm, ConversationDirectConfigVm, ConversationDynamicAgentRefVm,
-        ConversationWorkspaceSource, ConversationWorkspaceVm, PromptActivity,
+        ConversationRunSummaryVm, ConversationTaskActivityVm, ConversationWorkspaceSource,
+        ConversationWorkspaceVm, PromptActivity,
         apply_workflow_interview_preference, build_auto_workflow, build_direct_workflow,
         conversation_attempt_lifecycle_vm, conversation_auto_title, conversation_run_vm,
         conversation_sidebar_vm_from_sources, conversation_status_from_session,
+        conversation_task_activity,
         conversation_workspace_vms, derive_conversation_attempt_lifecycle, lifecycle_is_active,
         switch_conversation_session_vm,
     };
-    use camino::Utf8PathBuf;
+    use camino::{Utf8Path, Utf8PathBuf};
     use gold_band::app::{App, CreateTaskInput};
     use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, PromptEnvelopeMode};
     use serde_json::json;
@@ -3936,6 +3976,34 @@ mod tests {
             vec!["run-001", "run-002"]
         );
         assert_eq!(task.last_activity_at.as_deref(), Some("3000000000Z"));
+    }
+
+    #[test]
+    fn conversation_sidebar_task_activity_uses_runtime_status_when_no_live_prompt_exists() {
+        let running = ConversationRunSummaryVm {
+            run_id: "run-001".to_string(),
+            status: "running".to_string(),
+            outcome: None,
+            started_at: "2026-07-31T00:00:00Z".to_string(),
+            updated_at: "2026-07-31T00:00:00Z".to_string(),
+            current_round: None,
+            current_node: None,
+            resumable: false,
+        };
+        let completed = ConversationRunSummaryVm {
+            status: "completed".to_string(),
+            ..running.clone()
+        };
+        let task_dir = Utf8Path::new("test/sidebar-task-without-live-prompt");
+
+        assert_eq!(
+            conversation_task_activity(task_dir, Some(&running)),
+            Some(ConversationTaskActivityVm {
+                phase: "runtime-active".to_string(),
+                stopping: false,
+            })
+        );
+        assert_eq!(conversation_task_activity(task_dir, Some(&completed)), None);
     }
 
     #[test]

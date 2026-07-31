@@ -49,6 +49,7 @@ import {
   updateNotificationAttention,
 } from './api';
 import { isTauriRuntime } from './api/shared';
+import { applyConversationSidebarTaskActivity, conversationTaskActivityFromLifecycle } from './lib/conversation-sidebar-activity';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Breadcrumbs } from './components/Breadcrumbs';
 import { Button } from '@/components/ui/button';
@@ -123,6 +124,7 @@ import type {
   AppBootstrapVm,
   AppConfigVm,
   AppInfoVm,
+  ConversationAttemptLifecycleVm,
   ConversationPage,
   ConversationRunModeVm,
   ConversationRunVm,
@@ -296,6 +298,23 @@ export function App() {
     const nextSidebar = prioritizeConversationSidebarWorkspace(sidebar, activeProjectId);
     conversationSidebarRef.current = nextSidebar;
     setConversationSidebar(nextSidebar);
+  }, []);
+
+  const applyConversationTaskActivity = useCallback((
+    projectId: string,
+    taskId: string,
+    lifecycle: ConversationAttemptLifecycleVm,
+  ) => {
+    setConversationSidebar((current) => {
+      const next = applyConversationSidebarTaskActivity(
+        current,
+        projectId,
+        taskId,
+        conversationTaskActivityFromLifecycle(lifecycle),
+      );
+      conversationSidebarRef.current = next;
+      return next;
+    });
   }, []);
 
   // Derive active workspace: explicit local state > persisted lastActiveWorkspaceId > first workspace
@@ -629,6 +648,7 @@ export function App() {
       if (!active) return;
       if (event.taskId !== taskId || event.runId !== runId) return;
       if (event.projectId && event.projectId !== projectId) return;
+      if (event.lifecycle) applyConversationTaskActivity(projectId, taskId, event.lifecycle);
       const sessionKey = conversationSessionKeyFromParts(event);
       const currentRun = conversationRunRef.current;
       const currentSelectedKey = conversationSelectedSessionKeyRef.current
@@ -719,7 +739,7 @@ export function App() {
       stopListeningAcp?.();
       stopListeningRun?.();
     };
-  }, [applyConversationRunSnapshot, applyConversationSidebar, bootstrap, uiMode, conversationPage]);
+  }, [applyConversationRunSnapshot, applyConversationSidebar, applyConversationTaskActivity, bootstrap, uiMode, conversationPage]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -1783,6 +1803,7 @@ export function App() {
             }).catch(() => {});
           }}
           onLifecycleSnapshot={(snapshot) => {
+            applyConversationTaskActivity(conversationPage.projectId, snapshot.taskId, snapshot.lifecycle);
             setConversationRun((current) => {
               const selectedPatched = applyConversationSelectedSessionSnapshot(current, snapshot);
               const patched = selectedPatched === current

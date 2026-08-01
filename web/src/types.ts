@@ -689,6 +689,7 @@ export interface AcpSessionVm {
   config?: AcpSessionConfigVm | null;
   events: AcpUiEventVm[];
   eventPage: AcpEventPageVm;
+  timelineProjection: AcpTimelineProjectionVm | null;
   pendingPermissions: AcpPermissionRequestVm[];
   availableCommands?: unknown[] | null;
   usage?: AcpUsageVm | null;
@@ -989,6 +990,24 @@ export interface ConversationTaskRowVm {
   runs: ConversationRunSummaryVm[];
   pinned: boolean;
   pinnedOrder?: number | null;
+}
+
+export interface AcpTimelineProjectionVm {
+  agents: AcpAgentExecutionVm[];
+  todoEntries: Array<{ content?: string; status?: string; priority?: string }>;
+}
+
+export interface AcpAgentExecutionVm {
+  toolCallId: string;
+  attemptId?: string | null;
+  parentToolCallId?: string | null;
+  launchStatus?: string | null;
+  executionStatus: string;
+  eventCount: number;
+  toolCallCount: number;
+  readFileCount: number;
+  writtenFileCount: number;
+  todoEntries: Array<{ content?: string; status?: string; priority?: string }>;
 }
 
 export interface ConversationTaskActivityVm {

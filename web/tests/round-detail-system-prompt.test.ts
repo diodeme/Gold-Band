@@ -9,6 +9,7 @@ function makeSession(partial?: Partial<AcpSessionVm>): AcpSessionVm {
     restored: false,
     systemPromptAppend: null,
     events: [],
+    timelineProjection: null,
     eventPage: {
       total: 0,
       loadedCount: 0,
@@ -74,5 +75,39 @@ describe('round detail system prompt fallback', () => {
     ).toEqual([
       { attemptId: 'attempt-001', prompt: 'current system prompt' },
     ]);
+  });
+
+  it('inserts explicit stopped and continued boundaries between attempts', () => {
+    const first = makeSession({
+      status: 'cancelled',
+      stopReason: 'cancelled',
+      events: [{
+        id: 'first-text', seq: 1, timestamp: '1Z', kind: 'textDelta',
+        sessionId: 's-1', content: 'first', title: null, toolCallId: null,
+        status: null, raw: null,
+      }],
+    });
+    const second = makeSession({
+      status: 'running',
+      events: [{
+        id: 'second-text', seq: 1, timestamp: '2Z', kind: 'textDelta',
+        sessionId: 's-1', content: 'second', title: null, toolCallId: null,
+        status: null, raw: null,
+      }],
+    });
+    const conversation: AcpConversationVm = {
+      ...makeConversation(),
+      activeAttemptId: 'attempt-002',
+      attempts: [
+        { nodeId: 'node-1', attemptId: 'attempt-001', status: 'paused', current: false, acpSessionId: 's-1', acpSession: first },
+        { nodeId: 'node-1', attemptId: 'attempt-002', status: 'running', current: true, acpSessionId: 's-1', acpSession: second },
+      ],
+    };
+
+    const merged = mergedConversationSession(conversation);
+    const boundaries = merged?.events
+      .filter((event) => event.kind === 'attemptSeparator')
+      .map((event) => (event.raw as { boundaryKind?: string })?.boundaryKind);
+    expect(boundaries).toEqual(['stopped', 'continued']);
   });
 });

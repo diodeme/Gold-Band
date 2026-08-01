@@ -184,6 +184,8 @@ import { isTauriRuntime } from "@/api/shared";
 import { displayAppError, displayStatus } from "@/i18n";
 import type {
   AcpPermissionRequestVm,
+  AcpAgentExecutionVm,
+  AcpTimelineProjectionVm,
   AcpRawFramePageVm,
   AcpRawFrameOrder,
   AcpRawFrameQueryInput,
@@ -316,7 +318,24 @@ type AcpChildAgentGroup = {
   toolCallId?: string | null;
   toolEvent: AcpTimelineEvent;
   todoEntries: AcpTodoEntry[];
+  eventCount: number;
+  toolCallCount: number;
+  readFileCount: number;
+  writtenFileCount: number;
   events: AcpTimelineItem[];
+};
+
+type AcpActivityBatch = {
+  kind: "activityBatch";
+  id: string;
+  seq: number;
+  timestamp?: string;
+  startedSeq: number;
+  endedSeq: number;
+  startedAt?: string;
+  endedAt?: string;
+  live: boolean;
+  events: AcpTimelineEvent[];
 };
 
 type AcpTodoEntry = {
@@ -330,12 +349,8 @@ type AcpTimelineProjection = {
   todoEntries: AcpTodoEntry[];
 };
 
-type AcpTimelineItem = AcpTimelineEvent | AcpChildAgentGroup;
+type AcpTimelineItem = AcpTimelineEvent | AcpChildAgentGroup | AcpActivityBatch;
 type AcpExpandedItems = Record<string, boolean>;
-type AcpExpansionControls = {
-  expandedItems: AcpExpandedItems;
-  onOpenChange: (key: string, open: boolean) => void;
-};
 
 const DEFAULT_EVENT_PAGE_SIZE = 360;
 const LOADED_EVENT_BUFFER_PAGE_COUNT = 3;
@@ -374,6 +389,7 @@ export const ACP_SYSTEM_PROMPT_DIALOG_LAYOUT = {
 
 function timelineEventKey(event: AcpTimelineItem | AcpUiEventVm) {
   if (event.kind === "childAgentGroup") return event.id;
+  if (event.kind === "activityBatch") return event.id;
   if (
     (event.kind === "toolCall" || event.kind === "toolCallUpdate") &&
     event.toolCallId
@@ -387,6 +403,7 @@ function collectTimelineItemKeys(items: AcpTimelineItem[]) {
   const visit = (item: AcpTimelineItem) => {
     keys.add(timelineEventKey(item));
     if (isChildAgentGroup(item)) item.events.forEach(visit);
+    if (isActivityBatch(item)) item.events.forEach(visit);
   };
   items.forEach(visit);
   return keys;
@@ -423,7 +440,6 @@ const hiddenEventKinds = new Set([
   "sessionInfo",
   "modeUpdate",
   "configUpdate",
-  "permissionRequest",
   "elicitationRequest",
   "elicitationResponse",
   "timingUpdate",
@@ -651,6 +667,7 @@ export const ACPChatDialog = forwardRef<
   );
   const [prompt, setPrompt] = useState("");
   const [sending, setSending] = useState(false);
+  const [promptCommandPending, setPromptCommandPending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [awaitingResponse, setAwaitingResponse] = useState(
     Boolean(restoredPromptEvent),
@@ -670,7 +687,6 @@ export const ACPChatDialog = forwardRef<
   const [manualCheckSubmitting, setManualCheckSubmitting] = useState(false);
   const [manualCheckResolved, setManualCheckResolved] = useState(false);
   const [canvasMode, setCanvasMode] = useState<AcpCanvasMode>("chat");
-  const [expandedItems, setExpandedItems] = useState<AcpExpandedItems>({});
   const [systemPromptOpen, setSystemPromptOpen] = useState(false);
   const [rawPage, setRawPage] = useState<AcpRawFramePageVm | null>(null);
   const [rawQuery, setRawQuery] = useState<AcpRawFrameQueryInput>({
@@ -885,6 +901,7 @@ export const ACPChatDialog = forwardRef<
     setSendError(null);
     setCancelError(null);
     setCancelling(false);
+    setPromptCommandPending(false);
     setStopCommandPending(false);
     setStopOverlayPending(false);
     setRuntimeStopAccepted(false);
@@ -895,7 +912,6 @@ export const ACPChatDialog = forwardRef<
     setRawPage(null);
     setRawQuery({ page: 0, pageSize: 100, order: "desc" });
     setLoadingOlder(false);
-    setExpandedItems({});
     setHasOlderEvents(session?.eventPage.hasOlder ?? false);
     setHasNewerEvents(session?.eventPage.hasNewer ?? false);
     paginationDirectionRef.current = null;
@@ -1002,12 +1018,12 @@ export const ACPChatDialog = forwardRef<
   const effectiveEvents = effective?.events ?? [];
   const effectiveSessionTerminal = isSessionTerminalStatus(effective?.status);
   const hasResponseAfterActiveTurn = hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
-  const localTurnInFlight = sending || Boolean(pendingOptimisticPrompt) || (awaitingResponse && Boolean(activeTurnPrompt || activeTurnPromptId));
+  const localTurnInFlight = promptCommandPending || sending || Boolean(pendingOptimisticPrompt) || (awaitingResponse && Boolean(activeTurnPrompt || activeTurnPromptId));
   const activeAwaitingResponse = awaitingResponse && (!effectiveSessionTerminal || localTurnInFlight);
   const waitingForOptimisticPrompt =
     Boolean(pendingOptimisticPrompt) &&
     !hasResponseAfterActiveTurn;
-  const localSubmissionPending = sending || waitingForOptimisticPrompt;
+  const localSubmissionPending = promptCommandPending || sending || waitingForOptimisticPrompt;
   const runtimeActive = runtimeActiveFromContext && !(isSessionCompletedStatus(effective?.status ?? baseSession?.status) && !localSubmissionPending);
   const canInferPendingPermission = canInferPendingInteractionFromWindow(
     effective,
@@ -1031,33 +1047,29 @@ export const ACPChatDialog = forwardRef<
   const planInterventionOption = pendingPermission
     ? findPlanInterventionOption(pendingPermission)
     : null;
+  const projectionLifecycle = localRuntimeLifecycle ?? runtimeComposerContext?.lifecycle;
+  const projectedSessionStatus = projectionLifecycle?.acp.active
+    ? (projectionLifecycle.acp.stopping
+        ? "cancelling"
+        : (projectionLifecycle.acp.status || "running"))
+    : promptCommandPending
+      ? "running"
+      : effective?.status;
   const timelineProjection = useMemo(
-    () => buildAcpTimelineProjection(effectiveEvents),
-    [effectiveEvents],
+    () => buildAcpTimelineProjection(
+      effectiveEvents,
+      projectedSessionStatus,
+      effective?.timelineProjection,
+    ),
+    [effective?.timelineProjection, effectiveEvents, projectedSessionStatus],
   );
   const todoEntries = timelineProjection.todoEntries;
   const timeline = useStableAcpTimeline(timelineProjection.timeline);
   const acpSessionActive = isSessionActiveStatus(effective?.status);
-  const sessionActive = acpSessionActive || runtimeActive;
+  const sessionActive = acpSessionActive || runtimeActive || Boolean(projectionLifecycle?.acp.active) || promptCommandPending;
   const streamingMarkdownItemKey = sessionActive
     ? latestStreamingMarkdownItemKeyFromEvents(effectiveEvents)
     : null;
-  const handleTimelineItemOpenChange = useCallback(
-    (key: string, open: boolean) => {
-      setExpandedItems((current) =>
-        current[key] === open ? current : { ...current, [key]: open },
-      );
-    },
-    [],
-  );
-  const expansionControls = useMemo<AcpExpansionControls>(
-    () => ({
-      expandedItems,
-      onOpenChange: handleTimelineItemOpenChange,
-    }),
-    [expandedItems, handleTimelineItemOpenChange],
-  );
-
   const handleOpenArtifactDetail = useCallback(
     async (asset: AssetItemVm) => {
       setArtifactsDialogOpen(true);
@@ -1224,11 +1236,6 @@ export const ACPChatDialog = forwardRef<
     [handleOpenArtifactDetail],
   );
 
-  useEffect(() => {
-    setExpandedItems((current) =>
-      pruneExpandedTimelineItems(current, timeline),
-    );
-  }, [timeline]);
 
   const showManualCheckActions = manualCheckPending && !manualCheckResolved;
   const localLifecycle = localRuntimeLifecycle
@@ -1808,6 +1815,9 @@ export const ACPChatDialog = forwardRef<
     void (async () => {
       stopListening = await subscribe((event) => {
         if (!active || !matchesSessionEvent(event)) return;
+        if (event.lifecycle) {
+          setLocalRuntimeLifecycle(event.lifecycle);
+        }
         if (event.event) {
           const latest = latestSessionRef.current;
           if (
@@ -1937,6 +1947,9 @@ export const ACPChatDialog = forwardRef<
     if (stopCommandPending || sending || waitingForOptimisticPrompt) {
       return;
     }
+    if (promptCommandPending && !cancelling) {
+      return;
+    }
     if (!awaitingResponse && !cancelling) {
       return;
     }
@@ -1961,6 +1974,7 @@ export const ACPChatDialog = forwardRef<
     cancelling,
     effective?.status,
     onSessionStopped,
+    promptCommandPending,
     sending,
     sessionActive,
     stopCommandPending,
@@ -2128,6 +2142,7 @@ export const ACPChatDialog = forwardRef<
     const submittingRuntimeContinue = composerState.submitTarget === "runtime-continue";
     if (sending || activeAwaitingResponse || (!submittingRuntimeContinue && sessionActive) || cancelling) return;
     setSending(true);
+    setPromptCommandPending(true);
     setSendError(null);
     let attPaths: string[];
     try {
@@ -2263,6 +2278,7 @@ export const ACPChatDialog = forwardRef<
       );
     } finally {
       setSending(false);
+      setPromptCommandPending(false);
     }
   };
 
@@ -2304,7 +2320,8 @@ export const ACPChatDialog = forwardRef<
         outerNodeId,
         outerAttemptId,
       );
-      awaitTerminalStopRef.current = Boolean(result.session?.sessionId);
+      const awaitTerminalStop = shouldAwaitTerminalAcpStop(result.session);
+      awaitTerminalStopRef.current = awaitTerminalStop;
       setRuntimeStopAccepted(Boolean(result.run));
       if (result.lifecycle) {
         setLocalRuntimeLifecycle(result.lifecycle);
@@ -2312,7 +2329,19 @@ export const ACPChatDialog = forwardRef<
       }
       applySessionUpdate(result.session ?? null);
       flushPendingLiveEvents("sync");
-      const finalSession = await getAcpSession(
+      setStopCommandPending(false);
+      setPromptCommandPending(false);
+      setSending(false);
+      setActiveTurnPrompt(null);
+      setActiveTurnPromptId(null);
+      setActiveTurnStartedAt(null);
+      if (!awaitTerminalStop) {
+        setCancelling(false);
+        setAwaitingResponse(false);
+        cancelRequestedRef.current = false;
+        onSessionStopped?.();
+      }
+      void getAcpSession(
         projectId,
         taskId,
         runId,
@@ -2326,14 +2355,12 @@ export const ACPChatDialog = forwardRef<
         result.session ?? effective ?? null,
         outerNodeId,
         outerAttemptId,
-      );
-      applySessionUpdate(finalSession);
+      ).then((finalSession) => {
+        applySessionUpdate(finalSession);
+      }).catch(() => {
+        // stop_active_session 已返回持久化终态；补拉仅用于后台校准。
+      });
       updateOptimisticEvents(clearPendingOptimisticPromptsAfterStop);
-      setStopCommandPending(false);
-      setSending(false);
-      setActiveTurnPrompt(null);
-      setActiveTurnPromptId(null);
-      setActiveTurnStartedAt(null);
     } catch (error) {
       setCancelError(displayAppError(t, error));
       setCancelling(false);
@@ -2673,10 +2700,12 @@ export const ACPChatDialog = forwardRef<
                     >
                       <ACPTimelineItemRenderer
                         event={item}
-                        expansionControls={expansionControls}
                         streamingMarkdownItemKey={streamingMarkdownItemKey}
                         messageAttachmentLocator={messageAttachmentLocator}
                         onMessageAttachmentClick={handleOpenMessageAttachment}
+                        onPermissionSelect={(request, optionId) =>
+                          answerPermission(request, optionId)
+                        }
                       />
                     </div>
                   ))}
@@ -2700,14 +2729,6 @@ export const ACPChatDialog = forwardRef<
                 ) : null}
                 {permissionError ? (
                   <AcpErrorBanner reason={permissionError} />
-                ) : null}
-                {pendingPermission ? (
-                  <PermissionRequestCard
-                    request={pendingPermission}
-                    onSelect={(optionId) =>
-                      answerPermission(pendingPermission, optionId)
-                    }
-                  />
                 ) : null}
                 {pendingElicitation ? (
                   <ElicitationCard
@@ -3989,24 +4010,18 @@ export function ACPMessageList({
   timeline,
   sessionStatus,
   sending,
+  onPermissionSelect,
 }: {
   timeline: AcpTimelineItem[];
   sessionStatus: string;
   sending: boolean;
   onLayoutChange?: () => void;
+  onPermissionSelect?: (request: AcpPermissionRequestVm, optionId: string) => void;
 }) {
   const active = isSessionActiveStatus(sessionStatus) || sending;
   const streamingMarkdownItemKey = active
     ? latestStreamingMarkdownItemKey(timeline)
     : null;
-  const expansionControls = useMemo<AcpExpansionControls>(
-    () => ({
-      expandedItems: {},
-      onOpenChange: () => {},
-    }),
-    [],
-  );
-
   if (timeline.length === 0) return active ? null : <EmptyAcpState />;
 
   return (
@@ -4015,8 +4030,8 @@ export function ACPMessageList({
         <ACPTimelineItemRenderer
           key={timelineEventKey(item)}
           event={item}
-          expansionControls={expansionControls}
           streamingMarkdownItemKey={streamingMarkdownItemKey}
+          onPermissionSelect={onPermissionSelect}
         />
       ))}
     </div>
@@ -4047,11 +4062,18 @@ function AcpPendingTimelineState({ label }: { label: string }) {
 }
 
 function AttemptSeparator({ event }: { event: AcpTimelineEvent }) {
+  const { t } = useTranslation();
+  const boundaryKind = stringValue(rawObject(event.raw)?.boundaryKind);
+  const label = boundaryKind === "stopped"
+    ? t("acp.attemptStopped")
+    : boundaryKind === "continued"
+      ? t("acp.attemptContinued")
+      : event.title ?? event.content ?? "attempt";
   return (
     <div className="flex items-center gap-3 py-1 text-xs text-muted-foreground">
       <span className="h-px flex-1 bg-border/70" />
       <span className="rounded-full border bg-background/90 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.12em]">
-        {event.title ?? event.content ?? "attempt"}
+        {label}
       </span>
       <span className="h-px flex-1 bg-border/70" />
     </div>
@@ -4060,36 +4082,36 @@ function AttemptSeparator({ event }: { event: AcpTimelineEvent }) {
 
 const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   event,
-  expansionControls,
   streamingMarkdownItemKey,
   messageAttachmentLocator,
   onMessageAttachmentClick,
+  onPermissionSelect,
   nested = false,
 }: {
   event: AcpTimelineItem;
-  expansionControls: AcpExpansionControls;
   streamingMarkdownItemKey?: string | null;
   messageAttachmentLocator?: MessageAttachmentLocator;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
+  onPermissionSelect?: (request: AcpPermissionRequestVm, optionId: string) => void;
   nested?: boolean;
 }) {
   if (isChildAgentGroup(event))
     return nested ? (
       <ChildAgentGroupCard
         event={event}
-        expansionControls={expansionControls}
         streamingMarkdownItemKey={streamingMarkdownItemKey}
         messageAttachmentLocator={messageAttachmentLocator}
         onMessageAttachmentClick={onMessageAttachmentClick}
+        onPermissionSelect={onPermissionSelect}
       />
     ) : (
       <AssistantTimelineRow timestamp={event.timestamp ?? event.startedAt}>
         <ChildAgentGroupCard
           event={event}
-          expansionControls={expansionControls}
           streamingMarkdownItemKey={streamingMarkdownItemKey}
           messageAttachmentLocator={messageAttachmentLocator}
           onMessageAttachmentClick={onMessageAttachmentClick}
+          onPermissionSelect={onPermissionSelect}
         />
       </AssistantTimelineRow>
     );
@@ -4097,12 +4119,33 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
     return <AttemptSeparator event={event} />;
   if (event.kind === "contextCompaction")
     return <ContextCompactionRow event={event} />;
+  if (isActivityBatch(event))
+    return (
+      <AcpActivityBatchRow
+        event={event}
+        nested={nested}
+        onPermissionSelect={onPermissionSelect}
+      />
+    );
   if (event.kind === "textDelta" || event.kind === "userTextDelta")
     return <MessageBubble event={event} streamingMarkdownItemKey={streamingMarkdownItemKey} messageAttachmentLocator={messageAttachmentLocator} onMessageAttachmentClick={onMessageAttachmentClick} nested={nested} />;
   if (event.kind === "thoughtDelta")
-    return <ThoughtBlock event={event} expansionControls={expansionControls} streamingMarkdownItemKey={streamingMarkdownItemKey} nested={nested} />;
+    return <ThoughtBlock event={event} streamingMarkdownItemKey={streamingMarkdownItemKey} nested={nested} />;
   if (event.kind === "toolCall" || event.kind === "toolCallUpdate")
-    return <ToolBlock event={event} expansionControls={expansionControls} nested={nested} />;
+    return <ToolBlock event={event} nested={nested} />;
+  if (event.kind === "permissionRequest") {
+    const request = permissionRequestFromEvent(event);
+    return request ? (
+      <PermissionRequestCard
+        request={request}
+        status={event.status}
+        nested={nested}
+        onSelect={onPermissionSelect
+          ? (optionId) => onPermissionSelect(request, optionId)
+          : undefined}
+      />
+    ) : null;
+  }
   return null;
 });
 
@@ -4186,30 +4229,29 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
 
 const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
   event,
-  expansionControls,
   streamingMarkdownItemKey,
   messageAttachmentLocator,
   onMessageAttachmentClick,
+  onPermissionSelect,
   onLayoutChange,
 }: {
   event: AcpChildAgentGroup;
-  expansionControls: AcpExpansionControls;
   streamingMarkdownItemKey?: string | null;
   messageAttachmentLocator?: MessageAttachmentLocator;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
+  onPermissionSelect?: (request: AcpPermissionRequestVm, optionId: string) => void;
   onLayoutChange?: () => void;
 }) {
   const { t } = useTranslation();
-  const itemKey = timelineEventKey(event);
-  const open = isTimelineItemOpen(itemKey, expansionControls);
+  const [open, setOpen] = useState(false);
   const input = agentToolInput(event.toolEvent);
-  const details = toolDetails(event.toolEvent);
-  const description = input.description ?? details.queryBlocks[0]?.value;
+  const description = input.description;
+  const metricsSummary = childAgentMetricsSummary(event, t);
+  const visibleEventCount = visibleAgentEventCount(event.events);
+  const hiddenHistoryCount = Math.max(0, event.eventCount - visibleEventCount);
+  const attentionEvents = collectBranchAttentionEvents(event.events);
   const statusTone = toolStatusTone(event.status);
-  const statusLabel = event.status
-    ? displayStatus(t, event.status)
-    : t("acp.subAgentRunning");
-  const output = isTerminalToolStatus(event.status) ? details.output : null;
+  const statusLabel = childAgentStatusLabel(event.status, t);
 
   const statusClass =
     statusTone === "danger"
@@ -4224,7 +4266,7 @@ const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
       <Collapsible
         open={open}
         onOpenChange={(next) => {
-          expansionControls.onOpenChange(itemKey, next);
+          setOpen(next);
           onLayoutChange?.();
         }}
       >
@@ -4247,6 +4289,11 @@ const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
                 {description ? (
                   <span className="ml-2 text-xs">
                     {description}
+                  </span>
+                ) : null}
+                {metricsSummary ? (
+                  <span className="ml-2 text-xs text-muted-foreground/80">
+                    {metricsSummary}
                   </span>
                 ) : null}
               </span>
@@ -4287,41 +4334,342 @@ const ChildAgentGroupCard = memo(function ChildAgentGroupCard({
                     <ACPTimelineItemRenderer
                       key={timelineEventKey(child)}
                       event={child}
-                      expansionControls={expansionControls}
                       streamingMarkdownItemKey={streamingMarkdownItemKey}
                       messageAttachmentLocator={messageAttachmentLocator}
                       onMessageAttachmentClick={onMessageAttachmentClick}
+                      onPermissionSelect={onPermissionSelect}
                       nested
                     />
                   ))}
                 </div>
               ) : null}
-              {output ? (
-                <div className="min-w-0 max-w-full border-t border-border/60 pt-3">
-                  <div className="mb-1 text-xs font-medium text-muted-foreground">
-                    {t("acp.subAgentResult")}
-                  </div>
-                  <MessageContent
-                    variant="assistant"
-                    className="min-w-0 rounded-none p-0 text-sm leading-6 shadow-none [overflow-wrap:anywhere]"
-                  >
-                    {typeof output === "string" ? (
-                      <Markdown>{output}</Markdown>
-                    ) : (
-                      <pre className="max-h-52 min-w-0 overflow-auto whitespace-pre-wrap break-words font-sans text-foreground [overflow-wrap:anywhere]">
-                        {formatToolValue(output)}
-                      </pre>
-                    )}
-                  </MessageContent>
+              {hiddenHistoryCount > 0 ? (
+                <div className="px-1 text-xs text-muted-foreground">
+                  {t("acp.subAgentHistoryOutsideWindow", {
+                    visible: visibleEventCount,
+                    total: event.eventCount,
+                  })}
                 </div>
               ) : null}
             </div>
           </CollapsibleContent>
         ) : null}
+        {!open && attentionEvents.length > 0 ? (
+          <div className="ml-6 mt-1 min-w-0 space-y-2 border-l border-border/55 pl-3">
+            {attentionEvents.map((attention) => {
+              if (attention.kind === "permissionRequest") {
+                const request = permissionRequestFromEvent(attention);
+                return request ? (
+                  <PermissionRequestCard
+                    key={timelineEventKey(attention)}
+                    request={request}
+                    status={attention.status}
+                    nested
+                    onSelect={onPermissionSelect
+                      ? (optionId) => onPermissionSelect(request, optionId)
+                      : undefined}
+                  />
+                ) : null;
+              }
+              return (
+                <ToolBlock
+                  key={timelineEventKey(attention)}
+                  event={attention}
+                  nested
+                  compact
+                />
+              );
+            })}
+          </div>
+        ) : null}
       </Collapsible>
     </div>
   );
 });
+
+function childAgentMetricsSummary(
+  event: AcpChildAgentGroup,
+  t: ReturnType<typeof useTranslation>["t"],
+) {
+  const parts: string[] = [];
+  if (event.toolCallCount > 0) {
+    parts.push(t("acp.activityToolCount", { count: event.toolCallCount }));
+  }
+  if (event.readFileCount > 0) {
+    parts.push(t("acp.activityReadFiles", { count: event.readFileCount }));
+  }
+  if (event.writtenFileCount > 0) {
+    parts.push(t("acp.activityWrittenFiles", { count: event.writtenFileCount }));
+  }
+  return parts.join(" · ");
+}
+
+function visibleAgentEventCount(items: AcpTimelineItem[]): number {
+  return items.reduce((count, item) => {
+    if (isActivityBatch(item)) return count + item.events.length;
+    return count + 1;
+  }, 0);
+}
+
+function collectBranchAttentionEvents(items: AcpTimelineItem[]) {
+  const attention: AcpTimelineEvent[] = [];
+  const visit = (item: AcpTimelineItem) => {
+    if (isChildAgentGroup(item)) {
+      item.events.forEach(visit);
+      return;
+    }
+    if (isActivityBatch(item)) {
+      attention.push(...activityBatchAttentionEvents(item.events));
+      return;
+    }
+    if (isActivityAttentionEvent(item)) {
+      attention.push(item);
+    }
+  };
+  items.forEach(visit);
+  return attention;
+}
+
+const ACTIVITY_DETAIL_INITIAL_LIMIT = 80;
+
+const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
+  event,
+  nested = false,
+  onPermissionSelect,
+}: {
+  event: AcpActivityBatch;
+  nested?: boolean;
+  onPermissionSelect?: (request: AcpPermissionRequestVm, optionId: string) => void;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const [visibleLimit, setVisibleLimit] = useState(ACTIVITY_DETAIL_INITIAL_LIMIT);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const summary = activityBatchSummary(event, t);
+  const attentionEvents = activityBatchAttentionEvents(event.events);
+  const auditEvents = event.events.filter(isVisibleActivityAuditEvent);
+  const visibleStart = Math.max(0, auditEvents.length - visibleLimit);
+  const visibleEvents = open
+    ? auditEvents.filter(
+      (activity, index) => index >= visibleStart || isActivityAttentionEvent(activity),
+    )
+    : [];
+  const hiddenCount = Math.max(0, auditEvents.length - visibleEvents.length);
+  return (
+    <AssistantTimelineRow timestamp={event.timestamp} nested={nested}>
+      <Collapsible open={open} onOpenChange={setOpen} className="min-w-0 max-w-full">
+        <CollapsibleTrigger asChild>
+          <Button
+            ref={triggerRef}
+            variant="ghost"
+            className="h-auto min-h-8 w-full min-w-0 justify-start gap-2 rounded-lg px-2 py-1.5 text-left font-normal text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+          >
+            {event.live ? (
+              <Loader2 className="size-3.5 shrink-0 animate-spin text-primary motion-reduce:animate-none" />
+            ) : (
+              <ChevronDown
+                className={cn(
+                  "size-3.5 shrink-0 transition-transform",
+                  open && "rotate-180",
+                )}
+              />
+            )}
+            <span
+              className={cn(
+                "min-w-0 flex-1 truncate text-xs leading-5",
+                event.live && "acp-activity-live-label font-medium text-foreground/85",
+              )}
+            >
+              {summary}
+            </span>
+          </Button>
+        </CollapsibleTrigger>
+        {open ? (
+          <CollapsibleContent className="min-w-0 max-w-full overflow-hidden">
+            <div className="ml-2 min-w-0 max-w-full space-y-1 border-l border-border/55 py-1 pl-3">
+              {hiddenCount > 0 ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs text-muted-foreground"
+                  onClick={() => setVisibleLimit((current) => current + ACTIVITY_DETAIL_INITIAL_LIMIT)}
+                >
+                  {t("acp.activityShowEarlier", { count: hiddenCount })}
+                </Button>
+              ) : null}
+              {visibleEvents.map((activity) => (
+                <ActivityAuditEvent
+                  key={timelineEventKey(activity)}
+                  event={activity}
+                  onPermissionSelect={onPermissionSelect}
+                />
+              ))}
+              <div className="flex justify-end px-1 pt-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="acp-activity-collapse-button h-7 gap-1.5 px-2 text-xs font-normal text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+                  onClick={() => {
+                    setOpen(false);
+                    requestAnimationFrame(() => {
+                      triggerRef.current?.scrollIntoView?.({
+                        block: "nearest",
+                      });
+                    });
+                  }}
+                >
+                  <ChevronDown className="size-3.5 rotate-180" aria-hidden="true" />
+                  {t("acp.activityCollapse")}
+                </Button>
+              </div>
+            </div>
+          </CollapsibleContent>
+        ) : null}
+        {!open && attentionEvents.length > 0 ? (
+          <div className="ml-2 min-w-0 max-w-full space-y-1 border-l border-border/45 py-1 pl-3">
+            {attentionEvents.map((activity) => (
+              <ActivityAuditEvent
+                key={timelineEventKey(activity)}
+                event={activity}
+                onPermissionSelect={onPermissionSelect}
+              />
+            ))}
+          </div>
+        ) : null}
+      </Collapsible>
+    </AssistantTimelineRow>
+  );
+});
+
+const ActivityAuditEvent = memo(function ActivityAuditEvent({
+  event,
+  onPermissionSelect,
+}: {
+  event: AcpTimelineEvent;
+  onPermissionSelect?: (request: AcpPermissionRequestVm, optionId: string) => void;
+}) {
+  if (event.kind === "thoughtDelta") {
+    return <ThoughtBlock event={event} nested compact />;
+  }
+  if (event.kind === "permissionRequest") {
+    if (!isPendingPermissionStatus(event.status)) return null;
+    const request = permissionRequestFromEvent(event);
+    return request ? (
+      <PermissionRequestCard
+        request={request}
+        status={event.status}
+        nested
+        onSelect={onPermissionSelect
+          ? (optionId) => onPermissionSelect(request, optionId)
+          : undefined}
+      />
+    ) : null;
+  }
+  return <ToolBlock event={event} nested compact />;
+});
+
+function activityBatchAttentionEvents(events: AcpTimelineEvent[]) {
+  return events.filter(isActivityAttentionEvent);
+}
+
+function isActivityAttentionEvent(event: AcpTimelineEvent) {
+  return (
+    event.kind === "permissionRequest" &&
+    isPendingPermissionStatus(event.status)
+  );
+}
+
+function isVisibleActivityAuditEvent(event: AcpTimelineEvent) {
+  return event.kind !== "permissionRequest" || isPendingPermissionStatus(event.status);
+}
+
+function activityBatchSummary(
+  batch: AcpActivityBatch,
+  t: ReturnType<typeof useTranslation>["t"],
+) {
+  if (batch.live) return objectiveActivityLabel(batch.events.at(-1), t);
+  const toolIds = new Set<string>();
+  let thoughtCount = 0;
+  const readFiles = new Set<string>();
+  const writtenFiles = new Set<string>();
+  for (const event of batch.events) {
+    if (event.kind === "thoughtDelta") {
+      thoughtCount += 1;
+      continue;
+    }
+    const toolId = event.toolCallId ?? timelineEventKey(event);
+    toolIds.add(toolId);
+    if (!isSuccessfulToolStatus(event.status)) continue;
+    const details = toolDetails(event, false);
+    const name = details.name?.trim().toLowerCase();
+    const paths = toolFilePaths(event);
+    if (name === "read") paths.forEach((path) => readFiles.add(path));
+    if (["write", "edit", "applypatch", "apply_patch"].includes(name ?? "")) {
+      paths.forEach((path) => writtenFiles.add(path));
+    }
+  }
+  const parts: string[] = [];
+  if (toolIds.size > 0) parts.push(t("acp.activityToolCount", { count: toolIds.size }));
+  if (thoughtCount > 0) parts.push(t("acp.activityThoughtCount", { count: thoughtCount }));
+  if (readFiles.size > 0) parts.push(t("acp.activityReadFiles", { count: readFiles.size }));
+  if (writtenFiles.size > 0) parts.push(t("acp.activityWrittenFiles", { count: writtenFiles.size }));
+  return parts.join(" · ") || t("acp.activityRecorded");
+}
+
+function objectiveActivityLabel(
+  event: AcpTimelineEvent | undefined,
+  t: ReturnType<typeof useTranslation>["t"],
+) {
+  const descriptor = objectiveActivityDescriptor(event);
+  if (descriptor.kind === "thought") return t("acp.activityThinking");
+  const name = descriptor.name || t("acp.toolCall");
+  return descriptor.parameter
+    ? t("acp.activityCallingWithParameter", { name, parameter: descriptor.parameter })
+    : t("acp.activityCalling", { name });
+}
+
+function objectiveActivityDescriptor(event: AcpTimelineEvent | undefined) {
+  if (!event || event.kind === "thoughtDelta") {
+    return { kind: "thought" as const, name: null, parameter: null };
+  }
+  const details = toolDetails(event, false);
+  return {
+    kind: "tool" as const,
+    name: details.name || event.title || null,
+    parameter: toolSummary(details.queryBlocks) ?? null,
+  };
+}
+
+function isSuccessfulToolStatus(status?: string | null) {
+  return ["completed", "success", "succeeded"].includes(status?.toLowerCase() ?? "");
+}
+
+function childAgentStatusLabel(
+  status: string | null | undefined,
+  t: ReturnType<typeof useTranslation>["t"],
+) {
+  if (status === "queued") return t("acp.subAgentQueued");
+  if (status === "waiting_permission") return t("acp.subAgentWaitingPermission");
+  if (status === "interrupted") return t("acp.subAgentInterrupted");
+  return status ? displayStatus(t, status) : t("acp.subAgentRunning");
+}
+
+function toolFilePaths(event: AcpUiEventVm) {
+  const raw = rawObject(event.raw);
+  const toolCall = rawObject(raw?.toolCall) ?? rawObject(raw?.content) ?? raw;
+  const input = rawObject(toolCall?.rawInput) ?? rawObject(raw?.rawInput);
+  const locations = arrayValue(toolCall?.locations) ?? arrayValue(raw?.locations);
+  const values = [
+    stringValue(input?.file_path),
+    stringValue(input?.path),
+    ...(locations ?? []).map((location) => stringValue(rawObject(location)?.path)),
+  ];
+  return values
+    .filter((value): value is string => Boolean(value?.trim()))
+    .map((value) => value.replace(/\\/g, "/").replace(/\/$/, "").toLowerCase());
+}
 
 const ChildAgentPromptDisclosure = memo(function ChildAgentPromptDisclosure({
   prompt,
@@ -4779,36 +5127,53 @@ const AnimatedEllipsis = memo(function AnimatedEllipsis() {
 
 const ThoughtBlock = memo(function ThoughtBlock({
   event,
-  expansionControls,
   streamingMarkdownItemKey,
   nested = false,
+  compact = false,
 }: {
   event: AcpTimelineEvent;
-  expansionControls: AcpExpansionControls;
   streamingMarkdownItemKey?: string | null;
   nested?: boolean;
+  compact?: boolean;
 }) {
   const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
   if (!event.content?.trim()) return null;
   const itemKey = timelineEventKey(event);
-  const open = isTimelineItemOpen(itemKey, expansionControls);
   const streaming = itemKey === streamingMarkdownItemKey;
   const duration = formatThinkingDuration(t, event.durationMs);
   return (
     <AssistantTimelineRow timestamp={event.timestamp} nested={nested}>
-      <ChainOfThought className="min-w-0 max-w-full overflow-hidden rounded-xl border border-border/60 bg-muted/15 px-3.5 py-2 shadow-sm shadow-background/20">
+      <ChainOfThought
+        className={cn(
+          "min-w-0 max-w-full overflow-hidden",
+          compact
+            ? "px-1.5 py-1"
+            : "rounded-xl border border-border/60 bg-muted/15 px-3.5 py-2 shadow-sm shadow-background/20",
+        )}
+      >
         <ChainOfThoughtStep
           open={open}
-          onOpenChange={(next) => expansionControls.onOpenChange(itemKey, next)}
+          onOpenChange={setOpen}
         >
           <ChainOfThoughtTrigger
             leftIcon={<Clock className="size-4" />}
-            className="w-full min-w-0 justify-between"
+            className={cn(
+              "w-full min-w-0 justify-between",
+              compact && "text-xs",
+            )}
           >
             <span className="flex min-w-0 flex-wrap items-center gap-2">
               <span className="font-medium">{t("acp.thought")}</span>
               {duration ? (
-                <span className="rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums">
+                <span
+                  className={cn(
+                    "text-xs tabular-nums",
+                    compact
+                      ? "text-muted-foreground/75"
+                      : "rounded-full bg-muted px-2 py-0.5",
+                  )}
+                >
                   {duration}
                 </span>
               ) : null}
@@ -4829,15 +5194,17 @@ const ThoughtBlock = memo(function ThoughtBlock({
 
 const ToolBlock = memo(function ToolBlock({
   event,
-  expansionControls,
   nested = false,
+  compact = false,
 }: {
   event: AcpTimelineEvent;
-  expansionControls: AcpExpansionControls;
   nested?: boolean;
+  compact?: boolean;
 }) {
   const { t } = useTranslation();
-  const details = toolDetails(event);
+  const [open, setOpen] = useState(false);
+  const summaryDetails = toolDetails(event, false);
+  const details = open ? toolDetails(event, true) : summaryDetails;
   const ToolIcon = toolIcon(details.name);
   const orderedInput: ToolParam[] = details.queryBlocks.map((block) => ({
     label: t(block.labelKey),
@@ -4856,8 +5223,6 @@ const ToolBlock = memo(function ToolBlock({
         ? (event.content ?? undefined)
         : undefined,
   };
-  const itemKey = timelineEventKey(event);
-  const open = isTimelineItemOpen(itemKey, expansionControls);
   return (
     <AssistantTimelineRow timestamp={event.timestamp} nested={nested}>
       <Tool
@@ -4865,8 +5230,10 @@ const ToolBlock = memo(function ToolBlock({
         labels={toolLabels(t)}
         icon={<ToolIcon className="size-4" />}
         open={open}
-        onOpenChange={(next) => expansionControls.onOpenChange(itemKey, next)}
+        onOpenChange={setOpen}
         animated={false}
+        variant={compact ? "audit" : "card"}
+        className={compact ? "acp-activity-audit-tool" : undefined}
       />
     </AssistantTimelineRow>
   );
@@ -4887,15 +5254,36 @@ function toolLabels(t: ReturnType<typeof useTranslation>["t"]): ToolLabels {
 export function PermissionRequestCard({
   request,
   onSelect,
+  status = "pending",
+  nested = false,
 }: {
   request: AcpPermissionRequestVm;
-  onSelect: (optionId: string) => void;
+  onSelect?: (optionId: string) => void;
+  status?: string | null;
+  nested?: boolean;
 }) {
   const { t } = useTranslation();
   const decisionSummary = permissionRequestSummary(request);
+  const pending = isPendingPermissionStatus(status);
+  const selectedOptionId = stringValue(rawObject(request.raw)?.optionId);
+  const selectedOption = request.options.find(
+    (option) => option.optionId === selectedOptionId,
+  );
+  if (!pending) {
+    return (
+      <PermissionDecisionAuditRow
+        request={request}
+        status={status}
+        decisionLabel={selectedOption?.name || displayStatus(t, status)}
+        summary={decisionSummary}
+        nested={nested}
+      />
+    );
+  }
+
   return (
-    <AssistantTimelineRow>
-      <div className="w-full max-w-2xl overflow-hidden rounded-2xl border border-border/55 bg-card/65 px-4 py-3.5 shadow-[0_16px_40px_-32px_rgba(15,23,42,0.65)] ring-1 ring-foreground/[0.025] backdrop-blur-sm">
+    <AssistantTimelineRow nested={nested}>
+      <div className="acp-permission-request-card w-full max-w-2xl overflow-hidden rounded-2xl border border-border/55 bg-card/65 px-4 py-3.5 shadow-[0_16px_40px_-32px_rgba(15,23,42,0.65)] ring-1 ring-foreground/[0.025] backdrop-blur-sm">
         <div className="flex min-w-0 flex-col gap-3">
           <div className="flex min-w-0 items-center gap-3">
             <span className="flex size-8 shrink-0 items-center justify-center rounded-xl border border-border/50 bg-accent/65 text-accent-foreground shadow-sm shadow-background/20">
@@ -4920,8 +5308,9 @@ export function PermissionRequestCard({
               </div>
             </div>
           ) : null}
-          <div className="grid min-w-0 grid-cols-1 gap-2 pl-11 sm:grid-cols-2">
-            {request.options.map((option) => {
+          {onSelect ? (
+            <div className="grid min-w-0 grid-cols-1 gap-2 pl-11 sm:grid-cols-2">
+              {request.options.map((option) => {
               const label = option.name || option.optionId;
               const isAllowOption = option.kind.startsWith("allow");
               return (
@@ -4950,12 +5339,56 @@ export function PermissionRequestCard({
                   </TooltipContent>
                 </Tooltip>
               );
-            })}
-          </div>
+              })}
+            </div>
+          ) : null}
         </div>
       </div>
     </AssistantTimelineRow>
   );
+}
+
+const PermissionDecisionAuditRow = memo(function PermissionDecisionAuditRow({
+  request,
+  status,
+  decisionLabel,
+  summary,
+  nested,
+}: {
+  request: AcpPermissionRequestVm;
+  status?: string | null;
+  decisionLabel: string;
+  summary: string | null;
+  nested: boolean;
+}) {
+  return (
+    <AssistantTimelineRow nested={nested}>
+      <div
+        className="acp-permission-decision-audit flex min-w-0 max-w-full items-start gap-2 px-1.5 py-1 text-xs text-muted-foreground"
+        data-permission-status={status?.toLowerCase() || "selected"}
+      >
+        <ShieldQuestion className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+        <div className="min-w-0 leading-5">
+          <span className="font-medium text-foreground/80">{decisionLabel}</span>
+          {summary ? (
+            <span className="break-all text-muted-foreground [overflow-wrap:anywhere]">
+              <span aria-hidden="true"> · </span>
+              {summary}
+            </span>
+          ) : request.title ? (
+            <span className="break-all text-muted-foreground [overflow-wrap:anywhere]">
+              <span aria-hidden="true"> · </span>
+              {request.title}
+            </span>
+          ) : null}
+        </div>
+      </div>
+    </AssistantTimelineRow>
+  );
+});
+
+function isPendingPermissionStatus(status?: string | null) {
+  return !status || status.toLowerCase() === "pending";
 }
 
 export function permissionRequestSummary(request: AcpPermissionRequestVm) {
@@ -5363,8 +5796,8 @@ function isChildAgentGroup(
   return event.kind === "childAgentGroup";
 }
 
-function isTimelineItemOpen(key: string, controls: AcpExpansionControls) {
-  return controls.expandedItems[key] ?? false;
+function isActivityBatch(event: AcpTimelineItem): event is AcpActivityBatch {
+  return event.kind === "activityBatch";
 }
 
 function isAgentToolCall(event: AcpUiEventVm) {
@@ -5385,17 +5818,54 @@ function isTerminalToolStatus(status?: string | null) {
   ].includes(status?.toLowerCase() ?? "");
 }
 
+function isAsyncAgentLaunch(event: AcpUiEventVm) {
+  const raw = rawObject(event.raw);
+  const toolCall = rawObject(raw?.toolCall) ?? rawObject(raw?.content) ?? raw;
+  const input = rawObject(toolCall?.rawInput) ?? rawObject(raw?.rawInput);
+  return input?.run_in_background === true;
+}
+
+function hasAgentCompletionEvidence(children: AcpUiEventVm[]) {
+  return children.some((child) => child.kind === "textDelta" && Boolean(child.content?.trim()));
+}
+
+function hasPendingAgentPermission(children: AcpUiEventVm[]) {
+  return children.some(
+    (child) =>
+      child.kind === "permissionRequest" &&
+      (!child.status || child.status.toLowerCase() === "pending"),
+  );
+}
+
 function childAgentStatus(
   event: AcpUiEventVm,
   children: AcpUiEventVm[],
+  sessionStatus?: string | null,
 ) {
   const raw = rawObject(event.raw);
   const status = event.status ?? stringValue(raw?.status);
+  const normalized = status?.toLowerCase();
+  if (normalized && ["failed", "error"].includes(normalized)) return "failed";
+  if (hasPendingAgentPermission(children) && isSessionActiveStatus(sessionStatus)) {
+    return "waiting_permission";
+  }
+  if (isAsyncAgentLaunch(event)) {
+    if (hasAgentCompletionEvidence(children)) return "completed";
+    if (isSessionTerminalStatus(sessionStatus)) return "interrupted";
+    if (children.length > 0) return "running";
+    return "queued";
+  }
   if (
     children.length > 0 &&
-    (!status || ["pending", "sending"].includes(status.toLowerCase()))
+    (!status || ["pending", "sending"].includes(normalized ?? ""))
   ) {
     return "running";
+  }
+  if (
+    isSessionTerminalStatus(sessionStatus) &&
+    (!normalized || ["pending", "sending", "running"].includes(normalized))
+  ) {
+    return "interrupted";
   }
   return status;
 }
@@ -5450,8 +5920,6 @@ function planEntryContents(entries: AcpTodoEntry[]) {
 function inferPlanParentToolCallId(
   entries: AcpTodoEntry[],
   history: Array<{ entries: AcpTodoEntry[]; parentId: string | null }>,
-  position: number,
-  agentRanges: Map<string, { startedSeq: number; endedSeq?: number }>,
 ) {
   const contents = planEntryContents(entries);
   if (contents.size === 0) return null;
@@ -5459,13 +5927,6 @@ function inferPlanParentToolCallId(
   for (let index = history.length - 1; index >= 0; index -= 1) {
     const candidate = history[index];
     if (!candidate.parentId) continue;
-    const range = agentRanges.get(candidate.parentId);
-    if (
-      !range ||
-      position < range.startedSeq ||
-      (range.endedSeq != null && position > range.endedSeq)
-    )
-      continue;
     const overlap = [...planEntryContents(candidate.entries)].filter((content) =>
       contents.has(content),
     ).length;
@@ -5503,7 +5964,6 @@ function childAgentLifecycleRanges(events: AcpUiEventVm[]) {
 
 function resolveAcpEventParentToolCallIds(events: AcpUiEventVm[]) {
   const resolved = new Map<string, string>();
-  const agentRanges = childAgentLifecycleRanges(events);
   const planHistory: Array<{
     entries: AcpTodoEntry[];
     parentId: string | null;
@@ -5516,8 +5976,6 @@ function resolveAcpEventParentToolCallIds(events: AcpUiEventVm[]) {
       resolvedParentId ??= inferPlanParentToolCallId(
         entries,
         planHistory,
-        timelineEventPosition(event),
-        agentRanges,
       );
       planHistory.push({ entries, parentId: resolvedParentId });
     }
@@ -5639,27 +6097,35 @@ export function pendingPermissionFromEvents(
       continue;
     const requestId = permissionRequestIdFromEvent(event);
     if (dismissedIds.has(requestId)) continue;
-    const raw: Record<string, unknown> = {
-      ...(rawObject(event.raw) ?? {}),
-      requestId,
-    };
-    return {
-      requestId,
-      title: event.title ?? "Permission required",
-      toolCallId: event.toolCallId,
-      options:
-        arrayValue(raw.options)?.map((option) => {
-          const value = rawObject(option);
-          return {
-            optionId: stringValue(value?.optionId) ?? "",
-            name: stringValue(value?.name) ?? "",
-            kind: stringValue(value?.kind) ?? "",
-          };
-        }) ?? [],
-      raw,
-    } satisfies AcpPermissionRequestVm;
+    return permissionRequestFromEvent(event);
   }
   return null;
+}
+
+export function permissionRequestFromEvent(
+  event: AcpUiEventVm,
+): AcpPermissionRequestVm | null {
+  if (event.kind !== "permissionRequest") return null;
+  const requestId = permissionRequestIdFromEvent(event);
+  const raw: Record<string, unknown> = {
+    ...(rawObject(event.raw) ?? {}),
+    requestId,
+  };
+  return {
+    requestId,
+    title: event.title ?? "Permission required",
+    toolCallId: event.toolCallId,
+    options:
+      arrayValue(raw.options)?.map((option) => {
+        const value = rawObject(option);
+        return {
+          optionId: stringValue(value?.optionId) ?? "",
+          name: stringValue(value?.name) ?? "",
+          kind: stringValue(value?.kind) ?? "",
+        };
+      }) ?? [],
+    raw,
+  } satisfies AcpPermissionRequestVm;
 }
 
 interface PendingElicitationVm {
@@ -5804,7 +6270,9 @@ function stabilizeTimelineItems(
   nextItems: AcpTimelineItem[],
   previousItems: AcpTimelineItem[],
 ): AcpTimelineItem[] {
-  if (previousItems.length === 0) return nextItems;
+  if (previousItems.length === 0) {
+    return nextItems.length === 0 ? previousItems : nextItems;
+  }
   const previousByKey = new Map(
     previousItems.map((item) => [timelineEventKey(item), item]),
   );
@@ -5822,8 +6290,22 @@ function stabilizeTimelineItem(
   next: AcpTimelineItem,
   previous?: AcpTimelineItem,
 ): AcpTimelineItem {
-  if (!previous || isChildAgentGroup(next) !== isChildAgentGroup(previous))
-    return next;
+  if (!previous) return next;
+  if (isActivityBatch(next) || isActivityBatch(previous)) {
+    if (!isActivityBatch(next) || !isActivityBatch(previous)) return next;
+    const events = stabilizeTimelineItems(next.events, previous.events) as AcpTimelineEvent[];
+    if (
+      events === previous.events &&
+      next.seq === previous.seq &&
+      next.endedSeq === previous.endedSeq &&
+      next.endedAt === previous.endedAt &&
+      next.live === previous.live
+    ) {
+      return previous;
+    }
+    return { ...next, events };
+  }
+  if (isChildAgentGroup(next) !== isChildAgentGroup(previous)) return next;
   if (isChildAgentGroup(next) && isChildAgentGroup(previous)) {
     const events = stabilizeTimelineItems(next.events, previous.events);
     if (
@@ -5837,6 +6319,10 @@ function stabilizeTimelineItem(
       next.status === previous.status &&
       next.title === previous.title &&
       next.toolCallId === previous.toolCallId &&
+      next.eventCount === previous.eventCount &&
+      next.toolCallCount === previous.toolCallCount &&
+      next.readFileCount === previous.readFileCount &&
+      next.writtenFileCount === previous.writtenFileCount &&
       sameTodoEntries(next.todoEntries, previous.todoEntries) &&
       stabilizeTimelineItem(next.toolEvent, previous.toolEvent) ===
         previous.toolEvent
@@ -5895,6 +6381,10 @@ function latestStreamingMarkdownItemKey(items: AcpTimelineItem[]): string | null
       item.events.forEach(visit);
       return;
     }
+    if (isActivityBatch(item)) {
+      item.events.forEach(visit);
+      return;
+    }
     candidates.push(item);
   };
   items.forEach(visit);
@@ -5943,7 +6433,15 @@ function latestPlanEntries(
 
 function buildAcpTimelineProjection(
   events: AcpUiEventVm[],
+  sessionStatus?: string | null,
+  persistedProjection?: AcpTimelineProjectionVm | null,
 ): AcpTimelineProjection {
+  const persistedAgents = new Map(
+    (persistedProjection?.agents ?? []).flatMap((agent) => {
+      const scopedKey = agentProjectionKey(agent.toolCallId, agent.attemptId);
+      return [[scopedKey, agent] as const];
+    }),
+  );
   const resolvedParents = resolveAcpEventParentToolCallIds(events);
   const topLevelPlan = events.reduce<AcpUiEventVm | null>((latest, event) => {
     if (
@@ -5956,10 +6454,6 @@ function buildAcpTimelineProjection(
       ? event
       : latest;
   }, null);
-  const agentRanges = childAgentLifecycleRanges(events);
-  const topLevelPlanPosition = topLevelPlan
-    ? timelineEventPosition(topLevelPlan)
-    : null;
   const latestChildPlans = new Map<
     string,
     { position: number; entries: AcpTodoEntry[] }
@@ -5975,28 +6469,30 @@ function buildAcpTimelineProjection(
     }
   }
   const childTodoContents = new Set(
-    [...latestChildPlans.entries()].flatMap(([parentId, { entries }]) => {
-      const range = agentRanges.get(parentId);
-      if (
-        topLevelPlanPosition != null &&
-        range &&
-        (topLevelPlanPosition < range.startedSeq ||
-          (range.endedSeq != null && topLevelPlanPosition > range.endedSeq))
-      ) {
-        return [];
-      }
-      return [...planEntryContents(entries)];
-    }),
+    [...latestChildPlans.values()].flatMap(({ entries }) => [
+      ...planEntryContents(entries),
+    ]),
   );
   const flatTimeline = buildFlatAcpTimeline(events, resolvedParents);
+  const groupedTimeline = groupChildAgentTimeline(
+    flatTimeline,
+    resolvedParents,
+    sessionStatus,
+    persistedAgents,
+  );
   return {
-    timeline: groupChildAgentTimeline(flatTimeline, resolvedParents),
-    todoEntries: topLevelPlan
-      ? planEntries(topLevelPlan).filter(
+    timeline: batchAcpActivities(
+      groupedTimeline,
+      isSessionActiveStatus(sessionStatus),
+    ),
+    todoEntries: persistedProjection
+      ? persistedProjection.todoEntries
+      : topLevelPlan
+        ? planEntries(topLevelPlan).filter(
           (entry) =>
             !childTodoContents.has(normalizePromptText(entry.content)),
-        )
-      : [],
+          )
+        : [],
   };
 }
 
@@ -6107,6 +6603,8 @@ function buildFlatAcpTimeline(
 function groupChildAgentTimeline(
   events: AcpTimelineEvent[],
   resolvedParents: Map<string, string>,
+  sessionStatus?: string | null,
+  persistedAgents = new Map<string, AcpAgentExecutionVm>(),
 ): AcpTimelineItem[] {
   const agentToolCallIds = new Set<string>();
   for (const event of events) {
@@ -6161,7 +6659,12 @@ function groupChildAgentTimeline(
     nextAncestors.add(event.toolCallId);
     const directChildren = childrenByParent.get(event.toolCallId) ?? [];
     const visibleChildren = directChildren.filter((child) => child.kind !== "plan");
-    const status = childAgentStatus(event, directChildren);
+    const persisted = persistedAgents.get(agentProjectionKey(
+      event.toolCallId,
+      attemptIdFromAcpEvent(event),
+    )) ?? persistedAgents.get(event.toolCallId);
+    const status = persisted?.executionStatus
+      ?? childAgentStatus(event, directChildren, sessionStatus);
     const terminal = isTerminalToolStatus(status);
     const startSeq = event.startedSeq ?? event.seq;
     const endSeq = event.endedSeq ?? event.seq;
@@ -6178,8 +6681,19 @@ function groupChildAgentTimeline(
       title: event.title,
       toolCallId: event.toolCallId,
       toolEvent: event,
-      todoEntries: latestPlanEntries(directChildren),
-      events: visibleChildren.map((child) => buildItem(child, nextAncestors)),
+      todoEntries: persisted?.todoEntries ?? latestPlanEntries(directChildren),
+      eventCount: persisted?.eventCount ?? directChildren.length,
+      toolCallCount: persisted?.toolCallCount ?? directChildren.filter(
+        (child) =>
+          !isAgentToolCall(child) &&
+          (child.kind === "toolCall" || child.kind === "toolCallUpdate"),
+      ).length,
+      readFileCount: persisted?.readFileCount ?? 0,
+      writtenFileCount: persisted?.writtenFileCount ?? 0,
+      events: batchAcpActivities(
+        visibleChildren.map((child) => buildItem(child, nextAncestors)),
+        isSessionActiveStatus(sessionStatus),
+      ),
     };
   };
 
@@ -6191,6 +6705,56 @@ function groupChildAgentTimeline(
     grouped.push(buildItem(event, new Set()));
   }
   return grouped;
+}
+
+function agentProjectionKey(toolCallId: string, attemptId?: string | null) {
+  return attemptId ? `${attemptId}:${toolCallId}` : toolCallId;
+}
+
+function isActivityEvent(item: AcpTimelineItem): item is AcpTimelineEvent {
+  if (isChildAgentGroup(item) || isActivityBatch(item)) return false;
+  return (
+    item.kind === "thoughtDelta" ||
+    item.kind === "toolCall" ||
+    item.kind === "toolCallUpdate" ||
+    item.kind === "permissionRequest"
+  );
+}
+
+function batchAcpActivities(
+  items: AcpTimelineItem[],
+  sessionActive: boolean,
+): AcpTimelineItem[] {
+  const result: AcpTimelineItem[] = [];
+  let activityEvents: AcpTimelineEvent[] = [];
+  const flush = (live = false) => {
+    if (activityEvents.length === 0) return;
+    const first = activityEvents[0];
+    const last = activityEvents[activityEvents.length - 1];
+    result.push({
+      kind: "activityBatch",
+      id: `activity-${timelineEventKey(first)}`,
+      seq: first.startedSeq ?? first.seq,
+      timestamp: first.startedAt ?? first.timestamp,
+      startedSeq: first.startedSeq ?? first.seq,
+      endedSeq: last.endedSeq ?? last.seq,
+      startedAt: first.startedAt ?? first.timestamp,
+      endedAt: last.endedAt ?? last.timestamp,
+      live,
+      events: activityEvents,
+    });
+    activityEvents = [];
+  };
+  for (const item of items) {
+    if (isActivityEvent(item)) {
+      activityEvents.push(item);
+      continue;
+    }
+    flush(false);
+    result.push(item);
+  }
+  flush(sessionActive);
+  return result;
 }
 
 function isRenderableEvent(event: AcpUiEventVm) {
@@ -6347,6 +6911,7 @@ function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpS
     timing,
     restored: false,
     events,
+    timelineProjection: null,
     eventPage: {
       loadedCount: events.length,
       total: events.length,
@@ -6419,8 +6984,28 @@ function latestSessionTimingFromEvents(events: AcpUiEventVm[]): AcpSessionTiming
 
 function latestLiveSessionTimingFromEvents(events: AcpUiEventVm[]): AcpSessionTimingVm | null {
   return latestSessionTimingFromEvents(
-    events.filter((event) => event.kind === "timingUpdate"),
+    events.filter((event) => {
+      if (event.kind === "timingUpdate") return true;
+      if (
+        event.kind !== "permissionRequest" &&
+        event.kind !== "elicitationRequest" &&
+        event.kind !== "elicitationResponse"
+      ) {
+        return false;
+      }
+      return isVersionedLiveTimingPatch(event.timing);
+    }),
   );
+}
+
+function isVersionedLiveTimingPatch(timing: AcpUiEventVm["timing"]) {
+  return timing?.revision != null && Boolean(timing.observedAt);
+}
+
+export function shouldAwaitTerminalAcpStop(
+  session: Pick<AcpSessionVm, "sessionId" | "status"> | null | undefined,
+) {
+  return Boolean(session?.sessionId) && !isSessionTerminalStatus(session?.status);
 }
 
 function partitionAcpLiveTimingUpdates(events: AcpUiEventVm[]) {
@@ -6886,6 +7471,7 @@ export {
   pruneExpandedTimelineItems,
   buildAcpTimeline,
   buildAcpTimelineProjection,
+  stabilizeTimelineItems,
   latestStreamingMarkdownItemKey,
   latestStreamingMarkdownItemKeyFromEvents,
   calculateSessionElapsedSeconds,
@@ -6896,6 +7482,7 @@ export {
   liveTimelineUpdatesFromEvents,
   partitionAcpLiveTimingUpdates,
   queryBlocksFromTool,
+  objectiveActivityDescriptor,
   isTopLevelPlanEvent,
   hasMatchingUserPrompt,
   clearPendingOptimisticPromptsAfterStop,
@@ -7015,7 +7602,7 @@ function normalizePromptText(value?: string | null) {
   return value?.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim() ?? "";
 }
 
-function toolDetails(event: AcpUiEventVm) {
+function toolDetails(event: AcpUiEventVm, includeOutput = true) {
   const raw = rawObject(event.raw);
   const toolCall = rawObject(raw?.toolCall) ?? rawObject(raw?.content) ?? raw;
   const fields = rawObject(toolCall?.fields);
@@ -7027,19 +7614,21 @@ function toolDetails(event: AcpUiEventVm) {
   const claudeCode = rawObject(meta?.claudeCode);
   const toolResponse = rawObject(claudeCode?.toolResponse);
   const title = stringValue(toolCall?.title) ?? event.title;
-  const claudeToolName = stringValue(claudeCode?.toolName);
+  const normalizedToolName = stringValue(agentTranscriptMeta(event)?.toolName);
   const name =
-    claudeToolName ??
+    normalizedToolName ??
     parseToolTitle(title).name ??
     stringValue(toolCall?.name) ??
     title;
-  const output = cleanToolOutput(
-    toolCall?.output ??
-      raw?.output ??
-      fields?.output ??
-      toolResponse?.content ??
-      raw?.content,
-  );
+  const output = includeOutput
+    ? cleanToolOutput(
+        toolCall?.output ??
+          raw?.output ??
+          fields?.output ??
+          toolResponse?.content ??
+          raw?.content,
+      )
+    : undefined;
   const fallbackRawInput = toolCallInput ?? rawInput;
   return {
     name,
@@ -7077,12 +7666,16 @@ function queryBlocksFromTool(
   push("acp.toolQuery", stringValue(rawInput?.query));
   push("acp.toolQuery", stringValue(rawInput?.glob));
   push("acp.toolQuery", stringValue(rawInput?.command));
+  push("acp.toolSkill", stringValue(rawInput?.skill));
+  push("acp.toolArguments", stringValue(rawInput?.args));
   push("acp.toolPath", firstLocationPath(locations));
   return blocks;
 }
 
 function toolSummary(blocks: Array<{ value: string }>) {
-  const values = blocks.map((block) => block.value.trim()).filter(Boolean);
+  const values = [...new Set(
+    blocks.map((block) => block.value.trim()).filter(Boolean),
+  )];
   return values.length > 0 ? values.join(" · ") : undefined;
 }
 
@@ -7237,11 +7830,12 @@ function toolState(status?: string | null): ToolPart["state"] {
 }
 
 function toolStatusTone(status?: string | null): ToolTone {
-  if (!status) return "muted";
-  if (["pending", "sending"].includes(status)) return "pending";
-  if (["running", "in_progress"].includes(status)) return "running";
-  if (["completed", "success", "succeeded"].includes(status)) return "success";
-  if (["failed", "error", "cancelled"].includes(status)) return "danger";
+  const normalized = status?.toLowerCase();
+  if (!normalized) return "muted";
+  if (["pending", "sending", "queued"].includes(normalized)) return "pending";
+  if (["running", "in_progress", "waiting_permission"].includes(normalized)) return "running";
+  if (["completed", "success", "succeeded"].includes(normalized)) return "success";
+  if (["failed", "error", "cancelled", "canceled", "interrupted"].includes(normalized)) return "danger";
   return "muted";
 }
 

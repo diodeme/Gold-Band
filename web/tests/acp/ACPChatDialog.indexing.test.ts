@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildAcpTimeline, buildAcpTimelineProjection, collectTimelineItemKeys, createAcpSessionCacheKey, isTopLevelPlanEvent, latestStreamingMarkdownItemKey, latestStreamingMarkdownItemKeyFromEvents, limitAcpEvents, mergeAcpEvents, pruneExpandedTimelineItems, queryBlocksFromTool, restoreAcpLoadedEvents, storeAcpLoadedEvents, timelineEventKey } from '../../src/components/acp/ACPChatDialog';
+import { buildAcpTimeline, buildAcpTimelineProjection, collectTimelineItemKeys, createAcpSessionCacheKey, isTopLevelPlanEvent, latestLiveSessionTimingFromEvents, latestStreamingMarkdownItemKey, latestStreamingMarkdownItemKeyFromEvents, limitAcpEvents, mergeAcpEvents, objectiveActivityDescriptor, pruneExpandedTimelineItems, queryBlocksFromTool, restoreAcpLoadedEvents, shouldAwaitTerminalAcpStop, stabilizeTimelineItems, storeAcpLoadedEvents, timelineEventKey } from '../../src/components/acp/ACPChatDialog';
 import type { AcpUiEventVm } from '../../src/types';
 
 function event(partial: Partial<AcpUiEventVm> & Pick<AcpUiEventVm, 'id' | 'seq' | 'timestamp' | 'kind'>): AcpUiEventVm {
@@ -17,6 +17,7 @@ function event(partial: Partial<AcpUiEventVm> & Pick<AcpUiEventVm, 'id' | 'seq' 
     endedSeq: partial.endedSeq ?? partial.seq,
     startedAt: partial.startedAt ?? partial.timestamp,
     endedAt: partial.endedAt ?? partial.timestamp,
+    timing: partial.timing,
     raw: partial.raw,
   };
 }
@@ -75,7 +76,7 @@ describe('ACPChatDialog timeline helpers', () => {
       event({ id: 'message-1', seq: 2, timestamp: '2Z', kind: 'textDelta', content: 'hello' }),
     ]);
 
-    expect(timeline.map(timelineEventKey)).toEqual(['tool-call-1', 'textDelta-message-1']);
+    expect(timeline.map(timelineEventKey)).toEqual(['activity-tool-call-1', 'textDelta-message-1']);
   });
 
   it('aggregates delta and tool updates into stable timeline items', () => {
@@ -88,14 +89,19 @@ describe('ACPChatDialog timeline helpers', () => {
     ]);
 
     expect(timeline.map(timelineEventKey)).toEqual([
-      'thoughtDelta-thought-1',
-      'tool-call-1',
+      'activity-thoughtDelta-thought-1',
       'textDelta-message-1',
     ]);
-    const thought = timeline[0];
-    const tool = timeline[1];
-    expect(thought && !('events' in thought) ? thought.content : null).toBe('thinking more');
-    expect(tool && !('events' in tool) ? tool.status : null).toBe('completed');
+    const activity = timeline[0];
+    expect(activity?.kind).toBe('activityBatch');
+    if (!activity || activity.kind !== 'activityBatch') throw new Error('missing activity batch');
+    expect(activity.events.map(timelineEventKey)).toEqual([
+      'thoughtDelta-thought-1',
+      'tool-call-1',
+    ]);
+    expect(activity.events[0]?.content).toBe('thinking more');
+    expect(activity.events[1]?.status).toBe('completed');
+    expect(activity.live).toBe(false);
   });
 
   it('excludes top-level plan events from timeline', () => {
@@ -109,7 +115,7 @@ describe('ACPChatDialog timeline helpers', () => {
     const keys = timeline.map(timelineEventKey);
     expect(keys).not.toContain('plan-plan-1');
     expect(keys).not.toContain('plan-plan-2');
-    expect(keys).toContain('tool-call-1');
+    expect(keys).toContain('activity-tool-call-1');
   });
 
   it('keeps child-agent plan events in timeline', () => {
@@ -234,7 +240,73 @@ describe('ACPChatDialog timeline helpers', () => {
     expect(inner?.kind).toBe('childAgentGroup');
     if (!inner || inner.kind !== 'childAgentGroup') throw new Error('missing inner agent');
     expect(inner.status).toBe('running');
-    expect(inner.events.map(timelineEventKey)).toEqual(['tool-call-powershell']);
+    expect(inner.events.map(timelineEventKey)).toEqual(['activity-tool-call-powershell']);
+  });
+
+  it('keeps a nested permission request inside the owning agent branch', () => {
+    const projection = buildAcpTimelineProjection([
+      event({
+        id: 'agent', seq: 1, timestamp: '1Z', kind: 'toolCall',
+        toolCallId: 'call-agent', status: 'running',
+        raw: { _meta: { agentTranscript: { agentLaunch: true } }, rawInput: { description: 'inspect' } },
+      }),
+      event({
+        id: 'permission-1', seq: 2, timestamp: '2Z', kind: 'permissionRequest',
+        toolCallId: 'call-shell', status: 'pending', title: 'PowerShell',
+        raw: {
+          options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+          toolCall: { rawInput: { command: 'git status --short' } },
+          _meta: { agentTranscript: { parentToolCallId: 'call-agent' } },
+        },
+      }),
+    ]);
+
+    const agent = projection.timeline[0];
+    expect(agent?.kind).toBe('childAgentGroup');
+    if (!agent || agent.kind !== 'childAgentGroup') throw new Error('missing agent group');
+    expect(agent.events.map(timelineEventKey)).toEqual(['activity-permissionRequest-permission-1']);
+    const activity = agent.events[0];
+    expect(activity?.kind).toBe('activityBatch');
+    if (!activity || activity.kind !== 'activityBatch') throw new Error('missing permission activity');
+    expect(activity.events.map(timelineEventKey)).toEqual(['permissionRequest-permission-1']);
+  });
+
+  it('uses timing embedded in a permission event to enter permission wait immediately', () => {
+    const timing = {
+      sessionElapsedSeconds: 12,
+      revision: 9,
+      observedAt: '2Z',
+      paused: true,
+      waitReason: 'permission',
+    };
+    const permission = event({
+      id: 'permission-1', seq: 2, timestamp: '2Z', kind: 'permissionRequest',
+      status: 'pending', timing,
+    });
+
+    expect(latestLiveSessionTimingFromEvents([permission])).toMatchObject(timing);
+  });
+
+  it('ignores unversioned permission timing when rebuilding historical events', () => {
+    const permission = event({
+      id: 'permission-1', seq: 2, timestamp: '2Z', kind: 'permissionRequest',
+      status: 'selected',
+      timing: {
+        sessionElapsedSeconds: 12,
+        revision: 9,
+        observedAt: null,
+        paused: false,
+        waitReason: null,
+      },
+    });
+
+    expect(latestLiveSessionTimingFromEvents([permission])).toBeNull();
+  });
+
+  it('does not wait for another terminal snapshot after stop already returned one', () => {
+    expect(shouldAwaitTerminalAcpStop({ sessionId: 'session-1', status: 'cancelled' })).toBe(false);
+    expect(shouldAwaitTerminalAcpStop({ sessionId: 'session-1', status: 'cancelling' })).toBe(true);
+    expect(shouldAwaitTerminalAcpStop(null)).toBe(false);
   });
 
   it('projects an unscoped descendant plan into its established child-agent branch', () => {
@@ -277,7 +349,7 @@ describe('ACPChatDialog timeline helpers', () => {
     expect(isTopLevelPlanEvent(aggregatePlan, [outerAgent, firstPlan, aggregatePlan])).toBe(false);
   });
 
-  it('does not inherit a completed child-agent plan lineage after its lifecycle ends', () => {
+  it('keeps cumulative plan snapshots in the established child-agent plan stream', () => {
     const events = [
       event({
         id: 'outer-agent', seq: 1, startedSeq: 1, endedSeq: 3,
@@ -298,10 +370,212 @@ describe('ACPChatDialog timeline helpers', () => {
     ];
 
     const projection = buildAcpTimelineProjection(events);
-    expect(projection.todoEntries).toEqual([
+    expect(projection.todoEntries).toEqual([]);
+    const outer = projection.timeline[0];
+    expect(outer?.kind).toBe('childAgentGroup');
+    if (!outer || outer.kind !== 'childAgentGroup') throw new Error('missing child agent group');
+    expect(outer.todoEntries).toEqual([
       { content: 'Shared task', status: 'pending', priority: undefined },
     ]);
-    expect(isTopLevelPlanEvent(events[2]!, events)).toBe(true);
+    expect(isTopLevelPlanEvent(events[2]!, events)).toBe(false);
+  });
+
+  it('does not treat an accepted background Agent launch as completed execution', () => {
+    const launch = event({
+      id: 'agent-launch', seq: 1, timestamp: '1Z', kind: 'toolCall',
+      toolCallId: 'call-agent', status: 'completed',
+      raw: {
+        _meta: { agentTranscript: { agentLaunch: true } },
+        rawInput: { run_in_background: true, description: 'inspect ACP' },
+        rawOutput: 'Async agent launched successfully',
+      },
+    });
+
+    const queued = buildAcpTimelineProjection([launch], 'running').timeline[0];
+    expect(queued?.kind).toBe('childAgentGroup');
+    if (!queued || queued.kind !== 'childAgentGroup') throw new Error('missing queued agent');
+    expect(queued.status).toBe('queued');
+
+    const childTool = event({
+      id: 'child-tool', seq: 2, timestamp: '2Z', kind: 'toolCall',
+      toolCallId: 'call-read', status: 'completed', title: 'Read file',
+      raw: {
+        _meta: { agentTranscript: { parentToolCallId: 'call-agent' } },
+        rawInput: { file_path: 'src/acp/client.rs' },
+      },
+    });
+    const running = buildAcpTimelineProjection([launch, childTool], 'running').timeline[0];
+    expect(running?.kind === 'childAgentGroup' ? running.status : null).toBe('running');
+
+    const interrupted = buildAcpTimelineProjection([launch, childTool], 'cancelled').timeline[0];
+    expect(interrupted?.kind === 'childAgentGroup' ? interrupted.status : null).toBe('interrupted');
+  });
+
+  it('uses the full-session Agent projection when the finite event window only contains anchors', () => {
+    const launch = event({
+      id: 'agent-anchor', seq: 1, timestamp: '1Z', kind: 'toolCall',
+      toolCallId: 'call-agent', status: 'completed', title: 'Agent',
+      raw: {
+        _meta: { agentTranscript: { agentLaunch: true, toolName: 'Agent' } },
+        rawInput: { run_in_background: true, description: 'inspect ACP' },
+      },
+    });
+    const projection = buildAcpTimelineProjection([launch], 'running', {
+      todoEntries: [{ content: 'Main task', status: 'in_progress' }],
+      agents: [{
+        toolCallId: 'call-agent',
+        parentToolCallId: null,
+        launchStatus: 'completed',
+        executionStatus: 'running',
+        eventCount: 97,
+        toolCallCount: 42,
+        readFileCount: 18,
+        writtenFileCount: 3,
+        todoEntries: [{ content: 'Inspect timeline', status: 'completed' }],
+      }],
+    });
+
+    expect(projection.todoEntries).toEqual([{ content: 'Main task', status: 'in_progress' }]);
+    const agent = projection.timeline[0];
+    expect(agent?.kind).toBe('childAgentGroup');
+    if (!agent || agent.kind !== 'childAgentGroup') throw new Error('missing projected Agent');
+    expect(agent).toMatchObject({
+      status: 'running',
+      eventCount: 97,
+      toolCallCount: 42,
+      readFileCount: 18,
+      writtenFileCount: 3,
+      todoEntries: [{ content: 'Inspect timeline', status: 'completed' }],
+    });
+  });
+
+  it('preserves unrelated Agent branch identity when a live event updates one branch', () => {
+    const agent = (id: string, seq: number) => event({
+      id: `agent-${id}`, seq, timestamp: `${seq}Z`, kind: 'toolCall',
+      toolCallId: `call-${id}`, status: 'running', title: 'Agent',
+      raw: { _meta: { agentTranscript: { agentLaunch: true, toolName: 'Agent' } }, rawInput: { description: id } },
+    });
+    const agentA = agent('a', 1);
+    const agentB = agent('b', 2);
+    const initial = buildAcpTimeline([agentA, agentB]);
+    const updated = buildAcpTimeline([
+      agentA,
+      agentB,
+      event({
+        id: 'tool-b', seq: 3, timestamp: '3Z', kind: 'toolCall',
+        toolCallId: 'read-b', status: 'running', title: 'Read file',
+        raw: { _meta: { agentTranscript: { parentToolCallId: 'call-b', toolName: 'Read' } }, rawInput: { file_path: 'b.ts' } },
+      }),
+    ]);
+    const stable = stabilizeTimelineItems(updated, initial);
+
+    expect(stable[0]).toBe(initial[0]);
+    expect(stable[1]).not.toBe(initial[1]);
+  });
+
+  it('archives each activity batch when formal text begins and keeps the next batch separate', () => {
+    const timeline = buildAcpTimelineProjection([
+      event({ id: 'thought-1', seq: 1, timestamp: '1Z', kind: 'thoughtDelta', content: 'inspect' }),
+      event({ id: 'read-1', seq: 2, timestamp: '2Z', kind: 'toolCall', toolCallId: 'read-1', status: 'completed', title: 'Read file' }),
+      event({ id: 'text-1', seq: 3, timestamp: '3Z', kind: 'textDelta', content: 'Finding one.' }),
+      event({ id: 'grep-1', seq: 4, timestamp: '4Z', kind: 'toolCall', toolCallId: 'grep-1', status: 'running', title: 'Grep `parentToolCallId`' }),
+    ], 'running').timeline;
+
+    expect(timeline.map(timelineEventKey)).toEqual([
+      'activity-thoughtDelta-thought-1',
+      'textDelta-text-1',
+      'activity-tool-grep-1',
+    ]);
+    expect(timeline[0]?.kind === 'activityBatch' ? timeline[0].live : null).toBe(false);
+    expect(timeline[2]?.kind === 'activityBatch' ? timeline[2].live : null).toBe(true);
+  });
+
+  it('keeps failed tools, permission decisions, and later tools in one activity segment until text begins', () => {
+    const events = [
+      event({ id: 'glob-failed', seq: 1, timestamp: '1Z', kind: 'toolCall', toolCallId: 'glob-failed', status: 'failed', title: 'Glob `*`' }),
+      event({ id: 'glob-completed', seq: 2, timestamp: '2Z', kind: 'toolCall', toolCallId: 'glob-completed', status: 'completed', title: 'Glob `README*`' }),
+      event({ id: 'read-failed', seq: 3, timestamp: '3Z', kind: 'toolCall', toolCallId: 'read-failed', status: 'failed', title: 'Read README.zh-CN.md' }),
+      event({
+        id: 'permission', seq: 4, timestamp: '4Z', kind: 'permissionRequest',
+        toolCallId: 'bash', status: 'selected', title: 'Bash',
+        raw: { optionId: 'allow', options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }] },
+      }),
+      event({ id: 'bash', seq: 5, timestamp: '5Z', kind: 'toolCall', toolCallId: 'bash', status: 'completed', title: 'Bash `pwd`' }),
+      event({ id: 'read-completed', seq: 6, timestamp: '6Z', kind: 'toolCall', toolCallId: 'read-completed', status: 'completed', title: 'Read README.md' }),
+      event({ id: 'answer', seq: 7, timestamp: '7Z', kind: 'textDelta', content: 'README content.' }),
+    ];
+
+    const timeline = buildAcpTimelineProjection(events, 'completed').timeline;
+    expect(timeline.map(timelineEventKey)).toEqual([
+      'activity-tool-glob-failed',
+      'textDelta-answer',
+    ]);
+    const activity = timeline[0];
+    expect(activity?.kind).toBe('activityBatch');
+    if (!activity || activity.kind !== 'activityBatch') throw new Error('missing activity segment');
+    expect(activity.events.map(timelineEventKey)).toEqual([
+      'tool-glob-failed',
+      'tool-glob-completed',
+      'tool-read-failed',
+      'permissionRequest-permission',
+      'tool-bash',
+      'tool-read-completed',
+    ]);
+  });
+
+  it('keeps the activity row identity stable when later tools arrive while details are open', () => {
+    const first = event({
+      id: 'glob', seq: 1, timestamp: '1Z', kind: 'toolCall',
+      toolCallId: 'glob', status: 'completed', title: 'Glob `README*`',
+    });
+    const later = event({
+      id: 'read', seq: 2, timestamp: '2Z', kind: 'toolCall',
+      toolCallId: 'read', status: 'failed', title: 'Read README.zh-CN.md',
+    });
+    const initial = buildAcpTimelineProjection([first], 'running').timeline;
+    const updated = buildAcpTimelineProjection([first, later], 'running').timeline;
+    const stable = stabilizeTimelineItems(updated, initial);
+
+    expect(timelineEventKey(updated[0]!)).toBe(timelineEventKey(initial[0]!));
+    expect(stable).toHaveLength(1);
+    expect(stable[0]?.kind).toBe('activityBatch');
+    if (!stable[0] || stable[0].kind !== 'activityBatch') throw new Error('missing stable activity');
+    expect(stable[0].events.map(timelineEventKey)).toEqual(['tool-glob', 'tool-read']);
+    expect(stable[0].events[0]).toBe(
+      initial[0]?.kind === 'activityBatch' ? initial[0].events[0] : null,
+    );
+  });
+
+  it('projects the ACP tool action literally without guessing command intent', () => {
+    const descriptor = objectiveActivityDescriptor(event({
+      id: 'powershell', seq: 1, timestamp: '1Z', kind: 'toolCall',
+      toolCallId: 'powershell-1', status: 'running', title: 'PowerShell',
+      raw: { rawInput: { command: 'npm run web:test' } },
+    }));
+
+    expect(descriptor).toEqual({
+      kind: 'tool',
+      name: 'PowerShell',
+      parameter: 'npm run web:test',
+    });
+    expect(descriptor.parameter).not.toContain('运行测试');
+
+    const grepDescriptor = objectiveActivityDescriptor(event({
+      id: 'grep', seq: 2, timestamp: '2Z', kind: 'toolCall',
+      toolCallId: 'grep-1', status: 'running', title: 'Grep `parentToolCallId`',
+      raw: { rawInput: { pattern: 'parentToolCallId' } },
+    }));
+    expect(grepDescriptor.parameter).toBe('parentToolCallId');
+
+    const normalizedDescriptor = objectiveActivityDescriptor(event({
+      id: 'normalized-tool', seq: 3, timestamp: '3Z', kind: 'toolCall',
+      toolCallId: 'read-1', status: 'running', title: 'Reading file',
+      raw: {
+        _meta: { agentTranscript: { toolName: 'Read' } },
+        rawInput: { file_path: 'src/acp/client.rs' },
+      },
+    }));
+    expect(normalizedDescriptor.name).toBe('Read');
   });
 
   it('keeps nested agent todos inside their owners and removes them from the aggregate root plan', () => {

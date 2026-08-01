@@ -203,7 +203,9 @@ describe('ACP chat event handling', () => {
     ]);
 
     expect(timeline).toHaveLength(1);
-    expect(timeline[0]).toMatchObject({
+    expect(timeline[0]).toMatchObject({ kind: 'activityBatch' });
+    if (timeline[0]?.kind !== 'activityBatch') throw new Error('missing activity batch');
+    expect(timeline[0].events[0]).toMatchObject({
       kind: 'toolCall',
       toolCallId: 'ask-call',
       status: 'completed',
@@ -393,7 +395,9 @@ describe('ACP chat event handling', () => {
     ]);
 
     expect(timeline).toHaveLength(1);
-    expect(timeline[0]).toMatchObject({
+    expect(timeline[0]).toMatchObject({ kind: 'activityBatch' });
+    if (timeline[0]?.kind !== 'activityBatch') throw new Error('missing activity batch');
+    expect(timeline[0].events[0]).toMatchObject({
       kind: 'toolCall',
       toolCallId: 'call-a',
       status: 'completed',
@@ -431,7 +435,9 @@ describe('ACP chat event handling', () => {
 
     expect(timeline).toHaveLength(2);
     expect(timeline[0]).toMatchObject({ kind: 'textDelta', content: 'hello world' });
-    expect(timeline[1]).toMatchObject({ kind: 'thoughtDelta', content: 'thinking done' });
+    expect(timeline[1]).toMatchObject({ kind: 'activityBatch' });
+    if (timeline[1]?.kind !== 'activityBatch') throw new Error('missing activity batch');
+    expect(timeline[1].events[0]).toMatchObject({ kind: 'thoughtDelta', content: 'thinking done' });
   });
 
   it('keeps repeated Gold Band user prompts when prompt ids differ', () => {
@@ -1231,7 +1237,7 @@ describe('ACP chat event handling', () => {
     ]);
 
     expect(timeline).toHaveLength(4);
-    expect(timeline.map((item) => 'content' in item ? item.content : null)).toEqual([
+    expect(timeline.map((item) => item.kind === 'activityBatch' ? item.events[0]?.content : item.content)).toEqual([
       '继续',
       'first resumed thought',
       '继续',
@@ -1425,7 +1431,9 @@ describe('ACP chat event handling', () => {
 
     expect(timeline).toHaveLength(2);
     expect(timeline[0]).toMatchObject({ kind: 'textDelta', content: 'hello world' });
-    expect(timeline[1]).toMatchObject({ kind: 'thoughtDelta', content: 'thinking done' });
+    expect(timeline[1]).toMatchObject({ kind: 'activityBatch' });
+    if (timeline[1]?.kind !== 'activityBatch') throw new Error('missing activity batch');
+    expect(timeline[1].events[0]).toMatchObject({ kind: 'thoughtDelta', content: 'thinking done' });
   });
 
   it('replaces existing permission events during live/session merge', () => {

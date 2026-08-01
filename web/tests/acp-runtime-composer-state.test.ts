@@ -171,6 +171,39 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.showStatus).toBe(true);
   });
 
+  it('keeps stop available when a previous terminal snapshot races a live follow-up', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'completed',
+          outcome: 'success',
+          active: false,
+          phase: 'provider-running',
+        },
+        acp: {
+          status: 'running',
+          phase: 'running',
+          active: true,
+          stopping: false,
+          terminal: false,
+        },
+      }),
+      acpStatus: 'completed',
+      localTurnInFlight: true,
+      awaitingResponse: false,
+      sending: false,
+      waitingForOptimisticPrompt: false,
+      timelineProcessingKind: 'tool',
+    }));
+
+    expect(state.acpActive).toBe(true);
+    expect(state.sessionActive).toBe(true);
+    expect(state.statusActive).toBe(true);
+    expect(state.processingKind).toBe('tool');
+    expect(state.canStop).toBe(true);
+    expect(state.inputDisabled).toBe(true);
+  });
+
   it('keeps stopping locked while ACP is cancelling', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
@@ -195,6 +228,34 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.stopInProgress).toBe(true);
     expect(state.inputDisabled).toBe(true);
     expect(state.canSubmit).toBe(false);
+  });
+
+  it('lets a terminal ACP snapshot override a stale cancelling lifecycle', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'paused',
+          outcome: null,
+          pauseReason: 'process-interrupted',
+          resumable: true,
+          current: true,
+          active: false,
+          continuable: true,
+        },
+        acp: { status: 'cancelling', active: true, stopping: true, terminal: false },
+        displayStatus: 'cancelling',
+        runtimeDisplay: pausedDisplay,
+        continueKind: 'input',
+      }),
+      acpStatus: 'cancelled',
+      cancelling: true,
+      stopCommandPending: true,
+    }));
+
+    expect(state.stopInProgress).toBe(false);
+    expect(state.mode).toBe('interrupted-input');
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canStop).toBe(false);
   });
 
   it('routes process-interrupted stopped input through runtime continue', () => {

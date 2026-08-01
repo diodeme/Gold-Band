@@ -3907,7 +3907,7 @@ impl<'a> AcpRuntime<'a> {
                 &stream.content,
                 content,
             ) {
-                append_bounded(&mut stream.content, "\n\n", max_chars);
+                append_bounded(&mut stream.content, "\n", max_chars);
             }
             append_bounded(&mut stream.content, content, max_chars);
         }
@@ -5713,7 +5713,7 @@ mod tests {
 
         assert_eq!(
             second.content.as_deref(),
-            Some("**Designing routes**\n\n**Planning branches**")
+            Some("**Designing routes**\n**Planning branches**")
         );
     }
 

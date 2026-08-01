@@ -176,7 +176,7 @@ use crate::acp::elicitation::{
 use crate::acp::events::{
     AcpAttemptPaths, AcpSessionMetadata, AcpSessionTiming, AcpTimingState, AcpUiEvent,
     append_diagnostic, append_raw_frame, append_structured_diagnostic, append_ui_event,
-    current_timestamp, initial_acp_event_seq, latest_timeline_source_seq, load_timeline_items,
+    current_timestamp, initial_acp_event_seq, latest_timeline_source_seq,
     normalize_session_update, permission_request_event, user_prompt_event, write_session_metadata,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
@@ -187,7 +187,8 @@ use crate::acp::permission::{
 };
 use crate::acp::timeline::{TimelineCompactionPolicy, TimelineStore};
 use crate::acp::branches::{
-    ROOT_BRANCH_ID, agent_prompt_event, annotate_event_branch, branch_timeline_path, event_branch_id,
+    ROOT_BRANCH_ID, agent_prompt_event, annotate_event_branch, branch_route_for_event,
+    branch_timeline_path, event_branch_id,
     load_all_branch_events, migrate_legacy_agent_timeline,
 };
 use crate::acp::usage::{
@@ -1093,9 +1094,7 @@ struct AcpRuntime<'a> {
     system_prompt_append: Option<String>,
     session_title: Option<String>,
     usage: AcpUsageState,
-    active_text_stream: Option<AcpTimelineStreamState>,
-    active_thought_stream: Option<AcpTimelineStreamState>,
-    active_plan_stream: Option<AcpTimelineStreamState>,
+    active_timeline_streams: HashMap<String, AcpBranchTimelineStreams>,
     timing_state: AcpTimingState,
     live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
     pending_live_update: Option<AcpUiEvent>,
@@ -1113,6 +1112,13 @@ struct AcpRuntime<'a> {
     provider_freshness: ProviderFreshnessBaseline,
     sync_required: bool,
     retain_session_route: bool,
+}
+
+#[derive(Default)]
+struct AcpBranchTimelineStreams {
+    text: Option<AcpTimelineStreamState>,
+    thought: Option<AcpTimelineStreamState>,
+    plan: Option<AcpTimelineStreamState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1696,13 +1702,9 @@ fn read_prior_attempt_metrics(snapshot_path: &Utf8Path) -> PriorAttemptMetrics {
 impl<'a> AcpRuntime<'a> {
     fn cancel_pending_prompt_interactions(&mut self, decided_at: String) -> Result<()> {
         cancel_pending_prompt_interactions(&self.paths.attempt_dir, decided_at)?;
-        let timeline_items = load_timeline_items(&self.paths.timeline)?;
+        let timeline_items = load_all_branch_events(&self.paths.attempt_dir)?;
         self.timing_state = AcpTimingState::from_timeline_item_refs(&timeline_items);
-        (
-            self.active_text_stream,
-            self.active_thought_stream,
-            self.active_plan_stream,
-        ) = active_timeline_streams(&timeline_items);
+        self.active_timeline_streams = active_timeline_streams_by_branch(&timeline_items);
         self.timeline_items = runtime_hot_timeline_items(timeline_items);
         Ok(())
     }
@@ -1866,12 +1868,17 @@ impl<'a> AcpRuntime<'a> {
         migrate_legacy_agent_timeline(&paths.attempt_dir)?;
         let timeline_store =
             TimelineStore::open(paths.timeline.clone(), runtime_policy.timeline_compaction)?;
-        let seq = initial_acp_source_seq(&paths);
         let loaded_timeline_items = load_all_branch_events(&paths.attempt_dir)?;
+        let seq = initial_acp_source_seq(&paths).max(
+            loaded_timeline_items
+                .iter()
+                .map(|item| item.ended_seq.unwrap_or(item.seq))
+                .max()
+                .unwrap_or_default(),
+        );
         let timing_state = AcpTimingState::from_timeline_item_refs(&loaded_timeline_items);
         let provider_history_replay = ProviderHistoryReplay::from_timeline(&loaded_timeline_items);
-        let (active_text_stream, active_thought_stream, active_plan_stream) =
-            active_timeline_streams(&loaded_timeline_items);
+        let active_timeline_streams = active_timeline_streams_by_branch(&loaded_timeline_items);
         let context_compaction = active_context_compaction(&loaded_timeline_items);
         let historical_timeline_item_ids = loaded_timeline_items
             .iter()
@@ -1919,9 +1926,7 @@ impl<'a> AcpRuntime<'a> {
             system_prompt_append: None,
             session_title: None,
             usage,
-            active_text_stream,
-            active_thought_stream,
-            active_plan_stream,
+            active_timeline_streams,
             timing_state,
             live_update,
             pending_live_update: None,
@@ -4069,6 +4074,11 @@ impl<'a> AcpRuntime<'a> {
         event: &crate::acp::events::AcpUiEvent,
     ) -> crate::acp::events::AcpUiEvent {
         let mut item = event.clone();
+        let branch_id = branch_route_for_event(&item).branch_id;
+        let mut streams = self
+            .active_timeline_streams
+            .remove(&branch_id)
+            .unwrap_or_default();
         let timestamp = item.timestamp.clone();
         let seq = item.seq;
         match item.kind.as_str() {
@@ -4076,7 +4086,7 @@ impl<'a> AcpRuntime<'a> {
                 let stable_id = stable_message_item_id(&item);
                 let source_id = stable_message_stream_identity(&item);
                 Self::apply_streaming_delta(
-                    &mut self.active_text_stream,
+                    &mut streams.text,
                     &mut item,
                     &stable_id,
                     source_id.as_deref(),
@@ -4089,7 +4099,7 @@ impl<'a> AcpRuntime<'a> {
                 let stable_id = stable_thought_item_id(&item);
                 let source_id = stable_thought_stream_identity(&item);
                 Self::apply_streaming_delta(
-                    &mut self.active_thought_stream,
+                    &mut streams.thought,
                     &mut item,
                     &stable_id,
                     source_id.as_deref(),
@@ -4102,7 +4112,7 @@ impl<'a> AcpRuntime<'a> {
                 let stable_id = stable_plan_item_id(&item);
                 let source_id = stable_plan_stream_identity(&item);
                 Self::apply_streaming_delta(
-                    &mut self.active_plan_stream,
+                    &mut streams.plan,
                     &mut item,
                     &stable_id,
                     source_id.as_deref(),
@@ -4112,9 +4122,9 @@ impl<'a> AcpRuntime<'a> {
                 );
             }
             "contextCompaction" => {
-                self.active_text_stream = None;
-                self.active_thought_stream = None;
-                self.active_plan_stream = None;
+                streams.text = None;
+                streams.thought = None;
+                streams.plan = None;
                 self.apply_context_compaction_event(&mut item, seq, &timestamp);
             }
             "usageUpdate" => {
@@ -4125,9 +4135,9 @@ impl<'a> AcpRuntime<'a> {
                     .unwrap_or_else(|| "session-usage-current".to_string());
                 Self::finalize_non_streaming_event(
                     (
-                        &mut self.active_text_stream,
-                        &mut self.active_thought_stream,
-                        &mut self.active_plan_stream,
+                        &mut streams.text,
+                        &mut streams.thought,
+                        &mut streams.plan,
                     ),
                     &mut item,
                     seq,
@@ -4148,9 +4158,9 @@ impl<'a> AcpRuntime<'a> {
                 item.kind = "toolCall".to_string();
                 Self::finalize_non_streaming_event(
                     (
-                        &mut self.active_text_stream,
-                        &mut self.active_thought_stream,
-                        &mut self.active_plan_stream,
+                        &mut streams.text,
+                        &mut streams.thought,
+                        &mut streams.plan,
                     ),
                     &mut item,
                     seq,
@@ -4161,9 +4171,9 @@ impl<'a> AcpRuntime<'a> {
                 item.id = format!("permission-{}", item.id);
                 Self::finalize_non_streaming_event(
                     (
-                        &mut self.active_text_stream,
-                        &mut self.active_thought_stream,
-                        &mut self.active_plan_stream,
+                        &mut streams.text,
+                        &mut streams.thought,
+                        &mut streams.plan,
                     ),
                     &mut item,
                     seq,
@@ -4188,9 +4198,9 @@ impl<'a> AcpRuntime<'a> {
             _ => {
                 Self::finalize_non_streaming_event(
                     (
-                        &mut self.active_text_stream,
-                        &mut self.active_thought_stream,
-                        &mut self.active_plan_stream,
+                        &mut streams.text,
+                        &mut streams.thought,
+                        &mut streams.plan,
                     ),
                     &mut item,
                     seq,
@@ -4201,13 +4211,16 @@ impl<'a> AcpRuntime<'a> {
         // Clear streams whose kind no longer matches — the next delta of a
         // different kind will create a fresh stream with a new stable id.
         if item.kind != "textDelta" {
-            self.active_text_stream = None;
+            streams.text = None;
         }
         if item.kind != "thoughtDelta" {
-            self.active_thought_stream = None;
+            streams.thought = None;
         }
         if item.kind != "plan" {
-            self.active_plan_stream = None;
+            streams.plan = None;
+        }
+        if streams.text.is_some() || streams.thought.is_some() || streams.plan.is_some() {
+            self.active_timeline_streams.insert(branch_id, streams);
         }
         item
     }
@@ -4428,6 +4441,34 @@ fn active_timeline_streams(
     }
 }
 
+fn active_timeline_streams_by_branch(
+    items: &[crate::acp::events::AcpUiEvent],
+) -> HashMap<String, AcpBranchTimelineStreams> {
+    let mut latest_by_branch = HashMap::<String, &crate::acp::events::AcpUiEvent>::new();
+    for item in items {
+        let branch_id = branch_route_for_event(item).branch_id;
+        let should_replace = latest_by_branch
+            .get(&branch_id)
+            .is_none_or(|latest| {
+                (item.ended_seq.unwrap_or(item.seq), item.seq)
+                    >= (latest.ended_seq.unwrap_or(latest.seq), latest.seq)
+            });
+        if should_replace {
+            latest_by_branch.insert(branch_id, item);
+        }
+    }
+    latest_by_branch
+        .into_iter()
+        .filter_map(|(branch_id, item)| {
+            let (text, thought, plan) = active_timeline_streams(std::slice::from_ref(item));
+            (text.is_some() || thought.is_some() || plan.is_some()).then_some((
+                branch_id,
+                AcpBranchTimelineStreams { text, thought, plan },
+            ))
+        })
+        .collect()
+}
+
 fn active_context_compaction(
     items: &[crate::acp::events::AcpUiEvent],
 ) -> Option<AcpContextCompactionState> {
@@ -4549,7 +4590,12 @@ fn stable_message_stream_identity(event: &crate::acp::events::AcpUiEvent) -> Opt
         .and_then(|raw| raw.get("messageId"))
         .and_then(Value::as_str)
         .filter(|message_id| !message_id.trim().is_empty())
-        .map(|message_id| format!("assistant-message-{message_id}"))
+        .map(|message_id| {
+            format!(
+                "assistant-message-{}-{message_id}",
+                branch_route_for_event(event).branch_id,
+            )
+        })
 }
 
 fn stable_session_update_item_id(session_id: Option<&str>, update: &Value) -> Option<String> {
@@ -4638,7 +4684,12 @@ fn stable_thought_stream_identity(event: &crate::acp::events::AcpUiEvent) -> Opt
         .and_then(|raw| raw.get("messageId"))
         .and_then(Value::as_str)
         .filter(|message_id| !message_id.trim().is_empty())
-        .map(|message_id| format!("assistant-thought-{message_id}"))
+        .map(|message_id| {
+            format!(
+                "assistant-thought-{}-{message_id}",
+                branch_route_for_event(event).branch_id,
+            )
+        })
 }
 
 fn stable_plan_item_id(event: &crate::acp::events::AcpUiEvent) -> String {
@@ -4655,7 +4706,12 @@ fn stable_plan_stream_identity(event: &crate::acp::events::AcpUiEvent) -> Option
         .and_then(|raw| raw.get("sessionId"))
         .and_then(Value::as_str)
         .filter(|session_id| !session_id.trim().is_empty())
-        .map(|session_id| format!("session-plan-{session_id}"))
+        .map(|session_id| {
+            format!(
+                "session-plan-{session_id}-{}",
+                branch_route_for_event(event).branch_id,
+            )
+        })
 }
 
 fn provider_history_item_id(event: &crate::acp::events::AcpUiEvent) -> Option<&str> {

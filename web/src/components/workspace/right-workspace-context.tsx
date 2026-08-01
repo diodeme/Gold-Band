@@ -1,5 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, type ReactNode } from 'react';
-import { conversationEventBranchId, conversationEventMatchesAttempt, subscribeConversationEvents } from '@/lib/conversation-event-router';
+import { createContext, useCallback, useContext, useMemo, useReducer, type ReactNode } from 'react';
 
 export interface AgentTranscriptLocator {
   projectId: string;
@@ -20,7 +19,6 @@ export type RightWorkspaceResource = {
   description?: string | null;
   status: string;
   attention: boolean;
-  dirtyRevision: number;
   locator: AgentTranscriptLocator;
 };
 
@@ -39,18 +37,21 @@ interface RightWorkspaceContextValue extends RightWorkspaceState {
   setWidth: (width: number) => void;
 }
 
-type Action =
+export type RightWorkspaceAction =
   | { type: 'open'; resource: RightWorkspaceResource }
   | { type: 'activate'; key: string }
   | { type: 'close'; key: string }
   | { type: 'close-workspace' }
-  | { type: 'set-width'; width: number }
-  | { type: 'live-event'; event: Parameters<typeof conversationEventBranchId>[0] };
+  | { type: 'set-width'; width: number };
 
-const DEFAULT_RIGHT_WORKSPACE_WIDTH = 440;
+export const DEFAULT_RIGHT_WORKSPACE_WIDTH = 440;
 const RightWorkspaceContext = createContext<RightWorkspaceContextValue | null>(null);
 
-function reducer(state: RightWorkspaceState, action: Action): RightWorkspaceState {
+export function createInitialRightWorkspaceState(width = DEFAULT_RIGHT_WORKSPACE_WIDTH): RightWorkspaceState {
+  return { tabs: [], activeTabKey: null, requestedOpen: false, width };
+}
+
+export function rightWorkspaceReducer(state: RightWorkspaceState, action: RightWorkspaceAction): RightWorkspaceState {
   switch (action.type) {
     case 'open': {
       const existing = state.tabs.findIndex((tab) => tab.key === action.resource.key);
@@ -76,42 +77,15 @@ function reducer(state: RightWorkspaceState, action: Action): RightWorkspaceStat
       return { ...state, requestedOpen: false };
     case 'set-width':
       return { ...state, width: action.width };
-    case 'live-event': {
-      const eventBranchId = conversationEventBranchId(action.event);
-      let changed = false;
-      const tabs = state.tabs.map((tab) => {
-        if (!conversationEventMatchesAttempt(action.event, tab.locator)) return tab;
-        if (action.event.event && eventBranchId !== tab.locator.branchId) return tab;
-        changed = true;
-        const pendingAttention = action.event.event
-          && (action.event.event.kind === 'permissionRequest' || action.event.event.kind === 'elicitationRequest')
-          && (action.event.event.status ?? 'pending') === 'pending';
-        const resolvedAttention = action.event.event
-          && (action.event.event.kind === 'permissionRequest' || action.event.event.kind === 'elicitationResponse')
-          && action.event.event.status !== 'pending';
-        return {
-          ...tab,
-          status: action.event.session?.status ?? (pendingAttention ? 'waiting_permission' : tab.status),
-          attention: pendingAttention ? true : resolvedAttention ? false : tab.attention,
-          dirtyRevision: tab.dirtyRevision + 1,
-        };
-      });
-      return changed ? { ...state, tabs } : state;
-    }
   }
 }
 
 export function RightWorkspaceProvider({ initialWidth, children }: { initialWidth?: number; children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, {
-    tabs: [],
-    activeTabKey: null,
-    requestedOpen: false,
-    width: initialWidth ?? DEFAULT_RIGHT_WORKSPACE_WIDTH,
-  });
-  useEffect(() => {
-    const unsubscribe = subscribeConversationEvents((event) => dispatch({ type: 'live-event', event }));
-    return () => { unsubscribe(); };
-  }, []);
+  const [state, dispatch] = useReducer(
+    rightWorkspaceReducer,
+    initialWidth ?? DEFAULT_RIGHT_WORKSPACE_WIDTH,
+    createInitialRightWorkspaceState,
+  );
   const openResource = useCallback((resource: RightWorkspaceResource) => dispatch({ type: 'open', resource }), []);
   const activateTab = useCallback((key: string) => dispatch({ type: 'activate', key }), []);
   const closeTab = useCallback((key: string) => dispatch({ type: 'close', key }), []);

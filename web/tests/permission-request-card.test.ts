@@ -2,8 +2,9 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-import { PermissionRequestCard, permissionRequestSummary } from '@/components/acp/ACPChatDialog';
+import { ACPMessageList, buildAcpTimelineProjection, PermissionRequestCard, permissionRequestSummary } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import type { AcpUiEventVm } from '@/types';
 
 function renderPermissionCard() {
   return renderToStaticMarkup(
@@ -38,6 +39,7 @@ describe('PermissionRequestCard', () => {
   it('uses a compact low-emphasis approval surface', () => {
     const html = renderPermissionCard();
 
+    expect(html).toContain('acp-permission-request-card');
     expect(html).toContain('max-w-2xl');
     expect(html).toContain('bg-card/65');
     expect(html).toContain('bg-accent/65');
@@ -86,5 +88,141 @@ describe('PermissionRequestCard', () => {
     );
     expect(html).toContain('List projects under the ai directory');
     expect(html).toContain('Get-ChildItem -Force &quot;D:\\Projects\\code\\ai&quot;');
+  });
+
+  it('replaces a selected approval card with a compact audit row', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(
+        TooltipProvider,
+        null,
+        React.createElement(PermissionRequestCard, {
+          request: {
+            requestId: 'permission-3',
+            title: 'PowerShell',
+            raw: {
+              optionId: 'allow',
+              toolCall: { rawInput: { command: 'git status --short' } },
+            },
+            options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow once' }],
+          },
+          status: 'selected',
+        }),
+      ),
+    );
+
+    expect(html).toContain('acp-permission-decision-audit');
+    expect(html).toContain('data-permission-status="selected"');
+    expect(html).toContain('Allow once');
+    expect(html).toContain('git status --short');
+    expect(html).not.toContain('acp-permission-request-card');
+    expect(html).not.toContain('Permission required');
+    expect(html).not.toContain('data-slot="button"');
+  });
+
+  it('shows the ACP-provided Skill name and arguments without inferring intent', () => {
+    expect(permissionRequestSummary({
+      requestId: 'permission-skill',
+      title: 'Skill',
+      raw: {
+        toolCall: {
+          title: 'Skill',
+          rawInput: {
+            skill: 'prompt-kit',
+            args: '只读 very thorough 调查仓库',
+          },
+        },
+      },
+      options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow' }],
+    })).toBe('prompt-kit · 只读 very thorough 调查仓库');
+  });
+
+  it('keeps a pending nested permission visible while its parent Agent is collapsed', () => {
+    const event = (partial: Partial<AcpUiEventVm>): AcpUiEventVm => ({
+      id: 'event', seq: 1, timestamp: '1Z', kind: 'toolCall', sessionId: 'session',
+      content: null, title: null, toolCallId: null, status: null, raw: null,
+      ...partial,
+    });
+    const projection = buildAcpTimelineProjection([
+      event({
+        id: 'agent', kind: 'toolCall', toolCallId: 'call-agent', title: 'Agent', status: 'running',
+        raw: { _meta: { agentTranscript: { agentLaunch: true, toolName: 'Agent' } }, rawInput: { description: 'inspect UI' } },
+      }),
+      event({
+        id: 'permission', seq: 2, timestamp: '2Z', kind: 'permissionRequest', title: 'Skill', status: 'pending',
+        raw: {
+          _meta: { agentTranscript: { parentToolCallId: 'call-agent' } },
+          requestId: 'permission-skill',
+          toolCall: { title: 'Skill', rawInput: { skill: 'prompt-kit', args: 'read only' } },
+          options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow' }],
+        },
+      }),
+    ], 'running');
+
+    const html = renderToStaticMarkup(
+      React.createElement(TooltipProvider, null,
+        React.createElement(ACPMessageList, {
+          timeline: projection.timeline,
+          sessionStatus: 'running',
+          sending: false,
+        }),
+      ),
+    );
+    expect(html).toContain('prompt-kit');
+    expect(html).toContain('read only');
+    expect(html).toContain('aria-expanded="false"');
+  });
+
+  it('keeps only pending permission visible while tool rows including errors stay collapsed', () => {
+    const event = (partial: Partial<AcpUiEventVm>): AcpUiEventVm => ({
+      id: 'event', seq: 1, timestamp: '1Z', kind: 'toolCall', sessionId: 'session',
+      content: null, title: null, toolCallId: null, status: null, raw: null,
+      ...partial,
+    });
+    const projection = buildAcpTimelineProjection([
+      event({
+        id: 'failed-glob', kind: 'toolCall', toolCallId: 'glob-failed',
+        title: 'Glob failed-visible', status: 'failed',
+      }),
+      event({
+        id: 'completed-read', seq: 2, timestamp: '2Z', kind: 'toolCall',
+        toolCallId: 'read-completed', title: 'Read hidden-until-expanded', status: 'completed',
+      }),
+      event({
+        id: 'permission', seq: 3, timestamp: '3Z', kind: 'permissionRequest',
+        toolCallId: 'skill-call', title: 'Skill', status: 'pending',
+        raw: {
+          requestId: 'permission-skill',
+          toolCall: { title: 'Skill', rawInput: { skill: 'prompt-kit', args: 'read only' } },
+          options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow' }],
+        },
+      }),
+      event({
+        id: 'permission-selected', seq: 4, timestamp: '4Z', kind: 'permissionRequest',
+        toolCallId: 'selected-skill-call', title: 'Permission required', status: 'selected',
+        raw: {
+          requestId: 'permission-selected',
+          optionId: 'allow',
+          toolCall: { title: 'Skill', rawInput: { skill: 'selected-hidden-skill', args: 'audit only' } },
+          options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow once' }],
+        },
+      }),
+    ], 'running');
+
+    const html = renderToStaticMarkup(
+      React.createElement(TooltipProvider, null,
+        React.createElement(ACPMessageList, {
+          timeline: projection.timeline,
+          sessionStatus: 'running',
+          sending: false,
+        }),
+      ),
+    );
+
+    expect(html).toContain('acp-activity-live-label');
+    expect(html).toContain('prompt-kit');
+    expect(html).not.toContain('failed-visible');
+    expect(html).not.toContain('hidden-until-expanded');
+    expect(html.match(/acp-permission-request-card/g)).toHaveLength(1);
+    expect(html).not.toContain('acp-permission-decision-audit');
   });
 });

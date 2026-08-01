@@ -210,6 +210,7 @@ export const mockErrorBlockedConversationSession: AcpSessionVm = {
   systemPromptAppend: null,
   config: null,
   events: [],
+  timelineProjection: null,
   eventPage: { loadedCount: 0, total: 0, oldestSeq: null, newestSeq: null, hasOlder: false, hasNewer: false, oldestCursor: null, newestCursor: null },
   pendingPermissions: [],
   availableCommands: [],
@@ -332,6 +333,7 @@ const mockNodeDetail: NodeDetailVm = {
       { id: 'e4', seq: 4, timestamp: '2026-05-02 16:11', kind: 'plan', sessionId: 'acp-session-7f3', raw: { entries: [{ content: '重构窗口状态', status: 'completed' }, { content: '修正 DPI 偏移', status: 'in_progress' }] } },
       { id: 'e5', seq: 5, timestamp: '2026-05-02 16:12', kind: 'permissionRequest', title: '允许写入窗口管理文件', toolCallId: 'tool-2', status: 'pending', sessionId: 'acp-session-7f3', raw: { options: [{ optionId: 'allow-once', name: '允许一次', kind: 'allow_once' }, { optionId: 'reject-once', name: '拒绝', kind: 'reject_once' }] } },
     ],
+    timelineProjection: null,
   },
   artifacts: [
     { kind: 'artifact', name: 'window_manager_v2_core.rs', title: 'window_manager_v2_core.rs', tone: 'accent', preview: 'canonical artifact', roundId: 'round-001', nodeId: 'test', attemptId: 'att-test-001' },

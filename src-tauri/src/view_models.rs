@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::Result;
-use gold_band::acp::events::normalize_agent_transcript_metadata;
+use gold_band::acp::{client::PromptActivity, events::normalize_agent_transcript_metadata};
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
@@ -682,10 +682,32 @@ pub struct AcpSessionVm {
     pub config: Option<AcpSessionConfigVm>,
     pub events: Vec<AcpUiEventVm>,
     pub event_page: AcpEventPageVm,
+    pub timeline_projection: AcpTimelineProjectionVm,
     pub pending_permissions: Vec<AcpPermissionRequestVm>,
     pub available_commands: Option<Vec<serde_json::Value>>,
     pub usage: Option<AcpUsageVm>,
     pub diagnostics: AcpDiagnosticsVm,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpTimelineProjectionVm {
+    pub agents: Vec<AcpAgentExecutionVm>,
+    pub todo_entries: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpAgentExecutionVm {
+    pub tool_call_id: String,
+    pub parent_tool_call_id: Option<String>,
+    pub launch_status: Option<String>,
+    pub execution_status: String,
+    pub event_count: usize,
+    pub tool_call_count: usize,
+    pub read_file_count: usize,
+    pub written_file_count: usize,
+    pub todo_entries: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -3370,8 +3392,11 @@ pub fn dynamic_acp_session_vm(
         .get("status")
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
-    let stopping = is_acp_session_stopping_status(metadata_status);
-    let status = metadata_status.to_string();
+    let status = effective_acp_session_status(
+        metadata_status,
+        gold_band::acp::client::prompt_activity(&attempt_dir),
+    );
+    let stopping = is_acp_session_stopping_status(&status);
     let default_event_limit = app.config.acp_chat_event_page_size;
     let event_scan = if timeline_path.exists() {
         scan_acp_timeline(
@@ -3486,6 +3511,7 @@ pub fn dynamic_acp_session_vm(
         config,
         events: event_scan.events,
         event_page: event_scan.event_page,
+        timeline_projection: event_scan.timeline_projection,
         pending_permissions,
         available_commands: event_scan.available_commands,
         usage: {
@@ -3548,13 +3574,13 @@ pub fn dynamic_acp_session_status(
         node_id,
     );
     apply_stale_session_completion_fuse_dynamic(&attempt_dir, &node_path, &mut session)?;
-    Ok(Some(
+    Ok(Some(effective_acp_session_status(
         session
             .get("status")
             .and_then(|value| value.as_str())
-            .unwrap_or("unknown")
-            .to_string(),
-    ))
+            .unwrap_or("unknown"),
+        gold_band::acp::client::prompt_activity(&attempt_dir),
+    )))
 }
 
 pub fn acp_session_vm(
@@ -3671,8 +3697,11 @@ pub fn acp_session_vm(
         .get("status")
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
-    let stopping = is_acp_session_stopping_status(metadata_status);
-    let status = metadata_status.to_string();
+    let status = effective_acp_session_status(
+        metadata_status,
+        gold_band::acp::client::prompt_activity(&attempt_dir),
+    );
+    let stopping = is_acp_session_stopping_status(&status);
     let default_event_limit = app.config.acp_chat_event_page_size;
     let event_scan = if timeline_path.exists() {
         scan_acp_timeline(
@@ -3820,6 +3849,7 @@ pub fn acp_session_vm(
         },
         events: event_scan.events,
         event_page: event_scan.event_page,
+        timeline_projection: event_scan.timeline_projection,
         pending_permissions,
     };
     Ok(Some(result))
@@ -3852,13 +3882,13 @@ pub fn acp_session_status(
         &node_path,
         &mut session,
     )?;
-    Ok(Some(
+    Ok(Some(effective_acp_session_status(
         session
             .get("status")
             .and_then(|value| value.as_str())
-            .unwrap_or("unknown")
-            .to_string(),
-    ))
+            .unwrap_or("unknown"),
+        gold_band::acp::client::prompt_activity(&attempt_dir),
+    )))
 }
 
 fn session_metadata_from_attempt_dir(attempt_dir: &camino::Utf8Path) -> Option<serde_json::Value> {
@@ -3894,6 +3924,7 @@ fn session_metadata_from_attempt_dir(attempt_dir: &camino::Utf8Path) -> Option<s
 struct AcpEventScan {
     events: Vec<AcpUiEventVm>,
     event_page: AcpEventPageVm,
+    timeline_projection: AcpTimelineProjectionVm,
     event_count: usize,
     session_elapsed_seconds: Option<u64>,
     session_timing: Option<AcpSessionTimingVm>,
@@ -4053,6 +4084,7 @@ fn scan_acp_timeline(
                 &latest_permission_events,
                 available_commands.as_ref(),
                 usage.as_ref(),
+                session_active,
                 after_seq,
                 before_seq,
                 limit,
@@ -4087,6 +4119,7 @@ fn scan_acp_timeline(
         &latest_permission_events,
         available_commands.as_ref(),
         usage.as_ref(),
+        session_active,
         after_seq,
         before_seq,
         limit,
@@ -4616,12 +4649,15 @@ fn paginate_timeline(
     latest_permission_events: &HashMap<String, AcpUiEventVm>,
     available_commands: Option<&Vec<serde_json::Value>>,
     usage: Option<&AcpUsageVm>,
+    session_active: bool,
     after_seq: Option<u64>,
     before_seq: Option<u64>,
     limit: usize,
 ) -> Result<AcpEventScan> {
     let total = all_events.len();
     let session_timing = latest_session_timing_from_events(all_events);
+    let (timeline_projection, agent_launch_anchors) =
+        build_acp_timeline_projection(all_events, latest_permission_events, session_active);
     let filtered = if let Some(cursor) = after_seq {
         all_events
             .iter()
@@ -4655,7 +4691,8 @@ fn paginate_timeline(
             }
         })
         .collect();
-    include_latest_permission_events(&mut filtered, latest_permission_events);
+    // Pagination cursors describe the requested event window. Structural anchors and
+    // pending-interaction snapshots are appended afterwards and must not move cursors.
     let oldest_seq = filtered
         .iter()
         .map(|event| event.started_seq.unwrap_or(event.seq))
@@ -4674,7 +4711,7 @@ fn paginate_timeline(
             .iter()
             .rposition(|event| event.ended_seq.unwrap_or(event.seq) == seq)
     });
-    let event_page = AcpEventPageVm {
+    let mut event_page = AcpEventPageVm {
         loaded_count: filtered.len(),
         total,
         oldest_seq,
@@ -4684,11 +4721,15 @@ fn paginate_timeline(
         oldest_cursor: oldest_seq.map(format_timeline_cursor),
         newest_cursor: newest_seq.map(format_timeline_cursor),
     };
+    include_latest_permission_events(&mut filtered, latest_permission_events);
+    include_agent_launch_anchors(&mut filtered, &agent_launch_anchors);
+    event_page.loaded_count = filtered.len();
     order_provider_history_by_prompt_anchors_vm(&mut filtered);
 
     Ok(AcpEventScan {
         events: filtered,
         event_page,
+        timeline_projection,
         event_count,
         session_elapsed_seconds,
         session_timing,
@@ -4696,6 +4737,391 @@ fn paginate_timeline(
         available_commands: available_commands.cloned(),
         usage: usage.cloned(),
     })
+}
+
+#[derive(Debug, Clone, Default)]
+struct AgentEventMetaVm {
+    agent_launch: bool,
+    tool_name: Option<String>,
+    parent_tool_call_id: Option<String>,
+}
+
+fn agent_event_meta_vm(event: &AcpUiEventVm) -> AgentEventMetaVm {
+    let Some(mut raw) = event.raw.clone() else {
+        return AgentEventMetaVm::default();
+    };
+    let Some(relation) = normalize_agent_transcript_metadata(&mut raw) else {
+        return AgentEventMetaVm::default();
+    };
+    AgentEventMetaVm {
+        agent_launch: relation.agent_launch,
+        tool_name: relation.tool_name,
+        parent_tool_call_id: relation.parent_tool_call_id,
+    }
+}
+
+fn build_acp_timeline_projection(
+    all_events: &[AcpUiEventVm],
+    latest_permission_events: &HashMap<String, AcpUiEventVm>,
+    session_active: bool,
+) -> (AcpTimelineProjectionVm, Vec<AcpUiEventVm>) {
+    let event_meta = all_events
+        .iter()
+        .map(agent_event_meta_vm)
+        .collect::<Vec<_>>();
+    let mut launches = HashMap::<String, (usize, AcpUiEventVm)>::new();
+    for (index, event) in all_events.iter().enumerate() {
+        if !event_meta[index].agent_launch {
+            continue;
+        }
+        let Some(tool_call_id) = event.tool_call_id.as_ref() else {
+            continue;
+        };
+        let should_replace = launches
+            .get(tool_call_id)
+            .map(|(_, current)| event.seq >= current.seq)
+            .unwrap_or(true);
+        if should_replace {
+            launches.insert(tool_call_id.clone(), (index, event.clone()));
+        }
+    }
+
+    let (todo_entries, child_todos) = project_plan_streams(all_events, &event_meta);
+    let mut agents = launches
+        .iter()
+        .map(|(tool_call_id, (launch_index, launch))| {
+            let direct_events = all_events
+                .iter()
+                .zip(event_meta.iter())
+                .filter(|(_, meta)| {
+                    meta.parent_tool_call_id.as_deref() == Some(tool_call_id.as_str())
+                })
+                .map(|(event, meta)| (event, meta))
+                .collect::<Vec<_>>();
+            let direct_permissions = latest_permission_events
+                .values()
+                .filter(|event| {
+                    agent_event_meta_vm(event).parent_tool_call_id.as_deref()
+                        == Some(tool_call_id.as_str())
+                })
+                .collect::<Vec<_>>();
+            let execution_status = project_agent_execution_status(
+                launch,
+                &direct_events,
+                &direct_permissions,
+                session_active,
+            );
+            let (tool_call_count, read_file_count, written_file_count) =
+                project_agent_tool_metrics(&direct_events);
+            AcpAgentExecutionVm {
+                tool_call_id: tool_call_id.clone(),
+                parent_tool_call_id: event_meta[*launch_index].parent_tool_call_id.clone(),
+                launch_status: launch.status.clone(),
+                execution_status,
+                event_count: direct_events.len() + direct_permissions.len(),
+                tool_call_count,
+                read_file_count,
+                written_file_count,
+                todo_entries: child_todos.get(tool_call_id).cloned().unwrap_or_default(),
+            }
+        })
+        .collect::<Vec<_>>();
+    agents.sort_by_key(|agent| {
+        launches
+            .get(&agent.tool_call_id)
+            .map(|(_, event)| event.started_seq.unwrap_or(event.seq))
+            .unwrap_or(u64::MAX)
+    });
+    let anchors = agents
+        .iter()
+        .filter_map(|agent| {
+            launches
+                .get(&agent.tool_call_id)
+                .map(|(_, event)| event.clone())
+        })
+        .map(compact_event_for_session)
+        .collect::<Vec<_>>();
+    (
+        AcpTimelineProjectionVm {
+            agents,
+            todo_entries,
+        },
+        anchors,
+    )
+}
+
+fn project_agent_execution_status(
+    launch: &AcpUiEventVm,
+    direct_events: &[(&AcpUiEventVm, &AgentEventMetaVm)],
+    direct_permissions: &[&AcpUiEventVm],
+    session_active: bool,
+) -> String {
+    let launch_status = launch
+        .status
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(launch_status.as_str(), "failed" | "error") {
+        return "failed".to_string();
+    }
+    let pending_permission = direct_permissions.iter().any(|event| {
+        event
+            .status
+            .as_deref()
+            .unwrap_or("pending")
+            .eq_ignore_ascii_case("pending")
+    });
+    if pending_permission && session_active {
+        return "waiting_permission".to_string();
+    }
+    let has_completion = direct_events.iter().any(|(event, _)| {
+        event.kind == "textDelta"
+            && event
+                .content
+                .as_deref()
+                .is_some_and(|text| !text.trim().is_empty())
+    });
+    let background = agent_launch_runs_in_background(launch);
+    if background {
+        if has_completion {
+            return "completed".to_string();
+        }
+        if !session_active {
+            return "interrupted".to_string();
+        }
+        if !direct_events.is_empty() {
+            return "running".to_string();
+        }
+        return "queued".to_string();
+    }
+    if matches!(
+        launch_status.as_str(),
+        "completed" | "success" | "succeeded"
+    ) {
+        return "completed".to_string();
+    }
+    if !session_active {
+        return "interrupted".to_string();
+    }
+    if !direct_events.is_empty() {
+        return "running".to_string();
+    }
+    if matches!(launch_status.as_str(), "pending" | "sending") {
+        return "queued".to_string();
+    }
+    "running".to_string()
+}
+
+fn agent_launch_runs_in_background(event: &AcpUiEventVm) -> bool {
+    tool_raw_input(event)
+        .and_then(|input| input.get("run_in_background"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn project_agent_tool_metrics(
+    direct_events: &[(&AcpUiEventVm, &AgentEventMetaVm)],
+) -> (usize, usize, usize) {
+    let mut latest_tools = HashMap::<String, (&AcpUiEventVm, &AgentEventMetaVm)>::new();
+    for (event, meta) in direct_events {
+        if meta.agent_launch || !matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate") {
+            continue;
+        }
+        let key = event
+            .tool_call_id
+            .clone()
+            .unwrap_or_else(|| event.id.clone());
+        let should_replace = latest_tools
+            .get(&key)
+            .map(|(current, _)| {
+                event.ended_seq.unwrap_or(event.seq) >= current.ended_seq.unwrap_or(current.seq)
+            })
+            .unwrap_or(true);
+        if should_replace {
+            latest_tools.insert(key, (event, meta));
+        }
+    }
+    let mut read_files = std::collections::BTreeSet::<String>::new();
+    let mut written_files = std::collections::BTreeSet::<String>::new();
+    for (event, meta) in latest_tools.values() {
+        if !event.status.as_deref().is_some_and(|status| {
+            matches!(
+                status.to_ascii_lowercase().as_str(),
+                "completed" | "success" | "succeeded"
+            )
+        }) {
+            continue;
+        }
+        let tool_name = meta
+            .tool_name
+            .as_deref()
+            .or_else(|| {
+                event
+                    .title
+                    .as_deref()
+                    .and_then(|title| title.split_whitespace().next())
+            })
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let paths = structured_tool_paths(event);
+        if tool_name == "read" {
+            read_files.extend(paths);
+        } else if matches!(
+            tool_name.as_str(),
+            "write" | "edit" | "applypatch" | "apply_patch"
+        ) {
+            written_files.extend(paths);
+        }
+    }
+    (latest_tools.len(), read_files.len(), written_files.len())
+}
+
+fn tool_raw_input(event: &AcpUiEventVm) -> Option<&serde_json::Map<String, serde_json::Value>> {
+    let raw = event.raw.as_ref()?.as_object()?;
+    let container = raw
+        .get("toolCall")
+        .and_then(serde_json::Value::as_object)
+        .or_else(|| raw.get("content").and_then(serde_json::Value::as_object))
+        .unwrap_or(raw);
+    container
+        .get("rawInput")
+        .and_then(serde_json::Value::as_object)
+        .or_else(|| raw.get("rawInput").and_then(serde_json::Value::as_object))
+}
+
+fn structured_tool_paths(event: &AcpUiEventVm) -> Vec<String> {
+    let mut paths = Vec::<String>::new();
+    if let Some(input) = tool_raw_input(event) {
+        for key in ["file_path", "path"] {
+            if let Some(path) = input.get(key).and_then(serde_json::Value::as_str) {
+                paths.push(normalize_metric_path(path));
+            }
+        }
+    }
+    let raw = event.raw.as_ref();
+    let locations = raw
+        .and_then(|raw| raw.pointer("/toolCall/locations"))
+        .or_else(|| raw.and_then(|raw| raw.get("locations")))
+        .and_then(serde_json::Value::as_array);
+    if let Some(locations) = locations {
+        for location in locations {
+            if let Some(path) = location.get("path").and_then(serde_json::Value::as_str) {
+                paths.push(normalize_metric_path(path));
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn normalize_metric_path(path: &str) -> String {
+    path.trim()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+}
+
+fn project_plan_streams(
+    all_events: &[AcpUiEventVm],
+    event_meta: &[AgentEventMetaVm],
+) -> (
+    Vec<serde_json::Value>,
+    HashMap<String, Vec<serde_json::Value>>,
+) {
+    let mut history = Vec::<(Vec<serde_json::Value>, Option<String>)>::new();
+    let mut latest_root = Vec::<serde_json::Value>::new();
+    let mut latest_children = HashMap::<String, Vec<serde_json::Value>>::new();
+    for (index, event) in all_events.iter().enumerate() {
+        if event.kind != "plan" {
+            continue;
+        }
+        let entries = event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.get("entries"))
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let parent = event_meta[index]
+            .parent_tool_call_id
+            .clone()
+            .or_else(|| infer_plan_stream_parent(&entries, &history));
+        if let Some(parent) = parent.as_ref() {
+            latest_children.insert(parent.clone(), entries.clone());
+        } else {
+            latest_root = entries.clone();
+        }
+        history.push((entries, parent));
+    }
+    let child_contents = latest_children
+        .values()
+        .flat_map(|entries| entries.iter().filter_map(plan_entry_content))
+        .collect::<std::collections::HashSet<_>>();
+    latest_root.retain(|entry| {
+        plan_entry_content(entry)
+            .map(|content| !child_contents.contains(&content))
+            .unwrap_or(true)
+    });
+    (latest_root, latest_children)
+}
+
+fn infer_plan_stream_parent(
+    entries: &[serde_json::Value],
+    history: &[(Vec<serde_json::Value>, Option<String>)],
+) -> Option<String> {
+    let contents = entries
+        .iter()
+        .filter_map(plan_entry_content)
+        .collect::<std::collections::HashSet<_>>();
+    if contents.is_empty() {
+        return None;
+    }
+    let parents = history
+        .iter()
+        .rev()
+        .filter_map(|(candidate_entries, parent)| {
+            let parent = parent.as_ref()?;
+            candidate_entries
+                .iter()
+                .filter_map(plan_entry_content)
+                .any(|content| contents.contains(&content))
+                .then_some(parent.clone())
+        })
+        .collect::<std::collections::HashSet<_>>();
+    (parents.len() == 1)
+        .then(|| parents.into_iter().next())
+        .flatten()
+}
+
+fn plan_entry_content(entry: &serde_json::Value) -> Option<String> {
+    entry
+        .get("content")
+        .and_then(serde_json::Value::as_str)
+        .map(|content| {
+            content
+                .replace("\r\n", "\n")
+                .replace('\r', "\n")
+                .trim()
+                .to_string()
+        })
+        .filter(|content| !content.is_empty())
+}
+
+fn include_agent_launch_anchors(events: &mut Vec<AcpUiEventVm>, anchors: &[AcpUiEventVm]) {
+    for anchor in anchors {
+        let Some(tool_call_id) = anchor.tool_call_id.as_ref() else {
+            continue;
+        };
+        if events.iter().any(|event| {
+            event.tool_call_id.as_ref() == Some(tool_call_id)
+                && agent_event_meta_vm(event).agent_launch
+        }) {
+            continue;
+        }
+        events.push(anchor.clone());
+    }
+    events.sort_by_key(|event| event.started_seq.unwrap_or(event.seq));
 }
 
 fn latest_session_timing_from_events(all_events: &[AcpUiEventVm]) -> Option<AcpSessionTimingVm> {
@@ -4865,6 +5291,7 @@ fn scan_acp_events(
                 &latest_permission_events,
                 available_commands.as_ref(),
                 usage.as_ref(),
+                session_active,
                 after_seq,
                 before_seq,
                 limit,
@@ -4899,6 +5326,7 @@ fn scan_acp_events(
         &latest_permission_events,
         available_commands.as_ref(),
         usage.as_ref(),
+        session_active,
         after_seq,
         before_seq,
         limit,
@@ -5019,6 +5447,11 @@ fn apply_stale_session_completion_fuse(
         node_status
             .map(|status| status == RunStatus::Completed)
             .unwrap_or(false),
+        gold_band::acp::client::prompt_activity(
+            &app.paths
+                .attempt_dir(task_id, run_id, round_id, node_id, attempt_id),
+        )
+        .is_some(),
     )?;
     if fused {
         let snapshot_path = app
@@ -5044,8 +5477,13 @@ fn apply_stale_session_completion_fuse_dynamic(
     } else {
         false
     };
-    let fused =
-        apply_stale_session_completion_fuse_common(&pid_path, &raw_path, session, node_completed)?;
+    let fused = apply_stale_session_completion_fuse_common(
+        &pid_path,
+        &raw_path,
+        session,
+        node_completed,
+        gold_band::acp::client::prompt_activity(attempt_dir).is_some(),
+    )?;
     if fused {
         let snapshot_path = attempt_dir.join("acp.snapshot.json");
         let _ = write_json(&snapshot_path, &*session);
@@ -5058,7 +5496,11 @@ fn apply_stale_session_completion_fuse_common(
     raw_path: &camino::Utf8Path,
     session: &mut serde_json::Value,
     node_completed: bool,
+    prompt_active: bool,
 ) -> Result<bool> {
+    if prompt_active {
+        return Ok(false);
+    }
     let metadata_status = session
         .get("status")
         .and_then(|value| value.as_str())
@@ -5611,6 +6053,18 @@ fn is_acp_session_active_status(status: &str) -> bool {
             .as_str(),
         "pending" | "running" | "in-progress" | "sending" | "cancelling" | "cancel-requested"
     )
+}
+
+fn effective_acp_session_status(
+    persisted_status: &str,
+    prompt_activity: Option<PromptActivity>,
+) -> String {
+    match prompt_activity {
+        Some(PromptActivity::Starting) => "pending".to_string(),
+        Some(PromptActivity::Accepted | PromptActivity::Running) => "running".to_string(),
+        Some(PromptActivity::CancelRequested) => "cancelling".to_string(),
+        None => persisted_status.to_string(),
+    }
 }
 
 fn is_acp_session_stopping_status(status: &str) -> bool {
@@ -7153,9 +7607,14 @@ mod tests {
         fs::write(pid_path.as_std_path(), "12345").unwrap();
         let mut session = json!({ "status": "running" });
 
-        let fused =
-            apply_stale_session_completion_fuse_common(&pid_path, &raw_path, &mut session, true)
-                .unwrap();
+        let fused = apply_stale_session_completion_fuse_common(
+            &pid_path,
+            &raw_path,
+            &mut session,
+            true,
+            false,
+        )
+        .unwrap();
 
         assert!(fused);
         assert_eq!(
@@ -7165,6 +7624,51 @@ mod tests {
         assert!(!pid_path.exists());
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stale_session_completion_fuse_never_closes_a_live_follow_up_prompt() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-live-follow-up-fuse-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let pid_path = attempt_dir.join("provider.pid");
+        let raw_path = attempt_dir.join("acp.raw.jsonl");
+        let mut session = json!({ "status": "running", "stopReason": null });
+
+        let fused = apply_stale_session_completion_fuse_common(
+            &pid_path,
+            &raw_path,
+            &mut session,
+            true,
+            true,
+        )
+        .unwrap();
+
+        assert!(!fused);
+        assert_eq!(session["status"], "running");
+        assert!(session["stopReason"].is_null());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn live_prompt_activity_overrides_a_previous_terminal_snapshot() {
+        assert_eq!(
+            effective_acp_session_status("completed", Some(PromptActivity::Starting)),
+            "pending"
+        );
+        assert_eq!(
+            effective_acp_session_status("completed", Some(PromptActivity::Running)),
+            "running"
+        );
+        assert_eq!(
+            effective_acp_session_status("completed", Some(PromptActivity::CancelRequested)),
+            "cancelling"
+        );
+        assert_eq!(effective_acp_session_status("completed", None), "completed");
     }
 
     #[test]
@@ -7178,9 +7682,14 @@ mod tests {
         fs::write(pid_path.as_std_path(), "12345").unwrap();
         let mut session = json!({ "status": "running" });
 
-        let fused =
-            apply_stale_session_completion_fuse_common(&pid_path, &raw_path, &mut session, false)
-                .unwrap();
+        let fused = apply_stale_session_completion_fuse_common(
+            &pid_path,
+            &raw_path,
+            &mut session,
+            false,
+            false,
+        )
+        .unwrap();
 
         assert!(!fused);
         assert_eq!(
@@ -7204,9 +7713,14 @@ mod tests {
         let raw_path = attempt_dir.join("acp.raw.jsonl");
         let mut session = json!({ "status": "failed" });
 
-        let fused =
-            apply_stale_session_completion_fuse_common(&pid_path, &raw_path, &mut session, true)
-                .unwrap();
+        let fused = apply_stale_session_completion_fuse_common(
+            &pid_path,
+            &raw_path,
+            &mut session,
+            true,
+            false,
+        )
+        .unwrap();
 
         assert!(!fused);
         assert_eq!(
@@ -7314,9 +7828,14 @@ mod tests {
         .unwrap();
         let mut session = json!({ "status": "running", "stopReason": null });
 
-        let fused =
-            apply_stale_session_completion_fuse_common(&pid_path, &raw_path, &mut session, false)
-                .unwrap();
+        let fused = apply_stale_session_completion_fuse_common(
+            &pid_path,
+            &raw_path,
+            &mut session,
+            false,
+            false,
+        )
+        .unwrap();
 
         assert!(fused);
         assert_eq!(
@@ -7357,9 +7876,14 @@ mod tests {
         .unwrap();
         let mut session = json!({ "status": "running", "stopReason": null });
 
-        let fused =
-            apply_stale_session_completion_fuse_common(&pid_path, &raw_path, &mut session, false)
-                .unwrap();
+        let fused = apply_stale_session_completion_fuse_common(
+            &pid_path,
+            &raw_path,
+            &mut session,
+            false,
+            false,
+        )
+        .unwrap();
 
         assert!(!fused);
         assert_eq!(
@@ -8736,6 +9260,7 @@ mod tests {
             &latest,
             None,
             None,
+            false,
             None,
             None,
             2,
@@ -8754,6 +9279,137 @@ mod tests {
                 .and_then(|event| event.status.as_deref()),
             Some("selected")
         );
+    }
+
+    #[test]
+    fn paginate_keeps_agent_anchor_and_full_execution_projection_outside_window() {
+        let mut launch = acp_event_at(
+            "agent-launch",
+            "toolCall",
+            Some("completed"),
+            1000,
+            Some(json!({
+                "_meta": { "agentTranscript": { "agentLaunch": true, "toolName": "Agent" } },
+                "rawInput": { "run_in_background": true, "description": "inspect ACP" }
+            })),
+        );
+        launch.seq = 1;
+        launch.started_seq = Some(1);
+        launch.tool_call_id = Some("call-agent".to_string());
+        launch.title = Some("Agent".to_string());
+
+        let mut child_tool = acp_event_at(
+            "child-read",
+            "toolCall",
+            Some("completed"),
+            7000,
+            Some(json!({
+                "_meta": { "agentTranscript": { "parentToolCallId": "call-agent", "toolName": "Read" } },
+                "rawInput": { "file_path": "D:\\Projects\\code\\ai\\Gold-Band\\src\\acp\\client.rs" }
+            })),
+        );
+        child_tool.seq = 7;
+        child_tool.started_seq = Some(7);
+        child_tool.ended_seq = Some(7);
+        child_tool.tool_call_id = Some("call-read".to_string());
+        child_tool.title = Some("Read file".to_string());
+
+        let mut tail = text_event_at(8000);
+        tail.seq = 8;
+        tail.started_seq = Some(8);
+        let events = vec![launch, child_tool, tail];
+        let scan = paginate_timeline(
+            &events,
+            events.len(),
+            Some(0),
+            &HashMap::new(),
+            None,
+            None,
+            true,
+            None,
+            None,
+            2,
+        )
+        .unwrap();
+
+        assert_eq!(scan.event_page.oldest_seq, Some(7));
+        assert!(scan.event_page.has_older);
+        assert!(scan.events.iter().any(|event| {
+            event.tool_call_id.as_deref() == Some("call-agent")
+                && agent_event_meta_vm(event).agent_launch
+        }));
+        let agent = scan.timeline_projection.agents.first().unwrap();
+        assert_eq!(agent.execution_status, "running");
+        assert_eq!(agent.event_count, 1);
+        assert_eq!(agent.tool_call_count, 1);
+        assert_eq!(agent.read_file_count, 1);
+        assert_eq!(agent.written_file_count, 0);
+    }
+
+    #[test]
+    fn projection_keeps_cumulative_plan_stream_with_its_agent_after_pagination() {
+        let mut launch = acp_event_at(
+            "agent-launch",
+            "toolCall",
+            Some("completed"),
+            1000,
+            Some(json!({
+                "_meta": { "agentTranscript": { "agentLaunch": true, "toolName": "Agent" } },
+                "rawInput": { "run_in_background": true }
+            })),
+        );
+        launch.seq = 1;
+        launch.started_seq = Some(1);
+        launch.tool_call_id = Some("call-agent".to_string());
+        let mut scoped_plan = acp_event_at(
+            "plan-scoped",
+            "plan",
+            None,
+            2000,
+            Some(json!({
+                "_meta": { "agentTranscript": { "parentToolCallId": "call-agent" } },
+                "entries": [{ "content": "Inspect ACP", "status": "in_progress" }]
+            })),
+        );
+        scoped_plan.seq = 2;
+        scoped_plan.started_seq = Some(2);
+        let mut aggregate_plan = acp_event_at(
+            "plan-aggregate",
+            "plan",
+            None,
+            3000,
+            Some(json!({
+                "entries": [
+                    { "content": "Inspect ACP", "status": "completed" },
+                    { "content": "Write report", "status": "in_progress" }
+                ]
+            })),
+        );
+        aggregate_plan.seq = 3;
+        aggregate_plan.started_seq = Some(3);
+        let mut tail = text_event_at(9000);
+        tail.seq = 9;
+        tail.started_seq = Some(9);
+        let scan = paginate_timeline(
+            &[launch, scoped_plan, aggregate_plan, tail],
+            4,
+            Some(0),
+            &HashMap::new(),
+            None,
+            None,
+            false,
+            None,
+            None,
+            1,
+        )
+        .unwrap();
+
+        assert!(scan.timeline_projection.todo_entries.is_empty());
+        let agent = scan.timeline_projection.agents.first().unwrap();
+        assert_eq!(agent.execution_status, "interrupted");
+        assert_eq!(agent.todo_entries.len(), 2);
+        assert_eq!(agent.todo_entries[0]["status"], "completed");
+        assert_eq!(agent.todo_entries[1]["content"], "Write report");
     }
 
     #[test]

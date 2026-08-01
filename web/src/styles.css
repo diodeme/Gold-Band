@@ -607,6 +607,10 @@
 }
 
 @media (prefers-reduced-motion: no-preference) {
+  .acp-activity-live-label {
+    animation: acp-activity-label-breathe 1.8s ease-in-out infinite;
+  }
+
   .workflow-node-running::before {
     animation: workflow-node-sheen 2.4s ease-in-out infinite;
   }
@@ -633,6 +637,15 @@
 
   .workflow-run-active {
     animation: workflow-row-enter 220ms ease-out both;
+  }
+}
+
+@keyframes acp-activity-label-breathe {
+  0%, 100% {
+    opacity: 0.48;
+  }
+  50% {
+    opacity: 1;
   }
 }
 

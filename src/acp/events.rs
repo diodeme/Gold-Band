@@ -148,6 +148,8 @@ pub struct AgentTranscriptRelation {
     #[serde(default, skip_serializing_if = "is_false")]
     pub agent_launch: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_tool_call_id: Option<String>,
 }
 
@@ -1347,16 +1349,21 @@ fn extract_agent_transcript_relation(value: &Value) -> Option<AgentTranscriptRel
         .and_then(|meta| meta.get("parentToolCallId"))
         .and_then(Value::as_str)
         .map(str::to_string);
+    let standard_tool_name = standard
+        .and_then(|meta| meta.get("toolName"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let claude_subagent = claude
         .and_then(|meta| meta.get("subagent"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let claude_agent_tool = claude
+    let claude_tool_name = claude
         .and_then(|meta| meta.get("toolName"))
         .and_then(Value::as_str)
-        .is_some_and(|name| {
-            CLAUDE_AGENT_TOOL_NAMES.contains(&name.trim().to_ascii_lowercase().as_str())
-        });
+        .map(str::to_string);
+    let claude_agent_tool = claude_tool_name.as_deref().is_some_and(|name| {
+        CLAUDE_AGENT_TOOL_NAMES.contains(&name.trim().to_ascii_lowercase().as_str())
+    });
     let claude_parent = claude
         .and_then(|meta| meta.get("parentToolUseId"))
         .and_then(Value::as_str)
@@ -1364,6 +1371,7 @@ fn extract_agent_transcript_relation(value: &Value) -> Option<AgentTranscriptRel
 
     let relation = AgentTranscriptRelation {
         agent_launch: standard_launch.unwrap_or(claude_subagent || claude_agent_tool),
+        tool_name: standard_tool_name.or(claude_tool_name),
         parent_tool_call_id: standard_parent.or(claude_parent),
     };
     (!relation.is_empty()).then_some(relation)
@@ -1828,6 +1836,38 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/agentTranscript/toolName"))
+                .and_then(Value::as_str),
+            Some("Agent")
+        );
+    }
+
+    #[test]
+    fn normalizes_claude_tool_name_for_a_parented_event_without_reclassifying_it_as_an_agent_launch() {
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call-read",
+            "_meta": {
+                "claudeCode": {
+                    "toolName": "Read",
+                    "parentToolUseId": "call-agent"
+                }
+            }
+        });
+
+        let event = normalize_session_update(10, Some("session-1".to_string()), &update);
+        let transcript = event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.pointer("/_meta/agentTranscript"))
+            .expect("normalized transcript metadata");
+        assert!(transcript.get("agentLaunch").is_none());
+        assert_eq!(transcript["toolName"], "Read");
+        assert_eq!(transcript["parentToolCallId"], "call-agent");
     }
 
     #[test]

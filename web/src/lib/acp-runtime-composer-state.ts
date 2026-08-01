@@ -93,11 +93,14 @@ export function deriveAcpRuntimeComposerState(
 ): AcpRuntimeComposerState {
   const backend = input.lifecycle?.composer;
   const runtimeActive = Boolean(input.lifecycle?.runtime.active);
-  const acpActive = Boolean(input.lifecycle?.acp.active);
-  const acpTerminal = Boolean(input.lifecycle?.acp.terminal);
-  const backendStopping = Boolean(input.lifecycle?.acp.stopping) || backend?.mode === 'stopping';
-  const waitingForPermission = input.waitingForPermission && !input.hasPlanIntervention;
   const localTurnInFlight = Boolean(input.localTurnInFlight);
+  const lifecycleAcpRunning = Boolean(input.lifecycle?.acp.active) && !Boolean(input.lifecycle?.acp.stopping);
+  const acpTerminal = !localTurnInFlight && !lifecycleAcpRunning && (
+    Boolean(input.lifecycle?.acp.terminal) || isSessionTerminalStatus(input.acpStatus)
+  );
+  const acpActive = !acpTerminal && Boolean(input.lifecycle?.acp.active);
+  const backendStopping = !acpTerminal && (Boolean(input.lifecycle?.acp.stopping) || backend?.mode === 'stopping');
+  const waitingForPermission = input.waitingForPermission && !input.hasPlanIntervention;
   const staleTerminalSnapshot = acpTerminal && !localTurnInFlight;
   const cancelling = !acpTerminal && input.cancelling;
   const stopCommandPending = !acpTerminal && input.stopCommandPending;
@@ -108,7 +111,12 @@ export function deriveAcpRuntimeComposerState(
   const runtimeContinueKind = runtimeContinueKindFromInput(input);
   const runtimeErrorMessage = runtimeErrorMessageFromInput(input);
   const runtimeContinueBlockedByWorkflow = runtimeContinueKind != null && !input.workflowValid;
-  const backendMode = normalizeComposerMode(backend?.mode);
+  const reportedBackendMode = normalizeComposerMode(backend?.mode);
+  const backendMode = acpTerminal && reportedBackendMode === 'stopping'
+    ? runtimeContinueKind === 'input'
+      ? 'interrupted-input'
+      : 'normal'
+    : reportedBackendMode;
   const mode = composerModeFromBackend({
     backendMode,
     waitingForPermission,
@@ -127,7 +135,8 @@ export function deriveAcpRuntimeComposerState(
     stopInProgress;
   const showExternalState = mode === 'invalid-workflow' || mode === 'runtime-error';
   const composerLocked = waitingForPermission;
-  const backendInputLocked = mode !== 'normal' && Boolean(backend?.lockInput);
+  const staleStoppingBackend = acpTerminal && reportedBackendMode === 'stopping';
+  const backendInputLocked = !staleStoppingBackend && mode !== 'normal' && Boolean(backend?.lockInput);
   const inputDisabled = (composerLocked || backendInputLocked || activePromptLocked || mode === 'invalid-workflow' || mode === 'runtime-error') && !input.hasPlanIntervention;
   const canSubmit = Boolean(input.prompt.trim()) && submitTarget !== 'none' && !inputDisabledForSubmit(inputDisabled, input.hasPlanIntervention, mode);
   const processingKind = processingKindForInput(
@@ -149,11 +158,12 @@ export function deriveAcpRuntimeComposerState(
     inputDisabled,
     canSubmit,
     canStop:
-      Boolean(backend?.canStop) ||
+      (!acpTerminal && Boolean(backend?.canStop)) ||
       sessionActive ||
       awaitingResponse ||
       input.sending ||
       waitingForOptimisticPrompt ||
+      localTurnInFlight ||
       cancelling,
     stopInProgress,
     sessionActive,

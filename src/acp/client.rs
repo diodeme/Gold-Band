@@ -215,6 +215,7 @@ const SESSION_REPLAY_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 const SESSION_LIST_MAX_PAGES: usize = 8;
 const SESSION_EVICTION_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const SESSION_SYSTEM_CONTEXT_VERSION: u32 = 1;
+const NESTED_AGENT_TRANSCRIPT_CAPABILITY: &str = "subagent-transcript";
 
 #[derive(Debug)]
 struct AcpCancelled;
@@ -223,6 +224,9 @@ fn initialize_params() -> Value {
     json!({
         "protocolVersion": 1,
         "clientCapabilities": {
+            "_meta": {
+                (NESTED_AGENT_TRANSCRIPT_CAPABILITY): true
+            },
             "elicitation": {
                 "form": {}
             }
@@ -4886,15 +4890,15 @@ mod tests {
     use super::{
         AcpContextCompactionState, AcpPromptLifecycle, AcpPromptTokenUsage, AcpRuntime,
         AcpRuntimePolicy, AcpUsageState, AttachedSessionReusePlan, DOCTOR_DIAGNOSTIC_TARGET_SIZE,
-        PriorAttemptMetrics, PromptActivity, PromptBundle, PromptVisibility,
-        ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution, SessionUpdatePhase,
-        active_context_compaction, active_timeline_streams, attached_sync_required,
-        cleanup_doctor_acp_dir_after_success, contributes_to_final_text, drain_frames_until_quiet,
-        evaluate_provider_revision, initialize_params, is_transport_interruption,
-        is_unscoped_codex_diagnostic_update, merge_tool_raw_input,
+        NESTED_AGENT_TRANSCRIPT_CAPABILITY, PriorAttemptMetrics, PromptActivity, PromptBundle,
+        PromptVisibility, ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution,
+        SessionUpdatePhase, active_context_compaction, active_timeline_streams,
+        attached_sync_required, cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
+        drain_frames_until_quiet, evaluate_provider_revision, initialize_params,
+        is_transport_interruption, is_unscoped_codex_diagnostic_update, merge_tool_raw_input,
         permission_decision_timeline_event, plan_attached_session_reuse, prompt_activity,
-        register_provider_control, request_prompt_cancel,
-        resolve_permission_mode, resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
+        register_provider_control, request_prompt_cancel, resolve_permission_mode,
+        resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
         runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
         session_new_params, session_prompt_params, session_prompt_text,
         should_suppress_session_update, take_pending_live_update_for_stream_switch,
@@ -4908,10 +4912,16 @@ mod tests {
     use crate::provider::prepare_acp_mcp_servers;
 
     #[test]
-    fn initialize_keeps_private_subagent_capabilities_out_of_the_wire_contract() {
+    fn initialize_requests_nested_agent_transcripts_at_the_adapter_boundary() {
         let params = initialize_params();
 
-        assert!(params.pointer("/clientCapabilities/_meta").is_none());
+        assert_eq!(
+            params
+                .pointer("/clientCapabilities/_meta")
+                .and_then(|meta| meta.get(NESTED_AGENT_TRANSCRIPT_CAPABILITY))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
         assert!(
             params
                 .pointer("/clientCapabilities/elicitation/form")

@@ -1017,10 +1017,7 @@ export interface AcpTimelineProjectionVm {
 export interface AcpAgentExecutionVm {
   agentExecutionId: string;
   parentAgentExecutionId?: string | null;
-  toolCallId: string;
   attemptId?: string | null;
-  parentToolCallId?: string | null;
-  launchStatus?: string | null;
   executionStatus: string;
   eventCount: number;
   toolCallCount: number;

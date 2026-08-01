@@ -7,6 +7,8 @@ type Listener = (event: AcpSessionUpdatedEventVm) => void;
 const listeners = new Set<Listener>();
 const branchSnapshots = new Map<string, ConversationBranchLiveSnapshot>();
 const branchListeners = new Map<string, Set<() => void>>();
+const branchSnapshotOrder: string[] = [];
+const MAX_BRANCH_SNAPSHOTS = 64;
 let started = false;
 let starting: Promise<void> | null = null;
 
@@ -58,9 +60,11 @@ function updateBranchSnapshots(event: AcpSessionUpdatedEventVm) {
   if (event.event) {
     const key = conversationBranchStoreKey(event, conversationEventBranchId(event));
     const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
-    const interaction = event.event.kind === 'permissionRequest' || event.event.kind === 'elicitationRequest' || event.event.kind === 'elicitationResponse';
-    const pending = interaction && (event.event.status ?? 'pending') === 'pending';
-    branchSnapshots.set(key, {
+    const request = event.event.kind === 'permissionRequest' || event.event.kind === 'elicitationRequest';
+    const response = event.event.kind === 'elicitationResponse';
+    const interaction = request || response;
+    const pending = request && (event.event.status ?? 'pending') === 'pending';
+    storeBranchSnapshot(key, {
       revision: current.revision + 1,
       status: pending ? 'waiting_permission' : (current.status ?? 'running'),
       attention: interaction ? pending : current.attention,
@@ -70,10 +74,54 @@ function updateBranchSnapshots(event: AcpSessionUpdatedEventVm) {
   }
   if (!event.session) return;
   const prefix = `${attemptKey(event)}:`;
-  for (const [key, current] of branchSnapshots) {
-    if (!key.startsWith(prefix)) continue;
-    branchSnapshots.set(key, { ...current, revision: current.revision + 1, status: event.session.status });
+  const rootKey = `${prefix}root`;
+  const rootCurrent = branchSnapshots.get(rootKey) ?? EMPTY_BRANCH_SNAPSHOT;
+  storeBranchSnapshot(rootKey, {
+    ...rootCurrent,
+    revision: rootCurrent.revision + 1,
+    status: event.session.status,
+  });
+  notifyBranch(rootKey);
+  const projectedBranchKeys = new Set<string>();
+  for (const agent of event.session.timelineProjection?.agents ?? []) {
+    const key = `${prefix}${agent.agentExecutionId}`;
+    projectedBranchKeys.add(key);
+    const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
+    storeBranchSnapshot(key, {
+      revision: current.revision + 1,
+      status: agent.executionStatus,
+      attention: agent.hasAttention,
+    });
     notifyBranch(key);
+  }
+  if (!isTerminalSessionStatus(event.session.status)) return;
+  for (const [key, current] of branchSnapshots) {
+    if (!key.startsWith(prefix) || key === rootKey || projectedBranchKeys.has(key)) continue;
+    storeBranchSnapshot(key, { ...current, revision: current.revision + 1, status: 'interrupted', attention: false });
+    notifyBranch(key);
+  }
+}
+
+function isTerminalSessionStatus(status: string) {
+  return ['completed', 'failed', 'cancelled', 'canceled', 'interrupted', 'stopped'].includes(status.toLowerCase());
+}
+
+function storeBranchSnapshot(key: string, snapshot: ConversationBranchLiveSnapshot) {
+  branchSnapshots.set(key, snapshot);
+  const existing = branchSnapshotOrder.indexOf(key);
+  if (existing >= 0) branchSnapshotOrder.splice(existing, 1);
+  branchSnapshotOrder.push(key);
+  let retainedActive = 0;
+  while (branchSnapshotOrder.length > MAX_BRANCH_SNAPSHOTS && retainedActive < branchSnapshotOrder.length) {
+    const oldest = branchSnapshotOrder.shift();
+    if (!oldest) break;
+    if (branchListeners.has(oldest)) {
+      branchSnapshotOrder.push(oldest);
+      retainedActive += 1;
+    } else {
+      branchSnapshots.delete(oldest);
+      retainedActive = 0;
+    }
   }
 }
 
@@ -122,7 +170,7 @@ export function conversationEventMatchesAttempt(
     outerAttemptId?: string | null;
   },
 ) {
-  return (event.projectId ?? null) === (locator.projectId ?? null)
+  return (event.projectId == null || locator.projectId == null || event.projectId === locator.projectId)
     && event.taskId === locator.taskId
     && event.runId === locator.runId
     && event.roundId === locator.roundId

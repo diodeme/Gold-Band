@@ -21,8 +21,8 @@ const AGENT_NAMESPACE: Uuid = Uuid::from_u128(0x63c7f8ac_1498_4f6e_8f6d_62f2f040
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationBranchRoute {
     pub branch_id: String,
-    pub parent_branch_id: Option<String>,
     pub launched_agent_execution_id: Option<String>,
+    pub tool_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -75,13 +75,18 @@ pub fn branch_route_for_event(event: &AcpUiEvent) -> ConversationBranchRoute {
         branch_id: parent_agent_execution_id
             .clone()
             .unwrap_or_else(|| ROOT_BRANCH_ID.to_string()),
-        parent_branch_id: parent_agent_execution_id,
         launched_agent_execution_id,
+        tool_name: relation.and_then(|relation| relation.tool_name),
     }
 }
 
 pub fn annotate_event_branch(event: &mut AcpUiEvent) -> ConversationBranchRoute {
     let route = branch_route_for_event(event);
+    let normalized_tool_output = event
+        .raw
+        .as_ref()
+        .and_then(provider_tool_output)
+        .cloned();
     let raw = event.raw.get_or_insert_with(|| json!({}));
     if !raw.is_object() {
         *raw = json!({ "providerPayload": raw.clone() });
@@ -96,6 +101,8 @@ pub fn annotate_event_branch(event: &mut AcpUiEvent) -> ConversationBranchRoute 
         json!({
             "branchId": route.branch_id,
             "launchedAgentExecutionId": route.launched_agent_execution_id,
+            "toolName": route.tool_name,
+            "toolOutput": normalized_tool_output,
         }),
     );
     route
@@ -240,12 +247,15 @@ pub fn rebuild_agent_index(attempt_dir: &Utf8Path, session_status: &str) -> Resu
                 .map(|tool_call_id| stable_agent_execution_id(&session_id, tool_call_id));
             let branch_events = load_timeline_items(&branch_timeline_path(attempt_dir, &agent_execution_id))
                 .unwrap_or_default();
+            let execution_events = branch_events
+                .iter()
+                .filter(|event| !is_agent_prompt_event(event))
+                .collect::<Vec<_>>();
             let metrics = branch_metrics(&branch_events);
-            let latest_seq = branch_events.iter().map(|event| event.ended_seq.unwrap_or(event.seq)).max();
-            let latest_timestamp = branch_events.iter().max_by_key(|event| event.ended_seq.unwrap_or(event.seq))
+            let latest_seq = execution_events.iter().map(|event| event.ended_seq.unwrap_or(event.seq)).max();
+            let latest_timestamp = execution_events.iter().max_by_key(|event| event.ended_seq.unwrap_or(event.seq))
                 .map(|event| event.ended_at.clone().unwrap_or_else(|| event.timestamp.clone()));
             let launch_position = launch.ended_seq.unwrap_or(launch.seq);
-            let has_events_after_launch = latest_seq.is_some_and(|seq| seq > launch_position);
             let launch_status = launch.status.as_deref().unwrap_or_default().to_ascii_lowercase();
             let failed = matches!(launch_status.as_str(), "failed" | "error");
             let has_attention = branch_events.iter().any(|event| {
@@ -259,17 +269,24 @@ pub fn rebuild_agent_index(attempt_dir: &Utf8Path, session_status: &str) -> Resu
             } else if !session_active {
                 if session_interrupted {
                     "interrupted"
-                } else if matches!(launch_status.as_str(), "completed" | "success" | "succeeded") {
+                } else if has_agent_completion_evidence(&execution_events)
+                    || matches!(launch_status.as_str(), "completed" | "success" | "succeeded")
+                {
                     "completed"
                 } else {
                     "interrupted"
                 }
-            } else if branch_events.is_empty() {
+            } else if execution_events.is_empty() {
                 "queued"
-            } else if has_events_after_launch || !matches!(launch_status.as_str(), "completed" | "success" | "succeeded") {
-                "running"
-            } else {
+            } else if has_agent_completion_evidence(&execution_events) {
                 "completed"
+            } else if !agent_launch_runs_in_background(&launch)
+                && matches!(launch_status.as_str(), "completed" | "success" | "succeeded")
+                && latest_seq.is_some_and(|seq| seq <= launch_position)
+            {
+                "completed"
+            } else {
+                "running"
             }.to_string();
             let input = launch.raw.as_ref().and_then(tool_raw_input);
             let title = launch.title.clone();
@@ -286,7 +303,7 @@ pub fn rebuild_agent_index(attempt_dir: &Utf8Path, session_status: &str) -> Resu
                 description,
                 started_at: launch.started_at.clone().unwrap_or_else(|| launch.timestamp.clone()),
                 ended_at,
-                event_count: branch_events.len(),
+                event_count: execution_events.len(),
                 tool_call_count: metrics.tool_call_count,
                 read_file_count: metrics.read_file_count,
                 written_file_count: metrics.written_file_count,
@@ -327,7 +344,7 @@ struct BranchMetrics {
 }
 
 fn branch_metrics(events: &[AcpUiEvent]) -> BranchMetrics {
-    let mut metrics = BranchMetrics::default();
+    let mut latest_tools = BTreeMap::<String, &AcpUiEvent>::new();
     for event in events {
         if !matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate") {
             continue;
@@ -336,17 +353,95 @@ fn branch_metrics(events: &[AcpUiEvent]) -> BranchMetrics {
         if relation.as_ref().is_some_and(|relation| relation.agent_launch) {
             continue;
         }
-        metrics.tool_call_count += 1;
-        let tool_name = relation.and_then(|relation| relation.tool_name)
-            .or_else(|| event.title.clone()).unwrap_or_default().to_ascii_lowercase();
-        if matches!(tool_name.as_str(), "read" | "get-content" | "read_file") {
-            metrics.read_file_count += 1;
-        }
-        if matches!(tool_name.as_str(), "write" | "edit" | "apply_patch" | "set-content" | "write_file") {
-            metrics.written_file_count += 1;
+        let key = event.tool_call_id.clone().unwrap_or_else(|| event.id.clone());
+        let should_replace = latest_tools
+            .get(&key)
+            .is_none_or(|current| event.ended_seq.unwrap_or(event.seq) >= current.ended_seq.unwrap_or(current.seq));
+        if should_replace {
+            latest_tools.insert(key, event);
         }
     }
-    metrics
+    let mut read_files = std::collections::BTreeSet::<String>::new();
+    let mut written_files = std::collections::BTreeSet::<String>::new();
+    for event in latest_tools.values() {
+        let relation = agent_relation(event);
+        let tool_name = relation.and_then(|relation| relation.tool_name)
+            .or_else(|| event.title.clone()).unwrap_or_default().to_ascii_lowercase();
+        let paths = structured_tool_paths(event);
+        if matches!(tool_name.as_str(), "read" | "get-content" | "read_file") {
+            read_files.extend(paths);
+        } else if matches!(tool_name.as_str(), "write" | "edit" | "applypatch" | "apply_patch" | "set-content" | "write_file") {
+            written_files.extend(paths);
+        }
+    }
+    BranchMetrics {
+        tool_call_count: latest_tools.len(),
+        read_file_count: read_files.len(),
+        written_file_count: written_files.len(),
+    }
+}
+
+fn is_agent_prompt_event(event: &AcpUiEvent) -> bool {
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("source"))
+        .and_then(Value::as_str)
+        == Some("agentBranchPrompt")
+}
+
+fn has_agent_completion_evidence(events: &[&AcpUiEvent]) -> bool {
+    let Some(latest) = events
+        .iter()
+        .max_by_key(|event| event.ended_seq.unwrap_or(event.seq))
+    else {
+        return false;
+    };
+    latest.kind == "textDelta"
+        && latest.content.as_deref().is_some_and(|content| !content.trim().is_empty())
+}
+
+fn agent_launch_runs_in_background(event: &AcpUiEvent) -> bool {
+    event
+        .raw
+        .as_ref()
+        .and_then(tool_raw_input)
+        .and_then(|input| input.get("run_in_background"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn structured_tool_paths(event: &AcpUiEvent) -> Vec<String> {
+    let mut paths = Vec::<String>::new();
+    if let Some(input) = event.raw.as_ref().and_then(tool_raw_input) {
+        for key in ["file_path", "path"] {
+            if let Some(path) = input.get(key).and_then(Value::as_str) {
+                paths.push(normalize_metric_path(path));
+            }
+        }
+    }
+    let locations = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.pointer("/toolCall/locations").or_else(|| raw.get("locations")))
+        .and_then(Value::as_array);
+    if let Some(locations) = locations {
+        for location in locations {
+            if let Some(path) = location.get("path").and_then(Value::as_str) {
+                paths.push(normalize_metric_path(path));
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn normalize_metric_path(path: &str) -> String {
+    path.trim()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
 }
 
 fn latest_plan_entries(events: &[AcpUiEvent]) -> Vec<Value> {
@@ -365,6 +460,11 @@ fn tool_raw_input(raw: &Value) -> Option<&Value> {
         .or_else(|| raw.pointer("/toolCall/rawInput"))
         .or_else(|| raw.get("input"))
         .or_else(|| raw.pointer("/toolCall/input"))
+}
+
+pub fn provider_tool_output(raw: &Value) -> Option<&Value> {
+    raw.pointer("/_meta/claudeCode/toolResponse/content")
+        .or_else(|| raw.pointer("/toolCall/_meta/claudeCode/toolResponse/content"))
 }
 
 #[cfg(test)]

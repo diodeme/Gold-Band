@@ -362,6 +362,9 @@ export const browserApi: RuntimeApi = {
   getAcpActivityDetail() {
     return Promise.resolve({ items: [], hasMoreEarlier: false, earlierCursor: null });
   },
+  getAcpToolDetail() {
+    return Promise.resolve({ event: null });
+  },
   subscribeAcpSessionUpdates() {
     return Promise.resolve(() => {});
   },

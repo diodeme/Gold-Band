@@ -171,7 +171,7 @@ describe('ACP chat event handling', () => {
         toolCallId: 'ask-call',
         status: 'pending',
         title: 'Asking for your input',
-        raw: { _meta: { claudeCode: { toolName: 'AskUserQuestion' } } },
+        raw: { _meta: { goldBandConversation: { toolName: 'AskUserQuestion' } } },
       }),
       event({
         id: 'elicit-answered',

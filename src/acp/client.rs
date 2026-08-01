@@ -4071,7 +4071,7 @@ impl<'a> AcpRuntime<'a> {
         event: &crate::acp::events::AcpUiEvent,
     ) -> crate::acp::events::AcpUiEvent {
         let mut item = event.clone();
-        let branch_id = branch_route_for_event(&item).branch_id;
+        let branch_id = event_branch_id(&item);
         let mut streams = self
             .active_timeline_streams
             .remove(&branch_id)
@@ -4205,16 +4205,19 @@ impl<'a> AcpRuntime<'a> {
                 );
             }
         }
-        // Clear streams whose kind no longer matches — the next delta of a
-        // different kind will create a fresh stream with a new stable id.
-        if item.kind != "textDelta" {
-            streams.text = None;
-        }
-        if item.kind != "thoughtDelta" {
-            streams.thought = None;
-        }
-        if item.kind != "plan" {
-            streams.plan = None;
+        // An elicitation request is an intervention inside the current turn,
+        // not a transcript boundary. Every other non-stream event closes the
+        // active stream, matching restart recovery below.
+        if item.kind != "elicitationRequest" {
+            if item.kind != "textDelta" {
+                streams.text = None;
+            }
+            if item.kind != "thoughtDelta" {
+                streams.thought = None;
+            }
+            if item.kind != "plan" {
+                streams.plan = None;
+            }
         }
         if streams.text.is_some() || streams.thought.is_some() || streams.plan.is_some() {
             self.active_timeline_streams.insert(branch_id, streams);
@@ -4398,6 +4401,7 @@ fn runtime_hot_timeline_items(
     hot
 }
 
+#[cfg(test)]
 fn active_timeline_streams(
     items: &[crate::acp::events::AcpUiEvent],
 ) -> (
@@ -4405,55 +4409,71 @@ fn active_timeline_streams(
     Option<AcpTimelineStreamState>,
     Option<AcpTimelineStreamState>,
 ) {
-    let Some(item) = items
-        .iter()
-        .max_by_key(|item| (item.ended_seq.unwrap_or(item.seq), item.seq))
-    else {
-        return (None, None, None);
-    };
-    let stream = || AcpTimelineStreamState {
-        item_id: item.id.clone(),
-        source_id: match item.kind.as_str() {
-            "textDelta" => stable_message_stream_identity(item),
-            "thoughtDelta" => stable_thought_stream_identity(item),
-            "plan" => stable_plan_stream_identity(item),
-            _ => None,
-        },
-        started_seq: item.started_seq.unwrap_or(item.seq),
-        started_at: item
-            .started_at
-            .clone()
-            .unwrap_or_else(|| item.timestamp.clone()),
-        content: item.content.clone().unwrap_or_default(),
-    };
-    match item.kind.as_str() {
-        "textDelta" => (Some(stream()), None, None),
-        "thoughtDelta" => (None, Some(stream()), None),
-        "plan" => (None, None, Some(stream())),
-        _ => (None, None, None),
+    active_timeline_streams_from_refs(items.iter().collect())
+}
+
+fn active_timeline_streams_from_refs(
+    mut ordered: Vec<&crate::acp::events::AcpUiEvent>,
+) -> (
+    Option<AcpTimelineStreamState>,
+    Option<AcpTimelineStreamState>,
+    Option<AcpTimelineStreamState>,
+) {
+    ordered.sort_by_key(|item| (item.ended_seq.unwrap_or(item.seq), item.seq));
+    let mut streams = AcpBranchTimelineStreams::default();
+    for item in ordered {
+        let stream = || AcpTimelineStreamState {
+            item_id: item.id.clone(),
+            source_id: match item.kind.as_str() {
+                "textDelta" => stable_message_stream_identity(item),
+                "thoughtDelta" => stable_thought_stream_identity(item),
+                "plan" => stable_plan_stream_identity(item),
+                _ => None,
+            },
+            started_seq: item.started_seq.unwrap_or(item.seq),
+            started_at: item
+                .started_at
+                .clone()
+                .unwrap_or_else(|| item.timestamp.clone()),
+            content: item.content.clone().unwrap_or_default(),
+        };
+        match item.kind.as_str() {
+            "textDelta" => {
+                streams.text = Some(stream());
+                streams.thought = None;
+                streams.plan = None;
+            }
+            "thoughtDelta" => {
+                streams.text = None;
+                streams.thought = Some(stream());
+                streams.plan = None;
+            }
+            "plan" => {
+                streams.text = None;
+                streams.thought = None;
+                streams.plan = Some(stream());
+            }
+            "elicitationRequest" => {}
+            _ => streams = AcpBranchTimelineStreams::default(),
+        }
     }
+    (streams.text, streams.thought, streams.plan)
 }
 
 fn active_timeline_streams_by_branch(
     items: &[crate::acp::events::AcpUiEvent],
 ) -> HashMap<String, AcpBranchTimelineStreams> {
-    let mut latest_by_branch = HashMap::<String, &crate::acp::events::AcpUiEvent>::new();
+    let mut events_by_branch = HashMap::<String, Vec<&crate::acp::events::AcpUiEvent>>::new();
     for item in items {
-        let branch_id = branch_route_for_event(item).branch_id;
-        let should_replace = latest_by_branch
-            .get(&branch_id)
-            .is_none_or(|latest| {
-                (item.ended_seq.unwrap_or(item.seq), item.seq)
-                    >= (latest.ended_seq.unwrap_or(latest.seq), latest.seq)
-            });
-        if should_replace {
-            latest_by_branch.insert(branch_id, item);
-        }
+        events_by_branch
+            .entry(event_branch_id(item))
+            .or_default()
+            .push(item);
     }
-    latest_by_branch
+    events_by_branch
         .into_iter()
-        .filter_map(|(branch_id, item)| {
-            let (text, thought, plan) = active_timeline_streams(std::slice::from_ref(item));
+        .filter_map(|(branch_id, branch_items)| {
+            let (text, thought, plan) = active_timeline_streams_from_refs(branch_items);
             (text.is_some() || thought.is_some() || plan.is_some()).then_some((
                 branch_id,
                 AcpBranchTimelineStreams { text, thought, plan },
@@ -5526,6 +5546,37 @@ mod tests {
 
         assert!(text.is_none());
         assert_eq!(thought.unwrap().content, "thinking");
+        assert!(plan.is_none());
+    }
+
+    #[test]
+    fn active_timeline_stream_survives_an_elicitation_request() {
+        let text = timeline_event("message-1", 1, "textDelta", None, Some("draft"), None);
+        let elicitation = timeline_event(
+            "elicitation-1",
+            2,
+            "elicitationRequest",
+            Some("pending"),
+            None,
+            None,
+        );
+
+        let (text, thought, plan) = active_timeline_streams(&[text, elicitation]);
+
+        assert_eq!(text.unwrap().content, "draft");
+        assert!(thought.is_none());
+        assert!(plan.is_none());
+    }
+
+    #[test]
+    fn active_timeline_stream_closes_at_a_real_transcript_boundary() {
+        let text = timeline_event("message-1", 1, "textDelta", None, Some("done"), None);
+        let tool = timeline_event("tool-1", 2, "toolCall", Some("running"), None, None);
+
+        let (text, thought, plan) = active_timeline_streams(&[text, tool]);
+
+        assert!(text.is_none());
+        assert!(thought.is_none());
         assert!(plan.is_none());
     }
 

@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::{
     acp::events::{
-        append_ui_event, current_timestamp, elicitation_response_event,
+        current_timestamp, elicitation_response_event,
         load_timeline_items, write_timeline_items,
     },
     storage::{ensure_parent_dir, read_json, write_json},
@@ -141,6 +141,7 @@ pub fn cancel_pending_elicitation_requests(
     attempt_dir: &Utf8Path,
     decided_at: String,
 ) -> Result<()> {
+    crate::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
     let Ok(entries) = fs::read_dir(attempt_dir.as_std_path()) else {
         return Ok(());
     };
@@ -188,18 +189,14 @@ pub fn upsert_elicitation_response_event(
     action: &ElicitationAction,
     content: Option<Value>,
 ) -> Result<()> {
-    let events_path = attempt_dir.join("acp.events.jsonl");
+    crate::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
     let all_timeline_events = crate::acp::branches::load_all_branch_events(attempt_dir)?;
-    let source_seq = if !all_timeline_events.is_empty() || !events_path.exists() {
-        all_timeline_events
-            .iter()
-            .map(|event| event.ended_seq.unwrap_or(event.seq))
-            .max()
-            .unwrap_or_default()
-            + 1
-    } else {
-        legacy_event_count(&events_path) + 1
-    };
+    let source_seq = all_timeline_events
+        .iter()
+        .map(|event| event.ended_seq.unwrap_or(event.seq))
+        .max()
+        .unwrap_or_default()
+        + 1;
     let request = all_timeline_events.iter().find(|event| {
         event.kind == "elicitationRequest"
             && (event.id == elicitation_id
@@ -234,10 +231,6 @@ pub fn upsert_elicitation_response_event(
     event.ended_seq = Some(source_seq);
     event.started_at = Some(event.timestamp.clone());
     event.ended_at = Some(event.timestamp.clone());
-
-    if events_path.exists() && !timeline_path.exists() {
-        append_ui_event(&events_path, &event)?;
-    }
 
     let mut items = load_timeline_items(&timeline_path)?;
     if let Some(existing) = items.iter_mut().find(|item| item.id == event.id) {
@@ -298,16 +291,6 @@ fn sanitize_id(id: &str) -> String {
             }
         })
         .collect()
-}
-
-fn legacy_event_count(path: &Utf8Path) -> u64 {
-    let Ok(content) = fs::read_to_string(path.as_std_path()) else {
-        return 0;
-    };
-    content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .count() as u64
 }
 
 fn remove_file_if_exists(path: &Utf8Path) -> Result<()> {

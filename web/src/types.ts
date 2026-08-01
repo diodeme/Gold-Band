@@ -1009,6 +1009,16 @@ export interface AcpActivityDetailVm {
   earlierCursor?: string | null;
 }
 
+export interface AcpToolDetailQueryInput {
+  branchId: string;
+  eventId: string;
+  toolCallId?: string | null;
+}
+
+export interface AcpToolDetailVm {
+  event?: AcpUiEventVm | null;
+}
+
 export interface AcpTimelineProjectionVm {
   agents: AcpAgentExecutionVm[];
   todoEntries: Array<{ content?: string; status?: string; priority?: string }>;

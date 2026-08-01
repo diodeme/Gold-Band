@@ -21,7 +21,7 @@ async function ensureStarted() {
       return;
     }
     await subscribe((event) => {
-      updateBranchSnapshots(event);
+      applyConversationEventToBranchSnapshots(event);
       for (const listener of listeners) listener(event);
     });
     started = true;
@@ -56,7 +56,7 @@ export function conversationBranchStoreKey(locator: Parameters<typeof attemptKey
   return `${attemptKey(locator)}:${branchId}`;
 }
 
-function updateBranchSnapshots(event: AcpSessionUpdatedEventVm) {
+export function applyConversationEventToBranchSnapshots(event: AcpSessionUpdatedEventVm) {
   if (event.event) {
     const key = conversationBranchStoreKey(event, conversationEventBranchId(event));
     const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
@@ -64,42 +64,45 @@ function updateBranchSnapshots(event: AcpSessionUpdatedEventVm) {
     const response = event.event.kind === 'elicitationResponse';
     const interaction = request || response;
     const pending = request && (event.event.status ?? 'pending') === 'pending';
-    storeBranchSnapshot(key, {
-      revision: current.revision + 1,
-      status: pending ? 'waiting_permission' : (current.status ?? 'running'),
-      attention: interaction ? pending : current.attention,
-    });
-    notifyBranch(key);
+    const status = pending
+      ? 'waiting_permission'
+      : isTerminalBranchStatus(current.status)
+        ? current.status
+        : 'running';
+    updateBranchSnapshot(key, status, interaction ? pending : current.attention);
     return;
   }
   if (!event.session) return;
   const prefix = `${attemptKey(event)}:`;
   const rootKey = `${prefix}root`;
   const rootCurrent = branchSnapshots.get(rootKey) ?? EMPTY_BRANCH_SNAPSHOT;
-  storeBranchSnapshot(rootKey, {
-    ...rootCurrent,
-    revision: rootCurrent.revision + 1,
-    status: event.session.status,
-  });
-  notifyBranch(rootKey);
+  updateBranchSnapshot(rootKey, event.session.status, rootCurrent.attention);
   const projectedBranchKeys = new Set<string>();
   for (const agent of event.session.timelineProjection?.agents ?? []) {
     const key = `${prefix}${agent.agentExecutionId}`;
     projectedBranchKeys.add(key);
-    const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
-    storeBranchSnapshot(key, {
-      revision: current.revision + 1,
-      status: agent.executionStatus,
-      attention: agent.hasAttention,
-    });
-    notifyBranch(key);
+    updateBranchSnapshot(key, agent.executionStatus, agent.hasAttention);
   }
   if (!isTerminalSessionStatus(event.session.status)) return;
   for (const [key, current] of branchSnapshots) {
     if (!key.startsWith(prefix) || key === rootKey || projectedBranchKeys.has(key)) continue;
-    storeBranchSnapshot(key, { ...current, revision: current.revision + 1, status: 'interrupted', attention: false });
-    notifyBranch(key);
+    updateBranchSnapshot(key, 'interrupted', false);
   }
+}
+
+function updateBranchSnapshot(key: string, status: string | null, attention: boolean) {
+  const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
+  if (current.status === status && current.attention === attention) return;
+  storeBranchSnapshot(key, {
+    revision: current.revision + 1,
+    status,
+    attention,
+  });
+  notifyBranch(key);
+}
+
+function isTerminalBranchStatus(status: string | null) {
+  return status != null && ['completed', 'failed', 'cancelled', 'canceled', 'interrupted', 'stopped'].includes(status.toLowerCase());
 }
 
 function isTerminalSessionStatus(status: string) {
@@ -178,4 +181,16 @@ export function conversationEventMatchesAttempt(
     && event.attemptId === locator.attemptId
     && (event.outerNodeId ?? null) === (locator.outerNodeId ?? null)
     && (event.outerAttemptId ?? null) === (locator.outerAttemptId ?? null);
+}
+
+export function readConversationBranchLiveSnapshot(
+  locator: Parameters<typeof attemptKey>[0],
+  branchId: string,
+) {
+  return branchSnapshots.get(conversationBranchStoreKey(locator, branchId)) ?? EMPTY_BRANCH_SNAPSHOT;
+}
+
+export function resetConversationEventRouterSnapshots() {
+  branchSnapshots.clear();
+  branchSnapshotOrder.splice(0, branchSnapshotOrder.length);
 }

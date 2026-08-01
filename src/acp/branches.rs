@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 
 use anyhow::Result;
 use atomic_write_file::AtomicWriteFile;
@@ -82,11 +82,14 @@ pub fn branch_route_for_event(event: &AcpUiEvent) -> ConversationBranchRoute {
 
 pub fn annotate_event_branch(event: &mut AcpUiEvent) -> ConversationBranchRoute {
     let route = branch_route_for_event(event);
-    let normalized_tool_output = event
-        .raw
-        .as_ref()
-        .and_then(provider_tool_output)
-        .cloned();
+    // Agent launch results belong to the launched branch's formal transcript.
+    // Keep ordinary tool output normalized for the shared tool renderer, but do
+    // not duplicate an Agent's final response into its parent link event.
+    let normalized_tool_output = route
+        .launched_agent_execution_id
+        .is_none()
+        .then(|| event.raw.as_ref().and_then(provider_tool_output).cloned())
+        .flatten();
     let raw = event.raw.get_or_insert_with(|| json!({}));
     if !raw.is_object() {
         *raw = json!({ "providerPayload": raw.clone() });
@@ -173,7 +176,190 @@ pub fn branch_snapshot_path(attempt_dir: &Utf8Path, branch_id: &str) -> Utf8Path
     attempt_dir.join("agents").join(branch_id).join("snapshot.json")
 }
 
+/// One-time conversion of the pre-timeline `acp.events.jsonl` format.
+///
+/// The legacy file is intentionally retained as an audit artifact, but all
+/// runtime and query paths switch to branch timelines after this succeeds.
+/// This avoids a permanent dual-read compatibility path while keeping existing
+/// development conversations accessible.
+pub fn migrate_legacy_events_timeline(attempt_dir: &Utf8Path) -> Result<bool> {
+    let root_path = branch_timeline_path(attempt_dir, ROOT_BRANCH_ID);
+    if root_path
+        .metadata()
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false)
+    {
+        return Ok(false);
+    }
+    let legacy_path = attempt_dir.join("acp.events.jsonl");
+    let Ok(file) = std::fs::File::open(legacy_path.as_std_path()) else {
+        return Ok(false);
+    };
+
+    let mut canonical = Vec::<AcpUiEvent>::new();
+    let mut keyed = HashMap::<String, usize>::new();
+    let mut last_unkeyed_stream: Option<(String, String, usize)> = None;
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(mut event) = serde_json::from_str::<AcpUiEvent>(&line) else {
+            continue;
+        };
+        stamp_legacy_event_bounds(&mut event);
+        let route = branch_route_for_event(&event);
+        let key = legacy_event_merge_key(&event, &route.branch_id);
+        if let Some(index) = key.as_ref().and_then(|key| keyed.get(key)).copied() {
+            merge_legacy_event(&mut canonical[index], event);
+            last_unkeyed_stream = None;
+            continue;
+        }
+        let stream_kind = matches!(event.kind.as_str(), "textDelta" | "thoughtDelta" | "plan")
+            .then(|| event.kind.clone());
+        if key.is_none()
+            && let Some(kind) = stream_kind.as_ref()
+            && let Some((last_branch, last_kind, index)) = last_unkeyed_stream.as_ref()
+            && last_branch == &route.branch_id
+            && last_kind == kind
+        {
+            merge_legacy_event(&mut canonical[*index], event);
+            continue;
+        }
+        if let Some(key) = key {
+            keyed.insert(key, canonical.len());
+        }
+        last_unkeyed_stream = stream_kind
+            .map(|kind| (route.branch_id.clone(), kind, canonical.len()));
+        canonical.push(event);
+    }
+    if canonical.is_empty() {
+        return Ok(false);
+    }
+
+    let mut by_branch = BTreeMap::<String, Vec<AcpUiEvent>>::new();
+    for mut event in canonical {
+        let route = annotate_event_branch(&mut event);
+        let prompt = agent_prompt_event(&event);
+        by_branch.entry(route.branch_id).or_default().push(event);
+        if let Some(prompt) = prompt {
+            by_branch.entry(event_branch_id(&prompt)).or_default().push(prompt);
+        }
+    }
+    for events in by_branch.values_mut() {
+        events.sort_by_key(|event| (event.started_seq.unwrap_or(event.seq), event.seq));
+    }
+    write_timeline_items(
+        &root_path,
+        by_branch.remove(ROOT_BRANCH_ID).as_deref().unwrap_or_default(),
+    )?;
+    for (branch_id, events) in by_branch {
+        write_timeline_items(&branch_timeline_path(attempt_dir, &branch_id), &events)?;
+    }
+    Ok(true)
+}
+
+fn stamp_legacy_event_bounds(event: &mut AcpUiEvent) {
+    event.started_seq.get_or_insert(event.seq);
+    event.ended_seq.get_or_insert(event.seq);
+    event.started_at.get_or_insert_with(|| event.timestamp.clone());
+    event.ended_at.get_or_insert_with(|| event.timestamp.clone());
+}
+
+fn legacy_event_merge_key(event: &AcpUiEvent, branch_id: &str) -> Option<String> {
+    match event.kind.as_str() {
+        "toolCall" | "toolCallUpdate" => event
+            .tool_call_id
+            .as_deref()
+            .map(|id| format!("{branch_id}:tool:{id}")),
+        "permissionRequest" => Some(format!(
+            "{branch_id}:permission:{}",
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("requestId"))
+                .and_then(Value::as_str)
+                .unwrap_or(event.id.as_str())
+                .trim_start_matches("permission-")
+        )),
+        "textDelta" | "thoughtDelta" | "plan" => legacy_stream_identity(event)
+            .map(|identity| format!("{branch_id}:stream:{}:{identity}", event.kind)),
+        _ => None,
+    }
+}
+
+fn legacy_stream_identity(event: &AcpUiEvent) -> Option<&str> {
+    let raw = event.raw.as_ref()?;
+    [
+        "/messageId",
+        "/thoughtId",
+        "/planId",
+        "/toolCallId",
+        "/content/id",
+        "/_meta/messageId",
+    ]
+    .into_iter()
+    .find_map(|pointer| raw.pointer(pointer).and_then(Value::as_str))
+}
+
+fn merge_legacy_event(existing: &mut AcpUiEvent, incoming: AcpUiEvent) {
+    let existing_start_seq = existing.started_seq.unwrap_or(existing.seq);
+    let existing_started_at = existing
+        .started_at
+        .clone()
+        .unwrap_or_else(|| existing.timestamp.clone());
+    if matches!(incoming.kind.as_str(), "textDelta" | "thoughtDelta") {
+        if let Some(chunk) = incoming.content.as_deref() {
+            existing.content.get_or_insert_with(String::new).push_str(chunk);
+        }
+    } else {
+        if incoming.content.is_some() {
+            existing.content = incoming.content.clone();
+        }
+        if incoming.title.is_some() {
+            existing.title = incoming.title.clone();
+        }
+    }
+    existing.kind = if incoming.kind == "toolCallUpdate" {
+        "toolCall".to_string()
+    } else {
+        incoming.kind.clone()
+    };
+    existing.seq = incoming.seq;
+    existing.timestamp = incoming.timestamp.clone();
+    existing.status = incoming.status.clone().or_else(|| existing.status.clone());
+    existing.tool_call_id = incoming
+        .tool_call_id
+        .clone()
+        .or_else(|| existing.tool_call_id.clone());
+    existing.started_seq = Some(existing_start_seq);
+    existing.ended_seq = Some(incoming.ended_seq.unwrap_or(incoming.seq));
+    existing.started_at = Some(existing_started_at);
+    existing.ended_at = Some(
+        incoming
+            .ended_at
+            .clone()
+            .unwrap_or_else(|| incoming.timestamp.clone()),
+    );
+    existing.timing = incoming.timing.clone().or_else(|| existing.timing.clone());
+    existing.raw = merge_legacy_raw(existing.raw.take(), incoming.raw);
+}
+
+fn merge_legacy_raw(existing: Option<Value>, incoming: Option<Value>) -> Option<Value> {
+    match (existing, incoming) {
+        (Some(Value::Object(mut existing)), Some(Value::Object(incoming))) => {
+            for (key, value) in incoming {
+                existing.insert(key, value);
+            }
+            Some(Value::Object(existing))
+        }
+        (_, Some(incoming)) => Some(incoming),
+        (existing, None) => existing,
+    }
+}
+
 pub fn migrate_legacy_agent_timeline(attempt_dir: &Utf8Path) -> Result<bool> {
+    migrate_legacy_events_timeline(attempt_dir)?;
     let root_path = branch_timeline_path(attempt_dir, ROOT_BRANCH_ID);
     let mut events = load_timeline_items(&root_path)?;
     if !events.iter().any(|event| branch_route_for_event(event).branch_id != ROOT_BRANCH_ID) {
@@ -278,8 +464,6 @@ pub fn rebuild_agent_index(attempt_dir: &Utf8Path, session_status: &str) -> Resu
                 }
             } else if execution_events.is_empty() {
                 "queued"
-            } else if has_agent_completion_evidence(&execution_events) {
-                "completed"
             } else if !agent_launch_runs_in_background(&launch)
                 && matches!(launch_status.as_str(), "completed" | "success" | "succeeded")
                 && latest_seq.is_some_and(|seq| seq <= launch_position)
@@ -470,24 +654,65 @@ pub fn provider_tool_output(raw: &Value) -> Option<&Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp::events::append_ui_event;
 
-    fn event(id: &str, tool_call_id: Option<&str>, relation: Value) -> AcpUiEvent {
+    fn event_at(
+        id: &str,
+        seq: u64,
+        kind: &str,
+        tool_call_id: Option<&str>,
+        status: Option<&str>,
+        relation: Value,
+        raw_input: Option<Value>,
+    ) -> AcpUiEvent {
+        let mut raw = json!({ "_meta": { "agentTranscript": relation } });
+        if let Some(raw_input) = raw_input {
+            raw["rawInput"] = raw_input;
+        }
         AcpUiEvent {
             id: id.to_string(),
-            seq: 1,
-            timestamp: "1Z".to_string(),
-            kind: "toolCall".to_string(),
+            seq,
+            timestamp: format!("{seq}Z"),
+            kind: kind.to_string(),
             session_id: Some("session-1".to_string()),
             content: None,
             title: None,
             tool_call_id: tool_call_id.map(str::to_string),
-            status: Some("pending".to_string()),
-            started_seq: None,
-            ended_seq: None,
-            started_at: None,
-            ended_at: None,
+            status: status.map(str::to_string),
+            started_seq: Some(seq),
+            ended_seq: Some(seq),
+            started_at: Some(format!("{seq}Z")),
+            ended_at: Some(format!("{seq}Z")),
             timing: None,
-            raw: Some(json!({ "_meta": { "agentTranscript": relation } })),
+            raw: Some(raw),
+        }
+    }
+
+    fn event(id: &str, tool_call_id: Option<&str>, relation: Value) -> AcpUiEvent {
+        event_at(id, 1, "toolCall", tool_call_id, Some("pending"), relation, None)
+    }
+
+    fn temp_attempt(label: &str) -> Utf8PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "gold-band-agent-branch-{label}-{}",
+            Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        Utf8PathBuf::from_path_buf(path).unwrap()
+    }
+
+    fn persist_partitioned(attempt_dir: &Utf8Path, events: Vec<AcpUiEvent>) {
+        let mut by_branch = BTreeMap::<String, Vec<AcpUiEvent>>::new();
+        for mut event in events {
+            let route = annotate_event_branch(&mut event);
+            let prompt = agent_prompt_event(&event);
+            by_branch.entry(route.branch_id).or_default().push(event);
+            if let Some(prompt) = prompt {
+                by_branch.entry(event_branch_id(&prompt)).or_default().push(prompt);
+            }
+        }
+        for (branch_id, events) in by_branch {
+            write_timeline_items(&branch_timeline_path(attempt_dir, &branch_id), &events).unwrap();
         }
     }
 
@@ -506,5 +731,224 @@ mod tests {
         let child = event("read", Some("read-1"), json!({ "parentToolCallId": "child-tool" }));
         let route = branch_route_for_event(&child);
         assert_eq!(route.branch_id, stable_agent_execution_id("session-1", "child-tool"));
+    }
+
+    #[test]
+    fn nested_launch_is_routed_to_parent_branch_and_indexes_parent_relation() {
+        let attempt = temp_attempt("nested-route");
+        let outer = event_at(
+            "outer",
+            1,
+            "toolCall",
+            Some("provider-outer"),
+            Some("pending"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "description": "outer" })),
+        );
+        let nested = event_at(
+            "nested",
+            2,
+            "toolCall",
+            Some("provider-nested"),
+            Some("pending"),
+            json!({ "agentLaunch": true, "parentToolCallId": "provider-outer" }),
+            Some(json!({ "description": "nested" })),
+        );
+        assert_eq!(
+            branch_route_for_event(&nested).branch_id,
+            stable_agent_execution_id("session-1", "provider-outer")
+        );
+        persist_partitioned(&attempt, vec![outer, nested]);
+        let records = rebuild_agent_index(&attempt, "running").unwrap();
+        let nested_record = records
+            .iter()
+            .find(|record| record.launch_tool_call_id == "provider-nested")
+            .unwrap();
+        assert_eq!(
+            nested_record.parent_agent_execution_id.as_deref(),
+            Some(stable_agent_execution_id("session-1", "provider-outer").as_str())
+        );
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn legacy_events_are_migrated_once_into_single_owner_timelines() {
+        let attempt = temp_attempt("legacy-migration");
+        let legacy = attempt.join("acp.events.jsonl");
+        let mut user = event_at("user", 1, "userTextDelta", None, Some("completed"), json!({}), None);
+        user.content = Some("root prompt".to_string());
+        let launch = event_at(
+            "launch",
+            2,
+            "toolCall",
+            Some("provider-child"),
+            Some("pending"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "prompt": "child prompt", "description": "child" })),
+        );
+        let child = event_at(
+            "child-read",
+            3,
+            "toolCall",
+            Some("provider-read"),
+            Some("completed"),
+            json!({ "parentToolCallId": "provider-child", "toolName": "Read" }),
+            Some(json!({ "file_path": "src/lib.rs" })),
+        );
+        for event in [&user, &launch, &child] {
+            append_ui_event(&legacy, event).unwrap();
+        }
+
+        assert!(migrate_legacy_events_timeline(&attempt).unwrap());
+        assert!(!migrate_legacy_events_timeline(&attempt).unwrap());
+        let root = load_timeline_items(&branch_timeline_path(&attempt, ROOT_BRANCH_ID)).unwrap();
+        let branch_id = stable_agent_execution_id("session-1", "provider-child");
+        let branch = load_timeline_items(&branch_timeline_path(&attempt, &branch_id)).unwrap();
+        assert_eq!(root.iter().filter(|event| event.id == "child-read").count(), 0);
+        assert!(root.iter().any(|event| event.id == "launch"));
+        assert!(branch.iter().any(|event| event.id == "child-read"));
+        assert!(branch.iter().any(is_agent_prompt_event));
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn synthetic_agent_prompt_does_not_move_a_queued_agent_to_running() {
+        let attempt = temp_attempt("queued-prompt");
+        persist_partitioned(
+            &attempt,
+            vec![event_at(
+                "launch",
+                1,
+                "toolCall",
+                Some("provider-child"),
+                Some("completed"),
+                json!({ "agentLaunch": true }),
+                Some(json!({
+                    "prompt": "inspect",
+                    "description": "child",
+                    "run_in_background": true
+                })),
+            )],
+        );
+        let records = rebuild_agent_index(&attempt, "running").unwrap();
+        assert_eq!(records[0].status, "queued");
+        assert_eq!(records[0].event_count, 0);
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn background_agent_with_streaming_text_remains_running_until_session_terminal() {
+        let attempt = temp_attempt("background-running");
+        let launch = event_at(
+            "launch",
+            1,
+            "toolCall",
+            Some("provider-child"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "run_in_background": true, "description": "child" })),
+        );
+        let mut text = event_at(
+            "child-text",
+            2,
+            "textDelta",
+            None,
+            None,
+            json!({ "parentToolCallId": "provider-child" }),
+            None,
+        );
+        text.content = Some("partial answer".to_string());
+        persist_partitioned(&attempt, vec![launch, text]);
+
+        assert_eq!(rebuild_agent_index(&attempt, "running").unwrap()[0].status, "running");
+        assert_eq!(rebuild_agent_index(&attempt, "completed").unwrap()[0].status, "completed");
+        assert_eq!(rebuild_agent_index(&attempt, "stopped").unwrap()[0].status, "interrupted");
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn metrics_and_todos_are_owned_by_branch_and_deduplicated() {
+        let attempt = temp_attempt("metrics-todos");
+        let launch = event_at(
+            "launch",
+            1,
+            "toolCall",
+            Some("provider-child"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "run_in_background": true })),
+        );
+        let read_start = event_at(
+            "read-start",
+            2,
+            "toolCall",
+            Some("read-1"),
+            Some("running"),
+            json!({ "parentToolCallId": "provider-child", "toolName": "Read" }),
+            Some(json!({ "file_path": "SRC/lib.rs" })),
+        );
+        let read_end = event_at(
+            "read-end",
+            3,
+            "toolCallUpdate",
+            Some("read-1"),
+            Some("completed"),
+            json!({ "parentToolCallId": "provider-child", "toolName": "Read" }),
+            Some(json!({ "file_path": "src\\lib.rs" })),
+        );
+        let write = event_at(
+            "write",
+            4,
+            "toolCall",
+            Some("write-1"),
+            Some("completed"),
+            json!({ "parentToolCallId": "provider-child", "toolName": "Write" }),
+            Some(json!({ "file_path": "src/out.rs" })),
+        );
+        let mut plan = event_at(
+            "plan",
+            5,
+            "plan",
+            None,
+            None,
+            json!({ "parentToolCallId": "provider-child" }),
+            None,
+        );
+        plan.raw.as_mut().unwrap()["entries"] = json!([
+            { "content": "child only", "status": "in_progress" }
+        ]);
+        persist_partitioned(&attempt, vec![launch, read_start, read_end, write, plan]);
+        let record = rebuild_agent_index(&attempt, "running").unwrap().remove(0);
+        assert_eq!(record.tool_call_count, 2);
+        assert_eq!(record.read_file_count, 1);
+        assert_eq!(record.written_file_count, 1);
+        assert_eq!(record.todo_entries, vec![json!({ "content": "child only", "status": "in_progress" })]);
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn index_and_snapshot_restore_without_provider_ids_in_directory_names() {
+        let attempt = temp_attempt("index-restore");
+        persist_partitioned(
+            &attempt,
+            vec![event_at(
+                "launch",
+                1,
+                "toolCall",
+                Some("provider/use:unsafe"),
+                Some("pending"),
+                json!({ "agentLaunch": true }),
+                Some(json!({ "description": "child" })),
+            )],
+        );
+        let first = rebuild_agent_index(&attempt, "running").unwrap();
+        let second = rebuild_agent_index(&attempt, "running").unwrap();
+        assert_eq!(first, second);
+        let agent_id = &first[0].agent_execution_id;
+        assert!(branch_snapshot_path(&attempt, agent_id).exists());
+        assert!(attempt.join("acp.agents.jsonl").exists());
+        assert!(!agent_id.contains("provider/use"));
+        assert!(!attempt.join("agents").join("provider").exists());
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 }

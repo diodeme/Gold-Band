@@ -2794,9 +2794,6 @@ export const ACPChatDialog = forwardRef<
                         streamingMarkdownItemKey={streamingMarkdownItemKey}
                         messageAttachmentLocator={messageAttachmentLocator}
                         onMessageAttachmentClick={handleOpenMessageAttachment}
-                        onPermissionSelect={(request, optionId) =>
-                          answerPermission(request, optionId)
-                        }
                       />
                     </div>
                   ))}
@@ -4126,13 +4123,11 @@ export function ACPMessageList({
   timeline,
   sessionStatus,
   sending,
-  onPermissionSelect,
 }: {
   timeline: AcpTimelineItem[];
   sessionStatus: string;
   sending: boolean;
   onLayoutChange?: () => void;
-  onPermissionSelect?: (request: AcpPermissionRequestVm, optionId: string) => void;
 }) {
   const active = isSessionActiveStatus(sessionStatus) || sending;
   const streamingMarkdownItemKey = active
@@ -4147,7 +4142,6 @@ export function ACPMessageList({
           key={timelineEventKey(item)}
           event={item}
           streamingMarkdownItemKey={streamingMarkdownItemKey}
-          onPermissionSelect={onPermissionSelect}
         />
       ))}
     </div>
@@ -4201,14 +4195,12 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   streamingMarkdownItemKey,
   messageAttachmentLocator,
   onMessageAttachmentClick,
-  onPermissionSelect,
   nested = false,
 }: {
   event: AcpTimelineItem;
   streamingMarkdownItemKey?: string | null;
   messageAttachmentLocator?: MessageAttachmentLocator;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
-  onPermissionSelect?: (request: AcpPermissionRequestVm, optionId: string) => void;
   nested?: boolean;
 }) {
   if (isAgentLink(event))
@@ -4236,19 +4228,6 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
     return <ThoughtBlock event={event} streamingMarkdownItemKey={streamingMarkdownItemKey} nested={nested} />;
   if (event.kind === "toolCall" || event.kind === "toolCallUpdate")
     return <ToolBlock event={event} nested={nested} />;
-  if (event.kind === "permissionRequest") {
-    const request = permissionRequestFromEvent(event);
-    return request ? (
-      <PermissionRequestCard
-        request={request}
-        status={event.status}
-        nested={nested}
-        onSelect={onPermissionSelect
-          ? (optionId) => onPermissionSelect(request, optionId)
-          : undefined}
-      />
-    ) : null;
-  }
   return null;
 });
 
@@ -5167,21 +5146,7 @@ export function PermissionRequestCard({
   const { t } = useTranslation();
   const decisionSummary = permissionRequestSummary(request);
   const pending = isPendingPermissionStatus(status);
-  const selectedOptionId = stringValue(rawObject(request.raw)?.optionId);
-  const selectedOption = request.options.find(
-    (option) => option.optionId === selectedOptionId,
-  );
-  if (!pending) {
-    return (
-      <PermissionDecisionAuditRow
-        request={request}
-        status={status}
-        decisionLabel={selectedOption?.name || displayStatus(t, status)}
-        summary={decisionSummary}
-        nested={nested}
-      />
-    );
-  }
+  if (!pending) return null;
 
   return (
     <AssistantTimelineRow nested={nested}>
@@ -5249,45 +5214,6 @@ export function PermissionRequestCard({
     </AssistantTimelineRow>
   );
 }
-
-const PermissionDecisionAuditRow = memo(function PermissionDecisionAuditRow({
-  request,
-  status,
-  decisionLabel,
-  summary,
-  nested,
-}: {
-  request: AcpPermissionRequestVm;
-  status?: string | null;
-  decisionLabel: string;
-  summary: string | null;
-  nested: boolean;
-}) {
-  return (
-    <AssistantTimelineRow nested={nested}>
-      <div
-        className="acp-permission-decision-audit flex min-w-0 max-w-full items-start gap-2 px-1.5 py-1 text-xs text-muted-foreground"
-        data-permission-status={status?.toLowerCase() || "selected"}
-      >
-        <ShieldQuestion className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-        <div className="min-w-0 leading-5">
-          <span className="font-medium text-foreground/80">{decisionLabel}</span>
-          {summary ? (
-            <span className="break-all text-muted-foreground [overflow-wrap:anywhere]">
-              <span aria-hidden="true"> · </span>
-              {summary}
-            </span>
-          ) : request.title ? (
-            <span className="break-all text-muted-foreground [overflow-wrap:anywhere]">
-              <span aria-hidden="true"> · </span>
-              {request.title}
-            </span>
-          ) : null}
-        </div>
-      </div>
-    </AssistantTimelineRow>
-  );
-});
 
 function isPendingPermissionStatus(status?: string | null) {
   return !status || status.toLowerCase() === "pending";

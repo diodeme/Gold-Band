@@ -2,7 +2,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-import { ACPMessageList, buildAcpTimelineProjection, PermissionRequestCard, permissionRequestSummary } from '@/components/acp/ACPChatDialog';
+import { ACPMessageList, buildAcpTimelineProjection, pendingPermissionFromEvents, PermissionRequestCard, permissionRequestSummary } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { AcpUiEventVm } from '@/types';
 
@@ -90,7 +90,7 @@ describe('PermissionRequestCard', () => {
     expect(html).toContain('Get-ChildItem -Force &quot;D:\\Projects\\code\\ai&quot;');
   });
 
-  it('replaces a selected approval card with a compact audit row', () => {
+  it('does not render resolved permission records', () => {
     const html = renderToStaticMarkup(
       React.createElement(
         TooltipProvider,
@@ -110,13 +110,7 @@ describe('PermissionRequestCard', () => {
       ),
     );
 
-    expect(html).toContain('acp-permission-decision-audit');
-    expect(html).toContain('data-permission-status="selected"');
-    expect(html).toContain('Allow once');
-    expect(html).toContain('git status --short');
-    expect(html).not.toContain('acp-permission-request-card');
-    expect(html).not.toContain('Permission required');
-    expect(html).not.toContain('data-slot="button"');
+    expect(html).toBe('');
   });
 
   it('shows the ACP-provided Skill name and arguments without inferring intent', () => {
@@ -136,27 +130,21 @@ describe('PermissionRequestCard', () => {
     })).toBe('prompt-kit · 只读 very thorough 调查仓库');
   });
 
-  it('keeps a pending nested permission visible while its parent Agent is collapsed', () => {
+  it('keeps permission cards out of the conversation timeline', () => {
     const event = (partial: Partial<AcpUiEventVm>): AcpUiEventVm => ({
       id: 'event', seq: 1, timestamp: '1Z', kind: 'toolCall', sessionId: 'session',
       content: null, title: null, toolCallId: null, status: null, raw: null,
       ...partial,
     });
-    const projection = buildAcpTimelineProjection([
-      event({
-        id: 'agent', kind: 'toolCall', toolCallId: 'call-agent', title: 'Agent', status: 'running',
-        raw: { _meta: { agentTranscript: { agentLaunch: true, toolName: 'Agent' } }, rawInput: { description: 'inspect UI' } },
-      }),
-      event({
-        id: 'permission', seq: 2, timestamp: '2Z', kind: 'permissionRequest', title: 'Skill', status: 'pending',
-        raw: {
-          _meta: { agentTranscript: { parentToolCallId: 'call-agent' } },
-          requestId: 'permission-skill',
-          toolCall: { title: 'Skill', rawInput: { skill: 'prompt-kit', args: 'read only' } },
-          options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow' }],
-        },
-      }),
-    ], 'running');
+    const permission = event({
+      id: 'permission', seq: 2, timestamp: '2Z', kind: 'permissionRequest', title: 'Skill', status: 'pending',
+      raw: {
+        requestId: 'json-rpc-skill',
+        toolCall: { title: 'Skill', rawInput: { skill: 'prompt-kit', args: 'read only' } },
+        options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow' }],
+      },
+    });
+    const projection = buildAcpTimelineProjection([permission], 'running');
 
     const html = renderToStaticMarkup(
       React.createElement(TooltipProvider, null,
@@ -167,31 +155,23 @@ describe('PermissionRequestCard', () => {
         }),
       ),
     );
-    expect(html).toContain('prompt-kit');
-    expect(html).toContain('read only');
-    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain('prompt-kit');
+    expect(html).not.toContain('acp-permission-request-card');
+    expect(pendingPermissionFromEvents([permission], new Set())).toMatchObject({ requestId: 'json-rpc-skill' });
   });
 
-  it('keeps only pending permission visible while tool rows including errors stay collapsed', () => {
+  it('selects only the latest pending permission for the intervention layer', () => {
     const event = (partial: Partial<AcpUiEventVm>): AcpUiEventVm => ({
       id: 'event', seq: 1, timestamp: '1Z', kind: 'toolCall', sessionId: 'session',
       content: null, title: null, toolCallId: null, status: null, raw: null,
       ...partial,
     });
-    const projection = buildAcpTimelineProjection([
-      event({
-        id: 'failed-glob', kind: 'toolCall', toolCallId: 'glob-failed',
-        title: 'Glob failed-visible', status: 'failed',
-      }),
-      event({
-        id: 'completed-read', seq: 2, timestamp: '2Z', kind: 'toolCall',
-        toolCallId: 'read-completed', title: 'Read hidden-until-expanded', status: 'completed',
-      }),
+    const events = [
       event({
         id: 'permission', seq: 3, timestamp: '3Z', kind: 'permissionRequest',
         toolCallId: 'skill-call', title: 'Skill', status: 'pending',
         raw: {
-          requestId: 'permission-skill',
+          requestId: 'json-rpc-skill',
           toolCall: { title: 'Skill', rawInput: { skill: 'prompt-kit', args: 'read only' } },
           options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow' }],
         },
@@ -200,29 +180,16 @@ describe('PermissionRequestCard', () => {
         id: 'permission-selected', seq: 4, timestamp: '4Z', kind: 'permissionRequest',
         toolCallId: 'selected-skill-call', title: 'Permission required', status: 'selected',
         raw: {
-          requestId: 'permission-selected',
+          requestId: 'json-rpc-selected',
           optionId: 'allow',
           toolCall: { title: 'Skill', rawInput: { skill: 'selected-hidden-skill', args: 'audit only' } },
           options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow once' }],
         },
       }),
-    ], 'running');
+    ];
 
-    const html = renderToStaticMarkup(
-      React.createElement(TooltipProvider, null,
-        React.createElement(ACPMessageList, {
-          timeline: projection.timeline,
-          sessionStatus: 'running',
-          sending: false,
-        }),
-      ),
-    );
-
-    expect(html).toContain('acp-activity-live-label');
-    expect(html).toContain('prompt-kit');
-    expect(html).not.toContain('failed-visible');
-    expect(html).not.toContain('hidden-until-expanded');
-    expect(html.match(/acp-permission-request-card/g)).toHaveLength(1);
-    expect(html).not.toContain('acp-permission-decision-audit');
+    const pending = pendingPermissionFromEvents(events, new Set());
+    expect(pending).toMatchObject({ requestId: 'json-rpc-skill', title: 'Skill' });
+    expect(pending?.raw).not.toMatchObject({ requestId: 'json-rpc-selected' });
   });
 });

@@ -4,12 +4,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ACPMessageList,
+  PermissionRequestCard,
   buildAcpTimelineProjection,
   canInferPendingInteractionFromWindow,
   latestLiveSessionTimingFromEvents,
   liveTimelineUpdatesFromEvents,
   pendingPermissionFromEvents,
 } from '@/components/acp/ACPChatDialog';
+import { InterventionLayer } from '@/components/conversation/InterventionLayer';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { AcpUiEventVm } from '@/types';
 
@@ -59,13 +61,14 @@ describe('live ACP permission delivery', () => {
     )).toBe(true);
 
     const liveTimeline = liveTimelineUpdatesFromEvents([permissionEvent]);
-    expect(pendingPermissionFromEvents(liveTimeline, new Set())).toMatchObject({
+    const pending = pendingPermissionFromEvents(liveTimeline, new Set());
+    expect(pending).toMatchObject({
       requestId: 'json-rpc-7',
       title: 'mcp__code_graph__list_projects',
     });
 
     const projection = buildAcpTimelineProjection(liveTimeline, 'running');
-    const html = renderToStaticMarkup(
+    const timelineHtml = renderToStaticMarkup(
       React.createElement(
         TooltipProvider,
         null,
@@ -77,7 +80,21 @@ describe('live ACP permission delivery', () => {
         }),
       ),
     );
+    expect(timelineHtml).not.toContain('acp-permission-request-card');
 
+    const html = renderToStaticMarkup(
+      React.createElement(
+        TooltipProvider,
+        null,
+        React.createElement(
+          InterventionLayer,
+          null,
+          pending ? React.createElement(PermissionRequestCard, { request: pending, onSelect: () => undefined }) : null,
+        ),
+      ),
+    );
+
+    expect(html).toContain('data-conversation-intervention-layer="true"');
     expect(html).toContain('acp-permission-request-card');
     expect(html).toContain('mcp__code_graph__list_projects');
     expect(html).toContain('Allow');

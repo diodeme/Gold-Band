@@ -175,7 +175,7 @@ use crate::acp::elicitation::{
 };
 use crate::acp::events::{
     AcpAttemptPaths, AcpSessionMetadata, AcpSessionTiming, AcpTimingState, AcpUiEvent,
-    append_diagnostic, append_raw_frame, append_structured_diagnostic, append_ui_event,
+    append_diagnostic, append_raw_frame, append_structured_diagnostic,
     current_timestamp, initial_acp_event_seq, latest_timeline_source_seq,
     normalize_session_update, permission_request_event, user_prompt_event, write_session_metadata,
 };
@@ -3706,9 +3706,6 @@ impl<'a> AcpRuntime<'a> {
         event: &crate::acp::events::AcpUiEvent,
         emit_live_update: bool,
     ) -> Result<()> {
-        if should_write_legacy_events(&self.paths) {
-            append_ui_event(&self.paths.events, event)?;
-        }
         let mut timeline_item = self.timeline_item_for_event(event);
         annotate_event_branch(&mut timeline_item);
         let agent_prompt = agent_prompt_event(&timeline_item);
@@ -4387,10 +4384,6 @@ fn merge_tool_raw_input(
     }
 }
 
-fn should_write_legacy_events(paths: &AcpAttemptPaths) -> bool {
-    paths.events.exists() && !paths.timeline.exists()
-}
-
 fn is_streaming_timeline_update(event: &crate::acp::events::AcpUiEvent) -> bool {
     matches!(event.kind.as_str(), "textDelta" | "thoughtDelta" | "plan")
 }
@@ -4980,6 +4973,7 @@ mod tests {
         NESTED_AGENT_TRANSCRIPT_CAPABILITY, PriorAttemptMetrics, PromptActivity, PromptBundle,
         PromptVisibility, ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution,
         SessionUpdatePhase, active_context_compaction, active_timeline_streams,
+        active_timeline_streams_by_branch,
         attached_sync_required, cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
         drain_frames_until_quiet, evaluate_provider_revision, initialize_params,
         is_transport_interruption, is_unscoped_codex_diagnostic_update, merge_tool_raw_input,
@@ -4988,7 +4982,8 @@ mod tests {
         resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
         runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
         session_new_params, session_prompt_params, session_prompt_text,
-        should_suppress_session_update, take_pending_live_update_for_stream_switch,
+        should_suppress_session_update, stable_message_item_id,
+        take_pending_live_update_for_stream_switch,
         unregister_provider_control,
     };
     use crate::acp::{
@@ -5707,6 +5702,50 @@ mod tests {
 
         assert_eq!(second.id, "assistant-message-event-1");
         assert_eq!(second.content.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn agent_branch_stream_ids_and_restart_state_are_isolated() {
+        let branch_text = |id: &str, seq: u64, parent_tool_call_id: &str, content: &str| {
+            let mut event = timeline_event(id, seq, "textDelta", None, Some(content), None);
+            event.raw = Some(json!({
+                "_meta": {
+                    "agentTranscript": {
+                        "parentToolCallId": parent_tool_call_id
+                    }
+                },
+                "messageId": id
+            }));
+            event
+        };
+        let agent_a = branch_text("message-a", 10, "provider-agent-a", "A");
+        let agent_b = branch_text("message-b", 11, "provider-agent-b", "B");
+
+        assert_ne!(stable_message_item_id(&agent_a), stable_message_item_id(&agent_b));
+        let streams = active_timeline_streams_by_branch(&[agent_a.clone(), agent_b.clone()]);
+        let branch_a = crate::acp::branches::stable_agent_execution_id(
+            "session-1",
+            "provider-agent-a",
+        );
+        let branch_b = crate::acp::branches::stable_agent_execution_id(
+            "session-1",
+            "provider-agent-b",
+        );
+        assert_eq!(streams.len(), 2);
+        assert_eq!(
+            streams
+                .get(&branch_a)
+                .and_then(|stream| stream.text.as_ref())
+                .map(|stream| stream.content.as_str()),
+            Some("A")
+        );
+        assert_eq!(
+            streams
+                .get(&branch_b)
+                .and_then(|stream| stream.text.as_ref())
+                .map(|stream| stream.content.as_str()),
+            Some("B")
+        );
     }
 
     #[test]

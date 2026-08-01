@@ -3428,23 +3428,12 @@ pub fn dynamic_acp_session_vm(
         .unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
     let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &status)?;
     let branch_timeline_path = gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
-    let mut event_scan = if branch_id != gold_band::acp::branches::ROOT_BRANCH_ID
-        || branch_timeline_path.exists()
-    {
-        scan_acp_timeline(
-            &branch_timeline_path,
-            query.clone(),
-            active_status,
-            default_event_limit,
-        )?
-    } else {
-        scan_acp_events(
-            &events_path,
-            query,
-            active_status,
-            default_event_limit,
-        )?
-    };
+    let mut event_scan = scan_acp_timeline(
+        &branch_timeline_path,
+        query,
+        active_status,
+        default_event_limit,
+    )?;
     apply_agent_index_projection(&mut event_scan.timeline_projection, &agent_index);
     let parent_branch_id = agent_index
         .iter()
@@ -3749,23 +3738,12 @@ pub fn acp_session_vm(
         .unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
     let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &status)?;
     let branch_timeline_path = gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
-    let mut event_scan = if branch_id != gold_band::acp::branches::ROOT_BRANCH_ID
-        || branch_timeline_path.exists()
-    {
-        scan_acp_timeline(
-            &branch_timeline_path,
-            query.clone(),
-            active_status,
-            default_event_limit,
-        )?
-    } else {
-        scan_acp_events(
-            &events_path,
-            query,
-            active_status,
-            default_event_limit,
-        )?
-    };
+    let mut event_scan = scan_acp_timeline(
+        &branch_timeline_path,
+        query,
+        active_status,
+        default_event_limit,
+    )?;
     apply_agent_index_projection(&mut event_scan.timeline_projection, &agent_index);
     let parent_branch_id = agent_index
         .iter()
@@ -5008,7 +4986,6 @@ fn is_conversation_activity_event(event: &AcpUiEventVm) -> bool {
 struct AgentEventMetaVm {
     agent_launch: bool,
     tool_name: Option<String>,
-    parent_tool_call_id: Option<String>,
 }
 
 fn agent_event_meta_vm(event: &AcpUiEventVm) -> AgentEventMetaVm {
@@ -5021,7 +4998,6 @@ fn agent_event_meta_vm(event: &AcpUiEventVm) -> AgentEventMetaVm {
     AgentEventMetaVm {
         agent_launch: relation.agent_launch,
         tool_name: relation.tool_name,
-        parent_tool_call_id: relation.parent_tool_call_id,
     }
 }
 
@@ -5049,228 +5025,26 @@ fn apply_agent_index_projection(
 
 fn build_acp_timeline_projection(
     all_events: &[AcpUiEventVm],
-    latest_permission_events: &HashMap<String, AcpUiEventVm>,
-    session_active: bool,
+    _latest_permission_events: &HashMap<String, AcpUiEventVm>,
+    _session_active: bool,
 ) -> AcpTimelineProjectionVm {
-    let event_meta = all_events
+    // A branch timeline already contains only that branch's events. Its latest
+    // plan therefore belongs to the branch by construction; no text overlap or
+    // provider parent-id inference is valid here. Agent lifecycle projection is
+    // supplied exclusively by `apply_agent_index_projection` below.
+    let todo_entries = all_events
         .iter()
-        .map(agent_event_meta_vm)
-        .collect::<Vec<_>>();
-    let mut launches = HashMap::<String, (usize, AcpUiEventVm)>::new();
-    for (index, event) in all_events.iter().enumerate() {
-        if !event_meta[index].agent_launch {
-            continue;
-        }
-        let Some(tool_call_id) = event.tool_call_id.as_ref() else {
-            continue;
-        };
-        let should_replace = launches
-            .get(tool_call_id)
-            .map(|(_, current)| event.seq >= current.seq)
-            .unwrap_or(true);
-        if should_replace {
-            launches.insert(tool_call_id.clone(), (index, event.clone()));
-        }
-    }
-
-    let (todo_entries, child_todos) = project_plan_streams(all_events, &event_meta);
-    let mut agents = launches
-        .iter()
-        .map(|(tool_call_id, (launch_index, launch))| {
-            let direct_events = all_events
-                .iter()
-                .zip(event_meta.iter())
-                .filter(|(_, meta)| {
-                    meta.parent_tool_call_id.as_deref() == Some(tool_call_id.as_str())
-                })
-                .map(|(event, meta)| (event, meta))
-                .collect::<Vec<_>>();
-            let direct_permissions = latest_permission_events
-                .values()
-                .filter(|event| {
-                    agent_event_meta_vm(event).parent_tool_call_id.as_deref()
-                        == Some(tool_call_id.as_str())
-                })
-                .collect::<Vec<_>>();
-            let execution_status = project_agent_execution_status(
-                launch,
-                &direct_events,
-                &direct_permissions,
-                session_active,
-            );
-            let (tool_call_count, read_file_count, written_file_count) =
-                project_agent_tool_metrics(&direct_events);
-            AcpAgentExecutionVm {
-                agent_execution_id: gold_band::acp::branches::stable_agent_execution_id(
-                    launch.session_id.as_deref().unwrap_or("unknown-session"),
-                    tool_call_id,
-                ),
-                parent_agent_execution_id: event_meta[*launch_index]
-                    .parent_tool_call_id
-                    .as_deref()
-                    .map(|parent| gold_band::acp::branches::stable_agent_execution_id(
-                        launch.session_id.as_deref().unwrap_or("unknown-session"),
-                        parent,
-                    )),
-                execution_status,
-                event_count: direct_events.len() + direct_permissions.len(),
-                tool_call_count,
-                read_file_count,
-                written_file_count,
-                has_attention: direct_permissions.iter().any(|event| {
-                    event.status.as_deref().unwrap_or("pending").eq_ignore_ascii_case("pending")
-                }),
-                title: launch.title.clone(),
-                description: tool_raw_input(launch)
-                    .and_then(|input| input.get("description"))
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string),
-                todo_entries: child_todos.get(tool_call_id).cloned().unwrap_or_default(),
-            }
-        })
-        .collect::<Vec<_>>();
-    agents.sort_by_key(|agent| {
-        launches
-            .iter()
-            .find(|(tool_call_id, (_, launch))| {
-                gold_band::acp::branches::stable_agent_execution_id(
-                    launch.session_id.as_deref().unwrap_or("unknown-session"),
-                    tool_call_id,
-                ) == agent.agent_execution_id
-            })
-            .map(|(_, (_, event))| event.started_seq.unwrap_or(event.seq))
-            .unwrap_or(u64::MAX)
-    });
+        .filter(|event| event.kind == "plan")
+        .max_by_key(|event| event.ended_seq.unwrap_or(event.seq))
+        .and_then(|event| event.raw.as_ref())
+        .and_then(|raw| raw.get("entries").or_else(|| raw.pointer("/plan/entries")))
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     AcpTimelineProjectionVm {
-        agents,
+        agents: Vec::new(),
         todo_entries,
     }
-}
-
-fn project_agent_execution_status(
-    launch: &AcpUiEventVm,
-    direct_events: &[(&AcpUiEventVm, &AgentEventMetaVm)],
-    direct_permissions: &[&AcpUiEventVm],
-    session_active: bool,
-) -> String {
-    let launch_status = launch
-        .status
-        .as_deref()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if matches!(launch_status.as_str(), "failed" | "error") {
-        return "failed".to_string();
-    }
-    let pending_permission = direct_permissions.iter().any(|event| {
-        event
-            .status
-            .as_deref()
-            .unwrap_or("pending")
-            .eq_ignore_ascii_case("pending")
-    });
-    if pending_permission && session_active {
-        return "waiting_permission".to_string();
-    }
-    let has_completion = direct_events.iter().any(|(event, _)| {
-        event.kind == "textDelta"
-            && event
-                .content
-                .as_deref()
-                .is_some_and(|text| !text.trim().is_empty())
-    });
-    let background = agent_launch_runs_in_background(launch);
-    if background {
-        if has_completion {
-            return "completed".to_string();
-        }
-        if !session_active {
-            return "interrupted".to_string();
-        }
-        if !direct_events.is_empty() {
-            return "running".to_string();
-        }
-        return "queued".to_string();
-    }
-    if matches!(
-        launch_status.as_str(),
-        "completed" | "success" | "succeeded"
-    ) {
-        return "completed".to_string();
-    }
-    if !session_active {
-        return "interrupted".to_string();
-    }
-    if !direct_events.is_empty() {
-        return "running".to_string();
-    }
-    if matches!(launch_status.as_str(), "pending" | "sending") {
-        return "queued".to_string();
-    }
-    "running".to_string()
-}
-
-fn agent_launch_runs_in_background(event: &AcpUiEventVm) -> bool {
-    tool_raw_input(event)
-        .and_then(|input| input.get("run_in_background"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-}
-
-fn project_agent_tool_metrics(
-    direct_events: &[(&AcpUiEventVm, &AgentEventMetaVm)],
-) -> (usize, usize, usize) {
-    let mut latest_tools = HashMap::<String, (&AcpUiEventVm, &AgentEventMetaVm)>::new();
-    for (event, meta) in direct_events {
-        if meta.agent_launch || !matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate") {
-            continue;
-        }
-        let key = event
-            .tool_call_id
-            .clone()
-            .unwrap_or_else(|| event.id.clone());
-        let should_replace = latest_tools
-            .get(&key)
-            .map(|(current, _)| {
-                event.ended_seq.unwrap_or(event.seq) >= current.ended_seq.unwrap_or(current.seq)
-            })
-            .unwrap_or(true);
-        if should_replace {
-            latest_tools.insert(key, (event, meta));
-        }
-    }
-    let mut read_files = std::collections::BTreeSet::<String>::new();
-    let mut written_files = std::collections::BTreeSet::<String>::new();
-    for (event, meta) in latest_tools.values() {
-        if !event.status.as_deref().is_some_and(|status| {
-            matches!(
-                status.to_ascii_lowercase().as_str(),
-                "completed" | "success" | "succeeded"
-            )
-        }) {
-            continue;
-        }
-        let tool_name = meta
-            .tool_name
-            .as_deref()
-            .or_else(|| {
-                event
-                    .title
-                    .as_deref()
-                    .and_then(|title| title.split_whitespace().next())
-            })
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let paths = structured_tool_paths(event);
-        if tool_name == "read" {
-            read_files.extend(paths);
-        } else if matches!(
-            tool_name.as_str(),
-            "write" | "edit" | "applypatch" | "apply_patch"
-        ) {
-            written_files.extend(paths);
-        }
-    }
-    (latest_tools.len(), read_files.len(), written_files.len())
 }
 
 fn tool_raw_input(event: &AcpUiEventVm) -> Option<&serde_json::Map<String, serde_json::Value>> {
@@ -5319,91 +5093,6 @@ fn normalize_metric_path(path: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn project_plan_streams(
-    all_events: &[AcpUiEventVm],
-    event_meta: &[AgentEventMetaVm],
-) -> (
-    Vec<serde_json::Value>,
-    HashMap<String, Vec<serde_json::Value>>,
-) {
-    let mut history = Vec::<(Vec<serde_json::Value>, Option<String>)>::new();
-    let mut latest_root = Vec::<serde_json::Value>::new();
-    let mut latest_children = HashMap::<String, Vec<serde_json::Value>>::new();
-    for (index, event) in all_events.iter().enumerate() {
-        if event.kind != "plan" {
-            continue;
-        }
-        let entries = event
-            .raw
-            .as_ref()
-            .and_then(|raw| raw.get("entries"))
-            .and_then(serde_json::Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let parent = event_meta[index]
-            .parent_tool_call_id
-            .clone()
-            .or_else(|| infer_plan_stream_parent(&entries, &history));
-        if let Some(parent) = parent.as_ref() {
-            latest_children.insert(parent.clone(), entries.clone());
-        } else {
-            latest_root = entries.clone();
-        }
-        history.push((entries, parent));
-    }
-    let child_contents = latest_children
-        .values()
-        .flat_map(|entries| entries.iter().filter_map(plan_entry_content))
-        .collect::<std::collections::HashSet<_>>();
-    latest_root.retain(|entry| {
-        plan_entry_content(entry)
-            .map(|content| !child_contents.contains(&content))
-            .unwrap_or(true)
-    });
-    (latest_root, latest_children)
-}
-
-fn infer_plan_stream_parent(
-    entries: &[serde_json::Value],
-    history: &[(Vec<serde_json::Value>, Option<String>)],
-) -> Option<String> {
-    let contents = entries
-        .iter()
-        .filter_map(plan_entry_content)
-        .collect::<std::collections::HashSet<_>>();
-    if contents.is_empty() {
-        return None;
-    }
-    let parents = history
-        .iter()
-        .rev()
-        .filter_map(|(candidate_entries, parent)| {
-            let parent = parent.as_ref()?;
-            candidate_entries
-                .iter()
-                .filter_map(plan_entry_content)
-                .any(|content| contents.contains(&content))
-                .then_some(parent.clone())
-        })
-        .collect::<std::collections::HashSet<_>>();
-    (parents.len() == 1)
-        .then(|| parents.into_iter().next())
-        .flatten()
-}
-
-fn plan_entry_content(entry: &serde_json::Value) -> Option<String> {
-    entry
-        .get("content")
-        .and_then(serde_json::Value::as_str)
-        .map(|content| {
-            content
-                .replace("\r\n", "\n")
-                .replace('\r', "\n")
-                .trim()
-                .to_string()
-        })
-        .filter(|content| !content.is_empty())
-}
 
 fn latest_session_timing_from_events(all_events: &[AcpUiEventVm]) -> Option<AcpSessionTimingVm> {
     all_events.iter().rev().find_map(|event| {
@@ -5508,197 +5197,6 @@ fn include_latest_permission_events(
     }
     if changed {
         events.sort_by_key(|event| event.started_seq.unwrap_or(event.seq));
-    }
-}
-
-fn scan_acp_events(
-    path: &camino::Utf8Path,
-    query: Option<AcpSessionQueryInput>,
-    session_active: bool,
-    default_event_limit: usize,
-) -> Result<AcpEventScan> {
-    const MIN_EVENT_LIMIT: usize = 1;
-    const MAX_EVENT_LIMIT: usize = 1000;
-
-    let query = query.unwrap_or(AcpSessionQueryInput {
-        branch_id: None,
-        before_seq: None,
-        after_seq: None,
-        before_cursor: None,
-        after_cursor: None,
-        event_limit: None,
-        page_size: None,
-    });
-    let limit = query
-        .page_size
-        .or(query.event_limit)
-        .unwrap_or(default_event_limit)
-        .clamp(MIN_EVENT_LIMIT, MAX_EVENT_LIMIT);
-    let before_seq = query
-        .before_cursor
-        .as_deref()
-        .and_then(parse_timeline_cursor)
-        .or(query.before_seq);
-    let after_seq = query
-        .after_cursor
-        .as_deref()
-        .and_then(parse_timeline_cursor)
-        .or(query.after_seq);
-    let file_signature = timeline_file_signature(path)?;
-
-    // Cache via the same pool as scan_acp_timeline and invalidate on file writes.
-    let cache_key = timeline_cache_key(path);
-    let (
-        all_events,
-        raw_event_count,
-        session_elapsed_seconds,
-        latest_permission_events,
-        available_commands,
-        usage,
-    ) = if !session_active {
-        let mut cache = TIMELINE_CACHE.lock().unwrap();
-        if let Some(cached) = cache
-            .entries
-            .get(&cache_key)
-            .filter(|cached| cached.file_signature == file_signature)
-        {
-            let all_events = cached.all_events.clone();
-            let raw_event_count = cached.event_count;
-            let session_elapsed_seconds = cached.session_elapsed_seconds;
-            let latest_permission_events = cached.latest_permission_events.clone();
-            let available_commands = cached.available_commands.clone();
-            let usage = cached.usage.clone();
-            touch_timeline_cache(&mut cache, &cache_key);
-            return paginate_timeline(
-                &all_events,
-                raw_event_count,
-                session_elapsed_seconds,
-                &latest_permission_events,
-                available_commands.as_ref(),
-                usage.as_ref(),
-                session_active,
-                after_seq,
-                before_seq,
-                limit,
-            );
-        }
-        drop(cache);
-        let result = parse_events_file(path, session_active)?;
-        let mut cache = TIMELINE_CACHE.lock().unwrap();
-        cache.entries.insert(
-            cache_key.clone(),
-            CachedTimeline {
-                file_signature,
-                all_events: result.0.clone(),
-                event_count: result.1,
-                session_elapsed_seconds: result.2,
-                latest_permission_events: result.3.clone(),
-                available_commands: result.4.clone(),
-                usage: result.5.clone(),
-            },
-        );
-        touch_timeline_cache(&mut cache, &cache_key);
-        evict_timeline_cache(&mut cache);
-        result
-    } else {
-        parse_events_file(path, session_active)?
-    };
-
-    paginate_timeline(
-        &all_events,
-        raw_event_count,
-        session_elapsed_seconds,
-        &latest_permission_events,
-        available_commands.as_ref(),
-        usage.as_ref(),
-        session_active,
-        after_seq,
-        before_seq,
-        limit,
-    )
-}
-
-fn parse_events_file(
-    path: &camino::Utf8Path,
-    session_active: bool,
-) -> Result<(
-    Vec<AcpUiEventVm>,
-    usize,
-    Option<u64>,
-    HashMap<String, AcpUiEventVm>,
-    Option<Vec<serde_json::Value>>,
-    Option<AcpUsageVm>,
-)> {
-    let mut raw_event_count = 0usize;
-    let mut latest_permission_events = HashMap::<String, AcpUiEventVm>::new();
-    let mut available_commands = None;
-    let mut usage = None;
-    let mut session_elapsed = AcpSessionElapsedState::default();
-    let mut all_events = Vec::<AcpUiEventVm>::new();
-    let mut pending_delta: Option<AcpUiEventVm> = None;
-
-    if path.exists() {
-        let file = fs::File::open(path.as_std_path())?;
-        for line in BufReader::new(file).lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let Ok(mut event) = serde_json::from_str::<AcpUiEventVm>(&line) else {
-                continue;
-            };
-            raw_event_count += 1;
-            event.seq = raw_event_count as u64;
-            session_elapsed.observe_event(&event);
-            if event.kind == "permissionRequest" {
-                insert_latest_permission_event(&mut latest_permission_events, &event);
-            }
-            if let Some(raw) = event.raw.as_ref() {
-                if is_session_update(&event, "available_commands_update") {
-                    available_commands = raw
-                        .get("availableCommands")
-                        .and_then(|value| value.as_array())
-                        .cloned();
-                } else if is_session_update(&event, "usage_update") {
-                    let (used, size, cost_amount) =
-                        gold_band::acp::events::extract_usage_fields(raw);
-                    merge_confirmed_usage_observation(&mut usage, used, size, cost_amount);
-                }
-            }
-            if is_hidden_from_chat(&event) {
-                flush_pending_delta(&mut pending_delta, &mut all_events);
-                continue;
-            }
-            if !is_session_timeline_event(&event) {
-                continue;
-            }
-            if merge_pending_delta(&mut pending_delta, &event) {
-                continue;
-            }
-            flush_pending_delta(&mut pending_delta, &mut all_events);
-            if is_delta_event(&event) {
-                pending_delta = Some(event);
-            } else {
-                all_events.push(event);
-            }
-        }
-    }
-
-    flush_pending_delta(&mut pending_delta, &mut all_events);
-
-    Ok((
-        all_events,
-        raw_event_count,
-        session_elapsed.finish(session_active),
-        latest_permission_events,
-        available_commands,
-        usage,
-    ))
-}
-
-fn flush_pending_delta(pending: &mut Option<AcpUiEventVm>, events: &mut Vec<AcpUiEventVm>) {
-    if let Some(event) = pending.take() {
-        events.push(event);
     }
 }
 
@@ -6087,56 +5585,6 @@ fn current_epoch_seconds() -> u64 {
         .unwrap_or_default()
 }
 
-fn merge_pending_delta(pending: &mut Option<AcpUiEventVm>, event: &AcpUiEventVm) -> bool {
-    let Some(previous) = pending.as_mut() else {
-        return false;
-    };
-    if !is_delta_event(event)
-        || previous.kind != event.kind
-        || !same_delta_stream_identity(previous, event)
-    {
-        return false;
-    }
-    previous.content = Some(format!(
-        "{}{}",
-        previous.content.as_deref().unwrap_or_default(),
-        event.content.as_deref().unwrap_or_default()
-    ));
-    previous.seq = event.seq;
-    previous.timestamp = event.timestamp.clone();
-    previous.status = event.status.clone().or_else(|| previous.status.clone());
-    previous.raw = event
-        .raw
-        .clone()
-        .or_else(|| previous.raw.clone())
-        .map(compact_raw_value);
-    true
-}
-
-fn same_delta_stream_identity(previous: &AcpUiEventVm, event: &AcpUiEventVm) -> bool {
-    match (
-        delta_stream_identity(previous),
-        delta_stream_identity(event),
-    ) {
-        (Some(previous), Some(incoming)) => previous == incoming,
-        (None, None) => true,
-        _ => false,
-    }
-}
-
-fn delta_stream_identity(event: &AcpUiEventVm) -> Option<&str> {
-    event.raw.as_ref().and_then(|raw| {
-        raw.get("providerHistoryItemId")
-            .and_then(|value| value.as_str())
-            .or_else(|| raw.get("messageId").and_then(|value| value.as_str()))
-            .filter(|value| !value.trim().is_empty())
-    })
-}
-
-fn is_delta_event(event: &AcpUiEventVm) -> bool {
-    matches!(event.kind.as_str(), "textDelta" | "thoughtDelta")
-}
-
 fn is_hidden_from_chat(event: &AcpUiEventVm) -> bool {
     event
         .raw
@@ -6274,6 +5722,10 @@ fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {
                         tool_call_id,
                     )
                 });
+            let normalized_tool_output = launched_agent_execution_id
+                .is_none()
+                .then_some(normalized_tool_output)
+                .flatten();
             let raw_object = raw
                 .as_object_mut()
                 .expect("normalized ACP event raw must be an object");
@@ -8473,51 +7925,6 @@ mod tests {
     }
 
     #[test]
-    fn text_delta_still_merges_in_scan_window() {
-        let mut pending = Some(test_event("textDelta", "输出你的"));
-        let next = test_event("textDelta", "工具列表");
-
-        assert!(merge_pending_delta(&mut pending, &next));
-        assert_eq!(
-            pending.and_then(|event| event.content),
-            Some("输出你的工具列表".to_string())
-        );
-    }
-
-    #[test]
-    fn text_delta_with_different_message_ids_does_not_merge_in_scan_window() {
-        let mut first = test_event("textDelta", "warning");
-        first.raw = Some(json!({
-            "sessionUpdate": "agent_message_chunk",
-            "messageId": "warning-1"
-        }));
-        let mut pending = Some(first);
-        let mut next = test_event("textDelta", "answer");
-        next.raw = Some(json!({
-            "sessionUpdate": "agent_message_chunk",
-            "messageId": "answer-1"
-        }));
-
-        assert!(!merge_pending_delta(&mut pending, &next));
-        assert_eq!(
-            pending.and_then(|event| event.content),
-            Some("warning".to_string())
-        );
-    }
-
-    #[test]
-    fn user_text_delta_no_longer_merges_across_prompts() {
-        let mut pending = Some(test_event("userTextDelta", "输出你的工具列表"));
-        let next = test_event("userTextDelta", "给我一首古诗");
-
-        assert!(!merge_pending_delta(&mut pending, &next));
-        assert_eq!(
-            pending.and_then(|event| event.content),
-            Some("输出你的工具列表".to_string())
-        );
-    }
-
-    #[test]
     fn session_elapsed_excludes_selected_permission_wait() {
         let elapsed = elapsed_for(
             vec![
@@ -8841,17 +8248,6 @@ mod tests {
         path
     }
 
-    fn write_events_file(dir: &Utf8PathBuf, name: &str, events: &[AcpUiEventVm]) -> Utf8PathBuf {
-        let path = dir.join(name);
-        let mut content = String::new();
-        for event in events {
-            content.push_str(&serde_json::to_string(event).unwrap());
-            content.push('\n');
-        }
-        fs::write(path.as_std_path(), &content).unwrap();
-        path
-    }
-
     fn event_sequence(count: usize, base_ts: u64) -> Vec<AcpUiEventVm> {
         (0..count)
             .map(|i| AcpUiEventVm {
@@ -8863,28 +8259,6 @@ mod tests {
                 content: Some(format!("message {i}")),
                 title: None,
                 tool_call_id: None,
-                status: Some("completed".to_string()),
-                started_seq: Some(i as u64 + 1),
-                ended_seq: Some(i as u64 + 1),
-                started_at: Some(format!("{}Z", base_ts + i as u64)),
-                ended_at: Some(format!("{}Z", base_ts + i as u64)),
-                timing: None,
-                raw: None,
-            })
-            .collect()
-    }
-
-    fn tool_event_sequence(count: usize, base_ts: u64) -> Vec<AcpUiEventVm> {
-        (0..count)
-            .map(|i| AcpUiEventVm {
-                id: format!("tool-{i}"),
-                seq: i as u64 + 1,
-                timestamp: format!("{}Z", base_ts + i as u64),
-                kind: "toolCall".to_string(),
-                session_id: Some("s1".to_string()),
-                content: Some(format!("tool {i}")),
-                title: Some(format!("Tool {i}")),
-                tool_call_id: Some(format!("call-{i}")),
                 status: Some("completed".to_string()),
                 started_seq: Some(i as u64 + 1),
                 ended_seq: Some(i as u64 + 1),
@@ -9399,59 +8773,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_events_file_delta_merging() {
-        let dir = std::env::temp_dir().join(format!("gb-ev-merge-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-
-        let raw = vec![
-            AcpUiEventVm {
-                id: "d1".into(),
-                seq: 0,
-                timestamp: "100Z".into(),
-                kind: "textDelta".into(),
-                session_id: Some("s1".into()),
-                content: Some("Hello ".into()),
-                title: None,
-                tool_call_id: None,
-                status: Some("completed".into()),
-                started_seq: None,
-                ended_seq: None,
-                started_at: None,
-                ended_at: None,
-                timing: None,
-                raw: None,
-            },
-            AcpUiEventVm {
-                id: "d2".into(),
-                seq: 0,
-                timestamp: "101Z".into(),
-                kind: "textDelta".into(),
-                session_id: Some("s1".into()),
-                content: Some("World".into()),
-                title: None,
-                tool_call_id: None,
-                status: Some("completed".into()),
-                started_seq: None,
-                ended_seq: None,
-                started_at: None,
-                ended_at: None,
-                timing: None,
-                raw: None,
-            },
-        ];
-        let path = write_events_file(&db, "acp.events.jsonl", &raw);
-
-        let (all_events, raw_count, _, _, _, _) = parse_events_file(&path, false).unwrap();
-
-        assert_eq!(raw_count, 2);
-        assert_eq!(all_events.len(), 1);
-        assert_eq!(all_events[0].content.as_deref(), Some("Hello World"));
-
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
     fn scan_timeline_cache_hit_on_repeat() {
         let dir = std::env::temp_dir().join(format!("gb-tl-hit-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -9487,45 +8808,6 @@ mod tests {
         assert_eq!(r2.events.len(), 8);
         assert_eq!(r2.event_page.total, 8);
         assert_eq!(r2.events[7].content.as_deref(), Some("message 7"));
-
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn scan_events_cache_hit_on_repeat() {
-        let dir = std::env::temp_dir().join(format!("gb-ev-hit-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-        let path = write_events_file(&db, "acp.events.jsonl", &tool_event_sequence(15, 3000));
-
-        let r1 = scan_acp_events(&path, None, false, 360).unwrap();
-        let r2 = scan_acp_events(&path, None, false, 360).unwrap();
-
-        assert_eq!(r1.events.len(), 15);
-        assert_eq!(r2.events.len(), 15);
-        assert_eq!(r2.event_count, r1.event_count);
-
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn scan_events_cache_invalidates_when_file_changes() {
-        let dir = std::env::temp_dir().join(format!("gb-ev-stale-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-        let path = write_events_file(&db, "acp.events.jsonl", &tool_event_sequence(4, 3500));
-
-        let r1 = scan_acp_events(&path, None, false, 360).unwrap();
-        assert_eq!(r1.events.len(), 4);
-
-        let rewritten_path =
-            write_events_file(&db, "acp.events.jsonl", &tool_event_sequence(7, 3500));
-        assert_eq!(rewritten_path, path);
-        let r2 = scan_acp_events(&path, None, false, 360).unwrap();
-
-        assert_eq!(r2.events.len(), 7);
-        assert_eq!(r2.event_page.total, 7);
-        assert_eq!(r2.events[6].content.as_deref(), Some("tool 6"));
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -9567,7 +8849,7 @@ mod tests {
     }
 
     #[test]
-    fn paginate_includes_latest_permission_event_outside_window() {
+    fn paginate_excludes_resolved_permission_from_semantic_page() {
         let mut latest = HashMap::new();
         latest.insert(
             "req-1".to_string(),
@@ -9593,12 +8875,7 @@ mod tests {
         )
         .unwrap();
 
-        let permission = scan
-            .events
-            .iter()
-            .find(|event| event.kind == "permissionRequest")
-            .unwrap();
-        assert_eq!(permission.status.as_deref(), Some("selected"));
+        assert!(scan.events.iter().all(|event| event.kind != "permissionRequest"));
         assert_eq!(
             scan.latest_permission_events
                 .get("req-1")
@@ -9608,134 +8885,181 @@ mod tests {
     }
 
     #[test]
-    fn paginate_keeps_agent_anchor_and_full_execution_projection_outside_window() {
-        let mut launch = acp_event_at(
-            "agent-launch",
-            "toolCall",
-            Some("completed"),
-            1000,
-            Some(json!({
-                "_meta": { "agentTranscript": { "agentLaunch": true, "toolName": "Agent" } },
-                "rawInput": { "run_in_background": true, "description": "inspect ACP" }
-            })),
+    fn root_semantic_page_counts_agent_links_but_not_agent_branch_history() {
+        let dir = std::env::temp_dir().join(format!(
+            "gb-agent-semantic-page-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let mut user = test_event("userTextDelta", "inspect agents");
+        user.id = "root-user".to_string();
+        user.seq = 1;
+        user.started_seq = Some(1);
+        user.ended_seq = Some(1);
+        let launch = |id: &str, tool_call_id: &str, seq: u64| {
+            let mut event = acp_event_at(
+                id,
+                "toolCall",
+                Some("completed"),
+                1_000 + seq,
+                Some(json!({
+                    "_meta": { "agentTranscript": { "agentLaunch": true, "toolName": "Agent" } },
+                    "rawInput": { "run_in_background": true, "description": id }
+                })),
+            );
+            event.seq = seq;
+            event.started_seq = Some(seq);
+            event.ended_seq = Some(seq);
+            event.tool_call_id = Some(tool_call_id.to_string());
+            event
+        };
+        let root = vec![user, launch("agent-a", "provider-a", 2), launch("agent-b", "provider-b", 3)];
+        let root_path = gold_band::acp::branches::branch_timeline_path(
+            &attempt,
+            gold_band::acp::branches::ROOT_BRANCH_ID,
         );
-        launch.seq = 1;
-        launch.started_seq = Some(1);
-        launch.tool_call_id = Some("call-agent".to_string());
-        launch.title = Some("Agent".to_string());
+        write_timeline_file(&attempt, "acp.timeline.jsonl", &root);
 
-        let mut child_tool = acp_event_at(
-            "child-read",
-            "toolCall",
-            Some("completed"),
-            7000,
-            Some(json!({
-                "_meta": { "agentTranscript": { "parentToolCallId": "call-agent", "toolName": "Read" } },
-                "rawInput": { "file_path": "D:\\Projects\\code\\ai\\Gold-Band\\src\\acp\\client.rs" }
-            })),
+        let child_id = gold_band::acp::branches::stable_agent_execution_id("s1", "provider-a");
+        let child_events = (0..500)
+            .map(|index| {
+                let mut event = acp_event_at(
+                    &format!("child-tool-{index}"),
+                    "toolCall",
+                    Some("completed"),
+                    2_000 + index,
+                    Some(json!({ "rawInput": { "path": format!("file-{index}.rs") } })),
+                );
+                event.seq = index + 10;
+                event.started_seq = Some(index + 10);
+                event.ended_seq = Some(index + 10);
+                event.tool_call_id = Some(format!("child-call-{index}"));
+                event
+            })
+            .collect::<Vec<_>>();
+        let child_path = gold_band::acp::branches::branch_timeline_path(&attempt, &child_id);
+        gold_band::acp::events::write_timeline_items(&child_path, &child_events).unwrap();
+
+        let scan = scan_acp_timeline(&root_path, None, false, 30).unwrap();
+        assert_eq!(scan.event_page.total, 3);
+        assert_eq!(scan.event_page.loaded_count, 3);
+        assert!(!scan.event_page.has_older);
+        assert_eq!(scan.events.len(), 3);
+        assert_eq!(
+            scan.events
+                .iter()
+                .filter(|event| agent_event_meta_vm(event).agent_launch)
+                .count(),
+            2
         );
-        child_tool.seq = 7;
-        child_tool.started_seq = Some(7);
-        child_tool.ended_seq = Some(7);
-        child_tool.tool_call_id = Some("call-read".to_string());
-        child_tool.title = Some("Read file".to_string());
-
-        let mut tail = text_event_at(8000);
-        tail.seq = 8;
-        tail.started_seq = Some(8);
-        let events = vec![launch, child_tool, tail];
-        let scan = paginate_timeline(
-            &events,
-            events.len(),
-            Some(0),
-            &HashMap::new(),
-            None,
-            None,
-            true,
-            None,
-            None,
-            2,
-        )
-        .unwrap();
-
-        assert_eq!(scan.event_page.oldest_seq, Some(7));
-        assert!(scan.event_page.has_older);
-        assert!(scan.events.iter().any(|event| {
-            event.tool_call_id.as_deref() == Some("call-agent")
-                && agent_event_meta_vm(event).agent_launch
-        }));
-        let agent = scan.timeline_projection.agents.first().unwrap();
-        assert_eq!(agent.execution_status, "running");
-        assert_eq!(agent.event_count, 1);
-        assert_eq!(agent.tool_call_count, 1);
-        assert_eq!(agent.read_file_count, 1);
-        assert_eq!(agent.written_file_count, 0);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn projection_keeps_cumulative_plan_stream_with_its_agent_after_pagination() {
-        let mut launch = acp_event_at(
-            "agent-launch",
-            "toolCall",
-            Some("completed"),
-            1000,
-            Some(json!({
-                "_meta": { "agentTranscript": { "agentLaunch": true, "toolName": "Agent" } },
-                "rawInput": { "run_in_background": true }
-            })),
+    fn activity_summary_and_detail_use_independent_cursors() {
+        let dir = std::env::temp_dir().join(format!(
+            "gb-activity-detail-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let mut events = (1..=100)
+            .map(|seq| {
+                let mut event = acp_event_at(
+                    &format!("tool-{seq}"),
+                    if seq % 2 == 0 { "thoughtDelta" } else { "toolCall" },
+                    Some("completed"),
+                    1_000 + seq,
+                    Some(json!({ "rawInput": { "path": format!("file-{seq}.rs") } })),
+                );
+                event.seq = seq;
+                event.started_seq = Some(seq);
+                event.ended_seq = Some(seq);
+                if event.kind == "toolCall" {
+                    event.tool_call_id = Some(format!("call-{seq}"));
+                }
+                event
+            })
+            .collect::<Vec<_>>();
+        let mut resolved_permission = permission_event_at("resolved", "selected", 1_050);
+        resolved_permission.seq = 50;
+        resolved_permission.started_seq = Some(50);
+        resolved_permission.ended_seq = Some(50);
+        events.push(resolved_permission);
+        let mut answer = text_event_at(2_000);
+        answer.id = "answer".to_string();
+        answer.seq = 101;
+        answer.started_seq = Some(101);
+        answer.ended_seq = Some(101);
+        events.push(answer);
+        events.sort_by_key(|event| (event.started_seq.unwrap_or(event.seq), event.seq));
+        let path = gold_band::acp::branches::branch_timeline_path(
+            &attempt,
+            gold_band::acp::branches::ROOT_BRANCH_ID,
         );
-        launch.seq = 1;
-        launch.started_seq = Some(1);
-        launch.tool_call_id = Some("call-agent".to_string());
-        let mut scoped_plan = acp_event_at(
-            "plan-scoped",
-            "plan",
-            None,
-            2000,
-            Some(json!({
-                "_meta": { "agentTranscript": { "parentToolCallId": "call-agent" } },
-                "entries": [{ "content": "Inspect ACP", "status": "in_progress" }]
-            })),
+        gold_band::acp::events::write_timeline_items(&path, &events).unwrap();
+
+        let page = scan_acp_timeline(&path, None, false, 30).unwrap();
+        assert_eq!(page.event_page.total, 2);
+        assert!(!page.event_page.has_older);
+        assert_eq!(page.events.len(), 2);
+        let summary = page.events.iter().find(|event| event.kind == "activitySummary").unwrap();
+        assert_eq!(
+            summary.raw.as_ref().unwrap()["goldBandActivity"]["totalEventCount"],
+            100
         );
-        scoped_plan.seq = 2;
-        scoped_plan.started_seq = Some(2);
-        let mut aggregate_plan = acp_event_at(
-            "plan-aggregate",
-            "plan",
-            None,
-            3000,
-            Some(json!({
-                "entries": [
-                    { "content": "Inspect ACP", "status": "completed" },
-                    { "content": "Write report", "status": "in_progress" }
-                ]
-            })),
-        );
-        aggregate_plan.seq = 3;
-        aggregate_plan.started_seq = Some(3);
-        let mut tail = text_event_at(9000);
-        tail.seq = 9;
-        tail.started_seq = Some(9);
-        let scan = paginate_timeline(
-            &[launch, scoped_plan, aggregate_plan, tail],
-            4,
-            Some(0),
-            &HashMap::new(),
-            None,
-            None,
-            false,
-            None,
-            None,
-            1,
+
+        let detail = acp_activity_detail_vm_for_attempt(
+            &attempt,
+            AcpActivityDetailQueryInput {
+                branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                activity_start_seq: 1,
+                earlier_cursor: None,
+                limit: Some(40),
+            },
         )
         .unwrap();
+        assert_eq!(detail.items.len(), 40);
+        assert!(detail.has_more_earlier);
+        assert!(detail.items.iter().all(|event| event.kind != "permissionRequest"));
+        assert_eq!(page.event_page.total, 2);
 
-        assert!(scan.timeline_projection.todo_entries.is_empty());
-        let agent = scan.timeline_projection.agents.first().unwrap();
-        assert_eq!(agent.execution_status, "interrupted");
-        assert_eq!(agent.todo_entries.len(), 2);
-        assert_eq!(agent.todo_entries[0]["status"], "completed");
-        assert_eq!(agent.todo_entries[1]["content"], "Write report");
+        let earlier = acp_activity_detail_vm_for_attempt(
+            &attempt,
+            AcpActivityDetailQueryInput {
+                branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                activity_start_seq: 1,
+                earlier_cursor: detail.earlier_cursor.clone(),
+                limit: Some(40),
+            },
+        )
+        .unwrap();
+        assert_eq!(earlier.items.len(), 40);
+        assert!(earlier.items.last().unwrap().seq < detail.items.first().unwrap().seq);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn agent_execution_vm_does_not_serialize_provider_tool_ids() {
+        let vm = AcpAgentExecutionVm {
+            agent_execution_id: "agent-internal".to_string(),
+            parent_agent_execution_id: Some("agent-parent".to_string()),
+            execution_status: "running".to_string(),
+            event_count: 1,
+            tool_call_count: 1,
+            read_file_count: 0,
+            written_file_count: 0,
+            has_attention: false,
+            title: Some("Agent".to_string()),
+            description: None,
+            todo_entries: Vec::new(),
+        };
+        let value = serde_json::to_value(vm).unwrap();
+        assert_eq!(value["agentExecutionId"], "agent-internal");
+        assert!(value.get("toolCallId").is_none());
+        assert!(value.get("parentToolCallId").is_none());
+        assert!(value.get("launchStatus").is_none());
     }
 
     #[test]

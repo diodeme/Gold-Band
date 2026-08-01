@@ -1,7 +1,7 @@
 import { ACPChatDialog } from '@/components/acp/ACPChatDialog';
-import type { RightWorkspaceResource } from './right-workspace-context';
+import type { AgentTranscriptResource } from './right-workspace-context';
 
-export function AgentConversationPanel({ resource }: { resource: RightWorkspaceResource }) {
+export function AgentConversationPanel({ resource }: { resource: AgentTranscriptResource }) {
   const locator = resource.locator;
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">

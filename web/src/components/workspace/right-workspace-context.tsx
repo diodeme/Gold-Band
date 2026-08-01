@@ -12,15 +12,25 @@ export interface AgentTranscriptLocator {
   branchId: string;
 }
 
-export type RightWorkspaceResource = {
-  kind: 'agent-transcript';
+interface RightWorkspaceResourceBase {
   key: string;
   title: string;
   description?: string | null;
-  status: string;
   attention: boolean;
+}
+
+export type AgentTranscriptResource = RightWorkspaceResourceBase & {
+  kind: 'agent-transcript';
+  status: string;
   locator: AgentTranscriptLocator;
 };
+
+export type FileWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'file';
+  path: string;
+};
+
+export type RightWorkspaceResource = AgentTranscriptResource | FileWorkspaceResource;
 
 export interface RightWorkspaceState {
   tabs: RightWorkspaceResource[];
@@ -57,7 +67,7 @@ export function rightWorkspaceReducer(state: RightWorkspaceState, action: RightW
       const existing = state.tabs.findIndex((tab) => tab.key === action.resource.key);
       const tabs = existing < 0
         ? [...state.tabs, action.resource]
-        : state.tabs.map((tab, index) => index === existing ? { ...tab, ...action.resource } : tab);
+        : state.tabs.map((tab, index) => index === existing ? action.resource : tab);
       return { ...state, tabs, activeTabKey: action.resource.key, requestedOpen: true };
     }
     case 'activate':

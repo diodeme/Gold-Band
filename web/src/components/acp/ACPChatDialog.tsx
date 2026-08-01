@@ -1,9 +1,11 @@
 import {
   forwardRef,
+  createContext,
   memo,
   startTransition,
   type AnimationEvent,
   useCallback,
+  useContext,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
@@ -81,6 +83,11 @@ import {
   type ToolPart,
 } from "@/components/prompt-kit/tool";
 import { cn } from "@/lib/utils";
+import {
+  agentTranscriptResourceKey,
+  useOptionalRightWorkspace,
+  type AgentTranscriptLocator,
+} from "@/components/workspace/right-workspace-context";
 import { formatTokenCount } from "@/lib/format-token";
 import { agentIconClass, agentIconSrc } from "@/lib/agent-icons";
 import { EditableConversationTitle } from "@/components/conversation/EditableConversationTitle";
@@ -161,6 +168,7 @@ import {
 } from "@/lib/acp-session-shell";
 import { formatLocalDateTime } from "@/lib/datetime";
 import {
+  getAcpActivityDetail,
   getAcpRawFrames,
   getAcpSession,
   respondAcpPermission,
@@ -178,9 +186,9 @@ import {
 } from "@/api";
 import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
-import { subscribeAcpSessionUpdates } from "@/api";
 import { getRuntimeApi } from "@/api/client";
 import { isTauriRuntime } from "@/api/shared";
+import { subscribeConversationEvents, useConversationBranchLiveSnapshot } from "@/lib/conversation-event-router";
 import { displayAppError, displayStatus } from "@/i18n";
 import type {
   AcpPermissionRequestVm,
@@ -241,6 +249,8 @@ interface ACPChatDialogProps {
   attemptId: string;
   outerNodeId?: string | null;
   outerAttemptId?: string | null;
+  branchId?: string;
+  readOnly?: boolean;
   runtimeComposerContext?: AcpRuntimeComposerContext;
   manualCheckPending?: boolean;
   systemPromptOptions?: Array<{ attemptId: string; prompt?: string | null }>;
@@ -316,6 +326,10 @@ type AcpChildAgentGroup = {
   status?: string | null;
   title?: string | null;
   toolCallId?: string | null;
+  agentExecutionId: string;
+  parentAgentExecutionId?: string | null;
+  attention: boolean;
+  description?: string | null;
   toolEvent: AcpTimelineEvent;
   todoEntries: AcpTodoEntry[];
   eventCount: number;
@@ -324,6 +338,8 @@ type AcpChildAgentGroup = {
   writtenFileCount: number;
   events: AcpTimelineItem[];
 };
+
+const AcpBranchLocatorContext = createContext<AgentTranscriptLocator | null>(null);
 
 type AcpActivityBatch = {
   kind: "activityBatch";
@@ -336,6 +352,10 @@ type AcpActivityBatch = {
   endedAt?: string;
   live: boolean;
   events: AcpTimelineEvent[];
+  activityStartSeq: number;
+  totalEventCount: number;
+  hasMoreEarlier: boolean;
+  earlierCursor?: string | null;
 };
 
 type AcpTodoEntry = {
@@ -601,6 +621,8 @@ export const ACPChatDialog = forwardRef<
     attemptId,
     outerNodeId,
     outerAttemptId,
+    branchId: requestedBranchId,
+    readOnly = false,
     runtimeComposerContext,
     manualCheckPending = false,
     systemPromptOptions,
@@ -628,6 +650,7 @@ export const ACPChatDialog = forwardRef<
 ) {
   const { t } = useTranslation();
   const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
+  const branchId = requestedBranchId ?? session?.branchId ?? 'root';
   const effectiveLoadedEventBufferLimit = loadedEventBufferLimit(
     effectiveEventPageSize,
   );
@@ -639,7 +662,7 @@ export const ACPChatDialog = forwardRef<
     nodeId,
     attemptId,
   );
-  const eventWindowKey = `${sessionKey}:${outerNodeId ?? ""}:${outerAttemptId ?? ""}:${eventIdPrefix ?? ""}`;
+  const eventWindowKey = `${sessionKey}:${outerNodeId ?? ""}:${outerAttemptId ?? ""}:${branchId}:${eventIdPrefix ?? ""}`;
   const sessionIdentity = eventWindowKey;
   const componentInstanceIdRef = useRef(createAcpChatDialogInstanceId());
   const componentInstanceId = componentInstanceIdRef.current;
@@ -1782,21 +1805,16 @@ export const ACPChatDialog = forwardRef<
       setLoadingInitialSession(false);
       return;
     }
-    const runtimeApi = getRuntimeApi();
-    if (!runtimeApi.subscribeAcpSessionUpdates) {
-      setLoadingInitialSession(false);
-      return;
-    }
     let active = true;
     let stopListening: (() => void) | null = null;
-    const subscribe = runtimeApi.subscribeAcpSessionUpdates;
-    if (!subscribe) return;
     const refreshSeq = sessionRefreshSeqRef.current + 1;
     sessionRefreshSeqRef.current = refreshSeq;
     logAcpSessionReadyLifecycle("effect-start", componentInstanceId, sessionIdentity, {
       refreshSeq,
     });
     const matchesSessionEvent = (event: {
+      branchId?: string | null;
+      projectId?: string | null;
       taskId: string;
       runId: string;
       roundId: string;
@@ -1805,6 +1823,7 @@ export const ACPChatDialog = forwardRef<
       outerNodeId?: string | null;
       outerAttemptId?: string | null;
     }) =>
+      (event.projectId ?? null) === (projectId ?? null) &&
       event.taskId === taskId &&
       event.runId === runId &&
       event.roundId === roundId &&
@@ -1813,12 +1832,13 @@ export const ACPChatDialog = forwardRef<
       (event.outerNodeId ?? null) === (outerNodeId ?? null) &&
       (event.outerAttemptId ?? null) === (outerAttemptId ?? null);
     void (async () => {
-      stopListening = await subscribe((event) => {
+      stopListening = subscribeConversationEvents((event) => {
         if (!active || !matchesSessionEvent(event)) return;
         if (event.lifecycle) {
           setLocalRuntimeLifecycle(event.lifecycle);
         }
         if (event.event) {
+          if ((event.branchId ?? 'root') !== branchId) return;
           const latest = latestSessionRef.current;
           if (
             (!latest || !isAcpInitialSessionReady(latest)) &&
@@ -1836,6 +1856,21 @@ export const ACPChatDialog = forwardRef<
           enqueueLiveEventUpdate(event.event);
         } else {
           flushOrSchedulePendingLiveEvents("sync");
+          if (branchId !== 'root') {
+            void getAcpSession(
+              projectId,
+              taskId,
+              runId,
+              roundId,
+              nodeId,
+              attemptId,
+              { branchId, pageSize: effectiveEventPageSize, eventLimit: effectiveEventPageSize },
+              latestSessionRef.current,
+              outerNodeId,
+              outerAttemptId,
+            ).then((updated) => applySessionUpdate(updated, 'subscription-branch-refresh')).catch(() => {});
+            return;
+          }
           // Guard against subscription refresh overwriting a pending user config change
           const incoming = event.session;
           logAcpSessionReady("subscription-session:incoming", componentInstanceId, sessionIdentity, incoming ?? null, {
@@ -1872,6 +1907,7 @@ export const ACPChatDialog = forwardRef<
             nodeId,
             attemptId,
             {
+              branchId,
               pageSize: effectiveEventPageSize,
               eventLimit: effectiveEventPageSize,
             },
@@ -1921,6 +1957,7 @@ export const ACPChatDialog = forwardRef<
   }, [
     applySessionUpdate,
     attemptId,
+    branchId,
     enqueueLiveEventUpdate,
     eventWindowKey,
     effectiveEventPageSize,
@@ -2038,6 +2075,7 @@ export const ACPChatDialog = forwardRef<
           nodeId,
           attemptId,
           {
+            branchId,
             beforeCursor,
             beforeSeq: oldestSeq,
             pageSize: effectiveEventPageSize,
@@ -2101,6 +2139,7 @@ export const ACPChatDialog = forwardRef<
           nodeId,
           attemptId,
           {
+            branchId,
             afterCursor,
             afterSeq: newestSeq,
             pageSize: effectiveEventPageSize,
@@ -2349,6 +2388,7 @@ export const ACPChatDialog = forwardRef<
         nodeId,
         attemptId,
         {
+          branchId,
           pageSize: effectiveEventPageSize,
           eventLimit: effectiveEventPageSize,
         },
@@ -2610,7 +2650,18 @@ export const ACPChatDialog = forwardRef<
   );
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col bg-background">
+    <AcpBranchLocatorContext.Provider value={{
+      projectId,
+      taskId,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      outerNodeId,
+      outerAttemptId,
+      branchId,
+    }}>
+    <div className="flex h-full min-h-0 min-w-0 flex-col bg-background" data-conversation-branch-id={branchId}>
       <ACPSessionHeader
         session={effective}
         rawActive={canvasMode === "raw"}
@@ -2776,14 +2827,14 @@ export const ACPChatDialog = forwardRef<
               sessionSeconds={usageCompact ? composerSessionSeconds : null}
               className="mb-1"
             />
-            {showManualCheckActions ? (
+            {!readOnly && showManualCheckActions ? (
               <AcpManualCheckPanel
                 submitting={manualCheckSubmitting}
                 onSuccess={() => void submitManualDecision("success")}
                 onFailure={() => void submitManualDecision("failure")}
               />
             ) : null}
-            {composerState.externalKind ? (
+            {readOnly ? null : composerState.externalKind ? (
               <AcpExternalComposerState
                 kind={composerState.externalKind}
                 message={composerState.externalMessage ?? ""}
@@ -2946,6 +2997,7 @@ export const ACPChatDialog = forwardRef<
         onCloseText={() => setTextPreview(null)}
       />
     </div>
+    </AcpBranchLocatorContext.Provider>
   );
 });
 
@@ -4097,22 +4149,10 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
 }) {
   if (isChildAgentGroup(event))
     return nested ? (
-      <ChildAgentGroupCard
-        event={event}
-        streamingMarkdownItemKey={streamingMarkdownItemKey}
-        messageAttachmentLocator={messageAttachmentLocator}
-        onMessageAttachmentClick={onMessageAttachmentClick}
-        onPermissionSelect={onPermissionSelect}
-      />
+      <AgentLinkRow event={event} />
     ) : (
       <AssistantTimelineRow timestamp={event.timestamp ?? event.startedAt}>
-        <ChildAgentGroupCard
-          event={event}
-          streamingMarkdownItemKey={streamingMarkdownItemKey}
-          messageAttachmentLocator={messageAttachmentLocator}
-          onMessageAttachmentClick={onMessageAttachmentClick}
-          onPermissionSelect={onPermissionSelect}
-        />
+        <AgentLinkRow event={event} />
       </AssistantTimelineRow>
     );
   if (event.kind === "attemptSeparator")
@@ -4224,6 +4264,69 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
         ) : null}
       </div>
     </div>
+  );
+});
+
+const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpChildAgentGroup }) {
+  const { t } = useTranslation();
+  const branchLocator = useContext(AcpBranchLocatorContext);
+  const workspace = useOptionalRightWorkspace();
+  const liveSnapshot = useConversationBranchLiveSnapshot(
+    branchLocator ?? { projectId: 'unavailable', taskId: '', runId: '', roundId: '', nodeId: '', attemptId: '' },
+    event.agentExecutionId,
+  );
+  const input = agentToolInput(event.toolEvent);
+  const description = event.description ?? input.description;
+  const metricsSummary = childAgentMetricsSummary(event, t);
+  const displayedStatus = liveSnapshot.status ?? event.status;
+  const attention = liveSnapshot.revision > 0 ? liveSnapshot.attention : event.attention;
+  const statusTone = toolStatusTone(displayedStatus);
+  const statusLabel = childAgentStatusLabel(displayedStatus, t);
+  const canOpen = Boolean(branchLocator && workspace && !event.agentExecutionId.startsWith('unresolved-'));
+  const openAgent = () => {
+    if (!branchLocator || !workspace || !canOpen) return;
+    const locator: AgentTranscriptLocator = { ...branchLocator, branchId: event.agentExecutionId };
+    workspace.openResource({
+      kind: 'agent-transcript',
+      key: agentTranscriptResourceKey(locator),
+      title: description || event.title || t('acp.subAgent'),
+      description,
+      status: displayedStatus ?? 'queued',
+      attention,
+      dirtyRevision: 0,
+      locator,
+    });
+  };
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      disabled={!canOpen}
+      className="group h-auto min-h-10 w-full min-w-0 justify-start gap-3 rounded-lg px-2 py-2 text-left font-normal hover:bg-muted/30 disabled:cursor-default disabled:opacity-100"
+      onClick={openAgent}
+    >
+      <span className={cn(
+        'flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/8 text-primary',
+        attention && 'bg-amber-500/12 text-amber-600 dark:text-amber-300',
+      )}>
+        <Bot className="size-3.5" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 text-xs font-medium text-foreground">{t('acp.subAgent')}</span>
+          {description ? <span className="min-w-0 truncate text-sm text-foreground/90">{description}</span> : null}
+        </span>
+        {metricsSummary ? <span className="mt-0.5 block truncate text-xs text-muted-foreground">{metricsSummary}</span> : null}
+      </span>
+      <span className={cn(
+        'shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium',
+        statusTone === 'danger' && 'bg-destructive/10 text-destructive',
+        statusTone === 'success' && 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+        statusTone === 'running' && 'bg-primary/10 text-primary',
+        statusTone === 'muted' && 'bg-muted text-muted-foreground',
+      )}>{statusLabel}</span>
+      <ChevronDown className="size-3.5 shrink-0 -rotate-90 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+    </Button>
   );
 });
 
@@ -4430,8 +4533,6 @@ function collectBranchAttentionEvents(items: AcpTimelineItem[]) {
   return attention;
 }
 
-const ACTIVITY_DETAIL_INITIAL_LIMIT = 80;
-
 const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   event,
   nested = false,
@@ -4442,19 +4543,47 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   onPermissionSelect?: (request: AcpPermissionRequestVm, optionId: string) => void;
 }) {
   const { t } = useTranslation();
+  const branchLocator = useContext(AcpBranchLocatorContext);
   const [open, setOpen] = useState(false);
-  const [visibleLimit, setVisibleLimit] = useState(ACTIVITY_DETAIL_INITIAL_LIMIT);
+  const [auditEvents, setAuditEvents] = useState(() => event.events.filter(isVisibleActivityAuditEvent));
+  const [hasMoreEarlier, setHasMoreEarlier] = useState(event.hasMoreEarlier);
+  const [earlierCursor, setEarlierCursor] = useState(event.earlierCursor ?? null);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const summary = activityBatchSummary(event, t);
   const attentionEvents = activityBatchAttentionEvents(event.events);
-  const auditEvents = event.events.filter(isVisibleActivityAuditEvent);
-  const visibleStart = Math.max(0, auditEvents.length - visibleLimit);
-  const visibleEvents = open
-    ? auditEvents.filter(
-      (activity, index) => index >= visibleStart || isActivityAttentionEvent(activity),
-    )
-    : [];
-  const hiddenCount = Math.max(0, auditEvents.length - visibleEvents.length);
+  useEffect(() => {
+    setAuditEvents((current) => mergeAcpEvents(current, event.events.filter(isVisibleActivityAuditEvent)) as AcpTimelineEvent[]);
+    setHasMoreEarlier((current) => current || event.hasMoreEarlier);
+    setEarlierCursor((current) => current ?? event.earlierCursor ?? null);
+  }, [event.earlierCursor, event.events, event.hasMoreEarlier]);
+  const loadEarlier = async () => {
+    if (!branchLocator || loadingEarlier || !hasMoreEarlier) return;
+    setLoadingEarlier(true);
+    try {
+      const detail = await getAcpActivityDetail(
+        branchLocator.projectId,
+        branchLocator.taskId,
+        branchLocator.runId,
+        branchLocator.roundId,
+        branchLocator.nodeId,
+        branchLocator.attemptId,
+        {
+          branchId: branchLocator.branchId,
+          activityStartSeq: event.activityStartSeq,
+          earlierCursor,
+          limit: 40,
+        },
+        branchLocator.outerNodeId,
+        branchLocator.outerAttemptId,
+      );
+      setAuditEvents((current) => mergeAcpEvents(detail.items, current) as AcpTimelineEvent[]);
+      setHasMoreEarlier(detail.hasMoreEarlier);
+      setEarlierCursor(detail.earlierCursor ?? null);
+    } finally {
+      setLoadingEarlier(false);
+    }
+  };
   return (
     <AssistantTimelineRow timestamp={event.timestamp} nested={nested}>
       <Collapsible open={open} onOpenChange={setOpen} className="min-w-0 max-w-full">
@@ -4487,18 +4616,20 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
         {open ? (
           <CollapsibleContent className="min-w-0 max-w-full overflow-hidden">
             <div className="ml-2 min-w-0 max-w-full space-y-1 border-l border-border/55 py-1 pl-3">
-              {hiddenCount > 0 ? (
+              {hasMoreEarlier ? (
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
                   className="h-7 px-2 text-xs text-muted-foreground"
-                  onClick={() => setVisibleLimit((current) => current + ACTIVITY_DETAIL_INITIAL_LIMIT)}
+                  disabled={loadingEarlier}
+                  onClick={() => void loadEarlier()}
                 >
-                  {t("acp.activityShowEarlier", { count: hiddenCount })}
+                  {loadingEarlier ? <Loader2 className="mr-1 size-3 animate-spin" /> : null}
+                  {t("acp.activityShowEarlier", { count: Math.max(0, event.totalEventCount - auditEvents.length) })}
                 </Button>
               ) : null}
-              {visibleEvents.map((activity) => (
+              {auditEvents.map((activity) => (
                 <ActivityAuditEvent
                   key={timelineEventKey(activity)}
                   event={activity}
@@ -4611,6 +4742,9 @@ function activityBatchSummary(
     }
   }
   const parts: string[] = [];
+  if (batch.totalEventCount > batch.events.length) {
+    parts.push(t("acp.activityRecordedCount", { count: batch.totalEventCount }));
+  }
   if (toolIds.size > 0) parts.push(t("acp.activityToolCount", { count: toolIds.size }));
   if (thoughtCount > 0) parts.push(t("acp.activityThoughtCount", { count: thoughtCount }));
   if (readFiles.size > 0) parts.push(t("acp.activityReadFiles", { count: readFiles.size }));
@@ -6680,6 +6814,10 @@ function groupChildAgentTimeline(
       status,
       title: event.title,
       toolCallId: event.toolCallId,
+      agentExecutionId: persisted?.agentExecutionId ?? `unresolved-${event.toolCallId}`,
+      parentAgentExecutionId: persisted?.parentAgentExecutionId,
+      attention: persisted?.hasAttention ?? false,
+      description: persisted?.description,
       toolEvent: event,
       todoEntries: persisted?.todoEntries ?? latestPlanEntries(directChildren),
       eventCount: persisted?.eventCount ?? directChildren.length,
@@ -6717,7 +6855,8 @@ function isActivityEvent(item: AcpTimelineItem): item is AcpTimelineEvent {
     item.kind === "thoughtDelta" ||
     item.kind === "toolCall" ||
     item.kind === "toolCallUpdate" ||
-    item.kind === "permissionRequest"
+    item.kind === "permissionRequest" ||
+    item.kind === "error"
   );
 }
 
@@ -6731,9 +6870,13 @@ function batchAcpActivities(
     if (activityEvents.length === 0) return;
     const first = activityEvents[0];
     const last = activityEvents[activityEvents.length - 1];
+    const activityMeta = rawObject(rawObject(first.raw)?.goldBandActivity);
+    const activityStartSeq = numberValue(activityMeta?.activityStartSeq)
+      ?? first.startedSeq
+      ?? first.seq;
     result.push({
       kind: "activityBatch",
-      id: `activity-${timelineEventKey(first)}`,
+      id: `activity-${activityStartSeq}`,
       seq: first.startedSeq ?? first.seq,
       timestamp: first.startedAt ?? first.timestamp,
       startedSeq: first.startedSeq ?? first.seq,
@@ -6742,6 +6885,10 @@ function batchAcpActivities(
       endedAt: last.endedAt ?? last.timestamp,
       live,
       events: activityEvents,
+      activityStartSeq,
+      totalEventCount: numberValue(activityMeta?.totalEventCount) ?? activityEvents.length,
+      hasMoreEarlier: activityMeta?.hasMoreEarlier === true,
+      earlierCursor: stringValue(activityMeta?.earlierCursor),
     });
     activityEvents = [];
   };
@@ -6902,6 +7049,9 @@ function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpS
   const auditBounds = acpAuditSeqBounds(events);
   const timing = latestSessionTimingFromEvents(events);
   return {
+    branchId: 'root',
+    parentBranchId: null,
+    readOnly: false,
     sessionId: last?.sessionId ?? first?.sessionId ?? null,
     provider: "acp",
     status,

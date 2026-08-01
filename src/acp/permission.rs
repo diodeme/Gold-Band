@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::{
     acp::events::{
-        AcpUiEvent, append_ui_event, current_timestamp, latest_timeline_source_seq,
+        AcpUiEvent, append_ui_event, current_timestamp,
         load_timeline_items, write_timeline_items,
     },
     storage::{ensure_parent_dir, read_json, write_json},
@@ -208,14 +208,24 @@ pub fn upsert_permission_decision_event(
     option_id: Option<String>,
     cancelled: bool,
 ) -> Result<()> {
-    let timeline_path = attempt_dir.join("acp.timeline.jsonl");
     let events_path = attempt_dir.join("acp.events.jsonl");
-    let source_seq = if timeline_path.exists() || !events_path.exists() {
-        latest_timeline_source_seq(&timeline_path) + 1
+    let all_timeline_events = crate::acp::branches::load_all_branch_events(attempt_dir)?;
+    let source_seq = if !all_timeline_events.is_empty() || !events_path.exists() {
+        all_timeline_events
+            .iter()
+            .map(|event| event.ended_seq.unwrap_or(event.seq))
+            .max()
+            .unwrap_or_default()
+            + 1
     } else {
         legacy_event_count(&events_path) + 1
     };
     let existing = latest_permission_event(attempt_dir, request_id);
+    let branch_id = existing
+        .as_ref()
+        .map(crate::acp::branches::event_branch_id)
+        .unwrap_or_else(|| crate::acp::branches::ROOT_BRANCH_ID.to_string());
+    let timeline_path = crate::acp::branches::branch_timeline_path(attempt_dir, &branch_id);
     let mut event = if cancelled {
         cancelled_permission_event(source_seq, request_id.to_string(), existing.as_ref())
     } else {
@@ -367,7 +377,7 @@ fn latest_permission_status(attempt_dir: &Utf8Path, request_id: &str) -> Option<
 }
 
 fn latest_permission_event(attempt_dir: &Utf8Path, request_id: &str) -> Option<AcpUiEvent> {
-    let timeline_event = load_timeline_items(&attempt_dir.join("acp.timeline.jsonl"))
+    let timeline_event = crate::acp::branches::load_all_branch_events(attempt_dir)
         .ok()
         .into_iter()
         .flatten()

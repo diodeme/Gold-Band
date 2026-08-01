@@ -1,0 +1,241 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
+import { ConversationSidebar } from '../conversation/ConversationSidebar';
+import { saveConversationPreference } from '../../api';
+import { AppTitleBar } from '../AppTitleBar';
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
+import { cn } from '@/lib/utils';
+import { RightWorkspaceDock } from './RightWorkspaceDock';
+import { RightWorkspaceProvider, useRightWorkspace } from './right-workspace-context';
+
+interface WorkspaceShellProps {
+  appName: string;
+  feedbackEnabled?: boolean;
+  platform?: DesktopPlatform | null;
+  windowFrameStyle: DesktopWindowFrameStyle;
+  vm: ConversationSidebarVm;
+  active: ConversationPage;
+  sidebarCollapsed: boolean;
+  onSelect: (page: ConversationPage) => void;
+  onToggleSidebar: () => void;
+  onNewConversation: () => void;
+  onSearch: () => void;
+  onSelectTask: (projectId: string, taskId: string) => void;
+  onSelectRun: (projectId: string, taskId: string, runId: string) => void;
+  stoppingRun?: boolean;
+  onPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
+  onPinTask: (projectId: string, taskId: string) => void;
+  onUnpinTask: (projectId: string, taskId: string) => void;
+  onRenameTask: (projectId: string, taskId: string, title: string) => void;
+  onDeleteTask: (projectId: string, taskId: string) => void;
+  onNewConversationInWorkspace?: (projectId: string) => void;
+  onAddWorkspace?: () => void;
+  onRemoveWorkspace?: (projectId: string) => Promise<void>;
+  activeWorkspaceId?: string | null;
+  children: React.ReactNode;
+}
+
+export interface WorkspaceLayoutProfile {
+  centerMinWidth: number;
+}
+
+export const WORKSPACE_LAYOUT_PROFILES = {
+  conversation: { centerMinWidth: 420 },
+  contextCards: { centerMinWidth: 520 },
+  workflowCanvas: { centerMinWidth: 640 },
+  settings: { centerMinWidth: 480 },
+} satisfies Record<string, WorkspaceLayoutProfile>;
+
+const SIDEBAR_MIN = 200;
+const SIDEBAR_MAX = 420;
+const SIDEBAR_DEFAULT = 256;
+const RIGHT_WORKSPACE_MIN = 320;
+const RIGHT_WORKSPACE_MAX = 720;
+const RIGHT_WORKSPACE_DEFAULT = 440;
+const LAYOUT_HYSTERESIS = 48;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function loadWidth(prefs: Record<string, unknown> | null | undefined, key: string, fallback: number, min: number, max: number) {
+  const value = prefs?.[key];
+  return typeof value === 'number' ? clamp(value, min, max) : fallback;
+}
+
+function profileForPage(page: ConversationPage): WorkspaceLayoutProfile {
+  if (page.kind === 'conversation-home' || page.kind === 'conversation-run') return WORKSPACE_LAYOUT_PROFILES.conversation;
+  if (page.kind === 'contexts') return WORKSPACE_LAYOUT_PROFILES.contextCards;
+  if (page.kind === 'settings') return WORKSPACE_LAYOUT_PROFILES.settings;
+  return WORKSPACE_LAYOUT_PROFILES.workflowCanvas;
+}
+
+export function WorkspaceShell(props: WorkspaceShellProps) {
+  const initialRightWidth = loadWidth(props.vm.preferences, 'rightWorkspace.width', RIGHT_WORKSPACE_DEFAULT, RIGHT_WORKSPACE_MIN, RIGHT_WORKSPACE_MAX);
+  return (
+    <RightWorkspaceProvider initialWidth={initialRightWidth}>
+      <WorkspaceShellLayout {...props} />
+    </RightWorkspaceProvider>
+  );
+}
+
+function WorkspaceShellLayout({
+  appName,
+  feedbackEnabled,
+  platform,
+  windowFrameStyle,
+  vm,
+  active,
+  sidebarCollapsed,
+  onSelect,
+  onToggleSidebar,
+  onNewConversation,
+  onSearch,
+  onSelectTask,
+  onSelectRun,
+  stoppingRun = false,
+  onPauseRun,
+  onPinTask,
+  onUnpinTask,
+  onRenameTask,
+  onDeleteTask,
+  onNewConversationInWorkspace,
+  onAddWorkspace,
+  onRemoveWorkspace,
+  activeWorkspaceId,
+  children,
+}: WorkspaceShellProps) {
+  const { t } = useTranslation();
+  const workspace = useRightWorkspace();
+  const shellRef = useRef<HTMLDivElement>(null);
+  const previousWidthRef = useRef(0);
+  const resizeFrameRef = useRef<number | null>(null);
+  const [availableWidth, setAvailableWidth] = useState(0);
+  const [autoLeftCollapsed, setAutoLeftCollapsed] = useState(false);
+  const [autoRightCollapsed, setAutoRightCollapsed] = useState(false);
+  const sidebarWidth = loadWidth(vm.preferences, 'sidebar.width', SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX);
+  const profile = useMemo(() => profileForPage(active), [active]);
+  const wantsRight = workspace.requestedOpen && workspace.tabs.length > 0;
+  const showLeft = !sidebarCollapsed && !autoLeftCollapsed;
+  const showRightDock = wantsRight && !autoRightCollapsed;
+
+  useEffect(() => {
+    const element = shellRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? element.clientWidth;
+      if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);
+      resizeFrameRef.current = requestAnimationFrame(() => {
+        setAvailableWidth(Math.round(width));
+        resizeFrameRef.current = null;
+      });
+    });
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (availableWidth <= 0) return;
+    const shrinking = previousWidthRef.current > 0 && availableWidth < previousWidthRef.current;
+    previousWidthRef.current = availableWidth;
+    const needsAll = profile.centerMinWidth + SIDEBAR_MIN + (wantsRight ? RIGHT_WORKSPACE_MIN : 0);
+    const needsCenterAndRight = profile.centerMinWidth + (wantsRight ? RIGHT_WORKSPACE_MIN : 0);
+    if (shrinking) {
+      if (!sidebarCollapsed && !autoLeftCollapsed && availableWidth < needsAll) {
+        setAutoLeftCollapsed(true);
+      } else if (wantsRight && autoLeftCollapsed && !autoRightCollapsed && availableWidth < needsCenterAndRight) {
+        setAutoRightCollapsed(true);
+      }
+      return;
+    }
+    if (autoRightCollapsed && availableWidth > needsCenterAndRight + LAYOUT_HYSTERESIS) {
+      setAutoRightCollapsed(false);
+    } else if (autoLeftCollapsed && availableWidth > needsAll + LAYOUT_HYSTERESIS) {
+      setAutoLeftCollapsed(false);
+    }
+  }, [autoLeftCollapsed, autoRightCollapsed, availableWidth, profile.centerMinWidth, sidebarCollapsed, wantsRight]);
+
+  useEffect(() => {
+    if (!wantsRight) setAutoRightCollapsed(false);
+  }, [wantsRight]);
+
+  const saveSidebarWidth = useCallback((size: { inPixels: number }) => {
+    if (size.inPixels >= SIDEBAR_MIN) void saveConversationPreference('sidebar.width', Math.round(size.inPixels));
+  }, []);
+  const saveRightWidth = useCallback((size: { inPixels: number }) => {
+    if (size.inPixels < RIGHT_WORKSPACE_MIN) return;
+    const width = Math.round(size.inPixels);
+    workspace.setWidth(width);
+    void saveConversationPreference('rightWorkspace.width', width);
+  }, [workspace]);
+
+  return (
+    <div
+      ref={shellRef}
+      className="app-window-shell flex h-screen flex-col bg-gold-workspace text-foreground"
+      data-window-frame-style={windowFrameStyle}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <AppTitleBar appName={appName} feedbackEnabled={feedbackEnabled} platform={platform} sidebarCollapsed={sidebarCollapsed || autoLeftCollapsed} onToggleSidebar={onToggleSidebar} />
+      <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1 bg-sidebar">
+        {showLeft ? (
+          <>
+            <ResizablePanel id="workspace-navigation" defaultSize={sidebarWidth} minSize={SIDEBAR_MIN} maxSize={SIDEBAR_MAX} groupResizeBehavior="preserve-pixel-size" onResize={saveSidebarWidth}>
+              <ConversationSidebar
+                vm={vm}
+                active={active}
+                activeWorkspaceId={activeWorkspaceId}
+                onSelect={onSelect}
+                onNewConversation={onNewConversation}
+                onSearch={onSearch}
+                onSelectTask={onSelectTask}
+                onSelectRun={onSelectRun}
+                onPauseRun={onPauseRun}
+                onPinTask={onPinTask}
+                onUnpinTask={onUnpinTask}
+                onRenameTask={onRenameTask}
+                onDeleteTask={onDeleteTask}
+                onNewConversationInWorkspace={onNewConversationInWorkspace}
+                onAddWorkspace={onAddWorkspace}
+                onRemoveWorkspace={onRemoveWorkspace}
+              />
+            </ResizablePanel>
+            <ResizableHandle className="z-20 bg-sidebar-border/70 hover:bg-primary/30" data-testid="workspace-left-resize-handle" />
+          </>
+        ) : null}
+        <ResizablePanel id="workspace-center" minSize={profile.centerMinWidth} className="min-w-0">
+          <main className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-sidebar-border/70 bg-gold-workspace', showLeft && 'rounded-tl-2xl border-l')}>
+            {children}
+            {stoppingRun ? (
+              <div className="absolute inset-0 z-40 flex items-center justify-center bg-background/55 backdrop-blur-sm">
+                <div className="flex items-center gap-3 rounded-full border border-border/60 bg-popover/95 px-4 py-2 text-sm font-medium text-popover-foreground shadow-lg">
+                  <span className="size-3.5 animate-spin rounded-full border-2 border-primary/25 border-t-primary" aria-hidden="true" />
+                  <span>{t('conversation.runtime.stoppingRunOverlay')}</span>
+                </div>
+              </div>
+            ) : null}
+          </main>
+        </ResizablePanel>
+        {showRightDock ? (
+          <>
+            <ResizableHandle className="z-20 bg-border/60 hover:bg-primary/30" data-testid="workspace-right-resize-handle" />
+            <ResizablePanel id="workspace-right" defaultSize={workspace.width} minSize={RIGHT_WORKSPACE_MIN} maxSize={RIGHT_WORKSPACE_MAX} groupResizeBehavior="preserve-pixel-size" onResize={saveRightWidth}>
+              <RightWorkspaceDock />
+            </ResizablePanel>
+          </>
+        ) : null}
+      </ResizablePanelGroup>
+      <Sheet open={wantsRight && autoRightCollapsed} onOpenChange={(open) => { if (!open) workspace.closeWorkspace(); }}>
+        <SheetContent side="right" className="flex w-[min(92vw,44rem)] flex-col gap-0 p-0 sm:max-w-none">
+          <SheetTitle className="sr-only">{t('workspace.rightWorkspace')}</SheetTitle>
+          <RightWorkspaceDock />
+        </SheetContent>
+      </Sheet>
+    </div>
+  );
+}

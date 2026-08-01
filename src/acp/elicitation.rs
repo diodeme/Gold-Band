@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::{
     acp::events::{
-        append_ui_event, current_timestamp, elicitation_response_event, latest_timeline_source_seq,
+        append_ui_event, current_timestamp, elicitation_response_event,
         load_timeline_items, write_timeline_items,
     },
     storage::{ensure_parent_dir, read_json, write_json},
@@ -188,13 +188,32 @@ pub fn upsert_elicitation_response_event(
     action: &ElicitationAction,
     content: Option<Value>,
 ) -> Result<()> {
-    let timeline_path = attempt_dir.join("acp.timeline.jsonl");
     let events_path = attempt_dir.join("acp.events.jsonl");
-    let source_seq = if timeline_path.exists() || !events_path.exists() {
-        latest_timeline_source_seq(&timeline_path) + 1
+    let all_timeline_events = crate::acp::branches::load_all_branch_events(attempt_dir)?;
+    let source_seq = if !all_timeline_events.is_empty() || !events_path.exists() {
+        all_timeline_events
+            .iter()
+            .map(|event| event.ended_seq.unwrap_or(event.seq))
+            .max()
+            .unwrap_or_default()
+            + 1
     } else {
         legacy_event_count(&events_path) + 1
     };
+    let request = all_timeline_events.iter().find(|event| {
+        event.kind == "elicitationRequest"
+            && (event.id == elicitation_id
+                || event
+                    .raw
+                    .as_ref()
+                    .and_then(|raw| raw.get("elicitationId"))
+                    .and_then(Value::as_str)
+                    == Some(elicitation_id))
+    });
+    let branch_id = request
+        .map(crate::acp::branches::event_branch_id)
+        .unwrap_or_else(|| crate::acp::branches::ROOT_BRANCH_ID.to_string());
+    let timeline_path = crate::acp::branches::branch_timeline_path(attempt_dir, &branch_id);
     let action_value = match action {
         ElicitationAction::Accept => "accept",
         ElicitationAction::Decline => "decline",
@@ -205,6 +224,12 @@ pub fn upsert_elicitation_response_event(
         action_value.to_string(),
         content,
     );
+    if let (Some(request_meta), Some(event_raw)) = (
+        request.and_then(|request| request.raw.as_ref()).and_then(|raw| raw.get("_meta")),
+        event.raw.as_mut(),
+    ) {
+        event_raw["_meta"] = request_meta.clone();
+    }
     event.started_seq = Some(source_seq);
     event.ended_seq = Some(source_seq);
     event.started_at = Some(event.timestamp.clone());

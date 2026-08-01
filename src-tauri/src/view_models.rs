@@ -654,6 +654,9 @@ pub struct AcpUsageVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpSessionVm {
+    pub branch_id: String,
+    pub parent_branch_id: Option<String>,
+    pub read_only: bool,
     pub session_id: Option<String>,
     pub title: Option<String>,
     pub round_id: String,
@@ -699,6 +702,8 @@ pub struct AcpTimelineProjectionVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpAgentExecutionVm {
+    pub agent_execution_id: String,
+    pub parent_agent_execution_id: Option<String>,
     pub tool_call_id: String,
     pub parent_tool_call_id: Option<String>,
     pub launch_status: Option<String>,
@@ -707,12 +712,16 @@ pub struct AcpAgentExecutionVm {
     pub tool_call_count: usize,
     pub read_file_count: usize,
     pub written_file_count: usize,
+    pub has_attention: bool,
+    pub title: Option<String>,
+    pub description: Option<String>,
     pub todo_entries: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpSessionQueryInput {
+    pub branch_id: Option<String>,
     pub before_seq: Option<u64>,
     pub after_seq: Option<u64>,
     pub before_cursor: Option<String>,
@@ -914,6 +923,23 @@ pub struct AcpRawFramePageVm {
     pub search: Option<String>,
     pub kind: Option<String>,
     pub direction: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpActivityDetailQueryInput {
+    pub branch_id: String,
+    pub activity_start_seq: u64,
+    pub earlier_cursor: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpActivityDetailVm {
+    pub items: Vec<AcpUiEventVm>,
+    pub has_more_earlier: bool,
+    pub earlier_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -3398,22 +3424,35 @@ pub fn dynamic_acp_session_vm(
     );
     let stopping = is_acp_session_stopping_status(&status);
     let default_event_limit = app.config.acp_chat_event_page_size;
-    let event_scan = if timeline_path.exists() {
+    let active_status = is_acp_session_active_status(&status);
+    let branch_id = query
+        .as_ref()
+        .and_then(|query| query.branch_id.clone())
+        .unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
+    let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &status)?;
+    let branch_timeline_path = gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
+    let mut event_scan = if branch_id != gold_band::acp::branches::ROOT_BRANCH_ID
+        || branch_timeline_path.exists()
+    {
         scan_acp_timeline(
-            &timeline_path,
+            &branch_timeline_path,
             query.clone(),
-            is_acp_session_active_status(&status),
+            active_status,
             default_event_limit,
         )?
     } else {
         scan_acp_events(
             &events_path,
             query,
-            is_acp_session_active_status(&status),
+            active_status,
             default_event_limit,
         )?
     };
-    let active_status = is_acp_session_active_status(&status);
+    apply_agent_index_projection(&mut event_scan.timeline_projection, &agent_index);
+    let parent_branch_id = agent_index
+        .iter()
+        .find(|record| record.agent_execution_id == branch_id)
+        .and_then(|record| record.parent_agent_execution_id.clone());
     let pending_permissions = if stopping || !active_status {
         Vec::new()
     } else {
@@ -3459,6 +3498,9 @@ pub fn dynamic_acp_session_vm(
         .map(str::to_string)
         .or_else(|| Some(attempt_dir.to_string()));
     let result = AcpSessionVm {
+        branch_id: branch_id.clone(),
+        parent_branch_id,
+        read_only: branch_id != gold_band::acp::branches::ROOT_BRANCH_ID,
         session_id: continue_ref
             .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
             .and_then(|value| value.as_str())
@@ -3703,22 +3745,35 @@ pub fn acp_session_vm(
     );
     let stopping = is_acp_session_stopping_status(&status);
     let default_event_limit = app.config.acp_chat_event_page_size;
-    let event_scan = if timeline_path.exists() {
+    let active_status = is_acp_session_active_status(&status);
+    let branch_id = query
+        .as_ref()
+        .and_then(|query| query.branch_id.clone())
+        .unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
+    let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &status)?;
+    let branch_timeline_path = gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
+    let mut event_scan = if branch_id != gold_band::acp::branches::ROOT_BRANCH_ID
+        || branch_timeline_path.exists()
+    {
         scan_acp_timeline(
-            &timeline_path,
+            &branch_timeline_path,
             query.clone(),
-            is_acp_session_active_status(&status),
+            active_status,
             default_event_limit,
         )?
     } else {
         scan_acp_events(
             &events_path,
             query,
-            is_acp_session_active_status(&status),
+            active_status,
             default_event_limit,
         )?
     };
-    let active_status = is_acp_session_active_status(&status);
+    apply_agent_index_projection(&mut event_scan.timeline_projection, &agent_index);
+    let parent_branch_id = agent_index
+        .iter()
+        .find(|record| record.agent_execution_id == branch_id)
+        .and_then(|record| record.parent_agent_execution_id.clone());
     let pending_permissions = if stopping || !active_status {
         Vec::new()
     } else {
@@ -3767,6 +3822,9 @@ pub fn acp_session_vm(
         .or_else(|| snapshot_path.parent().map(|path| path.to_string()));
 
     let result = AcpSessionVm {
+        branch_id: branch_id.clone(),
+        parent_branch_id,
+        read_only: branch_id != gold_band::acp::branches::ROOT_BRANCH_ID,
         session_id: continue_ref
             .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
             .and_then(|value| value.as_str())
@@ -4029,6 +4087,7 @@ fn scan_acp_timeline(
     const MAX_EVENT_LIMIT: usize = 1000;
 
     let query = query.unwrap_or(AcpSessionQueryInput {
+        branch_id: None,
         before_seq: None,
         after_seq: None,
         before_cursor: None,
@@ -4654,21 +4713,22 @@ fn paginate_timeline(
     before_seq: Option<u64>,
     limit: usize,
 ) -> Result<AcpEventScan> {
-    let total = all_events.len();
+    let semantic_blocks = conversation_semantic_blocks(all_events);
+    let total = semantic_blocks.len();
     let session_timing = latest_session_timing_from_events(all_events);
-    let (timeline_projection, agent_launch_anchors) =
+    let timeline_projection =
         build_acp_timeline_projection(all_events, latest_permission_events, session_active);
-    let filtered = if let Some(cursor) = after_seq {
-        all_events
+    let selected_blocks = if let Some(cursor) = after_seq {
+        semantic_blocks
             .iter()
-            .filter(|event| event.started_seq.unwrap_or(event.seq) > cursor)
+            .filter(|block| block.oldest_seq > cursor)
             .take(limit)
             .cloned()
             .collect::<Vec<_>>()
     } else if let Some(cursor) = before_seq {
-        let mut page = all_events
+        let mut page = semantic_blocks
             .iter()
-            .filter(|event| event.started_seq.unwrap_or(event.seq) < cursor)
+            .filter(|block| block.newest_seq < cursor)
             .cloned()
             .collect::<Vec<_>>();
         if page.len() > limit {
@@ -4676,10 +4736,12 @@ fn paginate_timeline(
         }
         page
     } else if total > limit {
-        all_events[total - limit..].to_vec()
+        semantic_blocks[total - limit..].to_vec()
     } else {
-        all_events.to_vec()
+        semantic_blocks.clone()
     };
+    let loaded_semantic_count = selected_blocks.len();
+    let filtered = compact_selected_semantic_blocks(all_events, &selected_blocks);
     // Compact only the events in the final window (not all events)
     let mut filtered: Vec<_> = filtered
         .into_iter()
@@ -4701,18 +4763,14 @@ fn paginate_timeline(
         .iter()
         .map(|event| event.ended_seq.unwrap_or(event.seq))
         .max();
-    let oldest_index = oldest_seq.and_then(|seq| {
-        all_events
-            .iter()
-            .position(|event| event.started_seq.unwrap_or(event.seq) == seq)
+    let oldest_index = selected_blocks.first().and_then(|selected| {
+        semantic_blocks.iter().position(|block| block.oldest_seq == selected.oldest_seq)
     });
-    let newest_index = newest_seq.and_then(|seq| {
-        all_events
-            .iter()
-            .rposition(|event| event.ended_seq.unwrap_or(event.seq) == seq)
+    let newest_index = selected_blocks.last().and_then(|selected| {
+        semantic_blocks.iter().rposition(|block| block.newest_seq == selected.newest_seq)
     });
-    let mut event_page = AcpEventPageVm {
-        loaded_count: filtered.len(),
+    let event_page = AcpEventPageVm {
+        loaded_count: loaded_semantic_count,
         total,
         oldest_seq,
         newest_seq,
@@ -4722,8 +4780,6 @@ fn paginate_timeline(
         newest_cursor: newest_seq.map(format_timeline_cursor),
     };
     include_latest_permission_events(&mut filtered, latest_permission_events);
-    include_agent_launch_anchors(&mut filtered, &agent_launch_anchors);
-    event_page.loaded_count = filtered.len();
     order_provider_history_by_prompt_anchors_vm(&mut filtered);
 
     Ok(AcpEventScan {
@@ -4737,6 +4793,151 @@ fn paginate_timeline(
         available_commands: available_commands.cloned(),
         usage: usage.cloned(),
     })
+}
+
+#[derive(Debug, Clone)]
+struct ConversationSemanticBlockRange {
+    start: usize,
+    end: usize,
+    oldest_seq: u64,
+    newest_seq: u64,
+}
+
+fn conversation_semantic_blocks(events: &[AcpUiEventVm]) -> Vec<ConversationSemanticBlockRange> {
+    let mut blocks = Vec::<ConversationSemanticBlockRange>::new();
+    let mut activity_start: Option<usize> = None;
+    let flush_activity = |end: usize, start: &mut Option<usize>, blocks: &mut Vec<ConversationSemanticBlockRange>| {
+        if let Some(start_index) = start.take() {
+            blocks.push(semantic_block_range(events, start_index, end));
+        }
+    };
+    for (index, event) in events.iter().enumerate() {
+        if !is_conversation_semantic_event(event) {
+            continue;
+        }
+        if is_conversation_activity_event(event) {
+            activity_start.get_or_insert(index);
+            continue;
+        }
+        if index > 0 {
+            flush_activity(index - 1, &mut activity_start, &mut blocks);
+        }
+        blocks.push(semantic_block_range(events, index, index));
+    }
+    if !events.is_empty() {
+        flush_activity(events.len() - 1, &mut activity_start, &mut blocks);
+    }
+    blocks
+}
+
+const ACTIVITY_DETAIL_INITIAL_LIMIT: usize = 40;
+
+fn compact_selected_semantic_blocks(
+    events: &[AcpUiEventVm],
+    blocks: &[ConversationSemanticBlockRange],
+) -> Vec<AcpUiEventVm> {
+    let mut selected = Vec::new();
+    for block in blocks {
+        let block_events = &events[block.start..=block.end];
+        let is_activity = block_events.iter().any(is_conversation_activity_event)
+            && !block_events.iter().any(|event| !is_conversation_activity_event(event) && is_conversation_semantic_event(event));
+        if !is_activity {
+            selected.extend(block_events.iter().cloned());
+            continue;
+        }
+        let audit_events = block_events
+            .iter()
+            .filter(|event| is_conversation_activity_event(event) && event.kind != "permissionRequest")
+            .collect::<Vec<_>>();
+        let start = audit_events.len().saturating_sub(ACTIVITY_DETAIL_INITIAL_LIMIT);
+        let mut recent = audit_events[start..].iter().map(|event| (*event).clone()).collect::<Vec<_>>();
+        let earlier_cursor = recent.first().map(|event| format_timeline_cursor(event.started_seq.unwrap_or(event.seq)));
+        if let Some(first) = recent.first_mut() {
+            let raw = first.raw.get_or_insert_with(|| serde_json::json!({}));
+            if !raw.is_object() {
+                *raw = serde_json::json!({ "providerPayload": raw.clone() });
+            }
+            raw.as_object_mut().unwrap().insert(
+                "goldBandActivity".to_string(),
+                serde_json::json!({
+                    "activityStartSeq": block.oldest_seq,
+                    "activityEndSeq": block.newest_seq,
+                    "totalEventCount": audit_events.len(),
+                    "hasMoreEarlier": start > 0,
+                    "earlierCursor": earlier_cursor,
+                }),
+            );
+        }
+        selected.extend(recent);
+    }
+    selected
+}
+
+pub fn acp_activity_detail_vm_for_attempt(
+    attempt_dir: &camino::Utf8Path,
+    query: AcpActivityDetailQueryInput,
+) -> Result<AcpActivityDetailVm> {
+    gold_band::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
+    let timeline_path = gold_band::acp::branches::branch_timeline_path(attempt_dir, &query.branch_id);
+    let (events, _, _, _, _, _) = parse_timeline_file(&timeline_path, false)?;
+    let Some(block) = conversation_semantic_blocks(&events)
+        .into_iter()
+        .find(|block| block.oldest_seq == query.activity_start_seq)
+    else {
+        return Ok(AcpActivityDetailVm { items: Vec::new(), has_more_earlier: false, earlier_cursor: None });
+    };
+    let before_seq = query.earlier_cursor.as_deref().and_then(parse_timeline_cursor);
+    let limit = query.limit.unwrap_or(ACTIVITY_DETAIL_INITIAL_LIMIT).clamp(1, 200);
+    let mut audit = events[block.start..=block.end]
+        .iter()
+        .filter(|event| is_conversation_activity_event(event) && event.kind != "permissionRequest")
+        .filter(|event| before_seq.is_none_or(|cursor| event.started_seq.unwrap_or(event.seq) < cursor))
+        .cloned()
+        .collect::<Vec<_>>();
+    let has_more_earlier = audit.len() > limit;
+    if has_more_earlier {
+        audit = audit.split_off(audit.len() - limit);
+    }
+    let items = audit.into_iter().map(compact_event_for_session).collect::<Vec<_>>();
+    let earlier_cursor = items.first().map(|event| format_timeline_cursor(event.started_seq.unwrap_or(event.seq)));
+    Ok(AcpActivityDetailVm { items, has_more_earlier, earlier_cursor })
+}
+
+fn semantic_block_range(events: &[AcpUiEventVm], start: usize, end: usize) -> ConversationSemanticBlockRange {
+    let selected = &events[start..=end];
+    ConversationSemanticBlockRange {
+        start,
+        end,
+        oldest_seq: selected.iter().map(|event| event.started_seq.unwrap_or(event.seq)).min().unwrap_or_default(),
+        newest_seq: selected.iter().map(|event| event.ended_seq.unwrap_or(event.seq)).max().unwrap_or_default(),
+    }
+}
+
+fn is_conversation_semantic_event(event: &AcpUiEventVm) -> bool {
+    matches!(
+        event.kind.as_str(),
+        "userTextDelta"
+            | "textDelta"
+            | "thoughtDelta"
+            | "toolCall"
+            | "toolCallUpdate"
+            | "permissionRequest"
+            | "elicitationRequest"
+            | "plan"
+            | "attemptSeparator"
+            | "contextCompaction"
+            | "error"
+    )
+}
+
+fn is_conversation_activity_event(event: &AcpUiEventVm) -> bool {
+    if agent_event_meta_vm(event).agent_launch {
+        return false;
+    }
+    matches!(
+        event.kind.as_str(),
+        "thoughtDelta" | "toolCall" | "toolCallUpdate" | "permissionRequest" | "error"
+    )
 }
 
 #[derive(Debug, Clone, Default)]
@@ -4760,11 +4961,47 @@ fn agent_event_meta_vm(event: &AcpUiEventVm) -> AgentEventMetaVm {
     }
 }
 
+fn apply_agent_index_projection(
+    projection: &mut AcpTimelineProjectionVm,
+    records: &[gold_band::acp::branches::AgentExecutionRecord],
+) {
+    let launch_tool_by_execution = records
+        .iter()
+        .map(|record| (
+            record.agent_execution_id.as_str(),
+            record.launch_tool_call_id.as_str(),
+        ))
+        .collect::<HashMap<_, _>>();
+    projection.agents = records
+        .iter()
+        .map(|record| AcpAgentExecutionVm {
+            agent_execution_id: record.agent_execution_id.clone(),
+            parent_agent_execution_id: record.parent_agent_execution_id.clone(),
+            tool_call_id: record.launch_tool_call_id.clone(),
+            parent_tool_call_id: record
+                .parent_agent_execution_id
+                .as_deref()
+                .and_then(|id| launch_tool_by_execution.get(id))
+                .map(|id| (*id).to_string()),
+            launch_status: None,
+            execution_status: record.status.clone(),
+            event_count: record.event_count,
+            tool_call_count: record.tool_call_count,
+            read_file_count: record.read_file_count,
+            written_file_count: record.written_file_count,
+            has_attention: record.has_attention,
+            title: record.title.clone(),
+            description: record.description.clone(),
+            todo_entries: record.todo_entries.clone(),
+        })
+        .collect();
+}
+
 fn build_acp_timeline_projection(
     all_events: &[AcpUiEventVm],
     latest_permission_events: &HashMap<String, AcpUiEventVm>,
     session_active: bool,
-) -> (AcpTimelineProjectionVm, Vec<AcpUiEventVm>) {
+) -> AcpTimelineProjectionVm {
     let event_meta = all_events
         .iter()
         .map(agent_event_meta_vm)
@@ -4814,6 +5051,17 @@ fn build_acp_timeline_projection(
             let (tool_call_count, read_file_count, written_file_count) =
                 project_agent_tool_metrics(&direct_events);
             AcpAgentExecutionVm {
+                agent_execution_id: gold_band::acp::branches::stable_agent_execution_id(
+                    launch.session_id.as_deref().unwrap_or("unknown-session"),
+                    tool_call_id,
+                ),
+                parent_agent_execution_id: event_meta[*launch_index]
+                    .parent_tool_call_id
+                    .as_deref()
+                    .map(|parent| gold_band::acp::branches::stable_agent_execution_id(
+                        launch.session_id.as_deref().unwrap_or("unknown-session"),
+                        parent,
+                    )),
                 tool_call_id: tool_call_id.clone(),
                 parent_tool_call_id: event_meta[*launch_index].parent_tool_call_id.clone(),
                 launch_status: launch.status.clone(),
@@ -4822,6 +5070,14 @@ fn build_acp_timeline_projection(
                 tool_call_count,
                 read_file_count,
                 written_file_count,
+                has_attention: direct_permissions.iter().any(|event| {
+                    event.status.as_deref().unwrap_or("pending").eq_ignore_ascii_case("pending")
+                }),
+                title: launch.title.clone(),
+                description: tool_raw_input(launch)
+                    .and_then(|input| input.get("description"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
                 todo_entries: child_todos.get(tool_call_id).cloned().unwrap_or_default(),
             }
         })
@@ -4832,22 +5088,10 @@ fn build_acp_timeline_projection(
             .map(|(_, event)| event.started_seq.unwrap_or(event.seq))
             .unwrap_or(u64::MAX)
     });
-    let anchors = agents
-        .iter()
-        .filter_map(|agent| {
-            launches
-                .get(&agent.tool_call_id)
-                .map(|(_, event)| event.clone())
-        })
-        .map(compact_event_for_session)
-        .collect::<Vec<_>>();
-    (
-        AcpTimelineProjectionVm {
-            agents,
-            todo_entries,
-        },
-        anchors,
-    )
+    AcpTimelineProjectionVm {
+        agents,
+        todo_entries,
+    }
 }
 
 fn project_agent_execution_status(
@@ -5108,22 +5352,6 @@ fn plan_entry_content(entry: &serde_json::Value) -> Option<String> {
         .filter(|content| !content.is_empty())
 }
 
-fn include_agent_launch_anchors(events: &mut Vec<AcpUiEventVm>, anchors: &[AcpUiEventVm]) {
-    for anchor in anchors {
-        let Some(tool_call_id) = anchor.tool_call_id.as_ref() else {
-            continue;
-        };
-        if events.iter().any(|event| {
-            event.tool_call_id.as_ref() == Some(tool_call_id)
-                && agent_event_meta_vm(event).agent_launch
-        }) {
-            continue;
-        }
-        events.push(anchor.clone());
-    }
-    events.sort_by_key(|event| event.started_seq.unwrap_or(event.seq));
-}
-
 fn latest_session_timing_from_events(all_events: &[AcpUiEventVm]) -> Option<AcpSessionTimingVm> {
     all_events.iter().rev().find_map(|event| {
         event.timing.as_ref().map(|timing| AcpSessionTimingVm {
@@ -5209,6 +5437,9 @@ fn include_latest_permission_events(
 
     let mut changed = false;
     for (request_id, latest) in latest_permission_events {
+        if latest.status.as_deref() != Some("pending") {
+            continue;
+        }
         if let Some(existing) = events.iter_mut().find(|event| {
             event.kind == "permissionRequest"
                 && permission_request_id_from_event(event) == *request_id
@@ -5237,6 +5468,7 @@ fn scan_acp_events(
     const MAX_EVENT_LIMIT: usize = 1000;
 
     let query = query.unwrap_or(AcpSessionQueryInput {
+        branch_id: None,
         before_seq: None,
         after_seq: None,
         before_cursor: None,

@@ -21,6 +21,8 @@ import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects'
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from '@/lib/slash-command';
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
+import { PromptInput, PromptInputTextarea } from '@/components/prompt-kit/prompt-input';
+import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 
 interface ConversationComposerProps {
   projectId: string;
@@ -322,7 +324,14 @@ export function ConversationComposer({
         {...dropZoneHandlers}
       >
         {/* Main text input */}
-        <div className="rounded-2xl border border-border/60 bg-card/60 p-4 shadow-sm transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10">
+        <PromptInput
+          value={visibleContent}
+          onValueChange={(value) => setContent(`${committedSlashCommand?.prefix ?? ''}${value}`)}
+          maxHeight={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMaxHeightPx}
+          onSubmit={() => { void handleSubmit(); }}
+          disabled={busy || submittingAttachments}
+          className="rounded-2xl border-border/60 bg-card/60 p-4 shadow-sm transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
+        >
           <SlashCommandMenu
             open={slashCommands.isOpen}
             commands={slashCommands.filteredCommands}
@@ -332,7 +341,7 @@ export function ConversationComposer({
             onSelect={(index) => { slashCommands.selectByIndex(index); }}
             variant="inline"
           >
-            <div className="relative min-h-24 min-w-0">
+            <div className="relative min-w-0">
               {committedSlashCommand ? (
                 <span ref={committedInputLayout.adornmentRef} className="absolute left-0 top-0 z-10 inline-flex">
                   <SlashCommandInputTag
@@ -341,13 +350,11 @@ export function ConversationComposer({
                   />
                 </span>
               ) : null}
-              <textarea
+              <PromptInputTextarea
                 ref={composerTextareaRef}
                 style={committedInputLayout.textareaStyle}
-                className="min-h-24 w-full resize-none bg-transparent p-0 text-sm leading-6 text-foreground placeholder:text-muted-foreground outline-none"
+                className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMinHeightClassName} w-full overflow-y-hidden px-0 py-0 text-sm leading-6 text-foreground placeholder:text-muted-foreground`}
                 placeholder={t('conversation.home.inputPlaceholder')}
-                value={visibleContent}
-                onChange={(e) => setContent(`${committedSlashCommand?.prefix ?? ''}${e.target.value}`)}
                 onKeyDown={handleKeyDown}
                 onPaste={(e) => { void extractPasteFiles(e); }}
                 onDragEnter={dropZoneHandlers.onDragEnter}
@@ -467,7 +474,7 @@ export function ConversationComposer({
               </Button>
             </div>
           </div>
-        </div>
+        </PromptInput>
 
         {/* Attachment chips */}
         <AttachmentChipsList

@@ -58,6 +58,7 @@ import {
   ChainOfThoughtContent,
   ChainOfThoughtItem,
   ChainOfThoughtStep,
+  ChainOfThoughtText,
   ChainOfThoughtTrigger,
 } from "@/components/prompt-kit/chain-of-thought";
 import {
@@ -4815,9 +4816,9 @@ const ThoughtBlock = memo(function ThoughtBlock({
           </ChainOfThoughtTrigger>
           <ChainOfThoughtContent animated={false} preserveMount={streaming}>
             <ChainOfThoughtItem className="min-w-0 break-words text-muted-foreground [overflow-wrap:anywhere]">
-              <Markdown streaming={streaming} className="text-muted-foreground">
+              <ChainOfThoughtText className="text-muted-foreground">
                 {event.content}
-              </Markdown>
+              </ChainOfThoughtText>
             </ChainOfThoughtItem>
           </ChainOfThoughtContent>
         </ChainOfThoughtStep>

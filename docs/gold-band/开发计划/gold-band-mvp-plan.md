@@ -93,6 +93,7 @@
 - 2026-07-08：普通 worker runtime prompt 强化自由输出目录边界：attempt 根目录归 Gold Band runtime / ACP 管理，角色、任务或用户要求输出报告、脚本、过程记录等文件且未给绝对路径时，默认写入 hidden context 的 attachments 目录；hidden context 中的“附件目录”同时标注为本节点自由输出默认落点。
 - 2026-07-08：默认审查 profile 明确只 review 当前开发节点 / 本轮迭代改动，优先使用 `dev-report.md` 中的文件与行号限定范围，缺失时退回当前 git diff；历史遗留问题只有被当前改动引入、放大或直接影响当前改动时才阻塞裁决。
 - 2026-07-08：会话消息流新增 runtime control JSON 展示优化。普通 worker output contract 与 AI-DYNAMIC `dynamic-node-completion` 继续复用 Rust 端既有 JSON artifact 提取和校验链路；runtime 在实际消费控制输出或将非法 JSON 控制候选送入 repair 时为对应 ACP `textDelta` 写入 `raw.runtimeControlOutputDisplay`，前端只基于该标记把自然语言和控制 JSON 拆分展示，控制 JSON 收起态只显示单行 Gold Band 工作流控制条，非法候选使用告警色和告警图标，未标记 JSON 保持普通 Markdown 消息。
+- 2026-08-01：会话 thought / reasoning 从 Streamdown Markdown 渲染切回 prompt-kit `ChainOfThoughtText` 纯文本展示，Markdown 标记按字面显示；展示层裁掉整段首尾空白并保留内部换行。assistant 正文继续使用现有流式 Markdown presentation。后端在独立完整 thought chunk 之间只补一个换行，避免多个思考粘连且不产生额外空白行，token 级 chunk 继续无缝累计。接口回归必须验证 `**...**`、列表符号和代码围栏不会生成 Markdown DOM，首尾换行不会撑高内容区，同时 active thought 收起时仍不占布局。
 - 2026-05-07：桌面端品牌 Logo 从临时菱形字形替换为用户提供的红蓝金无限环 SVG；Web 品牌区和 favicon 共用 `web/public/logo.svg`，Tauri 平台图标由同一 Logo 生成。
 - 2026-05-07：修复任务编排面包屑上级项 hover/focus 高亮在页面跳转后残留的问题；可点击上级项改为纯 CSS 的 hover/focus-visible 临时反馈，Round 详情只保留当前 round 的常驻高亮。
 - 2026-05-07：工作流 execution history 的 run 分组保持一致黑色背景，不使用黄色背景或左侧金线表达展开态，避免被误解为选中态；2026-05-08 起初始态所有 run 默认收起，点击整行或左侧箭头即可展开/收起。

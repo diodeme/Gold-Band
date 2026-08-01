@@ -98,6 +98,20 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+export function resolveRightWorkspaceMaxWidth({
+  availableWidth,
+  centerMinWidth,
+  leftVisible,
+}: {
+  availableWidth: number;
+  centerMinWidth: number;
+  leftVisible: boolean;
+}) {
+  if (availableWidth <= 0) return RIGHT_WORKSPACE_MAX;
+  const reservedWidth = centerMinWidth + (leftVisible ? SIDEBAR_MIN : 0);
+  return clamp(availableWidth - reservedWidth, RIGHT_WORKSPACE_MIN, RIGHT_WORKSPACE_MAX);
+}
+
 function loadWidth(prefs: Record<string, unknown> | null | undefined, key: string, fallback: number, min: number, max: number) {
   const value = prefs?.[key];
   return typeof value === 'number' ? clamp(value, min, max) : fallback;
@@ -162,6 +176,11 @@ function WorkspaceShellLayout({
   const wantsRight = workspace.requestedOpen && workspace.tabs.length > 0;
   const showLeft = !sidebarCollapsed && !autoCollapse.left;
   const showRightDock = wantsRight && !autoCollapse.right;
+  const rightWorkspaceMaxWidth = resolveRightWorkspaceMaxWidth({
+    availableWidth,
+    centerMinWidth: profile.centerMinWidth,
+    leftVisible: showLeft,
+  });
 
   useEffect(() => {
     const element = shellRef.current;
@@ -266,7 +285,7 @@ function WorkspaceShellLayout({
         {showRightDock ? (
           <>
             <ResizableHandle className="z-20 bg-border/60 hover:bg-primary/30" data-testid="workspace-right-resize-handle" />
-            <ResizablePanel id="workspace-right" defaultSize={workspace.width} minSize={RIGHT_WORKSPACE_MIN} maxSize={RIGHT_WORKSPACE_MAX} groupResizeBehavior="preserve-pixel-size" onResize={saveRightWidth}>
+            <ResizablePanel id="workspace-right" defaultSize={workspace.width} minSize={RIGHT_WORKSPACE_MIN} maxSize={rightWorkspaceMaxWidth} groupResizeBehavior="preserve-pixel-size" onResize={saveRightWidth}>
               <RightWorkspaceDock />
             </ResizablePanel>
           </>
@@ -275,7 +294,9 @@ function WorkspaceShellLayout({
       <Sheet open={wantsRight && autoCollapse.right} onOpenChange={(open) => { if (!open) workspace.closeWorkspace(); }}>
         <SheetContent side="right" className="flex w-[min(92vw,44rem)] flex-col gap-0 p-0 sm:max-w-none">
           <SheetTitle className="sr-only">{t('workspace.rightWorkspace')}</SheetTitle>
-          <RightWorkspaceDock />
+          <div className="flex min-h-0 flex-1 flex-col" data-right-workspace-presentation="sheet">
+            <RightWorkspaceDock />
+          </div>
         </SheetContent>
       </Sheet>
     </div>

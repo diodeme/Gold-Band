@@ -4,7 +4,7 @@ import type { AgentTranscriptResource } from './right-workspace-context';
 export function AgentConversationPanel({ resource }: { resource: AgentTranscriptResource }) {
   const locator = resource.locator;
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-background">
+    <div className="flex min-h-0 flex-1 flex-col bg-background" data-agent-conversation-panel={locator.branchId} data-read-only="true">
       <ACPChatDialog
         session={null}
         projectId={locator.projectId}

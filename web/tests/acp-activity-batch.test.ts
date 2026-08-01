@@ -33,6 +33,61 @@ afterEach(() => {
 });
 
 describe('ACP activity batch disclosure', () => {
+  it('does not touch a large tool output until the individual tool is expanded', async () => {
+    let outputReads = 0;
+    const raw: Record<string, unknown> = {
+      title: 'Read',
+      rawInput: { path: 'large.log' },
+    };
+    Object.defineProperty(raw, 'output', {
+      enumerable: true,
+      configurable: true,
+      get() {
+        outputReads += 1;
+        return 'x'.repeat(256_000);
+      },
+    });
+    const projection = buildAcpTimelineProjection([
+      event({
+        id: 'large-tool',
+        kind: 'toolCall',
+        toolCallId: 'large-tool',
+        title: 'Read large.log',
+        status: 'completed',
+        raw,
+      }),
+    ], 'completed');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(React.createElement(ACPMessageList, {
+          timeline: projection.timeline,
+          sessionStatus: 'completed',
+          sending: false,
+        }));
+      });
+      expect(outputReads).toBe(0);
+
+      const activityTrigger = container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]');
+      await act(async () => {
+        activityTrigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      expect(outputReads).toBe(0);
+
+      const triggers = container.querySelectorAll<HTMLButtonElement>('[data-slot="collapsible-trigger"]');
+      expect(triggers.length).toBeGreaterThanOrEqual(2);
+      await act(async () => {
+        triggers[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      expect(outputReads).toBeGreaterThan(0);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('hides terminal permission records and offers collapse at the detail footer', async () => {
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
       window.setTimeout(() => callback(performance.now()), 0)

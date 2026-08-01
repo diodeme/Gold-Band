@@ -1,5 +1,7 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
+use std::sync::{Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
 
 use anyhow::Result;
 use atomic_write_file::AtomicWriteFile;
@@ -17,6 +19,32 @@ use crate::storage::{ensure_parent_dir, write_json};
 pub const ROOT_BRANCH_ID: &str = "root";
 const BRANCH_META_KEY: &str = "goldBandConversation";
 const AGENT_NAMESPACE: Uuid = Uuid::from_u128(0x63c7f8ac_1498_4f6e_8f6d_62f2f04033f1);
+const AGENT_INDEX_CACHE_CAPACITY: usize = 16;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentIndexSourceFileSignature {
+    path: String,
+    len: u64,
+    modified_nanos: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentIndexSourceSignature {
+    session_status: String,
+    files: Vec<AgentIndexSourceFileSignature>,
+}
+
+#[derive(Clone)]
+struct AgentIndexCacheEntry {
+    attempt_dir: String,
+    signature: AgentIndexSourceSignature,
+    records: Vec<AgentExecutionRecord>,
+}
+
+fn agent_index_cache() -> &'static Mutex<VecDeque<AgentIndexCacheEntry>> {
+    static CACHE: OnceLock<Mutex<VecDeque<AgentIndexCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(VecDeque::new()))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationBranchRoute {
@@ -407,6 +435,10 @@ pub fn rebuild_agent_index(attempt_dir: &Utf8Path, session_status: &str) -> Resu
     let session_active = matches!(session_status, "running" | "active" | "starting" | "cancelling" | "stopping");
     let session_interrupted = matches!(session_status, "cancelled" | "canceled" | "interrupted" | "stopped");
     migrate_legacy_agent_timeline(attempt_dir)?;
+    let source_signature = agent_index_source_signature(attempt_dir, session_status)?;
+    if let Some(records) = cached_agent_index(attempt_dir, &source_signature) {
+        return Ok(records);
+    }
     let all_events = load_all_branch_events(attempt_dir)?;
     let mut launches = HashMap::<String, AcpUiEvent>::new();
     for event in &all_events {
@@ -498,26 +530,153 @@ pub fn rebuild_agent_index(attempt_dir: &Utf8Path, session_status: &str) -> Resu
         })
         .collect::<Vec<_>>();
     records.sort_by(|left, right| left.started_at.cmp(&right.started_at));
+    propagate_agent_attention_to_ancestors(&mut records);
     write_agent_index(attempt_dir, &records)?;
     for record in &records {
-        write_json(
+        write_agent_snapshot_if_changed(
             &branch_snapshot_path(attempt_dir, &record.agent_execution_id),
             record,
         )?;
     }
+    cache_agent_index(attempt_dir, source_signature, records.clone());
     Ok(records)
 }
 
-fn write_agent_index(attempt_dir: &Utf8Path, records: &[AgentExecutionRecord]) -> Result<()> {
+fn propagate_agent_attention_to_ancestors(records: &mut [AgentExecutionRecord]) {
+    let index_by_id = records
+        .iter()
+        .enumerate()
+        .map(|(index, record)| (record.agent_execution_id.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let attention_sources = records
+        .iter()
+        .filter(|record| record.has_attention)
+        .map(|record| record.agent_execution_id.clone())
+        .collect::<Vec<_>>();
+    for source in attention_sources {
+        let mut current = source;
+        let mut visited = std::collections::HashSet::new();
+        while visited.insert(current.clone()) {
+            let Some(index) = index_by_id.get(&current).copied() else {
+                break;
+            };
+            let Some(parent_id) = records[index].parent_agent_execution_id.clone() else {
+                break;
+            };
+            let Some(parent_index) = index_by_id.get(&parent_id).copied() else {
+                break;
+            };
+            records[parent_index].has_attention = true;
+            current = parent_id;
+        }
+    }
+}
+
+fn agent_index_source_signature(
+    attempt_dir: &Utf8Path,
+    session_status: &str,
+) -> Result<AgentIndexSourceSignature> {
+    let mut paths = vec![branch_timeline_path(attempt_dir, ROOT_BRANCH_ID)];
+    let agents_dir = attempt_dir.join("agents");
+    if agents_dir.exists() {
+        for entry in std::fs::read_dir(agents_dir.as_std_path())? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let Some(branch_dir) = Utf8PathBuf::from_path_buf(entry.path()).ok() else {
+                continue;
+            };
+            paths.push(branch_dir.join("timeline.jsonl"));
+        }
+    }
+    paths.sort();
+    let files = paths
+        .into_iter()
+        .filter_map(|path| {
+            let metadata = path.metadata().ok()?;
+            let modified_nanos = metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+            Some(AgentIndexSourceFileSignature {
+                path: path.to_string(),
+                len: metadata.len(),
+                modified_nanos,
+            })
+        })
+        .collect();
+    Ok(AgentIndexSourceSignature {
+        session_status: session_status.to_string(),
+        files,
+    })
+}
+
+fn cached_agent_index(
+    attempt_dir: &Utf8Path,
+    signature: &AgentIndexSourceSignature,
+) -> Option<Vec<AgentExecutionRecord>> {
+    let mut cache = agent_index_cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let attempt_dir = attempt_dir.as_str();
+    let position = cache.iter().position(|entry| {
+        entry.attempt_dir == attempt_dir && &entry.signature == signature
+    })?;
+    let entry = cache.remove(position)?;
+    let records = entry.records.clone();
+    cache.push_back(entry);
+    Some(records)
+}
+
+fn cache_agent_index(
+    attempt_dir: &Utf8Path,
+    signature: AgentIndexSourceSignature,
+    records: Vec<AgentExecutionRecord>,
+) {
+    let mut cache = agent_index_cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.retain(|entry| entry.attempt_dir != attempt_dir.as_str());
+    cache.push_back(AgentIndexCacheEntry {
+        attempt_dir: attempt_dir.to_string(),
+        signature,
+        records,
+    });
+    while cache.len() > AGENT_INDEX_CACHE_CAPACITY {
+        cache.pop_front();
+    }
+}
+
+fn write_agent_index(attempt_dir: &Utf8Path, records: &[AgentExecutionRecord]) -> Result<bool> {
     let path = attempt_dir.join("acp.agents.jsonl");
+    let mut content = Vec::new();
+    for record in records {
+        serde_json::to_writer(&mut content, record)?;
+        content.push(b'\n');
+    }
+    if std::fs::read(path.as_std_path()).ok().as_deref() == Some(content.as_slice()) {
+        return Ok(false);
+    }
     ensure_parent_dir(&path)?;
     let mut file = AtomicWriteFile::open(path.as_std_path())?;
-    for record in records {
-        serde_json::to_writer(&mut file, record)?;
-        file.write_all(b"\n")?;
-    }
+    file.write_all(&content)?;
     file.commit()?;
-    Ok(())
+    Ok(true)
+}
+
+fn write_agent_snapshot_if_changed(
+    path: &Utf8Path,
+    record: &AgentExecutionRecord,
+) -> Result<bool> {
+    if path.exists()
+        && crate::storage::read_json::<AgentExecutionRecord>(path)
+            .ok()
+            .as_ref()
+            == Some(record)
+    {
+        return Ok(false);
+    }
+    write_json(path, record)?;
+    Ok(true)
 }
 
 #[derive(Default)]
@@ -764,10 +923,59 @@ mod tests {
             .iter()
             .find(|record| record.launch_tool_call_id == "provider-nested")
             .unwrap();
+        let expected_parent = stable_agent_execution_id("session-1", "provider-outer");
         assert_eq!(
             nested_record.parent_agent_execution_id.as_deref(),
-            Some(stable_agent_execution_id("session-1", "provider-outer").as_str())
+            Some(expected_parent.as_str())
         );
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn nested_pending_interaction_projects_attention_to_agent_ancestors() {
+        let attempt = temp_attempt("nested-attention");
+        let outer = event_at(
+            "outer",
+            1,
+            "toolCall",
+            Some("provider-outer"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "run_in_background": true })),
+        );
+        let nested = event_at(
+            "nested",
+            2,
+            "toolCall",
+            Some("provider-nested"),
+            Some("completed"),
+            json!({ "agentLaunch": true, "parentToolCallId": "provider-outer" }),
+            Some(json!({ "run_in_background": true })),
+        );
+        let permission = event_at(
+            "permission-request",
+            3,
+            "permissionRequest",
+            Some("tool-needing-permission"),
+            Some("pending"),
+            json!({ "parentToolCallId": "provider-nested" }),
+            None,
+        );
+        persist_partitioned(&attempt, vec![outer, nested, permission]);
+
+        let records = rebuild_agent_index(&attempt, "running").unwrap();
+        let outer = records
+            .iter()
+            .find(|record| record.launch_tool_call_id == "provider-outer")
+            .unwrap();
+        let nested = records
+            .iter()
+            .find(|record| record.launch_tool_call_id == "provider-nested")
+            .unwrap();
+        assert!(outer.has_attention);
+        assert_eq!(outer.status, "running");
+        assert!(nested.has_attention);
+        assert_eq!(nested.status, "waiting_permission");
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 
@@ -949,6 +1157,33 @@ mod tests {
         assert!(attempt.join("acp.agents.jsonl").exists());
         assert!(!agent_id.contains("provider/use"));
         assert!(!attempt.join("agents").join("provider").exists());
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn unchanged_agent_index_and_snapshot_are_not_rewritten() {
+        let attempt = temp_attempt("index-write-dedup");
+        persist_partitioned(
+            &attempt,
+            vec![event_at(
+                "launch",
+                1,
+                "toolCall",
+                Some("provider-child"),
+                Some("pending"),
+                json!({ "agentLaunch": true }),
+                Some(json!({ "description": "child" })),
+            )],
+        );
+        let records = rebuild_agent_index(&attempt, "running").unwrap();
+        assert!(!write_agent_index(&attempt, &records).unwrap());
+        let snapshot = branch_snapshot_path(&attempt, &records[0].agent_execution_id);
+        assert!(!write_agent_snapshot_if_changed(&snapshot, &records[0]).unwrap());
+
+        let mut changed = records.clone();
+        changed[0].title = Some("updated".to_string());
+        assert!(write_agent_index(&attempt, &changed).unwrap());
+        assert!(write_agent_snapshot_if_changed(&snapshot, &changed[0]).unwrap());
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 }

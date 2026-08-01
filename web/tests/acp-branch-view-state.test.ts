@@ -1,6 +1,13 @@
+/** @vitest-environment jsdom */
+
 import { describe, expect, it } from 'vitest';
 
-import { restoreAcpBranchViewState, storeAcpBranchViewState } from '@/components/acp/ACPChatDialog';
+import {
+  applyAcpScrollAnchorCompensation,
+  captureAcpBranchViewState,
+  restoreAcpBranchViewState,
+  storeAcpBranchViewState,
+} from '@/components/acp/ACPChatDialog';
 
 const state = (scrollTop: number) => ({
   anchorKey: `message-${scrollTop}`,
@@ -25,5 +32,30 @@ describe('ACP branch view state cache', () => {
     }
     expect(restoreAcpBranchViewState('lru-branch-0')).toBeNull();
     expect(restoreAcpBranchViewState('lru-branch-12')).toEqual(state(12));
+  });
+
+  it('captures and compensates a real DOM item anchor for either root or Agent branches', () => {
+    const scroller = document.createElement('div');
+    const item = document.createElement('div');
+    item.dataset.acpItemKey = 'message-anchor';
+    scroller.append(item);
+    scroller.scrollTop = 100;
+    Object.defineProperty(scroller, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 20, bottom: 420, left: 0, right: 400, width: 400, height: 400, x: 0, y: 20, toJSON() {} }),
+    });
+    Object.defineProperty(item, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 80, bottom: 120, left: 0, right: 400, width: 400, height: 40, x: 0, y: 80, toJSON() {} }),
+    });
+
+    expect(captureAcpBranchViewState(scroller, false, true, false)).toMatchObject({
+      anchorKey: 'message-anchor',
+      anchorOffset: 60,
+      scrollTop: 100,
+    });
+    expect(applyAcpScrollAnchorCompensation(scroller, 'message-anchor', 60)).toBe(true);
+    expect(scroller.scrollTop).toBe(120);
+    expect(applyAcpScrollAnchorCompensation(scroller, 'missing', 60)).toBe(false);
   });
 });

@@ -30,6 +30,7 @@ export function ConversationViewport({
 }: ConversationViewportProps) {
   return (
     <ChatContainerRoot
+      data-conversation-viewport="true"
       className={cn('h-full', className)}
       resize="instant"
       initial="instant"
@@ -47,4 +48,3 @@ export function ConversationViewport({
     </ChatContainerRoot>
   );
 }
-

@@ -13,7 +13,7 @@ export function RightWorkspaceDock() {
   const { tabs, activeTabKey, activateTab, closeTab, closeWorkspace } = useRightWorkspace();
   const active = tabs.find((tab) => tab.key === activeTabKey) ?? null;
   return (
-    <section className="flex h-full min-h-0 min-w-0 flex-col bg-background" aria-label={t('workspace.rightWorkspace')}>
+    <section className="flex h-full min-h-0 min-w-0 flex-col bg-background" aria-label={t('workspace.rightWorkspace')} data-right-workspace-dock="true">
       <div className="flex h-10 shrink-0 items-center border-b border-border/60 bg-muted/10">
         <div className="themed-scrollbar flex min-w-0 flex-1 items-stretch overflow-x-auto">
           {tabs.map((tab) => (

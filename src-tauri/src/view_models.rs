@@ -941,6 +941,20 @@ pub struct AcpActivityDetailVm {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AcpToolDetailQueryInput {
+    pub branch_id: String,
+    pub event_id: String,
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpToolDetailVm {
+    pub event: Option<AcpUiEventVm>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LogScopeInput {
     pub task_id: String,
     pub run_id: String,
@@ -4941,9 +4955,59 @@ pub fn acp_activity_detail_vm_for_attempt(
     if has_more_earlier {
         audit = audit.split_off(audit.len() - limit);
     }
-    let items = audit.into_iter().map(compact_event_for_session).collect::<Vec<_>>();
+    let items = audit
+        .into_iter()
+        .map(compact_event_for_activity_audit)
+        .collect::<Vec<_>>();
     let earlier_cursor = items.first().map(|event| format_timeline_cursor(event.started_seq.unwrap_or(event.seq)));
     Ok(AcpActivityDetailVm { items, has_more_earlier, earlier_cursor })
+}
+
+pub fn acp_tool_detail_vm_for_attempt(
+    attempt_dir: &camino::Utf8Path,
+    query: AcpToolDetailQueryInput,
+) -> Result<AcpToolDetailVm> {
+    gold_band::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
+    let timeline_path = gold_band::acp::branches::branch_timeline_path(attempt_dir, &query.branch_id);
+    if !timeline_path.exists() {
+        return Ok(AcpToolDetailVm { event: None });
+    }
+    let needles = [Some(query.event_id.as_str()), query.tool_call_id.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter(|value| !value.is_empty())
+        .map(|value| serde_json::to_string(value).unwrap_or_else(|_| format!("\"{value}\"")))
+        .collect::<Vec<_>>();
+    let file = fs::File::open(timeline_path.as_std_path())?;
+    let mut detail: Option<AcpUiEventVm> = None;
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        if !needles.iter().any(|needle| line.contains(needle)) {
+            continue;
+        }
+        let candidate = if let Ok(patch) = serde_json::from_str::<AcpTimelinePatchVm>(&line) {
+            (patch.patch_type == "timelinePatch" && patch.op == "upsert").then_some(patch.item)
+        } else {
+            serde_json::from_str::<AcpTimelineItemVm>(&line).ok().map(|item| item.item)
+        };
+        let Some(candidate) = candidate else { continue };
+        let identity_matches = candidate.id == query.event_id
+            || query.tool_call_id.as_deref().is_some_and(|tool_call_id| {
+                candidate.tool_call_id.as_deref() == Some(tool_call_id)
+            });
+        if !identity_matches || !matches!(candidate.kind.as_str(), "toolCall" | "toolCallUpdate") {
+            continue;
+        }
+        detail = Some(
+            detail
+                .as_ref()
+                .map(|current| merge_timeline_item_revision_vm(current, candidate.clone()))
+                .unwrap_or(candidate),
+        );
+    }
+    Ok(AcpToolDetailVm {
+        event: detail.map(compact_event_for_session),
+    })
 }
 
 fn semantic_block_range(events: &[AcpUiEventVm], start: usize, end: usize) -> ConversationSemanticBlockRange {
@@ -5745,6 +5809,7 @@ fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {
                 }),
             );
         }
+        remove_provider_agent_metadata(raw);
     }
     event.raw = event.raw.map(compact_raw_value);
     event.content = event
@@ -5752,6 +5817,79 @@ fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {
         .map(|content| truncate_string(content, 64_000));
     event.title = event.title.map(|title| truncate_string(title, 2_000));
     event
+}
+
+fn compact_event_for_activity_audit(event: AcpUiEventVm) -> AcpUiEventVm {
+    let mut event = compact_event_for_session(event);
+    if !matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate") {
+        return event;
+    }
+    let Some(raw) = event.raw.as_mut() else {
+        return event;
+    };
+    for path in [
+        &["output"][..],
+        &["fields", "output"][..],
+        &["content", "output"][..],
+        &["toolCall", "output"][..],
+        &["toolCall", "content"][..],
+        &["toolCall", "fields", "output"][..],
+        &["_meta", "goldBandConversation", "toolOutput"][..],
+    ] {
+        remove_nested_json_key(raw, path);
+    }
+    if raw.get("content").is_some_and(|content| !content.is_object())
+        && let Some(object) = raw.as_object_mut()
+    {
+        object.remove("content");
+    }
+    if !raw.is_object() {
+        *raw = serde_json::json!({});
+    }
+    let raw_object = raw.as_object_mut().expect("activity raw must be an object");
+    let meta = raw_object.entry("_meta").or_insert_with(|| serde_json::json!({}));
+    if !meta.is_object() {
+        *meta = serde_json::json!({});
+    }
+    let meta_object = meta.as_object_mut().expect("activity meta must be an object");
+    let conversation = meta_object
+        .entry("goldBandConversation")
+        .or_insert_with(|| serde_json::json!({}));
+    if !conversation.is_object() {
+        *conversation = serde_json::json!({});
+    }
+    conversation
+        .as_object_mut()
+        .expect("conversation meta must be an object")
+        .insert("toolDetailAvailable".to_string(), serde_json::Value::Bool(true));
+    event
+}
+
+fn remove_provider_agent_metadata(raw: &mut serde_json::Value) {
+    for path in [
+        &["_meta", "claudeCode"][..],
+        &["_meta", "agentTranscript"][..],
+        &["toolCall", "_meta", "claudeCode"][..],
+        &["toolCall", "_meta", "agentTranscript"][..],
+    ] {
+        remove_nested_json_key(raw, path);
+    }
+}
+
+fn remove_nested_json_key(value: &mut serde_json::Value, path: &[&str]) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let mut current = value;
+    for key in parents {
+        let Some(next) = current.get_mut(*key) else {
+            return;
+        };
+        current = next;
+    }
+    if let Some(object) = current.as_object_mut() {
+        object.remove(*last);
+    }
 }
 
 fn compact_raw_value(value: serde_json::Value) -> serde_json::Value {
@@ -6785,7 +6923,7 @@ mod tests {
     }
 
     #[test]
-    fn session_view_normalizes_legacy_claude_agent_metadata_for_historical_events() {
+    fn session_view_exposes_only_internal_agent_metadata_for_historical_events() {
         let mut event = test_event("toolCall", "");
         event.tool_call_id = Some("call-child".to_string());
         event.raw = Some(json!({
@@ -6801,14 +6939,17 @@ mod tests {
         }));
 
         let event = compact_event_for_session(event);
-        let transcript = event
+        let conversation = event
             .raw
             .as_ref()
-            .and_then(|raw| raw.pointer("/_meta/agentTranscript"))
-            .expect("normalized transcript metadata");
+            .and_then(|raw| raw.pointer("/_meta/goldBandConversation"))
+            .expect("normalized conversation metadata");
 
-        assert_eq!(transcript["agentLaunch"], true);
-        assert_eq!(transcript["parentToolCallId"], "call-parent");
+        assert_eq!(conversation["branchId"], gold_band::acp::branches::stable_agent_execution_id("session-123", "call-parent"));
+        assert!(conversation["launchedAgentExecutionId"].as_str().is_some());
+        assert_eq!(conversation["toolName"], "Agent");
+        assert!(event.raw.as_ref().unwrap().pointer("/_meta/claudeCode").is_none());
+        assert!(event.raw.as_ref().unwrap().pointer("/_meta/agentTranscript").is_none());
     }
 
     #[test]
@@ -8939,7 +9080,12 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let child_path = gold_band::acp::branches::branch_timeline_path(&attempt, &child_id);
-        gold_band::acp::events::write_timeline_items(&child_path, &child_events).unwrap();
+        fs::create_dir_all(child_path.parent().unwrap().as_std_path()).unwrap();
+        write_timeline_file(
+            &attempt,
+            &format!("agents/{child_id}/timeline.jsonl"),
+            &child_events,
+        );
 
         let scan = scan_acp_timeline(&root_path, None, false, 30).unwrap();
         assert_eq!(scan.event_page.total, 3);
@@ -8978,6 +9124,7 @@ mod tests {
                 event.ended_seq = Some(seq);
                 if event.kind == "toolCall" {
                     event.tool_call_id = Some(format!("call-{seq}"));
+                    event.raw.as_mut().unwrap()["output"] = json!(format!("tool output {seq}"));
                 }
                 event
             })
@@ -8998,7 +9145,7 @@ mod tests {
             &attempt,
             gold_band::acp::branches::ROOT_BRANCH_ID,
         );
-        gold_band::acp::events::write_timeline_items(&path, &events).unwrap();
+        write_timeline_file(&attempt, "acp.timeline.jsonl", &events);
 
         let page = scan_acp_timeline(&path, None, false, 30).unwrap();
         assert_eq!(page.event_page.total, 2);
@@ -9023,7 +9170,26 @@ mod tests {
         assert_eq!(detail.items.len(), 40);
         assert!(detail.has_more_earlier);
         assert!(detail.items.iter().all(|event| event.kind != "permissionRequest"));
+        let recent_tool = detail.items.iter().find(|event| event.kind == "toolCall").unwrap();
+        assert!(recent_tool.raw.as_ref().unwrap().get("output").is_none());
+        assert_eq!(
+            recent_tool.raw.as_ref().unwrap()["_meta"]["goldBandConversation"]["toolDetailAvailable"],
+            true
+        );
         assert_eq!(page.event_page.total, 2);
+
+        let tool_detail = acp_tool_detail_vm_for_attempt(
+            &attempt,
+            AcpToolDetailQueryInput {
+                branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                event_id: "tool-99".to_string(),
+                tool_call_id: Some("call-99".to_string()),
+            },
+        )
+        .unwrap()
+        .event
+        .expect("tool detail");
+        assert_eq!(tool_detail.raw.as_ref().unwrap()["output"], "tool output 99");
 
         let earlier = acp_activity_detail_vm_for_attempt(
             &attempt,

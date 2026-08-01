@@ -68,12 +68,6 @@ import { InterventionLayer } from "@/components/conversation/InterventionLayer";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { Message, MessageContent } from "@/components/prompt-kit/message";
 import {
-  PromptInput,
-  PromptInputActions,
-  PromptInputAction,
-  PromptInputTextarea,
-} from "@/components/prompt-kit/prompt-input";
-import {
   Tool,
   type ToolLabels,
   type ToolParam,
@@ -119,9 +113,8 @@ import {
   type AcpSessionAssetPanelItem,
 } from "@/lib/acp-session-assets-panel";
 import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-service";
-import { AttachmentChipsList, AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
-import { SlashCommandMenu } from "@/components/conversation/SlashCommandMenu";
-import { SlashCommandInputTag } from "@/components/conversation/SlashCommandInputTag";
+import { AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
+import { AcpConversationComposer } from "@/components/conversation/AcpConversationComposer";
 import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from "@/lib/slash-command";
 import { useAgentCommands } from "@/hooks/useAgentCommands";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
@@ -166,6 +159,7 @@ import {
 import { formatLocalDateTime } from "@/lib/datetime";
 import {
   getAcpActivityDetail,
+  getAcpToolDetail,
   getAcpRawFrames,
   getAcpSession,
   respondAcpPermission,
@@ -1773,11 +1767,8 @@ export const ACPChatDialog = forwardRef<
     const anchor = paginationAnchorRef.current;
     if (anchor) {
       paginationAnchorRef.current = null;
-      const element = findAcpItemElement(scroller, anchor.key);
-      if (element) {
+      if (applyAcpScrollAnchorCompensation(scroller, anchor.key, anchor.top)) {
         preservingScrollRef.current = true;
-        const delta = element.getBoundingClientRect().top - anchor.top;
-        scroller.scrollTop += delta;
         requestAnimationFrame(() => {
           preservingScrollRef.current = false;
         });
@@ -1794,12 +1785,15 @@ export const ACPChatDialog = forwardRef<
       chatContainerContextRef.current?.scrollToBottom({ animation: "instant" });
       return;
     }
-    const anchor = pending.anchorKey
-      ? findAcpItemElement(scroller, pending.anchorKey)
-      : null;
-    if (anchor) {
-      const currentOffset = anchor.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-      scroller.scrollTop += currentOffset - pending.anchorOffset;
+    if (
+      pending.anchorKey
+      && applyAcpScrollAnchorCompensation(
+        scroller,
+        pending.anchorKey,
+        scroller.getBoundingClientRect().top + pending.anchorOffset,
+      )
+    ) {
+      // The saved real-DOM anchor owns restoration when it is still present.
     } else {
       scroller.scrollTop = pending.scrollTop;
     }
@@ -2888,147 +2882,60 @@ export const ACPChatDialog = forwardRef<
                 }
               />
             ) : (
-              <div
-                data-attachment-dropzone="true"
+              <AcpConversationComposer
+                prompt={prompt}
+                onPromptChange={setPrompt}
+                onSubmit={send}
+                sending={sending}
+                status={showComposerStatus && !usageCompact ? (
+                  <AcpComposerStatus
+                    kind={composerProcessingKind}
+                    active={composerStatusActive}
+                    sessionSeconds={composerSessionSeconds}
+                  />
+                ) : null}
+                attachments={pendingAttachments}
+                onRemoveAttachment={removeAttachment}
+                onPreviewAttachment={handlePreviewAttachment}
+                onClearAttachments={clearAttachments}
+                fileError={fileError}
+                slashCommands={slashCommands.filteredCommands}
+                slashMenuOpen={slashCommands.isOpen}
+                slashMenuActiveIndex={slashCommands.activeIndex}
+                onSlashMenuActiveIndexChange={slashCommands.setActiveIndex}
+                onSlashMenuDismiss={slashCommands.dismiss}
+                onSlashMenuSelect={(index) => { slashCommands.selectByIndex(index); }}
+                textareaRef={composerTextareaRef}
+                committedSlashCommand={committedSlashCommand ? {
+                  prefix: committedSlashCommand.prefix,
+                  description: committedSlashCommand.command.description,
+                } : null}
+                placeholder={composerPlaceholder}
+                inputDisabled={composerInputDisabled}
+                onTextareaKeyDown={slashCommands.onKeyDown}
                 onDragEnter={dropZoneHandlers.onDragEnter}
                 onDragOver={dropZoneHandlers.onDragOver}
                 onDrop={dropZoneHandlers.onDrop}
-              >
-                    {/* Attachment chips */}
-                    <div className="mb-2">
-                      <AttachmentChipsList
-                        attachments={pendingAttachments}
-                        compact
-                        onRemove={removeAttachment}
-                        onPreview={handlePreviewAttachment}
-                        onClear={clearAttachments}
-                        clearLabel={t("common.clear") ?? "Clear"}
-                      />
-                    </div>
-                    {/* File error */}
-                    {fileError ? (
-                      <div className="mb-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-                        {fileError}
-                      </div>
-                    ) : null}
-                    <SlashCommandMenu
-                      open={slashCommands.isOpen}
-                      commands={slashCommands.filteredCommands}
-                      activeIndex={slashCommands.activeIndex}
-                      onActiveIndexChange={slashCommands.setActiveIndex}
-                      onDismiss={slashCommands.dismiss}
-                      onSelect={(index) => { slashCommands.selectByIndex(index); }}
-                    >
-                      <PromptInput
-                        value={prompt}
-                        onValueChange={setPrompt}
-                        onSubmit={send}
-                        isLoading={sending}
-                        className="rounded-2xl bg-card/80 shadow-sm shadow-background/30 transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
-                      >
-                        {showComposerStatus && !usageCompact ? (
-                          <AcpComposerStatus
-                            kind={composerProcessingKind}
-                            active={composerStatusActive}
-                            sessionSeconds={composerSessionSeconds}
-                          />
-                        ) : null}
-                        <PromptInputTextarea
-                          ref={composerTextareaRef}
-                          className="min-h-16 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
-                          valuePrefix={committedSlashCommand?.prefix}
-                          leadingAdornment={committedSlashCommand ? (
-                            <SlashCommandInputTag
-                              prefix={committedSlashCommand.prefix}
-                              description={committedSlashCommand.command.description}
-                            />
-                          ) : null}
-                          placeholder={composerPlaceholder}
-                          textareaDisabled={composerInputDisabled}
-                          onKeyDown={slashCommands.onKeyDown}
-                          onDragEnter={dropZoneHandlers.onDragEnter}
-                          onDragOver={dropZoneHandlers.onDragOver}
-                          onDrop={dropZoneHandlers.onDrop}
-                          onPaste={extractPasteFiles}
-                        />
-                        <div className="mt-1.5 flex items-center justify-between gap-4 px-2 pb-1">
-                        <div className="flex items-center gap-2">
-                          <input
-                            ref={fileInputRef}
-                            type="file"
-                            multiple
-                            className="hidden"
-                            onChange={handleFilesFromInput}
-                          />
-                          <PromptInputAction
-                            tooltip={t("acp.attachHint") ?? "Attach files"}
-                          >
-                            <Button
-                              className="size-7 rounded-full"
-                              size="icon"
-                              variant="ghost"
-                              disabled={composerInputDisabled}
-                              onClick={() => { void pickFiles(); }}
-                            >
-                              <Paperclip className="size-3.5" />
-                            </Button>
-                          </PromptInputAction>
-                          <span className="text-xs text-muted-foreground">
-                            {composerInputHint}
-                          </span>
-                        </div>
-                        <PromptInputActions className="shrink-0 pl-2">
-                          {canStopSession ? (
-                            <PromptInputAction tooltip={t("acp.stopHint")}>
-                              <Button
-                                className="h-8 gap-1.5 rounded-full px-3"
-                                size="sm"
-                                variant="secondary"
-                                disabled={stopInProgress}
-                                onClick={() => { void stopSession(); }}
-                              >
-                                {stopInProgress ? (
-                                  <Loader2
-                                    className="size-3.5 animate-spin"
-                                    style={{ willChange: "transform" }}
-                                  />
-                                ) : (
-                                  <CircleStop className="size-3.5" />
-                                )}
-                                {stopInProgress ? t("acp.stopping") : t("acp.stop")}
-                              </Button>
-                            </PromptInputAction>
-                          ) : null}
-                          <PromptInputAction tooltip={t("acp.send")}>
-                            <Button
-                              className="h-8 gap-1.5 rounded-full px-3"
-                              size="sm"
-                              disabled={!canSubmitPrompt}
-                              onClick={send}
-                            >
-                              {sendButtonBusy ? (
-                                <Loader2
-                                  className="size-3.5 animate-spin"
-                                  style={{ willChange: "transform" }}
-                                />
-                              ) : (
-                                <Send className="size-3.5" />
-                              )}
-                              {t("acp.send")}
-                            </Button>
-                          </PromptInputAction>
-                        </PromptInputActions>
-                        </div>
-                        <AcpSessionConfigBar
-                          scopeKey={sessionIdentity}
-                          viewModel={sessionConfigViewModel}
-                          onModelChange={handleAcpSessionModelChange}
-                          onConfigOptionChange={handleAcpSessionConfigOptionChange}
-                          onPermissionModeChange={handleAcpSessionPermissionModeChange}
-                        />
-                      </PromptInput>
-                    </SlashCommandMenu>
-                  </div>
+                onPaste={extractPasteFiles}
+                fileInputRef={fileInputRef}
+                onFilesChange={handleFilesFromInput}
+                onPickFiles={pickFiles}
+                inputHint={composerInputHint}
+                canStop={canStopSession}
+                stopInProgress={stopInProgress}
+                onStop={stopSession}
+                canSubmit={canSubmitPrompt}
+                sendButtonBusy={sendButtonBusy}
+                configBar={(
+                  <AcpSessionConfigBar
+                    scopeKey={sessionIdentity}
+                    viewModel={sessionConfigViewModel}
+                    onModelChange={handleAcpSessionModelChange}
+                    onConfigOptionChange={handleAcpSessionConfigOptionChange}
+                    onPermissionModeChange={handleAcpSessionPermissionModeChange}
+                  />
+                )}
+              />
             )}
           </div>
         </div>
@@ -3105,7 +3012,7 @@ function captureVisibleAcpAnchor(scroller: HTMLElement) {
   return item && key ? { key, top: item.getBoundingClientRect().top } : null;
 }
 
-function captureAcpBranchViewState(
+export function captureAcpBranchViewState(
   scroller: HTMLElement,
   atBottom: boolean,
   hasOlder: boolean,
@@ -3129,6 +3036,17 @@ function findAcpItemElement(scroller: HTMLElement, key: string) {
       scroller.querySelectorAll<HTMLElement>("[data-acp-item-key]"),
     ).find((element) => element.dataset.acpItemKey === key) ?? null
   );
+}
+
+export function applyAcpScrollAnchorCompensation(
+  scroller: HTMLElement,
+  key: string,
+  expectedTop: number,
+) {
+  const element = findAcpItemElement(scroller, key);
+  if (!element) return false;
+  scroller.scrollTop += element.getBoundingClientRect().top - expectedTop;
+  return true;
 }
 
 function AcpExternalComposerState({
@@ -4123,10 +4041,12 @@ export function ACPMessageList({
   timeline,
   sessionStatus,
   sending,
+  branchLocator,
 }: {
   timeline: AcpTimelineItem[];
   sessionStatus: string;
   sending: boolean;
+  branchLocator?: AgentTranscriptLocator;
   onLayoutChange?: () => void;
 }) {
   const active = isSessionActiveStatus(sessionStatus) || sending;
@@ -4135,7 +4055,7 @@ export function ACPMessageList({
     : null;
   if (timeline.length === 0) return active ? null : <EmptyAcpState />;
 
-  return (
+  const content = (
     <div className="min-w-0 space-y-4">
       {timeline.map((item) => (
         <ACPTimelineItemRenderer
@@ -4146,6 +4066,11 @@ export function ACPMessageList({
       ))}
     </div>
   );
+  return branchLocator ? (
+    <AcpBranchLocatorContext.Provider value={branchLocator}>
+      {content}
+    </AcpBranchLocatorContext.Provider>
+  ) : content;
 }
 
 function EmptyAcpState() {
@@ -4346,6 +4271,7 @@ const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink
     <Button
       type="button"
       variant="ghost"
+      data-agent-link-branch-id={event.agentExecutionId}
       disabled={!canOpen}
       className="group h-auto min-h-10 w-full min-w-0 justify-start gap-3 rounded-lg px-2 py-2 text-left font-normal hover:bg-muted/30 disabled:cursor-default disabled:opacity-100"
       onClick={openAgent}
@@ -4409,6 +4335,8 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   const [hasMoreEarlier, setHasMoreEarlier] = useState(event.hasMoreEarlier);
   const [earlierCursor, setEarlierCursor] = useState(event.earlierCursor ?? null);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const detailRequestInFlightRef = useRef(false);
+  const loadedDetailCursorsRef = useRef(new Set<string>());
   const triggerRef = useRef<HTMLButtonElement>(null);
   const summary = activityBatchSummary(event, t);
   useEffect(() => {
@@ -4417,7 +4345,13 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
     setEarlierCursor((current) => current ?? event.earlierCursor ?? null);
   }, [event.earlierCursor, event.events, event.hasMoreEarlier]);
   const loadDetail = async (cursor: string | null) => {
-    if (!branchLocator || loadingEarlier) return;
+    const requestKey = cursor ?? 'latest';
+    if (
+      !branchLocator
+      || detailRequestInFlightRef.current
+      || loadedDetailCursorsRef.current.has(requestKey)
+    ) return;
+    detailRequestInFlightRef.current = true;
     setLoadingEarlier(true);
     try {
       const detail = await getAcpActivityDetail(
@@ -4440,7 +4374,9 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
       setDetailLoaded(true);
       setHasMoreEarlier(detail.hasMoreEarlier);
       setEarlierCursor(detail.earlierCursor ?? null);
+      loadedDetailCursorsRef.current.add(requestKey);
     } finally {
+      detailRequestInFlightRef.current = false;
       setLoadingEarlier(false);
     }
   };
@@ -5083,9 +5019,12 @@ const ToolBlock = memo(function ToolBlock({
   compact?: boolean;
 }) {
   const { t } = useTranslation();
+  const branchLocator = useContext(AcpBranchLocatorContext);
   const [open, setOpen] = useState(false);
+  const [detailEvent, setDetailEvent] = useState<AcpTimelineEvent | null>(null);
+  const detailRequestInFlightRef = useRef(false);
   const summaryDetails = toolDetails(event, false);
-  const details = open ? toolDetails(event, true) : summaryDetails;
+  const details = open ? toolDetails(detailEvent ?? event, true) : summaryDetails;
   const ToolIcon = toolIcon(details.name);
   const orderedInput: ToolParam[] = details.queryBlocks.map((block) => ({
     label: t(block.labelKey),
@@ -5111,7 +5050,36 @@ const ToolBlock = memo(function ToolBlock({
         labels={toolLabels(t)}
         icon={<ToolIcon className="size-4" />}
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (
+            !next
+            || !branchLocator
+            || detailEvent
+            || detailRequestInFlightRef.current
+            || !toolDetailAvailable(event)
+          ) return;
+          detailRequestInFlightRef.current = true;
+          void getAcpToolDetail(
+            branchLocator.projectId,
+            branchLocator.taskId,
+            branchLocator.runId,
+            branchLocator.roundId,
+            branchLocator.nodeId,
+            branchLocator.attemptId,
+            {
+              branchId: branchLocator.branchId,
+              eventId: event.id,
+              toolCallId: event.toolCallId,
+            },
+            branchLocator.outerNodeId,
+            branchLocator.outerAttemptId,
+          ).then((detail) => {
+            if (detail.event) setDetailEvent(detail.event as AcpTimelineEvent);
+          }).finally(() => {
+            detailRequestInFlightRef.current = false;
+          });
+        }}
         animated={false}
         variant={compact ? "audit" : "card"}
         className={compact ? "acp-activity-audit-tool" : undefined}
@@ -5119,6 +5087,10 @@ const ToolBlock = memo(function ToolBlock({
     </AssistantTimelineRow>
   );
 });
+
+function toolDetailAvailable(event: AcpTimelineEvent) {
+  return goldBandConversationMeta(event)?.toolDetailAvailable === true;
+}
 
 function toolLabels(t: ReturnType<typeof useTranslation>["t"]): ToolLabels {
   return {

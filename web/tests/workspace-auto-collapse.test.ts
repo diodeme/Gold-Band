@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { reduceWorkspaceAutoCollapse, type WorkspaceAutoCollapseState } from '@/components/workspace/WorkspaceShell';
+import {
+  reduceWorkspaceAutoCollapse,
+  resolveRightWorkspaceMaxWidth,
+  type WorkspaceAutoCollapseState,
+} from '@/components/workspace/WorkspaceShell';
 
 const initial = (): WorkspaceAutoCollapseState => ({ previousWidth: 1_100, left: false, right: false });
 
@@ -43,5 +47,23 @@ describe('workspace auto collapse state machine', () => {
       { availableWidth: 720, centerMinWidth: 420, sidebarManuallyCollapsed: false, wantsRight: false },
     );
     expect(noWorkspace.right).toBe(false);
+  });
+
+  it('caps right-side dragging before the center crosses its page minimum', () => {
+    expect(resolveRightWorkspaceMaxWidth({
+      availableWidth: 1_000,
+      centerMinWidth: 420,
+      leftVisible: true,
+    })).toBe(380);
+    expect(resolveRightWorkspaceMaxWidth({
+      availableWidth: 1_400,
+      centerMinWidth: 420,
+      leftVisible: true,
+    })).toBe(720);
+    expect(resolveRightWorkspaceMaxWidth({
+      availableWidth: 800,
+      centerMinWidth: 420,
+      leftVisible: false,
+    })).toBe(380);
   });
 });

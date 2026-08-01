@@ -194,6 +194,9 @@ const errorBlockedLifecycle = {
 };
 
 export const mockErrorBlockedConversationSession: AcpSessionVm = {
+  branchId: 'root',
+  parentBranchId: null,
+  readOnly: false,
   sessionId: null,
   title: 'dev',
   provider: 'claude-acp',
@@ -301,6 +304,9 @@ const mockNodeDetail: NodeDetailVm = {
   manualCheckEnabled: false,
   manualCheckPending: false,
   acpSession: {
+    branchId: 'root',
+    parentBranchId: null,
+    readOnly: false,
     sessionId: 'acp-session-7f3',
     provider: 'claude-acp',
     adapterId: 'claude-agent-acp',

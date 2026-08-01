@@ -1334,7 +1334,7 @@ pub fn normalize_agent_transcript_metadata(value: &mut Value) -> Option<AgentTra
     Some(relation)
 }
 
-fn extract_agent_transcript_relation(value: &Value) -> Option<AgentTranscriptRelation> {
+pub fn extract_agent_transcript_relation(value: &Value) -> Option<AgentTranscriptRelation> {
     let standard = value
         .pointer(&format!("/_meta/{AGENT_TRANSCRIPT_META_KEY}"))
         .or_else(|| value.pointer(&format!("/toolCall/_meta/{AGENT_TRANSCRIPT_META_KEY}")));

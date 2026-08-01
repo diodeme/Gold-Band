@@ -359,6 +359,9 @@ export const browserApi: RuntimeApi = {
   getAcpSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _query, fallback, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(fallback ?? null);
   },
+  getAcpActivityDetail() {
+    return Promise.resolve({ items: [], hasMoreEarlier: false, earlierCursor: null });
+  },
   subscribeAcpSessionUpdates() {
     return Promise.resolve(() => {});
   },

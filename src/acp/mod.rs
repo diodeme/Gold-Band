@@ -1,4 +1,5 @@
 pub mod adapter;
+pub mod branches;
 pub mod client;
 pub mod commands;
 pub mod connection;

@@ -186,6 +186,10 @@ use crate::acp::permission::{
     write_pending_permission,
 };
 use crate::acp::timeline::{TimelineCompactionPolicy, TimelineStore};
+use crate::acp::branches::{
+    ROOT_BRANCH_ID, agent_prompt_event, annotate_event_branch, branch_timeline_path, event_branch_id,
+    load_all_branch_events, migrate_legacy_agent_timeline,
+};
 use crate::acp::usage::{
     AcpAttemptTokenTotals, AcpAttemptUsageRecovery, AcpPromptTokenUsage, append_prompt_completed,
     append_prompt_started, repair_attempt_usage,
@@ -1068,6 +1072,7 @@ struct AcpRuntime<'a> {
     seq: u64,
     timeline_revision: u64,
     timeline_store: TimelineStore,
+    branch_timeline_stores: HashMap<String, TimelineStore>,
     timeline_items: HashMap<String, AcpUiEvent>,
     session_id: Option<String>,
     final_text: String,
@@ -1858,10 +1863,11 @@ impl<'a> AcpRuntime<'a> {
             paths.provider_pid.as_std_path(),
             connection.pid().to_string(),
         )?;
+        migrate_legacy_agent_timeline(&paths.attempt_dir)?;
         let timeline_store =
             TimelineStore::open(paths.timeline.clone(), runtime_policy.timeline_compaction)?;
         let seq = initial_acp_source_seq(&paths);
-        let loaded_timeline_items = load_timeline_items(&paths.timeline)?;
+        let loaded_timeline_items = load_all_branch_events(&paths.attempt_dir)?;
         let timing_state = AcpTimingState::from_timeline_item_refs(&loaded_timeline_items);
         let provider_history_replay = ProviderHistoryReplay::from_timeline(&loaded_timeline_items);
         let (active_text_stream, active_thought_stream, active_plan_stream) =
@@ -1892,6 +1898,7 @@ impl<'a> AcpRuntime<'a> {
             seq,
             timeline_revision,
             timeline_store,
+            branch_timeline_stores: HashMap::new(),
             timeline_items,
             session_id: None,
             final_text: String::new(),
@@ -3698,6 +3705,8 @@ impl<'a> AcpRuntime<'a> {
             append_ui_event(&self.paths.events, event)?;
         }
         let mut timeline_item = self.timeline_item_for_event(event);
+        annotate_event_branch(&mut timeline_item);
+        let agent_prompt = agent_prompt_event(&timeline_item);
         self.timing_state.observe_event(&timeline_item);
         if let Some(timestamp) = parse_event_epoch_seconds(&timeline_item.timestamp) {
             timeline_item.timing = self
@@ -3709,6 +3718,14 @@ impl<'a> AcpRuntime<'a> {
         update_runtime_hot_timeline_items(&mut self.timeline_items, &timeline_item);
         if emit_live_update {
             self.emit_timeline_live_update(timeline_item)?;
+        }
+        if let Some(agent_prompt) = agent_prompt {
+            self.timeline_revision = self.timeline_revision.saturating_add(1);
+            self.persist_timeline_update(agent_prompt.clone())?;
+            update_runtime_hot_timeline_items(&mut self.timeline_items, &agent_prompt);
+            if emit_live_update {
+                self.emit_timeline_live_update(agent_prompt)?;
+            }
         }
         Ok(())
     }
@@ -3763,8 +3780,22 @@ impl<'a> AcpRuntime<'a> {
         item: &crate::acp::events::AcpUiEvent,
         now: Instant,
     ) -> Result<()> {
+        let branch_id = event_branch_id(item);
+        let outcome = if branch_id == ROOT_BRANCH_ID {
+            self.timeline_store.upsert(revision, item)?
+        } else {
+            let policy = self.runtime_policy.timeline_compaction;
+            let attempt_dir = self.paths.attempt_dir.clone();
+            self.branch_timeline_stores
+                .entry(branch_id.clone())
+                .or_insert(TimelineStore::open(
+                    branch_timeline_path(&attempt_dir, &branch_id),
+                    policy,
+                )?)
+                .upsert(revision, item)?
+        };
         if !matches!(
-            self.timeline_store.upsert(revision, item)?,
+            outcome,
             crate::acp::timeline::TimelineUpsertOutcome::Unchanged
         ) {
             self.last_timeline_patch_at = Some(now);

@@ -46,11 +46,12 @@ use crate::updater::{
     updater_settings,
 };
 use crate::view_models::{
-    AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm,
+    AcpActivityDetailQueryInput, AcpActivityDetailVm, AcpRawFramePageVm, AcpRawFrameQueryInput,
+    AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm,
     AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, McpServerVm,
     PreferencesVm, RoundDetailVm, RoundSelectionInput, RunDetailVm, RunSummaryVm, SkillContentVm,
     SkillListVm, SkillMetaVm, SyncStatusEntryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm,
-    WorkflowVm, acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm, bootstrap_vm,
+    WorkflowVm, acp_activity_detail_vm_for_attempt, acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm, bootstrap_vm,
     dynamic_acp_session_vm, log_page_vm, mcp_server_list_vm, preferences_vm, round_detail_vm,
     run_detail_vm, run_summary_vm, runtime_display_vm, skill_content_vm, skill_list_vm,
     skill_meta_vm, task_detail_vm, task_list_vm, workflow_vm,
@@ -425,6 +426,7 @@ fn emit_acp_turn_finished(
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AcpSessionUpdatedEventVm {
+    branch_id: Option<String>,
     project_id: Option<String>,
     task_id: String,
     run_id: String,
@@ -1840,6 +1842,9 @@ fn emit_acp_update(
     session: Option<AcpSessionVm>,
     event: Option<AcpUiEvent>,
 ) {
+    let branch_id = event
+        .as_ref()
+        .map(gold_band::acp::branches::event_branch_id);
     let lifecycle = app.and_then(|app| {
         conversation_attempt_lifecycle_vm(
             app,
@@ -1856,6 +1861,7 @@ fn emit_acp_update(
     let _ = app_handle.emit(
         ACP_SESSION_EVENT,
         AcpSessionUpdatedEventVm {
+            branch_id,
             project_id,
             task_id: task_id.to_string(),
             run_id: run_id.to_string(),
@@ -1953,6 +1959,33 @@ pub fn get_acp_session(
         None,
     )
     .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn get_acp_activity_detail(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    query: AcpActivityDetailQueryInput,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<AcpActivityDetailVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let attempt_dir = resolve_acp_attempt_dir(
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
+    );
+    acp_activity_detail_vm_for_attempt(&attempt_dir, query).map_err(command_error)
 }
 
 #[tauri::command]

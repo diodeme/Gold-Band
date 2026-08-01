@@ -665,6 +665,9 @@ export interface AcpAttemptSessionVm {
 }
 
 export interface AcpSessionVm {
+  branchId: string;
+  parentBranchId?: string | null;
+  readOnly: boolean;
   sessionId?: string | null;
   title?: string | null;
   roundId?: string | null;
@@ -704,6 +707,7 @@ export interface ActiveSessionStopVm {
 }
 
 export interface AcpSessionQueryInput {
+  branchId?: string;
   beforeSeq?: number;
   afterSeq?: number;
   beforeCursor?: string;
@@ -992,12 +996,27 @@ export interface ConversationTaskRowVm {
   pinnedOrder?: number | null;
 }
 
+export interface AcpActivityDetailQueryInput {
+  branchId: string;
+  activityStartSeq: number;
+  earlierCursor?: string | null;
+  limit?: number;
+}
+
+export interface AcpActivityDetailVm {
+  items: AcpUiEventVm[];
+  hasMoreEarlier: boolean;
+  earlierCursor?: string | null;
+}
+
 export interface AcpTimelineProjectionVm {
   agents: AcpAgentExecutionVm[];
   todoEntries: Array<{ content?: string; status?: string; priority?: string }>;
 }
 
 export interface AcpAgentExecutionVm {
+  agentExecutionId: string;
+  parentAgentExecutionId?: string | null;
   toolCallId: string;
   attemptId?: string | null;
   parentToolCallId?: string | null;
@@ -1007,6 +1026,9 @@ export interface AcpAgentExecutionVm {
   toolCallCount: number;
   readFileCount: number;
   writtenFileCount: number;
+  hasAttention: boolean;
+  title?: string | null;
+  description?: string | null;
   todoEntries: Array<{ content?: string; status?: string; priority?: string }>;
 }
 

@@ -102,6 +102,13 @@ const resources = {
         keepOneRecent: "至少保留一个最近工作空间",
         currentWorkspaceLocked: "当前工作空间正在使用",
       },
+      workspace: {
+        rightWorkspace: "右侧工作区",
+        closeWorkspace: "收起右侧工作区",
+        closeTab: "关闭标签页",
+        allTabs: "所有标签页",
+        attention: "需要处理",
+      },
       errors: {
         agent: {
           "already-exists": "Agent {{agentType}} 已存在。",
@@ -1001,6 +1008,7 @@ const resources = {
         activityReadFiles: "Read 涉及 {{count}} 个文件",
         activityWrittenFiles: "写入涉及 {{count}} 个文件",
         activityRecorded: "活动记录",
+        activityRecordedCount: "已记录 {{count}} 项活动",
         activityShowEarlier: "显示更早的 {{count}} 条活动",
         activityCollapse: "收起",
         attemptStopped: "用户已停止",
@@ -1481,6 +1489,13 @@ const resources = {
         removeRecent: "Remove from recent",
         keepOneRecent: "Keep at least one recent workspace",
         currentWorkspaceLocked: "Current workspace is in use",
+      },
+      workspace: {
+        rightWorkspace: "Right workspace",
+        closeWorkspace: "Collapse right workspace",
+        closeTab: "Close tab",
+        allTabs: "All tabs",
+        attention: "Needs attention",
       },
       errors: {
         agent: {
@@ -2421,6 +2436,7 @@ const resources = {
         activityReadFiles: "Read touched {{count}} files",
         activityWrittenFiles: "Writes touched {{count}} files",
         activityRecorded: "Activity record",
+        activityRecordedCount: "{{count}} recorded activities",
         activityShowEarlier: "Show {{count}} earlier activities",
         activityCollapse: "Collapse",
         attemptStopped: "Stopped by user",

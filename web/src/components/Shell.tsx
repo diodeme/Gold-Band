@@ -4,7 +4,7 @@ import type { ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopU
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { ConversationShell } from '@/components/conversation/ConversationShell';
+import { WorkspaceShell } from '@/components/workspace/WorkspaceShell';
 import { AppTitleBar } from './AppTitleBar';
 import { cn } from '@/lib/utils';
 
@@ -45,7 +45,7 @@ interface ShellProps {
 export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, conversationRunStopping = false, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, children }: ShellProps) {
   if (uiMode === 'conversation') {
     return (
-      <ConversationShell
+      <WorkspaceShell
         appName={appName}
         feedbackEnabled={feedbackEnabled}
         platform={platform}
@@ -71,7 +71,7 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
         activeWorkspaceId={activeWorkspaceId}
       >
         {children}
-      </ConversationShell>
+      </WorkspaceShell>
     );
   }
   return (

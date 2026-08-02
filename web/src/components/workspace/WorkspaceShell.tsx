@@ -6,6 +6,7 @@ import { saveConversationPreference } from '../../api';
 import { AppTitleBar } from '../AppTitleBar';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { RightWorkspaceDock } from './RightWorkspaceDock';
 import { RightWorkspaceProvider, useRightWorkspace } from './right-workspace-context';
@@ -42,7 +43,7 @@ export interface WorkspaceLayoutProfile {
 }
 
 export const WORKSPACE_LAYOUT_PROFILES = {
-  conversation: { centerMinWidth: 420 },
+  conversation: { centerMinWidth: 360 },
   contextCards: { centerMinWidth: 520 },
   workflowCanvas: { centerMinWidth: 640 },
   settings: { centerMinWidth: 480 },
@@ -142,9 +143,11 @@ function profileForPage(page: ConversationPage): WorkspaceLayoutProfile {
 export function WorkspaceShell(props: WorkspaceShellProps) {
   const initialRightWidth = loadWidth(props.vm.preferences, 'rightWorkspace.width', RIGHT_WORKSPACE_DEFAULT, RIGHT_WORKSPACE_MIN, RIGHT_WORKSPACE_MAX);
   return (
-    <RightWorkspaceProvider initialWidth={initialRightWidth}>
-      <WorkspaceShellLayout {...props} />
-    </RightWorkspaceProvider>
+    <TooltipProvider>
+      <RightWorkspaceProvider initialWidth={initialRightWidth}>
+        <WorkspaceShellLayout {...props} />
+      </RightWorkspaceProvider>
+    </TooltipProvider>
   );
 }
 

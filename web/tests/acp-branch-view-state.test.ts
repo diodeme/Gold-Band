@@ -6,8 +6,11 @@ import {
   applyAcpScrollAnchorCompensation,
   captureAcpBranchViewState,
   restoreAcpBranchViewState,
+  restoreAcpSession,
   storeAcpBranchViewState,
+  storeAcpSession,
 } from '@/components/acp/ACPChatDialog';
+import type { AcpSessionVm } from '@/types';
 
 const state = (scrollTop: number) => ({
   anchorKey: `message-${scrollTop}`,
@@ -16,6 +19,41 @@ const state = (scrollTop: number) => ({
   atBottom: false,
   hasOlder: true,
   hasNewer: false,
+});
+
+const session = (branchId: string): AcpSessionVm => ({
+  branchId,
+  parentBranchId: 'root',
+  readOnly: true,
+  branchExecution: {
+    agentExecutionId: branchId,
+    parentAgentExecutionId: null,
+    executionStatus: 'completed',
+    eventCount: 1,
+    toolCallCount: 0,
+    readFileCount: 0,
+    writtenFileCount: 0,
+    hasAttention: false,
+    todoEntries: [],
+  },
+  sessionId: 'session-1',
+  title: branchId,
+  roundId: 'round-1',
+  nodeId: 'node-1',
+  attemptId: 'attempt-1',
+  provider: 'test',
+  status: 'completed',
+  restored: true,
+  events: [],
+  eventPage: {
+    loadedCount: 0,
+    total: 0,
+    hasOlder: false,
+    hasNewer: false,
+  },
+  timelineProjection: { agents: [], todoEntries: [] },
+  pendingPermissions: [],
+  diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0 },
 });
 
 describe('ACP branch view state cache', () => {
@@ -32,6 +70,14 @@ describe('ACP branch view state cache', () => {
     }
     expect(restoreAcpBranchViewState('lru-branch-0')).toBeNull();
     expect(restoreAcpBranchViewState('lru-branch-12')).toEqual(state(12));
+  });
+
+  it('restores a finite Agent session VM cache independently from mounted Tab DOM', () => {
+    for (let index = 0; index < 13; index += 1) {
+      storeAcpSession(`session-lru-${index}`, session(`agent-${index}`));
+    }
+    expect(restoreAcpSession('session-lru-0')).toBeNull();
+    expect(restoreAcpSession('session-lru-12')?.branchId).toBe('agent-12');
   });
 
   it('captures and compensates a real DOM item anchor for either root or Agent branches', () => {

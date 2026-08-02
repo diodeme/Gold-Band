@@ -42,4 +42,12 @@ describe('Gold themed scrollbar', () => {
     expect(scrollArea).toContain('bg-[var(--gold-scrollbar-thumb-hover)]');
     expect(scrollArea).not.toContain('bg-border');
   });
+
+  it('keeps the right workspace Tab scrollbar compact without native end buttons', () => {
+    const styles = readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
+
+    expect(styles).toContain('.gold-themed-scrollbar.right-workspace-tab-scrollbar');
+    expect(styles).toContain('height: 4px');
+    expect(styles).toContain('.gold-themed-scrollbar.right-workspace-tab-scrollbar::-webkit-scrollbar-button');
+  });
 });

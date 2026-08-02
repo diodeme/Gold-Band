@@ -2,7 +2,7 @@
 
 import React, { act, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/conversation-event-router', async () => {
   const actual = await vi.importActual<typeof import('@/lib/conversation-event-router')>('@/lib/conversation-event-router');
@@ -29,6 +29,24 @@ import {
 import type { AcpSessionVm, AcpUiEventVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+class ControlledResizeObserver {
+  static instances: ControlledResizeObserver[] = [];
+  private readonly callback: ResizeObserverCallback;
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    ControlledResizeObserver.instances.push(this);
+  }
+
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+
+  flush(target: Element) {
+    this.callback([{ target } as ResizeObserverEntry], this as unknown as ResizeObserver);
+  }
+}
 
 const locator = (branchId: string): AgentTranscriptLocator => ({
   projectId: 'project-1',
@@ -72,12 +90,50 @@ function WorkspaceProbe() {
   );
 }
 
+beforeEach(() => {
+  ControlledResizeObserver.instances = [];
+  vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+});
+
 afterEach(() => {
   document.body.replaceChildren();
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
 
 describe('right workspace DOM lifecycle', () => {
+  it('shows the compact Tab list only when the native Tab strip overflows', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider>
+            <SeedTabs branches={['agent-a', 'agent-b']} />
+            <RightWorkspaceDock />
+          </RightWorkspaceProvider>,
+        );
+      });
+      const tabStrip = container.querySelector<HTMLElement>('[data-right-workspace-tab-strip="true"]');
+      expect(tabStrip).not.toBeNull();
+      expect(container.querySelector('[data-right-workspace-overflow-menu="true"]')).toBeNull();
+
+      Object.defineProperties(tabStrip!, {
+        clientWidth: { configurable: true, value: 180 },
+        scrollWidth: { configurable: true, value: 320 },
+      });
+      await act(async () => ControlledResizeObserver.instances.at(-1)?.flush(tabStrip!));
+      expect(container.querySelector('[data-right-workspace-overflow-menu="true"]')).not.toBeNull();
+
+      Object.defineProperty(tabStrip!, 'scrollWidth', { configurable: true, value: 160 });
+      await act(async () => ControlledResizeObserver.instances.at(-1)?.flush(tabStrip!));
+      expect(container.querySelector('[data-right-workspace-overflow-menu="true"]')).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('mounts a ConversationViewport only for the active Tab', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -94,6 +150,12 @@ describe('right workspace DOM lifecycle', () => {
       });
       expect(container.querySelectorAll('[data-conversation-viewport="true"]')).toHaveLength(1);
       expect(container.querySelector('[data-rendered-agent-branch="agent-b"]')).not.toBeNull();
+      const activeTab = container.querySelector('[data-right-workspace-tab][data-state="active"]');
+      expect(activeTab?.textContent).toContain('agent-b');
+      expect(activeTab?.className).toContain('rounded-xl');
+      expect(activeTab?.className).toContain('bg-muted/70');
+      expect(activeTab?.className).not.toContain('border-r');
+      expect(activeTab?.className).not.toContain('after:');
 
       const agentATab = Array.from(container.querySelectorAll('button'))
         .find((button) => button.textContent?.includes('agent-a'));
@@ -103,6 +165,7 @@ describe('right workspace DOM lifecycle', () => {
       expect(container.querySelectorAll('[data-conversation-viewport="true"]')).toHaveLength(1);
       expect(container.querySelector('[data-rendered-agent-branch="agent-a"]')).not.toBeNull();
       expect(container.querySelector('[data-rendered-agent-branch="agent-b"]')).toBeNull();
+      expect(container.querySelector('[data-right-workspace-tab][data-state="active"]')?.textContent).toContain('agent-a');
     } finally {
       await act(async () => root.unmount());
     }

@@ -446,6 +446,29 @@
   .gold-themed-scrollbar::-webkit-scrollbar-corner {
     background: transparent;
   }
+
+  .gold-themed-scrollbar.right-workspace-tab-scrollbar {
+    /* Chromium ignores ::-webkit-scrollbar sizing when standards-based thin wins. */
+    scrollbar-color: auto;
+    scrollbar-width: auto;
+  }
+
+  .gold-themed-scrollbar.right-workspace-tab-scrollbar::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+
+  .gold-themed-scrollbar.right-workspace-tab-scrollbar::-webkit-scrollbar-thumb {
+    min-width: 32px;
+    border: 0;
+  }
+
+  .gold-themed-scrollbar.right-workspace-tab-scrollbar::-webkit-scrollbar-button,
+  .gold-themed-scrollbar.right-workspace-tab-scrollbar::-webkit-scrollbar-button:horizontal {
+    display: none;
+    width: 0;
+    height: 0;
+  }
 }
 
 .workflow-graph {

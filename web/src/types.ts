@@ -708,6 +708,7 @@ export interface ActiveSessionStopVm {
 }
 
 export interface AcpSessionQueryInput {
+  traceId?: string;
   branchId?: string;
   beforeSeq?: number;
   afterSeq?: number;

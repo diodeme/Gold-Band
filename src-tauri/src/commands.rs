@@ -20,7 +20,7 @@ use gold_band::runtime::{NodeState, RunState, WorkerRefState};
 use gold_band::skill::SkillCommandError;
 use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
-use std::{collections::BTreeSet, str::FromStr, sync::Arc};
+use std::{collections::BTreeSet, str::FromStr, sync::Arc, time::Instant};
 
 use camino::Utf8PathBuf;
 use gold_band::config::{
@@ -1963,7 +1963,31 @@ pub fn get_acp_session(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
+    let trace_id = query
+        .as_ref()
+        .and_then(|query| query.trace_id.as_deref())
+        .map(str::trim)
+        .filter(|trace_id| !trace_id.is_empty())
+        .map(str::to_string);
+    let branch_id = query
+        .as_ref()
+        .and_then(|query| query.branch_id.as_deref())
+        .unwrap_or(gold_band::acp::branches::ROOT_BRANCH_ID)
+        .to_string();
+    let trace_started_at = Instant::now();
+    log_acp_session_command_stage(
+        trace_id.as_deref(),
+        &branch_id,
+        "command-received",
+        trace_started_at,
+    );
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    log_acp_session_command_stage(
+        trace_id.as_deref(),
+        &branch_id,
+        "project-resolved",
+        trace_started_at,
+    );
     if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (outer_node_id.as_deref(), outer_attempt_id.as_deref())
     {
@@ -1980,7 +2004,7 @@ pub fn get_acp_session(
             &attempt_dir,
             std::time::Duration::from_secs(app.config.acp_session_foreground_lease_ttl_secs),
         );
-        return dynamic_acp_session_vm(
+        let result = dynamic_acp_session_vm(
             &app,
             &task_id,
             &run_id,
@@ -1993,6 +2017,13 @@ pub fn get_acp_session(
             None,
         )
         .map_err(|error| acp_storage_query_error(error, "acp.session-query-failed"));
+        log_acp_session_command_stage(
+            trace_id.as_deref(),
+            &branch_id,
+            "command-complete",
+            trace_started_at,
+        );
+        return result;
     }
     let attempt_dir = app
         .paths
@@ -2001,7 +2032,7 @@ pub fn get_acp_session(
         &attempt_dir,
         std::time::Duration::from_secs(app.config.acp_session_foreground_lease_ttl_secs),
     );
-    acp_session_vm(
+    let result = acp_session_vm(
         &app,
         &task_id,
         &run_id,
@@ -2011,7 +2042,38 @@ pub fn get_acp_session(
         query,
         None,
     )
-    .map_err(|error| acp_storage_query_error(error, "acp.session-query-failed"))
+    .map_err(|error| acp_storage_query_error(error, "acp.session-query-failed"));
+    log_acp_session_command_stage(
+        trace_id.as_deref(),
+        &branch_id,
+        "command-complete",
+        trace_started_at,
+    );
+    result
+}
+
+fn log_acp_session_command_stage(
+    trace_id: Option<&str>,
+    branch_id: &str,
+    stage: &'static str,
+    started_at: Instant,
+) {
+    let Some(trace_id) = trace_id else {
+        return;
+    };
+    let total_ms = started_at.elapsed().as_millis() as u64;
+    info!(
+        target: "gold_band_desktop::acp_session_query",
+        trace_id,
+        branch_id,
+        stage,
+        total_ms,
+        "ACP session command stage"
+    );
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "[acp-session-query] trace={trace_id} branch={branch_id} stage={stage} total_ms={total_ms}"
+    );
 }
 
 #[tauri::command]

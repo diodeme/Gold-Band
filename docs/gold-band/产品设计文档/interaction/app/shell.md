@@ -88,10 +88,13 @@ Agent 管理
 - 中间主工作区承载会话、任务详情、工作流画布、上下文卡片和设置等一级任务内容。
 - 左侧导航与中间主工作区之间只由中间区域自身的圆角边界绘制可见分隔；可拖拽 resize handle 仅提供命中区域，不再额外绘制贯穿全高的直线，避免直线与左上圆角在顶部形成断裂接缝。
 - 右侧辅助工作区使用通用资源 Tab 描述符；首个资源类型为 Agent 分支会话，后续文件、Diff、产物和日志复用同一容器。
-- 资源以稳定 `resourceKey` 去重；关闭当前 Tab 后激活相邻 Tab，关闭最后一个 Tab 后收起工作区。Tab 条允许横向滚动，并提供完整 Tab 溢出菜单。
+- 资源以稳定 `resourceKey` 去重；关闭当前 Tab 后激活相邻 Tab，关闭最后一个 Tab 后收起工作区。Tab 条允许原生横向滚动；只有 `scrollWidth` 实际超过 `clientWidth` 时才显示紧凑的完整 Tab 菜单，未溢出时不长期占用标题栏空间。Tab 条使用独立的 4px 横向滚动条并隐藏两端原生按钮，不改变会话正文等全局滚动条尺寸。Tab 采用有间距的轻量标签布局：激活项使用圆角弱底色和正常前景色，关闭按钮常显但降低透明度；未激活项透明，仅在 hover 时出现弱底色和关闭按钮。不使用整格矩形填充、竖分隔线或底部选中横线。
 - 只挂载激活 Tab 的内容 DOM。非激活资源仅保留轻量定位、状态、attention、有限分页窗口与滚动恢复状态，不长期隐藏挂载多个消息视口。
+- Agent 分支的可展示条件由分支领域数据决定：非根 `branchId` 已返回 canonical `branchExecution` 时即为有效会话，不得继续等待只属于根会话的 system prompt、配置选项或 Gold Band user prompt。`interrupted` 等历史分支也必须在首次有效查询后停止初始化重试。
+- 已打开 Agent 的完整但有限语义窗口进入最多 12 个 branch key 的内存 LRU；切换 Tab 时先同步恢复会话、事件窗口和滚动锚点，再在后台刷新 canonical 数据。缓存未命中才展示加载壳，刷新不得把已经可审计的内容退回“加载中”。
 - 右侧 Dock 与紧凑宽度 Sheet 共用同一 Tab state 和内容组件。窗口自动收窄只隐藏 Dock，不自动用 Sheet 覆盖中间内容；用户在紧凑模式显式点击资源链接时才打开 Sheet。
 - 用户手动关闭工作区只改变 `requestedOpen`，不删除 Tab；自动恢复不得覆盖手动关闭意图。
+- 会话模式的 `WorkspaceShell` 必须在中间主工作区、右侧 Dock 和紧凑 Sheet 的共同稳定边界提供一次 shadcn `TooltipProvider`。资源面板可以直接复用主会话中含 Tooltip 的标题、工具和操作组件；不得要求每种右侧资源自行补 Provider，否则 Agent 内容异步加载后会使整个工作区渲染树异常退出。
 
 ---
 
@@ -153,7 +156,7 @@ Agent 管理
 - 顶栏窗口控制按钮组左侧可承载「帮助」入口（DropdownMenu）。是否展示由渠道配置的 `feedbackEnabled` 能力布尔值决定，经 `AppInfoVm` 贯穿应用壳；当前 `wb=true`、默认渠道为 false。前端不根据渠道名称猜能力，后端 command 也必须再次校验。当前菜单仅含「用户反馈」，详见 interaction/app/feedback.md。
 - 桌面窗口最小尺寸只由 Tauri Window 配置管理；`html/body/#root` 不得重复设置固定 `min-width/min-height`。WebView 必须始终服从真实 viewport 尺寸并继续触发响应式布局，禁止在达到 CSS 最小宽度后保持旧布局、由原生窗口直接裁切右侧内容。
 - 桌面壳内的二级布局必须基于实际内容容器宽度决定分栏，而不是直接复用整窗 `md/lg/xl` breakpoint。侧边栏、section 标题列、抽屉和详情 inspector 都会减少真实可用宽度；嵌套区域优先使用 Tailwind container query，固定画布/表格则必须提供明确的换行、堆叠或横向滚动降级策略。
-- 三段式工作区使用 shadcn `Resizable` copy-in（`react-resizable-panels`）统一管理面板，不维护手写全局 mousemove 拖拽。页面通过集中式 profile 声明中间最小宽度：会话 420px、上下文卡片 520px、工作流画布 640px、设置 480px；右侧拖拽上限必须动态扣除当前中间最小宽度和可见左栏最小宽度。
+- 三段式工作区使用 shadcn `Resizable` copy-in（`react-resizable-panels`）统一管理面板，不维护手写全局 mousemove 拖拽。页面通过集中式 profile 声明中间最小宽度：以文本为主且支持自然换行的会话为 360px、上下文卡片 520px、工作流画布 640px、设置 480px；右侧拖拽上限必须动态扣除当前中间最小宽度和可见左栏最小宽度。
 - 横向缩小时先把右侧压到最小宽度，再自动隐藏左栏，再隐藏右侧；放大时先恢复右侧、再恢复左侧。折叠阈值使用 48px 迟滞，手动折叠和自动折叠分别建模。右侧宽度写入会话 UI preference，ResizeObserver 按 animation frame 合并。
 - Windows 无边框窗口使用 WebView2 composition 路径承载连续边缘 resize：Tauri Window 在 Windows 平台启用透明控制器，但 `html/body/#root` 与应用壳始终绘制不透明主题 surface，不向用户呈现实际透明效果。宿主 Window 背景随主题同步，WebView 层保持 composition 模式，禁止为了遮盖黑带重新设为不透明控制器。
 - 主窗口初始隐藏；bootstrap、主题和宿主背景准备完成后由前端显式显示，避免 transparent composition 窗口在首帧 CSS 尚未就绪时闪现。Windows 自定义无边框模式按系统能力控制 native shadow：Win11 及更高版本开启，由 DWM 提供系统圆角与边界；Win10 关闭，避免 TAO `top=0 / left-right-bottom=frame_thickness` 的非对称 non-client frame，仅由应用内嵌边界补足可感知轮廓。关闭 Win10 shadow 不移除 `RESIZABLE/WS_SIZEBOX`，TAO 继续通过完整客户区边缘 hit-test 提供四边缩放；macOS 恢复 native decorations、shadow 与 traffic lights。
@@ -163,6 +166,9 @@ Agent 管理
 - Round 详情页的“继续运行”只在当前 run / round / node 处于可恢复暂停态时出现；成功、失败或 killed 的终局 round 不展示该入口。
 - 顶部“继续运行”是 workflow runtime 控制动作，不等同于 ACP 会话抽屉中的自由输入 composer；它会向当前 ACP session 自动发送本地化 `继续 / Continue`。
 - 根 ACP 会话属于中间主工作区；Agent 分支会话属于右侧辅助工作区的只读资源。关闭 Agent Tab 或右侧工作区不取消根 runtime，重新打开同一 branch 时从有限 LRU 和 branch 查询恢复语义窗口、滚动位置与实时状态。
+- 根会话耗时使用根 ACP attempt 的墙钟耗时，不把并行或串行 Agent 分支耗时求和。Agent 会话耗时只使用该 Agent execution 自身的开始与最后更新时间。
+- 根会话 Token 使用 ACP provider 对整个根 attempt 返回的累计 usage；Claude Agent ACP 的该累计值包含同一 turn 内嵌套 Agent 的模型调用。Gold Band 不从各分支 transcript 重复求和，Agent 分支在 provider 未提供独立 usage 时不伪造 Token 数字。
+- Todo、直属子 Agent 与活动统计按当前 branch ID 投影；Agent 会话标题区和任务列表只展示该 Agent 自身的数据，不能平铺到根会话或兄弟 Agent。
 - 桌面窗口关闭时，应用壳负责 best-effort 停止当前 workspace 内仍为 `running` 的 run，确保 provider 进程和 canonical run lifecycle 一致。
 
 ---
@@ -188,6 +194,9 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-07-28 Windows 10 窗口边界兼容：不回退 opaque WebView2 controller，也不恢复跨版本通用 CSS 圆角；桌面 bootstrap 基于 `RtlGetVersion` 的真实系统 build 下发 `native-compositor` / `app-outline` frame policy 与 `nativeShadow`。Win10 关闭 TAO undecorated shadow，使用对比度更明确的主题化 1px 内侧边界与四边一致的柔和内阴影，消除三侧 native frame 黑线的同时保留清晰窗口层次；Win11 继续使用 DWM 原生圆角与 shadow。
 - 2026-07-28 Windows 10 最大化拖拽修正：删除共享顶栏重复的 React `startDragging()` 与手动双击切换，鼠标和双击只通过 Tauri `data-tauri-drag-region` 进入一次原生拖拽/最大化流程；保留 WebView2 app-region 作为触摸输入补充，避免最大化窗口拖拽还原时连续发送两次 caption drag 导致窗口移出工作区。
 - 2026-08-02：会话模式应用壳升级为 `WorkspaceShell` 三段式布局。右侧 `RightWorkspaceDock` 使用通用多 Tab 资源模型和同源紧凑 Sheet；Agent 分支是首个只读资源。全局 Tauri 最小窗口仍为 1040x680，页面中间最小宽度只由布局 profile 约束，不复制为 Web 根最小宽度。
+- 2026-08-02：`WorkspaceShell` 补齐统一 Tooltip 上下文边界，覆盖中间会话、右侧 Agent Dock 与紧凑 Sheet。回归测试必须从工作区资源模型实际打开 Agent Tab，并验证 Agent 内容中的 Tooltip 可直接挂载，不再出现“加载中”后因 Provider 缺失导致的白屏。
+- 2026-08-02：Agent Tab 初始化改为 branch-scoped readiness 与有限 Session VM LRU。实测历史大分支的后端查询为几十至一百余毫秒；此前分钟级等待来自前端把已返回的 `interrupted` canonical 分支误判为未就绪后执行整段退避重试，并非文件体积。调试时可设置 `localStorage.setItem("goldBand.debug.acpTiming", "1")`，以前端同一 `traceId` 串联 effect、request 与 Rust command/view-model 分段日志；验证后删除该 key，常规运行不输出逐请求性能日志。
+- 2026-08-02：右侧 Tab 条改为基于真实横向溢出按需显示紧凑 Tab 菜单，并使用无两端按钮的 4px 专用横向滚动条；会话中间区最小宽度由 420px 校准为 360px，其余卡片、画布和设置 profile 不变。
 
 ---
 

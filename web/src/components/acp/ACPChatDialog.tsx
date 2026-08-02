@@ -498,6 +498,8 @@ const ACP_EVENT_STORE_MAX_KEYS = 12;
 
 const acpLoadedEventStore = new Map<string, AcpUiEventVm[]>();
 const acpEventStoreAccessOrder: string[] = [];
+const acpSessionStore = new Map<string, AcpSessionVm>();
+const acpSessionStoreAccessOrder: string[] = [];
 
 export interface AcpBranchViewState {
   anchorKey: string | null;
@@ -515,6 +517,27 @@ function touchAcpEventStoreKey(sessionKey: string) {
   const idx = acpEventStoreAccessOrder.indexOf(sessionKey);
   if (idx !== -1) acpEventStoreAccessOrder.splice(idx, 1);
   acpEventStoreAccessOrder.push(sessionKey);
+}
+
+function touchAcpSessionStoreKey(sessionKey: string) {
+  const index = acpSessionStoreAccessOrder.indexOf(sessionKey);
+  if (index >= 0) acpSessionStoreAccessOrder.splice(index, 1);
+  acpSessionStoreAccessOrder.push(sessionKey);
+  while (acpSessionStoreAccessOrder.length > ACP_EVENT_STORE_MAX_KEYS) {
+    const oldest = acpSessionStoreAccessOrder.shift();
+    if (oldest) acpSessionStore.delete(oldest);
+  }
+}
+
+export function restoreAcpSession(sessionKey: string) {
+  const session = acpSessionStore.get(sessionKey) ?? null;
+  if (session) touchAcpSessionStoreKey(sessionKey);
+  return session;
+}
+
+export function storeAcpSession(sessionKey: string, session: AcpSessionVm) {
+  acpSessionStore.set(sessionKey, session);
+  touchAcpSessionStoreKey(sessionKey);
 }
 
 function touchAcpBranchViewStateKey(sessionKey: string) {
@@ -684,13 +707,14 @@ export const ACPChatDialog = forwardRef<
   );
   const eventWindowKey = `${sessionKey}:${outerNodeId ?? ""}:${outerAttemptId ?? ""}:${branchId}:${eventIdPrefix ?? ""}`;
   const sessionIdentity = eventWindowKey;
+  const restoredSession = session ?? restoreAcpSession(eventWindowKey);
   const componentInstanceIdRef = useRef(createAcpChatDialogInstanceId());
   const componentInstanceId = componentInstanceIdRef.current;
   const restoredOptimisticEvents =
     controlledOptimisticEvents ?? readStoredOptimisticEvents(sessionKey);
   const restoredLoadedEvents = restoreAcpLoadedEvents(
     eventWindowKey,
-    session?.events ?? [],
+    restoredSession?.events ?? [],
     effectiveLoadedEventBufferLimit,
   );
   const restoredBranchViewState = restoreAcpBranchViewState(eventWindowKey);
@@ -700,7 +724,7 @@ export const ACPChatDialog = forwardRef<
   const restoredPrompt = restoredPromptEvent?.content?.trim() || null;
   const restoredPromptId = promptIdFromEvent(restoredPromptEvent);
   const [currentSession, setCurrentSession] = useState<AcpSessionVm | null>(
-    session ?? null,
+    restoredSession,
   );
   const [loadedEvents, setLoadedEvents] = useState<AcpUiEventVm[]>(
     () => restoredLoadedEvents,
@@ -740,16 +764,16 @@ export const ACPChatDialog = forwardRef<
   });
   const [rawLoading, setRawLoading] = useState(false);
   const [loadingInitialSession, setLoadingInitialSession] = useState(
-    !isAcpSessionReadyForInitialDisplay(session) && isTauriRuntime(),
+    !isAcpSessionReadyForInitialDisplay(restoredSession) && isTauriRuntime(),
   );
   const [sessionLoadError, setSessionLoadError] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [loadingLatest, setLoadingLatest] = useState(false);
   const [hasOlderEvents, setHasOlderEvents] = useState(
-    () => session?.eventPage.hasOlder ?? restoredBranchViewState?.hasOlder ?? false,
+    () => restoredSession?.eventPage.hasOlder ?? restoredBranchViewState?.hasOlder ?? false,
   );
   const [hasNewerEvents, setHasNewerEvents] = useState(
-    () => session?.eventPage.hasNewer ?? restoredBranchViewState?.hasNewer ?? false,
+    () => restoredSession?.eventPage.hasNewer ?? restoredBranchViewState?.hasNewer ?? false,
   );
   const hasOlderEventsRef = useRef(hasOlderEvents);
   const hasNewerEventsRef = useRef(hasNewerEvents);
@@ -807,7 +831,7 @@ export const ACPChatDialog = forwardRef<
   const [stopOverlayPending, setStopOverlayPending] = useState(false);
   const [runtimeStopAccepted, setRuntimeStopAccepted] = useState(false);
   const [localRuntimeLifecycle, setLocalRuntimeLifecycle] = useState<ConversationAttemptLifecycleVm | null>(null);
-  const latestSessionRef = useRef<AcpSessionVm | null>(session ?? null);
+  const latestSessionRef = useRef<AcpSessionVm | null>(restoredSession);
   const sessionRefreshSeqRef = useRef(0);
   const configGenerationRef = useRef(0);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -881,6 +905,7 @@ export const ACPChatDialog = forwardRef<
         session ?? null,
       );
       latestSessionRef.current = next;
+      if (next) storeAcpSession(eventWindowKey, next);
       return next;
     });
     if (isAcpSessionReadyForInitialDisplay(session)) setLoadingInitialSession(false);
@@ -923,11 +948,12 @@ export const ACPChatDialog = forwardRef<
   useEffect(() => {
     const identityChanged = sessionResetIdentityRef.current !== eventWindowKey;
     sessionResetIdentityRef.current = eventWindowKey;
+    const cachedSession = session ?? restoreAcpSession(eventWindowKey);
     const storedOptimisticEvents =
       controlledOptimisticEvents ?? readStoredOptimisticEvents(sessionKey);
     const storedLoadedEvents = restoreAcpLoadedEvents(
       eventWindowKey,
-      session?.events ?? [],
+      cachedSession?.events ?? [],
       effectiveLoadedEventBufferLimit,
     );
     const storedBranchViewState = restoreAcpBranchViewState(eventWindowKey);
@@ -941,12 +967,13 @@ export const ACPChatDialog = forwardRef<
       }
       const next = reconcileAcpSessionForDisplay(
         identityChanged ? null : previous,
-        session ?? null,
+        cachedSession,
       );
       latestSessionRef.current = next;
+      if (next) storeAcpSession(eventWindowKey, next);
       return next;
     });
-    setLoadingInitialSession(!isAcpSessionReadyForInitialDisplay(session) && isTauriRuntime());
+    setLoadingInitialSession(!isAcpSessionReadyForInitialDisplay(cachedSession) && isTauriRuntime());
     setSessionLoadError(null);
     loadedEventsRef.current = storedLoadedEvents;
     setLoadedEvents(storedLoadedEvents);
@@ -967,8 +994,8 @@ export const ACPChatDialog = forwardRef<
     setRawPage(null);
     setRawQuery({ page: 0, pageSize: 100, order: "desc" });
     setLoadingOlder(false);
-    setHasOlderEvents(session?.eventPage.hasOlder ?? storedBranchViewState?.hasOlder ?? false);
-    setHasNewerEvents(session?.eventPage.hasNewer ?? storedBranchViewState?.hasNewer ?? false);
+    setHasOlderEvents(cachedSession?.eventPage.hasOlder ?? storedBranchViewState?.hasOlder ?? false);
+    setHasNewerEvents(cachedSession?.eventPage.hasNewer ?? storedBranchViewState?.hasNewer ?? false);
     paginationDirectionRef.current = null;
     preservingScrollRef.current = false;
     paginationAnchorRef.current = null;
@@ -1423,6 +1450,7 @@ export const ACPChatDialog = forwardRef<
       incomingHadTimingRejected: incoming !== normalized,
     });
     latestSessionRef.current = normalized;
+    if (normalized) storeAcpSession(eventWindowKey, normalized);
     setCurrentSession((current) =>
       sessionsEquivalent(current, normalized) ? current : normalized,
     );
@@ -1442,7 +1470,7 @@ export const ACPChatDialog = forwardRef<
       loadedEventsRef.current = limited;
       return limited;
     });
-  }, [componentInstanceId, effectiveLoadedEventBufferLimit, normalizeSessionUpdate, sessionIdentity]);
+  }, [componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, normalizeSessionUpdate, sessionIdentity]);
 
   const emitLifecycleSnapshot = useCallback((lifecycle: ConversationAttemptLifecycleVm | null | undefined, sessionSnapshot?: AcpSessionVm | null) => {
     if (!lifecycle) return;
@@ -1894,6 +1922,14 @@ export const ACPChatDialog = forwardRef<
     let stopListening: (() => void) | null = null;
     const refreshSeq = sessionRefreshSeqRef.current + 1;
     sessionRefreshSeqRef.current = refreshSeq;
+    const effectTraceId = createAcpSessionQueryTraceId(
+      componentInstanceId,
+      branchId,
+      refreshSeq,
+    );
+    logAcpSessionQueryTiming("effect-start", effectTraceId, sessionIdentity, {
+      refreshSeq,
+    });
     logAcpSessionReadyLifecycle("effect-start", componentInstanceId, sessionIdentity, {
       refreshSeq,
     });
@@ -1975,6 +2011,12 @@ export const ACPChatDialog = forwardRef<
       let retryAttempt = 0;
       let lastLoadError: unknown = null;
       while (active && sessionRefreshSeqRef.current === refreshSeq) {
+        const requestTraceId = `${effectTraceId}:request-${retryAttempt + 1}`;
+        const requestStartedAt = performance.now();
+        logAcpSessionQueryTiming("request-start", requestTraceId, sessionIdentity, {
+          retryAttempt,
+          refreshSeq,
+        });
         try {
           const updated = await getAcpSession(
             projectId,
@@ -1984,6 +2026,9 @@ export const ACPChatDialog = forwardRef<
             nodeId,
             attemptId,
             {
+              ...(isAcpSessionQueryTimingDebugEnabled()
+                ? { traceId: requestTraceId }
+                : {}),
               branchId,
               pageSize: effectiveEventPageSize,
               eventLimit: effectiveEventPageSize,
@@ -1992,6 +2037,13 @@ export const ACPChatDialog = forwardRef<
             outerNodeId,
             outerAttemptId,
           );
+          logAcpSessionQueryTiming("request-complete", requestTraceId, sessionIdentity, {
+            retryAttempt,
+            refreshSeq,
+            elapsedMs: Math.round(performance.now() - requestStartedAt),
+            returnedEventCount: updated?.events.length ?? 0,
+            projectedAgentCount: updated?.timelineProjection?.agents.length ?? 0,
+          });
           if (!active || sessionRefreshSeqRef.current !== refreshSeq) break;
           logAcpSessionReady("initial-fetch:response", componentInstanceId, sessionIdentity, updated, {
             retryAttempt,
@@ -2008,6 +2060,12 @@ export const ACPChatDialog = forwardRef<
             }
           }
         } catch (error) {
+          logAcpSessionQueryTiming("request-error", requestTraceId, sessionIdentity, {
+            retryAttempt,
+            refreshSeq,
+            elapsedMs: Math.round(performance.now() - requestStartedAt),
+            error: String(error),
+          });
           if (!active || sessionRefreshSeqRef.current !== refreshSeq) break;
           lastLoadError = error;
           // provider resolution / IO error — retry may not help but we try once more
@@ -2023,6 +2081,9 @@ export const ACPChatDialog = forwardRef<
       }
     })();
     return () => {
+      logAcpSessionQueryTiming("effect-cleanup", effectTraceId, sessionIdentity, {
+        refreshSeq,
+      });
       logAcpSessionReadyLifecycle("effect-cleanup", componentInstanceId, sessionIdentity, {
         refreshSeq,
         hadStopListening: Boolean(stopListening),
@@ -7166,6 +7227,7 @@ function isAcpSessionReadyForInitialDisplay(session: AcpSessionVm | null | undef
   return Boolean(
     session &&
     (
+      (session.branchId !== 'root' && Boolean(session.branchExecution)) ||
       isAcpInitialSessionReady(session) ||
       isAcpSessionDisplayableDuringInitialLoad(session) ||
       isSessionTerminalStatus(session.status)
@@ -7218,6 +7280,38 @@ function createAcpChatDialogInstanceId() {
   return `acp-chat-${Date.now().toString(36)}-${Math.random()
     .toString(36)
     .slice(2, 8)}`;
+}
+
+function createAcpSessionQueryTraceId(
+  componentInstanceId: string,
+  branchId: string,
+  refreshSeq: number,
+) {
+  return `${componentInstanceId}:${branchId}:${refreshSeq}`;
+}
+
+function logAcpSessionQueryTiming(
+  stage: string,
+  traceId: string,
+  sessionIdentity: string,
+  details?: Record<string, unknown>,
+) {
+  if (!isAcpSessionQueryTimingDebugEnabled()) return;
+  console.info("[GoldBand][ACP session-query]", {
+    stage,
+    traceId,
+    sessionIdentity,
+    ...details,
+  });
+}
+
+function isAcpSessionQueryTimingDebugEnabled() {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem("goldBand.debug.acpTiming") === "1";
+  } catch {
+    return false;
+  }
 }
 
 function summarizeAcpSessionReady(session: AcpSessionVm | null | undefined) {

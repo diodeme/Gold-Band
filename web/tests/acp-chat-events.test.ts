@@ -48,6 +48,10 @@ function event(partial: Partial<AcpUiEventVm>): AcpUiEventVm {
 
 function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
   return {
+    branchId: partial.branchId,
+    parentBranchId: partial.parentBranchId,
+    readOnly: partial.readOnly,
+    branchExecution: partial.branchExecution,
     sessionId: partial.sessionId ?? 'session-1',
     provider: partial.provider ?? 'claude-acp',
     status: partial.status ?? 'running',
@@ -825,6 +829,29 @@ describe('ACP chat event handling', () => {
         }),
       ],
     }))).toBe(false);
+  });
+
+  it('treats a canonical Agent branch VM as ready without root session metadata', () => {
+    expect(isAcpSessionReadyForInitialDisplay(session({
+      branchId: 'agent-1',
+      parentBranchId: 'root',
+      readOnly: true,
+      branchExecution: {
+        agentExecutionId: 'agent-1',
+        parentAgentExecutionId: null,
+        executionStatus: 'interrupted',
+        eventCount: 9,
+        toolCallCount: 4,
+        readFileCount: 2,
+        writtenFileCount: 1,
+        hasAttention: false,
+        todoEntries: [],
+      },
+      status: 'interrupted',
+      systemPromptAppend: null,
+      config: null,
+      events: [],
+    }))).toBe(true);
   });
 
   it('keeps snapshot prompt events visible while live events are still catching up', () => {

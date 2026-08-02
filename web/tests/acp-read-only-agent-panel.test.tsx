@@ -14,7 +14,11 @@ vi.mock('@/api', async () => {
 });
 
 import { getAcpSession, respondAcpPermission } from '@/api';
-import { ACPChatDialog } from '@/components/acp/ACPChatDialog';
+import {
+  ACPChatDialog,
+  createAcpSessionCacheKey,
+  storeAcpSession,
+} from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { AcpSessionVm } from '@/types';
 
@@ -183,6 +187,52 @@ describe('read-only Agent conversation boundary', () => {
     const { container, root } = await renderDialog(historical, true);
     try {
       expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('restores a previously loaded Agent Tab without returning to the loading shell', async () => {
+    const branchId = 'agent-cached';
+    const cacheKey = `${createAcpSessionCacheKey(
+      'right-workspace-agent',
+      'task-1',
+      'run-1',
+      'round-1',
+      'node-1',
+      'attempt-1',
+    )}:::${branchId}:`;
+    storeAcpSession(cacheKey, session(branchId));
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <TooltipProvider>
+            <ACPChatDialog
+              session={null}
+              projectId="project-1"
+              taskId="task-1"
+              runId="run-1"
+              roundId="round-1"
+              nodeId="node-1"
+              attemptId="attempt-1"
+              branchId={branchId}
+              readOnly
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              allowEventOnlySessionShell={false}
+              usageCompact
+              cacheNamespace="right-workspace-agent"
+            />
+          </TooltipProvider>,
+        );
+      });
+
+      expect(container.querySelector('[data-conversation-viewport="true"]')).not.toBeNull();
+      expect(container.textContent).not.toContain('加载中');
+      expect(getAcpSession).not.toHaveBeenCalled();
     } finally {
       await act(async () => root.unmount());
     }

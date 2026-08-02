@@ -4,12 +4,21 @@ import {
   reduceWorkspaceAutoCollapse,
   resolveRightWorkspaceMaxWidth,
   shouldOpenRightWorkspaceSheet,
+  WORKSPACE_LAYOUT_PROFILES,
   type WorkspaceAutoCollapseState,
 } from '@/components/workspace/WorkspaceShell';
 
 const initial = (): WorkspaceAutoCollapseState => ({ previousWidth: 1_100, left: false, right: false });
 
 describe('workspace auto collapse state machine', () => {
+  it('lets text conversations become narrower than card and canvas pages', () => {
+    expect(WORKSPACE_LAYOUT_PROFILES.conversation.centerMinWidth).toBe(360);
+    expect(WORKSPACE_LAYOUT_PROFILES.conversation.centerMinWidth)
+      .toBeLessThan(WORKSPACE_LAYOUT_PROFILES.contextCards.centerMinWidth);
+    expect(WORKSPACE_LAYOUT_PROFILES.conversation.centerMinWidth)
+      .toBeLessThan(WORKSPACE_LAYOUT_PROFILES.workflowCanvas.centerMinWidth);
+  });
+
   it('collapses left then right while shrinking and restores right then left while growing', () => {
     const input = { centerMinWidth: 420, sidebarManuallyCollapsed: false, wantsRight: true };
     const leftCollapsed = reduceWorkspaceAutoCollapse(initial(), { ...input, availableWidth: 900 });

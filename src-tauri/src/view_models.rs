@@ -4,7 +4,7 @@ use std::{
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
     str::FromStr,
     sync::{LazyLock, Mutex},
-    time::SystemTime,
+    time::{Instant, SystemTime},
 };
 
 use anyhow::Result;
@@ -722,6 +722,7 @@ pub struct AcpAgentExecutionVm {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpSessionQueryInput {
+    pub trace_id: Option<String>,
     pub branch_id: Option<String>,
     pub before_seq: Option<u64>,
     pub after_seq: Option<u64>,
@@ -729,6 +730,61 @@ pub struct AcpSessionQueryInput {
     pub after_cursor: Option<String>,
     pub event_limit: Option<usize>,
     pub page_size: Option<usize>,
+}
+
+struct AcpSessionQueryTrace {
+    trace_id: String,
+    branch_id: String,
+    started_at: Instant,
+    stage_started_at: Instant,
+}
+
+impl AcpSessionQueryTrace {
+    fn from_query(query: Option<&AcpSessionQueryInput>, branch_id: &str) -> Option<Self> {
+        let trace_id = query?.trace_id.as_deref()?.trim();
+        if trace_id.is_empty() {
+            return None;
+        }
+        let now = Instant::now();
+        Some(Self {
+            trace_id: trace_id.to_string(),
+            branch_id: branch_id.to_string(),
+            started_at: now,
+            stage_started_at: now,
+        })
+    }
+
+    fn stage(&mut self, stage: &'static str, details: serde_json::Value) {
+        let now = Instant::now();
+        let stage_ms = now.duration_since(self.stage_started_at).as_millis() as u64;
+        let total_ms = now.duration_since(self.started_at).as_millis() as u64;
+        self.stage_started_at = now;
+        tracing::info!(
+            target: "gold_band_desktop::acp_session_query",
+            trace_id = %self.trace_id,
+            branch_id = %self.branch_id,
+            stage,
+            stage_ms,
+            total_ms,
+            details = %details,
+            "ACP session query stage"
+        );
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[acp-session-query] trace={} branch={} stage={} stage_ms={} total_ms={} details={}",
+            self.trace_id, self.branch_id, stage, stage_ms, total_ms, details
+        );
+    }
+}
+
+fn trace_acp_session_query(
+    trace: &mut Option<AcpSessionQueryTrace>,
+    stage: &'static str,
+    details: serde_json::Value,
+) {
+    if let Some(trace) = trace.as_mut() {
+        trace.stage(stage, details);
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3669,6 +3725,11 @@ pub fn acp_session_vm(
     let attempt_dir = app
         .paths
         .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
+    let branch_id = query
+        .as_ref()
+        .and_then(|query| query.branch_id.clone())
+        .unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
+    let mut query_trace = AcpSessionQueryTrace::from_query(query.as_ref(), &branch_id);
     let snapshot_path = app
         .paths
         .acp_snapshot_file(task_id, run_id, round_id, node_id, attempt_id);
@@ -3688,6 +3749,15 @@ pub fn acp_session_vm(
     let diagnostics_path = app
         .paths
         .acp_diagnostics_file(task_id, run_id, round_id, node_id, attempt_id);
+    trace_acp_session_query(
+        &mut query_trace,
+        "view-model-start",
+        serde_json::json!({
+            "attemptDir": attempt_dir,
+            "timelineBytes": timeline_path.metadata().ok().map(|metadata| metadata.len()),
+            "rawBytes": raw_path.metadata().ok().map(|metadata| metadata.len()),
+        }),
+    );
     let has_preloaded = preloaded_session_json.is_some();
     if !has_preloaded
         && !snapshot_path.exists()
@@ -3709,6 +3779,11 @@ pub fn acp_session_vm(
     } else {
         serde_json::json!({})
     };
+    trace_acp_session_query(
+        &mut query_trace,
+        "session-metadata",
+        serde_json::json!({ "snapshotBytes": snapshot_path.metadata().ok().map(|metadata| metadata.len()) }),
+    );
     let worker_ref_path = app
         .paths
         .worker_ref_file(task_id, run_id, round_id, node_id, attempt_id);
@@ -3734,6 +3809,11 @@ pub fn acp_session_vm(
     } else {
         None
     };
+    trace_acp_session_query(
+        &mut query_trace,
+        "worker-and-node-metadata",
+        serde_json::json!({ "hasWorkerRef": worker_ref.is_some(), "hasNodeProvider": node_provider.is_some() }),
+    );
     let continue_ref = worker_ref
         .as_ref()
         .and_then(|state| state.continue_ref.as_ref());
@@ -3741,6 +3821,11 @@ pub fn acp_session_vm(
         .paths
         .node_file(task_id, run_id, round_id, node_id, attempt_id);
     let diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
+    trace_acp_session_query(
+        &mut query_trace,
+        "diagnostics",
+        serde_json::json!({ "diagnosticBytes": diagnostics_path.metadata().ok().map(|metadata| metadata.len()) }),
+    );
     let recovered_attempt_usage = gold_band::acp::usage::repair_attempt_usage(
         &snapshot_path,
         &timeline_path,
@@ -3748,6 +3833,11 @@ pub fn acp_session_vm(
         &prompt_usage_path,
         gold_band::acp::client::prompt_activity(&attempt_dir).is_none(),
     )?;
+    trace_acp_session_query(
+        &mut query_trace,
+        "attempt-usage-repair",
+        serde_json::json!({ "promptUsageBytes": prompt_usage_path.metadata().ok().map(|metadata| metadata.len()) }),
+    );
     let system_prompt_append = session
         .get("systemPromptAppend")
         .and_then(|value| value.as_str())
@@ -3755,6 +3845,11 @@ pub fn acp_session_vm(
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .or_else(|| extract_system_prompt_append(&raw_path));
+    trace_acp_session_query(
+        &mut query_trace,
+        "system-prompt",
+        serde_json::json!({ "found": system_prompt_append.is_some() }),
+    );
     apply_stale_session_completion_fuse(
         app,
         task_id,
@@ -3765,6 +3860,11 @@ pub fn acp_session_vm(
         &node_path,
         &mut session,
     )?;
+    trace_acp_session_query(
+        &mut query_trace,
+        "lifecycle-fuse",
+        serde_json::json!({ "status": session.get("status").and_then(Value::as_str) }),
+    );
     let config = acp_session_config_vm(&session);
     let metadata_status = session
         .get("status")
@@ -3775,12 +3875,13 @@ pub fn acp_session_vm(
         gold_band::acp::client::prompt_activity(&attempt_dir),
     );
     let default_event_limit = app.config.acp_chat_event_page_size;
-    let branch_id = query
-        .as_ref()
-        .and_then(|query| query.branch_id.clone())
-        .unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
     gold_band::acp::branches::validate_conversation_branch_id(&branch_id)?;
     let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &root_status)?;
+    trace_acp_session_query(
+        &mut query_trace,
+        "agent-index",
+        serde_json::json!({ "agentCount": agent_index.len() }),
+    );
     let branch_record = conversation_branch_record(&agent_index, &branch_id);
     let status = conversation_branch_status(&root_status, &branch_id, branch_record);
     let stopping = is_acp_session_stopping_status(&status);
@@ -3793,6 +3894,16 @@ pub fn acp_session_vm(
         active_status,
         default_event_limit,
     )?;
+    trace_acp_session_query(
+        &mut query_trace,
+        "branch-timeline",
+        serde_json::json!({
+            "branchTimelineBytes": branch_timeline_path.metadata().ok().map(|metadata| metadata.len()),
+            "eventCount": event_scan.event_count,
+            "returnedEventCount": event_scan.events.len(),
+            "semanticTotal": event_scan.event_page.total,
+        }),
+    );
     apply_agent_index_projection(
         &mut event_scan.timeline_projection,
         &agent_index,
@@ -3956,6 +4067,15 @@ pub fn acp_session_vm(
         timeline_projection: event_scan.timeline_projection,
         pending_permissions,
     };
+    trace_acp_session_query(
+        &mut query_trace,
+        "view-model-complete",
+        serde_json::json!({
+            "returnedEventCount": result.events.len(),
+            "projectedAgentCount": result.timeline_projection.agents.len(),
+            "todoCount": result.timeline_projection.todo_entries.len(),
+        }),
+    );
     Ok(Some(result))
 }
 
@@ -4172,6 +4292,7 @@ fn scan_acp_timeline(
     const MAX_EVENT_LIMIT: usize = 1000;
 
     let query = query.unwrap_or(AcpSessionQueryInput {
+        trace_id: None,
         branch_id: None,
         before_seq: None,
         after_seq: None,

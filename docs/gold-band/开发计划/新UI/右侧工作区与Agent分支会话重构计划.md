@@ -75,7 +75,7 @@
 - 点击资源链接时，以稳定 `resourceKey` 查找已有 Tab；存在则激活，不重复创建。
 - 关闭当前 Tab 后激活相邻 Tab。
 - 关闭最后一个 Tab 后收起右侧工作区。
-- Tab 过多时允许横向滚动并提供溢出列表，不压缩到不可读宽度。
+- Tab 过多时允许原生横向滚动且不压缩到不可读宽度；只有 Tab 条真实溢出时才显示小号完整 Tab 菜单，未溢出时隐藏该入口。Tab 条使用无两端按钮的 4px 专用横向滚动条，不修改全局会话滚动条。Tab 之间保留轻量间距；激活项使用圆角弱底色和常显的低透明度关闭按钮，未激活项透明并在 hover 时反馈，不使用整格矩形、竖分隔线或底部选中横线。
 - 多个 Tab 可以同时处于打开状态，但只挂载当前激活 Tab 的内容 DOM。
 - 非激活 Agent Tab 只维护轻量状态和 attention 标记；激活时恢复分页窗口与滚动位置并补拉最新内容。
 - 自动响应式收起只隐藏工作区，不关闭 Tab，不丢失 Tab 状态。
@@ -128,14 +128,14 @@ interface WorkspaceLayoutProfile {
 }
 
 const WORKSPACE_LAYOUT_PROFILES = {
-  conversation: { centerMinWidth: 420 },
+  conversation: { centerMinWidth: 360 },
   contextCards: { centerMinWidth: 520 },
   workflowCanvas: { centerMinWidth: 640 },
   settings: { centerMinWidth: 480 },
 } satisfies Record<string, WorkspaceLayoutProfile>;
 ```
 
-以上数值是设计初值，实施阶段必须通过真实页面测量和最小窗口人工验证校准。
+以上数值已经过页面校准：会话内容以文本和可换行 composer 为主，允许收窄到 360px；卡片、画布和设置继续保留更大的领域最小宽度。后续调整仍必须通过真实页面测量和最小窗口人工验证，不能用单一全局阈值覆盖所有页面。
 
 ### 6.3 横向收缩顺序
 
@@ -266,6 +266,9 @@ interface ConversationBranchVm {
 - 每个 Agent execution 获得 Gold Band 生成的稳定 `AgentExecutionId`，并作为 branch ID。
 - Agent ID 不直接使用 provider `toolCallId` 作为磁盘目录名。
 - `parentBranchId` 表达嵌套关系，目录结构不递归嵌套。
+- 根分支 `sessionElapsedSeconds` 是根 ACP attempt 的墙钟时间，不聚合 Agent duration；非根分支耗时由该 Agent execution 自身的 `startedAt` 与 `updatedAt` 得出。
+- 根分支 `usage` 是 provider 对整个 attempt 报告的累计值。当前 Claude Agent ACP 会在同步根 turn usage 中包含嵌套 Agent 模型调用；Gold Band 不再逐 transcript 重复求和。非根分支没有 provider 独立 usage 时返回空值，不用推测值填充 UI。
+- Todo 与直属子 Agent 必须由当前 branch timeline 和 Agent index 的 parent relation 投影；根、当前 Agent、兄弟 Agent 之间不得共享任务列表或会话统计。
 - Claude `_meta.claudeCode.subagent/toolName/parentToolUseId` 只在 ACP 适配边界转换为统一 Agent transcript metadata；前端和持久化模型只消费内部字段。
 - 将来 ACP 标准提供等价字段时，只替换适配层，不改变 UI 与存储领域模型。
 
@@ -453,7 +456,10 @@ ACP live event(branchId)
 - 引入 shadcn Resizable copy-in 和 `react-resizable-panels`。
 - 建立布局 profile、自动折叠状态机、迟滞和宽度 preference。
 - 实现通用 Tab model、激活、关闭、去重、溢出列表。
+- Tab 溢出入口改为由 `ResizeObserver + scrollWidth/clientWidth` 驱动，只在真实溢出时出现；修正为 Gold Band 主题滚动条并将该横向轨道独立压缩到 4px。Tab 条显式恢复 WebKit 伪元素控制权，避免 Chromium 的 `scrollbar-width: thin` 覆盖专属尺寸和两端按钮隐藏规则。
+- 会话页面 `centerMinWidth` 从设计初值 420px 校准到 360px；上下文卡片、工作流画布和设置 profile 保持不变。
 - 使用静态 Agent resource 验证 docked/compact Sheet 两种模式。
+- 在 `WorkspaceShell` 共同边界提供 shadcn `TooltipProvider`，确保中间会话、右侧 Dock 与紧凑 Sheet 复用含 Tooltip 的会话组件时拥有相同 UI 上下文；不在 Agent 面板内重复补 Provider。
 
 ### Phase 2：统一 Agent 分支领域模型
 
@@ -506,11 +512,15 @@ ACP live event(branchId)
 ### 16.1 应用壳
 
 - 三栏均打开时，拖动右栏不能把中间区域压到当前页面最小宽度以下。
+- 会话中间区可继续收窄到 360px；同样窗口尺寸下，卡片与画布页面仍按各自更大 profile 提前停止拖动。
+- Tab 未溢出时不显示完整 Tab 菜单；真实溢出后显示小号入口，关闭 Tab 消除溢出后入口同步隐藏。
+- 激活 Tab 呈现圆角弱底色与常显关闭按钮，不显示整格填充、竖分隔线或底部选中横线；横向滚动条与选中态不会叠成双线。
 - 缩小时先自动收起左栏，再收起右栏；放大时先恢复右栏，再恢复左栏。
 - 临界宽度附近来回拖动不闪烁。
 - 自动收起不关闭 Tab，手动关闭状态不会被自动恢复覆盖。
 - 紧凑宽度点击 Agent 能以 Sheet 打开，恢复宽度后能回到 Dock。
 - 会话、上下文卡片、工作流画布使用各自容器宽度降级，不依赖整窗 breakpoint。
+- 从资源模型打开 Agent Tab 后，其会话内容中的 Tooltip 可以直接挂载；异步加载完成不得因缺少 `TooltipProvider` 停留在“加载中”、清空 WebView 或触发未捕获异常。
 
 ### 16.2 会话与分页
 
@@ -530,6 +540,8 @@ ACP live event(branchId)
 - Agent 内权限申请使对应链接和 Tab 出现 attention；进入 Tab 后可以决策。
 - 已决权限不出现在活动审计详情。
 - TODO 只出现在所属分支，不平铺回根会话。
+- 根会话耗时保持根 attempt 墙钟值，不因多个 Agent 并发或串行执行而求和；Agent 顶部耗时只属于该 Agent execution。
+- 根 Token 展示 provider-reported attempt 累计 usage；Claude Agent ACP 的嵌套 Agent usage 计入根值，Agent 分支不展示无法确认的独立 Token。
 - 存在 Agent execution 时，根 timeline 中没有 relation 的 session-wide plan 不生成 Todo；明确 scoped 的 Agent plan 仍在 Agent Tab 展示；没有 Agent execution 的普通根 plan 仍展示。
 - Todo 归属测试必须证明实现不读取条目自然语言进行 Agent 匹配。
 
@@ -538,7 +550,9 @@ ACP live event(branchId)
 - 更新 Agent B 时，Agent A 和根历史项保持对象引用。
 - 非激活 Tab 不挂载 ConversationViewport DOM。
 - 非激活 Agent streaming 不持续驱动完整 Tab React render。
-- 切换 Tab 能恢复各自滚动位置、分页窗口和贴底状态。
+- 切换 Tab 能从最多 12 个 branch key 的有限 LRU 同步恢复完整 Session VM、滚动位置、分页窗口和贴底状态；后台刷新期间不得重新展示加载壳。
+- canonical 非根分支一旦带有 `branchExecution` 即结束首次加载；不能因缺少根会话 metadata 或状态为 `interrupted` 进入 `missingAcpSessionRetryDelay` 退避链。
+- ACP session 查询支持可选 `traceId`，前端 effect/request 与 Rust command/view-model 各阶段使用同一 ID 记录耗时。调试开关为 `goldBand.debug.acpTiming=1`；关闭时不传 trace、不输出逐请求日志。
 - 工具大输出在活动和工具折叠时不解析。
 - 原生滚动分页锚点在主会话和 Agent 会话中均稳定，无跳动和错位。
 

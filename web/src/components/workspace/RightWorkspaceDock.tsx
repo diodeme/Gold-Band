@@ -1,5 +1,5 @@
 import { Bot, ChevronDown, FileText, X } from 'lucide-react';
-import { memo, type ReactNode } from 'react';
+import { memo, type ReactNode, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -12,10 +12,33 @@ export function RightWorkspaceDock() {
   const { t } = useTranslation();
   const { tabs, activeTabKey, activateTab, closeTab, closeWorkspace } = useRightWorkspace();
   const active = tabs.find((tab) => tab.key === activeTabKey) ?? null;
+  const tabStripRef = useRef<HTMLDivElement>(null);
+  const overflowMenuRef = useRef<HTMLButtonElement>(null);
+  const [tabsOverflowing, setTabsOverflowing] = useState(false);
+
+  useLayoutEffect(() => {
+    const tabStrip = tabStripRef.current;
+    if (!tabStrip) return;
+    const measure = () => {
+      const availableWidth = tabStrip.clientWidth + (overflowMenuRef.current?.offsetWidth ?? 0);
+      const overflowing = tabStrip.scrollWidth > availableWidth + 1;
+      setTabsOverflowing((current) => current === overflowing ? current : overflowing);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(tabStrip);
+    for (const tab of tabStrip.children) observer.observe(tab);
+    return () => observer.disconnect();
+  }, [tabs]);
+
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col bg-background" aria-label={t('workspace.rightWorkspace')} data-right-workspace-dock="true">
       <div className="flex h-10 shrink-0 items-center border-b border-border/60 bg-muted/10">
-        <div className="themed-scrollbar flex min-w-0 flex-1 items-stretch overflow-x-auto">
+        <div
+          ref={tabStripRef}
+          className="gold-themed-scrollbar right-workspace-tab-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-1"
+          data-right-workspace-tab-strip="true"
+        >
           {tabs.map((tab) => (
             <RightWorkspaceTab
               key={tab.key}
@@ -26,16 +49,25 @@ export function RightWorkspaceDock() {
             />
           ))}
         </div>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="size-9 shrink-0 rounded-none" aria-label={t('workspace.allTabs')}>
-              <ChevronDown className="size-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-64">
-            {tabs.map((tab) => <DropdownMenuItem key={tab.key} onSelect={() => activateTab(tab.key)}>{tab.title}</DropdownMenuItem>)}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {tabsOverflowing ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                ref={overflowMenuRef}
+                variant="ghost"
+                size="icon"
+                className="size-8 shrink-0 rounded-none"
+                aria-label={t('workspace.allTabs')}
+                data-right-workspace-overflow-menu="true"
+              >
+                <ChevronDown className="size-3" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-64">
+              {tabs.map((tab) => <DropdownMenuItem key={tab.key} onSelect={() => activateTab(tab.key)}>{tab.title}</DropdownMenuItem>)}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
         <Button variant="ghost" size="icon" className="size-9 shrink-0 rounded-none" onClick={closeWorkspace} aria-label={t('workspace.closeWorkspace')}>
           <X className="size-4" />
         </Button>
@@ -116,9 +148,13 @@ function RightWorkspaceTabButton({
   const { t } = useTranslation();
   return (
     <div
+      data-right-workspace-tab="true"
+      data-state={active ? 'active' : 'inactive'}
       className={cn(
-        'group relative flex min-w-36 max-w-56 shrink-0 items-center gap-2 border-r border-border/50 px-3 text-xs text-muted-foreground hover:bg-muted/30 hover:text-foreground',
-        active && 'bg-background text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-primary',
+        'group relative flex h-8 min-w-36 max-w-56 shrink-0 items-center gap-2 rounded-xl px-2.5 text-xs transition-colors',
+        active
+          ? 'bg-muted/70 text-foreground'
+          : 'text-muted-foreground hover:bg-muted/35 hover:text-foreground',
       )}
     >
       <button
@@ -134,7 +170,12 @@ function RightWorkspaceTabButton({
         type="button"
         variant="ghost"
         size="icon"
-        className="size-6 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+        className={cn(
+          'size-6 shrink-0 rounded-lg transition-opacity hover:bg-background/70',
+          active
+            ? 'opacity-60 hover:opacity-100'
+            : 'opacity-0 group-hover:opacity-60 focus-visible:opacity-100',
+        )}
         onClick={() => onClose(tab.key)}
         aria-label={t('workspace.closeTab')}
       >

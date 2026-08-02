@@ -189,6 +189,7 @@ import {
 } from "@/lib/conversation-event-router";
 import { displayAppError, displayStatus } from "@/i18n";
 import type {
+  AcpElicitationRequestVm,
   AcpPermissionRequestVm,
   AcpAgentExecutionVm,
   AcpTimelineProjectionVm,
@@ -1118,12 +1119,11 @@ export const ACPChatDialog = forwardRef<
       ? pendingPermissionFromEvents(effectiveEvents, dismissedPermissionIds)
       : null);
   const waitingForPermission = Boolean(pendingPermission);
-  const pendingElicitation = canInferPendingInteractionFromWindow(
-    effective,
-    hasNewerEvents,
-    "elicitation",
-  )
-    ? pendingElicitationFromEvents(effectiveEvents, answeredElicitations)
+  const pendingElicitationRequest = effective?.pendingElicitations.find(
+    (request) => !answeredElicitations.has(request.elicitationId),
+  );
+  const pendingElicitation = pendingElicitationRequest
+    ? pendingElicitationFromRequest(pendingElicitationRequest)
     : null;
   const planInterventionOption = pendingPermission
     ? findPlanInterventionOption(pendingPermission)
@@ -1626,7 +1626,10 @@ export const ACPChatDialog = forwardRef<
     if (normalizedEvents.length === 0) return;
     const latestTiming = latestLiveSessionTimingFromEvents(normalizedEvents);
     const branchResult = latestAgentBranchResult(normalizedEvents);
-    if (latestTiming || branchResult) {
+    const hasElicitationLifecycleUpdate = normalizedEvents.some(
+      (event) => event.kind === "elicitationRequest" || event.kind === "elicitationResponse",
+    );
+    if (latestTiming || branchResult || hasElicitationLifecycleUpdate) {
       setCurrentSession((current) => {
         const latest = latestSessionRef.current;
         const base =
@@ -1638,6 +1641,9 @@ export const ACPChatDialog = forwardRef<
           : (base ?? null);
         if (branchResult) {
           updated = applyAgentBranchResultToSession(updated, branchResult);
+        }
+        if (hasElicitationLifecycleUpdate) {
+          updated = applyPendingElicitationEventsToSession(updated, normalizedEvents);
         }
         const reconciled = reconcileAcpSessionForDisplay(latest, updated);
         latestSessionRef.current = reconciled;
@@ -6098,6 +6104,87 @@ interface PendingElicitationVm {
   requestedSchema: ElicitationSchema;
 }
 
+function pendingElicitationFromRequest(
+  request: AcpElicitationRequestVm,
+): PendingElicitationVm {
+  const requestedSchema = rawObject(request.requestedSchema);
+  return {
+    elicitationId: request.elicitationId,
+    message: request.message,
+    requestedSchema:
+      requestedSchema?.type === "object"
+        ? (requestedSchema as unknown as ElicitationSchema)
+        : { type: "object", properties: {} },
+  };
+}
+
+function elicitationRequestFromEvent(
+  event: AcpUiEventVm,
+): AcpElicitationRequestVm {
+  const raw = rawObject(event.raw) ?? {};
+  const nestedSchema = rawObject(raw.requestedSchema);
+  const requestedSchema = nestedSchema ?? (raw.type === "object" ? raw : {
+    type: "object",
+    properties: {},
+  });
+  return {
+    elicitationId: event.id,
+    message: stringValue(raw.message) ?? event.content ?? "",
+    toolCallId: event.toolCallId ?? stringValue(raw.toolCallId) ?? null,
+    requestedSchema,
+    raw: event.raw ?? {},
+  };
+}
+
+function reducePendingElicitations(
+  current: AcpElicitationRequestVm[],
+  events: AcpUiEventVm[],
+) {
+  const pending = new Map(
+    current.map((request) => [request.elicitationId, request]),
+  );
+  const ordered = [...events].sort(
+    (left, right) => originalSeqFromAcpEvent(left) - originalSeqFromAcpEvent(right),
+  );
+  for (const event of ordered) {
+    if (event.kind === "elicitationResponse") {
+      const elicitationId =
+        stringValue(rawObject(event.raw)?.elicitationId) ??
+        event.id.replace(/-response$/, "");
+      pending.delete(elicitationId);
+      continue;
+    }
+    if (event.kind !== "elicitationRequest") continue;
+    if (event.status?.toLowerCase() === "pending") {
+      pending.clear();
+      pending.set(event.id, elicitationRequestFromEvent(event));
+    } else {
+      pending.delete(event.id);
+    }
+  }
+  return [...pending.values()];
+}
+
+export function applyPendingElicitationEventsToSession(
+  session: AcpSessionVm | null | undefined,
+  events: AcpUiEventVm[],
+): AcpSessionVm | null {
+  if (!session) return session ?? null;
+  if (isSessionTerminalStatus(session.status)) {
+    return session.pendingElicitations.length > 0
+      ? { ...session, pendingElicitations: [] }
+      : session;
+  }
+  const pendingElicitations = reducePendingElicitations(
+    session.pendingElicitations,
+    events,
+  );
+  return {
+    ...session,
+    pendingElicitations,
+  };
+}
+
 type AcpPendingInteractionKind = "permission" | "elicitation";
 
 /**
@@ -6791,7 +6878,7 @@ function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpS
   const last = events.at(-1) ?? first;
   const auditBounds = acpAuditSeqBounds(events);
   const timing = latestSessionTimingFromEvents(events);
-  return {
+  const session: AcpSessionVm = {
     branchId: 'root',
     parentBranchId: null,
     readOnly: false,
@@ -6820,12 +6907,14 @@ function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpS
         : null,
     },
     pendingPermissions: [],
+    pendingElicitations: [],
     diagnostics: {
       rawFrameCount: 0,
       eventCount: events.length,
       errorCount: 0,
     },
   };
+  return applyPendingElicitationEventsToSession(session, events) ?? session;
 }
 
 function createVisibleAcpSession(
@@ -6897,6 +6986,7 @@ function applyAgentBranchResultToSession(
   return {
     ...session,
     status: "completed",
+    pendingElicitations: [],
     sessionUpdatedAt: result.endedAt ?? result.timestamp ?? session.sessionUpdatedAt,
     timing: session.timing
       ? {
@@ -7078,8 +7168,14 @@ function preserveAcpSessionMetadataForDisplay(
   const preserveGoldBandPrompts =
     previous.events.some(isGoldBandUserPrompt) &&
     !next.events.some(isGoldBandUserPrompt);
+  const preservePendingElicitations = shouldPreservePendingElicitations(previous, next);
 
-  if (!preserveSystemPrompt && !preserveConfig && !preserveGoldBandPrompts) {
+  if (
+    !preserveSystemPrompt &&
+    !preserveConfig &&
+    !preserveGoldBandPrompts &&
+    !preservePendingElicitations
+  ) {
     return next;
   }
 
@@ -7102,9 +7198,39 @@ function preserveAcpSessionMetadataForDisplay(
     config: preserveConfig
       ? mergeAcpSessionConfigForDisplay(previous.config, next.config)
       : next.config,
+    pendingElicitations: preservePendingElicitations
+      ? previous.pendingElicitations
+      : next.pendingElicitations,
     events,
     eventPage: next.eventPage,
   };
+}
+
+function shouldPreservePendingElicitations(
+  previous: AcpSessionVm,
+  next: AcpSessionVm,
+) {
+  if (
+    previous.pendingElicitations.length === 0 ||
+    next.pendingElicitations.length > 0 ||
+    !isSessionActiveStatus(next.status)
+  ) {
+    return false;
+  }
+  const pendingIds = new Set(
+    previous.pendingElicitations.map((request) => request.elicitationId),
+  );
+  return !next.events.some((event) => {
+    if (event.kind === "elicitationResponse") {
+      const elicitationId =
+        stringValue(rawObject(event.raw)?.elicitationId) ??
+        event.id.replace(/-response$/, "");
+      return pendingIds.has(elicitationId);
+    }
+    return event.kind === "elicitationRequest" &&
+      pendingIds.has(event.id) &&
+      event.status?.toLowerCase() !== "pending";
+  });
 }
 
 function shouldPreferAcpSessionMetadata(

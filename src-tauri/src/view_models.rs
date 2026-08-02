@@ -709,6 +709,7 @@ pub struct AcpSessionVm {
     pub event_page: AcpEventPageVm,
     pub timeline_projection: AcpTimelineProjectionVm,
     pub pending_permissions: Vec<AcpPermissionRequestVm>,
+    pub pending_elicitations: Vec<AcpElicitationRequestVm>,
     pub available_commands: Option<Vec<serde_json::Value>>,
     pub usage: Option<AcpUsageVm>,
     pub diagnostics: AcpDiagnosticsVm,
@@ -902,6 +903,16 @@ pub struct AcpPermissionOptionVm {
     pub option_id: String,
     pub name: String,
     pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpElicitationRequestVm {
+    pub elicitation_id: String,
+    pub message: String,
+    pub tool_call_id: Option<String>,
+    pub requested_schema: serde_json::Value,
+    pub raw: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3564,6 +3575,11 @@ pub fn dynamic_acp_session_vm(
             .map(|event| permission_vm_from_event(&event))
             .collect::<Vec<_>>()
     };
+    let pending_elicitations = if stopping || !active_status {
+        Vec::new()
+    } else {
+        event_scan.pending_elicitations.clone()
+    };
     let provider = worker_ref
         .as_ref()
         .map(|state| state.provider.clone())
@@ -3674,6 +3690,7 @@ pub fn dynamic_acp_session_vm(
         event_page: event_scan.event_page,
         timeline_projection: event_scan.timeline_projection,
         pending_permissions,
+        pending_elicitations,
         available_commands: event_scan.available_commands,
         usage: if branch_id != gold_band::acp::branches::ROOT_BRANCH_ID {
             None
@@ -3955,6 +3972,11 @@ pub fn acp_session_vm(
             .map(|event| permission_vm_from_event(&event))
             .collect::<Vec<_>>()
     };
+    let pending_elicitations = if stopping || !active_status {
+        Vec::new()
+    } else {
+        event_scan.pending_elicitations.clone()
+    };
 
     let provider = worker_ref
         .as_ref()
@@ -4100,6 +4122,7 @@ pub fn acp_session_vm(
         event_page: event_scan.event_page,
         timeline_projection: event_scan.timeline_projection,
         pending_permissions,
+        pending_elicitations,
     };
     trace_acp_session_query(
         &mut query_trace,
@@ -4187,6 +4210,7 @@ struct AcpEventScan {
     session_elapsed_seconds: Option<u64>,
     session_timing: Option<AcpSessionTimingVm>,
     latest_permission_events: HashMap<String, AcpUiEventVm>,
+    pending_elicitations: Vec<AcpElicitationRequestVm>,
     available_commands: Option<Vec<serde_json::Value>>,
     usage: Option<AcpUsageVm>,
 }
@@ -4956,6 +4980,7 @@ fn paginate_timeline(
     let semantic_blocks = conversation_semantic_blocks(all_events);
     let total = semantic_blocks.len();
     let session_timing = latest_session_timing_from_events(all_events);
+    let pending_elicitations = pending_elicitation_vms(all_events, session_active);
     let timeline_projection =
         build_acp_timeline_projection(all_events, latest_permission_events, session_active);
     let selected_blocks = if let Some(cursor) = after_seq {
@@ -5034,6 +5059,7 @@ fn paginate_timeline(
         session_elapsed_seconds,
         session_timing,
         latest_permission_events: latest_permission_events.clone(),
+        pending_elicitations,
         available_commands: available_commands.cloned(),
         usage: usage.cloned(),
     })
@@ -6745,6 +6771,66 @@ fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPermissionRequestVm {
     }
 }
 
+fn pending_elicitation_vms(
+    events: &[AcpUiEventVm],
+    session_active: bool,
+) -> Vec<AcpElicitationRequestVm> {
+    if !session_active {
+        return Vec::new();
+    }
+    let resolved_ids = events
+        .iter()
+        .filter(|event| event.kind == "elicitationResponse")
+        .filter_map(elicitation_id_from_event)
+        .collect::<HashSet<_>>();
+    let Some(request) = events
+        .iter()
+        .rev()
+        .find(|event| event.kind == "elicitationRequest")
+    else {
+        return Vec::new();
+    };
+    let pending = request
+        .status
+        .as_deref()
+        .is_some_and(|status| status.eq_ignore_ascii_case("pending"));
+    if !pending || resolved_ids.contains(&request.id) {
+        return Vec::new();
+    }
+    vec![elicitation_vm_from_event(request)]
+}
+
+fn elicitation_vm_from_event(event: &AcpUiEventVm) -> AcpElicitationRequestVm {
+    let raw = event
+        .raw
+        .clone()
+        .map(compact_raw_value)
+        .unwrap_or_else(|| serde_json::json!({}));
+    let requested_schema = raw
+        .get("requestedSchema")
+        .cloned()
+        .or_else(|| {
+            (raw.get("type").and_then(Value::as_str) == Some("object")).then(|| raw.clone())
+        })
+        .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
+    AcpElicitationRequestVm {
+        elicitation_id: event.id.clone(),
+        message: raw
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| event.content.clone())
+            .unwrap_or_default(),
+        tool_call_id: event.tool_call_id.clone().or_else(|| {
+            raw.get("toolCallId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        }),
+        requested_schema,
+        raw,
+    }
+}
+
 fn asset_item_vm(
     kind: &str,
     round_id: &str,
@@ -7774,13 +7860,25 @@ mod tests {
     }
 
     fn elicitation_request_event_at(elicitation_id: &str, timestamp: u64) -> AcpUiEventVm {
-        acp_event_at(
+        let mut event = acp_event_at(
             elicitation_id,
             "elicitationRequest",
             Some("pending"),
             timestamp,
-            Some(json!({ "type": "object" })),
-        )
+            Some(json!({
+                "message": "Choose a database",
+                "toolCallId": "ask-tool-1",
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": {
+                        "database": { "type": "string" }
+                    }
+                }
+            })),
+        );
+        event.content = Some("Choose a database".to_string());
+        event.tool_call_id = Some("ask-tool-1".to_string());
+        event
     }
 
     fn elicitation_response_event_at(elicitation_id: &str, timestamp: u64) -> AcpUiEventVm {
@@ -9671,6 +9769,67 @@ mod tests {
         assert_eq!(scan.event_page.total, 1);
         assert_eq!(scan.events.len(), 1);
         assert_eq!(scan.events[0].kind, "elicitationRequest");
+        assert_eq!(scan.pending_elicitations.len(), 1);
+        assert_eq!(
+            scan.pending_elicitations[0].elicitation_id,
+            "elicit-pending"
+        );
+        assert_eq!(
+            scan.pending_elicitations[0].requested_schema["properties"]["database"]["type"],
+            "string"
+        );
+    }
+
+    #[test]
+    fn pending_elicitation_is_authoritative_outside_the_requested_page_and_timing() {
+        let request = elicitation_request_event_at("elicit-authoritative", 1_000);
+        let later_message =
+            acp_event_at("later-message", "textDelta", Some("completed"), 2_000, None);
+        let events = vec![request, later_message];
+        let scan = paginate_timeline(
+            &events,
+            events.len(),
+            Some(0),
+            &HashMap::new(),
+            None,
+            None,
+            true,
+            None,
+            None,
+            1,
+        )
+        .unwrap();
+
+        assert!(
+            scan.events
+                .iter()
+                .all(|event| event.kind != "elicitationRequest")
+        );
+        assert_eq!(scan.pending_elicitations.len(), 1);
+        assert_eq!(
+            scan.pending_elicitations[0].elicitation_id,
+            "elicit-authoritative"
+        );
+    }
+
+    #[test]
+    fn elicitation_response_and_terminal_session_clear_authoritative_pending_state() {
+        let request = elicitation_request_event_at("elicit-resolved", 1_000);
+        let response = elicitation_response_event_at("elicit-resolved", 2_000);
+        let resolved = pending_elicitation_vms(&[request.clone(), response], true);
+        let terminal = pending_elicitation_vms(&[request], false);
+
+        assert!(resolved.is_empty());
+        assert!(terminal.is_empty());
+    }
+
+    #[test]
+    fn answered_latest_elicitation_does_not_resurface_an_older_request() {
+        let older = elicitation_request_event_at("elicit-old", 1_000);
+        let newer = elicitation_request_event_at("elicit-new", 2_000);
+        let response = elicitation_response_event_at("elicit-new", 3_000);
+
+        assert!(pending_elicitation_vms(&[older, newer, response], true).is_empty());
     }
 
     #[test]

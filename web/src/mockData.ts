@@ -216,6 +216,7 @@ export const mockErrorBlockedConversationSession: AcpSessionVm = {
   timelineProjection: null,
   eventPage: { loadedCount: 0, total: 0, oldestSeq: null, newestSeq: null, hasOlder: false, hasNewer: false, oldestCursor: null, newestCursor: null },
   pendingPermissions: [],
+  pendingElicitations: [],
   availableCommands: [],
   usage: null,
   diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0, lastError: null, lastErrorTimestamp: null },
@@ -339,6 +340,7 @@ const mockNodeDetail: NodeDetailVm = {
       { id: 'e4', seq: 4, timestamp: '2026-05-02 16:11', kind: 'plan', sessionId: 'acp-session-7f3', raw: { entries: [{ content: '重构窗口状态', status: 'completed' }, { content: '修正 DPI 偏移', status: 'in_progress' }] } },
       { id: 'e5', seq: 5, timestamp: '2026-05-02 16:12', kind: 'permissionRequest', title: '允许写入窗口管理文件', toolCallId: 'tool-2', status: 'pending', sessionId: 'acp-session-7f3', raw: { options: [{ optionId: 'allow-once', name: '允许一次', kind: 'allow_once' }, { optionId: 'reject-once', name: '拒绝', kind: 'reject_once' }] } },
     ],
+    pendingElicitations: [],
     timelineProjection: null,
   },
   artifacts: [
@@ -372,6 +374,7 @@ const errorBlockedNodeDetail: NodeDetailVm = {
     diagnostics: { rawFrameCount: 5, eventCount: 2, errorCount: 1, lastError: 'ACP prompt failed: adapter returned malformed response', lastErrorTimestamp: '2026-05-15 10:02' },
     eventPage: { loadedCount: 3, total: 3, oldestSeq: 1, newestSeq: 3, hasOlder: false, hasNewer: false },
     pendingPermissions: [],
+    pendingElicitations: [],
     events: [
       { id: 'e1', seq: 1, timestamp: '2026-05-15 10:01', kind: 'userTextDelta', content: '初始需求 prompt', sessionId: 'acp-session-7f3', raw: { source: 'goldBandPrompt', synthetic: true } },
       { id: 'acp-diagnostic-error-1', seq: 2, timestamp: '2026-05-15 10:02', kind: 'runtimeError', content: 'ACP prompt failed: adapter returned malformed response', status: 'failed', raw: { source: 'acpDiagnostic', level: 'error' } },

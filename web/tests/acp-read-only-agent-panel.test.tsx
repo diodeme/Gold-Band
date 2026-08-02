@@ -81,6 +81,7 @@ function session(branchId: string, withPermission = false): AcpSessionVm {
       raw: { rawInput: { path: 'README.md' } },
       options: [{ optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' }],
     }] : [],
+    pendingElicitations: [],
     diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0 },
   };
 }

@@ -83,10 +83,15 @@ export function reduceWorkspaceAutoCollapse(
   if (!sidebarManuallyCollapsed && !left && availableWidth < needsAll) left = true;
   if (wantsRight && (sidebarManuallyCollapsed || left) && !right && availableWidth < needsCenterAndRight) {
     right = true;
-  } else if (!shrinking && right && availableWidth > needsCenterAndRight + LAYOUT_HYSTERESIS) {
-    right = false;
-  } else if (!shrinking && left && availableWidth > needsAll + LAYOUT_HYSTERESIS) {
-    left = false;
+  } else if (!shrinking) {
+    // A maximize can cross both thresholds in one ResizeObserver delivery.
+    // Restore in the designed order without requiring a second resize event.
+    if (right && availableWidth > needsCenterAndRight + LAYOUT_HYSTERESIS) {
+      right = false;
+    }
+    if (left && availableWidth > needsAll + LAYOUT_HYSTERESIS) {
+      left = false;
+    }
   }
   if (state.previousWidth === availableWidth && state.left === left && state.right === right) return state;
   return { previousWidth: availableWidth, left, right };

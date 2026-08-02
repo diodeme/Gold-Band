@@ -25,6 +25,19 @@ describe('workspace auto collapse state machine', () => {
     expect(bothRestored).toMatchObject({ left: false, right: false });
   });
 
+  it('restores both automatically collapsed panels after a single maximize jump', () => {
+    const restored = reduceWorkspaceAutoCollapse(
+      { previousWidth: 700, left: true, right: true },
+      {
+        availableWidth: 1_100,
+        centerMinWidth: 420,
+        sidebarManuallyCollapsed: false,
+        wantsRight: true,
+      },
+    );
+    expect(restored).toMatchObject({ left: false, right: false });
+  });
+
   it('uses hysteresis so a boundary oscillation does not flicker', () => {
     const input = { centerMinWidth: 420, sidebarManuallyCollapsed: false, wantsRight: true };
     const collapsed = reduceWorkspaceAutoCollapse(initial(), { ...input, availableWidth: 900 });

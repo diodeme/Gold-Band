@@ -680,11 +680,9 @@ export function mergedConversationSession(conversation: NonNullable<NodeDetailVm
       ),
       todoEntries: activeAttempt?.acpSession?.timelineProjection?.todoEntries ?? [],
     },
-    eventPage: {
-      ...base.eventPage,
-      loadedCount: events.length,
-      total: Math.max(base.eventPage.total, events.length),
-    },
+    // Pagination controls query the active attempt. Historical attempt events
+    // are display context and must not rewrite its backend-owned semantic page.
+    eventPage: base.eventPage,
   };
 }
 

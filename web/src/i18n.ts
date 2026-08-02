@@ -119,6 +119,10 @@ const resources = {
         acp: {
           "missing-provider": "当前节点缺少 provider 配置。",
           "active-prompt-blocks-config-save": "当前有会话正在运行，请先停止会话后再保存配置。",
+          "invalid-conversation-branch-id": "该 Agent 会话链接无效或已失效。",
+          "session-query-failed": "会话内容加载失败，请重试。",
+          "activity-detail-query-failed": "活动详情加载失败，请重试。",
+          "tool-detail-query-failed": "工具详情加载失败，请重试。",
         },
         app: {
           "task-join-failed": "后台任务执行失败。",
@@ -1507,6 +1511,11 @@ const resources = {
         acp: {
           "missing-provider":
             "The current node is missing provider configuration.",
+          "invalid-conversation-branch-id":
+            "This Agent conversation link is invalid or no longer available.",
+          "session-query-failed": "The conversation could not be loaded. Try again.",
+          "activity-detail-query-failed": "Activity details could not be loaded. Try again.",
+          "tool-detail-query-failed": "Tool details could not be loaded. Try again.",
         },
         app: {
           "task-join-failed": "Background task failed.",

@@ -727,6 +727,7 @@ export const ACPChatDialog = forwardRef<
   const [loadingInitialSession, setLoadingInitialSession] = useState(
     !isAcpSessionReadyForInitialDisplay(session) && isTauriRuntime(),
   );
+  const [sessionLoadError, setSessionLoadError] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [loadingLatest, setLoadingLatest] = useState(false);
   const [hasOlderEvents, setHasOlderEvents] = useState(
@@ -931,6 +932,7 @@ export const ACPChatDialog = forwardRef<
       return next;
     });
     setLoadingInitialSession(!isAcpSessionReadyForInitialDisplay(session) && isTauriRuntime());
+    setSessionLoadError(null);
     loadedEventsRef.current = storedLoadedEvents;
     setLoadedEvents(storedLoadedEvents);
     setOptimisticEvents(storedOptimisticEvents);
@@ -1950,6 +1952,7 @@ export const ACPChatDialog = forwardRef<
         refreshSeq,
       });
       let retryAttempt = 0;
+      let lastLoadError: unknown = null;
       while (active && sessionRefreshSeqRef.current === refreshSeq) {
         try {
           const updated = await getAcpSession(
@@ -1976,13 +1979,16 @@ export const ACPChatDialog = forwardRef<
             currentRefreshSeq: sessionRefreshSeqRef.current,
           });
           if (updated && active && sessionRefreshSeqRef.current === refreshSeq) {
+            lastLoadError = null;
+            setSessionLoadError(null);
             applySessionUpdate(updated, "initial-fetch");
             if (isAcpSessionReadyForInitialDisplay(updated)) {
               break;
             }
           }
-        } catch {
+        } catch (error) {
           if (!active || sessionRefreshSeqRef.current !== refreshSeq) break;
+          lastLoadError = error;
           // provider resolution / IO error — retry may not help but we try once more
         }
         const delay = missingAcpSessionRetryDelay(retryAttempt);
@@ -1990,8 +1996,10 @@ export const ACPChatDialog = forwardRef<
         retryAttempt += 1;
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
-      if (active && sessionRefreshSeqRef.current === refreshSeq)
+      if (active && sessionRefreshSeqRef.current === refreshSeq) {
+        if (lastLoadError) setSessionLoadError(displayAppError(t, lastLoadError));
         setLoadingInitialSession(false);
+      }
     })();
     return () => {
       logAcpSessionReadyLifecycle("effect-cleanup", componentInstanceId, sessionIdentity, {
@@ -2024,6 +2032,7 @@ export const ACPChatDialog = forwardRef<
     sessionInitializationFailed,
     sessionInitializationInterrupted,
     taskId,
+    t,
   ]);
 
   useEffect(() => {
@@ -2108,7 +2117,7 @@ export const ACPChatDialog = forwardRef<
       previousEvents.length === 0
     )
       return;
-    const { oldestSeq } = acpAuditSeqBounds(previousEvents);
+    const { oldestSeq } = acpPaginationSeqBounds(previousEvents, eventIdPrefix);
     if (oldestSeq === null) return;
     const beforeCursor = formatTimelineCursor(oldestSeq);
     const scroller = chatContainerContextRef.current?.scrollRef.current;
@@ -2173,7 +2182,7 @@ export const ACPChatDialog = forwardRef<
       previousEvents.length === 0
     )
       return;
-    const { newestSeq } = acpAuditSeqBounds(previousEvents);
+    const { newestSeq } = acpPaginationSeqBounds(previousEvents, eventIdPrefix);
     if (newestSeq === null) return;
     const afterCursor = formatTimelineCursor(newestSeq);
     const scroller = chatContainerContextRef.current?.scrollRef.current;
@@ -2744,7 +2753,7 @@ export const ACPChatDialog = forwardRef<
   }
 
   if (!effective) {
-    return <AcpErrorState reason={t("acp.missingSessionReason")} />;
+    return <AcpErrorState reason={sessionLoadError ?? t("acp.missingSessionReason")} />;
   }
 
   const visibleError = visibleAcpBannerError(
@@ -4414,6 +4423,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   const [hasMoreEarlier, setHasMoreEarlier] = useState(event.hasMoreEarlier);
   const [earlierCursor, setEarlierCursor] = useState(event.earlierCursor ?? null);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const detailRequestInFlightRef = useRef(false);
   const loadedDetailCursorsRef = useRef(new Set<string>());
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -4432,6 +4442,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
     ) return;
     detailRequestInFlightRef.current = true;
     setLoadingEarlier(true);
+    setDetailError(null);
     try {
       const detail = await getAcpActivityDetail(
         branchLocator.projectId,
@@ -4455,6 +4466,8 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
       setHasMoreEarlier(detail.hasMoreEarlier);
       setEarlierCursor(detail.earlierCursor ?? null);
       loadedDetailCursorsRef.current.add(requestKey);
+    } catch (error) {
+      setDetailError(displayAppError(t, error));
     } finally {
       detailRequestInFlightRef.current = false;
       setLoadingEarlier(false);
@@ -4516,6 +4529,21 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
                 <div className="flex h-8 items-center gap-2 px-2 text-xs text-muted-foreground">
                   <Loader2 className="size-3 animate-spin" />
                   {t("common.loading")}
+                </div>
+              ) : null}
+              {detailError ? (
+                <div className="flex min-w-0 items-center justify-between gap-2 px-2 py-1 text-xs text-destructive">
+                  <span className="min-w-0 truncate">{detailError}</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 shrink-0 px-2 text-xs"
+                    onClick={() => void loadDetail(detailLoaded ? earlierCursor : null)}
+                    data-acp-activity-detail-retry="true"
+                  >
+                    {t("common.retry")}
+                  </Button>
                 </div>
               ) : null}
               {auditEvents.map((activity) => (
@@ -5102,6 +5130,7 @@ const ToolBlock = memo(function ToolBlock({
   const branchLocator = useContext(AcpBranchLocatorContext);
   const [open, setOpen] = useState(false);
   const [detailEvent, setDetailEvent] = useState<AcpTimelineEvent | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const detailRequestInFlightRef = useRef(false);
   const summaryDetails = toolDetails(event, false);
   const details = open ? toolDetails(detailEvent ?? event, true) : summaryDetails;
@@ -5123,47 +5152,69 @@ const ToolBlock = memo(function ToolBlock({
         ? (event.content ?? undefined)
         : undefined,
   };
+  const loadToolDetail = () => {
+    if (
+      !branchLocator
+      || detailEvent
+      || detailRequestInFlightRef.current
+      || !toolDetailAvailable(event)
+    ) return;
+    detailRequestInFlightRef.current = true;
+    setDetailError(null);
+    void getAcpToolDetail(
+      branchLocator.projectId,
+      branchLocator.taskId,
+      branchLocator.runId,
+      branchLocator.roundId,
+      branchLocator.nodeId,
+      branchLocator.attemptId,
+      {
+        branchId: branchLocator.branchId,
+        eventId: event.id,
+        toolCallId: event.toolCallId,
+      },
+      branchLocator.outerNodeId,
+      branchLocator.outerAttemptId,
+    ).then((detail) => {
+      if (detail.event) setDetailEvent(detail.event as AcpTimelineEvent);
+    }).catch((error) => {
+      setDetailError(displayAppError(t, error));
+    }).finally(() => {
+      detailRequestInFlightRef.current = false;
+    });
+  };
   return (
     <AssistantTimelineRow timestamp={event.timestamp} nested={nested}>
-      <Tool
-        toolPart={toolPart}
-        labels={toolLabels(t)}
-        icon={<ToolIcon className="size-4" />}
-        open={open}
-        onOpenChange={(next) => {
-          setOpen(next);
-          if (
-            !next
-            || !branchLocator
-            || detailEvent
-            || detailRequestInFlightRef.current
-            || !toolDetailAvailable(event)
-          ) return;
-          detailRequestInFlightRef.current = true;
-          void getAcpToolDetail(
-            branchLocator.projectId,
-            branchLocator.taskId,
-            branchLocator.runId,
-            branchLocator.roundId,
-            branchLocator.nodeId,
-            branchLocator.attemptId,
-            {
-              branchId: branchLocator.branchId,
-              eventId: event.id,
-              toolCallId: event.toolCallId,
-            },
-            branchLocator.outerNodeId,
-            branchLocator.outerAttemptId,
-          ).then((detail) => {
-            if (detail.event) setDetailEvent(detail.event as AcpTimelineEvent);
-          }).finally(() => {
-            detailRequestInFlightRef.current = false;
-          });
-        }}
-        animated={false}
-        variant={compact ? "audit" : "card"}
-        className={compact ? "acp-activity-audit-tool" : undefined}
-      />
+      <div className="min-w-0 max-w-full">
+        <Tool
+          toolPart={toolPart}
+          labels={toolLabels(t)}
+          icon={<ToolIcon className="size-4" />}
+          open={open}
+          onOpenChange={(next) => {
+            setOpen(next);
+            if (next) loadToolDetail();
+          }}
+          animated={false}
+          variant={compact ? "audit" : "card"}
+          className={compact ? "acp-activity-audit-tool" : undefined}
+        />
+        {detailError ? (
+          <div className="mt-1 flex min-w-0 items-center justify-between gap-2 px-2 text-xs text-destructive">
+            <span className="min-w-0 truncate">{detailError}</span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 px-2 text-xs"
+              onClick={loadToolDetail}
+              data-acp-tool-detail-retry="true"
+            >
+              {t("common.retry")}
+            </Button>
+          </div>
+        ) : null}
+      </div>
     </AssistantTimelineRow>
   );
 });
@@ -6549,6 +6600,16 @@ function acpAuditSeqBounds(events: AcpUiEventVm[]) {
   return { oldestSeq, newestSeq };
 }
 
+function acpPaginationSeqBounds(
+  events: AcpUiEventVm[],
+  attemptId?: string,
+) {
+  if (!attemptId) return acpAuditSeqBounds(events);
+  return acpAuditSeqBounds(
+    events.filter((event) => attemptIdFromAcpEvent(event) === attemptId),
+  );
+}
+
 function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpSessionVm {
   const first = events[0] ?? null;
   const last = events.at(-1) ?? first;
@@ -6591,7 +6652,7 @@ function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpS
   };
 }
 
-export function createVisibleAcpSession(
+function createVisibleAcpSession(
   session: AcpSessionVm,
   liveEvents: AcpUiEventVm[],
   eventPageSize: number,
@@ -6831,13 +6892,7 @@ function preserveAcpSessionMetadataForDisplay(
       ? mergeAcpSessionConfigForDisplay(previous.config, next.config)
       : next.config,
     events,
-    eventPage: preserveGoldBandPrompts
-      ? {
-          ...next.eventPage,
-          loadedCount: Math.max(next.eventPage.loadedCount, events.length),
-          total: Math.max(next.eventPage.total, events.length),
-        }
-      : next.eventPage,
+    eventPage: next.eventPage,
   };
 }
 
@@ -7117,6 +7172,7 @@ export {
   calculateSessionElapsedSeconds,
   createLiveAcpSessionShell,
   createVisibleAcpSession,
+  acpPaginationSeqBounds,
   latestLiveSessionTimingFromEvents,
   latestSessionTimingFromEvents,
   liveTimelineUpdatesFromEvents,

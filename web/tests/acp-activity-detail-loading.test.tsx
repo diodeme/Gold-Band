@@ -167,4 +167,75 @@ describe('ACP activity detail loading', () => {
       await act(async () => root.unmount());
     }
   });
+
+  it('shows a localized activity-detail failure and retries the same cursor', async () => {
+    vi.mocked(getAcpActivityDetail)
+      .mockRejectedValueOnce({ code: 'acp.activity-detail-query-failed', params: {} })
+      .mockResolvedValueOnce({ items: [], hasMoreEarlier: false, earlierCursor: null });
+    const projection = buildAcpTimelineProjection([activitySummary()], 'completed');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<ACPMessageList timeline={projection.timeline} sessionStatus="completed" sending={false} branchLocator={locator} />);
+      });
+      const trigger = container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]');
+      await act(async () => {
+        trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await Promise.resolve();
+      });
+      const retry = container.querySelector<HTMLButtonElement>('[data-acp-activity-detail-retry="true"]');
+      expect(retry).not.toBeNull();
+      await act(async () => {
+        retry?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(getAcpActivityDetail).toHaveBeenCalledTimes(2);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('shows a tool-detail failure and allows retry without collapsing the tool', async () => {
+    vi.mocked(getAcpToolDetail)
+      .mockRejectedValueOnce({ code: 'acp.tool-detail-query-failed', params: {} })
+      .mockResolvedValueOnce({ event: null });
+    const tool: AcpUiEventVm = {
+      id: 'tool-retry', seq: 20, timestamp: '20Z', kind: 'toolCall',
+      sessionId: 'session-1', content: null, title: 'Read file', toolCallId: 'call-retry',
+      status: 'completed',
+      raw: {
+        rawInput: { path: 'README.md' },
+        _meta: { goldBandConversation: { toolName: 'Read', toolDetailAvailable: true } },
+      },
+    };
+    const projection = buildAcpTimelineProjection([tool], 'completed');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<ACPMessageList timeline={projection.timeline} sessionStatus="completed" sending={false} branchLocator={locator} />);
+      });
+      let triggers = container.querySelectorAll<HTMLButtonElement>('[data-slot="collapsible-trigger"]');
+      await act(async () => {
+        triggers[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      triggers = container.querySelectorAll<HTMLButtonElement>('[data-slot="collapsible-trigger"]');
+      await act(async () => {
+        triggers[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await Promise.resolve();
+      });
+      const retry = container.querySelector<HTMLButtonElement>('[data-acp-tool-detail-retry="true"]');
+      expect(retry).not.toBeNull();
+      await act(async () => {
+        retry?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(getAcpToolDetail).toHaveBeenCalledTimes(2);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 });

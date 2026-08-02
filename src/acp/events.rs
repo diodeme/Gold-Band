@@ -155,7 +155,7 @@ pub struct AgentTranscriptRelation {
 
 impl AgentTranscriptRelation {
     fn is_empty(&self) -> bool {
-        !self.agent_launch && self.parent_tool_call_id.is_none()
+        !self.agent_launch && self.tool_name.is_none() && self.parent_tool_call_id.is_none()
     }
 }
 
@@ -1319,7 +1319,11 @@ pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> 
 }
 
 pub fn normalize_agent_transcript_metadata(value: &mut Value) -> Option<AgentTranscriptRelation> {
-    let relation = extract_agent_transcript_relation(value)?;
+    let relation = extract_agent_transcript_relation(value);
+    let tool_output = agent_transcript_tool_output(value).cloned();
+    if relation.is_none() && tool_output.is_none() {
+        return None;
+    }
     let object = value.as_object_mut()?;
     let meta = object
         .entry("_meta".to_string())
@@ -1327,11 +1331,35 @@ pub fn normalize_agent_transcript_metadata(value: &mut Value) -> Option<AgentTra
     if !meta.is_object() {
         *meta = Value::Object(serde_json::Map::new());
     }
-    meta.as_object_mut()?.insert(
-        AGENT_TRANSCRIPT_META_KEY.to_string(),
-        serde_json::to_value(&relation).expect("AgentTranscriptRelation must serialize"),
-    );
-    Some(relation)
+    let mut normalized = relation
+        .as_ref()
+        .map(|relation| {
+            serde_json::to_value(relation).expect("AgentTranscriptRelation must serialize")
+        })
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(tool_output) = tool_output {
+        ensure_object(&mut normalized).insert("toolOutput".to_string(), tool_output);
+    }
+    meta.as_object_mut()?
+        .insert(AGENT_TRANSCRIPT_META_KEY.to_string(), normalized);
+    relation
+}
+
+pub fn agent_transcript_tool_output(raw: &Value) -> Option<&Value> {
+    raw.pointer(&format!(
+        "/_meta/{AGENT_TRANSCRIPT_META_KEY}/toolOutput"
+    ))
+    .or_else(|| {
+        raw.pointer(&format!(
+            "/toolCall/_meta/{AGENT_TRANSCRIPT_META_KEY}/toolOutput"
+        ))
+    })
+    .or_else(|| raw.pointer(&format!("/_meta/{CLAUDE_CODE_META_KEY}/toolResponse/content")))
+    .or_else(|| {
+        raw.pointer(&format!(
+            "/toolCall/_meta/{CLAUDE_CODE_META_KEY}/toolResponse/content"
+        ))
+    })
 }
 
 /// Remove provider-only Agent metadata and heavyweight tool output before a
@@ -1374,7 +1402,10 @@ pub fn compact_live_conversation_event(event: &mut AcpUiEvent) {
     let conversation = meta_object
         .entry("goldBandConversation")
         .or_insert_with(|| serde_json::json!({}));
-    ensure_object(conversation).insert("toolDetailAvailable", Value::Bool(true));
+    ensure_object(conversation).insert(
+        "toolDetailAvailable".to_string(),
+        Value::Bool(true),
+    );
 }
 
 fn remove_provider_agent_metadata(raw: &mut Value) {
@@ -1972,6 +2003,31 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_claude_tool_response_into_internal_transcript_metadata() {
+        let update = json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call-read",
+            "_meta": {
+                "claudeCode": {
+                    "toolName": "Read",
+                    "toolResponse": { "content": "normalized output" }
+                }
+            }
+        });
+
+        let event = normalize_session_update(10, Some("session-1".to_string()), &update);
+        let raw = event.raw.as_ref().expect("normalized raw event");
+        assert_eq!(
+            raw.pointer("/_meta/agentTranscript/toolOutput"),
+            Some(&json!("normalized output"))
+        );
+        assert_eq!(
+            agent_transcript_tool_output(raw),
+            Some(&json!("normalized output"))
+        );
+    }
+
+    #[test]
     fn normalizes_claude_tool_name_for_a_parented_event_without_reclassifying_it_as_an_agent_launch()
      {
         let update = json!({
@@ -2104,7 +2160,7 @@ mod tests {
     }
 
     #[test]
-    fn leaves_unrelated_provider_metadata_without_agent_transcript_projection() {
+    fn normalizes_top_level_claude_tool_name_without_marking_an_agent_launch() {
         let update = json!({
             "sessionUpdate": "tool_call",
             "toolCallId": "call-read",
@@ -2116,13 +2172,14 @@ mod tests {
         });
 
         let event = normalize_session_update(15, Some("session-1".to_string()), &update);
-        assert!(
-            event
-                .raw
-                .as_ref()
-                .and_then(|raw| raw.pointer("/_meta/agentTranscript"))
-                .is_none()
-        );
+        let transcript = event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.pointer("/_meta/agentTranscript"))
+            .expect("normalized transcript metadata");
+        assert_eq!(transcript["toolName"], "Read");
+        assert!(transcript.get("agentLaunch").is_none());
+        assert!(transcript.get("parentToolCallId").is_none());
     }
 
     // --- existing tests ---

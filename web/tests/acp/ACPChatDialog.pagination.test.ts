@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  acpPaginationSeqBounds,
   createVisibleAcpSession,
   limitAcpEvents,
   loadedEventBufferLimit,
   mergeAcpEvents,
 } from '../../src/components/acp/ACPChatDialog';
+import { normalizeAcpEventForAttempt } from '../../src/lib/acp-event-normalization';
 import type { AcpSessionVm, AcpUiEventVm } from '../../src/types';
 
 function event(
@@ -21,6 +23,29 @@ function event(
 }
 
 describe('ACPChatDialog pagination buffer', () => {
+  it('derives continuation cursors only from the active attempt window', () => {
+    const previous = normalizeAcpEventForAttempt(
+      event({ id: 'previous', seq: 1, timestamp: '1Z', kind: 'textDelta' }),
+      'attempt-001',
+      1,
+    );
+    const activeOldest = normalizeAcpEventForAttempt(
+      event({ id: 'active-oldest', seq: 40, timestamp: '2Z', kind: 'textDelta' }),
+      'attempt-002',
+      2,
+    );
+    const activeNewest = normalizeAcpEventForAttempt(
+      event({ id: 'active-newest', seq: 80, timestamp: '3Z', kind: 'textDelta' }),
+      'attempt-002',
+      3,
+    );
+
+    expect(acpPaginationSeqBounds(
+      [previous, activeOldest, activeNewest],
+      'attempt-002',
+    )).toEqual({ oldestSeq: 40, newestSeq: 80 });
+  });
+
   it('keeps three configured pages in the sliding event buffer', () => {
     expect(loadedEventBufferLimit(360)).toBe(1080);
     expect(loadedEventBufferLimit(30)).toBe(90);

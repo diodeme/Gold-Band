@@ -164,8 +164,9 @@ impl AcpUsageState {
 }
 
 use crate::acp::branches::{
-    ROOT_BRANCH_ID, agent_prompt_event, annotate_event_branch, branch_route_for_event,
-    branch_timeline_path, event_branch_id, load_all_branch_events, migrate_legacy_agent_timeline,
+    ROOT_BRANCH_ID, agent_prompt_event, agent_result_event, annotate_event_branch,
+    branch_route_for_event, branch_timeline_path, event_branch_id, load_all_branch_events,
+    migrate_legacy_agent_timeline,
 };
 use crate::acp::commands::{AcpCommandItem, parse_available_commands};
 use crate::acp::connection::{
@@ -3706,8 +3707,16 @@ impl<'a> AcpRuntime<'a> {
         emit_live_update: bool,
     ) -> Result<()> {
         let mut timeline_item = self.timeline_item_for_event(event);
-        annotate_event_branch(&mut timeline_item);
         let agent_prompt = agent_prompt_event(&timeline_item);
+        let agent_result = agent_result_event(&timeline_item).filter(|result| {
+            !self.timeline_items.values().any(|existing| {
+                event_branch_id(existing) == event_branch_id(result)
+                    && existing.kind == "textDelta"
+                    && existing.content.as_deref().map(str::trim)
+                        == result.content.as_deref().map(str::trim)
+            })
+        });
+        annotate_event_branch(&mut timeline_item);
         self.timing_state.observe_event(&timeline_item);
         if let Some(timestamp) = parse_event_epoch_seconds(&timeline_item.timestamp) {
             timeline_item.timing = self
@@ -3726,6 +3735,14 @@ impl<'a> AcpRuntime<'a> {
             update_runtime_hot_timeline_items(&mut self.timeline_items, &agent_prompt);
             if emit_live_update {
                 self.emit_timeline_live_update(agent_prompt)?;
+            }
+        }
+        if let Some(agent_result) = agent_result {
+            self.timeline_revision = self.timeline_revision.saturating_add(1);
+            self.persist_timeline_update(agent_result.clone())?;
+            update_runtime_hot_timeline_items(&mut self.timeline_items, &agent_result);
+            if emit_live_update {
+                self.emit_timeline_live_update(agent_result)?;
             }
         }
         Ok(())

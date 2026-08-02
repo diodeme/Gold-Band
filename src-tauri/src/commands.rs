@@ -3318,9 +3318,7 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<ProfileCommandError>() {
         return CommandErrorVm::new(error.code(), error.params());
     }
-    if let Some(error) =
-        error.downcast_ref::<gold_band::acp::branches::ConversationBranchError>()
-    {
+    if let Some(error) = error.downcast_ref::<gold_band::acp::branches::ConversationBranchError>() {
         return CommandErrorVm::new(error.code(), serde_json::json!({}));
     }
     let message = error.to_string();

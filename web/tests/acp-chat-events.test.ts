@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildAcpTimeline,
+  applyAgentBranchResultToSession,
   calculateSessionElapsedSeconds,
   canInferPendingInteractionFromWindow,
   clearPendingOptimisticPromptsAfterStop,
@@ -76,6 +77,36 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
 }
 
 describe('ACP chat event handling', () => {
+  it('stops the read-only Agent session when its canonical result arrives', () => {
+    const current = session({
+      status: 'running',
+      sessionUpdatedAt: '10Z',
+      timing: {
+        sessionElapsedSeconds: 9,
+        activeTurnStartedAt: '1Z',
+        activeTurnLastActivityAt: '10Z',
+        paused: false,
+      },
+    });
+    const updated = applyAgentBranchResultToSession(current, event({
+      seq: 11,
+      timestamp: '11Z',
+      kind: 'textDelta',
+      status: 'completed',
+      raw: { source: 'agentBranchResult' },
+    }));
+
+    expect(updated).toMatchObject({
+      status: 'completed',
+      sessionUpdatedAt: '11Z',
+      timing: {
+        activeTurnStartedAt: null,
+        activeTurnLastActivityAt: null,
+        paused: true,
+      },
+    });
+  });
+
   it('does not treat the end of a truncated event window as the conversation bottom', () => {
     expect(isAcpConversationAtBottom(true, true)).toBe(false);
     expect(isAcpConversationAtBottom(true, false)).toBe(true);

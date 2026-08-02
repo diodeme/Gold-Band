@@ -657,6 +657,8 @@ pub struct AcpSessionVm {
     pub branch_id: String,
     pub parent_branch_id: Option<String>,
     pub read_only: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch_execution: Option<AcpAgentExecutionVm>,
     pub session_id: Option<String>,
     pub title: Option<String>,
     pub round_id: String,
@@ -3430,19 +3432,21 @@ pub fn dynamic_acp_session_vm(
         .get("status")
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
-    let status = effective_acp_session_status(
+    let root_status = effective_acp_session_status(
         metadata_status,
         gold_band::acp::client::prompt_activity(&attempt_dir),
     );
-    let stopping = is_acp_session_stopping_status(&status);
     let default_event_limit = app.config.acp_chat_event_page_size;
-    let active_status = is_acp_session_active_status(&status);
     let branch_id = query
         .as_ref()
         .and_then(|query| query.branch_id.clone())
         .unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
     gold_band::acp::branches::validate_conversation_branch_id(&branch_id)?;
-    let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &status)?;
+    let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &root_status)?;
+    let branch_record = conversation_branch_record(&agent_index, &branch_id);
+    let status = conversation_branch_status(&root_status, &branch_id, branch_record);
+    let stopping = is_acp_session_stopping_status(&status);
+    let active_status = is_acp_session_active_status(&status);
     let branch_timeline_path =
         gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
     let mut event_scan = scan_acp_timeline(
@@ -3451,11 +3455,13 @@ pub fn dynamic_acp_session_vm(
         active_status,
         default_event_limit,
     )?;
-    apply_agent_index_projection(&mut event_scan.timeline_projection, &agent_index);
-    let parent_branch_id = agent_index
-        .iter()
-        .find(|record| record.agent_execution_id == branch_id)
-        .and_then(|record| record.parent_agent_execution_id.clone());
+    apply_agent_index_projection(
+        &mut event_scan.timeline_projection,
+        &agent_index,
+        &branch_id,
+    );
+    let parent_branch_id =
+        branch_record.and_then(|record| record.parent_agent_execution_id.clone());
     let pending_permissions = if stopping || !active_status {
         Vec::new()
     } else {
@@ -3487,7 +3493,9 @@ pub fn dynamic_acp_session_vm(
     let adapter_icon_key = provider_icon_key(&provider);
     let session_timing = resolve_acp_session_timing(
         &status,
-        acp_session_timing_from_snapshot(&session),
+        (branch_id == gold_band::acp::branches::ROOT_BRANCH_ID)
+            .then(|| acp_session_timing_from_snapshot(&session))
+            .flatten(),
         event_scan.session_timing.clone(),
         event_scan.session_elapsed_seconds,
     );
@@ -3504,6 +3512,7 @@ pub fn dynamic_acp_session_vm(
         branch_id: branch_id.clone(),
         parent_branch_id,
         read_only: branch_id != gold_band::acp::branches::ROOT_BRANCH_ID,
+        branch_execution: branch_record.map(agent_execution_vm),
         session_id: continue_ref
             .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
             .and_then(|value| value.as_str())
@@ -3534,14 +3543,22 @@ pub fn dynamic_acp_session_vm(
         cwd,
         provider_cwd,
         status,
-        session_started_at: session
-            .get("createdAt")
-            .and_then(|value| value.as_str())
-            .map(str::to_string),
-        session_updated_at: session
-            .get("updatedAt")
-            .and_then(|value| value.as_str())
-            .map(str::to_string),
+        session_started_at: branch_record
+            .map(|record| record.started_at.clone())
+            .or_else(|| {
+                session
+                    .get("createdAt")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            }),
+        session_updated_at: branch_record
+            .map(|record| record.updated_at.clone())
+            .or_else(|| {
+                session
+                    .get("updatedAt")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            }),
         session_elapsed_seconds: event_scan.session_elapsed_seconds,
         timing: session_timing,
         restored: session
@@ -3559,7 +3576,9 @@ pub fn dynamic_acp_session_vm(
         timeline_projection: event_scan.timeline_projection,
         pending_permissions,
         available_commands: event_scan.available_commands,
-        usage: {
+        usage: if branch_id != gold_band::acp::branches::ROOT_BRANCH_ID {
+            None
+        } else {
             let mut u = event_scan.usage.unwrap_or_default();
             if u.used.is_none() {
                 u.used = session
@@ -3742,19 +3761,21 @@ pub fn acp_session_vm(
         .get("status")
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
-    let status = effective_acp_session_status(
+    let root_status = effective_acp_session_status(
         metadata_status,
         gold_band::acp::client::prompt_activity(&attempt_dir),
     );
-    let stopping = is_acp_session_stopping_status(&status);
     let default_event_limit = app.config.acp_chat_event_page_size;
-    let active_status = is_acp_session_active_status(&status);
     let branch_id = query
         .as_ref()
         .and_then(|query| query.branch_id.clone())
         .unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
     gold_band::acp::branches::validate_conversation_branch_id(&branch_id)?;
-    let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &status)?;
+    let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &root_status)?;
+    let branch_record = conversation_branch_record(&agent_index, &branch_id);
+    let status = conversation_branch_status(&root_status, &branch_id, branch_record);
+    let stopping = is_acp_session_stopping_status(&status);
+    let active_status = is_acp_session_active_status(&status);
     let branch_timeline_path =
         gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
     let mut event_scan = scan_acp_timeline(
@@ -3763,11 +3784,13 @@ pub fn acp_session_vm(
         active_status,
         default_event_limit,
     )?;
-    apply_agent_index_projection(&mut event_scan.timeline_projection, &agent_index);
-    let parent_branch_id = agent_index
-        .iter()
-        .find(|record| record.agent_execution_id == branch_id)
-        .and_then(|record| record.parent_agent_execution_id.clone());
+    apply_agent_index_projection(
+        &mut event_scan.timeline_projection,
+        &agent_index,
+        &branch_id,
+    );
+    let parent_branch_id =
+        branch_record.and_then(|record| record.parent_agent_execution_id.clone());
     let pending_permissions = if stopping || !active_status {
         Vec::new()
     } else {
@@ -3801,7 +3824,9 @@ pub fn acp_session_vm(
     let adapter_icon_key = provider_icon_key(&provider);
     let session_timing = resolve_acp_session_timing(
         &status,
-        acp_session_timing_from_snapshot(&session),
+        (branch_id == gold_band::acp::branches::ROOT_BRANCH_ID)
+            .then(|| acp_session_timing_from_snapshot(&session))
+            .flatten(),
         event_scan.session_timing.clone(),
         event_scan.session_elapsed_seconds,
     );
@@ -3819,6 +3844,7 @@ pub fn acp_session_vm(
         branch_id: branch_id.clone(),
         parent_branch_id,
         read_only: branch_id != gold_band::acp::branches::ROOT_BRANCH_ID,
+        branch_execution: branch_record.map(agent_execution_vm),
         session_id: continue_ref
             .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
             .and_then(|value| value.as_str())
@@ -3849,14 +3875,22 @@ pub fn acp_session_vm(
         cwd,
         provider_cwd,
         status,
-        session_started_at: session
-            .get("createdAt")
-            .and_then(|value| value.as_str())
-            .map(str::to_string),
-        session_updated_at: session
-            .get("updatedAt")
-            .and_then(|value| value.as_str())
-            .map(str::to_string),
+        session_started_at: branch_record
+            .map(|record| record.started_at.clone())
+            .or_else(|| {
+                session
+                    .get("createdAt")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            }),
+        session_updated_at: branch_record
+            .map(|record| record.updated_at.clone())
+            .or_else(|| {
+                session
+                    .get("updatedAt")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            }),
         session_elapsed_seconds: event_scan.session_elapsed_seconds,
         timing: session_timing,
         restored: session
@@ -3870,7 +3904,9 @@ pub fn acp_session_vm(
         system_prompt_append,
         config,
         available_commands: event_scan.available_commands,
-        usage: {
+        usage: if branch_id != gold_band::acp::branches::ROOT_BRANCH_ID {
+            None
+        } else {
             let mut u = event_scan.usage.unwrap_or_default();
             // Merge persisted session usage as fallback for restored sessions
             // where events may not contain a usage_update yet.
@@ -5335,26 +5371,63 @@ fn agent_event_meta_vm(event: &AcpUiEventVm) -> AgentEventMetaVm {
     }
 }
 
+fn conversation_branch_record<'a>(
+    records: &'a [gold_band::acp::branches::AgentExecutionRecord],
+    branch_id: &str,
+) -> Option<&'a gold_band::acp::branches::AgentExecutionRecord> {
+    (branch_id != gold_band::acp::branches::ROOT_BRANCH_ID)
+        .then(|| {
+            records
+                .iter()
+                .find(|record| record.agent_execution_id == branch_id)
+        })
+        .flatten()
+}
+
+fn conversation_branch_status(
+    root_status: &str,
+    branch_id: &str,
+    branch_record: Option<&gold_band::acp::branches::AgentExecutionRecord>,
+) -> String {
+    if branch_id == gold_band::acp::branches::ROOT_BRANCH_ID {
+        return root_status.to_string();
+    }
+    branch_record
+        .map(|record| record.status.clone())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 fn apply_agent_index_projection(
     projection: &mut AcpTimelineProjectionVm,
     records: &[gold_band::acp::branches::AgentExecutionRecord],
+    branch_id: &str,
 ) {
     projection.agents = records
         .iter()
-        .map(|record| AcpAgentExecutionVm {
-            agent_execution_id: record.agent_execution_id.clone(),
-            parent_agent_execution_id: record.parent_agent_execution_id.clone(),
-            execution_status: record.status.clone(),
-            event_count: record.event_count,
-            tool_call_count: record.tool_call_count,
-            read_file_count: record.read_file_count,
-            written_file_count: record.written_file_count,
-            has_attention: record.has_attention,
-            title: record.title.clone(),
-            description: record.description.clone(),
-            todo_entries: record.todo_entries.clone(),
+        .filter(|record| {
+            branch_id == gold_band::acp::branches::ROOT_BRANCH_ID
+                || record.parent_agent_execution_id.as_deref() == Some(branch_id)
         })
+        .map(agent_execution_vm)
         .collect();
+}
+
+fn agent_execution_vm(
+    record: &gold_band::acp::branches::AgentExecutionRecord,
+) -> AcpAgentExecutionVm {
+    AcpAgentExecutionVm {
+        agent_execution_id: record.agent_execution_id.clone(),
+        parent_agent_execution_id: record.parent_agent_execution_id.clone(),
+        execution_status: record.status.clone(),
+        event_count: record.event_count,
+        tool_call_count: record.tool_call_count,
+        read_file_count: record.read_file_count,
+        written_file_count: record.written_file_count,
+        has_attention: record.has_attention,
+        title: record.title.clone(),
+        description: record.description.clone(),
+        todo_entries: record.todo_entries.clone(),
+    }
 }
 
 fn build_acp_timeline_projection(
@@ -7140,6 +7213,32 @@ mod tests {
             ended_at: None,
             timing: None,
             raw: Some(json!({ "source": "goldBandPrompt" })),
+        }
+    }
+
+    fn test_agent_record(
+        agent_execution_id: &str,
+        parent_agent_execution_id: Option<&str>,
+        status: &str,
+    ) -> gold_band::acp::branches::AgentExecutionRecord {
+        gold_band::acp::branches::AgentExecutionRecord {
+            agent_execution_id: agent_execution_id.to_string(),
+            parent_agent_execution_id: parent_agent_execution_id.map(str::to_string),
+            launch_tool_call_id: format!("launch-{agent_execution_id}"),
+            session_id: "session-123".to_string(),
+            status: status.to_string(),
+            title: Some(agent_execution_id.to_string()),
+            description: None,
+            started_at: "100Z".to_string(),
+            updated_at: "120Z".to_string(),
+            ended_at: (status == "completed").then(|| "120Z".to_string()),
+            event_count: 1,
+            tool_call_count: 1,
+            read_file_count: 0,
+            written_file_count: 0,
+            has_attention: false,
+            latest_cursor: Some("seq:2".to_string()),
+            todo_entries: Vec::new(),
         }
     }
 
@@ -9630,6 +9729,51 @@ mod tests {
         assert!(value.get("toolCallId").is_none());
         assert!(value.get("parentToolCallId").is_none());
         assert!(value.get("launchStatus").is_none());
+    }
+
+    #[test]
+    fn agent_branch_session_uses_execution_status_instead_of_root_status() {
+        let agent = test_agent_record("agent-current", None, "completed");
+        let records = vec![agent];
+        let record = conversation_branch_record(&records, "agent-current");
+
+        assert_eq!(
+            conversation_branch_status("running", "agent-current", record),
+            "completed"
+        );
+        assert_eq!(
+            conversation_branch_status("running", gold_band::acp::branches::ROOT_BRANCH_ID, None),
+            "running"
+        );
+        assert_eq!(
+            conversation_branch_status("running", "agent-missing", None),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn agent_branch_projection_contains_only_direct_child_agents() {
+        let records = vec![
+            test_agent_record("agent-current", None, "running"),
+            test_agent_record("agent-child", Some("agent-current"), "running"),
+            test_agent_record("agent-grandchild", Some("agent-child"), "queued"),
+            test_agent_record("agent-sibling", None, "completed"),
+        ];
+        let mut branch_projection = AcpTimelineProjectionVm::default();
+        apply_agent_index_projection(&mut branch_projection, &records, "agent-current");
+        assert_eq!(branch_projection.agents.len(), 1);
+        assert_eq!(
+            branch_projection.agents[0].agent_execution_id,
+            "agent-child"
+        );
+
+        let mut root_projection = AcpTimelineProjectionVm::default();
+        apply_agent_index_projection(
+            &mut root_projection,
+            &records,
+            gold_band::acp::branches::ROOT_BRANCH_ID,
+        );
+        assert_eq!(root_projection.agents.len(), records.len());
     }
 
     #[test]

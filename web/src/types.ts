@@ -668,6 +668,7 @@ export interface AcpSessionVm {
   branchId: string;
   parentBranchId?: string | null;
   readOnly: boolean;
+  branchExecution?: AcpAgentExecutionVm | null;
   sessionId?: string | null;
   title?: string | null;
   roundId?: string | null;

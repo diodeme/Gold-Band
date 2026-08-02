@@ -61,6 +61,53 @@ describe('AppTitleBar', () => {
     expect(html).toContain('w-12 flex-none');
   });
 
+  it('places the left workspace control by the brand and the right control in the trailing action area', () => {
+    const source = readFileSync(path.resolve(__dirname, '../src/components/AppTitleBar.tsx'), 'utf8');
+    const html = renderToStaticMarkup(createElement(AppTitleBar, {
+      appName: 'Gold Band',
+      platform: 'windows',
+      sidebarCollapsed: false,
+      onToggleSidebar: () => {},
+      rightWorkspaceOpen: true,
+      onToggleRightWorkspace: () => {},
+    }));
+
+    const brandIndex = html.indexOf('data-titlebar-brand="true"');
+    const leftIndex = html.indexOf('data-titlebar-sidebar-toggle="left"');
+    const rightIndex = html.indexOf('data-titlebar-sidebar-toggle="right"');
+    expect(brandIndex).toBeGreaterThanOrEqual(0);
+    expect(leftIndex).toBeGreaterThan(brandIndex);
+    expect(rightIndex).toBeGreaterThan(leftIndex);
+    expect(html).toContain('workspace.closeWorkspace');
+    expect(html).toContain('data-state="open"');
+    expect(html).toContain('data-titlebar-trailing-actions="true"');
+    expect(html.match(/size-7 rounded-\[6px\]/g)).toHaveLength(2);
+    expect(source).toContain('<PanelLeft className="size-3.5" />');
+    expect(source).toContain('<PanelRight className="size-3.5" />');
+    expect(rightIndex).toBeLessThan(html.indexOf('common.minimizeWindow'));
+  });
+
+  it('keeps the macOS traffic-light inset on the left and the right workspace control in normal trailing flow', () => {
+    const html = renderToStaticMarkup(createElement(AppTitleBar, {
+      appName: 'Gold Band',
+      platform: 'macos',
+      sidebarCollapsed: false,
+      onToggleSidebar: () => {},
+      onToggleRightWorkspace: () => {},
+    }));
+
+    const insetIndex = html.indexOf('pl-[72px]');
+    const brandIndex = html.indexOf('data-titlebar-brand="true"');
+    const rightIndex = html.indexOf('data-titlebar-sidebar-toggle="right"');
+    expect(insetIndex).toBeGreaterThanOrEqual(0);
+    expect(brandIndex).toBeGreaterThan(insetIndex);
+    expect(rightIndex).toBeGreaterThan(brandIndex);
+    expect(html).toContain('data-titlebar-trailing-actions="true"');
+    expect(html).toContain('pr-2.5');
+    expect(html).not.toContain('common.minimizeWindow');
+    expect(html).not.toContain('absolute');
+  });
+
   it('keeps the shared titlebar draggable while excluding interactive controls', () => {
     const html = renderToStaticMarkup(createElement(AppTitleBar, {
       appName: 'Gold Band',

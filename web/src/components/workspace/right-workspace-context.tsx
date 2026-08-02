@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useReducer, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react';
 
 export interface AgentTranscriptLocator {
   projectId: string;
@@ -42,6 +42,7 @@ export interface RightWorkspaceState {
 
 interface RightWorkspaceContextValue extends RightWorkspaceState {
   openResource: (resource: RightWorkspaceResource) => void;
+  openWorkspace: () => void;
   activateTab: (key: string) => void;
   closeTab: (key: string) => void;
   closeWorkspace: () => void;
@@ -50,9 +51,11 @@ interface RightWorkspaceContextValue extends RightWorkspaceState {
 
 export type RightWorkspaceAction =
   | { type: 'open'; resource: RightWorkspaceResource }
+  | { type: 'open-workspace' }
   | { type: 'activate'; key: string }
   | { type: 'close'; key: string }
   | { type: 'close-workspace' }
+  | { type: 'hydrate-width'; width: number }
   | { type: 'set-width'; width: number };
 
 export const DEFAULT_RIGHT_WORKSPACE_WIDTH = 440;
@@ -77,6 +80,12 @@ export function rightWorkspaceReducer(state: RightWorkspaceState, action: RightW
         openRevision: state.openRevision + 1,
       };
     }
+    case 'open-workspace':
+      return {
+        ...state,
+        requestedOpen: true,
+        openRevision: state.openRevision + 1,
+      };
     case 'activate':
       return state.tabs.some((tab) => tab.key === action.key)
         ? { ...state, activeTabKey: action.key, requestedOpen: true }
@@ -88,34 +97,46 @@ export function rightWorkspaceReducer(state: RightWorkspaceState, action: RightW
       const activeTabKey = state.activeTabKey === action.key
         ? (tabs[Math.min(index, tabs.length - 1)]?.key ?? null)
         : state.activeTabKey;
-      return { ...state, tabs, activeTabKey, requestedOpen: tabs.length > 0 && state.requestedOpen };
+      return { ...state, tabs, activeTabKey };
     }
     case 'close-workspace':
       return { ...state, requestedOpen: false };
+    case 'hydrate-width':
+      return state.width === action.width ? state : { ...state, width: action.width };
     case 'set-width':
       return { ...state, width: action.width };
   }
 }
 
 export function RightWorkspaceProvider({ initialWidth, children }: { initialWidth?: number; children: ReactNode }) {
+  const widthTouchedRef = useRef(false);
   const [state, dispatch] = useReducer(
     rightWorkspaceReducer,
     initialWidth ?? DEFAULT_RIGHT_WORKSPACE_WIDTH,
     createInitialRightWorkspaceState,
   );
+  useEffect(() => {
+    if (widthTouchedRef.current || initialWidth == null) return;
+    dispatch({ type: 'hydrate-width', width: initialWidth });
+  }, [initialWidth]);
   const openResource = useCallback((resource: RightWorkspaceResource) => dispatch({ type: 'open', resource }), []);
+  const openWorkspace = useCallback(() => dispatch({ type: 'open-workspace' }), []);
   const activateTab = useCallback((key: string) => dispatch({ type: 'activate', key }), []);
   const closeTab = useCallback((key: string) => dispatch({ type: 'close', key }), []);
   const closeWorkspace = useCallback(() => dispatch({ type: 'close-workspace' }), []);
-  const setWidth = useCallback((width: number) => dispatch({ type: 'set-width', width }), []);
+  const setWidth = useCallback((width: number) => {
+    widthTouchedRef.current = true;
+    dispatch({ type: 'set-width', width });
+  }, []);
   const value = useMemo(() => ({
     ...state,
     openResource,
+    openWorkspace,
     activateTab,
     closeTab,
     closeWorkspace,
     setWidth,
-  }), [activateTab, closeTab, closeWorkspace, openResource, setWidth, state]);
+  }), [activateTab, closeTab, closeWorkspace, openResource, openWorkspace, setWidth, state]);
   return <RightWorkspaceContext.Provider value={value}>{children}</RightWorkspaceContext.Provider>;
 }
 

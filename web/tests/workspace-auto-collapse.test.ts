@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   reduceWorkspaceAutoCollapse,
   resolveRightWorkspaceMaxWidth,
+  resolveRightWorkspaceWidthFromLayout,
   shouldOpenRightWorkspaceSheet,
   WORKSPACE_LAYOUT_PROFILES,
   type WorkspaceAutoCollapseState,
@@ -102,6 +103,11 @@ describe('workspace auto collapse state machine', () => {
       centerMinWidth: 420,
       leftVisible: false,
     })).toBe(380);
+  });
+
+  it('converts the completed panel layout into a persisted right-side pixel width', () => {
+    expect(resolveRightWorkspaceWidthFromLayout({ 'workspace-center': 62.5, 'workspace-right': 37.5 }, 1_600)).toBe(600);
+    expect(resolveRightWorkspaceWidthFromLayout({ 'workspace-center': 100 }, 1_600)).toBeNull();
   });
 
   it('keeps an automatically collapsed workspace hidden until a resource is explicitly opened', () => {

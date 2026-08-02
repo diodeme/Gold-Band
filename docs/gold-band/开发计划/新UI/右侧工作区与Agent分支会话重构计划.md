@@ -183,7 +183,8 @@ windowMinWidth = 480
 - 用户拖动右侧分隔线时，左侧导航不自动关闭。
 - 右侧宽度在统一最小值、最大值之间变化。
 - 中间区域达到当前页面最小宽度后，继续拖动不再扩大右侧区域。
-- 右侧宽度保存到会话 UI preference，不能只保存到临时组件 state。保存使用 `ResizablePanelGroup.onLayoutChanged` 的 `isUserInteraction=true` 完成事件，不用连续 `onResize` 防抖推测拖动结束。
+- 窗口边缘拖动和 Panel 分隔线拖动都必须逐帧改变真实尺寸；禁止 debounce 成“停止拖动后才切换尺寸”。连续像素变化交给 WebView flex layout 与 `react-resizable-panels`，React 只提交跨折叠阈值后的离散呈现状态。
+- 左右宽度分别保存到会话 UI preference，不能只保存到临时组件 state。保存统一使用 `ResizablePanelGroup.onLayoutChanged` 的 `isUserInteraction=true` 完成事件，不使用连续 `onResize` 定时器推测拖动结束。
 - sidebar VM 异步加载偏好后必须 hydrate 已挂载的 `RightWorkspaceProvider`；fallback 初值不能永久占据 reducer，也不能在首次打开 Agent 时反写覆盖持久化宽度。
 - 拖动期间避免执行 timeline 重建、Markdown 重解析或面板内容重排。
 
@@ -466,8 +467,8 @@ ACP live event(branchId)
 3. 多 Tab 状态使用轻量描述符；timeline 缓存使用有限 LRU。
 4. 工具输出只在单条展开后解析。
 5. Activity 详情按需读取，避免一次读取几百 KB 或数 MB raw output。
-6. 分隔线拖动和整窗 resize 只更新布局状态，不重建 timeline projection。
-7. ResizeObserver 和宽度策略按 animation frame 批量处理，避免布局读写交错。
+6. 分隔线拖动和整窗 resize 的真实像素尺寸由原生窗口、浏览器 flex layout 与 `react-resizable-panels` 连续更新，不重建 timeline projection。
+7. ResizeObserver 按 animation frame 采样宽度，`previousWidth` 保存在 ref；同一折叠阈值区间内无论经过多少像素都不得提交 React state，只有 `{left,right}` 改变时更新工作区呈现。
 8. Agent summary 更新与 Agent transcript streaming 分层，主会话不消费子分支全部事件。
 9. 分页仍基于 cursor 和有限窗口，不扫描前端完整历史计算 total。
 10. 禁止为了多个已打开 Tab 将多个完整 ConversationViewport 长期隐藏挂载。
@@ -495,6 +496,7 @@ ACP live event(branchId)
 - Dock/Sheet 切换时仅保留 Sheet 的退出动画外壳；compact 状态结束即卸载其中的 `RightWorkspaceDock`，避免动画期间双挂载 Agent 会话与重复订阅。
 - 渠道 Tauri overlay 改为从基础 `tauri.conf.json` 完整继承主窗口配置，只覆盖渠道标题；删除 overlay 内独立的 1040px 最小宽度，避免浏览器状态机可达但 default/wb 客户端原生拖拽仍被旧约束截断。
 - 布局 profile 增加 `centerAutoCollapseWidth`，将中间硬下限和无右栏时的左栏自动收起舒适宽度分开；会话使用 360px/420px，保证原生最小窗口下即使右栏从未打开，左栏也能进入自动折叠态。
+- 优化窗口连续缩放热路径：删除 `availableWidth state -> autoCollapse state` 的每帧双提交，把 `previousWidth` 下沉到 ref；右栏使用 Resizable 原生 min/max 与中间 min 联合约束，不再每像素重算 max prop。左栏移除连续 `onResize` 持久化定时器，与右栏一起只在用户释放分隔线时保存；会话导航、置顶索引和右侧 Dock 增加稳定 memo/Set/Map 边界。单元契约以连续 100 个同区间像素样本固化零呈现更新，并保留跨阈值一次更新、迟滞及恢复顺序。
 
 ### Phase 2：统一 Agent 分支领域模型
 

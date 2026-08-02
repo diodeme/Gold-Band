@@ -30,6 +30,8 @@ export interface WorkspaceAutoCollapseState {
   right: boolean;
 }
 
+export type WorkspaceAutoCollapsePresentation = Pick<WorkspaceAutoCollapseState, 'left' | 'right'>;
+
 export interface WorkspaceAutoCollapseInput {
   availableWidth: number;
   centerMinWidth: number;
@@ -85,32 +87,43 @@ export function reduceWorkspaceAutoCollapse(
   return { previousWidth: availableWidth, left, right };
 }
 
-export function resolveRightWorkspaceMaxWidth({
-  availableWidth,
-  centerMinWidth,
-  leftWidth,
+export function workspaceAutoCollapsePresentationChanged(
+  current: WorkspaceAutoCollapsePresentation,
+  next: WorkspaceAutoCollapsePresentation,
+) {
+  return current.left !== next.left || current.right !== next.right;
+}
+
+export function resolveWorkspacePanelWidthFromLayout({
+  layout,
+  panelId,
+  groupWidth,
+  minWidth,
+  maxWidth,
 }: {
-  availableWidth: number;
-  centerMinWidth: number;
-  leftWidth: number;
+  layout: Layout;
+  panelId: string;
+  groupWidth: number;
+  minWidth: number;
+  maxWidth: number;
 }) {
-  if (availableWidth <= 0) return RIGHT_WORKSPACE_MAX_WIDTH;
-  const reservedWidth = centerMinWidth + Math.max(0, leftWidth);
+  const percentage = layout[panelId];
+  if (percentage == null || groupWidth <= 0) return null;
   return clamp(
-    availableWidth - reservedWidth,
-    RIGHT_WORKSPACE_MIN_WIDTH,
-    RIGHT_WORKSPACE_MAX_WIDTH,
+    Math.round(groupWidth * percentage / 100),
+    minWidth,
+    maxWidth,
   );
 }
 
 export function resolveRightWorkspaceWidthFromLayout(layout: Layout, groupWidth: number) {
-  const rightPercentage = layout['workspace-right'];
-  if (rightPercentage == null || groupWidth <= 0) return null;
-  return clamp(
-    Math.round(groupWidth * rightPercentage / 100),
-    RIGHT_WORKSPACE_MIN_WIDTH,
-    RIGHT_WORKSPACE_MAX_WIDTH,
-  );
+  return resolveWorkspacePanelWidthFromLayout({
+    layout,
+    panelId: 'workspace-right',
+    groupWidth,
+    minWidth: RIGHT_WORKSPACE_MIN_WIDTH,
+    maxWidth: RIGHT_WORKSPACE_MAX_WIDTH,
+  });
 }
 
 export function shouldOpenRightWorkspaceSheet({

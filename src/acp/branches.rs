@@ -68,6 +68,13 @@ pub struct ConversationBranchRoute {
     pub tool_name: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ConversationPlanOwnership {
+    Branch,
+    Unscoped,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentExecutionRecord {
@@ -142,6 +149,8 @@ pub fn branch_route_for_event(event: &AcpUiEvent) -> ConversationBranchRoute {
 
 pub fn annotate_event_branch(event: &mut AcpUiEvent) -> ConversationBranchRoute {
     let route = branch_route_for_event(event);
+    let plan_ownership = (event.kind == "plan")
+        .then(|| conversation_plan_ownership(event.raw.as_ref(), route.branch_id.as_str()));
     // Agent launch results belong to the launched branch's formal transcript.
     // Keep ordinary tool output normalized for the shared tool renderer, but do
     // not duplicate an Agent's final response into its parent link event.
@@ -170,18 +179,47 @@ pub fn annotate_event_branch(event: &mut AcpUiEvent) -> ConversationBranchRoute 
     if !meta.is_object() {
         *meta = json!({});
     }
+    let mut conversation = json!({
+        "branchId": route.branch_id,
+        "launchedAgentExecutionId": route.launched_agent_execution_id,
+        "toolName": route.tool_name,
+        "toolOutput": normalized_tool_output,
+    });
+    if let Some(ownership) = plan_ownership {
+        conversation
+            .as_object_mut()
+            .expect("normalized conversation metadata must be an object")
+            .insert(
+                "planOwnership".to_string(),
+                serde_json::to_value(ownership).expect("ConversationPlanOwnership must serialize"),
+            );
+    }
     meta.as_object_mut()
         .expect("normalized branch meta must be an object")
-        .insert(
-            BRANCH_META_KEY.to_string(),
-            json!({
-                "branchId": route.branch_id,
-                "launchedAgentExecutionId": route.launched_agent_execution_id,
-                "toolName": route.tool_name,
-                "toolOutput": normalized_tool_output,
-            }),
-        );
+        .insert(BRANCH_META_KEY.to_string(), conversation);
     route
+}
+
+pub fn conversation_plan_ownership(
+    raw: Option<&Value>,
+    branch_id: &str,
+) -> ConversationPlanOwnership {
+    let explicit = raw
+        .and_then(|raw| raw.pointer(&format!("/_meta/{BRANCH_META_KEY}/planOwnership")))
+        .and_then(|value| serde_json::from_value(value.clone()).ok());
+    if let Some(ownership) = explicit {
+        return ownership;
+    }
+    if branch_id != ROOT_BRANCH_ID
+        || raw
+            .and_then(extract_agent_transcript_relation)
+            .and_then(|relation| relation.parent_tool_call_id)
+            .is_some()
+    {
+        ConversationPlanOwnership::Branch
+    } else {
+        ConversationPlanOwnership::Unscoped
+    }
 }
 
 pub fn agent_prompt_event(launch: &AcpUiEvent) -> Option<AcpUiEvent> {
@@ -1236,7 +1274,11 @@ fn normalize_metric_path(path: &str) -> String {
 fn latest_plan_entries(events: &[AcpUiEvent]) -> Vec<Value> {
     events
         .iter()
-        .filter(|event| event.kind == "plan")
+        .filter(|event| {
+            event.kind == "plan"
+                && conversation_plan_ownership(event.raw.as_ref(), event_branch_id(event).as_str())
+                    == ConversationPlanOwnership::Branch
+        })
         .max_by_key(|event| event.ended_seq.unwrap_or(event.seq))
         .and_then(|event| event.raw.as_ref())
         .and_then(|raw| raw.get("entries").or_else(|| raw.pointer("/plan/entries")))
@@ -1370,6 +1412,49 @@ mod tests {
                 .as_ref()
                 .and_then(|raw| raw.pointer("/_meta/goldBandConversation/toolOutput")),
             Some(&json!("internal output"))
+        );
+    }
+
+    #[test]
+    fn branch_annotation_marks_plan_ownership_without_guessing_content() {
+        let mut root_plan = event_at(
+            "root-plan",
+            1,
+            "plan",
+            None,
+            Some("completed"),
+            json!({}),
+            None,
+        );
+        root_plan.raw.as_mut().unwrap()["entries"] = json!([
+            { "content": "text mentioning a child is not ownership", "status": "pending" }
+        ]);
+        annotate_event_branch(&mut root_plan);
+        assert_eq!(
+            root_plan
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/goldBandConversation/planOwnership")),
+            Some(&json!("unscoped"))
+        );
+
+        let mut branch_plan = event_at(
+            "branch-plan",
+            2,
+            "plan",
+            None,
+            Some("completed"),
+            json!({ "parentToolCallId": "provider-child" }),
+            None,
+        );
+        let route = annotate_event_branch(&mut branch_plan);
+        assert_ne!(route.branch_id, ROOT_BRANCH_ID);
+        assert_eq!(
+            branch_plan
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/goldBandConversation/planOwnership")),
+            Some(&json!("branch"))
         );
     }
 

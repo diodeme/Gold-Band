@@ -421,6 +421,8 @@ ACP live event(branchId)
 ## 13. 权限、TODO 与 attention 归属
 
 - TODO 在规范化阶段按 branch ID 归属，只显示在对应根分支或 Agent 分支。
+- Plan 归属使用内部 `planOwnership = branch | unscoped`。只有 provider relation 或现有内部 branch 定位能够证明归属时使用 `branch`；缺少 scope 的 session-wide plan 使用 `unscoped`，不得根据条目文本、Agent 名称或事件邻近猜测。
+- 没有 Agent execution 的普通根会话可以展示 `unscoped` plan；存在任意 Agent execution 时根分支 fail-closed 隐藏 `unscoped` plan，避免 provider 聚合 Todo 平铺回主会话。
 - 主会话不再通过文本内容去重来猜测哪些 TODO 属于嵌套 Agent。
 - 待决权限保存其 branch ID，并向所有祖先 Agent link 投影 attention 状态。
 - 根会话只显示 Agent link 的 attention，不把嵌套权限卡平铺到主消息流。
@@ -513,6 +515,7 @@ ACP live event(branchId)
 ### 16.2 会话与分页
 
 - 500 个嵌套工具事件、2 个顶层 Agent 的根会话只显示用户消息和 2 个 Agent link，且 `hasOlder=false` 时不显示历史提示。
+- Agent index 中有 2 个顶层、25 个嵌套 execution 时，根 projection 只返回 2 个顶层 Agent；任一 Agent branch 只返回 `parentAgentExecutionId` 指向自身的直属孩子。
 - 活动中 100 个工具和思考事件只形成一个会话语义块。
 - 折叠、展开活动不改变会话 cursor 和 `hasOlder`。
 - 展开活动只加载最近审计行，并可在内部“显示更早活动”。
@@ -527,6 +530,8 @@ ACP live event(branchId)
 - Agent 内权限申请使对应链接和 Tab 出现 attention；进入 Tab 后可以决策。
 - 已决权限不出现在活动审计详情。
 - TODO 只出现在所属分支，不平铺回根会话。
+- 存在 Agent execution 时，根 timeline 中没有 relation 的 session-wide plan 不生成 Todo；明确 scoped 的 Agent plan 仍在 Agent Tab 展示；没有 Agent execution 的普通根 plan 仍展示。
+- Todo 归属测试必须证明实现不读取条目自然语言进行 Agent 匹配。
 
 ### 16.4 实时和性能
 

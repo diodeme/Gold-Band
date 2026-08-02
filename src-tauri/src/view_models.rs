@@ -699,6 +699,8 @@ pub struct AcpSessionVm {
 pub struct AcpTimelineProjectionVm {
     pub agents: Vec<AcpAgentExecutionVm>,
     pub todo_entries: Vec<serde_json::Value>,
+    #[serde(skip)]
+    todo_ownership: Option<gold_band::acp::branches::ConversationPlanOwnership>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -5433,11 +5435,21 @@ fn apply_agent_index_projection(
     projection.agents = records
         .iter()
         .filter(|record| {
-            branch_id == gold_band::acp::branches::ROOT_BRANCH_ID
-                || record.parent_agent_execution_id.as_deref() == Some(branch_id)
+            if branch_id == gold_band::acp::branches::ROOT_BRANCH_ID {
+                record.parent_agent_execution_id.is_none()
+            } else {
+                record.parent_agent_execution_id.as_deref() == Some(branch_id)
+            }
         })
         .map(agent_execution_vm)
         .collect();
+    if branch_id == gold_band::acp::branches::ROOT_BRANCH_ID
+        && !records.is_empty()
+        && projection.todo_ownership
+            == Some(gold_band::acp::branches::ConversationPlanOwnership::Unscoped)
+    {
+        projection.todo_entries.clear();
+    }
 }
 
 fn agent_execution_vm(
@@ -5463,22 +5475,34 @@ fn build_acp_timeline_projection(
     _latest_permission_events: &HashMap<String, AcpUiEventVm>,
     _session_active: bool,
 ) -> AcpTimelineProjectionVm {
-    // A branch timeline already contains only that branch's events. Its latest
-    // plan therefore belongs to the branch by construction; no text overlap or
-    // provider parent-id inference is valid here. Agent lifecycle projection is
-    // supplied exclusively by `apply_agent_index_projection` below.
-    let todo_entries = all_events
+    // Plan ownership is fail-closed. Some ACP providers emit a session-wide
+    // aggregate plan without a branch relation; that plan remains unscoped and
+    // must not be guessed into the root or an Agent from its natural-language
+    // content. `apply_agent_index_projection` suppresses such root plans when
+    // the session contains Agent executions.
+    let latest_plan = all_events
         .iter()
         .filter(|event| event.kind == "plan")
-        .max_by_key(|event| event.ended_seq.unwrap_or(event.seq))
+        .max_by_key(|event| event.ended_seq.unwrap_or(event.seq));
+    let todo_entries = latest_plan
         .and_then(|event| event.raw.as_ref())
         .and_then(|raw| raw.get("entries").or_else(|| raw.pointer("/plan/entries")))
         .and_then(serde_json::Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let todo_ownership = latest_plan.map(|event| {
+        let branch_id = event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.pointer("/_meta/goldBandConversation/branchId"))
+            .and_then(Value::as_str)
+            .unwrap_or(gold_band::acp::branches::ROOT_BRANCH_ID);
+        gold_band::acp::branches::conversation_plan_ownership(event.raw.as_ref(), branch_id)
+    });
     AcpTimelineProjectionVm {
         agents: Vec::new(),
         todo_entries,
+        todo_ownership,
     }
 }
 
@@ -9813,7 +9837,130 @@ mod tests {
             &records,
             gold_band::acp::branches::ROOT_BRANCH_ID,
         );
-        assert_eq!(root_projection.agents.len(), records.len());
+        assert_eq!(root_projection.agents.len(), 2);
+        assert_eq!(
+            root_projection.agents[0].agent_execution_id,
+            "agent-current"
+        );
+        assert_eq!(
+            root_projection.agents[1].agent_execution_id,
+            "agent-sibling"
+        );
+    }
+
+    #[test]
+    fn root_projection_excludes_twenty_five_nested_agents() {
+        let mut records = vec![
+            test_agent_record("agent-top-a", None, "running"),
+            test_agent_record("agent-top-b", None, "running"),
+        ];
+        for index in 0..25 {
+            let id = format!("agent-nested-{index}");
+            let parent = if index % 2 == 0 {
+                "agent-top-a"
+            } else {
+                "agent-top-b"
+            };
+            records.push(test_agent_record(&id, Some(parent), "running"));
+        }
+
+        let mut projection = AcpTimelineProjectionVm::default();
+        apply_agent_index_projection(
+            &mut projection,
+            &records,
+            gold_band::acp::branches::ROOT_BRANCH_ID,
+        );
+
+        assert_eq!(projection.agents.len(), 2);
+        assert!(
+            projection
+                .agents
+                .iter()
+                .all(|agent| agent.parent_agent_execution_id.is_none())
+        );
+    }
+
+    #[test]
+    fn unscoped_session_plan_is_hidden_from_agent_root_without_text_inference() {
+        let plan = acp_event_at(
+            "session-plan",
+            "plan",
+            Some("completed"),
+            1_000,
+            Some(json!({
+                "entries": [{
+                    "content": "agent-top-a wording must not imply ownership",
+                    "status": "pending"
+                }],
+                "_meta": {
+                    "goldBandConversation": {
+                        "branchId": "root",
+                        "planOwnership": "unscoped"
+                    }
+                }
+            })),
+        );
+        let mut projection = build_acp_timeline_projection(&[plan], &HashMap::new(), true);
+        let records = vec![test_agent_record("agent-top-a", None, "running")];
+
+        apply_agent_index_projection(
+            &mut projection,
+            &records,
+            gold_band::acp::branches::ROOT_BRANCH_ID,
+        );
+
+        assert!(projection.todo_entries.is_empty());
+    }
+
+    #[test]
+    fn ordinary_root_and_explicit_agent_plans_keep_their_todos() {
+        let unscoped_root_plan = acp_event_at(
+            "root-plan",
+            "plan",
+            Some("completed"),
+            1_000,
+            Some(json!({
+                "entries": [{ "content": "ordinary root task", "status": "pending" }],
+                "_meta": {
+                    "goldBandConversation": {
+                        "branchId": "root",
+                        "planOwnership": "unscoped"
+                    }
+                }
+            })),
+        );
+        let mut root_projection =
+            build_acp_timeline_projection(&[unscoped_root_plan], &HashMap::new(), false);
+        apply_agent_index_projection(
+            &mut root_projection,
+            &[],
+            gold_band::acp::branches::ROOT_BRANCH_ID,
+        );
+        assert_eq!(root_projection.todo_entries.len(), 1);
+
+        let branch_plan = acp_event_at(
+            "branch-plan",
+            "plan",
+            Some("completed"),
+            2_000,
+            Some(json!({
+                "entries": [{ "content": "agent task", "status": "in_progress" }],
+                "_meta": {
+                    "goldBandConversation": {
+                        "branchId": "agent-current",
+                        "planOwnership": "branch"
+                    }
+                }
+            })),
+        );
+        let mut branch_projection =
+            build_acp_timeline_projection(&[branch_plan], &HashMap::new(), true);
+        apply_agent_index_projection(
+            &mut branch_projection,
+            &[test_agent_record("agent-current", None, "running")],
+            "agent-current",
+        );
+        assert_eq!(branch_projection.todo_entries.len(), 1);
     }
 
     #[test]

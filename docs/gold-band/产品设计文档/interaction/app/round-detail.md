@@ -307,6 +307,7 @@ MVP 中 Round 详情页由 Tauri command `get_round_detail` 提供 view model，
 - 2026-05-12 验收修正：从节点详情抽屉打开 artifact / attachment 内容后，“返回节点”和关闭当前产物详情必须恢复原节点详情抽屉，保留当前 node selection，不允许直接关闭到 Round 主页。
 - 2026-05-12 验收修正：节点详情抽屉头部不重复展示长节点说明，只保留紧凑“查看详情 / 查看会话”切换；ACP 会话头部压缩为名称、Raw frames 小按钮和 provider session id 两行，不展示 ACP session status 以免与节点 canonical status 混淆；Raw frames 摘要和展开内容必须受抽屉宽度约束，长 JSON 不允许横向撑出窗口。
 - 2026-05-12 验收修正：ACP 会话抽屉禁止因 Raw frames 切换、raw frame 展开或 tool call 展开自动滑到底部；点击发送到 `session/prompt` 请求完成前显示“发送中”，消息发出后等待 ACP 响应时切换为“处理中”，右侧乐观用户气泡同步切换状态；pending/running 空事件态与运行过程的处理中动效、当前步骤计时统一放在 composer 内，总耗时按每轮请求-响应耗时累加并常驻展示，不作为消息流卡片；permission request 使用轻量 inline action bar；thought/tool/plan 状态不展示头像但保留工具卡横向位置，工具卡高度更紧凑；工具标题左对齐显示“操作名 + 次级参数”。
+- 2026-08-02 起会话中的 Agent 不再以内嵌折叠 transcript 展示，而是作为轻量链接在通用右侧工作区打开只读分支会话。父分支只展示直属 Agent；嵌套 Agent 在直接父 Agent 会话中逐级出现。Plan 必须携带内部 `branch | unscoped` 归属，存在 Agent execution 时根会话不展示无法确认归属的 session-wide Todo，也不根据文字猜测归属。
 
 ---
 

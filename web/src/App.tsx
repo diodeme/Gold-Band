@@ -124,6 +124,11 @@ import {
   createDraftConversationWorkspaceScope,
 } from '@/components/workspace/right-workspace-context';
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
+import { syncDesktopWindowMinimum } from '@/lib/desktop-window-layout';
+import {
+  FALLBACK_WORKSPACE_LAYOUT,
+  workspaceLayoutProfileForSurface,
+} from '@/components/workspace/workspace-layout';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
@@ -200,6 +205,7 @@ const defaultAppInfo: AppInfoVm = {
 const defaultAppConfig: AppConfigVm = {
   acpSessionTitleRefreshEnabled: false,
   acpChatEventPageSize: 360,
+  workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
 };
 type RefreshMode = 'initial' | 'manual' | 'background';
 type VisibleRefreshMode = Exclude<RefreshMode, 'background'>;
@@ -244,6 +250,7 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof localStorage !== 'undefined' && localStorage.getItem('gold-band-sidebar-collapsed') === 'true');
   const [bootstrap, setBootstrap] = useState<AppBootstrapVm | null>(null);
   const windowRevealedRef = useRef(false);
+  const windowLayoutSyncRef = useRef<Promise<void>>(Promise.resolve());
   const [primaryModule, setPrimaryModule] = useState<PrimaryModule>(initialRoute.module);
   const [taskPage, setTaskPage] = useState<TaskPage>(initialRoute.taskPage);
   const [conversationPage, setConversationPage] = useState<ConversationPage>(initialRoute.conversationPage);
@@ -427,6 +434,15 @@ export function App() {
   const showUpdatesSectionDot = availableUpdateVersion !== null;
   const appInfo = bootstrap?.appInfo ?? defaultAppInfo;
   const appConfig = bootstrap?.appConfig ?? defaultAppConfig;
+  const activeWorkspaceLayoutProfile = useMemo(
+    () => workspaceLayoutProfileForSurface({
+      uiMode,
+      conversationPage,
+      primaryModule,
+      layout: appConfig.workspaceLayout,
+    }),
+    [appConfig.workspaceLayout, conversationPage, primaryModule, uiMode],
+  );
   const shouldShowUpdateAnnouncement = useMemo(
     () => availableUpdateVersion !== null && updateBadges.announcementClosedVersion !== availableUpdateVersion,
     [availableUpdateVersion, updateBadges.announcementClosedVersion],
@@ -455,15 +471,31 @@ export function App() {
   }, [sidebarCollapsed]);
 
   useEffect(() => {
-    if (!isTauriRuntime() || !bootstrap || windowRevealedRef.current) return;
-    windowRevealedRef.current = true;
+    if (!isTauriRuntime() || !bootstrap) return;
+    let cancelled = false;
     const revealWindow = async () => {
       const appWindow = getCurrentWindow();
-      await syncDesktopWindowSurface(resolveThemePreference(preferences.theme));
-      await appWindow.show().catch(() => {});
+      if (!windowRevealedRef.current) {
+        await syncDesktopWindowSurface(resolveThemePreference(preferences.theme));
+      }
+      await syncDesktopWindowMinimum(
+        appWindow,
+        appConfig.workspaceLayout,
+        activeWorkspaceLayoutProfile,
+      ).catch(() => {});
+      if (cancelled || windowRevealedRef.current) return;
+      windowRevealedRef.current = true;
+      await appWindow.show().catch(() => {
+        windowRevealedRef.current = false;
+      });
     };
-    void revealWindow();
-  }, [bootstrap, preferences.theme]);
+    windowLayoutSyncRef.current = windowLayoutSyncRef.current
+      .catch(() => {})
+      .then(revealWindow);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeWorkspaceLayoutProfile, appConfig.workspaceLayout, bootstrap, preferences.theme]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -1442,6 +1474,7 @@ export function App() {
       feedbackEnabled={appInfo.feedbackEnabled}
       platform={bootstrap?.platform}
       windowFrameStyle={bootstrap?.windowChrome.frameStyle}
+      appConfig={appConfig}
       repoRoot={bootstrap?.repoRoot}
       needsWorkspace={bootstrap?.needsWorkspace}
       showSettingsUpdateDot={showSettingsUpdateDot}

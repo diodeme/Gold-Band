@@ -1,6 +1,6 @@
 import { Bot, Boxes, ChevronsUpDown, Command, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopUiMode, DesktopWindowFrameStyle, PrimaryModule } from '../types';
+import type { AppConfigVm, ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopUiMode, DesktopWindowFrameStyle, PrimaryModule } from '../types';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -18,6 +18,7 @@ interface ShellProps {
   feedbackEnabled?: boolean;
   platform?: DesktopPlatform | null;
   windowFrameStyle?: DesktopWindowFrameStyle;
+  appConfig: AppConfigVm;
   repoRoot?: string;
   needsWorkspace?: boolean;
   showSettingsUpdateDot?: boolean;
@@ -45,7 +46,7 @@ interface ShellProps {
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, conversationRunStopping = false, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, conversationTaskUuid, conversationWorkspaceStore, children }: ShellProps) {
+export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, conversationRunStopping = false, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, conversationTaskUuid, conversationWorkspaceStore, children }: ShellProps) {
   if (uiMode === 'conversation') {
     return (
       <WorkspaceShell
@@ -53,6 +54,7 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
         feedbackEnabled={feedbackEnabled}
         platform={platform}
         windowFrameStyle={windowFrameStyle}
+        appConfig={appConfig}
         vm={conversationSidebar}
         active={conversationPage}
         sidebarCollapsed={sidebarCollapsed}

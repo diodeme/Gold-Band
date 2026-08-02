@@ -1,28 +1,45 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  FALLBACK_WORKSPACE_LAYOUT,
   reduceWorkspaceAutoCollapse,
   resolveRightWorkspaceMaxWidth,
   resolveRightWorkspaceWidthFromLayout,
   shouldOpenRightWorkspaceSheet,
-  WORKSPACE_LAYOUT_PROFILES,
+  workspaceLayoutProfileForPage,
+  workspaceLayoutProfileForSurface,
   type WorkspaceAutoCollapseState,
-} from '@/components/workspace/WorkspaceShell';
+} from '@/components/workspace/workspace-layout';
 
 const initial = (): WorkspaceAutoCollapseState => ({ previousWidth: 1_100, left: false, right: false });
 
 describe('workspace auto collapse state machine', () => {
   it('lets text conversations become narrower than card and canvas pages', () => {
-    expect(WORKSPACE_LAYOUT_PROFILES.conversation.centerMinWidth).toBe(360);
-    expect(WORKSPACE_LAYOUT_PROFILES.conversation.centerMinWidth)
-      .toBeLessThan(WORKSPACE_LAYOUT_PROFILES.contextCards.centerMinWidth);
-    expect(WORKSPACE_LAYOUT_PROFILES.conversation.centerMinWidth)
-      .toBeLessThan(WORKSPACE_LAYOUT_PROFILES.workflowCanvas.centerMinWidth);
+    expect(FALLBACK_WORKSPACE_LAYOUT.conversation.centerMinWidth).toBe(360);
+    expect(FALLBACK_WORKSPACE_LAYOUT.conversation.centerMinWidth)
+      .toBeLessThan(FALLBACK_WORKSPACE_LAYOUT.contextCards.centerMinWidth);
+    expect(FALLBACK_WORKSPACE_LAYOUT.conversation.centerMinWidth)
+      .toBeLessThan(FALLBACK_WORKSPACE_LAYOUT.workflowCanvas.centerMinWidth);
+    expect(FALLBACK_WORKSPACE_LAYOUT.conversation.centerAutoCollapseWidth)
+      .toBeGreaterThan(FALLBACK_WORKSPACE_LAYOUT.conversation.centerMinWidth);
+  });
+
+  it('resolves page profiles from the bootstrapped app configuration', () => {
+    expect(workspaceLayoutProfileForPage({ kind: 'conversation-home' }, FALLBACK_WORKSPACE_LAYOUT))
+      .toBe(FALLBACK_WORKSPACE_LAYOUT.conversation);
+    expect(workspaceLayoutProfileForPage({ kind: 'contexts' }, FALLBACK_WORKSPACE_LAYOUT))
+      .toBe(FALLBACK_WORKSPACE_LAYOUT.contextCards);
+    expect(workspaceLayoutProfileForSurface({
+      uiMode: 'workbench',
+      conversationPage: { kind: 'conversation-home' },
+      primaryModule: 'settings',
+      layout: FALLBACK_WORKSPACE_LAYOUT,
+    })).toBe(FALLBACK_WORKSPACE_LAYOUT.settings);
   });
 
   it('collapses left then right while shrinking and restores right then left while growing', () => {
-    const input = { centerMinWidth: 420, sidebarManuallyCollapsed: false, wantsRight: true };
-    const leftCollapsed = reduceWorkspaceAutoCollapse(initial(), { ...input, availableWidth: 900 });
+    const input = { centerMinWidth: 420, centerAutoCollapseWidth: 480, sidebarWidth: 256, sidebarManuallyCollapsed: false, wantsRight: true };
+    const leftCollapsed = reduceWorkspaceAutoCollapse(initial(), { ...input, availableWidth: 950 });
     expect(leftCollapsed).toMatchObject({ left: true, right: false });
 
     const bothCollapsed = reduceWorkspaceAutoCollapse(leftCollapsed, { ...input, availableWidth: 700 });
@@ -31,7 +48,7 @@ describe('workspace auto collapse state machine', () => {
     const rightRestored = reduceWorkspaceAutoCollapse(bothCollapsed, { ...input, availableWidth: 800 });
     expect(rightRestored).toMatchObject({ left: true, right: false });
 
-    const bothRestored = reduceWorkspaceAutoCollapse(rightRestored, { ...input, availableWidth: 1_000 });
+    const bothRestored = reduceWorkspaceAutoCollapse(rightRestored, { ...input, availableWidth: 1_100 });
     expect(bothRestored).toMatchObject({ left: false, right: false });
   });
 
@@ -41,6 +58,8 @@ describe('workspace auto collapse state machine', () => {
       {
         availableWidth: 1_100,
         centerMinWidth: 420,
+        centerAutoCollapseWidth: 480,
+        sidebarWidth: 256,
         sidebarManuallyCollapsed: false,
         wantsRight: true,
       },
@@ -49,11 +68,11 @@ describe('workspace auto collapse state machine', () => {
   });
 
   it('uses hysteresis so a boundary oscillation does not flicker', () => {
-    const input = { centerMinWidth: 420, sidebarManuallyCollapsed: false, wantsRight: true };
-    const collapsed = reduceWorkspaceAutoCollapse(initial(), { ...input, availableWidth: 900 });
-    const nearBoundary = reduceWorkspaceAutoCollapse(collapsed, { ...input, availableWidth: 960 });
+    const input = { centerMinWidth: 420, centerAutoCollapseWidth: 480, sidebarWidth: 256, sidebarManuallyCollapsed: false, wantsRight: true };
+    const collapsed = reduceWorkspaceAutoCollapse(initial(), { ...input, availableWidth: 950 });
+    const nearBoundary = reduceWorkspaceAutoCollapse(collapsed, { ...input, availableWidth: 1_020 });
     expect(nearBoundary.left).toBe(true);
-    const restored = reduceWorkspaceAutoCollapse(nearBoundary, { ...input, availableWidth: 990 });
+    const restored = reduceWorkspaceAutoCollapse(nearBoundary, { ...input, availableWidth: 1_050 });
     expect(restored.left).toBe(false);
   });
 
@@ -61,6 +80,8 @@ describe('workspace auto collapse state machine', () => {
     const manualLeft = reduceWorkspaceAutoCollapse(initial(), {
       availableWidth: 700,
       centerMinWidth: 420,
+      centerAutoCollapseWidth: 480,
+      sidebarWidth: 256,
       sidebarManuallyCollapsed: true,
       wantsRight: true,
     });
@@ -68,7 +89,7 @@ describe('workspace auto collapse state machine', () => {
 
     const noWorkspace = reduceWorkspaceAutoCollapse(
       { previousWidth: 700, left: true, right: true },
-      { availableWidth: 720, centerMinWidth: 420, sidebarManuallyCollapsed: false, wantsRight: false },
+      { availableWidth: 720, centerMinWidth: 420, centerAutoCollapseWidth: 480, sidebarWidth: 256, sidebarManuallyCollapsed: false, wantsRight: false },
     );
     expect(noWorkspace.right).toBe(false);
   });
@@ -76,32 +97,50 @@ describe('workspace auto collapse state machine', () => {
   it('applies the responsive order when a workspace opens at an already narrow width', () => {
     const openedWithRoomAfterNavigation = reduceWorkspaceAutoCollapse(
       { previousWidth: 800, left: false, right: false },
-      { availableWidth: 800, centerMinWidth: 420, sidebarManuallyCollapsed: false, wantsRight: true },
+      { availableWidth: 950, centerMinWidth: 420, centerAutoCollapseWidth: 480, sidebarWidth: 256, sidebarManuallyCollapsed: false, wantsRight: true },
     );
     expect(openedWithRoomAfterNavigation).toMatchObject({ left: true, right: false });
 
     const openedCompact = reduceWorkspaceAutoCollapse(
       { previousWidth: 700, left: false, right: false },
-      { availableWidth: 700, centerMinWidth: 420, sidebarManuallyCollapsed: false, wantsRight: true },
+      { availableWidth: 700, centerMinWidth: 420, centerAutoCollapseWidth: 480, sidebarWidth: 256, sidebarManuallyCollapsed: false, wantsRight: true },
     );
     expect(openedCompact).toMatchObject({ left: true, right: true });
+  });
+
+  it('uses the center comfort width to collapse the left sidebar when no right workspace is open', () => {
+    const input = {
+      centerMinWidth: 360,
+      centerAutoCollapseWidth: 420,
+      sidebarWidth: 256,
+      sidebarManuallyCollapsed: false,
+      wantsRight: false,
+    };
+    const collapsed = reduceWorkspaceAutoCollapse(initial(), { ...input, availableWidth: 650 });
+    expect(collapsed).toMatchObject({ left: true, right: false });
+
+    const heldByHysteresis = reduceWorkspaceAutoCollapse(collapsed, { ...input, availableWidth: 700 });
+    expect(heldByHysteresis.left).toBe(true);
+
+    const restored = reduceWorkspaceAutoCollapse(heldByHysteresis, { ...input, availableWidth: 730 });
+    expect(restored.left).toBe(false);
   });
 
   it('caps right-side dragging before the center crosses its page minimum', () => {
     expect(resolveRightWorkspaceMaxWidth({
       availableWidth: 1_000,
       centerMinWidth: 420,
-      leftVisible: true,
-    })).toBe(380);
+      leftWidth: 256,
+    })).toBe(324);
     expect(resolveRightWorkspaceMaxWidth({
       availableWidth: 1_400,
       centerMinWidth: 420,
-      leftVisible: true,
+      leftWidth: 256,
     })).toBe(720);
     expect(resolveRightWorkspaceMaxWidth({
       availableWidth: 800,
       centerMinWidth: 420,
-      leftVisible: false,
+      leftWidth: 0,
     })).toBe(380);
   });
 

@@ -86,6 +86,26 @@ pub struct AppBootstrapVm {
 pub struct AppConfigVm {
     pub acp_session_title_refresh_enabled: bool,
     pub acp_chat_event_page_size: usize,
+    pub workspace_layout: WorkspaceLayoutVm,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceLayoutVm {
+    pub shell_min_width: u32,
+    pub shell_min_height: u32,
+    pub conversation: WorkspaceLayoutProfileVm,
+    pub context_cards: WorkspaceLayoutProfileVm,
+    pub workflow_canvas: WorkspaceLayoutProfileVm,
+    pub settings: WorkspaceLayoutProfileVm,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceLayoutProfileVm {
+    pub center_min_width: u32,
+    pub center_auto_collapse_width: u32,
+    pub window_min_width: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1126,9 +1146,23 @@ fn persisted_available_update_vm(
 }
 
 fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
+    let profile_vm =
+        |profile: &gold_band::config::WorkspaceLayoutProfileConfig| WorkspaceLayoutProfileVm {
+            center_min_width: profile.center_min_width,
+            center_auto_collapse_width: profile.center_auto_collapse_width,
+            window_min_width: profile.window_min_width,
+        };
     AppConfigVm {
         acp_session_title_refresh_enabled: config.acp_session_title_refresh_enabled,
         acp_chat_event_page_size: config.acp_chat_event_page_size,
+        workspace_layout: WorkspaceLayoutVm {
+            shell_min_width: config.workspace_layout.shell_min_width,
+            shell_min_height: config.workspace_layout.shell_min_height,
+            conversation: profile_vm(&config.workspace_layout.conversation),
+            context_cards: profile_vm(&config.workspace_layout.context_cards),
+            workflow_canvas: profile_vm(&config.workspace_layout.workflow_canvas),
+            settings: profile_vm(&config.workspace_layout.settings),
+        },
     }
 }
 
@@ -7368,6 +7402,23 @@ mod tests {
     use camino::Utf8PathBuf;
     use gold_band::app::App;
     use serde_json::json;
+
+    #[test]
+    fn app_config_vm_exposes_workspace_layout_contract() {
+        let vm = app_config_vm(&RuntimeConfig::default());
+        let value = serde_json::to_value(vm).unwrap();
+
+        assert_eq!(value["workspaceLayout"]["shellMinWidth"], 480);
+        assert_eq!(value["workspaceLayout"]["shellMinHeight"], 680);
+        assert_eq!(
+            value["workspaceLayout"]["conversation"]["centerMinWidth"],
+            360
+        );
+        assert_eq!(
+            value["workspaceLayout"]["workflowCanvas"]["windowMinWidth"],
+            640
+        );
+    }
 
     fn test_event(kind: &str, content: &str) -> AcpUiEventVm {
         AcpUiEventVm {

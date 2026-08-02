@@ -707,7 +707,83 @@ pub struct ProjectAppConfig {
     pub notification_auto_dismiss_target_secs: Option<u64>,
     pub require_local_claude_executable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_layout: Option<WorkspaceLayoutConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_mapping: Option<BTreeMap<String, BTreeMap<String, String>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceLayoutProfileConfig {
+    pub center_min_width: u32,
+    pub center_auto_collapse_width: u32,
+    pub window_min_width: u32,
+}
+
+impl WorkspaceLayoutProfileConfig {
+    fn normalized(self, shell_min_width: u32) -> Self {
+        let center_min_width = self.center_min_width.max(1);
+        Self {
+            center_min_width,
+            center_auto_collapse_width: self.center_auto_collapse_width.max(center_min_width),
+            window_min_width: self
+                .window_min_width
+                .max(center_min_width)
+                .max(shell_min_width),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceLayoutConfig {
+    pub shell_min_width: u32,
+    pub shell_min_height: u32,
+    pub conversation: WorkspaceLayoutProfileConfig,
+    pub context_cards: WorkspaceLayoutProfileConfig,
+    pub workflow_canvas: WorkspaceLayoutProfileConfig,
+    pub settings: WorkspaceLayoutProfileConfig,
+}
+
+impl WorkspaceLayoutConfig {
+    fn normalized(mut self) -> Self {
+        self.shell_min_width = self.shell_min_width.max(1);
+        self.shell_min_height = self.shell_min_height.max(1);
+        self.conversation = self.conversation.normalized(self.shell_min_width);
+        self.context_cards = self.context_cards.normalized(self.shell_min_width);
+        self.workflow_canvas = self.workflow_canvas.normalized(self.shell_min_width);
+        self.settings = self.settings.normalized(self.shell_min_width);
+        self
+    }
+}
+
+impl Default for WorkspaceLayoutConfig {
+    fn default() -> Self {
+        Self {
+            shell_min_width: 480,
+            shell_min_height: 680,
+            conversation: WorkspaceLayoutProfileConfig {
+                center_min_width: 360,
+                center_auto_collapse_width: 420,
+                window_min_width: 480,
+            },
+            context_cards: WorkspaceLayoutProfileConfig {
+                center_min_width: 520,
+                center_auto_collapse_width: 520,
+                window_min_width: 520,
+            },
+            workflow_canvas: WorkspaceLayoutProfileConfig {
+                center_min_width: 640,
+                center_auto_collapse_width: 640,
+                window_min_width: 640,
+            },
+            settings: WorkspaceLayoutProfileConfig {
+                center_min_width: 480,
+                center_auto_collapse_width: 480,
+                window_min_width: 480,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -752,6 +828,7 @@ pub struct RuntimeConfig {
     pub acp_timeline_compact_patch_ratio: usize,
     pub conversation_auto_title_max_chars: usize,
     pub notification_auto_dismiss_target_secs: u64,
+    pub workspace_layout: WorkspaceLayoutConfig,
     pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub provider_diagnostics: BTreeMap<String, ProviderDiagnosticSnapshot>,
@@ -795,6 +872,7 @@ impl Default for RuntimeConfig {
             acp_timeline_compact_patch_ratio: 4,
             conversation_auto_title_max_chars: DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS,
             notification_auto_dismiss_target_secs: DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS,
+            workspace_layout: WorkspaceLayoutConfig::default(),
             permission_mode_mapping: BTreeMap::new(),
             provider_diagnostics: BTreeMap::new(),
         };
@@ -927,6 +1005,9 @@ impl RuntimeConfig {
         if let Some(require_local_claude_executable) = app_config.require_local_claude_executable {
             self.require_local_claude_executable = require_local_claude_executable;
         }
+        if let Some(workspace_layout) = &app_config.workspace_layout {
+            self.workspace_layout = workspace_layout.clone().normalized();
+        }
         if let Some(ref mapping) = app_config.permission_mode_mapping {
             self.permission_mode_mapping = mapping.clone();
         }
@@ -966,7 +1047,7 @@ mod tests {
         ConversationRunModeEntry, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
         DesktopUpdateBadgeState, MANAGED_AGENT_PRESETS, ManagedAgentConfig, ManagedAgentId,
         ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
-        managed_agent_preset,
+        WorkspaceLayoutConfig, managed_agent_preset,
     };
     use std::collections::BTreeMap;
     use std::str::FromStr;
@@ -1237,6 +1318,46 @@ mod tests {
         assert_eq!(config.conversation_auto_title_max_chars, 20);
         assert_eq!(config.notification_auto_dismiss_target_secs, 12);
         assert!(config.require_local_claude_executable);
+    }
+
+    #[test]
+    fn embedded_app_config_defines_page_window_layout_profiles() {
+        let layout = RuntimeConfig::default().workspace_layout;
+
+        assert_eq!(layout.shell_min_width, 480);
+        assert_eq!(layout.shell_min_height, 680);
+        assert_eq!(layout.conversation.center_min_width, 360);
+        assert_eq!(layout.conversation.center_auto_collapse_width, 420);
+        assert_eq!(layout.conversation.window_min_width, 480);
+        assert_eq!(layout.context_cards.window_min_width, 520);
+        assert_eq!(layout.workflow_canvas.window_min_width, 640);
+        assert_eq!(layout.settings.window_min_width, 480);
+    }
+
+    #[test]
+    fn app_config_normalizes_invalid_workspace_layout_thresholds() {
+        let mut layout = WorkspaceLayoutConfig::default();
+        layout.shell_min_width = 500;
+        layout.shell_min_height = 0;
+        layout.conversation.center_min_width = 420;
+        layout.conversation.center_auto_collapse_width = 360;
+        layout.conversation.window_min_width = 400;
+
+        let config = RuntimeConfig::default().apply_app_config(&ProjectAppConfig {
+            workspace_layout: Some(layout),
+            ..Default::default()
+        });
+
+        assert_eq!(config.workspace_layout.shell_min_height, 1);
+        assert_eq!(config.workspace_layout.conversation.center_min_width, 420);
+        assert_eq!(
+            config
+                .workspace_layout
+                .conversation
+                .center_auto_collapse_width,
+            420
+        );
+        assert_eq!(config.workspace_layout.conversation.window_min_width, 500);
     }
 
     #[test]

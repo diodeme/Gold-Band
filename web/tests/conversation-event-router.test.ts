@@ -71,6 +71,22 @@ describe('conversation event router', () => {
     expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({ status: 'running', revision: 1 });
   });
 
+  it('marks an Agent completed when its canonical branch result arrives', () => {
+    applyConversationEventToBranchSnapshots(live('agent-a', uiEvent('toolCall', 'running')));
+    applyConversationEventToBranchSnapshots(live('agent-a', {
+      ...uiEvent('textDelta', 'completed'),
+      seq: 2,
+      raw: { source: 'agentBranchResult' },
+    }));
+
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({
+      status: 'completed',
+      attention: false,
+      revision: 2,
+      contentRevision: 2,
+    });
+  });
+
   it('projects permission attention and clears it only after the decision event', () => {
     applyConversationEventToBranchSnapshots(live('agent-a', uiEvent('permissionRequest', 'pending')));
     expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({ status: 'waiting_permission', attention: true });

@@ -18,6 +18,7 @@ use crate::storage::{ensure_parent_dir, write_json};
 
 pub const ROOT_BRANCH_ID: &str = "root";
 const BRANCH_META_KEY: &str = "goldBandConversation";
+const AGENT_RESULT_MIGRATION_MARKER: &str = ".acp-agent-result-migration-v1";
 const AGENT_NAMESPACE: Uuid = Uuid::from_u128(0x63c7f8ac_1498_4f6e_8f6d_62f2f04033f1);
 const AGENT_INDEX_CACHE_CAPACITY: usize = 16;
 
@@ -78,6 +79,7 @@ pub struct AgentExecutionRecord {
     pub title: Option<String>,
     pub description: Option<String>,
     pub started_at: String,
+    pub updated_at: String,
     pub ended_at: Option<String>,
     pub event_count: usize,
     pub tool_call_count: usize,
@@ -161,6 +163,9 @@ pub fn annotate_event_branch(event: &mut AcpUiEvent) -> ConversationBranchRoute 
     let object = raw
         .as_object_mut()
         .expect("normalized branch raw must be an object");
+    if route.launched_agent_execution_id.is_some() {
+        strip_agent_launch_output(object);
+    }
     let meta = object.entry("_meta").or_insert_with(|| json!({}));
     if !meta.is_object() {
         *meta = json!({});
@@ -224,6 +229,123 @@ pub fn agent_prompt_event(launch: &AcpUiEvent) -> Option<AcpUiEvent> {
     };
     annotate_event_branch_override(&mut event, &agent_execution_id);
     Some(event)
+}
+
+pub fn agent_result_event(launch: &AcpUiEvent) -> Option<AcpUiEvent> {
+    let output = launch.raw.as_ref().and_then(agent_transcript_tool_output)?;
+    agent_result_event_from_output(launch, output)
+}
+
+fn legacy_agent_result_event(launch: &AcpUiEvent) -> Option<AcpUiEvent> {
+    let started_seq = launch.started_seq.unwrap_or(launch.seq);
+    let ended_seq = launch.ended_seq.unwrap_or(launch.seq);
+    if ended_seq <= started_seq.saturating_add(1)
+        || !matches!(
+            launch
+                .status
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .as_str(),
+            "completed" | "success" | "succeeded"
+        )
+    {
+        return None;
+    }
+    let raw = launch.raw.as_ref()?;
+    raw.get("content")
+        .or_else(|| raw.get("rawOutput"))
+        .and_then(|output| agent_result_event_from_output(launch, output))
+}
+
+fn agent_result_event_from_output(launch: &AcpUiEvent, output: &Value) -> Option<AcpUiEvent> {
+    let route = branch_route_for_event(launch);
+    let agent_execution_id = route.launched_agent_execution_id?;
+    let content = agent_output_text(output)?;
+    let seq = launch.ended_seq.unwrap_or(launch.seq);
+    let timestamp = launch
+        .ended_at
+        .clone()
+        .unwrap_or_else(|| launch.timestamp.clone());
+    let mut event = AcpUiEvent {
+        id: format!("agent-result-{agent_execution_id}"),
+        seq,
+        timestamp: timestamp.clone(),
+        kind: "textDelta".to_string(),
+        session_id: launch.session_id.clone(),
+        content: Some(content),
+        title: Some("Agent result".to_string()),
+        tool_call_id: None,
+        status: Some("completed".to_string()),
+        started_seq: Some(seq),
+        ended_seq: Some(seq),
+        started_at: Some(timestamp.clone()),
+        ended_at: Some(timestamp),
+        timing: launch.timing.clone(),
+        raw: Some(json!({
+            "source": "agentBranchResult",
+            "_meta": {}
+        })),
+    };
+    annotate_event_branch_override(&mut event, &agent_execution_id);
+    Some(event)
+}
+
+fn agent_output_text(output: &Value) -> Option<String> {
+    fn collect(value: &Value, parts: &mut Vec<String>) {
+        match value {
+            Value::String(text) if !text.trim().is_empty() => parts.push(text.clone()),
+            Value::Array(items) => {
+                for item in items {
+                    collect(item, parts);
+                }
+            }
+            Value::Object(object) => {
+                if let Some(text) = object
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.trim().is_empty())
+                {
+                    parts.push(text.to_string());
+                } else if let Some(content) = object.get("content") {
+                    collect(content, parts);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut parts = Vec::new();
+    collect(output, &mut parts);
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
+fn strip_agent_launch_output(raw: &mut serde_json::Map<String, Value>) {
+    for key in ["rawOutput", "output", "content"] {
+        raw.remove(key);
+    }
+    if let Some(meta) = raw.get_mut("_meta").and_then(Value::as_object_mut) {
+        if let Some(transcript) = meta
+            .get_mut("agentTranscript")
+            .and_then(Value::as_object_mut)
+        {
+            transcript.remove("toolOutput");
+        }
+        if let Some(provider) = meta.get_mut("claudeCode").and_then(Value::as_object_mut) {
+            provider.remove("toolResponse");
+        }
+    }
+}
+
+fn agent_launch_has_embedded_output(event: &AcpUiEvent) -> bool {
+    let Some(raw) = event.raw.as_ref() else {
+        return false;
+    };
+    ["rawOutput", "output", "content"]
+        .into_iter()
+        .any(|key| raw.get(key).is_some())
+        || raw.pointer("/_meta/agentTranscript/toolOutput").is_some()
+        || raw.pointer("/_meta/claudeCode/toolResponse").is_some()
 }
 
 fn annotate_event_branch_override(event: &mut AcpUiEvent, branch_id: &str) {
@@ -330,14 +452,21 @@ pub fn migrate_legacy_events_timeline(attempt_dir: &Utf8Path) -> Result<bool> {
 
     let mut by_branch = BTreeMap::<String, Vec<AcpUiEvent>>::new();
     for mut event in canonical {
-        let route = annotate_event_branch(&mut event);
         let prompt = agent_prompt_event(&event);
+        let result = agent_result_event(&event).or_else(|| legacy_agent_result_event(&event));
+        let route = annotate_event_branch(&mut event);
         by_branch.entry(route.branch_id).or_default().push(event);
         if let Some(prompt) = prompt {
             by_branch
                 .entry(event_branch_id(&prompt))
                 .or_default()
                 .push(prompt);
+        }
+        if let Some(result) = result {
+            by_branch
+                .entry(event_branch_id(&result))
+                .or_default()
+                .push(result);
         }
     }
     for events in by_branch.values_mut() {
@@ -474,14 +603,21 @@ pub fn migrate_legacy_agent_timeline(attempt_dir: &Utf8Path) -> Result<bool> {
     }
     let mut by_branch = BTreeMap::<String, Vec<AcpUiEvent>>::new();
     for mut event in events.drain(..) {
-        let route = annotate_event_branch(&mut event);
         let prompt = agent_prompt_event(&event);
+        let result = agent_result_event(&event).or_else(|| legacy_agent_result_event(&event));
+        let route = annotate_event_branch(&mut event);
         by_branch.entry(route.branch_id).or_default().push(event);
         if let Some(prompt) = prompt {
             by_branch
                 .entry(event_branch_id(&prompt))
                 .or_default()
                 .push(prompt);
+        }
+        if let Some(result) = result {
+            by_branch
+                .entry(event_branch_id(&result))
+                .or_default()
+                .push(result);
         }
     }
     write_timeline_items(
@@ -519,6 +655,82 @@ pub fn load_all_branch_events(attempt_dir: &Utf8Path) -> Result<Vec<AcpUiEvent>>
     Ok(events)
 }
 
+/// One-time repair for conversations written before Agent launch results were
+/// materialized as formal text in the launched branch.
+fn migrate_legacy_agent_results(attempt_dir: &Utf8Path) -> Result<bool> {
+    let marker = attempt_dir.join(AGENT_RESULT_MIGRATION_MARKER);
+    if marker.exists() {
+        return Ok(false);
+    }
+
+    let mut timeline_paths = vec![branch_timeline_path(attempt_dir, ROOT_BRANCH_ID)];
+    let agents_dir = attempt_dir.join("agents");
+    if agents_dir.exists() {
+        for entry in std::fs::read_dir(agents_dir.as_std_path())? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let Some(branch_dir) = Utf8PathBuf::from_path_buf(entry.path()).ok() else {
+                continue;
+            };
+            timeline_paths.push(branch_dir.join("timeline.jsonl"));
+        }
+    }
+    timeline_paths.sort();
+
+    let mut changed = false;
+    let mut results = BTreeMap::<String, AcpUiEvent>::new();
+    for path in &timeline_paths {
+        let mut events = load_timeline_items(path)?;
+        let mut path_changed = false;
+        for event in &mut events {
+            if branch_route_for_event(event)
+                .launched_agent_execution_id
+                .is_none()
+            {
+                continue;
+            }
+            if let Some(result) =
+                agent_result_event(event).or_else(|| legacy_agent_result_event(event))
+            {
+                let branch_id = event_branch_id(&result);
+                let should_replace = results
+                    .get(&branch_id)
+                    .is_none_or(|current| result.seq >= current.seq);
+                if should_replace {
+                    results.insert(branch_id, result);
+                }
+            }
+            let had_embedded_output = agent_launch_has_embedded_output(event);
+            annotate_event_branch(event);
+            path_changed |= had_embedded_output;
+        }
+        if path_changed {
+            write_timeline_items(path, &events)?;
+            changed = true;
+        }
+    }
+
+    for (branch_id, result) in results {
+        let path = branch_timeline_path(attempt_dir, &branch_id);
+        let mut events = load_timeline_items(&path)?;
+        if events
+            .iter()
+            .any(|event| equivalent_agent_result(event, &result))
+        {
+            continue;
+        }
+        events.push(result);
+        events.sort_by_key(|event| (event.started_seq.unwrap_or(event.seq), event.seq));
+        write_timeline_items(&path, &events)?;
+        changed = true;
+    }
+
+    write_json(&marker, &json!({ "version": 1 }))?;
+    Ok(changed)
+}
+
 pub fn rebuild_agent_index(
     attempt_dir: &Utf8Path,
     session_status: &str,
@@ -532,6 +744,7 @@ pub fn rebuild_agent_index(
         "cancelled" | "canceled" | "interrupted" | "stopped"
     );
     migrate_legacy_agent_timeline(attempt_dir)?;
+    migrate_legacy_agent_results(attempt_dir)?;
     let source_signature = agent_index_source_signature(attempt_dir, session_status)?;
     if let Some(records) = cached_agent_index(attempt_dir, &source_signature) {
         return Ok(records);
@@ -615,6 +828,8 @@ pub fn rebuild_agent_index(
                 } else {
                     "interrupted"
                 }
+            } else if has_agent_completion_evidence(&execution_events) {
+                "completed"
             } else if execution_events.is_empty() {
                 "queued"
             } else if !agent_launch_runs_in_background(&launch)
@@ -635,15 +850,15 @@ pub fn rebuild_agent_index(
                 .and_then(|input| input.get("description"))
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            let ended_at =
-                matches!(status.as_str(), "completed" | "failed" | "interrupted").then(|| {
-                    latest_timestamp.unwrap_or_else(|| {
-                        launch
-                            .ended_at
-                            .clone()
-                            .unwrap_or_else(|| launch.timestamp.clone())
-                    })
-                });
+            let updated_at = latest_timestamp.unwrap_or_else(|| {
+                launch
+                    .ended_at
+                    .clone()
+                    .or_else(|| launch.started_at.clone())
+                    .unwrap_or_else(|| launch.timestamp.clone())
+            });
+            let ended_at = matches!(status.as_str(), "completed" | "failed" | "interrupted")
+                .then(|| updated_at.clone());
             AgentExecutionRecord {
                 agent_execution_id,
                 parent_agent_execution_id,
@@ -656,6 +871,7 @@ pub fn rebuild_agent_index(
                     .started_at
                     .clone()
                     .unwrap_or_else(|| launch.timestamp.clone()),
+                updated_at,
                 ended_at,
                 event_count: execution_events.len(),
                 tool_call_count: metrics.tool_call_count,
@@ -923,18 +1139,24 @@ fn is_agent_prompt_event(event: &AcpUiEvent) -> bool {
         == Some("agentBranchPrompt")
 }
 
+fn is_agent_result_event(event: &AcpUiEvent) -> bool {
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("source"))
+        .and_then(Value::as_str)
+        == Some("agentBranchResult")
+}
+
+fn equivalent_agent_result(existing: &AcpUiEvent, result: &AcpUiEvent) -> bool {
+    is_agent_result_event(existing)
+        || (existing.kind == "textDelta"
+            && existing.content.as_deref().map(str::trim)
+                == result.content.as_deref().map(str::trim))
+}
+
 fn has_agent_completion_evidence(events: &[&AcpUiEvent]) -> bool {
-    let Some(latest) = events
-        .iter()
-        .max_by_key(|event| event.ended_seq.unwrap_or(event.seq))
-    else {
-        return false;
-    };
-    latest.kind == "textDelta"
-        && latest
-            .content
-            .as_deref()
-            .is_some_and(|content| !content.trim().is_empty())
+    events.iter().any(|event| is_agent_result_event(event))
 }
 
 fn agent_launch_runs_in_background(event: &AcpUiEvent) -> bool {
@@ -1061,14 +1283,21 @@ mod tests {
     fn persist_partitioned(attempt_dir: &Utf8Path, events: Vec<AcpUiEvent>) {
         let mut by_branch = BTreeMap::<String, Vec<AcpUiEvent>>::new();
         for mut event in events {
-            let route = annotate_event_branch(&mut event);
             let prompt = agent_prompt_event(&event);
+            let result = agent_result_event(&event);
+            let route = annotate_event_branch(&mut event);
             by_branch.entry(route.branch_id).or_default().push(event);
             if let Some(prompt) = prompt {
                 by_branch
                     .entry(event_branch_id(&prompt))
                     .or_default()
                     .push(prompt);
+            }
+            if let Some(result) = result {
+                by_branch
+                    .entry(event_branch_id(&result))
+                    .or_default()
+                    .push(result);
             }
         }
         for (branch_id, events) in by_branch {
@@ -1113,6 +1342,37 @@ mod tests {
                 .as_ref()
                 .and_then(|raw| raw.pointer("/_meta/goldBandConversation/toolOutput")),
             Some(&json!("internal output"))
+        );
+    }
+
+    #[test]
+    fn agent_launch_result_moves_to_the_launched_branch() {
+        let mut launch = event_at(
+            "launch",
+            5,
+            "toolCall",
+            Some("provider-agent"),
+            Some("completed"),
+            json!({ "agentLaunch": true, "toolOutput": [{ "type": "text", "text": "final answer" }] }),
+            Some(json!({ "prompt": "inspect" })),
+        );
+        launch.raw.as_mut().unwrap()["content"] =
+            json!([{ "type": "text", "text": "duplicate parent output" }]);
+
+        let result = agent_result_event(&launch).expect("canonical Agent result");
+        let branch_id = stable_agent_execution_id("session-1", "provider-agent");
+        assert_eq!(event_branch_id(&result), branch_id);
+        assert_eq!(result.content.as_deref(), Some("final answer"));
+        assert!(is_agent_result_event(&result));
+
+        annotate_event_branch(&mut launch);
+        let raw = launch.raw.as_ref().unwrap();
+        assert!(raw.get("content").is_none());
+        assert!(raw.pointer("/_meta/agentTranscript/toolOutput").is_none());
+        assert_eq!(
+            raw.pointer("/_meta/goldBandConversation/launchedAgentExecutionId")
+                .and_then(Value::as_str),
+            Some(branch_id.as_str())
         );
     }
 
@@ -1292,7 +1552,7 @@ mod tests {
             None,
         );
         user.content = Some("root prompt".to_string());
-        let launch = event_at(
+        let mut launch = event_at(
             "launch",
             2,
             "toolCall",
@@ -1301,6 +1561,8 @@ mod tests {
             json!({ "agentLaunch": true }),
             Some(json!({ "prompt": "child prompt", "description": "child" })),
         );
+        launch.raw.as_mut().unwrap()["_meta"]["agentTranscript"]["toolOutput"] =
+            json!("child result");
         let child = event_at(
             "child-read",
             3,
@@ -1326,6 +1588,18 @@ mod tests {
         assert!(root.iter().any(|event| event.id == "launch"));
         assert!(branch.iter().any(|event| event.id == "child-read"));
         assert!(branch.iter().any(is_agent_prompt_event));
+        assert!(branch.iter().any(|event| {
+            is_agent_result_event(event) && event.content.as_deref() == Some("child result")
+        }));
+        let root_launch = root.iter().find(|event| event.id == "launch").unwrap();
+        assert!(
+            root_launch
+                .raw
+                .as_ref()
+                .unwrap()
+                .pointer("/_meta/agentTranscript/toolOutput")
+                .is_none()
+        );
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 
@@ -1378,10 +1652,10 @@ mod tests {
         text.content = Some("partial answer".to_string());
         persist_partitioned(&attempt, vec![launch, text]);
 
-        assert_eq!(
-            rebuild_agent_index(&attempt, "running").unwrap()[0].status,
-            "running"
-        );
+        let running = rebuild_agent_index(&attempt, "running").unwrap();
+        assert_eq!(running[0].status, "running");
+        assert_eq!(running[0].updated_at, "2Z");
+        assert!(running[0].ended_at.is_none());
         assert_eq!(
             rebuild_agent_index(&attempt, "completed").unwrap()[0].status,
             "completed"
@@ -1390,6 +1664,35 @@ mod tests {
             rebuild_agent_index(&attempt, "stopped").unwrap()[0].status,
             "interrupted"
         );
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn canonical_background_agent_result_completes_while_root_session_keeps_running() {
+        let attempt = temp_attempt("background-result");
+        let launch = event_at(
+            "launch",
+            1,
+            "toolCall",
+            Some("provider-child"),
+            Some("completed"),
+            json!({ "agentLaunch": true, "toolOutput": "verified final answer" }),
+            Some(json!({ "run_in_background": true, "description": "child" })),
+        );
+        persist_partitioned(&attempt, vec![launch]);
+
+        let records = rebuild_agent_index(&attempt, "running").unwrap();
+        assert_eq!(records[0].status, "completed");
+        let branch = load_timeline_items(&branch_timeline_path(
+            &attempt,
+            &records[0].agent_execution_id,
+        ))
+        .unwrap();
+        let result = branch
+            .iter()
+            .find(|event| is_agent_result_event(event))
+            .unwrap();
+        assert_eq!(result.content.as_deref(), Some("verified final answer"));
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 

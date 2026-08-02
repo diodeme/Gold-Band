@@ -70,6 +70,10 @@ export function applyConversationEventToBranchSnapshots(event: AcpSessionUpdated
       updateBranchSnapshot(key, current.status, current.attention, true);
       return;
     }
+    if (isAgentBranchResult(event.event)) {
+      updateBranchSnapshot(key, 'completed', false, true);
+      return;
+    }
     const request = event.event.kind === 'permissionRequest' || event.event.kind === 'elicitationRequest';
     const response = event.event.kind === 'elicitationResponse';
     const interaction = request || response;
@@ -103,6 +107,11 @@ export function applyConversationEventToBranchSnapshots(event: AcpSessionUpdated
 function isSyntheticAgentPrompt(event: AcpSessionUpdatedEventVm['event']) {
   if (!event?.raw || typeof event.raw !== 'object' || Array.isArray(event.raw)) return false;
   return (event.raw as Record<string, unknown>).source === 'agentBranchPrompt';
+}
+
+function isAgentBranchResult(event: AcpSessionUpdatedEventVm['event']) {
+  if (!event?.raw || typeof event.raw !== 'object' || Array.isArray(event.raw)) return false;
+  return (event.raw as Record<string, unknown>).source === 'agentBranchResult';
 }
 
 function updateBranchSnapshot(

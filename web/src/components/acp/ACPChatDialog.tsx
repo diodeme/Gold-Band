@@ -250,6 +250,7 @@ interface ACPChatDialogProps {
   manualCheckPending?: boolean;
   systemPromptOptions?: Array<{ attemptId: string; prompt?: string | null }>;
   showSystemPromptAction?: boolean;
+  showRawFramesAction?: boolean;
   directSessionHeader?: AcpDirectSessionHeaderProps;
   eventIdPrefix?: string;
   eventPageSize?: number;
@@ -632,6 +633,7 @@ export const ACPChatDialog = forwardRef<
     manualCheckPending = false,
     systemPromptOptions,
     showSystemPromptAction = true,
+    showRawFramesAction = true,
     directSessionHeader,
     eventIdPrefix,
     eventPageSize,
@@ -1596,14 +1598,20 @@ export const ACPChatDialog = forwardRef<
       .filter((event): event is AcpUiEventVm => Boolean(event));
     if (normalizedEvents.length === 0) return;
     const latestTiming = latestLiveSessionTimingFromEvents(normalizedEvents);
-    if (latestTiming) {
+    const branchResult = latestAgentBranchResult(normalizedEvents);
+    if (latestTiming || branchResult) {
       setCurrentSession((current) => {
         const latest = latestSessionRef.current;
         const base =
           latest && (!current || shouldPreferAcpSessionMetadata(latest, current))
             ? latest
             : (current ?? latest);
-        const updated = stabilizeAcpSessionTimingPatchForDisplay(base, latestTiming);
+        let updated = latestTiming
+          ? stabilizeAcpSessionTimingPatchForDisplay(base, latestTiming)
+          : (base ?? null);
+        if (branchResult) {
+          updated = applyAgentBranchResultToSession(updated, branchResult);
+        }
         const reconciled = reconcileAcpSessionForDisplay(latest, updated);
         latestSessionRef.current = reconciled;
         return reconciled;
@@ -2780,6 +2788,7 @@ export const ACPChatDialog = forwardRef<
         rawActive={canvasMode === "raw"}
         rawLoading={rawLoading}
         showSystemPromptAction={showSystemPromptAction}
+        showRawFramesAction={showRawFramesAction}
         directSessionHeader={directSessionHeader}
         systemPromptAvailable={
           Boolean(effective.systemPromptAppend?.trim()) ||
@@ -2788,6 +2797,13 @@ export const ACPChatDialog = forwardRef<
         onToggleRaw={toggleRawFrames}
         onOpenSystemPrompt={() => setSystemPromptOpen(true)}
       />
+      {readOnly && effective.branchExecution ? (
+        <AgentBranchSessionSummary
+          execution={effective.branchExecution}
+          status={effective.status}
+          elapsedSeconds={effective.timing?.sessionElapsedSeconds ?? effective.sessionElapsedSeconds}
+        />
+      ) : null}
       <SystemPromptDialog
         open={systemPromptOpen}
         prompt={effective.systemPromptAppend}
@@ -3464,6 +3480,7 @@ export function ACPSessionHeader({
   rawActive,
   rawLoading,
   showSystemPromptAction = true,
+  showRawFramesAction = true,
   directSessionHeader,
   systemPromptAvailable,
   onToggleRaw,
@@ -3473,6 +3490,7 @@ export function ACPSessionHeader({
   rawActive: boolean;
   rawLoading: boolean;
   showSystemPromptAction?: boolean;
+  showRawFramesAction?: boolean;
   directSessionHeader?: AcpDirectSessionHeaderProps;
   systemPromptAvailable?: boolean;
   onToggleRaw: () => void;
@@ -3625,21 +3643,24 @@ export function ACPSessionHeader({
               {t("acp.systemPrompt")}
             </Button>
           ) : null}
-          <Button
-            size="sm"
-            variant={rawActive ? "default" : "outline"}
-            className={cn(
-              "h-5.5 gap-1 px-2 text-[10px] font-normal",
-              rawActive
-                ? "bg-primary/18 text-foreground hover:bg-primary/24"
-                : "border-border/60 bg-background/22 text-foreground/80 hover:bg-background/38",
-            )}
-            onClick={onToggleRaw}
-            disabled={rawLoading}
-          >
-            {rawLoading ? <Loader2 className="size-3 animate-spin" /> : null}
-            {t("acp.rawFrames")}
-          </Button>
+          {showRawFramesAction ? (
+            <Button
+              size="sm"
+              variant={rawActive ? "default" : "outline"}
+              className={cn(
+                "h-5.5 gap-1 px-2 text-[10px] font-normal",
+                rawActive
+                  ? "bg-primary/18 text-foreground hover:bg-primary/24"
+                  : "border-border/60 bg-background/22 text-foreground/80 hover:bg-background/38",
+              )}
+              onClick={onToggleRaw}
+              disabled={rawLoading}
+              data-acp-raw-frames-action="true"
+            >
+              {rawLoading ? <Loader2 className="size-3 animate-spin" /> : null}
+              {t("acp.rawFrames")}
+            </Button>
+          ) : null}
           {directSessionHeader?.onOpenInFileManager ? (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -6701,6 +6722,41 @@ function latestLiveSessionTimingFromEvents(events: AcpUiEventVm[]): AcpSessionTi
   );
 }
 
+function isAgentBranchResultEvent(event: AcpUiEventVm) {
+  if (!event.raw || typeof event.raw !== "object" || Array.isArray(event.raw)) return false;
+  return (event.raw as Record<string, unknown>).source === "agentBranchResult";
+}
+
+function latestAgentBranchResult(events: AcpUiEventVm[]) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (isAgentBranchResultEvent(events[index])) return events[index];
+  }
+  return null;
+}
+
+function applyAgentBranchResultToSession(
+  session: AcpSessionVm | null | undefined,
+  result: AcpUiEventVm,
+): AcpSessionVm | null {
+  if (!session || !isAgentBranchResultEvent(result)) return session ?? null;
+  return {
+    ...session,
+    status: "completed",
+    sessionUpdatedAt: result.endedAt ?? result.timestamp ?? session.sessionUpdatedAt,
+    timing: session.timing
+      ? {
+          ...session.timing,
+          activeTurnStartedAt: null,
+          activeTurnLastActivityAt: null,
+          permissionWaitStartedAt: null,
+          userWaitStartedAt: null,
+          waitReason: null,
+          paused: true,
+        }
+      : session.timing,
+  };
+}
+
 function isVersionedLiveTimingPatch(timing: AcpUiEventVm["timing"]) {
   return timing?.revision != null && Boolean(timing.observedAt);
 }
@@ -7173,6 +7229,7 @@ export {
   createLiveAcpSessionShell,
   createVisibleAcpSession,
   acpPaginationSeqBounds,
+  applyAgentBranchResultToSession,
   latestLiveSessionTimingFromEvents,
   latestSessionTimingFromEvents,
   liveTimelineUpdatesFromEvents,

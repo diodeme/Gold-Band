@@ -1346,20 +1346,22 @@ pub fn normalize_agent_transcript_metadata(value: &mut Value) -> Option<AgentTra
 }
 
 pub fn agent_transcript_tool_output(raw: &Value) -> Option<&Value> {
-    raw.pointer(&format!(
-        "/_meta/{AGENT_TRANSCRIPT_META_KEY}/toolOutput"
-    ))
-    .or_else(|| {
-        raw.pointer(&format!(
-            "/toolCall/_meta/{AGENT_TRANSCRIPT_META_KEY}/toolOutput"
-        ))
-    })
-    .or_else(|| raw.pointer(&format!("/_meta/{CLAUDE_CODE_META_KEY}/toolResponse/content")))
-    .or_else(|| {
-        raw.pointer(&format!(
-            "/toolCall/_meta/{CLAUDE_CODE_META_KEY}/toolResponse/content"
-        ))
-    })
+    raw.pointer(&format!("/_meta/{AGENT_TRANSCRIPT_META_KEY}/toolOutput"))
+        .or_else(|| {
+            raw.pointer(&format!(
+                "/toolCall/_meta/{AGENT_TRANSCRIPT_META_KEY}/toolOutput"
+            ))
+        })
+        .or_else(|| {
+            raw.pointer(&format!(
+                "/_meta/{CLAUDE_CODE_META_KEY}/toolResponse/content"
+            ))
+        })
+        .or_else(|| {
+            raw.pointer(&format!(
+                "/toolCall/_meta/{CLAUDE_CODE_META_KEY}/toolResponse/content"
+            ))
+        })
 }
 
 /// Remove provider-only Agent metadata and heavyweight tool output before a
@@ -1383,6 +1385,7 @@ pub fn compact_live_conversation_event(event: &mut AcpUiEvent) {
         &["toolCall", "output"][..],
         &["toolCall", "content"][..],
         &["toolCall", "fields", "output"][..],
+        &["_meta", AGENT_TRANSCRIPT_META_KEY, "toolOutput"][..],
         &["_meta", "goldBandConversation", "toolOutput"][..],
     ] {
         remove_nested_json_key(raw, path);
@@ -1402,10 +1405,7 @@ pub fn compact_live_conversation_event(event: &mut AcpUiEvent) {
     let conversation = meta_object
         .entry("goldBandConversation")
         .or_insert_with(|| serde_json::json!({}));
-    ensure_object(conversation).insert(
-        "toolDetailAvailable".to_string(),
-        Value::Bool(true),
-    );
+    ensure_object(conversation).insert("toolDetailAvailable".to_string(), Value::Bool(true));
 }
 
 fn remove_provider_agent_metadata(raw: &mut Value) {
@@ -1704,11 +1704,11 @@ fn extract_status(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpSessionMetadata, AcpTimingState, AcpUiEvent, annotate_latest_runtime_control_output,
-        append_raw_frame, append_structured_diagnostic, append_timeline_patch,
-        compact_live_conversation_event, context_compaction_phase, elicitation_request_event,
-        elicitation_response_event, extract_usage_fields, kind_to_ui_kind,
-        latest_timeline_source_seq, load_timeline_items, normalize_session_update,
+        AcpSessionMetadata, AcpTimingState, AcpUiEvent, agent_transcript_tool_output,
+        annotate_latest_runtime_control_output, append_raw_frame, append_structured_diagnostic,
+        append_timeline_patch, compact_live_conversation_event, context_compaction_phase,
+        elicitation_request_event, elicitation_response_event, extract_usage_fields,
+        kind_to_ui_kind, latest_timeline_source_seq, load_timeline_items, normalize_session_update,
         permission_request_event, user_prompt_event, write_timeline_items,
     };
     use serde_json::{Value, json};

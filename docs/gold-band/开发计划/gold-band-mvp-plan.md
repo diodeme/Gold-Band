@@ -831,3 +831,12 @@ attempt-001/
 - 生命周期边界：窗口 decorations、title bar style 与 native shadow 统一由 Rust/Tauri 宿主管理；Web 层只负责同步主题 surface、显示窗口以及渲染平台对应的控制入口，不再修改 native chrome，也不再持有 `allow-set-decorations` 权限。
 - 布局保持：不修改共享标题栏组件结构；macOS 固定“traffic lights 安全区 → 品牌 Logo/标题 → 左侧栏开关 → 弹性拖拽区 → 右侧栏开关”，Windows/Linux 继续使用右侧自绘最小化、最大化/还原与关闭按钮。
 - 回归固化：新增窗口 chrome 所有权契约测试，验证 Rust macOS 配置、Web reveal 无 decorations mutation、能力最小化和标题栏元素顺序；要求相关 Vitest、Web 生产构建与 Rust 桌面测试通过，并在 macOS 安装包上验收 traffic lights、拖拽及左右侧栏按钮点击。
+
+---
+
+## 2026-08-02：四主题滚动条低对比度校准
+
+- 根因修复：现有滚动条组件和全局消费路径保持不变，修正主题语义 token 将品牌色与辅助文字色混成不透明深色的问题；不为侧栏或单个滚动容器增加局部覆盖。
+- 主题策略：四套主题统一改用中性 `foreground` 透明叠加，轨道维持 3%–4%，静止 thumb 维持 16%–20%，hover thumb 维持 26%–32%；终端黑略高于其他主题以保留可发现性，浅色主题不再呈现品牌蓝滚动条。
+- 接口一致性：全局原生滚动条、`.gold-themed-scrollbar` 和 shadcn `ScrollArea` 继续只消费 `gold-scrollbar-*` token，组件尺寸与交互范围不变。
+- 回归固化：扩展滚动条 Vitest，逐主题验证中性低透明 token、静止/悬浮层级递增，以及滚动条 token 不再依赖 `primary` / `muted-foreground`；要求 Web 测试、生产构建和四主题实际页面核验通过。

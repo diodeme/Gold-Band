@@ -8,7 +8,7 @@ import { useConversationBranchLiveSnapshot } from '@/lib/conversation-event-rout
 import { AgentConversationPanel } from './AgentConversationPanel';
 import { useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
 
-export function RightWorkspaceDock() {
+export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
   const { t } = useTranslation();
   const { tabs, activeTabKey, activateTab, closeTab, renderResource } = useRightWorkspace();
   const active = tabs.find((tab) => tab.key === activeTabKey) ?? null;
@@ -76,7 +76,7 @@ export function RightWorkspaceDock() {
       </div>
     </section>
   );
-}
+});
 
 const RightWorkspaceTab = memo(function RightWorkspaceTab({
   tab,

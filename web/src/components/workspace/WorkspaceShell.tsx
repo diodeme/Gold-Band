@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { Layout, LayoutChangedMeta } from 'react-resizable-panels';
 import type { AppConfigVm, ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
@@ -19,8 +19,8 @@ import {
 } from './right-workspace-context';
 import {
   reduceWorkspaceAutoCollapse,
-  resolveRightWorkspaceMaxWidth,
   resolveRightWorkspaceWidthFromLayout,
+  resolveWorkspacePanelWidthFromLayout,
   RIGHT_WORKSPACE_DEFAULT_WIDTH,
   RIGHT_WORKSPACE_MAX_WIDTH,
   RIGHT_WORKSPACE_MIN_WIDTH,
@@ -28,7 +28,10 @@ import {
   WORKSPACE_SIDEBAR_DEFAULT_WIDTH,
   WORKSPACE_SIDEBAR_MAX_WIDTH,
   WORKSPACE_SIDEBAR_MIN_WIDTH,
+  workspaceAutoCollapsePresentationChanged,
   workspaceLayoutProfileForPage,
+  type WorkspaceAutoCollapseInput,
+  type WorkspaceAutoCollapsePresentation,
   type WorkspaceAutoCollapseState,
 } from './workspace-layout';
 
@@ -134,13 +137,22 @@ function WorkspaceShellLayout({
   const shellRef = useRef<HTMLDivElement>(null);
   const compactSheetContentRef = useRef<HTMLDivElement>(null);
   const resizeFrameRef = useRef<number | null>(null);
-  const sidebarWidthSaveTimerRef = useRef<number | null>(null);
   const handledOpenRevisionRef = useRef(workspace.openRevision);
   const handledWorkspaceScopeRef = useRef(workspace.scopeKey);
-  const [availableWidth, setAvailableWidth] = useState(0);
   const [compactSheetOpen, setCompactSheetOpen] = useState(false);
-  const [autoCollapse, setAutoCollapse] = useState<WorkspaceAutoCollapseState>({
+  const autoCollapseStateRef = useRef<WorkspaceAutoCollapseState>({
     previousWidth: 0,
+    left: false,
+    right: false,
+  });
+  const autoCollapseInputRef = useRef<Omit<WorkspaceAutoCollapseInput, 'availableWidth'>>({
+    centerMinWidth: 0,
+    centerAutoCollapseWidth: 0,
+    sidebarWidth: 0,
+    sidebarManuallyCollapsed: false,
+    wantsRight: false,
+  });
+  const [autoCollapse, setAutoCollapse] = useState<WorkspaceAutoCollapsePresentation>({
     left: false,
     right: false,
   });
@@ -157,17 +169,27 @@ function WorkspaceShellLayout({
   );
   const rightWorkspaceAvailable = workspace.scopeKey !== null;
   const wantsRight = rightWorkspaceAvailable && workspace.requestedOpen;
-  const showLeft = !sidebarCollapsed && !autoCollapse.left;
-  const rightWorkspaceCompact = wantsRight && (
-    autoCollapse.right
-    || (availableWidth > 0 && availableWidth < profile.centerMinWidth + RIGHT_WORKSPACE_MIN_WIDTH)
-  );
-  const showRightDock = wantsRight && !rightWorkspaceCompact;
-  const rightWorkspaceMaxWidth = resolveRightWorkspaceMaxWidth({
-    availableWidth,
+  autoCollapseInputRef.current = {
     centerMinWidth: profile.centerMinWidth,
-    leftWidth: showLeft ? sidebarWidth : 0,
-  });
+    centerAutoCollapseWidth: profile.centerAutoCollapseWidth,
+    sidebarWidth,
+    sidebarManuallyCollapsed: sidebarCollapsed,
+    wantsRight,
+  };
+  const showLeft = !sidebarCollapsed && !autoCollapse.left;
+  const rightWorkspaceCompact = wantsRight && autoCollapse.right;
+  const showRightDock = wantsRight && !rightWorkspaceCompact;
+
+  const evaluateAutoCollapse = useCallback((availableWidth: number) => {
+    const current = autoCollapseStateRef.current;
+    const next = reduceWorkspaceAutoCollapse(current, {
+      ...autoCollapseInputRef.current,
+      availableWidth: Math.round(availableWidth),
+    });
+    autoCollapseStateRef.current = next;
+    if (!workspaceAutoCollapsePresentationChanged(current, next)) return;
+    setAutoCollapse({ left: next.left, right: next.right });
+  }, []);
 
   useEffect(() => {
     const element = shellRef.current;
@@ -176,7 +198,7 @@ function WorkspaceShellLayout({
       const width = entries[0]?.contentRect.width ?? element.clientWidth;
       if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);
       resizeFrameRef.current = requestAnimationFrame(() => {
-        setAvailableWidth(Math.round(width));
+        evaluateAutoCollapse(width);
         resizeFrameRef.current = null;
       });
     });
@@ -185,22 +207,12 @@ function WorkspaceShellLayout({
       observer.disconnect();
       if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);
     };
-  }, []);
+  }, [evaluateAutoCollapse]);
 
-  useEffect(() => () => {
-    if (sidebarWidthSaveTimerRef.current !== null) window.clearTimeout(sidebarWidthSaveTimerRef.current);
-  }, []);
-
-  useEffect(() => {
-    setAutoCollapse((current) => reduceWorkspaceAutoCollapse(current, {
-      availableWidth,
-      centerMinWidth: profile.centerMinWidth,
-      centerAutoCollapseWidth: profile.centerAutoCollapseWidth,
-      sidebarWidth,
-      sidebarManuallyCollapsed: sidebarCollapsed,
-      wantsRight,
-    }));
-  }, [availableWidth, profile.centerAutoCollapseWidth, profile.centerMinWidth, sidebarCollapsed, sidebarWidth, wantsRight]);
+  useLayoutEffect(() => {
+    const element = shellRef.current;
+    if (element) evaluateAutoCollapse(element.clientWidth);
+  }, [evaluateAutoCollapse, profile.centerAutoCollapseWidth, profile.centerMinWidth, sidebarCollapsed, sidebarWidth, wantsRight]);
 
   useEffect(() => {
     if (handledWorkspaceScopeRef.current !== workspace.scopeKey) {
@@ -224,23 +236,26 @@ function WorkspaceShellLayout({
     if (!rightWorkspaceCompact || !wantsRight) setCompactSheetOpen(false);
   }, [rightWorkspaceCompact, wantsRight]);
 
-  const saveSidebarWidth = useCallback((size: { inPixels: number }) => {
-    if (size.inPixels < WORKSPACE_SIDEBAR_MIN_WIDTH) return;
-    if (sidebarWidthSaveTimerRef.current !== null) window.clearTimeout(sidebarWidthSaveTimerRef.current);
-    const width = Math.round(size.inPixels);
-    sidebarWidthSaveTimerRef.current = window.setTimeout(() => {
-      sidebarWidthSaveTimerRef.current = null;
-      void saveConversationPreference('sidebar.width', width);
-    }, 160);
-  }, []);
   const setRightWorkspaceWidth = workspace.setWidth;
   const saveWorkspaceLayout = useCallback((layout: Layout, meta: LayoutChangedMeta) => {
     if (!meta.isUserInteraction) return;
-    const width = resolveRightWorkspaceWidthFromLayout(layout, shellRef.current?.clientWidth ?? 0);
-    if (width == null) return;
-    setRightWorkspaceWidth(width);
-    void saveConversationPreference('rightWorkspace.width', width);
-  }, [setRightWorkspaceWidth]);
+    const groupWidth = shellRef.current?.clientWidth ?? 0;
+    const nextSidebarWidth = resolveWorkspacePanelWidthFromLayout({
+      layout,
+      panelId: 'workspace-navigation',
+      groupWidth,
+      minWidth: WORKSPACE_SIDEBAR_MIN_WIDTH,
+      maxWidth: WORKSPACE_SIDEBAR_MAX_WIDTH,
+    });
+    if (nextSidebarWidth != null && nextSidebarWidth !== Math.round(sidebarWidth)) {
+      void saveConversationPreference('sidebar.width', nextSidebarWidth);
+    }
+    const nextRightWidth = resolveRightWorkspaceWidthFromLayout(layout, groupWidth);
+    if (nextRightWidth != null && nextRightWidth !== Math.round(workspace.width)) {
+      setRightWorkspaceWidth(nextRightWidth);
+      void saveConversationPreference('rightWorkspace.width', nextRightWidth);
+    }
+  }, [setRightWorkspaceWidth, sidebarWidth, workspace.width]);
 
   const rightWorkspacePresented = showRightDock || (rightWorkspaceCompact && compactSheetOpen);
   const toggleRightWorkspace = useCallback(() => {
@@ -271,7 +286,7 @@ function WorkspaceShellLayout({
       <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1 bg-sidebar" onLayoutChanged={saveWorkspaceLayout}>
         {showLeft ? (
           <>
-            <ResizablePanel id="workspace-navigation" defaultSize={sidebarWidth} minSize={WORKSPACE_SIDEBAR_MIN_WIDTH} maxSize={WORKSPACE_SIDEBAR_MAX_WIDTH} groupResizeBehavior="preserve-pixel-size" onResize={saveSidebarWidth}>
+            <ResizablePanel id="workspace-navigation" defaultSize={sidebarWidth} minSize={WORKSPACE_SIDEBAR_MIN_WIDTH} maxSize={WORKSPACE_SIDEBAR_MAX_WIDTH} groupResizeBehavior="preserve-pixel-size">
               <ConversationSidebar
                 vm={vm}
                 active={active}
@@ -310,7 +325,7 @@ function WorkspaceShellLayout({
         {showRightDock ? (
           <>
             <ResizableHandle className="z-20 bg-sidebar-border/70 hover:bg-primary/30" data-testid="workspace-right-resize-handle" />
-            <ResizablePanel id="workspace-right" defaultSize={workspace.width} minSize={RIGHT_WORKSPACE_MIN_WIDTH} maxSize={rightWorkspaceMaxWidth} groupResizeBehavior="preserve-pixel-size">
+            <ResizablePanel id="workspace-right" defaultSize={workspace.width} minSize={RIGHT_WORKSPACE_MIN_WIDTH} maxSize={RIGHT_WORKSPACE_MAX_WIDTH} groupResizeBehavior="preserve-pixel-size">
               <RightWorkspaceDock />
             </ResizablePanel>
           </>

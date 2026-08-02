@@ -1,6 +1,6 @@
 import { Pin, PinOff, MessageSquare, Search, Bot, Boxes, Workflow, Settings, ChevronDown, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
 import { saveConversationPreference } from '../../api';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -32,7 +32,7 @@ interface ConversationSidebarProps {
   onRemoveWorkspace?: (projectId: string) => Promise<void>;
 }
 
-export function ConversationSidebar({
+export const ConversationSidebar = memo(function ConversationSidebar({
   vm,
   active,
   activeWorkspaceId,
@@ -62,6 +62,18 @@ export function ConversationSidebar({
   const [collapsedPinnedWorkspaces, setCollapsedPinnedWorkspaces] = useState<Record<string, boolean>>({});
   const [workspaceToRemove, setWorkspaceToRemove] = useState<ConversationWorkspaceVm | null>(null);
   const [workspaceRemovalPending, setWorkspaceRemovalPending] = useState(false);
+  const pinnedTasksByWorkspace = useMemo(() => vm.pinnedTasks.reduce<Record<string, ConversationTaskRowVm[]>>((acc, task) => {
+    (acc[task.projectId] ??= []).push(task);
+    return acc;
+  }, {}), [vm.pinnedTasks]);
+  const pinnedTaskKeys = useMemo(
+    () => new Set(vm.pinnedTasks.map((task) => conversationSidebarTaskKey(task.projectId, task.taskId))),
+    [vm.pinnedTasks],
+  );
+  const workspacesByProjectId = useMemo(
+    () => new Map(vm.workspaces.map((workspace) => [workspace.projectId, workspace])),
+    [vm.workspaces],
+  );
 
   // Sync pinned collapse from persisted preferences when sidebar VM reloads
   useEffect(() => {
@@ -224,13 +236,8 @@ export function ConversationSidebar({
             </button>
             {!pinnedCollapsed ? (
               <div>
-                {Object.entries(
-                  vm.pinnedTasks.reduce<Record<string, ConversationTaskRowVm[]>>((acc, task) => {
-                    (acc[task.projectId] ??= []).push(task);
-                    return acc;
-                  }, {}),
-                ).map(([projectId, tasks]) => {
-                  const ws = vm.workspaces.find((w) => w.projectId === projectId);
+                {Object.entries(pinnedTasksByWorkspace).map(([projectId, tasks]) => {
+                  const ws = workspacesByProjectId.get(projectId);
                   const isWsCollapsed = collapsedPinnedWorkspaces[projectId] ?? false;
                   return (
                     <div key={`pinned-ws-${projectId}`}>
@@ -321,7 +328,7 @@ export function ConversationSidebar({
                       <TaskRow
                         key={`${task.projectId}-${task.taskId}`}
                         task={task}
-                        pinned={vm.pinnedTasks.some((p) => p.projectId === task.projectId && p.taskId === task.taskId)}
+                        pinned={pinnedTaskKeys.has(conversationSidebarTaskKey(task.projectId, task.taskId))}
                         isActive={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) && active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
                         activeRunKey={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) ? activeRunKey : null}
                         expanded={expandedTaskKeys.workspace === conversationSidebarTaskKey(task.projectId, task.taskId)}
@@ -422,7 +429,7 @@ export function ConversationSidebar({
       </>
     </TooltipProvider>
   );
-}
+});
 
 // ── Task Row ──
 

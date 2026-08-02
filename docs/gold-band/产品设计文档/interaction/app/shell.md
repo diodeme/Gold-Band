@@ -165,8 +165,8 @@ Agent 管理
 - 顶栏窗口控制按钮组左侧可承载「帮助」入口（DropdownMenu）。是否展示由渠道配置的 `feedbackEnabled` 能力布尔值决定，经 `AppInfoVm` 贯穿应用壳；当前 `wb=true`、默认渠道为 false。前端不根据渠道名称猜能力，后端 command 也必须再次校验。当前菜单仅含「用户反馈」，详见 interaction/app/feedback.md。
 - 桌面窗口最小尺寸由 `configs/app-config.toml` 的 `workspaceLayout` 页面 profile 统一管理，前端在页面切换时通过 Tauri Window API 更新原生最小尺寸；`tauri.conf.json` 与 `html/body/#root` 不得再维护固定 `min-width/min-height`。WebView 必须始终服从真实 viewport 尺寸并继续触发响应式布局，禁止在达到 CSS 最小宽度后保持旧布局、由原生窗口直接裁切右侧内容。
 - 桌面壳内的二级布局必须基于实际内容容器宽度决定分栏，而不是直接复用整窗 `md/lg/xl` breakpoint。侧边栏、section 标题列、抽屉和详情 inspector 都会减少真实可用宽度；嵌套区域优先使用 Tailwind container query，固定画布/表格则必须提供明确的换行、堆叠或横向滚动降级策略。
-- 三段式工作区使用 shadcn `Resizable` copy-in（`react-resizable-panels`）统一管理面板，不维护手写全局 mousemove 拖拽。页面通过 `configs/app-config.toml` 的集中式 profile 分别声明中间区域硬下限 `centerMinWidth`、无右栏时的左栏自动收起舒适宽度 `centerAutoCollapseWidth` 和当前页面原生窗口下限 `windowMinWidth`。会话为 360/420/480px，上下文卡片为 520/520/520px、工作流画布为 640/640/640px、设置为 480/480/480px。右侧拖拽上限必须动态扣除当前中间硬下限和当前可见左栏宽度。
-- 横向缩小时先把右侧压到最小宽度，再自动隐藏左栏，再隐藏右侧；放大时先恢复右侧、再恢复左侧。折叠阈值使用当前持久化左栏宽度和 48px 迟滞，手动折叠和自动折叠分别建模。右侧宽度在 `ResizablePanelGroup.onLayoutChanged` 确认用户完成拖动后换算为像素并写入会话 UI preference；异步 sidebar VM 到达后必须 hydrate Provider 初始宽度，不能让首次渲染的 440px fallback 覆盖已持久化值。
+- 三段式工作区使用 shadcn `Resizable` copy-in（`react-resizable-panels`）统一管理面板，不维护手写全局 mousemove 拖拽。页面通过 `configs/app-config.toml` 的集中式 profile 分别声明中间区域硬下限 `centerMinWidth`、无右栏时的左栏自动收起舒适宽度 `centerAutoCollapseWidth` 和当前页面原生窗口下限 `windowMinWidth`。会话为 360/420/480px，上下文卡片为 520/520/520px、工作流画布为 640/640/640px、设置为 480/480/480px。中间硬下限与右侧 320–720px 范围直接声明为 Resizable Panel 约束，由组件库在同一 flex layout 中联合求解；不得把整窗每像素宽度重新写入 React state 后动态生成右栏 `maxSize`。
+- 横向缩小时先把右侧压到最小宽度，再自动隐藏左栏，再隐藏右侧；放大时先恢复右侧、再恢复左侧。窗口和面板的像素尺寸必须在系统拖拽期间连续跟随，不做 debounce 或“释放后才改变”的延迟布局。折叠阈值使用当前持久化左栏宽度和 48px 迟滞，手动折叠和自动折叠分别建模；ResizeObserver 只在 animation frame 更新 ref 中的 `previousWidth`，仅当 `{left,right}` 离散呈现状态改变时提交 React state。左右宽度统一在 `ResizablePanelGroup.onLayoutChanged` 确认用户完成分隔线拖动后换算为像素并写入会话 UI preference；异步 sidebar VM 到达后必须 hydrate Provider 初始宽度，不能让首次渲染的 440px fallback 覆盖已持久化值。
 - Tauri 原生最小宽度随当前页面 profile 动态切换：会话与设置为 480px、上下文卡片为 520px、工作流画布为 640px。进入更窄页面只放宽约束，不强制缩小用户窗口；从窄页面进入更宽页面时，应用先更新原生下限，再把当前窗口扩到新下限。`shellMinWidth/shellMinHeight` 保护应用 chrome 的绝对下限；初始隐藏窗口必须完成当前页面约束和主题背景同步后再显示，页面快速切换时按同一串行生命周期执行，最终页面配置必须最后生效。
 - 紧凑 Sheet 复用 shadcn/Radix 的焦点陷阱与键盘可访问性，但打开后的初始焦点落在对话区容器，不落到唯一的关闭按钮。关闭按钮只使用 `focus-visible` 绘制键盘焦点环，不得使用 `data-state=open` 背景或普通 `focus` 环把鼠标打开后的自动焦点误呈现为选中态；键盘 Tab 进入关闭按钮时仍必须有可见焦点。
 - Windows 无边框窗口使用 WebView2 composition 路径承载连续边缘 resize：Tauri Window 在 Windows 平台启用透明控制器，但 `html/body/#root` 与应用壳始终绘制不透明主题 surface，不向用户呈现实际透明效果。宿主 Window 背景随主题同步，WebView 层保持 composition 模式，禁止为了遮盖黑带重新设为不透明控制器。
@@ -218,6 +218,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-08-02：Dock/Sheet 模式切换时，Sheet 可保留 Radix 退出动画外壳，但 compact 状态结束后必须立即卸载内部 `RightWorkspaceDock`；禁止退出动画期间同时挂载两套 Agent 内容、重复建立实时订阅。
 - 2026-08-02：修复渠道 Tauri overlay 覆盖基础窗口最小宽度的问题。`scripts/channel-config.mjs` 不再维护第二份 1040px 等窗口参数，而是完整继承 `src-tauri/tauri.conf.json` 的主窗口配置，仅替换渠道标题；渠道契约测试比较最终 overlay 与基础窗口配置，确保真实客户端和浏览器响应式验收使用同一约束。
 - 2026-08-02：补齐无右栏时的左栏紧凑策略。布局 profile 将中间内容硬下限与自动折叠舒适宽度分开建模；会话分别为 360px/420px。右栏关闭时按舒适宽度收起左栏，避免折叠阈值 616px 低于原生 640px 最小宽度而永远不可达；右栏打开时仍按硬下限计算，保持“右栏先压到最小值，再收左栏”的顺序。
+- 2026-08-02：窗口连续缩放热路径移除每像素 React 双提交。原生窗口与 Resizable flex 面板继续逐帧跟随指针；`previousWidth` 下沉到 ref，React 只接收跨越折叠临界点后的 `{left,right}`，右栏最大值改由 Panel 原生 min/max 与中间 min 联合约束。左栏逐帧 `onResize` 持久化定时器被删除，左右宽度只在用户释放分隔线后的 `onLayoutChanged` 中保存；会话导航和右侧 Dock 建立 memo 边界，避免无关壳层提交重建长列表或 Agent 视口。
 
 ---
 

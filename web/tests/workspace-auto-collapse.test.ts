@@ -3,9 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   FALLBACK_WORKSPACE_LAYOUT,
   reduceWorkspaceAutoCollapse,
-  resolveRightWorkspaceMaxWidth,
   resolveRightWorkspaceWidthFromLayout,
+  resolveWorkspacePanelWidthFromLayout,
   shouldOpenRightWorkspaceSheet,
+  workspaceAutoCollapsePresentationChanged,
   workspaceLayoutProfileForPage,
   workspaceLayoutProfileForSurface,
   type WorkspaceAutoCollapseState,
@@ -126,22 +127,38 @@ describe('workspace auto collapse state machine', () => {
     expect(restored.left).toBe(false);
   });
 
-  it('caps right-side dragging before the center crosses its page minimum', () => {
-    expect(resolveRightWorkspaceMaxWidth({
-      availableWidth: 1_000,
-      centerMinWidth: 420,
-      leftWidth: 256,
-    })).toBe(324);
-    expect(resolveRightWorkspaceMaxWidth({
-      availableWidth: 1_400,
-      centerMinWidth: 420,
-      leftWidth: 256,
-    })).toBe(720);
-    expect(resolveRightWorkspaceMaxWidth({
-      availableWidth: 800,
-      centerMinWidth: 420,
-      leftWidth: 0,
-    })).toBe(380);
+  it('does not publish React presentation updates for per-pixel widths inside one threshold band', () => {
+    const input = { centerMinWidth: 420, centerAutoCollapseWidth: 480, sidebarWidth: 256, sidebarManuallyCollapsed: false, wantsRight: true };
+    let state = initial();
+    let presentationUpdates = 0;
+    for (let availableWidth = 1_099; availableWidth >= 1_000; availableWidth -= 1) {
+      const next = reduceWorkspaceAutoCollapse(state, { ...input, availableWidth });
+      if (workspaceAutoCollapsePresentationChanged(state, next)) presentationUpdates += 1;
+      state = next;
+    }
+    expect(state.previousWidth).toBe(1_000);
+    expect(presentationUpdates).toBe(0);
+
+    const crossed = reduceWorkspaceAutoCollapse(state, { ...input, availableWidth: 995 });
+    expect(workspaceAutoCollapsePresentationChanged(state, crossed)).toBe(true);
+    expect(crossed).toMatchObject({ left: true, right: false });
+  });
+
+  it('converts any completed panel layout into a bounded persisted pixel width', () => {
+    expect(resolveWorkspacePanelWidthFromLayout({
+      layout: { 'workspace-navigation': 20 },
+      panelId: 'workspace-navigation',
+      groupWidth: 1_600,
+      minWidth: 200,
+      maxWidth: 420,
+    })).toBe(320);
+    expect(resolveWorkspacePanelWidthFromLayout({
+      layout: { 'workspace-navigation': 50 },
+      panelId: 'workspace-navigation',
+      groupWidth: 1_600,
+      minWidth: 200,
+      maxWidth: 420,
+    })).toBe(420);
   });
 
   it('converts the completed panel layout into a persisted right-side pixel width', () => {

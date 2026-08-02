@@ -74,7 +74,7 @@
 
 - 点击资源链接时，以稳定 `resourceKey` 查找已有 Tab；存在则激活，不重复创建。
 - 关闭当前 Tab 后激活相邻 Tab。
-- 关闭最后一个 Tab 后收起右侧工作区。
+- 关闭最后一个 Tab 后保持右侧工作区的空白入口页；工作区显隐只由独立 `requestedOpen` 控制。
 - Tab 过多时允许原生横向滚动且不压缩到不可读宽度；只有 Tab 条真实溢出时才显示小号完整 Tab 菜单，未溢出时隐藏该入口。Tab 条使用无两端按钮的 4px 专用横向滚动条，不修改全局会话滚动条。Tab 之间保留轻量间距；激活项使用圆角弱底色和常显的低透明度关闭按钮，未激活项透明并在 hover 时反馈，不使用整格矩形、竖分隔线或底部选中横线。
 - 多个 Tab 可以同时处于打开状态，但只挂载当前激活 Tab 的内容 DOM。
 - 非激活 Agent Tab 只维护轻量状态和 attention 标记；激活时恢复分页窗口与滚动位置并补拉最新内容。
@@ -107,6 +107,8 @@ interface RightWorkspaceState {
 ```
 
 Tab 描述只保存资源定位，不直接保存 timeline、文件内容等大对象。资源缓存、实时状态和 DOM 生命周期独立管理。
+
+共享顶栏左侧按品牌、左侧导航开关排序，右侧工作区开关进入尾部操作区；Windows/Linux 中排在自定义窗口控制之前，macOS 中通过正常 flex 流停在右端并保留左侧原生 traffic lights 安全区，不使用绝对定位。两个开关复用 shadcn `Button`，统一使用 28px 点击区、14px 图标和低对比打开态。右栏开关在会话模式常驻，可在没有 Tab 时打开空白入口页。Tab 集合和激活态只在 `RightWorkspaceProvider` 的应用运行期内存中保存，进程重启后清空；像素宽度单独跨重启持久化。
 
 ## 6. 面板宽度与窗口响应式
 
@@ -159,7 +161,8 @@ const WORKSPACE_LAYOUT_PROFILES = {
 - 用户拖动右侧分隔线时，左侧导航不自动关闭。
 - 右侧宽度在统一最小值、最大值之间变化。
 - 中间区域达到当前页面最小宽度后，继续拖动不再扩大右侧区域。
-- 右侧宽度保存到会话 UI preference，不能只保存到临时组件 state。
+- 右侧宽度保存到会话 UI preference，不能只保存到临时组件 state。保存使用 `ResizablePanelGroup.onLayoutChanged` 的 `isUserInteraction=true` 完成事件，不用连续 `onResize` 防抖推测拖动结束。
+- sidebar VM 异步加载偏好后必须 hydrate 已挂载的 `RightWorkspaceProvider`；fallback 初值不能永久占据 reducer，也不能在首次打开 Agent 时反写覆盖持久化宽度。
 - 拖动期间避免执行 timeline 重建、Markdown 重解析或面板内容重排。
 
 ### 6.5 紧凑窗口访问
@@ -183,6 +186,7 @@ const WORKSPACE_LAYOUT_PROFILES = {
 
 - 不提供 Collapsible，不在根会话挂载 Agent transcript。
 - 展示名称、描述、结构化状态和 ACP 已确认的客观统计。
+- 子 Agent 链接复用 Assistant 消息的共享 Agent 头像和用户头像 preference；嵌套 Agent 继承当前执行者身份，未配置头像时由同一组件提供 Bot fallback，不维护链接专用图标映射。
 - 不猜测“正在运行测试”“正在搜索生命周期”等自然语言意图。
 - 点击后在右侧工作区打开或激活对应 Agent 会话。
 - 嵌套 Agent 在父 Agent 会话中继续使用相同链接组件。
@@ -455,6 +459,9 @@ ACP live event(branchId)
 - 把 `ConversationShell` 提升为通用三段式 `WorkspaceShell`。
 - 引入 shadcn Resizable copy-in 和 `react-resizable-panels`。
 - 建立布局 profile、自动折叠状态机、迟滞和宽度 preference。
+- 共享顶栏改为品牌在前、左右栏开关在后；右栏开关与资源 Tab 解耦，无资源时呈现空白入口页。
+- 左右栏开关缩小按钮与图标尺寸并保留独立打开态；左栏入口留在品牌后，右栏入口通过尾部 flex 操作区靠近窗口右侧，降低识别成本并兼容 macOS 原生 traffic lights。
+- 修正右栏宽度恢复：Provider 接收异步 preference hydrate，拖动结束使用 group layout 用户事件持久化真实像素宽度。
 - 实现通用 Tab model、激活、关闭、去重、溢出列表。
 - Tab 溢出入口改为由 `ResizeObserver + scrollWidth/clientWidth` 驱动，只在真实溢出时出现；修正为 Gold Band 主题滚动条并将该横向轨道独立压缩到 4px。Tab 条显式恢复 WebKit 伪元素控制权，避免 Chromium 的 `scrollbar-width: thin` 覆盖专属尺寸和两端按钮隐藏规则。
 - 会话页面 `centerMinWidth` 从设计初值 420px 校准到 360px；上下文卡片、工作流画布和设置 profile 保持不变。
@@ -515,9 +522,12 @@ ACP live event(branchId)
 - 会话中间区可继续收窄到 360px；同样窗口尺寸下，卡片与画布页面仍按各自更大 profile 提前停止拖动。
 - Tab 未溢出时不显示完整 Tab 菜单；真实溢出后显示小号入口，关闭 Tab 消除溢出后入口同步隐藏。
 - 激活 Tab 呈现圆角弱底色与常显关闭按钮，不显示整格填充、竖分隔线或底部选中横线；横向滚动条与选中态不会叠成双线。
+- 主会话与 Agent 会话中的子 Agent 链接都渲染共享 Agent 头像；自定义头像更新后链接同步变化，attention 状态只增加可见外圈。
 - 缩小时先自动收起左栏，再收起右栏；放大时先恢复右栏，再恢复左栏。
 - 临界宽度附近来回拖动不闪烁。
 - 自动收起不关闭 Tab，手动关闭状态不会被自动恢复覆盖。
+- 关闭最后一个 Tab 后右侧保持空白，标题栏右栏开关可独立展开或收起；重启后 Tab 清空但宽度恢复。
+- sidebar VM 晚于应用壳到达时，持久化宽度仍能覆盖 440px fallback；用户拖动结束只写一次真实像素宽度。
 - 紧凑宽度点击 Agent 能以 Sheet 打开，恢复宽度后能回到 Dock。
 - 会话、上下文卡片、工作流画布使用各自容器宽度降级，不依赖整窗 breakpoint。
 - 从资源模型打开 Agent Tab 后，其会话内容中的 Tooltip 可以直接挂载；异步加载完成不得因缺少 `TooltipProvider` 停留在“加载中”、清空 WebView 或触发未捕获异常。

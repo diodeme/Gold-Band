@@ -19,6 +19,7 @@ vi.mock('@/components/workspace/AgentConversationPanel', () => ({
 }));
 
 import { ACPMessageList, buildAcpTimelineProjection } from '@/components/acp/ACPChatDialog';
+import { AvatarPreferencesProvider } from '@/components/avatar/AvatarPreferencesContext';
 import { RightWorkspaceDock } from '@/components/workspace/RightWorkspaceDock';
 import {
   agentTranscriptResourceKey,
@@ -27,6 +28,7 @@ import {
   type AgentTranscriptLocator,
 } from '@/components/workspace/right-workspace-context';
 import type { AcpSessionVm, AcpUiEventVm } from '@/types';
+import { createDefaultAvatarPreferences } from '@/lib/avatar';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -78,12 +80,19 @@ function SeedTabs({ branches }: { branches: string[] }) {
   return null;
 }
 
+function OpenEmptyWorkspace() {
+  const workspace = useRightWorkspace();
+  useEffect(() => workspace.openWorkspace(), [workspace.openWorkspace]);
+  return null;
+}
+
 function WorkspaceProbe() {
   const workspace = useRightWorkspace();
   return (
     <output
       data-workspace-tab-count={workspace.tabs.length}
       data-workspace-active-tab={workspace.activeTabKey ?? ''}
+      data-workspace-width={workspace.width}
     >
       {workspace.tabs.map((tab) => tab.kind === 'agent-transcript' ? tab.locator.branchId : tab.key).join(',')}
     </output>
@@ -102,6 +111,44 @@ afterEach(() => {
 });
 
 describe('right workspace DOM lifecycle', () => {
+  it('renders a blank entry surface when the workspace is open without resources', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider>
+            <OpenEmptyWorkspace />
+            <RightWorkspaceDock />
+          </RightWorkspaceProvider>,
+        );
+      });
+      expect(container.querySelector('[data-right-workspace-empty="true"]')).not.toBeNull();
+      expect(container.querySelector('[data-right-workspace-tab-strip="true"]')).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('hydrates the persisted width after the asynchronous sidebar VM arrives', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<RightWorkspaceProvider initialWidth={440}><WorkspaceProbe /></RightWorkspaceProvider>);
+      });
+      expect(container.querySelector('output')?.getAttribute('data-workspace-width')).toBe('440');
+      await act(async () => {
+        root.render(<RightWorkspaceProvider initialWidth={612}><WorkspaceProbe /></RightWorkspaceProvider>);
+      });
+      expect(container.querySelector('output')?.getAttribute('data-workspace-width')).toBe('612');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('shows the compact Tab list only when the native Tab strip overflows', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -210,6 +257,16 @@ describe('right workspace DOM lifecycle', () => {
       }],
     };
     const projection = buildAcpTimelineProjection([launch], 'running', projectionVm);
+    const avatarPreferences = createDefaultAvatarPreferences();
+    avatarPreferences.agent = {
+      shape: 'square',
+      selectedAvatarId: 'agent-avatar',
+      recentAvatars: [{
+        id: 'agent-avatar',
+        dataUrl: 'data:image/png;base64,AQ==',
+        createdAt: '2026-08-02T00:00:00Z',
+      }],
+    };
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -217,20 +274,25 @@ describe('right workspace DOM lifecycle', () => {
     try {
       await act(async () => {
         root.render(
-          <RightWorkspaceProvider>
-            <SeedTabs branches={parentBranches} />
-            <ACPMessageList
-              timeline={projection.timeline}
-              sessionStatus="running"
-              sending={false}
-              branchLocator={locator('agent-parent')}
-            />
-            <WorkspaceProbe />
-          </RightWorkspaceProvider>,
+          <AvatarPreferencesProvider preferences={avatarPreferences}>
+            <RightWorkspaceProvider>
+              <SeedTabs branches={parentBranches} />
+              <ACPMessageList
+                timeline={projection.timeline}
+                sessionStatus="running"
+                sending={false}
+                branchLocator={locator('agent-parent')}
+              />
+              <WorkspaceProbe />
+            </RightWorkspaceProvider>
+          </AvatarPreferencesProvider>,
         );
       });
       const link = container.querySelector<HTMLButtonElement>(`[data-agent-link-branch-id="${childId}"]`);
       expect(link).not.toBeNull();
+      const agentAvatar = link?.querySelector('[data-slot="avatar"]');
+      expect(agentAvatar).not.toBeNull();
+      expect(agentAvatar?.className).toContain('rounded-md');
       await act(async () => {
         link?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       });

@@ -104,6 +104,7 @@ const resources = {
       },
       workspace: {
         rightWorkspace: "右侧工作区",
+        openWorkspace: "展开右侧工作区",
         closeWorkspace: "收起右侧工作区",
         closeTab: "关闭标签页",
         allTabs: "所有标签页",
@@ -1496,6 +1497,7 @@ const resources = {
       },
       workspace: {
         rightWorkspace: "Right workspace",
+        openWorkspace: "Expand right workspace",
         closeWorkspace: "Collapse right workspace",
         closeTab: "Close tab",
         allTabs: "All tabs",

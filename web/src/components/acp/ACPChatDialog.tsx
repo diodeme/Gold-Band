@@ -118,7 +118,7 @@ import { AcpConversationComposer } from "@/components/conversation/AcpConversati
 import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from "@/lib/slash-command";
 import { useAgentCommands } from "@/hooks/useAgentCommands";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
-import { AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
+import { AcpAvatar, AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
 import { AcpUsagePanel } from "@/components/acp/AcpUsagePanel";
 import { HiddenPromptMessageContent } from "@/components/acp/HiddenPromptMessageContent";
 import {
@@ -4483,12 +4483,13 @@ const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink
       className="group h-auto min-h-10 w-full min-w-0 justify-start gap-3 rounded-lg px-2 py-2 text-left font-normal hover:bg-muted/30 disabled:cursor-default disabled:opacity-100"
       onClick={openAgent}
     >
-      <span className={cn(
-        'flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/8 text-primary',
-        attention && 'bg-amber-500/12 text-amber-600 dark:text-amber-300',
-      )}>
-        <Bot className="size-3.5" />
-      </span>
+      <AcpAvatar
+        tone="assistant"
+        className={cn(
+          'mt-0 size-7',
+          attention && 'border-amber-500/45 ring-2 ring-amber-500/15',
+        )}
+      />
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-2">
           <span className="shrink-0 text-xs font-medium text-foreground">{t('acp.subAgent')}</span>

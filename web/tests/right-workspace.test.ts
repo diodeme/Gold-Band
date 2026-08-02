@@ -44,7 +44,7 @@ describe('right workspace resource model', () => {
     expect(state.openRevision).toBe(3);
   });
 
-  it('closes the active tab to its adjacent tab and collapses after the last tab', () => {
+  it('closes the active tab to its adjacent tab and leaves the empty workspace open', () => {
     let state = createInitialRightWorkspaceState();
     for (const branch of ['agent-a', 'agent-b', 'agent-c']) {
       state = rightWorkspaceReducer(state, { type: 'open', resource: agent(branch) });
@@ -55,6 +55,13 @@ describe('right workspace resource model', () => {
 
     state = rightWorkspaceReducer(state, { type: 'close', key: agent('agent-c').key });
     state = rightWorkspaceReducer(state, { type: 'close', key: agent('agent-a').key });
+    expect(state).toMatchObject({ tabs: [], activeTabKey: null, requestedOpen: true });
+  });
+
+  it('opens and closes an empty workspace independently from its resources', () => {
+    let state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open-workspace' });
+    expect(state).toMatchObject({ tabs: [], activeTabKey: null, requestedOpen: true, openRevision: 1 });
+    state = rightWorkspaceReducer(state, { type: 'close-workspace' });
     expect(state).toMatchObject({ tabs: [], activeTabKey: null, requestedOpen: false });
   });
 

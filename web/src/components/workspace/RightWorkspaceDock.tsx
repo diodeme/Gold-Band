@@ -10,7 +10,7 @@ import { useRightWorkspace, type RightWorkspaceResource } from './right-workspac
 
 export function RightWorkspaceDock() {
   const { t } = useTranslation();
-  const { tabs, activeTabKey, activateTab, closeTab, closeWorkspace } = useRightWorkspace();
+  const { tabs, activeTabKey, activateTab, closeTab } = useRightWorkspace();
   const active = tabs.find((tab) => tab.key === activeTabKey) ?? null;
   const tabStripRef = useRef<HTMLDivElement>(null);
   const overflowMenuRef = useRef<HTMLButtonElement>(null);
@@ -33,7 +33,7 @@ export function RightWorkspaceDock() {
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col bg-background" aria-label={t('workspace.rightWorkspace')} data-right-workspace-dock="true">
-      <div className="flex h-10 shrink-0 items-center border-b border-border/60 bg-muted/10">
+      {tabs.length > 0 ? <div className="flex h-10 shrink-0 items-center border-b border-border/60 bg-muted/10">
         <div
           ref={tabStripRef}
           className="gold-themed-scrollbar right-workspace-tab-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-1"
@@ -68,12 +68,10 @@ export function RightWorkspaceDock() {
             </DropdownMenuContent>
           </DropdownMenu>
         ) : null}
-        <Button variant="ghost" size="icon" className="size-9 shrink-0 rounded-none" onClick={closeWorkspace} aria-label={t('workspace.closeWorkspace')}>
-          <X className="size-4" />
-        </Button>
-      </div>
+      </div> : null}
       <div className="flex min-h-0 flex-1 flex-col">
         {active?.kind === 'agent-transcript' ? <AgentConversationPanel key={active.key} resource={active} /> : null}
+        {!active ? <div className="min-h-0 flex-1" data-right-workspace-empty="true" /> : null}
       </div>
     </section>
   );

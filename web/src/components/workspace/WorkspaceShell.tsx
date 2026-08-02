@@ -303,7 +303,7 @@ function WorkspaceShellLayout({
                 onRemoveWorkspace={onRemoveWorkspace}
               />
             </ResizablePanel>
-            <ResizableHandle className="z-20 bg-sidebar-border/70 hover:bg-primary/30" data-testid="workspace-left-resize-handle" />
+            <ResizableHandle className="z-20 bg-transparent hover:bg-transparent" data-testid="workspace-left-resize-handle" />
           </>
         ) : null}
         <ResizablePanel id="workspace-center" minSize={profile.centerMinWidth} className="min-w-0">

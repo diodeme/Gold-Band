@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   reduceWorkspaceAutoCollapse,
   resolveRightWorkspaceMaxWidth,
+  shouldOpenRightWorkspaceSheet,
   type WorkspaceAutoCollapseState,
 } from '@/components/workspace/WorkspaceShell';
 
@@ -49,6 +50,20 @@ describe('workspace auto collapse state machine', () => {
     expect(noWorkspace.right).toBe(false);
   });
 
+  it('applies the responsive order when a workspace opens at an already narrow width', () => {
+    const openedWithRoomAfterNavigation = reduceWorkspaceAutoCollapse(
+      { previousWidth: 800, left: false, right: false },
+      { availableWidth: 800, centerMinWidth: 420, sidebarManuallyCollapsed: false, wantsRight: true },
+    );
+    expect(openedWithRoomAfterNavigation).toMatchObject({ left: true, right: false });
+
+    const openedCompact = reduceWorkspaceAutoCollapse(
+      { previousWidth: 700, left: false, right: false },
+      { availableWidth: 700, centerMinWidth: 420, sidebarManuallyCollapsed: false, wantsRight: true },
+    );
+    expect(openedCompact).toMatchObject({ left: true, right: true });
+  });
+
   it('caps right-side dragging before the center crosses its page minimum', () => {
     expect(resolveRightWorkspaceMaxWidth({
       availableWidth: 1_000,
@@ -65,5 +80,23 @@ describe('workspace auto collapse state machine', () => {
       centerMinWidth: 420,
       leftVisible: false,
     })).toBe(380);
+  });
+
+  it('keeps an automatically collapsed workspace hidden until a resource is explicitly opened', () => {
+    expect(shouldOpenRightWorkspaceSheet({
+      compact: true,
+      previousOpenRevision: 2,
+      openRevision: 2,
+    })).toBe(false);
+    expect(shouldOpenRightWorkspaceSheet({
+      compact: true,
+      previousOpenRevision: 2,
+      openRevision: 3,
+    })).toBe(true);
+    expect(shouldOpenRightWorkspaceSheet({
+      compact: false,
+      previousOpenRevision: 2,
+      openRevision: 3,
+    })).toBe(false);
   });
 });

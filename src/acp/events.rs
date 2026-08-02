@@ -1847,7 +1847,8 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_claude_tool_name_for_a_parented_event_without_reclassifying_it_as_an_agent_launch() {
+    fn normalizes_claude_tool_name_for_a_parented_event_without_reclassifying_it_as_an_agent_launch()
+     {
         let update = json!({
             "sessionUpdate": "tool_call",
             "toolCallId": "call-read",

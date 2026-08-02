@@ -33,11 +33,17 @@ async function ensureStarted() {
 
 export interface ConversationBranchLiveSnapshot {
   revision: number;
+  contentRevision: number;
   status: string | null;
   attention: boolean;
 }
 
-const EMPTY_BRANCH_SNAPSHOT: ConversationBranchLiveSnapshot = { revision: 0, status: null, attention: false };
+const EMPTY_BRANCH_SNAPSHOT: ConversationBranchLiveSnapshot = {
+  revision: 0,
+  contentRevision: 0,
+  status: null,
+  attention: false,
+};
 
 function attemptKey(locator: {
   projectId?: string | null;
@@ -69,7 +75,7 @@ export function applyConversationEventToBranchSnapshots(event: AcpSessionUpdated
       : isTerminalBranchStatus(current.status)
         ? current.status
         : 'running';
-    updateBranchSnapshot(key, status, interaction ? pending : current.attention);
+    updateBranchSnapshot(key, status, interaction ? pending : current.attention, true);
     return;
   }
   if (!event.session) return;
@@ -90,11 +96,25 @@ export function applyConversationEventToBranchSnapshots(event: AcpSessionUpdated
   }
 }
 
-function updateBranchSnapshot(key: string, status: string | null, attention: boolean) {
+function updateBranchSnapshot(
+  key: string,
+  status: string | null,
+  attention: boolean,
+  contentChanged = false,
+) {
   const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
-  if (current.status === status && current.attention === attention) return;
+  if (current.status === status && current.attention === attention) {
+    if (contentChanged) {
+      storeBranchSnapshot(key, {
+        ...current,
+        contentRevision: current.contentRevision + 1,
+      });
+    }
+    return;
+  }
   storeBranchSnapshot(key, {
     revision: current.revision + 1,
+    contentRevision: current.contentRevision + Number(contentChanged),
     status,
     attention,
   });

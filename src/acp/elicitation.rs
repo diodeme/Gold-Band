@@ -8,8 +8,7 @@ use serde_json::Value;
 
 use crate::{
     acp::events::{
-        current_timestamp, elicitation_response_event,
-        load_timeline_items, write_timeline_items,
+        current_timestamp, elicitation_response_event, load_timeline_items, write_timeline_items,
     },
     storage::{ensure_parent_dir, read_json, write_json},
 };
@@ -222,7 +221,9 @@ pub fn upsert_elicitation_response_event(
         content,
     );
     if let (Some(request_meta), Some(event_raw)) = (
-        request.and_then(|request| request.raw.as_ref()).and_then(|raw| raw.get("_meta")),
+        request
+            .and_then(|request| request.raw.as_ref())
+            .and_then(|raw| raw.get("_meta")),
         event.raw.as_mut(),
     ) {
         event_raw["_meta"] = request_meta.clone();

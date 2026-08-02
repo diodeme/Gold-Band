@@ -927,6 +927,7 @@ pub struct AcpRawFramePageVm {
 pub struct AcpActivityDetailQueryInput {
     pub branch_id: String,
     pub activity_start_seq: u64,
+    pub activity_end_seq: u64,
     pub earlier_cursor: Option<String>,
     pub limit: Option<usize>,
 }
@@ -3441,7 +3442,8 @@ pub fn dynamic_acp_session_vm(
         .and_then(|query| query.branch_id.clone())
         .unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
     let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &status)?;
-    let branch_timeline_path = gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
+    let branch_timeline_path =
+        gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
     let mut event_scan = scan_acp_timeline(
         &branch_timeline_path,
         query,
@@ -3751,7 +3753,8 @@ pub fn acp_session_vm(
         .and_then(|query| query.branch_id.clone())
         .unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
     let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &status)?;
-    let branch_timeline_path = gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
+    let branch_timeline_path =
+        gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
     let mut event_scan = scan_acp_timeline(
         &branch_timeline_path,
         query,
@@ -4000,6 +4003,45 @@ struct AcpTimelinePatchVm {
     revision: u64,
     op: String,
     item: AcpUiEventVm,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpTimelineEntryHeaderVm {
+    #[serde(default)]
+    patch_type: Option<String>,
+    #[serde(default)]
+    item_id: Option<String>,
+    #[serde(default)]
+    revision: Option<u64>,
+    #[serde(default)]
+    op: Option<String>,
+    item: AcpTimelineEventHeaderVm,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpTimelineEventHeaderVm {
+    id: String,
+    seq: u64,
+    kind: String,
+    #[serde(default)]
+    started_seq: Option<u64>,
+    #[serde(default)]
+    raw: Option<AcpTimelineEventRawHeaderVm>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpTimelineEventRawHeaderVm {
+    #[serde(default)]
+    hidden_from_chat: bool,
+}
+
+#[derive(Debug, Clone)]
+struct AcpActivityDetailCandidateVm {
+    revision: u64,
+    started_seq: u64,
 }
 
 // --- timeline scan cache ---
@@ -4753,10 +4795,14 @@ fn paginate_timeline(
         .map(|event| event.ended_seq.unwrap_or(event.seq))
         .max();
     let oldest_index = selected_blocks.first().and_then(|selected| {
-        semantic_blocks.iter().position(|block| block.oldest_seq == selected.oldest_seq)
+        semantic_blocks
+            .iter()
+            .position(|block| block.oldest_seq == selected.oldest_seq)
     });
     let newest_index = selected_blocks.last().and_then(|selected| {
-        semantic_blocks.iter().rposition(|block| block.newest_seq == selected.newest_seq)
+        semantic_blocks
+            .iter()
+            .rposition(|block| block.newest_seq == selected.newest_seq)
     });
     let event_page = AcpEventPageVm {
         loaded_count: loaded_semantic_count,
@@ -4795,11 +4841,14 @@ struct ConversationSemanticBlockRange {
 fn conversation_semantic_blocks(events: &[AcpUiEventVm]) -> Vec<ConversationSemanticBlockRange> {
     let mut blocks = Vec::<ConversationSemanticBlockRange>::new();
     let mut activity_start: Option<usize> = None;
-    let flush_activity = |end: usize, start: &mut Option<usize>, blocks: &mut Vec<ConversationSemanticBlockRange>| {
-        if let Some(start_index) = start.take() {
-            blocks.push(semantic_block_range(events, start_index, end));
-        }
-    };
+    let flush_activity =
+        |end: usize,
+         start: &mut Option<usize>,
+         blocks: &mut Vec<ConversationSemanticBlockRange>| {
+            if let Some(start_index) = start.take() {
+                blocks.push(semantic_block_range(events, start_index, end));
+            }
+        };
     for (index, event) in events.iter().enumerate() {
         if !is_conversation_semantic_event(event) {
             continue;
@@ -4829,7 +4878,9 @@ fn compact_selected_semantic_blocks(
     for block in blocks {
         let block_events = &events[block.start..=block.end];
         let is_activity = block_events.iter().any(is_conversation_activity_event)
-            && !block_events.iter().any(|event| !is_conversation_activity_event(event) && is_conversation_semantic_event(event));
+            && !block_events.iter().any(|event| {
+                !is_conversation_activity_event(event) && is_conversation_semantic_event(event)
+            });
         if !is_activity {
             selected.extend(block_events.iter().cloned());
             continue;
@@ -4860,7 +4911,12 @@ fn activity_summary_event(
             "thoughtDelta" => thought_count += 1,
             "error" => error_count += 1,
             "toolCall" | "toolCallUpdate" => {
-                tool_ids.insert(event.tool_call_id.clone().unwrap_or_else(|| event.id.clone()));
+                tool_ids.insert(
+                    event
+                        .tool_call_id
+                        .clone()
+                        .unwrap_or_else(|| event.id.clone()),
+                );
                 if !event.status.as_deref().is_some_and(|status| {
                     matches!(
                         status.to_ascii_lowercase().as_str(),
@@ -4912,7 +4968,10 @@ fn activity_summary_event(
             .first()
             .and_then(|event| event.started_at.clone())
             .or_else(|| audit_events.first().map(|event| event.timestamp.clone())),
-        ended_at: latest.ended_at.clone().or_else(|| Some(latest.timestamp.clone())),
+        ended_at: latest
+            .ended_at
+            .clone()
+            .or_else(|| Some(latest.timestamp.clone())),
         timing: latest.timing.clone(),
         raw: Some(serde_json::json!({
             "goldBandActivity": {
@@ -4935,32 +4994,192 @@ pub fn acp_activity_detail_vm_for_attempt(
     query: AcpActivityDetailQueryInput,
 ) -> Result<AcpActivityDetailVm> {
     gold_band::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
-    let timeline_path = gold_band::acp::branches::branch_timeline_path(attempt_dir, &query.branch_id);
-    let (events, _, _, _, _, _) = parse_timeline_file(&timeline_path, false)?;
-    let Some(block) = conversation_semantic_blocks(&events)
-        .into_iter()
-        .find(|block| block.oldest_seq == query.activity_start_seq)
-    else {
-        return Ok(AcpActivityDetailVm { items: Vec::new(), has_more_earlier: false, earlier_cursor: None });
-    };
-    let before_seq = query.earlier_cursor.as_deref().and_then(parse_timeline_cursor);
-    let limit = query.limit.unwrap_or(ACTIVITY_DETAIL_INITIAL_LIMIT).clamp(1, 200);
-    let mut audit = events[block.start..=block.end]
-        .iter()
-        .filter(|event| is_conversation_activity_event(event))
-        .filter(|event| before_seq.is_none_or(|cursor| event.started_seq.unwrap_or(event.seq) < cursor))
-        .cloned()
-        .collect::<Vec<_>>();
-    let has_more_earlier = audit.len() > limit;
-    if has_more_earlier {
-        audit = audit.split_off(audit.len() - limit);
+    let timeline_path =
+        gold_band::acp::branches::branch_timeline_path(attempt_dir, &query.branch_id);
+    if query.activity_end_seq < query.activity_start_seq || !timeline_path.exists() {
+        return Ok(AcpActivityDetailVm {
+            items: Vec::new(),
+            has_more_earlier: false,
+            earlier_cursor: None,
+        });
     }
+    let before_seq = query
+        .earlier_cursor
+        .as_deref()
+        .and_then(parse_timeline_cursor);
+    let limit = query
+        .limit
+        .unwrap_or(ACTIVITY_DETAIL_INITIAL_LIMIT)
+        .clamp(1, 200);
+    let candidates = scan_activity_detail_candidates(
+        &timeline_path,
+        query.activity_start_seq,
+        query.activity_end_seq,
+        before_seq,
+        limit.saturating_add(1),
+    )?;
+    let has_more_earlier = candidates.len() > limit;
+    let selected_ids = candidates
+        .iter()
+        .skip(usize::from(has_more_earlier))
+        .map(|(item_id, _)| item_id.clone())
+        .collect::<HashSet<_>>();
+    let audit = load_selected_activity_detail_events(&timeline_path, &selected_ids)?;
     let items = audit
         .into_iter()
         .map(compact_event_for_activity_audit)
         .collect::<Vec<_>>();
-    let earlier_cursor = items.first().map(|event| format_timeline_cursor(event.started_seq.unwrap_or(event.seq)));
-    Ok(AcpActivityDetailVm { items, has_more_earlier, earlier_cursor })
+    let earlier_cursor = items
+        .first()
+        .map(|event| format_timeline_cursor(event.started_seq.unwrap_or(event.seq)));
+    Ok(AcpActivityDetailVm {
+        items,
+        has_more_earlier,
+        earlier_cursor,
+    })
+}
+
+fn scan_activity_detail_candidates(
+    timeline_path: &camino::Utf8Path,
+    activity_start_seq: u64,
+    activity_end_seq: u64,
+    before_seq: Option<u64>,
+    capacity: usize,
+) -> Result<Vec<(String, AcpActivityDetailCandidateVm)>> {
+    let file = fs::File::open(timeline_path.as_std_path())?;
+    let mut candidates = HashMap::<String, AcpActivityDetailCandidateVm>::new();
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        let Ok(header) = serde_json::from_str::<AcpTimelineEntryHeaderVm>(&line) else {
+            continue;
+        };
+        let is_patch = header.patch_type.as_deref() == Some("timelinePatch");
+        if is_patch && header.op.as_deref() != Some("upsert") {
+            continue;
+        }
+        let started_seq = header.item.started_seq.unwrap_or(header.item.seq);
+        if started_seq < activity_start_seq
+            || started_seq > activity_end_seq
+            || before_seq.is_some_and(|cursor| started_seq >= cursor)
+            || header
+                .item
+                .raw
+                .as_ref()
+                .is_some_and(|raw| raw.hidden_from_chat)
+            || !matches!(
+                header.item.kind.as_str(),
+                "thoughtDelta" | "toolCall" | "toolCallUpdate" | "error"
+            )
+        {
+            continue;
+        }
+        let item_id = header.item_id.unwrap_or(header.item.id);
+        let revision = if is_patch {
+            header.revision.unwrap_or_default()
+        } else {
+            0
+        };
+        match candidates.get_mut(&item_id) {
+            Some(current) if is_patch && revision >= current.revision => {
+                current.revision = revision;
+                current.started_seq = current.started_seq.min(started_seq);
+            }
+            Some(current) if !is_patch && current.revision == 0 => {
+                current.started_seq = current.started_seq.min(started_seq);
+            }
+            Some(_) => {}
+            None => {
+                candidates.insert(
+                    item_id,
+                    AcpActivityDetailCandidateVm {
+                        revision,
+                        started_seq,
+                    },
+                );
+            }
+        }
+        if candidates.len() > capacity {
+            let oldest = candidates
+                .iter()
+                .min_by_key(|(item_id, candidate)| (candidate.started_seq, item_id.as_str()))
+                .map(|(item_id, _)| item_id.clone());
+            if let Some(oldest) = oldest {
+                candidates.remove(&oldest);
+            }
+        }
+    }
+    let mut candidates = candidates.into_iter().collect::<Vec<_>>();
+    candidates.sort_by(|(left_id, left), (right_id, right)| {
+        (left.started_seq, left_id.as_str()).cmp(&(right.started_seq, right_id.as_str()))
+    });
+    Ok(candidates)
+}
+
+fn load_selected_activity_detail_events(
+    timeline_path: &camino::Utf8Path,
+    selected_ids: &HashSet<String>,
+) -> Result<Vec<AcpUiEventVm>> {
+    if selected_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let file = fs::File::open(timeline_path.as_std_path())?;
+    let mut latest_by_item = HashMap::<String, (u64, AcpUiEventVm)>::new();
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        let Ok(header) = serde_json::from_str::<AcpTimelineEntryHeaderVm>(&line) else {
+            continue;
+        };
+        let item_id = header.item_id.unwrap_or(header.item.id);
+        if !selected_ids.contains(&item_id) {
+            continue;
+        }
+        if header.patch_type.as_deref() == Some("timelinePatch") {
+            let Ok(patch) = serde_json::from_str::<AcpTimelinePatchVm>(&line) else {
+                continue;
+            };
+            if patch.op != "upsert" {
+                continue;
+            }
+            let should_replace = latest_by_item
+                .get(&patch.item_id)
+                .map(|(revision, _)| patch.revision >= *revision)
+                .unwrap_or(true);
+            if should_replace {
+                let item = latest_by_item
+                    .get(&patch.item_id)
+                    .map(|(_, existing)| {
+                        merge_timeline_item_revision_vm(existing, patch.item.clone())
+                    })
+                    .unwrap_or(patch.item);
+                latest_by_item.insert(patch.item_id, (patch.revision, item));
+            }
+            continue;
+        }
+        let Ok(final_item) = serde_json::from_str::<AcpTimelineItemVm>(&line) else {
+            continue;
+        };
+        let item_id = final_item.item.id.clone();
+        let should_replace = latest_by_item
+            .get(&item_id)
+            .map(|(revision, _)| *revision == 0)
+            .unwrap_or(true);
+        if should_replace {
+            let item = latest_by_item
+                .get(&item_id)
+                .map(|(_, existing)| {
+                    merge_timeline_item_revision_vm(existing, final_item.item.clone())
+                })
+                .unwrap_or(final_item.item);
+            latest_by_item.insert(item_id, (0, item));
+        }
+    }
+    let mut events = latest_by_item
+        .into_values()
+        .map(|(_, event)| event)
+        .filter(|event| !is_hidden_from_chat(event) && is_conversation_activity_event(event))
+        .collect::<Vec<_>>();
+    events.sort_by_key(|event| (event.started_seq.unwrap_or(event.seq), event.seq));
+    Ok(events)
 }
 
 pub fn acp_tool_detail_vm_for_attempt(
@@ -4968,7 +5187,8 @@ pub fn acp_tool_detail_vm_for_attempt(
     query: AcpToolDetailQueryInput,
 ) -> Result<AcpToolDetailVm> {
     gold_band::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
-    let timeline_path = gold_band::acp::branches::branch_timeline_path(attempt_dir, &query.branch_id);
+    let timeline_path =
+        gold_band::acp::branches::branch_timeline_path(attempt_dir, &query.branch_id);
     if !timeline_path.exists() {
         return Ok(AcpToolDetailVm { event: None });
     }
@@ -4988,7 +5208,9 @@ pub fn acp_tool_detail_vm_for_attempt(
         let candidate = if let Ok(patch) = serde_json::from_str::<AcpTimelinePatchVm>(&line) {
             (patch.patch_type == "timelinePatch" && patch.op == "upsert").then_some(patch.item)
         } else {
-            serde_json::from_str::<AcpTimelineItemVm>(&line).ok().map(|item| item.item)
+            serde_json::from_str::<AcpTimelineItemVm>(&line)
+                .ok()
+                .map(|item| item.item)
         };
         let Some(candidate) = candidate else { continue };
         let identity_matches = candidate.id == query.event_id
@@ -5010,17 +5232,32 @@ pub fn acp_tool_detail_vm_for_attempt(
     })
 }
 
-fn semantic_block_range(events: &[AcpUiEventVm], start: usize, end: usize) -> ConversationSemanticBlockRange {
+fn semantic_block_range(
+    events: &[AcpUiEventVm],
+    start: usize,
+    end: usize,
+) -> ConversationSemanticBlockRange {
     let selected = &events[start..=end];
     ConversationSemanticBlockRange {
         start,
         end,
-        oldest_seq: selected.iter().map(|event| event.started_seq.unwrap_or(event.seq)).min().unwrap_or_default(),
-        newest_seq: selected.iter().map(|event| event.ended_seq.unwrap_or(event.seq)).max().unwrap_or_default(),
+        oldest_seq: selected
+            .iter()
+            .map(|event| event.started_seq.unwrap_or(event.seq))
+            .min()
+            .unwrap_or_default(),
+        newest_seq: selected
+            .iter()
+            .map(|event| event.ended_seq.unwrap_or(event.seq))
+            .max()
+            .unwrap_or_default(),
     }
 }
 
 fn is_conversation_semantic_event(event: &AcpUiEventVm) -> bool {
+    if event.kind == "permissionRequest" {
+        return event.status.as_deref() == Some("pending");
+    }
     matches!(
         event.kind.as_str(),
         "userTextDelta"
@@ -5156,7 +5393,6 @@ fn normalize_metric_path(path: &str) -> String {
         .trim_end_matches('/')
         .to_ascii_lowercase()
 }
-
 
 fn latest_session_timing_from_events(all_events: &[AcpUiEventVm]) -> Option<AcpSessionTimingVm> {
     all_events.iter().rev().find_map(|event| {
@@ -5659,6 +5895,9 @@ fn is_hidden_from_chat(event: &AcpUiEventVm) -> bool {
 }
 
 fn is_session_timeline_event(event: &AcpUiEventVm) -> bool {
+    if event.kind == "permissionRequest" {
+        return event.status.as_deref() == Some("pending");
+    }
     if matches!(
         event.kind.as_str(),
         "availableCommands"
@@ -5666,7 +5905,6 @@ fn is_session_timeline_event(event: &AcpUiEventVm) -> bool {
             | "sessionInfo"
             | "modeUpdate"
             | "configUpdate"
-            | "permissionRequest"
             | "rawDiagnostic"
     ) {
         return false;
@@ -5770,10 +6008,7 @@ fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {
                 .parent_tool_call_id
                 .as_deref()
                 .map(|tool_call_id| {
-                    gold_band::acp::branches::stable_agent_execution_id(
-                        session_id,
-                        tool_call_id,
-                    )
+                    gold_band::acp::branches::stable_agent_execution_id(session_id, tool_call_id)
                 })
                 .unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
             let launched_agent_execution_id = relation
@@ -5781,10 +6016,7 @@ fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {
                 .then(|| event.tool_call_id.as_deref())
                 .flatten()
                 .map(|tool_call_id| {
-                    gold_band::acp::branches::stable_agent_execution_id(
-                        session_id,
-                        tool_call_id,
-                    )
+                    gold_band::acp::branches::stable_agent_execution_id(session_id, tool_call_id)
                 });
             let normalized_tool_output = launched_agent_execution_id
                 .is_none()
@@ -5838,7 +6070,9 @@ fn compact_event_for_activity_audit(event: AcpUiEventVm) -> AcpUiEventVm {
     ] {
         remove_nested_json_key(raw, path);
     }
-    if raw.get("content").is_some_and(|content| !content.is_object())
+    if raw
+        .get("content")
+        .is_some_and(|content| !content.is_object())
         && let Some(object) = raw.as_object_mut()
     {
         object.remove("content");
@@ -5847,11 +6081,15 @@ fn compact_event_for_activity_audit(event: AcpUiEventVm) -> AcpUiEventVm {
         *raw = serde_json::json!({});
     }
     let raw_object = raw.as_object_mut().expect("activity raw must be an object");
-    let meta = raw_object.entry("_meta").or_insert_with(|| serde_json::json!({}));
+    let meta = raw_object
+        .entry("_meta")
+        .or_insert_with(|| serde_json::json!({}));
     if !meta.is_object() {
         *meta = serde_json::json!({});
     }
-    let meta_object = meta.as_object_mut().expect("activity meta must be an object");
+    let meta_object = meta
+        .as_object_mut()
+        .expect("activity meta must be an object");
     let conversation = meta_object
         .entry("goldBandConversation")
         .or_insert_with(|| serde_json::json!({}));
@@ -5861,7 +6099,10 @@ fn compact_event_for_activity_audit(event: AcpUiEventVm) -> AcpUiEventVm {
     conversation
         .as_object_mut()
         .expect("conversation meta must be an object")
-        .insert("toolDetailAvailable".to_string(), serde_json::Value::Bool(true));
+        .insert(
+            "toolDetailAvailable".to_string(),
+            serde_json::Value::Bool(true),
+        );
     event
 }
 
@@ -6945,11 +7186,28 @@ mod tests {
             .and_then(|raw| raw.pointer("/_meta/goldBandConversation"))
             .expect("normalized conversation metadata");
 
-        assert_eq!(conversation["branchId"], gold_band::acp::branches::stable_agent_execution_id("session-123", "call-parent"));
+        assert_eq!(
+            conversation["branchId"],
+            gold_band::acp::branches::stable_agent_execution_id("session-123", "call-parent")
+        );
         assert!(conversation["launchedAgentExecutionId"].as_str().is_some());
         assert_eq!(conversation["toolName"], "Agent");
-        assert!(event.raw.as_ref().unwrap().pointer("/_meta/claudeCode").is_none());
-        assert!(event.raw.as_ref().unwrap().pointer("/_meta/agentTranscript").is_none());
+        assert!(
+            event
+                .raw
+                .as_ref()
+                .unwrap()
+                .pointer("/_meta/claudeCode")
+                .is_none()
+        );
+        assert!(
+            event
+                .raw
+                .as_ref()
+                .unwrap()
+                .pointer("/_meta/agentTranscript")
+                .is_none()
+        );
     }
 
     #[test]
@@ -8789,13 +9047,13 @@ mod tests {
             .collect::<Vec<_>>();
         let path = write_timeline_patch_file(&db, "acp.timeline.jsonl", &borrowed);
 
+        let (canonical, _, _, _, _, _) = parse_timeline_file(&path, false).unwrap();
         let scan = scan_acp_timeline(&path, None, false, 30).unwrap();
 
         assert!(scan.events.iter().any(|event| event.id == external.id));
         assert!(!scan.events.iter().any(|event| event.id == stale_ask.id));
         assert!(!scan.events.iter().any(|event| event.id == stale_answer.id));
-        let tool = scan
-            .events
+        let tool = canonical
             .iter()
             .find(|event| event.id == original_tool.id)
             .unwrap();
@@ -9016,7 +9274,11 @@ mod tests {
         )
         .unwrap();
 
-        assert!(scan.events.iter().all(|event| event.kind != "permissionRequest"));
+        assert!(
+            scan.events
+                .iter()
+                .all(|event| event.kind != "permissionRequest")
+        );
         assert_eq!(
             scan.latest_permission_events
                 .get("req-1")
@@ -9027,10 +9289,8 @@ mod tests {
 
     #[test]
     fn root_semantic_page_counts_agent_links_but_not_agent_branch_history() {
-        let dir = std::env::temp_dir().join(format!(
-            "gb-agent-semantic-page-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("gb-agent-semantic-page-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let attempt = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
         let mut user = test_event("userTextDelta", "inspect agents");
@@ -9055,7 +9315,11 @@ mod tests {
             event.tool_call_id = Some(tool_call_id.to_string());
             event
         };
-        let root = vec![user, launch("agent-a", "provider-a", 2), launch("agent-b", "provider-b", 3)];
+        let root = vec![
+            user,
+            launch("agent-a", "provider-a", 2),
+            launch("agent-b", "provider-b", 3),
+        ];
         let root_path = gold_band::acp::branches::branch_timeline_path(
             &attempt,
             gold_band::acp::branches::ROOT_BRANCH_ID,
@@ -9095,7 +9359,16 @@ mod tests {
         assert_eq!(
             scan.events
                 .iter()
-                .filter(|event| agent_event_meta_vm(event).agent_launch)
+                .filter(|event| {
+                    event
+                        .raw
+                        .as_ref()
+                        .and_then(|raw| {
+                            raw.pointer("/_meta/goldBandConversation/launchedAgentExecutionId")
+                        })
+                        .and_then(serde_json::Value::as_str)
+                        .is_some()
+                })
                 .count(),
             2
         );
@@ -9104,17 +9377,18 @@ mod tests {
 
     #[test]
     fn activity_summary_and_detail_use_independent_cursors() {
-        let dir = std::env::temp_dir().join(format!(
-            "gb-activity-detail-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir = std::env::temp_dir().join(format!("gb-activity-detail-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let attempt = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
         let mut events = (1..=100)
             .map(|seq| {
                 let mut event = acp_event_at(
                     &format!("tool-{seq}"),
-                    if seq % 2 == 0 { "thoughtDelta" } else { "toolCall" },
+                    if seq % 2 == 0 {
+                        "thoughtDelta"
+                    } else {
+                        "toolCall"
+                    },
                     Some("completed"),
                     1_000 + seq,
                     Some(json!({ "rawInput": { "path": format!("file-{seq}.rs") } })),
@@ -9151,7 +9425,11 @@ mod tests {
         assert_eq!(page.event_page.total, 2);
         assert!(!page.event_page.has_older);
         assert_eq!(page.events.len(), 2);
-        let summary = page.events.iter().find(|event| event.kind == "activitySummary").unwrap();
+        let summary = page
+            .events
+            .iter()
+            .find(|event| event.kind == "activitySummary")
+            .unwrap();
         assert_eq!(
             summary.raw.as_ref().unwrap()["goldBandActivity"]["totalEventCount"],
             100
@@ -9162,6 +9440,7 @@ mod tests {
             AcpActivityDetailQueryInput {
                 branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
                 activity_start_seq: 1,
+                activity_end_seq: 100,
                 earlier_cursor: None,
                 limit: Some(40),
             },
@@ -9169,8 +9448,17 @@ mod tests {
         .unwrap();
         assert_eq!(detail.items.len(), 40);
         assert!(detail.has_more_earlier);
-        assert!(detail.items.iter().all(|event| event.kind != "permissionRequest"));
-        let recent_tool = detail.items.iter().find(|event| event.kind == "toolCall").unwrap();
+        assert!(
+            detail
+                .items
+                .iter()
+                .all(|event| event.kind != "permissionRequest")
+        );
+        let recent_tool = detail
+            .items
+            .iter()
+            .find(|event| event.kind == "toolCall")
+            .unwrap();
         assert!(recent_tool.raw.as_ref().unwrap().get("output").is_none());
         assert_eq!(
             recent_tool.raw.as_ref().unwrap()["_meta"]["goldBandConversation"]["toolDetailAvailable"],
@@ -9189,13 +9477,17 @@ mod tests {
         .unwrap()
         .event
         .expect("tool detail");
-        assert_eq!(tool_detail.raw.as_ref().unwrap()["output"], "tool output 99");
+        assert_eq!(
+            tool_detail.raw.as_ref().unwrap()["output"],
+            "tool output 99"
+        );
 
         let earlier = acp_activity_detail_vm_for_attempt(
             &attempt,
             AcpActivityDetailQueryInput {
                 branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
                 activity_start_seq: 1,
+                activity_end_seq: 100,
                 earlier_cursor: detail.earlier_cursor.clone(),
                 limit: Some(40),
             },
@@ -9203,6 +9495,49 @@ mod tests {
         .unwrap();
         assert_eq!(earlier.items.len(), 40);
         assert!(earlier.items.last().unwrap().seq < detail.items.first().unwrap().seq);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn current_pending_permission_is_one_semantic_block_until_resolved() {
+        let dir = std::env::temp_dir().join(format!(
+            "gb-pending-semantic-block-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let mut user = test_event("userTextDelta", "request");
+        user.seq = 1;
+        user.started_seq = Some(1);
+        user.ended_seq = Some(1);
+        let mut pending = permission_event_at("permission-1", "pending", 2_000);
+        pending.seq = 2;
+        pending.started_seq = Some(2);
+        pending.ended_seq = Some(2);
+        let timeline = gold_band::acp::branches::branch_timeline_path(
+            &attempt,
+            gold_band::acp::branches::ROOT_BRANCH_ID,
+        );
+        write_timeline_file(&attempt, "acp.timeline.jsonl", &[user.clone(), pending]);
+        let pending_page = scan_acp_timeline(&timeline, None, true, 30).unwrap();
+        assert_eq!(pending_page.event_page.total, 2);
+        assert!(pending_page.events.iter().any(|event| {
+            event.kind == "permissionRequest" && event.status.as_deref() == Some("pending")
+        }));
+
+        let mut resolved = permission_event_at("permission-1", "selected", 3_000);
+        resolved.seq = 3;
+        resolved.started_seq = Some(2);
+        resolved.ended_seq = Some(3);
+        write_timeline_file(&attempt, "acp.timeline.jsonl", &[user, resolved]);
+        let resolved_page = scan_acp_timeline(&timeline, None, false, 30).unwrap();
+        assert_eq!(resolved_page.event_page.total, 1);
+        assert!(
+            resolved_page
+                .events
+                .iter()
+                .all(|event| event.kind != "permissionRequest")
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 

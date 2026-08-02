@@ -8,7 +8,7 @@ vi.mock('@/lib/conversation-event-router', async () => {
   const actual = await vi.importActual<typeof import('@/lib/conversation-event-router')>('@/lib/conversation-event-router');
   return {
     ...actual,
-    useConversationBranchLiveSnapshot: () => ({ revision: 0, status: null, attention: false }),
+    useConversationBranchLiveSnapshot: () => ({ revision: 0, contentRevision: 0, status: null, attention: false }),
   };
 });
 

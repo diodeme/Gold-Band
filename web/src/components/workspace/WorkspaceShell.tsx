@@ -80,14 +80,12 @@ export function reduceWorkspaceAutoCollapse(
   const needsCenterAndRight = centerMinWidth + (wantsRight ? RIGHT_WORKSPACE_MIN : 0);
   let left = state.left;
   let right = wantsRight ? state.right : false;
-  if (shrinking) {
-    if (!sidebarManuallyCollapsed && !left && availableWidth < needsAll) left = true;
-    if (wantsRight && (sidebarManuallyCollapsed || left) && !right && availableWidth < needsCenterAndRight) {
-      right = true;
-    }
-  } else if (right && availableWidth > needsCenterAndRight + LAYOUT_HYSTERESIS) {
+  if (!sidebarManuallyCollapsed && !left && availableWidth < needsAll) left = true;
+  if (wantsRight && (sidebarManuallyCollapsed || left) && !right && availableWidth < needsCenterAndRight) {
+    right = true;
+  } else if (!shrinking && right && availableWidth > needsCenterAndRight + LAYOUT_HYSTERESIS) {
     right = false;
-  } else if (left && availableWidth > needsAll + LAYOUT_HYSTERESIS) {
+  } else if (!shrinking && left && availableWidth > needsAll + LAYOUT_HYSTERESIS) {
     left = false;
   }
   if (state.previousWidth === availableWidth && state.left === left && state.right === right) return state;
@@ -110,6 +108,18 @@ export function resolveRightWorkspaceMaxWidth({
   if (availableWidth <= 0) return RIGHT_WORKSPACE_MAX;
   const reservedWidth = centerMinWidth + (leftVisible ? SIDEBAR_MIN : 0);
   return clamp(availableWidth - reservedWidth, RIGHT_WORKSPACE_MIN, RIGHT_WORKSPACE_MAX);
+}
+
+export function shouldOpenRightWorkspaceSheet({
+  compact,
+  previousOpenRevision,
+  openRevision,
+}: {
+  compact: boolean;
+  previousOpenRevision: number;
+  openRevision: number;
+}) {
+  return compact && openRevision > previousOpenRevision;
 }
 
 function loadWidth(prefs: Record<string, unknown> | null | undefined, key: string, fallback: number, min: number, max: number) {
@@ -165,7 +175,9 @@ function WorkspaceShellLayout({
   const resizeFrameRef = useRef<number | null>(null);
   const sidebarWidthSaveTimerRef = useRef<number | null>(null);
   const rightWidthSaveTimerRef = useRef<number | null>(null);
+  const handledOpenRevisionRef = useRef(workspace.openRevision);
   const [availableWidth, setAvailableWidth] = useState(0);
+  const [compactSheetOpen, setCompactSheetOpen] = useState(false);
   const [autoCollapse, setAutoCollapse] = useState<WorkspaceAutoCollapseState>({
     previousWidth: 0,
     left: false,
@@ -175,7 +187,11 @@ function WorkspaceShellLayout({
   const profile = useMemo(() => profileForPage(active), [active]);
   const wantsRight = workspace.requestedOpen && workspace.tabs.length > 0;
   const showLeft = !sidebarCollapsed && !autoCollapse.left;
-  const showRightDock = wantsRight && !autoCollapse.right;
+  const rightWorkspaceCompact = wantsRight && (
+    autoCollapse.right
+    || (availableWidth > 0 && availableWidth < profile.centerMinWidth + RIGHT_WORKSPACE_MIN)
+  );
+  const showRightDock = wantsRight && !rightWorkspaceCompact;
   const rightWorkspaceMaxWidth = resolveRightWorkspaceMaxWidth({
     availableWidth,
     centerMinWidth: profile.centerMinWidth,
@@ -213,6 +229,22 @@ function WorkspaceShellLayout({
       wantsRight,
     }));
   }, [availableWidth, profile.centerMinWidth, sidebarCollapsed, wantsRight]);
+
+  useEffect(() => {
+    const previousOpenRevision = handledOpenRevisionRef.current;
+    handledOpenRevisionRef.current = workspace.openRevision;
+    if (shouldOpenRightWorkspaceSheet({
+      compact: rightWorkspaceCompact,
+      previousOpenRevision,
+      openRevision: workspace.openRevision,
+    })) {
+      setCompactSheetOpen(true);
+    }
+  }, [rightWorkspaceCompact, workspace.openRevision]);
+
+  useEffect(() => {
+    if (!rightWorkspaceCompact || !wantsRight) setCompactSheetOpen(false);
+  }, [rightWorkspaceCompact, wantsRight]);
 
   const saveSidebarWidth = useCallback((size: { inPixels: number }) => {
     if (size.inPixels < SIDEBAR_MIN) return;
@@ -291,7 +323,13 @@ function WorkspaceShellLayout({
           </>
         ) : null}
       </ResizablePanelGroup>
-      <Sheet open={wantsRight && autoCollapse.right} onOpenChange={(open) => { if (!open) workspace.closeWorkspace(); }}>
+      <Sheet
+        open={wantsRight && rightWorkspaceCompact && compactSheetOpen}
+        onOpenChange={(open) => {
+          setCompactSheetOpen(open);
+          if (!open) workspace.closeWorkspace();
+        }}
+      >
         <SheetContent side="right" className="flex w-[min(92vw,44rem)] flex-col gap-0 p-0 sm:max-w-none">
           <SheetTitle className="sr-only">{t('workspace.rightWorkspace')}</SheetTitle>
           <div className="flex min-h-0 flex-1 flex-col" data-right-workspace-presentation="sheet">

@@ -2957,13 +2957,11 @@ mod tests {
     use super::{
         ConversationAutoConfigVm, ConversationDirectConfigVm, ConversationDynamicAgentRefVm,
         ConversationRunSummaryVm, ConversationTaskActivityVm, ConversationWorkspaceSource,
-        ConversationWorkspaceVm, PromptActivity,
-        apply_workflow_interview_preference, build_auto_workflow, build_direct_workflow,
-        conversation_attempt_lifecycle_vm, conversation_auto_title, conversation_run_vm,
-        conversation_sidebar_vm_from_sources, conversation_status_from_session,
-        conversation_task_activity,
-        conversation_workspace_vms, derive_conversation_attempt_lifecycle, lifecycle_is_active,
-        switch_conversation_session_vm,
+        ConversationWorkspaceVm, PromptActivity, apply_workflow_interview_preference,
+        build_auto_workflow, build_direct_workflow, conversation_attempt_lifecycle_vm,
+        conversation_auto_title, conversation_run_vm, conversation_sidebar_vm_from_sources,
+        conversation_status_from_session, conversation_task_activity, conversation_workspace_vms,
+        derive_conversation_attempt_lifecycle, lifecycle_is_active, switch_conversation_session_vm,
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use gold_band::app::{App, CreateTaskInput};

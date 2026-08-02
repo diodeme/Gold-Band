@@ -77,7 +77,10 @@ pub struct AgentExecutionRecord {
 
 pub fn stable_agent_execution_id(session_id: &str, launch_tool_call_id: &str) -> String {
     let name = format!("{session_id}\u{0}{launch_tool_call_id}");
-    format!("agent-{}", Uuid::new_v5(&AGENT_NAMESPACE, name.as_bytes()).simple())
+    format!(
+        "agent-{}",
+        Uuid::new_v5(&AGENT_NAMESPACE, name.as_bytes()).simple()
+    )
 }
 
 pub fn agent_relation(event: &AcpUiEvent) -> Option<AgentTranscriptRelation> {
@@ -122,20 +125,24 @@ pub fn annotate_event_branch(event: &mut AcpUiEvent) -> ConversationBranchRoute 
     if !raw.is_object() {
         *raw = json!({ "providerPayload": raw.clone() });
     }
-    let object = raw.as_object_mut().expect("normalized branch raw must be an object");
+    let object = raw
+        .as_object_mut()
+        .expect("normalized branch raw must be an object");
     let meta = object.entry("_meta").or_insert_with(|| json!({}));
     if !meta.is_object() {
         *meta = json!({});
     }
-    meta.as_object_mut().expect("normalized branch meta must be an object").insert(
-        BRANCH_META_KEY.to_string(),
-        json!({
-            "branchId": route.branch_id,
-            "launchedAgentExecutionId": route.launched_agent_execution_id,
-            "toolName": route.tool_name,
-            "toolOutput": normalized_tool_output,
-        }),
-    );
+    meta.as_object_mut()
+        .expect("normalized branch meta must be an object")
+        .insert(
+            BRANCH_META_KEY.to_string(),
+            json!({
+                "branchId": route.branch_id,
+                "launchedAgentExecutionId": route.launched_agent_execution_id,
+                "toolName": route.tool_name,
+                "toolOutput": normalized_tool_output,
+            }),
+        );
     route
 }
 
@@ -152,7 +159,10 @@ pub fn agent_prompt_event(launch: &AcpUiEvent) -> Option<AcpUiEvent> {
     let mut event = AcpUiEvent {
         id: format!("agent-prompt-{agent_execution_id}"),
         seq: launch.started_seq.unwrap_or(launch.seq),
-        timestamp: launch.started_at.clone().unwrap_or_else(|| launch.timestamp.clone()),
+        timestamp: launch
+            .started_at
+            .clone()
+            .unwrap_or_else(|| launch.timestamp.clone()),
         kind: "userTextDelta".to_string(),
         session_id: launch.session_id.clone(),
         content: Some(prompt.to_string()),
@@ -161,8 +171,18 @@ pub fn agent_prompt_event(launch: &AcpUiEvent) -> Option<AcpUiEvent> {
         status: Some("completed".to_string()),
         started_seq: Some(launch.started_seq.unwrap_or(launch.seq)),
         ended_seq: Some(launch.started_seq.unwrap_or(launch.seq)),
-        started_at: Some(launch.started_at.clone().unwrap_or_else(|| launch.timestamp.clone())),
-        ended_at: Some(launch.started_at.clone().unwrap_or_else(|| launch.timestamp.clone())),
+        started_at: Some(
+            launch
+                .started_at
+                .clone()
+                .unwrap_or_else(|| launch.timestamp.clone()),
+        ),
+        ended_at: Some(
+            launch
+                .started_at
+                .clone()
+                .unwrap_or_else(|| launch.timestamp.clone()),
+        ),
         timing: None,
         raw: Some(json!({
             "source": "agentBranchPrompt",
@@ -175,7 +195,11 @@ pub fn agent_prompt_event(launch: &AcpUiEvent) -> Option<AcpUiEvent> {
 
 fn annotate_event_branch_override(event: &mut AcpUiEvent, branch_id: &str) {
     let raw = event.raw.get_or_insert_with(|| json!({}));
-    let meta = raw.as_object_mut().unwrap().entry("_meta").or_insert_with(|| json!({}));
+    let meta = raw
+        .as_object_mut()
+        .unwrap()
+        .entry("_meta")
+        .or_insert_with(|| json!({}));
     meta.as_object_mut().unwrap().insert(
         BRANCH_META_KEY.to_string(),
         json!({ "branchId": branch_id }),
@@ -196,12 +220,18 @@ pub fn branch_timeline_path(attempt_dir: &Utf8Path, branch_id: &str) -> Utf8Path
     if branch_id == ROOT_BRANCH_ID {
         attempt_dir.join("acp.timeline.jsonl")
     } else {
-        attempt_dir.join("agents").join(branch_id).join("timeline.jsonl")
+        attempt_dir
+            .join("agents")
+            .join(branch_id)
+            .join("timeline.jsonl")
     }
 }
 
 pub fn branch_snapshot_path(attempt_dir: &Utf8Path, branch_id: &str) -> Utf8PathBuf {
-    attempt_dir.join("agents").join(branch_id).join("snapshot.json")
+    attempt_dir
+        .join("agents")
+        .join(branch_id)
+        .join("snapshot.json")
 }
 
 /// One-time conversion of the pre-timeline `acp.events.jsonl` format.
@@ -257,8 +287,8 @@ pub fn migrate_legacy_events_timeline(attempt_dir: &Utf8Path) -> Result<bool> {
         if let Some(key) = key {
             keyed.insert(key, canonical.len());
         }
-        last_unkeyed_stream = stream_kind
-            .map(|kind| (route.branch_id.clone(), kind, canonical.len()));
+        last_unkeyed_stream =
+            stream_kind.map(|kind| (route.branch_id.clone(), kind, canonical.len()));
         canonical.push(event);
     }
     if canonical.is_empty() {
@@ -271,7 +301,10 @@ pub fn migrate_legacy_events_timeline(attempt_dir: &Utf8Path) -> Result<bool> {
         let prompt = agent_prompt_event(&event);
         by_branch.entry(route.branch_id).or_default().push(event);
         if let Some(prompt) = prompt {
-            by_branch.entry(event_branch_id(&prompt)).or_default().push(prompt);
+            by_branch
+                .entry(event_branch_id(&prompt))
+                .or_default()
+                .push(prompt);
         }
     }
     for events in by_branch.values_mut() {
@@ -279,7 +312,10 @@ pub fn migrate_legacy_events_timeline(attempt_dir: &Utf8Path) -> Result<bool> {
     }
     write_timeline_items(
         &root_path,
-        by_branch.remove(ROOT_BRANCH_ID).as_deref().unwrap_or_default(),
+        by_branch
+            .remove(ROOT_BRANCH_ID)
+            .as_deref()
+            .unwrap_or_default(),
     )?;
     for (branch_id, events) in by_branch {
         write_timeline_items(&branch_timeline_path(attempt_dir, &branch_id), &events)?;
@@ -290,8 +326,12 @@ pub fn migrate_legacy_events_timeline(attempt_dir: &Utf8Path) -> Result<bool> {
 fn stamp_legacy_event_bounds(event: &mut AcpUiEvent) {
     event.started_seq.get_or_insert(event.seq);
     event.ended_seq.get_or_insert(event.seq);
-    event.started_at.get_or_insert_with(|| event.timestamp.clone());
-    event.ended_at.get_or_insert_with(|| event.timestamp.clone());
+    event
+        .started_at
+        .get_or_insert_with(|| event.timestamp.clone());
+    event
+        .ended_at
+        .get_or_insert_with(|| event.timestamp.clone());
 }
 
 fn legacy_event_merge_key(event: &AcpUiEvent, branch_id: &str) -> Option<String> {
@@ -338,7 +378,10 @@ fn merge_legacy_event(existing: &mut AcpUiEvent, incoming: AcpUiEvent) {
         .unwrap_or_else(|| existing.timestamp.clone());
     if matches!(incoming.kind.as_str(), "textDelta" | "thoughtDelta") {
         if let Some(chunk) = incoming.content.as_deref() {
-            existing.content.get_or_insert_with(String::new).push_str(chunk);
+            existing
+                .content
+                .get_or_insert_with(String::new)
+                .push_str(chunk);
         }
     } else {
         if incoming.content.is_some() {
@@ -390,7 +433,10 @@ pub fn migrate_legacy_agent_timeline(attempt_dir: &Utf8Path) -> Result<bool> {
     migrate_legacy_events_timeline(attempt_dir)?;
     let root_path = branch_timeline_path(attempt_dir, ROOT_BRANCH_ID);
     let mut events = load_timeline_items(&root_path)?;
-    if !events.iter().any(|event| branch_route_for_event(event).branch_id != ROOT_BRANCH_ID) {
+    if !events
+        .iter()
+        .any(|event| branch_route_for_event(event).branch_id != ROOT_BRANCH_ID)
+    {
         return Ok(false);
     }
     let mut by_branch = BTreeMap::<String, Vec<AcpUiEvent>>::new();
@@ -399,15 +445,24 @@ pub fn migrate_legacy_agent_timeline(attempt_dir: &Utf8Path) -> Result<bool> {
         let prompt = agent_prompt_event(&event);
         by_branch.entry(route.branch_id).or_default().push(event);
         if let Some(prompt) = prompt {
-            by_branch.entry(event_branch_id(&prompt)).or_default().push(prompt);
+            by_branch
+                .entry(event_branch_id(&prompt))
+                .or_default()
+                .push(prompt);
         }
     }
     write_timeline_items(
         &root_path,
-        by_branch.remove(ROOT_BRANCH_ID).as_deref().unwrap_or_default(),
+        by_branch
+            .remove(ROOT_BRANCH_ID)
+            .as_deref()
+            .unwrap_or_default(),
     )?;
     for (branch_id, branch_events) in by_branch {
-        write_timeline_items(&branch_timeline_path(attempt_dir, &branch_id), &branch_events)?;
+        write_timeline_items(
+            &branch_timeline_path(attempt_dir, &branch_id),
+            &branch_events,
+        )?;
     }
     Ok(true)
 }
@@ -431,9 +486,18 @@ pub fn load_all_branch_events(attempt_dir: &Utf8Path) -> Result<Vec<AcpUiEvent>>
     Ok(events)
 }
 
-pub fn rebuild_agent_index(attempt_dir: &Utf8Path, session_status: &str) -> Result<Vec<AgentExecutionRecord>> {
-    let session_active = matches!(session_status, "running" | "active" | "starting" | "cancelling" | "stopping");
-    let session_interrupted = matches!(session_status, "cancelled" | "canceled" | "interrupted" | "stopped");
+pub fn rebuild_agent_index(
+    attempt_dir: &Utf8Path,
+    session_status: &str,
+) -> Result<Vec<AgentExecutionRecord>> {
+    let session_active = matches!(
+        session_status,
+        "running" | "active" | "starting" | "cancelling" | "stopping"
+    );
+    let session_interrupted = matches!(
+        session_status,
+        "cancelled" | "canceled" | "interrupted" | "stopped"
+    );
     migrate_legacy_agent_timeline(attempt_dir)?;
     let source_signature = agent_index_source_signature(attempt_dir, session_status)?;
     if let Some(records) = cached_agent_index(attempt_dir, &source_signature) {
@@ -442,11 +506,15 @@ pub fn rebuild_agent_index(attempt_dir: &Utf8Path, session_status: &str) -> Resu
     let all_events = load_all_branch_events(attempt_dir)?;
     let mut launches = HashMap::<String, AcpUiEvent>::new();
     for event in &all_events {
-        let Some(relation) = agent_relation(event) else { continue };
+        let Some(relation) = agent_relation(event) else {
+            continue;
+        };
         if !relation.agent_launch {
             continue;
         }
-        let Some(tool_call_id) = event.tool_call_id.as_ref() else { continue };
+        let Some(tool_call_id) = event.tool_call_id.as_ref() else {
+            continue;
+        };
         let should_replace = launches
             .get(tool_call_id)
             .map(|current| event.seq >= current.seq)
@@ -458,27 +526,53 @@ pub fn rebuild_agent_index(attempt_dir: &Utf8Path, session_status: &str) -> Resu
     let mut records = launches
         .into_iter()
         .map(|(launch_tool_call_id, launch)| {
-            let session_id = launch.session_id.clone().unwrap_or_else(|| "unknown-session".to_string());
+            let session_id = launch
+                .session_id
+                .clone()
+                .unwrap_or_else(|| "unknown-session".to_string());
             let agent_execution_id = stable_agent_execution_id(&session_id, &launch_tool_call_id);
             let relation = agent_relation(&launch).unwrap_or_default();
-            let parent_agent_execution_id = relation.parent_tool_call_id.as_deref()
+            let parent_agent_execution_id = relation
+                .parent_tool_call_id
+                .as_deref()
                 .map(|tool_call_id| stable_agent_execution_id(&session_id, tool_call_id));
-            let branch_events = load_timeline_items(&branch_timeline_path(attempt_dir, &agent_execution_id))
-                .unwrap_or_default();
+            let branch_events =
+                load_timeline_items(&branch_timeline_path(attempt_dir, &agent_execution_id))
+                    .unwrap_or_default();
             let execution_events = branch_events
                 .iter()
                 .filter(|event| !is_agent_prompt_event(event))
                 .collect::<Vec<_>>();
             let metrics = branch_metrics(&branch_events);
-            let latest_seq = execution_events.iter().map(|event| event.ended_seq.unwrap_or(event.seq)).max();
-            let latest_timestamp = execution_events.iter().max_by_key(|event| event.ended_seq.unwrap_or(event.seq))
-                .map(|event| event.ended_at.clone().unwrap_or_else(|| event.timestamp.clone()));
+            let latest_seq = execution_events
+                .iter()
+                .map(|event| event.ended_seq.unwrap_or(event.seq))
+                .max();
+            let latest_timestamp = execution_events
+                .iter()
+                .max_by_key(|event| event.ended_seq.unwrap_or(event.seq))
+                .map(|event| {
+                    event
+                        .ended_at
+                        .clone()
+                        .unwrap_or_else(|| event.timestamp.clone())
+                });
             let launch_position = launch.ended_seq.unwrap_or(launch.seq);
-            let launch_status = launch.status.as_deref().unwrap_or_default().to_ascii_lowercase();
+            let launch_status = launch
+                .status
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
             let failed = matches!(launch_status.as_str(), "failed" | "error");
             let has_attention = branch_events.iter().any(|event| {
-                matches!(event.kind.as_str(), "permissionRequest" | "elicitationRequest")
-                    && event.status.as_deref().unwrap_or("pending").eq_ignore_ascii_case("pending")
+                matches!(
+                    event.kind.as_str(),
+                    "permissionRequest" | "elicitationRequest"
+                ) && event
+                    .status
+                    .as_deref()
+                    .unwrap_or("pending")
+                    .eq_ignore_ascii_case("pending")
             });
             let status = if failed {
                 "failed"
@@ -488,7 +582,10 @@ pub fn rebuild_agent_index(attempt_dir: &Utf8Path, session_status: &str) -> Resu
                 if session_interrupted {
                     "interrupted"
                 } else if has_agent_completion_evidence(&execution_events)
-                    || matches!(launch_status.as_str(), "completed" | "success" | "succeeded")
+                    || matches!(
+                        launch_status.as_str(),
+                        "completed" | "success" | "succeeded"
+                    )
                 {
                     "completed"
                 } else {
@@ -497,18 +594,32 @@ pub fn rebuild_agent_index(attempt_dir: &Utf8Path, session_status: &str) -> Resu
             } else if execution_events.is_empty() {
                 "queued"
             } else if !agent_launch_runs_in_background(&launch)
-                && matches!(launch_status.as_str(), "completed" | "success" | "succeeded")
+                && matches!(
+                    launch_status.as_str(),
+                    "completed" | "success" | "succeeded"
+                )
                 && latest_seq.is_some_and(|seq| seq <= launch_position)
             {
                 "completed"
             } else {
                 "running"
-            }.to_string();
+            }
+            .to_string();
             let input = launch.raw.as_ref().and_then(tool_raw_input);
             let title = launch.title.clone();
-            let description = input.and_then(|input| input.get("description")).and_then(Value::as_str).map(str::to_string);
-            let ended_at = matches!(status.as_str(), "completed" | "failed" | "interrupted")
-                .then(|| latest_timestamp.unwrap_or_else(|| launch.ended_at.clone().unwrap_or_else(|| launch.timestamp.clone())));
+            let description = input
+                .and_then(|input| input.get("description"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let ended_at =
+                matches!(status.as_str(), "completed" | "failed" | "interrupted").then(|| {
+                    latest_timestamp.unwrap_or_else(|| {
+                        launch
+                            .ended_at
+                            .clone()
+                            .unwrap_or_else(|| launch.timestamp.clone())
+                    })
+                });
             AgentExecutionRecord {
                 agent_execution_id,
                 parent_agent_execution_id,
@@ -517,7 +628,10 @@ pub fn rebuild_agent_index(attempt_dir: &Utf8Path, session_status: &str) -> Resu
                 status,
                 title,
                 description,
-                started_at: launch.started_at.clone().unwrap_or_else(|| launch.timestamp.clone()),
+                started_at: launch
+                    .started_at
+                    .clone()
+                    .unwrap_or_else(|| launch.timestamp.clone()),
                 ended_at,
                 event_count: execution_events.len(),
                 tool_call_count: metrics.tool_call_count,
@@ -618,11 +732,13 @@ fn cached_agent_index(
     attempt_dir: &Utf8Path,
     signature: &AgentIndexSourceSignature,
 ) -> Option<Vec<AgentExecutionRecord>> {
-    let mut cache = agent_index_cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = agent_index_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let attempt_dir = attempt_dir.as_str();
-    let position = cache.iter().position(|entry| {
-        entry.attempt_dir == attempt_dir && &entry.signature == signature
-    })?;
+    let position = cache
+        .iter()
+        .position(|entry| entry.attempt_dir == attempt_dir && &entry.signature == signature)?;
     let entry = cache.remove(position)?;
     let records = entry.records.clone();
     cache.push_back(entry);
@@ -634,7 +750,9 @@ fn cache_agent_index(
     signature: AgentIndexSourceSignature,
     records: Vec<AgentExecutionRecord>,
 ) {
-    let mut cache = agent_index_cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = agent_index_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.retain(|entry| entry.attempt_dir != attempt_dir.as_str());
     cache.push_back(AgentIndexCacheEntry {
         attempt_dir: attempt_dir.to_string(),
@@ -663,10 +781,7 @@ fn write_agent_index(attempt_dir: &Utf8Path, records: &[AgentExecutionRecord]) -
     Ok(true)
 }
 
-fn write_agent_snapshot_if_changed(
-    path: &Utf8Path,
-    record: &AgentExecutionRecord,
-) -> Result<bool> {
+fn write_agent_snapshot_if_changed(path: &Utf8Path, record: &AgentExecutionRecord) -> Result<bool> {
     if path.exists()
         && crate::storage::read_json::<AgentExecutionRecord>(path)
             .ok()
@@ -693,13 +808,19 @@ fn branch_metrics(events: &[AcpUiEvent]) -> BranchMetrics {
             continue;
         }
         let relation = agent_relation(event);
-        if relation.as_ref().is_some_and(|relation| relation.agent_launch) {
+        if relation
+            .as_ref()
+            .is_some_and(|relation| relation.agent_launch)
+        {
             continue;
         }
-        let key = event.tool_call_id.clone().unwrap_or_else(|| event.id.clone());
-        let should_replace = latest_tools
-            .get(&key)
-            .is_none_or(|current| event.ended_seq.unwrap_or(event.seq) >= current.ended_seq.unwrap_or(current.seq));
+        let key = event
+            .tool_call_id
+            .clone()
+            .unwrap_or_else(|| event.id.clone());
+        let should_replace = latest_tools.get(&key).is_none_or(|current| {
+            event.ended_seq.unwrap_or(event.seq) >= current.ended_seq.unwrap_or(current.seq)
+        });
         if should_replace {
             latest_tools.insert(key, event);
         }
@@ -708,12 +829,18 @@ fn branch_metrics(events: &[AcpUiEvent]) -> BranchMetrics {
     let mut written_files = std::collections::BTreeSet::<String>::new();
     for event in latest_tools.values() {
         let relation = agent_relation(event);
-        let tool_name = relation.and_then(|relation| relation.tool_name)
-            .or_else(|| event.title.clone()).unwrap_or_default().to_ascii_lowercase();
+        let tool_name = relation
+            .and_then(|relation| relation.tool_name)
+            .or_else(|| event.title.clone())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         let paths = structured_tool_paths(event);
         if matches!(tool_name.as_str(), "read" | "get-content" | "read_file") {
             read_files.extend(paths);
-        } else if matches!(tool_name.as_str(), "write" | "edit" | "applypatch" | "apply_patch" | "set-content" | "write_file") {
+        } else if matches!(
+            tool_name.as_str(),
+            "write" | "edit" | "applypatch" | "apply_patch" | "set-content" | "write_file"
+        ) {
             written_files.extend(paths);
         }
     }
@@ -741,7 +868,10 @@ fn has_agent_completion_evidence(events: &[&AcpUiEvent]) -> bool {
         return false;
     };
     latest.kind == "textDelta"
-        && latest.content.as_deref().is_some_and(|content| !content.trim().is_empty())
+        && latest
+            .content
+            .as_deref()
+            .is_some_and(|content| !content.trim().is_empty())
 }
 
 fn agent_launch_runs_in_background(event: &AcpUiEvent) -> bool {
@@ -766,7 +896,10 @@ fn structured_tool_paths(event: &AcpUiEvent) -> Vec<String> {
     let locations = event
         .raw
         .as_ref()
-        .and_then(|raw| raw.pointer("/toolCall/locations").or_else(|| raw.get("locations")))
+        .and_then(|raw| {
+            raw.pointer("/toolCall/locations")
+                .or_else(|| raw.get("locations"))
+        })
         .and_then(Value::as_array);
     if let Some(locations) = locations {
         for location in locations {
@@ -788,7 +921,8 @@ fn normalize_metric_path(path: &str) -> String {
 }
 
 fn latest_plan_entries(events: &[AcpUiEvent]) -> Vec<Value> {
-    events.iter()
+    events
+        .iter()
         .filter(|event| event.kind == "plan")
         .max_by_key(|event| event.ended_seq.unwrap_or(event.seq))
         .and_then(|event| event.raw.as_ref())
@@ -848,14 +982,20 @@ mod tests {
     }
 
     fn event(id: &str, tool_call_id: Option<&str>, relation: Value) -> AcpUiEvent {
-        event_at(id, 1, "toolCall", tool_call_id, Some("pending"), relation, None)
+        event_at(
+            id,
+            1,
+            "toolCall",
+            tool_call_id,
+            Some("pending"),
+            relation,
+            None,
+        )
     }
 
     fn temp_attempt(label: &str) -> Utf8PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "gold-band-agent-branch-{label}-{}",
-            Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("gold-band-agent-branch-{label}-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&path).unwrap();
         Utf8PathBuf::from_path_buf(path).unwrap()
     }
@@ -867,7 +1007,10 @@ mod tests {
             let prompt = agent_prompt_event(&event);
             by_branch.entry(route.branch_id).or_default().push(event);
             if let Some(prompt) = prompt {
-                by_branch.entry(event_branch_id(&prompt)).or_default().push(prompt);
+                by_branch
+                    .entry(event_branch_id(&prompt))
+                    .or_default()
+                    .push(prompt);
             }
         }
         for (branch_id, events) in by_branch {
@@ -880,16 +1023,26 @@ mod tests {
         let id = stable_agent_execution_id("session-1", "tool/use:unsafe");
         assert!(id.starts_with("agent-"));
         assert!(!id.contains("tool/use"));
-        assert_eq!(id, stable_agent_execution_id("session-1", "tool/use:unsafe"));
+        assert_eq!(
+            id,
+            stable_agent_execution_id("session-1", "tool/use:unsafe")
+        );
     }
 
     #[test]
     fn launch_is_stored_in_parent_and_children_in_launched_branch() {
         let launch = event("launch", Some("child-tool"), json!({ "agentLaunch": true }));
         assert_eq!(branch_route_for_event(&launch).branch_id, ROOT_BRANCH_ID);
-        let child = event("read", Some("read-1"), json!({ "parentToolCallId": "child-tool" }));
+        let child = event(
+            "read",
+            Some("read-1"),
+            json!({ "parentToolCallId": "child-tool" }),
+        );
         let route = branch_route_for_event(&child);
-        assert_eq!(route.branch_id, stable_agent_execution_id("session-1", "child-tool"));
+        assert_eq!(
+            route.branch_id,
+            stable_agent_execution_id("session-1", "child-tool")
+        );
     }
 
     #[test]
@@ -983,7 +1136,15 @@ mod tests {
     fn legacy_events_are_migrated_once_into_single_owner_timelines() {
         let attempt = temp_attempt("legacy-migration");
         let legacy = attempt.join("acp.events.jsonl");
-        let mut user = event_at("user", 1, "userTextDelta", None, Some("completed"), json!({}), None);
+        let mut user = event_at(
+            "user",
+            1,
+            "userTextDelta",
+            None,
+            Some("completed"),
+            json!({}),
+            None,
+        );
         user.content = Some("root prompt".to_string());
         let launch = event_at(
             "launch",
@@ -1012,7 +1173,10 @@ mod tests {
         let root = load_timeline_items(&branch_timeline_path(&attempt, ROOT_BRANCH_ID)).unwrap();
         let branch_id = stable_agent_execution_id("session-1", "provider-child");
         let branch = load_timeline_items(&branch_timeline_path(&attempt, &branch_id)).unwrap();
-        assert_eq!(root.iter().filter(|event| event.id == "child-read").count(), 0);
+        assert_eq!(
+            root.iter().filter(|event| event.id == "child-read").count(),
+            0
+        );
         assert!(root.iter().any(|event| event.id == "launch"));
         assert!(branch.iter().any(|event| event.id == "child-read"));
         assert!(branch.iter().any(is_agent_prompt_event));
@@ -1068,9 +1232,18 @@ mod tests {
         text.content = Some("partial answer".to_string());
         persist_partitioned(&attempt, vec![launch, text]);
 
-        assert_eq!(rebuild_agent_index(&attempt, "running").unwrap()[0].status, "running");
-        assert_eq!(rebuild_agent_index(&attempt, "completed").unwrap()[0].status, "completed");
-        assert_eq!(rebuild_agent_index(&attempt, "stopped").unwrap()[0].status, "interrupted");
+        assert_eq!(
+            rebuild_agent_index(&attempt, "running").unwrap()[0].status,
+            "running"
+        );
+        assert_eq!(
+            rebuild_agent_index(&attempt, "completed").unwrap()[0].status,
+            "completed"
+        );
+        assert_eq!(
+            rebuild_agent_index(&attempt, "stopped").unwrap()[0].status,
+            "interrupted"
+        );
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 
@@ -1130,7 +1303,10 @@ mod tests {
         assert_eq!(record.tool_call_count, 2);
         assert_eq!(record.read_file_count, 1);
         assert_eq!(record.written_file_count, 1);
-        assert_eq!(record.todo_entries, vec![json!({ "content": "child only", "status": "in_progress" })]);
+        assert_eq!(
+            record.todo_entries,
+            vec![json!({ "content": "child only", "status": "in_progress" })]
+        );
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 

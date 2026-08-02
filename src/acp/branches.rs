@@ -1,9 +1,9 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
@@ -81,6 +81,19 @@ pub fn stable_agent_execution_id(session_id: &str, launch_tool_call_id: &str) ->
         "agent-{}",
         Uuid::new_v5(&AGENT_NAMESPACE, name.as_bytes()).simple()
     )
+}
+
+pub fn validate_conversation_branch_id(branch_id: &str) -> Result<()> {
+    if branch_id == ROOT_BRANCH_ID {
+        return Ok(());
+    }
+    let Some(value) = branch_id.strip_prefix("agent-") else {
+        bail!("acp.invalid-conversation-branch-id");
+    };
+    if value.len() != 32 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("acp.invalid-conversation-branch-id");
+    }
+    Ok(())
 }
 
 pub fn agent_relation(event: &AcpUiEvent) -> Option<AgentTranscriptRelation> {
@@ -564,16 +577,7 @@ pub fn rebuild_agent_index(
                 .unwrap_or_default()
                 .to_ascii_lowercase();
             let failed = matches!(launch_status.as_str(), "failed" | "error");
-            let has_attention = branch_events.iter().any(|event| {
-                matches!(
-                    event.kind.as_str(),
-                    "permissionRequest" | "elicitationRequest"
-                ) && event
-                    .status
-                    .as_deref()
-                    .unwrap_or("pending")
-                    .eq_ignore_ascii_case("pending")
-            });
+            let has_attention = branch_has_pending_interaction(&branch_events);
             let status = if failed {
                 "failed"
             } else if has_attention && session_active {
@@ -684,6 +688,45 @@ fn propagate_agent_attention_to_ancestors(records: &mut [AgentExecutionRecord]) 
             current = parent_id;
         }
     }
+}
+
+fn branch_has_pending_interaction(events: &[AcpUiEvent]) -> bool {
+    let resolved_elicitation_ids = events
+        .iter()
+        .filter(|event| event.kind == "elicitationResponse")
+        .filter_map(elicitation_id)
+        .collect::<HashSet<_>>();
+    events.iter().any(|event| {
+        let pending = event
+            .status
+            .as_deref()
+            .unwrap_or("pending")
+            .eq_ignore_ascii_case("pending");
+        if !pending {
+            return false;
+        }
+        match event.kind.as_str() {
+            "permissionRequest" => true,
+            "elicitationRequest" => {
+                elicitation_id(event).is_none_or(|id| !resolved_elicitation_ids.contains(&id))
+            }
+            _ => false,
+        }
+    })
+}
+
+fn elicitation_id(event: &AcpUiEvent) -> Option<String> {
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("elicitationId"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            let id = event.id.strip_suffix("-response").unwrap_or(&event.id);
+            (!id.is_empty()).then(|| id.to_string())
+        })
 }
 
 fn agent_index_source_signature(
@@ -1030,6 +1073,16 @@ mod tests {
     }
 
     #[test]
+    fn branch_ids_reject_provider_ids_and_path_segments() {
+        assert!(validate_conversation_branch_id(ROOT_BRANCH_ID).is_ok());
+        assert!(
+            validate_conversation_branch_id(&stable_agent_execution_id("session", "tool")).is_ok()
+        );
+        assert!(validate_conversation_branch_id("provider-tool-id").is_err());
+        assert!(validate_conversation_branch_id("../acp.timeline.jsonl").is_err());
+    }
+
+    #[test]
     fn launch_is_stored_in_parent_and_children_in_launched_branch() {
         let launch = event("launch", Some("child-tool"), json!({ "agentLaunch": true }));
         assert_eq!(branch_route_for_event(&launch).branch_id, ROOT_BRANCH_ID);
@@ -1129,6 +1182,50 @@ mod tests {
         assert_eq!(outer.status, "running");
         assert!(nested.has_attention);
         assert_eq!(nested.status, "waiting_permission");
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn answered_elicitation_clears_persisted_agent_attention() {
+        let attempt = temp_attempt("resolved-elicitation-attention");
+        let launch = event_at(
+            "agent",
+            1,
+            "toolCall",
+            Some("provider-agent"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "run_in_background": true })),
+        );
+        let mut request = event_at(
+            "elicit-1",
+            2,
+            "elicitationRequest",
+            None,
+            Some("pending"),
+            json!({ "parentToolCallId": "provider-agent" }),
+            None,
+        );
+        request.raw.as_mut().unwrap()["elicitationId"] = json!("elicit-1");
+        let mut response = event_at(
+            "elicit-1-response",
+            3,
+            "elicitationResponse",
+            None,
+            Some("completed"),
+            json!({ "parentToolCallId": "provider-agent" }),
+            None,
+        );
+        response.raw.as_mut().unwrap()["elicitationId"] = json!("elicit-1");
+        persist_partitioned(&attempt, vec![launch, request, response]);
+
+        let records = rebuild_agent_index(&attempt, "running").unwrap();
+        let agent = records
+            .iter()
+            .find(|record| record.launch_tool_call_id == "provider-agent")
+            .unwrap();
+        assert!(!agent.has_attention);
+        assert_eq!(agent.status, "running");
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 

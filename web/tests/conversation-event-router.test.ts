@@ -56,6 +56,21 @@ describe('conversation event router', () => {
     expect(second.contentRevision).toBe(2);
   });
 
+  it('keeps an Agent queued when only its synthetic prompt has arrived', () => {
+    applyConversationEventToBranchSnapshots(live('agent-a', {
+      ...uiEvent('userTextDelta', 'completed'),
+      raw: { source: 'agentBranchPrompt' },
+    }));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({
+      status: null,
+      revision: 0,
+      contentRevision: 1,
+    });
+
+    applyConversationEventToBranchSnapshots(live('agent-a', { ...uiEvent('toolCall', 'running'), seq: 2 }));
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({ status: 'running', revision: 1 });
+  });
+
   it('projects permission attention and clears it only after the decision event', () => {
     applyConversationEventToBranchSnapshots(live('agent-a', uiEvent('permissionRequest', 'pending')));
     expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({ status: 'waiting_permission', attention: true });

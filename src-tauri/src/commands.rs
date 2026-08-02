@@ -3,7 +3,7 @@ use gold_band::acp::commands::{AcpCommandCatalog, parse_available_commands};
 use gold_band::acp::elicitation::{
     ElicitationAction, cancel_pending_elicitation_requests, write_elicitation_response,
 };
-use gold_band::acp::events::{AcpUiEvent, current_timestamp};
+use gold_band::acp::events::{AcpUiEvent, compact_live_conversation_event, current_timestamp};
 use gold_band::acp::permission::{
     PendingPermissionState, cancel_pending_permission_requests,
     write_permission_response_if_pending,
@@ -1531,7 +1531,15 @@ pub(crate) fn acp_live_update_emitter(
     lifecycle_bus: Option<gold_band::app::observability::RuntimeLifecycleBus>,
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, AcpUiEvent) -> anyhow::Result<()> + Send + Sync>
 {
-    Arc::new(move |context, event| {
+    Arc::new(move |context, mut event| {
+        let refresh_agent_attention = matches!(
+            event.kind.as_str(),
+            "permissionRequest" | "elicitationRequest"
+        ) && event
+            .status
+            .as_deref()
+            .unwrap_or("pending")
+            .eq_ignore_ascii_case("pending");
         maybe_record_agent_commands(&app_handle, notification_app.as_ref(), &context, &event);
         if let Some(lifecycle_bus) = lifecycle_bus.as_ref() {
             maybe_emit_permission_intervention(
@@ -1547,6 +1555,7 @@ pub(crate) fn acp_live_update_emitter(
                 &event,
             );
         }
+        compact_live_conversation_event(&mut event);
         emit_acp_event_update(
             &app_handle,
             project_id.clone(),
@@ -1555,10 +1564,53 @@ pub(crate) fn acp_live_update_emitter(
             &context.round_id,
             &context.node_id,
             &context.attempt_id,
-            context.outer_node_id,
-            context.outer_attempt_id,
+            context.outer_node_id.clone(),
+            context.outer_attempt_id.clone(),
             event,
         );
+        if refresh_agent_attention && let Some(app) = notification_app.as_ref() {
+            let session = if let (Some(outer_node_id), Some(outer_attempt_id)) = (
+                context.outer_node_id.as_deref(),
+                context.outer_attempt_id.as_deref(),
+            ) {
+                dynamic_acp_session_vm(
+                    app,
+                    &context.task_id,
+                    &context.run_id,
+                    &context.round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                    &context.node_id,
+                    &context.attempt_id,
+                    None,
+                    None,
+                )?
+            } else {
+                acp_session_vm(
+                    app,
+                    &context.task_id,
+                    &context.run_id,
+                    &context.round_id,
+                    &context.node_id,
+                    &context.attempt_id,
+                    None,
+                    None,
+                )?
+            };
+            emit_acp_session_update(
+                &app_handle,
+                app,
+                project_id.clone(),
+                &context.task_id,
+                &context.run_id,
+                &context.round_id,
+                &context.node_id,
+                &context.attempt_id,
+                context.outer_node_id.clone(),
+                context.outer_attempt_id.clone(),
+                session,
+            );
+        }
         Ok(())
     })
 }

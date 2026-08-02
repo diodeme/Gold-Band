@@ -1334,6 +1334,85 @@ pub fn normalize_agent_transcript_metadata(value: &mut Value) -> Option<AgentTra
     Some(relation)
 }
 
+/// Remove provider-only Agent metadata and heavyweight tool output before a
+/// canonical live event crosses the desktop IPC boundary.
+///
+/// The complete event remains available in the branch timeline and can be
+/// queried through the single-tool detail API. Live consumers only need the
+/// stable Gold Band relation metadata, tool input, status, and summary fields.
+pub fn compact_live_conversation_event(event: &mut AcpUiEvent) {
+    let Some(raw) = event.raw.as_mut() else {
+        return;
+    };
+    remove_provider_agent_metadata(raw);
+    if !matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate") {
+        return;
+    }
+    for path in [
+        &["output"][..],
+        &["fields", "output"][..],
+        &["content", "output"][..],
+        &["toolCall", "output"][..],
+        &["toolCall", "content"][..],
+        &["toolCall", "fields", "output"][..],
+        &["_meta", "goldBandConversation", "toolOutput"][..],
+    ] {
+        remove_nested_json_key(raw, path);
+    }
+    if raw
+        .get("content")
+        .is_some_and(|content| !content.is_object())
+        && let Some(object) = raw.as_object_mut()
+    {
+        object.remove("content");
+    }
+    let raw_object = ensure_object(raw);
+    let meta = raw_object
+        .entry("_meta")
+        .or_insert_with(|| serde_json::json!({}));
+    let meta_object = ensure_object(meta);
+    let conversation = meta_object
+        .entry("goldBandConversation")
+        .or_insert_with(|| serde_json::json!({}));
+    ensure_object(conversation).insert("toolDetailAvailable", Value::Bool(true));
+}
+
+fn remove_provider_agent_metadata(raw: &mut Value) {
+    for path in [
+        &["_meta", CLAUDE_CODE_META_KEY][..],
+        &["_meta", AGENT_TRANSCRIPT_META_KEY][..],
+        &["toolCall", "_meta", CLAUDE_CODE_META_KEY][..],
+        &["toolCall", "_meta", AGENT_TRANSCRIPT_META_KEY][..],
+    ] {
+        remove_nested_json_key(raw, path);
+    }
+}
+
+fn remove_nested_json_key(value: &mut Value, path: &[&str]) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let mut current = value;
+    for key in parents {
+        let Some(next) = current.get_mut(*key) else {
+            return;
+        };
+        current = next;
+    }
+    if let Some(object) = current.as_object_mut() {
+        object.remove(*last);
+    }
+}
+
+fn ensure_object(value: &mut Value) -> &mut serde_json::Map<String, Value> {
+    if !value.is_object() {
+        *value = serde_json::json!({});
+    }
+    value
+        .as_object_mut()
+        .expect("normalized conversation metadata must be an object")
+}
+
 pub fn extract_agent_transcript_relation(value: &Value) -> Option<AgentTranscriptRelation> {
     let standard = value
         .pointer(&format!("/_meta/{AGENT_TRANSCRIPT_META_KEY}"))
@@ -1596,12 +1675,58 @@ mod tests {
     use super::{
         AcpSessionMetadata, AcpTimingState, AcpUiEvent, annotate_latest_runtime_control_output,
         append_raw_frame, append_structured_diagnostic, append_timeline_patch,
-        context_compaction_phase, elicitation_request_event, elicitation_response_event,
-        extract_usage_fields, kind_to_ui_kind, latest_timeline_source_seq, load_timeline_items,
-        normalize_session_update, permission_request_event, user_prompt_event,
-        write_timeline_items,
+        compact_live_conversation_event, context_compaction_phase, elicitation_request_event,
+        elicitation_response_event, extract_usage_fields, kind_to_ui_kind,
+        latest_timeline_source_seq, load_timeline_items, normalize_session_update,
+        permission_request_event, user_prompt_event, write_timeline_items,
     };
     use serde_json::{Value, json};
+
+    #[test]
+    fn live_tool_event_keeps_input_but_defers_output_and_provider_metadata() {
+        let mut event = test_timeline_event("tool-1", 1, "");
+        event.kind = "toolCall".to_string();
+        event.raw = Some(json!({
+            "rawInput": { "path": "src/main.rs" },
+            "output": "large output",
+            "_meta": {
+                "goldBandConversation": {
+                    "branchId": "agent-internal",
+                    "toolName": "Read",
+                    "toolOutput": "large normalized output"
+                },
+                "claudeCode": {
+                    "subagent": true,
+                    "toolResponse": { "content": "large provider output" }
+                },
+                "agentTranscript": { "parentToolCallId": "provider-parent" }
+            }
+        }));
+
+        compact_live_conversation_event(&mut event);
+
+        let raw = event.raw.as_ref().unwrap();
+        assert_eq!(
+            raw.pointer("/rawInput/path").and_then(Value::as_str),
+            Some("src/main.rs")
+        );
+        assert_eq!(
+            raw.pointer("/_meta/goldBandConversation/branchId")
+                .and_then(Value::as_str),
+            Some("agent-internal")
+        );
+        assert_eq!(
+            raw.pointer("/_meta/goldBandConversation/toolDetailAvailable"),
+            Some(&Value::Bool(true))
+        );
+        assert!(raw.get("output").is_none());
+        assert!(
+            raw.pointer("/_meta/goldBandConversation/toolOutput")
+                .is_none()
+        );
+        assert!(raw.pointer("/_meta/claudeCode").is_none());
+        assert!(raw.pointer("/_meta/agentTranscript").is_none());
+    }
 
     #[test]
     fn structured_diagnostic_persists_stable_code_and_params() {

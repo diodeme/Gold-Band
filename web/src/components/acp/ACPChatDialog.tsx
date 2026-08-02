@@ -728,6 +728,7 @@ export const ACPChatDialog = forwardRef<
     !isAcpSessionReadyForInitialDisplay(session) && isTauriRuntime(),
   );
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [loadingLatest, setLoadingLatest] = useState(false);
   const [hasOlderEvents, setHasOlderEvents] = useState(
     () => session?.eventPage.hasOlder ?? restoredBranchViewState?.hasOlder ?? false,
   );
@@ -1616,7 +1617,6 @@ export const ACPChatDialog = forwardRef<
         "start",
         effectiveLoadedEventBufferLimit,
       );
-      setHasOlderEvents((current) => current || limited.length < merged.length);
       loadedEventsRef.current = limited;
       return limited;
     });
@@ -1705,10 +1705,22 @@ export const ACPChatDialog = forwardRef<
 
   const handleAtBottomChange = useCallback((viewportAtBottom: boolean) => {
     viewportAtBottomRef.current = viewportAtBottom;
+    const scroller = chatContainerContextRef.current?.scrollRef.current;
+    if (scroller) {
+      storeAcpBranchViewState(
+        eventWindowKey,
+        captureAcpBranchViewState(
+          scroller,
+          viewportAtBottom,
+          hasOlderEventsRef.current,
+          hasNewerEventsRef.current,
+        ),
+      );
+    }
     onAtBottomChange?.(
       isAcpConversationAtBottom(viewportAtBottom, hasNewerEvents),
     );
-  }, [hasNewerEvents, onAtBottomChange]);
+  }, [eventWindowKey, hasNewerEvents, onAtBottomChange]);
 
   const enqueueLiveEventUpdate = useCallback(
     (event: AcpUiEventVm) => {
@@ -2218,6 +2230,48 @@ export const ACPChatDialog = forwardRef<
     }
   };
 
+  const returnToLatestEvents = async () => {
+    if (paginationDirectionRef.current !== null) return;
+    paginationDirectionRef.current = "newer";
+    setLoadingLatest(true);
+    try {
+      const updated = normalizeSessionUpdate(
+        await getAcpSession(
+          projectId,
+          taskId,
+          runId,
+          roundId,
+          nodeId,
+          attemptId,
+          { branchId, pageSize: effectiveEventPageSize, eventLimit: effectiveEventPageSize },
+          baseSession,
+          outerNodeId,
+          outerAttemptId,
+        ),
+      );
+      if (!updated) return;
+      const reconciled = reconcileAcpSessionForDisplay(latestSessionRef.current, updated);
+      latestSessionRef.current = reconciled;
+      setCurrentSession(reconciled);
+      const latestEvents = limitAcpEvents(
+        updated.events,
+        "start",
+        effectiveLoadedEventBufferLimit,
+      );
+      loadedEventsRef.current = latestEvents;
+      setLoadedEvents(latestEvents);
+      setHasOlderEvents(updated.eventPage.hasOlder);
+      setHasNewerEvents(updated.eventPage.hasNewer);
+      viewportAtBottomRef.current = true;
+      requestAnimationFrame(() => {
+        chatContainerContextRef.current?.scrollToBottom({ animation: "instant" });
+      });
+    } finally {
+      paginationDirectionRef.current = null;
+      setLoadingLatest(false);
+    }
+  };
+
   const submitPrompt = async (trimmed: string) => {
     const submittingRuntimeContinue = composerState.submitTarget === "runtime-continue";
     if (sending || activeAwaitingResponse || (!submittingRuntimeContinue && sessionActive) || cancelling) return;
@@ -2648,6 +2702,15 @@ export const ACPChatDialog = forwardRef<
     if (distanceFromBottom < NEWER_PAGE_LOAD_THRESHOLD_PX && hasNewerEvents) {
       void loadNewerEvents();
     }
+    storeAcpBranchViewState(
+      eventWindowKey,
+      captureAcpBranchViewState(
+        scroller,
+        viewportAtBottomRef.current,
+        hasOlderEventsRef.current,
+        hasNewerEventsRef.current,
+      ),
+    );
   };
   const handleScroll = useCallback((scroller: HTMLDivElement) => {
     if (scrollFrameRef.current != null) return;
@@ -2840,6 +2903,20 @@ export const ACPChatDialog = forwardRef<
               </InterventionLayer>
           </ConversationViewport>
         )}
+        {canvasMode === "chat" && hasNewerEvents ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            className="absolute right-4 bottom-4 z-20 gap-1.5 rounded-full border border-border/60 bg-background/95 shadow-sm backdrop-blur"
+            disabled={loadingLatest}
+            onClick={() => void returnToLatestEvents()}
+            data-acp-return-to-latest="true"
+          >
+            <ChevronDown className="size-3.5" />
+            {t("acp.returnToLatest")}
+          </Button>
+        ) : null}
         {stopOverlayPending ? <AcpStopOverlay /> : null}
       </div>
       {canvasMode === "chat" ? (
@@ -4245,6 +4322,7 @@ const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink
   );
   const input = agentToolInput(event.toolEvent);
   const description = event.description ?? input.description;
+  const label = description || event.title;
   const metricsSummary = childAgentMetricsSummary(event, t);
   const displayedStatus = liveSnapshot.status ?? event.status;
   const attention = liveSnapshot.revision > 0 ? liveSnapshot.attention : event.attention;
@@ -4261,7 +4339,7 @@ const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink
     workspace.openResource({
       kind: 'agent-transcript',
       key: agentTranscriptResourceKey(locator),
-      title: description || event.title || t('acp.subAgent'),
+      title: label || t('acp.subAgent'),
       description,
       status: displayedStatus ?? 'queued',
       attention,
@@ -4286,7 +4364,7 @@ const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-2">
           <span className="shrink-0 text-xs font-medium text-foreground">{t('acp.subAgent')}</span>
-          {description ? <span className="min-w-0 truncate text-sm text-foreground/90">{description}</span> : null}
+          {label ? <span className="min-w-0 truncate text-sm text-foreground/90">{label}</span> : null}
         </span>
         {metricsSummary ? <span className="mt-0.5 block truncate text-xs text-muted-foreground">{metricsSummary}</span> : null}
       </span>
@@ -6513,31 +6591,17 @@ function createLiveAcpSessionShell(events: AcpUiEventVm[], status: string): AcpS
   };
 }
 
-function createVisibleAcpSession(
+export function createVisibleAcpSession(
   session: AcpSessionVm,
   liveEvents: AcpUiEventVm[],
   eventPageSize: number,
 ): AcpSessionVm {
   const mergedEvents = mergeAcpEvents(session.events, liveEvents);
   const limitedEvents = limitAcpEvents(mergedEvents, "start", eventPageSize);
-  const auditBounds = acpAuditSeqBounds(limitedEvents);
   return {
     ...session,
     events: limitedEvents,
-    eventPage: {
-      ...session.eventPage,
-      loadedCount: limitedEvents.length,
-      total: Math.max(session.eventPage.total, mergedEvents.length),
-      oldestSeq: auditBounds.oldestSeq ?? session.eventPage.oldestSeq,
-      newestSeq: auditBounds.newestSeq ?? session.eventPage.newestSeq,
-      hasOlder: session.eventPage.hasOlder || limitedEvents.length < mergedEvents.length,
-      oldestCursor: auditBounds.oldestSeq !== null
-        ? formatTimelineCursor(auditBounds.oldestSeq)
-        : session.eventPage.oldestCursor,
-      newestCursor: auditBounds.newestSeq !== null
-        ? formatTimelineCursor(auditBounds.newestSeq)
-        : session.eventPage.newestCursor,
-    },
+    eventPage: session.eventPage,
   };
 }
 

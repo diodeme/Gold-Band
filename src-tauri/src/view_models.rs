@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::Result;
-use gold_band::acp::{client::PromptActivity, events::normalize_agent_transcript_metadata};
+use gold_band::acp::client::PromptActivity;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
@@ -3441,6 +3441,7 @@ pub fn dynamic_acp_session_vm(
         .as_ref()
         .and_then(|query| query.branch_id.clone())
         .unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id)?;
     let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &status)?;
     let branch_timeline_path =
         gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
@@ -3752,6 +3753,7 @@ pub fn acp_session_vm(
         .as_ref()
         .and_then(|query| query.branch_id.clone())
         .unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id)?;
     let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &status)?;
     let branch_timeline_path =
         gold_band::acp::branches::branch_timeline_path(&attempt_dir, &branch_id);
@@ -4841,6 +4843,11 @@ struct ConversationSemanticBlockRange {
 fn conversation_semantic_blocks(events: &[AcpUiEventVm]) -> Vec<ConversationSemanticBlockRange> {
     let mut blocks = Vec::<ConversationSemanticBlockRange>::new();
     let mut activity_start: Option<usize> = None;
+    let resolved_elicitation_ids = events
+        .iter()
+        .filter(|event| event.kind == "elicitationResponse")
+        .filter_map(elicitation_id_from_event)
+        .collect::<HashSet<_>>();
     let flush_activity =
         |end: usize,
          start: &mut Option<usize>,
@@ -4850,7 +4857,7 @@ fn conversation_semantic_blocks(events: &[AcpUiEventVm]) -> Vec<ConversationSema
             }
         };
     for (index, event) in events.iter().enumerate() {
-        if !is_conversation_semantic_event(event) {
+        if !is_conversation_semantic_event(event, &resolved_elicitation_ids) {
             continue;
         }
         if is_conversation_activity_event(event) {
@@ -4877,10 +4884,7 @@ fn compact_selected_semantic_blocks(
     let mut selected = Vec::new();
     for block in blocks {
         let block_events = &events[block.start..=block.end];
-        let is_activity = block_events.iter().any(is_conversation_activity_event)
-            && !block_events.iter().any(|event| {
-                !is_conversation_activity_event(event) && is_conversation_semantic_event(event)
-            });
+        let is_activity = block_events.iter().any(is_conversation_activity_event);
         if !is_activity {
             selected.extend(block_events.iter().cloned());
             continue;
@@ -4993,6 +4997,7 @@ pub fn acp_activity_detail_vm_for_attempt(
     attempt_dir: &camino::Utf8Path,
     query: AcpActivityDetailQueryInput,
 ) -> Result<AcpActivityDetailVm> {
+    gold_band::acp::branches::validate_conversation_branch_id(&query.branch_id)?;
     gold_band::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
     let timeline_path =
         gold_band::acp::branches::branch_timeline_path(attempt_dir, &query.branch_id);
@@ -5186,6 +5191,7 @@ pub fn acp_tool_detail_vm_for_attempt(
     attempt_dir: &camino::Utf8Path,
     query: AcpToolDetailQueryInput,
 ) -> Result<AcpToolDetailVm> {
+    gold_band::acp::branches::validate_conversation_branch_id(&query.branch_id)?;
     gold_band::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
     let timeline_path =
         gold_band::acp::branches::branch_timeline_path(attempt_dir, &query.branch_id);
@@ -5254,9 +5260,17 @@ fn semantic_block_range(
     }
 }
 
-fn is_conversation_semantic_event(event: &AcpUiEventVm) -> bool {
+fn is_conversation_semantic_event(
+    event: &AcpUiEventVm,
+    resolved_elicitation_ids: &HashSet<String>,
+) -> bool {
     if event.kind == "permissionRequest" {
         return event.status.as_deref() == Some("pending");
+    }
+    if event.kind == "elicitationRequest" {
+        return event.status.as_deref().unwrap_or("pending") == "pending"
+            && elicitation_id_from_event(event)
+                .is_none_or(|id| !resolved_elicitation_ids.contains(&id));
     }
     matches!(
         event.kind.as_str(),
@@ -5265,12 +5279,24 @@ fn is_conversation_semantic_event(event: &AcpUiEventVm) -> bool {
             | "thoughtDelta"
             | "toolCall"
             | "toolCallUpdate"
-            | "elicitationRequest"
-            | "plan"
             | "attemptSeparator"
             | "contextCompaction"
             | "error"
     )
+}
+
+fn elicitation_id_from_event(event: &AcpUiEventVm) -> Option<String> {
+    event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("elicitationId"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            let id = event.id.strip_suffix("-response").unwrap_or(&event.id);
+            (!id.is_empty()).then(|| id.to_string())
+        })
 }
 
 fn is_conversation_activity_event(event: &AcpUiEventVm) -> bool {
@@ -5290,15 +5316,22 @@ struct AgentEventMetaVm {
 }
 
 fn agent_event_meta_vm(event: &AcpUiEventVm) -> AgentEventMetaVm {
-    let Some(mut raw) = event.raw.clone() else {
-        return AgentEventMetaVm::default();
-    };
-    let Some(relation) = normalize_agent_transcript_metadata(&mut raw) else {
+    let Some(conversation) = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.pointer("/_meta/goldBandConversation"))
+    else {
         return AgentEventMetaVm::default();
     };
     AgentEventMetaVm {
-        agent_launch: relation.agent_launch,
-        tool_name: relation.tool_name,
+        agent_launch: conversation
+            .get("launchedAgentExecutionId")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.is_empty()),
+        tool_name: conversation
+            .get("toolName")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
     }
 }
 
@@ -6001,46 +6034,6 @@ fn extract_system_prompt_append(path: &camino::Utf8Path) -> Option<String> {
 
 fn compact_event_for_session(mut event: AcpUiEventVm) -> AcpUiEventVm {
     if let Some(raw) = event.raw.as_mut() {
-        let normalized_tool_output = gold_band::acp::branches::provider_tool_output(raw).cloned();
-        if let Some(relation) = normalize_agent_transcript_metadata(raw) {
-            let session_id = event.session_id.as_deref().unwrap_or("unknown-session");
-            let branch_id = relation
-                .parent_tool_call_id
-                .as_deref()
-                .map(|tool_call_id| {
-                    gold_band::acp::branches::stable_agent_execution_id(session_id, tool_call_id)
-                })
-                .unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
-            let launched_agent_execution_id = relation
-                .agent_launch
-                .then(|| event.tool_call_id.as_deref())
-                .flatten()
-                .map(|tool_call_id| {
-                    gold_band::acp::branches::stable_agent_execution_id(session_id, tool_call_id)
-                });
-            let normalized_tool_output = launched_agent_execution_id
-                .is_none()
-                .then_some(normalized_tool_output)
-                .flatten();
-            let raw_object = raw
-                .as_object_mut()
-                .expect("normalized ACP event raw must be an object");
-            let meta = raw_object
-                .entry("_meta")
-                .or_insert_with(|| serde_json::json!({}));
-            if !meta.is_object() {
-                *meta = serde_json::json!({});
-            }
-            meta.as_object_mut().unwrap().insert(
-                "goldBandConversation".to_string(),
-                serde_json::json!({
-                    "branchId": branch_id,
-                    "launchedAgentExecutionId": launched_agent_execution_id,
-                    "toolName": relation.tool_name,
-                    "toolOutput": normalized_tool_output,
-                }),
-            );
-        }
         remove_provider_agent_metadata(raw);
     }
     event.raw = event.raw.map(compact_raw_value);
@@ -7164,17 +7157,22 @@ mod tests {
     }
 
     #[test]
-    fn session_view_exposes_only_internal_agent_metadata_for_historical_events() {
+    fn session_view_consumes_only_internal_agent_metadata_for_historical_events() {
         let mut event = test_event("toolCall", "");
         event.tool_call_id = Some("call-child".to_string());
         event.raw = Some(json!({
             "sessionUpdate": "tool_call",
             "toolCallId": "call-child",
             "_meta": {
+                "goldBandConversation": {
+                    "branchId": "agent-internal-parent",
+                    "launchedAgentExecutionId": "agent-internal-child",
+                    "toolName": "Agent"
+                },
                 "claudeCode": {
-                    "toolName": "Agent",
+                    "toolName": "ConflictingProviderTool",
                     "subagent": true,
-                    "parentToolUseId": "call-parent"
+                    "parentToolUseId": "provider-parent-must-not-be-consumed"
                 }
             }
         }));
@@ -7186,11 +7184,11 @@ mod tests {
             .and_then(|raw| raw.pointer("/_meta/goldBandConversation"))
             .expect("normalized conversation metadata");
 
+        assert_eq!(conversation["branchId"], "agent-internal-parent");
         assert_eq!(
-            conversation["branchId"],
-            gold_band::acp::branches::stable_agent_execution_id("session-123", "call-parent")
+            conversation["launchedAgentExecutionId"],
+            "agent-internal-child"
         );
-        assert!(conversation["launchedAgentExecutionId"].as_str().is_some());
         assert_eq!(conversation["toolName"], "Agent");
         assert!(
             event
@@ -9288,6 +9286,71 @@ mod tests {
     }
 
     #[test]
+    fn semantic_page_ignores_todo_revisions_and_resolved_elicitation() {
+        let mut user = acp_event_at("user", "userTextDelta", Some("completed"), 1_000, None);
+        user.content = Some("delegate".to_string());
+        let mut plan = acp_event_at(
+            "plan-latest",
+            "plan",
+            Some("completed"),
+            1_100,
+            Some(json!({ "entries": [{ "content": "inspect", "status": "pending" }] })),
+        );
+        plan.content = None;
+        let request = elicitation_request_event_at("elicit-1", 1_200);
+        let response = elicitation_response_event_at("elicit-1", 1_300);
+        let mut assistant = acp_event_at("answer", "textDelta", Some("completed"), 1_400, None);
+        assistant.content = Some("done".to_string());
+        let events = vec![user, plan, request, response, assistant];
+
+        let scan = paginate_timeline(
+            &events,
+            events.len(),
+            Some(0),
+            &HashMap::new(),
+            None,
+            None,
+            false,
+            None,
+            None,
+            30,
+        )
+        .unwrap();
+
+        assert_eq!(scan.event_page.total, 2);
+        assert!(!scan.event_page.has_older);
+        assert_eq!(scan.events.len(), 2);
+        assert!(
+            scan.events
+                .iter()
+                .all(|event| matches!(event.kind.as_str(), "userTextDelta" | "textDelta"))
+        );
+        assert_eq!(scan.timeline_projection.todo_entries.len(), 1);
+    }
+
+    #[test]
+    fn pending_elicitation_is_one_current_semantic_block() {
+        let request = elicitation_request_event_at("elicit-pending", 1_000);
+        let scan = paginate_timeline(
+            std::slice::from_ref(&request),
+            1,
+            Some(0),
+            &HashMap::new(),
+            None,
+            None,
+            true,
+            None,
+            None,
+            30,
+        )
+        .unwrap();
+
+        assert_eq!(scan.event_page.total, 1);
+        assert_eq!(scan.events.len(), 1);
+        assert_eq!(scan.events[0].kind, "elicitationRequest");
+    }
+
+    #[test]
     fn root_semantic_page_counts_agent_links_but_not_agent_branch_history() {
         let dir =
             std::env::temp_dir().join(format!("gb-agent-semantic-page-{}", uuid::Uuid::new_v4()));
@@ -9299,13 +9362,19 @@ mod tests {
         user.started_seq = Some(1);
         user.ended_seq = Some(1);
         let launch = |id: &str, tool_call_id: &str, seq: u64| {
+            let agent_execution_id =
+                gold_band::acp::branches::stable_agent_execution_id("s1", tool_call_id);
             let mut event = acp_event_at(
                 id,
                 "toolCall",
                 Some("completed"),
                 1_000 + seq,
                 Some(json!({
-                    "_meta": { "agentTranscript": { "agentLaunch": true, "toolName": "Agent" } },
+                    "_meta": { "goldBandConversation": {
+                        "branchId": "root",
+                        "launchedAgentExecutionId": agent_execution_id,
+                        "toolName": "Agent"
+                    } },
                     "rawInput": { "run_in_background": true, "description": id }
                 })),
             );

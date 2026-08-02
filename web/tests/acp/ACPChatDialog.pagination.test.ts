@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createVisibleAcpSession,
   limitAcpEvents,
   loadedEventBufferLimit,
   mergeAcpEvents,
 } from '../../src/components/acp/ACPChatDialog';
-import type { AcpUiEventVm } from '../../src/types';
+import type { AcpSessionVm, AcpUiEventVm } from '../../src/types';
 
 function event(
   partial: Partial<AcpUiEventVm> &
@@ -91,5 +92,47 @@ describe('ACPChatDialog pagination buffer', () => {
     expect(merged[719]!.seq).toBe(1080);
     expect(merged[720]!.seq).toBe(1081);
     expect(merged[1079]!.seq).toBe(1440);
+  });
+
+  it('does not turn live activity audit overflow into conversation history', () => {
+    const rootMessage = event({ id: 'user', seq: 1, timestamp: '1Z', kind: 'userTextDelta', content: 'delegate' });
+    const session = {
+      branchId: 'root',
+      parentBranchId: null,
+      readOnly: false,
+      sessionId: 'session-1',
+      provider: 'acp',
+      status: 'running',
+      restored: false,
+      events: [rootMessage],
+      timelineProjection: null,
+      eventPage: {
+        loadedCount: 1,
+        total: 1,
+        oldestSeq: 1,
+        newestSeq: 1,
+        hasOlder: false,
+        hasNewer: false,
+        oldestCursor: 'seq:1',
+        newestCursor: 'seq:1',
+      },
+      pendingPermissions: [],
+      diagnostics: { rawFrameCount: 0, eventCount: 1, errorCount: 0 },
+    } as AcpSessionVm;
+    const activity = Array.from({ length: 500 }, (_, index) => event({
+      id: `tool-${index}`,
+      seq: index + 2,
+      timestamp: `${index + 2}Z`,
+      kind: 'toolCall',
+      toolCallId: `call-${index}`,
+      status: 'completed',
+    }));
+
+    const visible = createVisibleAcpSession(session, activity, 90);
+
+    expect(visible.events).toHaveLength(90);
+    expect(visible.eventPage).toEqual(session.eventPage);
+    expect(visible.eventPage.hasOlder).toBe(false);
+    expect(visible.eventPage.total).toBe(1);
   });
 });

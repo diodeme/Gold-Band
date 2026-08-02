@@ -136,4 +136,15 @@ describe('read-only Agent conversation boundary', () => {
       await act(async () => root.unmount());
     }
   });
+
+  it('offers an explicit return to the latest semantic window', async () => {
+    const historical = session('agent-1');
+    historical.eventPage.hasNewer = true;
+    const { container, root } = await renderDialog(historical, true);
+    try {
+      expect(container.querySelector('[data-acp-return-to-latest="true"]')).not.toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 });

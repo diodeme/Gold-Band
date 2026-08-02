@@ -98,10 +98,12 @@ describe('AppTitleBar', () => {
 
     const insetIndex = html.indexOf('pl-[72px]');
     const brandIndex = html.indexOf('data-titlebar-brand="true"');
+    const leftIndex = html.indexOf('data-titlebar-sidebar-toggle="left"');
     const rightIndex = html.indexOf('data-titlebar-sidebar-toggle="right"');
     expect(insetIndex).toBeGreaterThanOrEqual(0);
     expect(brandIndex).toBeGreaterThan(insetIndex);
-    expect(rightIndex).toBeGreaterThan(brandIndex);
+    expect(leftIndex).toBeGreaterThan(brandIndex);
+    expect(rightIndex).toBeGreaterThan(leftIndex);
     expect(html).toContain('data-titlebar-trailing-actions="true"');
     expect(html).toContain('pr-2.5');
     expect(html).not.toContain('common.minimizeWindow');

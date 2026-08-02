@@ -822,3 +822,12 @@ attempt-001/
 - 布局契约：首页主内容收窄为 `max-w-3xl`；正文区以 56px 为初始最小高度，按内容增长到 320px 上限，未到上限隐藏滚动条，超过上限后固定高度并在正文区内部滚动，工具栏保持稳定。
 - 光学居中：主页横向继续相对可用主区严格居中；纵向在居中容器底部增加 64–80px 响应式布局留白，使内容组上移约 32–40px。该留白参与 flex 布局计算，不使用 transform，避免视觉位置与真实布局位置分离。
 - 回归固化：共享自动尺寸函数覆盖短文本、中等文本和超限文本，布局配置测试固定主页宽度、最小高度与增长上限；要求 Web 测试、生产构建和 `/chat` deep link 实际验证通过。
+
+---
+
+## 2026-08-02：macOS 原生窗口控制恢复与 chrome 所有权收口
+
+- 根因修复：Rust 启动阶段已为 macOS 恢复 native decorations、Overlay title bar、hidden title 与 shadow，但 Web reveal 流程随后无条件调用 `setDecorations(false)`；前端又按 macOS 平台隐藏自绘窗口按钮，最终形成只保留安全区而没有 traffic lights 的空白标题栏。
+- 生命周期边界：窗口 decorations、title bar style 与 native shadow 统一由 Rust/Tauri 宿主管理；Web 层只负责同步主题 surface、显示窗口以及渲染平台对应的控制入口，不再修改 native chrome，也不再持有 `allow-set-decorations` 权限。
+- 布局保持：不修改共享标题栏组件结构；macOS 固定“traffic lights 安全区 → 品牌 Logo/标题 → 左侧栏开关 → 弹性拖拽区 → 右侧栏开关”，Windows/Linux 继续使用右侧自绘最小化、最大化/还原与关闭按钮。
+- 回归固化：新增窗口 chrome 所有权契约测试，验证 Rust macOS 配置、Web reveal 无 decorations mutation、能力最小化和标题栏元素顺序；要求相关 Vitest、Web 生产构建与 Rust 桌面测试通过，并在 macOS 安装包上验收 traffic lights、拖拽及左右侧栏按钮点击。

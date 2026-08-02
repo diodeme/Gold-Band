@@ -832,7 +832,14 @@ describe('ACP chat event handling', () => {
       'gold-band-user-prompt-1',
       'assistant-message-1',
     ]);
-    expect(visible.eventPage.loadedCount).toBe(2);
+    expect(visible.eventPage).toEqual({
+      loadedCount: 1,
+      total: 1,
+      oldestSeq: 1,
+      newestSeq: 1,
+      hasOlder: false,
+      hasNewer: false,
+    });
   });
 
   it('uses backend timing as the session elapsed source of truth', () => {

@@ -1992,7 +1992,7 @@ pub fn get_acp_session(
             query,
             None,
         )
-        .map_err(command_error);
+        .map_err(|error| acp_storage_query_error(error, "acp.session-query-failed"));
     }
     let attempt_dir = app
         .paths
@@ -2011,7 +2011,7 @@ pub fn get_acp_session(
         query,
         None,
     )
-    .map_err(command_error)
+    .map_err(|error| acp_storage_query_error(error, "acp.session-query-failed"))
 }
 
 #[tauri::command]
@@ -2038,7 +2038,8 @@ pub fn get_acp_activity_detail(
         outer_node_id.as_deref(),
         outer_attempt_id.as_deref(),
     );
-    acp_activity_detail_vm_for_attempt(&attempt_dir, query).map_err(command_error)
+    acp_activity_detail_vm_for_attempt(&attempt_dir, query)
+        .map_err(|error| acp_storage_query_error(error, "acp.activity-detail-query-failed"))
 }
 
 #[tauri::command]
@@ -2065,7 +2066,8 @@ pub fn get_acp_tool_detail(
         outer_node_id.as_deref(),
         outer_attempt_id.as_deref(),
     );
-    acp_tool_detail_vm_for_attempt(&attempt_dir, query).map_err(command_error)
+    acp_tool_detail_vm_for_attempt(&attempt_dir, query)
+        .map_err(|error| acp_storage_query_error(error, "acp.tool-detail-query-failed"))
 }
 
 #[tauri::command]
@@ -3316,11 +3318,26 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<ProfileCommandError>() {
         return CommandErrorVm::new(error.code(), error.params());
     }
+    if let Some(error) =
+        error.downcast_ref::<gold_band::acp::branches::ConversationBranchError>()
+    {
+        return CommandErrorVm::new(error.code(), serde_json::json!({}));
+    }
     let message = error.to_string();
     if let Some(code) = updater_command_error_code(&message) {
         return CommandErrorVm::new(code, serde_json::json!({ "message": message }));
     }
     CommandErrorVm::new("app.unexpected", serde_json::json!({ "message": message }))
+}
+
+fn acp_storage_query_error(error: anyhow::Error, fallback_code: &'static str) -> CommandErrorVm {
+    if error
+        .downcast_ref::<gold_band::acp::branches::ConversationBranchError>()
+        .is_some()
+    {
+        return command_error(error);
+    }
+    CommandErrorVm::new(fallback_code, serde_json::json!({}))
 }
 
 fn updater_command_error_code(message: &str) -> Option<&'static str> {
@@ -4625,6 +4642,25 @@ mod tests {
         });
 
         assert_ne!(worker_thread, caller_thread);
+    }
+
+    #[test]
+    fn branch_query_errors_keep_their_structured_command_code() {
+        let error = command_error(
+            gold_band::acp::branches::ConversationBranchError::InvalidBranchId.into(),
+        );
+        assert_eq!(error.code, "acp.invalid-conversation-branch-id");
+        assert_eq!(error.params, serde_json::json!({}));
+    }
+
+    #[test]
+    fn storage_query_errors_do_not_expose_backend_messages() {
+        let error = acp_storage_query_error(
+            anyhow::anyhow!("D:/secret/path could not be parsed"),
+            "acp.activity-detail-query-failed",
+        );
+        assert_eq!(error.code, "acp.activity-detail-query-failed");
+        assert_eq!(error.params, serde_json::json!({}));
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::acp::events::{
-    AcpUiEvent, AgentTranscriptRelation, extract_agent_transcript_relation, load_timeline_items,
-    write_timeline_items,
+    AcpUiEvent, AgentTranscriptRelation, agent_transcript_tool_output,
+    extract_agent_transcript_relation, load_timeline_items, write_timeline_items,
 };
 use crate::storage::{ensure_parent_dir, write_json};
 
@@ -20,6 +20,20 @@ pub const ROOT_BRANCH_ID: &str = "root";
 const BRANCH_META_KEY: &str = "goldBandConversation";
 const AGENT_NAMESPACE: Uuid = Uuid::from_u128(0x63c7f8ac_1498_4f6e_8f6d_62f2f04033f1);
 const AGENT_INDEX_CACHE_CAPACITY: usize = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ConversationBranchError {
+    #[error("invalid conversation branch id")]
+    InvalidBranchId,
+}
+
+impl ConversationBranchError {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::InvalidBranchId => "acp.invalid-conversation-branch-id",
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AgentIndexSourceFileSignature {
@@ -88,10 +102,10 @@ pub fn validate_conversation_branch_id(branch_id: &str) -> Result<()> {
         return Ok(());
     }
     let Some(value) = branch_id.strip_prefix("agent-") else {
-        bail!("acp.invalid-conversation-branch-id");
+        return Err(ConversationBranchError::InvalidBranchId.into());
     };
     if value.len() != 32 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("acp.invalid-conversation-branch-id");
+        return Err(ConversationBranchError::InvalidBranchId.into());
     }
     Ok(())
 }
@@ -132,7 +146,13 @@ pub fn annotate_event_branch(event: &mut AcpUiEvent) -> ConversationBranchRoute 
     let normalized_tool_output = route
         .launched_agent_execution_id
         .is_none()
-        .then(|| event.raw.as_ref().and_then(provider_tool_output).cloned())
+        .then(|| {
+            event
+                .raw
+                .as_ref()
+                .and_then(agent_transcript_tool_output)
+                .cloned()
+        })
         .flatten();
     let raw = event.raw.get_or_insert_with(|| json!({}));
     if !raw.is_object() {
@@ -982,11 +1002,6 @@ fn tool_raw_input(raw: &Value) -> Option<&Value> {
         .or_else(|| raw.pointer("/toolCall/input"))
 }
 
-pub fn provider_tool_output(raw: &Value) -> Option<&Value> {
-    raw.pointer("/_meta/claudeCode/toolResponse/content")
-        .or_else(|| raw.pointer("/toolCall/_meta/claudeCode/toolResponse/content"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1073,13 +1088,47 @@ mod tests {
     }
 
     #[test]
+    fn branch_annotation_consumes_only_internal_tool_output() {
+        let mut event = event_at(
+            "tool",
+            1,
+            "toolCall",
+            Some("provider-tool"),
+            Some("completed"),
+            json!({}),
+            None,
+        );
+        event.raw = Some(json!({
+            "_meta": {
+                "agentTranscript": { "toolOutput": "internal output" },
+                "claudeCode": { "toolResponse": { "content": "provider output" } }
+            }
+        }));
+
+        annotate_event_branch(&mut event);
+
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/goldBandConversation/toolOutput")),
+            Some(&json!("internal output"))
+        );
+    }
+
+    #[test]
     fn branch_ids_reject_provider_ids_and_path_segments() {
         assert!(validate_conversation_branch_id(ROOT_BRANCH_ID).is_ok());
         assert!(
             validate_conversation_branch_id(&stable_agent_execution_id("session", "tool")).is_ok()
         );
-        assert!(validate_conversation_branch_id("provider-tool-id").is_err());
-        assert!(validate_conversation_branch_id("../acp.timeline.jsonl").is_err());
+        for invalid in ["provider-tool-id", "../acp.timeline.jsonl"] {
+            let error = validate_conversation_branch_id(invalid).unwrap_err();
+            let domain = error
+                .downcast_ref::<ConversationBranchError>()
+                .expect("structured branch error");
+            assert_eq!(domain.code(), "acp.invalid-conversation-branch-id");
+        }
     }
 
     #[test]

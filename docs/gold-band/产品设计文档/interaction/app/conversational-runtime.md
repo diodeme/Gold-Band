@@ -21,7 +21,7 @@
 ## 运行时数据与内存边界
 
 - `acp.timeline.jsonl` 是会话展示事件的完整事实源；活动 runtime 内存只保存当前 text/thought/plan 累计流、未终态 tool call、未决 permission/elicitation、session metadata、usage 与 timing aggregate。完成并已持久化的历史事件必须立即从热状态释放，不能按完整会话历史常驻 `HashMap`。
-- 根会话与每个 Agent execution 是统一的 `ConversationBranch`。根分支写入 `acp.timeline.jsonl`，Agent 分支写入 `agents/<稳定 AgentExecutionId>/timeline.jsonl`；`acp.agents.jsonl` 与分支 snapshot 保存父子关系、生命周期、统计、attention 和最新 cursor。每个规范事件只属于一个分支，Agent 正式文本、TODO、工具与权限不得复制回父分支。
+- 根会话与每个 Agent execution 是统一的 `ConversationBranch`。根分支写入 `acp.timeline.jsonl`，Agent 分支写入 `agents/<稳定 AgentExecutionId>/timeline.jsonl`；`acp.agents.jsonl` 与分支 snapshot 保存父子关系、生命周期、统计、attention 和最新 cursor。每个规范事件只属于一个分支，Agent 正式文本、TODO、工具与权限不得复制回父分支。每个分支只投影 `parentAgentExecutionId` 指向自身的直属 Agent；根分支只投影 `parentAgentExecutionId = null` 的顶层 Agent，后代必须在父 Agent 会话中逐级出现。
 - Claude `_meta.claudeCode` 只允许在 ACP 适配边界转换为内部关系；前端与持久化查询只消费 `_meta.goldBandConversation` 和稳定 branch ID。旧 `acp.events.jsonl` 只允许一次性迁移并保留为审计文件，迁移后运行时、权限、elicitation 和查询不得继续双读或双写。
 - usage aggregate 必须区分上下文窗口 gauge 与 Token 消耗 counter：`used/size` 表示 Agent ACP 最新确认的当前上下文，compact 后直接切换为 compact 后值；`input/output/cache/total` 表示 Provider 返回的累计消耗。瞬时 `used=0` 只属于 raw 协议采样或 compact reset 边界，不能覆盖 canonical timeline、snapshot 或 UI。
 - timeline 使用既有 item/patch 格式持续追加，旧文件继续可读；运行期不再依赖从全量内存历史重写 timeline。`AcpTimingState` 按交互 ID 增量观察 permission/elicitation 终态，不能为一次交互复制整份 timeline。
@@ -353,6 +353,8 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - 默认收起，显示任务进度摘要（如 "2/4 · 当前任务名称"）
 - 展开后展示完整条目列表，每项包含状态 Badge 和内容
 - 仅显示当前 branch 的 todo；Agent 内部 plan 只在对应右侧 Agent 会话中展示，不回落到父分支
+- 规范化边界为 plan 写入 `planOwnership = branch | unscoped`。只有 provider relation 或既有内部 branch 定位能够证明归属时才标记为 `branch`；缺少范围信息的 session-wide plan 标记为 `unscoped`，不得根据条目文本、事件邻近或 Agent 名称猜测归属
+- 普通且没有 Agent execution 的根会话可以展示 `unscoped` plan；一旦当前 session 存在 Agent execution，根会话必须 fail-closed 隐藏 `unscoped` plan，防止 provider 聚合的子 Agent Todo 平铺到主会话
 - 每次 plan 更新时面板实时刷新，不再在消息流中追加重复 plan 卡片
 
 ## Composer 配置栏
@@ -379,7 +381,7 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - `Agent` 工具调用在所属父分支只投影为轻量 `AgentLinkRow`，展示 ACP 已确认的名称、说明、结构化状态、工具数和文件读写数；不提供 Collapsible，不在父消息流挂载 transcript，也不猜测“正在测试/搜索”等意图。
 - 点击 Agent link 使用稳定资源 key 在右侧工作区打开或激活只读 Agent Tab。嵌套 Agent 在父 Agent 分支中继续显示相同链接，并打开另一个 Tab；同一 execution 原位更新，不因 streaming update 生成新行。
 - Agent Prompt 作为目标分支的 synthetic 用户消息持久化；正式回答只在目标分支展示。launch tool 的 `completed` 仅表示分发完成，execution 状态由统一索引按 queued/running/waiting_permission/completed/failed/interrupted 管理。
-- TODO 按 branch ID 投影。待决权限只在 owning branch 展示可操作 intervention，同时向所有祖先 Agent link/Tab 投影 attention；决策完成后退出 intervention，不保留权限申请审计行。
+- TODO 按显式 branch ownership 投影；根分支与任一 Agent 分支都不得依据文字猜归属。父分支只列直属 Agent，嵌套 execution 只在其直接父 Agent 会话中出现。待决权限只在 owning branch 展示可操作 intervention，同时向所有祖先 Agent link/Tab 投影 attention；决策完成后退出 intervention，不保留权限申请审计行。
 - 只挂载激活 Agent Tab 的 `ConversationViewport`。分支事件窗口、滚动锚点、贴底和 `hasOlder/hasNewer` 保存在有限 LRU 中；切回 dirty Tab 时重新拉取该分支最新语义页。普通后台 streaming 不驱动所有 Tab React render。
 
 ## Runtime Control JSON 展示

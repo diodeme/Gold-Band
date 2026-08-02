@@ -10,7 +10,13 @@ import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { RightWorkspaceDock } from './RightWorkspaceDock';
-import { RightWorkspaceProvider, useRightWorkspace } from './right-workspace-context';
+import {
+  ConversationWorkspaceStore,
+  createConversationWorkspaceScope,
+  createDraftConversationWorkspaceScope,
+  RightWorkspaceProvider,
+  useRightWorkspace,
+} from './right-workspace-context';
 
 interface WorkspaceShellProps {
   appName: string;
@@ -36,6 +42,8 @@ interface WorkspaceShellProps {
   onAddWorkspace?: () => void;
   onRemoveWorkspace?: (projectId: string) => Promise<void>;
   activeWorkspaceId?: string | null;
+  conversationTaskUuid?: string | null;
+  conversationWorkspaceStore: ConversationWorkspaceStore;
   children: React.ReactNode;
 }
 
@@ -153,9 +161,23 @@ function profileForPage(page: ConversationPage): WorkspaceLayoutProfile {
 
 export function WorkspaceShell(props: WorkspaceShellProps) {
   const initialRightWidth = loadWidth(props.vm.preferences, 'rightWorkspace.width', RIGHT_WORKSPACE_DEFAULT, RIGHT_WORKSPACE_MIN, RIGHT_WORKSPACE_MAX);
+  const rightWorkspaceScope = useMemo(() => {
+    if (props.active.kind === 'conversation-home') {
+      return createDraftConversationWorkspaceScope(props.activeWorkspaceId ?? 'default');
+    }
+    if (props.active.kind === 'conversation-run') {
+      return createConversationWorkspaceScope({
+        projectId: props.active.projectId,
+        taskId: props.active.taskId,
+        taskUuid: props.conversationTaskUuid,
+        runId: props.active.runId,
+      });
+    }
+    return null;
+  }, [props.active, props.activeWorkspaceId, props.conversationTaskUuid]);
   return (
     <TooltipProvider>
-      <RightWorkspaceProvider initialWidth={initialRightWidth}>
+      <RightWorkspaceProvider initialWidth={initialRightWidth} scope={rightWorkspaceScope} store={props.conversationWorkspaceStore}>
         <WorkspaceShellLayout {...props} />
       </RightWorkspaceProvider>
     </TooltipProvider>
@@ -194,6 +216,7 @@ function WorkspaceShellLayout({
   const resizeFrameRef = useRef<number | null>(null);
   const sidebarWidthSaveTimerRef = useRef<number | null>(null);
   const handledOpenRevisionRef = useRef(workspace.openRevision);
+  const handledWorkspaceScopeRef = useRef(workspace.scopeKey);
   const [availableWidth, setAvailableWidth] = useState(0);
   const [compactSheetOpen, setCompactSheetOpen] = useState(false);
   const [autoCollapse, setAutoCollapse] = useState<WorkspaceAutoCollapseState>({
@@ -203,7 +226,8 @@ function WorkspaceShellLayout({
   });
   const sidebarWidth = loadWidth(vm.preferences, 'sidebar.width', SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX);
   const profile = useMemo(() => profileForPage(active), [active]);
-  const wantsRight = workspace.requestedOpen;
+  const rightWorkspaceAvailable = workspace.scopeKey !== null;
+  const wantsRight = rightWorkspaceAvailable && workspace.requestedOpen;
   const showLeft = !sidebarCollapsed && !autoCollapse.left;
   const rightWorkspaceCompact = wantsRight && (
     autoCollapse.right
@@ -248,6 +272,12 @@ function WorkspaceShellLayout({
   }, [availableWidth, profile.centerMinWidth, sidebarCollapsed, wantsRight]);
 
   useEffect(() => {
+    if (handledWorkspaceScopeRef.current !== workspace.scopeKey) {
+      handledWorkspaceScopeRef.current = workspace.scopeKey;
+      handledOpenRevisionRef.current = workspace.openRevision;
+      setCompactSheetOpen(false);
+      return;
+    }
     const previousOpenRevision = handledOpenRevisionRef.current;
     handledOpenRevisionRef.current = workspace.openRevision;
     if (shouldOpenRightWorkspaceSheet({
@@ -257,7 +287,7 @@ function WorkspaceShellLayout({
     })) {
       setCompactSheetOpen(true);
     }
-  }, [rightWorkspaceCompact, workspace.openRevision]);
+  }, [rightWorkspaceCompact, workspace.openRevision, workspace.scopeKey]);
 
   useEffect(() => {
     if (!rightWorkspaceCompact || !wantsRight) setCompactSheetOpen(false);
@@ -305,7 +335,7 @@ function WorkspaceShellLayout({
         sidebarCollapsed={sidebarCollapsed || autoCollapse.left}
         onToggleSidebar={onToggleSidebar}
         rightWorkspaceOpen={rightWorkspacePresented}
-        onToggleRightWorkspace={toggleRightWorkspace}
+        onToggleRightWorkspace={rightWorkspaceAvailable ? toggleRightWorkspace : undefined}
       />
       <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1 bg-sidebar" onLayoutChanged={saveWorkspaceLayout}>
         {showLeft ? (
@@ -348,7 +378,7 @@ function WorkspaceShellLayout({
         </ResizablePanel>
         {showRightDock ? (
           <>
-            <ResizableHandle className="z-20 bg-border/60 hover:bg-primary/30" data-testid="workspace-right-resize-handle" />
+            <ResizableHandle className="z-20 bg-sidebar-border/70 hover:bg-primary/30" data-testid="workspace-right-resize-handle" />
             <ResizablePanel id="workspace-right" defaultSize={workspace.width} minSize={RIGHT_WORKSPACE_MIN} maxSize={rightWorkspaceMaxWidth} groupResizeBehavior="preserve-pixel-size">
               <RightWorkspaceDock />
             </ResizablePanel>

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ACPSessionHeader,
   formatAcpSessionIdForDisplay,
+  resolveRawFramesActionActive,
   reduceAcpSessionIdTooltipState,
 } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -42,6 +43,12 @@ function renderHeader(props: React.ComponentProps<typeof ACPSessionHeader>) {
 }
 
 describe('ACPSessionHeader', () => {
+  it('uses an active raw action only when the button actually switches the current canvas', () => {
+    expect(resolveRawFramesActionActive(false, true)).toBe(true);
+    expect(resolveRawFramesActionActive(true, true)).toBe(false);
+    expect(resolveRawFramesActionActive(true, false)).toBe(false);
+  });
+
   it('shortens long session ids while preserving compact ids', () => {
     expect(formatAcpSessionIdForDisplay('019f9417-0b0f-75c2-a79a-739cd4c94238'))
       .toBe('019f9417…4238');

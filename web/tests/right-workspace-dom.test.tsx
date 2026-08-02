@@ -23,6 +23,8 @@ import { AvatarPreferencesProvider } from '@/components/avatar/AvatarPreferences
 import { RightWorkspaceDock } from '@/components/workspace/RightWorkspaceDock';
 import {
   agentTranscriptResourceKey,
+  ConversationWorkspaceStore,
+  createConversationWorkspaceScope,
   RightWorkspaceProvider,
   useRightWorkspace,
   type AgentTranscriptLocator,
@@ -65,6 +67,7 @@ function resource(branchId: string) {
   return {
     kind: 'agent-transcript' as const,
     key: agentTranscriptResourceKey(branchLocator),
+    scopeKey: 'draft:default',
     title: branchId,
     status: 'running',
     attention: false,
@@ -83,6 +86,32 @@ function SeedTabs({ branches }: { branches: string[] }) {
 function OpenEmptyWorkspace() {
   const workspace = useRightWorkspace();
   useEffect(() => workspace.openWorkspace(), [workspace.openWorkspace]);
+  return null;
+}
+
+function SeedWorkflowResource({ guarded = false }: { guarded?: boolean }) {
+  const workspace = useRightWorkspace();
+  useEffect(() => {
+    const resource = {
+      kind: 'workflow-view' as const,
+      key: 'workflow-view:project-1:task-1:run-1',
+      scopeKey: 'draft:default',
+      title: 'Workflow',
+      attention: false,
+      locator: { projectId: 'project-1', taskId: 'task-1', runId: 'run-1' },
+    };
+    workspace.openResource(resource);
+    const unregisterRenderer = workspace.registerResourceRenderer((active) => (
+      <div data-rendered-resource={active.kind}>{active.title}</div>
+    ));
+    const unregisterGuard = guarded
+      ? workspace.registerResourceCloseResolver(() => false)
+      : () => {};
+    return () => {
+      unregisterGuard();
+      unregisterRenderer();
+    };
+  }, [guarded, workspace.openResource, workspace.registerResourceCloseResolver, workspace.registerResourceRenderer]);
   return null;
 }
 
@@ -111,6 +140,63 @@ afterEach(() => {
 });
 
 describe('right workspace DOM lifecycle', () => {
+  it('restores the active conversation snapshot without rendering another scope tabs', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const store = new ConversationWorkspaceStore();
+    const first = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+    const second = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-2', runId: 'run-1' });
+    store.save(first, {
+      tabs: [{ ...resource('agent-a'), scopeKey: first.key }],
+      activeTabKey: resource('agent-a').key,
+      requestedOpen: true,
+      openRevision: 1,
+    });
+    store.save(second, {
+      tabs: [{ ...resource('agent-b'), scopeKey: second.key }],
+      activeTabKey: resource('agent-b').key,
+      requestedOpen: true,
+      openRevision: 1,
+    });
+    try {
+      await act(async () => {
+        root.render(<RightWorkspaceProvider scope={first} store={store}><WorkspaceProbe /></RightWorkspaceProvider>);
+      });
+      expect(container.querySelector('output')?.textContent).toBe('agent-a');
+      await act(async () => {
+        root.render(<RightWorkspaceProvider scope={second} store={store}><WorkspaceProbe /></RightWorkspaceProvider>);
+      });
+      expect(container.querySelector('output')?.textContent).toBe('agent-b');
+      await act(async () => {
+        root.render(<RightWorkspaceProvider scope={first} store={store}><WorkspaceProbe /></RightWorkspaceProvider>);
+      });
+      expect(container.querySelector('output')?.textContent).toBe('agent-a');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('rejects a resource descriptor owned by another conversation scope', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const scope = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider scope={scope}>
+            <SeedTabs branches={['agent-from-default-draft']} />
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      expect(container.querySelector('output')?.getAttribute('data-workspace-tab-count')).toBe('0');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('renders a blank entry surface when the workspace is open without resources', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -126,6 +212,29 @@ describe('right workspace DOM lifecycle', () => {
       });
       expect(container.querySelector('[data-right-workspace-empty="true"]')).not.toBeNull();
       expect(container.querySelector('[data-right-workspace-tab-strip="true"]')).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('renders only the active locator resource through the conversation host and honors its close guard', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider>
+            <SeedWorkflowResource guarded />
+            <RightWorkspaceDock />
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      expect(container.querySelector('[data-rendered-resource="workflow-view"]')?.textContent).toBe('Workflow');
+      const closeButton = container.querySelector<HTMLButtonElement>('[aria-label="Close tab"], [aria-label="关闭标签页"]');
+      await act(async () => closeButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+      expect(container.querySelector('output')?.getAttribute('data-workspace-tab-count')).toBe('1');
     } finally {
       await act(async () => root.unmount());
     }

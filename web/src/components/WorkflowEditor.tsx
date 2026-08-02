@@ -64,6 +64,12 @@ function providerToIconKey(provider: string): string | undefined {
 const UNSPECIFIED_PERMISSION_MODE = '__unspecified_permission_mode__';
 
 type EditorTab = 'canvas' | 'json';
+
+export interface WorkflowEditorSessionDraft {
+  workflow: WorkflowDsl;
+  tab: EditorTab;
+  jsonDraft: string;
+}
 type EdgeOutcome = 'success' | 'failure';
 type SessionMode = 'new' | 'continue';
 type EditorNodeData = { label: string; kind: string; detail: string; terminal?: boolean; iconKey?: string; entryCandidate?: boolean; entryLabel?: string };
@@ -128,14 +134,17 @@ interface WorkflowEditorProps {
   saving?: boolean;
   showSaveAction?: boolean;
   validationRequestId?: number;
+  initialSessionDraft?: WorkflowEditorSessionDraft | null;
+  onSessionDraftChange?: (draft: WorkflowEditorSessionDraft) => void;
 }
 
-export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProfileManagement, onSave, onChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0 }: WorkflowEditorProps) {
+export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProfileManagement, onSave, onChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0, initialSessionDraft, onSessionDraftChange }: WorkflowEditorProps) {
   const { t } = useTranslation();
   const initialWorkflow = useMemo(() => normalizeWorkflowEntryFromTopology(normalizeWorkflowSchemas(value)), [value]);
-  const [workflow, setWorkflow] = useState<WorkflowDsl>(initialWorkflow);
-  const [tab, setTab] = useState<EditorTab>('canvas');
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialWorkflow.nodes[0]?.id ?? null);
+  const restoredWorkflow = initialSessionDraft?.workflow ?? initialWorkflow;
+  const [workflow, setWorkflow] = useState<WorkflowDsl>(restoredWorkflow);
+  const [tab, setTab] = useState<EditorTab>(initialSessionDraft?.tab ?? 'canvas');
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(restoredWorkflow.nodes[0]?.id ?? null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<Node<EditorNodeData>, Edge> | null>(null);
   const [pendingFocusNodeId, setPendingFocusNodeId] = useState<string | null>(null);
@@ -145,10 +154,11 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   const [pendingValidation, setPendingValidation] = useState<WorkflowValidationResult | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
   const [invalidNodeIds, setInvalidNodeIds] = useState<Set<string>>(new Set());
-  const [jsonDraft, setJsonDraft] = useState(() => JSON.stringify(initialWorkflow, null, 2));
+  const [jsonDraft, setJsonDraft] = useState(() => initialSessionDraft?.jsonDraft ?? JSON.stringify(restoredWorkflow, null, 2));
   const [jsonError, setJsonError] = useState<string | null>(null);
-  const [newRoundEntryDrafts, setNewRoundEntryDrafts] = useState<Record<number, string>>(() => newRoundEntryDraftsFromWorkflow(initialWorkflow));
+  const [newRoundEntryDrafts, setNewRoundEntryDrafts] = useState<Record<number, string>>(() => newRoundEntryDraftsFromWorkflow(restoredWorkflow));
   const handledValidationRequestIdRef = useRef(0);
+  const restoredDraftAppliedRef = useRef(Boolean(initialSessionDraft));
   const agents = useMemo(() => agentRegistry?.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true) ?? [], [agentRegistry]);
   const selectedNode = selectedNodeId ? workflow.nodes.find((node) => node.id === selectedNodeId) ?? null : null;
   const selectedEdgeIndex = selectedEdgeId ? Number(selectedEdgeId.split(':').at(-1)) : -1;
@@ -163,6 +173,14 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   );
 
   useEffect(() => {
+    onSessionDraftChange?.({ workflow, tab, jsonDraft });
+  }, [jsonDraft, onSessionDraftChange, tab, workflow]);
+
+  useEffect(() => {
+    if (restoredDraftAppliedRef.current) {
+      restoredDraftAppliedRef.current = false;
+      return;
+    }
     if (JSON.stringify(workflow) === JSON.stringify(initialWorkflow)) return;
     setWorkflow(initialWorkflow);
     setJsonDraft(JSON.stringify(initialWorkflow, null, 2));
@@ -283,6 +301,8 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     setInvalidNodeIds(new Set());
     try {
       await onSave(validation.sanitizedWorkflow);
+      setWorkflow(validation.sanitizedWorkflow);
+      setJsonDraft(JSON.stringify(validation.sanitizedWorkflow, null, 2));
     } catch (error) {
       setPendingValidation({
         valid: false,

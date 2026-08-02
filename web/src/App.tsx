@@ -118,6 +118,11 @@ import {
 import { ConversationRunModePersistence } from '@/lib/conversation-run-mode-persistence';
 import { createDefaultAvatarPreferences } from '@/lib/avatar';
 import { AvatarPreferencesProvider } from '@/components/avatar/AvatarPreferencesContext';
+import {
+  ConversationWorkspaceStore,
+  createConversationWorkspaceScope,
+  createDraftConversationWorkspaceScope,
+} from '@/components/workspace/right-workspace-context';
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
 import type {
   AgentRegistryVm,
@@ -251,6 +256,7 @@ export function App() {
   const [conversationRunModePersistence] = useState(
     () => new ConversationRunModePersistence(saveConversationRunMode),
   );
+  const [conversationWorkspaceStore] = useState(() => new ConversationWorkspaceStore());
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const [conversationRunStopping, setConversationRunStopping] = useState(false);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
@@ -1423,6 +1429,15 @@ export function App() {
       conversationPage={conversationPage}
       conversationSidebar={conversationSidebar}
       activeWorkspaceId={sidebarFocusWorkspaceId}
+      conversationTaskUuid={
+        conversationPage.kind === 'conversation-run'
+        && conversationRun?.projectId === conversationPage.projectId
+        && conversationRun.taskId === conversationPage.taskId
+        && conversationRun.runId === conversationPage.runId
+          ? conversationRun.taskUuid
+          : null
+      }
+      conversationWorkspaceStore={conversationWorkspaceStore}
       appName={appInfo.appName}
       feedbackEnabled={appInfo.feedbackEnabled}
       platform={bootstrap?.platform}
@@ -1474,6 +1489,7 @@ export function App() {
       onConversationDeleteTask={(projectId, taskId) => {
         deleteConversationTask(projectId, taskId)
           .then((sidebar) => {
+            conversationWorkspaceStore.deleteConversation(projectId, taskId);
             applyConversationSidebar(sidebar);
             if (conversationPage.kind === 'conversation-run' && conversationPage.projectId === projectId && conversationPage.taskId === taskId) {
               setConversationRun(null);
@@ -1499,6 +1515,7 @@ export function App() {
         setError(null);
         return removeConversationWorkspace(projectId)
           .then((sidebar) => {
+            conversationWorkspaceStore.deleteProject(projectId);
             const transition = resolveConversationWorkspaceRemovalTransition({
               removedProjectId: projectId,
               lastActiveWorkspaceId: sidebar.lastActiveWorkspaceId,
@@ -1657,6 +1674,15 @@ export function App() {
                 return validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n');
               }
               const run = await createConversationRun(input);
+              conversationWorkspaceStore.promoteDraft(
+                createDraftConversationWorkspaceScope(input.projectId),
+                createConversationWorkspaceScope({
+                  projectId: run.projectId,
+                  taskId: run.taskId,
+                  taskUuid: run.taskUuid,
+                  runId: run.runId,
+                }),
+              );
               rememberConversationWorkspace(run.projectId);
               updateConversationSessionFollow('auto', run.sessionTree.selectedSessionKey ?? null);
               applyConversationRunSnapshot(run, 'create');

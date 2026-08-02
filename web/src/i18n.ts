@@ -109,6 +109,7 @@ const resources = {
         closeTab: "关闭标签页",
         allTabs: "所有标签页",
         attention: "需要处理",
+        discardWorkflowChanges: "工作流还有未保存的修改。确定要放弃这些修改并关闭吗？",
       },
       errors: {
         agent: {
@@ -1502,6 +1503,7 @@ const resources = {
         closeTab: "Close tab",
         allTabs: "All tabs",
         attention: "Needs attention",
+        discardWorkflowChanges: "This workflow has unsaved changes. Discard them and close the tab?",
       },
       errors: {
         agent: {

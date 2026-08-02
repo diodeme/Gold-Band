@@ -3491,14 +3491,21 @@ pub fn dynamic_acp_session_vm(
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
     let adapter_icon_key = provider_icon_key(&provider);
-    let session_timing = resolve_acp_session_timing(
-        &status,
-        (branch_id == gold_band::acp::branches::ROOT_BRANCH_ID)
-            .then(|| acp_session_timing_from_snapshot(&session))
-            .flatten(),
-        event_scan.session_timing.clone(),
+    let session_elapsed_seconds = conversation_branch_elapsed_seconds(
+        &branch_id,
+        branch_record,
         event_scan.session_elapsed_seconds,
     );
+    let session_timing = if branch_id == gold_band::acp::branches::ROOT_BRANCH_ID {
+        resolve_acp_session_timing(
+            &status,
+            acp_session_timing_from_snapshot(&session),
+            event_scan.session_timing.clone(),
+            session_elapsed_seconds,
+        )
+    } else {
+        legacy_session_timing(session_elapsed_seconds)
+    };
     let provider_cwd = continue_ref
         .and_then(|value| value.get("cwd"))
         .and_then(|value| value.as_str())
@@ -3559,7 +3566,7 @@ pub fn dynamic_acp_session_vm(
                     .and_then(|value| value.as_str())
                     .map(str::to_string)
             }),
-        session_elapsed_seconds: event_scan.session_elapsed_seconds,
+        session_elapsed_seconds,
         timing: session_timing,
         restored: session
             .get("restored")
@@ -3822,14 +3829,21 @@ pub fn acp_session_vm(
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
     let adapter_icon_key = provider_icon_key(&provider);
-    let session_timing = resolve_acp_session_timing(
-        &status,
-        (branch_id == gold_band::acp::branches::ROOT_BRANCH_ID)
-            .then(|| acp_session_timing_from_snapshot(&session))
-            .flatten(),
-        event_scan.session_timing.clone(),
+    let session_elapsed_seconds = conversation_branch_elapsed_seconds(
+        &branch_id,
+        branch_record,
         event_scan.session_elapsed_seconds,
     );
+    let session_timing = if branch_id == gold_band::acp::branches::ROOT_BRANCH_ID {
+        resolve_acp_session_timing(
+            &status,
+            acp_session_timing_from_snapshot(&session),
+            event_scan.session_timing.clone(),
+            session_elapsed_seconds,
+        )
+    } else {
+        legacy_session_timing(session_elapsed_seconds)
+    };
     let provider_cwd = continue_ref
         .and_then(|value| value.get("cwd"))
         .and_then(|value| value.as_str())
@@ -3891,7 +3905,7 @@ pub fn acp_session_vm(
                     .and_then(|value| value.as_str())
                     .map(str::to_string)
             }),
-        session_elapsed_seconds: event_scan.session_elapsed_seconds,
+        session_elapsed_seconds,
         timing: session_timing,
         restored: session
             .get("restored")
@@ -5395,6 +5409,20 @@ fn conversation_branch_status(
     branch_record
         .map(|record| record.status.clone())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn conversation_branch_elapsed_seconds(
+    branch_id: &str,
+    branch_record: Option<&gold_band::acp::branches::AgentExecutionRecord>,
+    root_elapsed_seconds: Option<u64>,
+) -> Option<u64> {
+    if branch_id == gold_band::acp::branches::ROOT_BRANCH_ID {
+        return root_elapsed_seconds;
+    }
+    let record = branch_record?;
+    let started_at = parse_epoch_timestamp(&record.started_at)?;
+    let updated_at = parse_epoch_timestamp(&record.updated_at)?;
+    Some(updated_at.saturating_sub(started_at))
 }
 
 fn apply_agent_index_projection(
@@ -9748,6 +9776,18 @@ mod tests {
         assert_eq!(
             conversation_branch_status("running", "agent-missing", None),
             "unknown"
+        );
+        assert_eq!(
+            conversation_branch_elapsed_seconds("agent-current", record, Some(999)),
+            Some(20)
+        );
+        assert_eq!(
+            conversation_branch_elapsed_seconds(
+                gold_band::acp::branches::ROOT_BRANCH_ID,
+                None,
+                Some(999),
+            ),
+            Some(999)
         );
     }
 

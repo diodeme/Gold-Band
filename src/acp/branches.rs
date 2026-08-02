@@ -18,7 +18,7 @@ use crate::storage::{ensure_parent_dir, write_json};
 
 pub const ROOT_BRANCH_ID: &str = "root";
 const BRANCH_META_KEY: &str = "goldBandConversation";
-const AGENT_RESULT_MIGRATION_MARKER: &str = ".acp-agent-result-migration-v1";
+const AGENT_RESULT_MIGRATION_MARKER: &str = ".acp-agent-result-migration-v2";
 const AGENT_NAMESPACE: Uuid = Uuid::from_u128(0x63c7f8ac_1498_4f6e_8f6d_62f2f04033f1);
 const AGENT_INDEX_CACHE_CAPACITY: usize = 16;
 
@@ -259,6 +259,13 @@ fn legacy_agent_result_event(launch: &AcpUiEvent) -> Option<AcpUiEvent> {
 }
 
 fn agent_result_event_from_output(launch: &AcpUiEvent, output: &Value) -> Option<AcpUiEvent> {
+    // A background Agent tool result acknowledges that the execution was
+    // launched; its formal response arrives later on the Agent transcript.
+    // Treating that acknowledgement as a result would complete the branch
+    // while it is still producing tools and text.
+    if agent_launch_runs_in_background(launch) {
+        return None;
+    }
     let route = branch_route_for_event(launch);
     let agent_execution_id = route.launched_agent_execution_id?;
     let content = agent_output_text(output)?;
@@ -655,8 +662,8 @@ pub fn load_all_branch_events(attempt_dir: &Utf8Path) -> Result<Vec<AcpUiEvent>>
     Ok(events)
 }
 
-/// One-time repair for conversations written before Agent launch results were
-/// materialized as formal text in the launched branch.
+/// One-time repair for conversations written before Agent launch prompts and
+/// valid foreground results were materialized in the launched branch.
 fn migrate_legacy_agent_results(attempt_dir: &Utf8Path) -> Result<bool> {
     let marker = attempt_dir.join(AGENT_RESULT_MIGRATION_MARKER);
     if marker.exists() {
@@ -679,17 +686,38 @@ fn migrate_legacy_agent_results(attempt_dir: &Utf8Path) -> Result<bool> {
     }
     timeline_paths.sort();
 
+    let mut background_branches = HashSet::<String>::new();
+    for path in &timeline_paths {
+        for event in load_timeline_items(path)? {
+            let route = branch_route_for_event(&event);
+            if agent_launch_runs_in_background(&event)
+                && let Some(branch_id) = route.launched_agent_execution_id
+            {
+                background_branches.insert(branch_id);
+            }
+        }
+    }
+
     let mut changed = false;
+    let mut prompts = BTreeMap::<String, AcpUiEvent>::new();
     let mut results = BTreeMap::<String, AcpUiEvent>::new();
     for path in &timeline_paths {
         let mut events = load_timeline_items(path)?;
-        let mut path_changed = false;
+        let original_len = events.len();
+        events.retain(|event| {
+            !(is_agent_result_event(event)
+                && background_branches.contains(&event_branch_id(event)))
+        });
+        let mut path_changed = events.len() != original_len;
         for event in &mut events {
             if branch_route_for_event(event)
                 .launched_agent_execution_id
                 .is_none()
             {
                 continue;
+            }
+            if let Some(prompt) = agent_prompt_event(event) {
+                prompts.insert(event_branch_id(&prompt), prompt);
             }
             if let Some(result) =
                 agent_result_event(event).or_else(|| legacy_agent_result_event(event))
@@ -712,6 +740,18 @@ fn migrate_legacy_agent_results(attempt_dir: &Utf8Path) -> Result<bool> {
         }
     }
 
+    for (branch_id, prompt) in prompts {
+        let path = branch_timeline_path(attempt_dir, &branch_id);
+        let mut events = load_timeline_items(&path)?;
+        if events.iter().any(is_agent_prompt_event) {
+            continue;
+        }
+        events.push(prompt);
+        events.sort_by_key(|event| (event.started_seq.unwrap_or(event.seq), event.seq));
+        write_timeline_items(&path, &events)?;
+        changed = true;
+    }
+
     for (branch_id, result) in results {
         let path = branch_timeline_path(attempt_dir, &branch_id);
         let mut events = load_timeline_items(&path)?;
@@ -727,7 +767,7 @@ fn migrate_legacy_agent_results(attempt_dir: &Utf8Path) -> Result<bool> {
         changed = true;
     }
 
-    write_json(&marker, &json!({ "version": 1 }))?;
+    write_json(&marker, &json!({ "version": 2 }))?;
     Ok(changed)
 }
 
@@ -741,7 +781,7 @@ pub fn rebuild_agent_index(
     );
     let session_interrupted = matches!(
         session_status,
-        "cancelled" | "canceled" | "interrupted" | "stopped"
+        "cancelled" | "canceled" | "interrupted" | "stopped" | "failed" | "error"
     );
     migrate_legacy_agent_timeline(attempt_dir)?;
     migrate_legacy_agent_results(attempt_dir)?;
@@ -803,7 +843,6 @@ pub fn rebuild_agent_index(
                         .clone()
                         .unwrap_or_else(|| event.timestamp.clone())
                 });
-            let launch_position = launch.ended_seq.unwrap_or(launch.seq);
             let launch_status = launch
                 .status
                 .as_deref()
@@ -813,13 +852,14 @@ pub fn rebuild_agent_index(
             let has_attention = branch_has_pending_interaction(&branch_events);
             let status = if failed {
                 "failed"
+            } else if has_agent_completion_evidence(&execution_events) {
+                "completed"
             } else if has_attention && session_active {
                 "waiting_permission"
             } else if !session_active {
                 if session_interrupted {
                     "interrupted"
-                } else if has_agent_completion_evidence(&execution_events)
-                    || matches!(
+                } else if matches!(
                         launch_status.as_str(),
                         "completed" | "success" | "succeeded"
                     )
@@ -828,18 +868,8 @@ pub fn rebuild_agent_index(
                 } else {
                     "interrupted"
                 }
-            } else if has_agent_completion_evidence(&execution_events) {
-                "completed"
             } else if execution_events.is_empty() {
                 "queued"
-            } else if !agent_launch_runs_in_background(&launch)
-                && matches!(
-                    launch_status.as_str(),
-                    "completed" | "success" | "succeeded"
-                )
-                && latest_seq.is_some_and(|seq| seq <= launch_position)
-            {
-                "completed"
             } else {
                 "running"
             }
@@ -1638,7 +1668,11 @@ mod tests {
             Some("provider-child"),
             Some("completed"),
             json!({ "agentLaunch": true }),
-            Some(json!({ "run_in_background": true, "description": "child" })),
+            Some(json!({
+                "run_in_background": true,
+                "description": "child",
+                "prompt": "inspect"
+            })),
         );
         let mut text = event_at(
             "child-text",
@@ -1664,12 +1698,45 @@ mod tests {
             rebuild_agent_index(&attempt, "stopped").unwrap()[0].status,
             "interrupted"
         );
+        assert_eq!(
+            rebuild_agent_index(&attempt, "failed").unwrap()[0].status,
+            "interrupted"
+        );
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 
     #[test]
-    fn canonical_background_agent_result_completes_while_root_session_keeps_running() {
-        let attempt = temp_attempt("background-result");
+    fn completed_launch_tool_does_not_complete_a_generating_foreground_agent() {
+        let attempt = temp_attempt("foreground-still-running");
+        let launch = event_at(
+            "launch",
+            10,
+            "toolCall",
+            Some("provider-child"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "description": "child" })),
+        );
+        let thought = event_at(
+            "child-thought",
+            9,
+            "thoughtDelta",
+            None,
+            None,
+            json!({ "parentToolCallId": "provider-child" }),
+            None,
+        );
+        persist_partitioned(&attempt, vec![launch, thought]);
+
+        let records = rebuild_agent_index(&attempt, "running").unwrap();
+        assert_eq!(records[0].status, "running");
+        assert!(records[0].ended_at.is_none());
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn background_agent_acknowledgement_does_not_complete_the_branch() {
+        let attempt = temp_attempt("background-acknowledgement");
         let launch = event_at(
             "launch",
             1,
@@ -1682,16 +1749,90 @@ mod tests {
         persist_partitioned(&attempt, vec![launch]);
 
         let records = rebuild_agent_index(&attempt, "running").unwrap();
-        assert_eq!(records[0].status, "completed");
+        assert_eq!(records[0].status, "queued");
         let branch = load_timeline_items(&branch_timeline_path(
             &attempt,
             &records[0].agent_execution_id,
         ))
         .unwrap();
-        let result = branch
-            .iter()
-            .find(|event| is_agent_result_event(event))
-            .unwrap();
+        assert!(!branch.iter().any(is_agent_result_event));
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn result_migration_v2_removes_legacy_background_acknowledgements() {
+        let attempt = temp_attempt("background-acknowledgement-v2");
+        let launch = event_at(
+            "launch",
+            1,
+            "toolCall",
+            Some("provider-child"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            Some(json!({
+                "run_in_background": true,
+                "description": "child",
+                "prompt": "inspect"
+            })),
+        );
+        persist_partitioned(&attempt, vec![launch]);
+        std::fs::write(
+            attempt.join(".acp-agent-result-migration-v1").as_std_path(),
+            b"{\"version\":1}",
+        )
+        .unwrap();
+
+        let branch_id = stable_agent_execution_id("session-1", "provider-child");
+        let mut invalid_result = event_at(
+            "agent-result-legacy",
+            2,
+            "textDelta",
+            None,
+            Some("completed"),
+            json!({}),
+            None,
+        );
+        invalid_result.content = Some("Async agent launched successfully.".to_string());
+        invalid_result.raw = Some(json!({ "source": "agentBranchResult", "_meta": {} }));
+        annotate_event_branch_override(&mut invalid_result, &branch_id);
+        write_timeline_items(
+            &branch_timeline_path(&attempt, &branch_id),
+            &[invalid_result],
+        )
+        .unwrap();
+
+        let records = rebuild_agent_index(&attempt, "running").unwrap();
+        assert_eq!(records[0].status, "queued");
+        let branch = load_timeline_items(&branch_timeline_path(&attempt, &branch_id)).unwrap();
+        assert!(!branch.iter().any(is_agent_result_event));
+        assert!(branch.iter().any(is_agent_prompt_event));
+        assert!(attempt.join(AGENT_RESULT_MIGRATION_MARKER).exists());
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn foreground_agent_result_is_formal_completion_evidence() {
+        let attempt = temp_attempt("foreground-result");
+        let launch = event_at(
+            "launch",
+            1,
+            "toolCall",
+            Some("provider-child"),
+            Some("completed"),
+            json!({ "agentLaunch": true, "toolOutput": "verified final answer" }),
+            Some(json!({ "description": "child" })),
+        );
+        persist_partitioned(&attempt, vec![launch]);
+
+        let records = rebuild_agent_index(&attempt, "running").unwrap();
+        assert_eq!(records[0].status, "completed");
+        assert_eq!(rebuild_agent_index(&attempt, "stopped").unwrap()[0].status, "completed");
+        let branch = load_timeline_items(&branch_timeline_path(
+            &attempt,
+            &records[0].agent_execution_id,
+        ))
+        .unwrap();
+        let result = branch.iter().find(|event| is_agent_result_event(event)).unwrap();
         assert_eq!(result.content.as_deref(), Some("verified final answer"));
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }

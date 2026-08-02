@@ -182,6 +182,23 @@ describe('ACPChatDialog branch timeline helpers', () => {
     expect(interrupted?.kind === 'agentLink' ? interrupted.status : null).toBe('interrupted');
   });
 
+  it('does not treat a completed launch receipt as Agent completion before projection arrives', () => {
+    const launch = agentLaunch('background review', 1, 'agent-01');
+    const pendingProjection = buildAcpTimelineProjection(
+      [launch],
+      'running',
+      projection([]),
+    ).timeline[0];
+    expect(pendingProjection?.kind === 'agentLink' ? pendingProjection.status : null).toBe('queued');
+
+    const completedSession = buildAcpTimelineProjection(
+      [launch],
+      'completed',
+      projection([]),
+    ).timeline[0];
+    expect(completedSession?.kind === 'agentLink' ? completedSession.status : null).toBe('completed');
+  });
+
   it('preserves an unrelated Agent link object when another Agent projection changes', () => {
     const launches = [agentLaunch('A', 1, 'agent-a'), agentLaunch('B', 2, 'agent-b')];
     const initial = buildAcpTimelineProjection(

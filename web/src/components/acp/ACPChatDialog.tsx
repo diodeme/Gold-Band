@@ -658,6 +658,19 @@ export const ACPChatDialog = forwardRef<
   const { t } = useTranslation();
   const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
   const branchId = requestedBranchId ?? session?.branchId ?? 'root';
+  const branchLiveSnapshot = useConversationBranchLiveSnapshot(
+    {
+      projectId,
+      taskId,
+      runId,
+      roundId,
+      nodeId,
+      attemptId,
+      outerNodeId,
+      outerAttemptId,
+    },
+    branchId,
+  );
   const effectiveLoadedEventBufferLimit = loadedEventBufferLimit(
     effectiveEventPageSize,
   );
@@ -2568,7 +2581,31 @@ export const ACPChatDialog = forwardRef<
         outerNodeId,
         outerAttemptId,
       );
-      applySessionUpdate(updated);
+      if (branchId === 'root' || updated?.branchId === branchId) {
+        applySessionUpdate(updated);
+      } else {
+        try {
+          const refreshedBranch = await getAcpSession(
+            projectId,
+            taskId,
+            runId,
+            roundId,
+            nodeId,
+            attemptId,
+            {
+              branchId,
+              pageSize: effectiveEventPageSize,
+              eventLimit: effectiveEventPageSize,
+            },
+            effective,
+            outerNodeId,
+            outerAttemptId,
+          );
+          applySessionUpdate(refreshedBranch);
+        } catch (error) {
+          setPermissionError(displayAppError(t, error));
+        }
+      }
     } catch (error) {
       setDismissedPermissionIds((current) => {
         const next = new Set(current);
@@ -2800,7 +2837,7 @@ export const ACPChatDialog = forwardRef<
       {readOnly && effective.branchExecution ? (
         <AgentBranchSessionSummary
           execution={effective.branchExecution}
-          status={effective.status}
+          status={branchLiveSnapshot.status ?? effective.status}
           elapsedSeconds={effective.timing?.sessionElapsedSeconds ?? effective.sessionElapsedSeconds}
         />
       ) : null}
@@ -4353,7 +4390,7 @@ const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink
   const input = agentToolInput(event.toolEvent);
   const description = event.description ?? input.description;
   const label = description || event.title;
-  const metricsSummary = childAgentMetricsSummary(event, t);
+  const metricsSummary = agentExecutionMetricsSummary(event, t);
   const displayedStatus = liveSnapshot.status ?? event.status;
   const attention = liveSnapshot.revision > 0 ? liveSnapshot.attention : event.attention;
   const statusTone = toolStatusTone(displayedStatus);
@@ -4410,22 +4447,71 @@ const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink
   );
 });
 
-function childAgentMetricsSummary(
-  event: AcpAgentLink,
+type AgentExecutionMetrics = Pick<
+  AcpAgentExecutionVm,
+  "toolCallCount" | "readFileCount" | "writtenFileCount"
+>;
+
+function agentExecutionMetricsSummary(
+  execution: AgentExecutionMetrics,
   t: ReturnType<typeof useTranslation>["t"],
 ) {
   const parts: string[] = [];
-  if (event.toolCallCount > 0) {
-    parts.push(t("acp.activityToolCount", { count: event.toolCallCount }));
+  if (execution.toolCallCount > 0) {
+    parts.push(t("acp.activityToolCount", { count: execution.toolCallCount }));
   }
-  if (event.readFileCount > 0) {
-    parts.push(t("acp.activityReadFiles", { count: event.readFileCount }));
+  if (execution.readFileCount > 0) {
+    parts.push(t("acp.activityReadFiles", { count: execution.readFileCount }));
   }
-  if (event.writtenFileCount > 0) {
-    parts.push(t("acp.activityWrittenFiles", { count: event.writtenFileCount }));
+  if (execution.writtenFileCount > 0) {
+    parts.push(t("acp.activityWrittenFiles", { count: execution.writtenFileCount }));
   }
   return parts.join(" · ");
 }
+
+const AgentBranchSessionSummary = memo(function AgentBranchSessionSummary({
+  execution,
+  status,
+  elapsedSeconds,
+}: {
+  execution: AcpAgentExecutionVm;
+  status: string;
+  elapsedSeconds?: number | null;
+}) {
+  const { t } = useTranslation();
+  const displayedStatus = status || execution.executionStatus;
+  const tone = toolStatusTone(displayedStatus);
+  const metrics = agentExecutionMetricsSummary(execution, t);
+  return (
+    <div
+      className="flex min-h-8 shrink-0 min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/45 bg-muted/10 px-5 py-1.5 text-xs text-muted-foreground"
+      data-agent-branch-summary="true"
+      data-agent-branch-status={displayedStatus}
+      data-agent-branch-tool-count={execution.toolCallCount}
+      data-agent-branch-read-file-count={execution.readFileCount}
+      data-agent-branch-written-file-count={execution.writtenFileCount}
+    >
+      <span className="flex shrink-0 items-center gap-1.5 font-medium text-foreground/85">
+        <span
+          aria-hidden="true"
+          className={cn(
+            "size-1.5 rounded-full bg-muted-foreground/50",
+            tone === "running" && "animate-pulse bg-primary motion-reduce:animate-none",
+            tone === "success" && "bg-emerald-500",
+            tone === "danger" && "bg-destructive",
+          )}
+        />
+        {childAgentStatusLabel(displayedStatus, t)}
+      </span>
+      {elapsedSeconds != null ? (
+        <span className="shrink-0 tabular-nums">
+          {formatElapsedDuration(elapsedSeconds)}
+        </span>
+      ) : null}
+      {metrics ? <span className="min-w-0 truncate">{metrics}</span> : null}
+    </div>
+  );
+});
 
 const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   event,
@@ -6368,13 +6454,8 @@ function projectAgentLinks(
     const eventAttemptId = attemptIdFromAcpEvent(event);
     const persisted = persistedAgents.get(agentProjectionKey(agentExecutionId, eventAttemptId))
       ?? persistedAgents.get(agentExecutionId);
-    const status = persisted?.executionStatus ?? (
-      isSessionTerminalStatus(sessionStatus)
-        ? "interrupted"
-        : isTerminalToolStatus(event.status)
-          ? event.status
-          : "queued"
-    );
+    const status = persisted?.executionStatus
+      ?? fallbackAgentExecutionStatus(sessionStatus, event.status);
     const terminal = isTerminalToolStatus(status);
     const startSeq = event.startedSeq ?? event.seq;
     const endSeq = event.endedSeq ?? event.seq;
@@ -6402,6 +6483,15 @@ function projectAgentLinks(
       writtenFileCount: persisted?.writtenFileCount ?? 0,
     };
   });
+}
+
+function fallbackAgentExecutionStatus(
+  sessionStatus?: string | null,
+  launchStatus?: string | null,
+) {
+  if (toolStatusTone(launchStatus) === "danger") return "failed";
+  if (!isSessionTerminalStatus(sessionStatus)) return "queued";
+  return isSessionCompletedStatus(sessionStatus) ? "completed" : "interrupted";
 }
 
 function agentProjectionKey(agentExecutionId: string, attemptId?: string | null) {

@@ -18,7 +18,9 @@ export function AgentConversationPanel({ resource }: { resource: AgentTranscript
         branchId={locator.branchId}
         readOnly
         showSystemPromptAction={false}
+        showRawFramesAction={false}
         allowEventOnlySessionShell={false}
+        usageCompact
         cacheNamespace="right-workspace-agent"
       />
     </div>

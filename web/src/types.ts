@@ -711,6 +711,7 @@ export interface AcpSessionVm {
   eventPage: AcpEventPageVm;
   timelineProjection: AcpTimelineProjectionVm | null;
   pendingPermissions: AcpPermissionRequestVm[];
+  pendingElicitations: AcpElicitationRequestVm[];
   availableCommands?: unknown[] | null;
   usage?: AcpUsageVm | null;
   diagnostics: AcpDiagnosticsVm;
@@ -813,6 +814,14 @@ export interface AcpPermissionOptionVm {
   optionId: string;
   name: string;
   kind: string;
+}
+
+export interface AcpElicitationRequestVm {
+  elicitationId: string;
+  message: string;
+  toolCallId?: string | null;
+  requestedSchema: Record<string, unknown>;
+  raw: unknown;
 }
 
 // Navigation payload emitted after clicking "View details" in a system toast.

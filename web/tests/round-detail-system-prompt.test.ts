@@ -21,6 +21,7 @@ function makeSession(partial?: Partial<AcpSessionVm>): AcpSessionVm {
       newestCursor: null,
     },
     pendingPermissions: [],
+    pendingElicitations: [],
     diagnostics: {
       rawFrameCount: 0,
       eventCount: 0,

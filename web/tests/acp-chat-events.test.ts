@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyPendingElicitationEventsToSession,
   buildAcpTimeline,
   applyAgentBranchResultToSession,
   calculateSessionElapsedSeconds,
@@ -72,6 +73,7 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
       hasNewer: false,
     },
     pendingPermissions: partial.pendingPermissions ?? [],
+    pendingElicitations: partial.pendingElicitations ?? [],
     diagnostics: partial.diagnostics ?? {
       rawFrameCount: 0,
       eventCount: 0,
@@ -261,6 +263,103 @@ describe('ACP chat event handling', () => {
     ];
 
     expect(pendingElicitationFromEvents(events, new Map())?.elicitationId).toBe('elicit-2');
+  });
+
+  it('projects a live elicitation into authoritative session state without relying on timing', () => {
+    const current = session({
+      status: 'running',
+      timing: {
+        sessionElapsedSeconds: 12,
+        paused: false,
+      },
+    });
+    const message = 'Choose a database';
+    const requestedSchema = {
+      type: 'object',
+      properties: { database: { type: 'string' } },
+    };
+    const updated = applyPendingElicitationEventsToSession(current, [event({
+      id: 'elicit-live',
+      seq: 20,
+      kind: 'elicitationRequest',
+      status: 'pending',
+      content: message,
+      raw: {
+        message,
+        toolCallId: 'ask-tool-1',
+        requestedSchema,
+      },
+    })]);
+
+    expect(updated?.timing?.paused).toBe(false);
+    expect(updated?.pendingElicitations).toEqual([{
+      elicitationId: 'elicit-live',
+      message,
+      toolCallId: 'ask-tool-1',
+      requestedSchema,
+      raw: {
+        message,
+        toolCallId: 'ask-tool-1',
+        requestedSchema,
+      },
+    }]);
+  });
+
+  it('clears authoritative elicitation state on response or terminal session', () => {
+    const pending = session({
+      status: 'running',
+      pendingElicitations: [{
+        elicitationId: 'elicit-live',
+        message: 'Choose',
+        requestedSchema: { type: 'object' },
+        raw: {},
+      }],
+    });
+    const resolved = applyPendingElicitationEventsToSession(pending, [event({
+      id: 'elicit-live-response',
+      seq: 21,
+      kind: 'elicitationResponse',
+      status: 'completed',
+      raw: { elicitationId: 'elicit-live', action: 'accept' },
+    })]);
+    const terminal = applyPendingElicitationEventsToSession(
+      { ...pending, status: 'cancelled' },
+      [],
+    );
+
+    expect(resolved?.pendingElicitations).toEqual([]);
+    expect(terminal?.pendingElicitations).toEqual([]);
+  });
+
+  it('preserves a live pending elicitation across a stale active session snapshot', () => {
+    const pendingRequest = {
+      elicitationId: 'elicit-live',
+      message: 'Choose',
+      requestedSchema: { type: 'object' },
+      raw: {},
+    };
+    const live = session({ pendingElicitations: [pendingRequest] });
+    const staleSnapshot = session({
+      pendingElicitations: [],
+      events: [],
+    });
+    const resolvedSnapshot = session({
+      pendingElicitations: [],
+      events: [event({
+        id: 'elicit-live-response',
+        seq: 22,
+        kind: 'elicitationResponse',
+        status: 'completed',
+        raw: { elicitationId: 'elicit-live', action: 'accept' },
+      })],
+    });
+
+    expect(
+      reconcileAcpSessionForDisplay(live, staleSnapshot)?.pendingElicitations,
+    ).toEqual([pendingRequest]);
+    expect(
+      reconcileAcpSessionForDisplay(live, resolvedSnapshot)?.pendingElicitations,
+    ).toEqual([]);
   });
 
   it('does not infer pending interactions from a terminal session history window', () => {

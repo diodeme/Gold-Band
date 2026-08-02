@@ -142,6 +142,7 @@ describe('ACPChatDialog pagination buffer', () => {
         newestCursor: 'seq:1',
       },
       pendingPermissions: [],
+      pendingElicitations: [],
       diagnostics: { rawFrameCount: 0, eventCount: 1, errorCount: 0 },
     } as AcpSessionVm;
     const activity = Array.from({ length: 500 }, (_, index) => event({

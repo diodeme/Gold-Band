@@ -2,7 +2,8 @@
 
 ## 1. 文档状态
 
-- 状态：方案已确认，待实现。
+- 状态：主体实现完成，正在执行最终回归与真实页面验收。
+- 实现日期：2026-08-02。
 - 范围：会话模式应用壳、右侧工作区、Agent 分支会话、会话投影与分页、实时事件路由和持久化。
 - 本阶段首个右侧资源类型：Agent 只读会话。
 - 后续可扩展资源：文件查看、Diff、产物、日志、并行会话等；本次不实现这些资源的具体内容。
@@ -444,6 +445,8 @@ ACP live event(branchId)
 
 ### Phase 1：应用壳与右侧工作区基础
 
+状态：已实现。
+
 - 把 `ConversationShell` 提升为通用三段式 `WorkspaceShell`。
 - 引入 shadcn Resizable copy-in 和 `react-resizable-panels`。
 - 建立布局 profile、自动折叠状态机、迟滞和宽度 preference。
@@ -452,12 +455,16 @@ ACP live event(branchId)
 
 ### Phase 2：统一 Agent 分支领域模型
 
+状态：已实现。
+
 - 定义 `AgentExecutionId`、`ConversationBranchId`、branch locator 和 Agent index。
 - 在 ACP 适配边界把 provider metadata 转为统一关系模型。
 - 生命周期、TODO、权限和统计统一绑定 branch ID。
 - 删除前端 provider 私有字段消费。
 
 ### Phase 3：分支持久化与查询接口
+
+状态：已实现。
 
 - 根 timeline 与 Agent timeline 分流写入。
 - 增加 Agent index/snapshot。
@@ -467,11 +474,15 @@ ACP live event(branchId)
 
 ### Phase 4：会话渲染器拆分
 
+状态：已实现。
+
 - 从 `ACPChatDialog` 提取 `ConversationViewport`、`InterventionLayer` 和 composer。
 - 实现 `AgentConversationPanel` 只读容器。
 - 根会话和 Agent 分支共用消息、活动、工具、分页、贴底和 Markdown 实现。
 
 ### Phase 5：Agent 链接与实时路由
+
+状态：已实现。
 
 - 用 `AgentLinkRow` 替换嵌套 `ChildAgentGroupCard`。
 - 建立应用级 ConversationEventRouter。
@@ -479,6 +490,8 @@ ACP live event(branchId)
 - 接入 attention、permission 和 terminal 状态。
 
 ### Phase 6：破坏式清理
+
+状态：已实现。
 
 - 删除嵌套 Agent Collapsible UI。
 - 删除 `subAgentHistoryOutsideWindow` 和原始事件数提示。

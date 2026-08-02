@@ -37,6 +37,7 @@ export interface RightWorkspaceState {
   activeTabKey: string | null;
   requestedOpen: boolean;
   width: number;
+  openRevision: number;
 }
 
 interface RightWorkspaceContextValue extends RightWorkspaceState {
@@ -58,7 +59,7 @@ export const DEFAULT_RIGHT_WORKSPACE_WIDTH = 440;
 const RightWorkspaceContext = createContext<RightWorkspaceContextValue | null>(null);
 
 export function createInitialRightWorkspaceState(width = DEFAULT_RIGHT_WORKSPACE_WIDTH): RightWorkspaceState {
-  return { tabs: [], activeTabKey: null, requestedOpen: false, width };
+  return { tabs: [], activeTabKey: null, requestedOpen: false, width, openRevision: 0 };
 }
 
 export function rightWorkspaceReducer(state: RightWorkspaceState, action: RightWorkspaceAction): RightWorkspaceState {
@@ -68,7 +69,13 @@ export function rightWorkspaceReducer(state: RightWorkspaceState, action: RightW
       const tabs = existing < 0
         ? [...state.tabs, action.resource]
         : state.tabs.map((tab, index) => index === existing ? action.resource : tab);
-      return { ...state, tabs, activeTabKey: action.resource.key, requestedOpen: true };
+      return {
+        ...state,
+        tabs,
+        activeTabKey: action.resource.key,
+        requestedOpen: true,
+        openRevision: state.openRevision + 1,
+      };
     }
     case 'activate':
       return state.tabs.some((tab) => tab.key === action.key)

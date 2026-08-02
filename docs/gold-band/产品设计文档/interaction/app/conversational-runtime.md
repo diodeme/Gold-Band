@@ -21,6 +21,8 @@
 ## 运行时数据与内存边界
 
 - `acp.timeline.jsonl` 是会话展示事件的完整事实源；活动 runtime 内存只保存当前 text/thought/plan 累计流、未终态 tool call、未决 permission/elicitation、session metadata、usage 与 timing aggregate。完成并已持久化的历史事件必须立即从热状态释放，不能按完整会话历史常驻 `HashMap`。
+- 根会话与每个 Agent execution 是统一的 `ConversationBranch`。根分支写入 `acp.timeline.jsonl`，Agent 分支写入 `agents/<稳定 AgentExecutionId>/timeline.jsonl`；`acp.agents.jsonl` 与分支 snapshot 保存父子关系、生命周期、统计、attention 和最新 cursor。每个规范事件只属于一个分支，Agent 正式文本、TODO、工具与权限不得复制回父分支。
+- Claude `_meta.claudeCode` 只允许在 ACP 适配边界转换为内部关系；前端与持久化查询只消费 `_meta.goldBandConversation` 和稳定 branch ID。旧 `acp.events.jsonl` 只允许一次性迁移并保留为审计文件，迁移后运行时、权限、elicitation 和查询不得继续双读或双写。
 - usage aggregate 必须区分上下文窗口 gauge 与 Token 消耗 counter：`used/size` 表示 Agent ACP 最新确认的当前上下文，compact 后直接切换为 compact 后值；`input/output/cache/total` 表示 Provider 返回的累计消耗。瞬时 `used=0` 只属于 raw 协议采样或 compact reset 边界，不能覆盖 canonical timeline、snapshot 或 UI。
 - timeline 使用既有 item/patch 格式持续追加，旧文件继续可读；运行期不再依赖从全量内存历史重写 timeline。`AcpTimingState` 按交互 ID 增量观察 permission/elicitation 终态，不能为一次交互复制整份 timeline。
 - 会话树刷新只读取 attempt 的 session metadata 与 lifecycle 摘要；仅当前选中会话读取完整 timeline 事件页。非选中会话的超大或不可读 timeline 不得阻断 run/session tree 刷新；选中会话仍保持既有事件窗口配置、cursor 和终态覆盖语义。
@@ -196,6 +198,9 @@ ElicitationCard 的单选、多选必须共享同一套选中语义：使用 `ac
 - 正在流式增长的 assistant 消息继续使用 prompt-kit `Markdown` copy-in；Streamdown streaming mode 只解析当前可见前缀，语法门控在推进 offset 时吞并纯 Markdown 控制符、未完成链接地址和代码围栏后缀。不得同时启用 Streamdown 全字符 opacity/stagger。thought 使用 prompt-kit `ChainOfThoughtText` 纯文本路径，以 `white-space: pre-wrap` 保留内部换行与连续空白，不解析 Markdown，`**`、反引号、列表符号与代码围栏均作为字面内容展示；展示层只裁掉整段首尾空白，避免 provider 边界换行形成空白首尾行。thought chunk 的语义分段继续由后端 timeline accumulator 写入 canonical：缺少换行的独立完整 strong block 之间只写入一个换行，token 级 thought chunk 继续无缝拼接；这是 chunk 语义归一化，不依赖前端是否启用 Markdown，前端也不得重写内部 canonical。最新活跃 stream 必须按最大 `endedSeq/seq` 的事件种类判定，tool、plan、permission 等生命周期事件到达后不得让旧 text/thought 继续处于 active streaming 生命周期。默认不因聊天主路径引入 Mermaid、完整 Shiki 语言包或 KaTeX 等未启用插件。
 - 正在输出的 thought disclosure 收起时，prompt-kit `ChainOfThoughtContent` 对 active streaming thought 使用 Radix `forceMount` 保留当前纯文本节点，并在 closed 状态通过 `display: none` 脱离布局；thought 结束后恢复普通 Collapsible unmount 生命周期，避免所有历史思考内容长期常驻。
 - timeline item 必须保持稳定 id；未变化的历史 item 应尽量复用对象引用，让消息、工具卡、thought 和子 Agent 分组的 memo 化渲染有效。
+- 会话分页按用户消息、Assistant 正式消息、Agent link、活动摘要、待决交互和 attempt/压缩边界等语义块计算。活动内工具数量、折叠状态和 Agent 子分支事件数不改变父分支 cursor 或 `hasOlder`；根分支和 Agent 分支共用同一 `eventPage`、有限事件 buffer、真实 DOM 锚点补偿和原生滚动容器，不引入动态高度虚拟列表。
+- 活动摘要折叠时不请求审计详情。首次展开携带 `branchId + activityStartSeq + activityEndSeq`，后端顺序扫描轻量 header，只保留最近有限候选并仅反序列化当前页选中的事件；“显示更早活动”使用独立 cursor，不修改会话分页。单条工具 raw output 再延迟到该工具展开时按 event/tool ID 查询。已决 permission 不进入活动审计，待决 permission 只进入 owning branch 的 intervention。
+- Agent 分支只读面板与根会话复用 `ConversationViewport`、消息、Markdown、Activity、Tool 和 `InterventionLayer`，但不挂载 composer、模型/权限配置、停止、继续或重试 DOM。pending permission/elicitation 仍可在 owning Agent 分支中响应；停止和继续只由根 runtime lifecycle 控制。
 - Raw frames 面板默认只展示行摘要；展开单条 frame 时才做 JSON pretty print 和长段落换行，不允许折叠态批量解析完整 raw 内容。
 - 会话式运行页的工作流 Sheet 与 `GraphView` 必须把拓扑布局和运行态映射分开：布局只依赖节点 id/order 与边 from/to/label，ACP live payload、selected session、node status/current 等运行态刷新只能映射到既有坐标，不得重复执行布局。
 - 会话 follow、ACP composer 与 GraphView 运行态不得在普通运行中输出持续性 console 日志；排障日志必须面向具体错误，且不能挂在 token/live event 热路径上。排查 `Maximum update depth exceeded` 时，只保留全局 `[gb-ui-error]` 诊断：命中该错误后输出当前 active element、最近 pointer 目标和截断 stack，用于定位 Radix/prompt-kit composed refs 触发源。
@@ -347,7 +352,7 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - 位于 composer 上方、AcpUsagePanel 下方
 - 默认收起，显示任务进度摘要（如 "2/4 · 当前任务名称"）
 - 展开后展示完整条目列表，每项包含状态 Badge 和内容
-- 仅显示主会话顶层 todo；子 Agent 内部 plan 保留在各自分组中
+- 仅显示当前 branch 的 todo；Agent 内部 plan 只在对应右侧 Agent 会话中展示，不回落到父分支
 - 每次 plan 更新时面板实时刷新，不再在消息流中追加重复 plan 卡片
 
 ## Composer 配置栏
@@ -369,12 +374,13 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - 同标签参数保留多个不同值（如多个路径、多个查询条件）
 - 语义化参数缺失时回退展示原始输入 JSON
 
-## 子 Agent 嵌套会话展示
+## Agent 分支会话展示
 
-- `Agent` 工具调用在会话中投影为一条可折叠的嵌套分支，不使用完整工具卡、元数据卡片和结果卡片层层嵌套。收起态只展示子 Agent、类型、任务说明和当前状态，通过缩进引导线表达父子层级。
-- 展开后的子事件继续复用主 ACP timeline 的消息、thought、tool call 和 plan 渲染器；嵌套上下文只移除重复头像占位与主会话 `82%` 宽度限制，不另造一套消息组件。
-- 长 Prompt 默认收起为次级“子 Agent Prompt”入口，用户需要审计时再展开；子 Agent 尚未进入 terminal 状态时不得把 `tool_call.content` 中的输入回显误展示为执行结果。terminal 结果复用主 assistant Markdown 内容样式，不增加独立厚重卡片。
-- timeline 展开状态以稳定 item key 管理。流式更新重建 timeline 时，合法 key 集合必须递归覆盖全部嵌套子 Agent 与其子事件；只能清理整棵树中已经消失的 key，不能只按顶层 item 清理，否则嵌套展开状态会在下一次 live flush 时被关闭。
+- `Agent` 工具调用在所属父分支只投影为轻量 `AgentLinkRow`，展示 ACP 已确认的名称、说明、结构化状态、工具数和文件读写数；不提供 Collapsible，不在父消息流挂载 transcript，也不猜测“正在测试/搜索”等意图。
+- 点击 Agent link 使用稳定资源 key 在右侧工作区打开或激活只读 Agent Tab。嵌套 Agent 在父 Agent 分支中继续显示相同链接，并打开另一个 Tab；同一 execution 原位更新，不因 streaming update 生成新行。
+- Agent Prompt 作为目标分支的 synthetic 用户消息持久化；正式回答只在目标分支展示。launch tool 的 `completed` 仅表示分发完成，execution 状态由统一索引按 queued/running/waiting_permission/completed/failed/interrupted 管理。
+- TODO 按 branch ID 投影。待决权限只在 owning branch 展示可操作 intervention，同时向所有祖先 Agent link/Tab 投影 attention；决策完成后退出 intervention，不保留权限申请审计行。
+- 只挂载激活 Agent Tab 的 `ConversationViewport`。分支事件窗口、滚动锚点、贴底和 `hasOlder/hasNewer` 保存在有限 LRU 中；切回 dirty Tab 时重新拉取该分支最新语义页。普通后台 streaming 不驱动所有 Tab React render。
 
 ## Runtime Control JSON 展示
 

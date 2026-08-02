@@ -47,16 +47,15 @@ use crate::updater::{
 };
 use crate::view_models::{
     AcpActivityDetailQueryInput, AcpActivityDetailVm, AcpRawFramePageVm, AcpRawFrameQueryInput,
-    AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm,
-    AcpToolDetailQueryInput, AcpToolDetailVm,
+    AcpSessionQueryInput, AcpSessionVm, AcpToolDetailQueryInput, AcpToolDetailVm, AgentRegistryVm,
     AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, McpServerVm,
     PreferencesVm, RoundDetailVm, RoundSelectionInput, RunDetailVm, RunSummaryVm, SkillContentVm,
     SkillListVm, SkillMetaVm, SyncStatusEntryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm,
     WorkflowVm, acp_activity_detail_vm_for_attempt, acp_raw_frame_page_vm, acp_session_vm,
-    acp_tool_detail_vm_for_attempt, agent_registry_vm, bootstrap_vm,
-    dynamic_acp_session_vm, log_page_vm, mcp_server_list_vm, preferences_vm, round_detail_vm,
-    run_detail_vm, run_summary_vm, runtime_display_vm, skill_content_vm, skill_list_vm,
-    skill_meta_vm, task_detail_vm, task_list_vm, workflow_vm,
+    acp_tool_detail_vm_for_attempt, agent_registry_vm, bootstrap_vm, dynamic_acp_session_vm,
+    log_page_vm, mcp_server_list_vm, preferences_vm, round_detail_vm, run_detail_vm,
+    run_summary_vm, runtime_display_vm, skill_content_vm, skill_list_vm, skill_meta_vm,
+    task_detail_vm, task_list_vm, workflow_vm,
 };
 use crate::view_models_conversation::{
     ConversationAttemptLifecycleVm, conversation_attempt_lifecycle_vm,

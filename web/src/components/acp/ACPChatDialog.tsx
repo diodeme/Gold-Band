@@ -347,6 +347,7 @@ type AcpActivityBatch = {
   live: boolean;
   events: AcpTimelineEvent[];
   activityStartSeq: number;
+  activityEndSeq: number;
   totalEventCount: number;
   toolCallCount: number;
   thoughtCount: number;
@@ -4364,6 +4365,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
         {
           branchId: branchLocator.branchId,
           activityStartSeq: event.activityStartSeq,
+          activityEndSeq: event.activityEndSeq,
           earlierCursor: cursor,
           limit: 40,
         },
@@ -5958,6 +5960,8 @@ function stabilizeTimelineItem(
     if (
       events === previous.events &&
       next.seq === previous.seq &&
+      next.activityStartSeq === previous.activityStartSeq &&
+      next.activityEndSeq === previous.activityEndSeq &&
       next.endedSeq === previous.endedSeq &&
       next.endedAt === previous.endedAt &&
       next.live === previous.live &&
@@ -6298,6 +6302,9 @@ function batchAcpActivities(
       live,
       events: retainedEvents,
       activityStartSeq,
+      activityEndSeq: numberValue(activityMeta?.activityEndSeq)
+        ?? last.endedSeq
+        ?? last.seq,
       totalEventCount: numberValue(activityMeta?.totalEventCount) ?? auditEvents.length,
       toolCallCount: numberValue(activityMeta?.toolCallCount) ?? toolIds.size,
       thoughtCount: numberValue(activityMeta?.thoughtCount)

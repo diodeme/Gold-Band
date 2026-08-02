@@ -999,6 +999,7 @@ export interface ConversationTaskRowVm {
 export interface AcpActivityDetailQueryInput {
   branchId: string;
   activityStartSeq: number;
+  activityEndSeq: number;
   earlierCursor?: string | null;
   limit?: number;
 }

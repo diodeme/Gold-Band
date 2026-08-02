@@ -41,6 +41,7 @@ describe('right workspace resource model', () => {
     expect(state.activeTabKey).toBe(agent('agent-a').key);
     expect(state.tabs[0]).toMatchObject({ title: 'Agent A updated', attention: true });
     expect(state.requestedOpen).toBe(true);
+    expect(state.openRevision).toBe(3);
   });
 
   it('closes the active tab to its adjacent tab and collapses after the last tab', () => {

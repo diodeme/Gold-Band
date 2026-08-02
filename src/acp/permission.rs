@@ -6,10 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    acp::events::{
-        AcpUiEvent, current_timestamp,
-        load_timeline_items, write_timeline_items,
-    },
+    acp::events::{AcpUiEvent, current_timestamp, load_timeline_items, write_timeline_items},
     storage::{ensure_parent_dir, read_json, write_json},
 };
 
@@ -251,7 +248,10 @@ pub fn upsert_permission_decision_event(
     event.ended_at = Some(event.timestamp.clone());
 
     let mut items = load_timeline_items(&timeline_path)?;
-    if let Some(existing) = items.iter_mut().find(|item| item.id == event.id) {
+    if let Some(existing) = items
+        .iter_mut()
+        .find(|item| permission_event_matches(item, request_id))
+    {
         *existing = event;
     } else {
         items.push(event);
@@ -521,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn cancel_pending_permission_appends_legacy_event_when_no_timeline_exists() {
+    fn cancel_pending_permission_migrates_legacy_audit_without_writing_it() {
         let dir = tempdir().unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
         let request_id = "legacy";
@@ -542,7 +542,8 @@ mod tests {
         cancel_pending_permission_requests(&attempt_dir, "2Z".to_string()).unwrap();
 
         let events = fs::read_to_string(events_path.as_std_path()).unwrap();
-        assert!(events.contains("\"status\":\"cancelled\""));
+        assert!(events.contains("\"status\":\"pending\""));
+        assert!(!events.contains("\"status\":\"cancelled\""));
         let items = load_timeline_items(&attempt_dir.join("acp.timeline.jsonl")).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "permission-legacy");

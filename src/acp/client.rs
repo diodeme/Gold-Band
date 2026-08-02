@@ -163,6 +163,10 @@ impl AcpUsageState {
     }
 }
 
+use crate::acp::branches::{
+    ROOT_BRANCH_ID, agent_prompt_event, annotate_event_branch, branch_route_for_event,
+    branch_timeline_path, event_branch_id, load_all_branch_events, migrate_legacy_agent_timeline,
+};
 use crate::acp::commands::{AcpCommandItem, parse_available_commands};
 use crate::acp::connection::{
     AcpConnectionUnavailable, AdapterConnection, AdapterConnectionKey, AdapterConnectionManager,
@@ -175,9 +179,9 @@ use crate::acp::elicitation::{
 };
 use crate::acp::events::{
     AcpAttemptPaths, AcpSessionMetadata, AcpSessionTiming, AcpTimingState, AcpUiEvent,
-    append_diagnostic, append_raw_frame, append_structured_diagnostic,
-    current_timestamp, initial_acp_event_seq, latest_timeline_source_seq,
-    normalize_session_update, permission_request_event, user_prompt_event, write_session_metadata,
+    append_diagnostic, append_raw_frame, append_structured_diagnostic, current_timestamp,
+    latest_timeline_source_seq, normalize_session_update, permission_request_event,
+    user_prompt_event, write_session_metadata,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::permission::{
@@ -186,11 +190,6 @@ use crate::acp::permission::{
     write_pending_permission,
 };
 use crate::acp::timeline::{TimelineCompactionPolicy, TimelineStore};
-use crate::acp::branches::{
-    ROOT_BRANCH_ID, agent_prompt_event, annotate_event_branch, branch_route_for_event,
-    branch_timeline_path, event_branch_id,
-    load_all_branch_events, migrate_legacy_agent_timeline,
-};
 use crate::acp::usage::{
     AcpAttemptTokenTotals, AcpAttemptUsageRecovery, AcpPromptTokenUsage, append_prompt_completed,
     append_prompt_started, repair_attempt_usage,
@@ -4131,11 +4130,7 @@ impl<'a> AcpRuntime<'a> {
                     .map(|session_id| format!("session-usage-{session_id}"))
                     .unwrap_or_else(|| "session-usage-current".to_string());
                 Self::finalize_non_streaming_event(
-                    (
-                        &mut streams.text,
-                        &mut streams.thought,
-                        &mut streams.plan,
-                    ),
+                    (&mut streams.text, &mut streams.thought, &mut streams.plan),
                     &mut item,
                     seq,
                     &timestamp,
@@ -4154,11 +4149,7 @@ impl<'a> AcpRuntime<'a> {
                 }
                 item.kind = "toolCall".to_string();
                 Self::finalize_non_streaming_event(
-                    (
-                        &mut streams.text,
-                        &mut streams.thought,
-                        &mut streams.plan,
-                    ),
+                    (&mut streams.text, &mut streams.thought, &mut streams.plan),
                     &mut item,
                     seq,
                     &timestamp,
@@ -4167,11 +4158,7 @@ impl<'a> AcpRuntime<'a> {
             "permissionRequest" => {
                 item.id = format!("permission-{}", item.id);
                 Self::finalize_non_streaming_event(
-                    (
-                        &mut streams.text,
-                        &mut streams.thought,
-                        &mut streams.plan,
-                    ),
+                    (&mut streams.text, &mut streams.thought, &mut streams.plan),
                     &mut item,
                     seq,
                     &timestamp,
@@ -4194,11 +4181,7 @@ impl<'a> AcpRuntime<'a> {
             }
             _ => {
                 Self::finalize_non_streaming_event(
-                    (
-                        &mut streams.text,
-                        &mut streams.thought,
-                        &mut streams.plan,
-                    ),
+                    (&mut streams.text, &mut streams.thought, &mut streams.plan),
                     &mut item,
                     seq,
                     &timestamp,
@@ -4476,7 +4459,11 @@ fn active_timeline_streams_by_branch(
             let (text, thought, plan) = active_timeline_streams_from_refs(branch_items);
             (text.is_some() || thought.is_some() || plan.is_some()).then_some((
                 branch_id,
-                AcpBranchTimelineStreams { text, thought, plan },
+                AcpBranchTimelineStreams {
+                    text,
+                    thought,
+                    plan,
+                },
             ))
         })
         .collect()
@@ -4581,11 +4568,7 @@ fn take_pending_live_update_for_stream_switch(
 }
 
 fn initial_acp_source_seq(paths: &AcpAttemptPaths) -> u64 {
-    if paths.timeline.exists() || !paths.events.exists() {
-        latest_timeline_source_seq(&paths.timeline)
-    } else {
-        initial_acp_event_seq(&paths.events)
-    }
+    latest_timeline_source_seq(&paths.timeline)
 }
 
 fn stable_message_item_id(event: &crate::acp::events::AcpUiEvent) -> String {
@@ -4993,18 +4976,17 @@ mod tests {
         NESTED_AGENT_TRANSCRIPT_CAPABILITY, PriorAttemptMetrics, PromptActivity, PromptBundle,
         PromptVisibility, ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution,
         SessionUpdatePhase, active_context_compaction, active_timeline_streams,
-        active_timeline_streams_by_branch,
-        attached_sync_required, cleanup_doctor_acp_dir_after_success, contributes_to_final_text,
-        drain_frames_until_quiet, evaluate_provider_revision, initialize_params,
-        is_transport_interruption, is_unscoped_codex_diagnostic_update, merge_tool_raw_input,
+        active_timeline_streams_by_branch, attached_sync_required,
+        cleanup_doctor_acp_dir_after_success, contributes_to_final_text, drain_frames_until_quiet,
+        evaluate_provider_revision, initialize_params, is_transport_interruption,
+        is_unscoped_codex_diagnostic_update, merge_tool_raw_input,
         permission_decision_timeline_event, plan_attached_session_reuse, prompt_activity,
         register_provider_control, request_prompt_cancel, resolve_permission_mode,
         resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
         runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
         session_new_params, session_prompt_params, session_prompt_text,
         should_suppress_session_update, stable_message_item_id,
-        take_pending_live_update_for_stream_switch,
-        unregister_provider_control,
+        take_pending_live_update_for_stream_switch, unregister_provider_control,
     };
     use crate::acp::{
         connection::AcpConnectionUnavailable,
@@ -5772,16 +5754,15 @@ mod tests {
         let agent_a = branch_text("message-a", 10, "provider-agent-a", "A");
         let agent_b = branch_text("message-b", 11, "provider-agent-b", "B");
 
-        assert_ne!(stable_message_item_id(&agent_a), stable_message_item_id(&agent_b));
+        assert_ne!(
+            stable_message_item_id(&agent_a),
+            stable_message_item_id(&agent_b)
+        );
         let streams = active_timeline_streams_by_branch(&[agent_a.clone(), agent_b.clone()]);
-        let branch_a = crate::acp::branches::stable_agent_execution_id(
-            "session-1",
-            "provider-agent-a",
-        );
-        let branch_b = crate::acp::branches::stable_agent_execution_id(
-            "session-1",
-            "provider-agent-b",
-        );
+        let branch_a =
+            crate::acp::branches::stable_agent_execution_id("session-1", "provider-agent-a");
+        let branch_b =
+            crate::acp::branches::stable_agent_execution_id("session-1", "provider-agent-b");
         assert_eq!(streams.len(), 2);
         assert_eq!(
             streams

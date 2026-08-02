@@ -140,6 +140,23 @@ describe('ACP activity detail loading', () => {
         trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       });
       expect(getAcpActivityDetail).toHaveBeenCalledTimes(1);
+      expect(getAcpActivityDetail).toHaveBeenCalledWith(
+        'project-1',
+        'task-1',
+        'run-1',
+        'round-1',
+        'node-1',
+        'attempt-1',
+        {
+          branchId: 'agent-1',
+          activityStartSeq: 10,
+          activityEndSeq: 109,
+          earlierCursor: null,
+          limit: 40,
+        },
+        undefined,
+        undefined,
+      );
 
       await act(async () => {
         resolveDetail({ items: [], hasMoreEarlier: false, earlierCursor: null });

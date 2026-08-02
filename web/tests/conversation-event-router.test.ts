@@ -51,8 +51,9 @@ describe('conversation event router', () => {
     const first = readConversationBranchLiveSnapshot(locator, 'agent-a');
     applyConversationEventToBranchSnapshots(live('agent-a', { ...uiEvent('textDelta'), id: 'text-2', seq: 2 }));
     const second = readConversationBranchLiveSnapshot(locator, 'agent-a');
-    expect(second).toBe(first);
+    expect(second).not.toBe(first);
     expect(second.revision).toBe(1);
+    expect(second.contentRevision).toBe(2);
   });
 
   it('projects permission attention and clears it only after the decision event', () => {

@@ -81,24 +81,16 @@ Agent 管理
 
 ---
 
-## 4. 右侧功能区
-右侧功能区完全由当前一级功能控制。
+## 4. 中间主工作区与右侧辅助工作区
 
-当选中“任务编排”时，右侧页面栈为：
+应用壳固定为左侧导航、中间主工作区、右侧辅助工作区三个领域。一级页面及其页面栈只占用中间主工作区；右侧是跨页面复用的资源工作区，不再把所有页面内容笼统称为“右侧功能区”。
 
-```text
-任务列表
-任务详情
-工作流列表
-run 详情
-round 详情
-```
-
-右侧功能区顶部通常包含：
-- 页面标题
-- 面包屑
-- 页面级操作按钮
-- 当前状态摘要
+- 中间主工作区承载会话、任务详情、工作流画布、上下文卡片和设置等一级任务内容。
+- 右侧辅助工作区使用通用资源 Tab 描述符；首个资源类型为 Agent 分支会话，后续文件、Diff、产物和日志复用同一容器。
+- 资源以稳定 `resourceKey` 去重；关闭当前 Tab 后激活相邻 Tab，关闭最后一个 Tab 后收起工作区。Tab 条允许横向滚动，并提供完整 Tab 溢出菜单。
+- 只挂载激活 Tab 的内容 DOM。非激活资源仅保留轻量定位、状态、attention、有限分页窗口与滚动恢复状态，不长期隐藏挂载多个消息视口。
+- 右侧 Dock 与紧凑宽度 Sheet 共用同一 Tab state 和内容组件。窗口自动收窄只隐藏 Dock，不自动用 Sheet 覆盖中间内容；用户在紧凑模式显式点击资源链接时才打开 Sheet。
+- 用户手动关闭工作区只改变 `requestedOpen`，不删除 Tab；自动恢复不得覆盖手动关闭意图。
 
 ---
 
@@ -124,7 +116,7 @@ round 详情
 
 ### 6.1 保持稳定区域
 - 左侧一级功能区不随页面下钻变化。
-- 右侧功能区随页面层级变化。
+- 中间主工作区随页面层级变化；右侧辅助工作区保持资源上下文，不属于某个会话页的局部抽屉。
 - 用户始终知道自己处于哪个一级模块。
 
 ### 6.2 避免终端心智
@@ -160,6 +152,8 @@ round 详情
 - 顶栏窗口控制按钮组左侧可承载「帮助」入口（DropdownMenu）。是否展示由渠道配置的 `feedbackEnabled` 能力布尔值决定，经 `AppInfoVm` 贯穿应用壳；当前 `wb=true`、默认渠道为 false。前端不根据渠道名称猜能力，后端 command 也必须再次校验。当前菜单仅含「用户反馈」，详见 interaction/app/feedback.md。
 - 桌面窗口最小尺寸只由 Tauri Window 配置管理；`html/body/#root` 不得重复设置固定 `min-width/min-height`。WebView 必须始终服从真实 viewport 尺寸并继续触发响应式布局，禁止在达到 CSS 最小宽度后保持旧布局、由原生窗口直接裁切右侧内容。
 - 桌面壳内的二级布局必须基于实际内容容器宽度决定分栏，而不是直接复用整窗 `md/lg/xl` breakpoint。侧边栏、section 标题列、抽屉和详情 inspector 都会减少真实可用宽度；嵌套区域优先使用 Tailwind container query，固定画布/表格则必须提供明确的换行、堆叠或横向滚动降级策略。
+- 三段式工作区使用 shadcn `Resizable` copy-in（`react-resizable-panels`）统一管理面板，不维护手写全局 mousemove 拖拽。页面通过集中式 profile 声明中间最小宽度：会话 420px、上下文卡片 520px、工作流画布 640px、设置 480px；右侧拖拽上限必须动态扣除当前中间最小宽度和可见左栏最小宽度。
+- 横向缩小时先把右侧压到最小宽度，再自动隐藏左栏，再隐藏右侧；放大时先恢复右侧、再恢复左侧。折叠阈值使用 48px 迟滞，手动折叠和自动折叠分别建模。右侧宽度写入会话 UI preference，ResizeObserver 按 animation frame 合并。
 - Windows 无边框窗口使用 WebView2 composition 路径承载连续边缘 resize：Tauri Window 在 Windows 平台启用透明控制器，但 `html/body/#root` 与应用壳始终绘制不透明主题 surface，不向用户呈现实际透明效果。宿主 Window 背景随主题同步，WebView 层保持 composition 模式，禁止为了遮盖黑带重新设为不透明控制器。
 - 主窗口初始隐藏；bootstrap、主题和宿主背景准备完成后由前端显式显示，避免 transparent composition 窗口在首帧 CSS 尚未就绪时闪现。Windows 自定义无边框模式按系统能力控制 native shadow：Win11 及更高版本开启，由 DWM 提供系统圆角与边界；Win10 关闭，避免 TAO `top=0 / left-right-bottom=frame_thickness` 的非对称 non-client frame，仅由应用内嵌边界补足可感知轮廓。关闭 Win10 shadow 不移除 `RESIZABLE/WS_SIZEBOX`，TAO 继续通过完整客户区边缘 hit-test 提供四边缩放；macOS 恢复 native decorations、shadow 与 traffic lights。
 - 上下文管理的角色卡片网格按列表容器实际宽度决定列数，而不是只依赖整窗 viewport：窄容器单列、中等容器双列、足够宽时三列。卡片底部操作区允许整组换行，系统显示缩放、字体增大或翻译文案变长时不得越过卡片边界或覆盖相邻卡片。
@@ -192,9 +186,10 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-07-23 Windows 边缘缩放修正：采用 Tauri/WebView2 transparent composition workaround，并复用 AionUi 的“窗口初始隐藏、首帧完成后显示”启动策略；保留 native shadow 以获得 Win11 DWM 原生圆角和边框，删除 Win11 根壳的整窗 border、CSS 圆角与高层级伪元素。
 - 2026-07-28 Windows 10 窗口边界兼容：不回退 opaque WebView2 controller，也不恢复跨版本通用 CSS 圆角；桌面 bootstrap 基于 `RtlGetVersion` 的真实系统 build 下发 `native-compositor` / `app-outline` frame policy 与 `nativeShadow`。Win10 关闭 TAO undecorated shadow，使用对比度更明确的主题化 1px 内侧边界与四边一致的柔和内阴影，消除三侧 native frame 黑线的同时保留清晰窗口层次；Win11 继续使用 DWM 原生圆角与 shadow。
 - 2026-07-28 Windows 10 最大化拖拽修正：删除共享顶栏重复的 React `startDragging()` 与手动双击切换，鼠标和双击只通过 Tauri `data-tauri-drag-region` 进入一次原生拖拽/最大化流程；保留 WebView2 app-region 作为触摸输入补充，避免最大化窗口拖拽还原时连续发送两次 caption drag 导致窗口移出工作区。
+- 2026-08-02：会话模式应用壳升级为 `WorkspaceShell` 三段式布局。右侧 `RightWorkspaceDock` 使用通用多 Tab 资源模型和同源紧凑 Sheet；Agent 分支是首个只读资源。全局 Tauri 最小窗口仍为 1040x680，页面中间最小宽度只由布局 profile 约束，不复制为 Web 根最小宽度。
 
 ---
 
 ## 8. 一句话总结
 
-> 应用壳只解决“我在哪个一级功能里”，任务内部的递进浏览全部发生在右侧功能区。
+> 应用壳稳定组织左侧导航、中间主任务和右侧辅助资源；页面下钻不再与辅助资源工作区混为同一个“右侧区域”。

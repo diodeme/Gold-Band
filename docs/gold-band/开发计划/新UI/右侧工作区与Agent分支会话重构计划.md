@@ -58,7 +58,7 @@
 
 - 左侧导航继续负责工作空间、会话列表和一级页面入口。
 - 中间区域始终是当前一级页面的主任务区域。
-- 右侧区域是跨页面可复用的辅助资源工作区，不属于 `ConversationRunPage` 的局部抽屉。
+- 右侧区域是会话域内复用的辅助资源工作区，只在快速对话与 `ConversationRunPage` 可用；进入其他一级页面时隐藏入口和 Dock。
 - 内部组件命名使用 `RightWorkspaceDock` 或 `AuxiliaryWorkspace`，避免与左侧导航 Sidebar 混淆。
 
 ### 5.2 右侧工作区 Tab
@@ -101,14 +101,20 @@ interface RightWorkspaceState {
   tabs: RightWorkspaceResource[];
   activeTabKey: string | null;
   requestedOpen: boolean;
-  width: number;
-  autoCollapsed: boolean;
 }
 ```
 
-Tab 描述只保存资源定位，不直接保存 timeline、文件内容等大对象。资源缓存、实时状态和 DOM 生命周期独立管理。
+Tab 描述只保存资源定位与所属 `scopeKey`，不直接保存 timeline、文件内容等大对象。快速对话使用 draft scope，具体会话使用 project/task/run scope；轻量状态按 scope 进入 24 项运行期 LRU。宽度属于全局 UI preference，不放入 scope state；资源缓存、实时状态和 DOM 生命周期独立管理。
 
-共享顶栏左侧按品牌、左侧导航开关排序，右侧工作区开关进入尾部操作区；Windows/Linux 中排在自定义窗口控制之前，macOS 中通过正常 flex 流停在右端并保留左侧原生 traffic lights 安全区，不使用绝对定位。两个开关复用 shadcn `Button`，统一使用 28px 点击区、14px 图标和低对比打开态。右栏开关在会话模式常驻，可在没有 Tab 时打开空白入口页。Tab 集合和激活态只在 `RightWorkspaceProvider` 的应用运行期内存中保存，进程重启后清空；像素宽度单独跨重启持久化。
+共享顶栏左侧按品牌、左侧导航开关排序，右侧工作区开关进入尾部操作区；Windows/Linux 中排在自定义窗口控制之前，macOS 中通过正常 flex 流停在右端并保留左侧原生 traffic lights 安全区，不使用绝对定位。两个开关复用 shadcn `Button`，统一使用 28px 点击区、14px 图标和低对比打开态。右栏开关只在快速对话与会话详情展示，可在没有 Tab 时打开空白入口页。Tab 集合和激活态只在应用运行期记忆；像素宽度单独跨重启持久化。
+
+### 5.3 会话 scope 与 LRU
+
+- `draft:<projectId>` 表示尚未绑定具体会话的快速对话工作区；`conversation:<projectId>:<taskId>:<runId>` 表示具体会话工作区。
+- 创建会话时将 draft 的 `requestedOpen` 迁移给新 scope，但不迁移资源 Tab；切换现有会话时直接恢复目标 scope，未命中或已淘汰时使用默认收起状态。
+- `ConversationWorkspaceStore` 最多保留 24 个有状态 scope。访问顺序只由用户进入、打开、激活、关闭等工作区动作更新；后台 ACP streaming 不改变顺序。
+- 删除会话或移除项目时同步删除匹配 scope。进程退出后轻量 LRU 清空，不把临时 Tab 持久化为用户配置。
+- ACP Session VM、事件窗口和 branch view state 合并为同一 `AcpCachedResource`，统一限制 12 个 resource key；淘汰一个 key 时三类重对象一起释放。
 
 ## 6. 面板宽度与窗口响应式
 
@@ -467,6 +473,8 @@ ACP live event(branchId)
 - 会话页面 `centerMinWidth` 从设计初值 420px 校准到 360px；上下文卡片、工作流画布和设置 profile 保持不变。
 - 使用静态 Agent resource 验证 docked/compact Sheet 两种模式。
 - 在 `WorkspaceShell` 共同边界提供 shadcn `TooltipProvider`，确保中间会话、右侧 Dock 与紧凑 Sheet 复用含 Tooltip 的会话组件时拥有相同 UI 上下文；不在 Agent 面板内重复补 Provider。
+- 右侧入口限制为快速对话与会话详情；引入 draft/conversation scope 和 24 项轻量 LRU，切换会话恢复各自 Tab、激活态与展开态，被淘汰会话回到默认收起状态。
+- 将 ACP Session、有限事件窗口和 branch view state 的三套 12 项缓存改为单一 resource LRU，避免只淘汰部分数据。
 
 ### Phase 2：统一 Agent 分支领域模型
 
@@ -514,6 +522,19 @@ ACP live event(branchId)
 - 删除旧 Agent launch anchor 注入和前端兼容消费。
 - 删除已无调用方的状态、i18n 和测试 fixture。
 
+### Phase 7：会话辅助资源迁移
+
+状态：已实现。
+
+- 扩展统一 `RightWorkspaceResource` 为 `workflow-view`、`workflow-edit`、`system-prompt`、`raw-frames`，所有描述符只保存当前 scope 与稳定 locator。
+- “查看工作流 / 编辑工作流 / 修复工作流”从会话 Sheet 迁移为右侧 Tab；保存继续调用既有任务工作流接口并刷新 run snapshot。
+- “系统提示 / 原始帧”从 ACP 内部 Dialog/画布切换迁移为 attempt-scoped 右侧 Tab；根会话与嵌套 Agent 使用同一资源协议。
+- 右侧 Dock 只挂载激活资源，通过当前 conversation-run 注册的资源 renderer 读取实时 run 与保存控制器，拒绝把 Graph、prompt 或 raw page 写入 Tab/LRU。
+- 工作流草稿使用独立 24 项运行期缓存；收起 Dock、切换 Tab 和切换会话后仍可恢复，主动关闭脏 Tab 需确认。
+- 原始帧筛选区拆成“全宽搜索 + 横向可换行 Select 组”，按资源容器真实宽度自然降级，不再用过大的 container breakpoint 让筛选器整组竖排。
+- 去掉会话标题栏“原始帧”入口与右侧激活 Tab 的重复选中态；右侧 Tab 是资源选中的唯一视觉来源，非工作区旧页面的真实 canvas 切换继续保留按钮 active 状态。
+- 保留非会话旧页面的 ACP fallback 展示，但在存在 conversation workspace scope 时只能走右侧资源，不允许同一上下文同时存在两套消费路径。
+
 ## 16. 测试与验收
 
 ### 16.1 应用壳
@@ -531,6 +552,14 @@ ACP live event(branchId)
 - 紧凑宽度点击 Agent 能以 Sheet 打开，恢复宽度后能回到 Dock。
 - 会话、上下文卡片、工作流画布使用各自容器宽度降级，不依赖整窗 breakpoint。
 - 从资源模型打开 Agent Tab 后，其会话内容中的 Tooltip 可以直接挂载；异步加载完成不得因缺少 `TooltipProvider` 停留在“加载中”、清空 WebView 或触发未捕获异常。
+- 快速对话与会话详情显示右栏入口；Agent 管理、上下文管理、运行模式管理和设置不显示入口或 Dock。
+- A/B 会话切换只呈现各自 scope 的 Tab；返回 A 恢复 A，未命中或第 25 个 scope 淘汰后进入会话时右栏默认收起。
+- LRU touch 只由用户访问和工作区操作触发，后台流式事件不能使非当前会话长期保热。
+- draft 创建新会话时迁移展开意图但不迁移资源 Tab；删除会话、移除项目同步清理 scope。
+- ACP 重资源缓存淘汰时，同一 key 的 Session、events 与 view state 必须同时不可恢复。
+- 四类会话辅助入口打开后均产生当前 scope 的 locator-only Tab；Tab state 不包含 workflow JSON/Graph、system prompt 正文或 raw frame page。
+- 查看 raw frame 或 system prompt 不改变主会话 canvas mode；从嵌套 Agent 打开时 locator 保留该 Agent 的 branch ID，返回原 Agent Tab 时不重新进入初始加载。
+- 编辑工作流后收起并重开右栏仍恢复草稿；关闭脏 Tab 被 guard 拦截或经确认后丢弃，保存后 guard 自动解除且主 run snapshot 刷新。
 
 ### 16.2 会话与分页
 

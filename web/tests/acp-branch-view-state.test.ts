@@ -1,16 +1,19 @@
 /** @vitest-environment jsdom */
 
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   applyAcpScrollAnchorCompensation,
   captureAcpBranchViewState,
+  resetAcpResourceCache,
   restoreAcpBranchViewState,
+  restoreAcpLoadedEvents,
   restoreAcpSession,
   storeAcpBranchViewState,
+  storeAcpLoadedEvents,
   storeAcpSession,
 } from '@/components/acp/ACPChatDialog';
-import type { AcpSessionVm } from '@/types';
+import type { AcpSessionVm, AcpUiEventVm } from '@/types';
 
 const state = (scrollTop: number) => ({
   anchorKey: `message-${scrollTop}`,
@@ -56,6 +59,17 @@ const session = (branchId: string): AcpSessionVm => ({
   diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0 },
 });
 
+const event = (id: string): AcpUiEventVm => ({
+  id,
+  seq: 1,
+  timestamp: '2026-01-01T00:00:00Z',
+  kind: 'assistantTextDelta',
+  sessionId: 'session-1',
+  content: id,
+});
+
+beforeEach(() => resetAcpResourceCache());
+
 describe('ACP branch view state cache', () => {
   it('stores independent scroll, cursor, and bottom-lock state per branch', () => {
     storeAcpBranchViewState('attempt:root', state(100));
@@ -78,6 +92,19 @@ describe('ACP branch view state cache', () => {
     }
     expect(restoreAcpSession('session-lru-0')).toBeNull();
     expect(restoreAcpSession('session-lru-12')?.branchId).toBe('agent-12');
+  });
+
+  it('evicts session, events, and view state atomically by resource key', () => {
+    storeAcpSession('combined-oldest', session('agent-oldest'));
+    storeAcpLoadedEvents('combined-oldest', [event('event-oldest')], 100);
+    storeAcpBranchViewState('combined-oldest', state(100));
+    for (let index = 0; index < 12; index += 1) {
+      storeAcpSession(`combined-${index}`, session(`agent-${index}`));
+    }
+
+    expect(restoreAcpSession('combined-oldest')).toBeNull();
+    expect(restoreAcpBranchViewState('combined-oldest')).toBeNull();
+    expect(restoreAcpLoadedEvents('combined-oldest', [], 100)).toEqual([]);
   });
 
   it('captures and compensates a real DOM item anchor for either root or Agent branches', () => {

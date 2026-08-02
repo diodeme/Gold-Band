@@ -53,8 +53,8 @@ describe('AgentConversationPanel', () => {
       const renderer = container.querySelector('output');
       expect(renderer?.getAttribute('data-branch-id')).toBe('agent-01');
       expect(renderer?.getAttribute('data-read-only')).toBe('true');
-      expect(renderer?.getAttribute('data-show-system-prompt')).toBe('false');
-      expect(renderer?.getAttribute('data-show-raw-frames')).toBe('false');
+      expect(renderer?.getAttribute('data-show-system-prompt')).toBe('true');
+      expect(renderer?.getAttribute('data-show-raw-frames')).toBe('true');
       expect(renderer?.getAttribute('data-usage-compact')).toBe('true');
     } finally {
       await act(async () => root.unmount());

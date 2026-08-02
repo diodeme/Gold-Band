@@ -1,4 +1,4 @@
-import { Bot, ChevronDown, FileText, X } from 'lucide-react';
+import { Bot, Braces, ChevronDown, FileCode2, FileText, GitBranch, PencilLine, X } from 'lucide-react';
 import { memo, type ReactNode, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -10,7 +10,7 @@ import { useRightWorkspace, type RightWorkspaceResource } from './right-workspac
 
 export function RightWorkspaceDock() {
   const { t } = useTranslation();
-  const { tabs, activeTabKey, activateTab, closeTab } = useRightWorkspace();
+  const { tabs, activeTabKey, activateTab, closeTab, renderResource } = useRightWorkspace();
   const active = tabs.find((tab) => tab.key === activeTabKey) ?? null;
   const tabStripRef = useRef<HTMLDivElement>(null);
   const overflowMenuRef = useRef<HTMLButtonElement>(null);
@@ -71,6 +71,7 @@ export function RightWorkspaceDock() {
       </div> : null}
       <div className="flex min-h-0 flex-1 flex-col">
         {active?.kind === 'agent-transcript' ? <AgentConversationPanel key={active.key} resource={active} /> : null}
+        {active && active.kind !== 'agent-transcript' ? renderResource(active) : null}
         {!active ? <div className="min-h-0 flex-1" data-right-workspace-empty="true" /> : null}
       </div>
     </section>
@@ -91,12 +92,21 @@ const RightWorkspaceTab = memo(function RightWorkspaceTab({
   if (tab.kind === 'agent-transcript') {
     return <AgentWorkspaceTab tab={tab} active={active} onActivate={onActivate} onClose={onClose} />;
   }
+  const icon = tab.kind === 'workflow-view'
+    ? <GitBranch className="size-3.5 shrink-0" />
+    : tab.kind === 'workflow-edit'
+      ? <PencilLine className="size-3.5 shrink-0" />
+      : tab.kind === 'system-prompt'
+        ? <FileCode2 className="size-3.5 shrink-0" />
+        : tab.kind === 'raw-frames'
+          ? <Braces className="size-3.5 shrink-0" />
+          : <FileText className="size-3.5 shrink-0" />;
   return (
     <RightWorkspaceTabButton
       tab={tab}
       active={active}
       attention={tab.attention}
-      icon={<FileText className="size-3.5 shrink-0" />}
+      icon={icon}
       onActivate={onActivate}
       onClose={onClose}
     />

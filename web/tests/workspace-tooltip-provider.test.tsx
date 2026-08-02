@@ -10,7 +10,11 @@ vi.mock('@/api', async () => {
 });
 
 vi.mock('@/components/AppTitleBar', () => ({
-  AppTitleBar: () => <header data-testid="app-title-bar" />,
+  AppTitleBar: ({ onToggleRightWorkspace }: { onToggleRightWorkspace?: () => void }) => (
+    <header data-testid="app-title-bar">
+      {onToggleRightWorkspace ? <button type="button" data-titlebar-sidebar-toggle="right" onClick={onToggleRightWorkspace} /> : null}
+    </header>
+  ),
 }));
 
 vi.mock('@/components/conversation/ConversationSidebar', () => ({
@@ -54,6 +58,7 @@ vi.mock('@/components/workspace/AgentConversationPanel', async () => {
 import { WorkspaceShell } from '@/components/workspace/WorkspaceShell';
 import {
   agentTranscriptResourceKey,
+  ConversationWorkspaceStore,
   useRightWorkspace,
   type AgentTranscriptResource,
 } from '@/components/workspace/right-workspace-context';
@@ -71,6 +76,7 @@ const resource: AgentTranscriptResource = {
     attemptId: 'attempt-1',
     branchId: 'agent-1',
   }),
+  scopeKey: 'draft:default',
   title: 'Agent 1',
   status: 'running',
   attention: false,
@@ -118,6 +124,7 @@ describe('WorkspaceShell tooltip boundary', () => {
             windowFrameStyle="native-compositor"
             vm={{ workspaces: [], pinnedTasks: [], tasksByWorkspace: {}, preferences: null }}
             active={{ kind: 'conversation-home' }}
+            conversationWorkspaceStore={new ConversationWorkspaceStore()}
             sidebarCollapsed={false}
             onSelect={() => {}}
             onToggleSidebar={() => {}}
@@ -136,8 +143,45 @@ describe('WorkspaceShell tooltip boundary', () => {
       });
 
       expect(container.querySelector('[data-right-workspace-dock="true"]')).not.toBeNull();
+      expect(container.querySelector('[data-titlebar-sidebar-toggle="right"]')).not.toBeNull();
       expect(container.querySelector('[data-slot="tooltip-trigger"]')?.textContent)
         .toBe('Agent conversation action');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('hides the right workspace entry outside quick chat and conversation detail pages', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <WorkspaceShell
+            appName="Gold Band"
+            windowFrameStyle="native-compositor"
+            vm={{ workspaces: [], pinnedTasks: [], tasksByWorkspace: {}, preferences: null }}
+            active={{ kind: 'settings' }}
+            conversationWorkspaceStore={new ConversationWorkspaceStore()}
+            sidebarCollapsed={false}
+            onSelect={() => {}}
+            onToggleSidebar={() => {}}
+            onNewConversation={() => {}}
+            onSearch={() => {}}
+            onSelectTask={() => {}}
+            onSelectRun={() => {}}
+            onPinTask={() => {}}
+            onUnpinTask={() => {}}
+            onRenameTask={() => {}}
+            onDeleteTask={() => {}}
+          >
+            <div>Settings content</div>
+          </WorkspaceShell>,
+        );
+      });
+      expect(container.querySelector('[data-titlebar-sidebar-toggle="right"]')).toBeNull();
+      expect(container.querySelector('[data-right-workspace-dock="true"]')).toBeNull();
     } finally {
       await act(async () => root.unmount());
     }

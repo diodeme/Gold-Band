@@ -75,8 +75,10 @@ import {
 } from "@/components/prompt-kit/tool";
 import { cn } from "@/lib/utils";
 import {
+  acpAttemptWorkspaceResourceKey,
   agentTranscriptResourceKey,
   useOptionalRightWorkspace,
+  type AcpAttemptWorkspaceLocator,
   type AgentTranscriptLocator,
 } from "@/components/workspace/right-workspace-context";
 import { formatTokenCount } from "@/lib/format-token";
@@ -89,6 +91,7 @@ import {
   SYSTEM_PROMPT_VIEW_MODES,
 } from "@/lib/system-prompt-view-pref";
 import { goldThemedScrollbarClassName } from "@/lib/themed-scrollbar";
+import { BoundedLruCache } from "@/lib/bounded-lru-cache";
 import {
   decideAcpLiveEventFlush,
   isAcpLiveToolEvent,
@@ -399,7 +402,7 @@ export const ACP_SYSTEM_PROMPT_DIALOG_LAYOUT = {
   scrollContainerClassName: goldThemedScrollbarClassName(
     "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-scroll",
   ),
-  bodyClassName: "min-w-0 max-w-full space-y-3 px-5 pb-5 pr-6",
+  bodyClassName: "min-w-0 max-w-full space-y-3 px-5 pb-5 pt-4 pr-6",
   toolbarClassName:
     "flex min-h-8 min-w-0 flex-wrap items-center justify-between gap-3",
   renderedPromptClassName:
@@ -494,12 +497,7 @@ function latestSendingOptimisticEvent(events: AcpUiEventVm[]) {
   return null;
 }
 
-const ACP_EVENT_STORE_MAX_KEYS = 12;
-
-const acpLoadedEventStore = new Map<string, AcpUiEventVm[]>();
-const acpEventStoreAccessOrder: string[] = [];
-const acpSessionStore = new Map<string, AcpSessionVm>();
-const acpSessionStoreAccessOrder: string[] = [];
+export const ACP_RESOURCE_CACHE_LIMIT = 12;
 
 export interface AcpBranchViewState {
   anchorKey: string | null;
@@ -510,62 +508,33 @@ export interface AcpBranchViewState {
   hasNewer: boolean;
 }
 
-const acpBranchViewStateStore = new Map<string, AcpBranchViewState>();
-const acpBranchViewStateAccessOrder: string[] = [];
-
-function touchAcpEventStoreKey(sessionKey: string) {
-  const idx = acpEventStoreAccessOrder.indexOf(sessionKey);
-  if (idx !== -1) acpEventStoreAccessOrder.splice(idx, 1);
-  acpEventStoreAccessOrder.push(sessionKey);
+interface AcpCachedResource {
+  session?: AcpSessionVm;
+  events?: AcpUiEventVm[];
+  viewState?: AcpBranchViewState;
 }
 
-function touchAcpSessionStoreKey(sessionKey: string) {
-  const index = acpSessionStoreAccessOrder.indexOf(sessionKey);
-  if (index >= 0) acpSessionStoreAccessOrder.splice(index, 1);
-  acpSessionStoreAccessOrder.push(sessionKey);
-  while (acpSessionStoreAccessOrder.length > ACP_EVENT_STORE_MAX_KEYS) {
-    const oldest = acpSessionStoreAccessOrder.shift();
-    if (oldest) acpSessionStore.delete(oldest);
-  }
+const acpResourceStore = new BoundedLruCache<string, AcpCachedResource>(ACP_RESOURCE_CACHE_LIMIT);
+
+function storeAcpResourcePart(sessionKey: string, patch: Partial<AcpCachedResource>) {
+  const current = acpResourceStore.peek(sessionKey) ?? {};
+  acpResourceStore.set(sessionKey, { ...current, ...patch });
 }
 
 export function restoreAcpSession(sessionKey: string) {
-  const session = acpSessionStore.get(sessionKey) ?? null;
-  if (session) touchAcpSessionStoreKey(sessionKey);
-  return session;
+  return acpResourceStore.get(sessionKey)?.session ?? null;
 }
 
 export function storeAcpSession(sessionKey: string, session: AcpSessionVm) {
-  acpSessionStore.set(sessionKey, session);
-  touchAcpSessionStoreKey(sessionKey);
-}
-
-function touchAcpBranchViewStateKey(sessionKey: string) {
-  const index = acpBranchViewStateAccessOrder.indexOf(sessionKey);
-  if (index >= 0) acpBranchViewStateAccessOrder.splice(index, 1);
-  acpBranchViewStateAccessOrder.push(sessionKey);
-  while (acpBranchViewStateAccessOrder.length > ACP_EVENT_STORE_MAX_KEYS) {
-    const oldest = acpBranchViewStateAccessOrder.shift();
-    if (oldest) acpBranchViewStateStore.delete(oldest);
-  }
+  storeAcpResourcePart(sessionKey, { session });
 }
 
 export function restoreAcpBranchViewState(sessionKey: string) {
-  const state = acpBranchViewStateStore.get(sessionKey) ?? null;
-  if (state) touchAcpBranchViewStateKey(sessionKey);
-  return state;
+  return acpResourceStore.get(sessionKey)?.viewState ?? null;
 }
 
 export function storeAcpBranchViewState(sessionKey: string, state: AcpBranchViewState) {
-  acpBranchViewStateStore.set(sessionKey, state);
-  touchAcpBranchViewStateKey(sessionKey);
-}
-
-function evictAcpEventStoreIfNeeded() {
-  while (acpEventStoreAccessOrder.length > ACP_EVENT_STORE_MAX_KEYS) {
-    const oldest = acpEventStoreAccessOrder.shift();
-    if (oldest !== undefined) acpLoadedEventStore.delete(oldest);
-  }
+  storeAcpResourcePart(sessionKey, { viewState: state });
 }
 
 export function restoreAcpLoadedEvents(
@@ -573,8 +542,7 @@ export function restoreAcpLoadedEvents(
   events: AcpUiEventVm[],
   eventPageSize: number,
 ) {
-  const stored = acpLoadedEventStore.get(sessionKey) ?? [];
-  if (stored.length > 0) touchAcpEventStoreKey(sessionKey);
+  const stored = acpResourceStore.get(sessionKey)?.events ?? [];
   return limitAcpEvents(
     stored.length > 0 ? mergeAcpEvents(stored, events) : events,
     "start",
@@ -588,17 +556,23 @@ export function storeAcpLoadedEvents(
   eventPageSize: number,
 ) {
   if (events.length === 0) {
-    acpLoadedEventStore.delete(sessionKey);
-    const idx = acpEventStoreAccessOrder.indexOf(sessionKey);
-    if (idx !== -1) acpEventStoreAccessOrder.splice(idx, 1);
+    const current = acpResourceStore.peek(sessionKey);
+    if (!current) return;
+    const { events: _events, ...rest } = current;
+    if (Object.keys(rest).length === 0) {
+      acpResourceStore.delete(sessionKey);
+    } else {
+      acpResourceStore.set(sessionKey, rest);
+    }
   } else {
-    if (!acpLoadedEventStore.has(sessionKey)) touchAcpEventStoreKey(sessionKey);
-    acpLoadedEventStore.set(
-      sessionKey,
-      limitAcpEvents(events, "start", eventPageSize),
-    );
-    evictAcpEventStoreIfNeeded();
+    storeAcpResourcePart(sessionKey, {
+      events: limitAcpEvents(events, "start", eventPageSize),
+    });
   }
+}
+
+export function resetAcpResourceCache() {
+  acpResourceStore.clear();
 }
 
 export function createAcpSessionCacheKey(
@@ -679,8 +653,22 @@ export const ACPChatDialog = forwardRef<
   ref,
 ) {
   const { t } = useTranslation();
+  const rightWorkspace = useOptionalRightWorkspace();
   const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
   const branchId = requestedBranchId ?? session?.branchId ?? 'root';
+  const attemptWorkspaceLocator = useMemo<AcpAttemptWorkspaceLocator>(() => ({
+    projectId,
+    taskId,
+    runId,
+    roundId,
+    nodeId,
+    attemptId,
+    outerNodeId,
+    outerAttemptId,
+    branchId,
+  }), [attemptId, branchId, nodeId, outerAttemptId, outerNodeId, projectId, roundId, runId, taskId]);
+  const systemPromptWorkspaceKey = acpAttemptWorkspaceResourceKey('system-prompt', attemptWorkspaceLocator);
+  const rawFramesWorkspaceKey = acpAttemptWorkspaceResourceKey('raw-frames', attemptWorkspaceLocator);
   const branchLiveSnapshot = useConversationBranchLiveSnapshot(
     {
       projectId,
@@ -843,9 +831,7 @@ export const ACPChatDialog = forwardRef<
   const liveBeforeReadyLogCountRef = useRef(0);
   const sessionPropSyncIdentityRef = useRef(eventWindowKey);
   const sessionResetIdentityRef = useRef(eventWindowKey);
-  const liveUpdatesPaused = Boolean(
-    externalLiveUpdatesPaused || systemPromptOpen || artifactsDialogOpen,
-  );
+  const liveUpdatesPaused = Boolean(externalLiveUpdatesPaused || systemPromptOpen || artifactsDialogOpen);
   liveUpdatesPausedRef.current = liveUpdatesPaused;
 
   const updateOptimisticEvents = (
@@ -2790,6 +2776,17 @@ export const ACPChatDialog = forwardRef<
   };
 
   const toggleRawFrames = async () => {
+    if (rightWorkspace?.scopeKey) {
+      rightWorkspace.openResource({
+        kind: 'raw-frames',
+        key: rawFramesWorkspaceKey,
+        scopeKey: rightWorkspace.scopeKey,
+        title: t('acp.rawFrames'),
+        attention: false,
+        locator: attemptWorkspaceLocator,
+      });
+      return;
+    }
     preserveScrollPosition();
     if (canvasMode === "raw") {
       setCanvasMode("chat");
@@ -2797,6 +2794,21 @@ export const ACPChatDialog = forwardRef<
     }
     if (rawPage == null) await loadRawFrames(rawQuery);
     setCanvasMode("raw");
+  };
+
+  const openSystemPrompt = () => {
+    if (rightWorkspace?.scopeKey) {
+      rightWorkspace.openResource({
+        kind: 'system-prompt',
+        key: systemPromptWorkspaceKey,
+        scopeKey: rightWorkspace.scopeKey,
+        title: t('acp.systemPrompt'),
+        attention: false,
+        locator: attemptWorkspaceLocator,
+      });
+      return;
+    }
+    setSystemPromptOpen(true);
   };
 
   const scrollFrameRef = useRef<number | null>(null);
@@ -2883,7 +2895,7 @@ export const ACPChatDialog = forwardRef<
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-background" data-conversation-branch-id={branchId}>
       <ACPSessionHeader
         session={effective}
-        rawActive={canvasMode === "raw"}
+        rawActive={resolveRawFramesActionActive(Boolean(rightWorkspace?.scopeKey), canvasMode === "raw")}
         rawLoading={rawLoading}
         showSystemPromptAction={showSystemPromptAction}
         showRawFramesAction={showRawFramesAction}
@@ -2893,7 +2905,7 @@ export const ACPChatDialog = forwardRef<
           Boolean(systemPromptOptions?.some((option) => option.prompt?.trim()))
         }
         onToggleRaw={toggleRawFrames}
-        onOpenSystemPrompt={() => setSystemPromptOpen(true)}
+        onOpenSystemPrompt={openSystemPrompt}
       />
       {readOnly && effective.branchExecution ? (
         <AgentBranchSessionSummary
@@ -3847,6 +3859,10 @@ export function formatAcpSessionIdForDisplay(sessionId: string) {
   return `${sessionId.slice(0, SESSION_ID_DISPLAY_PREFIX_LENGTH)}…${sessionId.slice(-SESSION_ID_DISPLAY_SUFFIX_LENGTH)}`;
 }
 
+export function resolveRawFramesActionActive(workspaceScoped: boolean, canvasRawActive: boolean) {
+  return !workspaceScoped && canvasRawActive;
+}
+
 const SystemPromptDialog = memo(function SystemPromptDialog({
   open,
   prompt,
@@ -3859,26 +3875,6 @@ const SystemPromptDialog = memo(function SystemPromptDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
-  const availableOptions = useMemo(
-    () => (open ? (options?.filter((option) => option.prompt?.trim()) ?? []) : []),
-    [open, options],
-  );
-  const latestAttemptId = availableOptions.at(-1)?.attemptId ?? null;
-  const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(
-    latestAttemptId,
-  );
-  const [viewMode, setViewMode] = useState(loadSystemPromptViewMode);
-  useEffect(() => {
-    if (!open) return;
-    setSelectedAttemptId(latestAttemptId);
-  }, [open, latestAttemptId]);
-  const selectedPrompt = availableOptions.find(
-    (option) => option.attemptId === selectedAttemptId,
-  )?.prompt;
-  const content = useMemo(
-    () => (open ? ((selectedPrompt ?? prompt)?.trim() || "") : ""),
-    [open, prompt, selectedPrompt],
-  );
   if (!open) return null;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -3891,62 +3887,68 @@ const SystemPromptDialog = memo(function SystemPromptDialog({
             {t("acp.systemPromptTitle")}
           </DialogTitle>
         </DialogHeader>
-        <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.scrollContainerClassName}>
-          <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.bodyClassName}>
-            <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.toolbarClassName}>
-              {availableOptions.length > 1 ? (
-                <Select
-                  value={selectedAttemptId ?? availableOptions[0]?.attemptId}
-                  onValueChange={setSelectedAttemptId}
-                >
-                  <SelectTrigger className="h-8 w-[220px]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableOptions.map((option) => (
-                      <SelectItem value={option.attemptId} key={option.attemptId}>
-                        {option.attemptId}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <span />
-              )}
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <span>{t("acp.renderMarkdown")}</span>
-                <Switch
-                  checked={viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered}
-                  onCheckedChange={(rendered) => {
-                    const nextMode = rendered
-                      ? SYSTEM_PROMPT_VIEW_MODES.rendered
-                      : SYSTEM_PROMPT_VIEW_MODES.raw;
-                    setViewMode(nextMode);
-                    saveSystemPromptViewMode(nextMode);
-                  }}
-                  aria-label={t("acp.renderMarkdown")}
-                />
-              </div>
-            </div>
-            {content ? (
-              viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered ? (
-                <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.renderedPromptClassName}>
-                  <Markdown>{content}</Markdown>
-                </div>
-              ) : (
-                <pre className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.promptClassName}>
-                  {content}
-                </pre>
-              )
-            ) : (
-              <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">
-                {t("acp.systemPromptEmpty")}
-              </div>
-            )}
-          </div>
-        </div>
+        <SystemPromptPanel prompt={prompt} options={options} />
       </DialogContent>
     </Dialog>
+  );
+});
+
+export const SystemPromptPanel = memo(function SystemPromptPanel({
+  prompt,
+  options,
+}: {
+  prompt?: string | null;
+  options?: Array<{ attemptId: string; prompt?: string | null }>;
+}) {
+  const { t } = useTranslation();
+  const availableOptions = useMemo(
+    () => options?.filter((option) => option.prompt?.trim()) ?? [],
+    [options],
+  );
+  const latestAttemptId = availableOptions.at(-1)?.attemptId ?? null;
+  const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(latestAttemptId);
+  const [viewMode, setViewMode] = useState(loadSystemPromptViewMode);
+  useEffect(() => setSelectedAttemptId(latestAttemptId), [latestAttemptId]);
+  const selectedPrompt = availableOptions.find((option) => option.attemptId === selectedAttemptId)?.prompt;
+  const content = (selectedPrompt ?? prompt)?.trim() || "";
+  return (
+    <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.scrollContainerClassName} data-right-workspace-resource="system-prompt">
+      <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.bodyClassName}>
+        <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.toolbarClassName}>
+          {availableOptions.length > 1 ? (
+            <Select value={selectedAttemptId ?? availableOptions[0]?.attemptId} onValueChange={setSelectedAttemptId}>
+              <SelectTrigger className="h-8 w-[220px] max-w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {availableOptions.map((option) => (
+                  <SelectItem value={option.attemptId} key={option.attemptId}>{option.attemptId}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : <span />}
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span>{t("acp.renderMarkdown")}</span>
+            <Switch
+              checked={viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered}
+              onCheckedChange={(rendered) => {
+                const nextMode = rendered ? SYSTEM_PROMPT_VIEW_MODES.rendered : SYSTEM_PROMPT_VIEW_MODES.raw;
+                setViewMode(nextMode);
+                saveSystemPromptViewMode(nextMode);
+              }}
+              aria-label={t("acp.renderMarkdown")}
+            />
+          </div>
+        </div>
+        {content ? (
+          viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered ? (
+            <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.renderedPromptClassName}><Markdown>{content}</Markdown></div>
+          ) : (
+            <pre className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.promptClassName}>{content}</pre>
+          )
+        ) : (
+          <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">{t("acp.systemPromptEmpty")}</div>
+        )}
+      </div>
+    </div>
   );
 });
 
@@ -4456,9 +4458,9 @@ const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink
   const attention = liveSnapshot.revision > 0 ? liveSnapshot.attention : event.attention;
   const statusTone = toolStatusTone(displayedStatus);
   const statusLabel = childAgentStatusLabel(displayedStatus, t);
-  const canOpen = Boolean(branchLocator && workspace && !event.agentExecutionId.startsWith('unresolved-'));
+  const canOpen = Boolean(branchLocator && workspace?.scopeKey && !event.agentExecutionId.startsWith('unresolved-'));
   const openAgent = () => {
-    if (!branchLocator || !workspace || !canOpen) return;
+    if (!branchLocator || !workspace?.scopeKey || !canOpen) return;
     const locator: AgentTranscriptLocator = {
       ...branchLocator,
       attemptId: event.attemptId ?? branchLocator.attemptId,
@@ -4467,6 +4469,7 @@ const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink
     workspace.openResource({
       kind: 'agent-transcript',
       key: agentTranscriptResourceKey(locator),
+      scopeKey: workspace.scopeKey,
       title: label || t('acp.subAgent'),
       description,
       status: displayedStatus ?? 'queued',
@@ -5558,11 +5561,10 @@ export function RawFrameViewer({
   }
 
   return (
-    <div className="w-full min-w-0 max-w-full space-y-3 overflow-hidden">
+    <div className="@container/raw-frame w-full min-w-0 max-w-full space-y-3 overflow-hidden">
       <div className="rounded-2xl border border-border/60 bg-card/50 p-3 shadow-sm shadow-background/20">
         <div className="flex min-w-0 flex-col gap-3">
-          <div className="flex min-w-0 flex-col gap-2 lg:flex-row">
-            <div className="relative min-w-0 flex-1">
+          <div className="relative min-w-0">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
               <input
                 className="h-9 w-full rounded-md border border-input bg-background/70 pl-8 pr-3 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-primary/50 focus-visible:ring-2 focus-visible:ring-primary/10"
@@ -5573,7 +5575,8 @@ export function RawFrameViewer({
                   if (event.key === "Enter") applySearch();
                 }}
               />
-            </div>
+          </div>
+          <div className="flex min-w-0 flex-wrap items-center gap-2" data-raw-frame-filters="true">
             <Select
               value={query.kind ?? "all"}
               onValueChange={(value) =>
@@ -5583,7 +5586,7 @@ export function RawFrameViewer({
                 })
               }
             >
-              <SelectTrigger className="h-9 lg:w-44">
+              <SelectTrigger className="h-9 w-44 max-w-full">
                 <SelectValue placeholder={t("acp.rawKindPlaceholder")} />
               </SelectTrigger>
               <SelectContent>
@@ -5604,7 +5607,7 @@ export function RawFrameViewer({
                 })
               }
             >
-              <SelectTrigger className="h-9 lg:w-36">
+              <SelectTrigger className="h-9 w-36 max-w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -5624,7 +5627,7 @@ export function RawFrameViewer({
             >
               <SelectTrigger
                 aria-label={t("acp.rawSortOrder")}
-                className="h-9 lg:w-40"
+                className="h-9 w-40 max-w-full"
               >
                 <SelectValue />
               </SelectTrigger>

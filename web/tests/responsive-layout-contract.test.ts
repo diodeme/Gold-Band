@@ -27,6 +27,10 @@ const workflowEditorSource = readFileSync(
   fileURLToPath(new URL('../src/components/WorkflowEditor.tsx', import.meta.url)),
   'utf8',
 );
+const acpChatSource = readFileSync(
+  fileURLToPath(new URL('../src/components/acp/ACPChatDialog.tsx', import.meta.url)),
+  'utf8',
+);
 
 describe('responsive desktop layout contracts', () => {
   it('lets the composer toolbar wrap its leading and trailing control groups', () => {
@@ -65,5 +69,12 @@ describe('responsive desktop layout contracts', () => {
     expect(workflowEditorSource).toContain('@container/workflow-editor');
     expect(workflowEditorSource).toContain('@5xl/workflow-editor:grid-cols-[minmax(0,1fr)_340px]');
     expect(workflowEditorSource).toContain('max-w-[calc(100%-1.5rem)] flex-wrap');
+  });
+
+  it('keeps raw frame search separate while filters wrap horizontally inside the workspace width', () => {
+    expect(acpChatSource).toContain('data-raw-frame-filters="true"');
+    expect(acpChatSource).toContain('flex min-w-0 flex-wrap items-center gap-2');
+    expect(acpChatSource).toContain('h-9 w-44 max-w-full');
+    expect(acpChatSource).not.toContain('@3xl/raw-frame:flex-row');
   });
 });

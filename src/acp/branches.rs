@@ -705,8 +705,7 @@ fn migrate_legacy_agent_results(attempt_dir: &Utf8Path) -> Result<bool> {
         let mut events = load_timeline_items(path)?;
         let original_len = events.len();
         events.retain(|event| {
-            !(is_agent_result_event(event)
-                && background_branches.contains(&event_branch_id(event)))
+            !(is_agent_result_event(event) && background_branches.contains(&event_branch_id(event)))
         });
         let mut path_changed = events.len() != original_len;
         for event in &mut events {
@@ -860,10 +859,9 @@ pub fn rebuild_agent_index(
                 if session_interrupted {
                     "interrupted"
                 } else if matches!(
-                        launch_status.as_str(),
-                        "completed" | "success" | "succeeded"
-                    )
-                {
+                    launch_status.as_str(),
+                    "completed" | "success" | "succeeded"
+                ) {
                     "completed"
                 } else {
                     "interrupted"
@@ -1826,13 +1824,19 @@ mod tests {
 
         let records = rebuild_agent_index(&attempt, "running").unwrap();
         assert_eq!(records[0].status, "completed");
-        assert_eq!(rebuild_agent_index(&attempt, "stopped").unwrap()[0].status, "completed");
+        assert_eq!(
+            rebuild_agent_index(&attempt, "stopped").unwrap()[0].status,
+            "completed"
+        );
         let branch = load_timeline_items(&branch_timeline_path(
             &attempt,
             &records[0].agent_execution_id,
         ))
         .unwrap();
-        let result = branch.iter().find(|event| is_agent_result_event(event)).unwrap();
+        let result = branch
+            .iter()
+            .find(|event| is_agent_result_event(event))
+            .unwrap();
         assert_eq!(result.content.as_deref(), Some("verified final answer"));
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }

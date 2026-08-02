@@ -6,10 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/api', async () => {
   const actual = await vi.importActual<typeof import('@/api')>('@/api');
-  return { ...actual, respondAcpPermission: vi.fn().mockResolvedValue(null) };
+  return {
+    ...actual,
+    getAcpSession: vi.fn().mockResolvedValue(null),
+    respondAcpPermission: vi.fn().mockResolvedValue(null),
+  };
 });
 
-import { respondAcpPermission } from '@/api';
+import { getAcpSession, respondAcpPermission } from '@/api';
 import { ACPChatDialog } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { AcpSessionVm } from '@/types';
@@ -33,6 +37,19 @@ function session(branchId: string, withPermission = false): AcpSessionVm {
     branchId,
     parentBranchId: branchId === 'root' ? null : 'root',
     readOnly: branchId !== 'root',
+    branchExecution: branchId === 'root' ? null : {
+      agentExecutionId: branchId,
+      parentAgentExecutionId: null,
+      executionStatus: withPermission ? 'waiting_permission' : 'completed',
+      eventCount: 8,
+      toolCallCount: 3,
+      readFileCount: 2,
+      writtenFileCount: 1,
+      hasAttention: withPermission,
+      title: 'Agent branch',
+      description: 'Agent branch',
+      todoEntries: [],
+    },
     sessionId: 'session-1',
     title: 'Agent branch',
     roundId: 'round-1',
@@ -82,6 +99,8 @@ async function renderDialog(acpSession: AcpSessionVm, readOnly: boolean) {
           branchId={acpSession.branchId}
           readOnly={readOnly}
           showSystemPromptAction={false}
+          showRawFramesAction={false}
+          usageCompact
         />
       </TooltipProvider>,
     );
@@ -101,6 +120,13 @@ describe('read-only Agent conversation boundary', () => {
     try {
       expect(container.querySelector('[data-conversation-viewport="true"]')).not.toBeNull();
       expect(container.querySelector('[data-conversation-composer="acp"]')).toBeNull();
+      expect(container.querySelector('[data-acp-raw-frames-action]')).toBeNull();
+      const summary = container.querySelector('[data-agent-branch-summary="true"]');
+      expect(summary).not.toBeNull();
+      expect(summary?.getAttribute('data-agent-branch-status')).toBe('completed');
+      expect(summary?.getAttribute('data-agent-branch-tool-count')).toBe('3');
+      expect(summary?.getAttribute('data-agent-branch-read-file-count')).toBe('2');
+      expect(summary?.getAttribute('data-agent-branch-written-file-count')).toBe('1');
       expect(container.textContent).not.toContain('停止');
       expect(container.textContent).not.toContain('继续');
       expect(container.textContent).not.toContain('重试');
@@ -110,7 +136,9 @@ describe('read-only Agent conversation boundary', () => {
   });
 
   it('keeps a pending Agent permission actionable without mounting the composer', async () => {
-    const { container, root } = await renderDialog(session('agent-1', true), true);
+    const activeBranch = session('agent-1', true);
+    vi.mocked(getAcpSession).mockResolvedValueOnce(session('agent-1'));
+    const { container, root } = await renderDialog(activeBranch, true);
     try {
       const allow = Array.from(container.querySelectorAll('button'))
         .find((button) => button.textContent?.includes('Allow once'));
@@ -128,6 +156,18 @@ describe('read-only Agent conversation boundary', () => {
         'permission-1',
         'allow_once',
         expect.anything(),
+        undefined,
+        undefined,
+      );
+      expect(getAcpSession).toHaveBeenCalledWith(
+        'project-1',
+        'task-1',
+        'run-1',
+        'round-1',
+        'node-1',
+        'attempt-1',
+        expect.objectContaining({ branchId: 'agent-1' }),
+        expect.objectContaining({ branchId: 'agent-1' }),
         undefined,
         undefined,
       );

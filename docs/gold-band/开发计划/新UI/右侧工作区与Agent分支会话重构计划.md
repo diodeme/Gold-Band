@@ -124,26 +124,42 @@ Tab 描述只保存资源定位与所属 `scopeKey`，不直接保存 timeline�
 - 左侧导航、中间主工作区、右侧工作区进入统一水平 Panel Group。
 - 不继续扩展当前应用壳中手写的 `mousemove/mouseup` 拖拽算法。
 - shadcn Sheet 只用于紧凑宽度下的右侧资源覆盖模式，不作为常驻 Dock。
+- 紧凑 Sheet 打开时把初始焦点放到 dialog 内容容器，避免空入口页把唯一的关闭按钮自动呈现为选中；关闭按钮保留键盘 `focus-visible`，但不使用 `data-state=open` 背景。
 - 拖拽命中区域保持足够宽，但可见边界只使用低对比 1px 分隔，不显示粗色带。
 
 ### 6.2 页面布局配置
 
-原生窗口最小宽度保持全局稳定；当前页面通过集中式布局配置声明中间区域最小宽度，用于决定面板何时收起。不得在页面组件中散落硬编码判断。
+页面布局与原生窗口下限统一由 `configs/app-config.toml` 提供，Rust 解析、校验并通过 `AppConfigVm.workspaceLayout` 下发；前端只负责把当前页面映射到 profile。不得在页面组件、`tauri.conf.json` 或渠道 overlay 中散落第二套尺寸常量。
 
-```ts
-interface WorkspaceLayoutProfile {
-  centerMinWidth: number;
-}
+```toml
+[workspaceLayout]
+shellMinWidth = 480
+shellMinHeight = 680
 
-const WORKSPACE_LAYOUT_PROFILES = {
-  conversation: { centerMinWidth: 360 },
-  contextCards: { centerMinWidth: 520 },
-  workflowCanvas: { centerMinWidth: 640 },
-  settings: { centerMinWidth: 480 },
-} satisfies Record<string, WorkspaceLayoutProfile>;
+[workspaceLayout.conversation]
+centerMinWidth = 360
+centerAutoCollapseWidth = 420
+windowMinWidth = 480
+
+[workspaceLayout.contextCards]
+centerMinWidth = 520
+centerAutoCollapseWidth = 520
+windowMinWidth = 520
+
+[workspaceLayout.workflowCanvas]
+centerMinWidth = 640
+centerAutoCollapseWidth = 640
+windowMinWidth = 640
+
+[workspaceLayout.settings]
+centerMinWidth = 480
+centerAutoCollapseWidth = 480
+windowMinWidth = 480
 ```
 
-以上数值已经过页面校准：会话内容以文本和可换行 composer 为主，允许收窄到 360px；卡片、画布和设置继续保留更大的领域最小宽度。后续调整仍必须通过真实页面测量和最小窗口人工验证，不能用单一全局阈值覆盖所有页面。
+`centerMinWidth` 是 Resizable 和右栏压缩使用的内容硬下限；`centerAutoCollapseWidth` 是没有右栏时决定左栏何时自动收起的舒适宽度；`windowMinWidth` 是当前页面允许的原生窗口下限。会话内容允许压到 360px，但应用 chrome 下限仍为 480px；卡片、画布和设置按各自内容密度声明窗口下限。Rust 对非正值以及小于硬下限的阈值进行归一化，前端不得重新猜测配置。`scripts/channel-config.mjs` 生成的 default/wb overlay 继续完整继承基础 window config，仅覆盖渠道属性。
+
+页面切换时先调用 `setMinSize(LogicalSize(windowMinWidth, shellMinHeight))`。若当前逻辑宽度低于新页面下限，再调用 `setSize` 扩宽；进入更窄页面只降低约束，不主动缩小窗口。初始窗口保持隐藏，当前页面最小尺寸与主题 surface 同步完成后才调用 `show()`。连续导航必须串行化窗口更新，防止较早页面的异步调用覆盖最终页面。
 
 ### 6.3 横向收缩顺序
 
@@ -153,14 +169,14 @@ const WORKSPACE_LAYOUT_PROFILES = {
 2. 中间区域即将低于当前页面 `centerMinWidth` 时，自动收起左侧导航。
 3. 继续缩小且中间区域再次接近最小宽度时，自动收起右侧工作区。
 4. 剩余宽度全部交给中间区域。
-5. 达到 Tauri 原生窗口全局最小宽度后停止缩小。
+5. 达到当前页面 `windowMinWidth` 后停止缩小。
 
 窗口变宽时按相反顺序恢复：
 
 1. 先恢复右侧工作区。
 2. 再恢复左侧导航。
 
-临界判断必须提供迟滞区间，避免窗口拖动时左右区域反复闪烁。手动折叠状态与自动折叠状态分别建模；自动恢复不得覆盖用户主动关闭右侧工作区的意图。
+临界判断必须使用用户当前持久化的左栏宽度，而不是左栏最小宽度；否则中间区域会在达到 profile 最小值后仍被继续压缩。判断提供 48px 迟滞区间，避免窗口拖动时左右区域反复闪烁。手动折叠状态与自动折叠状态分别建模；自动恢复不得覆盖用户主动关闭右侧工作区的意图。
 
 ### 6.4 手动拖拽规则
 
@@ -475,6 +491,10 @@ ACP live event(branchId)
 - 在 `WorkspaceShell` 共同边界提供 shadcn `TooltipProvider`，确保中间会话、右侧 Dock 与紧凑 Sheet 复用含 Tooltip 的会话组件时拥有相同 UI 上下文；不在 Agent 面板内重复补 Provider。
 - 右侧入口限制为快速对话与会话详情；引入 draft/conversation scope 和 24 项轻量 LRU，切换会话恢复各自 Tab、激活态与展开态，被淘汰会话回到默认收起状态。
 - 将 ACP Session、有限事件窗口和 branch view state 的三套 12 项缓存改为单一 resource LRU，避免只淘汰部分数据。
+- 修复响应式折叠不可达：Tauri 原生最小宽度从 1040px 调整为 profile 最大值 640px；布局阈值与右栏动态上限统一消费当前左栏宽度，保证窗口缩放真实触发 Dock → 自动折叠 → 同源 Sheet 路径。
+- Dock/Sheet 切换时仅保留 Sheet 的退出动画外壳；compact 状态结束即卸载其中的 `RightWorkspaceDock`，避免动画期间双挂载 Agent 会话与重复订阅。
+- 渠道 Tauri overlay 改为从基础 `tauri.conf.json` 完整继承主窗口配置，只覆盖渠道标题；删除 overlay 内独立的 1040px 最小宽度，避免浏览器状态机可达但 default/wb 客户端原生拖拽仍被旧约束截断。
+- 布局 profile 增加 `centerAutoCollapseWidth`，将中间硬下限和无右栏时的左栏自动收起舒适宽度分开；会话使用 360px/420px，保证原生最小窗口下即使右栏从未打开，左栏也能进入自动折叠态。
 
 ### Phase 2：统一 Agent 分支领域模型
 
@@ -545,11 +565,15 @@ ACP live event(branchId)
 - 激活 Tab 呈现圆角弱底色与常显关闭按钮，不显示整格填充、竖分隔线或底部选中横线；横向滚动条与选中态不会叠成双线。
 - 主会话与 Agent 会话中的子 Agent 链接都渲染共享 Agent 头像；自定义头像更新后链接同步变化，attention 状态只增加可见外圈。
 - 缩小时先自动收起左栏，再收起右栏；放大时先恢复右栏，再恢复左栏。
+- Tauri 主窗口可从三栏状态继续缩小到 640px；会话页在约 `sidebarWidth + 360 + 320` 时收左栏、低于 680px 时收右栏，不得在 1040px 提前停止。
+- default 与 wb 渠道生成的最终 Tauri overlay，其主窗口尺寸、最小尺寸、可见性、透明度、阴影与背景属性必须和基础配置一致，只有标题允许因渠道变化。
+- 右栏关闭的会话页缩到约 `centerAutoCollapseWidth + sidebarWidth` 时自动收起左栏，并在反向放宽超过 48px 迟滞后恢复；该路径不得依赖右栏曾经打开。
 - 临界宽度附近来回拖动不闪烁。
 - 自动收起不关闭 Tab，手动关闭状态不会被自动恢复覆盖。
 - 关闭最后一个 Tab 后右侧保持空白，标题栏右栏开关可独立展开或收起；重启后 Tab 清空但宽度恢复。
 - sidebar VM 晚于应用壳到达时，持久化宽度仍能覆盖 440px fallback；用户拖动结束只写一次真实像素宽度。
 - 紧凑宽度点击 Agent 能以 Sheet 打开，恢复宽度后能回到 Dock。
+- Sheet → Dock 退出动画期间只能存在一套 `RightWorkspaceDock` 内容，不能短暂双挂载 Agent transcript。
 - 会话、上下文卡片、工作流画布使用各自容器宽度降级，不依赖整窗 breakpoint。
 - 从资源模型打开 Agent Tab 后，其会话内容中的 Tooltip 可以直接挂载；异步加载完成不得因缺少 `TooltipProvider` 停留在“加载中”、清空 WebView 或触发未捕获异常。
 - 快速对话与会话详情显示右栏入口；Agent 管理、上下文管理、运行模式管理和设置不显示入口或 Dock。

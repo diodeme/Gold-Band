@@ -110,6 +110,22 @@ export interface AppBootstrapVm {
 export interface AppConfigVm {
   acpSessionTitleRefreshEnabled: boolean;
   acpChatEventPageSize: number;
+  workspaceLayout: WorkspaceLayoutVm;
+}
+
+export interface WorkspaceLayoutVm {
+  shellMinWidth: number;
+  shellMinHeight: number;
+  conversation: WorkspaceLayoutProfileVm;
+  contextCards: WorkspaceLayoutProfileVm;
+  workflowCanvas: WorkspaceLayoutProfileVm;
+  settings: WorkspaceLayoutProfileVm;
+}
+
+export interface WorkspaceLayoutProfileVm {
+  centerMinWidth: number;
+  centerAutoCollapseWidth: number;
+  windowMinWidth: number;
 }
 
 export interface AppInfoVm {

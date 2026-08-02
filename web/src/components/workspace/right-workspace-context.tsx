@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import { BoundedLruCache } from '@/lib/bounded-lru-cache';
+import { RIGHT_WORKSPACE_DEFAULT_WIDTH } from './workspace-layout';
 
 export interface AgentTranscriptLocator {
   projectId: string;
@@ -114,7 +115,7 @@ export type RightWorkspaceAction =
   | { type: 'close'; key: string }
   | { type: 'close-workspace' };
 
-export const DEFAULT_RIGHT_WORKSPACE_WIDTH = 440;
+export const DEFAULT_RIGHT_WORKSPACE_WIDTH = RIGHT_WORKSPACE_DEFAULT_WIDTH;
 export const CONVERSATION_WORKSPACE_LRU_LIMIT = 24;
 const RightWorkspaceContext = createContext<RightWorkspaceContextValue | null>(null);
 

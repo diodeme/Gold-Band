@@ -56,6 +56,7 @@ vi.mock('@/components/workspace/AgentConversationPanel', async () => {
 });
 
 import { WorkspaceShell } from '@/components/workspace/WorkspaceShell';
+import { FALLBACK_WORKSPACE_LAYOUT } from '@/components/workspace/workspace-layout';
 import {
   agentTranscriptResourceKey,
   ConversationWorkspaceStore,
@@ -122,6 +123,11 @@ describe('WorkspaceShell tooltip boundary', () => {
           <WorkspaceShell
             appName="Gold Band"
             windowFrameStyle="native-compositor"
+            appConfig={{
+              acpSessionTitleRefreshEnabled: false,
+              acpChatEventPageSize: 360,
+              workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
+            }}
             vm={{ workspaces: [], pinnedTasks: [], tasksByWorkspace: {}, preferences: null }}
             active={{ kind: 'conversation-home' }}
             conversationWorkspaceStore={new ConversationWorkspaceStore()}
@@ -161,6 +167,11 @@ describe('WorkspaceShell tooltip boundary', () => {
           <WorkspaceShell
             appName="Gold Band"
             windowFrameStyle="native-compositor"
+            appConfig={{
+              acpSessionTitleRefreshEnabled: false,
+              acpChatEventPageSize: 360,
+              workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
+            }}
             vm={{ workspaces: [], pinnedTasks: [], tasksByWorkspace: {}, preferences: null }}
             active={{ kind: 'settings' }}
             conversationWorkspaceStore={new ConversationWorkspaceStore()}

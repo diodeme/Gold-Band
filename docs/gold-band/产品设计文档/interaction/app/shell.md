@@ -160,7 +160,7 @@ Agent 管理
 - 三段式工作区使用 shadcn `Resizable` copy-in（`react-resizable-panels`）统一管理面板，不维护手写全局 mousemove 拖拽。页面通过集中式 profile 声明中间最小宽度：以文本为主且支持自然换行的会话为 360px、上下文卡片 520px、工作流画布 640px、设置 480px；右侧拖拽上限必须动态扣除当前中间最小宽度和可见左栏最小宽度。
 - 横向缩小时先把右侧压到最小宽度，再自动隐藏左栏，再隐藏右侧；放大时先恢复右侧、再恢复左侧。折叠阈值使用 48px 迟滞，手动折叠和自动折叠分别建模。右侧宽度在 `ResizablePanelGroup.onLayoutChanged` 确认用户完成拖动后换算为像素并写入会话 UI preference；异步 sidebar VM 到达后必须 hydrate Provider 初始宽度，不能让首次渲染的 440px fallback 覆盖已持久化值。
 - Windows 无边框窗口使用 WebView2 composition 路径承载连续边缘 resize：Tauri Window 在 Windows 平台启用透明控制器，但 `html/body/#root` 与应用壳始终绘制不透明主题 surface，不向用户呈现实际透明效果。宿主 Window 背景随主题同步，WebView 层保持 composition 模式，禁止为了遮盖黑带重新设为不透明控制器。
-- 主窗口初始隐藏；bootstrap、主题和宿主背景准备完成后由前端显式显示，避免 transparent composition 窗口在首帧 CSS 尚未就绪时闪现。Windows 自定义无边框模式按系统能力控制 native shadow：Win11 及更高版本开启，由 DWM 提供系统圆角与边界；Win10 关闭，避免 TAO `top=0 / left-right-bottom=frame_thickness` 的非对称 non-client frame，仅由应用内嵌边界补足可感知轮廓。关闭 Win10 shadow 不移除 `RESIZABLE/WS_SIZEBOX`，TAO 继续通过完整客户区边缘 hit-test 提供四边缩放；macOS 恢复 native decorations、shadow 与 traffic lights。
+- 主窗口初始隐藏；bootstrap、主题和宿主背景准备完成后由前端显式显示，避免 transparent composition 窗口在首帧 CSS 尚未就绪时闪现。窗口 decorations、title bar style 与 native shadow 的生命周期只由 Rust/Tauri 宿主配置管理，Web 层只同步主题背景并显示窗口，不具备运行时修改 decorations 的权限。Windows 自定义无边框模式按系统能力控制 native shadow：Win11 及更高版本开启，由 DWM 提供系统圆角与边界；Win10 关闭，避免 TAO `top=0 / left-right-bottom=frame_thickness` 的非对称 non-client frame，仅由应用内嵌边界补足可感知轮廓。关闭 Win10 shadow 不移除 `RESIZABLE/WS_SIZEBOX`，TAO 继续通过完整客户区边缘 hit-test 提供四边缩放；macOS 恢复 native decorations、shadow 与 traffic lights。
 - 上下文管理的角色卡片网格按列表容器实际宽度决定列数，而不是只依赖整窗 viewport：窄容器单列、中等容器双列、足够宽时三列。卡片底部操作区允许整组换行，系统显示缩放、字体增大或翻译文案变长时不得越过卡片边界或覆盖相邻卡片。
 
 ### 6.4 运行态生命周期
@@ -201,6 +201,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-08-02：右侧 Tab 条改为基于真实横向溢出按需显示紧凑 Tab 菜单，并使用无两端按钮的 4px 专用横向滚动条；会话中间区最小宽度由 420px 校准为 360px，其余卡片、画布和设置 profile 不变。
 - 2026-08-02：共享顶栏品牌移至左侧安全区起点，其后排列左右工作区开关。右侧 `requestedOpen` 与 Tab 集合解耦，支持无资源空白入口页；Tab 仅运行期记忆。宽度持久化改用 resizable group 的用户完成事件，并支持异步 preference hydrate，修复重启后总是回到 440px 的问题。
 - 2026-08-02：共享顶栏左右工作区开关统一收敛为 28px 按钮和 14px 图标；左栏开关留在品牌后，右栏开关移至尾部操作区并位于 Windows/Linux 窗口控制之前。macOS 继续在左侧保留 traffic lights 安全区，尾部入口使用 flex 流定位，不维护平台绝对坐标。
+- 2026-08-02：修复 Web reveal 流程无条件关闭 decorations、覆盖 macOS 原生标题栏的问题。窗口 chrome 状态收归 Rust/Tauri 单一所有者，WebView 移除 `allow-set-decorations` 权限；macOS 保持“traffic lights 安全区 → 品牌 → 左栏开关 → 弹性空白 → 右栏开关”的共享顶栏顺序，Windows/Linux 自绘窗口按钮不变。
 
 ---
 

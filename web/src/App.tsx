@@ -453,7 +453,6 @@ export function App() {
     windowRevealedRef.current = true;
     const revealWindow = async () => {
       const appWindow = getCurrentWindow();
-      await appWindow.setDecorations(false).catch(() => {});
       await syncDesktopWindowSurface(resolveThemePreference(preferences.theme));
       await appWindow.show().catch(() => {});
     };

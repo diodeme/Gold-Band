@@ -849,3 +849,14 @@ attempt-001/
 - 根因修复：根 Cargo package 与 `src-tauri` 构成 workspace，Tauri dev watcher 会监听 workspace package；此前没有仓库级 `.taurignore`，导致 `docs/` 和根 README 等非运行时文件变化也触发桌面应用重建。
 - 监听边界：采用 Tauri 官方 `.taurignore` 扩展点，以 Gitignore 语义统一排除 `docs/` 和根目录 `README*.md`；不关闭 Rust 热重载，也不修改已经以 `web/` 为 root 的 Vite 监听范围。
 - 回归固化：新增开发监听配置契约测试，使用 Git 的 ignore 匹配接口验证嵌套文档与中英文 README 均被忽略，同时 Cargo、Rust、Web 源码和 package 配置继续可观察。现有开发进程需重启一次后应用新规则。
+
+---
+
+## 2026-08-04：会话初始附件解析与历史消息投影一致性
+
+- 根因修复：附件扩展名白名单声明支持 `.jsonl`，但 provider 文本类型判断遗漏该扩展名，导致文件已保存到 task `authoring/inputs/`，却没有进入 ACP content block、`PromptBundle.attachment_metas` 和用户消息 `raw.attachments`；图片正常、普通 `.jsonl` 附件消失。
+- 数据设计：删除扩展名白名单、MIME 映射和 image/text 判断三份重复定义，改为统一附件格式注册表；`supported_attachment_extensions()`、provider resolver 与消息元数据共同消费该注册表，`.jsonl` 作为 `application/json` 文本资源发送。
+- 历史恢复：`SessionMode::New` 根分支的 session ViewModel 从 task `authoring/inputs/` 恢复旧 timeline 首条 Gold Band 用户消息缺少的 task 输入附件，按 `task-inputs/<name>` path 去重，不改写原始 timeline，也不污染带 `promptId` 的后续追问。
+- 接口验收：Rust 单测固定“所有公开支持扩展名均可解析”、`.jsonl` 同时生成文本 content block 与附件元数据、历史首条消息补全且不重复/不进入后续消息；前端附件数组回归固定同一用户消息同时保留图片与普通文件。目标 `task-158/run-001` 的真实落盘数据验收确认历史投影结果同时包含 `image.png` 与 `acp.raw.jsonl`。
+- 展示完善：消息组件按附件媒体类型派生图片组与普通文件组，固定渲染为“图片行在上、文件行在下”，同类附件各自行内换行；普通文件使用内容宽度的紧凑 pill，不与固定尺寸图片缩略图混排或共同拉伸。
+- 前端回归：纯函数测试固定混合输入的分组结果；DOM 测试固定两个附件行的顺序、内容隔离，以及普通文件按钮的 `w-fit` / pill 样式契约。

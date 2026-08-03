@@ -315,6 +315,178 @@ pub struct PromptBundle {
     pub content_blocks: Vec<AcpContentBlock>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachmentContentKind {
+    Image,
+    Text,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AttachmentFormat {
+    extensions: &'static [&'static str],
+    mime_type: &'static str,
+    content_kind: AttachmentContentKind,
+}
+
+const ATTACHMENT_FORMATS: &[AttachmentFormat] = &[
+    AttachmentFormat {
+        extensions: &["png"],
+        mime_type: "image/png",
+        content_kind: AttachmentContentKind::Image,
+    },
+    AttachmentFormat {
+        extensions: &["jpg", "jpeg"],
+        mime_type: "image/jpeg",
+        content_kind: AttachmentContentKind::Image,
+    },
+    AttachmentFormat {
+        extensions: &["webp"],
+        mime_type: "image/webp",
+        content_kind: AttachmentContentKind::Image,
+    },
+    AttachmentFormat {
+        extensions: &["gif"],
+        mime_type: "image/gif",
+        content_kind: AttachmentContentKind::Image,
+    },
+    AttachmentFormat {
+        extensions: &["bmp"],
+        mime_type: "image/bmp",
+        content_kind: AttachmentContentKind::Image,
+    },
+    AttachmentFormat {
+        extensions: &["txt"],
+        mime_type: "text/plain",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["md", "markdown"],
+        mime_type: "text/markdown",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["json", "jsonl"],
+        mime_type: "application/json",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["csv"],
+        mime_type: "text/csv",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["html", "htm"],
+        mime_type: "text/html",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["css"],
+        mime_type: "text/css",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["js", "jsx"],
+        mime_type: "text/javascript",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["ts", "tsx"],
+        mime_type: "text/typescript",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["rs"],
+        mime_type: "text/rust",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["py"],
+        mime_type: "text/python",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["go"],
+        mime_type: "text/go",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["java"],
+        mime_type: "text/java",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["c", "h"],
+        mime_type: "text/c",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["cpp", "hpp"],
+        mime_type: "text/cpp",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["yaml", "yml"],
+        mime_type: "text/yaml",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["xml"],
+        mime_type: "text/xml",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["toml"],
+        mime_type: "text/toml",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["log"],
+        mime_type: "text/plain",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["sql"],
+        mime_type: "text/plain",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["sh", "bash", "zsh"],
+        mime_type: "text/plain",
+        content_kind: AttachmentContentKind::Text,
+    },
+];
+
+fn attachment_format(extension: &str) -> Option<&'static AttachmentFormat> {
+    ATTACHMENT_FORMATS
+        .iter()
+        .find(|format| format.extensions.contains(&extension))
+}
+
+pub fn attachment_meta_for_path(
+    path: &std::path::Path,
+    storage_prefix: &str,
+) -> Result<Option<AttachmentMeta>> {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let Some(format) = attachment_format(&extension) else {
+        return Ok(None);
+    };
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+    Ok(Some(AttachmentMeta {
+        path: format!("{storage_prefix}/{name}"),
+        mime_type: format.mime_type.to_string(),
+        size: path.metadata()?.len(),
+        name,
+    }))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PromptVisibility {
@@ -333,60 +505,32 @@ pub fn resolve_attachments(
     let mut resolved = Vec::new();
     for path_str in paths {
         let std_path = std::path::Path::new(path_str);
-        let name = std_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let data = std::fs::read(std_path)?;
-        let size = data.len() as u64;
-        let ext = std_path
+        let Some(meta) = attachment_meta_for_path(std_path, storage_prefix)? else {
+            continue;
+        };
+        let extension = std_path
             .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-
-        let is_image = matches!(
-            ext.as_str(),
-            "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
-        );
-        let mime_type = mime_for_ext(&ext);
-
-        if is_image {
-            let b64 = base64_encode(&data);
-            let path_for_storage = format!("{}/{}", storage_prefix, name);
-            resolved.push(ResolvedAttachment {
-                meta: AttachmentMeta {
-                    name: name.clone(),
-                    path: path_for_storage,
-                    mime_type,
-                    size,
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let format = attachment_format(&extension)
+            .expect("attachment metadata is only created for a supported format");
+        let data = std::fs::read(std_path)?;
+        let uri = format!("file://{}", path_str.replace('\\', "/"));
+        let block = match format.content_kind {
+            AttachmentContentKind::Image => AcpContentBlock::Image(AcpImageBlock {
+                data: base64_encode(&data),
+                mime_type: format.mime_type.to_string(),
+                uri: Some(uri),
+            }),
+            AttachmentContentKind::Text => AcpContentBlock::Resource(AcpResourceBlock {
+                resource: AcpTextResourceContents {
+                    text: String::from_utf8(data).unwrap_or_else(|_| "[binary file]".to_string()),
+                    uri,
                 },
-                block: AcpContentBlock::Image(AcpImageBlock {
-                    data: b64,
-                    mime_type: mime_for_ext(&ext),
-                    uri: Some(format!("file://{}", path_str.replace('\\', "/"))),
-                }),
-            });
-        } else if is_text_ext(&ext) {
-            let text = String::from_utf8(data).unwrap_or_else(|_| "[binary file]".to_string());
-            let path_for_storage = format!("{}/{}", storage_prefix, name);
-            resolved.push(ResolvedAttachment {
-                meta: AttachmentMeta {
-                    name: name.clone(),
-                    path: path_for_storage,
-                    mime_type,
-                    size,
-                },
-                block: AcpContentBlock::Resource(AcpResourceBlock {
-                    resource: AcpTextResourceContents {
-                        text,
-                        uri: format!("file://{}", path_str.replace('\\', "/")),
-                    },
-                }),
-            });
-        }
-        // Non-image, non-text files are skipped for now
+            }),
+        };
+        resolved.push(ResolvedAttachment { meta, block });
     }
     Ok(resolved)
 }
@@ -394,76 +538,10 @@ pub fn resolve_attachments(
 /// Returns the set of file extensions supported as attachments.
 /// This is the single source of truth — the frontend queries it via Tauri command.
 pub fn supported_attachment_extensions() -> Vec<&'static str> {
-    vec![
-        "png", "jpg", "jpeg", "webp", "gif", "bmp", "txt", "md", "markdown", "json", "jsonl",
-        "csv", "html", "htm", "css", "js", "ts", "tsx", "jsx", "rs", "py", "go", "java", "c", "h",
-        "cpp", "hpp", "yaml", "yml", "xml", "toml", "log", "sql", "sh", "bash", "zsh",
-    ]
-}
-
-fn mime_for_ext(ext: &str) -> String {
-    match ext {
-        "png" => "image/png".to_string(),
-        "jpg" | "jpeg" => "image/jpeg".to_string(),
-        "webp" => "image/webp".to_string(),
-        "gif" => "image/gif".to_string(),
-        "bmp" => "image/bmp".to_string(),
-        "txt" => "text/plain".to_string(),
-        "md" | "markdown" => "text/markdown".to_string(),
-        "json" => "application/json".to_string(),
-        "csv" => "text/csv".to_string(),
-        "html" | "htm" => "text/html".to_string(),
-        "css" => "text/css".to_string(),
-        "js" => "text/javascript".to_string(),
-        "ts" => "text/typescript".to_string(),
-        "tsx" => "text/typescript".to_string(),
-        "jsx" => "text/javascript".to_string(),
-        "rs" => "text/rust".to_string(),
-        "py" => "text/python".to_string(),
-        "go" => "text/go".to_string(),
-        "java" => "text/java".to_string(),
-        "c" | "h" => "text/c".to_string(),
-        "cpp" | "hpp" => "text/cpp".to_string(),
-        "yaml" | "yml" => "text/yaml".to_string(),
-        "xml" => "text/xml".to_string(),
-        "toml" => "text/toml".to_string(),
-        _ => "application/octet-stream".to_string(),
-    }
-}
-
-fn is_text_ext(ext: &str) -> bool {
-    matches!(
-        ext,
-        "txt"
-            | "md"
-            | "markdown"
-            | "json"
-            | "csv"
-            | "html"
-            | "htm"
-            | "css"
-            | "js"
-            | "ts"
-            | "tsx"
-            | "jsx"
-            | "rs"
-            | "py"
-            | "go"
-            | "java"
-            | "c"
-            | "h"
-            | "cpp"
-            | "hpp"
-            | "yaml"
-            | "yml"
-            | "xml"
-            | "toml"
-            | "log"
-            | "sql"
-            | "sh"
-            | "bash"
-            | "zsh"
-    )
+    ATTACHMENT_FORMATS
+        .iter()
+        .flat_map(|format| format.extensions.iter().copied())
+        .collect()
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -1715,6 +1793,47 @@ mod tests {
     use super::*;
     use crate::acp::client::AcpPromptFailure;
     use crate::runtime_error::RecoveryMode;
+
+    #[test]
+    fn every_advertised_attachment_extension_is_resolvable() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = supported_attachment_extensions()
+            .into_iter()
+            .map(|extension| {
+                let path = dir.path().join(format!("sample.{extension}"));
+                std::fs::write(&path, b"{}\n").unwrap();
+                path.to_string_lossy().to_string()
+            })
+            .collect::<Vec<_>>();
+
+        let resolved = resolve_attachments(&paths, "task-inputs").unwrap();
+
+        assert_eq!(resolved.len(), paths.len());
+        assert!(resolved.iter().all(|attachment| {
+            attachment.meta.path.starts_with("task-inputs/")
+                && attachment.meta.mime_type != "application/octet-stream"
+        }));
+    }
+
+    #[test]
+    fn jsonl_attachment_is_projected_as_text_resource_and_message_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("acp.raw.jsonl");
+        std::fs::write(&path, b"{\"event\":1}\n{\"event\":2}\n").unwrap();
+
+        let resolved =
+            resolve_attachments(&[path.to_string_lossy().to_string()], "task-inputs").unwrap();
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].meta.name, "acp.raw.jsonl");
+        assert_eq!(resolved[0].meta.path, "task-inputs/acp.raw.jsonl");
+        assert_eq!(resolved[0].meta.mime_type, "application/json");
+        assert!(matches!(
+            &resolved[0].block,
+            AcpContentBlock::Resource(resource)
+                if resource.resource.text.contains("{\"event\":2}")
+        ));
+    }
 
     #[test]
     fn prepare_acp_mcp_servers_filters_only_explicitly_unsupported_transports() {

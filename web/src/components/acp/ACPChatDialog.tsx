@@ -106,9 +106,11 @@ import {
   type AcpSessionConfigViewModel,
 } from "@/lib/acp-session-config";
 import {
+  groupMessageAttachmentPreviews,
   imageSrcFromContent,
   isImageMessageAttachment,
   isTaskInputMessageAttachment,
+  messageAttachmentPreviewsFromRaw,
   type MessageAttachmentPreview,
 } from "@/lib/asset-preview";
 import {
@@ -4903,9 +4905,9 @@ const MessageBubble = memo(function MessageBubble({
   const failed = event.status === "failed";
   const streamingDraft =
     !isUser && timelineEventKey(event) === streamingMarkdownItemKey;
-  const rawAttachments: MessageAttachmentPreview[] =
-    rawObject(event.raw)?.attachments as any ?? [];
+  const rawAttachments = messageAttachmentPreviewsFromRaw(event.raw);
   const hasAttachments = isUser && !event.optimistic && rawAttachments.length > 0;
+  const attachmentGroups = groupMessageAttachmentPreviews(rawAttachments);
   const runtimeControlParts = !isUser && !streamingDraft
     ? runtimeControlMessageParts(event)
     : { display: null, visibleText: event.content ?? "" };
@@ -4955,15 +4957,37 @@ const MessageBubble = memo(function MessageBubble({
           <RuntimeControlOutputCard display={runtimeControlParts.display} />
         ) : null}
         {hasAttachments ? (
-          <div className={cn("flex flex-wrap gap-1.5 px-1", isUser && "justify-end")}>
-            {rawAttachments.map((att) => (
-              <MessageAttachmentPreviewButton
-                key={att.path}
-                attachment={att}
-                locator={messageAttachmentLocator}
-                onClick={onMessageAttachmentClick}
-              />
-            ))}
+          <div className={cn("flex max-w-full flex-col gap-2 px-1", isUser && "items-end")}>
+            {attachmentGroups.images.length > 0 ? (
+              <div
+                data-acp-attachment-row="images"
+                className={cn("flex max-w-full flex-wrap gap-1.5", isUser && "justify-end")}
+              >
+                {attachmentGroups.images.map((att) => (
+                  <MessageAttachmentPreviewButton
+                    key={att.path}
+                    attachment={att}
+                    locator={messageAttachmentLocator}
+                    onClick={onMessageAttachmentClick}
+                  />
+                ))}
+              </div>
+            ) : null}
+            {attachmentGroups.files.length > 0 ? (
+              <div
+                data-acp-attachment-row="files"
+                className={cn("flex max-w-full flex-wrap gap-1.5", isUser && "justify-end")}
+              >
+                {attachmentGroups.files.map((att) => (
+                  <MessageAttachmentPreviewButton
+                    key={att.path}
+                    attachment={att}
+                    locator={messageAttachmentLocator}
+                    onClick={onMessageAttachmentClick}
+                  />
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null}
         {event.optimistic || failed ? (
@@ -5177,7 +5201,7 @@ const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewBut
   return (
     <button
       type="button"
-      className="flex items-center gap-1.5 rounded-md border border-border/60 bg-card/80 px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="inline-flex h-9 w-fit max-w-full shrink-0 items-center gap-1.5 rounded-full border border-border/60 bg-card/80 px-3 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       title={`${attachment.name} (${formatAttachmentSize(attachment.size)})`}
       onClick={() => onClick?.(attachment)}
     >

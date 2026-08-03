@@ -198,12 +198,17 @@ export function ConversationRunPage({
     );
   }, [agentRegistry, handleWorkflowNodeOpenSession, onSaveWorkflow, run]);
 
+  useEffect(() => {
+    const unregister = [
+      workspace.registerResourceRenderer('workflow-view', renderWorkspaceResource),
+      workspace.registerResourceRenderer('workflow-edit', renderWorkspaceResource),
+      workspace.registerResourceRenderer('system-prompt', renderWorkspaceResource),
+      workspace.registerResourceRenderer('raw-frames', renderWorkspaceResource),
+    ];
+    return () => unregister.forEach((dispose) => dispose());
+  }, [renderWorkspaceResource, workspace.registerResourceRenderer]);
   useEffect(
-    () => workspace.registerResourceRenderer(renderWorkspaceResource),
-    [renderWorkspaceResource, workspace.registerResourceRenderer],
-  );
-  useEffect(
-    () => workspace.registerResourceCloseResolver((resource) => confirmCloseConversationRunWorkspaceResource(
+    () => workspace.registerResourceCloseResolver('workflow-edit', (resource) => confirmCloseConversationRunWorkspaceResource(
       resource,
       () => window.confirm(t('workspace.discardWorkflowChanges')),
     )),

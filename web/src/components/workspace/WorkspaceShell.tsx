@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { Layout, LayoutChangedMeta } from 'react-resizable-panels';
+import type { Layout, LayoutChangedMeta, PanelImperativeHandle } from 'react-resizable-panels';
 import type { AppConfigVm, ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
 import { ConversationSidebar } from '../conversation/ConversationSidebar';
 import { saveConversationPreference } from '../../api';
+import { isTauriRuntime } from '@/api/shared';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { AppTitleBar } from '../AppTitleBar';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
@@ -16,14 +18,16 @@ import {
   createDraftConversationWorkspaceScope,
   RightWorkspaceProvider,
   useRightWorkspace,
+  type RightWorkspaceResource,
 } from './right-workspace-context';
+import { fileContentStore } from './files/file-content-store';
+import { fileExplorerStore } from './files/file-explorer-store';
+import { WorkspaceFileLinkProvider } from './files/WorkspaceFileLinkProvider';
 import {
   reduceWorkspaceAutoCollapse,
   resolveRightWorkspaceWidthFromLayout,
   resolveWorkspacePanelWidthFromLayout,
-  RIGHT_WORKSPACE_DEFAULT_WIDTH,
-  RIGHT_WORKSPACE_MAX_WIDTH,
-  RIGHT_WORKSPACE_MIN_WIDTH,
+  FALLBACK_WORKSPACE_FILES,
   shouldOpenRightWorkspaceSheet,
   WORKSPACE_SIDEBAR_DEFAULT_WIDTH,
   WORKSPACE_SIDEBAR_MAX_WIDTH,
@@ -74,13 +78,77 @@ function loadWidth(prefs: Record<string, unknown> | null | undefined, key: strin
   return typeof value === 'number' ? clamp(value, min, max) : fallback;
 }
 
+const LazyFileWorkspacePanel = lazy(() => import('./files/FileWorkspacePanel').then((module) => ({ default: module.FileWorkspacePanel })));
+
+function FileWorkspaceIntegration({
+  config = FALLBACK_WORKSPACE_FILES,
+  layout,
+}: {
+  config?: AppConfigVm['workspaceFiles'];
+  layout: AppConfigVm['workspaceLayout']['rightWorkspace']['file'];
+}) {
+  const workspace = useRightWorkspace();
+  useEffect(() => {
+    fileContentStore.configure(config);
+    fileExplorerStore.configure(config);
+  }, [config]);
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const appWindow = getCurrentWindow();
+    let disposed = false;
+    let closing = false;
+    let allowClose = false;
+    let unlisten: (() => void) | null = null;
+    void appWindow.onCloseRequested(async (event) => {
+      if (allowClose) return;
+      event.preventDefault();
+      if (closing) return;
+      closing = true;
+      const saved = await fileContentStore.flushAll();
+      if (!disposed && saved) {
+        allowClose = true;
+        await appWindow.close().catch(() => {
+          allowClose = false;
+          closing = false;
+        });
+        return;
+      }
+      closing = false;
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+  useEffect(() => workspace.registerResourceRenderer('file-browser', (resource: RightWorkspaceResource) => (
+    resource.kind === 'file-browser'
+      ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyFileWorkspacePanel resource={resource} layout={layout} /></Suspense>
+      : null
+  )), [layout, workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceRenderer('file', (resource: RightWorkspaceResource) => (
+    resource.kind === 'file'
+      ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyFileWorkspacePanel resource={resource} layout={layout} /></Suspense>
+      : null
+  )), [layout, workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceCloseResolver('file', (resource, reason) => (
+    resource.kind === 'file'
+      ? (reason === 'close' ? fileContentStore.close(resource.key) : fileContentStore.flush(resource.key))
+      : true
+  )), [workspace.registerResourceCloseResolver]);
+  return null;
+}
+
 export function WorkspaceShell(props: WorkspaceShellProps) {
+  const rightWorkspaceLayout = props.appConfig.workspaceLayout.rightWorkspace;
   const initialRightWidth = loadWidth(
     props.vm.preferences,
     'rightWorkspace.width',
-    RIGHT_WORKSPACE_DEFAULT_WIDTH,
-    RIGHT_WORKSPACE_MIN_WIDTH,
-    RIGHT_WORKSPACE_MAX_WIDTH,
+    rightWorkspaceLayout.defaultWidth,
+    rightWorkspaceLayout.minWidth,
+    rightWorkspaceLayout.maxWidth,
   );
   const rightWorkspaceScope = useMemo(() => {
     if (props.active.kind === 'conversation-home') {
@@ -99,7 +167,9 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
   return (
     <TooltipProvider>
       <RightWorkspaceProvider initialWidth={initialRightWidth} scope={rightWorkspaceScope} store={props.conversationWorkspaceStore}>
-        <WorkspaceShellLayout {...props} />
+        <WorkspaceFileLinkProvider>
+          <WorkspaceShellLayout {...props} />
+        </WorkspaceFileLinkProvider>
       </RightWorkspaceProvider>
     </TooltipProvider>
   );
@@ -136,6 +206,7 @@ function WorkspaceShellLayout({
   const workspace = useRightWorkspace();
   const shellRef = useRef<HTMLDivElement>(null);
   const compactSheetContentRef = useRef<HTMLDivElement>(null);
+  const rightPanelRef = useRef<PanelImperativeHandle | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
   const handledOpenRevisionRef = useRef(workspace.openRevision);
   const handledWorkspaceScopeRef = useRef(workspace.scopeKey);
@@ -175,6 +246,7 @@ function WorkspaceShellLayout({
     sidebarWidth,
     sidebarManuallyCollapsed: sidebarCollapsed,
     wantsRight,
+    rightMinWidth: appConfig.workspaceLayout.rightWorkspace.minWidth,
   };
   const showLeft = !sidebarCollapsed && !autoCollapse.left;
   const rightWorkspaceCompact = wantsRight && autoCollapse.right;
@@ -215,6 +287,18 @@ function WorkspaceShellLayout({
   }, [evaluateAutoCollapse, profile.centerAutoCollapseWidth, profile.centerMinWidth, sidebarCollapsed, sidebarWidth, wantsRight]);
 
   useEffect(() => {
+    if (!showRightDock) return;
+    const frame = requestAnimationFrame(() => {
+      try {
+        rightPanelRef.current?.resize(workspace.width);
+      } catch {
+        // The panel may have been replaced by the compact Sheet before the frame ran.
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [showRightDock, workspace.width]);
+
+  useEffect(() => {
     if (handledWorkspaceScopeRef.current !== workspace.scopeKey) {
       handledWorkspaceScopeRef.current = workspace.scopeKey;
       handledOpenRevisionRef.current = workspace.openRevision;
@@ -250,14 +334,31 @@ function WorkspaceShellLayout({
     if (nextSidebarWidth != null && nextSidebarWidth !== Math.round(sidebarWidth)) {
       void saveConversationPreference('sidebar.width', nextSidebarWidth);
     }
-    const nextRightWidth = resolveRightWorkspaceWidthFromLayout(layout, groupWidth);
+    const nextRightWidth = resolveRightWorkspaceWidthFromLayout(
+      layout,
+      groupWidth,
+      appConfig.workspaceLayout.rightWorkspace,
+    );
     if (nextRightWidth != null && nextRightWidth !== Math.round(workspace.width)) {
       setRightWorkspaceWidth(nextRightWidth);
       void saveConversationPreference('rightWorkspace.width', nextRightWidth);
     }
-  }, [setRightWorkspaceWidth, sidebarWidth, workspace.width]);
+  }, [appConfig.workspaceLayout.rightWorkspace, setRightWorkspaceWidth, sidebarWidth, workspace.width]);
 
   const rightWorkspacePresented = showRightDock || (rightWorkspaceCompact && compactSheetOpen);
+  const removeWorkspace = useCallback(async (projectId: string) => {
+    if (!onRemoveWorkspace) return;
+    const saved = await fileContentStore.flushAll(projectId);
+    if (!saved) throw new Error('workspace-file.pending-save-failed');
+    await onRemoveWorkspace(projectId);
+    await fileContentStore.releaseProject(projectId);
+    fileExplorerStore.clear(projectId);
+  }, [onRemoveWorkspace]);
+  const deleteTask = useCallback((projectId: string, taskId: string) => {
+    void fileContentStore.flushAll(projectId).then((saved) => {
+      if (saved) onDeleteTask(projectId, taskId);
+    });
+  }, [onDeleteTask]);
   const toggleRightWorkspace = useCallback(() => {
     if (rightWorkspacePresented) {
       setCompactSheetOpen(false);
@@ -274,6 +375,10 @@ function WorkspaceShellLayout({
       data-window-frame-style={windowFrameStyle}
       onContextMenu={(event) => event.preventDefault()}
     >
+      <FileWorkspaceIntegration
+        config={appConfig.workspaceFiles}
+        layout={appConfig.workspaceLayout.rightWorkspace.file}
+      />
       <AppTitleBar
         appName={appName}
         feedbackEnabled={feedbackEnabled}
@@ -300,10 +405,10 @@ function WorkspaceShellLayout({
                 onPinTask={onPinTask}
                 onUnpinTask={onUnpinTask}
                 onRenameTask={onRenameTask}
-                onDeleteTask={onDeleteTask}
+                onDeleteTask={deleteTask}
                 onNewConversationInWorkspace={onNewConversationInWorkspace}
                 onAddWorkspace={onAddWorkspace}
-                onRemoveWorkspace={onRemoveWorkspace}
+                onRemoveWorkspace={onRemoveWorkspace ? removeWorkspace : undefined}
               />
             </ResizablePanel>
             <ResizableHandle className="z-20 bg-transparent hover:bg-transparent" data-testid="workspace-left-resize-handle" />
@@ -325,7 +430,14 @@ function WorkspaceShellLayout({
         {showRightDock ? (
           <>
             <ResizableHandle className="z-20 bg-sidebar-border/70 hover:bg-primary/30" data-testid="workspace-right-resize-handle" />
-            <ResizablePanel id="workspace-right" defaultSize={workspace.width} minSize={RIGHT_WORKSPACE_MIN_WIDTH} maxSize={RIGHT_WORKSPACE_MAX_WIDTH} groupResizeBehavior="preserve-pixel-size">
+            <ResizablePanel
+              panelRef={rightPanelRef}
+              id="workspace-right"
+              defaultSize={workspace.width}
+              minSize={appConfig.workspaceLayout.rightWorkspace.minWidth}
+              maxSize={appConfig.workspaceLayout.rightWorkspace.maxWidth}
+              groupResizeBehavior="preserve-pixel-size"
+            >
               <RightWorkspaceDock />
             </ResizablePanel>
           </>

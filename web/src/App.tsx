@@ -126,6 +126,7 @@ import {
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
 import { syncDesktopWindowMinimum } from '@/lib/desktop-window-layout';
 import {
+  FALLBACK_WORKSPACE_FILES,
   FALLBACK_WORKSPACE_LAYOUT,
   workspaceLayoutProfileForSurface,
 } from '@/components/workspace/workspace-layout';
@@ -206,6 +207,7 @@ const defaultAppConfig: AppConfigVm = {
   acpSessionTitleRefreshEnabled: false,
   acpChatEventPageSize: 360,
   workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
+  workspaceFiles: FALLBACK_WORKSPACE_FILES,
 };
 type RefreshMode = 'initial' | 'manual' | 'background';
 type VisibleRefreshMode = Exclude<RefreshMode, 'background'>;

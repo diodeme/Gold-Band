@@ -392,6 +392,62 @@ export function saveConversationPreference(key: string, value: unknown) {
 export function saveLastConversationWorkspace(projectId: string) {
   return getRuntimeApi().saveLastConversationWorkspace(projectId);
 }
+
+export function listWorkspaceDirectory(projectId: string, relativePath = '') {
+  return getRuntimeApi().listWorkspaceDirectory(projectId, relativePath);
+}
+
+export function searchWorkspaceFiles(projectId: string, query: string, requestId: string, limit: number) {
+  return getRuntimeApi().searchWorkspaceFiles(projectId, query, requestId, limit);
+}
+
+export function resolveWorkspaceFileLink(projectId: string, rawHref: string) {
+  return getRuntimeApi().resolveWorkspaceFileLink(projectId, rawHref);
+}
+
+export function readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource = false) {
+  return getRuntimeApi().readFileResource(projectId, canonicalPath, externalAccessToken, preferSource);
+}
+
+export function resolveMarkdownImage(input: Parameters<ReturnType<typeof getRuntimeApi>['resolveMarkdownImage']>[0]) {
+  return getRuntimeApi().resolveMarkdownImage(input);
+}
+
+export function writeFileResource(input: Parameters<ReturnType<typeof getRuntimeApi>['writeFileResource']>[0]) {
+  return getRuntimeApi().writeFileResource(input);
+}
+
+export function releaseWorkspaceFilePreview(token: string) {
+  return getRuntimeApi().releaseWorkspaceFilePreview(token);
+}
+
+export function renewExternalFileAccess(token: string) {
+  return getRuntimeApi().renewExternalFileAccess(token);
+}
+
+export function releaseExternalFileAccess(token: string) {
+  return getRuntimeApi().releaseExternalFileAccess(token);
+}
+
+export function startWorkspaceFileWatch(projectId: string) {
+  return getRuntimeApi().startWorkspaceFileWatch(projectId);
+}
+
+export function stopWorkspaceFileWatch(projectId: string) {
+  return getRuntimeApi().stopWorkspaceFileWatch(projectId);
+}
+
+export function subscribeWorkspaceFileChanges(listener: Parameters<NonNullable<RuntimeApi['subscribeWorkspaceFileChanges']>>[0]) {
+  return getRuntimeApi().subscribeWorkspaceFileChanges?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function workspaceFilePreviewUrl(token: string, staticFrame = false) {
+  return getRuntimeApi().workspaceFilePreviewUrl(token, staticFrame);
+}
+
+export function openFileWithSystemApp(path: string) {
+  return getRuntimeApi().openFileWithSystemApp(path);
+}
 // pickAttachmentFiles for file picker in desktop envs
 export function pickAttachmentFiles() {
   return getRuntimeApi().pickAttachmentFiles();

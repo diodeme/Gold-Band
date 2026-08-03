@@ -15,7 +15,7 @@
 1. Markdown 默认以实时预览编辑模式打开。
 2. 用户直接在渲染后的标题、列表、强调、链接、代码块和表格等内容中编辑；当前编辑位置按组件成熟交互显露必要 Markdown 标记。
 3. 编辑器右上角提供“一键复制源码”和“切换源码/实时预览”两个悬浮按钮。
-4. 两种模式共享同一份 Markdown 源码、自动保存队列、文件 revision、选区和原生撤销历史；切换通过单一 EditorView 重建并恢复语义视口，不维护双编辑器。
+4. 两种模式共享同一份 Markdown 源码、自动保存队列、文件 revision、选区、原生撤销历史和同一个永久 `EditorView`；切换通过稳定 Compartment 原地重配置并恢复语义视口，不重建 View，也不维护双编辑器。
 5. Markdown 内图片正常展示，但本地图片只能通过现有 `gold-band-preview://token` 安全协议加载，不能把本地路径直接交给 WebView。
 6. 工作区内文件和用户显式打开的工作区外 Markdown 都允许编辑和近实时自动保存。
 
@@ -41,7 +41,7 @@
 
 因此问题不是文件领域或保存模型的根本缺陷，而是通用源码编辑器缺少 Markdown 的视图层能力。Markdown 原文必须继续只有一份，并由 `FileContentStore` 统一保存；预览只能是 CodeMirror decoration/widget，不创建富文本状态，也不引入 DOM→Markdown 反序列化链路。
 
-实际接入确认 Atomic 0.6.x 的 table `StateField` 在同一 View 内被 React props 动态移除、重新加入时会保留失效装饰，导致表格退回原文。根因不是“必须保留预览 View”，而是扩展生命周期不稳定。最终方案只保留一个 CodeMirror：模式切换时先序列化 `doc + selection + history`，把视口顶部映射成顶部逻辑源码块与非负像素边距，再用目标模式的稳定扩展集合重建 View，并提交官方 `EditorView.scrollIntoView` effect。图片状态只通过稳定 `StateField + StateEffect` 更新，不触发 Atomic 扩展重配。该边界复用成熟组件的懒测量与虚拟滚动能力，不复制上游表格或滚动实现，也不长期支付双编辑器成本。
+实际接入确认问题来自 React 层以整套 extensions props 和 `key` 管理模式生命周期，而不是 Atomic 必须绑定独立 View。真实 DOM 契约证明 Atomic 0.6.x 的 table、inline preview 和图片扩展可通过显式 `Compartment.reconfigure()` 在同一 View 内完整往返。最终方案固定 CodeMirror 基础扩展拓扑：模式、编辑策略分别进入长期存在的 Compartment；模式切换捕获顶部逻辑源码块与非负像素边距，在同一个 transaction 中提交 reconfigure 与官方 `EditorView.scrollIntoView` effect。图片授权状态通过 `StateField + StateEffect` 更新，源码切预览前预解码当前视口附近的安全图片 URL。该边界复用 CodeMirror/Atomic 的扩展生命周期、懒测量和虚拟滚动能力，不 fork 上游、不复制表格或滚动实现，也不支付重建或双编辑器成本。
 
 ## 5. 开源组件结论
 
@@ -90,9 +90,9 @@ type MarkdownEditorMode = 'live-preview' | 'source'
 
 ### 6.3 编辑与撤销
 
-- 任一时刻只存在一个 `EditorView`。切换前保存当前 `EditorState` 的 doc、selection、history，并把视口顶部映射为顶部逻辑源码块位置与相对视口的非负像素边距。
-- 目标模式以完整、稳定的 extension profile 重建；确认新 View 身份后，在 transaction 中提交 `EditorView.scrollIntoView(position, { y: 'start', yMargin })`，由 CodeMirror 在懒测量周期内完成虚拟高度修正和滚动。渲染与源码高度不同，禁止读取新 View 的估算块高度自行换算，禁止复用或直接写入裸 `scrollTop`。
-- 两种模式共享同一原生 `Ctrl/Cmd+Z` / redo 历史；Atomic table 与图片 decoration 不通过 React extension props 动态移除、加入。
+- 任一时刻只存在一个身份稳定的 `EditorView`。切换不序列化或重建 `EditorState`；doc、selection、history 天然保持在原实例中。切换前只捕获顶部逻辑源码块位置与相对视口的非负像素边距。
+- 基础扩展拓扑只初始化一次，React CodeMirror 的 `extensions` 与 `basicSetup` props 在模式切换期间保持稳定。源码/预览 profile 进入模式 Compartment；同一个 transaction 提交 `Compartment.reconfigure()` 与 `EditorView.scrollIntoView(position, { y: 'start', yMargin })`，由 CodeMirror 在 decoration 更新与懒测量周期内完成虚拟高度修正和滚动。
+- 两种模式共享同一原生 `Ctrl/Cmd+Z` / redo history；Atomic table 与图片 decoration 只由显式 Compartment transaction 切换，不通过 React props 动态重组，也不通过 `key` 销毁 View。
 - 输入继续调用现有 `onChange`，进入 `FileContentStore.updateText()` 与自动保存链路。
 - `Ctrl/Cmd+S`、失焦、切 Tab 和关闭继续 flush 当前内容。
 - 保存失败或磁盘冲突时保留内存内容和撤销历史，沿用现有恢复流程。
@@ -176,7 +176,7 @@ CodeMirror markdown language（GFM）
   + Gold Band theme/readOnly/save/target-line extensions
 ```
 
-源码 profile 不挂载 Atomic decoration、table widget 和图片 widget，仅保留 Markdown 语法、通用主题及文件编辑扩展；切换时销毁旧 profile 对应的 View，不保留后台预览实例。
+源码 profile 不挂载 Atomic decoration、table widget 和图片 widget，仅保留 Markdown 语法、通用主题及文件编辑扩展；切换时原地重配置同一个模式 Compartment，不销毁 View，也不保留后台预览实例。
 
 合法 GFM 表格始终启用 `Atomic tables`。安全降级精确到“表格自身包含 Markdown 图片”，不能因为文档其他位置存在图片而关闭全部表格。含图片表格暂时显示 Markdown 原文，避免 Atomic 内部把未经授权的 `src` 交给原始 `<img>`。widget 表格使用详情容器 `width: 100% + table-layout: fixed`，长内容在单元格内部换行，不能使用 `max-content` 撑宽编辑器。
 
@@ -293,7 +293,7 @@ markdownEmbeddedImageMaxConcurrent = 4
 ## 12. 性能策略
 
 1. Atomic 和 Markdown parser 只在打开 Markdown 时动态加载。
-2. 源码/预览共享同一源码和保存状态；任一时刻只挂载一个 View，模式切换以完整稳定 profile 重建，避免 Atomic table StateField 动态重配失效。
+2. 源码/预览共享同一源码、保存状态与永久 View；模式切换由显式 Compartment transaction 原地完成，React 不替换扩展 props。进入预览前只预解码当前视口及有限 overscan 的本地图片，不扫描或等待整篇文档。
 3. 图片只解析语法树识别出的 `Image` 节点，不用全量 DOM 扫描。
 4. 文档修改仅重算受影响图片引用；普通文字输入不重复解析全部图片。
 5. 相同 canonical path 去重，图片请求按配置限制并发。
@@ -307,7 +307,7 @@ markdownEmbeddedImageMaxConcurrent = 4
 
 - `.md` 默认实时预览，其他文本不受影响。
 - 模式按 resource key 保存，关闭资源后释放。
-- 切换模式不改变源码；单 View 重建后恢复 selection、共享 undo history 与语义视口锚点。
+- 切换模式不改变源码；同一 View 原地重配置后保持 selection、undo history 与语义视口锚点。
 - 复制的是当前内存源码，不是落盘旧内容。
 - 输入、撤销、redo 继续进入原自动保存队列。
 - 超阈值 Markdown 自动降级源码模式。

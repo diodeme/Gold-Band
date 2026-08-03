@@ -14,6 +14,10 @@ const HTML_ALIGN_CLOSE_PATTERN = /^\s*<\/(div|p)>\s*$/iu;
 const HTML_BREAK_PATTERN = /^\s*<br\s*\/?>\s*$/iu;
 const STANDALONE_MARKDOWN_IMAGE_PATTERN = /^\s*(?:\[)?!\[[^\]]*\]\((?:<[^>]+>|[^\s)"']+)(?:\s+["'][^)]*["'])?\)(?:\]\([^)]+\))?\s*$/iu;
 const EMPTY_MARKDOWN_IMAGES = new Map<string, MarkdownImageState>();
+const MARKDOWN_IMAGE_PREDECODE_OVERSCAN_LINES = 12;
+const MARKDOWN_IMAGE_DECODE_CACHE_LIMIT = 128;
+const decodedMarkdownImageUrls = new Set<string>();
+const pendingMarkdownImageDecodes = new Map<string, Promise<void>>();
 
 export function isRemoteMarkdownImageSource(source: string) {
   return /^(?:https?:)?\/\//iu.test(source.trim());
@@ -29,6 +33,55 @@ export function markdownImageSources(markdown: string): string[] {
     if (match[2] && !isRemoteMarkdownImageSource(match[2])) sources.add(match[2]);
   }
   return [...sources];
+}
+
+function rememberDecodedMarkdownImage(url: string) {
+  decodedMarkdownImageUrls.delete(url);
+  decodedMarkdownImageUrls.add(url);
+  while (decodedMarkdownImageUrls.size > MARKDOWN_IMAGE_DECODE_CACHE_LIMIT) {
+    const oldest = decodedMarkdownImageUrls.values().next().value;
+    if (!oldest) break;
+    decodedMarkdownImageUrls.delete(oldest);
+  }
+}
+
+async function predecodeMarkdownImageUrl(url: string) {
+  if (decodedMarkdownImageUrls.has(url)) return;
+  const pending = pendingMarkdownImageDecodes.get(url);
+  if (pending) return pending;
+  if (typeof Image === 'undefined') return;
+  const decode = (async () => {
+    const image = new Image();
+    image.decoding = 'async';
+    image.loading = 'eager';
+    image.src = url;
+    if (typeof image.decode !== 'function') return;
+    try {
+      await image.decode();
+      rememberDecodedMarkdownImage(url);
+    } catch {
+      // The mounted widget owns the visible error state and token refresh path.
+    }
+  })().finally(() => pendingMarkdownImageDecodes.delete(url));
+  pendingMarkdownImageDecodes.set(url, decode);
+  return decode;
+}
+
+export async function predecodeMarkdownImagesNearViewport(
+  view: EditorView,
+  images: ReadonlyMap<string, MarkdownImageState>,
+) {
+  const firstVisibleLine = view.state.doc.lineAt(view.viewport.from).number;
+  const lastVisibleLine = view.state.doc.lineAt(view.viewport.to).number;
+  const firstLine = view.state.doc.line(Math.max(1, firstVisibleLine - MARKDOWN_IMAGE_PREDECODE_OVERSCAN_LINES));
+  const lastLine = view.state.doc.line(Math.min(view.state.doc.lines, lastVisibleLine + MARKDOWN_IMAGE_PREDECODE_OVERSCAN_LINES));
+  const sources = markdownImageSources(view.state.doc.sliceString(firstLine.from, lastLine.to));
+  await Promise.all(sources.flatMap((source) => {
+    const image = images.get(source);
+    return image?.kind === 'ready'
+      ? [predecodeMarkdownImageUrl(workspaceFilePreviewUrl(image.previewGrant.token))]
+      : [];
+  }));
 }
 
 function htmlAttribute(attributes: string, name: string) {
@@ -108,9 +161,11 @@ class SafeMarkdownImageWidget extends WidgetType {
     wrap.className = 'cm-atomic-image cm-gold-band-markdown-image';
     if (this.state.kind === 'ready') {
       const image = document.createElement('img');
-      image.src = workspaceFilePreviewUrl(this.state.previewGrant.token);
+      const previewUrl = workspaceFilePreviewUrl(this.state.previewGrant.token);
+      image.src = previewUrl;
       image.alt = this.alt;
-      image.loading = 'lazy';
+      image.decoding = 'async';
+      image.loading = decodedMarkdownImageUrls.has(previewUrl) ? 'eager' : 'lazy';
       image.width = this.state.width;
       image.height = this.state.height;
       image.addEventListener('error', () => {

@@ -2,7 +2,7 @@
 
 import { readFileSync } from 'node:fs';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
-import { EditorState } from '@codemirror/state';
+import { Compartment, EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadMarkdownLivePreviewExtensions } from '@/components/workspace/files/markdown-live-preview';
@@ -142,5 +142,24 @@ describe('Markdown preview DOM contract', () => {
 
     expect(view.dom.querySelector('.cm-atomic-table table')).not.toBeNull();
     expect(view.dom.querySelector('img:not(.cm-widgetBuffer)')).not.toBeNull();
+  });
+
+  it('reconfigures source and live preview on the same EditorView', async () => {
+    const previewExtensions = await loadMarkdownLivePreviewExtensions(() => undefined, true);
+    const sourceExtensions = [markdown({ base: markdownLanguage })];
+    const mode = new Compartment();
+    const view = createView(
+      '| Name | Value |\n| --- | --- |\n| table | remains |\n\n![Diagram](diagram.png)',
+      [mode.of([...previewExtensions, markdownImagePreview()])],
+    );
+    const originalView = view;
+
+    expect(view.dom.querySelector('.cm-atomic-table table')).not.toBeNull();
+    view.dispatch({ effects: mode.reconfigure(sourceExtensions) });
+    expect(view.dom.querySelector('.cm-atomic-table table')).toBeNull();
+    view.dispatch({ effects: mode.reconfigure([...previewExtensions, markdownImagePreview()]) });
+
+    expect(view).toBe(originalView);
+    expect(view.dom.querySelector('.cm-atomic-table table')).not.toBeNull();
   });
 });

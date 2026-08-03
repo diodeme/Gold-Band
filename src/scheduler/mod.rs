@@ -1,4 +1,7 @@
-use chrono::{DateTime, Datelike, Duration, NaiveTime, TimeZone, Utc, Weekday};
+use chrono::{
+    DateTime, Datelike, Duration, LocalResult, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc,
+    Weekday,
+};
 use chrono_tz::Tz;
 use cron::Schedule;
 use serde::{Deserialize, Serialize};
@@ -292,6 +295,7 @@ pub enum ScheduleKind {
         preset: RepeatPreset,
         hour: u32,
         minute: u32,
+        #[serde(default = "default_timezone")]
         timezone: String,
     },
     Every {
@@ -302,6 +306,7 @@ pub enum ScheduleKind {
     },
     Cron {
         expression: String,
+        #[serde(default = "default_timezone")]
         timezone: String,
     },
 }
@@ -398,12 +403,19 @@ impl ScheduleSpec {
         unit: &str,
         anchor_at: DateTime<Utc>,
     ) -> Result<Self, ScheduleError> {
+        let every = EverySpec::new(value, unit)?;
+        if matches!(
+            &self.kind,
+            ScheduleKind::Every { every: current, .. } if current == &every
+        ) {
+            return Ok(self);
+        }
         let timezone = self
             .timezone()
             .map(str::to_string)
             .unwrap_or_else(default_timezone);
         self.kind = ScheduleKind::Every {
-            every: EverySpec::new(value, unit)?,
+            every,
             anchor_at,
             timezone,
         };
@@ -450,8 +462,15 @@ impl ScheduleSpec {
     }
 }
 
+pub fn system_timezone() -> String {
+    iana_time_zone::get_timezone()
+        .ok()
+        .filter(|timezone| parse_timezone(timezone).is_ok())
+        .unwrap_or_else(|| "UTC".to_string())
+}
+
 fn default_timezone() -> String {
-    "Asia/Shanghai".to_string()
+    system_timezone()
 }
 
 fn validate_time(hour: u32, minute: u32) -> Result<(), ScheduleError> {
@@ -478,6 +497,25 @@ fn next_repeat_occurrence(
 ) -> Option<DateTime<Utc>> {
     let tz = parse_timezone(timezone).ok()?;
     let local_after = after.with_timezone(&tz);
+
+    if matches!(preset, RepeatPreset::Hourly) {
+        let mut candidate =
+            local_after
+                .naive_local()
+                .date()
+                .and_hms_opt(local_after.hour(), 0, 0)?;
+        if candidate <= local_after.naive_local() {
+            candidate = candidate.checked_add_signed(Duration::hours(1))?;
+        }
+        for _ in 0..(366 * 24 + 1) {
+            if let Some(next) = next_resolved_local_datetime(&tz, candidate, local_after) {
+                return Some(next.with_timezone(&Utc));
+            }
+            candidate = candidate.checked_add_signed(Duration::hours(1))?;
+        }
+        return None;
+    }
+
     let mut date = local_after.date_naive();
     for _ in 0..8 {
         let weekday = date.weekday();
@@ -491,16 +529,29 @@ fn next_repeat_occurrence(
             RepeatPreset::Weekly { weekdays } => weekdays.contains(&weekday),
         };
         if allowed {
-            let local = tz
-                .with_ymd_and_hms(date.year(), date.month(), date.day(), hour, minute, 0)
-                .single()?;
-            if local > local_after {
-                return Some(local.with_timezone(&Utc));
+            let local = NaiveDateTime::new(date, NaiveTime::from_hms_opt(hour, minute, 0)?);
+            if let Some(next) = next_resolved_local_datetime(&tz, local, local_after) {
+                return Some(next.with_timezone(&Utc));
             }
         }
         date = date.succ_opt()?;
     }
     None
+}
+
+fn next_resolved_local_datetime(
+    timezone: &Tz,
+    local: NaiveDateTime,
+    after: DateTime<Tz>,
+) -> Option<DateTime<Tz>> {
+    match timezone.from_local_datetime(&local) {
+        LocalResult::None => None,
+        LocalResult::Single(candidate) => (candidate > after).then_some(candidate),
+        LocalResult::Ambiguous(first, second) => [first, second]
+            .into_iter()
+            .filter(|candidate| *candidate > after)
+            .min_by_key(|candidate| candidate.with_timezone(&Utc)),
+    }
 }
 
 fn next_cron_occurrence(
@@ -521,7 +572,7 @@ mod tests {
     use super::RepeatPreset;
     use super::{
         EverySpec, OverlapPolicy, ScheduleError, ScheduleSpec, ScheduledTaskContentSnapshot,
-        ScheduledTaskDefinition,
+        ScheduledTaskDefinition, system_timezone,
     };
     use chrono::{Duration, TimeZone, Utc, Weekday};
 
@@ -565,6 +616,69 @@ mod tests {
         assert_eq!(
             schedule.next_occurrence_after(resumed),
             Some(resumed + Duration::minutes(30))
+        );
+    }
+
+    #[test]
+    fn every_edit_only_resets_anchor_when_interval_changes() {
+        let original = Utc.with_ymd_and_hms(2026, 7, 30, 10, 10, 0).unwrap();
+        let edited_at = Utc.with_ymd_and_hms(2026, 7, 30, 14, 0, 0).unwrap();
+        let unchanged = ScheduleSpec::every(1, "hours", original)
+            .unwrap()
+            .with_every(1, "hours", edited_at)
+            .unwrap();
+        assert_eq!(unchanged.anchor_at(), original);
+
+        let changed = unchanged.with_every(30, "minutes", edited_at).unwrap();
+        assert_eq!(changed.anchor_at(), edited_at);
+    }
+
+    #[test]
+    fn hourly_schedule_returns_next_wall_clock_hour() {
+        let schedule =
+            ScheduleSpec::repeat(RepeatPreset::Hourly, 7, 15, "America/New_York").unwrap();
+        let after = Utc.with_ymd_and_hms(2026, 8, 3, 14, 37, 0).unwrap();
+
+        assert_eq!(
+            schedule.next_occurrence_after(after),
+            Some(Utc.with_ymd_and_hms(2026, 8, 3, 15, 0, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn system_timezone_is_used_when_schedule_timezone_is_omitted() {
+        let schedule: ScheduleSpec = serde_json::from_value(serde_json::json!({
+            "kind": "At",
+            "at": "2026-08-03T12:00:00Z"
+        }))
+        .unwrap();
+        let timezone = system_timezone();
+
+        assert_eq!(schedule.timezone(), Some(timezone.as_str()));
+        assert!(timezone.parse::<chrono_tz::Tz>().is_ok());
+    }
+
+    #[test]
+    fn dst_gap_returns_next_valid_occurrence() {
+        let schedule =
+            ScheduleSpec::repeat(RepeatPreset::Daily, 2, 30, "America/New_York").unwrap();
+        let after = Utc.with_ymd_and_hms(2026, 3, 8, 5, 0, 0).unwrap();
+
+        assert_eq!(
+            schedule.next_occurrence_after(after),
+            Some(Utc.with_ymd_and_hms(2026, 3, 9, 6, 30, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn dst_overlap_uses_the_first_valid_occurrence() {
+        let schedule =
+            ScheduleSpec::repeat(RepeatPreset::Daily, 1, 30, "America/New_York").unwrap();
+        let after = Utc.with_ymd_and_hms(2026, 11, 1, 4, 0, 0).unwrap();
+
+        assert_eq!(
+            schedule.next_occurrence_after(after),
+            Some(Utc.with_ymd_and_hms(2026, 11, 1, 5, 30, 0).unwrap())
         );
     }
 

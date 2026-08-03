@@ -14,6 +14,7 @@ anyhow = "1"
 camino = { version = "1", features = ["serde1"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = "0.10"
+iana-time-zone = "0.1"
 cron = "0.17"
 dirs = "6"
 clap = { version = "4", features = ["derive"] }

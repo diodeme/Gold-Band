@@ -1860,6 +1860,7 @@ dependencies = [
  "dirs",
  "figlet-rs",
  "file-rotate",
+ "iana-time-zone",
  "indexmap 2.14.0",
  "jsonschema",
  "minijinja",

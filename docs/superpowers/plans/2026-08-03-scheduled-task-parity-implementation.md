@@ -62,7 +62,7 @@ Expected: PASS, including the concurrent claim test. Commit: `git add src/schedu
 - Modify: `Cargo.toml`, `Cargo.lock`
 - Test: `src/scheduler/mod.rs`, `src/scheduler/db.rs`
 
-- [ ] **Step 1: Add failing time and migration tests**
+- [x] **Step 1: Add failing time and migration tests**
 
 Add tests named `hourly_schedule_returns_next_wall_clock_hour`, `system_timezone_is_used_when_schedule_timezone_is_omitted`, `dst_gap_returns_next_valid_occurrence`, `dst_overlap_uses_the_first_valid_occurrence`, `every_edit_only_resets_anchor_when_interval_changes`, `legacy_json_definition_import_is_idempotent`, and `legacy_import_rejects_conflicting_ids`.
 
@@ -70,11 +70,11 @@ Run: `cargo test -p gold-band scheduler::tests scheduler::db::migration`
 
 Expected: FAIL for Hourly, system timezone, DST, anchor edit, and migration behavior.
 
-- [ ] **Step 2: Fix schedule calculation without changing the public schedule tags**
+- [x] **Step 2: Fix schedule calculation without changing the public schedule tags**
 
 Implement `Hourly` as the next local `xx:00:00`, independent of the stored `hour/minute` fields. Resolve the default timezone using a system-timezone helper and retain a valid IANA string. Handle `chrono_tz::LocalResult::Single` and `Ambiguous` deterministically; skip `None` local times instead of returning `None` for the whole schedule. Keep `Every` absolute to `anchorAt`, and only reset its anchor when enabling or changing value/unit.
 
-- [ ] **Step 3: Implement one-time JSON import**
+- [x] **Step 3: Implement one-time JSON import**
 
 Read legacy definitions and trigger files through the existing `ScheduledTaskStore`, insert jobs and occurrences in one transaction per definition, preserve Task/Run links and content snapshots, and make a second import a no-op. On ID or timestamp conflict return a typed migration error. Do not make runtime scheduling read the JSON after successful import.
 

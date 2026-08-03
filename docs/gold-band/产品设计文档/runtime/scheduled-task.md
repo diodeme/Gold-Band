@@ -98,6 +98,16 @@ active 包括运行中、等待权限、等待 AskUserQuestion、等待用户恢
 
 错过的 `at` 或重复时间点记录为 `missed`，不自动补跑；重复任务直接计算下一个未来时间点。第一版不提供错过执行策略配置。
 
+### 6.1 无人值守交互
+
+定时任务必须使用 Agent 支持的 full-auto 能力。创建和编辑时先完成能力校验；不支持无人值守执行的 Agent 不允许保存定时任务。
+
+运行时仍出现 permission request 时，本次 occurrence 结束为 `failed`，错误码为
+`SCHEDULED_PERMISSION_REQUIRED`。系统保留关联 Task、Run、ACP 会话和权限请求，并通过通知引导用户查看详情，不让调度器无限等待。
+
+运行时出现 `AskUserQuestion` 时，本次 occurrence 结束为 `attention_required`，错误码为
+`SCHEDULED_USER_INPUT_REQUIRED`。关联 Run 保持可恢复暂停，用户回答后继续原 Run；调度器释放 occurrence lease，不创建第二个同时等待回答的会话。后续时间点按队列策略记录 `skipped` 或有限次 `retrying`。
+
 ## 7. 时区
 
 所有 wall-clock 调度显式保存 IANA 时区，默认使用系统当前时区，例如 `Asia/Shanghai`。`every` 仍保存时区以便统一展示和日志解释，但实际计算依赖 `anchorAt` 的绝对时间间隔。
@@ -111,14 +121,27 @@ active 包括运行中、等待权限、等待 AskUserQuestion、等待用户恢
 调度定义状态与 run 状态分离：
 
 - 调度定义：`active | paused | completed | missed`
-- 调度触发记录：`scheduled | running | skipped | missed | completed | failed`
+- 调度 occurrence：`pending | running | retrying | succeeded | failed | skipped | missed | attention_required`
 - run 继续使用现有 `running | paused | completed` 与 `outcome` 约束。
 
-调度器不得直接修改 run 的 canonical 状态；它只负责生成触发记录并调用现有 task/run 创建和启动接口。
-## 当前实现边界
+调度器不得直接修改 run 的 canonical 状态；它只负责创建和认领 occurrence，调用现有 task/run 创建和启动接口，并根据带 occurrence ID 的真实执行完成事件回写 occurrence。
 
-创建命令与 Composer 已统一使用扁平调度协议：`kind` 使用 `At`、`Repeat`、`Every`、`Cron`，字段使用 camelCase。创建前复用会话模式校验，后端校验失败会返回具体校验码并由前端展开显示。
+## 9. 调度可靠性边界
 
-创建入口已经位于会话 Composer 的发送按钮下拉操作中。创建时保存 instruction、模式配置、调度定义、队列保护策略、会话策略和附件快照；任务管理页负责启停。后台 scheduler loop 会扫描当前及已登记工作区，在到点后物化 Task 并通过现有 Task/Run/ACP 链路执行；创建命令本身不会立即执行。
+调度定义和 occurrence 使用独立的 SQLite scheduler store。`(scheduledTaskId, scheduledAt, triggerKind)` 必须有唯一约束；owner、lease、heartbeat 和 attempt 用于多进程认领及崩溃恢复。
 
-当前版本已覆盖 Direct 新会话、Direct 持续会话、Workflow/AUTO 同 Task 新 Run、内容指纹变化后新 Task、队列保护、触发记录和手动管理。错过时间点暂不补跑，也暂不生成 `missed` 触发记录。
+每个任务使用独立计时器。应用启动和系统唤醒时显式检查过去的时间点并写入 `missed`，不通过推进游标追赶历史时间点。立即执行创建 `triggerKind = manual` 的 occurrence，不改变下一次计划时间。
+
+occurrence 的成功只表示现有 Task/Run/ACP 链路真实结束；启动后台进程不等于完成。Occurrence 历史、Task/Run 历史和调度定义生命周期分别管理，删除调度定义不删除已物化的 Task/Run/ACP 历史。
+
+## 当前实现基线与待完善项
+
+当前版本已经具备结构化调度定义、内容指纹、Task/Run 复用规则、Composer 创建入口和基本管理页，但以下可靠性能力仍属于待实现阶段：
+
+- occurrence SQLite 存储、原子认领、lease/heartbeat、真实执行终态和迁移；
+- missed 唤醒恢复、立即执行、执行历史和诊断字段；
+- Direct full-auto 预检、permission/AskUserQuestion 的无人值守处理；
+- 每任务计时器、系统时区、DST、Hourly 和自然语言 skill；
+- Workflow/AUTO 对统一 occurrence 生命周期的完整接入。
+
+实现完成前不得将启动后台执行标记为 `completed`，也不得依赖 definition 游标实现跨进程幂等。

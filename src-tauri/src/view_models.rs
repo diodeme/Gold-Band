@@ -117,10 +117,30 @@ pub struct WorkspaceFilesVm {
 pub struct WorkspaceLayoutVm {
     pub shell_min_width: u32,
     pub shell_min_height: u32,
+    pub right_workspace: RightWorkspaceLayoutVm,
     pub conversation: WorkspaceLayoutProfileVm,
     pub context_cards: WorkspaceLayoutProfileVm,
     pub workflow_canvas: WorkspaceLayoutProfileVm,
     pub settings: WorkspaceLayoutProfileVm,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RightWorkspaceLayoutVm {
+    pub min_width: u32,
+    pub default_width: u32,
+    pub max_width: u32,
+    pub file: FileWorkspaceLayoutVm,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileWorkspaceLayoutVm {
+    pub preferred_width: u32,
+    pub split_min_width: u32,
+    pub tree_default_width: u32,
+    pub tree_min_width: u32,
+    pub tree_max_width: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1186,12 +1206,25 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
             center_auto_collapse_width: profile.center_auto_collapse_width,
             window_min_width: profile.window_min_width,
         };
+    let right_workspace = &config.workspace_layout.right_workspace;
     AppConfigVm {
         acp_session_title_refresh_enabled: config.acp_session_title_refresh_enabled,
         acp_chat_event_page_size: config.acp_chat_event_page_size,
         workspace_layout: WorkspaceLayoutVm {
             shell_min_width: config.workspace_layout.shell_min_width,
             shell_min_height: config.workspace_layout.shell_min_height,
+            right_workspace: RightWorkspaceLayoutVm {
+                min_width: right_workspace.min_width,
+                default_width: right_workspace.default_width,
+                max_width: right_workspace.max_width,
+                file: FileWorkspaceLayoutVm {
+                    preferred_width: right_workspace.file.preferred_width,
+                    split_min_width: right_workspace.file.split_min_width,
+                    tree_default_width: right_workspace.file.tree_default_width,
+                    tree_min_width: right_workspace.file.tree_min_width,
+                    tree_max_width: right_workspace.file.tree_max_width,
+                },
+            },
             conversation: profile_vm(&config.workspace_layout.conversation),
             context_cards: profile_vm(&config.workspace_layout.context_cards),
             workflow_canvas: profile_vm(&config.workspace_layout.workflow_canvas),
@@ -1213,9 +1246,7 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
             external_access_grant_ttl_seconds: config
                 .workspace_files
                 .external_access_grant_ttl_seconds,
-            markdown_live_preview_max_chars: config
-                .workspace_files
-                .markdown_live_preview_max_chars,
+            markdown_live_preview_max_chars: config.workspace_files.markdown_live_preview_max_chars,
             markdown_embedded_image_limit: config.workspace_files.markdown_embedded_image_limit,
             markdown_embedded_image_max_concurrent: config
                 .workspace_files
@@ -7547,6 +7578,22 @@ mod tests {
 
         assert_eq!(value["workspaceLayout"]["shellMinWidth"], 480);
         assert_eq!(value["workspaceLayout"]["shellMinHeight"], 680);
+        assert_eq!(value["workspaceLayout"]["rightWorkspace"]["minWidth"], 320);
+        assert_eq!(
+            value["workspaceLayout"]["rightWorkspace"]["defaultWidth"],
+            440
+        );
+        assert_eq!(value["workspaceLayout"]["rightWorkspace"]["maxWidth"], 960);
+        assert_eq!(
+            value["workspaceLayout"]["rightWorkspace"]["file"],
+            json!({
+                "preferredWidth": 760,
+                "splitMinWidth": 620,
+                "treeDefaultWidth": 280,
+                "treeMinWidth": 220,
+                "treeMaxWidth": 420,
+            })
+        );
         assert_eq!(
             value["workspaceLayout"]["conversation"]["centerMinWidth"],
             360

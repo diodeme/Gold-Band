@@ -19,8 +19,9 @@ use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::DynamicGraphState;
 use gold_band::provider::{
-    mcp_capabilities_from_capabilities, select_config_options_from_capabilities,
-    supported_models_from_capabilities, supported_modes_from_capabilities,
+    attachment_meta_for_path, mcp_capabilities_from_capabilities,
+    select_config_options_from_capabilities, supported_models_from_capabilities,
+    supported_modes_from_capabilities,
 };
 use gold_band::runtime::{NodeState, RoundState, RoundTraceStep, RunState, WorkerRefState};
 
@@ -3633,6 +3634,13 @@ pub fn dynamic_acp_session_vm(
         active_status,
         default_event_limit,
     )?;
+    restore_initial_task_attachments(
+        app,
+        task_id,
+        worker_ref.as_ref().map(|worker| worker.mode),
+        &branch_id,
+        &mut event_scan.events,
+    );
     apply_agent_index_projection(
         &mut event_scan.timeline_projection,
         &agent_index,
@@ -4020,6 +4028,13 @@ pub fn acp_session_vm(
         active_status,
         default_event_limit,
     )?;
+    restore_initial_task_attachments(
+        app,
+        task_id,
+        worker_ref.as_ref().map(|worker| worker.mode),
+        &branch_id,
+        &mut event_scan.events,
+    );
     trace_acp_session_query(
         &mut query_trace,
         "branch-timeline",
@@ -4294,6 +4309,82 @@ struct AcpDiagnosticsScan {
     error_count: usize,
     last_error: Option<String>,
     last_error_timestamp: Option<String>,
+}
+
+fn restore_initial_task_attachments(
+    app: &App,
+    task_id: &str,
+    session_mode: Option<SessionMode>,
+    branch_id: &str,
+    events: &mut [AcpUiEventVm],
+) {
+    if session_mode != Some(SessionMode::New)
+        || branch_id != gold_band::acp::branches::ROOT_BRANCH_ID
+    {
+        return;
+    }
+
+    let input_dir = app.paths.task_dir(task_id).join("authoring").join("inputs");
+    let mut input_paths = std::fs::read_dir(input_dir.as_std_path())
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    input_paths.sort();
+    let attachment_values = input_paths
+        .iter()
+        .filter_map(|path| attachment_meta_for_path(path, "task-inputs").ok().flatten())
+        .filter_map(|attachment| serde_json::to_value(attachment).ok())
+        .collect::<Vec<_>>();
+    if attachment_values.is_empty() {
+        return;
+    }
+
+    merge_initial_task_attachment_values(events, attachment_values);
+}
+
+fn merge_initial_task_attachment_values(
+    events: &mut [AcpUiEventVm],
+    attachment_values: Vec<Value>,
+) {
+    let Some(initial_prompt) = events.iter_mut().find(|event| {
+        is_gold_band_user_prompt_event(event)
+            && event
+                .raw
+                .as_ref()
+                .is_none_or(|raw| raw.get("promptId").is_none())
+    }) else {
+        return;
+    };
+    let raw = initial_prompt
+        .raw
+        .get_or_insert_with(|| serde_json::json!({}));
+    let Some(raw) = raw.as_object_mut() else {
+        return;
+    };
+    let attachments = raw
+        .entry("attachments")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    let Some(attachments) = attachments.as_array_mut() else {
+        return;
+    };
+    let mut known_paths = attachments
+        .iter()
+        .filter_map(|attachment| attachment.get("path").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    for attachment in attachment_values {
+        let Some(path) = attachment.get("path").and_then(Value::as_str) else {
+            continue;
+        };
+        if known_paths.insert(path.to_string()) {
+            attachments.push(attachment);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -7615,6 +7706,60 @@ mod tests {
             timing: None,
             raw: Some(json!({ "source": "goldBandPrompt" })),
         }
+    }
+
+    #[test]
+    fn session_projection_restores_missing_initial_task_attachments() {
+        let mut initial_prompt = test_event("userTextDelta", "hi");
+        initial_prompt.raw = Some(json!({
+            "source": "goldBandPrompt",
+            "attachments": [{
+                "name": "image.png",
+                "path": "task-inputs/image.png",
+                "type": "image/png",
+                "size": 81_401
+            }]
+        }));
+        let mut later_prompt = test_event("userTextDelta", "follow up");
+        later_prompt.raw = Some(json!({
+            "source": "goldBandPrompt",
+            "promptId": "prompt-002"
+        }));
+        let mut events = vec![initial_prompt, later_prompt];
+
+        merge_initial_task_attachment_values(
+            &mut events,
+            vec![
+                json!({
+                    "name": "image.png",
+                    "path": "task-inputs/image.png",
+                    "type": "image/png",
+                    "size": 81_401
+                }),
+                json!({
+                    "name": "acp.raw.jsonl",
+                    "path": "task-inputs/acp.raw.jsonl",
+                    "type": "application/json",
+                    "size": 1_672_643
+                }),
+            ],
+        );
+
+        let attachments = events[0]
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.get("attachments"))
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(attachments.len(), 2);
+        assert_eq!(attachments[1]["name"], "acp.raw.jsonl");
+        assert!(
+            events[1]
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("attachments"))
+                .is_none()
+        );
     }
 
     fn test_agent_record(

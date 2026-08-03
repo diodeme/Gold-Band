@@ -146,7 +146,10 @@
 - **入口**：纸夹按钮、拖拽、粘贴（统一走 same-session 附件模型）；桌面端必须在基础 Tauri 配置和 channel overlay 中关闭原生 WebView file-drop，让文件拖拽进入前端 HTML5 drop zone，拖入 composer 时稳定显示可投放状态
 - **预览**：图片文件在 composer 内显示缩略图，点击可打开沉浸式大图预览；预览使用单层深色遮罩按合适尺寸展示原图，不支持缩放或拖拽，点击空白遮罩关闭
 - **消息展示**：用户消息下方的图片附件显示为固定尺寸小缩略图，点击进入独立全屏原图预览，不进入附件详情弹窗；文本/代码附件继续显示为紧凑文件 chip 并走附件详情。base64/data URL 只作为内部图片数据承载，不直接作为可见文本展示。消息流附件预览必须按 timeline `raw.attachments[].path` 区分来源：`task-inputs/<name>` 属于新会话首轮 task 输入附件，继续读取 task 级 `authoring/inputs`；`user-inputs/<name>` 属于继续/追问本轮新附件，按当前 session locator 读取该 attempt 下的相对文件。两类附件不得混用读取入口，否则首轮需求附件或完成后追问附件会在 UI 中丢失内容。
+- **消息附件布局**：同一条消息中的图片与普通文件必须按媒体类型分为两个独立附件行，图片行在上、文件行在下，禁止混排；同类多项只在各自行内换行。图片保持固定缩略图尺寸，普通文件使用内容宽度的紧凑 pill，不能被消息容器拉伸成大卡片。
 - **传输**：新会话初始输入附件只进入 task 级 `authoring/inputs/`，并且只在 `SessionMode::New` 的首次 ACP session 初始化时作为 provider `task-inputs` content block 发送；同一个 ACP session 内的 `continue` / resume 不自动重发 task-level input attachments，避免历史输入在每轮用户消息下重复出现。发送前若附件来自粘贴、拖拽或浏览器 File 对象，前端先通过桌面命令 materialize 到 Gold Band 临时输入附件区，拿到本地路径后再进入对应输入链路。本轮 composer 显式选择的附件属于 resume prompt attachments，只随本轮 same-session prompt 发送。输入附件作为 ACP content block 发送给 agent，不混入 agent 输出产物目录。
+- **格式契约**：后端使用同一份附件格式注册表派生可选择扩展名、内容类别（image/text）与 MIME；前端查询到“支持”的扩展名必须都能被 provider resolver 转换为 ACP content block，并同步生成 timeline `raw.attachments` 元数据，不允许维护彼此独立的白名单、MIME 映射和文本类型判断。`.jsonl` 按 `application/json` 文本资源处理。
+- **历史投影修复**：对旧版本已经保存于 `authoring/inputs/`、但因旧格式分类遗漏而没有进入首条 timeline 用户消息的 task 输入附件，session ViewModel 在读取 `SessionMode::New` 根分支时按 `task-inputs/<name>` 补齐 `raw.attachments`，按 path 去重且不改写原始 timeline；后续带 `promptId` 的追问消息不得被补入初始附件。
 - **AI-DYNAMIC**：AUTO / WORKFLOW 中的 AI-DYNAMIC 内部 worker、merge、acceptance 节点必须与普通 worker 复用同一 task input attachment 数据源；动态节点不得把 `input_attachment_paths` 清空，也不得要求 agent 主动扫描 run 目录寻找图片。
 
 ## Composer 状态
@@ -346,6 +349,7 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - 重跑复用 task-level 附件（同一 task 的 `authoring/inputs/` 在多次 run 间共享）
 - 继续对话新附件进入当前 ACP session 的 user-inputs 链路，不写入 task 初始输入附件目录
 - 输入附件展示为独立层级，不与 agent 运行产物和输出附件混合
+- task 输入附件的生命周期数据由 `authoring/inputs/`、provider `PromptBundle.attachment_metas` 和首条用户消息 `raw.attachments` 共同投影；格式注册表是三者共享的分类事实源，不能出现“文件已持久化但消息/Agent 输入缺失”的半状态
 
 ## Todo/Plan 任务面板
 

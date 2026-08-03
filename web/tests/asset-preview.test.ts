@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  groupMessageAttachmentPreviews,
   imageSrcFromContent,
   isImageMessageAttachment,
   isTaskInputMessageAttachment,
+  messageAttachmentPreviewsFromRaw,
 } from '../src/lib/asset-preview';
 
 describe('asset preview helpers', () => {
@@ -47,5 +49,27 @@ describe('asset preview helpers', () => {
       type: 'image/png',
       size: 12,
     })).toBe(false);
+  });
+
+  it('preserves image and regular file attachments from the same user message', () => {
+    expect(messageAttachmentPreviewsFromRaw({
+      attachments: [
+        { name: 'image.png', path: 'task-inputs/image.png', type: 'image/png', size: 81_401 },
+        { name: 'acp.raw.jsonl', path: 'task-inputs/acp.raw.jsonl', type: 'application/json', size: 1_672_643 },
+      ],
+    })).toEqual([
+      { name: 'image.png', path: 'task-inputs/image.png', type: 'image/png', size: 81_401 },
+      { name: 'acp.raw.jsonl', path: 'task-inputs/acp.raw.jsonl', type: 'application/json', size: 1_672_643 },
+    ]);
+  });
+
+  it('groups message images and regular files into independent display rows', () => {
+    const image = { name: 'image.png', path: 'task-inputs/image.png', type: 'image/png', size: 81_401 };
+    const file = { name: 'acp.raw.jsonl', path: 'task-inputs/acp.raw.jsonl', type: 'application/json', size: 1_672_643 };
+
+    expect(groupMessageAttachmentPreviews([file, image])).toEqual({
+      images: [image],
+      files: [file],
+    });
   });
 });

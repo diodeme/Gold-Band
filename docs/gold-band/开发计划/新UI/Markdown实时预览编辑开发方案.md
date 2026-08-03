@@ -41,7 +41,7 @@
 
 因此问题不是文件领域或保存模型的根本缺陷，而是通用源码编辑器缺少 Markdown 的视图层能力。Markdown 原文必须继续只有一份，并由 `FileContentStore` 统一保存；预览只能是 CodeMirror decoration/widget，不创建富文本状态，也不引入 DOM→Markdown 反序列化链路。
 
-实际接入确认 Atomic 0.6.x 的 table `StateField` 在同一 View 内被 React props 动态移除、重新加入时会保留失效装饰，导致表格退回原文。根因不是“必须保留预览 View”，而是扩展生命周期不稳定。最终方案只保留一个 CodeMirror：模式切换时先序列化 `doc + selection + history`，并把视口顶部映射成当前渲染块内的源码位置比例，再用目标模式的稳定扩展集合重建 View、连续复测恢复；图片状态只通过稳定 `StateField + StateEffect` 更新，不触发 Atomic 扩展重配。该边界复用成熟组件能力，不复制上游表格实现，也不长期支付双编辑器成本。
+实际接入确认 Atomic 0.6.x 的 table `StateField` 在同一 View 内被 React props 动态移除、重新加入时会保留失效装饰，导致表格退回原文。根因不是“必须保留预览 View”，而是扩展生命周期不稳定。最终方案只保留一个 CodeMirror：模式切换时先序列化 `doc + selection + history`，把视口顶部映射成顶部逻辑源码块与非负像素边距，再用目标模式的稳定扩展集合重建 View，并提交官方 `EditorView.scrollIntoView` effect。图片状态只通过稳定 `StateField + StateEffect` 更新，不触发 Atomic 扩展重配。该边界复用成熟组件的懒测量与虚拟滚动能力，不复制上游表格或滚动实现，也不长期支付双编辑器成本。
 
 ## 5. 开源组件结论
 
@@ -90,8 +90,8 @@ type MarkdownEditorMode = 'live-preview' | 'source'
 
 ### 6.3 编辑与撤销
 
-- 任一时刻只存在一个 `EditorView`。切换前保存当前 `EditorState` 的 doc、selection、history，并把视口顶部映射为当前渲染块范围中的源码位置比例。
-- 目标模式以完整、稳定的 extension profile 重建；连续三帧测量并收敛到语义锚点。渲染与源码高度不同，禁止复用裸 `scrollTop` 或原模式像素偏移。
+- 任一时刻只存在一个 `EditorView`。切换前保存当前 `EditorState` 的 doc、selection、history，并把视口顶部映射为顶部逻辑源码块位置与相对视口的非负像素边距。
+- 目标模式以完整、稳定的 extension profile 重建；确认新 View 身份后，在 transaction 中提交 `EditorView.scrollIntoView(position, { y: 'start', yMargin })`，由 CodeMirror 在懒测量周期内完成虚拟高度修正和滚动。渲染与源码高度不同，禁止读取新 View 的估算块高度自行换算，禁止复用或直接写入裸 `scrollTop`。
 - 两种模式共享同一原生 `Ctrl/Cmd+Z` / redo 历史；Atomic table 与图片 decoration 不通过 React extension props 动态移除、加入。
 - 输入继续调用现有 `onChange`，进入 `FileContentStore.updateText()` 与自动保存链路。
 - `Ctrl/Cmd+S`、失焦、切 Tab 和关闭继续 flush 当前内容。
@@ -335,7 +335,7 @@ markdownEmbeddedImageMaxConcurrent = 4
 - 合法 GFM 表格在首次打开以及“源码→预览”往返后都保持 table widget；文档其他位置含图片不影响表格。
 - README 白名单对齐标签不显示为正文，本地 HTML 图片走 preview grant，远程 badge 不静默联网且保留外层目标链接。
 - 删除和新增标题文本后，最终 Markdown 源码语义正确；标记显隐按 Atomic 成熟交互执行。
-- 两种模式共享 `Ctrl/Cmd+Z` 与 redo history；切换后按源码块比例恢复视口，布局稳定后的残余误差不超过半像素校正阈值。
+- 两种模式共享 `Ctrl/Cmd+Z` 与 redo history；切换后通过 CodeMirror 原生 scroll effect 恢复顶部语义源码块。渲染 → 源码 → 渲染往返后，原顶部语义块仍须位于视口顶部；负的子行偏移规范化为零，不允许为追求像素级补偿而自行读取未稳定几何。
 - 图片通过 `gold-band-preview://token` 展示，DOM 中不存在本地路径。
 - 外部目录图片只出现一次文档级确认，不逐图片打断。
 - 深色/亮色、宽屏/窄屏、长文档和多图片滚动正常。

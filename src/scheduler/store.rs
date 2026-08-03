@@ -107,8 +107,9 @@ impl ScheduledTaskStore {
 
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<super::ScheduledTaskDefinition> {
         let mut definition = self.load(id)?;
+        let was_enabled = definition.enabled;
         definition.enabled = enabled;
-        if enabled {
+        if enabled && !was_enabled {
             if let super::ScheduleKind::Every { anchor_at, .. } = &mut definition.schedule.kind {
                 *anchor_at = chrono::Utc::now();
             }
@@ -286,6 +287,31 @@ mod tests {
         store.delete(definition.id()).unwrap();
         assert!(!paths.scheduled_task_dir(definition.id()).exists());
         assert!(paths.task_dir("task-001").exists());
+    }
+
+    #[test]
+    fn reenable_resets_every_anchor_only_when_transitioning_from_disabled() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let paths = GoldBandPaths::new(repo_root);
+        let store = super::ScheduledTaskStore::new(paths);
+        let original = Utc.with_ymd_and_hms(2026, 8, 1, 1, 0, 0).unwrap();
+        let mut definition = ScheduledTaskDefinition::new(
+            "project-a",
+            "scheduled-task-001",
+            "direct",
+            ScheduleSpec::every(1, "hours", original).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        store.save(&definition).unwrap();
+
+        let still_enabled = store.set_enabled(definition.id(), true).unwrap();
+        assert_eq!(still_enabled.schedule.anchor_at(), original);
+
+        definition = store.set_enabled(definition.id(), false).unwrap();
+        let reenabled = store.set_enabled(definition.id(), true).unwrap();
+        assert_ne!(reenabled.schedule.anchor_at(), original);
     }
 
     #[test]

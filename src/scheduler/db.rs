@@ -1,7 +1,9 @@
+use super::ScheduledTaskDefinition;
 use super::occurrence::{
     ClaimResult, OccurrenceLinks, OccurrenceStatus, OccurrenceTriggerKind, ScheduledError,
     ScheduledErrorCode, ScheduledOccurrence,
 };
+use super::store::{ScheduledTaskStore, ScheduledTriggerRecord};
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::path::Path;
@@ -16,8 +18,18 @@ const BUSY_TIMEOUT_MILLIS: u64 = 5_000;
 pub enum SchedulerDatabaseError {
     #[error("scheduler sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("scheduler storage error: {0}")]
+    Io(#[from] std::io::Error),
     #[error("scheduler JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("legacy scheduler store error: {0}")]
+    LegacyStore(String),
+    #[error("legacy scheduler migration conflict for {job_id}: {field}={value}")]
+    MigrationConflict {
+        job_id: String,
+        field: String,
+        value: String,
+    },
     #[error("invalid scheduler value: {0}")]
     InvalidValue(String),
 }
@@ -39,6 +51,13 @@ impl std::fmt::Debug for ScheduledTaskDatabase {
 
 impl ScheduledTaskDatabase {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)?;
+        }
         let connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_millis(BUSY_TIMEOUT_MILLIS))?;
         connection.execute_batch(
@@ -50,6 +69,152 @@ impl ScheduledTaskDatabase {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
+    }
+
+    pub fn import_legacy_store(&self, store: &ScheduledTaskStore) -> Result<usize> {
+        let definitions = store
+            .list()
+            .map_err(|error| SchedulerDatabaseError::LegacyStore(error.to_string()))?;
+        let mut imported = 0;
+        for definition in definitions {
+            let triggers = store
+                .list_triggers(definition.id())
+                .map_err(|error| SchedulerDatabaseError::LegacyStore(error.to_string()))?;
+            imported += self.import_legacy_definition(&definition, &triggers)?;
+        }
+        Ok(imported)
+    }
+
+    pub fn import_legacy_definition(
+        &self,
+        definition: &ScheduledTaskDefinition,
+        triggers: &[ScheduledTriggerRecord],
+    ) -> Result<usize> {
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let definition_json = serde_json::to_string(definition)?;
+        let existing_definition = transaction
+            .query_row(
+                "SELECT project_id, enabled, definition_json, created_at, updated_at
+                 FROM scheduled_jobs WHERE id = ?1",
+                params![definition.id()],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        match existing_definition {
+            None => {
+                transaction.execute(
+                    "INSERT INTO scheduled_jobs (
+                         id, project_id, enabled, definition_json, created_at, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        definition.id(),
+                        definition.project_id,
+                        definition.enabled,
+                        definition_json,
+                        timestamp_millis(definition.created_at),
+                        timestamp_millis(definition.updated_at),
+                    ],
+                )?;
+            }
+            Some((_, _, Some(existing_json), _, _)) if existing_json != definition_json => {
+                return Err(SchedulerDatabaseError::MigrationConflict {
+                    job_id: definition.id().to_string(),
+                    field: "definition_json".to_string(),
+                    value: existing_json,
+                });
+            }
+            Some((_, _, None, _, _)) => {
+                transaction.execute(
+                    "UPDATE scheduled_jobs
+                     SET project_id = ?2, enabled = ?3, definition_json = ?4,
+                         created_at = ?5, updated_at = ?6
+                     WHERE id = ?1",
+                    params![
+                        definition.id(),
+                        definition.project_id,
+                        definition.enabled,
+                        definition_json,
+                        timestamp_millis(definition.created_at),
+                        timestamp_millis(definition.updated_at),
+                    ],
+                )?;
+            }
+            Some((_, _, Some(_), _, _)) => {}
+        }
+
+        let mut imported = 0;
+        for trigger in triggers {
+            if trigger.scheduled_task_id != definition.id() {
+                return Err(SchedulerDatabaseError::MigrationConflict {
+                    job_id: definition.id().to_string(),
+                    field: "scheduled_task_id".to_string(),
+                    value: trigger.scheduled_task_id.clone(),
+                });
+            }
+            let occurrence_id = legacy_occurrence_id(definition.id(), &trigger.id);
+            let status = legacy_trigger_status(&trigger.status)?;
+            let existing_by_id = load_occurrence_by_id_tx(&transaction, &occurrence_id)?;
+            let existing_by_key = load_occurrence_by_key(
+                &transaction,
+                definition.id(),
+                trigger.scheduled_at,
+                OccurrenceTriggerKind::Scheduled,
+            )?;
+
+            if let Some(existing) = existing_by_id {
+                if !legacy_occurrence_matches(&existing, &occurrence_id, trigger, status) {
+                    return Err(SchedulerDatabaseError::MigrationConflict {
+                        job_id: definition.id().to_string(),
+                        field: "occurrence_id".to_string(),
+                        value: occurrence_id,
+                    });
+                }
+                continue;
+            }
+            if let Some(_existing) = existing_by_key {
+                return Err(SchedulerDatabaseError::MigrationConflict {
+                    job_id: definition.id().to_string(),
+                    field: "scheduled_at".to_string(),
+                    value: trigger.scheduled_at.to_rfc3339(),
+                });
+            }
+
+            let finished_at = status
+                .is_terminal()
+                .then_some(timestamp_millis(trigger.updated_at));
+            transaction.execute(
+                "INSERT INTO scheduled_occurrences (
+                     id, job_id, scheduled_at, trigger_kind, status, attempt,
+                     task_id, run_id, finished_at, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, 'scheduled', ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    occurrence_id,
+                    definition.id(),
+                    timestamp_millis(trigger.scheduled_at),
+                    status.to_string(),
+                    trigger.attempts,
+                    trigger.task_id,
+                    trigger.run_id,
+                    finished_at,
+                    timestamp_millis(trigger.created_at),
+                    timestamp_millis(trigger.updated_at),
+                ],
+            )?;
+            imported += 1;
+        }
+
+        transaction.commit()?;
+        Ok(imported)
     }
 
     pub fn create_or_get_occurrence(
@@ -414,6 +579,40 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn legacy_occurrence_id(job_id: &str, trigger_id: &str) -> String {
+    format!("legacy:{job_id}:{trigger_id}")
+}
+
+fn legacy_trigger_status(value: &str) -> Result<OccurrenceStatus> {
+    match value {
+        "completed" | "succeeded" => Ok(OccurrenceStatus::Succeeded),
+        "failed" => Ok(OccurrenceStatus::Failed),
+        "skipped" => Ok(OccurrenceStatus::Skipped),
+        "missed" => Ok(OccurrenceStatus::Missed),
+        "pending" => Ok(OccurrenceStatus::Pending),
+        "running" => Ok(OccurrenceStatus::Running),
+        "retrying" => Ok(OccurrenceStatus::Retrying),
+        "attention_required" => Ok(OccurrenceStatus::AttentionRequired),
+        other => Err(SchedulerDatabaseError::InvalidValue(format!(
+            "unsupported legacy trigger status: {other}"
+        ))),
+    }
+}
+
+fn legacy_occurrence_matches(
+    occurrence: &ScheduledOccurrence,
+    occurrence_id: &str,
+    trigger: &ScheduledTriggerRecord,
+    status: OccurrenceStatus,
+) -> bool {
+    occurrence.id == occurrence_id
+        && occurrence.scheduled_at.timestamp_millis() == trigger.scheduled_at.timestamp_millis()
+        && occurrence.status == status
+        && occurrence.attempt == trigger.attempts
+        && occurrence.task_id == trigger.task_id
+        && occurrence.run_id == trigger.run_id
+}
+
 fn ensure_job_row(transaction: &Transaction<'_>, job_id: &str, now: DateTime<Utc>) -> Result<()> {
     transaction.execute(
         "INSERT OR IGNORE INTO scheduled_jobs (id, created_at, updated_at)
@@ -579,6 +778,8 @@ fn to_conversion_error(error: impl std::fmt::Display) -> rusqlite::Error {
 mod tests {
     use super::ScheduledTaskDatabase;
     use crate::scheduler::occurrence::{ClaimResult, OccurrenceStatus, OccurrenceTriggerKind};
+    use crate::scheduler::store::{ScheduledTaskStore, ScheduledTriggerRecord};
+    use crate::scheduler::{OverlapPolicy, ScheduleSpec, ScheduledTaskDefinition};
     use camino::Utf8PathBuf;
     use chrono::{Duration, TimeZone, Utc};
     use std::sync::{Arc, Barrier};
@@ -610,6 +811,18 @@ mod tests {
             .unwrap();
         assert_ne!(first.id, manual.id);
         assert_eq!(database.list_occurrences("job-1", 10).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn open_creates_missing_database_parent_directory() {
+        let temp = tempdir().unwrap();
+        let db_path =
+            Utf8PathBuf::from_path_buf(temp.path().join("nested").join("scheduled-tasks.db"))
+                .unwrap();
+
+        ScheduledTaskDatabase::open(&db_path).unwrap();
+
+        assert!(db_path.exists());
     }
 
     #[test]
@@ -867,5 +1080,95 @@ mod tests {
         assert_eq!(current[0].trigger_kind, OccurrenceTriggerKind::Scheduled);
         assert_eq!(current[0].status, OccurrenceStatus::Missed);
         assert!(current[0].finished_at.is_some());
+    }
+
+    #[test]
+    fn legacy_json_definition_import_is_idempotent() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let paths = crate::storage::GoldBandPaths::new(repo_root);
+        let store = ScheduledTaskStore::new(paths);
+        let definition = ScheduledTaskDefinition::new(
+            "project-a",
+            "scheduled-task-legacy",
+            "direct",
+            ScheduleSpec::at(Utc.with_ymd_and_hms(2026, 8, 3, 12, 0, 0).unwrap()),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        store.save(&definition).unwrap();
+        store
+            .append_trigger(ScheduledTriggerRecord::new(
+                definition.id(),
+                definition.created_at,
+                "completed",
+                Some("task-1".to_string()),
+                Some("run-1".to_string()),
+                1,
+            ))
+            .unwrap();
+
+        let database = ScheduledTaskDatabase::open(temp.path().join("scheduled-tasks.db")).unwrap();
+        assert_eq!(database.import_legacy_store(&store).unwrap(), 1);
+        assert_eq!(database.import_legacy_store(&store).unwrap(), 0);
+        let history = database.list_occurrences(definition.id(), 10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].task_id.as_deref(), Some("task-1"));
+        assert_eq!(history[0].run_id.as_deref(), Some("run-1"));
+        assert_eq!(history[0].status, OccurrenceStatus::Succeeded);
+    }
+
+    #[test]
+    fn legacy_import_rejects_conflicting_ids() {
+        let temp = tempdir().unwrap();
+        let database = ScheduledTaskDatabase::open(temp.path().join("scheduled-tasks.db")).unwrap();
+        let first = ScheduledTaskDefinition::new(
+            "project-a",
+            "scheduled-task-conflict",
+            "direct",
+            ScheduleSpec::at(Utc.with_ymd_and_hms(2026, 8, 3, 12, 0, 0).unwrap()),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        database.import_legacy_definition(&first, &[]).unwrap();
+
+        let mut conflicting = first.clone();
+        conflicting.instruction = "different instruction".to_string();
+        let result = database.import_legacy_definition(&conflicting, &[]);
+        assert!(matches!(
+            result,
+            Err(super::SchedulerDatabaseError::MigrationConflict { .. })
+        ));
+    }
+
+    #[test]
+    fn legacy_import_rejects_conflicting_timestamps() {
+        let temp = tempdir().unwrap();
+        let database = ScheduledTaskDatabase::open(temp.path().join("scheduled-tasks.db")).unwrap();
+        let scheduled_at = Utc.with_ymd_and_hms(2026, 8, 3, 12, 0, 0).unwrap();
+        let definition = ScheduledTaskDefinition::new(
+            "project-a",
+            "scheduled-task-timestamp-conflict",
+            "direct",
+            ScheduleSpec::at(scheduled_at),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        let mut first =
+            ScheduledTriggerRecord::new(definition.id(), scheduled_at, "completed", None, None, 1);
+        first.id = "trigger-001".to_string();
+        database
+            .import_legacy_definition(&definition, &[first])
+            .unwrap();
+
+        let mut second =
+            ScheduledTriggerRecord::new(definition.id(), scheduled_at, "completed", None, None, 1);
+        second.id = "trigger-002".to_string();
+        let result = database.import_legacy_definition(&definition, &[second]);
+        assert!(matches!(
+            result,
+            Err(super::SchedulerDatabaseError::MigrationConflict { field, .. })
+                if field == "scheduled_at"
+        ));
     }
 }

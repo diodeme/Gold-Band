@@ -17,6 +17,10 @@
 
 `ScheduledTaskDatabase` 使用独立的 `GoldBandPaths::scheduler_db_path()`，与搜索数据库保持分离。数据库启用 WAL 和 busy timeout，维护单例 schema version、`scheduled_jobs` 与 `scheduled_occurrences`；occurrence 通过 `(job_id, scheduled_at, trigger_kind)` 唯一约束去重。claim、续租、终态回写和过期 lease 恢复均在事务中执行，并在写入条件中校验 owner 与 lease，且跨 SQLite 连接的竞争也只能产生一个 running owner。仓储只保存 `SCHEDULED_*` 错误码及结构化参数，不生成面向用户的错误文案。
 
+### Phase 2 repository and time semantics (2026-08-03)
+
+旧 `ScheduledTaskStore` 的 definition/trigger 可以按 definition 事务导入 SQLite；重复导入是 no-op，definition ID 或 `(job_id, scheduled_at, trigger_kind)` 冲突会返回类型化 migration error，Task/Run 链接和完整 content snapshot 保留在 definition/occurrence 数据中。默认时区通过系统 IANA 时区解析，Hourly 计算下一个本地整点；DST gap 跳过无效本地时间，DST overlap 按绝对时间选择第一个有效 occurrence。Every 只有在启用转换或 interval/unit 变化时重置 anchor。
+
 ## occurrence 生命周期
 
 ```text

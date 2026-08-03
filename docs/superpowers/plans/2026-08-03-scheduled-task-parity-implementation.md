@@ -251,3 +251,10 @@ Expected: all commands exit 0; any pre-existing warning is reported separately f
 - [ ] **Step 3: Review the final diff and commit documentation**
 
 Run: `git status --short`, `git diff --stat`, and `git log -1 --oneline`. Commit: `git add docs && git commit -m "docs: record verified scheduled task parity"`.
+
+### Task 3 implementation checkpoint (2026-08-03)
+
+- [x] Added scheduled origin propagation to lifecycle events and background App clones.
+- [x] Replaced JSON cursor polling with SQLite definitions, transactional occurrence claim/lease/finish, startup missed-point handling, and bounded queue retry/skip.
+- [x] Added lifecycle completion mapping for RunCompleted, ACP turn failure, permission request, and user input intervention.
+- [x] Synchronized scheduled task CRUD commands with SQLite definitions and added regression tests for runtime lifecycle behavior.

@@ -100,6 +100,7 @@ fn run() -> anyhow::Result<()> {
         .setup(|app| {
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
+            scheduled_runtime::start(app.handle().clone());
             if let Ok(runtime_app) = state.app() {
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
                 let _ = runtime_app.recover_interrupted_running_sessions();
@@ -146,7 +147,6 @@ fn run() -> anyhow::Result<()> {
             retry_pending_startup_install(&app.handle().clone());
             start_update_polling(app.handle().clone());
             start_heartbeat_polling(app.handle().clone());
-            scheduled_runtime::start(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {

@@ -191,6 +191,9 @@ pub fn set_scheduled_task_enabled(
     let definition = store
         .set_enabled(&scheduled_task_id, enabled)
         .map_err(command_error)?;
+    gold_band::scheduler::db::ScheduledTaskDatabase::open(app.paths.scheduler_db_path())
+        .and_then(|database| database.save_job_definition(&definition))
+        .map_err(|error| command_error(anyhow::anyhow!(error)))?;
     crate::scheduled_runtime::emit_scheduled_task_updated(&app_handle, &definition);
     let workspace_name = workspace_name_for_project(&state_config, &definition.project_id);
     Ok(
@@ -291,6 +294,9 @@ pub fn create_scheduled_task(
     gold_band::scheduler::store::ScheduledTaskStore::new(app.paths.clone())
         .save(&definition)
         .map_err(command_error)?;
+    gold_band::scheduler::db::ScheduledTaskDatabase::open(app.paths.scheduler_db_path())
+        .and_then(|database| database.save_job_definition(&definition))
+        .map_err(|error| command_error(anyhow::anyhow!(error)))?;
     crate::scheduled_runtime::emit_scheduled_task_updated(&app_handle, &definition);
     let workspace_name = workspace_name_for_project(&app_state, &definition.project_id);
     Ok(
@@ -491,6 +497,9 @@ pub fn update_scheduled_task(
     }
     definition.updated_at = chrono::Utc::now();
     store.update(&definition).map_err(command_error)?;
+    gold_band::scheduler::db::ScheduledTaskDatabase::open(app.paths.scheduler_db_path())
+        .and_then(|database| database.save_job_definition(&definition))
+        .map_err(|error| command_error(anyhow::anyhow!(error)))?;
     crate::scheduled_runtime::emit_scheduled_task_updated(&app_handle, &definition);
     Ok(crate::view_models_conversation::ScheduledTaskEditVm::from_definition(&definition))
 }
@@ -512,6 +521,9 @@ pub fn delete_scheduled_task(
         ));
     }
     store.delete(&scheduled_task_id).map_err(command_error)?;
+    gold_band::scheduler::db::ScheduledTaskDatabase::open(app.paths.scheduler_db_path())
+        .and_then(|database| database.delete_job(&scheduled_task_id))
+        .map_err(|error| command_error(anyhow::anyhow!(error)))?;
     crate::scheduled_runtime::emit_scheduled_task_updated(&app_handle, &definition);
     Ok(())
 }

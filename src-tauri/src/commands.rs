@@ -403,6 +403,7 @@ fn emit_acp_turn_finished(
             turn_id,
         ),
         occurred_at: current_timestamp(),
+        scheduled_occurrence_id: None,
         task_id: locator.task_id.clone(),
         run_id: locator.run_id.clone(),
         round_id: locator.round_id.clone(),
@@ -1621,6 +1622,8 @@ fn maybe_emit_permission_intervention(
             PERMISSION_REQUESTED_DEDUP_SUFFIX,
         ),
         occurred_at: current_timestamp(),
+        scheduled_occurrence_id: app
+            .and_then(|value| value.scheduled_occurrence_id().map(str::to_string)),
         task_id: context.task_id.clone(),
         run_id: context.run_id.clone(),
         round_id: context.round_id.clone(),
@@ -1656,6 +1659,8 @@ fn maybe_emit_elicitation_intervention(
             ELICITATION_REQUESTED_DEDUP_SUFFIX,
         ),
         occurred_at: current_timestamp(),
+        scheduled_occurrence_id: app
+            .and_then(|value| value.scheduled_occurrence_id().map(str::to_string)),
         task_id: context.task_id.clone(),
         run_id: context.run_id.clone(),
         round_id: context.round_id.clone(),
@@ -2105,6 +2110,39 @@ pub async fn send_acp_prompt(
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
+    send_acp_prompt_with_app(
+        app_handle,
+        app,
+        project_id,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        prompt,
+        prompt_id,
+        outer_node_id,
+        outer_attempt_id,
+        attachment_paths,
+    )
+    .await
+}
+
+pub(crate) async fn send_acp_prompt_with_app(
+    app_handle: AppHandle,
+    app: App,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    prompt: String,
+    prompt_id: Option<String>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    attachment_paths: Option<Vec<String>>,
+) -> CommandResult<Option<AcpSessionVm>> {
     let locator = AttemptLocator::new(
         task_id.clone(),
         run_id.clone(),
@@ -2511,8 +2549,8 @@ pub async fn send_acp_prompt(
     emit_acp_turn_finished(&app_for_emit, &locator, &turn_id, &agent_label, outcome);
 
     // Fire-and-forget: index this attempt for cross-session search
-    spawn_index_attempt(
-        state.inner(),
+    spawn_index_attempt_for_app(
+        &app_for_emit,
         &task_id_for_emit,
         &run_id_for_emit,
         &round_id_for_emit,
@@ -2736,8 +2774,30 @@ fn spawn_index_attempt(
     outer_attempt_id: Option<&str>,
 ) {
     let Ok(app) = state.app() else { return };
-    let attempt_dir = resolve_acp_attempt_dir(
+    spawn_index_attempt_for_app(
         &app,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+}
+
+fn spawn_index_attempt_for_app(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<&str>,
+    outer_attempt_id: Option<&str>,
+) {
+    let attempt_dir = resolve_acp_attempt_dir(
+        app,
         task_id,
         run_id,
         round_id,
@@ -4720,6 +4780,7 @@ mod tests {
         let paused = conversation_run_state_update_for_event(RuntimeLifecycleEvent::RunPaused {
             event_id: "event-paused".to_string(),
             occurred_at: "2026-06-25T00:00:00Z".to_string(),
+            scheduled_occurrence_id: None,
             task_id: "task-001".to_string(),
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
@@ -4742,6 +4803,7 @@ mod tests {
             conversation_run_state_update_for_event(RuntimeLifecycleEvent::RunCompleted {
                 event_id: "event-completed".to_string(),
                 occurred_at: "2026-06-25T00:00:01Z".to_string(),
+                scheduled_occurrence_id: None,
                 task_id: "task-001".to_string(),
                 run_id: "run-001".to_string(),
                 round_id: "round-001".to_string(),

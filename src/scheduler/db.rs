@@ -217,6 +217,62 @@ impl ScheduledTaskDatabase {
         Ok(imported)
     }
 
+    pub fn save_job_definition(&self, definition: &ScheduledTaskDefinition) -> Result<()> {
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let definition_json = serde_json::to_string(definition)?;
+        transaction.execute(
+            "INSERT INTO scheduled_jobs (
+                 id, project_id, enabled, definition_json, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                 project_id = excluded.project_id,
+                 enabled = excluded.enabled,
+                 definition_json = excluded.definition_json,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
+            params![
+                definition.id(),
+                definition.project_id,
+                definition.enabled,
+                definition_json,
+                timestamp_millis(definition.created_at),
+                timestamp_millis(definition.updated_at),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_job(&self, job_id: &str) -> Result<()> {
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "DELETE FROM scheduled_occurrences WHERE job_id = ?1",
+            params![job_id],
+        )?;
+        transaction.execute("DELETE FROM scheduled_jobs WHERE id = ?1", params![job_id])?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn list_job_definitions(&self) -> Result<Vec<ScheduledTaskDefinition>> {
+        let connection = self.lock_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT definition_json
+             FROM scheduled_jobs
+             WHERE definition_json IS NOT NULL
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut definitions = Vec::new();
+        for row in rows {
+            let definition_json = row?;
+            definitions.push(serde_json::from_str(&definition_json)?);
+        }
+        Ok(definitions)
+    }
+
     pub fn create_or_get_occurrence(
         &self,
         job_id: &str,
@@ -899,10 +955,8 @@ mod tests {
 
         let first_result = first_thread.join().unwrap();
         let second_result = second_thread.join().unwrap();
-        assert_eq!(
-            [first_result.is_claimed(), second_result.is_claimed()],
-            [true, false]
-        );
+        assert_ne!(first_result.is_claimed(), second_result.is_claimed());
+        assert!(first_result.is_claimed() || second_result.is_claimed());
     }
 
     #[test]

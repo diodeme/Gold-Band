@@ -41,7 +41,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   api.listWorkspaceDirectory.mockImplementation(async (_projectId: string, path: string) => (
-    path === '' ? [directory('src')] : path === 'src' ? [directory('nested', 'src/nested')] : [file('main.rs', 'src/nested/main.rs')]
+    path === '' ? [directory('src'), file('README.md')] : path === 'src' ? [directory('nested', 'src/nested')] : [file('main.rs', 'src/nested/main.rs')]
   ));
 });
 
@@ -122,6 +122,47 @@ describe('FileExplorerStore lifecycle', () => {
     expect(api.listWorkspaceDirectory).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps atomic-save rename events outside the directory invalidation boundary', async () => {
+    const store = createStore();
+    await store.loadRoot('project-1');
+    const roots = store.snapshot('project-1').roots;
+
+    store.applyFileChange({
+      projectId: 'project-1',
+      canonicalPath: 'D:\\repo\\README.md',
+      kind: 'renamed',
+      revision: { byteLength: 20, modifiedAtNs: '2', contentHash: 'saved' },
+      operationId: 'write-1',
+    });
+    store.applyFileChange({
+      projectId: 'project-1',
+      canonicalPath: 'D:\\repo\\.README.md.a1B2c3',
+      kind: 'renamed',
+      revision: null,
+      operationId: null,
+    });
+    await vi.advanceTimersByTimeAsync(FALLBACK_WORKSPACE_FILES.watchDebounceMs);
+
+    expect(store.snapshot('project-1').roots).toBe(roots);
+    expect(api.listWorkspaceDirectory).toHaveBeenCalledTimes(1);
+  });
+
+  it('also treats an external atomic replacement of a known path as content-only', async () => {
+    const store = createStore();
+    await store.loadRoot('project-1');
+
+    store.applyFileChange({
+      projectId: 'project-1',
+      canonicalPath: 'D:\\repo\\README.md',
+      kind: 'renamed',
+      revision: { byteLength: 20, modifiedAtNs: '2', contentHash: 'external-save' },
+      operationId: null,
+    });
+    await vi.advanceTimersByTimeAsync(FALLBACK_WORKSPACE_FILES.watchDebounceMs);
+
+    expect(api.listWorkspaceDirectory).toHaveBeenCalledTimes(1);
+  });
+
   it('invalidates directory structure for create events', async () => {
     const store = createStore();
     await store.loadRoot('project-1');
@@ -129,6 +170,22 @@ describe('FileExplorerStore lifecycle', () => {
       projectId: 'project-1',
       canonicalPath: 'D:\\repo\\new.md',
       kind: 'created',
+      revision: { byteLength: 0, modifiedAtNs: '2', contentHash: 'new' },
+      operationId: null,
+    });
+
+    await vi.advanceTimersByTimeAsync(FALLBACK_WORKSPACE_FILES.watchDebounceMs);
+
+    expect(api.listWorkspaceDirectory).toHaveBeenCalledTimes(2);
+  });
+
+  it('invalidates directory structure when a known node is removed', async () => {
+    const store = createStore();
+    await store.loadRoot('project-1');
+    store.applyFileChange({
+      projectId: 'project-1',
+      canonicalPath: 'D:\\repo\\README.md',
+      kind: 'removed',
       revision: null,
       operationId: null,
     });

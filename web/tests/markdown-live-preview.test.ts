@@ -42,11 +42,14 @@ describe('Markdown live preview integration', () => {
     expect(nodeNames).toContain('Table');
   });
 
-  it('uses one CodeMirror view and rebuilds stable mode profiles with semantic viewport state', () => {
+  it('keeps one CodeMirror view and reconfigures stable mode profiles with semantic viewport state', () => {
     expect(editorSource).toContain('state.doc.toString()');
     expect(editorSource).toContain('state.toJSON({ history: historyField })');
     expect(editorSource).toContain('captureEditorViewportAnchor');
-    expect(editorSource).toContain('key={editorProfileKey}');
+    expect(editorSource).toContain('new Compartment()');
+    expect(editorSource).toContain('modeCompartment.reconfigure(currentModeExtensions())');
+    expect(editorSource).toContain('predecodeMarkdownImagesNearViewport');
+    expect(editorSource).toContain('basicSetup={false}');
     expect(editorSource).toContain('appliedTargetRevisionsRef.current.get(intent.documentKey)');
     expect(editorSource).toContain('restoreEditorViewportAnchor');
     expect(editorSource).toContain("EditorView.scrollIntoView(position, {");
@@ -59,9 +62,11 @@ describe('Markdown live preview integration', () => {
     expect(editorSource).not.toContain('coordsAtPos');
     expect(editorSource).not.toContain('ResizeObserver');
     expect(editorSource).not.toContain('view.state.doc.toString() !== value');
-    expect(editorSource).toContain('basicSetup={basicSetup}');
+    expect(editorSource).toContain('basicSetup={false}');
     expect(editorSource).toContain('onChange={handleChange}');
     expect(editorSource).not.toContain('sourceEditorRef');
+    expect(editorSource).not.toContain('key={editorProfileKey}');
+    expect(editorSource).not.toContain('PendingEditorRebuild');
     expect(editorSource.match(/<CodeMirror/gu)).toHaveLength(1);
   });
 

@@ -54,11 +54,24 @@ describe('WorkspaceFileEditor target intent', () => {
     }
   });
 
-  it('restores the same semantic viewport through preview-source-preview rebuilds', async () => {
+  it('reconfigures preview-source-preview on one view after predecoding visible images', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
-    const value = Array.from({ length: 100 }, (_, index) => `paragraph ${index + 1}`).join('\n\n');
+    const decode = vi.fn().mockResolvedValue(undefined);
+    const originalDecode = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'decode');
+    Object.defineProperty(HTMLImageElement.prototype, 'decode', { configurable: true, value: decode });
+    const value = `![Diagram](diagram.png)\n\n${Array.from({ length: 100 }, (_, index) => `paragraph ${index + 1}`).join('\n\n')}`;
+    const markdownImages = new Map([['diagram.png', {
+      kind: 'ready' as const,
+      rawSrc: 'diagram.png',
+      canonicalPath: 'D:/repo/diagram.png',
+      previewGrant: { token: 'preview-mode-roundtrip', expiresAtMs: String(Date.now() + 300_000) },
+      mimeType: 'image/png',
+      width: 640,
+      height: 360,
+      animated: false,
+    }]]);
     function ModeHarness() {
       const [mode, setMode] = React.useState<'source' | 'live-preview'>('live-preview');
       return (
@@ -77,6 +90,7 @@ describe('WorkspaceFileEditor target intent', () => {
             initialStateJson={null}
             onPersistState={() => undefined}
             markdownMode={mode}
+            markdownImages={markdownImages}
             onMarkdownModeChange={setMode}
           />
         </TooltipProvider>
@@ -93,18 +107,24 @@ describe('WorkspaceFileEditor target intent', () => {
     try {
       await act(async () => root.render(<ModeHarness />));
       await act(async () => new Promise((resolve) => setTimeout(resolve, 600)));
+      const originalView = EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement);
 
       await switchMode();
       await vi.waitFor(() => expect(viewportRestoreCalls()).toHaveLength(1), { timeout: 5_000 });
+      expect(EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement)).toBe(originalView);
       await switchMode();
       await vi.waitFor(() => expect(viewportRestoreCalls()).toHaveLength(2), { timeout: 5_000 });
 
       const viewportRestores = viewportRestoreCalls();
       expect(viewportRestores).toHaveLength(2);
       expect(viewportRestores[1]).toEqual(viewportRestores[0]);
+      expect(decode).toHaveBeenCalledOnce();
+      expect(EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement)).toBe(originalView);
       expect(container.querySelectorAll('.cm-editor')).toHaveLength(1);
     } finally {
       await act(async () => root.unmount());
+      if (originalDecode) Object.defineProperty(HTMLImageElement.prototype, 'decode', originalDecode);
+      else Reflect.deleteProperty(HTMLImageElement.prototype, 'decode');
     }
   });
 

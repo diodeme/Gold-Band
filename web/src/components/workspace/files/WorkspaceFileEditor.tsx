@@ -52,8 +52,6 @@ interface PendingEditorRebuild {
 }
 
 const EMPTY_MARKDOWN_IMAGES = new Map<string, MarkdownImageState>();
-const VIEWPORT_RESTORE_PASSES = 3;
-const VIEWPORT_RESTORE_EPSILON_PX = 0.5;
 
 const workspaceEditorTheme = EditorView.theme({
   '&': { height: '100%', backgroundColor: 'transparent', color: 'var(--foreground)' },
@@ -98,10 +96,14 @@ export function captureEditorViewportAnchor(view: EditorView): EditorViewportAnc
   };
 }
 
-function viewportAnchorDocumentTop(view: EditorView, anchor: EditorViewportAnchor) {
+export function restoreEditorViewportAnchor(view: EditorView, anchor: EditorViewportAnchor) {
   const position = Math.min(view.state.doc.length, Math.max(0, anchor.position));
-  const block = view.lineBlockAt(position);
-  return block.top - anchor.blockOffsetTop;
+  view.dispatch({
+    effects: EditorView.scrollIntoView(position, {
+      y: 'start',
+      yMargin: Math.max(0, anchor.blockOffsetTop),
+    }),
+  });
 }
 
 function serializeEditorState(view: EditorView) {
@@ -306,36 +308,11 @@ export function WorkspaceFileEditor({
       || !viewport
       || (target?.line && targetRevision > pendingRebuild.targetRevisionAtCapture)
     ) return;
-    let cancelled = false;
-    let frame = 0;
-    let pass = 0;
-    const restore = () => {
-      const view = editorRef.current?.view;
-      if (!view || cancelled) return;
-      view.requestMeasure({
-        read: () => {
-          const currentTop = view.scrollDOM.getBoundingClientRect().top - view.documentTop;
-          return { currentTop, targetTop: viewportAnchorDocumentTop(view, viewport) };
-        },
-        write: ({ currentTop, targetTop }) => {
-          if (cancelled) return;
-          const delta = targetTop - currentTop;
-          if (Math.abs(delta) > VIEWPORT_RESTORE_EPSILON_PX) view.scrollDOM.scrollTop += delta;
-          pass += 1;
-          if (pass < VIEWPORT_RESTORE_PASSES) {
-            frame = requestAnimationFrame(restore);
-          } else {
-            pendingRebuildRef.current = null;
-          }
-        },
-      });
-    };
-    frame = requestAnimationFrame(restore);
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(frame);
-    };
-  }, [activeEditorReady, documentKey, editorProfileKey, pendingRebuild, target?.line, targetRevision]);
+    const view = activeEditorView;
+    if (!view || editorRef.current?.view !== view) return;
+    restoreEditorViewportAnchor(view, viewport);
+    if (pendingRebuildRef.current === pendingRebuild) pendingRebuildRef.current = null;
+  }, [activeEditorReady, activeEditorView, documentKey, editorProfileKey, pendingRebuild, target?.line, targetRevision]);
 
   useEffect(() => () => {
     if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);

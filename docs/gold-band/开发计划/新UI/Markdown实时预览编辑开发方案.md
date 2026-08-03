@@ -15,7 +15,7 @@
 1. Markdown 默认以实时预览编辑模式打开。
 2. 用户直接在渲染后的标题、列表、强调、链接、代码块和表格等内容中编辑；当前编辑位置按组件成熟交互显露必要 Markdown 标记。
 3. 编辑器右上角提供“一键复制源码”和“切换源码/实时预览”两个悬浮按钮。
-4. 两种模式共享同一份 Markdown 源码、同一 CodeMirror 撤销历史、选区、滚动位置、自动保存队列和文件 revision。
+4. 两种模式共享同一份 Markdown 源码、自动保存队列和文件 revision；实时预览与源码视图分别保留原生 CodeMirror 撤销历史，切换不会销毁实时预览的表格、选区和滚动状态。
 5. Markdown 内图片正常展示，但本地图片只能通过现有 `gold-band-preview://token` 安全协议加载，不能把本地路径直接交给 WebView。
 6. 工作区内文件和用户显式打开的工作区外 Markdown 都允许编辑和近实时自动保存。
 
@@ -39,7 +39,9 @@
 - 编辑通过 300ms 合并、单文件串行写入、expected revision 和 watcher operation id 防止乱序覆盖与自身写回环。
 - 图片已经通过 Rust 校验后签发短期 preview token，WebView 不接收可任意读取本地文件的路径。
 
-因此问题不是文件领域或保存模型的根本缺陷，而是通用源码编辑器缺少 Markdown 的视图层能力。正确做法是在同一个 CodeMirror `EditorState` 上按模式切换扩展，不创建第二份富文本状态，也不引入 DOM→Markdown 反序列化链路。
+因此问题不是文件领域或保存模型的根本缺陷，而是通用源码编辑器缺少 Markdown 的视图层能力。Markdown 原文必须继续只有一份，并由 `FileContentStore` 统一保存；预览只能是 CodeMirror decoration/widget，不创建富文本状态，也不引入 DOM→Markdown 反序列化链路。
+
+实际接入确认 Atomic 0.6.x 的 table `StateField` 在扩展动态移除后重新加入会保留失效装饰，导致源码/预览往返后表格退回原文。最终方案在源码模式期间保留并隐藏实时预览 CodeMirror，只临时显示源码 CodeMirror；两者受同一个受控 `value` 驱动，只有一个可见和可输入。该边界复用成熟组件能力，不复制上游约 1200 行表格实现。
 
 ## 5. 开源组件结论
 
@@ -53,7 +55,7 @@
 接入约束：
 
 1. 锁定精确版本 `0.6.2`，升级必须先跑 Gold Band 回归测试。
-2. 不直接使用 Atomic Editor 的 React 包装器，避免创建第二套内容、只读、保存和 history 生命周期。
+2. 不直接使用 Atomic Editor 的 React 包装器；Gold Band 统一控制内容、只读、保存和文件 revision。源码模式的临时 CodeMirror 只是同一源码的另一种输入视图，不拥有独立文件状态。
 3. 不启用其默认 `imageBlocks()`；该扩展会把 Markdown 原始地址直接赋给 `<img src>`，不满足本地文件安全边界。
 4. 不直接采用完整 Atomic 主题。只使用行为扩展，并通过 Gold Band CSS token 适配视觉。
 5. Markdown/Atomic 依赖保留在现有文件工作区动态 chunk，不能增加会话首屏主 chunk。
@@ -88,8 +90,9 @@ type MarkdownEditorMode = 'live-preview' | 'source'
 
 ### 6.3 编辑与撤销
 
-- 模式切换使用 CodeMirror extension reconfigure，不卸载编辑器，不重新创建 `EditorState`。
-- `Ctrl/Cmd+Z`、redo、选区和滚动位置跨模式连续。
+- 实时预览实例在源码模式期间保持挂载但隐藏，避免 Atomic table StateField 因动态重配失效；源码 CodeMirror 只在源码模式挂载。
+- 两个视图共享受控源码、文件 revision 和自动保存队列，只有当前可见视图响应输入。
+- 两个视图都支持原生 `Ctrl/Cmd+Z` 与 redo；预览视图自身的选区、滚动和撤销历史跨模式保持，源码视图离开前序列化 history。跨视图不承诺把另一视图产生的编辑合并为同一 undo 栈。
 - 输入继续调用现有 `onChange`，进入 `FileContentStore.updateText()` 与自动保存链路。
 - `Ctrl/Cmd+S`、失焦、切 Tab 和关闭继续 flush 当前内容。
 - 保存失败或磁盘冲突时保留内存内容和撤销历史，沿用现有恢复流程。
@@ -167,7 +170,9 @@ CodeMirror markdown language（GFM）
   + Gold Band theme/readOnly/save/target-line extensions
 ```
 
-源码模式不挂载 Atomic decoration、table widget 和图片 widget，仅保留 Markdown 语法、通用主题及文件编辑扩展。
+源码模式的可见 CodeMirror 不挂载 Atomic decoration、table widget 和图片 widget，仅保留 Markdown 语法、通用主题及文件编辑扩展；后台保留的预览实例不可见、不可聚焦，也不会建立第二份保存状态。
+
+合法 GFM 表格始终启用 `Atomic tables`。安全降级精确到“表格自身包含 Markdown 图片”，不能因为文档其他位置存在图片而关闭全部表格。含图片表格暂时显示 Markdown 原文，避免 Atomic 内部把未经授权的 `src` 交给原始 `<img>`。
 
 链接点击统一路由：
 
@@ -182,6 +187,14 @@ CodeMirror markdown language（GFM）
 - Markdown 标题接近正文，通过字重、轻量间距和细分隔表达层级，不使用文档页大标题样式。
 - 深色主题避免多层黑色卡片和强边框。
 - CodeMirror 虚拟滚动要求通过 line padding 表达垂直节奏，不对 `.cm-line` 使用会破坏高度测量的 margin。
+- 正文固定使用稳定的 Gold Band 阅读字体栈、15px 基准字号和约 78ch 阅读宽度；标题、表格和内容 padding 使用紧凑层级，不继承可能用于代码的展示型自定义字体。
+
+### 8.3 README 安全 HTML 子集
+
+- 支持单行 `<div|p align="left|center|right">`、对应闭合标签、`<br>` 和单行 `<img ...>` 的视图解释。
+- 白名单标签只生成 CodeMirror decoration、line class 和安全图片 widget，不执行 HTML，不使用 `dangerouslySetInnerHTML`。
+- HTML `<img src>` 与 Markdown 图片共用 `resolve_markdown_image`、preview token 和外部精确授权；网络 badge 默认显示紧凑占位，不主动发起追踪请求。
+- 实时预览中白名单 HTML 源码隐藏；需要修改标签时切换源码模式。未列入白名单的 HTML 保持源码显示。
 
 ## 9. Markdown 图片安全协议
 
@@ -274,7 +287,7 @@ markdownExternalImagePolicy = "confirm"
 ## 12. 性能策略
 
 1. Atomic 和 Markdown parser 只在打开 Markdown 时动态加载。
-2. 模式切换通过 extension reconfigure，不重建编辑器。
+2. 源码/预览共享同一源码和保存状态；预览实例跨模式保留，避免 Atomic table StateField 动态重配失效。
 3. 图片只解析语法树识别出的 `Image` 节点，不用全量 DOM 扫描。
 4. 文档修改仅重算受影响图片引用；普通文字输入不重复解析全部图片。
 5. 相同 canonical path 去重，图片请求按配置限制并发。
@@ -288,7 +301,7 @@ markdownExternalImagePolicy = "confirm"
 
 - `.md` 默认实时预览，其他文本不受影响。
 - 模式按 resource key 保存，关闭资源后释放。
-- 切换模式不改变源码、不重建 undo history。
+- 切换模式不改变源码；预览实例不卸载，源码实例保留自己的原生 undo history。
 - 复制的是当前内存源码，不是落盘旧内容。
 - 输入、撤销、redo 继续进入原自动保存队列。
 - 超阈值 Markdown 自动降级源码模式。
@@ -310,8 +323,10 @@ markdownExternalImagePolicy = "confirm"
 
 - 右上角两个悬浮按钮可见、可键盘操作、tooltip 与 aria-label 正确。
 - 标题、强调、列表、任务项、链接、代码块和表格可直接编辑。
+- 合法 GFM 表格在首次打开以及“源码→预览”往返后都保持 table widget；文档其他位置含图片不影响表格。
+- README 白名单对齐标签不显示为正文，本地 HTML 图片走 preview token，远程 badge 不静默联网。
 - 删除和新增标题文本后，最终 Markdown 源码语义正确；标记显隐按 Atomic 成熟交互执行。
-- `Ctrl/Cmd+Z`、redo 跨源码/预览模式连续。
+- 两种模式内分别支持 `Ctrl/Cmd+Z` 与 redo；切换不销毁预览视图历史。
 - 图片通过 `gold-band-preview://token` 展示，DOM 中不存在本地路径。
 - 外部目录图片只出现一次文档级确认，不逐图片打断。
 - 深色/亮色、宽屏/窄屏、长文档和多图片滚动正常。
@@ -348,10 +363,10 @@ markdownExternalImagePolicy = "confirm"
 
 ## 15. 完成标准
 
-- [ ] Markdown 默认实时预览编辑，源码模式可随时切换。
-- [ ] 两种模式共享源码、EditorState、撤销历史、选区和自动保存链路。
-- [ ] 右上角复制源码与模式切换按钮完成无障碍和轻量反馈。
-- [ ] 标题、列表、强调、链接、代码块、任务项和表格可直接编辑。
+- [x] Markdown 默认实时预览编辑，源码模式可随时切换。
+- [x] 两种模式共享源码、revision 和自动保存链路；预览实例跨切换保留，两个可见编辑视图分别具备原生撤销历史。
+- [x] 右上角复制源码与模式切换按钮完成无障碍和轻量反馈。
+- [x] 标题、列表、强调、链接、代码块、任务项和合法 GFM 表格可直接编辑。
 - [ ] Markdown 本地图片只通过安全 preview token 展示。
 - [ ] 工作区外 Markdown 同目录图片自动展示，目录外引用按文档统一确认且只授权精确引用。
 - [ ] SVG 安全栅格化；网络、UNC 和危险 scheme 不会静默加载。

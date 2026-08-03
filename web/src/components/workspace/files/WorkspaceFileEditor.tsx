@@ -35,7 +35,7 @@ interface WorkspaceFileEditorProps {
   markdownLivePreviewAvailable?: boolean;
   onMarkdownModeChange?: (mode: MarkdownEditorMode) => void;
   markdownImages?: ReadonlyMap<string, MarkdownImageState>;
-  markdownHasImages?: boolean;
+  markdownHasTableImages?: boolean;
 }
 
 const EMPTY_MARKDOWN_IMAGES = new Map<string, MarkdownImageState>();
@@ -91,13 +91,15 @@ export function WorkspaceFileEditor({
   markdownLivePreviewAvailable = true,
   onMarkdownModeChange,
   markdownImages = EMPTY_MARKDOWN_IMAGES,
-  markdownHasImages = false,
+  markdownHasTableImages = false,
 }: WorkspaceFileEditorProps) {
   const { t } = useTranslation();
   const editorRef = useRef<ReactCodeMirrorRef>(null);
+  const sourceEditorRef = useRef<ReactCodeMirrorRef>(null);
   const onSaveRef = useRef(onSave);
   const [languageExtension, setLanguageExtension] = useState<Extension | null>(null);
   const [markdownExtensions, setMarkdownExtensions] = useState<Extension[]>([]);
+  const [markdownExtensionsReady, setMarkdownExtensionsReady] = useState(markdownMode === null);
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   onSaveRef.current = onSave;
@@ -116,23 +118,28 @@ export function WorkspaceFileEditor({
 
   useEffect(() => {
     let active = true;
-    if (markdownMode !== 'live-preview' || !markdownLivePreviewAvailable) {
+    if (markdownMode === null || !markdownLivePreviewAvailable) {
       setMarkdownExtensions([]);
+      setMarkdownExtensionsReady(true);
       return () => { active = false; };
     }
-    void loadMarkdownLivePreviewExtensions(() => undefined, !markdownHasImages).then((extensions) => {
-      if (active) setMarkdownExtensions(extensions);
+    setMarkdownExtensionsReady(false);
+    void loadMarkdownLivePreviewExtensions(() => undefined, !markdownHasTableImages).then((extensions) => {
+      if (active) {
+        setMarkdownExtensions(extensions);
+        setMarkdownExtensionsReady(true);
+      }
     });
     return () => { active = false; };
-  }, [markdownHasImages, markdownLivePreviewAvailable, markdownMode]);
+  }, [markdownHasTableImages, markdownLivePreviewAvailable, markdownMode === null]);
 
   const previewMode = markdownMode === 'live-preview' && markdownLivePreviewAvailable;
   const markdownImageExtension = useMemo(
-    () => previewMode ? markdownImagePreview(markdownImages) : null,
-    [markdownImages, previewMode],
+    () => markdownMode ? markdownImagePreview(markdownImages) : null,
+    [markdownImages, markdownMode],
   );
 
-  const extensions = useMemo<Extension[]>(() => [
+  const baseExtensions = useMemo<Extension[]>(() => [
     workspaceEditorTheme,
     syntaxHighlighting(workspaceHighlightStyle),
     EditorView.lineWrapping,
@@ -140,12 +147,22 @@ export function WorkspaceFileEditor({
     EditorView.editable.of(editable),
     Prec.highest(keymap.of([{ key: 'Mod-s', preventDefault: true, run: () => { onSaveRef.current(); return true; } }])),
     ...(languageExtension ? [languageExtension] : []),
+  ], [editable, languageExtension]);
+  const previewExtensions = useMemo<Extension[]>(() => [
+    ...baseExtensions,
     ...markdownExtensions,
     ...(markdownImageExtension ? [markdownImageExtension] : []),
-  ], [editable, languageExtension, markdownExtensions, markdownImageExtension]);
+  ], [baseExtensions, markdownExtensions, markdownImageExtension]);
+  const activeEditorRef = markdownMode === 'source' ? sourceEditorRef : editorRef;
 
   useEffect(() => {
-    const view = editorRef.current?.view;
+    if (!previewMode) return;
+    const frame = requestAnimationFrame(() => editorRef.current?.view?.requestMeasure());
+    return () => cancelAnimationFrame(frame);
+  }, [previewMode]);
+
+  useEffect(() => {
+    const view = activeEditorRef.current?.view;
     if (!view || !target?.line) {
       onLocationAdjusted?.(false);
       return;
@@ -167,20 +184,26 @@ export function WorkspaceFileEditor({
       effects: EditorView.scrollIntoView(anchor, { y: 'center' }),
     });
     view.focus();
-  }, [contentRevision, onLocationAdjusted, target, targetRevision]);
+  }, [contentRevision, markdownMode, onLocationAdjusted, target, targetRevision]);
 
   useEffect(() => () => {
     if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
-    const state = editorRef.current?.view?.state;
+    const state = activeEditorRef.current?.view?.state;
     if (state) onPersistState(state.toJSON({ history: historyField }));
-  }, [onPersistState]);
+  }, [markdownMode, onPersistState]);
 
   const copySource = async () => {
-    const source = editorRef.current?.view?.state.doc.toString() ?? value;
+    const source = activeEditorRef.current?.view?.state.doc.toString() ?? value;
     await navigator.clipboard.writeText(source);
     setCopied(true);
     if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
     copiedTimerRef.current = setTimeout(() => setCopied(false), 1_500);
+  };
+
+  const switchMarkdownMode = () => {
+    const state = activeEditorRef.current?.view?.state;
+    if (state) onPersistState(state.toJSON({ history: historyField }));
+    onMarkdownModeChange?.(previewMode ? 'source' : 'live-preview');
   };
 
   return (
@@ -208,7 +231,7 @@ export function WorkspaceFileEditor({
                 variant="ghost"
                 className="size-7"
                 disabled={!markdownLivePreviewAvailable && markdownMode === 'source'}
-                onClick={() => onMarkdownModeChange?.(previewMode ? 'source' : 'live-preview')}
+                onClick={switchMarkdownMode}
                 aria-label={t(previewMode ? 'workspace.filesPanel.viewMarkdownSource' : 'workspace.filesPanel.viewMarkdownLivePreview')}
               >
                 {previewMode ? <Code2 className="size-3.5" /> : <Eye className="size-3.5" />}
@@ -218,7 +241,60 @@ export function WorkspaceFileEditor({
           </Tooltip>
         </div>
       ) : null}
-      <CodeMirror
+      {markdownMode ? (
+        <>
+          {markdownExtensionsReady ? (
+            <div className={previewMode ? 'h-full min-h-0' : 'hidden'} aria-hidden={!previewMode}>
+              <CodeMirror
+                ref={editorRef}
+                value={value}
+                height="100%"
+                theme="none"
+                basicSetup={{
+                  lineNumbers: false,
+                  foldGutter: false,
+                  highlightActiveLine: false,
+                  highlightSelectionMatches: highlight,
+                  searchKeymap: true,
+                }}
+                extensions={previewExtensions}
+                initialState={initialStateJson ? { json: initialStateJson, fields: { history: historyField } } : undefined}
+                onChange={(nextValue) => {
+                  if (nextValue !== value) onChange(nextValue);
+                }}
+                onBlur={() => onSaveRef.current()}
+                className="atomic-cm-editor workspace-markdown-live-preview h-full min-h-0 overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto"
+                aria-label="workspace-file-editor"
+              />
+            </div>
+          ) : previewMode ? (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground" aria-label="workspace-markdown-loading">…</div>
+          ) : null}
+          {!previewMode ? (
+            <CodeMirror
+              ref={sourceEditorRef}
+              value={value}
+              height="100%"
+              theme="none"
+              basicSetup={{
+                lineNumbers: true,
+                foldGutter: highlight,
+                highlightActiveLine: true,
+                highlightSelectionMatches: highlight,
+                searchKeymap: true,
+              }}
+              extensions={baseExtensions}
+              initialState={initialStateJson ? { json: initialStateJson, fields: { history: historyField } } : undefined}
+              onChange={(nextValue) => {
+                if (nextValue !== value) onChange(nextValue);
+              }}
+              onBlur={() => onSaveRef.current()}
+              className="h-full min-h-0 overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto"
+              aria-label="workspace-file-editor"
+            />
+          ) : null}
+        </>
+      ) : <CodeMirror
         ref={editorRef}
         value={value}
         height="100%"
@@ -230,13 +306,15 @@ export function WorkspaceFileEditor({
           highlightSelectionMatches: highlight,
           searchKeymap: true,
         }}
-        extensions={extensions}
+        extensions={baseExtensions}
         initialState={initialStateJson ? { json: initialStateJson, fields: { history: historyField } } : undefined}
-        onChange={onChange}
+        onChange={(nextValue) => {
+          if (nextValue !== value) onChange(nextValue);
+        }}
         onBlur={() => onSaveRef.current()}
-        className={`h-full min-h-0 overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto ${previewMode ? 'atomic-cm-editor workspace-markdown-live-preview' : ''}`}
+        className="h-full min-h-0 overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto"
         aria-label="workspace-file-editor"
-      />
+      />}
     </div>
   );
 }

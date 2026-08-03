@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   FALLBACK_WORKSPACE_LAYOUT,
   reduceWorkspaceAutoCollapse,
+  resolveRightWorkspaceRestoreWidth,
   resolveRightWorkspaceWidthFromLayout,
   resolveWorkspacePanelWidthFromLayout,
   shouldOpenRightWorkspaceSheet,
+  shouldPersistRightWorkspaceWidth,
   workspaceAutoCollapsePresentationChanged,
   workspaceLayoutProfileForPage,
   workspaceLayoutProfileForSurface,
@@ -75,6 +77,34 @@ describe('workspace auto collapse state machine', () => {
     expect(nearBoundary.left).toBe(true);
     const restored = reduceWorkspaceAutoCollapse(nearBoundary, { ...input, availableWidth: 1_050 });
     expect(restored.left).toBe(false);
+  });
+
+  it('does not restore navigation until the file workspace can keep its visible dual columns', () => {
+    const input = {
+      centerMinWidth: 360,
+      centerAutoCollapseWidth: 420,
+      sidebarWidth: 256,
+      sidebarManuallyCollapsed: false,
+      wantsRight: true,
+      rightMinWidth: 320,
+      rightWidthForStableLeftRestore: 540,
+    };
+    let state: WorkspaceAutoCollapseState = { previousWidth: 640, left: true, right: true };
+    let dualColumnsBecameVisible = false;
+
+    for (let availableWidth = 641; availableWidth <= 1_300; availableWidth += 1) {
+      state = reduceWorkspaceAutoCollapse(state, { ...input, availableWidth });
+      const visibleSidebarWidth = state.left ? 0 : input.sidebarWidth;
+      const availableRightWidth = state.right
+        ? 0
+        : availableWidth - input.centerMinWidth - visibleSidebarWidth;
+      const dualColumnsVisible = availableRightWidth >= input.rightWidthForStableLeftRestore;
+
+      if (dualColumnsVisible) dualColumnsBecameVisible = true;
+      if (dualColumnsBecameVisible) expect(dualColumnsVisible).toBe(true);
+    }
+
+    expect(state).toMatchObject({ left: false, right: false });
   });
 
   it('keeps manual intent separate from automatic collapse', () => {
@@ -164,6 +194,50 @@ describe('workspace auto collapse state machine', () => {
   it('converts the completed panel layout into a persisted right-side pixel width', () => {
     expect(resolveRightWorkspaceWidthFromLayout({ 'workspace-center': 62.5, 'workspace-right': 37.5 }, 1_600)).toBe(600);
     expect(resolveRightWorkspaceWidthFromLayout({ 'workspace-center': 100 }, 1_600)).toBeNull();
+  });
+
+  it('restores the right workspace only up to the width genuinely available to it', () => {
+    expect(resolveRightWorkspaceRestoreWidth({
+      shellWidth: 1_200,
+      preferredWidth: 760,
+      actualWidth: 360,
+      centerMinWidth: 420,
+      sidebarWidth: 256,
+      showLeft: true,
+    })).toBe(524);
+    expect(resolveRightWorkspaceRestoreWidth({
+      shellWidth: 1_500,
+      preferredWidth: 760,
+      actualWidth: 360,
+      centerMinWidth: 420,
+      sidebarWidth: 256,
+      showLeft: true,
+    })).toBe(760);
+    expect(resolveRightWorkspaceRestoreWidth({
+      shellWidth: 1_200,
+      preferredWidth: 760,
+      actualWidth: 524,
+      centerMinWidth: 420,
+      sidebarWidth: 256,
+      showLeft: true,
+    })).toBeNull();
+  });
+
+  it('uses the space released by an automatically collapsed sidebar', () => {
+    expect(resolveRightWorkspaceRestoreWidth({
+      shellWidth: 1_000,
+      preferredWidth: 760,
+      actualWidth: 320,
+      centerMinWidth: 420,
+      sidebarWidth: 256,
+      showLeft: false,
+    })).toBe(580);
+  });
+
+  it('persists right width only for a direct right-separator interaction', () => {
+    expect(shouldPersistRightWorkspaceWidth(true, true)).toBe(true);
+    expect(shouldPersistRightWorkspaceWidth(true, false)).toBe(false);
+    expect(shouldPersistRightWorkspaceWidth(false, true)).toBe(false);
   });
 
   it('keeps an automatically collapsed workspace hidden until a resource is explicitly opened', () => {

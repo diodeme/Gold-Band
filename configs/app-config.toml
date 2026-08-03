@@ -25,9 +25,9 @@ maxWidth = 960
 
 [workspaceLayout.rightWorkspace.file]
 preferredWidth = 760
-splitMinWidth = 620
+splitMinWidth = 540
 treeDefaultWidth = 280
-treeMinWidth = 220
+treeMinWidth = 200
 treeMaxWidth = 420
 
 [workspaceLayout.conversation]

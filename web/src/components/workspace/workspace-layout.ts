@@ -18,9 +18,9 @@ export const FALLBACK_WORKSPACE_LAYOUT: WorkspaceLayoutVm = {
     maxWidth: 960,
     file: {
       preferredWidth: 760,
-      splitMinWidth: 620,
+      splitMinWidth: 540,
       treeDefaultWidth: 280,
-      treeMinWidth: 220,
+      treeMinWidth: 200,
       treeMaxWidth: 420,
     },
   },
@@ -72,6 +72,7 @@ export interface WorkspaceAutoCollapseInput {
   sidebarManuallyCollapsed: boolean;
   wantsRight: boolean;
   rightMinWidth?: number;
+  rightWidthForStableLeftRestore?: number;
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -90,6 +91,7 @@ export function reduceWorkspaceAutoCollapse(
     sidebarManuallyCollapsed,
     wantsRight,
     rightMinWidth = RIGHT_WORKSPACE_MIN_WIDTH,
+    rightWidthForStableLeftRestore = rightMinWidth,
   } = input;
   if (availableWidth <= 0) return state;
 
@@ -101,6 +103,9 @@ export function reduceWorkspaceAutoCollapse(
     ? centerMinWidth
     : Math.max(centerMinWidth, centerAutoCollapseWidth);
   const needsAll = centerWidthBeforeLeftCollapse + desiredSidebarWidth + (wantsRight ? rightMinWidth : 0);
+  const needsAllForStableRestore = centerWidthBeforeLeftCollapse
+    + desiredSidebarWidth
+    + (wantsRight ? Math.max(rightMinWidth, rightWidthForStableLeftRestore) : 0);
   const needsCenterAndRight = centerMinWidth + (wantsRight ? rightMinWidth : 0);
   let left = sidebarManuallyCollapsed ? false : state.left;
   let right = wantsRight ? state.right : false;
@@ -112,7 +117,7 @@ export function reduceWorkspaceAutoCollapse(
     if (right && availableWidth > needsCenterAndRight + WORKSPACE_LAYOUT_HYSTERESIS) {
       right = false;
     }
-    if (!sidebarManuallyCollapsed && left && availableWidth > needsAll + WORKSPACE_LAYOUT_HYSTERESIS) {
+    if (!sidebarManuallyCollapsed && left && availableWidth > needsAllForStableRestore + WORKSPACE_LAYOUT_HYSTERESIS) {
       left = false;
     }
   }
@@ -162,6 +167,39 @@ export function resolveRightWorkspaceWidthFromLayout(
     minWidth: bounds.minWidth,
     maxWidth: bounds.maxWidth,
   });
+}
+
+export function resolveRightWorkspaceRestoreWidth({
+  shellWidth,
+  preferredWidth,
+  actualWidth,
+  centerMinWidth,
+  sidebarWidth,
+  showLeft,
+  rightMinWidth = RIGHT_WORKSPACE_MIN_WIDTH,
+}: {
+  shellWidth: number;
+  preferredWidth: number;
+  actualWidth: number;
+  centerMinWidth: number;
+  sidebarWidth: number;
+  showLeft: boolean;
+  rightMinWidth?: number;
+}) {
+  const visibleSidebarWidth = showLeft
+    ? clamp(sidebarWidth, WORKSPACE_SIDEBAR_MIN_WIDTH, WORKSPACE_SIDEBAR_MAX_WIDTH)
+    : 0;
+  const availableWidth = shellWidth - centerMinWidth - visibleSidebarWidth;
+  const targetWidth = clamp(
+    Math.min(preferredWidth, availableWidth),
+    rightMinWidth,
+    preferredWidth,
+  );
+  return targetWidth > actualWidth + 1 ? Math.floor(targetWidth) : null;
+}
+
+export function shouldPersistRightWorkspaceWidth(isUserInteraction: boolean, hasResizeIntent: boolean) {
+  return isUserInteraction && hasResizeIntent;
 }
 
 export function shouldOpenRightWorkspaceSheet({

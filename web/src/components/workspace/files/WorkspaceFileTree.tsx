@@ -109,6 +109,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
   const snapshot = useFileExplorerSnapshot(projectId);
   const { ref, height } = useMeasuredHeight();
   const treeRef = useRef<TreeApi<FileTreeNode> | null>(null);
+  const pendingRevealPathRef = useRef<string | null>(selectedPath);
   const [copied, setCopied] = useState<'absolute' | 'relative' | 'error' | null>(null);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -122,10 +123,14 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
   }, [projectId]);
 
   useEffect(() => {
-    if (!selectedPath) return;
-    const selected = findTreeNodeByCanonicalPath(snapshot.roots, selectedPath);
-    if (!selected) return;
-    const frame = requestAnimationFrame(() => treeRef.current?.scrollTo(selected.id));
+    pendingRevealPathRef.current = selectedPath;
+  }, [selectedPath]);
+
+  useEffect(() => {
+    const reveal = consumePendingTreeReveal(pendingRevealPathRef.current, snapshot.roots);
+    if (!reveal.targetId) return;
+    pendingRevealPathRef.current = reveal.pendingPath;
+    const frame = requestAnimationFrame(() => treeRef.current?.scrollTo(reveal.targetId!));
     return () => cancelAnimationFrame(frame);
   }, [selectedPath, snapshot.roots]);
 
@@ -224,6 +229,14 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
       </div>
     </aside>
   );
+}
+
+export function consumePendingTreeReveal(pendingPath: string | null, nodes: FileTreeNode[]) {
+  if (!pendingPath) return { pendingPath: null, targetId: null };
+  const selected = findTreeNodeByCanonicalPath(nodes, pendingPath);
+  return selected
+    ? { pendingPath: null, targetId: selected.id }
+    : { pendingPath, targetId: null };
 }
 
 function findTreeNodeByCanonicalPath(nodes: FileTreeNode[], canonicalPath: string): FileTreeNode | null {

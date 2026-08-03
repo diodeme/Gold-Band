@@ -16,6 +16,7 @@ import { fileContentStore, useFileContentEntry } from './file-content-store';
 import { fileExplorerStore } from './file-explorer-store';
 import { WorkspaceFileEditor } from './WorkspaceFileEditor';
 import { markdownImageSources } from './markdown-image-preview';
+import { markdownHasTableImages } from './markdown-live-preview';
 import { WorkspaceFileTree } from './WorkspaceFileTree';
 
 interface FileWorkspacePanelProps {
@@ -80,7 +81,7 @@ export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps
   useEffect(() => {
     const unsubscribe = fileContentStore.subscribeChanges((event) => {
       if (event.projectId === resource.projectId) {
-        fileExplorerStore.invalidate(resource.projectId, event.canonicalPath);
+        fileExplorerStore.applyFileChange(event);
       }
     });
     void fileContentStore.startProjectWatch(resource.projectId);
@@ -137,7 +138,7 @@ export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps
               if (next != null) fileExplorerStore.setTreeWidth(resource.projectId, next);
             }}
           >
-            <ResizablePanel id="file-content" defaultSize={`${100 - treePercent}%`} minSize={300} className="min-w-0">{content}</ResizablePanel>
+            <ResizablePanel id="file-content" defaultSize={`${100 - treePercent}%`} minSize={280} className="min-w-0">{content}</ResizablePanel>
             <ResizableHandle className="bg-border/50" />
             <ResizablePanel
               id="file-tree"
@@ -248,6 +249,9 @@ function FileSnapshotContent({
     [markdown, snapshot?.kind === 'text' ? snapshot.content : null],
   );
   const markdownImages = fileContentStore.markdownImages(resource.key);
+  const markdownTableHasImages = snapshot?.kind === 'text' && markdown
+    ? markdownHasTableImages(snapshot.content)
+    : false;
   const approvalCount = [...markdownImages.values()].filter((image) => image.kind === 'approvalRequired').length;
   useEffect(() => {
     if (!markdown) return;
@@ -288,7 +292,7 @@ function FileSnapshotContent({
           markdownLivePreviewAvailable={markdownLivePreviewAvailable}
           onMarkdownModeChange={(mode) => fileContentStore.setMarkdownMode(resource.key, mode)}
           markdownImages={markdownImages}
-          markdownHasImages={markdownSources.length > 0}
+          markdownHasTableImages={markdownTableHasImages}
         />
         </div>
       </div>

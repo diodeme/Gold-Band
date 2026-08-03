@@ -9,7 +9,7 @@ vi.mock('@/api', () => api);
 
 import { FileExplorerStore } from '@/components/workspace/files/file-explorer-store';
 import { FALLBACK_WORKSPACE_FILES } from '@/components/workspace/workspace-layout';
-import type { WorkspaceDirectoryEntryVm } from '@/types';
+import type { WorkspaceDirectoryEntryVm, WorkspaceFileChangedEventVm } from '@/types';
 
 const directory = (name: string, relativePath = name): WorkspaceDirectoryEntryVm => ({
   name,
@@ -101,5 +101,40 @@ describe('FileExplorerStore lifecycle', () => {
     for (let index = 1; index <= 24; index += 1) store.snapshot(`project-${index}`);
 
     expect(store.snapshot('project-0').status).toBe('idle');
+  });
+
+  it('keeps content-only file changes outside the directory invalidation boundary', async () => {
+    const store = createStore();
+    await store.loadRoot('project-1');
+    const roots = store.snapshot('project-1').roots;
+    const event: WorkspaceFileChangedEventVm = {
+      projectId: 'project-1',
+      canonicalPath: 'D:\\repo\\README.md',
+      kind: 'modified',
+      revision: { byteLength: 20, modifiedAtNs: '2', contentHash: 'changed' },
+      operationId: 'write-1',
+    };
+
+    store.applyFileChange(event);
+    await vi.advanceTimersByTimeAsync(FALLBACK_WORKSPACE_FILES.watchDebounceMs);
+
+    expect(store.snapshot('project-1').roots).toBe(roots);
+    expect(api.listWorkspaceDirectory).toHaveBeenCalledTimes(1);
+  });
+
+  it('invalidates directory structure for create events', async () => {
+    const store = createStore();
+    await store.loadRoot('project-1');
+    store.applyFileChange({
+      projectId: 'project-1',
+      canonicalPath: 'D:\\repo\\new.md',
+      kind: 'created',
+      revision: null,
+      operationId: null,
+    });
+
+    await vi.advanceTimersByTimeAsync(FALLBACK_WORKSPACE_FILES.watchDebounceMs);
+
+    expect(api.listWorkspaceDirectory).toHaveBeenCalledTimes(2);
   });
 });

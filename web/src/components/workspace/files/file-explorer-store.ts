@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { listWorkspaceDirectory, searchWorkspaceFiles } from '@/api';
-import type { WorkspaceDirectoryEntryVm, WorkspaceFileSearchVm, WorkspaceFilesVm } from '@/types';
+import type { WorkspaceDirectoryEntryVm, WorkspaceFileChangedEventVm, WorkspaceFileSearchVm, WorkspaceFilesVm } from '@/types';
 import { FALLBACK_WORKSPACE_FILES } from '../workspace-layout';
 
 export interface FileTreeNode extends WorkspaceDirectoryEntryVm {
@@ -230,6 +230,13 @@ export class FileExplorerStore {
       if (parent) void this.loadDirectory(projectId, parent, true);
       else void this.loadRoot(projectId, true);
     }, this.config.watchDebounceMs);
+  }
+
+  applyFileChange(event: WorkspaceFileChangedEventVm) {
+    // The tree does not display content revision metadata. A content-only write
+    // therefore has no observable tree state and must not refetch or rerender it.
+    if (event.kind === 'modified') return;
+    this.invalidate(event.projectId, event.canonicalPath);
   }
 
   private async runSearch(runtime: ProjectRuntime, query: string, revision: number) {

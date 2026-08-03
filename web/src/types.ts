@@ -1550,3 +1550,12 @@ export interface FeedbackArchivePreview {
   maxFileCount: number;
 }
 
+export interface AppExitPreparationWarningVm {
+  code: string;
+  params: Record<string, unknown>;
+}
+
+export interface AppExitPreparationVm {
+  warnings: AppExitPreparationWarningVm[];
+}
+

@@ -30,7 +30,7 @@ use commands::{
     get_run_detail, get_skill_sync_status, get_system_fonts, get_task_detail, get_task_list,
     get_update_status, get_workflow, get_workflow_templates, list_mcp_servers, list_mcp_tools,
     list_project_skills, list_skills, mark_settings_advanced_update_seen,
-    mark_settings_update_seen, open_in_file_manager, pause_run, read_skill,
+    mark_settings_update_seen, open_in_file_manager, pause_run, prepare_app_exit, read_skill,
     remove_recent_workspace, renew_acp_session_lease, replace_auto_templates,
     respond_acp_permission, respond_elicitation, retry_run, save_auto_template,
     save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
@@ -58,8 +58,8 @@ use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
 use metrics::start_heartbeat_polling;
 use state::{DesktopContext, DesktopState};
-use tauri::{Manager, WindowEvent};
-use tracing::{info, warn};
+use tauri::Manager;
+use tracing::info;
 use updater::{retry_pending_startup_install, start_update_polling};
 use workspace_files::{WorkspaceFileRuntime, WorkspaceFileWatchRuntime};
 
@@ -170,26 +170,9 @@ fn run() -> anyhow::Result<()> {
             start_heartbeat_polling(app.handle().clone());
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if matches!(event, WindowEvent::CloseRequested { .. }) {
-                let state = window.state::<DesktopState>();
-                if let Ok(app) = state.app()
-                    && let Err(error) = app.stop_all_running_sessions()
-                {
-                    warn!(%error, "failed to stop running sessions before window close");
-                }
-                let _ = state.cleanup_agent_diagnostic_processes();
-                // 关键更新：退出前安装已下载的包，成功自动删文件
-                if let Some(path) = state.take_pending_update() {
-                    let handle = window.app_handle().clone();
-                    tauri::async_runtime::block_on(async move {
-                        let _ = crate::updater::install_pending_file(&handle, &path).await;
-                    });
-                }
-            }
-        })
         .invoke_handler(tauri::generate_handler![
             get_app_bootstrap,
+            prepare_app_exit,
             get_system_fonts,
             check_local_claude,
             get_agent_registry,

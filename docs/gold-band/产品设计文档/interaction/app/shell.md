@@ -105,6 +105,8 @@ Agent 管理
 - Tab 与激活态只保存在当前应用进程内，重启后清空；右侧工作区像素宽度不属于会话内容，继续写入用户级 conversation preference 并跨重启全局恢复，切换会话不得造成宽度跳变。
 - 会话模式的 `WorkspaceShell` 必须在中间主工作区、右侧 Dock 和紧凑 Sheet 的共同稳定边界提供一次 shadcn `TooltipProvider`。资源面板可以直接复用主会话中含 Tooltip 的标题、工具和操作组件；不得要求每种右侧资源自行补 Provider，否则 Agent 内容异步加载后会使整个工作区渲染树异常退出。
 - 资源 renderer 与关闭 resolver 按 `RightWorkspaceResource.kind` 注册，文件、工作流和诊断资源不能使用会相互覆盖的单例回调。文件资源切换、收起和关闭前由异步 resolver 冲刷自动保存；保存失败或 revision 冲突时保留 Tab。
+- 应用整窗关闭由根壳唯一的关闭事务接管，旧 Workbench deep link 与会话 UI 不得各自注册关闭生命周期。原生标题栏按钮、任务栏“关闭窗口”和系统快捷键触发 `onCloseRequested` 后立即阻止默认关闭；并发请求复用当前事务，不重复保存、停止会话或销毁窗口。事务先冲刷全部文件保存队列：成功则继续；失败或异常则使用 shadcn `AlertDialog` 提供“重试保存 / 取消关闭 / 放弃修改并退出”。重试只重新执行保存，取消必须保持窗口和所有运行会话不变，放弃只丢弃本进程尚未落盘的文件修改。
+- 文件保存决策通过后，前端调用唯一的 Rust `prepare_app_exit` 接口，按顺序暂停运行中 Run、取消活跃 ACP attempt、关闭 ACP 连接、清理 Agent 诊断进程并处理待安装更新。各清理步骤保持 best-effort，并只返回结构化 warning code；禁止在 Rust `WindowEvent::CloseRequested` 中提前执行这些副作用，否则保存失败后取消关闭仍会停止会话。退出准备结束后前端显式调用一次 `destroy()`，关闭回调内禁止递归调用 `close()`。主窗口 capability 必须同时声明 `core:window:allow-close` 与 `core:window:allow-destroy`。
 - 右栏像素宽度仍是用户级偏好；文件资源首次挂载时可请求现有最大宽度以优先形成“左详情、右目录”双栏，用户之后的手动 resize 不得被持续回弹。可用宽度低于文件 split 阈值时使用文件/目录单栏切换。
 
 ---

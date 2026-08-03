@@ -11,6 +11,10 @@ export function getAppBootstrap() {
   return getRuntimeApi().getAppBootstrap();
 }
 
+export function prepareAppExit() {
+  return getRuntimeApi().prepareAppExit();
+}
+
 export function getSystemFonts() {
   return getRuntimeApi().getSystemFonts();
 }

@@ -124,7 +124,11 @@ import {
   createDraftConversationWorkspaceScope,
 } from '@/components/workspace/right-workspace-context';
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
-import { syncDesktopWindowMinimum } from '@/lib/desktop-window-layout';
+import {
+  INITIAL_DESKTOP_WINDOW_MINIMUM_SYNC_STATE,
+  syncDesktopWindowMinimum,
+  type DesktopWindowMinimumSyncState,
+} from '@/lib/desktop-window-layout';
 import {
   FALLBACK_WORKSPACE_FILES,
   FALLBACK_WORKSPACE_LAYOUT,
@@ -253,6 +257,13 @@ export function App() {
   const [bootstrap, setBootstrap] = useState<AppBootstrapVm | null>(null);
   const windowRevealedRef = useRef(false);
   const windowLayoutSyncRef = useRef<Promise<void>>(Promise.resolve());
+  const windowMinimumSyncStateRef = useRef<DesktopWindowMinimumSyncState>(
+    INITIAL_DESKTOP_WINDOW_MINIMUM_SYNC_STATE,
+  );
+  const activeWindowLayoutRef = useRef<{
+    layout: AppConfigVm['workspaceLayout'];
+    profile: AppConfigVm['workspaceLayout']['conversation'];
+  } | null>(null);
   const [primaryModule, setPrimaryModule] = useState<PrimaryModule>(initialRoute.module);
   const [taskPage, setTaskPage] = useState<TaskPage>(initialRoute.taskPage);
   const [conversationPage, setConversationPage] = useState<ConversationPage>(initialRoute.conversationPage);
@@ -445,6 +456,10 @@ export function App() {
     }),
     [appConfig.workspaceLayout, conversationPage, primaryModule, uiMode],
   );
+  activeWindowLayoutRef.current = {
+    layout: appConfig.workspaceLayout,
+    profile: activeWorkspaceLayoutProfile,
+  };
   const shouldShowUpdateAnnouncement = useMemo(
     () => availableUpdateVersion !== null && updateBadges.announcementClosedVersion !== availableUpdateVersion,
     [availableUpdateVersion, updateBadges.announcementClosedVersion],
@@ -484,7 +499,10 @@ export function App() {
         appWindow,
         appConfig.workspaceLayout,
         activeWorkspaceLayoutProfile,
-      ).catch(() => {});
+        windowMinimumSyncStateRef.current,
+      ).then((state) => {
+        windowMinimumSyncStateRef.current = state;
+      }).catch(() => {});
       if (cancelled || windowRevealedRef.current) return;
       windowRevealedRef.current = true;
       await appWindow.show().catch(() => {
@@ -498,6 +516,43 @@ export function App() {
       cancelled = true;
     };
   }, [activeWorkspaceLayoutProfile, appConfig.workspaceLayout, bootstrap, preferences.theme]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return undefined;
+    const appWindow = getCurrentWindow();
+    let active = true;
+    let unlisten: (() => void) | undefined;
+
+    appWindow.onResized(() => {
+      if (!windowMinimumSyncStateRef.current.pending) return;
+      windowLayoutSyncRef.current = windowLayoutSyncRef.current
+        .catch(() => {})
+        .then(async () => {
+          if (!active || !windowMinimumSyncStateRef.current.pending) return;
+          const target = activeWindowLayoutRef.current;
+          if (!target) return;
+          const state = await syncDesktopWindowMinimum(
+            appWindow,
+            target.layout,
+            target.profile,
+            windowMinimumSyncStateRef.current,
+          );
+          if (active) windowMinimumSyncStateRef.current = state;
+        })
+        .catch(() => {});
+    }).then((dispose) => {
+      if (active) {
+        unlisten = dispose;
+      } else {
+        dispose();
+      }
+    }).catch(() => {});
+
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;

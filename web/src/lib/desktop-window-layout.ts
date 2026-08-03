@@ -7,6 +7,23 @@ export interface DesktopWindowMinimumPlan {
   resizeTo: { width: number; height: number } | null;
 }
 
+export interface DesktopWindowMinimumSyncState {
+  appliedMinimum: DesktopWindowMinimumPlan['minimum'] | null;
+  pending: boolean;
+}
+
+export const INITIAL_DESKTOP_WINDOW_MINIMUM_SYNC_STATE: DesktopWindowMinimumSyncState = {
+  appliedMinimum: null,
+  pending: false,
+};
+
+function sameMinimum(
+  left: DesktopWindowMinimumPlan['minimum'] | null,
+  right: DesktopWindowMinimumPlan['minimum'],
+) {
+  return left?.width === right.width && left.height === right.height;
+}
+
 export function planDesktopWindowMinimum({
   currentWidth,
   currentHeight,
@@ -34,7 +51,19 @@ export async function syncDesktopWindowMinimum(
   appWindow: TauriWindow,
   layout: WorkspaceLayoutVm,
   profile: WorkspaceLayoutProfileVm,
-) {
+  state: DesktopWindowMinimumSyncState,
+): Promise<DesktopWindowMinimumSyncState> {
+  const minimum = {
+    width: Math.max(layout.shellMinWidth, profile.windowMinWidth),
+    height: layout.shellMinHeight,
+  };
+  if (sameMinimum(state.appliedMinimum, minimum)) {
+    return { appliedMinimum: state.appliedMinimum, pending: false };
+  }
+  if (await appWindow.isMaximized()) {
+    return { appliedMinimum: state.appliedMinimum, pending: true };
+  }
+
   const [physicalSize, scaleFactor] = await Promise.all([
     appWindow.innerSize(),
     appWindow.scaleFactor(),
@@ -50,4 +79,5 @@ export async function syncDesktopWindowMinimum(
   if (plan.resizeTo) {
     await appWindow.setSize(new LogicalSize(plan.resizeTo.width, plan.resizeTo.height));
   }
+  return { appliedMinimum: plan.minimum, pending: false };
 }

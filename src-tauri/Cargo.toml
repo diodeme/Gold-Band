@@ -43,6 +43,7 @@ walkdir = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "ico"] }
 notify = "8"
 natord = "1"
+nucleo-matcher = "0.3.1"
 percent-encoding = "2"
 resvg = "0.45"
 # macOS / Linux OS 閫氱煡 fallback銆?

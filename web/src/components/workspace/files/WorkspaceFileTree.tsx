@@ -191,10 +191,11 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
       <div className="relative shrink-0 border-b border-border/50 p-2">
         <Search className="pointer-events-none absolute left-4 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input
+          variant="toolbar"
           value={snapshot.searchQuery}
           onChange={(event) => fileExplorerStore.setSearchQuery(projectId, event.target.value)}
           placeholder={t('workspace.filesPanel.filterPlaceholder')}
-          className="h-8 border-transparent bg-muted/45 pl-8 pr-8 text-xs shadow-none focus-visible:border-border"
+          className="h-8 pl-8 pr-8 text-xs"
         />
         {snapshot.searchQuery ? (
           <Button

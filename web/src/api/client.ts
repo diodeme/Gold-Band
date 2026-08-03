@@ -7,6 +7,7 @@ import type {
   ActiveSessionStopVm,
   AgentRegistryVm,
   AppBootstrapVm,
+  AppExitPreparationVm,
   AutoTemplate,
   AutoTemplateStore,
   ContentVm,
@@ -122,6 +123,7 @@ export interface MaterializeAttachmentFileInput {
 export interface RuntimeApi {
   checkLocalClaude(): Promise<LocalClaudeStatusVm>;
   getAppBootstrap(): Promise<AppBootstrapVm>;
+  prepareAppExit(): Promise<AppExitPreparationVm>;
   getSystemFonts(): Promise<string[]>;
   getAgentRegistry(): Promise<AgentRegistryVm>;
   getAgentCommandCatalog(agentType: string, workspacePath: string): Promise<import('../types').AcpCommandCatalogVm | null>;

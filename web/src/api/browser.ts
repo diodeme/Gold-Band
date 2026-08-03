@@ -192,6 +192,9 @@ function browserSvgDataUrl(content: string) {
 }
 
 export const browserApi: RuntimeApi = {
+  prepareAppExit() {
+    return Promise.resolve({ warnings: [] });
+  },
   checkLocalClaude() {
     return Promise.resolve({ found: false, path: null });
   },

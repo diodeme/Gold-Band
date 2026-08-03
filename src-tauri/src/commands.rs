@@ -42,8 +42,8 @@ use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base
 use crate::state::{DesktopState, NotificationAttentionInput, UpdateBadgeSeenTarget};
 use crate::updater::{
     UpdateStatusVm, UpdaterSettingsVm, check_update,
-    download_and_install_update as run_download_and_install_update, normalize_updater_url_override,
-    updater_settings,
+    download_and_install_update as run_download_and_install_update, install_pending_file,
+    normalize_updater_url_override, updater_settings,
 };
 use crate::view_models::{
     AcpActivityDetailQueryInput, AcpActivityDetailVm, AcpRawFramePageVm, AcpRawFrameQueryInput,
@@ -582,6 +582,29 @@ pub struct CommandErrorVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AppExitPreparationWarningVm {
+    pub code: String,
+    pub params: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppExitPreparationVm {
+    pub warnings: Vec<AppExitPreparationWarningVm>,
+}
+
+impl AppExitPreparationVm {
+    fn record_warning(&mut self, code: &str, error: &dyn std::fmt::Display) {
+        warn!(warning_code = code, %error, "application exit preparation step failed");
+        self.warnings.push(AppExitPreparationWarningVm {
+            code: code.to_string(),
+            params: serde_json::json!({}),
+        });
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationPromptSubmitVm {
     pub kind: String,
     pub session: Option<AcpSessionVm>,
@@ -605,6 +628,41 @@ impl CommandErrorVm {
             params,
         }
     }
+}
+
+#[tauri::command]
+pub async fn prepare_app_exit(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+) -> CommandResult<AppExitPreparationVm> {
+    let mut result = AppExitPreparationVm::default();
+
+    match state.app() {
+        Ok(runtime_app) => {
+            match tauri::async_runtime::spawn_blocking(move || {
+                runtime_app.stop_all_running_sessions().map(|_| ())
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => result.record_warning("app-exit.session-stop-failed", &error),
+                Err(error) => result.record_warning("app-exit.session-stop-task-failed", &error),
+            }
+        }
+        Err(error) => result.record_warning("app-exit.runtime-unavailable", &error),
+    }
+
+    if let Err(error) = state.cleanup_agent_diagnostic_processes() {
+        result.record_warning("app-exit.diagnostic-cleanup-failed", &error);
+    }
+
+    if let Some(path) = state.take_pending_update()
+        && let Err(error) = install_pending_file(&app_handle, &path).await
+    {
+        result.record_warning("app-exit.update-install-failed", &error);
+    }
+
+    Ok(result)
 }
 
 fn ensure_no_active_acp_prompts_in_workspace(
@@ -4721,6 +4779,27 @@ mod tests {
         );
         assert_eq!(error.code, "acp.activity-detail-query-failed");
         assert_eq!(error.params, serde_json::json!({}));
+    }
+
+    #[test]
+    fn app_exit_warnings_keep_codes_without_exposing_backend_messages() {
+        let mut result = AppExitPreparationVm::default();
+        result.record_warning(
+            "app-exit.session-stop-failed",
+            &anyhow::anyhow!("D:/secret/provider process failed"),
+        );
+
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "warnings": [{
+                    "code": "app-exit.session-stop-failed",
+                    "params": {}
+                }]
+            })
+        );
+        assert!(!value.to_string().contains("secret"));
     }
 
     #[test]

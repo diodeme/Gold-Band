@@ -18,6 +18,9 @@ export interface MetricsSettingsVm {
 const noopUnlisten = () => {};
 
 export const desktopApi: RuntimeApi = {
+  prepareAppExit() {
+    return invokeCommand('prepare_app_exit');
+  },
   async subscribeAcpSessionUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
     const unlisten: UnlistenFn = await listen<AcpSessionUpdatedEventVm>('gold-band://acp-session-updated', (event) => {

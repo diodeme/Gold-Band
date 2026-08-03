@@ -4,8 +4,6 @@ import type { Layout, LayoutChangedMeta, PanelImperativeHandle } from 'react-res
 import type { AppConfigVm, ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
 import { ConversationSidebar } from '../conversation/ConversationSidebar';
 import { saveConversationPreference } from '../../api';
-import { isTauriRuntime } from '@/api/shared';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { AppTitleBar } from '../AppTitleBar';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
@@ -94,37 +92,6 @@ function FileWorkspaceIntegration({
     fileContentStore.configure(config);
     fileExplorerStore.configure(config);
   }, [config]);
-  useEffect(() => {
-    if (!isTauriRuntime()) return;
-    const appWindow = getCurrentWindow();
-    let disposed = false;
-    let closing = false;
-    let allowClose = false;
-    let unlisten: (() => void) | null = null;
-    void appWindow.onCloseRequested(async (event) => {
-      if (allowClose) return;
-      event.preventDefault();
-      if (closing) return;
-      closing = true;
-      const saved = await fileContentStore.flushAll();
-      if (!disposed && saved) {
-        allowClose = true;
-        await appWindow.close().catch(() => {
-          allowClose = false;
-          closing = false;
-        });
-        return;
-      }
-      closing = false;
-    }).then((dispose) => {
-      if (disposed) dispose();
-      else unlisten = dispose;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
   useEffect(() => workspace.registerResourceRenderer('file-browser', (resource: RightWorkspaceResource) => (
     resource.kind === 'file-browser'
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyFileWorkspacePanel resource={resource} layout={layout} /></Suspense>

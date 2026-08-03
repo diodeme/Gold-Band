@@ -3,8 +3,10 @@ import { AlertTriangle, ExternalLink, FileQuestion, FolderOpen, LoaderCircle, Ma
 import { useTranslation } from 'react-i18next';
 import { openFileWithSystemApp, resolveWorkspaceFileLink, workspaceFilePreviewUrl } from '@/api';
 import { Button } from '@/components/ui/button';
+import { useMarkdownResourceLinkHandler } from '@/components/prompt-kit/markdown';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm } from '@/types';
+import { isLocalFileHref } from '@/lib/file-link';
 import { resolveWorkspacePanelWidthFromLayout } from '../workspace-layout';
 import {
   fileWorkspaceResourceKey,
@@ -95,7 +97,7 @@ export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps
     workspace.openResource(fileResourceFromEntry(resource, entry));
   }, [resource, workspace.openResource]);
 
-  const content = selected ? <FileContent resource={selected} /> : <FileEmptyState />;
+  const content = selected ? <FileContent key={selected.key} resource={selected} /> : <FileEmptyState />;
   const tree = (
     <WorkspaceFileTree
       projectId={resource.projectId}
@@ -232,6 +234,7 @@ function FileSnapshotContent({
   onLocationAdjusted?: (adjusted: boolean) => void;
 }) {
   const { t } = useTranslation();
+  const markdownResourceLinkHandler = useMarkdownResourceLinkHandler();
   const entry = useFileContentEntry(resource.key);
   const persistEditorState = useCallback((state: unknown) => {
     fileContentStore.persistEditorState(resource.key, state, entry.contentRevision);
@@ -252,6 +255,18 @@ function FileSnapshotContent({
   const markdownTableHasImages = snapshot?.kind === 'text' && markdown
     ? markdownHasTableImages(snapshot.content)
     : false;
+  const handleMarkdownImagePreviewError = useCallback((_rawSrc: string, failedToken: string) => {
+    void fileContentStore.refreshMarkdownImages(resource.key, failedToken);
+  }, [resource.key]);
+  const handleMarkdownLinkClick = useCallback((href: string) => {
+    if (isLocalFileHref(href)) {
+      if (markdownResourceLinkHandler) {
+        void markdownResourceLinkHandler.openLocalFile(href, resource.locator.canonicalPath);
+      }
+      return;
+    }
+    window.open(href, '_blank', 'noopener,noreferrer');
+  }, [markdownResourceLinkHandler, resource.locator.canonicalPath]);
   const approvalCount = [...markdownImages.values()].filter((image) => image.kind === 'approvalRequired').length;
   useEffect(() => {
     if (!markdown) return;
@@ -260,6 +275,16 @@ function FileSnapshotContent({
       markdownMode === 'live-preview' ? markdownSources : [],
     );
   }, [markdown, markdownMode, markdownSources, resource.key]);
+  useEffect(() => {
+    if (!markdown || markdownMode !== 'live-preview') return;
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fileContentStore.ensureMarkdownImagePreviews(resource.key);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [markdown, markdownMode, resource.key]);
   if (!snapshot) return null;
   if (snapshot.kind === 'text') {
     return (
@@ -275,7 +300,8 @@ function FileSnapshotContent({
         ) : null}
         <div className="min-h-0 flex-1">
         <WorkspaceFileEditor
-          key={entry.contentRevision}
+          key={`${resource.key}:${entry.contentRevision}`}
+          documentKey={resource.key}
           value={snapshot.content}
           editable={snapshot.editable}
           language={snapshot.language}
@@ -293,6 +319,8 @@ function FileSnapshotContent({
           onMarkdownModeChange={(mode) => fileContentStore.setMarkdownMode(resource.key, mode)}
           markdownImages={markdownImages}
           markdownHasTableImages={markdownTableHasImages}
+          onMarkdownImagePreviewError={handleMarkdownImagePreviewError}
+          onMarkdownLinkClick={handleMarkdownLinkClick}
         />
         </div>
       </div>
@@ -323,13 +351,13 @@ function ImagePreview({ resource }: { resource: FileWorkspaceResource }) {
     if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
       setAnimationPaused(true);
     }
-  }, [snapshot?.animated, snapshot?.previewToken]);
+  }, [snapshot?.animated, snapshot?.previewGrant.token]);
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport || !snapshot) return;
     viewport.scrollLeft = initialViewState.scrollLeft;
     viewport.scrollTop = initialViewState.scrollTop;
-  }, [initialViewState.scrollLeft, initialViewState.scrollTop, resource.key, snapshot?.previewToken]);
+  }, [initialViewState.scrollLeft, initialViewState.scrollTop, resource.key, snapshot?.previewGrant.token]);
   if (!snapshot) return null;
   const persistView = (nextZoom: number, viewport = viewportRef.current) => {
     fileContentStore.persistImageViewState(resource.key, {
@@ -399,9 +427,10 @@ function ImagePreview({ resource }: { resource: FileWorkspaceResource }) {
         onScroll={(event) => persistView(zoom, event.currentTarget)}
       >
         <img
-          src={workspaceFilePreviewUrl(snapshot.previewToken, animationPaused)}
+          src={workspaceFilePreviewUrl(snapshot.previewGrant.token, animationPaused)}
           alt={snapshot.name}
           draggable={false}
+          onError={() => void fileContentStore.reload(resource.key)}
           className="max-w-none select-none object-contain shadow-lg"
           style={{ width: snapshot.width * zoom, height: snapshot.height * zoom }}
         />

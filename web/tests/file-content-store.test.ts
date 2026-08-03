@@ -79,6 +79,11 @@ function createStore() {
   return store;
 }
 
+const previewGrant = (token: string, expiresInMs = 5 * 60 * 1_000) => ({
+  token,
+  expiresAtMs: String(Date.now() + expiresInMs),
+});
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
@@ -86,7 +91,7 @@ beforeEach(() => {
   api.resolveMarkdownImage.mockResolvedValue({
     kind: 'ready',
     canonicalPath: 'D:/repo/image.png',
-    previewToken: 'preview-1',
+    previewGrant: previewGrant('preview-1'),
     mimeType: 'image/png',
     width: 640,
     height: 360,
@@ -344,7 +349,7 @@ describe('FileContentStore Markdown runtime contract', () => {
     api.resolveMarkdownImage
       .mockResolvedValueOnce({ kind: 'approvalRequired', canonicalPath: 'D:/outside.png', reason: 'outside-document-directory' })
       .mockResolvedValueOnce({
-        kind: 'ready', canonicalPath: 'D:/outside.png', previewToken: 'preview-outside',
+        kind: 'ready', canonicalPath: 'D:/outside.png', previewGrant: previewGrant('preview-outside'),
         mimeType: 'image/png', width: 100, height: 80, animated: false,
       });
     await store.load(markdownResource);
@@ -354,5 +359,85 @@ describe('FileContentStore Markdown runtime contract', () => {
     await store.approveMarkdownImages(markdownResource.key);
     expect(api.resolveMarkdownImage.mock.calls[1]?.[0].approvedExternalTargets).toEqual(['D:/outside.png']);
     expect(store.markdownImages(markdownResource.key).get('../outside.png')?.kind).toBe('ready');
+  });
+
+  it('renews Markdown preview grants before expiry and releases the old token after replacement', async () => {
+    const store = createStore();
+    api.readFileResource.mockResolvedValueOnce({ ...snapshot('![diagram](image.png)'), locator: markdownResource.locator, language: 'markdown' });
+    api.resolveMarkdownImage
+      .mockResolvedValueOnce({
+        kind: 'ready', canonicalPath: 'D:/repo/image.png', previewGrant: previewGrant('preview-old'),
+        mimeType: 'image/png', width: 640, height: 360, animated: false,
+      })
+      .mockResolvedValueOnce({
+        kind: 'ready', canonicalPath: 'D:/repo/image.png', previewGrant: previewGrant('preview-new'),
+        mimeType: 'image/png', width: 640, height: 360, animated: false,
+      });
+
+    await store.load(markdownResource);
+    await store.syncMarkdownImages(markdownResource.key, ['image.png']);
+    await vi.advanceTimersByTimeAsync(4 * 60 * 1_000);
+
+    const image = store.markdownImages(markdownResource.key).get('image.png');
+    expect(image?.kind === 'ready' && image.previewGrant.token).toBe('preview-new');
+    expect(api.releaseWorkspaceFilePreview).toHaveBeenCalledWith('preview-old');
+  });
+
+  it('keeps the current Markdown preview grant when renewal fails and retries later', async () => {
+    const store = createStore();
+    api.readFileResource.mockResolvedValueOnce({ ...snapshot('![diagram](image.png)'), locator: markdownResource.locator, language: 'markdown' });
+    api.resolveMarkdownImage
+      .mockResolvedValueOnce({
+        kind: 'ready', canonicalPath: 'D:/repo/image.png', previewGrant: previewGrant('preview-current'),
+        mimeType: 'image/png', width: 640, height: 360, animated: false,
+      })
+      .mockRejectedValueOnce({ code: 'workspace-file.runtime-unavailable' })
+      .mockResolvedValueOnce({
+        kind: 'ready', canonicalPath: 'D:/repo/image.png', previewGrant: previewGrant('preview-recovered'),
+        mimeType: 'image/png', width: 640, height: 360, animated: false,
+      });
+
+    await store.load(markdownResource);
+    await store.syncMarkdownImages(markdownResource.key, ['image.png']);
+    await vi.advanceTimersByTimeAsync(4 * 60 * 1_000);
+    let image = store.markdownImages(markdownResource.key).get('image.png');
+    expect(image?.kind === 'ready' && image.previewGrant.token).toBe('preview-current');
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    image = store.markdownImages(markdownResource.key).get('image.png');
+    expect(image?.kind === 'ready' && image.previewGrant.token).toBe('preview-recovered');
+  });
+
+  it('does not send remote Markdown image URLs to the local preview resolver', async () => {
+    const store = createStore();
+    api.readFileResource.mockResolvedValueOnce({ ...snapshot('![remote](https://example.com/a.png)'), locator: markdownResource.locator, language: 'markdown' });
+    await store.load(markdownResource);
+    await store.syncMarkdownImages(markdownResource.key, ['https://example.com/a.png']);
+
+    expect(api.resolveMarkdownImage).not.toHaveBeenCalled();
+    expect(store.markdownImages(markdownResource.key).size).toBe(0);
+  });
+
+  it('reissues the active grant after an image load error but ignores stale widget errors', async () => {
+    const store = createStore();
+    api.readFileResource.mockResolvedValueOnce({ ...snapshot('![diagram](image.png)'), locator: markdownResource.locator, language: 'markdown' });
+    api.resolveMarkdownImage
+      .mockResolvedValueOnce({
+        kind: 'ready', canonicalPath: 'D:/repo/image.png', previewGrant: previewGrant('preview-broken'),
+        mimeType: 'image/png', width: 640, height: 360, animated: false,
+      })
+      .mockResolvedValueOnce({
+        kind: 'ready', canonicalPath: 'D:/repo/image.png', previewGrant: previewGrant('preview-reissued'),
+        mimeType: 'image/png', width: 640, height: 360, animated: false,
+      });
+
+    await store.load(markdownResource);
+    await store.syncMarkdownImages(markdownResource.key, ['image.png']);
+    await store.refreshMarkdownImages(markdownResource.key, 'already-replaced');
+    expect(api.resolveMarkdownImage).toHaveBeenCalledTimes(1);
+
+    await store.refreshMarkdownImages(markdownResource.key, 'preview-broken');
+    const image = store.markdownImages(markdownResource.key).get('image.png');
+    expect(image?.kind === 'ready' && image.previewGrant.token).toBe('preview-reissued');
   });
 });

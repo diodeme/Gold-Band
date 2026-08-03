@@ -803,12 +803,13 @@ pub struct FileWorkspaceLayoutConfig {
 
 impl FileWorkspaceLayoutConfig {
     fn normalized(mut self, right_min_width: u32, right_max_width: u32) -> Self {
-        self.preferred_width = self
-            .preferred_width
-            .clamp(right_min_width, right_max_width);
+        self.preferred_width = self.preferred_width.clamp(right_min_width, right_max_width);
         self.split_min_width = self.split_min_width.clamp(right_min_width, right_max_width);
         self.tree_min_width = self.tree_min_width.max(1).min(right_max_width);
-        self.tree_max_width = self.tree_max_width.max(self.tree_min_width).min(right_max_width);
+        self.tree_max_width = self
+            .tree_max_width
+            .max(self.tree_min_width)
+            .min(right_max_width);
         self.tree_default_width = self
             .tree_default_width
             .clamp(self.tree_min_width, self.tree_max_width);
@@ -877,7 +878,6 @@ pub struct WorkspaceFilesConfig {
     pub markdown_live_preview_max_chars: usize,
     pub markdown_embedded_image_limit: usize,
     pub markdown_embedded_image_max_concurrent: usize,
-    pub markdown_external_image_policy: String,
 }
 
 impl WorkspaceFilesConfig {
@@ -896,15 +896,11 @@ impl WorkspaceFilesConfig {
         self.content_cache_max_bytes = self.content_cache_max_bytes.max(1);
         self.watch_debounce_ms = self.watch_debounce_ms.max(1);
         self.preview_token_ttl_seconds = self.preview_token_ttl_seconds.max(1);
-        self.external_access_grant_ttl_seconds =
-            self.external_access_grant_ttl_seconds.max(1);
+        self.external_access_grant_ttl_seconds = self.external_access_grant_ttl_seconds.max(1);
         self.markdown_live_preview_max_chars = self.markdown_live_preview_max_chars.max(1);
         self.markdown_embedded_image_limit = self.markdown_embedded_image_limit.max(1);
         self.markdown_embedded_image_max_concurrent =
             self.markdown_embedded_image_max_concurrent.max(1);
-        if self.markdown_external_image_policy != "confirm" {
-            self.markdown_external_image_policy = "confirm".to_owned();
-        }
         self
     }
 }
@@ -928,7 +924,6 @@ impl Default for WorkspaceFilesConfig {
             markdown_live_preview_max_chars: 200_000,
             markdown_embedded_image_limit: 100,
             markdown_embedded_image_max_concurrent: 4,
-            markdown_external_image_policy: "confirm".to_owned(),
         }
     }
 }
@@ -1522,8 +1517,14 @@ mod tests {
         assert_eq!(config.workspace_layout.right_workspace.min_width, 500);
         assert_eq!(config.workspace_layout.right_workspace.default_width, 500);
         assert_eq!(config.workspace_layout.right_workspace.max_width, 500);
-        assert_eq!(config.workspace_layout.right_workspace.file.tree_min_width, 300);
-        assert_eq!(config.workspace_layout.right_workspace.file.tree_max_width, 300);
+        assert_eq!(
+            config.workspace_layout.right_workspace.file.tree_min_width,
+            300
+        );
+        assert_eq!(
+            config.workspace_layout.right_workspace.file.tree_max_width,
+            300
+        );
     }
 
     #[test]

@@ -92,7 +92,7 @@
 
 .workspace-markdown-live-preview {
   --atomic-editor-measure: 78ch;
-  --atomic-editor-body-size: 0.9375rem;
+  --atomic-editor-body-size: 0.875rem;
   --atomic-editor-body-leading: 1.65;
   --atomic-editor-font: "Gold Band MiSans", "MiSans", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
   --atomic-editor-font-mono: var(--font-mono, ui-monospace, monospace);
@@ -133,13 +133,27 @@
 }
 
 .workspace-markdown-live-preview .cm-atomic-table {
+  box-sizing: border-box;
+  inline-size: 100%;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  overflow-x: hidden;
   font-size: 0.94em;
+}
+
+.workspace-markdown-live-preview .cm-atomic-table table {
+  inline-size: 100%;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  table-layout: fixed;
 }
 
 .workspace-markdown-live-preview .cm-atomic-table th,
 .workspace-markdown-live-preview .cm-atomic-table td {
   border-color: color-mix(in srgb, var(--border) 70%, transparent);
   padding: 0.3em 0.55em;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .workspace-markdown-live-preview .cm-line.cm-gold-band-markdown-align-center {
@@ -169,6 +183,20 @@
   color: var(--muted-foreground);
   font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
   font-size: 0.75rem;
+}
+
+.workspace-markdown-live-preview .cm-gold-band-markdown-remote-image-link {
+  color: var(--atomic-editor-link);
+  font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+  font-size: 0.875rem;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--atomic-editor-link) 45%, transparent);
+  text-underline-offset: 0.16em;
+}
+
+.workspace-markdown-live-preview .cm-gold-band-markdown-remote-image-link:hover {
+  color: var(--atomic-editor-link-hover);
+  text-decoration-color: currentColor;
 }
 
 .workspace-markdown-live-preview .cm-gold-band-markdown-image-inline {

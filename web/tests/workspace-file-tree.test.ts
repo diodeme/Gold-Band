@@ -3,7 +3,9 @@ import {
   consumePendingTreeReveal,
   copyableAbsolutePath,
   shouldActivateTreeFile,
+  treeViewportContentHeight,
 } from '@/components/workspace/files/WorkspaceFileTree';
+import { FileExplorerStore } from '@/components/workspace/files/file-explorer-store';
 import type { FileTreeNode } from '@/components/workspace/files/file-explorer-store';
 
 const fileNode: FileTreeNode = {
@@ -20,12 +22,25 @@ const fileNode: FileTreeNode = {
 };
 
 describe('workspace file tree reveal lifecycle', () => {
+  it('passes the virtual list the padding-free content-box height', () => {
+    expect(treeViewportContentHeight(640, 6, 6)).toBe(628);
+    expect(treeViewportContentHeight(12, 6, 6)).toBe(1);
+  });
   it('consumes selection reveal once so later directory snapshots do not scroll again', () => {
     const first = consumePendingTreeReveal('d:/REPO/readme.md', [fileNode]);
     expect(first).toEqual({ pendingPath: null, targetId: 'README.md' });
 
     const afterDirectoryExpansion = consumePendingTreeReveal(first.pendingPath, [{ ...fileNode }]);
     expect(afterDirectoryExpansion).toEqual({ pendingPath: null, targetId: null });
+  });
+
+  it('reveals a selection only when its identity changes across tree remounts', () => {
+    const store = new FileExplorerStore();
+    expect(store.takeSelectionReveal('project-1', 'D:\\repo\\README.md')).toBe(true);
+    expect(store.takeSelectionReveal('project-1', 'd:/REPO/README.md')).toBe(false);
+    expect(store.takeSelectionReveal('project-1', 'D:\\repo\\src\\main.rs')).toBe(true);
+    expect(store.takeSelectionReveal('project-1', null)).toBe(false);
+    expect(store.takeSelectionReveal('project-1', 'D:\\repo\\src\\main.rs')).toBe(true);
   });
 
   it('keeps a reveal pending until its lazy parent directories are loaded', () => {

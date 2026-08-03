@@ -405,8 +405,8 @@ export function searchWorkspaceFiles(projectId: string, query: string, requestId
   return getRuntimeApi().searchWorkspaceFiles(projectId, query, requestId, limit);
 }
 
-export function resolveWorkspaceFileLink(projectId: string, rawHref: string) {
-  return getRuntimeApi().resolveWorkspaceFileLink(projectId, rawHref);
+export function resolveWorkspaceFileLink(projectId: string, rawHref: string, baseCanonicalPath?: string | null) {
+  return getRuntimeApi().resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath);
 }
 
 export function readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource = false) {

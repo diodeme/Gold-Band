@@ -1,24 +1,32 @@
 import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
-import { StateField, type EditorState, type Extension, type Range } from '@codemirror/state';
+import { StateEffect, StateField, type EditorState, type Extension, type Range } from '@codemirror/state';
 import { Decoration, EditorView, WidgetType, type DecorationSet } from '@codemirror/view';
 import { workspaceFilePreviewUrl } from '@/api';
+import { isLocalFileHref } from '@/lib/file-link';
 import type { MarkdownImageState } from './file-content-store';
 
 const IMAGE_SOURCE_PATTERN = /!\[[^\]]*\]\((?:<([^>]+)>|([^\s)"']+))(?:\s+["'][^)]*["'])?\)/gu;
 const HTML_IMAGE_SOURCE_PATTERN = /<img\b[^>]*\bsrc\s*=\s*(["'])(.*?)\1[^>]*>/giu;
 const HTML_IMAGE_LINE_PATTERN = /^\s*<img\b([^>]*)\/?\s*>\s*$/iu;
+const HTML_LINKED_IMAGE_LINE_PATTERN = /^\s*<a\b([^>]*)>\s*<img\b([^>]*)\/?\s*>\s*<\/a>\s*$/iu;
 const HTML_ALIGN_OPEN_PATTERN = /^\s*<(div|p)\b[^>]*\balign\s*=\s*(["'])(center|left|right)\2[^>]*>\s*$/iu;
 const HTML_ALIGN_CLOSE_PATTERN = /^\s*<\/(div|p)>\s*$/iu;
 const HTML_BREAK_PATTERN = /^\s*<br\s*\/?>\s*$/iu;
+const STANDALONE_MARKDOWN_IMAGE_PATTERN = /^\s*(?:\[)?!\[[^\]]*\]\((?:<[^>]+>|[^\s)"']+)(?:\s+["'][^)]*["'])?\)(?:\]\([^)]+\))?\s*$/iu;
+const EMPTY_MARKDOWN_IMAGES = new Map<string, MarkdownImageState>();
+
+export function isRemoteMarkdownImageSource(source: string) {
+  return /^(?:https?:)?\/\//iu.test(source.trim());
+}
 
 export function markdownImageSources(markdown: string): string[] {
   const sources = new Set<string>();
   for (const match of markdown.matchAll(IMAGE_SOURCE_PATTERN)) {
     const source = match[1] ?? match[2];
-    if (source) sources.add(source);
+    if (source && !isRemoteMarkdownImageSource(source)) sources.add(source);
   }
   for (const match of markdown.matchAll(HTML_IMAGE_SOURCE_PATTERN)) {
-    if (match[2]) sources.add(match[2]);
+    if (match[2] && !isRemoteMarkdownImageSource(match[2])) sources.add(match[2]);
   }
   return [...sources];
 }
@@ -28,46 +36,93 @@ function htmlAttribute(attributes: string, name: string) {
   return match?.[2] ?? '';
 }
 
-function isRemoteSource(source: string) {
-  return /^https?:\/\//iu.test(source);
+class RemoteMarkdownImageLinkWidget extends WidgetType {
+  constructor(
+    private readonly href: string,
+    private readonly label: string,
+    private readonly onLinkClick?: (href: string) => void,
+  ) {
+    super();
+  }
+
+  eq(other: RemoteMarkdownImageLinkWidget) {
+    return this.href === other.href
+      && this.label === other.label
+      && this.onLinkClick === other.onLinkClick;
+  }
+
+  toDOM() {
+    const link = document.createElement('a');
+    link.className = 'cm-gold-band-markdown-remote-image-link';
+    const routedLocalLink = Boolean(this.onLinkClick && isLocalFileHref(this.href));
+    if (routedLocalLink) {
+      link.tabIndex = 0;
+      link.role = 'link';
+      link.dataset.href = this.href;
+    } else {
+      link.href = this.href;
+      link.target = '_blank';
+      link.rel = 'noreferrer';
+    }
+    link.textContent = this.label || this.href;
+    if (this.onLinkClick) {
+      const open = (event: Event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.onLinkClick?.(this.href);
+      };
+      link.addEventListener('click', open);
+      if (routedLocalLink) {
+        link.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' || event.key === ' ') open(event);
+        });
+      }
+    }
+    return link;
+  }
+
+  ignoreEvent() {
+    return true;
+  }
 }
 
 class SafeMarkdownImageWidget extends WidgetType {
   constructor(
     private readonly state: MarkdownImageState,
     private readonly alt: string,
-    private readonly inline = false,
+    private readonly onPreviewError?: (rawSrc: string, failedToken: string) => void,
   ) {
     super();
   }
 
   eq(other: SafeMarkdownImageWidget) {
-    if (other.inline !== this.inline || other.state.kind !== this.state.kind || other.state.rawSrc !== this.state.rawSrc) return false;
+    if (other.state.kind !== this.state.kind || other.state.rawSrc !== this.state.rawSrc) return false;
     if (this.state.kind === 'ready' && other.state.kind === 'ready') {
-      return this.state.previewToken === other.state.previewToken && this.alt === other.alt;
+      return this.state.previewGrant.token === other.state.previewGrant.token && this.alt === other.alt;
     }
     return this.alt === other.alt;
   }
 
   toDOM(view: EditorView) {
-    const wrap = document.createElement(this.inline ? 'span' : 'div');
-    wrap.className = this.inline
-      ? 'cm-gold-band-markdown-image-inline'
-      : 'cm-atomic-image cm-gold-band-markdown-image';
+    const wrap = document.createElement('div');
+    wrap.className = 'cm-atomic-image cm-gold-band-markdown-image';
     if (this.state.kind === 'ready') {
       const image = document.createElement('img');
-      image.src = workspaceFilePreviewUrl(this.state.previewToken);
+      image.src = workspaceFilePreviewUrl(this.state.previewGrant.token);
       image.alt = this.alt;
       image.loading = 'lazy';
       image.width = this.state.width;
       image.height = this.state.height;
+      image.addEventListener('error', () => {
+        if (this.state.kind === 'ready') {
+          this.onPreviewError?.(this.state.rawSrc, this.state.previewGrant.token);
+        }
+      }, { once: true });
       wrap.appendChild(image);
     } else {
       const placeholder = document.createElement('span');
       placeholder.className = 'cm-gold-band-markdown-image-placeholder';
-      placeholder.textContent = this.state.kind === 'loading'
-        ? '…'
-        : this.alt || this.state.rawSrc;
+      placeholder.textContent = this.state.kind === 'loading' ? '…' : this.alt || this.state.rawSrc;
       wrap.appendChild(placeholder);
     }
     wrap.addEventListener('mousedown', (event) => {
@@ -86,39 +141,77 @@ class SafeMarkdownImageWidget extends WidgetType {
   }
 }
 
-function buildDecorations(state: EditorState, images: ReadonlyMap<string, MarkdownImageState>) {
+interface MarkdownImagePreviewConfig {
+  images: ReadonlyMap<string, MarkdownImageState>;
+  onPreviewError?: (rawSrc: string, failedToken: string) => void;
+  onLinkClick?: (href: string) => void;
+}
+
+interface MarkdownImagePreviewFieldValue extends MarkdownImagePreviewConfig {
+  decorations: DecorationSet;
+}
+
+const setMarkdownImagePreviewConfig = StateEffect.define<MarkdownImagePreviewConfig>();
+
+function markdownLinkTarget(state: EditorState, imageNode: { from: number; to: number; node: { parent: { name: string; from: number; to: number } | null } }, fallback: string) {
+  const parent = imageNode.node.parent;
+  if (parent?.name !== 'Link') return { from: imageNode.from, to: imageNode.to, href: fallback };
+  const raw = state.doc.sliceString(parent.from, parent.to);
+  const match = raw.match(/\]\((?:<([^>]+)>|([^\s)"']+))(?:\s+["'][^)]*["'])?\)$/u);
+  return {
+    from: parent.from,
+    to: parent.to,
+    href: match?.[1] ?? match?.[2] ?? fallback,
+  };
+}
+
+function buildDecorations(state: EditorState, config: MarkdownImagePreviewConfig) {
   const ranges: Range<Decoration>[] = [];
   const tree = ensureSyntaxTree(state, state.doc.length, 100) ?? syntaxTree(state);
   tree.iterate({
     enter(node) {
+      if (node.name === 'CommentBlock') {
+        const startLine = state.doc.lineAt(node.from);
+        const endLine = state.doc.lineAt(node.to);
+        ranges.push(Decoration.replace({ block: true }).range(startLine.from, endLine.to));
+        return false;
+      }
       if (node.name !== 'Image') return;
       const raw = state.doc.sliceString(node.from, node.to);
       const match = raw.match(/^!\[([^\]]*)\]\((?:<([^>]+)>|([^\s)"']+))(?:\s+["'][^)]*["'])?\)$/u);
       const source = match?.[2] ?? match?.[3];
       if (!match || !source) return;
-      const image = images.get(source);
-      if (!image) return;
-      if (image.kind !== 'ready' && isRemoteSource(source)) {
+      if (isRemoteMarkdownImageSource(source)) {
+        const link = markdownLinkTarget(state, node, source);
         ranges.push(Decoration.replace({
-          widget: new SafeMarkdownImageWidget(image, match[1] ?? '', true),
-        }).range(node.from, node.to));
+          widget: new RemoteMarkdownImageLinkWidget(link.href, match[1] ?? '', config.onLinkClick),
+        }).range(link.from, link.to));
         return;
       }
+      const image = config.images.get(source);
+      if (!image) return;
       const line = state.doc.lineAt(node.from);
+      if (STANDALONE_MARKDOWN_IMAGE_PATTERN.test(line.text)) {
+        ranges.push(Decoration.replace({
+          widget: new SafeMarkdownImageWidget(image, match[1] ?? '', config.onPreviewError),
+          block: true,
+        }).range(line.from, line.to));
+        return;
+      }
       ranges.push(Decoration.widget({
-        widget: new SafeMarkdownImageWidget(image, match[1] ?? ''),
+        widget: new SafeMarkdownImageWidget(image, match[1] ?? '', config.onPreviewError),
         block: true,
         side: 1,
       }).range(line.to));
     },
   });
-  addSafeHtmlDecorations(state, images, ranges);
+  addSafeHtmlDecorations(state, config, ranges);
   return Decoration.set(ranges, true);
 }
 
 function addSafeHtmlDecorations(
   state: EditorState,
-  images: ReadonlyMap<string, MarkdownImageState>,
+  config: MarkdownImagePreviewConfig,
   ranges: Range<Decoration>[],
 ) {
   const alignStack: Array<{ tag: string; align: string }> = [];
@@ -128,9 +221,7 @@ function addSafeHtmlDecorations(
     if (isCodeLine(state, line.from)) {
       const currentAlign = alignStack.at(-1)?.align;
       if (currentAlign) {
-        ranges.push(Decoration.line({
-          attributes: { class: `cm-gold-band-markdown-align-${currentAlign}` },
-        }).range(line.from));
+        ranges.push(Decoration.line({ attributes: { class: `cm-gold-band-markdown-align-${currentAlign}` } }).range(line.from));
       }
       continue;
     }
@@ -142,15 +233,22 @@ function addSafeHtmlDecorations(
         attributes: { class: `cm-gold-band-markdown-align-${open?.[3]?.toLowerCase() ?? currentAlign}` },
       }).range(line.from));
     }
+
+    const linkedImageMatch = text.match(HTML_LINKED_IMAGE_LINE_PATTERN);
     const imageMatch = text.match(HTML_IMAGE_LINE_PATTERN);
-    if (imageMatch) {
-      const source = htmlAttribute(imageMatch[1] ?? '', 'src');
-      const image = images.get(source);
-      if (source && image) {
-        const inline = image.kind !== 'ready' && isRemoteSource(source);
+    const imageAttributes = linkedImageMatch?.[2] ?? imageMatch?.[1] ?? '';
+    const source = htmlAttribute(imageAttributes, 'src');
+    if (source && isRemoteMarkdownImageSource(source)) {
+      const href = linkedImageMatch ? htmlAttribute(linkedImageMatch[1] ?? '', 'href') || source : source;
+      ranges.push(Decoration.replace({
+          widget: new RemoteMarkdownImageLinkWidget(href, htmlAttribute(imageAttributes, 'alt'), config.onLinkClick),
+      }).range(line.from, line.to));
+    } else if (source) {
+      const image = config.images.get(source);
+      if (image) {
         ranges.push(Decoration.replace({
-          widget: new SafeMarkdownImageWidget(image, htmlAttribute(imageMatch[1] ?? '', 'alt'), inline),
-          block: !inline,
+          widget: new SafeMarkdownImageWidget(image, htmlAttribute(imageAttributes, 'alt'), config.onPreviewError),
+          block: true,
         }).range(line.from, line.to));
       }
     } else if ((open || close || HTML_BREAK_PATTERN.test(text)) && line.from < line.to) {
@@ -174,13 +272,43 @@ function isCodeLine(state: EditorState, position: number) {
   return false;
 }
 
-export function markdownImagePreview(images: ReadonlyMap<string, MarkdownImageState>): Extension {
-  const field = StateField.define<DecorationSet>({
-    create: (state) => buildDecorations(state, images),
-    update: (decorations, transaction) => transaction.docChanged
-      ? buildDecorations(transaction.state, images)
-      : decorations,
-    provide: (value) => EditorView.decorations.from(value),
-  });
-  return field;
+const markdownImagePreviewField = StateField.define<MarkdownImagePreviewFieldValue>({
+  create: (state) => ({
+    images: EMPTY_MARKDOWN_IMAGES,
+    decorations: buildDecorations(state, { images: EMPTY_MARKDOWN_IMAGES }),
+  }),
+  update: (value, transaction) => {
+    let config: MarkdownImagePreviewConfig = value;
+    for (const effect of transaction.effects) {
+      if (effect.is(setMarkdownImagePreviewConfig)) config = effect.value;
+    }
+    if (!transaction.docChanged && config === value) return value;
+    return { ...config, decorations: buildDecorations(transaction.state, config) };
+  },
+  provide: (field) => EditorView.decorations.from(field, (value) => value.decorations),
+});
+
+export function markdownImagePreview(
+  images: ReadonlyMap<string, MarkdownImageState> = EMPTY_MARKDOWN_IMAGES,
+  onPreviewError?: (rawSrc: string, failedToken: string) => void,
+  onLinkClick?: (href: string) => void,
+): Extension {
+  return [
+    markdownImagePreviewField,
+    markdownImagePreviewField.init((state) => ({
+      images,
+      onPreviewError,
+      onLinkClick,
+      decorations: buildDecorations(state, { images, onPreviewError, onLinkClick }),
+    })),
+  ];
+}
+
+export function updateMarkdownImagePreview(
+  view: EditorView,
+  images: ReadonlyMap<string, MarkdownImageState>,
+  onPreviewError?: (rawSrc: string, failedToken: string) => void,
+  onLinkClick?: (href: string) => void,
+) {
+  view.dispatch({ effects: setMarkdownImagePreviewConfig.of({ images, onPreviewError, onLinkClick }) });
 }

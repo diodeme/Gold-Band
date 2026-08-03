@@ -126,12 +126,10 @@ export interface WorkspaceFilesVm {
   contentCacheEntries: number;
   contentCacheMaxBytes: number;
   watchDebounceMs: number;
-  previewTokenTtlSeconds: number;
   externalAccessGrantTtlSeconds: number;
   markdownLivePreviewMaxChars: number;
   markdownEmbeddedImageLimit: number;
   markdownEmbeddedImageMaxConcurrent: number;
-  markdownExternalImagePolicy: 'confirm';
 }
 
 export interface FileRevisionVm {
@@ -198,13 +196,18 @@ export interface TextFileSnapshotVm extends WorkspaceFileSnapshotBaseVm {
   limitationCode: string | null;
 }
 
+export interface WorkspaceFilePreviewGrantVm {
+  token: string;
+  expiresAtMs: string;
+}
+
 export interface ImageFileSnapshotVm extends WorkspaceFileSnapshotBaseVm {
   kind: 'image';
   mimeType: string;
   width: number;
   height: number;
   animated: boolean;
-  previewToken: string;
+  previewGrant: WorkspaceFilePreviewGrantVm;
   sourceEditable: boolean;
 }
 
@@ -231,7 +234,7 @@ export type MarkdownImagePreviewVm =
   | {
       kind: 'ready';
       canonicalPath: string;
-      previewToken: string;
+      previewGrant: WorkspaceFilePreviewGrantVm;
       mimeType: string;
       width: number;
       height: number;

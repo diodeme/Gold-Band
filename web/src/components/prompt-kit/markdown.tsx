@@ -1,11 +1,13 @@
 import type React from 'react';
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { FileCode2 } from 'lucide-react';
 import {
   defaultUrlTransform,
   Streamdown,
   type StreamdownProps,
 } from 'streamdown';
 import { cn } from '@/lib/utils';
+import { isLocalFileHref } from '@/lib/file-link';
 import {
   advanceStreamingMarkdownPresentation,
   createStreamingMarkdownPresentation,
@@ -22,7 +24,7 @@ export type MarkdownProps = {
 };
 
 export interface MarkdownResourceLinkHandler {
-  openLocalFile: (rawHref: string) => void | Promise<void>;
+  openLocalFile: (rawHref: string, baseCanonicalPath?: string | null) => void | Promise<void>;
 }
 
 const MarkdownResourceLinkContext = createContext<MarkdownResourceLinkHandler | null>(null);
@@ -32,16 +34,11 @@ export function MarkdownResourceLinkProvider({ handler, children }: { handler: M
   return <MarkdownResourceLinkContext.Provider value={handler}>{children}</MarkdownResourceLinkContext.Provider>;
 }
 
-export function isLocalFileHref(href: string) {
-  const value = href.trim();
-  if (!value || value.startsWith('#')) return false;
-  if (/^[a-z]:[\\/]/iu.test(value) || /^file:\/\//iu.test(value)) return true;
-  const pathWithoutTarget = value
-    .replace(/#L\d+(?:-L?\d+)?$/iu, '')
-    .replace(/:\d+(?::\d+)?$/u, '');
-  if (/^[a-z][a-z\d+.-]*:/iu.test(pathWithoutTarget) || /^\/\//u.test(pathWithoutTarget)) return false;
-  return true;
+export function useMarkdownResourceLinkHandler() {
+  return useContext(MarkdownResourceLinkContext);
 }
+
+export { isLocalFileHref };
 
 export function proxyLocalFileLinks(markdown: string) {
   return markdown.replace(/(?<!!)\[([^\]\n]+)\]\(([^)\n]+)\)/gu, (match, label: string, destination: string) => {
@@ -78,7 +75,13 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
   return (
     <a
       {...props}
-      className="font-medium text-primary underline underline-offset-2 [overflow-wrap:anywhere] hover:text-primary/80"
+      className={cn(
+        'font-medium [overflow-wrap:anywhere] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-running/45',
+        enabledLocal
+          ? 'mx-0.5 inline-flex items-center gap-1 rounded-sm bg-muted/45 px-1 py-px align-baseline text-foreground/90 no-underline transition-colors hover:bg-accent hover:text-accent-foreground'
+          : 'text-gold-running underline decoration-gold-running/45 underline-offset-2 hover:decoration-gold-running',
+        local && !handler && 'cursor-not-allowed opacity-60',
+      )}
       href={enabledLocal ? localHref ?? undefined : local ? undefined : href}
       target={local ? undefined : '_blank'}
       rel={local ? undefined : 'noreferrer'}
@@ -88,6 +91,7 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
         if (localHref && handler) void handler.openLocalFile(localHref);
       } : props.onClick}
     >
+      {enabledLocal ? <FileCode2 className="size-[0.9em] shrink-0 self-center text-gold-running" aria-hidden="true" /> : null}
       {children}
     </a>
   );

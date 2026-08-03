@@ -36,13 +36,24 @@ function useMeasuredHeight() {
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
-    const update = () => setHeight(Math.max(120, Math.round(element.clientHeight)));
+    const update = () => {
+      const style = getComputedStyle(element);
+      setHeight(treeViewportContentHeight(
+        element.clientHeight,
+        Number.parseFloat(style.paddingTop) || 0,
+        Number.parseFloat(style.paddingBottom) || 0,
+      ));
+    };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
   return { ref, height };
+}
+
+export function treeViewportContentHeight(clientHeight: number, paddingTop: number, paddingBottom: number) {
+  return Math.max(1, Math.floor(clientHeight - paddingTop - paddingBottom));
 }
 
 async function copyPath(value: string) {
@@ -77,9 +88,11 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeNode
       ref={dragHandle}
       style={style}
       className={cn(
-        'group flex cursor-default items-center gap-1.5 rounded-md pr-2 text-xs outline-none transition-colors',
-        node.isFocused && 'ring-1 ring-inset ring-ring/70',
-        context.selectedPath === entry.canonicalPath ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-muted/45 hover:text-foreground',
+        'group flex h-full w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-xs outline-none transition-[background-color,color,box-shadow]',
+        context.selectedPath === entry.canonicalPath
+          ? 'bg-accent text-accent-foreground shadow-[inset_2px_0_0_var(--gold-running)]'
+          : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
+        node.isFocused && context.selectedPath !== entry.canonicalPath && 'bg-accent/45 text-foreground',
       )}
       onClick={(event) => {
         event.stopPropagation();
@@ -95,7 +108,7 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeNode
           {entry.loading ? <LoaderCircle className="size-3 animate-spin" /> : node.isOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         </span>
       ) : <span className="size-4 shrink-0" />}
-      <Icon className={cn('size-3.5 shrink-0', isDirectory && 'text-amber-500/85')} />
+      <Icon className={cn('size-3.5 shrink-0', isDirectory && 'text-foreground/65 group-hover:text-foreground')} />
       <span className="min-w-0 flex-1 truncate">{entry.name}</span>
     </div>
   );
@@ -127,7 +140,8 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
   const snapshot = useFileExplorerSnapshot(projectId);
   const { ref, height } = useMeasuredHeight();
   const treeRef = useRef<TreeApi<FileTreeNode> | null>(null);
-  const pendingRevealPathRef = useRef<string | null>(selectedPath);
+  const pendingRevealPathRef = useRef<string | null>(null);
+  const restoringScrollRef = useRef(true);
   const contextMenuOpenRef = useRef(false);
   const suppressContextMenuActivationRef = useRef(false);
   const contextMenuFrameRef = useRef<number | null>(null);
@@ -136,17 +150,31 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
 
   useEffect(() => {
     void fileExplorerStore.loadRoot(projectId);
-    const frame = requestAnimationFrame(() => treeRef.current?.scrollToOffset(snapshot.treeScrollTop));
+    restoringScrollRef.current = true;
+    const savedScrollTop = fileExplorerStore.snapshot(projectId).treeScrollTop;
+    let settleFrame: number | null = null;
+    const frame = requestAnimationFrame(() => {
+      treeRef.current?.scrollToOffset(savedScrollTop);
+      settleFrame = requestAnimationFrame(() => { restoringScrollRef.current = false; });
+    });
     return () => {
       cancelAnimationFrame(frame);
+      if (settleFrame !== null) cancelAnimationFrame(settleFrame);
       if (copyFailedTimerRef.current) clearTimeout(copyFailedTimerRef.current);
       if (contextMenuFrameRef.current !== null) cancelAnimationFrame(contextMenuFrameRef.current);
     };
   }, [projectId]);
 
   useEffect(() => {
-    pendingRevealPathRef.current = selectedPath;
-  }, [selectedPath]);
+    if (!selectedPath) {
+      fileExplorerStore.takeSelectionReveal(projectId, null);
+      pendingRevealPathRef.current = null;
+      return;
+    }
+    if (fileExplorerStore.takeSelectionReveal(projectId, selectedPath)) {
+      pendingRevealPathRef.current = selectedPath;
+    }
+  }, [projectId, selectedPath]);
 
   useEffect(() => {
     const reveal = consumePendingTreeReveal(pendingRevealPathRef.current, snapshot.roots);
@@ -247,7 +275,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
               data={snapshot.roots}
               width="100%"
               height={height}
-              rowHeight={28}
+              rowHeight={32}
               indent={14}
               overscanCount={8}
               idAccessor="id"
@@ -260,7 +288,13 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
               disableMultiSelection
               selection={undefined}
               onToggle={(id) => void fileExplorerStore.toggleDirectory(projectId, id, !snapshot.expanded.has(id))}
-              onScroll={({ scrollOffset }) => fileExplorerStore.setTreeScrollTop(projectId, scrollOffset)}
+              className="gold-themed-scrollbar !overflow-x-hidden overscroll-contain [overflow-anchor:none] [scrollbar-gutter:stable]"
+              rowClassName="w-full px-0.5"
+              onScroll={({ scrollOffset, scrollUpdateWasRequested }) => {
+                if (!restoringScrollRef.current && !scrollUpdateWasRequested) {
+                  fileExplorerStore.setTreeScrollTop(projectId, scrollOffset);
+                }
+              }}
               onActivate={(node) => {
                 if (node.data.kind === 'file' && canActivateFile()) onOpenFile(node.data);
               }}

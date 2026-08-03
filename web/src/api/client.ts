@@ -224,7 +224,7 @@ export interface RuntimeApi {
   saveLastConversationWorkspace(projectId: string): Promise<void>;
   listWorkspaceDirectory(projectId: string, relativePath: string): Promise<WorkspaceDirectoryEntryVm[]>;
   searchWorkspaceFiles(projectId: string, query: string, requestId: string, limit: number): Promise<WorkspaceFileSearchVm>;
-  resolveWorkspaceFileLink(projectId: string, rawHref: string): Promise<ResolvedWorkspaceFileLinkVm>;
+  resolveWorkspaceFileLink(projectId: string, rawHref: string, baseCanonicalPath?: string | null): Promise<ResolvedWorkspaceFileLinkVm>;
   readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource?: boolean): Promise<WorkspaceFileSnapshotVm>;
   resolveMarkdownImage(input: ResolveMarkdownImageInput): Promise<MarkdownImagePreviewVm>;
   writeFileResource(input: WriteFileResourceInput): Promise<FileRevisionVm>;

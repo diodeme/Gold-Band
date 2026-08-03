@@ -24,6 +24,7 @@ export interface FileExplorerSnapshot {
 
 interface ProjectRuntime {
   snapshot: FileExplorerSnapshot;
+  revealedSelectionPath: string | null;
   directoryRequests: Map<string, number>;
   searchRevision: number;
   searchTimer: ReturnType<typeof setTimeout> | null;
@@ -144,6 +145,14 @@ export class FileExplorerStore {
     const next = Math.max(1, Math.round(treeWidth));
     if (runtime.snapshot.treeWidth === next) return;
     runtime.snapshot = { ...runtime.snapshot, treeWidth: next };
+  }
+
+  takeSelectionReveal(projectId: string, canonicalPath: string | null) {
+    const runtime = this.runtime(projectId);
+    const next = canonicalPath ? normalizePath(canonicalPath) : null;
+    if (runtime.revealedSelectionPath === next) return false;
+    runtime.revealedSelectionPath = next;
+    return next !== null;
   }
 
   async loadRoot(projectId: string, force = false) {
@@ -286,6 +295,7 @@ export class FileExplorerStore {
     if (!runtime) {
       runtime = {
         snapshot: idleSnapshot(projectId),
+        revealedSelectionPath: null,
         directoryRequests: new Map(),
         searchRevision: 0,
         searchTimer: null,

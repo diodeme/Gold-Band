@@ -10,5 +10,10 @@ export default defineConfig({
   test: {
     include: ['web/tests/**/*.test.{ts,tsx}'],
     environment: 'node',
+    server: {
+      deps: {
+        inline: ['@atomic-editor/editor'],
+      },
+    },
   },
 });

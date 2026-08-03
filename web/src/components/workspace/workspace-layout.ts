@@ -41,12 +41,10 @@ export const FALLBACK_WORKSPACE_FILES: WorkspaceFilesVm = {
   contentCacheEntries: 12,
   contentCacheMaxBytes: 16 * 1024 * 1024,
   watchDebounceMs: 150,
-  previewTokenTtlSeconds: 300,
   externalAccessGrantTtlSeconds: 1_800,
   markdownLivePreviewMaxChars: 200_000,
   markdownEmbeddedImageLimit: 100,
   markdownEmbeddedImageMaxConcurrent: 4,
-  markdownExternalImagePolicy: 'confirm',
 };
 export const WORKSPACE_SIDEBAR_MIN_WIDTH = 200;
 export const WORKSPACE_SIDEBAR_MAX_WIDTH = 420;

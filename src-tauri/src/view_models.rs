@@ -104,12 +104,10 @@ pub struct WorkspaceFilesVm {
     pub content_cache_entries: usize,
     pub content_cache_max_bytes: u64,
     pub watch_debounce_ms: u64,
-    pub preview_token_ttl_seconds: u64,
     pub external_access_grant_ttl_seconds: u64,
     pub markdown_live_preview_max_chars: usize,
     pub markdown_embedded_image_limit: usize,
     pub markdown_embedded_image_max_concurrent: usize,
-    pub markdown_external_image_policy: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1242,7 +1240,6 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
             content_cache_entries: config.workspace_files.content_cache_entries,
             content_cache_max_bytes: config.workspace_files.content_cache_max_bytes,
             watch_debounce_ms: config.workspace_files.watch_debounce_ms,
-            preview_token_ttl_seconds: config.workspace_files.preview_token_ttl_seconds,
             external_access_grant_ttl_seconds: config
                 .workspace_files
                 .external_access_grant_ttl_seconds,
@@ -1251,10 +1248,6 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
             markdown_embedded_image_max_concurrent: config
                 .workspace_files
                 .markdown_embedded_image_max_concurrent,
-            markdown_external_image_policy: config
-                .workspace_files
-                .markdown_external_image_policy
-                .clone(),
         },
     }
 }

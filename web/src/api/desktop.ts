@@ -380,6 +380,10 @@ export const desktopApi: RuntimeApi = {
   workspaceFilePreviewUrl(token, staticFrame = false) {
     return convertFileSrc(staticFrame ? `${token}/static` : token, 'gold-band-preview');
   },
+  async openExternalUrl(url) {
+    const { openUrl } = await import('@tauri-apps/plugin-opener');
+    await openUrl(url);
+  },
   async openFileWithSystemApp(path) {
     const { openPath } = await import('@tauri-apps/plugin-opener');
     await openPath(path);

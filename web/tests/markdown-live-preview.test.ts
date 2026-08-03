@@ -47,10 +47,13 @@ describe('Markdown live preview integration', () => {
     expect(editorSource).toContain('state.toJSON({ history: historyField })');
     expect(editorSource).toContain('captureEditorViewportAnchor');
     expect(editorSource).toContain('key={editorProfileKey}');
-    expect(editorSource).toContain('appliedTargetRevisionsRef.current.get(documentKey)');
+    expect(editorSource).toContain('appliedTargetRevisionsRef.current.get(intent.documentKey)');
     expect(editorSource).toContain('viewportAnchorDocumentTop');
-    expect(editorSource).toContain('targetMeasured');
-    expect(editorSource).toContain('ResizeObserver');
+    expect(editorSource).toContain("EditorView.scrollIntoView(resolved.selection.main, { y: 'center' })");
+    expect(editorSource).not.toContain('targetMeasured');
+    expect(editorSource).not.toContain('coordsAtPos');
+    expect(editorSource).not.toContain('ResizeObserver');
+    expect(editorSource).not.toContain('view.state.doc.toString() !== value');
     expect(editorSource).toContain('basicSetup={basicSetup}');
     expect(editorSource).toContain('onChange={handleChange}');
     expect(editorSource).not.toContain('sourceEditorRef');

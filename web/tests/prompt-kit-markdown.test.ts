@@ -2,6 +2,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { isLocalFileHref, Markdown, proxyLocalFileLinks } from '@/components/prompt-kit/markdown';
+import { isDocumentAnchorHref, isExternalUrlHref } from '@/lib/file-link';
 import {
   advanceStreamingMarkdownPresentation,
   createStreamingMarkdownPresentation,
@@ -22,6 +23,8 @@ describe('prompt-kit Markdown', () => {
     expect(isLocalFileHref('src/client.rs:3302')).toBe(true);
     expect(isLocalFileHref('https://example.com/client.rs:12')).toBe(false);
     expect(isLocalFileHref('mailto:dev@example.com')).toBe(false);
+    expect(isExternalUrlHref('https://github.com/diodeme/Gold-Band/releases')).toBe(true);
+    expect(isDocumentAnchorHref('#')).toBe(true);
   });
 
   it('proxies only local Markdown destinations through the safe render URL', () => {

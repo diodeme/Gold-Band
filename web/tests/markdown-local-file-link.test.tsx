@@ -3,11 +3,17 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { openExternalUrl } from '@/api';
 import { Markdown, MarkdownResourceLinkProvider } from '@/components/prompt-kit/markdown';
+
+vi.mock('@/api', () => ({ openExternalUrl: vi.fn(() => Promise.resolve()) }));
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-afterEach(() => document.body.replaceChildren());
+afterEach(() => {
+  document.body.replaceChildren();
+  vi.mocked(openExternalUrl).mockClear();
+});
 
 describe('Markdown local file link routing', () => {
   it('routes a local path to the workspace handler without opening a new browser target', async () => {
@@ -53,7 +59,7 @@ describe('Markdown local file link routing', () => {
     }
   });
 
-  it('preserves external link behavior', async () => {
+  it('opens external links through the runtime URL opener', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -65,9 +71,10 @@ describe('Markdown local file link routing', () => {
         </MarkdownResourceLinkProvider>,
       ));
       const link = container.querySelector<HTMLAnchorElement>('a');
-      expect(link?.target).toBe('_blank');
-      expect(link?.rel).toBe('noreferrer');
+      expect(link?.target).toBe('');
       expect(openLocalFile).not.toHaveBeenCalled();
+      await act(async () => link?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })));
+      expect(openExternalUrl).toHaveBeenCalledWith('https://example.com/file.rs:12');
     } finally {
       await act(async () => root.unmount());
     }

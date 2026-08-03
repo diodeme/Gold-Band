@@ -79,4 +79,11 @@ describe('browserApi', () => {
       renewed.token,
     )).resolves.toMatchObject({ kind: 'text' });
   });
+
+  it('preserves the line target when resolving a conversation file link', async () => {
+    const resolved = await browserApi.resolveWorkspaceFileLink('default', 'README.md:47');
+
+    expect(resolved.locator.relativePath).toBe('README.md');
+    expect(resolved.target).toEqual({ line: 47, column: null, endLine: null });
+  });
 });

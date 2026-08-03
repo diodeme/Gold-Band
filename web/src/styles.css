@@ -103,12 +103,13 @@
   --atomic-editor-bg-panel: var(--popover);
   --atomic-editor-bg-surface: var(--muted);
   --atomic-editor-border: var(--border);
-  --atomic-editor-accent: var(--primary);
-  --atomic-editor-accent-bright: var(--primary);
-  --atomic-editor-accent-soft: color-mix(in srgb, var(--primary) 55%, var(--background));
-  --atomic-editor-link: var(--primary);
-  --atomic-editor-link-hover: color-mix(in srgb, var(--primary) 78%, var(--foreground));
-  --atomic-editor-code-bg: color-mix(in srgb, var(--muted) 72%, transparent);
+  --atomic-editor-accent: var(--gold-running);
+  --atomic-editor-accent-bright: var(--gold-running);
+  --atomic-editor-accent-soft: color-mix(in srgb, var(--gold-running) 42%, var(--background));
+  --atomic-editor-link: var(--gold-running);
+  --atomic-editor-link-hover: color-mix(in srgb, var(--gold-running) 72%, var(--foreground));
+  --atomic-editor-code-bg: color-mix(in srgb, var(--gold-surface-high) 72%, var(--background));
+  --atomic-editor-code-rail: color-mix(in srgb, var(--gold-running) 48%, var(--border));
 }
 
 .workspace-markdown-live-preview .cm-content {

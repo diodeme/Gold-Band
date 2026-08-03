@@ -449,6 +449,10 @@ export function workspaceFilePreviewUrl(token: string, staticFrame = false) {
   return getRuntimeApi().workspaceFilePreviewUrl(token, staticFrame);
 }
 
+export function openExternalUrl(url: string) {
+  return getRuntimeApi().openExternalUrl(url);
+}
+
 export function openFileWithSystemApp(path: string) {
   return getRuntimeApi().openFileWithSystemApp(path);
 }

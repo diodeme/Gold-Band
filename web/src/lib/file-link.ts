@@ -8,3 +8,11 @@ export function isLocalFileHref(href: string) {
   if (/^[a-z][a-z\d+.-]*:/iu.test(pathWithoutTarget) || /^\/\//u.test(pathWithoutTarget)) return false;
   return true;
 }
+
+export function isExternalUrlHref(href: string) {
+  return /^(?:https?:\/\/|mailto:|tel:)/iu.test(href.trim());
+}
+
+export function isDocumentAnchorHref(href: string) {
+  return href.trim().startsWith('#');
+}

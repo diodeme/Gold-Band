@@ -212,6 +212,10 @@ impl GoldBandPaths {
         self.user_gold_band_root.join("gold-band.db")
     }
 
+    pub fn scheduler_db_path(&self) -> Utf8PathBuf {
+        self.user_gold_band_root.join("scheduled-tasks.db")
+    }
+
     // ── SKILL paths ──
 
     pub fn global_skills_dir() -> Utf8PathBuf {
@@ -1338,6 +1342,23 @@ mod tests {
                 .to_string()
                 .replace('\\', "/")
                 .ends_with("/.gold-band-test-root/logs/runtime.log")
+        );
+    }
+
+    #[test]
+    fn scheduler_db_path_is_separate_from_search_database_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let paths = GoldBandPaths::new(repo_root);
+
+        assert_ne!(paths.scheduler_db_path(), paths.sqlite_db_path());
+        assert!(
+            paths
+                .scheduler_db_path()
+                .to_string()
+                .replace('\\', "/")
+                .ends_with("/scheduled-tasks.db")
         );
     }
 }

@@ -26,7 +26,7 @@ import {
   type WorkflowEditWorkspaceResource,
 } from './right-workspace-context';
 
-type ConversationRunWorkspaceResource = Exclude<RightWorkspaceResource, { kind: 'agent-transcript' | 'file' }>;
+type ConversationRunWorkspaceResource = Exclude<RightWorkspaceResource, { kind: 'agent-transcript' | 'file' | 'file-browser' }>;
 
 interface ConversationRunWorkspaceResourcePanelProps {
   resource: ConversationRunWorkspaceResource;

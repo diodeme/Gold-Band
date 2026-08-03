@@ -12,9 +12,15 @@ url = "2"
 
 [dependencies]
 anyhow = "1"
+atomic-write-file = "0.2"
+blake3 = "1"
 camino = { version = "1", features = ["serde1"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+encoding_rs = "0.8"
 gold-band = { path = ".." }
+ignore = "0.4"
+infer = "0.19"
+imagesize = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 fontdb = "0.23"
@@ -34,7 +40,11 @@ base64 = "0.22"
 tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 walkdir = "2"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "ico"] }
+notify = "8"
+natord = "1"
+percent-encoding = "2"
+resvg = "0.45"
 # macOS / Linux OS 閫氱煡 fallback銆?
 notify-rust = { version = "4", optional = true }
 

@@ -1,7 +1,8 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { convertFileSrc } from '@tauri-apps/api/core';
 
 // ── Metrics Settings ──
 
@@ -34,6 +35,13 @@ export const desktopApi: RuntimeApi = {
   async subscribeInterventionNavigate(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
     const unlisten: UnlistenFn = await listen<InterventionNavigateEventVm>('gold-band://intervention-navigate', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  async subscribeWorkspaceFileChanges(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<WorkspaceFileChangedEventVm>('gold-band://workspace-file-changed', (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
@@ -332,6 +340,46 @@ export const desktopApi: RuntimeApi = {
   },
   saveLastConversationWorkspace(projectId) {
     return invokeCommand('save_last_conversation_workspace', { projectId });
+  },
+  listWorkspaceDirectory(projectId, relativePath) {
+    return invokeCommand('list_workspace_directory', { input: { projectId, relativePath } });
+  },
+  searchWorkspaceFiles(projectId, query, requestId, limit) {
+    return invokeCommand('search_workspace_files', { input: { projectId, query, requestId, limit } });
+  },
+  resolveWorkspaceFileLink(projectId, rawHref) {
+    return invokeCommand('resolve_workspace_file_link', { input: { projectId, rawHref } });
+  },
+  readFileResource(projectId, canonicalPath, externalAccessToken = null, preferSource = false) {
+    return invokeCommand('read_file_resource', { input: { projectId, canonicalPath, externalAccessToken, preferSource } });
+  },
+  resolveMarkdownImage(input) {
+    return invokeCommand('resolve_markdown_image', { input });
+  },
+  writeFileResource(input) {
+    return invokeCommand('write_file_resource', { input });
+  },
+  releaseWorkspaceFilePreview(token) {
+    return invokeCommand('release_workspace_file_preview', { input: { token } });
+  },
+  renewExternalFileAccess(token) {
+    return invokeCommand('renew_external_file_access', { input: { token } });
+  },
+  releaseExternalFileAccess(token) {
+    return invokeCommand('release_external_file_access', { input: { token } });
+  },
+  startWorkspaceFileWatch(projectId) {
+    return invokeCommand('start_workspace_file_watch', { input: { projectId } });
+  },
+  stopWorkspaceFileWatch(projectId) {
+    return invokeCommand('stop_workspace_file_watch', { input: { projectId } });
+  },
+  workspaceFilePreviewUrl(token, staticFrame = false) {
+    return convertFileSrc(staticFrame ? `${token}/static` : token, 'gold-band-preview');
+  },
+  async openFileWithSystemApp(path) {
+    const { openPath } = await import('@tauri-apps/plugin-opener');
+    await openPath(path);
   },
   async pickAttachmentFiles() {
     const { open } = await import('@tauri-apps/plugin-dialog');

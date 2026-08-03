@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AppBootstrapVm } from '../src/types';
+import { FALLBACK_WORKSPACE_FILES } from '../src/components/workspace/workspace-layout';
 import {
   canRemoveRecentWorkspace,
   shouldAutoOpenWorkspacePicker,
@@ -59,11 +60,24 @@ const bootstrap = (needsWorkspace: boolean): AppBootstrapVm => ({
     workspaceLayout: {
       shellMinWidth: 480,
       shellMinHeight: 680,
+      rightWorkspace: {
+        minWidth: 320,
+        defaultWidth: 440,
+        maxWidth: 960,
+        file: {
+          preferredWidth: 760,
+          splitMinWidth: 620,
+          treeDefaultWidth: 280,
+          treeMinWidth: 220,
+          treeMaxWidth: 420,
+        },
+      },
       conversation: { centerMinWidth: 360, centerAutoCollapseWidth: 420, windowMinWidth: 480 },
       contextCards: { centerMinWidth: 520, centerAutoCollapseWidth: 520, windowMinWidth: 520 },
       workflowCanvas: { centerMinWidth: 640, centerAutoCollapseWidth: 640, windowMinWidth: 640 },
       settings: { centerMinWidth: 480, centerAutoCollapseWidth: 480, windowMinWidth: 480 },
     },
+    workspaceFiles: FALLBACK_WORKSPACE_FILES,
   },
   needsWorkspace,
 });

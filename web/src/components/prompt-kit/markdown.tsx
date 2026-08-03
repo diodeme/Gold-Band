@@ -1,6 +1,7 @@
 import type React from 'react';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
+  defaultUrlTransform,
   Streamdown,
   type StreamdownProps,
 } from 'streamdown';
@@ -19,6 +20,78 @@ export type MarkdownProps = {
   className?: string;
   streaming?: boolean;
 };
+
+export interface MarkdownResourceLinkHandler {
+  openLocalFile: (rawHref: string) => void | Promise<void>;
+}
+
+const MarkdownResourceLinkContext = createContext<MarkdownResourceLinkHandler | null>(null);
+const LOCAL_FILE_PROXY_PREFIX = 'https://gold-band.local-file.invalid/?href=';
+
+export function MarkdownResourceLinkProvider({ handler, children }: { handler: MarkdownResourceLinkHandler | null; children: React.ReactNode }) {
+  return <MarkdownResourceLinkContext.Provider value={handler}>{children}</MarkdownResourceLinkContext.Provider>;
+}
+
+export function isLocalFileHref(href: string) {
+  const value = href.trim();
+  if (!value || value.startsWith('#')) return false;
+  if (/^[a-z]:[\\/]/iu.test(value) || /^file:\/\//iu.test(value)) return true;
+  const pathWithoutTarget = value
+    .replace(/#L\d+(?:-L?\d+)?$/iu, '')
+    .replace(/:\d+(?::\d+)?$/u, '');
+  if (/^[a-z][a-z\d+.-]*:/iu.test(pathWithoutTarget) || /^\/\//u.test(pathWithoutTarget)) return false;
+  return true;
+}
+
+export function proxyLocalFileLinks(markdown: string) {
+  return markdown.replace(/(?<!!)\[([^\]\n]+)\]\(([^)\n]+)\)/gu, (match, label: string, destination: string) => {
+    const trimmed = destination.trim();
+    const href = trimmed.startsWith('<') && trimmed.endsWith('>') ? trimmed.slice(1, -1) : trimmed;
+    return isLocalFileHref(href)
+      ? `[${label}](${LOCAL_FILE_PROXY_PREFIX}${encodeURIComponent(href)})`
+      : match;
+  });
+}
+
+function localHrefFromRenderedHref(href: string | undefined) {
+  if (!href) return null;
+  if (href.startsWith(LOCAL_FILE_PROXY_PREFIX)) {
+    try {
+      return decodeURIComponent(href.slice(LOCAL_FILE_PROXY_PREFIX.length));
+    } catch {
+      return null;
+    }
+  }
+  return isLocalFileHref(href) ? href : null;
+}
+
+const markdownUrlTransform: NonNullable<StreamdownProps['urlTransform']> = (url, key, node) => (
+  isLocalFileHref(url) ? url : defaultUrlTransform(url, key, node)
+);
+const markdownLinkSafety: NonNullable<StreamdownProps['linkSafety']> = { enabled: false };
+
+function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
+  const handler = useContext(MarkdownResourceLinkContext);
+  const localHref = localHrefFromRenderedHref(href);
+  const local = Boolean(localHref);
+  const enabledLocal = Boolean(handler && localHref);
+  return (
+    <a
+      {...props}
+      className="font-medium text-primary underline underline-offset-2 [overflow-wrap:anywhere] hover:text-primary/80"
+      href={enabledLocal ? localHref ?? undefined : local ? undefined : href}
+      target={local ? undefined : '_blank'}
+      rel={local ? undefined : 'noreferrer'}
+      aria-disabled={local && !handler ? true : undefined}
+      onClick={local ? (event) => {
+        event.preventDefault();
+        if (localHref && handler) void handler.openLocalFile(localHref);
+      } : props.onClick}
+    >
+      {children}
+    </a>
+  );
+}
 
 function CompactHeading({ level, children }: { level: 1 | 2 | 3; children: React.ReactNode }) {
   if (level === 1) {
@@ -47,11 +120,7 @@ const markdownComponents = {
   p: ({ children }: { children?: React.ReactNode }) => <p className="my-0 min-w-0 break-words [overflow-wrap:anywhere]">{children}</p>,
   strong: ({ children }: { children?: React.ReactNode }) => <strong className="font-semibold text-foreground">{children}</strong>,
   em: ({ children }: { children?: React.ReactNode }) => <em className="text-foreground/90">{children}</em>,
-  a: ({ href, children }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
-    <a className="font-medium text-primary underline underline-offset-2 [overflow-wrap:anywhere] hover:text-primary/80" href={href} target="_blank" rel="noreferrer">
-      {children}
-    </a>
-  ),
+  a: MarkdownLink,
   ul: ({ children }: { children?: React.ReactNode }) => <ul className="my-1.5 list-disc space-y-1 pl-5 marker:text-muted-foreground">{children}</ul>,
   ol: ({ children }: { children?: React.ReactNode }) => <ol className="my-1.5 list-decimal space-y-1 pl-5 marker:text-muted-foreground">{children}</ol>,
   li: ({ children }: { children?: React.ReactNode }) => <li className="pl-1 leading-6">{children}</li>,
@@ -137,8 +206,10 @@ export function Markdown({ children, className, streaming = false }: MarkdownPro
         isAnimating={presentationStreaming}
         mode={streamdownMode}
         parseIncompleteMarkdown={presentationStreaming}
+        urlTransform={markdownUrlTransform}
+        linkSafety={markdownLinkSafety}
       >
-        {visibleChildren}
+        {proxyLocalFileLinks(visibleChildren)}
       </Streamdown>
     </div>
   );

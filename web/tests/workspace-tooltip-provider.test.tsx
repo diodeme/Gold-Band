@@ -94,7 +94,9 @@ const resource: AgentTranscriptResource = {
 
 function OpenAgentWorkspace() {
   const workspace = useRightWorkspace();
-  useEffect(() => workspace.openResource(resource), [workspace.openResource]);
+  useEffect(() => {
+    void workspace.openResource(resource);
+  }, [workspace.openResource]);
   return null;
 }
 

@@ -1,4 +1,4 @@
-import { Bot, Braces, ChevronDown, FileCode2, FileText, GitBranch, PencilLine, X } from 'lucide-react';
+import { Bot, Braces, ChevronDown, FileCode2, FileText, FolderOpen, GitBranch, PencilLine, X } from 'lucide-react';
 import { memo, type ReactNode, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -6,11 +6,12 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { cn } from '@/lib/utils';
 import { useConversationBranchLiveSnapshot } from '@/lib/conversation-event-router';
 import { AgentConversationPanel } from './AgentConversationPanel';
-import { useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
+import { fileBrowserWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
+import { useFileContentEntry } from './files/file-content-store';
 
 export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
   const { t } = useTranslation();
-  const { tabs, activeTabKey, activateTab, closeTab, renderResource } = useRightWorkspace();
+  const { tabs, activeTabKey, activateTab, closeTab, renderResource, openResource, projectId, scopeKey } = useRightWorkspace();
   const active = tabs.find((tab) => tab.key === activeTabKey) ?? null;
   const tabStripRef = useRef<HTMLDivElement>(null);
   const overflowMenuRef = useRef<HTMLButtonElement>(null);
@@ -72,7 +73,34 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
       <div className="flex min-h-0 flex-1 flex-col">
         {active?.kind === 'agent-transcript' ? <AgentConversationPanel key={active.key} resource={active} /> : null}
         {active && active.kind !== 'agent-transcript' ? renderResource(active) : null}
-        {!active ? <div className="min-h-0 flex-1" data-right-workspace-empty="true" /> : null}
+        {!active ? (
+          <div className="flex min-h-0 flex-1 flex-col p-3" data-right-workspace-empty="true">
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-auto justify-start gap-3 rounded-xl px-3 py-3 text-left"
+              disabled={!projectId || !scopeKey}
+              onClick={() => {
+                if (!projectId || !scopeKey) return;
+                openResource({
+                  kind: 'file-browser',
+                  key: fileBrowserWorkspaceResourceKey(projectId),
+                  scopeKey,
+                  projectId,
+                  title: t('workspace.files'),
+                  description: t('workspace.browseWorkspaceFiles'),
+                  attention: false,
+                });
+              }}
+            >
+              <FolderOpen className="size-4 shrink-0 text-primary" />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium text-foreground">{t('workspace.files')}</span>
+                <span className="mt-0.5 block text-xs font-normal text-muted-foreground">{t('workspace.browseWorkspaceFiles')}</span>
+              </span>
+            </Button>
+          </div>
+        ) : null}
       </div>
     </section>
   );
@@ -89,6 +117,7 @@ const RightWorkspaceTab = memo(function RightWorkspaceTab({
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
 }) {
+  const fileEntry = useFileContentEntry(tab.kind === 'file' ? tab.key : '');
   if (tab.kind === 'agent-transcript') {
     return <AgentWorkspaceTab tab={tab} active={active} onActivate={onActivate} onClose={onClose} />;
   }
@@ -100,12 +129,18 @@ const RightWorkspaceTab = memo(function RightWorkspaceTab({
         ? <FileCode2 className="size-3.5 shrink-0" />
         : tab.kind === 'raw-frames'
           ? <Braces className="size-3.5 shrink-0" />
-          : <FileText className="size-3.5 shrink-0" />;
+          : tab.kind === 'file-browser'
+            ? <FolderOpen className="size-3.5 shrink-0" />
+            : <FileText className="size-3.5 shrink-0" />;
   return (
     <RightWorkspaceTabButton
       tab={tab}
       active={active}
-      attention={tab.attention}
+      attention={tab.attention || (tab.kind === 'file' && (
+        fileEntry.status === 'error'
+        || fileEntry.saveState.kind === 'error'
+        || fileEntry.saveState.kind === 'conflict'
+      ))}
       icon={icon}
       onActivate={onActivate}
       onClose={onClose}

@@ -111,15 +111,185 @@ export interface AppConfigVm {
   acpSessionTitleRefreshEnabled: boolean;
   acpChatEventPageSize: number;
   workspaceLayout: WorkspaceLayoutVm;
+  workspaceFiles: WorkspaceFilesVm;
+}
+
+export interface WorkspaceFilesVm {
+  autoSaveDelayMs: number;
+  searchDebounceMs: number;
+  searchResultLimit: number;
+  textEditableMaxBytes: number;
+  textHighlightMaxChars: number;
+  textReadOnlyMaxBytes: number;
+  imagePreviewMaxBytes: number;
+  imagePreviewMaxPixels: number;
+  contentCacheEntries: number;
+  contentCacheMaxBytes: number;
+  watchDebounceMs: number;
+  previewTokenTtlSeconds: number;
+  externalAccessGrantTtlSeconds: number;
+  markdownLivePreviewMaxChars: number;
+  markdownEmbeddedImageLimit: number;
+  markdownEmbeddedImageMaxConcurrent: number;
+  markdownExternalImagePolicy: 'confirm';
+}
+
+export interface FileRevisionVm {
+  byteLength: number;
+  modifiedAtNs: string;
+  contentHash: string;
+}
+
+export interface WorkspaceFileLocatorVm {
+  projectId: string;
+  canonicalPath: string;
+  relativePath: string | null;
+  scope: 'workspace' | 'external';
+}
+
+export interface ExternalFileAccessGrantVm {
+  token: string;
+  permissions: Array<'read' | 'write'>;
+  expiresAtMs: string;
+}
+
+export interface FileTargetLocationVm {
+  line: number | null;
+  column: number | null;
+  endLine: number | null;
+}
+
+export interface ResolvedWorkspaceFileLinkVm {
+  locator: WorkspaceFileLocatorVm;
+  target: FileTargetLocationVm | null;
+  externalAccessGrant: ExternalFileAccessGrantVm | null;
+}
+
+export interface WorkspaceDirectoryEntryVm {
+  name: string;
+  relativePath: string;
+  canonicalPath: string;
+  kind: 'directory' | 'file' | 'symlink' | 'other';
+  hasChildren: boolean;
+  byteLength: number | null;
+  modifiedAtNs: string | null;
+}
+
+export interface WorkspaceFileSearchVm {
+  requestId: string;
+  entries: WorkspaceDirectoryEntryVm[];
+  truncated: boolean;
+}
+
+interface WorkspaceFileSnapshotBaseVm {
+  locator: WorkspaceFileLocatorVm;
+  name: string;
+  revision: FileRevisionVm;
+  externalAccessGrant: ExternalFileAccessGrantVm | null;
+}
+
+export interface TextFileSnapshotVm extends WorkspaceFileSnapshotBaseVm {
+  kind: 'text';
+  content: string;
+  encoding: string;
+  language: string | null;
+  lineEnding: 'lf' | 'crlf' | 'mixed';
+  editable: boolean;
+  limitationCode: string | null;
+}
+
+export interface ImageFileSnapshotVm extends WorkspaceFileSnapshotBaseVm {
+  kind: 'image';
+  mimeType: string;
+  width: number;
+  height: number;
+  animated: boolean;
+  previewToken: string;
+  sourceEditable: boolean;
+}
+
+export interface UnsupportedFileSnapshotVm extends WorkspaceFileSnapshotBaseVm {
+  kind: 'unsupported';
+  mimeType: string | null;
+  limitationCode: string;
+}
+
+export type WorkspaceFileSnapshotVm =
+  | TextFileSnapshotVm
+  | ImageFileSnapshotVm
+  | UnsupportedFileSnapshotVm;
+
+export interface ResolveMarkdownImageInput {
+  projectId: string;
+  markdownCanonicalPath: string;
+  markdownExternalAccessToken: string | null;
+  rawSrc: string;
+  approvedExternalTargets: string[];
+}
+
+export type MarkdownImagePreviewVm =
+  | {
+      kind: 'ready';
+      canonicalPath: string;
+      previewToken: string;
+      mimeType: string;
+      width: number;
+      height: number;
+      animated: boolean;
+    }
+  | {
+      kind: 'approvalRequired';
+      canonicalPath: string;
+      reason: 'outside-document-directory';
+    }
+  | {
+      kind: 'unsupported';
+      limitationCode: string;
+    };
+
+export interface WriteFileResourceInput {
+  projectId: string;
+  canonicalPath: string;
+  externalAccessToken: string | null;
+  content: string;
+  encoding: string;
+  lineEnding: string;
+  expectedRevision: FileRevisionVm;
+  operationId: string;
+  force: boolean;
+}
+
+export interface WorkspaceFileChangedEventVm {
+  projectId: string;
+  canonicalPath: string;
+  kind: 'created' | 'modified' | 'removed' | 'renamed';
+  revision: FileRevisionVm | null;
+  operationId: string | null;
 }
 
 export interface WorkspaceLayoutVm {
   shellMinWidth: number;
   shellMinHeight: number;
+  rightWorkspace: RightWorkspaceLayoutVm;
   conversation: WorkspaceLayoutProfileVm;
   contextCards: WorkspaceLayoutProfileVm;
   workflowCanvas: WorkspaceLayoutProfileVm;
   settings: WorkspaceLayoutProfileVm;
+}
+
+export interface FileWorkspaceLayoutVm {
+  preferredWidth: number;
+  splitMinWidth: number;
+  treeDefaultWidth: number;
+  treeMinWidth: number;
+  treeMaxWidth: number;
+}
+
+export interface RightWorkspaceLayoutVm {
+  minWidth: number;
+  defaultWidth: number;
+  maxWidth: number;
+  file: FileWorkspaceLayoutVm;
 }
 
 export interface WorkspaceLayoutProfileVm {

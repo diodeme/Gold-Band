@@ -87,7 +87,7 @@ Agent 管理
 
 - 中间主工作区承载会话、任务详情、工作流画布、上下文卡片和设置等一级任务内容。
 - 左侧导航与中间主工作区之间只由中间区域自身的圆角边界绘制可见分隔；可拖拽 resize handle 仅提供命中区域，不再额外绘制贯穿全高的直线，避免直线与左上圆角在顶部形成断裂接缝。
-- 右侧辅助工作区使用通用资源 Tab 描述符。当前正式资源包括 Agent 分支会话、运行工作流查看、运行工作流编辑/修复、ACP 系统提示和 ACP 原始帧；后续文件、Diff、产物和日志复用同一容器。
+- 右侧辅助工作区使用通用资源 Tab 描述符。当前正式资源包括 Agent 分支会话、工作空间文件、运行工作流查看、运行工作流编辑/修复、ACP 系统提示和 ACP 原始帧；后续 Diff、产物和日志复用同一容器。文件资源的格式、保存、授权和性能边界见 [右侧工作区文件浏览与编辑](workspace-files.md)。
 - 资源 Tab 只保存稳定 locator：工作流资源绑定 `projectId/taskId/runId`，系统提示与原始帧绑定完整 attempt locator（含 outer attempt 与 `branchId`）。工作流图、编辑草稿、system prompt 正文和 raw frame page 都不进入轻量会话 LRU；只有激活 Tab 才解析或查询对应大内容。
 - 会话详情页的“查看工作流 / 编辑工作流 / 修复工作流”统一打开右侧资源，不再打开独立 Sheet；ACP 标题栏的“系统提示 / 原始帧”也统一打开右侧资源，不再替换主会话画布。嵌套 Agent 使用自身 attempt/branch locator 打开对应资源，切换资源不得卸载或重置原 Agent Tab 的缓存内容。
 - 原始帧工具栏按右侧资源容器宽度布局：搜索框固定独占第一行；事件类型、方向、排序位于下一行横向排列并允许自然换行。禁止使用一个大断点在“整组竖排 / 整组横排”之间切换，避免宽面板仍出现三个 Select 纵向堆叠。
@@ -104,6 +104,8 @@ Agent 管理
 - ACP Session VM、有限事件窗口和滚动/分页锚点按同一 resource key 进入统一 12 项重资源 LRU；淘汰必须原子释放三类数据，禁止三套独立顺序造成部分大对象继续驻留。live branch snapshot 继续使用自身 64 项轻量上限，并保护仍有订阅者的条目。
 - Tab 与激活态只保存在当前应用进程内，重启后清空；右侧工作区像素宽度不属于会话内容，继续写入用户级 conversation preference 并跨重启全局恢复，切换会话不得造成宽度跳变。
 - 会话模式的 `WorkspaceShell` 必须在中间主工作区、右侧 Dock 和紧凑 Sheet 的共同稳定边界提供一次 shadcn `TooltipProvider`。资源面板可以直接复用主会话中含 Tooltip 的标题、工具和操作组件；不得要求每种右侧资源自行补 Provider，否则 Agent 内容异步加载后会使整个工作区渲染树异常退出。
+- 资源 renderer 与关闭 resolver 按 `RightWorkspaceResource.kind` 注册，文件、工作流和诊断资源不能使用会相互覆盖的单例回调。文件资源切换、收起和关闭前由异步 resolver 冲刷自动保存；保存失败或 revision 冲突时保留 Tab。
+- 右栏像素宽度仍是用户级偏好；文件资源首次挂载时可请求现有最大宽度以优先形成“左详情、右目录”双栏，用户之后的手动 resize 不得被持续回弹。可用宽度低于文件 split 阈值时使用文件/目录单栏切换。
 
 ---
 
@@ -165,7 +167,7 @@ Agent 管理
 - 顶栏窗口控制按钮组左侧可承载「帮助」入口（DropdownMenu）。是否展示由渠道配置的 `feedbackEnabled` 能力布尔值决定，经 `AppInfoVm` 贯穿应用壳；当前 `wb=true`、默认渠道为 false。前端不根据渠道名称猜能力，后端 command 也必须再次校验。当前菜单仅含「用户反馈」，详见 interaction/app/feedback.md。
 - 桌面窗口最小尺寸由 `configs/app-config.toml` 的 `workspaceLayout` 页面 profile 统一管理，前端在页面切换时通过 Tauri Window API 更新原生最小尺寸；`tauri.conf.json` 与 `html/body/#root` 不得再维护固定 `min-width/min-height`。WebView 必须始终服从真实 viewport 尺寸并继续触发响应式布局，禁止在达到 CSS 最小宽度后保持旧布局、由原生窗口直接裁切右侧内容。
 - 桌面壳内的二级布局必须基于实际内容容器宽度决定分栏，而不是直接复用整窗 `md/lg/xl` breakpoint。侧边栏、section 标题列、抽屉和详情 inspector 都会减少真实可用宽度；嵌套区域优先使用 Tailwind container query，固定画布/表格则必须提供明确的换行、堆叠或横向滚动降级策略。
-- 三段式工作区使用 shadcn `Resizable` copy-in（`react-resizable-panels`）统一管理面板，不维护手写全局 mousemove 拖拽。页面通过 `configs/app-config.toml` 的集中式 profile 分别声明中间区域硬下限 `centerMinWidth`、无右栏时的左栏自动收起舒适宽度 `centerAutoCollapseWidth` 和当前页面原生窗口下限 `windowMinWidth`。会话为 360/420/480px，上下文卡片为 520/520/520px、工作流画布为 640/640/640px、设置为 480/480/480px。中间硬下限与右侧 320–720px 范围直接声明为 Resizable Panel 约束，由组件库在同一 flex layout 中联合求解；不得把整窗每像素宽度重新写入 React state 后动态生成右栏 `maxSize`。
+- 三段式工作区使用 shadcn `Resizable` copy-in（`react-resizable-panels`）统一管理面板，不维护手写全局 mousemove 拖拽。页面通过 `configs/app-config.toml` 的集中式 profile 分别声明中间区域硬下限 `centerMinWidth`、无右栏时的左栏自动收起舒适宽度 `centerAutoCollapseWidth` 和当前页面原生窗口下限 `windowMinWidth`。会话为 360/420/480px，上下文卡片为 520/520/520px、工作流画布为 640/640/640px、设置为 480/480/480px。中间硬下限与右侧 320–960px 范围直接声明为 Resizable Panel 约束，文件资源首次打开时推荐 760px；组件库在同一 flex layout 中联合求解，不得把整窗每像素宽度重新写入 React state 后动态生成右栏 `maxSize`。
 - 横向缩小时先把右侧压到最小宽度，再自动隐藏左栏，再隐藏右侧；放大时先恢复右侧、再恢复左侧。窗口和面板的像素尺寸必须在系统拖拽期间连续跟随，不做 debounce 或“释放后才改变”的延迟布局。折叠阈值使用当前持久化左栏宽度和 48px 迟滞，手动折叠和自动折叠分别建模；ResizeObserver 只在 animation frame 更新 ref 中的 `previousWidth`，仅当 `{left,right}` 离散呈现状态改变时提交 React state。左右宽度统一在 `ResizablePanelGroup.onLayoutChanged` 确认用户完成分隔线拖动后换算为像素并写入会话 UI preference；异步 sidebar VM 到达后必须 hydrate Provider 初始宽度，不能让首次渲染的 440px fallback 覆盖已持久化值。
 - Tauri 原生最小宽度随当前页面 profile 动态切换：会话与设置为 480px、上下文卡片为 520px、工作流画布为 640px。进入更窄页面只放宽约束，不强制缩小用户窗口；从窄页面进入更宽页面时，应用先更新原生下限，再把当前窗口扩到新下限。`shellMinWidth/shellMinHeight` 保护应用 chrome 的绝对下限；初始隐藏窗口必须完成当前页面约束和主题背景同步后再显示，页面快速切换时按同一串行生命周期执行，最终页面配置必须最后生效。
 - 紧凑 Sheet 复用 shadcn/Radix 的焦点陷阱与键盘可访问性，但打开后的初始焦点落在对话区容器，不落到唯一的关闭按钮。关闭按钮只使用 `focus-visible` 绘制键盘焦点环，不得使用 `data-state=open` 背景或普通 `focus` 环把鼠标打开后的自动焦点误呈现为选中态；键盘 Tab 进入关闭按钮时仍必须有可见焦点。

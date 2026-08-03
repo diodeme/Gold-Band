@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, FileRevisionVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { RuntimeApi } from './client';
 import { browserPreviewState } from './browserState';
@@ -115,6 +115,80 @@ function browserCompletedConversationRun(): ConversationRunVm {
     };
   }
   return run;
+}
+
+const browserWorkspaceRoot = '/default';
+const browserWorkspaceFiles = new Map<string, string>([
+  ['/default/README.md', '# Gold Band\n\n右侧工作区文件预览。\n'],
+  ['/default/src/main.rs', 'fn main() {\n    println!("Gold Band");\n}\n'],
+  ['/default/src/config.json', '{\n  "workspace": "default"\n}\n'],
+  ['/default/assets/logo.svg', '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120"><rect width="240" height="120" rx="24" fill="#b9922e"/><text x="120" y="70" text-anchor="middle" fill="#18140a" font-size="24">Gold Band</text></svg>'],
+]);
+const browserFileRevisions = new Map<string, number>();
+const browserWorkspaceFileListeners = new Set<(event: WorkspaceFileChangedEventVm) => void>();
+const browserExternalFileGrants = new Map<string, { canonicalPath: string; expiresAtMs: number }>();
+let browserExternalGrantRevision = 0;
+
+function issueBrowserExternalFileGrant(canonicalPath: string) {
+  browserExternalGrantRevision += 1;
+  const token = `browser-external:${browserExternalGrantRevision}:${canonicalPath}`;
+  const expiresAtMs = Date.now() + 30 * 60_000;
+  browserExternalFileGrants.set(token, { canonicalPath, expiresAtMs });
+  return {
+    token,
+    permissions: ['read', 'write'] as Array<'read' | 'write'>,
+    expiresAtMs: String(expiresAtMs),
+  };
+}
+
+function browserExternalGrantValid(token: string | null | undefined, canonicalPath: string) {
+  if (!token) return false;
+  const grant = browserExternalFileGrants.get(token);
+  return Boolean(grant && grant.canonicalPath === canonicalPath && grant.expiresAtMs > Date.now());
+}
+
+function browserFileRevision(path: string, content: string): FileRevisionVm {
+  const revision = browserFileRevisions.get(path) ?? 0;
+  return {
+    byteLength: new TextEncoder().encode(content).byteLength,
+    modifiedAtNs: String(revision),
+    contentHash: `browser-${revision}-${content.length}`,
+  };
+}
+
+function browserRelativePath(path: string) {
+  return path.startsWith(`${browserWorkspaceRoot}/`) ? path.slice(browserWorkspaceRoot.length + 1) : null;
+}
+
+function browserDirectoryEntries(relativePath: string) {
+  const directory = relativePath ? `${browserWorkspaceRoot}/${relativePath}` : browserWorkspaceRoot;
+  const prefix = `${directory}/`;
+  const seen = new Set<string>();
+  const entries: import('../types').WorkspaceDirectoryEntryVm[] = [];
+  for (const [path, content] of browserWorkspaceFiles) {
+    if (!path.startsWith(prefix)) continue;
+    const remainder = path.slice(prefix.length);
+    const [name, ...rest] = remainder.split('/');
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const childPath = `${prefix}${name}`;
+    const childRelativePath = browserRelativePath(childPath) ?? name;
+    const directoryEntry = rest.length > 0;
+    entries.push({
+      name,
+      relativePath: childRelativePath,
+      canonicalPath: childPath,
+      kind: directoryEntry ? 'directory' : 'file',
+      hasChildren: directoryEntry,
+      byteLength: directoryEntry ? null : new TextEncoder().encode(content).byteLength,
+      modifiedAtNs: directoryEntry ? null : String(browserFileRevisions.get(path) ?? 0),
+    });
+  }
+  return entries.sort((left, right) => Number(left.kind !== 'directory') - Number(right.kind !== 'directory') || left.name.localeCompare(right.name));
+}
+
+function browserSvgDataUrl(content: string) {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(content)}`;
 }
 
 export const browserApi: RuntimeApi = {
@@ -670,6 +744,172 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve();
   },
   saveLastConversationWorkspace(_projectId) {
+    return Promise.resolve();
+  },
+  listWorkspaceDirectory(_projectId, relativePath) {
+    return Promise.resolve(browserDirectoryEntries(relativePath));
+  },
+  searchWorkspaceFiles(_projectId, query, requestId, limit) {
+    const normalized = query.trim().toLocaleLowerCase();
+    const matches = [...browserWorkspaceFiles.entries()]
+      .filter(([path]) => path.toLocaleLowerCase().includes(normalized))
+      .slice(0, limit)
+      .map(([path, content]) => ({
+        name: path.split('/').at(-1) ?? path,
+        relativePath: browserRelativePath(path) ?? path,
+        canonicalPath: path,
+        kind: 'file' as const,
+        hasChildren: false,
+        byteLength: new TextEncoder().encode(content).byteLength,
+        modifiedAtNs: String(browserFileRevisions.get(path) ?? 0),
+      }));
+    return Promise.resolve({ requestId, entries: matches, truncated: matches.length >= limit });
+  },
+  resolveWorkspaceFileLink(projectId, rawHref) {
+    let href = decodeURIComponent(rawHref.replace(/^file:\/\//u, ''));
+    let line: number | null = null;
+    let column: number | null = null;
+    const fragment = href.match(/#L(\d+)(?:-L?(\d+))?$/iu);
+    const endLine = fragment?.[2] ? Number(fragment[2]) : null;
+    if (fragment) {
+      line = Number(fragment[1]);
+      href = href.slice(0, fragment.index);
+    } else {
+      const suffix = href.match(/:(\d+)(?::(\d+))?$/u);
+      if (suffix) {
+        line = Number(suffix[1]);
+        column = suffix[2] ? Number(suffix[2]) : null;
+        href = href.slice(0, suffix.index);
+      }
+    }
+    const canonicalPath = href.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(href)
+      ? href.replaceAll('\\', '/')
+      : `${browserWorkspaceRoot}/${href.replace(/^\.\//u, '')}`;
+    const relativePath = browserRelativePath(canonicalPath);
+    const externalAccessGrant = relativePath == null ? issueBrowserExternalFileGrant(canonicalPath) : null;
+    if (!browserWorkspaceFiles.has(canonicalPath)) {
+      browserWorkspaceFiles.set(canonicalPath, '# External file\n\nBrowser preview content.\n');
+    }
+    return Promise.resolve({
+      locator: { projectId, canonicalPath, relativePath, scope: relativePath == null ? 'external' as const : 'workspace' as const },
+      target: line ? { line, column, endLine } : null,
+      externalAccessGrant,
+    });
+  },
+  readFileResource(projectId, canonicalPath, externalAccessToken = null, preferSource = false) {
+    const content = browserWorkspaceFiles.get(canonicalPath);
+    if (content == null) return Promise.reject({ code: 'workspace-file.not-found', params: { path: canonicalPath } });
+    const relativePath = browserRelativePath(canonicalPath);
+    if (relativePath == null && !browserExternalGrantValid(externalAccessToken, canonicalPath)) {
+      return Promise.reject({ code: 'workspace-file.external-access-denied', params: { path: canonicalPath } });
+    }
+    const externalAccessGrant = relativePath == null && externalAccessToken
+      ? {
+          token: externalAccessToken,
+          permissions: ['read', 'write'] as Array<'read' | 'write'>,
+          expiresAtMs: String(browserExternalFileGrants.get(externalAccessToken)?.expiresAtMs ?? Date.now()),
+        }
+      : null;
+    const locator = { projectId, canonicalPath, relativePath, scope: relativePath == null ? 'external' as const : 'workspace' as const };
+    const name = canonicalPath.split('/').at(-1) ?? canonicalPath;
+    const revision = browserFileRevision(canonicalPath, content);
+    if (canonicalPath.toLocaleLowerCase().endsWith('.svg') && !preferSource) {
+      return Promise.resolve({
+        kind: 'image' as const,
+        locator,
+        name,
+        revision,
+        mimeType: 'image/svg+xml',
+        width: 240,
+        height: 120,
+        animated: false,
+        previewToken: `browser-preview:${canonicalPath}`,
+        sourceEditable: true,
+        externalAccessGrant,
+      });
+    }
+    return Promise.resolve({
+      kind: 'text' as const,
+      locator,
+      name,
+      revision,
+      content,
+      encoding: 'utf-8',
+      language: canonicalPath.endsWith('.rs') ? 'rust' : canonicalPath.endsWith('.json') ? 'json' : canonicalPath.endsWith('.svg') ? 'xml' : 'markdown',
+      lineEnding: 'lf' as const,
+      editable: true,
+      limitationCode: null,
+      externalAccessGrant,
+    });
+  },
+  resolveMarkdownImage(input) {
+    const raw = decodeURIComponent(input.rawSrc).replaceAll('\\', '/');
+    if (/^(?:https?:|data:|javascript:)/iu.test(raw)) {
+      return Promise.reject({ code: 'workspace-file.markdown-image-network-blocked', params: { src: raw } });
+    }
+    const parent = input.markdownCanonicalPath.replace(/\/[^/]*$/u, '');
+    const canonicalPath = /^[A-Za-z]:\//u.test(raw) || raw.startsWith('/')
+      ? raw
+      : `${parent}/${raw}`.replace('/./', '/');
+    return Promise.resolve({
+      kind: 'ready' as const,
+      canonicalPath,
+      previewToken: `browser-preview:${canonicalPath}`,
+      mimeType: canonicalPath.toLowerCase().endsWith('.svg') ? 'image/svg+xml' : 'image/png',
+      width: 640,
+      height: 360,
+      animated: false,
+    });
+  },
+  writeFileResource(input) {
+    const current = browserWorkspaceFiles.get(input.canonicalPath);
+    if (current == null) return Promise.reject({ code: 'workspace-file.not-found', params: { path: input.canonicalPath } });
+    const currentRevision = browserFileRevision(input.canonicalPath, current);
+    if (browserRelativePath(input.canonicalPath) == null
+      && !browserExternalGrantValid(input.externalAccessToken, input.canonicalPath)) {
+      return Promise.reject({ code: 'workspace-file.external-access-denied', params: { path: input.canonicalPath } });
+    }
+    if (!input.force && currentRevision.contentHash !== input.expectedRevision.contentHash) {
+      return Promise.reject({ code: 'workspace-file.changed-on-disk', params: { path: input.canonicalPath } });
+    }
+    browserWorkspaceFiles.set(input.canonicalPath, input.content);
+    browserFileRevisions.set(input.canonicalPath, (browserFileRevisions.get(input.canonicalPath) ?? 0) + 1);
+    const revision = browserFileRevision(input.canonicalPath, input.content);
+    for (const listener of browserWorkspaceFileListeners) {
+      listener({ projectId: input.projectId, canonicalPath: input.canonicalPath, kind: 'modified', revision, operationId: input.operationId });
+    }
+    return Promise.resolve(revision);
+  },
+  releaseWorkspaceFilePreview(_token) {
+    return Promise.resolve();
+  },
+  renewExternalFileAccess(token) {
+    const grant = browserExternalFileGrants.get(token);
+    if (!grant || grant.expiresAtMs <= Date.now()) {
+      return Promise.reject({ code: 'workspace-file.external-access-denied', params: { operation: 'renew' } });
+    }
+    browserExternalFileGrants.delete(token);
+    return Promise.resolve(issueBrowserExternalFileGrant(grant.canonicalPath));
+  },
+  releaseExternalFileAccess(token) {
+    browserExternalFileGrants.delete(token);
+    return Promise.resolve();
+  },
+  startWorkspaceFileWatch(_projectId) {
+    return Promise.resolve();
+  },
+  stopWorkspaceFileWatch(_projectId) {
+    return Promise.resolve();
+  },
+  subscribeWorkspaceFileChanges(listener) {
+    browserWorkspaceFileListeners.add(listener);
+    return Promise.resolve(() => browserWorkspaceFileListeners.delete(listener));
+  },
+  workspaceFilePreviewUrl(token, _staticFrame = false) {
+    const path = token.replace(/^browser-preview:/u, '');
+    return browserSvgDataUrl(browserWorkspaceFiles.get(path) ?? '<svg xmlns="http://www.w3.org/2000/svg"/>');
+  },
+  openFileWithSystemApp(_path) {
     return Promise.resolve();
   },
   pickAttachmentFiles() {

@@ -58,6 +58,16 @@ import type {
   FeedbackInput,
   FeedbackResult,
   FeedbackArchivePreview,
+  ExternalFileAccessGrantVm,
+  FileRevisionVm,
+  ResolvedWorkspaceFileLinkVm,
+  WorkspaceDirectoryEntryVm,
+  WorkspaceFileChangedEventVm,
+  WorkspaceFileSearchVm,
+  WorkspaceFileSnapshotVm,
+  ResolveMarkdownImageInput,
+  MarkdownImagePreviewVm,
+  WriteFileResourceInput,
 } from '../types';
 import { browserApi } from './browser';
 import { desktopApi } from './desktop';
@@ -210,6 +220,20 @@ export interface RuntimeApi {
   syncConversationWorkspace(workspacePath: string): Promise<ConversationSidebarVm>;
   saveConversationPreference(key: string, value: unknown): Promise<void>;
   saveLastConversationWorkspace(projectId: string): Promise<void>;
+  listWorkspaceDirectory(projectId: string, relativePath: string): Promise<WorkspaceDirectoryEntryVm[]>;
+  searchWorkspaceFiles(projectId: string, query: string, requestId: string, limit: number): Promise<WorkspaceFileSearchVm>;
+  resolveWorkspaceFileLink(projectId: string, rawHref: string): Promise<ResolvedWorkspaceFileLinkVm>;
+  readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource?: boolean): Promise<WorkspaceFileSnapshotVm>;
+  resolveMarkdownImage(input: ResolveMarkdownImageInput): Promise<MarkdownImagePreviewVm>;
+  writeFileResource(input: WriteFileResourceInput): Promise<FileRevisionVm>;
+  releaseWorkspaceFilePreview(token: string): Promise<void>;
+  renewExternalFileAccess(token: string): Promise<ExternalFileAccessGrantVm>;
+  releaseExternalFileAccess(token: string): Promise<void>;
+  startWorkspaceFileWatch(projectId: string): Promise<void>;
+  stopWorkspaceFileWatch(projectId: string): Promise<void>;
+  subscribeWorkspaceFileChanges?(listener: (event: WorkspaceFileChangedEventVm) => void): Promise<() => void>;
+  workspaceFilePreviewUrl(token: string, staticFrame?: boolean): string;
+  openFileWithSystemApp(path: string): Promise<void>;
   pickAttachmentFiles(): Promise<AttachmentFileRef[]>;
   materializeConversationAttachments(files: MaterializeAttachmentFileInput[]): Promise<AttachmentFileRef[]>;
   getSupportedAttachmentExtensions(): Promise<string[]>;

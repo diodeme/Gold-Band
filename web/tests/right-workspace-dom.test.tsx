@@ -101,11 +101,11 @@ function SeedWorkflowResource({ guarded = false }: { guarded?: boolean }) {
       locator: { projectId: 'project-1', taskId: 'task-1', runId: 'run-1' },
     };
     workspace.openResource(resource);
-    const unregisterRenderer = workspace.registerResourceRenderer((active) => (
+    const unregisterRenderer = workspace.registerResourceRenderer('workflow-view', (active) => (
       <div data-rendered-resource={active.kind}>{active.title}</div>
     ));
     const unregisterGuard = guarded
-      ? workspace.registerResourceCloseResolver(() => false)
+      ? workspace.registerResourceCloseResolver('workflow-view', () => false)
       : () => {};
     return () => {
       unregisterGuard();
@@ -128,6 +128,23 @@ function WorkspaceProbe() {
   );
 }
 
+function TransitionGuardProbe({ resolve }: { resolve: ReturnType<typeof vi.fn> }) {
+  const workspace = useRightWorkspace();
+  const makeResource = (key: string) => ({
+    kind: 'workflow-view' as const,
+    key,
+    scopeKey: 'draft:default',
+    title: key,
+    attention: false,
+    locator: { projectId: 'default', taskId: key, runId: 'run-1' },
+  });
+  useEffect(() => workspace.registerResourceCloseResolver('workflow-view', resolve), [resolve, workspace.registerResourceCloseResolver]);
+  useEffect(() => {
+    void workspace.openResource(makeResource('first'));
+  }, [workspace.openResource]);
+  return <button type="button" data-open-second onClick={() => void workspace.openResource(makeResource('second'))}>open second</button>;
+}
+
 beforeEach(() => {
   ControlledResizeObserver.instances = [];
   vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
@@ -140,6 +157,34 @@ afterEach(() => {
 });
 
 describe('right workspace DOM lifecycle', () => {
+  it('honors transition guards and reports deactivation separately from actual close', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const resolve = vi.fn().mockResolvedValue(false);
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider>
+            <TransitionGuardProbe resolve={resolve} />
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      await act(async () => container.querySelector<HTMLButtonElement>('[data-open-second]')?.click());
+      expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ key: 'first' }), 'deactivate');
+      expect(container.querySelector('output')?.getAttribute('data-workspace-tab-count')).toBe('1');
+      expect(container.querySelector('output')?.getAttribute('data-workspace-active-tab')).toBe('first');
+
+      resolve.mockResolvedValue(true);
+      await act(async () => container.querySelector<HTMLButtonElement>('[data-open-second]')?.click());
+      expect(container.querySelector('output')?.getAttribute('data-workspace-tab-count')).toBe('2');
+      expect(container.querySelector('output')?.getAttribute('data-workspace-active-tab')).toBe('second');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('restores the active conversation snapshot without rendering another scope tabs', async () => {
     const container = document.createElement('div');
     document.body.append(container);

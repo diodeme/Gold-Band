@@ -15,6 +15,7 @@ mod updater;
 mod view_models;
 mod view_models_conversation;
 mod window_chrome;
+mod workspace_files;
 
 use anyhow::Context;
 use commands::{
@@ -60,6 +61,7 @@ use state::{DesktopContext, DesktopState};
 use tauri::{Manager, WindowEvent};
 use tracing::{info, warn};
 use updater::{retry_pending_startup_install, start_update_polling};
+use workspace_files::{WorkspaceFileRuntime, WorkspaceFileWatchRuntime};
 
 fn main() {
     if let Err(error) = run() {
@@ -98,6 +100,25 @@ fn run() -> anyhow::Result<()> {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(DesktopState::new(context))
+        .manage(WorkspaceFileRuntime::default())
+        .manage(WorkspaceFileWatchRuntime::default())
+        .register_asynchronous_uri_scheme_protocol(
+            workspace_files::WORKSPACE_FILE_PREVIEW_PROTOCOL,
+            |protocol_context, request, responder| {
+                let runtime = protocol_context
+                    .app_handle()
+                    .state::<WorkspaceFileRuntime>()
+                    .inner()
+                    .clone();
+                let request_path = request.uri().path().to_string();
+                std::thread::spawn(move || {
+                    responder.respond(workspace_files::preview_protocol_response(
+                        &runtime,
+                        &request_path,
+                    ));
+                });
+            },
+        )
         .setup(|app| {
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
@@ -271,6 +292,17 @@ fn run() -> anyhow::Result<()> {
             save_last_conversation_workspace,
             get_supported_attachment_extensions,
             open_in_file_manager,
+            workspace_files::list_workspace_directory,
+            workspace_files::search_workspace_files,
+            workspace_files::resolve_workspace_file_link,
+            workspace_files::read_file_resource,
+            workspace_files::resolve_markdown_image,
+            workspace_files::write_file_resource,
+            workspace_files::release_workspace_file_preview,
+            workspace_files::renew_external_file_access,
+            workspace_files::release_external_file_access,
+            workspace_files::start_workspace_file_watch,
+            workspace_files::stop_workspace_file_watch,
             // MCP & SKILL management
             list_mcp_servers,
             add_mcp_server,

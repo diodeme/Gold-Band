@@ -87,6 +87,29 @@ pub struct AppConfigVm {
     pub acp_session_title_refresh_enabled: bool,
     pub acp_chat_event_page_size: usize,
     pub workspace_layout: WorkspaceLayoutVm,
+    pub workspace_files: WorkspaceFilesVm,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFilesVm {
+    pub auto_save_delay_ms: u64,
+    pub search_debounce_ms: u64,
+    pub search_result_limit: usize,
+    pub text_editable_max_bytes: u64,
+    pub text_highlight_max_chars: usize,
+    pub text_read_only_max_bytes: u64,
+    pub image_preview_max_bytes: u64,
+    pub image_preview_max_pixels: u64,
+    pub content_cache_entries: usize,
+    pub content_cache_max_bytes: u64,
+    pub watch_debounce_ms: u64,
+    pub preview_token_ttl_seconds: u64,
+    pub external_access_grant_ttl_seconds: u64,
+    pub markdown_live_preview_max_chars: usize,
+    pub markdown_embedded_image_limit: usize,
+    pub markdown_embedded_image_max_concurrent: usize,
+    pub markdown_external_image_policy: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1173,6 +1196,34 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
             context_cards: profile_vm(&config.workspace_layout.context_cards),
             workflow_canvas: profile_vm(&config.workspace_layout.workflow_canvas),
             settings: profile_vm(&config.workspace_layout.settings),
+        },
+        workspace_files: WorkspaceFilesVm {
+            auto_save_delay_ms: config.workspace_files.auto_save_delay_ms,
+            search_debounce_ms: config.workspace_files.search_debounce_ms,
+            search_result_limit: config.workspace_files.search_result_limit,
+            text_editable_max_bytes: config.workspace_files.text_editable_max_bytes,
+            text_highlight_max_chars: config.workspace_files.text_highlight_max_chars,
+            text_read_only_max_bytes: config.workspace_files.text_read_only_max_bytes,
+            image_preview_max_bytes: config.workspace_files.image_preview_max_bytes,
+            image_preview_max_pixels: config.workspace_files.image_preview_max_pixels,
+            content_cache_entries: config.workspace_files.content_cache_entries,
+            content_cache_max_bytes: config.workspace_files.content_cache_max_bytes,
+            watch_debounce_ms: config.workspace_files.watch_debounce_ms,
+            preview_token_ttl_seconds: config.workspace_files.preview_token_ttl_seconds,
+            external_access_grant_ttl_seconds: config
+                .workspace_files
+                .external_access_grant_ttl_seconds,
+            markdown_live_preview_max_chars: config
+                .workspace_files
+                .markdown_live_preview_max_chars,
+            markdown_embedded_image_limit: config.workspace_files.markdown_embedded_image_limit,
+            markdown_embedded_image_max_concurrent: config
+                .workspace_files
+                .markdown_embedded_image_max_concurrent,
+            markdown_external_image_policy: config
+                .workspace_files
+                .markdown_external_image_policy
+                .clone(),
         },
     }
 }

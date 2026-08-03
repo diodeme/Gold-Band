@@ -159,7 +159,7 @@ windowMinWidth = 480
 
 `centerMinWidth` 是 Resizable 和右栏压缩使用的内容硬下限；`centerAutoCollapseWidth` 是没有右栏时决定左栏何时自动收起的舒适宽度；`windowMinWidth` 是当前页面允许的原生窗口下限。会话内容允许压到 360px，但应用 chrome 下限仍为 480px；卡片、画布和设置按各自内容密度声明窗口下限。Rust 对非正值以及小于硬下限的阈值进行归一化，前端不得重新猜测配置。`scripts/channel-config.mjs` 生成的 default/wb overlay 继续完整继承基础 window config，仅覆盖渠道属性。
 
-页面切换时先调用 `setMinSize(LogicalSize(windowMinWidth, shellMinHeight))`。若当前逻辑宽度低于新页面下限，再调用 `setSize` 扩宽；进入更窄页面只降低约束，不主动缩小窗口。初始窗口保持隐藏，当前页面最小尺寸与主题 surface 同步完成后才调用 `show()`。连续导航必须串行化窗口更新，防止较早页面的异步调用覆盖最终页面。
+页面切换先计算目标 `LogicalSize(windowMinWidth, shellMinHeight)`，只有目标与已应用约束数值不同时才允许调用宿主 API。普通窗口先调用 `setMinSize`；若当前逻辑宽度低于新页面下限，再调用 `setSize` 扩宽。最大化窗口不得调用 `setMinSize/setSize`，只把最新目标记为 pending；用户恢复普通窗口后由 resize 生命周期在同一串行队列中应用 pending。进入更窄页面只降低约束，不主动缩小窗口。初始窗口保持隐藏，当前页面最小尺寸与主题 surface 同步完成后才调用 `show()`；连续导航必须保证最终页面配置最后生效。
 
 ### 6.3 横向收缩顺序
 
@@ -497,6 +497,7 @@ ACP live event(branchId)
 - 渠道 Tauri overlay 改为从基础 `tauri.conf.json` 完整继承主窗口配置，只覆盖渠道标题；删除 overlay 内独立的 1040px 最小宽度，避免浏览器状态机可达但 default/wb 客户端原生拖拽仍被旧约束截断。
 - 布局 profile 增加 `centerAutoCollapseWidth`，将中间硬下限和无右栏时的左栏自动收起舒适宽度分开；会话使用 360px/420px，保证原生最小窗口下即使右栏从未打开，左栏也能进入自动折叠态。
 - 优化窗口连续缩放热路径：删除 `availableWidth state -> autoCollapse state` 的每帧双提交，把 `previousWidth` 下沉到 ref；右栏使用 Resizable 原生 min/max 与中间 min 联合约束，不再每像素重算 max prop。左栏移除连续 `onResize` 持久化定时器，与右栏一起只在用户释放分隔线时保存；会话导航、置顶索引和右侧 Dock 增加稳定 memo/Set/Map 边界。单元契约以连续 100 个同区间像素样本固化零呈现更新，并保留跨阈值一次更新、迟滞及恢复顺序。
+- 修复 Windows 最大化切页还原：窗口约束同步维护 `appliedMinimum + pending`，同尺寸 profile 不调用 Tauri；最大化期间延迟不同约束，恢复后应用最新 pending，避免 TAO `set_min_inner_size -> set_inner_size` 清除最大化状态。
 
 ### Phase 2：统一 Agent 分支领域模型
 
@@ -569,6 +570,8 @@ ACP live event(branchId)
 - 缩小时先自动收起左栏，再收起右栏；放大时先恢复右栏，再恢复左栏。
 - Tauri 主窗口可从三栏状态继续缩小到 640px；会话页在约 `sidebarWidth + 360 + 320` 时收左栏、低于 680px 时收右栏，不得在 1040px 提前停止。
 - default 与 wb 渠道生成的最终 Tauri overlay，其主窗口尺寸、最小尺寸、可见性、透明度、阴影与背景属性必须和基础配置一致，只有标题允许因渠道变化。
+- 最大化状态下从会话详情双向切换设置页，窗口必须持续保持最大化；切换到不同 `windowMinWidth` 的页面也不得调用 `setMinSize/setSize`，恢复普通窗口后才应用最新约束。
+- 会话与设置使用相同 480×680 约束时，双向切换不得重复调用宿主窗口 mutation；接口级测试必须分别固化 unchanged、maximized deferred、restored applied 三条路径。
 - 右栏关闭的会话页缩到约 `centerAutoCollapseWidth + sidebarWidth` 时自动收起左栏，并在反向放宽超过 48px 迟滞后恢复；该路径不得依赖右栏曾经打开。
 - 临界宽度附近来回拖动不闪烁。
 - 自动收起不关闭 Tab，手动关闭状态不会被自动恢复覆盖。

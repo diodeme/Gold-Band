@@ -28,7 +28,7 @@ describe('themed tabs surface', () => {
       'utf8',
     );
 
-    expect(composer).toContain('<TabsList variant="bare" className="h-10">');
+    expect(composer).toContain('<TabsList variant="bare" className="h-10 max-w-full">');
     expect(roundDetail).toContain('<TabsList variant="bare" className="h-8 w-fit rounded-full border bg-background/70 p-1 shadow-sm">');
     expect(composer).not.toContain('TabsList className="h-10 gap-1 bg-transparent p-0"');
   });

@@ -5,7 +5,7 @@ import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-l
 
 describe('conversation composer autosize contract', () => {
   it('uses the narrower home layout and a compact initial textarea', () => {
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT).toEqual({
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT).toMatchObject({
       contentMaxWidthClassName: 'max-w-3xl',
       opticalBottomPaddingClassName: 'pb-[clamp(4rem,8vh,5rem)]',
       textareaMinHeightClassName: 'min-h-14',

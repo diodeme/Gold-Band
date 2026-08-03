@@ -531,8 +531,8 @@ export function ConversationComposer({
           <div className={CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName}>
             <span className="mr-1 text-xs font-medium text-muted-foreground">{t('conversation.home.selectAgent')}</span>
             <TooltipProvider>
-              <Tabs value={selectedDirectAgent} onValueChange={selectDirectAgent} className="min-w-0 overflow-x-auto">
-                <TabsList variant="bare" className="h-10 max-w-full">
+              <Tabs value={selectedDirectAgent} onValueChange={selectDirectAgent} className={CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName}>
+                <TabsList variant="bare" className={CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsListClassName}>
                   {agentOptions.map(({ agent, selectable, reason }) => (
                     <Tooltip key={agent.agentType}>
                       <TooltipTrigger asChild>

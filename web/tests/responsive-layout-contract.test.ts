@@ -57,6 +57,15 @@ describe('responsive desktop layout contracts', () => {
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.optionTabsListClassName).toContain('w-full');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).toContain('flex-col');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).toContain('@sm/conversation-composer:flex-row');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).toContain('px-4 py-1');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).not.toContain('px-4 py-3');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('overflow-x-auto');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('overflow-y-hidden');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('py-1');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('@sm/conversation-composer:flex-1');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsListClassName).toContain('w-max');
+    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName');
+    expect(composerSource).not.toContain('className="min-w-0 overflow-x-auto"');
   });
 
   it('uses profile-list container width and wrapping card actions instead of viewport-only fixed rows', () => {

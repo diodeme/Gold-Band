@@ -12,5 +12,7 @@ export const CONVERSATION_HOME_COMPOSER_LAYOUT = {
   sendButtonClassName: 'h-9 w-full gap-1.5 rounded-full px-4 @sm/conversation-composer:col-span-2 @lg/conversation-composer:col-span-1 @lg/conversation-composer:w-auto @2xl/conversation-composer:h-8 @2xl/conversation-composer:shrink-0 @2xl/conversation-composer:px-3',
   optionSectionClassName: 'flex flex-col items-stretch gap-2 rounded-xl border border-border/50 bg-card/40 px-4 py-3 @sm/conversation-composer:flex-row @sm/conversation-composer:items-center @sm/conversation-composer:gap-3',
   optionTabsListClassName: 'h-8 w-full @sm/conversation-composer:w-fit',
-  agentSectionClassName: 'flex min-h-14 flex-col items-stretch gap-2 rounded-xl border border-border/50 bg-card/40 px-4 py-3 @sm/conversation-composer:flex-row @sm/conversation-composer:items-center',
+  agentSectionClassName: 'flex min-h-14 flex-col items-stretch gap-2 rounded-xl border border-border/50 bg-card/40 px-4 py-1 @sm/conversation-composer:flex-row @sm/conversation-composer:items-center',
+  agentTabsClassName: 'w-full min-w-0 overflow-x-auto overflow-y-hidden py-1 @sm/conversation-composer:w-auto @sm/conversation-composer:flex-1',
+  agentTabsListClassName: 'h-10 w-max max-w-none',
 } as const;

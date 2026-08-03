@@ -350,8 +350,8 @@ export const desktopApi: RuntimeApi = {
   searchWorkspaceFiles(projectId, query, requestId, limit) {
     return invokeCommand('search_workspace_files', { input: { projectId, query, requestId, limit } });
   },
-  resolveWorkspaceFileLink(projectId, rawHref) {
-    return invokeCommand('resolve_workspace_file_link', { input: { projectId, rawHref } });
+  resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath = null) {
+    return invokeCommand('resolve_workspace_file_link', { input: { projectId, rawHref, baseCanonicalPath } });
   },
   readFileResource(projectId, canonicalPath, externalAccessToken = null, preferSource = false) {
     return invokeCommand('read_file_resource', { input: { projectId, canonicalPath, externalAccessToken, preferSource } });

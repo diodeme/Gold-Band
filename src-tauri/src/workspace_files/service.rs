@@ -463,7 +463,7 @@ fn image_snapshot(
             external_access_grant,
         });
     }
-    let preview_token = runtime.issue_preview(
+    let preview_grant = runtime.issue_preview(
         root.project_id.clone(),
         path.to_path_buf(),
         revision.clone(),
@@ -482,7 +482,7 @@ fn image_snapshot(
         width,
         height,
         animated: image.mime_type == "image/gif",
-        preview_token,
+        preview_grant,
         source_editable,
         external_access_grant,
     })

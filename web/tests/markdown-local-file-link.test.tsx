@@ -24,6 +24,9 @@ describe('Markdown local file link routing', () => {
       const link = container.querySelector<HTMLAnchorElement>('a');
       expect(link, container.innerHTML).not.toBeNull();
       expect(link?.target).toBe('');
+      expect(link?.className).toContain('bg-muted/45');
+      expect(link?.className).not.toContain('border-gold-running');
+      expect(link?.querySelector('svg')?.getAttribute('class')).toContain('text-gold-running');
       await act(async () => link?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })));
       expect(openLocalFile).toHaveBeenCalledWith('D:/repo/src/client.rs:2727');
     } finally {

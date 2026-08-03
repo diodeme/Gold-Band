@@ -67,7 +67,6 @@ externalAccessGrantTtlSeconds = 1800
 markdownLivePreviewMaxChars = 200000
 markdownEmbeddedImageLimit = 100
 markdownEmbeddedImageMaxConcurrent = 4
-markdownExternalImagePolicy = "confirm"
 
 [permissionModeMapping.claude-acp]
 read_only = "plan"

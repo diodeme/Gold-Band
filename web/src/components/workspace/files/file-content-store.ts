@@ -77,6 +77,7 @@ interface SaveRuntime {
   markdownImages: Map<string, MarkdownImageState>;
   markdownImageSources: Set<string>;
   markdownImageRequestRevision: number;
+  markdownImageRefreshPromise: Promise<void> | null;
   approvedMarkdownImageTargets: Set<string>;
 }
 
@@ -90,6 +91,13 @@ interface PrimedExternalGrant {
   projectId: string;
   canonicalPath: string;
   grant: ExternalFileAccessGrantVm;
+}
+
+const PREVIEW_REFRESH_LEAD_MS = 60_000;
+const PREVIEW_REFRESH_RETRY_MS = 15_000;
+
+function isNetworkImageSource(source: string) {
+  return /^(?:https?:)?\/\//iu.test(source.trim());
 }
 
 function errorCode(reason: unknown) {
@@ -147,12 +155,16 @@ export class FileContentStore {
     const runtime = this.runtimes.get(resourceKey);
     const entry = this.entries.get(resourceKey);
     if (!runtime || !entry || entry.snapshot?.kind !== 'text') return;
-    const sources = new Set(rawSources.slice(0, this.config.markdownEmbeddedImageLimit));
+    const sources = new Set(
+      rawSources
+        .filter((source) => !isNetworkImageSource(source))
+        .slice(0, this.config.markdownEmbeddedImageLimit),
+    );
     runtime.markdownImageSources = sources;
     const staleTokens: string[] = [];
     for (const [rawSrc, image] of runtime.markdownImages) {
       if (sources.has(rawSrc)) continue;
-      if (image.kind === 'ready') staleTokens.push(image.previewToken);
+      if (image.kind === 'ready') staleTokens.push(image.previewGrant.token);
       runtime.markdownImages.delete(rawSrc);
     }
     for (const source of sources) {
@@ -164,40 +176,49 @@ export class FileContentStore {
     this.setEntry(resourceKey, { ...entry });
     await Promise.all(staleTokens.map((token) => releaseWorkspaceFilePreview(token).catch(() => undefined)));
     const unresolved = [...sources].filter((source) => runtime.markdownImages.get(source)?.kind === 'loading');
-    const concurrency = this.config.markdownEmbeddedImageMaxConcurrent;
-    for (let index = 0; index < unresolved.length; index += concurrency) {
-      await Promise.all(unresolved.slice(index, index + concurrency).map(async (rawSrc) => {
-        let next: MarkdownImageState;
-        try {
-          const result = await resolveMarkdownImage({
-            projectId: entry.resource.projectId,
-            markdownCanonicalPath: entry.resource.locator.canonicalPath,
-            markdownExternalAccessToken: runtime.externalAccessGrant?.token ?? null,
-            rawSrc,
-            approvedExternalTargets: [...runtime.approvedMarkdownImageTargets],
-          });
-          next = { ...result, rawSrc };
-        } catch (reason) {
-          next = { kind: 'error', rawSrc, errorCode: errorCode(reason) };
-        }
-        const currentRuntime = this.runtimes.get(resourceKey);
-        const currentEntry = this.entries.get(resourceKey);
-        if (!currentRuntime || !currentEntry
-          || currentRuntime.markdownImageRequestRevision !== requestRevision
-          || !currentRuntime.markdownImageSources.has(rawSrc)) {
-          if (next.kind === 'ready') {
-            await releaseWorkspaceFilePreview(next.previewToken).catch(() => undefined);
-          }
-          return;
-        }
-        const previous = currentRuntime.markdownImages.get(rawSrc);
-        if (previous?.kind === 'ready' && previous.previewToken !== (next.kind === 'ready' ? next.previewToken : null)) {
-          await releaseWorkspaceFilePreview(previous.previewToken).catch(() => undefined);
-        }
-        currentRuntime.markdownImages.set(rawSrc, next);
-        this.setEntry(resourceKey, { ...currentEntry });
-      }));
+    if (unresolved.length > 0) {
+      await this.resolveMarkdownImageStates(resourceKey, unresolved, requestRevision, false);
     }
+    this.schedulePreviewRefresh(resourceKey, runtime);
+  }
+
+  async refreshMarkdownImages(resourceKey: string, failedToken?: string) {
+    const runtime = this.runtimes.get(resourceKey);
+    const entry = this.entries.get(resourceKey);
+    if (!runtime || !entry || entry.snapshot?.kind !== 'text') return;
+    if (failedToken && ![...runtime.markdownImages.values()].some(
+      (image) => image.kind === 'ready' && image.previewGrant.token === failedToken,
+    )) return;
+    if (runtime.markdownImageRefreshPromise) return runtime.markdownImageRefreshPromise;
+    const sources = [...runtime.markdownImageSources].filter(
+      (source) => runtime.markdownImages.get(source)?.kind === 'ready',
+    );
+    if (sources.length === 0) return;
+    const requestRevision = ++runtime.markdownImageRequestRevision;
+    const promise = this.resolveMarkdownImageStates(resourceKey, sources, requestRevision, true)
+      .then((refreshed) => {
+        const currentRuntime = this.runtimes.get(resourceKey);
+        if (currentRuntime === runtime) {
+          this.schedulePreviewRefresh(resourceKey, runtime, refreshed ? undefined : PREVIEW_REFRESH_RETRY_MS);
+        }
+      })
+      .finally(() => {
+        if (this.runtimes.get(resourceKey) === runtime && runtime.markdownImageRefreshPromise === promise) {
+          runtime.markdownImageRefreshPromise = null;
+        }
+      });
+    runtime.markdownImageRefreshPromise = promise;
+    return promise;
+  }
+
+  ensureMarkdownImagePreviews(resourceKey: string) {
+    const runtime = this.runtimes.get(resourceKey);
+    if (!runtime) return;
+    const refreshBefore = Date.now() + PREVIEW_REFRESH_LEAD_MS;
+    const expiring = [...runtime.markdownImages.values()].some((image) => (
+      image.kind === 'ready' && Number(image.previewGrant.expiresAtMs) <= refreshBefore
+    ));
+    if (expiring) void this.refreshMarkdownImages(resourceKey);
   }
 
   async approveMarkdownImages(resourceKey: string) {
@@ -279,9 +300,9 @@ export class FileContentStore {
       }
       if (
         existing?.snapshot?.kind === 'image'
-        && (snapshot.kind !== 'image' || snapshot.previewToken !== existing.snapshot.previewToken)
+        && (snapshot.kind !== 'image' || snapshot.previewGrant.token !== existing.snapshot.previewGrant.token)
       ) {
-        await releaseWorkspaceFilePreview(existing.snapshot.previewToken).catch(() => undefined);
+        await releaseWorkspaceFilePreview(existing.snapshot.previewGrant.token).catch(() => undefined);
       }
       const next: FileContentEntry = {
         key: resource.key,
@@ -430,9 +451,9 @@ export class FileContentStore {
     if (runtime?.timer) clearTimeout(runtime.timer);
     if (runtime?.renewalTimer) clearTimeout(runtime.renewalTimer);
     if (runtime?.previewRefreshTimer) clearTimeout(runtime.previewRefreshTimer);
-    const previewToken = entry?.snapshot?.kind === 'image' ? entry.snapshot.previewToken : null;
+    const previewToken = entry?.snapshot?.kind === 'image' ? entry.snapshot.previewGrant.token : null;
     const markdownPreviewTokens = runtime
-      ? [...runtime.markdownImages.values()].flatMap((image) => image.kind === 'ready' ? [image.previewToken] : [])
+      ? [...runtime.markdownImages.values()].flatMap((image) => image.kind === 'ready' ? [image.previewGrant.token] : [])
       : [];
     const grant = entry?.snapshot?.externalAccessGrant
       ?? runtime?.externalAccessGrant
@@ -565,6 +586,69 @@ export class FileContentStore {
     }
   }
 
+  private async resolveMarkdownImageStates(
+    resourceKey: string,
+    sources: string[],
+    requestRevision: number,
+    preserveReadyOnFailure: boolean,
+  ) {
+    const runtime = this.runtimes.get(resourceKey);
+    const entry = this.entries.get(resourceKey);
+    if (!runtime || !entry || entry.snapshot?.kind !== 'text') return false;
+    const results = new Map<string, MarkdownImageState>();
+    const concurrency = Math.max(1, this.config.markdownEmbeddedImageMaxConcurrent);
+    for (let index = 0; index < sources.length; index += concurrency) {
+      await Promise.all(sources.slice(index, index + concurrency).map(async (rawSrc) => {
+        let next: MarkdownImageState;
+        try {
+          const result = await resolveMarkdownImage({
+            projectId: entry.resource.projectId,
+            markdownCanonicalPath: entry.resource.locator.canonicalPath,
+            markdownExternalAccessToken: runtime.externalAccessGrant?.token ?? null,
+            rawSrc,
+            approvedExternalTargets: [...runtime.approvedMarkdownImageTargets],
+          });
+          next = { ...result, rawSrc };
+        } catch (reason) {
+          next = { kind: 'error', rawSrc, errorCode: errorCode(reason) };
+        }
+        results.set(rawSrc, next);
+      }));
+    }
+
+    const currentRuntime = this.runtimes.get(resourceKey);
+    const currentEntry = this.entries.get(resourceKey);
+    if (!currentRuntime || !currentEntry || currentRuntime.markdownImageRequestRevision !== requestRevision) {
+      await Promise.all([...results.values()].flatMap((image) => image.kind === 'ready'
+        ? [releaseWorkspaceFilePreview(image.previewGrant.token).catch(() => undefined)]
+        : []));
+      return false;
+    }
+
+    const staleTokens: string[] = [];
+    let refreshed = true;
+    for (const [rawSrc, next] of results) {
+      if (!currentRuntime.markdownImageSources.has(rawSrc)) {
+        if (next.kind === 'ready') staleTokens.push(next.previewGrant.token);
+        continue;
+      }
+      const previous = currentRuntime.markdownImages.get(rawSrc);
+      if (next.kind !== 'ready' && preserveReadyOnFailure && previous?.kind === 'ready') {
+        refreshed = false;
+        continue;
+      }
+      if (previous?.kind === 'ready'
+        && previous.previewGrant.token !== (next.kind === 'ready' ? next.previewGrant.token : null)) {
+        staleTokens.push(previous.previewGrant.token);
+      }
+      currentRuntime.markdownImages.set(rawSrc, next);
+      if (next.kind !== 'ready') refreshed = false;
+    }
+    this.setEntry(resourceKey, { ...currentEntry });
+    await Promise.all(staleTokens.map((token) => releaseWorkspaceFilePreview(token).catch(() => undefined)));
+    return refreshed;
+  }
+
   private installRuntime(key: string, snapshot: WorkspaceFileSnapshotVm) {
     const existing = this.runtimes.get(key);
     if (existing?.timer) clearTimeout(existing.timer);
@@ -573,7 +657,7 @@ export class FileContentStore {
     if (existing) {
       for (const image of existing.markdownImages.values()) {
         if (image.kind === 'ready') {
-          void releaseWorkspaceFilePreview(image.previewToken).catch(() => undefined);
+          void releaseWorkspaceFilePreview(image.previewGrant.token).catch(() => undefined);
         }
       }
     }
@@ -595,11 +679,12 @@ export class FileContentStore {
       markdownImages: new Map(),
       markdownImageSources: new Set(),
       markdownImageRequestRevision: (existing?.markdownImageRequestRevision ?? 0) + 1,
+      markdownImageRefreshPromise: null,
       approvedMarkdownImageTargets: existing?.approvedMarkdownImageTargets ?? new Set(),
     };
     this.runtimes.set(key, runtime);
     this.scheduleGrantRenewal(key, runtime);
-    this.schedulePreviewRefresh(key, runtime, snapshot);
+    this.schedulePreviewRefresh(key, runtime);
   }
 
   private scheduleGrantRenewal(key: string, runtime: SaveRuntime) {
@@ -621,13 +706,28 @@ export class FileContentStore {
     }, delay);
   }
 
-  private schedulePreviewRefresh(key: string, runtime: SaveRuntime, snapshot: WorkspaceFileSnapshotVm) {
-    if (snapshot.kind !== 'image') return;
-    const delay = Math.max(1_000, this.config.previewTokenTtlSeconds * 1_000 - 60_000);
+  private schedulePreviewRefresh(key: string, runtime: SaveRuntime, retryDelay?: number) {
+    if (runtime.previewRefreshTimer) clearTimeout(runtime.previewRefreshTimer);
+    const entry = this.entries.get(key);
+    const snapshot = entry?.snapshot;
+    if (!snapshot) return;
+    const expirations = snapshot.kind === 'image'
+      ? [Number(snapshot.previewGrant.expiresAtMs)]
+      : [...runtime.markdownImages.values()].flatMap((image) => image.kind === 'ready'
+        ? [Number(image.previewGrant.expiresAtMs)]
+        : []);
+    const validExpirations = expirations.filter(Number.isFinite);
+    if (validExpirations.length === 0) return;
+    const expiresAt = Math.min(...validExpirations);
+    const delay = retryDelay ?? Math.max(1_000, expiresAt - Date.now() - PREVIEW_REFRESH_LEAD_MS);
     runtime.previewRefreshTimer = setTimeout(() => {
-      const entry = this.entries.get(key);
-      if (entry?.snapshot?.kind === 'image' && entry.saveState.kind === 'clean') {
-        void this.load(entry.resource, false, true);
+      const currentEntry = this.entries.get(key);
+      const currentRuntime = this.runtimes.get(key);
+      if (!currentEntry || currentRuntime !== runtime) return;
+      if (currentEntry.snapshot?.kind === 'image' && currentEntry.saveState.kind === 'clean') {
+        void this.load(currentEntry.resource, false, true);
+      } else if (currentEntry.snapshot?.kind === 'text') {
+        void this.refreshMarkdownImages(key);
       }
     }, delay);
   }

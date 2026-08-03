@@ -20,10 +20,10 @@ function fileName(path: string) {
 export function WorkspaceFileLinkProvider({ children }: { children: ReactNode }) {
   const workspace = useRightWorkspace();
   const targetRevisionsRef = useRef(new Map<string, number>());
-  const openLocalFile = useCallback(async (rawHref: string) => {
+  const openLocalFile = useCallback(async (rawHref: string, baseCanonicalPath?: string | null) => {
     if (!workspace.projectId || !workspace.scopeKey) return;
     try {
-      const resolved = await resolveWorkspaceFileLink(workspace.projectId, rawHref);
+      const resolved = await resolveWorkspaceFileLink(workspace.projectId, rawHref, baseCanonicalPath);
       const key = fileWorkspaceResourceKey(workspace.projectId, resolved.locator.canonicalPath);
       fileContentStore.primeExternalGrant(
         key,

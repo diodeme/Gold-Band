@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::commands::{CommandErrorVm, CommandResult};
 
-use super::models::{ExternalFileAccessGrantVm, FileRevisionVm};
+use super::models::{ExternalFileAccessGrantVm, FileRevisionVm, WorkspaceFilePreviewGrantVm};
 use super::paths::{display_path, error};
 
 #[derive(Clone, Default)]
@@ -123,8 +123,9 @@ impl WorkspaceFileRuntime {
         mime_type: String,
         svg: bool,
         ttl_seconds: u64,
-    ) -> CommandResult<String> {
+    ) -> CommandResult<WorkspaceFilePreviewGrantVm> {
         let token = Uuid::new_v4().to_string();
+        let expires_at = SystemTime::now() + Duration::from_secs(ttl_seconds.max(1));
         let mut inner = self.lock()?;
         inner.cleanup_expired();
         inner.preview_grants.insert(
@@ -135,10 +136,13 @@ impl WorkspaceFileRuntime {
                 revision,
                 mime_type,
                 svg,
-                expires_at: SystemTime::now() + Duration::from_secs(ttl_seconds.max(1)),
+                expires_at,
             },
         );
-        Ok(token)
+        Ok(WorkspaceFilePreviewGrantVm {
+            token,
+            expires_at_ms: system_time_ms(expires_at),
+        })
     }
 
     pub(crate) fn release_preview(&self, token: &str) -> CommandResult<()> {
@@ -272,12 +276,16 @@ fn external_grant_vm(token: String, expires_at: SystemTime) -> ExternalFileAcces
     ExternalFileAccessGrantVm {
         token,
         permissions: vec!["read".to_string(), "write".to_string()],
-        expires_at_ms: expires_at
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            .to_string(),
+        expires_at_ms: system_time_ms(expires_at),
     }
+}
+
+fn system_time_ms(value: SystemTime) -> String {
+    value
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .to_string()
 }
 
 fn external_access_error(path: &Path, operation: &str, reason: &str) -> CommandErrorVm {
@@ -359,7 +367,11 @@ mod tests {
                 .get_mut(&external.token)
                 .unwrap()
                 .expires_at = UNIX_EPOCH;
-            inner.preview_grants.get_mut(&preview).unwrap().expires_at = UNIX_EPOCH;
+            inner
+                .preview_grants
+                .get_mut(&preview.token)
+                .unwrap()
+                .expires_at = UNIX_EPOCH;
         }
 
         assert!(
@@ -368,7 +380,9 @@ mod tests {
                 .is_err()
         );
         assert_eq!(
-            runtime.preview_protocol_response(&preview, false).status(),
+            runtime
+                .preview_protocol_response(&preview.token, false)
+                .status(),
             StatusCode::GONE
         );
     }
@@ -395,7 +409,9 @@ mod tests {
         std::fs::write(&path, b"changed").unwrap();
 
         assert_eq!(
-            runtime.preview_protocol_response(&preview, false).status(),
+            runtime
+                .preview_protocol_response(&preview.token, false)
+                .status(),
             StatusCode::CONFLICT
         );
     }
@@ -420,7 +436,7 @@ mod tests {
             )
             .unwrap();
 
-        let response = runtime.preview_protocol_response(&preview, true);
+        let response = runtime.preview_protocol_response(&preview.token, true);
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response.headers().get(header::CONTENT_TYPE).unwrap(),
@@ -451,7 +467,7 @@ mod tests {
             )
             .unwrap();
 
-        let response = runtime.preview_protocol_response(&preview, false);
+        let response = runtime.preview_protocol_response(&preview.token, false);
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response.headers().get(header::CONTENT_TYPE).unwrap(),

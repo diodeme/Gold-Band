@@ -88,7 +88,7 @@ pub enum WorkspaceFileSnapshotVm {
         width: u32,
         height: u32,
         animated: bool,
-        preview_token: String,
+        preview_grant: WorkspaceFilePreviewGrantVm,
         source_editable: bool,
         external_access_grant: Option<ExternalFileAccessGrantVm>,
     },
@@ -124,6 +124,8 @@ pub struct SearchWorkspaceFilesInput {
 pub struct ResolveWorkspaceFileLinkInput {
     pub project_id: String,
     pub raw_href: String,
+    #[serde(default)]
+    pub base_canonical_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +150,13 @@ pub struct ResolveMarkdownImageInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFilePreviewGrantVm {
+    pub token: String,
+    pub expires_at_ms: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -156,7 +165,7 @@ pub struct ResolveMarkdownImageInput {
 pub enum MarkdownImagePreviewVm {
     Ready {
         canonical_path: String,
-        preview_token: String,
+        preview_grant: WorkspaceFilePreviewGrantVm,
         mime_type: String,
         width: u32,
         height: u32,

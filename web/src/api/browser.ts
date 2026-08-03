@@ -768,7 +768,7 @@ export const browserApi: RuntimeApi = {
       }));
     return Promise.resolve({ requestId, entries: matches, truncated: matches.length >= limit });
   },
-  resolveWorkspaceFileLink(projectId, rawHref) {
+  resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath = null) {
     let href = decodeURIComponent(rawHref.replace(/^file:\/\//u, ''));
     let line: number | null = null;
     let column: number | null = null;
@@ -785,9 +785,13 @@ export const browserApi: RuntimeApi = {
         href = href.slice(0, suffix.index);
       }
     }
+    const normalizedHref = href.replaceAll('\\', '/');
+    const baseDirectory = baseCanonicalPath
+      ? baseCanonicalPath.replaceAll('\\', '/').replace(/\/[^/]*$/u, '')
+      : browserWorkspaceRoot;
     const canonicalPath = href.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(href)
-      ? href.replaceAll('\\', '/')
-      : `${browserWorkspaceRoot}/${href.replace(/^\.\//u, '')}`;
+      ? normalizedHref
+      : new URL(normalizedHref, `file:///${baseDirectory.replace(/^\/+/, '')}/`).pathname.replace(/^\/([A-Za-z]:)/u, '$1');
     const relativePath = browserRelativePath(canonicalPath);
     const externalAccessGrant = relativePath == null ? issueBrowserExternalFileGrant(canonicalPath) : null;
     if (!browserWorkspaceFiles.has(canonicalPath)) {
@@ -826,7 +830,10 @@ export const browserApi: RuntimeApi = {
         width: 240,
         height: 120,
         animated: false,
-        previewToken: `browser-preview:${canonicalPath}`,
+        previewGrant: {
+          token: `browser-preview:${canonicalPath}`,
+          expiresAtMs: String(Date.now() + 5 * 60 * 1_000),
+        },
         sourceEditable: true,
         externalAccessGrant,
       });
@@ -857,7 +864,10 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve({
       kind: 'ready' as const,
       canonicalPath,
-      previewToken: `browser-preview:${canonicalPath}`,
+      previewGrant: {
+        token: `browser-preview:${canonicalPath}`,
+        expiresAtMs: String(Date.now() + 5 * 60 * 1_000),
+      },
       mimeType: canonicalPath.toLowerCase().endsWith('.svg') ? 'image/svg+xml' : 'image/png',
       width: 640,
       height: 360,

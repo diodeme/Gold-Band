@@ -144,19 +144,17 @@ pub(crate) fn display_path(path: &Path) -> String {
     if let Some(network_path) = value.strip_prefix(r"\\?\UNC\") {
         return format!(r"\\{network_path}");
     }
-    value
-        .strip_prefix(r"\\?\")
-        .unwrap_or(&value)
-        .to_string()
+    value.strip_prefix(r"\\?\").unwrap_or(&value).to_string()
 }
 
 pub(crate) fn slash_path(path: &Path) -> String {
     display_path(path).replace('\\', "/")
 }
 
-pub(crate) fn parse_file_link(
+pub(crate) fn parse_file_link_from(
     root: &ResolvedWorkspaceRoot,
     raw_href: &str,
+    base_canonical_path: Option<&Path>,
 ) -> CommandResult<(PathBuf, Option<FileTargetLocationVm>)> {
     let trimmed = raw_href
         .trim()
@@ -196,6 +194,7 @@ pub(crate) fn parse_file_link(
 
     let path = PathBuf::from(decoded);
     if !path.is_absolute()
+        && base_canonical_path.is_none()
         && path.components().any(|component| {
             matches!(
                 component,
@@ -210,6 +209,17 @@ pub(crate) fn parse_file_link(
     }
     let candidate = if path.is_absolute() {
         path
+    } else if let Some(base_path) = base_canonical_path {
+        let base_file = canonicalize_file(base_path, "read")?;
+        base_file
+            .parent()
+            .ok_or_else(|| {
+                error(
+                    "workspace-file.path-invalid",
+                    serde_json::json!({ "path": raw_href }),
+                )
+            })?
+            .join(path)
     } else {
         root.path.join(path)
     };
@@ -387,11 +397,29 @@ mod tests {
         let workspace = root(dir.path());
 
         let (resolved, target) =
-            parse_file_link(&workspace, "space%20dir/%E4%BD%A0%E5%A5%BD.rs:12:4").unwrap();
+            parse_file_link_from(&workspace, "space%20dir/%E4%BD%A0%E5%A5%BD.rs:12:4", None)
+                .unwrap();
         assert_eq!(resolved, std::fs::canonicalize(path).unwrap());
         let target = target.unwrap();
         assert_eq!(target.line, Some(12));
         assert_eq!(target.column, Some(4));
+    }
+
+    #[test]
+    fn resolves_markdown_links_relative_to_the_current_document() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("docs")).unwrap();
+        let markdown = dir.path().join("docs").join("guide.md");
+        let license = dir.path().join("LICENSE");
+        std::fs::write(&markdown, "[License](../LICENSE)").unwrap();
+        std::fs::write(&license, "AGPL-3.0").unwrap();
+        let workspace = root(dir.path());
+
+        let (resolved, target) =
+            parse_file_link_from(&workspace, "../LICENSE", Some(&markdown)).unwrap();
+
+        assert_eq!(resolved, std::fs::canonicalize(license).unwrap());
+        assert!(target.is_none());
     }
 
     #[test]
@@ -404,7 +432,7 @@ mod tests {
 
         let outside_name = outside_dir.path().file_name().unwrap().to_string_lossy();
         let href = format!("../{outside_name}/outside-workspace-file.txt");
-        let result = parse_file_link(&workspace, &href);
+        let result = parse_file_link_from(&workspace, &href, None);
         assert_eq!(
             result.unwrap_err().code,
             "workspace-file.path-outside-workspace"
@@ -433,7 +461,7 @@ mod tests {
         let workspace = root(dir.path());
         let href = format!("{}#L10-L20", Url::from_file_path(&path).unwrap());
 
-        let (resolved, target) = parse_file_link(&workspace, &href).unwrap();
+        let (resolved, target) = parse_file_link_from(&workspace, &href, None).unwrap();
         assert_eq!(resolved, std::fs::canonicalize(path).unwrap());
         let target = target.unwrap();
         assert_eq!(target.line, Some(10));

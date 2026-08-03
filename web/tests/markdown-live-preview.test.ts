@@ -14,10 +14,11 @@ const atomicAdapterSource = readFileSync(
   new URL('../src/components/workspace/files/markdown-live-preview.ts', import.meta.url),
   'utf8',
 );
+const workspaceStyles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
 
 describe('Markdown live preview integration', () => {
   it('extracts distinct local Markdown image sources without treating alt text as a path', () => {
-    expect(markdownImageSources('![A](one.png)\n![B](<folder/two image.png>)\n![Again](one.png)\n<img src="html.png" alt="HTML" />')).toEqual([
+    expect(markdownImageSources('![A](one.png)\n![B](<folder/two image.png>)\n![Again](one.png)\n![Remote](https://example.com/a.png)\n<img src="html.png" alt="HTML" />')).toEqual([
       'one.png',
       'folder/two image.png',
       'html.png',
@@ -41,12 +42,24 @@ describe('Markdown live preview integration', () => {
     expect(nodeNames).toContain('Table');
   });
 
-  it('copies the active CodeMirror document and keeps Atomic preview mounted across source-mode switches', () => {
+  it('uses one CodeMirror view and rebuilds stable mode profiles with semantic viewport state', () => {
     expect(editorSource).toContain('state.doc.toString()');
     expect(editorSource).toContain('state.toJSON({ history: historyField })');
-    expect(editorSource).toContain("previewMode ? 'source' : 'live-preview'");
-    expect(editorSource).toContain("previewMode ? 'h-full min-h-0' : 'hidden'");
-    expect(editorSource).toContain('sourceEditorRef');
+    expect(editorSource).toContain('captureEditorViewportAnchor');
+    expect(editorSource).toContain('key={editorProfileKey}');
+    expect(editorSource).toContain('appliedTargetRevisionsRef.current.get(documentKey)');
+    expect(editorSource).toContain('viewportAnchorDocumentTop');
+    expect(editorSource).toContain('targetMeasured');
+    expect(editorSource).toContain('ResizeObserver');
+    expect(editorSource).toContain('basicSetup={basicSetup}');
+    expect(editorSource).toContain('onChange={handleChange}');
+    expect(editorSource).not.toContain('sourceEditorRef');
+    expect(editorSource.match(/<CodeMirror/gu)).toHaveLength(1);
+  });
+
+  it('constrains Atomic tables to the file detail width and wraps cell content', () => {
+    expect(workspaceStyles).toMatch(/\.workspace-markdown-live-preview \.cm-atomic-table table \{[\s\S]*?table-layout: fixed;/u);
+    expect(workspaceStyles).toMatch(/\.workspace-markdown-live-preview \.cm-atomic-table th,[\s\S]*?overflow-wrap: anywhere;/u);
   });
 
   it('uses Atomic public live-preview extensions but never its raw-src image extension', () => {

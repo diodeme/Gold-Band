@@ -20,7 +20,7 @@ pub use watcher::WorkspaceFileWatchRuntime;
 pub const WORKSPACE_FILE_PREVIEW_PROTOCOL: &str = "gold-band-preview";
 
 use paths::{
-    canonicalize_file, locator_for_path, parse_file_link, path_is_within,
+    canonicalize_file, locator_for_path, parse_file_link_from, path_is_within,
     resolve_workspace_relative_path, resolve_workspace_root,
 };
 
@@ -57,8 +57,15 @@ pub async fn resolve_workspace_file_link(
     let root = resolve_workspace_root(state.inner(), &input.project_id)?;
     let parse_root = root.clone();
     let raw_href = input.raw_href;
-    let (path, target) =
-        spawn_blocking_command(move || parse_file_link(&parse_root, &raw_href)).await?;
+    let base_canonical_path = input.base_canonical_path;
+    let (path, target) = spawn_blocking_command(move || {
+        parse_file_link_from(
+            &parse_root,
+            &raw_href,
+            base_canonical_path.as_deref().map(Path::new),
+        )
+    })
+    .await?;
     let locator = locator_for_path(&root, &path);
     let external_access_grant = if locator.scope == "external" {
         let grant = runtime.issue_external_grant(
@@ -156,11 +163,10 @@ pub async fn resolve_markdown_image(
             serde_json::json!({ "src": input.raw_src }),
         )
     })?;
-    let auto_allowed = path_is_within(&image_path, &root.path)
-        || path_is_within(&image_path, markdown_directory);
+    let auto_allowed =
+        path_is_within(&image_path, &root.path) || path_is_within(&image_path, markdown_directory);
     let explicitly_approved = input.approved_external_targets.iter().any(|candidate| {
-        canonicalize_file(Path::new(candidate), "read")
-            .is_ok_and(|approved| approved == image_path)
+        canonicalize_file(Path::new(candidate), "read").is_ok_and(|approved| approved == image_path)
     });
     if !auto_allowed && !explicitly_approved {
         return Ok(MarkdownImagePreviewVm::ApprovalRequired {
@@ -178,7 +184,7 @@ pub async fn resolve_markdown_image(
     Ok(match snapshot {
         WorkspaceFileSnapshotVm::Image {
             locator,
-            preview_token,
+            preview_grant,
             mime_type,
             width,
             height,
@@ -186,15 +192,15 @@ pub async fn resolve_markdown_image(
             ..
         } => MarkdownImagePreviewVm::Ready {
             canonical_path: locator.canonical_path,
-            preview_token,
+            preview_grant,
             mime_type,
             width,
             height,
             animated,
         },
-        WorkspaceFileSnapshotVm::Unsupported { limitation_code, .. } => {
-            MarkdownImagePreviewVm::Unsupported { limitation_code }
-        }
+        WorkspaceFileSnapshotVm::Unsupported {
+            limitation_code, ..
+        } => MarkdownImagePreviewVm::Unsupported { limitation_code },
         WorkspaceFileSnapshotVm::Text { .. } => MarkdownImagePreviewVm::Unsupported {
             limitation_code: "workspace-file.format-unsupported".to_owned(),
         },
@@ -224,33 +230,43 @@ fn resolve_markdown_image_path(markdown_path: &Path, raw_src: &str) -> CommandRe
         ));
     }
     if lower.starts_with("file:") {
-        let url = url::Url::parse(raw).map_err(|_| paths::error(
-            "workspace-file.markdown-image-src-invalid",
-            serde_json::json!({ "src": raw }),
-        ))?;
-        if url.host_str().is_some_and(|host| !host.is_empty() && host != "localhost") {
+        let url = url::Url::parse(raw).map_err(|_| {
+            paths::error(
+                "workspace-file.markdown-image-src-invalid",
+                serde_json::json!({ "src": raw }),
+            )
+        })?;
+        if url
+            .host_str()
+            .is_some_and(|host| !host.is_empty() && host != "localhost")
+        {
             return Err(paths::error(
                 "workspace-file.markdown-image-unc-blocked",
                 serde_json::json!({ "src": raw }),
             ));
         }
-        let path = url.to_file_path().map_err(|_| paths::error(
-            "workspace-file.markdown-image-src-invalid",
-            serde_json::json!({ "src": raw }),
-        ))?;
+        let path = url.to_file_path().map_err(|_| {
+            paths::error(
+                "workspace-file.markdown-image-src-invalid",
+                serde_json::json!({ "src": raw }),
+            )
+        })?;
         return canonicalize_file(&path, "read");
     }
-    let decoded = percent_decode_str(raw)
-        .decode_utf8()
-        .map_err(|_| paths::error(
+    let decoded = percent_decode_str(raw).decode_utf8().map_err(|_| {
+        paths::error(
             "workspace-file.markdown-image-src-invalid",
             serde_json::json!({ "src": raw }),
-        ))?;
+        )
+    })?;
     let path = Path::new(decoded.as_ref());
     let candidate = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        markdown_path.parent().unwrap_or_else(|| Path::new("")).join(path)
+        markdown_path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(path)
     };
     canonicalize_file(&candidate, "read")
 }

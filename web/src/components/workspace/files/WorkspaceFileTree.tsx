@@ -23,7 +23,9 @@ interface WorkspaceFileTreeProps {
 interface TreeRowContextValue {
   selectedPath: string | null;
   onOpenFile: (entry: WorkspaceDirectoryEntryVm) => void;
-  onCopied: (kind: 'absolute' | 'relative' | 'error') => void;
+  onCopyFailed: () => void;
+  onContextMenuOpenChange: (open: boolean) => void;
+  canActivateFile: () => boolean;
 }
 
 const TreeRowContext = createContext<TreeRowContextValue | null>(null);
@@ -46,6 +48,15 @@ function useMeasuredHeight() {
 async function copyPath(value: string) {
   if (!navigator.clipboard) throw new Error('clipboard-unavailable');
   await navigator.clipboard.writeText(value);
+}
+
+export function copyableAbsolutePath(path: string) {
+  if (path.startsWith('\\\\?\\UNC\\')) return `\\\\${path.slice(8)}`;
+  return path.startsWith('\\\\?\\') ? path.slice(4) : path;
+}
+
+export function shouldActivateTreeFile(contextMenuOpen: boolean, suppressContextMenuActivation: boolean) {
+  return !contextMenuOpen && !suppressContextMenuActivation;
 }
 
 function fileIcon(name: string) {
@@ -74,7 +85,7 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeNode
         event.stopPropagation();
         node.select();
         if (isDirectory) node.toggle();
-        else context.onOpenFile(entry);
+        else if (context.canActivateFile()) context.onOpenFile(entry);
       }}
       onDoubleClick={(event) => event.preventDefault()}
     >
@@ -88,15 +99,22 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeNode
       <span className="min-w-0 flex-1 truncate">{entry.name}</span>
     </div>
   );
-  if (isDirectory) return row;
+  const copyEntryPath = (event: Event, value: string) => {
+    event.stopPropagation();
+    void copyPath(value).catch(context.onCopyFailed);
+  };
   return (
-    <ContextMenu>
+    <ContextMenu dir="ltr" onOpenChange={context.onContextMenuOpenChange}>
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
-      <ContextMenuContent className="w-56">
-        <ContextMenuItem onSelect={() => void copyPath(entry.canonicalPath).then(() => context.onCopied('absolute')).catch(() => context.onCopied('error'))}>
+      <ContextMenuContent
+        className="w-40 min-w-40 p-1"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <ContextMenuItem className="h-8 px-2 py-1 text-xs" onSelect={(event) => copyEntryPath(event, copyableAbsolutePath(entry.canonicalPath))}>
           {t('workspace.filesPanel.copyAbsolutePath')}
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => void copyPath(entry.relativePath.replaceAll('\\', '/')).then(() => context.onCopied('relative')).catch(() => context.onCopied('error'))}>
+        <ContextMenuItem className="h-8 px-2 py-1 text-xs" onSelect={(event) => copyEntryPath(event, entry.relativePath.replaceAll('\\', '/'))}>
           {t('workspace.filesPanel.copyRelativePath')}
         </ContextMenuItem>
       </ContextMenuContent>
@@ -110,15 +128,19 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
   const { ref, height } = useMeasuredHeight();
   const treeRef = useRef<TreeApi<FileTreeNode> | null>(null);
   const pendingRevealPathRef = useRef<string | null>(selectedPath);
-  const [copied, setCopied] = useState<'absolute' | 'relative' | 'error' | null>(null);
-  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const contextMenuOpenRef = useRef(false);
+  const suppressContextMenuActivationRef = useRef(false);
+  const contextMenuFrameRef = useRef<number | null>(null);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const copyFailedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     void fileExplorerStore.loadRoot(projectId);
     const frame = requestAnimationFrame(() => treeRef.current?.scrollToOffset(snapshot.treeScrollTop));
     return () => {
       cancelAnimationFrame(frame);
-      if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+      if (copyFailedTimerRef.current) clearTimeout(copyFailedTimerRef.current);
+      if (contextMenuFrameRef.current !== null) cancelAnimationFrame(contextMenuFrameRef.current);
     };
   }, [projectId]);
 
@@ -134,17 +156,38 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
     return () => cancelAnimationFrame(frame);
   }, [selectedPath, snapshot.roots]);
 
-  const onCopied = useCallback((kind: 'absolute' | 'relative' | 'error') => {
-    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
-    setCopied(kind);
-    copiedTimerRef.current = setTimeout(() => setCopied(null), 1_500);
+  const onCopyFailed = useCallback(() => {
+    if (copyFailedTimerRef.current) clearTimeout(copyFailedTimerRef.current);
+    setCopyFailed(true);
+    copyFailedTimerRef.current = setTimeout(() => setCopyFailed(false), 1_500);
   }, []);
-  const contextValue = useMemo(() => ({ selectedPath, onOpenFile, onCopied }), [onCopied, onOpenFile, selectedPath]);
+  const onContextMenuOpenChange = useCallback((open: boolean) => {
+    contextMenuOpenRef.current = open;
+    suppressContextMenuActivationRef.current = true;
+    if (contextMenuFrameRef.current !== null) cancelAnimationFrame(contextMenuFrameRef.current);
+    if (!open) {
+      contextMenuFrameRef.current = requestAnimationFrame(() => {
+        suppressContextMenuActivationRef.current = false;
+        contextMenuFrameRef.current = null;
+      });
+    }
+  }, []);
+  const canActivateFile = useCallback(() => shouldActivateTreeFile(
+    contextMenuOpenRef.current,
+    suppressContextMenuActivationRef.current,
+  ), []);
+  const contextValue = useMemo(() => ({
+    selectedPath,
+    onOpenFile,
+    onCopyFailed,
+    onContextMenuOpenChange,
+    canActivateFile,
+  }), [canActivateFile, onContextMenuOpenChange, onCopyFailed, onOpenFile, selectedPath]);
   const searchEntries = snapshot.searchResult?.entries ?? [];
   const searching = snapshot.searchQuery.trim().length > 0;
 
   return (
-    <aside className="flex h-full min-h-0 flex-col bg-muted/10" aria-label={t('workspace.filesPanel.workspaceTree')}>
+    <aside className="relative flex h-full min-h-0 flex-col bg-muted/10" aria-label={t('workspace.filesPanel.workspaceTree')}>
       <div className="relative shrink-0 border-b border-border/50 p-2">
         <Search className="pointer-events-none absolute left-4 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input
@@ -166,7 +209,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
           </Button>
         ) : null}
       </div>
-      {copied ? <div className={cn('shrink-0 px-3 py-1.5 text-[11px]', copied === 'error' ? 'text-destructive' : 'text-emerald-600 dark:text-emerald-400')}>{t(copied === 'error' ? 'workspace.filesPanel.pathCopyFailed' : 'workspace.filesPanel.pathCopied')}</div> : null}
+      {copyFailed ? <div className="pointer-events-none absolute right-2 top-12 z-20 rounded-md border border-destructive/20 bg-popover/95 px-2 py-1 text-[11px] text-destructive shadow-sm">{t('workspace.filesPanel.pathCopyFailed')}</div> : null}
       <div ref={ref} className="min-h-0 flex-1 overflow-hidden p-1.5">
         {snapshot.status === 'loading' || snapshot.searchStatus === 'loading' ? (
           <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground"><LoaderCircle className="size-3.5 animate-spin" />{t('workspace.filesPanel.loading')}</div>
@@ -218,7 +261,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
               onToggle={(id) => void fileExplorerStore.toggleDirectory(projectId, id, !snapshot.expanded.has(id))}
               onScroll={({ scrollOffset }) => fileExplorerStore.setTreeScrollTop(projectId, scrollOffset)}
               onActivate={(node) => {
-                if (node.data.kind === 'file') onOpenFile(node.data);
+                if (node.data.kind === 'file' && canActivateFile()) onOpenFile(node.data);
               }}
               aria-label={t('workspace.filesPanel.workspaceTree')}
             >

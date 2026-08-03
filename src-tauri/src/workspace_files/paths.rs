@@ -140,7 +140,14 @@ pub(crate) fn relative_display(path: &Path, root: &Path) -> String {
 }
 
 pub(crate) fn display_path(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+    let value = path.to_string_lossy();
+    if let Some(network_path) = value.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{network_path}");
+    }
+    value
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&value)
+        .to_string()
 }
 
 pub(crate) fn slash_path(path: &Path) -> String {
@@ -357,6 +364,18 @@ mod tests {
         let root = Path::new("root");
         let path = root.join("src").join("main.rs");
         assert_eq!(relative_display(&path, root), "src/main.rs");
+    }
+
+    #[test]
+    fn display_path_removes_windows_extended_length_prefixes() {
+        assert_eq!(
+            display_path(Path::new(r"\\?\D:\repo\README.md")),
+            r"D:\repo\README.md"
+        );
+        assert_eq!(
+            display_path(Path::new(r"\\?\UNC\server\share\README.md")),
+            r"\\server\share\README.md"
+        );
     }
 
     #[test]

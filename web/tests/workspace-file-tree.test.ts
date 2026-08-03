@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { consumePendingTreeReveal } from '@/components/workspace/files/WorkspaceFileTree';
+import {
+  consumePendingTreeReveal,
+  copyableAbsolutePath,
+  shouldActivateTreeFile,
+} from '@/components/workspace/files/WorkspaceFileTree';
 import type { FileTreeNode } from '@/components/workspace/files/file-explorer-store';
 
 const fileNode: FileTreeNode = {
@@ -28,5 +32,19 @@ describe('workspace file tree reveal lifecycle', () => {
     const beforeLoad = consumePendingTreeReveal('D:\\repo\\README.md', []);
     expect(beforeLoad.targetId).toBeNull();
     expect(consumePendingTreeReveal(beforeLoad.pendingPath, [fileNode]).targetId).toBe('README.md');
+  });
+});
+
+describe('workspace file tree path actions', () => {
+  it('copies normal Windows paths without the extended-length prefix', () => {
+    expect(copyableAbsolutePath('\\\\?\\D:\\repo\\README.md')).toBe('D:\\repo\\README.md');
+    expect(copyableAbsolutePath('\\\\?\\UNC\\server\\share\\README.md')).toBe('\\\\server\\share\\README.md');
+    expect(copyableAbsolutePath('D:\\repo\\README.md')).toBe('D:\\repo\\README.md');
+  });
+
+  it('blocks file activation during a context-menu copy lifecycle', () => {
+    expect(shouldActivateTreeFile(true, true)).toBe(false);
+    expect(shouldActivateTreeFile(false, true)).toBe(false);
+    expect(shouldActivateTreeFile(false, false)).toBe(true);
   });
 });

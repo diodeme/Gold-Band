@@ -72,6 +72,34 @@ function findNode(nodes: FileTreeNode[], id: string): FileTreeNode | null {
   return null;
 }
 
+function containsCanonicalPath(nodes: FileTreeNode[], canonicalPath: string): boolean {
+  const target = normalizePath(canonicalPath);
+  for (const node of nodes) {
+    if (normalizePath(node.canonicalPath) === target) return true;
+    if (node.children && containsCanonicalPath(node.children, canonicalPath)) return true;
+  }
+  return false;
+}
+
+export function fileChangeAffectsTree(
+  snapshot: FileExplorerSnapshot,
+  event: WorkspaceFileChangedEventVm,
+): boolean {
+  // File saves belong to the content domain. Atomic replacement can surface as
+  // create/remove/rename events even though the visible path identity is stable.
+  if (event.kind === 'modified' || event.operationId) return false;
+  const knownPath = containsCanonicalPath(snapshot.roots, event.canonicalPath);
+  if (event.kind === 'created') return !knownPath;
+  if (event.kind === 'removed') return knownPath;
+  if (event.kind === 'renamed') {
+    // A path with a revision exists after the rename. Existing+present is an
+    // atomic replacement; missing+present is a new tree node. Without a
+    // revision the path no longer exists, so only a known node changed shape.
+    return event.revision ? !knownPath : knownPath;
+  }
+  return true;
+}
+
 function idleSnapshot(projectId: string): FileExplorerSnapshot {
   return {
     projectId,
@@ -233,9 +261,7 @@ export class FileExplorerStore {
   }
 
   applyFileChange(event: WorkspaceFileChangedEventVm) {
-    // The tree does not display content revision metadata. A content-only write
-    // therefore has no observable tree state and must not refetch or rerender it.
-    if (event.kind === 'modified') return;
+    if (!fileChangeAffectsTree(this.runtime(event.projectId, false).snapshot, event)) return;
     this.invalidate(event.projectId, event.canonicalPath);
   }
 

@@ -1,4 +1,6 @@
 use std::borrow::Cow;
+use std::cmp::{Ordering, Reverse};
+use std::collections::BinaryHeap;
 use std::fs::{File, Metadata};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -6,6 +8,8 @@ use std::time::UNIX_EPOCH;
 
 use atomic_write_file::AtomicWriteFile;
 use ignore::WalkBuilder;
+use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config, Matcher, Utf32Str};
 
 use crate::commands::CommandResult;
 
@@ -105,8 +109,8 @@ pub(crate) fn search_files(
     request_id: String,
     requested_limit: usize,
 ) -> CommandResult<WorkspaceFileSearchVm> {
-    let normalized_query = query.trim().to_lowercase();
-    if normalized_query.is_empty() {
+    let query = query.trim();
+    if query.is_empty() {
         return Ok(WorkspaceFileSearchVm {
             request_id,
             entries: Vec::new(),
@@ -116,7 +120,37 @@ pub(crate) fn search_files(
     let limit = requested_limit
         .max(1)
         .min(root.config.search_result_limit.max(1));
-    let mut entries = Vec::with_capacity(limit.min(128));
+    let file_name_pattern = Pattern::new(
+        query,
+        CaseMatching::Ignore,
+        Normalization::Smart,
+        AtomKind::Fuzzy,
+    );
+    let relative_path_pattern = Pattern::new(
+        query,
+        CaseMatching::Ignore,
+        Normalization::Smart,
+        AtomKind::Fuzzy,
+    );
+    let exact_file_name_pattern = Atom::new(
+        query,
+        CaseMatching::Ignore,
+        Normalization::Smart,
+        AtomKind::Exact,
+        false,
+    );
+    let prefix_file_name_pattern = Atom::new(
+        query,
+        CaseMatching::Ignore,
+        Normalization::Smart,
+        AtomKind::Prefix,
+        false,
+    );
+    let mut file_name_matcher = Matcher::new(Config::DEFAULT);
+    let mut relative_path_matcher = Matcher::new(Config::DEFAULT.match_paths());
+    let mut file_name_buf = Vec::new();
+    let mut relative_path_buf = Vec::new();
+    let mut ranked_entries = BinaryHeap::with_capacity(limit);
     let mut truncated = false;
     let walker = WalkBuilder::new(&root.path)
         .hidden(false)
@@ -131,32 +165,112 @@ pub(crate) fn search_files(
             continue;
         }
         let relative_path = relative_display(entry.path(), &root.path);
-        if !relative_path.to_lowercase().contains(&normalized_query) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let relative_path_haystack = Utf32Str::new(&relative_path, &mut relative_path_buf);
+        let Some(relative_path_score) =
+            relative_path_pattern.score(relative_path_haystack, &mut relative_path_matcher)
+        else {
             continue;
-        }
-        if entries.len() >= limit {
-            truncated = true;
-            break;
-        }
+        };
+        let file_name_haystack = Utf32Str::new(&name, &mut file_name_buf);
+        let file_name_score = file_name_pattern.score(file_name_haystack, &mut file_name_matcher);
+        let exact_file_name = file_name_score.is_some()
+            && exact_file_name_pattern
+                .score(file_name_haystack, &mut file_name_matcher)
+                .is_some();
+        let prefix_file_name = file_name_score.is_some()
+            && prefix_file_name_pattern
+                .score(file_name_haystack, &mut file_name_matcher)
+                .is_some();
         let metadata = entry.metadata().ok();
-        entries.push(WorkspaceDirectoryEntryVm {
-            name: entry.file_name().to_string_lossy().into_owned(),
-            relative_path,
-            canonical_path: display_path(entry.path()),
-            kind: "file".to_string(),
-            has_children: false,
-            byte_length: metadata.as_ref().map(Metadata::len),
-            modified_at_ns: metadata.as_ref().and_then(modified_at_ns),
-        });
+        let candidate = RankedSearchEntry {
+            exact_file_name,
+            prefix_file_name,
+            file_name_score,
+            relative_path_score,
+            path_depth: relative_path_depth(&relative_path),
+            entry: WorkspaceDirectoryEntryVm {
+                name,
+                relative_path,
+                canonical_path: display_path(entry.path()),
+                kind: "file".to_string(),
+                has_children: false,
+                byte_length: metadata.as_ref().map(Metadata::len),
+                modified_at_ns: metadata.as_ref().and_then(modified_at_ns),
+            },
+        };
+        if ranked_entries.len() < limit {
+            ranked_entries.push(Reverse(candidate));
+        } else {
+            truncated = true;
+            let should_replace = ranked_entries
+                .peek()
+                .is_some_and(|worst| candidate > worst.0);
+            if should_replace {
+                ranked_entries.pop();
+                ranked_entries.push(Reverse(candidate));
+            }
+        }
     }
-    entries.sort_by(|left, right| {
-        natord::compare_ignore_case(&left.relative_path, &right.relative_path)
-    });
+    let mut ranked_entries = ranked_entries
+        .into_iter()
+        .map(|entry| entry.0)
+        .collect::<Vec<_>>();
+    ranked_entries.sort_by(|left, right| right.cmp(left));
     Ok(WorkspaceFileSearchVm {
         request_id,
-        entries,
+        entries: ranked_entries
+            .into_iter()
+            .map(|entry| entry.entry)
+            .collect(),
         truncated,
     })
+}
+
+#[derive(Debug)]
+struct RankedSearchEntry {
+    exact_file_name: bool,
+    prefix_file_name: bool,
+    file_name_score: Option<u32>,
+    relative_path_score: u32,
+    path_depth: usize,
+    entry: WorkspaceDirectoryEntryVm,
+}
+
+impl PartialEq for RankedSearchEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for RankedSearchEntry {}
+
+impl PartialOrd for RankedSearchEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RankedSearchEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.exact_file_name
+            .cmp(&other.exact_file_name)
+            .then_with(|| self.prefix_file_name.cmp(&other.prefix_file_name))
+            .then_with(|| self.file_name_score.cmp(&other.file_name_score))
+            .then_with(|| self.relative_path_score.cmp(&other.relative_path_score))
+            .then_with(|| other.path_depth.cmp(&self.path_depth))
+            .then_with(|| {
+                natord::compare_ignore_case(&other.entry.relative_path, &self.entry.relative_path)
+            })
+            .then_with(|| other.entry.relative_path.cmp(&self.entry.relative_path))
+    }
+}
+
+fn relative_path_depth(relative_path: &str) -> usize {
+    relative_path
+        .bytes()
+        .filter(|separator| matches!(separator, b'/' | b'\\'))
+        .count()
 }
 
 pub(crate) fn read_file(
@@ -681,6 +795,66 @@ mod tests {
         assert_eq!(result.request_id, "request-1");
         assert_eq!(result.entries.len(), 1);
         assert!(result.entries[0].relative_path.starts_with("src/"));
+        assert!(result.truncated);
+    }
+
+    #[test]
+    fn search_ranks_exact_prefix_and_file_name_matches_before_path_only_matches() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("read"), "exact").unwrap();
+        std::fs::write(dir.path().join("reader.rs"), "prefix").unwrap();
+        std::fs::write(dir.path().join("thread.rs"), "file-name").unwrap();
+        std::fs::create_dir(dir.path().join("read-guides")).unwrap();
+        std::fs::write(dir.path().join("read-guides").join("value.rs"), "path").unwrap();
+        let workspace = root(dir.path());
+
+        let result = search_files(&workspace, "read", "request-rank".to_string(), 10).unwrap();
+        let paths = result
+            .entries
+            .iter()
+            .map(|entry| entry.relative_path.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            paths,
+            ["read", "reader.rs", "thread.rs", "read-guides/value.rs"]
+        );
+    }
+
+    #[test]
+    fn search_supports_non_contiguous_fuzzy_file_name_matches() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("WorkspaceFileTree.tsx"), "tree").unwrap();
+        std::fs::write(dir.path().join("工作区文件树.tsx"), "unicode-tree").unwrap();
+        std::fs::write(dir.path().join("workspace.ts"), "other").unwrap();
+        let workspace = root(dir.path());
+
+        let result = search_files(&workspace, "wft", "request-fuzzy".to_string(), 10).unwrap();
+        let unicode_result =
+            search_files(&workspace, "工区树", "request-unicode".to_string(), 10).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].name, "WorkspaceFileTree.tsx");
+        assert_eq!(unicode_result.entries.len(), 1);
+        assert_eq!(unicode_result.entries[0].name, "工作区文件树.tsx");
+    }
+
+    #[test]
+    fn search_applies_the_limit_after_global_relevance_ranking() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("wft-notes")).unwrap();
+        std::fs::write(
+            dir.path().join("wft-notes").join("unrelated.txt"),
+            "path-only",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("WorkspaceFileTree.tsx"), "file-name").unwrap();
+        let workspace = root(dir.path());
+
+        let result = search_files(&workspace, "wft", "request-top-k".to_string(), 1).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].name, "WorkspaceFileTree.tsx");
         assert!(result.truncated);
     }
 

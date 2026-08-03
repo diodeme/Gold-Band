@@ -623,6 +623,7 @@ pub enum RuntimeLifecycleEvent {
     RunPaused {
         event_id: String,
         occurred_at: String,
+        scheduled_occurrence_id: Option<String>,
         task_id: String,
         run_id: String,
         round_id: String,
@@ -635,6 +636,7 @@ pub enum RuntimeLifecycleEvent {
     InterventionRequested {
         event_id: String,
         occurred_at: String,
+        scheduled_occurrence_id: Option<String>,
         task_id: String,
         run_id: String,
         round_id: String,
@@ -647,6 +649,7 @@ pub enum RuntimeLifecycleEvent {
     RunCompleted {
         event_id: String,
         occurred_at: String,
+        scheduled_occurrence_id: Option<String>,
         task_id: String,
         run_id: String,
         round_id: String,
@@ -665,6 +668,7 @@ pub enum RuntimeLifecycleEvent {
     AcpTurnFinished {
         event_id: String,
         occurred_at: String,
+        scheduled_occurrence_id: Option<String>,
         task_id: String,
         run_id: String,
         round_id: String,
@@ -675,6 +679,32 @@ pub enum RuntimeLifecycleEvent {
         outcome: AcpTurnOutcome,
         task_title: Option<String>,
     },
+}
+
+impl RuntimeLifecycleEvent {
+    fn set_scheduled_occurrence_id(&mut self, occurrence_id: Option<String>) {
+        match self {
+            Self::RunPaused {
+                scheduled_occurrence_id,
+                ..
+            }
+            | Self::InterventionRequested {
+                scheduled_occurrence_id,
+                ..
+            }
+            | Self::RunCompleted {
+                scheduled_occurrence_id,
+                ..
+            }
+            | Self::AcpTurnFinished {
+                scheduled_occurrence_id,
+                ..
+            } => {
+                *scheduled_occurrence_id = occurrence_id;
+            }
+            Self::NodeStarted { .. } | Self::NodeCompleted { .. } => {}
+        }
+    }
 }
 
 pub struct App {
@@ -691,6 +721,7 @@ pub struct App {
     >,
     acp_session_update: Option<Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>>,
     pub lifecycle_bus: observability::RuntimeLifecycleBus,
+    scheduled_occurrence_id: Option<String>,
 }
 
 fn default_task_search_indexer() -> Arc<dyn Fn(&Utf8Path, &str) + Send + Sync> {
@@ -886,6 +917,7 @@ impl App {
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
+            scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
         }
     }
 
@@ -930,6 +962,7 @@ impl App {
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
+            scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
         }
     }
 
@@ -954,6 +987,15 @@ impl App {
     pub fn with_lifecycle_bus(mut self, lifecycle_bus: observability::RuntimeLifecycleBus) -> Self {
         self.lifecycle_bus = lifecycle_bus;
         self
+    }
+
+    pub fn with_scheduled_occurrence_id(mut self, occurrence_id: Option<String>) -> Self {
+        self.scheduled_occurrence_id = occurrence_id;
+        self
+    }
+
+    pub fn scheduled_occurrence_id(&self) -> Option<&str> {
+        self.scheduled_occurrence_id.as_deref()
     }
 
     pub fn with_lifecycle_subscriber(
@@ -997,7 +1039,10 @@ impl App {
         Ok(())
     }
 
-    pub fn emit_lifecycle_event(&self, event: RuntimeLifecycleEvent) {
+    pub fn emit_lifecycle_event(&self, mut event: RuntimeLifecycleEvent) {
+        if let Some(occurrence_id) = self.scheduled_occurrence_id.clone() {
+            event.set_scheduled_occurrence_id(Some(occurrence_id));
+        }
         self.lifecycle_bus.emit(event);
     }
 
@@ -1756,6 +1801,7 @@ impl App {
             acp_live_update: None,
             acp_session_update: None,
             lifecycle_bus: observability::RuntimeLifecycleBus::new(),
+            scheduled_occurrence_id: None,
         }
     }
 
@@ -3349,7 +3395,8 @@ mod tests {
         ProviderDiagnosticSnapshot, RuntimeConfig,
     };
     use crate::domain::{
-        NodeOutcome, NodeType, PauseReason, RoundTrigger, RunStatus, SessionMode, VERSION,
+        NodeOutcome, NodeType, PauseReason, RoundTrigger, RunOutcome, RunStatus, SessionMode,
+        VERSION,
     };
     use crate::dsl::{
         AiDynamicAgentStrategy, NodeDsl, WorkerNode, WorkflowControl, WorkflowDsl,
@@ -3494,6 +3541,7 @@ mod tests {
         RuntimeLifecycleEvent::RunPaused {
             event_id: "run-1:round-1:node-1:attempt-1:waiting-for-user-input".to_string(),
             occurred_at: "2026-01-01T00:00:00".to_string(),
+            scheduled_occurrence_id: None,
             task_id: "task-1".to_string(),
             run_id: "run-1".to_string(),
             round_id: "round-1".to_string(),
@@ -3683,6 +3731,49 @@ mod tests {
         let bg = app.clone_for_background();
         bg.emit_lifecycle_event(sample_run_paused_event());
         assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn scheduled_origin_is_injected_into_background_lifecycle_events() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_callback = seen.clone();
+        let app = test_app(repo_root)
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                if let RuntimeLifecycleEvent::RunCompleted {
+                    scheduled_occurrence_id,
+                    ..
+                } = event
+                {
+                    seen_for_callback
+                        .lock()
+                        .unwrap()
+                        .push(scheduled_occurrence_id);
+                }
+            }));
+
+        app.emit_lifecycle_event(RuntimeLifecycleEvent::RunCompleted {
+            event_id: "run-completed".to_string(),
+            occurred_at: "2026-08-03T00:00:00Z".to_string(),
+            scheduled_occurrence_id: None,
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "node-001".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            node_label: "node".to_string(),
+            outcome: RunOutcome::Success,
+            task_title: None,
+            completion_agent_label: None,
+        });
+
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[Some("occurrence-001".to_string())]
+        );
     }
 
     #[test]

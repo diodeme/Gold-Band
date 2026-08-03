@@ -75,3 +75,14 @@ pending
 - 重启/唤醒后的过去时间点为 `missed`，不会追赶补跑。
 - permission request 和 AskUserQuestion 分别进入 `failed` 与 `attention_required`，并可从通知进入详情。
 - run-now 不改变下一次计划时间；Direct、Workflow、AUTO 都使用同一 occurrence 规则。
+- run-now 不改变下一次计划时间；Direct、Workflow、AUTO 都使用同一 occurrence 规则。
+
+### Phase 3 runtime lifecycle implementation (2026-08-03)
+
+The runtime now uses the per-workspace SQLite scheduler database as its source of truth. Legacy JSON is imported only when the database is empty. Startup recovers expired leases and marks past schedule points as `missed` without backfill.
+
+Each scheduled point is created and claimed transactionally. The scheduler keeps the lease alive while the Task/Run/ACP work is active, and completion is written only from lifecycle events carrying the scheduled occurrence ID. `RunCompleted` and successful ACP turns become `succeeded`; failures become `failed`.
+
+Permission and elicitation interventions terminate the scheduler occurrence immediately: permission maps to `failed + SCHEDULED_PERMISSION_REQUIRED`, while user input maps to `attention_required + SCHEDULED_USER_INPUT_REQUIRED`. The lease is released before the occurrence update event is emitted, so the existing notification path can direct the user to the resumable Run.
+
+Direct/new, Direct/continuous, Workflow and AUTO execution adapters now propagate the occurrence origin through background App clones. Scheduled task create, update, enable/disable and delete commands synchronize their definitions with SQLite.

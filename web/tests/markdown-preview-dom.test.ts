@@ -65,6 +65,32 @@ describe('Markdown preview DOM contract', () => {
     expect(view.dom.querySelector('img:not(.cm-widgetBuffer)')).toBeNull();
   });
 
+  it('routes each README badge to its exact outer Markdown target', () => {
+    const onLinkClick = vi.fn();
+    const view = createView(
+      [
+        '[![GitHub Stars](https://img.shields.io/github/stars/diodeme/Gold-Band?style=flat-square&color=FFD700)](https://github.com/diodeme/Gold-Band/stargazers)',
+        '[![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)',
+        '[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)](#)',
+        '[![Downloads](https://img.shields.io/github/downloads/diodeme/Gold-Band/total?style=flat-square)](https://github.com/diodeme/Gold-Band/releases)',
+      ].join('\n'),
+      [
+        markdown({ base: markdownLanguage }),
+        markdownImagePreview(new Map(), undefined, onLinkClick),
+      ],
+    );
+
+    const links = [...view.dom.querySelectorAll<HTMLAnchorElement>('.cm-gold-band-markdown-remote-image-link')];
+    expect(links.map((link) => link.textContent)).toEqual(['GitHub Stars', 'License', 'Platform', 'Downloads']);
+    for (const link of links) link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(onLinkClick.mock.calls.map(([href]) => href)).toEqual([
+      'https://github.com/diodeme/Gold-Band/stargazers',
+      'LICENSE',
+      '#',
+      'https://github.com/diodeme/Gold-Band/releases',
+    ]);
+  });
+
   it('routes a relative linked badge through the workspace link handler', () => {
     const onLinkClick = vi.fn();
     const view = createView(

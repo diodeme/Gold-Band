@@ -3,6 +3,7 @@ import {
   consumePendingTreeReveal,
   copyableAbsolutePath,
   shouldActivateTreeFile,
+  treeOverscanCount,
   treeViewportContentHeight,
 } from '@/components/workspace/files/WorkspaceFileTree';
 import { FileExplorerStore } from '@/components/workspace/files/file-explorer-store';
@@ -25,6 +26,12 @@ describe('workspace file tree reveal lifecycle', () => {
   it('passes the virtual list the padding-free content-box height', () => {
     expect(treeViewportContentHeight(640, 6, 6)).toBe(628);
     expect(treeViewportContentHeight(12, 6, 6)).toBe(1);
+  });
+
+  it('renders at least two viewportfuls around fast virtual-tree scrolling', () => {
+    expect(treeOverscanCount(480)).toBe(30);
+    expect(treeOverscanCount(160)).toBe(24);
+    expect(treeOverscanCount(4_000)).toBe(96);
   });
   it('consumes selection reveal once so later directory snapshots do not scroll again', () => {
     const first = consumePendingTreeReveal('d:/REPO/readme.md', [fileNode]);

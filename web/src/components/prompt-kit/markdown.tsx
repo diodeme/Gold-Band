@@ -6,8 +6,9 @@ import {
   Streamdown,
   type StreamdownProps,
 } from 'streamdown';
+import { openExternalUrl } from '@/api';
 import { cn } from '@/lib/utils';
-import { isLocalFileHref } from '@/lib/file-link';
+import { isExternalUrlHref, isLocalFileHref } from '@/lib/file-link';
 import {
   advanceStreamingMarkdownPresentation,
   createStreamingMarkdownPresentation,
@@ -72,6 +73,7 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
   const localHref = localHrefFromRenderedHref(href);
   const local = Boolean(localHref);
   const enabledLocal = Boolean(handler && localHref);
+  const external = Boolean(href && isExternalUrlHref(href));
   return (
     <a
       {...props}
@@ -83,15 +85,22 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
         local && !handler && 'cursor-not-allowed opacity-60',
       )}
       href={enabledLocal ? localHref ?? undefined : local ? undefined : href}
-      target={local ? undefined : '_blank'}
-      rel={local ? undefined : 'noreferrer'}
+      target={local || external ? undefined : props.target}
+      rel={local || external ? undefined : props.rel}
       aria-disabled={local && !handler ? true : undefined}
-      onClick={local ? (event) => {
-        event.preventDefault();
-        if (localHref && handler) void handler.openLocalFile(localHref);
-      } : props.onClick}
+      onClick={local
+        ? (event) => {
+          event.preventDefault();
+          if (localHref && handler) void handler.openLocalFile(localHref);
+        }
+        : external
+          ? (event) => {
+            event.preventDefault();
+            if (href) void openExternalUrl(href);
+          }
+          : props.onClick}
     >
-      {enabledLocal ? <FileCode2 className="size-[0.9em] shrink-0 self-center text-gold-running" aria-hidden="true" /> : null}
+      {enabledLocal ? <FileCode2 className="size-[1em] shrink-0 self-center stroke-[2.35] text-gold-running" aria-hidden="true" /> : null}
       {children}
     </a>
   );

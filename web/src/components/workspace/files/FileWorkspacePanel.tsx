@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ExternalLink, FileQuestion, FolderOpen, LoaderCircle, Maximize2, Pause, Play, RefreshCw, RotateCcw, SearchX, ShieldAlert, ZoomIn, ZoomOut } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { openFileWithSystemApp, resolveWorkspaceFileLink, workspaceFilePreviewUrl } from '@/api';
+import { openExternalUrl, openFileWithSystemApp, resolveWorkspaceFileLink, workspaceFilePreviewUrl } from '@/api';
 import { Button } from '@/components/ui/button';
 import { useMarkdownResourceLinkHandler } from '@/components/prompt-kit/markdown';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm } from '@/types';
-import { isLocalFileHref } from '@/lib/file-link';
+import { isExternalUrlHref, isLocalFileHref } from '@/lib/file-link';
 import { resolveWorkspacePanelWidthFromLayout } from '../workspace-layout';
 import {
   fileWorkspaceResourceKey,
@@ -265,7 +265,7 @@ function FileSnapshotContent({
       }
       return;
     }
-    window.open(href, '_blank', 'noopener,noreferrer');
+    if (isExternalUrlHref(href)) void openExternalUrl(href);
   }, [markdownResourceLinkHandler, resource.locator.canonicalPath]);
   const approvalCount = [...markdownImages.values()].filter((image) => image.kind === 'approvalRequired').length;
   useEffect(() => {

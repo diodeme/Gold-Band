@@ -184,6 +184,7 @@ CodeMirror markdown language（GFM）
 
 - HTTP/HTTPS/mailto 交给现有安全外链能力。
 - 本地文件链接复用工作区文件链接解析与右侧 Tab 打开能力；实时预览中的相对链接以当前 Markdown canonical path 的父目录为基准，会话消息中的相对链接仍以项目根为基准。
+- 网络图片 badge 严格执行外层 Markdown 目标，不按 badge 类型写特例；本地文件、同文档锚点和外部 URL 分域处理，外部 URL 使用 Tauri opener 而不是 WebView `window.open`。
 - 不直接调用 `window.open` 打开本地路径。
 
 ### 8.2 样式适配
@@ -338,7 +339,7 @@ markdownEmbeddedImageMaxConcurrent = 4
 - 图片通过 `gold-band-preview://token` 展示，DOM 中不存在本地路径。
 - 外部目录图片只出现一次文档级确认，不逐图片打断。
 - 深色/亮色、宽屏/窄屏、长文档和多图片滚动正常。
-- 目标行链接打开 Markdown 后仍定位到正确源码位置并滚动到视口中央；已消费 revision 按 document key 隔离，必须由真实 selection 与 viewport 契约确认。
+- 目标行链接打开 Markdown 后仍定位到正确源码位置并滚动到视口中央；同一链接重复点击必须建立新定位 revision。文档实例使用 `documentKey + contentRevision + 当前 EditorView ref` 判定，不得比较 CodeMirror 已规范化换行的全文与原始 CRLF 文本。`onCreateEditor` 不消费定位；受控 value 同步后的 React effect 通过同一个 transaction 提交 selection 和 `EditorView.scrollIntoView(range, { y: 'center' })`。不得在 Adapter 中增加 rAF/ResizeObserver 等待，也不得用 `coordsAtPos`、估算块高度或直接写 `scrollTop` 重复实现 CodeMirror 的虚拟滚动。target revision 不得触发 Markdown 扩展重载或 EditorView 重建；已消费 revision 按 document key 隔离。
 
 ## 14. 分阶段实施
 

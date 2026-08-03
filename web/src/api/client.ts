@@ -235,6 +235,7 @@ export interface RuntimeApi {
   stopWorkspaceFileWatch(projectId: string): Promise<void>;
   subscribeWorkspaceFileChanges?(listener: (event: WorkspaceFileChangedEventVm) => void): Promise<() => void>;
   workspaceFilePreviewUrl(token: string, staticFrame?: boolean): string;
+  openExternalUrl(url: string): Promise<void>;
   openFileWithSystemApp(path: string): Promise<void>;
   pickAttachmentFiles(): Promise<AttachmentFileRef[]>;
   materializeConversationAttachments(files: MaterializeAttachmentFileInput[]): Promise<AttachmentFileRef[]>;

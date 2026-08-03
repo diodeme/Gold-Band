@@ -9,6 +9,7 @@ import { Check, Code2, Copy, Eye } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { isDocumentAnchorHref } from '@/lib/file-link';
 import type { FileTargetLocationVm } from '@/types';
 import type { MarkdownEditorMode, MarkdownImageState } from './file-content-store';
 import { loadMarkdownLivePreviewExtensions } from './markdown-live-preview';
@@ -40,16 +41,17 @@ interface WorkspaceFileEditorProps {
 
 interface EditorViewportAnchor {
   position: number;
+  blockOffsetTop: number;
 }
 
 interface PendingEditorRebuild {
   mode: MarkdownEditorMode;
   stateJson: unknown;
   viewport: EditorViewportAnchor;
+  targetRevisionAtCapture: number;
 }
 
 const EMPTY_MARKDOWN_IMAGES = new Map<string, MarkdownImageState>();
-const TARGET_REVEAL_CORRECTION_PASSES = 5;
 const VIEWPORT_RESTORE_PASSES = 3;
 const VIEWPORT_RESTORE_EPSILON_PX = 0.5;
 
@@ -66,14 +68,14 @@ const workspaceEditorTheme = EditorView.theme({
 const workspaceHighlightStyle = HighlightStyle.define([
   { tag: [tags.comment, tags.lineComment, tags.blockComment, tags.docComment], color: 'var(--muted-foreground)', fontStyle: 'italic' },
   { tag: [tags.meta, tags.processingInstruction, tags.punctuation], color: 'var(--muted-foreground)' },
-  { tag: [tags.keyword, tags.controlKeyword, tags.operatorKeyword, tags.modifier], color: 'var(--primary)' },
-  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.labelName], color: 'var(--primary)' },
+  { tag: [tags.keyword, tags.controlKeyword, tags.operatorKeyword, tags.modifier], color: 'var(--gold-running)' },
+  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.labelName], color: 'var(--gold-running)' },
   { tag: [tags.string, tags.special(tags.string), tags.regexp, tags.escape], color: 'var(--gold-success)' },
   { tag: [tags.number, tags.bool, tags.null, tags.atom], color: 'var(--gold-warning)' },
   { tag: [tags.invalid, tags.deleted], color: 'var(--gold-danger)' },
   { tag: [tags.heading, tags.strong], color: 'var(--foreground)', fontWeight: '600' },
   { tag: tags.emphasis, fontStyle: 'italic' },
-  { tag: [tags.link, tags.url], color: 'var(--primary)', textDecoration: 'underline' },
+  { tag: [tags.link, tags.url], color: 'var(--gold-running)', textDecoration: 'underline' },
 ]);
 
 async function loadLanguage(language: string | null): Promise<Extension | null> {
@@ -90,27 +92,24 @@ async function loadLanguage(language: string | null): Promise<Extension | null> 
 export function captureEditorViewportAnchor(view: EditorView): EditorViewportAnchor {
   const viewportTop = Math.max(0, view.scrollDOM.getBoundingClientRect().top - view.documentTop);
   const block = view.lineBlockAtHeight(viewportTop);
-  const blockProgress = block.height > 0
-    ? Math.min(1, Math.max(0, (viewportTop - block.top) / block.height))
-    : 0;
-  const sourceSpan = Math.max(0, block.to - block.from);
   return {
-    position: Math.min(view.state.doc.length, block.from + Math.floor(sourceSpan * blockProgress)),
+    position: Math.min(view.state.doc.length, block.from),
+    blockOffsetTop: block.top - viewportTop,
   };
 }
 
 function viewportAnchorDocumentTop(view: EditorView, anchor: EditorViewportAnchor) {
   const position = Math.min(view.state.doc.length, Math.max(0, anchor.position));
   const block = view.lineBlockAt(position);
-  const sourceSpan = Math.max(0, block.to - block.from);
-  const sourceProgress = sourceSpan > 0
-    ? Math.min(1, Math.max(0, (position - block.from) / sourceSpan))
-    : 0;
-  return block.top + block.height * sourceProgress;
+  return block.top - anchor.blockOffsetTop;
 }
 
 function serializeEditorState(view: EditorView) {
   return view.state.toJSON({ history: historyField });
+}
+
+export function normalizeCodeMirrorValue(value: string) {
+  return value.replace(/\r\n?/gu, '\n');
 }
 
 function targetSelection(view: EditorView, target: FileTargetLocationVm) {
@@ -157,20 +156,34 @@ export function WorkspaceFileEditor({
   const onSaveRef = useRef(onSave);
   const onChangeRef = useRef(onChange);
   const onMarkdownLinkClickRef = useRef(onMarkdownLinkClick);
+  const onLocationAdjustedRef = useRef(onLocationAdjusted);
+  const onPersistStateRef = useRef(onPersistState);
   const valueRef = useRef(value);
+  const targetRevisionRef = useRef(targetRevision);
   const pendingRebuildRef = useRef<PendingEditorRebuild | null>(null);
   const appliedTargetRevisionsRef = useRef(new Map<string, number>());
+  const targetIntentRef = useRef({ documentKey, target, targetRevision });
   const [languageExtension, setLanguageExtension] = useState<Extension | null>(null);
   const [markdownExtensions, setMarkdownExtensions] = useState<Extension[]>([]);
   const [markdownExtensionsReady, setMarkdownExtensionsReady] = useState(markdownMode === null);
   const [markdownProfileRevision, setMarkdownProfileRevision] = useState(0);
+  const [activeEditorView, setActiveEditorView] = useState<EditorView | null>(null);
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   onSaveRef.current = onSave;
   onChangeRef.current = onChange;
   onMarkdownLinkClickRef.current = onMarkdownLinkClick;
-  valueRef.current = value;
+  onLocationAdjustedRef.current = onLocationAdjusted;
+  onPersistStateRef.current = onPersistState;
+  const editorValue = useMemo(() => normalizeCodeMirrorValue(value), [value]);
+  valueRef.current = editorValue;
+  targetRevisionRef.current = targetRevision;
+  targetIntentRef.current = { documentKey, target, targetRevision };
   const routeMarkdownLink = useCallback((href: string) => {
+    if (isDocumentAnchorHref(href)) {
+      if (href.trim() === '#') editorRef.current?.view?.scrollDOM.scrollTo({ left: 0, top: 0 });
+      return;
+    }
     onMarkdownLinkClickRef.current?.(href);
   }, []);
 
@@ -193,9 +206,10 @@ export function WorkspaceFileEditor({
       mode,
       stateJson: serializeEditorState(view),
       viewport: captureEditorViewportAnchor(view),
+      targetRevisionAtCapture: targetRevisionRef.current,
     };
-    onPersistState(pendingRebuildRef.current.stateJson);
-  }, [onPersistState]);
+    onPersistStateRef.current(pendingRebuildRef.current.stateJson);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -252,89 +266,46 @@ export function WorkspaceFileEditor({
   const pendingRebuild = pendingRebuildRef.current?.mode === markdownMode ? pendingRebuildRef.current : null;
   const editorInitialState = pendingRebuild?.stateJson ?? initialStateJson;
 
-  useEffect(() => {
-    if (!previewMode || !activeEditorReady) return;
-    const view = editorRef.current?.view;
-    if (view) updateMarkdownImagePreview(view, markdownImages, onMarkdownImagePreviewError, routeMarkdownLink);
-  }, [activeEditorReady, markdownImages, onMarkdownImagePreviewError, previewMode, editorProfileKey, routeMarkdownLink]);
+  const applyPendingTarget = useCallback((view: EditorView) => {
+    const intent = targetIntentRef.current;
+    const appliedTargetRevision = appliedTargetRevisionsRef.current.get(intent.documentKey) ?? 0;
+    if (
+      !intent.target?.line
+      || intent.targetRevision <= appliedTargetRevision
+    ) return false;
+    const resolved = targetSelection(view, intent.target);
+    const pendingTargetRebuild = pendingRebuildRef.current;
+    if (pendingTargetRebuild && intent.targetRevision > pendingTargetRebuild.targetRevisionAtCapture) {
+      pendingRebuildRef.current = null;
+    }
+    view.dispatch({
+      selection: resolved.selection,
+      effects: EditorView.scrollIntoView(resolved.selection.main, { y: 'center' }),
+    });
+    appliedTargetRevisionsRef.current.set(intent.documentKey, intent.targetRevision);
+    onLocationAdjustedRef.current?.(resolved.adjusted);
+    view.focus();
+    return true;
+  }, []);
 
   useEffect(() => {
-    const appliedTargetRevision = appliedTargetRevisionsRef.current.get(documentKey) ?? 0;
-    if (!activeEditorReady || !target?.line || targetRevision <= appliedTargetRevision) return;
-    let cancelled = false;
-    let frame = 0;
-    let resizeObserver: ResizeObserver | null = null;
-    const attempt = () => {
-      if (cancelled) return;
-      const view = editorRef.current?.view;
-      if (!view || !view.dom.isConnected || view.state.doc.toString() !== value) {
-        frame = requestAnimationFrame(attempt);
-        return;
-      }
-      if (view.scrollDOM.clientHeight <= 0) {
-        if (typeof ResizeObserver !== 'undefined' && !resizeObserver) {
-          resizeObserver = new ResizeObserver(() => attempt());
-          resizeObserver.observe(view.scrollDOM);
-        } else if (!resizeObserver) {
-          frame = requestAnimationFrame(attempt);
-        }
-        return;
-      }
-      const resolved = targetSelection(view, target);
-      view.dispatch({
-        selection: resolved.selection,
-        effects: EditorView.scrollIntoView(resolved.anchor, { y: 'center' }),
-        scrollIntoView: true,
-      });
-      view.requestMeasure();
-      let revealAttempts = 0;
-      const confirmReveal = () => {
-        if (cancelled || editorRef.current?.view !== view) return;
-        const selectionApplied = view.state.selection.main.anchor === resolved.anchor;
-        const block = view.lineBlockAt(resolved.anchor);
-        const viewportTop = view.scrollDOM.getBoundingClientRect().top - view.documentTop;
-        const viewportBottom = viewportTop + view.scrollDOM.clientHeight;
-        const targetMeasured = (
-          view.viewport.from <= resolved.anchor && resolved.anchor <= view.viewport.to
-        ) || (block.bottom >= viewportTop && block.top <= viewportBottom);
-        if ((!selectionApplied || !targetMeasured) && revealAttempts < TARGET_REVEAL_CORRECTION_PASSES) {
-          revealAttempts += 1;
-          view.scrollDOM.scrollTop = Math.max(
-            0,
-            block.top - Math.max(0, view.scrollDOM.clientHeight - block.height) / 2,
-          );
-          view.requestMeasure();
-          frame = requestAnimationFrame(confirmReveal);
-          return;
-        }
-        if (!selectionApplied || !targetMeasured) {
-          frame = requestAnimationFrame(confirmReveal);
-          return;
-        }
-        view.focus();
-        resizeObserver?.disconnect();
-        resizeObserver = null;
-        pendingRebuildRef.current = null;
-        appliedTargetRevisionsRef.current.set(documentKey, targetRevision);
-        onLocationAdjusted?.(resolved.adjusted);
-      };
-      frame = requestAnimationFrame(() => {
-        if (cancelled || editorRef.current?.view !== view) return;
-        confirmReveal();
-      });
-    };
-    frame = requestAnimationFrame(attempt);
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(frame);
-      resizeObserver?.disconnect();
-    };
-  }, [activeEditorReady, contentRevision, documentKey, editorProfileKey, onLocationAdjusted, target, targetRevision, value]);
+    if (!previewMode || !activeEditorReady) return;
+    const view = activeEditorView;
+    if (view) updateMarkdownImagePreview(view, markdownImages, onMarkdownImagePreviewError, routeMarkdownLink);
+  }, [activeEditorReady, activeEditorView, markdownImages, onMarkdownImagePreviewError, previewMode, editorProfileKey, routeMarkdownLink]);
+
+  useEffect(() => {
+    if (!activeEditorReady || !target?.line) return;
+    if (activeEditorView && editorRef.current?.view === activeEditorView) applyPendingTarget(activeEditorView);
+  }, [activeEditorReady, activeEditorView, applyPendingTarget, contentRevision, documentKey, editorProfileKey, target, targetRevision]);
 
   useEffect(() => {
     const viewport = pendingRebuild?.viewport;
-    const appliedTargetRevision = appliedTargetRevisionsRef.current.get(documentKey) ?? 0;
-    if (!activeEditorReady || !viewport || (target?.line && targetRevision > appliedTargetRevision)) return;
+    if (
+      !activeEditorReady
+      || !viewport
+      || (target?.line && targetRevision > pendingRebuild.targetRevisionAtCapture)
+    ) return;
     let cancelled = false;
     let frame = 0;
     let pass = 0;
@@ -369,8 +340,8 @@ export function WorkspaceFileEditor({
   useEffect(() => () => {
     if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
     const state = editorRef.current?.view?.state;
-    if (state) onPersistState(state.toJSON({ history: historyField }));
-  }, [onPersistState]);
+    if (state) onPersistStateRef.current(state.toJSON({ history: historyField }));
+  }, []);
 
   const copySource = async () => {
     const source = editorRef.current?.view?.state.doc.toString() ?? value;
@@ -426,7 +397,7 @@ export function WorkspaceFileEditor({
         <CodeMirror
           key={editorProfileKey}
           ref={editorRef}
-          value={value}
+          value={editorValue}
           height="100%"
           theme="none"
           basicSetup={basicSetup}
@@ -434,6 +405,7 @@ export function WorkspaceFileEditor({
           initialState={editorInitialState ? { json: editorInitialState, fields: { history: historyField } } : undefined}
           onCreateEditor={(view) => {
             if (previewMode) updateMarkdownImagePreview(view, markdownImages, onMarkdownImagePreviewError, routeMarkdownLink);
+            setActiveEditorView(view);
           }}
           onChange={handleChange}
           onBlur={() => onSaveRef.current()}

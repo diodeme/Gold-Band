@@ -29,6 +29,7 @@ interface TreeRowContextValue {
 }
 
 const TreeRowContext = createContext<TreeRowContextValue | null>(null);
+const TREE_ROW_HEIGHT = 32;
 
 function useMeasuredHeight() {
   const ref = useRef<HTMLDivElement>(null);
@@ -54,6 +55,11 @@ function useMeasuredHeight() {
 
 export function treeViewportContentHeight(clientHeight: number, paddingTop: number, paddingBottom: number) {
   return Math.max(1, Math.floor(clientHeight - paddingTop - paddingBottom));
+}
+
+export function treeOverscanCount(viewportHeight: number, rowHeight = TREE_ROW_HEIGHT) {
+  const visibleRows = Math.ceil(Math.max(1, viewportHeight) / Math.max(1, rowHeight));
+  return Math.min(96, Math.max(24, visibleRows * 2));
 }
 
 async function copyPath(value: string) {
@@ -90,7 +96,7 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeNode
       className={cn(
         'group flex h-full w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-xs outline-none transition-[background-color,color,box-shadow]',
         context.selectedPath === entry.canonicalPath
-          ? 'bg-accent text-accent-foreground shadow-[inset_2px_0_0_var(--gold-running)]'
+          ? 'bg-gold-running/12 text-foreground shadow-[inset_2px_0_0_var(--gold-running)]'
           : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
         node.isFocused && context.selectedPath !== entry.canonicalPath && 'bg-accent/45 text-foreground',
       )}
@@ -108,7 +114,12 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeNode
           {entry.loading ? <LoaderCircle className="size-3 animate-spin" /> : node.isOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         </span>
       ) : <span className="size-4 shrink-0" />}
-      <Icon className={cn('size-3.5 shrink-0', isDirectory && 'text-foreground/65 group-hover:text-foreground')} />
+      <Icon className={cn(
+        'size-3.5 shrink-0',
+        context.selectedPath === entry.canonicalPath
+          ? 'text-gold-running'
+          : 'text-foreground/65 group-hover:text-foreground',
+      )} />
       <span className="min-w-0 flex-1 truncate">{entry.name}</span>
     </div>
   );
@@ -275,9 +286,9 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
               data={snapshot.roots}
               width="100%"
               height={height}
-              rowHeight={32}
+              rowHeight={TREE_ROW_HEIGHT}
               indent={14}
-              overscanCount={8}
+              overscanCount={treeOverscanCount(height)}
               idAccessor="id"
               childrenAccessor={(entry) => entry.kind === 'directory' ? (entry.children ?? []) : null}
               initialOpenState={Object.fromEntries([...snapshot.expanded].map((id) => [id, true]))}

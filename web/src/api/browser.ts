@@ -922,6 +922,10 @@ export const browserApi: RuntimeApi = {
     const path = token.replace(/^browser-preview:/u, '');
     return browserSvgDataUrl(browserWorkspaceFiles.get(path) ?? '<svg xmlns="http://www.w3.org/2000/svg"/>');
   },
+  openExternalUrl(url) {
+    window.open(url, '_blank', 'noopener,noreferrer');
+    return Promise.resolve();
+  },
   openFileWithSystemApp(_path) {
     return Promise.resolve();
   },

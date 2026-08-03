@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use thiserror::Error;
 
+pub mod db;
 pub mod fingerprint;
+pub mod occurrence;
 pub mod queue;
 pub mod store;
 

@@ -13,6 +13,10 @@
 3. queue policy：统一识别 active Task/Run/ACP 状态，执行 `skip_when_running` 或有限次 `retry_when_busy`。
 4. execution adapter：接入 Direct/new、Direct/continuous、Workflow、AUTO，并要求执行链路发出带 occurrence ID 的真实完成事件。
 
+### Phase 1 repository contract (2026-08-03)
+
+`ScheduledTaskDatabase` 使用独立的 `GoldBandPaths::scheduler_db_path()`，与搜索数据库保持分离。数据库启用 WAL 和 busy timeout，维护单例 schema version、`scheduled_jobs` 与 `scheduled_occurrences`；occurrence 通过 `(job_id, scheduled_at, trigger_kind)` 唯一约束去重。claim、续租、终态回写和过期 lease 恢复均在事务中执行，并在写入条件中校验 owner 与 lease，且跨 SQLite 连接的竞争也只能产生一个 running owner。仓储只保存 `SCHEDULED_*` 错误码及结构化参数，不生成面向用户的错误文案。
+
 ## occurrence 生命周期
 
 ```text

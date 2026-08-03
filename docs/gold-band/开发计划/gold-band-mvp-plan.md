@@ -841,3 +841,11 @@ attempt-001/
 - 主题策略：四套主题统一改用中性 `foreground` 透明叠加，轨道维持 3%–4%，静止 thumb 维持 16%–20%，hover thumb 维持 26%–32%；终端黑略高于其他主题以保留可发现性，浅色主题不再呈现品牌蓝滚动条。
 - 接口一致性：全局原生滚动条、`.gold-themed-scrollbar` 和 shadcn `ScrollArea` 继续只消费 `gold-scrollbar-*` token，组件尺寸与交互范围不变。
 - 回归固化：扩展滚动条 Vitest，逐主题验证中性低透明 token、静止/悬浮层级递增，以及滚动条 token 不再依赖 `primary` / `muted-foreground`；要求 Web 测试、生产构建和四主题实际页面核验通过。
+
+---
+
+## 2026-08-03：桌面开发监听范围收口
+
+- 根因修复：根 Cargo package 与 `src-tauri` 构成 workspace，Tauri dev watcher 会监听 workspace package；此前没有仓库级 `.taurignore`，导致 `docs/` 和根 README 等非运行时文件变化也触发桌面应用重建。
+- 监听边界：采用 Tauri 官方 `.taurignore` 扩展点，以 Gitignore 语义统一排除 `docs/` 和根目录 `README*.md`；不关闭 Rust 热重载，也不修改已经以 `web/` 为 root 的 Vite 监听范围。
+- 回归固化：新增开发监听配置契约测试，使用 Git 的 ignore 匹配接口验证嵌套文档与中英文 README 均被忽略，同时 Cargo、Rust、Web 源码和 package 配置继续可观察。现有开发进程需重启一次后应用新规则。

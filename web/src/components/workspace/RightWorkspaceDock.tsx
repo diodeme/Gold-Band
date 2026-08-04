@@ -1,5 +1,5 @@
-import { Bot, Braces, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, PencilLine, X } from 'lucide-react';
-import { memo, type ReactNode, useLayoutEffect, useRef, useState } from 'react';
+import { Bot, Braces, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, PencilLine, Plus, X } from 'lucide-react';
+import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -11,7 +11,7 @@ import { useFileContentEntry } from './files/file-content-store';
 
 export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
   const { t } = useTranslation();
-  const { tabs, activeTabKey, activateTab, closeTab, renderResource, openResource, projectId, scopeKey } = useRightWorkspace();
+  const { tabs, activeTabKey, activateTab, closeTab, renderResource } = useRightWorkspace();
   const active = tabs.find((tab) => tab.key === activeTabKey) ?? null;
   const tabStripRef = useRef<HTMLDivElement>(null);
   const overflowMenuRef = useRef<HTMLButtonElement>(null);
@@ -47,6 +47,7 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col bg-background" aria-label={t('workspace.rightWorkspace')} data-right-workspace-dock="true">
       {tabs.length > 0 ? <div className="flex h-10 shrink-0 items-center border-b border-border/60 bg-muted/10">
+        <WorkspaceEntryOptions presentation="menu" />
         <div
           ref={tabStripRef}
           className="gold-themed-scrollbar right-workspace-tab-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-1"
@@ -87,36 +88,108 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
         {active && active.kind !== 'agent-transcript' ? renderResource(active) : null}
         {!active ? (
           <div className="flex min-h-0 flex-1 flex-col p-3" data-right-workspace-empty="true">
-            <Button
-              type="button"
-              variant="ghost"
-              className="h-auto justify-start gap-3 rounded-xl px-3 py-3 text-left"
-              disabled={!projectId || !scopeKey}
-              onClick={() => {
-                if (!projectId || !scopeKey) return;
-                openResource({
-                  kind: 'file-browser',
-                  key: fileBrowserWorkspaceResourceKey(projectId),
-                  scopeKey,
-                  projectId,
-                  title: t('workspace.files'),
-                  description: t('workspace.browseWorkspaceFiles'),
-                  attention: false,
-                });
-              }}
-            >
-              <FolderOpen className="size-4 shrink-0 text-primary" />
-              <span className="min-w-0">
-                <span className="block text-sm font-medium text-foreground">{t('workspace.files')}</span>
-                <span className="mt-0.5 block text-xs font-normal text-muted-foreground">{t('workspace.browseWorkspaceFiles')}</span>
-              </span>
-            </Button>
+            <WorkspaceEntryOptions presentation="empty" />
           </div>
         ) : null}
       </div>
     </section>
   );
 });
+
+type WorkspaceEntryOption = {
+  id: 'file-browser';
+  label: string;
+  description: string;
+  icon: typeof FolderOpen;
+  open: () => void;
+};
+
+function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu' }) {
+  const { t } = useTranslation();
+  const { openResource, projectId, scopeKey } = useRightWorkspace();
+  const options = useMemo<WorkspaceEntryOption[]>(() => {
+    if (!projectId || !scopeKey) return [];
+    return [{
+      id: 'file-browser',
+      label: t('workspace.files'),
+      description: t('workspace.browseWorkspaceFiles'),
+      icon: FolderOpen,
+      open: () => {
+        void openResource({
+          kind: 'file-browser',
+          key: fileBrowserWorkspaceResourceKey(projectId),
+          scopeKey,
+          projectId,
+          title: t('workspace.files'),
+          description: t('workspace.browseWorkspaceFiles'),
+          attention: false,
+        });
+      },
+    }];
+  }, [openResource, projectId, scopeKey, t]);
+
+  if (presentation === 'menu') {
+    return (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="ml-1 size-8 shrink-0 rounded-lg"
+            disabled={options.length === 0}
+            aria-label={t('workspace.openNewTab')}
+            data-right-workspace-new-tab-menu="true"
+          >
+            <Plus className="size-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-56">
+          {options.map((option) => {
+            const Icon = option.icon;
+            return (
+              <DropdownMenuItem
+                key={option.id}
+                className="min-h-9 px-2 py-1.5 text-xs"
+                data-right-workspace-entry-option={option.id}
+                onSelect={option.open}
+              >
+                <Icon className="size-3.5" />
+                <span className="min-w-0">
+                  <span className="block font-medium">{option.label}</span>
+                  <span className="block truncate text-[10px] text-muted-foreground">{option.description}</span>
+                </span>
+              </DropdownMenuItem>
+            );
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  }
+
+  return (
+    <div data-right-workspace-entry-options="empty">
+      {options.map((option) => {
+        const Icon = option.icon;
+        return (
+          <Button
+            key={option.id}
+            type="button"
+            variant="ghost"
+            className="h-auto justify-start gap-3 rounded-xl px-3 py-3 text-left"
+            onClick={option.open}
+          >
+            <Icon className="size-4 shrink-0 text-primary" />
+            <span className="min-w-0">
+              <span className="block text-sm font-medium text-foreground">{option.label}</span>
+              <span className="mt-0.5 block text-xs font-normal text-muted-foreground">{option.description}</span>
+            </span>
+          </Button>
+        );
+      })}
+    </div>
+  );
+}
 
 const RightWorkspaceTab = memo(function RightWorkspaceTab({
   tab,

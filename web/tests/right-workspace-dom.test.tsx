@@ -348,6 +348,39 @@ describe('right workspace DOM lifecycle', () => {
     }
   });
 
+  it('opens the same resource choices from the fixed new Tab menu and focuses the resulting Tab', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider>
+            <SeedTabs branches={['agent-a']} />
+            <RightWorkspaceDock />
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      const newTabMenu = container.querySelector<HTMLButtonElement>('[data-right-workspace-new-tab-menu="true"]');
+      expect(newTabMenu).not.toBeNull();
+      expect(newTabMenu?.nextElementSibling?.getAttribute('data-right-workspace-tab-strip')).toBe('true');
+
+      await act(async () => {
+        newTabMenu?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));
+      });
+      const filesOption = document.querySelector<HTMLElement>('[data-right-workspace-entry-option="file-browser"]');
+      expect(filesOption).not.toBeNull();
+      await act(async () => filesOption?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+      const probe = container.querySelector('output');
+      expect(probe?.getAttribute('data-workspace-tab-count')).toBe('2');
+      expect(probe?.getAttribute('data-workspace-active-tab')).toBe('file-browser:default');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('mounts a ConversationViewport only for the active Tab', async () => {
     const container = document.createElement('div');
     document.body.append(container);

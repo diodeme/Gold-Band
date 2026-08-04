@@ -61,7 +61,9 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
       scopeKey: workspace.scopeKey,
       title: fileName(change.logicalPath),
       description: change.logicalPath,
-      attention: Boolean(change.limitationCode),
+      // A capture/rendering limitation is explained by the read-only viewer itself.
+      // Opening a diff is ordinary navigation, not a Tab-level attention event.
+      attention: false,
       locator,
       changeSetId,
       changeId: change.id,
@@ -124,7 +126,7 @@ function TurnFileChangeRow({ change, onOpen }: { change: TurnFileChangeVm; onOpe
     ? <FilePlus2 className="size-3.5 text-emerald-600 dark:text-emerald-400" />
     : change.changeKind === 'deleted'
       ? <FileMinus2 className="size-3.5 text-destructive" />
-      : <FileDiff className="size-3.5 text-amber-600 dark:text-amber-400" />;
+      : <FileDiff className="size-3.5 text-gold-running" />;
   const content = (
     <>
       {icon}

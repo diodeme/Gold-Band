@@ -258,6 +258,7 @@ describe('right workspace DOM lifecycle', () => {
       });
       expect(container.querySelector('[data-right-workspace-empty="true"]')).not.toBeNull();
       expect(container.querySelector('[data-right-workspace-tab-strip="true"]')).toBeNull();
+      expect(container.querySelector<HTMLElement>('[data-right-workspace-empty-option="file-browser"]')?.className).toContain('w-full');
     } finally {
       await act(async () => root.unmount());
     }
@@ -324,20 +325,31 @@ describe('right workspace DOM lifecycle', () => {
       const tabStrip = container.querySelector<HTMLElement>('[data-right-workspace-tab-strip="true"]');
       expect(tabStrip).not.toBeNull();
       expect(container.querySelector('[data-right-workspace-overflow-menu="true"]')).toBeNull();
+      const tabStripObserver = ControlledResizeObserver.instances.at(-1);
 
       Object.defineProperties(tabStrip!, {
         clientWidth: { configurable: true, value: 180 },
         scrollWidth: { configurable: true, value: 320 },
       });
       await act(async () => {
-        ControlledResizeObserver.instances.at(-1)?.flush(tabStrip!);
+        tabStripObserver?.flush(tabStrip!);
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
-      expect(container.querySelector('[data-right-workspace-overflow-menu="true"]')).not.toBeNull();
+      const overflowMenu = container.querySelector<HTMLButtonElement>('[data-right-workspace-overflow-menu="true"]');
+      expect(overflowMenu).not.toBeNull();
+      await act(async () => {
+        overflowMenu?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));
+      });
+      const overflowList = document.querySelector<HTMLElement>('[data-right-workspace-overflow-list="true"]');
+      const overflowOptions = document.querySelectorAll<HTMLElement>('[data-right-workspace-overflow-option]');
+      expect(overflowList).not.toBeNull();
+      expect(overflowOptions).toHaveLength(2);
+      expect(overflowOptions[0]?.className).toContain('h-8');
+      expect(document.querySelectorAll('[data-right-workspace-overflow-option][aria-current="page"]')).toHaveLength(1);
 
       Object.defineProperty(tabStrip!, 'scrollWidth', { configurable: true, value: 160 });
       await act(async () => {
-        ControlledResizeObserver.instances.at(-1)?.flush(tabStrip!);
+        tabStripObserver?.flush(tabStrip!);
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
       expect(container.querySelector('[data-right-workspace-overflow-menu="true"]')).toBeNull();

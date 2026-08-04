@@ -1,6 +1,13 @@
 "use client"
 
-import { useEffect, useRef } from "react"
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { cn } from "@/lib/utils"
 import { GOLD_THEMED_SCROLLBAR_CLASS } from "@/lib/themed-scrollbar"
 import {
@@ -35,6 +42,13 @@ export type ChatContainerScrollAnchorProps = {
 } & React.HTMLAttributes<HTMLDivElement>
 
 export const CHAT_CONTAINER_BOTTOM_REJOIN_TOLERANCE_PX = 2
+const CHAT_CONTAINER_FOLLOW_RECOVERY_DELAY_MS = 4
+
+const CHAT_CONTAINER_SCROLL_UP_KEYS = new Set([
+  "ArrowUp",
+  "Home",
+  "PageUp",
+])
 
 export function isChatContainerViewportAtBottom(
   viewport: Pick<HTMLDivElement, "clientHeight" | "scrollHeight" | "scrollTop">,
@@ -61,12 +75,13 @@ function ChatContainerRoot({
       className={cn("relative min-h-0 min-w-0", className)}
       resize={resize}
       initial={initial}
-      contextRef={contextRef}
       role="log"
       {...props}
     >
       {children}
       <ChatContainerLifecycle
+        contextRef={contextRef}
+        initialFollowing={initial !== false}
         onAtBottomChange={onAtBottomChange}
         onViewportScroll={onViewportScroll}
         onViewportWheel={onViewportWheel}
@@ -96,55 +111,180 @@ function ChatContainerContent({
 }
 
 function ChatContainerLifecycle({
+  contextRef,
+  initialFollowing,
   onAtBottomChange,
   onViewportScroll,
   onViewportWheel,
 }: Pick<
   ChatContainerRootProps,
-  "onAtBottomChange" | "onViewportScroll" | "onViewportWheel"
->) {
-  const { isAtBottom, scrollRef, stopScroll } = useStickToBottomContext()
-  const escapedByUserRef = useRef(false)
+  "contextRef" | "onAtBottomChange" | "onViewportScroll" | "onViewportWheel"
+> & { initialFollowing: boolean }) {
+  const stickContext = useStickToBottomContext()
+  const {
+    contentRef,
+    scrollRef,
+    scrollToBottom: libraryScrollToBottom,
+    stopScroll: libraryStopScroll,
+  } = stickContext
+  const [isFollowing, setIsFollowing] = useState(initialFollowing)
+  const isFollowingRef = useRef(initialFollowing)
+  const pointerScrollingRef = useRef(false)
+  const lastScrollTopRef = useRef<number | null>(null)
+  const recoveryTimerRef = useRef<number | null>(null)
+  const recoveryFrameRef = useRef<number | null>(null)
+
+  const updateFollowIntent = useCallback((following: boolean) => {
+    isFollowingRef.current = following
+    setIsFollowing((current) => current === following ? current : following)
+  }, [])
+
+  const stopScroll = useCallback(() => {
+    updateFollowIntent(false)
+    libraryStopScroll()
+  }, [libraryStopScroll, updateFollowIntent])
+
+  const scrollToBottom = useCallback<StickToBottomContext["scrollToBottom"]>(
+    (options) => {
+      updateFollowIntent(true)
+      return libraryScrollToBottom(options)
+    },
+    [libraryScrollToBottom, updateFollowIntent],
+  )
+
+  const exposedContext = useMemo<ChatContainerContext>(() => ({
+    contentRef: stickContext.contentRef,
+    scrollRef: stickContext.scrollRef,
+    scrollToBottom,
+    stopScroll,
+    isAtBottom: isFollowing,
+    escapedFromLock: !isFollowing,
+    state: stickContext.state,
+    get targetScrollTop() {
+      return stickContext.targetScrollTop
+    },
+    set targetScrollTop(targetScrollTop) {
+      stickContext.targetScrollTop = targetScrollTop
+    },
+  }), [isFollowing, scrollToBottom, stickContext, stopScroll])
+
+  useImperativeHandle(contextRef, () => exposedContext, [exposedContext])
 
   useEffect(() => {
-    onAtBottomChange?.(escapedByUserRef.current ? false : isAtBottom)
-  }, [isAtBottom, onAtBottomChange])
+    onAtBottomChange?.(isFollowing)
+  }, [isFollowing, onAtBottomChange])
+
+  const scheduleFollowRecovery = useCallback(() => {
+    if (!isFollowingRef.current || recoveryTimerRef.current !== null) return
+    recoveryTimerRef.current = window.setTimeout(() => {
+      recoveryTimerRef.current = null
+      recoveryFrameRef.current = requestAnimationFrame(() => {
+        recoveryFrameRef.current = null
+        if (!isFollowingRef.current) return
+        const viewport = scrollRef.current as HTMLDivElement | null
+        if (
+          viewport &&
+          (!isChatContainerViewportAtBottom(viewport) ||
+            !stickContext.state.isAtBottom)
+        ) {
+          void libraryScrollToBottom({ animation: "instant" })
+        }
+      })
+    }, CHAT_CONTAINER_FOLLOW_RECOVERY_DELAY_MS)
+  }, [libraryScrollToBottom, scrollRef, stickContext.state])
 
   useEffect(() => {
     const viewport = scrollRef.current as HTMLDivElement | null
     if (!viewport) return
+    lastScrollTopRef.current = viewport.scrollTop
 
     const handleScroll = () => {
+      const previousScrollTop = lastScrollTopRef.current
+      const currentScrollTop = viewport.scrollTop
+      lastScrollTopRef.current = currentScrollTop
       if (
-        escapedByUserRef.current &&
+        pointerScrollingRef.current &&
+        previousScrollTop !== null &&
+        currentScrollTop < previousScrollTop
+      ) {
+        stopScroll()
+      }
+      if (
+        !isFollowingRef.current &&
         isChatContainerViewportAtBottom(viewport)
       ) {
-        escapedByUserRef.current = false
-        onAtBottomChange?.(true)
+        updateFollowIntent(true)
       }
       onViewportScroll?.(viewport)
+      scheduleFollowRecovery()
     }
     const handleWheel = (event: WheelEvent) => {
       if (
         event.deltaY < 0 &&
         viewport.scrollHeight > viewport.clientHeight
       ) {
-        escapedByUserRef.current = true
         stopScroll()
-        onAtBottomChange?.(false)
       }
       onViewportWheel?.(event, viewport)
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const scrollsUp = CHAT_CONTAINER_SCROLL_UP_KEYS.has(event.key)
+        || (event.key === " " && event.shiftKey)
+      if (scrollsUp && viewport.scrollHeight > viewport.clientHeight) {
+        stopScroll()
+      }
+    }
+    const handlePointerDown = () => {
+      pointerScrollingRef.current = true
+    }
+    const handlePointerEnd = () => {
+      pointerScrollingRef.current = false
     }
     viewport.addEventListener("scroll", handleScroll, { passive: true })
     viewport.addEventListener("wheel", handleWheel, {
       capture: true,
       passive: true,
     })
+    viewport.addEventListener("keydown", handleKeyDown, { capture: true })
+    viewport.addEventListener("pointerdown", handlePointerDown, {
+      capture: true,
+      passive: true,
+    })
+    window.addEventListener("pointerup", handlePointerEnd, { passive: true })
+    window.addEventListener("pointercancel", handlePointerEnd, { passive: true })
     return () => {
       viewport.removeEventListener("scroll", handleScroll)
       viewport.removeEventListener("wheel", handleWheel, { capture: true })
+      viewport.removeEventListener("keydown", handleKeyDown, { capture: true })
+      viewport.removeEventListener("pointerdown", handlePointerDown, { capture: true })
+      window.removeEventListener("pointerup", handlePointerEnd)
+      window.removeEventListener("pointercancel", handlePointerEnd)
     }
-  }, [onAtBottomChange, onViewportScroll, onViewportWheel, scrollRef, stopScroll])
+  }, [
+    onViewportScroll,
+    onViewportWheel,
+    scheduleFollowRecovery,
+    scrollRef,
+    stopScroll,
+    updateFollowIntent,
+  ])
+
+  useEffect(() => {
+    const content = contentRef.current
+    if (!content) return
+    const observer = new ResizeObserver(scheduleFollowRecovery)
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [contentRef, scheduleFollowRecovery])
+
+  useEffect(() => () => {
+    if (recoveryTimerRef.current !== null) {
+      window.clearTimeout(recoveryTimerRef.current)
+    }
+    if (recoveryFrameRef.current !== null) {
+      cancelAnimationFrame(recoveryFrameRef.current)
+    }
+  }, [])
 
   return null
 }

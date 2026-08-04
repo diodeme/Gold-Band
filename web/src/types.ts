@@ -3,6 +3,8 @@ export type ConcreteDesktopTheme = Exclude<DesktopThemePreference, 'system'>;
 export type DesktopThemeMode = 'light' | 'dark';
 export type DesktopFontPreference = string;
 export type DesktopLanguage = 'zh-cn' | 'en';
+export type AvatarKind = 'agent' | 'user';
+export type AvatarShape = 'circle' | 'square';
 export type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'unknown';
 export type DesktopWindowFrameStyle = 'native-compositor' | 'app-outline';
 export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'error';
@@ -13,6 +15,31 @@ export interface PreferencesVm {
   font: DesktopFontPreference;
   useLocalClaude: boolean;
   verboseLogging: boolean;
+  avatars: AvatarPreferencesVm;
+}
+
+export interface AvatarImageVm {
+  id: string;
+  dataUrl: string;
+  createdAt: string;
+}
+
+export interface AvatarProfileVm {
+  shape: AvatarShape;
+  selectedAvatarId: string | null;
+  recentAvatars: AvatarImageVm[];
+}
+
+export interface AvatarPreferencesVm {
+  agent: AvatarProfileVm;
+  user: AvatarProfileVm;
+}
+
+export interface SaveDesktopAvatarInput {
+  kind: AvatarKind;
+  shape: AvatarShape;
+  mimeType: string;
+  dataBase64: string;
 }
 
 export interface LocalClaudeStatusVm {
@@ -83,10 +110,200 @@ export interface AppBootstrapVm {
 export interface AppConfigVm {
   acpSessionTitleRefreshEnabled: boolean;
   acpChatEventPageSize: number;
+  workspaceLayout: WorkspaceLayoutVm;
+  workspaceFiles: WorkspaceFilesVm;
+}
+
+export interface WorkspaceFilesVm {
+  autoSaveDelayMs: number;
+  searchDebounceMs: number;
+  searchResultLimit: number;
+  textEditableMaxBytes: number;
+  textHighlightMaxChars: number;
+  textReadOnlyMaxBytes: number;
+  imagePreviewMaxBytes: number;
+  imagePreviewMaxPixels: number;
+  contentCacheEntries: number;
+  contentCacheMaxBytes: number;
+  watchDebounceMs: number;
+  externalAccessGrantTtlSeconds: number;
+  markdownLivePreviewMaxChars: number;
+  markdownEmbeddedImageLimit: number;
+  markdownEmbeddedImageMaxConcurrent: number;
+}
+
+export interface FileRevisionVm {
+  byteLength: number;
+  modifiedAtNs: string;
+  contentHash: string;
+}
+
+export interface WorkspaceFileLocatorVm {
+  projectId: string;
+  canonicalPath: string;
+  relativePath: string | null;
+  scope: 'workspace' | 'external';
+}
+
+export interface ExternalFileAccessGrantVm {
+  token: string;
+  permissions: Array<'read' | 'write'>;
+  expiresAtMs: string;
+}
+
+export interface FileTargetLocationVm {
+  line: number | null;
+  column: number | null;
+  endLine: number | null;
+}
+
+export interface ResolvedWorkspaceFileLinkVm {
+  locator: WorkspaceFileLocatorVm;
+  target: FileTargetLocationVm | null;
+  externalAccessGrant: ExternalFileAccessGrantVm | null;
+}
+
+export interface WorkspaceDirectoryEntryVm {
+  name: string;
+  relativePath: string;
+  canonicalPath: string;
+  kind: 'directory' | 'file' | 'symlink' | 'other';
+  hasChildren: boolean;
+  byteLength: number | null;
+  modifiedAtNs: string | null;
+}
+
+export interface WorkspaceFileSearchVm {
+  requestId: string;
+  entries: WorkspaceDirectoryEntryVm[];
+  truncated: boolean;
+}
+
+interface WorkspaceFileSnapshotBaseVm {
+  locator: WorkspaceFileLocatorVm;
+  name: string;
+  revision: FileRevisionVm;
+  externalAccessGrant: ExternalFileAccessGrantVm | null;
+}
+
+export interface TextFileSnapshotVm extends WorkspaceFileSnapshotBaseVm {
+  kind: 'text';
+  content: string;
+  encoding: string;
+  language: string | null;
+  lineEnding: 'lf' | 'crlf' | 'mixed';
+  editable: boolean;
+  limitationCode: string | null;
+}
+
+export interface WorkspaceFilePreviewGrantVm {
+  token: string;
+  expiresAtMs: string;
+}
+
+export interface ImageFileSnapshotVm extends WorkspaceFileSnapshotBaseVm {
+  kind: 'image';
+  mimeType: string;
+  width: number;
+  height: number;
+  animated: boolean;
+  previewGrant: WorkspaceFilePreviewGrantVm;
+  sourceEditable: boolean;
+}
+
+export interface UnsupportedFileSnapshotVm extends WorkspaceFileSnapshotBaseVm {
+  kind: 'unsupported';
+  mimeType: string | null;
+  limitationCode: string;
+}
+
+export type WorkspaceFileSnapshotVm =
+  | TextFileSnapshotVm
+  | ImageFileSnapshotVm
+  | UnsupportedFileSnapshotVm;
+
+export interface ResolveMarkdownImageInput {
+  projectId: string;
+  markdownCanonicalPath: string;
+  markdownExternalAccessToken: string | null;
+  rawSrc: string;
+  approvedExternalTargets: string[];
+}
+
+export type MarkdownImagePreviewVm =
+  | {
+      kind: 'ready';
+      canonicalPath: string;
+      previewGrant: WorkspaceFilePreviewGrantVm;
+      mimeType: string;
+      width: number;
+      height: number;
+      animated: boolean;
+    }
+  | {
+      kind: 'approvalRequired';
+      canonicalPath: string;
+      reason: 'outside-document-directory';
+    }
+  | {
+      kind: 'unsupported';
+      limitationCode: string;
+    };
+
+export interface WriteFileResourceInput {
+  projectId: string;
+  canonicalPath: string;
+  externalAccessToken: string | null;
+  content: string;
+  encoding: string;
+  lineEnding: string;
+  expectedRevision: FileRevisionVm;
+  operationId: string;
+  force: boolean;
+}
+
+export interface WorkspaceFileChangedEventVm {
+  projectId: string;
+  canonicalPath: string;
+  kind: 'created' | 'modified' | 'removed' | 'renamed';
+  revision: FileRevisionVm | null;
+  operationId: string | null;
+}
+
+export interface WorkspaceLayoutVm {
+  shellMinWidth: number;
+  shellMinHeight: number;
+  rightWorkspace: RightWorkspaceLayoutVm;
+  conversation: WorkspaceLayoutProfileVm;
+  contextCards: WorkspaceLayoutProfileVm;
+  workflowCanvas: WorkspaceLayoutProfileVm;
+  settings: WorkspaceLayoutProfileVm;
+}
+
+export interface FileWorkspaceLayoutVm {
+  preferredWidth: number;
+  splitMinWidth: number;
+  treeDefaultWidth: number;
+  treeMinWidth: number;
+  treeMaxWidth: number;
+}
+
+export interface RightWorkspaceLayoutVm {
+  minWidth: number;
+  defaultWidth: number;
+  maxWidth: number;
+  file: FileWorkspaceLayoutVm;
+}
+
+export interface WorkspaceLayoutProfileVm {
+  centerMinWidth: number;
+  centerAutoCollapseWidth: number;
+  windowMinWidth: number;
 }
 
 export interface AppInfoVm {
   channel: string;
+  feedbackEnabled: boolean;
   appName: string;
   appKey: string;
   configDirName: string;
@@ -112,6 +329,10 @@ export interface ManagedAgentVm {
   supportedModes?: AcpModeVm[] | null;
   supportedModels?: AcpModeVm[] | null;
   configOptions?: AcpSelectConfigOptionVm[] | null;
+  /** 是否支持 streamable HTTP MCP 传输（null=未诊断/未知） */
+  mcpHttpSupported?: boolean | null;
+  /** 是否支持 SSE MCP 传输（null=未诊断/未知） */
+  mcpSseSupported?: boolean | null;
 }
 
 export interface AcpModeVm {
@@ -633,6 +854,10 @@ export interface AcpAttemptSessionVm {
 }
 
 export interface AcpSessionVm {
+  branchId: string;
+  parentBranchId?: string | null;
+  readOnly: boolean;
+  branchExecution?: AcpAgentExecutionVm | null;
   sessionId?: string | null;
   title?: string | null;
   roundId?: string | null;
@@ -657,7 +882,9 @@ export interface AcpSessionVm {
   config?: AcpSessionConfigVm | null;
   events: AcpUiEventVm[];
   eventPage: AcpEventPageVm;
+  timelineProjection: AcpTimelineProjectionVm | null;
   pendingPermissions: AcpPermissionRequestVm[];
+  pendingElicitations: AcpElicitationRequestVm[];
   availableCommands?: unknown[] | null;
   usage?: AcpUsageVm | null;
   diagnostics: AcpDiagnosticsVm;
@@ -671,6 +898,8 @@ export interface ActiveSessionStopVm {
 }
 
 export interface AcpSessionQueryInput {
+  traceId?: string;
+  branchId?: string;
   beforeSeq?: number;
   afterSeq?: number;
   beforeCursor?: string;
@@ -758,6 +987,14 @@ export interface AcpPermissionOptionVm {
   optionId: string;
   name: string;
   kind: string;
+}
+
+export interface AcpElicitationRequestVm {
+  elicitationId: string;
+  message: string;
+  toolCallId?: string | null;
+  requestedSchema: Record<string, unknown>;
+  raw: unknown;
 }
 
 // Navigation payload emitted after clicking "View details" in a system toast.
@@ -952,10 +1189,60 @@ export interface ConversationTaskRowVm {
   workflowTemplateId?: string | null;
   agentIdentity?: ConversationAgentIdentityVm | null;
   lastActivityAt?: string | null;
+  activity?: ConversationTaskActivityVm | null;
   latestRun?: ConversationRunSummaryVm | null;
   runs: ConversationRunSummaryVm[];
   pinned: boolean;
   pinnedOrder?: number | null;
+}
+
+export interface AcpActivityDetailQueryInput {
+  branchId: string;
+  activityStartSeq: number;
+  activityEndSeq: number;
+  earlierCursor?: string | null;
+  limit?: number;
+}
+
+export interface AcpActivityDetailVm {
+  items: AcpUiEventVm[];
+  hasMoreEarlier: boolean;
+  earlierCursor?: string | null;
+}
+
+export interface AcpToolDetailQueryInput {
+  branchId: string;
+  eventId: string;
+  toolCallId?: string | null;
+}
+
+export interface AcpToolDetailVm {
+  event?: AcpUiEventVm | null;
+}
+
+export interface AcpTimelineProjectionVm {
+  agents: AcpAgentExecutionVm[];
+  todoEntries: Array<{ content?: string; status?: string; priority?: string }>;
+}
+
+export interface AcpAgentExecutionVm {
+  agentExecutionId: string;
+  parentAgentExecutionId?: string | null;
+  attemptId?: string | null;
+  executionStatus: string;
+  eventCount: number;
+  toolCallCount: number;
+  readFileCount: number;
+  writtenFileCount: number;
+  hasAttention: boolean;
+  title?: string | null;
+  description?: string | null;
+  todoEntries: Array<{ content?: string; status?: string; priority?: string }>;
+}
+
+export interface ConversationTaskActivityVm {
+  phase: string;
+  stopping: boolean;
 }
 
 export interface ConversationRunSummaryVm {
@@ -1255,7 +1542,23 @@ export interface SkillContentVm {
 }
 
 // -- Feedback --
-export interface FeedbackInput { description: string; sessionWorkspace?: string | null; sessionTaskId?: string | null; screenshotPaths: string[]; includeLogs: boolean; }
+export interface FeedbackScreenshotInput { name: string; mime: string; size: number; dataBase64: string; }
+export interface FeedbackInput { description: string; projectId?: string | null; taskId?: string | null; screenshots: FeedbackScreenshotInput[]; includeLogs: boolean; }
 export interface FeedbackResult { success: boolean; }
-export interface FeedbackArchivePreview { uncompressedBytes: number; fileCount: number; }
+export interface FeedbackArchivePreview {
+  uncompressedBytes: number;
+  fileCount: number;
+  withinLimits: boolean;
+  maxUncompressedBytes: number;
+  maxFileCount: number;
+}
+
+export interface AppExitPreparationWarningVm {
+  code: string;
+  params: Record<string, unknown>;
+}
+
+export interface AppExitPreparationVm {
+  warnings: AppExitPreparationWarningVm[];
+}
 

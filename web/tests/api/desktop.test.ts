@@ -1,9 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const openerMocks = vi.hoisted(() => ({
+  openPath: vi.fn(() => Promise.resolve()),
+  openUrl: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('../../src/api/shared', () => ({
   invokeCommand: vi.fn(() => Promise.resolve({ profiles: [] })),
   toRoundSelectionInput: vi.fn((selection) => selection),
 }));
+vi.mock('@tauri-apps/plugin-opener', () => openerMocks);
 
 import { desktopApi } from '../../src/api/desktop';
 import { invokeCommand } from '../../src/api/shared';
@@ -11,6 +17,13 @@ import { invokeCommand } from '../../src/api/shared';
 describe('desktopApi', () => {
   beforeEach(() => {
     vi.mocked(invokeCommand).mockClear();
+    openerMocks.openUrl.mockClear();
+  });
+
+  it('opens Markdown web targets with the desktop URL opener', async () => {
+    await desktopApi.openExternalUrl('https://github.com/diodeme/Gold-Band/stargazers');
+
+    expect(openerMocks.openUrl).toHaveBeenCalledWith('https://github.com/diodeme/Gold-Band/stargazers');
   });
 
   it('forwards deleteProfile directly to the Tauri command path', async () => {

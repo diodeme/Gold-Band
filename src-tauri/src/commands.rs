@@ -3,7 +3,7 @@ use gold_band::acp::commands::{AcpCommandCatalog, parse_available_commands};
 use gold_band::acp::elicitation::{
     ElicitationAction, cancel_pending_elicitation_requests, write_elicitation_response,
 };
-use gold_band::acp::events::{AcpUiEvent, current_timestamp};
+use gold_band::acp::events::{AcpUiEvent, compact_live_conversation_event, current_timestamp};
 use gold_band::acp::permission::{
     PendingPermissionState, cancel_pending_permission_requests,
     write_permission_response_if_pending,
@@ -20,7 +20,7 @@ use gold_band::runtime::{NodeState, RunState, WorkerRefState};
 use gold_band::skill::SkillCommandError;
 use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
-use std::{collections::BTreeSet, str::FromStr, sync::Arc};
+use std::{collections::BTreeSet, str::FromStr, sync::Arc, time::Instant};
 
 use camino::Utf8PathBuf;
 use gold_band::config::{
@@ -32,24 +32,30 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{info, warn};
 
+use crate::avatar::{
+    AvatarKind, AvatarPreferencesVm, AvatarShape, SaveDesktopAvatarInput, clear_avatar,
+    load_avatar_preferences, save_avatar_image, save_avatar_shape, select_recent_avatar,
+};
 use crate::conversation_workspace::workspace_entry_for_project;
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
 use crate::state::{DesktopState, NotificationAttentionInput, UpdateBadgeSeenTarget};
 use crate::updater::{
     UpdateStatusVm, UpdaterSettingsVm, check_update,
-    download_and_install_update as run_download_and_install_update, normalize_updater_url_override,
-    updater_settings,
+    download_and_install_update as run_download_and_install_update, install_pending_file,
+    normalize_updater_url_override, updater_settings,
 };
 use crate::view_models::{
-    AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm,
+    AcpActivityDetailQueryInput, AcpActivityDetailVm, AcpRawFramePageVm, AcpRawFrameQueryInput,
+    AcpSessionQueryInput, AcpSessionVm, AcpToolDetailQueryInput, AcpToolDetailVm, AgentRegistryVm,
     AppBootstrapVm, ContentVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, McpServerVm,
     PreferencesVm, RoundDetailVm, RoundSelectionInput, RunDetailVm, RunSummaryVm, SkillContentVm,
     SkillListVm, SkillMetaVm, SyncStatusEntryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm,
-    WorkflowVm, acp_raw_frame_page_vm, acp_session_vm, agent_registry_vm, bootstrap_vm,
-    dynamic_acp_session_vm, log_page_vm, mcp_server_list_vm, preferences_vm, round_detail_vm,
-    run_detail_vm, run_summary_vm, runtime_display_vm, skill_content_vm, skill_list_vm,
-    skill_meta_vm, task_detail_vm, task_list_vm, workflow_vm,
+    WorkflowVm, acp_activity_detail_vm_for_attempt, acp_raw_frame_page_vm, acp_session_vm,
+    acp_tool_detail_vm_for_attempt, agent_registry_vm, bootstrap_vm, dynamic_acp_session_vm,
+    log_page_vm, mcp_server_list_vm, preferences_vm, round_detail_vm, run_detail_vm,
+    run_summary_vm, runtime_display_vm, skill_content_vm, skill_list_vm, skill_meta_vm,
+    task_detail_vm, task_list_vm, workflow_vm,
 };
 use crate::view_models_conversation::{
     ConversationAttemptLifecycleVm, conversation_attempt_lifecycle_vm,
@@ -421,6 +427,7 @@ fn emit_acp_turn_finished(
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AcpSessionUpdatedEventVm {
+    branch_id: Option<String>,
     project_id: Option<String>,
     task_id: String,
     run_id: String,
@@ -575,6 +582,29 @@ pub struct CommandErrorVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AppExitPreparationWarningVm {
+    pub code: String,
+    pub params: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppExitPreparationVm {
+    pub warnings: Vec<AppExitPreparationWarningVm>,
+}
+
+impl AppExitPreparationVm {
+    fn record_warning(&mut self, code: &str, error: &dyn std::fmt::Display) {
+        warn!(warning_code = code, %error, "application exit preparation step failed");
+        self.warnings.push(AppExitPreparationWarningVm {
+            code: code.to_string(),
+            params: serde_json::json!({}),
+        });
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationPromptSubmitVm {
     pub kind: String,
     pub session: Option<AcpSessionVm>,
@@ -598,6 +628,41 @@ impl CommandErrorVm {
             params,
         }
     }
+}
+
+#[tauri::command]
+pub async fn prepare_app_exit(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+) -> CommandResult<AppExitPreparationVm> {
+    let mut result = AppExitPreparationVm::default();
+
+    match state.app() {
+        Ok(runtime_app) => {
+            match tauri::async_runtime::spawn_blocking(move || {
+                runtime_app.stop_all_running_sessions().map(|_| ())
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => result.record_warning("app-exit.session-stop-failed", &error),
+                Err(error) => result.record_warning("app-exit.session-stop-task-failed", &error),
+            }
+        }
+        Err(error) => result.record_warning("app-exit.runtime-unavailable", &error),
+    }
+
+    if let Err(error) = state.cleanup_agent_diagnostic_processes() {
+        result.record_warning("app-exit.diagnostic-cleanup-failed", &error);
+    }
+
+    if let Some(path) = state.take_pending_update()
+        && let Err(error) = install_pending_file(&app_handle, &path).await
+    {
+        result.record_warning("app-exit.update-install-failed", &error);
+    }
+
+    Ok(result)
 }
 
 fn ensure_no_active_acp_prompts_in_workspace(
@@ -1535,7 +1600,15 @@ pub(crate) fn acp_live_update_emitter(
     lifecycle_bus: Option<gold_band::app::observability::RuntimeLifecycleBus>,
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, AcpUiEvent) -> anyhow::Result<()> + Send + Sync>
 {
-    Arc::new(move |context, event| {
+    Arc::new(move |context, mut event| {
+        let refresh_agent_attention = matches!(
+            event.kind.as_str(),
+            "permissionRequest" | "elicitationRequest"
+        ) && event
+            .status
+            .as_deref()
+            .unwrap_or("pending")
+            .eq_ignore_ascii_case("pending");
         maybe_record_agent_commands(&app_handle, notification_app.as_ref(), &context, &event);
         if let Some(lifecycle_bus) = lifecycle_bus.as_ref() {
             maybe_emit_permission_intervention(
@@ -1551,6 +1624,7 @@ pub(crate) fn acp_live_update_emitter(
                 &event,
             );
         }
+        compact_live_conversation_event(&mut event);
         emit_acp_event_update(
             &app_handle,
             project_id.clone(),
@@ -1559,10 +1633,53 @@ pub(crate) fn acp_live_update_emitter(
             &context.round_id,
             &context.node_id,
             &context.attempt_id,
-            context.outer_node_id,
-            context.outer_attempt_id,
+            context.outer_node_id.clone(),
+            context.outer_attempt_id.clone(),
             event,
         );
+        if refresh_agent_attention && let Some(app) = notification_app.as_ref() {
+            let session = if let (Some(outer_node_id), Some(outer_attempt_id)) = (
+                context.outer_node_id.as_deref(),
+                context.outer_attempt_id.as_deref(),
+            ) {
+                dynamic_acp_session_vm(
+                    app,
+                    &context.task_id,
+                    &context.run_id,
+                    &context.round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                    &context.node_id,
+                    &context.attempt_id,
+                    None,
+                    None,
+                )?
+            } else {
+                acp_session_vm(
+                    app,
+                    &context.task_id,
+                    &context.run_id,
+                    &context.round_id,
+                    &context.node_id,
+                    &context.attempt_id,
+                    None,
+                    None,
+                )?
+            };
+            emit_acp_session_update(
+                &app_handle,
+                app,
+                project_id.clone(),
+                &context.task_id,
+                &context.run_id,
+                &context.round_id,
+                &context.node_id,
+                &context.attempt_id,
+                context.outer_node_id.clone(),
+                context.outer_attempt_id.clone(),
+                session,
+            );
+        }
         Ok(())
     })
 }
@@ -1847,6 +1964,9 @@ fn emit_acp_update(
     session: Option<AcpSessionVm>,
     event: Option<AcpUiEvent>,
 ) {
+    let branch_id = event
+        .as_ref()
+        .map(gold_band::acp::branches::event_branch_id);
     let lifecycle = app.and_then(|app| {
         conversation_attempt_lifecycle_vm(
             app,
@@ -1863,6 +1983,7 @@ fn emit_acp_update(
     let _ = app_handle.emit(
         ACP_SESSION_EVENT,
         AcpSessionUpdatedEventVm {
+            branch_id,
             project_id,
             task_id: task_id.to_string(),
             run_id: run_id.to_string(),
@@ -1911,7 +2032,31 @@ pub fn get_acp_session(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
+    let trace_id = query
+        .as_ref()
+        .and_then(|query| query.trace_id.as_deref())
+        .map(str::trim)
+        .filter(|trace_id| !trace_id.is_empty())
+        .map(str::to_string);
+    let branch_id = query
+        .as_ref()
+        .and_then(|query| query.branch_id.as_deref())
+        .unwrap_or(gold_band::acp::branches::ROOT_BRANCH_ID)
+        .to_string();
+    let trace_started_at = Instant::now();
+    log_acp_session_command_stage(
+        trace_id.as_deref(),
+        &branch_id,
+        "command-received",
+        trace_started_at,
+    );
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    log_acp_session_command_stage(
+        trace_id.as_deref(),
+        &branch_id,
+        "project-resolved",
+        trace_started_at,
+    );
     if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (outer_node_id.as_deref(), outer_attempt_id.as_deref())
     {
@@ -1928,7 +2073,7 @@ pub fn get_acp_session(
             &attempt_dir,
             std::time::Duration::from_secs(app.config.acp_session_foreground_lease_ttl_secs),
         );
-        return dynamic_acp_session_vm(
+        let result = dynamic_acp_session_vm(
             &app,
             &task_id,
             &run_id,
@@ -1940,7 +2085,14 @@ pub fn get_acp_session(
             query,
             None,
         )
-        .map_err(command_error);
+        .map_err(|error| acp_storage_query_error(error, "acp.session-query-failed"));
+        log_acp_session_command_stage(
+            trace_id.as_deref(),
+            &branch_id,
+            "command-complete",
+            trace_started_at,
+        );
+        return result;
     }
     let attempt_dir = app
         .paths
@@ -1949,7 +2101,7 @@ pub fn get_acp_session(
         &attempt_dir,
         std::time::Duration::from_secs(app.config.acp_session_foreground_lease_ttl_secs),
     );
-    acp_session_vm(
+    let result = acp_session_vm(
         &app,
         &task_id,
         &run_id,
@@ -1959,7 +2111,94 @@ pub fn get_acp_session(
         query,
         None,
     )
-    .map_err(command_error)
+    .map_err(|error| acp_storage_query_error(error, "acp.session-query-failed"));
+    log_acp_session_command_stage(
+        trace_id.as_deref(),
+        &branch_id,
+        "command-complete",
+        trace_started_at,
+    );
+    result
+}
+
+fn log_acp_session_command_stage(
+    trace_id: Option<&str>,
+    branch_id: &str,
+    stage: &'static str,
+    started_at: Instant,
+) {
+    let Some(trace_id) = trace_id else {
+        return;
+    };
+    let total_ms = started_at.elapsed().as_millis() as u64;
+    info!(
+        target: "gold_band_desktop::acp_session_query",
+        trace_id,
+        branch_id,
+        stage,
+        total_ms,
+        "ACP session command stage"
+    );
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "[acp-session-query] trace={trace_id} branch={branch_id} stage={stage} total_ms={total_ms}"
+    );
+}
+
+#[tauri::command]
+pub fn get_acp_activity_detail(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    query: AcpActivityDetailQueryInput,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<AcpActivityDetailVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let attempt_dir = resolve_acp_attempt_dir(
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
+    );
+    acp_activity_detail_vm_for_attempt(&attempt_dir, query)
+        .map_err(|error| acp_storage_query_error(error, "acp.activity-detail-query-failed"))
+}
+
+#[tauri::command]
+pub fn get_acp_tool_detail(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    query: AcpToolDetailQueryInput,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<AcpToolDetailVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let attempt_dir = resolve_acp_attempt_dir(
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
+    );
+    acp_tool_detail_vm_for_attempt(&attempt_dir, query)
+        .map_err(|error| acp_storage_query_error(error, "acp.tool-detail-query-failed"))
 }
 
 #[tauri::command]
@@ -3021,7 +3260,51 @@ pub fn save_desktop_preferences(
         font,
         use_local_claude,
         log_level,
+        load_avatar_preferences(&app.paths.user_gold_band_dir()).map_err(avatar_command_error)?,
     ))
+}
+
+#[tauri::command]
+pub fn save_desktop_avatar(
+    state: State<'_, DesktopState>,
+    input: SaveDesktopAvatarInput,
+) -> CommandResult<AvatarPreferencesVm> {
+    let app = state.context().map_err(command_error)?.app();
+    save_avatar_image(&app.paths.user_gold_band_dir(), input).map_err(avatar_command_error)
+}
+
+#[tauri::command]
+pub fn select_recent_desktop_avatar(
+    state: State<'_, DesktopState>,
+    kind: AvatarKind,
+    avatar_id: String,
+) -> CommandResult<AvatarPreferencesVm> {
+    let app = state.context().map_err(command_error)?.app();
+    select_recent_avatar(&app.paths.user_gold_band_dir(), kind, &avatar_id)
+        .map_err(avatar_command_error)
+}
+
+#[tauri::command]
+pub fn save_desktop_avatar_shape(
+    state: State<'_, DesktopState>,
+    kind: AvatarKind,
+    shape: AvatarShape,
+) -> CommandResult<AvatarPreferencesVm> {
+    let app = state.context().map_err(command_error)?.app();
+    save_avatar_shape(&app.paths.user_gold_band_dir(), kind, shape).map_err(avatar_command_error)
+}
+
+#[tauri::command]
+pub fn clear_desktop_avatar(
+    state: State<'_, DesktopState>,
+    kind: AvatarKind,
+) -> CommandResult<AvatarPreferencesVm> {
+    let app = state.context().map_err(command_error)?.app();
+    clear_avatar(&app.paths.user_gold_band_dir(), kind).map_err(avatar_command_error)
+}
+
+fn avatar_command_error(error: crate::avatar::AvatarError) -> CommandErrorVm {
+    CommandErrorVm::new(error.code, error.params)
 }
 
 #[tauri::command]
@@ -3168,11 +3451,24 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<ProfileCommandError>() {
         return CommandErrorVm::new(error.code(), error.params());
     }
+    if let Some(error) = error.downcast_ref::<gold_band::acp::branches::ConversationBranchError>() {
+        return CommandErrorVm::new(error.code(), serde_json::json!({}));
+    }
     let message = error.to_string();
     if let Some(code) = updater_command_error_code(&message) {
         return CommandErrorVm::new(code, serde_json::json!({ "message": message }));
     }
     CommandErrorVm::new("app.unexpected", serde_json::json!({ "message": message }))
+}
+
+fn acp_storage_query_error(error: anyhow::Error, fallback_code: &'static str) -> CommandErrorVm {
+    if error
+        .downcast_ref::<gold_band::acp::branches::ConversationBranchError>()
+        .is_some()
+    {
+        return command_error(error);
+    }
+    CommandErrorVm::new(fallback_code, serde_json::json!({}))
 }
 
 fn updater_command_error_code(message: &str) -> Option<&'static str> {
@@ -4478,6 +4774,46 @@ mod tests {
         });
 
         assert_ne!(worker_thread, caller_thread);
+    }
+
+    #[test]
+    fn branch_query_errors_keep_their_structured_command_code() {
+        let error = command_error(
+            gold_band::acp::branches::ConversationBranchError::InvalidBranchId.into(),
+        );
+        assert_eq!(error.code, "acp.invalid-conversation-branch-id");
+        assert_eq!(error.params, serde_json::json!({}));
+    }
+
+    #[test]
+    fn storage_query_errors_do_not_expose_backend_messages() {
+        let error = acp_storage_query_error(
+            anyhow::anyhow!("D:/secret/path could not be parsed"),
+            "acp.activity-detail-query-failed",
+        );
+        assert_eq!(error.code, "acp.activity-detail-query-failed");
+        assert_eq!(error.params, serde_json::json!({}));
+    }
+
+    #[test]
+    fn app_exit_warnings_keep_codes_without_exposing_backend_messages() {
+        let mut result = AppExitPreparationVm::default();
+        result.record_warning(
+            "app-exit.session-stop-failed",
+            &anyhow::anyhow!("D:/secret/provider process failed"),
+        );
+
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "warnings": [{
+                    "code": "app-exit.session-stop-failed",
+                    "params": {}
+                }]
+            })
+        );
+        assert!(!value.to_string().contains("secret"));
     }
 
     #[test]

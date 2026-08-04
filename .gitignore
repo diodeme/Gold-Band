@@ -2,7 +2,7 @@
 /release
 .idea
 .vscode
-/node_modules
+node_modules/
 /web/dist
 /src-tauri/target
 .external

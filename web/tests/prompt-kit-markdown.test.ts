@@ -1,7 +1,8 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { Markdown } from '@/components/prompt-kit/markdown';
+import { isLocalFileHref, Markdown, proxyLocalFileLinks } from '@/components/prompt-kit/markdown';
+import { isDocumentAnchorHref, isExternalUrlHref } from '@/lib/file-link';
 import {
   advanceStreamingMarkdownPresentation,
   createStreamingMarkdownPresentation,
@@ -15,6 +16,23 @@ function renderedText(html: string) {
 }
 
 describe('prompt-kit Markdown', () => {
+  it('classifies supported local file links without taking over web links', () => {
+    expect(isLocalFileHref('D:/repo/src/client.rs:2727')).toBe(true);
+    expect(isLocalFileHref('D:\\repo\\src\\client.rs:2727:8')).toBe(true);
+    expect(isLocalFileHref('file:///D:/repo/src/client.rs#L10-L20')).toBe(true);
+    expect(isLocalFileHref('src/client.rs:3302')).toBe(true);
+    expect(isLocalFileHref('https://example.com/client.rs:12')).toBe(false);
+    expect(isLocalFileHref('mailto:dev@example.com')).toBe(false);
+    expect(isExternalUrlHref('https://github.com/diodeme/Gold-Band/releases')).toBe(true);
+    expect(isDocumentAnchorHref('#')).toBe(true);
+  });
+
+  it('proxies only local Markdown destinations through the safe render URL', () => {
+    const proxied = proxyLocalFileLinks('[file](D:/repo/client.rs:10) [web](https://example.com) ![image](D:/repo/a.png)');
+    expect(proxied).toContain('https://gold-band.local-file.invalid/?href=');
+    expect(proxied).toContain('[web](https://example.com)');
+    expect(proxied).toContain('![image](D:/repo/a.png)');
+  });
   it('renders complete Markdown in static mode', () => {
     const html = renderToStaticMarkup(createElement(Markdown, {
       children: '**完成内容**',

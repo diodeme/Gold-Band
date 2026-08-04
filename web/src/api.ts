@@ -11,6 +11,10 @@ export function getAppBootstrap() {
   return getRuntimeApi().getAppBootstrap();
 }
 
+export function prepareAppExit() {
+  return getRuntimeApi().prepareAppExit();
+}
+
 export function getSystemFonts() {
   return getRuntimeApi().getSystemFonts();
 }
@@ -168,6 +172,14 @@ export function getAcpSession(projectId: string | null | undefined, taskId: stri
   return getRuntimeApi().getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, fallback, outerNodeId, outerAttemptId);
 }
 
+export function getAcpActivityDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: Parameters<ReturnType<typeof getRuntimeApi>['getAcpActivityDetail']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().getAcpActivityDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);
+}
+
+export function getAcpToolDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: Parameters<ReturnType<typeof getRuntimeApi>['getAcpToolDetail']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().getAcpToolDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);
+}
+
 export function subscribeAcpSessionUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeAcpSessionUpdates']>>[0]) {
   return getRuntimeApi().subscribeAcpSessionUpdates?.(listener) ?? Promise.resolve(() => {});
 }
@@ -235,6 +247,22 @@ export function showWorkerRef(taskId: string, runId: string, roundId: string, no
 
 export function saveDesktopPreferences(theme: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[0], language: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[1], font: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[2], useLocalClaude: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[3], verboseLogging: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[4]) {
   return getRuntimeApi().saveDesktopPreferences(theme, language, font, useLocalClaude, verboseLogging);
+}
+
+export function saveDesktopAvatar(input: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopAvatar']>[0]) {
+  return getRuntimeApi().saveDesktopAvatar(input);
+}
+
+export function selectRecentDesktopAvatar(kind: Parameters<ReturnType<typeof getRuntimeApi>['selectRecentDesktopAvatar']>[0], avatarId: string) {
+  return getRuntimeApi().selectRecentDesktopAvatar(kind, avatarId);
+}
+
+export function saveDesktopAvatarShape(kind: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopAvatarShape']>[0], shape: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopAvatarShape']>[1]) {
+  return getRuntimeApi().saveDesktopAvatarShape(kind, shape);
+}
+
+export function clearDesktopAvatar(kind: Parameters<ReturnType<typeof getRuntimeApi>['clearDesktopAvatar']>[0]) {
+  return getRuntimeApi().clearDesktopAvatar(kind);
 }
 
 export function saveUpdaterSettings(overrideUrl: string | null) {
@@ -371,6 +399,66 @@ export function saveConversationPreference(key: string, value: unknown) {
 
 export function saveLastConversationWorkspace(projectId: string) {
   return getRuntimeApi().saveLastConversationWorkspace(projectId);
+}
+
+export function listWorkspaceDirectory(projectId: string, relativePath = '') {
+  return getRuntimeApi().listWorkspaceDirectory(projectId, relativePath);
+}
+
+export function searchWorkspaceFiles(projectId: string, query: string, requestId: string, limit: number) {
+  return getRuntimeApi().searchWorkspaceFiles(projectId, query, requestId, limit);
+}
+
+export function resolveWorkspaceFileLink(projectId: string, rawHref: string, baseCanonicalPath?: string | null) {
+  return getRuntimeApi().resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath);
+}
+
+export function readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource = false) {
+  return getRuntimeApi().readFileResource(projectId, canonicalPath, externalAccessToken, preferSource);
+}
+
+export function resolveMarkdownImage(input: Parameters<ReturnType<typeof getRuntimeApi>['resolveMarkdownImage']>[0]) {
+  return getRuntimeApi().resolveMarkdownImage(input);
+}
+
+export function writeFileResource(input: Parameters<ReturnType<typeof getRuntimeApi>['writeFileResource']>[0]) {
+  return getRuntimeApi().writeFileResource(input);
+}
+
+export function releaseWorkspaceFilePreview(token: string) {
+  return getRuntimeApi().releaseWorkspaceFilePreview(token);
+}
+
+export function renewExternalFileAccess(token: string) {
+  return getRuntimeApi().renewExternalFileAccess(token);
+}
+
+export function releaseExternalFileAccess(token: string) {
+  return getRuntimeApi().releaseExternalFileAccess(token);
+}
+
+export function startWorkspaceFileWatch(projectId: string) {
+  return getRuntimeApi().startWorkspaceFileWatch(projectId);
+}
+
+export function stopWorkspaceFileWatch(projectId: string) {
+  return getRuntimeApi().stopWorkspaceFileWatch(projectId);
+}
+
+export function subscribeWorkspaceFileChanges(listener: Parameters<NonNullable<RuntimeApi['subscribeWorkspaceFileChanges']>>[0]) {
+  return getRuntimeApi().subscribeWorkspaceFileChanges?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function workspaceFilePreviewUrl(token: string, staticFrame = false) {
+  return getRuntimeApi().workspaceFilePreviewUrl(token, staticFrame);
+}
+
+export function openExternalUrl(url: string) {
+  return getRuntimeApi().openExternalUrl(url);
+}
+
+export function openFileWithSystemApp(path: string) {
+  return getRuntimeApi().openFileWithSystemApp(path);
 }
 // pickAttachmentFiles for file picker in desktop envs
 export function pickAttachmentFiles() {

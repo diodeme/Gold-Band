@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyPendingElicitationEventsToSession,
   buildAcpTimeline,
+  applyAgentBranchResultToSession,
   calculateSessionElapsedSeconds,
+  canInferPendingInteractionFromWindow,
   clearPendingOptimisticPromptsAfterStop,
   contextCompactionUsageBefore,
   createLiveAcpSessionShell,
@@ -16,6 +19,7 @@ import {
   reconcileAcpSessionForDisplay,
   runtimeControlMessageParts,
   isAcpSessionReadyForInitialDisplay,
+  isAcpConversationAtBottom,
   stabilizeAcpSessionTimingForDisplay,
   stabilizeAcpSessionTimingPatchForDisplay,
   useSessionTimingSeconds,
@@ -45,6 +49,10 @@ function event(partial: Partial<AcpUiEventVm>): AcpUiEventVm {
 
 function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
   return {
+    branchId: partial.branchId,
+    parentBranchId: partial.parentBranchId,
+    readOnly: partial.readOnly,
+    branchExecution: partial.branchExecution,
     sessionId: partial.sessionId ?? 'session-1',
     provider: partial.provider ?? 'claude-acp',
     status: partial.status ?? 'running',
@@ -65,6 +73,7 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
       hasNewer: false,
     },
     pendingPermissions: partial.pendingPermissions ?? [],
+    pendingElicitations: partial.pendingElicitations ?? [],
     diagnostics: partial.diagnostics ?? {
       rawFrameCount: 0,
       eventCount: 0,
@@ -74,6 +83,42 @@ function session(partial: Partial<AcpSessionVm>): AcpSessionVm {
 }
 
 describe('ACP chat event handling', () => {
+  it('stops the read-only Agent session when its canonical result arrives', () => {
+    const current = session({
+      status: 'running',
+      sessionUpdatedAt: '10Z',
+      timing: {
+        sessionElapsedSeconds: 9,
+        activeTurnStartedAt: '1Z',
+        activeTurnLastActivityAt: '10Z',
+        paused: false,
+      },
+    });
+    const updated = applyAgentBranchResultToSession(current, event({
+      seq: 11,
+      timestamp: '11Z',
+      kind: 'textDelta',
+      status: 'completed',
+      raw: { source: 'agentBranchResult' },
+    }));
+
+    expect(updated).toMatchObject({
+      status: 'completed',
+      sessionUpdatedAt: '11Z',
+      timing: {
+        activeTurnStartedAt: null,
+        activeTurnLastActivityAt: null,
+        paused: true,
+      },
+    });
+  });
+
+  it('does not treat the end of a truncated event window as the conversation bottom', () => {
+    expect(isAcpConversationAtBottom(true, true)).toBe(false);
+    expect(isAcpConversationAtBottom(true, false)).toBe(true);
+    expect(isAcpConversationAtBottom(false, false)).toBe(false);
+  });
+
   it('shows runtime control failures in the session banner', () => {
     const acpSession = session({
       diagnostics: {
@@ -163,7 +208,7 @@ describe('ACP chat event handling', () => {
         toolCallId: 'ask-call',
         status: 'pending',
         title: 'Asking for your input',
-        raw: { _meta: { claudeCode: { toolName: 'AskUserQuestion' } } },
+        raw: { _meta: { goldBandConversation: { toolName: 'AskUserQuestion' } } },
       }),
       event({
         id: 'elicit-answered',
@@ -195,7 +240,9 @@ describe('ACP chat event handling', () => {
     ]);
 
     expect(timeline).toHaveLength(1);
-    expect(timeline[0]).toMatchObject({
+    expect(timeline[0]).toMatchObject({ kind: 'activityBatch' });
+    if (timeline[0]?.kind !== 'activityBatch') throw new Error('missing activity batch');
+    expect(timeline[0].events[0]).toMatchObject({
       kind: 'toolCall',
       toolCallId: 'ask-call',
       status: 'completed',
@@ -216,6 +263,218 @@ describe('ACP chat event handling', () => {
     ];
 
     expect(pendingElicitationFromEvents(events, new Map())?.elicitationId).toBe('elicit-2');
+  });
+
+  it('projects a live elicitation into authoritative session state without relying on timing', () => {
+    const current = session({
+      status: 'running',
+      timing: {
+        sessionElapsedSeconds: 12,
+        paused: false,
+      },
+    });
+    const message = 'Choose a database';
+    const requestedSchema = {
+      type: 'object',
+      properties: { database: { type: 'string' } },
+    };
+    const updated = applyPendingElicitationEventsToSession(current, [event({
+      id: 'elicit-live',
+      seq: 20,
+      kind: 'elicitationRequest',
+      status: 'pending',
+      content: message,
+      raw: {
+        message,
+        toolCallId: 'ask-tool-1',
+        requestedSchema,
+      },
+    })]);
+
+    expect(updated?.timing?.paused).toBe(false);
+    expect(updated?.pendingElicitations).toEqual([{
+      elicitationId: 'elicit-live',
+      message,
+      toolCallId: 'ask-tool-1',
+      requestedSchema,
+      raw: {
+        message,
+        toolCallId: 'ask-tool-1',
+        requestedSchema,
+      },
+    }]);
+  });
+
+  it('clears authoritative elicitation state on response or terminal session', () => {
+    const pending = session({
+      status: 'running',
+      pendingElicitations: [{
+        elicitationId: 'elicit-live',
+        message: 'Choose',
+        requestedSchema: { type: 'object' },
+        raw: {},
+      }],
+    });
+    const resolved = applyPendingElicitationEventsToSession(pending, [event({
+      id: 'elicit-live-response',
+      seq: 21,
+      kind: 'elicitationResponse',
+      status: 'completed',
+      raw: { elicitationId: 'elicit-live', action: 'accept' },
+    })]);
+    const terminal = applyPendingElicitationEventsToSession(
+      { ...pending, status: 'cancelled' },
+      [],
+    );
+
+    expect(resolved?.pendingElicitations).toEqual([]);
+    expect(terminal?.pendingElicitations).toEqual([]);
+  });
+
+  it('preserves a live pending elicitation across a stale active session snapshot', () => {
+    const pendingRequest = {
+      elicitationId: 'elicit-live',
+      message: 'Choose',
+      requestedSchema: { type: 'object' },
+      raw: {},
+    };
+    const live = session({ pendingElicitations: [pendingRequest] });
+    const staleSnapshot = session({
+      pendingElicitations: [],
+      events: [],
+    });
+    const resolvedSnapshot = session({
+      pendingElicitations: [],
+      events: [event({
+        id: 'elicit-live-response',
+        seq: 22,
+        kind: 'elicitationResponse',
+        status: 'completed',
+        raw: { elicitationId: 'elicit-live', action: 'accept' },
+      })],
+    });
+
+    expect(
+      reconcileAcpSessionForDisplay(live, staleSnapshot)?.pendingElicitations,
+    ).toEqual([pendingRequest]);
+    expect(
+      reconcileAcpSessionForDisplay(live, resolvedSnapshot)?.pendingElicitations,
+    ).toEqual([]);
+  });
+
+  it('does not infer pending interactions from a terminal session history window', () => {
+    const failedSession = session({
+      status: 'failed',
+      timing: {
+        paused: true,
+        waitReason: 'elicitation',
+      },
+    });
+
+    expect(
+      canInferPendingInteractionFromWindow(
+        failedSession,
+        false,
+        'elicitation',
+      ),
+    ).toBe(false);
+  });
+
+  it('does not infer a stale pending card while newer history pages exist', () => {
+    const runningSession = session({
+      status: 'running',
+      timing: {
+        paused: true,
+        waitReason: 'elicitation',
+      },
+    });
+
+    expect(
+      canInferPendingInteractionFromWindow(
+        runningSession,
+        true,
+        'elicitation',
+      ),
+    ).toBe(false);
+  });
+
+  it('infers only the interaction kind described by the current session wait', () => {
+    const runningSession = session({
+      status: 'running',
+      timing: {
+        paused: true,
+        waitReason: 'elicitation',
+      },
+    });
+
+    expect(
+      canInferPendingInteractionFromWindow(
+        runningSession,
+        false,
+        'elicitation',
+      ),
+    ).toBe(true);
+    expect(
+      canInferPendingInteractionFromWindow(
+        runningSession,
+        false,
+        'permission',
+      ),
+    ).toBe(false);
+  });
+
+  it('does not infer a pending card from an active non-waiting session', () => {
+    const runningSession = session({
+      status: 'running',
+      timing: {
+        paused: false,
+      },
+    });
+
+    expect(
+      canInferPendingInteractionFromWindow(
+        runningSession,
+        false,
+        'elicitation',
+      ),
+    ).toBe(false);
+  });
+
+  it('recovers a pending card from the full typed elicitation request after refresh', () => {
+    const message = 'Round 11 | 歧义：23.5%\n\n管理端 API 与菜单的权限标识如何设计？';
+    const requestedSchema = {
+      type: 'object' as const,
+      properties: {
+        question_0: {
+          type: 'string' as const,
+          title: '管理端权限标识',
+          oneOf: [{ const: 'admin-only', title: 'admin-only' }],
+        },
+      },
+    };
+    const events = [
+      event({
+        id: 'elicit-full-request',
+        seq: 10,
+        kind: 'elicitationRequest',
+        status: 'pending',
+        content: message,
+        raw: {
+          mode: 'form',
+          sessionId: 'session-1',
+          toolCallId: 'call-1',
+          message,
+          requestedSchema,
+          _meta: { source: 'claude-agent-acp' },
+        },
+      }),
+    ];
+
+    expect(pendingElicitationFromEvents(events, new Map())).toEqual({
+      elicitationId: 'elicit-full-request',
+      message,
+      requestedSchema,
+    });
   });
 
   it('does not resurface older pending elicitation requests after a newer one was answered', () => {
@@ -270,7 +529,9 @@ describe('ACP chat event handling', () => {
     ]);
 
     expect(timeline).toHaveLength(1);
-    expect(timeline[0]).toMatchObject({
+    expect(timeline[0]).toMatchObject({ kind: 'activityBatch' });
+    if (timeline[0]?.kind !== 'activityBatch') throw new Error('missing activity batch');
+    expect(timeline[0].events[0]).toMatchObject({
       kind: 'toolCall',
       toolCallId: 'call-a',
       status: 'completed',
@@ -308,7 +569,9 @@ describe('ACP chat event handling', () => {
 
     expect(timeline).toHaveLength(2);
     expect(timeline[0]).toMatchObject({ kind: 'textDelta', content: 'hello world' });
-    expect(timeline[1]).toMatchObject({ kind: 'thoughtDelta', content: 'thinking done' });
+    expect(timeline[1]).toMatchObject({ kind: 'activityBatch' });
+    if (timeline[1]?.kind !== 'activityBatch') throw new Error('missing activity batch');
+    expect(timeline[1].events[0]).toMatchObject({ kind: 'thoughtDelta', content: 'thinking done' });
   });
 
   it('keeps repeated Gold Band user prompts when prompt ids differ', () => {
@@ -667,6 +930,29 @@ describe('ACP chat event handling', () => {
     }))).toBe(false);
   });
 
+  it('treats a canonical Agent branch VM as ready without root session metadata', () => {
+    expect(isAcpSessionReadyForInitialDisplay(session({
+      branchId: 'agent-1',
+      parentBranchId: 'root',
+      readOnly: true,
+      branchExecution: {
+        agentExecutionId: 'agent-1',
+        parentAgentExecutionId: null,
+        executionStatus: 'interrupted',
+        eventCount: 9,
+        toolCallCount: 4,
+        readFileCount: 2,
+        writtenFileCount: 1,
+        hasAttention: false,
+        todoEntries: [],
+      },
+      status: 'interrupted',
+      systemPromptAppend: null,
+      config: null,
+      events: [],
+    }))).toBe(true);
+  });
+
   it('keeps snapshot prompt events visible while live events are still catching up', () => {
     const prompt = event({
       id: 'gold-band-user-prompt-1',
@@ -703,7 +989,14 @@ describe('ACP chat event handling', () => {
       'gold-band-user-prompt-1',
       'assistant-message-1',
     ]);
-    expect(visible.eventPage.loadedCount).toBe(2);
+    expect(visible.eventPage).toEqual({
+      loadedCount: 1,
+      total: 1,
+      oldestSeq: 1,
+      newestSeq: 1,
+      hasOlder: false,
+      hasNewer: false,
+    });
   });
 
   it('uses backend timing as the session elapsed source of truth', () => {
@@ -1108,7 +1401,7 @@ describe('ACP chat event handling', () => {
     ]);
 
     expect(timeline).toHaveLength(4);
-    expect(timeline.map((item) => 'content' in item ? item.content : null)).toEqual([
+    expect(timeline.map((item) => item.kind === 'activityBatch' ? item.events[0]?.content : item.content)).toEqual([
       '继续',
       'first resumed thought',
       '继续',
@@ -1302,7 +1595,9 @@ describe('ACP chat event handling', () => {
 
     expect(timeline).toHaveLength(2);
     expect(timeline[0]).toMatchObject({ kind: 'textDelta', content: 'hello world' });
-    expect(timeline[1]).toMatchObject({ kind: 'thoughtDelta', content: 'thinking done' });
+    expect(timeline[1]).toMatchObject({ kind: 'activityBatch' });
+    if (timeline[1]?.kind !== 'activityBatch') throw new Error('missing activity batch');
+    expect(timeline[1].events[0]).toMatchObject({ kind: 'thoughtDelta', content: 'thinking done' });
   });
 
   it('replaces existing permission events during live/session merge', () => {

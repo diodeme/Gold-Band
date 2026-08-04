@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ChevronDown } from 'lucide-react';
 
 import type { AcpModeVm, AcpSelectConfigOptionVm } from '@/types';
+import { cn } from '@/lib/utils';
 import {
   ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS,
   ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS,
@@ -60,6 +61,7 @@ type Props = {
   compact?: boolean;
   contentSide?: 'top' | 'bottom';
   align?: 'start' | 'end';
+  triggerClassName?: string;
 };
 
 export function AcpModelThoughtSelects({
@@ -74,6 +76,7 @@ export function AcpModelThoughtSelects({
   compact = false,
   contentSide = 'bottom',
   align = DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
+  triggerClassName,
 }: Props) {
   const { t } = useTranslation();
   const [openSection, setOpenSection] = useState<string | null>(null);
@@ -94,6 +97,7 @@ export function AcpModelThoughtSelects({
         compact={compact}
         contentSide={contentSide}
         align={align}
+        triggerClassName={triggerClassName}
       />
     ) : null;
   }
@@ -109,7 +113,7 @@ export function AcpModelThoughtSelects({
       modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL}
       onOpenChange={() => setOpenSection(null)}
     >
-      <DropdownMenuTrigger className={triggerClass}>
+      <DropdownMenuTrigger className={cn(triggerClass, triggerClassName)}>
         <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{t('acp.currentModel')}</span>
         <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>{compositeLabel}</span>
         <ChevronDown className={ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS} />

@@ -1,4 +1,5 @@
 pub mod adapter;
+pub mod branches;
 pub mod client;
 pub mod commands;
 pub mod connection;
@@ -7,3 +8,4 @@ pub mod events;
 pub mod history;
 pub mod permission;
 pub mod timeline;
+pub mod usage;

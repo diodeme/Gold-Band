@@ -52,6 +52,7 @@
 - 高级调度 / 多 run 并发 orchestration
 
 ### 桌面端 MVP 增量
+- 2026-08-02：修复 `AskUserQuestion` 偶现停在“工具调用中”且不显示提问卡片。根因是 0.10.0 的分页保护把提问可见性同时绑定到有限事件窗口与 `timing.waitReason=elicitation`，而 elicitation 没有与 permission 对称的 session 权威字段；live timing 或 snapshot 短暂陈旧时，runtime 仍在阻塞等待但 UI 会隐藏输入入口。`AcpSessionVm` 新增从完整 timeline 投影的 `pendingElicitations`，前端 live reducer 按 request/response 更新同一字段并直接渲染，response、stop decline 与 terminal session 统一清空。Rust 接口测试覆盖分页窗口不含 request、response/terminal 收敛；Web 测试覆盖 timing 非等待态下 live request 仍可进入权威 pending 状态。
 - 2026-07-25：用户消息中的隐藏 runtime context 改为由当前可见内容统一驱动气泡宽度。隐藏根节点、Trigger、Content 使用无百分比宽度的嵌套 grid stretch；`82cqi` 只保留为消息列最大测量宽度。组件在该上限内以不可见副本进行真实排版，通过 `Range.getClientRects()` 获取各文本行宽度，折叠态取标签/可见正文最大值，展开态再纳入隐藏正文；ResizeObserver、展开状态和字体加载触发重测。由此删除固定 `rem` 与线性 `65cqi` 最终宽度，避免客户端越宽、气泡尾部空白越大的问题。
 - 2026-07-22：默认工作流“需求采访”开关收敛为 workspace 级偏好，仅在内置 `default` 模板显示；自定义模板拓扑不受影响。elicitation 回答后不再生成独立用户消息气泡，保留 `AskUserQuestion` 工具卡片；response signal 改由 runtime 完成 JSON-RPC 回包后清理，修复 completed run follow-up 提交后卡在“发送中”。
 - 使用 Tauri 2.x + Vite + React + TypeScript 生成桌面端应用。
@@ -93,6 +94,7 @@
 - 2026-07-08：普通 worker runtime prompt 强化自由输出目录边界：attempt 根目录归 Gold Band runtime / ACP 管理，角色、任务或用户要求输出报告、脚本、过程记录等文件且未给绝对路径时，默认写入 hidden context 的 attachments 目录；hidden context 中的“附件目录”同时标注为本节点自由输出默认落点。
 - 2026-07-08：默认审查 profile 明确只 review 当前开发节点 / 本轮迭代改动，优先使用 `dev-report.md` 中的文件与行号限定范围，缺失时退回当前 git diff；历史遗留问题只有被当前改动引入、放大或直接影响当前改动时才阻塞裁决。
 - 2026-07-08：会话消息流新增 runtime control JSON 展示优化。普通 worker output contract 与 AI-DYNAMIC `dynamic-node-completion` 继续复用 Rust 端既有 JSON artifact 提取和校验链路；runtime 在实际消费控制输出或将非法 JSON 控制候选送入 repair 时为对应 ACP `textDelta` 写入 `raw.runtimeControlOutputDisplay`，前端只基于该标记把自然语言和控制 JSON 拆分展示，控制 JSON 收起态只显示单行 Gold Band 工作流控制条，非法候选使用告警色和告警图标，未标记 JSON 保持普通 Markdown 消息。
+- 2026-08-01：会话 thought / reasoning 从 Streamdown Markdown 渲染切回 prompt-kit `ChainOfThoughtText` 纯文本展示，Markdown 标记按字面显示；展示层裁掉整段首尾空白并保留内部换行。assistant 正文继续使用现有流式 Markdown presentation。后端在独立完整 thought chunk 之间只补一个换行，避免多个思考粘连且不产生额外空白行，token 级 chunk 继续无缝累计。接口回归必须验证 `**...**`、列表符号和代码围栏不会生成 Markdown DOM，首尾换行不会撑高内容区，同时 active thought 收起时仍不占布局。
 - 2026-05-07：桌面端品牌 Logo 从临时菱形字形替换为用户提供的红蓝金无限环 SVG；Web 品牌区和 favicon 共用 `web/public/logo.svg`，Tauri 平台图标由同一 Logo 生成。
 - 2026-05-07：修复任务编排面包屑上级项 hover/focus 高亮在页面跳转后残留的问题；可点击上级项改为纯 CSS 的 hover/focus-visible 临时反馈，Round 详情只保留当前 round 的常驻高亮。
 - 2026-05-07：工作流 execution history 的 run 分组保持一致黑色背景，不使用黄色背景或左侧金线表达展开态，避免被误解为选中态；2026-05-08 起初始态所有 run 默认收起，点击整行或左侧箭头即可展开/收起。
@@ -684,6 +686,13 @@ attempt-001/
 - Direct 内部 `raw-agent` worker 不参与 profile 解析且禁止绑定 profile，避免角色解析阻断创建或向空 system prompt 注入 Gold Band 上下文。
 - 回归范围包含 prompt、lifecycle、创建/config、前端 composer 状态、tab 顺序和 sidebar identity；合入前要求 Rust workspace、Web tests/build 与 `/chat`、Direct run deep link 实际验证通过。
 
+## 2026-07-31：Direct 侧边栏活跃 turn 指示恢复
+
+- 根因修复：Direct 用 Agent icon 替换 run 状态点且隐藏 run 子行后，侧边栏失去运行态入口；同时 completed run 上的后续追问不会把 `latestRun.status` 改回 running，因此不能在前端补一个基于 run status 的特例。
+- 后端 `ConversationTaskRowVm.activity` 统一聚合 task 下 per-attempt live prompt activity 与首轮 runtime running 状态，覆盖 starting、accepted、running、cancel-requested 和 runtime-active。
+- 前端在 Direct Agent icon 外使用轻量 CSS 旋转环；提交/停止返回的 canonical lifecycle snapshot 与 live lifecycle 事件同步更新 workspace、置顶两份 task 行，终态后恢复静态 Agent icon。
+- 回归要求：Rust 单测固化 task root prompt activity 与 runtime fallback，Web 单测固化 lifecycle-to-sidebar 映射和 Direct-only 显示条件；通过 Web build/test、Rust 定向测试并 deep link 启动前端验证侧栏视觉。
+
 ---
 
 ## 2026-07-24：新会话搜索索引生命周期收敛
@@ -761,6 +770,7 @@ attempt-001/
 - 领域收敛：相对时间格式化从 React 组件下沉到共享 `datetime` 模块，任务行与 run 行使用同一接口；继续保持侧边栏既有 `m/h/d/w/mo/y` 紧凑展示，不引入改变文案形态的第三方格式化依赖。
 - 连续区间：不足 1 分钟显示“刚刚”，1–59 分钟显示分钟，1–23 小时显示小时，1–6 天显示天，7–29 天显示周，30–364 天显示月，365 天起显示年。
 - 回归固化：前端纯函数测试覆盖所有单位切换边界、Unix 秒时间戳、未来时间与非法输入；生产构建和侧边栏实际展示验证通过后完成验收。
+
 ---
 
 ## 2026-07-29：用户反馈入口按渠道收口
@@ -776,3 +786,85 @@ attempt-001/
 - 仅成功解析服务端成功 envelope 的 2xx 视为交付，畸形 2xx 进入有限重试。
 - pointer/keyboard/focus 与 Direct、Workflow、AUTO、继续输入命令统一投影为
   activity，Rust 层负责 15 分钟节流和 1 分钟失败退避。
+---
+
+## 2026-07-29：ACP Elicitation 多行题干与跨版本结构兼容
+
+- 根因修复：ElicitationCard 不再把 `params.message` 按换行和步骤下标切题；单题的上下文与实际问题整体展示，多题使用字段 description，通用 provider message 可隐藏。
+- 协议边界：Rust 使用官方 `agent-client-protocol-schema 1.6.0` 的 `CreateElicitationRequest` 反序列化并持久化完整请求，timeline 保留 mode、scope、session/tool identity、schema 与 `_meta`。
+- 版本兼容：按 schema shape 支持 Claude Agent ACP 0.44 全局 `customAnswer`、0.45.1 `question_n_custom` 和当前 `_askUserQuestionCustomAnswer` 元数据，不要求用户机器上的旧 Agent 同步升级。
+- 展示能力：选项 description 与 Claude preview 元数据保持结构化渲染；普通文本字段不再被猜测为首题自定义答案。
+- 回归固化：Rust 覆盖生产 0.44 fixture、pending roundtrip 和完整 timeline request；Web 覆盖多行题干、三类自定义答案、选项元数据及刷新恢复，并要求生产构建和 ACP 会话实际验证通过。
+
+---
+
+## 2026-07-30：PR #81 合并修复与反馈安全边界收敛
+
+- 合并策略：保留单一 PR 与原分支，合并最新 main 后同时保留反馈渠道和 main 的 avatar、ACP elicitation、terminal failure 等能力，不拆分提交组。
+- 反馈信任边界：破坏式删除 `sessionWorkspace` / `screenshotPaths` command 契约，改为 `projectId + taskId` 后端解析和截图 File bytes；task id、canonical root、逐文件路径与 symlink 规则统一校验。task id 的路径分隔符校验显式覆盖 `/` 与 `\\`，不依赖 Windows/Linux 的 `Path` 解析差异。
+- 工作空间状态清理：移除 workspace 时以请求 ID、持久化 ID、路径重算 ID 组成身份别名集合，统一删除 run mode、pin 与 last workspace 引用，固化跨平台大小写差异下的回归测试。
+- 资源生命周期：使用 image/walkdir/tempfile/zip/ReaderStream；截图验证后统一重编码 PNG，任务 ZIP 写临时文件并流式上传；统一限制描述、截图、归档未压缩/压缩/文件数、日志和总请求大小。
+- 渠道能力：`feedbackEnabled` 从 channel JSON 编译到 `AppInfoVm`，前端只透传 boolean，后端二次门控；不再硬编码 `channel === wb`。
+- 错误协议：补齐 disabled、session-not-found、attachment-invalid、payload-too-large 等结构化错误码；网络原始错误只写 metrics.log。
+- MCP 范围收口：transport、Streamable HTTP 和 per-Agent 兼容性由独立 MCP 方案统一维护；本次删除 provider 层按 provider ID 硬编码 transport、预过滤 server 和 attempt warning 的重复实现，避免与 MCP 管理域形成双重事实源。
+- 配置规范化：stale Agent config option 使用纯函数清理，validate 不再 mutation 输入；Direct/AUTO 提交和能力刷新使用规范化结果。
+- 回归要求：Rust workspace、桌面 crate、Web 全量测试、生产构建、default/wb 渠道编译与 wb UI 实际验证全部通过后才允许推送原 PR 分支。
+
+---
+
+## 2026-07-30：Streamable HTTP MCP 协议与 session 生命周期修复
+
+- 根因修复：废弃“读取完整 HTTP body 后取第一条 `data:`”的错误模型；Streamable HTTP SSE 改为按 event 增量解析，并按 JSON-RPC request id 等待对应 response，允许服务端在此前发送 request、notification、keepalive 或其他 response。
+- SSE framing：多条 `data:` 按标准使用换行拼接，comment 不产生消息；目标 response 到达后立即返回，不依赖服务端关闭 SSE 连接。
+- session 状态：`Mcp-Session-Id` 与协商后的 `protocolVersion` 统一由客户端管理；后续 notification、tools/list 与 DELETE 均携带协商版本和 session header。
+- session 恢复：携带 session 的请求收到 `404` 后，不单独重放失败请求，而是清除旧状态并完整重走 initialize → notifications/initialized → tools/list；连续失效则停止重试并返回错误。
+- 资源释放：健康检查与工具发现属于短生命周期操作，完成或失败后均 best-effort 发送 HTTP DELETE；`404/405` 视为已释放或服务端不支持主动释放。
+- HTTP 方法安全：禁用自动重定向，避免 301/302 将 MCP POST 降级成 GET；要求配置最终 endpoint URL。
+- UI 修复：Agent 兼容性状态的 Tooltip 使用非 disabled 包装触发器，支持/不支持状态仍可 hover 查看说明。
+- 回归固化：Rust 单元测试覆盖多行 SSE、前置 notification/错误 id、目标 response 到达但连接仍保持、session 404 后重新握手、协商版本透传和最终 DELETE。
+
+---
+
+## 2026-08-01：会话主页 composer 自动增高与宽度收敛
+
+- 根因修复：会话主页原先使用固定 `min-h-24` 的原生 textarea，而会话追问已使用 prompt-kit 自动尺寸输入，形成两套不一致的输入生命周期；主页改为复用 `PromptInputTextarea`，不新增独立 autosize 实现。
+- 布局契约：首页主内容收窄为 `max-w-3xl`；正文区以 56px 为初始最小高度，按内容增长到 320px 上限，未到上限隐藏滚动条，超过上限后固定高度并在正文区内部滚动，工具栏保持稳定。
+- 光学居中：主页横向继续相对可用主区严格居中；纵向在居中容器底部增加 64–80px 响应式布局留白，使内容组上移约 32–40px。该留白参与 flex 布局计算，不使用 transform，避免视觉位置与真实布局位置分离。
+- 回归固化：共享自动尺寸函数覆盖短文本、中等文本和超限文本，布局配置测试固定主页宽度、最小高度与增长上限；要求 Web 测试、生产构建和 `/chat` deep link 实际验证通过。
+
+---
+
+## 2026-08-02：macOS 原生窗口控制恢复与 chrome 所有权收口
+
+- 根因修复：Rust 启动阶段已为 macOS 恢复 native decorations、Overlay title bar、hidden title 与 shadow，但 Web reveal 流程随后无条件调用 `setDecorations(false)`；前端又按 macOS 平台隐藏自绘窗口按钮，最终形成只保留安全区而没有 traffic lights 的空白标题栏。
+- 生命周期边界：窗口 decorations、title bar style 与 native shadow 统一由 Rust/Tauri 宿主管理；Web 层只负责同步主题 surface、显示窗口以及渲染平台对应的控制入口，不再修改 native chrome，也不再持有 `allow-set-decorations` 权限。
+- 布局保持：不修改共享标题栏组件结构；macOS 固定“traffic lights 安全区 → 品牌 Logo/标题 → 左侧栏开关 → 弹性拖拽区 → 右侧栏开关”，Windows/Linux 继续使用右侧自绘最小化、最大化/还原与关闭按钮。
+- 回归固化：新增窗口 chrome 所有权契约测试，验证 Rust macOS 配置、Web reveal 无 decorations mutation、能力最小化和标题栏元素顺序；要求相关 Vitest、Web 生产构建与 Rust 桌面测试通过，并在 macOS 安装包上验收 traffic lights、拖拽及左右侧栏按钮点击。
+
+---
+
+## 2026-08-02：四主题滚动条低对比度校准
+
+- 根因修复：现有滚动条组件和全局消费路径保持不变，修正主题语义 token 将品牌色与辅助文字色混成不透明深色的问题；不为侧栏或单个滚动容器增加局部覆盖。
+- 主题策略：四套主题统一改用中性 `foreground` 透明叠加，轨道维持 3%–4%，静止 thumb 维持 16%–20%，hover thumb 维持 26%–32%；终端黑略高于其他主题以保留可发现性，浅色主题不再呈现品牌蓝滚动条。
+- 接口一致性：全局原生滚动条、`.gold-themed-scrollbar` 和 shadcn `ScrollArea` 继续只消费 `gold-scrollbar-*` token，组件尺寸与交互范围不变。
+- 回归固化：扩展滚动条 Vitest，逐主题验证中性低透明 token、静止/悬浮层级递增，以及滚动条 token 不再依赖 `primary` / `muted-foreground`；要求 Web 测试、生产构建和四主题实际页面核验通过。
+
+---
+
+## 2026-08-03：桌面开发监听范围收口
+
+- 根因修复：根 Cargo package 与 `src-tauri` 构成 workspace，Tauri dev watcher 会监听 workspace package；此前没有仓库级 `.taurignore`，导致 `docs/` 和根 README 等非运行时文件变化也触发桌面应用重建。
+- 监听边界：采用 Tauri 官方 `.taurignore` 扩展点，以 Gitignore 语义统一排除 `docs/` 和根目录 `README*.md`；不关闭 Rust 热重载，也不修改已经以 `web/` 为 root 的 Vite 监听范围。
+- 回归固化：新增开发监听配置契约测试，使用 Git 的 ignore 匹配接口验证嵌套文档与中英文 README 均被忽略，同时 Cargo、Rust、Web 源码和 package 配置继续可观察。现有开发进程需重启一次后应用新规则。
+
+---
+
+## 2026-08-04：会话初始附件解析与历史消息投影一致性
+
+- 根因修复：附件扩展名白名单声明支持 `.jsonl`，但 provider 文本类型判断遗漏该扩展名，导致文件已保存到 task `authoring/inputs/`，却没有进入 ACP content block、`PromptBundle.attachment_metas` 和用户消息 `raw.attachments`；图片正常、普通 `.jsonl` 附件消失。
+- 数据设计：删除扩展名白名单、MIME 映射和 image/text 判断三份重复定义，改为统一附件格式注册表；`supported_attachment_extensions()`、provider resolver 与消息元数据共同消费该注册表，`.jsonl` 作为 `application/json` 文本资源发送。
+- 历史恢复：`SessionMode::New` 根分支的 session ViewModel 从 task `authoring/inputs/` 恢复旧 timeline 首条 Gold Band 用户消息缺少的 task 输入附件，按 `task-inputs/<name>` path 去重，不改写原始 timeline，也不污染带 `promptId` 的后续追问。
+- 接口验收：Rust 单测固定“所有公开支持扩展名均可解析”、`.jsonl` 同时生成文本 content block 与附件元数据、历史首条消息补全且不重复/不进入后续消息；前端附件数组回归固定同一用户消息同时保留图片与普通文件。目标 `task-158/run-001` 的真实落盘数据验收确认历史投影结果同时包含 `image.png` 与 `acp.raw.jsonl`。
+- 展示完善：消息组件按附件媒体类型派生图片组与普通文件组，固定渲染为“图片行在上、文件行在下”，同类附件各自行内换行；普通文件使用内容宽度的紧凑 pill，不与固定尺寸图片缩略图混排或共同拉伸。
+- 前端回归：纯函数测试固定混合输入的分组结果；DOM 测试固定两个附件行的顺序、内容隔离，以及普通文件按钮的 `w-fit` / pill 样式契约。

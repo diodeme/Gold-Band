@@ -8,7 +8,7 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForAgent, includeInterviewForSubmit, normalizeConversationAutoConfigForSubmit, normalizeConversationDirectConfigForSubmit, optionalRunModeText, shouldShowInterviewToggle } from '@/lib/conversation-run-mode-config';
-import { selectableAgentOptions, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
+import { normalizeConfigOptionOverrides, selectableAgentOptions, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
@@ -21,6 +21,8 @@ import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects'
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from '@/lib/slash-command';
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
+import { PromptInput, PromptInputTextarea } from '@/components/prompt-kit/prompt-input';
+import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 
 interface ConversationComposerProps {
   projectId: string;
@@ -222,6 +224,27 @@ export function ConversationComposer({
     onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession(patch) }, projectId);
   };
 
+  useEffect(() => {
+    if (!isDirect || !selectedDirectAgentObj) return;
+    const normalized = normalizeConfigOptionOverrides(selectedDirectAgentObj, selectedDirectConfigOptions);
+    if (normalized.removedOptionIds.length === 0) return;
+    setSelectedDirectConfigOptions(normalized.configOptions);
+    updateDirectConfig({
+      agentType: selectedDirectAgent,
+      modelId: selectedDirectModel || undefined,
+      permissionMode: selectedDirectPermissionMode || undefined,
+      configOptions: normalized.configOptions,
+    });
+  }, [isDirect, selectedDirectAgentObj, selectedDirectAgent, selectedDirectModel, selectedDirectPermissionMode, selectedDirectConfigOptions]);
+
+  useEffect(() => {
+    if (!isAuto || isDynamicAuto || !selectedAgentObj) return;
+    const normalized = normalizeConfigOptionOverrides(selectedAgentObj, selectedConfigOptions);
+    if (normalized.removedOptionIds.length === 0) return;
+    setSelectedConfigOptions(normalized.configOptions);
+    updateAutoSession({ configOptions: normalized.configOptions });
+  }, [isAuto, isDynamicAuto, selectedAgentObj, selectedConfigOptions]);
+
   const handleSubmit = async () => {
     if (!canSubmit) return;
     const trimmed = content.trim();
@@ -236,11 +259,17 @@ export function ConversationComposer({
           agentType: selectedDirectAgent,
           modelId: selectedDirectModel || undefined,
           permissionMode: selectedDirectPermissionMode || undefined,
-          configOptions: selectedDirectConfigOptions,
+          configOptions: selectedDirectAgentObj
+            ? normalizeConfigOptionOverrides(selectedDirectAgentObj, selectedDirectConfigOptions).configOptions
+            : selectedDirectConfigOptions,
         })
         : undefined,
       autoConfig: isAuto
-        ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession())
+        ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession(
+          !isDynamicAuto && selectedAgentObj
+            ? { configOptions: normalizeConfigOptionOverrides(selectedAgentObj, selectedConfigOptions).configOptions }
+            : {},
+        ))
         : undefined,
     };
     setSubmittingAttachments(true);
@@ -291,11 +320,18 @@ export function ConversationComposer({
     <>
       <div
         data-attachment-dropzone="true"
-        className="flex flex-col gap-4"
+        className={CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName}
         {...dropZoneHandlers}
       >
         {/* Main text input */}
-        <div className="rounded-2xl border border-border/60 bg-card/60 p-4 shadow-sm transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10">
+        <PromptInput
+          value={visibleContent}
+          onValueChange={(value) => setContent(`${committedSlashCommand?.prefix ?? ''}${value}`)}
+          maxHeight={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMaxHeightPx}
+          onSubmit={() => { void handleSubmit(); }}
+          disabled={busy || submittingAttachments}
+          className="rounded-2xl border-border/60 bg-card/60 p-4 shadow-sm transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
+        >
           <SlashCommandMenu
             open={slashCommands.isOpen}
             commands={slashCommands.filteredCommands}
@@ -305,7 +341,7 @@ export function ConversationComposer({
             onSelect={(index) => { slashCommands.selectByIndex(index); }}
             variant="inline"
           >
-            <div className="relative min-h-24 min-w-0">
+            <div className="relative min-w-0">
               {committedSlashCommand ? (
                 <span ref={committedInputLayout.adornmentRef} className="absolute left-0 top-0 z-10 inline-flex">
                   <SlashCommandInputTag
@@ -314,13 +350,11 @@ export function ConversationComposer({
                   />
                 </span>
               ) : null}
-              <textarea
+              <PromptInputTextarea
                 ref={composerTextareaRef}
                 style={committedInputLayout.textareaStyle}
-                className="min-h-24 w-full resize-none bg-transparent p-0 text-sm leading-6 text-foreground placeholder:text-muted-foreground outline-none"
+                className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMinHeightClassName} w-full overflow-y-hidden px-0 py-0 text-sm leading-6 text-foreground placeholder:text-muted-foreground`}
                 placeholder={t('conversation.home.inputPlaceholder')}
-                value={visibleContent}
-                onChange={(e) => setContent(`${committedSlashCommand?.prefix ?? ''}${e.target.value}`)}
                 onKeyDown={handleKeyDown}
                 onPaste={(e) => { void extractPasteFiles(e); }}
                 onDragEnter={dropZoneHandlers.onDragEnter}
@@ -333,11 +367,11 @@ export function ConversationComposer({
           <span className="mt-1 text-xs text-muted-foreground">{t('acp.promptInputHint')}</span>
           <div
             data-slot="conversation-composer-toolbar"
-            className="mt-3 flex flex-wrap items-center gap-3 border-t border-border/40 pt-3"
+            className={CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName}
           >
             <div
               data-slot="conversation-composer-leading-actions"
-              className="flex min-w-0 flex-1 basis-[15rem] flex-wrap items-center gap-2"
+              className={CONVERSATION_HOME_COMPOSER_LAYOUT.leadingActionsClassName}
             >
               <input
                 ref={fileInputRef}
@@ -362,7 +396,7 @@ export function ConversationComposer({
               ) : null}
               {workspaces.length > 1 ? (
                 <Select value={projectId} onValueChange={onWorkspaceChange}>
-                  <SelectTrigger className="h-9 min-w-[140px] max-w-[240px] flex-1 gap-2 rounded-full border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none hover:bg-gold-surface-high/55 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55">
+                  <SelectTrigger className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} h-9 gap-2 rounded-full border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none hover:bg-gold-surface-high/55 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55`}>
                     <span className="flex min-w-0 items-center gap-2">
                       <Folders className="size-3.5 shrink-0 text-muted-foreground/80" />
                       <SelectValue />
@@ -375,7 +409,7 @@ export function ConversationComposer({
                   </SelectContent>
                 </Select>
               ) : (
-                <div className="flex h-9 min-w-[140px] max-w-[240px] flex-1 items-center gap-2 rounded-full border border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground">
+                <div className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-9 items-center gap-2 rounded-full border border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground`}>
                   <Folders className="size-3.5 shrink-0 text-muted-foreground/80" />
                   <span className="truncate">{workspaceName}</span>
                 </div>
@@ -383,7 +417,7 @@ export function ConversationComposer({
             </div>
             <div
               data-slot="conversation-composer-trailing-actions"
-              className="ml-auto flex min-w-0 flex-1 basis-[22rem] flex-wrap items-center justify-end gap-2"
+              className={CONVERSATION_HOME_COMPOSER_LAYOUT.trailingActionsClassName}
             >
               {isDirect ? (
                 <>
@@ -392,6 +426,7 @@ export function ConversationComposer({
                     modelValue={selectedDirectModel}
                     thoughtLevel={directThoughtLevel}
                     thoughtValue={directThoughtLevel ? selectedDirectConfigOptions[directThoughtLevel.id] : null}
+                    triggerClassName={CONVERSATION_HOME_COMPOSER_LAYOUT.configTriggerClassName}
                     onModelChange={(value) => {
                       const modelId = value ?? '';
                       setSelectedDirectModel(modelId);
@@ -421,6 +456,7 @@ export function ConversationComposer({
                     options={directPermissionModes}
                     unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
                     align="end"
+                    triggerClassName={CONVERSATION_HOME_COMPOSER_LAYOUT.configTriggerClassName}
                     onValueChange={(value) => {
                       const permissionMode = value ?? '';
                       setSelectedDirectPermissionMode(permissionMode);
@@ -434,13 +470,13 @@ export function ConversationComposer({
                   />
                 </>
               ) : null}
-              <Button size="sm" className="h-8 shrink-0 gap-1.5 rounded-full px-3" disabled={!canSubmit} onClick={() => { void handleSubmit(); }}>
+              <Button size="sm" className={CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName} disabled={!canSubmit} onClick={() => { void handleSubmit(); }}>
                 <Send className="size-3.5" />
                 {t('acp.send')}
               </Button>
             </div>
           </div>
-        </div>
+        </PromptInput>
 
         {/* Attachment chips */}
         <AttachmentChipsList
@@ -457,7 +493,7 @@ export function ConversationComposer({
         ) : null}
 
         {/* Run mode selector */}
-        <div className="flex items-center gap-3 rounded-xl border border-border/50 bg-card/40 px-4 py-3">
+        <div className={CONVERSATION_HOME_COMPOSER_LAYOUT.optionSectionClassName}>
           <span className="text-xs font-medium text-muted-foreground">{t('conversation.home.runMode')}</span>
           <Tabs value={runMode.mode} onValueChange={(value) => {
             if (value === 'direct') {
@@ -474,7 +510,7 @@ export function ConversationComposer({
               onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession() }, projectId);
             }
           }}>
-            <TabsList className="h-8">
+            <TabsList className={CONVERSATION_HOME_COMPOSER_LAYOUT.optionTabsListClassName}>
               {CONVERSATION_RUN_MODE_ORDER.map((mode) => (
                 <TabsTrigger value={mode} className="px-3 text-xs" key={mode}>
                   {t(`conversation.home.${mode}`)}
@@ -492,11 +528,11 @@ export function ConversationComposer({
         </div>
 
         {isDirect ? (
-          <div className="flex min-h-14 items-center gap-2 rounded-xl border border-border/50 bg-card/40 px-4 py-3">
+          <div className={CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName}>
             <span className="mr-1 text-xs font-medium text-muted-foreground">{t('conversation.home.selectAgent')}</span>
             <TooltipProvider>
-              <Tabs value={selectedDirectAgent} onValueChange={selectDirectAgent}>
-                <TabsList variant="bare" className="h-10">
+              <Tabs value={selectedDirectAgent} onValueChange={selectDirectAgent} className={CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName}>
+                <TabsList variant="bare" className={CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsListClassName}>
                   {agentOptions.map(({ agent, selectable, reason }) => (
                     <Tooltip key={agent.agentType}>
                       <TooltipTrigger asChild>

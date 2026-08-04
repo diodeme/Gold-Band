@@ -10,8 +10,13 @@ import {
   prioritizeConversationSidebarWorkspace,
   selectConversationSidebarRunPauseAction,
   shouldShowConversationSidebarRunList,
+  shouldShowConversationSidebarActivity,
   updateConversationSidebarExpandedTaskKeys,
 } from '@/components/conversation/ConversationSidebar';
+import {
+  applyConversationSidebarTaskActivity,
+  conversationTaskActivityFromLifecycle,
+} from '@/lib/conversation-sidebar-activity';
 
 describe('ConversationSidebar run selection identity', () => {
   it('uses Agent identity for Direct tasks and runtime status for other modes', () => {
@@ -21,6 +26,49 @@ describe('ConversationSidebar run selection identity', () => {
     })).toBe('agent-icon');
     expect(conversationSidebarIdentityKind({ runMode: 'workflow', agentIdentity: null })).toBe('runtime-status');
     expect(conversationSidebarIdentityKind({ runMode: 'auto', agentIdentity: null })).toBe('runtime-status');
+  });
+
+  it('shows activity around the Direct Agent identity only while a canonical task activity exists', () => {
+    const direct = {
+      runMode: 'direct' as const,
+      agentIdentity: { agentType: 'codex-acp', displayName: 'Codex', iconKey: 'codex' },
+    };
+    expect(shouldShowConversationSidebarActivity({ ...direct, activity: { phase: 'running', stopping: false } })).toBe(true);
+    expect(shouldShowConversationSidebarActivity({ ...direct, activity: null })).toBe(false);
+    expect(shouldShowConversationSidebarActivity({
+      runMode: 'workflow',
+      agentIdentity: null,
+      activity: { phase: 'runtime-active', stopping: false },
+    })).toBe(false);
+  });
+
+  it('maps canonical lifecycle into both workspace and pinned sidebar copies', () => {
+    const task = {
+      projectId: 'project-a',
+      taskId: 'task-a',
+      title: 'Direct task',
+      autoTitle: false,
+      runMode: 'direct' as const,
+      runs: [],
+      pinned: true,
+    };
+    const lifecycle = {
+      runtime: { status: 'completed', resumable: false, current: true, active: false, continuable: false, phase: 'terminal' },
+      acp: { status: 'running', phase: 'running' as const, active: true, stopping: false, terminal: false },
+      displayStatus: 'running',
+      runtimeDisplay: { code: 'running', tone: 'running', icon: 'dot', terminal: false, resumable: false, reasonCode: null, blockingError: false },
+      continueKind: null,
+      composer: { mode: 'runtime-active', submitTarget: 'none', processingKind: 'processing', statusKey: null, canStop: true, lockInput: true },
+    };
+    const activity = conversationTaskActivityFromLifecycle(lifecycle);
+    const sidebar = applyConversationSidebarTaskActivity({
+      workspaces: [],
+      pinnedTasks: [task],
+      tasksByWorkspace: { 'project-a': [task] },
+    }, 'project-a', 'task-a', activity);
+
+    expect(sidebar.pinnedTasks[0].activity).toEqual({ phase: 'running', stopping: false });
+    expect(sidebar.tasksByWorkspace['project-a'][0].activity).toEqual({ phase: 'running', stopping: false });
   });
   it('binds an active run to its parent project and task', () => {
     const activeRunKey = conversationSidebarRunKey('project-a', 'task-a', 'run-003');

@@ -625,21 +625,25 @@ impl DesktopState {
             .keys()
             .cloned()
             .collect::<BTreeSet<_>>();
-        for agent_id in agent_ids {
-            if scheduled.contains(&agent_id) {
-                continue;
-            }
-            if let Err(error) = self.refresh_agent_diagnostic_unlocked(&agent_id) {
-                let queued = self
-                    .scheduled_agent_diagnostics
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("agent diagnostic schedule lock poisoned"))?
-                    .contains_key(&agent_id);
-                if !queued {
-                    return Err(error);
-                }
-            }
+        let to_probe = agent_ids
+            .into_iter()
+            .filter(|agent_id| !scheduled.contains(agent_id))
+            .collect::<Vec<_>>();
+        if to_probe.is_empty() {
+            return self.prune_agent_diagnostics();
         }
+        // 并行诊断：provider_doctor_probe 会 spawn 各 agent 的 adapter 子进程（npx，5–15s），
+        // 是慢操作且各 agent 互不影响；并行后总耗时 ≈ 最慢单个，而非逐个累加。
+        // 诊断 map 为 Arc<Mutex> 细粒度锁，持久化为原子写（AtomicWriteFile），并发安全；
+        // 单个 agent 失败不中断其他（保持旧诊断值，下一轮重试）。
+        std::thread::scope(|s| {
+            for agent_id in &to_probe {
+                let agent_id = agent_id.clone();
+                s.spawn(move || {
+                    let _ = self.refresh_agent_diagnostic_unlocked(&agent_id);
+                });
+            }
+        });
         self.prune_agent_diagnostics()
     }
 

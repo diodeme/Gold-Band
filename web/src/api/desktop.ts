@@ -1,7 +1,8 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { convertFileSrc } from '@tauri-apps/api/core';
 
 // ── Metrics Settings ──
 
@@ -17,6 +18,9 @@ export interface MetricsSettingsVm {
 const noopUnlisten = () => {};
 
 export const desktopApi: RuntimeApi = {
+  prepareAppExit() {
+    return invokeCommand('prepare_app_exit');
+  },
   async subscribeAcpSessionUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
     const unlisten: UnlistenFn = await listen<AcpSessionUpdatedEventVm>('gold-band://acp-session-updated', (event) => {
@@ -34,6 +38,13 @@ export const desktopApi: RuntimeApi = {
   async subscribeInterventionNavigate(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
     const unlisten: UnlistenFn = await listen<InterventionNavigateEventVm>('gold-band://intervention-navigate', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  async subscribeWorkspaceFileChanges(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<WorkspaceFileChangedEventVm>('gold-band://workspace-file-changed', (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
@@ -164,6 +175,12 @@ export const desktopApi: RuntimeApi = {
   getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, _fallback, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('get_acp_session', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
   },
+  getAcpActivityDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
+    return invokeCommand<import('../types').AcpActivityDetailVm>('get_acp_activity_detail', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
+  },
+  getAcpToolDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
+    return invokeCommand<import('../types').AcpToolDetailVm>('get_acp_tool_detail', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
+  },
   renewAcpSessionLease(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand<number>('renew_acp_session_lease', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
@@ -208,6 +225,18 @@ export const desktopApi: RuntimeApi = {
   },
   saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) {
     return invokeCommand('save_desktop_preferences', { theme, language, font, useLocalClaude, verboseLogging });
+  },
+  saveDesktopAvatar(input) {
+    return invokeCommand('save_desktop_avatar', { input });
+  },
+  selectRecentDesktopAvatar(kind, avatarId) {
+    return invokeCommand('select_recent_desktop_avatar', { kind, avatarId });
+  },
+  saveDesktopAvatarShape(kind, shape) {
+    return invokeCommand('save_desktop_avatar_shape', { kind, shape });
+  },
+  clearDesktopAvatar(kind) {
+    return invokeCommand('clear_desktop_avatar', { kind });
   },
   saveUpdaterSettings(overrideUrl: string | null) {
     const normalized = overrideUrl?.trim() ? overrideUrl.trim() : null;
@@ -318,6 +347,50 @@ export const desktopApi: RuntimeApi = {
   saveLastConversationWorkspace(projectId) {
     return invokeCommand('save_last_conversation_workspace', { projectId });
   },
+  listWorkspaceDirectory(projectId, relativePath) {
+    return invokeCommand('list_workspace_directory', { input: { projectId, relativePath } });
+  },
+  searchWorkspaceFiles(projectId, query, requestId, limit) {
+    return invokeCommand('search_workspace_files', { input: { projectId, query, requestId, limit } });
+  },
+  resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath = null) {
+    return invokeCommand('resolve_workspace_file_link', { input: { projectId, rawHref, baseCanonicalPath } });
+  },
+  readFileResource(projectId, canonicalPath, externalAccessToken = null, preferSource = false) {
+    return invokeCommand('read_file_resource', { input: { projectId, canonicalPath, externalAccessToken, preferSource } });
+  },
+  resolveMarkdownImage(input) {
+    return invokeCommand('resolve_markdown_image', { input });
+  },
+  writeFileResource(input) {
+    return invokeCommand('write_file_resource', { input });
+  },
+  releaseWorkspaceFilePreview(token) {
+    return invokeCommand('release_workspace_file_preview', { input: { token } });
+  },
+  renewExternalFileAccess(token) {
+    return invokeCommand('renew_external_file_access', { input: { token } });
+  },
+  releaseExternalFileAccess(token) {
+    return invokeCommand('release_external_file_access', { input: { token } });
+  },
+  startWorkspaceFileWatch(projectId) {
+    return invokeCommand('start_workspace_file_watch', { input: { projectId } });
+  },
+  stopWorkspaceFileWatch(projectId) {
+    return invokeCommand('stop_workspace_file_watch', { input: { projectId } });
+  },
+  workspaceFilePreviewUrl(token, staticFrame = false) {
+    return convertFileSrc(staticFrame ? `${token}/static` : token, 'gold-band-preview');
+  },
+  async openExternalUrl(url) {
+    const { openUrl } = await import('@tauri-apps/plugin-opener');
+    await openUrl(url);
+  },
+  async openFileWithSystemApp(path) {
+    const { openPath } = await import('@tauri-apps/plugin-opener');
+    await openPath(path);
+  },
   async pickAttachmentFiles() {
     const { open } = await import('@tauri-apps/plugin-dialog');
     const result = await open({ multiple: true });
@@ -411,7 +484,7 @@ export const desktopApi: RuntimeApi = {
   submitFeedback(input: import('../types').FeedbackInput) {
     return invokeCommand('submit_feedback', { input });
   },
-  previewFeedbackSessionArchive(sessionWorkspace, sessionTaskId) {
-    return invokeCommand('preview_feedback_session_archive', { sessionWorkspace, sessionTaskId });
+  previewFeedbackSessionArchive(projectId, taskId) {
+    return invokeCommand('preview_feedback_session_archive', { projectId, taskId });
   },
 };

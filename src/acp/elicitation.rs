@@ -1,5 +1,6 @@
 use std::{fs, thread, time::Duration};
 
+use agent_client_protocol_schema::v1::CreateElicitationRequest;
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
@@ -7,8 +8,7 @@ use serde_json::Value;
 
 use crate::{
     acp::events::{
-        append_ui_event, current_timestamp, elicitation_response_event, latest_timeline_source_seq,
-        load_timeline_items, write_timeline_items,
+        current_timestamp, elicitation_response_event, load_timeline_items, write_timeline_items,
     },
     storage::{ensure_parent_dir, read_json, write_json},
 };
@@ -31,8 +31,7 @@ pub enum ElicitationAction {
 pub struct PendingElicitationState {
     pub elicitation_id: String,
     pub jsonrpc_id: Value,
-    pub message: String,
-    pub requested_schema: Value,
+    pub request: CreateElicitationRequest,
     pub created_at: String,
 }
 
@@ -141,6 +140,7 @@ pub fn cancel_pending_elicitation_requests(
     attempt_dir: &Utf8Path,
     decided_at: String,
 ) -> Result<()> {
+    crate::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
     let Ok(entries) = fs::read_dir(attempt_dir.as_std_path()) else {
         return Ok(());
     };
@@ -188,13 +188,28 @@ pub fn upsert_elicitation_response_event(
     action: &ElicitationAction,
     content: Option<Value>,
 ) -> Result<()> {
-    let timeline_path = attempt_dir.join("acp.timeline.jsonl");
-    let events_path = attempt_dir.join("acp.events.jsonl");
-    let source_seq = if timeline_path.exists() || !events_path.exists() {
-        latest_timeline_source_seq(&timeline_path) + 1
-    } else {
-        legacy_event_count(&events_path) + 1
-    };
+    crate::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
+    let all_timeline_events = crate::acp::branches::load_all_branch_events(attempt_dir)?;
+    let source_seq = all_timeline_events
+        .iter()
+        .map(|event| event.ended_seq.unwrap_or(event.seq))
+        .max()
+        .unwrap_or_default()
+        + 1;
+    let request = all_timeline_events.iter().find(|event| {
+        event.kind == "elicitationRequest"
+            && (event.id == elicitation_id
+                || event
+                    .raw
+                    .as_ref()
+                    .and_then(|raw| raw.get("elicitationId"))
+                    .and_then(Value::as_str)
+                    == Some(elicitation_id))
+    });
+    let branch_id = request
+        .map(crate::acp::branches::event_branch_id)
+        .unwrap_or_else(|| crate::acp::branches::ROOT_BRANCH_ID.to_string());
+    let timeline_path = crate::acp::branches::branch_timeline_path(attempt_dir, &branch_id);
     let action_value = match action {
         ElicitationAction::Accept => "accept",
         ElicitationAction::Decline => "decline",
@@ -205,14 +220,18 @@ pub fn upsert_elicitation_response_event(
         action_value.to_string(),
         content,
     );
+    if let (Some(request_meta), Some(event_raw)) = (
+        request
+            .and_then(|request| request.raw.as_ref())
+            .and_then(|raw| raw.get("_meta")),
+        event.raw.as_mut(),
+    ) {
+        event_raw["_meta"] = request_meta.clone();
+    }
     event.started_seq = Some(source_seq);
     event.ended_seq = Some(source_seq);
     event.started_at = Some(event.timestamp.clone());
     event.ended_at = Some(event.timestamp.clone());
-
-    if events_path.exists() && !timeline_path.exists() {
-        append_ui_event(&events_path, &event)?;
-    }
 
     let mut items = load_timeline_items(&timeline_path)?;
     if let Some(existing) = items.iter_mut().find(|item| item.id == event.id) {
@@ -275,16 +294,6 @@ fn sanitize_id(id: &str) -> String {
         .collect()
 }
 
-fn legacy_event_count(path: &Utf8Path) -> u64 {
-    let Ok(content) = fs::read_to_string(path.as_std_path()) else {
-        return 0;
-    };
-    content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .count() as u64
-}
-
 fn remove_file_if_exists(path: &Utf8Path) -> Result<()> {
     match fs::remove_file(path.as_std_path()) {
         Ok(()) => Ok(()),
@@ -304,14 +313,76 @@ mod tests {
         (dir, path)
     }
 
+    fn test_elicitation_request(message: &str) -> CreateElicitationRequest {
+        serde_json::from_value(serde_json::json!({
+            "mode": "form",
+            "sessionId": "session-test",
+            "toolCallId": "tool-test",
+            "message": message,
+            "requestedSchema": {
+                "type": "object",
+                "properties": {},
+                "_meta": { "schemaSource": "test" }
+            },
+            "_meta": { "requestSource": "test" }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn deserializes_claude_agent_acp_044_form_request_without_line_parsing() {
+        let message = "Round 11 | 组件：反馈列表管理页 + 反馈详情页 | 歧义：23.5%\n\n管理端 API 与菜单的权限标识如何设计？";
+        let raw = serde_json::json!({
+            "message": message,
+            "mode": "form",
+            "requestedSchema": {
+                "properties": {
+                    "customAnswer": {
+                        "description": "Type your own answer instead of choosing an option above (optional).",
+                        "title": "Other",
+                        "type": "string"
+                    },
+                    "question_0": {
+                        "oneOf": [{
+                            "const": "admin-only 无 perm",
+                            "title": "admin-only 无 perm — 菜单放 admin 块"
+                        }],
+                        "title": "管理端权限标识",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "sessionId": "dff9dc64-77bb-4562-9fa5-960516f8540d",
+            "toolCallId": "call_a05f15e6f68b4cc78b3b4014"
+        });
+
+        let request: CreateElicitationRequest = serde_json::from_value(raw).unwrap();
+        let serialized = serde_json::to_value(&request).unwrap();
+
+        assert_eq!(request.message, message);
+        assert_eq!(
+            serialized["sessionId"],
+            "dff9dc64-77bb-4562-9fa5-960516f8540d"
+        );
+        assert_eq!(serialized["toolCallId"], "call_a05f15e6f68b4cc78b3b4014");
+        assert_eq!(
+            serialized["requestedSchema"]["properties"]["customAnswer"]["title"],
+            "Other"
+        );
+        assert_eq!(
+            serialized["requestedSchema"]["properties"]["question_0"]["oneOf"][0]["const"],
+            "admin-only 无 perm"
+        );
+    }
+
     #[test]
     fn write_and_read_pending_elicitation() {
         let (_dir, attempt_dir) = dummy_attempt_dir();
         let state = PendingElicitationState {
             elicitation_id: "elicit-abc123".to_string(),
             jsonrpc_id: serde_json::json!(42),
-            message: "请选择数据库".to_string(),
-            requested_schema: serde_json::json!({"type": "object"}),
+            request: test_elicitation_request("请选择数据库"),
             created_at: "2026-01-01T00:00:00Z".to_string(),
         };
         write_pending_elicitation(&attempt_dir, &state).unwrap();
@@ -319,7 +390,11 @@ mod tests {
         assert!(path.exists());
         let read_back: PendingElicitationState = read_json(&path).unwrap();
         assert_eq!(read_back.elicitation_id, "elicit-abc123");
-        assert_eq!(read_back.message, "请选择数据库");
+        assert_eq!(read_back.request.message, "请选择数据库");
+        let request = serde_json::to_value(read_back.request).unwrap();
+        assert_eq!(request["toolCallId"], "tool-test");
+        assert_eq!(request["_meta"]["requestSource"], "test");
+        assert_eq!(request["requestedSchema"]["_meta"]["schemaSource"], "test");
     }
 
     #[test]
@@ -362,8 +437,7 @@ mod tests {
             &PendingElicitationState {
                 elicitation_id: elicitation_id.to_string(),
                 jsonrpc_id: serde_json::json!(42),
-                message: "Continue the completed session".to_string(),
-                requested_schema: serde_json::json!({ "type": "object" }),
+                request: test_elicitation_request("Continue the completed session"),
                 created_at: "1Z".to_string(),
             },
         )
@@ -491,8 +565,7 @@ mod tests {
             &PendingElicitationState {
                 elicitation_id: "elicit-cancel-me".to_string(),
                 jsonrpc_id: serde_json::json!(1),
-                message: "test".to_string(),
-                requested_schema: serde_json::json!({}),
+                request: test_elicitation_request("test"),
                 created_at: "t".to_string(),
             },
         )
@@ -529,8 +602,7 @@ mod tests {
             &PendingElicitationState {
                 elicitation_id: elicitation_id.to_string(),
                 jsonrpc_id: serde_json::json!(1),
-                message: "Question".to_string(),
-                requested_schema: serde_json::json!({}),
+                request: test_elicitation_request("Question"),
                 created_at: "1Z".to_string(),
             },
         )

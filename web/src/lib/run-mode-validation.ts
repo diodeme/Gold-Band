@@ -139,28 +139,15 @@ export function validateAutoConfig(
     if (availableAgents.length === 0) {
       issues.push(t('runMode.validationDynamicAvailableAgentsRequired'));
     }
-    const hasRoutingPrompt = Boolean(config?.routingPrompt?.trim());
     const seen = new Set<string>();
     for (const item of availableAgents) {
       const provider = item.provider.trim();
       if (seen.has(provider)) issues.push(t('runMode.validationDynamicAgentDuplicated', { agent: provider }));
       seen.add(provider);
       requireReadyAgent(provider, t('workflowEditor.dynamicAvailableAgents'));
-      if (!hasRoutingPrompt && !item.model?.trim()) {
-        issues.push(t('runMode.validationDynamicAgentModelRequiredWithoutRouting', { agent: provider }));
-      }
     }
   } else {
     requireReadyAgent(config?.agentType, t('runMode.agent'));
-    const agent = config?.agentType ? agentById.get(config.agentType) : undefined;
-    if (agent) {
-      const stale = pruneStaleConfigOptionOverrides(agent, config?.configOptions);
-      if (stale.length > 0 && config?.configOptions) {
-        // Agent config options changed since the user last saved (e.g. after an adapter upgrade).
-        // Drop the stale entries instead of blocking the session.
-        for (const optionId of stale) delete config.configOptions[optionId];
-      }
-    }
   }
 
   const selectedWorkflowIds = config?.allowedWorkflows?.map((item) => item.workflowId.trim()).filter(Boolean) ?? [];
@@ -220,26 +207,27 @@ export function validateDirectConfig(
   if (config?.permissionMode && !(agent.supportedModes ?? []).some((mode) => mode.id === config.permissionMode)) {
     issues.push(t('conversation.validation.permission.not-found'));
   }
-  const stale = pruneStaleConfigOptionOverrides(agent, config?.configOptions);
-  if (stale.length > 0 && config?.configOptions) {
-    for (const optionId of stale) delete config.configOptions[optionId];
-  }
   return issues;
 }
 
 /**
- * Returns optionIds from `overrides` that the agent no longer exposes (or whose
- * stored value is no longer valid). Callers prune these from persisted config
- * rather than blocking the session when an agent upgrades its option set.
+ * Produces a valid override set without mutating persisted or React-owned
+ * objects. Agent upgrades may remove options or values; those stale entries are
+ * cleanup data, not validation failures.
  */
-function pruneStaleConfigOptionOverrides(
+export function normalizeConfigOptionOverrides(
   agent: ManagedAgentVm,
   overrides: Record<string, string> | null | undefined,
-): string[] {
-  return Object.entries(overrides ?? {}) 
-    .filter(([optionId, value]) => {
-      const option = agent.configOptions?.find((candidate) => candidate.id === optionId);
-      return !(option?.options.some((candidate) => candidate.value === value) ?? false);
-    })
-    .map(([optionId]) => optionId);
+): { configOptions: Record<string, string>; removedOptionIds: string[] } {
+  const configOptions: Record<string, string> = {};
+  const removedOptionIds: string[] = [];
+  for (const [optionId, value] of Object.entries(overrides ?? {})) {
+    const option = agent.configOptions?.find((candidate) => candidate.id === optionId);
+    if (option?.options.some((candidate) => candidate.value === value)) {
+      configOptions[optionId] = value;
+    } else {
+      removedOptionIds.push(optionId);
+    }
+  }
+  return { configOptions, removedOptionIds };
 }

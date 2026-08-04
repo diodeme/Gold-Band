@@ -14,6 +14,60 @@ conversationAutoTitleMaxChars = 18
 notificationAutoDismissTargetSecs = 20
 requireLocalClaudeExecutable = false
 
+[workspaceLayout]
+shellMinWidth = 480
+shellMinHeight = 680
+
+[workspaceLayout.rightWorkspace]
+minWidth = 320
+defaultWidth = 440
+maxWidth = 960
+
+[workspaceLayout.rightWorkspace.file]
+preferredWidth = 760
+splitMinWidth = 540
+treeDefaultWidth = 280
+treeMinWidth = 200
+treeMaxWidth = 420
+
+[workspaceLayout.conversation]
+centerMinWidth = 360
+centerAutoCollapseWidth = 420
+windowMinWidth = 480
+
+[workspaceLayout.contextCards]
+centerMinWidth = 520
+centerAutoCollapseWidth = 520
+windowMinWidth = 520
+
+[workspaceLayout.workflowCanvas]
+centerMinWidth = 640
+centerAutoCollapseWidth = 640
+windowMinWidth = 640
+
+[workspaceLayout.settings]
+centerMinWidth = 480
+centerAutoCollapseWidth = 480
+windowMinWidth = 480
+
+[workspaceFiles]
+autoSaveDelayMs = 300
+searchDebounceMs = 200
+searchResultLimit = 500
+textEditableMaxBytes = 2097152
+textHighlightMaxChars = 120000
+textReadOnlyMaxBytes = 10485760
+imagePreviewMaxBytes = 20971520
+imagePreviewMaxPixels = 40000000
+contentCacheEntries = 12
+contentCacheMaxBytes = 16777216
+watchDebounceMs = 150
+previewTokenTtlSeconds = 300
+externalAccessGrantTtlSeconds = 1800
+markdownLivePreviewMaxChars = 200000
+markdownEmbeddedImageLimit = 100
+markdownEmbeddedImageMaxConcurrent = 4
+
 [permissionModeMapping.claude-acp]
 read_only = "plan"
 ask = "acceptEdits"
@@ -22,4 +76,4 @@ full_access = "bypassPermissions"
 [permissionModeMapping.codex-acp]
 read_only = "read-only"
 ask = "auto"
-full_access = "full-access"
+full_access = "agent-full-access"

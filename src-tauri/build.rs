@@ -16,6 +16,8 @@ struct ChannelConfig {
     updater_public_key: String,
     allow_http_updater: bool,
     metrics_enabled: bool,
+    #[serde(default)]
+    feedback_enabled: bool,
     metrics_toggle_locked: bool,
     #[serde(default)]
     metrics_base_url: String,
@@ -90,6 +92,10 @@ fn main() {
     println!(
         "cargo:rustc-env=GOLD_BAND_METRICS_ENABLED={}",
         config.metrics_enabled
+    );
+    println!(
+        "cargo:rustc-env=GOLD_BAND_FEEDBACK_ENABLED={}",
+        config.feedback_enabled
     );
     println!(
         "cargo:rustc-env=GOLD_BAND_METRICS_TOGGLE_LOCKED={}",

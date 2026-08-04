@@ -750,7 +750,7 @@ Direct runtime composer 继续复用 `ACPChatDialog`：
 - Direct 不显示停止/暂停黄点。
 - Direct 单轮失败不显示长期红点。
 - 当前选中态通过整行背景表达。
-- Direct 正在后台回复时，可在 Agent icon 外显示轻量主色 pulse halo；不使用绿/黄/红语义。
+- Direct 正在回复或停止当前回复时，在 Agent icon 外显示轻量主色旋转环；不使用绿/黄/红语义。状态来源是后端 task 级 canonical activity，必须覆盖首轮 runtime active 与 completed run 上的 same-session ACP follow-up，不能只读取 `latestRun.status`。
 - relative time 来自 Direct `lastActivityAt`。
 
 ### 11.2 Workflow / AUTO 保持原状态点
@@ -1241,6 +1241,7 @@ web/tests/*
 - [x] Direct 无可选 Agent 时展示提示文案和“+”入口，点击直接进入 Agent 管理页。
 - [x] Direct 运行时隐藏 workflow、session tree、run outcome 和重跑心智，header 展示 Agent identity。
 - [x] Direct 侧边栏 task 行和搜索结果使用 Agent icon；身份槽位与 Workflow/AUTO 状态点等宽，标题起点对齐，最近排序与相对时间使用 `lastActivityAt`。
+- [x] Direct 侧边栏补齐 task 级活跃 turn 旋转环；后端聚合 runtime status 与 per-attempt live prompt activity，前端在 submit/stop lifecycle snapshot 和 live lifecycle 更新时同步置顶区与 workspace 区，completed run 追问不再丢失运行态提示。
 - [x] Direct 侧边栏不展示 run 子列表；Direct ACP header 不展示无意义的“系统提示”按钮。
 - [x] 创建接口增加 Direct Agent/model/permission 后端校验，错误以结构化 code 返回。
 - [x] profile resolver 按 prompt envelope 分流：`runtime-managed` 必须解析角色，`raw-agent` 跳过角色解析且禁止绑定 profile；Direct 创建不再触发 `direct-agent is not associated with role`。

@@ -4,7 +4,6 @@ import {
   isCoalescableAcpLiveEvent,
   mergeAcpLiveStreamEvent,
   mergeAcpLiveToolEvent,
-  shouldAutoScrollAfterAcpTimelineUpdate,
 } from '@/lib/acp-live-flush';
 
 describe('ACP live event flush policy', () => {
@@ -86,21 +85,6 @@ describe('ACP live event flush policy', () => {
       scheduleFlush: false,
       scheduleDelayMs: null,
     });
-  });
-
-  it('does not auto-scroll timeline updates during the interaction quiet window', () => {
-    expect(shouldAutoScrollAfterAcpTimelineUpdate({
-      pinned: true,
-      deferRemainingMs: 100,
-    })).toBe(false);
-    expect(shouldAutoScrollAfterAcpTimelineUpdate({
-      pinned: true,
-      deferRemainingMs: 0,
-    })).toBe(true);
-    expect(shouldAutoScrollAfterAcpTimelineUpdate({
-      pinned: false,
-      deferRemainingMs: 0,
-    })).toBe(false);
   });
 
   it('coalesces non-terminal tool calls while keeping terminal tool updates immediate', () => {

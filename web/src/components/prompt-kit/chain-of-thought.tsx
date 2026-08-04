@@ -21,6 +21,26 @@ export const ChainOfThoughtItem = ({
   </div>
 )
 
+export type ChainOfThoughtTextProps = Omit<React.ComponentProps<"div">, "children"> & {
+  children: string
+}
+
+export const ChainOfThoughtText = ({
+  children,
+  className,
+  ...props
+}: ChainOfThoughtTextProps) => (
+  <div
+    className={cn(
+      "min-w-0 max-w-full whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]",
+      className
+    )}
+    {...props}
+  >
+    {children.trim()}
+  </div>
+)
+
 export type ChainOfThoughtTriggerProps = React.ComponentProps<
   typeof CollapsibleTrigger
 > & {

@@ -8,6 +8,7 @@ const { streamdownRender } = vi.hoisted(() => ({ streamdownRender: vi.fn() }));
 
 vi.mock('streamdown', () => ({
   defaultUrlTransform: (url: string) => url,
+  parseMarkdownIntoBlocks: (markdown: string) => [markdown],
   Streamdown: ({ children }: { children: React.ReactNode }) => {
     streamdownRender();
     return <div>{children}</div>;

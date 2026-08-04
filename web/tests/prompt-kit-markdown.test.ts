@@ -7,6 +7,8 @@ import {
   advanceStreamingMarkdownPresentation,
   createStreamingMarkdownPresentation,
   normalizeStreamingMarkdownPrefix,
+  STREAMING_MARKDOWN_FINAL_CATCH_UP_MS,
+  STREAMING_MARKDOWN_MAX_CHARS_PER_SECOND,
   streamingMarkdownPresentationText,
   syncStreamingMarkdownPresentation,
 } from '@/lib/streaming-markdown';
@@ -52,7 +54,7 @@ describe('prompt-kit Markdown', () => {
     expect(renderedText(html)).toBe('实');
   });
 
-  it('only puts the paced visible prefix into layout while streaming', () => {
+  it('only puts the paced visible Markdown prefix into layout while streaming', () => {
     const html = renderToStaticMarkup(createElement(Markdown, {
       children: '**顺滑出现**\n\n第二段',
       streaming: true,
@@ -65,10 +67,9 @@ describe('prompt-kit Markdown', () => {
     expect(html).not.toContain('第二段');
   });
 
-  it('keeps Streamdown animation metadata disabled during streaming', () => {
+  it('keeps Streamdown animation metadata disabled after streaming finishes', () => {
     const html = renderToStaticMarkup(createElement(Markdown, {
       children: '正在增长的内容',
-      streaming: true,
     }));
 
     expect(html).not.toContain('data-sd-animate');
@@ -109,6 +110,68 @@ describe('prompt-kit Markdown', () => {
     presentation = syncStreamingMarkdownPresentation(presentation, canonical, false);
 
     expect(streamingMarkdownPresentationText(presentation, false)).toBe(canonical);
+  });
+
+  it('finishes a short final backlog with the existing typewriter cadence', () => {
+    const boundaryLength =
+      (STREAMING_MARKDOWN_FINAL_CATCH_UP_MS
+        * STREAMING_MARKDOWN_MAX_CHARS_PER_SECOND)
+      / 1000;
+    const canonical = `\u4e2d${'a'.repeat(boundaryLength)}`;
+    const streamingPresentation = createStreamingMarkdownPresentation(
+      canonical,
+      true,
+    );
+
+    const finishedPresentation = syncStreamingMarkdownPresentation(
+      streamingPresentation,
+      canonical,
+      false,
+    );
+
+    expect(finishedPresentation.offset).toBe(streamingPresentation.offset);
+    expect(finishedPresentation.offset).toBeLessThan(canonical.length);
+  });
+
+  it('shows the final Markdown immediately when the finished backlog exceeds 500ms', () => {
+    const boundaryLength =
+      (STREAMING_MARKDOWN_FINAL_CATCH_UP_MS
+        * STREAMING_MARKDOWN_MAX_CHARS_PER_SECOND)
+      / 1000;
+    const canonical = `\u4e2d${'\ud83e\udde0'.repeat(boundaryLength + 1)}`;
+    const streamingPresentation = createStreamingMarkdownPresentation(
+      canonical,
+      true,
+    );
+
+    const finishedPresentation = syncStreamingMarkdownPresentation(
+      streamingPresentation,
+      canonical,
+      false,
+    );
+
+    expect(finishedPresentation.offset).toBe(canonical.length);
+    expect(finishedPresentation.carry).toBe(0);
+    expect(streamingMarkdownPresentationText(finishedPresentation, false)).toBe(
+      canonical,
+    );
+  });
+
+  it('never skips a large backlog while the response is still streaming', () => {
+    const canonical = `\u4e2d${'a'.repeat(500)}`;
+    const streamingPresentation = createStreamingMarkdownPresentation(
+      canonical,
+      true,
+    );
+
+    const syncedPresentation = syncStreamingMarkdownPresentation(
+      streamingPresentation,
+      canonical,
+      true,
+    );
+
+    expect(syncedPresentation).toBe(streamingPresentation);
+    expect(syncedPresentation.offset).toBeLessThan(canonical.length);
   });
 
   it('does not leak renderer metadata into code DOM attributes', () => {

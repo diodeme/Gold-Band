@@ -9,7 +9,7 @@ import {
   toggleMcpServer, checkMcpServerHealth, listMcpTools,
   listSkills, listProjectSkills, readSkill, writeSkill, deleteSkill, getSkillSyncStatus,
   checkSkillNameConflict, updateSkillSyncTargets,
-  getConversationWorkspaces, getAgentRegistry,
+  getConversationWorkspaces, doctorAgent,
 } from '../api';
 import { displayAppError } from '../i18n';
 import type {
@@ -57,7 +57,12 @@ type ContextTab = 'profiles' | 'mcp' | 'skills';
 type ProfileListTab = 'built-in' | 'custom';
 const pageSizes = [6, 12, 24];
 
-export function ContextManagementPage() {
+interface ContextManagementPageProps {
+  agentRegistry: AgentRegistryVm | null;
+  onAgentRegistryChange: (registry: AgentRegistryVm) => void;
+}
+
+export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: ContextManagementPageProps) {
   const { t } = useTranslation();
   const [vm, setVm] = useState<ProfileListVm | null>(null);
   const [loading, setLoading] = useState(false);
@@ -131,7 +136,7 @@ export function ContextManagementPage() {
   const [skillDeleting, setSkillDeleting] = useState(false);
   const [skillSyncPendingKey, setSkillSyncPendingKey] = useState<string | null>(null);
   const [skillEditWsPath, setSkillEditWsPath] = useState<string | null>(null);
-  const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
+  const [mcpDiagnosingAgent, setMcpDiagnosingAgent] = useState<string | null>(null);
 
   const [skillTab, setSkillTab] = useState<'global' | 'project'>('global');
   const [skillQuery, setSkillQuery] = useState('');
@@ -240,7 +245,6 @@ export function ContextManagementPage() {
   useEffect(() => {
     if (!needsSkillContext) return;
     getConversationWorkspaces().then(setWorkspaces).catch(() => setWorkspaces([]));
-    getAgentRegistry().then(setAgentRegistry).catch(() => setAgentRegistry(null));
   }, [needsSkillContext]);
 
   const refresh = async () => {
@@ -649,6 +653,29 @@ export function ContextManagementPage() {
                   }}
                   onEdit={s.managed ? undefined : () => { setMcpEditTarget(s); setMcpJsonContent(mcpServerToJson(s)); setMcpTransportTab(s.transport as 'stdio' | 'http' | 'sse'); setMcpSheetOpen(true); }}
                   onDelete={s.managed ? undefined : () => setMcpDeleteTarget(s)}
+                  agentCompatLoading={!agentRegistry}
+                  agentCompatibility={(agentRegistry?.agents ?? []).map((a) => ({
+                    agentType: a.agentType,
+                    label: a.displayName,
+                    iconKey: a.iconKey,
+                    mcpHttpSupported: a.mcpHttpSupported,
+                    mcpSseSupported: a.mcpSseSupported,
+                    diagnosticAvailable: a.diagnostic?.available,
+                    diagnosticReason: a.diagnostic?.reason,
+                  }))}
+                  diagnosingAgentType={mcpDiagnosingAgent}
+                  onDiagnoseAgent={async (agentType) => {
+                    if (mcpDiagnosingAgent) return;
+                    setMcpDiagnosingAgent(agentType);
+                    try {
+                      const registry = await doctorAgent(agentType);
+                      onAgentRegistryChange(registry);
+                    } catch {
+                      // 忽略诊断错误；用户可重试
+                    } finally {
+                      setMcpDiagnosingAgent(null);
+                    }
+                  }}
                 />
               ))}
             </div>

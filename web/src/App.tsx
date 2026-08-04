@@ -23,14 +23,18 @@ import {
   getRoundDetail,
   getTaskList,
   getWorkflow,
+  clearDesktopAvatar,
   pauseRun,
   pinConversation,
   rerunConversationTask,
   removeRecentWorkspace,
   saveDesktopPreferences,
+  saveDesktopAvatar,
+  saveDesktopAvatarShape,
   saveUpdaterSettings,
   saveTaskWorkflow,
   selectRecentWorkspace,
+  selectRecentDesktopAvatar,
   startRun,
   unpinConversation,
   updateTaskMetadata,
@@ -46,11 +50,13 @@ import {
   recordActivity,
 } from './api';
 import { isTauriRuntime } from './api/shared';
+import { applyConversationSidebarTaskActivity, conversationTaskActivityFromLifecycle } from './lib/conversation-sidebar-activity';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Breadcrumbs } from './components/Breadcrumbs';
 import { Button } from '@/components/ui/button';
 import { X } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { WindowCloseCoordinator } from '@/components/WindowCloseCoordinator';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
@@ -112,12 +118,30 @@ import {
   type ConversationRunModesByWorkspace,
 } from '@/lib/conversation-run-mode-config';
 import { ConversationRunModePersistence } from '@/lib/conversation-run-mode-persistence';
+import { createDefaultAvatarPreferences } from '@/lib/avatar';
+import { AvatarPreferencesProvider } from '@/components/avatar/AvatarPreferencesContext';
+import {
+  ConversationWorkspaceStore,
+  createConversationWorkspaceScope,
+  createDraftConversationWorkspaceScope,
+} from '@/components/workspace/right-workspace-context';
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
+import {
+  INITIAL_DESKTOP_WINDOW_MINIMUM_SYNC_STATE,
+  syncDesktopWindowMinimum,
+  type DesktopWindowMinimumSyncState,
+} from '@/lib/desktop-window-layout';
+import {
+  FALLBACK_WORKSPACE_FILES,
+  FALLBACK_WORKSPACE_LAYOUT,
+  workspaceLayoutProfileForSurface,
+} from '@/components/workspace/workspace-layout';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
   AppConfigVm,
   AppInfoVm,
+  ConversationAttemptLifecycleVm,
   ConversationPage,
   ConversationRunModeVm,
   ConversationRunVm,
@@ -145,9 +169,12 @@ import type {
   WorkflowDsl,
   WorkflowVm,
   InterventionNavigateEventVm,
+  AvatarKind,
+  AvatarShape,
+  SaveDesktopAvatarInput,
 } from './types';
 
-const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false };
+const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
 const defaultUpdaterSettings: UpdaterSettingsVm = {
   channel: 'default',
   builtInUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
@@ -177,6 +204,7 @@ const defaultUpdateBadges: UpdateBadgeStateVm = {
 };
 const defaultAppInfo: AppInfoVm = {
   channel: 'default',
+  feedbackEnabled: false,
   appName: 'Gold Band',
   appKey: 'gold-band',
   configDirName: '.gold-band',
@@ -184,6 +212,8 @@ const defaultAppInfo: AppInfoVm = {
 const defaultAppConfig: AppConfigVm = {
   acpSessionTitleRefreshEnabled: false,
   acpChatEventPageSize: 360,
+  workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
+  workspaceFiles: FALLBACK_WORKSPACE_FILES,
 };
 type RefreshMode = 'initial' | 'manual' | 'background';
 type VisibleRefreshMode = Exclude<RefreshMode, 'background'>;
@@ -228,6 +258,14 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof localStorage !== 'undefined' && localStorage.getItem('gold-band-sidebar-collapsed') === 'true');
   const [bootstrap, setBootstrap] = useState<AppBootstrapVm | null>(null);
   const windowRevealedRef = useRef(false);
+  const windowLayoutSyncRef = useRef<Promise<void>>(Promise.resolve());
+  const windowMinimumSyncStateRef = useRef<DesktopWindowMinimumSyncState>(
+    INITIAL_DESKTOP_WINDOW_MINIMUM_SYNC_STATE,
+  );
+  const activeWindowLayoutRef = useRef<{
+    layout: AppConfigVm['workspaceLayout'];
+    profile: AppConfigVm['workspaceLayout']['conversation'];
+  } | null>(null);
   const [primaryModule, setPrimaryModule] = useState<PrimaryModule>(initialRoute.module);
   const [taskPage, setTaskPage] = useState<TaskPage>(initialRoute.taskPage);
   const [conversationPage, setConversationPage] = useState<ConversationPage>(initialRoute.conversationPage);
@@ -240,6 +278,7 @@ export function App() {
   const [conversationRunModePersistence] = useState(
     () => new ConversationRunModePersistence(saveConversationRunMode),
   );
+  const [conversationWorkspaceStore] = useState(() => new ConversationWorkspaceStore());
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const [conversationRunStopping, setConversationRunStopping] = useState(false);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
@@ -287,6 +326,23 @@ export function App() {
     const nextSidebar = prioritizeConversationSidebarWorkspace(sidebar, activeProjectId);
     conversationSidebarRef.current = nextSidebar;
     setConversationSidebar(nextSidebar);
+  }, []);
+
+  const applyConversationTaskActivity = useCallback((
+    projectId: string,
+    taskId: string,
+    lifecycle: ConversationAttemptLifecycleVm,
+  ) => {
+    setConversationSidebar((current) => {
+      const next = applyConversationSidebarTaskActivity(
+        current,
+        projectId,
+        taskId,
+        conversationTaskActivityFromLifecycle(lifecycle),
+      );
+      conversationSidebarRef.current = next;
+      return next;
+    });
   }, []);
 
   // Derive active workspace: explicit local state > persisted lastActiveWorkspaceId > first workspace
@@ -411,6 +467,19 @@ export function App() {
   const showUpdatesSectionDot = availableUpdateVersion !== null;
   const appInfo = bootstrap?.appInfo ?? defaultAppInfo;
   const appConfig = bootstrap?.appConfig ?? defaultAppConfig;
+  const activeWorkspaceLayoutProfile = useMemo(
+    () => workspaceLayoutProfileForSurface({
+      uiMode,
+      conversationPage,
+      primaryModule,
+      layout: appConfig.workspaceLayout,
+    }),
+    [appConfig.workspaceLayout, conversationPage, primaryModule, uiMode],
+  );
+  activeWindowLayoutRef.current = {
+    layout: appConfig.workspaceLayout,
+    profile: activeWorkspaceLayoutProfile,
+  };
   const shouldShowUpdateAnnouncement = useMemo(
     () => availableUpdateVersion !== null && updateBadges.announcementClosedVersion !== availableUpdateVersion,
     [availableUpdateVersion, updateBadges.announcementClosedVersion],
@@ -439,16 +508,71 @@ export function App() {
   }, [sidebarCollapsed]);
 
   useEffect(() => {
-    if (!isTauriRuntime() || !bootstrap || windowRevealedRef.current) return;
-    windowRevealedRef.current = true;
+    if (!isTauriRuntime() || !bootstrap) return;
+    let cancelled = false;
     const revealWindow = async () => {
       const appWindow = getCurrentWindow();
-      await appWindow.setDecorations(false).catch(() => {});
-      await syncDesktopWindowSurface(resolveThemePreference(preferences.theme));
-      await appWindow.show().catch(() => {});
+      if (!windowRevealedRef.current) {
+        await syncDesktopWindowSurface(resolveThemePreference(preferences.theme));
+      }
+      await syncDesktopWindowMinimum(
+        appWindow,
+        appConfig.workspaceLayout,
+        activeWorkspaceLayoutProfile,
+        windowMinimumSyncStateRef.current,
+      ).then((state) => {
+        windowMinimumSyncStateRef.current = state;
+      }).catch(() => {});
+      if (cancelled || windowRevealedRef.current) return;
+      windowRevealedRef.current = true;
+      await appWindow.show().catch(() => {
+        windowRevealedRef.current = false;
+      });
     };
-    void revealWindow();
-  }, [bootstrap, preferences.theme]);
+    windowLayoutSyncRef.current = windowLayoutSyncRef.current
+      .catch(() => {})
+      .then(revealWindow);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeWorkspaceLayoutProfile, appConfig.workspaceLayout, bootstrap, preferences.theme]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return undefined;
+    const appWindow = getCurrentWindow();
+    let active = true;
+    let unlisten: (() => void) | undefined;
+
+    appWindow.onResized(() => {
+      if (!windowMinimumSyncStateRef.current.pending) return;
+      windowLayoutSyncRef.current = windowLayoutSyncRef.current
+        .catch(() => {})
+        .then(async () => {
+          if (!active || !windowMinimumSyncStateRef.current.pending) return;
+          const target = activeWindowLayoutRef.current;
+          if (!target) return;
+          const state = await syncDesktopWindowMinimum(
+            appWindow,
+            target.layout,
+            target.profile,
+            windowMinimumSyncStateRef.current,
+          );
+          if (active) windowMinimumSyncStateRef.current = state;
+        })
+        .catch(() => {});
+    }).then((dispose) => {
+      if (active) {
+        unlisten = dispose;
+      } else {
+        dispose();
+      }
+    }).catch(() => {});
+
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -545,8 +669,12 @@ export function App() {
   }, [applyConversationSidebar, bootstrap, uiMode]);
 
   useEffect(() => {
-    if (!bootstrap || uiMode !== 'conversation') return;
+    if (!bootstrap) return;
     getAgentRegistry().then(setAgentRegistry).catch(() => {});
+  }, [bootstrap]);
+
+  useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation') return;
     loadProfiles().catch(() => setProfiles([]));
     getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
   }, [bootstrap, loadProfiles, uiMode]);
@@ -638,6 +766,7 @@ export function App() {
       if (!active) return;
       if (event.taskId !== taskId || event.runId !== runId) return;
       if (event.projectId && event.projectId !== projectId) return;
+      if (event.lifecycle) applyConversationTaskActivity(projectId, taskId, event.lifecycle);
       const sessionKey = conversationSessionKeyFromParts(event);
       const currentRun = conversationRunRef.current;
       const currentSelectedKey = conversationSelectedSessionKeyRef.current
@@ -728,7 +857,7 @@ export function App() {
       stopListeningAcp?.();
       stopListeningRun?.();
     };
-  }, [applyConversationRunSnapshot, applyConversationSidebar, bootstrap, uiMode, conversationPage]);
+  }, [applyConversationRunSnapshot, applyConversationSidebar, applyConversationTaskActivity, bootstrap, uiMode, conversationPage]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -757,7 +886,7 @@ export function App() {
       }
     };
 
-    void listen('gold-band://agent-commands-updated', () => {
+    void listen('gold-band://agent-registry-updated', () => {
       if (active) void refreshAgentRegistry();
     }).then((dispose) => {
       if (active) {
@@ -1193,6 +1322,60 @@ export function App() {
     }
   };
 
+  const applyAvatarPreferences = useCallback((avatars: PreferencesVm['avatars']) => {
+    setBootstrap((current) => current
+      ? { ...current, preferences: { ...current.preferences, avatars } }
+      : current);
+  }, []);
+
+  const onSaveAvatar = useCallback(async (input: SaveDesktopAvatarInput) => {
+    setError(null);
+    try {
+      const avatars = await saveDesktopAvatar(input);
+      applyAvatarPreferences(avatars);
+      return avatars;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    }
+  }, [applyAvatarPreferences, t]);
+
+  const onSelectRecentAvatar = useCallback(async (kind: AvatarKind, avatarId: string) => {
+    setError(null);
+    try {
+      const avatars = await selectRecentDesktopAvatar(kind, avatarId);
+      applyAvatarPreferences(avatars);
+      return avatars;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    }
+  }, [applyAvatarPreferences, t]);
+
+  const onSaveAvatarShape = useCallback(async (kind: AvatarKind, shape: AvatarShape) => {
+    setError(null);
+    try {
+      const avatars = await saveDesktopAvatarShape(kind, shape);
+      applyAvatarPreferences(avatars);
+      return avatars;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    }
+  }, [applyAvatarPreferences, t]);
+
+  const onClearAvatar = useCallback(async (kind: AvatarKind) => {
+    setError(null);
+    try {
+      const avatars = await clearDesktopAvatar(kind);
+      applyAvatarPreferences(avatars);
+      return avatars;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    }
+  }, [applyAvatarPreferences, t]);
+
   const onSaveUpdaterSettings = async (overrideUrl: string | null) => {
     setBusy(true);
     try {
@@ -1316,6 +1499,10 @@ export function App() {
           clientVersion={bootstrap?.clientVersion ?? ''}
           busy={busy}
           onSave={onSavePreferences}
+          onSaveAvatar={onSaveAvatar}
+          onSelectRecentAvatar={onSelectRecentAvatar}
+          onSaveAvatarShape={onSaveAvatarShape}
+          onClearAvatar={onClearAvatar}
           onSaveUpdaterSettings={onSaveUpdaterSettings}
           onCheckUpdate={onCheckUpdate}
           onInstallUpdate={onInstallUpdate}
@@ -1326,7 +1513,7 @@ export function App() {
       : primaryModule === 'agent-management'
         ? <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />
         : primaryModule === 'knowledge-base'
-          ? <ContextManagementPage />
+          ? <ContextManagementPage agentRegistry={agentRegistry} onAgentRegistryChange={setAgentRegistry} />
           : renderTaskContent();
 
   const onSelectConversation = (page: ConversationPage) => {
@@ -1343,6 +1530,7 @@ export function App() {
   };
 
   return (
+    <AvatarPreferencesProvider preferences={preferences.avatars}>
     <ConversationComposerDraftBoundary ref={composerDraftRef}>
     <Shell
       uiMode={uiMode}
@@ -1350,10 +1538,20 @@ export function App() {
       conversationPage={conversationPage}
       conversationSidebar={conversationSidebar}
       activeWorkspaceId={sidebarFocusWorkspaceId}
+      conversationTaskUuid={
+        conversationPage.kind === 'conversation-run'
+        && conversationRun?.projectId === conversationPage.projectId
+        && conversationRun.taskId === conversationPage.taskId
+        && conversationRun.runId === conversationPage.runId
+          ? conversationRun.taskUuid
+          : null
+      }
+      conversationWorkspaceStore={conversationWorkspaceStore}
       appName={appInfo.appName}
-      channel={appInfo.channel}
+      feedbackEnabled={appInfo.feedbackEnabled}
       platform={bootstrap?.platform}
       windowFrameStyle={bootstrap?.windowChrome.frameStyle}
+      appConfig={appConfig}
       repoRoot={bootstrap?.repoRoot}
       needsWorkspace={bootstrap?.needsWorkspace}
       showSettingsUpdateDot={showSettingsUpdateDot}
@@ -1401,6 +1599,7 @@ export function App() {
       onConversationDeleteTask={(projectId, taskId) => {
         deleteConversationTask(projectId, taskId)
           .then((sidebar) => {
+            conversationWorkspaceStore.deleteConversation(projectId, taskId);
             applyConversationSidebar(sidebar);
             if (conversationPage.kind === 'conversation-run' && conversationPage.projectId === projectId && conversationPage.taskId === taskId) {
               setConversationRun(null);
@@ -1426,6 +1625,7 @@ export function App() {
         setError(null);
         return removeConversationWorkspace(projectId)
           .then((sidebar) => {
+            conversationWorkspaceStore.deleteProject(projectId);
             const transition = resolveConversationWorkspaceRemovalTransition({
               removedProjectId: projectId,
               lastActiveWorkspaceId: sidebar.lastActiveWorkspaceId,
@@ -1449,6 +1649,7 @@ export function App() {
           });
       }}
     >
+      <WindowCloseCoordinator />
       <AlertDialog open={Boolean(error)} onOpenChange={(open) => { if (!open) setError(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -1507,6 +1708,7 @@ export function App() {
       />
     </Shell>
     </ConversationComposerDraftBoundary>
+    </AvatarPreferencesProvider>
   );
 
   function renderConversationContent() {
@@ -1514,7 +1716,7 @@ export function App() {
       return <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />;
     }
     if (conversationPage.kind === 'contexts') {
-      return <ContextManagementPage />;
+      return <ContextManagementPage agentRegistry={agentRegistry} onAgentRegistryChange={setAgentRegistry} />;
     }
     if (conversationPage.kind === 'settings') {
       return (
@@ -1534,6 +1736,10 @@ export function App() {
             clientVersion={bootstrap?.clientVersion ?? ''}
             busy={busy}
             onSave={onSavePreferences}
+            onSaveAvatar={onSaveAvatar}
+            onSelectRecentAvatar={onSelectRecentAvatar}
+            onSaveAvatarShape={onSaveAvatarShape}
+            onClearAvatar={onClearAvatar}
             onSaveUpdaterSettings={onSaveUpdaterSettings}
             onCheckUpdate={onCheckUpdate}
             onInstallUpdate={onInstallUpdate}
@@ -1579,6 +1785,15 @@ export function App() {
                 return validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n');
               }
               const run = await createConversationRun(input);
+              conversationWorkspaceStore.promoteDraft(
+                createDraftConversationWorkspaceScope(input.projectId),
+                createConversationWorkspaceScope({
+                  projectId: run.projectId,
+                  taskId: run.taskId,
+                  taskUuid: run.taskUuid,
+                  runId: run.runId,
+                }),
+              );
               rememberConversationWorkspace(run.projectId);
               updateConversationSessionFollow('auto', run.sessionTree.selectedSessionKey ?? null);
               applyConversationRunSnapshot(run, 'create');
@@ -1728,6 +1943,7 @@ export function App() {
             }).catch(() => {});
           }}
           onLifecycleSnapshot={(snapshot) => {
+            applyConversationTaskActivity(conversationPage.projectId, snapshot.taskId, snapshot.lifecycle);
             setConversationRun((current) => {
               const selectedPatched = applyConversationSelectedSessionSnapshot(current, snapshot);
               const patched = selectedPatched === current

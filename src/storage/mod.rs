@@ -869,6 +869,29 @@ pub fn append_jsonl<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
     with_jsonl_file_lock(path, || append_jsonl_line_unlocked(path, &line))
 }
 
+/// Append one JSONL record and force its bytes to the operating-system storage
+/// boundary before returning. Use this for small write-ahead journals whose
+/// records must survive an application-process crash.
+pub fn append_jsonl_durable<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
+    with_jsonl_file_lock(path, || append_jsonl_durable_unlocked(path, value))
+}
+
+/// Durable JSONL append for callers that already hold this path's JSONL lock.
+pub fn append_jsonl_durable_unlocked<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
+    let line = serde_json::to_vec(value)?;
+    ensure_parent_dir(path)?;
+    repair_jsonl_tail_unlocked(path)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path.as_std_path())?;
+    file.write_all(&line)?;
+    file.write_all(b"\n")?;
+    file.flush()?;
+    file.sync_data()?;
+    Ok(())
+}
+
 pub fn append_jsonl_unlocked<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
     let line = serde_json::to_vec(value)?;
     append_jsonl_line_unlocked(path, &line)
@@ -882,6 +905,32 @@ fn append_jsonl_line_unlocked(path: &Utf8Path, line: &[u8]) -> Result<()> {
         .open(path.as_std_path())?;
     file.write_all(line)?;
     file.write_all(b"\n")?;
+    Ok(())
+}
+
+fn repair_jsonl_tail_unlocked(path: &Utf8Path) -> Result<()> {
+    let Ok(content) = std::fs::read(path.as_std_path()) else {
+        return Ok(());
+    };
+    if content.is_empty() || content.last() == Some(&b'\n') {
+        return Ok(());
+    }
+
+    let tail_start = content
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index.saturating_add(1));
+    let tail = &content[tail_start..];
+    if serde_json::from_slice::<serde_json::Value>(tail).is_ok() {
+        let mut file = OpenOptions::new().append(true).open(path.as_std_path())?;
+        file.write_all(b"\n")?;
+        return Ok(());
+    }
+
+    OpenOptions::new()
+        .write(true)
+        .open(path.as_std_path())?
+        .set_len(tail_start as u64)?;
     Ok(())
 }
 
@@ -1280,6 +1329,42 @@ mod tests {
             line_count += 1;
         }
         assert_eq!(line_count, thread_count * writes_per_thread);
+    }
+
+    #[test]
+    fn durable_jsonl_append_repairs_torn_tail_before_writing_next_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("journal.jsonl")).unwrap();
+        std::fs::write(path.as_std_path(), b"{\"kind\":\"complete\"}\n{\"kind\":").unwrap();
+
+        append_jsonl_durable(&path, &serde_json::json!({ "kind": "next" })).unwrap();
+
+        let records = std::fs::read_to_string(path.as_std_path())
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["kind"], "complete");
+        assert_eq!(records[1]["kind"], "next");
+    }
+
+    #[test]
+    fn durable_jsonl_append_preserves_complete_tail_without_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("journal.jsonl")).unwrap();
+        std::fs::write(path.as_std_path(), b"{\"kind\":\"complete\"}").unwrap();
+
+        append_jsonl_durable(&path, &serde_json::json!({ "kind": "next" })).unwrap();
+
+        let records = std::fs::read_to_string(path.as_std_path())
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["kind"], "complete");
+        assert_eq!(records[1]["kind"], "next");
     }
 
     #[test]

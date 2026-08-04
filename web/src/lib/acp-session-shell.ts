@@ -4,7 +4,13 @@ export interface AcpLiveSessionShellPolicyInput {
   loadedEventCount: number;
 }
 
-export type AcpSessionShellState = 'available' | 'loading' | 'missing' | 'interrupted';
+export type AcpSessionShellState =
+  | 'available'
+  | 'initializing'
+  | 'loading'
+  | 'missing'
+  | 'interrupted'
+  | 'error';
 
 const MISSING_ACP_SESSION_RETRY_DELAYS_MS = [
   120,
@@ -26,7 +32,9 @@ export interface AcpSessionShellStateInput {
   hasLiveSessionShell: boolean;
   initialSessionLoading: boolean;
   initializationInterrupted?: boolean;
+  initializationFailed?: boolean;
   runtimeActive?: boolean;
+  showInitializingShell?: boolean;
 }
 
 export interface AcpSessionInitializationInterruptedInput {
@@ -38,19 +46,55 @@ export interface AcpSessionInitializationInterruptedInput {
   loadedEventCount: number;
 }
 
+export interface AcpSessionInitializationFailedInput {
+  runtimeStatus?: string | null;
+  runtimePauseReason?: string | null;
+  runtimeActive: boolean;
+  runtimeComposerMode?: string | null;
+  runtimeErrorMessage?: string | null;
+  sessionId?: string | null;
+  baseSessionReady: boolean;
+  loadedEventCount: number;
+}
+
 export function shouldCreateLiveAcpSessionShell(input: AcpLiveSessionShellPolicyInput) {
   if (!input.allowEventOnlySessionShell) return false;
   return input.runtimeActive || input.loadedEventCount > 0;
 }
 
 export function resolveAcpSessionShellState(input: AcpSessionShellStateInput): AcpSessionShellState {
+  if (input.initializationFailed) return 'error';
   if (input.initializationInterrupted) return 'interrupted';
+  if (
+    input.showInitializingShell &&
+    input.runtimeActive &&
+    !input.baseSessionReady &&
+    !input.hasLiveSessionShell
+  ) return 'initializing';
   if (input.hasBaseSession && (!input.initialSessionLoading || input.baseSessionReady)) return 'available';
   if (input.hasLiveSessionShell) return 'available';
   if (input.initialSessionLoading) return 'loading';
   if (input.hasBaseSession) return 'available';
   if (input.runtimeActive) return 'loading';
   return 'missing';
+}
+
+export function isAcpSessionInitializationFailed(input: AcpSessionInitializationFailedInput) {
+  const runtimeStatus = normalizeLifecycleCode(input.runtimeStatus);
+  const runtimePauseReason = normalizeLifecycleCode(input.runtimePauseReason);
+  const runtimeStoppedWithFailure =
+    runtimePauseReason === 'runtime-abnormal' ||
+    runtimePauseReason === 'error-blocked' ||
+    ['failed', 'failure', 'error', 'killed'].includes(runtimeStatus);
+  const composerStoppedWithFailure =
+    normalizeLifecycleCode(input.runtimeComposerMode) === 'runtime-error';
+  return (
+    !input.runtimeActive &&
+    (runtimeStoppedWithFailure || composerStoppedWithFailure) &&
+    !input.sessionId?.trim() &&
+    !input.baseSessionReady &&
+    input.loadedEventCount === 0
+  );
 }
 
 export function isAcpSessionInitializationInterrupted(

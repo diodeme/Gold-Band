@@ -151,8 +151,20 @@ spawn command → stdin.write(initialize) → 读取匹配 id=1 的 initialize �
 
 **HTTP 流程：**
 ```
-POST url body=initialize_request → 200: parse response / 401: OAuth discovery → result
+POST initialize
+  → application/json: 校验 JSON-RPC response id
+  → text/event-stream: 增量解析 SSE event，忽略 notification/request/其他 id，等待 initialize response
+  → 记录 Mcp-Session-Id 与服务端协商的 protocolVersion
+  → notifications/initialized
+  → tools/list（同样按 response id 关联）
+  → DELETE + Mcp-Session-Id 释放短生命周期 session
 ```
+
+Streamable HTTP 的状态由 `StreamableHttpClient` 统一管理：静态 headers 属于配置域，`session_id` 与协商后的 `protocol_version` 属于同一连接生命周期，不能由健康检查和工具发现分别拼接。服务端返回 session 级 `404` 时，客户端清除旧 session，重新执行完整 initialize → initialized → request 流程；不允许只重放失败的业务请求。
+
+SSE 响应按标准 event framing 处理：多个 `data:` 字段使用换行拼接，comment/keepalive 不产生消息；服务端可以在目标 response 前发送 JSON-RPC request、notification 或其他 response，客户端只接受同时满足“无 method、包含 result/error、id 与当前 request 匹配”的消息。读取到目标 response 后立即结束本次 POST stream，不等待 HTTP body EOF。
+
+HTTP endpoint 必须配置最终 URL。客户端不自动跟随 301/302，避免 `POST` 被 HTTP 客户端降级为 `GET`；重定向响应作为配置错误返回，并提示使用最终 MCP endpoint。
 
 ### 2.4 健康门控与缓存
 
@@ -214,6 +226,9 @@ pub fn invalidate_health(&self, id: &str);
 - 保存 Sheet：保持打开 → "正在连接…" → 成功关闭 / 失败显示具体错误（6 秒自动消失 + ✕ 手动关闭）
 - 诊断按钮：每个服务器卡片的"MCP 服务诊断"按钮
 - 进入 Tab 时自动刷新 + 检查所有 enabled 服务器
+- MCP 卡片的 per-Agent transport 兼容性统一读取 App 级 `AgentRegistryVm`；该 Registry 在应用启动时从持久化的 `agent-diagnostics.json` 恢复，MCP 页面不得维护第二份局部 Registry，也不得因页面重新挂载把已有兼容性退回 loading。
+- Agent doctor 采用 stale-while-refresh 展示语义：检查期间继续展示上一次已知的 `mcpCapabilities`，doctor 完成并发布 `agent-registry-updated` 后一次性替换为新状态；只有从未获得过能力快照的 Agent 才显示诊断 loading。
+- Agent 健康状态优先于 MCP transport capability。不健康 Agent 展示不可用状态与 doctor 失败原因，不触发 MCP 兼容性检查，也不能把“当前不可用”误判为“不支持某 transport”。健康但未声明 `mcpCapabilities` 的 Agent 才展示未知态并允许手动重新诊断。
 
 ### 2.8 Zed 对标达成度
 
@@ -226,7 +241,8 @@ pub fn invalidate_health(&self, id: &str);
 | `to_acp_mcp_servers()` 缓存优先 + 健康门控 | ✅ |
 | 手动刷新/失效 | ✅ |
 | System prompt 渲染工具列表（缓存优先） | ✅ |
-| 多行响应处理 + 10s 超时保护 | ✅ |
+| SSE event 增量解析 + JSON-RPC id 关联 + 10s 超时保护 | ✅ |
+| Streamable HTTP session 失效重建与 DELETE 释放 | ✅ |
 | 长期进程管理 | 🔜 |
 | `tools/list` 自动发现 | ✅ |
 | `tools/list_changed` 订阅 | 🔜 |
@@ -574,7 +590,7 @@ settings.json
 | | 统一协议 (HTTP 也发 initialize) | ✅ | ✅ | — |
 | | 状态机 | ✅ (7 states) | ✅ (5 states) | 小幅 |
 | | 状态缓存 | ✅ (内存) | ✅ (RefCell) | — |
-| | 工具发现 (tools/list) | ✅ | 🔜 | 待实施 |
+| | 工具发现 (tools/list) | ✅ | ✅ | — |
 | | 工具订阅 (list_changed) | ✅ | 🔜 | 待实施 |
 | | 长期进程 | ✅ | 🔜 | 待实施 |
 | **MCP — 传递** | ACP mcpServers | ✅ | ✅ | — |
@@ -611,7 +627,6 @@ settings.json
 
 ### Phase 2 (后续 PR)
 - [ ] 长期进程管理 (Stdio 进程保持存活)
-- [ ] `tools/list` 自动发现
 - [ ] `tools/list_changed` 订阅
 - [ ] 信任门控 (C+1 方案: 本地自动信任 + 外部弹窗 + settings.json)
 

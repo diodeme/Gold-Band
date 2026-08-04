@@ -40,3 +40,46 @@
 - 2026-07-26：Rust core 全量单元测试通过；Codex package 持久化迁移、warning 分类、同/不同消息身份与无身份 fallback 均已固化为接口级测试。
 - 2026-07-26：Tauri 本项相关 view model 测试通过；桌面端全量测试另有既有 `timeline_permission_decision_replaces_pending_by_request_id` 失败，与本次文本 stream 身份改动无调用关系，单独留待 permission timeline 修复。
 - 2026-07-26：前端 ACP/Agent 管理相关测试及生产构建通过；本地启动页面实测新增 Codex 表单显示 `-y @agentclientprotocol/codex-acp@latest`，浏览器控制台无 warning/error，测试服务已清理。本项实现关闭。
+
+## 2026-07-31 Tooltip ref 更新环补充修复
+
+### 根因
+
+- 流式事件批量 flush 会连续重渲染 `ACPChatDialog` 及其顶部标题。
+- 标题使用 shadcn Tooltip 的 `TooltipTrigger asChild`。项目原有 `radix-ui@1.4.3` 内部解析到 `@radix-ui/react-slot@1.2.3`，旧 Slot 在渲染期间重新创建组合 ref；React 19 在 trigger detach/attach 时调用 Tooltip 的内部 state ref，形成 `setRef -> setState -> render -> setRef` 更新环。
+- 流式渲染只是稳定触发高频父级更新，消息 reducer、timeline 数据和 Markdown 内容不是本次错误的事实来源。
+
+### 实现
+
+- 将 `radix-ui` 统一升级为 `1.6.7`，使用其内部 `@radix-ui/react-slot@1.3.3` 与 `@radix-ui/react-tooltip@1.2.16` 稳定 ref 实现。
+- 删除没有源码消费者的 scoped Radix 直依赖，并把 Button 的 Slot 入口统一为 `radix-ui`，避免聚合包与 scoped 包继续产生版本漂移。
+- 引入 jsdom 测试环境，真实挂载会话标题 Tooltip；打开 trigger 后执行 80 次父级重渲染，锁定不会再次出现 maximum update depth。
+
+### 验收
+
+- `npm ls radix-ui @radix-ui/react-slot @radix-ui/react-tooltip --depth=1` 只显示一个 Radix primitive 所有权入口。
+- Tooltip 流式重渲染测试、Button ref、ACP session header 与 conversation header 测试通过。
+- 前端全量单元测试与生产构建通过。
+- `npm run dev` 启动后在实际会话流式输出期间悬停标题，控制台不再出现 `Maximum update depth exceeded`。
+
+## 2026-07-31 ACP 流式消息自动贴底生命周期修复
+
+### 根因
+
+- 2026-07-22 引入的 Markdown presentation controller 会在收到 timeline 累计快照后，继续以约 32ms 的局部帧推进可见前缀并改变真实 DOM 高度。
+- ACP 原滚动实现只在 `timeline` 引用变化时执行一次 `scrollTop = scrollHeight`，没有观察 presentation 后续布局增长；用户重新滑到底部也只会瞬时恢复 `pinToBottomRef`，下一帧内容增长后再次脱离。
+- 消息贴底、session auto-follow、历史分页和程序滚动分别维护布尔 ref，生命周期所有权重复，现有单测又只分别覆盖 live flush 与 Markdown presentation，未覆盖二者的 DOM 集成。
+
+### 实现
+
+- ACP 主消息区迁移到现有 prompt-kit `ChatContainer` 与 `use-stick-to-bottom`，由内容根节点 `ResizeObserver` 持续感知真实高度；保留 timeline canonical / presentation visible offset 分层，不回退实时 Markdown。
+- 删除 `pinToBottomRef`、`programmaticScrollRef`、本地 `isAtBottom` 和 timeline 自动写 `scrollTop` 的旧入口；贴底、用户向上逃逸、回到底部恢复统一由组件状态机管理，并把 `onAtBottomChange` 继续传给 run 级 session auto-follow。
+- 历史向上分页在请求前调用统一 `stopScroll()`，继续使用可见 timeline item 锚点补偿 prepend 高度；向下分页只保留独立的接近底部阈值，不再参与贴底状态判定。
+- interaction quiet window 继续负责合并高频 live event；由 ResizeObserver 产生的程序滚动不再被误判为用户交互。
+
+### 验收
+
+- 新增 jsdom DOM 回归测试，真实触发内容 `ResizeObserver`，固化“内容持续增长时贴底、用户离底后保持位置、用户回到底部后恢复持续跟随”。
+- ACP live flush、Markdown presentation、session follow、主题滚动条与新 ChatContainer 定向测试共 41 项通过。
+- 前端全量 86 个测试文件、576 项测试通过；`npm run web:build` 生产构建通过。
+- 浏览器调试模式通过 `/chat/projects/default/tasks/mock-task/runs/run-052` deep link 验证：消息区保持单一滚动 viewport、内容根节点高度正确、composer 布局无回归，控制台无 warning/error。

@@ -7,6 +7,7 @@ import type {
   ActiveSessionStopVm,
   AgentRegistryVm,
   AppBootstrapVm,
+  AppExitPreparationVm,
   AutoTemplate,
   AutoTemplateStore,
   ContentVm,
@@ -34,6 +35,10 @@ import type {
   SkillContentVm,
   SkillListVm,
   PreferencesVm,
+  AvatarKind,
+  AvatarPreferencesVm,
+  AvatarShape,
+  SaveDesktopAvatarInput,
   ProfileInput,
   ProfileListVm,
   ProfileVm,
@@ -54,12 +59,23 @@ import type {
   FeedbackInput,
   FeedbackResult,
   FeedbackArchivePreview,
+  ExternalFileAccessGrantVm,
+  FileRevisionVm,
+  ResolvedWorkspaceFileLinkVm,
+  WorkspaceDirectoryEntryVm,
+  WorkspaceFileChangedEventVm,
+  WorkspaceFileSearchVm,
+  WorkspaceFileSnapshotVm,
+  ResolveMarkdownImageInput,
+  MarkdownImagePreviewVm,
+  WriteFileResourceInput,
 } from '../types';
 import { browserApi } from './browser';
 import { desktopApi } from './desktop';
 import { isTauriRuntime } from './shared';
 
 export interface AcpSessionUpdatedEventVm {
+  branchId?: string | null;
   projectId?: string | null;
   taskId: string;
   runId: string;
@@ -107,6 +123,7 @@ export interface MaterializeAttachmentFileInput {
 export interface RuntimeApi {
   checkLocalClaude(): Promise<LocalClaudeStatusVm>;
   getAppBootstrap(): Promise<AppBootstrapVm>;
+  prepareAppExit(): Promise<AppExitPreparationVm>;
   getSystemFonts(): Promise<string[]>;
   getAgentRegistry(): Promise<AgentRegistryVm>;
   getAgentCommandCatalog(agentType: string, workspacePath: string): Promise<import('../types').AcpCommandCatalogVm | null>;
@@ -146,6 +163,8 @@ export interface RuntimeApi {
   retryRun(taskId: string, runId: string): Promise<RunSummaryVm>;
   getLogPage(query: LogQueryInput): Promise<LogPageVm>;
   getAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
+  getAcpActivityDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpActivityDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpActivityDetailVm>;
+  getAcpToolDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpToolDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpToolDetailVm>;
   renewAcpSessionLease?(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<number>;
   subscribeAcpSessionUpdates?(listener: (event: AcpSessionUpdatedEventVm) => void): Promise<() => void>;
   subscribeConversationRunStateUpdates?(listener: (event: ConversationRunStateUpdatedEventVm) => void): Promise<() => void>;
@@ -166,6 +185,10 @@ export interface RuntimeApi {
   showConversationMessageAttachment(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, path: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean): Promise<PreferencesVm>;
+  saveDesktopAvatar(input: SaveDesktopAvatarInput): Promise<AvatarPreferencesVm>;
+  selectRecentDesktopAvatar(kind: AvatarKind, avatarId: string): Promise<AvatarPreferencesVm>;
+  saveDesktopAvatarShape(kind: AvatarKind, shape: AvatarShape): Promise<AvatarPreferencesVm>;
+  clearDesktopAvatar(kind: AvatarKind): Promise<AvatarPreferencesVm>;
   saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
   updateNotificationAttention?(input: NotificationAttentionInput): Promise<void>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;
@@ -200,6 +223,21 @@ export interface RuntimeApi {
   syncConversationWorkspace(workspacePath: string): Promise<ConversationSidebarVm>;
   saveConversationPreference(key: string, value: unknown): Promise<void>;
   saveLastConversationWorkspace(projectId: string): Promise<void>;
+  listWorkspaceDirectory(projectId: string, relativePath: string): Promise<WorkspaceDirectoryEntryVm[]>;
+  searchWorkspaceFiles(projectId: string, query: string, requestId: string, limit: number): Promise<WorkspaceFileSearchVm>;
+  resolveWorkspaceFileLink(projectId: string, rawHref: string, baseCanonicalPath?: string | null): Promise<ResolvedWorkspaceFileLinkVm>;
+  readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource?: boolean): Promise<WorkspaceFileSnapshotVm>;
+  resolveMarkdownImage(input: ResolveMarkdownImageInput): Promise<MarkdownImagePreviewVm>;
+  writeFileResource(input: WriteFileResourceInput): Promise<FileRevisionVm>;
+  releaseWorkspaceFilePreview(token: string): Promise<void>;
+  renewExternalFileAccess(token: string): Promise<ExternalFileAccessGrantVm>;
+  releaseExternalFileAccess(token: string): Promise<void>;
+  startWorkspaceFileWatch(projectId: string): Promise<void>;
+  stopWorkspaceFileWatch(projectId: string): Promise<void>;
+  subscribeWorkspaceFileChanges?(listener: (event: WorkspaceFileChangedEventVm) => void): Promise<() => void>;
+  workspaceFilePreviewUrl(token: string, staticFrame?: boolean): string;
+  openExternalUrl(url: string): Promise<void>;
+  openFileWithSystemApp(path: string): Promise<void>;
   pickAttachmentFiles(): Promise<AttachmentFileRef[]>;
   materializeConversationAttachments(files: MaterializeAttachmentFileInput[]): Promise<AttachmentFileRef[]>;
   getSupportedAttachmentExtensions(): Promise<string[]>;
@@ -242,7 +280,7 @@ export interface RuntimeApi {
     syncTargets?: string[] | null,
   ): Promise<string[]>;
   submitFeedback(input: FeedbackInput): Promise<FeedbackResult>;
-  previewFeedbackSessionArchive(sessionWorkspace: string | null, sessionTaskId: string | null): Promise<FeedbackArchivePreview | null>;
+  previewFeedbackSessionArchive(projectId: string | null, taskId: string | null): Promise<FeedbackArchivePreview | null>;
 }
 
 export function getRuntimeApi(): RuntimeApi {

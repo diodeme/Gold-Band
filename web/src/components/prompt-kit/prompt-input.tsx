@@ -36,6 +36,23 @@ function usePromptInput() {
   return useContext(PromptInputContext)
 }
 
+export function promptInputTextareaSize(
+  scrollHeight: number,
+  maxHeight: number | string,
+): { height: string; overflowY: "auto" | "hidden" } {
+  if (typeof maxHeight === "number") {
+    return {
+      height: `${Math.min(scrollHeight, maxHeight)}px`,
+      overflowY: scrollHeight > maxHeight ? "auto" : "hidden",
+    }
+  }
+
+  return {
+    height: `min(${scrollHeight}px, ${maxHeight})`,
+    overflowY: "auto",
+  }
+}
+
 const PROMPT_INPUT_INTERACTIVE_SELECTOR = [
   "button",
   "a[href]",
@@ -157,12 +174,9 @@ function PromptInputTextarea({
     if (!el || disableAutosize) return
 
     el.style.height = "auto"
-
-    if (typeof maxHeight === "number") {
-      el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
-    } else {
-      el.style.height = `min(${el.scrollHeight}px, ${maxHeight})`
-    }
+    const size = promptInputTextareaSize(el.scrollHeight, maxHeight)
+    el.style.height = size.height
+    el.style.overflowY = size.overflowY
   }
 
   const handleRef = (el: HTMLTextAreaElement | null) => {
@@ -180,12 +194,9 @@ function PromptInputTextarea({
 
     const el = textareaRef.current
     el.style.height = "auto"
-
-    if (typeof maxHeight === "number") {
-      el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
-    } else {
-      el.style.height = `min(${el.scrollHeight}px, ${maxHeight})`
-    }
+    const size = promptInputTextareaSize(el.scrollHeight, maxHeight)
+    el.style.height = size.height
+    el.style.overflowY = size.overflowY
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [textareaValue, maxHeight, disableAutosize])
 
@@ -211,7 +222,7 @@ function PromptInputTextarea({
       onChange={handleChange}
       onKeyDown={handleKeyDown}
       className={cn(
-        "text-primary min-h-[44px] min-w-0 flex-1 resize-none border-none bg-transparent shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0",
+        "text-primary min-h-[44px] min-w-0 flex-1 resize-none border-none bg-transparent shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent",
         hasLeadingAdornment && "px-0 py-0",
         className
       )}

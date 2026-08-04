@@ -12,6 +12,7 @@ use gold_band::provider::{
     ProviderInfo, ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef,
     UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
 };
+use gold_band::runtime_error::{RuntimeErrorDomain, auto_runtime_error_info};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
@@ -30,6 +31,7 @@ enum DynamicScenario {
     MissingArtifactRepair,
     SessionContinuePrompt,
     InvalidSessionContinue,
+    ProviderRuntimeError,
     MergePauseThenContinue,
     WorkflowInvocation { workflow_id: Arc<Mutex<String>> },
     WorkflowInvocationPauseThenContinue { workflow_id: Arc<Mutex<String>> },
@@ -97,6 +99,10 @@ impl DynamicProvider {
         Self::new(DynamicScenario::InvalidSessionContinue)
     }
 
+    fn provider_runtime_error() -> Self {
+        Self::new(DynamicScenario::ProviderRuntimeError)
+    }
+
     fn merge_pause_then_continue() -> Self {
         Self::new(DynamicScenario::MergePauseThenContinue)
     }
@@ -135,6 +141,21 @@ impl ProviderAdapter for DynamicProvider {
 
     fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
         self.invocations.lock().unwrap().push(req.clone());
+        if matches!(self.scenario, DynamicScenario::ProviderRuntimeError) {
+            return Ok(ProviderRunResult {
+                status: ProviderRunStatus::Failure,
+                exit_code: None,
+                result_payload: None,
+                worker_ref_seed: None,
+                stream_path: None,
+                runtime_error: Some(auto_runtime_error_info(
+                    RuntimeErrorDomain::Provider,
+                    "provider.server-unavailable",
+                    "provider is temporarily unavailable",
+                    json!({}),
+                )),
+            });
+        }
         let (status, output_artifact) = match (
             &self.scenario,
             req.runtime_context.run_id.as_str(),
@@ -1008,6 +1029,44 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
     assert!(merge.user_prompt.contains("group-core"));
     assert!(merge.user_prompt.contains("branch-a"));
     assert!(merge.user_prompt.contains("branch-b"));
+}
+
+#[test]
+fn ai_dynamic_provider_runtime_error_does_not_enter_proposal_repair() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-ai-dynamic-provider-runtime-error";
+    let provider = DynamicProvider::provider_runtime_error();
+    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let profile = first_profile_id(&app);
+    write_task_file(&app, task_id);
+    write_dynamic_workflow(&app, task_id, &profile, "[]");
+
+    let run = app.run_start(task_id, None).unwrap();
+
+    assert_eq!(run.status, RunStatus::Paused);
+    assert_eq!(run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+    let graph = dynamic_graph(&app, task_id);
+    assert_eq!(graph.run.status, DynamicRunStatus::Paused);
+    assert_eq!(graph.run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+    let bootstrap = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "bootstrap")
+        .expect("bootstrap node");
+    assert_eq!(bootstrap.status, DynamicNodeStatus::Paused);
+    assert_eq!(bootstrap.pause_reason, Some(PauseReason::RuntimeAbnormal));
+    assert_eq!(
+        bootstrap
+            .runtime_error
+            .as_ref()
+            .map(|error| error.code.code.as_str()),
+        Some("provider.server-unavailable")
+    );
+
+    let invocations = provider.invocations.lock().unwrap();
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(invocations[0].session_mode, SessionMode::New);
 }
 
 #[test]

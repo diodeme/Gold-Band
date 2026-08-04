@@ -8,7 +8,7 @@ use crate::prompts::{
     RUNTIME_SYSTEM_EN, RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN,
     profile_template_context, prompt_by_language, render as render_template,
 };
-use crate::runtime_error::{RuntimeErrorInfo, normalize_provider_failure};
+use crate::runtime_error::{RuntimeErrorInfo, normalize_provider_runtime_failure};
 use crate::storage::active_storage_path_config;
 use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
@@ -72,51 +72,6 @@ pub struct ProviderCapabilities {
     pub supports_continue_session: bool,
     pub supports_system_prompt: bool,
     pub supports_raw_stream: bool,
-    pub supported_mcp_transports: Vec<McpTransportKind>,
-}
-
-/// ACP MCP server transport kind, derived from the serialized MCP server JSON.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum McpTransportKind {
-    Stdio,
-    Http,
-    Sse,
-}
-
-impl McpTransportKind {
-    /// A server without a `type` field is treated as stdio (command-based).
-    pub fn from_acp_server(value: &serde_json::Value) -> Self {
-        match value.get("type").and_then(serde_json::Value::as_str) {
-            Some("http") => Self::Http,
-            Some("sse") => Self::Sse,
-            _ => Self::Stdio,
-        }
-    }
-
-    pub fn all() -> &'static [McpTransportKind] {
-        &[Self::Stdio, Self::Http, Self::Sse]
-    }
-}
-
-/// Keeps only MCP server entries whose transport is supported by the target provider.
-pub fn filter_supported_mcp_servers(
-    servers: &[serde_json::Value],
-    supported: &[McpTransportKind],
-) -> Vec<serde_json::Value> {
-    servers
-        .iter()
-        .filter(|s| supported.contains(&McpTransportKind::from_acp_server(s)))
-        .cloned()
-        .collect()
-}
-
-fn default_supported_mcp_transports(provider_id: &str) -> Vec<McpTransportKind> {
-    match provider_id {
-        // codex-acp delegates MCP to the Codex SDK, which rejects SSE transport.
-        "codex-acp" => vec![McpTransportKind::Stdio, McpTransportKind::Http],
-        _ => McpTransportKind::all().to_vec(),
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -333,6 +288,12 @@ pub enum ProviderRunStatus {
     PermissionRequested,
 }
 
+#[derive(Debug)]
+struct ProviderTerminalOutcome {
+    status: ProviderRunStatus,
+    runtime_error: Option<RuntimeErrorInfo>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderResultPayload {
     pub output_artifact: Option<OutputArtifactPayload>,
@@ -354,6 +315,178 @@ pub struct PromptBundle {
     pub content_blocks: Vec<AcpContentBlock>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachmentContentKind {
+    Image,
+    Text,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AttachmentFormat {
+    extensions: &'static [&'static str],
+    mime_type: &'static str,
+    content_kind: AttachmentContentKind,
+}
+
+const ATTACHMENT_FORMATS: &[AttachmentFormat] = &[
+    AttachmentFormat {
+        extensions: &["png"],
+        mime_type: "image/png",
+        content_kind: AttachmentContentKind::Image,
+    },
+    AttachmentFormat {
+        extensions: &["jpg", "jpeg"],
+        mime_type: "image/jpeg",
+        content_kind: AttachmentContentKind::Image,
+    },
+    AttachmentFormat {
+        extensions: &["webp"],
+        mime_type: "image/webp",
+        content_kind: AttachmentContentKind::Image,
+    },
+    AttachmentFormat {
+        extensions: &["gif"],
+        mime_type: "image/gif",
+        content_kind: AttachmentContentKind::Image,
+    },
+    AttachmentFormat {
+        extensions: &["bmp"],
+        mime_type: "image/bmp",
+        content_kind: AttachmentContentKind::Image,
+    },
+    AttachmentFormat {
+        extensions: &["txt"],
+        mime_type: "text/plain",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["md", "markdown"],
+        mime_type: "text/markdown",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["json", "jsonl"],
+        mime_type: "application/json",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["csv"],
+        mime_type: "text/csv",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["html", "htm"],
+        mime_type: "text/html",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["css"],
+        mime_type: "text/css",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["js", "jsx"],
+        mime_type: "text/javascript",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["ts", "tsx"],
+        mime_type: "text/typescript",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["rs"],
+        mime_type: "text/rust",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["py"],
+        mime_type: "text/python",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["go"],
+        mime_type: "text/go",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["java"],
+        mime_type: "text/java",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["c", "h"],
+        mime_type: "text/c",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["cpp", "hpp"],
+        mime_type: "text/cpp",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["yaml", "yml"],
+        mime_type: "text/yaml",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["xml"],
+        mime_type: "text/xml",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["toml"],
+        mime_type: "text/toml",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["log"],
+        mime_type: "text/plain",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["sql"],
+        mime_type: "text/plain",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["sh", "bash", "zsh"],
+        mime_type: "text/plain",
+        content_kind: AttachmentContentKind::Text,
+    },
+];
+
+fn attachment_format(extension: &str) -> Option<&'static AttachmentFormat> {
+    ATTACHMENT_FORMATS
+        .iter()
+        .find(|format| format.extensions.contains(&extension))
+}
+
+pub fn attachment_meta_for_path(
+    path: &std::path::Path,
+    storage_prefix: &str,
+) -> Result<Option<AttachmentMeta>> {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let Some(format) = attachment_format(&extension) else {
+        return Ok(None);
+    };
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+    Ok(Some(AttachmentMeta {
+        path: format!("{storage_prefix}/{name}"),
+        mime_type: format.mime_type.to_string(),
+        size: path.metadata()?.len(),
+        name,
+    }))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PromptVisibility {
@@ -372,60 +505,32 @@ pub fn resolve_attachments(
     let mut resolved = Vec::new();
     for path_str in paths {
         let std_path = std::path::Path::new(path_str);
-        let name = std_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let data = std::fs::read(std_path)?;
-        let size = data.len() as u64;
-        let ext = std_path
+        let Some(meta) = attachment_meta_for_path(std_path, storage_prefix)? else {
+            continue;
+        };
+        let extension = std_path
             .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-
-        let is_image = matches!(
-            ext.as_str(),
-            "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
-        );
-        let mime_type = mime_for_ext(&ext);
-
-        if is_image {
-            let b64 = base64_encode(&data);
-            let path_for_storage = format!("{}/{}", storage_prefix, name);
-            resolved.push(ResolvedAttachment {
-                meta: AttachmentMeta {
-                    name: name.clone(),
-                    path: path_for_storage,
-                    mime_type,
-                    size,
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let format = attachment_format(&extension)
+            .expect("attachment metadata is only created for a supported format");
+        let data = std::fs::read(std_path)?;
+        let uri = format!("file://{}", path_str.replace('\\', "/"));
+        let block = match format.content_kind {
+            AttachmentContentKind::Image => AcpContentBlock::Image(AcpImageBlock {
+                data: base64_encode(&data),
+                mime_type: format.mime_type.to_string(),
+                uri: Some(uri),
+            }),
+            AttachmentContentKind::Text => AcpContentBlock::Resource(AcpResourceBlock {
+                resource: AcpTextResourceContents {
+                    text: String::from_utf8(data).unwrap_or_else(|_| "[binary file]".to_string()),
+                    uri,
                 },
-                block: AcpContentBlock::Image(AcpImageBlock {
-                    data: b64,
-                    mime_type: mime_for_ext(&ext),
-                    uri: Some(format!("file://{}", path_str.replace('\\', "/"))),
-                }),
-            });
-        } else if is_text_ext(&ext) {
-            let text = String::from_utf8(data).unwrap_or_else(|_| "[binary file]".to_string());
-            let path_for_storage = format!("{}/{}", storage_prefix, name);
-            resolved.push(ResolvedAttachment {
-                meta: AttachmentMeta {
-                    name: name.clone(),
-                    path: path_for_storage,
-                    mime_type,
-                    size,
-                },
-                block: AcpContentBlock::Resource(AcpResourceBlock {
-                    resource: AcpTextResourceContents {
-                        text,
-                        uri: format!("file://{}", path_str.replace('\\', "/")),
-                    },
-                }),
-            });
-        }
-        // Non-image, non-text files are skipped for now
+            }),
+        };
+        resolved.push(ResolvedAttachment { meta, block });
     }
     Ok(resolved)
 }
@@ -433,76 +538,10 @@ pub fn resolve_attachments(
 /// Returns the set of file extensions supported as attachments.
 /// This is the single source of truth — the frontend queries it via Tauri command.
 pub fn supported_attachment_extensions() -> Vec<&'static str> {
-    vec![
-        "png", "jpg", "jpeg", "webp", "gif", "bmp", "txt", "md", "markdown", "json", "jsonl",
-        "csv", "html", "htm", "css", "js", "ts", "tsx", "jsx", "rs", "py", "go", "java", "c", "h",
-        "cpp", "hpp", "yaml", "yml", "xml", "toml", "log", "sql", "sh", "bash", "zsh",
-    ]
-}
-
-fn mime_for_ext(ext: &str) -> String {
-    match ext {
-        "png" => "image/png".to_string(),
-        "jpg" | "jpeg" => "image/jpeg".to_string(),
-        "webp" => "image/webp".to_string(),
-        "gif" => "image/gif".to_string(),
-        "bmp" => "image/bmp".to_string(),
-        "txt" => "text/plain".to_string(),
-        "md" | "markdown" => "text/markdown".to_string(),
-        "json" => "application/json".to_string(),
-        "csv" => "text/csv".to_string(),
-        "html" | "htm" => "text/html".to_string(),
-        "css" => "text/css".to_string(),
-        "js" => "text/javascript".to_string(),
-        "ts" => "text/typescript".to_string(),
-        "tsx" => "text/typescript".to_string(),
-        "jsx" => "text/javascript".to_string(),
-        "rs" => "text/rust".to_string(),
-        "py" => "text/python".to_string(),
-        "go" => "text/go".to_string(),
-        "java" => "text/java".to_string(),
-        "c" | "h" => "text/c".to_string(),
-        "cpp" | "hpp" => "text/cpp".to_string(),
-        "yaml" | "yml" => "text/yaml".to_string(),
-        "xml" => "text/xml".to_string(),
-        "toml" => "text/toml".to_string(),
-        _ => "application/octet-stream".to_string(),
-    }
-}
-
-fn is_text_ext(ext: &str) -> bool {
-    matches!(
-        ext,
-        "txt"
-            | "md"
-            | "markdown"
-            | "json"
-            | "csv"
-            | "html"
-            | "htm"
-            | "css"
-            | "js"
-            | "ts"
-            | "tsx"
-            | "jsx"
-            | "rs"
-            | "py"
-            | "go"
-            | "java"
-            | "c"
-            | "h"
-            | "cpp"
-            | "hpp"
-            | "yaml"
-            | "yml"
-            | "xml"
-            | "toml"
-            | "log"
-            | "sql"
-            | "sh"
-            | "bash"
-            | "zsh"
-    )
+    ATTACHMENT_FORMATS
+        .iter()
+        .flat_map(|format| format.extensions.iter().copied())
+        .collect()
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -655,6 +694,121 @@ pub fn supported_models_from_capabilities(capabilities: Option<&Value>) -> Vec<A
     Vec::new()
 }
 
+/// Agent 对 MCP 远程传输的支持情况（stdio 由 ACP 规范保证必支持，不在此列）。
+/// 读取 `agentCapabilities.mcpCapabilities.{http,sse}`（ACP schema `McpCapabilities`，camelCase）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct McpCapabilitiesSummary {
+    /// 是否支持 streamable HTTP 传输
+    pub http: bool,
+    /// 是否支持旧式 SSE 传输
+    pub sse: bool,
+}
+
+/// 从 agent capabilities 提取 MCP 远程传输支持。
+/// 返回 `None` 表示 capabilities 缺失或无 `mcpCapabilities` 字段 —— agent 尚未诊断或未声明。
+pub fn mcp_capabilities_from_capabilities(
+    capabilities: Option<&Value>,
+) -> Option<McpCapabilitiesSummary> {
+    let mcp = capabilities?.get("mcpCapabilities")?;
+    Some(McpCapabilitiesSummary {
+        http: mcp.get("http").and_then(Value::as_bool).unwrap_or(false),
+        sse: mcp.get("sse").and_then(Value::as_bool).unwrap_or(false),
+    })
+}
+
+pub const ACP_MCP_TRANSPORT_UNSUPPORTED_CODE: &str = "acp.mcp-transport-unsupported";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AcpMcpTransport {
+    Stdio,
+    Http,
+    Sse,
+}
+
+impl AcpMcpTransport {
+    fn from_server(server: &Value) -> Self {
+        match server.get("type").and_then(Value::as_str) {
+            Some("http") => Self::Http,
+            Some("sse") => Self::Sse,
+            _ => Self::Stdio,
+        }
+    }
+
+    fn capability_path(self) -> Option<&'static str> {
+        match self {
+            Self::Stdio => None,
+            Self::Http => Some("mcpCapabilities.http"),
+            Self::Sse => Some("mcpCapabilities.sse"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedAcpMcpServer {
+    pub name: String,
+    pub transport: AcpMcpTransport,
+    pub capability: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AcpMcpPreparationResult {
+    pub accepted: Vec<Value>,
+    pub skipped: Vec<SkippedAcpMcpServer>,
+}
+
+/// Applies the current Agent's ACP initialize capabilities to the MCP list.
+/// Missing `mcpCapabilities` means the Agent did not declare remote transport
+/// support, so the existing list is preserved instead of guessing.
+pub fn prepare_acp_mcp_servers(
+    servers: &[Value],
+    agent_capabilities: Option<&Value>,
+) -> AcpMcpPreparationResult {
+    let Some(mcp_capabilities) =
+        agent_capabilities.and_then(|capabilities| capabilities.get("mcpCapabilities"))
+    else {
+        return AcpMcpPreparationResult {
+            accepted: servers.to_vec(),
+            skipped: Vec::new(),
+        };
+    };
+
+    let mut accepted = Vec::with_capacity(servers.len());
+    let mut skipped = Vec::new();
+    for server in servers {
+        let transport = AcpMcpTransport::from_server(server);
+        let supported = match transport {
+            AcpMcpTransport::Stdio => true,
+            AcpMcpTransport::Http => {
+                mcp_capabilities.get("http").and_then(Value::as_bool) != Some(false)
+            }
+            AcpMcpTransport::Sse => {
+                mcp_capabilities.get("sse").and_then(Value::as_bool) != Some(false)
+            }
+        };
+        if supported {
+            accepted.push(server.clone());
+            continue;
+        }
+        skipped.push(SkippedAcpMcpServer {
+            name: server
+                .get("name")
+                .or_else(|| server.get("id"))
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or("unnamed")
+                .to_string(),
+            transport,
+            capability: transport
+                .capability_path()
+                .expect("stdio MCP transport is always accepted")
+                .to_string(),
+        });
+    }
+    AcpMcpPreparationResult { accepted, skipped }
+}
+
 /// Extracts generic ACP select configuration options without assuming adapter-specific IDs.
 pub fn select_config_options_from_capabilities(
     capabilities: Option<&Value>,
@@ -779,7 +933,6 @@ impl ProviderAdapter for AcpProvider {
                 supports_continue_session: true,
                 supports_system_prompt: self.provider_id == "claude-acp",
                 supports_raw_stream: false,
-                supported_mcp_transports: default_supported_mcp_transports(&self.provider_id),
             },
             is_default: self.provider_id == DEFAULT_PROVIDER,
         }
@@ -827,10 +980,6 @@ impl ProviderAdapter for AcpProvider {
         live_update: Option<AcpLiveUpdate<'_>>,
         session_update: Option<AcpSessionUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
-        let mcp_servers = filter_supported_mcp_servers(
-            &req.mcp_servers,
-            &default_supported_mcp_transports(&self.provider_id),
-        );
         let prompt = render_prompt_bundle(&req)?;
         log_prompt_bundle(
             &prompt,
@@ -862,7 +1011,7 @@ impl ProviderAdapter for AcpProvider {
             self.acp_raw_target_size_bytes,
             self.runtime_policy,
             live_update,
-            &mcp_servers,
+            &req.mcp_servers,
             session_update,
             Some(client::RuntimeStopProbe {
                 run_file: req.runtime_context.run_dir.join("run.json"),
@@ -880,40 +1029,24 @@ impl ProviderAdapter for AcpProvider {
                 attempt_state_file: req.runtime_context.attempt_state_file.clone(),
             }),
         )?;
-        let status = match run.stop_reason.as_deref() {
-            Some("cancelled" | "interrupted" | "max_turn_requests") => {
-                ProviderRunStatus::Interrupted
-            }
-            Some("waiting_for_user_input" | "user_input_required") => {
-                ProviderRunStatus::WaitingForUserInput
-            }
-            Some("permission_requested") => ProviderRunStatus::PermissionRequested,
-            Some("refusal" | "error") => ProviderRunStatus::Failure,
-            _ => ProviderRunStatus::Success,
-        };
-        let runtime_error = (status == ProviderRunStatus::Failure)
-            .then(|| {
-                normalize_provider_failure(
-                    run.stop_reason.as_deref(),
-                    run.final_text.clone(),
-                    Some(serde_json::json!({
-                        "adapterId": run.adapter_id,
-                        "adapterDisplayName": run.adapter_display_name,
-                        "stopReason": run.stop_reason,
-                    })),
-                )
+        let terminal = classify_acp_prompt_run(&run);
+        let result_payload = matches!(
+            terminal.status,
+            ProviderRunStatus::Success | ProviderRunStatus::Interrupted
+        )
+        .then(|| {
+            req.output_contract.as_ref().and_then(|contract| {
+                output_artifact_payload_from_run(contract, &run.final_outputs, &run.final_text)
             })
-            .flatten();
-        let result_payload = req.output_contract.as_ref().and_then(|contract| {
-            output_artifact_payload_from_run(contract, &run.final_outputs, &run.final_text)
-        });
+        })
+        .flatten();
         Ok(ProviderRunResult {
-            status,
+            status: terminal.status,
             exit_code: None,
             result_payload,
             worker_ref_seed: None,
             stream_path: None,
-            runtime_error,
+            runtime_error: terminal.runtime_error,
         })
     }
 
@@ -926,6 +1059,83 @@ impl ProviderAdapter for AcpProvider {
 
     fn build_continue_command(&self, _worker_ref: &SessionRef) -> Result<Option<String>> {
         Ok(None)
+    }
+}
+
+fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcome {
+    if let Some(failure) = &run.terminal_failure {
+        return ProviderTerminalOutcome {
+            status: ProviderRunStatus::Failure,
+            runtime_error: Some(normalize_provider_runtime_failure(
+                run.stop_reason.as_deref(),
+                failure.diagnostic(),
+                Some(serde_json::json!({
+                    "adapterId": run.adapter_id,
+                    "adapterDisplayName": run.adapter_display_name,
+                    "stopReason": run.stop_reason,
+                    "terminalFailure": failure,
+                })),
+            )),
+        };
+    }
+
+    let normalized_reason = run
+        .stop_reason
+        .as_deref()
+        .map(|reason| reason.trim().to_ascii_lowercase().replace('_', "-"));
+    match normalized_reason.as_deref() {
+        Some("end-turn") => ProviderTerminalOutcome {
+            status: ProviderRunStatus::Success,
+            runtime_error: None,
+        },
+        Some("cancelled" | "canceled" | "interrupted" | "max-turn-requests" | "max-tokens") => {
+            ProviderTerminalOutcome {
+                status: ProviderRunStatus::Interrupted,
+                runtime_error: None,
+            }
+        }
+        Some("waiting-for-user-input" | "user-input-required") => ProviderTerminalOutcome {
+            status: ProviderRunStatus::WaitingForUserInput,
+            runtime_error: None,
+        },
+        Some("permission-requested") => ProviderTerminalOutcome {
+            status: ProviderRunStatus::PermissionRequested,
+            runtime_error: None,
+        },
+        Some("refusal") => ProviderTerminalOutcome {
+            status: ProviderRunStatus::Failure,
+            runtime_error: None,
+        },
+        Some("error" | "failure") => ProviderTerminalOutcome {
+            status: ProviderRunStatus::Failure,
+            runtime_error: Some(normalize_provider_runtime_failure(
+                run.stop_reason.as_deref(),
+                run.final_text.clone(),
+                Some(serde_json::json!({
+                    "adapterId": run.adapter_id,
+                    "adapterDisplayName": run.adapter_display_name,
+                    "stopReason": run.stop_reason,
+                })),
+            )),
+        },
+        unknown => {
+            let diagnostic = match unknown {
+                Some(reason) => format!("ACP returned unknown prompt stop reason `{reason}`"),
+                None => "ACP prompt response did not include a stop reason".to_string(),
+            };
+            ProviderTerminalOutcome {
+                status: ProviderRunStatus::Failure,
+                runtime_error: Some(normalize_provider_runtime_failure(
+                    run.stop_reason.as_deref(),
+                    diagnostic,
+                    Some(serde_json::json!({
+                        "adapterId": run.adapter_id,
+                        "adapterDisplayName": run.adapter_display_name,
+                        "stopReason": run.stop_reason,
+                    })),
+                )),
+            }
+        }
     }
 }
 
@@ -1581,44 +1791,205 @@ pub fn default_provider() -> Box<dyn ProviderAdapter> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use crate::acp::client::AcpPromptFailure;
+    use crate::runtime_error::RecoveryMode;
 
     #[test]
-    fn mcp_transport_kind_classifies_acp_server_json() {
-        let stdio = json!({"name": "local", "command": "node"});
-        let http = json!({"name": "api", "type": "http", "url": "https://x"});
-        let sse = json!({"name": "graph", "type": "sse", "url": "https://y"});
-        assert_eq!(McpTransportKind::from_acp_server(&stdio), McpTransportKind::Stdio);
-        assert_eq!(McpTransportKind::from_acp_server(&http), McpTransportKind::Http);
-        assert_eq!(McpTransportKind::from_acp_server(&sse), McpTransportKind::Sse);
+    fn every_advertised_attachment_extension_is_resolvable() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = supported_attachment_extensions()
+            .into_iter()
+            .map(|extension| {
+                let path = dir.path().join(format!("sample.{extension}"));
+                std::fs::write(&path, b"{}\n").unwrap();
+                path.to_string_lossy().to_string()
+            })
+            .collect::<Vec<_>>();
+
+        let resolved = resolve_attachments(&paths, "task-inputs").unwrap();
+
+        assert_eq!(resolved.len(), paths.len());
+        assert!(resolved.iter().all(|attachment| {
+            attachment.meta.path.starts_with("task-inputs/")
+                && attachment.meta.mime_type != "application/octet-stream"
+        }));
     }
 
     #[test]
-    fn filter_supported_mcp_servers_drops_unsupported_transports() {
+    fn jsonl_attachment_is_projected_as_text_resource_and_message_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("acp.raw.jsonl");
+        std::fs::write(&path, b"{\"event\":1}\n{\"event\":2}\n").unwrap();
+
+        let resolved =
+            resolve_attachments(&[path.to_string_lossy().to_string()], "task-inputs").unwrap();
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].meta.name, "acp.raw.jsonl");
+        assert_eq!(resolved[0].meta.path, "task-inputs/acp.raw.jsonl");
+        assert_eq!(resolved[0].meta.mime_type, "application/json");
+        assert!(matches!(
+            &resolved[0].block,
+            AcpContentBlock::Resource(resource)
+                if resource.resource.text.contains("{\"event\":2}")
+        ));
+    }
+
+    #[test]
+    fn prepare_acp_mcp_servers_filters_only_explicitly_unsupported_transports() {
         let servers = vec![
-            json!({"name": "local", "command": "node"}),
-            json!({"name": "api", "type": "http", "url": "https://x"}),
-            json!({"name": "graph", "type": "sse", "url": "https://y"}),
+            serde_json::json!({"name": "local", "command": "node"}),
+            serde_json::json!({"type": "http", "name": "docs", "url": "https://example.com/mcp"}),
+            serde_json::json!({"type": "sse", "name": "legacy", "url": "https://example.com/sse"}),
         ];
-        let codex = vec![McpTransportKind::Stdio, McpTransportKind::Http];
-        let kept = filter_supported_mcp_servers(&servers, &codex);
-        assert_eq!(kept.len(), 2);
-        assert!(kept.iter().all(|s| s.get("type").and_then(|v| v.as_str()) != Some("sse")));
+        let capabilities = serde_json::json!({
+            "mcpCapabilities": {
+                "http": true,
+                "sse": false
+            }
+        });
+
+        let prepared = prepare_acp_mcp_servers(&servers, Some(&capabilities));
+
+        assert_eq!(prepared.accepted.len(), 2);
+        assert_eq!(prepared.skipped.len(), 1);
+        assert_eq!(prepared.skipped[0].name, "legacy");
+        assert_eq!(prepared.skipped[0].transport, AcpMcpTransport::Sse);
+        assert_eq!(prepared.skipped[0].capability, "mcpCapabilities.sse");
     }
 
     #[test]
-    fn codex_acp_capabilities_exclude_sse_mcp_transport() {
-        let caps = provider_capabilities("codex-acp").expect("codex-acp capabilities");
-        assert!(!caps.supported_mcp_transports.contains(&McpTransportKind::Sse));
-        assert!(caps
-            .supported_mcp_transports
-            .contains(&McpTransportKind::Stdio));
+    fn prepare_acp_mcp_servers_preserves_servers_when_agent_does_not_declare_capabilities() {
+        let servers = vec![serde_json::json!({
+            "type": "sse",
+            "name": "legacy",
+            "url": "https://example.com/sse"
+        })];
+
+        let prepared = prepare_acp_mcp_servers(&servers, Some(&serde_json::json!({})));
+
+        assert_eq!(prepared.accepted, servers);
+        assert!(prepared.skipped.is_empty());
     }
 
     #[test]
-    fn non_codex_providers_keep_all_mcp_transports() {
-        let caps = provider_capabilities("claude-acp").expect("claude-acp capabilities");
-        assert_eq!(caps.supported_mcp_transports, McpTransportKind::all().to_vec());
+    fn prepare_acp_mcp_servers_preserves_transport_when_specific_flag_is_not_declared() {
+        let servers = vec![serde_json::json!({
+            "type": "sse",
+            "name": "legacy",
+            "url": "https://example.com/sse"
+        })];
+        let capabilities = serde_json::json!({
+            "mcpCapabilities": {
+                "http": true
+            }
+        });
+
+        let prepared = prepare_acp_mcp_servers(&servers, Some(&capabilities));
+
+        assert_eq!(prepared.accepted, servers);
+        assert!(prepared.skipped.is_empty());
+    }
+
+    #[test]
+    fn prepare_acp_mcp_servers_uses_capabilities_instead_of_agent_identity() {
+        let servers = vec![
+            serde_json::json!({"type": "http", "name": "docs", "url": "https://example.com/mcp"}),
+            serde_json::json!({"type": "sse", "name": "legacy", "url": "https://example.com/sse"}),
+        ];
+        let capabilities = serde_json::json!({
+            "mcpCapabilities": {
+                "http": false,
+                "sse": true
+            }
+        });
+
+        let prepared = prepare_acp_mcp_servers(&servers, Some(&capabilities));
+
+        assert_eq!(prepared.accepted, vec![servers[1].clone()]);
+        assert_eq!(prepared.skipped[0].transport, AcpMcpTransport::Http);
+    }
+
+    fn acp_prompt_run(
+        stop_reason: Option<&str>,
+        terminal_failure: Option<AcpPromptFailure>,
+    ) -> client::AcpPromptRun {
+        client::AcpPromptRun {
+            session_id: "session-1".to_string(),
+            adapter_id: "codex-acp".to_string(),
+            adapter_display_name: "Codex".to_string(),
+            stop_reason: stop_reason.map(str::to_string),
+            terminal_failure,
+            final_text: String::new(),
+            final_outputs: Vec::new(),
+            restored: false,
+            used_tokens: None,
+            context_window_size: None,
+            total_cost_usd: None,
+            input_tokens: None,
+            output_tokens: None,
+            cached_read_tokens: None,
+            cached_write_tokens: None,
+            total_tokens: None,
+        }
+    }
+
+    #[test]
+    fn fatal_session_error_overrides_end_turn_success_reason() {
+        let run = acp_prompt_run(
+            Some("end_turn"),
+            Some(AcpPromptFailure {
+                code: "acp.session-system-error".to_string(),
+                message:
+                    "We're currently experiencing high demand, which may cause temporary errors."
+                        .to_string(),
+                details: Some("Reconnecting... 5/5".to_string()),
+                raw: serde_json::json!({ "threadStatus": { "type": "systemError" } }),
+            }),
+        );
+
+        let outcome = classify_acp_prompt_run(&run);
+
+        assert_eq!(outcome.status, ProviderRunStatus::Failure);
+        let error = outcome
+            .runtime_error
+            .expect("fatal error must be preserved");
+        assert_eq!(error.code_str(), "provider.server-unavailable");
+        assert_eq!(error.recovery, RecoveryMode::Auto);
+    }
+
+    #[test]
+    fn end_turn_without_fatal_signal_is_success() {
+        let outcome = classify_acp_prompt_run(&acp_prompt_run(Some("end_turn"), None));
+
+        assert_eq!(outcome.status, ProviderRunStatus::Success);
+        assert!(outcome.runtime_error.is_none());
+    }
+
+    #[test]
+    fn unknown_or_missing_stop_reason_is_protocol_failure() {
+        for stop_reason in [Some("future_reason"), None] {
+            let outcome = classify_acp_prompt_run(&acp_prompt_run(stop_reason, None));
+
+            assert_eq!(outcome.status, ProviderRunStatus::Failure);
+            let error = outcome
+                .runtime_error
+                .expect("unknown terminal state must not become success");
+            assert_eq!(error.recovery, RecoveryMode::Manual);
+            assert_eq!(error.code_str(), "provider.acp-error");
+        }
+    }
+
+    #[test]
+    fn incomplete_and_interactive_stop_reasons_are_not_success() {
+        assert_eq!(
+            classify_acp_prompt_run(&acp_prompt_run(Some("max_tokens"), None)).status,
+            ProviderRunStatus::Interrupted
+        );
+        assert_eq!(
+            classify_acp_prompt_run(&acp_prompt_run(Some("permission_requested"), None)).status,
+            ProviderRunStatus::PermissionRequested
+        );
     }
 
     #[test]

@@ -21,6 +21,8 @@
 ## 运行时数据与内存边界
 
 - `acp.timeline.jsonl` 是会话展示事件的完整事实源；活动 runtime 内存只保存当前 text/thought/plan 累计流、未终态 tool call、未决 permission/elicitation、session metadata、usage 与 timing aggregate。完成并已持久化的历史事件必须立即从热状态释放，不能按完整会话历史常驻 `HashMap`。
+- 根会话与每个 Agent execution 是统一的 `ConversationBranch`。根分支写入 `acp.timeline.jsonl`，Agent 分支写入 `agents/<稳定 AgentExecutionId>/timeline.jsonl`；`acp.agents.jsonl` 与分支 snapshot 保存父子关系、生命周期、统计、attention 和最新 cursor。每个规范事件只属于一个分支，Agent 正式文本、TODO、工具与权限不得复制回父分支。每个分支只投影 `parentAgentExecutionId` 指向自身的直属 Agent；根分支只投影 `parentAgentExecutionId = null` 的顶层 Agent，后代必须在父 Agent 会话中逐级出现。
+- Claude `_meta.claudeCode` 只允许在 ACP 适配边界转换为内部关系；前端与持久化查询只消费 `_meta.goldBandConversation` 和稳定 branch ID。旧 `acp.events.jsonl` 只允许一次性迁移并保留为审计文件，迁移后运行时、权限、elicitation 和查询不得继续双读或双写。
 - usage aggregate 必须区分上下文窗口 gauge 与 Token 消耗 counter：`used/size` 表示 Agent ACP 最新确认的当前上下文，compact 后直接切换为 compact 后值；`input/output/cache/total` 表示 Provider 返回的累计消耗。瞬时 `used=0` 只属于 raw 协议采样或 compact reset 边界，不能覆盖 canonical timeline、snapshot 或 UI。
 - timeline 使用既有 item/patch 格式持续追加，旧文件继续可读；运行期不再依赖从全量内存历史重写 timeline。`AcpTimingState` 按交互 ID 增量观察 permission/elicitation 终态，不能为一次交互复制整份 timeline。
 - 会话树刷新只读取 attempt 的 session metadata 与 lifecycle 摘要；仅当前选中会话读取完整 timeline 事件页。非选中会话的超大或不可读 timeline 不得阻断 run/session tree 刷新；选中会话仍保持既有事件窗口配置、cursor 和终态覆盖语义。
@@ -42,6 +44,13 @@
 - 顶部区域采用“单块双行”而不是两个分裂 header：第一行承载 run 标题与主操作，第二行承载 session 元信息；两行共用同一块 surface，仅在整个区块底部保留总边线
 - 整体高度收敛优先通过两行共同压缩上下留白实现，不通过单独挤压第二行的行盒来制造紧凑感
 - 继续收窄时优先轻压第一行的上下留白，并缩短两行之间的垂直缝；第二行文字本身保持稳定，避免 metadata 层被压得过碎
+
+### 流式重渲染下的组件稳定性
+
+- 会话消息的实时 flush 可以触发父级连续重渲染；顶部标题、Tooltip、菜单和按钮等静态交互组件必须在父级高频更新时保持 ref identity 与内部状态收敛，不能由 ref detach/attach 反向驱动无限状态更新。
+- shadcn copy-in 组件统一从项目选定的 `radix-ui` 聚合包消费 primitive；不得同时保留没有源码消费者的 `@radix-ui/react-*` 直依赖，也不得让同一种 Slot/Tooltip primitive 在 lockfile 中由多套直依赖版本共同拥有。
+- Radix 升级必须保留 shadcn copy-in 层的可定制代码、键盘交互、ARIA 和 focus 管理，不通过删除 Tooltip、移除 `asChild` 或增加特定流式条件分支规避组件生命周期问题。
+- 回归验收必须使用真实 DOM 挂载 Tooltip trigger，在 trigger 打开后连续更新父级输入，确认触发器仍挂载且不会产生 `Maximum update depth exceeded`。
 
 ## 顶部操作栏
 
@@ -119,6 +128,8 @@
 - 用户通过 session tree 或工作流图入口手动切到任意 session 后，自动跟随立即解除；后续新 running session 只在后台推进，不抢占当前查看中的会话
 - 当前选中 session 因 runtime 自然完成而从 active 变为 terminal 时，如果用户仍在底部且未手动切换，session auto-follow 进入 pending 状态；后续同一 run 的新 active child session 首次 live event 或 lifecycle-only active update 到达时可以切换过去。
 - 自动跟随分为两层：消息列表的贴底 pin 控制当前 session 内流式内容是否滚到最新；session auto-follow 控制是否随 workflow 切到新的 active session。用户滚回当前活跃 session 底部时，恢复贴底 pin 并恢复 session auto-follow；用户滚回历史/非活跃 session 底部时，只恢复当前消息贴底，不切换 session。
+- 消息列表贴底 pin 的事实来源必须是“用户滚动意图 + 滚动 viewport + 实际内容尺寸”组成的统一状态机。ACP 主消息区复用 prompt-kit `ChatContainer` / `use-stick-to-bottom`，由内容根节点 `ResizeObserver` 覆盖 timeline 更新、流式 Markdown presentation 帧、图片或折叠内容等真实布局增长；不得再把 `timeline` 变化当成唯一贴底触发器，也不得在业务组件中另存 `pinToBottomRef` 后重复写 `scrollTop = scrollHeight`。任意向上滚动输入都必须立即解除贴底锁，即使视口仍位于第三方组件定义的 bottom-near 阈值内；只有视口真正回到内容底部时才恢复锁，并通过同一 `onAtBottomChange` 信号驱动 session auto-follow。
+- 历史会话初始化可以瞬时定位到底部，但该定位必须允许用户逃逸；不得使用 `ignoreEscapes` 等不可中断选项跨越 Markdown、折叠节点或图片的异步布局阶段。发送新消息等由用户明确触发的“查看最新内容”动作可以主动贴底，但后续向上滚动仍拥有最高优先级。
 - 用户手动查看历史 session 后，只有再次明确选中最新 active/current runtime leaf 并回到底部，才恢复 session auto-follow；仅把历史 session 滚到底部不能恢复 auto，也不能让后续 background active session 抢焦点。
 - 顶部运行中节点 chip 是显式“跟随当前活跃 session”入口：点击 active chip 且消息窗口位于底部时，重新进入自动跟随；live event 到达或完整 run VM 刷新不能单独恢复自动跟随
 - 刷新 run VM 时若未满足自动跟随条件，前端必须继续保留当前 `selectedSessionKey` 与当前 session payload，不能因为其他 session 的 live event 或后端默认 selected key 回退到最新 running attempt；若手动切换与已排队的 live refresh 同时发生，仍以最新手动选择为准
@@ -135,7 +146,10 @@
 - **入口**：纸夹按钮、拖拽、粘贴（统一走 same-session 附件模型）；桌面端必须在基础 Tauri 配置和 channel overlay 中关闭原生 WebView file-drop，让文件拖拽进入前端 HTML5 drop zone，拖入 composer 时稳定显示可投放状态
 - **预览**：图片文件在 composer 内显示缩略图，点击可打开沉浸式大图预览；预览使用单层深色遮罩按合适尺寸展示原图，不支持缩放或拖拽，点击空白遮罩关闭
 - **消息展示**：用户消息下方的图片附件显示为固定尺寸小缩略图，点击进入独立全屏原图预览，不进入附件详情弹窗；文本/代码附件继续显示为紧凑文件 chip 并走附件详情。base64/data URL 只作为内部图片数据承载，不直接作为可见文本展示。消息流附件预览必须按 timeline `raw.attachments[].path` 区分来源：`task-inputs/<name>` 属于新会话首轮 task 输入附件，继续读取 task 级 `authoring/inputs`；`user-inputs/<name>` 属于继续/追问本轮新附件，按当前 session locator 读取该 attempt 下的相对文件。两类附件不得混用读取入口，否则首轮需求附件或完成后追问附件会在 UI 中丢失内容。
+- **消息附件布局**：同一条消息中的图片与普通文件必须按媒体类型分为两个独立附件行，图片行在上、文件行在下，禁止混排；同类多项只在各自行内换行。图片保持固定缩略图尺寸，普通文件使用内容宽度的紧凑 pill，不能被消息容器拉伸成大卡片。
 - **传输**：新会话初始输入附件只进入 task 级 `authoring/inputs/`，并且只在 `SessionMode::New` 的首次 ACP session 初始化时作为 provider `task-inputs` content block 发送；同一个 ACP session 内的 `continue` / resume 不自动重发 task-level input attachments，避免历史输入在每轮用户消息下重复出现。发送前若附件来自粘贴、拖拽或浏览器 File 对象，前端先通过桌面命令 materialize 到 Gold Band 临时输入附件区，拿到本地路径后再进入对应输入链路。本轮 composer 显式选择的附件属于 resume prompt attachments，只随本轮 same-session prompt 发送。输入附件作为 ACP content block 发送给 agent，不混入 agent 输出产物目录。
+- **格式契约**：后端使用同一份附件格式注册表派生可选择扩展名、内容类别（image/text）与 MIME；前端查询到“支持”的扩展名必须都能被 provider resolver 转换为 ACP content block，并同步生成 timeline `raw.attachments` 元数据，不允许维护彼此独立的白名单、MIME 映射和文本类型判断。`.jsonl` 按 `application/json` 文本资源处理。
+- **历史投影修复**：对旧版本已经保存于 `authoring/inputs/`、但因旧格式分类遗漏而没有进入首条 timeline 用户消息的 task 输入附件，session ViewModel 在读取 `SessionMode::New` 根分支时按 `task-inputs/<name>` 补齐 `raw.attachments`，按 path 去重且不改写原始 timeline；后续带 `promptId` 的追问消息不得被补入初始附件。
 - **AI-DYNAMIC**：AUTO / WORKFLOW 中的 AI-DYNAMIC 内部 worker、merge、acceptance 节点必须与普通 worker 复用同一 task input attachment 数据源；动态节点不得把 `input_attachment_paths` 清空，也不得要求 agent 主动扫描 run 目录寻找图片。
 
 ## Composer 状态
@@ -154,7 +168,13 @@
 
 ACP 权限请求与 elicitation 提问都必须收敛到统一 intervention notification 机制：runtime 控制下的暂停由 lifecycle 事件触发通知，ACP live event 同时做旁路桥接补齐实时提醒。这样权限请求、elicitation、人工判断、异常中断和任务完成共享同一套去重、点击跳转和前台抑制规则。permission/elicitation 的 canonical event id 必须包含 ACP request id：同一请求的重复 live update 只通知一次，同一 attempt 或 Direct 长会话中的后续请求必须独立通知；elicitation 还必须与 `waiting-for-user-input` 的人工确认通知使用不同 kind suffix。通知展示身份不得暴露 `direct-agent` 等内部 node id：Direct 使用 conversation metadata 中的 Agent 名称，普通节点优先使用实际 provider/Agent 展示名，只有历史数据缺失时才回退 node id。
 
-ACP elicitation 也复用同一条 session event / timeline 管道：`elicitationRequest` 与 `elicitationResponse` 虽然不直接作为普通消息卡片渲染，但必须保留在当前 session events 中，供 composer 底部的提问卡片推导 pending/answered 状态。已回答状态不能只依赖前端内存 Map，刷新或重进页面后必须能从 `elicitationResponse` 回放恢复。回答提交后交互卡片立即消失，不额外合成用户消息气泡；Agent 原生 `AskUserQuestion` 的 `toolCall/toolCallUpdate` 仍按普通工具卡片展示，并保留 completed 状态、关键参数和工具输出。
+ACP elicitation 也复用同一条 session event / timeline 管道：`elicitationRequest` 与 `elicitationResponse` 虽然不直接作为普通消息卡片渲染，但必须保留在完整 session timeline 中。后端 `AcpSessionVm.pendingElicitations` 是当前待回答请求的权威投影，与 `pendingPermissions` 同层；它必须从完整 timeline 而不是当前分页窗口生成，并在 session terminal、对应 response 或 stop decline 后清空。前端收到 live request/response 时同步更新同一个 session 字段，composer 直接消费该字段，不得再用 `timing.waitReason`、有限事件窗口或本地 Map 判断一个真实提问是否存在；timing 只负责暂停计时和状态文案。刷新或重进页面后由后端权威投影恢复。回答提交后交互卡片立即消失，不额外合成用户消息气泡；Agent 原生 `AskUserQuestion` 的 `toolCall/toolCallUpdate` 仍按普通工具卡片展示，并保留 completed 状态、关键参数和工具输出。
+
+`elicitation/create` 的协议边界必须使用官方 `agent-client-protocol-schema` 类型反序列化，不能在 runtime 中手工摘取 `message / requestedSchema`。pending signal 与 `elicitationRequest.raw` 保存完整请求，包含 `mode`、scope、`sessionId`、`toolCallId`、`requestedSchema` 和 `_meta`；event 顶层 session/tool identity 从类型化 scope 派生。前端刷新恢复同时识别完整请求形态与历史上仅保存 schema 的 timeline 形态，但新写入事实统一使用完整请求。
+
+ElicitationCard 不从自然语言猜测题目边界。表单级 `message` 必须整体展示并保留换行；字段级 `title` 作为短标签，`description` 作为该字段题干或帮助文本；多题时 provider 的通用 message 可以隐藏。单题没有字段 description 时，完整 message 就是题干，禁止按 `split("\n")` 或步骤 index 截取其中一行。
+
+AskUserQuestion 自定义答案按请求结构关联，不按 Agent 版本号分支：优先读取字段 `_meta._askUserQuestionCustomAnswer.questionId`，其次识别 `question_n_custom -> question_n`；旧版全局 `customAnswer` 与普通文本字段保持独立步骤并原样提交自己的 key，绝不能把任意未匹配文本字段猜成首个选项题的伴随输入。枚举选项的 `description` 与 `_meta._claude/askUserQuestionOption.preview` 保持结构化展示。该 shape-based 规则覆盖 Claude Agent ACP 0.44、0.45.1 及当前版本，升级 Gold Band 后无需同步升级用户机器上的 Agent 才能正确显示旧请求。
 
 多问题 ElicitationCard 的已确认答案必须作为卡片内唯一事实源，当前步骤的单选、多选和自定义输入只属于可丢弃草稿。步骤前进时把当前题答案按字段原子替换进答案集；返回历史步骤时从答案集恢复选中状态；用户对历史步骤执行“跳过”时，必须同时删除该题主字段与自定义伴随字段，最终 `content` 只从清理后的答案集构建。不得分别维护“界面选中值”和“提交答案”而缺少双向同步，也不得让已经跳过或已经被预设选项替换的旧自定义值进入提交载荷。
 
@@ -175,12 +195,15 @@ ElicitationCard 的单选、多选必须共享同一套选中语义：使用 `ac
 - 前端必须把 text/thought/plan 与非终态 toolCall/toolCallUpdate streaming flush 视为低优先级、可合并的后台 UI 任务，而不是固定定时器任务。覆盖式交互打开、消息列表用户滚动、wheel 等滚动输入期间都应进入同一套 interaction quiet window：取消已排队但尚未执行的 streaming flush timer，只缓存最新帧；交互安静后再 trailing flush。不得为每种交互单独散落补丁式暂停逻辑，也不得在消息容器上用 pointer/touch 起手事件拦截所有按钮点击。
 - text/thought live item 的前端合并必须保持单调：同一 stream 的旧短帧、空帧或乱序 hydrate 帧不得覆盖已显示的完整 content；interaction quiet window 只能延迟普通 trailing flush，不能让 tool、permission、lifecycle 或 session 边界事件越过 pending text/thought，显式 `sync` flush 必须绕过交互 defer 但继续尊重真实 live pause。
 - Conversation run 级 live update 必须与当前 ACP 消息热路径分层调度：当前 selected session 的普通 timeline event 只进入 ACPChatDialog 局部合并；已存在于 session tree 里的后台 session 普通 live event 不得触发 `getConversationRun` 和整页 React state 更新；只有新 session 锚点缺失、terminal snapshot、权限/暂停/等待输入等交互态才允许排队完整 run refresh。后台非终态 session snapshot 只允许做轻量运行态 patch，且不能替换当前 selected session payload。
-- ACP 消息滚动容器的 `scroll` 事件不得同步读取 `scrollHeight/clientHeight/getBoundingClientRect`。滚动期间只允许记录交互和排一个 `requestAnimationFrame`，在 rAF 中合并完成贴底状态、历史分页触发和 `isAtBottom` 更新；timeline 更新后的自动贴底也必须尊重 interaction quiet window，用户正在滚动时不得抢写 `scrollTop`。
+- ACP 消息滚动容器的 `scroll` 事件不得同步读取 `scrollHeight/clientHeight/getBoundingClientRect`。滚动期间只允许记录交互和排一个 `requestAnimationFrame`，在 rAF 中处理历史分页与 interaction quiet window；贴底状态、用户逃逸和内容 resize 引发的程序滚动统一由 prompt-kit `ChatContainer` 管理。interaction quiet window 只延迟普通 live event flush，不再持有第二套 timeline 自动滚动门控；流式 Markdown presentation 即使在两次 timeline snapshot 之间继续改变 DOM 高度，也必须由内容尺寸观察持续贴底。Activity 展开时，pending 权限卡审批后缩为审计行、后续工具增长和下一张 pending 权限卡插入属于同一内容 resize 生命周期：原本已贴底时必须持续跟随，用户主动上滚后不得抢回底部。加载更早历史前显式解除贴底锁，合并完成后继续使用可见 item DOM 锚点补偿阅读位置。
 - 关闭状态的系统提示弹窗、产物弹窗和工作流 sheet 不应解析大文本或 workflow JSON；打开时再计算内容，并尽量使用 memo 化结果，避免被 live stream render 带着重复执行。
-- ACP 事实状态刷新节奏与用户可见呈现节奏必须分层：timeline/live flush 继续负责把同一稳定 item 合并成最新累计快照；当前活跃 text/thought item 由独立 presentation controller 维护“canonical 目标 + 可见 offset + 速率余量”，只把已经到达可见 offset 的 Markdown 前缀放入 DOM。不得把完整 snapshot 先布局后仅用 opacity/stagger 隐藏未显示字符，否则消息容器会按最终高度提前撑开，并让多个 Markdown block 在不同位置提前出现；presentation controller 也不得反向修改 timeline canonical 或让每个字符进入会话级 state。默认以约 32ms 的有界呈现帧推进，并根据积压量在统一速率范围内追赶，从而把 75ms/125ms 的不稳定快照批次平滑成稳定视觉节奏。
-- 正在流式增长的 assistant 消息与思考过程必须共用 prompt-kit `Markdown` copy-in，不得让 thought 继续走 `whitespace-pre-wrap` 纯文本旁路。Streamdown streaming mode 只解析当前可见前缀，语法门控在推进 offset 时吞并纯 Markdown 控制符、未完成链接地址和代码围栏后缀，避免 `**`、反引号或 `[blocked]` 占用独立显示帧。不得同时启用 Streamdown 全字符 opacity/stagger：可见 offset 已是唯一呈现状态，第二套字符动画会在 block 重建时把历史字符重新判为新增字符，并让透明字符继续参与布局。thought chunk 的语义分段必须由后端 timeline accumulator 写入 canonical：完整的独立 strong block 之间写入段落分隔，token 级 thought chunk 继续无缝拼接；前端不得为了兼容旧会话重写 canonical。消息离开最新活跃 stream 后允许呈现队列短暂收敛，收敛后关闭 incomplete repair，但同一已流式组件必须继续保持 block renderer 路径，不能在完成瞬间切换成另一棵 static renderer DOM；重新加载的历史静态消息可以直接使用 static mode。最新活跃 stream 必须按最大 `endedSeq/seq` 的事件种类判定，tool、plan、permission 等生命周期事件到达后不得让旧 text/thought 继续处于 streaming。默认不因聊天主路径引入 Mermaid、完整 Shiki 语言包或 KaTeX 等未启用插件。
-- 正在输出的 thought disclosure 收起时不得卸载 Markdown presentation。prompt-kit `ChainOfThoughtContent` 对 active streaming thought 使用 Radix `forceMount` 保留组件实例，并在 closed 状态通过 `display: none` 脱离布局；重新展开必须复用原 visible offset 与 DOM，而不是从 offset 0 重放。thought 结束后恢复普通 Collapsible unmount 生命周期，避免所有历史思考内容长期常驻。
-- timeline item 必须保持稳定 id；未变化的历史 item 应尽量复用对象引用，让消息、工具卡、thought 和子 Agent 分组的 memo 化渲染有效。
+- ACP 事实状态刷新节奏与用户可见呈现节奏必须分层：timeline/live flush 继续负责把同一稳定 item 合并成最新累计快照；当前活跃 assistant text item 由独立 presentation controller 维护“canonical 目标 + 可见 offset + 速率余量”，只把已经到达可见 offset 的 Markdown 前缀放入 DOM。不得把完整 snapshot 先布局后仅用 opacity/stagger 隐藏未显示字符，否则消息容器会按最终高度提前撑开，并让多个 Markdown block 在不同位置提前出现；presentation controller 也不得反向修改 timeline canonical 或让每个字符进入会话级 state。默认以约 32ms 的有界呈现帧推进，并根据积压量在统一速率范围内追赶，从而把 75ms/125ms 的不稳定快照批次平滑成稳定视觉节奏。thought 不进入该 Markdown presentation controller，直接展示 timeline 已合并的纯文本快照。Activity 展开详情可能很长，内容末尾必须提供右对齐的轻量“收起”按钮，复用 shadcn Button；收起后将同一 Activity 标题恢复到最近可见位置，不要求用户回到顶部寻找触发器。
+- 正在流式增长的 assistant 消息继续使用 prompt-kit `Markdown` copy-in；Streamdown streaming mode 只解析当前可见前缀，语法门控在推进 offset 时吞并纯 Markdown 控制符、未完成链接地址和代码围栏后缀。不得同时启用 Streamdown 全字符 opacity/stagger。thought 使用 prompt-kit `ChainOfThoughtText` 纯文本路径，以 `white-space: pre-wrap` 保留内部换行与连续空白，不解析 Markdown，`**`、反引号、列表符号与代码围栏均作为字面内容展示；展示层只裁掉整段首尾空白，避免 provider 边界换行形成空白首尾行。thought chunk 的语义分段继续由后端 timeline accumulator 写入 canonical：缺少换行的独立完整 strong block 之间只写入一个换行，token 级 thought chunk 继续无缝拼接；这是 chunk 语义归一化，不依赖前端是否启用 Markdown，前端也不得重写内部 canonical。最新活跃 stream 必须按最大 `endedSeq/seq` 的事件种类判定，tool、plan、permission 等生命周期事件到达后不得让旧 text/thought 继续处于 active streaming 生命周期。默认不因聊天主路径引入 Mermaid、完整 Shiki 语言包或 KaTeX 等未启用插件。
+- 正在输出的 thought disclosure 收起时，prompt-kit `ChainOfThoughtContent` 对 active streaming thought 使用 Radix `forceMount` 保留当前纯文本节点，并在 closed 状态通过 `display: none` 脱离布局；thought 结束后恢复普通 Collapsible unmount 生命周期，避免所有历史思考内容长期常驻。
+- timeline item 必须保持稳定 id；未变化的历史 item 应复用对象引用，让正式消息、Activity 摘要、工具审计行和 Agent link 的 memo 化渲染有效。子 Agent transcript 属于独立 branch，不进入父时间线对象图。
+- 会话分页按用户消息、Assistant 正式消息、Agent link、活动摘要、待决交互和 attempt/压缩边界等语义块计算。活动内工具数量、折叠状态和 Agent 子分支事件数不改变父分支 cursor 或 `hasOlder`；根分支和 Agent 分支共用同一 `eventPage`、有限事件 buffer、真实 DOM 锚点补偿和原生滚动容器，不引入动态高度虚拟列表。
+- 活动摘要折叠时不请求审计详情。首次展开携带 `branchId + activityStartSeq + activityEndSeq`，后端顺序扫描轻量 header，只保留最近有限候选并仅反序列化当前页选中的事件；“显示更早活动”使用独立 cursor，不修改会话分页。单条工具 raw output 再延迟到该工具展开时按 event/tool ID 查询。已决 permission 不进入活动审计，待决 permission 只进入 owning branch 的 intervention。
+- Agent 分支只读面板与根会话复用 `ConversationViewport`、消息、Markdown、Activity、Tool 和 `InterventionLayer`，但不挂载 composer、模型/权限配置、停止、继续或重试 DOM。pending permission/elicitation 仍可在 owning Agent 分支中响应；停止和继续只由根 runtime lifecycle 控制。
 - Raw frames 面板默认只展示行摘要；展开单条 frame 时才做 JSON pretty print 和长段落换行，不允许折叠态批量解析完整 raw 内容。
 - 会话式运行页的工作流 Sheet 与 `GraphView` 必须把拓扑布局和运行态映射分开：布局只依赖节点 id/order 与边 from/to/label，ACP live payload、selected session、node status/current 等运行态刷新只能映射到既有坐标，不得重复执行布局。
 - 会话 follow、ACP composer 与 GraphView 运行态不得在普通运行中输出持续性 console 日志；排障日志必须面向具体错误，且不能挂在 token/live event 热路径上。排查 `Maximum update depth exceeded` 时，只保留全局 `[gb-ui-error]` 诊断：命中该错误后输出当前 active element、最近 pointer 目标和截断 stack，用于定位 Radix/prompt-kit composed refs 触发源。
@@ -233,6 +256,7 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - Provider history identity 优先使用 `messageId/toolCallId`；Agent 未提供稳定 ID 时，使用 `session + afterPromptId + gapTurnIndex + kind/itemIndex` 生成稳定身份，使尾部历史在下一次 load 获得 `beforePromptId` 后仍只更新同一 item。ACP replay 不提供原始消息时间时，timeline 只能保存本次同步到达时间和原始 replay 顺序，不伪造历史时间。
 - Claude ACP 当前把 `[Request interrupted by user]` 与 `[Request interrupted by user for tool use]` 作为普通 `user_message_chunk` 返回，且没有结构化 control 标志。现阶段只在 Claude Provider 归一化层对这两个完整字符串做精确隐藏，原始帧继续保留；不得使用 contains/前缀等模糊规则。该规则是上游协议补充结构化 interruption 事件前的临时适配，后续应改为消费结构化字段。
 - prompt lifecycle 明确拆为 `Starting -> Accepted -> Running -> CancelRequested -> terminal`：`Accepted` 表示 synthetic 用户消息已经持久化并可在重启后恢复，`Running` 表示 `session/prompt` 已真正发出。前端在匹配到持久化 `promptId` 后从“发送中”切到“处理中”，不得等待 provider echo。
+- 已完成 run 上继续发起 same-session follow-up 时，当前内存 `PromptActivity` 是本轮 ACP lifecycle 的权威事实，优先于上一轮持久化 snapshot 的 `completed/cancelled`。会话 VM 必须用同一有效状态驱动 session status、pending permission、Agent execution projection 与 composer；stale-session completion fuse 在存在活跃 prompt 时禁止把 snapshot 改回终态。每个流式 ACP update 携带的 lifecycle 必须立即进入当前会话局部状态，前端本地 submit command 未结算前也不得被上一轮 terminal snapshot 清除；因此只要本轮 prompt 仍为 Starting/Accepted/Running，嵌套 Agent 不得误显示“已中断”，composer 必须保留停止入口。
 - 恢复已有 ACP session 时，`session/load` response 只表示 RPC 已返回，不代表 Provider history replay 已发送完成。runtime 必须继续保持 `Replaying`，通过 session event pump 等待 inbound replay 达到有界静默，再结算暂存的 Provider history turn；在 session-ready 快照与真实 `session/prompt` 之间再次执行同一静默屏障，确认回放收敛后才进入 `AwaitingTurnStart` 并发送 prompt。静默屏障超时必须终止本轮同步，不能让历史与当前 turn 混流。外部会话同步关闭时，屏障内所有 replay content 只保留 raw 审计，不进入 timeline；开启时才交给 Provider history importer。已知历史 identity 在后续阶段仍需抑制，避免极迟到的旧消息被重复追加或移动到会话末尾。
 - 停止成功后，前端先合并后端最终 session snapshot，再只移除仍为 `optimistic + sending` 的未接受消息。已经出现 durable `goldBandPrompt` 的用户消息必须保留；若停止发生在持久化前，未接受 optimistic 消息应立即消失且不得在重启后复现。
 - 历史版本中未分类、直接写入 timeline 的 provider user echo 继续在读取投影中清理；新版本只有经过 replay 对账确认的外部消息才携带 `source=providerHistory` 并进入聊天时间线。每个外部历史 item 在 `raw.historyPlacement` 中记录 `version/afterPromptId/beforePromptId/gapTurnIndex`，顶层继续记录 `historyItemIndex`；`seq/timestamp` 永远表示审计到达顺序，不因逻辑插入位置改变。后端 session projection 与前端窗口 merge 必须按本地 prompt 锚点构建展示顺序，同一 gap 内按 `historyItemIndex`、审计 seq 排列；分页筛选与 cursor 仍按审计 seq 工作，并以当前窗口审计 seq 的最小/最大值计算边界。读取投影只对缺少 `historyPlacement` 的旧 Provider-history turn 使用文本锚点修复，结构化新历史不得再按文本猜测删除；若 replay patch 与既有非 Provider-history item 使用同一稳定 identity，原始本地 item 优先。raw/timeline 审计记录不重写，placement-only patch 合并时保留首次 `seq/timestamp/start/end/timing`，同时以真实最大 patch revision 继续分配后续序号。
@@ -259,7 +283,7 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - `session/close` 是 ACP session 的关闭边界，不是可恢复暂停边界。后端在发送 close 前必须先结算该 attempt 下所有 pending permission / elicitation：写入 cancelled response、把 timeline 中对应 request upsert 为 terminal 状态，并清理 pending signal 文件；close 成功后必须把 `acp.snapshot.json` / `acp.session.json` 写为 `cancelled + stopReason=cancelled`。视图层读取历史数据时，如果 snapshot 仍是 active 且 `acp.raw.jsonl` 中最后一个 ACP 生命周期边界是同一 JSON-RPC id 的 `session/close` request 与成功 result，必须将该 session 熔断为 `cancelled` 并隐藏 pending permission；如果该 close 之后又出现新的 `session/load` / `session/prompt`，说明会话已经重新进入运行态，不能再用旧 close 熔断当前 snapshot，避免恢复运行中的权限响应被误判为 terminal 后删除。
 - composer semantic state 的优先级固定为：permission blocked → stopping → submitting → runtime active lock（含 `launching-next-node`）→ invalid workflow（仅 runtime continue 路径）→ runtime error（含 `error-blocked`）→ `process-interrupted` / `runtime-abnormal` 输入继续 → `waiting-for-user-input + manual_check_pending` 普通 ACP prompt + 判定按钮 → normal ACP prompt。后续新增状态必须先进入该派生表和矩阵测试，不能在组件里局部追加布尔判断。
 - `permission blocked` 属于 runtime 运行态阻塞，不是独立的 composer 替代视图。前端必须继续渲染同一个 prompt-kit `PromptInput`，用禁用 textarea、运行态 placeholder、权限等待 hint 和停止入口表达“当前会话由 runtime 运行中，暂不可输入”；权限决策卡片可以作为会话交互卡展示，但不得覆盖或替换原输入框。刷新或重进页面后，只要持久化 timeline/session 仍存在 pending permission，就必须恢复同样的锁定 composer 状态。
-- 权限决策卡片采用轻量审批 surface，不把所有 allow 选项渲染成高强调实心主按钮。标题与等待状态组成单一信息行，操作区使用两列紧凑按钮；allow 使用低透明度 accent surface，reject 使用中性描边，避免多个同级操作同时争夺视觉焦点。选项名称保持单行截断，但整个按钮必须复用 shadcn Tooltip 作为触发器，在鼠标悬浮与键盘聚焦时展示完整文本；按钮同时保留完整 `aria-label`，不得使用浏览器原生 `title` 或按字符数猜测是否溢出。
+- 权限决策卡片采用轻量审批 surface，不把所有 allow 选项渲染成高强调实心主按钮。只有 `pending` 权限展示完整可操作卡片，并允许穿透收起的 Activity / Agent 分支常驻；权限变为 `selected`、`rejected`、`cancelled` 等终态后，不再在 Activity 折叠详情中展示权限申请记录，工具请求及其终态由相邻工具行唯一呈现。标题与等待状态组成单一信息行，操作区使用两列紧凑按钮；allow 使用低透明度 accent surface，reject 使用中性描边，避免多个同级操作同时争夺视觉焦点。选项名称保持单行截断，但整个按钮必须复用 shadcn Tooltip 作为触发器，在鼠标悬浮与键盘聚焦时展示完整文本；按钮同时保留完整 `aria-label`，不得使用浏览器原生 `title` 或按字符数猜测是否溢出。
 - 排查停止状态不得恢复持续性 ACP composer console 日志；如需再次定位停止链路，应优先补充状态矩阵测试或临时一次性断点式诊断，完成排查后必须移除。
 
 ### 侧栏加载与桌面 IPC 响应性
@@ -325,13 +349,16 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - 重跑复用 task-level 附件（同一 task 的 `authoring/inputs/` 在多次 run 间共享）
 - 继续对话新附件进入当前 ACP session 的 user-inputs 链路，不写入 task 初始输入附件目录
 - 输入附件展示为独立层级，不与 agent 运行产物和输出附件混合
+- task 输入附件的生命周期数据由 `authoring/inputs/`、provider `PromptBundle.attachment_metas` 和首条用户消息 `raw.attachments` 共同投影；格式注册表是三者共享的分类事实源，不能出现“文件已持久化但消息/Agent 输入缺失”的半状态
 
 ## Todo/Plan 任务面板
 
 - 位于 composer 上方、AcpUsagePanel 下方
 - 默认收起，显示任务进度摘要（如 "2/4 · 当前任务名称"）
 - 展开后展示完整条目列表，每项包含状态 Badge 和内容
-- 仅显示主会话顶层 todo；子 Agent 内部 plan 保留在各自分组中
+- 仅显示当前 branch 的 todo；Agent 内部 plan 只在对应右侧 Agent 会话中展示，不回落到父分支
+- 规范化边界为 plan 写入 `planOwnership = branch | unscoped`。只有 provider relation 或既有内部 branch 定位能够证明归属时才标记为 `branch`；缺少范围信息的 session-wide plan 标记为 `unscoped`，不得根据条目文本、事件邻近或 Agent 名称猜测归属
+- 普通且没有 Agent execution 的根会话可以展示 `unscoped` plan；一旦当前 session 存在 Agent execution，根会话必须 fail-closed 隐藏 `unscoped` plan，防止 provider 聚合的子 Agent Todo 平铺到主会话
 - 每次 plan 更新时面板实时刷新，不再在消息流中追加重复 plan 卡片
 
 ## Composer 配置栏
@@ -352,6 +379,14 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - 参数按来源优先级提取：rawInput > 结构化 fields > title/locations 解析
 - 同标签参数保留多个不同值（如多个路径、多个查询条件）
 - 语义化参数缺失时回退展示原始输入 JSON
+
+## Agent 分支会话展示
+
+- `Agent` 工具调用在所属父分支只投影为轻量 `AgentLinkRow`，展示 ACP 已确认的名称、说明、结构化状态、工具数和文件读写数；不提供 Collapsible，不在父消息流挂载 transcript，也不猜测“正在测试/搜索”等意图。
+- 点击 Agent link 使用稳定资源 key 在右侧工作区打开或激活只读 Agent Tab。嵌套 Agent 在父 Agent 分支中继续显示相同链接，并打开另一个 Tab；同一 execution 原位更新，不因 streaming update 生成新行。
+- Agent Prompt 作为目标分支的 synthetic 用户消息持久化；正式回答只在目标分支展示。launch tool 的 `completed` 仅表示分发完成，execution 状态由统一索引按 queued/running/waiting_permission/completed/failed/interrupted 管理。
+- TODO 按显式 branch ownership 投影；根分支与任一 Agent 分支都不得依据文字猜归属。父分支只列直属 Agent，嵌套 execution 只在其直接父 Agent 会话中出现。待决权限只在 owning branch 展示可操作 intervention，同时向所有祖先 Agent link/Tab 投影 attention；决策完成后退出 intervention，不保留权限申请审计行。
+- 只挂载激活 Agent Tab 的 `ConversationViewport`。分支事件窗口、滚动锚点、贴底和 `hasOlder/hasNewer` 保存在有限 LRU 中；切回 dirty Tab 时重新拉取该分支最新语义页。普通后台 streaming 不驱动所有 Tab React render。
 
 ## Runtime Control JSON 展示
 
@@ -388,6 +423,17 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - `acp.timeline.jsonl` 是 UI canonical timeline，不是原始传输审计。所有 upsert 先合并既有 canonical item，再计算语义指纹；仅 replay 的 `seq/timestamp` 变化不落盘，内容、状态、工具结果或 history placement 变化才追加 revision。
 - timeline 达到配置化大小、patch/unique ratio 阈值，或读取旧文件时发现同一稳定 ID 存在语义完全相同的重复 revision 后，必须在文件锁内加载 canonical projection，并通过原子文件替换压缩为每个稳定 ID 一条 item。首次 `seq/timestamp/startedSeq` 和 history placement 保持不变；既有重复 replay 在下次打开 timeline 时自动收敛，`acp.raw.jsonl` 继续保存原始到达顺序并沿用独立滚动策略。
 - Direct、Workflow、AUTO、runtime continue/repair 与 AI-DYNAMIC leaf 共享同一 dispatcher/registry 语义，不允许重新引入 Direct 专用的长连接旁路。
+
+## ACP Attempt Token 累计契约
+
+- 会话详情的最小逻辑与统计单位是 attempt。底部“Token 用量”表示当前 ACP attempt 内所有 Gold Band prompt turn 的累计消耗，不是最近一次 Provider 调用的快照。Direct 多轮、停止后继续、runtime 重建、节点完成后在原 attempt 追问都继续累计；resume 到相同 Provider session 但创建新 attempt 时，从新的 attempt 重新计数。
+- Provider `PromptResponse.usage` 是单轮 prompt 增量。runtime 必须先解析为 `AcpPromptTokenUsage`，再通过唯一的 `AcpAttemptTokenTotals` 状态累加；禁止把单轮值直接覆盖 attempt 累计值，也禁止使用字段 `max()`、上下文窗口 `used` 差值或前端消息窗口估算累计消耗。
+- `acp.snapshot.json` 同时保存两个不同领域的数据：`inputTokens / outputTokens / cachedReadTokens / cachedWriteTokens / totalTokens` 保留最后一轮 prompt 快照，供后续单独讨论的节点指标链路使用；`attemptInputTokens / attemptOutputTokens / attemptCachedReadTokens / attemptCachedWriteTokens / attemptTotalTokens` 保存会话 UI 当前 attempt 用量的物化快照。两组字段不得在正常 UI 投影中互相 fallback 或混用。
+- attempt 目录必须维护独立的 `acp.prompt-usage.jsonl` 写前日志。首次启用时先写一条 `attemptBaseline` 固化已有 snapshot 累计；每轮在调用 Provider 前持久化 `promptStarted(turnId, turnSeq)`，收到成功 `PromptResponse.usage` 后立即持久化 `promptCompleted(turnId, usage)`，随后才能把结果投影到内存状态和 snapshot。日志追加必须持有路径级锁，完成 `flush + sync_data`，并在下一次追加前截断不可解析的半行；完整但缺少换行的尾记录必须保留。
+- `acp.prompt-usage.jsonl` 是 attempt 累计恢复的权威事务记录，`acp.snapshot.json` 只是可重建的物化缓存。runtime 重建或会话读取时按稳定 `turnId` 去重并重放 baseline 与 completed；若崩溃发生在 `acp.raw.jsonl` 已记录 Provider 响应、但 `promptCompleted` 尚未落盘的窗口，则把未完成的 `promptStarted` 与 raw 中的 `session/prompt` 成功响应配对，补写 recovered completion。修复必须幂等，同一 turn 不得重复累计。
+- `acp.raw.jsonl` 可独立滚动，因此 raw 修复只处理 baseline 时间之后的结果；不得用不完整的滚动窗口覆盖或降低已有 baseline。升级前的旧 attempt 若没有 `attempt*` 字段，以最后一轮字段建立不下降的迁移 baseline；这只是一次性持久化迁移，不改变 UI 禁止读取最后一轮字段的契约，也不承诺从已经滚掉的 raw 中还原不可得的历史轮次。
+- runtime 在同一 attempt 内重新创建、停止后继续或节点完成后追问时，从当前 attempt journal 恢复 `AcpAttemptTokenTotals` 后继续累加；保留中的 attached runtime 则在同一内存状态中继续累加。新 attempt 不继承旧 attempt totals，即使两者恢复的是同一个 Provider session。单轮响应缺少 `totalTokens` 但存在分项时，使用输入、输出、缓存读、缓存写的饱和加法计算该轮 total；缺失分项不清空既有累计值。
+- `AcpUsageVm.inputTokens / outputTokens / cachedReadTokens / cachedWriteTokens / totalTokens` 对聊天 UI 投影累计字段。timeline 中的 `usage_update` 只负责 `used / size / cost` 等上下文状态，不得用最近一轮 usage breakdown 覆盖累计字段。
 
 ## Agent 单轮回复通知
 

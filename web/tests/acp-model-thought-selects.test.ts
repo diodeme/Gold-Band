@@ -81,4 +81,26 @@ describe('ACP composite model selector', () => {
     }
     expect(modelOnlyTriggerClass).not.toContain('shadow-xs');
   });
+
+  it('forwards the layout-owned trigger class in model-only and composite modes', () => {
+    const commonProps = {
+      models: [{ id: 'gpt-5.6-sol', name: 'GPT-5.6-Sol' }],
+      modelValue: 'gpt-5.6-sol',
+      onModelChange: () => {},
+      triggerClassName: 'w-full max-w-none',
+    };
+    const modelOnly = renderToStaticMarkup(createElement(AcpModelThoughtSelects, commonProps));
+    const composite = renderToStaticMarkup(createElement(AcpModelThoughtSelects, {
+      ...commonProps,
+      thoughtLevel: {
+        id: 'reasoning_effort',
+        category: 'thought_level',
+        options: [{ value: 'high', name: 'High' }],
+      },
+      thoughtValue: 'high',
+    }));
+
+    expect(triggerClass(modelOnly, 'dropdown-menu-trigger')).toContain('w-full max-w-none');
+    expect(triggerClass(composite, 'dropdown-menu-trigger')).toContain('w-full max-w-none');
+  });
 });

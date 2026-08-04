@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod avatar;
 mod builtin_mcp;
 mod channel;
 mod commands;
@@ -14,25 +15,28 @@ mod updater;
 mod view_models;
 mod view_models_conversation;
 mod window_chrome;
+mod workspace_files;
 
 use anyhow::Context;
 use commands::{
     add_mcp_server, cancel_acp_session, check_local_claude, check_mcp_server_health,
-    check_skill_name_conflict, check_update_manual, choose_workspace, continue_run, create_agent,
-    create_profile, create_task, delete_agent, delete_auto_template, delete_mcp_server,
-    delete_profile, delete_skill, delete_workflow_template, dismiss_update_announcement,
-    doctor_agent, download_and_install_update, get_acp_raw_frames, get_acp_session,
+    check_skill_name_conflict, check_update_manual, choose_workspace, clear_desktop_avatar,
+    continue_run, create_agent, create_profile, create_task, delete_agent, delete_auto_template,
+    delete_mcp_server, delete_profile, delete_skill, delete_workflow_template,
+    dismiss_update_announcement, doctor_agent, download_and_install_update,
+    get_acp_activity_detail, get_acp_raw_frames, get_acp_session, get_acp_tool_detail,
     get_agent_command_catalog, get_agent_registry, get_app_bootstrap, get_auto_templates,
     get_log_page, get_metrics_settings, get_profile, get_profiles, get_round_detail,
     get_run_detail, get_skill_sync_status, get_system_fonts, get_task_detail, get_task_list,
     get_update_status, get_workflow, get_workflow_templates, list_mcp_servers, list_mcp_tools,
     list_project_skills, list_skills, mark_settings_advanced_update_seen,
-    mark_settings_update_seen, open_in_file_manager, pause_run, read_skill,
+    mark_settings_update_seen, open_in_file_manager, pause_run, prepare_app_exit, read_skill,
     remove_recent_workspace, renew_acp_session_lease, replace_auto_templates,
     record_activity,
     respond_acp_permission, respond_elicitation, retry_run, save_auto_template,
-    save_desktop_preferences, save_metrics_settings, save_task_workflow, save_updater_settings,
-    save_workflow_template, search_acp_prompts, search_acp_sessions, search_tasks,
+    save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
+    save_metrics_settings, save_task_workflow, save_updater_settings, save_workflow_template,
+    search_acp_prompts, search_acp_sessions, search_tasks, select_recent_desktop_avatar,
     select_recent_workspace, send_acp_prompt, set_acp_session_config_option, set_acp_session_model,
     set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref, start_run,
     stop_active_session, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
@@ -55,9 +59,10 @@ use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
 // Heartbeat reporter is event-driven; initialized via DesktopState::reevaluate_heartbeat_config().
 use state::{DesktopContext, DesktopState};
-use tauri::{Manager, WindowEvent};
-use tracing::{info, warn};
+use tauri::Manager;
+use tracing::info;
 use updater::{retry_pending_startup_install, start_update_polling};
+use workspace_files::{WorkspaceFileRuntime, WorkspaceFileWatchRuntime};
 
 fn main() {
     if let Err(error) = run() {
@@ -96,6 +101,25 @@ fn run() -> anyhow::Result<()> {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(DesktopState::new(context))
+        .manage(WorkspaceFileRuntime::default())
+        .manage(WorkspaceFileWatchRuntime::default())
+        .register_asynchronous_uri_scheme_protocol(
+            workspace_files::WORKSPACE_FILE_PREVIEW_PROTOCOL,
+            |protocol_context, request, responder| {
+                let runtime = protocol_context
+                    .app_handle()
+                    .state::<WorkspaceFileRuntime>()
+                    .inner()
+                    .clone();
+                let request_path = request.uri().path().to_string();
+                std::thread::spawn(move || {
+                    responder.respond(workspace_files::preview_protocol_response(
+                        &runtime,
+                        &request_path,
+                    ));
+                });
+            },
+        )
         .setup(|app| {
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
@@ -147,30 +171,9 @@ fn run() -> anyhow::Result<()> {
             let _ = app.state::<DesktopState>().reevaluate_heartbeat_config();
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if matches!(event, WindowEvent::CloseRequested { .. }) {
-                let state = window.state::<DesktopState>();
-                if let Ok(app) = state.app()
-                    && let Err(error) = app.stop_all_running_sessions()
-                {
-                    warn!(%error, "failed to stop running sessions before window close");
-                }
-                let _ = state.cleanup_agent_diagnostic_processes();
-                // 关键更新：退出前安装已下载的包，成功自动删文件
-                if let Some(path) = state.take_pending_update() {
-                    let handle = window.app_handle().clone();
-                    tauri::async_runtime::block_on(async move {
-                        let _ = crate::updater::install_pending_file(&handle, &path).await;
-                    });
-                }
-            }
-            if let WindowEvent::Focused(true) = event {
-                let state = window.state::<DesktopState>();
-                let _ = state.record_heartbeat_activity();
-            }
-        })
         .invoke_handler(tauri::generate_handler![
             get_app_bootstrap,
+            prepare_app_exit,
             get_system_fonts,
             check_local_claude,
             get_agent_registry,
@@ -205,6 +208,8 @@ fn run() -> anyhow::Result<()> {
             get_round_detail,
             get_log_page,
             get_acp_session,
+            get_acp_activity_detail,
+            get_acp_tool_detail,
             renew_acp_session_lease,
             submit_conversation_prompt,
             send_acp_prompt,
@@ -225,6 +230,10 @@ fn run() -> anyhow::Result<()> {
             show_attachment,
             show_worker_ref,
             save_desktop_preferences,
+            save_desktop_avatar,
+            select_recent_desktop_avatar,
+            save_desktop_avatar_shape,
+            clear_desktop_avatar,
             save_updater_settings,
             get_metrics_settings,
             update_notification_attention,
@@ -268,6 +277,17 @@ fn run() -> anyhow::Result<()> {
             save_last_conversation_workspace,
             get_supported_attachment_extensions,
             open_in_file_manager,
+            workspace_files::list_workspace_directory,
+            workspace_files::search_workspace_files,
+            workspace_files::resolve_workspace_file_link,
+            workspace_files::read_file_resource,
+            workspace_files::resolve_markdown_image,
+            workspace_files::write_file_resource,
+            workspace_files::release_workspace_file_preview,
+            workspace_files::renew_external_file_access,
+            workspace_files::release_external_file_access,
+            workspace_files::start_workspace_file_watch,
+            workspace_files::stop_workspace_file_watch,
             // MCP & SKILL management
             list_mcp_servers,
             add_mcp_server,

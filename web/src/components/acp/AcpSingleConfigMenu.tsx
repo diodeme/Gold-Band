@@ -1,5 +1,7 @@
 import { ChevronDown } from 'lucide-react';
 
+import { cn } from '@/lib/utils';
+
 import {
   ACP_COMPOSER_CONFIG_DROPDOWN_MODAL,
   ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS,
@@ -35,6 +37,7 @@ type Props = {
   compact?: boolean;
   contentSide?: 'top' | 'bottom';
   align?: 'start' | 'end';
+  triggerClassName?: string;
 };
 
 export function resolveAcpSingleConfigMenuValue(value: string) {
@@ -52,13 +55,14 @@ export function AcpSingleConfigMenu({
   compact = false,
   contentSide = 'bottom',
   align = DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
+  triggerClassName,
 }: Props) {
   const selectedOption = options.find((option) => option.id === value);
   const selectedLabel = valueLabel ?? selectedOption?.name ?? unspecifiedLabel;
 
   return (
     <DropdownMenu modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL}>
-      <DropdownMenuTrigger className={acpComposerConfigTriggerVariants({ compact })}>
+      <DropdownMenuTrigger className={cn(acpComposerConfigTriggerVariants({ compact }), triggerClassName)}>
         <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{label}</span>
         <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>{selectedLabel}</span>
         <ChevronDown className={ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS} />

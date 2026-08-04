@@ -1,8 +1,9 @@
 use anyhow::{Result, anyhow, bail, ensure};
 use camino::Utf8PathBuf;
 use std::collections::{BTreeMap, HashSet};
+use std::time::Instant;
 
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::acp::events::annotate_latest_runtime_control_output;
 use crate::artifacts::parse_json_artifact;
@@ -504,6 +505,7 @@ pub(crate) fn build_worker_invocation(
     model_override: Option<String>,
     permission_mode_override: Option<String>,
 ) -> Result<WorkerInvocation> {
+    let invocation_started_at = Instant::now();
     let round_id = round.id.as_str();
     let node_dsl = workflow.get_node(node_id).expect("validated node exists");
     let (
@@ -569,11 +571,34 @@ pub(crate) fn build_worker_invocation(
         SessionMode::Continue => resume_input_attachment_paths,
     };
 
+    let mcp_resolution_started_at = Instant::now();
     let mcp_mgr = crate::mcp::McpManager::new(app.paths.user_settings_file());
-    let mcp_servers = mcp_mgr.to_acp_mcp_servers().unwrap_or_else(|e| {
+    let mcp_servers = mcp_mgr.configured_acp_mcp_servers().unwrap_or_else(|e| {
         warn!(%e, "failed to load MCP servers for ACP session, falling back to empty list");
         Vec::new()
     });
+    info!(
+        target: "gold_band::perf",
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        server_count = mcp_servers.len(),
+        elapsed_ms = mcp_resolution_started_at.elapsed().as_millis(),
+        "ACP MCP configuration resolved"
+    );
+
+    info!(
+        target: "gold_band::perf",
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        elapsed_ms = invocation_started_at.elapsed().as_millis(),
+        "worker invocation built"
+    );
 
     Ok(WorkerInvocation {
         invocation_kind,

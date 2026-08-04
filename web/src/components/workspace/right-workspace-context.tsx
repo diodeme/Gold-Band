@@ -1,0 +1,433 @@
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
+import { BoundedLruCache } from '@/lib/bounded-lru-cache';
+import { RIGHT_WORKSPACE_DEFAULT_WIDTH } from './workspace-layout';
+
+export interface AgentTranscriptLocator {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  branchId: string;
+}
+
+export interface ConversationRunLocator {
+  projectId: string;
+  taskId: string;
+  runId: string;
+}
+
+export interface AcpAttemptWorkspaceLocator extends ConversationRunLocator {
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  branchId: string;
+}
+
+export type ConversationWorkspaceScope =
+  | { kind: 'draft'; key: string; projectId: string }
+  | { kind: 'conversation'; key: string; projectId: string; taskId: string; taskUuid?: string | null; runId: string };
+
+interface RightWorkspaceResourceBase {
+  key: string;
+  scopeKey: string;
+  title: string;
+  description?: string | null;
+  attention: boolean;
+}
+
+export type FileBrowserWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'file-browser';
+  projectId: string;
+};
+
+export type AgentTranscriptResource = RightWorkspaceResourceBase & {
+  kind: 'agent-transcript';
+  status: string;
+  locator: AgentTranscriptLocator;
+};
+
+export type FileWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'file';
+  projectId: string;
+  locator: import('@/types').WorkspaceFileLocatorVm;
+  target: import('@/types').FileTargetLocationVm | null;
+  targetRevision: number;
+};
+
+export type WorkflowViewWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'workflow-view';
+  locator: ConversationRunLocator;
+};
+
+export type WorkflowEditWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'workflow-edit';
+  mode: 'edit' | 'repair';
+  locator: ConversationRunLocator;
+};
+
+export type SystemPromptWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'system-prompt';
+  locator: AcpAttemptWorkspaceLocator;
+};
+
+export type RawFramesWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'raw-frames';
+  locator: AcpAttemptWorkspaceLocator;
+};
+
+export type RightWorkspaceResource =
+  | AgentTranscriptResource
+  | FileBrowserWorkspaceResource
+  | FileWorkspaceResource
+  | WorkflowViewWorkspaceResource
+  | WorkflowEditWorkspaceResource
+  | SystemPromptWorkspaceResource
+  | RawFramesWorkspaceResource;
+
+export interface RightWorkspaceSessionState {
+  tabs: RightWorkspaceResource[];
+  activeTabKey: string | null;
+  requestedOpen: boolean;
+  openRevision: number;
+}
+
+export interface RightWorkspaceState extends RightWorkspaceSessionState {
+  scopeKey: string | null;
+  width: number;
+}
+
+interface RightWorkspaceContextValue extends RightWorkspaceState {
+  openResource: (resource: RightWorkspaceResource) => void | Promise<void>;
+  openWorkspace: () => void;
+  activateTab: (key: string) => void | Promise<void>;
+  closeTab: (key: string) => void | Promise<void>;
+  closeWorkspace: () => void | Promise<void>;
+  setWidth: (width: number) => void;
+  renderResource: (resource: RightWorkspaceResource) => ReactNode;
+  projectId: string | null;
+  registerResourceRenderer: (kind: RightWorkspaceResourceKind, renderer: RightWorkspaceResourceRenderer) => () => void;
+  registerResourceCloseResolver: (kind: RightWorkspaceResourceKind, resolver: RightWorkspaceResourceCloseResolver) => () => void;
+}
+
+export type RightWorkspaceResourceKind = RightWorkspaceResource['kind'];
+export type RightWorkspaceResourceRenderer = (resource: RightWorkspaceResource) => ReactNode;
+export type RightWorkspaceResourceTransitionReason = 'deactivate' | 'close' | 'workspace-close' | 'scope-change';
+export type RightWorkspaceResourceCloseResolver = (
+  resource: RightWorkspaceResource,
+  reason: RightWorkspaceResourceTransitionReason,
+) => boolean | Promise<boolean>;
+
+export type RightWorkspaceAction =
+  | { type: 'open'; resource: RightWorkspaceResource }
+  | { type: 'open-workspace' }
+  | { type: 'activate'; key: string }
+  | { type: 'close'; key: string }
+  | { type: 'close-workspace' };
+
+export const DEFAULT_RIGHT_WORKSPACE_WIDTH = RIGHT_WORKSPACE_DEFAULT_WIDTH;
+export const CONVERSATION_WORKSPACE_LRU_LIMIT = 24;
+const RightWorkspaceContext = createContext<RightWorkspaceContextValue | null>(null);
+
+export function createDraftConversationWorkspaceScope(projectId: string): ConversationWorkspaceScope {
+  return { kind: 'draft', key: `draft:${projectId}`, projectId };
+}
+
+export function createConversationWorkspaceScope(input: {
+  projectId: string;
+  taskId: string;
+  taskUuid?: string | null;
+  runId: string;
+}): ConversationWorkspaceScope {
+  return {
+    kind: 'conversation',
+    key: `conversation:${input.projectId}:${input.taskId}:${input.runId}`,
+    ...input,
+  };
+}
+
+export function createInitialRightWorkspaceState(): RightWorkspaceSessionState {
+  return { tabs: [], activeTabKey: null, requestedOpen: false, openRevision: 0 };
+}
+
+function cloneRightWorkspaceState(state: RightWorkspaceSessionState): RightWorkspaceSessionState {
+  return { ...state, tabs: [...state.tabs] };
+}
+
+interface StoredConversationWorkspace {
+  scope: ConversationWorkspaceScope;
+  state: RightWorkspaceSessionState;
+}
+
+export class ConversationWorkspaceStore {
+  private readonly entries = new BoundedLruCache<string, StoredConversationWorkspace>(CONVERSATION_WORKSPACE_LRU_LIMIT);
+
+  restore(scope: ConversationWorkspaceScope) {
+    const stored = this.entries.get(scope.key);
+    return stored ? cloneRightWorkspaceState(stored.state) : createInitialRightWorkspaceState();
+  }
+
+  peek(scope: ConversationWorkspaceScope) {
+    const stored = this.entries.peek(scope.key);
+    return stored ? cloneRightWorkspaceState(stored.state) : createInitialRightWorkspaceState();
+  }
+
+  save(scope: ConversationWorkspaceScope, state: RightWorkspaceSessionState) {
+    this.entries.set(scope.key, { scope, state: cloneRightWorkspaceState(state) });
+  }
+
+  touch(scope: ConversationWorkspaceScope) {
+    this.entries.get(scope.key);
+  }
+
+  promoteDraft(draft: ConversationWorkspaceScope, conversation: ConversationWorkspaceScope) {
+    if (draft.kind !== 'draft' || conversation.kind !== 'conversation') return;
+    const previous = this.entries.get(draft.key);
+    this.entries.delete(draft.key);
+    if (!previous) return;
+    this.entries.set(conversation.key, {
+      scope: conversation,
+      state: {
+        ...createInitialRightWorkspaceState(),
+        requestedOpen: previous.state.requestedOpen,
+        openRevision: previous.state.openRevision,
+      },
+    });
+  }
+
+  deleteConversation(projectId: string, taskId: string) {
+    this.entries.deleteWhere(({ scope }) => scope.kind === 'conversation' && scope.projectId === projectId && scope.taskId === taskId);
+  }
+
+  deleteProject(projectId: string) {
+    this.entries.deleteWhere(({ scope }) => scope.projectId === projectId);
+  }
+
+  has(scope: ConversationWorkspaceScope) {
+    return this.entries.peek(scope.key) !== undefined;
+  }
+
+  keys() {
+    return this.entries.keys();
+  }
+}
+
+export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action: RightWorkspaceAction): RightWorkspaceSessionState {
+  switch (action.type) {
+    case 'open': {
+      const existing = state.tabs.findIndex((tab) => tab.key === action.resource.key);
+      const tabs = existing < 0
+        ? [...state.tabs, action.resource]
+        : state.tabs.map((tab, index) => index === existing ? action.resource : tab);
+      return {
+        ...state,
+        tabs,
+        activeTabKey: action.resource.key,
+        requestedOpen: true,
+        openRevision: state.openRevision + 1,
+      };
+    }
+    case 'open-workspace':
+      return {
+        ...state,
+        requestedOpen: true,
+        openRevision: state.openRevision + 1,
+      };
+    case 'activate':
+      return state.tabs.some((tab) => tab.key === action.key)
+        ? { ...state, activeTabKey: action.key, requestedOpen: true }
+        : state;
+    case 'close': {
+      const index = state.tabs.findIndex((tab) => tab.key === action.key);
+      if (index < 0) return state;
+      const tabs = state.tabs.filter((tab) => tab.key !== action.key);
+      const activeTabKey = state.activeTabKey === action.key
+        ? (tabs[Math.min(index, tabs.length - 1)]?.key ?? null)
+        : state.activeTabKey;
+      return { ...state, tabs, activeTabKey };
+    }
+    case 'close-workspace':
+      return { ...state, requestedOpen: false };
+  }
+}
+
+const DEFAULT_SCOPE = createDraftConversationWorkspaceScope('default');
+
+export function RightWorkspaceProvider({
+  initialWidth,
+  scope = DEFAULT_SCOPE,
+  store,
+  children,
+}: {
+  initialWidth?: number;
+  scope?: ConversationWorkspaceScope | null;
+  store?: ConversationWorkspaceStore;
+  children: ReactNode;
+}) {
+  const internalStoreRef = useRef<ConversationWorkspaceStore | null>(null);
+  if (!internalStoreRef.current) internalStoreRef.current = new ConversationWorkspaceStore();
+  const effectiveStore = store ?? internalStoreRef.current;
+  const widthTouchedRef = useRef(false);
+  const [width, setWidthState] = useState(initialWidth ?? DEFAULT_RIGHT_WORKSPACE_WIDTH);
+  const [revision, render] = useReducer((currentRevision) => currentRevision + 1, 0);
+  const rendererRegistryRef = useRef(new Map<RightWorkspaceResourceKind, RightWorkspaceResourceRenderer>());
+  const closeResolverRegistryRef = useRef(new Map<RightWorkspaceResourceKind, RightWorkspaceResourceCloseResolver>());
+  const previousScopeRef = useRef<ConversationWorkspaceScope | null>(scope);
+  const [rendererRevision, renderRenderer] = useReducer((currentRevision) => currentRevision + 1, 0);
+  const sessionState = useMemo(
+    () => scope ? effectiveStore.peek(scope) : createInitialRightWorkspaceState(),
+    [effectiveStore, revision, scope],
+  );
+
+  useEffect(() => {
+    if (scope) effectiveStore.touch(scope);
+  }, [effectiveStore, scope]);
+
+  useEffect(() => {
+    const previous = previousScopeRef.current;
+    previousScopeRef.current = scope;
+    if (!previous || previous.key === scope?.key) return;
+    const previousState = effectiveStore.peek(previous);
+    const active = previousState.tabs.find((tab) => tab.key === previousState.activeTabKey);
+    if (active) void closeResolverRegistryRef.current.get(active.kind)?.(active, 'scope-change');
+  }, [effectiveStore, scope]);
+
+  useEffect(() => {
+    if (widthTouchedRef.current || initialWidth == null) return;
+    setWidthState(initialWidth);
+  }, [initialWidth]);
+
+  const commit = useCallback((action: RightWorkspaceAction) => {
+    if (!scope) return;
+    const current = effectiveStore.peek(scope);
+    if (action.type === 'open' && action.resource.scopeKey !== scope.key) return;
+    effectiveStore.save(scope, rightWorkspaceReducer(current, action));
+    render();
+  }, [effectiveStore, scope]);
+  const openResource = useCallback(async (resource: RightWorkspaceResource) => {
+    if (!scope) return;
+    const current = effectiveStore.peek(scope);
+    if (current.activeTabKey && current.activeTabKey !== resource.key) {
+      const active = current.tabs.find((tab) => tab.key === current.activeTabKey);
+      if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'deactivate') === false) return;
+    }
+    commit({ type: 'open', resource });
+  }, [commit, effectiveStore, scope]);
+  const openWorkspace = useCallback(() => commit({ type: 'open-workspace' }), [commit]);
+  const activateTab = useCallback(async (key: string) => {
+    if (!scope) return;
+    const current = effectiveStore.peek(scope);
+    if (current.activeTabKey && current.activeTabKey !== key) {
+      const active = current.tabs.find((tab) => tab.key === current.activeTabKey);
+      if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'deactivate') === false) return;
+    }
+    commit({ type: 'activate', key });
+  }, [commit, effectiveStore, scope]);
+  const closeTab = useCallback(async (key: string) => {
+    if (!scope) return;
+    const resource = effectiveStore.peek(scope).tabs.find((tab) => tab.key === key);
+    if (resource && await closeResolverRegistryRef.current.get(resource.kind)?.(resource, 'close') === false) return;
+    commit({ type: 'close', key });
+  }, [commit, effectiveStore, scope]);
+  const closeWorkspace = useCallback(async () => {
+    if (!scope) return;
+    const current = effectiveStore.peek(scope);
+    const active = current.tabs.find((tab) => tab.key === current.activeTabKey);
+    if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'workspace-close') === false) return;
+    commit({ type: 'close-workspace' });
+  }, [commit, effectiveStore, scope]);
+  const setWidth = useCallback((nextWidth: number) => {
+    widthTouchedRef.current = true;
+    setWidthState(nextWidth);
+  }, []);
+  const renderResource = useCallback((resource: RightWorkspaceResource) => rendererRegistryRef.current.get(resource.kind)?.(resource) ?? null, []);
+  const registerResourceRenderer = useCallback((kind: RightWorkspaceResourceKind, renderer: RightWorkspaceResourceRenderer) => {
+    rendererRegistryRef.current.set(kind, renderer);
+    renderRenderer();
+    return () => {
+      if (rendererRegistryRef.current.get(kind) !== renderer) return;
+      rendererRegistryRef.current.delete(kind);
+      renderRenderer();
+    };
+  }, []);
+  const registerResourceCloseResolver = useCallback((kind: RightWorkspaceResourceKind, resolver: RightWorkspaceResourceCloseResolver) => {
+    closeResolverRegistryRef.current.set(kind, resolver);
+    return () => {
+      if (closeResolverRegistryRef.current.get(kind) === resolver) closeResolverRegistryRef.current.delete(kind);
+    };
+  }, []);
+  const value = useMemo(() => ({
+    ...sessionState,
+    scopeKey: scope?.key ?? null,
+    projectId: scope?.projectId ?? null,
+    width,
+    openResource,
+    openWorkspace,
+    activateTab,
+    closeTab,
+    closeWorkspace,
+    setWidth,
+    renderResource,
+    registerResourceRenderer,
+    registerResourceCloseResolver,
+  }), [activateTab, closeTab, closeWorkspace, openResource, openWorkspace, registerResourceCloseResolver, registerResourceRenderer, renderResource, rendererRevision, scope?.key, scope?.projectId, sessionState, setWidth, width]);
+  return <RightWorkspaceContext.Provider value={value}>{children}</RightWorkspaceContext.Provider>;
+}
+
+export function useRightWorkspace() {
+  const value = useContext(RightWorkspaceContext);
+  if (!value) throw new Error('useRightWorkspace must be used inside RightWorkspaceProvider');
+  return value;
+}
+
+export function useOptionalRightWorkspace() {
+  return useContext(RightWorkspaceContext);
+}
+
+export function agentTranscriptResourceKey(locator: AgentTranscriptLocator) {
+  return [
+    locator.projectId,
+    locator.taskId,
+    locator.runId,
+    locator.roundId,
+    locator.nodeId,
+    locator.attemptId,
+    locator.outerNodeId ?? '',
+    locator.outerAttemptId ?? '',
+    locator.branchId,
+  ].join(':');
+}
+
+export function conversationRunWorkspaceResourceKey(kind: 'workflow-view' | 'workflow-edit', locator: ConversationRunLocator) {
+  return `${kind}:${locator.projectId}:${locator.taskId}:${locator.runId}`;
+}
+
+export function fileBrowserWorkspaceResourceKey(projectId: string) {
+  return `file-browser:${projectId}`;
+}
+
+export function fileWorkspaceResourceKey(projectId: string, canonicalPath: string) {
+  const normalizedPath = canonicalPath.replaceAll('\\', '/');
+  const platformPath = /^[a-z]:\//iu.test(normalizedPath) ? normalizedPath.toLocaleLowerCase() : normalizedPath;
+  return `file:${projectId}:${platformPath}`;
+}
+
+export function acpAttemptWorkspaceResourceKey(kind: 'system-prompt' | 'raw-frames', locator: AcpAttemptWorkspaceLocator) {
+  return [
+    kind,
+    locator.projectId,
+    locator.taskId,
+    locator.runId,
+    locator.roundId,
+    locator.nodeId,
+    locator.attemptId,
+    locator.outerNodeId ?? '',
+    locator.outerAttemptId ?? '',
+    locator.branchId,
+  ].join(':');
+}

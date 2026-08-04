@@ -119,7 +119,19 @@ function cloneProfiles(profiles: ProfileVm[]): ProfileVm[] {
 }
 
 function clonePreferences(preferences: PreferencesVm): PreferencesVm {
-  return { ...preferences };
+  return {
+    ...preferences,
+    avatars: {
+      agent: {
+        ...preferences.avatars.agent,
+        recentAvatars: preferences.avatars.agent.recentAvatars.map((avatar) => ({ ...avatar })),
+      },
+      user: {
+        ...preferences.avatars.user,
+        recentAvatars: preferences.avatars.user.recentAvatars.map((avatar) => ({ ...avatar })),
+      },
+    },
+  };
 }
 
 function cloneUpdaterSettings(settings: UpdaterSettingsVm): UpdaterSettingsVm {

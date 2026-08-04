@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isAcpSessionInitializationFailed,
   isAcpSessionInitializationInterrupted,
   missingAcpSessionRetryDelay,
   resolveAcpSessionShellState,
@@ -41,6 +42,16 @@ describe('shouldCreateLiveAcpSessionShell', () => {
 });
 
 describe('resolveAcpSessionShellState', () => {
+  it('shows runtime initialization errors before the loading shell', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: true,
+      initializationFailed: true,
+    })).toBe('error');
+  });
+
   it('shows an interrupted terminal shell immediately when ACP initialization never established a session', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: true,
@@ -93,14 +104,37 @@ describe('resolveAcpSessionShellState', () => {
     })).toBe('missing');
   });
 
-  it('keeps runtime-active empty session owners in loading state', () => {
+  it('shows runtime-active empty session owners in an initializing shell', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: false,
       baseSessionReady: false,
       hasLiveSessionShell: false,
-      initialSessionLoading: false,
+      initialSessionLoading: true,
       runtimeActive: true,
+      showInitializingShell: true,
+    })).toBe('initializing');
+  });
+
+  it('keeps runtime-active session switching in loading without initialization ownership', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: false,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: true,
+      runtimeActive: true,
+      showInitializingShell: false,
     })).toBe('loading');
+  });
+
+  it('keeps a current partial session in the initializing shell until metadata is ready', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: true,
+      runtimeActive: true,
+      showInitializingShell: true,
+    })).toBe('initializing');
   });
 
   it('allows partial base sessions after startup retries are exhausted', () => {
@@ -110,6 +144,65 @@ describe('resolveAcpSessionShellState', () => {
       hasLiveSessionShell: false,
       initialSessionLoading: false,
     })).toBe('available');
+  });
+});
+
+describe('isAcpSessionInitializationFailed', () => {
+  const failedInput = {
+    runtimeStatus: 'paused',
+    runtimePauseReason: 'error-blocked',
+    runtimeActive: false,
+    runtimeComposerMode: 'runtime-error',
+    runtimeErrorMessage: 'Configured model is unavailable',
+    sessionId: null,
+    baseSessionReady: false,
+    loadedEventCount: 0,
+  };
+
+  it('identifies runtime errors that happen before ACP session-ready state', () => {
+    expect(isAcpSessionInitializationFailed(failedInput)).toBe(true);
+  });
+
+  it('ends loading when a resumable runtime-abnormal pause happens before session creation', () => {
+    expect(isAcpSessionInitializationFailed({
+      ...failedInput,
+      runtimePauseReason: 'runtime-abnormal',
+      runtimeComposerMode: 'interrupted-input',
+      runtimeErrorMessage: "Codex doesn't support MCP SSE transport protocol",
+    })).toBe(true);
+  });
+
+  it('uses canonical failed runtime status even when no ACP composer error was created', () => {
+    expect(isAcpSessionInitializationFailed({
+      ...failedInput,
+      runtimeStatus: 'failed',
+      runtimePauseReason: null,
+      runtimeComposerMode: 'normal',
+      runtimeErrorMessage: null,
+    })).toBe(true);
+  });
+
+  it('keeps established or active sessions on the normal conversation path', () => {
+    expect(isAcpSessionInitializationFailed({
+      ...failedInput,
+      sessionId: 'session-1',
+    })).toBe(false);
+    expect(isAcpSessionInitializationFailed({
+      ...failedInput,
+      runtimeActive: true,
+    })).toBe(false);
+    expect(isAcpSessionInitializationFailed({
+      ...failedInput,
+      loadedEventCount: 1,
+    })).toBe(false);
+  });
+
+  it('does not turn non-error pauses into ACP initialization failures', () => {
+    expect(isAcpSessionInitializationFailed({
+      ...failedInput,
+      runtimePauseReason: 'waiting-for-user-input',
+      runtimeComposerMode: 'interrupted-input',
+    })).toBe(false);
   });
 });
 

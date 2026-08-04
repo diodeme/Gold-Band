@@ -707,7 +707,225 @@ pub struct ProjectAppConfig {
     pub notification_auto_dismiss_target_secs: Option<u64>,
     pub require_local_claude_executable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_layout: Option<WorkspaceLayoutConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_files: Option<WorkspaceFilesConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_mapping: Option<BTreeMap<String, BTreeMap<String, String>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceLayoutProfileConfig {
+    pub center_min_width: u32,
+    pub center_auto_collapse_width: u32,
+    pub window_min_width: u32,
+}
+
+impl WorkspaceLayoutProfileConfig {
+    fn normalized(self, shell_min_width: u32) -> Self {
+        let center_min_width = self.center_min_width.max(1);
+        Self {
+            center_min_width,
+            center_auto_collapse_width: self.center_auto_collapse_width.max(center_min_width),
+            window_min_width: self
+                .window_min_width
+                .max(center_min_width)
+                .max(shell_min_width),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceLayoutConfig {
+    pub shell_min_width: u32,
+    pub shell_min_height: u32,
+    pub right_workspace: RightWorkspaceLayoutConfig,
+    pub conversation: WorkspaceLayoutProfileConfig,
+    pub context_cards: WorkspaceLayoutProfileConfig,
+    pub workflow_canvas: WorkspaceLayoutProfileConfig,
+    pub settings: WorkspaceLayoutProfileConfig,
+}
+
+impl WorkspaceLayoutConfig {
+    fn normalized(mut self) -> Self {
+        self.shell_min_width = self.shell_min_width.max(1);
+        self.shell_min_height = self.shell_min_height.max(1);
+        self.right_workspace = self.right_workspace.normalized();
+        self.conversation = self.conversation.normalized(self.shell_min_width);
+        self.context_cards = self.context_cards.normalized(self.shell_min_width);
+        self.workflow_canvas = self.workflow_canvas.normalized(self.shell_min_width);
+        self.settings = self.settings.normalized(self.shell_min_width);
+        self
+    }
+}
+
+impl Default for WorkspaceLayoutConfig {
+    fn default() -> Self {
+        Self {
+            shell_min_width: 480,
+            shell_min_height: 680,
+            right_workspace: RightWorkspaceLayoutConfig::default(),
+            conversation: WorkspaceLayoutProfileConfig {
+                center_min_width: 360,
+                center_auto_collapse_width: 420,
+                window_min_width: 480,
+            },
+            context_cards: WorkspaceLayoutProfileConfig {
+                center_min_width: 520,
+                center_auto_collapse_width: 520,
+                window_min_width: 520,
+            },
+            workflow_canvas: WorkspaceLayoutProfileConfig {
+                center_min_width: 640,
+                center_auto_collapse_width: 640,
+                window_min_width: 640,
+            },
+            settings: WorkspaceLayoutProfileConfig {
+                center_min_width: 480,
+                center_auto_collapse_width: 480,
+                window_min_width: 480,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileWorkspaceLayoutConfig {
+    pub preferred_width: u32,
+    pub split_min_width: u32,
+    pub tree_default_width: u32,
+    pub tree_min_width: u32,
+    pub tree_max_width: u32,
+}
+
+impl FileWorkspaceLayoutConfig {
+    fn normalized(mut self, right_min_width: u32, right_max_width: u32) -> Self {
+        self.preferred_width = self.preferred_width.clamp(right_min_width, right_max_width);
+        self.split_min_width = self.split_min_width.clamp(right_min_width, right_max_width);
+        self.tree_min_width = self.tree_min_width.max(1).min(right_max_width);
+        self.tree_max_width = self
+            .tree_max_width
+            .max(self.tree_min_width)
+            .min(right_max_width);
+        self.tree_default_width = self
+            .tree_default_width
+            .clamp(self.tree_min_width, self.tree_max_width);
+        self
+    }
+}
+
+impl Default for FileWorkspaceLayoutConfig {
+    fn default() -> Self {
+        Self {
+            preferred_width: 760,
+            split_min_width: 620,
+            tree_default_width: 280,
+            tree_min_width: 220,
+            tree_max_width: 420,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RightWorkspaceLayoutConfig {
+    pub min_width: u32,
+    pub default_width: u32,
+    pub max_width: u32,
+    pub file: FileWorkspaceLayoutConfig,
+}
+
+impl RightWorkspaceLayoutConfig {
+    fn normalized(mut self) -> Self {
+        self.min_width = self.min_width.max(1);
+        self.max_width = self.max_width.max(self.min_width);
+        self.default_width = self.default_width.clamp(self.min_width, self.max_width);
+        self.file = self.file.normalized(self.min_width, self.max_width);
+        self
+    }
+}
+
+impl Default for RightWorkspaceLayoutConfig {
+    fn default() -> Self {
+        Self {
+            min_width: 320,
+            default_width: 440,
+            max_width: 960,
+            file: FileWorkspaceLayoutConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkspaceFilesConfig {
+    pub auto_save_delay_ms: u64,
+    pub search_debounce_ms: u64,
+    pub search_result_limit: usize,
+    pub text_editable_max_bytes: u64,
+    pub text_highlight_max_chars: usize,
+    pub text_read_only_max_bytes: u64,
+    pub image_preview_max_bytes: u64,
+    pub image_preview_max_pixels: u64,
+    pub content_cache_entries: usize,
+    pub content_cache_max_bytes: u64,
+    pub watch_debounce_ms: u64,
+    pub preview_token_ttl_seconds: u64,
+    pub external_access_grant_ttl_seconds: u64,
+    pub markdown_live_preview_max_chars: usize,
+    pub markdown_embedded_image_limit: usize,
+    pub markdown_embedded_image_max_concurrent: usize,
+}
+
+impl WorkspaceFilesConfig {
+    fn normalized(mut self) -> Self {
+        self.auto_save_delay_ms = self.auto_save_delay_ms.max(1);
+        self.search_debounce_ms = self.search_debounce_ms.max(1);
+        self.search_result_limit = self.search_result_limit.max(1);
+        self.text_editable_max_bytes = self.text_editable_max_bytes.max(1);
+        self.text_highlight_max_chars = self.text_highlight_max_chars.max(1);
+        self.text_read_only_max_bytes = self
+            .text_read_only_max_bytes
+            .max(self.text_editable_max_bytes);
+        self.image_preview_max_bytes = self.image_preview_max_bytes.max(1);
+        self.image_preview_max_pixels = self.image_preview_max_pixels.max(1);
+        self.content_cache_entries = self.content_cache_entries.max(1);
+        self.content_cache_max_bytes = self.content_cache_max_bytes.max(1);
+        self.watch_debounce_ms = self.watch_debounce_ms.max(1);
+        self.preview_token_ttl_seconds = self.preview_token_ttl_seconds.max(1);
+        self.external_access_grant_ttl_seconds = self.external_access_grant_ttl_seconds.max(1);
+        self.markdown_live_preview_max_chars = self.markdown_live_preview_max_chars.max(1);
+        self.markdown_embedded_image_limit = self.markdown_embedded_image_limit.max(1);
+        self.markdown_embedded_image_max_concurrent =
+            self.markdown_embedded_image_max_concurrent.max(1);
+        self
+    }
+}
+
+impl Default for WorkspaceFilesConfig {
+    fn default() -> Self {
+        Self {
+            auto_save_delay_ms: 300,
+            search_debounce_ms: 200,
+            search_result_limit: 500,
+            text_editable_max_bytes: 2 * 1024 * 1024,
+            text_highlight_max_chars: 120_000,
+            text_read_only_max_bytes: 10 * 1024 * 1024,
+            image_preview_max_bytes: 20 * 1024 * 1024,
+            image_preview_max_pixels: 40_000_000,
+            content_cache_entries: 12,
+            content_cache_max_bytes: 16 * 1024 * 1024,
+            watch_debounce_ms: 150,
+            preview_token_ttl_seconds: 300,
+            external_access_grant_ttl_seconds: 1_800,
+            markdown_live_preview_max_chars: 200_000,
+            markdown_embedded_image_limit: 100,
+            markdown_embedded_image_max_concurrent: 4,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -752,6 +970,8 @@ pub struct RuntimeConfig {
     pub acp_timeline_compact_patch_ratio: usize,
     pub conversation_auto_title_max_chars: usize,
     pub notification_auto_dismiss_target_secs: u64,
+    pub workspace_layout: WorkspaceLayoutConfig,
+    pub workspace_files: WorkspaceFilesConfig,
     pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub provider_diagnostics: BTreeMap<String, ProviderDiagnosticSnapshot>,
@@ -795,6 +1015,8 @@ impl Default for RuntimeConfig {
             acp_timeline_compact_patch_ratio: 4,
             conversation_auto_title_max_chars: DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS,
             notification_auto_dismiss_target_secs: DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS,
+            workspace_layout: WorkspaceLayoutConfig::default(),
+            workspace_files: WorkspaceFilesConfig::default(),
             permission_mode_mapping: BTreeMap::new(),
             provider_diagnostics: BTreeMap::new(),
         };
@@ -927,6 +1149,12 @@ impl RuntimeConfig {
         if let Some(require_local_claude_executable) = app_config.require_local_claude_executable {
             self.require_local_claude_executable = require_local_claude_executable;
         }
+        if let Some(workspace_layout) = &app_config.workspace_layout {
+            self.workspace_layout = workspace_layout.clone().normalized();
+        }
+        if let Some(workspace_files) = &app_config.workspace_files {
+            self.workspace_files = workspace_files.clone().normalized();
+        }
         if let Some(ref mapping) = app_config.permission_mode_mapping {
             self.permission_mode_mapping = mapping.clone();
         }
@@ -966,7 +1194,7 @@ mod tests {
         ConversationRunModeEntry, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
         DesktopUpdateBadgeState, MANAGED_AGENT_PRESETS, ManagedAgentConfig, ManagedAgentId,
         ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
-        managed_agent_preset,
+        WorkspaceLayoutConfig, managed_agent_preset,
     };
     use std::collections::BTreeMap;
     use std::str::FromStr;
@@ -1237,6 +1465,80 @@ mod tests {
         assert_eq!(config.conversation_auto_title_max_chars, 20);
         assert_eq!(config.notification_auto_dismiss_target_secs, 12);
         assert!(config.require_local_claude_executable);
+    }
+
+    #[test]
+    fn embedded_app_config_defines_page_window_layout_profiles() {
+        let layout = RuntimeConfig::default().workspace_layout;
+
+        assert_eq!(layout.shell_min_width, 480);
+        assert_eq!(layout.shell_min_height, 680);
+        assert_eq!(layout.right_workspace.min_width, 320);
+        assert_eq!(layout.right_workspace.default_width, 440);
+        assert_eq!(layout.right_workspace.max_width, 960);
+        assert_eq!(layout.right_workspace.file.preferred_width, 760);
+        assert_eq!(layout.conversation.center_min_width, 360);
+        assert_eq!(layout.conversation.center_auto_collapse_width, 420);
+        assert_eq!(layout.conversation.window_min_width, 480);
+        assert_eq!(layout.context_cards.window_min_width, 520);
+        assert_eq!(layout.workflow_canvas.window_min_width, 640);
+        assert_eq!(layout.settings.window_min_width, 480);
+    }
+
+    #[test]
+    fn app_config_normalizes_invalid_workspace_layout_thresholds() {
+        let mut layout = WorkspaceLayoutConfig::default();
+        layout.shell_min_width = 500;
+        layout.shell_min_height = 0;
+        layout.conversation.center_min_width = 420;
+        layout.conversation.center_auto_collapse_width = 360;
+        layout.conversation.window_min_width = 400;
+        layout.right_workspace.min_width = 500;
+        layout.right_workspace.default_width = 100;
+        layout.right_workspace.max_width = 400;
+        layout.right_workspace.file.tree_min_width = 300;
+        layout.right_workspace.file.tree_max_width = 200;
+
+        let config = RuntimeConfig::default().apply_app_config(&ProjectAppConfig {
+            workspace_layout: Some(layout),
+            ..Default::default()
+        });
+
+        assert_eq!(config.workspace_layout.shell_min_height, 1);
+        assert_eq!(config.workspace_layout.conversation.center_min_width, 420);
+        assert_eq!(
+            config
+                .workspace_layout
+                .conversation
+                .center_auto_collapse_width,
+            420
+        );
+        assert_eq!(config.workspace_layout.conversation.window_min_width, 500);
+        assert_eq!(config.workspace_layout.right_workspace.min_width, 500);
+        assert_eq!(config.workspace_layout.right_workspace.default_width, 500);
+        assert_eq!(config.workspace_layout.right_workspace.max_width, 500);
+        assert_eq!(
+            config.workspace_layout.right_workspace.file.tree_min_width,
+            300
+        );
+        assert_eq!(
+            config.workspace_layout.right_workspace.file.tree_max_width,
+            300
+        );
+    }
+
+    #[test]
+    fn embedded_permission_mode_mapping_uses_current_codex_mode_ids() {
+        let config = RuntimeConfig::default();
+
+        assert_eq!(
+            config.resolve_permission_mode("codex-acp", "full_access"),
+            "agent-full-access"
+        );
+        assert_eq!(
+            config.resolve_permission_mode("claude-acp", "full_access"),
+            "bypassPermissions"
+        );
     }
 
     #[test]

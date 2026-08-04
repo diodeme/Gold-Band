@@ -22,10 +22,13 @@ import type {
   WorkflowVm,
   ConversationRunVm,
 } from './types';
+import { FALLBACK_WORKSPACE_FILES } from './components/workspace/workspace-layout';
+import { createDefaultAvatarPreferences } from './lib/avatar';
 
-const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false };
+const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
 export const mockAppInfo = {
   channel: 'default',
+  feedbackEnabled: false,
   appName: 'Gold Band',
   appKey: 'gold-band',
   configDirName: '.gold-band',
@@ -192,6 +195,9 @@ const errorBlockedLifecycle = {
 };
 
 export const mockErrorBlockedConversationSession: AcpSessionVm = {
+  branchId: 'root',
+  parentBranchId: null,
+  readOnly: false,
   sessionId: null,
   title: 'dev',
   provider: 'claude-acp',
@@ -208,8 +214,10 @@ export const mockErrorBlockedConversationSession: AcpSessionVm = {
   systemPromptAppend: null,
   config: null,
   events: [],
+  timelineProjection: null,
   eventPage: { loadedCount: 0, total: 0, oldestSeq: null, newestSeq: null, hasOlder: false, hasNewer: false, oldestCursor: null, newestCursor: null },
   pendingPermissions: [],
+  pendingElicitations: [],
   availableCommands: [],
   usage: null,
   diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0, lastError: null, lastErrorTimestamp: null },
@@ -298,6 +306,9 @@ const mockNodeDetail: NodeDetailVm = {
   manualCheckEnabled: false,
   manualCheckPending: false,
   acpSession: {
+    branchId: 'root',
+    parentBranchId: null,
+    readOnly: false,
     sessionId: 'acp-session-7f3',
     provider: 'claude-acp',
     adapterId: 'claude-agent-acp',
@@ -330,6 +341,8 @@ const mockNodeDetail: NodeDetailVm = {
       { id: 'e4', seq: 4, timestamp: '2026-05-02 16:11', kind: 'plan', sessionId: 'acp-session-7f3', raw: { entries: [{ content: '重构窗口状态', status: 'completed' }, { content: '修正 DPI 偏移', status: 'in_progress' }] } },
       { id: 'e5', seq: 5, timestamp: '2026-05-02 16:12', kind: 'permissionRequest', title: '允许写入窗口管理文件', toolCallId: 'tool-2', status: 'pending', sessionId: 'acp-session-7f3', raw: { options: [{ optionId: 'allow-once', name: '允许一次', kind: 'allow_once' }, { optionId: 'reject-once', name: '拒绝', kind: 'reject_once' }] } },
     ],
+    pendingElicitations: [],
+    timelineProjection: null,
   },
   artifacts: [
     { kind: 'artifact', name: 'window_manager_v2_core.rs', title: 'window_manager_v2_core.rs', tone: 'accent', preview: 'canonical artifact', roundId: 'round-001', nodeId: 'test', attemptId: 'att-test-001' },
@@ -362,6 +375,7 @@ const errorBlockedNodeDetail: NodeDetailVm = {
     diagnostics: { rawFrameCount: 5, eventCount: 2, errorCount: 1, lastError: 'ACP prompt failed: adapter returned malformed response', lastErrorTimestamp: '2026-05-15 10:02' },
     eventPage: { loadedCount: 3, total: 3, oldestSeq: 1, newestSeq: 3, hasOlder: false, hasNewer: false },
     pendingPermissions: [],
+    pendingElicitations: [],
     events: [
       { id: 'e1', seq: 1, timestamp: '2026-05-15 10:01', kind: 'userTextDelta', content: '初始需求 prompt', sessionId: 'acp-session-7f3', raw: { source: 'goldBandPrompt', synthetic: true } },
       { id: 'acp-diagnostic-error-1', seq: 2, timestamp: '2026-05-15 10:02', kind: 'runtimeError', content: 'ACP prompt failed: adapter returned malformed response', status: 'failed', raw: { source: 'acpDiagnostic', level: 'error' } },
@@ -413,6 +427,27 @@ export const mockBootstrap: AppBootstrapVm = {
   appConfig: {
     acpSessionTitleRefreshEnabled: false,
     acpChatEventPageSize: 360,
+    workspaceLayout: {
+      shellMinWidth: 480,
+      shellMinHeight: 680,
+      rightWorkspace: {
+        minWidth: 320,
+        defaultWidth: 440,
+        maxWidth: 960,
+        file: {
+          preferredWidth: 760,
+          splitMinWidth: 540,
+          treeDefaultWidth: 280,
+          treeMinWidth: 200,
+          treeMaxWidth: 420,
+        },
+      },
+      conversation: { centerMinWidth: 360, centerAutoCollapseWidth: 420, windowMinWidth: 480 },
+      contextCards: { centerMinWidth: 520, centerAutoCollapseWidth: 520, windowMinWidth: 520 },
+      workflowCanvas: { centerMinWidth: 640, centerAutoCollapseWidth: 640, windowMinWidth: 640 },
+      settings: { centerMinWidth: 480, centerAutoCollapseWidth: 480, windowMinWidth: 480 },
+    },
+    workspaceFiles: FALLBACK_WORKSPACE_FILES,
   },
   needsWorkspace: false,
 };

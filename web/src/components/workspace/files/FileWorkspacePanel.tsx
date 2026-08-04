@@ -24,6 +24,7 @@ import { fileContentStore, useFileContentEntry } from './file-content-store';
 import { fileExplorerStore } from './file-explorer-store';
 import { WorkspaceFileEditor } from './WorkspaceFileEditor';
 import { markdownImageSources } from './markdown-image-preview';
+import { isMarkdownDocumentPath } from './markdown-document';
 import { markdownHasTableImages } from './markdown-live-preview';
 import { WorkspaceFileTree } from './WorkspaceFileTree';
 
@@ -240,7 +241,7 @@ function FileSnapshotContent({
     fileContentStore.persistEditorState(resource.key, state, entry.contentRevision);
   }, [entry.contentRevision, resource.key]);
   const snapshot = entry.snapshot;
-  const markdown = snapshot?.kind === 'text' && /\.md(?:own)?$/iu.test(resource.locator.canonicalPath);
+  const markdown = snapshot?.kind === 'text' && isMarkdownDocumentPath(resource.locator.canonicalPath);
   const markdownLivePreviewAvailable = snapshot?.kind === 'text'
     ? fileContentStore.canUseMarkdownLivePreview(snapshot.content.length)
     : false;

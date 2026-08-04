@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TurnFileChangesCard } from '@/components/acp/TurnFileChangesCard';
 import { ACPMessageList } from '@/components/acp/ACPChatDialog';
+import { shouldShowDiffChunkNavigation } from '@/components/workspace/files/TurnFileWorkspacePanel';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import {
   RightWorkspaceProvider,
@@ -276,6 +277,12 @@ describe('conversation artifact workspace entry', () => {
 });
 
 describe('turn file viewer contract', () => {
+  it('shows change navigation only when the unified diff has multiple chunks', () => {
+    expect(shouldShowDiffChunkNavigation(0)).toBe(false);
+    expect(shouldShowDiffChunkNavigation(1)).toBe(false);
+    expect(shouldShowDiffChunkNavigation(2)).toBe(true);
+  });
+
   it('uses a read-only unified CodeMirror merge view', () => {
     const source = readFileSync(
       resolve(process.cwd(), 'web/src/components/workspace/files/TurnFileWorkspacePanel.tsx'),
@@ -290,5 +297,17 @@ describe('turn file viewer contract', () => {
     expect(source).toContain('[&_.cm-scroller]:overflow-x-hidden');
     expect(source).toContain('mergeControls: false');
     expect(source).toContain('collapseUnchanged:');
+    expect(source).toContain('getChunks(view.state)?.chunks.length');
+  });
+
+  it('uses the shared read-only Markdown viewer for fully added Markdown files', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'web/src/components/workspace/files/TurnFileWorkspacePanel.tsx'),
+      'utf8',
+    );
+    expect(source).toContain("resource.kind === 'file-version'");
+    expect(source).toContain('isMarkdownDocumentPath(');
+    expect(source).toContain('<WorkspaceFileEditor');
+    expect(source).toContain('editable={false}');
   });
 });

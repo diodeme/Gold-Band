@@ -24,7 +24,7 @@
 | 类别 | 内置能力 |
 |---|---|
 | 文本、日志 | CodeMirror 查看、查找、行号、换行和编辑 |
-| Markdown | 默认实时预览编辑，可切换源码模式并一键复制当前内存源码；两种模式共享源码、选区、撤销历史和自动保存队列 |
+| Markdown | 项目文件默认实时预览编辑；系统提示、用户附件、运行产物与完全新增的文件版本均复用同一 AtomEditor 查看器并固定只读。查看器可切换源码模式并一键复制当前源码；两种模式共享源码与视口状态，项目文件额外共享撤销历史和自动保存队列 |
 | 常见代码与配置 | CodeMirror 按需语言高亮；无语言包时回退纯文本 |
 | PNG、JPEG、WebP、GIF、BMP、ICO | 安全图片预览、缩放、适应窗口、原始大小和拖拽平移；GIF 支持播放/暂停，并在 reduced motion 下默认显示静态首帧 |
 | SVG | Rust 安全栅格化预览，可切换源码编辑 |
@@ -92,7 +92,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 ### 2026-08-04 会话历史版本与 Diff 资源
 
 - 右侧工作区增加 `file-version`、`file-diff` 与 `conversation-asset` 三类只读资源。历史版本 key 包含 change set/change identity，同一路径不同 turn 不复用错误内容；消息附件和 artifact key 包含完整 attempt/branch locator。
-- `file-diff` 使用官方 `@codemirror/merge` 的 `unifiedMergeView`，固定只读、无 merge controls，开启 gutter、变化高亮、未修改区折叠及上一处/下一处导航。viewer 必须跟随右侧工作区容器宽度并启用 `EditorView.lineWrapping`，长行在当前可视宽度内换行，不产生页面级横向滚动。普通文件与 diff 复用同一语言加载、主题和 syntax highlight extension；新增片段的主题选择器必须命中同一编辑器根节点 `&.cm-merge-b`，显式移除 merge 默认 background image，只保留实色语义背景。只读 diff/version viewer 不安装 CodeMirror 自绘 selection layer，使用应用级 `--text-selection` / `--text-selection-foreground` 原生选中态，避免 diff 标记背景遮挡深色模式选区；普通 CodeMirror 自绘选区也必须使用同一 selection token。
+- `file-diff` 使用官方 `@codemirror/merge` 的 `unifiedMergeView`，固定只读、无 merge controls，开启 gutter、变化高亮和未修改区折叠。标题使用“本轮修改 Diff”，表明比较的是本 Prompt Turn 第一次 tool diff 的 oldText 与最后一次 tool diff 的 newText，而不是 live workspace；仅当官方 changed chunk 数量至少为 2 时展示上一处/下一处导航。viewer 必须跟随右侧工作区容器宽度并启用 `EditorView.lineWrapping`，长行在当前可视宽度内换行，不产生页面级横向滚动。普通文件与 diff 复用同一语言加载、主题和 syntax highlight extension；新增片段的主题选择器必须命中同一编辑器根节点 `&.cm-merge-b`，显式移除 merge 默认 background image，只保留实色语义背景。只读 diff/version viewer 不安装 CodeMirror 自绘 selection layer，使用应用级 `--text-selection` / `--text-selection-foreground` 原生选中态，避免 diff 标记背景遮挡深色模式选区；普通 CodeMirror 自绘选区也必须使用同一 selection token。
 - 打开 `file-diff` / `file-version` 属于普通只读浏览，即使捕获或渲染存在限制也不得显示 Tab 黄点；限制仅在 viewer 内说明。变更列表的“修改”文件图标使用主题 `gold-running` 蓝色语义 token，不使用固定琥珀色；新增/删除仍使用各自的成功/破坏性语义色。
 - ACP `oldText/newText` 必须是文件内容，不得包含 unified diff 的 `No newline at end of file` 元数据。若 provider 的后续 tool update 错把该标记混入标准文本字段，捕获层需要移除标记并恢复真实的文件末尾换行状态；已有 change set 通过 schema 迁移从 durable journal 重新生成，不把元数据伪装成普通删除/新增行。
 - 变更卡收起时只展示配置数量的预览行；展开后全部文件进入同一个 ScrollArea，预览行不得固定在滚动区外。标题固定使用“本轮变更 N 个文件”，partial 不在标题后追加告警图标。

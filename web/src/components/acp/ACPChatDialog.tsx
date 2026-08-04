@@ -42,7 +42,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -123,6 +122,7 @@ import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { AcpAvatar, AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
 import { AcpUsagePanel } from "@/components/acp/AcpUsagePanel";
 import { HiddenPromptMessageContent } from "@/components/acp/HiddenPromptMessageContent";
+import { WorkspaceFileEditor } from "@/components/workspace/files/WorkspaceFileEditor";
 import {
   DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT,
   TurnFileCardPreviewLimitContext,
@@ -396,15 +396,10 @@ export const ACP_SYSTEM_PROMPT_DIALOG_LAYOUT = {
     "max-h-[86vh] gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55 flex flex-col sm:max-w-5xl",
   headerClassName: "shrink-0 border-b px-5 py-4",
   scrollContainerClassName: goldThemedScrollbarClassName(
-    "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-scroll",
+    "min-h-0 min-w-0 flex-1 overflow-hidden",
   ),
-  bodyClassName: "min-w-0 max-w-full space-y-3 px-5 pb-5 pt-4 pr-6",
-  toolbarClassName:
-    "flex min-h-8 min-w-0 flex-wrap items-center justify-between gap-3",
-  renderedPromptClassName:
-    "w-full min-w-0 max-w-full overflow-x-hidden rounded-xl border bg-muted/20 p-4 text-foreground/90 [overflow-wrap:anywhere]",
-  promptClassName:
-    "w-full min-w-0 max-w-full overflow-x-hidden rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-all [overflow-wrap:anywhere]",
+  bodyClassName: "relative h-full min-h-0 min-w-0 max-w-full",
+  attemptSelectorClassName: "absolute left-2 top-2 z-30",
 } as const;
 
 function timelineEventKey(event: AcpTimelineItem | AcpUiEventVm) {
@@ -3736,10 +3731,17 @@ export const SystemPromptPanel = memo(function SystemPromptPanel({
   useEffect(() => setSelectedAttemptId(latestAttemptId), [latestAttemptId]);
   const selectedPrompt = availableOptions.find((option) => option.attemptId === selectedAttemptId)?.prompt;
   const content = (selectedPrompt ?? prompt)?.trim() || "";
+  const onMarkdownModeChange = (mode: "source" | "live-preview") => {
+    const nextMode = mode === "live-preview"
+      ? SYSTEM_PROMPT_VIEW_MODES.rendered
+      : SYSTEM_PROMPT_VIEW_MODES.raw;
+    setViewMode(nextMode);
+    saveSystemPromptViewMode(nextMode);
+  };
   return (
     <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.scrollContainerClassName} data-right-workspace-resource="system-prompt">
       <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.bodyClassName}>
-        <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.toolbarClassName}>
+        <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.attemptSelectorClassName}>
           {availableOptions.length > 1 ? (
             <Select value={selectedAttemptId ?? availableOptions[0]?.attemptId} onValueChange={setSelectedAttemptId}>
               <SelectTrigger className="h-8 w-[220px] max-w-full"><SelectValue /></SelectTrigger>
@@ -3749,28 +3751,27 @@ export const SystemPromptPanel = memo(function SystemPromptPanel({
                 ))}
               </SelectContent>
             </Select>
-          ) : <span />}
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span>{t("acp.renderMarkdown")}</span>
-            <Switch
-              checked={viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered}
-              onCheckedChange={(rendered) => {
-                const nextMode = rendered ? SYSTEM_PROMPT_VIEW_MODES.rendered : SYSTEM_PROMPT_VIEW_MODES.raw;
-                setViewMode(nextMode);
-                saveSystemPromptViewMode(nextMode);
-              }}
-              aria-label={t("acp.renderMarkdown")}
-            />
-          </div>
+          ) : null}
         </div>
         {content ? (
-          viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered ? (
-            <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.renderedPromptClassName}><Markdown>{content}</Markdown></div>
-          ) : (
-            <pre className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.promptClassName}>{content}</pre>
-          )
+          <WorkspaceFileEditor
+            documentKey={`system-prompt:${selectedAttemptId ?? "current"}`}
+            value={content}
+            editable={false}
+            language="markdown"
+            highlight
+            contentRevision={0}
+            target={null}
+            targetRevision={0}
+            onChange={() => undefined}
+            onSave={() => undefined}
+            initialStateJson={null}
+            onPersistState={() => undefined}
+            markdownMode={viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered ? "live-preview" : "source"}
+            onMarkdownModeChange={onMarkdownModeChange}
+          />
         ) : (
-          <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">{t("acp.systemPromptEmpty")}</div>
+          <div className="flex h-full items-center justify-center p-5"><div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">{t("acp.systemPromptEmpty")}</div></div>
         )}
       </div>
     </div>

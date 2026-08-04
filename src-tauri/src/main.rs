@@ -14,6 +14,8 @@ mod state;
 mod updater;
 mod view_models;
 mod view_models_conversation;
+#[cfg(any(test, all(debug_assertions, target_os = "windows")))]
+mod webview_heap_diagnostics;
 mod window_chrome;
 mod workspace_files;
 
@@ -75,6 +77,8 @@ fn main() {
 fn run() -> anyhow::Result<()> {
     configure_storage_paths(channel::storage_path_config());
     let context = DesktopContext::from_current_dir()?;
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    let webview_heap_diagnostics = webview_heap_diagnostics::initialize(&context)?;
     let mut tauri_context = tauri::generate_context!();
     #[cfg(target_os = "windows")]
     let desktop_window_chrome = window_chrome::desktop_window_chrome_vm();
@@ -87,6 +91,14 @@ fn run() -> anyhow::Result<()> {
         // application-owned inset outline instead.
         window.transparent = true;
         window.shadow = desktop_window_chrome.native_shadow;
+        #[cfg(debug_assertions)]
+        {
+            window.additional_browser_args =
+                Some(webview_heap_diagnostics::additional_browser_arguments(
+                    window.additional_browser_args.as_deref(),
+                    &webview_heap_diagnostics.snapshot(),
+                ));
+        }
     }
     #[cfg(target_os = "macos")]
     if let Some(window) = tauri_context.config_mut().app.windows.first_mut() {
@@ -95,13 +107,16 @@ fn run() -> anyhow::Result<()> {
         window.title_bar_style = tauri::TitleBarStyle::Overlay;
         window.hidden_title = true;
     }
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(DesktopState::new(context))
         .manage(WorkspaceFileRuntime::default())
-        .manage(WorkspaceFileWatchRuntime::default())
+        .manage(WorkspaceFileWatchRuntime::default());
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    let builder = builder.manage(webview_heap_diagnostics);
+    builder
         .register_asynchronous_uri_scheme_protocol(
             workspace_files::WORKSPACE_FILE_PREVIEW_PROTOCOL,
             |protocol_context, request, responder| {
@@ -306,6 +321,8 @@ fn run() -> anyhow::Result<()> {
             check_skill_name_conflict,
             feedback::submit_feedback,
             feedback::preview_feedback_session_archive,
+            #[cfg(all(debug_assertions, target_os = "windows"))]
+            webview_heap_diagnostics::get_webview_heap_diagnostic,
         ])
         .run(tauri_context)
         .context("tauri runtime failed")?;

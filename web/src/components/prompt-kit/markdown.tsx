@@ -9,6 +9,7 @@ import {
 import { openExternalUrl } from '@/api';
 import { cn } from '@/lib/utils';
 import { isExternalUrlHref, isLocalFileHref } from '@/lib/file-link';
+import { createIncrementalMarkdownBlockParser } from '@/lib/incremental-markdown-blocks';
 import {
   advanceStreamingMarkdownPresentation,
   createStreamingMarkdownPresentation,
@@ -166,6 +167,11 @@ export const Markdown = memo(function Markdown({ children, className, streaming 
   const lastFrameAtRef = useRef(0);
   const hasStreamedRef = useRef(streaming);
   if (streaming) hasStreamedRef.current = true;
+  const streamdownMode = hasStreamedRef.current ? 'streaming' : 'static';
+  const blockParserRef = useRef<ReturnType<typeof createIncrementalMarkdownBlockParser> | null>(null);
+  if (!blockParserRef.current) {
+    blockParserRef.current = createIncrementalMarkdownBlockParser();
+  }
 
   useLayoutEffect(() => {
     setPresentation((current) =>
@@ -204,7 +210,6 @@ export const Markdown = memo(function Markdown({ children, className, streaming 
   }, [pending, presentation.canonical.length, presentation.offset]);
 
   const presentationStreaming = streaming || pending;
-  const streamdownMode = hasStreamedRef.current ? 'streaming' : 'static';
   const visibleChildren = streamingMarkdownPresentationText(
     presentation,
     streaming,
@@ -219,6 +224,7 @@ export const Markdown = memo(function Markdown({ children, className, streaming 
         isAnimating={presentationStreaming}
         mode={streamdownMode}
         parseIncompleteMarkdown={presentationStreaming}
+        parseMarkdownIntoBlocksFn={blockParserRef.current}
         urlTransform={markdownUrlTransform}
         linkSafety={markdownLinkSafety}
       >

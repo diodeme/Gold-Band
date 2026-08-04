@@ -1041,6 +1041,7 @@ export interface TurnFileChangeSummaryVm {
 }
 
 export interface TurnFileChangeSetVm {
+  schemaVersion?: number;
   id: string;
   turnId: string;
   promptEventId: string;

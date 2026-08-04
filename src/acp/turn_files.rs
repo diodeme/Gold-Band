@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 
 use anyhow::{Context, Result, anyhow};
@@ -16,6 +16,10 @@ pub const BLOB_CORRUPTED: &str = "turn-files.blob-corrupted";
 pub const INVALID_TOOL_DIFF: &str = "turn-files.invalid-tool-diff";
 pub const NON_LINEAR_MUTATION: &str = "turn-files.non-linear-mutation";
 pub const CAPTURE_LIMIT_EXCEEDED: &str = "turn-files.capture-limit-exceeded";
+pub const TURN_FILE_CHANGE_SET_SCHEMA_VERSION: u32 = 3;
+
+const UNIFIED_DIFF_NO_NEWLINE_MARKERS: [&str; 2] =
+    [r"\ No newline at end of file", " No newline at end of file"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TurnFileCaptureConfig {
@@ -108,6 +112,8 @@ pub enum TurnFileChangeSetStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnFileChangeSet {
+    #[serde(default = "legacy_change_set_schema_version")]
+    pub schema_version: u32,
     pub id: String,
     pub turn_id: String,
     pub prompt_event_id: String,
@@ -288,7 +294,7 @@ impl TurnFileStore {
         started_at: &str,
         finished_at: &str,
     ) -> Result<Option<TurnFileChangeSet>> {
-        let mut mutations = self
+        let mutations = self
             .load_mutations()?
             .into_iter()
             .filter(|mutation| mutation.turn_id == turn_id && mutation.branch_id == branch_id)
@@ -296,6 +302,11 @@ impl TurnFileStore {
         if mutations.is_empty() {
             return Ok(None);
         }
+        let mut mutations = mutations
+            .into_iter()
+            .map(|mutation| self.normalize_mutation_versions(mutation))
+            .collect::<Result<Vec<_>>>()?;
+        mutations = latest_tool_diff_revisions(mutations);
         mutations.sort_by_key(|mutation| (mutation.event_seq, mutation.content_index));
         let entry_limit_exceeded = mutations.len() > self.config.capture_max_entries;
         let mut by_path = BTreeMap::<String, Vec<TurnFileMutation>>::new();
@@ -379,6 +390,7 @@ impl TurnFileStore {
         let summary = summarize(&changes);
         let id = change_set_id(turn_id, branch_id);
         let change_set = TurnFileChangeSet {
+            schema_version: TURN_FILE_CHANGE_SET_SCHEMA_VERSION,
             id: id.clone(),
             turn_id: turn_id.to_string(),
             prompt_event_id: prompt_event_id.to_string(),
@@ -404,7 +416,22 @@ impl TurnFileStore {
         if !path.exists() {
             return Err(anyhow!(CHANGE_SET_NOT_FOUND));
         }
-        read_json(&path).map_err(|error| anyhow!("{CHANGE_SET_NOT_FOUND}: {error}"))
+        let change_set: TurnFileChangeSet =
+            read_json(&path).map_err(|error| anyhow!("{CHANGE_SET_NOT_FOUND}: {error}"))?;
+        if change_set.schema_version >= TURN_FILE_CHANGE_SET_SCHEMA_VERSION {
+            return Ok(change_set);
+        }
+        self.finalize_turn_branch(
+            &change_set.turn_id,
+            &change_set.prompt_event_id,
+            &change_set.branch_id,
+            &change_set.started_at,
+            change_set
+                .finished_at
+                .as_deref()
+                .unwrap_or(&change_set.started_at),
+        )?
+        .ok_or_else(|| anyhow!(CHANGE_SET_NOT_FOUND))
     }
 
     pub fn comparison(&self, change_set_id: &str, change_id: &str) -> Result<FileComparison> {
@@ -486,6 +513,28 @@ impl TurnFileStore {
         String::from_utf8(bytes).map_err(|_| anyhow!(BLOB_CORRUPTED))
     }
 
+    fn normalize_mutation_versions(
+        &self,
+        mut mutation: TurnFileMutation,
+    ) -> Result<TurnFileMutation> {
+        mutation.before_version = self.normalize_version(mutation.before_version)?;
+        mutation.after_version = self.normalize_version(mutation.after_version)?;
+        Ok(mutation)
+    }
+
+    fn normalize_version(&self, version: Option<FileVersionRef>) -> Result<Option<FileVersionRef>> {
+        let Some(version) = version else {
+            return Ok(None);
+        };
+        let content = self.read_blob(&version)?;
+        let normalized = strip_unified_diff_no_newline_markers(&content);
+        if normalized == content {
+            Ok(Some(version))
+        } else {
+            self.write_blob(&normalized).map(Some)
+        }
+    }
+
     fn load_mutations(&self) -> Result<Vec<TurnFileMutation>> {
         let path = self.mutation_journal_path();
         if !path.exists() {
@@ -540,8 +589,10 @@ pub fn extract_standard_tool_diffs(raw: &Value) -> Vec<CapturedToolDiff> {
         .filter_map(|(content_index, item)| {
             (item.get("type").and_then(Value::as_str) == Some("diff")).then(|| {
                 let path = item.get("path")?.as_str()?.to_string();
-                let old_text = optional_text(item, "oldText")?;
-                let new_text = optional_text(item, "newText")?;
+                let old_text = optional_text(item, "oldText")?
+                    .map(|text| strip_unified_diff_no_newline_markers(&text));
+                let new_text = optional_text(item, "newText")?
+                    .map(|text| strip_unified_diff_no_newline_markers(&text));
                 if old_text.is_none() && new_text.is_none() {
                     return None;
                 }
@@ -564,6 +615,29 @@ fn optional_text(value: &Value, key: &str) -> Option<Option<String>> {
     }
 }
 
+fn strip_unified_diff_no_newline_markers(content: &str) -> String {
+    let ends_with_marker = content
+        .lines()
+        .next_back()
+        .is_some_and(|line| UNIFIED_DIFF_NO_NEWLINE_MARKERS.contains(&line));
+    let mut normalized = content
+        .split_inclusive('\n')
+        .filter(|line| {
+            let text = line.strip_suffix('\n').unwrap_or(line);
+            let text = text.strip_suffix('\r').unwrap_or(text);
+            !UNIFIED_DIFF_NO_NEWLINE_MARKERS.contains(&text)
+        })
+        .collect::<String>();
+    if ends_with_marker {
+        if normalized.ends_with("\r\n") {
+            normalized.truncate(normalized.len() - 2);
+        } else if normalized.ends_with('\n') {
+            normalized.pop();
+        }
+    }
+    normalized
+}
+
 fn normalize_logical_path(path: &str) -> Result<String> {
     let trimmed = path.trim();
     if trimmed.is_empty()
@@ -574,6 +648,28 @@ fn normalize_logical_path(path: &str) -> Result<String> {
         return Err(anyhow!(INVALID_TOOL_DIFF));
     }
     Ok(trimmed.replace('\\', "/"))
+}
+
+fn latest_tool_diff_revisions(mutations: Vec<TurnFileMutation>) -> Vec<TurnFileMutation> {
+    let mut latest_event_by_operation = HashMap::<(String, String), u64>::new();
+    for mutation in &mutations {
+        latest_event_by_operation
+            .entry((mutation.tool_call_id.clone(), mutation.logical_path.clone()))
+            .and_modify(|latest| *latest = (*latest).max(mutation.event_seq))
+            .or_insert(mutation.event_seq);
+    }
+    mutations
+        .into_iter()
+        .filter(|mutation| {
+            latest_event_by_operation
+                .get(&(mutation.tool_call_id.clone(), mutation.logical_path.clone()))
+                .is_some_and(|latest| *latest == mutation.event_seq)
+        })
+        .collect()
+}
+
+fn legacy_change_set_schema_version() -> u32 {
+    1
 }
 
 fn mutation_key(
@@ -695,6 +791,27 @@ mod tests {
     }
 
     #[test]
+    fn strips_unified_diff_no_newline_metadata_from_captured_text() {
+        let diffs = extract_standard_tool_diffs(&raw(serde_json::json!([{
+            "type": "diff",
+            "path": "poem.md",
+            "oldText": "静夜思\n[唐] 李白\n\n床前明月光，\n疑是地上霜。\n举头望明月，\n低头思故乡。\n No newline at end of file\n No newline at end of file",
+            "newText": "春望\n[唐] 杜甫\n\n No newline at end of file\n国破山河在，城春草木深。\n感时花溅泪，恨别鸟惊心。\n烽火连三月，家书抵万金。\n白头搔更短，浑欲不胜簪。\n No newline at end of file"
+        }])));
+
+        assert_eq!(
+            diffs[0].old_text.as_deref(),
+            Some("静夜思\n[唐] 李白\n\n床前明月光，\n疑是地上霜。\n举头望明月，\n低头思故乡。")
+        );
+        assert_eq!(
+            diffs[0].new_text.as_deref(),
+            Some(
+                "春望\n[唐] 杜甫\n\n国破山河在，城春草木深。\n感时花溅泪，恨别鸟惊心。\n烽火连三月，家书抵万金。\n白头搔更短，浑欲不胜簪。"
+            )
+        );
+    }
+
+    #[test]
     fn folds_write_then_edit_without_reading_workspace() {
         let (_dir, store) = store();
         store
@@ -796,6 +913,140 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn latest_update_of_one_tool_call_replaces_earlier_diff_context() {
+        let (_dir, store) = store();
+        store
+            .capture_event_diffs(
+                "turn",
+                "prompt",
+                "root",
+                "edit",
+                2,
+                "2Z",
+                &raw(serde_json::json!([
+                    { "type": "diff", "path": "poem.md", "oldText": "author", "newText": "author\nnew poem" }
+                ])),
+            )
+            .unwrap();
+        store
+            .capture_event_diffs(
+                "turn",
+                "prompt",
+                "root",
+                "edit",
+                3,
+                "3Z",
+                &raw(serde_json::json!([
+                    { "type": "diff", "path": "poem.md", "oldText": "last line\n\nauthor", "newText": "last line\n\nauthor\n\nnew poem" }
+                ])),
+            )
+            .unwrap();
+
+        let set = store
+            .finalize_turn_branch("turn", "prompt", "root", "1Z", "4Z")
+            .unwrap()
+            .unwrap();
+        assert_eq!(set.status, TurnFileChangeSetStatus::Finalized);
+        assert!(set.limitation_codes.is_empty());
+        let comparison = store.comparison(&set.id, &set.changes[0].id).unwrap();
+        assert_eq!(comparison.before.unwrap().content, "last line\n\nauthor");
+        assert_eq!(
+            comparison.after.unwrap().content,
+            "last line\n\nauthor\n\nnew poem"
+        );
+    }
+
+    #[test]
+    fn loading_legacy_change_set_rebuilds_it_from_the_durable_journal() {
+        let (_dir, store) = store();
+        store
+            .capture_event_diffs(
+                "turn",
+                "prompt",
+                "root",
+                "edit",
+                2,
+                "2Z",
+                &raw(serde_json::json!([
+                    { "type": "diff", "path": "a.txt", "oldText": "A", "newText": "B" }
+                ])),
+            )
+            .unwrap();
+        let mut legacy = store
+            .finalize_turn_branch("turn", "prompt", "root", "1Z", "4Z")
+            .unwrap()
+            .unwrap();
+        legacy.schema_version = 1;
+        write_json(&store.change_set_path(&legacy.id), &legacy).unwrap();
+        store
+            .capture_event_diffs(
+                "turn",
+                "prompt",
+                "root",
+                "edit",
+                3,
+                "3Z",
+                &raw(serde_json::json!([
+                    { "type": "diff", "path": "a.txt", "oldText": "context\nA", "newText": "context\nB" }
+                ])),
+            )
+            .unwrap();
+
+        let rebuilt = store.load_change_set(&legacy.id).unwrap();
+        assert_eq!(rebuilt.schema_version, TURN_FILE_CHANGE_SET_SCHEMA_VERSION);
+        let comparison = store
+            .comparison(&rebuilt.id, &rebuilt.changes[0].id)
+            .unwrap();
+        assert_eq!(comparison.before.unwrap().content, "context\nA");
+        assert_eq!(comparison.after.unwrap().content, "context\nB");
+    }
+
+    #[test]
+    fn loading_schema_two_change_set_repairs_no_newline_metadata_from_journal() {
+        let (_dir, store) = store();
+        let before_version = store
+            .write_blob("静夜思\n No newline at end of file\n No newline at end of file")
+            .unwrap();
+        let after_version = store
+            .write_blob(" No newline at end of file\n春望\n No newline at end of file")
+            .unwrap();
+        append_jsonl_durable(
+            &store.mutation_journal_path(),
+            &TurnFileMutation {
+                idempotency_key: "legacy-mutation".to_string(),
+                turn_id: "turn".to_string(),
+                prompt_event_id: "prompt".to_string(),
+                branch_id: "root".to_string(),
+                tool_call_id: "edit".to_string(),
+                event_seq: 2,
+                content_index: 0,
+                logical_path: "poem.md".to_string(),
+                before_version: Some(before_version.clone()),
+                after_version: Some(after_version.clone()),
+                captured_at: "2Z".to_string(),
+                limitation_code: None,
+            },
+        )
+        .unwrap();
+        let mut schema_two = store
+            .finalize_turn_branch("turn", "prompt", "root", "1Z", "3Z")
+            .unwrap()
+            .unwrap();
+        schema_two.schema_version = 2;
+        schema_two.changes[0].before_version = Some(before_version);
+        schema_two.changes[0].after_version = Some(after_version);
+        write_json(&store.change_set_path(&schema_two.id), &schema_two).unwrap();
+
+        let rebuilt = store.load_change_set(&schema_two.id).unwrap();
+        assert_eq!(rebuilt.schema_version, TURN_FILE_CHANGE_SET_SCHEMA_VERSION);
+        let comparison = store
+            .comparison(&rebuilt.id, &rebuilt.changes[0].id)
+            .unwrap();
+        assert_eq!(comparison.before.unwrap().content, "静夜思");
+        assert_eq!(comparison.after.unwrap().content, "春望");
     }
 
     #[test]

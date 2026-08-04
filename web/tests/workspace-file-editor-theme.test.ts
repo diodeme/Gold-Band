@@ -31,6 +31,12 @@ describe('workspace file editor theme contract', () => {
     }
   });
 
+  it('replaces the merge-view insertion underline with a solid highlight', () => {
+    expect(editorExtensionsSource).toContain("'&.cm-merge-b .cm-changedText': {");
+    expect(editorExtensionsSource).toContain("backgroundImage: 'none'");
+    expect(editorExtensionsSource).not.toContain("'.cm-merge-b .cm-changedText'");
+  });
+
   it('maps Markdown links and code surfaces to contrast-safe semantic tokens', () => {
     expect(styles).toContain('--atomic-editor-link: var(--gold-running)');
     expect(styles).toContain('--atomic-editor-code-bg: color-mix(in srgb, var(--gold-surface-high) 72%, var(--background))');

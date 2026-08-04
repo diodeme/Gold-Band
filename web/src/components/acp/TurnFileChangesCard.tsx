@@ -15,7 +15,7 @@ import type {
   TurnFileChangeVm,
   TurnFileLocatorVm,
 } from '@/types';
-import { useOptionalRightWorkspace } from '@/components/workspace/right-workspace-context';
+import { useOptionalRightWorkspaceCommands } from '@/components/workspace/right-workspace-context';
 
 export const DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT = 3;
 export const TurnFileCardPreviewLimitContext = createContext(DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT);
@@ -24,7 +24,7 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
   const { t } = useTranslation();
   const configuredPreviewLimit = useContext(TurnFileCardPreviewLimitContext);
   const previewLimit = Math.max(1, Math.floor(configuredPreviewLimit));
-  const workspace = useOptionalRightWorkspace();
+  const workspace = useOptionalRightWorkspaceCommands();
   const [expanded, setExpanded] = useState(false);
   const [changeSet, setChangeSet] = useState<TurnFileChangeSetVm | null>(null);
   const [error, setError] = useState(false);

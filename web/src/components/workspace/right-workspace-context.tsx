@@ -132,6 +132,13 @@ interface RightWorkspaceContextValue extends RightWorkspaceState {
   registerResourceCloseResolver: (kind: RightWorkspaceResourceKind, resolver: RightWorkspaceResourceCloseResolver) => () => void;
 }
 
+export interface RightWorkspaceCommands {
+  scopeKey: string | null;
+  projectId: string | null;
+  openResource: (resource: RightWorkspaceResource) => void | Promise<void>;
+  getResource: (key: string) => RightWorkspaceResource | null;
+}
+
 export type RightWorkspaceResourceKind = RightWorkspaceResource['kind'];
 export type RightWorkspaceResourceRenderer = (resource: RightWorkspaceResource) => ReactNode;
 export type RightWorkspaceResourceTransitionReason = 'deactivate' | 'close' | 'workspace-close' | 'scope-change';
@@ -150,6 +157,7 @@ export type RightWorkspaceAction =
 export const DEFAULT_RIGHT_WORKSPACE_WIDTH = RIGHT_WORKSPACE_DEFAULT_WIDTH;
 export const CONVERSATION_WORKSPACE_LRU_LIMIT = 24;
 const RightWorkspaceContext = createContext<RightWorkspaceContextValue | null>(null);
+const RightWorkspaceCommandsContext = createContext<RightWorkspaceCommands | null>(null);
 
 export function createDraftConversationWorkspaceScope(projectId: string): ConversationWorkspaceScope {
   return { kind: 'draft', key: `draft:${projectId}`, projectId };
@@ -289,6 +297,8 @@ export function RightWorkspaceProvider({
   const internalStoreRef = useRef<ConversationWorkspaceStore | null>(null);
   if (!internalStoreRef.current) internalStoreRef.current = new ConversationWorkspaceStore();
   const effectiveStore = store ?? internalStoreRef.current;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
   const widthTouchedRef = useRef(false);
   const [width, setWidthState] = useState(initialWidth ?? DEFAULT_RIGHT_WORKSPACE_WIDTH);
   const [revision, render] = useReducer((currentRevision) => currentRevision + 1, 0);
@@ -320,21 +330,28 @@ export function RightWorkspaceProvider({
   }, [initialWidth]);
 
   const commit = useCallback((action: RightWorkspaceAction) => {
-    if (!scope) return;
-    const current = effectiveStore.peek(scope);
-    if (action.type === 'open' && action.resource.scopeKey !== scope.key) return;
-    effectiveStore.save(scope, rightWorkspaceReducer(current, action));
+    const currentScope = scopeRef.current;
+    if (!currentScope) return;
+    const current = effectiveStore.peek(currentScope);
+    if (action.type === 'open' && action.resource.scopeKey !== currentScope.key) return;
+    effectiveStore.save(currentScope, rightWorkspaceReducer(current, action));
     render();
-  }, [effectiveStore, scope]);
+  }, [effectiveStore]);
   const openResource = useCallback(async (resource: RightWorkspaceResource) => {
-    if (!scope) return;
-    const current = effectiveStore.peek(scope);
+    const currentScope = scopeRef.current;
+    if (!currentScope) return;
+    const current = effectiveStore.peek(currentScope);
     if (current.activeTabKey && current.activeTabKey !== resource.key) {
       const active = current.tabs.find((tab) => tab.key === current.activeTabKey);
       if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'deactivate') === false) return;
     }
     commit({ type: 'open', resource });
-  }, [commit, effectiveStore, scope]);
+  }, [commit, effectiveStore]);
+  const getResource = useCallback((key: string) => {
+    const currentScope = scopeRef.current;
+    if (!currentScope) return null;
+    return effectiveStore.peek(currentScope).tabs.find((tab) => tab.key === key) ?? null;
+  }, [effectiveStore]);
   const openWorkspace = useCallback(() => commit({ type: 'open-workspace' }), [commit]);
   const activateTab = useCallback(async (key: string) => {
     if (!scope) return;
@@ -393,7 +410,17 @@ export function RightWorkspaceProvider({
     registerResourceRenderer,
     registerResourceCloseResolver,
   }), [activateTab, closeTab, closeWorkspace, openResource, openWorkspace, registerResourceCloseResolver, registerResourceRenderer, renderResource, rendererRevision, scope?.key, scope?.projectId, sessionState, setWidth, width]);
-  return <RightWorkspaceContext.Provider value={value}>{children}</RightWorkspaceContext.Provider>;
+  const commands = useMemo<RightWorkspaceCommands>(() => ({
+    scopeKey: scope?.key ?? null,
+    projectId: scope?.projectId ?? null,
+    openResource,
+    getResource,
+  }), [getResource, openResource, scope?.key, scope?.projectId]);
+  return (
+    <RightWorkspaceCommandsContext.Provider value={commands}>
+      <RightWorkspaceContext.Provider value={value}>{children}</RightWorkspaceContext.Provider>
+    </RightWorkspaceCommandsContext.Provider>
+  );
 }
 
 export function useRightWorkspace() {
@@ -404,6 +431,16 @@ export function useRightWorkspace() {
 
 export function useOptionalRightWorkspace() {
   return useContext(RightWorkspaceContext);
+}
+
+export function useRightWorkspaceCommands() {
+  const value = useContext(RightWorkspaceCommandsContext);
+  if (!value) throw new Error('useRightWorkspaceCommands must be used inside RightWorkspaceProvider');
+  return value;
+}
+
+export function useOptionalRightWorkspaceCommands() {
+  return useContext(RightWorkspaceCommandsContext);
 }
 
 export function agentTranscriptResourceKey(locator: AgentTranscriptLocator) {

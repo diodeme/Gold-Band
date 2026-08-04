@@ -69,6 +69,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 ## 6. 领域与性能边界
 
 - `RightWorkspaceState` 只保存轻量资源 locator、Tab 与激活态。
+- 右侧工作区按生命周期拆分两个 React context：`RightWorkspaceState` 暴露 tabs、activeTab、requestedOpen、width 等可变展示状态，只供 Dock、Panel 和布局消费；`RightWorkspaceCommands` 暴露会话 scope 内引用稳定的 `openResource/getResource`。消息、Turn 文件卡片和 Markdown 文件链接只消费 commands；需要判断已打开资源时通过 `getResource(key)` 调用时读取 Store，不订阅完整 tabs 快照。
 - `FileExplorerStore` 管理树、展开状态、目录缓存、搜索请求序号和 watcher 失效刷新。
 - `FileExplorerStore` 同时区分用户滚动位置与一次性选中 reveal：侧栏收起/展开重挂载时恢复原滚动位置，同一选中路径不会再次自动居中；程序化恢复滚动不反写用户滚动快照。虚拟树高度必须使用扣除容器 padding 后的 content box，且目录树禁止横向滚动；再配合稳定 scrollbar gutter、关闭 scroll anchoring 和限制 overscroll 传播，避免底部存在被裁切的伪滚动区及随后的回弹震颤。
 - 连续缩放的可变像素值属于瞬时布局数据，不进入 `RightWorkspaceContext`、`FileExplorerStore` 的可观察快照或组件 state。标签溢出检测只观察标签条容器并按动画帧合并测量，不逐个观察所有标签子节点；只有溢出布尔值变化时才发布 React 更新。
@@ -79,6 +80,8 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 - `configs/app-config.toml` 是工作区布局阈值的权威来源。桌面 `get_app_bootstrap.appConfig.workspaceLayout` 必须完整投影 `shellMinWidth/shellMinHeight`、`rightWorkspace` 及各页面 profile；`rightWorkspace.file` 与右栏宽度属于同一生命周期契约，不能只存在于前端类型或 browser mock。桌面 bootstrap 完成后前端直接消费真实契约，不增加缺字段 fallback。
 
 ## 7. 实现状态
+
+2026-08-04 修复流式会话同时浏览文件时的消息树失效：工作区 state/commands context 已分离，Markdown 文件链接 handler 不再依赖 tabs，历史 prompt-kit Markdown 增加静态 memo 边界。接口回归固定“打开并切换 15 个文件、改变右栏宽度时，命令消费者与历史 Markdown 不重渲染”，避免文件操作重新解析完整会话历史或重复创建 CodeMirror/Streamdown 子树。右侧 Tab 条的 `ResizeObserver` effect 只在执行测量时读取当前 ref，不允许闭包强持有已经 detach 的旧 tab strip DOM；cleanup 继续统一断开 observer 并取消待执行 rAF。
 
 2026-08-04 进一步收敛窗口连续缩放：移除 shell resize 热路径中的逐帧右栏 `getSize/resize` 和 `onResize` 像素跟踪，连续几何只由面板库计算；右栏可见时由其独占窗口尺寸增量，并受用户首选宽度上限约束。文件区因此在扩展和收缩时都随实际宽度即时跨过单双栏阈值，不再等待窗口拖拽结束，也不会与应用主动恢复形成双布局反馈。
 

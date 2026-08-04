@@ -50,10 +50,11 @@ export function TurnFileWorkspacePanel({ resource }: { resource: TurnFileWorkspa
   const after = comparison?.after?.content ?? '';
   const extensions = useMemo(() => {
     const base: Extension[] = [
-      basicSetup({ lineNumbers: false, foldGutter: false }),
+      basicSetup({ lineNumbers: false, foldGutter: false, drawSelection: false }),
       lineNumbers(),
       EditorState.readOnly.of(true),
       EditorView.editable.of(false),
+      EditorView.lineWrapping,
       workspaceEditorTheme,
       workspaceSyntaxHighlighting,
     ];
@@ -81,7 +82,7 @@ export function TurnFileWorkspacePanel({ resource }: { resource: TurnFileWorkspa
   }
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col" data-turn-file-workspace={resource.kind}>
+    <section className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col" data-turn-file-workspace={resource.kind}>
       <header className="z-10 shrink-0 border-b border-border/60 bg-background/95 backdrop-blur">
         <div className="flex h-9 items-center gap-2 px-3 text-xs">
           {resource.kind === 'file-diff' ? <FileDiff className="size-3.5 text-primary" /> : <FileText className="size-3.5 text-primary" />}
@@ -111,16 +112,17 @@ export function TurnFileWorkspacePanel({ resource }: { resource: TurnFileWorkspa
           </div>
         ) : null}
       </header>
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
         <CodeMirror
           ref={editorRef}
           value={after}
           height="100%"
+          width="100%"
           theme="none"
           basicSetup={false}
           editable={false}
           extensions={extensions}
-          className="h-full min-h-0 overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto"
+          className="h-full min-h-0 min-w-0 max-w-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:max-w-full [&_.cm-scroller]:max-w-full [&_.cm-scroller]:overflow-y-auto [&_.cm-scroller]:overflow-x-hidden"
           aria-label={resource.kind === 'file-diff' ? t('turnFiles.diffViewer') : t('turnFiles.versionViewer')}
         />
       </div>

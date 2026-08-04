@@ -37,6 +37,11 @@ describe('workspace file editor theme contract', () => {
     expect(editorExtensionsSource).not.toContain("'.cm-merge-b .cm-changedText'");
   });
 
+  it('uses the application text-selection token for CodeMirror selections', () => {
+    expect(editorExtensionsSource).toContain("backgroundColor: 'var(--text-selection)'");
+    expect(editorExtensionsSource).not.toContain("backgroundColor: 'color-mix(in srgb, var(--primary) 20%, transparent)'");
+  });
+
   it('maps Markdown links and code surfaces to contrast-safe semantic tokens', () => {
     expect(styles).toContain('--atomic-editor-link: var(--gold-running)');
     expect(styles).toContain('--atomic-editor-code-bg: color-mix(in srgb, var(--gold-surface-high) 72%, var(--background))');

@@ -202,4 +202,59 @@ describe('ACP activity batch disclosure', () => {
       });
     }
   });
+
+  it('hands bottom-follow ownership to the activity disclosure lifecycle', async () => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    ));
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => window.clearTimeout(frameId));
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    const onActivityDisclosureOpen = vi.fn(() => 42);
+    const onActivityDisclosureClose = vi.fn(() => true);
+    const projection = buildAcpTimelineProjection([
+      event({
+        id: 'tool',
+        kind: 'toolCall',
+        toolCallId: 'tool',
+        title: 'Read activity.log',
+        status: 'completed',
+        raw: { title: 'Read activity.log', rawInput: { path: 'activity.log' } },
+      }),
+    ], 'completed');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(React.createElement(ACPMessageList, {
+          timeline: projection.timeline,
+          sessionStatus: 'completed',
+          sending: false,
+          onActivityDisclosureOpen,
+          onActivityDisclosureClose,
+        }));
+      });
+
+      const trigger = container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]');
+      await act(async () => {
+        trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      expect(onActivityDisclosureOpen).toHaveBeenCalledTimes(1);
+
+      const collapse = container.querySelector<HTMLButtonElement>('.acp-activity-collapse-button');
+      await act(async () => {
+        collapse?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await new Promise((resolve) => window.setTimeout(resolve, 1));
+      });
+      expect(onActivityDisclosureClose).toHaveBeenCalledWith(42);
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 });

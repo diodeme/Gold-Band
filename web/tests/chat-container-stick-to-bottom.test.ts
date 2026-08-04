@@ -46,7 +46,11 @@ class ControlledResizeObserver implements ResizeObserver {
 }
 
 function waitForScrollFrames() {
-  return new Promise<void>((resolve) => window.setTimeout(resolve, 12));
+  return new Promise<void>((resolve) => window.setTimeout(resolve, 24));
+}
+
+function waitForFollowRecovery() {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, 80));
 }
 
 function emitObservedHeight(height: number) {
@@ -135,7 +139,7 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
       await act(async () => {
         scrollTop = 96;
         viewport?.dispatchEvent(new Event('scroll'));
-        await waitForScrollFrames();
+        await waitForFollowRecovery();
       });
       expect(scrollTop).toBe(139);
       expect(contextRef.current?.state.isAtBottom).toBe(true);
@@ -308,6 +312,233 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
       await act(async () => {
         root.unmount();
       });
+    }
+  });
+
+  it('lets bottom content expand downward and restores following after it collapses', async () => {
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    ));
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => window.clearTimeout(frameId));
+
+    const contextRef = React.createRef<ChatContainerContext>();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            ChatContainerRoot,
+            { resize: 'instant', initial: 'instant', contextRef },
+            React.createElement(
+              ChatContainerContent,
+              { scrollClassName: 'overflow-y-auto' },
+              React.createElement('div', null, 'expandable activity'),
+            ),
+          ),
+        );
+      });
+
+      const viewport = contextRef.current?.scrollRef.current as HTMLDivElement | null;
+      let contentHeight = 240;
+      let scrollTop = 139;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, get: () => 100 },
+        scrollHeight: { configurable: true, get: () => contentHeight },
+        scrollTop: {
+          configurable: true,
+          get: () => scrollTop,
+          set: (value: number) => {
+            scrollTop = Number(value);
+          },
+        },
+      });
+
+      let expansionToken: number | null = null;
+      await act(async () => {
+        emitObservedHeight(contentHeight);
+        expansionToken = contextRef.current?.beginContentExpansion() ?? null;
+        contentHeight = 360;
+        emitObservedHeight(contentHeight);
+        await waitForScrollFrames();
+      });
+      expect(expansionToken).not.toBeNull();
+      expect(scrollTop).toBe(139);
+      expect(contextRef.current?.isAtBottom).toBe(false);
+
+      contentHeight = 240;
+      await act(async () => {
+        expect(contextRef.current?.endContentExpansion(expansionToken)).toBe(true);
+        emitObservedHeight(contentHeight);
+        await waitForScrollFrames();
+      });
+      expect(scrollTop).toBe(139);
+      expect(contextRef.current?.isAtBottom).toBe(true);
+
+      contentHeight = 300;
+      await act(async () => {
+        emitObservedHeight(contentHeight);
+        await waitForScrollFrames();
+      });
+      expect(scrollTop).toBe(199);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('resumes following when collapsing one of several expansions reaches the bottom', async () => {
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    ));
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => window.clearTimeout(frameId));
+
+    const contextRef = React.createRef<ChatContainerContext>();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            ChatContainerRoot,
+            { resize: 'instant', initial: 'instant', contextRef },
+            React.createElement(
+              ChatContainerContent,
+              { scrollClassName: 'overflow-y-auto' },
+              React.createElement('div', null, 'several expandable activities'),
+            ),
+          ),
+        );
+      });
+
+      const viewport = contextRef.current?.scrollRef.current as HTMLDivElement | null;
+      let contentHeight = 240;
+      let scrollTop = 139;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, get: () => 100 },
+        scrollHeight: { configurable: true, get: () => contentHeight },
+        scrollTop: {
+          configurable: true,
+          get: () => scrollTop,
+          set: (value: number) => {
+            scrollTop = Number(value);
+          },
+        },
+      });
+
+      let firstToken: number | null = null;
+      let secondToken: number | null = null;
+      await act(async () => {
+        emitObservedHeight(contentHeight);
+        firstToken = contextRef.current?.beginContentExpansion() ?? null;
+        contentHeight = 320;
+        emitObservedHeight(contentHeight);
+        secondToken = contextRef.current?.beginContentExpansion() ?? null;
+        contentHeight = 420;
+        emitObservedHeight(contentHeight);
+        await waitForScrollFrames();
+      });
+      expect(scrollTop).toBe(139);
+      expect(contextRef.current?.isAtBottom).toBe(false);
+
+      await act(async () => {
+        expect(contextRef.current?.endContentExpansion(firstToken)).toBe(false);
+        contentHeight = 240;
+        emitObservedHeight(contentHeight);
+        await waitForScrollFrames();
+      });
+      expect(scrollTop).toBe(139);
+      expect(contextRef.current?.isAtBottom).toBe(true);
+
+      expect(contextRef.current?.endContentExpansion(secondToken)).toBe(false);
+      contentHeight = 300;
+      await act(async () => {
+        emitObservedHeight(contentHeight);
+        await waitForScrollFrames();
+      });
+      expect(scrollTop).toBe(199);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('does not restore disclosure following after the user scrolls while expanded', async () => {
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    ));
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => window.clearTimeout(frameId));
+
+    const contextRef = React.createRef<ChatContainerContext>();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            ChatContainerRoot,
+            { resize: 'instant', initial: 'instant', contextRef },
+            React.createElement(
+              ChatContainerContent,
+              { scrollClassName: 'overflow-y-auto' },
+              React.createElement('div', null, 'expandable activity'),
+            ),
+          ),
+        );
+      });
+
+      const viewport = contextRef.current?.scrollRef.current as HTMLDivElement | null;
+      let contentHeight = 240;
+      let scrollTop = 139;
+      Object.defineProperties(viewport, {
+        clientHeight: { configurable: true, get: () => 100 },
+        scrollHeight: { configurable: true, get: () => contentHeight },
+        scrollTop: {
+          configurable: true,
+          get: () => scrollTop,
+          set: (value: number) => {
+            scrollTop = Number(value);
+          },
+        },
+      });
+
+      let expansionToken: number | null = null;
+      await act(async () => {
+        emitObservedHeight(contentHeight);
+        expansionToken = contextRef.current?.beginContentExpansion() ?? null;
+        contentHeight = 360;
+        emitObservedHeight(contentHeight);
+        await waitForScrollFrames();
+        viewport?.dispatchEvent(new WheelEvent('wheel', { deltaY: -20 }));
+        scrollTop = 50;
+        viewport?.dispatchEvent(new Event('scroll'));
+        await waitForScrollFrames();
+      });
+
+      contentHeight = 240;
+      await act(async () => {
+        expect(contextRef.current?.endContentExpansion(expansionToken)).toBe(false);
+        emitObservedHeight(contentHeight);
+        await waitForScrollFrames();
+      });
+      expect(scrollTop).toBe(50);
+      expect(contextRef.current?.isAtBottom).toBe(false);
+
+      contentHeight = 300;
+      await act(async () => {
+        emitObservedHeight(contentHeight);
+        await waitForScrollFrames();
+      });
+      expect(scrollTop).toBe(50);
+    } finally {
+      await act(async () => root.unmount());
     }
   });
 

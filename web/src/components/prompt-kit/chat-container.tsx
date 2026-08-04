@@ -17,14 +17,21 @@ import {
   useStickToBottomContext,
 } from "use-stick-to-bottom"
 
-export type ChatContainerContext = StickToBottomContext
+export type ChatContainerContentExpansionToken = number
+
+export type ChatContainerContext = StickToBottomContext & {
+  beginContentExpansion: () => ChatContainerContentExpansionToken | null
+  endContentExpansion: (
+    token: ChatContainerContentExpansionToken | null,
+  ) => boolean
+}
 
 export type ChatContainerRootProps = {
   children: React.ReactNode
   className?: string
   resize?: StickToBottomProps["resize"]
   initial?: StickToBottomProps["initial"]
-  contextRef?: StickToBottomProps["contextRef"]
+  contextRef?: React.Ref<ChatContainerContext>
   onAtBottomChange?: (atBottom: boolean) => void
   onViewportScroll?: (viewport: HTMLDivElement) => void
   onViewportWheel?: (event: WheelEvent, viewport: HTMLDivElement) => void
@@ -48,6 +55,14 @@ const CHAT_CONTAINER_SCROLL_UP_KEYS = new Set([
   "ArrowUp",
   "Home",
   "PageUp",
+])
+
+const CHAT_CONTAINER_SCROLL_KEYS = new Set([
+  ...CHAT_CONTAINER_SCROLL_UP_KEYS,
+  "ArrowDown",
+  "End",
+  "PageDown",
+  " ",
 ])
 
 export function isChatContainerViewportAtBottom(
@@ -133,30 +148,74 @@ function ChatContainerLifecycle({
   const lastScrollTopRef = useRef<number | null>(null)
   const recoveryTimerRef = useRef<number | null>(null)
   const recoveryFrameRef = useRef<number | null>(null)
+  const nextContentExpansionTokenRef = useRef(0)
+  const contentExpansionTokensRef = useRef<Set<number> | null>(null)
+  const contentExpansionRestoreFrameRef = useRef<number | null>(null)
 
   const updateFollowIntent = useCallback((following: boolean) => {
     isFollowingRef.current = following
     setIsFollowing((current) => current === following ? current : following)
   }, [])
 
+  const cancelContentExpansionRestore = useCallback(() => {
+    contentExpansionTokensRef.current = null
+    if (contentExpansionRestoreFrameRef.current !== null) {
+      cancelAnimationFrame(contentExpansionRestoreFrameRef.current)
+      contentExpansionRestoreFrameRef.current = null
+    }
+  }, [])
+
   const stopScroll = useCallback(() => {
+    cancelContentExpansionRestore()
     updateFollowIntent(false)
     libraryStopScroll()
-  }, [libraryStopScroll, updateFollowIntent])
+  }, [cancelContentExpansionRestore, libraryStopScroll, updateFollowIntent])
 
   const scrollToBottom = useCallback<StickToBottomContext["scrollToBottom"]>(
     (options) => {
+      cancelContentExpansionRestore()
       updateFollowIntent(true)
       return libraryScrollToBottom(options)
     },
-    [libraryScrollToBottom, updateFollowIntent],
+    [cancelContentExpansionRestore, libraryScrollToBottom, updateFollowIntent],
   )
+
+  const beginContentExpansion = useCallback(() => {
+    let expansionTokens = contentExpansionTokensRef.current
+    if (!expansionTokens) {
+      if (!isFollowingRef.current) return null
+      expansionTokens = new Set<number>()
+      contentExpansionTokensRef.current = expansionTokens
+      updateFollowIntent(false)
+      libraryStopScroll()
+    }
+    const token = nextContentExpansionTokenRef.current + 1
+    nextContentExpansionTokenRef.current = token
+    expansionTokens.add(token)
+    return token
+  }, [libraryStopScroll, updateFollowIntent])
+
+  const endContentExpansion = useCallback((token: number | null) => {
+    const expansionTokens = contentExpansionTokensRef.current
+    if (token === null || !expansionTokens?.delete(token)) return false
+    if (expansionTokens.size > 0) return false
+    contentExpansionTokensRef.current = null
+    contentExpansionRestoreFrameRef.current = requestAnimationFrame(() => {
+      contentExpansionRestoreFrameRef.current = null
+      if (contentExpansionTokensRef.current || isFollowingRef.current) return
+      updateFollowIntent(true)
+      void libraryScrollToBottom({ animation: "instant" })
+    })
+    return true
+  }, [libraryScrollToBottom, updateFollowIntent])
 
   const exposedContext = useMemo<ChatContainerContext>(() => ({
     contentRef: stickContext.contentRef,
     scrollRef: stickContext.scrollRef,
     scrollToBottom,
     stopScroll,
+    beginContentExpansion,
+    endContentExpansion,
     isAtBottom: isFollowing,
     escapedFromLock: !isFollowing,
     state: stickContext.state,
@@ -166,7 +225,14 @@ function ChatContainerLifecycle({
     set targetScrollTop(targetScrollTop) {
       stickContext.targetScrollTop = targetScrollTop
     },
-  }), [isFollowing, scrollToBottom, stickContext, stopScroll])
+  }), [
+    beginContentExpansion,
+    endContentExpansion,
+    isFollowing,
+    scrollToBottom,
+    stickContext,
+    stopScroll,
+  ])
 
   useImperativeHandle(contextRef, () => exposedContext, [exposedContext])
 
@@ -203,6 +269,13 @@ function ChatContainerLifecycle({
       const currentScrollTop = viewport.scrollTop
       lastScrollTopRef.current = currentScrollTop
       if (
+        contentExpansionTokensRef.current &&
+        pointerScrollingRef.current &&
+        previousScrollTop !== null &&
+        currentScrollTop !== previousScrollTop
+      ) {
+        stopScroll()
+      } else if (
         pointerScrollingRef.current &&
         previousScrollTop !== null &&
         currentScrollTop < previousScrollTop
@@ -213,13 +286,16 @@ function ChatContainerLifecycle({
         !isFollowingRef.current &&
         isChatContainerViewportAtBottom(viewport)
       ) {
+        cancelContentExpansionRestore()
         updateFollowIntent(true)
       }
       onViewportScroll?.(viewport)
       scheduleFollowRecovery()
     }
     const handleWheel = (event: WheelEvent) => {
-      if (
+      if (contentExpansionTokensRef.current && event.deltaY !== 0) {
+        stopScroll()
+      } else if (
         event.deltaY < 0 &&
         viewport.scrollHeight > viewport.clientHeight
       ) {
@@ -230,12 +306,17 @@ function ChatContainerLifecycle({
     const handleKeyDown = (event: KeyboardEvent) => {
       const scrollsUp = CHAT_CONTAINER_SCROLL_UP_KEYS.has(event.key)
         || (event.key === " " && event.shiftKey)
-      if (scrollsUp && viewport.scrollHeight > viewport.clientHeight) {
+      if (
+        contentExpansionTokensRef.current &&
+        CHAT_CONTAINER_SCROLL_KEYS.has(event.key)
+      ) {
+        stopScroll()
+      } else if (scrollsUp && viewport.scrollHeight > viewport.clientHeight) {
         stopScroll()
       }
     }
-    const handlePointerDown = () => {
-      pointerScrollingRef.current = true
+    const handlePointerDown = (event: PointerEvent) => {
+      pointerScrollingRef.current = event.target === viewport
     }
     const handlePointerEnd = () => {
       pointerScrollingRef.current = false
@@ -264,6 +345,7 @@ function ChatContainerLifecycle({
     onViewportScroll,
     onViewportWheel,
     scheduleFollowRecovery,
+    cancelContentExpansionRestore,
     scrollRef,
     stopScroll,
     updateFollowIntent,
@@ -272,10 +354,31 @@ function ChatContainerLifecycle({
   useEffect(() => {
     const content = contentRef.current
     if (!content) return
-    const observer = new ResizeObserver(scheduleFollowRecovery)
+    const observer = new ResizeObserver(() => {
+      const viewport = scrollRef.current as HTMLDivElement | null
+      if (
+        contentExpansionTokensRef.current &&
+        !isFollowingRef.current &&
+        viewport &&
+        isChatContainerViewportAtBottom(viewport)
+      ) {
+        cancelContentExpansionRestore()
+        updateFollowIntent(true)
+        void libraryScrollToBottom({ animation: "instant" })
+        return
+      }
+      scheduleFollowRecovery()
+    })
     observer.observe(content)
     return () => observer.disconnect()
-  }, [contentRef, scheduleFollowRecovery])
+  }, [
+    cancelContentExpansionRestore,
+    contentRef,
+    libraryScrollToBottom,
+    scheduleFollowRecovery,
+    scrollRef,
+    updateFollowIntent,
+  ])
 
   useEffect(() => () => {
     if (recoveryTimerRef.current !== null) {
@@ -283,6 +386,9 @@ function ChatContainerLifecycle({
     }
     if (recoveryFrameRef.current !== null) {
       cancelAnimationFrame(recoveryFrameRef.current)
+    }
+    if (contentExpansionRestoreFrameRef.current !== null) {
+      cancelAnimationFrame(contentExpansionRestoreFrameRef.current)
     }
   }, [])
 

@@ -58,7 +58,10 @@ import {
   ChainOfThoughtText,
   ChainOfThoughtTrigger,
 } from "@/components/prompt-kit/chain-of-thought";
-import { type ChatContainerContext } from "@/components/prompt-kit/chat-container";
+import {
+  type ChatContainerContentExpansionToken,
+  type ChatContainerContext,
+} from "@/components/prompt-kit/chat-container";
 import { ConversationViewport } from "@/components/conversation/ConversationViewport";
 import { InterventionLayer } from "@/components/conversation/InterventionLayer";
 import { Markdown } from "@/components/prompt-kit/markdown";
@@ -1611,6 +1614,16 @@ export function ACPChatDialog(
     );
   }, [eventWindowKey, hasNewerEvents, onAtBottomChange]);
 
+  const handleActivityDisclosureOpen = useCallback(() => (
+    chatContainerContextRef.current?.beginContentExpansion() ?? null
+  ), []);
+
+  const handleActivityDisclosureClose = useCallback((
+    token: ChatContainerContentExpansionToken | null,
+  ) => (
+    chatContainerContextRef.current?.endContentExpansion(token) ?? false
+  ), []);
+
   const enqueueLiveEventUpdate = useCallback(
     (event: AcpUiEventVm) => {
       if (event.kind === "timingUpdate") {
@@ -2812,6 +2825,8 @@ export function ACPChatDialog(
                         streamingMarkdownItemKey={streamingMarkdownItemKey}
                         messageAttachmentLocator={messageAttachmentLocator}
                         onMessageAttachmentClick={handleOpenMessageAttachment}
+                        onActivityDisclosureOpen={handleActivityDisclosureOpen}
+                        onActivityDisclosureClose={handleActivityDisclosureClose}
                       />
                     </div>
                   ))}
@@ -3778,12 +3793,18 @@ export function ACPMessageList({
   sessionStatus,
   sending,
   branchLocator,
+  onActivityDisclosureOpen,
+  onActivityDisclosureClose,
 }: {
   timeline: AcpTimelineItem[];
   sessionStatus: string;
   sending: boolean;
   branchLocator?: AgentTranscriptLocator;
   onLayoutChange?: () => void;
+  onActivityDisclosureOpen?: () => ChatContainerContentExpansionToken | null;
+  onActivityDisclosureClose?: (
+    token: ChatContainerContentExpansionToken | null,
+  ) => boolean;
 }) {
   const active = isSessionActiveStatus(sessionStatus) || sending;
   const streamingMarkdownItemKey = active
@@ -3798,6 +3819,8 @@ export function ACPMessageList({
           key={timelineEventKey(item)}
           event={item}
           streamingMarkdownItemKey={streamingMarkdownItemKey}
+          onActivityDisclosureOpen={onActivityDisclosureOpen}
+          onActivityDisclosureClose={onActivityDisclosureClose}
         />
       ))}
     </div>
@@ -3856,12 +3879,18 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   streamingMarkdownItemKey,
   messageAttachmentLocator,
   onMessageAttachmentClick,
+  onActivityDisclosureOpen,
+  onActivityDisclosureClose,
   nested = false,
 }: {
   event: AcpTimelineItem;
   streamingMarkdownItemKey?: string | null;
   messageAttachmentLocator?: MessageAttachmentLocator;
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
+  onActivityDisclosureOpen?: () => ChatContainerContentExpansionToken | null;
+  onActivityDisclosureClose?: (
+    token: ChatContainerContentExpansionToken | null,
+  ) => boolean;
   nested?: boolean;
 }) {
   const branchLocator = useContext(AcpBranchLocatorContext);
@@ -3884,6 +3913,8 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
       <AcpActivityBatchRow
         event={event}
         nested={nested}
+        onDisclosureOpen={onActivityDisclosureOpen}
+        onDisclosureClose={onActivityDisclosureClose}
       />
     );
   if (event.kind === "textDelta" || event.kind === "userTextDelta")
@@ -4112,9 +4143,15 @@ const AgentBranchSessionSummary = memo(function AgentBranchSessionSummary({
 const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   event,
   nested = false,
+  onDisclosureOpen,
+  onDisclosureClose,
 }: {
   event: AcpActivityBatch;
   nested?: boolean;
+  onDisclosureOpen?: () => ChatContainerContentExpansionToken | null;
+  onDisclosureClose?: (
+    token: ChatContainerContentExpansionToken | null,
+  ) => boolean;
 }) {
   const { t } = useTranslation();
   const branchLocator = useContext(AcpBranchLocatorContext);
@@ -4133,7 +4170,15 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   const [detailError, setDetailError] = useState<string | null>(null);
   const detailRequestInFlightRef = useRef(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const disclosureTokenRef = useRef<ChatContainerContentExpansionToken | null>(null);
+  const disclosureCloseRef = useRef(onDisclosureClose);
+  disclosureCloseRef.current = onDisclosureClose;
   const summary = activityBatchSummary(event, t);
+  useEffect(() => () => {
+    const token = disclosureTokenRef.current;
+    disclosureTokenRef.current = null;
+    if (token !== null) disclosureCloseRef.current?.(token);
+  }, []);
   useEffect(() => {
     setAuditEvents((current) => mergeAcpEvents(current, event.events.filter(isVisibleActivityAuditEvent)) as AcpTimelineEvent[]);
     setHasMoreEarlier((current) => current || event.hasMoreEarlier);
@@ -4189,14 +4234,28 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
       setLoadingEarlier(false);
     }
   };
+  const handleOpenChange = (next: boolean) => {
+    let restoringBottom = false;
+    if (next) {
+      disclosureTokenRef.current = onDisclosureOpen?.() ?? null;
+    } else {
+      const token = disclosureTokenRef.current;
+      disclosureTokenRef.current = null;
+      restoringBottom = onDisclosureClose?.(token) ?? false;
+    }
+    setOpen(next);
+    if (next && !detailLoaded && event.detailAvailable) void loadDetail(null);
+    if (!next && !restoringBottom) {
+      requestAnimationFrame(() => {
+        triggerRef.current?.scrollIntoView?.({ block: "nearest" });
+      });
+    }
+  };
   return (
     <AssistantTimelineRow timestamp={event.timestamp} nested={nested}>
       <Collapsible
         open={open}
-        onOpenChange={(next) => {
-          setOpen(next);
-          if (next && !detailLoaded && event.detailAvailable) void loadDetail(null);
-        }}
+        onOpenChange={handleOpenChange}
         className="min-w-0 max-w-full"
       >
         <CollapsibleTrigger asChild>
@@ -4274,14 +4333,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
                   variant="ghost"
                   size="sm"
                   className="acp-activity-collapse-button h-7 gap-1.5 px-2 text-xs font-normal text-muted-foreground hover:bg-muted/40 hover:text-foreground"
-                  onClick={() => {
-                    setOpen(false);
-                    requestAnimationFrame(() => {
-                      triggerRef.current?.scrollIntoView?.({
-                        block: "nearest",
-                      });
-                    });
-                  }}
+                  onClick={() => handleOpenChange(false)}
                 >
                   <ChevronDown className="size-3.5 rotate-180" aria-hidden="true" />
                   {t("acp.activityCollapse")}

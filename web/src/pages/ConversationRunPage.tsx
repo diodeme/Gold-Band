@@ -3,12 +3,11 @@ import { useTranslation } from 'react-i18next';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
-import { ACPChatDialog, type ACPChatDialogHandle, type AcpLifecycleSnapshot, type AcpRuntimeComposerContext } from '@/components/acp/ACPChatDialog';
+import { ACPChatDialog, type AcpLifecycleSnapshot, type AcpRuntimeComposerContext } from '@/components/acp/ACPChatDialog';
 import { ConversationRunHeader } from '@/components/conversation/ConversationRunHeader';
 import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
 import { confirmCloseConversationRunWorkspaceResource, ConversationRunWorkspaceResourcePanel } from '@/components/workspace/ConversationRunWorkspaceResourcePanel';
 import { conversationRunWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
-import { conversationAssetsForLeaf } from '@/lib/conversation-session-assets';
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
 import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm } from '../types';
 import { openInFileManager } from '@/api';
@@ -102,7 +101,6 @@ export function ConversationRunPage({
   const pendingAutoFollowRestoreSessionKeyRef = useRef<string | null>(null);
   const onAutoFollowChangeRef = useRef(onAutoFollowChange);
   const headerAreaRef = useRef<HTMLDivElement>(null);
-  const chatDialogRef = useRef<ACPChatDialogHandle>(null);
   const activeSessionKeys = useMemo(
     () => run.activeSessions.map((session) => activeSessionKey(session)),
     [run.activeSessions],
@@ -299,8 +297,6 @@ export function ConversationRunPage({
 
   const selectedSessionMatchesLeaf = sessionBelongsToLeaf(run.selectedSession, run, selectedLeaf);
   const selectedSession = selectedSessionMatchesLeaf ? run.selectedSession : null;
-  const selectedArtifacts = conversationAssetsForLeaf(run.artifacts, selectedLeaf);
-  const selectedAttachments = conversationAssetsForLeaf(run.attachments, selectedLeaf);
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
   const selectedSessionRuntimeControlError = run.runtimeErrorMessage && !(
     selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionDisplay?.code === 'error-blocked'
@@ -400,7 +396,6 @@ export function ConversationRunPage({
       <div className="min-h-0 flex-1">
         {selectedLeaf ? (
           <ACPChatDialog
-            ref={chatDialogRef}
             key={`${run.taskUuid ?? run.taskId}:${selectedSessionKey ?? 'empty'}`}
             session={selectedSession}
             projectId={run.projectId}
@@ -412,6 +407,7 @@ export function ConversationRunPage({
             outerNodeId={selectedLeaf.outerNodeId}
             outerAttemptId={selectedLeaf.outerAttemptId}
             eventPageSize={appConfig.acpChatEventPageSize}
+            turnFileCardPreviewLimit={appConfig.turnFiles.cardPreviewLimit}
             onLifecycleSnapshot={onLifecycleSnapshot}
             onAtBottomChange={handleAtBottomChange}
             allowEventOnlySessionShell={false}
@@ -424,10 +420,6 @@ export function ConversationRunPage({
               onTitleChange,
               onOpenInFileManager: handleOpenInFileManager,
             } : undefined}
-            artifacts={selectedArtifacts}
-            attachments={selectedAttachments}
-            allArtifacts={run.artifacts}
-            allAttachments={run.attachments}
             usageCompact
             cacheNamespace={run.taskUuid ?? `${run.projectId}:${run.taskId}`}
           />

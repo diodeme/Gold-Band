@@ -181,6 +181,12 @@ export const desktopApi: RuntimeApi = {
   getAcpToolDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
     return invokeCommand<import('../types').AcpToolDetailVm>('get_acp_tool_detail', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
   },
+  getTurnFileChangeSet(locator, changeSetId) {
+    return invokeCommand<import('../types').TurnFileChangeSetVm>('get_turn_file_change_set', { ...locator, changeSetId });
+  },
+  getFileComparison(locator, changeSetId, changeId) {
+    return invokeCommand<import('../types').FileComparisonVm>('get_file_comparison', { ...locator, changeSetId, changeId });
+  },
   renewAcpSessionLease(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand<number>('renew_acp_session_lease', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },

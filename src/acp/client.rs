@@ -21,7 +21,9 @@ struct AcpTimelineStreamState {
 #[derive(Debug, Clone)]
 struct AcpPromptTurnIdentity {
     id: String,
+    prompt_event_id: String,
     seq: u64,
+    started_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -734,6 +736,7 @@ pub struct AcpRuntimePolicy {
     pub max_idle_adapter_connections: usize,
     pub timeline_compaction: TimelineCompactionPolicy,
     pub external_session_sync_enabled: bool,
+    pub turn_file_capture: crate::acp::turn_files::TurnFileCaptureConfig,
 }
 
 impl Default for AcpRuntimePolicy {
@@ -747,6 +750,7 @@ impl Default for AcpRuntimePolicy {
             max_idle_adapter_connections: 4,
             timeline_compaction: TimelineCompactionPolicy::default(),
             external_session_sync_enabled: false,
+            turn_file_capture: crate::acp::turn_files::TurnFileCaptureConfig::default(),
         }
     }
 }
@@ -769,6 +773,7 @@ impl From<&RuntimeConfig> for AcpRuntimePolicy {
                 patch_ratio: config.acp_timeline_compact_patch_ratio,
             },
             external_session_sync_enabled: false,
+            turn_file_capture: config.turn_files.into(),
         }
     }
 }
@@ -1084,6 +1089,8 @@ struct AcpRuntime<'a> {
     provider_history_replay: ProviderHistoryReplay,
     historical_timeline_item_ids: HashSet<String>,
     current_turn_item_ids: HashSet<String>,
+    active_turn_file_branches: HashSet<String>,
+    active_prompt_turn: Option<AcpPromptTurnIdentity>,
     models: Option<Value>,
     modes: Option<Value>,
     config_options: Option<Value>,
@@ -1397,6 +1404,17 @@ pub fn run_prompt(
                 restored,
                 Some("error".to_string()),
             )?;
+            if let Err(capture_error) = runtime.finalize_turn_file_changes(&prompt_turn) {
+                append_structured_diagnostic(
+                    &runtime.paths.diagnostics,
+                    "error",
+                    "turn-files.finalize-failed",
+                    Some(json!({
+                        "error": capture_error.to_string(),
+                        "turnId": prompt_turn.id,
+                    })),
+                )?;
+            }
             runtime.control.mark_stopped();
             runtime.write_session("failed", restored, Some("error".to_string()), capabilities)?;
             if let Some(session_update) = session_update {
@@ -1415,6 +1433,7 @@ pub fn run_prompt(
     )?;
     runtime
         .interrupt_active_context_compaction(stop_reason.as_deref().unwrap_or("prompt_finished"))?;
+    runtime.finalize_turn_file_changes(&prompt_turn)?;
     runtime.control.mark_stopped();
     runtime.write_session(status, restored, stop_reason.clone(), capabilities)?;
     if let Some(session_update) = session_update {
@@ -1440,6 +1459,36 @@ pub fn run_prompt(
     };
     runtime.release_managed_session();
     Ok(run)
+}
+
+fn latest_visible_turn_id<'a>(events: impl IntoIterator<Item = &'a AcpUiEvent>) -> Option<String> {
+    events
+        .into_iter()
+        .filter(|event| {
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("source"))
+                .and_then(Value::as_str)
+                == Some("goldBandPrompt")
+                && !event
+                    .raw
+                    .as_ref()
+                    .and_then(|raw| raw.get("hiddenFromChat"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+        })
+        .max_by_key(|event| event.seq)
+        .map(|event| {
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("promptId"))
+                .and_then(Value::as_str)
+                .filter(|prompt_id| !prompt_id.trim().is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| event.id.clone())
+        })
 }
 
 fn cancel_pending_prompt_interactions(attempt_dir: &Utf8Path, decided_at: String) -> Result<()> {
@@ -1916,6 +1965,8 @@ impl<'a> AcpRuntime<'a> {
             provider_history_replay,
             historical_timeline_item_ids,
             current_turn_item_ids: HashSet::new(),
+            active_turn_file_branches: HashSet::new(),
+            active_prompt_turn: None,
             models: None,
             modes: None,
             config_options: None,
@@ -2734,10 +2785,25 @@ impl<'a> AcpRuntime<'a> {
             user_event.seq,
             &user_event.timestamp,
         )?;
-        Ok(AcpPromptTurnIdentity {
-            id: user_event.id,
+        let turn_id = prompt
+            .prompt_id
+            .clone()
+            .filter(|prompt_id| !prompt_id.trim().is_empty())
+            .or_else(|| {
+                (prompt.visibility == PromptVisibility::Hidden)
+                    .then(|| latest_visible_turn_id(self.timeline_items.values()))
+                    .flatten()
+            })
+            .unwrap_or_else(|| user_event.id.clone());
+        let identity = AcpPromptTurnIdentity {
+            id: turn_id,
+            prompt_event_id: user_event.id,
             seq: user_event.seq,
-        })
+            started_at: user_event.timestamp,
+        };
+        self.active_turn_file_branches.clear();
+        self.active_prompt_turn = Some(identity.clone());
+        Ok(identity)
     }
 
     fn prompt(
@@ -2978,7 +3044,7 @@ impl<'a> AcpRuntime<'a> {
                         {
                             append_prompt_completed(
                                 &self.paths.prompt_usage,
-                                &prompt_turn.id,
+                                &prompt_turn.prompt_event_id,
                                 prompt_turn.seq,
                                 &current_timestamp(),
                                 Some(Value::from(request.id)),
@@ -3160,6 +3226,7 @@ impl<'a> AcpRuntime<'a> {
 
         self.seq += 1;
         let event = normalize_session_update(self.seq, session_id, &update);
+        self.capture_turn_file_diffs(&event)?;
         if contributes_to_final_text(&event.kind) {
             if !self.collecting_text_output {
                 self.final_outputs.push(String::new());
@@ -3195,6 +3262,100 @@ impl<'a> AcpRuntime<'a> {
         if let Some(used) = usage_after_compaction {
             self.maybe_persist_context_compaction_usage(used)?;
         }
+        Ok(())
+    }
+
+    fn capture_turn_file_diffs(&mut self, event: &AcpUiEvent) -> Result<()> {
+        if !matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate") {
+            return Ok(());
+        }
+        let (Some(turn), Some(tool_call_id), Some(raw)) = (
+            self.active_prompt_turn.as_ref(),
+            event.tool_call_id.as_deref(),
+            event.raw.as_ref(),
+        ) else {
+            return Ok(());
+        };
+        let branch_id = event_branch_id(event);
+        let store = crate::acp::turn_files::TurnFileStore::new(
+            self.paths.attempt_dir.clone(),
+            self.runtime_policy.turn_file_capture,
+        );
+        let captured = store.capture_event_diffs(
+            &turn.id,
+            &turn.prompt_event_id,
+            &branch_id,
+            tool_call_id,
+            event.seq,
+            &event.timestamp,
+            raw,
+        )?;
+        if captured > 0 {
+            self.active_turn_file_branches.insert(branch_id);
+        }
+        Ok(())
+    }
+
+    fn finalize_turn_file_changes(&mut self, turn: &AcpPromptTurnIdentity) -> Result<()> {
+        let store = crate::acp::turn_files::TurnFileStore::new(
+            self.paths.attempt_dir.clone(),
+            self.runtime_policy.turn_file_capture,
+        );
+        let finished_at = current_timestamp();
+        let branches = self
+            .active_turn_file_branches
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        for branch_id in branches {
+            let Some(change_set) = store.finalize_turn_branch(
+                &turn.id,
+                &turn.prompt_event_id,
+                &branch_id,
+                &turn.started_at,
+                &finished_at,
+            )?
+            else {
+                continue;
+            };
+            self.seq = self.seq.saturating_add(1);
+            let event = AcpUiEvent {
+                id: format!("turn-file-change-set:{}", change_set.id),
+                seq: self.seq,
+                timestamp: finished_at.clone(),
+                kind: "fileChangeSet".to_string(),
+                session_id: self.session_id.clone(),
+                content: None,
+                title: None,
+                tool_call_id: None,
+                status: Some(
+                    match change_set.status {
+                        crate::acp::turn_files::TurnFileChangeSetStatus::Finalized => "finalized",
+                        crate::acp::turn_files::TurnFileChangeSetStatus::Partial => "partial",
+                        crate::acp::turn_files::TurnFileChangeSetStatus::Capturing => "capturing",
+                    }
+                    .to_string(),
+                ),
+                started_seq: Some(turn.seq),
+                ended_seq: Some(self.seq),
+                started_at: Some(turn.started_at.clone()),
+                ended_at: Some(finished_at.clone()),
+                timing: None,
+                raw: Some(json!({
+                    "changeSetId": change_set.id,
+                    "turnId": change_set.turn_id,
+                    "promptEventId": change_set.prompt_event_id,
+                    "summary": change_set.summary,
+                    "limitationCodes": change_set.limitation_codes,
+                    "_meta": {
+                        "conversation": { "branchId": branch_id }
+                    }
+                })),
+            };
+            self.persist_event(&event)?;
+        }
+        self.active_prompt_turn = None;
+        self.active_turn_file_branches.clear();
         Ok(())
     }
 
@@ -4996,7 +5157,7 @@ mod tests {
         active_timeline_streams_by_branch, attached_sync_required,
         cleanup_doctor_acp_dir_after_success, contributes_to_final_text, drain_frames_until_quiet,
         evaluate_provider_revision, initialize_params, is_transport_interruption,
-        is_unscoped_codex_diagnostic_update, merge_tool_raw_input,
+        is_unscoped_codex_diagnostic_update, latest_visible_turn_id, merge_tool_raw_input,
         permission_decision_timeline_event, plan_attached_session_reuse, prompt_activity,
         register_provider_control, request_prompt_cancel, resolve_permission_mode,
         resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
@@ -5027,6 +5188,38 @@ mod tests {
             params
                 .pointer("/clientCapabilities/elicitation/form")
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn hidden_repair_reuses_the_latest_visible_prompt_turn_identity() {
+        let event = |id: &str, seq: u64, prompt_id: &str, hidden: bool| AcpUiEvent {
+            id: id.to_string(),
+            seq,
+            timestamp: format!("{seq}Z"),
+            kind: "userTextDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some("prompt".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: Some("completed".to_string()),
+            started_seq: Some(seq),
+            ended_seq: Some(seq),
+            started_at: Some(format!("{seq}Z")),
+            ended_at: Some(format!("{seq}Z")),
+            timing: None,
+            raw: Some(json!({
+                "source": "goldBandPrompt",
+                "promptId": prompt_id,
+                "hiddenFromChat": hidden,
+            })),
+        };
+        let first = event("visible-1", 1, "turn-1", false);
+        let hidden = event("repair-2", 2, "repair-2", true);
+
+        assert_eq!(
+            latest_visible_turn_id([&first, &hidden]),
+            Some("turn-1".to_string()),
         );
     }
 

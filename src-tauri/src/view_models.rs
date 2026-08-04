@@ -87,8 +87,15 @@ pub struct AppBootstrapVm {
 pub struct AppConfigVm {
     pub acp_session_title_refresh_enabled: bool,
     pub acp_chat_event_page_size: usize,
+    pub turn_files: TurnFilesVm,
     pub workspace_layout: WorkspaceLayoutVm,
     pub workspace_files: WorkspaceFilesVm,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnFilesVm {
+    pub card_preview_limit: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1209,6 +1216,9 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
     AppConfigVm {
         acp_session_title_refresh_enabled: config.acp_session_title_refresh_enabled,
         acp_chat_event_page_size: config.acp_chat_event_page_size,
+        turn_files: TurnFilesVm {
+            card_preview_limit: config.turn_files.card_preview_limit,
+        },
         workspace_layout: WorkspaceLayoutVm {
             shell_min_width: config.workspace_layout.shell_min_width,
             shell_min_height: config.workspace_layout.shell_min_height,

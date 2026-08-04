@@ -180,6 +180,14 @@ export function getAcpToolDetail(projectId: string | null | undefined, taskId: s
   return getRuntimeApi().getAcpToolDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);
 }
 
+export function getTurnFileChangeSet(locator: Parameters<ReturnType<typeof getRuntimeApi>['getTurnFileChangeSet']>[0], changeSetId: string) {
+  return getRuntimeApi().getTurnFileChangeSet(locator, changeSetId);
+}
+
+export function getFileComparison(locator: Parameters<ReturnType<typeof getRuntimeApi>['getFileComparison']>[0], changeSetId: string, changeId: string) {
+  return getRuntimeApi().getFileComparison(locator, changeSetId, changeId);
+}
+
 export function subscribeAcpSessionUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeAcpSessionUpdates']>>[0]) {
   return getRuntimeApi().subscribeAcpSessionUpdates?.(listener) ?? Promise.resolve(() => {});
 }

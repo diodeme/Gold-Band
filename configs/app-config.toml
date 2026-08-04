@@ -68,6 +68,16 @@ markdownLivePreviewMaxChars = 200000
 markdownEmbeddedImageLimit = 100
 markdownEmbeddedImageMaxConcurrent = 4
 
+[turnFiles]
+cardPreviewLimit = 3
+captureMaxEntries = 256
+captureMaxFileBytes = 2097152
+captureMaxTotalBytes = 16777216
+diffTextMaxBytes = 2097152
+diffTextMaxLines = 100000
+blobCacheMaxBytes = 0
+blobRetentionPolicy = "attempt"
+
 [permissionModeMapping.claude-acp]
 read_only = "plan"
 ask = "acceptEdits"

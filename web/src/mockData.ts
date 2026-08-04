@@ -271,8 +271,6 @@ export const mockErrorBlockedConversationRun: ConversationRunVm = {
   },
   selectedSession: mockErrorBlockedConversationSession,
   activeSessions: [],
-  artifacts: [],
-  attachments: [],
   inputAttachments: [],
   workflowStatus: 'valid',
   workflowValid: true,
@@ -427,6 +425,7 @@ export const mockBootstrap: AppBootstrapVm = {
   appConfig: {
     acpSessionTitleRefreshEnabled: false,
     acpChatEventPageSize: 360,
+    turnFiles: { cardPreviewLimit: 3 },
     workspaceLayout: {
       shellMinWidth: 480,
       shellMinHeight: 680,

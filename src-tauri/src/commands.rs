@@ -8,6 +8,9 @@ use gold_band::acp::permission::{
     PendingPermissionState, cancel_pending_permission_requests,
     write_permission_response_if_pending,
 };
+use gold_band::acp::turn_files::{
+    CHANGE_SET_NOT_FOUND, TurnFileChangeSet, TurnFileStore, VERSION_NOT_FOUND,
+};
 use gold_band::app::{
     AcpTurnOutcome, App, AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError,
     ProfileEntry, ProfileInput, ProfileList, RuntimeInterventionKind, RuntimeLifecycleEvent,
@@ -2108,6 +2111,101 @@ pub fn get_acp_session(
         trace_started_at,
     );
     result
+}
+
+#[tauri::command]
+pub fn get_turn_file_change_set(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    branch_id: String,
+    change_set_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<TurnFileChangeSet> {
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id).map_err(|_| {
+        CommandErrorVm::new("turn-files.version-access-denied", serde_json::json!({}))
+    })?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let store = TurnFileStore::new(locator.attempt_dir(&app), app.config.turn_files.into());
+    let change_set = store
+        .load_change_set(&change_set_id)
+        .map_err(turn_file_command_error)?;
+    if change_set.branch_id != branch_id {
+        return Err(CommandErrorVm::new(
+            "turn-files.version-access-denied",
+            serde_json::json!({}),
+        ));
+    }
+    Ok(change_set)
+}
+
+#[tauri::command]
+pub fn get_file_comparison(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    branch_id: String,
+    change_set_id: String,
+    change_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<gold_band::acp::turn_files::FileComparison> {
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id).map_err(|_| {
+        CommandErrorVm::new("turn-files.version-access-denied", serde_json::json!({}))
+    })?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let store = TurnFileStore::new(locator.attempt_dir(&app), app.config.turn_files.into());
+    let change_set = store
+        .load_change_set(&change_set_id)
+        .map_err(turn_file_command_error)?;
+    if change_set.branch_id != branch_id {
+        return Err(CommandErrorVm::new(
+            "turn-files.version-access-denied",
+            serde_json::json!({}),
+        ));
+    }
+    store
+        .comparison(&change_set_id, &change_id)
+        .map_err(turn_file_command_error)
+}
+
+fn turn_file_command_error(error: anyhow::Error) -> CommandErrorVm {
+    let message = error.to_string();
+    let code = if message.starts_with(VERSION_NOT_FOUND) {
+        VERSION_NOT_FOUND
+    } else if message.starts_with("turn-files.blob-corrupted") {
+        "turn-files.blob-corrupted"
+    } else {
+        CHANGE_SET_NOT_FOUND
+    };
+    CommandErrorVm::new(code, serde_json::json!({}))
 }
 
 fn log_acp_session_command_stage(

@@ -124,8 +124,6 @@ pub struct ConversationRunVm {
     pub session_tree: ConversationSessionTreeVm,
     pub selected_session: Option<crate::view_models::AcpSessionVm>,
     pub active_sessions: Vec<ConversationActiveSessionVm>,
-    pub artifacts: Vec<crate::view_models::AssetItemVm>,
-    pub attachments: Vec<crate::view_models::AssetItemVm>,
     pub input_attachments: Vec<crate::view_models::AssetItemVm>,
     pub workflow_status: String,
     pub workflow_valid: bool,
@@ -141,8 +139,6 @@ pub struct ConversationRunVm {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSessionSwitchVm {
     pub selected_session: Option<crate::view_models::AcpSessionVm>,
-    pub artifacts: Vec<crate::view_models::AssetItemVm>,
-    pub attachments: Vec<crate::view_models::AssetItemVm>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2122,21 +2118,6 @@ pub fn conversation_run_vm(
         None
     };
 
-    let (artifacts, attachments) = if let Some(ref leaf) = selected_leaf {
-        conversation_session_assets(
-            app,
-            task_id,
-            run_id,
-            &leaf.round_id,
-            &leaf.node_id,
-            &leaf.attempt_id,
-            leaf.outer_node_id.as_deref(),
-            leaf.outer_attempt_id.as_deref(),
-        )?
-    } else {
-        (Vec::new(), Vec::new())
-    };
-
     let input_attachments = input_attachments_vm(app, task_id);
 
     let run_outcome = run.outcome.map(|o| enum_label(&o));
@@ -2221,8 +2202,6 @@ pub fn conversation_run_vm(
         },
         selected_session,
         active_sessions,
-        artifacts,
-        attachments,
         input_attachments,
         workflow_status: "valid".to_string(),
         workflow_valid,
@@ -2760,8 +2739,6 @@ pub fn create_conversation_run_vm(
             },
             selected_session: None,
             active_sessions: Vec::new(),
-            artifacts: Vec::new(),
-            attachments: Vec::new(),
             input_attachments: Vec::new(),
             workflow_status: "valid".to_string(),
             workflow_valid: true,
@@ -2881,8 +2858,6 @@ pub fn rerun_conversation_task_vm(
             },
             selected_session: None,
             active_sessions: Vec::new(),
-            artifacts: Vec::new(),
-            attachments: Vec::new(),
             input_attachments: Vec::new(),
             workflow_status: "valid".to_string(),
             workflow_valid: true,
@@ -2933,22 +2908,7 @@ pub fn switch_conversation_session_vm(
             .flatten()
         };
 
-    let (artifacts, attachments) = conversation_session_assets(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        outer_node_id,
-        outer_attempt_id,
-    )?;
-
-    let result = ConversationSessionSwitchVm {
-        selected_session,
-        artifacts,
-        attachments,
-    };
+    let result = ConversationSessionSwitchVm { selected_session };
     Ok(result)
 }
 

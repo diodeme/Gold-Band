@@ -60,6 +60,21 @@ export type FileWorkspaceResource = RightWorkspaceResourceBase & {
   targetRevision: number;
 };
 
+export type TurnFileWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'file-diff' | 'file-version';
+  locator: import('@/types').TurnFileLocatorVm;
+  changeSetId: string;
+  changeId: string;
+};
+
+export type ConversationAssetWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'conversation-asset';
+  locator: AcpAttemptWorkspaceLocator;
+  assetKind: 'artifact' | 'message-attachment' | 'input-attachment';
+  name: string;
+  path?: string | null;
+};
+
 export type WorkflowViewWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'workflow-view';
   locator: ConversationRunLocator;
@@ -85,6 +100,8 @@ export type RightWorkspaceResource =
   | AgentTranscriptResource
   | FileBrowserWorkspaceResource
   | FileWorkspaceResource
+  | TurnFileWorkspaceResource
+  | ConversationAssetWorkspaceResource
   | WorkflowViewWorkspaceResource
   | WorkflowEditWorkspaceResource
   | SystemPromptWorkspaceResource
@@ -429,5 +446,27 @@ export function acpAttemptWorkspaceResourceKey(kind: 'system-prompt' | 'raw-fram
     locator.outerNodeId ?? '',
     locator.outerAttemptId ?? '',
     locator.branchId,
+  ].join(':');
+}
+
+export function conversationAssetWorkspaceResourceKey(
+  assetKind: ConversationAssetWorkspaceResource['assetKind'],
+  locator: AcpAttemptWorkspaceLocator,
+  name: string,
+  path?: string | null,
+) {
+  return [
+    'conversation-asset',
+    assetKind,
+    locator.projectId,
+    locator.taskId,
+    locator.runId,
+    locator.roundId,
+    locator.nodeId,
+    locator.attemptId,
+    locator.outerNodeId ?? '',
+    locator.outerAttemptId ?? '',
+    locator.branchId,
+    path ?? name,
   ].join(':');
 }

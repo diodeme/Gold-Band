@@ -4768,6 +4768,9 @@ fn parse_timeline_file(
         .into_values()
         .map(|(_, event)| event)
         .collect::<Vec<_>>();
+    for event in &mut canonical_events {
+        normalize_turn_file_change_set_position(event);
+    }
     canonical_events.sort_by_key(|event| (event.started_seq.unwrap_or(event.seq), event.seq));
     remove_reclassified_local_provider_history_vm(&mut canonical_events);
 
@@ -4795,6 +4798,17 @@ fn parse_timeline_file(
     ))
 }
 
+fn normalize_turn_file_change_set_position(event: &mut AcpUiEventVm) {
+    if event.kind != "fileChangeSet" {
+        return;
+    }
+    event.started_seq = Some(event.seq);
+    event.started_at = event
+        .ended_at
+        .clone()
+        .or_else(|| Some(event.timestamp.clone()));
+}
+
 fn merge_timeline_item_revision_vm(
     existing: &AcpUiEventVm,
     mut incoming: AcpUiEventVm,
@@ -4806,6 +4820,15 @@ fn merge_timeline_item_revision_vm(
     let incoming_start = incoming.started_seq.unwrap_or(incoming.seq);
     if existing_start > incoming_start {
         return incoming;
+    }
+    if matches!(incoming.kind.as_str(), "toolCall" | "toolCallUpdate") {
+        if incoming.title.is_none() {
+            incoming.title.clone_from(&existing.title);
+        }
+        if let Some(existing_raw) = existing.raw.as_ref() {
+            let incoming_raw = incoming.raw.get_or_insert_with(|| serde_json::json!({}));
+            gold_band::acp::events::merge_tool_revision_raw(incoming_raw, existing_raw);
+        }
     }
 
     let repeated_payload = existing.kind == incoming.kind
@@ -5688,6 +5711,7 @@ fn is_conversation_semantic_event(
             | "thoughtDelta"
             | "toolCall"
             | "toolCallUpdate"
+            | "fileChangeSet"
             | "attemptSeparator"
             | "contextCompaction"
             | "error"
@@ -9349,6 +9373,134 @@ mod tests {
         assert_eq!(all_events[0].content.as_deref(), Some("message 0"));
         assert_eq!(all_events[49].content.as_deref(), Some("message 49"));
 
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parse_timeline_keeps_persisted_file_change_set_at_turn_end() {
+        let dir =
+            std::env::temp_dir().join(format!("gb-tl-file-change-position-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let db = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let mut events = event_sequence(3, 1_000);
+        events[0].id = "prompt".to_string();
+        events[0].kind = "userTextDelta".to_string();
+        events[1].id = "tool".to_string();
+        events[1].kind = "toolCall".to_string();
+        events[2].id = "changes".to_string();
+        events[2].kind = "fileChangeSet".to_string();
+        events[2].started_seq = Some(events[0].seq);
+        events[2].started_at = events[0].started_at.clone();
+        let expected_change_seq = events[2].seq;
+        let path = write_timeline_file(&db, "acp.timeline.jsonl", &events);
+
+        let (all_events, _, _, _, _, _) = parse_timeline_file(&path, false).unwrap();
+
+        assert_eq!(
+            all_events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["prompt", "tool", "changes"]
+        );
+        assert_eq!(all_events[2].started_seq, Some(expected_change_seq));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reload_page_keeps_file_change_set_appended_after_final_answer() {
+        let dir =
+            std::env::temp_dir().join(format!("gb-tl-file-change-page-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let mut events = event_sequence(4, 1_000);
+        events[0].id = "prompt".to_string();
+        events[0].kind = "userTextDelta".to_string();
+        events[1].id = "tool".to_string();
+        events[1].kind = "toolCall".to_string();
+        events[1].tool_call_id = Some("call-1".to_string());
+        events[2].id = "answer".to_string();
+        events[3].id = "changes".to_string();
+        events[3].kind = "fileChangeSet".to_string();
+        events[3].raw = Some(json!({
+            "changeSetId": "turn-files-1",
+            "summary": {
+                "fileCount": 1,
+                "addedFiles": 0,
+                "modifiedFiles": 1,
+                "deletedFiles": 0,
+                "addedLines": 1,
+                "deletedLines": 1
+            }
+        }));
+        let path = write_timeline_file(&attempt, "acp.timeline.jsonl", &events);
+
+        let page = scan_acp_timeline(&path, None, false, 30).unwrap();
+
+        assert_eq!(page.event_page.total, 4);
+        assert_eq!(
+            page.events.last().map(|event| event.id.as_str()),
+            Some("changes")
+        );
+        assert_eq!(
+            page.events.last().map(|event| event.kind.as_str()),
+            Some("fileChangeSet")
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn tool_detail_keeps_intermediate_diff_when_terminal_revision_has_only_status() {
+        let dir = std::env::temp_dir().join(format!(
+            "gb-tool-detail-diff-revision-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let mut intermediate = event_sequence(1, 1_000).remove(0);
+        intermediate.id = "tool-call-call-1".to_string();
+        intermediate.kind = "toolCall".to_string();
+        intermediate.tool_call_id = Some("call-1".to_string());
+        intermediate.status = None;
+        intermediate.raw = Some(json!({
+            "rawInput": { "path": "report.md" },
+            "content": [{
+                "type": "diff",
+                "path": "report.md",
+                "oldText": "before",
+                "newText": "after"
+            }]
+        }));
+        let mut terminal = intermediate.clone();
+        terminal.seq = 2;
+        terminal.ended_seq = Some(2);
+        terminal.status = Some("completed".to_string());
+        terminal.raw = Some(json!({ "rawOutput": "done" }));
+        write_timeline_patch_file(
+            &attempt,
+            "acp.timeline.jsonl",
+            &[
+                (1, "tool-call-call-1", intermediate),
+                (2, "tool-call-call-1", terminal),
+            ],
+        );
+
+        let detail = acp_tool_detail_vm_for_attempt(
+            &attempt,
+            AcpToolDetailQueryInput {
+                branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                event_id: "tool-call-call-1".to_string(),
+                tool_call_id: Some("call-1".to_string()),
+            },
+        )
+        .unwrap()
+        .event
+        .expect("tool detail");
+
+        assert_eq!(detail.status.as_deref(), Some("completed"));
+        assert_eq!(detail.raw.as_ref().unwrap()["content"][0]["type"], "diff");
+        assert_eq!(detail.raw.as_ref().unwrap()["rawOutput"], "done");
         fs::remove_dir_all(dir).unwrap();
     }
 

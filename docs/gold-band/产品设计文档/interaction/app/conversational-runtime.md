@@ -468,8 +468,10 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 
 - 每个可见 prompt 使用稳定 `turnId/promptId`；hidden repair 继承最近可见 turn，不生成第二张用户可见文件卡。完成、失败和取消都会结算已经捕获的变化。
 - 文件变化的唯一事实源是当前 prompt 生命周期内 ACP `toolCall/toolCallUpdate` 的标准 `content[type=diff]`。运行时不扫描目录、不读取 live 文件、不调用 Git，也不按 write/edit/shell 等工具名猜测。
-- 同一路径 mutation 按 `eventSeq + contentIndex` 折叠为首个 tool-reported before 与最后一个 tool-reported after；相邻 hash 不连续时保留证据并标记 partial，最终恢复原版本时不展示。
+- 同一个 `toolCallId + path` 的多次 update 是同一工具操作的流式修订，必须先取最后一个 event revision，不能误当成顺序 mutation；不同 tool call 才按 `eventSeq + contentIndex` 折叠。相邻 hash 不连续时保留证据并标记 partial，最终恢复原版本时不展示。
 - 每份 old/new 正文先写入 attempt 级 BLAKE3 CAS，再追加 durable mutation journal；finalized change set 独立保存，timeline 只追加 summary 与 `changeSetId` 指针。历史查看只读取捕获版本，不受磁盘后续修改或删除影响。
-- 变更卡是 prompt turn 末尾无头像的结构化行。修改打开右栏 unified diff，新增打开该轮 after 原文，删除行不提供点击或键盘焦点；无变化不渲染空卡。
+- 变更卡是 prompt turn 末尾无头像的结构化行，持久化事件的 `startedSeq` 必须等于卡片自身终态 seq；历史读取发现旧指针仍绑定 prompt 起始 seq 时统一修正到终态位置，保证实时与重载顺序一致。修改打开右栏 unified diff，新增打开该轮 after 原文，删除行不提供点击或键盘焦点；无变化不渲染空卡。
+- 用户点击停止、provider cancel 或 prompt 失败都属于 turn 终态，必须结算已经收到的标准 diff。直接杀进程只能依赖已落盘 mutation journal，不能承诺生成尚未来得及写入的终态卡片。
+- shell/Bash 命令本身不是文件变化事实源。只有 provider 对该 tool call 返回标准 `content[type=diff]` 才能统计；若 `rm`、重定向或脚本写入只返回普通 stdout/完成状态，Gold Band 不解析命令文本、不读取磁盘补偿，也不会把该操作猜成文件变化。
 - 用户消息附件和 canonical artifact 保持各自消息归属，点击后打开右侧会话资源，不进入文件变化卡。Conversation 主 DTO 不再聚合当前 session 的 artifacts/attachments，composer 上方也不再显示独立资产展开栏。
 - 根会话和 Agent branch 按持久化 branch ownership 各自查询 change set。前端不根据路径或自然语言推断归属，也不把 sibling branch 的变化投影到当前会话。

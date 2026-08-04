@@ -182,6 +182,45 @@ describe('turn file changes card', () => {
       await act(async () => root.unmount());
     }
   });
+
+  it('scrolls the complete file list after expansion instead of only the additional rows', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const longSet = changeSet('long-set');
+    longSet.changes = Array.from({ length: 15 }, (_, index) => ({
+      id: `added-${index + 1}`,
+      changeKind: 'added' as const,
+      logicalPath: `docs/${index + 1}.txt`,
+      text: true,
+      addedLines: 1,
+      deletedLines: 0,
+    }));
+    longSet.summary = {
+      fileCount: 15,
+      addedFiles: 15,
+      modifiedFiles: 0,
+      deletedFiles: 0,
+      addedLines: 15,
+      deletedLines: 0,
+    };
+    getTurnFileChangeSetMock.mockResolvedValue(longSet);
+    const event = pointerEvent('long-set');
+    event.raw = { changeSetId: longSet.id, summary: longSet.summary };
+    const root = await renderCard(container, event);
+    try {
+      expect(container.querySelectorAll('[role="listitem"]')).toHaveLength(3);
+      const trigger = container.querySelector<HTMLButtonElement>('button[aria-expanded="false"]');
+      expect(trigger).not.toBeNull();
+      await act(async () => trigger?.click());
+
+      const viewport = container.querySelector('[data-radix-scroll-area-viewport]');
+      expect(viewport).not.toBeNull();
+      expect(viewport?.querySelectorAll('[role="listitem"]')).toHaveLength(15);
+      expect(container.querySelectorAll('[role="list"]')).toHaveLength(1);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 });
 
 describe('conversation artifact workspace entry', () => {

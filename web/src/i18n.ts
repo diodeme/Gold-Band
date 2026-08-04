@@ -974,7 +974,7 @@ const resources = {
         noAttachments: "暂无附件",
       },
       turnFiles: {
-        title: "本轮变化 {{count}} 个文件",
+        title: "本轮变更 {{count}} 个文件",
         fileList: "本轮文件变化",
         additionalFiles: "本轮其余文件变化",
         loading: "正在加载文件变化…",

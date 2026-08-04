@@ -1,12 +1,11 @@
 import { createContext, useContext, useEffect, useState } from 'react';
-import { ChevronDown, FileDiff, FileMinus2, FilePlus2, TriangleAlert } from 'lucide-react';
+import { ChevronDown, FileDiff, FileMinus2, FilePlus2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { getTurnFileChangeSet } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import type {
   AcpUiEventVm,
@@ -50,9 +49,7 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
   const summary = changeSet?.summary ?? inlineSummary;
   const changes = changeSet?.changes ?? [];
   const previewChanges = changes.slice(0, previewLimit);
-  const extraChanges = changes.slice(previewLimit);
   const hiddenCount = Math.max(0, changes.length - previewLimit);
-  const partial = event.status === 'partial' || changeSet?.status === 'partial';
   if (!summary || summary.fileCount === 0 || !changeSetId) return null;
 
   const openChange = (change: TurnFileChangeVm) => {
@@ -77,16 +74,6 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
         <CardTitle className="flex min-w-0 items-center gap-2 text-sm font-medium">
           <FileDiff className="size-4 shrink-0 text-primary" />
           <span>{t('turnFiles.title', { count: summary.fileCount })}</span>
-          {partial ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button type="button" className="rounded-sm text-amber-500 outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={t('turnFiles.partial')}>
-                  <TriangleAlert className="size-3.5" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>{t('turnFiles.partial')}</TooltipContent>
-            </Tooltip>
-          ) : null}
         </CardTitle>
         <div className="flex items-center gap-2 text-xs tabular-nums">
           <span className="text-emerald-600 dark:text-emerald-400">+{summary.addedLines}</span>
@@ -100,15 +87,17 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
           <div className="px-3 py-2 text-xs text-muted-foreground">{t('turnFiles.loading')}</div>
         ) : (
           <Collapsible open={expanded} onOpenChange={setExpanded}>
-            <div role="list" aria-label={t('turnFiles.fileList')}>
-              {previewChanges.map((change) => (
-                <TurnFileChangeRow key={change.id} change={change} onOpen={openChange} />
-              ))}
-            </div>
+            {!expanded ? (
+              <div role="list" aria-label={t('turnFiles.fileList')}>
+                {previewChanges.map((change) => (
+                  <TurnFileChangeRow key={change.id} change={change} onOpen={openChange} />
+                ))}
+              </div>
+            ) : null}
             <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden">
-              <ScrollArea className={cn(extraChanges.length > 5 ? 'h-48' : 'h-auto')}>
-                <div role="list" aria-label={t('turnFiles.additionalFiles')}>
-                  {extraChanges.map((change) => (
+              <ScrollArea className={cn(changes.length > 8 ? 'h-64' : 'h-auto')}>
+                <div role="list" aria-label={t('turnFiles.fileList')}>
+                  {changes.map((change) => (
                     <TurnFileChangeRow key={change.id} change={change} onOpen={openChange} />
                   ))}
                 </div>

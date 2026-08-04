@@ -4061,7 +4061,7 @@ mod tests {
     }
 
     #[test]
-    fn conversation_run_vm_exposes_selected_session_assets_and_leaf_counts() {
+    fn conversation_run_vm_keeps_assets_out_of_session_dto_and_exposes_leaf_counts() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
         write_conversation_assets_fixture(&app);
@@ -4075,10 +4075,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(vm.artifacts.len(), 1);
-        assert_eq!(vm.artifacts[0].name, "测试-result");
-        assert_eq!(vm.attachments.len(), 1);
-        assert_eq!(vm.attachments[0].name, "test-report.md");
         assert_eq!(vm.task_uuid.as_deref(), Some("task-046-fixture-uuid"));
 
         let leaf = vm.session_tree.rounds[0].nodes[0]
@@ -4207,7 +4203,7 @@ mod tests {
     }
 
     #[test]
-    fn switch_conversation_session_vm_uses_same_asset_contract() {
+    fn switch_conversation_session_vm_returns_only_the_selected_session() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
         write_conversation_assets_fixture(&app);
@@ -4224,10 +4220,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(switched.artifacts.len(), 1);
-        assert_eq!(switched.artifacts[0].name, "测试-result");
-        assert_eq!(switched.attachments.len(), 1);
-        assert_eq!(switched.attachments[0].name, "test-report.md");
+        assert!(switched.selected_session.is_none());
+        let serialized = serde_json::to_value(switched).unwrap();
+        assert!(serialized.get("selectedSession").is_some());
+        assert!(serialized.get("artifacts").is_none());
+        assert!(serialized.get("attachments").is_none());
     }
 
     fn temp_repo_root() -> Utf8PathBuf {

@@ -3336,9 +3336,12 @@ impl<'a> AcpRuntime<'a> {
                     }
                     .to_string(),
                 ),
-                started_seq: Some(turn.seq),
+                // A finalized change set belongs at the end of its prompt turn.
+                // Persisting the prompt start here makes reload sorting move the
+                // card above the tool calls even though live state appended it last.
+                started_seq: Some(self.seq),
                 ended_seq: Some(self.seq),
-                started_at: Some(turn.started_at.clone()),
+                started_at: Some(finished_at.clone()),
                 ended_at: Some(finished_at.clone()),
                 timing: None,
                 raw: Some(json!({
@@ -4318,12 +4321,10 @@ impl<'a> AcpRuntime<'a> {
                 if let Some(tool_call_id) = item.tool_call_id.clone() {
                     item.id = format!("tool-call-{tool_call_id}");
                 }
-                // Merge rawInput from the previous event for this tool call
-                // if the new event doesn't carry it. The adapter typically sends
-                // rawInput on an intermediate toolCallUpdate but not on the
-                // final completed event, so without merging the input is lost.
+                // Preserve input and diff evidence from earlier revisions when
+                // the provider's terminal update only carries status/output.
                 if let Some(prev) = self.timeline_items.get(&item.id) {
-                    merge_tool_raw_input(&mut item, prev);
+                    merge_tool_revision(&mut item, prev);
                 }
                 item.kind = "toolCall".to_string();
                 Self::finalize_non_streaming_event(
@@ -4467,13 +4468,6 @@ impl Drop for AcpRuntime<'_> {
     }
 }
 
-fn is_non_empty_object(value: &serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::Object(map) => !map.is_empty(),
-        _ => false,
-    }
-}
-
 fn upsert_context_compaction_raw(
     item: &mut crate::acp::events::AcpUiEvent,
     phase: &str,
@@ -4494,58 +4488,20 @@ fn upsert_context_compaction_raw(
     });
 }
 
-/// Merge `raw.rawInput` and `raw.title` from a previous tool-call timeline
-/// item into the current one when the current item doesn't have a non-empty
-/// value. This preserves tool input across adapter updates that overwrite the
-/// timeline slot — the final "completed" event often carries the output
-/// but no longer carries the input or title.
-fn merge_tool_raw_input(
+/// Merge durable input and diff fields from a previous tool-call revision when
+/// a later revision does not replace them.
+fn merge_tool_revision(
     new_item: &mut crate::acp::events::AcpUiEvent,
     prev: &crate::acp::events::AcpUiEvent,
 ) {
-    let new_raw = match &new_item.raw {
-        Some(v) => v,
-        None => return,
-    };
-    let prev_raw = match &prev.raw {
-        Some(v) => v,
-        None => return,
-    };
-    // Merge title if new event lacks one.
     if new_item.title.is_none() {
-        if let Some(prev_title) = &prev.title {
-            new_item.title = Some(prev_title.clone());
-        }
+        new_item.title.clone_from(&prev.title);
     }
-    // Merge rawInput.
-    let new_direct = new_raw.get("rawInput");
-    let new_nested = new_raw.get("toolCall").and_then(|tc| tc.get("rawInput"));
-    if new_direct.map_or(false, |v| is_non_empty_object(v))
-        || new_nested.map_or(false, |v| is_non_empty_object(v))
-    {
+    let Some(previous_raw) = prev.raw.as_ref() else {
         return;
-    }
-    if let Some(prev_direct) = prev_raw.get("rawInput") {
-        if is_non_empty_object(prev_direct) {
-            if let Some(raw_mut) = new_item.raw.as_mut() {
-                raw_mut["rawInput"] = prev_direct.clone();
-            }
-            return;
-        }
-    }
-    if let Some(prev_nested) = prev_raw.get("toolCall").and_then(|tc| tc.get("rawInput")) {
-        if is_non_empty_object(prev_nested) {
-            if let Some(raw_mut) = new_item.raw.as_mut() {
-                if let Some(tc_mut) = raw_mut.get_mut("toolCall") {
-                    tc_mut["rawInput"] = prev_nested.clone();
-                } else {
-                    let mut tc = serde_json::Map::new();
-                    tc.insert("rawInput".to_string(), prev_nested.clone());
-                    raw_mut["toolCall"] = serde_json::Value::Object(tc);
-                }
-            }
-        }
-    }
+    };
+    let incoming_raw = new_item.raw.get_or_insert_with(|| json!({}));
+    crate::acp::events::merge_tool_revision_raw(incoming_raw, previous_raw);
 }
 
 fn is_streaming_timeline_update(event: &crate::acp::events::AcpUiEvent) -> bool {
@@ -5157,7 +5113,7 @@ mod tests {
         active_timeline_streams_by_branch, attached_sync_required,
         cleanup_doctor_acp_dir_after_success, contributes_to_final_text, drain_frames_until_quiet,
         evaluate_provider_revision, initialize_params, is_transport_interruption,
-        is_unscoped_codex_diagnostic_update, latest_visible_turn_id, merge_tool_raw_input,
+        is_unscoped_codex_diagnostic_update, latest_visible_turn_id, merge_tool_revision,
         permission_decision_timeline_event, plan_attached_session_reuse, prompt_activity,
         register_provider_control, request_prompt_cancel, resolve_permission_mode,
         resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
@@ -5773,14 +5729,23 @@ mod tests {
     }
 
     #[test]
-    fn terminal_tool_update_preserves_intermediate_raw_input_before_release() {
+    fn terminal_tool_update_preserves_intermediate_input_and_diff_before_release() {
         let intermediate = timeline_event(
             "tool-call-1",
             1,
             "toolCall",
             Some("in_progress"),
             None,
-            Some(json!({ "rawInput": { "path": "report.md" } })),
+            Some(json!({
+                "rawInput": { "path": "report.md" },
+                "content": [{
+                    "type": "diff",
+                    "path": "report.md",
+                    "oldText": "before",
+                    "newText": "after"
+                }],
+                "locations": [{ "path": "report.md" }]
+            })),
         );
         let mut terminal = timeline_event(
             "tool-call-1",
@@ -5788,10 +5753,10 @@ mod tests {
             "toolCall",
             Some("completed"),
             None,
-            Some(json!({ "content": "done" })),
+            Some(json!({ "rawOutput": "done" })),
         );
 
-        merge_tool_raw_input(&mut terminal, &intermediate);
+        merge_tool_revision(&mut terminal, &intermediate);
 
         assert_eq!(
             terminal
@@ -5800,6 +5765,25 @@ mod tests {
                 .and_then(|raw| raw.get("rawInput"))
                 .cloned(),
             Some(json!({ "path": "report.md" }))
+        );
+        assert_eq!(
+            terminal
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("content"))
+                .and_then(Value::as_array)
+                .and_then(|content| content.first())
+                .and_then(|content| content.get("type"))
+                .and_then(Value::as_str),
+            Some("diff")
+        );
+        assert_eq!(
+            terminal
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("rawOutput"))
+                .and_then(Value::as_str),
+            Some("done")
         );
         assert!(runtime_hot_timeline_items(vec![terminal]).is_empty());
     }

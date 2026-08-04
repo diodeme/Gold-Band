@@ -90,7 +90,9 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 ### 2026-08-04 会话历史版本与 Diff 资源
 
 - 右侧工作区增加 `file-version`、`file-diff` 与 `conversation-asset` 三类只读资源。历史版本 key 包含 change set/change identity，同一路径不同 turn 不复用错误内容；消息附件和 artifact key 包含完整 attempt/branch locator。
-- `file-diff` 使用官方 `@codemirror/merge` 的 `unifiedMergeView`，固定只读、无 merge controls，开启 gutter、变化高亮、未修改区折叠及上一处/下一处导航。普通文件与 diff 复用同一语言加载、主题和 syntax highlight extension。
+- `file-diff` 使用官方 `@codemirror/merge` 的 `unifiedMergeView`，固定只读、无 merge controls，开启 gutter、变化高亮、未修改区折叠及上一处/下一处导航。普通文件与 diff 复用同一语言加载、主题和 syntax highlight extension；新增片段的主题选择器必须命中同一编辑器根节点 `&.cm-merge-b`，显式移除 merge 默认 background image，只保留实色语义背景。
+- ACP `oldText/newText` 必须是文件内容，不得包含 unified diff 的 `No newline at end of file` 元数据。若 provider 的后续 tool update 错把该标记混入标准文本字段，捕获层需要移除标记并恢复真实的文件末尾换行状态；已有 change set 通过 schema 迁移从 durable journal 重新生成，不把元数据伪装成普通删除/新增行。
+- 变更卡收起时只展示配置数量的预览行；展开后全部文件进入同一个 ScrollArea，预览行不得固定在滚动区外。标题固定使用“本轮变更 N 个文件”，partial 不在标题后追加告警图标。
 - `get_turn_file_change_set` 与 `get_file_comparison` 只接受受控 attempt locator、branch、changeSetId/changeId；后端校验标识符、branch ownership 和 CAS hash，不接受前端提交任意 blob 路径或 runtime 绝对路径。
 - `configs/app-config.toml` 的 `turnFiles` 统一管理卡片预览数、捕获条目/字节上限与 diff 渲染上限；CAS 不启用额外内存 blob cache，blob 生命周期跟随 attempt。
 - 未来 Git commit/tree/blob 比较继续返回同一 `FileChange/FileComparison` 前端模型并复用 unified viewer；外部 Git 命令必须通过后台进程 helper，本期不提供 Git UI。

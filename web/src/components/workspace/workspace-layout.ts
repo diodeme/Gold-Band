@@ -53,6 +53,7 @@ export const RIGHT_WORKSPACE_MIN_WIDTH = FALLBACK_WORKSPACE_LAYOUT.rightWorkspac
 export const RIGHT_WORKSPACE_MAX_WIDTH = FALLBACK_WORKSPACE_LAYOUT.rightWorkspace.maxWidth;
 export const RIGHT_WORKSPACE_DEFAULT_WIDTH = FALLBACK_WORKSPACE_LAYOUT.rightWorkspace.defaultWidth;
 export const WORKSPACE_LAYOUT_HYSTERESIS = 48;
+export const FILE_WORKSPACE_RESIZE_DIRECTION_HOLD_MS = 120;
 
 export interface WorkspaceAutoCollapseState {
   previousWidth: number;
@@ -61,6 +62,32 @@ export interface WorkspaceAutoCollapseState {
 }
 
 export type WorkspaceAutoCollapsePresentation = Pick<WorkspaceAutoCollapseState, 'left' | 'right'>;
+
+export interface FileWorkspaceResponsiveState {
+  split: boolean;
+  widthAtTransition: number;
+}
+
+export type FileWorkspaceResizeDirection = 'growing' | 'shrinking' | 'stationary';
+
+export function resolveFileWorkspaceResizeDirection({
+  previousShellWidth,
+  shellWidth,
+  previousDirection,
+  elapsedSinceShellResizeMs,
+  holdMs = FILE_WORKSPACE_RESIZE_DIRECTION_HOLD_MS,
+}: {
+  previousShellWidth: number;
+  shellWidth: number;
+  previousDirection: FileWorkspaceResizeDirection;
+  elapsedSinceShellResizeMs: number;
+  holdMs?: number;
+}): FileWorkspaceResizeDirection {
+  if (previousShellWidth > 0 && shellWidth !== previousShellWidth) {
+    return shellWidth > previousShellWidth ? 'growing' : 'shrinking';
+  }
+  return elapsedSinceShellResizeMs <= holdMs ? previousDirection : 'stationary';
+}
 
 export interface WorkspaceAutoCollapseInput {
   availableWidth: number;
@@ -131,6 +158,19 @@ export function workspaceAutoCollapsePresentationChanged(
   return current.left !== next.left || current.right !== next.right;
 }
 
+export function reduceFileWorkspaceResponsiveState(
+  state: FileWorkspaceResponsiveState,
+  width: number,
+  splitMinWidth: number,
+  direction: FileWorkspaceResizeDirection = 'stationary',
+): FileWorkspaceResponsiveState {
+  const split = width >= splitMinWidth;
+  if (state.split === split) return state;
+  if (direction === 'growing' && state.split) return state;
+  if (direction === 'shrinking' && !state.split) return state;
+  return { split, widthAtTransition: width };
+}
+
 export function resolveWorkspacePanelWidthFromLayout({
   layout,
   panelId,
@@ -167,33 +207,18 @@ export function resolveRightWorkspaceWidthFromLayout(
   });
 }
 
-export function resolveRightWorkspaceRestoreWidth({
-  shellWidth,
+export function resolveRightWorkspacePanelMaxWidth({
   preferredWidth,
-  actualWidth,
-  centerMinWidth,
-  sidebarWidth,
-  showLeft,
-  rightMinWidth = RIGHT_WORKSPACE_MIN_WIDTH,
+  minWidth,
+  maxWidth,
+  userResizing,
 }: {
-  shellWidth: number;
   preferredWidth: number;
-  actualWidth: number;
-  centerMinWidth: number;
-  sidebarWidth: number;
-  showLeft: boolean;
-  rightMinWidth?: number;
+  minWidth: number;
+  maxWidth: number;
+  userResizing: boolean;
 }) {
-  const visibleSidebarWidth = showLeft
-    ? clamp(sidebarWidth, WORKSPACE_SIDEBAR_MIN_WIDTH, WORKSPACE_SIDEBAR_MAX_WIDTH)
-    : 0;
-  const availableWidth = shellWidth - centerMinWidth - visibleSidebarWidth;
-  const targetWidth = clamp(
-    Math.min(preferredWidth, availableWidth),
-    rightMinWidth,
-    preferredWidth,
-  );
-  return targetWidth > actualWidth + 1 ? Math.floor(targetWidth) : null;
+  return userResizing ? maxWidth : clamp(preferredWidth, minWidth, maxWidth);
 }
 
 export function shouldPersistRightWorkspaceWidth(isUserInteraction: boolean, hasResizeIntent: boolean) {

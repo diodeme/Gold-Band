@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ExternalLink, FileQuestion, FolderOpen, LoaderCircle, Maximize2, Pause, Play, RefreshCw, RotateCcw, SearchX, ShieldAlert, ZoomIn, ZoomOut } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl, openFileWithSystemApp, resolveWorkspaceFileLink, workspaceFilePreviewUrl } from '@/api';
@@ -7,7 +7,13 @@ import { useMarkdownResourceLinkHandler } from '@/components/prompt-kit/markdown
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm } from '@/types';
 import { isExternalUrlHref, isLocalFileHref } from '@/lib/file-link';
-import { resolveWorkspacePanelWidthFromLayout } from '../workspace-layout';
+import {
+  reduceFileWorkspaceResponsiveState,
+  resolveFileWorkspaceResizeDirection,
+  resolveWorkspacePanelWidthFromLayout,
+  type FileWorkspaceResizeDirection,
+  type FileWorkspaceResponsiveState,
+} from '../workspace-layout';
 import {
   fileWorkspaceResourceKey,
   useRightWorkspace,
@@ -26,19 +32,69 @@ interface FileWorkspacePanelProps {
   layout: FileWorkspaceLayoutVm;
 }
 
-function usePanelWidth() {
+const INITIAL_FILE_WORKSPACE_RESPONSIVE_STATE: FileWorkspaceResponsiveState = {
+  split: false,
+  widthAtTransition: 0,
+};
+
+function usePanelResponsiveState(splitMinWidth: number) {
   const ref = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(720);
-  useEffect(() => {
+  const widthRef = useRef(0);
+  const shellWidthRef = useRef(0);
+  const shellResizeDirectionRef = useRef<FileWorkspaceResizeDirection>('stationary');
+  const shellResizeObservedAtRef = useRef(0);
+  const resizeFrameRef = useRef<number | null>(null);
+  const responsiveStateRef = useRef(INITIAL_FILE_WORKSPACE_RESPONSIVE_STATE);
+  const [responsiveState, setResponsiveState] = useState(INITIAL_FILE_WORKSPACE_RESPONSIVE_STATE);
+  useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return;
-    const update = () => setWidth(Math.round(element.clientWidth));
+    const update = () => {
+      const width = Math.round(element.clientWidth);
+      const shellWidth = Math.round(element.ownerDocument.documentElement.clientWidth);
+      const now = Date.now();
+      const shellWidthChanged = shellWidthRef.current > 0 && shellWidth !== shellWidthRef.current;
+      const direction = resolveFileWorkspaceResizeDirection({
+        previousShellWidth: shellWidthRef.current,
+        shellWidth,
+        previousDirection: shellResizeDirectionRef.current,
+        elapsedSinceShellResizeMs: now - shellResizeObservedAtRef.current,
+      });
+      widthRef.current = width;
+      shellWidthRef.current = shellWidth;
+      shellResizeDirectionRef.current = direction;
+      if (shellWidthChanged) shellResizeObservedAtRef.current = now;
+      const next = reduceFileWorkspaceResponsiveState(
+        responsiveStateRef.current,
+        width,
+        splitMinWidth,
+        direction,
+      );
+      if (next === responsiveStateRef.current) return;
+      responsiveStateRef.current = next;
+      setResponsiveState(next);
+    };
+    const scheduleUpdate = () => {
+      if (resizeFrameRef.current !== null) return;
+      resizeFrameRef.current = requestAnimationFrame(() => {
+        resizeFrameRef.current = null;
+        update();
+      });
+    };
     update();
-    const observer = new ResizeObserver(update);
+    const observer = new ResizeObserver(scheduleUpdate);
     observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-  return { ref, width };
+    return () => {
+      observer.disconnect();
+      if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);
+      resizeFrameRef.current = null;
+    };
+  }, [splitMinWidth]);
+  return {
+    ref,
+    responsiveState,
+    currentWidth: () => widthRef.current || Math.round(ref.current?.clientWidth ?? 0),
+  };
 }
 
 function fileResourceFromEntry(resource: FileWorkspacePanelProps['resource'], entry: WorkspaceDirectoryEntryVm): FileWorkspaceResource {
@@ -65,10 +121,10 @@ export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps
   const { t } = useTranslation();
   const workspace = useRightWorkspace();
   const selected = resource.kind === 'file' ? resource : null;
-  const { ref, width } = usePanelWidth();
+  const { ref, responsiveState, currentWidth } = usePanelResponsiveState(layout.splitMinWidth);
   const preferredWidthRequestedRef = useRef(false);
   const [compactView, setCompactView] = useState<'content' | 'tree'>(selected ? 'content' : 'tree');
-  const split = width >= layout.splitMinWidth;
+  const split = responsiveState.split;
 
   useEffect(() => {
     if (preferredWidthRequestedRef.current) return;
@@ -110,7 +166,10 @@ export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps
     layout.treeMaxWidth,
     Math.max(layout.treeMinWidth, rememberedTreeWidth ?? layout.treeDefaultWidth),
   );
-  const treePercent = Math.min(60, Math.max(20, width > 0 ? treeWidth / width * 100 : 38));
+  const treePercent = Math.min(60, Math.max(
+    20,
+    responsiveState.widthAtTransition > 0 ? treeWidth / responsiveState.widthAtTransition * 100 : 38,
+  ));
 
   return (
     <div ref={ref} className="flex min-h-0 flex-1 flex-col" data-file-workspace-panel="true">
@@ -129,7 +188,9 @@ export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps
           <ResizablePanelGroup
             orientation="horizontal"
             className="h-full"
-            onLayoutChanged={(panelLayout) => {
+            onLayoutChanged={(panelLayout, meta) => {
+              if (!meta.isUserInteraction) return;
+              const width = currentWidth();
               const next = resolveWorkspacePanelWidthFromLayout({
                 layout: panelLayout,
                 panelId: 'file-tree',

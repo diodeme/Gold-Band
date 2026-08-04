@@ -15,6 +15,7 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
   const active = tabs.find((tab) => tab.key === activeTabKey) ?? null;
   const tabStripRef = useRef<HTMLDivElement>(null);
   const overflowMenuRef = useRef<HTMLButtonElement>(null);
+  const resizeFrameRef = useRef<number | null>(null);
   const [tabsOverflowing, setTabsOverflowing] = useState(false);
 
   useLayoutEffect(() => {
@@ -25,11 +26,21 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
       const overflowing = tabStrip.scrollWidth > availableWidth + 1;
       setTabsOverflowing((current) => current === overflowing ? current : overflowing);
     };
+    const scheduleMeasure = () => {
+      if (resizeFrameRef.current !== null) return;
+      resizeFrameRef.current = requestAnimationFrame(() => {
+        resizeFrameRef.current = null;
+        measure();
+      });
+    };
     measure();
-    const observer = new ResizeObserver(measure);
+    const observer = new ResizeObserver(scheduleMeasure);
     observer.observe(tabStrip);
-    for (const tab of tabStrip.children) observer.observe(tab);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);
+      resizeFrameRef.current = null;
+    };
   }, [tabs]);
 
   return (

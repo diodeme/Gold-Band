@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   FALLBACK_WORKSPACE_LAYOUT,
+  reduceFileWorkspaceResponsiveState,
   reduceWorkspaceAutoCollapse,
-  resolveRightWorkspaceRestoreWidth,
+  resolveFileWorkspaceResizeDirection,
+  resolveRightWorkspacePanelMaxWidth,
   resolveRightWorkspaceWidthFromLayout,
   resolveWorkspacePanelWidthFromLayout,
   shouldOpenRightWorkspaceSheet,
@@ -11,12 +13,73 @@ import {
   workspaceAutoCollapsePresentationChanged,
   workspaceLayoutProfileForPage,
   workspaceLayoutProfileForSurface,
+  type FileWorkspaceResponsiveState,
   type WorkspaceAutoCollapseState,
 } from '@/components/workspace/workspace-layout';
 
 const initial = (): WorkspaceAutoCollapseState => ({ previousWidth: 1_100, left: false, right: false });
 
 describe('workspace auto collapse state machine', () => {
+  it('keeps file workspace pixel widths outside React presentation state', () => {
+    let state: FileWorkspaceResponsiveState = { split: false, widthAtTransition: 0 };
+    const compactState = state;
+
+    for (let width = 320; width < 540; width += 1) {
+      state = reduceFileWorkspaceResponsiveState(state, width, 540);
+      expect(state).toBe(compactState);
+    }
+
+    state = reduceFileWorkspaceResponsiveState(state, 540, 540);
+    expect(state).toEqual({ split: true, widthAtTransition: 540 });
+    const splitState = state;
+
+    for (let width = 541; width <= 960; width += 1) {
+      state = reduceFileWorkspaceResponsiveState(state, width, 540);
+      expect(state).toBe(splitState);
+    }
+
+    state = reduceFileWorkspaceResponsiveState(state, 539, 540);
+    expect(state).toEqual({ split: false, widthAtTransition: 539 });
+  });
+
+  it('keeps file workspace presentation monotonic in the window resize direction', () => {
+    const split: FileWorkspaceResponsiveState = { split: true, widthAtTransition: 540 };
+    expect(reduceFileWorkspaceResponsiveState(split, 479, 540, 'growing')).toBe(split);
+    expect(reduceFileWorkspaceResponsiveState(split, 539, 540, 'shrinking'))
+      .toEqual({ split: false, widthAtTransition: 539 });
+
+    const compact: FileWorkspaceResponsiveState = { split: false, widthAtTransition: 539 };
+    expect(reduceFileWorkspaceResponsiveState(compact, 568, 540, 'shrinking')).toBe(compact);
+    expect(reduceFileWorkspaceResponsiveState(compact, 540, 540, 'growing'))
+      .toEqual({ split: true, widthAtTransition: 540 });
+
+    expect(reduceFileWorkspaceResponsiveState(split, 520, 540, 'stationary'))
+      .toEqual({ split: false, widthAtTransition: 520 });
+    expect(reduceFileWorkspaceResponsiveState(compact, 560, 540, 'stationary'))
+      .toEqual({ split: true, widthAtTransition: 560 });
+  });
+
+  it('holds the last window direction across follow-up layout callbacks until resize settles', () => {
+    expect(resolveFileWorkspaceResizeDirection({
+      previousShellWidth: 936,
+      shellWidth: 928,
+      previousDirection: 'stationary',
+      elapsedSinceShellResizeMs: 1_000,
+    })).toBe('shrinking');
+    expect(resolveFileWorkspaceResizeDirection({
+      previousShellWidth: 928,
+      shellWidth: 928,
+      previousDirection: 'shrinking',
+      elapsedSinceShellResizeMs: 16,
+    })).toBe('shrinking');
+    expect(resolveFileWorkspaceResizeDirection({
+      previousShellWidth: 928,
+      shellWidth: 928,
+      previousDirection: 'shrinking',
+      elapsedSinceShellResizeMs: 121,
+    })).toBe('stationary');
+  });
+
   it('lets text conversations become narrower than card and canvas pages', () => {
     expect(FALLBACK_WORKSPACE_LAYOUT.conversation.centerMinWidth).toBe(360);
     expect(FALLBACK_WORKSPACE_LAYOUT.conversation.centerMinWidth)
@@ -196,42 +259,25 @@ describe('workspace auto collapse state machine', () => {
     expect(resolveRightWorkspaceWidthFromLayout({ 'workspace-center': 100 }, 1_600)).toBeNull();
   });
 
-  it('restores the right workspace only up to the width genuinely available to it', () => {
-    expect(resolveRightWorkspaceRestoreWidth({
-      shellWidth: 1_200,
+  it('caps automatic right-panel growth at the preference and unlocks the configured range for direct resizing', () => {
+    expect(resolveRightWorkspacePanelMaxWidth({
       preferredWidth: 760,
-      actualWidth: 360,
-      centerMinWidth: 420,
-      sidebarWidth: 256,
-      showLeft: true,
-    })).toBe(524);
-    expect(resolveRightWorkspaceRestoreWidth({
-      shellWidth: 1_500,
-      preferredWidth: 760,
-      actualWidth: 360,
-      centerMinWidth: 420,
-      sidebarWidth: 256,
-      showLeft: true,
+      minWidth: 320,
+      maxWidth: 960,
+      userResizing: false,
     })).toBe(760);
-    expect(resolveRightWorkspaceRestoreWidth({
-      shellWidth: 1_200,
+    expect(resolveRightWorkspacePanelMaxWidth({
       preferredWidth: 760,
-      actualWidth: 524,
-      centerMinWidth: 420,
-      sidebarWidth: 256,
-      showLeft: true,
-    })).toBeNull();
-  });
-
-  it('uses the space released by an automatically collapsed sidebar', () => {
-    expect(resolveRightWorkspaceRestoreWidth({
-      shellWidth: 1_000,
-      preferredWidth: 760,
-      actualWidth: 320,
-      centerMinWidth: 420,
-      sidebarWidth: 256,
-      showLeft: false,
-    })).toBe(580);
+      minWidth: 320,
+      maxWidth: 960,
+      userResizing: true,
+    })).toBe(960);
+    expect(resolveRightWorkspacePanelMaxWidth({
+      preferredWidth: 200,
+      minWidth: 320,
+      maxWidth: 960,
+      userResizing: false,
+    })).toBe(320);
   });
 
   it('persists right width only for a direct right-separator interaction', () => {

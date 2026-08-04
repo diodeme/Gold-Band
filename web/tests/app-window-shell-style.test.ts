@@ -43,4 +43,22 @@ describe('App window shell style', () => {
     expect(shell).not.toContain('mousemove');
     expect(shell).not.toContain('mouseup');
   });
+
+  it('lets the panel group grow and shrink the right workspace without imperative resize feedback', () => {
+    const shell = readFileSync(path.resolve(__dirname, '../src/components/workspace/WorkspaceShell.tsx'), 'utf8');
+
+    expect(shell).not.toContain('panel.resize(');
+    expect(shell).not.toContain('panel.getSize(');
+    expect(shell).toContain("groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-pixel-size' : 'preserve-relative-size'}");
+    expect(shell).toContain("groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-relative-size' : 'preserve-pixel-size'}");
+    expect(shell).toContain('maxSize={rightPanelMaxWidth}');
+    expect(shell).toContain('onResize={trackRightPanelSize}');
+    expect(shell).toContain('onPointerDown={beginRightPanelResize}');
+    expect(shell).toContain('onPointerUp={endRightPanelResize}');
+    expect(shell).toContain('panelRef={leftPanelRef}');
+    expect(shell).toContain('panelRef={rightPanelRef}');
+    expect(shell).toContain('collapsedSize={0}');
+    expect(shell).toContain('if (panel.isCollapsed()) panel.expand()');
+    expect(shell).toContain('panel.collapse()');
+  });
 });

@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { Layout, LayoutChangedMeta, PanelImperativeHandle } from 'react-resizable-panels';
+import type { Layout, LayoutChangedMeta, PanelImperativeHandle, PanelSize } from 'react-resizable-panels';
 import type { AppConfigVm, ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
 import { ConversationSidebar } from '../conversation/ConversationSidebar';
 import { saveConversationPreference } from '../../api';
@@ -23,7 +23,7 @@ import { fileExplorerStore } from './files/file-explorer-store';
 import { WorkspaceFileLinkProvider } from './files/WorkspaceFileLinkProvider';
 import {
   reduceWorkspaceAutoCollapse,
-  resolveRightWorkspaceRestoreWidth,
+  resolveRightWorkspacePanelMaxWidth,
   resolveRightWorkspaceWidthFromLayout,
   resolveWorkspacePanelWidthFromLayout,
   FALLBACK_WORKSPACE_FILES,
@@ -175,13 +175,17 @@ function WorkspaceShellLayout({
   const workspace = useRightWorkspace();
   const shellRef = useRef<HTMLDivElement>(null);
   const compactSheetContentRef = useRef<HTMLDivElement>(null);
+  const leftPanelRef = useRef<PanelImperativeHandle | null>(null);
   const rightPanelRef = useRef<PanelImperativeHandle | null>(null);
   const rightResizeIntentRef = useRef(false);
   const resizeFrameRef = useRef<number | null>(null);
-  const previousShellWidthRef = useRef(0);
+  const rightPanelActualWidthRef = useRef(0);
+  const rightPanelAtPreferredWidthRef = useRef(false);
   const handledOpenRevisionRef = useRef(workspace.openRevision);
   const handledWorkspaceScopeRef = useRef(workspace.scopeKey);
   const [compactSheetOpen, setCompactSheetOpen] = useState(false);
+  const [rightPanelResizeActive, setRightPanelResizeActive] = useState(false);
+  const [rightPanelAtPreferredWidth, setRightPanelAtPreferredWidth] = useState(false);
   const autoCollapseStateRef = useRef<WorkspaceAutoCollapseState>({
     previousWidth: 0,
     left: false,
@@ -227,6 +231,27 @@ function WorkspaceShellLayout({
   const showLeft = !sidebarCollapsed && !autoCollapse.left;
   const rightWorkspaceCompact = wantsRight && autoCollapse.right;
   const showRightDock = wantsRight && !rightWorkspaceCompact;
+  const rightPanelMaxWidth = resolveRightWorkspacePanelMaxWidth({
+    preferredWidth: workspace.width,
+    minWidth: appConfig.workspaceLayout.rightWorkspace.minWidth,
+    maxWidth: appConfig.workspaceLayout.rightWorkspace.maxWidth,
+    userResizing: rightPanelResizeActive,
+  });
+  const rightPanelOwnsWindowResize = showRightDock && !rightPanelAtPreferredWidth;
+  const trackRightPanelSize = useCallback((size: PanelSize) => {
+    rightPanelActualWidthRef.current = size.inPixels;
+    const next = size.inPixels >= rightPanelMaxWidth - 1;
+    if (rightPanelAtPreferredWidthRef.current === next) return;
+    rightPanelAtPreferredWidthRef.current = next;
+    setRightPanelAtPreferredWidth(next);
+  }, [rightPanelMaxWidth]);
+  const beginRightPanelResize = useCallback(() => {
+    rightResizeIntentRef.current = true;
+    setRightPanelResizeActive(true);
+  }, []);
+  const endRightPanelResize = useCallback(() => {
+    setRightPanelResizeActive(false);
+  }, []);
 
   const evaluateAutoCollapse = useCallback((availableWidth: number) => {
     const current = autoCollapseStateRef.current;
@@ -248,26 +273,7 @@ function WorkspaceShellLayout({
       const width = entries[0]?.contentRect.width ?? element.clientWidth;
       if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);
       resizeFrameRef.current = requestAnimationFrame(() => {
-        const next = evaluateAutoCollapse(width);
-        const panel = rightPanelRef.current;
-        if (
-          panel
-          && width > previousShellWidthRef.current
-          && autoCollapseInputRef.current.wantsRight
-          && !next.right
-        ) {
-          const targetWidth = resolveRightWorkspaceRestoreWidth({
-            shellWidth: width,
-            preferredWidth: workspace.width,
-            actualWidth: panel.getSize().inPixels,
-            centerMinWidth: autoCollapseInputRef.current.centerMinWidth,
-            sidebarWidth: autoCollapseInputRef.current.sidebarWidth,
-            showLeft: !autoCollapseInputRef.current.sidebarManuallyCollapsed && !next.left,
-            rightMinWidth: appConfig.workspaceLayout.rightWorkspace.minWidth,
-          });
-          if (targetWidth !== null) panel.resize(targetWidth);
-        }
-        previousShellWidthRef.current = width;
+        evaluateAutoCollapse(width);
         resizeFrameRef.current = null;
       });
     });
@@ -276,36 +282,40 @@ function WorkspaceShellLayout({
       observer.disconnect();
       if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);
     };
-  }, [appConfig.workspaceLayout.rightWorkspace.minWidth, evaluateAutoCollapse, workspace.width]);
+  }, [evaluateAutoCollapse]);
 
   useLayoutEffect(() => {
     const element = shellRef.current;
     if (element) evaluateAutoCollapse(element.clientWidth);
   }, [evaluateAutoCollapse, fileWorkspaceActive, profile.centerAutoCollapseWidth, profile.centerMinWidth, sidebarCollapsed, sidebarWidth, wantsRight]);
 
-  useEffect(() => {
-    if (!showRightDock) return;
-    const frame = requestAnimationFrame(() => {
-      try {
-        const panel = rightPanelRef.current;
-        const shellWidth = shellRef.current?.clientWidth ?? 0;
-        if (!panel || shellWidth <= 0) return;
-        const targetWidth = resolveRightWorkspaceRestoreWidth({
-          shellWidth,
-          preferredWidth: workspace.width,
-          actualWidth: panel.getSize().inPixels,
-          centerMinWidth: profile.centerMinWidth,
-          sidebarWidth,
-          showLeft,
-          rightMinWidth: appConfig.workspaceLayout.rightWorkspace.minWidth,
-        });
-        if (targetWidth !== null) panel.resize(targetWidth);
-      } catch {
-        // The panel may have been replaced by the compact Sheet before the frame ran.
+  useLayoutEffect(() => {
+    const panel = leftPanelRef.current;
+    if (!panel) return;
+    try {
+      if (showLeft) {
+        if (panel.isCollapsed()) panel.expand();
+      } else if (!panel.isCollapsed()) {
+        panel.collapse();
       }
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [appConfig.workspaceLayout.rightWorkspace.minWidth, profile.centerMinWidth, showLeft, showRightDock, sidebarWidth, workspace.width]);
+    } catch {
+      // The panel group may be unmounting while the desktop surface changes.
+    }
+  }, [showLeft]);
+
+  useLayoutEffect(() => {
+    const panel = rightPanelRef.current;
+    if (!panel) return;
+    try {
+      if (showRightDock) {
+        if (panel.isCollapsed()) panel.expand();
+      } else if (!panel.isCollapsed()) {
+        panel.collapse();
+      }
+    } catch {
+      // The panel group may be unmounting while the desktop surface changes.
+    }
+  }, [showRightDock]);
 
   useEffect(() => {
     if (handledWorkspaceScopeRef.current !== workspace.scopeKey) {
@@ -328,6 +338,24 @@ function WorkspaceShellLayout({
   useEffect(() => {
     if (!rightWorkspaceCompact || !wantsRight) setCompactSheetOpen(false);
   }, [rightWorkspaceCompact, wantsRight]);
+
+  useEffect(() => {
+    if (showRightDock) return;
+    rightResizeIntentRef.current = false;
+    rightPanelActualWidthRef.current = 0;
+    rightPanelAtPreferredWidthRef.current = false;
+    setRightPanelResizeActive(false);
+    setRightPanelAtPreferredWidth(false);
+  }, [showRightDock]);
+
+  useLayoutEffect(() => {
+    const actualWidth = rightPanelActualWidthRef.current;
+    if (actualWidth <= 0) return;
+    const next = actualWidth >= rightPanelMaxWidth - 1;
+    if (rightPanelAtPreferredWidthRef.current === next) return;
+    rightPanelAtPreferredWidthRef.current = next;
+    setRightPanelAtPreferredWidth(next);
+  }, [rightPanelMaxWidth]);
 
   const setRightWorkspaceWidth = workspace.setWidth;
   const saveWorkspaceLayout = useCallback((layout: Layout, meta: LayoutChangedMeta) => {
@@ -401,32 +429,50 @@ function WorkspaceShellLayout({
         onToggleRightWorkspace={rightWorkspaceAvailable ? toggleRightWorkspace : undefined}
       />
       <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1 bg-sidebar" onLayoutChanged={saveWorkspaceLayout}>
-        {showLeft ? (
-          <>
-            <ResizablePanel id="workspace-navigation" defaultSize={sidebarWidth} minSize={WORKSPACE_SIDEBAR_MIN_WIDTH} maxSize={WORKSPACE_SIDEBAR_MAX_WIDTH} groupResizeBehavior="preserve-pixel-size">
-              <ConversationSidebar
-                vm={vm}
-                active={active}
-                activeWorkspaceId={activeWorkspaceId}
-                onSelect={onSelect}
-                onNewConversation={onNewConversation}
-                onSearch={onSearch}
-                onSelectTask={onSelectTask}
-                onSelectRun={onSelectRun}
-                onPauseRun={onPauseRun}
-                onPinTask={onPinTask}
-                onUnpinTask={onUnpinTask}
-                onRenameTask={onRenameTask}
-                onDeleteTask={deleteTask}
-                onNewConversationInWorkspace={onNewConversationInWorkspace}
-                onAddWorkspace={onAddWorkspace}
-                onRemoveWorkspace={onRemoveWorkspace ? removeWorkspace : undefined}
-              />
-            </ResizablePanel>
-            <ResizableHandle className="z-20 bg-transparent hover:bg-transparent" data-testid="workspace-left-resize-handle" />
-          </>
-        ) : null}
-        <ResizablePanel id="workspace-center" minSize={profile.centerMinWidth} className="min-w-0">
+        <ResizablePanel
+          panelRef={leftPanelRef}
+          id="workspace-navigation"
+          defaultSize={sidebarWidth}
+          minSize={WORKSPACE_SIDEBAR_MIN_WIDTH}
+          maxSize={WORKSPACE_SIDEBAR_MAX_WIDTH}
+          collapsedSize={0}
+          collapsible
+          groupResizeBehavior="preserve-pixel-size"
+          className={cn(!showLeft && 'pointer-events-none overflow-hidden')}
+        >
+          {showLeft ? (
+            <ConversationSidebar
+              vm={vm}
+              active={active}
+              activeWorkspaceId={activeWorkspaceId}
+              onSelect={onSelect}
+              onNewConversation={onNewConversation}
+              onSearch={onSearch}
+              onSelectTask={onSelectTask}
+              onSelectRun={onSelectRun}
+              onPauseRun={onPauseRun}
+              onPinTask={onPinTask}
+              onUnpinTask={onUnpinTask}
+              onRenameTask={onRenameTask}
+              onDeleteTask={deleteTask}
+              onNewConversationInWorkspace={onNewConversationInWorkspace}
+              onAddWorkspace={onAddWorkspace}
+              onRemoveWorkspace={onRemoveWorkspace ? removeWorkspace : undefined}
+            />
+          ) : null}
+        </ResizablePanel>
+        <ResizableHandle
+          className={cn('z-20 bg-transparent hover:bg-transparent', !showLeft && 'pointer-events-none opacity-0')}
+          data-testid="workspace-left-resize-handle"
+          disabled={!showLeft}
+          aria-hidden={!showLeft}
+        />
+        <ResizablePanel
+          id="workspace-center"
+          minSize={profile.centerMinWidth}
+          className="min-w-0"
+          groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-pixel-size' : 'preserve-relative-size'}
+        >
           <main className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-sidebar-border/70 bg-gold-workspace', showLeft && 'rounded-tl-2xl border-l')}>
             {children}
             {stoppingRun ? (
@@ -439,26 +485,36 @@ function WorkspaceShellLayout({
             ) : null}
           </main>
         </ResizablePanel>
-        {showRightDock ? (
-          <>
-            <ResizableHandle
-              className="z-20 bg-sidebar-border/70 hover:bg-primary/30"
-              data-testid="workspace-right-resize-handle"
-              onPointerDown={() => { rightResizeIntentRef.current = true; }}
-              onKeyDown={() => { rightResizeIntentRef.current = true; }}
-            />
-            <ResizablePanel
-              panelRef={rightPanelRef}
-              id="workspace-right"
-              defaultSize={workspace.width}
-              minSize={appConfig.workspaceLayout.rightWorkspace.minWidth}
-              maxSize={appConfig.workspaceLayout.rightWorkspace.maxWidth}
-              groupResizeBehavior="preserve-pixel-size"
-            >
-              <RightWorkspaceDock />
-            </ResizablePanel>
-          </>
-        ) : null}
+        <ResizableHandle
+          className={cn(
+            'z-20 bg-sidebar-border/70 hover:bg-primary/30',
+            !showRightDock && 'pointer-events-none opacity-0',
+          )}
+          data-testid="workspace-right-resize-handle"
+          disabled={!showRightDock}
+          aria-hidden={!showRightDock}
+          onPointerDown={beginRightPanelResize}
+          onPointerUp={endRightPanelResize}
+          onPointerCancel={endRightPanelResize}
+          onLostPointerCapture={endRightPanelResize}
+          onKeyDown={beginRightPanelResize}
+          onKeyUp={endRightPanelResize}
+          onBlur={endRightPanelResize}
+        />
+        <ResizablePanel
+          panelRef={rightPanelRef}
+          id="workspace-right"
+          defaultSize={workspace.width}
+          minSize={appConfig.workspaceLayout.rightWorkspace.minWidth}
+          maxSize={rightPanelMaxWidth}
+          collapsedSize={0}
+          collapsible
+          groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-relative-size' : 'preserve-pixel-size'}
+          onResize={trackRightPanelSize}
+          className={cn(!showRightDock && 'pointer-events-none overflow-hidden')}
+        >
+          {showRightDock ? <RightWorkspaceDock /> : null}
+        </ResizablePanel>
       </ResizablePanelGroup>
       <Sheet
         open={wantsRight && rightWorkspaceCompact && compactSheetOpen}

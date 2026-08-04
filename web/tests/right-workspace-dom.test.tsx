@@ -304,6 +304,10 @@ describe('right workspace DOM lifecycle', () => {
   });
 
   it('shows the compact Tab list only when the native Tab strip overflows', async () => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    ));
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => window.clearTimeout(frameId));
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -324,11 +328,17 @@ describe('right workspace DOM lifecycle', () => {
         clientWidth: { configurable: true, value: 180 },
         scrollWidth: { configurable: true, value: 320 },
       });
-      await act(async () => ControlledResizeObserver.instances.at(-1)?.flush(tabStrip!));
+      await act(async () => {
+        ControlledResizeObserver.instances.at(-1)?.flush(tabStrip!);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
       expect(container.querySelector('[data-right-workspace-overflow-menu="true"]')).not.toBeNull();
 
       Object.defineProperty(tabStrip!, 'scrollWidth', { configurable: true, value: 160 });
-      await act(async () => ControlledResizeObserver.instances.at(-1)?.flush(tabStrip!));
+      await act(async () => {
+        ControlledResizeObserver.instances.at(-1)?.flush(tabStrip!);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
       expect(container.querySelector('[data-right-workspace-overflow-menu="true"]')).toBeNull();
     } finally {
       await act(async () => root.unmount());

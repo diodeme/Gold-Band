@@ -41,7 +41,7 @@
 
 因此问题不是文件领域或保存模型的根本缺陷，而是通用源码编辑器缺少 Markdown 的视图层能力。Markdown 原文必须继续只有一份，并由 `FileContentStore` 统一保存；预览只能是 CodeMirror decoration/widget，不创建富文本状态，也不引入 DOM→Markdown 反序列化链路。
 
-实际接入确认问题来自 React 层以整套 extensions props 和 `key` 管理模式生命周期，而不是 Atomic 必须绑定独立 View。真实 DOM 契约证明 Atomic 0.6.x 的 table、inline preview 和图片扩展可通过显式 `Compartment.reconfigure()` 在同一 View 内完整往返。最终方案固定 CodeMirror 基础扩展拓扑：模式、编辑策略分别进入长期存在的 Compartment；模式切换捕获顶部逻辑源码块与非负像素边距，在同一个 transaction 中提交 reconfigure 与官方 `EditorView.scrollIntoView` effect。图片授权状态通过 `StateField + StateEffect` 更新，源码切预览前预解码当前视口附近的安全图片 URL。该边界复用 CodeMirror/Atomic 的扩展生命周期、懒测量和虚拟滚动能力，不 fork 上游、不复制表格或滚动实现，也不支付重建或双编辑器成本。
+实际接入确认问题来自 React 层以整套 extensions props 和 `key` 管理模式生命周期，而不是 Atomic 必须绑定独立 View。真实 DOM 契约证明 Atomic 0.6.x 的 table、inline preview 和图片扩展可通过显式 `Compartment.reconfigure()` 在同一 View 内完整往返。进一步用真实 `功能点todo列表.md` 复现出：若把 Markdown/GFM parser 也塞进模式 Compartment，源码切回预览时 parser 会被重新挂载，Atomic table `StateField` 在长文档增量语法树尚未恢复时可能得到空 decoration，最终停留为原始 Markdown。最终方案固定 CodeMirror 基础扩展拓扑，并按领域生命周期拆成语言、模式、编辑策略三个长期存在的 Compartment：parser 随文档稳定，只有 table、inline preview、图片 decoration 与源码 UI 随模式切换。普通文本使用源码位置与块内像素偏移；table/图片 range widget 使用“源码范围 + widget 内进度 + 语义位置”，先由原生 scroll effect 揭示目标范围，再由固定 `scrollHandler` 在 CodeMirror 新布局测量完成、准备消费滚动目标时按真实 widget 几何恢复组件内部位置；巨型 widget 达到单次 viewport 稳定上限时，下一布局帧只补发一次官方 measure 调度，不做轮询。反向切换在用户未滚动时继续使用同一锚点，源码视口顶部向内 1px 采样以消除浮点边界歧义。图片授权状态通过 `StateField + StateEffect` 更新，源码切预览前预解码当前视口附近的安全图片 URL。该边界复用 CodeMirror/Atomic 的扩展生命周期、增量语法树、官方滚动扩展点和虚拟滚动能力，不 fork 上游、不复制表格实现，也不支付重建或双编辑器成本。
 
 ## 5. 开源组件结论
 
@@ -90,8 +90,8 @@ type MarkdownEditorMode = 'live-preview' | 'source'
 
 ### 6.3 编辑与撤销
 
-- 任一时刻只存在一个身份稳定的 `EditorView`。切换不序列化或重建 `EditorState`；doc、selection、history 天然保持在原实例中。切换前只捕获顶部逻辑源码块位置与相对视口的非负像素边距。
-- 基础扩展拓扑只初始化一次，React CodeMirror 的 `extensions` 与 `basicSetup` props 在模式切换期间保持稳定。源码/预览 profile 进入模式 Compartment；同一个 transaction 提交 `Compartment.reconfigure()` 与 `EditorView.scrollIntoView(position, { y: 'start', yMargin })`，由 CodeMirror 在 decoration 更新与懒测量周期内完成虚拟高度修正和滚动。
+- 任一时刻只存在一个身份稳定的 `EditorView`。切换不序列化或重建 `EditorState`；doc、selection、history 天然保持在原实例中。切换前捕获统一视口锚点：普通文本记录源码位置与块内像素偏移；Atomic table 记录 Table 源码范围、渲染行索引和行内进度，其他 range widget 才使用组件内部相对进度。表格行通过稳定 Markdown parser 与 Atomic `thead/tbody/tr` 结构双向映射，不能用整个 widget 的像素百分比乘以整个源码范围字符数。用户未滚动到其他源码行时，往返继续保留原 widget 行锚点；编辑文档或滚动到其他源码块后重新采样。
+- 基础扩展拓扑只初始化一次，React CodeMirror 的 `extensions` 与 `basicSetup` props 在模式切换期间保持稳定。Markdown/GFM parser 单独进入语言 Compartment 并贯穿文档生命周期；源码/预览 profile 只包含展示层扩展并进入模式 Compartment。同一个模式 transaction 提交 `Compartment.reconfigure()` 与 `EditorView.scrollIntoView(position, { y: 'start', yMargin })`；range widget 由基础拓扑中的 `EditorView.scrollHandler` 在 decoration 与 viewport 测量稳定、原生滚动目标即将执行时读取真实 block 几何并一次恢复内部位置。巨型 widget 若使首轮测量达到 CodeMirror 稳定次数上限，下一布局帧只补发一次 `requestMeasure()` 以继续消费待处理目标；不得使用固定 rAF 次数、定时器或 ResizeObserver 重试。
 - 两种模式共享同一原生 `Ctrl/Cmd+Z` / redo history；Atomic table 与图片 decoration 只由显式 Compartment transaction 切换，不通过 React props 动态重组，也不通过 `key` 销毁 View。
 - 输入继续调用现有 `onChange`，进入 `FileContentStore.updateText()` 与自动保存链路。
 - `Ctrl/Cmd+S`、失焦、切 Tab 和关闭继续 flush 当前内容。
@@ -176,7 +176,7 @@ CodeMirror markdown language（GFM）
   + Gold Band theme/readOnly/save/target-line extensions
 ```
 
-源码 profile 不挂载 Atomic decoration、table widget 和图片 widget，仅保留 Markdown 语法、通用主题及文件编辑扩展；切换时原地重配置同一个模式 Compartment，不销毁 View，也不保留后台预览实例。
+源码 profile 不挂载 Atomic decoration、table widget 和图片 widget；Markdown/GFM 语法不属于源码 profile，而由独立语言 Compartment 在两种模式间稳定共享。切换时只原地重配置模式 Compartment，不销毁 View、不重启 parser，也不保留后台预览实例。
 
 合法 GFM 表格始终启用 `Atomic tables`。安全降级精确到“表格自身包含 Markdown 图片”，不能因为文档其他位置存在图片而关闭全部表格。含图片表格暂时显示 Markdown 原文，避免 Atomic 内部把未经授权的 `src` 交给原始 `<img>`。widget 表格使用详情容器 `width: 100% + table-layout: fixed`，长内容在单元格内部换行，不能使用 `max-content` 撑宽编辑器。
 
@@ -300,6 +300,7 @@ markdownEmbeddedImageMaxConcurrent = 4
 6. 每个请求携带内容/request revision，忽略旧响应。
 7. 超过 `markdownLivePreviewMaxChars` 时不挂载高成本 decoration/table/widget。
 8. 不启用 Atomic 默认图片扩展，避免未授权网络或本地读取。
+9. 语言、模式、编辑策略 Compartment 以及图片 StateField 配置均以已应用 profile 去重；首次 View 创建已包含的 profile 不得在挂载 effect 中重复 reconfigure/update，避免长表格 DOM 挂载后因无状态变化的 transaction 触发同步 selection/layout 测量。
 
 ## 13. 测试矩阵
 
@@ -335,7 +336,7 @@ markdownEmbeddedImageMaxConcurrent = 4
 - 合法 GFM 表格在首次打开以及“源码→预览”往返后都保持 table widget；文档其他位置含图片不影响表格。
 - README 白名单对齐标签不显示为正文，本地 HTML 图片走 preview grant，远程 badge 不静默联网且保留外层目标链接。
 - 删除和新增标题文本后，最终 Markdown 源码语义正确；标记显隐按 Atomic 成熟交互执行。
-- 两种模式共享 `Ctrl/Cmd+Z` 与 redo history；切换后通过 CodeMirror 原生 scroll effect 恢复顶部语义源码块。渲染 → 源码 → 渲染往返后，原顶部语义块仍须位于视口顶部；负的子行偏移规范化为零，不允许为追求像素级补偿而自行读取未稳定几何。
+- 两种模式共享 `Ctrl/Cmd+Z` 与 redo history；普通文本切换后通过 CodeMirror 原生 scroll effect 恢复顶部语义源码块。渲染 → 源码 → 渲染往返后，原顶部语义块仍须位于视口顶部；当视口位于 table 内部时，源码态必须定位到对应 Markdown 表格行，反向切换恢复同一 `<tr>` 及行内进度，不能退化为整表字符百分比或 widget 起点；图片等其他 range widget 继续恢复同一源码语义进度。真实几何只允许在 CodeMirror `scrollHandler` 的稳定滚动阶段读取并一次提交；源码顶部边界采样不得因亚像素误差误判用户已滚动，不允许固定帧复测。
 - 图片通过 `gold-band-preview://token` 展示，DOM 中不存在本地路径。
 - 外部目录图片只出现一次文档级确认，不逐图片打断。
 - 深色/亮色、宽屏/窄屏、长文档和多图片滚动正常。

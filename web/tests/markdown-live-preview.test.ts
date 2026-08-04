@@ -5,6 +5,7 @@ import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { EditorState } from '@codemirror/state';
 import { markdownImageSources } from '@/components/workspace/files/markdown-image-preview';
 import { markdownHasTableImages } from '@/components/workspace/files/markdown-live-preview';
+import { markdownTableRangeAt } from '@/components/workspace/files/markdown-table-viewport';
 
 const editorSource = readFileSync(
   new URL('../src/components/workspace/files/WorkspaceFileEditor.tsx', import.meta.url),
@@ -40,6 +41,10 @@ describe('Markdown live preview integration', () => {
     const nodeNames: string[] = [];
     tree.iterate({ enter: (node) => { nodeNames.push(node.name); } });
     expect(nodeNames).toContain('Table');
+    expect(markdownTableRangeAt(state, state.doc.line(3).from)).toEqual({
+      from: 0,
+      to: state.doc.length,
+    });
   });
 
   it('keeps one CodeMirror view and reconfigures stable mode profiles with semantic viewport state', () => {
@@ -47,6 +52,8 @@ describe('Markdown live preview integration', () => {
     expect(editorSource).toContain('state.toJSON({ history: historyField })');
     expect(editorSource).toContain('captureEditorViewportAnchor');
     expect(editorSource).toContain('new Compartment()');
+    expect(editorSource).toContain('languageCompartment.of(documentLanguageExtensions)');
+    expect(editorSource).toContain('languageCompartment.reconfigure(documentLanguageExtensions)');
     expect(editorSource).toContain('modeCompartment.reconfigure(currentModeExtensions())');
     expect(editorSource).toContain('predecodeMarkdownImagesNearViewport');
     expect(editorSource).toContain('basicSetup={false}');
@@ -55,7 +62,10 @@ describe('Markdown live preview integration', () => {
     expect(editorSource).toContain("EditorView.scrollIntoView(position, {");
     expect(editorSource).toContain("y: 'start'");
     expect(editorSource).toContain("EditorView.scrollIntoView(resolved.selection.main, { y: 'center' })");
-    expect(editorSource).not.toContain('view.requestMeasure');
+    expect(editorSource).toContain('EditorView.scrollHandler.of');
+    expect(editorSource).toContain('scrollEditorViewportAnchor(view, anchor)');
+    expect(editorSource).toContain('VIEWPORT_ANCHOR_INSET_PX');
+    expect(editorSource).toContain('view.requestMeasure');
     expect(editorSource).not.toContain('view.scrollDOM.scrollTop +=');
     expect(editorSource).not.toContain('VIEWPORT_RESTORE_PASSES');
     expect(editorSource).not.toContain('targetMeasured');
@@ -76,9 +86,23 @@ describe('Markdown live preview integration', () => {
   });
 
   it('uses Atomic public live-preview extensions but never its raw-src image extension', () => {
+    expect(atomicAdapterSource).toContain('loadMarkdownLanguageExtension');
+    expect(atomicAdapterSource).toContain('loadMarkdownPreviewExtensions');
     expect(atomicAdapterSource).toContain('atomic.inlinePreview');
     expect(atomicAdapterSource).toContain('atomic.highlightMarkdown');
     expect(atomicAdapterSource).toContain('enableTables ? [atomic.tables');
     expect(atomicAdapterSource).not.toContain('imageBlocks(');
+  });
+
+  it('keeps the Markdown parser outside the mode-switching presentation profile', () => {
+    const previewLoader = atomicAdapterSource.slice(
+      atomicAdapterSource.indexOf('export async function loadMarkdownPreviewExtensions'),
+    );
+    const sourceModeProfile = editorSource.match(
+      /const sourceModeExtensions = useMemo<Extension\[\]>\(\(\) => \[([\s\S]*?)\n  \], \[highlight\]\);/u,
+    )?.[1];
+    expect(previewLoader).not.toContain('markdown({');
+    expect(sourceModeProfile).toBeDefined();
+    expect(sourceModeProfile).not.toContain('languageExtension');
   });
 });

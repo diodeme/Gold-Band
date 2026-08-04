@@ -17,19 +17,23 @@ export function markdownHasTableImages(markdown: string) {
   return false;
 }
 
-export async function loadMarkdownLivePreviewExtensions(
-  onLinkClick: (href: string) => void,
-  enableTables: boolean,
-): Promise<Extension[]> {
+export async function loadMarkdownLanguageExtension(): Promise<Extension> {
   const [{ markdown, markdownLanguage }, atomic] = await Promise.all([
     import('@codemirror/lang-markdown'),
     import('@atomic-editor/editor'),
   ]);
+  return markdown({
+    base: markdownLanguage,
+    extensions: atomic.highlightMarkdown,
+  });
+}
+
+export async function loadMarkdownPreviewExtensions(
+  onLinkClick: (href: string) => void,
+  enableTables: boolean,
+): Promise<Extension[]> {
+  const atomic = await import('@atomic-editor/editor');
   return [
-    markdown({
-      base: markdownLanguage,
-      extensions: atomic.highlightMarkdown,
-    }),
     atomic.atomicMarkdownSyntax,
     ...(enableTables ? [atomic.tables({ onLinkClick })] : []),
     atomic.inlinePreview({ onLinkClick }),

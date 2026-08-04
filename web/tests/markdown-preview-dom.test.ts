@@ -5,7 +5,10 @@ import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { Compartment, EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { loadMarkdownLivePreviewExtensions } from '@/components/workspace/files/markdown-live-preview';
+import {
+  loadMarkdownLanguageExtension,
+  loadMarkdownPreviewExtensions,
+} from '@/components/workspace/files/markdown-live-preview';
 import { markdownImagePreview, updateMarkdownImagePreview } from '@/components/workspace/files/markdown-image-preview';
 
 const views: EditorView[] = [];
@@ -26,11 +29,19 @@ function createView(doc: string, extensions: Parameters<typeof EditorState.creat
   return view;
 }
 
+async function loadMarkdownPreviewContract() {
+  const [languageExtension, previewExtensions] = await Promise.all([
+    loadMarkdownLanguageExtension(),
+    loadMarkdownPreviewExtensions(() => undefined, true),
+  ]);
+  return { languageExtension, previewExtensions };
+}
+
 describe('Markdown preview DOM contract', () => {
   it('renders a normal GFM table from the real long-form todo document shape', async () => {
-    const extensions = await loadMarkdownLivePreviewExtensions(() => undefined, true);
+    const { languageExtension, previewExtensions } = await loadMarkdownPreviewContract();
     const todo = readFileSync('docs/gold-band/开发计划/功能点todo列表.md', 'utf8');
-    const view = createView(todo, extensions);
+    const view = createView(todo, [languageExtension, ...previewExtensions]);
 
     expect(view.dom.querySelector('.cm-atomic-table table')).not.toBeNull();
     expect(view.dom.textContent).toContain('SKILL 多 Agent 实例级管理');
@@ -123,10 +134,10 @@ describe('Markdown preview DOM contract', () => {
   });
 
   it('updates local image tokens through a state effect without removing the table widget', async () => {
-    const extensions = await loadMarkdownLivePreviewExtensions(() => undefined, true);
+    const { languageExtension, previewExtensions } = await loadMarkdownPreviewContract();
     const view = createView(
       '| Name | Value |\n| --- | --- |\n| table | remains |\n\n![Diagram](diagram.png)',
-      [...extensions, markdownImagePreview()],
+      [languageExtension, ...previewExtensions, markdownImagePreview()],
     );
 
     updateMarkdownImagePreview(view, new Map([['diagram.png', {
@@ -144,22 +155,23 @@ describe('Markdown preview DOM contract', () => {
     expect(view.dom.querySelector('img:not(.cm-widgetBuffer)')).not.toBeNull();
   });
 
-  it('reconfigures source and live preview on the same EditorView', async () => {
-    const previewExtensions = await loadMarkdownLivePreviewExtensions(() => undefined, true);
-    const sourceExtensions = [markdown({ base: markdownLanguage })];
+  it('restores tables from the real todo document after source and preview reconfiguration', async () => {
+    const { languageExtension, previewExtensions } = await loadMarkdownPreviewContract();
     const mode = new Compartment();
+    const todo = readFileSync('docs/gold-band/开发计划/功能点todo列表.md', 'utf8');
     const view = createView(
-      '| Name | Value |\n| --- | --- |\n| table | remains |\n\n![Diagram](diagram.png)',
-      [mode.of([...previewExtensions, markdownImagePreview()])],
+      todo,
+      [languageExtension, mode.of([...previewExtensions, markdownImagePreview()])],
     );
     const originalView = view;
 
     expect(view.dom.querySelector('.cm-atomic-table table')).not.toBeNull();
-    view.dispatch({ effects: mode.reconfigure(sourceExtensions) });
+    view.dispatch({ effects: mode.reconfigure([]) });
     expect(view.dom.querySelector('.cm-atomic-table table')).toBeNull();
     view.dispatch({ effects: mode.reconfigure([...previewExtensions, markdownImagePreview()]) });
 
     expect(view).toBe(originalView);
     expect(view.dom.querySelector('.cm-atomic-table table')).not.toBeNull();
+    expect(view.dom.textContent).toContain('SKILL 多 Agent 实例级管理');
   });
 });

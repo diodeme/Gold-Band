@@ -19,12 +19,22 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { isDocumentAnchorHref } from '@/lib/file-link';
 import type { FileTargetLocationVm } from '@/types';
 import type { MarkdownEditorMode, MarkdownImageState } from './file-content-store';
-import { loadMarkdownLivePreviewExtensions } from './markdown-live-preview';
+import {
+  loadMarkdownLanguageExtension,
+  loadMarkdownPreviewExtensions,
+} from './markdown-live-preview';
 import {
   markdownImagePreview,
   predecodeMarkdownImagesNearViewport,
   updateMarkdownImagePreview,
 } from './markdown-image-preview';
+import {
+  captureMarkdownTableRowViewport,
+  markdownTableRangeAt,
+  markdownTableRowAnchorFromSource,
+  markdownTableRowScreenPoint,
+  type MarkdownTableRowViewportAnchor,
+} from './markdown-table-viewport';
 import '@atomic-editor/editor/styles.css';
 
 interface WorkspaceFileEditorProps {
@@ -50,9 +60,12 @@ interface WorkspaceFileEditorProps {
   onMarkdownLinkClick?: (href: string) => void;
 }
 
-interface EditorViewportAnchor {
+export interface EditorViewportAnchor {
   position: number;
   blockOffsetTop: number;
+  blockRange: { from: number; to: number };
+  widgetRange: { from: number; to: number } | null;
+  widgetAnchor: MarkdownTableRowViewportAnchor | null;
 }
 
 interface PendingMarkdownModeTransition {
@@ -61,12 +74,28 @@ interface PendingMarkdownModeTransition {
   targetRevisionAtCapture: number;
 }
 
-interface MarkdownExtensionProfile {
+interface MarkdownPreviewProfile {
   revision: number;
   extensions: Extension[];
 }
 
+interface MarkdownImagePreviewProfile {
+  images: ReadonlyMap<string, MarkdownImageState>;
+  onPreviewError: (rawSrc: string, failedToken: string) => void;
+  onLinkClick: (href: string) => void;
+}
+
 const EMPTY_MARKDOWN_IMAGES = new Map<string, MarkdownImageState>();
+const VIEWPORT_ANCHOR_INSET_PX = 1;
+
+function sameMarkdownImagePreviewProfile(
+  left: MarkdownImagePreviewProfile | null,
+  right: MarkdownImagePreviewProfile,
+) {
+  return left?.images === right.images
+    && left.onPreviewError === right.onPreviewError
+    && left.onLinkClick === right.onLinkClick;
+}
 
 const workspaceEditorTheme = EditorView.theme({
   '&': { height: '100%', backgroundColor: 'transparent', color: 'var(--foreground)' },
@@ -104,10 +133,68 @@ async function loadLanguage(language: string | null): Promise<Extension | null> 
 
 export function captureEditorViewportAnchor(view: EditorView): EditorViewportAnchor {
   const viewportTop = Math.max(0, view.scrollDOM.getBoundingClientRect().top - view.documentTop);
-  const block = view.lineBlockAtHeight(viewportTop);
+  const block = view.elementAtHeight(viewportTop + VIEWPORT_ANCHOR_INSET_PX);
+  const widgetRange = block.widget && block.to > block.from
+    ? { from: block.from, to: block.to }
+    : null;
+  const tableRow = widgetRange
+    ? captureMarkdownTableRowViewport(
+      view,
+      widgetRange,
+      view.scrollDOM.getBoundingClientRect().top + VIEWPORT_ANCHOR_INSET_PX,
+    )
+    : null;
+  const blockProgress = widgetRange && block.height > 0
+    ? Math.min(1, Math.max(0, (viewportTop - block.top) / block.height))
+    : 0;
+  const position = tableRow?.position ?? (widgetRange
+    ? Math.min(
+      widgetRange.to - 1,
+      widgetRange.from + Math.floor((widgetRange.to - widgetRange.from) * blockProgress),
+    )
+    : block.from);
   return {
-    position: Math.min(view.state.doc.length, block.from),
-    blockOffsetTop: block.top - viewportTop,
+    position: Math.min(view.state.doc.length, Math.max(0, position)),
+    blockOffsetTop: widgetRange ? 0 : block.top - viewportTop,
+    blockRange: { from: block.from, to: block.to },
+    widgetRange,
+    widgetAnchor: tableRow?.anchor ?? null,
+  };
+}
+
+export function retainWidgetViewportAnchor(
+  view: EditorView,
+  captured: EditorViewportAnchor,
+  remembered: EditorViewportAnchor | null,
+) {
+  if (captured.widgetRange) return captured;
+  if (
+    remembered?.widgetRange
+    && remembered.position >= captured.blockRange.from
+    && remembered.position <= captured.blockRange.to
+  ) return remembered;
+  const tableRange = remembered?.widgetRange
+    && captured.position >= remembered.widgetRange.from
+    && captured.position < remembered.widgetRange.to
+    ? remembered.widgetRange
+    : markdownTableRangeAt(view.state, captured.position);
+  if (!tableRange) return captured;
+  const lineBlock = view.lineBlockAt(captured.position);
+  const rowProgress = lineBlock.height > 0
+    ? Math.min(1, Math.max(0, -captured.blockOffsetTop / lineBlock.height))
+    : 0;
+  const tableRow = markdownTableRowAnchorFromSource(
+    view.state.doc,
+    tableRange,
+    captured.position,
+    rowProgress,
+  );
+  return {
+    ...captured,
+    position: tableRow.position,
+    blockOffsetTop: 0,
+    widgetRange: tableRange,
+    widgetAnchor: tableRow.anchor,
   };
 }
 
@@ -123,6 +210,57 @@ export function editorViewportScrollEffect(view: EditorView, anchor: EditorViewp
     y: 'start',
     yMargin: Math.max(0, anchor.blockOffsetTop),
   });
+}
+
+function editorWidgetBlockAt(view: EditorView, position: number) {
+  const lineBlock = view.lineBlockAt(position);
+  if (lineBlock.widget) return lineBlock;
+  return Array.isArray(lineBlock.type)
+    ? lineBlock.type.find((part) => part.widget && part.from <= position && part.to >= position) ?? null
+    : null;
+}
+
+export function scrollEditorViewportAnchor(view: EditorView, anchor: EditorViewportAnchor) {
+  const position = Math.min(view.state.doc.length, Math.max(0, anchor.position));
+  if (anchor.widgetRange && anchor.widgetAnchor) {
+    const screenPoint = markdownTableRowScreenPoint(
+      view,
+      anchor.widgetRange,
+      anchor.widgetAnchor,
+    );
+    if (screenPoint !== null) {
+      const scrollerTop = view.scrollDOM.getBoundingClientRect().top;
+      const nextScrollTop = view.scrollDOM.scrollTop
+        + (screenPoint - anchor.blockOffsetTop - scrollerTop) / view.scaleY;
+      view.scrollDOM.scrollTop = Math.min(
+        Math.max(0, view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight),
+        Math.max(0, nextScrollTop),
+      );
+      return;
+    }
+  }
+  const lineBlock = view.lineBlockAt(position);
+  const visibleWidget = view.viewportLineBlocks.flatMap((candidate) => (
+    Array.isArray(candidate.type) ? candidate.type : [candidate]
+  )).find((candidate) => candidate.widget && candidate.from <= position && candidate.to >= position);
+  const block = visibleWidget ?? (
+    Array.isArray(lineBlock.type)
+      ? lineBlock.type.find((part) => part.widget && part.from <= position && part.to >= position) ?? lineBlock
+      : lineBlock
+  );
+  const widgetProgress = block.widget && block.to > block.from
+    ? Math.min(1, Math.max(0, (position - block.from) / (block.to - block.from)))
+    : 0;
+  const targetPoint = block.widget
+    ? block.top + block.height * widgetProgress
+    : block.top;
+  const viewportTop = Math.max(0, view.scrollDOM.getBoundingClientRect().top - view.documentTop);
+  const nextScrollTop = view.scrollDOM.scrollTop
+    + (targetPoint - anchor.blockOffsetTop - viewportTop) / view.scaleY;
+  view.scrollDOM.scrollTop = Math.min(
+    Math.max(0, view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight),
+    Math.max(0, nextScrollTop),
+  );
 }
 
 export function normalizeCodeMirrorValue(value: string) {
@@ -180,21 +318,38 @@ export function WorkspaceFileEditor({
   const targetRevisionRef = useRef(targetRevision);
   const markdownImagesRef = useRef(markdownImages);
   const pendingModeTransitionRef = useRef<PendingMarkdownModeTransition | null>(null);
+  const pendingViewportRestoreRef = useRef<EditorViewportAnchor | null>(null);
+  const pendingViewportMeasureFrameRef = useRef<{ id: number; win: Window } | null>(null);
+  const restoredModeAnchorRef = useRef<{ mode: MarkdownEditorMode; anchor: EditorViewportAnchor } | null>(null);
   const modeTransitionRequestRef = useRef(0);
   const appliedTargetRevisionsRef = useRef(new Map<string, number>());
   const appliedModeProfileRef = useRef<string | null>(null);
   const initialModeProfileRef = useRef<string | null>(null);
+  const appliedLanguageProfileRef = useRef<string | null>(null);
+  const initialLanguageProfileRef = useRef<string | null>(null);
+  const appliedEditorPolicyProfileRef = useRef<string | null>(null);
+  const initialEditorPolicyProfileRef = useRef<string | null>(null);
+  const appliedMarkdownImagePreviewProfileRef = useRef<MarkdownImagePreviewProfile | null>(null);
+  const initialMarkdownImagePreviewProfileRef = useRef<MarkdownImagePreviewProfile | null>(null);
   const editorExtensionsRef = useRef<Extension[] | null>(null);
   const targetIntentRef = useRef({ documentKey, target, targetRevision });
+  const languageCompartment = useMemo(() => new Compartment(), []);
   const modeCompartment = useMemo(() => new Compartment(), []);
   const editorPolicyCompartment = useMemo(() => new Compartment(), []);
   const [languageExtension, setLanguageExtension] = useState<Extension | null>(null);
   const [languageExtensionRevision, setLanguageExtensionRevision] = useState(0);
-  const [markdownProfile, setMarkdownProfile] = useState<MarkdownExtensionProfile | null>(null);
+  const [markdownLanguageExtension, setMarkdownLanguageExtension] = useState<Extension | null>(null);
+  const [markdownLanguageRevision, setMarkdownLanguageRevision] = useState(0);
+  const [markdownPreviewProfile, setMarkdownPreviewProfile] = useState<MarkdownPreviewProfile | null>(null);
   const [activeEditorView, setActiveEditorView] = useState<EditorView | null>(null);
   const [modeTransitionPending, setModeTransitionPending] = useState(false);
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelPendingViewportMeasure = useCallback(() => {
+    const pendingFrame = pendingViewportMeasureFrameRef.current;
+    if (pendingFrame) pendingFrame.win.cancelAnimationFrame(pendingFrame.id);
+    pendingViewportMeasureFrameRef.current = null;
+  }, []);
   onSaveRef.current = onSave;
   onChangeRef.current = onChange;
   onMarkdownLinkClickRef.current = onMarkdownLinkClick;
@@ -216,9 +371,18 @@ export function WorkspaceFileEditor({
   const routeMarkdownImagePreviewError = useCallback((rawSrc: string, failedToken: string) => {
     onMarkdownImagePreviewErrorRef.current?.(rawSrc, failedToken);
   }, []);
+  const markdownImagePreviewProfile = useMemo<MarkdownImagePreviewProfile>(() => ({
+    images: markdownImages,
+    onPreviewError: routeMarkdownImagePreviewError,
+    onLinkClick: routeMarkdownLink,
+  }), [markdownImages, routeMarkdownImagePreviewError, routeMarkdownLink]);
 
   useEffect(() => {
     let active = true;
+    if (markdownMode !== null && markdownLivePreviewAvailable) {
+      setLanguageExtension(null);
+      return () => { active = false; };
+    }
     if (!highlight) {
       setLanguageExtension(null);
       setLanguageExtensionRevision((revision) => revision + 1);
@@ -231,17 +395,32 @@ export function WorkspaceFileEditor({
       }
     });
     return () => { active = false; };
-  }, [highlight, language]);
+  }, [highlight, language, markdownLivePreviewAvailable, markdownMode]);
 
   useEffect(() => {
     let active = true;
     if (markdownMode === null || !markdownLivePreviewAvailable) {
-      setMarkdownProfile(null);
+      setMarkdownLanguageExtension(null);
       return () => { active = false; };
     }
-    void loadMarkdownLivePreviewExtensions(routeMarkdownLink, !markdownHasTableImages).then((extensions) => {
+    void loadMarkdownLanguageExtension().then((extension) => {
       if (active) {
-        setMarkdownProfile((current) => ({
+        setMarkdownLanguageExtension(extension);
+        setMarkdownLanguageRevision((revision) => revision + 1);
+      }
+    });
+    return () => { active = false; };
+  }, [markdownLivePreviewAvailable, markdownMode === null]);
+
+  useEffect(() => {
+    let active = true;
+    if (markdownMode === null || !markdownLivePreviewAvailable) {
+      setMarkdownPreviewProfile(null);
+      return () => { active = false; };
+    }
+    void loadMarkdownPreviewExtensions(routeMarkdownLink, !markdownHasTableImages).then((extensions) => {
+      if (active) {
+        setMarkdownPreviewProfile((current) => ({
           revision: (current?.revision ?? 0) + 1,
           extensions,
         }));
@@ -251,11 +430,11 @@ export function WorkspaceFileEditor({
   }, [markdownHasTableImages, markdownLivePreviewAvailable, markdownMode === null, routeMarkdownLink]);
 
   const previewMode = markdownMode === 'live-preview' && markdownLivePreviewAvailable;
-  const desiredEditorMode: MarkdownEditorMode = previewMode && markdownProfile ? 'live-preview' : 'source';
+  const desiredEditorMode: MarkdownEditorMode = previewMode && markdownPreviewProfile ? 'live-preview' : 'source';
+  const stableMarkdownLanguage = markdownMode !== null && markdownLivePreviewAvailable;
   const editorReady = editorExtensionsRef.current !== null
-    || markdownMode === null
-    || !previewMode
-    || markdownProfile !== null;
+    || !stableMarkdownLanguage
+    || (markdownLanguageExtension !== null && (!previewMode || markdownPreviewProfile !== null));
   const baseEditorExtensions = useMemo<Extension[]>(() => [
     ...basicSetup({
       lineNumbers: false,
@@ -268,46 +447,79 @@ export function WorkspaceFileEditor({
     workspaceEditorTheme,
     syntaxHighlighting(workspaceHighlightStyle),
     EditorView.lineWrapping,
+    EditorView.scrollHandler.of((view, range, options) => {
+      const anchor = pendingViewportRestoreRef.current;
+      if (!anchor) return false;
+      const position = Math.min(view.state.doc.length, Math.max(0, anchor.position));
+      if (range.head !== position || options.y !== 'start') return false;
+      if (anchor.widgetAnchor && !editorWidgetBlockAt(view, position)) {
+        pendingViewportRestoreRef.current = null;
+        return false;
+      }
+      pendingViewportRestoreRef.current = null;
+      scrollEditorViewportAnchor(view, anchor);
+      return true;
+    }),
     Prec.highest(keymap.of([{ key: 'Mod-s', preventDefault: true, run: () => { onSaveRef.current(); return true; } }])),
   ], []);
+  const documentLanguageExtensions = useMemo<Extension[]>(() => {
+    if (stableMarkdownLanguage) {
+      return markdownLanguageExtension ? [markdownLanguageExtension] : [];
+    }
+    return languageExtension ? [languageExtension] : [];
+  }, [languageExtension, markdownLanguageExtension, stableMarkdownLanguage]);
   const sourceModeExtensions = useMemo<Extension[]>(() => [
-    ...(languageExtension ? [languageExtension] : []),
     lineNumbers(),
     highlightActiveLineGutter(),
     highlightActiveLine(),
     ...(highlight ? [foldGutter(), highlightSelectionMatches()] : []),
-  ], [highlight, languageExtension]);
+  ], [highlight]);
+  const languageProfileSignature = stableMarkdownLanguage
+    ? `markdown:${markdownLanguageRevision}`
+    : `language:${languageExtensionRevision}`;
+  const editorPolicyProfileSignature = editable ? 'editable' : 'read-only';
   const modeProfileSignature = desiredEditorMode === 'live-preview'
-    ? `live-preview:${markdownProfile?.revision ?? 0}:${highlight ? 1 : 0}`
-    : `source:${languageExtensionRevision}:${highlight ? 1 : 0}`;
+    ? `live-preview:${markdownPreviewProfile?.revision ?? 0}:${highlight ? 1 : 0}`
+    : `source:${highlight ? 1 : 0}`;
   const currentModeExtensions = useCallback((): Extension[] => {
-    if (desiredEditorMode === 'live-preview' && markdownProfile) {
+    if (desiredEditorMode === 'live-preview' && markdownPreviewProfile) {
       return [
-        ...markdownProfile.extensions,
+        ...markdownPreviewProfile.extensions,
         markdownImagePreview(
-          markdownImagesRef.current,
-          routeMarkdownImagePreviewError,
-          routeMarkdownLink,
+          markdownImagePreviewProfile.images,
+          markdownImagePreviewProfile.onPreviewError,
+          markdownImagePreviewProfile.onLinkClick,
         ),
         ...(highlight ? [highlightSelectionMatches()] : []),
       ];
     }
     return sourceModeExtensions;
-  }, [desiredEditorMode, highlight, markdownProfile, routeMarkdownImagePreviewError, routeMarkdownLink, sourceModeExtensions]);
+  }, [desiredEditorMode, highlight, markdownImagePreviewProfile, markdownPreviewProfile, sourceModeExtensions]);
   if (editorReady && !editorExtensionsRef.current) {
     editorExtensionsRef.current = [
       ...baseEditorExtensions,
+      languageCompartment.of(documentLanguageExtensions),
       editorPolicyCompartment.of([
         EditorState.readOnly.of(!editable),
         EditorView.editable.of(editable),
       ]),
       modeCompartment.of(currentModeExtensions()),
     ];
+    initialLanguageProfileRef.current = languageProfileSignature;
+    initialEditorPolicyProfileRef.current = editorPolicyProfileSignature;
+    initialMarkdownImagePreviewProfileRef.current = desiredEditorMode === 'live-preview'
+      ? markdownImagePreviewProfile
+      : null;
     initialModeProfileRef.current = modeProfileSignature;
   }
   const handleChange = useCallback((nextValue: string) => {
-    if (nextValue !== valueRef.current) onChangeRef.current(nextValue);
-  }, []);
+    if (nextValue !== valueRef.current) {
+      pendingViewportRestoreRef.current = null;
+      cancelPendingViewportMeasure();
+      restoredModeAnchorRef.current = null;
+      onChangeRef.current(nextValue);
+    }
+  }, [cancelPendingViewportMeasure]);
 
   const applyPendingTarget = useCallback((view: EditorView) => {
     const intent = targetIntentRef.current;
@@ -316,6 +528,8 @@ export function WorkspaceFileEditor({
       !intent.target?.line
       || intent.targetRevision <= appliedTargetRevision
     ) return false;
+    pendingViewportRestoreRef.current = null;
+    cancelPendingViewportMeasure();
     const resolved = targetSelection(view, intent.target);
     view.dispatch({
       selection: resolved.selection,
@@ -325,18 +539,44 @@ export function WorkspaceFileEditor({
     onLocationAdjustedRef.current?.(resolved.adjusted);
     view.focus();
     return true;
-  }, []);
+  }, [cancelPendingViewportMeasure]);
 
   useEffect(() => {
     const view = activeEditorView;
-    if (!view || editorRef.current?.view !== view) return;
+    if (
+      !view
+      || editorRef.current?.view !== view
+      || appliedEditorPolicyProfileRef.current === editorPolicyProfileSignature
+    ) return;
     view.dispatch({
       effects: editorPolicyCompartment.reconfigure([
         EditorState.readOnly.of(!editable),
         EditorView.editable.of(editable),
       ]),
     });
-  }, [activeEditorView, editable, editorPolicyCompartment]);
+    appliedEditorPolicyProfileRef.current = editorPolicyProfileSignature;
+  }, [
+    activeEditorView,
+    editable,
+    editorPolicyCompartment,
+    editorPolicyProfileSignature,
+  ]);
+
+  useEffect(() => {
+    const view = activeEditorView;
+    if (
+      !view
+      || editorRef.current?.view !== view
+      || appliedLanguageProfileRef.current === languageProfileSignature
+    ) return;
+    view.dispatch({ effects: languageCompartment.reconfigure(documentLanguageExtensions) });
+    appliedLanguageProfileRef.current = languageProfileSignature;
+  }, [
+    activeEditorView,
+    documentLanguageExtensions,
+    languageCompartment,
+    languageProfileSignature,
+  ]);
 
   useEffect(() => {
     const view = activeEditorView;
@@ -354,12 +594,35 @@ export function WorkspaceFileEditor({
       && target?.line
       && targetRevision > pendingTransition.targetRevisionAtCapture,
     );
+    if (!hasNewerTarget) {
+      cancelPendingViewportMeasure();
+      pendingViewportRestoreRef.current = viewport;
+    }
     view.dispatch({
       effects: [
         modeCompartment.reconfigure(currentModeExtensions()),
         ...(!hasNewerTarget ? [editorViewportScrollEffect(view, viewport)] : []),
       ],
     });
+    if (!hasNewerTarget) {
+      const viewWindow = view.dom.ownerDocument.defaultView;
+      if (viewWindow) {
+        const id = viewWindow.requestAnimationFrame(() => {
+          pendingViewportMeasureFrameRef.current = null;
+          if (
+            pendingViewportRestoreRef.current === viewport
+            && editorRef.current?.view === view
+          ) view.requestMeasure();
+        });
+        pendingViewportMeasureFrameRef.current = { id, win: viewWindow };
+      } else {
+        view.requestMeasure();
+      }
+      restoredModeAnchorRef.current = { mode: desiredEditorMode, anchor: viewport };
+    }
+    appliedMarkdownImagePreviewProfileRef.current = desiredEditorMode === 'live-preview'
+      ? markdownImagePreviewProfile
+      : null;
     appliedModeProfileRef.current = modeProfileSignature;
     if (pendingTransition?.mode === desiredEditorMode) {
       pendingModeTransitionRef.current = null;
@@ -367,8 +630,10 @@ export function WorkspaceFileEditor({
     }
   }, [
     activeEditorView,
+    cancelPendingViewportMeasure,
     currentModeExtensions,
     desiredEditorMode,
+    markdownImagePreviewProfile,
     modeCompartment,
     modeProfileSignature,
     target?.line,
@@ -378,21 +643,27 @@ export function WorkspaceFileEditor({
   useEffect(() => {
     if (desiredEditorMode !== 'live-preview') return;
     const view = activeEditorView;
-    if (view && editorRef.current?.view === view) {
+    if (
+      view
+      && editorRef.current?.view === view
+      && !sameMarkdownImagePreviewProfile(
+        appliedMarkdownImagePreviewProfileRef.current,
+        markdownImagePreviewProfile,
+      )
+    ) {
       updateMarkdownImagePreview(
         view,
-        markdownImages,
-        routeMarkdownImagePreviewError,
-        routeMarkdownLink,
+        markdownImagePreviewProfile.images,
+        markdownImagePreviewProfile.onPreviewError,
+        markdownImagePreviewProfile.onLinkClick,
       );
+      appliedMarkdownImagePreviewProfileRef.current = markdownImagePreviewProfile;
     }
   }, [
     activeEditorView,
     desiredEditorMode,
-    markdownImages,
+    markdownImagePreviewProfile,
     modeProfileSignature,
-    routeMarkdownImagePreviewError,
-    routeMarkdownLink,
   ]);
 
   useEffect(() => {
@@ -402,10 +673,11 @@ export function WorkspaceFileEditor({
 
   useEffect(() => () => {
     modeTransitionRequestRef.current += 1;
+    cancelPendingViewportMeasure();
     if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
     const state = editorRef.current?.view?.state;
     if (state) onPersistStateRef.current(state.toJSON({ history: historyField }));
-  }, []);
+  }, [cancelPendingViewportMeasure]);
 
   const copySource = async () => {
     const source = editorRef.current?.view?.state.doc.toString() ?? value;
@@ -419,7 +691,7 @@ export function WorkspaceFileEditor({
     if (!markdownMode || !onMarkdownModeChange || modeTransitionPending) return;
     const nextMode = previewMode ? 'source' : 'live-preview';
     const view = editorRef.current?.view;
-    if (!view || (nextMode === 'live-preview' && !markdownProfile)) return;
+    if (!view || (nextMode === 'live-preview' && !markdownPreviewProfile)) return;
     const request = modeTransitionRequestRef.current + 1;
     modeTransitionRequestRef.current = request;
     setModeTransitionPending(true);
@@ -427,9 +699,14 @@ export function WorkspaceFileEditor({
       await predecodeMarkdownImagesNearViewport(view, markdownImagesRef.current);
       if (modeTransitionRequestRef.current !== request) return;
     }
+    const capturedViewport = captureEditorViewportAnchor(view);
+    const rememberedViewport = restoredModeAnchorRef.current?.mode === (previewMode ? 'live-preview' : 'source')
+      ? restoredModeAnchorRef.current.anchor
+      : null;
+    const retainedViewport = retainWidgetViewportAnchor(view, capturedViewport, rememberedViewport);
     pendingModeTransitionRef.current = {
       mode: nextMode,
-      viewport: captureEditorViewportAnchor(view),
+      viewport: retainedViewport,
       targetRevisionAtCapture: targetRevisionRef.current,
     };
     onMarkdownModeChange(nextMode);
@@ -459,7 +736,7 @@ export function WorkspaceFileEditor({
                 size="icon"
                 variant="ghost"
                 className="size-6"
-                disabled={modeTransitionPending || (!previewMode && (!markdownLivePreviewAvailable || !markdownProfile))}
+                disabled={modeTransitionPending || (!previewMode && (!markdownLivePreviewAvailable || !markdownPreviewProfile))}
                 onClick={() => void switchMarkdownMode()}
                 aria-label={t(previewMode ? 'workspace.filesPanel.viewMarkdownSource' : 'workspace.filesPanel.viewMarkdownLivePreview')}
               >
@@ -480,6 +757,9 @@ export function WorkspaceFileEditor({
           extensions={editorExtensionsRef.current ?? []}
           initialState={initialStateJson ? { json: initialStateJson, fields: { history: historyField } } : undefined}
           onCreateEditor={(view) => {
+            appliedLanguageProfileRef.current = initialLanguageProfileRef.current;
+            appliedEditorPolicyProfileRef.current = initialEditorPolicyProfileRef.current;
+            appliedMarkdownImagePreviewProfileRef.current = initialMarkdownImagePreviewProfileRef.current;
             appliedModeProfileRef.current = initialModeProfileRef.current;
             setActiveEditorView(view);
           }}

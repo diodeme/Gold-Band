@@ -2734,17 +2734,7 @@ export function ACPChatDialog(
 
   return (
     <TurnFileCardPreviewLimitContext.Provider value={turnFileCardPreviewLimit}>
-    <AcpBranchLocatorContext.Provider value={{
-      projectId,
-      taskId,
-      runId,
-      roundId,
-      nodeId,
-      attemptId,
-      outerNodeId,
-      outerAttemptId,
-      branchId,
-    }}>
+    <AcpBranchLocatorContext.Provider value={attemptWorkspaceLocator}>
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-background" data-conversation-branch-id={branchId}>
       <ACPSessionHeader
         session={effective}
@@ -4130,15 +4120,18 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   const branchLocator = useContext(AcpBranchLocatorContext);
   const [open, setOpen] = useState(false);
   const [auditEvents, setAuditEvents] = useState(() => event.events.filter(isVisibleActivityAuditEvent));
+  const initialDetailComplete = hasCompleteLocalActivityDetail(event);
+  const loadedDetailCursorsRef = useRef(new Set<string>(
+    initialDetailComplete ? [activityDetailRequestKey(event, null)] : [],
+  ));
   const [detailLoaded, setDetailLoaded] = useState(
-    () => event.events.length > 0 || !event.detailAvailable,
+    initialDetailComplete,
   );
   const [hasMoreEarlier, setHasMoreEarlier] = useState(event.hasMoreEarlier);
   const [earlierCursor, setEarlierCursor] = useState(event.earlierCursor ?? null);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const detailRequestInFlightRef = useRef(false);
-  const loadedDetailCursorsRef = useRef(new Set<string>());
   const triggerRef = useRef<HTMLButtonElement>(null);
   const summary = activityBatchSummary(event, t);
   useEffect(() => {
@@ -4146,8 +4139,18 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
     setHasMoreEarlier((current) => current || event.hasMoreEarlier);
     setEarlierCursor((current) => current ?? event.earlierCursor ?? null);
   }, [event.earlierCursor, event.events, event.hasMoreEarlier]);
+  useEffect(() => {
+    const latestDetailLoaded = loadedDetailCursorsRef.current.has(
+      activityDetailRequestKey(event, null),
+    );
+    setDetailLoaded(
+      !event.detailAvailable
+      || auditEvents.length >= event.totalEventCount
+      || latestDetailLoaded,
+    );
+  }, [auditEvents.length, event.activityEndSeq, event.activityStartSeq, event.detailAvailable, event.totalEventCount]);
   const loadDetail = async (cursor: string | null) => {
-    const requestKey = cursor ?? 'latest';
+    const requestKey = activityDetailRequestKey(event, cursor);
     if (
       !branchLocator
       || detailRequestInFlightRef.current
@@ -4305,6 +4308,16 @@ const ActivityAuditEvent = memo(function ActivityAuditEvent({
 
 function isVisibleActivityAuditEvent(event: AcpTimelineEvent) {
   return event.kind !== "permissionRequest" && event.kind !== "activitySummary";
+}
+
+function hasCompleteLocalActivityDetail(event: AcpActivityBatch) {
+  if (!event.detailAvailable) return true;
+  const localEventCount = event.events.filter(isVisibleActivityAuditEvent).length;
+  return localEventCount >= event.totalEventCount;
+}
+
+function activityDetailRequestKey(event: AcpActivityBatch, cursor: string | null) {
+  return `${event.activityStartSeq}:${event.activityEndSeq}:${cursor ?? 'latest'}`;
 }
 
 function activityBatchSummary(

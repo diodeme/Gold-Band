@@ -5,6 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { useLeadingAdornmentTextIndent } from "@/hooks/useLeadingAdornmentTextIndent"
 import React, {
+  useCallback,
   createContext,
   useContext,
   useLayoutEffect,
@@ -170,16 +171,16 @@ function PromptInputTextarea({
   const hasLeadingAdornment = Boolean(leadingAdornment && effectiveValuePrefix)
   const leadingAdornmentLayout = useLeadingAdornmentTextIndent(hasLeadingAdornment)
 
-  const adjustHeight = (el: HTMLTextAreaElement | null) => {
+  const adjustHeight = useCallback((el: HTMLTextAreaElement | null) => {
     if (!el || disableAutosize) return
 
     el.style.height = "auto"
     const size = promptInputTextareaSize(el.scrollHeight, maxHeight)
     el.style.height = size.height
     el.style.overflowY = size.overflowY
-  }
+  }, [disableAutosize, maxHeight])
 
-  const handleRef = (el: HTMLTextAreaElement | null) => {
+  const handleRef = useCallback((el: HTMLTextAreaElement | null) => {
     textareaRef.current = el
     if (typeof externalRef === "function") {
       externalRef(el)
@@ -187,21 +188,13 @@ function PromptInputTextarea({
       externalRef.current = el
     }
     adjustHeight(el)
-  }
+  }, [adjustHeight, externalRef, textareaRef])
 
   useLayoutEffect(() => {
-    if (!textareaRef.current || disableAutosize) return
-
-    const el = textareaRef.current
-    el.style.height = "auto"
-    const size = promptInputTextareaSize(el.scrollHeight, maxHeight)
-    el.style.height = size.height
-    el.style.overflowY = size.overflowY
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [textareaValue, maxHeight, disableAutosize])
+    adjustHeight(textareaRef.current)
+  }, [adjustHeight, textareaRef, textareaValue])
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    adjustHeight(e.target)
     setValue(`${effectiveValuePrefix}${e.target.value}`)
   }
 

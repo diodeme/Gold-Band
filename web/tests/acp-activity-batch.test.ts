@@ -5,6 +5,11 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ACPMessageList, buildAcpTimelineProjection } from '@/components/acp/ACPChatDialog';
+import {
+  ChatContainerContent,
+  ChatContainerRoot,
+  type ChatContainerContext,
+} from '@/components/prompt-kit/chat-container';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { AcpUiEventVm } from '@/types';
 
@@ -204,6 +209,11 @@ describe('ACP activity batch disclosure', () => {
   });
 
   it('hands bottom-follow ownership to the activity disclosure lifecycle', async () => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
       window.setTimeout(() => callback(performance.now()), 0)
     ));
@@ -213,8 +223,7 @@ describe('ACP activity batch disclosure', () => {
       configurable: true,
       value: scrollIntoView,
     });
-    const onActivityDisclosureOpen = vi.fn(() => 42);
-    const onActivityDisclosureClose = vi.fn(() => true);
+    const contextRef = React.createRef<ChatContainerContext>();
     const projection = buildAcpTimelineProjection([
       event({
         id: 'tool',
@@ -231,27 +240,35 @@ describe('ACP activity batch disclosure', () => {
 
     try {
       await act(async () => {
-        root.render(React.createElement(ACPMessageList, {
-          timeline: projection.timeline,
-          sessionStatus: 'completed',
-          sending: false,
-          onActivityDisclosureOpen,
-          onActivityDisclosureClose,
-        }));
+        root.render(
+          React.createElement(
+            ChatContainerRoot,
+            { contextRef, resize: 'instant', initial: 'instant' },
+            React.createElement(
+              ChatContainerContent,
+              { scrollClassName: 'overflow-y-auto' },
+              React.createElement(ACPMessageList, {
+                timeline: projection.timeline,
+                sessionStatus: 'completed',
+                sending: false,
+              }),
+            ),
+          ),
+        );
       });
 
       const trigger = container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]');
       await act(async () => {
         trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       });
-      expect(onActivityDisclosureOpen).toHaveBeenCalledTimes(1);
+      expect(contextRef.current?.isAtBottom).toBe(false);
 
       const collapse = container.querySelector<HTMLButtonElement>('.acp-activity-collapse-button');
       await act(async () => {
         collapse?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
         await new Promise((resolve) => window.setTimeout(resolve, 1));
       });
-      expect(onActivityDisclosureClose).toHaveBeenCalledWith(42);
+      expect(contextRef.current?.isAtBottom).toBe(true);
       expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
       await act(async () => root.unmount());

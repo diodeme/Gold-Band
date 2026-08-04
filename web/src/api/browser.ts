@@ -902,6 +902,12 @@ export const browserApi: RuntimeApi = {
   listWorkspaceDirectory(_projectId, relativePath) {
     return Promise.resolve(browserDirectoryEntries(relativePath));
   },
+  openWorkspacePathInFileManager(_projectId, _relativePath = '') {
+    return Promise.resolve();
+  },
+  listConversationDirectory(_input) { return Promise.resolve([]); },
+  openConversationDirectoryPathInFileManager(_input) { return Promise.resolve(); },
+  readConversationDirectoryFile(_input) { return Promise.reject(new Error('conversation-directory.unavailable')); },
   searchWorkspaceFiles(_projectId, query, requestId, limit) {
     const normalized = query.trim().toLocaleLowerCase();
     const matches = [...browserWorkspaceFiles.entries()]

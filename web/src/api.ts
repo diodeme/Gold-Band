@@ -409,6 +409,22 @@ export function listWorkspaceDirectory(projectId: string, relativePath = '') {
   return getRuntimeApi().listWorkspaceDirectory(projectId, relativePath);
 }
 
+export function openWorkspacePathInFileManager(projectId: string, relativePath = '') {
+  return getRuntimeApi().openWorkspacePathInFileManager(projectId, relativePath);
+}
+
+export function listConversationDirectory(input: import('./api/client').ConversationDirectoryInput) {
+  return getRuntimeApi().listConversationDirectory(input);
+}
+
+export function openConversationDirectoryPathInFileManager(input: import('./api/client').ConversationDirectoryInput) {
+  return getRuntimeApi().openConversationDirectoryPathInFileManager(input);
+}
+
+export function readConversationDirectoryFile(input: import('./api/client').ConversationDirectoryInput) {
+  return getRuntimeApi().readConversationDirectoryFile(input);
+}
+
 export function searchWorkspaceFiles(projectId: string, query: string, requestId: string, limit: number) {
   return getRuntimeApi().searchWorkspaceFiles(projectId, query, requestId, limit);
 }

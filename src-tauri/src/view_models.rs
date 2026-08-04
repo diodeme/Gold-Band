@@ -7706,7 +7706,7 @@ mod tests {
             value["workspaceLayout"]["rightWorkspace"]["file"],
             json!({
                 "preferredWidth": 760,
-                "splitMinWidth": 540,
+                "splitMinWidth": 500,
                 "treeDefaultWidth": 280,
                 "treeMinWidth": 200,
                 "treeMaxWidth": 420,

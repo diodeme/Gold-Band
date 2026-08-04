@@ -874,7 +874,7 @@ impl Default for FileWorkspaceLayoutConfig {
     fn default() -> Self {
         Self {
             preferred_width: 760,
-            split_min_width: 620,
+            split_min_width: 500,
             tree_default_width: 280,
             tree_min_width: 220,
             tree_max_width: 420,

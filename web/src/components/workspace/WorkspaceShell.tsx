@@ -81,6 +81,7 @@ function loadWidth(prefs: Record<string, unknown> | null | undefined, key: strin
 const LazyFileWorkspacePanel = lazy(() => import('./files/FileWorkspacePanel').then((module) => ({ default: module.FileWorkspacePanel })));
 const LazyTurnFileWorkspacePanel = lazy(() => import('./files/TurnFileWorkspacePanel').then((module) => ({ default: module.TurnFileWorkspacePanel })));
 const LazyConversationAssetWorkspacePanel = lazy(() => import('./files/ConversationAssetWorkspacePanel').then((module) => ({ default: module.ConversationAssetWorkspacePanel })));
+const LazyConversationDirectoryWorkspacePanel = lazy(() => import('./ConversationDirectoryWorkspacePanel').then((module) => ({ default: module.ConversationDirectoryWorkspacePanel })));
 
 function FileWorkspaceIntegration({
   config = FALLBACK_WORKSPACE_FILES,
@@ -102,6 +103,11 @@ function FileWorkspaceIntegration({
   useEffect(() => workspace.registerResourceRenderer('file', (resource: RightWorkspaceResource) => (
     resource.kind === 'file'
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyFileWorkspacePanel resource={resource} layout={layout} /></Suspense>
+      : null
+  )), [layout, workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceRenderer('conversation-directory', (resource: RightWorkspaceResource) => (
+    resource.kind === 'conversation-directory'
+      ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyConversationDirectoryWorkspacePanel resource={resource} layout={layout} /></Suspense>
       : null
   )), [layout, workspace.registerResourceRenderer]);
   useEffect(() => workspace.registerResourceRenderer('file-diff', (resource: RightWorkspaceResource) => (

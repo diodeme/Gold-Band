@@ -123,20 +123,20 @@ Gold Band 需要吸收的是 Jockey 的 ACP 事件归一化和 Chat/Session UI �
 - 普通 `overflow-y-auto` message list：承载 ACP 历史浏览和向上分页；对 prepend 历史使用 scrollHeight 差值补偿 scrollTop，避免虚拟列表重新测量高度时闪回；对流式消息内容增高使用内容尺寸监听来维持底部贴合，避免只在事件数量变化时滚动。
 - `ChatContainerRoot / ChatContainerContent / ChatContainerScrollAnchor`：仅用于不需要历史分页的普通聊天容器场景。
 - `Message / MessageContent`：承载用户与 agent 气泡。
-- `PromptInput / PromptInputTextarea / PromptInputActions / PromptInputAction`：承载 composer、快捷键、loading 和 action 区域。
+- `PromptInput / PromptInputTextarea / PromptInputActions / PromptInputAction`：承载 composer、快捷键、loading 和 action 区域。受控输入的 autosize ref 必须稳定，每次 value 更新只在 layout effect 中测量一次，不能在 `onChange`、ref 重挂载和 layout effect 三条路径重复读写高度。
 - `Tool`：承载工具调用卡片的折叠、状态、输入输出展示。
 - `ChainOfThought / ChainOfThoughtStep / ChainOfThoughtTrigger / ChainOfThoughtContent`：承载 thought / reasoning 折叠展示。
 
 ACP 专属组件只做协议事件映射和业务状态组合：
 
-- `ACPChatDialog`：组合共享会话视口、intervention 与根会话 composer，并负责 branch 查询和实时事件合并。
+- `ACPChatDialog`：组合共享会话视口、intervention 与根会话 composer，并负责 branch 查询和实时事件合并。branch locator 使用稳定对象引用下发；composer 草稿逐键更新不得使历史 Markdown/Activity/Tool 消费者失去 memo 命中。
 - `ConversationViewport` / `ACPMessageList`：根会话与 Agent 分支共用的原生滚动消息视口，按语义块展示正式文字、活动摘要、TODO 和 Agent 链接。
 - `ACPSessionHeader`：展示 session/provider/adapter/cwd/连接状态；Agent 只读容器按只读边界隐藏不适用入口。
 - `ACPEventRenderer`：根据 Gold Band 规范事件类型选择渲染组件，不读取 provider 私有 metadata。
 - `ToolCallCard`：把 ACP `ToolCall` / `ToolCallUpdate` 映射为 prompt-kit `Tool` props。
 - `AgentLinkRow`：在所属父分支中展示轻量 Agent execution 链接，不挂载子 transcript。
 - `RightWorkspaceDock` / `AgentConversationPanel`：用通用多 Tab 右侧工作区承载只读 Agent 分支会话；仅挂载激活 Tab 的完整视口。
-- `AcpActivityBatchRow`：展示一个稳定活动语义块，并在首次展开后按局部 cursor 延迟读取审计详情。
+- `AcpActivityBatchRow`：展示一个稳定活动语义块，并在首次展开后按局部 cursor 延迟读取审计详情。摘要总数与本地详情完整性分开建模；即使已混入少量 live 尾部，只要本地审计数小于摘要总数，首次展开仍读取权威详情。
 - `ThoughtBlock`：把合并后的 `ThoughtDelta` 映射为 prompt-kit `ChainOfThought`，标题展示思考耗时而非字符数。
 - `PlanBlock`：展示计划条目和状态变化。
 - `InterventionLayer` / `PermissionRequestCard`：只展示当前 branch 的待决权限或提问，并使用规范 request ID 提交决策。

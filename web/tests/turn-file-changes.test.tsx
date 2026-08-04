@@ -278,6 +278,10 @@ describe('turn file viewer contract', () => {
     expect(source).toContain('unifiedMergeView({');
     expect(source).toContain('EditorState.readOnly.of(true)');
     expect(source).toContain('EditorView.editable.of(false)');
+    expect(source).toContain('EditorView.lineWrapping');
+    expect(source).toContain('drawSelection: false');
+    expect(source).toContain('width="100%"');
+    expect(source).toContain('[&_.cm-scroller]:overflow-x-hidden');
     expect(source).toContain('mergeControls: false');
     expect(source).toContain('collapseUnchanged:');
   });

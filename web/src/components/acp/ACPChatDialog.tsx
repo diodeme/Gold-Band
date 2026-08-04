@@ -1,7 +1,6 @@
 import {
   createContext,
   memo,
-  startTransition,
   type AnimationEvent,
   useCallback,
   useContext,
@@ -75,7 +74,7 @@ import {
   acpAttemptWorkspaceResourceKey,
   agentTranscriptResourceKey,
   conversationAssetWorkspaceResourceKey,
-  useOptionalRightWorkspace,
+  useOptionalRightWorkspaceCommands,
   type AcpAttemptWorkspaceLocator,
   type AgentTranscriptLocator,
 } from "@/components/workspace/right-workspace-context";
@@ -90,6 +89,7 @@ import {
 import { goldThemedScrollbarClassName } from "@/lib/themed-scrollbar";
 import { BoundedLruCache } from "@/lib/bounded-lru-cache";
 import {
+  AcpLatestWinsEventBuffer,
   decideAcpLiveEventFlush,
   isAcpLiveToolEvent,
   isAcpTextStreamEventKind,
@@ -638,7 +638,7 @@ export function ACPChatDialog(
   }: ACPChatDialogProps,
 ) {
   const { t } = useTranslation();
-  const rightWorkspace = useOptionalRightWorkspace();
+  const rightWorkspace = useOptionalRightWorkspaceCommands();
   const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
   const branchId = requestedBranchId ?? session?.branchId ?? 'root';
   const attemptWorkspaceLocator = useMemo<AcpAttemptWorkspaceLocator>(() => ({
@@ -797,7 +797,7 @@ export function ACPChatDialog(
   const configGenerationRef = useRef(0);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const paginationAnchorRef = useRef<{ key: string; top: number } | null>(null);
-  const pendingLiveEventsRef = useRef<Map<string, AcpUiEventVm>>(new Map());
+  const pendingLiveEventsRef = useRef(new AcpLatestWinsEventBuffer<AcpUiEventVm>());
   const liveEventFlushTimerRef = useRef<number | null>(null);
   const liveUpdatesDeferredUntilRef = useRef(0);
   const liveUpdatesPausedRef = useRef(false);
@@ -1521,23 +1521,18 @@ export function ACPChatDialog(
     applyEventUpdates([event]);
   }, [applyEventUpdates]);
 
-  const flushPendingLiveEvents = useCallback((priority: "sync" | "transition" = "transition") => {
+  const flushPendingLiveEvents = useCallback(() => {
     if (liveEventFlushTimerRef.current !== null) {
       window.clearTimeout(liveEventFlushTimerRef.current);
       liveEventFlushTimerRef.current = null;
     }
-    const updates = [...pendingLiveEventsRef.current.values()];
-    pendingLiveEventsRef.current.clear();
+    const updates = pendingLiveEventsRef.current.drain();
     if (updates.length === 0) return;
-    if (priority === "sync") {
-      applyEventUpdates(updates);
-      return;
-    }
     const { timingUpdates, timelineUpdates } = partitionAcpLiveTimingUpdates(updates);
     if (timingUpdates.length > 0) applyEventUpdates(timingUpdates);
-    if (timelineUpdates.length > 0) {
-      startTransition(() => applyEventUpdates(timelineUpdates));
-    }
+    // The timer and latest-wins map are the single flight. Publishing synchronously
+    // here prevents React from retaining obsolete cumulative snapshots in transitions.
+    if (timelineUpdates.length > 0) applyEventUpdates(timelineUpdates);
   }, [applyEventUpdates]);
 
   const liveFlushDeferRemainingMs = useCallback(() => (
@@ -1566,10 +1561,10 @@ export function ACPChatDialog(
     schedule(delayMs);
   }, [flushPendingLiveEvents, liveFlushDeferRemainingMs]);
 
-  const flushOrSchedulePendingLiveEvents = useCallback((priority: "sync" | "transition" = "transition") => {
+  const flushOrSchedulePendingLiveEvents = useCallback((immediate = false) => {
     if (pendingLiveEventsRef.current.size === 0 || liveUpdatesPausedRef.current) return;
-    if (priority === "sync") {
-      flushPendingLiveEvents("sync");
+    if (immediate) {
+      flushPendingLiveEvents();
       return;
     }
     const deferRemainingMs = liveFlushDeferRemainingMs();
@@ -1577,7 +1572,7 @@ export function ACPChatDialog(
       schedulePendingLiveFlush(deferRemainingMs);
       return;
     }
-    flushPendingLiveEvents(priority);
+    flushPendingLiveEvents();
   }, [flushPendingLiveEvents, liveFlushDeferRemainingMs, schedulePendingLiveFlush]);
 
   const deferPendingLiveFlush = useCallback((durationMs = LIVE_EVENT_INTERACTION_QUIET_MS) => {
@@ -1639,14 +1634,14 @@ export function ACPChatDialog(
           ? mergeAcpLiveToolEvent(pendingToolEvent, event, mergeRaw)
           : event;
         if (bufferedToolKey) pendingLiveEventsRef.current.delete(bufferedToolKey);
-        if (decision.flushPendingBeforeApply) flushPendingLiveEvents("sync");
+        if (decision.flushPendingBeforeApply) flushPendingLiveEvents();
         applyEventUpdate(eventToApply);
         return;
       }
 
       if (!decision.buffer) return;
       const bufferKey = liveEventBufferKey(event);
-      pendingLiveEventsRef.current.set(
+      pendingLiveEventsRef.current.replace(
         bufferKey,
         mergeBufferedLiveEvent(pendingLiveEventsRef.current.get(bufferKey), event),
       );
@@ -1810,7 +1805,7 @@ export function ACPChatDialog(
           }
           enqueueLiveEventUpdate(event.event);
         } else {
-          flushOrSchedulePendingLiveEvents("sync");
+          flushOrSchedulePendingLiveEvents(true);
           if (branchId !== 'root') {
             void getAcpSession(
               projectId,
@@ -1931,7 +1926,7 @@ export function ACPChatDialog(
         refreshSeq,
         hadStopListening: Boolean(stopListening),
       });
-      flushPendingLiveEvents("sync");
+      flushPendingLiveEvents();
       active = false;
       stopListening?.();
       if (liveEventFlushTimerRef.current !== null) {
@@ -2396,7 +2391,7 @@ export function ACPChatDialog(
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
       applySessionUpdate(result.session ?? null);
-      flushPendingLiveEvents("sync");
+      flushPendingLiveEvents();
       setStopCommandPending(false);
       setPromptCommandPending(false);
       setSending(false);
@@ -3991,7 +3986,7 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
 const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink }) {
   const { t } = useTranslation();
   const branchLocator = useContext(AcpBranchLocatorContext);
-  const workspace = useOptionalRightWorkspace();
+  const workspace = useOptionalRightWorkspaceCommands();
   const liveSnapshot = useConversationBranchLiveSnapshot(
     branchLocator ?? { projectId: 'unavailable', taskId: '', runId: '', roundId: '', nodeId: '', attemptId: '' },
     event.agentExecutionId,
@@ -4440,7 +4435,7 @@ const MessageBubble = memo(function MessageBubble({
 }) {
   const { t } = useTranslation();
   const branchLocator = useContext(AcpBranchLocatorContext);
-  const workspace = useOptionalRightWorkspace();
+  const workspace = useOptionalRightWorkspaceCommands();
   const isUser = event.kind === "userTextDelta";
   const failed = event.status === "failed";
   const streamingDraft =

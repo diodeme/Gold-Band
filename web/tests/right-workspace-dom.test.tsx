@@ -37,6 +37,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 class ControlledResizeObserver {
   static instances: ControlledResizeObserver[] = [];
   private readonly callback: ResizeObserverCallback;
+  disconnected = false;
 
   constructor(callback: ResizeObserverCallback) {
     this.callback = callback;
@@ -45,7 +46,7 @@ class ControlledResizeObserver {
 
   observe() {}
   unobserve() {}
-  disconnect() {}
+  disconnect() { this.disconnected = true; }
 
   flush(target: Element) {
     this.callback([{ target } as ResizeObserverEntry], this as unknown as ResizeObserver);
@@ -340,6 +341,8 @@ describe('right workspace DOM lifecycle', () => {
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
       expect(container.querySelector('[data-right-workspace-overflow-menu="true"]')).toBeNull();
+      await act(async () => root.unmount());
+      expect(ControlledResizeObserver.instances.every((observer) => observer.disconnected)).toBe(true);
     } finally {
       await act(async () => root.unmount());
     }

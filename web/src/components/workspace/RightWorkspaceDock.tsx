@@ -19,9 +19,10 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
   const [tabsOverflowing, setTabsOverflowing] = useState(false);
 
   useLayoutEffect(() => {
-    const tabStrip = tabStripRef.current;
-    if (!tabStrip) return;
+    if (!tabStripRef.current) return;
     const measure = () => {
+      const tabStrip = tabStripRef.current;
+      if (!tabStrip) return;
       const availableWidth = tabStrip.clientWidth + (overflowMenuRef.current?.offsetWidth ?? 0);
       const overflowing = tabStrip.scrollWidth > availableWidth + 1;
       setTabsOverflowing((current) => current === overflowing ? current : overflowing);
@@ -35,7 +36,7 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
     };
     measure();
     const observer = new ResizeObserver(scheduleMeasure);
-    observer.observe(tabStrip);
+    observer.observe(tabStripRef.current);
     return () => {
       observer.disconnect();
       if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);

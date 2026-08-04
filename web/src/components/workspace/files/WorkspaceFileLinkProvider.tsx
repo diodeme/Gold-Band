@@ -3,8 +3,7 @@ import { resolveWorkspaceFileLink } from '@/api';
 import { MarkdownResourceLinkProvider } from '@/components/prompt-kit/markdown';
 import {
   fileWorkspaceResourceKey,
-  useRightWorkspace,
-  type FileWorkspaceResource,
+  useRightWorkspaceCommands,
 } from '../right-workspace-context';
 import { fileContentStore } from './file-content-store';
 
@@ -18,7 +17,7 @@ function fileName(path: string) {
 }
 
 export function WorkspaceFileLinkProvider({ children }: { children: ReactNode }) {
-  const workspace = useRightWorkspace();
+  const workspace = useRightWorkspaceCommands();
   const targetRevisionsRef = useRef(new Map<string, number>());
   const openLocalFile = useCallback(async (rawHref: string, baseCanonicalPath?: string | null) => {
     if (!workspace.projectId || !workspace.scopeKey) return;
@@ -31,7 +30,8 @@ export function WorkspaceFileLinkProvider({ children }: { children: ReactNode })
         resolved.locator.canonicalPath,
         resolved.externalAccessGrant,
       );
-      const existing = workspace.tabs.find((tab): tab is FileWorkspaceResource => tab.kind === 'file' && tab.key === key);
+      const resource = workspace.getResource(key);
+      const existing = resource?.kind === 'file' ? resource : null;
       if (existing && resolved.externalAccessGrant) {
         await fileContentStore.reauthorize(key, resolved.externalAccessGrant);
       }
@@ -72,7 +72,7 @@ export function WorkspaceFileLinkProvider({ children }: { children: ReactNode })
         targetRevision: 1,
       });
     }
-  }, [workspace.openResource, workspace.projectId, workspace.scopeKey, workspace.tabs]);
+  }, [workspace.getResource, workspace.openResource, workspace.projectId, workspace.scopeKey]);
   const handler = useMemo(
     () => workspace.projectId && workspace.scopeKey ? { openLocalFile } : null,
     [openLocalFile, workspace.projectId, workspace.scopeKey],

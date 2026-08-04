@@ -2623,6 +2623,8 @@ impl<'a> AcpRuntime<'a> {
             &user_event.id,
             user_event.seq,
             &user_event.timestamp,
+            Some(provider_id),
+            self.model_override.as_deref(),
         )?;
         Ok(AcpPromptTurnIdentity {
             id: user_event.id,
@@ -2873,6 +2875,8 @@ impl<'a> AcpRuntime<'a> {
                                 &current_timestamp(),
                                 Some(Value::from(request.id)),
                                 &prompt_usage,
+                                Some(&self.provider_id),
+                                self.model_override.as_deref(),
                             )?;
                             self.usage.record_prompt_usage(prompt_usage);
                         }

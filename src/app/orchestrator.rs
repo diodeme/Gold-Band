@@ -584,6 +584,17 @@ fn prepare_run(
         ),
     );
 
+    emit_run_metrics_fact(
+        app,
+        &run,
+        super::observability::LifecycleEventType::ExecutionStarted,
+        uuid::Uuid::new_v4().to_string(),
+        run.started_at.clone(),
+        None,
+        None,
+        None,
+    );
+
     Ok(PreparedRun {
         validated,
         resolved_profiles,
@@ -1758,6 +1769,220 @@ fn task_title(app: &App, task_id: &str) -> Option<String> {
     app.task_show(task_id).ok().and_then(|t| t.title)
 }
 
+fn metrics_user_id() -> String {
+    std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_else(|_| "unknown".into())
+}
+
+fn metrics_pause_reason(reason: PauseReason) -> super::observability::MetricsPauseReason {
+    use super::observability::MetricsPauseReason as M;
+    match reason {
+        PauseReason::WaitingForUserInput => M::WaitingForUserInput,
+        PauseReason::PermissionRequested => M::PermissionRequested,
+        PauseReason::RuntimeAbnormal => M::RuntimeAbnormal,
+        PauseReason::ErrorBlocked => M::ErrorBlocked,
+        PauseReason::ProcessInterrupted => M::ProcessInterrupted,
+    }
+}
+
+fn failed_dynamic_metrics_unit(
+    graph: &DynamicGraphState,
+) -> Option<&crate::dynamic::DynamicNodeState> {
+    graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            matches!(
+                node.outcome,
+                Some(NodeOutcome::Failure | NodeOutcome::Invalid | NodeOutcome::Killed)
+            )
+        })
+        .max_by_key(|node| node.finished_at.as_deref())
+}
+
+fn dynamic_metrics_terminal_reason(
+    node: &crate::dynamic::DynamicNodeState,
+) -> super::observability::TerminalReason {
+    match node.outcome {
+        Some(NodeOutcome::Killed) => super::observability::TerminalReason::ProcessKilled,
+        Some(NodeOutcome::Invalid) => super::observability::TerminalReason::ValidationError,
+        Some(NodeOutcome::Failure) if node.kind == crate::dynamic::DynamicNodeKind::Acceptance => {
+            crate::app::observability::TerminalReason::AcceptanceRejected
+        }
+        Some(NodeOutcome::Failure) if node.runtime_error.is_some() => {
+            super::observability::TerminalReason::RuntimeError
+        }
+        _ => super::observability::TerminalReason::ExecutionFailed,
+    }
+}
+
+fn metrics_intervention_kind(
+    kind: RuntimeInterventionKind,
+) -> super::observability::MetricsInterventionKind {
+    use super::observability::MetricsInterventionKind as M;
+    match kind {
+        RuntimeInterventionKind::ManualDecisionRequired => M::ManualDecision,
+        RuntimeInterventionKind::ElicitationRequested => M::Elicitation,
+        RuntimeInterventionKind::PermissionRequested => M::Permission,
+        RuntimeInterventionKind::RuntimeAbnormal => M::RuntimeAbnormal,
+        RuntimeInterventionKind::ErrorBlocked => M::ErrorBlocked,
+        RuntimeInterventionKind::ProcessInterrupted => M::ProcessInterrupted,
+    }
+}
+
+fn emit_run_metrics_fact(
+    app: &App,
+    run: &RunState,
+    event_type: super::observability::LifecycleEventType,
+    _event_id: String,
+    occurred_at: String,
+    pause_reason: Option<PauseReason>,
+    intervention_kind: Option<RuntimeInterventionKind>,
+    outcome: Option<RunOutcome>,
+) {
+    if !app.metrics_collection_enabled() {
+        return;
+    }
+    let (Some(task_uuid), Some(run_uuid)) = (run.task_uuid.clone(), run.uuid.clone()) else {
+        return;
+    };
+    // Direct conversations own their per-turn lifecycle in the ACP command
+    // path. Their internal worker run must not create a second delivery.
+    if super::notification::direct_conversation_agent_label(app, &run.task_id).is_some() {
+        return;
+    }
+    let path = app
+        .paths
+        .run_dir(&run.task_id, &run.id)
+        .join("observability")
+        .join(&run_uuid)
+        .join(super::observability::OBSERVABILITY_SNAPSHOT_FILE);
+    let state = app.update_observability_state(&run_uuid, path, |state| {
+        state.next_revision();
+        if event_type == super::observability::LifecycleEventType::ExecutionPaused {
+            state.record_pause(true);
+        }
+        if event_type == super::observability::LifecycleEventType::ExecutionResumed {
+            let cause = state
+                .take_pending_resume_cause()
+                .unwrap_or(super::observability::ResumeCause::AutomaticRecovery);
+            state.record_resume(true, cause);
+        }
+    });
+    let is_auto = run
+        .current_round
+        .as_deref()
+        .zip(run.current_node.as_deref())
+        .zip(run.current_attempt.as_deref())
+        .and_then(|((round_id, node_id), attempt_id)| {
+            read_json::<NodeState>(&app.paths.node_file(
+                &run.task_id,
+                &run.id,
+                round_id,
+                node_id,
+                attempt_id,
+            ))
+            .ok()
+        })
+        .is_some_and(|node| node.node_type == crate::domain::NodeType::AiDynamic);
+    let mut fact = super::observability::MetricsLifecycleFact::new(
+        event_type,
+        state.event_revision,
+        occurred_at,
+        metrics_user_id(),
+        app.paths.repo_root.to_string(),
+        if is_auto {
+            super::observability::MetricsSessionMode::Auto
+        } else {
+            super::observability::MetricsSessionMode::Workflow
+        },
+        task_uuid,
+        if is_auto {
+            super::observability::ExecutionKind::OuterRun
+        } else {
+            super::observability::ExecutionKind::Run
+        },
+        run_uuid.clone(),
+    );
+    fact.pause_reason = pause_reason.map(metrics_pause_reason);
+    fact.previous_pause_reason =
+        if event_type == super::observability::LifecycleEventType::ExecutionResumed {
+            pause_reason.map(metrics_pause_reason)
+        } else {
+            None
+        };
+    fact.intervention_kind = intervention_kind.map(metrics_intervention_kind);
+    fact.collection_state_recovered = state.collection_state_recovered;
+    if let Some(outcome) = outcome {
+        fact.outcome = Some(match outcome {
+            RunOutcome::Success => super::observability::ExecutionOutcome::Success,
+            RunOutcome::Failure => super::observability::ExecutionOutcome::Failure,
+            RunOutcome::Killed => super::observability::ExecutionOutcome::Killed,
+        });
+        fact.terminal_reason = Some(match outcome {
+            RunOutcome::Success => super::observability::TerminalReason::Completed,
+            RunOutcome::Failure => super::observability::TerminalReason::ExecutionFailed,
+            RunOutcome::Killed => super::observability::TerminalReason::ProcessKilled,
+        });
+        if !is_auto {
+            fact.round_count = Some(run.new_rounds_opened.saturating_add(1));
+        }
+        if outcome != RunOutcome::Success {
+            let outer_attempt = run
+                .current_round
+                .as_deref()
+                .zip(run.current_node.as_deref())
+                .zip(run.current_attempt.as_deref());
+            let failed_unit = is_auto
+                .then(|| outer_attempt)
+                .flatten()
+                .and_then(|((round_id, node_id), attempt_id)| {
+                    read_json::<DynamicGraphState>(&app.paths.dynamic_graph_file(
+                        &run.task_id,
+                        &run.id,
+                        round_id,
+                        node_id,
+                        attempt_id,
+                    ))
+                    .ok()
+                })
+                .and_then(|graph| failed_dynamic_metrics_unit(&graph).cloned());
+            if let Some(node) = failed_unit {
+                fact.failed_attempt_id = node.uuid.as_deref().and_then(|execution_id| {
+                    super::observability::derive_attempt_id(
+                        execution_id,
+                        &dynamic_attempt_id(&node),
+                    )
+                });
+                fact.terminal_reason = Some(dynamic_metrics_terminal_reason(&node));
+                fact.terminal_reason_code = node
+                    .runtime_error
+                    .as_ref()
+                    .map(|error| error.code_str().to_string());
+            } else {
+                fact.failed_attempt_id =
+                    outer_attempt.and_then(|((round_id, node_id), attempt_id)| {
+                        read_json::<NodeState>(&app.paths.node_file(
+                            &run.task_id,
+                            &run.id,
+                            round_id,
+                            node_id,
+                            attempt_id,
+                        ))
+                        .ok()
+                        .and_then(|node| node.uuid)
+                    });
+            }
+        }
+        fact.counters = Some(state.counters.clone());
+    }
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsFact(fact));
+    if outcome.is_some() {
+        app.release_observability_state(&run_uuid);
+    }
+}
+
 fn emit_run_paused_lifecycle_event(
     app: &App,
     task_id: &str,
@@ -1766,15 +1991,17 @@ fn emit_run_paused_lifecycle_event(
     node: &NodeState,
 ) {
     let reason = run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted);
+    let event_id = super::notification::make_dedup_key(
+        &run.id,
+        &round.id,
+        &node.node_id,
+        &node.attempt_id,
+        reason,
+    );
+    let occurred_at = now_rfc3339_like();
     app.emit_lifecycle_event(RuntimeLifecycleEvent::RunPaused {
-        event_id: super::notification::make_dedup_key(
-            &run.id,
-            &round.id,
-            &node.node_id,
-            &node.attempt_id,
-            reason,
-        ),
-        occurred_at: now_rfc3339_like(),
+        event_id: event_id.clone(),
+        occurred_at: occurred_at.clone(),
         task_id: task_id.to_string(),
         run_id: run.id.clone(),
         round_id: round.id.clone(),
@@ -1784,6 +2011,16 @@ fn emit_run_paused_lifecycle_event(
         pause_reason: reason,
         task_title: task_title(app, task_id),
     });
+    emit_run_metrics_fact(
+        app,
+        run,
+        super::observability::LifecycleEventType::ExecutionPaused,
+        event_id,
+        occurred_at,
+        Some(reason),
+        None,
+        None,
+    );
 }
 
 fn emit_intervention_requested(
@@ -1795,15 +2032,17 @@ fn emit_intervention_requested(
     kind: RuntimeInterventionKind,
 ) {
     let pause_reason = super::notification::pause_reason_for_intervention(kind);
+    let event_id = super::notification::make_dedup_key(
+        &run.id,
+        &round.id,
+        &node.node_id,
+        &node.attempt_id,
+        pause_reason,
+    );
+    let occurred_at = now_rfc3339_like();
     app.emit_lifecycle_event(RuntimeLifecycleEvent::InterventionRequested {
-        event_id: super::notification::make_dedup_key(
-            &run.id,
-            &round.id,
-            &node.node_id,
-            &node.attempt_id,
-            pause_reason,
-        ),
-        occurred_at: now_rfc3339_like(),
+        event_id: event_id.clone(),
+        occurred_at: occurred_at.clone(),
         task_id: task_id.to_string(),
         run_id: run.id.clone(),
         round_id: round.id.clone(),
@@ -1813,6 +2052,16 @@ fn emit_intervention_requested(
         kind,
         task_title: task_title(app, task_id),
     });
+    emit_run_metrics_fact(
+        app,
+        run,
+        super::observability::LifecycleEventType::InterventionRequested,
+        event_id,
+        occurred_at,
+        None,
+        Some(kind),
+        None,
+    );
 }
 
 fn emit_run_completed_lifecycle_event(
@@ -1823,14 +2072,16 @@ fn emit_run_completed_lifecycle_event(
     node: &NodeState,
     outcome: RunOutcome,
 ) {
+    let event_id = super::notification::make_completion_dedup_key(
+        &run.id,
+        &round.id,
+        &node.node_id,
+        &node.attempt_id,
+    );
+    let occurred_at = now_rfc3339_like();
     app.emit_lifecycle_event(RuntimeLifecycleEvent::RunCompleted {
-        event_id: super::notification::make_completion_dedup_key(
-            &run.id,
-            &round.id,
-            &node.node_id,
-            &node.attempt_id,
-        ),
-        occurred_at: now_rfc3339_like(),
+        event_id: event_id.clone(),
+        occurred_at: occurred_at.clone(),
         task_id: task_id.to_string(),
         run_id: run.id.clone(),
         round_id: round.id.clone(),
@@ -1841,6 +2092,16 @@ fn emit_run_completed_lifecycle_event(
         task_title: task_title(app, task_id),
         completion_agent_label: super::notification::direct_conversation_agent_label(app, task_id),
     });
+    emit_run_metrics_fact(
+        app,
+        run,
+        super::observability::LifecycleEventType::ExecutionCompleted,
+        event_id,
+        occurred_at,
+        None,
+        None,
+        Some(outcome),
+    );
 }
 
 fn intervention_kind_for_pause(
@@ -4414,6 +4675,7 @@ fn restore_outer_attempt_running_for_dynamic_resume(
     if round.status != RunStatus::Paused || node.status != RunStatus::Paused {
         return Ok(false);
     }
+    let previous_pause_reason = run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted);
     let now = now_rfc3339_like();
     run.status = RunStatus::Running;
     run.pause_reason = None;
@@ -4424,6 +4686,21 @@ fn restore_outer_attempt_running_for_dynamic_resume(
     node.outcome = None;
     node.finished_at = None;
     persist_runtime_state(app, task_id, &run, &round, &node)?;
+    app.record_metrics_resume_cause(
+        task_id,
+        run_id,
+        super::observability::ResumeCause::AutomaticRecovery,
+    );
+    emit_run_metrics_fact(
+        app,
+        &run,
+        super::observability::LifecycleEventType::ExecutionResumed,
+        uuid::Uuid::new_v4().to_string(),
+        now_rfc3339_like(),
+        Some(previous_pause_reason),
+        None,
+        None,
+    );
     Ok(true)
 }
 
@@ -4468,30 +4745,41 @@ fn emit_dynamic_worker_completed(
 
     let outcome = match node.outcome {
         Some(NodeOutcome::Success) => "SUCCESS",
+        Some(NodeOutcome::Invalid) => "INVALID",
+        Some(NodeOutcome::Killed) => "KILLED",
         _ => "FAILED",
     };
 
-    app.lifecycle_bus
-        .emit(RuntimeLifecycleEvent::NodeCompleted {
-            task_id: ctx.task_id.to_string(),
-            task_uuid: ctx.task_uuid.map(|s| s.to_string()),
-            run_id: ctx.run_id.to_string(),
-            run_uuid: ctx.run_uuid.map(|s| s.to_string()),
-            round_id: ctx.round_id.to_string(),
-            round_uuid: ctx.round_uuid.map(|s| s.to_string()),
-            node_id: node.id.clone(),
-            node_uuid: node.uuid.clone(),
-            attempt_id: dynamic_attempt_id(node),
-            repo_root: app.paths.repo_root.to_string(),
-            seq: None,
-            node_name: node.title.clone(),
-            agent_type: node.provider.clone(),
-            started_at: node.started_at.clone().unwrap_or_default(),
-            finished_at: node.finished_at.clone(),
-            outcome: outcome.to_string(),
-            attempt_dir,
-            suppress_sentinel: true,
-        });
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::NodeCompleted {
+        task_id: ctx.task_id.to_string(),
+        task_uuid: ctx.task_uuid.map(|s| s.to_string()),
+        run_id: ctx.run_id.to_string(),
+        run_uuid: ctx.run_uuid.map(|s| s.to_string()),
+        round_id: ctx.round_id.to_string(),
+        round_uuid: ctx.round_uuid.map(|s| s.to_string()),
+        round_index: read_json::<RoundState>(&app.paths.round_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+        ))
+        .ok()
+        .map(|round| round.index),
+        node_id: node.id.clone(),
+        node_uuid: node.uuid.clone(),
+        attempt_id: dynamic_attempt_id(node),
+        repo_root: app.paths.repo_root.to_string(),
+        seq: None,
+        node_name: node.title.clone(),
+        agent_type: node.provider.clone(),
+        resolved_model: node.model.clone(),
+        started_at: node.started_at.clone().unwrap_or_default(),
+        finished_at: node.finished_at.clone(),
+        outcome: outcome.to_string(),
+        attempt_dir,
+        suppress_sentinel: true,
+        metrics_unit_kind: Some(node.kind),
+        child_run_id: node.child_run_id.clone(),
+    });
 }
 
 fn execute_dynamic_node_job(
@@ -4511,6 +4799,30 @@ fn execute_dynamic_node_job(
     parent_continue_prompt_id: Option<String>,
     resume_override: Option<DynamicResumeOverride>,
 ) -> Result<DynamicExecutionResult> {
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::NodeStarted {
+        task_id: task_id.to_string(),
+        task_uuid: task_uuid.map(str::to_string),
+        run_id: run_id.to_string(),
+        run_uuid: run_uuid.map(str::to_string),
+        round_id: round_id.to_string(),
+        round_uuid: round_uuid.map(str::to_string),
+        round_index: read_json::<RoundState>(&app.paths.round_file(task_id, run_id, round_id))
+            .ok()
+            .map(|round| round.index),
+        node_id: node.id.clone(),
+        node_uuid: node.uuid.clone(),
+        attempt_id: dynamic_attempt_id(&node),
+        repo_root: app.paths.repo_root.to_string(),
+        seq: None,
+        node_name: Some(node.title.clone()),
+        agent_type: node.provider.clone(),
+        resolved_model: node.model.clone(),
+        started_at: node.started_at.clone().unwrap_or_else(now_rfc3339_like),
+        attempt_dir: None,
+        predecessor: None,
+        metrics_unit_kind: Some(node.kind),
+        child_run_id: node.child_run_id.clone(),
+    });
     append_dynamic_event_for_ids_best_effort(
         app,
         task_id,
@@ -9985,6 +10297,9 @@ fn drive_from_node_with_initial_session(
             .with_round(round.id.clone())
             .with_node(current_node_id.clone())
             .with_attempt(current_attempt_id.clone());
+        let previous_pause_reason = (run.status == RunStatus::Paused)
+            .then_some(run.pause_reason)
+            .flatten();
         run.status = RunStatus::Running;
         run.pause_reason = None;
         run.updated_at = now_rfc3339_like();
@@ -10022,6 +10337,18 @@ fn drive_from_node_with_initial_session(
             ),
         );
         persist_runtime_state(app, task_id, run, round, &node)?;
+        if let Some(previous_pause_reason) = previous_pause_reason {
+            emit_run_metrics_fact(
+                app,
+                run,
+                super::observability::LifecycleEventType::ExecutionResumed,
+                uuid::Uuid::new_v4().to_string(),
+                now_rfc3339_like(),
+                Some(previous_pause_reason),
+                None,
+                None,
+            );
+        }
 
         // ── Observability: notify node started ──
         {
@@ -10048,25 +10375,32 @@ fn drive_from_node_with_initial_session(
                 .get("provider")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            app.lifecycle_bus
-                .emit(super::RuntimeLifecycleEvent::NodeStarted {
-                    task_id: task_id.to_string(),
-                    task_uuid: run.task_uuid.clone(),
-                    run_id: run.id.clone(),
-                    run_uuid: run.uuid.clone(),
-                    round_id: round.id.clone(),
-                    round_uuid: round.uuid.clone(),
-                    node_id: node.node_id.clone(),
-                    node_uuid: node.uuid.clone(),
-                    attempt_id: node.attempt_id.clone(),
-                    repo_root: app.paths.repo_root.to_string(),
-                    seq,
-                    node_name,
-                    agent_type,
-                    started_at: node.started_at.clone(),
-                    attempt_dir: None,
-                    predecessor: run.last_executed_node.clone(),
-                });
+            app.emit_lifecycle_event(super::RuntimeLifecycleEvent::NodeStarted {
+                task_id: task_id.to_string(),
+                task_uuid: run.task_uuid.clone(),
+                run_id: run.id.clone(),
+                run_uuid: run.uuid.clone(),
+                round_id: round.id.clone(),
+                round_uuid: round.uuid.clone(),
+                round_index: Some(round.index),
+                node_id: node.node_id.clone(),
+                node_uuid: node.uuid.clone(),
+                attempt_id: node.attempt_id.clone(),
+                repo_root: app.paths.repo_root.to_string(),
+                seq,
+                node_name,
+                agent_type,
+                resolved_model: node
+                    .resolved_config
+                    .get("model")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                started_at: node.started_at.clone(),
+                attempt_dir: None,
+                predecessor: run.last_executed_node.clone(),
+                metrics_unit_kind: None,
+                child_run_id: None,
+            });
         }
 
         let current_node_dsl = workflow
@@ -10529,27 +10863,34 @@ fn drive_from_node_with_initial_session(
         }
         // Workflow ended — emit completed event for observability subscribers
         run.last_executed_node = Some(completed_snapshot.clone());
-        app.lifecycle_bus
-            .emit(super::RuntimeLifecycleEvent::NodeCompleted {
-                task_id: task_id.to_string(),
-                task_uuid: run.task_uuid.clone(),
-                run_id: run.id.clone(),
-                run_uuid: run.uuid.clone(),
-                round_id: round.id.clone(),
-                round_uuid: round.uuid.clone(),
-                node_id: node.node_id.clone(),
-                node_uuid: node.uuid.clone(),
-                attempt_id: node.attempt_id.clone(),
-                repo_root: app.paths.repo_root.to_string(),
-                seq: completed_snapshot.seq,
-                node_name: completed_snapshot.node_name.clone(),
-                agent_type: completed_snapshot.agent_type.clone(),
-                started_at: node.started_at.clone(),
-                finished_at: node.finished_at.clone(),
-                outcome: completed_snapshot.status.clone(),
-                attempt_dir: attempt_dir.clone(),
-                suppress_sentinel: false,
-            });
+        app.emit_lifecycle_event(super::RuntimeLifecycleEvent::NodeCompleted {
+            task_id: task_id.to_string(),
+            task_uuid: run.task_uuid.clone(),
+            run_id: run.id.clone(),
+            run_uuid: run.uuid.clone(),
+            round_id: round.id.clone(),
+            round_uuid: round.uuid.clone(),
+            round_index: Some(round.index),
+            node_id: node.node_id.clone(),
+            node_uuid: node.uuid.clone(),
+            attempt_id: node.attempt_id.clone(),
+            repo_root: app.paths.repo_root.to_string(),
+            seq: completed_snapshot.seq,
+            node_name: completed_snapshot.node_name.clone(),
+            agent_type: completed_snapshot.agent_type.clone(),
+            resolved_model: node
+                .resolved_config
+                .get("model")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            started_at: node.started_at.clone(),
+            finished_at: node.finished_at.clone(),
+            outcome: completed_snapshot.status.clone(),
+            attempt_dir: attempt_dir.clone(),
+            suppress_sentinel: false,
+            metrics_unit_kind: None,
+            child_run_id: None,
+        });
         return Ok(());
     }
 }
@@ -10564,6 +10905,103 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
+
+    #[test]
+    fn metrics_resume_cause_is_consumed_without_pause_reason_inference() {
+        let mut state = crate::app::observability::ExecutionObservabilityState::default();
+        state.set_pending_resume_cause(crate::app::observability::ResumeCause::PermissionResolved);
+        let cause = state.take_pending_resume_cause().unwrap();
+        state.record_resume(true, cause);
+        assert_eq!(state.counters.resume_count, 1);
+        assert_eq!(state.counters.manual_continue_count, 0);
+        state.set_pending_resume_cause(crate::app::observability::ResumeCause::ManualContinue);
+        let cause = state.take_pending_resume_cause().unwrap();
+        state.record_resume(true, cause);
+        assert_eq!(state.counters.resume_count, 2);
+        assert_eq!(state.counters.manual_continue_count, 1);
+    }
+
+    #[test]
+    fn auto_metrics_selects_latest_failed_unit_and_classifies_acceptance() {
+        fn node(
+            id: &str,
+            kind: crate::dynamic::DynamicNodeKind,
+            outcome: NodeOutcome,
+            finished_at: &str,
+        ) -> crate::dynamic::DynamicNodeState {
+            crate::dynamic::DynamicNodeState {
+                version: crate::domain::VERSION.into(),
+                id: id.into(),
+                dynamic_run_id: "dynamic-001".into(),
+                kind,
+                title: id.into(),
+                task: id.into(),
+                status: DynamicNodeStatus::Completed,
+                outcome: Some(outcome),
+                pause_reason: None,
+                runtime_error: None,
+                group_id: None,
+                chain_id: "chain-001".into(),
+                depth: 0,
+                depends_on: Vec::new(),
+                workspace: crate::dynamic::WorkspacePolicy::default(),
+                workspace_path: None,
+                provider: None,
+                profile: None,
+                permission_mode: None,
+                model: None,
+                session_mode: SessionMode::New,
+                continue_from_node_id: None,
+                workflow_id: None,
+                workflow_snapshot_id: None,
+                child_run_id: None,
+                started_at: Some("2026-08-01T00:00:00Z".into()),
+                finished_at: Some(finished_at.into()),
+                uuid: Some(format!("uuid-{id}")),
+            }
+        }
+        let graph = DynamicGraphState {
+            version: crate::domain::VERSION.into(),
+            run: DynamicRunState {
+                version: crate::domain::VERSION.into(),
+                id: "dynamic-001".into(),
+                parent_run_id: "run-001".into(),
+                parent_round_id: "round-001".into(),
+                parent_node_id: "auto".into(),
+                parent_attempt_id: "attempt-001".into(),
+                status: DynamicRunStatus::Completed,
+                outcome: Some(RunOutcome::Failure),
+                pause_reason: None,
+                started_at: "2026-08-01T00:00:00Z".into(),
+                updated_at: "2026-08-01T00:00:02Z".into(),
+                control: crate::dsl::DynamicControlDsl::default(),
+                allowed_workflow_snapshots: Vec::new(),
+                current_node_ids: Vec::new(),
+            },
+            nodes: vec![
+                node(
+                    "worker",
+                    crate::dynamic::DynamicNodeKind::Worker,
+                    NodeOutcome::Failure,
+                    "2026-08-01T00:00:01Z",
+                ),
+                node(
+                    "acceptance",
+                    crate::dynamic::DynamicNodeKind::Acceptance,
+                    NodeOutcome::Failure,
+                    "2026-08-01T00:00:02Z",
+                ),
+            ],
+            groups: Vec::new(),
+            proposals: Vec::new(),
+        };
+        let failed = failed_dynamic_metrics_unit(&graph).unwrap();
+        assert_eq!(failed.uuid.as_deref(), Some("uuid-acceptance"));
+        assert_eq!(
+            dynamic_metrics_terminal_reason(failed),
+            crate::app::observability::TerminalReason::AcceptanceRejected
+        );
+    }
 
     fn git(cwd: &Utf8Path, args: &[&str]) {
         let output = git_output(cwd, args).expect("git command should run");

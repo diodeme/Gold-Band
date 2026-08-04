@@ -104,6 +104,10 @@ enum AcpPromptUsageJournalEntry {
         turn_id: String,
         turn_seq: u64,
         timestamp: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     PromptCompleted {
         turn_id: String,
@@ -112,6 +116,10 @@ enum AcpPromptUsageJournalEntry {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<Value>,
         usage: AcpPromptTokenUsage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
         #[serde(default, skip_serializing_if = "is_false")]
         recovered_from_raw: bool,
     },
@@ -130,6 +138,17 @@ struct PromptTurnStart {
     turn_id: String,
     turn_seq: u64,
     timestamp: String,
+    provider: Option<String>,
+    model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpPromptUsageSegment {
+    pub turn_id: String,
+    pub turn_seq: u64,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub usage: AcpPromptTokenUsage,
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +171,8 @@ pub fn append_prompt_started(
     turn_id: &str,
     turn_seq: u64,
     timestamp: &str,
+    provider: Option<&str>,
+    model: Option<&str>,
 ) -> Result<()> {
     append_jsonl_durable(
         journal_path,
@@ -159,6 +180,8 @@ pub fn append_prompt_started(
             turn_id: turn_id.to_string(),
             turn_seq,
             timestamp: timestamp.to_string(),
+            provider: provider.map(str::to_string),
+            model: model.map(str::to_string),
         },
     )
 }
@@ -170,6 +193,8 @@ pub fn append_prompt_completed(
     timestamp: &str,
     request_id: Option<Value>,
     usage: &AcpPromptTokenUsage,
+    provider: Option<&str>,
+    model: Option<&str>,
 ) -> Result<bool> {
     append_prompt_completed_inner(
         journal_path,
@@ -178,6 +203,8 @@ pub fn append_prompt_completed(
         timestamp,
         request_id,
         usage,
+        provider.map(str::to_string),
+        model.map(str::to_string),
         false,
     )
 }
@@ -207,6 +234,8 @@ pub fn repair_attempt_usage(
             turn_id: event.id.clone(),
             turn_seq: event.seq,
             timestamp: event.timestamp.clone(),
+            provider: None,
+            model: None,
         });
     }
     starts.sort_by_key(|start| start.turn_seq);
@@ -239,6 +268,8 @@ pub fn repair_attempt_usage(
                 completed_at,
                 Some(transaction.request_id.clone()),
                 usage,
+                start.provider.clone(),
+                start.model.clone(),
                 true,
             )? {
                 recovered_turns = recovered_turns.saturating_add(1);
@@ -382,6 +413,8 @@ fn append_prompt_completed_inner(
     timestamp: &str,
     request_id: Option<Value>,
     usage: &AcpPromptTokenUsage,
+    provider: Option<String>,
+    model: Option<String>,
     recovered_from_raw: bool,
 ) -> Result<bool> {
     with_jsonl_file_lock(journal_path, || {
@@ -394,6 +427,8 @@ fn append_prompt_completed_inner(
             timestamp: timestamp.to_string(),
             request_id,
             usage: usage.clone(),
+            provider,
+            model,
             recovered_from_raw,
         };
         append_journal_entry_durable_unlocked(journal_path, &entry)?;
@@ -415,16 +450,49 @@ fn prompt_starts_from_journal(path: &Utf8Path) -> Result<Vec<PromptTurnStart>> {
             turn_id,
             turn_seq,
             timestamp,
+            provider,
+            model,
         } = entry
         {
             starts.entry(turn_id.clone()).or_insert(PromptTurnStart {
                 turn_id,
                 turn_seq,
                 timestamp,
+                provider,
+                model,
             });
         }
     }
     Ok(starts.into_values().collect())
+}
+
+pub fn read_prompt_usage_segments(attempt_dir: &Utf8Path) -> Vec<AcpPromptUsageSegment> {
+    let path = attempt_dir.join("acp.prompt-usage.jsonl");
+    let Ok(entries) = read_journal(&path) else {
+        return Vec::new();
+    };
+    let mut segments = entries
+        .into_iter()
+        .filter_map(|entry| match entry {
+            AcpPromptUsageJournalEntry::PromptCompleted {
+                turn_id,
+                turn_seq,
+                provider,
+                model,
+                usage,
+                ..
+            } => Some(AcpPromptUsageSegment {
+                turn_id,
+                turn_seq,
+                provider,
+                model,
+                usage,
+            }),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    segments.sort_by_key(|segment| segment.turn_seq);
+    segments
 }
 
 fn prompt_completions_from_journal(
@@ -612,8 +680,24 @@ mod tests {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir.clone());
         let prompts = vec![prompt_event(1, "100Z"), prompt_event(15, "200Z")];
         write_timeline_items(&paths.timeline, &prompts).unwrap();
-        append_prompt_started(&paths.prompt_usage, &prompts[0].id, 1, "100Z").unwrap();
-        append_prompt_started(&paths.prompt_usage, &prompts[1].id, 15, "200Z").unwrap();
+        append_prompt_started(
+            &paths.prompt_usage,
+            &prompts[0].id,
+            1,
+            "100Z",
+            Some("provider-a"),
+            Some("model-a"),
+        )
+        .unwrap();
+        append_prompt_started(
+            &paths.prompt_usage,
+            &prompts[1].id,
+            15,
+            "200Z",
+            Some("provider-b"),
+            Some("model-b"),
+        )
+        .unwrap();
         append_prompt_completed(
             &paths.prompt_usage,
             &prompts[0].id,
@@ -626,6 +710,8 @@ mod tests {
                 total_tokens: Some(110),
                 ..Default::default()
             },
+            Some("provider-a"),
+            Some("model-a"),
         )
         .unwrap();
         for frame in [
@@ -668,6 +754,13 @@ mod tests {
         assert_eq!(recovered.totals.output_tokens, Some(30));
         assert_eq!(recovered.totals.cached_read_tokens, Some(30));
         assert_eq!(recovered.totals.total_tokens, Some(230));
+        let segments = read_prompt_usage_segments(&attempt_dir);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].provider.as_deref(), Some("provider-a"));
+        assert_eq!(segments[0].model.as_deref(), Some("model-a"));
+        assert_eq!(segments[1].provider.as_deref(), Some("provider-b"));
+        assert_eq!(segments[1].model.as_deref(), Some("model-b"));
+        assert_eq!(segments[1].usage.total_tokens, Some(120));
 
         let second_read = repair_attempt_usage(
             &paths.snapshot,

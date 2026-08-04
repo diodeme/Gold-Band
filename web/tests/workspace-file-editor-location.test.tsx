@@ -1,12 +1,16 @@
 /** @vitest-environment jsdom */
 
 import React, { act } from 'react';
+import { readFileSync } from 'node:fs';
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  captureEditorViewportAnchor,
+  retainWidgetViewportAnchor,
   restoreEditorViewportAnchor,
+  scrollEditorViewportAnchor,
   WorkspaceFileEditor,
 } from '@/components/workspace/files/WorkspaceFileEditor';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -35,6 +39,102 @@ afterEach(() => {
 });
 
 describe('WorkspaceFileEditor target intent', () => {
+  it('does not reconfigure an unchanged editor policy after the view mounts', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const dispatch = vi.spyOn(EditorView.prototype, 'dispatch');
+    const props = {
+      documentKey: 'editor-policy-profile',
+      value: 'content',
+      language: 'text',
+      highlight: false,
+      contentRevision: 1,
+      target: null,
+      targetRevision: 0,
+      onChange: () => undefined,
+      onSave: () => undefined,
+      initialStateJson: null,
+      onPersistState: () => undefined,
+    } as const;
+    const editorPolicyDispatches = () => dispatch.mock.calls.filter(([spec]) => {
+      if (Array.isArray(spec)) return false;
+      const effect = (spec as { effects?: { value?: { extension?: unknown[] } } }).effects;
+      return Array.isArray(effect?.value?.extension) && effect.value.extension.length === 2;
+    });
+    try {
+      await act(async () => root.render(<WorkspaceFileEditor {...props} editable />));
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 120)));
+
+      const view = EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement);
+      expect(view).toBeDefined();
+      expect(editorPolicyDispatches()).toHaveLength(0);
+
+      await act(async () => root.render(<WorkspaceFileEditor {...props} editable={false} />));
+      expect(EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement)).toBe(view);
+      expect(editorPolicyDispatches()).toHaveLength(1);
+      expect(view?.state.facet(EditorState.readOnly)).toBe(true);
+      expect(view?.state.facet(EditorView.editable)).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('does not repeat the initial Markdown image profile dispatch', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const dispatch = vi.spyOn(EditorView.prototype, 'dispatch');
+    const initialImages = new Map();
+    const nextImages = new Map();
+    const props = {
+      documentKey: 'markdown-image-profile',
+      value: '# Preview',
+      editable: true,
+      language: 'markdown',
+      highlight: false,
+      contentRevision: 1,
+      target: null,
+      targetRevision: 0,
+      onChange: () => undefined,
+      onSave: () => undefined,
+      initialStateJson: null,
+      onPersistState: () => undefined,
+      markdownMode: 'live-preview' as const,
+    };
+    const imageProfileDispatches = () => dispatch.mock.calls.filter(([spec]) => {
+      if (Array.isArray(spec)) return false;
+      const effect = (spec as { effects?: { value?: { images?: unknown } } }).effects;
+      return effect?.value?.images instanceof Map;
+    });
+    try {
+      await act(async () => root.render(
+        <TooltipProvider>
+          <WorkspaceFileEditor {...props} markdownImages={initialImages} />
+        </TooltipProvider>,
+      ));
+      await vi.waitFor(() => expect(container.querySelector('.cm-editor')).not.toBeNull(), { timeout: 5_000 });
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 120)));
+
+      const view = EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement);
+      expect(view).toBeDefined();
+      expect(imageProfileDispatches()).toHaveLength(0);
+
+      await act(async () => root.render(
+        <TooltipProvider>
+          <WorkspaceFileEditor {...props} markdownImages={nextImages} />
+        </TooltipProvider>,
+      ));
+      expect(EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement)).toBe(view);
+      expect(imageProfileDispatches()).toHaveLength(1);
+      expect(imageProfileDispatches()[0]?.[0]).toMatchObject({
+        effects: { value: { images: nextImages } },
+      });
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('restores a rebuild anchor through the native CodeMirror scroll effect', () => {
     const parent = document.createElement('div');
     document.body.append(parent);
@@ -43,7 +143,13 @@ describe('WorkspaceFileEditor target intent', () => {
       parent,
     });
     try {
-      restoreEditorViewportAnchor(view, { position: view.state.doc.line(2).from, blockOffsetTop: -1.5 });
+      restoreEditorViewportAnchor(view, {
+        position: view.state.doc.line(2).from,
+        blockOffsetTop: -1.5,
+        blockRange: { from: view.state.doc.line(2).from, to: view.state.doc.line(2).to },
+        widgetRange: null,
+        widgetAnchor: null,
+      });
 
       expect(EditorView.scrollIntoView).toHaveBeenCalledWith(
         view.state.doc.line(2).from,
@@ -52,6 +158,159 @@ describe('WorkspaceFileEditor target intent', () => {
     } finally {
       view.destroy();
     }
+  });
+
+  it('retains a table-row anchor when the source viewport remains on the same row', () => {
+    const remembered = {
+      position: 50,
+      blockOffsetTop: 0,
+      blockRange: { from: 10, to: 90 },
+      widgetRange: { from: 10, to: 90 },
+      widgetAnchor: { kind: 'markdown-table-row' as const, rowIndex: 2, rowProgress: 0.5 },
+    };
+    const view = {
+      state: EditorState.create({ doc: 'x'.repeat(100) }),
+      lineBlockAt: () => ({ height: 20 }),
+    } as unknown as EditorView;
+
+    expect(retainWidgetViewportAnchor(view, {
+      position: 40,
+      blockOffsetTop: -1.625,
+      blockRange: { from: 40, to: 60 },
+      widgetRange: null,
+      widgetAnchor: null,
+    }, remembered)).toBe(remembered);
+    expect(retainWidgetViewportAnchor(view, {
+      position: 61,
+      blockOffsetTop: 0,
+      blockRange: { from: 61, to: 70 },
+      widgetRange: null,
+      widgetAnchor: null,
+    }, remembered)).not.toBe(remembered);
+  });
+
+  it('maps the viewport inside a replacement widget to its source range', () => {
+    const elementAtHeight = vi.fn(() => ({
+      from: 100,
+      to: 200,
+      top: 200,
+      height: 600,
+      widget: {},
+    }));
+    const anchor = captureEditorViewportAnchor({
+      scrollDOM: { getBoundingClientRect: () => new DOMRect(0, 0, 800, 480) },
+      documentTop: -500,
+      elementAtHeight,
+      state: { doc: { length: 1_000 } },
+    } as unknown as EditorView);
+
+    expect(elementAtHeight).toHaveBeenCalledWith(501);
+    expect(anchor).toEqual({
+      position: 150,
+      blockOffsetTop: 0,
+      blockRange: { from: 100, to: 200 },
+      widgetRange: { from: 100, to: 200 },
+      widgetAnchor: null,
+    });
+  });
+
+  it('maps an Atomic table viewport to its semantic Markdown row', () => {
+    const state = EditorState.create({
+      doc: '# Title\n\n| H | V |\n| --- | --- |\n| one | first |\n| two | second row |',
+    });
+    const tableRange = {
+      from: state.doc.line(3).from,
+      to: state.doc.line(6).to,
+    };
+    const content = document.createElement('div');
+    const atomicTable = document.createElement('div');
+    atomicTable.className = 'cm-atomic-table';
+    const table = document.createElement('table');
+    const head = table.createTHead();
+    head.insertRow();
+    const body = table.createTBody();
+    body.insertRow();
+    body.insertRow();
+    atomicTable.append(table);
+    content.append(atomicTable);
+    const rows = atomicTable.querySelectorAll('tr');
+    Object.defineProperty(rows[0], 'getBoundingClientRect', {
+      configurable: true,
+      value: () => new DOMRect(0, -199, 800, 99),
+    });
+    Object.defineProperty(rows[1], 'getBoundingClientRect', {
+      configurable: true,
+      value: () => new DOMRect(0, -99, 800, 99),
+    });
+    Object.defineProperty(rows[2], 'getBoundingClientRect', {
+      configurable: true,
+      value: () => new DOMRect(0, 0, 800, 100),
+    });
+    const anchor = captureEditorViewportAnchor({
+      scrollDOM: { getBoundingClientRect: () => new DOMRect(0, 0, 800, 480) },
+      documentTop: -200,
+      domAtPos: () => ({ node: content, offset: 0 }),
+      elementAtHeight: () => ({
+        ...tableRange,
+        top: 0,
+        height: 400,
+        widget: {},
+      }),
+      state,
+    } as unknown as EditorView);
+
+    expect(anchor).toEqual({
+      position: state.doc.line(6).from,
+      blockOffsetTop: 0,
+      blockRange: tableRange,
+      widgetRange: tableRange,
+      widgetAnchor: {
+        kind: 'markdown-table-row',
+        rowIndex: 2,
+        rowProgress: 0.01,
+      },
+    });
+  });
+
+  it('restores widget progress from the measured viewport block instead of a stale position block', () => {
+    const scrollDOM = {
+      scrollTop: 100,
+      scrollHeight: 2_000,
+      clientHeight: 480,
+      getBoundingClientRect: () => new DOMRect(0, 0, 800, 480),
+    };
+    const view = {
+      state: { doc: { length: 1_000 } },
+      scaleY: 1,
+      documentTop: -100,
+      scrollDOM,
+      viewportLineBlocks: [{
+        from: 100,
+        to: 200,
+        top: 200,
+        height: 800,
+        widget: {},
+        type: 3,
+      }],
+      lineBlockAt: () => ({
+        from: 100,
+        to: 200,
+        top: 20,
+        height: 20,
+        widget: {},
+        type: 3,
+      }),
+    } as unknown as EditorView;
+
+    scrollEditorViewportAnchor(view, {
+      position: 150,
+      blockOffsetTop: 0,
+      blockRange: { from: 100, to: 200 },
+      widgetRange: null,
+      widgetAnchor: null,
+    });
+
+    expect(scrollDOM.scrollTop).toBe(600);
   });
 
   it('reconfigures preview-source-preview on one view after predecoding visible images', async () => {
@@ -127,6 +386,56 @@ describe('WorkspaceFileEditor target intent', () => {
       else Reflect.deleteProperty(HTMLImageElement.prototype, 'decode');
     }
   });
+
+  it('restores the real todo table after preview-source-preview mode changes', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const value = readFileSync('docs/gold-band/开发计划/功能点todo列表.md', 'utf8');
+    function ModeHarness() {
+      const [mode, setMode] = React.useState<'source' | 'live-preview'>('live-preview');
+      return (
+        <TooltipProvider>
+          <WorkspaceFileEditor
+            documentKey="todo-table-roundtrip"
+            value={value}
+            editable
+            language="markdown"
+            highlight
+            contentRevision={1}
+            target={null}
+            targetRevision={0}
+            onChange={() => undefined}
+            onSave={() => undefined}
+            initialStateJson={null}
+            onPersistState={() => undefined}
+            markdownMode={mode}
+            onMarkdownModeChange={setMode}
+          />
+        </TooltipProvider>
+      );
+    }
+    const switchMode = async () => {
+      const button = container.querySelectorAll('button')[1];
+      expect(button).toBeInstanceOf(HTMLButtonElement);
+      await act(async () => button.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    };
+    try {
+      await act(async () => root.render(<ModeHarness />));
+      await vi.waitFor(() => expect(container.querySelector('.cm-atomic-table table')).not.toBeNull(), { timeout: 5_000 });
+      const originalView = EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement);
+
+      await switchMode();
+      await vi.waitFor(() => expect(container.querySelector('.cm-atomic-table table')).toBeNull(), { timeout: 5_000 });
+      await switchMode();
+      await vi.waitFor(() => expect(container.querySelector('.cm-atomic-table table')).not.toBeNull(), { timeout: 5_000 });
+
+      expect(EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement)).toBe(originalView);
+      expect(container.textContent).toContain('SKILL 多 Agent 实例级管理');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  }, 20_000);
 
   it('applies a CRLF document line target when the first editor view is created', async () => {
     const container = document.createElement('div');

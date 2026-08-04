@@ -264,6 +264,7 @@ fn suggested_path_dirs_with_home(home: Option<&Path>) -> Vec<PathBuf> {
         push_dir_if_exists(&mut dirs, home.join(".local/bin"));
         push_dir_if_exists(&mut dirs, home.join(".cargo/bin"));
         push_dir_if_exists(&mut dirs, home.join(".opencode/bin"));
+        push_dir_if_exists(&mut dirs, home.join(".kimi-code/bin"));
         push_dir_if_exists(&mut dirs, home.join(".volta/bin"));
         for dir in nvm_bin_dirs(home) {
             push_dir_if_exists(&mut dirs, dir);
@@ -317,6 +318,31 @@ mod tests {
         let dirs = suggested_path_dirs_with_home(Some(temp.path()));
 
         assert!(dirs.iter().any(|dir| dir == &nvm_bin));
+    }
+
+    #[test]
+    fn suggested_path_dirs_include_kimi_code_bin() {
+        let temp = tempdir().unwrap();
+        let kimi_bin = temp.path().join(".kimi-code/bin");
+        fs::create_dir_all(&kimi_bin).unwrap();
+
+        let dirs = suggested_path_dirs_with_home(Some(temp.path()));
+
+        assert!(dirs.iter().any(|dir| dir == &kimi_bin));
+    }
+
+    #[test]
+    fn resolve_kimi_command_uses_kimi_code_bin() {
+        let temp = tempdir().unwrap();
+        let kimi_bin = temp.path().join(".kimi-code/bin");
+        fs::create_dir_all(&kimi_bin).unwrap();
+        fs::write(kimi_bin.join("kimi"), "").unwrap();
+
+        let suggested = suggested_path_dirs_with_home(Some(temp.path()));
+        let path = augment_path_with_dirs(None, &suggested).unwrap();
+        let resolved = resolve_command_with_path("kimi", Some(path.as_str()));
+
+        assert_eq!(resolved, kimi_bin.join("kimi").to_string_lossy());
     }
 
     #[test]

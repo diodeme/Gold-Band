@@ -221,7 +221,7 @@ impl ManagedAgentPreset {
     }
 }
 
-pub const MANAGED_AGENT_PRESETS: [ManagedAgentPreset; 5] = [
+pub const MANAGED_AGENT_PRESETS: [ManagedAgentPreset; 6] = [
     ManagedAgentPreset {
         id: "claude-acp",
         label: "Claude",
@@ -265,6 +265,15 @@ pub const MANAGED_AGENT_PRESETS: [ManagedAgentPreset; 5] = [
         command: "opencode",
         args: &["acp"],
         primary_agent_dir: ".opencode",
+        compatible_agent_dirs: &[".agents"],
+    },
+    ManagedAgentPreset {
+        id: "kimi",
+        label: "Kimi",
+        icon_key: "kimi",
+        command: "kimi",
+        args: &["acp"],
+        primary_agent_dir: ".kimi-code",
         compatible_agent_dirs: &[".agents"],
     },
 ];

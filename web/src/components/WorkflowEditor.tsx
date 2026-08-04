@@ -57,7 +57,7 @@ import { formatLocalDateTime } from '@/lib/datetime';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 
 function providerToIconKey(provider: string): string | undefined {
-  const mapping: Record<string, string> = { 'claude-acp': 'claude', 'codex-acp': 'codex', cursor: 'cursor', gemini: 'gemini', opencode: 'opencode' };
+  const mapping: Record<string, string> = { 'claude-acp': 'claude', 'codex-acp': 'codex', cursor: 'cursor', gemini: 'gemini', opencode: 'opencode', kimi: 'kimi' };
   return mapping[provider];
 }
 

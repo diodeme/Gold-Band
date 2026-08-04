@@ -4,6 +4,7 @@ const AGENT_ICON_SCALE_CLASS: Record<string, string> = {
   codex: 'scale-125',
   gemini: 'scale-110',
   opencode: 'scale-110',
+  kimi: 'scale-110',
 };
 
 export function agentIconSrc(iconKey: string) {

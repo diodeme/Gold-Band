@@ -1,0 +1,105 @@
+{
+  "version": "0.1",
+  "id": "sts2-gawain-dev-workflow",
+  "entry": "stage-1",
+  "control": {
+    "max_attempts": 3,
+    "max_rounds": 12
+  },
+  "nodes": [
+    {
+      "type": "worker",
+      "id": "stage-1",
+      "provider": "kimi",
+      "goal": "需求登记与规格：建 Issue、triage 分诊、grill-with-docs 澄清歧义、to-tickets 拆带依赖顺序的任务清单、L 型先 wayfinder 拆地图并出 OpenSpec。产出 .agent-runs/<task-id>/task.yaml(size 字段) + STATE.md；结束前写 stage-handoff(S1)。人工门禁：需求确认。",
+      "manual_check": true,
+      "profile": "pf-req-kimi-k3"
+    },
+    {
+      "type": "worker",
+      "id": "stage-2",
+      "provider": "codex-acp",
+      "model": "gpt-5.6",
+      "goal": "开发实现：按 task.yaml 用 implement 施工，tdd 先写失败测试。满足 QUALITY_GATES Gate1-4。本地 verify.sh 全绿后建 Draft PR，写 developer-handoff.md 与更新 STATE.md、stage-handoff(S2)。",
+      "manual_check": false,
+      "profile": "pf-dev-codex-gpt56"
+    },
+    {
+      "type": "worker",
+      "id": "stage-3",
+      "provider": "cursor",
+      "model": "sonnet",
+      "goal": "测试与缺陷诊断：运行单测，diagnosing-bugs 修复逃逸/假测试（修复前必须有失败测试），resolving-merge-conflicts 解决冲突，涉及游戏内显示改动用 STS2-AUTOTEST 做 smoke test。写 test-report.md 与 stage-handoff(S3)。",
+      "manual_check": false,
+      "profile": "pf-test-cursor-sonnet5"
+    },
+    {
+      "type": "worker",
+      "id": "stage-4",
+      "provider": "cursor",
+      "model": "opus",
+      "goal": "独立审核：code-review 双轴并行审查（需求符合 + 代码质量）。产出 review-report.md，结论 APPROVE/REQUEST_CHANGES/COMMENT_ONLY。有阻塞则回 stage-2。写 stage-handoff(S4)。",
+      "manual_check": false,
+      "profile": "pf-review-cursor-opus5"
+    },
+    {
+      "type": "worker",
+      "id": "stage-5",
+      "provider": "opencode",
+      "model": "deepseek-v4-flash",
+      "goal": "用户验收 + 收口：你本人做体验与效果拍板（人工门禁：用户验收）。open code + DeepSeek V4 Flash 用 neat-freak 做合并前一致性收口（代码/文档/Roadmap/规则对齐）。人工门禁：合并授权。写 stage-handoff(S5)。",
+      "manual_check": true,
+      "profile": "pf-closeout-opencode-deepseek"
+    }
+  ],
+  "edges": [
+    {
+      "from": "stage-1",
+      "to": "stage-2",
+      "on": "success",
+      "session": "new"
+    },
+    {
+      "from": "stage-2",
+      "to": "stage-3",
+      "on": "success",
+      "session": "new"
+    },
+    {
+      "from": "stage-3",
+      "to": "stage-4",
+      "on": "success",
+      "session": "new"
+    },
+    {
+      "from": "stage-4",
+      "to": "stage-5",
+      "on": "success",
+      "session": "new"
+    },
+    {
+      "from": "stage-5",
+      "to": "$end",
+      "on": "success",
+      "session": "new"
+    },
+    {
+      "from": "stage-2",
+      "to": "stage-2",
+      "on": "failure",
+      "session": "new"
+    },
+    {
+      "from": "stage-3",
+      "to": "stage-2",
+      "on": "failure",
+      "session": "new"
+    },
+    {
+      "from": "stage-4",
+      "to": "stage-2",
+      "on": "failure",
+      "session": "new"
+    }
+  ]
+}

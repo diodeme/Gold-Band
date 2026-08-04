@@ -962,3 +962,40 @@ pub fn normalize_legacy_workflow_snapshot(mut workflow: WorkflowDsl) -> Workflow
 pub fn validate_workflow_snapshot(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
     validate_workflow_strict(normalize_legacy_workflow_snapshot(workflow))
 }
+
+#[cfg(test)]
+mod import_contract_tests {
+    use super::*;
+
+    #[test]
+    fn imported_gawain_workflow_validates() {
+        let raw = include_str!("testdata/goldband-workflow.json");
+        let workflow: WorkflowDsl = serde_json::from_str(raw)
+            .expect("goldband-workflow.json must deserialize as WorkflowDsl");
+        validate_workflow(workflow).expect("goldband-workflow.json must pass validate_workflow");
+    }
+
+    #[test]
+    fn imported_store_gawain_template_validates() {
+        let home = dirs::home_dir().expect("home dir must exist");
+        let path = home
+            .join(".gold-band")
+            .join("context")
+            .join("workflows.json");
+        // The workflow is imported through the GUI into the local store; on CI
+        // that store does not exist, so skip instead of failing.
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        let store: crate::app::WorkflowTemplateStore = serde_json::from_str(&raw)
+            .expect("workflows.json must deserialize as WorkflowTemplateStore");
+        let tpl = store
+            .templates
+            .iter()
+            .find(|t| t.id == "sts2-gawain-dev-workflow")
+            .expect("sts2-gawain-dev-workflow template must exist in the store");
+        validate_workflow(tpl.workflow.clone())
+            .expect("imported gawain workflow template must pass validate_workflow");
+    }
+}

@@ -127,6 +127,19 @@ pub fn agent_relation(event: &AcpUiEvent) -> Option<AgentTranscriptRelation> {
 }
 
 pub fn branch_route_for_event(event: &AcpUiEvent) -> ConversationBranchRoute {
+    if let Some(branch_id) = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.pointer(&format!("/_meta/{BRANCH_META_KEY}/branchId")))
+        .and_then(Value::as_str)
+        .filter(|branch_id| validate_conversation_branch_id(branch_id).is_ok())
+    {
+        return ConversationBranchRoute {
+            branch_id: branch_id.to_string(),
+            launched_agent_execution_id: None,
+            tool_name: None,
+        };
+    }
     let relation = agent_relation(event);
     let session_id = event.session_id.as_deref().unwrap_or("unknown-session");
     let parent_agent_execution_id = relation

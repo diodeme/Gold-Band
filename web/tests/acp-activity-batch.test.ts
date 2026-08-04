@@ -33,6 +33,34 @@ afterEach(() => {
 });
 
 describe('ACP activity batch disclosure', () => {
+  it('keeps a finalized file change set immediately after the turn activity batch', () => {
+    const projection = buildAcpTimelineProjection([
+      event({
+        id: 'write-tool',
+        seq: 1,
+        kind: 'toolCall',
+        toolCallId: 'write-tool',
+        title: 'Write src/app.ts',
+        status: 'completed',
+      }),
+      event({
+        id: 'file-change-set',
+        seq: 2,
+        kind: 'fileChangeSet',
+        status: 'finalized',
+        raw: {
+          changeSetId: 'change-set-1',
+          summary: { fileCount: 1, addedFiles: 1, modifiedFiles: 0, deletedFiles: 0, addedLines: 2, deletedLines: 0 },
+        },
+      }),
+    ], 'completed');
+
+    expect(projection.timeline.map((item) => item.kind)).toEqual([
+      'activityBatch',
+      'fileChangeSet',
+    ]);
+  });
+
   it('does not touch a large tool output until the individual tool is expanded', async () => {
     let outputReads = 0;
     const raw: Record<string, unknown> = {

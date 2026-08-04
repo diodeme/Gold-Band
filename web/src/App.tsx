@@ -211,6 +211,7 @@ const defaultAppInfo: AppInfoVm = {
 const defaultAppConfig: AppConfigVm = {
   acpSessionTitleRefreshEnabled: false,
   acpChatEventPageSize: 360,
+  turnFiles: { cardPreviewLimit: 3 },
   workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
   workspaceFiles: FALLBACK_WORKSPACE_FILES,
 };
@@ -1118,8 +1119,6 @@ export function App() {
           const next: ConversationRunVm = {
             ...prev,
             selectedSession: switched.selectedSession,
-            artifacts: switched.artifacts,
-            attachments: switched.attachments,
             sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
           };
           conversationRunRef.current = next;
@@ -1900,8 +1899,6 @@ export function App() {
                   const next = {
                     ...prev,
                     selectedSession: switched.selectedSession,
-                    artifacts: switched.artifacts,
-                    attachments: switched.attachments,
                     sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
                   };
                   conversationRunRef.current = next;
@@ -1913,8 +1910,6 @@ export function App() {
                 conversationRunRef.current = {
                   ...conversationRunRef.current,
                   selectedSession: switched.selectedSession,
-                  artifacts: switched.artifacts,
-                  attachments: switched.attachments,
                   sessionTree: {
                     ...conversationRunRef.current.sessionTree,
                     selectedSessionKey: key,

@@ -17,8 +17,6 @@ function run(overrides: Partial<ConversationRunVm> = {}): ConversationRunVm {
     sessionTree: { selectedSessionKey: null, rounds: [] },
     selectedSession: { sessionId: 'session-1', status: 'running', events: [] } as any,
     activeSessions: [],
-    artifacts: [],
-    attachments: [],
     inputAttachments: [],
     workflowStatus: 'valid',
     workflowValid: true,

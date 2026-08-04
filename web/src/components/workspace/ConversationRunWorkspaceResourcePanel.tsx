@@ -24,9 +24,14 @@ import {
   type RightWorkspaceResource,
   type SystemPromptWorkspaceResource,
   type WorkflowEditWorkspaceResource,
+  type WorkflowViewWorkspaceResource,
 } from './right-workspace-context';
 
-type ConversationRunWorkspaceResource = Exclude<RightWorkspaceResource, { kind: 'agent-transcript' | 'file' | 'file-browser' }>;
+type ConversationRunWorkspaceResource =
+  | WorkflowViewWorkspaceResource
+  | WorkflowEditWorkspaceResource
+  | SystemPromptWorkspaceResource
+  | RawFramesWorkspaceResource;
 
 interface ConversationRunWorkspaceResourcePanelProps {
   resource: ConversationRunWorkspaceResource;

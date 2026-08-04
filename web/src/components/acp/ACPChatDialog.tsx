@@ -1,5 +1,4 @@
 import {
-  forwardRef,
   createContext,
   memo,
   startTransition,
@@ -7,7 +6,6 @@ import {
   useCallback,
   useContext,
   useEffect,
-  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useReducer,
@@ -26,7 +24,6 @@ import {
   Image as ImageIcon,
   ListTodo,
   Loader2,
-  Paperclip,
   Search,
   Send,
   ShieldQuestion,
@@ -77,6 +74,7 @@ import { cn } from "@/lib/utils";
 import {
   acpAttemptWorkspaceResourceKey,
   agentTranscriptResourceKey,
+  conversationAssetWorkspaceResourceKey,
   useOptionalRightWorkspace,
   type AcpAttemptWorkspaceLocator,
   type AgentTranscriptLocator,
@@ -84,7 +82,6 @@ import {
 import { formatTokenCount } from "@/lib/format-token";
 import { agentIconClass, agentIconSrc } from "@/lib/agent-icons";
 import { EditableConversationTitle } from "@/components/conversation/EditableConversationTitle";
-import { loadArtifactMarkdownRender, saveArtifactMarkdownRender } from "@/lib/artifact-markdown-pref";
 import {
   loadSystemPromptViewMode,
   saveSystemPromptViewMode,
@@ -113,10 +110,6 @@ import {
   messageAttachmentPreviewsFromRaw,
   type MessageAttachmentPreview,
 } from "@/lib/asset-preview";
-import {
-  createAcpSessionAssetPanelViewModel,
-  type AcpSessionAssetPanelItem,
-} from "@/lib/acp-session-assets-panel";
 import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-service";
 import { AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
 import { AcpConversationComposer } from "@/components/conversation/AcpConversationComposer";
@@ -126,6 +119,11 @@ import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { AcpAvatar, AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
 import { AcpUsagePanel } from "@/components/acp/AcpUsagePanel";
 import { HiddenPromptMessageContent } from "@/components/acp/HiddenPromptMessageContent";
+import {
+  DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT,
+  TurnFileCardPreviewLimitContext,
+  TurnFileChangesCard,
+} from "@/components/acp/TurnFileChangesCard";
 import {
   ElicitationCard,
   type ElicitationSchema,
@@ -203,8 +201,6 @@ import type {
   AcpSessionVm,
   AcpUiEventVm,
   AcpUsageVm,
-  AssetItemVm,
-  ContentVm,
   ConversationAttemptLifecycleVm,
 } from "@/types";
 
@@ -229,10 +225,6 @@ export type AcpRuntimeComposerContext = {
   runtimeError?: string | null;
   onRepair?: () => void;
 };
-
-export interface ACPChatDialogHandle {
-  openArtifactsDialog: (asset?: AssetItemVm) => void;
-}
 
 export interface AcpDirectSessionHeaderProps {
   title: string;
@@ -269,12 +261,9 @@ interface ACPChatDialogProps {
   onAtBottomChange?: (atBottom: boolean) => void;
   allowEventOnlySessionShell?: boolean;
   showInitializingSessionShell?: boolean;
-  artifacts?: AssetItemVm[];
-  attachments?: AssetItemVm[];
-  allArtifacts?: AssetItemVm[];
-  allAttachments?: AssetItemVm[];
   usageCompact?: boolean;
   cacheNamespace?: string;
+  turnFileCardPreviewLimit?: number;
 }
 
 type AcpCanvasMode = "chat" | "raw";
@@ -613,10 +602,7 @@ export function loadedEventBufferLimit(eventPageSize: number) {
   );
 }
 
-export const ACPChatDialog = forwardRef<
-  ACPChatDialogHandle,
-  ACPChatDialogProps
->(function ACPChatDialog(
+export function ACPChatDialog(
   {
     session,
     projectId,
@@ -646,14 +632,10 @@ export const ACPChatDialog = forwardRef<
     onAtBottomChange,
     allowEventOnlySessionShell = true,
     showInitializingSessionShell = false,
-    artifacts = [],
-    attachments = [],
-    allArtifacts,
-    allAttachments,
     usageCompact,
     cacheNamespace,
-  },
-  ref,
+    turnFileCardPreviewLimit = DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT,
+  }: ACPChatDialogProps,
 ) {
   const { t } = useTranslation();
   const rightWorkspace = useOptionalRightWorkspace();
@@ -780,18 +762,6 @@ export const ACPChatDialog = forwardRef<
   const [queuedInterventionPrompt, setQueuedInterventionPrompt] = useState<
     string | null
   >(null);
-  const [artifactsDialogOpen, setArtifactsDialogOpen] = useState(false);
-  const [selectedArtifact, setSelectedArtifact] = useState<AssetItemVm | null>(
-    null,
-  );
-  const [artifactContent, setArtifactContent] = useState<ContentVm | null>(
-    null,
-  );
-  const [artifactLoading, setArtifactLoading] = useState(false);
-  const [messageImagePreview, setMessageImagePreview] = useState<{
-    name: string;
-    src: string;
-  } | null>(null);
   const {
     attachments: pendingAttachments,
     fileError,
@@ -834,7 +804,7 @@ export const ACPChatDialog = forwardRef<
   const liveBeforeReadyLogCountRef = useRef(0);
   const sessionPropSyncIdentityRef = useRef(eventWindowKey);
   const sessionResetIdentityRef = useRef(eventWindowKey);
-  const liveUpdatesPaused = Boolean(externalLiveUpdatesPaused || systemPromptOpen || artifactsDialogOpen);
+  const liveUpdatesPaused = Boolean(externalLiveUpdatesPaused || systemPromptOpen);
   liveUpdatesPausedRef.current = liveUpdatesPaused;
 
   const updateOptimisticEvents = (
@@ -1153,96 +1123,6 @@ export const ACPChatDialog = forwardRef<
   const streamingMarkdownItemKey = sessionActive
     ? latestStreamingMarkdownItemKeyFromEvents(effectiveEvents)
     : null;
-  const handleOpenArtifactDetail = useCallback(
-    async (asset: AssetItemVm) => {
-      setArtifactsDialogOpen(true);
-      setSelectedArtifact(asset);
-      setArtifactContent(null);
-      setArtifactLoading(true);
-      try {
-        let content: ContentVm;
-        if (asset.kind === "input-attachment") {
-          content = await showConversationAttachment(projectId, taskId, asset.name);
-        } else {
-          const loader =
-            asset.kind === "attachment" ? showAttachment : showArtifact;
-          const assetOuterNodeId =
-            outerNodeId && outerAttemptId ? outerNodeId : undefined;
-          const assetOuterAttemptId =
-            outerNodeId && outerAttemptId ? outerAttemptId : undefined;
-          content = await loader(
-            projectId,
-            taskId,
-            runId,
-            asset.roundId || roundId,
-            asset.nodeId,
-            asset.attemptId,
-            asset.name,
-            assetOuterNodeId,
-            assetOuterAttemptId,
-          );
-        }
-        setArtifactContent(content);
-      } catch {
-        setArtifactContent(null);
-      } finally {
-        setArtifactLoading(false);
-      }
-    },
-    [projectId, taskId, runId, roundId],
-  );
-
-  const handleArtifactsDialogOpenChange = useCallback((open: boolean) => {
-    setArtifactsDialogOpen(open);
-    if (!open) {
-      setSelectedArtifact(null);
-      setArtifactContent(null);
-      setArtifactLoading(false);
-    }
-  }, []);
-
-  const loadMessageAttachmentContent = useCallback(
-    (attachment: MessageAttachmentPreview) =>
-      isTaskInputMessageAttachment(attachment)
-        ? showConversationAttachment(projectId, taskId, attachment.name)
-        : showConversationMessageAttachment(
-            projectId,
-            taskId,
-            runId,
-            roundId,
-            nodeId,
-            attemptId,
-            attachment.name,
-            attachment.path,
-            outerNodeId,
-            outerAttemptId,
-          ),
-    [
-      attemptId,
-      nodeId,
-      outerAttemptId,
-      outerNodeId,
-      projectId,
-      roundId,
-      runId,
-      taskId,
-    ],
-  );
-
-  const messageAttachmentAsset = useCallback(
-    (attachment: MessageAttachmentPreview): AssetItemVm => ({
-      kind: isTaskInputMessageAttachment(attachment) ? 'input-attachment' : 'message-attachment',
-      name: attachment.name,
-      title: attachment.name,
-      tone: 'neutral',
-      preview: '',
-      roundId,
-      nodeId,
-      attemptId,
-    }),
-    [attemptId, nodeId, roundId],
-  );
-
   const messageAttachmentLocator = useMemo<MessageAttachmentLocator>(
     () => ({
       projectId,
@@ -1267,56 +1147,25 @@ export const ACPChatDialog = forwardRef<
   );
 
   const handleOpenMessageAttachment = useCallback(
-    async (attachment: MessageAttachmentPreview) => {
-      const asset = messageAttachmentAsset(attachment);
-      if (isImageMessageAttachment(attachment)) {
-        try {
-          const content = await loadMessageAttachmentContent(attachment);
-          const src = imageSrcFromContent(content);
-          if (src) {
-            setMessageImagePreview({ name: attachment.name, src });
-            return;
-          }
-          setArtifactsDialogOpen(true);
-          setSelectedArtifact(asset);
-          setArtifactContent(content);
-          setArtifactLoading(false);
-          return;
-        } catch {
-          setArtifactsDialogOpen(true);
-          setSelectedArtifact(asset);
-          setArtifactContent(null);
-          setArtifactLoading(false);
-          return;
-        }
-      }
-      setArtifactsDialogOpen(true);
-      setSelectedArtifact(asset);
-      setArtifactContent(null);
-      setArtifactLoading(true);
-      try {
-        setArtifactContent(await loadMessageAttachmentContent(attachment));
-      } catch {
-        setArtifactContent(null);
-      } finally {
-        setArtifactLoading(false);
-      }
+    (attachment: MessageAttachmentPreview) => {
+      if (!rightWorkspace?.scopeKey) return;
+      const assetKind = isTaskInputMessageAttachment(attachment)
+        ? 'input-attachment' as const
+        : 'message-attachment' as const;
+      void rightWorkspace.openResource({
+        kind: 'conversation-asset',
+        key: conversationAssetWorkspaceResourceKey(assetKind, attemptWorkspaceLocator, attachment.name, attachment.path),
+        scopeKey: rightWorkspace.scopeKey,
+        title: attachment.name,
+        description: attachment.path,
+        attention: false,
+        locator: attemptWorkspaceLocator,
+        assetKind,
+        name: attachment.name,
+        path: attachment.path,
+      });
     },
-    [loadMessageAttachmentContent, messageAttachmentAsset],
-  );
-
-  useImperativeHandle(
-    ref,
-    () => ({
-      openArtifactsDialog: (asset?: AssetItemVm) => {
-        if (asset) {
-          handleOpenArtifactDetail(asset);
-        } else {
-          setArtifactsDialogOpen(true);
-        }
-      },
-    }),
-    [handleOpenArtifactDetail],
+    [attemptWorkspaceLocator, rightWorkspace],
   );
 
 
@@ -2889,6 +2738,7 @@ export const ACPChatDialog = forwardRef<
   );
 
   return (
+    <TurnFileCardPreviewLimitContext.Provider value={turnFileCardPreviewLimit}>
     <AcpBranchLocatorContext.Provider value={{
       projectId,
       taskId,
@@ -2927,24 +2777,6 @@ export const ACPChatDialog = forwardRef<
         prompt={effective.systemPromptAppend}
         options={systemPromptOptions}
         onOpenChange={setSystemPromptOpen}
-      />
-      <ACPArtifactsDialog
-        open={artifactsDialogOpen}
-        artifacts={artifacts}
-        attachments={attachments}
-        selectedArtifact={selectedArtifact}
-        artifactContent={artifactContent}
-        artifactLoading={artifactLoading}
-        onOpenChange={handleArtifactsDialogOpenChange}
-        onOpenDetail={handleOpenArtifactDetail}
-        onBack={() => {
-          setSelectedArtifact(null);
-          setArtifactContent(null);
-        }}
-      />
-      <MessageImagePreviewDialog
-        preview={messageImagePreview}
-        onClose={() => setMessageImagePreview(null)}
       />
       {visibleError ? <AcpErrorBanner reason={visibleError} /> : null}
       <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
@@ -3064,11 +2896,6 @@ export const ACPChatDialog = forwardRef<
       </div>
       {canvasMode === "chat" ? (
         <div className="shrink-0 bg-background/95 backdrop-blur">
-          <AcpSessionAssetsPanel
-            artifacts={allArtifacts ?? artifacts}
-            attachments={allAttachments ?? attachments}
-            onOpenDetail={handleOpenArtifactDetail}
-          />
           {todoEntries.length > 0 ? (
             <div className="px-4">
               <AcpTodoPanel entries={todoEntries} />
@@ -3169,8 +2996,9 @@ export const ACPChatDialog = forwardRef<
       />
     </div>
     </AcpBranchLocatorContext.Provider>
+    </TurnFileCardPreviewLimitContext.Provider>
   );
-});
+}
 
 function AcpErrorState({ reason }: { reason: string }) {
   return (
@@ -3960,299 +3788,6 @@ export const SystemPromptPanel = memo(function SystemPromptPanel({
   );
 });
 
-function ACPArtifactsDialog({
-  open,
-  artifacts,
-  attachments,
-  selectedArtifact,
-  artifactContent,
-  artifactLoading,
-  onOpenChange,
-  onOpenDetail,
-  onBack,
-}: {
-  open: boolean;
-  artifacts: AssetItemVm[];
-  attachments: AssetItemVm[];
-  selectedArtifact: AssetItemVm | null;
-  artifactContent: ContentVm | null;
-  artifactLoading: boolean;
-  onOpenChange: (open: boolean) => void;
-  onOpenDetail: (asset: AssetItemVm) => void;
-  onBack: () => void;
-}) {
-  const { t } = useTranslation();
-  const [renderMarkdown, setRenderMarkdown] = useState<boolean>(() =>
-    loadArtifactMarkdownRender(),
-  );
-  const allAssets = [
-    ...artifacts.map((a) => ({ ...a, kind: "artifact" as const })),
-    ...attachments.map((a) => ({ ...a, kind: "attachment" as const })),
-  ];
-
-  if (selectedArtifact) {
-    const imagePreviewSrc = imageSrcFromContent(artifactContent);
-    return (
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent
-          overlayClassName="bg-black/16 backdrop-blur-md"
-          className="max-h-[86vh] max-w-4xl gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55 flex flex-col"
-        >
-          <DialogHeader className="border-b border-border/40 px-5 py-4">
-            <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 gap-1.5 px-2 text-xs"
-                onClick={onBack}
-              >
-                <ChevronDown className="size-3 rotate-90" />
-                {t("common.back")}
-              </Button>
-              <DialogTitle className="truncate text-base">
-                {selectedArtifact.title}
-              </DialogTitle>
-            </div>
-          </DialogHeader>
-          {!artifactLoading && artifactContent && !imagePreviewSrc ? (
-            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/40 px-5 py-2.5 text-xs text-muted-foreground">
-              <div className="flex items-center gap-2">
-                <Badge
-                  variant="secondary"
-                  className="rounded-full px-2.5 text-[11px]"
-                >
-                  {selectedArtifact.kind}
-                </Badge>
-                <span>{artifactContent.kind}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span>{t("acp.renderMarkdown")}</span>
-                <Switch
-                  checked={renderMarkdown}
-                  onCheckedChange={(next) => {
-                    setRenderMarkdown(next);
-                    saveArtifactMarkdownRender(next);
-                  }}
-                  aria-label={t("acp.renderMarkdown")}
-                />
-              </div>
-            </div>
-          ) : null}
-          <div className="gold-themed-scrollbar min-h-0 flex-1 overflow-auto p-5">
-            {artifactLoading ? (
-              <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
-                <Loader2 className="mr-2 size-4 animate-spin" />
-                {t("common.loading")}
-              </div>
-            ) : artifactContent ? (
-              imagePreviewSrc ? (
-                <div className="flex max-h-[64vh] items-center justify-center overflow-hidden rounded-xl border border-border/45 bg-black/5 p-2">
-                  <img
-                    src={imagePreviewSrc}
-                    alt={selectedArtifact.title}
-                    draggable={false}
-                    className="max-h-[60vh] max-w-full object-contain"
-                  />
-                </div>
-              ) : renderMarkdown ? (
-                <div className="rounded-xl border bg-muted/20 p-4">
-                  <Markdown>{artifactContent.content}</Markdown>
-                </div>
-              ) : (
-                <pre className="rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words">
-                  {artifactContent.content}
-                </pre>
-              )
-            ) : (
-              <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-center text-sm text-muted-foreground">
-                {t("common.empty")}
-              </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
-    );
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        overlayClassName="bg-black/16 backdrop-blur-md"
-        className="max-h-[86vh] max-w-lg gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55 flex flex-col"
-      >
-        <DialogHeader className="border-b px-5 py-4">
-          <DialogTitle className="text-base">
-            {t("acp.artifactsTitle")}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="gold-themed-scrollbar min-h-0 flex-1 space-y-3 overflow-auto px-5 pb-5">
-          {attachments.length > 0 ? (
-            <section className="space-y-2">
-              <div className="flex items-center justify-between gap-3">
-                <h3 className="text-sm font-semibold">
-                  {t("acp.attachments")}
-                </h3>
-                <Badge variant="secondary" className="rounded-full px-2.5">
-                  {attachments.length}
-                </Badge>
-              </div>
-              <div className="space-y-1.5">
-                {attachments.map((item) => (
-                  <Button
-                    key={`attachment-${item.name}`}
-                    variant="outline"
-                    className="h-10 w-full justify-start gap-3 rounded-lg border-border/45 bg-background/34 px-3 text-left shadow-none hover:bg-background/42"
-                    onClick={() => onOpenDetail(item)}
-                  >
-                    <Badge
-                      variant="secondary"
-                      className="shrink-0 rounded-full px-2.5 text-[11px]"
-                    >
-                      {item.kind}
-                    </Badge>
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                      {item.title}
-                    </span>
-                  </Button>
-                ))}
-              </div>
-            </section>
-          ) : null}
-          {artifacts.length > 0 ? (
-            <section className="space-y-2">
-              <div className="flex items-center justify-between gap-3">
-                <h3 className="text-sm font-semibold">{t("acp.artifacts")}</h3>
-                <Badge variant="secondary" className="rounded-full px-2.5">
-                  {artifacts.length}
-                </Badge>
-              </div>
-              <div className="space-y-1.5">
-                {artifacts.map((item) => (
-                  <Button
-                    key={`artifact-${item.name}`}
-                    variant="outline"
-                    className="h-10 w-full justify-start gap-3 rounded-lg border-border/45 bg-background/34 px-3 text-left shadow-none hover:bg-background/42"
-                    onClick={() => onOpenDetail(item)}
-                  >
-                    <Badge
-                      variant="secondary"
-                      className="shrink-0 rounded-full px-2.5 text-[11px]"
-                    >
-                      {item.kind}
-                    </Badge>
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                      {item.title}
-                    </span>
-                  </Button>
-                ))}
-              </div>
-            </section>
-          ) : null}
-          {allAssets.length === 0 ? (
-            <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-center text-sm text-muted-foreground">
-              {t("common.empty")}
-            </div>
-          ) : null}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function AcpSessionAssetsPanel({
-  artifacts,
-  attachments,
-  onOpenDetail,
-}: {
-  artifacts: AssetItemVm[];
-  attachments: AssetItemVm[];
-  onOpenDetail: (asset: AssetItemVm) => void;
-}) {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-
-  const vm = createAcpSessionAssetPanelViewModel(artifacts, attachments);
-
-  if (vm.totalCount === 0) return null;
-
-  return (
-    <div className="px-4 pt-1.5">
-      <Collapsible
-        open={open}
-        onOpenChange={setOpen}
-        className="w-full border border-b-0 border-border/60 bg-card/60"
-      >
-        <CollapsibleTrigger asChild>
-          <Button
-            variant="ghost"
-            className="h-auto w-full justify-between rounded-none border-0 px-3 py-2 font-normal shadow-none hover:bg-transparent focus-visible:border-transparent focus-visible:ring-0"
-          >
-            <span className="flex min-w-0 items-center gap-2 text-xs">
-              <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="text-muted-foreground">
-                {t("acp.artifactsTitle")}
-              </span>
-              <span className="flex min-w-0 items-center gap-1.5 truncate font-medium text-foreground">
-                {vm.summaryParts.map((part) => (
-                  <span key={part.kind} className="shrink-0">
-                    {part.kind === "artifact"
-                      ? t("acp.assetSummaryArtifact", { count: part.count })
-                      : t("acp.assetSummaryAttachment", { count: part.count })}
-                  </span>
-                ))}
-              </span>
-            </span>
-            <ChevronDown
-              className={cn(
-                "size-3.5 shrink-0 text-muted-foreground transition-transform",
-                !open && "rotate-180",
-              )}
-            />
-          </Button>
-        </CollapsibleTrigger>
-        <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden">
-          <div className="space-y-1 border-t border-border/40 px-3 pb-2 pt-2">
-            {vm.items.map((item) => (
-              <AcpSessionAssetPanelRow
-                key={`${item.kind}-${item.name}`}
-                item={item}
-                onOpenDetail={onOpenDetail}
-              />
-            ))}
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
-    </div>
-  );
-}
-
-function AcpSessionAssetPanelRow({
-  item,
-  onOpenDetail,
-}: {
-  item: AcpSessionAssetPanelItem;
-  onOpenDetail: (asset: AssetItemVm) => void;
-}) {
-  const { t } = useTranslation();
-  const Icon = item.kind === "artifact" ? FileText : Paperclip;
-
-  return (
-    <button
-      type="button"
-      className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted/45"
-      onClick={() => onOpenDetail(item)}
-    >
-      <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1 truncate font-medium text-foreground">
-        {item.title || item.name}
-      </span>
-      <span className="shrink-0 text-muted-foreground">
-        {item.kind === "artifact" ? t("acp.artifacts") : t("acp.attachments")}
-      </span>
-    </button>
-  );
-}
-
 export function ACPMessageList({
   timeline,
   sessionStatus,
@@ -4344,6 +3879,7 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
   nested?: boolean;
 }) {
+  const branchLocator = useContext(AcpBranchLocatorContext);
   if (isAgentLink(event))
     return nested ? (
       <AgentLinkRow event={event} />
@@ -4356,6 +3892,8 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
     return <AttemptSeparator event={event} />;
   if (event.kind === "contextCompaction")
     return <ContextCompactionRow event={event} />;
+  if (event.kind === "fileChangeSet")
+    return <TurnFileChangesCard event={event} locator={branchLocator} />;
   if (isActivityBatch(event))
     return (
       <AcpActivityBatchRow
@@ -4901,6 +4439,8 @@ const MessageBubble = memo(function MessageBubble({
   nested?: boolean;
 }) {
   const { t } = useTranslation();
+  const branchLocator = useContext(AcpBranchLocatorContext);
+  const workspace = useOptionalRightWorkspace();
   const isUser = event.kind === "userTextDelta";
   const failed = event.status === "failed";
   const streamingDraft =
@@ -4915,6 +4455,20 @@ const MessageBubble = memo(function MessageBubble({
     ? runtimeControlParts.visibleText
     : (event.content ?? "");
   const showMessageBubble = isUser || streamingDraft || messageText.trim().length > 0;
+  const openArtifact = useCallback((name: string) => {
+    if (!branchLocator || !workspace?.scopeKey) return;
+    void workspace.openResource({
+      kind: 'conversation-asset',
+      key: conversationAssetWorkspaceResourceKey('artifact', branchLocator, name),
+      scopeKey: workspace.scopeKey,
+      title: name,
+      description: null,
+      attention: false,
+      locator: branchLocator,
+      assetKind: 'artifact',
+      name,
+    });
+  }, [branchLocator, workspace]);
   return (
     <Message
       data-acp-message-row={isUser ? "user" : "assistant"}
@@ -4954,7 +4508,10 @@ const MessageBubble = memo(function MessageBubble({
           </MessageContent>
         ) : null}
         {runtimeControlParts.display ? (
-          <RuntimeControlOutputCard display={runtimeControlParts.display} />
+          <RuntimeControlOutputCard
+            display={runtimeControlParts.display}
+            onOpenArtifact={branchLocator && workspace?.scopeKey ? openArtifact : undefined}
+          />
         ) : null}
         {hasAttachments ? (
           <div className={cn("flex max-w-full flex-col gap-2 px-1", isUser && "items-end")}>
@@ -5019,8 +4576,10 @@ const MessageBubble = memo(function MessageBubble({
 
 const RuntimeControlOutputCard = memo(function RuntimeControlOutputCard({
   display,
+  onOpenArtifact,
 }: {
   display: RuntimeControlOutputDisplay;
+  onOpenArtifact?: (name: string) => void;
 }) {
   const { t } = useTranslation();
   const jsonText = display.jsonText ?? "";
@@ -5045,37 +4604,49 @@ const RuntimeControlOutputCard = memo(function RuntimeControlOutputCard({
           : "border-primary/20 bg-primary/5",
       )}
     >
-      <CollapsibleTrigger asChild>
-        <Button
-          variant="ghost"
-          className={cn(
-            "group h-9 w-full min-w-0 justify-between rounded-none px-3 py-1.5 text-left font-normal",
-            isInvalid ? "hover:bg-destructive/10" : "hover:bg-primary/10",
-          )}
-        >
-          <span className="flex min-w-0 items-center gap-2 overflow-hidden">
-            <span
-              className={cn(
-                "flex size-6 shrink-0 items-center justify-center rounded-md",
-                isInvalid
-                  ? "bg-destructive/10 text-destructive"
-                  : "bg-primary/10 text-primary",
-              )}
-            >
-              <Icon className="size-3.5" />
+      <div className="flex min-w-0 items-stretch">
+        <CollapsibleTrigger asChild>
+          <Button
+            variant="ghost"
+            className={cn(
+              "group h-9 min-w-0 flex-1 justify-between rounded-none px-3 py-1.5 text-left font-normal",
+              isInvalid ? "hover:bg-destructive/10" : "hover:bg-primary/10",
+            )}
+          >
+            <span className="flex min-w-0 items-center gap-2 overflow-hidden">
+              <span
+                className={cn(
+                  "flex size-6 shrink-0 items-center justify-center rounded-md",
+                  isInvalid
+                    ? "bg-destructive/10 text-destructive"
+                    : "bg-primary/10 text-primary",
+                )}
+              >
+                <Icon className="size-3.5" />
+              </span>
+              <span className="truncate text-sm font-medium text-foreground">
+                {t("acp.runtimeControlTitle")}
+              </span>
+              <span className="shrink-0 text-xs text-muted-foreground">·</span>
+              <span className="truncate text-xs text-muted-foreground">{subtitle}</span>
             </span>
-            <span className="truncate text-sm font-medium text-foreground">
-              {t("acp.runtimeControlTitle")}
-            </span>
-            <span className="shrink-0 text-xs text-muted-foreground">·</span>
-            <span className="truncate text-xs text-muted-foreground">
-              {subtitle}
-              {display.artifactName ? ` · ${display.artifactName}` : ""}
-            </span>
-          </span>
-          <ChevronDown className="ml-2 size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
-        </Button>
-      </CollapsibleTrigger>
+            <ChevronDown className="ml-2 size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+          </Button>
+        </CollapsibleTrigger>
+        {display.artifactName && onOpenArtifact ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-9 min-w-0 max-w-48 shrink-0 gap-1.5 rounded-none border-l border-border/50 px-2.5 text-xs font-normal"
+            title={display.artifactName}
+            onClick={() => onOpenArtifact(display.artifactName!)}
+          >
+            <FileText className="size-3.5 shrink-0" />
+            <span className="truncate">{display.artifactName}</span>
+          </Button>
+        ) : null}
+      </div>
       <CollapsibleContent
         className={cn(
           "border-t bg-background/60 px-3 py-2",
@@ -5208,34 +4779,6 @@ const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewBut
       <FileText className="size-3 text-muted-foreground" />
       <span className="max-w-[120px] truncate">{attachment.name}</span>
     </button>
-  );
-});
-
-const MessageImagePreviewDialog = memo(function MessageImagePreviewDialog({
-  preview,
-  onClose,
-}: {
-  preview: { name: string; src: string } | null;
-  onClose: () => void;
-}) {
-  return (
-    <Dialog open={Boolean(preview)} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent
-        showCloseButton={false}
-        overlayClassName="bg-black/70"
-        className="!w-auto !max-w-[calc(100vw-4rem)] !gap-0 border-0 bg-transparent p-0 shadow-none sm:!max-w-[calc(100vw-4rem)]"
-      >
-        <DialogTitle className="sr-only">{preview?.name ?? 'Image Preview'}</DialogTitle>
-        {preview ? (
-          <img
-            src={preview.src}
-            alt={preview.name}
-            draggable={false}
-            className="block max-h-[calc(100vh-4rem)] max-w-[calc(100vw-4rem)] object-contain"
-          />
-        ) : null}
-      </DialogContent>
-    </Dialog>
   );
 });
 

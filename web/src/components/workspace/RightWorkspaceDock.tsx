@@ -1,4 +1,4 @@
-import { Bot, Braces, ChevronDown, FileCode2, FileText, FolderOpen, GitBranch, PencilLine, X } from 'lucide-react';
+import { Bot, Braces, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, PencilLine, X } from 'lucide-react';
 import { memo, type ReactNode, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -142,6 +142,8 @@ const RightWorkspaceTab = memo(function RightWorkspaceTab({
           ? <Braces className="size-3.5 shrink-0" />
           : tab.kind === 'file-browser'
             ? <FolderOpen className="size-3.5 shrink-0" />
+            : tab.kind === 'file-diff'
+              ? <FileDiff className="size-3.5 shrink-0" />
             : <FileText className="size-3.5 shrink-0" />;
   return (
     <RightWorkspaceTabButton

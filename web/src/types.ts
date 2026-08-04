@@ -110,8 +110,13 @@ export interface AppBootstrapVm {
 export interface AppConfigVm {
   acpSessionTitleRefreshEnabled: boolean;
   acpChatEventPageSize: number;
+  turnFiles: TurnFilesVm;
   workspaceLayout: WorkspaceLayoutVm;
   workspaceFiles: WorkspaceFilesVm;
+}
+
+export interface TurnFilesVm {
+  cardPreviewLimit: number;
 }
 
 export interface WorkspaceFilesVm {
@@ -989,6 +994,80 @@ export interface AcpPermissionOptionVm {
   kind: string;
 }
 
+export interface TurnFileLocatorVm {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  branchId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+}
+
+export type FileChangeKindVm = 'added' | 'modified' | 'deleted' | 'renamed';
+
+export interface FileVersionRefVm {
+  id: string;
+  storageKind: 'capturedBlob';
+  contentHash: string;
+  byteLength: number;
+  encoding?: string | null;
+  lineEnding?: string | null;
+}
+
+export interface TurnFileChangeVm {
+  id: string;
+  changeKind: FileChangeKindVm;
+  logicalPath: string;
+  previousLogicalPath?: string | null;
+  mimeType?: string | null;
+  text: boolean;
+  addedLines?: number | null;
+  deletedLines?: number | null;
+  beforeVersion?: FileVersionRefVm | null;
+  afterVersion?: FileVersionRefVm | null;
+  limitationCode?: string | null;
+}
+
+export interface TurnFileChangeSummaryVm {
+  fileCount: number;
+  addedFiles: number;
+  modifiedFiles: number;
+  deletedFiles: number;
+  addedLines: number;
+  deletedLines: number;
+}
+
+export interface TurnFileChangeSetVm {
+  id: string;
+  turnId: string;
+  promptEventId: string;
+  branchId: string;
+  status: 'capturing' | 'finalized' | 'partial';
+  startedAt: string;
+  finishedAt?: string | null;
+  summary: TurnFileChangeSummaryVm;
+  changes: TurnFileChangeVm[];
+  limitationCodes: string[];
+}
+
+export interface CapturedTextSnapshotVm {
+  version: FileVersionRefVm;
+  content: string;
+}
+
+export interface FileComparisonVm {
+  changeSetId: string;
+  changeId: string;
+  path: string;
+  stats: { addedLines?: number | null; deletedLines?: number | null };
+  before?: CapturedTextSnapshotVm | null;
+  after?: CapturedTextSnapshotVm | null;
+  limitationCode?: string | null;
+}
+
 export interface AcpElicitationRequestVm {
   elicitationId: string;
   message: string;
@@ -1367,8 +1446,6 @@ export interface ConversationRunVm {
   sessionTree: ConversationSessionTreeVm;
   selectedSession?: AcpSessionVm | null;
   activeSessions: ConversationActiveSessionVm[];
-  artifacts: AssetItemVm[];
-  attachments: AssetItemVm[];
   inputAttachments: AssetItemVm[];
   workflowStatus: string;
   workflowValid: boolean;
@@ -1382,8 +1459,6 @@ export interface ConversationRunVm {
 
 export interface ConversationSessionSwitchVm {
   selectedSession?: AcpSessionVm | null;
-  artifacts: AssetItemVm[];
-  attachments: AssetItemVm[];
 }
 
 export interface ConversationActiveSessionVm {

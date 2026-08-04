@@ -461,3 +461,13 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - 用户通过 Esc、点击外部等方式关闭当前 `/query` 后，关闭状态按稳定的 `{agentType, workspace}` 目录身份与当前输入值保留在前端运行期；切换页面再返回不会因为组件重新挂载而重开。输入值改变或删除后允许重新触发；切换 Agent 时清除新 Agent 上的关闭状态并展示其命令。
 - 方向键改变选中项后，菜单通过直接持有的 `CommandList` ref 调整唯一滚动容器的 `scrollTop`，选中项位置只相对该容器计算并执行最小滚动；不得叠加第二层滚动组件、动态查找 DOM 父节点或使用跨父节点的 `offsetTop`。
 - 鼠标或键盘选中命令后，命令 controller 必须在写入 `/${name} ` 并关闭菜单后通知 composer 恢复 textarea 焦点，使用户可以直接继续输入或再次按 Enter 发送。焦点恢复统一延迟到下一动画帧，等待受控值、标签投影和 Popover 关闭完成，并同步把 selection 放到 textarea 当前可见值末尾；快速对话原生 textarea 与会话详情 prompt-kit textarea 都通过显式 ref 接入，不允许使用 `querySelector` 猜测输入框。命令标签解除后复用同一焦点/selection 生命周期。若 textarea 在恢复执行前已进入 disabled 状态，则跳过聚焦。
+
+## Prompt turn 文件变化
+
+- 每个可见 prompt 使用稳定 `turnId/promptId`；hidden repair 继承最近可见 turn，不生成第二张用户可见文件卡。完成、失败和取消都会结算已经捕获的变化。
+- 文件变化的唯一事实源是当前 prompt 生命周期内 ACP `toolCall/toolCallUpdate` 的标准 `content[type=diff]`。运行时不扫描目录、不读取 live 文件、不调用 Git，也不按 write/edit/shell 等工具名猜测。
+- 同一路径 mutation 按 `eventSeq + contentIndex` 折叠为首个 tool-reported before 与最后一个 tool-reported after；相邻 hash 不连续时保留证据并标记 partial，最终恢复原版本时不展示。
+- 每份 old/new 正文先写入 attempt 级 BLAKE3 CAS，再追加 durable mutation journal；finalized change set 独立保存，timeline 只追加 summary 与 `changeSetId` 指针。历史查看只读取捕获版本，不受磁盘后续修改或删除影响。
+- 变更卡是 prompt turn 末尾无头像的结构化行。修改打开右栏 unified diff，新增打开该轮 after 原文，删除行不提供点击或键盘焦点；无变化不渲染空卡。
+- 用户消息附件和 canonical artifact 保持各自消息归属，点击后打开右侧会话资源，不进入文件变化卡。Conversation 主 DTO 不再聚合当前 session 的 artifacts/attachments，composer 上方也不再显示独立资产展开栏。
+- 根会话和 Agent branch 按持久化 branch ownership 各自查询 change set。前端不根据路径或自然语言推断归属，也不把 sibling branch 的变化投影到当前会话。

@@ -353,6 +353,16 @@ export const desktopApi: RuntimeApi = {
   listWorkspaceDirectory(projectId, relativePath) {
     return invokeCommand('list_workspace_directory', { input: { projectId, relativePath } });
   },
+  openWorkspacePathInFileManager(projectId, relativePath = '') {
+    return invokeCommand('open_workspace_path_in_file_manager', { input: { projectId, relativePath } });
+  },
+  listConversationDirectory(input) {
+    return invokeCommand('list_conversation_directory', { input });
+  },
+  openConversationDirectoryPathInFileManager(input) {
+    return invokeCommand('open_conversation_directory_path_in_file_manager', { input });
+  },
+  readConversationDirectoryFile(input) { return invokeCommand('read_conversation_directory_file', { input }); },
   searchWorkspaceFiles(projectId, query, requestId, limit) {
     return invokeCommand('search_workspace_files', { input: { projectId, query, requestId, limit } });
   },

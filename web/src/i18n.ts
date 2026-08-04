@@ -117,6 +117,7 @@ const resources = {
         attention: "需要处理",
         files: "文件",
         browseWorkspaceFiles: "浏览和编辑当前工作空间文件",
+        runDirectory: "运行目录",
         filesPanel: {
           file: "文件",
           directory: "目录",
@@ -127,6 +128,8 @@ const resources = {
           copyRelativePath: "复制相对路径",
           pathCopied: "路径已复制",
           pathCopyFailed: "路径复制失败，请重试",
+          openInFileManager: "在文件管理器中打开",
+          fileManagerOpenFailed: "无法打开文件管理器，请重试",
           loading: "正在载入目录…",
           loadingFile: "正在载入文件…",
           retry: "重试",
@@ -1603,6 +1606,7 @@ const resources = {
         attention: "Needs attention",
         files: "Files",
         browseWorkspaceFiles: "Browse and edit files in this workspace",
+        runDirectory: "Run directory",
         filesPanel: {
           file: "File",
           directory: "Directory",
@@ -1613,6 +1617,8 @@ const resources = {
           copyRelativePath: "Copy relative path",
           pathCopied: "Path copied",
           pathCopyFailed: "Could not copy the path. Try again.",
+          openInFileManager: "Open in File Manager",
+          fileManagerOpenFailed: "Could not open the file manager. Try again.",
           loading: "Loading directory…",
           loadingFile: "Loading file…",
           retry: "Retry",

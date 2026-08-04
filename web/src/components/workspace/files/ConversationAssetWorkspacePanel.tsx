@@ -47,6 +47,7 @@ export function ConversationAssetWorkspacePanel({ resource }: { resource: Conver
     lineNumbers(),
     EditorState.readOnly.of(true),
     EditorView.editable.of(false),
+    EditorView.lineWrapping,
     workspaceEditorTheme,
     workspaceSyntaxHighlighting,
     ...(language ? [language] : []),
@@ -72,7 +73,7 @@ export function ConversationAssetWorkspacePanel({ resource }: { resource: Conver
             <img src={imageSrc} alt={resource.name} className="max-h-full max-w-full object-contain" />
           </div>
         ) : (
-          <CodeMirror value={content.content} height="100%" theme="none" basicSetup={false} editable={false} extensions={extensions} className="h-full min-h-0 overflow-hidden [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto" aria-label={t('turnFiles.assetViewer')} />
+          <CodeMirror value={content.content} height="100%" theme="none" basicSetup={false} editable={false} extensions={extensions} className="h-full min-h-0 min-w-0 max-w-full overflow-hidden [&_.cm-content]:min-w-0 [&_.cm-editor]:h-full [&_.cm-editor]:min-w-0 [&_.cm-line]:break-words [&_.cm-scroller]:min-w-0 [&_.cm-scroller]:overflow-auto" aria-label={t('turnFiles.assetViewer')} />
         )}
       </div>
     </section>

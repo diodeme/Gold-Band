@@ -7,10 +7,9 @@ import { ACPChatDialog, type AcpLifecycleSnapshot, type AcpRuntimeComposerContex
 import { ConversationRunHeader } from '@/components/conversation/ConversationRunHeader';
 import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
 import { confirmCloseConversationRunWorkspaceResource, ConversationRunWorkspaceResourcePanel } from '@/components/workspace/ConversationRunWorkspaceResourcePanel';
-import { conversationRunWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
+import { conversationDirectoryWorkspaceResourceKey, conversationRunWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
 import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm } from '../types';
-import { openInFileManager } from '@/api';
 
 function activeSessionKey(session: {
   roundId: string;
@@ -220,18 +219,27 @@ export function ConversationRunPage({
   const showLaunchingSession = isRunning && !selectedLeaf;
 
   const handleOpenInFileManager = useCallback(() => {
-    if (!selectedLeaf) return;
-    openInFileManager(
-      run.projectId,
-      run.taskId,
-      run.runId,
-      selectedLeaf.roundId,
-      selectedLeaf.nodeId,
-      selectedLeaf.attemptId,
-      selectedLeaf.outerNodeId,
-      selectedLeaf.outerAttemptId,
-    );
-  }, [run.projectId, run.taskId, run.runId, selectedLeaf]);
+    if (!workspace.scopeKey || !selectedLeaf) return;
+    const locator = {
+      projectId: run.projectId,
+      taskId: run.taskId,
+      runId: run.runId,
+      roundId: selectedLeaf.roundId,
+      nodeId: selectedLeaf.nodeId,
+      attemptId: selectedLeaf.attemptId,
+      outerNodeId: selectedLeaf.outerNodeId,
+      outerAttemptId: selectedLeaf.outerAttemptId,
+    };
+    void workspace.openResource({
+      kind: 'conversation-directory',
+      key: conversationDirectoryWorkspaceResourceKey(locator),
+      scopeKey: workspace.scopeKey,
+      title: t('workspace.runDirectory'),
+      description: selectedLeaf.runtimeDisplay?.code ?? null,
+      attention: false,
+      locator,
+    });
+  }, [run.projectId, run.runId, run.taskId, selectedLeaf, t, workspace.openResource, workspace.scopeKey]);
 
   const isAutoFollowRestorableLeaf = useCallback((leaf: ConversationSessionLeafVm | null) => {
     if (!leaf) return false;

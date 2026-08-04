@@ -228,6 +228,10 @@ export interface RuntimeApi {
   saveConversationPreference(key: string, value: unknown): Promise<void>;
   saveLastConversationWorkspace(projectId: string): Promise<void>;
   listWorkspaceDirectory(projectId: string, relativePath: string): Promise<WorkspaceDirectoryEntryVm[]>;
+  openWorkspacePathInFileManager(projectId: string, relativePath?: string): Promise<void>;
+  listConversationDirectory(input: ConversationDirectoryInput): Promise<WorkspaceDirectoryEntryVm[]>;
+  openConversationDirectoryPathInFileManager(input: ConversationDirectoryInput): Promise<void>;
+  readConversationDirectoryFile(input: ConversationDirectoryInput): Promise<WorkspaceFileSnapshotVm>;
   searchWorkspaceFiles(projectId: string, query: string, requestId: string, limit: number): Promise<WorkspaceFileSearchVm>;
   resolveWorkspaceFileLink(projectId: string, rawHref: string, baseCanonicalPath?: string | null): Promise<ResolvedWorkspaceFileLinkVm>;
   readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource?: boolean): Promise<WorkspaceFileSnapshotVm>;
@@ -285,6 +289,18 @@ export interface RuntimeApi {
   ): Promise<string[]>;
   submitFeedback(input: FeedbackInput): Promise<FeedbackResult>;
   previewFeedbackSessionArchive(projectId: string | null, taskId: string | null): Promise<FeedbackArchivePreview | null>;
+}
+
+export interface ConversationDirectoryInput {
+  projectId?: string | null;
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  relativePath?: string;
 }
 
 export function getRuntimeApi(): RuntimeApi {

@@ -44,6 +44,12 @@ interface RightWorkspaceResourceBase {
 export type FileBrowserWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'file-browser';
   projectId: string;
+  selectedFile?: FileWorkspaceResource | null;
+};
+
+export type ConversationDirectoryWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'conversation-directory';
+  locator: ConversationRunLocator & { roundId: string; nodeId: string; attemptId: string; outerNodeId?: string | null; outerAttemptId?: string | null };
 };
 
 export type AgentTranscriptResource = RightWorkspaceResourceBase & {
@@ -99,6 +105,7 @@ export type RawFramesWorkspaceResource = RightWorkspaceResourceBase & {
 export type RightWorkspaceResource =
   | AgentTranscriptResource
   | FileBrowserWorkspaceResource
+  | ConversationDirectoryWorkspaceResource
   | FileWorkspaceResource
   | TurnFileWorkspaceResource
   | ConversationAssetWorkspaceResource
@@ -245,14 +252,30 @@ export class ConversationWorkspaceStore {
 export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action: RightWorkspaceAction): RightWorkspaceSessionState {
   switch (action.type) {
     case 'open': {
-      const existing = state.tabs.findIndex((tab) => tab.key === action.resource.key);
+      const fileProjectId = action.resource.kind === 'file' ? action.resource.projectId : null;
+      const existingFileBrowser = fileProjectId
+        ? state.tabs.find((tab): tab is FileBrowserWorkspaceResource => tab.kind === 'file-browser' && tab.projectId === fileProjectId)
+        : null;
+      const resource = action.resource.kind === 'file'
+        ? {
+          kind: 'file-browser' as const,
+          key: fileBrowserWorkspaceResourceKey(action.resource.projectId),
+          scopeKey: action.resource.scopeKey,
+          projectId: action.resource.projectId,
+          title: existingFileBrowser?.title ?? action.resource.title,
+          description: existingFileBrowser?.description ?? action.resource.description,
+          attention: action.resource.attention,
+          selectedFile: action.resource,
+        }
+        : action.resource;
+      const existing = state.tabs.findIndex((tab) => tab.key === resource.key);
       const tabs = existing < 0
-        ? [...state.tabs, action.resource]
-        : state.tabs.map((tab, index) => index === existing ? action.resource : tab);
+        ? [...state.tabs, resource]
+        : state.tabs.map((tab, index) => index === existing ? resource : tab);
       return {
         ...state,
         tabs,
-        activeTabKey: action.resource.key,
+        activeTabKey: resource.key,
         requestedOpen: true,
         openRevision: state.openRevision + 1,
       };
@@ -463,6 +486,10 @@ export function conversationRunWorkspaceResourceKey(kind: 'workflow-view' | 'wor
 
 export function fileBrowserWorkspaceResourceKey(projectId: string) {
   return `file-browser:${projectId}`;
+}
+
+export function conversationDirectoryWorkspaceResourceKey(locator: ConversationDirectoryWorkspaceResource['locator']) {
+  return ['conversation-directory', locator.projectId, locator.taskId, locator.runId, locator.roundId, locator.outerNodeId ?? '', locator.outerAttemptId ?? '', locator.nodeId, locator.attemptId].join(':');
 }
 
 export function fileWorkspaceResourceKey(projectId: string, canonicalPath: string) {

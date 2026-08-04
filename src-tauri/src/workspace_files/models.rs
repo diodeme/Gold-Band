@@ -112,6 +112,14 @@ pub struct ListWorkspaceDirectoryInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OpenWorkspacePathInFileManagerInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub relative_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchWorkspaceFilesInput {
     pub project_id: String,
     pub query: String,

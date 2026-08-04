@@ -26,9 +26,9 @@ describe('conversation run mode config text fields', () => {
     expect(canOpenRunModeManagement('workflow')).toBe(true);
     expect(canOpenRunModeManagement('auto')).toBe(true);
   });
-  it('uses default AUTO when a workspace has no saved run mode', () => {
-    expect(conversationRunModeOrDefault(null)).toEqual({ mode: 'auto' });
-    expect(conversationRunModeOrDefault(undefined)).toEqual({ mode: 'auto' });
+  it('uses default Direct when a workspace has no saved run mode', () => {
+    expect(conversationRunModeOrDefault(null)).toEqual({ mode: 'direct' });
+    expect(conversationRunModeOrDefault(undefined)).toEqual({ mode: 'direct' });
   });
 
   it('preserves in-progress spaces while editing session config', () => {
@@ -149,7 +149,7 @@ describe('conversation run mode config text fields', () => {
       conversationRunModeForWorkspace(modes, 'workspace-b'),
       'claude-acp',
     )).toEqual(workspaceB.directConfig);
-    expect(conversationRunModeForWorkspace(modes, 'workspace-missing')).toEqual({ mode: 'auto' });
+    expect(conversationRunModeForWorkspace(modes, 'workspace-missing')).toEqual({ mode: 'direct' });
   });
 
   it('keeps existing Workflow and AUTO memories isolated when another workspace uses Direct', () => {

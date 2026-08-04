@@ -608,6 +608,41 @@ pub struct SessionMetrics {
     pub session_elapsed_seconds: u64,
 }
 
+/// Optional cumulative totals owned by one persisted ACP attempt. Missing
+/// provider data remains `None`; metrics callers must never guess it as zero.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AttemptMetrics {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub elapsed_ms: Option<u64>,
+}
+
+pub fn read_attempt_metrics(session_path: &Utf8Path) -> AttemptMetrics {
+    let Some(snapshot_path) = session_path
+        .parent()
+        .map(|path| path.join("acp.snapshot.json"))
+    else {
+        return AttemptMetrics::default();
+    };
+    let Ok(contents) = std::fs::read_to_string(snapshot_path.as_std_path()) else {
+        return AttemptMetrics::default();
+    };
+    let Ok(metadata) = serde_json::from_str::<AcpSessionMetadata>(&contents) else {
+        return AttemptMetrics::default();
+    };
+    AttemptMetrics {
+        input_tokens: metadata.attempt_input_tokens,
+        output_tokens: metadata.attempt_output_tokens,
+        cache_read_tokens: metadata.attempt_cached_read_tokens,
+        total_tokens: metadata.attempt_total_tokens,
+        elapsed_ms: metadata
+            .timing
+            .map(|timing| timing.session_elapsed_seconds.saturating_mul(1000)),
+    }
+}
+
 /// Read token totals from the ACP session metadata file and timeline.
 /// First reads `acp.snapshot.json`, then scans `acp.timeline.jsonl` for usage events
 /// to pick up the latest accumulated totals. Returns (input, output, cache_read, total).
@@ -2663,6 +2698,39 @@ mod tests {
         assert_eq!(m.cache_read_tokens, 200);
         assert_eq!(m.total_tokens, 1700);
         assert_eq!(m.session_elapsed_seconds, 842);
+    }
+
+    #[test]
+    fn attempt_metrics_use_attempt_totals_and_preserve_unknowns() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("acp.snapshot.json"),
+            r#"{
+            "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
+            "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
+            "inputTokens":100,"totalTokens":100,
+            "attemptInputTokens":260,"attemptTotalTokens":300,
+            "timing":{"sessionElapsedSeconds":12,"paused":false}
+        }"#,
+        )
+        .unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
+        let metrics = super::read_attempt_metrics(&session_path);
+        assert_eq!(metrics.input_tokens, Some(260));
+        assert_eq!(metrics.output_tokens, None);
+        assert_eq!(metrics.cache_read_tokens, None);
+        assert_eq!(metrics.total_tokens, Some(300));
+        assert_eq!(metrics.elapsed_ms, Some(12_000));
+
+        let missing_dir = TempDir::new().unwrap();
+        let missing = super::read_attempt_metrics(
+            &camino::Utf8Path::from_path(missing_dir.path())
+                .unwrap()
+                .join("acp.session.json"),
+        );
+        assert_eq!(missing.output_tokens, None);
     }
 
     #[test]

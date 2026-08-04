@@ -3,8 +3,11 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use camino::Utf8PathBuf;
 use gold_band::app::RuntimeLifecycleEvent;
+use gold_band::app::observability::{
+    LifecycleTiming, MetricsCounters as CoreMetricsCounters, MetricsLifecycleFact, ModelUsage,
+    TokenUsage,
+};
 use gold_band::config::RuntimeConfig;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime};
@@ -16,6 +19,9 @@ use crate::{channel::current_channel_config, state::DesktopState};
 static METRICS_LOG_PATH: OnceLock<Option<String>> = OnceLock::new();
 const HEARTBEAT_ENDPOINT_PATH: &str = "/api/client-report/heartbeat";
 const NODE_METRICS_ENDPOINT_PATH: &str = "/api/client-report/metrics/batch";
+const METRICS_QUEUE_CAPACITY: usize = 2048;
+const METRICS_BATCH_LIMIT: usize = 100;
+const METRICS_LOG_LIMIT_BYTES: u64 = 20 * 1024 * 1024;
 
 fn metrics_log_path() -> Option<&'static str> {
     METRICS_LOG_PATH
@@ -50,6 +56,26 @@ pub(crate) fn metrics_log(msg: &str) {
         chrono::Local::now().format("%Y-%m-%dT%H:%M:%S"),
         msg
     );
+    let line = if line.len() as u64 > METRICS_LOG_LIMIT_BYTES {
+        format!(
+            "[{}] payload-too-large actualBytes={}\n",
+            chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+            line.len()
+        )
+    } else {
+        line
+    };
+    if let Ok(metadata) = std::fs::metadata(log_path) {
+        if metadata.len().saturating_add(line.len() as u64) > METRICS_LOG_LIMIT_BYTES {
+            let reset = format!(
+                "[{}] log-reset reason=size-limit\n",
+                chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false)
+            );
+            if let Err(error) = std::fs::write(log_path, reset) {
+                eprintln!("[metrics] failed to reset log {}: {}", log_path, error);
+            }
+        }
+    }
     if let Err(e) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -257,389 +283,432 @@ pub(crate) fn get_api_key(config: &RuntimeConfig) -> Option<String> {
         })
 }
 
-// ── Node Metrics ─────────────────────────────────────────────────────────────
+// ── Lifecycle Metrics ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub enum MetricsEventType {
+    #[serde(rename = "execution.started")]
+    ExecutionStarted,
+    #[serde(rename = "execution.completed")]
+    ExecutionCompleted,
+    #[serde(rename = "execution.paused")]
+    ExecutionPaused,
+    #[serde(rename = "intervention.requested")]
+    InterventionRequested,
+    #[serde(rename = "execution.resumed")]
+    ExecutionResumed,
+    #[serde(rename = "acceptance.completed")]
+    AcceptanceCompleted,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum MetricsSessionMode {
+    Direct,
+    Workflow,
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum MetricsExecutionKind {
+    Turn,
+    Run,
+    NodeAttempt,
+    OuterRun,
+    UnitAttempt,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricsCounters {
+    pub pause_count: u32,
+    pub resume_count: u32,
+    pub permission_request_count: u32,
+    pub elicitation_count: u32,
+    pub manual_continue_count: u32,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NodeMetricItem {
-    pub workspace: String,
+pub struct MetricsEventItem {
+    pub event_id: String,
+    pub event_revision: u64,
+    pub event_type: MetricsEventType,
+    pub occurred_at: String,
+    pub reported_at: String,
     pub user_id: String,
+    pub workspace: String,
+    pub client_version: String,
+    pub session_mode: MetricsSessionMode,
     pub task_id: String,
-    pub run_id: String,
-    pub round_id: String,
-    pub node_id: String,
+    pub execution_kind: MetricsExecutionKind,
+    pub execution_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub seq: Option<u32>,
+    pub parent_execution_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_name: Option<String>,
+    pub node_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_type: Option<String>,
-    pub attempt_count: u32,
+    pub attempt_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<String>,
+    pub attempt_index: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ended_at: Option<String>,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub total_tokens: u64,
-    pub status: String,
+    pub round_index: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reported_at: Option<String>,
-    pub session_elapsed_seconds: u64,
+    pub role_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counters: Option<MetricsCounters>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_reason_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_attempt_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub round_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub passed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acceptance_attempt: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_pass: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intervention_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pause_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_pause_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TokenUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_usages: Option<Vec<ModelUsage>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timing: Option<LifecycleTiming>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collection_state_recovered: Option<bool>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct NodeMetricBatch {
-    metrics: Vec<NodeMetricItem>,
+struct MetricsEventBatch {
+    events: Vec<MetricsEventItem>,
 }
 
-pub async fn send_node_metrics_batch(endpoint: &str, api_key: &str, batch: NodeMetricBatch) {
+fn iso_now() -> String {
+    chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false)
+}
+
+fn map_runtime_event(event: RuntimeLifecycleEvent) -> Option<MetricsEventItem> {
+    match event {
+        RuntimeLifecycleEvent::MetricsFact(fact) => Some(map_metrics_fact(fact, iso_now())),
+        _ => None,
+    }
+}
+fn wire<T: Serialize>(value: T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn map_metrics_fact(fact: MetricsLifecycleFact, reported_at: String) -> MetricsEventItem {
+    let event_type = match fact.event_type {
+        gold_band::app::observability::LifecycleEventType::ExecutionStarted => {
+            MetricsEventType::ExecutionStarted
+        }
+        gold_band::app::observability::LifecycleEventType::ExecutionCompleted => {
+            MetricsEventType::ExecutionCompleted
+        }
+        gold_band::app::observability::LifecycleEventType::ExecutionPaused => {
+            MetricsEventType::ExecutionPaused
+        }
+        gold_band::app::observability::LifecycleEventType::ExecutionResumed => {
+            MetricsEventType::ExecutionResumed
+        }
+        gold_band::app::observability::LifecycleEventType::InterventionRequested => {
+            MetricsEventType::InterventionRequested
+        }
+        gold_band::app::observability::LifecycleEventType::AcceptanceCompleted => {
+            MetricsEventType::AcceptanceCompleted
+        }
+    };
+    let session_mode = match fact.session_mode {
+        gold_band::app::observability::MetricsSessionMode::Direct => MetricsSessionMode::Direct,
+        gold_band::app::observability::MetricsSessionMode::Workflow => MetricsSessionMode::Workflow,
+        gold_band::app::observability::MetricsSessionMode::Auto => MetricsSessionMode::Auto,
+    };
+    let execution_kind = match fact.execution_kind {
+        gold_band::app::observability::ExecutionKind::Turn => MetricsExecutionKind::Turn,
+        gold_band::app::observability::ExecutionKind::Run => MetricsExecutionKind::Run,
+        gold_band::app::observability::ExecutionKind::NodeAttempt => {
+            MetricsExecutionKind::NodeAttempt
+        }
+        gold_band::app::observability::ExecutionKind::OuterRun => MetricsExecutionKind::OuterRun,
+        gold_band::app::observability::ExecutionKind::UnitAttempt => {
+            MetricsExecutionKind::UnitAttempt
+        }
+    };
+    MetricsEventItem {
+        event_id: fact.event_id,
+        event_revision: fact.event_revision,
+        event_type,
+        occurred_at: to_iso8601(&fact.occurred_at),
+        reported_at,
+        user_id: fact.user_id,
+        workspace: fact.workspace,
+        client_version: env!("CARGO_PKG_VERSION").into(),
+        session_mode,
+        task_id: fact.task_id,
+        execution_kind,
+        execution_id: fact.execution_id,
+        parent_execution_id: fact.parent_execution_id,
+        node_id: fact.node_id,
+        attempt_id: fact.attempt_id,
+        attempt_index: fact.attempt_index,
+        round_index: fact.round_index,
+        role_name: fact.role_name,
+        outcome: fact.outcome.map(wire),
+        terminal_reason: fact.terminal_reason.map(wire),
+        counters: fact.counters.map(|c: CoreMetricsCounters| MetricsCounters {
+            pause_count: c.pause_count,
+            resume_count: c.resume_count,
+            permission_request_count: c.permission_request_count,
+            elicitation_count: c.elicitation_count,
+            manual_continue_count: c.manual_continue_count,
+        }),
+        unit_id: fact.unit_id,
+        unit_kind: fact.unit_kind.map(wire),
+        child_run_id: fact.child_run_id,
+        terminal_reason_code: fact.terminal_reason_code,
+        failed_attempt_id: fact.failed_attempt_id,
+        round_count: fact.round_count,
+        passed: fact.passed,
+        acceptance_attempt: fact.acceptance_attempt,
+        first_pass: fact.first_pass,
+        intervention_kind: fact.intervention_kind.map(wire),
+        pause_reason: fact.pause_reason.map(wire),
+        previous_pause_reason: fact.previous_pause_reason.map(wire),
+        provider: fact.provider,
+        model: fact.model,
+        usage: fact.usage,
+        model_usages: fact.model_usages,
+        timing: fact.timing,
+        collection_state_recovered: fact.collection_state_recovered,
+    }
+}
+
+fn same_report_month(left: &str, right: &str) -> bool {
+    left.get(..7) == right.get(..7)
+}
+
+async fn send_metrics_batch(
+    client: &reqwest::Client,
+    endpoint: &str,
+    api_key: &str,
+    events: Vec<MetricsEventItem>,
+) {
+    let batch = MetricsEventBatch { events };
     let body = serde_json::to_string(&batch).unwrap_or_default();
-    metrics_log(&format!("[node-metrics] POST {} body: {}", endpoint, body));
-    let client = reqwest::Client::new();
-    let result = client
-        .post(endpoint)
-        .header("X-Maling-Report-Key", api_key)
-        .header("Content-Type", "application/json;charset=UTF-8")
-        .json(&batch)
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await;
-    match result {
-        Ok(resp) => {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    for attempt in 1..=3 {
+        if body.len() as u64 > METRICS_LOG_LIMIT_BYTES {
             metrics_log(&format!(
-                "[node-metrics] response status={} count={}",
-                resp.status(),
-                batch.metrics.len()
+                "[lifecycle-metrics] request requestId={request_id} attempt={attempt} url={endpoint} actualBytes={} payload-too-large",
+                body.len()
+            ));
+        } else {
+            metrics_log(&format!(
+                "[lifecycle-metrics] request requestId={request_id} attempt={attempt} url={endpoint} body={body}"
             ));
         }
-        Err(err) => {
-            metrics_log(&format!("[node-metrics] FAILED (ignored): {}", err));
+        let result = client
+            .post(endpoint)
+            .header("X-Maling-Report-Key", api_key)
+            .header("Content-Type", "application/json;charset=UTF-8")
+            .body(body.clone())
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await;
+        match result {
+            Ok(response) => {
+                let status = response.status();
+                let response_body = response.text().await.unwrap_or_default();
+                metrics_log(&format!(
+                    "[lifecycle-metrics] response requestId={request_id} status={status} body={response_body}"
+                ));
+                if !should_retry_status(status) {
+                    return;
+                }
+            }
+            Err(error) => metrics_log(&format!(
+                "[lifecycle-metrics] error requestId={request_id} attempt={attempt} error={error}"
+            )),
         }
     }
 }
 
-/// Build a "start sentinel" node metric item for the first node in a run (no predecessor).
-pub fn start_sentinel_metric(
-    workspace: &str,
-    user_id: &str,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    started_at: &str,
-    reported_at: &str,
-) -> NodeMetricItem {
-    let sentinel_uuid = uuid::Uuid::new_v4().simple().to_string();
-    NodeMetricItem {
-        workspace: workspace.to_string(),
-        user_id: user_id.to_string(),
-        task_id: task_id.to_string(),
-        run_id: run_id.to_string(),
-        round_id: round_id.to_string(),
-        node_id: sentinel_uuid,
-        seq: None,
-        node_name: Some("开始".to_string()),
-        agent_type: None,
-        attempt_count: 0,
-        started_at: Some(started_at.to_string()),
-        ended_at: Some(started_at.to_string()),
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_read_tokens: 0,
-        total_tokens: 0,
-        status: "SUCCESS".to_string(),
-        reported_at: Some(reported_at.to_string()),
-        session_elapsed_seconds: 0,
+fn should_retry_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error()
+}
+
+fn metrics_collection_enabled(
+    channel: &str,
+    enabled: bool,
+    endpoint: Option<&str>,
+    api_key: Option<&str>,
+) -> bool {
+    channel == "wb"
+        && enabled
+        && endpoint.is_some_and(|value| !value.trim().is_empty())
+        && api_key.is_some_and(|value| !value.trim().is_empty())
+}
+
+pub(crate) fn core_metrics_collection_enabled(config: &RuntimeConfig) -> bool {
+    let settings = metrics_settings(config);
+    metrics_collection_enabled(
+        current_channel_config().channel,
+        settings.enabled,
+        settings.node_metrics_endpoint.as_deref(),
+        get_api_key(config).as_deref(),
+    )
+}
+
+async fn run_metrics_reporter(
+    mut receiver: tokio::sync::mpsc::Receiver<MetricsEventItem>,
+    endpoint: String,
+    api_key: String,
+) {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(3))
+        .build()
+        .unwrap_or_default();
+    let mut pending = Vec::with_capacity(METRICS_BATCH_LIMIT);
+    let mut shutdown_deadline = None;
+    loop {
+        if receiver.is_closed() && shutdown_deadline.is_none() {
+            shutdown_deadline = Some(tokio::time::Instant::now() + Duration::from_millis(500));
+        }
+        if pending.is_empty() && shutdown_deadline.is_none() {
+            let deadline = tokio::time::sleep(Duration::from_secs(2));
+            tokio::pin!(deadline);
+            tokio::select! {
+                value = receiver.recv() => match value { Some(event) => pending.push(event), None => continue },
+                _ = &mut deadline => {}
+            }
+        }
+        while pending.len() < METRICS_BATCH_LIMIT
+            && !shutdown_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+        {
+            match receiver.try_recv() {
+                Ok(event) => pending.push(event),
+                Err(_) => break,
+            }
+        }
+        if pending.is_empty() {
+            if shutdown_deadline.is_some() {
+                break;
+            }
+            continue;
+        }
+        let batch = take_next_batch(&mut pending);
+        if let Some(deadline) = shutdown_deadline {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let _ = tokio::time::timeout(
+                remaining,
+                send_metrics_batch(&client, &endpoint, &api_key, batch),
+            )
+            .await;
+        } else {
+            send_metrics_batch(&client, &endpoint, &api_key, batch).await;
+        }
     }
 }
 
-// ── Orchestrator Callback ────────────────────────────────────────────────────
+fn take_next_batch(pending: &mut Vec<MetricsEventItem>) -> Vec<MetricsEventItem> {
+    let month = pending[0].reported_at.clone();
+    let split = pending
+        .iter()
+        .position(|event| !same_report_month(&month, &event.reported_at))
+        .unwrap_or(pending.len())
+        .min(METRICS_BATCH_LIMIT);
+    pending.drain(..split).collect()
+}
 
-/// Create a metrics subscriber for the RuntimeLifecycleBus.
-///
-/// The bus invokes subscribers off the runtime hot path; this handler still
-/// delegates HTTP requests to `tauri::async_runtime::spawn` after lightweight
-/// settings and metric construction.
 pub fn create_metrics_subscriber<R: Runtime>(
     app: AppHandle<R>,
 ) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
-    Arc::new(move |event: RuntimeLifecycleEvent| {
-        // ── Guard: settings check (shared by both branches) ──
-        let settings = match app.try_state::<DesktopState>() {
-            Some(state) => match state.context() {
-                Ok(ctx) => metrics_settings(&ctx.config),
-                Err(_) => return,
-            },
-            None => return,
+    let (sender, receiver) = tokio::sync::mpsc::channel(METRICS_QUEUE_CAPACITY);
+    let gate = app
+        .try_state::<DesktopState>()
+        .and_then(|state| state.context().ok())
+        .and_then(|context| {
+            let settings = metrics_settings(&context.config);
+            metrics_collection_enabled(
+                current_channel_config().channel,
+                settings.enabled,
+                settings.node_metrics_endpoint.as_deref(),
+                get_api_key(&context.config).as_deref(),
+            )
+            .then(|| {
+                Some((
+                    settings.node_metrics_endpoint?,
+                    get_api_key(&context.config)?,
+                ))
+            })
+            .flatten()
+        });
+    if let Some((endpoint, api_key)) = gate {
+        tauri::async_runtime::spawn(run_metrics_reporter(receiver, endpoint, api_key));
+    } else {
+        drop(receiver);
+        metrics_log("[lifecycle-metrics] disabled: requires wb channel, endpoint and api key");
+    }
+    Arc::new(move |event| {
+        let RuntimeLifecycleEvent::MetricsFact(fact) = &event else {
+            return;
         };
-        if !settings.enabled {
+        if let Err(error) = fact.validate() {
+            metrics_log(&format!(
+                "[lifecycle-metrics] dropped invalid event error={error}"
+            ));
             return;
         }
-        let node_metrics_endpoint = match &settings.node_metrics_endpoint {
-            Some(ep) => ep.clone(),
-            None => return,
+        let Some(item) = map_runtime_event(event) else {
+            return;
         };
-        let api_key = match app.try_state::<DesktopState>() {
-            Some(state) => match state.context() {
-                Ok(ctx) => match get_api_key(&ctx.config) {
-                    Some(k) => k,
-                    None => return,
-                },
-                Err(_) => return,
-            },
-            None => return,
-        };
-
-        let user_id = get_system_username();
-        let reported_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-
-        match event {
-            RuntimeLifecycleEvent::NodeStarted {
-                repo_root,
-                task_id,
-                task_uuid,
-                run_id,
-                run_uuid,
-                round_id,
-                round_uuid,
-                node_id,
-                node_uuid,
-                attempt_id,
-                seq,
-                node_name,
-                agent_type,
-                started_at,
-                predecessor,
-                ..
-            } => {
-                metrics_log(&format!(
-                    "[node-metrics] NodeStarted task={} run={} node={} has_predecessor={}",
-                    task_id,
-                    run_id,
-                    node_id,
-                    predecessor.is_some()
-                ));
-
-                let attempt_count = attempt_id
-                    .strip_prefix("attempt-")
-                    .and_then(|n| n.parse::<u32>().ok())
-                    .unwrap_or(0)
-                    .saturating_sub(1);
-
-                let node_status = if attempt_count > 0 {
-                    "Reentrancy".to_string()
-                } else {
-                    "RUNNING".to_string()
-                };
-
-                // ── Build predecessor metric ──
-                let predecessor_item = match &predecessor {
-                    Some(pred) => {
-                        // Read predecessor tokens from ITS attempt_dir
-                        let (
-                            input_tokens,
-                            output_tokens,
-                            cache_read_tokens,
-                            total_tokens,
-                            session_elapsed_seconds,
-                        ) = pred
-                            .attempt_dir
-                            .as_ref()
-                            .map(|d| {
-                                let path = Utf8PathBuf::from(d).join("acp.session.json");
-                                let m = gold_band::acp::events::read_session_metrics(&path);
-                                (
-                                    m.input_tokens,
-                                    m.output_tokens,
-                                    m.cache_read_tokens,
-                                    m.total_tokens,
-                                    m.session_elapsed_seconds,
-                                )
-                            })
-                            .unwrap_or((0, 0, 0, 0, 0));
-
-                        NodeMetricItem {
-                            workspace: repo_root.clone(),
-                            user_id: user_id.clone(),
-                            task_id: task_uuid.clone().unwrap_or(task_id.clone()),
-                            run_id: run_uuid.clone().unwrap_or(run_id.clone()),
-                            round_id: pred.round_uuid.clone(),
-                            node_id: pred.uuid.clone(),
-                            seq: pred.seq,
-                            node_name: Some(pred.node_name.clone()),
-                            agent_type: pred.agent_type.clone(),
-                            attempt_count: 0,
-                            started_at: Some(to_iso8601(&pred.started_at)),
-                            ended_at: pred.finished_at.as_ref().map(|s| to_iso8601(s)),
-                            input_tokens,
-                            output_tokens,
-                            cache_read_tokens,
-                            total_tokens,
-                            session_elapsed_seconds,
-                            status: pred.status.clone(),
-                            reported_at: Some(reported_at.clone()),
-                        }
-                    }
-                    None => start_sentinel_metric(
-                        &repo_root,
-                        &user_id,
-                        &task_uuid.clone().unwrap_or(task_id.clone()),
-                        &run_uuid.clone().unwrap_or(run_id.clone()),
-                        &round_uuid.clone().unwrap_or(round_id.clone()),
-                        &to_iso8601(&started_at),
-                        &reported_at,
-                    ),
-                };
-
-                // ── Build current node metric (token=0 — hasn't executed yet) ──
-                let current = NodeMetricItem {
-                    workspace: repo_root.clone(),
-                    user_id: user_id.clone(),
-                    task_id: task_uuid.clone().unwrap_or(task_id.clone()),
-                    run_id: run_uuid.clone().unwrap_or(run_id.clone()),
-                    round_id: round_uuid.clone().unwrap_or(round_id.clone()),
-                    node_id: node_uuid.clone().unwrap_or(node_id.clone()),
-                    seq,
-                    node_name: node_name.clone(),
-                    agent_type: agent_type.clone(),
-                    attempt_count,
-                    started_at: Some(to_iso8601(&started_at)),
-                    ended_at: None,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cache_read_tokens: 0,
-                    total_tokens: 0,
-                    session_elapsed_seconds: 0,
-                    status: node_status,
-                    reported_at: Some(reported_at.clone()),
-                };
-
-                let batch = NodeMetricBatch {
-                    metrics: vec![predecessor_item, current],
-                };
-
-                metrics_log(&format!(
-                    "[node-metrics] sending batch to {} (pred_status={}, cur_status={})",
-                    node_metrics_endpoint,
-                    batch
-                        .metrics
-                        .first()
-                        .map(|m| m.status.as_str())
-                        .unwrap_or("?"),
-                    batch
-                        .metrics
-                        .get(1)
-                        .map(|m| m.status.as_str())
-                        .unwrap_or("?")
-                ));
-
-                let app_handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    send_node_metrics_batch(&node_metrics_endpoint, &api_key, batch).await;
-                    let _ = app_handle;
-                });
-            }
-
-            RuntimeLifecycleEvent::NodeCompleted {
-                repo_root,
-                task_id,
-                task_uuid,
-                run_id,
-                run_uuid,
-                round_id,
-                round_uuid,
-                node_id,
-                node_uuid,
-                seq,
-                node_name,
-                agent_type,
-                started_at,
-                finished_at,
-                outcome,
-                attempt_dir,
-                suppress_sentinel,
-                ..
-            } => {
-                metrics_log(&format!(
-                    "[node-metrics] WorkflowEnded: task={} run={} node={}",
-                    task_id, run_id, node_id
-                ));
-
-                // Read tokens from this node's attempt_dir
-                let path = Utf8PathBuf::from(&attempt_dir).join("acp.session.json");
-                let m = gold_band::acp::events::read_session_metrics(&path);
-
-                let last_node = NodeMetricItem {
-                    workspace: repo_root.clone(),
-                    user_id: user_id.clone(),
-                    task_id: task_uuid.clone().unwrap_or(task_id.clone()),
-                    run_id: run_uuid.clone().unwrap_or(run_id.clone()),
-                    round_id: round_uuid.clone().unwrap_or(round_id.clone()),
-                    node_id: node_uuid.clone().unwrap_or(node_id.clone()),
-                    seq,
-                    node_name: Some(node_name.clone()),
-                    agent_type: agent_type.clone(),
-                    attempt_count: 0,
-                    started_at: Some(to_iso8601(&started_at)),
-                    ended_at: finished_at.as_ref().map(|s| to_iso8601(s)),
-                    input_tokens: m.input_tokens,
-                    output_tokens: m.output_tokens,
-                    cache_read_tokens: m.cache_read_tokens,
-                    total_tokens: m.total_tokens,
-                    session_elapsed_seconds: m.session_elapsed_seconds,
-                    status: outcome.clone(),
-                    reported_at: Some(reported_at.clone()),
-                };
-
-                let end_started = finished_at
-                    .as_ref()
-                    .map(|s| to_iso8601(s))
-                    .unwrap_or_else(|| reported_at.clone());
-
-                let end_sentinel = NodeMetricItem {
-                    workspace: repo_root.clone(),
-                    user_id: user_id.clone(),
-                    task_id: task_uuid.clone().unwrap_or(task_id.clone()),
-                    run_id: run_uuid.clone().unwrap_or(run_id.clone()),
-                    round_id: round_uuid.clone().unwrap_or(round_id.clone()),
-                    node_id: uuid::Uuid::new_v4().simple().to_string(),
-                    seq: None,
-                    node_name: Some("结束".to_string()),
-                    agent_type: None,
-                    attempt_count: 0,
-                    started_at: Some(end_started),
-                    ended_at: Some(reported_at.clone()),
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cache_read_tokens: 0,
-                    total_tokens: 0,
-                    session_elapsed_seconds: 0,
-                    status: outcome,
-                    reported_at: Some(reported_at.clone()),
-                };
-
-                let mut metrics = vec![last_node];
-                if !suppress_sentinel {
-                    metrics.push(end_sentinel);
-                }
-                let batch = NodeMetricBatch { metrics };
-
-                let app_handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    send_node_metrics_batch(&node_metrics_endpoint, &api_key, batch).await;
-                    let _ = app_handle;
-                });
-            }
-            _ => {}
+        if let Err(error) = sender.try_send(item) {
+            let reason = error.to_string();
+            let item = error.into_inner();
+            metrics_log(&format!(
+                "[lifecycle-metrics] dropped event eventId={} executionId={} reason={reason}",
+                item.event_id, item.execution_id,
+            ));
         }
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{metrics_settings, normalize_metrics_base_url};
+    use super::{
+        METRICS_BATCH_LIMIT, MetricsEventType, MetricsExecutionKind, MetricsSessionMode,
+        map_metrics_fact, metrics_collection_enabled, metrics_settings, normalize_metrics_base_url,
+        run_metrics_reporter, same_report_month, should_retry_status, take_next_batch,
+    };
     use gold_band::config::RuntimeConfig;
 
     #[test]
@@ -683,5 +752,183 @@ mod tests {
             settings.node_metrics_endpoint.as_deref(),
             Some("http://metrics.example.com/api/client-report/metrics/batch")
         );
+    }
+
+    #[test]
+    fn lifecycle_contract_enums_use_protocol_values() {
+        assert_eq!(
+            serde_json::to_string(&MetricsEventType::ExecutionCompleted).unwrap(),
+            "\"execution.completed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MetricsSessionMode::Workflow).unwrap(),
+            "\"workflow\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MetricsExecutionKind::NodeAttempt).unwrap(),
+            "\"node-attempt\""
+        );
+    }
+
+    #[test]
+    fn reporter_groups_by_frozen_report_month_and_caps_batches() {
+        assert!(same_report_month(
+            "2026-07-31T23:59:59+08:00",
+            "2026-07-01T00:00:00+08:00"
+        ));
+        assert!(!same_report_month(
+            "2026-07-31T23:59:59+08:00",
+            "2026-08-01T00:00:00+08:00"
+        ));
+        assert_eq!(METRICS_BATCH_LIMIT, 100);
+    }
+
+    #[test]
+    fn wb_gate_requires_all_credentials_and_default_never_collects() {
+        assert!(metrics_collection_enabled(
+            "wb",
+            true,
+            Some("https://metrics.example"),
+            Some("key")
+        ));
+        assert!(!metrics_collection_enabled(
+            "default",
+            true,
+            Some("https://metrics.example"),
+            Some("key")
+        ));
+        assert!(!metrics_collection_enabled("wb", true, None, Some("key")));
+        assert!(!metrics_collection_enabled(
+            "wb",
+            true,
+            Some("https://metrics.example"),
+            None
+        ));
+    }
+
+    #[test]
+    fn retry_policy_retries_only_server_failures() {
+        assert!(should_retry_status(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
+        assert!(should_retry_status(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE
+        ));
+        assert!(!should_retry_status(reqwest::StatusCode::BAD_REQUEST));
+        assert!(!should_retry_status(reqwest::StatusCode::OK));
+    }
+
+    #[tokio::test]
+    async fn bounded_queue_drops_new_event_without_waiting() {
+        let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+        sender.try_send(1).unwrap();
+        assert!(matches!(
+            sender.try_send(2),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(2))
+        ));
+    }
+
+    #[test]
+    fn every_shutdown_batch_respects_the_hundred_event_limit() {
+        let mut pending = (0..205)
+            .map(|_| {
+                let fact = gold_band::app::observability::MetricsLifecycleFact::new(
+                    gold_band::app::observability::LifecycleEventType::ExecutionStarted,
+                    1,
+                    "2026-08-01T00:00:00Z".into(),
+                    "user".into(),
+                    "workspace".into(),
+                    gold_band::app::observability::MetricsSessionMode::Workflow,
+                    "task".into(),
+                    gold_band::app::observability::ExecutionKind::Run,
+                    uuid::Uuid::new_v4().to_string(),
+                );
+                map_metrics_fact(fact, "2026-08-01T00:00:00Z".into())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(take_next_batch(&mut pending).len(), 100);
+        assert_eq!(take_next_batch(&mut pending).len(), 100);
+        assert_eq!(take_next_batch(&mut pending).len(), 5);
+    }
+
+    #[test]
+    fn dto_uses_failed_attempt_id_for_delivery_failure() {
+        let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
+            gold_band::app::observability::LifecycleEventType::ExecutionCompleted,
+            2,
+            "2026-08-01T00:00:00Z".into(),
+            "user".into(),
+            "workspace".into(),
+            gold_band::app::observability::MetricsSessionMode::Auto,
+            "task".into(),
+            gold_band::app::observability::ExecutionKind::OuterRun,
+            uuid::Uuid::new_v4().to_string(),
+        );
+        fact.outcome = Some(gold_band::app::observability::ExecutionOutcome::Failure);
+        fact.terminal_reason =
+            Some(gold_band::app::observability::TerminalReason::AcceptanceRejected);
+        fact.failed_attempt_id = Some(uuid::Uuid::new_v4().to_string());
+        fact.counters = Some(Default::default());
+        let value =
+            serde_json::to_value(map_metrics_fact(fact, "2026-08-01T00:00:00Z".into())).unwrap();
+        assert!(value.get("failedAttemptId").is_some());
+        assert!(value.get("failedExecutionId").is_none());
+    }
+
+    #[test]
+    fn dto_serializes_attempt_index_only_for_attempt_events() {
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
+            gold_band::app::observability::LifecycleEventType::ExecutionStarted,
+            1,
+            "2026-08-01T00:00:00Z".into(),
+            "user".into(),
+            "workspace".into(),
+            gold_band::app::observability::MetricsSessionMode::Direct,
+            "task".into(),
+            gold_band::app::observability::ExecutionKind::Turn,
+            execution_id.clone(),
+        );
+        fact.attempt_id = Some(execution_id);
+        fact.attempt_index = Some(1);
+        let value =
+            serde_json::to_value(map_metrics_fact(fact, "2026-08-01T00:00:00Z".into())).unwrap();
+        assert_eq!(value.get("attemptIndex").and_then(|v| v.as_u64()), Some(1));
+    }
+
+    #[tokio::test]
+    async fn reporter_shutdown_is_bounded_to_five_hundred_milliseconds() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((_stream, _)) = listener.accept() {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        });
+        let fact = gold_band::app::observability::MetricsLifecycleFact::new(
+            gold_band::app::observability::LifecycleEventType::ExecutionStarted,
+            1,
+            "2026-08-01T00:00:00Z".into(),
+            "user".into(),
+            "workspace".into(),
+            gold_band::app::observability::MetricsSessionMode::Workflow,
+            "task".into(),
+            gold_band::app::observability::ExecutionKind::Run,
+            uuid::Uuid::new_v4().to_string(),
+        );
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        sender
+            .send(map_metrics_fact(fact, "2026-08-01T00:00:00Z".into()))
+            .await
+            .unwrap();
+        drop(sender);
+        let started = std::time::Instant::now();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(900),
+            run_metrics_reporter(receiver, format!("http://{address}"), "key".into()),
+        )
+        .await
+        .expect("reporter must honor the shutdown budget");
+        assert!(started.elapsed() < std::time::Duration::from_millis(900));
     }
 }

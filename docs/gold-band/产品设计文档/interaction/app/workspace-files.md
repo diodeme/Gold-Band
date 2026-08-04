@@ -6,7 +6,7 @@
 
 ## 2. 核心交互
 
-- 右侧工作区没有 Tab 时展示“文件”入口；进入后始终以当前 `projectId` 对应的工作空间为目录根。存在 Tab 时，Tab 栏最左侧固定展示“新建 Tab”图标，使用 shadcn/Radix 菜单展示与空态完全相同的资源入口；选择入口后按资源稳定 key 打开或聚焦 Tab，禁止为同一资源创建重复 Tab。图标不随标签横向滚动，标签溢出菜单仍位于最右侧。
+- 右侧工作区没有 Tab 时展示“文件”入口；进入后始终以当前 `projectId` 对应的工作空间为目录根。空态入口按工作区可用宽度整行展开，整行都是可点击区域，不以内容宽度收缩成胶囊卡片。存在 Tab 时，Tab 栏最左侧固定展示“新建 Tab”图标，使用 shadcn/Radix 菜单展示与空态完全相同的资源入口；选择入口后按资源稳定 key 打开或聚焦 Tab，禁止为同一资源创建重复 Tab。图标不随标签横向滚动，标签溢出菜单仍位于最右侧。溢出菜单是紧凑的单行选项列表：每项展示资源图标、截断标题和当前项勾选态，32px 行高，不使用说明文字或卡片化大间距。
 - 可用宽度不少于 540px 时，左侧显示文件详情，右侧显示目录树；详情最小 280px、目录最小 200px。打开文件能力时优先请求 760px 右栏宽度，右栏最大允许扩展到 960px。空间不足时切换为“文件 / 目录”单栏，不横向压缩两个不可用面板。
 - 窗口连续缩放属于 DOM 布局热路径：外层只允许一个 `ResizeObserver` 合并到动画帧，并且只计算左/中/右可见性等离散断点；左栏与右栏跨过各自断点时立即展示或隐藏，使布局反馈始终对应当前窗口宽度。右栏可见且尚未达到用户首选宽度时，中栏使用 `preserve-pixel-size`、右栏使用 `preserve-relative-size`，由 `react-resizable-panels` 把窗口增减空间直接分配给右栏；到达首选宽度后交换所有权，中栏吸收后续窗口增量而右栏保持像素宽度。`ResizablePanel.onResize` 只把实际宽度写入 ref，并仅在“是否达到首选宽度”变化时发布一次离散 React state。因此文件区变宽和变窄都在实际宽度跨过 540px 的当帧切换单双栏，不等待松手；固定拓扑中的左栏原生展开挤压右栏时也会立即切回右栏增长状态，禁止以方向锁掩盖低于最小分栏宽度的布局。用户直接拖动右侧 separator 时临时把右栏上限解锁到配置最大宽度，结束后以新偏好重新设限。热路径禁止调用 `panel.getSize()` 或 `panel.resize()`，避免面板库布局后再被应用代码二次改写。文件面板的逐像素宽度只写 ref；React state 只发布文件区单栏/双栏等离散状态，处于同一阈值区间时不得重渲染文件详情、Markdown 编辑器或目录树。内层 ResizeObserver 只能登记后续 rAF，并在该帧重新读取最终 `clientWidth`，不能立即消费面板库重组过程中的中间宽度。文件区状态机同时接收窗口宽度方向：变宽时禁止双栏退回单栏，变窄时禁止单栏重新升级双栏；一次 shell 尺寸变化引发的后续内层回调在 120ms settle 窗口内沿用最后方向，尺寸稳定后才回到 stationary，使右侧 separator 直接拖动仍可双向切换。目录分栏宽度只在用户直接拖动内部 separator 完成后保存，窗口缩放产生的布局变化不得覆盖用户偏好。
 - 左侧导航、右侧工作区 Panel 及其相邻 separator 始终保留在同一 `ResizablePanelGroup` 拓扑中，自动隐藏使用组件原生 `collapsible + collapsedSize=0`，跨断点时只执行一次 `collapse/expand`；禁止条件卸载后重新挂载，否则面板库会恢复旧的双栏或三栏布局快照并瞬间挤压已经展开的文件双栏。折叠时 separator 只切换为 disabled、透明且不可命中，Panel 内容可以随展示态卸载；紧凑右栏内容只在 Sheet 中挂载一份。
@@ -91,6 +91,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 
 - 右侧工作区增加 `file-version`、`file-diff` 与 `conversation-asset` 三类只读资源。历史版本 key 包含 change set/change identity，同一路径不同 turn 不复用错误内容；消息附件和 artifact key 包含完整 attempt/branch locator。
 - `file-diff` 使用官方 `@codemirror/merge` 的 `unifiedMergeView`，固定只读、无 merge controls，开启 gutter、变化高亮、未修改区折叠及上一处/下一处导航。viewer 必须跟随右侧工作区容器宽度并启用 `EditorView.lineWrapping`，长行在当前可视宽度内换行，不产生页面级横向滚动。普通文件与 diff 复用同一语言加载、主题和 syntax highlight extension；新增片段的主题选择器必须命中同一编辑器根节点 `&.cm-merge-b`，显式移除 merge 默认 background image，只保留实色语义背景。只读 diff/version viewer 不安装 CodeMirror 自绘 selection layer，使用应用级 `--text-selection` / `--text-selection-foreground` 原生选中态，避免 diff 标记背景遮挡深色模式选区；普通 CodeMirror 自绘选区也必须使用同一 selection token。
+- 打开 `file-diff` / `file-version` 属于普通只读浏览，即使捕获或渲染存在限制也不得显示 Tab 黄点；限制仅在 viewer 内说明。变更列表的“修改”文件图标使用主题 `gold-running` 蓝色语义 token，不使用固定琥珀色；新增/删除仍使用各自的成功/破坏性语义色。
 - ACP `oldText/newText` 必须是文件内容，不得包含 unified diff 的 `No newline at end of file` 元数据。若 provider 的后续 tool update 错把该标记混入标准文本字段，捕获层需要移除标记并恢复真实的文件末尾换行状态；已有 change set 通过 schema 迁移从 durable journal 重新生成，不把元数据伪装成普通删除/新增行。
 - 变更卡收起时只展示配置数量的预览行；展开后全部文件进入同一个 ScrollArea，预览行不得固定在滚动区外。标题固定使用“本轮变更 N 个文件”，partial 不在标题后追加告警图标。
 - `get_turn_file_change_set` 与 `get_file_comparison` 只接受受控 attempt locator、branch、changeSetId/changeId；后端校验标识符、branch ownership 和 CAS hash，不接受前端提交任意 blob 路径或 runtime 绝对路径。

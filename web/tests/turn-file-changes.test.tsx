@@ -108,6 +108,7 @@ function WorkspaceProbe() {
       data-active-kind={active?.kind ?? ''}
       data-active-key={active?.key ?? ''}
       data-active-branch={active && 'locator' in active && 'branchId' in active.locator ? active.locator.branchId : ''}
+      data-active-attention={String(active?.attention ?? false)}
       data-tab-count={workspace.tabs.length}
     />
   );
@@ -142,6 +143,9 @@ describe('turn file changes card', () => {
   it('opens added and modified captures in the right workspace, while deleted files remain non-interactive', async () => {
     const container = document.createElement('div');
     document.body.append(container);
+    const limitedChangeSet = changeSet();
+    limitedChangeSet.changes[1]!.limitationCode = 'turn-files.non-linear-mutation';
+    getTurnFileChangeSetMock.mockResolvedValue(limitedChangeSet);
     const root = await renderCard(container);
     try {
       const rows = Array.from(container.querySelectorAll<HTMLElement>('[role="listitem"]'));
@@ -161,6 +165,8 @@ describe('turn file changes card', () => {
       expect(probe?.dataset.activeKind).toBe('file-diff');
       expect(probe?.dataset.activeKey).toContain('change-set-1:modified-1');
       expect(probe?.dataset.tabCount).toBe('2');
+      expect(probe?.dataset.activeAttention).toBe('false');
+      expect(rows[1]?.querySelector('svg')?.className.baseVal).toContain('text-gold-running');
     } finally {
       await act(async () => root.unmount());
     }

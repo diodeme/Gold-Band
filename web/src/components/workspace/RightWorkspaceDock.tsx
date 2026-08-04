@@ -1,4 +1,4 @@
-import { Bot, Braces, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, PencilLine, Plus, X } from 'lucide-react';
+import { Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, PencilLine, Plus, X } from 'lucide-react';
 import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -77,8 +77,23 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
                 <ChevronDown className="size-3" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-64">
-              {tabs.map((tab) => <DropdownMenuItem key={tab.key} onSelect={() => activateTab(tab.key)}>{tab.title}</DropdownMenuItem>)}
+            <DropdownMenuContent align="end" className="w-[min(19rem,calc(100vw-2rem))] p-1" data-right-workspace-overflow-list="true">
+              {tabs.map((tab) => (
+                <DropdownMenuItem
+                  key={tab.key}
+                  className={cn(
+                    'h-8 min-w-0 gap-2 px-2 text-xs',
+                    tab.key === activeTabKey && 'bg-accent/70 text-accent-foreground',
+                  )}
+                  aria-current={tab.key === activeTabKey ? 'page' : undefined}
+                  data-right-workspace-overflow-option={tab.key}
+                  onSelect={() => activateTab(tab.key)}
+                >
+                  {workspaceTabIcon(tab)}
+                  <span className="min-w-0 flex-1 truncate">{tab.title}</span>
+                  {tab.key === activeTabKey ? <Check className="size-3.5 text-primary" aria-hidden="true" /> : null}
+                </DropdownMenuItem>
+              ))}
             </DropdownMenuContent>
           </DropdownMenu>
         ) : null}
@@ -168,7 +183,7 @@ function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu
   }
 
   return (
-    <div data-right-workspace-entry-options="empty">
+    <div className="w-full" data-right-workspace-entry-options="empty">
       {options.map((option) => {
         const Icon = option.icon;
         return (
@@ -176,7 +191,8 @@ function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu
             key={option.id}
             type="button"
             variant="ghost"
-            className="h-auto justify-start gap-3 rounded-xl px-3 py-3 text-left"
+            className="h-auto w-full justify-start gap-3 rounded-xl px-3 py-3 text-left"
+            data-right-workspace-empty-option={option.id}
             onClick={option.open}
           >
             <Icon className="size-4 shrink-0 text-primary" />
@@ -206,7 +222,26 @@ const RightWorkspaceTab = memo(function RightWorkspaceTab({
   if (tab.kind === 'agent-transcript') {
     return <AgentWorkspaceTab tab={tab} active={active} onActivate={onActivate} onClose={onClose} />;
   }
-  const icon = tab.kind === 'workflow-view'
+  return (
+    <RightWorkspaceTabButton
+      tab={tab}
+      active={active}
+      attention={tab.attention || (tab.kind === 'file' && (
+        fileEntry.status === 'error'
+        || fileEntry.saveState.kind === 'error'
+        || fileEntry.saveState.kind === 'conflict'
+      ))}
+      icon={workspaceTabIcon(tab)}
+      onActivate={onActivate}
+      onClose={onClose}
+    />
+  );
+});
+
+function workspaceTabIcon(tab: RightWorkspaceResource) {
+  return tab.kind === 'agent-transcript'
+    ? <Bot className="size-3.5 shrink-0" />
+    : tab.kind === 'workflow-view'
     ? <GitBranch className="size-3.5 shrink-0" />
     : tab.kind === 'workflow-edit'
       ? <PencilLine className="size-3.5 shrink-0" />
@@ -218,22 +253,8 @@ const RightWorkspaceTab = memo(function RightWorkspaceTab({
             ? <FolderOpen className="size-3.5 shrink-0" />
             : tab.kind === 'file-diff'
               ? <FileDiff className="size-3.5 shrink-0" />
-            : <FileText className="size-3.5 shrink-0" />;
-  return (
-    <RightWorkspaceTabButton
-      tab={tab}
-      active={active}
-      attention={tab.attention || (tab.kind === 'file' && (
-        fileEntry.status === 'error'
-        || fileEntry.saveState.kind === 'error'
-        || fileEntry.saveState.kind === 'conflict'
-      ))}
-      icon={icon}
-      onActivate={onActivate}
-      onClose={onClose}
-    />
-  );
-});
+              : <FileText className="size-3.5 shrink-0" />;
+}
 
 const AgentWorkspaceTab = memo(function AgentWorkspaceTab({
   tab,

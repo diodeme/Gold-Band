@@ -943,7 +943,18 @@ impl ProviderAdapter for AcpProvider {
             .ok()
             .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
             .unwrap_or_else(|| Utf8PathBuf::from("."));
+        let agent_id = match ManagedAgentId::from_str(&self.provider_id) {
+            Ok(agent_id) => agent_id,
+            Err(err) => {
+                return DoctorResult {
+                    available: false,
+                    reason: Some(err.to_string()),
+                    capabilities: None,
+                };
+            }
+        };
         match client::doctor(
+            &agent_id,
             &self.adapter_config,
             cwd,
             self.use_local_claude,

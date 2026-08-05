@@ -112,7 +112,8 @@ Agent Cards
 - 桌面端启动后自动执行诊断
 - 后台每 60 秒自动诊断一次当前 workspace 下已配置 agent
 - 新增或修改 Agent 配置保存成功后，后台立即自动诊断该 agent 一次，不要求用户再手动点击“环境诊断”
-- 手动诊断、保存后自动诊断、周期诊断和命令目录刷新共享同一个 doctor 运行边界；配置持久化使用独立的短时提交边界，不能被长时间 doctor 阻塞。诊断提交结果前必须再次校验 Agent 配置版本，旧配置的诊断结果不得覆盖新配置；连续保存产生的同 agent 自动诊断请求必须按版本合并并最终只诊断最新版，禁止并发清理同一 `doctor/acp` 目录或启动重复 adapter
+- 手动诊断、保存后自动诊断、周期诊断和命令目录刷新共享同一个 doctor 运行边界；配置持久化使用独立的短时提交边界，不能被长时间 doctor 阻塞。诊断提交结果前必须再次校验 Agent 配置版本，旧配置的诊断结果不得覆盖新配置；连续保存产生的同 agent 自动诊断请求必须按版本合并并最终只诊断最新版。同一 Agent 禁止并发启动重复 adapter；全量周期诊断允许不同 Agent 并行，但每个 Agent 必须使用独立的 `doctor/acp/<agent-id>` attempt 目录和 `provider.pid`，任何诊断只能清理自己所属的目录
+- 手动诊断、保存后自动诊断和命令目录刷新只执行一次 doctor，不自动重试。后台每 60 秒周期诊断首次失败时在同一轮内自动重试一次；首次失败不得提前发布或持久化为异常，重试仍失败才以第二次错误作为最终诊断结果并展示原因
 - 手动诊断和自动诊断都必须在诊断结束、初始化失败、超时或客户端关闭时关闭 ACP adapter 进程树
 - 诊断对当前已配置的 ACP adapter 通用执行，不再限定 Claude；首次运行 npx 或本地二进制 adapter 可能需要安装依赖，耗时可达到 1 分钟以上
 - 桌面端启动 ACP adapter 前需要自动补全常见用户 bin 目录到子进程 PATH，例如 `~/.nvm/versions/node/*/bin`、`~/.local/bin`、`~/.cargo/bin`、`~/.opencode/bin`、`/opt/homebrew/bin`、`/usr/local/bin`，避免 macOS GUI 进程未继承 shell PATH 时 `npx`、`node`、`claude`、`codex` 无法启动
@@ -129,8 +130,8 @@ Agent 管理页不是 workflow 编辑器，但它决定 workflow 里声明的 ag
 
 当前约束：
 - workflow 节点中的 `provider` 字段表示稳定的 managed Agent ID
-- 创建任务与工作流编辑器的节点 Agent 下拉只展示已配置、当前支持且最近一次 doctor 成功的 agent card
-- 未运行 doctor、doctor 失败或诊断缓存缺失的 agent 不能被工作流选择，保存工作流时也会被命令入口拦截
+- 创建任务与工作流编辑器的节点 Agent 下拉展示已配置且当前支持的 agent card；最近一次 doctor 成功的 Agent 可选择，未运行 doctor、doctor 失败或诊断缓存缺失的 Agent 保留展示但禁用，并展示诊断失败原因
+- 已有节点引用的 Agent 诊断失败后必须保留原选择，不得把节点表现为“未关联 Agent”；该工作流不能保存或启动，后端命令入口继续拦截，用户可到 Agent 管理页手动重试诊断
 - 若节点引用的 agent type 未在 Agent 管理页中配置或未通过 doctor，则 workflow 校验失败
 - workflow 节点权限模式必须来自该 agent 最近一次 doctor 缓存的 `supportedModes`；切换 agent 时不继承旧 agent 的权限模式
 - 节点详情页应展示当前节点绑定的 agent type，便于确认执行来源

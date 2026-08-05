@@ -1,6 +1,6 @@
 pub mod sqlite;
 
-use crate::config::SettingsConfig;
+use crate::config::{ManagedAgentId, SettingsConfig};
 use crate::domain::VERSION;
 use anyhow::{Result, anyhow};
 use atomic_write_file::AtomicWriteFile;
@@ -200,12 +200,16 @@ impl GoldBandPaths {
         self.user_gold_band_root.join("doctor")
     }
 
-    pub fn doctor_acp_dir(&self) -> Utf8PathBuf {
+    pub fn doctor_acp_root_dir(&self) -> Utf8PathBuf {
         self.doctor_dir().join("acp")
     }
 
-    pub fn doctor_acp_provider_pid_file(&self) -> Utf8PathBuf {
-        self.doctor_acp_dir().join("provider.pid")
+    pub fn doctor_acp_dir(&self, agent_id: &ManagedAgentId) -> Utf8PathBuf {
+        self.doctor_acp_root_dir().join(agent_id.as_str())
+    }
+
+    pub fn doctor_acp_provider_pid_file(&self, agent_id: &ManagedAgentId) -> Utf8PathBuf {
+        self.doctor_acp_dir(agent_id).join("provider.pid")
     }
 
     pub fn sqlite_db_path(&self) -> Utf8PathBuf {
@@ -1379,6 +1383,26 @@ mod tests {
 
         let after = std::fs::read_to_string(path.as_std_path()).unwrap();
         assert_eq!(after, second);
+    }
+
+    #[test]
+    fn doctor_attempt_directories_are_isolated_by_agent_id() {
+        let root = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let paths = GoldBandPaths::new(repo_root);
+        let cursor = "cursor".parse::<ManagedAgentId>().unwrap();
+        let opencode = "opencode".parse::<ManagedAgentId>().unwrap();
+
+        assert_ne!(
+            paths.doctor_acp_dir(&cursor),
+            paths.doctor_acp_dir(&opencode)
+        );
+        assert!(paths.doctor_acp_dir(&cursor).ends_with("doctor/acp/cursor"));
+        assert!(
+            paths
+                .doctor_acp_dir(&opencode)
+                .ends_with("doctor/acp/opencode")
+        );
     }
 
     #[cfg(unix)]

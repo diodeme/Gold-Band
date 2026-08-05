@@ -52,6 +52,7 @@
 - 高级调度 / 多 run 并发 orchestration
 
 ### 桌面端 MVP 增量
+- 2026-08-05：模型与思考强度配置入口完成统一。工作流普通 Worker、AI-DYNAMIC 固定/动态策略和 AUTO 固定/动态配置破坏式替换旧的单模型 Select，统一复用 Direct 的 shadcn/Radix ACP 复合选择器；思考强度通过 Agent 能力目录的 `category=thought_level` 动态发现，并按真实 option id 持久化。普通 Worker/固定策略沿用节点 `config_options` / `configOptions`；动态策略新增初始分发、验收和各候选 Agent 独立 option map，runtime 按节点角色/provider 路由，避免不同 Agent 相互覆盖。切换 Agent/策略同步清理对应模型与 overrides；接口回归固定共享 override 的不可变增删、AUTO submit 规范化、动态 runtime 路由，以及工作流/AUTO 作者态全部模型槽位的选择器回显。本次按用户要求仅执行单元测试、类型检查和生产构建，不启动前端交互验证。
 - 2026-08-02：修复 `AskUserQuestion` 偶现停在“工具调用中”且不显示提问卡片。根因是 0.10.0 的分页保护把提问可见性同时绑定到有限事件窗口与 `timing.waitReason=elicitation`，而 elicitation 没有与 permission 对称的 session 权威字段；live timing 或 snapshot 短暂陈旧时，runtime 仍在阻塞等待但 UI 会隐藏输入入口。`AcpSessionVm` 新增从完整 timeline 投影的 `pendingElicitations`，前端 live reducer 按 request/response 更新同一字段并直接渲染，response、stop decline 与 terminal session 统一清空。Rust 接口测试覆盖分页窗口不含 request、response/terminal 收敛；Web 测试覆盖 timing 非等待态下 live request 仍可进入权威 pending 状态。
 - 2026-07-25：用户消息中的隐藏 runtime context 改为由当前可见内容统一驱动气泡宽度。隐藏根节点、Trigger、Content 使用无百分比宽度的嵌套 grid stretch；`82cqi` 只保留为消息列最大测量宽度。组件在该上限内以不可见副本进行真实排版，通过 `Range.getClientRects()` 获取各文本行宽度，折叠态取标签/可见正文最大值，展开态再纳入隐藏正文；ResizeObserver、展开状态和字体加载触发重测。由此删除固定 `rem` 与线性 `65cqi` 最终宽度，避免客户端越宽、气泡尾部空白越大的问题。
 - 2026-07-22：默认工作流“需求采访”开关收敛为 workspace 级偏好，仅在内置 `default` 模板显示；自定义模板拓扑不受影响。elicitation 回答后不再生成独立用户消息气泡，保留 `AskUserQuestion` 工具卡片；response signal 改由 runtime 完成 JSON-RPC 回包后清理，修复 completed run follow-up 提交后卡在“发送中”。

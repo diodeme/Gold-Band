@@ -1,10 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Bot, ChevronDown, CircleHelp, Folders, Plus, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Bot, ChevronDown, CircleHelp, Folders, Plus, Trash2 } from 'lucide-react';
 import type { AgentRegistryVm, AutoTemplate, ConversationAutoConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, DynamicAgentRefDsl, DynamicControlDsl, ProfileVm, WorkflowDsl, WorkflowTemplate, WorkflowTemplateStore } from '../types';
 import { deleteAutoTemplate as deleteAutoTemplateApi, deleteWorkflowTemplate, getAutoTemplates, getProfiles, replaceAutoTemplates, saveAutoTemplate, saveWorkflowTemplate, updateAutoTemplate, updateWorkflowTemplate } from '@/api';
 import { Page, PageHeader } from '@/components/PageScaffold';
+import {
+  AcpModelThoughtSelects,
+  findAcpThoughtLevel,
+  updateAcpConfigOptionOverride,
+} from '@/components/acp/AcpModelThoughtSelects';
 import { WorkflowEditor, validateWorkflowForSave } from '@/components/WorkflowEditor';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
@@ -198,8 +203,11 @@ export function RunModeManagementPage({
   const [agent, setAgent] = useState(runMode.autoConfig?.agentType ?? '');
   const [bootstrapAgent, setBootstrapAgent] = useState(runMode.autoConfig?.bootstrapAgentType ?? runMode.autoConfig?.agentType ?? '');
   const [bootstrapModel, setBootstrapModel] = useState(runMode.autoConfig?.bootstrapModelId ?? '');
+  const [bootstrapConfigOptions, setBootstrapConfigOptions] = useState<Record<string, string>>(runMode.autoConfig?.bootstrapConfigOptions ?? {});
   const [acceptanceModel, setAcceptanceModel] = useState(runMode.autoConfig?.acceptanceModelId ?? '');
+  const [acceptanceConfigOptions, setAcceptanceConfigOptions] = useState<Record<string, string>>(runMode.autoConfig?.acceptanceConfigOptions ?? {});
   const [model, setModel] = useState(runMode.autoConfig?.modelId ?? '');
+  const [configOptions, setConfigOptions] = useState<Record<string, string>>(runMode.autoConfig?.configOptions ?? {});
   const [availableAgents, setAvailableAgents] = useState<DynamicAgentRefDsl[]>(runMode.autoConfig?.availableAgents ?? []);
   const [routingPrompt, setRoutingPrompt] = useState(runMode.autoConfig?.routingPrompt ?? '');
   const [allowedWorkflowIds, setAllowedWorkflowIds] = useState((runMode.autoConfig?.allowedWorkflows ?? []).map((item) => item.workflowId));
@@ -240,8 +248,10 @@ export function RunModeManagementPage({
   const workflowOptions = useMemo(() => selectableWorkflowOptions(effectiveWorkflowTemplates, t), [effectiveWorkflowTemplates, t]);
   const selectedAgent = agents.find((a) => a.agentType === agent) ?? null;
   const fixedModels = selectedAgent?.supportedModels ?? [];
+  const fixedThoughtLevel = findAcpThoughtLevel(selectedAgent?.configOptions);
   const selectedBootstrapAgent = agents.find((a) => a.agentType === bootstrapAgent) ?? null;
   const bootstrapModels = selectedBootstrapAgent?.supportedModels ?? [];
+  const bootstrapThoughtLevel = findAcpThoughtLevel(selectedBootstrapAgent?.configOptions);
   const availableAgentMap = useMemo(() => new Map(availableAgents.map((item) => [item.provider, item])), [availableAgents]);
   const acceptanceModels = useMemo(() => {
     const options = new Map<string, { id: string; name: string; description?: string | null }>();
@@ -263,6 +273,10 @@ export function RunModeManagementPage({
     }
     return Array.from(options.values());
   }, [acceptanceModel, agents, availableAgents, bootstrapAgent]);
+  const selectedAcceptanceAgent = agents.find((item) => (
+    item.supportedModels?.some((candidate) => candidate.id === acceptanceModel)
+  )) ?? selectedBootstrapAgent;
+  const acceptanceThoughtLevel = findAcpThoughtLevel(selectedAcceptanceAgent?.configOptions);
 
   useEffect(() => {
     const projectChanged = previousProjectIdRef.current !== projectId;
@@ -274,8 +288,11 @@ export function RunModeManagementPage({
     setAgent(config?.agentType ?? '');
     setBootstrapAgent(config?.bootstrapAgentType ?? config?.agentType ?? '');
     setBootstrapModel(config?.bootstrapModelId ?? '');
+    setBootstrapConfigOptions(config?.bootstrapConfigOptions ?? {});
     setAcceptanceModel(config?.acceptanceModelId ?? '');
+    setAcceptanceConfigOptions(config?.acceptanceConfigOptions ?? {});
     setModel(config?.modelId ?? '');
+    setConfigOptions(config?.configOptions ?? {});
     setAvailableAgents(config?.availableAgents ?? []);
     setRoutingPrompt(config?.routingPrompt ?? '');
     setAllowedWorkflowIds((config?.allowedWorkflows ?? []).map((item) => item.workflowId));
@@ -376,7 +393,9 @@ export function RunModeManagementPage({
         agentType: bootstrapAgent || agent,
         bootstrapAgentType: bootstrapAgent || agent,
         bootstrapModelId: bootstrapModel || undefined,
+        bootstrapConfigOptions,
         acceptanceModelId: acceptanceModel || undefined,
+        acceptanceConfigOptions,
         availableAgents,
         routingPrompt: routingPrompt.trim() || undefined,
         allowedWorkflows: allowedWorkflowIds.map((workflowId) => ({ workflowId })),
@@ -392,6 +411,7 @@ export function RunModeManagementPage({
       agentStrategy: 'fixed',
       agentType: agent,
       modelId: model || undefined,
+      configOptions,
       allowedWorkflows: allowedWorkflowIds.map((workflowId) => ({ workflowId })),
       allowedProfiles,
       control,
@@ -432,8 +452,11 @@ export function RunModeManagementPage({
     setAgent(config.agentType ?? '');
     setBootstrapAgent(config.bootstrapAgentType ?? config.agentType ?? '');
     setBootstrapModel(config.bootstrapModelId ?? '');
+    setBootstrapConfigOptions(config.bootstrapConfigOptions ?? {});
     setAcceptanceModel(config.acceptanceModelId ?? '');
+    setAcceptanceConfigOptions(config.acceptanceConfigOptions ?? {});
     setModel(config.modelId ?? '');
+    setConfigOptions(config.configOptions ?? {});
     setAvailableAgents(config.availableAgents ?? []);
     setRoutingPrompt(config.routingPrompt ?? '');
     setAllowedWorkflowIds((config.allowedWorkflows ?? []).map((item) => item.workflowId));
@@ -710,8 +733,8 @@ export function RunModeManagementPage({
     });
   };
 
-  const updateAvailableAgentModel = (agentType: string, modelId: string) => {
-    setAvailableAgents((current) => current.map((item) => item.provider === agentType ? { ...item, model: modelId || undefined } : item));
+  const updateAvailableAgentConfig = (agentType: string, patch: Partial<DynamicAgentRefDsl>) => {
+    setAvailableAgents((current) => current.map((item) => item.provider === agentType ? { ...item, ...patch } : item));
   };
 
   return (
@@ -815,7 +838,13 @@ export function RunModeManagementPage({
 
             <section className="flex flex-wrap gap-2">
               <Field label={<><Bot className="size-3.5" />{t('workflowEditor.dynamicAgentStrategy')}</>} required help={t('workflowEditor.dynamicAgentStrategyHelp')}>
-                <Select value={agentStrategy} onValueChange={(value) => setAgentStrategy(value as 'fixed' | 'dynamic')}>
+                <Select value={agentStrategy} onValueChange={(value) => {
+                  setAgentStrategy(value as 'fixed' | 'dynamic');
+                  setModel('');
+                  setConfigOptions({});
+                  setBootstrapConfigOptions({});
+                  setAcceptanceConfigOptions({});
+                }}>
                   <SelectTrigger className="h-9 w-[180px]"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="fixed">{t('workflowEditor.dynamicAgentStrategyFixed')}</SelectItem>
@@ -826,7 +855,7 @@ export function RunModeManagementPage({
 
               {agentStrategy === 'fixed' ? (
                 <Field label={t('runMode.agent')} required help={t('workflowEditor.dynamicFixedAgentHelp')}>
-                  <Select value={agent} onValueChange={(value) => { setAgent(value); setModel(''); }}>
+                  <Select value={agent} onValueChange={(value) => { setAgent(value); setModel(''); setConfigOptions({}); }}>
                     <SelectTrigger className="h-9 w-[180px]"><SelectValue placeholder={t('conversation.home.selectAgent')} /></SelectTrigger>
                     <SelectContent>
                       {agentOptions.map(({ agent: item, selectable, reason }) => (
@@ -842,7 +871,7 @@ export function RunModeManagementPage({
                 </Field>
               ) : (
                 <Field label={t('workflowEditor.dynamicBootstrapAgent')} required help={t('workflowEditor.dynamicBootstrapAgentHelp')}>
-                  <Select value={bootstrapAgent} onValueChange={(value) => { setBootstrapAgent(value); setBootstrapModel(''); }}>
+                  <Select value={bootstrapAgent} onValueChange={(value) => { setBootstrapAgent(value); setBootstrapModel(''); setBootstrapConfigOptions({}); setAcceptanceModel(''); setAcceptanceConfigOptions({}); }}>
                     <SelectTrigger className="h-9 w-[180px]"><SelectValue placeholder={t('conversation.home.selectAgent')} /></SelectTrigger>
                     <SelectContent>
                       {agentOptions.map(({ agent: item, selectable, reason }) => (
@@ -858,41 +887,53 @@ export function RunModeManagementPage({
                 </Field>
               )}
 
-              {agentStrategy === 'fixed' && fixedModels.length > 0 ? (
+              {agentStrategy === 'fixed' && selectedAgent && (fixedModels.length > 0 || fixedThoughtLevel) ? (
                 <Field label={t('runMode.model')} help={t('workflowEditor.dynamicFixedModelHelp')}>
-                  <ClearableModelSelect
-                    value={model}
+                  <AcpModelThoughtSelects
                     models={fixedModels}
-                    placeholder={t('conversation.home.selectModel')}
-                    clearLabel={t('workflowEditor.clearModel')}
-                    triggerClassName="w-[180px]"
-                    onChange={setModel}
+                    modelValue={model}
+                    thoughtLevel={fixedThoughtLevel}
+                    thoughtValue={fixedThoughtLevel ? configOptions[fixedThoughtLevel.id] : null}
+                    compact
+                    triggerClassName="w-[220px] max-w-none rounded-md"
+                    onModelChange={(value) => setModel(value ?? '')}
+                    onThoughtChange={(optionId, value) => setConfigOptions((current) => (
+                      updateAcpConfigOptionOverride(current, optionId, value)
+                    ))}
                   />
                 </Field>
               ) : null}
 
-              {agentStrategy === 'dynamic' && bootstrapModels.length > 0 ? (
+              {agentStrategy === 'dynamic' && (bootstrapModels.length > 0 || bootstrapThoughtLevel) ? (
                 <Field label={t('workflowEditor.dynamicBootstrapModel')} help={t('workflowEditor.dynamicBootstrapModelHelp')}>
-                  <ClearableModelSelect
-                    value={bootstrapModel}
+                  <AcpModelThoughtSelects
                     models={bootstrapModels}
-                    placeholder={t('conversation.home.selectModel')}
-                    clearLabel={t('workflowEditor.clearModel')}
-                    triggerClassName="w-[180px]"
-                    onChange={setBootstrapModel}
+                    modelValue={bootstrapModel}
+                    thoughtLevel={bootstrapThoughtLevel}
+                    thoughtValue={bootstrapThoughtLevel ? bootstrapConfigOptions[bootstrapThoughtLevel.id] : null}
+                    compact
+                    triggerClassName="w-[220px] max-w-none rounded-md"
+                    onModelChange={(value) => setBootstrapModel(value ?? '')}
+                    onThoughtChange={(optionId, value) => setBootstrapConfigOptions((current) => (
+                      updateAcpConfigOptionOverride(current, optionId, value)
+                    ))}
                   />
                 </Field>
               ) : null}
 
-              {agentStrategy === 'dynamic' && acceptanceModels.length > 0 ? (
+              {agentStrategy === 'dynamic' && (acceptanceModels.length > 0 || acceptanceThoughtLevel) ? (
                 <Field label={t('workflowEditor.dynamicAcceptanceModel')} help={t('workflowEditor.dynamicAcceptanceModelHelp')}>
-                  <ClearableModelSelect
-                    value={acceptanceModel}
+                  <AcpModelThoughtSelects
                     models={acceptanceModels}
-                    placeholder={t('conversation.home.selectModel')}
-                    clearLabel={t('workflowEditor.clearModel')}
-                    triggerClassName="w-[220px]"
-                    onChange={setAcceptanceModel}
+                    modelValue={acceptanceModel}
+                    thoughtLevel={acceptanceThoughtLevel}
+                    thoughtValue={acceptanceThoughtLevel ? acceptanceConfigOptions[acceptanceThoughtLevel.id] : null}
+                    compact
+                    triggerClassName="w-[260px] max-w-none rounded-md"
+                    onModelChange={(value) => { setAcceptanceModel(value ?? ''); setAcceptanceConfigOptions({}); }}
+                    onThoughtChange={(optionId, value) => setAcceptanceConfigOptions((current) => (
+                      updateAcpConfigOptionOverride(current, optionId, value)
+                    ))}
                   />
                 </Field>
               ) : null}
@@ -906,6 +947,7 @@ export function RunModeManagementPage({
                     {agentOptions.map(({ agent: item, selectable, reason }) => {
                       const selected = availableAgentMap.has(item.agentType);
                       const selectedModel = availableAgentMap.get(item.agentType)?.model ?? '';
+                      const thoughtLevel = findAcpThoughtLevel(item.configOptions);
                       return (
                         <div key={item.agentType} className={cn('flex items-center gap-2 rounded-md border border-border/60 bg-background/35 px-3 py-2', !selectable && 'opacity-60')}>
                           <button type="button" disabled={!selectable} className={cn('size-4 rounded border disabled:cursor-not-allowed', selected ? 'border-primary bg-primary' : 'border-border')} onClick={() => toggleAvailableAgent(item.agentType)} aria-label={item.displayName} />
@@ -913,15 +955,18 @@ export function RunModeManagementPage({
                             <span className="block truncate">{item.displayName}</span>
                             {!selectable && reason ? <span className="mt-0.5 block text-xs text-destructive">{reason}</span> : null}
                           </span>
-                          {selected && (item.supportedModels?.length ?? 0) > 0 ? (
-                            <ClearableModelSelect
-                              value={selectedModel}
+                          {selected && ((item.supportedModels?.length ?? 0) > 0 || thoughtLevel) ? (
+                            <AcpModelThoughtSelects
                               models={item.supportedModels ?? []}
-                              placeholder={t('conversation.home.selectModel')}
-                              clearLabel={t('workflowEditor.clearModel')}
-                              triggerClassName="h-8 w-[220px] text-xs"
-                              buttonClassName="size-8"
-                              onChange={(value) => updateAvailableAgentModel(item.agentType, value)}
+                              modelValue={selectedModel}
+                              thoughtLevel={thoughtLevel}
+                              thoughtValue={thoughtLevel ? availableAgentMap.get(item.agentType)?.configOptions?.[thoughtLevel.id] : null}
+                              compact
+                              triggerClassName="h-8 w-[260px] max-w-none rounded-md text-xs"
+                              onModelChange={(value) => updateAvailableAgentConfig(item.agentType, { model: value || undefined })}
+                              onThoughtChange={(optionId, value) => updateAvailableAgentConfig(item.agentType, {
+                                configOptions: updateAcpConfigOptionOverride(availableAgentMap.get(item.agentType)?.configOptions, optionId, value),
+                              })}
                             />
                           ) : null}
                         </div>
@@ -1116,61 +1161,6 @@ function Field({ label, children, required = false, help }: { label: ReactNode; 
         ) : null}
       </div>
       {children}
-    </div>
-  );
-}
-
-function ModelItem({ id, name, description }: { id: string; name: string; description?: string | null }) {
-  return (
-    <SelectItem value={id} className="items-start py-2">
-      <span className="block min-w-0">
-        <span className="block truncate font-medium">{name}</span>
-        {description ? <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">{description}</span> : null}
-      </span>
-    </SelectItem>
-  );
-}
-
-function ClearableModelSelect({
-  value,
-  models,
-  placeholder,
-  clearLabel,
-  triggerClassName,
-  buttonClassName,
-  onChange,
-}: {
-  value: string;
-  models: Array<{ id: string; name: string; description?: string | null }>;
-  placeholder: string;
-  clearLabel: string;
-  triggerClassName?: string;
-  buttonClassName?: string;
-  onChange: (value: string) => void;
-}) {
-  const selected = models.find((item) => item.id === value) ?? null;
-  return (
-    <div className="flex min-w-0 items-center gap-1">
-      <Select value={value} onValueChange={onChange}>
-        <SelectTrigger className={cn('h-9 min-w-0', triggerClassName)}>
-          <span className="truncate">{selected?.name ?? placeholder}</span>
-        </SelectTrigger>
-        <SelectContent className="w-[min(28rem,calc(100vw-2rem))]">
-          {models.map((item) => <ModelItem key={item.id} id={item.id} name={item.name} description={item.description} />)}
-        </SelectContent>
-      </Select>
-      {value ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          className={cn('size-9 shrink-0', buttonClassName)}
-          aria-label={clearLabel}
-          onClick={() => onChange('')}
-        >
-          <X className="size-3.5" />
-        </Button>
-      ) : null}
     </div>
   );
 }

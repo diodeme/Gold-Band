@@ -3818,11 +3818,14 @@ mod tests {
             agent_strategy: AiDynamicAgentStrategy::Dynamic {
                 bootstrap_provider: "codex-acp".to_string(),
                 bootstrap_model: None,
+                bootstrap_config_options: Default::default(),
                 acceptance_model: None,
+                acceptance_config_options: Default::default(),
                 routing_prompt: String::new(),
                 available_agents: vec![crate::dsl::DynamicAgentRef {
                     provider: "codex-acp".to_string(),
                     model: None,
+                    config_options: Default::default(),
                 }],
             },
             permission_mode: Some("full_access".to_string()),
@@ -3862,11 +3865,14 @@ mod tests {
                 agent_strategy: AiDynamicAgentStrategy::Dynamic {
                     bootstrap_provider: "claude-acp".to_string(),
                     bootstrap_model: Some("sonnet".to_string()),
+                    bootstrap_config_options: Default::default(),
                     acceptance_model: Some("sonnet".to_string()),
+                    acceptance_config_options: Default::default(),
                     routing_prompt: String::new(),
                     available_agents: vec![crate::dsl::DynamicAgentRef {
                         provider: "claude-acp".to_string(),
                         model: Some("future-model".to_string()),
+                        config_options: Default::default(),
                     }],
                 },
                 permission_mode: None,
@@ -3930,11 +3936,14 @@ mod tests {
                     agent_strategy: AiDynamicAgentStrategy::Dynamic {
                         bootstrap_provider: "codex-acp".to_string(),
                         bootstrap_model: Some("gpt-5.6-sol".to_string()),
+                        bootstrap_config_options: Default::default(),
                         acceptance_model: Some("gpt-5.6-sol".to_string()),
+                        acceptance_config_options: Default::default(),
                         routing_prompt: String::new(),
                         available_agents: vec![crate::dsl::DynamicAgentRef {
                             provider: "codex-acp".to_string(),
                             model: Some("gpt-5.4".to_string()),
+                            config_options: Default::default(),
                         }],
                     },
                     permission_mode: None,

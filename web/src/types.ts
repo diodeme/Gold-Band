@@ -496,6 +496,7 @@ export interface WorkflowWorkerNodeDsl {
   output?: WorkflowOutputContractDsl | null;
   success_condition?: WorkflowJsonConditionDsl | null;
   permission_mode?: string | null;
+  config_options?: Record<string, string>;
   manual_check?: boolean | null;
 }
 
@@ -504,6 +505,7 @@ export type WorkflowAiDynamicAgentStrategyDsl = WorkflowAiDynamicFixedAgentStrat
 export interface DynamicAgentRefDsl {
   provider: string;
   model?: string | null;
+  configOptions?: Record<string, string>;
 }
 
 export interface WorkflowAiDynamicFixedAgentStrategyDsl {
@@ -516,7 +518,9 @@ export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
   mode: 'dynamic';
   bootstrapProvider: string;
   bootstrapModel?: string | null;
+  bootstrapConfigOptions?: Record<string, string>;
   acceptanceModel?: string | null;
+  acceptanceConfigOptions?: Record<string, string>;
   routingPrompt: string;
   availableAgents: DynamicAgentRefDsl[];
 }
@@ -526,6 +530,7 @@ export interface WorkflowAiDynamicNodeDsl {
   id: string;
   agentStrategy: WorkflowAiDynamicAgentStrategyDsl;
   permission_mode?: string | null;
+  configOptions?: Record<string, string>;
   allowedProfiles?: string[];
   globalGoal?: string | null;
   control: DynamicControlDsl;
@@ -1508,7 +1513,9 @@ export interface ConversationAutoConfigVm {
   agentType: string;
   bootstrapAgentType?: string | null;
   bootstrapModelId?: string | null;
+  bootstrapConfigOptions?: Record<string, string>;
   acceptanceModelId?: string | null;
+  acceptanceConfigOptions?: Record<string, string>;
   modelId?: string | null;
   permissionMode?: string | null;
   configOptions?: Record<string, string>;

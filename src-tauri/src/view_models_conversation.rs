@@ -293,7 +293,11 @@ pub struct ConversationAutoConfigVm {
     pub agent_type: String,
     pub bootstrap_agent_type: Option<String>,
     pub bootstrap_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bootstrap_config_options: BTreeMap<String, String>,
     pub acceptance_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub acceptance_config_options: BTreeMap<String, String>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -313,6 +317,8 @@ pub struct ConversationAutoConfigVm {
 pub struct ConversationDynamicAgentRefVm {
     pub provider: String,
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_options: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2547,6 +2553,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
                                 .map(str::trim)
                                 .filter(|value| !value.is_empty())
                                 .map(str::to_string),
+                            config_options: agent.config_options.clone(),
                         })
                     })
                     .collect::<Vec<_>>()
@@ -2556,12 +2563,19 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
                 vec![DynamicAgentRef {
                     provider: bootstrap_provider.clone(),
                     model: model_id.map(str::to_string),
+                    config_options: BTreeMap::new(),
                 }]
             });
         AiDynamicAgentStrategy::Dynamic {
             bootstrap_provider,
             bootstrap_model: bootstrap_model_id.map(str::to_string),
+            bootstrap_config_options: config
+                .map(|config| config.bootstrap_config_options.clone())
+                .unwrap_or_default(),
             acceptance_model: acceptance_model_id.map(str::to_string),
+            acceptance_config_options: config
+                .map(|config| config.acceptance_config_options.clone())
+                .unwrap_or_default(),
             routing_prompt: config
                 .and_then(|c| c.routing_prompt.as_deref())
                 .map(str::trim)
@@ -3765,13 +3779,25 @@ mod tests {
             agent_type: "claude-acp".to_string(),
             bootstrap_agent_type: Some("claude-acp".to_string()),
             bootstrap_model_id: Some("bootstrap-model".to_string()),
+            bootstrap_config_options: std::collections::BTreeMap::from([(
+                "reasoning_effort".to_string(),
+                "high".to_string(),
+            )]),
             acceptance_model_id: Some("accept-model".to_string()),
+            acceptance_config_options: std::collections::BTreeMap::from([(
+                "reasoning_effort".to_string(),
+                "medium".to_string(),
+            )]),
             model_id: None,
             permission_mode: None,
             config_options: Default::default(),
             available_agents: Some(vec![ConversationDynamicAgentRefVm {
                 provider: "claude-acp".to_string(),
                 model: Some("worker-model".to_string()),
+                config_options: std::collections::BTreeMap::from([(
+                    "reasoning_effort".to_string(),
+                    "low".to_string(),
+                )]),
             }]),
             routing_prompt: Some("Pick worker models explicitly".to_string()),
             allowed_workflows: None,
@@ -3788,13 +3814,34 @@ mod tests {
         match &node.agent_strategy {
             AiDynamicAgentStrategy::Dynamic {
                 bootstrap_model,
+                bootstrap_config_options,
                 acceptance_model,
+                acceptance_config_options,
                 available_agents,
                 ..
             } => {
                 assert_eq!(bootstrap_model.as_deref(), Some("bootstrap-model"));
                 assert_eq!(acceptance_model.as_deref(), Some("accept-model"));
                 assert_eq!(available_agents[0].model.as_deref(), Some("worker-model"));
+                assert_eq!(
+                    bootstrap_config_options
+                        .get("reasoning_effort")
+                        .map(String::as_str),
+                    Some("high")
+                );
+                assert_eq!(
+                    acceptance_config_options
+                        .get("reasoning_effort")
+                        .map(String::as_str),
+                    Some("medium")
+                );
+                assert_eq!(
+                    available_agents[0]
+                        .config_options
+                        .get("reasoning_effort")
+                        .map(String::as_str),
+                    Some("low")
+                );
             }
             other => panic!("expected dynamic strategy, got {other:?}"),
         }

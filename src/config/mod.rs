@@ -2065,7 +2065,11 @@ pub struct ConversationAutoConfig {
     pub agent_type: String,
     pub bootstrap_agent_type: Option<String>,
     pub bootstrap_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bootstrap_config_options: BTreeMap<String, String>,
     pub acceptance_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub acceptance_config_options: BTreeMap<String, String>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -2085,6 +2089,8 @@ pub struct ConversationAutoConfig {
 pub struct ConversationDynamicAgentRef {
     pub provider: String,
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_options: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

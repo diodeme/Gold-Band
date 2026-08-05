@@ -47,11 +47,27 @@ export function normalizeConversationAutoConfigForSubmit(
 ): ConversationAutoConfigVm | undefined {
   if (!config) return undefined;
   const configOptions = normalizeConfigOptions(config.configOptions);
-  const { configOptions: _configOptions, ...rest } = config;
+  const bootstrapConfigOptions = normalizeConfigOptions(config.bootstrapConfigOptions);
+  const acceptanceConfigOptions = normalizeConfigOptions(config.acceptanceConfigOptions);
+  const availableAgents = config.availableAgents?.map((agent) => {
+    const agentConfigOptions = normalizeConfigOptions(agent.configOptions);
+    const { configOptions: _agentConfigOptions, ...agentRest } = agent;
+    return { ...agentRest, ...(agentConfigOptions ? { configOptions: agentConfigOptions } : {}) };
+  });
+  const {
+    configOptions: _configOptions,
+    bootstrapConfigOptions: _bootstrapConfigOptions,
+    acceptanceConfigOptions: _acceptanceConfigOptions,
+    availableAgents: _availableAgents,
+    ...rest
+  } = config;
   return {
     ...rest,
     globalGoal: normalizeOptionalRunModeText(config.globalGoal),
     ...(configOptions ? { configOptions } : {}),
+    ...(bootstrapConfigOptions ? { bootstrapConfigOptions } : {}),
+    ...(acceptanceConfigOptions ? { acceptanceConfigOptions } : {}),
+    ...(availableAgents ? { availableAgents } : {}),
   };
 }
 

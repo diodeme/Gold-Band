@@ -37,6 +37,11 @@ import {
   TARGET_POS,
 } from './workflowGraph';
 import { AppCard } from '@/components/AppCard';
+import {
+  AcpModelThoughtSelects,
+  findAcpThoughtLevel,
+  updateAcpConfigOptionOverride,
+} from '@/components/acp/AcpModelThoughtSelects';
 import { CodeBlock, EmptyState } from '@/components/PageScaffold';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -665,6 +670,7 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
   const selectedAgent = agents.find((agent) => agent.agentType === node.provider) ?? null;
   const updateWorker = (patch: Partial<WorkflowWorkerNodeDsl>) => onUpdate(node.id, patch as Partial<WorkflowNodeDsl>);
   const modelOptions = selectedAgent?.supportedModels ?? [];
+  const thoughtLevel = findAcpThoughtLevel(selectedAgent?.configOptions);
   const permissionModes = selectedAgent?.supportedModes ?? [];
   const errorsFor = (field: string) => fieldErrors[`node:${node.id}:${field}`] ?? [];
   const clearValidationPatch = { output: null, success_condition: null };
@@ -767,7 +773,7 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
         />
       </Field>
       <Field label={t('workflowEditor.agent')} required errors={errorsFor('provider')}>
-        <Select value={node.provider ?? ''} onValueChange={(provider) => updateWorker({ provider, permission_mode: null, model: null })}>
+        <Select value={node.provider ?? ''} onValueChange={(provider) => updateWorker({ provider, permission_mode: null, model: null, config_options: {} })}>
           <SelectTrigger className={errorClass(errorsFor('provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
           <SelectContent>{agents.map((agent) => (
             <SelectItem value={agent.agentType} key={agent.agentType} disabled={!isWorkflowAgentDoctorReady(agent)}>
@@ -777,14 +783,19 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
         </Select>
         {agents.length === 0 ? <p className="text-xs text-muted-foreground">{t('workflowEditor.noDoctorReadyAgents')}</p> : null}
       </Field>
-      {modelOptions.length > 0 ? (
+      {modelOptions.length > 0 || thoughtLevel ? (
         <Field label={t('workflowEditor.model')} errors={errorsFor('model')}>
-          <ModelSelect
-            value={node.model ?? ''}
-            options={modelOptions}
-            placeholder={t('workflowEditor.selectModel')}
-            className={errorClass(errorsFor('model'))}
-            onChange={(model) => updateWorker({ model: model || null })}
+          <AcpModelThoughtSelects
+            models={modelOptions}
+            modelValue={node.model}
+            thoughtLevel={thoughtLevel}
+            thoughtValue={thoughtLevel ? node.config_options?.[thoughtLevel.id] : null}
+            compact
+            triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('model')))}
+            onModelChange={(model) => updateWorker({ model })}
+            onThoughtChange={(optionId, value) => updateWorker({
+              config_options: updateAcpConfigOptionOverride(node.config_options, optionId, value),
+            })}
           />
         </Field>
       ) : null}
@@ -959,8 +970,11 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
               const nextProvider = cur.mode === 'fixed'
                 ? cur.provider
                 : cur.bootstrapProvider;
-              updateDynamic({ permission_mode: null } as Partial<WorkflowAiDynamicNodeDsl>);
-              updateAgentStrategy({ mode: 'fixed', provider: nextProvider, model: undefined });
+              updateDynamic({
+                permission_mode: null,
+                configOptions: {},
+                agentStrategy: { mode: 'fixed', provider: nextProvider, model: undefined },
+              });
               return;
             }
             const curDynamic = node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl;
@@ -979,14 +993,17 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
             const nextAvailableAgents = cur.mode === 'dynamic'
               ? cur.availableAgents
               : [];
-            updateDynamic({ permission_mode: null } as Partial<WorkflowAiDynamicNodeDsl>);
-            updateAgentStrategy({
-              mode: 'dynamic',
-              bootstrapProvider: nextBootstrapProvider,
-              bootstrapModel: nextBootstrapModel,
-              acceptanceModel: nextAcceptanceModel,
-              routingPrompt: nextRoutingPrompt,
-              availableAgents: nextAvailableAgents,
+            updateDynamic({
+              permission_mode: null,
+              configOptions: {},
+              agentStrategy: {
+                mode: 'dynamic',
+                bootstrapProvider: nextBootstrapProvider,
+                bootstrapModel: nextBootstrapModel,
+                acceptanceModel: nextAcceptanceModel,
+                routingPrompt: nextRoutingPrompt,
+                availableAgents: nextAvailableAgents,
+              },
             });
           }}
         >
@@ -1000,7 +1017,11 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
       {node.agentStrategy.mode === 'fixed' ? (
         <>
           <Field label={<HelpLabel label={t('workflowEditor.agent')} help={t('workflowEditor.dynamicFixedAgentHelp')} />} required errors={errorsFor('agentStrategy.provider')}>
-            <Select value={node.agentStrategy.provider} onValueChange={(provider) => { updateDynamic({ permission_mode: null } as Partial<WorkflowAiDynamicNodeDsl>); updateAgentStrategy({ mode: 'fixed', provider, model: undefined } as WorkflowAiDynamicFixedAgentStrategyDsl); }}>
+            <Select value={node.agentStrategy.provider} onValueChange={(provider) => updateDynamic({
+              permission_mode: null,
+              configOptions: {},
+              agentStrategy: { mode: 'fixed', provider, model: undefined },
+            })}>
               <SelectTrigger className={errorClass(errorsFor('agentStrategy.provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
               <SelectContent>{agents.map((agent) => (
                 <SelectItem value={agent.agentType} key={agent.agentType} disabled={!isWorkflowAgentDoctorReady(agent)}>
@@ -1013,15 +1034,21 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
             const fixedStrategy = node.agentStrategy as WorkflowAiDynamicFixedAgentStrategyDsl;
             const fixedAgent = agents.find((a) => a.agentType === fixedStrategy.provider);
             const fixedModels = fixedAgent?.supportedModels ?? [];
-            if (fixedModels.length > 0) {
+            const fixedThoughtLevel = findAcpThoughtLevel(fixedAgent?.configOptions);
+            if (fixedModels.length > 0 || fixedThoughtLevel) {
               return (
                 <Field label={t('workflowEditor.model')} errors={errorsFor('agentStrategy.model')}>
-                  <ModelSelect
-                    value={fixedStrategy.model ?? ''}
-                    options={fixedModels}
-                    placeholder={t('workflowEditor.selectModel')}
-                    className={errorClass(errorsFor('agentStrategy.model'))}
-                    onChange={(model) => updateAgentStrategy({ mode: 'fixed', provider: fixedStrategy.provider, model: model || undefined } as WorkflowAiDynamicFixedAgentStrategyDsl)}
+                  <AcpModelThoughtSelects
+                    models={fixedModels}
+                    modelValue={fixedStrategy.model}
+                    thoughtLevel={fixedThoughtLevel}
+                    thoughtValue={fixedThoughtLevel ? node.configOptions?.[fixedThoughtLevel.id] : null}
+                    compact
+                    triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('agentStrategy.model')))}
+                    onModelChange={(model) => updateAgentStrategy({ mode: 'fixed', provider: fixedStrategy.provider, model: model || undefined } as WorkflowAiDynamicFixedAgentStrategyDsl)}
+                    onThoughtChange={(optionId, value) => updateDynamic({
+                      configOptions: updateAcpConfigOptionOverride(node.configOptions, optionId, value),
+                    })}
                   />
                 </Field>
               );
@@ -1032,7 +1059,18 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
       ) : (
         <>
           <Field label={<HelpLabel label={t('workflowEditor.dynamicBootstrapAgent')} help={t('workflowEditor.dynamicBootstrapAgentHelp')} />} required errors={errorsFor('agentStrategy.bootstrapProvider')}>
-            <Select value={node.agentStrategy.bootstrapProvider} onValueChange={(bootstrapProvider) => { updateDynamic({ permission_mode: null } as Partial<WorkflowAiDynamicNodeDsl>); updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), bootstrapProvider, bootstrapModel: undefined }); }}>
+            <Select value={node.agentStrategy.bootstrapProvider} onValueChange={(bootstrapProvider) => updateDynamic({
+              permission_mode: null,
+              configOptions: {},
+              agentStrategy: {
+                ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl),
+                bootstrapProvider,
+                bootstrapModel: undefined,
+                bootstrapConfigOptions: {},
+                acceptanceModel: undefined,
+                acceptanceConfigOptions: {},
+              },
+            })}>
               <SelectTrigger className={errorClass(errorsFor('agentStrategy.bootstrapProvider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
               <SelectContent>{agents.map((agent) => (
                 <SelectItem value={agent.agentType} key={agent.agentType} disabled={!isWorkflowAgentDoctorReady(agent)}>
@@ -1045,16 +1083,22 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
             const dynamicStrategy = node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl;
             const bootstrapAgent = agents.find((agent) => agent.agentType === dynamicStrategy.bootstrapProvider);
             const bootstrapModels = bootstrapAgent?.supportedModels ?? [];
-            if (bootstrapModels.length === 0) return null;
+            const bootstrapThoughtLevel = findAcpThoughtLevel(bootstrapAgent?.configOptions);
+            if (bootstrapModels.length === 0 && !bootstrapThoughtLevel) return null;
             return (
               <Field label={t('workflowEditor.dynamicBootstrapModel')} errors={errorsFor('agentStrategy.bootstrapModel')}>
-                <ModelSelect
-                  value={dynamicStrategy.bootstrapModel ?? ''}
-                  options={bootstrapModels}
-                  placeholder={t('workflowEditor.selectModel')}
-                  className={errorClass(errorsFor('agentStrategy.bootstrapModel'))}
-                  clearLabel={t('workflowEditor.clearModel')}
-                  onChange={(model) => updateAgentStrategy({ ...dynamicStrategy, bootstrapModel: model || undefined })}
+                <AcpModelThoughtSelects
+                  models={bootstrapModels}
+                  modelValue={dynamicStrategy.bootstrapModel}
+                  thoughtLevel={bootstrapThoughtLevel}
+                  thoughtValue={bootstrapThoughtLevel ? dynamicStrategy.bootstrapConfigOptions?.[bootstrapThoughtLevel.id] : null}
+                  compact
+                  triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('agentStrategy.bootstrapModel')))}
+                  onModelChange={(model) => updateAgentStrategy({ ...dynamicStrategy, bootstrapModel: model || undefined })}
+                  onThoughtChange={(optionId, value) => updateAgentStrategy({
+                    ...dynamicStrategy,
+                    bootstrapConfigOptions: updateAcpConfigOptionOverride(dynamicStrategy.bootstrapConfigOptions, optionId, value),
+                  })}
                 />
               </Field>
             );
@@ -1077,16 +1121,25 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                 description: null,
               });
             }
-            if (acceptanceModels.length === 0) return null;
+            const acceptanceAgent = agents.find((agent) => (
+              agent.supportedModels?.some((model) => model.id === dynamicStrategy.acceptanceModel)
+            )) ?? agents.find((agent) => agent.agentType === dynamicStrategy.bootstrapProvider);
+            const acceptanceThoughtLevel = findAcpThoughtLevel(acceptanceAgent?.configOptions);
+            if (acceptanceModels.length === 0 && !acceptanceThoughtLevel) return null;
             return (
               <Field label={<HelpLabel label={t('workflowEditor.dynamicAcceptanceModel')} help={t('workflowEditor.dynamicAcceptanceModelHelp')} />} errors={errorsFor('agentStrategy.acceptanceModel')}>
-                <ModelSelect
-                  value={dynamicStrategy.acceptanceModel ?? ''}
-                  options={acceptanceModels}
-                  placeholder={t('workflowEditor.selectModel')}
-                  className={errorClass(errorsFor('agentStrategy.acceptanceModel'))}
-                  clearLabel={t('workflowEditor.clearModel')}
-                  onChange={(model) => updateAgentStrategy({ ...dynamicStrategy, acceptanceModel: model || undefined })}
+                <AcpModelThoughtSelects
+                  models={acceptanceModels}
+                  modelValue={dynamicStrategy.acceptanceModel}
+                  thoughtLevel={acceptanceThoughtLevel}
+                  thoughtValue={acceptanceThoughtLevel ? dynamicStrategy.acceptanceConfigOptions?.[acceptanceThoughtLevel.id] : null}
+                  compact
+                  triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('agentStrategy.acceptanceModel')))}
+                  onModelChange={(model) => updateAgentStrategy({ ...dynamicStrategy, acceptanceModel: model || undefined, acceptanceConfigOptions: {} })}
+                  onThoughtChange={(optionId, value) => updateAgentStrategy({
+                    ...dynamicStrategy,
+                    acceptanceConfigOptions: updateAcpConfigOptionOverride(dynamicStrategy.acceptanceConfigOptions, optionId, value),
+                  })}
                 />
               </Field>
             );
@@ -1103,18 +1156,28 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
           {(node.agentStrategy.availableAgents ?? []).map((agentRef, idx) => {
             const agentObj = agents.find((a) => a.agentType === agentRef.provider);
             const agentModels = agentObj?.supportedModels ?? [];
-            if (agentModels.length === 0) return null;
+            const thoughtLevel = findAcpThoughtLevel(agentObj?.configOptions);
+            if (agentModels.length === 0 && !thoughtLevel) return null;
             return (
               <Field key={agentRef.provider} label={`${t('workflowEditor.model')} — ${agentObj!.displayName}`} errors={errorsFor(`agentStrategy.availableAgents.${idx}.model`)}>
-                <ModelSelect
-                  value={agentRef.model ?? ''}
-                  options={agentModels}
-                  placeholder={t('workflowEditor.selectModel')}
-                  className={errorClass(errorsFor(`agentStrategy.availableAgents.${idx}.model`))}
-                  clearLabel={t('workflowEditor.clearModel')}
-                  onChange={(model) => {
+                <AcpModelThoughtSelects
+                  models={agentModels}
+                  modelValue={agentRef.model}
+                  thoughtLevel={thoughtLevel}
+                  thoughtValue={thoughtLevel ? agentRef.configOptions?.[thoughtLevel.id] : null}
+                  compact
+                  triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor(`agentStrategy.availableAgents.${idx}.model`)))}
+                  onModelChange={(model) => {
                     const next = [...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl).availableAgents];
                     next[idx] = { ...next[idx], model: model || undefined };
+                    updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), availableAgents: next });
+                  }}
+                  onThoughtChange={(optionId, value) => {
+                    const next = [...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl).availableAgents];
+                    next[idx] = {
+                      ...next[idx],
+                      configOptions: updateAcpConfigOptionOverride(next[idx].configOptions, optionId, value),
+                    };
                     updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), availableAgents: next });
                   }}
                 />
@@ -1766,47 +1829,6 @@ function EdgeInspector({ edge, index, workflow, fieldErrors, onUpdate, onDelete,
           </SelectContent>
         </Select>
       </Field>
-    </div>
-  );
-}
-
-function ModelSelect({ value, options, placeholder, className, clearLabel, onChange }: { value: string; options: Array<{ id: string; name: string; description?: string | null }>; placeholder: string; className?: string; clearLabel?: string; onChange: (value: string) => void }) {
-  const selected = options.find((option) => option.id === value) ?? null;
-  return (
-    <div className="flex min-w-0 items-center gap-1">
-      <Select value={value} onValueChange={onChange}>
-        <SelectTrigger className={cn('w-full min-w-0', className)}>
-          <span className="min-w-0 flex-1 truncate text-left">
-            {selected?.name ?? <span className="text-muted-foreground">{placeholder}</span>}
-          </span>
-        </SelectTrigger>
-        <SelectContent className="w-[var(--radix-select-trigger-width)] min-w-[16rem] max-w-[min(32rem,calc(100vw-2rem))]">
-          {options.map((option) => (
-            <SelectItem value={option.id} key={option.id} className="items-start py-2 pr-8">
-              <span className="block min-w-0">
-                <span className="block truncate font-medium">{option.name}</span>
-                {option.description ? (
-                  <span className="mt-0.5 block max-w-[26rem] whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">
-                    {option.description}
-                  </span>
-                ) : null}
-              </span>
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      {value ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          className="size-8 shrink-0"
-          aria-label={clearLabel ?? placeholder}
-          onClick={() => onChange('')}
-        >
-          <X className="size-3.5" />
-        </Button>
-      ) : null}
     </div>
   );
 }

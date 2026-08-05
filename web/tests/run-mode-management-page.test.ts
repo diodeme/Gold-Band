@@ -1,9 +1,29 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { autoNoticeAutoDismiss, autoSaveTarget, createBlankWorkflowTemplateEditorState, RunModeProjectSelector, RunModeTabsToolbar, TemplateActionRow } from '@/pages/RunModeManagementPage';
+import { autoNoticeAutoDismiss, autoSaveTarget, createBlankWorkflowTemplateEditorState, RunModeManagementPage, RunModeProjectSelector, RunModeTabsToolbar, TemplateActionRow } from '@/pages/RunModeManagementPage';
 
 describe('RunModeTabsToolbar', () => {
+  it('renders a title-only page header, without a mode description or duplicate back action', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(RunModeManagementPage, {
+        projectId: 'project-a',
+        workspaceName: 'Project A',
+        workspaces: [{ projectId: 'project-a', name: 'Project A', workspacePath: 'D:/a' }],
+        runMode: { mode: 'auto', workflowTemplateId: null, autoConfig: null },
+        agentRegistry: null,
+        workflowTemplates: null,
+        onProjectChange: () => undefined,
+        onSave: () => undefined,
+      }),
+    );
+    const header = html.match(/<header[\s\S]*?<\/header>/)?.[0] ?? '';
+
+    expect(header).toContain('<h1');
+    expect(header).not.toContain('text-muted-foreground');
+    expect(header).not.toContain('<button');
+  });
+
   it('renders only mode tabs because mode changes are applied immediately', () => {
     const html = renderToStaticMarkup(
       React.createElement(RunModeTabsToolbar, {

@@ -1848,7 +1848,6 @@ export function App() {
           }}
           onSave={(mode) => updateConversationRunMode(mode, defaultProjectId)}
           onWorkflowTemplatesChange={setConversationWorkflowTemplates}
-          onBack={() => setConversationPage({ kind: 'conversation-home' })}
         />
       );
     }

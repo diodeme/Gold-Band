@@ -1,7 +1,7 @@
 # Scheduled Task Reliability and Direct Parity Design
 
 **Date:** 2026-08-03
-**Status:** Approved for implementation planning
+**Status:** Superseded by `2026-08-05-scheduled-task-unified-runtime-design.md`
 **Scope:** Direct parity with the current AionUi scheduled-task capabilities, plus reliability hardening shared by Workflow and AUTO.
 
 ## Goal
@@ -28,7 +28,7 @@ The AionCore cron crate is not copied. Its occurrence and lease behavior is repr
 - structured schedule and IANA timezone;
 - overlap policy and maximum busy retries;
 - enabled state, `next_run_at`, content fingerprint, task association, created/updated timestamps;
-- optional `keep_awake` preference and diagnostic counters.
+- diagnostic counters. Keep-awake is a global application preference, not a per-job field.
 
 There is no persisted `name`. The UI title is derived from instruction text. The job ID is the only stable identity.
 

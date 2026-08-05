@@ -17,7 +17,11 @@ import { useAgentCommands } from '@/hooks/useAgentCommands';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
 import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
 import { SlashCommandInputTag } from '@/components/conversation/SlashCommandInputTag';
-import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
+import {
+  AcpModelThoughtSelects,
+  findAcpThoughtLevel,
+  updateAcpConfigOptionOverride,
+} from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from '@/lib/slash-command';
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
@@ -109,7 +113,7 @@ export function ConversationComposer({
   const selectedDirectAgentObj = agents.find((agent) => agent.agentType === selectedDirectAgent);
   const directModels = selectedDirectAgentObj?.supportedModels ?? [];
   const directPermissionModes = selectedDirectAgentObj?.supportedModes ?? [];
-  const directThoughtLevel = selectedDirectAgentObj?.configOptions?.find((option) => option.category === 'thought_level') ?? null;
+  const directThoughtLevel = findAcpThoughtLevel(selectedDirectAgentObj?.configOptions);
   const models = selectedAgentObj?.supportedModels ?? [];
   const permissionModes = selectedAgentObj?.supportedModes ?? [];
   const autoPermissionModes = isDynamicAuto ? [
@@ -117,7 +121,7 @@ export function ConversationComposer({
     { id: 'ask', name: t('workflowEditor.permissionModeAsk') },
     { id: 'full_access', name: t('workflowEditor.permissionModeFullAccess') },
   ] : permissionModes;
-  const thoughtLevel = selectedAgentObj?.configOptions?.find((option) => option.category === 'thought_level') ?? null;
+  const thoughtLevel = findAcpThoughtLevel(selectedAgentObj?.configOptions);
   const templates = workflowTemplates?.templates ?? [];
   const selectedWorkflowTemplateId = workflowTemplateId || runMode.workflowTemplateId || undefined;
   const showInterviewToggle = shouldShowInterviewToggle(runMode.mode, selectedWorkflowTemplateId);
@@ -438,9 +442,7 @@ export function ConversationComposer({
                       });
                     }}
                     onThoughtChange={(optionId, value) => {
-                      const next = { ...selectedDirectConfigOptions };
-                      if (value) next[optionId] = value;
-                      else delete next[optionId];
+                      const next = updateAcpConfigOptionOverride(selectedDirectConfigOptions, optionId, value);
                       setSelectedDirectConfigOptions(next);
                       updateDirectConfig({
                         agentType: selectedDirectAgent,
@@ -605,9 +607,7 @@ export function ConversationComposer({
                       updateAutoSession({ modelId: modelId || undefined });
                     }}
                     onThoughtChange={(optionId, value) => {
-                      const next = { ...selectedConfigOptions };
-                      if (value) next[optionId] = value;
-                      else delete next[optionId];
+                      const next = updateAcpConfigOptionOverride(selectedConfigOptions, optionId, value);
                       setSelectedConfigOptions(next);
                       updateAutoSession({ configOptions: next });
                     }}

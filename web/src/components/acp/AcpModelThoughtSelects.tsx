@@ -29,6 +29,25 @@ import {
 
 export { UNSPECIFIED_ACP_CONFIG_VALUE } from '@/components/acp/AcpSingleConfigMenu';
 
+export const ACP_THOUGHT_LEVEL_CATEGORY = 'thought_level';
+
+export function findAcpThoughtLevel(
+  configOptions: AcpSelectConfigOptionVm[] | null | undefined,
+) {
+  return configOptions?.find((option) => option.category === ACP_THOUGHT_LEVEL_CATEGORY) ?? null;
+}
+
+export function updateAcpConfigOptionOverride(
+  overrides: Record<string, string> | null | undefined,
+  optionId: string,
+  value: string | null,
+): Record<string, string> {
+  const next = { ...(overrides ?? {}) };
+  if (value) next[optionId] = value;
+  else delete next[optionId];
+  return next;
+}
+
 export function nextAcpCompositeSection(
   currentSection: string | null,
   section: string,

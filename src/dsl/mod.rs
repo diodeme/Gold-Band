@@ -415,8 +415,12 @@ pub enum AiDynamicAgentStrategy {
         bootstrap_provider: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bootstrap_model: Option<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        bootstrap_config_options: BTreeMap<String, String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         acceptance_model: Option<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        acceptance_config_options: BTreeMap<String, String>,
         routing_prompt: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         available_agents: Vec<DynamicAgentRef>,
@@ -429,6 +433,8 @@ pub struct DynamicAgentRef {
     pub provider: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_options: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -655,7 +661,9 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
         AiDynamicAgentStrategy::Dynamic {
             bootstrap_provider,
             bootstrap_model,
+            bootstrap_config_options: _,
             acceptance_model,
+            acceptance_config_options: _,
             routing_prompt: _,
             available_agents,
         } => {

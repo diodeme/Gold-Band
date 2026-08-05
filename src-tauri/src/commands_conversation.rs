@@ -764,7 +764,9 @@ pub fn get_conversation_run_mode(
                         agent_type: cfg.agent_type.clone(),
                         bootstrap_agent_type: cfg.bootstrap_agent_type.clone(),
                         bootstrap_model_id: cfg.bootstrap_model_id.clone(),
+                        bootstrap_config_options: cfg.bootstrap_config_options.clone(),
                         acceptance_model_id: cfg.acceptance_model_id.clone(),
+                        acceptance_config_options: cfg.acceptance_config_options.clone(),
                         model_id: cfg.model_id.clone(),
                         permission_mode: cfg.permission_mode.clone(),
                         config_options: cfg.config_options.clone(),
@@ -775,6 +777,7 @@ pub fn get_conversation_run_mode(
                                     crate::view_models_conversation::ConversationDynamicAgentRefVm {
                                         provider: agent.provider.clone(),
                                         model: agent.model.clone(),
+                                        config_options: agent.config_options.clone(),
                                     }
                                 })
                                 .collect()
@@ -860,7 +863,9 @@ pub fn save_conversation_run_mode(
                 agent_type: cfg.agent_type,
                 bootstrap_agent_type: cfg.bootstrap_agent_type,
                 bootstrap_model_id: cfg.bootstrap_model_id,
+                bootstrap_config_options: cfg.bootstrap_config_options,
                 acceptance_model_id: cfg.acceptance_model_id,
+                acceptance_config_options: cfg.acceptance_config_options,
                 model_id: cfg.model_id,
                 permission_mode: cfg.permission_mode,
                 config_options: cfg.config_options,
@@ -870,6 +875,7 @@ pub fn save_conversation_run_mode(
                         .map(|agent| ConversationDynamicAgentRef {
                             provider: agent.provider,
                             model: agent.model,
+                            config_options: agent.config_options,
                         })
                         .collect()
                 }),

@@ -2852,6 +2852,41 @@ fn dynamic_model_for_provider(dynamic: &AiDynamicNode, provider: &str) -> Option
     }
 }
 
+fn dynamic_config_options_for_invocation(
+    dynamic: &AiDynamicNode,
+    node: &DynamicNodeState,
+) -> BTreeMap<String, String> {
+    match &dynamic.agent_strategy {
+        AiDynamicAgentStrategy::Fixed { .. } => dynamic.config_options.clone(),
+        AiDynamicAgentStrategy::Dynamic {
+            bootstrap_config_options,
+            acceptance_config_options,
+            available_agents,
+            ..
+        } => {
+            if node.id == DYNAMIC_BOOTSTRAP_NODE_ID {
+                return bootstrap_config_options.clone();
+            }
+            match node.kind {
+                DynamicNodeKind::Merge | DynamicNodeKind::Acceptance => {
+                    acceptance_config_options.clone()
+                }
+                DynamicNodeKind::Worker => node
+                    .provider
+                    .as_deref()
+                    .and_then(|provider| {
+                        available_agents
+                            .iter()
+                            .find(|agent| agent.provider == provider)
+                    })
+                    .map(|agent| agent.config_options.clone())
+                    .unwrap_or_default(),
+                DynamicNodeKind::WorkflowInvocation => BTreeMap::new(),
+            }
+        }
+    }
+}
+
 fn resolve_dynamic_invocation_model(
     dynamic: &AiDynamicNode,
     node: &DynamicNodeState,
@@ -7912,7 +7947,7 @@ fn build_dynamic_worker_invocation(
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "runtime_context");
     let runtime_context = dynamic_runtime_context(ctx, &node.id, attempt_id);
-    let mut config_options = ctx.dynamic.config_options.clone();
+    let mut config_options = dynamic_config_options_for_invocation(ctx.dynamic, node);
     config_options.extend(dynamic_acp_config_option_overrides(
         &runtime_context.attempt_dir,
     ));
@@ -10659,11 +10694,23 @@ mod tests {
             agent_strategy: AiDynamicAgentStrategy::Dynamic {
                 bootstrap_provider: "codex-acp".to_string(),
                 bootstrap_model: Some("gpt-5.6-sol".to_string()),
+                bootstrap_config_options: BTreeMap::from([(
+                    "reasoning_effort".to_string(),
+                    "high".to_string(),
+                )]),
                 acceptance_model: Some("gpt-5.6-sol".to_string()),
+                acceptance_config_options: BTreeMap::from([(
+                    "reasoning_effort".to_string(),
+                    "medium".to_string(),
+                )]),
                 routing_prompt: String::new(),
                 available_agents: vec![crate::dsl::DynamicAgentRef {
                     provider: "codex-acp".to_string(),
                     model: Some("gpt-5.4".to_string()),
+                    config_options: BTreeMap::from([(
+                        "reasoning_effort".to_string(),
+                        "low".to_string(),
+                    )]),
                 }],
             },
             permission_mode: None,
@@ -10681,6 +10728,12 @@ mod tests {
             resolve_dynamic_invocation_model(&dynamic, &bootstrap, None).as_deref(),
             Some("gpt-5.6-sol")
         );
+        assert_eq!(
+            dynamic_config_options_for_invocation(&dynamic, &bootstrap)
+                .get("reasoning_effort")
+                .map(String::as_str),
+            Some("high")
+        );
 
         let mut worker = test_worktree_node("implementation");
         worker.provider = Some("codex-acp".to_string());
@@ -10689,11 +10742,23 @@ mod tests {
             resolve_dynamic_invocation_model(&dynamic, &worker, None).as_deref(),
             Some("gpt-5.4")
         );
+        assert_eq!(
+            dynamic_config_options_for_invocation(&dynamic, &worker)
+                .get("reasoning_effort")
+                .map(String::as_str),
+            Some("low")
+        );
 
         worker.kind = DynamicNodeKind::Acceptance;
         assert_eq!(
             resolve_dynamic_invocation_model(&dynamic, &worker, None).as_deref(),
             Some("gpt-5.6-sol")
+        );
+        assert_eq!(
+            dynamic_config_options_for_invocation(&dynamic, &worker)
+                .get("reasoning_effort")
+                .map(String::as_str),
+            Some("medium")
         );
     }
 
@@ -11234,11 +11299,14 @@ mod tests {
             agent_strategy: AiDynamicAgentStrategy::Dynamic {
                 bootstrap_provider: "claude-acp".to_string(),
                 bootstrap_model: None,
+                bootstrap_config_options: Default::default(),
                 acceptance_model: None,
+                acceptance_config_options: Default::default(),
                 routing_prompt: "choose provider and model".to_string(),
                 available_agents: vec![crate::dsl::DynamicAgentRef {
                     provider: "claude-acp".to_string(),
                     model: None,
+                    config_options: Default::default(),
                 }],
             },
             ..test_dynamic()
@@ -11347,11 +11415,14 @@ mod tests {
             agent_strategy: AiDynamicAgentStrategy::Dynamic {
                 bootstrap_provider: "claude-acp".to_string(),
                 bootstrap_model: None,
+                bootstrap_config_options: Default::default(),
                 acceptance_model: None,
+                acceptance_config_options: Default::default(),
                 routing_prompt: "choose provider and model".to_string(),
                 available_agents: vec![crate::dsl::DynamicAgentRef {
                     provider: "claude-acp".to_string(),
                     model: None,
+                    config_options: Default::default(),
                 }],
             },
             ..test_dynamic()

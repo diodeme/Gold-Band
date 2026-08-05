@@ -20,7 +20,7 @@ use gold_band::domain::NodeType;
 use gold_band::domain::RunStatus;
 use gold_band::dsl::{
     AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, END_NODE, EdgeDsl,
-    EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
+    EdgeOutcome, NodeDsl, WorkflowDsl,
 };
 use gold_band::dynamic::DynamicGraphState;
 use gold_band::runtime::RunState;
@@ -2577,32 +2577,14 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
 }
 
 fn build_direct_workflow(config: &ConversationDirectConfigVm) -> WorkflowDsl {
-    WorkflowDsl {
-        version: "0.1".to_string(),
-        id: "direct-agent".to_string(),
-        entry: "direct-agent".to_string(),
-        control: Default::default(),
-        nodes: vec![NodeDsl::Worker(WorkerNode {
-            id: "direct-agent".to_string(),
-            provider: Some(config.agent_type.clone()),
-            model: config.model_id.clone(),
-            profile: None,
-            goal: None,
-            output: None,
-            success_condition: None,
-            permission_mode: config.permission_mode.clone(),
-            config_options: config.config_options.clone(),
-            manual_check: Some(false),
-            prompt_envelope: PromptEnvelopeMode::RawAgent,
-        })],
-        edges: vec![EdgeDsl {
-            from: "direct-agent".to_string(),
-            to: END_NODE.to_string(),
-            on: EdgeOutcome::Success,
-            session: None,
-            new_round_entry: None,
-        }],
-    }
+    // 委托库层 preset（gold_band::dsl::presets::direct_workflow），与会话 VM / multica bridge
+    // 共用同一份 provider→WorkflowDsl 构造（开发设计 2.5）。
+    gold_band::dsl::presets::direct_workflow(
+        config.agent_type.clone(),
+        config.model_id.clone(),
+        config.permission_mode.clone(),
+        config.config_options.clone(),
+    )
 }
 
 pub fn create_conversation_run_vm(

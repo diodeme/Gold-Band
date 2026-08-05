@@ -23,3 +23,4 @@ node_modules/
 !.claude/settings.json
 draft/*
 .agents
+.omc

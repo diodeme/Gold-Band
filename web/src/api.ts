@@ -312,6 +312,66 @@ export function getMetricsSettings() {
 export function saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) {
   return getRuntimeApi().saveMetricsSettings(enabled, metricsBaseUrl, apiKey);
 }
+
+export function getMulticaSettings() {
+  return getRuntimeApi().getMulticaSettings();
+}
+
+export function saveMulticaSettings(enabled: boolean, multicaBaseUrl: string | null, multicaAppUrl: string | null, defaultProvider: string | null, activeWorkspaceId: string | null) {
+  return getRuntimeApi().saveMulticaSettings(enabled, multicaBaseUrl, multicaAppUrl, defaultProvider, activeWorkspaceId);
+}
+
+export function connectMultica() {
+  return getRuntimeApi().connectMultica();
+}
+
+export function disconnectMultica() {
+  return getRuntimeApi().disconnectMultica();
+}
+
+export function getMulticaTasks() {
+  return getRuntimeApi().getMulticaTasks();
+}
+
+export function claimMulticaTask(taskId: string, workspaceId: string) {
+  return getRuntimeApi().claimMulticaTask(taskId, workspaceId);
+}
+
+export function startMulticaRemoteTask(taskId: string, workspaceId: string) {
+  return getRuntimeApi().startMulticaRemoteTask(taskId, workspaceId);
+}
+
+export function cancelMulticaTask(taskId: string) {
+  return getRuntimeApi().cancelMulticaTask(taskId);
+}
+
+export function rerunMulticaTask(issueId: string, workspaceId: string) {
+  return getRuntimeApi().rerunMulticaTask(issueId, workspaceId);
+}
+
+export function listServerMulticaWorkspaces() {
+  return getRuntimeApi().listServerMulticaWorkspaces();
+}
+
+export function pickLocalDirectory() {
+  return getRuntimeApi().pickLocalDirectory();
+}
+
+export function addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string, localPath: string) {
+  return getRuntimeApi().addMulticaWorkspace(workspaceId, workspaceName, provider, localPath);
+}
+
+export function rebindMulticaWorkspace(workspaceId: string, localPath: string) {
+  return getRuntimeApi().rebindMulticaWorkspace(workspaceId, localPath);
+}
+
+export function removeMulticaWorkspace(workspaceId: string) {
+  return getRuntimeApi().removeMulticaWorkspace(workspaceId);
+}
+
+export function setActiveMulticaWorkspace(workspaceId: string) {
+  return getRuntimeApi().setActiveMulticaWorkspace(workspaceId);
+}
 // ── Conversation UI ──
 export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
   return getRuntimeApi().saveDesktopUiMode(mode);
@@ -451,6 +511,14 @@ export function stopWorkspaceFileWatch(projectId: string) {
 
 export function subscribeWorkspaceFileChanges(listener: Parameters<NonNullable<RuntimeApi['subscribeWorkspaceFileChanges']>>[0]) {
   return getRuntimeApi().subscribeWorkspaceFileChanges?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function subscribeMulticaTaskUpdates(listener: () => void) {
+  return getRuntimeApi().subscribeMulticaTaskUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function subscribeMulticaSettingsUpdates(listener: () => void) {
+  return getRuntimeApi().subscribeMulticaSettingsUpdates?.(listener) ?? Promise.resolve(() => {});
 }
 
 export function workspaceFilePreviewUrl(token: string, staticFrame = false) {

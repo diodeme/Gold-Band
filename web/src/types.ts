@@ -64,6 +64,76 @@ export interface MetricsSettingsVm {
   apiKeySet: boolean;
 }
 
+export interface MulticaWorkspaceRefVm {
+  id: string;
+  name: string;
+  slug: string;
+  localProjectId: string;
+  provider: string;
+}
+
+export interface MulticaServerWorkspaceVm {
+  id: string;
+  name: string;
+}
+
+/// 已连接 multica 账号身份（`/api/me`）；仅 UI 展示用，非凭证。
+export interface MulticaAccountRefVm {
+  name: string | null;
+  email: string | null;
+}
+
+export interface MulticaSettingsVm {
+  enabled: boolean;
+  toggleLocked: boolean;
+  multicaBaseUrl: string | null;
+  multicaAppUrl: string | null;
+  patSet: boolean;
+  daemonIdSet: boolean;
+  workspaces: MulticaWorkspaceRefVm[];
+  activeWorkspaceId: string | null;
+  defaultProvider: string;
+  connected: boolean;
+  connectedAccount: MulticaAccountRefVm | null;
+}
+
+export interface RemoteTaskVm {
+  id: string;
+  issueId: string | null;
+  status: string;
+  retryable: boolean;
+  workspaceId: string;
+  title: string;
+  lastActivityAt: string | null;
+}
+
+export interface RemoteConversationSidebarVm {
+  workspaces: MulticaWorkspaceRefVm[];
+  tasksByWorkspace: Record<string, RemoteTaskVm[]>;
+  pinnedTasks: RemoteTaskVm[];
+  recentlyCompleted: MulticaCompletedTaskVm[];
+  lastActiveWorkspaceId: string | null;
+  connected: boolean;
+}
+
+/// `start_multica_remote_task` 启动结果：同时回 localTaskId（侧栏 key）与 runId（直达会话页）。
+export interface MulticaRemoteTaskStartedVm {
+  localTaskId: string;
+  runId: string;
+}
+
+/// 远程 tab「最近完成」回看行（点击 onSelectRun(projectId, taskId, runId) 直达本地会话）。
+export interface MulticaCompletedTaskVm {
+  remoteTaskId: string;
+  localTaskId: string;
+  runId: string;
+  workspaceId: string;
+  projectId: string;
+  title: string;
+  status: string;
+  completedAt: string;
+}
+
 export interface UpdateInfoVm {
   version: string;
   currentVersion: string;

@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, MulticaRemoteTaskStartedVm, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, ProfileInput, RemoteConversationSidebarVm, RemoteTaskVm, RoundSelection, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -47,6 +47,16 @@ export const desktopApi: RuntimeApi = {
     const unlisten: UnlistenFn = await listen<WorkspaceFileChangedEventVm>('gold-band://workspace-file-changed', (event) => {
       if (event.payload) listener(event.payload);
     });
+    return () => unlisten();
+  },
+  async subscribeMulticaTaskUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen('gold-band://multica-task-updated', () => listener());
+    return () => unlisten();
+  },
+  async subscribeMulticaSettingsUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen('gold-band://multica-settings-updated', () => listener());
     return () => unlisten();
   },
   checkLocalClaude() {
@@ -256,6 +266,60 @@ export const desktopApi: RuntimeApi = {
   },
   saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) {
     return invokeCommand<MetricsSettingsVm>('save_metrics_settings', { enabled, metricsBaseUrl, apiKey });
+  },
+  getMulticaSettings() {
+    return invokeCommand<MulticaSettingsVm>('get_multica_settings');
+  },
+  saveMulticaSettings(enabled: boolean, multicaBaseUrl: string | null, multicaAppUrl: string | null, defaultProvider: string | null, activeWorkspaceId: string | null) {
+    return invokeCommand<MulticaSettingsVm>('save_multica_settings', { enabled, multicaBaseUrl, multicaAppUrl, defaultProvider, activeWorkspaceId });
+  },
+  connectMultica() {
+    return invokeCommand<MulticaSettingsVm>('connect_multica');
+  },
+  disconnectMultica() {
+    return invokeCommand<MulticaSettingsVm>('disconnect_multica');
+  },
+  getMulticaTasks() {
+    return invokeCommand<RemoteConversationSidebarVm>('get_multica_tasks');
+  },
+  claimMulticaTask(taskId: string, workspaceId: string) {
+    return invokeCommand<RemoteTaskVm>('claim_multica_task', { taskId, workspaceId });
+  },
+  startMulticaRemoteTask(taskId: string, workspaceId: string) {
+    return invokeCommand<MulticaRemoteTaskStartedVm>('start_multica_remote_task', { taskId, workspaceId });
+  },
+  cancelMulticaTask(taskId: string) {
+    return invokeCommand<void>('cancel_multica_task', { taskId });
+  },
+  rerunMulticaTask(issueId: string, workspaceId: string) {
+    return invokeCommand<void>('rerun_multica_task', { issueId, workspaceId });
+  },
+  listServerMulticaWorkspaces() {
+    return invokeCommand<MulticaServerWorkspaceVm[]>('list_server_multica_workspaces');
+  },
+  async pickLocalDirectory() {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    return open({ directory: true });
+  },
+  addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string, localPath: string) {
+    return invokeCommand<MulticaSettingsVm>('add_multica_workspace', {
+      workspaceId,
+      workspaceName,
+      workspacePath: localPath,
+      provider,
+    });
+  },
+  rebindMulticaWorkspace(workspaceId: string, localPath: string) {
+    return invokeCommand<MulticaSettingsVm>('rebind_multica_workspace', {
+      workspaceId,
+      workspacePath: localPath,
+    });
+  },
+  removeMulticaWorkspace(workspaceId: string) {
+    return invokeCommand<MulticaSettingsVm>('remove_multica_workspace', { workspaceId });
+  },
+  setActiveMulticaWorkspace(workspaceId: string) {
+    return invokeCommand<MulticaSettingsVm>('set_active_multica_workspace', { workspaceId });
   },
   getUpdateStatus() {
     return invokeCommand('get_update_status');

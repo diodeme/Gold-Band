@@ -753,6 +753,92 @@ export const browserApi: RuntimeApi = {
   saveMetricsSettings(_enabled: boolean, _metricsBaseUrl: string | null, _apiKey: string | null) {
     return this.getMetricsSettings();
   },
+  getMulticaSettings() {
+    return Promise.resolve({
+      enabled: false,
+      toggleLocked: false,
+      multicaBaseUrl: null,
+      multicaAppUrl: null,
+      patSet: false,
+      daemonIdSet: false,
+      workspaces: [],
+      activeWorkspaceId: null,
+      defaultProvider: 'claude-acp',
+      connected: false,
+      connectedAccount: null,
+    });
+  },
+  saveMulticaSettings(_enabled: boolean, _multicaBaseUrl: string | null, _multicaAppUrl: string | null, _defaultProvider: string | null, _activeWorkspaceId: string | null) {
+    return this.getMulticaSettings();
+  },
+  connectMultica() {
+    return this.getMulticaSettings().then((s) => ({
+      ...s,
+      connected: true,
+      patSet: true,
+      daemonIdSet: true,
+      connectedAccount: { name: 'Demo', email: 'demo@maling.local' },
+    }));
+  },
+  disconnectMultica() {
+    // 账号作用域状态随登录态一并清空（与 desktop clear_multica_session 对齐）：workspaces 也清。
+    return this.getMulticaSettings().then((s) => ({
+      ...s,
+      connected: false,
+      patSet: false,
+      connectedAccount: null,
+      workspaces: [],
+      activeWorkspaceId: null,
+    }));
+  },
+  getMulticaTasks() {
+    return Promise.resolve({
+      workspaces: [],
+      tasksByWorkspace: {},
+      pinnedTasks: [],
+      recentlyCompleted: [],
+      lastActiveWorkspaceId: null,
+      connected: false,
+    });
+  },
+  claimMulticaTask(_taskId: string, _workspaceId: string) {
+    return Promise.resolve({
+      id: 'mock-remote-task',
+      issueId: null,
+      status: 'queued',
+      retryable: false,
+      workspaceId: 'mock-workspace',
+      title: 'Mock remote task',
+      lastActivityAt: null,
+    });
+  },
+  startMulticaRemoteTask(_taskId: string, _workspaceId: string) {
+    return Promise.resolve({ localTaskId: 'mock-local-task-id', runId: 'mock-run-id' });
+  },
+  cancelMulticaTask(_taskId: string) {
+    return Promise.resolve();
+  },
+  rerunMulticaTask(_issueId: string, _workspaceId: string) {
+    return Promise.resolve();
+  },
+  listServerMulticaWorkspaces() {
+    return Promise.resolve([]);
+  },
+  pickLocalDirectory() {
+    return Promise.resolve(null);
+  },
+  addMulticaWorkspace(_workspaceId: string, _workspaceName: string, _provider: string, _localPath: string) {
+    return this.getMulticaSettings();
+  },
+  rebindMulticaWorkspace(_workspaceId: string, _localPath: string) {
+    return this.getMulticaSettings();
+  },
+  removeMulticaWorkspace(_workspaceId: string) {
+    return this.getMulticaSettings();
+  },
+  setActiveMulticaWorkspace(_workspaceId: string) {
+    return this.getMulticaSettings();
+  },
   getUpdateStatus() {
     return Promise.resolve(browserPreviewState.getUpdateStatus());
   },
@@ -1067,6 +1153,12 @@ export const browserApi: RuntimeApi = {
   subscribeWorkspaceFileChanges(listener) {
     browserWorkspaceFileListeners.add(listener);
     return Promise.resolve(() => browserWorkspaceFileListeners.delete(listener));
+  },
+  subscribeMulticaTaskUpdates() {
+    return Promise.resolve(() => {});
+  },
+  subscribeMulticaSettingsUpdates() {
+    return Promise.resolve(() => {});
   },
   workspaceFilePreviewUrl(token, _staticFrame = false) {
     const path = token.replace(/^browser-preview:/u, '');

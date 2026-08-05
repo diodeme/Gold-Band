@@ -12,6 +12,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { cn } from '@/lib/utils';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { formatCompactRelativeTime } from '@/lib/datetime';
+import { MulticaRemoteTaskList } from './MulticaRemoteTaskList';
 
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
@@ -62,6 +63,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   const [collapsedPinnedWorkspaces, setCollapsedPinnedWorkspaces] = useState<Record<string, boolean>>({});
   const [workspaceToRemove, setWorkspaceToRemove] = useState<ConversationWorkspaceVm | null>(null);
   const [workspaceRemovalPending, setWorkspaceRemovalPending] = useState(false);
+  const [remoteView, setRemoteView] = useState<'local' | 'remote'>('local');
   const pinnedTasksByWorkspace = useMemo(() => vm.pinnedTasks.reduce<Record<string, ConversationTaskRowVm[]>>((acc, task) => {
     (acc[task.projectId] ??= []).push(task);
     return acc;
@@ -285,95 +287,133 @@ export const ConversationSidebar = memo(function ConversationSidebar({
           <Separator className="mx-1 my-0.75 opacity-45" />
         )}
 
-        {/* Workspace sections — scrollable with sticky headers */}
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="pt-2.5">
-            {vm.workspaces.map((ws) => (
-              <div key={ws.projectId} className="mb-2.5">
-                <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-0.75">
-                  <button
-                    type="button"
-                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[12px] font-semibold uppercase tracking-[0.12em] text-sidebar-foreground hover:text-sidebar-accent-foreground group-hover:pr-11"
-                    onClick={() => toggleWorkspace(ws.projectId)}
-                  >
-                    <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
-                    <span className="truncate">{ws.name}</span>
-                  </button>
-                  <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
-                    {onNewConversationInWorkspace ? (
-                      <Button variant="ghost" size="icon" className="size-5 active:scale-90 transition-transform" onClick={(e) => { e.stopPropagation(); onNewConversationInWorkspace(ws.projectId); }}>
-                        <Plus className="size-3" />
-                      </Button>
-                    ) : null}
-                    {onRemoveWorkspace ? (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="size-5 text-muted-foreground transition-transform hover:text-destructive active:scale-90"
-                        aria-label={t('conversation.sidebar.removeWorkspaceNamed', { name: ws.name })}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setWorkspaceRemovalPending(false);
-                          setWorkspaceToRemove(ws);
-                        }}
-                      >
-                        <Trash2 className="size-3" />
-                      </Button>
-                    ) : null}
-                  </span>
-                </div>
-                {expandedWorkspaces[ws.projectId] ? (
-                  <div className="space-y-1">
-                    {(vm.tasksByWorkspace[ws.projectId] ?? []).map((task) => (
-                      <TaskRow
-                        key={`${task.projectId}-${task.taskId}`}
-                        task={task}
-                        pinned={pinnedTaskKeys.has(conversationSidebarTaskKey(task.projectId, task.taskId))}
-                        isActive={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) && active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
-                        activeRunKey={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) ? activeRunKey : null}
-                        expanded={expandedTaskKeys.workspace === conversationSidebarTaskKey(task.projectId, task.taskId)}
-                        onSelect={() => onSelectTask(task.projectId, task.taskId)}
-                        onSelectRun={(runId) => {
-                          markRunListInteraction('workspace');
-                          onSelectRun(task.projectId, task.taskId, runId);
-                        }}
-                        onToggleRuns={() => toggleTaskRuns('workspace', task.projectId, task.taskId)}
-                        onExpandRuns={() => expandTaskRuns('workspace', task.projectId, task.taskId)}
-                        onPin={() => onPinTask(task.projectId, task.taskId)}
-                        onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
-                        onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
-                        onDelete={() => onDeleteTask(task.projectId, task.taskId)}
-                        onPauseRun={(runId) => onPauseRun?.(task.projectId, task.taskId, runId)}
-                        t={t}
-                      />
-                    ))}
-                    {(!vm.tasksByWorkspace[ws.projectId] || vm.tasksByWorkspace[ws.projectId].length === 0) ? (
-                      <div className="px-3 py-2 text-xs text-muted-foreground">{t('conversation.noConversations')}</div>
-                    ) : null}
+        {/* local/remote segmented toggle */}
+        <div className="mx-1 flex rounded-md bg-muted p-0.5">
+          <button
+            type="button"
+            className={cn(
+              'flex-1 rounded-sm px-2 py-1 text-xs font-medium transition-colors',
+              remoteView === 'local'
+                ? 'bg-background text-sidebar-accent-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-sidebar-foreground',
+            )}
+            onClick={() => setRemoteView('local')}
+          >
+            {t('conversation.sidebar.multica.localTab')}
+          </button>
+          <button
+            type="button"
+            className={cn(
+              'flex-1 rounded-sm px-2 py-1 text-xs font-medium transition-colors',
+              remoteView === 'remote'
+                ? 'bg-background text-sidebar-accent-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-sidebar-foreground',
+            )}
+            onClick={() => setRemoteView('remote')}
+          >
+            {t('conversation.sidebar.multica.remoteTab')}
+          </button>
+        </div>
+
+        {/* Main task list — local or remote */}
+        {remoteView === 'local' ? (
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="pt-2.5">
+              {vm.workspaces.map((ws) => (
+                <div key={ws.projectId} className="mb-2.5">
+                  <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-0.75">
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[12px] font-semibold uppercase tracking-[0.12em] text-sidebar-foreground hover:text-sidebar-accent-foreground group-hover:pr-11"
+                      onClick={() => toggleWorkspace(ws.projectId)}
+                    >
+                      <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
+                      <span className="truncate">{ws.name}</span>
+                    </button>
+                    <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+                      {onNewConversationInWorkspace ? (
+                        <Button variant="ghost" size="icon" className="size-5 active:scale-90 transition-transform" onClick={(e) => { e.stopPropagation(); onNewConversationInWorkspace(ws.projectId); }}>
+                          <Plus className="size-3" />
+                        </Button>
+                      ) : null}
+                      {onRemoveWorkspace ? (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-5 text-muted-foreground transition-transform hover:text-destructive active:scale-90"
+                          aria-label={t('conversation.sidebar.removeWorkspaceNamed', { name: ws.name })}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setWorkspaceRemovalPending(false);
+                            setWorkspaceToRemove(ws);
+                          }}
+                        >
+                          <Trash2 className="size-3" />
+                        </Button>
+                      ) : null}
+                    </span>
                   </div>
-                ) : null}
-              </div>
-            ))}
+                  {expandedWorkspaces[ws.projectId] ? (
+                    <div className="space-y-1">
+                      {(vm.tasksByWorkspace[ws.projectId] ?? []).map((task) => (
+                        <TaskRow
+                          key={`${task.projectId}-${task.taskId}`}
+                          task={task}
+                          pinned={pinnedTaskKeys.has(conversationSidebarTaskKey(task.projectId, task.taskId))}
+                          isActive={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) && active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
+                          activeRunKey={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) ? activeRunKey : null}
+                          expanded={expandedTaskKeys.workspace === conversationSidebarTaskKey(task.projectId, task.taskId)}
+                          onSelect={() => onSelectTask(task.projectId, task.taskId)}
+                          onSelectRun={(runId) => {
+                            markRunListInteraction('workspace');
+                            onSelectRun(task.projectId, task.taskId, runId);
+                          }}
+                          onToggleRuns={() => toggleTaskRuns('workspace', task.projectId, task.taskId)}
+                          onExpandRuns={() => expandTaskRuns('workspace', task.projectId, task.taskId)}
+                          onPin={() => onPinTask(task.projectId, task.taskId)}
+                          onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
+                          onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
+                          onDelete={() => onDeleteTask(task.projectId, task.taskId)}
+                          onPauseRun={(runId) => onPauseRun?.(task.projectId, task.taskId, runId)}
+                          t={t}
+                        />
+                      ))}
+                      {(!vm.tasksByWorkspace[ws.projectId] || vm.tasksByWorkspace[ws.projectId].length === 0) ? (
+                        <div className="px-3 py-2 text-xs text-muted-foreground">{t('conversation.noConversations')}</div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
 
-            {/* Add workspace button */}
-            {onAddWorkspace ? (
-              <button
-                type="button"
-                className="mt-1.5 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[14px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                onClick={onAddWorkspace}
-              >
-                <Plus className="size-3.5" />
-                <span>{t('conversation.sidebar.addWorkspace')}</span>
-              </button>
-            ) : null}
+              {/* Add workspace button */}
+              {onAddWorkspace ? (
+                <button
+                  type="button"
+                  className="mt-1.5 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[14px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  onClick={onAddWorkspace}
+                >
+                  <Plus className="size-3.5" />
+                  <span>{t('conversation.sidebar.addWorkspace')}</span>
+                </button>
+              ) : null}
 
-            {vm.workspaces.length === 0 ? (
-              <div className="px-3 py-4 text-center text-xs text-muted-foreground">
-                {t('conversation.sidebar.noWorkspaces')}
-              </div>
-            ) : null}
-          </div>
-        </ScrollArea>
+              {vm.workspaces.length === 0 ? (
+                <div className="px-3 py-4 text-center text-xs text-muted-foreground">
+                  {t('conversation.sidebar.noWorkspaces')}
+                </div>
+              ) : null}
+            </div>
+          </ScrollArea>
+        ) : (
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="pt-2.5">
+              <MulticaRemoteTaskList
+                onSelectRun={onSelectRun}
+              />
+            </div>
+          </ScrollArea>
+        )}
 
 
         {/* Settings */}

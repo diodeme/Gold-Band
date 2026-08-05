@@ -24,12 +24,24 @@ struct ChannelConfig {
     metrics_api_key: String,
     #[serde(default)]
     builtin_mcp_servers: Vec<serde_json::Value>,
+    #[serde(default)]
+    multica_enabled: bool,
+    #[serde(default)]
+    multica_toggle_locked: bool,
+    #[serde(default)]
+    multica_base_url: String,
+    #[serde(default)]
+    multica_app_url: String,
 }
 
 fn main() {
     println!("cargo:rerun-if-env-changed=GOLD_BAND_RELEASE_CHANNEL");
     println!("cargo:rerun-if-env-changed=GOLD_BAND_METRICS_API_KEY");
     println!("cargo:rerun-if-env-changed=GOLD_BAND_METRICS_BASE_URL");
+    println!("cargo:rerun-if-env-changed=GOLD_BAND_MULTICA_ENABLED");
+    println!("cargo:rerun-if-env-changed=GOLD_BAND_MULTICA_TOGGLE_LOCKED");
+    println!("cargo:rerun-if-env-changed=GOLD_BAND_MULTICA_BASE_URL");
+    println!("cargo:rerun-if-env-changed=GOLD_BAND_MULTICA_APP_URL");
     println!("cargo:rerun-if-changed=../configs/channels");
 
     let channel = env::var("GOLD_BAND_RELEASE_CHANNEL").unwrap_or_else(|_| "default".to_string());
@@ -122,6 +134,21 @@ fn main() {
     );
     let builtin_mcp_json = serde_json::to_string(&config.builtin_mcp_servers).unwrap_or_default();
     println!("cargo:rustc-env=GOLD_BAND_BUILTIN_MCP_SERVERS={builtin_mcp_json}");
+
+    println!(
+        "cargo:rustc-env=GOLD_BAND_MULTICA_ENABLED={}",
+        config.multica_enabled
+    );
+    println!(
+        "cargo:rustc-env=GOLD_BAND_MULTICA_TOGGLE_LOCKED={}",
+        config.multica_toggle_locked
+    );
+    let multica_base_url =
+        env::var("GOLD_BAND_MULTICA_BASE_URL").unwrap_or(config.multica_base_url.clone());
+    println!("cargo:rustc-env=GOLD_BAND_MULTICA_BASE_URL={}", multica_base_url);
+    let multica_app_url =
+        env::var("GOLD_BAND_MULTICA_APP_URL").unwrap_or(config.multica_app_url.clone());
+    println!("cargo:rustc-env=GOLD_BAND_MULTICA_APP_URL={}", multica_app_url);
 
     tauri_build::build()
 }

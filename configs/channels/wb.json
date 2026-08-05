@@ -18,6 +18,10 @@
   "metricsToggleLocked": true,
   "metricsBaseUrl": "http://maling.example.com",
   "metricsApiKey": "",
+  "multicaEnabled": true,
+  "multicaToggleLocked": true,
+  "multicaBaseUrl": "http://maling.example.com",
+  "multicaAppUrl": "http://maling.example.com",
   "builtinMcpServers": [
     {
       "id": "maling-code-graph",

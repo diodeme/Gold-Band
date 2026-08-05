@@ -19,7 +19,6 @@ import {
   CircleStop,
   Clock,
   FileText,
-  FolderOpen,
   Image as ImageIcon,
   ListTodo,
   Loader2,
@@ -233,7 +232,6 @@ export type AcpRuntimeComposerContext = {
 export interface AcpDirectSessionHeaderProps {
   title: string;
   onTitleChange?: (title: string) => void;
-  onOpenInFileManager?: () => void;
 }
 
 interface ACPChatDialogProps {
@@ -3590,22 +3588,6 @@ export function ACPSessionHeader({
               {rawLoading ? <Loader2 className="size-3 animate-spin" /> : null}
               {t("acp.rawFrames")}
             </Button>
-          ) : null}
-          {directSessionHeader?.onOpenInFileManager ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-5.5"
-                  aria-label={t("conversation.runtime.openInFileManager")}
-                  onClick={directSessionHeader.onOpenInFileManager}
-                >
-                  <FolderOpen className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{t("conversation.runtime.openInFileManager")}</TooltipContent>
-            </Tooltip>
           ) : null}
         </div>
       </div>

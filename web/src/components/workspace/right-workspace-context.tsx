@@ -52,6 +52,8 @@ export type ConversationDirectoryWorkspaceResource = RightWorkspaceResourceBase 
   locator: ConversationRunLocator & { roundId: string; nodeId: string; attemptId: string; outerNodeId?: string | null; outerAttemptId?: string | null };
 };
 
+export type ConversationDirectoryWorkspaceEntry = Omit<ConversationDirectoryWorkspaceResource, 'key'>;
+
 export type AgentTranscriptResource = RightWorkspaceResourceBase & {
   kind: 'agent-transcript';
   status: string;
@@ -135,6 +137,8 @@ interface RightWorkspaceContextValue extends RightWorkspaceState {
   setWidth: (width: number) => void;
   renderResource: (resource: RightWorkspaceResource) => ReactNode;
   projectId: string | null;
+  conversationDirectoryEntry: ConversationDirectoryWorkspaceEntry | null;
+  setConversationDirectoryEntry: (entry: ConversationDirectoryWorkspaceEntry | null) => void;
   registerResourceRenderer: (kind: RightWorkspaceResourceKind, renderer: RightWorkspaceResourceRenderer) => () => void;
   registerResourceCloseResolver: (kind: RightWorkspaceResourceKind, resolver: RightWorkspaceResourceCloseResolver) => () => void;
 }
@@ -324,6 +328,7 @@ export function RightWorkspaceProvider({
   scopeRef.current = scope;
   const widthTouchedRef = useRef(false);
   const [width, setWidthState] = useState(initialWidth ?? DEFAULT_RIGHT_WORKSPACE_WIDTH);
+  const [conversationDirectoryEntry, setConversationDirectoryEntryState] = useState<ConversationDirectoryWorkspaceEntry | null>(null);
   const [revision, render] = useReducer((currentRevision) => currentRevision + 1, 0);
   const rendererRegistryRef = useRef(new Map<RightWorkspaceResourceKind, RightWorkspaceResourceRenderer>());
   const closeResolverRegistryRef = useRef(new Map<RightWorkspaceResourceKind, RightWorkspaceResourceCloseResolver>());
@@ -402,6 +407,9 @@ export function RightWorkspaceProvider({
     widthTouchedRef.current = true;
     setWidthState(nextWidth);
   }, []);
+  const setConversationDirectoryEntry = useCallback((entry: ConversationDirectoryWorkspaceEntry | null) => {
+    setConversationDirectoryEntryState(entry);
+  }, []);
   const renderResource = useCallback((resource: RightWorkspaceResource) => rendererRegistryRef.current.get(resource.kind)?.(resource) ?? null, []);
   const registerResourceRenderer = useCallback((kind: RightWorkspaceResourceKind, renderer: RightWorkspaceResourceRenderer) => {
     rendererRegistryRef.current.set(kind, renderer);
@@ -422,6 +430,8 @@ export function RightWorkspaceProvider({
     ...sessionState,
     scopeKey: scope?.key ?? null,
     projectId: scope?.projectId ?? null,
+    conversationDirectoryEntry: conversationDirectoryEntry?.scopeKey === scope?.key ? conversationDirectoryEntry : null,
+    setConversationDirectoryEntry,
     width,
     openResource,
     openWorkspace,
@@ -432,7 +442,7 @@ export function RightWorkspaceProvider({
     renderResource,
     registerResourceRenderer,
     registerResourceCloseResolver,
-  }), [activateTab, closeTab, closeWorkspace, openResource, openWorkspace, registerResourceCloseResolver, registerResourceRenderer, renderResource, rendererRevision, scope?.key, scope?.projectId, sessionState, setWidth, width]);
+  }), [activateTab, closeTab, closeWorkspace, conversationDirectoryEntry, openResource, openWorkspace, registerResourceCloseResolver, registerResourceRenderer, renderResource, rendererRevision, scope?.key, scope?.projectId, sessionState, setConversationDirectoryEntry, setWidth, width]);
   const commands = useMemo<RightWorkspaceCommands>(() => ({
     scopeKey: scope?.key ?? null,
     projectId: scope?.projectId ?? null,

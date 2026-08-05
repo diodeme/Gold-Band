@@ -6,7 +6,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { cn } from '@/lib/utils';
 import { useConversationBranchLiveSnapshot } from '@/lib/conversation-event-router';
 import { AgentConversationPanel } from './AgentConversationPanel';
-import { fileBrowserWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
+import { conversationDirectoryWorkspaceResourceKey, fileBrowserWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
 import { useFileContentEntry } from './files/file-content-store';
 
 export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
@@ -112,7 +112,7 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
 });
 
 type WorkspaceEntryOption = {
-  id: 'file-browser';
+  id: 'file-browser' | 'conversation-directory';
   label: string;
   description: string;
   icon: typeof FolderOpen;
@@ -121,10 +121,10 @@ type WorkspaceEntryOption = {
 
 function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu' }) {
   const { t } = useTranslation();
-  const { openResource, projectId, scopeKey } = useRightWorkspace();
+  const { conversationDirectoryEntry, openResource, projectId, scopeKey } = useRightWorkspace();
   const options = useMemo<WorkspaceEntryOption[]>(() => {
     if (!projectId || !scopeKey) return [];
-    return [{
+    const entries: WorkspaceEntryOption[] = [{
       id: 'file-browser',
       label: t('workspace.files'),
       description: t('workspace.browseWorkspaceFiles'),
@@ -141,7 +141,22 @@ function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu
         });
       },
     }];
-  }, [openResource, projectId, scopeKey, t]);
+    if (conversationDirectoryEntry) {
+      entries.push({
+        id: 'conversation-directory',
+        label: t('workspace.runDirectory'),
+        description: t('workspace.browseRunDirectory'),
+        icon: FolderOpen,
+        open: () => {
+          void openResource({
+            ...conversationDirectoryEntry,
+            key: conversationDirectoryWorkspaceResourceKey(conversationDirectoryEntry.locator),
+          });
+        },
+      });
+    }
+    return entries;
+  }, [conversationDirectoryEntry, openResource, projectId, scopeKey, t]);
 
   if (presentation === 'menu') {
     return (

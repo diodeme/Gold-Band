@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "node scripts/dev-channel.mjs default",
     "dev:default": "node scripts/dev-channel.mjs default",
+    "dev:static": "node scripts/dev-static-channel.mjs default",
     "dev:wb": "node scripts/dev-channel.mjs wb",
     "build": "node scripts/build-channel.mjs default",
     "build:channel": "node scripts/build-channel.mjs",
@@ -18,6 +19,7 @@
     "web:test": "vitest run --config web/vitest.config.ts",
     "test:channel-config": "node --test scripts/channel-config.test.mjs",
     "test:dev-watch-config": "node --test scripts/dev-watch-config.test.mjs",
+    "test:dev-static": "node --test scripts/dev-static-channel.test.mjs",
     "web:build": "tsc -p web/tsconfig.build.json && vite build --config web/vite.config.ts",
     "web:preview": "vite preview --config web/vite.config.ts"
   },

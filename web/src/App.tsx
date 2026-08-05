@@ -49,7 +49,11 @@ import {
   updateNotificationAttention,
 } from './api';
 import { isTauriRuntime } from './api/shared';
-import { applyConversationSidebarTaskActivity, conversationTaskActivityFromLifecycle } from './lib/conversation-sidebar-activity';
+import {
+  applyConversationSidebarTaskActivity,
+  conversationTaskActivityFromLifecycle,
+  conversationTaskActivityFromUpdate,
+} from './lib/conversation-sidebar-activity';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Breadcrumbs } from './components/Breadcrumbs';
 import { Button } from '@/components/ui/button';
@@ -98,7 +102,6 @@ import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
 import { applyFont, applyTheme, resolveThemePreference, syncDesktopWindowSurface } from './theme';
-import { isConversationRunStopSettled } from '@/lib/conversation-run-stop';
 import { useInterventionNotifications } from './lib/use-intervention-notifications';
 import {
   shouldRunWorkbenchBackgroundRefresh,
@@ -147,6 +150,7 @@ import type {
   AppConfigVm,
   AppInfoVm,
   ConversationAttemptLifecycleVm,
+  ConversationTaskActivityVm,
   ConversationPage,
   ConversationRunModeVm,
   ConversationRunVm,
@@ -277,6 +281,7 @@ export function App() {
   const [conversationPage, setConversationPage] = useState<ConversationPage>(initialRoute.conversationPage);
   const conversationPageRef = useRef<ConversationPage>(initialRoute.conversationPage);
   const conversationStopRequestRef = useRef(0);
+  const conversationRunStopPendingRef = useRef(false);
   const [conversationSidebar, setConversationSidebar] = useState<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const conversationSidebarRef = useRef<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
@@ -288,7 +293,6 @@ export function App() {
   );
   const [conversationWorkspaceStore] = useState(() => new ConversationWorkspaceStore());
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
-  const [conversationRunStopping, setConversationRunStopping] = useState(false);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
   const conversationNavigationRequestRef = useRef(0);
   const presentedConversationPage = useMemo(
@@ -348,14 +352,14 @@ export function App() {
   const applyConversationTaskActivity = useCallback((
     projectId: string,
     taskId: string,
-    lifecycle: ConversationAttemptLifecycleVm,
+    activity: ConversationTaskActivityVm | null,
   ) => {
     setConversationSidebar((current) => {
       const next = applyConversationSidebarTaskActivity(
         current,
         projectId,
         taskId,
-        conversationTaskActivityFromLifecycle(lifecycle),
+        activity,
       );
       conversationSidebarRef.current = next;
       return next;
@@ -430,10 +434,7 @@ export function App() {
   useEffect(() => {
     conversationRunRef.current = conversationRun;
     conversationSelectedSessionKeyRef.current = conversationRun?.sessionTree.selectedSessionKey ?? null;
-    if (conversationRunStopping && isConversationRunStopSettled(conversationRun)) {
-      setConversationRunStopping(false);
-    }
-  }, [conversationRun, conversationRunStopping]);
+  }, [conversationRun]);
 
   useEffect(() => {
     if (conversationPage.kind !== 'conversation-run') return;
@@ -785,7 +786,10 @@ export function App() {
       if (!active) return;
       if (event.taskId !== taskId || event.runId !== runId) return;
       if (event.projectId && event.projectId !== projectId) return;
-      if (event.lifecycle) applyConversationTaskActivity(projectId, taskId, event.lifecycle);
+      const sidebarActivity = conversationTaskActivityFromUpdate(event);
+      if (sidebarActivity !== undefined) {
+        applyConversationTaskActivity(projectId, taskId, sidebarActivity);
+      }
       const sessionKey = conversationSessionKeyFromParts(event);
       const currentRun = conversationRunRef.current;
       const currentSelectedKey = conversationSelectedSessionKeyRef.current
@@ -1218,15 +1222,13 @@ export function App() {
   };
 
   const onConversationPauseRun = async (projectId: string, taskId: string, runId: string) => {
+    if (conversationRunStopPendingRef.current) return;
+    conversationRunStopPendingRef.current = true;
     const requestVersion = conversationStopRequestRef.current + 1;
     conversationStopRequestRef.current = requestVersion;
-    setConversationRunStopping(true);
     setError(null);
-    let stopSettled = false;
-    let stopAccepted = false;
     try {
       await pauseRun(taskId, runId, projectId);
-      stopAccepted = true;
       const selectedKey = conversationRunRef.current?.sessionTree.selectedSessionKey ?? null;
       const refreshSelectedRun = conversationPageRef.current.kind === 'conversation-run'
         && conversationPageRef.current.projectId === projectId
@@ -1245,13 +1247,10 @@ export function App() {
         && currentPage.projectId === projectId
         && currentPage.taskId === taskId
         && currentPage.runId === runId) {
-        stopSettled = isConversationRunStopSettled(refreshed);
         applyConversationRunSnapshot(refreshed, 'session-stopped', {
           selectedSessionKey: selectedKey,
           preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
         });
-      } else {
-        stopSettled = true;
       }
       applyConversationSidebar(sidebar);
     } catch (err) {
@@ -1259,8 +1258,8 @@ export function App() {
         setError(displayAppError(t, err));
       }
     } finally {
-      if (conversationStopRequestRef.current === requestVersion && (!stopAccepted || stopSettled)) {
-        setConversationRunStopping(false);
+      if (conversationStopRequestRef.current === requestVersion) {
+        conversationRunStopPendingRef.current = false;
       }
     }
   };
@@ -1621,7 +1620,6 @@ export function App() {
       onConversationSelectRun={(projectId, taskId, runId) => {
         setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
       }}
-      conversationRunStopping={conversationRunStopping}
       onConversationPauseRun={onConversationPauseRun}
       onConversationRenameTask={(projectId, taskId, title) => {
         updateTaskMetadata(projectId, taskId, title)
@@ -1975,7 +1973,11 @@ export function App() {
             }).catch(() => {});
           }}
           onLifecycleSnapshot={(snapshot) => {
-            applyConversationTaskActivity(conversationPage.projectId, snapshot.taskId, snapshot.lifecycle);
+            applyConversationTaskActivity(
+              conversationPage.projectId,
+              snapshot.taskId,
+              conversationTaskActivityFromLifecycle(snapshot.lifecycle),
+            );
             setConversationRun((current) => {
               const selectedPatched = applyConversationSelectedSessionSnapshot(current, snapshot);
               const patched = selectedPatched === current

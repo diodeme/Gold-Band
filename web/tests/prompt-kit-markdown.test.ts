@@ -7,8 +7,6 @@ import {
   advanceStreamingMarkdownPresentation,
   createStreamingMarkdownPresentation,
   normalizeStreamingMarkdownPrefix,
-  STREAMING_MARKDOWN_FINAL_CATCH_UP_MS,
-  STREAMING_MARKDOWN_MAX_CHARS_PER_SECOND,
   streamingMarkdownPresentationText,
   syncStreamingMarkdownPresentation,
 } from '@/lib/streaming-markdown';
@@ -112,33 +110,8 @@ describe('prompt-kit Markdown', () => {
     expect(streamingMarkdownPresentationText(presentation, false)).toBe(canonical);
   });
 
-  it('finishes a short final backlog with the existing typewriter cadence', () => {
-    const boundaryLength =
-      (STREAMING_MARKDOWN_FINAL_CATCH_UP_MS
-        * STREAMING_MARKDOWN_MAX_CHARS_PER_SECOND)
-      / 1000;
-    const canonical = `\u4e2d${'a'.repeat(boundaryLength)}`;
-    const streamingPresentation = createStreamingMarkdownPresentation(
-      canonical,
-      true,
-    );
-
-    const finishedPresentation = syncStreamingMarkdownPresentation(
-      streamingPresentation,
-      canonical,
-      false,
-    );
-
-    expect(finishedPresentation.offset).toBe(streamingPresentation.offset);
-    expect(finishedPresentation.offset).toBeLessThan(canonical.length);
-  });
-
-  it('shows the final Markdown immediately when the finished backlog exceeds 500ms', () => {
-    const boundaryLength =
-      (STREAMING_MARKDOWN_FINAL_CATCH_UP_MS
-        * STREAMING_MARKDOWN_MAX_CHARS_PER_SECOND)
-      / 1000;
-    const canonical = `\u4e2d${'\ud83e\udde0'.repeat(boundaryLength + 1)}`;
+  it('shows the complete Markdown immediately when a live stream settles', () => {
+    const canonical = `\u4e2d${'a'.repeat(90)}`;
     const streamingPresentation = createStreamingMarkdownPresentation(
       canonical,
       true,

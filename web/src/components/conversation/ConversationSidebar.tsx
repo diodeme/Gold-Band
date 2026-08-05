@@ -13,6 +13,8 @@ import { cn } from '@/lib/utils';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { formatCompactRelativeTime } from '@/lib/datetime';
 
+export const conversationSidebarActivityRingClass = '-inset-1 border-2 border-gold-running/45 border-t-gold-running';
+
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
   active: ConversationPage;
@@ -639,7 +641,10 @@ function TaskRow({
             {showActivity ? (
               <span
                 aria-hidden="true"
-                className="absolute inset-0 animate-spin rounded-full border border-primary/20 border-t-primary [animation-duration:900ms]"
+                className={cn(
+                  'absolute animate-spin rounded-full [animation-duration:900ms]',
+                  conversationSidebarActivityRingClass,
+                )}
               />
             ) : null}
             <img

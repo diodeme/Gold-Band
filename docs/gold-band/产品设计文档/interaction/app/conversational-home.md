@@ -155,6 +155,7 @@
 ## 状态规则
 - Workflow/AUTO 状态 = 最新 run 的最终状态；成功 = 绿色，失败/异常/停止 = 红色，暂停 = 黄色，运行中不显示时间
 - Direct 不用 run outcome 表达会话身份，不展示成功/暂停/失败色点。旋转环必须消费后端 task 级 canonical activity：同时覆盖首轮 runtime active、completed run 上的 same-session ACP follow-up 和 cancel requested；禁止只判断 `latestRun.status`，因为 Direct 后续追问期间底层 run 仍可能保持 completed。
+- 高频 ACP session update 必须直接携带从 per-attempt prompt control registry 投影的轻量 `activity`，包括 `starting / accepted / running / cancel-requested`；prompt 终态用显式 `null` 清除。该投影只读内存控制状态，不得为侧边栏圆环重建完整 lifecycle、session 或 timeline。前端优先消费此字段，并仅对旧的无 `activity` 事件回退到 lifecycle 投影。
 
 ## 性能与后台刷新
 

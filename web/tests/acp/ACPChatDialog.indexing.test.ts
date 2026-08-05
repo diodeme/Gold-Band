@@ -4,10 +4,9 @@ import {
   buildAcpTimelineProjection,
   createAcpSessionCacheKey,
   latestLiveSessionTimingFromEvents,
-  latestStreamingMarkdownItemKey,
-  latestStreamingMarkdownItemKeyFromEvents,
   limitAcpEvents,
   mergeAcpEvents,
+  nextLiveStreamingMarkdownTarget,
   objectiveActivityDescriptor,
   planAcpStopResponse,
   queryBlocksFromTool,
@@ -83,20 +82,16 @@ function projectedAgent(agentExecutionId: string, overrides: Partial<AcpTimeline
 }
 
 describe('ACPChatDialog branch timeline helpers', () => {
-  it('marks only the newest active text or thought stream for paced Markdown', () => {
-    const thought = event({ id: 'thought-1', seq: 1, endedSeq: 4, timestamp: '1Z', kind: 'thoughtDelta', content: '**thinking**' });
-    const text = event({ id: 'message-1', seq: 2, endedSeq: 3, timestamp: '2Z', kind: 'textDelta', content: 'older response' });
+  it('paces only a live text update after the current prompt and settles before tools', () => {
+    const historical = event({ id: 'old-answer', seq: 4, timestamp: '4Z', kind: 'textDelta', content: 'already rendered' });
+    expect(nextLiveStreamingMarkdownTarget(null, historical, 10)).toBeNull();
 
-    expect(latestStreamingMarkdownItemKey(buildAcpTimeline([thought, text]))).toBe('thoughtDelta-thought-1');
-    expect(latestStreamingMarkdownItemKeyFromEvents([
-      thought,
-      text,
-      event({ id: 'optimistic-user', seq: Number.MAX_SAFE_INTEGER, timestamp: '3Z', kind: 'userTextDelta', content: 'prompt', raw: { optimistic: true } }),
-    ])).toBe('thoughtDelta-thought-1');
-    expect(latestStreamingMarkdownItemKeyFromEvents([
-      thought,
-      event({ id: 'tool-1', seq: 5, timestamp: '5Z', kind: 'toolCall', toolCallId: 'tool-1' }),
-    ])).toBeNull();
+    const liveText = event({ id: 'new-answer', seq: 11, timestamp: '11Z', kind: 'textDelta', content: 'new response' });
+    const target = nextLiveStreamingMarkdownTarget(null, liveText, 10);
+    expect(target).toEqual({ key: 'textDelta-new-answer', position: 11 });
+
+    const tool = event({ id: 'tool-1', seq: 12, timestamp: '12Z', kind: 'toolCall', toolCallId: 'tool-1' });
+    expect(nextLiveStreamingMarkdownTarget(target, tool, 10)).toBeNull();
   });
 
   it('uses the semantic activity start cursor as the stable activity key', () => {

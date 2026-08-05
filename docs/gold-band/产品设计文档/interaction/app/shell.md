@@ -186,6 +186,7 @@ Agent 管理
 - 根会话 Token 使用 ACP provider 对整个根 attempt 返回的累计 usage；Claude Agent ACP 的该累计值包含同一 turn 内嵌套 Agent 的模型调用。Gold Band 不从各分支 transcript 重复求和，Agent 分支在 provider 未提供独立 usage 时不伪造 Token 数字。
 - Todo、直属子 Agent 与活动统计按当前 branch ID 投影；Agent 会话标题区和任务列表只展示该 Agent 自身的数据，不能平铺到根会话或兄弟 Agent。
 - 桌面窗口关闭时，应用壳负责 best-effort 停止当前 workspace 内仍为 `running` 的 run，确保 provider 进程和 canonical run lifecycle 一致。
+- 会话侧栏 Direct 任务的 Agent 图标在活动态叠加向外扩展 4px 的 2px 旋转环（外径 24px）；旋转环轨道与亮色段统一使用 `gold-running` 运行态语义色，保证深色和浅色主题都有足够对比度，不使用低对比度的通用 `primary` 色。
 
 ---
 

@@ -54,6 +54,7 @@ import type {
   MetricsSettingsVm,
   WorkflowDsl,
   ConversationAttemptLifecycleVm,
+  ConversationTaskActivityVm,
   WorkflowTemplateStore,
   WorkflowVm,
   FeedbackInput,
@@ -90,6 +91,7 @@ export interface AcpSessionUpdatedEventVm {
   session?: AcpSessionVm | null;
   event?: AcpUiEventVm | null;
   lifecycle?: ConversationAttemptLifecycleVm | null;
+  activity?: ConversationTaskActivityVm | null;
 }
 
 export interface ConversationRunStateUpdatedEventVm {

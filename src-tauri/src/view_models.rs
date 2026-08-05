@@ -5188,7 +5188,7 @@ fn paginate_timeline(
     let selected_blocks = if let Some(cursor) = after_seq {
         semantic_blocks
             .iter()
-            .filter(|block| block.oldest_seq > cursor)
+            .filter(|block| block.newest_seq > cursor)
             .take(limit)
             .cloned()
             .collect::<Vec<_>>()
@@ -10081,6 +10081,36 @@ mod tests {
         assert_eq!(r.events[0].content.as_deref(), Some("message 70"));
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn paginate_after_seq_includes_a_cumulative_block_extended_past_the_cursor() {
+        let mut cumulative = text_event_at(1_000);
+        cumulative.id = "assistant-message-1".to_string();
+        cumulative.seq = 20;
+        cumulative.started_seq = Some(2);
+        cumulative.ended_seq = Some(20);
+        cumulative.content = Some("检查已经完成，准备调用工具".to_string());
+
+        let scan = paginate_timeline(
+            camino::Utf8Path::new("acp.timeline.jsonl"),
+            std::slice::from_ref(&cumulative),
+            20,
+            Some(0),
+            &HashMap::new(),
+            None,
+            None,
+            true,
+            Some(10),
+            None,
+            30,
+        )
+        .unwrap();
+
+        assert_eq!(scan.events.len(), 1);
+        assert_eq!(scan.events[0].id, "assistant-message-1");
+        assert_eq!(scan.events[0].ended_seq, Some(20));
+        assert_eq!(scan.event_page.newest_seq, Some(20));
     }
 
     #[test]

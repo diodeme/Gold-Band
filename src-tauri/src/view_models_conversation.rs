@@ -483,16 +483,7 @@ fn conversation_task_activity(
     latest_run: Option<&ConversationRunSummaryVm>,
 ) -> Option<ConversationTaskActivityVm> {
     if let Some(activity) = prompt_activity_under(task_dir) {
-        return Some(ConversationTaskActivityVm {
-            phase: match activity {
-                PromptActivity::Starting => "starting",
-                PromptActivity::Accepted => "accepted",
-                PromptActivity::Running => "running",
-                PromptActivity::CancelRequested => "cancel-requested",
-            }
-            .to_string(),
-            stopping: activity == PromptActivity::CancelRequested,
-        });
+        return Some(conversation_task_activity_from_prompt(activity));
     }
     latest_run
         .filter(|run| normalize_lifecycle_code(&run.status) == "running")
@@ -500,6 +491,21 @@ fn conversation_task_activity(
             phase: "runtime-active".to_string(),
             stopping: false,
         })
+}
+
+pub(crate) fn conversation_task_activity_from_prompt(
+    activity: PromptActivity,
+) -> ConversationTaskActivityVm {
+    ConversationTaskActivityVm {
+        phase: match activity {
+            PromptActivity::Starting => "starting",
+            PromptActivity::Accepted => "accepted",
+            PromptActivity::Running => "running",
+            PromptActivity::CancelRequested => "cancel-requested",
+        }
+        .to_string(),
+        stopping: activity == PromptActivity::CancelRequested,
+    }
 }
 
 // ── Builder functions (stubs — full implementation in later phases) ──

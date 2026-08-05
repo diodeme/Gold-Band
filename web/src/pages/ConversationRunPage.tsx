@@ -471,7 +471,7 @@ function ConversationEmptySessionState({ label, active }: { label: string; activ
         {active ? (
           <span
             aria-hidden="true"
-            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary [animation-duration:900ms]"
+            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-gold-running/30 border-t-gold-running [animation-duration:900ms]"
           />
         ) : null}
         <span>{label}</span>

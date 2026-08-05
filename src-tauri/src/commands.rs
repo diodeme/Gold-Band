@@ -63,7 +63,8 @@ use crate::view_models::{
     task_detail_vm, task_list_vm, workflow_vm,
 };
 use crate::view_models_conversation::{
-    ConversationAttemptLifecycleVm, conversation_attempt_lifecycle_vm,
+    ConversationAttemptLifecycleVm, ConversationTaskActivityVm, conversation_attempt_lifecycle_vm,
+    conversation_task_activity_from_prompt,
 };
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
@@ -444,6 +445,7 @@ struct AcpSessionUpdatedEventVm {
     session: Option<AcpSessionVm>,
     event: Option<AcpUiEvent>,
     lifecycle: Option<ConversationAttemptLifecycleVm>,
+    activity: Option<ConversationTaskActivityVm>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1636,6 +1638,7 @@ pub(crate) fn acp_live_update_emitter(
         compact_live_conversation_event(&mut event);
         emit_acp_event_update(
             &app_handle,
+            notification_app.as_ref(),
             project_id.clone(),
             &context.task_id,
             &context.run_id,
@@ -1914,6 +1917,16 @@ fn emit_acp_session_update(
     outer_attempt_id: Option<String>,
     session: Option<AcpSessionVm>,
 ) {
+    let activity = conversation_prompt_activity_vm(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id.as_deref(),
+        outer_attempt_id.as_deref(),
+    );
     emit_acp_update(
         app_handle,
         Some(app),
@@ -1927,11 +1940,13 @@ fn emit_acp_session_update(
         outer_attempt_id,
         session,
         None,
+        activity,
     );
 }
 
 fn emit_acp_event_update(
     app_handle: &AppHandle,
+    activity_app: Option<&App>,
     project_id: Option<String>,
     task_id: &str,
     run_id: &str,
@@ -1942,6 +1957,18 @@ fn emit_acp_event_update(
     outer_attempt_id: Option<String>,
     event: AcpUiEvent,
 ) {
+    let activity = activity_app.and_then(|app| {
+        conversation_prompt_activity_vm(
+            app,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            outer_node_id.as_deref(),
+            outer_attempt_id.as_deref(),
+        )
+    });
     emit_acp_update(
         app_handle,
         None,
@@ -1955,7 +1982,32 @@ fn emit_acp_event_update(
         outer_attempt_id,
         None,
         Some(event),
+        activity,
     );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn conversation_prompt_activity_vm(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<&str>,
+    outer_attempt_id: Option<&str>,
+) -> Option<ConversationTaskActivityVm> {
+    let attempt_dir = resolve_acp_attempt_dir(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    client::prompt_activity(&attempt_dir).map(conversation_task_activity_from_prompt)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1972,6 +2024,7 @@ fn emit_acp_update(
     outer_attempt_id: Option<String>,
     session: Option<AcpSessionVm>,
     event: Option<AcpUiEvent>,
+    activity: Option<ConversationTaskActivityVm>,
 ) {
     let branch_id = event
         .as_ref()
@@ -2004,6 +2057,7 @@ fn emit_acp_update(
             session,
             event,
             lifecycle,
+            activity,
         },
     );
 }
@@ -5124,6 +5178,50 @@ mod tests {
         });
 
         assert_ne!(worker_thread, caller_thread);
+    }
+
+    #[test]
+    fn acp_session_update_serializes_lightweight_prompt_activity_and_terminal_clear() {
+        let active = AcpSessionUpdatedEventVm {
+            branch_id: None,
+            project_id: Some("project-a".to_string()),
+            task_id: "task-a".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "direct-agent".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+            session: None,
+            event: None,
+            lifecycle: None,
+            activity: Some(conversation_task_activity_from_prompt(
+                client::PromptActivity::Running,
+            )),
+        };
+        let active_json = serde_json::to_value(active).unwrap();
+        assert_eq!(
+            active_json["activity"],
+            serde_json::json!({ "phase": "running", "stopping": false })
+        );
+        assert!(active_json["lifecycle"].is_null());
+
+        let terminal = AcpSessionUpdatedEventVm {
+            branch_id: None,
+            project_id: Some("project-a".to_string()),
+            task_id: "task-a".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "direct-agent".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+            session: None,
+            event: None,
+            lifecycle: None,
+            activity: None,
+        };
+        assert!(serde_json::to_value(terminal).unwrap()["activity"].is_null());
     }
 
     #[test]

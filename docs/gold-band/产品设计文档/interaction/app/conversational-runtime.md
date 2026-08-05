@@ -309,7 +309,7 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - 新 UI 侧边栏的 Workflow/AUTO task 只要存在 run，就必须展示 run 子列表；只有一个 run 时也展示 `run-001` 行，确保右键停止菜单始终挂在具体 run 行上，而不是回退到 task 行。Direct task 不展示 run 子列表，停止当前回复继续使用会话 composer 内的统一停止入口。
 - 新 UI 侧边栏的置顶区与普通工作区是两个独立的列表区域；同一会话同时出现在两处时，run 子列表开合状态必须按区域隔离。置顶区内部一次只展开一个会话实例，普通工作区内部一次只展开一个会话实例，点击其中一区不得联动展开另一区的同一 task。
 - 新 UI 侧边栏的选中高亮同样按区域隔离；同一会话同时出现在置顶区与普通工作区时，只高亮用户最后交互的那个区域实例，另一处保持普通展示，避免用户误判两处列表被同步选中。
-- 停止期间会话窗口显示全局“正在停止”遮罩，停止正常交互与流式观感；后端只合并已经进入 ACP runtime channel 的事件，不再等待额外文件信号。命令返回后前端按后端 lifecycle 和最终 snapshot 对齐已确认消息。侧边栏 run 级“停止”点击后也必须立即关闭菜单并展示页面级“正在停止当前运行”遮罩；遮罩不只跟随 `pause_run` 命令返回，而是等当前 run VM 刷新确认 run 非 running、active sessions 清空且选中 ACP session 已 terminal 后再消失，避免用户误以为操作没有生效。
+- 停止反馈只保留在 composer 内：停止按钮进入 pending/禁用态，状态行显示“停止中”，输入按 canonical composer lifecycle 锁定；不得用全局或页面级遮罩覆盖会话消息区。`stop_active_session` / `pause_run` 已采用快速 accepted 控制面，页面继续展示原有消息和实时收敛过程，后台 session/run/sidebar 校准不阻塞阅读，也不因短暂遮罩挂载产生闪屏。侧边栏 run 级“停止”仍须立即关闭菜单并发起一次请求，重复提交由命令 pending 与请求版本隔离处理。
 - 关闭客户端和启动时崩溃恢复与用户停止共享同一 interruption 语义：所有仍为 running 的 run、当前 node 和 AI-DYNAMIC descendants 都收敛为 `paused + process-interrupted`。`provider.pid` 不参与业务状态判断，只能作为 adapter process metadata 用于诊断和 orphan cleanup。
 - 停止请求一旦落盘，迟到的普通 ACP success response 不能写 success artifact，也不能驱动 workflow 跳到下一节点；runtime 必须在 provider 返回后重新确认当前 attempt 仍是 running/current，确认已暂停则直接停止推进。唯一例外是 AI-DYNAMIC worker 已经返回完整且合法的 `dynamic-node-completion`：这属于业务结果已完成但 stop 先被 ACP 观察到的竞态，应按完成优先接受并继续 graph 推进；非法/不完整 completion 不进入该例外。
 - runtime 异常、agent/provider 异常与 workflow DSL 无效必须分开提示：只有 `workflowValid=false` 或明确的 workflow validation error 才展示“修改/修复工作流”入口；`runtime-abnormal` 表示异常但可继续，恢复输入框并保留异常提示；provider/model/catalog/workspace 等 manual 可恢复异常也归入 `runtime-abnormal`；`error-blocked`、session failure、session killed 等不可继续运行期异常只提示查看错误原因，不默认引导用户修改工作流。
@@ -429,6 +429,9 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - session runtime 使用 foreground lease、idle TTL 与 LRU 有界保留；active prompt、permission/elicitation 处理中和前台 lease 内 session 不参与驱逐。会话详情页按后端返回的 renew interval 续租，页面关闭后自然停止续租。
 - `acp.timeline.jsonl` 是 UI canonical timeline，不是原始传输审计。所有 upsert 先合并既有 canonical item，再计算语义指纹；仅 replay 的 `seq/timestamp` 变化不落盘，内容、状态、工具结果或 history placement 变化才追加 revision。
 - timeline 达到配置化大小、patch/unique ratio 阈值，或读取旧文件时发现同一稳定 ID 存在语义完全相同的重复 revision 后，必须在文件锁内加载 canonical projection，并通过原子文件替换压缩为每个稳定 ID 一条 item。首次 `seq/timestamp/startedSeq` 和 history placement 保持不变；既有重复 replay 在下次打开 timeline 时自动收敛，`acp.raw.jsonl` 继续保存原始到达顺序并沿用独立滚动策略。
+- 会话详情恢复必须使用 snapshot/live 水位交接，不能把一次 ready snapshot 当作“已追到最新”。全局 ACP 事件路由在页面卸载期间按 attempt + branch 保留有界 latest-wins 交接缓冲；同一稳定事件只保留最新引用，并同时受 branch 数、单 branch 事件数、单事件估算字节、单 branch 字节和全局字节预算约束。超限时只保留 `headSeq + requiresCatchUp`，不得缓存完整 timeline 或触发非当前页面 React 渲染。页面重挂载先确认全局订阅就绪，再合并快照、交接事件，并在存在缺口时使用 `afterSeq` 增量追平；只有快照覆盖稳定 generation 后才能回收缓冲。
+- timeline 增量游标表示“客户端已观察到的最新 revision 位置”。`afterSeq` 必须返回 `newestSeq > cursor` 的语义块，而不是只返回 `startedSeq > cursor` 的新块；否则从 seq 2 开始、更新到 seq 20 的累计 text/tool block 会被错误遗漏。快照、回放和 live 合并必须按稳定事件身份保持单调，旧快照不得覆盖更高 `endedSeq` 的正文或状态。
+- Markdown 流式展示由事件来源而非整个 session active 状态决定。快照、缓存恢复和水位补偿回放全部静态完整展示；只有本次页面完成水位交接后收到、且位于当前用户 prompt 之后的 live `textDelta/thoughtDelta` 才拥有唯一 streaming target。新的 user/tool/plan/permission/terminal 边界到达时必须立即结算前置 Markdown，不得出现工具已经展示而前置文本仍停留在打字机前缀，也不得在 completed run follow-up 重挂载后重播上一轮回复。
 - Direct、Workflow、AUTO、runtime continue/repair 与 AI-DYNAMIC leaf 共享同一 dispatcher/registry 语义，不允许重新引入 Direct 专用的长连接旁路。
 
 ## ACP Attempt Token 累计契约
@@ -474,6 +477,7 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - 会话之间的导航必须按完整 `projectId + taskId + runId` 身份作为一次呈现事务。用户选中目标后，当前聊天、composer 与右侧工作区继续共同消费旧会话 scope；目标 `ConversationRunVm` 与首屏最近的文件变更清单在后台准备完成后，才在同一次 React 提交中切换聊天与右栏 scope。不得先恢复目标右栏再保留旧消息，也不得把目标消息与旧右栏组合成可见中间帧。
 - 导航请求使用单调递增 request id；快速连续选择时只有最新请求且返回快照完整匹配目标身份才能提交，较慢的旧请求即使最后返回也必须丢弃。目标会话的实时订阅在首轮导航提交后才启动，避免 live refresh 绕过准备边界提前替换当前页面。
 - 文件变更详情继续通过独立受控接口读取，不扩充 Conversation 主 DTO。切换事务只并行预取当前 selected branch 时间线尾部最近 12 个 change set，并写入 96 项有界 LRU；`TurnFileChangesCard` 首次挂载同步读取该缓存，命中时首帧直接展示最终预览行。预取失败不阻断会话导航，卡片回到稳定占位与原接口错误处理。
+
 - 每个可见 prompt 使用稳定 `turnId/promptId`；hidden repair 继承最近可见 turn，不生成第二张用户可见文件卡。完成、失败和取消都会结算已经捕获的变化。
 - 文件变化的唯一事实源是当前 prompt 生命周期内 ACP `toolCall/toolCallUpdate` 的标准 `content[type=diff]`。运行时不扫描目录、不读取 live 文件、不调用 Git，也不按 write/edit/shell 等工具名猜测。
 - 同一个 `toolCallId + path` 的多次 update 是同一工具操作的流式修订，必须先取最后一个 event revision，不能误当成顺序 mutation；不同 tool call 才按 `eventSeq + contentIndex` 折叠。相邻 hash 不连续时保留证据并标记 partial，最终恢复原版本时不展示。

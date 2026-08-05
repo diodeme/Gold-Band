@@ -186,7 +186,10 @@ import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { getRuntimeApi } from "@/api/client";
 import { isTauriRuntime } from "@/api/shared";
 import {
+  acknowledgeConversationBranchReplay,
   conversationEventMatchesAttempt,
+  ensureConversationEventRouterStarted,
+  readConversationBranchReplaySnapshot,
   subscribeConversationEvents,
   useConversationBranchLiveSnapshot,
 } from "@/lib/conversation-event-router";
@@ -379,8 +382,14 @@ const MIN_LOADED_EVENT_BUFFER_LIMIT = 30;
 const HISTORY_LOAD_THRESHOLD_PX = 240;
 const NEWER_PAGE_LOAD_THRESHOLD_PX = 240;
 const LIVE_EVENT_FLUSH_MS = 125;
+const ACP_REPLAY_CATCH_UP_DELAYS_MS = [0, 40, 120, 240] as const;
 const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
 const ACP_SESSION_LEASE_RETRY_MS = 30_000;
+
+type LiveStreamingMarkdownTarget = {
+  key: string;
+  position: number;
+};
 const CONTEXT_COMPACTION_DELAYED_AFTER_SECONDS = 120;
 
 export const ACP_SESSION_SCROLL_AREA_CLASS_NAME = goldThemedScrollbarClassName(
@@ -721,6 +730,7 @@ export function ACPChatDialog(
   const [activeTurnStartedAt, setActiveTurnStartedAt] = useState<string | null>(
     null,
   );
+  const [streamingMarkdownItemKey, setStreamingMarkdownItemKey] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [manualCheckError, setManualCheckError] = useState<string | null>(null);
@@ -788,7 +798,6 @@ export function ACPChatDialog(
   const awaitTerminalStopRef = useRef(false);
   const terminalSessionNotifiedRef = useRef(false);
   const [stopCommandPending, setStopCommandPending] = useState(false);
-  const [stopOverlayPending, setStopOverlayPending] = useState(false);
   const [runtimeStopAccepted, setRuntimeStopAccepted] = useState(false);
   const [localRuntimeLifecycle, setLocalRuntimeLifecycle] = useState<ConversationAttemptLifecycleVm | null>(null);
   const latestSessionRef = useRef<AcpSessionVm | null>(restoredSession);
@@ -801,6 +810,8 @@ export function ACPChatDialog(
   const liveUpdatesDeferredUntilRef = useRef(0);
   const liveUpdatesPausedRef = useRef(false);
   const liveBeforeReadyLogCountRef = useRef(0);
+  const liveAnimationReadyRef = useRef(false);
+  const liveStreamingTargetRef = useRef<LiveStreamingMarkdownTarget | null>(null);
   const sessionPropSyncIdentityRef = useRef(eventWindowKey);
   const sessionResetIdentityRef = useRef(eventWindowKey);
   const liveUpdatesPaused = Boolean(externalLiveUpdatesPaused || systemPromptOpen);
@@ -943,7 +954,6 @@ export function ACPChatDialog(
     setCancelling(false);
     setPromptCommandPending(false);
     setStopCommandPending(false);
-    setStopOverlayPending(false);
     setRuntimeStopAccepted(false);
     setAwaitingResponse(Boolean(storedPromptEvent));
     setActiveTurnPrompt(storedPromptEvent?.content?.trim() || null);
@@ -965,6 +975,9 @@ export function ACPChatDialog(
     terminalSessionNotifiedRef.current = false;
     sessionRefreshSeqRef.current += 1;
     liveBeforeReadyLogCountRef.current = 0;
+    liveAnimationReadyRef.current = false;
+    liveStreamingTargetRef.current = null;
+    setStreamingMarkdownItemKey(null);
     setCanvasMode("chat");
   }, [effectiveLoadedEventBufferLimit, eventWindowKey, sessionKey]);
 
@@ -1119,9 +1132,6 @@ export function ACPChatDialog(
   const timeline = useStableAcpTimeline(timelineProjection.timeline);
   const acpSessionActive = isSessionActiveStatus(effective?.status);
   const sessionActive = acpSessionActive || runtimeActive || Boolean(projectionLifecycle?.acp.active) || promptCommandPending;
-  const streamingMarkdownItemKey = sessionActive
-    ? latestStreamingMarkdownItemKeyFromEvents(effectiveEvents)
-    : null;
   const messageAttachmentLocator = useMemo<MessageAttachmentLocator>(
     () => ({
       projectId,
@@ -1276,6 +1286,33 @@ export function ACPChatDialog(
         : (event ?? null),
     [eventIdPrefix],
   );
+
+  const settleLiveStreamingMarkdown = useCallback(() => {
+    liveStreamingTargetRef.current = null;
+    setStreamingMarkdownItemKey(null);
+  }, []);
+
+  const observeLiveStreamingEvent = useCallback((update: AcpUiEventVm) => {
+    if (!liveAnimationReadyRef.current || update.kind === "timingUpdate") return;
+    const event = normalizeEventUpdate(update);
+    if (!event) return;
+    const target = nextLiveStreamingMarkdownTarget(
+      liveStreamingTargetRef.current,
+      event,
+      latestUserPromptPosition(loadedEventsRef.current),
+    );
+    if (target === liveStreamingTargetRef.current) return;
+    if (!target) {
+      settleLiveStreamingMarkdown();
+      return;
+    }
+    liveStreamingTargetRef.current = target;
+    setStreamingMarkdownItemKey(target.key);
+  }, [normalizeEventUpdate, settleLiveStreamingMarkdown]);
+
+  useEffect(() => {
+    if (!sessionActive) settleLiveStreamingMarkdown();
+  }, [sessionActive, settleLiveStreamingMarkdown]);
 
   const applySessionUpdate = useCallback((updated: AcpSessionVm | null, source = "session-update") => {
     const incoming = normalizeSessionUpdate(updated);
@@ -1804,6 +1841,7 @@ export function ACPChatDialog(
               current: summarizeAcpSessionReady(latest),
             });
           }
+          observeLiveStreamingEvent(event.event);
           enqueueLiveEventUpdate(event.event);
         } else {
           flushOrSchedulePendingLiveEvents(true);
@@ -1841,14 +1879,20 @@ export function ACPChatDialog(
               };
             }
           }
+          if (incoming && isSessionTerminalStatus(incoming.status)) {
+            settleLiveStreamingMarkdown();
+          }
           applySessionUpdate(incoming ?? null, "subscription-session");
         }
       });
+      await ensureConversationEventRouterStarted();
+      if (!active || sessionRefreshSeqRef.current !== refreshSeq) return;
       logAcpSessionReadyLifecycle("subscription-listening", componentInstanceId, sessionIdentity, {
         refreshSeq,
       });
       let retryAttempt = 0;
       let lastLoadError: unknown = null;
+      let snapshotHeadSeq = 0;
       while (active && sessionRefreshSeqRef.current === refreshSeq) {
         const requestTraceId = `${effectTraceId}:request-${retryAttempt + 1}`;
         const requestStartedAt = performance.now();
@@ -1894,6 +1938,7 @@ export function ACPChatDialog(
             lastLoadError = null;
             setSessionLoadError(null);
             applySessionUpdate(updated, "initial-fetch");
+            snapshotHeadSeq = Math.max(snapshotHeadSeq, acpSessionSnapshotHeadSeq(updated));
             if (isAcpSessionReadyForInitialDisplay(updated)) {
               break;
             }
@@ -1913,6 +1958,53 @@ export function ACPChatDialog(
         if (delay === null) break;
         retryAttempt += 1;
         await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+      if (active && sessionRefreshSeqRef.current === refreshSeq) {
+        let replay = readConversationBranchReplaySnapshot(branchLocator, branchId);
+        if (replay.events.length > 0) applyEventUpdates(replay.events);
+
+        if (replay.requiresCatchUp && snapshotHeadSeq < replay.headSeq) {
+          for (const delayMs of ACP_REPLAY_CATCH_UP_DELAYS_MS) {
+            if (!active || sessionRefreshSeqRef.current !== refreshSeq) break;
+            if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+            const delta = await getAcpSession(
+              projectId,
+              taskId,
+              runId,
+              roundId,
+              nodeId,
+              attemptId,
+              {
+                branchId,
+                afterSeq: snapshotHeadSeq,
+                pageSize: effectiveEventPageSize,
+                eventLimit: effectiveEventPageSize,
+              },
+              latestSessionRef.current,
+              outerNodeId,
+              outerAttemptId,
+            ).catch(() => null);
+            if (!active || sessionRefreshSeqRef.current !== refreshSeq) break;
+            if (delta) {
+              applySessionUpdate(delta, "replay-gap-catch-up");
+              snapshotHeadSeq = Math.max(snapshotHeadSeq, acpSessionSnapshotHeadSeq(delta));
+            }
+            replay = readConversationBranchReplaySnapshot(branchLocator, branchId);
+            if (replay.events.length > 0) applyEventUpdates(replay.events);
+            if (snapshotHeadSeq >= replay.headSeq) break;
+          }
+        }
+
+        replay = readConversationBranchReplaySnapshot(branchLocator, branchId);
+        if (snapshotHeadSeq >= replay.headSeq) {
+          acknowledgeConversationBranchReplay(
+            branchLocator,
+            branchId,
+            snapshotHeadSeq,
+            replay.generation,
+          );
+        }
+        liveAnimationReadyRef.current = true;
       }
       if (active && sessionRefreshSeqRef.current === refreshSeq) {
         if (lastLoadError) setSessionLoadError(displayAppError(t, lastLoadError));
@@ -1938,6 +2030,7 @@ export function ACPChatDialog(
     };
   }, [
     applySessionUpdate,
+    applyEventUpdates,
     attemptId,
     branchId,
     enqueueLiveEventUpdate,
@@ -1946,10 +2039,12 @@ export function ACPChatDialog(
     flushPendingLiveEvents,
     flushOrSchedulePendingLiveEvents,
     nodeId,
+    observeLiveStreamingEvent,
     outerAttemptId,
     outerNodeId,
     roundId,
     runId,
+    settleLiveStreamingMarkdown,
     sessionInitializationFailed,
     sessionInitializationInterrupted,
     taskId,
@@ -2369,7 +2464,6 @@ export function ACPChatDialog(
     cancelRequestedRef.current = true;
     setCancelling(true);
     setStopCommandPending(true);
-    setStopOverlayPending(true);
     setCancelError(null);
     setAwaitingResponse(true);
     try {
@@ -2432,8 +2526,6 @@ export function ACPChatDialog(
       setCancelling(false);
       setStopCommandPending(false);
       cancelRequestedRef.current = false;
-    } finally {
-      setStopOverlayPending(false);
     }
   };
 
@@ -2879,7 +2971,6 @@ export function ACPChatDialog(
             {t("acp.returnToLatest")}
           </Button>
         ) : null}
-        {stopOverlayPending ? <AcpStopOverlay /> : null}
       </div>
       {canvasMode === "chat" ? (
         <div className="shrink-0 bg-background/95 backdrop-blur">
@@ -3002,7 +3093,7 @@ function AcpLoadingState({ label }: { label: string }) {
       <div className="flex items-center gap-2">
         <span
           aria-hidden="true"
-          className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary [animation-duration:900ms]"
+          className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-gold-running/30 border-t-gold-running [animation-duration:900ms]"
         />
         <span>{label}</span>
       </div>
@@ -3272,18 +3363,6 @@ function AcpChatSkeleton() {
           </div>
         </div>
       ))}
-    </div>
-  );
-}
-
-function AcpStopOverlay() {
-  const { t } = useTranslation();
-  return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/70 backdrop-blur-sm">
-      <div className="flex items-center gap-2 rounded-full border bg-card/90 px-4 py-2 text-sm font-medium text-foreground shadow-lg shadow-background/30">
-        <Loader2 className="size-4 animate-spin text-primary" />
-        {t("acp.stopping")}
-      </div>
     </div>
   );
 }
@@ -3778,9 +3857,6 @@ export function ACPMessageList({
   onLayoutChange?: () => void;
 }) {
   const active = isSessionActiveStatus(sessionStatus) || sending;
-  const streamingMarkdownItemKey = active
-    ? latestStreamingMarkdownItemKey(timeline)
-    : null;
   if (timeline.length === 0) return active ? null : <EmptyAcpState />;
 
   const content = (
@@ -3789,7 +3865,7 @@ export function ACPMessageList({
         <ACPTimelineItemRenderer
           key={timelineEventKey(item)}
           event={item}
-          streamingMarkdownItemKey={streamingMarkdownItemKey}
+          streamingMarkdownItemKey={null}
         />
       ))}
     </div>
@@ -3816,7 +3892,7 @@ function AcpPendingTimelineState({ label }: { label: string }) {
       <div className="flex items-center gap-2">
         <span
           aria-hidden="true"
-          className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary [animation-duration:900ms]"
+          className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-gold-running/30 border-t-gold-running [animation-duration:900ms]"
         />
         <span className="font-medium text-foreground">{label}...</span>
       </div>
@@ -3933,7 +4009,7 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
             aria-hidden="true"
             className={cn(
               "flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold",
-              running && "border-2 border-primary/25 border-t-primary text-transparent animate-spin motion-reduce:animate-none",
+              running && "border-2 border-gold-running/30 border-t-gold-running text-transparent animate-spin motion-reduce:animate-none",
               !running && !interrupted && "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
               interrupted && "bg-destructive/10 text-destructive",
             )}
@@ -4419,7 +4495,7 @@ const AcpComposerStatus = memo(function AcpComposerStatus({
         <>
           <span
             aria-hidden="true"
-            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary [animation-duration:900ms]"
+            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-gold-running/30 border-t-gold-running [animation-duration:900ms]"
           />
           <span className="font-medium text-foreground">{label}</span>
           {kind === "sending" ? (
@@ -6006,47 +6082,40 @@ function sameTimelineEvent(left: AcpTimelineEvent, right: AcpTimelineEvent) {
   );
 }
 
-function latestStreamingMarkdownItemKey(items: AcpTimelineItem[]): string | null {
-  const candidates: AcpTimelineEvent[] = [];
-  const visit = (item: AcpTimelineItem) => {
-    if (isAgentLink(item)) {
-      visit(item.toolEvent);
-      return;
-    }
-    if (isActivityBatch(item)) {
-      item.events.forEach(visit);
-      return;
-    }
-    candidates.push(item);
-  };
-  items.forEach(visit);
-  const latest = candidates.reduce<AcpTimelineEvent | null>(
-    (current, candidate) =>
-      !current || timelineEventPosition(candidate) > timelineEventPosition(current)
-        ? candidate
-        : current,
-    null,
-  );
-  return latest && (latest.kind === "textDelta" || latest.kind === "thoughtDelta")
-    ? timelineEventKey(latest)
-    : null;
-}
-
-function latestStreamingMarkdownItemKeyFromEvents(events: AcpUiEventVm[]) {
-  let latest: AcpUiEventVm | null = null;
-  for (const event of events) {
-    if (event.kind === "timingUpdate" || isOptimisticEvent(event)) continue;
-    if (!latest || timelineEventPosition(event) > timelineEventPosition(latest)) {
-      latest = event;
-    }
-  }
-  return latest && (latest.kind === "textDelta" || latest.kind === "thoughtDelta")
-    ? `${latest.kind}-${latest.id}`
-    : null;
-}
-
 function timelineEventPosition(event: Pick<AcpUiEventVm, "seq" | "endedSeq">) {
   return event.endedSeq ?? event.seq;
+}
+
+function acpSessionSnapshotHeadSeq(session: AcpSessionVm) {
+  let headSeq = session.eventPage.newestSeq ?? 0;
+  for (const event of session.events) {
+    headSeq = Math.max(headSeq, timelineEventPosition(event));
+  }
+  return headSeq;
+}
+
+function latestUserPromptPosition(events: AcpUiEventVm[]) {
+  let position: number | null = null;
+  for (const event of events) {
+    if (!isGoldBandUserPrompt(event) || isOptimisticEvent(event)) continue;
+    position = Math.max(position ?? 0, timelineEventPosition(event));
+  }
+  return position;
+}
+
+function nextLiveStreamingMarkdownTarget(
+  current: LiveStreamingMarkdownTarget | null,
+  event: AcpUiEventVm,
+  latestPromptPosition: number | null,
+): LiveStreamingMarkdownTarget | null {
+  if (event.kind === "timingUpdate") return current;
+  const position = timelineEventPosition(event);
+  if (event.kind === "userTextDelta") return null;
+  if (event.kind === "textDelta" || event.kind === "thoughtDelta") {
+    if (latestPromptPosition != null && position <= latestPromptPosition) return null;
+    return { key: `${event.kind}-${event.id}`, position };
+  }
+  return current && position < current.position ? current : null;
 }
 
 function buildAcpTimelineProjection(
@@ -7135,8 +7204,7 @@ export {
   buildAcpTimeline,
   buildAcpTimelineProjection,
   stabilizeTimelineItems,
-  latestStreamingMarkdownItemKey,
-  latestStreamingMarkdownItemKeyFromEvents,
+  nextLiveStreamingMarkdownTarget,
   calculateSessionElapsedSeconds,
   createLiveAcpSessionShell,
   createVisibleAcpSession,

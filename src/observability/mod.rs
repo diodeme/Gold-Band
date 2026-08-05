@@ -161,6 +161,21 @@ pub struct RunEventData {
     pub details: Option<serde_json::Value>,
 }
 
+
+struct LocalTimer;
+impl tracing_subscriber::fmt::time::FormatTime for LocalTimer {
+    fn format_time(
+        &self,
+        w: &mut tracing_subscriber::fmt::format::Writer<'_>,
+    ) -> std::fmt::Result {
+        write!(
+            w,
+            "{}",
+            chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f")
+        )
+    }
+}
+
 pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig, enable_stderr_progress: bool) {
     let _ = TRACE_ID.get_or_init(trace_id_seed);
     cleanup_old_logs(paths, config.log_retention_days);
@@ -188,11 +203,13 @@ pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig, enable_stderr
             RUNTIME_LOG_ROTATED_FILES,
         )))
         .with_target(true)
+        .with_timer(LocalTimer)
         .with_filter(FilterFn::new(runtime_log_filter));
 
     let stderr_layer = fmt::layer()
         .compact()
         .with_target(false)
+        .with_timer(LocalTimer)
         .with_writer(stderr_writer)
         .with_filter(progress_filter);
 

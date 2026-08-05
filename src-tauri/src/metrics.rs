@@ -1,4 +1,4 @@
-use std::io::Write;
+﻿use std::io::Write;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -15,7 +15,7 @@ use url::Url;
 
 use crate::{channel::current_channel_config, state::DesktopState};
 
-/// Cached log path — resolved once, avoids env-var lookup + create_dir_all on every log line.
+/// Cached log path 鈥?resolved once, avoids env-var lookup + create_dir_all on every log line.
 static METRICS_LOG_PATH: OnceLock<Option<String>> = OnceLock::new();
 const HEARTBEAT_ENDPOINT_PATH: &str = "/api/client-report/heartbeat";
 const NODE_METRICS_ENDPOINT_PATH: &str = "/api/client-report/metrics/batch";
@@ -59,7 +59,7 @@ pub(crate) fn metrics_log(msg: &str) {
     let line = if line.len() as u64 > METRICS_LOG_LIMIT_BYTES {
         format!(
             "[{}] payload-too-large actualBytes={}\n",
-            chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+            chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string(),
             line.len()
         )
     } else {
@@ -69,7 +69,7 @@ pub(crate) fn metrics_log(msg: &str) {
         if metadata.len().saturating_add(line.len() as u64) > METRICS_LOG_LIMIT_BYTES {
             let reset = format!(
                 "[{}] log-reset reason=size-limit\n",
-                chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false)
+                chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string()
             );
             if let Err(error) = std::fs::write(log_path, reset) {
                 eprintln!("[metrics] failed to reset log {}: {}", log_path, error);
@@ -93,14 +93,13 @@ fn to_iso8601(ts: &str) -> String {
         return ts.to_string();
     }
     if let Some(dt) = chrono::DateTime::from_timestamp(secs, 0) {
-        let local = dt.with_timezone(&chrono::Local);
-        local.format("%Y-%m-%dT%H:%M:%S").to_string()
+        dt.with_timezone(&chrono::Local).format("%Y-%m-%dT%H:%M:%S%.3f").to_string()
     } else {
         ts.to_string()
     }
 }
 
-// ── Settings VM ──────────────────────────────────────────────────────────────
+// 鈹€鈹€ Settings VM 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -192,7 +191,7 @@ pub fn metrics_settings(config: &RuntimeConfig) -> MetricsSettingsVm {
     }
 }
 
-// ── Heartbeat ────────────────────────────────────────────────────────────────
+// 鈹€鈹€ Heartbeat 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -283,7 +282,7 @@ pub(crate) fn get_api_key(config: &RuntimeConfig) -> Option<String> {
         })
 }
 
-// ── Lifecycle Metrics ────────────────────────────────────────────────────────
+// 鈹€鈹€ Lifecycle Metrics 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 pub enum MetricsEventType {
@@ -407,7 +406,7 @@ struct MetricsEventBatch {
 }
 
 fn iso_now() -> String {
-    chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false)
+    chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string()
 }
 
 fn map_runtime_event(event: RuntimeLifecycleEvent) -> Option<MetricsEventItem> {
@@ -504,7 +503,7 @@ fn map_metrics_fact(fact: MetricsLifecycleFact, reported_at: String) -> MetricsE
         model: fact.model,
         usage: fact.usage,
         model_usages: fact.model_usages,
-        timing: fact.timing,
+        timing: fact.timing.map(|t| LifecycleTiming { started_at: to_iso8601(&t.started_at), ended_at: t.ended_at.map(|e| to_iso8601(&e)), acp_session_elapsed_ms: t.acp_session_elapsed_ms }),
         collection_state_recovered: fact.collection_state_recovered,
     }
 }

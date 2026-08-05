@@ -1,4 +1,4 @@
-mod ids;
+﻿mod ids;
 mod node_executor;
 mod notification;
 pub mod observability;
@@ -1255,6 +1255,125 @@ impl App {
         if dynamic_kind.is_none()
             && direct_conversation_agent_label(&scoped_app, &task_id).is_some()
         {
+            // Direct 模式：发 turn 指标而不是 node-attempt 指标。
+            // 首次消息和后续追问的 NodeStarted/NodeCompleted 都走这里。
+            let turn_key = format!("{0}\u{0}{1}\u{0}{2}\u{0}{3}", task_id, run_id, logical_node_id, attempt_id);
+            let turn_execution_id = if event_type == LifecycleEventType::ExecutionStarted {
+                let id = uuid::Uuid::new_v4().to_string();
+                scoped_app.begin_metrics_turn(turn_key.clone(), id.clone());
+                id
+            } else {
+                let Some(id) = scoped_app.active_metrics_turn(&turn_key) else {
+                    return;
+                };
+                id
+            };
+            let turn_snapshot_path = scoped_app
+                .paths
+                .run_dir(&task_id, &run_id)
+                .join("observability")
+                .join(&turn_execution_id)
+                .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
+            let turn_usage_snapshot = attempt_dir
+                .as_ref()
+                .map(|dir| crate::acp::events::read_attempt_metrics(
+                    &Utf8PathBuf::from(dir).join("acp.session.json"),
+                ));
+            let turn_state = scoped_app.update_observability_state(
+                &turn_execution_id,
+                turn_snapshot_path,
+                |state| {
+                    if let (Some(usage), Some(p), Some(m)) =
+                        (&turn_usage_snapshot, provider.as_ref(), model.as_ref())
+                    {
+                        let tu = TokenUsage {
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
+                            cache_read_tokens: usage.cache_read_tokens,
+                            total_tokens: usage.total_tokens,
+                        };
+                        if event_type == LifecycleEventType::ExecutionCompleted {
+                            state.record_cumulative_model_usage(
+                                p.clone(), m.clone(), tu, usage.elapsed_ms,
+                            );
+                        } else {
+                            state.set_cumulative_usage_baseline(
+                                p.clone(), tu, usage.elapsed_ms,
+                            );
+                        }
+                    }
+                    if event_type == LifecycleEventType::ExecutionStarted {
+                        state.record_started_at(started_at.clone());
+                    }
+                    state.next_revision();
+                },
+            );
+            let mut turn_fact = MetricsLifecycleFact::new(
+                event_type,
+                turn_state.event_revision,
+                ended_at.clone().unwrap_or_else(|| started_at.clone()),
+                std::env::var("USERNAME")
+                    .or_else(|_| std::env::var("USER"))
+                    .unwrap_or_else(|_| "unknown".into()),
+                scoped_app.paths.repo_root.to_string(),
+                MetricsSessionMode::Direct,
+                task_uuid.clone(),
+                ExecutionKind::Turn,
+                turn_execution_id.clone(),
+            );
+            turn_fact.attempt_id = Some(turn_execution_id.clone());
+            turn_fact.attempt_index = Some(1);
+            turn_fact.provider = provider.clone();
+            turn_fact.model = model.clone();
+            turn_fact.collection_state_recovered = turn_state.collection_state_recovered;
+            if event_type == LifecycleEventType::ExecutionCompleted {
+                if let Some(outcome_str) = &outcome {
+                    if outcome_str.eq_ignore_ascii_case("success") {
+                        turn_fact.outcome = Some(ExecutionOutcome::Completed);
+                        turn_fact.terminal_reason = Some(TerminalReason::Completed);
+                    } else if outcome_str.eq_ignore_ascii_case("killed") {
+                        turn_fact.outcome = Some(ExecutionOutcome::Cancelled);
+                        turn_fact.terminal_reason = Some(TerminalReason::ProcessKilled);
+                    } else {
+                        turn_fact.outcome = Some(ExecutionOutcome::Failed);
+                        turn_fact.terminal_reason = Some(TerminalReason::ProviderError);
+                    }
+                }
+                let usages = turn_state.model_usages();
+                let sum_tokens = |get: fn(&TokenUsage) -> Option<u64>| {
+                    usages
+                        .iter()
+                        .filter_map(|u| get(&u.usage))
+                        .fold(None, |acc, v| {
+                            Some(acc.unwrap_or(0u64).saturating_add(v))
+                        })
+                };
+                if !usages.is_empty() {
+                    turn_fact.usage = Some(TokenUsage {
+                        input_tokens: sum_tokens(|u| u.input_tokens),
+                        output_tokens: sum_tokens(|u| u.output_tokens),
+                        cache_read_tokens: sum_tokens(|u| u.cache_read_tokens),
+                        total_tokens: sum_tokens(|u| u.total_tokens),
+                    });
+                    turn_fact.model_usages = Some(usages);
+                }
+                turn_fact.timing = Some(LifecycleTiming {
+                    started_at: turn_state
+                        .started_at
+                        .clone()
+                        .unwrap_or_else(|| started_at.clone()),
+                    ended_at: ended_at.clone(),
+                    acp_session_elapsed_ms: turn_usage_snapshot.and_then(|u| u.elapsed_ms),
+                });
+                turn_fact.counters = Some(turn_state.counters.clone());
+            }
+            scoped_app
+                .lifecycle_bus
+                .emit(RuntimeLifecycleEvent::MetricsFact(turn_fact));
+            if event_type == LifecycleEventType::ExecutionCompleted {
+                scoped_app.release_observability_state(&turn_execution_id);
+                scoped_app.end_metrics_turn(&turn_key);
+            }
             return;
         }
         let execution_id = if dynamic_kind.is_some() {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   consumePendingTreeReveal,
   copyableAbsolutePath,
+  copyableRelativePath,
   shouldActivateTreeFile,
   treeOverscanCount,
   treeViewportContentHeight,
@@ -62,6 +63,10 @@ describe('workspace file tree path actions', () => {
     expect(copyableAbsolutePath('\\\\?\\D:\\repo\\README.md')).toBe('D:\\repo\\README.md');
     expect(copyableAbsolutePath('\\\\?\\UNC\\server\\share\\README.md')).toBe('\\\\server\\share\\README.md');
     expect(copyableAbsolutePath('D:\\repo\\README.md')).toBe('D:\\repo\\README.md');
+  });
+
+  it('uses portable separators for relative paths in every directory context menu', () => {
+    expect(copyableRelativePath('rounds\\round-001\\node.json')).toBe('rounds/round-001/node.json');
   });
 
   it('blocks file activation during a context-menu copy lifecycle', () => {

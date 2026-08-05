@@ -3,17 +3,13 @@ import { ChevronDown, ChevronRight, File, FileCode2, Folder, FolderOpen, LoaderC
 import { Tree, type NodeRendererProps, type TreeApi } from 'react-arborist';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuTrigger,
-} from '@/components/ui/context-menu';
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import { openWorkspacePathInFileManager } from '@/api';
 import type { WorkspaceDirectoryEntryVm } from '@/types';
 import { fileExplorerStore, useFileExplorerSnapshot, type FileTreeNode } from './file-explorer-store';
+import { WorkspaceDirectoryContextMenu } from './WorkspaceDirectoryContextMenu';
 
 interface WorkspaceFileTreeProps {
   projectId: string;
@@ -64,15 +60,8 @@ export function treeOverscanCount(viewportHeight: number, rowHeight = TREE_ROW_H
   return Math.min(96, Math.max(24, visibleRows * 2));
 }
 
-async function copyPath(value: string) {
-  if (!navigator.clipboard) throw new Error('clipboard-unavailable');
-  await navigator.clipboard.writeText(value);
-}
-
-export function copyableAbsolutePath(path: string) {
-  if (path.startsWith('\\\\?\\UNC\\')) return `\\\\${path.slice(8)}`;
-  return path.startsWith('\\\\?\\') ? path.slice(4) : path;
-}
+export { copyableAbsolutePath } from './WorkspaceDirectoryContextMenu';
+export { copyableRelativePath } from './WorkspaceDirectoryContextMenu';
 
 export function shouldActivateTreeFile(contextMenuOpen: boolean, suppressContextMenuActivation: boolean) {
   return !contextMenuOpen && !suppressContextMenuActivation;
@@ -85,7 +74,6 @@ function fileIcon(name: string) {
 }
 
 function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeNode>) {
-  const { t } = useTranslation();
   const context = useContext(TreeRowContext);
   if (!context) return null;
   const entry = node.data;
@@ -125,10 +113,6 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeNode
       <span className="min-w-0 flex-1 truncate">{entry.name}</span>
     </div>
   );
-  const copyEntryPath = (event: Event, value: string) => {
-    event.stopPropagation();
-    void copyPath(value).catch(context.onCopyFailed);
-  };
   return (
     <ContextMenu dir="ltr" onOpenChange={context.onContextMenuOpenChange}>
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
@@ -137,18 +121,7 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeNode
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
       >
-        <ContextMenuItem className="h-8 px-2 py-1 text-xs" onSelect={(event) => copyEntryPath(event, copyableAbsolutePath(entry.canonicalPath))}>
-          {t('workspace.filesPanel.copyAbsolutePath')}
-        </ContextMenuItem>
-        <ContextMenuItem className="h-8 px-2 py-1 text-xs" onSelect={(event) => copyEntryPath(event, entry.relativePath.replaceAll('\\', '/'))}>
-          {t('workspace.filesPanel.copyRelativePath')}
-        </ContextMenuItem>
-        <ContextMenuItem className="h-8 px-2 py-1 text-xs" onSelect={(event) => {
-          event.stopPropagation();
-          context.onOpenInFileManager(entry.relativePath);
-        }}>
-          {t('workspace.filesPanel.openInFileManager')}
-        </ContextMenuItem>
+        <WorkspaceDirectoryContextMenu canonicalPath={entry.canonicalPath} relativePath={entry.relativePath} onCopyFailed={context.onCopyFailed} onOpenInFileManager={context.onOpenInFileManager} />
       </ContextMenuContent>
     </ContextMenu>
   );
@@ -292,13 +265,8 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
                       <span className="min-w-0"><span className="block truncate text-foreground">{entry.name}</span><span className="block truncate text-[10px]">{entry.relativePath}</span></span>
                     </button>
                   </ContextMenuTrigger>
-                  <ContextMenuContent className="w-40 min-w-40 p-1">
-                    <ContextMenuItem className="h-8 px-2 py-1 text-xs" onSelect={(event) => {
-                      event.stopPropagation();
-                      onOpenInFileManager(entry.relativePath);
-                    }}>
-                      {t('workspace.filesPanel.openInFileManager')}
-                    </ContextMenuItem>
+                  <ContextMenuContent className="w-40 min-w-40 p-1" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+                    <WorkspaceDirectoryContextMenu canonicalPath={entry.canonicalPath} relativePath={entry.relativePath} onCopyFailed={onCopyFailed} onOpenInFileManager={onOpenInFileManager} />
                   </ContextMenuContent>
                 </ContextMenu>
               );

@@ -154,13 +154,6 @@ pub(crate) fn endpoint_from_base_url(base_url: &str, path: &str) -> Option<Strin
 
 pub fn metrics_settings(config: &RuntimeConfig) -> MetricsSettingsVm {
     let channel_config = current_channel_config();
-    eprintln!(
-        "[metrics] channel raw: ch_enabled={} ch_locked={} ch_base_url={} ch_apikey_empty={}",
-        channel_config.metrics_enabled,
-        channel_config.metrics_toggle_locked,
-        channel_config.metrics_base_url,
-        channel_config.metrics_api_key.is_empty(),
-    );
     let enabled = config.desktop_metrics_enabled || channel_config.metrics_enabled;
     let metrics_base_url = metrics_base_url(config);
     let heartbeat_endpoint = metrics_base_url

@@ -35,7 +35,6 @@ interface RunModeManagementPageProps {
   onProjectChange: (projectId: string) => void;
   onSave: (mode: ConversationRunModeVm) => void | Promise<void>;
   onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
-  onBack: () => void;
 }
 
 type RunModeManagementTab = 'auto' | 'workflow';
@@ -195,7 +194,6 @@ export function RunModeManagementPage({
   onProjectChange,
   onSave,
   onWorkflowTemplatesChange,
-  onBack,
 }: RunModeManagementPageProps) {
   const { t } = useTranslation();
   const [mode, setMode] = useState<RunModeManagementTab>(runMode.mode === 'auto' ? 'auto' : 'workflow');
@@ -741,8 +739,6 @@ export function RunModeManagementPage({
     <Page flush className="flex flex-col">
       <PageHeader
         title={<span className="text-title">{t('runMode.title')}</span>}
-        subtitle={mode === 'auto' ? t('runMode.autoDescription') : t('runMode.workflowSection')}
-        actions={<Button variant="outline" size="sm" onClick={onBack}>{t('common.back')}</Button>}
       />
 
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">

@@ -1097,6 +1097,9 @@ const resources = {
         sessionElapsed: "会话累计 {{duration}}",
         timingSession: "会话累计",
         sessionFailed: "ACP 会话失败",
+        retrying: "正在重试 {{current}}/{{total}} 次",
+        retryFailed: "重试 {{count}} 次后失败",
+        retryStopped: "重试 {{count}} 次后已停止",
         sessionInterrupted: "会话发起中断，请重跑该任务",
         missingSessionReason:
           "本次任务没有成功建立 ACP 会话。请检查 Claude ACP adapter 是否可启动、npx 是否能加载 @agentclientprotocol/claude-agent-acp，以及 Claude 认证是否有效。",
@@ -2628,6 +2631,9 @@ const resources = {
         sessionElapsed: "Session {{duration}}",
         timingSession: "Session",
         sessionFailed: "ACP session failed",
+        retrying: "Retrying {{current}}/{{total}}",
+        retryFailed: "Failed after {{count}} retries",
+        retryStopped: "Stopped after {{count}} retries",
         sessionInterrupted: "Session launch was interrupted. Rerun the task.",
         missingSessionReason:
           "This task did not establish an ACP session. Check that the Claude ACP adapter can start, npx can load @agentclientprotocol/claude-agent-acp, and Claude authentication is valid.",

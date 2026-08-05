@@ -4799,13 +4799,15 @@ fn execute_dynamic_worker(
     let mut session_mode = prompt_state.session_mode;
     let mut continue_ref = prompt_state.continue_ref;
     let mut resume_prompt = prompt_state.resume_prompt;
-    let mut resume_prompt_id = prompt_state.resume_prompt_id;
+    let resume_prompt_id = prompt_state.resume_prompt_id;
+    let logical_prompt_id = logical_prompt_id(resume_prompt_id.clone());
     let mut resume_prompt_visibility = PromptVisibility::Visible;
     let mut user_prompt_render_mode = prompt_state.user_prompt_render_mode;
     let resume_input_attachment_paths = prompt_state.input_attachment_paths;
-    let mut resume_model_override = prompt_state.model_override;
-    let mut resume_permission_mode_override = prompt_state.permission_mode_override;
+    let resume_model_override = prompt_state.model_override;
+    let resume_permission_mode_override = prompt_state.permission_mode_override;
     let mut proposals = Vec::new();
+    let mut auto_retry_attempts = 0;
 
     loop {
         let live_update_context = dynamic_acp_live_event_context(ctx, &node.id, &attempt_id);
@@ -4852,13 +4854,13 @@ fn execute_dynamic_worker(
             Some(output_contract),
             session_mode,
             continue_ref.clone(),
-            resume_prompt.take(),
-            resume_prompt_id.take(),
+            resume_prompt.clone(),
+            Some(logical_prompt_id.clone()),
             resume_prompt_visibility,
             user_prompt_render_mode,
             resume_input_attachment_paths.clone(),
-            resume_model_override.take(),
-            resume_permission_mode_override.take(),
+            resume_model_override.clone(),
+            resume_permission_mode_override.clone(),
         )
         .with_context(|| {
             format!(
@@ -4910,13 +4912,38 @@ fn execute_dynamic_worker(
             )
         })?;
         let provider_resolve_elapsed_ms = elapsed_ms(provider_started_at);
-        let result = provider
+        let result = match provider
             .run_worker_with_callbacks(
                 invocation,
                 live_update.as_ref().map(|callback| callback as _),
                 session_update.as_ref().map(|callback| callback as _),
             )
-            .with_context(|| format!("provider `{}` failed to run `{}`", provider_id, node.id))?;
+            .with_context(|| format!("provider `{}` failed to run `{}`", provider_id, node.id))
+        {
+            Ok(result) => result,
+            Err(error) => {
+                let info = normalize_runtime_error(&error);
+                if let Some(delay_ms) = auto_retry_delay_ms(&info, auto_retry_attempts) {
+                    auto_retry_attempts += 1;
+                    append_dynamic_event(
+                        ctx,
+                        "dynamic_runtime_auto_retry",
+                        serde_json::json!({
+                            "nodeId": node.id,
+                            "attemptId": attempt_id,
+                            "promptId": logical_prompt_id,
+                            "retryAttempt": auto_retry_attempts,
+                            "maxAttempts": info.retry_policy.as_ref().map(|policy| policy.max_attempts),
+                            "delayMs": delay_ms,
+                            "runtimeError": info,
+                        }),
+                    )?;
+                    thread::sleep(Duration::from_millis(delay_ms));
+                    continue;
+                }
+                return Err(error);
+            }
+        };
         dynamic_event_best_effort(
             ctx,
             "dynamic_worker_provider_end",
@@ -4931,6 +4958,26 @@ fn execute_dynamic_worker(
                 "repairPromptCount": proposal_repair_prompts,
             }),
         );
+        if let Some(info) = result.runtime_error.as_ref() {
+            if let Some(delay_ms) = auto_retry_delay_ms(info, auto_retry_attempts) {
+                auto_retry_attempts += 1;
+                append_dynamic_event(
+                    ctx,
+                    "dynamic_runtime_auto_retry",
+                    serde_json::json!({
+                        "nodeId": node.id,
+                        "attemptId": attempt_id,
+                        "promptId": logical_prompt_id,
+                        "retryAttempt": auto_retry_attempts,
+                        "maxAttempts": info.retry_policy.as_ref().map(|policy| policy.max_attempts),
+                        "delayMs": delay_ms,
+                        "runtimeError": info,
+                    }),
+                )?;
+                thread::sleep(Duration::from_millis(delay_ms));
+                continue;
+            }
+        }
         let provider_status = result.status;
         let interrupted_output_artifact = interrupted_dynamic_output_artifact_candidate(&result);
         finalize_dynamic_worker_result(ctx, &mut node, &attempt_id, result)?;
@@ -9914,6 +9961,14 @@ fn auto_retry_delay_ms(info: &RuntimeErrorInfo, completed_retries: u32) -> Optio
         .or_else(|| policy.backoff_ms.last().copied())
 }
 
+/// One user-visible turn may recreate its provider runtime many times. Keep
+/// its identity in the scheduler, where that retry lifecycle actually lives.
+fn logical_prompt_id(existing: Option<String>) -> String {
+    existing
+        .filter(|prompt_id| !prompt_id.trim().is_empty())
+        .unwrap_or_else(|| format!("runtime-turn-{}", uuid::Uuid::new_v4().simple()))
+}
+
 fn pause_active_dynamic_leaves(graph: &mut DynamicGraphState, pause_reason: PauseReason) {
     for node in &mut graph.nodes {
         if dynamic_leaf_is_active(node.status) && node.outcome.is_none() {
@@ -10110,6 +10165,11 @@ fn drive_from_node_with_initial_session(
         if matches!(current_node_dsl, NodeDsl::Worker(_)) {
             setup_node_environment(app, task_id, &run.id, &round.id, &node, &ctx)?;
         }
+        // A provider invocation may be rebuilt for an automatic retry.  The
+        // user turn does not change when that happens, so allocate its
+        // identity at the orchestration boundary rather than inside an ACP
+        // runtime (which is deliberately short lived).
+        let logical_prompt_id = logical_prompt_id(resume_prompt_id.clone());
         let mut auto_retry_attempts = 0;
         let execution_result = loop {
             let result = match current_node_dsl {
@@ -10128,12 +10188,12 @@ fn drive_from_node_with_initial_session(
                             session_mode,
                             continue_ref.as_ref().cloned(),
                             resume_prompt.clone(),
-                            resume_prompt_id.clone(),
+                            Some(logical_prompt_id.clone()),
                             resume_prompt_visibility,
                             user_prompt_render_mode,
                             resume_input_attachment_paths.clone(),
-                            model_override.take(),
-                            permission_mode_override.take(),
+                            model_override.clone(),
+                            permission_mode_override.clone(),
                         )
                     }),
                 NodeDsl::AiDynamic(dynamic) => execute_ai_dynamic_node(
@@ -10599,6 +10659,17 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
+
+    #[test]
+    fn logical_prompt_id_preserves_the_same_turn_across_runtime_retries() {
+        let original = logical_prompt_id(None);
+        assert!(original.starts_with("runtime-turn-"));
+        assert_eq!(logical_prompt_id(Some(original.clone())), original);
+        assert_eq!(
+            logical_prompt_id(Some("user-turn-001".to_string())),
+            "user-turn-001"
+        );
+    }
 
     fn git(cwd: &Utf8Path, args: &[&str]) {
         let output = git_output(cwd, args).expect("git command should run");

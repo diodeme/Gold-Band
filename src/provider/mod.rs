@@ -1223,11 +1223,10 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     Ok(PromptBundle {
         system_prompt,
         user_prompt,
-        prompt_id: if is_continue {
-            req.resume_prompt_id.clone()
-        } else {
-            None
-        },
+        // Prompt identity is an orchestration concern, independent of ACP
+        // session mode.  In particular, an automatic retry may start a new
+        // ACP session while remaining the same visible user turn.
+        prompt_id: req.resume_prompt_id.clone(),
         visibility: if is_continue {
             req.resume_prompt_visibility
         } else {
@@ -2090,6 +2089,11 @@ mod tests {
 
         let prompt = render_prompt_bundle(&req).unwrap();
         assert!(!prompt.system_prompt.contains("Output contract"));
+        assert_eq!(prompt.prompt_id, None);
+
+        req.resume_prompt_id = Some("logical-turn-001".to_string());
+        let prompt = render_prompt_bundle(&req).unwrap();
+        assert_eq!(prompt.prompt_id.as_deref(), Some("logical-turn-001"));
 
         req.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
         req.requirement_text = Some("  original direct prompt\n".to_string());

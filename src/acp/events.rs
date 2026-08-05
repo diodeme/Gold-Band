@@ -57,6 +57,11 @@ pub struct AcpSessionMetadata {
     pub config_option_overrides: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt_append: Option<String>,
+    /// Retry lifecycle of the latest logical prompt. Unlike session activity,
+    /// this survives terminal session status so a rebuilt provider runtime can
+    /// continue the same user turn without scanning the timeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_retry: Option<AcpPromptRetryState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -89,6 +94,14 @@ pub struct AcpSessionMetadata {
     pub timing: Option<AcpSessionTiming>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Durable retry identity for the latest logical prompt turn.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpPromptRetryState {
+    pub prompt_id: String,
+    pub retry_attempt: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -382,7 +382,8 @@ const MIN_LOADED_EVENT_BUFFER_LIMIT = 30;
 const HISTORY_LOAD_THRESHOLD_PX = 240;
 const NEWER_PAGE_LOAD_THRESHOLD_PX = 240;
 const LIVE_EVENT_FLUSH_MS = 125;
-const ACP_REPLAY_CATCH_UP_DELAYS_MS = [0, 40, 120, 240] as const;
+const ACP_REPLAY_CATCH_UP_INITIAL_DELAY_MS = 40;
+const ACP_REPLAY_CATCH_UP_MAX_DELAY_MS = 2_000;
 const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
 const ACP_SESSION_LEASE_RETRY_MS = 30_000;
 
@@ -1795,6 +1796,7 @@ export function ACPChatDialog(
       return;
     }
     let active = true;
+    const replayCatchUpAbortController = new AbortController();
     let stopListening: (() => void) | null = null;
     const refreshSeq = sessionRefreshSeqRef.current + 1;
     sessionRefreshSeqRef.current = refreshSeq;
@@ -1961,50 +1963,78 @@ export function ACPChatDialog(
       }
       if (active && sessionRefreshSeqRef.current === refreshSeq) {
         let replay = readConversationBranchReplaySnapshot(branchLocator, branchId);
-        if (replay.events.length > 0) applyEventUpdates(replay.events);
+        let appliedReplayGeneration = -1;
+        let catchUpRetryAttempt = 0;
+        let requiredCatchUpHeadSeq = replay.requiresCatchUp ? replay.headSeq : 0;
+        if (requiredCatchUpHeadSeq === 0) liveAnimationReadyRef.current = true;
+        setLoadingInitialSession(false);
 
-        if (replay.requiresCatchUp && snapshotHeadSeq < replay.headSeq) {
-          for (const delayMs of ACP_REPLAY_CATCH_UP_DELAYS_MS) {
-            if (!active || sessionRefreshSeqRef.current !== refreshSeq) break;
-            if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
-            const delta = await getAcpSession(
-              projectId,
-              taskId,
-              runId,
-              roundId,
-              nodeId,
-              attemptId,
-              {
-                branchId,
-                afterSeq: snapshotHeadSeq,
-                pageSize: effectiveEventPageSize,
-                eventLimit: effectiveEventPageSize,
-              },
-              latestSessionRef.current,
-              outerNodeId,
-              outerAttemptId,
-            ).catch(() => null);
-            if (!active || sessionRefreshSeqRef.current !== refreshSeq) break;
-            if (delta) {
-              applySessionUpdate(delta, "replay-gap-catch-up");
-              snapshotHeadSeq = Math.max(snapshotHeadSeq, acpSessionSnapshotHeadSeq(delta));
-            }
-            replay = readConversationBranchReplaySnapshot(branchLocator, branchId);
+        while (active && sessionRefreshSeqRef.current === refreshSeq) {
+          replay = readConversationBranchReplaySnapshot(branchLocator, branchId);
+          if (replay.generation !== appliedReplayGeneration) {
             if (replay.events.length > 0) applyEventUpdates(replay.events);
-            if (snapshotHeadSeq >= replay.headSeq) break;
+            appliedReplayGeneration = replay.generation;
           }
-        }
+          if (!liveAnimationReadyRef.current && replay.requiresCatchUp) {
+            requiredCatchUpHeadSeq = Math.max(requiredCatchUpHeadSeq, replay.headSeq);
+          }
+          if (
+            !liveAnimationReadyRef.current
+            && snapshotHeadSeq >= requiredCatchUpHeadSeq
+          ) {
+            liveAnimationReadyRef.current = true;
+          }
+          if (
+            snapshotHeadSeq >= replay.headSeq
+            && acknowledgeConversationBranchReplay(
+              branchLocator,
+              branchId,
+              snapshotHeadSeq,
+              replay.generation,
+            )
+          ) {
+            liveAnimationReadyRef.current = true;
+            break;
+          }
 
-        replay = readConversationBranchReplaySnapshot(branchLocator, branchId);
-        if (snapshotHeadSeq >= replay.headSeq) {
-          acknowledgeConversationBranchReplay(
-            branchLocator,
-            branchId,
-            snapshotHeadSeq,
-            replay.generation,
-          );
+          const delayMs = acpReplayCatchUpDelayMs(catchUpRetryAttempt);
+          if (delayMs > 0) {
+            await waitForAcpReplayCatchUp(delayMs, replayCatchUpAbortController.signal);
+          }
+          if (
+            replayCatchUpAbortController.signal.aborted
+            || !active
+            || sessionRefreshSeqRef.current !== refreshSeq
+          ) {
+            break;
+          }
+          const previousHeadSeq = snapshotHeadSeq;
+          const delta = await getAcpSession(
+            projectId,
+            taskId,
+            runId,
+            roundId,
+            nodeId,
+            attemptId,
+            {
+              branchId,
+              afterSeq: snapshotHeadSeq,
+              pageSize: effectiveEventPageSize,
+              eventLimit: effectiveEventPageSize,
+            },
+            latestSessionRef.current,
+            outerNodeId,
+            outerAttemptId,
+          ).catch(() => null);
+          if (!active || sessionRefreshSeqRef.current !== refreshSeq) break;
+          if (delta) {
+            applySessionUpdate(delta, "replay-gap-catch-up");
+            snapshotHeadSeq = Math.max(snapshotHeadSeq, acpSessionSnapshotHeadSeq(delta));
+          }
+          catchUpRetryAttempt = snapshotHeadSeq > previousHeadSeq
+            ? 0
+            : catchUpRetryAttempt + 1;
         }
-        liveAnimationReadyRef.current = true;
       }
       if (active && sessionRefreshSeqRef.current === refreshSeq) {
         if (lastLoadError) setSessionLoadError(displayAppError(t, lastLoadError));
@@ -2021,6 +2051,7 @@ export function ACPChatDialog(
       });
       flushPendingLiveEvents();
       active = false;
+      replayCatchUpAbortController.abort();
       stopListening?.();
       if (liveEventFlushTimerRef.current !== null) {
         window.clearTimeout(liveEventFlushTimerRef.current);
@@ -6125,6 +6156,27 @@ function acpSessionSnapshotHeadSeq(session: AcpSessionVm) {
     headSeq = Math.max(headSeq, timelineEventPosition(event));
   }
   return headSeq;
+}
+
+export function acpReplayCatchUpDelayMs(retryAttempt: number) {
+  if (retryAttempt <= 0) return 0;
+  return Math.min(
+    ACP_REPLAY_CATCH_UP_MAX_DELAY_MS,
+    ACP_REPLAY_CATCH_UP_INITIAL_DELAY_MS * 2 ** Math.min(retryAttempt - 1, 8),
+  );
+}
+
+function waitForAcpReplayCatchUp(delayMs: number, signal: AbortSignal) {
+  if (delayMs <= 0 || signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const finish = () => {
+      window.clearTimeout(timer);
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = window.setTimeout(finish, delayMs);
+    signal.addEventListener('abort', finish, { once: true });
+  });
 }
 
 function latestUserPromptPosition(events: AcpUiEventVm[]) {

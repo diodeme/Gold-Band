@@ -180,6 +180,31 @@ describe('conversation event router', () => {
     expect(readConversationBranchReplaySnapshot(locator, 'root').events).toHaveLength(0);
   });
 
+  it('treats an already-evicted replay buffer as acknowledged', () => {
+    expect(acknowledgeConversationBranchReplay(locator, 'root', 0, 0)).toBe(true);
+  });
+
+  it('strictly caps retained branch snapshots and replay buffers', () => {
+    for (let index = 0; index <= CONVERSATION_EVENT_REPLAY_LIMITS.branchCount; index += 1) {
+      applyConversationEventToBranchSnapshots(live(`branch-${index}`, {
+        ...uiEvent('textDelta'),
+        id: `answer-${index}`,
+        seq: index + 1,
+        endedSeq: index + 1,
+      }));
+    }
+
+    expect(readConversationBranchLiveSnapshot(locator, 'branch-0')).toMatchObject({
+      revision: 0,
+      contentRevision: 0,
+    });
+    expect(readConversationBranchReplaySnapshot(locator, 'branch-0').events).toHaveLength(0);
+    expect(readConversationBranchReplaySnapshot(
+      locator,
+      `branch-${CONVERSATION_EVENT_REPLAY_LIMITS.branchCount}`,
+    ).events).toHaveLength(1);
+  });
+
   it('keeps an Agent queued when only its synthetic prompt has arrived', () => {
     applyConversationEventToBranchSnapshots(live('agent-a', {
       ...uiEvent('userTextDelta', 'completed'),
@@ -231,8 +256,12 @@ describe('conversation event router', () => {
     expect(readConversationBranchLiveSnapshot(locator, 'agent-b').status).toBe('interrupted');
   });
 
-  it('accepts project-less live events for the matching attempt and rejects other attempts', () => {
-    expect(conversationEventMatchesAttempt({ ...locator, projectId: null }, locator)).toBe(true);
+  it('requires an exact project identity and rejects other attempts', () => {
+    expect(conversationEventMatchesAttempt(
+      { ...locator, projectId: null },
+      { ...locator, projectId: null },
+    )).toBe(true);
+    expect(conversationEventMatchesAttempt({ ...locator, projectId: null }, locator)).toBe(false);
     expect(conversationEventMatchesAttempt({ ...locator, attemptId: 'attempt-2' }, locator)).toBe(false);
   });
 });

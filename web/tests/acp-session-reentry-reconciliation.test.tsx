@@ -47,6 +47,7 @@ import { ACPChatDialog } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import {
   applyConversationEventToBranchSnapshots,
+  CONVERSATION_EVENT_REPLAY_LIMITS,
   resetConversationEventRouterSnapshots,
 } from '@/lib/conversation-event-router';
 import type { AcpSessionUpdatedEventVm } from '@/api/client';
@@ -196,6 +197,49 @@ describe('ACP session re-entry reconciliation', () => {
     try {
       expect(container.textContent).toContain('检查已经完成，准备调用工具');
       expect(container.textContent).toContain('Editing · files');
+      expect([...container.querySelectorAll('[data-testid="markdown"]')]
+        .every((node) => node.getAttribute('data-streaming') === 'false')).toBe(true);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps reconciling a watermark-only gap after the initial retry window', async () => {
+    const prompt = event('prompt-gap', 1, 'userTextDelta', '检查项目', {
+      raw: { source: 'goldBandPrompt', promptId: 'prompt-gap' },
+    });
+    const stale = session([prompt, event('answer-gap', 2, 'textDelta', '延迟')]);
+    const complete = session([
+      prompt,
+      event('answer-gap', 9, 'textDelta', '延迟追平后的完整回答', { startedSeq: 2 }),
+    ]);
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(stale)
+      .mockResolvedValueOnce(stale)
+      .mockResolvedValueOnce(stale)
+      .mockResolvedValueOnce(stale)
+      .mockResolvedValueOnce(stale)
+      .mockResolvedValue(complete);
+
+    applyConversationEventToBranchSnapshots(update(event(
+      'answer-gap',
+      9,
+      'textDelta',
+      '延迟追平后的完整回答',
+      {
+        startedSeq: 2,
+        raw: { oversized: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes) },
+      },
+    )));
+
+    const { container, root } = await renderDialog(stale);
+    try {
+      expect(container.textContent).not.toContain('延迟追平后的完整回答');
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 850));
+      });
+      expect(vi.mocked(getAcpSession).mock.calls.length).toBeGreaterThanOrEqual(6);
+      expect(container.textContent).toContain('延迟追平后的完整回答');
       expect([...container.querySelectorAll('[data-testid="markdown"]')]
         .every((node) => node.getAttribute('data-streaming') === 'false')).toBe(true);
     } finally {

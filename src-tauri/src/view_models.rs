@@ -5185,13 +5185,27 @@ fn paginate_timeline(
     let pending_elicitations = pending_elicitation_vms(all_events, session_active);
     let timeline_projection =
         build_acp_timeline_projection(all_events, latest_permission_events, session_active);
-    let selected_blocks = if let Some(cursor) = after_seq {
-        semantic_blocks
+    let (selected_blocks, after_cursor_has_newer) = if let Some(cursor) = after_seq {
+        let mut changed_blocks = semantic_blocks
             .iter()
             .filter(|block| block.newest_seq > cursor)
-            .take(limit)
-            .cloned()
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        changed_blocks.sort_by_key(|block| {
+            (block.newest_seq, block.oldest_seq, block.start, block.end)
+        });
+        let selected_count = if changed_blocks.len() > limit {
+            let cutoff_revision = changed_blocks[limit - 1].newest_seq;
+            changed_blocks.partition_point(|block| block.newest_seq <= cutoff_revision)
+        } else {
+            changed_blocks.len()
+        };
+        let has_newer = selected_count < changed_blocks.len();
+        let mut selected = changed_blocks[..selected_count]
+            .iter()
+            .map(|block| (*block).clone())
+            .collect::<Vec<_>>();
+        selected.sort_by_key(|block| (block.start, block.end));
+        (selected, Some(has_newer))
     } else if let Some(cursor) = before_seq {
         let mut page = semantic_blocks
             .iter()
@@ -5201,11 +5215,11 @@ fn paginate_timeline(
         if page.len() > limit {
             page = page.split_off(page.len() - limit);
         }
-        page
+        (page, None)
     } else if total > limit {
-        semantic_blocks[total - limit..].to_vec()
+        (semantic_blocks[total - limit..].to_vec(), None)
     } else {
-        semantic_blocks.clone()
+        (semantic_blocks.clone(), None)
     };
     let loaded_semantic_count = selected_blocks.len();
     let filtered = compact_selected_semantic_blocks(all_events, &selected_blocks);
@@ -5246,7 +5260,8 @@ fn paginate_timeline(
         oldest_seq,
         newest_seq,
         has_older: oldest_index.is_some_and(|index| index > 0),
-        has_newer: newest_index.is_some_and(|index| index + 1 < total),
+        has_newer: after_cursor_has_newer
+            .unwrap_or_else(|| newest_index.is_some_and(|index| index + 1 < total)),
         oldest_cursor: oldest_seq.map(format_timeline_cursor),
         newest_cursor: newest_seq.map(format_timeline_cursor),
     };
@@ -10111,6 +10126,92 @@ mod tests {
         assert_eq!(scan.events[0].id, "assistant-message-1");
         assert_eq!(scan.events[0].ended_seq, Some(20));
         assert_eq!(scan.event_page.newest_seq, Some(20));
+    }
+
+    #[test]
+    fn paginate_after_seq_orders_changed_blocks_by_revision_without_skipping() {
+        let mut events = event_sequence(4, 1_000);
+        events[0].ended_seq = Some(100);
+        events[1].ended_seq = Some(20);
+        events[2].ended_seq = Some(30);
+        events[3].ended_seq = Some(40);
+
+        let first = paginate_timeline(
+            camino::Utf8Path::new("acp.timeline.jsonl"),
+            &events,
+            4,
+            Some(0),
+            &HashMap::new(),
+            None,
+            None,
+            true,
+            Some(10),
+            None,
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            first
+                .events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["evt-1", "evt-2"]
+        );
+        assert_eq!(first.event_page.newest_seq, Some(30));
+        assert!(first.event_page.has_newer);
+
+        let second = paginate_timeline(
+            camino::Utf8Path::new("acp.timeline.jsonl"),
+            &events,
+            4,
+            Some(0),
+            &HashMap::new(),
+            None,
+            None,
+            true,
+            first.event_page.newest_seq,
+            None,
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            second
+                .events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["evt-0", "evt-3"]
+        );
+        assert_eq!(second.event_page.newest_seq, Some(100));
+        assert!(!second.event_page.has_newer);
+    }
+
+    #[test]
+    fn paginate_after_seq_keeps_equal_revision_blocks_in_one_page() {
+        let mut events = event_sequence(3, 1_000);
+        events[0].ended_seq = Some(20);
+        events[1].ended_seq = Some(20);
+        events[2].ended_seq = Some(30);
+
+        let first = paginate_timeline(
+            camino::Utf8Path::new("acp.timeline.jsonl"),
+            &events,
+            3,
+            Some(0),
+            &HashMap::new(),
+            None,
+            None,
+            true,
+            Some(10),
+            None,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(first.events.len(), 2);
+        assert_eq!(first.event_page.newest_seq, Some(20));
+        assert!(first.event_page.has_newer);
     }
 
     #[test]

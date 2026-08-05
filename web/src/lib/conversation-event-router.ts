@@ -1,7 +1,7 @@
 import type { AcpSessionUpdatedEventVm } from '@/api/client';
 import { getRuntimeApi } from '@/api/client';
 import type { AcpUiEventVm } from '@/types';
-import { useSyncExternalStore } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 
 type Listener = (event: AcpSessionUpdatedEventVm) => void;
 
@@ -195,18 +195,11 @@ function storeBranchSnapshot(key: string, snapshot: ConversationBranchLiveSnapsh
   const existing = branchSnapshotOrder.indexOf(key);
   if (existing >= 0) branchSnapshotOrder.splice(existing, 1);
   branchSnapshotOrder.push(key);
-  let retainedActive = 0;
-  while (branchSnapshotOrder.length > MAX_BRANCH_SNAPSHOTS && retainedActive < branchSnapshotOrder.length) {
+  while (branchSnapshotOrder.length > MAX_BRANCH_SNAPSHOTS) {
     const oldest = branchSnapshotOrder.shift();
     if (!oldest) break;
-    if (branchListeners.has(oldest)) {
-      branchSnapshotOrder.push(oldest);
-      retainedActive += 1;
-    } else {
-      branchSnapshots.delete(oldest);
-      deleteBranchReplayBuffer(oldest);
-      retainedActive = 0;
-    }
+    branchSnapshots.delete(oldest);
+    deleteBranchReplayBuffer(oldest);
   }
 }
 
@@ -337,18 +330,23 @@ function notifyBranch(key: string) {
 
 export function useConversationBranchLiveSnapshot(locator: Parameters<typeof attemptKey>[0], branchId: string) {
   const key = conversationBranchStoreKey(locator, branchId);
-  return useSyncExternalStore(
-    (listener) => {
-      const set = branchListeners.get(key) ?? new Set<() => void>();
-      set.add(listener);
-      branchListeners.set(key, set);
-      void ensureStarted();
-      return () => {
-        set.delete(listener);
-        if (set.size === 0) branchListeners.delete(key);
-      };
-    },
+  const subscribe = useCallback((listener: () => void) => {
+    const set = branchListeners.get(key) ?? new Set<() => void>();
+    set.add(listener);
+    branchListeners.set(key, set);
+    void ensureStarted();
+    return () => {
+      set.delete(listener);
+      if (set.size === 0) branchListeners.delete(key);
+    };
+  }, [key]);
+  const getSnapshot = useCallback(
     () => branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT,
+    [key],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    getSnapshot,
     () => EMPTY_BRANCH_SNAPSHOT,
   );
 }
@@ -376,7 +374,7 @@ export function conversationEventMatchesAttempt(
     outerAttemptId?: string | null;
   },
 ) {
-  return (event.projectId == null || locator.projectId == null || event.projectId === locator.projectId)
+  return (event.projectId ?? null) === (locator.projectId ?? null)
     && event.taskId === locator.taskId
     && event.runId === locator.runId
     && event.roundId === locator.roundId
@@ -428,9 +426,9 @@ export function acknowledgeConversationBranchReplay(
   observedGeneration: number,
 ) {
   const buffer = branchReplayBuffers.get(conversationBranchStoreKey(locator, branchId));
+  if (!buffer) return true;
   if (
-    !buffer
-    || buffer.generation !== observedGeneration
+    buffer.generation !== observedGeneration
     || snapshotHeadSeq < buffer.headSeq
   ) {
     return false;

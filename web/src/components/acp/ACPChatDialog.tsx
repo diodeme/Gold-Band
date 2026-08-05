@@ -2820,11 +2820,16 @@ export function ACPChatDialog(
     return <AcpErrorState reason={sessionLoadError ?? t("acp.missingSessionReason")} />;
   }
 
-  const visibleError = visibleAcpBannerError(
-    runtimeComposerContext?.runtimeError,
-    effective,
-    effectiveEvents,
-  );
+  // A failed provider attempt can be followed by an automatic retry. Until
+  // the runtime reaches its final terminal state, the retry progress is the
+  // user-facing state; showing a terminal banner here is contradictory.
+  const visibleError = runtimeActive
+    ? null
+    : visibleAcpBannerError(
+      runtimeComposerContext?.runtimeError,
+      effective,
+      effectiveEvents,
+    );
 
   return (
     <TurnFileCardPreviewLimitContext.Provider value={turnFileCardPreviewLimit}>
@@ -4534,7 +4539,12 @@ const MessageBubble = memo(function MessageBubble({
   const branchLocator = useContext(AcpBranchLocatorContext);
   const workspace = useOptionalRightWorkspaceCommands();
   const isUser = event.kind === "userTextDelta";
-  const failed = event.status === "failed";
+  // Provider failures are surfaced by the session error state. A user prompt
+  // itself is never an error surface: it may be retried, and colouring it red
+  // briefly makes one logical prompt look like multiple contradictory states.
+  const failed = !isUser && event.status === "failed";
+  const retry = isUser ? promptRetryInfo(event) : null;
+  const retryFooter = isUser ? promptRetryFooterKind(event) : null;
   const streamingDraft =
     !isUser && timelineEventKey(event) === streamingMarkdownItemKey;
   const rawAttachments = messageAttachmentPreviewsFromRaw(event.raw);
@@ -4639,15 +4649,21 @@ const MessageBubble = memo(function MessageBubble({
             ) : null}
           </div>
         ) : null}
-        {event.optimistic || failed ? (
+        {event.optimistic || failed || retry ? (
           <div
             className={cn(
               "flex px-1 text-xs text-muted-foreground",
               isUser && "justify-end text-right",
             )}
           >
-            {failed ? (
+            {retryFooter === "failed" && retry ? (
+              t("acp.retryFailed", { count: retry.attempt })
+            ) : retryFooter === "cancelled" && retry ? (
+              t("acp.retryStopped", { count: retry.attempt })
+            ) : failed ? (
               t("acp.sendFailed")
+            ) : retry ? (
+              t("acp.retrying", { current: retry.attempt, total: retry.maxAttempts })
             ) : (
               <span className="inline-flex items-center">
                 {event.status === "processing"
@@ -5519,6 +5535,23 @@ function promptIdFromEvent(event?: AcpUiEventVm | null) {
   return stringValue(rawObject(event?.raw)?.promptId) ?? null;
 }
 
+function promptRetryInfo(event: AcpUiEventVm) {
+  const retry = rawObject(rawObject(event.raw)?.retry);
+  const attempt = numberValue(retry?.attempt);
+  const maxAttempts = numberValue(retry?.maxAttempts);
+  if (attempt == null || attempt < 1 || maxAttempts == null || maxAttempts < attempt) {
+    return null;
+  }
+  return { attempt, maxAttempts };
+}
+
+export function promptRetryFooterKind(event: AcpUiEventVm) {
+  if (!promptRetryInfo(event)) return null;
+  if (event.status === "failed") return "failed";
+  if (event.status === "cancelled") return "cancelled";
+  return "retrying";
+}
+
 function isGoldBandUserPrompt(event: AcpUiEventVm) {
   return (
     event.kind === "userTextDelta" &&
@@ -6157,13 +6190,23 @@ function buildAcpTimeline(events: AcpUiEventVm[]): AcpTimelineItem[] {
 function buildFlatAcpTimeline(events: AcpUiEventVm[]) {
   const timeline: AcpTimelineEvent[] = [];
   const toolIndex = new Map<string, AcpTimelineEvent>();
-  const seenUserPrompts = new Set<string>();
+  const seenUserPrompts = new Map<string, AcpTimelineEvent>();
   for (const event of events) {
     if (!isRenderableEvent(event)) continue;
     if (event.kind === "userTextDelta") {
       const key = userPromptDedupKey(event);
-      if (key && seenUserPrompts.has(key)) continue;
-      if (key) seenUserPrompts.add(key);
+      const previousPrompt = key ? seenUserPrompts.get(key) : undefined;
+      if (previousPrompt) {
+        // Repeated persisted events for one promptId are provider retry
+        // attempts, never a text-based deduplication heuristic. Keep one
+        // bubble and retain the newest retry metadata below it.
+        previousPrompt.seq = event.seq;
+        previousPrompt.endedSeq = event.endedSeq ?? originalSeqFromAcpEvent(event);
+        previousPrompt.endedAt = event.endedAt ?? event.timestamp;
+        previousPrompt.status = event.status ?? previousPrompt.status;
+        previousPrompt.raw = mergeRaw(previousPrompt.raw, event.raw);
+        continue;
+      }
     }
     const previous = timeline[timeline.length - 1];
     if (shouldMergeUserPromptEvents(previous, event)) {
@@ -6222,14 +6265,19 @@ function buildFlatAcpTimeline(events: AcpUiEventVm[]) {
     }
     if (event.kind === "thoughtDelta" && !event.content?.trim()) continue;
     if (event.kind === "plan") continue;
-    timeline.push({
+    const timelineEvent: AcpTimelineEvent = {
       ...event,
       startedAt: event.startedAt ?? event.timestamp,
       endedAt: event.endedAt ?? event.timestamp,
       startedSeq: event.startedSeq ?? originalSeqFromAcpEvent(event),
       endedSeq: event.endedSeq ?? originalSeqFromAcpEvent(event),
       optimistic: isOptimisticEvent(event),
-    });
+    };
+    timeline.push(timelineEvent);
+    if (event.kind === "userTextDelta") {
+      const key = userPromptDedupKey(event);
+      if (key) seenUserPrompts.set(key, timelineEvent);
+    }
   }
   let nextTimestamp: number | null = null;
   for (let index = timeline.length - 1; index >= 0; index -= 1) {

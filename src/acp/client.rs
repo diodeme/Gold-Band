@@ -24,6 +24,58 @@ struct AcpPromptTurnIdentity {
     prompt_event_id: String,
     seq: u64,
     started_at: String,
+    /// The durable user event for this logical prompt. Completed user events
+    /// deliberately leave `timeline_items`, so terminal settlement must not
+    /// depend on that runtime-only hot cache.
+    event: AcpUiEvent,
+}
+
+fn next_prompt_retry_attempt(prior: Option<&AcpPromptRetryState>, prompt_id: &str) -> u32 {
+    prior
+        .filter(|state| state.prompt_id == prompt_id)
+        .map(|state| state.retry_attempt.saturating_add(1))
+        .unwrap_or_default()
+}
+
+fn settle_prompt_event(
+    mut event: AcpUiEvent,
+    terminal_status: &str,
+    ended_seq: u64,
+    failure: Option<&AcpPromptFailure>,
+) -> AcpUiEvent {
+    event.status = Some(terminal_status.to_string());
+    event.ended_seq = Some(ended_seq);
+    event.ended_at = Some(current_timestamp());
+    let raw = event.raw.get_or_insert_with(|| json!({}));
+    match failure {
+        Some(failure) => {
+            raw["terminalFailure"] = json!({
+                "code": failure.code,
+                "message": failure.diagnostic(),
+            });
+        }
+        None => raw["cancelled"] = json!(true),
+    }
+    event
+}
+
+/// The orchestration layer owns the retry loop, but the ACP runtime owns the
+/// live timeline event. Use the same structured policy here so a retryable
+/// provider failure is rendered as retry progress instead of a transient
+/// failed message before the next runtime is created.
+fn scheduled_auto_retry(
+    failure: &AcpPromptFailure,
+    stop_reason: Option<&str>,
+    completed_retries: u32,
+) -> Option<(u32, u32)> {
+    let info = normalize_provider_runtime_failure(
+        stop_reason,
+        failure.diagnostic(),
+        Some(failure.raw.clone()),
+    );
+    let policy = info.retry_policy?;
+    (info.recovery == RecoveryMode::Auto && completed_retries < policy.max_attempts)
+        .then_some((completed_retries.saturating_add(1), policy.max_attempts))
 }
 
 #[derive(Debug, Clone)]
@@ -181,10 +233,10 @@ use crate::acp::elicitation::{
     upsert_elicitation_response_event, wait_for_elicitation_response, write_pending_elicitation,
 };
 use crate::acp::events::{
-    AcpAttemptPaths, AcpSessionMetadata, AcpSessionTiming, AcpTimingState, AcpUiEvent,
-    append_diagnostic, append_raw_frame, append_structured_diagnostic, current_timestamp,
-    latest_timeline_source_seq, normalize_session_update, permission_request_event,
-    user_prompt_event, write_session_metadata,
+    AcpAttemptPaths, AcpPromptRetryState, AcpSessionMetadata, AcpSessionTiming, AcpTimingState,
+    AcpUiEvent, append_diagnostic, append_raw_frame, append_structured_diagnostic,
+    current_timestamp, latest_timeline_source_seq, normalize_session_update,
+    permission_request_event, user_prompt_event, write_session_metadata,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::permission::{
@@ -204,6 +256,9 @@ use crate::provider::{
     gold_band_hidden_block, prepare_acp_mcp_servers, supports_system_prompt,
 };
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
+use crate::runtime_error::{
+    DEFAULT_AUTO_RETRY_MAX_ATTEMPTS, RecoveryMode, normalize_provider_runtime_failure,
+};
 use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, roll_jsonl, write_json};
 
 const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(100);
@@ -1091,6 +1146,7 @@ struct AcpRuntime<'a> {
     current_turn_item_ids: HashSet<String>,
     active_turn_file_branches: HashSet<String>,
     active_prompt_turn: Option<AcpPromptTurnIdentity>,
+    prompt_retry: Option<AcpPromptRetryState>,
     models: Option<Value>,
     modes: Option<Value>,
     config_options: Option<Value>,
@@ -1425,6 +1481,36 @@ pub fn run_prompt(
             return Err(error);
         }
     };
+    // ACP may return a syntactically successful `end_turn` and only then
+    // report the terminal provider error in session metadata. Persist that
+    // failure through the same diagnostics channel as RPC failures.
+    if let Some(failure) = terminal_failure.as_ref() {
+        if let Some((retry_attempt, max_attempts)) = scheduled_auto_retry(
+            failure,
+            stop_reason.as_deref(),
+            runtime
+                .prompt_retry
+                .as_ref()
+                .map(|state| state.retry_attempt)
+                .unwrap_or_default(),
+        ) {
+            runtime.mark_prompt_retrying(&prompt_turn, retry_attempt, max_attempts)?;
+        } else {
+            runtime.mark_prompt_terminal_failure(&prompt_turn, failure)?;
+        }
+        append_diagnostic(
+            &runtime.paths.diagnostics,
+            "error",
+            format!("ACP prompt failed: {}", failure.diagnostic()),
+            Some(json!({
+                "code": failure.code,
+                "details": failure.details,
+                "raw": failure.raw,
+            })),
+        )?;
+    } else if status == "cancelled" {
+        runtime.mark_prompt_cancelled(&prompt_turn)?;
+    }
     runtime.write_worker_ref(
         provider_id,
         &workspace_dir,
@@ -1936,6 +2022,9 @@ impl<'a> AcpRuntime<'a> {
             .collect();
         let timeline_items = runtime_hot_timeline_items(loaded_timeline_items);
         let timeline_revision = seq;
+        let prompt_retry = read_json::<AcpSessionMetadata>(&paths.snapshot)
+            .ok()
+            .and_then(|metadata| metadata.prompt_retry);
         let prior = read_prior_attempt_metrics(&paths.snapshot);
         let recovered_usage = repair_attempt_usage(
             &paths.snapshot,
@@ -1968,6 +2057,7 @@ impl<'a> AcpRuntime<'a> {
             current_turn_item_ids: HashSet::new(),
             active_turn_file_branches: HashSet::new(),
             active_prompt_turn: None,
+            prompt_retry,
             models: None,
             modes: None,
             config_options: None,
@@ -2770,15 +2860,39 @@ impl<'a> AcpRuntime<'a> {
             .session_id
             .clone()
             .ok_or_else(|| anyhow!("ACP prompt requires a session id"))?;
+        let prior_retry = self.prompt_retry.clone();
+        let prompt_id = prompt
+            .prompt_id
+            .as_deref()
+            .filter(|prompt_id| !prompt_id.trim().is_empty())
+            .map(str::to_string)
+            // An automatic retry reopens the provider session, but it is
+            // still the same user turn. Reuse its durable identity instead
+            // of comparing the user-visible text.
+            .or_else(|| prior_retry.as_ref().map(|state| state.prompt_id.clone()))
+            .unwrap_or_else(|| format!("acp-turn-{}", self.seq + 1));
+        let retry_attempt = next_prompt_retry_attempt(prior_retry.as_ref(), &prompt_id);
+        self.prompt_retry = Some(AcpPromptRetryState {
+            prompt_id: prompt_id.clone(),
+            retry_attempt,
+        });
         self.seq += 1;
-        let user_event = user_prompt_event(
+        let mut user_event = user_prompt_event(
             self.seq,
             session_id,
             session_prompt_text(provider_id, prompt, restored),
-            prompt.prompt_id.clone(),
+            Some(prompt_id.clone()),
             prompt.visibility == PromptVisibility::Hidden,
             prompt.attachment_metas.clone(),
         );
+        if retry_attempt > 0 {
+            if let Some(raw) = user_event.raw.as_mut() {
+                raw["retry"] = json!({
+                    "attempt": retry_attempt,
+                    "maxAttempts": DEFAULT_AUTO_RETRY_MAX_ATTEMPTS,
+                });
+            }
+        }
         self.persist_event(&user_event)?;
         append_prompt_started(
             &self.paths.prompt_usage,
@@ -2786,25 +2900,59 @@ impl<'a> AcpRuntime<'a> {
             user_event.seq,
             &user_event.timestamp,
         )?;
-        let turn_id = prompt
-            .prompt_id
-            .clone()
-            .filter(|prompt_id| !prompt_id.trim().is_empty())
-            .or_else(|| {
-                (prompt.visibility == PromptVisibility::Hidden)
-                    .then(|| latest_visible_turn_id(self.timeline_items.values()))
-                    .flatten()
-            })
-            .unwrap_or_else(|| user_event.id.clone());
+        let turn_id = prompt_id;
         let identity = AcpPromptTurnIdentity {
             id: turn_id,
-            prompt_event_id: user_event.id,
+            prompt_event_id: user_event.id.clone(),
             seq: user_event.seq,
-            started_at: user_event.timestamp,
+            started_at: user_event.timestamp.clone(),
+            event: user_event,
         };
         self.active_turn_file_branches.clear();
         self.active_prompt_turn = Some(identity.clone());
         Ok(identity)
+    }
+
+    fn mark_prompt_terminal_failure(
+        &mut self,
+        prompt_turn: &AcpPromptTurnIdentity,
+        failure: &AcpPromptFailure,
+    ) -> Result<()> {
+        let event =
+            settle_prompt_event(prompt_turn.event.clone(), "failed", self.seq, Some(failure));
+        self.timeline_revision = self.timeline_revision.saturating_add(1);
+        self.persist_timeline_update(event.clone())?;
+        update_runtime_hot_timeline_items(&mut self.timeline_items, &event);
+        self.emit_timeline_live_update(event)
+    }
+
+    fn mark_prompt_retrying(
+        &mut self,
+        prompt_turn: &AcpPromptTurnIdentity,
+        retry_attempt: u32,
+        max_attempts: u32,
+    ) -> Result<()> {
+        let mut event = prompt_turn.event.clone();
+        event.status = Some("processing".to_string());
+        event.ended_seq = Some(self.seq);
+        event.ended_at = Some(current_timestamp());
+        let raw = event.raw.get_or_insert_with(|| json!({}));
+        raw["retry"] = json!({
+            "attempt": retry_attempt,
+            "maxAttempts": max_attempts,
+        });
+        self.timeline_revision = self.timeline_revision.saturating_add(1);
+        self.persist_timeline_update(event.clone())?;
+        update_runtime_hot_timeline_items(&mut self.timeline_items, &event);
+        self.emit_timeline_live_update(event)
+    }
+
+    fn mark_prompt_cancelled(&mut self, prompt_turn: &AcpPromptTurnIdentity) -> Result<()> {
+        let event = settle_prompt_event(prompt_turn.event.clone(), "cancelled", self.seq, None);
+        self.timeline_revision = self.timeline_revision.saturating_add(1);
+        self.persist_timeline_update(event.clone())?;
+        update_runtime_hot_timeline_items(&mut self.timeline_items, &event);
+        self.emit_timeline_live_update(event)
     }
 
     fn prompt(
@@ -3820,6 +3968,7 @@ impl<'a> AcpRuntime<'a> {
             permission_mode_override: self.permission_mode_override.clone(),
             config_option_overrides: self.config_option_overrides.clone(),
             system_prompt_append: self.system_prompt_append.clone(),
+            prompt_retry: self.prompt_retry.clone(),
             used_tokens: self.usage.context.confirmed_used,
             context_window_size: self.usage.context.window_size,
             total_cost_usd: self.usage.total_cost_usd,
@@ -5106,21 +5255,21 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        AcpContextCompactionState, AcpPromptLifecycle, AcpPromptTokenUsage, AcpRuntime,
-        AcpRuntimePolicy, AcpUsageState, AttachedSessionReusePlan, DOCTOR_DIAGNOSTIC_TARGET_SIZE,
-        NESTED_AGENT_TRANSCRIPT_CAPABILITY, PriorAttemptMetrics, PromptActivity, PromptBundle,
-        PromptVisibility, ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution,
-        SessionUpdatePhase, active_context_compaction, active_timeline_streams,
-        active_timeline_streams_by_branch, attached_sync_required,
+        AcpContextCompactionState, AcpPromptFailure, AcpPromptLifecycle, AcpPromptRetryState,
+        AcpPromptTokenUsage, AcpRuntime, AcpRuntimePolicy, AcpUsageState, AttachedSessionReusePlan,
+        DOCTOR_DIAGNOSTIC_TARGET_SIZE, NESTED_AGENT_TRANSCRIPT_CAPABILITY, PriorAttemptMetrics,
+        PromptActivity, PromptBundle, PromptVisibility, ProviderFreshnessBaseline,
+        RuntimeStopProbe, SessionModelResolution, SessionUpdatePhase, active_context_compaction,
+        active_timeline_streams, active_timeline_streams_by_branch, attached_sync_required,
         cleanup_doctor_acp_dir_after_success, contributes_to_final_text, drain_frames_until_quiet,
         evaluate_provider_revision, initialize_params, is_transport_interruption,
         is_unscoped_codex_diagnostic_update, latest_visible_turn_id, merge_tool_revision,
-        permission_decision_timeline_event, plan_attached_session_reuse, prompt_activity,
-        register_provider_control, request_prompt_cancel, resolve_permission_mode,
+        next_prompt_retry_attempt, permission_decision_timeline_event, plan_attached_session_reuse,
+        prompt_activity, register_provider_control, request_prompt_cancel, resolve_permission_mode,
         resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
-        runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
-        session_new_params, session_prompt_params, session_prompt_text,
-        should_suppress_session_update, stable_message_item_id,
+        runtime_hot_timeline_items, scheduled_auto_retry, session_config_fingerprint,
+        session_load_params, session_new_params, session_prompt_params, session_prompt_text,
+        settle_prompt_event, should_suppress_session_update, stable_message_item_id,
         take_pending_live_update_for_stream_switch, unregister_provider_control,
     };
     use crate::acp::{
@@ -5177,6 +5326,80 @@ mod tests {
         assert_eq!(
             latest_visible_turn_id([&first, &hidden]),
             Some("turn-1".to_string()),
+        );
+    }
+
+    #[test]
+    fn prompt_retry_counter_survives_terminal_session_snapshot_state() {
+        let prior = AcpPromptRetryState {
+            prompt_id: "runtime-turn-001".to_string(),
+            retry_attempt: 1,
+        };
+        assert_eq!(
+            next_prompt_retry_attempt(Some(&prior), "runtime-turn-001"),
+            2
+        );
+        assert_eq!(
+            next_prompt_retry_attempt(Some(&prior), "runtime-turn-002"),
+            0
+        );
+    }
+
+    #[test]
+    fn retryable_provider_failure_is_rendered_as_retry_progress_until_budget_exhaustion() {
+        let failure = AcpPromptFailure {
+            code: "acp.session-system-error".to_string(),
+            message: "We're currently experiencing high demand, which may cause temporary errors."
+                .to_string(),
+            details: None,
+            raw: json!({ "threadStatus": "systemError" }),
+        };
+        assert_eq!(
+            scheduled_auto_retry(&failure, Some("end_turn"), 0),
+            Some((1, 3))
+        );
+        assert_eq!(scheduled_auto_retry(&failure, Some("end_turn"), 3), None);
+    }
+
+    #[test]
+    fn terminal_prompt_settlement_preserves_retry_after_event_leaves_hot_cache() {
+        let prompt_event = AcpUiEvent {
+            id: "gold-band-user-prompt-12".to_string(),
+            seq: 12,
+            timestamp: "2026-08-06T00:00:00Z".to_string(),
+            kind: "userTextDelta".to_string(),
+            session_id: Some("session-1".to_string()),
+            content: Some("hi".to_string()),
+            title: None,
+            tool_call_id: None,
+            status: Some("completed".to_string()),
+            started_seq: Some(12),
+            ended_seq: Some(12),
+            started_at: Some("2026-08-06T00:00:00Z".to_string()),
+            ended_at: Some("2026-08-06T00:00:00Z".to_string()),
+            timing: None,
+            raw: Some(json!({ "retry": { "attempt": 1, "maxAttempts": 3 } })),
+        };
+        let hot = runtime_hot_timeline_items(vec![prompt_event.clone()]);
+        assert!(!hot.contains_key(&prompt_event.id));
+
+        let cancelled = settle_prompt_event(prompt_event.clone(), "cancelled", 13, None);
+        assert_eq!(cancelled.status.as_deref(), Some("cancelled"));
+        assert_eq!(cancelled.raw.as_ref().unwrap()["retry"]["attempt"], 1);
+        assert_eq!(cancelled.raw.as_ref().unwrap()["cancelled"], true);
+
+        let failure = AcpPromptFailure {
+            code: "provider_error".to_string(),
+            message: "provider failed".to_string(),
+            details: None,
+            raw: json!({}),
+        };
+        let failed = settle_prompt_event(prompt_event, "failed", 13, Some(&failure));
+        assert_eq!(failed.status.as_deref(), Some("failed"));
+        assert_eq!(failed.raw.as_ref().unwrap()["retry"]["attempt"], 1);
+        assert_eq!(
+            failed.raw.as_ref().unwrap()["terminalFailure"]["code"],
+            "provider_error"
         );
     }
 

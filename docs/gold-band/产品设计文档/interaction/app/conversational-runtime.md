@@ -471,6 +471,9 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 
 ## Prompt turn 文件变化
 
+- 会话之间的导航必须按完整 `projectId + taskId + runId` 身份作为一次呈现事务。用户选中目标后，当前聊天、composer 与右侧工作区继续共同消费旧会话 scope；目标 `ConversationRunVm` 与首屏最近的文件变更清单在后台准备完成后，才在同一次 React 提交中切换聊天与右栏 scope。不得先恢复目标右栏再保留旧消息，也不得把目标消息与旧右栏组合成可见中间帧。
+- 导航请求使用单调递增 request id；快速连续选择时只有最新请求且返回快照完整匹配目标身份才能提交，较慢的旧请求即使最后返回也必须丢弃。目标会话的实时订阅在首轮导航提交后才启动，避免 live refresh 绕过准备边界提前替换当前页面。
+- 文件变更详情继续通过独立受控接口读取，不扩充 Conversation 主 DTO。切换事务只并行预取当前 selected branch 时间线尾部最近 12 个 change set，并写入 96 项有界 LRU；`TurnFileChangesCard` 首次挂载同步读取该缓存，命中时首帧直接展示最终预览行。预取失败不阻断会话导航，卡片回到稳定占位与原接口错误处理。
 - 每个可见 prompt 使用稳定 `turnId/promptId`；hidden repair 继承最近可见 turn，不生成第二张用户可见文件卡。完成、失败和取消都会结算已经捕获的变化。
 - 文件变化的唯一事实源是当前 prompt 生命周期内 ACP `toolCall/toolCallUpdate` 的标准 `content[type=diff]`。运行时不扫描目录、不读取 live 文件、不调用 Git，也不按 write/edit/shell 等工具名猜测。
 - 同一个 `toolCallId + path` 的多次 update 是同一工具操作的流式修订，必须先取最后一个 event revision，不能误当成顺序 mutation；不同 tool call 才按 `eventSeq + contentIndex` 折叠。相邻 hash 不连续时保留证据并标记 partial，最终恢复原版本时不展示。

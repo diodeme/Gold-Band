@@ -126,6 +126,12 @@ import {
 } from '@/components/workspace/right-workspace-context';
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
 import {
+  conversationPageMatchesRun,
+  resolvePresentedConversationPage,
+  shouldCommitConversationNavigation,
+} from '@/lib/conversation-navigation';
+import { preloadConversationTurnFileChangeSets } from '@/lib/turn-file-change-set-cache';
+import {
   INITIAL_DESKTOP_WINDOW_MINIMUM_SYNC_STATE,
   syncDesktopWindowMinimum,
   type DesktopWindowMinimumSyncState,
@@ -284,6 +290,11 @@ export function App() {
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const [conversationRunStopping, setConversationRunStopping] = useState(false);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
+  const conversationNavigationRequestRef = useRef(0);
+  const presentedConversationPage = useMemo(
+    () => resolvePresentedConversationPage(conversationPage, conversationRun),
+    [conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId],
+  );
   const conversationSessionFollowRef = useRef<ConversationSessionFollowState>({
     mode: 'auto',
     selectedSessionKey: null,
@@ -373,8 +384,8 @@ export function App() {
   const draftWorkspace = conversationSidebar.workspaces.find((w) => w.projectId === draftConversationWorkspaceId)
     ?? activeWorkspace
     ?? conversationSidebar.workspaces[0];
-  const sidebarFocusWorkspaceId = conversationPage.kind === 'conversation-run'
-    ? conversationPage.projectId
+  const sidebarFocusWorkspaceId = presentedConversationPage.kind === 'conversation-run'
+    ? presentedConversationPage.projectId
     : (draftConversationWorkspaceId ?? effectiveWorkspaceId);
   const defaultProjectId = draftWorkspace?.projectId ?? 'default';
   const defaultWorkspaceName = draftWorkspace?.name ?? 'Default Workspace';
@@ -458,11 +469,11 @@ export function App() {
   const activeWorkspaceLayoutProfile = useMemo(
     () => workspaceLayoutProfileForSurface({
       uiMode,
-      conversationPage,
+      conversationPage: presentedConversationPage,
       primaryModule,
       layout: appConfig.workspaceLayout,
     }),
-    [appConfig.workspaceLayout, conversationPage, primaryModule, uiMode],
+    [appConfig.workspaceLayout, presentedConversationPage, primaryModule, uiMode],
   );
   activeWindowLayoutRef.current = {
     layout: appConfig.workspaceLayout,
@@ -676,15 +687,35 @@ export function App() {
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return;
     const { projectId, taskId, runId } = conversationPage;
+    const requestId = conversationNavigationRequestRef.current + 1;
+    conversationNavigationRequestRef.current = requestId;
+    let cancelled = false;
     getConversationRun(projectId, taskId, runId)
-      .then((run) => {
+      .then(async (run) => {
+        await preloadConversationTurnFileChangeSets(run);
+        if (cancelled || !shouldCommitConversationNavigation(
+          requestId,
+          conversationNavigationRequestRef.current,
+          conversationPageRef.current,
+          run,
+        )) return;
         applyConversationRunSnapshot(run, 'initial-load');
       })
-      .catch(() => setConversationRun(null));
-  }, [applyConversationRunSnapshot, bootstrap, uiMode, conversationPage]);
+      .catch((err: unknown) => {
+        if (cancelled || requestId !== conversationNavigationRequestRef.current) return;
+        if (conversationPageRef.current.kind === 'conversation-run'
+          && conversationPageRef.current.projectId === projectId
+          && conversationPageRef.current.taskId === taskId
+          && conversationPageRef.current.runId === runId) {
+          setError(displayAppError(t, err));
+        }
+      });
+    return () => { cancelled = true; };
+  }, [applyConversationRunSnapshot, bootstrap, t, uiMode, conversationPage]);
 
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return undefined;
+    if (!conversationPageMatchesRun(conversationPage, conversationRun)) return undefined;
     let active = true;
     let refreshTimer: number | null = null;
     let refreshInFlight = false;
@@ -845,7 +876,7 @@ export function App() {
       stopListeningAcp?.();
       stopListeningRun?.();
     };
-  }, [applyConversationRunSnapshot, applyConversationSidebar, applyConversationTaskActivity, bootstrap, uiMode, conversationPage]);
+  }, [applyConversationRunSnapshot, applyConversationSidebar, applyConversationTaskActivity, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -1540,14 +1571,14 @@ export function App() {
     <Shell
       uiMode={uiMode}
       active={primaryModule}
-      conversationPage={conversationPage}
+      conversationPage={presentedConversationPage}
       conversationSidebar={conversationSidebar}
       activeWorkspaceId={sidebarFocusWorkspaceId}
       conversationTaskUuid={
-        conversationPage.kind === 'conversation-run'
-        && conversationRun?.projectId === conversationPage.projectId
-        && conversationRun.taskId === conversationPage.taskId
-        && conversationRun.runId === conversationPage.runId
+        presentedConversationPage.kind === 'conversation-run'
+        && conversationRun?.projectId === presentedConversationPage.projectId
+        && conversationRun.taskId === presentedConversationPage.taskId
+        && conversationRun.runId === presentedConversationPage.runId
           ? conversationRun.taskUuid
           : null
       }
@@ -1717,6 +1748,7 @@ export function App() {
   );
 
   function renderConversationContent() {
+    const conversationPage = presentedConversationPage;
     if (conversationPage.kind === 'agents') {
       return <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />;
     }

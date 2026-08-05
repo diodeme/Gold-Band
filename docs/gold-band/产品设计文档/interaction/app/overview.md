@@ -141,7 +141,7 @@ UI 不应根据日志直接推断 workflow 终局，终局状态以 canonical st
 - 前端位于 `web/`，只负责桌面应用壳、页面栈、图形展示与直接操作。
 - 前后端通过 Tauri commands 交换 view model，终局状态仍以 canonical state 为准。
 - 桌面端 workspace 不依赖 Tauri 进程启动目录：启动时恢复用户记忆，或向上查找 `.gold-band/` 作为项目根；用户可通过原生目录选择器切换 workspace。
-- 启动命令为 `npm run dev`，默认渠道构建命令为 `npm run build` / `npm run build:default`，wb 内网渠道本地临时构建命令为 `npm run build:wb`。
+- 开发热加载启动命令为 `npm run dev`；需要固定当前源码快照、且不随前端或 Rust 文件修改热加载/重启时，使用默认渠道静态开发启动命令 `npm run dev:static`。该命令先将一次性 `web:build` 直接输出到本次进程独占的 `src-tauri/target/static-dev/<channel>/<snapshot>/frontend`，再让 Tauri `frontendDist` 只服务该不可变目录；退出后清理本次前端快照。后续其他进程改写 `web/dist` 不会触发当前客户端刷新，深层会话路由也不会在并行构建的清空窗口内落入临时 404。该模式同时关闭 Tauri source watcher，使用独立 Cargo target，并关闭 static dev 专用 Cargo dev profile 的 Rust debug symbols，避免与普通构建争用 Windows PDB 或触发容量限制；普通 `npm run dev` 的源码级调试能力不受影响。默认渠道构建命令为 `npm run build` / `npm run build:default`，wb 内网渠道本地临时构建命令为 `npm run build:wb`。
 - Tauri updater 按构建渠道内置更新配置：default 指向 GitHub Release `latest.json`，wb 指向内网占位地址；两个渠道内置不同 public key，避免跨渠道更新包互相验证通过。default 渠道由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在，并附加桌面安装包、签名和 `latest.json`；该 workflow 支持 `main` push 自动触发和 GitHub Actions 页面手动触发，便于 release-please 主链路补跑；manifest 始终使用 release tag 生成版本号和下载 URL，Windows 平台优先指向签名的 setup exe 安装包；手动 fallback 重建时应用源码来自 release tag，发布脚本来自所选 workflow 分支；macOS arm64 使用 `macos-15`，macOS x64 使用 `macos-15-intel`，release publish 后客户端才会从 latest 地址看到更新。
 - Windows release 包按 GUI 桌面应用启动，不附带 cmd 控制台窗口；仅 debug/dev 构建保留控制台输出以便开发调试；后台子进程通过统一 process helper 启动，ACP provider、诊断清理、Toast AUMID 注册等 npx/codex/taskkill/reg/PowerShell 调用不弹控制台窗口。
 

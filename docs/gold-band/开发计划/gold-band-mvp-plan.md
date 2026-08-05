@@ -164,7 +164,7 @@
 - 2026-06-29：ACP elicitation 卡片视觉密度收敛：已确认回答、多步骤进度、题干、选项行、自定义输入与底部操作区统一压缩上下留白和控制高度，保持会话流内联提问的轻量表单形态，不改变 request/response 协议与答案提交语义。
 - 2026-06-29：前端构建类型检查拆分为生产源码配置 `web/tsconfig.build.json` 与 Vitest 测试运行配置；`npm run web:build` 不再把 Node 环境测试文件纳入浏览器源码编译，测试验收继续通过 `npm run web:test` 固化。
 - 2026-06-29：wb 构建链路补齐 MCP stdio 握手实现对 `std::process::Command` 的显式依赖，保持新增 stdio MCP health/tools 探测逻辑可被 Rust 编译器稳定解析。
-- 启动：`npm run dev`；构建：`npm run build` / `npm run build:default`；wb 本地构建：`npm run build:wb`。
+- 启动：`npm run dev`；默认渠道固定快照调试：`npm run dev:static`（前端构建直接写入本次进程独占的不可变快照，Tauri 只服务该快照并在退出后清理；其他 `web:build` 不再触发全局刷新或深层路由临时 404。该模式同时关闭 Vite HMR、Tauri source watcher 与 Rust debug symbols，并使用独立 Cargo target，源码修改不影响当前客户端且规避 Windows PDB 冲突/容量限制；普通 dev 调试能力不受影响）；构建：`npm run build` / `npm run build:default`；wb 本地构建：`npm run build:wb`。
 - 仓库级依赖安装与锁文件统一使用 `npm` / `package-lock.json`；除非单独立项迁移包管理器，否则不新增 `pnpm-lock.yaml`、`yarn.lock` 等并行 lockfile。
 
 ---

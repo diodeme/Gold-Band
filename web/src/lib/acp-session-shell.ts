@@ -42,6 +42,7 @@ export interface AcpSessionInitializationInterruptedInput {
   runtimePauseReason?: string | null;
   runtimeActive: boolean;
   sessionId?: string | null;
+  sessionEstablished?: boolean;
   baseSessionReady: boolean;
   loadedEventCount: number;
 }
@@ -53,6 +54,7 @@ export interface AcpSessionInitializationFailedInput {
   runtimeComposerMode?: string | null;
   runtimeErrorMessage?: string | null;
   sessionId?: string | null;
+  sessionEstablished?: boolean;
   baseSessionReady: boolean;
   loadedEventCount: number;
 }
@@ -91,6 +93,7 @@ export function isAcpSessionInitializationFailed(input: AcpSessionInitialization
   return (
     !input.runtimeActive &&
     (runtimeStoppedWithFailure || composerStoppedWithFailure) &&
+    !input.sessionEstablished &&
     !input.sessionId?.trim() &&
     !input.baseSessionReady &&
     input.loadedEventCount === 0
@@ -106,6 +109,7 @@ export function isAcpSessionInitializationInterrupted(
     !input.runtimeActive &&
     runtimeStatus === 'paused' &&
     pauseReason === 'process-interrupted' &&
+    !input.sessionEstablished &&
     !input.sessionId?.trim() &&
     !input.baseSessionReady &&
     input.loadedEventCount === 0

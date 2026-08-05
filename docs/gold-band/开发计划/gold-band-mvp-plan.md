@@ -650,11 +650,11 @@ attempt-001/
 ## 2026-07-21：工作流长运行内存稳定性隐性优化
 
 - 生命周期：桌面进程共享一个 `RuntimeLifecycleBus`，metrics、notifications、conversation-run-state 在 setup 以固定键幂等订阅一次；保留匿名订阅供测试和内部场景使用。
-- ACP 传输：每 session route 使用 4 MiB / 256 帧无损 FIFO 背压，允许空队列单个超大帧；不影响 RPC pending response，不丢弃、不合并、不重排。
-- Timeline：磁盘 `acp.timeline.jsonl` 是完整事实源，内存只保留当前 text/thought/plan 流、未终态 tool、未决 permission/elicitation 及 metadata/usage/timing；会话树只加载 metadata/lifecycle，选中会话才加载完整事件页。
+- ACP 传输：每 session event pump 使用 4 MiB / 256 帧 FIFO 消费窗口；2026-08-05 起共享 stdout reader 不再等待该窗口，改由 64 MiB / 16,384 帧 session ingress 隔离过载，避免一个 session 反压 RPC 与其他会话。
+- Timeline：磁盘 `acp.timeline.jsonl` 是 canonical base + patch journal 规范索引，大字段使用 attempt Blob；内存只保留当前 text/thought/plan 流、未终态 tool、未决 permission/elicitation 及 metadata/usage/timing。会话树只加载 metadata/lifecycle，显式选择会话后才加载分页事件详情。
 - 日志：未路由 frame 仅记录摘要并按连接/事件类型限频；`runtime.log` 8 MiB 轮转、保留 4 份并继续执行 30 天清理，`acp.raw.jsonl` 保持现状。
 - 兼容边界：Tauri command、Runtime API、ViewModel JSON、前端类型、既有事件窗口配置、75ms/125ms 流式刷新、消息/工具/权限/分页/自动跟随与 workflow 并行度全部不变；不包含 WebView 恢复和高内存降并行。
-- 回归固化：覆盖具名订阅幂等、10,000 帧 FIFO、字节/帧背压、超大帧与关闭唤醒、热状态释放后 timeline 可读、tool input/output 合并、permission/elicitation timing、非选中不可读 timeline、日志限频和 size rotation。合入前必须通过 Rust workspace、Web test/build 与桌面 deep-link 验证。
+- 回归固化：覆盖具名订阅幂等、10,000 帧 FIFO、session ingress 过载隔离、超大帧与关闭、热状态释放后 timeline 可读、tool input/output/Blob 合并、permission/elicitation timing、非选中不可读 timeline、日志限频和 size rotation。合入前必须通过 Rust workspace、Web test/build 与桌面 deep-link 验证。
 - 本次结果：Rust workspace 全量通过；Release ACP route 10 项通过；Web 54 个测试文件、362 项通过且生产构建成功；桌面端现有 run/session deep-link 冒烟通过，测试实例与 dev server 已清理。字体测试仅修正元素定位，未改变 UI。
 
 ---
@@ -860,3 +860,4 @@ attempt-001/
 - 接口验收：Rust 单测固定“所有公开支持扩展名均可解析”、`.jsonl` 同时生成文本 content block 与附件元数据、历史首条消息补全且不重复/不进入后续消息；前端附件数组回归固定同一用户消息同时保留图片与普通文件。目标 `task-158/run-001` 的真实落盘数据验收确认历史投影结果同时包含 `image.png` 与 `acp.raw.jsonl`。
 - 展示完善：消息组件按附件媒体类型派生图片组与普通文件组，固定渲染为“图片行在上、文件行在下”，同类附件各自行内换行；普通文件使用内容宽度的紧凑 pill，不与固定尺寸图片缩略图混排或共同拉伸。
 - 前端回归：纯函数测试固定混合输入的分组结果；DOM 测试固定两个附件行的顺序、内容隔离，以及普通文件按钮的 `w-fit` / pill 样式契约。
+- 2026-08-05：完成双会话 ACP 卡死的根因修复。共享 stdout reader 从“等待单 session 4 MiB / 256 帧队列”改为非阻塞公平 demux，单 session 使用独立 64 MiB / 16,384 帧 ingress 熔断，RPC response、cancel control 和其他会话不再被旧会话反压。timeline 压缩只按 canonical rewrite 后新增 patch 字节与 patch/item 比例触发；`raw` 中超过 64 KiB 的 terminal/diff 字符串写入 `acp.file-blobs`，分页窗口和工具详情按需还原。`get_conversation_run` 首次只读摘要/会话树并移入 blocking worker，显式选中后再加载分页详情；leaf 额外投影轻量 `sessionEstablished` 和真实 ACP `sessionId`，避免 summary-first 的空 `selectedSession` 被误判为初始化中断。`stop_active_session` 先持久化暂停与 cancelled snapshot，返回 `operationId + accepted`，权限/elicitation 清理、ACP cancel、索引和详情校准后台执行，前端不再用空 session 清屏，run/sidebar 校准并行且用请求版本隔离陈旧响应。接口回归覆盖 9 MiB canonical 不重复压缩、9 MiB 已建立会话摘要不读 timeline 正文仍可恢复详情、outbound-only `session/new` 保持未建立、16 MiB 旧 session 积压下新 session 50 ms 内收帧、不可读 timeline 下停止 2 秒内 accepted、摘要/lifecycle 不读 timeline、Blob 工具详情完整还原和 accepted-stop 保留选中会话；Rust 定向测试、Web 定向测试与生产构建通过。

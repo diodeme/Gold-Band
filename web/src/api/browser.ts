@@ -517,7 +517,14 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId, status: 'paused', pauseReason: 'process-interrupted', resumable: true });
   },
   stopActiveSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, fallback, _outerNodeId, _outerAttemptId) {
-    return Promise.resolve({ kind: 'session-cancelled', run: null, session: fallback ?? null });
+    return Promise.resolve({
+      operationId: 'browser-preview-stop',
+      status: 'accepted',
+      kind: 'stop-accepted',
+      run: null,
+      session: fallback ?? null,
+      lifecycle: null,
+    });
   },
   submitManualCheck(_projectId, taskId, runId, _roundId, _nodeId, _attemptId, _outcome) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });

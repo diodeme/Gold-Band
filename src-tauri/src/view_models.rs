@@ -4577,6 +4577,7 @@ fn scan_acp_timeline(
             let usage = cached.usage.clone();
             touch_timeline_cache(&mut cache, &cache_key);
             return paginate_timeline(
+                path,
                 &all_events,
                 event_count,
                 session_elapsed_seconds,
@@ -4612,6 +4613,7 @@ fn scan_acp_timeline(
     };
 
     paginate_timeline(
+        path,
         &all_events,
         event_count,
         session_elapsed_seconds,
@@ -5165,6 +5167,7 @@ fn provider_history_item_index_vm(event: &AcpUiEventVm) -> u64 {
 }
 
 fn paginate_timeline(
+    timeline_path: &camino::Utf8Path,
     all_events: &[AcpUiEventVm],
     event_count: usize,
     session_elapsed_seconds: Option<u64>,
@@ -5249,6 +5252,7 @@ fn paginate_timeline(
     };
     include_latest_permission_events(&mut filtered, latest_permission_events);
     order_provider_history_by_prompt_anchors_vm(&mut filtered);
+    hydrate_timeline_events(timeline_path, &mut filtered)?;
 
     Ok(AcpEventScan {
         events: filtered,
@@ -5262,6 +5266,18 @@ fn paginate_timeline(
         available_commands: available_commands.cloned(),
         usage: usage.cloned(),
     })
+}
+
+fn hydrate_timeline_events(
+    timeline_path: &camino::Utf8Path,
+    events: &mut [AcpUiEventVm],
+) -> Result<()> {
+    for event in events {
+        if let Some(raw) = event.raw.as_mut() {
+            gold_band::acp::timeline::hydrate_timeline_value(timeline_path, raw)?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -5462,6 +5478,8 @@ pub fn acp_activity_detail_vm_for_attempt(
         .map(|(item_id, _)| item_id.clone())
         .collect::<HashSet<_>>();
     let audit = load_selected_activity_detail_events(&timeline_path, &selected_ids)?;
+    let mut audit = audit;
+    hydrate_timeline_events(&timeline_path, &mut audit)?;
     let items = audit
         .into_iter()
         .map(compact_event_for_activity_audit)
@@ -5665,9 +5683,10 @@ pub fn acp_tool_detail_vm_for_attempt(
                 .unwrap_or(candidate),
         );
     }
-    Ok(AcpToolDetailVm {
-        event: detail.map(compact_event_for_session),
-    })
+    if let Some(event) = detail.as_mut() {
+        hydrate_timeline_events(&timeline_path, std::slice::from_mut(event))?;
+    }
+    Ok(AcpToolDetailVm { event: detail })
 }
 
 fn semantic_block_range(
@@ -10078,6 +10097,7 @@ mod tests {
         ];
 
         let scan = paginate_timeline(
+            camino::Utf8Path::new("acp.timeline.jsonl"),
             &events,
             events.len(),
             Some(0),
@@ -10123,6 +10143,7 @@ mod tests {
         let events = vec![user, plan, request, response, assistant];
 
         let scan = paginate_timeline(
+            camino::Utf8Path::new("acp.timeline.jsonl"),
             &events,
             events.len(),
             Some(0),
@@ -10151,6 +10172,7 @@ mod tests {
     fn pending_elicitation_is_one_current_semantic_block() {
         let request = elicitation_request_event_at("elicit-pending", 1_000);
         let scan = paginate_timeline(
+            camino::Utf8Path::new("acp.timeline.jsonl"),
             std::slice::from_ref(&request),
             1,
             Some(0),
@@ -10185,6 +10207,7 @@ mod tests {
             acp_event_at("later-message", "textDelta", Some("completed"), 2_000, None);
         let events = vec![request, later_message];
         let scan = paginate_timeline(
+            camino::Utf8Path::new("acp.timeline.jsonl"),
             &events,
             events.len(),
             Some(0),
@@ -10486,6 +10509,50 @@ mod tests {
                 .events
                 .iter()
                 .all(|event| event.kind != "permissionRequest")
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn paginated_tool_detail_hydrates_blob_backed_terminal_output() {
+        let dir =
+            std::env::temp_dir().join(format!("gb-blob-tool-detail-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let timeline_path = gold_band::acp::branches::branch_timeline_path(
+            &attempt,
+            gold_band::acp::branches::ROOT_BRANCH_ID,
+        );
+        let large_output = "terminal-output".repeat(8 * 1024);
+        let mut event = acp_event_at(
+            "tool-large",
+            "toolCall",
+            Some("completed"),
+            1_000,
+            Some(json!({ "output": large_output })),
+        );
+        event.tool_call_id = Some("call-large".to_string());
+        let stored_event: gold_band::acp::events::AcpUiEvent =
+            serde_json::from_value(serde_json::to_value(event).unwrap()).unwrap();
+        gold_band::acp::events::write_timeline_items(&timeline_path, &[stored_event]).unwrap();
+
+        let stored = fs::read_to_string(timeline_path.as_std_path()).unwrap();
+        assert!(stored.contains("$goldBandBlob"));
+        let detail = acp_tool_detail_vm_for_attempt(
+            &attempt,
+            AcpToolDetailQueryInput {
+                branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                event_id: "tool-large".to_string(),
+                tool_call_id: Some("call-large".to_string()),
+            },
+        )
+        .unwrap()
+        .event
+        .unwrap();
+
+        assert_eq!(
+            detail.raw.unwrap()["output"].as_str(),
+            Some(large_output.as_str())
         );
         fs::remove_dir_all(dir).unwrap();
     }

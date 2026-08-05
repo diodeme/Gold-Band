@@ -26,7 +26,8 @@ const CLOSE_RAW_MAX_SIZE: u64 = 5 * 1024 * 1024;
 const CLOSE_RAW_TARGET_SIZE: u64 = 4 * 1024 * 1024;
 const SESSION_ROUTE_MAX_BYTES: usize = 4 * 1024 * 1024;
 const SESSION_ROUTE_MAX_FRAMES: usize = 256;
-const SESSION_ROUTE_BACKPRESSURE_WARN_AFTER: Duration = Duration::from_millis(250);
+const SESSION_ROUTE_INGRESS_HARD_MAX_BYTES: usize = 64 * 1024 * 1024;
+const SESSION_ROUTE_INGRESS_HARD_MAX_FRAMES: usize = 16_384;
 const UNROUTED_WARNING_INTERVAL: Duration = Duration::from_secs(60);
 const EARLY_SESSION_FRAME_TTL: Duration = Duration::from_secs(5);
 const EARLY_SESSION_FRAME_MAX_BYTES: usize = 1024 * 1024;
@@ -192,57 +193,42 @@ struct SessionRouteSender {
 
 impl SessionRouteSender {
     fn send(&self, value: Value, bytes: usize) -> bool {
-        let started_waiting = Instant::now();
-        let mut waited = false;
         let Ok(mut state) = self.inner.state.lock() else {
             return false;
         };
-        while !state.closed && state.receiver_alive && !session_route_has_capacity(&state, bytes) {
-            waited = true;
-            let Ok(next) = self.inner.not_full.wait(state) else {
-                return false;
-            };
-            state = next;
-        }
         if state.closed || !state.receiver_alive {
+            return false;
+        }
+        let exceeds_hard_limit = !state.queue.is_empty()
+            && (state.queue.len() >= SESSION_ROUTE_INGRESS_HARD_MAX_FRAMES
+                || state.queued_bytes.saturating_add(bytes) > SESSION_ROUTE_INGRESS_HARD_MAX_BYTES);
+        if exceeds_hard_limit {
+            state.closed = true;
+            let queued_bytes = state.queued_bytes;
+            let queued_frames = state.queue.len();
+            drop(state);
+            self.inner.not_empty.notify_all();
+            warn!(
+                adapter = %self.adapter_id,
+                session_id = %self.session_id,
+                queued_bytes,
+                queued_frames,
+                "ACP session route exceeded isolated ingress limit"
+            );
             return false;
         }
         state.queued_bytes = state.queued_bytes.saturating_add(bytes);
         state.queue.push_back(SessionRouteFrame { value, bytes });
         state.high_water_bytes = state.high_water_bytes.max(state.queued_bytes);
         state.high_water_frames = state.high_water_frames.max(state.queue.len());
-        let queued_bytes = state.queued_bytes;
-        let queued_frames = state.queue.len();
-        let high_water_bytes = state.high_water_bytes;
-        let high_water_frames = state.high_water_frames;
         drop(state);
         self.inner.not_empty.notify_one();
-        if waited && started_waiting.elapsed() >= SESSION_ROUTE_BACKPRESSURE_WARN_AFTER {
-            warn!(
-                adapter = %self.adapter_id,
-                session_id = %self.session_id,
-                wait_ms = started_waiting.elapsed().as_millis(),
-                queued_bytes,
-                queued_frames,
-                high_water_bytes,
-                high_water_frames,
-                "ACP session route applied bounded backpressure"
-            );
-        }
         true
     }
 
     fn close(&self) {
         self.inner.close();
     }
-}
-
-fn session_route_has_capacity(state: &SessionRouteState, incoming_bytes: usize) -> bool {
-    if state.queue.is_empty() {
-        return true;
-    }
-    state.queue.len() < SESSION_ROUTE_MAX_FRAMES
-        && state.queued_bytes.saturating_add(incoming_bytes) <= SESSION_ROUTE_MAX_BYTES
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2101,36 +2087,25 @@ mod tests {
     }
 
     #[test]
-    fn session_route_blocks_at_frame_limit_and_resumes_after_receive() {
+    fn session_route_does_not_block_shared_reader_at_pump_frame_limit() {
         let (sender, receiver) = session_route_pair("test-adapter", "session-1");
         for index in 0..256_u64 {
             assert!(sender.send(json!({ "index": index }), 1));
         }
-        let (done_tx, done_rx) = mpsc::channel();
-        let producer = thread::spawn(move || {
-            let sent = sender.send(json!({ "index": 256 }), 1);
-            done_tx.send(sent).unwrap();
-        });
-
-        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        let started = std::time::Instant::now();
+        assert!(sender.send(json!({ "index": 256 }), 1));
+        assert!(started.elapsed() < Duration::from_millis(50));
         assert!(receiver.try_recv().is_ok());
-        assert_eq!(done_rx.recv_timeout(Duration::from_secs(1)).unwrap(), true);
-        producer.join().unwrap();
     }
 
     #[test]
-    fn session_route_blocks_at_byte_limit_and_resumes_after_receive() {
+    fn session_route_does_not_block_shared_reader_at_pump_byte_limit() {
         let (sender, receiver) = session_route_pair("test-adapter", "session-1");
         assert!(sender.send(json!({ "index": 0 }), 4 * 1024 * 1024));
-        let (done_tx, done_rx) = mpsc::channel();
-        let producer = thread::spawn(move || {
-            done_tx.send(sender.send(json!({ "index": 1 }), 1)).unwrap();
-        });
-
-        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        let started = std::time::Instant::now();
+        assert!(sender.send(json!({ "index": 1 }), 1));
+        assert!(started.elapsed() < Duration::from_millis(50));
         assert!(receiver.try_recv().is_ok());
-        assert!(done_rx.recv_timeout(Duration::from_secs(1)).unwrap());
-        producer.join().unwrap();
     }
 
     #[test]
@@ -2141,41 +2116,21 @@ mod tests {
     }
 
     #[test]
-    fn dropping_receiver_unblocks_waiting_sender() {
+    fn dropping_receiver_rejects_subsequent_send() {
         let (sender, receiver) = session_route_pair("test-adapter", "session-1");
-        for index in 0..256_u64 {
-            assert!(sender.send(json!({ "index": index }), 1));
-        }
-        let (done_tx, done_rx) = mpsc::channel();
-        let producer = thread::spawn(move || {
-            done_tx
-                .send(sender.send(json!({ "afterDrop": true }), 1))
-                .unwrap();
-        });
-
         drop(receiver);
-
-        assert!(!done_rx.recv_timeout(Duration::from_secs(1)).unwrap());
-        producer.join().unwrap();
+        assert!(!sender.send(json!({ "afterDrop": true }), 1));
     }
 
     #[test]
-    fn closing_route_unblocks_waiting_sender_and_allows_receiver_to_drain() {
+    fn closing_route_rejects_new_frames_and_allows_receiver_to_drain() {
         let (sender, receiver) = session_route_pair("test-adapter", "session-1");
         for index in 0..256_u64 {
             assert!(sender.send(json!({ "index": index }), 1));
         }
         let closing_sender = sender.clone();
-        let (done_tx, done_rx) = mpsc::channel();
-        let producer = thread::spawn(move || {
-            done_tx
-                .send(sender.send(json!({ "afterClose": true }), 1))
-                .unwrap();
-        });
-
         closing_sender.close();
-
-        assert!(!done_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        assert!(!sender.send(json!({ "afterClose": true }), 1));
         for expected in 0..256_u64 {
             assert_eq!(
                 receiver.try_recv().unwrap()["index"].as_u64(),
@@ -2186,7 +2141,39 @@ mod tests {
             receiver.try_recv(),
             Err(SessionRouteTryRecvError::Disconnected)
         );
-        producer.join().unwrap();
+    }
+
+    #[test]
+    fn saturated_session_route_does_not_delay_another_session() {
+        let routes = Mutex::new(HashMap::new());
+        let early_frames = Mutex::new(EarlySessionFrames::default());
+        let receiver_a =
+            register_session_route_state("test-adapter", "session-a", &routes, &early_frames);
+        let receiver_b =
+            register_session_route_state("test-adapter", "session-b", &routes, &early_frames);
+        for index in 0..1_024_u64 {
+            assert!(route_or_buffer_session_frame(
+                &routes,
+                &early_frames,
+                "session-a",
+                json!({ "index": index }),
+                16 * 1024,
+                std::time::Instant::now(),
+            ));
+        }
+
+        let started = std::time::Instant::now();
+        assert!(route_or_buffer_session_frame(
+            &routes,
+            &early_frames,
+            "session-b",
+            json!({ "response": "ready" }),
+            32,
+            std::time::Instant::now(),
+        ));
+        assert!(started.elapsed() < Duration::from_millis(50));
+        assert_eq!(receiver_b.try_recv().unwrap()["response"], json!("ready"));
+        drop(receiver_a);
     }
 
     #[test]

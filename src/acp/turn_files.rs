@@ -484,7 +484,7 @@ impl TurnFileStore {
         })
     }
 
-    fn write_blob(&self, content: &str) -> Result<FileVersionRef> {
+    pub(crate) fn write_blob(&self, content: &str) -> Result<FileVersionRef> {
         let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
         let path = self.blob_path(&hash);
         if !path.exists() {
@@ -503,7 +503,7 @@ impl TurnFileStore {
         })
     }
 
-    fn read_blob(&self, version: &FileVersionRef) -> Result<String> {
+    pub(crate) fn read_blob(&self, version: &FileVersionRef) -> Result<String> {
         validate_hash(&version.content_hash)?;
         let path = self.blob_path(&version.content_hash);
         let bytes = std::fs::read(path.as_std_path()).map_err(|_| anyhow!(VERSION_NOT_FOUND))?;

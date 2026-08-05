@@ -388,6 +388,8 @@ export function ConversationRunPage({
                   lifecycle: session.lifecycle,
                   current: true,
                   manualCheckPending: session.manualCheckPending,
+                  sessionId: session.sessionId,
+                  sessionEstablished: session.sessionEstablished,
                   artifactCount: 0,
                   attachmentCount: 0,
                 }, true)}
@@ -408,6 +410,7 @@ export function ConversationRunPage({
           <ACPChatDialog
             key={`${run.taskUuid ?? run.taskId}:${selectedSessionKey ?? 'empty'}`}
             session={selectedSession}
+            sessionEstablished={selectedLeaf.sessionEstablished}
             projectId={run.projectId}
             taskId={run.taskId}
             runId={run.runId}

@@ -7,7 +7,7 @@ import { ACPChatDialog, type AcpLifecycleSnapshot, type AcpRuntimeComposerContex
 import { ConversationRunHeader } from '@/components/conversation/ConversationRunHeader';
 import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
 import { confirmCloseConversationRunWorkspaceResource, ConversationRunWorkspaceResourcePanel } from '@/components/workspace/ConversationRunWorkspaceResourcePanel';
-import { conversationDirectoryWorkspaceResourceKey, conversationRunWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
+import { conversationRunWorkspaceResourceKey, useRightWorkspace, type ConversationDirectoryWorkspaceEntry, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
 import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm } from '../types';
 
@@ -218,28 +218,31 @@ export function ConversationRunPage({
   const selectedSessionKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
   const showLaunchingSession = isRunning && !selectedLeaf;
 
-  const handleOpenInFileManager = useCallback(() => {
-    if (!workspace.scopeKey || !selectedLeaf) return;
-    const locator = {
-      projectId: run.projectId,
-      taskId: run.taskId,
-      runId: run.runId,
-      roundId: selectedLeaf.roundId,
-      nodeId: selectedLeaf.nodeId,
-      attemptId: selectedLeaf.attemptId,
-      outerNodeId: selectedLeaf.outerNodeId,
-      outerAttemptId: selectedLeaf.outerAttemptId,
-    };
-    void workspace.openResource({
+  const conversationDirectoryEntry = useMemo<ConversationDirectoryWorkspaceEntry | null>(() => {
+    if (!workspace.scopeKey || !selectedLeaf) return null;
+    return {
       kind: 'conversation-directory',
-      key: conversationDirectoryWorkspaceResourceKey(locator),
       scopeKey: workspace.scopeKey,
       title: t('workspace.runDirectory'),
       description: selectedLeaf.runtimeDisplay?.code ?? null,
       attention: false,
-      locator,
-    });
-  }, [run.projectId, run.runId, run.taskId, selectedLeaf, t, workspace.openResource, workspace.scopeKey]);
+      locator: {
+        projectId: run.projectId,
+        taskId: run.taskId,
+        runId: run.runId,
+        roundId: selectedLeaf.roundId,
+        nodeId: selectedLeaf.nodeId,
+        attemptId: selectedLeaf.attemptId,
+        outerNodeId: selectedLeaf.outerNodeId,
+        outerAttemptId: selectedLeaf.outerAttemptId,
+      },
+    };
+  }, [run.projectId, run.runId, run.taskId, selectedLeaf, t, workspace.scopeKey]);
+
+  useEffect(() => {
+    workspace.setConversationDirectoryEntry(conversationDirectoryEntry);
+    return () => workspace.setConversationDirectoryEntry(null);
+  }, [conversationDirectoryEntry, workspace.setConversationDirectoryEntry]);
 
   const isAutoFollowRestorableLeaf = useCallback((leaf: ConversationSessionLeafVm | null) => {
     if (!leaf) return false;
@@ -344,7 +347,6 @@ export function ConversationRunPage({
             onRerun={handleRerun}
             onEditWorkflow={handleEditWorkflow}
             onViewWorkflow={handleViewWorkflow}
-            onOpenInFileManager={handleOpenInFileManager}
             onToggleSessionSwitcher={() => setSessionSwitcherOpen((prev) => !prev)}
             sessionSwitcherOpen={sessionSwitcherOpen}
             onTitleChange={onTitleChange}
@@ -426,7 +428,6 @@ export function ConversationRunPage({
             directSessionHeader={isDirect ? {
               title: run.title,
               onTitleChange,
-              onOpenInFileManager: handleOpenInFileManager,
             } : undefined}
             usageCompact
             cacheNamespace={run.taskUuid ?? `${run.projectId}:${run.taskId}`}

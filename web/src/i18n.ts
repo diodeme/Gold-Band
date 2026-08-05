@@ -115,8 +115,9 @@ const resources = {
         closeTab: "关闭标签页",
         allTabs: "所有标签页",
         attention: "需要处理",
-        files: "文件",
+        files: "工作空间",
         browseWorkspaceFiles: "浏览和编辑当前工作空间文件",
+        browseRunDirectory: "浏览当前会话的运行文件",
         runDirectory: "运行目录",
         filesPanel: {
           file: "文件",
@@ -1604,8 +1605,9 @@ const resources = {
         closeTab: "Close tab",
         allTabs: "All tabs",
         attention: "Needs attention",
-        files: "Files",
+        files: "Workspace",
         browseWorkspaceFiles: "Browse and edit files in this workspace",
+        browseRunDirectory: "Browse files from this conversation run",
         runDirectory: "Run directory",
         filesPanel: {
           file: "File",

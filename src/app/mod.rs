@@ -1766,6 +1766,7 @@ impl App {
             bail!("agent `{provider}` is not supported yet");
         }
         match acp_client::doctor(
+            &agent_id,
             &config.adapter,
             self.paths.repo_root.clone(),
             self.config.use_local_claude,

@@ -11,7 +11,7 @@ use gold_band::acp::commands::{
 };
 use gold_band::acp::events::current_timestamp;
 use gold_band::app::observability::RuntimeLifecycleBus;
-use gold_band::app::{App, NotificationDedup};
+use gold_band::app::{App, NotificationDedup, ProviderDoctorProbe};
 use gold_band::config::{
     ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig, SettingsConfig,
     StateConfig,
@@ -79,6 +79,12 @@ impl DesktopContext {
 }
 
 pub type AgentDiagnosticState = ProviderDiagnosticSnapshot;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DoctorRetryPolicy {
+    NoRetry,
+    RetryOnce,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum UpdateBadgeSeenTarget {
@@ -477,15 +483,16 @@ impl DesktopState {
 
     pub fn cleanup_agent_diagnostic_processes(&self) -> Result<()> {
         let repo_root = self.context()?.repo_root;
-        let pid_path = GoldBandPaths::new(repo_root).doctor_acp_provider_pid_file();
-        let Some(pid) = std::fs::read_to_string(pid_path.as_std_path())
-            .ok()
-            .and_then(|value| value.trim().parse::<u32>().ok())
-        else {
-            return Ok(());
-        };
-        let _ = kill_process_tree(pid);
-        let _ = std::fs::remove_file(pid_path.as_std_path());
+        let doctor_acp_root = GoldBandPaths::new(repo_root).doctor_acp_root_dir();
+        for pid_path in doctor_provider_pid_files(&doctor_acp_root) {
+            if let Some(pid) = std::fs::read_to_string(pid_path.as_std_path())
+                .ok()
+                .and_then(|value| value.trim().parse::<u32>().ok())
+            {
+                let _ = kill_process_tree(pid);
+            }
+            let _ = std::fs::remove_file(pid_path.as_std_path());
+        }
         Ok(())
     }
 
@@ -572,9 +579,32 @@ impl DesktopState {
         &self,
         agent_id: &ManagedAgentId,
     ) -> Result<AgentDiagnosticState> {
+        self.refresh_agent_diagnostic_unlocked_with_probe(agent_id, |app, agent_id| {
+            doctor_probe_with_retry(DoctorRetryPolicy::NoRetry, || {
+                app.provider_doctor_probe(agent_id.as_str())
+            })
+        })
+    }
+
+    fn refresh_background_agent_diagnostic_unlocked(
+        &self,
+        agent_id: &ManagedAgentId,
+    ) -> Result<AgentDiagnosticState> {
+        self.refresh_agent_diagnostic_unlocked_with_probe(agent_id, |app, agent_id| {
+            doctor_probe_with_retry(DoctorRetryPolicy::RetryOnce, || {
+                app.provider_doctor_probe(agent_id.as_str())
+            })
+        })
+    }
+
+    fn refresh_agent_diagnostic_unlocked_with_probe(
+        &self,
+        agent_id: &ManagedAgentId,
+        probe: impl FnOnce(&App, &ManagedAgentId) -> Result<ProviderDoctorProbe>,
+    ) -> Result<AgentDiagnosticState> {
         let expected_config = self.managed_agent_config_revision(agent_id)?;
         let app = self.app()?;
-        let probe = app.provider_doctor_probe(agent_id.as_str())?;
+        let probe = probe(&app, agent_id)?;
         let _commit_guard = self.agent_config_diagnostic_commit_guard()?;
         if self.managed_agent_config_revision(agent_id)? != expected_config {
             anyhow::bail!("agent configuration changed during diagnostic");
@@ -613,15 +643,16 @@ impl DesktopState {
         if to_probe.is_empty() {
             return self.prune_agent_diagnostics();
         }
-        // 并行诊断：provider_doctor_probe 会 spawn 各 agent 的 adapter 子进程（npx，5–15s），
-        // 是慢操作且各 agent 互不影响；并行后总耗时 ≈ 最慢单个，而非逐个累加。
+        // 不同 agent 使用各自的 doctor/acp/<agent-id> attempt 目录，可安全并行；
+        // 同一 agent 仍由 agent_diagnostic_run_lock / scheduled queue 保持 singleflight。
+        // 定时诊断仅在首次 doctor 返回 unavailable 时重试一次，手动与保存后自动诊断不重试。
         // 诊断 map 为 Arc<Mutex> 细粒度锁，持久化为原子写（AtomicWriteFile），并发安全；
-        // 单个 agent 失败不中断其他（保持旧诊断值，下一轮重试）。
+        // 单个 agent 最终失败不中断其他 agent。
         std::thread::scope(|s| {
             for agent_id in &to_probe {
                 let agent_id = agent_id.clone();
                 s.spawn(move || {
-                    let _ = self.refresh_agent_diagnostic_unlocked(&agent_id);
+                    let _ = self.refresh_background_agent_diagnostic_unlocked(&agent_id);
                 });
             }
         });
@@ -877,6 +908,39 @@ fn diagnostic_state_from_result(result: DoctorResult) -> AgentDiagnosticState {
     }
 }
 
+fn doctor_probe_with_retry(
+    retry_policy: DoctorRetryPolicy,
+    mut probe: impl FnMut() -> Result<ProviderDoctorProbe>,
+) -> Result<ProviderDoctorProbe> {
+    let first = probe()?;
+    if first.doctor.available || retry_policy == DoctorRetryPolicy::NoRetry {
+        return Ok(first);
+    }
+    probe()
+}
+
+fn doctor_provider_pid_files(doctor_acp_root: &Utf8Path) -> Vec<Utf8PathBuf> {
+    let mut pid_files = Vec::new();
+    let legacy_pid = doctor_acp_root.join("provider.pid");
+    if legacy_pid.is_file() {
+        pid_files.push(legacy_pid);
+    }
+    let Ok(entries) = std::fs::read_dir(doctor_acp_root.as_std_path()) else {
+        return pid_files;
+    };
+    for entry in entries.flatten() {
+        let Ok(path) = Utf8PathBuf::from_path_buf(entry.path()) else {
+            continue;
+        };
+        let pid_path = path.join("provider.pid");
+        if pid_path.is_file() {
+            pid_files.push(pid_path);
+        }
+    }
+    pid_files.sort();
+    pid_files
+}
+
 fn load_persisted_agent_diagnostics(
     context: &DesktopContext,
 ) -> BTreeMap<ManagedAgentId, AgentDiagnosticState> {
@@ -954,6 +1018,17 @@ mod tests {
     use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
+    fn doctor_probe(available: bool, reason: Option<&str>) -> ProviderDoctorProbe {
+        ProviderDoctorProbe {
+            doctor: DoctorResult {
+                available,
+                reason: reason.map(str::to_string),
+                capabilities: None,
+            },
+            commands: Vec::new(),
+        }
+    }
+
     fn desktop_state() -> (tempfile::TempDir, DesktopState) {
         let root = tempfile::tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
@@ -1023,6 +1098,87 @@ mod tests {
 
         state.cancel_queued_agent_diagnostic(&agent_id).unwrap();
         assert!(state.queue_agent_diagnostic(&agent_id).unwrap());
+    }
+
+    #[test]
+    fn background_doctor_retries_once_after_an_unavailable_result() {
+        let mut attempts = 0;
+        let result = doctor_probe_with_retry(DoctorRetryPolicy::RetryOnce, || {
+            attempts += 1;
+            Ok(if attempts == 1 {
+                doctor_probe(false, Some("transient failure"))
+            } else {
+                doctor_probe(true, None)
+            })
+        })
+        .unwrap();
+
+        assert_eq!(attempts, 2);
+        assert!(result.doctor.available);
+    }
+
+    #[test]
+    fn background_doctor_persists_the_second_failure_without_more_retries() {
+        let mut attempts = 0;
+        let result = doctor_probe_with_retry(DoctorRetryPolicy::RetryOnce, || {
+            attempts += 1;
+            Ok(doctor_probe(
+                false,
+                Some(if attempts == 1 { "first" } else { "second" }),
+            ))
+        })
+        .unwrap();
+
+        assert_eq!(attempts, 2);
+        assert!(!result.doctor.available);
+        assert_eq!(result.doctor.reason.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn background_doctor_does_not_retry_a_successful_result() {
+        let mut attempts = 0;
+        let result = doctor_probe_with_retry(DoctorRetryPolicy::RetryOnce, || {
+            attempts += 1;
+            Ok(doctor_probe(true, None))
+        })
+        .unwrap();
+
+        assert_eq!(attempts, 1);
+        assert!(result.doctor.available);
+    }
+
+    #[test]
+    fn manual_doctor_does_not_retry_an_unavailable_result() {
+        let mut attempts = 0;
+        let result = doctor_probe_with_retry(DoctorRetryPolicy::NoRetry, || {
+            attempts += 1;
+            Ok(doctor_probe(false, Some("manual failure")))
+        })
+        .unwrap();
+
+        assert_eq!(attempts, 1);
+        assert!(!result.doctor.available);
+        assert_eq!(result.doctor.reason.as_deref(), Some("manual failure"));
+    }
+
+    #[test]
+    fn doctor_process_cleanup_discovers_each_agent_pid_file() {
+        let root = tempfile::tempdir().unwrap();
+        let doctor_root = Utf8PathBuf::from_path_buf(root.path().join("doctor/acp")).unwrap();
+        let cursor_dir = doctor_root.join("cursor");
+        let opencode_dir = doctor_root.join("opencode");
+        std::fs::create_dir_all(cursor_dir.as_std_path()).unwrap();
+        std::fs::create_dir_all(opencode_dir.as_std_path()).unwrap();
+        std::fs::write(cursor_dir.join("provider.pid").as_std_path(), "101").unwrap();
+        std::fs::write(opencode_dir.join("provider.pid").as_std_path(), "202").unwrap();
+
+        assert_eq!(
+            doctor_provider_pid_files(&doctor_root),
+            vec![
+                cursor_dir.join("provider.pid"),
+                opencode_dir.join("provider.pid"),
+            ]
+        );
     }
 
     #[test]

@@ -86,6 +86,26 @@ const edgeTypes = { workflowRouted: WorkflowRoutedEdge };
 const editorNodeTypes = { editorCanvas: EditorCanvasNode };
 const SCHEMA_VALIDATION_DELAY_MS = 2000;
 
+export function isWorkflowAgentDoctorReady(agent: ManagedAgentVm): boolean {
+  return agent.supported && agent.diagnostic?.available === true;
+}
+
+export function workflowEditorSupportedAgents(agentRegistry: AgentRegistryVm | null): ManagedAgentVm[] {
+  return agentRegistry?.agents.filter((agent) => agent.supported) ?? [];
+}
+
+function AgentSelectItemContent({ agent, unavailableLabel }: { agent: ManagedAgentVm; unavailableLabel: string }) {
+  const unavailableReason = isWorkflowAgentDoctorReady(agent)
+    ? null
+    : (agent.diagnostic?.reason ?? unavailableLabel);
+  return (
+    <span className="flex min-w-0 flex-col items-start">
+      <span>{agent.displayName}</span>
+      {unavailableReason ? <span className="max-w-[24rem] truncate text-xs text-destructive">{unavailableReason}</span> : null}
+    </span>
+  );
+}
+
 function EditorCanvasNode({ data }: { data: EditorNodeData }) {
   if (data.terminal) {
     return (
@@ -159,11 +179,12 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   const [newRoundEntryDrafts, setNewRoundEntryDrafts] = useState<Record<number, string>>(() => newRoundEntryDraftsFromWorkflow(restoredWorkflow));
   const handledValidationRequestIdRef = useRef(0);
   const restoredDraftAppliedRef = useRef(Boolean(initialSessionDraft));
-  const agents = useMemo(() => agentRegistry?.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true) ?? [], [agentRegistry]);
+  const agents = useMemo(() => workflowEditorSupportedAgents(agentRegistry), [agentRegistry]);
+  const doctorReadyAgents = useMemo(() => agents.filter(isWorkflowAgentDoctorReady), [agents]);
   const selectedNode = selectedNodeId ? workflow.nodes.find((node) => node.id === selectedNodeId) ?? null : null;
   const selectedEdgeIndex = selectedEdgeId ? Number(selectedEdgeId.split(':').at(-1)) : -1;
   const selectedEdge = selectedEdgeIndex >= 0 ? workflow.edges[selectedEdgeIndex] ?? null : null;
-  const canSave = workflow.nodes.length > 0 && workflow.entry.trim() !== '' && agents.length > 0;
+  const canSave = workflow.nodes.length > 0 && workflow.entry.trim() !== '' && doctorReadyAgents.length > 0;
   const workflowGraphSignature = useMemo(() => authoringWorkflowGraphSignature(workflow), [workflow]);
   const invalidNodeSignature = useMemo(() => stringSetSignature(invalidNodeIds), [invalidNodeIds]);
   const visibleTerminalSignature = useMemo(() => stringSetSignature(visibleTerminalIds), [visibleTerminalIds]);
@@ -195,11 +216,11 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   useEffect(() => {
     if (validationRequestId <= 0 || handledValidationRequestIdRef.current === validationRequestId) return;
     handledValidationRequestIdRef.current = validationRequestId;
-    const validation = validateWorkflowForSave(workflow, profiles, agents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId);
+    const validation = validateWorkflowForSave(workflow, profiles, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId);
     if (validation.valid) return;
     setPendingValidation(validation);
     setValidationDialogOpen(true);
-  }, [agents, profiles, t, validationRequestId, workflow, workflowTemplates]);
+  }, [doctorReadyAgents, profiles, t, validationRequestId, workflow, workflowTemplates]);
 
   useEffect(() => {
     if (!pendingFocusNodeId || !flowInstance) return;
@@ -291,7 +312,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
       setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(workflowToSave));
       onChange?.(workflowToSave);
     }
-    const validation = validateWorkflowForSave(workflowToSave, profiles, agents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId);
+    const validation = validateWorkflowForSave(workflowToSave, profiles, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId);
     if (!validation.valid) {
       setPendingValidation(validation);
       setValidationDialogOpen(true);
@@ -748,7 +769,11 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
       <Field label={t('workflowEditor.agent')} required errors={errorsFor('provider')}>
         <Select value={node.provider ?? ''} onValueChange={(provider) => updateWorker({ provider, permission_mode: null, model: null })}>
           <SelectTrigger className={errorClass(errorsFor('provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
-          <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
+          <SelectContent>{agents.map((agent) => (
+            <SelectItem value={agent.agentType} key={agent.agentType} disabled={!isWorkflowAgentDoctorReady(agent)}>
+              <AgentSelectItemContent agent={agent} unavailableLabel={t('workflowEditor.agentDoctorUnavailable')} />
+            </SelectItem>
+          ))}</SelectContent>
         </Select>
         {agents.length === 0 ? <p className="text-xs text-muted-foreground">{t('workflowEditor.noDoctorReadyAgents')}</p> : null}
       </Field>
@@ -977,7 +1002,11 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
           <Field label={<HelpLabel label={t('workflowEditor.agent')} help={t('workflowEditor.dynamicFixedAgentHelp')} />} required errors={errorsFor('agentStrategy.provider')}>
             <Select value={node.agentStrategy.provider} onValueChange={(provider) => { updateDynamic({ permission_mode: null } as Partial<WorkflowAiDynamicNodeDsl>); updateAgentStrategy({ mode: 'fixed', provider, model: undefined } as WorkflowAiDynamicFixedAgentStrategyDsl); }}>
               <SelectTrigger className={errorClass(errorsFor('agentStrategy.provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
-              <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
+              <SelectContent>{agents.map((agent) => (
+                <SelectItem value={agent.agentType} key={agent.agentType} disabled={!isWorkflowAgentDoctorReady(agent)}>
+                  <AgentSelectItemContent agent={agent} unavailableLabel={t('workflowEditor.agentDoctorUnavailable')} />
+                </SelectItem>
+              ))}</SelectContent>
             </Select>
           </Field>
           {(() => {
@@ -1005,7 +1034,11 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
           <Field label={<HelpLabel label={t('workflowEditor.dynamicBootstrapAgent')} help={t('workflowEditor.dynamicBootstrapAgentHelp')} />} required errors={errorsFor('agentStrategy.bootstrapProvider')}>
             <Select value={node.agentStrategy.bootstrapProvider} onValueChange={(bootstrapProvider) => { updateDynamic({ permission_mode: null } as Partial<WorkflowAiDynamicNodeDsl>); updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), bootstrapProvider, bootstrapModel: undefined }); }}>
               <SelectTrigger className={errorClass(errorsFor('agentStrategy.bootstrapProvider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
-              <SelectContent>{agents.map((agent) => <SelectItem value={agent.agentType} key={agent.agentType}>{agent.displayName}</SelectItem>)}</SelectContent>
+              <SelectContent>{agents.map((agent) => (
+                <SelectItem value={agent.agentType} key={agent.agentType} disabled={!isWorkflowAgentDoctorReady(agent)}>
+                  <AgentSelectItemContent agent={agent} unavailableLabel={t('workflowEditor.agentDoctorUnavailable')} />
+                </SelectItem>
+              ))}</SelectContent>
             </Select>
           </Field>
           {(() => {
@@ -1174,6 +1207,7 @@ type MultiSelectPopoverProps<T> = {
   getItemId: (item: T) => string;
   filterFn: (item: T, search: string) => boolean;
   isSelected: (id: string) => boolean;
+  isItemDisabled?: (item: T, isSelected: boolean) => boolean;
   onToggle: (id: string) => void;
   onRemove: (id: string) => void;
   renderBadge: (id: string) => ReactNode;
@@ -1186,7 +1220,7 @@ type MultiSelectPopoverProps<T> = {
   resetSearchOnClose?: boolean;
 };
 
-function MultiSelectPopover<T>({ items, getItemId, filterFn, isSelected, onToggle, onRemove, renderBadge, renderItem, placeholder, emptyMessage, triggerEmptyLabel, showTriggerEmpty, invalid, resetSearchOnClose }: MultiSelectPopoverProps<T>) {
+function MultiSelectPopover<T>({ items, getItemId, filterFn, isSelected, isItemDisabled, onToggle, onRemove, renderBadge, renderItem, placeholder, emptyMessage, triggerEmptyLabel, showTriggerEmpty, invalid, resetSearchOnClose }: MultiSelectPopoverProps<T>) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const selectedIds = useMemo(() => new Set(items.filter((item) => isSelected(getItemId(item))).map(getItemId)), [items, isSelected, getItemId]);
@@ -1226,7 +1260,7 @@ function MultiSelectPopover<T>({ items, getItemId, filterFn, isSelected, onToggl
                 const id = getItemId(item);
                 const selected = isSelected(id);
                 return (
-                  <CommandItem key={id} value={id} onSelect={() => onToggle(id)} className="items-start py-2">
+                  <CommandItem key={id} value={id} disabled={isItemDisabled?.(item, selected)} onSelect={() => onToggle(id)} className="items-start py-2">
                     <Check className={cn('mt-0.5 size-4', selected ? 'opacity-100' : 'opacity-0')} />
                     {renderItem(item, selected)}
                   </CommandItem>
@@ -1251,11 +1285,13 @@ function AgentMultiSelect({ agents, selectedAgents, invalid, onChange, t }: { ag
       if (next.has(agentType)) {
         next.delete(agentType);
       } else {
+        const agent = agents.find((item) => item.agentType === agentType);
+        if (!agent || !isWorkflowAgentDoctorReady(agent)) return;
         next.set(agentType, { provider: agentType });
       }
       onChange(Array.from(next.values()));
     },
-    [selectedMap, onChange],
+    [agents, selectedMap, onChange],
   );
   const getItemId = useCallback((a: ManagedAgentVm) => a.agentType, []);
   const filterFn = useCallback(
@@ -1286,13 +1322,19 @@ function AgentMultiSelect({ agents, selectedAgents, invalid, onChange, t }: { ag
     [agents],
   );
   const renderItem = useCallback(
-    (agent: ManagedAgentVm, _selected: boolean) => (
-      <span>
+    (agent: ManagedAgentVm, _selected: boolean) => {
+      const reason = isWorkflowAgentDoctorReady(agent)
+        ? null
+        : (agent.diagnostic?.reason ?? t('workflowEditor.agentDoctorUnavailable'));
+      return (
+      <span className={cn('flex min-w-0 flex-col', reason && 'opacity-60')}>
         <span>{agent.displayName}</span>
         <span className="font-mono text-[11px] text-muted-foreground">{agent.agentType}</span>
+        {reason ? <span className="max-w-[22rem] truncate text-[11px] text-destructive">{reason}</span> : null}
       </span>
-    ),
-    [],
+      );
+    },
+    [t],
   );
 
   return (
@@ -1301,6 +1343,7 @@ function AgentMultiSelect({ agents, selectedAgents, invalid, onChange, t }: { ag
       getItemId={getItemId}
       filterFn={filterFn}
       isSelected={isSelected}
+      isItemDisabled={(agent, selected) => !selected && !isWorkflowAgentDoctorReady(agent)}
       onToggle={toggleAgent}
       onRemove={onRemove}
       renderBadge={renderBadge}

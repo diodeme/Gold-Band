@@ -197,7 +197,7 @@ use crate::acp::usage::{
     AcpAttemptTokenTotals, AcpAttemptUsageRecovery, AcpPromptTokenUsage, append_prompt_completed,
     append_prompt_started, repair_attempt_usage,
 };
-use crate::config::{AcpAdapterConfig, RuntimeConfig};
+use crate::config::{AcpAdapterConfig, ManagedAgentId, RuntimeConfig};
 use crate::domain::{SessionMode, VERSION};
 use crate::provider::{
     ACP_MCP_TRANSPORT_UNSUPPORTED_CODE, PromptBundle, PromptVisibility, SkippedAcpMcpServer,
@@ -1142,16 +1142,17 @@ pub struct AcpDoctorProbe {
 }
 
 pub fn doctor(
+    agent_id: &ManagedAgentId,
     config: &AcpAdapterConfig,
     cwd: Utf8PathBuf,
     use_local_claude: bool,
     require_local_claude_executable: bool,
 ) -> Result<AcpDoctorProbe> {
     let paths = GoldBandPaths::new(cwd.clone());
-    let doctor_acp_dir = paths.doctor_acp_dir();
+    let doctor_acp_dir = paths.doctor_acp_dir(agent_id);
     cleanup_doctor_acp_dir_before_run(&doctor_acp_dir);
     let mut runtime = AcpRuntime::start_standalone(
-        "doctor",
+        agent_id.as_str(),
         config,
         cwd.clone(),
         doctor_acp_dir.clone(),
@@ -1165,7 +1166,7 @@ pub fn doctor(
     let result = (|| {
         let mut capabilities = runtime.initialize_with_timeout(Some(DOCTOR_REQUEST_TIMEOUT))?;
         runtime.setup_session(
-            "doctor",
+            agent_id.as_str(),
             cwd,
             None,
             None,

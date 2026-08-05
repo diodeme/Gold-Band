@@ -685,6 +685,7 @@ const resources = {
         noAgents: "请先在 Agent 管理页配置并通过 doctor 检查。",
         noDoctorReadyAgents:
           "暂无通过 doctor 的 Agent，请先到 Agent 管理运行 doctor。",
+        agentDoctorUnavailable: "Agent 未通过 doctor",
         selectHint: "选择画布中的节点或边进行配置。",
         workflowControls: "工作流控制",
         workflowControlsHelp: "未填写表示不限制；限制超出后当前工作流失败。",
@@ -2197,6 +2198,7 @@ const resources = {
           "Configure an agent and pass doctor in Agent Management first.",
         noDoctorReadyAgents:
           "No doctor-ready agents yet. Run doctor in Agent Management first.",
+        agentDoctorUnavailable: "Agent has not passed doctor",
         selectHint: "Select a node or edge on the canvas to configure it.",
         workflowControls: "Workflow Controls",
         workflowControlsHelp:

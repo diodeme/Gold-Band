@@ -52,6 +52,12 @@ import type {
   UpdateStatusVm,
   UpdaterSettingsVm,
   MetricsSettingsVm,
+  MulticaSettingsVm,
+  MulticaServerWorkspaceVm,
+  MulticaWorkspaceRefVm,
+  MulticaRemoteTaskStartedVm,
+  RemoteConversationSidebarVm,
+  RemoteTaskVm,
   WorkflowDsl,
   ConversationAttemptLifecycleVm,
   WorkflowTemplateStore,
@@ -198,6 +204,21 @@ export interface RuntimeApi {
   updateNotificationAttention?(input: NotificationAttentionInput): Promise<void>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;
   saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null): Promise<MetricsSettingsVm>;
+  getMulticaSettings(): Promise<MulticaSettingsVm>;
+  saveMulticaSettings(enabled: boolean, multicaBaseUrl: string | null, multicaAppUrl: string | null, defaultProvider: string | null, activeWorkspaceId: string | null): Promise<MulticaSettingsVm>;
+  connectMultica(): Promise<MulticaSettingsVm>;
+  disconnectMultica(): Promise<MulticaSettingsVm>;
+  getMulticaTasks(): Promise<RemoteConversationSidebarVm>;
+  claimMulticaTask(taskId: string, workspaceId: string): Promise<RemoteTaskVm>;
+  startMulticaRemoteTask(taskId: string, workspaceId: string): Promise<MulticaRemoteTaskStartedVm>;
+  cancelMulticaTask(taskId: string): Promise<void>;
+  rerunMulticaTask(issueId: string, workspaceId: string): Promise<void>;
+  listServerMulticaWorkspaces(): Promise<MulticaServerWorkspaceVm[]>;
+  pickLocalDirectory(): Promise<string | null>;
+  addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string, localPath: string): Promise<MulticaSettingsVm>;
+  rebindMulticaWorkspace(workspaceId: string, localPath: string): Promise<MulticaSettingsVm>;
+  removeMulticaWorkspace(workspaceId: string): Promise<MulticaSettingsVm>;
+  setActiveMulticaWorkspace(workspaceId: string): Promise<MulticaSettingsVm>;
   getUpdateStatus(): Promise<UpdateStatusVm>;
   markSettingsUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;
   markSettingsAdvancedUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;
@@ -239,6 +260,8 @@ export interface RuntimeApi {
   startWorkspaceFileWatch(projectId: string): Promise<void>;
   stopWorkspaceFileWatch(projectId: string): Promise<void>;
   subscribeWorkspaceFileChanges?(listener: (event: WorkspaceFileChangedEventVm) => void): Promise<() => void>;
+  subscribeMulticaTaskUpdates?(listener: () => void): Promise<() => void>;
+  subscribeMulticaSettingsUpdates?(listener: () => void): Promise<() => void>;
   workspaceFilePreviewUrl(token: string, staticFrame?: boolean): string;
   openExternalUrl(url: string): Promise<void>;
   openFileWithSystemApp(path: string): Promise<void>;

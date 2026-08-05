@@ -527,6 +527,17 @@ pub struct SettingsConfig {
     pub desktop_metrics_api_key: Option<String>,
     #[serde(default)]
     pub context_servers: Option<Vec<McpServerConfig>>,
+    // —— multica（全 Option<T>，对照 metrics 三字段）——
+    pub desktop_multica_enabled: Option<bool>,
+    pub desktop_multica_base_url: Option<String>,
+    pub desktop_multica_app_url: Option<String>,
+    pub desktop_multica_pat: Option<String>,
+    pub desktop_multica_daemon_id: Option<String>,
+    pub desktop_multica_workspaces: Option<Vec<MulticaWorkspaceRef>>,
+    pub desktop_multica_active_workspace_id: Option<String>,
+    pub desktop_multica_default_provider: Option<String>,
+    /// 已连接 multica 账号身份（connect 写、disconnect 清）；仅 UI 展示用，非凭证。
+    pub desktop_multica_account: Option<MulticaAccountRef>,
 }
 
 pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 2;
@@ -686,6 +697,16 @@ pub struct StateConfig {
     pub conversation_pins: Vec<ConversationPin>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub conversation_run_modes: std::collections::HashMap<String, ConversationRunModeEntry>,
+    // —— multica 持久化状态（程序写入/恢复）——
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multica_runtime_ids: Option<std::collections::HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multica_pending_issues: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multica_task_conversations:
+        Option<std::collections::HashMap<String, MulticaTaskConversation>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub multica_completed_tasks: Vec<MulticaCompletedTask>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1029,6 +1050,16 @@ pub struct RuntimeConfig {
     pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub provider_diagnostics: BTreeMap<String, ProviderDiagnosticSnapshot>,
+    // —— multica 镜像（非 Option，apply_settings 灌入）——
+    pub desktop_multica_enabled: bool,
+    pub desktop_multica_base_url: Option<String>,
+    pub desktop_multica_app_url: Option<String>,
+    pub desktop_multica_pat: Option<String>,
+    pub desktop_multica_daemon_id: Option<String>,
+    pub desktop_multica_workspaces: Vec<MulticaWorkspaceRef>,
+    pub desktop_multica_active_workspace_id: Option<String>,
+    pub desktop_multica_default_provider: String,
+    pub desktop_multica_account: Option<MulticaAccountRef>,
 }
 
 impl Default for RuntimeConfig {
@@ -1074,6 +1105,15 @@ impl Default for RuntimeConfig {
             turn_files: TurnFilesConfig::default(),
             permission_mode_mapping: BTreeMap::new(),
             provider_diagnostics: BTreeMap::new(),
+            desktop_multica_enabled: false,
+            desktop_multica_base_url: None,
+            desktop_multica_app_url: None,
+            desktop_multica_pat: None,
+            desktop_multica_daemon_id: None,
+            desktop_multica_workspaces: Vec::new(),
+            desktop_multica_active_workspace_id: None,
+            desktop_multica_default_provider: "claude-acp".to_string(),
+            desktop_multica_account: None,
         };
         base.apply_app_config(embedded_project_app_config())
     }
@@ -1117,6 +1157,23 @@ impl RuntimeConfig {
         }
         self.desktop_metrics_base_url = settings.desktop_metrics_base_url.clone();
         self.desktop_metrics_api_key = settings.desktop_metrics_api_key.clone();
+        if let Some(value) = settings.desktop_multica_enabled {
+            self.desktop_multica_enabled = value;
+        }
+        self.desktop_multica_base_url = settings.desktop_multica_base_url.clone();
+        self.desktop_multica_app_url = settings.desktop_multica_app_url.clone();
+        self.desktop_multica_pat = settings.desktop_multica_pat.clone();
+        self.desktop_multica_daemon_id = settings.desktop_multica_daemon_id.clone();
+        self.desktop_multica_workspaces = settings
+            .desktop_multica_workspaces
+            .clone()
+            .unwrap_or_default();
+        self.desktop_multica_active_workspace_id = settings.desktop_multica_active_workspace_id.clone();
+        self.desktop_multica_default_provider = settings
+            .desktop_multica_default_provider
+            .clone()
+            .unwrap_or_else(|| "claude-acp".to_string());
+        self.desktop_multica_account = settings.desktop_multica_account.clone();
         self
     }
 
@@ -1251,7 +1308,9 @@ mod tests {
         AcpAdapterConfig, ConsoleThemeName, ConversationDirectConfig, ConversationRunMode,
         ConversationRunModeEntry, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
         DesktopUpdateBadgeState, MANAGED_AGENT_PRESETS, ManagedAgentConfig, ManagedAgentId,
-        ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
+        MulticaAccountRef, MulticaCompletedTask, MulticaTaskConversation, MulticaWorkspaceRef,
+        ProjectAppConfig, RuntimeConfig,
+        RuntimeLogLevel, SettingsConfig, StateConfig,
         TurnFilesConfig, WorkspaceLayoutConfig, managed_agent_preset,
     };
     use std::collections::BTreeMap;
@@ -1969,6 +2028,192 @@ mod tests {
             Some("bypassPermissions")
         );
     }
+
+    #[test]
+    fn multica_workspace_ref_serializes_camel_case() {
+        // 前端契约：JSON key 必须是 camelCase（localProjectId），防止 rename_all 被误删。
+        let workspace = MulticaWorkspaceRef {
+            id: "ws-1".to_string(),
+            name: "Gold Band".to_string(),
+            slug: "gold-band".to_string(),
+            local_project_id: "proj-1".to_string(),
+            provider: "claude-acp".to_string(),
+        };
+        let json = serde_json::to_value(&workspace).unwrap();
+        assert_eq!(json["id"], "ws-1");
+        assert_eq!(json["localProjectId"], "proj-1");
+        assert_eq!(json["provider"], "claude-acp");
+        assert!(
+            json.get("local_project_id").is_none(),
+            "snake_case key must not be serialized"
+        );
+        let roundtripped: MulticaWorkspaceRef = serde_json::from_value(json).unwrap();
+        assert_eq!(roundtripped.local_project_id, "proj-1");
+    }
+
+    #[test]
+    fn multica_task_conversation_serializes_camel_case() {
+        let conversation = MulticaTaskConversation {
+            local_task_id: "task-1".to_string(),
+            local_run_id: "run-1".to_string(),
+            session_id: Some("acp-session-1".to_string()),
+            work_dir: Some("/repo".to_string()),
+        };
+        let json = serde_json::to_value(&conversation).unwrap();
+        assert_eq!(json["localTaskId"], "task-1");
+        assert_eq!(json["localRunId"], "run-1");
+        assert_eq!(json["sessionId"], "acp-session-1");
+        assert_eq!(json["workDir"], "/repo");
+        serde_json::from_value::<MulticaTaskConversation>(json).unwrap();
+    }
+
+    #[test]
+    fn runtime_config_defaults_multica_disabled_with_default_provider() {
+        let config = RuntimeConfig::default();
+        assert!(!config.desktop_multica_enabled);
+        assert_eq!(config.desktop_multica_default_provider, "claude-acp");
+        assert!(config.desktop_multica_base_url.is_none());
+        assert!(config.desktop_multica_workspaces.is_empty());
+    }
+
+    #[test]
+    fn apply_settings_propagates_multica_fields_with_provider_fallback() {
+        let config = RuntimeConfig::default().apply_settings(&SettingsConfig {
+            desktop_multica_enabled: Some(true),
+            desktop_multica_base_url: Some("http://maling.weoa.com".to_string()),
+            desktop_multica_app_url: Some("http://maling.weoa.com".to_string()),
+            desktop_multica_default_provider: None,
+            desktop_multica_workspaces: Some(vec![MulticaWorkspaceRef {
+                id: "ws-1".to_string(),
+                name: "Gold Band".to_string(),
+                slug: "gold-band".to_string(),
+                local_project_id: "proj-1".to_string(),
+                provider: "claude-acp".to_string(),
+            }]),
+            ..SettingsConfig::default()
+        });
+        assert!(config.desktop_multica_enabled);
+        assert_eq!(
+            config.desktop_multica_base_url.as_deref(),
+            Some("http://maling.weoa.com")
+        );
+        // default_provider=None 时 fallback 到 claude-acp（与 Default 一致）。
+        assert_eq!(config.desktop_multica_default_provider, "claude-acp");
+        assert_eq!(config.desktop_multica_workspaces.len(), 1);
+        assert_eq!(config.desktop_multica_workspaces[0].id, "ws-1");
+
+        // 显式 provider 覆盖 fallback。
+        let with_provider = RuntimeConfig::default().apply_settings(&SettingsConfig {
+            desktop_multica_default_provider: Some("codex-acp".to_string()),
+            ..SettingsConfig::default()
+        });
+        assert_eq!(with_provider.desktop_multica_default_provider, "codex-acp");
+    }
+
+    #[test]
+    fn settings_config_multica_fields_roundtrip_json() {
+        let settings = SettingsConfig {
+            desktop_multica_enabled: Some(true),
+            desktop_multica_base_url: Some("http://maling.weoa.com".to_string()),
+            desktop_multica_pat: Some("secret-token".to_string()),
+            desktop_multica_daemon_id: Some("daemon-1".to_string()),
+            desktop_multica_workspaces: Some(vec![MulticaWorkspaceRef {
+                id: "ws-1".to_string(),
+                name: "Gold Band".to_string(),
+                slug: "gold-band".to_string(),
+                local_project_id: "proj-1".to_string(),
+                provider: "claude-acp".to_string(),
+            }]),
+            desktop_multica_default_provider: Some("claude-acp".to_string()),
+            desktop_multica_account: Some(MulticaAccountRef {
+                name: Some("张三".to_string()),
+                email: Some("zhangsan@maling.local".to_string()),
+            }),
+            ..SettingsConfig::default()
+        };
+        let json = serde_json::to_string_pretty(&settings).unwrap();
+        assert!(json.contains("\"desktopMulticaEnabled\": true"));
+        assert!(json.contains("\"desktopMulticaBaseUrl\""));
+        assert!(json.contains("\"localProjectId\": \"proj-1\""));
+        assert!(json.contains("\"zhangsan@maling.local\""));
+        let roundtripped: SettingsConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped.desktop_multica_enabled, Some(true));
+        assert_eq!(
+            roundtripped.desktop_multica_pat.as_deref(),
+            Some("secret-token")
+        );
+        assert_eq!(
+            roundtripped
+                .desktop_multica_workspaces
+                .as_ref()
+                .unwrap()
+                .len(),
+            1
+        );
+        // 账号身份 roundtrip（camelCase name/email）。
+        let account = roundtripped.desktop_multica_account.expect("account roundtripped");
+        assert_eq!(account.name.as_deref(), Some("张三"));
+        assert_eq!(account.email.as_deref(), Some("zhangsan@maling.local"));
+    }
+
+    #[test]
+    fn state_config_multica_task_conversations_roundtrip_json() {
+        let state = StateConfig {
+            multica_task_conversations: Some(std::collections::HashMap::from([(
+                "remote-task-1".to_string(),
+                MulticaTaskConversation {
+                    local_task_id: "task-1".to_string(),
+                    local_run_id: "run-1".to_string(),
+                    session_id: Some("acp-session-1".to_string()),
+                    work_dir: Some("/repo".to_string()),
+                },
+            )])),
+            ..StateConfig::default()
+        };
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        let roundtripped: StateConfig = serde_json::from_str(&json).unwrap();
+        let entry = roundtripped
+            .multica_task_conversations
+            .as_ref()
+            .unwrap()
+            .get("remote-task-1")
+            .unwrap();
+        assert_eq!(entry.local_task_id, "task-1");
+        assert_eq!(entry.session_id.as_deref(), Some("acp-session-1"));
+    }
+
+    #[test]
+    fn state_config_multica_completed_tasks_roundtrip_json() {
+        // 「最近完成」历史（Issue 3C）roundtrip：camelCase 键 + 空列表不序列化。
+        let state = StateConfig {
+            multica_completed_tasks: vec![MulticaCompletedTask {
+                remote_task_id: "remote-1".to_string(),
+                local_task_id: "task-1".to_string(),
+                local_run_id: "run-1".to_string(),
+                workspace_id: "ws-1".to_string(),
+                issue_id: Some("iss-1".to_string()),
+                status: "completed".to_string(),
+                title: "Fix bug".to_string(),
+                completed_at: "2026-08-06T01:00:00Z".to_string(),
+            }],
+            ..StateConfig::default()
+        };
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        // 空字段不序列化，非空 completed 列表序列化为 camelCase 键。
+        assert!(json.contains("\"multicaCompletedTasks\""));
+        assert!(json.contains("\"remoteTaskId\": \"remote-1\""));
+        assert!(json.contains("\"completedAt\": \"2026-08-06T01:00:00Z\""));
+        let roundtripped: StateConfig = serde_json::from_str(&json).unwrap();
+        let entry = &roundtripped.multica_completed_tasks[0];
+        assert_eq!(entry.remote_task_id, "remote-1");
+        assert_eq!(entry.local_run_id, "run-1");
+        assert_eq!(entry.status, "completed");
+        assert_eq!(entry.issue_id.as_deref(), Some("iss-1"));
+
+        // 空列表序列化后不含该键（skip_serializing_if = Vec::is_empty）。
+        let empty_json = serde_json::to_string(&StateConfig::default()).unwrap();
+        assert!(!empty_json.contains("multicaCompletedTasks"));
+    }
 }
 
 fn is_zero_u32(value: &u32) -> bool {
@@ -2015,6 +2260,62 @@ pub struct ConversationPin {
     pub project_id: String,
     pub task_id: String,
     pub order: usize,
+}
+
+/// multica 远程工作区引用（SettingsConfig.desktop_multica_workspaces 条目）。
+/// 一个 multica workspace 绑定一个本地目录（local_project_id 指向
+/// conversation_workspaces.project_id）+ 一个执行 provider（绑定后不可变）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MulticaWorkspaceRef {
+    pub id: String,
+    pub name: String,
+    pub slug: String,
+    pub local_project_id: String,
+    pub provider: String,
+}
+
+/// multica 登录账号身份（connect 时由 `/api/me` 返回的 `UserInfo`，disconnect 时清空）。
+///
+/// 生命周期与 PAT 绑定（connect 一起写、disconnect 一起清），故合并为单结构体统一管理。
+/// 仅用于 UI 展示「已连接：<name> \<email\>」，让用户核对/发现浏览器 cookie 静默连错账号；
+/// **非凭证**（凭证是 PAT，PAT 永不回显）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MulticaAccountRef {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+/// multica remote_task ↔ 本地会话的断点续跑索引（StateConfig.multica_task_conversations 条目，
+/// 键 = remote_task_id）。claim 命中（session_id 非空）时带 prior_session_id 续跑同一 ACP session；
+/// complete 后清条目。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MulticaTaskConversation {
+    pub local_task_id: String,
+    pub local_run_id: String,
+    pub session_id: Option<String>,
+    pub work_dir: Option<String>,
+}
+
+/// multica 远程任务完成历史（StateConfig.multica_completed_tasks，Issue 3C「最近完成」回看）。
+///
+/// `finalize_terminal` 在任务终态时从 `ActiveRemoteRun` 快照写入：保留 remote↔local 链接 + 行标签
+/// （title）+ 终态（completed/failed），让远程 tab「最近完成」分区能点击直达本地会话。有界（最新在前，
+/// 按 `remote_task_id` 去重，截断至上限），非每查询读盘——title 在终态时快照（来自 claim 的 thread_name）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MulticaCompletedTask {
+    pub remote_task_id: String,
+    pub local_task_id: String,
+    pub local_run_id: String,
+    pub workspace_id: String,
+    pub issue_id: Option<String>,
+    /// `completed` | `failed`（由 finalize 的 PendingUpdate 决定）。
+    pub status: String,
+    pub title: String,
+    pub completed_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

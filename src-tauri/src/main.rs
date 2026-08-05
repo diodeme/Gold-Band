@@ -9,6 +9,7 @@ mod conversation_workspace;
 mod feedback;
 mod i18n;
 mod metrics;
+mod multica;
 mod notifications;
 mod state;
 mod updater;
@@ -23,12 +24,13 @@ use anyhow::Context;
 use commands::{
     add_mcp_server, cancel_acp_session, check_local_claude, check_mcp_server_health,
     check_skill_name_conflict, check_update_manual, choose_workspace, clear_desktop_avatar,
-    continue_run, create_agent, create_profile, create_task, delete_agent, delete_auto_template,
+    connect_multica, continue_run, create_agent, create_profile, create_task, delete_agent, delete_auto_template,
     delete_mcp_server, delete_profile, delete_skill, delete_workflow_template,
-    dismiss_update_announcement, doctor_agent, download_and_install_update,
+    dismiss_update_announcement, disconnect_multica, doctor_agent, download_and_install_update,
     get_acp_activity_detail, get_acp_raw_frames, get_acp_session, get_acp_tool_detail,
     get_agent_command_catalog, get_agent_registry, get_app_bootstrap, get_auto_templates,
-    get_file_comparison, get_log_page, get_metrics_settings, get_profile, get_profiles,
+    get_file_comparison, get_log_page, get_metrics_settings, get_multica_settings, get_profile,
+    get_profiles,
     get_round_detail, get_run_detail, get_skill_sync_status, get_system_fonts, get_task_detail,
     get_task_list, get_turn_file_change_set, get_update_status, get_workflow,
     get_workflow_templates, list_mcp_servers, list_mcp_tools, list_project_skills, list_skills,
@@ -36,7 +38,8 @@ use commands::{
     prepare_app_exit, read_skill, remove_recent_workspace, renew_acp_session_lease,
     replace_auto_templates, respond_acp_permission, respond_elicitation, retry_run,
     save_auto_template, save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
-    save_metrics_settings, save_task_workflow, save_updater_settings, save_workflow_template,
+    save_metrics_settings, save_multica_settings, save_task_workflow, save_updater_settings,
+    save_workflow_template,
     search_acp_prompts, search_acp_sessions, search_tasks, select_recent_desktop_avatar,
     select_recent_workspace, send_acp_prompt, set_acp_session_config_option, set_acp_session_model,
     set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref, start_run,
@@ -59,6 +62,11 @@ use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
 use metrics::start_heartbeat_polling;
+use multica::commands::{
+    add_multica_workspace, cancel_multica_task, claim_multica_task, get_multica_tasks,
+    list_server_multica_workspaces, rebind_multica_workspace, remove_multica_workspace,
+    rerun_multica_task, set_active_multica_workspace, start_multica_remote_task,
+};
 use state::{DesktopContext, DesktopState};
 use tauri::Manager;
 use tracing::info;
@@ -113,7 +121,8 @@ fn run() -> anyhow::Result<()> {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(DesktopState::new(context))
         .manage(WorkspaceFileRuntime::default())
-        .manage(WorkspaceFileWatchRuntime::default());
+        .manage(WorkspaceFileWatchRuntime::default())
+        .manage(multica::shared_state());
     #[cfg(all(debug_assertions, target_os = "windows"))]
     let builder = builder.manage(webview_heap_diagnostics);
     builder
@@ -183,6 +192,7 @@ fn run() -> anyhow::Result<()> {
             retry_pending_startup_install(&app.handle().clone());
             start_update_polling(app.handle().clone());
             start_heartbeat_polling(app.handle().clone());
+            multica::start_multica_loop(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -254,6 +264,20 @@ fn run() -> anyhow::Result<()> {
             get_metrics_settings,
             update_notification_attention,
             save_metrics_settings,
+            get_multica_settings,
+            save_multica_settings,
+            connect_multica,
+            disconnect_multica,
+            get_multica_tasks,
+            claim_multica_task,
+            start_multica_remote_task,
+            cancel_multica_task,
+            rerun_multica_task,
+            list_server_multica_workspaces,
+            add_multica_workspace,
+            rebind_multica_workspace,
+            remove_multica_workspace,
+            set_active_multica_workspace,
             get_update_status,
             mark_settings_update_seen,
             mark_settings_advanced_update_seen,

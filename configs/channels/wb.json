@@ -18,6 +18,10 @@
   "metricsToggleLocked": true,
   "metricsBaseUrl": "http://maling.weoa.com",
   "metricsApiKey": "",
+  "multicaEnabled": true,
+  "multicaToggleLocked": true,
+  "multicaBaseUrl": "http://maling.weoa.com",
+  "multicaAppUrl": "http://maling.weoa.com",
   "builtinMcpServers": [
     {
       "id": "maling-code-graph",

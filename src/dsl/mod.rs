@@ -5,6 +5,9 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
+/// 工作流预设（provider → 单节点 WorkflowDsl 复用构造，开发设计 2.5）。
+pub mod presets;
+
 pub const END_NODE: &str = "$end";
 pub const ENTRY_NODE: &str = "$entry";
 pub const NEW_ROUND_NODE: &str = "$new-round";

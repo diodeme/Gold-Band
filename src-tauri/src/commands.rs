@@ -28,7 +28,7 @@ use std::{collections::BTreeSet, str::FromStr, sync::Arc, time::Instant};
 use camino::Utf8PathBuf;
 use gold_band::config::{
     AcpAdapterConfig, ConversationAutoConfig, DesktopFontPreference, DesktopLanguage,
-    DesktopThemePreference, ManagedAgentConfig, ManagedAgentId,
+    DesktopThemePreference, ManagedAgentConfig, ManagedAgentId, MulticaAccountRef,
 };
 use gold_band::observability::set_runtime_log_level;
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,11 @@ use crate::avatar::{
 use crate::conversation_workspace::workspace_entry_for_project;
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
+use crate::multica::{
+    clear_multica_session, ensure_daemon_id, multica_app_url, multica_base_url, multica_settings,
+    normalize_multica_base_url, MulticaClient, MulticaError, MulticaSettingsVm,
+};
+use crate::multica::state::SharedMulticaState;
 use crate::state::{DesktopState, NotificationAttentionInput, UpdateBadgeSeenTarget};
 use crate::updater::{
     UpdateStatusVm, UpdaterSettingsVm, check_update,
@@ -493,6 +498,10 @@ pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) 
     app.lifecycle_bus.subscribe_named(
         "desktop.conversation-run-state",
         create_conversation_run_state_subscriber(app_handle.clone()),
+    );
+    app.lifecycle_bus.subscribe_named(
+        "desktop.multica",
+        crate::multica::bridge::create_multica_subscriber(app_handle.clone()),
     );
 }
 
@@ -1583,6 +1592,111 @@ pub fn save_metrics_settings(
         .map_err(command_error)?;
     let updated_context = state.context().map_err(command_error)?;
     Ok(metrics_settings(&updated_context.config))
+}
+
+#[tauri::command]
+pub fn get_multica_settings(state: State<'_, DesktopState>) -> CommandResult<MulticaSettingsVm> {
+    let context = state.context().map_err(command_error)?;
+    Ok(multica_settings(&context.config))
+}
+
+#[tauri::command]
+pub fn save_multica_settings(
+    state: State<'_, DesktopState>,
+    app_handle: AppHandle,
+    enabled: bool,
+    multica_base_url: Option<String>,
+    multica_app_url: Option<String>,
+    default_provider: Option<String>,
+    active_workspace_id: Option<String>,
+) -> CommandResult<MulticaSettingsVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    let mut existing = app.load_settings().map_err(command_error)?;
+    existing.desktop_multica_enabled = Some(enabled);
+    existing.desktop_multica_base_url = multica_base_url
+        .as_deref()
+        .and_then(normalize_multica_base_url);
+    existing.desktop_multica_app_url = multica_app_url
+        .as_deref()
+        .and_then(normalize_multica_base_url);
+    existing.desktop_multica_default_provider = default_provider.filter(|s| !s.trim().is_empty());
+    existing.desktop_multica_active_workspace_id =
+        active_workspace_id.filter(|s| !s.is_empty());
+    app.save_settings(&existing).map_err(command_error)?;
+    state
+        .update_settings_config(&existing)
+        .map_err(command_error)?;
+    // 配置变更 → 通知任务列表 + 设置页 re-fetch（跨视图同步）。
+    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
+    let updated_context = state.context().map_err(command_error)?;
+    Ok(multica_settings(&updated_context.config))
+}
+
+/// 触发浏览器登录：开浏览器 → JWT → PAT → verify → 落盘 PAT + 首次生成 daemon_id。
+/// PAT 永不回显（VM 仅暴露 `pat_set`）。
+#[tauri::command]
+pub async fn connect_multica(
+    state: State<'_, DesktopState>,
+    app_handle: AppHandle,
+) -> CommandResult<MulticaSettingsVm> {
+    let context = state.context().map_err(command_error)?;
+    let base_url = multica_base_url(&context.config)
+        .ok_or(MulticaError::NotConfigured)
+        .map_err(|e| command_error(e.into()))?;
+    let app_url = multica_app_url(&context.config)
+        .ok_or(MulticaError::NotConfigured)
+        .map_err(|e| command_error(e.into()))?;
+    let (pat, user) = MulticaClient::browser_login(&base_url, &app_url, "Maling Desktop", 90)
+        .await
+        .map_err(|e| command_error(e.into()))?;
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    let mut existing = app.load_settings().map_err(command_error)?;
+    existing.desktop_multica_pat = Some(pat);
+    ensure_daemon_id(&mut existing);
+    // 记录已连接账号身份（`/api/me`），供 UI 展示「已连接：<email>」，让用户核对浏览器 cookie
+    // 是否静默连到了非预期账号（码灵把认证委托给浏览器，cookie 不受控——见设计文档 M5-l）。
+    existing.desktop_multica_account = Some(MulticaAccountRef {
+        name: user.name,
+        email: user.email,
+    });
+    app.save_settings(&existing).map_err(command_error)?;
+    state
+        .update_settings_config(&existing)
+        .map_err(command_error)?;
+    // 连接态变更 → 通知任务列表 + 设置页 re-fetch（跨视图同步）。
+    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
+    let updated_context = state.context().map_err(command_error)?;
+    Ok(multica_settings(&updated_context.config))
+}
+
+/// 断开 multica 连接：与 [`connect_multica`] 对称。清账号作用域状态（PAT、账号身份、workspace 绑定、
+/// active workspace——均由当前账号 PAT 发现、仅登录态下有效），保留 daemon_id（本机持久标识），
+/// 并清运行期 register 缓存（重连后 loop 重建）。断开后 `connected=false`，前端任务列表与设置页
+/// 均回到空态（换账号 / 退出 / 本地反复联调用）；重连同账号需重新绑定 workspace。
+#[tauri::command]
+pub fn disconnect_multica(
+    state: State<'_, DesktopState>,
+    shared: State<'_, SharedMulticaState>,
+    app_handle: AppHandle,
+) -> CommandResult<MulticaSettingsVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    let mut existing = app.load_settings().map_err(command_error)?;
+    clear_multica_session(&mut existing);
+    app.save_settings(&existing).map_err(command_error)?;
+    state
+        .update_settings_config(&existing)
+        .map_err(command_error)?;
+    // 清 register 缓存（active_runs 保留：在飞本地 run 的 remote 映射，断开不改其归属）。
+    if let Ok(mut guard) = shared.lock() {
+        guard.clear_runtime_ids();
+    }
+    // 连接态变更 → 通知任务列表 + 设置页 re-fetch（回到「连接 Multica」空状态）。
+    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
+    let updated_context = state.context().map_err(command_error)?;
+    Ok(multica_settings(&updated_context.config))
 }
 
 pub(crate) fn acp_live_update_emitter(
@@ -3538,6 +3652,9 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     }
     if let Some(error) = error.downcast_ref::<gold_band::acp::branches::ConversationBranchError>() {
         return CommandErrorVm::new(error.code(), serde_json::json!({}));
+    }
+    if let Some(error) = error.downcast_ref::<MulticaError>() {
+        return CommandErrorVm::new(error.code(), error.params());
     }
     let message = error.to_string();
     if let Some(code) = updater_command_error_code(&message) {

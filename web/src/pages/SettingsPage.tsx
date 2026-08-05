@@ -28,6 +28,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
 import { AvatarSettings } from '@/components/settings/AvatarSettings';
+import { MulticaSettingsBlock } from '@/components/settings/MulticaSettingsBlock';
 
 type ThemeDrawerMode = 'all' | DesktopThemeMode;
 
@@ -521,6 +522,10 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   )}
                 </div>
               </SettingsSection>
+            {/* Multica integration section - self-contained block, shared by both UI modes */}
+            <SettingsSection title={t('settings.multica.title')} divided>
+              <MulticaSettingsBlock />
+            </SettingsSection>
           </AppCard>
         </TabsContent>
       </Tabs>

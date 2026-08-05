@@ -8,6 +8,8 @@
 
 定时任务是 Gold Band 的触发层，不是新的运行模式。三种模式共享调度定义、occurrence、原子领取、租约、队列保护、错过检测、通知和清理机制，但继续由各自的执行适配器维护 Task、Run、ACP session 和 authoring 语义。
 
+普通“创建定时任务”动作只持久化定义，不自动调用模型。如果用户没有执行其他操作，调度器在首次计划时间到达时才创建 scheduled occurrence、物化 Task 并启动执行。用户也可以在创建成功后立即点击“立即执行”；该显式动作会马上创建 `trigger_kind = manual` 的 occurrence 并走完整执行链，无需等待首次计划时间，也不推进或重算原计划的 `next_run_at`。
+
 本次目标是消除当前 JSON/SQLite 双数据源和每秒全量轮询两个根本性缺陷，并补齐相较 AionUi 已验证有价值的能力。不会移植 AionUi/AionCore 的 conversation domain，也不会让调度器直接修改 canonical Run 状态。
 
 应用退出、电脑关机、强制合盖策略或企业电源策略下不承诺继续调度。本次不建设独立系统服务或云端调度器。
@@ -65,7 +67,7 @@ coordinator 不轮询 Task/Run 状态。执行中的 lease heartbeat 由 occurre
 
 `src/scheduler/queue.rs` 是 busy 判定、重试次数和重试间隔的唯一来源。运行时不得手写 `3`、`30s` 或分叉的 active 状态判断。
 
-`skip_when_running` 直接记录 `skipped`；`retry_when_busy` 记录有界 `retrying`，达到上限后记录 `skipped`。scheduled 与 manual occurrence 使用同一策略，run-now 不改变 `next_run_at`。
+`skip_when_running` 直接记录 `skipped`；`retry_when_busy` 记录有界 `retrying`，达到上限后记录 `skipped`。scheduled 与 manual occurrence 使用同一策略。run-now 是创建后的独立显式操作，会立即启动 manual occurrence，但不改变 `next_run_at`。
 
 ## 5. 执行适配器
 

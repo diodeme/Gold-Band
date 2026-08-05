@@ -8,9 +8,9 @@ use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
 
 use crate::view_models::{
-    AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_status, acp_session_vm,
-    dynamic_acp_session_status, dynamic_acp_session_vm, dynamic_runtime_graph_vm,
-    latest_control_failure_vm, round_detail_vm, runtime_display_vm, workflow_graph_vm,
+    AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_status, dynamic_acp_session_status,
+    dynamic_runtime_graph_vm, latest_control_failure_vm, round_detail_vm, runtime_display_vm,
+    workflow_graph_vm,
 };
 use gold_band::acp::client::{PromptActivity, prompt_activity, prompt_activity_under};
 use gold_band::app::{App, CreateTaskInput, DEFAULT_WORKFLOW_TEMPLATE_ID, is_run_continuable};
@@ -189,6 +189,7 @@ pub struct ConversationSessionLeafVm {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub session_id: Option<String>,
+    pub session_established: bool,
     pub artifact_count: usize,
     pub attachment_count: usize,
 }
@@ -252,6 +253,7 @@ pub struct ConversationActiveSessionVm {
     pub lifecycle: ConversationAttemptLifecycleVm,
     pub manual_check_pending: bool,
     pub session_id: Option<String>,
+    pub session_established: bool,
     pub started_at: Option<String>,
 }
 
@@ -720,6 +722,43 @@ fn acp_session_file_is_cancelled(path: &camino::Utf8Path) -> bool {
             .then_some(())
         })
         .is_some()
+}
+
+#[derive(Debug, Default)]
+struct AcpSessionPresence {
+    session_id: Option<String>,
+    established: bool,
+}
+
+fn acp_session_presence(attempt_dir: &Utf8Path) -> AcpSessionPresence {
+    let worker_ref = read_json::<serde_json::Value>(&attempt_dir.join("worker-ref.json")).ok();
+    let session_id = worker_ref
+        .as_ref()
+        .and_then(|value| {
+            value
+                .get("continue_ref")
+                .or_else(|| value.get("continueRef"))
+        })
+        .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let established = session_id.is_some()
+        || [
+            "acp.snapshot.json",
+            "acp.session.json",
+            "acp.timeline.jsonl",
+        ]
+        .iter()
+        .any(|name| {
+            fs::metadata(attempt_dir.join(name).as_std_path())
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+        });
+    AcpSessionPresence {
+        session_id,
+        established,
+    }
 }
 
 fn asset_item_vm(
@@ -1411,7 +1450,7 @@ pub fn conversation_attempt_lifecycle_vm(
     let runtime_resumable = is_run_continuable(&run);
 
     if let (Some(outer_node_id), Some(outer_attempt_id)) = (outer_node_id, outer_attempt_id) {
-        let session_vm = dynamic_acp_session_vm(
+        let session_status = dynamic_acp_session_status(
             app,
             task_id,
             run_id,
@@ -1420,8 +1459,6 @@ pub fn conversation_attempt_lifecycle_vm(
             outer_attempt_id,
             node_id,
             attempt_id,
-            None,
-            None,
         )?;
         let dynamic_path = app.paths.dynamic_graph_file(
             task_id,
@@ -1487,7 +1524,7 @@ pub fn conversation_attempt_lifecycle_vm(
             attempt_id,
         );
         return Ok(derive_conversation_attempt_lifecycle(
-            session_vm.as_ref().map(|session| session.status.as_str()),
+            session_status.as_deref(),
             prompt_activity(&attempt_dir),
             &runtime_status,
             outcome.as_deref(),
@@ -1498,9 +1535,7 @@ pub fn conversation_attempt_lifecycle_vm(
         ));
     }
 
-    let session_vm = acp_session_vm(
-        app, task_id, run_id, round_id, node_id, attempt_id, None, None,
-    )?;
+    let session_status = acp_session_status(app, task_id, run_id, round_id, node_id, attempt_id)?;
     let node_path = app
         .paths
         .node_file(task_id, run_id, round_id, node_id, attempt_id);
@@ -1523,7 +1558,7 @@ pub fn conversation_attempt_lifecycle_vm(
         .paths
         .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
     Ok(derive_conversation_attempt_lifecycle(
-        session_vm.as_ref().map(|session| session.status.as_str()),
+        session_status.as_deref(),
         prompt_activity(&attempt_dir),
         &runtime_status,
         outcome.as_deref(),
@@ -1534,6 +1569,7 @@ pub fn conversation_attempt_lifecycle_vm(
     ))
 }
 
+#[cfg(test)]
 fn conversation_status_from_session(
     session_status: Option<&str>,
     runtime_status: &str,
@@ -1819,6 +1855,7 @@ pub fn conversation_run_vm(
                                 let dyn_status = lifecycle.display_status.clone();
                                 let dyn_runtime_display = lifecycle.runtime_display.clone();
                                 let is_active = lifecycle_is_active(&lifecycle, false);
+                                let session_presence = acp_session_presence(&dyn_attempt_dir);
                                 let (artifacts, attachments) = conversation_session_assets(
                                     app,
                                     task_id,
@@ -1845,7 +1882,8 @@ pub fn conversation_run_vm(
                                     manual_check_pending: false,
                                     started_at: dyn_node.started_at.clone(),
                                     finished_at: dyn_node.finished_at.clone(),
-                                    session_id: None,
+                                    session_id: session_presence.session_id.clone(),
+                                    session_established: session_presence.established,
                                     artifact_count: artifacts.len(),
                                     attachment_count: attachments.len(),
                                 });
@@ -1862,7 +1900,8 @@ pub fn conversation_run_vm(
                                         runtime_display: dyn_runtime_display.clone(),
                                         lifecycle: lifecycle.clone(),
                                         manual_check_pending: false,
-                                        session_id: None,
+                                        session_id: session_presence.session_id.clone(),
+                                        session_established: session_presence.established,
                                         started_at: None,
                                     });
                                 }
@@ -1948,6 +1987,7 @@ pub fn conversation_run_vm(
                     let status = lifecycle.display_status.clone();
                     let runtime_display = lifecycle.runtime_display.clone();
                     let is_active = lifecycle_is_active(&lifecycle, manual_check_pending);
+                    let session_presence = acp_session_presence(&attempt_dir);
                     let (artifacts, attachments) = conversation_session_assets(
                         app,
                         task_id,
@@ -1973,7 +2013,8 @@ pub fn conversation_run_vm(
                         manual_check_pending,
                         started_at: Some(attempt.started_at.clone()),
                         finished_at: attempt.finished_at.clone(),
-                        session_id: None,
+                        session_id: session_presence.session_id.clone(),
+                        session_established: session_presence.established,
                         artifact_count: artifacts.len(),
                         attachment_count: attachments.len(),
                     });
@@ -1990,7 +2031,8 @@ pub fn conversation_run_vm(
                             runtime_display: runtime_display.clone(),
                             lifecycle: lifecycle.clone(),
                             manual_check_pending,
-                            session_id: None,
+                            session_id: session_presence.session_id.clone(),
+                            session_established: session_presence.established,
                             started_at: Some(attempt.started_at.clone()),
                         });
                     }
@@ -2081,7 +2123,9 @@ pub fn conversation_run_vm(
     let effective_key: Option<String> = selected_leaf.as_ref().map(conversation_leaf_key);
 
     // Load the selected ACP session
-    let selected_session = if let Some(ref leaf) = selected_leaf {
+    let selected_session = if selected_session_key.is_some()
+        && let Some(ref leaf) = selected_leaf
+    {
         if let (Some(outer_id), Some(outer_attempt)) = (
             leaf.outer_node_id.as_deref(),
             leaf.outer_attempt_id.as_deref(),
@@ -2921,7 +2965,8 @@ mod tests {
         build_auto_workflow, build_direct_workflow, conversation_attempt_lifecycle_vm,
         conversation_auto_title, conversation_run_vm, conversation_sidebar_vm_from_sources,
         conversation_status_from_session, conversation_task_activity, conversation_workspace_vms,
-        derive_conversation_attempt_lifecycle, lifecycle_is_active, switch_conversation_session_vm,
+        derive_conversation_attempt_lifecycle, find_leaf_by_key, lifecycle_is_active,
+        switch_conversation_session_vm,
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use gold_band::app::{App, CreateTaskInput};
@@ -4130,6 +4175,115 @@ mod tests {
             vm.session_tree.selected_session_key.as_deref(),
             Some("round-001/测试/attempt-002")
         );
+    }
+
+    #[test]
+    fn conversation_run_summary_does_not_reconstruct_default_session_timeline() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        let timeline_path =
+            app.paths
+                .acp_timeline_file("task-046", "run-060", "round-001", "测试", "attempt-002");
+        std::fs::create_dir_all(timeline_path.as_std_path()).unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-046", "run-060", None).unwrap();
+
+        assert_eq!(
+            vm.session_tree.selected_session_key.as_deref(),
+            Some("round-001/测试/attempt-002")
+        );
+        assert!(vm.selected_session.is_none());
+    }
+
+    #[test]
+    fn conversation_run_summary_projects_established_session_without_reading_large_timeline() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        let attempt_dir =
+            app.paths
+                .attempt_dir("task-046", "run-060", "round-001", "测试", "attempt-002");
+        std::fs::write(
+            attempt_dir.join("acp.timeline.jsonl").as_std_path(),
+            vec![b'x'; 9 * 1024 * 1024],
+        )
+        .unwrap();
+        gold_band::storage::write_json(
+            &attempt_dir.join("worker-ref.json"),
+            &json!({
+                "version": "0.1",
+                "provider": "codex-acp",
+                "mode": "new",
+                "continue_ref": { "acpSessionId": "session-established" }
+            }),
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-046", "run-060", None).unwrap();
+        let selected_leaf = find_leaf_by_key(
+            &vm.session_tree.rounds,
+            vm.session_tree.selected_session_key.as_deref().unwrap(),
+        )
+        .unwrap();
+
+        assert!(vm.selected_session.is_none());
+        assert!(selected_leaf.session_established);
+        assert_eq!(
+            selected_leaf.session_id.as_deref(),
+            Some("session-established")
+        );
+    }
+
+    #[test]
+    fn conversation_run_summary_does_not_treat_outbound_session_new_as_established() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        let attempt_dir =
+            app.paths
+                .attempt_dir("task-046", "run-060", "round-001", "测试", "attempt-002");
+        std::fs::write(
+            attempt_dir.join("acp.raw.jsonl").as_std_path(),
+            r#"{"direction":"outbound","frame":{"method":"session/new"}}"#,
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-046", "run-060", None).unwrap();
+        let selected_leaf = find_leaf_by_key(
+            &vm.session_tree.rounds,
+            vm.session_tree.selected_session_key.as_deref().unwrap(),
+        )
+        .unwrap();
+
+        assert!(!selected_leaf.session_established);
+        assert!(selected_leaf.session_id.is_none());
+    }
+
+    #[test]
+    fn lifecycle_projection_does_not_read_timeline_detail() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        let timeline_path =
+            app.paths
+                .acp_timeline_file("task-046", "run-060", "round-001", "测试", "attempt-002");
+        std::fs::create_dir_all(timeline_path.as_std_path()).unwrap();
+
+        let lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-046",
+            "run-060",
+            "round-001",
+            "测试",
+            "attempt-002",
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(lifecycle.runtime.status, "completed");
+        assert_eq!(lifecycle.runtime.phase, "terminal");
     }
 
     #[test]

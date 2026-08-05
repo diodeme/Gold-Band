@@ -166,7 +166,7 @@ pub async fn get_conversation_workspaces(
 }
 
 #[tauri::command]
-pub fn get_conversation_run(
+pub async fn get_conversation_run(
     state: State<'_, DesktopState>,
     project_id: String,
     task_id: String,
@@ -175,39 +175,45 @@ pub fn get_conversation_run(
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
     let started = Instant::now();
     let context = state.context().map_err(command_error)?;
-    let global_app = context.app();
-    let app_state = global_app.load_state().map_err(command_error)?;
-    let Some((workspace_path, resolved_project_id)) =
-        workspace_entry_for_project(&app_state, &project_id)
-    else {
-        return Err(CommandErrorVm::new(
-            "workspace.not-found",
-            serde_json::json!({ "projectId": project_id }),
-        ));
-    };
-    let workspace_app = state
-        .app()
-        .map_err(command_error)?
-        .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
-    let result = crate::view_models_conversation::conversation_run_vm(
-        &workspace_app,
-        &resolved_project_id,
-        &task_id,
-        &run_id,
-        selected_session_key.as_deref(),
-    );
+    let log_project_id = project_id.clone();
+    let log_task_id = task_id.clone();
+    let log_run_id = run_id.clone();
+    let log_selected_session_key = selected_session_key.clone();
+    let result = spawn_blocking_command(move || {
+        let global_app = context.app();
+        let app_state = global_app.load_state().map_err(command_error)?;
+        let Some((workspace_path, resolved_project_id)) =
+            workspace_entry_for_project(&app_state, &project_id)
+        else {
+            return Err(CommandErrorVm::new(
+                "workspace.not-found",
+                serde_json::json!({ "projectId": project_id }),
+            ));
+        };
+        let workspace_app =
+            global_app.with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
+        crate::view_models_conversation::conversation_run_vm(
+            &workspace_app,
+            &resolved_project_id,
+            &task_id,
+            &run_id,
+            selected_session_key.as_deref(),
+        )
+        .map_err(command_error)
+    })
+    .await;
     info!(
         target: "gold_band::perf",
         command = "get_conversation_run",
-        project_id = %project_id,
-        task_id = %task_id,
-        run_id = %run_id,
-        selected_session_key = ?selected_session_key,
+        project_id = %log_project_id,
+        task_id = %log_task_id,
+        run_id = %log_run_id,
+        selected_session_key = ?log_selected_session_key,
         elapsed_ms = started.elapsed().as_millis(),
         status = if result.is_ok() { "ok" } else { "error" },
         "conversation run view model loaded"
     );
-    result.map_err(command_error)
+    result
 }
 
 #[tauri::command]

@@ -894,7 +894,9 @@ pub fn write_timeline_items(path: &Utf8Path, items: &[AcpUiEvent]) -> Result<()>
         ensure_parent_dir(path)?;
         let mut file = AtomicWriteFile::open(path.as_std_path())?;
         for item in items {
-            serde_json::to_writer(&mut file, &AcpTimelineItem { item: item.clone() })?;
+            let mut item = item.clone();
+            crate::acp::timeline::externalize_timeline_event_for_storage(path, &mut item)?;
+            serde_json::to_writer(&mut file, &AcpTimelineItem { item })?;
             use std::io::Write as _;
             file.write_all(b"\n")?;
         }
@@ -981,6 +983,16 @@ fn utf16_index(content: &str, byte_index: usize) -> usize {
 }
 
 pub(crate) fn load_timeline_items_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
+    let mut items = load_timeline_items_for_storage_unlocked(path)?;
+    for item in &mut items {
+        if let Some(raw) = item.raw.as_mut() {
+            crate::acp::timeline::hydrate_timeline_value(path, raw)?;
+        }
+    }
+    Ok(items)
+}
+
+pub(crate) fn load_timeline_items_for_storage_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
     let Ok(file) = std::fs::File::open(path.as_std_path()) else {
         return Ok(Vec::new());
     };

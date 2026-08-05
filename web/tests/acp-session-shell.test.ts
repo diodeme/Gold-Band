@@ -223,6 +223,10 @@ describe('isAcpSessionInitializationInterrupted', () => {
   it('keeps established or displayable interrupted sessions on the normal conversation path', () => {
     expect(isAcpSessionInitializationInterrupted({
       ...interruptedInput,
+      sessionEstablished: true,
+    })).toBe(false);
+    expect(isAcpSessionInitializationInterrupted({
+      ...interruptedInput,
       sessionId: 'session-1',
     })).toBe(false);
     expect(isAcpSessionInitializationInterrupted({
@@ -233,6 +237,13 @@ describe('isAcpSessionInitializationInterrupted', () => {
       ...interruptedInput,
       loadedEventCount: 1,
     })).toBe(false);
+  });
+
+  it('still identifies an outbound-only session/new attempt as interrupted', () => {
+    expect(isAcpSessionInitializationInterrupted({
+      ...interruptedInput,
+      sessionEstablished: false,
+    })).toBe(true);
   });
 
   it('does not replace an active startup or another pause reason with interrupted', () => {

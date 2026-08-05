@@ -9,6 +9,7 @@ import {
   limitAcpEvents,
   mergeAcpEvents,
   objectiveActivityDescriptor,
+  planAcpStopResponse,
   queryBlocksFromTool,
   restoreAcpLoadedEvents,
   shouldAwaitTerminalAcpStop,
@@ -273,6 +274,18 @@ describe('ACPChatDialog branch timeline helpers', () => {
     expect(shouldAwaitTerminalAcpStop({ sessionId: 'session-1', status: 'cancelled' })).toBe(false);
     expect(shouldAwaitTerminalAcpStop({ sessionId: 'session-1', status: 'cancelling' })).toBe(true);
     expect(shouldAwaitTerminalAcpStop(null)).toBe(false);
+  });
+
+  it('keeps the selected session while an accepted stop settles through lifecycle updates', () => {
+    const plan = planAcpStopResponse({
+      status: 'accepted',
+      session: null,
+      lifecycle: { acp: { stopping: true } },
+    });
+
+    expect(plan.accepted).toBe(true);
+    expect(plan.awaitTerminal).toBe(true);
+    expect(plan.sessionSnapshot).toBeUndefined();
   });
 
   it('preserves multiple query parameters with the same label key', () => {

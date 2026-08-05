@@ -896,7 +896,9 @@ export interface AcpSessionVm {
 }
 
 export interface ActiveSessionStopVm {
-  kind: 'run-paused' | 'session-cancelled' | string;
+  operationId: string;
+  status: 'accepted' | string;
+  kind: 'stop-accepted' | string;
   run?: RunSummaryVm | null;
   session?: AcpSessionVm | null;
   lifecycle?: ConversationAttemptLifecycleVm | null;
@@ -1402,6 +1404,7 @@ export interface ConversationSessionLeafVm {
   startedAt?: string | null;
   finishedAt?: string | null;
   sessionId?: string | null;
+  sessionEstablished?: boolean;
   artifactCount: number;
   attachmentCount: number;
 }
@@ -1474,6 +1477,7 @@ export interface ConversationActiveSessionVm {
   lifecycle?: ConversationAttemptLifecycleVm | null;
   manualCheckPending: boolean;
   sessionId?: string | null;
+  sessionEstablished?: boolean;
   startedAt?: string | null;
 }
 

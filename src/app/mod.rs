@@ -2666,8 +2666,13 @@ impl App {
     }
 
     pub fn persist_cancelled_session_snapshot_best_effort(&self, attempt_dir: &Utf8Path) {
-        let _ = self.persist_cancelled_session_file(&attempt_dir.join("acp.snapshot.json"));
-        let _ = self.persist_cancelled_session_file(&attempt_dir.join("acp.session.json"));
+        let _ = self.persist_cancelled_session_snapshot(attempt_dir);
+    }
+
+    pub fn persist_cancelled_session_snapshot(&self, attempt_dir: &Utf8Path) -> Result<()> {
+        self.persist_cancelled_session_file(&attempt_dir.join("acp.snapshot.json"))?;
+        self.persist_cancelled_session_file(&attempt_dir.join("acp.session.json"))?;
+        Ok(())
     }
 
     fn persist_cancelled_session_file(&self, path: &Utf8Path) -> Result<()> {

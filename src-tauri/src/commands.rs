@@ -35,6 +35,7 @@ use gold_band::observability::set_runtime_log_level;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{info, warn};
+use uuid::Uuid;
 
 use crate::avatar::{
     AvatarKind, AvatarPreferencesVm, AvatarShape, SaveDesktopAvatarInput, clear_avatar,
@@ -619,6 +620,8 @@ pub struct ConversationPromptSubmitVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveSessionStopVm {
+    pub operation_id: String,
+    pub status: String,
     pub kind: String,
     pub run: Option<RunSummaryVm>,
     pub session: Option<AcpSessionVm>,
@@ -1390,7 +1393,7 @@ pub fn pause_run(
 }
 
 #[tauri::command]
-pub fn stop_active_session(
+pub async fn stop_active_session(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -1403,7 +1406,6 @@ pub fn stop_active_session(
     outer_attempt_id: Option<String>,
 ) -> CommandResult<ActiveSessionStopVm> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-
     let locator = AttemptLocator::new(
         task_id.clone(),
         run_id.clone(),
@@ -1413,28 +1415,42 @@ pub fn stop_active_session(
         outer_node_id,
         outer_attempt_id,
     );
-    let session = stop_acp_session(
+    let operation_id = Uuid::new_v4().to_string();
+    let control_app = app.clone_for_background();
+    let control_locator = locator.clone();
+    let (attempt_dir, current_run, lifecycle) = spawn_blocking_command(move || {
+        let attempt_dir = persist_active_session_stop(&control_app, &control_locator)?;
+        let current_run = control_app
+            .run_status(&control_locator.task_id, &control_locator.run_id)
+            .map_err(command_error)?;
+        let lifecycle = lifecycle_for_locator(&control_app, &control_locator);
+        Ok((attempt_dir, current_run, lifecycle))
+    })
+    .await?;
+
+    spawn_active_session_stop_cleanup(
         app_handle,
-        state.inner(),
-        project_id.clone(),
+        app.clone_for_background(),
+        project_id,
         locator.clone(),
-    )?;
-    let lifecycle = lifecycle_for_locator(&app, &locator);
-
-    let current_run = app.run_status(&task_id, &run_id).map_err(command_error)?;
-    if current_run.status == RunStatus::Paused {
-        return Ok(ActiveSessionStopVm {
-            kind: "run-paused".to_string(),
-            run: Some(run_summary_vm(current_run)),
-            session,
-            lifecycle,
-        });
-    }
-
+        attempt_dir,
+    );
+    spawn_index_attempt(
+        state.inner(),
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+        locator.outer_node_id(),
+        locator.outer_attempt_id(),
+    );
     Ok(ActiveSessionStopVm {
-        kind: "session-cancelled".to_string(),
+        operation_id,
+        status: "accepted".to_string(),
+        kind: "stop-accepted".to_string(),
         run: Some(run_summary_vm(current_run)),
-        session,
+        session: None,
         lifecycle,
     })
 }
@@ -3052,6 +3068,69 @@ fn stop_acp_session(
         locator.outer_attempt_id(),
     );
     Ok(session)
+}
+
+fn persist_active_session_stop(
+    app: &gold_band::app::App,
+    locator: &AttemptLocator,
+) -> CommandResult<Utf8PathBuf> {
+    let attempt_dir = locator.attempt_dir(app);
+    if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (locator.outer_node_id(), locator.outer_attempt_id())
+    {
+        app.pause_dynamic_attempt_runtime_state(
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &locator.node_id,
+            PauseReason::ProcessInterrupted,
+        )
+        .map_err(command_error)?;
+    } else {
+        app.pause_attempt_runtime_state(
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            PauseReason::ProcessInterrupted,
+        )
+        .map_err(command_error)?;
+    }
+    app.persist_cancelled_session_snapshot(&attempt_dir)
+        .map_err(command_error)?;
+    client::request_prompt_cancel(&attempt_dir);
+    Ok(attempt_dir)
+}
+
+fn spawn_active_session_stop_cleanup(
+    app_handle: AppHandle,
+    app: gold_band::app::App,
+    project_id: Option<String>,
+    locator: AttemptLocator,
+    attempt_dir: Utf8PathBuf,
+) {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.cancel_attempt_dir_best_effort(&attempt_dir);
+        if let Err(error) = client::cancel_attempt_prompt(&attempt_dir) {
+            warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
+        }
+        emit_acp_session_update(
+            &app_handle,
+            &app,
+            project_id,
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            locator.outer_node_id.clone(),
+            locator.outer_attempt_id.clone(),
+            None,
+        );
+    });
 }
 
 fn request_acp_cancel_and_persist_interrupted_snapshot(
@@ -5045,6 +5124,103 @@ mod tests {
         });
 
         assert_ne!(worker_thread, caller_thread);
+    }
+
+    #[test]
+    fn accepted_stop_persists_control_state_without_reading_timeline() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-stop-control-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let repo_root = Utf8PathBuf::from_path_buf(root.clone()).unwrap();
+        let app = App::new(repo_root);
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "node-001".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        write_json(
+            &app.paths.run_file("task-001", "run-001"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "id": "run-001",
+                "task_id": "task-001",
+                "status": "running",
+                "outcome": null,
+                "started_at": "2026-08-05T00:00:00Z",
+                "updated_at": "2026-08-05T00:00:00Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": "round-001",
+                "current_node": "node-001",
+                "current_attempt": "attempt-001",
+                "new_rounds_opened": 0,
+                "pause_reason": null
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file("task-001", "run-001", "round-001"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "id": "round-001",
+                "run_id": "run-001",
+                "index": 1,
+                "status": "running",
+                "outcome": null,
+                "trigger": "initial",
+                "started_at": "2026-08-05T00:00:00Z",
+                "trace": []
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths.node_file(
+                "task-001",
+                "run-001",
+                "round-001",
+                "node-001",
+                "attempt-001",
+            ),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "node_id": "node-001",
+                "node_type": "worker",
+                "run_id": "run-001",
+                "round_id": "round-001",
+                "attempt_id": "attempt-001",
+                "status": "running",
+                "outcome": null,
+                "started_at": "2026-08-05T00:00:00Z",
+                "finished_at": null,
+                "manual_check_pending": false,
+                "resolved_config": {}
+            }),
+        )
+        .unwrap();
+        let timeline_path = app.paths.acp_timeline_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "node-001",
+            "attempt-001",
+        );
+        std::fs::create_dir_all(timeline_path.as_std_path()).unwrap();
+
+        let started = std::time::Instant::now();
+        let attempt_dir = persist_active_session_stop(&app, &locator).unwrap();
+
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        let run: serde_json::Value = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(run["status"], "paused");
+        let snapshot: serde_json::Value =
+            read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
+        assert_eq!(snapshot["status"], "cancelled");
+        assert!(timeline_path.is_dir());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

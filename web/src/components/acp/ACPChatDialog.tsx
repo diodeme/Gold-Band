@@ -236,6 +236,7 @@ export interface AcpDirectSessionHeaderProps {
 
 interface ACPChatDialogProps {
   session?: AcpSessionVm | null;
+  sessionEstablished?: boolean;
   projectId: string;
   taskId: string;
   runId: string;
@@ -602,6 +603,7 @@ export function loadedEventBufferLimit(eventPageSize: number) {
 export function ACPChatDialog(
   {
     session,
+    sessionEstablished = false,
     projectId,
     taskId,
     runId,
@@ -1197,6 +1199,7 @@ export function ACPChatDialog(
     runtimePauseReason: localLifecycle?.runtime.pauseReason,
     runtimeActive: runtimeActiveFromContext,
     sessionId: baseSession?.sessionId,
+    sessionEstablished,
     baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
     loadedEventCount: loadedEvents.length,
   });
@@ -1207,6 +1210,7 @@ export function ACPChatDialog(
     runtimeComposerMode: localLifecycle?.composer.mode,
     runtimeErrorMessage: runtimeComposerContext?.runtimeError,
     sessionId: baseSession?.sessionId,
+    sessionEstablished,
     baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
     loadedEventCount: loadedEvents.length,
   });
@@ -2380,14 +2384,15 @@ export function ACPChatDialog(
         outerNodeId,
         outerAttemptId,
       );
-      const awaitTerminalStop = shouldAwaitTerminalAcpStop(result.session);
+      const stopPlan = planAcpStopResponse(result);
+      const awaitTerminalStop = stopPlan.awaitTerminal;
       awaitTerminalStopRef.current = awaitTerminalStop;
-      setRuntimeStopAccepted(Boolean(result.run));
+      setRuntimeStopAccepted(stopPlan.accepted || Boolean(result.run));
       if (result.lifecycle) {
         setLocalRuntimeLifecycle(result.lifecycle);
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
-      applySessionUpdate(result.session ?? null);
+      if (stopPlan.sessionSnapshot) applySessionUpdate(stopPlan.sessionSnapshot);
       flushPendingLiveEvents();
       setStopCommandPending(false);
       setPromptCommandPending(false);
@@ -6588,6 +6593,21 @@ export function shouldAwaitTerminalAcpStop(
   session: Pick<AcpSessionVm, "sessionId" | "status"> | null | undefined,
 ) {
   return Boolean(session?.sessionId) && !isSessionTerminalStatus(session?.status);
+}
+
+export function planAcpStopResponse(result: {
+  status?: string;
+  session?: AcpSessionVm | null;
+  lifecycle?: { acp: { stopping: boolean } } | null;
+}) {
+  const accepted = result.status === "accepted";
+  return {
+    accepted,
+    awaitTerminal: accepted
+      ? Boolean(result.lifecycle?.acp.stopping)
+      : shouldAwaitTerminalAcpStop(result.session),
+    sessionSnapshot: result.session ?? undefined,
+  };
 }
 
 function partitionAcpLiveTimingUpdates(events: AcpUiEventVm[]) {

@@ -269,6 +269,8 @@ export function App() {
   const [primaryModule, setPrimaryModule] = useState<PrimaryModule>(initialRoute.module);
   const [taskPage, setTaskPage] = useState<TaskPage>(initialRoute.taskPage);
   const [conversationPage, setConversationPage] = useState<ConversationPage>(initialRoute.conversationPage);
+  const conversationPageRef = useRef<ConversationPage>(initialRoute.conversationPage);
+  const conversationStopRequestRef = useRef(0);
   const [conversationSidebar, setConversationSidebar] = useState<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const conversationSidebarRef = useRef<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
@@ -288,6 +290,10 @@ export function App() {
     version: 0,
   });
   const conversationSelectedSessionKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    conversationPageRef.current = conversationPage;
+  }, [conversationPage]);
   const [forceSettingsTab, setForceSettingsTab] = useState<'advanced' | null>(null);
   const [conversationWorkflowTemplates, setConversationWorkflowTemplates] = useState<WorkflowTemplateStore | null>(null);
   const [, startTransition] = useTransition();
@@ -1181,19 +1187,33 @@ export function App() {
   };
 
   const onConversationPauseRun = async (projectId: string, taskId: string, runId: string) => {
+    const requestVersion = conversationStopRequestRef.current + 1;
+    conversationStopRequestRef.current = requestVersion;
     setConversationRunStopping(true);
+    setError(null);
     let stopSettled = false;
     let stopAccepted = false;
     try {
-      const paused = await runAction(() => pauseRun(taskId, runId, projectId));
-      if (!paused) return;
+      await pauseRun(taskId, runId, projectId);
       stopAccepted = true;
       const selectedKey = conversationRunRef.current?.sessionTree.selectedSessionKey ?? null;
-      if (conversationPage.kind === 'conversation-run'
-        && conversationPage.projectId === projectId
-        && conversationPage.taskId === taskId
-        && conversationPage.runId === runId) {
-        const refreshed = await getConversationRun(projectId, taskId, runId, selectedKey);
+      const refreshSelectedRun = conversationPageRef.current.kind === 'conversation-run'
+        && conversationPageRef.current.projectId === projectId
+        && conversationPageRef.current.taskId === taskId
+        && conversationPageRef.current.runId === runId;
+      const [refreshed, sidebar] = await Promise.all([
+        refreshSelectedRun
+          ? getConversationRun(projectId, taskId, runId, selectedKey)
+          : Promise.resolve(null),
+        getConversationSidebar(),
+      ]);
+      if (conversationStopRequestRef.current !== requestVersion) return;
+      const currentPage = conversationPageRef.current;
+      if (refreshed
+        && currentPage.kind === 'conversation-run'
+        && currentPage.projectId === projectId
+        && currentPage.taskId === taskId
+        && currentPage.runId === runId) {
         stopSettled = isConversationRunStopSettled(refreshed);
         applyConversationRunSnapshot(refreshed, 'session-stopped', {
           selectedSessionKey: selectedKey,
@@ -1202,10 +1222,15 @@ export function App() {
       } else {
         stopSettled = true;
       }
-      const sidebar = await getConversationSidebar();
       applyConversationSidebar(sidebar);
+    } catch (err) {
+      if (conversationStopRequestRef.current === requestVersion) {
+        setError(displayAppError(t, err));
+      }
     } finally {
-      if (!stopAccepted || stopSettled) setConversationRunStopping(false);
+      if (conversationStopRequestRef.current === requestVersion && (!stopAccepted || stopSettled)) {
+        setConversationRunStopping(false);
+      }
     }
   };
 

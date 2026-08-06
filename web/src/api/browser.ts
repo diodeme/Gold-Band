@@ -471,12 +471,9 @@ export const browserApi: RuntimeApi = {
   },
   saveAutoTemplate(name: string, config: ConversationAutoConfigVm) {
     const current = browserPreviewState.getAutoTemplates();
-    const idBase = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `auto-${current.templates.length + 1}`;
-    let id = idBase;
-    let suffix = 1;
+    let id = `auto-template-${crypto.randomUUID().replaceAll('-', '')}`;
     while (current.templates.some((template) => template.id === id)) {
-      suffix += 1;
-      id = `${idBase}-${suffix}`;
+      id = `auto-template-${crypto.randomUUID().replaceAll('-', '')}`;
     }
     const now = new Date().toISOString();
     return Promise.resolve(browserPreviewState.setAutoTemplates({

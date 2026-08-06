@@ -2,8 +2,8 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { WorkflowDsl } from '@/types';
-import { autoNoticeAutoDismiss, autoSaveTarget, createBlankAutoTemplateEditorState, createBlankWorkflowTemplateEditorState, findSavedWorkflowTemplate, isNoAutoTemplateSelected, RunModeManagementPage, RunModeProjectSelector, RunModeTabsToolbar, templatePickerSavedListClass, TemplateActionRow } from '@/pages/RunModeManagementPage';
-import { pruneMissingAutoAllowedProfileIds, pruneMissingAutoAllowedWorkflowIds } from '@/lib/run-mode-validation';
+import { autoNoticeAutoDismiss, autoNoticeDismissDelay, autoSaveTarget, createBlankAutoTemplateEditorState, createBlankWorkflowTemplateEditorState, findSavedWorkflowTemplate, isNoAutoTemplateSelected, RunModeManagementPage, RunModeProjectSelector, RunModeTabsToolbar, templatePickerSavedListClass, TemplateActionRow } from '@/pages/RunModeManagementPage';
+import { pruneMissingAutoAllowedProfileIds, pruneMissingAutoAllowedWorkflowIds, pruneMissingAutoConfigReferences } from '@/lib/run-mode-validation';
 
 describe('RunModeTabsToolbar', () => {
   it('renders a title-only page header, without a mode description or duplicate back action', () => {
@@ -121,10 +121,12 @@ describe('RunModeTabsToolbar', () => {
     expect(templatePickerSavedListClass).toContain('overflow-auto');
   });
 
-  it('auto-dismisses successful AUTO notices but keeps errors visible', () => {
+  it('auto-dismisses successful and warning AUTO notices but keeps errors visible', () => {
     expect(autoNoticeAutoDismiss('success')).toBe(true);
     expect(autoNoticeAutoDismiss('error')).toBe(false);
-    expect(autoNoticeAutoDismiss('warning')).toBe(false);
+    expect(autoNoticeAutoDismiss('warning')).toBe(true);
+    expect(autoNoticeDismissDelay('success')).toBe(3000);
+    expect(autoNoticeDismissDelay('warning')).toBe(5000);
   });
 
   it('removes only AUTO workflow references that no longer resolve', () => {
@@ -160,6 +162,28 @@ describe('RunModeTabsToolbar', () => {
       profileIds: ['profile-plan', 'profile-dev'],
       removedProfileIds: ['missing-profile'],
     });
+  });
+
+  it('returns a cleaned AUTO template config when its workflow or profile reference is missing', () => {
+    const result = pruneMissingAutoConfigReferences(
+      {
+        agentType: 'claude-acp',
+        allowedWorkflows: [{ workflowId: 'missing-workflow' }, { workflowId: 'task-workflow' }],
+        allowedProfiles: ['missing-profile', 'profile-plan'],
+      },
+      {
+        version: '0.1',
+        lastUsedTemplateId: 'default',
+        lastCreatedWorkflow: null,
+        templates: [{ id: 'default', name: '默认工作流', workflow: { id: 'task-workflow' } as WorkflowDsl, createdAt: '', updatedAt: '' }],
+      },
+      [{ id: 'profile-plan', name: '规划', content: '', isBuiltIn: false }],
+    );
+
+    expect(result.removedWorkflowIds).toEqual(['missing-workflow']);
+    expect(result.removedProfileIds).toEqual(['missing-profile']);
+    expect(result.config.allowedWorkflows).toEqual([{ workflowId: 'task-workflow' }]);
+    expect(result.config.allowedProfiles).toEqual(['profile-plan']);
   });
 
   it('renders the shared template action row in picker-save-name-save-as order', () => {

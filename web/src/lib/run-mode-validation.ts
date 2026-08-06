@@ -110,6 +110,34 @@ export function pruneMissingAutoAllowedProfileIds(
   return { profileIds: profileIdsKept, removedProfileIds };
 }
 
+export function pruneMissingAutoConfigReferences(
+  config: ConversationAutoConfigVm,
+  workflowTemplates: WorkflowTemplateStore,
+  profiles: readonly ProfileVm[],
+): {
+  config: ConversationAutoConfigVm;
+  removedWorkflowIds: string[];
+  removedProfileIds: string[];
+} {
+  const prunedWorkflows = pruneMissingAutoAllowedWorkflowIds(
+    (config.allowedWorkflows ?? []).map((item) => item.workflowId),
+    workflowTemplates,
+  );
+  const prunedProfiles = pruneMissingAutoAllowedProfileIds(config.allowedProfiles ?? [], profiles);
+  if (prunedWorkflows.removedWorkflowIds.length === 0 && prunedProfiles.removedProfileIds.length === 0) {
+    return { config, ...prunedWorkflows, ...prunedProfiles };
+  }
+  return {
+    config: {
+      ...config,
+      allowedWorkflows: prunedWorkflows.workflowIds.map((workflowId) => ({ workflowId })),
+      allowedProfiles: prunedProfiles.profileIds,
+    },
+    ...prunedWorkflows,
+    ...prunedProfiles,
+  };
+}
+
 export function validateWorkflowTemplateForConversationStart(
   templateId: string | null | undefined,
   agentRegistry: AgentRegistryVm | null,

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown } from 'lucide-react';
 
@@ -10,6 +10,7 @@ import {
   ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS,
   ACP_COMPOSER_CONFIG_DROPDOWN_MODAL,
   DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
+  keepAcpConfigMenuOpenOnSelect,
   acpComposerConfigTriggerVariants,
 } from '@/components/acp/AcpComposerConfigTrigger';
 import {
@@ -98,11 +99,29 @@ export function AcpModelThoughtSelects({
   triggerClassName,
 }: Props) {
   const { t } = useTranslation();
+  const [menuOpen, setMenuOpen] = useState(false);
   const [openSection, setOpenSection] = useState<string | null>(null);
+  const keepMenuOpenRef = useRef(false);
   const triggerClass = acpComposerConfigTriggerVariants({ compact });
   const selectedModel = models.find((model) => model.id === modelValue);
   const selectedThought = thoughtLevel?.options.find((option) => option.value === thoughtValue);
   const hasThoughtLevel = Boolean(thoughtLevel && thoughtLevel.options.length > 0);
+  const handleConfigOptionSelect = (event: Event) => {
+    keepAcpConfigMenuOpenOnSelect(event);
+    keepMenuOpenRef.current = true;
+    setTimeout(() => {
+      keepMenuOpenRef.current = false;
+    }, 0);
+  };
+  const handleMenuOpenChange = (open: boolean) => {
+    if (!open && keepMenuOpenRef.current) {
+      keepMenuOpenRef.current = false;
+      setMenuOpen(true);
+      return;
+    }
+    setMenuOpen(open);
+    if (!open) setOpenSection(null);
+  };
 
   if (!hasThoughtLevel) {
     return models.length > 0 ? (
@@ -129,8 +148,9 @@ export function AcpModelThoughtSelects({
 
   return (
     <DropdownMenu
+      open={menuOpen}
       modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL}
-      onOpenChange={() => setOpenSection(null)}
+      onOpenChange={handleMenuOpenChange}
     >
       <DropdownMenuTrigger className={cn(triggerClass, triggerClassName)}>
         <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{t('acp.currentModel')}</span>
@@ -160,12 +180,12 @@ export function AcpModelThoughtSelects({
               onValueChange={(value) => onModelChange(value === UNSPECIFIED_ACP_CONFIG_VALUE ? null : value)}
             >
               {showUnspecifiedModel ? (
-                <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE}>
+                <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE} onSelect={handleConfigOptionSelect}>
                   {t('conversation.home.unspecifiedModel')}
                 </DropdownMenuRadioItem>
               ) : null}
               {models.map((model) => (
-                <DropdownMenuRadioItem key={model.id} value={model.id} className="items-start py-2">
+                <DropdownMenuRadioItem key={model.id} value={model.id} className="items-start py-2" onSelect={handleConfigOptionSelect}>
                   <span className="block min-w-0">
                     <span className="block truncate font-medium">{model.name}</span>
                     {model.description ? <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">{model.description}</span> : null}
@@ -196,12 +216,12 @@ export function AcpModelThoughtSelects({
               )}
             >
               {showUnspecifiedThought ? (
-                <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE}>
+                <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE} onSelect={handleConfigOptionSelect}>
                   {t('acp.unspecifiedThoughtLevel')}
                 </DropdownMenuRadioItem>
               ) : null}
               {thoughtLevel!.options.map((option) => (
-                <DropdownMenuRadioItem key={option.value} value={option.value} className="items-start py-2">
+                <DropdownMenuRadioItem key={option.value} value={option.value} className="items-start py-2" onSelect={handleConfigOptionSelect}>
                   <span className="block min-w-0">
                     <span className="block truncate font-medium">{option.name}</span>
                     {option.description ? <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">{option.description}</span> : null}

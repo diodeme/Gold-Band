@@ -13,6 +13,7 @@ import {
 import {
   ACP_COMPOSER_CONFIG_DROPDOWN_MODAL,
   DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
+  keepAcpConfigMenuOpenOnSelect,
 } from '@/components/acp/AcpComposerConfigTrigger';
 
 function triggerClass(markup: string, slot: string) {
@@ -60,6 +61,14 @@ describe('ACP composite model selector', () => {
 
     openSection = nextAcpCompositeSection(openSection, 'reasoning_effort', false);
     expect(openSection).toBeNull();
+  });
+
+  it('keeps the config menu open after selecting a model or thought level', () => {
+    const event = new Event('select', { cancelable: true });
+
+    keepAcpConfigMenuOpenOnSelect(event);
+
+    expect(event.defaultPrevented).toBe(true);
   });
 
   it('shows one unspecified state until a model or thought level is selected', () => {

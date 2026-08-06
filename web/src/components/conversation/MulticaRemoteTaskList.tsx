@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { formatLocalDateTime } from '@/lib/datetime';
 import { displayAppError } from '../../i18n';
 import type {
   MulticaCompletedTaskVm,
@@ -329,7 +330,7 @@ function RemoteTaskRow({
             {task.status}
           </Badge>
           {task.lastActivityAt && (
-            <span className="truncate">{task.lastActivityAt.slice(0, 19).replace('T', ' ')}</span>
+            <span className="truncate">{formatLocalDateTime(task.lastActivityAt)}</span>
           )}
         </div>
       </div>
@@ -389,7 +390,7 @@ function CompletedTaskRow({
             {task.status}
           </Badge>
           {task.completedAt && (
-            <span className="truncate">{task.completedAt.slice(0, 19).replace('T', ' ')}</span>
+            <span className="truncate">{formatLocalDateTime(task.completedAt)}</span>
           )}
         </div>
       </div>

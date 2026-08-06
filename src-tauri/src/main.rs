@@ -14,6 +14,8 @@ mod state;
 mod updater;
 mod view_models;
 mod view_models_conversation;
+#[cfg(any(test, all(debug_assertions, target_os = "windows")))]
+mod webview_heap_diagnostics;
 mod window_chrome;
 mod workspace_files;
 
@@ -26,15 +28,16 @@ use commands::{
     dismiss_update_announcement, doctor_agent, download_and_install_update,
     get_acp_activity_detail, get_acp_raw_frames, get_acp_session, get_acp_tool_detail,
     get_agent_command_catalog, get_agent_registry, get_app_bootstrap, get_auto_templates,
-    get_log_page, get_metrics_settings, get_profile, get_profiles, get_round_detail,
-    get_run_detail, get_skill_sync_status, get_system_fonts, get_task_detail, get_task_list,
-    get_update_status, get_workflow, get_workflow_templates, list_mcp_servers, list_mcp_tools,
+    get_file_comparison, get_log_page, get_metrics_settings, get_profile, get_profiles,
+    get_round_detail, get_run_detail, get_skill_sync_status, get_system_fonts, get_task_detail,
+    get_task_list, get_turn_file_change_set, get_update_status, get_workflow,
+    get_workflow_templates, list_conversation_directory, list_mcp_servers, list_mcp_tools,
     list_project_skills, list_skills, mark_settings_advanced_update_seen,
-    mark_settings_update_seen, open_in_file_manager, pause_run, prepare_app_exit, read_skill,
-    remove_recent_workspace, renew_acp_session_lease, replace_auto_templates,
-    record_activity,
-    respond_acp_permission, respond_elicitation, retry_run, save_auto_template,
-    save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
+    mark_settings_update_seen, open_conversation_directory_path_in_file_manager,
+    open_in_file_manager, pause_run, prepare_app_exit, read_conversation_directory_file,
+    read_skill, record_activity, remove_recent_workspace, renew_acp_session_lease,
+    replace_auto_templates, respond_acp_permission, respond_elicitation, retry_run,
+    save_auto_template, save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
     save_metrics_settings, save_task_workflow, save_updater_settings, save_workflow_template,
     search_acp_prompts, search_acp_sessions, search_tasks, select_recent_desktop_avatar,
     select_recent_workspace, send_acp_prompt, set_acp_session_config_option, set_acp_session_model,
@@ -76,6 +79,8 @@ fn main() {
 fn run() -> anyhow::Result<()> {
     configure_storage_paths(channel::storage_path_config());
     let context = DesktopContext::from_current_dir()?;
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    let webview_heap_diagnostics = webview_heap_diagnostics::initialize(&context)?;
     let mut tauri_context = tauri::generate_context!();
     #[cfg(target_os = "windows")]
     let desktop_window_chrome = window_chrome::desktop_window_chrome_vm();
@@ -88,6 +93,14 @@ fn run() -> anyhow::Result<()> {
         // application-owned inset outline instead.
         window.transparent = true;
         window.shadow = desktop_window_chrome.native_shadow;
+        #[cfg(debug_assertions)]
+        {
+            window.additional_browser_args =
+                Some(webview_heap_diagnostics::additional_browser_arguments(
+                    window.additional_browser_args.as_deref(),
+                    &webview_heap_diagnostics.snapshot(),
+                ));
+        }
     }
     #[cfg(target_os = "macos")]
     if let Some(window) = tauri_context.config_mut().app.windows.first_mut() {
@@ -96,13 +109,16 @@ fn run() -> anyhow::Result<()> {
         window.title_bar_style = tauri::TitleBarStyle::Overlay;
         window.hidden_title = true;
     }
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(DesktopState::new(context))
         .manage(WorkspaceFileRuntime::default())
-        .manage(WorkspaceFileWatchRuntime::default())
+        .manage(WorkspaceFileWatchRuntime::default());
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    let builder = builder.manage(webview_heap_diagnostics);
+    builder
         .register_asynchronous_uri_scheme_protocol(
             workspace_files::WORKSPACE_FILE_PREVIEW_PROTOCOL,
             |protocol_context, request, responder| {
@@ -159,8 +175,8 @@ fn run() -> anyhow::Result<()> {
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
             });
-            // 启动后台线程预探测 MCP 服务健康状态（独立线程，避免阻塞 webview 主线程）。
-            // 客户端启动后即开始检测，进入 MCP 管理页时状态已就绪，无需手动诊断。
+            // 启动后台线程预探�?MCP 服务健康状态（独立线程，避免阻�?webview 主线程）�?
+            // 客户端启动后即开始检测，进入 MCP 管理页时状态已就绪，无需手动诊断�?
             let health_handle = app.handle().clone();
             std::thread::spawn(move || {
                 let state = health_handle.state::<DesktopState>();
@@ -208,6 +224,8 @@ fn run() -> anyhow::Result<()> {
             get_round_detail,
             get_log_page,
             get_acp_session,
+            get_turn_file_change_set,
+            get_file_comparison,
             get_acp_activity_detail,
             get_acp_tool_detail,
             renew_acp_session_lease,
@@ -277,7 +295,11 @@ fn run() -> anyhow::Result<()> {
             save_last_conversation_workspace,
             get_supported_attachment_extensions,
             open_in_file_manager,
+            list_conversation_directory,
+            open_conversation_directory_path_in_file_manager,
+            read_conversation_directory_file,
             workspace_files::list_workspace_directory,
+            workspace_files::open_workspace_path_in_file_manager,
             workspace_files::search_workspace_files,
             workspace_files::resolve_workspace_file_link,
             workspace_files::read_file_resource,
@@ -306,6 +328,8 @@ fn run() -> anyhow::Result<()> {
             check_skill_name_conflict,
             feedback::submit_feedback,
             feedback::preview_feedback_session_archive,
+            #[cfg(all(debug_assertions, target_os = "windows"))]
+            webview_heap_diagnostics::get_webview_heap_diagnostic,
         ])
         .run(tauri_context)
         .context("tauri runtime failed")?;

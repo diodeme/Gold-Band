@@ -57,6 +57,7 @@ const bootstrap = (needsWorkspace: boolean): AppBootstrapVm => ({
   appConfig: {
     acpSessionTitleRefreshEnabled: false,
     acpChatEventPageSize: 360,
+    turnFiles: { cardPreviewLimit: 3 },
     workspaceLayout: {
       shellMinWidth: 480,
       shellMinHeight: 680,
@@ -66,7 +67,7 @@ const bootstrap = (needsWorkspace: boolean): AppBootstrapVm => ({
         maxWidth: 960,
         file: {
           preferredWidth: 760,
-          splitMinWidth: 540,
+          splitMinWidth: 500,
           treeDefaultWidth: 280,
           treeMinWidth: 200,
           treeMaxWidth: 420,

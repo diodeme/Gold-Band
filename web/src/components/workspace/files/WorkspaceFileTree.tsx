@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/context-menu';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import { openWorkspacePathInFileManager } from '@/api';
 import type { WorkspaceDirectoryEntryVm } from '@/types';
 import { fileExplorerStore, useFileExplorerSnapshot, type FileTreeNode } from './file-explorer-store';
 
@@ -24,6 +25,7 @@ interface TreeRowContextValue {
   selectedPath: string | null;
   onOpenFile: (entry: WorkspaceDirectoryEntryVm) => void;
   onCopyFailed: () => void;
+  onOpenInFileManager: (relativePath: string) => void;
   onContextMenuOpenChange: (open: boolean) => void;
   canActivateFile: () => boolean;
 }
@@ -141,6 +143,12 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeNode
         <ContextMenuItem className="h-8 px-2 py-1 text-xs" onSelect={(event) => copyEntryPath(event, entry.relativePath.replaceAll('\\', '/'))}>
           {t('workspace.filesPanel.copyRelativePath')}
         </ContextMenuItem>
+        <ContextMenuItem className="h-8 px-2 py-1 text-xs" onSelect={(event) => {
+          event.stopPropagation();
+          context.onOpenInFileManager(entry.relativePath);
+        }}>
+          {t('workspace.filesPanel.openInFileManager')}
+        </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   );
@@ -156,8 +164,8 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
   const contextMenuOpenRef = useRef(false);
   const suppressContextMenuActivationRef = useRef(false);
   const contextMenuFrameRef = useRef<number | null>(null);
-  const [copyFailed, setCopyFailed] = useState(false);
-  const copyFailedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [actionFailure, setActionFailure] = useState<'copy' | 'file-manager' | null>(null);
+  const actionFailureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     void fileExplorerStore.loadRoot(projectId);
@@ -171,7 +179,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
     return () => {
       cancelAnimationFrame(frame);
       if (settleFrame !== null) cancelAnimationFrame(settleFrame);
-      if (copyFailedTimerRef.current) clearTimeout(copyFailedTimerRef.current);
+      if (actionFailureTimerRef.current) clearTimeout(actionFailureTimerRef.current);
       if (contextMenuFrameRef.current !== null) cancelAnimationFrame(contextMenuFrameRef.current);
     };
   }, [projectId]);
@@ -196,10 +204,17 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
   }, [selectedPath, snapshot.roots]);
 
   const onCopyFailed = useCallback(() => {
-    if (copyFailedTimerRef.current) clearTimeout(copyFailedTimerRef.current);
-    setCopyFailed(true);
-    copyFailedTimerRef.current = setTimeout(() => setCopyFailed(false), 1_500);
+    if (actionFailureTimerRef.current) clearTimeout(actionFailureTimerRef.current);
+    setActionFailure('copy');
+    actionFailureTimerRef.current = setTimeout(() => setActionFailure(null), 1_500);
   }, []);
+  const onOpenInFileManager = useCallback((relativePath: string) => {
+    void openWorkspacePathInFileManager(projectId, relativePath).catch(() => {
+      if (actionFailureTimerRef.current) clearTimeout(actionFailureTimerRef.current);
+      setActionFailure('file-manager');
+      actionFailureTimerRef.current = setTimeout(() => setActionFailure(null), 1_500);
+    });
+  }, [projectId]);
   const onContextMenuOpenChange = useCallback((open: boolean) => {
     contextMenuOpenRef.current = open;
     suppressContextMenuActivationRef.current = true;
@@ -219,9 +234,10 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
     selectedPath,
     onOpenFile,
     onCopyFailed,
+    onOpenInFileManager,
     onContextMenuOpenChange,
     canActivateFile,
-  }), [canActivateFile, onContextMenuOpenChange, onCopyFailed, onOpenFile, selectedPath]);
+  }), [canActivateFile, onContextMenuOpenChange, onCopyFailed, onOpenFile, onOpenInFileManager, selectedPath]);
   const searchEntries = snapshot.searchResult?.entries ?? [];
   const searching = snapshot.searchQuery.trim().length > 0;
 
@@ -249,7 +265,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
           </Button>
         ) : null}
       </div>
-      {copyFailed ? <div className="pointer-events-none absolute right-2 top-12 z-20 rounded-md border border-destructive/20 bg-popover/95 px-2 py-1 text-[11px] text-destructive shadow-sm">{t('workspace.filesPanel.pathCopyFailed')}</div> : null}
+      {actionFailure ? <div className="pointer-events-none absolute right-2 top-12 z-20 rounded-md border border-destructive/20 bg-popover/95 px-2 py-1 text-[11px] text-destructive shadow-sm">{t(actionFailure === 'copy' ? 'workspace.filesPanel.pathCopyFailed' : 'workspace.filesPanel.fileManagerOpenFailed')}</div> : null}
       <div ref={ref} className="min-h-0 flex-1 overflow-hidden p-1.5">
         {snapshot.status === 'loading' || snapshot.searchStatus === 'loading' ? (
           <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground"><LoaderCircle className="size-3.5 animate-spin" />{t('workspace.filesPanel.loading')}</div>
@@ -263,17 +279,28 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
             {searchEntries.map((entry) => {
               const Icon = fileIcon(entry.name);
               return (
-                <button
-                  key={entry.canonicalPath}
-                  type="button"
-                  className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/45 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  onClick={() => {
-                    void fileExplorerStore.revealFile(projectId, entry.relativePath).then(() => onOpenFile(entry));
-                  }}
-                >
-                  <Icon className="mt-0.5 size-3.5 shrink-0" />
-                  <span className="min-w-0"><span className="block truncate text-foreground">{entry.name}</span><span className="block truncate text-[10px]">{entry.relativePath}</span></span>
-                </button>
+                <ContextMenu key={entry.canonicalPath} dir="ltr" onOpenChange={onContextMenuOpenChange}>
+                  <ContextMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/45 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      onClick={() => {
+                        void fileExplorerStore.revealFile(projectId, entry.relativePath).then(() => onOpenFile(entry));
+                      }}
+                    >
+                      <Icon className="mt-0.5 size-3.5 shrink-0" />
+                      <span className="min-w-0"><span className="block truncate text-foreground">{entry.name}</span><span className="block truncate text-[10px]">{entry.relativePath}</span></span>
+                    </button>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent className="w-40 min-w-40 p-1">
+                    <ContextMenuItem className="h-8 px-2 py-1 text-xs" onSelect={(event) => {
+                      event.stopPropagation();
+                      onOpenInFileManager(entry.relativePath);
+                    }}>
+                      {t('workspace.filesPanel.openInFileManager')}
+                    </ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
               );
             })}
             {snapshot.searchStatus === 'ready' && searchEntries.length === 0 ? <p className="px-2 py-3 text-xs text-muted-foreground">{t('workspace.filesPanel.noSearchResults')}</p> : null}

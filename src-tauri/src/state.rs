@@ -219,7 +219,9 @@ impl DesktopState {
             notification_dedup: Arc::new(NotificationDedup::new()),
             lifecycle_bus: RuntimeLifecycleBus::new(),
             mcp_health: Mutex::new(BTreeMap::new()),
-            heartbeat_reporter: crate::metrics::heartbeat::HeartbeatReporter::new(env!("CARGO_PKG_VERSION").to_string()),
+            heartbeat_reporter: crate::metrics::heartbeat::HeartbeatReporter::new(
+                env!("CARGO_PKG_VERSION").to_string(),
+            ),
         }
     }
 

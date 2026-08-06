@@ -57,6 +57,102 @@ afterEach(() => {
 });
 
 describe('ACP activity detail loading', () => {
+  it('loads the authoritative detail when a compact summary is mixed with only a partial live tail', async () => {
+    const partialThought: AcpUiEventVm = {
+      id: 'thought-partial',
+      seq: 20,
+      timestamp: '20Z',
+      kind: 'thoughtDelta',
+      sessionId: 'session-1',
+      content: 'partial live thought',
+      title: null,
+      toolCallId: null,
+      status: 'completed',
+      startedSeq: 10,
+      endedSeq: 20,
+      raw: {},
+    };
+    const summary = activitySummary();
+    summary.raw = {
+      goldBandActivity: {
+        activityStartSeq: 10,
+        activityEndSeq: 109,
+        totalEventCount: 3,
+        toolCallCount: 1,
+        thoughtCount: 2,
+        detailAvailable: true,
+      },
+    };
+    const editTool: AcpUiEventVm = {
+      id: 'tool-edit',
+      seq: 30,
+      timestamp: '30Z',
+      kind: 'toolCall',
+      sessionId: 'session-1',
+      content: null,
+      title: 'Edit file',
+      toolCallId: 'call-edit',
+      status: 'completed',
+      startedSeq: 30,
+      endedSeq: 30,
+      raw: { _meta: { goldBandConversation: { toolName: 'Edit' } } },
+    };
+    const finalThought: AcpUiEventVm = {
+      ...partialThought,
+      id: 'thought-final',
+      seq: 40,
+      timestamp: '40Z',
+      content: 'final thought',
+      startedSeq: 40,
+      endedSeq: 40,
+    };
+    vi.mocked(getAcpActivityDetail).mockResolvedValue({
+      items: [partialThought, editTool, finalThought],
+      hasMoreEarlier: false,
+      earlierCursor: null,
+    });
+    const liveProjection = buildAcpTimelineProjection([partialThought], 'completed');
+    const mixedProjection = buildAcpTimelineProjection([summary, partialThought], 'completed');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<ACPMessageList timeline={liveProjection.timeline} sessionStatus="completed" sending={false} branchLocator={locator} />);
+      });
+      await act(async () => {
+        root.render(<ACPMessageList timeline={mixedProjection.timeline} sessionStatus="completed" sending={false} branchLocator={locator} />);
+      });
+      const trigger = container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]');
+      await act(async () => {
+        trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(getAcpActivityDetail).toHaveBeenCalledTimes(1);
+      expect(getAcpActivityDetail).toHaveBeenCalledWith(
+        'project-1',
+        'task-1',
+        'run-1',
+        'round-1',
+        'node-1',
+        'attempt-1',
+        {
+          branchId: 'agent-1',
+          activityStartSeq: 10,
+          activityEndSeq: 109,
+          earlierCursor: null,
+          limit: 40,
+        },
+        undefined,
+        undefined,
+      );
+      expect(container.textContent).toContain('Edit');
+      expect(container.textContent?.match(/思考过程/g)).toHaveLength(2);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('requests tool output only after the individual audit tool is expanded', async () => {
     vi.mocked(getAcpToolDetail).mockResolvedValue({ event: null });
     const tool: AcpUiEventVm = {

@@ -5,6 +5,11 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ACPMessageList, buildAcpTimelineProjection } from '@/components/acp/ACPChatDialog';
+import {
+  ChatContainerContent,
+  ChatContainerRoot,
+  type ChatContainerContext,
+} from '@/components/prompt-kit/chat-container';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { AcpUiEventVm } from '@/types';
 
@@ -33,6 +38,34 @@ afterEach(() => {
 });
 
 describe('ACP activity batch disclosure', () => {
+  it('keeps a finalized file change set immediately after the turn activity batch', () => {
+    const projection = buildAcpTimelineProjection([
+      event({
+        id: 'write-tool',
+        seq: 1,
+        kind: 'toolCall',
+        toolCallId: 'write-tool',
+        title: 'Write src/app.ts',
+        status: 'completed',
+      }),
+      event({
+        id: 'file-change-set',
+        seq: 2,
+        kind: 'fileChangeSet',
+        status: 'finalized',
+        raw: {
+          changeSetId: 'change-set-1',
+          summary: { fileCount: 1, addedFiles: 1, modifiedFiles: 0, deletedFiles: 0, addedLines: 2, deletedLines: 0 },
+        },
+      }),
+    ], 'completed');
+
+    expect(projection.timeline.map((item) => item.kind)).toEqual([
+      'activityBatch',
+      'fileChangeSet',
+    ]);
+  });
+
   it('does not touch a large tool output until the individual tool is expanded', async () => {
     let outputReads = 0;
     const raw: Record<string, unknown> = {
@@ -172,6 +205,73 @@ describe('ACP activity batch disclosure', () => {
       await act(async () => {
         root.unmount();
       });
+    }
+  });
+
+  it('hands bottom-follow ownership to the activity disclosure lifecycle', async () => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    ));
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => window.clearTimeout(frameId));
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    const contextRef = React.createRef<ChatContainerContext>();
+    const projection = buildAcpTimelineProjection([
+      event({
+        id: 'tool',
+        kind: 'toolCall',
+        toolCallId: 'tool',
+        title: 'Read activity.log',
+        status: 'completed',
+        raw: { title: 'Read activity.log', rawInput: { path: 'activity.log' } },
+      }),
+    ], 'completed');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            ChatContainerRoot,
+            { contextRef, resize: 'instant', initial: 'instant' },
+            React.createElement(
+              ChatContainerContent,
+              { scrollClassName: 'overflow-y-auto' },
+              React.createElement(ACPMessageList, {
+                timeline: projection.timeline,
+                sessionStatus: 'completed',
+                sending: false,
+              }),
+            ),
+          ),
+        );
+      });
+
+      const trigger = container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]');
+      await act(async () => {
+        trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      expect(contextRef.current?.isAtBottom).toBe(false);
+
+      const collapse = container.querySelector<HTMLButtonElement>('.acp-activity-collapse-button');
+      await act(async () => {
+        collapse?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await new Promise((resolve) => window.setTimeout(resolve, 1));
+      });
+      expect(contextRef.current?.isAtBottom).toBe(true);
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
     }
   });
 });

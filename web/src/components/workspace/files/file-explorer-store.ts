@@ -173,6 +173,25 @@ export class FileExplorerStore {
     }
   }
 
+  private async refreshRoot(projectId: string) {
+    const runtime = this.runtime(projectId);
+    if (runtime.snapshot.status !== 'ready') {
+      await this.loadRoot(projectId, true);
+      return;
+    }
+    try {
+      const entries = await listWorkspaceDirectory(projectId, '');
+      this.setSnapshot(runtime, { ...runtime.snapshot, roots: nodesFor(entries), errorCode: null });
+      const expanded = [...runtime.snapshot.expanded].sort((left, right) => pathDepth(left) - pathDepth(right));
+      for (const id of expanded) await this.loadDirectory(projectId, id);
+    } catch (reason) {
+      this.setSnapshot(runtime, {
+        ...runtime.snapshot,
+        errorCode: commandErrorCode(reason, 'workspace-file.read-failed'),
+      });
+    }
+  }
+
   async toggleDirectory(projectId: string, relativePath: string, open: boolean) {
     const runtime = this.runtime(projectId);
     const expanded = new Set(runtime.snapshot.expanded);
@@ -265,7 +284,7 @@ export class FileExplorerStore {
       runtime.refreshTimer = null;
       const parent = canonicalPath ? relativeParentFor(runtime.snapshot, canonicalPath) : null;
       if (parent) void this.loadDirectory(projectId, parent, true);
-      else void this.loadRoot(projectId, true);
+      else void this.refreshRoot(projectId);
     }, this.config.watchDebounceMs);
   }
 

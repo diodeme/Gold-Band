@@ -6,7 +6,7 @@
 - 前端新增 ACP session / event / permission / diagnostics 类型，数据来自 Tauri `AcpSessionVm`。
 - `ACPChatDialog` 展示压缩 session header、消息流、thought、tool call、plan、permission、raw frames 和 composer。
 - 会话 UI 已采用 prompt-kit copy-in 组件承载基础交互：`ChatContainer` 负责消息滚动，`Message` 负责用户/agent 气泡，`PromptInput` 负责 composer，`Tool` 负责工具调用卡片，`ChainOfThought` 负责 thought 折叠展示；ACP 专属逻辑只负责事件映射、权限和诊断。
-- 系统提示弹窗正文、原始帧摘要展开详情、子 Agent 结果等长文本区统一跟随应用设置字体；仅在明确需要展示代码或固定宽度标识时才允许局部使用等宽字体。
+- 系统提示弹窗正文、原始帧摘要展开详情、子 Agent 结果等长文本区统一跟随应用设置字体；仅在明确需要展示代码或固定宽度标识时才允许局部使用等宽字体。系统提示正文直接复用 AtomEditor/CodeMirror 的 Markdown 查看器并固定 `editable=false`，复制源码与 Markdown/原文切换沿用该组件右上角的工具栏，不使用额外文字、Switch 或独立工具行。
 - 系统提示弹窗已收口为 shadcn/Radix Dialog + 原生 flex 滚动容器的单滚动面：标题栏固定，正文使用 Gold Band 统一滚动条且常驻，profile/runtime prompt 不做长度截断；长路径和连续字符在正文容器内强制断行，禁止由 `<pre>` 再创建嵌套滚动或把 Dialog 撑出视口。由于 Dialog 使用自然高度加 `max-height`，正文不得改用依赖百分比 viewport 高度的 Radix ScrollArea。前端回归测试固化 `max-height + flex column + min-height zero + direct overflow-y-scroll child` 布局契约。
 - ACP 会话流支持将 `Agent` 工具调用生命周期内的子 Agent transcript 聚合为可展开/收起分组，不再把主 Agent 与子 Agent 输出完全混排。
 - ACP session 初始化与后续追问必须分别维护 Gold Band 显式覆盖和 Agent 当前配置：模型只继承 `modelOverride`，权限模式只继承 `permissionModeOverride`，其余 ACP select 配置继承 `configOptionOverrides[实际 optionId]`；不得从 Agent 返回的 `currentModelId / currentModeId / currentValue` 反推 override。发起会话前模型、权限和思考强度都可切回“不指定”；会话详情仅在对应 override 尚为空时提供“不指定”，模型、权限或思考强度一旦选择具体值后都只能在具体值之间切换。same-session prompt、runtime continue 与 AI-DYNAMIC inner continue 只继续使用显式覆盖。
@@ -123,20 +123,20 @@ Gold Band 需要吸收的是 Jockey 的 ACP 事件归一化和 Chat/Session UI �
 - 普通 `overflow-y-auto` message list：承载 ACP 历史浏览和向上分页；对 prepend 历史使用 scrollHeight 差值补偿 scrollTop，避免虚拟列表重新测量高度时闪回；对流式消息内容增高使用内容尺寸监听来维持底部贴合，避免只在事件数量变化时滚动。
 - `ChatContainerRoot / ChatContainerContent / ChatContainerScrollAnchor`：仅用于不需要历史分页的普通聊天容器场景。
 - `Message / MessageContent`：承载用户与 agent 气泡。
-- `PromptInput / PromptInputTextarea / PromptInputActions / PromptInputAction`：承载 composer、快捷键、loading 和 action 区域。
+- `PromptInput / PromptInputTextarea / PromptInputActions / PromptInputAction`：承载 composer、快捷键、loading 和 action 区域。受控输入的 autosize ref 必须稳定，每次 value 更新只在 layout effect 中测量一次，不能在 `onChange`、ref 重挂载和 layout effect 三条路径重复读写高度。
 - `Tool`：承载工具调用卡片的折叠、状态、输入输出展示。
 - `ChainOfThought / ChainOfThoughtStep / ChainOfThoughtTrigger / ChainOfThoughtContent`：承载 thought / reasoning 折叠展示。
 
 ACP 专属组件只做协议事件映射和业务状态组合：
 
-- `ACPChatDialog`：组合共享会话视口、intervention 与根会话 composer，并负责 branch 查询和实时事件合并。
+- `ACPChatDialog`：组合共享会话视口、intervention 与根会话 composer，并负责 branch 查询和实时事件合并。branch locator 使用稳定对象引用下发；composer 草稿逐键更新不得使历史 Markdown/Activity/Tool 消费者失去 memo 命中。
 - `ConversationViewport` / `ACPMessageList`：根会话与 Agent 分支共用的原生滚动消息视口，按语义块展示正式文字、活动摘要、TODO 和 Agent 链接。
 - `ACPSessionHeader`：展示 session/provider/adapter/cwd/连接状态；Agent 只读容器按只读边界隐藏不适用入口。
 - `ACPEventRenderer`：根据 Gold Band 规范事件类型选择渲染组件，不读取 provider 私有 metadata。
 - `ToolCallCard`：把 ACP `ToolCall` / `ToolCallUpdate` 映射为 prompt-kit `Tool` props。
 - `AgentLinkRow`：在所属父分支中展示轻量 Agent execution 链接，不挂载子 transcript。
 - `RightWorkspaceDock` / `AgentConversationPanel`：用通用多 Tab 右侧工作区承载只读 Agent 分支会话；仅挂载激活 Tab 的完整视口。
-- `AcpActivityBatchRow`：展示一个稳定活动语义块，并在首次展开后按局部 cursor 延迟读取审计详情。
+- `AcpActivityBatchRow`：展示一个稳定活动语义块，并在首次展开后按局部 cursor 延迟读取审计详情。摘要总数与本地详情完整性分开建模；即使已混入少量 live 尾部，只要本地审计数小于摘要总数，首次展开仍读取权威详情。
 - `ThoughtBlock`：把合并后的 `ThoughtDelta` 映射为 prompt-kit `ChainOfThought`，标题展示思考耗时而非字符数。
 - `PlanBlock`：展示计划条目和状态变化。
 - `InterventionLayer` / `PermissionRequestCard`：只展示当前 branch 的待决权限或提问，并使用规范 request ID 提交决策。

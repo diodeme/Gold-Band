@@ -68,3 +68,12 @@ system prompt / user prompt 的固定区分标准：
 
 ## 命令 / 终端 调用约束
 在 Gold Band 桌面端中，所有不需要用户交互的外部命令或终端调用都必须通过 process::background_command() 创建进程，不能直接使用 std::process::Command::new()。该 helper 会在 Windows 上统一应用隐藏控制台窗口的启动参数，避免 cmd.exe、git.exe、taskkill、mklink、MCP/ACP helper 等后台子进程弹出黑色终端窗口，保证产品保持桌面应用心智而不是 terminal 心智。
+
+
+## 验证工具使用规则
+
+涉及 Web 页面、前端页面、路由、交互、布局或样式验证时，优先使用 Codex 内置浏览器 `browser:control-in-app-browser`，通过 `mcp__node_repl__js` 连接和操作浏览器，并优先使用 deep link 直接进入目标页面。
+
+只有在必须验证 EXE 桌面客户端、Windows 原生窗口或客户端级交互时，才使用 `computer-use:computer-use`，通过 `mcp__node_repl__js` 和 `sky` 操控本地客户端。
+
+验证完成后，应关闭或清理本次启动的测试页面、进程和临时资源，避免留下长期运行的测试会话。

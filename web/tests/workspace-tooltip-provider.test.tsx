@@ -128,6 +128,7 @@ describe('WorkspaceShell tooltip boundary', () => {
             appConfig={{
               acpSessionTitleRefreshEnabled: false,
               acpChatEventPageSize: 360,
+              turnFiles: { cardPreviewLimit: 3 },
               workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
             }}
             vm={{ workspaces: [], pinnedTasks: [], tasksByWorkspace: {}, preferences: null }}
@@ -172,6 +173,7 @@ describe('WorkspaceShell tooltip boundary', () => {
             appConfig={{
               acpSessionTitleRefreshEnabled: false,
               acpChatEventPageSize: 360,
+              turnFiles: { cardPreviewLimit: 3 },
               workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
             }}
             vm={{ workspaces: [], pinnedTasks: [], tasksByWorkspace: {}, preferences: null }}

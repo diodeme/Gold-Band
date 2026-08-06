@@ -3,15 +3,13 @@ import { useTranslation } from 'react-i18next';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
-import { ACPChatDialog, type ACPChatDialogHandle, type AcpLifecycleSnapshot, type AcpRuntimeComposerContext } from '@/components/acp/ACPChatDialog';
+import { ACPChatDialog, type AcpLifecycleSnapshot, type AcpRuntimeComposerContext } from '@/components/acp/ACPChatDialog';
 import { ConversationRunHeader } from '@/components/conversation/ConversationRunHeader';
 import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
 import { confirmCloseConversationRunWorkspaceResource, ConversationRunWorkspaceResourcePanel } from '@/components/workspace/ConversationRunWorkspaceResourcePanel';
-import { conversationRunWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
-import { conversationAssetsForLeaf } from '@/lib/conversation-session-assets';
+import { conversationRunWorkspaceResourceKey, useRightWorkspace, type ConversationDirectoryWorkspaceEntry, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
 import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm } from '../types';
-import { openInFileManager } from '@/api';
 
 function activeSessionKey(session: {
   roundId: string;
@@ -102,7 +100,6 @@ export function ConversationRunPage({
   const pendingAutoFollowRestoreSessionKeyRef = useRef<string | null>(null);
   const onAutoFollowChangeRef = useRef(onAutoFollowChange);
   const headerAreaRef = useRef<HTMLDivElement>(null);
-  const chatDialogRef = useRef<ACPChatDialogHandle>(null);
   const activeSessionKeys = useMemo(
     () => run.activeSessions.map((session) => activeSessionKey(session)),
     [run.activeSessions],
@@ -221,19 +218,31 @@ export function ConversationRunPage({
   const selectedSessionKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
   const showLaunchingSession = isRunning && !selectedLeaf;
 
-  const handleOpenInFileManager = useCallback(() => {
-    if (!selectedLeaf) return;
-    openInFileManager(
-      run.projectId,
-      run.taskId,
-      run.runId,
-      selectedLeaf.roundId,
-      selectedLeaf.nodeId,
-      selectedLeaf.attemptId,
-      selectedLeaf.outerNodeId,
-      selectedLeaf.outerAttemptId,
-    );
-  }, [run.projectId, run.taskId, run.runId, selectedLeaf]);
+  const conversationDirectoryEntry = useMemo<ConversationDirectoryWorkspaceEntry | null>(() => {
+    if (!workspace.scopeKey || !selectedLeaf) return null;
+    return {
+      kind: 'conversation-directory',
+      scopeKey: workspace.scopeKey,
+      title: t('workspace.runDirectory'),
+      description: selectedLeaf.runtimeDisplay?.code ?? null,
+      attention: false,
+      locator: {
+        projectId: run.projectId,
+        taskId: run.taskId,
+        runId: run.runId,
+        roundId: selectedLeaf.roundId,
+        nodeId: selectedLeaf.nodeId,
+        attemptId: selectedLeaf.attemptId,
+        outerNodeId: selectedLeaf.outerNodeId,
+        outerAttemptId: selectedLeaf.outerAttemptId,
+      },
+    };
+  }, [run.projectId, run.runId, run.taskId, selectedLeaf, t, workspace.scopeKey]);
+
+  useEffect(() => {
+    workspace.setConversationDirectoryEntry(conversationDirectoryEntry);
+    return () => workspace.setConversationDirectoryEntry(null);
+  }, [conversationDirectoryEntry, workspace.setConversationDirectoryEntry]);
 
   const isAutoFollowRestorableLeaf = useCallback((leaf: ConversationSessionLeafVm | null) => {
     if (!leaf) return false;
@@ -299,8 +308,6 @@ export function ConversationRunPage({
 
   const selectedSessionMatchesLeaf = sessionBelongsToLeaf(run.selectedSession, run, selectedLeaf);
   const selectedSession = selectedSessionMatchesLeaf ? run.selectedSession : null;
-  const selectedArtifacts = conversationAssetsForLeaf(run.artifacts, selectedLeaf);
-  const selectedAttachments = conversationAssetsForLeaf(run.attachments, selectedLeaf);
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
   const selectedSessionRuntimeControlError = run.runtimeErrorMessage && !(
     selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionDisplay?.code === 'error-blocked'
@@ -340,7 +347,6 @@ export function ConversationRunPage({
             onRerun={handleRerun}
             onEditWorkflow={handleEditWorkflow}
             onViewWorkflow={handleViewWorkflow}
-            onOpenInFileManager={handleOpenInFileManager}
             onToggleSessionSwitcher={() => setSessionSwitcherOpen((prev) => !prev)}
             sessionSwitcherOpen={sessionSwitcherOpen}
             onTitleChange={onTitleChange}
@@ -400,7 +406,6 @@ export function ConversationRunPage({
       <div className="min-h-0 flex-1">
         {selectedLeaf ? (
           <ACPChatDialog
-            ref={chatDialogRef}
             key={`${run.taskUuid ?? run.taskId}:${selectedSessionKey ?? 'empty'}`}
             session={selectedSession}
             projectId={run.projectId}
@@ -412,6 +417,7 @@ export function ConversationRunPage({
             outerNodeId={selectedLeaf.outerNodeId}
             outerAttemptId={selectedLeaf.outerAttemptId}
             eventPageSize={appConfig.acpChatEventPageSize}
+            turnFileCardPreviewLimit={appConfig.turnFiles.cardPreviewLimit}
             onLifecycleSnapshot={onLifecycleSnapshot}
             onAtBottomChange={handleAtBottomChange}
             allowEventOnlySessionShell={false}
@@ -422,12 +428,7 @@ export function ConversationRunPage({
             directSessionHeader={isDirect ? {
               title: run.title,
               onTitleChange,
-              onOpenInFileManager: handleOpenInFileManager,
             } : undefined}
-            artifacts={selectedArtifacts}
-            attachments={selectedAttachments}
-            allArtifacts={run.artifacts}
-            allAttachments={run.attachments}
             usageCompact
             cacheNamespace={run.taskUuid ?? `${run.projectId}:${run.taskId}`}
           />

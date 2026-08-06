@@ -224,6 +224,8 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-08-02：补齐无右栏时的左栏紧凑策略。布局 profile 将中间内容硬下限与自动折叠舒适宽度分开建模；会话分别为 360px/420px。右栏关闭时按舒适宽度收起左栏，避免折叠阈值 616px 低于原生 640px 最小宽度而永远不可达；右栏打开时仍按硬下限计算，保持“右栏先压到最小值，再收左栏”的顺序。
 - 2026-08-02：窗口连续缩放热路径移除每像素 React 双提交。原生窗口与 Resizable flex 面板继续逐帧跟随指针；`previousWidth` 下沉到 ref，React 只接收跨越折叠临界点后的 `{left,right}`，右栏最大值改由 Panel 原生 min/max 与中间 min 联合约束。左栏逐帧 `onResize` 持久化定时器被删除，左右宽度只在用户释放分隔线后的 `onLayoutChanged` 中保存；会话导航和右侧 Dock 建立 memo 边界，避免无关壳层提交重建长列表或 Agent 视口。
 - 2026-08-03：修复最大化窗口切换页面时被还原。页面约束同步增加 applied/pending 状态：同约束切换不触发宿主 API；不同约束在最大化期间延迟，恢复普通窗口后由 resize 生命周期应用最新值。禁止使用“先退出再重新最大化”的闪动补偿。
+- 2026-08-04：会话文件入口统一资源化。用户消息附件、Agent artifact、prompt turn 历史原文与 diff 都打开右侧工作区 Tab；旧 composer 上方资产聚合栏和会话内预览 modal 已删除。右侧 Dock/Sheet 继续共享同一资源状态，新增历史资源一律只读，不改变 live workspace 文件的编辑与自动保存语义。
+- 2026-08-04：Conversation 主页面与 session switch payload 删除仅服务旧聚合栏的 `artifacts/attachments` 数组；Round/节点排障入口及按名读取接口保留。会话首屏只携带 change set summary 指针，文件清单和正文分别在卡片/Tab 打开时懒加载。
 
 ---
 

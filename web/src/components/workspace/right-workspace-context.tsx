@@ -44,7 +44,15 @@ interface RightWorkspaceResourceBase {
 export type FileBrowserWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'file-browser';
   projectId: string;
+  selectedFile?: FileWorkspaceResource | null;
 };
+
+export type ConversationDirectoryWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'conversation-directory';
+  locator: ConversationRunLocator & { roundId: string; nodeId: string; attemptId: string; outerNodeId?: string | null; outerAttemptId?: string | null };
+};
+
+export type ConversationDirectoryWorkspaceEntry = Omit<ConversationDirectoryWorkspaceResource, 'key'>;
 
 export type AgentTranscriptResource = RightWorkspaceResourceBase & {
   kind: 'agent-transcript';
@@ -58,6 +66,21 @@ export type FileWorkspaceResource = RightWorkspaceResourceBase & {
   locator: import('@/types').WorkspaceFileLocatorVm;
   target: import('@/types').FileTargetLocationVm | null;
   targetRevision: number;
+};
+
+export type TurnFileWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'file-diff' | 'file-version';
+  locator: import('@/types').TurnFileLocatorVm;
+  changeSetId: string;
+  changeId: string;
+};
+
+export type ConversationAssetWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'conversation-asset';
+  locator: AcpAttemptWorkspaceLocator;
+  assetKind: 'artifact' | 'message-attachment' | 'input-attachment';
+  name: string;
+  path?: string | null;
 };
 
 export type WorkflowViewWorkspaceResource = RightWorkspaceResourceBase & {
@@ -84,7 +107,10 @@ export type RawFramesWorkspaceResource = RightWorkspaceResourceBase & {
 export type RightWorkspaceResource =
   | AgentTranscriptResource
   | FileBrowserWorkspaceResource
+  | ConversationDirectoryWorkspaceResource
   | FileWorkspaceResource
+  | TurnFileWorkspaceResource
+  | ConversationAssetWorkspaceResource
   | WorkflowViewWorkspaceResource
   | WorkflowEditWorkspaceResource
   | SystemPromptWorkspaceResource
@@ -111,8 +137,17 @@ interface RightWorkspaceContextValue extends RightWorkspaceState {
   setWidth: (width: number) => void;
   renderResource: (resource: RightWorkspaceResource) => ReactNode;
   projectId: string | null;
+  conversationDirectoryEntry: ConversationDirectoryWorkspaceEntry | null;
+  setConversationDirectoryEntry: (entry: ConversationDirectoryWorkspaceEntry | null) => void;
   registerResourceRenderer: (kind: RightWorkspaceResourceKind, renderer: RightWorkspaceResourceRenderer) => () => void;
   registerResourceCloseResolver: (kind: RightWorkspaceResourceKind, resolver: RightWorkspaceResourceCloseResolver) => () => void;
+}
+
+export interface RightWorkspaceCommands {
+  scopeKey: string | null;
+  projectId: string | null;
+  openResource: (resource: RightWorkspaceResource) => void | Promise<void>;
+  getResource: (key: string) => RightWorkspaceResource | null;
 }
 
 export type RightWorkspaceResourceKind = RightWorkspaceResource['kind'];
@@ -133,6 +168,7 @@ export type RightWorkspaceAction =
 export const DEFAULT_RIGHT_WORKSPACE_WIDTH = RIGHT_WORKSPACE_DEFAULT_WIDTH;
 export const CONVERSATION_WORKSPACE_LRU_LIMIT = 24;
 const RightWorkspaceContext = createContext<RightWorkspaceContextValue | null>(null);
+const RightWorkspaceCommandsContext = createContext<RightWorkspaceCommands | null>(null);
 
 export function createDraftConversationWorkspaceScope(projectId: string): ConversationWorkspaceScope {
   return { kind: 'draft', key: `draft:${projectId}`, projectId };
@@ -220,14 +256,30 @@ export class ConversationWorkspaceStore {
 export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action: RightWorkspaceAction): RightWorkspaceSessionState {
   switch (action.type) {
     case 'open': {
-      const existing = state.tabs.findIndex((tab) => tab.key === action.resource.key);
+      const fileProjectId = action.resource.kind === 'file' ? action.resource.projectId : null;
+      const existingFileBrowser = fileProjectId
+        ? state.tabs.find((tab): tab is FileBrowserWorkspaceResource => tab.kind === 'file-browser' && tab.projectId === fileProjectId)
+        : null;
+      const resource = action.resource.kind === 'file'
+        ? {
+          kind: 'file-browser' as const,
+          key: fileBrowserWorkspaceResourceKey(action.resource.projectId),
+          scopeKey: action.resource.scopeKey,
+          projectId: action.resource.projectId,
+          title: existingFileBrowser?.title ?? action.resource.title,
+          description: existingFileBrowser?.description ?? action.resource.description,
+          attention: action.resource.attention,
+          selectedFile: action.resource,
+        }
+        : action.resource;
+      const existing = state.tabs.findIndex((tab) => tab.key === resource.key);
       const tabs = existing < 0
-        ? [...state.tabs, action.resource]
-        : state.tabs.map((tab, index) => index === existing ? action.resource : tab);
+        ? [...state.tabs, resource]
+        : state.tabs.map((tab, index) => index === existing ? resource : tab);
       return {
         ...state,
         tabs,
-        activeTabKey: action.resource.key,
+        activeTabKey: resource.key,
         requestedOpen: true,
         openRevision: state.openRevision + 1,
       };
@@ -272,8 +324,11 @@ export function RightWorkspaceProvider({
   const internalStoreRef = useRef<ConversationWorkspaceStore | null>(null);
   if (!internalStoreRef.current) internalStoreRef.current = new ConversationWorkspaceStore();
   const effectiveStore = store ?? internalStoreRef.current;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
   const widthTouchedRef = useRef(false);
   const [width, setWidthState] = useState(initialWidth ?? DEFAULT_RIGHT_WORKSPACE_WIDTH);
+  const [conversationDirectoryEntry, setConversationDirectoryEntryState] = useState<ConversationDirectoryWorkspaceEntry | null>(null);
   const [revision, render] = useReducer((currentRevision) => currentRevision + 1, 0);
   const rendererRegistryRef = useRef(new Map<RightWorkspaceResourceKind, RightWorkspaceResourceRenderer>());
   const closeResolverRegistryRef = useRef(new Map<RightWorkspaceResourceKind, RightWorkspaceResourceCloseResolver>());
@@ -303,21 +358,28 @@ export function RightWorkspaceProvider({
   }, [initialWidth]);
 
   const commit = useCallback((action: RightWorkspaceAction) => {
-    if (!scope) return;
-    const current = effectiveStore.peek(scope);
-    if (action.type === 'open' && action.resource.scopeKey !== scope.key) return;
-    effectiveStore.save(scope, rightWorkspaceReducer(current, action));
+    const currentScope = scopeRef.current;
+    if (!currentScope) return;
+    const current = effectiveStore.peek(currentScope);
+    if (action.type === 'open' && action.resource.scopeKey !== currentScope.key) return;
+    effectiveStore.save(currentScope, rightWorkspaceReducer(current, action));
     render();
-  }, [effectiveStore, scope]);
+  }, [effectiveStore]);
   const openResource = useCallback(async (resource: RightWorkspaceResource) => {
-    if (!scope) return;
-    const current = effectiveStore.peek(scope);
+    const currentScope = scopeRef.current;
+    if (!currentScope) return;
+    const current = effectiveStore.peek(currentScope);
     if (current.activeTabKey && current.activeTabKey !== resource.key) {
       const active = current.tabs.find((tab) => tab.key === current.activeTabKey);
       if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'deactivate') === false) return;
     }
     commit({ type: 'open', resource });
-  }, [commit, effectiveStore, scope]);
+  }, [commit, effectiveStore]);
+  const getResource = useCallback((key: string) => {
+    const currentScope = scopeRef.current;
+    if (!currentScope) return null;
+    return effectiveStore.peek(currentScope).tabs.find((tab) => tab.key === key) ?? null;
+  }, [effectiveStore]);
   const openWorkspace = useCallback(() => commit({ type: 'open-workspace' }), [commit]);
   const activateTab = useCallback(async (key: string) => {
     if (!scope) return;
@@ -345,6 +407,9 @@ export function RightWorkspaceProvider({
     widthTouchedRef.current = true;
     setWidthState(nextWidth);
   }, []);
+  const setConversationDirectoryEntry = useCallback((entry: ConversationDirectoryWorkspaceEntry | null) => {
+    setConversationDirectoryEntryState(entry);
+  }, []);
   const renderResource = useCallback((resource: RightWorkspaceResource) => rendererRegistryRef.current.get(resource.kind)?.(resource) ?? null, []);
   const registerResourceRenderer = useCallback((kind: RightWorkspaceResourceKind, renderer: RightWorkspaceResourceRenderer) => {
     rendererRegistryRef.current.set(kind, renderer);
@@ -365,6 +430,8 @@ export function RightWorkspaceProvider({
     ...sessionState,
     scopeKey: scope?.key ?? null,
     projectId: scope?.projectId ?? null,
+    conversationDirectoryEntry: conversationDirectoryEntry?.scopeKey === scope?.key ? conversationDirectoryEntry : null,
+    setConversationDirectoryEntry,
     width,
     openResource,
     openWorkspace,
@@ -375,8 +442,18 @@ export function RightWorkspaceProvider({
     renderResource,
     registerResourceRenderer,
     registerResourceCloseResolver,
-  }), [activateTab, closeTab, closeWorkspace, openResource, openWorkspace, registerResourceCloseResolver, registerResourceRenderer, renderResource, rendererRevision, scope?.key, scope?.projectId, sessionState, setWidth, width]);
-  return <RightWorkspaceContext.Provider value={value}>{children}</RightWorkspaceContext.Provider>;
+  }), [activateTab, closeTab, closeWorkspace, conversationDirectoryEntry, openResource, openWorkspace, registerResourceCloseResolver, registerResourceRenderer, renderResource, rendererRevision, scope?.key, scope?.projectId, sessionState, setConversationDirectoryEntry, setWidth, width]);
+  const commands = useMemo<RightWorkspaceCommands>(() => ({
+    scopeKey: scope?.key ?? null,
+    projectId: scope?.projectId ?? null,
+    openResource,
+    getResource,
+  }), [getResource, openResource, scope?.key, scope?.projectId]);
+  return (
+    <RightWorkspaceCommandsContext.Provider value={commands}>
+      <RightWorkspaceContext.Provider value={value}>{children}</RightWorkspaceContext.Provider>
+    </RightWorkspaceCommandsContext.Provider>
+  );
 }
 
 export function useRightWorkspace() {
@@ -387,6 +464,16 @@ export function useRightWorkspace() {
 
 export function useOptionalRightWorkspace() {
   return useContext(RightWorkspaceContext);
+}
+
+export function useRightWorkspaceCommands() {
+  const value = useContext(RightWorkspaceCommandsContext);
+  if (!value) throw new Error('useRightWorkspaceCommands must be used inside RightWorkspaceProvider');
+  return value;
+}
+
+export function useOptionalRightWorkspaceCommands() {
+  return useContext(RightWorkspaceCommandsContext);
 }
 
 export function agentTranscriptResourceKey(locator: AgentTranscriptLocator) {
@@ -411,6 +498,10 @@ export function fileBrowserWorkspaceResourceKey(projectId: string) {
   return `file-browser:${projectId}`;
 }
 
+export function conversationDirectoryWorkspaceResourceKey(locator: ConversationDirectoryWorkspaceResource['locator']) {
+  return ['conversation-directory', locator.projectId, locator.taskId, locator.runId, locator.roundId, locator.outerNodeId ?? '', locator.outerAttemptId ?? '', locator.nodeId, locator.attemptId].join(':');
+}
+
 export function fileWorkspaceResourceKey(projectId: string, canonicalPath: string) {
   const normalizedPath = canonicalPath.replaceAll('\\', '/');
   const platformPath = /^[a-z]:\//iu.test(normalizedPath) ? normalizedPath.toLocaleLowerCase() : normalizedPath;
@@ -429,5 +520,27 @@ export function acpAttemptWorkspaceResourceKey(kind: 'system-prompt' | 'raw-fram
     locator.outerNodeId ?? '',
     locator.outerAttemptId ?? '',
     locator.branchId,
+  ].join(':');
+}
+
+export function conversationAssetWorkspaceResourceKey(
+  assetKind: ConversationAssetWorkspaceResource['assetKind'],
+  locator: AcpAttemptWorkspaceLocator,
+  name: string,
+  path?: string | null,
+) {
+  return [
+    'conversation-asset',
+    assetKind,
+    locator.projectId,
+    locator.taskId,
+    locator.runId,
+    locator.roundId,
+    locator.nodeId,
+    locator.attemptId,
+    locator.outerNodeId ?? '',
+    locator.outerAttemptId ?? '',
+    locator.branchId,
+    path ?? name,
   ].join(':');
 }

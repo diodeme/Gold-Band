@@ -43,7 +43,7 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 - 生成的 workflow 走现有 validation、snapshot、runtime
 - 快速会话记忆上一次会话级 AUTO 选择；AUTO模式 tab 的当前配置可保存为模板，并可切换生效模板
 - AUTO 模板保存 AI-DYNAMIC 模板级的 fixed/bootstrap/候选 Agent 模型与原生权限配置，不保存全局 Goal
-- AUTO 模板存储在用户目录 `~/.gold-band/context/auto-templates.json`，属于用户级跨 workspace 模板；首次读取时若后端模板为空，会把旧版 `localStorage.gold-band-auto-mode-templates` 导入到该文件并清理旧 key
+- AUTO 模板存储在用户目录 `~/.gold-band/context/auto-templates.json`，属于用户级跨 workspace 模板；创建时由后端生成 `auto-template-<uuid-v4-without-hyphens>` 分布式 ID，模板名称只用于展示与重名校验，不参与身份生成。首次读取时若后端模板为空，会把旧版 `localStorage.gold-band-auto-mode-templates` 导入到该文件并清理旧 key；既有模板 ID 保持不变。
 - AUTO 模板下拉依次分为“新增模板”“不使用模板”和已保存模板列表三个区域；已保存模板列表与工作流模板列表均限制最大高度并在超出后内部滚动。“新增模板”创建独立的空白 AUTO 草稿并显示“新增模板（未保存）”，不得复用“不使用模板”或当前模板的配置。删除当前模板只解除模板绑定并清空模板名，不清空用户正在编辑的 AUTO 配置字段
 - AUTO 模板选择器的高亮项必须与当前编辑身份一致：未保存草稿高亮“新增模板”；只有未绑定任何已保存模板且不存在草稿时，才高亮“不使用模板”。
 - AUTO 与工作流模板管理复用同一个模板操作行组件；操作栏顺序统一为模板选择、保存修改、新模板名称、另存模板，“保存修改”和“另存”使用主题色按钮。
@@ -57,7 +57,7 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 - AUTO 的可用角色列表只作为内部 worker proposal 的可选 profile ID 白名单；worker 不填 profile 时不注入角色内容。merge / acceptance 不接受 proposal profile，始终使用 runtime 内置 merge / acceptance prompt。
 - Agent 列表展示所有已配置 Agent；未通过诊断或不支持的 Agent 置灰，不可选，并展示不可选原因
 - 允许调用的工作流按 DSL `workflow.id` 去重判断；重复或空 ID 的工作流直接展示在允许调用工作流列表下方，标签保留名称，感叹号 icon tooltip 展示原因
-- AUTO 配置加载后若“允许调用的工作流”包含已无法解析的 `workflow.id`，或“可用角色列表”包含已无法解析的 profile id，页面自动从当前 project 配置中剔除该引用并持久化；模板仍在但 ID 重复、为空或包含不允许嵌套的 AI-DYNAMIC 时继续按常规校验处理，不自动删除。页面用黄色警告横幅分别告知已移除的工作流和角色数量，后续保存和另存不再被该历史失效引用阻断。
+- AUTO 配置加载后若“允许调用的工作流”包含已无法解析的 `workflow.id`，或“可用角色列表”包含已无法解析的 profile id，页面自动从当前 project 配置中剔除该引用并持久化；若当前已选 AUTO 模板也有同类失效引用，则在该模板被选中并加载时同步清理并回写其在用户级 `auto-templates.json` 中的记录。未选中的 AUTO 模板不扫描、不改写。模板仍在但 ID 重复、为空或包含不允许嵌套的 AI-DYNAMIC 时继续按常规校验处理，不自动删除。页面用黄色警告横幅分别告知已移除的工作流和角色数量；其消失规则由消息类型统一管理，warning 自动展示约 5 秒且不可被调用方改为常驻。切换 AUTO 模板时立即清除该横幅，后续保存和另存不再被该历史失效引用阻断。
 
 ## 工作流模式
 

@@ -23,7 +23,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { displayAppError } from '@/i18n';
-import { pruneMissingAutoAllowedProfileIds, pruneMissingAutoAllowedWorkflowIds, selectableAgentOptions, selectableWorkflowOptions, validateAutoConfig } from '@/lib/run-mode-validation';
+import { pruneMissingAutoConfigReferences, pruneMissingAutoAllowedProfileIds, pruneMissingAutoAllowedWorkflowIds, selectableAgentOptions, selectableWorkflowOptions, validateAutoConfig } from '@/lib/run-mode-validation';
 import { createBlankWorkflowDraft } from '@/lib/workflow-template';
 import { cn } from '@/lib/utils';
 
@@ -205,7 +205,11 @@ export function autoSaveTarget(activeTemplateId: string | null | undefined): 'te
 }
 
 export function autoNoticeAutoDismiss(tone: 'success' | 'error' | 'warning'): boolean {
-  return tone === 'success';
+  return tone !== 'error';
+}
+
+export function autoNoticeDismissDelay(tone: 'success' | 'error' | 'warning'): number {
+  return tone === 'warning' ? 5000 : 3000;
 }
 
 export function findSavedWorkflowTemplate(store: WorkflowTemplateStore, name: string): WorkflowTemplate | null {
@@ -272,6 +276,7 @@ export function RunModeManagementPage({
   const wfEditorInitialized = useRef(false);
   const previousProjectIdRef = useRef(projectId);
   const prunedAutoConfigRef = useRef<string | null>(null);
+  const prunedAutoTemplateRef = useRef<string | null>(null);
 
   useEffect(() => {
     setWfTemplateStore(workflowTemplates);
@@ -346,17 +351,17 @@ export function RunModeManagementPage({
   // store only supplies the template data for that selection.
   }, [projectId, runMode]);
 
-  function showAutoNotice(notice: { tone: 'success' | 'error' | 'warning'; message: string }, autoDismiss = autoNoticeAutoDismiss(notice.tone)) {
+  function showAutoNotice(notice: { tone: 'success' | 'error' | 'warning'; message: string }) {
     if (autoNoticeTimerRef.current) {
       clearTimeout(autoNoticeTimerRef.current);
       autoNoticeTimerRef.current = null;
     }
     setAutoNotice(notice);
-    if (autoDismiss) {
+    if (autoNoticeAutoDismiss(notice.tone)) {
       autoNoticeTimerRef.current = setTimeout(() => {
         setAutoNotice(null);
         autoNoticeTimerRef.current = null;
-      }, 3000);
+      }, autoNoticeDismissDelay(notice.tone));
     }
   }
 
@@ -417,8 +422,45 @@ export function RunModeManagementPage({
         workflows: prunedWorkflows.removedWorkflowIds.length,
         profiles: prunedProfiles.removedProfileIds.length,
       }),
-    }, false);
+    });
   }, [effectiveWorkflowTemplates, profiles, profilesLoaded, projectId, runMode, t]);
+
+  useEffect(() => {
+    const activeTemplateId = runMode.autoConfig?.activeTemplateId?.trim();
+    if (!profilesLoaded || !effectiveWorkflowTemplates || !activeTemplateId) return;
+    const activeTemplate = templates.find((template) => template.id === activeTemplateId);
+    if (!activeTemplate) return;
+
+    const normalized = pruneMissingAutoConfigReferences(activeTemplate.config, effectiveWorkflowTemplates, profiles);
+    if (normalized.removedWorkflowIds.length === 0 && normalized.removedProfileIds.length === 0) {
+      prunedAutoTemplateRef.current = null;
+      return;
+    }
+
+    const pruneKey = `${activeTemplate.id}:${JSON.stringify(activeTemplate.config.allowedWorkflows ?? [])}:${JSON.stringify(activeTemplate.config.allowedProfiles ?? [])}`;
+    if (prunedAutoTemplateRef.current === pruneKey) return;
+    prunedAutoTemplateRef.current = pruneKey;
+
+    let cancelled = false;
+    void updateAutoTemplate(activeTemplate.id, activeTemplate.name, normalized.config)
+      .then((store) => {
+        if (cancelled) return;
+        setTemplates(store.templates);
+        showAutoNotice({
+          tone: 'warning',
+          message: t('runMode.invalidAutoTemplateReferencesRemoved', {
+            workflows: normalized.removedWorkflowIds.length,
+            profiles: normalized.removedProfileIds.length,
+          }),
+        });
+      })
+      .catch((error) => {
+        if (!cancelled) showAutoNotice({ tone: 'error', message: displayAppError(t, error) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [effectiveWorkflowTemplates, profiles, profilesLoaded, runMode.autoConfig?.activeTemplateId, t, templates]);
 
   useEffect(() => {
     let cancelled = false;
@@ -507,7 +549,7 @@ export function RunModeManagementPage({
       const config = buildAutoConfig();
       const issues = validateAutoConfig(config, agentRegistry, effectiveWorkflowTemplates, t);
       if (issues.length > 0) {
-        showAutoNotice({ tone: 'error', message: issues.join('\n') }, false);
+        showAutoNotice({ tone: 'error', message: issues.join('\n') });
         return;
       }
       persistRunModeSelection('auto', config);
@@ -537,6 +579,11 @@ export function RunModeManagementPage({
   };
 
   const selectAutoTemplate = (templateId: string) => {
+    if (autoNoticeTimerRef.current) {
+      clearTimeout(autoNoticeTimerRef.current);
+      autoNoticeTimerRef.current = null;
+    }
+    setAutoNotice(null);
     if (templateId === '__none__') {
       const config = buildAutoConfig({ activeTemplateId: undefined, activeTemplateName: undefined });
       setActiveTemplateId('');
@@ -730,17 +777,17 @@ export function RunModeManagementPage({
   const saveAsTemplate = async () => {
     const name = templateName.trim();
     if (!name) {
-      showAutoNotice({ tone: 'error', message: t('runMode.validationTemplateNameRequired') }, false);
+      showAutoNotice({ tone: 'error', message: t('runMode.validationTemplateNameRequired') });
       return;
     }
     if (templates.some((item) => item.name.trim() === name)) {
-      showAutoNotice({ tone: 'error', message: t('runMode.validationTemplateNameDuplicated', { name }) }, false);
+      showAutoNotice({ tone: 'error', message: t('runMode.validationTemplateNameDuplicated', { name }) });
       return;
     }
     const templateConfig = buildAutoConfig({ activeTemplateId: undefined, activeTemplateName: name }, false);
     const issues = validateAutoConfig(templateConfig, agentRegistry, effectiveWorkflowTemplates, t);
     if (issues.length > 0) {
-      showAutoNotice({ tone: 'error', message: issues.join('\n') }, false);
+      showAutoNotice({ tone: 'error', message: issues.join('\n') });
       return;
     }
     setAutoSaving(true);
@@ -760,7 +807,7 @@ export function RunModeManagementPage({
       await Promise.resolve(onSave({ mode: 'auto', autoConfig: config }));
       showAutoNotice({ tone: 'success', message: t('runMode.autoTemplateSaved') });
     } catch (error) {
-      showAutoNotice({ tone: 'error', message: displayAppError(t, error) }, false);
+      showAutoNotice({ tone: 'error', message: displayAppError(t, error) });
     } finally {
       setAutoSaving(false);
     }
@@ -772,7 +819,7 @@ export function RunModeManagementPage({
       const config = buildAutoConfig({ activeTemplateId: undefined, activeTemplateName: undefined });
       const issues = validateAutoConfig(config, agentRegistry, effectiveWorkflowTemplates, t);
       if (issues.length > 0) {
-        showAutoNotice({ tone: 'error', message: issues.join('\n') }, false);
+        showAutoNotice({ tone: 'error', message: issues.join('\n') });
         return;
       }
       setAutoSaving(true);
@@ -788,13 +835,13 @@ export function RunModeManagementPage({
 
     const name = templateName.trim() || templates.find((item) => item.id === activeTemplateId)?.name || t('runMode.autoTemplateFallbackName');
     if (templates.some((item) => item.id !== activeTemplateId && item.name.trim() === name)) {
-      showAutoNotice({ tone: 'error', message: t('runMode.validationTemplateNameDuplicated', { name }) }, false);
+      showAutoNotice({ tone: 'error', message: t('runMode.validationTemplateNameDuplicated', { name }) });
       return;
     }
     const templateConfig = buildAutoConfig({ activeTemplateId, activeTemplateName: name }, false);
     const issues = validateAutoConfig(templateConfig, agentRegistry, effectiveWorkflowTemplates, t);
     if (issues.length > 0) {
-      showAutoNotice({ tone: 'error', message: issues.join('\n') }, false);
+      showAutoNotice({ tone: 'error', message: issues.join('\n') });
       return;
     }
     setAutoSaving(true);
@@ -806,7 +853,7 @@ export function RunModeManagementPage({
       await Promise.resolve(onSave({ mode: 'auto', autoConfig: config }));
       showAutoNotice({ tone: 'success', message: t('runMode.autoTemplateSaved') });
     } catch (error) {
-      showAutoNotice({ tone: 'error', message: displayAppError(t, error) }, false);
+      showAutoNotice({ tone: 'error', message: displayAppError(t, error) });
     } finally {
       setAutoSaving(false);
     }
@@ -901,7 +948,7 @@ export function RunModeManagementPage({
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   void deleteAutoTemplate(template.id).catch((error) => {
-                                    showAutoNotice({ tone: 'error', message: displayAppError(t, error) }, false);
+                                    showAutoNotice({ tone: 'error', message: displayAppError(t, error) });
                                   });
                                 }}
                               >

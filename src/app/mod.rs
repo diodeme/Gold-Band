@@ -403,37 +403,13 @@ fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> Str
     candidate
 }
 
-fn unique_auto_template_id(store: &AutoTemplateStore, name: &str) -> String {
-    let slug = name
-        .trim()
-        .to_ascii_lowercase()
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string();
-    let base = if slug.is_empty() {
-        "auto-template".to_string()
-    } else {
-        slug
-    };
-    let mut candidate = base.clone();
-    let mut index = 1;
-    while store
-        .templates
-        .iter()
-        .any(|template| template.id == candidate)
-    {
-        index += 1;
-        candidate = format!("{base}-{index}");
+fn next_auto_template_id(store: &AutoTemplateStore) -> String {
+    loop {
+        let candidate = format!("auto-template-{}", generate_uuid());
+        if !store.templates.iter().any(|template| template.id == candidate) {
+            return candidate;
+        }
     }
-    candidate
 }
 
 #[derive(Debug, Clone)]
@@ -1543,7 +1519,7 @@ impl App {
             bail!("auto template name `{name}` already exists");
         }
         let now = now_rfc3339_like();
-        let id = unique_auto_template_id(&store, name);
+        let id = next_auto_template_id(&store);
         store.templates.push(AutoTemplate {
             id,
             name: name.to_string(),
@@ -1620,7 +1596,7 @@ impl App {
             }
             let mut id = template.id.trim().to_string();
             if id.is_empty() || store.templates.iter().any(|item| item.id == id) {
-                id = unique_auto_template_id(&store, name);
+                id = next_auto_template_id(&store);
             }
             if store.templates.iter().any(|item| item.name == name) {
                 continue;
@@ -3481,8 +3457,8 @@ fn is_acp_session_active_status(status: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpLiveEventContext, App, CreateTaskInput, RuntimeLifecycleEvent, WorkflowTemplate,
-        WorkflowTemplateStore,
+        AcpLiveEventContext, App, AutoTemplateStore, CreateTaskInput, RuntimeLifecycleEvent,
+        WorkflowTemplate, WorkflowTemplateStore, next_auto_template_id,
     };
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
@@ -3521,6 +3497,22 @@ mod tests {
             config_dir_name: ".gold-band-app-test",
             home_env_var: "GOLD_BAND_APP_TEST_HOME",
         }
+    }
+
+    #[test]
+    fn auto_template_ids_are_name_independent_distributed_ids() {
+        let store = AutoTemplateStore {
+            version: VERSION.to_string(),
+            templates: Vec::new(),
+        };
+
+        let first = next_auto_template_id(&store);
+        let second = next_auto_template_id(&store);
+
+        assert!(first.starts_with("auto-template-"));
+        assert!(second.starts_with("auto-template-"));
+        assert_eq!(first.len(), "auto-template-".len() + 32);
+        assert_ne!(first, second);
     }
 
     fn set_test_home(repo_root: &Utf8PathBuf) {

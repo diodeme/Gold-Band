@@ -52,10 +52,10 @@ use crate::prompts::{
     RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN, prompt_by_language, render as render_template,
 };
 use crate::provider::{
-    PromptBundle, PromptHiddenSection, PromptOutputContract, PromptRuntimeContext,
-    PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode, UserPromptRenderMode,
-    WorkerInvocation, render_prompt_bundle, supported_models_from_capabilities,
-    supported_modes_from_capabilities,
+    OutputEmissionMode, PromptBundle, PromptHiddenSection, PromptOutputContract,
+    PromptRuntimeContext, PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode,
+    UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, RunState, TaskState, WorkerRefState,
@@ -3304,6 +3304,7 @@ fn dynamic_effective_completion_schema(
 fn dynamic_output_contract(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
+    emission_mode: OutputEmissionMode,
 ) -> PromptOutputContract {
     let language = ctx.app.config.desktop_language;
     let schema = dynamic_effective_completion_schema(ctx, graph);
@@ -3332,7 +3333,35 @@ fn dynamic_output_contract(
         schema: Some(schema),
         schema_text: Some(schema_text.trim().to_string()),
         success_condition: None,
+        finalize_context: None,
+        emission_mode,
     }
+}
+
+fn dynamic_node_is_bootstrap_dispatch(node: &DynamicNodeState) -> bool {
+    node.id == DYNAMIC_BOOTSTRAP_NODE_ID
+        && node.kind == DynamicNodeKind::Worker
+        && node.depth == 0
+        && node.group_id.is_none()
+        && node.depends_on.is_empty()
+        && node.chain_id == DYNAMIC_BOOTSTRAP_NODE_ID
+}
+
+fn dynamic_output_emission_mode(node: &DynamicNodeState) -> OutputEmissionMode {
+    if dynamic_node_is_bootstrap_dispatch(node) {
+        OutputEmissionMode::InlineControl
+    } else {
+        OutputEmissionMode::PostTurnProjection
+    }
+}
+
+fn dynamic_output_contract_for_node(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+    node: &DynamicNodeState,
+) -> Option<PromptOutputContract> {
+    dynamic_node_uses_completion_contract(node.kind)
+        .then(|| dynamic_output_contract(ctx, graph, dynamic_output_emission_mode(node)))
 }
 
 fn dynamic_attempt_id(_node: &DynamicNodeState) -> String {
@@ -4896,7 +4925,8 @@ fn execute_dynamic_worker(
         );
         let output_contract_started_at =
             dynamic_invocation_build_step_begin(ctx, &node, &attempt_id, "output_contract");
-        let output_contract = dynamic_output_contract(ctx, graph);
+        let output_contract = dynamic_output_contract_for_node(ctx, graph, &node)
+            .expect("dynamic worker stage requires a completion contract");
         dynamic_invocation_build_step_end(
             ctx,
             &node,
@@ -8025,8 +8055,7 @@ pub(crate) fn build_dynamic_prompt_bundle(
         parent_continue_prompt_id: None,
         resume_override: None,
     };
-    let output_contract = dynamic_node_uses_completion_contract(node.kind)
-        .then(|| dynamic_output_contract(&ctx, &graph));
+    let output_contract = dynamic_output_contract_for_node(&ctx, &graph, &node);
     let invocation = build_dynamic_worker_invocation(
         &ctx,
         &graph,
@@ -8055,7 +8084,7 @@ fn build_dynamic_worker_invocation(
     graph: &DynamicGraphState,
     node: &DynamicNodeState,
     attempt_id: &str,
-    output_contract: Option<PromptOutputContract>,
+    mut output_contract: Option<PromptOutputContract>,
     session_mode: SessionMode,
     continue_ref: Option<serde_json::Value>,
     resume_prompt: Option<String>,
@@ -8100,9 +8129,10 @@ fn build_dynamic_worker_invocation(
         Some((_, content)) => Some(content.trim().to_string()),
         None => profile_entry.as_ref().map(|entry| entry.content.clone()),
     };
-    let profile_dynamic_template = profile_entry
-        .as_ref()
-        .is_some_and(|entry| entry.dynamic_template);
+    let profile_dynamic_template = builtin_profile.is_some()
+        || profile_entry
+            .as_ref()
+            .is_some_and(|entry| entry.dynamic_template);
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -8136,8 +8166,30 @@ fn build_dynamic_worker_invocation(
 
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "system_sections");
-    let has_output_contract = output_contract.is_some();
+    let has_output_contract = output_contract
+        .as_ref()
+        .is_some_and(|contract| contract.emission_mode == OutputEmissionMode::InlineControl);
     let extra_system_sections = dynamic_system_sections(ctx, graph, node, has_output_contract)?;
+    let extra_hidden_sections = dynamic_hidden_sections(
+        ctx,
+        graph,
+        node,
+        attempt_id,
+        session_mode,
+        has_output_contract,
+    )?;
+    if let Some(contract) = output_contract
+        .as_mut()
+        .filter(|contract| contract.emission_mode == OutputEmissionMode::PostTurnProjection)
+    {
+        contract.finalize_context = Some(
+            dynamic_hidden_sections(ctx, graph, node, attempt_id, session_mode, true)?
+                .into_iter()
+                .map(|section| section.content)
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        );
+    }
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -8283,14 +8335,7 @@ fn build_dynamic_worker_invocation(
         predecessors,
         new_round_trigger: None,
         extra_system_sections,
-        extra_hidden_sections: dynamic_hidden_sections(
-            ctx,
-            graph,
-            node,
-            attempt_id,
-            session_mode,
-            has_output_contract,
-        )?,
+        extra_hidden_sections,
         task_instruction: Some(task_instruction.clone()),
         user_tips_instruction: dynamic_user_tips_instruction(ctx),
         resume_task_instruction: dynamic_resume_task_instruction(session_mode, &task_instruction),
@@ -8350,7 +8395,7 @@ fn dynamic_builtin_profile(
     node: &DynamicNodeState,
 ) -> Option<(&'static str, &'static str)> {
     match node.kind {
-        DynamicNodeKind::Worker if node.depth == 0 && node.chain_id == "bootstrap" => Some((
+        DynamicNodeKind::Worker if dynamic_node_is_bootstrap_dispatch(node) => Some((
             "ai-dynamic-fanout",
             prompt_by_language(language, AI_DYNAMIC_FANOUT_ZH_CN, AI_DYNAMIC_FANOUT_EN),
         )),
@@ -11849,7 +11894,11 @@ mod tests {
         let app = App::with_config(repo_root, RuntimeConfig::default());
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
-        let node = test_worktree_node("bootstrap");
+        let mut node = test_worktree_node("bootstrap");
+        node.depth = 0;
+        node.workspace = WorkspacePolicy {
+            mode: WorkspaceMode::Readonly,
+        };
         let graph = test_dynamic_graph(vec![node.clone()]);
 
         let invocation = build_dynamic_worker_invocation(
@@ -11857,7 +11906,7 @@ mod tests {
             &graph,
             &node,
             &dynamic_attempt_id(&node),
-            Some(dynamic_output_contract(&ctx, &graph)),
+            dynamic_output_contract_for_node(&ctx, &graph, &node),
             SessionMode::New,
             None,
             None,
@@ -11872,6 +11921,7 @@ mod tests {
         let prompt = render_prompt_bundle(&invocation).unwrap();
 
         assert!(prompt.system_prompt.contains("AI-DYNAMIC 稳定规则"));
+        assert!(prompt.system_prompt.contains("dynamic-node-completion"));
         assert!(!prompt.system_prompt.contains("内部 attempt 目录"));
         assert!(!prompt.system_prompt.contains("remaining dynamic nodes"));
         assert!(!prompt.system_prompt.contains("当前链路可复用会话节点"));
@@ -11915,7 +11965,7 @@ mod tests {
             &graph,
             &node,
             &dynamic_attempt_id(&node),
-            Some(dynamic_output_contract(&ctx, &graph)),
+            dynamic_output_contract_for_node(&ctx, &graph, &node),
             SessionMode::New,
             None,
             None,
@@ -11979,7 +12029,7 @@ mod tests {
             &graph,
             &node,
             &dynamic_attempt_id(&node),
-            Some(dynamic_output_contract(&ctx, &graph)),
+            dynamic_output_contract_for_node(&ctx, &graph, &node),
             SessionMode::New,
             None,
             None,
@@ -12003,6 +12053,8 @@ mod tests {
                 .contains("artifacts/dynamic-node-completion")
         );
         assert!(!prompt.user_prompt.contains("completion="));
+        assert!(!prompt.system_prompt.contains("dynamic-node-completion"));
+        assert!(prompt.system_prompt.contains("隐藏 finalize turn"));
     }
 
     #[test]
@@ -12043,7 +12095,7 @@ mod tests {
             &graph,
             &branch_a,
             &dynamic_attempt_id(&branch_a),
-            Some(dynamic_output_contract(&ctx, &graph)),
+            dynamic_output_contract_for_node(&ctx, &graph, &branch_a),
             SessionMode::New,
             None,
             None,
@@ -12180,7 +12232,7 @@ mod tests {
             &graph,
             &acceptance,
             &dynamic_attempt_id(&acceptance),
-            Some(dynamic_output_contract(&ctx, &graph)),
+            dynamic_output_contract_for_node(&ctx, &graph, &acceptance),
             SessionMode::New,
             None,
             None,
@@ -12192,15 +12244,42 @@ mod tests {
             None,
         )
         .unwrap();
+        let finalize_context = invocation
+            .output_contract
+            .as_ref()
+            .and_then(|contract| contract.finalize_context.as_deref())
+            .expect("acceptance finalizer needs dynamic routing context");
+        assert!(finalize_context.contains("## 会话复用"));
+        assert!(finalize_context.contains("## 运行预算"));
+        assert!(finalize_context.contains("## Agent 与 profile 选项"));
         let prompt = render_prompt_bundle(&invocation).unwrap();
 
         assert!(prompt.user_prompt.contains("## 当前 group"));
         assert!(!prompt.user_prompt.contains("## 并行兄弟节点"));
-        assert!(prompt.user_prompt.contains("## 会话复用"));
-        assert!(prompt.user_prompt.contains("## 运行预算"));
-        assert!(prompt.user_prompt.contains("## Agent 与 profile 选项"));
-        assert!(prompt.system_prompt.contains("dynamic-node-completion"));
-        assert!(prompt.system_prompt.contains("next.type"));
+        assert!(!prompt.user_prompt.contains("## 会话复用"));
+        assert!(!prompt.user_prompt.contains("## 运行预算"));
+        assert!(!prompt.user_prompt.contains("## Agent 与 profile 选项"));
+        assert!(!prompt.system_prompt.contains("dynamic-node-completion"));
+        assert!(!prompt.system_prompt.contains("next.type"));
+        assert!(prompt.system_prompt.contains("隐藏 finalize turn"));
+
+        let mut finalize_invocation = invocation;
+        finalize_invocation
+            .output_contract
+            .as_mut()
+            .unwrap()
+            .emission_mode = OutputEmissionMode::InlineControl;
+        finalize_invocation.session_mode = SessionMode::Continue;
+        finalize_invocation.user_prompt_render_mode = UserPromptRenderMode::RuntimeFinalize;
+        finalize_invocation.resume_prompt_visibility = PromptVisibility::Hidden;
+        finalize_invocation.resume_prompt = Some("finalize".to_string());
+        let finalize_prompt = render_prompt_bundle(&finalize_invocation).unwrap();
+        assert!(
+            finalize_prompt
+                .system_prompt
+                .contains("dynamic-node-completion")
+        );
+        assert!(finalize_prompt.system_prompt.contains("next.type"));
     }
 
     #[test]
@@ -12268,7 +12347,7 @@ mod tests {
             &graph,
             &child_a,
             &dynamic_attempt_id(&child_a),
-            Some(dynamic_output_contract(&ctx, &graph)),
+            dynamic_output_contract_for_node(&ctx, &graph, &child_a),
             SessionMode::New,
             None,
             None,
@@ -12310,7 +12389,7 @@ mod tests {
             &graph,
             &node,
             &dynamic_attempt_id(&node),
-            Some(dynamic_output_contract(&ctx, &graph)),
+            dynamic_output_contract_for_node(&ctx, &graph, &node),
             SessionMode::Continue,
             Some(serde_json::json!({ "acpSessionId": "session-1" })),
             Some(localized_continue_prompt(ctx.app.config.desktop_language)),
@@ -12322,12 +12401,19 @@ mod tests {
             None,
         )
         .unwrap();
+        let finalize_context = invocation
+            .output_contract
+            .as_ref()
+            .and_then(|contract| contract.finalize_context.as_deref())
+            .expect("continued dynamic worker needs finalize context");
+        assert!(finalize_context.contains("continueFromNodeId"));
+        assert!(finalize_context.contains("hello-step"));
         let prompt = render_prompt_bundle(&invocation).unwrap();
 
         assert!(prompt.user_prompt.contains("# 目标"));
         assert!(prompt.user_prompt.contains("# 任务"));
         assert!(prompt.user_prompt.contains("goodbye-step"));
-        assert!(prompt.user_prompt.contains("continueFromNodeId"));
+        assert!(!prompt.user_prompt.contains("continueFromNodeId"));
         assert!(prompt.user_prompt.contains("hello-step"));
         assert!(
             prompt
@@ -12360,6 +12446,43 @@ mod tests {
         assert!(!dynamic_node_uses_completion_contract(
             DynamicNodeKind::Merge
         ));
+    }
+
+    #[test]
+    fn dynamic_bootstrap_is_inline_but_work_nodes_are_post_turn() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut bootstrap = test_worktree_node(DYNAMIC_BOOTSTRAP_NODE_ID);
+        bootstrap.depth = 0;
+        bootstrap.workspace = WorkspacePolicy {
+            mode: WorkspaceMode::Readonly,
+        };
+        let worker = test_worktree_node("implementation");
+        let mut acceptance = test_worktree_node("acceptance");
+        acceptance.kind = DynamicNodeKind::Acceptance;
+        let graph = test_dynamic_graph(vec![bootstrap.clone(), worker.clone(), acceptance.clone()]);
+
+        assert!(dynamic_node_is_bootstrap_dispatch(&bootstrap));
+        assert_eq!(
+            dynamic_output_contract_for_node(&ctx, &graph, &bootstrap)
+                .unwrap()
+                .emission_mode,
+            OutputEmissionMode::InlineControl
+        );
+        assert_eq!(
+            dynamic_output_contract_for_node(&ctx, &graph, &worker)
+                .unwrap()
+                .emission_mode,
+            OutputEmissionMode::PostTurnProjection
+        );
+        assert_eq!(
+            dynamic_output_contract_for_node(&ctx, &graph, &acceptance)
+                .unwrap()
+                .emission_mode,
+            OutputEmissionMode::PostTurnProjection
+        );
     }
 
     fn accepted_proposal(source_node_id: &str, parsed: serde_json::Value) -> DynamicProposalState {

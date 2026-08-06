@@ -457,7 +457,9 @@ MVP 行为：
 
 ### schema 输出修复规则
 - 声明 `output.schema` 的 worker 输出不合法时，不走 edge。
-- runtime 在同一 attempt / provider session 中隐藏追问 agent 修复输出。
+- 普通 workflow / AI-DYNAMIC 工作节点先完成自然语言业务 turn，再在同一 attempt / provider session 中通过隐藏 finalize turn 请求 canonical artifact；只有 AI-DYNAMIC bootstrap 分发控制节点在首轮内联输出协议。
+- runtime 使用 attempt 根目录的 `artifact-emission.json(finalizing)` 固化两阶段边界；恢复或重试检测到该状态时只继续 finalize，不重复业务 turn。
+- runtime 在同一 artifact finalize 会话中隐藏追问 agent 修复输出。
 - 隐藏追问最多 3 次；仍不合法则 workflow failure。
 
 ---
@@ -935,3 +937,13 @@ attempt-001/
 
 - 根因修复：`notify-rust 4.18` 的 `ResponseHandler` 接收 `&NotificationResponse`，桌面适配器错误地按值推断参数，导致 Linux 与两个 macOS release job 在 Rust 编译阶段同时失败。适配器现显式遵守借用签名，并先把第三方响应映射为内部 `Navigate / ClearDedup` 处置后再操作导航队列和 dedup。
 - 回归固化：新增响应分类与 borrowed `ResponseHandler` 契约单测，覆盖正文、view、其他 action、reply 和 closed；PR checks 保留完整回归，两条 release 流水线的多平台构建必须等待 Linux `cargo check --workspace --all-targets` 通过。发布预检只验证平台代码可编译，不执行全量业务测试，避免无关的平台断言阻断打包。
+
+---
+
+## 2026-08-06：Runtime artifact 约定后置
+
+- 根因修复：原实现把“业务执行”和“runtime 控制结果归一化”压在同一个 prompt turn，导致 agent 在工作开始前就被结构化 artifact 协议约束，自然业务回复与控制 JSON 相互污染。保留现有 `output_contract` 作为 runtime 控制契约，并新增 `PostTurnProjection / InlineControl` 发射模式，不拆出第二套 contract 领域。
+- 执行契约：普通 workflow worker 与 AI-DYNAMIC 的 worker / workflow invocation / acceptance 先以 Conversation 策略完成可见业务 turn，再复用同一 ACP session 发送隐藏 `RuntimeFinalize` prompt 生成 artifact；AI-DYNAMIC bootstrap dispatcher 的职责就是分发，继续使用 `InlineControl` 在首轮接收并输出完整动态协议。Direct / `RawAgent` 不变。
+- 生命周期：业务 turn 成功后先原子写入 `artifact-emission.json(finalizing)`，再开始隐藏 finalize。停止、进程恢复和自动重试只要观察到该 durable phase，就跳过业务执行并继续 finalization；无 phase 时仍按业务 turn 恢复。finalize 输出 repair 只修复 artifact，不重新执行任务；损坏或版本不支持的 phase 不允许静默回退。
+- 提示词与观测：中英文 finalize 模板统一放入 `src/prompts/<language>/runtime/artifact_finalize.md`；可见业务 turn 不暴露 schema，隐藏 timeline reason 区分 `artifactFinalize` 与 `invalidOutputRepair`。
+- 回归固化：Rust 单元测试覆盖发射模式到 ACP 输出策略的映射、业务 prompt 不含 schema、隐藏 finalize 内容与 reason、durable finalizing 恢复、workflow 默认后置，以及 AI-DYNAMIC bootstrap/普通 worker/acceptance 的模式分流。

@@ -8,7 +8,9 @@ use crate::prompts::{
     RUNTIME_SYSTEM_EN, RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN,
     profile_template_context, prompt_by_language, render as render_template,
 };
-use crate::runtime_error::{RuntimeErrorInfo, normalize_provider_runtime_failure};
+use crate::runtime_error::{
+    RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, normalize_provider_runtime_failure,
+};
 use crate::storage::active_storage_path_config;
 use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
@@ -1021,6 +1023,7 @@ impl ProviderAdapter for AcpProvider {
             self.acp_raw_max_size_bytes,
             self.acp_raw_target_size_bytes,
             self.runtime_policy,
+            acp_output_policy(req.output_contract.as_ref()),
             live_update,
             &req.mcp_servers,
             session_update,
@@ -1047,7 +1050,11 @@ impl ProviderAdapter for AcpProvider {
         )
         .then(|| {
             req.output_contract.as_ref().and_then(|contract| {
-                output_artifact_payload_from_run(contract, &run.final_outputs, &run.final_text)
+                output_artifact_payload_from_run(
+                    contract,
+                    &run.output.identified_outputs,
+                    &run.output.identified_text,
+                )
             })
         })
         .flatten();
@@ -1073,20 +1080,44 @@ impl ProviderAdapter for AcpProvider {
     }
 }
 
+fn acp_output_policy(contract: Option<&PromptOutputContract>) -> client::AcpOutputPolicy {
+    if contract.is_some() {
+        client::AcpOutputPolicy::ArtifactContract
+    } else {
+        client::AcpOutputPolicy::Conversation
+    }
+}
+
 fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcome {
     if let Some(failure) = &run.terminal_failure {
-        return ProviderTerminalOutcome {
-            status: ProviderRunStatus::Failure,
-            runtime_error: Some(normalize_provider_runtime_failure(
+        let raw = Some(serde_json::json!({
+            "adapterId": run.adapter_id,
+            "adapterDisplayName": run.adapter_display_name,
+            "stopReason": run.stop_reason,
+            "terminalFailure": failure,
+        }));
+        let runtime_error = if failure.code == client::ACP_UNIDENTIFIED_AGENT_OUTPUT_CODE {
+            RuntimeErrorInfo::new(
+                RuntimeErrorDomain::Provider,
+                "provider.acp-unidentified-agent-output",
+                RecoveryMode::Manual,
+                failure.diagnostic(),
+                serde_json::json!({
+                    "acpCode": failure.code,
+                    "anonymousChunkCount": run.output.anonymous_chunk_count,
+                }),
+                raw,
+            )
+        } else {
+            normalize_provider_runtime_failure(
                 run.stop_reason.as_deref(),
                 failure.diagnostic(),
-                Some(serde_json::json!({
-                    "adapterId": run.adapter_id,
-                    "adapterDisplayName": run.adapter_display_name,
-                    "stopReason": run.stop_reason,
-                    "terminalFailure": failure,
-                })),
-            )),
+                raw,
+            )
+        };
+        return ProviderTerminalOutcome {
+            status: ProviderRunStatus::Failure,
+            runtime_error: Some(runtime_error),
         };
     }
 
@@ -1121,7 +1152,7 @@ fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcom
             status: ProviderRunStatus::Failure,
             runtime_error: Some(normalize_provider_runtime_failure(
                 run.stop_reason.as_deref(),
-                run.final_text.clone(),
+                run.output.visible_text.clone(),
                 Some(serde_json::json!({
                     "adapterId": run.adapter_id,
                     "adapterDisplayName": run.adapter_display_name,
@@ -1930,8 +1961,7 @@ mod tests {
             adapter_display_name: "Codex".to_string(),
             stop_reason: stop_reason.map(str::to_string),
             terminal_failure,
-            final_text: String::new(),
-            final_outputs: Vec::new(),
+            output: client::AcpPromptOutput::default(),
             restored: false,
             used_tokens: None,
             context_window_size: None,
@@ -1974,6 +2004,52 @@ mod tests {
 
         assert_eq!(outcome.status, ProviderRunStatus::Success);
         assert!(outcome.runtime_error.is_none());
+    }
+
+    #[test]
+    fn output_contract_selects_strict_policy_without_mode_or_provider_branching() {
+        let contract = PromptOutputContract {
+            artifact: "dynamic-node-completion".to_string(),
+            kind: "json".to_string(),
+            schema: None,
+            schema_text: None,
+            success_condition: None,
+        };
+
+        assert_eq!(
+            acp_output_policy(None),
+            client::AcpOutputPolicy::Conversation
+        );
+        assert_eq!(
+            acp_output_policy(Some(&contract)),
+            client::AcpOutputPolicy::ArtifactContract
+        );
+    }
+
+    #[test]
+    fn anonymous_only_artifact_failure_is_manual_and_never_auto_retried() {
+        let mut run = acp_prompt_run(
+            Some("end_turn"),
+            Some(AcpPromptFailure {
+                code: client::ACP_UNIDENTIFIED_AGENT_OUTPUT_CODE.to_string(),
+                message: "ACP artifact prompt produced only anonymous output".to_string(),
+                details: Some("unexpected status 502 Bad Gateway".to_string()),
+                raw: serde_json::json!({ "anonymousChunkCount": 1 }),
+            }),
+        );
+        run.output.anonymous_text = "unexpected status 502 Bad Gateway".to_string();
+        run.output.visible_text = run.output.anonymous_text.clone();
+        run.output.anonymous_chunk_count = 1;
+
+        let outcome = classify_acp_prompt_run(&run);
+
+        assert_eq!(outcome.status, ProviderRunStatus::Failure);
+        let error = outcome
+            .runtime_error
+            .expect("strict anonymous output failure");
+        assert_eq!(error.code_str(), "provider.acp-unidentified-agent-output");
+        assert_eq!(error.recovery, RecoveryMode::Manual);
+        assert!(error.retry_policy.is_none());
     }
 
     #[test]

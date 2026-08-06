@@ -98,7 +98,7 @@ Choose a workspace, run mode, Agent, model, and permission mode from one entry p
 
 Inspect Agent output, thoughts, tool calls, structured questions, attachments, artifacts, tokens, and duration, then stop or continue the session when needed.
 
-![alt text](docs/images/README.en/image.png)
+![alt text](docs/images/README.en/image-6.png)
 
 ### Agent Management
 

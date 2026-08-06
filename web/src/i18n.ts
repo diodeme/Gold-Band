@@ -704,12 +704,7 @@ const resources = {
         selectModel: "选择模型",
         profile: "角色",
         permissionMode: "权限模式",
-        dynamicPermissionModeHelp:
-          "选择一个权限级别（只读 / 询问 / 完全访问），系统自动映射到各 agent 的实际权限模式。AI-DYNAMIC 内部所有派生节点共用该级别。",
         permissionModeUnspecified: "不指定",
-        permissionModeReadOnly: "只读",
-        permissionModeAsk: "询问",
-        permissionModeFullAccess: "完全访问",
         selectProfile: "搜索并选择角色",
         clearProfile: "清空角色",
         noProfiles: "暂无可选角色",
@@ -776,18 +771,21 @@ const resources = {
           "动态模式下 bootstrap 节点使用的模型。不选则使用 Agent 的默认模型。",
         dynamicAcceptanceModel: "验收节点模型",
         dynamicAcceptanceModelHelp:
-          "可选。填写后，fanout 配套的 merge / acceptance 会固定使用这个模型，并且它们的内部 DSL 不再输出 `model`；普通 worker 仍按原规则决定是否输出模型。",
+          "初始分发 Agent 执行 merge / acceptance 时使用的模型。不选则使用该 Agent 的默认模型。",
+        dynamicControlPermission: "权限模式",
+        dynamicControlPermissionHelp:
+          "初始分发、merge 和 acceptance 共用的原生 ACP 权限模式。",
         dynamicFixedModelHelp:
           "固定模式下所有内部节点使用的模型。不选则使用 Agent 的默认模型。",
         clearModel: "清空模型选择",
-        dynamicAgentRoutingPrompt: "agent 和模型决策指南",
+        dynamicAgentRoutingPrompt: "Agent 决策指南",
         dynamicAgentRoutingPromptHelp:
-          "可选。为空时每个可选动态 Agent 必须在配置里指定模型，内部 DSL 不需要输出模型；填写后内部 DSL 必须输出模型，已配置模型的 Agent 仍固定使用配置模型。",
+          "可选。用于说明不同 worker 任务应选择哪个 Agent。worker 只输出 Agent，模型和权限使用该 Agent 的预先配置。",
         dynamicAgentRoutingPromptPlaceholder:
-          "示例：开发使用 claude + sonnet 模型，测试使用 codex + gpt-5 模型",
+          "示例：开发任务使用 Claude，测试和验证任务使用 Codex",
         dynamicAvailableAgents: "可选的动态 Agent",
         dynamicAvailableAgentsHelp:
-          "选中后 AI-DYNAMIC 内部派生节点只能从这些 Agent 中选择。模型可由配置锁定，也可在填写决策指南后交给内部 DSL 输出。",
+          "AI-DYNAMIC worker 只能选择这里启用的 Agent，并直接使用为该 Agent 配置的模型和原生权限模式。",
         maxDynamicNodes: "动态节点上限",
         maxDynamicNodesHelp:
           "限制这次 AI-DYNAMIC 运行最多可以创建多少个内部节点。",
@@ -2220,12 +2218,7 @@ const resources = {
         selectModel: "Select model",
         profile: "Profile",
         permissionMode: "Permission mode",
-        dynamicPermissionModeHelp:
-          "Select a permission level (Read Only / Ask / Full Access). The system maps it to each agent's actual permission mode. All derived nodes within the AI-DYNAMIC node share this level.",
         permissionModeUnspecified: "Unspecified",
-        permissionModeReadOnly: "Read Only",
-        permissionModeAsk: "Ask",
-        permissionModeFullAccess: "Full Access",
         selectProfile: "Search and select a profile",
         clearProfile: "Clear profile",
         noProfiles: "No profiles available",
@@ -2295,18 +2288,21 @@ const resources = {
           "Model used by the bootstrap node in dynamic mode. Uses the agent default model when not selected.",
         dynamicAcceptanceModel: "Acceptance model",
         dynamicAcceptanceModelHelp:
-          "Optional. When set, fanout merge / acceptance always use this model and their internal DSL no longer outputs `model`; ordinary worker nodes still follow the existing model rules.",
+          "Model used by the bootstrap Agent for merge / acceptance. Uses that Agent's default model when not selected.",
+        dynamicControlPermission: "Permission mode",
+        dynamicControlPermissionHelp:
+          "Native ACP permission mode shared by bootstrap, merge, and acceptance.",
         dynamicFixedModelHelp:
           "Model used by all internal nodes in fixed mode. Uses the agent default model when not selected.",
         clearModel: "Clear model",
-        dynamicAgentRoutingPrompt: "Agent and model routing guidance",
+        dynamicAgentRoutingPrompt: "Agent routing guidance",
         dynamicAgentRoutingPromptHelp:
-          "Optional. When empty, every available dynamic agent must have a configured model and internal DSL does not output models. When filled, internal DSL must output models, while agents with configured models still use the configured model.",
+          "Optional. Explain which Agent should handle each worker task. Workers output only the Agent; model and permission come from that Agent's saved configuration.",
         dynamicAgentRoutingPromptPlaceholder:
-          "Example: use Claude with sonnet model for development, Codex with gpt-5 model for testing",
+          "Example: use Claude for development and Codex for testing and verification",
         dynamicAvailableAgents: "Available dynamic agents",
         dynamicAvailableAgentsHelp:
-          "AI-DYNAMIC internal nodes can only choose from selected agents. Models may be locked in config, or emitted by internal DSL when routing guidance is filled.",
+          "AI-DYNAMIC workers can only choose these Agents and use each Agent's configured model and native permission mode.",
         maxDynamicNodes: "Max Dynamic Nodes",
         maxDynamicNodesHelp:
           "Limit how many internal nodes this AI-DYNAMIC run may create in total.",

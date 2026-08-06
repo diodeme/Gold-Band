@@ -42,6 +42,10 @@ export function normalizeOptionalRunModeText(value: string | null | undefined): 
   return value.trim().length > 0 ? value : undefined;
 }
 
+function normalizeOptionalRunModeId(value: string | null | undefined): string | undefined {
+  return normalizeOptionalRunModeText(value)?.trim();
+}
+
 export function normalizeConversationAutoConfigForSubmit(
   config: ConversationAutoConfigVm | null | undefined,
 ): ConversationAutoConfigVm | undefined {
@@ -52,19 +56,36 @@ export function normalizeConversationAutoConfigForSubmit(
   const availableAgents = config.availableAgents?.map((agent) => {
     const agentConfigOptions = normalizeConfigOptions(agent.configOptions);
     const { configOptions: _agentConfigOptions, ...agentRest } = agent;
-    return { ...agentRest, ...(agentConfigOptions ? { configOptions: agentConfigOptions } : {}) };
+    return {
+      ...agentRest,
+      model: normalizeOptionalRunModeId(agent.model),
+      permissionMode: normalizeOptionalRunModeId(agent.permissionMode),
+      ...(agentConfigOptions ? { configOptions: agentConfigOptions } : {}),
+    };
   });
   const {
     configOptions: _configOptions,
     bootstrapConfigOptions: _bootstrapConfigOptions,
     acceptanceConfigOptions: _acceptanceConfigOptions,
     availableAgents: _availableAgents,
+    bootstrapModelId: _bootstrapModelId,
+    acceptanceModelId: _acceptanceModelId,
+    modelId: _modelId,
+    permissionMode: _permissionMode,
     ...rest
   } = config;
+  const bootstrapModelId = normalizeOptionalRunModeId(config.bootstrapModelId);
+  const acceptanceModelId = normalizeOptionalRunModeId(config.acceptanceModelId);
+  const modelId = normalizeOptionalRunModeId(config.modelId);
+  const permissionMode = normalizeOptionalRunModeId(config.permissionMode);
   return {
     ...rest,
     globalGoal: normalizeOptionalRunModeText(config.globalGoal),
-    ...(configOptions ? { configOptions } : {}),
+    ...(bootstrapModelId ? { bootstrapModelId } : {}),
+    ...(acceptanceModelId ? { acceptanceModelId } : {}),
+    ...(modelId ? { modelId } : {}),
+    ...(permissionMode ? { permissionMode } : {}),
+    ...(config.agentStrategy !== 'dynamic' && configOptions ? { configOptions } : {}),
     ...(bootstrapConfigOptions ? { bootstrapConfigOptions } : {}),
     ...(acceptanceConfigOptions ? { acceptanceConfigOptions } : {}),
     ...(availableAgents ? { availableAgents } : {}),
@@ -78,8 +99,8 @@ export function normalizeConversationDirectConfigForSubmit(
   const configOptions = normalizeConfigOptions(config.configOptions);
   return {
     agentType: config.agentType.trim(),
-    modelId: normalizeOptionalRunModeText(config.modelId),
-    permissionMode: normalizeOptionalRunModeText(config.permissionMode),
+    modelId: normalizeOptionalRunModeId(config.modelId),
+    permissionMode: normalizeOptionalRunModeId(config.permissionMode),
     ...(configOptions ? { configOptions } : {}),
   };
 }

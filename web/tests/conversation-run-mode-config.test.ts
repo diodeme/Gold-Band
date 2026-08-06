@@ -108,19 +108,23 @@ describe('conversation run mode config text fields', () => {
       agentStrategy: 'dynamic',
       agentType: 'claude-acp',
       bootstrapAgentType: 'claude-acp',
+      permissionMode: ' acceptEdits ',
       bootstrapConfigOptions: { reasoning_effort: 'high', blank: ' ' },
       acceptanceConfigOptions: { reasoning_effort: 'medium' },
       availableAgents: [{
         provider: 'claude-acp',
         model: 'sonnet',
+        permissionMode: ' bypassPermissions ',
         configOptions: { reasoning_effort: 'low', blank: '' },
       }],
     })).toMatchObject({
+      permissionMode: 'acceptEdits',
       bootstrapConfigOptions: { reasoning_effort: 'high' },
       acceptanceConfigOptions: { reasoning_effort: 'medium' },
       availableAgents: [{
         provider: 'claude-acp',
         model: 'sonnet',
+        permissionMode: 'bypassPermissions',
         configOptions: { reasoning_effort: 'low' },
       }],
     });

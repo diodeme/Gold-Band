@@ -23,16 +23,16 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 ### 配置项
 - **节点 ID**：固定为 `ai-dynamic`
 - **Agent 策略**：固定 Agent 或动态 Agent
-- **固定 Agent**：固定策略下从 Agent 管理枚举已配置 agent，模型配置复用 Direct 的 ACP 复合选择器，可同时选择模型与 Agent 能力目录中 `category=thought_level` 的思考强度；两者为空都表示不建立显式 override。内部 proposal 不输出 provider，runtime 会把固定 provider 注入到 worker / merge / acceptance。
-- **动态 Agent**：动态策略下配置初始分发节点 Agent、初始分发节点模型、验收节点模型、可选动态 Agent 列表、每个可选 Agent 的可选模型，以及 agent / 模型决策指南。所有模型入口都复用 ACP 复合选择器，并分别保存自己的思考强度，禁止用一个全局 option map 覆盖不同运行角色。
+- **固定 Agent**：固定策略下从 Agent 管理枚举已配置 agent，并共同配置模型、思考强度与该 Agent doctor 返回的原生权限模式。内部 proposal 不输出 provider，runtime 注入固定 Agent 的初始化配置。
+- **动态 Agent**：动态策略下依次配置初始分发 Agent、分发模型、验收模型、控制面共享权限，以及每个可选动态 worker Agent 的模型/原生权限/思考强度。分发模型与验收模型都只读取初始分发 Agent 的模型目录；Agent 决策指南只描述 worker 任务到 Agent 的选择规则。
 - **允许调用的工作流**：引用工作流 DSL 内的 `workflow.id`
 - **可用角色列表**：引用上下文管理中的 profile id
 - **动态控制**：`maxDynamicNodes`、`maxFanout`、`maxDepth`、`maxParallel`、`maxGroupDepth`、`maxWorkflowInvocations`
 
 ### 会话级配置
-- **权限模式** 不在 AUTO模式 tab 中最终决定；会话 composer 选择 AUTO 后展示权限下拉，并作为本次会话发起 AI-DYNAMIC 工作流的最终值
-- 固定 Agent 策略下，composer 展示 agent 下拉、模型下拉和该 agent 支持的权限模式；composer 中选择的 agent / 模型可以覆盖 AUTO tab 当前配置，用于快速会话
-- 动态 Agent 策略下，composer 展示 Dynamic Agent 标识和通用权限模式下拉
+- 固定 Agent 策略下，composer 展示 agent、模型和该 Agent 原生权限模式，可作为本次会话的初始化 override。
+- 动态 Agent 策略下，composer 只展示 Dynamic Agent 标识；各 Agent 的初始化模型/权限在 AUTO 配置中预设，不再提供共享权限入口。
+- ACP session 建立后，用户仍可通过会话 composer 的权威 session config options 实时切换当前会话模型与权限；该 override 不回写 AUTO 候选配置。
 - **全局 Goal** 在 composer 中输入，非必填；运行时追加到每个 AI-DYNAMIC 内部节点目标
 - composer 提供跳转 AUTO模式 tab 的快速入口，用户需要改模板级配置时直接进入运行模式管理
 
@@ -42,17 +42,17 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 - AUTO 模式下创建 task 前生成标准 WorkflowDsl
 - 生成的 workflow 走现有 validation、snapshot、runtime
 - 快速会话记忆上一次会话级 AUTO 选择；AUTO模式 tab 的当前配置可保存为模板，并可切换生效模板
-- AUTO 模板只保存 AI-DYNAMIC 模板级配置，不保存会话级权限模式和全局 Goal
+- AUTO 模板保存 AI-DYNAMIC 模板级的 fixed/bootstrap/候选 Agent 模型与原生权限配置，不保存全局 Goal
 - AUTO 模板存储在用户目录 `~/.gold-band/context/auto-templates.json`，属于用户级跨 workspace 模板；首次读取时若后端模板为空，会把旧版 `localStorage.gold-band-auto-mode-templates` 导入到该文件并清理旧 key
 - AUTO 模板下拉支持选择和删除；删除当前模板只解除模板绑定并清空模板名，不清空用户正在编辑的 AUTO 配置字段
 - AUTO 与工作流模板管理复用同一个模板操作行组件；操作栏顺序统一为模板选择、保存修改、新模板名称、另存模板，“保存修改”和“另存”使用主题色按钮。
 - AUTO 的“保存修改”保存当前 AUTO 配置：选中模板时更新该模板并设为当前默认 AUTO 配置；选择“不使用模板”时不创建模板，直接把当前参数持久化为默认 AUTO 配置。
 - AUTO 的“另存模板”只负责创建新模板；模板名称为空或重复时仅在 AUTO模式 tab 内展示错误，不污染工作流模式区域。
 - AUTO 保存修改和另存提交期间按钮展示“保存中…”并禁用重复提交；反馈横幅位于模板操作行下方，成功反馈短暂展示后自动消失，错误反馈保留在 AUTO模式 tab 内等待用户修正。
-- AUTO 模板保存和另存必须给出明确反馈；模板名重复、Agent 不可用、动态策略缺少可用 Agent、无决策指南且可选动态 Agent 未选择模型、动态控制参数非法时不允许静默保存
-- 动态 Agent 策略中，初始分发节点 Agent 可以独立选择模型；后续调起 bootstrap 节点时使用该模型，不复用可选动态 Agent 的模型配置
+- AUTO 模板保存和另存必须给出明确反馈；模板名重复、Agent 不可用、动态策略缺少可用 Agent、原生权限不属于对应 Agent doctor 目录、动态控制参数非法时不允许静默保存
+- 动态 Agent 策略中，bootstrap、merge、acceptance 固定使用初始分发 Agent；bootstrap 与验收模型分别配置，但三类控制面节点共用同一个原生权限模式，不复用候选 worker Agent 的配置
 - 动态策略的思考强度按运行角色独立持久化：`bootstrapConfigOptions` 用于初始分发，`acceptanceConfigOptions` 用于 merge / acceptance，每个 `availableAgents[]` 自带 `configOptions` 用于该 provider 的普通动态 worker。runtime 必须按实际节点 kind/provider 选择对应 map，不能继续读取 AI-DYNAMIC 节点级 `configOptions` 作为动态策略的全局覆盖。
-- 可选动态 Agent 的模型下拉支持清空。若 agent / 模型决策指南为空，则每个可选动态 Agent 必须选择模型，AI-DYNAMIC 内部 proposal DSL 不需要输出 `model`；若决策指南非空，则内部 proposal DSL 必须输出 `model`，但已在配置里选择模型的 Agent 仍固定使用配置模型，忽略 proposal 中对该 Agent 给出的其他模型
+- 可选动态 Agent 的模型与权限均支持清空并使用 provider 默认值。无论 Agent 决策指南是否填写，内部 proposal DSL 都只输出 provider；runtime 查找候选行并注入预设模型、原生权限与 config options。
 - AUTO 的可用角色列表只作为内部 worker proposal 的可选 profile ID 白名单；worker 不填 profile 时不注入角色内容。merge / acceptance 不接受 proposal profile，始终使用 runtime 内置 merge / acceptance prompt。
 - Agent 列表展示所有已配置 Agent；未通过诊断或不支持的 Agent 置灰，不可选，并展示不可选原因
 - 允许调用的工作流按 DSL `workflow.id` 去重判断；重复或空 ID 的工作流直接展示在允许调用工作流列表下方，标签保留名称，感叹号 icon tooltip 展示原因

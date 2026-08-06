@@ -317,6 +317,7 @@ pub struct ConversationAutoConfigVm {
 pub struct ConversationDynamicAgentRefVm {
     pub provider: String,
     pub model: Option<String>,
+    pub permission_mode: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
 }
@@ -2559,6 +2560,12 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
                                 .map(str::trim)
                                 .filter(|value| !value.is_empty())
                                 .map(str::to_string),
+                            permission_mode: agent
+                                .permission_mode
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                                .map(str::to_string),
                             config_options: agent.config_options.clone(),
                         })
                     })
@@ -2569,12 +2576,14 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
                 vec![DynamicAgentRef {
                     provider: bootstrap_provider.clone(),
                     model: model_id.map(str::to_string),
+                    permission_mode: None,
                     config_options: BTreeMap::new(),
                 }]
             });
         AiDynamicAgentStrategy::Dynamic {
             bootstrap_provider,
             bootstrap_model: bootstrap_model_id.map(str::to_string),
+            permission_mode: permission_mode.map(str::to_string),
             bootstrap_config_options: config
                 .map(|config| config.bootstrap_config_options.clone())
                 .unwrap_or_default(),
@@ -2593,6 +2602,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
         AiDynamicAgentStrategy::Fixed {
             provider: agent_type.to_string(),
             model: model_id.map(str::to_string),
+            permission_mode: permission_mode.map(str::to_string),
         }
     };
 
@@ -2604,7 +2614,6 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
         nodes: vec![NodeDsl::AiDynamic(AiDynamicNode {
             id: "ai-dynamic".to_string(),
             agent_strategy,
-            permission_mode: permission_mode.map(|s| s.to_string()),
             config_options: config
                 .map(|config| config.config_options.clone())
                 .unwrap_or_default(),
@@ -3795,11 +3804,12 @@ mod tests {
                 "medium".to_string(),
             )]),
             model_id: None,
-            permission_mode: None,
+            permission_mode: Some("acceptEdits".to_string()),
             config_options: Default::default(),
             available_agents: Some(vec![ConversationDynamicAgentRefVm {
                 provider: "claude-acp".to_string(),
                 model: Some("worker-model".to_string()),
+                permission_mode: Some("bypassPermissions".to_string()),
                 config_options: std::collections::BTreeMap::from([(
                     "reasoning_effort".to_string(),
                     "low".to_string(),
@@ -3820,6 +3830,7 @@ mod tests {
         match &node.agent_strategy {
             AiDynamicAgentStrategy::Dynamic {
                 bootstrap_model,
+                permission_mode,
                 bootstrap_config_options,
                 acceptance_model,
                 acceptance_config_options,
@@ -3827,8 +3838,13 @@ mod tests {
                 ..
             } => {
                 assert_eq!(bootstrap_model.as_deref(), Some("bootstrap-model"));
+                assert_eq!(permission_mode.as_deref(), Some("acceptEdits"));
                 assert_eq!(acceptance_model.as_deref(), Some("accept-model"));
                 assert_eq!(available_agents[0].model.as_deref(), Some("worker-model"));
+                assert_eq!(
+                    available_agents[0].permission_mode.as_deref(),
+                    Some("bypassPermissions")
+                );
                 assert_eq!(
                     bootstrap_config_options
                         .get("reasoning_effort")

@@ -713,8 +713,6 @@ pub struct ProjectAppConfig {
     pub workspace_files: Option<WorkspaceFilesConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_files: Option<TurnFilesConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission_mode_mapping: Option<BTreeMap<String, BTreeMap<String, String>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1028,7 +1026,6 @@ pub struct RuntimeConfig {
     pub workspace_layout: WorkspaceLayoutConfig,
     pub workspace_files: WorkspaceFilesConfig,
     pub turn_files: TurnFilesConfig,
-    pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub provider_diagnostics: BTreeMap<String, ProviderDiagnosticSnapshot>,
 }
@@ -1075,7 +1072,6 @@ impl Default for RuntimeConfig {
             workspace_layout: WorkspaceLayoutConfig::default(),
             workspace_files: WorkspaceFilesConfig::default(),
             turn_files: TurnFilesConfig::default(),
-            permission_mode_mapping: BTreeMap::new(),
             provider_diagnostics: BTreeMap::new(),
         };
         base.apply_app_config(embedded_project_app_config())
@@ -1222,9 +1218,6 @@ impl RuntimeConfig {
         if let Some(turn_files) = app_config.turn_files {
             self.turn_files = turn_files.normalized();
         }
-        if let Some(ref mapping) = app_config.permission_mode_mapping {
-            self.permission_mode_mapping = mapping.clone();
-        }
         self
     }
 
@@ -1241,16 +1234,6 @@ impl RuntimeConfig {
     ) -> Self {
         self.provider_diagnostics = provider_diagnostics;
         self
-    }
-
-    /// Resolve a normative permission mode (read_only/ask/full_access) to an agent-specific mode ID.
-    /// Falls back to the normative mode itself if no mapping is configured for the provider.
-    pub fn resolve_permission_mode(&self, provider: &str, normative_mode: &str) -> String {
-        self.permission_mode_mapping
-            .get(provider)
-            .and_then(|map| map.get(normative_mode))
-            .cloned()
-            .unwrap_or_else(|| normative_mode.to_string())
     }
 }
 
@@ -1601,20 +1584,6 @@ mod tests {
         assert_eq!(
             config.workspace_layout.right_workspace.file.tree_max_width,
             300
-        );
-    }
-
-    #[test]
-    fn embedded_permission_mode_mapping_uses_current_codex_mode_ids() {
-        let config = RuntimeConfig::default();
-
-        assert_eq!(
-            config.resolve_permission_mode("codex-acp", "full_access"),
-            "agent-full-access"
-        );
-        assert_eq!(
-            config.resolve_permission_mode("claude-acp", "full_access"),
-            "bypassPermissions"
         );
     }
 
@@ -2105,6 +2074,7 @@ pub struct ConversationAutoConfig {
 pub struct ConversationDynamicAgentRef {
     pub provider: String,
     pub model: Option<String>,
+    pub permission_mode: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
 }

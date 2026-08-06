@@ -132,9 +132,20 @@ export function validateAutoConfig(
     const reason = agentDoctorReason(found, t);
     if (reason) issues.push(t('runMode.validationAgentUnavailable', { label, agent: found.displayName, reason }));
   };
+  const validatePermissionMode = (agentType: string | null | undefined, permissionMode: string | null | undefined) => {
+    const agent = agentById.get(agentType?.trim() ?? '');
+    const mode = permissionMode?.trim();
+    if (!agent || !mode) return;
+    const supportedModes = agent.supportedModes ?? [];
+    if (supportedModes.length > 0 && !supportedModes.some((option) => option.id === mode)) {
+      issues.push(t('conversation.validation.permission.not-found'));
+    }
+  };
 
   if (strategy === 'dynamic') {
-    requireReadyAgent(config?.bootstrapAgentType || config?.agentType, t('workflowEditor.dynamicBootstrapAgent'));
+    const bootstrapAgentType = config?.bootstrapAgentType || config?.agentType;
+    requireReadyAgent(bootstrapAgentType, t('workflowEditor.dynamicBootstrapAgent'));
+    validatePermissionMode(bootstrapAgentType, config?.permissionMode);
     const availableAgents = config?.availableAgents ?? [];
     if (availableAgents.length === 0) {
       issues.push(t('runMode.validationDynamicAvailableAgentsRequired'));
@@ -145,9 +156,11 @@ export function validateAutoConfig(
       if (seen.has(provider)) issues.push(t('runMode.validationDynamicAgentDuplicated', { agent: provider }));
       seen.add(provider);
       requireReadyAgent(provider, t('workflowEditor.dynamicAvailableAgents'));
+      validatePermissionMode(provider, item.permissionMode);
     }
   } else {
     requireReadyAgent(config?.agentType, t('runMode.agent'));
+    validatePermissionMode(config?.agentType, config?.permissionMode);
   }
 
   const selectedWorkflowIds = config?.allowedWorkflows?.map((item) => item.workflowId.trim()).filter(Boolean) ?? [];

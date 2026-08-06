@@ -855,10 +855,25 @@ fn configured_permission_modes_for_node(node: &NodeDsl) -> Vec<(String, Option<S
             .map(|provider| (provider.clone(), worker.permission_mode.clone()))
             .into_iter()
             .collect(),
-        NodeDsl::AiDynamic(dynamic) => providers_for_node(node)
-            .into_iter()
-            .map(|provider| (provider, dynamic.permission_mode.clone()))
-            .collect(),
+        NodeDsl::AiDynamic(dynamic) => match &dynamic.agent_strategy {
+            AiDynamicAgentStrategy::Fixed {
+                provider,
+                permission_mode,
+                ..
+            } => vec![(provider.clone(), permission_mode.clone())],
+            AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider,
+                permission_mode,
+                available_agents,
+                ..
+            } => std::iter::once((bootstrap_provider.clone(), permission_mode.clone()))
+                .chain(
+                    available_agents
+                        .iter()
+                        .map(|agent| (agent.provider.clone(), agent.permission_mode.clone())),
+                )
+                .collect(),
+        },
     }
 }
 
@@ -3080,9 +3095,6 @@ impl App {
                 if permission_mode.is_empty() {
                     continue;
                 }
-                let resolved = self
-                    .config
-                    .resolve_permission_mode(&provider, permission_mode);
                 let supported_modes = provider_diagnostics
                     .get(&provider)
                     .filter(|diagnostic| diagnostic.available)
@@ -3091,10 +3103,12 @@ impl App {
                     })
                     .unwrap_or_default();
                 if !supported_modes.is_empty()
-                    && !supported_modes.iter().any(|option| option.id == resolved)
+                    && !supported_modes
+                        .iter()
+                        .any(|option| option.id == permission_mode)
                 {
                     bail!(
-                        "worker permissionMode `{permission_mode}` (resolved to `{resolved}`) is not supported by provider `{provider}`"
+                        "worker permissionMode `{permission_mode}` is not supported by provider `{provider}`"
                     );
                 }
             }
@@ -3123,7 +3137,9 @@ impl App {
                     }
                 }
                 NodeDsl::AiDynamic(dynamic) => match &mut dynamic.agent_strategy {
-                    AiDynamicAgentStrategy::Fixed { provider, model } => clear_stale_model(
+                    AiDynamicAgentStrategy::Fixed {
+                        provider, model, ..
+                    } => clear_stale_model(
                         &diagnostics,
                         &dynamic.id,
                         "fixed",
@@ -3156,48 +3172,14 @@ impl App {
                                 &mut normalizations,
                             );
                         }
-                        let Some(configured) = acceptance_model
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|value| !value.is_empty())
-                        else {
-                            continue;
-                        };
-                        let mut providers = vec![bootstrap_provider.as_str()];
-                        for agent in available_agents.iter() {
-                            if !providers.contains(&agent.provider.as_str()) {
-                                providers.push(agent.provider.as_str());
-                            }
-                        }
-                        let providers_with_catalog = providers
-                            .iter()
-                            .filter(|provider| {
-                                diagnostics
-                                    .get(**provider)
-                                    .filter(|diagnostic| diagnostic.available)
-                                    .map(|diagnostic| {
-                                        !supported_models_from_capabilities(
-                                            diagnostic.capabilities.as_ref(),
-                                        )
-                                        .is_empty()
-                                    })
-                                    .unwrap_or(false)
-                            })
-                            .copied()
-                            .collect::<Vec<_>>();
-                        if !providers_with_catalog.is_empty()
-                            && providers_with_catalog.iter().all(|provider| {
-                                provider_model_is_stale(&diagnostics, provider, configured)
-                            })
-                        {
-                            normalizations.push(ModelConfigNormalization {
-                                node_id: dynamic.id.clone(),
-                                scope: "acceptance".to_string(),
-                                provider: None,
-                                previous_model: configured.to_string(),
-                            });
-                            *acceptance_model = None;
-                        }
+                        clear_stale_model(
+                            &diagnostics,
+                            &dynamic.id,
+                            "acceptance",
+                            bootstrap_provider,
+                            acceptance_model,
+                            &mut normalizations,
+                        );
                     }
                 },
             }
@@ -3780,8 +3762,10 @@ mod tests {
             }),
         );
 
-        let accepted = validate_workflow(worker_workflow(Some("sonnet"), Some("ask"))).unwrap();
-        let rejected_model = validate_workflow(worker_workflow(Some("opus"), Some("ask"))).unwrap();
+        let accepted =
+            validate_workflow(worker_workflow(Some("sonnet"), Some("acceptEdits"))).unwrap();
+        let rejected_model =
+            validate_workflow(worker_workflow(Some("opus"), Some("acceptEdits"))).unwrap();
         let rejected_mode =
             validate_workflow(worker_workflow(Some("sonnet"), Some("full_access"))).unwrap();
 
@@ -3791,7 +3775,7 @@ mod tests {
     }
 
     #[test]
-    fn ai_dynamic_normative_full_access_resolves_to_current_codex_mode() {
+    fn ai_dynamic_accepts_native_permission_modes_per_agent() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -3817,6 +3801,7 @@ mod tests {
             agent_strategy: AiDynamicAgentStrategy::Dynamic {
                 bootstrap_provider: "codex-acp".to_string(),
                 bootstrap_model: None,
+                permission_mode: Some("agent-full-access".to_string()),
                 bootstrap_config_options: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
@@ -3824,10 +3809,10 @@ mod tests {
                 available_agents: vec![crate::dsl::DynamicAgentRef {
                     provider: "codex-acp".to_string(),
                     model: None,
+                    permission_mode: Some("agent-full-access".to_string()),
                     config_options: Default::default(),
                 }],
             },
-            permission_mode: Some("full_access".to_string()),
             config_options: Default::default(),
             allowed_profiles: Vec::new(),
             global_goal: None,
@@ -3864,6 +3849,7 @@ mod tests {
                 agent_strategy: AiDynamicAgentStrategy::Dynamic {
                     bootstrap_provider: "claude-acp".to_string(),
                     bootstrap_model: Some("sonnet".to_string()),
+                    permission_mode: None,
                     bootstrap_config_options: Default::default(),
                     acceptance_model: Some("sonnet".to_string()),
                     acceptance_config_options: Default::default(),
@@ -3871,10 +3857,10 @@ mod tests {
                     available_agents: vec![crate::dsl::DynamicAgentRef {
                         provider: "claude-acp".to_string(),
                         model: Some("future-model".to_string()),
+                        permission_mode: None,
                         config_options: Default::default(),
                     }],
                 },
-                permission_mode: None,
                 config_options: Default::default(),
                 allowed_profiles: Vec::new(),
                 global_goal: None,
@@ -3935,6 +3921,7 @@ mod tests {
                     agent_strategy: AiDynamicAgentStrategy::Dynamic {
                         bootstrap_provider: "codex-acp".to_string(),
                         bootstrap_model: Some("gpt-5.6-sol".to_string()),
+                        permission_mode: None,
                         bootstrap_config_options: Default::default(),
                         acceptance_model: Some("gpt-5.6-sol".to_string()),
                         acceptance_config_options: Default::default(),
@@ -3942,10 +3929,10 @@ mod tests {
                         available_agents: vec![crate::dsl::DynamicAgentRef {
                             provider: "codex-acp".to_string(),
                             model: Some("gpt-5.4".to_string()),
+                            permission_mode: None,
                             config_options: Default::default(),
                         }],
                     },
-                    permission_mode: None,
                     config_options: Default::default(),
                     allowed_profiles: Vec::new(),
                     global_goal: None,
@@ -3957,8 +3944,8 @@ mod tests {
                     agent_strategy: AiDynamicAgentStrategy::Fixed {
                         provider: "codex-acp".to_string(),
                         model: Some("gpt-5.4".to_string()),
+                        permission_mode: None,
                     },
-                    permission_mode: None,
                     config_options: Default::default(),
                     allowed_profiles: Vec::new(),
                     global_goal: None,

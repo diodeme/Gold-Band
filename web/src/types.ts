@@ -505,6 +505,7 @@ export type WorkflowAiDynamicAgentStrategyDsl = WorkflowAiDynamicFixedAgentStrat
 export interface DynamicAgentRefDsl {
   provider: string;
   model?: string | null;
+  permissionMode?: string | null;
   configOptions?: Record<string, string>;
 }
 
@@ -512,12 +513,14 @@ export interface WorkflowAiDynamicFixedAgentStrategyDsl {
   mode: 'fixed';
   provider: string;
   model?: string;
+  permissionMode?: string | null;
 }
 
 export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
   mode: 'dynamic';
   bootstrapProvider: string;
   bootstrapModel?: string | null;
+  permissionMode?: string | null;
   bootstrapConfigOptions?: Record<string, string>;
   acceptanceModel?: string | null;
   acceptanceConfigOptions?: Record<string, string>;
@@ -529,7 +532,6 @@ export interface WorkflowAiDynamicNodeDsl {
   type: 'ai-dynamic';
   id: string;
   agentStrategy: WorkflowAiDynamicAgentStrategyDsl;
-  permission_mode?: string | null;
   configOptions?: Record<string, string>;
   allowedProfiles?: string[];
   globalGoal?: string | null;

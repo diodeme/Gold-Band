@@ -14,7 +14,7 @@ const agentRegistry = {
     supported: true,
     diagnostic: { available: true },
     supportedModels: [{ id: 'sonnet', name: 'Sonnet' }],
-    supportedModes: [],
+    supportedModes: [{ id: 'acceptEdits', name: 'Accept Edits' }],
     configOptions: [{
       id: 'reasoning_effort',
       category: 'thought_level',
@@ -92,6 +92,7 @@ describe('workflow and AUTO model configuration', () => {
           mode: 'dynamic',
           bootstrapProvider: 'claude-acp',
           bootstrapModel: 'sonnet',
+          permissionMode: 'acceptEdits',
           bootstrapConfigOptions: { reasoning_effort: 'high' },
           acceptanceModel: 'sonnet',
           acceptanceConfigOptions: { reasoning_effort: 'high' },
@@ -99,6 +100,7 @@ describe('workflow and AUTO model configuration', () => {
           availableAgents: [{
             provider: 'claude-acp',
             model: 'sonnet',
+            permissionMode: 'acceptEdits',
             configOptions: { reasoning_effort: 'high' },
           }],
         },
@@ -126,6 +128,7 @@ describe('workflow and AUTO model configuration', () => {
     }));
 
     expect(html.match(/Sonnet · High/g)?.length).toBe(3);
+    expect(html.match(/Accept Edits/g)?.length).toBe(2);
   });
 
   it('replays every dynamic AUTO model role with its own thought-level override', () => {
@@ -140,12 +143,14 @@ describe('workflow and AUTO model configuration', () => {
           agentType: 'claude-acp',
           bootstrapAgentType: 'claude-acp',
           bootstrapModelId: 'sonnet',
+          permissionMode: 'acceptEdits',
           bootstrapConfigOptions: { reasoning_effort: 'high' },
           acceptanceModelId: 'sonnet',
           acceptanceConfigOptions: { reasoning_effort: 'high' },
           availableAgents: [{
             provider: 'claude-acp',
             model: 'sonnet',
+            permissionMode: 'acceptEdits',
             configOptions: { reasoning_effort: 'high' },
           }],
           routingPrompt: '',
@@ -159,5 +164,6 @@ describe('workflow and AUTO model configuration', () => {
     }));
 
     expect(html.match(/Sonnet · High/g)?.length).toBe(3);
+    expect(html.match(/Accept Edits/g)?.length).toBe(2);
   });
 });

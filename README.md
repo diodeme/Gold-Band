@@ -29,6 +29,8 @@ Gold Band 是一个面向本地项目的 AI Agent 桌面客户端。它通过 Ag
 
 你既可以像使用普通 Agent 客户端一样持续对话，也可以通过固定工作流或 AI 动态编排执行更长、更复杂、需要验证和失败恢复的 Coding 任务。
 
+![alt text](docs/images/README/gold-band-readme-hero-zh.png)
+
 > [!NOTE]
 > Gold Band 仍处于 **Developer Preview**。Claude Code 和 Codex 是当前推荐的体验入口；其他 Agent 的可用性取决于本机环境及其 ACP 支持情况。
 

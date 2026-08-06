@@ -1,5 +1,72 @@
 # Changelog
 
+## [0.11.0](https://github.com/diodeme/Gold-Band/compare/v0.10.0...v0.11.0) (2026-08-05)
+
+
+### Features
+
+* **acp:** add agent branch workspace ([810fc92](https://github.com/diodeme/Gold-Band/commit/810fc926ee5ad8bbd7839cea8a066cd380b8f178))
+* **acp:** refine agent branch conversations ([d011492](https://github.com/diodeme/Gold-Band/commit/d011492e54b73698296998d4c6947f5b88650f53))
+* **conversation:** add turn file change viewer ([d2297d9](https://github.com/diodeme/Gold-Band/commit/d2297d9128d58b0fd22ade238215f27e514c2015))
+* **conversation:** change default run mode from auto to direct ([1681151](https://github.com/diodeme/Gold-Band/commit/1681151165496f5d7c776697a9151841569133df))
+* **diagnostics:** add debug WebView heap endpoint ([77f2532](https://github.com/diodeme/Gold-Band/commit/77f2532d40af842fd01995768fbaed5fe69b1158))
+* **workspace:** add file browser and Markdown live editing ([902554d](https://github.com/diodeme/Gold-Band/commit/902554df3ec7c5c108d12656aed5e0ed09a4fa7e))
+* **workspace:** add new tab resource menu ([72f5160](https://github.com/diodeme/Gold-Band/commit/72f51609982e1b3a72a3ff2cebd05e07313e2b87))
+* **workspace:** add run directory entry ([a7b7364](https://github.com/diodeme/Gold-Band/commit/a7b7364c4593f6678cdbe732903f68991b2887e7))
+* **workspace:** add running directory browser ([cf20837](https://github.com/diodeme/Gold-Band/commit/cf208371a78a3ffb4a9de56f49adf701b9629014))
+* **workspace:** improve file filtering ([6567182](https://github.com/diodeme/Gold-Band/commit/656718257680ba0e7e4d181ecb537ed57a85156c))
+* **workspace:** unify conversation resources in right panel ([494eed3](https://github.com/diodeme/Gold-Band/commit/494eed35150cd2b2740545221a8d608e9b3596a0))
+* **workspace:** unify markdown document viewers ([2b750fb](https://github.com/diodeme/Gold-Band/commit/2b750fbb445aeed43b240a83e67984dc5552e951))
+
+
+### Bug Fixes
+
+* **acp:** harden branch session rendering ([b1b5d66](https://github.com/diodeme/Gold-Band/commit/b1b5d664d4c5dccd37b420e99d8772acef063742))
+* **acp:** preserve agent branch execution state ([ac0072b](https://github.com/diodeme/Gold-Band/commit/ac0072bd21507ee40265d3e5c928e41c9c3ba7a1))
+* **acp:** preserve agent branch lifecycle and results ([4218b6f](https://github.com/diodeme/Gold-Band/commit/4218b6fd575d261dc07239772895ed5683ea5237))
+* **acp:** preserve mixed message attachments ([6d6bf90](https://github.com/diodeme/Gold-Band/commit/6d6bf9086366c7a9365115912ac082417a2b084c))
+* **acp:** prevent activity gaps and composer flicker ([82069a6](https://github.com/diodeme/Gold-Band/commit/82069a626a9fd3274240d3e7d2d08fc8fd23e4d0))
+* **acp:** render thought content as plain text ([755c141](https://github.com/diodeme/Gold-Band/commit/755c141b6cebbbcd62092f86fd7e24bc43174c87))
+* **acp:** scope agent plans and child projections ([1e8e635](https://github.com/diodeme/Gold-Band/commit/1e8e635cbc0ad9cdc5cf78c47a4fa45a7c77b2fe))
+* **acp:** stabilize agent workspace sessions ([06f3042](https://github.com/diodeme/Gold-Band/commit/06f3042c6a5af02b4ac0681dbea7522eaad8d48e))
+* **acp:** stabilize AskUserQuestion pending state ([5498fd5](https://github.com/diodeme/Gold-Band/commit/5498fd50484d933e3a71e14b809d3340c95a3def))
+* **acp:** stabilize branch conversation lifecycle ([c1d77bf](https://github.com/diodeme/Gold-Band/commit/c1d77bfaea4b4354a31df5da8768e67d23c5e210))
+* **acp:** stabilize nested agent activity rendering ([d5b6828](https://github.com/diodeme/Gold-Band/commit/d5b6828cc9c9de69c55aeeef4ceef238f80c4a7d))
+* **app:** coordinate window close transaction ([2ac822f](https://github.com/diodeme/Gold-Band/commit/2ac822fe081f8d366164b997211d902c0325d4d0))
+* **conversation:** align narrow composer controls ([9bcc0dc](https://github.com/diodeme/Gold-Band/commit/9bcc0dc640e5b310a265197348dc4d6fe6b5cf63))
+* **conversation:** preserve bottom follow across layout updates ([a157cdd](https://github.com/diodeme/Gold-Band/commit/a157cdda07d9b2757166816126a31d521609d2c7))
+* **conversation:** preserve scroll intent for activity expansion ([f5a3f86](https://github.com/diodeme/Gold-Band/commit/f5a3f86f8aafbc5fcbcd6a56bd1ff81cb1d03144))
+* **conversation:** preserve turn file change history ([e32cbe6](https://github.com/diodeme/Gold-Band/commit/e32cbe6c645a20384408d5f5b4bbfcd525e452b1))
+* **conversation:** prevent agent picker clipping ([9182e7c](https://github.com/diodeme/Gold-Band/commit/9182e7c6470e993098590fc60a81907b23d11f54))
+* **conversation:** refine home composer layout ([abb89f0](https://github.com/diodeme/Gold-Band/commit/abb89f0f3aa1df4ff89e63e41723fa039b1c7d18))
+* **conversation:** unify content expansion lifecycle ([65632d8](https://github.com/diodeme/Gold-Band/commit/65632d84c4b4b0791ee9636d126097a0c4486e20))
+* **desktop:** restore workspace layout bootstrap contract ([86c005f](https://github.com/diodeme/Gold-Band/commit/86c005f0ee4617e3862570ed4cf638feec8e8380))
+* **dev:** ignore documentation in Tauri watcher ([e7b843a](https://github.com/diodeme/Gold-Band/commit/e7b843af5c5c6bd0eebf422b228aa7a0b7d96475))
+* **theme:** reduce scrollbar visual contrast ([975227f](https://github.com/diodeme/Gold-Band/commit/975227fb541345447c61a4630847792fdd34a006))
+* **ui:** refine shell divider and composer surface ([4ffcc87](https://github.com/diodeme/Gold-Band/commit/4ffcc87b816f1b62acb0a543e8fa12811a299378))
+* **window:** preserve maximized state across navigation ([f24b7c8](https://github.com/diodeme/Gold-Band/commit/f24b7c87d3092a2028219259261033110e5a073e))
+* **window:** restore native macOS controls ([444a0ed](https://github.com/diodeme/Gold-Band/commit/444a0edce00cafce1ace86adc9d9c428451a04b6))
+* **workspace:** correct Markdown navigation and rendering ([ec0036c](https://github.com/diodeme/Gold-Band/commit/ec0036cb38209c3ac021e24475146282def9dcb9))
+* **workspace:** make diff viewer responsive ([3649690](https://github.com/diodeme/Gold-Band/commit/364969050ffd2cd01e934e3a3c02b05141d8199a))
+* **workspace:** make responsive window limits page-aware ([ecd7c2b](https://github.com/diodeme/Gold-Band/commit/ecd7c2bd4b864cc0db25d9bf6f22cd009a94fc81))
+* **workspace:** preserve Markdown viewport across modes ([eccda28](https://github.com/diodeme/Gold-Band/commit/eccda28900d84a188e9f7a6b5b09780fdb25ea72))
+* **workspace:** preserve tree on root refresh ([6788807](https://github.com/diodeme/Gold-Band/commit/6788807aa48ef545c59f1da66919ce09570c19b6))
+* **workspace:** refine diff tab feedback ([b404d8f](https://github.com/diodeme/Gold-Band/commit/b404d8febf90d23d6c999e6379ebb61c33d20782))
+* **workspace:** stabilize file browser and Markdown preview ([2d56eab](https://github.com/diodeme/Gold-Band/commit/2d56eab43ddf0043cfa51c89fa7761fc964caa63))
+* **workspace:** stabilize file navigation and Markdown preview ([f966c20](https://github.com/diodeme/Gold-Band/commit/f966c20203a21e7b48688d4e2ab98f1a030878b0))
+* **workspace:** stabilize file tree path actions ([3c167fb](https://github.com/diodeme/Gold-Band/commit/3c167fbcc00ecb05d1ec5797c3ef8ab6dbaac8ec))
+* **workspace:** stabilize Markdown mode transitions ([f4e2bb8](https://github.com/diodeme/Gold-Band/commit/f4e2bb84289cee8cb7f8cf8a330208d7dfe93303))
+* **workspace:** stabilize right panel state and controls ([00cbef5](https://github.com/diodeme/Gold-Band/commit/00cbef5d6267f271195285c61354460dc4a63805))
+* **workspace:** switch Markdown modes without rebuilding view ([ddfc42b](https://github.com/diodeme/Gold-Band/commit/ddfc42bbf2290846f3473a0133a5080d791227db))
+
+
+### Performance Improvements
+
+* **conversation:** bound streaming workspace rerenders ([d23974a](https://github.com/diodeme/Gold-Band/commit/d23974ace83e8826a08ef2acbb0804fcde059ccb))
+* **markdown:** reduce streaming render allocation churn ([74948a0](https://github.com/diodeme/Gold-Band/commit/74948a06bde09ed9a7baa66c7256c9a9a2b14d83))
+* **workspace:** make panel resizing symmetric ([fab1308](https://github.com/diodeme/Gold-Band/commit/fab1308f977ac2ed66d2c70a89bc4d124ad5cbc5))
+* **workspace:** streamline responsive resizing ([dd39e8a](https://github.com/diodeme/Gold-Band/commit/dd39e8a97b39d4c8ba89e90719f1eb4871577af2))
+
 ## [0.10.0](https://github.com/diodeme/Gold-Band/compare/v0.9.0...v0.10.0) (2026-07-31)
 
 

@@ -13,6 +13,7 @@ import {
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { WorkflowEditor, validateWorkflowForSave } from '@/components/WorkflowEditor';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -22,7 +23,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { displayAppError } from '@/i18n';
-import { selectableAgentOptions, selectableWorkflowOptions, validateAutoConfig } from '@/lib/run-mode-validation';
+import { pruneMissingAutoAllowedProfileIds, pruneMissingAutoAllowedWorkflowIds, selectableAgentOptions, selectableWorkflowOptions, validateAutoConfig } from '@/lib/run-mode-validation';
 import { createBlankWorkflowDraft } from '@/lib/workflow-template';
 import { cn } from '@/lib/utils';
 
@@ -177,12 +178,44 @@ const DEFAULT_DYNAMIC_CONTROL: DynamicControlDsl = {
   allowNestedDynamic: false,
 };
 
+export function createBlankAutoTemplateEditorState(): ConversationAutoConfigVm {
+  return {
+    agentStrategy: 'fixed',
+    agentType: '',
+    bootstrapAgentType: '',
+    bootstrapModelId: '',
+    permissionMode: '',
+    bootstrapConfigOptions: {},
+    acceptanceModelId: '',
+    acceptanceConfigOptions: {},
+    modelId: '',
+    configOptions: {},
+    availableAgents: [],
+    routingPrompt: '',
+    allowedWorkflows: [],
+    allowedProfiles: [],
+    control: { ...DEFAULT_DYNAMIC_CONTROL },
+    activeTemplateId: '',
+    activeTemplateName: '',
+  };
+}
+
 export function autoSaveTarget(activeTemplateId: string | null | undefined): 'template' | 'run-mode' {
   return activeTemplateId ? 'template' : 'run-mode';
 }
 
-export function autoNoticeAutoDismiss(tone: 'success' | 'error'): boolean {
+export function autoNoticeAutoDismiss(tone: 'success' | 'error' | 'warning'): boolean {
   return tone === 'success';
+}
+
+export function findSavedWorkflowTemplate(store: WorkflowTemplateStore, name: string): WorkflowTemplate | null {
+  return store.templates.find((template) => template.name === name) ?? null;
+}
+
+export const templatePickerSavedListClass = 'max-h-64 overflow-auto p-1';
+
+export function isNoAutoTemplateSelected(activeTemplateId: string | null | undefined, isDraft: boolean): boolean {
+  return !activeTemplateId && !isDraft;
 }
 
 export function RunModeManagementPage({
@@ -215,10 +248,12 @@ export function RunModeManagementPage({
   const [control, setControl] = useState<DynamicControlDsl>({ ...DEFAULT_DYNAMIC_CONTROL, ...(runMode.autoConfig?.control ?? {}) });
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? workflowTemplates?.lastUsedTemplateId ?? workflowTemplates?.templates[0]?.id ?? '');
   const [profiles, setProfiles] = useState<ProfileVm[]>([]);
+  const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [templates, setTemplates] = useState<AutoTemplate[]>([]);
   const [templateName, setTemplateName] = useState(runMode.autoConfig?.activeTemplateName ?? '');
   const [activeTemplateId, setActiveTemplateId] = useState(runMode.autoConfig?.activeTemplateId ?? '');
-  const [autoNotice, setAutoNotice] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
+  const [isAutoTemplateDraft, setIsAutoTemplateDraft] = useState(false);
+  const [autoNotice, setAutoNotice] = useState<{ tone: 'success' | 'error' | 'warning'; message: string } | null>(null);
   const [autoSaving, setAutoSaving] = useState(false);
   const [autoTemplatePickerOpen, setAutoTemplatePickerOpen] = useState(false);
   const autoNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -236,6 +271,7 @@ export function RunModeManagementPage({
   const [wfTemplateStore, setWfTemplateStore] = useState<WorkflowTemplateStore | null>(workflowTemplates);
   const wfEditorInitialized = useRef(false);
   const previousProjectIdRef = useRef(projectId);
+  const prunedAutoConfigRef = useRef<string | null>(null);
 
   useEffect(() => {
     setWfTemplateStore(workflowTemplates);
@@ -279,6 +315,7 @@ export function RunModeManagementPage({
     setControl({ ...DEFAULT_DYNAMIC_CONTROL, ...(config?.control ?? {}) });
     setActiveTemplateId(config?.activeTemplateId ?? '');
     setTemplateName(config?.activeTemplateName ?? '');
+    setIsAutoTemplateDraft(false);
 
     const nextWorkflowTemplateId = runMode.workflowTemplateId
       ?? effectiveWorkflowTemplates?.lastUsedTemplateId
@@ -303,9 +340,13 @@ export function RunModeManagementPage({
       setWfNotice(null);
       setWfError(null);
     }
-  }, [projectId, runMode, effectiveWorkflowTemplates]);
 
-  const showAutoNotice = (notice: { tone: 'success' | 'error'; message: string }, autoDismiss = autoNoticeAutoDismiss(notice.tone)) => {
+  // A template-store refresh must not reset the editor to the stale run-mode
+  // selection. The run-mode scope is the owner of the initial selection; the
+  // store only supplies the template data for that selection.
+  }, [projectId, runMode]);
+
+  function showAutoNotice(notice: { tone: 'success' | 'error' | 'warning'; message: string }, autoDismiss = autoNoticeAutoDismiss(notice.tone)) {
     if (autoNoticeTimerRef.current) {
       clearTimeout(autoNoticeTimerRef.current);
       autoNoticeTimerRef.current = null;
@@ -317,7 +358,7 @@ export function RunModeManagementPage({
         autoNoticeTimerRef.current = null;
       }, 3000);
     }
-  };
+  }
 
   useEffect(() => {
     return () => {
@@ -328,8 +369,56 @@ export function RunModeManagementPage({
   }, []);
 
   useEffect(() => {
-    getProfiles().then((result) => setProfiles(result.profiles)).catch(() => setProfiles([]));
+    let cancelled = false;
+    getProfiles()
+      .then((result) => {
+        if (cancelled) return;
+        setProfiles(result.profiles);
+        setProfilesLoaded(true);
+      })
+      .catch(() => {
+        // Keep the last known profile set. A failed load is not proof that all
+        // persisted profile references are invalid.
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  useEffect(() => {
+    const config = runMode.autoConfig;
+    if (!config || !profilesLoaded || !effectiveWorkflowTemplates) return;
+
+    const currentWorkflowIds = (config.allowedWorkflows ?? []).map((item) => item.workflowId);
+    const currentProfileIds = config.allowedProfiles ?? [];
+    const prunedWorkflows = pruneMissingAutoAllowedWorkflowIds(currentWorkflowIds, effectiveWorkflowTemplates);
+    const prunedProfiles = pruneMissingAutoAllowedProfileIds(currentProfileIds, profiles);
+    const removedCount = prunedWorkflows.removedWorkflowIds.length + prunedProfiles.removedProfileIds.length;
+    if (removedCount === 0) {
+      prunedAutoConfigRef.current = null;
+      return;
+    }
+
+    const pruneKey = `${projectId}:${currentWorkflowIds.join('\u0000')}:${currentProfileIds.join('\u0000')}`;
+    if (prunedAutoConfigRef.current === pruneKey) return;
+    prunedAutoConfigRef.current = pruneKey;
+
+    const nextConfig = {
+      ...config,
+      allowedWorkflows: prunedWorkflows.workflowIds.map((workflowId) => ({ workflowId })),
+      allowedProfiles: prunedProfiles.profileIds,
+    };
+    setAllowedWorkflowIds(prunedWorkflows.workflowIds);
+    setAllowedProfiles(prunedProfiles.profileIds);
+    void Promise.resolve(onSave({ ...runMode, autoConfig: nextConfig }));
+    showAutoNotice({
+      tone: 'warning',
+      message: t('runMode.invalidAutoReferencesRemoved', {
+        workflows: prunedWorkflows.removedWorkflowIds.length,
+        profiles: prunedProfiles.removedProfileIds.length,
+      }),
+    }, false);
+  }, [effectiveWorkflowTemplates, profiles, profilesLoaded, projectId, runMode, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -452,6 +541,7 @@ export function RunModeManagementPage({
       const config = buildAutoConfig({ activeTemplateId: undefined, activeTemplateName: undefined });
       setActiveTemplateId('');
       setTemplateName('');
+      setIsAutoTemplateDraft(false);
       setAutoTemplatePickerOpen(false);
       persistRunModeSelection('auto', config);
       return;
@@ -465,6 +555,7 @@ export function RunModeManagementPage({
       ...sessionFields(),
     };
     applyAutoConfig(config);
+    setIsAutoTemplateDraft(false);
     setAutoTemplatePickerOpen(false);
     persistRunModeSelection('auto', config);
   };
@@ -476,9 +567,17 @@ export function RunModeManagementPage({
       const config = buildAutoConfig({ activeTemplateId: undefined, activeTemplateName: undefined });
       setActiveTemplateId('');
       setTemplateName('');
+      setIsAutoTemplateDraft(false);
       persistRunModeSelection('auto', config);
     }
     showAutoNotice({ tone: 'success', message: t('runMode.autoTemplateDeleted') });
+  };
+
+  const startAutoTemplate = () => {
+    applyAutoConfig(createBlankAutoTemplateEditorState());
+    setIsAutoTemplateDraft(true);
+    setAutoTemplatePickerOpen(false);
+    setAutoNotice(null);
   };
 
   // Workflow template editor helpers
@@ -568,10 +667,15 @@ export function RunModeManagementPage({
     setWfSaving(true);
     try {
       const nextStore = await saveWorkflowTemplate(wfSaveName.trim(), validated);
-      const selected = nextStore.templates.at(-1) ?? null;
+      const selected = findSavedWorkflowTemplate(nextStore, wfSaveName.trim());
+      if (!selected) {
+        throw new Error('Saved workflow template was not returned by the template store.');
+      }
+      setWorkflowTemplateId(selected.id);
+      setWfEditTemplateId(selected.id);
+      setWfEditWorkflow(selected.workflow);
+      persistRunModeSelection('workflow', undefined, selected.id);
       applyWorkflowTemplateStore(nextStore);
-      setWfEditTemplateId(selected?.id ?? null);
-      setWfEditWorkflow(selected?.workflow ?? null);
       setWfSaveName('');
       setWfNotice(t('taskList.create.workflowTemplateSaved'));
       setTimeout(() => setWfNotice(null), 3000);
@@ -652,6 +756,7 @@ export function RunModeManagementPage({
       setTemplates(nextStore.templates);
       setActiveTemplateId(savedTemplate?.id ?? '');
       setTemplateName(savedTemplate?.name ?? name);
+      setIsAutoTemplateDraft(false);
       await Promise.resolve(onSave({ mode: 'auto', autoConfig: config }));
       showAutoNotice({ tone: 'success', message: t('runMode.autoTemplateSaved') });
     } catch (error) {
@@ -750,7 +855,7 @@ export function RunModeManagementPage({
                   <Popover open={autoTemplatePickerOpen} onOpenChange={setAutoTemplatePickerOpen}>
                     <PopoverTrigger asChild>
                       <Button variant="outline" className="justify-between min-w-[200px]" aria-label={t('runMode.autoTemplate')}>
-                        <span className="truncate">{templates.find((item) => item.id === activeTemplateId)?.name ?? t('runMode.noAutoTemplate')}</span>
+                        <span className="truncate">{templates.find((item) => item.id === activeTemplateId)?.name ?? (isAutoTemplateDraft ? t('runMode.unsavedAutoTemplate') : t('runMode.noAutoTemplate'))}</span>
                         <ChevronDown className="ml-2 size-4 shrink-0 opacity-50" />
                       </Button>
                     </PopoverTrigger>
@@ -758,14 +863,25 @@ export function RunModeManagementPage({
                       <div className="p-1">
                         <button
                           type="button"
-                          className={cn('flex w-full items-center rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent', !activeTemplateId && 'bg-accent text-accent-foreground')}
+                          className={cn('flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent', isAutoTemplateDraft && 'bg-accent text-accent-foreground')}
+                          onClick={startAutoTemplate}
+                        >
+                          <Plus className="size-3.5" />
+                          {t('runMode.newAutoTemplate')}
+                        </button>
+                      </div>
+                      <Separator />
+                      <div className="p-1">
+                        <button
+                          type="button"
+                          className={cn('flex w-full items-center rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent', isNoAutoTemplateSelected(activeTemplateId, isAutoTemplateDraft) && 'bg-accent text-accent-foreground')}
                           onClick={() => selectAutoTemplate('__none__')}
                         >
                           {t('runMode.noAutoTemplate')}
                         </button>
                       </div>
                       {templates.length > 0 ? <Separator /> : null}
-                      <div className="max-h-64 overflow-auto p-1">
+                      <div className={templatePickerSavedListClass}>
                         {templates.map((template) => {
                           const selected = template.id === activeTemplateId;
                           return (
@@ -799,6 +915,7 @@ export function RunModeManagementPage({
                   </Popover>
                 )}
                 saving={autoSaving}
+                showSaveCurrent={!isAutoTemplateDraft}
                 saveCurrentLabel={t('runMode.saveChanges')}
                 savingLabel={t('runMode.saving')}
                 onSaveCurrent={() => void saveCurrentTemplate()}
@@ -810,9 +927,16 @@ export function RunModeManagementPage({
               />
             </section>
             {autoNotice ? (
-              <div className={cn('whitespace-pre-wrap rounded-md border px-3 py-2 text-sm', autoNotice.tone === 'success' ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-600' : 'border-destructive/30 bg-destructive/5 text-destructive')}>
-                {autoNotice.message}
-              </div>
+              autoNotice.tone === 'warning' ? (
+                <Alert data-testid="auto-config-pruned-warning" className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                  <AlertTriangle />
+                  <AlertDescription className="text-current">{autoNotice.message}</AlertDescription>
+                </Alert>
+              ) : (
+                <div className={cn('whitespace-pre-wrap rounded-md border px-3 py-2 text-sm', autoNotice.tone === 'success' ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-600' : 'border-destructive/30 bg-destructive/5 text-destructive')}>
+                  {autoNotice.message}
+                </div>
+              )
             ) : null}
 
             <section className="flex flex-wrap gap-2">
@@ -1052,7 +1176,7 @@ export function RunModeManagementPage({
                       </button>
                     </div>
                     {workflowTemplateList.length > 0 ? <Separator /> : null}
-                    <div className="max-h-64 overflow-auto p-1">
+                    <div className={templatePickerSavedListClass}>
                       {workflowTemplateList.map((tpl) => {
                         const selected = tpl.id === wfEditTemplateId;
                         const isDefault = tpl.id === 'default';

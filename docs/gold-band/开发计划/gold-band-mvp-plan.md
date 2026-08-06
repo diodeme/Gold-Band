@@ -872,3 +872,21 @@ attempt-001/
 - 接口验收：Rust 单测固定“所有公开支持扩展名均可解析”、`.jsonl` 同时生成文本 content block 与附件元数据、历史首条消息补全且不重复/不进入后续消息；前端附件数组回归固定同一用户消息同时保留图片与普通文件。目标 `task-158/run-001` 的真实落盘数据验收确认历史投影结果同时包含 `image.png` 与 `acp.raw.jsonl`。
 - 展示完善：消息组件按附件媒体类型派生图片组与普通文件组，固定渲染为“图片行在上、文件行在下”，同类附件各自行内换行；普通文件使用内容宽度的紧凑 pill，不与固定尺寸图片缩略图混排或共同拉伸。
 - 前端回归：纯函数测试固定混合输入的分组结果；DOM 测试固定两个附件行的顺序、内容隔离，以及普通文件按钮的 `w-fit` / pill 样式契约。
+
+---
+
+## 2026-08-06：AI-DYNAMIC 候选 Agent 原生权限配置
+
+- 根因修复：删除 AI-DYNAMIC 节点级共享权限字段以及产品侧 `read_only / ask / full_access` 枚举和 `permissionModeMapping` 中央映射，消除新增 ACP Agent 必须补 provider 映射的扩展阻塞。
+- 数据契约：dynamic 控制面保存 `bootstrapProvider / bootstrapModel / acceptanceModel / permissionMode`，其中分发与验收模型都来自初始分发 Agent 目录，bootstrap/merge/acceptance 共用原生权限；每个动态候选 Agent 继续保存 worker 自己的模型、config options 和原生 permission mode id。AUTO 与 workflow AI-DYNAMIC 使用同一结构。
+- 路由契约：dynamic strategy 的 `dynamic-node-completion` 只有 worker 选择 Agent/provider，merge / acceptance 禁止输出 provider，所有节点都禁止 `model / permissionMode`；runtime 给 worker 注入候选配置，给 bootstrap/merge/acceptance 注入控制面配置。会话建立后继续允许通过 ACP session config 实时切换模型与权限，实时 override 不改变初始化配置。
+- UI 交付：AUTO 的“可选动态 Agent”和工作流 AI-DYNAMIC Inspector 在每个候选 Agent 旁共同展示模型与原生权限选择；bootstrap 与 fixed 配置同步成对展示；动态 AUTO composer 不再展示共享权限入口。
+- 回归固化：Rust 接口测试覆盖 AUTO 配置到 DSL 的模型/权限传递、原生权限 doctor 校验以及 provider-only output contract；Web 测试覆盖候选权限回显、提交规范化与非法原生权限阻断，并要求 Rust/Web 构建和目标页面交互验收通过。
+
+---
+
+## 2026-08-06：AUTO 失效工作流引用自修复
+
+- 根因修复：历史或异常写入的 AUTO `allowedWorkflows[].workflowId` 无法在当前工作流模板库中解析时，旧页面只报阻断错误而不展示该选项，用户无法移除它，导致保存和另存模板全部不可用。
+- 数据策略：加载运行模式后仅清理“当前模板库完全不存在”的工作流 ID 和“当前角色目录完全不存在”的 profile ID，并立即合并回写 project 级 AUTO 配置；存在但本身不可选的工作流继续保留，由现有重复 ID、空 ID 与嵌套 AI-DYNAMIC 校验明确阻止，避免静默改变有效但需要人工处理的配置。
+- UI 与验收：清理后在 AUTO 模板操作行下显示不自动消失的黄色警告横幅，分别说明工作流和角色移除数量，保存继续可用；Web 单元测试覆盖两类缺失引用剔除、保留有效引用与 warning 不自动消失。

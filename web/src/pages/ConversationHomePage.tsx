@@ -1,6 +1,7 @@
 import { ConversationComposer } from '@/components/conversation/ConversationComposer';
 import { ConversationGreeting } from '@/components/conversation/ConversationGreeting';
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
+import type { ConversationComposerMulticaBinding } from '@/lib/conversation-composer-draft';
 import { cn } from '@/lib/utils';
 import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../types';
 
@@ -15,7 +16,7 @@ interface ConversationHomePageProps {
   busy: boolean;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
-  onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
+  onSubmit: (input: ConversationCreateInput, multica?: ConversationComposerMulticaBinding | null) => Promise<string | null | undefined> | string | null | undefined;
   onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;

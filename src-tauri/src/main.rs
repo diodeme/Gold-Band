@@ -63,9 +63,10 @@ use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
 use metrics::start_heartbeat_polling;
 use multica::commands::{
-    add_multica_workspace, cancel_multica_task, claim_multica_task, get_multica_tasks,
-    list_server_multica_workspaces, rebind_multica_workspace, remove_multica_workspace,
-    rerun_multica_task, set_active_multica_workspace, start_multica_remote_task,
+    add_multica_workspace, cancel_multica_prepare_lease, cancel_multica_task, claim_multica_task,
+    get_multica_tasks, list_server_multica_workspaces, rebind_multica_workspace,
+    remove_multica_workspace, rerun_multica_task, set_active_multica_workspace,
+    start_multica_conversation_run,
 };
 use state::{DesktopContext, DesktopState};
 use tauri::Manager;
@@ -270,7 +271,8 @@ fn run() -> anyhow::Result<()> {
             disconnect_multica,
             get_multica_tasks,
             claim_multica_task,
-            start_multica_remote_task,
+            start_multica_conversation_run,
+            cancel_multica_prepare_lease,
             cancel_multica_task,
             rerun_multica_task,
             list_server_multica_workspaces,

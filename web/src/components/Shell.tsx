@@ -37,7 +37,7 @@ interface ShellProps {
   onConversationDeleteTask: (projectId: string, taskId: string) => void;
   onConversationPinTask: (projectId: string, taskId: string) => void;
   onConversationUnpinTask: (projectId: string, taskId: string) => void;
-  onConversationNewInWorkspace?: (projectId: string) => void;
+  onConversationNewInWorkspace: (projectId: string) => void;
   onConversationAddWorkspace?: () => void;
   onConversationRemoveWorkspace?: (projectId: string) => Promise<void>;
   activeWorkspaceId?: string | null;

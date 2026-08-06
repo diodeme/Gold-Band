@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, MulticaRemoteTaskStartedVm, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, ProfileInput, RemoteConversationSidebarVm, RemoteTaskVm, RoundSelection, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, ProfileInput, RemoteConversationSidebarVm, RemoteTaskVm, RoundSelection, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -285,8 +285,11 @@ export const desktopApi: RuntimeApi = {
   claimMulticaTask(taskId: string, workspaceId: string) {
     return invokeCommand<RemoteTaskVm>('claim_multica_task', { taskId, workspaceId });
   },
-  startMulticaRemoteTask(taskId: string, workspaceId: string) {
-    return invokeCommand<MulticaRemoteTaskStartedVm>('start_multica_remote_task', { taskId, workspaceId });
+  startMulticaConversationRun(input, remoteTaskId, workspaceId) {
+    return invokeCommand<ConversationRunVm>('start_multica_conversation_run', { input, remoteTaskId, workspaceId });
+  },
+  cancelMulticaPrepareLease(remoteTaskId) {
+    return invokeCommand<void>('cancel_multica_prepare_lease', { remoteTaskId });
   },
   cancelMulticaTask(taskId: string) {
     return invokeCommand<void>('cancel_multica_task', { taskId });

@@ -104,6 +104,9 @@ export interface RemoteTaskVm {
   retryable: boolean;
   workspaceId: string;
   title: string;
+  /// claim 响应里解析出的需求正文（quick-create/chat/comment/autopilot/handoff 来源优先级取首个非空，无则 null）。
+  /// 仅 claim 后回填；pending 列表（get_multica_tasks）该字段恒为 null——预填 composer 必须先 claim。
+  requirement: string | null;
   lastActivityAt: string | null;
 }
 
@@ -114,12 +117,6 @@ export interface RemoteConversationSidebarVm {
   recentlyCompleted: MulticaCompletedTaskVm[];
   lastActiveWorkspaceId: string | null;
   connected: boolean;
-}
-
-/// `start_multica_remote_task` 启动结果：同时回 localTaskId（侧栏 key）与 runId（直达会话页）。
-export interface MulticaRemoteTaskStartedVm {
-  localTaskId: string;
-  runId: string;
 }
 
 /// 远程 tab「最近完成」回看行（点击 onSelectRun(projectId, taskId, runId) 直达本地会话）。

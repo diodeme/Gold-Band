@@ -337,8 +337,16 @@ export function claimMulticaTask(taskId: string, workspaceId: string) {
   return getRuntimeApi().claimMulticaTask(taskId, workspaceId);
 }
 
-export function startMulticaRemoteTask(taskId: string, workspaceId: string) {
-  return getRuntimeApi().startMulticaRemoteTask(taskId, workspaceId);
+export function startMulticaConversationRun(
+  input: Parameters<ReturnType<typeof getRuntimeApi>['startMulticaConversationRun']>[0],
+  remoteTaskId: string,
+  workspaceId: string,
+) {
+  return getRuntimeApi().startMulticaConversationRun(input, remoteTaskId, workspaceId);
+}
+
+export function cancelMulticaPrepareLease(remoteTaskId: string) {
+  return getRuntimeApi().cancelMulticaPrepareLease(remoteTaskId);
 }
 
 export function cancelMulticaTask(taskId: string) {

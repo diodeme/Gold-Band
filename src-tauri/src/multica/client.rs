@@ -134,11 +134,44 @@ pub struct RemoteTask {
     /// 仅 serde key 对齐 server（下游 `task.title` 消费点 / VM 输出 camelCase 不受影响）。
     #[serde(default, rename = "thread_name")]
     pub title: Option<String>,
-    /// 首轮需求文本（作本地 task 的 requirement；M4 bridge 注入）。
+    /// 首轮需求文本——来源字段（镜像 server `AgentTaskResponse` 的来源互斥分支，仅 claim 响应携带）。
+    ///
+    /// pending 列表只有 `thread_name`，无这些字段。供 [`RemoteTask::requirement_text`] 取「最佳可用」
+    /// 预填文本：quick-create/chat/comment/autopilot/handoff 任一非空取之；皆空回退 title（issue 场景）。
     #[serde(default)]
-    pub requirement: Option<String>,
+    pub quick_create_prompt: Option<String>,
+    #[serde(default)]
+    pub chat_message: Option<String>,
+    #[serde(default)]
+    pub trigger_comment_content: Option<String>,
+    #[serde(default)]
+    pub autopilot_description: Option<String>,
+    #[serde(default)]
+    pub handoff_note: Option<String>,
     #[serde(default)]
     pub last_activity_at: Option<String>,
+}
+
+impl RemoteTask {
+    /// 预填用「最佳可用需求文本」（镜像 server `computeTaskKind` 来源互斥优先级）。
+    ///
+    /// quick-create → chat → comment → autopilot → handoff 任一非空取之；皆空回退 title
+    /// （issue 场景预填 issue 标题）。空白值视为缺失跳过——按来源**逐个**过滤后再短路，保证
+    /// 纯空白的上游来源不会吞掉下游（如空白 quick_create 仍回退 title）。
+    pub fn requirement_text(&self) -> Option<String> {
+        [
+            self.quick_create_prompt.as_deref(),
+            self.chat_message.as_deref(),
+            self.trigger_comment_content.as_deref(),
+            self.autopilot_description.as_deref(),
+            self.handoff_note.as_deref(),
+            self.title.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|s| !s.trim().is_empty())
+        .map(str::to_string)
+    }
 }
 
 /// selective claim 请求（接入方案 B2：body `{}`；命中本地 task_conversations 时带 prior_session_id）。
@@ -462,6 +495,22 @@ impl MulticaClient {
     /// 失败不阻断启动（仅记日志）；server 对 `runtime_recovery` 等 retryable reason 自动重试（本期接受）。
     pub async fn recover_orphans(&self, runtime_id: &str) -> Result<(), MulticaError> {
         let path = format!("/api/daemon/runtimes/{runtime_id}/recover-orphans");
+        let _: serde_json::Value = self.post_json(&path, &serde_json::json!({})).await?;
+        Ok(())
+    }
+
+    /// `POST /api/daemon/runtimes/{rid}/tasks/{tid}/prepare-lease` —— claim 后 compose 期间续期 prepare lease。
+    ///
+    /// server 的 prepare lease 仅 45s（`prepareLeaseDuration`），claim-at-click 后用户在 composer 选模型/
+    /// 改需求可能超过该窗口；心跳循环每 tick 调本方法续期，防任务被 `ReclaimStaleDispatchedTaskForRuntime`
+    /// 回收（与 multica daemon `startTaskPrepareLeaseExtender` 同构）。失败仅记日志（下一 tick 重试），
+    /// 不在 client 内重试（循环即重试），走单次 `post_json`。
+    pub async fn extend_prepare_lease(
+        &self,
+        runtime_id: &str,
+        task_id: &str,
+    ) -> Result<(), MulticaError> {
+        let path = format!("/api/daemon/runtimes/{runtime_id}/tasks/{task_id}/prepare-lease");
         let _: serde_json::Value = self.post_json(&path, &serde_json::json!({})).await?;
         Ok(())
     }
@@ -983,6 +1032,45 @@ mod tests {
         )
         .unwrap();
         assert_eq!(task.title.as_deref(), Some("Fix login bug"));
+    }
+
+    #[test]
+    fn remote_task_requirement_text_picks_source_by_priority() {
+        // 镜像 server computeTaskKind 来源互斥优先级：
+        // quick-create > chat > comment > autopilot > handoff > title（issue 回退标题）。
+        let qc: RemoteTask =
+            serde_json::from_str(r#"{"id":"t","thread_name":"T","quick_create_prompt":"qc-prompt"}"#)
+                .unwrap();
+        assert_eq!(qc.requirement_text().as_deref(), Some("qc-prompt"));
+
+        let chat: RemoteTask =
+            serde_json::from_str(r#"{"id":"t","thread_name":"T","chat_message":"chat-msg"}"#)
+                .unwrap();
+        assert_eq!(chat.requirement_text().as_deref(), Some("chat-msg"));
+
+        let comment: RemoteTask = serde_json::from_str(
+            r#"{"id":"t","thread_name":"T","trigger_comment_content":"plz fix"}"#,
+        )
+        .unwrap();
+        assert_eq!(comment.requirement_text().as_deref(), Some("plz fix"));
+
+        // issue：无来源字段 → 回退 title（预填 issue 标题）。
+        let issue: RemoteTask =
+            serde_json::from_str(r#"{"id":"t","thread_name":"Login bug"}"#).unwrap();
+        assert_eq!(issue.requirement_text().as_deref(), Some("Login bug"));
+
+        // 优先级：多来源同时存在取最高优先级（quick_create 压过 chat）。
+        let multi: RemoteTask = serde_json::from_str(
+            r#"{"id":"t","thread_name":"T","quick_create_prompt":"qc","chat_message":"chat"}"#,
+        )
+        .unwrap();
+        assert_eq!(multi.requirement_text().as_deref(), Some("qc"));
+
+        // 空白来源视为缺失，跳到下一优先级（回退 title）。
+        let blank: RemoteTask =
+            serde_json::from_str(r#"{"id":"t","thread_name":"Title","quick_create_prompt":"  "}"#)
+                .unwrap();
+        assert_eq!(blank.requirement_text().as_deref(), Some("Title"));
     }
 
     #[test]

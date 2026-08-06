@@ -35,6 +35,7 @@ import {
   saveTaskWorkflow,
   selectRecentWorkspace,
   selectRecentDesktopAvatar,
+  startMulticaConversationRun,
   startRun,
   unpinConversation,
   updateTaskMetadata,
@@ -1788,7 +1789,7 @@ export function App() {
           busy={busy}
           onRunModeChange={updateConversationRunMode}
           onLoadProfiles={loadProfiles}
-          onSubmit={async (input) => {
+          onSubmit={async (input, multica) => {
             const nextMode: ConversationRunModeVm = input.runMode === 'direct'
               ? {
                 mode: 'direct',
@@ -1810,7 +1811,11 @@ export function App() {
               if (!validation.valid) {
                 return validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n');
               }
-              const run = await createConversationRun(input);
+              // draft 带 multica 绑定 = 远程任务「点击执行」后的发送：复用本地建会话链 + 叠加 multica 簿记；
+              // 否则普通本地新建会话。二者返回同一 ConversationRunVm，后续导航/侧栏刷新完全复用。
+              const run = multica
+                ? await startMulticaConversationRun(input, multica.remoteTaskId, multica.workspaceId)
+                : await createConversationRun(input);
               conversationWorkspaceStore.promoteDraft(
                 createDraftConversationWorkspaceScope(input.projectId),
                 createConversationWorkspaceScope({

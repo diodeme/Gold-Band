@@ -55,7 +55,7 @@ const mocks = vi.hoisted(() => ({
   connectMultica: vi.fn(),
   cancelMulticaTask: vi.fn(),
   rerunMulticaTask: vi.fn(),
-  startMulticaRemoteTask: vi.fn(),
+  claimMulticaTask: vi.fn(),
   subscribeMulticaTaskUpdates: vi.fn(),
   subscribeMulticaSettingsUpdates: vi.fn(),
 }));
@@ -65,7 +65,7 @@ vi.mock('@/api', () => ({
   connectMultica: mocks.connectMultica,
   cancelMulticaTask: mocks.cancelMulticaTask,
   rerunMulticaTask: mocks.rerunMulticaTask,
-  startMulticaRemoteTask: mocks.startMulticaRemoteTask,
+  claimMulticaTask: mocks.claimMulticaTask,
   subscribeMulticaTaskUpdates: mocks.subscribeMulticaTaskUpdates,
   subscribeMulticaSettingsUpdates: mocks.subscribeMulticaSettingsUpdates,
 }));
@@ -73,11 +73,13 @@ vi.mock('@/api', () => ({
 const noopUnlisten = () => {};
 const {
   getMulticaTasks,
-  startMulticaRemoteTask,
+  claimMulticaTask,
   subscribeMulticaTaskUpdates,
   subscribeMulticaSettingsUpdates,
 } = mocks;
 
+import { formatLocalDateTime } from '@/lib/datetime';
+import { ConversationComposerDraftProvider } from '@/lib/conversation-composer-draft';
 import { MulticaRemoteTaskList } from '@/components/conversation/MulticaRemoteTaskList';
 
 const NO_TASKS_KEY = 'conversation.sidebar.multica.noTasksInWorkspace';
@@ -106,16 +108,36 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-async function renderList(onSelectRun = vi.fn()) {
+async function renderList(
+  onSelectRun = vi.fn(),
+  onNewConversationInWorkspace = vi.fn(),
+  prefill = vi.fn(),
+) {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
+  // MulticaRemoteTaskList 落在 composer draft boundary 内，通过 context 预填草稿；
+  // 测试注入带 prefill spy 的 context value，便于断言预填参数。
+  const draftValue = {
+    draft: { content: '', attachments: [], multica: null },
+    setContent: vi.fn(),
+    setAttachments: vi.fn(),
+    prefill,
+    reset: vi.fn(),
+  };
   await act(async () => {
-    root.render(<MulticaRemoteTaskList onSelectRun={onSelectRun} />);
+    root.render(
+      <ConversationComposerDraftProvider value={draftValue}>
+        <MulticaRemoteTaskList
+          onSelectRun={onSelectRun}
+          onNewConversationInWorkspace={onNewConversationInWorkspace}
+        />
+      </ConversationComposerDraftProvider>,
+    );
   });
   // flush getMulticaTasks promise + 订阅 promise
   await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-  return { container, onSelectRun };
+  return { container, onSelectRun, onNewConversationInWorkspace, prefill };
 }
 
 function findButtonByText(container: HTMLElement, text: string): HTMLButtonElement {
@@ -191,8 +213,10 @@ describe('multica remote task list', () => {
     expect(container.textContent).toContain('Some task');
   });
 
-  it('claims a queued task and navigates via onSelectRun with localTaskId + runId', async () => {
+  it('claims a queued task, prefills the composer draft, then navigates to conversation-home (same as local "+")', async () => {
     const onSelectRun = vi.fn();
+    const onNewConversationInWorkspace = vi.fn();
+    const prefill = vi.fn();
     getMulticaTasks.mockResolvedValue(baseVm({
       workspaces: [
         { id: 'ws-004', name: '004', slug: 'ws-004', localProjectId: 'proj-004', provider: 'claude-acp' },
@@ -204,11 +228,16 @@ describe('multica remote task list', () => {
       },
       lastActiveWorkspaceId: 'ws-004',
     }));
-    startMulticaRemoteTask.mockResolvedValue({ localTaskId: 'local-1', runId: 'run-1' });
+    // claim 响应回填需求正文（pending 列表只有 thread_name，正文仅 claim 响应里有）。
+    claimMulticaTask.mockResolvedValue({
+      id: 'rt-1', issueId: null, status: 'queued', retryable: true,
+      workspaceId: 'ws-004', title: 'Some task', requirement: '远程任务需求正文', lastActivityAt: null,
+    });
 
-    const { container } = await renderList(onSelectRun);
+    const { container, onNewConversationInWorkspace: navSpy, prefill: prefillSpy } =
+      await renderList(onSelectRun, onNewConversationInWorkspace, prefill);
 
-    // 领取按钮：queud 任务唯一的动作按钮，子节点为 null → textContent 为空。
+    // 领取按钮：queued 任务唯一的动作按钮，子节点为 null → textContent 为空。
     const claimButton = Array.from(container.querySelectorAll('button')).find(
       (b) => (b.textContent ?? '').trim() === '',
     ) as HTMLButtonElement;
@@ -217,9 +246,50 @@ describe('multica remote task list', () => {
     await act(async () => { claimButton.click(); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
-    expect(startMulticaRemoteTask).toHaveBeenCalledWith('rt-1', 'ws-004');
-    // 按 run 直达本地会话：projectId + localTaskId + runId。
-    expect(onSelectRun).toHaveBeenCalledWith('proj-004', 'local-1', 'run-1');
+    // claim 即领取（claim-at-click），不再原子 claim+start。
+    expect(claimMulticaTask).toHaveBeenCalledWith('rt-1', 'ws-004');
+    // 需求正文预填进 composer 草稿，并带上 multica 绑定（发送时据此分流远程 vs 本地）。
+    expect(prefillSpy).toHaveBeenCalledWith('远程任务需求正文', {
+      remoteTaskId: 'rt-1',
+      workspaceId: 'ws-004',
+      localProjectId: 'proj-004',
+    });
+    // 与本地工作空间「+」同一回调：导航到 conversation-home（仅 projectId），不再按 run 直达。
+    expect(navSpy).toHaveBeenCalledWith('proj-004');
+    expect(onSelectRun).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the task title when the claim response has no requirement body', async () => {
+    const onSelectRun = vi.fn();
+    const onNewConversationInWorkspace = vi.fn();
+    const prefill = vi.fn();
+    getMulticaTasks.mockResolvedValue(baseVm({
+      workspaces: [
+        { id: 'ws-004', name: '004', slug: 'ws-004', localProjectId: 'proj-004', provider: 'claude-acp' },
+      ],
+      tasksByWorkspace: {
+        'ws-004': [
+          { id: 'rt-1', workspaceId: 'ws-004', title: 'Issue title', status: 'queued', retryable: true },
+        ],
+      },
+      lastActiveWorkspaceId: 'ws-004',
+    }));
+    // issue 型任务：无需求正文来源，requirement 为 null → 预填回退到 title。
+    claimMulticaTask.mockResolvedValue({
+      id: 'rt-1', issueId: 'issue-1', status: 'queued', retryable: true,
+      workspaceId: 'ws-004', title: 'Issue title', requirement: null, lastActivityAt: null,
+    });
+
+    const { container, prefill: prefillSpy } =
+      await renderList(onSelectRun, onNewConversationInWorkspace, prefill);
+
+    const claimButton = Array.from(container.querySelectorAll('button')).find(
+      (b) => (b.textContent ?? '').trim() === '',
+    ) as HTMLButtonElement;
+    await act(async () => { claimButton.click(); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    expect(prefillSpy).toHaveBeenCalledWith('Issue title', expect.objectContaining({ remoteTaskId: 'rt-1' }));
   });
 
   it('renders a recently completed task and navigates via onSelectRun on click', async () => {
@@ -257,5 +327,45 @@ describe('multica remote task list', () => {
 
     // 点击直达本地会话（projectId + localTaskId + runId）。
     expect(onSelectRun).toHaveBeenCalledWith('proj-004', 'local-done', 'run-done');
+  });
+
+  it('renders task timestamps in the local timezone, not raw UTC', async () => {
+    // 时间显示修复（接入方案 M5-p）：UTC 存储、本地时区展示。复用真实
+    // formatLocalDateTime 计算期望值，避免绑定测试机时区（任何 tz 下都成立）。
+    const lastActivity = '2026-08-06T02:30:00Z';
+    const completedAt = '2026-08-06T10:00:00Z';
+
+    getMulticaTasks.mockResolvedValue(baseVm({
+      workspaces: [
+        { id: 'ws-004', name: '004', slug: 'ws-004', localProjectId: 'proj-004', provider: 'claude-acp' },
+      ],
+      tasksByWorkspace: {
+        'ws-004': [
+          { id: 'rt-1', workspaceId: 'ws-004', title: 'Queued task', status: 'queued', retryable: true, lastActivityAt: lastActivity },
+        ],
+      },
+      recentlyCompleted: [
+        {
+          remoteTaskId: 'rt-done',
+          localTaskId: 'local-done',
+          runId: 'run-done',
+          workspaceId: 'ws-004',
+          projectId: 'proj-004',
+          title: 'Completed task',
+          status: 'completed',
+          completedAt,
+        },
+      ],
+      lastActiveWorkspaceId: 'ws-004',
+    }));
+
+    const { container } = await renderList();
+
+    // pending 行 lastActivityAt 与「最近完成」行 completedAt 均按本地时区渲染。
+    expect(container.textContent).toContain(formatLocalDateTime(lastActivity));
+    expect(container.textContent).toContain(formatLocalDateTime(completedAt));
+    // 不应残留原始 UTC 字面量（旧实现 slice+replace 直接展示 UTC 墙钟）。
+    expect(container.textContent).not.toContain('2026-08-06T02:30:00Z');
+    expect(container.textContent).not.toContain('2026-08-06T10:00:00Z');
   });
 });

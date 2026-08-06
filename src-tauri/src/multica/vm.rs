@@ -23,6 +23,11 @@ pub struct RemoteTaskVm {
     pub workspace_id: String,
     pub title: String,
     pub last_activity_at: Option<String>,
+    /// claim 响应才回填：远程任务需求正文（来自 `requirement_text()`），供 composer 预填输入框。
+    ///
+    /// pending 列表不回填（server pending 只给 thread_name，正文仅在 claim 响应里），
+    /// 故 `from_pending` 留 None，`from_claimed` 才覆盖。前端按 Some/None 决定是否预填。
+    pub requirement: Option<String>,
 }
 
 /// 远程任务列表 sidebar（对齐 ConversationSidebarVm 形状，line 652-658）。
@@ -42,19 +47,7 @@ pub struct RemoteConversationSidebarVm {
     pub connected: bool,
 }
 
-/// `start_multica_remote_task` 启动结果（camelCase → `{localTaskId, runId}`）。
-///
-/// 与 `create_conversation_run` 对齐：既回本地 task id（侧栏 key / 磁盘 `<id>/`），
-/// 又回 run id（直达会话页 `conversation-run`）。之前只回 local_task_id 而丢弃
-/// 内部全程持有的 local_run_id，导致前端无法按 run 直达会话（Issue 3 根因之一）。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MulticaRemoteTaskStartedVm {
-    pub local_task_id: String,
-    pub run_id: String,
-}
-
-/// 远程 tab「最近完成」回看行（Issue 3C，对齐 `onSelectRun(projectId, taskId, runId)` 直达本地会话）。
+/// 远程任务「最近完成」回看行（Issue 3C，对齐 `onSelectRun(projectId, taskId, runId)` 直达本地会话）。
 ///
 /// `project_id` 由 `workspace_id → local_project_id`（经 workspaces 列表）解析，未绑定/已解绑的
 /// workspace 不进列表（无可直达的本地会话）。`status` = `completed` | `failed`。
@@ -77,9 +70,11 @@ impl RemoteTaskVm {
         Self::from_remote(task, workspace_id, false)
     }
 
-    /// claim 响应行（领取成功，retryable=false）。
+    /// claim 响应行（领取成功，retryable=false）。回填 `requirement`（正文仅 claim 响应才有）。
     pub fn from_claimed(task: &RemoteTask, workspace_id: &str) -> Self {
-        Self::from_remote(task, workspace_id, false)
+        let mut vm = Self::from_remote(task, workspace_id, false);
+        vm.requirement = task.requirement_text();
+        vm
     }
 
     /// 失败回显行（`multica_pending_issues`，retryable=true）。`id` = issue_id（rerun 键）。
@@ -92,6 +87,7 @@ impl RemoteTaskVm {
             workspace_id: String::new(),
             title: issue_id.to_string(),
             last_activity_at: None,
+            requirement: None,
         }
     }
 
@@ -110,6 +106,8 @@ impl RemoteTaskVm {
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| task.id.clone()),
             last_activity_at: task.last_activity_at.clone(),
+            // pending 列表无正文来源（server pending 只给 thread_name）；claim 响应由 from_claimed 覆盖。
+            requirement: None,
         }
     }
 }
@@ -161,7 +159,11 @@ mod tests {
             auth_token: Some("secret".into()),
             prior_session_id: None,
             title: Some("Fix bug".into()),
-            requirement: None,
+            quick_create_prompt: None,
+            chat_message: None,
+            trigger_comment_content: None,
+            autopilot_description: None,
+            handoff_note: None,
             last_activity_at: Some("2026-08-04T10:00:00Z".into()),
         };
         let vm = RemoteTaskVm::from_pending(&task, "ws-1");
@@ -171,7 +173,54 @@ mod tests {
         assert!(!vm.retryable);
         assert_eq!(vm.workspace_id, "ws-1");
         assert_eq!(vm.title, "Fix bug");
+        // pending 列表无正文来源 → requirement 留 None（预填只在 claim 后才有）。
+        assert!(vm.requirement.is_none());
         // auth_token 永不入 VM（执行凭证不回显）。
+    }
+
+    #[test]
+    fn from_claimed_fills_requirement_from_source_priority() {
+        // claim 响应：requirement 取来源优先级首个非空（quick_create > chat > ... > title）。
+        let task = RemoteTask {
+            id: "t-1".into(),
+            issue_id: Some("iss-1".into()),
+            status: "queued".into(),
+            auth_token: Some("secret".into()),
+            prior_session_id: None,
+            title: Some("Thread name".into()),
+            quick_create_prompt: Some("Full prompt body".into()),
+            chat_message: None,
+            trigger_comment_content: None,
+            autopilot_description: None,
+            handoff_note: None,
+            last_activity_at: Some("2026-08-04T10:00:00Z".into()),
+        };
+        let vm = RemoteTaskVm::from_claimed(&task, "ws-1");
+        assert_eq!(vm.requirement.as_deref(), Some("Full prompt body"));
+        // title 与 requirement 各司其职（title 仍是 thread_name，不混进正文）。
+        assert_eq!(vm.title, "Thread name");
+
+        // issue 场景（无来源字段）→ requirement 回退 title（issue 预填标题）。
+        let issue = RemoteTask {
+            id: "t-2".into(),
+            issue_id: None,
+            status: "queued".into(),
+            auth_token: None,
+            prior_session_id: None,
+            title: Some("Login bug".into()),
+            quick_create_prompt: None,
+            chat_message: None,
+            trigger_comment_content: None,
+            autopilot_description: None,
+            handoff_note: None,
+            last_activity_at: None,
+        };
+        assert_eq!(
+            RemoteTaskVm::from_claimed(&issue, "ws-1")
+                .requirement
+                .as_deref(),
+            Some("Login bug")
+        );
     }
 
     #[test]
@@ -184,7 +233,11 @@ mod tests {
             auth_token: None,
             prior_session_id: None,
             title: None,
-            requirement: None,
+            quick_create_prompt: None,
+            chat_message: None,
+            trigger_comment_content: None,
+            autopilot_description: None,
+            handoff_note: None,
             last_activity_at: None,
         };
         assert_eq!(RemoteTaskVm::from_pending(&task, "ws-1").title, "t-7");
@@ -219,6 +272,7 @@ mod tests {
             workspace_id: "ws-1".into(),
             title: "Fix bug".into(),
             last_activity_at: Some("2026-08-04T10:00:00Z".into()),
+            requirement: Some("prefill body".into()),
         };
         let json = serde_json::to_value(&vm).unwrap();
         // 锁定 camelCase 键名（对齐 line 650 TS，前端按这些键取值）。
@@ -229,18 +283,7 @@ mod tests {
         assert_eq!(json["workspaceId"], "ws-1");
         assert_eq!(json["title"], "Fix bug");
         assert_eq!(json["lastActivityAt"], "2026-08-04T10:00:00Z");
-    }
-
-    #[test]
-    fn remote_task_started_vm_serializes_camel_case_keys() {
-        let vm = MulticaRemoteTaskStartedVm {
-            local_task_id: "task-abc".into(),
-            run_id: "run-xyz".into(),
-        };
-        let json = serde_json::to_value(&vm).unwrap();
-        // 锁定 camelCase + 同时回 localTaskId 与 runId（前端按 runId 直达会话）。
-        assert_eq!(json["localTaskId"], "task-abc");
-        assert_eq!(json["runId"], "run-xyz");
+        assert_eq!(json["requirement"], "prefill body");
     }
 
     #[test]

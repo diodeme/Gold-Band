@@ -87,11 +87,23 @@ impl DefaultProfileIds {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct LocalizedProfileText {
+    zh_cn: &'static str,
+    en: &'static str,
+}
+
+impl LocalizedProfileText {
+    fn value(self, language: DesktopLanguage) -> &'static str {
+        prompt_by_language(language, self.zh_cn, self.en)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 struct DefaultProfileSeed {
     key: &'static str,
     id: &'static str,
-    name: &'static str,
-    summary: &'static str,
+    name: LocalizedProfileText,
+    summary: LocalizedProfileText,
     dynamic_template: bool,
 }
 
@@ -142,57 +154,105 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
     DefaultProfileSeed {
         key: "plan",
         id: "pf-builtin-plan",
-        name: "方案",
-        summary: "方案角色，用于需求分析和实施方案设计。",
+        name: LocalizedProfileText {
+            zh_cn: "方案",
+            en: "Plan",
+        },
+        summary: LocalizedProfileText {
+            zh_cn: "方案角色，用于需求分析和实施方案设计。",
+            en: "Planning role for analyzing requirements and designing implementation plans.",
+        },
         dynamic_template: true,
     },
     DefaultProfileSeed {
         key: "dev",
         id: "pf-builtin-dev",
-        name: "开发",
-        summary: "开发角色，用于实现需求并维护代码质量。",
+        name: LocalizedProfileText {
+            zh_cn: "开发",
+            en: "Development",
+        },
+        summary: LocalizedProfileText {
+            zh_cn: "开发角色，用于实现需求并维护代码质量。",
+            en: "Development role for implementing requirements and maintaining code quality.",
+        },
         dynamic_template: true,
     },
     DefaultProfileSeed {
         key: "review",
         id: "pf-builtin-review",
-        name: "审查",
-        summary: "审查角色，用于检查实现质量、风险和一致性。",
+        name: LocalizedProfileText {
+            zh_cn: "审查",
+            en: "Review",
+        },
+        summary: LocalizedProfileText {
+            zh_cn: "审查角色，用于检查实现质量、风险和一致性。",
+            en: "Review role for checking implementation quality, risks, and consistency.",
+        },
         dynamic_template: false,
     },
     DefaultProfileSeed {
         key: "test",
         id: "pf-builtin-test",
-        name: "测试",
-        summary: "测试角色，用于执行验证并反馈质量结果。",
+        name: LocalizedProfileText {
+            zh_cn: "测试",
+            en: "Testing",
+        },
+        summary: LocalizedProfileText {
+            zh_cn: "测试角色，用于执行验证并反馈质量结果。",
+            en: "Testing role for running verification and reporting quality results.",
+        },
         dynamic_template: false,
     },
     DefaultProfileSeed {
         key: "accept",
         id: "pf-builtin-accept",
-        name: "验收",
-        summary: "验收角色，用于对照需求判断交付是否满足目标。",
+        name: LocalizedProfileText {
+            zh_cn: "验收",
+            en: "Acceptance",
+        },
+        summary: LocalizedProfileText {
+            zh_cn: "验收角色，用于对照需求判断交付是否满足目标。",
+            en: "Acceptance role for determining whether the delivery meets the requirements.",
+        },
         dynamic_template: false,
     },
     DefaultProfileSeed {
         key: "cleanup",
         id: "pf-builtin-cleanup",
-        name: "清理",
-        summary: "清理角色，用于验收成功后的资源释放、收尾和环境清理。",
+        name: LocalizedProfileText {
+            zh_cn: "清理",
+            en: "Cleanup",
+        },
+        summary: LocalizedProfileText {
+            zh_cn: "清理角色，用于验收成功后的资源释放、收尾和环境清理。",
+            en: "Cleanup role for releasing resources, finalizing handoff notes, and cleaning up the environment after acceptance.",
+        },
         dynamic_template: false,
     },
     DefaultProfileSeed {
         key: "interview",
         id: "pf-builtin-interview",
-        name: "访谈",
-        summary: "访谈角色，用于需求澄清，通过深度访谈把模糊需求转化为清晰规格。",
+        name: LocalizedProfileText {
+            zh_cn: "访谈",
+            en: "Interview",
+        },
+        summary: LocalizedProfileText {
+            zh_cn: "访谈角色，用于需求澄清，通过深度访谈把模糊需求转化为清晰规格。",
+            en: "Interview role for clarifying requirements and turning ambiguity into clear specifications through deep interviews.",
+        },
         dynamic_template: false,
     },
     DefaultProfileSeed {
         key: "grill",
         id: "pf-builtin-grill",
-        name: "拷问",
-        summary: "拷问角色，围绕计划或决策进行毫不留情的深度访谈，直到达成共同理解。",
+        name: LocalizedProfileText {
+            zh_cn: "拷问",
+            en: "Grill",
+        },
+        summary: LocalizedProfileText {
+            zh_cn: "拷问角色，围绕计划或决策进行毫不留情的深度访谈，直到达成共同理解。",
+            en: "Grill role for rigorously challenging plans or decisions through deep interviews until shared understanding is reached.",
+        },
         dynamic_template: false,
     },
 ];
@@ -319,9 +379,9 @@ fn built_in_profiles(language: DesktopLanguage) -> Vec<ProfileEntry> {
         .iter()
         .map(|seed| ProfileEntry {
             id: seed.id.to_string(),
-            name: seed.name.to_string(),
-            summary: seed.summary.to_string(),
-            summary_source: seed.summary.to_string(),
+            name: seed.name.value(language).to_string(),
+            summary: seed.summary.value(language).to_string(),
+            summary_source: seed.summary.value(language).to_string(),
             content: built_in_profile_content(seed.key, language).to_string(),
             dynamic_template: seed.dynamic_template,
             scope: ProfileScope::BuiltIn,
@@ -339,9 +399,9 @@ fn built_in_profile_by_id(id: &str, language: DesktopLanguage) -> Option<Profile
         .find(|seed| seed.id == id)
         .map(|seed| ProfileEntry {
             id: seed.id.to_string(),
-            name: seed.name.to_string(),
-            summary: seed.summary.to_string(),
-            summary_source: seed.summary.to_string(),
+            name: seed.name.value(language).to_string(),
+            summary: seed.summary.value(language).to_string(),
+            summary_source: seed.summary.value(language).to_string(),
             content: built_in_profile_content(seed.key, language).to_string(),
             dynamic_template: seed.dynamic_template,
             scope: ProfileScope::BuiltIn,
@@ -831,6 +891,38 @@ profile body
         assert_eq!(by_id["pf-builtin-accept"], false);
         assert_eq!(by_id["pf-builtin-cleanup"], false);
         assert_eq!(by_id["pf-builtin-interview"], false);
+    }
+
+    #[test]
+    fn built_in_profile_metadata_localizes_without_changing_profile_ids() {
+        let zh_profiles = built_in_profiles(DesktopLanguage::ZhCn);
+        let en_profiles = built_in_profiles(DesktopLanguage::En);
+        let expected = [
+            ("pf-builtin-plan", "方案", "Plan"),
+            ("pf-builtin-dev", "开发", "Development"),
+            ("pf-builtin-review", "审查", "Review"),
+            ("pf-builtin-test", "测试", "Testing"),
+            ("pf-builtin-accept", "验收", "Acceptance"),
+            ("pf-builtin-cleanup", "清理", "Cleanup"),
+            ("pf-builtin-interview", "访谈", "Interview"),
+            ("pf-builtin-grill", "拷问", "Grill"),
+        ];
+
+        for (id, zh_name, en_name) in expected {
+            let zh = zh_profiles
+                .iter()
+                .find(|profile| profile.id == id)
+                .expect("Chinese built-in profile should exist");
+            let en = en_profiles
+                .iter()
+                .find(|profile| profile.id == id)
+                .expect("English built-in profile should exist");
+
+            assert_eq!(zh.id, en.id);
+            assert_eq!(zh.name, zh_name);
+            assert_eq!(en.name, en_name);
+            assert_ne!(zh.summary, en.summary);
+        }
     }
 
     #[test]

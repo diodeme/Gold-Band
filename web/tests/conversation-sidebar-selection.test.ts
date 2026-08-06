@@ -11,7 +11,8 @@ import {
   selectConversationSidebarRunPauseAction,
   shouldShowConversationSidebarRunList,
   shouldShowConversationSidebarActivity,
-  conversationSidebarActivityRingClass,
+  conversationSidebarActivityIconClass,
+  conversationSidebarRunStatusClass,
   updateConversationSidebarExpandedTaskKeys,
 } from '@/components/conversation/ConversationSidebar';
 import {
@@ -21,12 +22,16 @@ import {
 } from '@/lib/conversation-sidebar-activity';
 
 describe('ConversationSidebar run selection identity', () => {
-  it('uses the running semantic color for the Direct Agent activity ring', () => {
-    expect(conversationSidebarActivityRingClass).toContain('-inset-1');
-    expect(conversationSidebarActivityRingClass).toContain('border-2');
-    expect(conversationSidebarActivityRingClass).toContain('border-gold-running/45');
-    expect(conversationSidebarActivityRingClass).toContain('border-t-gold-running');
-    expect(conversationSidebarActivityRingClass).not.toContain('border-primary');
+  it('uses a reduced-motion-safe breathing effect for active Direct Agent icons', () => {
+    expect(conversationSidebarActivityIconClass).toContain('motion-safe:animate-pulse');
+    expect(conversationSidebarActivityIconClass).not.toContain('animate-spin');
+  });
+
+  it('uses a blue breathing dot only for running workflow sessions', () => {
+    expect(conversationSidebarRunStatusClass({ status: 'running', outcome: null })).toContain('bg-gold-running');
+    expect(conversationSidebarRunStatusClass({ status: 'running', outcome: null })).toContain('motion-safe:animate-pulse');
+    expect(conversationSidebarRunStatusClass({ status: 'paused', outcome: null })).toBe('bg-yellow-500/50');
+    expect(conversationSidebarRunStatusClass({ status: 'completed', outcome: 'success' })).toBe('bg-emerald-500/50');
   });
 
   it('uses Agent identity for Direct tasks and runtime status for other modes', () => {

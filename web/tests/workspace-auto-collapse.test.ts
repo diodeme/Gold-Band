@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   FALLBACK_WORKSPACE_LAYOUT,
+  WORKSPACE_SIDEBAR_MIN_WIDTH,
   reduceFileWorkspaceResponsiveState,
   reduceWorkspaceAutoCollapse,
   resolveFileWorkspaceResizeDirection,
@@ -20,6 +21,10 @@ import {
 const initial = (): WorkspaceAutoCollapseState => ({ previousWidth: 1_100, left: false, right: false });
 
 describe('workspace auto collapse state machine', () => {
+  it('allows the navigation sidebar to shrink to its compact readable width', () => {
+    expect(WORKSPACE_SIDEBAR_MIN_WIDTH).toBe(176);
+  });
+
   it('keeps file workspace pixel widths outside React presentation state', () => {
     let state: FileWorkspaceResponsiveState = { split: false, widthAtTransition: 0 };
     const compactState = state;

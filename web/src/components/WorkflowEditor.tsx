@@ -17,6 +17,7 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react';
 import { useTranslation } from 'react-i18next';
+import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import type { AgentRegistryVm, DynamicAgentRefDsl, DynamicControlDsl, ManagedAgentVm, ProfileVm, WorkflowAiDynamicDynamicAgentStrategyDsl, WorkflowAiDynamicFixedAgentStrategyDsl, WorkflowAiDynamicNodeDsl, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowWorkerNodeDsl } from '../types';
 import {
   END_NODE,
@@ -1570,7 +1571,7 @@ function AllowedWorkflowMultiSelect({ templates, selectedWorkflowIds, allowNeste
           <span className="flex min-w-0 flex-1 flex-wrap gap-1">
             {selectedTemplates.map((template) => (
               <Badge key={template.workflow.id} variant="secondary" className="max-w-full gap-1">
-                <span className="max-w-40 truncate">{template.name}</span>
+                <span className="max-w-40 truncate">{workflowTemplateDisplayName(template, t)}</span>
                 <span className="font-mono text-[10px] text-muted-foreground">{template.workflow.id}</span>
                 <span role="button" tabIndex={0} className="rounded-full hover:text-destructive" onClick={(event) => { event.preventDefault(); event.stopPropagation(); removeWorkflow(template.workflow.id); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') removeWorkflow(template.workflow.id); }}>
                   <X className="size-3" />
@@ -1599,10 +1600,10 @@ function AllowedWorkflowMultiSelect({ templates, selectedWorkflowIds, allowNeste
               {selectableOptions.map(({ template }) => {
                 const workflowId = template.workflow.id;
                 return (
-                  <CommandItem key={workflowId} value={workflowTemplateSearchText(template)} onSelect={() => toggleWorkflow(workflowId)} className="items-start py-2">
+                  <CommandItem key={workflowId} value={workflowTemplateSearchText(template, t)} onSelect={() => toggleWorkflow(workflowId)} className="items-start py-2">
                     <Check className={cn('mt-0.5 size-4', selected.has(workflowId) ? 'opacity-100' : 'opacity-0')} />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate font-medium">{template.name}</span>
+                      <span className="block truncate font-medium">{workflowTemplateDisplayName(template, t)}</span>
                       <span className="mt-1 block truncate font-mono text-[11px] text-muted-foreground">{workflowId}</span>
                     </span>
                   </CommandItem>
@@ -1614,10 +1615,10 @@ function AllowedWorkflowMultiSelect({ templates, selectedWorkflowIds, allowNeste
                 {disabledOptions.map(({ template, reason }, index) => {
                   const workflowId = template.workflow.id.trim();
                   return (
-                    <CommandItem key={`${template.id}:${workflowId}:${index}`} value={workflowTemplateSearchText(template)} disabled className="items-start py-2 opacity-60">
+                    <CommandItem key={`${template.id}:${workflowId}:${index}`} value={workflowTemplateSearchText(template, t)} disabled className="items-start py-2 opacity-60">
                       <span className="mt-1 size-4 shrink-0 rounded-full border border-muted-foreground/40" />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate font-medium">{template.name}</span>
+                        <span className="block truncate font-medium">{workflowTemplateDisplayName(template, t)}</span>
                         <span className="mt-1 block truncate font-mono text-[11px] text-muted-foreground">{workflowId || t('workflowEditor.emptyWorkflowId')}</span>
                         <span className="mt-1 block text-xs text-destructive">{reason}</span>
                       </span>
@@ -1760,8 +1761,11 @@ function profileCommandScore(itemValue: string, search: string) {
   return itemValue.toLowerCase().includes(normalizedSearch) ? 1 : 0;
 }
 
-function workflowTemplateSearchText(template: WorkflowTemplate) {
-  return [template.name, template.workflow.id].join('\n').toLowerCase();
+function workflowTemplateSearchText(
+  template: WorkflowTemplate,
+  t: (key: string, options?: Record<string, unknown>) => string,
+) {
+  return [workflowTemplateDisplayName(template, t), template.name, template.workflow.id].join('\n').toLowerCase();
 }
 
 function workflowIdCountMap(templates: WorkflowTemplate[]) {

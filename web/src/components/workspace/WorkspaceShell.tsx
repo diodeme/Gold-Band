@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { Layout, LayoutChangedMeta, PanelImperativeHandle, PanelSize } from 'react-resizable-panels';
 import type { AppConfigVm, ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
@@ -268,7 +269,9 @@ function WorkspaceShellLayout({
   }, [rightPanelMaxWidth]);
   const beginRightPanelResize = useCallback(() => {
     rightResizeIntentRef.current = true;
-    setRightPanelResizeActive(true);
+    // react-resizable-panels reads maxSize as it starts the gesture. Commit the
+    // expanded bound in this same event so a saved narrow width cannot cap it.
+    flushSync(() => setRightPanelResizeActive(true));
   }, []);
   const endRightPanelResize = useCallback(() => {
     setRightPanelResizeActive(false);

@@ -24,7 +24,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { displayAppError } from '@/i18n';
 import { pruneMissingAutoConfigReferences, pruneMissingAutoAllowedProfileIds, pruneMissingAutoAllowedWorkflowIds, selectableAgentOptions, selectableWorkflowOptions, validateAutoConfig } from '@/lib/run-mode-validation';
-import { createBlankWorkflowDraft } from '@/lib/workflow-template';
+import { createBlankWorkflowDraft, workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { cn } from '@/lib/utils';
 
 interface RunModeManagementPageProps {
@@ -674,7 +674,7 @@ export function RunModeManagementPage({
   };
 
   const selectedWfTemplate = effectiveWorkflowTemplates?.templates.find((t) => t.id === wfEditTemplateId) ?? null;
-  const wfTemplateLabel = selectedWfTemplate?.name ?? (wfEditWorkflow ? t('taskList.create.unsavedWorkflowTemplate') : t('taskList.create.workflowTemplatePlaceholder'));
+  const wfTemplateLabel = selectedWfTemplate ? workflowTemplateDisplayName(selectedWfTemplate, t) : (wfEditWorkflow ? t('taskList.create.unsavedWorkflowTemplate') : t('taskList.create.workflowTemplatePlaceholder'));
   const canUpdateWfTemplate = Boolean(wfEditTemplateId && wfEditTemplateId !== 'default');
   const lastUsedWfTemplate = effectiveWorkflowTemplates?.templates.find((t) => t.id === effectiveWorkflowTemplates?.lastUsedTemplateId) ?? null;
   const showWfLastUsedHint = Boolean(lastUsedWfTemplate && wfEditTemplateId !== lastUsedWfTemplate.id && !wfLastUsedHintDismissed);
@@ -687,7 +687,7 @@ export function RunModeManagementPage({
 
   const validateWfForTemplate = (workflow: WorkflowDsl, validateTemplateDuplicateId = true): WorkflowDsl | null => {
     const supportedAgents = agents.filter((a) => a.supported && a.diagnostic?.available === true);
-    const validation = validateWorkflowForSave(workflow, profiles, supportedAgents, t, effectiveWorkflowTemplates ?? null, wfEditTemplateId, selectedWfTemplate?.name ?? null, validateTemplateDuplicateId);
+    const validation = validateWorkflowForSave(workflow, profiles, supportedAgents, t, effectiveWorkflowTemplates ?? null, wfEditTemplateId, selectedWfTemplate ? workflowTemplateDisplayName(selectedWfTemplate, t) : null, validateTemplateDuplicateId);
     if (!validation.valid) {
       setWfError(validation.issues.map((issue) => issue.message).join('\n'));
       return null;
@@ -1175,7 +1175,7 @@ export function RunModeManagementPage({
             <section className="grid gap-4 md:grid-cols-2">
               <Field label={t('workflowEditor.allowedWorkflows')} help={t('workflowEditor.allowedWorkflowsHelp')}>
                 <MultiToggle
-                  items={workflowOptions.map(({ template, workflowId, selectable, reason }) => ({ id: workflowId || template.id, label: template.name, selectable, reason }))}
+                  items={workflowOptions.map(({ template, workflowId, selectable, reason }) => ({ id: workflowId || template.id, label: workflowTemplateDisplayName(template, t), selectable, reason }))}
                   selected={allowedWorkflowIds}
                   onChange={setAllowedWorkflowIds}
                   emptyLabel={t('workflowEditor.noWorkflowTemplates')}
@@ -1234,7 +1234,7 @@ export function RunModeManagementPage({
                               className="min-w-0 flex-1 truncate px-1 py-1 text-left text-xs"
                               onClick={() => { selectWfTemplate(tpl.id); setWfTemplatePickerOpen(false); }}
                             >
-                              {tpl.name}
+                              {workflowTemplateDisplayName(tpl, t)}
                             </button>
                             <Button
                               variant="ghost"
@@ -1259,7 +1259,7 @@ export function RunModeManagementPage({
                   className="rounded-full border border-primary/30 bg-primary/5 px-3 py-1 text-xs text-primary hover:bg-primary/10"
                   onClick={() => selectWfTemplate(lastUsedWfTemplate.id)}
                 >
-                  {t('taskList.create.selectLastUsedWorkflow', { name: lastUsedWfTemplate.name })}
+                  {t('taskList.create.selectLastUsedWorkflow', { name: workflowTemplateDisplayName(lastUsedWfTemplate, t) })}
                 </button>
               ) : null}
               showSaveCurrent={canUpdateWfTemplate}
@@ -1290,7 +1290,7 @@ export function RunModeManagementPage({
                     profiles={profiles}
                     workflowTemplates={effectiveWorkflowTemplates}
                     currentTemplateId={wfEditTemplateId}
-                    currentTemplateName={selectedWfTemplate?.name ?? null}
+                    currentTemplateName={selectedWfTemplate ? workflowTemplateDisplayName(selectedWfTemplate, t) : null}
                     showSaveAction={false}
                     allowAiDynamic={true}
                     onChange={setWfEditWorkflow}

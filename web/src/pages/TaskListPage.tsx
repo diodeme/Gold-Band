@@ -26,7 +26,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
-import { createBlankWorkflowDraft } from '@/lib/workflow-template';
+import { createBlankWorkflowDraft, workflowTemplateDisplayName } from '@/lib/workflow-template';
 
 type TaskListLoading = 'initial' | 'manual' | null;
 
@@ -462,7 +462,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
       setWorkflowError(t('common.loading'));
       return null;
     }
-    const validation = validateWorkflowForSave(workflowDraft, profileList.profiles, agentRegistry.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true), t, templateStore ?? null, selectedTemplateId, selectedTemplate?.name ?? null, validateTemplateDuplicateId);
+    const validation = validateWorkflowForSave(workflowDraft, profileList.profiles, agentRegistry.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true), t, templateStore ?? null, selectedTemplateId, selectedTemplate ? workflowTemplateDisplayName(selectedTemplate, t) : null, validateTemplateDuplicateId);
     if (!validation.valid) {
       setWorkflowNotice(null);
       setWorkflowError(validation.issues.map((issue) => issue.message).join('\n'));
@@ -552,7 +552,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
 
   const defaultWorkflow = templateStore?.templates.find((template) => template.id === 'default')?.workflow ?? null;
   const selectedTemplate = templateStore?.templates.find((template) => template.id === selectedTemplateId) ?? null;
-  const workflowTemplateLabel = selectedTemplate?.name ?? (workflow ? t('taskList.create.unsavedWorkflowTemplate') : t('taskList.create.workflowTemplatePlaceholder'));
+  const workflowTemplateLabel = selectedTemplate ? workflowTemplateDisplayName(selectedTemplate, t) : (workflow ? t('taskList.create.unsavedWorkflowTemplate') : t('taskList.create.workflowTemplatePlaceholder'));
   const canUpdateSelectedTemplate = Boolean(selectedTemplateId && selectedTemplateId !== 'default');
   const lastUsedTemplate = templateStore?.templates.find((template) => template.id === templateStore.lastUsedTemplateId) ?? null;
   const showLastUsedHint = Boolean(lastUsedTemplate && selectedTemplateId !== lastUsedTemplate.id && !lastUsedHintDismissed);
@@ -718,7 +718,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
                                     setTemplatePickerOpen(false);
                                   }}
                                 >
-                                  <span className="truncate">{template.name}</span>
+                                  <span className="truncate">{workflowTemplateDisplayName(template, t)}</span>
                                   {selected ? <Check className="size-4 shrink-0" /> : null}
                                 </button>
                                 <Button
@@ -748,10 +748,10 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
                         <button
                           type="button"
                           className="font-medium text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                          aria-label={t('taskList.create.selectLastUsedWorkflow', { name: lastUsedTemplate.name })}
+                          aria-label={t('taskList.create.selectLastUsedWorkflow', { name: workflowTemplateDisplayName(lastUsedTemplate, t) })}
                           onClick={() => selectWorkflowTemplate(lastUsedTemplate.id)}
                         >
-                          {lastUsedTemplate.name}
+                          {workflowTemplateDisplayName(lastUsedTemplate, t)}
                         </button>
                       </span>
                     ) : null}
@@ -782,7 +782,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
                   defaultWorkflow={defaultWorkflow}
                   workflowTemplates={templateStore}
                   currentTemplateId={selectedTemplateId}
-                  currentTemplateName={selectedTemplate?.name ?? null}
+                  currentTemplateName={selectedTemplate ? workflowTemplateDisplayName(selectedTemplate, t) : null}
                   allowAiDynamic
                   saving={saving}
                   onChange={(next) => {

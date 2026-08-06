@@ -27,6 +27,7 @@ import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from '@/lib
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
 import { PromptInput, PromptInputTextarea } from '@/components/prompt-kit/prompt-input';
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
+import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 
 interface ConversationComposerProps {
   projectId: string;
@@ -647,7 +648,7 @@ export function ConversationComposer({
               </SelectTrigger>
               <SelectContent position="popper" align="start">
                 {templates.map((tpl) => (
-                  <SelectItem key={tpl.id} value={tpl.id}>{tpl.name}</SelectItem>
+                  <SelectItem key={tpl.id} value={tpl.id}>{workflowTemplateDisplayName(tpl, t)}</SelectItem>
                 ))}
                 {templates.length === 0 ? (
                   <div className="px-2 py-3 text-xs text-muted-foreground">{t('conversation.home.noWorkflowTemplate')}</div>

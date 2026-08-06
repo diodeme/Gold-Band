@@ -8,6 +8,7 @@ import type {
   WorkflowTemplate,
   WorkflowTemplateStore,
 } from '@/types';
+import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 
 export type SelectableAgentOption = {
   agent: ManagedAgentVm;
@@ -157,7 +158,7 @@ export function validateWorkflowTemplateForConversationStart(
     t,
     workflowTemplates,
     template.id,
-    template.name,
+    workflowTemplateDisplayName(template, t),
   );
   return validation.valid ? [] : validation.issues.map((issue) => issue.message);
 }

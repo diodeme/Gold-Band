@@ -21,6 +21,10 @@
 
 旧 `ScheduledTaskStore` 的 definition/trigger 可以按 definition 事务导入 SQLite；重复导入是 no-op，definition ID 或 `(job_id, scheduled_at, trigger_kind)` 冲突会返回类型化 migration error，Task/Run 链接和完整 content snapshot 保留在 definition/occurrence 数据中。默认时区通过系统 IANA 时区解析，Hourly 计算下一个本地整点；DST gap 跳过无效本地时间，DST overlap 按绝对时间选择第一个有效 occurrence。Every 只有在启用转换或 interval/unit 变化时重置 anchor。
 
+### Scheduler contract baseline (2026-08-06)
+
+`ScheduledErrorCode` 的迁移冲突、coordinator 不可用、sleep inhibitor 失败、通知失败和 Skill 校验失败使用稳定的 `SCHEDULED_*` wire code，并通过结构化 error/params 传递，不包含面向用户的错误文案。`src/scheduler/queue.rs` 是队列和 occurrence 保留策略的唯一来源：busy retry 为 30 秒、最多 3 次；late-fire grace 为 60 秒；终态 occurrence 默认保留 30 天，允许范围为 1 至 3650 天，每批删除 500 条。
+
 ## occurrence 生命周期
 
 ```text

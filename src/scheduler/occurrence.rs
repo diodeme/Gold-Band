@@ -103,6 +103,16 @@ pub enum ScheduledErrorCode {
     ExecutionFailed,
     #[serde(rename = "SCHEDULED_LEASE_LOST")]
     LeaseLost,
+    #[serde(rename = "SCHEDULED_MIGRATION_CONFLICT")]
+    MigrationConflict,
+    #[serde(rename = "SCHEDULED_COORDINATOR_UNAVAILABLE")]
+    CoordinatorUnavailable,
+    #[serde(rename = "SCHEDULED_POWER_INHIBITOR_FAILED")]
+    PowerInhibitorFailed,
+    #[serde(rename = "SCHEDULED_NOTIFICATION_FAILED")]
+    NotificationFailed,
+    #[serde(rename = "SCHEDULED_SKILL_VALIDATION_FAILED")]
+    SkillValidationFailed,
 }
 
 impl fmt::Display for ScheduledErrorCode {
@@ -115,6 +125,11 @@ impl fmt::Display for ScheduledErrorCode {
             Self::AgentUnattendedModeUnsupported => "SCHEDULED_AGENT_UNATTENDED_MODE_UNSUPPORTED",
             Self::ExecutionFailed => "SCHEDULED_EXECUTION_FAILED",
             Self::LeaseLost => "SCHEDULED_LEASE_LOST",
+            Self::MigrationConflict => "SCHEDULED_MIGRATION_CONFLICT",
+            Self::CoordinatorUnavailable => "SCHEDULED_COORDINATOR_UNAVAILABLE",
+            Self::PowerInhibitorFailed => "SCHEDULED_POWER_INHIBITOR_FAILED",
+            Self::NotificationFailed => "SCHEDULED_NOTIFICATION_FAILED",
+            Self::SkillValidationFailed => "SCHEDULED_SKILL_VALIDATION_FAILED",
         };
         formatter.write_str(value)
     }
@@ -134,6 +149,11 @@ impl std::str::FromStr for ScheduledErrorCode {
             }
             "SCHEDULED_EXECUTION_FAILED" => Ok(Self::ExecutionFailed),
             "SCHEDULED_LEASE_LOST" => Ok(Self::LeaseLost),
+            "SCHEDULED_MIGRATION_CONFLICT" => Ok(Self::MigrationConflict),
+            "SCHEDULED_COORDINATOR_UNAVAILABLE" => Ok(Self::CoordinatorUnavailable),
+            "SCHEDULED_POWER_INHIBITOR_FAILED" => Ok(Self::PowerInhibitorFailed),
+            "SCHEDULED_NOTIFICATION_FAILED" => Ok(Self::NotificationFailed),
+            "SCHEDULED_SKILL_VALIDATION_FAILED" => Ok(Self::SkillValidationFailed),
             _ => Err(format!("unsupported scheduled error code: {value}")),
         }
     }
@@ -308,6 +328,30 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&ScheduledErrorCode::PermissionRequired).unwrap(),
             "\"SCHEDULED_PERMISSION_REQUIRED\""
+        );
+    }
+
+    #[test]
+    fn scheduled_error_codes_serialize_to_stable_wire_values() {
+        assert_eq!(
+            serde_json::to_string(&ScheduledErrorCode::MigrationConflict).unwrap(),
+            "\"SCHEDULED_MIGRATION_CONFLICT\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ScheduledErrorCode::CoordinatorUnavailable).unwrap(),
+            "\"SCHEDULED_COORDINATOR_UNAVAILABLE\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ScheduledErrorCode::PowerInhibitorFailed).unwrap(),
+            "\"SCHEDULED_POWER_INHIBITOR_FAILED\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ScheduledErrorCode::NotificationFailed).unwrap(),
+            "\"SCHEDULED_NOTIFICATION_FAILED\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ScheduledErrorCode::SkillValidationFailed).unwrap(),
+            "\"SCHEDULED_SKILL_VALIDATION_FAILED\""
         );
     }
 

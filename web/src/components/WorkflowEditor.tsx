@@ -42,6 +42,7 @@ import {
   findAcpThoughtLevel,
   updateAcpConfigOptionOverride,
 } from '@/components/acp/AcpModelThoughtSelects';
+import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { CodeBlock, EmptyState } from '@/components/PageScaffold';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -903,16 +904,6 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
   const [nodeIdComposing, setNodeIdComposing] = useState(false);
   const control = { ...defaultDynamicControl(), ...(node.control ?? {}) };
   const templates = workflowTemplates?.templates ?? [];
-  const strategy = node.agentStrategy.mode === 'dynamic'
-    ? node.agentStrategy
-    : node.agentStrategy as WorkflowAiDynamicFixedAgentStrategyDsl;
-  const isFixedStrategy = node.agentStrategy.mode === 'fixed';
-  const permissionModeAgentId = isFixedStrategy
-    ? (node.agentStrategy as WorkflowAiDynamicFixedAgentStrategyDsl).provider?.trim()
-    : null;
-  const agentSpecificModes = isFixedStrategy && permissionModeAgentId
-    ? (agents.find((a) => a.agentType === permissionModeAgentId)?.supportedModes ?? [])
-    : [];
   const errorsFor = (field: string) => fieldErrors[`node:${node.id}:${field}`] ?? [];
   const updateDynamic = (patch: Partial<WorkflowAiDynamicNodeDsl>) => onUpdate(node.id, patch as Partial<WorkflowNodeDsl>);
   const updateControl = (patch: Partial<DynamicControlDsl>) => {
@@ -971,9 +962,8 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
                 ? cur.provider
                 : cur.bootstrapProvider;
               updateDynamic({
-                permission_mode: null,
                 configOptions: {},
-                agentStrategy: { mode: 'fixed', provider: nextProvider, model: undefined },
+                agentStrategy: { mode: 'fixed', provider: nextProvider, model: undefined, permissionMode: undefined },
               });
               return;
             }
@@ -987,6 +977,9 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
             const nextBootstrapModel = cur.mode === 'dynamic'
               ? cur.bootstrapModel
               : undefined;
+            const nextPermissionMode = cur.mode === 'dynamic'
+              ? cur.permissionMode
+              : (cur as WorkflowAiDynamicFixedAgentStrategyDsl).permissionMode;
             const nextAcceptanceModel = cur.mode === 'dynamic'
               ? cur.acceptanceModel
               : undefined;
@@ -994,12 +987,12 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
               ? cur.availableAgents
               : [];
             updateDynamic({
-              permission_mode: null,
               configOptions: {},
               agentStrategy: {
                 mode: 'dynamic',
                 bootstrapProvider: nextBootstrapProvider,
                 bootstrapModel: nextBootstrapModel,
+                permissionMode: nextPermissionMode,
                 acceptanceModel: nextAcceptanceModel,
                 routingPrompt: nextRoutingPrompt,
                 availableAgents: nextAvailableAgents,
@@ -1018,9 +1011,8 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
         <>
           <Field label={<HelpLabel label={t('workflowEditor.agent')} help={t('workflowEditor.dynamicFixedAgentHelp')} />} required errors={errorsFor('agentStrategy.provider')}>
             <Select value={node.agentStrategy.provider} onValueChange={(provider) => updateDynamic({
-              permission_mode: null,
               configOptions: {},
-              agentStrategy: { mode: 'fixed', provider, model: undefined },
+              agentStrategy: { mode: 'fixed', provider, model: undefined, permissionMode: undefined },
             })}>
               <SelectTrigger className={errorClass(errorsFor('agentStrategy.provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
               <SelectContent>{agents.map((agent) => (
@@ -1034,22 +1026,36 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
             const fixedStrategy = node.agentStrategy as WorkflowAiDynamicFixedAgentStrategyDsl;
             const fixedAgent = agents.find((a) => a.agentType === fixedStrategy.provider);
             const fixedModels = fixedAgent?.supportedModels ?? [];
+            const fixedModes = fixedAgent?.supportedModes ?? [];
             const fixedThoughtLevel = findAcpThoughtLevel(fixedAgent?.configOptions);
-            if (fixedModels.length > 0 || fixedThoughtLevel) {
+            if (fixedModels.length > 0 || fixedThoughtLevel || fixedModes.length > 0) {
               return (
                 <Field label={t('workflowEditor.model')} errors={errorsFor('agentStrategy.model')}>
-                  <AcpModelThoughtSelects
-                    models={fixedModels}
-                    modelValue={fixedStrategy.model}
-                    thoughtLevel={fixedThoughtLevel}
-                    thoughtValue={fixedThoughtLevel ? node.configOptions?.[fixedThoughtLevel.id] : null}
-                    compact
-                    triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('agentStrategy.model')))}
-                    onModelChange={(model) => updateAgentStrategy({ mode: 'fixed', provider: fixedStrategy.provider, model: model || undefined } as WorkflowAiDynamicFixedAgentStrategyDsl)}
-                    onThoughtChange={(optionId, value) => updateDynamic({
-                      configOptions: updateAcpConfigOptionOverride(node.configOptions, optionId, value),
-                    })}
-                  />
+                  <div className="flex flex-wrap gap-2">
+                    <AcpModelThoughtSelects
+                      models={fixedModels}
+                      modelValue={fixedStrategy.model}
+                      thoughtLevel={fixedThoughtLevel}
+                      thoughtValue={fixedThoughtLevel ? node.configOptions?.[fixedThoughtLevel.id] : null}
+                      compact
+                      triggerClassName={cn('min-w-[12rem] flex-1 rounded-md', errorClass(errorsFor('agentStrategy.model')))}
+                      onModelChange={(model) => updateAgentStrategy({ ...fixedStrategy, model: model || undefined })}
+                      onThoughtChange={(optionId, value) => updateDynamic({
+                        configOptions: updateAcpConfigOptionOverride(node.configOptions, optionId, value),
+                      })}
+                    />
+                    {fixedModes.length > 0 ? (
+                      <AcpSingleConfigMenu
+                        label={t('acp.permissionMode')}
+                        value={fixedStrategy.permissionMode}
+                        options={fixedModes}
+                        unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
+                        compact
+                        triggerClassName="min-w-[12rem] flex-1 rounded-md"
+                        onValueChange={(permissionMode) => updateAgentStrategy({ ...fixedStrategy, permissionMode })}
+                      />
+                    ) : null}
+                  </div>
                 </Field>
               );
             }
@@ -1060,12 +1066,12 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
         <>
           <Field label={<HelpLabel label={t('workflowEditor.dynamicBootstrapAgent')} help={t('workflowEditor.dynamicBootstrapAgentHelp')} />} required errors={errorsFor('agentStrategy.bootstrapProvider')}>
             <Select value={node.agentStrategy.bootstrapProvider} onValueChange={(bootstrapProvider) => updateDynamic({
-              permission_mode: null,
               configOptions: {},
               agentStrategy: {
                 ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl),
                 bootstrapProvider,
                 bootstrapModel: undefined,
+                permissionMode: undefined,
                 bootstrapConfigOptions: {},
                 acceptanceModel: undefined,
                 acceptanceConfigOptions: {},
@@ -1105,25 +1111,8 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
           })()}
           {(() => {
             const dynamicStrategy = node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl;
-            const candidateProviders = new Set((dynamicStrategy.availableAgents ?? []).map((agent) => agent.provider));
-            if (dynamicStrategy.bootstrapProvider?.trim()) {
-              candidateProviders.add(dynamicStrategy.bootstrapProvider.trim());
-            }
-            const acceptanceModels = agents
-              .filter((agent) => candidateProviders.has(agent.agentType))
-              .flatMap((agent) => agent.supportedModels ?? [])
-              .filter((model, index, list) => list.findIndex((item) => item.id === model.id) === index);
-            if (dynamicStrategy.acceptanceModel?.trim()
-              && !acceptanceModels.some((model) => model.id === dynamicStrategy.acceptanceModel)) {
-              acceptanceModels.push({
-                id: dynamicStrategy.acceptanceModel,
-                name: dynamicStrategy.acceptanceModel,
-                description: null,
-              });
-            }
-            const acceptanceAgent = agents.find((agent) => (
-              agent.supportedModels?.some((model) => model.id === dynamicStrategy.acceptanceModel)
-            )) ?? agents.find((agent) => agent.agentType === dynamicStrategy.bootstrapProvider);
+            const acceptanceAgent = agents.find((agent) => agent.agentType === dynamicStrategy.bootstrapProvider);
+            const acceptanceModels = acceptanceAgent?.supportedModels ?? [];
             const acceptanceThoughtLevel = findAcpThoughtLevel(acceptanceAgent?.configOptions);
             if (acceptanceModels.length === 0 && !acceptanceThoughtLevel) return null;
             return (
@@ -1144,6 +1133,25 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
               </Field>
             );
           })()}
+          {(() => {
+            const dynamicStrategy = node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl;
+            const bootstrapAgent = agents.find((agent) => agent.agentType === dynamicStrategy.bootstrapProvider);
+            const bootstrapModes = bootstrapAgent?.supportedModes ?? [];
+            if (bootstrapModes.length === 0) return null;
+            return (
+              <Field label={<HelpLabel label={t('workflowEditor.dynamicControlPermission')} help={t('workflowEditor.dynamicControlPermissionHelp')} />} errors={errorsFor('agentStrategy.permissionMode')}>
+                <AcpSingleConfigMenu
+                  label={t('acp.permissionMode')}
+                  value={dynamicStrategy.permissionMode}
+                  options={bootstrapModes}
+                  unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
+                  compact
+                  triggerClassName={cn('w-full rounded-md', errorClass(errorsFor('agentStrategy.permissionMode')))}
+                  onValueChange={(permissionMode) => updateAgentStrategy({ ...dynamicStrategy, permissionMode })}
+                />
+              </Field>
+            );
+          })()}
           <Field label={<HelpLabel label={t('workflowEditor.dynamicAvailableAgents')} help={t('workflowEditor.dynamicAvailableAgentsHelp')} />} required errors={errorsFor('agentStrategy.availableAgents')}>
             <AgentMultiSelect
               agents={agents}
@@ -1156,31 +1164,49 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
           {(node.agentStrategy.availableAgents ?? []).map((agentRef, idx) => {
             const agentObj = agents.find((a) => a.agentType === agentRef.provider);
             const agentModels = agentObj?.supportedModels ?? [];
+            const agentModes = agentObj?.supportedModes ?? [];
             const thoughtLevel = findAcpThoughtLevel(agentObj?.configOptions);
-            if (agentModels.length === 0 && !thoughtLevel) return null;
+            if (agentModels.length === 0 && !thoughtLevel && agentModes.length === 0) return null;
             return (
               <Field key={agentRef.provider} label={`${t('workflowEditor.model')} — ${agentObj!.displayName}`} errors={errorsFor(`agentStrategy.availableAgents.${idx}.model`)}>
-                <AcpModelThoughtSelects
-                  models={agentModels}
-                  modelValue={agentRef.model}
-                  thoughtLevel={thoughtLevel}
-                  thoughtValue={thoughtLevel ? agentRef.configOptions?.[thoughtLevel.id] : null}
-                  compact
-                  triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor(`agentStrategy.availableAgents.${idx}.model`)))}
-                  onModelChange={(model) => {
-                    const next = [...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl).availableAgents];
-                    next[idx] = { ...next[idx], model: model || undefined };
-                    updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), availableAgents: next });
-                  }}
-                  onThoughtChange={(optionId, value) => {
-                    const next = [...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl).availableAgents];
-                    next[idx] = {
-                      ...next[idx],
-                      configOptions: updateAcpConfigOptionOverride(next[idx].configOptions, optionId, value),
-                    };
-                    updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), availableAgents: next });
-                  }}
-                />
+                <div className="flex flex-wrap gap-2">
+                  <AcpModelThoughtSelects
+                    models={agentModels}
+                    modelValue={agentRef.model}
+                    thoughtLevel={thoughtLevel}
+                    thoughtValue={thoughtLevel ? agentRef.configOptions?.[thoughtLevel.id] : null}
+                    compact
+                    triggerClassName={cn('min-w-[12rem] flex-1 rounded-md', errorClass(errorsFor(`agentStrategy.availableAgents.${idx}.model`)))}
+                    onModelChange={(model) => {
+                      const next = [...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl).availableAgents];
+                      next[idx] = { ...next[idx], model: model || undefined };
+                      updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), availableAgents: next });
+                    }}
+                    onThoughtChange={(optionId, value) => {
+                      const next = [...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl).availableAgents];
+                      next[idx] = {
+                        ...next[idx],
+                        configOptions: updateAcpConfigOptionOverride(next[idx].configOptions, optionId, value),
+                      };
+                      updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), availableAgents: next });
+                    }}
+                  />
+                  {agentModes.length > 0 ? (
+                    <AcpSingleConfigMenu
+                      label={t('acp.permissionMode')}
+                      value={agentRef.permissionMode}
+                      options={agentModes}
+                      unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
+                      compact
+                      triggerClassName="min-w-[12rem] flex-1 rounded-md"
+                      onValueChange={(permissionMode) => {
+                        const next = [...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl).availableAgents];
+                        next[idx] = { ...next[idx], permissionMode };
+                        updateAgentStrategy({ ...(node.agentStrategy as WorkflowAiDynamicDynamicAgentStrategyDsl), availableAgents: next });
+                      }}
+                    />
+                  ) : null}
+                </div>
               </Field>
             );
           })}
@@ -1194,25 +1220,6 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
           </Field>
         </>
       )}
-      <Field label={<HelpLabel label={t('workflowEditor.permissionMode')} help={t('workflowEditor.dynamicPermissionModeHelp')} />} errors={errorsFor('permission_mode')}>
-        <Select value={node.permission_mode ?? UNSPECIFIED_PERMISSION_MODE} onValueChange={(value) => updateDynamic({ permission_mode: value === UNSPECIFIED_PERMISSION_MODE ? null : value } as Partial<WorkflowAiDynamicNodeDsl>)}>
-          <SelectTrigger className={errorClass(errorsFor('permission_mode'))}>
-            <SelectValue placeholder={t('workflowEditor.permissionModeUnspecified')} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={UNSPECIFIED_PERMISSION_MODE}>{t('workflowEditor.permissionModeUnspecified')}</SelectItem>
-            {isFixedStrategy
-              ? agentSpecificModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)
-              : (
-                <>
-                  <SelectItem value="read_only">{t('workflowEditor.permissionModeReadOnly')}</SelectItem>
-                  <SelectItem value="ask">{t('workflowEditor.permissionModeAsk')}</SelectItem>
-                  <SelectItem value="full_access">{t('workflowEditor.permissionModeFullAccess')}</SelectItem>
-                </>
-              )}
-          </SelectContent>
-        </Select>
-      </Field>
       <Field label={<HelpLabel label={t('workflowEditor.allowedWorkflows')} help={t('workflowEditor.allowedWorkflowsHelp')} />} errors={errorsFor('allowedWorkflows')}>
         <AllowedWorkflowMultiSelect
           templates={templates}
@@ -2121,7 +2128,6 @@ function normalizeWorkflowSchemas(workflow: WorkflowDsl): WorkflowDsl {
           profile?: string | null;
           goal?: string | null;
           agentStrategy?: WorkflowAiDynamicNodeDsl['agentStrategy'];
-          permissionMode?: string | null;
           allowedProfiles?: string[];
           globalGoal?: string | null;
         };
@@ -2133,21 +2139,23 @@ function normalizeWorkflowSchemas(workflow: WorkflowDsl): WorkflowDsl {
           ? {
             ...normalizedStrategy,
             model: normalizedStrategy.model?.trim() ? normalizedStrategy.model : undefined,
+            permissionMode: normalizedStrategy.permissionMode?.trim() ? normalizedStrategy.permissionMode : undefined,
           }
           : {
             ...normalizedStrategy,
             bootstrapModel: normalizedStrategy.bootstrapModel?.trim() ? normalizedStrategy.bootstrapModel : undefined,
+            permissionMode: normalizedStrategy.permissionMode?.trim() ? normalizedStrategy.permissionMode : undefined,
             acceptanceModel: normalizedStrategy.acceptanceModel?.trim() ? normalizedStrategy.acceptanceModel : undefined,
             routingPrompt: normalizedStrategy.routingPrompt ?? '',
             availableAgents: (normalizedStrategy.availableAgents ?? []).map((agent) => ({
               ...agent,
               model: agent.model?.trim() ? agent.model : undefined,
+              permissionMode: agent.permissionMode?.trim() ? agent.permissionMode : undefined,
             })),
           };
         return {
           ...node,
           agentStrategy,
-          permission_mode: node.permission_mode ?? rawNode.permissionMode ?? null,
           allowedProfiles: node.allowedProfiles ?? rawNode.allowedProfiles ?? [],
           globalGoal: node.globalGoal ?? rawNode.globalGoal ?? null,
           control: { ...defaultDynamicControl(), ...((node.control ?? {}) as Partial<DynamicControlDsl>), allowNestedDynamic: false },
@@ -2417,6 +2425,14 @@ function validateAiDynamicNodeForSave(
   t: (key: string, options?: Record<string, unknown>) => string,
 ) {
   const control = { ...defaultDynamicControl(), ...(node.control ?? {}) };
+  const validatePermissionMode = (provider: string | undefined, permissionMode: string | null | undefined, field: string) => {
+    const mode = permissionMode?.trim();
+    if (!provider || !mode) return;
+    const supportedModeIds = new Set((agentById.get(provider)?.supportedModes ?? []).map((option) => option.id));
+    if (supportedModeIds.size > 0 && !supportedModeIds.has(mode)) {
+      addIssue(t('workflowEditor.validationPermissionModeUnavailable', { node: nodeLabel }), nodeField(node, field), node.id);
+    }
+  };
   if (node.agentStrategy.mode === 'fixed') {
     const provider = node.agentStrategy.provider?.trim();
     if (!provider) {
@@ -2424,6 +2440,7 @@ function validateAiDynamicNodeForSave(
     } else if (!agentIds.has(provider)) {
       addIssue(t('workflowEditor.validationNodeProviderUnavailable', { node: nodeLabel }), nodeField(node, 'agentStrategy.provider'), node.id);
     }
+    validatePermissionMode(provider, node.agentStrategy.permissionMode, 'agentStrategy.permissionMode');
   } else {
     const bootstrapProvider = node.agentStrategy.bootstrapProvider?.trim();
     if (!bootstrapProvider) {
@@ -2431,6 +2448,7 @@ function validateAiDynamicNodeForSave(
     } else if (!agentIds.has(bootstrapProvider)) {
       addIssue(t('workflowEditor.validationNodeProviderUnavailable', { node: nodeLabel }), nodeField(node, 'agentStrategy.bootstrapProvider'), node.id);
     }
+    validatePermissionMode(bootstrapProvider, node.agentStrategy.permissionMode, 'agentStrategy.permissionMode');
     if ((node.agentStrategy.availableAgents ?? []).length === 0) {
       addIssue(t('workflowEditor.validationDynamicAvailableAgentsRequired', { node: nodeLabel }), nodeField(node, 'agentStrategy.availableAgents'), node.id);
     }
@@ -2449,23 +2467,8 @@ function validateAiDynamicNodeForSave(
       if (!agentIds.has(provider)) {
         addIssue(t('workflowEditor.validationNodeProviderUnavailable', { node: nodeLabel }), nodeField(node, `agentStrategy.availableAgents.${index}.provider`), node.id);
       }
+      validatePermissionMode(provider, agentRef.permissionMode, `agentStrategy.availableAgents.${index}.permissionMode`);
     });
-  }
-  if (node.permission_mode?.trim()) {
-    if (node.agentStrategy.mode === 'fixed') {
-      const provider = node.agentStrategy.provider?.trim();
-      if (provider) {
-        const supportedModeIds = new Set((agentById.get(provider)?.supportedModes ?? []).map((mode) => mode.id));
-        if (supportedModeIds.size > 0 && !supportedModeIds.has(node.permission_mode)) {
-          addIssue(t('workflowEditor.validationPermissionModeUnavailable', { node: nodeLabel }), nodeField(node, 'permission_mode'), node.id);
-        }
-      }
-    } else {
-      const VALID_NORMATIVE_MODES = new Set(['read_only', 'ask', 'full_access']);
-      if (!VALID_NORMATIVE_MODES.has(node.permission_mode)) {
-        addIssue(t('workflowEditor.validationPermissionModeUnavailable', { node: nodeLabel }), nodeField(node, 'permission_mode'), node.id);
-      }
-    }
   }
   const knownProfileIds = new Set(profiles.map((profile) => profile.id));
   const seenProfiles = new Set<string>();

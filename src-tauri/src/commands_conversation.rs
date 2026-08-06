@@ -777,6 +777,7 @@ pub fn get_conversation_run_mode(
                                     crate::view_models_conversation::ConversationDynamicAgentRefVm {
                                         provider: agent.provider.clone(),
                                         model: agent.model.clone(),
+                                        permission_mode: agent.permission_mode.clone(),
                                         config_options: agent.config_options.clone(),
                                     }
                                 })
@@ -875,6 +876,7 @@ pub fn save_conversation_run_mode(
                         .map(|agent| ConversationDynamicAgentRef {
                             provider: agent.provider,
                             model: agent.model,
+                            permission_mode: agent.permission_mode,
                             config_options: agent.config_options,
                         })
                         .collect()

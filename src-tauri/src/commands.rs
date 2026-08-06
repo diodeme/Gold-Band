@@ -5977,6 +5977,7 @@ mod tests {
             agent_strategy: AiDynamicAgentStrategy::Dynamic {
                 bootstrap_provider: "claude-acp".to_string(),
                 bootstrap_model: None,
+                permission_mode: None,
                 bootstrap_config_options: Default::default(),
                 acceptance_model: None,
                 acceptance_config_options: Default::default(),
@@ -5985,16 +5986,17 @@ mod tests {
                     gold_band::dsl::DynamicAgentRef {
                         provider: "codex-acp".to_string(),
                         model: None,
+                        permission_mode: None,
                         config_options: Default::default(),
                     },
                     gold_band::dsl::DynamicAgentRef {
                         provider: "claude-acp".to_string(),
                         model: None,
+                        permission_mode: None,
                         config_options: Default::default(),
                     },
                 ],
             },
-            permission_mode: None,
             config_options: Default::default(),
             allowed_profiles: Vec::new(),
             global_goal: None,

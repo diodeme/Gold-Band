@@ -116,11 +116,7 @@ export function ConversationComposer({
   const directThoughtLevel = findAcpThoughtLevel(selectedDirectAgentObj?.configOptions);
   const models = selectedAgentObj?.supportedModels ?? [];
   const permissionModes = selectedAgentObj?.supportedModes ?? [];
-  const autoPermissionModes = isDynamicAuto ? [
-    { id: 'read_only', name: t('workflowEditor.permissionModeReadOnly') },
-    { id: 'ask', name: t('workflowEditor.permissionModeAsk') },
-    { id: 'full_access', name: t('workflowEditor.permissionModeFullAccess') },
-  ] : permissionModes;
+  const autoPermissionModes = permissionModes;
   const thoughtLevel = findAcpThoughtLevel(selectedAgentObj?.configOptions);
   const templates = workflowTemplates?.templates ?? [];
   const selectedWorkflowTemplateId = workflowTemplateId || runMode.workflowTemplateId || undefined;
@@ -207,8 +203,7 @@ export function ConversationComposer({
         agentStrategy: 'dynamic',
         agentType: base.agentType || base.bootstrapAgentType || nextAgent || '',
         ...patch,
-        permissionMode: nextPermissionMode || undefined,
-        configOptions: nextConfigOptions,
+        configOptions: undefined,
         globalGoal: optionalRunModeText(nextGlobalGoal),
       };
     }
@@ -613,17 +608,19 @@ export function ConversationComposer({
                     }}
                   />
                 ) : null}
-                <AcpSingleConfigMenu
-                  label={t('acp.permissionMode')}
-                  value={selectedPermissionMode}
-                  options={autoPermissionModes}
-                  unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
-                  onValueChange={(value) => {
-                    const next = value ?? '';
-                    setSelectedPermissionMode(next);
-                    updateAutoSession({ permissionMode: next || undefined });
-                  }}
-                />
+                {!isDynamicAuto ? (
+                  <AcpSingleConfigMenu
+                    label={t('acp.permissionMode')}
+                    value={selectedPermissionMode}
+                    options={autoPermissionModes}
+                    unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
+                    onValueChange={(value) => {
+                      const next = value ?? '';
+                      setSelectedPermissionMode(next);
+                      updateAutoSession({ permissionMode: next || undefined });
+                    }}
+                  />
+                ) : null}
                 <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={onOpenRunModeSettings}>
                   <Workflow className="size-3" />
                   {t('conversation.home.configureAuto')}

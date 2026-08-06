@@ -73,8 +73,7 @@ const workflowTemplates: WorkflowTemplateStore = {
       nodes: [{
         id: 'ai-dynamic1',
         type: 'ai-dynamic',
-        agentStrategy: { mode: 'fixed', provider: 'claude-acp' },
-        permission_mode: 'full_access',
+        agentStrategy: { mode: 'fixed', provider: 'claude-acp', permissionMode: 'full_access' },
         allowedProfiles: [],
         allowedWorkflows: [],
         control: {

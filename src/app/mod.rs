@@ -149,28 +149,20 @@ fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
     match (language, key) {
         (DesktopLanguage::ZhCn, "plan") => "分析导入的需求并产出实施方案。",
         (DesktopLanguage::ZhCn, "dev") => "在当前工作区实现需求。",
-        (DesktopLanguage::ZhCn, "review") => {
-            "审查实现质量，并返回包含 result 和 reason 字段的 JSON。"
-        }
-        (DesktopLanguage::ZhCn, "test") => {
-            "执行或说明验证结果，并返回包含 result 和 reason 字段的 JSON。"
-        }
-        (DesktopLanguage::ZhCn, "accept") => {
-            "对照需求进行验收，并返回包含 result 和 reason 字段的 JSON。"
-        }
+        (DesktopLanguage::ZhCn, "review") => "审查实现质量并形成明确结论。",
+        (DesktopLanguage::ZhCn, "test") => "执行验证并形成明确结论。",
+        (DesktopLanguage::ZhCn, "accept") => "对照需求进行验收并形成明确结论。",
         (DesktopLanguage::ZhCn, "cleanup") => "清理资源、整理交付说明并清理 Git 工作区。",
         (DesktopLanguage::En, "plan") => {
             "Analyze the imported requirement and produce an implementation plan."
         }
         (DesktopLanguage::En, "dev") => "Implement the requirement in the workspace.",
         (DesktopLanguage::En, "review") => {
-            "Review the implementation and return JSON with result and reason fields."
+            "Review the implementation and reach a clear conclusion."
         }
-        (DesktopLanguage::En, "test") => {
-            "Run or describe verification and return JSON with result and reason fields."
-        }
+        (DesktopLanguage::En, "test") => "Run verification and reach a clear conclusion.",
         (DesktopLanguage::En, "accept") => {
-            "Validate acceptance and return JSON with result and reason fields."
+            "Validate acceptance against the requirement and reach a clear conclusion."
         }
         (DesktopLanguage::En, "cleanup") => {
             "Clean up resources, finalize handoff notes, and clean up the Git workspace."

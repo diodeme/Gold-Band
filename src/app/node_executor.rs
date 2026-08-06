@@ -14,9 +14,9 @@ use crate::dsl::{
 use crate::observability::{ProgressStage, progress};
 use crate::prompts::PromptExecutionSurface;
 use crate::provider::{
-    PromptArtifactRef, PromptAttachmentRef, PromptOutputContract, PromptPredecessorContext,
-    PromptRuntimeContext, PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode,
-    UserPromptRenderMode, WorkerInvocation,
+    OutputEmissionMode, PromptArtifactRef, PromptAttachmentRef, PromptOutputContract,
+    PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
+    ProviderRunStatus, StreamMode, UserPromptRenderMode, WorkerInvocation,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, WorkerRefState, validate_node_state,
@@ -72,6 +72,8 @@ fn worker_output_contract(worker: &WorkerNode) -> Option<PromptOutputContract> {
             .success_condition
             .as_ref()
             .map(success_condition_text),
+        finalize_context: None,
+        emission_mode: OutputEmissionMode::PostTurnProjection,
     })
 }
 
@@ -1153,7 +1155,36 @@ pub(crate) fn re_evaluate_attempt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dsl::{OutputContractDsl, OutputKind};
     use crate::runtime_error::{RuntimeErrorDomain, manual_runtime_error_info};
+
+    #[test]
+    fn workflow_output_contract_uses_post_turn_projection() {
+        let worker = WorkerNode {
+            id: "review".to_string(),
+            provider: Some("claude-acp".to_string()),
+            model: None,
+            profile: None,
+            goal: Some("Review the implementation".to_string()),
+            output: Some(OutputContractDsl {
+                kind: OutputKind::Json,
+                artifact: "review-result".to_string(),
+                schema: Some(serde_json::json!({ "result": "boolean" })),
+            }),
+            success_condition: None,
+            permission_mode: None,
+            config_options: Default::default(),
+            manual_check: None,
+            prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
+        };
+
+        let contract = worker_output_contract(&worker).unwrap();
+
+        assert_eq!(
+            contract.emission_mode,
+            OutputEmissionMode::PostTurnProjection
+        );
+    }
 
     #[test]
     fn selects_nested_array_json_path() {

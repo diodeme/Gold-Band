@@ -3444,6 +3444,12 @@ impl<'a> AcpRuntime<'a> {
             hidden_from_chat,
             prompt.attachment_metas.clone(),
         );
+        if hidden_from_chat
+            && let Some(reason) = prompt.hidden_reason.as_deref()
+            && let Some(raw) = user_event.raw.as_mut()
+        {
+            raw["reason"] = Value::String(reason.to_string());
+        }
         user_event.id = prompt_event_id.clone();
         user_event.timestamp = prompt_event_timestamp;
         if retry_attempt > 0 {
@@ -7682,6 +7688,7 @@ mod tests {
             user_prompt: "do the task".to_string(),
             prompt_id: Some("prompt-001".to_string()),
             visibility: PromptVisibility::Visible,
+            hidden_reason: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
         };
@@ -7705,6 +7712,7 @@ mod tests {
             user_prompt: "follow up".to_string(),
             prompt_id: Some("prompt-002".to_string()),
             visibility: PromptVisibility::Visible,
+            hidden_reason: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
         };
@@ -7726,6 +7734,7 @@ mod tests {
             user_prompt: "do the task".to_string(),
             prompt_id: None,
             visibility: PromptVisibility::Visible,
+            hidden_reason: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
         };

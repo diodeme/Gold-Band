@@ -4,17 +4,20 @@ use crate::config::{
     AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, catalog_agent_default_config,
 };
 pub use crate::domain::SessionRef;
-use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode};
+use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode, VERSION};
 use crate::prompts::{
-    PromptExecutionSurface, RUNTIME_HIDDEN_CONTEXT_EN, RUNTIME_HIDDEN_CONTEXT_ZH_CN,
-    RUNTIME_SYSTEM_EN, RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN,
-    profile_template_context, prompt_by_language, render as render_template,
+    PromptExecutionSurface, RUNTIME_ARTIFACT_FINALIZE_EN, RUNTIME_ARTIFACT_FINALIZE_ZH_CN,
+    RUNTIME_HIDDEN_CONTEXT_EN, RUNTIME_HIDDEN_CONTEXT_ZH_CN, RUNTIME_SYSTEM_EN,
+    RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN, profile_template_context,
+    prompt_by_language, render as render_template,
 };
+use crate::runtime::WorkerRefState;
 use crate::runtime_error::{
-    RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, normalize_provider_runtime_failure,
+    RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, blocked_runtime_error_info,
+    normalize_provider_runtime_failure, runtime_error,
 };
-use crate::storage::active_storage_path_config;
-use anyhow::{Result, bail, ensure};
+use crate::storage::{active_storage_path_config, read_json, write_json};
+use anyhow::{Context, Result, bail, ensure};
 use camino::Utf8PathBuf;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -126,6 +129,7 @@ impl DoctorResult {
 pub enum UserPromptRenderMode {
     RequirementTask,
     WorkflowResume,
+    RuntimeFinalize,
     RuntimeRepair,
     UserMessage,
 }
@@ -255,6 +259,69 @@ pub struct PromptOutputContract {
     pub schema: Option<serde_json::Value>,
     pub schema_text: Option<String>,
     pub success_condition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalize_context: Option<String>,
+    #[serde(default)]
+    pub emission_mode: OutputEmissionMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum OutputEmissionMode {
+    #[default]
+    PostTurnProjection,
+    InlineControl,
+}
+
+const ARTIFACT_EMISSION_STATE_FILE: &str = "artifact-emission.json";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ArtifactEmissionPhase {
+    Finalizing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ArtifactEmissionState {
+    version: String,
+    phase: ArtifactEmissionPhase,
+}
+
+fn post_turn_projection_is_finalizing(req: &WorkerInvocation) -> Result<bool> {
+    if matches!(
+        req.user_prompt_render_mode,
+        UserPromptRenderMode::RuntimeFinalize | UserPromptRenderMode::RuntimeRepair
+    ) {
+        return Ok(true);
+    }
+    let state_path = req.attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE);
+    if !state_path.exists() {
+        return Ok(false);
+    }
+    let state: ArtifactEmissionState = read_json(&state_path).map_err(|error| {
+        runtime_error(blocked_runtime_error_info(
+            RuntimeErrorDomain::Internal,
+            "runtime.artifact-emission-state-invalid",
+            format!("failed to read artifact emission state `{state_path}`: {error:#}"),
+            serde_json::json!({ "path": state_path }),
+        ))
+    })?;
+    if state.version != VERSION {
+        return Err(runtime_error(blocked_runtime_error_info(
+            RuntimeErrorDomain::Internal,
+            "runtime.artifact-emission-state-version-unsupported",
+            format!(
+                "unsupported artifact emission state version `{}`",
+                state.version
+            ),
+            serde_json::json!({
+                "path": state_path,
+                "actualVersion": state.version,
+                "expectedVersion": VERSION,
+            }),
+        )));
+    }
+    Ok(state.phase == ArtifactEmissionPhase::Finalizing)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -315,6 +382,7 @@ pub struct PromptBundle {
     pub user_prompt: String,
     pub prompt_id: Option<String>,
     pub visibility: PromptVisibility,
+    pub hidden_reason: Option<String>,
     pub attachment_metas: Vec<AttachmentMeta>,
     pub content_blocks: Vec<AcpContentBlock>,
 }
@@ -935,6 +1003,174 @@ impl AcpProvider {
         self.runtime_policy.supports_system_prompt = supported;
         self
     }
+
+    fn run_worker_once_with_callbacks(
+        &self,
+        req: WorkerInvocation,
+        live_update: Option<AcpLiveUpdate<'_>>,
+        session_update: Option<AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
+    ) -> Result<ProviderRunResult> {
+        let prompt = render_prompt_bundle(&req)?;
+        log_prompt_bundle(
+            &prompt,
+            req.invocation_kind,
+            req.profile.as_deref(),
+            req.output_contract
+                .as_ref()
+                .filter(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
+                .map(|contract| contract.artifact.as_str()),
+            req.cold_artifacts.len(),
+            req.cold_attachments.len(),
+            req.log_prompts,
+        );
+        let run = client::run_prompt(
+            &self.provider_id,
+            &self.adapter_config,
+            req.adapter_workspace_dir.clone(),
+            req.workspace_dir.clone(),
+            req.attempt_dir.clone(),
+            &prompt,
+            req.session_mode,
+            req.permission_mode.clone(),
+            req.model.clone(),
+            req.config_options.clone(),
+            req.continue_ref.clone(),
+            self.use_local_claude,
+            self.require_local_claude_executable,
+            self.acp_session_title_refresh_enabled,
+            self.acp_raw_max_size_bytes,
+            self.acp_raw_target_size_bytes,
+            self.runtime_policy,
+            acp_output_policy(req.output_contract.as_ref()),
+            live_update,
+            &req.mcp_servers,
+            session_update,
+            prompt_accepted,
+            Some(client::RuntimeStopProbe {
+                run_file: req.runtime_context.run_dir.join("run.json"),
+                round_id: req.runtime_context.round_id.clone(),
+                node_id: req
+                    .runtime_context
+                    .runtime_node_id
+                    .clone()
+                    .unwrap_or_else(|| req.runtime_context.node_id.clone()),
+                attempt_id: req
+                    .runtime_context
+                    .runtime_attempt_id
+                    .clone()
+                    .unwrap_or_else(|| req.runtime_context.attempt_id.clone()),
+                attempt_state_file: req.runtime_context.attempt_state_file.clone(),
+            }),
+        )?;
+        let terminal = classify_acp_prompt_run(&run);
+        let result_payload = matches!(
+            terminal.status,
+            ProviderRunStatus::Success | ProviderRunStatus::Interrupted
+        )
+        .then(|| {
+            req.output_contract
+                .as_ref()
+                .filter(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
+                .and_then(|contract| {
+                    output_artifact_payload_from_run(
+                        contract,
+                        &run.output.identified_outputs,
+                        &run.output.identified_text,
+                    )
+                })
+        })
+        .flatten();
+        Ok(ProviderRunResult {
+            status: terminal.status,
+            exit_code: None,
+            result_payload,
+            worker_ref_seed: None,
+            stream_path: None,
+            runtime_error: terminal.runtime_error,
+        })
+    }
+
+    fn run_post_turn_projection_with_callbacks(
+        &self,
+        req: WorkerInvocation,
+        live_update: Option<AcpLiveUpdate<'_>>,
+        session_update: Option<AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
+    ) -> Result<ProviderRunResult> {
+        let mut contract = req
+            .output_contract
+            .clone()
+            .expect("post-turn projection requires output contract");
+        let resumed_control_turn = matches!(
+            req.user_prompt_render_mode,
+            UserPromptRenderMode::RuntimeFinalize | UserPromptRenderMode::RuntimeRepair
+        );
+        let finalizing = post_turn_projection_is_finalizing(&req)?;
+
+        if !finalizing {
+            let work_result = self.run_worker_once_with_callbacks(
+                req.clone(),
+                live_update,
+                session_update,
+                prompt_accepted,
+            )?;
+            if work_result.runtime_error.is_some()
+                || work_result.status != ProviderRunStatus::Success
+            {
+                return Ok(work_result);
+            }
+        }
+
+        let state_path = req.attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE);
+        write_json(
+            &state_path,
+            &ArtifactEmissionState {
+                version: VERSION.to_string(),
+                phase: ArtifactEmissionPhase::Finalizing,
+            },
+        )?;
+        let worker_ref: WorkerRefState = read_json(&req.attempt_dir.join("worker-ref.json"))
+            .context("post-turn artifact finalization requires durable worker-ref")?;
+        ensure!(
+            worker_ref.supports_continue_session,
+            "post-turn artifact finalization requires a continuable provider session"
+        );
+        let continue_ref = worker_ref
+            .continue_ref
+            .context("post-turn artifact finalization requires provider continue reference")?;
+
+        let preserve_control_prompt = resumed_control_turn
+            && req
+                .resume_prompt
+                .as_deref()
+                .is_some_and(|prompt| !prompt.trim().is_empty());
+        let mut finalize_req = req;
+        contract.emission_mode = OutputEmissionMode::InlineControl;
+        finalize_req.output_contract = Some(contract.clone());
+        finalize_req.session_mode = SessionMode::Continue;
+        finalize_req.continue_ref = Some(continue_ref);
+        finalize_req.resume_prompt_visibility = PromptVisibility::Hidden;
+        finalize_req.input_attachment_paths.clear();
+        if !preserve_control_prompt {
+            finalize_req.resume_prompt = Some(render_artifact_finalize_prompt(
+                finalize_req.runtime_context.language,
+                &contract,
+            )?);
+            finalize_req.resume_prompt_id = Some(format!(
+                "artifact-finalize-{}",
+                finalize_req.runtime_context.attempt_id
+            ));
+            finalize_req.user_prompt_render_mode = UserPromptRenderMode::RuntimeFinalize;
+        }
+
+        self.run_worker_once_with_callbacks(
+            finalize_req,
+            live_update,
+            session_update,
+            prompt_accepted,
+        )
+    }
 }
 
 impl ProviderAdapter for AcpProvider {
@@ -1006,80 +1242,18 @@ impl ProviderAdapter for AcpProvider {
         session_update: Option<AcpSessionUpdate<'_>>,
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
-        let prompt = render_prompt_bundle(&req)?;
-        log_prompt_bundle(
-            &prompt,
-            req.invocation_kind,
-            req.profile.as_deref(),
-            req.output_contract
-                .as_ref()
-                .map(|contract| contract.artifact.as_str()),
-            req.cold_artifacts.len(),
-            req.cold_attachments.len(),
-            req.log_prompts,
-        );
-        let run = client::run_prompt(
-            &self.provider_id,
-            &self.adapter_config,
-            req.adapter_workspace_dir.clone(),
-            req.workspace_dir.clone(),
-            req.attempt_dir.clone(),
-            &prompt,
-            req.session_mode,
-            req.permission_mode.clone(),
-            req.model.clone(),
-            req.config_options.clone(),
-            req.continue_ref.clone(),
-            self.use_local_claude,
-            self.require_local_claude_executable,
-            self.acp_session_title_refresh_enabled,
-            self.acp_raw_max_size_bytes,
-            self.acp_raw_target_size_bytes,
-            self.runtime_policy,
-            acp_output_policy(req.output_contract.as_ref()),
-            live_update,
-            &req.mcp_servers,
-            session_update,
-            prompt_accepted,
-            Some(client::RuntimeStopProbe {
-                run_file: req.runtime_context.run_dir.join("run.json"),
-                round_id: req.runtime_context.round_id.clone(),
-                node_id: req
-                    .runtime_context
-                    .runtime_node_id
-                    .clone()
-                    .unwrap_or_else(|| req.runtime_context.node_id.clone()),
-                attempt_id: req
-                    .runtime_context
-                    .runtime_attempt_id
-                    .clone()
-                    .unwrap_or_else(|| req.runtime_context.attempt_id.clone()),
-                attempt_state_file: req.runtime_context.attempt_state_file.clone(),
-            }),
-        )?;
-        let terminal = classify_acp_prompt_run(&run);
-        let result_payload = matches!(
-            terminal.status,
-            ProviderRunStatus::Success | ProviderRunStatus::Interrupted
-        )
-        .then(|| {
-            req.output_contract.as_ref().and_then(|contract| {
-                output_artifact_payload_from_run(
-                    contract,
-                    &run.output.identified_outputs,
-                    &run.output.identified_text,
-                )
-            })
-        })
-        .flatten();
-        Ok(ProviderRunResult {
-            status: terminal.status,
-            exit_code: None,
-            result_payload,
-            worker_ref_seed: None,
-            stream_path: None,
-            runtime_error: terminal.runtime_error,
-        })
+        if req.output_contract.as_ref().is_some_and(|contract| {
+            contract.emission_mode == OutputEmissionMode::PostTurnProjection
+        }) {
+            self.run_post_turn_projection_with_callbacks(
+                req,
+                live_update,
+                session_update,
+                prompt_accepted,
+            )
+        } else {
+            self.run_worker_once_with_callbacks(req, live_update, session_update, prompt_accepted)
+        }
     }
 
     fn open_session(&self, worker_ref: &SessionRef) -> Result<()> {
@@ -1095,7 +1269,8 @@ impl ProviderAdapter for AcpProvider {
 }
 
 fn acp_output_policy(contract: Option<&PromptOutputContract>) -> client::AcpOutputPolicy {
-    if contract.is_some() {
+    if contract.is_some_and(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
+    {
         client::AcpOutputPolicy::ArtifactContract
     } else {
         client::AcpOutputPolicy::Conversation
@@ -1233,6 +1408,7 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
             }
         }
         UserPromptRenderMode::WorkflowResume
+        | UserPromptRenderMode::RuntimeFinalize
         | UserPromptRenderMode::RuntimeRepair
         | UserPromptRenderMode::UserMessage => String::new(),
     };
@@ -1277,6 +1453,11 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         } else {
             PromptVisibility::Visible
         },
+        hidden_reason: match req.user_prompt_render_mode {
+            UserPromptRenderMode::RuntimeFinalize => Some("artifactFinalize".to_string()),
+            UserPromptRenderMode::RuntimeRepair => Some("invalidOutputRepair".to_string()),
+            _ => None,
+        },
         attachment_metas,
         content_blocks,
     })
@@ -1295,7 +1476,9 @@ fn render_system_prompt(req: &WorkerInvocation) -> Result<String> {
 
 fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String {
     match req.user_prompt_render_mode {
-        UserPromptRenderMode::UserMessage | UserPromptRenderMode::RuntimeRepair => req
+        UserPromptRenderMode::UserMessage
+        | UserPromptRenderMode::RuntimeFinalize
+        | UserPromptRenderMode::RuntimeRepair => req
             .resume_prompt
             .as_deref()
             .unwrap_or_default()
@@ -1405,6 +1588,7 @@ struct RuntimePromptTemplateContext {
     extra_system_sections: Option<String>,
     profile: RuntimeProfileTemplateContext,
     output_contract: Option<RuntimeOutputContractTemplateContext>,
+    output_deferred: bool,
 }
 
 #[derive(Serialize)]
@@ -1450,9 +1634,14 @@ struct RuntimeOutputContractTemplateContext {
     kind: String,
     schema: String,
     success_condition: Option<String>,
+    finalize_context: Option<String>,
 }
 
 fn runtime_system_context(req: &WorkerInvocation) -> Result<RuntimePromptTemplateContext> {
+    let inline_output_contract = req
+        .output_contract
+        .as_ref()
+        .filter(|contract| contract.emission_mode == OutputEmissionMode::InlineControl);
     let profile_content = match req
         .profile_content
         .as_deref()
@@ -1468,7 +1657,7 @@ fn runtime_system_context(req: &WorkerInvocation) -> Result<RuntimePromptTemplat
                 content,
                 profile_template_context(
                     req.execution_surface,
-                    req.output_contract.is_some(),
+                    inline_output_contract.is_some(),
                     session_mode,
                 ),
             )?)
@@ -1489,11 +1678,26 @@ fn runtime_system_context(req: &WorkerInvocation) -> Result<RuntimePromptTemplat
             id: req.profile.clone(),
             content: profile_content,
         },
-        output_contract: req
-            .output_contract
-            .as_ref()
-            .map(runtime_output_contract_context),
+        output_contract: inline_output_contract.map(runtime_output_contract_context),
+        output_deferred: req.output_contract.as_ref().is_some_and(|contract| {
+            contract.emission_mode == OutputEmissionMode::PostTurnProjection
+        }),
     })
+}
+
+fn render_artifact_finalize_prompt(
+    language: crate::config::DesktopLanguage,
+    contract: &PromptOutputContract,
+) -> Result<String> {
+    let context = runtime_output_contract_context(contract);
+    render_template(
+        prompt_by_language(
+            language,
+            RUNTIME_ARTIFACT_FINALIZE_ZH_CN,
+            RUNTIME_ARTIFACT_FINALIZE_EN,
+        ),
+        context,
+    )
 }
 
 fn runtime_hidden_context(req: &WorkerInvocation) -> RuntimeHiddenContextTemplateContext {
@@ -1723,6 +1927,7 @@ fn runtime_output_contract_context(
             })
             .unwrap_or_else(|| "当前节点未声明结构化 schema。".to_string()),
         success_condition: contract.success_condition.clone(),
+        finalize_context: contract.finalize_context.clone(),
     }
 }
 
@@ -1858,6 +2063,81 @@ mod tests {
     use super::*;
     use crate::acp::client::AcpPromptFailure;
     use crate::runtime_error::RecoveryMode;
+
+    fn test_worker_invocation(attempt_dir: Utf8PathBuf) -> WorkerInvocation {
+        let runtime_context = PromptRuntimeContext {
+            project_id: "project-001".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "dev".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            runtime_node_id: None,
+            runtime_attempt_id: None,
+            attempt_state_file: None,
+            language: crate::config::DesktopLanguage::ZhCn,
+            run_dir: attempt_dir.join("../../.."),
+            round_dir: attempt_dir.join("../.."),
+            node_dir: attempt_dir.join(".."),
+            attempt_dir: attempt_dir.clone(),
+            attachments_dir: attempt_dir.join("attachments"),
+            task_inputs_dir: None,
+        };
+        WorkerInvocation {
+            invocation_kind: InvocationKind::WorkerGeneric,
+            prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
+            execution_surface: PromptExecutionSurface::Workflow,
+            profile: None,
+            profile_content: None,
+            profile_dynamic_template: false,
+            requirement_path: None,
+            requirement_text: Some("Need a structured result".to_string()),
+            adapter_workspace_dir: Utf8PathBuf::from("/repo"),
+            workspace_dir: Utf8PathBuf::from("/repo"),
+            attempt_dir,
+            output_contract: None,
+            runtime_context,
+            predecessors: Vec::new(),
+            new_round_trigger: None,
+            extra_system_sections: Vec::new(),
+            extra_hidden_sections: Vec::new(),
+            task_instruction: Some("Create a structured result".to_string()),
+            user_tips_instruction: None,
+            resume_task_instruction: None,
+            session_mode: SessionMode::New,
+            user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
+            permission_mode: None,
+            model: None,
+            config_options: Default::default(),
+            continue_ref: None,
+            resume_prompt: None,
+            resume_prompt_id: None,
+            resume_prompt_visibility: PromptVisibility::Visible,
+            stream_mode: StreamMode::StreamJson,
+            log_prompts: false,
+            log_provider_command: false,
+            attachments_dir: None,
+            cold_artifacts: Vec::new(),
+            cold_attachments: Vec::new(),
+            input_attachment_paths: Vec::new(),
+            mcp_servers: Vec::new(),
+        }
+    }
+
+    fn test_output_contract(emission_mode: OutputEmissionMode) -> PromptOutputContract {
+        PromptOutputContract {
+            artifact: "dynamic-node-completion".to_string(),
+            kind: "json".to_string(),
+            schema: Some(serde_json::json!({
+                "type": "object",
+                "required": ["status"]
+            })),
+            schema_text: Some("Return JSON with a required status field.".to_string()),
+            success_condition: None,
+            finalize_context: None,
+            emission_mode,
+        }
+    }
 
     #[test]
     fn every_advertised_attachment_extension_is_resolvable() {
@@ -2031,23 +2311,108 @@ mod tests {
     }
 
     #[test]
-    fn output_contract_selects_strict_policy_without_mode_or_provider_branching() {
-        let contract = PromptOutputContract {
-            artifact: "dynamic-node-completion".to_string(),
-            kind: "json".to_string(),
-            schema: None,
-            schema_text: None,
-            success_condition: None,
-        };
+    fn output_emission_mode_selects_acp_output_policy() {
+        let inline = test_output_contract(OutputEmissionMode::InlineControl);
+        let deferred = test_output_contract(OutputEmissionMode::PostTurnProjection);
 
         assert_eq!(
             acp_output_policy(None),
             client::AcpOutputPolicy::Conversation
         );
         assert_eq!(
-            acp_output_policy(Some(&contract)),
+            acp_output_policy(Some(&deferred)),
+            client::AcpOutputPolicy::Conversation
+        );
+        assert_eq!(
+            acp_output_policy(Some(&inline)),
             client::AcpOutputPolicy::ArtifactContract
         );
+    }
+
+    #[test]
+    fn post_turn_projection_hides_contract_until_hidden_finalize_turn() {
+        let mut req = test_worker_invocation(Utf8PathBuf::from("/run/attempt-001"));
+        req.output_contract = Some(test_output_contract(OutputEmissionMode::PostTurnProjection));
+
+        let business_prompt = render_prompt_bundle(&req).unwrap();
+        assert_eq!(business_prompt.visibility, PromptVisibility::Visible);
+        assert_eq!(business_prompt.hidden_reason, None);
+        assert!(business_prompt.system_prompt.contains("隐藏 finalize turn"));
+        assert!(
+            !business_prompt
+                .system_prompt
+                .contains("required status field")
+        );
+        assert!(
+            !business_prompt
+                .system_prompt
+                .contains("dynamic-node-completion")
+        );
+
+        let contract = req.output_contract.as_mut().unwrap();
+        contract.emission_mode = OutputEmissionMode::InlineControl;
+        contract.finalize_context = Some("remaining nodes: 3".to_string());
+        let finalize_prompt =
+            render_artifact_finalize_prompt(req.runtime_context.language, contract).unwrap();
+        req.session_mode = SessionMode::Continue;
+        req.user_prompt_render_mode = UserPromptRenderMode::RuntimeFinalize;
+        req.resume_prompt_visibility = PromptVisibility::Hidden;
+        req.resume_prompt = Some(finalize_prompt);
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+        assert_eq!(prompt.visibility, PromptVisibility::Hidden);
+        assert_eq!(prompt.hidden_reason.as_deref(), Some("artifactFinalize"));
+        assert!(prompt.user_prompt.contains("dynamic-node-completion"));
+        assert!(prompt.user_prompt.contains("required status field"));
+        assert!(prompt.user_prompt.contains("remaining nodes: 3"));
+        assert!(prompt.user_prompt.contains("不要继续执行任务"));
+
+        req.user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
+        assert_eq!(
+            render_prompt_bundle(&req).unwrap().hidden_reason.as_deref(),
+            Some("invalidOutputRepair")
+        );
+    }
+
+    #[test]
+    fn durable_finalizing_state_skips_the_business_phase_on_resume() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let req = test_worker_invocation(attempt_dir.clone());
+
+        assert!(!post_turn_projection_is_finalizing(&req).unwrap());
+        write_json(
+            &attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE),
+            &ArtifactEmissionState {
+                version: VERSION.to_string(),
+                phase: ArtifactEmissionPhase::Finalizing,
+            },
+        )
+        .unwrap();
+        assert!(post_turn_projection_is_finalizing(&req).unwrap());
+
+        let mut repair_req = test_worker_invocation(attempt_dir.join("repair"));
+        repair_req.user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
+        assert!(post_turn_projection_is_finalizing(&repair_req).unwrap());
+    }
+
+    #[test]
+    fn invalid_artifact_emission_state_never_replays_business_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        std::fs::write(
+            attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE),
+            "{ invalid state",
+        )
+        .unwrap();
+        let req = test_worker_invocation(attempt_dir);
+
+        let error = post_turn_projection_is_finalizing(&req).unwrap_err();
+        let info = crate::runtime_error::normalize_runtime_error(&error);
+
+        assert!(error.to_string().contains("artifact emission state"));
+        assert_eq!(info.code_str(), "runtime.artifact-emission-state-invalid");
+        assert_eq!(info.recovery, RecoveryMode::Blocked);
     }
 
     #[test]
@@ -2225,6 +2590,8 @@ mod tests {
             schema: None,
             schema_text: None,
             success_condition: None,
+            finalize_context: None,
+            emission_mode: OutputEmissionMode::InlineControl,
         };
 
         let payload = output_artifact_payload_from_run(&contract, &[], "");
@@ -2240,6 +2607,8 @@ mod tests {
             schema: None,
             schema_text: None,
             success_condition: None,
+            finalize_context: None,
+            emission_mode: OutputEmissionMode::InlineControl,
         };
         let outputs = vec![
             "planning text".to_string(),
@@ -2264,6 +2633,8 @@ mod tests {
             schema: None,
             schema_text: None,
             success_condition: None,
+            finalize_context: None,
+            emission_mode: OutputEmissionMode::InlineControl,
         };
 
         let payload = output_artifact_payload_from_run(

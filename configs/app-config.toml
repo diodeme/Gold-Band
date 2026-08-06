@@ -21,7 +21,7 @@ shellMinHeight = 680
 [workspaceLayout.rightWorkspace]
 minWidth = 320
 defaultWidth = 440
-maxWidth = 960
+maxWidth = 1440
 
 [workspaceLayout.rightWorkspace.file]
 preferredWidth = 760

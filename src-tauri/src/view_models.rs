@@ -7735,7 +7735,7 @@ mod tests {
             value["workspaceLayout"]["rightWorkspace"]["defaultWidth"],
             440
         );
-        assert_eq!(value["workspaceLayout"]["rightWorkspace"]["maxWidth"], 960);
+        assert_eq!(value["workspaceLayout"]["rightWorkspace"]["maxWidth"], 1440);
         assert_eq!(
             value["workspaceLayout"]["rightWorkspace"]["file"],
             json!({

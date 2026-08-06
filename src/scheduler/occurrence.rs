@@ -332,27 +332,39 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_error_codes_serialize_to_stable_wire_values() {
-        assert_eq!(
-            serde_json::to_string(&ScheduledErrorCode::MigrationConflict).unwrap(),
-            "\"SCHEDULED_MIGRATION_CONFLICT\""
-        );
-        assert_eq!(
-            serde_json::to_string(&ScheduledErrorCode::CoordinatorUnavailable).unwrap(),
-            "\"SCHEDULED_COORDINATOR_UNAVAILABLE\""
-        );
-        assert_eq!(
-            serde_json::to_string(&ScheduledErrorCode::PowerInhibitorFailed).unwrap(),
-            "\"SCHEDULED_POWER_INHIBITOR_FAILED\""
-        );
-        assert_eq!(
-            serde_json::to_string(&ScheduledErrorCode::NotificationFailed).unwrap(),
-            "\"SCHEDULED_NOTIFICATION_FAILED\""
-        );
-        assert_eq!(
-            serde_json::to_string(&ScheduledErrorCode::SkillValidationFailed).unwrap(),
-            "\"SCHEDULED_SKILL_VALIDATION_FAILED\""
-        );
+    fn scheduled_error_codes_round_trip_stable_wire_values() {
+        let cases = [
+            (
+                ScheduledErrorCode::MigrationConflict,
+                "SCHEDULED_MIGRATION_CONFLICT",
+            ),
+            (
+                ScheduledErrorCode::CoordinatorUnavailable,
+                "SCHEDULED_COORDINATOR_UNAVAILABLE",
+            ),
+            (
+                ScheduledErrorCode::PowerInhibitorFailed,
+                "SCHEDULED_POWER_INHIBITOR_FAILED",
+            ),
+            (
+                ScheduledErrorCode::NotificationFailed,
+                "SCHEDULED_NOTIFICATION_FAILED",
+            ),
+            (
+                ScheduledErrorCode::SkillValidationFailed,
+                "SCHEDULED_SKILL_VALIDATION_FAILED",
+            ),
+        ];
+
+        for (code, wire_code) in cases {
+            let encoded = serde_json::to_string(&code).unwrap();
+            assert_eq!(encoded, format!("\"{wire_code}\""));
+
+            let decoded: ScheduledErrorCode = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded, code);
+            assert_eq!(code.to_string(), wire_code);
+            assert_eq!(wire_code.parse::<ScheduledErrorCode>().unwrap(), code);
+        }
     }
 
     #[test]

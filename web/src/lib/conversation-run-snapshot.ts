@@ -160,21 +160,15 @@ export function mergeConversationRunSnapshot(
       ? {
           ...merged,
           selectedSession: current.selectedSession,
-          artifacts: current.artifacts,
-          attachments: current.attachments,
         }
       : {
           ...merged,
           selectedSession: null,
-          artifacts: [],
-          attachments: [],
         };
   } else if (!merged.selectedSession && selectedKey && selectedKey === currentKey && current.selectedSession) {
     merged = {
       ...merged,
       selectedSession: current.selectedSession,
-      artifacts: current.artifacts,
-      attachments: current.attachments,
     };
   }
   if (

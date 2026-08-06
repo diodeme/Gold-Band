@@ -13,8 +13,6 @@ function run(partial: Partial<ConversationRunVm> = {}): ConversationRunVm {
     sessionTree: { rounds: [], selectedSessionKey: null },
     selectedSession: null,
     activeSessions: [],
-    artifacts: [],
-    attachments: [],
     inputAttachments: [],
     workflowValid: true,
     workflowStatus: 'valid',

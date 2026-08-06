@@ -6,14 +6,16 @@
 
 ## 2. 核心交互
 
-- 右侧工作区没有 Tab 时展示“文件”入口；进入后始终以当前 `projectId` 对应的工作空间为目录根。
-- 可用宽度不少于 540px 时，左侧显示文件详情，右侧显示目录树；详情最小 280px、目录最小 200px。打开文件能力时优先请求 760px 右栏宽度，右栏最大允许扩展到 960px。空间不足时切换为“文件 / 目录”单栏，不横向压缩两个不可用面板。
-- 窗口连续缩放属于 DOM 布局热路径：外层只允许一个 `ResizeObserver` 合并到动画帧，并且只计算左/中/右可见性等离散断点；左栏与右栏跨过各自断点时立即展示或隐藏，使布局反馈始终对应当前窗口宽度。右栏可见且尚未达到用户首选宽度时，中栏使用 `preserve-pixel-size`、右栏使用 `preserve-relative-size`，由 `react-resizable-panels` 把窗口增减空间直接分配给右栏；到达首选宽度后交换所有权，中栏吸收后续窗口增量而右栏保持像素宽度。`ResizablePanel.onResize` 只把实际宽度写入 ref，并仅在“是否达到首选宽度”变化时发布一次离散 React state。因此文件区变宽和变窄都在实际宽度跨过 540px 的当帧切换单双栏，不等待松手；固定拓扑中的左栏原生展开挤压右栏时也会立即切回右栏增长状态，禁止以方向锁掩盖低于最小分栏宽度的布局。用户直接拖动右侧 separator 时临时把右栏上限解锁到配置最大宽度，结束后以新偏好重新设限。热路径禁止调用 `panel.getSize()` 或 `panel.resize()`，避免面板库布局后再被应用代码二次改写。文件面板的逐像素宽度只写 ref；React state 只发布文件区单栏/双栏等离散状态，处于同一阈值区间时不得重渲染文件详情、Markdown 编辑器或目录树。内层 ResizeObserver 只能登记后续 rAF，并在该帧重新读取最终 `clientWidth`，不能立即消费面板库重组过程中的中间宽度。文件区状态机同时接收窗口宽度方向：变宽时禁止双栏退回单栏，变窄时禁止单栏重新升级双栏；一次 shell 尺寸变化引发的后续内层回调在 120ms settle 窗口内沿用最后方向，尺寸稳定后才回到 stationary，使右侧 separator 直接拖动仍可双向切换。目录分栏宽度只在用户直接拖动内部 separator 完成后保存，窗口缩放产生的布局变化不得覆盖用户偏好。
+- 右侧工作区没有 Tab 时展示“工作空间”入口；进入后始终以当前 `projectId` 对应的项目工作空间为目录根。对于已发起且已选择运行节点的会话，入口页额外展示“运行目录”；快速对话 draft 和尚未产生运行节点的会话不展示该项。空态入口按工作区可用宽度整行展开，整行都是可点击区域，不以内容宽度收缩成胶囊卡片。存在 Tab 时，Tab 栏最左侧固定展示“新建 Tab”图标，使用 shadcn/Radix 菜单展示与空态完全相同的资源入口；选择入口后按资源稳定 key 打开或聚焦 Tab，禁止为同一资源创建重复 Tab。图标不随标签横向滚动，标签溢出菜单仍位于最右侧。溢出菜单是紧凑的单行选项列表：每项展示资源图标、截断标题和当前项勾选态，32px 行高，不使用说明文字或卡片化大间距。
+- 可用宽度不少于 500px 时，左侧显示文件详情，右侧显示目录树；详情最小 280px、目录最小 200px。该阈值由 `configs/app-config.toml` 的 `workspaceLayout.rightWorkspace.file.splitMinWidth` 配置；打开文件能力时优先请求 760px 右栏宽度，右栏最大允许扩展到 960px。空间不足时切换为“文件 / 目录”单栏，不横向压缩两个不可用面板。
+- 窗口连续缩放属于 DOM 布局热路径：外层只允许一个 `ResizeObserver` 合并到动画帧，并且只计算左/中/右可见性等离散断点；左栏与右栏跨过各自断点时立即展示或隐藏，使布局反馈始终对应当前窗口宽度。右栏可见且尚未达到用户首选宽度时，中栏使用 `preserve-pixel-size`、右栏使用 `preserve-relative-size`，由 `react-resizable-panels` 把窗口增减空间直接分配给右栏；到达首选宽度后交换所有权，中栏吸收后续窗口增量而右栏保持像素宽度。`ResizablePanel.onResize` 只把实际宽度写入 ref，并仅在“是否达到首选宽度”变化时发布一次离散 React state。因此文件区变宽和变窄都在实际宽度跨过配置化的 500px 阈值的当帧切换单双栏，不等待松手；固定拓扑中的左栏原生展开挤压右栏时也会立即切回右栏增长状态，禁止以方向锁掩盖低于最小分栏宽度的布局。用户直接拖动右侧 separator 时临时把右栏上限解锁到配置最大宽度，结束后以新偏好重新设限。热路径禁止调用 `panel.getSize()` 或 `panel.resize()`，避免面板库布局后再被应用代码二次改写。文件面板的逐像素宽度只写 ref；React state 只发布文件区单栏/双栏等离散状态，处于同一阈值区间时不得重渲染文件详情、Markdown 编辑器或目录树。内层 ResizeObserver 只能登记后续 rAF，并在该帧重新读取最终 `clientWidth`，不能立即消费面板库重组过程中的中间宽度。文件区状态机同时接收窗口宽度方向：变宽时禁止双栏退回单栏，变窄时禁止单栏重新升级双栏；一次 shell 尺寸变化引发的后续内层回调在 120ms settle 窗口内沿用最后方向，尺寸稳定后才回到 stationary，使右侧 separator 直接拖动仍可双向切换。目录分栏宽度只在用户直接拖动内部 separator 完成后保存，窗口缩放产生的布局变化不得覆盖用户偏好。
 - 左侧导航、右侧工作区 Panel 及其相邻 separator 始终保留在同一 `ResizablePanelGroup` 拓扑中，自动隐藏使用组件原生 `collapsible + collapsedSize=0`，跨断点时只执行一次 `collapse/expand`；禁止条件卸载后重新挂载，否则面板库会恢复旧的双栏或三栏布局快照并瞬间挤压已经展开的文件双栏。折叠时 separator 只切换为 disabled、透明且不可命中，Panel 内容可以随展示态卸载；紧凑右栏内容只在 Sheet 中挂载一份。
-- 目录按层懒加载，使用虚拟化树与标准键盘语义；展开目录保持当前滚动锚点，只有新选择/新定位的文件可以触发一次主动滚动。虚拟树 overscan 按实际 content-box 高度动态计算，至少保留 24 行并覆盖约两个视口，快速滚动时不得暴露尚未挂载的空窗；滚动本身不发起目录加载。搜索在 Rust 后台执行并遵守 `.gitignore`，前端只接收有限结果。匹配使用 `nucleo-matcher` 的 Unicode-aware 模糊评分，支持 `wft` 命中 `WorkspaceFileTree.tsx`；结果按“文件名完全匹配、文件名前缀、文件名模糊匹配、仅相对路径模糊匹配”分层，同层再按 Nucleo 分数、较浅路径和自然路径稳定排序。
+- 目录按层懒加载，使用虚拟化树与标准键盘语义；展开目录保持当前滚动锚点，只有新选择/新定位的文件可以触发一次主动滚动。根目录发生创建、删除或重命名时，刷新必须保留现有树实例、展开状态和滚动锚点，不能切入 loading 后重挂载并跳回顶部；只有首次加载或无可用快照时才展示 loading。虚拟树 overscan 按实际 content-box 高度动态计算，至少保留 24 行并覆盖约两个视口，快速滚动时不得暴露尚未挂载的空窗；滚动本身不发起目录加载。搜索在 Rust 后台执行并遵守 `.gitignore`，前端只接收有限结果。匹配使用 `nucleo-matcher` 的 Unicode-aware 模糊评分，支持 `wft` 命中 `WorkspaceFileTree.tsx`；结果按“文件名完全匹配、文件名前缀、文件名模糊匹配、仅相对路径模糊匹配”分层，同层再按 Nucleo 分数、较浅路径和自然路径稳定排序。
 - 目录筛选属于工作区工具栏控件，不属于 CodeMirror。它复用 shadcn/ui `Input` 的 `toolbar` 外观：静止时使用低对比度表面与边界，键盘聚焦时保留 1px 语义色焦点环和边界变化；表单输入继续使用标准的高可见焦点态，不能为了视觉弱化而全局移除无障碍焦点提示。
 - 文件和目录共用紧凑右键菜单，提供绝对路径和 `/` 分隔的工作空间相对路径复制；菜单按 LTR 优先从点击点向右展开，空间不足时允许组件进行碰撞调整。复制路径不得激活文件、切换详情或改变树布局；成功不提示，失败使用不占据文档流的浮层提示。Windows 绝对路径对客与剪贴板统一移除 `\\?\` extended-length 前缀，UNC 路径恢复为标准 `\\server\share` 格式。
-- 文件 Tab 以 `projectId + canonicalPath` 去重。再次点击同一文件的不同链接位置只更新 `target/targetRevision`，不创建重复 Tab。
+- 会话详情的右侧工作区入口页及其“新建 Tab”菜单提供独立的“运行目录”资源，并展示当前 attempt 的运行产物；会话标题栏不重复放置入口。“工作空间”资源始终只表示项目工作空间。两类资源均复用同一 `FileWorkspaceSplitLayout`，因此共享左侧文件详情、右侧目录树、窄宽度“文件 / 目录”切换和宽度响应逻辑；运行目录默认只读，避免直接修改 Agent 运行产物。两类目录树均以当前文件的 canonical path 驱动同一主题化选中态（背景、细侧标与图标色）；目录只展开或收起，不改变当前文件选中。目录、文件以及工作空间筛选结果文件共用右键菜单；除路径复制外均提供“在文件管理器中打开”。运行目录动作只接收 task/run/round/node/attempt 与相对路径，由 Rust 重新计算 attempt 根目录并拒绝越界；工作空间动作只接收 `projectId + relativePath`，由 Rust 重新解析注册的工作空间根目录。前端不传递任意本机绝对路径。
+- 单栏状态的“文件 / 目录”视图由当前选中文件的稳定 identity 驱动；无论此前是否已有文件，目录树选择新文件后都必须自动切回“文件”。用户附件的只读 CodeMirror 启用原生折行并约束内部最小宽度，长行只能在内容区内换行，不得撑宽右侧工作区。
+- 项目工作空间始终只有一个稳定的 `file-browser:<projectId>` 文件 Tab；树点击、搜索结果和会话文件链接均在该 Tab 内更新当前选中文件。`projectId + canonicalPath` 仅作为 `FileContentStore` 的文档身份；再次点击同一文件的不同链接位置只更新 `target/targetRevision`，不创建任何文件级 Tab。
 - 会话中的本地文件链接使用轻量主题底色，文件类型图标单独使用语义强调色以保证对比度；不能只依赖下划线表达可点击。路径解析得到的 `target/targetRevision` 属于绑定 `projectId + canonicalPath` 的一次定位意图：相同链接每次点击都产生新 revision。Adapter 以 `documentKey + contentRevision + 当前 EditorView ref` 判断文档实例，不得用全文字符串相等判断，因为 CodeMirror 会规范化 CRLF。`onCreateEditor` 只初始化 View 插件；外部定位必须等受控 `value` 同步后的 React effect，再在同一个 CodeMirror transaction 中提交 selection 与官方 `EditorView.scrollIntoView(range, { y: 'center' })` effect。滚动测量、虚拟高度换算与视口更新完全交给 CodeMirror，不得用 rAF/ResizeObserver 轮询、`coordsAtPos`、估算块高度或直接写 `scrollTop` 实现第二套滚动器。transaction 成功 dispatch 后按文档身份消费 revision，文件切换不能沿用其他文件的已消费 revision。
 - 工作空间外文件仅能由用户显式点击会话本地文件链接打开。详情显示不可点击的绝对路径，右侧目录树仍属于当前工作空间；文本、代码、配置和 SVG 源码允许编辑，图片保持只读。
 
@@ -22,7 +24,7 @@
 | 类别 | 内置能力 |
 |---|---|
 | 文本、日志 | CodeMirror 查看、查找、行号、换行和编辑 |
-| Markdown | 默认实时预览编辑，可切换源码模式并一键复制当前内存源码；两种模式共享源码、选区、撤销历史和自动保存队列 |
+| Markdown | 项目文件默认实时预览编辑；系统提示、用户附件、运行产物与完全新增的文件版本均复用同一 AtomEditor 查看器并固定只读。查看器可切换源码模式并一键复制当前源码；两种模式共享源码与视口状态，项目文件额外共享撤销历史和自动保存队列 |
 | 常见代码与配置 | CodeMirror 按需语言高亮；无语言包时回退纯文本 |
 | PNG、JPEG、WebP、GIF、BMP、ICO | 安全图片预览、缩放、适应窗口、原始大小和拖拽平移；GIF 支持播放/暂停，并在 reduced motion 下默认显示静态首帧 |
 | SVG | Rust 安全栅格化预览，可切换源码编辑 |
@@ -69,6 +71,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 ## 6. 领域与性能边界
 
 - `RightWorkspaceState` 只保存轻量资源 locator、Tab 与激活态。
+- 右侧工作区按生命周期拆分两个 React context：`RightWorkspaceState` 暴露 tabs、activeTab、requestedOpen、width 等可变展示状态，只供 Dock、Panel 和布局消费；`RightWorkspaceCommands` 暴露会话 scope 内引用稳定的 `openResource/getResource`。消息、Turn 文件卡片和 Markdown 文件链接只消费 commands；需要判断已打开资源时通过 `getResource(key)` 调用时读取 Store，不订阅完整 tabs 快照。
 - `FileExplorerStore` 管理树、展开状态、目录缓存、搜索请求序号和 watcher 失效刷新。
 - `FileExplorerStore` 同时区分用户滚动位置与一次性选中 reveal：侧栏收起/展开重挂载时恢复原滚动位置，同一选中路径不会再次自动居中；程序化恢复滚动不反写用户滚动快照。虚拟树高度必须使用扣除容器 padding 后的 content box，且目录树禁止横向滚动；再配合稳定 scrollbar gutter、关闭 scroll anchoring 和限制 overscroll 传播，避免底部存在被裁切的伪滚动区及随后的回弹震颤。
 - 连续缩放的可变像素值属于瞬时布局数据，不进入 `RightWorkspaceContext`、`FileExplorerStore` 的可观察快照或组件 state。标签溢出检测只观察标签条容器并按动画帧合并测量，不逐个观察所有标签子节点；只有溢出布尔值变化时才发布 React 更新。
@@ -80,6 +83,19 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 
 ## 7. 实现状态
 
+2026-08-04 修复流式会话同时浏览文件时的消息树失效：工作区 state/commands context 已分离，Markdown 文件链接 handler 不再依赖 tabs，历史 prompt-kit Markdown 增加静态 memo 边界。接口回归固定“打开并切换 15 个文件、改变右栏宽度时，命令消费者与历史 Markdown 不重渲染”，避免文件操作重新解析完整会话历史或重复创建 CodeMirror/Streamdown 子树。右侧 Tab 条的 `ResizeObserver` effect 只在执行测量时读取当前 ref，不允许闭包强持有已经 detach 的旧 tab strip DOM；cleanup 继续统一断开 observer 并取消待执行 rAF。
+
 2026-08-04 进一步收敛窗口连续缩放：移除 shell resize 热路径中的逐帧右栏 `getSize/resize` 和 `onResize` 像素跟踪，连续几何只由面板库计算；右栏可见时由其独占窗口尺寸增量，并受用户首选宽度上限约束。文件区因此在扩展和收缩时都随实际宽度即时跨过单双栏阈值，不再等待窗口拖拽结束，也不会与应用主动恢复形成双布局反馈。
 
 2026-08-03 已完成 MVP 实现，并通过 Rust 文件服务专项测试、前端全量回归、生产构建及本地真实页面的浅色、深色、双栏和窄屏验证。同日补齐桌面 bootstrap 的 `rightWorkspace/file` 配置投影与序列化契约测试，确保隐藏启动窗口不会因真实 IPC 数据缺字段导致首屏渲染中断。后续修正目录滚动锚点、内容事件导致整树刷新、右栏宽窄往返丢失偏好宽度、540px 双栏阈值、GFM 表格、紧凑排版、目录筛选工具栏焦点态、Nucleo 模糊搜索相关度及 README 安全 HTML 子集；搜索结果上限现在通过全局 Top-K 应用于全部有效候选，不再由文件系统遍历顺序决定候选集合。窗口回拉时，右栏按扣除当前可见左栏与中栏最小宽度后的真实剩余空间渐进恢复，空间足够后才恢复完整偏好宽度。若右侧文件区已经进入双栏，左侧导航必须等到恢复后仍能保住 540px 文件双栏时再出现，保证增宽过程的布局单调变化，禁止双栏闪烁或松手反跳。文件体验的第二轮收口进一步统一了低强调主题化会话文件入口、可确认的首次行号定位、32px 整行树命中区、无边框选中态和主题文件夹图标；树重挂载不再重复 reveal，底部滚动使用稳定 gutter。Markdown 改为单 View 稳定扩展模型，真实长文档表格、模式切换语义视口、README 注释和网络图片超链接由自动化契约覆盖；本地图片 preview grant 支持续期、失败保留和重新签发，正文基准字号为 14px。第三轮收口把定位意图按文档身份隔离；Markdown 相对链接统一以当前文档目录解析，响应式表格不再撑宽详情；虚拟树按 content-box 高度布局，从根因移除底部伪滚动区。第四轮根据真实反馈将模式切换锚点改为顶部逻辑块与像素偏移；行号定位删除了与 CodeMirror 竞争的外层坐标验收和手动 `scrollTop` 校正，统一由原生 `EditorView.scrollIntoView` effect 调度；README badge 严格按外层目标分流，外链接入 Tauri opener；Markdown 与源码高亮改用可读语义色，目录树选中态及 overscan 随主题和视口动态变化，并新增首次、已打开文件及重复点击同一 `#L47`、实时预览定位和四类 badge 目标的组件契约。第五轮将模式切换恢复也收敛到 CodeMirror 原生滚动 effect，移除对新 View 懒测量高度的读取、固定帧重试和手动 `scrollTop` 写入，避免渲染 → 源码 → 渲染往返时语义块向下漂移。第六轮从生命周期根因移除模式 `key` 与 EditorView 重建，改为固定扩展拓扑、显式 Compartment 原地重配置及视口图片预解码。第七轮进一步按领域生命周期拆分语言与展示 Compartment，Markdown/GFM parser 在源码/预览往返期间保持稳定，Atomic table 重新挂载时直接消费已持续解析的语法树。第八轮补齐 range widget 的双向视口映射：表格/图片内部进度映射为源码语义位置，反向切换由稳定 `scrollHandler` 在 CodeMirror 新布局测量完成后恢复块内位置，并以 1px 内缩采样消除源码行浮点边界歧义；同一 View 身份、真实 Todo 长表格往返、widget 内部进度、图片 decode 和普通语义锚点均由接口测试固化。
+
+### 2026-08-04 会话历史版本与 Diff 资源
+
+- 右侧工作区增加 `file-version`、`file-diff` 与 `conversation-asset` 三类只读资源。历史版本 key 包含 change set/change identity，同一路径不同 turn 不复用错误内容；消息附件和 artifact key 包含完整 attempt/branch locator。
+- `file-diff` 使用官方 `@codemirror/merge` 的 `unifiedMergeView`，固定只读、无 merge controls，开启 gutter、变化高亮和未修改区折叠。标题使用“本轮修改 Diff”，表明比较的是本 Prompt Turn 第一次 tool diff 的 oldText 与最后一次 tool diff 的 newText，而不是 live workspace；仅当官方 changed chunk 数量至少为 2 时展示上一处/下一处导航。viewer 必须跟随右侧工作区容器宽度并启用 `EditorView.lineWrapping`，长行在当前可视宽度内换行，不产生页面级横向滚动。普通文件与 diff 复用同一语言加载、主题和 syntax highlight extension；新增片段的主题选择器必须命中同一编辑器根节点 `&.cm-merge-b`，显式移除 merge 默认 background image，只保留实色语义背景。只读 diff/version viewer 不安装 CodeMirror 自绘 selection layer，使用应用级 `--text-selection` / `--text-selection-foreground` 原生选中态，避免 diff 标记背景遮挡深色模式选区；普通 CodeMirror 自绘选区也必须使用同一 selection token。
+- 打开 `file-diff` / `file-version` 属于普通只读浏览，即使捕获或渲染存在限制也不得显示 Tab 黄点；限制仅在 viewer 内说明。变更列表的“修改”文件图标使用主题 `gold-running` 蓝色语义 token，不使用固定琥珀色；新增/删除仍使用各自的成功/破坏性语义色。
+- ACP `oldText/newText` 必须是文件内容，不得包含 unified diff 的 `No newline at end of file` 元数据。若 provider 的后续 tool update 错把该标记混入标准文本字段，捕获层需要移除标记并恢复真实的文件末尾换行状态；已有 change set 通过 schema 迁移从 durable journal 重新生成，不把元数据伪装成普通删除/新增行。
+- 变更卡收起时只展示配置数量的预览行；展开后全部文件进入同一个 ScrollArea，预览行不得固定在滚动区外。标题固定使用“本轮变更 N 个文件”，partial 不在标题后追加告警图标。
+- `get_turn_file_change_set` 与 `get_file_comparison` 只接受受控 attempt locator、branch、changeSetId/changeId；后端校验标识符、branch ownership 和 CAS hash，不接受前端提交任意 blob 路径或 runtime 绝对路径。
+- `configs/app-config.toml` 的 `turnFiles` 统一管理卡片预览数、捕获条目/字节上限与 diff 渲染上限；CAS 不启用额外内存 blob cache，blob 生命周期跟随 attempt。
+- 未来 Git commit/tree/blob 比较继续返回同一 `FileChange/FileComparison` 前端模型并复用 unified viewer；外部 Git 命令必须通过后台进程 helper，本期不提供 Git UI。

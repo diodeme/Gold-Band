@@ -23,6 +23,7 @@ import { AvatarPreferencesProvider } from '@/components/avatar/AvatarPreferences
 import { RightWorkspaceDock } from '@/components/workspace/RightWorkspaceDock';
 import {
   agentTranscriptResourceKey,
+  conversationDirectoryWorkspaceResourceKey,
   ConversationWorkspaceStore,
   createConversationWorkspaceScope,
   RightWorkspaceProvider,
@@ -37,6 +38,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 class ControlledResizeObserver {
   static instances: ControlledResizeObserver[] = [];
   private readonly callback: ResizeObserverCallback;
+  disconnected = false;
 
   constructor(callback: ResizeObserverCallback) {
     this.callback = callback;
@@ -45,7 +47,7 @@ class ControlledResizeObserver {
 
   observe() {}
   unobserve() {}
-  disconnect() {}
+  disconnect() { this.disconnected = true; }
 
   flush(target: Element) {
     this.callback([{ target } as ResizeObserverEntry], this as unknown as ResizeObserver);
@@ -86,6 +88,30 @@ function SeedTabs({ branches }: { branches: string[] }) {
 function OpenEmptyWorkspace() {
   const workspace = useRightWorkspace();
   useEffect(() => workspace.openWorkspace(), [workspace.openWorkspace]);
+  return null;
+}
+
+function ConversationDirectoryEntry() {
+  const workspace = useRightWorkspace();
+  useEffect(() => {
+    if (!workspace.scopeKey) return;
+    workspace.setConversationDirectoryEntry({
+      kind: 'conversation-directory',
+      scopeKey: workspace.scopeKey,
+      title: '运行目录',
+      description: 'running',
+      attention: false,
+      locator: {
+        projectId: 'project-1',
+        taskId: 'task-1',
+        runId: 'run-1',
+        roundId: 'round-1',
+        nodeId: 'node-1',
+        attemptId: 'attempt-1',
+      },
+    });
+    return () => workspace.setConversationDirectoryEntry(null);
+  }, [workspace.scopeKey, workspace.setConversationDirectoryEntry]);
   return null;
 }
 
@@ -257,6 +283,44 @@ describe('right workspace DOM lifecycle', () => {
       });
       expect(container.querySelector('[data-right-workspace-empty="true"]')).not.toBeNull();
       expect(container.querySelector('[data-right-workspace-tab-strip="true"]')).toBeNull();
+      const workspaceOption = container.querySelector<HTMLElement>('[data-right-workspace-empty-option="file-browser"]');
+      expect(workspaceOption?.className).toContain('w-full');
+      expect(workspaceOption?.textContent).toContain('工作空间');
+      expect(container.querySelector('[data-right-workspace-empty-option="conversation-directory"]')).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('offers the current conversation run directory from both workspace entry surfaces', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const scope = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+    const expectedKey = conversationDirectoryWorkspaceResourceKey({
+      projectId: 'project-1', taskId: 'task-1', runId: 'run-1', roundId: 'round-1', nodeId: 'node-1', attemptId: 'attempt-1',
+    });
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider scope={scope}>
+            <OpenEmptyWorkspace />
+            <ConversationDirectoryEntry />
+            <RightWorkspaceDock />
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      const emptyOption = container.querySelector<HTMLButtonElement>('[data-right-workspace-empty-option="conversation-directory"]');
+      expect(emptyOption).not.toBeNull();
+      await act(async () => emptyOption?.click());
+      expect(container.querySelector('output')?.getAttribute('data-workspace-active-tab')).toBe(expectedKey);
+
+      const newTabMenu = container.querySelector<HTMLButtonElement>('[data-right-workspace-new-tab-menu="true"]');
+      await act(async () => {
+        newTabMenu?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));
+      });
+      expect(document.querySelector('[data-right-workspace-entry-option="conversation-directory"]')).not.toBeNull();
     } finally {
       await act(async () => root.unmount());
     }
@@ -323,23 +387,69 @@ describe('right workspace DOM lifecycle', () => {
       const tabStrip = container.querySelector<HTMLElement>('[data-right-workspace-tab-strip="true"]');
       expect(tabStrip).not.toBeNull();
       expect(container.querySelector('[data-right-workspace-overflow-menu="true"]')).toBeNull();
+      const tabStripObserver = ControlledResizeObserver.instances.at(-1);
 
       Object.defineProperties(tabStrip!, {
         clientWidth: { configurable: true, value: 180 },
         scrollWidth: { configurable: true, value: 320 },
       });
       await act(async () => {
-        ControlledResizeObserver.instances.at(-1)?.flush(tabStrip!);
+        tabStripObserver?.flush(tabStrip!);
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
-      expect(container.querySelector('[data-right-workspace-overflow-menu="true"]')).not.toBeNull();
+      const overflowMenu = container.querySelector<HTMLButtonElement>('[data-right-workspace-overflow-menu="true"]');
+      expect(overflowMenu).not.toBeNull();
+      await act(async () => {
+        overflowMenu?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));
+      });
+      const overflowList = document.querySelector<HTMLElement>('[data-right-workspace-overflow-list="true"]');
+      const overflowOptions = document.querySelectorAll<HTMLElement>('[data-right-workspace-overflow-option]');
+      expect(overflowList).not.toBeNull();
+      expect(overflowOptions).toHaveLength(2);
+      expect(overflowOptions[0]?.className).toContain('h-8');
+      expect(document.querySelectorAll('[data-right-workspace-overflow-option][aria-current="page"]')).toHaveLength(1);
 
       Object.defineProperty(tabStrip!, 'scrollWidth', { configurable: true, value: 160 });
       await act(async () => {
-        ControlledResizeObserver.instances.at(-1)?.flush(tabStrip!);
+        tabStripObserver?.flush(tabStrip!);
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
       expect(container.querySelector('[data-right-workspace-overflow-menu="true"]')).toBeNull();
+      await act(async () => root.unmount());
+      expect(ControlledResizeObserver.instances.every((observer) => observer.disconnected)).toBe(true);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('opens the same resource choices from the fixed new Tab menu and focuses the resulting Tab', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider>
+            <SeedTabs branches={['agent-a']} />
+            <RightWorkspaceDock />
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      const newTabMenu = container.querySelector<HTMLButtonElement>('[data-right-workspace-new-tab-menu="true"]');
+      expect(newTabMenu).not.toBeNull();
+      expect(newTabMenu?.nextElementSibling?.getAttribute('data-right-workspace-tab-strip')).toBe('true');
+
+      await act(async () => {
+        newTabMenu?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));
+      });
+      const filesOption = document.querySelector<HTMLElement>('[data-right-workspace-entry-option="file-browser"]');
+      expect(filesOption).not.toBeNull();
+      await act(async () => filesOption?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+      const probe = container.querySelector('output');
+      expect(probe?.getAttribute('data-workspace-tab-count')).toBe('2');
+      expect(probe?.getAttribute('data-workspace-active-tab')).toBe('file-browser:default');
     } finally {
       await act(async () => root.unmount());
     }

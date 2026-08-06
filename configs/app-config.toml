@@ -25,7 +25,7 @@ maxWidth = 960
 
 [workspaceLayout.rightWorkspace.file]
 preferredWidth = 760
-splitMinWidth = 540
+splitMinWidth = 500
 treeDefaultWidth = 280
 treeMinWidth = 200
 treeMaxWidth = 420
@@ -67,6 +67,16 @@ externalAccessGrantTtlSeconds = 1800
 markdownLivePreviewMaxChars = 200000
 markdownEmbeddedImageLimit = 100
 markdownEmbeddedImageMaxConcurrent = 4
+
+[turnFiles]
+cardPreviewLimit = 3
+captureMaxEntries = 256
+captureMaxFileBytes = 2097152
+captureMaxTotalBytes = 16777216
+diffTextMaxBytes = 2097152
+diffTextMaxLines = 100000
+blobCacheMaxBytes = 0
+blobRetentionPolicy = "attempt"
 
 [permissionModeMapping.claude-acp]
 read_only = "plan"

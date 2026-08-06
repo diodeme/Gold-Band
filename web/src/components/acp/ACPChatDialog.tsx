@@ -1,13 +1,10 @@
 import {
-  forwardRef,
   createContext,
   memo,
-  startTransition,
   type AnimationEvent,
   useCallback,
   useContext,
   useEffect,
-  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useReducer,
@@ -22,11 +19,9 @@ import {
   CircleStop,
   Clock,
   FileText,
-  FolderOpen,
   Image as ImageIcon,
   ListTodo,
   Loader2,
-  Paperclip,
   Search,
   Send,
   ShieldQuestion,
@@ -46,7 +41,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -62,7 +56,11 @@ import {
   ChainOfThoughtText,
   ChainOfThoughtTrigger,
 } from "@/components/prompt-kit/chain-of-thought";
-import { type ChatContainerContext } from "@/components/prompt-kit/chat-container";
+import {
+  type ChatContainerContentExpansionToken,
+  type ChatContainerContext,
+  useOptionalChatContainerContentExpansion,
+} from "@/components/prompt-kit/chat-container";
 import { ConversationViewport } from "@/components/conversation/ConversationViewport";
 import { InterventionLayer } from "@/components/conversation/InterventionLayer";
 import { Markdown } from "@/components/prompt-kit/markdown";
@@ -77,14 +75,14 @@ import { cn } from "@/lib/utils";
 import {
   acpAttemptWorkspaceResourceKey,
   agentTranscriptResourceKey,
-  useOptionalRightWorkspace,
+  conversationAssetWorkspaceResourceKey,
+  useOptionalRightWorkspaceCommands,
   type AcpAttemptWorkspaceLocator,
   type AgentTranscriptLocator,
 } from "@/components/workspace/right-workspace-context";
 import { formatTokenCount } from "@/lib/format-token";
 import { agentIconClass, agentIconSrc } from "@/lib/agent-icons";
 import { EditableConversationTitle } from "@/components/conversation/EditableConversationTitle";
-import { loadArtifactMarkdownRender, saveArtifactMarkdownRender } from "@/lib/artifact-markdown-pref";
 import {
   loadSystemPromptViewMode,
   saveSystemPromptViewMode,
@@ -93,6 +91,7 @@ import {
 import { goldThemedScrollbarClassName } from "@/lib/themed-scrollbar";
 import { BoundedLruCache } from "@/lib/bounded-lru-cache";
 import {
+  AcpLatestWinsEventBuffer,
   decideAcpLiveEventFlush,
   isAcpLiveToolEvent,
   isAcpTextStreamEventKind,
@@ -113,10 +112,6 @@ import {
   messageAttachmentPreviewsFromRaw,
   type MessageAttachmentPreview,
 } from "@/lib/asset-preview";
-import {
-  createAcpSessionAssetPanelViewModel,
-  type AcpSessionAssetPanelItem,
-} from "@/lib/acp-session-assets-panel";
 import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-service";
 import { AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
 import { AcpConversationComposer } from "@/components/conversation/AcpConversationComposer";
@@ -126,6 +121,12 @@ import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { AcpAvatar, AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
 import { AcpUsagePanel } from "@/components/acp/AcpUsagePanel";
 import { HiddenPromptMessageContent } from "@/components/acp/HiddenPromptMessageContent";
+import { WorkspaceFileEditor } from "@/components/workspace/files/WorkspaceFileEditor";
+import {
+  DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT,
+  TurnFileCardPreviewLimitContext,
+  TurnFileChangesCard,
+} from "@/components/acp/TurnFileChangesCard";
 import {
   ElicitationCard,
   type ElicitationSchema,
@@ -203,8 +204,6 @@ import type {
   AcpSessionVm,
   AcpUiEventVm,
   AcpUsageVm,
-  AssetItemVm,
-  ContentVm,
   ConversationAttemptLifecycleVm,
 } from "@/types";
 
@@ -230,14 +229,9 @@ export type AcpRuntimeComposerContext = {
   onRepair?: () => void;
 };
 
-export interface ACPChatDialogHandle {
-  openArtifactsDialog: (asset?: AssetItemVm) => void;
-}
-
 export interface AcpDirectSessionHeaderProps {
   title: string;
   onTitleChange?: (title: string) => void;
-  onOpenInFileManager?: () => void;
 }
 
 interface ACPChatDialogProps {
@@ -269,12 +263,9 @@ interface ACPChatDialogProps {
   onAtBottomChange?: (atBottom: boolean) => void;
   allowEventOnlySessionShell?: boolean;
   showInitializingSessionShell?: boolean;
-  artifacts?: AssetItemVm[];
-  attachments?: AssetItemVm[];
-  allArtifacts?: AssetItemVm[];
-  allAttachments?: AssetItemVm[];
   usageCompact?: boolean;
   cacheNamespace?: string;
+  turnFileCardPreviewLimit?: number;
 }
 
 type AcpCanvasMode = "chat" | "raw";
@@ -403,15 +394,10 @@ export const ACP_SYSTEM_PROMPT_DIALOG_LAYOUT = {
     "max-h-[86vh] gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55 flex flex-col sm:max-w-5xl",
   headerClassName: "shrink-0 border-b px-5 py-4",
   scrollContainerClassName: goldThemedScrollbarClassName(
-    "min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-scroll",
+    "min-h-0 min-w-0 flex-1 overflow-hidden",
   ),
-  bodyClassName: "min-w-0 max-w-full space-y-3 px-5 pb-5 pt-4 pr-6",
-  toolbarClassName:
-    "flex min-h-8 min-w-0 flex-wrap items-center justify-between gap-3",
-  renderedPromptClassName:
-    "w-full min-w-0 max-w-full overflow-x-hidden rounded-xl border bg-muted/20 p-4 text-foreground/90 [overflow-wrap:anywhere]",
-  promptClassName:
-    "w-full min-w-0 max-w-full overflow-x-hidden rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-all [overflow-wrap:anywhere]",
+  bodyClassName: "relative h-full min-h-0 min-w-0 max-w-full",
+  attemptSelectorClassName: "absolute left-2 top-2 z-30",
 } as const;
 
 function timelineEventKey(event: AcpTimelineItem | AcpUiEventVm) {
@@ -613,10 +599,7 @@ export function loadedEventBufferLimit(eventPageSize: number) {
   );
 }
 
-export const ACPChatDialog = forwardRef<
-  ACPChatDialogHandle,
-  ACPChatDialogProps
->(function ACPChatDialog(
+export function ACPChatDialog(
   {
     session,
     projectId,
@@ -646,17 +629,13 @@ export const ACPChatDialog = forwardRef<
     onAtBottomChange,
     allowEventOnlySessionShell = true,
     showInitializingSessionShell = false,
-    artifacts = [],
-    attachments = [],
-    allArtifacts,
-    allAttachments,
     usageCompact,
     cacheNamespace,
-  },
-  ref,
+    turnFileCardPreviewLimit = DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT,
+  }: ACPChatDialogProps,
 ) {
   const { t } = useTranslation();
-  const rightWorkspace = useOptionalRightWorkspace();
+  const rightWorkspace = useOptionalRightWorkspaceCommands();
   const effectiveEventPageSize = normalizeEventPageSize(eventPageSize);
   const branchId = requestedBranchId ?? session?.branchId ?? 'root';
   const attemptWorkspaceLocator = useMemo<AcpAttemptWorkspaceLocator>(() => ({
@@ -780,18 +759,6 @@ export const ACPChatDialog = forwardRef<
   const [queuedInterventionPrompt, setQueuedInterventionPrompt] = useState<
     string | null
   >(null);
-  const [artifactsDialogOpen, setArtifactsDialogOpen] = useState(false);
-  const [selectedArtifact, setSelectedArtifact] = useState<AssetItemVm | null>(
-    null,
-  );
-  const [artifactContent, setArtifactContent] = useState<ContentVm | null>(
-    null,
-  );
-  const [artifactLoading, setArtifactLoading] = useState(false);
-  const [messageImagePreview, setMessageImagePreview] = useState<{
-    name: string;
-    src: string;
-  } | null>(null);
   const {
     attachments: pendingAttachments,
     fileError,
@@ -827,14 +794,14 @@ export const ACPChatDialog = forwardRef<
   const configGenerationRef = useRef(0);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const paginationAnchorRef = useRef<{ key: string; top: number } | null>(null);
-  const pendingLiveEventsRef = useRef<Map<string, AcpUiEventVm>>(new Map());
+  const pendingLiveEventsRef = useRef(new AcpLatestWinsEventBuffer<AcpUiEventVm>());
   const liveEventFlushTimerRef = useRef<number | null>(null);
   const liveUpdatesDeferredUntilRef = useRef(0);
   const liveUpdatesPausedRef = useRef(false);
   const liveBeforeReadyLogCountRef = useRef(0);
   const sessionPropSyncIdentityRef = useRef(eventWindowKey);
   const sessionResetIdentityRef = useRef(eventWindowKey);
-  const liveUpdatesPaused = Boolean(externalLiveUpdatesPaused || systemPromptOpen || artifactsDialogOpen);
+  const liveUpdatesPaused = Boolean(externalLiveUpdatesPaused || systemPromptOpen);
   liveUpdatesPausedRef.current = liveUpdatesPaused;
 
   const updateOptimisticEvents = (
@@ -1153,96 +1120,6 @@ export const ACPChatDialog = forwardRef<
   const streamingMarkdownItemKey = sessionActive
     ? latestStreamingMarkdownItemKeyFromEvents(effectiveEvents)
     : null;
-  const handleOpenArtifactDetail = useCallback(
-    async (asset: AssetItemVm) => {
-      setArtifactsDialogOpen(true);
-      setSelectedArtifact(asset);
-      setArtifactContent(null);
-      setArtifactLoading(true);
-      try {
-        let content: ContentVm;
-        if (asset.kind === "input-attachment") {
-          content = await showConversationAttachment(projectId, taskId, asset.name);
-        } else {
-          const loader =
-            asset.kind === "attachment" ? showAttachment : showArtifact;
-          const assetOuterNodeId =
-            outerNodeId && outerAttemptId ? outerNodeId : undefined;
-          const assetOuterAttemptId =
-            outerNodeId && outerAttemptId ? outerAttemptId : undefined;
-          content = await loader(
-            projectId,
-            taskId,
-            runId,
-            asset.roundId || roundId,
-            asset.nodeId,
-            asset.attemptId,
-            asset.name,
-            assetOuterNodeId,
-            assetOuterAttemptId,
-          );
-        }
-        setArtifactContent(content);
-      } catch {
-        setArtifactContent(null);
-      } finally {
-        setArtifactLoading(false);
-      }
-    },
-    [projectId, taskId, runId, roundId],
-  );
-
-  const handleArtifactsDialogOpenChange = useCallback((open: boolean) => {
-    setArtifactsDialogOpen(open);
-    if (!open) {
-      setSelectedArtifact(null);
-      setArtifactContent(null);
-      setArtifactLoading(false);
-    }
-  }, []);
-
-  const loadMessageAttachmentContent = useCallback(
-    (attachment: MessageAttachmentPreview) =>
-      isTaskInputMessageAttachment(attachment)
-        ? showConversationAttachment(projectId, taskId, attachment.name)
-        : showConversationMessageAttachment(
-            projectId,
-            taskId,
-            runId,
-            roundId,
-            nodeId,
-            attemptId,
-            attachment.name,
-            attachment.path,
-            outerNodeId,
-            outerAttemptId,
-          ),
-    [
-      attemptId,
-      nodeId,
-      outerAttemptId,
-      outerNodeId,
-      projectId,
-      roundId,
-      runId,
-      taskId,
-    ],
-  );
-
-  const messageAttachmentAsset = useCallback(
-    (attachment: MessageAttachmentPreview): AssetItemVm => ({
-      kind: isTaskInputMessageAttachment(attachment) ? 'input-attachment' : 'message-attachment',
-      name: attachment.name,
-      title: attachment.name,
-      tone: 'neutral',
-      preview: '',
-      roundId,
-      nodeId,
-      attemptId,
-    }),
-    [attemptId, nodeId, roundId],
-  );
-
   const messageAttachmentLocator = useMemo<MessageAttachmentLocator>(
     () => ({
       projectId,
@@ -1267,56 +1144,25 @@ export const ACPChatDialog = forwardRef<
   );
 
   const handleOpenMessageAttachment = useCallback(
-    async (attachment: MessageAttachmentPreview) => {
-      const asset = messageAttachmentAsset(attachment);
-      if (isImageMessageAttachment(attachment)) {
-        try {
-          const content = await loadMessageAttachmentContent(attachment);
-          const src = imageSrcFromContent(content);
-          if (src) {
-            setMessageImagePreview({ name: attachment.name, src });
-            return;
-          }
-          setArtifactsDialogOpen(true);
-          setSelectedArtifact(asset);
-          setArtifactContent(content);
-          setArtifactLoading(false);
-          return;
-        } catch {
-          setArtifactsDialogOpen(true);
-          setSelectedArtifact(asset);
-          setArtifactContent(null);
-          setArtifactLoading(false);
-          return;
-        }
-      }
-      setArtifactsDialogOpen(true);
-      setSelectedArtifact(asset);
-      setArtifactContent(null);
-      setArtifactLoading(true);
-      try {
-        setArtifactContent(await loadMessageAttachmentContent(attachment));
-      } catch {
-        setArtifactContent(null);
-      } finally {
-        setArtifactLoading(false);
-      }
+    (attachment: MessageAttachmentPreview) => {
+      if (!rightWorkspace?.scopeKey) return;
+      const assetKind = isTaskInputMessageAttachment(attachment)
+        ? 'input-attachment' as const
+        : 'message-attachment' as const;
+      void rightWorkspace.openResource({
+        kind: 'conversation-asset',
+        key: conversationAssetWorkspaceResourceKey(assetKind, attemptWorkspaceLocator, attachment.name, attachment.path),
+        scopeKey: rightWorkspace.scopeKey,
+        title: attachment.name,
+        description: attachment.path,
+        attention: false,
+        locator: attemptWorkspaceLocator,
+        assetKind,
+        name: attachment.name,
+        path: attachment.path,
+      });
     },
-    [loadMessageAttachmentContent, messageAttachmentAsset],
-  );
-
-  useImperativeHandle(
-    ref,
-    () => ({
-      openArtifactsDialog: (asset?: AssetItemVm) => {
-        if (asset) {
-          handleOpenArtifactDetail(asset);
-        } else {
-          setArtifactsDialogOpen(true);
-        }
-      },
-    }),
-    [handleOpenArtifactDetail],
+    [attemptWorkspaceLocator, rightWorkspace],
   );
 
 
@@ -1672,23 +1518,18 @@ export const ACPChatDialog = forwardRef<
     applyEventUpdates([event]);
   }, [applyEventUpdates]);
 
-  const flushPendingLiveEvents = useCallback((priority: "sync" | "transition" = "transition") => {
+  const flushPendingLiveEvents = useCallback(() => {
     if (liveEventFlushTimerRef.current !== null) {
       window.clearTimeout(liveEventFlushTimerRef.current);
       liveEventFlushTimerRef.current = null;
     }
-    const updates = [...pendingLiveEventsRef.current.values()];
-    pendingLiveEventsRef.current.clear();
+    const updates = pendingLiveEventsRef.current.drain();
     if (updates.length === 0) return;
-    if (priority === "sync") {
-      applyEventUpdates(updates);
-      return;
-    }
     const { timingUpdates, timelineUpdates } = partitionAcpLiveTimingUpdates(updates);
     if (timingUpdates.length > 0) applyEventUpdates(timingUpdates);
-    if (timelineUpdates.length > 0) {
-      startTransition(() => applyEventUpdates(timelineUpdates));
-    }
+    // The timer and latest-wins map are the single flight. Publishing synchronously
+    // here prevents React from retaining obsolete cumulative snapshots in transitions.
+    if (timelineUpdates.length > 0) applyEventUpdates(timelineUpdates);
   }, [applyEventUpdates]);
 
   const liveFlushDeferRemainingMs = useCallback(() => (
@@ -1717,10 +1558,10 @@ export const ACPChatDialog = forwardRef<
     schedule(delayMs);
   }, [flushPendingLiveEvents, liveFlushDeferRemainingMs]);
 
-  const flushOrSchedulePendingLiveEvents = useCallback((priority: "sync" | "transition" = "transition") => {
+  const flushOrSchedulePendingLiveEvents = useCallback((immediate = false) => {
     if (pendingLiveEventsRef.current.size === 0 || liveUpdatesPausedRef.current) return;
-    if (priority === "sync") {
-      flushPendingLiveEvents("sync");
+    if (immediate) {
+      flushPendingLiveEvents();
       return;
     }
     const deferRemainingMs = liveFlushDeferRemainingMs();
@@ -1728,7 +1569,7 @@ export const ACPChatDialog = forwardRef<
       schedulePendingLiveFlush(deferRemainingMs);
       return;
     }
-    flushPendingLiveEvents(priority);
+    flushPendingLiveEvents();
   }, [flushPendingLiveEvents, liveFlushDeferRemainingMs, schedulePendingLiveFlush]);
 
   const deferPendingLiveFlush = useCallback((durationMs = LIVE_EVENT_INTERACTION_QUIET_MS) => {
@@ -1790,14 +1631,14 @@ export const ACPChatDialog = forwardRef<
           ? mergeAcpLiveToolEvent(pendingToolEvent, event, mergeRaw)
           : event;
         if (bufferedToolKey) pendingLiveEventsRef.current.delete(bufferedToolKey);
-        if (decision.flushPendingBeforeApply) flushPendingLiveEvents("sync");
+        if (decision.flushPendingBeforeApply) flushPendingLiveEvents();
         applyEventUpdate(eventToApply);
         return;
       }
 
       if (!decision.buffer) return;
       const bufferKey = liveEventBufferKey(event);
-      pendingLiveEventsRef.current.set(
+      pendingLiveEventsRef.current.replace(
         bufferKey,
         mergeBufferedLiveEvent(pendingLiveEventsRef.current.get(bufferKey), event),
       );
@@ -1961,7 +1802,7 @@ export const ACPChatDialog = forwardRef<
           }
           enqueueLiveEventUpdate(event.event);
         } else {
-          flushOrSchedulePendingLiveEvents("sync");
+          flushOrSchedulePendingLiveEvents(true);
           if (branchId !== 'root') {
             void getAcpSession(
               projectId,
@@ -2082,7 +1923,7 @@ export const ACPChatDialog = forwardRef<
         refreshSeq,
         hadStopListening: Boolean(stopListening),
       });
-      flushPendingLiveEvents("sync");
+      flushPendingLiveEvents();
       active = false;
       stopListening?.();
       if (liveEventFlushTimerRef.current !== null) {
@@ -2547,7 +2388,7 @@ export const ACPChatDialog = forwardRef<
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
       applySessionUpdate(result.session ?? null);
-      flushPendingLiveEvents("sync");
+      flushPendingLiveEvents();
       setStopCommandPending(false);
       setPromptCommandPending(false);
       setSending(false);
@@ -2889,17 +2730,8 @@ export const ACPChatDialog = forwardRef<
   );
 
   return (
-    <AcpBranchLocatorContext.Provider value={{
-      projectId,
-      taskId,
-      runId,
-      roundId,
-      nodeId,
-      attemptId,
-      outerNodeId,
-      outerAttemptId,
-      branchId,
-    }}>
+    <TurnFileCardPreviewLimitContext.Provider value={turnFileCardPreviewLimit}>
+    <AcpBranchLocatorContext.Provider value={attemptWorkspaceLocator}>
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-background" data-conversation-branch-id={branchId}>
       <ACPSessionHeader
         session={effective}
@@ -2927,24 +2759,6 @@ export const ACPChatDialog = forwardRef<
         prompt={effective.systemPromptAppend}
         options={systemPromptOptions}
         onOpenChange={setSystemPromptOpen}
-      />
-      <ACPArtifactsDialog
-        open={artifactsDialogOpen}
-        artifacts={artifacts}
-        attachments={attachments}
-        selectedArtifact={selectedArtifact}
-        artifactContent={artifactContent}
-        artifactLoading={artifactLoading}
-        onOpenChange={handleArtifactsDialogOpenChange}
-        onOpenDetail={handleOpenArtifactDetail}
-        onBack={() => {
-          setSelectedArtifact(null);
-          setArtifactContent(null);
-        }}
-      />
-      <MessageImagePreviewDialog
-        preview={messageImagePreview}
-        onClose={() => setMessageImagePreview(null)}
       />
       {visibleError ? <AcpErrorBanner reason={visibleError} /> : null}
       <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
@@ -3064,11 +2878,6 @@ export const ACPChatDialog = forwardRef<
       </div>
       {canvasMode === "chat" ? (
         <div className="shrink-0 bg-background/95 backdrop-blur">
-          <AcpSessionAssetsPanel
-            artifacts={allArtifacts ?? artifacts}
-            attachments={allAttachments ?? attachments}
-            onOpenDetail={handleOpenArtifactDetail}
-          />
           {todoEntries.length > 0 ? (
             <div className="px-4">
               <AcpTodoPanel entries={todoEntries} />
@@ -3169,8 +2978,9 @@ export const ACPChatDialog = forwardRef<
       />
     </div>
     </AcpBranchLocatorContext.Provider>
+    </TurnFileCardPreviewLimitContext.Provider>
   );
-});
+}
 
 function AcpErrorState({ reason }: { reason: string }) {
   return (
@@ -3779,22 +3589,6 @@ export function ACPSessionHeader({
               {t("acp.rawFrames")}
             </Button>
           ) : null}
-          {directSessionHeader?.onOpenInFileManager ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-5.5"
-                  aria-label={t("conversation.runtime.openInFileManager")}
-                  onClick={directSessionHeader.onOpenInFileManager}
-                >
-                  <FolderOpen className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{t("conversation.runtime.openInFileManager")}</TooltipContent>
-            </Tooltip>
-          ) : null}
         </div>
       </div>
     </div>
@@ -3919,10 +3713,17 @@ export const SystemPromptPanel = memo(function SystemPromptPanel({
   useEffect(() => setSelectedAttemptId(latestAttemptId), [latestAttemptId]);
   const selectedPrompt = availableOptions.find((option) => option.attemptId === selectedAttemptId)?.prompt;
   const content = (selectedPrompt ?? prompt)?.trim() || "";
+  const onMarkdownModeChange = (mode: "source" | "live-preview") => {
+    const nextMode = mode === "live-preview"
+      ? SYSTEM_PROMPT_VIEW_MODES.rendered
+      : SYSTEM_PROMPT_VIEW_MODES.raw;
+    setViewMode(nextMode);
+    saveSystemPromptViewMode(nextMode);
+  };
   return (
     <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.scrollContainerClassName} data-right-workspace-resource="system-prompt">
       <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.bodyClassName}>
-        <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.toolbarClassName}>
+        <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.attemptSelectorClassName}>
           {availableOptions.length > 1 ? (
             <Select value={selectedAttemptId ?? availableOptions[0]?.attemptId} onValueChange={setSelectedAttemptId}>
               <SelectTrigger className="h-8 w-[220px] max-w-full"><SelectValue /></SelectTrigger>
@@ -3932,326 +3733,32 @@ export const SystemPromptPanel = memo(function SystemPromptPanel({
                 ))}
               </SelectContent>
             </Select>
-          ) : <span />}
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span>{t("acp.renderMarkdown")}</span>
-            <Switch
-              checked={viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered}
-              onCheckedChange={(rendered) => {
-                const nextMode = rendered ? SYSTEM_PROMPT_VIEW_MODES.rendered : SYSTEM_PROMPT_VIEW_MODES.raw;
-                setViewMode(nextMode);
-                saveSystemPromptViewMode(nextMode);
-              }}
-              aria-label={t("acp.renderMarkdown")}
-            />
-          </div>
+          ) : null}
         </div>
         {content ? (
-          viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered ? (
-            <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.renderedPromptClassName}><Markdown>{content}</Markdown></div>
-          ) : (
-            <pre className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.promptClassName}>{content}</pre>
-          )
+          <WorkspaceFileEditor
+            documentKey={`system-prompt:${selectedAttemptId ?? "current"}`}
+            value={content}
+            editable={false}
+            language="markdown"
+            highlight
+            contentRevision={0}
+            target={null}
+            targetRevision={0}
+            onChange={() => undefined}
+            onSave={() => undefined}
+            initialStateJson={null}
+            onPersistState={() => undefined}
+            markdownMode={viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered ? "live-preview" : "source"}
+            onMarkdownModeChange={onMarkdownModeChange}
+          />
         ) : (
-          <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">{t("acp.systemPromptEmpty")}</div>
+          <div className="flex h-full items-center justify-center p-5"><div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">{t("acp.systemPromptEmpty")}</div></div>
         )}
       </div>
     </div>
   );
 });
-
-function ACPArtifactsDialog({
-  open,
-  artifacts,
-  attachments,
-  selectedArtifact,
-  artifactContent,
-  artifactLoading,
-  onOpenChange,
-  onOpenDetail,
-  onBack,
-}: {
-  open: boolean;
-  artifacts: AssetItemVm[];
-  attachments: AssetItemVm[];
-  selectedArtifact: AssetItemVm | null;
-  artifactContent: ContentVm | null;
-  artifactLoading: boolean;
-  onOpenChange: (open: boolean) => void;
-  onOpenDetail: (asset: AssetItemVm) => void;
-  onBack: () => void;
-}) {
-  const { t } = useTranslation();
-  const [renderMarkdown, setRenderMarkdown] = useState<boolean>(() =>
-    loadArtifactMarkdownRender(),
-  );
-  const allAssets = [
-    ...artifacts.map((a) => ({ ...a, kind: "artifact" as const })),
-    ...attachments.map((a) => ({ ...a, kind: "attachment" as const })),
-  ];
-
-  if (selectedArtifact) {
-    const imagePreviewSrc = imageSrcFromContent(artifactContent);
-    return (
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent
-          overlayClassName="bg-black/16 backdrop-blur-md"
-          className="max-h-[86vh] max-w-4xl gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55 flex flex-col"
-        >
-          <DialogHeader className="border-b border-border/40 px-5 py-4">
-            <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 gap-1.5 px-2 text-xs"
-                onClick={onBack}
-              >
-                <ChevronDown className="size-3 rotate-90" />
-                {t("common.back")}
-              </Button>
-              <DialogTitle className="truncate text-base">
-                {selectedArtifact.title}
-              </DialogTitle>
-            </div>
-          </DialogHeader>
-          {!artifactLoading && artifactContent && !imagePreviewSrc ? (
-            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/40 px-5 py-2.5 text-xs text-muted-foreground">
-              <div className="flex items-center gap-2">
-                <Badge
-                  variant="secondary"
-                  className="rounded-full px-2.5 text-[11px]"
-                >
-                  {selectedArtifact.kind}
-                </Badge>
-                <span>{artifactContent.kind}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span>{t("acp.renderMarkdown")}</span>
-                <Switch
-                  checked={renderMarkdown}
-                  onCheckedChange={(next) => {
-                    setRenderMarkdown(next);
-                    saveArtifactMarkdownRender(next);
-                  }}
-                  aria-label={t("acp.renderMarkdown")}
-                />
-              </div>
-            </div>
-          ) : null}
-          <div className="gold-themed-scrollbar min-h-0 flex-1 overflow-auto p-5">
-            {artifactLoading ? (
-              <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
-                <Loader2 className="mr-2 size-4 animate-spin" />
-                {t("common.loading")}
-              </div>
-            ) : artifactContent ? (
-              imagePreviewSrc ? (
-                <div className="flex max-h-[64vh] items-center justify-center overflow-hidden rounded-xl border border-border/45 bg-black/5 p-2">
-                  <img
-                    src={imagePreviewSrc}
-                    alt={selectedArtifact.title}
-                    draggable={false}
-                    className="max-h-[60vh] max-w-full object-contain"
-                  />
-                </div>
-              ) : renderMarkdown ? (
-                <div className="rounded-xl border bg-muted/20 p-4">
-                  <Markdown>{artifactContent.content}</Markdown>
-                </div>
-              ) : (
-                <pre className="rounded-xl border bg-muted/20 p-4 font-sans text-xs leading-5 text-foreground/85 whitespace-pre-wrap break-words">
-                  {artifactContent.content}
-                </pre>
-              )
-            ) : (
-              <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-center text-sm text-muted-foreground">
-                {t("common.empty")}
-              </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
-    );
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        overlayClassName="bg-black/16 backdrop-blur-md"
-        className="max-h-[86vh] max-w-lg gap-4 overflow-hidden border-border/50 bg-background/68 p-0 shadow-xl shadow-black/10 supports-[backdrop-filter]:bg-background/55 flex flex-col"
-      >
-        <DialogHeader className="border-b px-5 py-4">
-          <DialogTitle className="text-base">
-            {t("acp.artifactsTitle")}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="gold-themed-scrollbar min-h-0 flex-1 space-y-3 overflow-auto px-5 pb-5">
-          {attachments.length > 0 ? (
-            <section className="space-y-2">
-              <div className="flex items-center justify-between gap-3">
-                <h3 className="text-sm font-semibold">
-                  {t("acp.attachments")}
-                </h3>
-                <Badge variant="secondary" className="rounded-full px-2.5">
-                  {attachments.length}
-                </Badge>
-              </div>
-              <div className="space-y-1.5">
-                {attachments.map((item) => (
-                  <Button
-                    key={`attachment-${item.name}`}
-                    variant="outline"
-                    className="h-10 w-full justify-start gap-3 rounded-lg border-border/45 bg-background/34 px-3 text-left shadow-none hover:bg-background/42"
-                    onClick={() => onOpenDetail(item)}
-                  >
-                    <Badge
-                      variant="secondary"
-                      className="shrink-0 rounded-full px-2.5 text-[11px]"
-                    >
-                      {item.kind}
-                    </Badge>
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                      {item.title}
-                    </span>
-                  </Button>
-                ))}
-              </div>
-            </section>
-          ) : null}
-          {artifacts.length > 0 ? (
-            <section className="space-y-2">
-              <div className="flex items-center justify-between gap-3">
-                <h3 className="text-sm font-semibold">{t("acp.artifacts")}</h3>
-                <Badge variant="secondary" className="rounded-full px-2.5">
-                  {artifacts.length}
-                </Badge>
-              </div>
-              <div className="space-y-1.5">
-                {artifacts.map((item) => (
-                  <Button
-                    key={`artifact-${item.name}`}
-                    variant="outline"
-                    className="h-10 w-full justify-start gap-3 rounded-lg border-border/45 bg-background/34 px-3 text-left shadow-none hover:bg-background/42"
-                    onClick={() => onOpenDetail(item)}
-                  >
-                    <Badge
-                      variant="secondary"
-                      className="shrink-0 rounded-full px-2.5 text-[11px]"
-                    >
-                      {item.kind}
-                    </Badge>
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                      {item.title}
-                    </span>
-                  </Button>
-                ))}
-              </div>
-            </section>
-          ) : null}
-          {allAssets.length === 0 ? (
-            <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-center text-sm text-muted-foreground">
-              {t("common.empty")}
-            </div>
-          ) : null}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function AcpSessionAssetsPanel({
-  artifacts,
-  attachments,
-  onOpenDetail,
-}: {
-  artifacts: AssetItemVm[];
-  attachments: AssetItemVm[];
-  onOpenDetail: (asset: AssetItemVm) => void;
-}) {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-
-  const vm = createAcpSessionAssetPanelViewModel(artifacts, attachments);
-
-  if (vm.totalCount === 0) return null;
-
-  return (
-    <div className="px-4 pt-1.5">
-      <Collapsible
-        open={open}
-        onOpenChange={setOpen}
-        className="w-full border border-b-0 border-border/60 bg-card/60"
-      >
-        <CollapsibleTrigger asChild>
-          <Button
-            variant="ghost"
-            className="h-auto w-full justify-between rounded-none border-0 px-3 py-2 font-normal shadow-none hover:bg-transparent focus-visible:border-transparent focus-visible:ring-0"
-          >
-            <span className="flex min-w-0 items-center gap-2 text-xs">
-              <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="text-muted-foreground">
-                {t("acp.artifactsTitle")}
-              </span>
-              <span className="flex min-w-0 items-center gap-1.5 truncate font-medium text-foreground">
-                {vm.summaryParts.map((part) => (
-                  <span key={part.kind} className="shrink-0">
-                    {part.kind === "artifact"
-                      ? t("acp.assetSummaryArtifact", { count: part.count })
-                      : t("acp.assetSummaryAttachment", { count: part.count })}
-                  </span>
-                ))}
-              </span>
-            </span>
-            <ChevronDown
-              className={cn(
-                "size-3.5 shrink-0 text-muted-foreground transition-transform",
-                !open && "rotate-180",
-              )}
-            />
-          </Button>
-        </CollapsibleTrigger>
-        <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden">
-          <div className="space-y-1 border-t border-border/40 px-3 pb-2 pt-2">
-            {vm.items.map((item) => (
-              <AcpSessionAssetPanelRow
-                key={`${item.kind}-${item.name}`}
-                item={item}
-                onOpenDetail={onOpenDetail}
-              />
-            ))}
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
-    </div>
-  );
-}
-
-function AcpSessionAssetPanelRow({
-  item,
-  onOpenDetail,
-}: {
-  item: AcpSessionAssetPanelItem;
-  onOpenDetail: (asset: AssetItemVm) => void;
-}) {
-  const { t } = useTranslation();
-  const Icon = item.kind === "artifact" ? FileText : Paperclip;
-
-  return (
-    <button
-      type="button"
-      className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted/45"
-      onClick={() => onOpenDetail(item)}
-    >
-      <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1 truncate font-medium text-foreground">
-        {item.title || item.name}
-      </span>
-      <span className="shrink-0 text-muted-foreground">
-        {item.kind === "artifact" ? t("acp.artifacts") : t("acp.attachments")}
-      </span>
-    </button>
-  );
-}
 
 export function ACPMessageList({
   timeline,
@@ -4344,6 +3851,7 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   onMessageAttachmentClick?: (att: MessageAttachmentPreview) => void;
   nested?: boolean;
 }) {
+  const branchLocator = useContext(AcpBranchLocatorContext);
   if (isAgentLink(event))
     return nested ? (
       <AgentLinkRow event={event} />
@@ -4356,6 +3864,8 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
     return <AttemptSeparator event={event} />;
   if (event.kind === "contextCompaction")
     return <ContextCompactionRow event={event} />;
+  if (event.kind === "fileChangeSet")
+    return <TurnFileChangesCard event={event} locator={branchLocator} />;
   if (isActivityBatch(event))
     return (
       <AcpActivityBatchRow
@@ -4453,7 +3963,7 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
 const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink }) {
   const { t } = useTranslation();
   const branchLocator = useContext(AcpBranchLocatorContext);
-  const workspace = useOptionalRightWorkspace();
+  const workspace = useOptionalRightWorkspaceCommands();
   const liveSnapshot = useConversationBranchLiveSnapshot(
     branchLocator ?? { projectId: 'unavailable', taskId: '', runId: '', roundId: '', nodeId: '', attemptId: '' },
     event.agentExecutionId,
@@ -4595,26 +4105,48 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
 }) {
   const { t } = useTranslation();
   const branchLocator = useContext(AcpBranchLocatorContext);
+  const contentExpansion = useOptionalChatContainerContentExpansion();
   const [open, setOpen] = useState(false);
   const [auditEvents, setAuditEvents] = useState(() => event.events.filter(isVisibleActivityAuditEvent));
+  const initialDetailComplete = hasCompleteLocalActivityDetail(event);
+  const loadedDetailCursorsRef = useRef(new Set<string>(
+    initialDetailComplete ? [activityDetailRequestKey(event, null)] : [],
+  ));
   const [detailLoaded, setDetailLoaded] = useState(
-    () => event.events.length > 0 || !event.detailAvailable,
+    initialDetailComplete,
   );
   const [hasMoreEarlier, setHasMoreEarlier] = useState(event.hasMoreEarlier);
   const [earlierCursor, setEarlierCursor] = useState(event.earlierCursor ?? null);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const detailRequestInFlightRef = useRef(false);
-  const loadedDetailCursorsRef = useRef(new Set<string>());
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const disclosureTokenRef = useRef<ChatContainerContentExpansionToken | null>(null);
+  const contentExpansionRef = useRef(contentExpansion);
+  contentExpansionRef.current = contentExpansion;
   const summary = activityBatchSummary(event, t);
+  useEffect(() => () => {
+    const token = disclosureTokenRef.current;
+    disclosureTokenRef.current = null;
+    if (token !== null) contentExpansionRef.current?.endContentExpansion(token);
+  }, []);
   useEffect(() => {
     setAuditEvents((current) => mergeAcpEvents(current, event.events.filter(isVisibleActivityAuditEvent)) as AcpTimelineEvent[]);
     setHasMoreEarlier((current) => current || event.hasMoreEarlier);
     setEarlierCursor((current) => current ?? event.earlierCursor ?? null);
   }, [event.earlierCursor, event.events, event.hasMoreEarlier]);
+  useEffect(() => {
+    const latestDetailLoaded = loadedDetailCursorsRef.current.has(
+      activityDetailRequestKey(event, null),
+    );
+    setDetailLoaded(
+      !event.detailAvailable
+      || auditEvents.length >= event.totalEventCount
+      || latestDetailLoaded,
+    );
+  }, [auditEvents.length, event.activityEndSeq, event.activityStartSeq, event.detailAvailable, event.totalEventCount]);
   const loadDetail = async (cursor: string | null) => {
-    const requestKey = cursor ?? 'latest';
+    const requestKey = activityDetailRequestKey(event, cursor);
     if (
       !branchLocator
       || detailRequestInFlightRef.current
@@ -4653,14 +4185,28 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
       setLoadingEarlier(false);
     }
   };
+  const handleOpenChange = (next: boolean) => {
+    let restoringBottom = false;
+    if (next) {
+      disclosureTokenRef.current = contentExpansion?.beginContentExpansion() ?? null;
+    } else {
+      const token = disclosureTokenRef.current;
+      disclosureTokenRef.current = null;
+      restoringBottom = contentExpansion?.endContentExpansion(token) ?? false;
+    }
+    setOpen(next);
+    if (next && !detailLoaded && event.detailAvailable) void loadDetail(null);
+    if (!next && !restoringBottom) {
+      requestAnimationFrame(() => {
+        triggerRef.current?.scrollIntoView?.({ block: "nearest" });
+      });
+    }
+  };
   return (
     <AssistantTimelineRow timestamp={event.timestamp} nested={nested}>
       <Collapsible
         open={open}
-        onOpenChange={(next) => {
-          setOpen(next);
-          if (next && !detailLoaded && event.detailAvailable) void loadDetail(null);
-        }}
+        onOpenChange={handleOpenChange}
         className="min-w-0 max-w-full"
       >
         <CollapsibleTrigger asChild>
@@ -4738,14 +4284,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
                   variant="ghost"
                   size="sm"
                   className="acp-activity-collapse-button h-7 gap-1.5 px-2 text-xs font-normal text-muted-foreground hover:bg-muted/40 hover:text-foreground"
-                  onClick={() => {
-                    setOpen(false);
-                    requestAnimationFrame(() => {
-                      triggerRef.current?.scrollIntoView?.({
-                        block: "nearest",
-                      });
-                    });
-                  }}
+                  onClick={() => handleOpenChange(false)}
                 >
                   <ChevronDown className="size-3.5 rotate-180" aria-hidden="true" />
                   {t("acp.activityCollapse")}
@@ -4772,6 +4311,16 @@ const ActivityAuditEvent = memo(function ActivityAuditEvent({
 
 function isVisibleActivityAuditEvent(event: AcpTimelineEvent) {
   return event.kind !== "permissionRequest" && event.kind !== "activitySummary";
+}
+
+function hasCompleteLocalActivityDetail(event: AcpActivityBatch) {
+  if (!event.detailAvailable) return true;
+  const localEventCount = event.events.filter(isVisibleActivityAuditEvent).length;
+  return localEventCount >= event.totalEventCount;
+}
+
+function activityDetailRequestKey(event: AcpActivityBatch, cursor: string | null) {
+  return `${event.activityStartSeq}:${event.activityEndSeq}:${cursor ?? 'latest'}`;
 }
 
 function activityBatchSummary(
@@ -4901,6 +4450,8 @@ const MessageBubble = memo(function MessageBubble({
   nested?: boolean;
 }) {
   const { t } = useTranslation();
+  const branchLocator = useContext(AcpBranchLocatorContext);
+  const workspace = useOptionalRightWorkspaceCommands();
   const isUser = event.kind === "userTextDelta";
   const failed = event.status === "failed";
   const streamingDraft =
@@ -4915,6 +4466,20 @@ const MessageBubble = memo(function MessageBubble({
     ? runtimeControlParts.visibleText
     : (event.content ?? "");
   const showMessageBubble = isUser || streamingDraft || messageText.trim().length > 0;
+  const openArtifact = useCallback((name: string) => {
+    if (!branchLocator || !workspace?.scopeKey) return;
+    void workspace.openResource({
+      kind: 'conversation-asset',
+      key: conversationAssetWorkspaceResourceKey('artifact', branchLocator, name),
+      scopeKey: workspace.scopeKey,
+      title: name,
+      description: null,
+      attention: false,
+      locator: branchLocator,
+      assetKind: 'artifact',
+      name,
+    });
+  }, [branchLocator, workspace]);
   return (
     <Message
       data-acp-message-row={isUser ? "user" : "assistant"}
@@ -4954,7 +4519,10 @@ const MessageBubble = memo(function MessageBubble({
           </MessageContent>
         ) : null}
         {runtimeControlParts.display ? (
-          <RuntimeControlOutputCard display={runtimeControlParts.display} />
+          <RuntimeControlOutputCard
+            display={runtimeControlParts.display}
+            onOpenArtifact={branchLocator && workspace?.scopeKey ? openArtifact : undefined}
+          />
         ) : null}
         {hasAttachments ? (
           <div className={cn("flex max-w-full flex-col gap-2 px-1", isUser && "items-end")}>
@@ -5019,8 +4587,10 @@ const MessageBubble = memo(function MessageBubble({
 
 const RuntimeControlOutputCard = memo(function RuntimeControlOutputCard({
   display,
+  onOpenArtifact,
 }: {
   display: RuntimeControlOutputDisplay;
+  onOpenArtifact?: (name: string) => void;
 }) {
   const { t } = useTranslation();
   const jsonText = display.jsonText ?? "";
@@ -5045,37 +4615,49 @@ const RuntimeControlOutputCard = memo(function RuntimeControlOutputCard({
           : "border-primary/20 bg-primary/5",
       )}
     >
-      <CollapsibleTrigger asChild>
-        <Button
-          variant="ghost"
-          className={cn(
-            "group h-9 w-full min-w-0 justify-between rounded-none px-3 py-1.5 text-left font-normal",
-            isInvalid ? "hover:bg-destructive/10" : "hover:bg-primary/10",
-          )}
-        >
-          <span className="flex min-w-0 items-center gap-2 overflow-hidden">
-            <span
-              className={cn(
-                "flex size-6 shrink-0 items-center justify-center rounded-md",
-                isInvalid
-                  ? "bg-destructive/10 text-destructive"
-                  : "bg-primary/10 text-primary",
-              )}
-            >
-              <Icon className="size-3.5" />
+      <div className="flex min-w-0 items-stretch">
+        <CollapsibleTrigger asChild>
+          <Button
+            variant="ghost"
+            className={cn(
+              "group h-9 min-w-0 flex-1 justify-between rounded-none px-3 py-1.5 text-left font-normal",
+              isInvalid ? "hover:bg-destructive/10" : "hover:bg-primary/10",
+            )}
+          >
+            <span className="flex min-w-0 items-center gap-2 overflow-hidden">
+              <span
+                className={cn(
+                  "flex size-6 shrink-0 items-center justify-center rounded-md",
+                  isInvalid
+                    ? "bg-destructive/10 text-destructive"
+                    : "bg-primary/10 text-primary",
+                )}
+              >
+                <Icon className="size-3.5" />
+              </span>
+              <span className="truncate text-sm font-medium text-foreground">
+                {t("acp.runtimeControlTitle")}
+              </span>
+              <span className="shrink-0 text-xs text-muted-foreground">·</span>
+              <span className="truncate text-xs text-muted-foreground">{subtitle}</span>
             </span>
-            <span className="truncate text-sm font-medium text-foreground">
-              {t("acp.runtimeControlTitle")}
-            </span>
-            <span className="shrink-0 text-xs text-muted-foreground">·</span>
-            <span className="truncate text-xs text-muted-foreground">
-              {subtitle}
-              {display.artifactName ? ` · ${display.artifactName}` : ""}
-            </span>
-          </span>
-          <ChevronDown className="ml-2 size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
-        </Button>
-      </CollapsibleTrigger>
+            <ChevronDown className="ml-2 size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+          </Button>
+        </CollapsibleTrigger>
+        {display.artifactName && onOpenArtifact ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-9 min-w-0 max-w-48 shrink-0 gap-1.5 rounded-none border-l border-border/50 px-2.5 text-xs font-normal"
+            title={display.artifactName}
+            onClick={() => onOpenArtifact(display.artifactName!)}
+          >
+            <FileText className="size-3.5 shrink-0" />
+            <span className="truncate">{display.artifactName}</span>
+          </Button>
+        ) : null}
+      </div>
       <CollapsibleContent
         className={cn(
           "border-t bg-background/60 px-3 py-2",
@@ -5208,34 +4790,6 @@ const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewBut
       <FileText className="size-3 text-muted-foreground" />
       <span className="max-w-[120px] truncate">{attachment.name}</span>
     </button>
-  );
-});
-
-const MessageImagePreviewDialog = memo(function MessageImagePreviewDialog({
-  preview,
-  onClose,
-}: {
-  preview: { name: string; src: string } | null;
-  onClose: () => void;
-}) {
-  return (
-    <Dialog open={Boolean(preview)} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent
-        showCloseButton={false}
-        overlayClassName="bg-black/70"
-        className="!w-auto !max-w-[calc(100vw-4rem)] !gap-0 border-0 bg-transparent p-0 shadow-none sm:!max-w-[calc(100vw-4rem)]"
-      >
-        <DialogTitle className="sr-only">{preview?.name ?? 'Image Preview'}</DialogTitle>
-        {preview ? (
-          <img
-            src={preview.src}
-            alt={preview.name}
-            draggable={false}
-            className="block max-h-[calc(100vh-4rem)] max-w-[calc(100vw-4rem)] object-contain"
-          />
-        ) : null}
-      </DialogContent>
-    </Dialog>
   );
 });
 

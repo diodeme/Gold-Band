@@ -711,7 +711,60 @@ pub struct ProjectAppConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_files: Option<WorkspaceFilesConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_files: Option<TurnFilesConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode_mapping: Option<BTreeMap<String, BTreeMap<String, String>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnFilesConfig {
+    pub card_preview_limit: usize,
+    pub capture_max_entries: usize,
+    pub capture_max_file_bytes: usize,
+    pub capture_max_total_bytes: usize,
+    pub diff_text_max_bytes: usize,
+    pub diff_text_max_lines: usize,
+    pub blob_cache_max_bytes: usize,
+    pub blob_retention_policy: TurnFileBlobRetentionPolicy,
+}
+
+impl Default for TurnFilesConfig {
+    fn default() -> Self {
+        Self {
+            card_preview_limit: 3,
+            capture_max_entries: 256,
+            capture_max_file_bytes: 2 * 1024 * 1024,
+            capture_max_total_bytes: 16 * 1024 * 1024,
+            diff_text_max_bytes: 2 * 1024 * 1024,
+            diff_text_max_lines: 100_000,
+            blob_cache_max_bytes: 0,
+            blob_retention_policy: TurnFileBlobRetentionPolicy::Attempt,
+        }
+    }
+}
+
+impl TurnFilesConfig {
+    fn normalized(self) -> Self {
+        Self {
+            card_preview_limit: self.card_preview_limit.max(1),
+            capture_max_entries: self.capture_max_entries.max(1),
+            capture_max_file_bytes: self.capture_max_file_bytes.max(1),
+            capture_max_total_bytes: self
+                .capture_max_total_bytes
+                .max(self.capture_max_file_bytes),
+            diff_text_max_bytes: self.diff_text_max_bytes.max(1),
+            diff_text_max_lines: self.diff_text_max_lines.max(1),
+            blob_cache_max_bytes: self.blob_cache_max_bytes,
+            blob_retention_policy: self.blob_retention_policy,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TurnFileBlobRetentionPolicy {
+    Attempt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -821,7 +874,7 @@ impl Default for FileWorkspaceLayoutConfig {
     fn default() -> Self {
         Self {
             preferred_width: 760,
-            split_min_width: 620,
+            split_min_width: 500,
             tree_default_width: 280,
             tree_min_width: 220,
             tree_max_width: 420,
@@ -972,6 +1025,7 @@ pub struct RuntimeConfig {
     pub notification_auto_dismiss_target_secs: u64,
     pub workspace_layout: WorkspaceLayoutConfig,
     pub workspace_files: WorkspaceFilesConfig,
+    pub turn_files: TurnFilesConfig,
     pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub provider_diagnostics: BTreeMap<String, ProviderDiagnosticSnapshot>,
@@ -1017,6 +1071,7 @@ impl Default for RuntimeConfig {
             notification_auto_dismiss_target_secs: DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS,
             workspace_layout: WorkspaceLayoutConfig::default(),
             workspace_files: WorkspaceFilesConfig::default(),
+            turn_files: TurnFilesConfig::default(),
             permission_mode_mapping: BTreeMap::new(),
             provider_diagnostics: BTreeMap::new(),
         };
@@ -1155,6 +1210,9 @@ impl RuntimeConfig {
         if let Some(workspace_files) = &app_config.workspace_files {
             self.workspace_files = workspace_files.clone().normalized();
         }
+        if let Some(turn_files) = app_config.turn_files {
+            self.turn_files = turn_files.normalized();
+        }
         if let Some(ref mapping) = app_config.permission_mode_mapping {
             self.permission_mode_mapping = mapping.clone();
         }
@@ -1194,7 +1252,7 @@ mod tests {
         ConversationRunModeEntry, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
         DesktopUpdateBadgeState, MANAGED_AGENT_PRESETS, ManagedAgentConfig, ManagedAgentId,
         ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
-        WorkspaceLayoutConfig, managed_agent_preset,
+        TurnFilesConfig, WorkspaceLayoutConfig, managed_agent_preset,
     };
     use std::collections::BTreeMap;
     use std::str::FromStr;
@@ -1389,6 +1447,10 @@ mod tests {
             acp_session_idle_ttl_secs: Some(900),
             acp_max_idle_session_runtimes: Some(12),
             acp_timeline_compact_patch_ratio: Some(6),
+            turn_files: Some(TurnFilesConfig {
+                card_preview_limit: 5,
+                ..TurnFilesConfig::default()
+            }),
             ..Default::default()
         };
         let json = serde_json::to_string_pretty(&app_config).unwrap();
@@ -1401,6 +1463,7 @@ mod tests {
         assert_eq!(roundtripped.acp_session_idle_ttl_secs, Some(900));
         assert_eq!(roundtripped.acp_max_idle_session_runtimes, Some(12));
         assert_eq!(roundtripped.acp_timeline_compact_patch_ratio, Some(6));
+        assert_eq!(roundtripped.turn_files.unwrap().card_preview_limit, 5);
     }
 
     #[test]

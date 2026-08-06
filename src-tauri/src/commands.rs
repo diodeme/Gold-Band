@@ -8,6 +8,9 @@ use gold_band::acp::permission::{
     PendingPermissionState, cancel_pending_permission_requests,
     write_permission_response_if_pending,
 };
+use gold_band::acp::turn_files::{
+    CHANGE_SET_NOT_FOUND, TurnFileChangeSet, TurnFileStore, VERSION_NOT_FOUND,
+};
 use gold_band::app::{
     AcpTurnOutcome, App, AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError,
     ProfileEntry, ProfileInput, ProfileList, RuntimeInterventionKind, RuntimeLifecycleEvent,
@@ -20,6 +23,7 @@ use gold_band::runtime::{NodeState, RunState, WorkerRefState};
 use gold_band::skill::SkillCommandError;
 use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
+use std::path::{Component, Path, PathBuf};
 use std::{collections::BTreeSet, str::FromStr, sync::Arc, time::Instant};
 
 use camino::Utf8PathBuf;
@@ -2121,6 +2125,101 @@ pub fn get_acp_session(
     result
 }
 
+#[tauri::command]
+pub fn get_turn_file_change_set(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    branch_id: String,
+    change_set_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<TurnFileChangeSet> {
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id).map_err(|_| {
+        CommandErrorVm::new("turn-files.version-access-denied", serde_json::json!({}))
+    })?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let store = TurnFileStore::new(locator.attempt_dir(&app), app.config.turn_files.into());
+    let change_set = store
+        .load_change_set(&change_set_id)
+        .map_err(turn_file_command_error)?;
+    if change_set.branch_id != branch_id {
+        return Err(CommandErrorVm::new(
+            "turn-files.version-access-denied",
+            serde_json::json!({}),
+        ));
+    }
+    Ok(change_set)
+}
+
+#[tauri::command]
+pub fn get_file_comparison(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    branch_id: String,
+    change_set_id: String,
+    change_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<gold_band::acp::turn_files::FileComparison> {
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id).map_err(|_| {
+        CommandErrorVm::new("turn-files.version-access-denied", serde_json::json!({}))
+    })?;
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let store = TurnFileStore::new(locator.attempt_dir(&app), app.config.turn_files.into());
+    let change_set = store
+        .load_change_set(&change_set_id)
+        .map_err(turn_file_command_error)?;
+    if change_set.branch_id != branch_id {
+        return Err(CommandErrorVm::new(
+            "turn-files.version-access-denied",
+            serde_json::json!({}),
+        ));
+    }
+    store
+        .comparison(&change_set_id, &change_id)
+        .map_err(turn_file_command_error)
+}
+
+fn turn_file_command_error(error: anyhow::Error) -> CommandErrorVm {
+    let message = error.to_string();
+    let code = if message.starts_with(VERSION_NOT_FOUND) {
+        VERSION_NOT_FOUND
+    } else if message.starts_with("turn-files.blob-corrupted") {
+        "turn-files.blob-corrupted"
+    } else {
+        CHANGE_SET_NOT_FOUND
+    };
+    CommandErrorVm::new(code, serde_json::json!({}))
+}
+
 fn log_acp_session_command_stage(
     trace_id: Option<&str>,
     branch_id: &str,
@@ -4172,6 +4271,192 @@ pub fn open_in_file_manager(
             serde_json::json!({ "message": e }),
         )
     })
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationDirectoryInput {
+    pub project_id: Option<String>,
+    pub task_id: String,
+    pub run_id: String,
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+    pub outer_node_id: Option<String>,
+    pub outer_attempt_id: Option<String>,
+    #[serde(default)]
+    pub relative_path: String,
+}
+
+fn conversation_directory_path(
+    input: &ConversationDirectoryInput,
+    state: &DesktopState,
+) -> CommandResult<PathBuf> {
+    let app = resolve_command_app(state, input.project_id.as_deref())?;
+    let root = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (&input.outer_node_id, &input.outer_attempt_id)
+    {
+        app.paths.dynamic_node_attempt_dir(
+            &input.task_id,
+            &input.run_id,
+            &input.round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &input.node_id,
+            &input.attempt_id,
+        )
+    } else {
+        app.paths.attempt_dir(
+            &input.task_id,
+            &input.run_id,
+            &input.round_id,
+            &input.node_id,
+            &input.attempt_id,
+        )
+    };
+    let root = std::fs::canonicalize(root.as_std_path()).map_err(|error| {
+        CommandErrorVm::new(
+            "conversation-directory.not-found",
+            serde_json::json!({ "reason": error.to_string() }),
+        )
+    })?;
+    let relative = Path::new(&input.relative_path);
+    if input.relative_path.contains('\0')
+        || relative.components().any(|part| {
+            matches!(
+                part,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(CommandErrorVm::new(
+            "conversation-directory.path-outside-root",
+            serde_json::json!({ "path": input.relative_path }),
+        ));
+    }
+    let path = std::fs::canonicalize(root.join(relative)).map_err(|error| {
+        CommandErrorVm::new(
+            "conversation-directory.not-found",
+            serde_json::json!({ "reason": error.to_string() }),
+        )
+    })?;
+    path.starts_with(&root).then_some(path).ok_or_else(|| {
+        CommandErrorVm::new(
+            "conversation-directory.path-outside-root",
+            serde_json::json!({ "path": input.relative_path }),
+        )
+    })
+}
+
+#[tauri::command]
+pub async fn list_conversation_directory(
+    state: State<'_, DesktopState>,
+    input: ConversationDirectoryInput,
+) -> CommandResult<Vec<crate::workspace_files::WorkspaceDirectoryEntryVm>> {
+    let path = conversation_directory_path(&input, state.inner())?;
+    let root = conversation_directory_path(
+        &ConversationDirectoryInput {
+            relative_path: String::new(),
+            ..input.clone()
+        },
+        state.inner(),
+    )?;
+    spawn_blocking_command(move || list_conversation_directory_entries(&root, &path)).await
+}
+
+#[tauri::command]
+pub async fn open_conversation_directory_path_in_file_manager(
+    state: State<'_, DesktopState>,
+    input: ConversationDirectoryInput,
+) -> CommandResult<()> {
+    let path = conversation_directory_path(&input, state.inner())?;
+    spawn_blocking_command(move || {
+        let display_path = path.to_string_lossy();
+        let display_path = display_path.strip_prefix(r"\\?\").unwrap_or(&display_path);
+        gold_band::process::background_command("explorer.exe")
+            .arg(format!("/select,{display_path}"))
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| {
+                CommandErrorVm::new(
+                    "conversation-directory.file-manager-open-failed",
+                    serde_json::json!({ "reason": error.to_string() }),
+                )
+            })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn read_conversation_directory_file(
+    state: State<'_, DesktopState>,
+    runtime: State<'_, crate::workspace_files::WorkspaceFileRuntime>,
+    input: ConversationDirectoryInput,
+) -> CommandResult<crate::workspace_files::WorkspaceFileSnapshotVm> {
+    let path = conversation_directory_path(&input, state.inner())?;
+    let root = conversation_directory_path(
+        &ConversationDirectoryInput {
+            relative_path: String::new(),
+            ..input.clone()
+        },
+        state.inner(),
+    )?;
+    let project_id = input.project_id.unwrap_or_else(|| "default".to_owned());
+    let runtime = runtime.inner().clone();
+    spawn_blocking_command(move || {
+        crate::workspace_files::read_file_from_directory_root(project_id, root, path, runtime)
+    })
+    .await
+}
+
+fn list_conversation_directory_entries(
+    root: &Path,
+    directory: &Path,
+) -> CommandResult<Vec<crate::workspace_files::WorkspaceDirectoryEntryVm>> {
+    let mut entries = std::fs::read_dir(directory)
+        .map_err(|error| {
+            CommandErrorVm::new(
+                "conversation-directory.read-failed",
+                serde_json::json!({ "reason": error.to_string() }),
+            )
+        })?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let metadata = entry.metadata().ok()?;
+            let canonical_path = std::fs::canonicalize(&path).ok()?;
+            let relative_path = canonical_path
+                .strip_prefix(root)
+                .ok()?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let kind = if metadata.is_dir() {
+                "directory"
+            } else if metadata.is_file() {
+                "file"
+            } else {
+                return None;
+            };
+            Some(crate::workspace_files::WorkspaceDirectoryEntryVm {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                relative_path,
+                canonical_path: canonical_path.to_string_lossy().into_owned(),
+                kind: kind.to_owned(),
+                has_children: metadata.is_dir(),
+                byte_length: metadata.is_file().then_some(metadata.len()),
+                modified_at_ns: metadata
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|time| time.as_nanos().to_string()),
+            })
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        (left.kind != "directory", left.name.to_lowercase())
+            .cmp(&(right.kind != "directory", right.name.to_lowercase()))
+    });
+    Ok(entries)
 }
 
 #[tauri::command]

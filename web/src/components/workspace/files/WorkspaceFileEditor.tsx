@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CodeMirror, { basicSetup, type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { historyField } from '@codemirror/commands';
-import { foldGutter, HighlightStyle, syntaxHighlighting } from '@codemirror/language';
+import { foldGutter } from '@codemirror/language';
 import { highlightSelectionMatches } from '@codemirror/search';
 import { Compartment, EditorSelection, EditorState, Prec, type Extension } from '@codemirror/state';
 import {
@@ -11,7 +11,6 @@ import {
   keymap,
   lineNumbers,
 } from '@codemirror/view';
-import { tags } from '@lezer/highlight';
 import { Check, Code2, Copy, Eye } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -36,6 +35,11 @@ import {
   type MarkdownTableRowViewportAnchor,
 } from './markdown-table-viewport';
 import '@atomic-editor/editor/styles.css';
+import {
+  loadWorkspaceLanguage,
+  workspaceEditorTheme,
+  workspaceSyntaxHighlighting,
+} from './editor-extensions';
 
 interface WorkspaceFileEditorProps {
   documentKey: string;
@@ -95,40 +99,6 @@ function sameMarkdownImagePreviewProfile(
   return left?.images === right.images
     && left.onPreviewError === right.onPreviewError
     && left.onLinkClick === right.onLinkClick;
-}
-
-const workspaceEditorTheme = EditorView.theme({
-  '&': { height: '100%', backgroundColor: 'transparent', color: 'var(--foreground)' },
-  '.cm-scroller': { fontFamily: 'var(--font-mono, ui-monospace)', fontSize: '12px', lineHeight: '1.6' },
-  '.cm-content': { padding: '12px 0' },
-  '.cm-gutters': { backgroundColor: 'transparent', color: 'var(--muted-foreground)', borderRight: '1px solid color-mix(in srgb, var(--border) 55%, transparent)' },
-  '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: 'color-mix(in srgb, var(--muted) 35%, transparent)' },
-  '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'color-mix(in srgb, var(--primary) 20%, transparent)' },
-  '&.cm-focused': { outline: 'none' },
-});
-
-const workspaceHighlightStyle = HighlightStyle.define([
-  { tag: [tags.comment, tags.lineComment, tags.blockComment, tags.docComment], color: 'var(--muted-foreground)', fontStyle: 'italic' },
-  { tag: [tags.meta, tags.processingInstruction, tags.punctuation], color: 'var(--muted-foreground)' },
-  { tag: [tags.keyword, tags.controlKeyword, tags.operatorKeyword, tags.modifier], color: 'var(--gold-running)' },
-  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.labelName], color: 'var(--gold-running)' },
-  { tag: [tags.string, tags.special(tags.string), tags.regexp, tags.escape], color: 'var(--gold-success)' },
-  { tag: [tags.number, tags.bool, tags.null, tags.atom], color: 'var(--gold-warning)' },
-  { tag: [tags.invalid, tags.deleted], color: 'var(--gold-danger)' },
-  { tag: [tags.heading, tags.strong], color: 'var(--foreground)', fontWeight: '600' },
-  { tag: tags.emphasis, fontStyle: 'italic' },
-  { tag: [tags.link, tags.url], color: 'var(--gold-running)', textDecoration: 'underline' },
-]);
-
-async function loadLanguage(language: string | null): Promise<Extension | null> {
-  if (!language) return null;
-  const { languages } = await import('@codemirror/language-data');
-  const normalized = language.toLowerCase();
-  const description = languages.find((candidate) => (
-    candidate.name.toLowerCase() === normalized
-    || candidate.alias.some((alias) => alias.toLowerCase() === normalized)
-  ));
-  return description ? description.load() : null;
 }
 
 export function captureEditorViewportAnchor(view: EditorView): EditorViewportAnchor {
@@ -388,7 +358,7 @@ export function WorkspaceFileEditor({
       setLanguageExtensionRevision((revision) => revision + 1);
       return () => { active = false; };
     }
-    void loadLanguage(language).then((extension) => {
+    void loadWorkspaceLanguage(language).then((extension) => {
       if (active) {
         setLanguageExtension(extension);
         setLanguageExtensionRevision((revision) => revision + 1);
@@ -445,7 +415,7 @@ export function WorkspaceFileEditor({
       searchKeymap: true,
     }),
     workspaceEditorTheme,
-    syntaxHighlighting(workspaceHighlightStyle),
+    workspaceSyntaxHighlighting,
     EditorView.lineWrapping,
     EditorView.scrollHandler.of((view, range, options) => {
       const anchor = pendingViewportRestoreRef.current;

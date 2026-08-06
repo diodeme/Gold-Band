@@ -1,6 +1,6 @@
 import type { ConversationAutoConfigVm, ConversationDirectConfigVm, ConversationRunModeVm } from '@/types';
 
-export const DEFAULT_CONVERSATION_RUN_MODE: ConversationRunModeVm = { mode: 'auto' };
+export const DEFAULT_CONVERSATION_RUN_MODE: ConversationRunModeVm = { mode: 'direct' };
 export const DEFAULT_WORKFLOW_TEMPLATE_ID = 'default';
 export const CONVERSATION_RUN_MODE_ORDER: ConversationRunModeVm['mode'][] = ['direct', 'workflow', 'auto'];
 export type ConversationRunModesByWorkspace = Record<string, ConversationRunModeVm>;

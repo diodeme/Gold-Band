@@ -121,8 +121,6 @@ function run(overrides: Partial<ConversationRunVm> = {}, attempts = [leaf('runni
       sessionId: null,
       startedAt: selectedAttempt.startedAt,
     }],
-    artifacts: [],
-    attachments: [],
     inputAttachments: [],
     workflowStatus: 'valid',
     workflowValid: true,
@@ -515,8 +513,6 @@ describe('mergeConversationRunSnapshot', () => {
 
     expect(merged.sessionTree.selectedSessionKey).toBe('round-001/dev/attempt-002');
     expect(merged.selectedSession).toBeNull();
-    expect(merged.artifacts).toEqual([]);
-    expect(merged.attachments).toEqual([]);
   });
 
   it('preserves selected session payload when same-key refresh omits it', () => {
@@ -599,8 +595,6 @@ describe('mergeConversationRunSnapshot', () => {
     }, [acceptAttempt, devAttempt]);
     const incoming = run({
       selectedSession: { sessionId: 'dev-session', status: 'completed', events: [{ content: 'dev event' }] } as any,
-      artifacts: [{ name: 'dev-report.md' }] as any,
-      attachments: [{ name: 'dev-report.md' }] as any,
       sessionTree: {
         ...run({}, [acceptAttempt, devAttempt]).sessionTree,
         selectedSessionKey: 'round-001/dev/attempt-002',
@@ -613,8 +607,6 @@ describe('mergeConversationRunSnapshot', () => {
 
     expect(merged.sessionTree.selectedSessionKey).toBe('round-001/accept/attempt-001');
     expect(merged.selectedSession).toBeNull();
-    expect(merged.artifacts).toEqual([]);
-    expect(merged.attachments).toEqual([]);
   });
 
   it('replaces state when the snapshot belongs to a different run', () => {

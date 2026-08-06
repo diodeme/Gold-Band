@@ -5,16 +5,20 @@ const editorSource = readFileSync(
   new URL('../src/components/workspace/files/WorkspaceFileEditor.tsx', import.meta.url),
   'utf8',
 );
+const editorExtensionsSource = readFileSync(
+  new URL('../src/components/workspace/files/editor-extensions.ts', import.meta.url),
+  'utf8',
+);
 const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
 
 describe('workspace file editor theme contract', () => {
   it('does not install the upstream light-only CodeMirror theme', () => {
     expect(editorSource).toContain('theme="none"');
-    expect(editorSource).toContain("backgroundColor: 'transparent'");
+    expect(editorExtensionsSource).toContain("backgroundColor: 'transparent'");
   });
 
   it('uses application theme tokens for syntax highlighting', () => {
-    expect(editorSource).toContain('syntaxHighlighting(workspaceHighlightStyle)');
+    expect(editorExtensionsSource).toContain('syntaxHighlighting(workspaceHighlightStyle)');
     for (const token of [
       'var(--foreground)',
       'var(--muted-foreground)',
@@ -23,8 +27,19 @@ describe('workspace file editor theme contract', () => {
       'var(--gold-warning)',
       'var(--gold-danger)',
     ]) {
-      expect(editorSource).toContain(token);
+      expect(editorExtensionsSource).toContain(token);
     }
+  });
+
+  it('replaces the merge-view insertion underline with a solid highlight', () => {
+    expect(editorExtensionsSource).toContain("'&.cm-merge-b .cm-changedText': {");
+    expect(editorExtensionsSource).toContain("backgroundImage: 'none'");
+    expect(editorExtensionsSource).not.toContain("'.cm-merge-b .cm-changedText'");
+  });
+
+  it('uses the application text-selection token for CodeMirror selections', () => {
+    expect(editorExtensionsSource).toContain("backgroundColor: 'var(--text-selection)'");
+    expect(editorExtensionsSource).not.toContain("backgroundColor: 'color-mix(in srgb, var(--primary) 20%, transparent)'");
   });
 
   it('maps Markdown links and code surfaces to contrast-safe semantic tokens', () => {

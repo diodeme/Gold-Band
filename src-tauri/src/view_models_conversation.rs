@@ -124,8 +124,6 @@ pub struct ConversationRunVm {
     pub session_tree: ConversationSessionTreeVm,
     pub selected_session: Option<crate::view_models::AcpSessionVm>,
     pub active_sessions: Vec<ConversationActiveSessionVm>,
-    pub artifacts: Vec<crate::view_models::AssetItemVm>,
-    pub attachments: Vec<crate::view_models::AssetItemVm>,
     pub input_attachments: Vec<crate::view_models::AssetItemVm>,
     pub workflow_status: String,
     pub workflow_valid: bool,
@@ -141,8 +139,6 @@ pub struct ConversationRunVm {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSessionSwitchVm {
     pub selected_session: Option<crate::view_models::AcpSessionVm>,
-    pub artifacts: Vec<crate::view_models::AssetItemVm>,
-    pub attachments: Vec<crate::view_models::AssetItemVm>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2122,21 +2118,6 @@ pub fn conversation_run_vm(
         None
     };
 
-    let (artifacts, attachments) = if let Some(ref leaf) = selected_leaf {
-        conversation_session_assets(
-            app,
-            task_id,
-            run_id,
-            &leaf.round_id,
-            &leaf.node_id,
-            &leaf.attempt_id,
-            leaf.outer_node_id.as_deref(),
-            leaf.outer_attempt_id.as_deref(),
-        )?
-    } else {
-        (Vec::new(), Vec::new())
-    };
-
     let input_attachments = input_attachments_vm(app, task_id);
 
     let run_outcome = run.outcome.map(|o| enum_label(&o));
@@ -2221,8 +2202,6 @@ pub fn conversation_run_vm(
         },
         selected_session,
         active_sessions,
-        artifacts,
-        attachments,
         input_attachments,
         workflow_status: "valid".to_string(),
         workflow_valid,
@@ -2760,8 +2739,6 @@ pub fn create_conversation_run_vm(
             },
             selected_session: None,
             active_sessions: Vec::new(),
-            artifacts: Vec::new(),
-            attachments: Vec::new(),
             input_attachments: Vec::new(),
             workflow_status: "valid".to_string(),
             workflow_valid: true,
@@ -2881,8 +2858,6 @@ pub fn rerun_conversation_task_vm(
             },
             selected_session: None,
             active_sessions: Vec::new(),
-            artifacts: Vec::new(),
-            attachments: Vec::new(),
             input_attachments: Vec::new(),
             workflow_status: "valid".to_string(),
             workflow_valid: true,
@@ -2933,22 +2908,7 @@ pub fn switch_conversation_session_vm(
             .flatten()
         };
 
-    let (artifacts, attachments) = conversation_session_assets(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        outer_node_id,
-        outer_attempt_id,
-    )?;
-
-    let result = ConversationSessionSwitchVm {
-        selected_session,
-        artifacts,
-        attachments,
-    };
+    let result = ConversationSessionSwitchVm { selected_session };
     Ok(result)
 }
 
@@ -4101,7 +4061,7 @@ mod tests {
     }
 
     #[test]
-    fn conversation_run_vm_exposes_selected_session_assets_and_leaf_counts() {
+    fn conversation_run_vm_keeps_assets_out_of_session_dto_and_exposes_leaf_counts() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
         write_conversation_assets_fixture(&app);
@@ -4115,10 +4075,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(vm.artifacts.len(), 1);
-        assert_eq!(vm.artifacts[0].name, "测试-result");
-        assert_eq!(vm.attachments.len(), 1);
-        assert_eq!(vm.attachments[0].name, "test-report.md");
         assert_eq!(vm.task_uuid.as_deref(), Some("task-046-fixture-uuid"));
 
         let leaf = vm.session_tree.rounds[0].nodes[0]
@@ -4247,7 +4203,7 @@ mod tests {
     }
 
     #[test]
-    fn switch_conversation_session_vm_uses_same_asset_contract() {
+    fn switch_conversation_session_vm_returns_only_the_selected_session() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
         write_conversation_assets_fixture(&app);
@@ -4264,10 +4220,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(switched.artifacts.len(), 1);
-        assert_eq!(switched.artifacts[0].name, "测试-result");
-        assert_eq!(switched.attachments.len(), 1);
-        assert_eq!(switched.attachments[0].name, "test-report.md");
+        assert!(switched.selected_session.is_none());
+        let serialized = serde_json::to_value(switched).unwrap();
+        assert!(serialized.get("selectedSession").is_some());
+        assert!(serialized.get("artifacts").is_none());
+        assert!(serialized.get("attachments").is_none());
     }
 
     fn temp_repo_root() -> Utf8PathBuf {

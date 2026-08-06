@@ -213,3 +213,38 @@ export function decideAcpLiveEventFlush(
       : null,
   };
 }
+
+/**
+ * Holds at most one cumulative snapshot for each live stream/tool identity.
+ * Draining transfers ownership to the sole scheduled publisher, so previously
+ * superseded strings cannot remain referenced by a queue of React transitions.
+ */
+export class AcpLatestWinsEventBuffer<T> {
+  private readonly pending = new Map<string, T>();
+
+  get size() {
+    return this.pending.size;
+  }
+
+  get(key: string) {
+    return this.pending.get(key);
+  }
+
+  replace(key: string, value: T) {
+    this.pending.set(key, value);
+  }
+
+  delete(key: string) {
+    return this.pending.delete(key);
+  }
+
+  drain() {
+    const values = [...this.pending.values()];
+    this.pending.clear();
+    return values;
+  }
+
+  clear() {
+    this.pending.clear();
+  }
+}

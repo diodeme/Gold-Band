@@ -24,38 +24,38 @@ describe('workspace auto collapse state machine', () => {
     let state: FileWorkspaceResponsiveState = { split: false, widthAtTransition: 0 };
     const compactState = state;
 
-    for (let width = 320; width < 540; width += 1) {
-      state = reduceFileWorkspaceResponsiveState(state, width, 540);
+    for (let width = 320; width < 500; width += 1) {
+      state = reduceFileWorkspaceResponsiveState(state, width, 500);
       expect(state).toBe(compactState);
     }
 
-    state = reduceFileWorkspaceResponsiveState(state, 540, 540);
-    expect(state).toEqual({ split: true, widthAtTransition: 540 });
+    state = reduceFileWorkspaceResponsiveState(state, 500, 500);
+    expect(state).toEqual({ split: true, widthAtTransition: 500 });
     const splitState = state;
 
-    for (let width = 541; width <= 960; width += 1) {
-      state = reduceFileWorkspaceResponsiveState(state, width, 540);
+    for (let width = 501; width <= 960; width += 1) {
+      state = reduceFileWorkspaceResponsiveState(state, width, 500);
       expect(state).toBe(splitState);
     }
 
-    state = reduceFileWorkspaceResponsiveState(state, 539, 540);
-    expect(state).toEqual({ split: false, widthAtTransition: 539 });
+    state = reduceFileWorkspaceResponsiveState(state, 499, 500);
+    expect(state).toEqual({ split: false, widthAtTransition: 499 });
   });
 
   it('keeps file workspace presentation monotonic in the window resize direction', () => {
-    const split: FileWorkspaceResponsiveState = { split: true, widthAtTransition: 540 };
-    expect(reduceFileWorkspaceResponsiveState(split, 479, 540, 'growing')).toBe(split);
-    expect(reduceFileWorkspaceResponsiveState(split, 539, 540, 'shrinking'))
-      .toEqual({ split: false, widthAtTransition: 539 });
+    const split: FileWorkspaceResponsiveState = { split: true, widthAtTransition: 500 };
+    expect(reduceFileWorkspaceResponsiveState(split, 479, 500, 'growing')).toBe(split);
+    expect(reduceFileWorkspaceResponsiveState(split, 499, 500, 'shrinking'))
+      .toEqual({ split: false, widthAtTransition: 499 });
 
-    const compact: FileWorkspaceResponsiveState = { split: false, widthAtTransition: 539 };
-    expect(reduceFileWorkspaceResponsiveState(compact, 568, 540, 'shrinking')).toBe(compact);
-    expect(reduceFileWorkspaceResponsiveState(compact, 540, 540, 'growing'))
-      .toEqual({ split: true, widthAtTransition: 540 });
+    const compact: FileWorkspaceResponsiveState = { split: false, widthAtTransition: 499 };
+    expect(reduceFileWorkspaceResponsiveState(compact, 568, 500, 'shrinking')).toBe(compact);
+    expect(reduceFileWorkspaceResponsiveState(compact, 500, 500, 'growing'))
+      .toEqual({ split: true, widthAtTransition: 500 });
 
-    expect(reduceFileWorkspaceResponsiveState(split, 520, 540, 'stationary'))
-      .toEqual({ split: false, widthAtTransition: 520 });
-    expect(reduceFileWorkspaceResponsiveState(compact, 560, 540, 'stationary'))
+    expect(reduceFileWorkspaceResponsiveState(split, 480, 500, 'stationary'))
+      .toEqual({ split: false, widthAtTransition: 480 });
+    expect(reduceFileWorkspaceResponsiveState(compact, 560, 500, 'stationary'))
       .toEqual({ split: true, widthAtTransition: 560 });
   });
 

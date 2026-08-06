@@ -180,6 +180,14 @@ export function getAcpToolDetail(projectId: string | null | undefined, taskId: s
   return getRuntimeApi().getAcpToolDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);
 }
 
+export function getTurnFileChangeSet(locator: Parameters<ReturnType<typeof getRuntimeApi>['getTurnFileChangeSet']>[0], changeSetId: string) {
+  return getRuntimeApi().getTurnFileChangeSet(locator, changeSetId);
+}
+
+export function getFileComparison(locator: Parameters<ReturnType<typeof getRuntimeApi>['getFileComparison']>[0], changeSetId: string, changeId: string) {
+  return getRuntimeApi().getFileComparison(locator, changeSetId, changeId);
+}
+
 export function subscribeAcpSessionUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeAcpSessionUpdates']>>[0]) {
   return getRuntimeApi().subscribeAcpSessionUpdates?.(listener) ?? Promise.resolve(() => {});
 }
@@ -403,6 +411,22 @@ export function saveLastConversationWorkspace(projectId: string) {
 
 export function listWorkspaceDirectory(projectId: string, relativePath = '') {
   return getRuntimeApi().listWorkspaceDirectory(projectId, relativePath);
+}
+
+export function openWorkspacePathInFileManager(projectId: string, relativePath = '') {
+  return getRuntimeApi().openWorkspacePathInFileManager(projectId, relativePath);
+}
+
+export function listConversationDirectory(input: import('./api/client').ConversationDirectoryInput) {
+  return getRuntimeApi().listConversationDirectory(input);
+}
+
+export function openConversationDirectoryPathInFileManager(input: import('./api/client').ConversationDirectoryInput) {
+  return getRuntimeApi().openConversationDirectoryPathInFileManager(input);
+}
+
+export function readConversationDirectoryFile(input: import('./api/client').ConversationDirectoryInput) {
+  return getRuntimeApi().readConversationDirectoryFile(input);
 }
 
 export function searchWorkspaceFiles(projectId: string, query: string, requestId: string, limit: number) {

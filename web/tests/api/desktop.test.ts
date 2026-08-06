@@ -95,4 +95,34 @@ describe('desktopApi', () => {
 
     expect(invokeCommand).toHaveBeenCalledWith('get_conversation_workspaces');
   });
+
+  it('queries a captured turn change set with the complete branch locator', async () => {
+    const locator = {
+      projectId: 'project-1', taskId: 'task-1', runId: 'run-1', roundId: 'round-1',
+      nodeId: 'node-1', attemptId: 'attempt-1', outerNodeId: 'dynamic-1',
+      outerAttemptId: 'dynamic-attempt-1', branchId: 'agent-1',
+    };
+
+    await desktopApi.getTurnFileChangeSet(locator, 'change-set-1');
+
+    expect(invokeCommand).toHaveBeenCalledWith('get_turn_file_change_set', {
+      ...locator,
+      changeSetId: 'change-set-1',
+    });
+  });
+
+  it('queries a historical comparison by change-set and change identity', async () => {
+    const locator = {
+      projectId: 'project-1', taskId: 'task-1', runId: 'run-1', roundId: 'round-1',
+      nodeId: 'node-1', attemptId: 'attempt-1', branchId: 'root',
+    };
+
+    await desktopApi.getFileComparison(locator, 'change-set-1', 'change-1');
+
+    expect(invokeCommand).toHaveBeenCalledWith('get_file_comparison', {
+      ...locator,
+      changeSetId: 'change-set-1',
+      changeId: 'change-1',
+    });
+  });
 });

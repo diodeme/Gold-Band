@@ -43,6 +43,56 @@ function browserCompletedConversationRun(): ConversationRunVm {
     cwd: 'D:/Projects/code/ai/Gold-Band',
     status: 'completed',
     stopReason: 'end_turn',
+    events: [
+      {
+        id: 'browser-user-prompt-052',
+        seq: 1,
+        timestamp: '2026-08-04 10:00',
+        kind: 'userTextDelta',
+        content: '请更新工作区配置并补充说明。',
+        raw: { promptId: 'browser-prompt-052' },
+      },
+      {
+        id: 'browser-tool-call-052',
+        seq: 2,
+        timestamp: '2026-08-04 10:01',
+        kind: 'toolCall',
+        title: '更新工作区文件',
+        toolCallId: 'browser-tool-052',
+        status: 'completed',
+        raw: { toolCallId: 'browser-tool-052', title: '更新工作区文件', status: 'completed' },
+      },
+      {
+        id: 'browser-file-change-set-052',
+        seq: 3,
+        timestamp: '2026-08-04 10:01',
+        kind: 'fileChangeSet',
+        status: 'finalized',
+        raw: {
+          changeSetId: browserTurnFileChangeSet.id,
+          summary: browserTurnFileChangeSet.summary,
+        },
+      },
+      {
+        id: 'browser-agent-message-052',
+        seq: 4,
+        timestamp: '2026-08-04 10:01',
+        kind: 'textDelta',
+        content: '配置与说明已更新。',
+        status: 'completed',
+        raw: {},
+      },
+    ],
+    eventPage: {
+      loadedCount: 4,
+      total: 4,
+      oldestSeq: 1,
+      newestSeq: 4,
+      hasOlder: false,
+      hasNewer: false,
+      oldestCursor: null,
+      newestCursor: null,
+    },
     config: {
       modelOverrideId: null,
       permissionModeOverrideId: null,
@@ -116,6 +166,51 @@ function browserCompletedConversationRun(): ConversationRunVm {
   }
   return run;
 }
+
+const browserTurnFileChangeSet = {
+  id: 'browser-change-set-052',
+  turnId: 'browser-turn-052',
+  promptEventId: 'browser-prompt-052',
+  branchId: 'root',
+  status: 'finalized' as const,
+  startedAt: '2026-08-04 10:00',
+  finishedAt: '2026-08-04 10:01',
+  summary: {
+    fileCount: 3,
+    addedFiles: 1,
+    modifiedFiles: 1,
+    deletedFiles: 1,
+    addedLines: 8,
+    deletedLines: 3,
+  },
+  changes: [
+    {
+      id: 'browser-added-readme',
+      changeKind: 'added' as const,
+      logicalPath: 'docs/workspace-notes.md',
+      text: true,
+      addedLines: 4,
+      deletedLines: 0,
+    },
+    {
+      id: 'browser-modified-config',
+      changeKind: 'modified' as const,
+      logicalPath: 'src/config.json',
+      text: true,
+      addedLines: 4,
+      deletedLines: 2,
+    },
+    {
+      id: 'browser-deleted-legacy',
+      changeKind: 'deleted' as const,
+      logicalPath: 'src/legacy-config.json',
+      text: true,
+      addedLines: 0,
+      deletedLines: 1,
+    },
+  ],
+  limitationCodes: [],
+};
 
 const browserWorkspaceRoot = '/default';
 const browserWorkspaceFiles = new Map<string, string>([
@@ -442,6 +537,65 @@ export const browserApi: RuntimeApi = {
   getAcpToolDetail() {
     return Promise.resolve({ event: null });
   },
+  getTurnFileChangeSet(locator, changeSetId) {
+    if (changeSetId === browserTurnFileChangeSet.id) {
+      return Promise.resolve({ ...browserTurnFileChangeSet, branchId: locator.branchId });
+    }
+    return Promise.resolve({
+      id: changeSetId,
+      turnId: 'browser-turn',
+      promptEventId: 'browser-prompt',
+      branchId: locator.branchId,
+      status: 'finalized' as const,
+      startedAt: '',
+      finishedAt: '',
+      summary: { fileCount: 0, addedFiles: 0, modifiedFiles: 0, deletedFiles: 0, addedLines: 0, deletedLines: 0 },
+      changes: [],
+      limitationCodes: [],
+    });
+  },
+  getFileComparison(_locator, changeSetId, changeId) {
+    if (changeSetId === browserTurnFileChangeSet.id && changeId === 'browser-added-readme') {
+      return Promise.resolve({
+        changeSetId,
+        changeId,
+        path: 'docs/workspace-notes.md',
+        stats: { addedLines: 4, deletedLines: 0 },
+        before: null,
+        after: {
+          version: { id: 'browser-added-version', storageKind: 'capturedBlob' as const, contentHash: 'browser-added', byteLength: 69, encoding: 'utf-8', lineEnding: 'lf' },
+          content: '# Workspace notes\n\n- Use captured tool-call output.\n- Keep history read-only.\n',
+        },
+        limitationCode: null,
+      });
+    }
+    if (changeSetId === browserTurnFileChangeSet.id && changeId === 'browser-modified-config') {
+      return Promise.resolve({
+        changeSetId,
+        changeId,
+        path: 'src/config.json',
+        stats: { addedLines: 4, deletedLines: 2 },
+        before: {
+          version: { id: 'browser-before-version', storageKind: 'capturedBlob' as const, contentHash: 'browser-before', byteLength: 29, encoding: 'utf-8', lineEnding: 'lf' },
+          content: '{\n  "workspace": "default"\n}\n',
+        },
+        after: {
+          version: { id: 'browser-after-version', storageKind: 'capturedBlob' as const, contentHash: 'browser-after', byteLength: 72, encoding: 'utf-8', lineEnding: 'lf' },
+          content: '{\n  "workspace": "default",\n  "history": "captured",\n  "readOnly": true\n}\n',
+        },
+        limitationCode: null,
+      });
+    }
+    return Promise.resolve({
+      changeSetId,
+      changeId,
+      path: '',
+      stats: { addedLines: 0, deletedLines: 0 },
+      before: null,
+      after: null,
+      limitationCode: null,
+    });
+  },
   subscribeAcpSessionUpdates() {
     return Promise.resolve(() => {});
   },
@@ -660,8 +814,6 @@ export const browserApi: RuntimeApi = {
       sessionTree: { rounds: [], selectedSessionKey: null },
       selectedSession: null,
       activeSessions: [],
-      artifacts: [],
-      attachments: [],
       inputAttachments: [],
       workflowStatus: 'valid',
       workflowValid: true,
@@ -672,9 +824,9 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve(run);
   },
   switchConversationSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
-    if (_runId === 'run-051') return Promise.resolve({ selectedSession: mockErrorBlockedConversationSession, artifacts: [], attachments: [] });
-    if (_runId === 'run-052') return Promise.resolve({ selectedSession: browserCompletedConversationRun().selectedSession, artifacts: [], attachments: [] });
-    return Promise.resolve({ selectedSession: null, artifacts: [], attachments: [] });
+    if (_runId === 'run-051') return Promise.resolve({ selectedSession: mockErrorBlockedConversationSession });
+    if (_runId === 'run-052') return Promise.resolve({ selectedSession: browserCompletedConversationRun().selectedSession });
+    return Promise.resolve({ selectedSession: null });
   },
   validateConversationCreate(_input) {
     return Promise.resolve({ valid: true, missingItems: [] });
@@ -694,8 +846,6 @@ export const browserApi: RuntimeApi = {
       sessionTree: { rounds: [], selectedSessionKey: null },
       selectedSession: null,
       activeSessions: [],
-      artifacts: [],
-      attachments: [],
       inputAttachments: [],
       workflowStatus: 'valid',
       workflowValid: true,
@@ -755,6 +905,12 @@ export const browserApi: RuntimeApi = {
   listWorkspaceDirectory(_projectId, relativePath) {
     return Promise.resolve(browserDirectoryEntries(relativePath));
   },
+  openWorkspacePathInFileManager(_projectId, _relativePath = '') {
+    return Promise.resolve();
+  },
+  listConversationDirectory(_input) { return Promise.resolve([]); },
+  openConversationDirectoryPathInFileManager(_input) { return Promise.resolve(); },
+  readConversationDirectoryFile(_input) { return Promise.reject(new Error('conversation-directory.unavailable')); },
   searchWorkspaceFiles(_projectId, query, requestId, limit) {
     const normalized = query.trim().toLocaleLowerCase();
     const matches = [...browserWorkspaceFiles.entries()]

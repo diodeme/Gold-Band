@@ -99,6 +99,57 @@ pub struct AcpRawFrame {
     pub frame: Value,
 }
 
+/// Preserve durable tool-call evidence across provider revisions. Providers
+/// commonly send input and diff content before a terminal status-only update;
+/// the terminal revision must not erase fields that it does not replace.
+pub fn merge_tool_revision_raw(incoming: &mut Value, previous: &Value) {
+    let (Some(incoming_object), Some(previous_object)) =
+        (incoming.as_object_mut(), previous.as_object())
+    else {
+        return;
+    };
+    for key in ["rawInput", "content", "locations"] {
+        merge_missing_json_field(incoming_object, previous_object, key);
+    }
+    if let Some(previous_tool_call) = previous_object.get("toolCall").and_then(Value::as_object) {
+        let incoming_tool_call = incoming_object
+            .entry("toolCall")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if let Some(incoming_tool_call) = incoming_tool_call.as_object_mut() {
+            for key in ["rawInput", "content", "locations"] {
+                merge_missing_json_field(incoming_tool_call, previous_tool_call, key);
+            }
+        }
+    }
+}
+
+fn merge_missing_json_field(
+    incoming: &mut serde_json::Map<String, Value>,
+    previous: &serde_json::Map<String, Value>,
+    key: &str,
+) {
+    let incoming_has_value = incoming.get(key).is_some_and(json_value_has_payload);
+    if incoming_has_value {
+        return;
+    }
+    if let Some(previous_value) = previous
+        .get(key)
+        .filter(|value| json_value_has_payload(value))
+    {
+        incoming.insert(key.to_string(), previous_value.clone());
+    }
+}
+
+fn json_value_has_payload(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::String(value) => !value.is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
+        Value::Bool(_) | Value::Number(_) => true,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpDiagnostic {

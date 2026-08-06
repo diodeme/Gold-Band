@@ -179,6 +179,35 @@ describe('FileExplorerStore lifecycle', () => {
     expect(api.listWorkspaceDirectory).toHaveBeenCalledTimes(2);
   });
 
+  it('refreshes root structure without replacing the mounted tree with a loading state', async () => {
+    const store = createStore();
+    await store.loadRoot('project-1');
+    const beforeRefresh = store.snapshot('project-1');
+    let completeRefresh!: (entries: WorkspaceDirectoryEntryVm[]) => void;
+    api.listWorkspaceDirectory.mockImplementationOnce(() => new Promise((resolve) => {
+      completeRefresh = resolve;
+    }));
+
+    store.applyFileChange({
+      projectId: 'project-1',
+      canonicalPath: 'D:\\repo\\new.md',
+      kind: 'created',
+      revision: { byteLength: 0, modifiedAtNs: '2', contentHash: 'new' },
+      operationId: null,
+    });
+    await vi.advanceTimersByTimeAsync(FALLBACK_WORKSPACE_FILES.watchDebounceMs);
+
+    expect(store.snapshot('project-1').status).toBe('ready');
+    expect(store.snapshot('project-1').roots).toBe(beforeRefresh.roots);
+
+    completeRefresh([directory('src'), file('README.md'), file('new.md')]);
+    await Promise.resolve();
+
+    expect(store.snapshot('project-1').status).toBe('ready');
+    expect(store.snapshot('project-1').roots.map((entry) => entry.name)).toEqual(['src', 'README.md', 'new.md']);
+    expect(store.snapshot('project-1').treeScrollTop).toBe(beforeRefresh.treeScrollTop);
+  });
+
   it('invalidates directory structure when a known node is removed', async () => {
     const store = createStore();
     await store.loadRoot('project-1');

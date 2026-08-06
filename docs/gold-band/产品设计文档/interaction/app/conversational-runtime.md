@@ -488,3 +488,4 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - shell/Bash 命令本身不是文件变化事实源。只有 provider 对该 tool call 返回标准 `content[type=diff]` 才能统计；若 `rm`、重定向或脚本写入只返回普通 stdout/完成状态，Gold Band 不解析命令文本、不读取磁盘补偿，也不会把该操作猜成文件变化。
 - 用户消息附件和 canonical artifact 保持各自消息归属，点击后打开右侧会话资源，不进入文件变化卡。Conversation 主 DTO 不再聚合当前 session 的 artifacts/attachments，composer 上方也不再显示独立资产展开栏。
 - 根会话和 Agent branch 按持久化 branch ownership 各自查询 change set。前端不根据路径或自然语言推断归属，也不把 sibling branch 的变化投影到当前会话。
+- 会话侧边栏仅将活跃态动画绑定到既有身份/状态载体：进行中的 Workflow/AUTO run 使用 `gold-running` 蓝色圆点低强度呼吸；进行中的 Direct 会话让既有 Agent icon 低强度呼吸。动画必须遵守系统 reduced-motion 设置，禁止使用旋转外圈或标题文字动画；暂停保持既有黄色静态点，成功保持既有绿色静态点，失败保持既有红色静态点。

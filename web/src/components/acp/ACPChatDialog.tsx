@@ -4685,6 +4685,7 @@ const MessageBubble = memo(function MessageBubble({
             className={cn(
               "flex px-1 text-xs text-muted-foreground",
               isUser && "justify-end text-right",
+              retryFooter === "retrying" && "acp-retry-live-label",
             )}
           >
             {retryFooter === "failed" && retry ? (
@@ -6249,14 +6250,16 @@ function buildFlatAcpTimeline(events: AcpUiEventVm[]) {
       const key = userPromptDedupKey(event);
       const previousPrompt = key ? seenUserPrompts.get(key) : undefined;
       if (previousPrompt) {
-        // Repeated persisted events for one promptId are provider retry
-        // attempts, never a text-based deduplication heuristic. Keep one
-        // bubble and retain the newest retry metadata below it.
-        previousPrompt.seq = event.seq;
-        previousPrompt.endedSeq = event.endedSeq ?? originalSeqFromAcpEvent(event);
-        previousPrompt.endedAt = event.endedAt ?? event.timestamp;
-        previousPrompt.status = event.status ?? previousPrompt.status;
-        previousPrompt.raw = mergeRaw(previousPrompt.raw, event.raw);
+        // Compatibility for historical timelines written before promptId had
+        // one canonical event ID. Apply the same monotonic snapshot reducer so
+        // an older physical retry event cannot reopen a settled footer.
+        const merged = mergeAcpEventSnapshots(previousPrompt, event);
+        if (merged !== previousPrompt) {
+          previousPrompt.endedSeq = merged.endedSeq ?? previousPrompt.endedSeq;
+          previousPrompt.endedAt = merged.endedAt ?? previousPrompt.endedAt;
+          previousPrompt.status = merged.status ?? previousPrompt.status;
+          previousPrompt.raw = mergeRaw(previousPrompt.raw, merged.raw);
+        }
         continue;
       }
     }

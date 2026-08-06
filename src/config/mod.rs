@@ -697,6 +697,7 @@ pub struct ProjectAppConfig {
     pub acp_raw_target_size_bytes: Option<u64>,
     pub acp_session_foreground_lease_ttl_secs: Option<u64>,
     pub acp_session_foreground_lease_renew_interval_secs: Option<u64>,
+    pub acp_prompt_terminal_route_timeout_ms: Option<u64>,
     pub acp_session_idle_ttl_secs: Option<u64>,
     pub acp_adapter_connection_idle_ttl_secs: Option<u64>,
     pub acp_max_idle_session_runtimes: Option<usize>,
@@ -1015,6 +1016,7 @@ pub struct RuntimeConfig {
     pub acp_raw_target_size_bytes: u64,
     pub acp_session_foreground_lease_ttl_secs: u64,
     pub acp_session_foreground_lease_renew_interval_secs: u64,
+    pub acp_prompt_terminal_route_timeout_ms: u64,
     pub acp_session_idle_ttl_secs: u64,
     pub acp_adapter_connection_idle_ttl_secs: u64,
     pub acp_max_idle_session_runtimes: usize,
@@ -1061,6 +1063,7 @@ impl Default for RuntimeConfig {
             acp_raw_target_size_bytes: 4 * 1024 * 1024,
             acp_session_foreground_lease_ttl_secs: 90,
             acp_session_foreground_lease_renew_interval_secs: 30,
+            acp_prompt_terminal_route_timeout_ms: 5_000,
             acp_session_idle_ttl_secs: 600,
             acp_adapter_connection_idle_ttl_secs: 600,
             acp_max_idle_session_runtimes: 8,
@@ -1152,6 +1155,12 @@ impl RuntimeConfig {
         {
             self.acp_session_foreground_lease_renew_interval_secs =
                 (self.acp_session_foreground_lease_ttl_secs / 3).max(1);
+        }
+        if let Some(value) = app_config
+            .acp_prompt_terminal_route_timeout_ms
+            .filter(|value| *value > 0)
+        {
+            self.acp_prompt_terminal_route_timeout_ms = value;
         }
         if let Some(value) = app_config
             .acp_session_idle_ttl_secs
@@ -1445,6 +1454,7 @@ mod tests {
             notification_auto_dismiss_target_secs: Some(20),
             require_local_claude_executable: Some(true),
             acp_session_idle_ttl_secs: Some(900),
+            acp_prompt_terminal_route_timeout_ms: Some(2_500),
             acp_max_idle_session_runtimes: Some(12),
             acp_timeline_compact_patch_ratio: Some(6),
             turn_files: Some(TurnFilesConfig {
@@ -1461,6 +1471,10 @@ mod tests {
         assert_eq!(roundtripped.notification_auto_dismiss_target_secs, Some(20));
         assert_eq!(roundtripped.require_local_claude_executable, Some(true));
         assert_eq!(roundtripped.acp_session_idle_ttl_secs, Some(900));
+        assert_eq!(
+            roundtripped.acp_prompt_terminal_route_timeout_ms,
+            Some(2_500)
+        );
         assert_eq!(roundtripped.acp_max_idle_session_runtimes, Some(12));
         assert_eq!(roundtripped.acp_timeline_compact_patch_ratio, Some(6));
         assert_eq!(roundtripped.turn_files.unwrap().card_preview_limit, 5);
@@ -1882,6 +1896,7 @@ mod tests {
             acp_session_foreground_lease_ttl_secs: Some(60),
             acp_session_foreground_lease_renew_interval_secs: Some(90),
             acp_session_idle_ttl_secs: Some(0),
+            acp_prompt_terminal_route_timeout_ms: Some(0),
             acp_max_idle_session_runtimes: Some(0),
             acp_timeline_compact_patch_ratio: Some(0),
             ..Default::default()
@@ -1889,6 +1904,7 @@ mod tests {
         assert_eq!(config.acp_session_foreground_lease_ttl_secs, 60);
         assert_eq!(config.acp_session_foreground_lease_renew_interval_secs, 20);
         assert_eq!(config.acp_session_idle_ttl_secs, 600);
+        assert_eq!(config.acp_prompt_terminal_route_timeout_ms, 5_000);
         assert_eq!(config.acp_max_idle_session_runtimes, 8);
         assert_eq!(config.acp_timeline_compact_patch_ratio, 4);
     }

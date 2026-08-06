@@ -2680,6 +2680,7 @@ pub async fn send_acp_prompt(
                 app.config.acp_raw_target_size_bytes,
                 client::AcpRuntimePolicy::from(&app.config)
                     .with_external_session_sync_enabled(agent_config.external_session_sync_enabled),
+                client::AcpOutputPolicy::Conversation,
                 Some(&|event| {
                     live_update(
                         acp_live_event_context(
@@ -2828,6 +2829,7 @@ pub async fn send_acp_prompt(
             app.config.acp_raw_target_size_bytes,
             client::AcpRuntimePolicy::from(&app.config)
                 .with_external_session_sync_enabled(agent_config.external_session_sync_enabled),
+            client::AcpOutputPolicy::Conversation,
             Some(&|event| {
                 live_update(
                     acp_live_event_context(

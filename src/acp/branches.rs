@@ -127,19 +127,6 @@ pub fn agent_relation(event: &AcpUiEvent) -> Option<AgentTranscriptRelation> {
 }
 
 pub fn branch_route_for_event(event: &AcpUiEvent) -> ConversationBranchRoute {
-    if let Some(branch_id) = event
-        .raw
-        .as_ref()
-        .and_then(|raw| raw.pointer(&format!("/_meta/{BRANCH_META_KEY}/branchId")))
-        .and_then(Value::as_str)
-        .filter(|branch_id| validate_conversation_branch_id(branch_id).is_ok())
-    {
-        return ConversationBranchRoute {
-            branch_id: branch_id.to_string(),
-            launched_agent_execution_id: None,
-            tool_name: None,
-        };
-    }
     let relation = agent_relation(event);
     let session_id = event.session_id.as_deref().unwrap_or("unknown-session");
     let parent_agent_execution_id = relation
@@ -151,12 +138,27 @@ pub fn branch_route_for_event(event: &AcpUiEvent) -> ConversationBranchRoute {
         .filter(|relation| relation.agent_launch)
         .and_then(|_| event.tool_call_id.as_deref())
         .map(|tool_call_id| stable_agent_execution_id(session_id, tool_call_id));
+    let tool_name = relation.and_then(|relation| relation.tool_name);
+    // A persisted branch-id override determines which transcript an event
+    // belongs to, but it must not discard the launch relation it carries.
+    // Migration and agent-index accounting still need launched_agent_execution_id
+    // and tool_name, which are orthogonal to branch ownership.
+    let branch_id = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.pointer(&format!("/_meta/{BRANCH_META_KEY}/branchId")))
+        .and_then(Value::as_str)
+        .filter(|branch_id| validate_conversation_branch_id(branch_id).is_ok())
+        .map(|branch_id| branch_id.to_string())
+        .unwrap_or_else(|| {
+            parent_agent_execution_id
+                .clone()
+                .unwrap_or_else(|| ROOT_BRANCH_ID.to_string())
+        });
     ConversationBranchRoute {
-        branch_id: parent_agent_execution_id
-            .clone()
-            .unwrap_or_else(|| ROOT_BRANCH_ID.to_string()),
+        branch_id,
         launched_agent_execution_id,
-        tool_name: relation.and_then(|relation| relation.tool_name),
+        tool_name,
     }
 }
 

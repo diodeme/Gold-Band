@@ -98,7 +98,7 @@ AUTO 模式由 AI-DYNAMIC 根据目标动态提出后续节点，可以拆分子
 
 持续查看 Agent 输出、思考过程、工具调用、结构化提问、附件、产物、Token 和耗时，并在需要时停止或继续会话。
 
-![alt text](docs/images/README/image-2.png)
+![alt text](docs/images/README/image-5.png)
 
 ### Agent 管理
 

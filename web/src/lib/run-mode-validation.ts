@@ -62,6 +62,54 @@ export function selectableWorkflowOptions(
   });
 }
 
+/**
+ * AUTO settings keep workflow DSL ids. A workflow can disappear outside this
+ * form, so remove only references that can no longer be resolved. References
+ * to an existing-but-unselectable workflow remain for the normal validator to
+ * explain and block, rather than silently changing an intentional setting.
+ */
+export function pruneMissingAutoAllowedWorkflowIds(
+  workflowIds: readonly string[],
+  workflowTemplates: WorkflowTemplateStore | null,
+): { workflowIds: string[]; removedWorkflowIds: string[] } {
+  if (!workflowTemplates) return { workflowIds: [...workflowIds], removedWorkflowIds: [] };
+
+  const knownIds = new Set(
+    workflowTemplates.templates
+      .map((template) => template.workflow.id.trim())
+      .filter(Boolean),
+  );
+  const workflowIdsKept: string[] = [];
+  const removedWorkflowIds: string[] = [];
+  for (const workflowId of workflowIds) {
+    const normalizedId = workflowId.trim();
+    if (!normalizedId || !knownIds.has(normalizedId)) {
+      removedWorkflowIds.push(workflowId);
+      continue;
+    }
+    workflowIdsKept.push(normalizedId);
+  }
+  return { workflowIds: workflowIdsKept, removedWorkflowIds };
+}
+
+export function pruneMissingAutoAllowedProfileIds(
+  profileIds: readonly string[],
+  profiles: readonly ProfileVm[],
+): { profileIds: string[]; removedProfileIds: string[] } {
+  const knownIds = new Set(profiles.map((profile) => profile.id));
+  const profileIdsKept: string[] = [];
+  const removedProfileIds: string[] = [];
+  for (const profileId of profileIds) {
+    const normalizedId = profileId.trim();
+    if (!normalizedId || !knownIds.has(normalizedId)) {
+      removedProfileIds.push(profileId);
+      continue;
+    }
+    profileIdsKept.push(normalizedId);
+  }
+  return { profileIds: profileIdsKept, removedProfileIds };
+}
+
 export function validateWorkflowTemplateForConversationStart(
   templateId: string | null | undefined,
   agentRegistry: AgentRegistryVm | null,

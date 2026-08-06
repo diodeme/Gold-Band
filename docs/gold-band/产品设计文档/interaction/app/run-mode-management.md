@@ -44,7 +44,8 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 - 快速会话记忆上一次会话级 AUTO 选择；AUTO模式 tab 的当前配置可保存为模板，并可切换生效模板
 - AUTO 模板保存 AI-DYNAMIC 模板级的 fixed/bootstrap/候选 Agent 模型与原生权限配置，不保存全局 Goal
 - AUTO 模板存储在用户目录 `~/.gold-band/context/auto-templates.json`，属于用户级跨 workspace 模板；首次读取时若后端模板为空，会把旧版 `localStorage.gold-band-auto-mode-templates` 导入到该文件并清理旧 key
-- AUTO 模板下拉支持选择和删除；删除当前模板只解除模板绑定并清空模板名，不清空用户正在编辑的 AUTO 配置字段
+- AUTO 模板下拉依次分为“新增模板”“不使用模板”和已保存模板列表三个区域；已保存模板列表与工作流模板列表均限制最大高度并在超出后内部滚动。“新增模板”创建独立的空白 AUTO 草稿并显示“新增模板（未保存）”，不得复用“不使用模板”或当前模板的配置。删除当前模板只解除模板绑定并清空模板名，不清空用户正在编辑的 AUTO 配置字段
+- AUTO 模板选择器的高亮项必须与当前编辑身份一致：未保存草稿高亮“新增模板”；只有未绑定任何已保存模板且不存在草稿时，才高亮“不使用模板”。
 - AUTO 与工作流模板管理复用同一个模板操作行组件；操作栏顺序统一为模板选择、保存修改、新模板名称、另存模板，“保存修改”和“另存”使用主题色按钮。
 - AUTO 的“保存修改”保存当前 AUTO 配置：选中模板时更新该模板并设为当前默认 AUTO 配置；选择“不使用模板”时不创建模板，直接把当前参数持久化为默认 AUTO 配置。
 - AUTO 的“另存模板”只负责创建新模板；模板名称为空或重复时仅在 AUTO模式 tab 内展示错误，不污染工作流模式区域。
@@ -56,6 +57,7 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 - AUTO 的可用角色列表只作为内部 worker proposal 的可选 profile ID 白名单；worker 不填 profile 时不注入角色内容。merge / acceptance 不接受 proposal profile，始终使用 runtime 内置 merge / acceptance prompt。
 - Agent 列表展示所有已配置 Agent；未通过诊断或不支持的 Agent 置灰，不可选，并展示不可选原因
 - 允许调用的工作流按 DSL `workflow.id` 去重判断；重复或空 ID 的工作流直接展示在允许调用工作流列表下方，标签保留名称，感叹号 icon tooltip 展示原因
+- AUTO 配置加载后若“允许调用的工作流”包含已无法解析的 `workflow.id`，或“可用角色列表”包含已无法解析的 profile id，页面自动从当前 project 配置中剔除该引用并持久化；模板仍在但 ID 重复、为空或包含不允许嵌套的 AI-DYNAMIC 时继续按常规校验处理，不自动删除。页面用黄色警告横幅分别告知已移除的工作流和角色数量，后续保存和另存不再被该历史失效引用阻断。
 
 ## 工作流模式
 
@@ -73,7 +75,7 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 - 普通 Worker 节点和 AI-DYNAMIC 的固定、动态 Agent 策略必须复用 Direct 的 ACP 模型复合选择器。固定策略的模型分别写入既有 `model` / `agentStrategy.model`，思考强度按 Agent 返回的真实 option id 写入节点 `config_options` / `configOptions`；动态策略写入初始分发、验收和各候选 Agent 自己的 role-scoped config options。不得硬编码 `reasoning_effort` 等 provider 专用字段；切换 Agent 或策略时同时清空对应模型与 option overrides，避免跨 Agent 污染。
 - “保存为新的工作流”不会继承来源 `workflow.id` 作为新模板 DSL ID；后端保存时生成 `workflow-{uuid}`，如与现有模板冲突最多重试 3 次
 - 工作流模板存储在用户目录 `~/.gold-band/context/workflows.json`，属于用户级跨 workspace 模板；若新路径不存在且当前 workspace 仍存在旧版 `authoring/workflows.json`，首次读取时会复制迁移到用户级 context
-- 保存/删除后必须立即刷新当前页面和会话主页持有的 workflow template store，新模板应立刻出现在模板选择器中，并显示保存后的模板名
+- 保存/删除后必须立即刷新当前页面和会话主页持有的 workflow template store；另存成功后以保存结果中的模板身份更新当前运行模式和编辑选择，新模板应立刻出现在模板选择器中并保持显示保存后的模板名，不能回退到默认工作流
 
 ## 校验规则
 

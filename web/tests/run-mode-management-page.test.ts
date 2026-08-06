@@ -1,7 +1,9 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { autoNoticeAutoDismiss, autoSaveTarget, createBlankWorkflowTemplateEditorState, RunModeManagementPage, RunModeProjectSelector, RunModeTabsToolbar, TemplateActionRow } from '@/pages/RunModeManagementPage';
+import type { WorkflowDsl } from '@/types';
+import { autoNoticeAutoDismiss, autoSaveTarget, createBlankAutoTemplateEditorState, createBlankWorkflowTemplateEditorState, findSavedWorkflowTemplate, isNoAutoTemplateSelected, RunModeManagementPage, RunModeProjectSelector, RunModeTabsToolbar, templatePickerSavedListClass, TemplateActionRow } from '@/pages/RunModeManagementPage';
+import { pruneMissingAutoAllowedProfileIds, pruneMissingAutoAllowedWorkflowIds } from '@/lib/run-mode-validation';
 
 describe('RunModeTabsToolbar', () => {
   it('renders a title-only page header, without a mode description or duplicate back action', () => {
@@ -57,6 +59,32 @@ describe('RunModeTabsToolbar', () => {
     expect(draft.workflow.id).toMatch(/^workflow-/);
   });
 
+  it('creates an independent empty AUTO draft for a new template', () => {
+    expect(createBlankAutoTemplateEditorState()).toMatchObject({
+      agentStrategy: 'fixed',
+      agentType: '',
+      allowedWorkflows: [],
+      allowedProfiles: [],
+      activeTemplateId: '',
+      activeTemplateName: '',
+      control: { maxDynamicNodes: 20, maxWorkflowInvocations: 10 },
+    });
+  });
+
+  it('resolves a newly saved workflow by its name instead of template array position', () => {
+    const templates = {
+      version: '0.1',
+      lastUsedTemplateId: 'default',
+      lastCreatedWorkflow: null,
+      templates: [
+        { id: 'new-template', name: '新增工作流', workflow: { id: 'workflow-new' } as WorkflowDsl, createdAt: '', updatedAt: '' },
+        { id: 'default', name: '默认工作流', workflow: { id: 'workflow-default' } as WorkflowDsl, createdAt: '', updatedAt: '' },
+      ],
+    };
+
+    expect(findSavedWorkflowTemplate(templates, '新增工作流')?.id).toBe('new-template');
+  });
+
   it('renders the current project as the selected run mode scope', () => {
     const html = renderToStaticMarkup(
       React.createElement(RunModeProjectSelector, {
@@ -82,9 +110,56 @@ describe('RunModeTabsToolbar', () => {
     expect(autoSaveTarget('auto-template-1')).toBe('template');
   });
 
+  it('does not select “no template” while a new AUTO template draft is active', () => {
+    expect(isNoAutoTemplateSelected('', true)).toBe(false);
+    expect(isNoAutoTemplateSelected('', false)).toBe(true);
+    expect(isNoAutoTemplateSelected('saved-template', false)).toBe(false);
+  });
+
+  it('limits both template pickers to a scrollable saved-template list', () => {
+    expect(templatePickerSavedListClass).toContain('max-h-64');
+    expect(templatePickerSavedListClass).toContain('overflow-auto');
+  });
+
   it('auto-dismisses successful AUTO notices but keeps errors visible', () => {
     expect(autoNoticeAutoDismiss('success')).toBe(true);
     expect(autoNoticeAutoDismiss('error')).toBe(false);
+    expect(autoNoticeAutoDismiss('warning')).toBe(false);
+  });
+
+  it('removes only AUTO workflow references that no longer resolve', () => {
+    const result = pruneMissingAutoAllowedWorkflowIds(
+      ['task-workflow', 'missing-workflow', '  custom-workflow  '],
+      {
+        version: '0.1',
+        lastUsedTemplateId: 'default',
+        lastCreatedWorkflow: null,
+        templates: [
+          { id: 'default', name: '默认工作流', workflow: { id: 'task-workflow' } as WorkflowDsl, createdAt: '', updatedAt: '' },
+          { id: 'custom', name: '我的工作流', workflow: { id: 'custom-workflow' } as WorkflowDsl, createdAt: '', updatedAt: '' },
+        ],
+      },
+    );
+
+    expect(result).toEqual({
+      workflowIds: ['task-workflow', 'custom-workflow'],
+      removedWorkflowIds: ['missing-workflow'],
+    });
+  });
+
+  it('removes only AUTO profile references that no longer resolve', () => {
+    const result = pruneMissingAutoAllowedProfileIds(
+      ['profile-plan', 'missing-profile', ' profile-dev '],
+      [
+        { id: 'profile-plan', name: '规划', content: '', isBuiltIn: false },
+        { id: 'profile-dev', name: '开发', content: '', isBuiltIn: false },
+      ],
+    );
+
+    expect(result).toEqual({
+      profileIds: ['profile-plan', 'profile-dev'],
+      removedProfileIds: ['missing-profile'],
+    });
   });
 
   it('renders the shared template action row in picker-save-name-save-as order', () => {

@@ -282,6 +282,17 @@ const NESTED_AGENT_TRANSCRIPT_CAPABILITY: &str = "subagent-transcript";
 #[derive(Debug)]
 struct AcpCancelled;
 
+#[derive(Debug)]
+struct AcpCancelDrainTimeout {
+    timeout: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PromptCancellationOutcome {
+    observed: bool,
+    drain_timed_out: bool,
+}
+
 fn initialize_params() -> Value {
     json!({
         "protocolVersion": 1,
@@ -308,6 +319,33 @@ impl std::fmt::Display for AcpCancelled {
 }
 
 impl std::error::Error for AcpCancelled {}
+
+impl std::fmt::Display for AcpCancelDrainTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "ACP cancelled prompt did not drain within {} seconds",
+            self.timeout.as_secs()
+        )
+    }
+}
+
+impl std::error::Error for AcpCancelDrainTimeout {}
+
+fn prompt_cancellation_outcome(
+    cancel_requested: bool,
+    error: Option<&anyhow::Error>,
+) -> PromptCancellationOutcome {
+    let drain_timed_out =
+        error.is_some_and(|error| error.downcast_ref::<AcpCancelDrainTimeout>().is_some());
+    let observed = cancel_requested
+        || drain_timed_out
+        || error.is_some_and(|error| error.downcast_ref::<AcpCancelled>().is_some());
+    PromptCancellationOutcome {
+        observed,
+        drain_timed_out,
+    }
+}
 
 #[derive(Debug)]
 struct AcpTransportInterrupted;
@@ -395,6 +433,20 @@ enum ProviderControlState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CancelNotificationPhase {
+    BeforeProviderActive,
+    AfterProviderActive,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProviderControlInner {
+    state: ProviderControlState,
+    provider_active: bool,
+    cancel_sent_before_active: bool,
+    cancel_sent_after_active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptActivity {
     Starting,
     Accepted,
@@ -404,74 +456,93 @@ pub enum PromptActivity {
 
 #[derive(Debug)]
 struct ProviderControl {
-    state: Mutex<ProviderControlState>,
-    cancel_sent: Mutex<bool>,
+    inner: Mutex<ProviderControlInner>,
 }
 
 impl ProviderControl {
     fn new() -> Self {
         Self {
-            state: Mutex::new(ProviderControlState::Starting),
-            cancel_sent: Mutex::new(false),
+            inner: Mutex::new(ProviderControlInner {
+                state: ProviderControlState::Starting,
+                provider_active: false,
+                cancel_sent_before_active: false,
+                cancel_sent_after_active: false,
+            }),
         }
     }
 
     fn state(&self) -> ProviderControlState {
-        self.state
+        self.inner
             .lock()
-            .map(|state| *state)
+            .map(|inner| inner.state)
             .unwrap_or(ProviderControlState::Stopped)
     }
 
     fn request_prompt_cancel(&self) -> bool {
-        let Ok(mut state) = self.state.lock() else {
+        let Ok(mut inner) = self.inner.lock() else {
             return false;
         };
-        match *state {
+        match inner.state {
             ProviderControlState::Starting
             | ProviderControlState::Accepted
             | ProviderControlState::Running => {
-                *state = ProviderControlState::CancelRequested;
+                inner.state = ProviderControlState::CancelRequested;
                 true
             }
             ProviderControlState::CancelRequested | ProviderControlState::Stopped => false,
         }
     }
 
-    fn mark_cancel_sent(&self) -> bool {
-        let Ok(mut sent) = self.cancel_sent.lock() else {
-            return false;
+    fn claim_cancel_notification(&self) -> Option<CancelNotificationPhase> {
+        let Ok(mut inner) = self.inner.lock() else {
+            return None;
         };
-        if *sent {
-            false
+        if inner.state != ProviderControlState::CancelRequested {
+            return None;
+        }
+        if inner.provider_active {
+            if inner.cancel_sent_after_active {
+                None
+            } else {
+                inner.cancel_sent_after_active = true;
+                Some(CancelNotificationPhase::AfterProviderActive)
+            }
+        } else if inner.cancel_sent_before_active {
+            None
         } else {
-            *sent = true;
-            true
+            inner.cancel_sent_before_active = true;
+            Some(CancelNotificationPhase::BeforeProviderActive)
+        }
+    }
+
+    fn mark_provider_active(&self) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.provider_active = true;
         }
     }
 
     fn mark_running(&self) {
-        if let Ok(mut state) = self.state.lock()
+        if let Ok(mut inner) = self.inner.lock()
             && matches!(
-                *state,
+                inner.state,
                 ProviderControlState::Starting | ProviderControlState::Accepted
             )
         {
-            *state = ProviderControlState::Running;
+            inner.state = ProviderControlState::Running;
         }
     }
 
     fn mark_accepted(&self) {
-        if let Ok(mut state) = self.state.lock()
-            && *state == ProviderControlState::Starting
+        if let Ok(mut inner) = self.inner.lock()
+            && inner.state == ProviderControlState::Starting
         {
-            *state = ProviderControlState::Accepted;
+            inner.state = ProviderControlState::Accepted;
         }
     }
 
     fn mark_stopped(&self) {
-        if let Ok(mut state) = self.state.lock() {
-            *state = ProviderControlState::Stopped;
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.state = ProviderControlState::Stopped;
         }
     }
 }
@@ -530,8 +601,31 @@ pub fn prompt_activity_under(root: &Utf8Path) -> Option<PromptActivity> {
 }
 
 pub fn cancel_attempt_prompt(attempt_dir: &Utf8Path) -> Result<bool> {
-    cancel_pending_prompt_interactions(attempt_dir, current_timestamp())?;
-    AdapterConnectionManager::shared().cancel_attempt_prompt(attempt_dir)
+    let key = attempt_control_key(attempt_dir);
+    let control = PROVIDER_CONTROLS
+        .lock()
+        .ok()
+        .and_then(|controls| controls.get(&key).cloned());
+    if let Some(control) = control.as_ref() {
+        control.request_prompt_cancel();
+    }
+    let manager = AdapterConnectionManager::shared();
+    let cancel_result = if manager.attempt_session(attempt_dir).is_none() {
+        Ok(control.is_some())
+    } else if control
+        .as_ref()
+        .is_some_and(|control| control.claim_cancel_notification().is_none())
+    {
+        Ok(true)
+    } else {
+        manager.cancel_attempt_prompt(attempt_dir)
+    };
+    // Timeline settlement is bookkeeping: report its failure only after the
+    // lifecycle latch and live ACP cancel have had a chance to be delivered.
+    let interaction_result = cancel_pending_prompt_interactions(attempt_dir, current_timestamp());
+    let cancelled = cancel_result?;
+    interaction_result?;
+    Ok(cancelled)
 }
 
 pub fn close_attempt_session_bounded(attempt_dir: &Utf8Path) -> Result<bool> {
@@ -663,6 +757,13 @@ impl RuntimeStopProbe {
 
 fn normalize_stop_code(value: &str) -> String {
     value.trim().to_ascii_lowercase().replace('_', "-")
+}
+
+fn provider_thread_is_active(update: &Value) -> bool {
+    update
+        .pointer("/_meta/codex/threadStatus/type")
+        .and_then(Value::as_str)
+        .is_some_and(|status| status.eq_ignore_ascii_case("active"))
 }
 
 #[derive(Debug, Clone)]
@@ -1383,7 +1484,14 @@ pub fn run_prompt(
         .session_id
         .clone()
         .ok_or_else(|| anyhow!("ACP session setup did not return a session id"))?;
-    runtime.write_worker_ref(provider_id, &workspace_dir, session_mode, restored, None)?;
+    runtime.write_worker_ref(
+        provider_id,
+        &workspace_dir,
+        session_mode,
+        restored,
+        None,
+        true,
+    )?;
     let prompt_turn = runtime.record_user_prompt_event(provider_id, prompt, restored)?;
     runtime.control.mark_accepted();
     runtime.write_session("running", restored, None, capabilities.clone())?;
@@ -1417,10 +1525,21 @@ pub fn run_prompt(
         acp_session_title_refresh_enabled,
     );
     runtime.refresh_provider_freshness_best_effort(&workspace_dir);
-    let terminal_failure = runtime.prompt_lifecycle.terminal_failure.clone();
+    let cancellation = prompt_cancellation_outcome(
+        runtime.is_prompt_cancel_requested(),
+        prompt_result.as_ref().err(),
+    );
+    // Cancellation owns the user-visible terminal state. Provider and
+    // transport errors arriving while the session drains are diagnostics for
+    // that cancellation, not a new failure eligible for automatic retry.
+    let terminal_failure = (!cancellation.observed)
+        .then(|| runtime.prompt_lifecycle.terminal_failure.clone())
+        .flatten();
     let (status, stop_reason) = match prompt_result {
         Ok(stop_reason) => {
-            let status = if terminal_failure.is_some() {
+            let status = if cancellation.observed {
+                "cancelled"
+            } else if terminal_failure.is_some() {
                 "failed"
             } else if stop_reason.as_deref().is_some_and(|reason| {
                 matches!(
@@ -1438,6 +1557,10 @@ pub fn run_prompt(
             (status, stop_reason)
         }
         Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
+            let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
+            ("cancelled", Some("cancelled".to_string()))
+        }
+        Err(error) if error.downcast_ref::<AcpCancelDrainTimeout>().is_some() => {
             let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             ("cancelled", Some("cancelled".to_string()))
         }
@@ -1460,6 +1583,7 @@ pub fn run_prompt(
                 session_mode,
                 restored,
                 Some("error".to_string()),
+                true,
             )?;
             if let Err(capture_error) = runtime.finalize_turn_file_changes(&prompt_turn) {
                 append_structured_diagnostic(
@@ -1517,6 +1641,7 @@ pub fn run_prompt(
         session_mode,
         restored,
         stop_reason.clone(),
+        !cancellation.drain_timed_out,
     )?;
     runtime
         .interrupt_active_context_compaction(stop_reason.as_deref().unwrap_or("prompt_finished"))?;
@@ -1544,7 +1669,13 @@ pub fn run_prompt(
         cached_write_tokens: runtime.usage.latest_prompt.cached_write_tokens,
         total_tokens: runtime.usage.latest_prompt.total_tokens,
     };
-    runtime.release_managed_session();
+    if cancellation.drain_timed_out {
+        // The adapter process may host other reusable sessions, so keep the
+        // process alive while quarantining only this undrained session.
+        runtime.shutdown();
+    } else {
+        runtime.release_managed_session();
+    }
     Ok(run)
 }
 
@@ -3224,10 +3355,19 @@ impl<'a> AcpRuntime<'a> {
                             .is_some_and(|started| started.elapsed() >= PROMPT_CANCEL_TIMEOUT)
                         {
                             self.connection.cancel_pending(request.id);
-                            break Err(anyhow!(
-                                "ACP `session/cancel` timed out after {} seconds",
-                                PROMPT_CANCEL_TIMEOUT.as_secs()
-                            ));
+                            let _ = append_structured_diagnostic(
+                                &self.paths.diagnostics,
+                                "warn",
+                                "acp.cancel-drain-timeout",
+                                Some(json!({
+                                    "timeoutSeconds": PROMPT_CANCEL_TIMEOUT.as_secs(),
+                                    "sessionId": session_id,
+                                    "requestId": request.id,
+                                })),
+                            );
+                            break Err(anyhow!(AcpCancelDrainTimeout {
+                                timeout: PROMPT_CANCEL_TIMEOUT,
+                            }));
                         }
                     }
                     Err(RecvTimeoutError::Disconnected) => {
@@ -3334,7 +3474,19 @@ impl<'a> AcpRuntime<'a> {
             return Ok(());
         }
 
+        if provider_thread_is_active(&update) {
+            self.control.mark_provider_active();
+        }
         self.prompt_lifecycle.observe_session_update(&update);
+        if provider_thread_is_active(&update) && self.is_prompt_cancel_requested() {
+            // Some providers ignore a cancel delivered before their turn is
+            // active. The cancellation latch remains set, so active is the
+            // synchronization point for one meaningful redelivery.
+            self.send_cancel_notification_best_effort();
+        }
+        if self.is_prompt_cancel_requested() && is_current_turn_content_update(&update) {
+            return Ok(());
+        }
 
         // Fold raw provider samples into a stable context gauge before the event
         // enters the canonical timeline. The untouched raw frame is already in
@@ -3717,9 +3869,9 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn send_cancel_notification_best_effort(&mut self) {
-        if !self.control.mark_cancel_sent() {
+        let Some(phase) = self.control.claim_cancel_notification() else {
             return;
-        }
+        };
         let Some(session_id) = self.session_id.clone() else {
             return;
         };
@@ -3741,6 +3893,19 @@ impl<'a> AcpRuntime<'a> {
                 "warn",
                 format!("failed to send ACP session/cancel notification: {error}"),
                 Some(frame),
+            );
+        } else {
+            let _ = append_structured_diagnostic(
+                &self.paths.diagnostics,
+                "info",
+                "acp.cancel-notification-sent",
+                Some(json!({
+                    "sessionId": session_id,
+                    "phase": match phase {
+                        CancelNotificationPhase::BeforeProviderActive => "before-provider-active",
+                        CancelNotificationPhase::AfterProviderActive => "after-provider-active",
+                    },
+                })),
             );
         }
     }
@@ -3894,6 +4059,7 @@ impl<'a> AcpRuntime<'a> {
         session_mode: SessionMode,
         restored: bool,
         stop_reason: Option<String>,
+        reusable: bool,
     ) -> Result<()> {
         let session_id = self
             .session_id
@@ -3904,16 +4070,18 @@ impl<'a> AcpRuntime<'a> {
             provider: provider_id.to_string(),
             mode: session_mode,
             supports_open_session: true,
-            supports_continue_session: true,
-            continue_ref: Some(json!({
-                "acpSessionId": session_id,
-                "adapterId": self.connection.adapter().adapter_id.clone(),
-                "adapterDisplayName": self.connection.adapter().display_name.clone(),
-                "cwd": workspace_dir.as_str(),
-                "snapshotFile": self.paths.snapshot.as_str(),
-                "lastStopReason": stop_reason,
-                "restored": restored,
-            })),
+            supports_continue_session: reusable,
+            continue_ref: reusable.then(|| {
+                json!({
+                    "acpSessionId": session_id,
+                    "adapterId": self.connection.adapter().adapter_id.clone(),
+                    "adapterDisplayName": self.connection.adapter().display_name.clone(),
+                    "cwd": workspace_dir.as_str(),
+                    "snapshotFile": self.paths.snapshot.as_str(),
+                    "lastStopReason": stop_reason,
+                    "restored": restored,
+                })
+            }),
             open_command: None,
         };
         validate_worker_ref_state(&worker_ref)?;
@@ -4547,6 +4715,7 @@ impl<'a> AcpRuntime<'a> {
         if let Some(session_id) = self.session_id.as_deref() {
             self.connection.unregister_session_route(session_id);
         }
+        AdapterConnectionManager::shared().unregister_attempt_session(&self.paths.attempt_dir);
         if self.connection_key.is_none() {
             self.connection.shutdown();
         }
@@ -5255,17 +5424,19 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        AcpContextCompactionState, AcpPromptFailure, AcpPromptLifecycle, AcpPromptRetryState,
-        AcpPromptTokenUsage, AcpRuntime, AcpRuntimePolicy, AcpUsageState, AttachedSessionReusePlan,
-        DOCTOR_DIAGNOSTIC_TARGET_SIZE, NESTED_AGENT_TRANSCRIPT_CAPABILITY, PriorAttemptMetrics,
-        PromptActivity, PromptBundle, PromptVisibility, ProviderFreshnessBaseline,
-        RuntimeStopProbe, SessionModelResolution, SessionUpdatePhase, active_context_compaction,
-        active_timeline_streams, active_timeline_streams_by_branch, attached_sync_required,
+        AcpCancelDrainTimeout, AcpContextCompactionState, AcpPromptFailure, AcpPromptLifecycle,
+        AcpPromptRetryState, AcpPromptTokenUsage, AcpRuntime, AcpRuntimePolicy, AcpUsageState,
+        AttachedSessionReusePlan, CancelNotificationPhase, DOCTOR_DIAGNOSTIC_TARGET_SIZE,
+        NESTED_AGENT_TRANSCRIPT_CAPABILITY, PriorAttemptMetrics, PromptActivity, PromptBundle,
+        PromptVisibility, ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution,
+        SessionUpdatePhase, active_context_compaction, active_timeline_streams,
+        active_timeline_streams_by_branch, attached_sync_required,
         cleanup_doctor_acp_dir_after_success, contributes_to_final_text, drain_frames_until_quiet,
         evaluate_provider_revision, initialize_params, is_transport_interruption,
         is_unscoped_codex_diagnostic_update, latest_visible_turn_id, merge_tool_revision,
         next_prompt_retry_attempt, permission_decision_timeline_event, plan_attached_session_reuse,
-        prompt_activity, register_provider_control, request_prompt_cancel, resolve_permission_mode,
+        prompt_activity, prompt_cancellation_outcome, provider_thread_is_active,
+        register_provider_control, request_prompt_cancel, resolve_permission_mode,
         resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
         runtime_hot_timeline_items, scheduled_auto_retry, session_config_fingerprint,
         session_load_params, session_new_params, session_prompt_params, session_prompt_text,
@@ -5639,6 +5810,50 @@ mod tests {
 
         unregister_provider_control(attempt_dir, &control);
         assert_eq!(prompt_activity(attempt_dir), None);
+    }
+
+    #[test]
+    fn provider_control_redelivers_cancel_once_after_provider_becomes_active() {
+        let control = super::ProviderControl::new();
+        assert!(control.request_prompt_cancel());
+        assert_eq!(
+            control.claim_cancel_notification(),
+            Some(CancelNotificationPhase::BeforeProviderActive)
+        );
+        assert_eq!(control.claim_cancel_notification(), None);
+
+        control.mark_provider_active();
+        assert_eq!(
+            control.claim_cancel_notification(),
+            Some(CancelNotificationPhase::AfterProviderActive)
+        );
+        assert_eq!(control.claim_cancel_notification(), None);
+        control.mark_provider_active();
+        assert_eq!(control.claim_cancel_notification(), None);
+    }
+
+    #[test]
+    fn cancel_drain_timeout_remains_a_cancellation_terminal_outcome() {
+        let error = anyhow::anyhow!(AcpCancelDrainTimeout {
+            timeout: std::time::Duration::from_secs(30),
+        });
+
+        let outcome = prompt_cancellation_outcome(false, Some(&error));
+
+        assert!(outcome.observed);
+        assert!(outcome.drain_timed_out);
+    }
+
+    #[test]
+    fn codex_active_thread_status_is_the_cancel_redelivery_boundary() {
+        assert!(provider_thread_is_active(&json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": { "codex": { "threadStatus": { "type": "active" } } }
+        })));
+        assert!(!provider_thread_is_active(&json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": { "codex": { "threadStatus": { "type": "systemError" } } }
+        })));
     }
 
     #[test]

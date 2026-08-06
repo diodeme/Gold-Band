@@ -106,6 +106,7 @@ struct AcpInvocationPromptState {
 
 const MAX_INVALID_OUTPUT_REPAIR_PROMPTS: u32 = 3;
 const MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS: u32 = 3;
+const AUTO_RETRY_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const DYNAMIC_BOOTSTRAP_NODE_ID: &str = "bootstrap";
 static DYNAMIC_COMPLETION_SCHEMA_CACHE: OnceLock<Mutex<HashMap<String, Arc<JSONSchema>>>> =
     OnceLock::new();
@@ -4390,6 +4391,39 @@ fn outer_attempt_is_still_current_running(ctx: &DynamicExecutionContext<'_>) -> 
     )
 }
 
+fn dynamic_leaf_attempt_is_still_running(
+    ctx: &DynamicExecutionContext<'_>,
+    node_id: &str,
+    attempt_id: &str,
+) -> Result<bool> {
+    if !outer_attempt_is_still_current_running(ctx)? {
+        return Ok(false);
+    }
+    let state_lock = dynamic_state_lock_for(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+    )?;
+    let _guard = state_lock
+        .lock()
+        .map_err(|_| anyhow!("dynamic state lock poisoned"))?;
+    let graph: DynamicGraphState = read_json(&ctx.app.paths.dynamic_graph_file(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+    ))?;
+    Ok(graph.nodes.iter().any(|node| {
+        node.id == node_id
+            && dynamic_attempt_id(node) == attempt_id
+            && node.status == DynamicNodeStatus::Running
+            && node.outcome.is_none()
+    }))
+}
+
 fn dynamic_result_is_successful_completion(result: &DynamicExecutionResult) -> bool {
     result.node.status == DynamicNodeStatus::Completed
         && result.node.outcome == Some(NodeOutcome::Success)
@@ -4810,6 +4844,10 @@ fn execute_dynamic_worker(
     let mut auto_retry_attempts = 0;
 
     loop {
+        if !dynamic_leaf_attempt_is_still_running(ctx, &node.id, &attempt_id)? {
+            mark_dynamic_node_paused(&mut node, PauseReason::ProcessInterrupted, None);
+            return Ok(DynamicExecutionResult { node, proposals });
+        }
         let live_update_context = dynamic_acp_live_event_context(ctx, &node.id, &attempt_id);
         let live_update = ctx.app.acp_live_update_for(live_update_context.clone());
         let session_update = ctx.app.acp_session_update_for(live_update_context);
@@ -4922,8 +4960,16 @@ fn execute_dynamic_worker(
         {
             Ok(result) => result,
             Err(error) => {
+                if !dynamic_leaf_attempt_is_still_running(ctx, &node.id, &attempt_id)? {
+                    mark_dynamic_node_paused(&mut node, PauseReason::ProcessInterrupted, None);
+                    return Ok(DynamicExecutionResult { node, proposals });
+                }
                 let info = normalize_runtime_error(&error);
                 if let Some(delay_ms) = auto_retry_delay_ms(&info, auto_retry_attempts) {
+                    if !dynamic_leaf_attempt_is_still_running(ctx, &node.id, &attempt_id)? {
+                        mark_dynamic_node_paused(&mut node, PauseReason::ProcessInterrupted, None);
+                        return Ok(DynamicExecutionResult { node, proposals });
+                    }
                     auto_retry_attempts += 1;
                     append_dynamic_event(
                         ctx,
@@ -4938,7 +4984,12 @@ fn execute_dynamic_worker(
                             "runtimeError": info,
                         }),
                     )?;
-                    thread::sleep(Duration::from_millis(delay_ms));
+                    if !wait_for_retry_while_active(delay_ms, || {
+                        dynamic_leaf_attempt_is_still_running(ctx, &node.id, &attempt_id)
+                    })? {
+                        mark_dynamic_node_paused(&mut node, PauseReason::ProcessInterrupted, None);
+                        return Ok(DynamicExecutionResult { node, proposals });
+                    }
                     continue;
                 }
                 return Err(error);
@@ -4959,7 +5010,15 @@ fn execute_dynamic_worker(
             }),
         );
         if let Some(info) = result.runtime_error.as_ref() {
+            if !dynamic_leaf_attempt_is_still_running(ctx, &node.id, &attempt_id)? {
+                mark_dynamic_node_paused(&mut node, PauseReason::ProcessInterrupted, None);
+                return Ok(DynamicExecutionResult { node, proposals });
+            }
             if let Some(delay_ms) = auto_retry_delay_ms(info, auto_retry_attempts) {
+                if !dynamic_leaf_attempt_is_still_running(ctx, &node.id, &attempt_id)? {
+                    mark_dynamic_node_paused(&mut node, PauseReason::ProcessInterrupted, None);
+                    return Ok(DynamicExecutionResult { node, proposals });
+                }
                 auto_retry_attempts += 1;
                 append_dynamic_event(
                     ctx,
@@ -4974,7 +5033,12 @@ fn execute_dynamic_worker(
                         "runtimeError": info,
                     }),
                 )?;
-                thread::sleep(Duration::from_millis(delay_ms));
+                if !wait_for_retry_while_active(delay_ms, || {
+                    dynamic_leaf_attempt_is_still_running(ctx, &node.id, &attempt_id)
+                })? {
+                    mark_dynamic_node_paused(&mut node, PauseReason::ProcessInterrupted, None);
+                    return Ok(DynamicExecutionResult { node, proposals });
+                }
                 continue;
             }
         }
@@ -9961,6 +10025,26 @@ fn auto_retry_delay_ms(info: &RuntimeErrorInfo, completed_retries: u32) -> Optio
         .or_else(|| policy.backoff_ms.last().copied())
 }
 
+fn wait_for_retry_while_active(
+    delay_ms: u64,
+    mut is_active: impl FnMut() -> Result<bool>,
+) -> Result<bool> {
+    if !is_active()? {
+        return Ok(false);
+    }
+    let deadline = Instant::now() + Duration::from_millis(delay_ms);
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return is_active();
+        }
+        thread::sleep((deadline - now).min(AUTO_RETRY_STOP_POLL_INTERVAL));
+        if !is_active()? {
+            return Ok(false);
+        }
+    }
+}
+
 /// One user-visible turn may recreate its provider runtime many times. Keep
 /// its identity in the scheduler, where that retry lifecycle actually lives.
 fn logical_prompt_id(existing: Option<String>) -> String {
@@ -10172,6 +10256,16 @@ fn drive_from_node_with_initial_session(
         let logical_prompt_id = logical_prompt_id(resume_prompt_id.clone());
         let mut auto_retry_attempts = 0;
         let execution_result = loop {
+            if !attempt_is_still_current_running(
+                app,
+                task_id,
+                &run.id,
+                &round.id,
+                &current_node_id,
+                &current_attempt_id,
+            )? {
+                return Ok(());
+            }
             let result = match current_node_dsl {
                 NodeDsl::Worker(_) => app
                     .validate_workflow_node_agent_options(current_node_dsl)
@@ -10211,8 +10305,28 @@ fn drive_from_node_with_initial_session(
             };
             match result {
                 Err(err) => {
+                    if !attempt_is_still_current_running(
+                        app,
+                        task_id,
+                        &run.id,
+                        &round.id,
+                        &current_node_id,
+                        &current_attempt_id,
+                    )? {
+                        return Ok(());
+                    }
                     let info = normalize_runtime_error(&err);
                     if let Some(delay_ms) = auto_retry_delay_ms(&info, auto_retry_attempts) {
+                        if !attempt_is_still_current_running(
+                            app,
+                            task_id,
+                            &run.id,
+                            &round.id,
+                            &current_node_id,
+                            &current_attempt_id,
+                        )? {
+                            return Ok(());
+                        }
                         auto_retry_attempts += 1;
                         let summary = format!(
                             "auto retry {}/{} after {} at {}/{}/{}: {}",
@@ -10256,7 +10370,18 @@ fn drive_from_node_with_initial_session(
                             now_rfc3339_like(),
                             event_data,
                         );
-                        thread::sleep(Duration::from_millis(delay_ms));
+                        if !wait_for_retry_while_active(delay_ms, || {
+                            attempt_is_still_current_running(
+                                app,
+                                task_id,
+                                &run.id,
+                                &round.id,
+                                &current_node_id,
+                                &current_attempt_id,
+                            )
+                        })? {
+                            return Ok(());
+                        }
                         continue;
                     }
                     break Err(err);
@@ -10669,6 +10794,41 @@ mod tests {
             logical_prompt_id(Some("user-turn-001".to_string())),
             "user-turn-001"
         );
+    }
+
+    #[test]
+    fn automatic_retry_wait_aborts_when_attempt_is_no_longer_active() {
+        let mut checks = 0;
+        let active = wait_for_retry_while_active(0, || {
+            checks += 1;
+            Ok(checks == 1)
+        })
+        .unwrap();
+
+        assert!(!active);
+        assert_eq!(checks, 2);
+    }
+
+    #[test]
+    fn dynamic_retry_gate_observes_a_stopped_leaf_while_parent_stays_running() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = App::new(repo_root);
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut leaf = test_worktree_node("leaf-a");
+        leaf.status = DynamicNodeStatus::Running;
+        leaf.started_at = Some("2026-08-06T00:00:00Z".to_string());
+        let mut graph = test_dynamic_graph(vec![leaf]);
+        persist_dynamic_graph(&ctx, &graph).unwrap();
+
+        assert!(dynamic_leaf_attempt_is_still_running(&ctx, "leaf-a", "attempt-001").unwrap());
+
+        mark_dynamic_node_paused(&mut graph.nodes[0], PauseReason::ProcessInterrupted, None);
+        persist_dynamic_graph(&ctx, &graph).unwrap();
+
+        assert!(!dynamic_leaf_attempt_is_still_running(&ctx, "leaf-a", "attempt-001").unwrap());
     }
 
     fn git(cwd: &Utf8Path, args: &[&str]) {

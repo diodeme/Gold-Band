@@ -1,7 +1,12 @@
 //! multica 远程任务命令（开发设计 2.4 / 第 6 章表）。
 //!
 //! - [`get_multica_tasks`]：按 workspace 分组的远程 pending 列表 + 本地失败回显（`multica_pending_issues`）。
-//! - [`claim_multica_task`]：selective claim（命中 `multica_task_conversations.session_id` 带 prior_session_id 续跑）。
+//! - [`claim_multica_task`]：selective claim（点击即领取，claim-at-click）。claim 成功后登记 prepare lease
+//!   （心跳循环续期防 45s 回收）并回填 `requirement`（composer 预填输入框用）。
+//! - [`start_multica_conversation_run`]：发送预填好的远程任务——**复用** 本地会话创建链路
+//!   （`create_conversation_run_vm`：建工作流 + 建任务 + 写 conversation.json + 启动 run），
+//!   仅叠加 multica 专属簿记（active_run + 断点续跑索引 + start_task + 释放 lease）。
+//! - [`cancel_multica_prepare_lease`]：放弃 compose 时释放 lease（兜底是 45s 自然过期回收）。
 //!
 //! `pending_issues` 语义 = 失败待重试 issue（"失败回显"）：由 M4 终态 fail 写入、complete/rerun
 //! 清除；**claim 不写**（刚领取的 running 任务不是 failed/retryable，写入会让 VM 把 in-flight 误显为可重试）。
@@ -9,23 +14,27 @@
 use std::collections::BTreeMap;
 
 use camino::Utf8PathBuf;
-use gold_band::app::CreateTaskInput;
 use gold_band::config::{ConversationWorkspaceEntry, MulticaTaskConversation, MulticaWorkspaceRef};
 use tauri::{AppHandle, State};
 use tracing::{info, warn};
 
-use crate::commands::{CommandErrorVm, CommandResult, command_error};
-use crate::conversation_workspace::{project_id_for_workspace, project_ids_match};
+use crate::commands::{
+    CommandErrorVm, CommandResult, acp_live_update_emitter_for_app, acp_session_update_emitter,
+    command_error,
+};
+use crate::conversation_workspace::{project_id_for_workspace, project_ids_match, workspace_entry_for_project};
 use crate::multica::client::{MulticaClient, RegisterRequest, RuntimeSpec, WorkspaceInfo};
 use crate::multica::config::{
     MulticaSettingsVm, binding_for_multica, get_daemon_id, get_pat, multica_base_url, multica_settings,
 };
 use crate::multica::error::MulticaError;
 use crate::multica::state::{ActiveRemoteRun, SharedMulticaState};
-use crate::multica::vm::{
-    MulticaCompletedTaskVm, MulticaRemoteTaskStartedVm, RemoteConversationSidebarVm, RemoteTaskVm,
-};
+use crate::multica::vm::{MulticaCompletedTaskVm, RemoteConversationSidebarVm, RemoteTaskVm};
 use crate::state::DesktopState;
+use crate::view_models_conversation::{
+    ConversationCreateInputVm, ConversationRunVm, create_conversation_run_vm,
+    validate_conversation_create_vm,
+};
 
 /// 远程任务列表（按 workspace 分组，对齐 `ConversationSidebarVm` 形状）。
 ///
@@ -136,11 +145,12 @@ pub async fn get_multica_tasks(
     })
 }
 
-/// selective claim：点哪领哪（开发设计 2.4 / 4.4）。
+/// selective claim：点哪领哪（claim-at-click，开发设计 2.4 / 4.4）。
 ///
 /// 命中本地 `multica_task_conversations[task_id].session_id` 时带 `prior_session_id` 续跑同一 ACP
-/// session。返回领取到的 [`RemoteTaskVm`]（`auth_token` 不回显——M4 `start_multica_remote_task`
-/// 执行链自行 claim 取执行凭证）。
+/// session。claim 成功后：① 登记 prepare lease（心跳循环续期，防 compose 期间 45s 回收；同时缓存
+/// 任务身份 `issue_id`/`title` 供 start 消费）；② 回填 `requirement`（来自 `requirement_text()`），
+/// 供前端 composer 预填输入框。`auth_token` 不回显（执行凭证不进 VM）。
 #[tauri::command]
 pub async fn claim_multica_task(
     state: State<'_, DesktopState>,
@@ -182,28 +192,46 @@ pub async fn claim_multica_task(
         .await
         .map_err(|e| command_error(e.into()))?;
 
+    // claim 成功 → 登记 prepare lease（心跳循环续期 + 缓存任务身份供 start 消费）。
+    // issue_id/title 取自 claim 响应（start 命令无权再读 claim，靠 lease 传递）。
+    if let Ok(mut guard) = shared.lock() {
+        guard.register_prepare_lease(
+            &task_id,
+            runtime_id,
+            task.issue_id.clone(),
+            task.title.clone(),
+        );
+    }
+
     Ok(RemoteTaskVm::from_claimed(&task, &workspace_id))
 }
 
-/// 执行 multica 远程任务（开发设计 2.5 / 2.8 / 4.3）。
+/// 发送预填好的远程任务：复用本地会话创建链路 + 叠加 multica 簿记（开发设计 2.5 / 2.8 / 4.3）。
 ///
-/// claim（命中索引带 `prior_session_id` 续跑）→ 解析 workspace 绑定目录 → 构造绑定该目录、共享
-/// `lifecycle_bus` 的 App（`desktop.multica` 订阅器据此收到 NodeCompleted/RunCompleted）→ Direct
-/// WorkflowDsl（provider 先天绑定）+ `create_task_from_requirement`(requirement 作首轮 prompt) +
-/// `run_start_background`（库层 API，不经 Tauri command 层）→ 登记 `active_runs` + 落断点续跑索引
-/// → `start_task(force_fresh_session=false)`。
+/// 与本地工作空间「+」号进入的是**同一创建链路**：解析 workspace 绑定目录 → 构造 workspace-bound App
+/// （注入与 `create_conversation_run` 同款的 ACP emitter，NodeCompleted/RunCompleted 流向前端）→
+/// `validate_conversation_create_vm` → **复用** `create_conversation_run_vm`（建工作流 + 建任务 +
+/// 写 conversation.json + 拷附件 + 启动 run）。远程任务预填的需求即 `input.requirement`，用户在 composer
+/// 已选好模型/模式（与本地完全一致）。
 ///
-/// `auth_token`：claim 响应带的执行凭证，本期码灵本地执行不注入（agent 用绑定 provider，multica
-/// 回传全走 daemon PAT）——保留字段，未来 agent→multica 直连回调再启用。
+/// multica 专属叠加（成功建 run 后）：① `register_active_run`（真实 run.id，先于事件归属反查）；
+/// ② 持久化 `multica_task_conversations`（断点续跑索引，session_id 待 bridge 回填）；③ `start_task`
+/// （dispatched→running，claim 后 5min 内不 start 会被超时 fail）；④ 释放 prepare lease（compose 期间
+/// 心跳续期使命完成）。
 ///
-/// 库层 sync App 调用经 `spawn_blocking` 执行；HTTP（claim/start）留在 async 上下文。
+/// lease 读取用 peek（不移除）：失败路径（校验/建 run/HTTP）下 lease 留存，心跳继续续期，任务保持已领取态
+/// 可重试发送；仅成功建 run + start 后才 drop。
+///
+/// 库层 sync App 调用经 `spawn_blocking` 执行；HTTP（start/fail）留在 async 上下文。
 #[tauri::command]
-pub async fn start_multica_remote_task(
+pub async fn start_multica_conversation_run(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     shared: State<'_, SharedMulticaState>,
-    task_id: String,
+    input: ConversationCreateInputVm,
+    remote_task_id: String,
     workspace_id: String,
-) -> CommandResult<MulticaRemoteTaskStartedVm> {
+) -> CommandResult<ConversationRunVm> {
     let context = state.context().map_err(command_error)?;
     if !multica_settings(&context.config).connected {
         return Err(command_error(MulticaError::NotConfigured.into()));
@@ -212,106 +240,80 @@ pub async fn start_multica_remote_task(
     let pat = get_pat(&context.config).unwrap_or_default();
     let client = MulticaClient::new(base_url, Some(pat)).map_err(|e| command_error(e.into()))?;
 
-    // runtime_id 来自该 workspace 启动注册缓存（未注册 → runtime-offline）。
-    let runtime_id = shared
+    // ① 消费 claim 时缓存的 lease 身份（runtime_id + issue_id + thread_name）；未 claim 直接 send → 拒绝。
+    // peek 不移除：失败路径 lease 留存续期，成功后才 drop。
+    let lease = shared
         .lock()
         .ok()
-        .and_then(|guard| guard.runtime_id(&workspace_id).map(str::to_string))
-        .ok_or(MulticaError::RuntimeOffline)
+        .and_then(|guard| guard.prepare_lease(&remote_task_id))
+        .ok_or(MulticaError::TaskNotFound)
         .map_err(|e| command_error(e.into()))?;
 
-    // 续跑依据：home-repo StateConfig 的 multica_task_conversations[task_id]。
-    // 同时供 claim 带 prior_session_id（session_id 字段）与本地 run 续跑决策（local ids）。
-    let resume_conv = context.app().load_state().ok().and_then(|state_cfg| {
-        state_cfg
-            .multica_task_conversations
-            .as_ref()
-            .and_then(|map| map.get(&task_id))
-            .cloned()
-    });
-    let prior_session_id = resume_conv.as_ref().and_then(|c| c.session_id.clone());
+    // ② resolve workspace（input.project_id = 绑定 workspace 的 local_project_id，前端预填时已确定）。
+    let global_app = context.app();
+    let app_state = global_app.load_state().map_err(command_error)?;
+    let Some((workspace_path, resolved_project_id)) =
+        workspace_entry_for_project(&app_state, &input.project_id)
+    else {
+        return Err(CommandErrorVm::new(
+            "workspace.not-found",
+            serde_json::json!({ "projectId": input.project_id }),
+        ));
+    };
 
-    // claim（async HTTP）→ requirement + issue_id。
-    let claimed = client
-        .claim_specific_task(&runtime_id, &task_id, prior_session_id.as_deref())
-        .await
-        .map_err(|e| command_error(e.into()))?;
-
-    // 绑定目录 + provider（未绑定 → task-not-found，引导用户绑定工作空间）。
-    let home_state = context.app().load_state().map_err(command_error)?;
-    let (workspace_path, provider) =
-        binding_for_multica(&context.config, &home_state, &workspace_id)
-            .ok_or(MulticaError::TaskNotFound)
-            .map_err(|e| command_error(e.into()))?;
-
-    // workspace-bound App：state.app() 注入共享 lifecycle_bus，with_repo_root 保留之并改绑目录。
+    // ③ workspace-bound App + 与 create_conversation_run 同款的 ACP emitter 注入（事件流向前端）。
     let workspace_app = state
         .app()
         .map_err(command_error)?
-        .with_repo_root(Utf8PathBuf::from(workspace_path.clone()), context.config.clone());
+        .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
+    let mut input = input;
+    input.project_id = resolved_project_id.clone();
+    // 先算 emitter（借 workspace_app）再 move——避免在 with_acp_live_update 表达式内同时借与 move。
+    let live_update = acp_live_update_emitter_for_app(
+        &workspace_app,
+        app_handle.clone(),
+        Some(resolved_project_id.clone()),
+    );
+    let app = workspace_app
+        .with_acp_live_update(live_update)
+        .with_acp_session_update(acp_session_update_emitter(
+            app_handle.clone(),
+            state
+                .app()
+                .map_err(command_error)?
+                .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone()),
+            Some(resolved_project_id.clone()),
+        ));
 
-    let requirement = claimed
-        .requirement
-        .clone()
-        .or(claimed.title.clone())
-        .unwrap_or_default();
-    let issue_id = claimed.issue_id.clone();
-    let remote = task_id.clone();
-    let ws_path = workspace_path.clone();
-    let rt_id = runtime_id.clone();
+    // ④ 复用本地链路校验（与本地「+」同一校验：模型/agent 可用性等）。
+    let validation = validate_conversation_create_vm(&app, &input).map_err(command_error)?;
+    if !validation.valid {
+        return Err(CommandErrorVm::new(
+            "conversation.validation-failed",
+            serde_json::json!({
+                "codes": validation
+                    .missing_items
+                    .iter()
+                    .map(|item| item.code.clone())
+                    .collect::<Vec<_>>()
+            }),
+        ));
+    }
+
+    // 搬运到 spawn_blocking 闭包的 multica 簿记数据。
+    let remote = remote_task_id.clone();
     let ws_id = workspace_id.clone();
+    let rt_id = lease.runtime_id.clone();
+    let issue = lease.issue_id.clone();
+    let title = lease.title.clone();
+    let ws_path = workspace_path.clone();
     let shared_clone = shared.inner().clone();
     let ctx_clone = context.clone();
-    let decision = classify_resume(resume_conv.as_ref());
 
-    // 库层 sync App 调用 → spawn_blocking（不阻塞 Tauri async runtime）。
-    // 返回 (local_task_id, local_run_id, force_fresh_session)：local_run_id 供前端按 run 直达会话
-    // （对齐 create_conversation_run，Issue 3 根因修复）；force_fresh=true 仅 strict_continue 续跑失败降级整任务重跑时。
+    // ⑤ 复用 create_conversation_run_vm（建工作流 + 建任务 + 写 conversation.json + 启动 run）+ 叠加簿记。
     let result = tauri::async_runtime::spawn_blocking(
-        move || -> anyhow::Result<(String, String, bool)> {
-            let (local_task_id, local_run_id, force_fresh) = match decision {
-                ResumeDecision::Resume {
-                    local_task_id,
-                    local_run_id,
-                } => {
-                    // 续跑同一本地 run：内部 worker-ref continue_ref → session/load 续跑同一 ACP session。
-                    match workspace_app.run_continue_background_with_config_overrides(
-                        &local_task_id,
-                        &local_run_id,
-                        None,
-                        None,
-                        Vec::new(),
-                        None,
-                        None,
-                    ) {
-                        Ok(_) => (local_task_id, local_run_id, false),
-                        Err(error) => {
-                            // strict_continue 失败（session 已死，acp/client.rs:2132-2141）→ 降级整任务重跑。
-                            warn!(
-                                task = %remote,
-                                %error,
-                                "multica resume failed, falling back to fresh task"
-                            );
-                            let (tid, rid) = start_fresh(
-                                &workspace_app,
-                                claimed.title.clone(),
-                                &requirement,
-                                &provider,
-                            )?;
-                            (tid, rid, true)
-                        }
-                    }
-                }
-                ResumeDecision::Fresh => {
-                    let (tid, rid) = start_fresh(
-                        &workspace_app,
-                        claimed.title.clone(),
-                        &requirement,
-                        &provider,
-                    )?;
-                    (tid, rid, false)
-                }
-            };
+        move || -> anyhow::Result<ConversationRunVm> {
+            let run = create_conversation_run_vm(&app, &input)?;
             // 登记 active_run（真实 run.id，先于 NodeCompleted/RunCompleted 归属反查）。
             if let Ok(mut guard) = shared_clone.lock() {
                 guard.register_active_run(
@@ -319,106 +321,69 @@ pub async fn start_multica_remote_task(
                     ActiveRemoteRun {
                         runtime_id: rt_id,
                         workspace_id: ws_id,
-                        local_task_id: local_task_id.clone(),
-                        local_run_id: local_run_id.clone(),
-                        issue_id,
-                        title: claimed.title.clone(),
+                        local_task_id: run.task_id.clone(),
+                        local_run_id: run.run_id.clone(),
+                        issue_id: issue,
+                        title,
                         started_at: chrono::Utc::now().to_rfc3339(),
                     },
                 );
+                // 建成 run + 登记 → 释放 lease（compose 期间续期使命完成）。失败时已在上面 ? 返回，lease 留存。
+                guard.drop_prepare_lease(&remote);
             }
-            // 落断点续跑索引（home-repo StateConfig）：fresh/fresh-fallback 覆盖为新 ids；
-            // 续跑成功沿用原条目（local ids 不变），仅刷新 work_dir 兜底。session_id 待 bridge 回填。
+            // 落断点续跑索引（home-repo StateConfig）：新 run 的 local ids + work_dir；session_id 待 bridge 回填。
             let mut state_cfg = ctx_clone.app().load_state()?;
             let mut conversations = state_cfg.multica_task_conversations.clone().unwrap_or_default();
             let entry = conversations.entry(remote.clone()).or_insert(MulticaTaskConversation {
-                local_task_id: local_task_id.clone(),
-                local_run_id: local_run_id.clone(),
+                local_task_id: run.task_id.clone(),
+                local_run_id: run.run_id.clone(),
                 session_id: None,
                 work_dir: Some(ws_path.clone()),
             });
-            entry.local_task_id = local_task_id.clone();
-            entry.local_run_id = local_run_id.clone();
+            entry.local_task_id = run.task_id.clone();
+            entry.local_run_id = run.run_id.clone();
             entry.work_dir = Some(ws_path);
             state_cfg.multica_task_conversations = Some(conversations);
             ctx_clone.app().save_state(&state_cfg)?;
-            Ok((local_task_id, local_run_id, force_fresh))
+            Ok(run)
         },
     )
     .await
     .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?;
 
     match result {
-        Ok((local_task_id, local_run_id, force_fresh)) => {
+        Ok(run) => {
             // 本地 run 已登记 → 通知 server dispatched→running（claim 后 5min 内不 start 会被超时 fail）。
-            // force_fresh_session=true 仅整任务重跑降级（strict_continue 失败）；正常执行/续跑 false。
+            // composer 流总是 fresh（与本地「+」一致；断点续跑由 server 重派 + bridge 兜底，不在此分支）。
             client
-                .start_task(&task_id, force_fresh)
+                .start_task(&remote_task_id, false)
                 .await
                 .map_err(|e| command_error(e.into()))?;
-            Ok(MulticaRemoteTaskStartedVm {
-                local_task_id,
-                run_id: local_run_id,
-            })
+            Ok(run)
         }
         Err(error) => {
             // 本地启动失败：best-effort fail_task，避免 server 干等 5min 超时（reason=agent_error，resume-unsafe）。
             let _ = client
-                .fail_task(&task_id, "local start failed", "agent_error")
+                .fail_task(&remote_task_id, "local start failed", "agent_error")
                 .await;
             Err(command_error(error))
         }
     }
 }
 
-/// 断点续跑决策（开发设计 4.4）：resume-safe 重派（同 task_id）命中本地未终态 run → 续跑；否则 fresh。
+/// 放弃 compose 时释放 prepare lease（开发设计 2.5 / 接入方案 Req D.2）。
 ///
-/// 命中 = `task_conversations[tid]` 存在且 `local_task_id`/`local_run_id` 非空（run 未终态——
-/// bridge `finalize_terminal` 在终态时清条目，故存在即代表先前 run 仍可续）。session_id 是否存在
-/// 不影响决策（无 session 时续跑会因 strict_continue 立即降级 fresh）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ResumeDecision {
-    /// 续跑同一本地 run（worker-ref continue_ref → session/load）。
-    Resume {
-        local_task_id: String,
-        local_run_id: String,
-    },
-    /// 无先前本地 run（首 claim）→ fresh 整任务执行。
-    Fresh,
-}
-
-/// 纯函数：按 `task_conversations[tid]` 决策续跑/新建。
-fn classify_resume(conv: Option<&MulticaTaskConversation>) -> ResumeDecision {
-    match conv {
-        Some(c) if !c.local_task_id.is_empty() && !c.local_run_id.is_empty() => ResumeDecision::Resume {
-            local_task_id: c.local_task_id.clone(),
-            local_run_id: c.local_run_id.clone(),
-        },
-        _ => ResumeDecision::Fresh,
+/// 用户在预填页返回/新建其它会话 → 调此命令丢弃 lease，心跳停止续期；server 的 45s prepare lease
+/// 自然过期后由 `ReclaimStaleDispatchedTaskForRuntime` 回收回 pending 可领取态（兜底）。幂等：无 lease 返回 Ok。
+#[tauri::command]
+pub fn cancel_multica_prepare_lease(
+    shared: State<'_, SharedMulticaState>,
+    remote_task_id: String,
+) -> CommandResult<()> {
+    if let Ok(mut guard) = shared.lock() {
+        guard.drop_prepare_lease(&remote_task_id);
     }
-}
-
-/// fresh 整任务执行：Direct WorkflowDsl（provider 先天绑定）+ create_task + run_start。
-///
-/// 续跑降级与首 claim 共用。返回 `(local_task_id, local_run_id)`。
-fn start_fresh(
-    app: &gold_band::app::App,
-    title: Option<String>,
-    requirement: &str,
-    provider: &str,
-) -> anyhow::Result<(String, String)> {
-    let workflow = gold_band::dsl::presets::direct_workflow(provider.to_string(), None, None, BTreeMap::new());
-    let summary = app.create_task_from_requirement(CreateTaskInput {
-        title,
-        description: None,
-        requirement_file_name: None,
-        requirement_content: requirement.to_string(),
-        workflow,
-        workflow_template_id: None,
-    })?;
-    let local_task_id = summary.task.id.clone();
-    let run = app.run_start_background(&local_task_id, None)?;
-    Ok((local_task_id, run.id))
+    Ok(())
 }
 
 /// 中断 multica 远程任务的本地 run（开发设计 2.8 / 4.4 取消检测）。
@@ -799,51 +764,40 @@ pub fn set_active_multica_workspace(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gold_band::config::MulticaTaskConversation;
 
-    fn conv(task: &str, run: &str, session: Option<&str>) -> MulticaTaskConversation {
-        MulticaTaskConversation {
-            local_task_id: task.into(),
-            local_run_id: run.into(),
-            session_id: session.map(str::to_string),
-            work_dir: Some("/repo".into()),
-        }
+    #[test]
+    fn cancel_prepare_lease_is_idempotent() {
+        // 放弃 compose：有 lease → 丢弃；无 lease → 幂等返回 Ok（兜底是 45s 自然过期回收）。
+        let shared = crate::multica::state::shared_state();
+        // 无 lease：不报错。
+        assert!(shared.lock().unwrap().drop_prepare_lease("remote-x").is_none());
+        // 登记后丢弃：返回 Some（携带身份），再丢返回 None。
+        shared
+            .lock()
+            .unwrap()
+            .register_prepare_lease("remote-1", "rt-a".into(), None, None);
+        assert!(shared.lock().unwrap().drop_prepare_lease("remote-1").is_some());
+        assert!(shared.lock().unwrap().drop_prepare_lease("remote-1").is_none());
     }
 
     #[test]
-    fn classify_resume_fresh_when_no_prior_local_run() {
-        // 首 claim：无 task_conversations 条目 → fresh 整任务执行。
-        assert_eq!(classify_resume(None), ResumeDecision::Fresh);
-    }
-
-    #[test]
-    fn classify_resume_fresh_when_local_ids_empty() {
-        // 条目存在但 local ids 空（异常残留）→ fresh，不续跑空 run。
-        assert_eq!(classify_resume(Some(&conv("", "", None))), ResumeDecision::Fresh);
-        // task 有值但 run 空 → 仍 fresh。
-        let mut c = conv("task-1", "", None);
-        assert_eq!(classify_resume(Some(&c)), ResumeDecision::Fresh);
-        c = conv("", "run-1", None);
-        assert_eq!(classify_resume(Some(&c)), ResumeDecision::Fresh);
-    }
-
-    #[test]
-    fn classify_resume_resume_when_prior_local_run_present() {
-        // 命中先前未终态本地 run（local ids 非空）→ 续跑。session_id 有无不影响决策。
-        assert_eq!(
-            classify_resume(Some(&conv("task-1", "run-1", Some("sess-9")))),
-            ResumeDecision::Resume {
-                local_task_id: "task-1".into(),
-                local_run_id: "run-1".into(),
-            }
+    fn prepare_lease_peek_does_not_consume() {
+        // start 命令用 peek 读身份：失败路径 lease 留存（心跳续期），成功后才 drop。
+        let shared = crate::multica::state::shared_state();
+        shared.lock().unwrap().register_prepare_lease(
+            "remote-1",
+            "rt-a".into(),
+            Some("issue-1".into()),
+            Some("Thread name".into()),
         );
-        // 无 session（首轮未及 NodeCompleted 即中断）→ 仍 Resume（续跑会 strict_continue 降级 fresh）。
-        assert_eq!(
-            classify_resume(Some(&conv("task-1", "run-1", None))),
-            ResumeDecision::Resume {
-                local_task_id: "task-1".into(),
-                local_run_id: "run-1".into(),
-            }
-        );
+        // peek 不移除 → snapshot 仍含该条（心跳仍续期）。
+        let peeked = shared.lock().unwrap().prepare_lease("remote-1").expect("应命中");
+        assert_eq!(peeked.runtime_id, "rt-a");
+        assert_eq!(peeked.issue_id.as_deref(), Some("issue-1"));
+        assert_eq!(peeked.title.as_deref(), Some("Thread name"));
+        assert!(!shared.lock().unwrap().prepare_leases_snapshot().is_empty());
+        // 显式 drop 才移除（成功建 run 后）。
+        shared.lock().unwrap().drop_prepare_lease("remote-1");
+        assert!(shared.lock().unwrap().prepare_lease("remote-1").is_none());
     }
 }

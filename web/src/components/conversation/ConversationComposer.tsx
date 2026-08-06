@@ -11,7 +11,7 @@ import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForA
 import { normalizeConfigOptionOverrides, selectableAgentOptions, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
-import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
+import { useConversationComposerDraft, type ConversationComposerMulticaBinding } from '@/lib/conversation-composer-draft';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { useAgentCommands } from '@/hooks/useAgentCommands';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
@@ -35,7 +35,7 @@ interface ConversationComposerProps {
   busy: boolean;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
-  onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
+  onSubmit: (input: ConversationCreateInput, multica?: ConversationComposerMulticaBinding | null) => Promise<string | null | undefined> | string | null | undefined;
   onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
@@ -292,10 +292,14 @@ export function ConversationComposer({
       }
       const paths = await resolveAttachmentPaths();
       setRunModeError(null);
-      const submitError = await onSubmit({
-        ...inputBase,
-        attachmentPaths: paths.length > 0 ? paths : undefined,
-      });
+      // 把当前 draft 的 multica 绑定一并交给 onSubmit：发送方据此分流远程任务 vs 本地新建（composer 自身不做决策，仅转发）。
+      const submitError = await onSubmit(
+        {
+          ...inputBase,
+          attachmentPaths: paths.length > 0 ? paths : undefined,
+        },
+        composerDraft.draft.multica,
+      );
       if (submitError) {
         setRunModeError(submitError);
         return;

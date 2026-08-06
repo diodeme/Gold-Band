@@ -3,10 +3,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   cancelMulticaTask,
+  claimMulticaTask,
   connectMultica,
   getMulticaTasks,
   rerunMulticaTask,
-  startMulticaRemoteTask,
   subscribeMulticaSettingsUpdates,
   subscribeMulticaTaskUpdates,
 } from '../../api';
@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
 import { formatLocalDateTime } from '@/lib/datetime';
 import { displayAppError } from '../../i18n';
 import type {
@@ -27,6 +28,8 @@ import type {
 interface MulticaRemoteTaskListProps {
   /// 直达指定 run 的会话页（复用本地侧栏 onSelectRun，与 createConversationRun 同路径）。
   onSelectRun: (projectId: string, taskId: string, runId: string) => void;
+  /// 远程任务「点击执行」后进入会话准备页（与本地工作空间「+」同一回调：预填后落 conversation-home）。
+  onNewConversationInWorkspace: (projectId: string) => void;
 }
 
 const STATUS_VARIANT: Record<string, 'outline' | 'secondary' | 'default' | 'destructive'> = {
@@ -36,8 +39,9 @@ const STATUS_VARIANT: Record<string, 'outline' | 'secondary' | 'default' | 'dest
   failed: 'destructive',
 };
 
-export function MulticaRemoteTaskList({ onSelectRun }: MulticaRemoteTaskListProps) {
+export function MulticaRemoteTaskList({ onSelectRun, onNewConversationInWorkspace }: MulticaRemoteTaskListProps) {
   const { t } = useTranslation();
+  const composerDraft = useConversationComposerDraft();
   const [vm, setVm] = useState<RemoteConversationSidebarVm | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -92,15 +96,23 @@ export function MulticaRemoteTaskList({ onSelectRun }: MulticaRemoteTaskListProp
     }
   }
 
-  async function handleClaimAndStart(task: RemoteTaskVm) {
+  async function handleClaimAndPrepare(task: RemoteTaskVm) {
     const ws = workspacesById.get(task.workspaceId);
     if (!ws) return;
     setBusyTaskId(task.id);
     setError(null);
     try {
-      // start 返回 localTaskId + runId（对齐 createConversationRun）→ 按 run 直达会话页。
-      const { localTaskId, runId } = await startMulticaRemoteTask(task.id, task.workspaceId);
-      onSelectRun(ws.localProjectId, localTaskId, runId);
+      // claim 即领取（claim-at-click）：拿到需求正文（pending 列表只有 thread_name，正文仅 claim 响应里有）；
+      // 后端同时登记 prepare lease，常驻心跳在 compose 期间续期，防 45s 被回收。
+      const claimed = await claimMulticaTask(task.id, task.workspaceId);
+      const requirement = claimed.requirement ?? claimed.title ?? '';
+      composerDraft.prefill(requirement, {
+        remoteTaskId: task.id,
+        workspaceId: task.workspaceId,
+        localProjectId: ws.localProjectId,
+      });
+      // 与本地工作空间「+」同一回调：落到 conversation-home，composer 已预填需求正文，用户选模型/模式后发送。
+      onNewConversationInWorkspace(ws.localProjectId);
     } catch (err) {
       setError(displayAppError(t, err));
     } finally {
@@ -193,7 +205,7 @@ export function MulticaRemoteTaskList({ onSelectRun }: MulticaRemoteTaskListProp
                           key={task.id}
                           task={task}
                           busy={busyTaskId === task.id}
-                          onClaimAndStart={() => handleClaimAndStart(task)}
+                          onClaimAndPrepare={() => handleClaimAndPrepare(task)}
                           onCancel={() => handleCancel(task)}
                           onRerun={() => handleRerun(task)}
                           t={t}
@@ -228,7 +240,7 @@ export function MulticaRemoteTaskList({ onSelectRun }: MulticaRemoteTaskListProp
                       key={task.id}
                       task={task}
                       busy={busyTaskId === task.id}
-                      onClaimAndStart={() => handleClaimAndStart(task)}
+                      onClaimAndPrepare={() => handleClaimAndPrepare(task)}
                       onCancel={() => handleCancel(task)}
                       onRerun={() => handleRerun(task)}
                       t={t}
@@ -298,14 +310,14 @@ export function MulticaRemoteTaskList({ onSelectRun }: MulticaRemoteTaskListProp
 function RemoteTaskRow({
   task,
   busy,
-  onClaimAndStart,
+  onClaimAndPrepare,
   onCancel,
   onRerun,
   t,
 }: {
   task: RemoteTaskVm;
   busy: boolean;
-  onClaimAndStart: () => void;
+  onClaimAndPrepare: () => void;
   onCancel: () => void;
   onRerun: () => void;
   t: ReturnType<typeof useTranslation>['t'];
@@ -336,7 +348,7 @@ function RemoteTaskRow({
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
         {canClaim && (
-          <Button size="icon" variant="ghost" className="size-7" disabled={busy} onClick={onClaimAndStart}>
+          <Button size="icon" variant="ghost" className="size-7" disabled={busy} onClick={onClaimAndPrepare}>
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
           </Button>
         )}

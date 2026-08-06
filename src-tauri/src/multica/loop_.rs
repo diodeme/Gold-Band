@@ -6,8 +6,9 @@
 //! - **recover-orphans**：启动 register 后，对每个 runtime_id 清残留的在飞任务。
 //! - **启动 reconcile**：recover-orphans 后，崩溃残留的 task_conversations 条目 remote cancelled/404
 //!   → 作废本地 Paused run（不在 failed 上作废，保断点续跑，开发设计 4.4）。
-//! - **执行期 15s 心跳 + 取消检测**：claim→complete 期间维持 runtime 在线；同 tick 取消检测——
-//!   在飞 active_run 的 remote failed/cancelled/404 → 作废本地 run（接入方案 C5）。
+//! - **常驻 15s 心跳 + lease 续期 + 取消检测**：与 multica 建立连接后始终保持心跳（不再仅在任务执行时）；
+//!   同 tick 对 claim-at-click 后未 start 的任务续期 prepare lease（防 45s 回收）；再对在飞 active_run
+//!   做取消检测——remote failed/cancelled/404 → 作废本地 run（接入方案 C5）。
 //!
 //! 复用 `metrics::start_heartbeat_polling` 骨架：`tauri::async_runtime::spawn` + 三层 guard
 //! （try_state → context → multica_settings）+ 每 tick 重读配置（用户改配置即时生效）。
@@ -26,7 +27,7 @@ use crate::multica::error::MulticaError;
 use crate::multica::state::SharedMulticaState;
 use crate::state::DesktopState;
 
-/// 执行期心跳间隔（秒）。≠ metrics 的 15min；两套并存，互不干扰（开发设计 2.6 / 第 6 章表3）。
+/// 常驻心跳间隔（秒）。≠ metrics 的 15min；两套并存，互不干扰（开发设计 2.6 / 第 6 章表3）。
 pub const MULTICA_HEARTBEAT_INTERVAL_SECS: u64 = 15;
 
 /// 启动 multica 运行期循环（main.rs setup，`start_heartbeat_polling` 之后挂载）。
@@ -121,13 +122,16 @@ async fn run_startup_registration<R: Runtime>(app: &AppHandle<R>) {
     reconcile_startup_orphans(app, &client).await;
 }
 
-/// 执行期心跳循环（15s）：仅对有在飞任务的 runtime 发心跳 + 取消检测（开发设计 2.6 / 4.4）。
+/// 常驻心跳循环（15s）：对**所有已连接 runtime** 发心跳 + 续期 prepare lease + 取消检测。
 ///
-/// 每 tick：心跳维持 runtime 在线，随后取消检测——在飞 active_run 的 remote 若已 terminal
-/// （failed/cancelled/404）→ 作废本地 run（接入方案 C5）。无在飞任务则空转。
+/// 与 multica 建立连接后即持续维持在线（不再仅任务执行期间），心跳源是 `runtime_ids`（所有已注册
+/// 工作空间）而非 `active_runs`——无任务也在线，符合「连接后始终保持心跳」。每 tick 顺序：
+/// 1. 心跳（维持 runtime 在线）；
+/// 2. 续期 claim-at-click 后未 start 的 prepare lease（compose 期间防 45s 回收）；
+/// 3. 取消检测——在飞 active_run 的 remote 若已 terminal（failed/cancelled/404）→ 作废本地 run（C5）。
 async fn run_heartbeat_loop<R: Runtime>(app: AppHandle<R>) {
     loop {
-        let runtime_ids = collect_active_runtime_ids(&app);
+        let runtime_ids = collect_all_runtime_ids(&app);
         if !runtime_ids.is_empty() {
             if let Some(client) = build_client(&app) {
                 for runtime_id in &runtime_ids {
@@ -139,6 +143,8 @@ async fn run_heartbeat_loop<R: Runtime>(app: AppHandle<R>) {
                         );
                     }
                 }
+                // 续期 prepare lease：claim 后未 start 的任务（compose 期间），防 server 45s 回收。
+                extend_prepare_leases(&app, &client).await;
                 // 取消检测：active run 的 remote terminal → 作废本地（client.rs:524 C5）。
                 detect_cancelled_active_runs(&app, &client).await;
             }
@@ -182,8 +188,11 @@ fn build_client<R: Runtime>(app: &AppHandle<R>) -> Option<MulticaClient> {
     MulticaClient::new(base_url, Some(pat)).ok()
 }
 
-/// 三层 guard + 取有在飞任务的 runtime_id 集合（心跳遍历用）。
-fn collect_active_runtime_ids<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
+/// 三层 guard + 取**所有已注册** runtime_id 集合（常驻心跳遍历用——与在飞任务解耦）。
+///
+/// 读 `runtime_ids`（所有已连接工作空间）而非 `active_runs`：连接后即持续在线，无任务也心跳，
+/// 符合「与 multica 建立连接后始终保持心跳」。register 重建缓存后自动纳入。
+fn collect_all_runtime_ids<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
     let Some(desktop) = app.try_state::<DesktopState>() else {
         return Vec::new();
     };
@@ -198,8 +207,30 @@ fn collect_active_runtime_ids<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
     }
     shared
         .lock()
-        .map(|guard| guard.active_runtime_ids())
+        .map(|guard| guard.runtime_ids())
         .unwrap_or_default()
+}
+
+/// compose 期间续期 prepare lease（claim-at-click 后、未 start 的任务）。
+///
+/// 遍历 `prepare_leases` 快照 `(remote_task_id, runtime_id)`，对每条调 `client.extend_prepare_lease`
+/// 续 45s 窗口，防 server `ReclaimStaleDispatchedTaskForRuntime` 回收（与 multica daemon
+/// `startTaskPrepareLeaseExtender` 每 15s 续期同构）。start 消费 / cancel 放弃后该条移除，续期自然停止。
+async fn extend_prepare_leases<R: Runtime>(app: &AppHandle<R>, client: &MulticaClient) {
+    let leases = app
+        .try_state::<SharedMulticaState>()
+        .and_then(|shared| shared.lock().ok().map(|guard| guard.prepare_leases_snapshot()))
+        .unwrap_or_default();
+    for (remote_task_id, runtime_id) in &leases {
+        if let Err(error) = client.extend_prepare_lease(runtime_id, remote_task_id).await {
+            tracing::warn!(
+                remote_task_id = %remote_task_id,
+                runtime_id = %runtime_id,
+                %error,
+                "multica prepare-lease extend failed (will retry next tick)"
+            );
+        }
+    }
 }
 
 // ── 取消检测 / 启动 reconcile（开发设计 4.4 / 接入方案 C5）──────────────────────

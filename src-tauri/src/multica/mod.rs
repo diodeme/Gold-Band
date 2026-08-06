@@ -6,10 +6,11 @@
 //! - [`error`]:  `MulticaError` → `CommandErrorVm` 映射（code 前缀 `multica.*`）
 //!
 //! 后续里程碑追加：
-//! - `loop_`（M2）：启动全量 register / 15s 心跳 / recover-orphans / 取消检测
-//! - `state`（M2+）：运行期内存状态（runtime_id 映射、在飞任务映射）
+//! - `loop_`（M2）：启动全量 register / 常驻 15s 心跳（连接后即持续，承载 prepare-lease 续期）/ recover-orphans / 取消检测
+//! - `state`（M2+）：运行期内存状态（runtime_id 映射、在飞任务映射、prepare lease）
 //! - `vm`（M3）：远程任务展示 VM（RemoteTaskVm / RemoteConversationSidebarVm）
-//! - `commands`（M3）：远程任务命令（get_multica_tasks / claim_multica_task）
+//! - `commands`（M3）：远程任务命令（get_multica_tasks / claim_multica_task /
+//!   start_multica_conversation_run / cancel_multica_prepare_lease）
 //! - `bridge`（M4）：lifecycle 事件转译 multica 终态（NodeCompleted 采 session pin /
 //!   RunCompleted 4 分支 complete/fail；订阅 `RuntimeLifecycleBus`）
 

@@ -55,7 +55,6 @@ import type {
   MulticaSettingsVm,
   MulticaServerWorkspaceVm,
   MulticaWorkspaceRefVm,
-  MulticaRemoteTaskStartedVm,
   RemoteConversationSidebarVm,
   RemoteTaskVm,
   WorkflowDsl,
@@ -210,7 +209,11 @@ export interface RuntimeApi {
   disconnectMultica(): Promise<MulticaSettingsVm>;
   getMulticaTasks(): Promise<RemoteConversationSidebarVm>;
   claimMulticaTask(taskId: string, workspaceId: string): Promise<RemoteTaskVm>;
-  startMulticaRemoteTask(taskId: string, workspaceId: string): Promise<MulticaRemoteTaskStartedVm>;
+  /// 远程任务「点击执行」后复用本地 composer：用户在预填页选模型/模式后发送，
+  /// 经此命令复用 create_conversation_run_vm 建会话并叠加 multica 簿记（register_active_run + start_task）。
+  startMulticaConversationRun(input: ConversationCreateInput, remoteTaskId: string, workspaceId: string): Promise<ConversationRunVm>;
+  /// 放弃远程任务 prepare（claim 后未发送即离开）时调用：移除 prepare lease，停止心跳续期（兜底为 45s 自然回收）。
+  cancelMulticaPrepareLease(remoteTaskId: string): Promise<void>;
   cancelMulticaTask(taskId: string): Promise<void>;
   rerunMulticaTask(issueId: string, workspaceId: string): Promise<void>;
   listServerMulticaWorkspaces(): Promise<MulticaServerWorkspaceVm[]>;

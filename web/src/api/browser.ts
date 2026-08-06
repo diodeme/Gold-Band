@@ -809,11 +809,16 @@ export const browserApi: RuntimeApi = {
       retryable: false,
       workspaceId: 'mock-workspace',
       title: 'Mock remote task',
+      requirement: null,
       lastActivityAt: null,
     });
   },
-  startMulticaRemoteTask(_taskId: string, _workspaceId: string) {
-    return Promise.resolve({ localTaskId: 'mock-local-task-id', runId: 'mock-run-id' });
+  startMulticaConversationRun(input) {
+    // 浏览器桩：复用本地 createConversationRun 桩返回同样的会话 VM（多机端仅桌面端真实执行）。
+    return this.createConversationRun(input);
+  },
+  cancelMulticaPrepareLease(_remoteTaskId: string) {
+    return Promise.resolve();
   },
   cancelMulticaTask(_taskId: string) {
     return Promise.resolve();

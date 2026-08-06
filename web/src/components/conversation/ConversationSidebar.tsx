@@ -28,7 +28,7 @@ interface ConversationSidebarProps {
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
   onDeleteTask: (projectId: string, taskId: string) => void;
   onPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
-  onNewConversationInWorkspace?: (projectId: string) => void;
+  onNewConversationInWorkspace: (projectId: string) => void;
   onAddWorkspace?: () => void;
   onRemoveWorkspace?: (projectId: string) => Promise<void>;
 }
@@ -410,6 +410,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             <div className="pt-2.5">
               <MulticaRemoteTaskList
                 onSelectRun={onSelectRun}
+                onNewConversationInWorkspace={onNewConversationInWorkspace}
               />
             </div>
           </ScrollArea>

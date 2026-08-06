@@ -1,7 +1,7 @@
 //! 工作流预设（DSL 层复用构造，开发设计 2.5）。
 //!
 //! 把「provider → 单节点 WorkflowDsl」这份构造从私有调用点上提到库层公开，
-//! 供会话 VM（`build_direct_workflow`）与 multica bridge（`start_multica_remote_task`）
+//! 供会话 VM（`build_direct_workflow`）与 multica（`create_conversation_run_vm` 经由的发送链）
 //! 共用同一份 provider→WorkflowDsl 构造，杜绝重复造轮子。
 //!
 //! 仅上提 `direct_workflow`：它是 provider 先天绑定的单 Worker 节点工作流，会话 VM 与

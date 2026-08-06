@@ -2650,7 +2650,6 @@ impl App {
     }
 
     pub fn request_attempt_prompt_cancel_best_effort(&self, attempt_dir: &Utf8Path) {
-        let _ = acp_client::request_prompt_cancel(attempt_dir);
         let _ = acp_client::cancel_attempt_prompt(attempt_dir);
     }
 

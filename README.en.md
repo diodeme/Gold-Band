@@ -29,6 +29,8 @@ Gold Band is a desktop AI Agent client for local projects. It connects to local 
 
 You can use it as a regular Agent client for continuous conversations, or run longer and more complex Coding tasks through fixed workflows or AI-driven orchestration with validation and failure recovery.
 
+![alt text](docs/images/README.en/gold-band-readme-hero-wide.png)
+
 > [!NOTE]
 > Gold Band is still in **Developer Preview**. Claude Code and Codex are the recommended starting points. Availability of other Agents depends on the local environment and their ACP support.
 

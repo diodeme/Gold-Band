@@ -33,7 +33,7 @@ describe('workspace auto collapse state machine', () => {
     expect(state).toEqual({ split: true, widthAtTransition: 500 });
     const splitState = state;
 
-    for (let width = 501; width <= 960; width += 1) {
+    for (let width = 501; width <= 1_440; width += 1) {
       state = reduceFileWorkspaceResponsiveState(state, width, 500);
       expect(state).toBe(splitState);
     }
@@ -263,19 +263,19 @@ describe('workspace auto collapse state machine', () => {
     expect(resolveRightWorkspacePanelMaxWidth({
       preferredWidth: 760,
       minWidth: 320,
-      maxWidth: 960,
+      maxWidth: 1440,
       userResizing: false,
     })).toBe(760);
     expect(resolveRightWorkspacePanelMaxWidth({
       preferredWidth: 760,
       minWidth: 320,
-      maxWidth: 960,
+      maxWidth: 1440,
       userResizing: true,
-    })).toBe(960);
+    })).toBe(1440);
     expect(resolveRightWorkspacePanelMaxWidth({
       preferredWidth: 200,
       minWidth: 320,
-      maxWidth: 960,
+      maxWidth: 1440,
       userResizing: false,
     })).toBe(320);
   });

@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import { useMeasuredElementHeight } from '@/hooks/use-measured-element-height';
 import { openWorkspacePathInFileManager } from '@/api';
 import type { WorkspaceDirectoryEntryVm } from '@/types';
 import { fileExplorerStore, useFileExplorerSnapshot, type FileTreeNode } from './file-explorer-store';
@@ -29,31 +30,18 @@ interface TreeRowContextValue {
 const TreeRowContext = createContext<TreeRowContextValue | null>(null);
 const TREE_ROW_HEIGHT = 32;
 
-function useMeasuredHeight() {
-  const ref = useRef<HTMLDivElement>(null);
-  const [height, setHeight] = useState(320);
-  useEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-    const update = () => {
-      const style = getComputedStyle(element);
-      setHeight(treeViewportContentHeight(
-        element.clientHeight,
-        Number.parseFloat(style.paddingTop) || 0,
-        Number.parseFloat(style.paddingBottom) || 0,
-      ));
-    };
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-  return { ref, height };
-}
-
 export function treeViewportContentHeight(clientHeight: number, paddingTop: number, paddingBottom: number) {
   return Math.max(1, Math.floor(clientHeight - paddingTop - paddingBottom));
 }
+
+const measureTreeViewportHeight = (element: HTMLDivElement) => {
+  const style = getComputedStyle(element);
+  return treeViewportContentHeight(
+    element.clientHeight,
+    Number.parseFloat(style.paddingTop) || 0,
+    Number.parseFloat(style.paddingBottom) || 0,
+  );
+};
 
 export function treeOverscanCount(viewportHeight: number, rowHeight = TREE_ROW_HEIGHT) {
   const visibleRows = Math.ceil(Math.max(1, viewportHeight) / Math.max(1, rowHeight));
@@ -130,7 +118,7 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeNode
 export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: WorkspaceFileTreeProps) {
   const { t } = useTranslation();
   const snapshot = useFileExplorerSnapshot(projectId);
-  const { ref, height } = useMeasuredHeight();
+  const { ref, height } = useMeasuredElementHeight(320, measureTreeViewportHeight);
   const treeRef = useRef<TreeApi<FileTreeNode> | null>(null);
   const pendingRevealPathRef = useRef<string | null>(null);
   const restoringScrollRef = useRef(true);

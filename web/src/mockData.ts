@@ -432,7 +432,7 @@ export const mockBootstrap: AppBootstrapVm = {
       rightWorkspace: {
         minWidth: 320,
         defaultWidth: 440,
-        maxWidth: 960,
+        maxWidth: 1440,
         file: {
           preferredWidth: 760,
           splitMinWidth: 500,

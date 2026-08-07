@@ -39,7 +39,7 @@ flowchart LR
 
 | `executionKind` | 模式 | 含义 | 稳定 `executionId` |
 |---|---|---|---|
-| `turn` | Direct | 一次用户消息到回复终态 | 每个 turn 独立生成的持久化 UUID；该 UUID 同时作为 `attemptId` |
+| `turn` | Direct | 一次用户消息到回复终态 | 同一 Direct 会话/task 使用 task UUID；executionId/attemptId 与 taskId 相同且不变化 |
 | `run` | Workflow | 一次 Workflow 运行 | `runUuid` |
 | `node-attempt` | Workflow | 某节点的一次实际尝试 | 同一 run/round/node 稳定派生的逻辑节点 execution UUID；重试不变 |
 | `outer-run` | AUTO | 一次 AUTO 总体交付 | 外层 `runUuid` |
@@ -47,7 +47,7 @@ flowchart LR
 
 子单元必须携带 `parentExecutionId`。Workflow node 指向 run，AUTO unit 指向 outer run；`workflow-invocation` 还携带 `childRunId`，用于关联其内部 Workflow run。
 
-`eventId`、`executionId`、`attemptId` 必须为 UUID。Workflow logical node executionId 由持久化 run UUID 与 round/node 逻辑键使用 UUID v5 稳定派生；AUTO unit executionId 使用持久化 DynamicNode UUID；attemptId 在 attempt 创建时生成或由 executionId 与持久化本地 attempt 序号稳定派生，attemptIndex 从同一领域序号产生。缺少生成条件或本地 attempt 标识不符合 `attempt-NNN` 时跳过事件并写本地诊断，HTTP 发送层不得猜测或重排。
+`eventId`、`executionId`、`attemptId` 必须为 UUID。Direct turn 的 executionId/attemptId 直接等于 task UUID，同一 task 内不随 run/node/用户输入变化，attemptIndex 固定为 1。Workflow logical node executionId 由持久化 run UUID 与 round/node 逻辑键使用 UUID v5 稳定派生；AUTO unit executionId 使用持久化 DynamicNode UUID；attemptId 在 attempt 创建时生成或由 executionId 与持久化本地 attempt 序号稳定派生，attemptIndex 从同一领域序号产生。缺少生成条件或本地 attempt 标识不符合 `attempt-NNN` 时跳过事件并写本地诊断，HTTP 发送层不得猜测或重排。
 
 ### 3.2 生命周期事件
 
@@ -140,7 +140,7 @@ flowchart LR
 |---|---|---|
 | `parentExecutionId` | 子单元 | 父 run/outer run ID |
 | `nodeId` | Workflow node attempt | 逻辑节点 UUID；用于关联同一节点的多次 attempt 和统计节点可靠性 |
-| `attemptId` | Direct turn、Workflow node attempt、AUTO unit attempt | 服务端 Usage 留存粒度。Direct 等于 executionId；Workflow/AUTO 与逻辑 executionId 分离，一次 attempt 从 started 到 terminal 固定，只有重试才生成新 UUID |
+| `attemptId` | Direct turn、Workflow node attempt、AUTO unit attempt | 服务端 Usage 留存粒度。Direct 的 attemptId 等于 taskId/executionId，同一 task 内持续累加；Workflow/AUTO 与逻辑 executionId 分离，一次 attempt 从 started 到 terminal 固定，只有重试才生成新 UUID |
 | `attemptIndex` | Direct turn、Workflow node attempt、AUTO unit attempt | 同一逻辑 execution 内的尝试序号，从 1 开始；Direct 固定为 1，Workflow/AUTO 真正重试时严格加一；同一 attempt 生命周期内固定 |
 | `roundIndex` | Workflow node attempt | 从 1 开始的 round 序号；用于首轮/后续轮次分析，不上报无统计价值的 round UUID |
 | `roleName` | Workflow node attempt；绑定 profile 的 AUTO unit | 执行开始时 resolved profile 名称快照；只用于展示和分组，不能作为唯一键 |
@@ -182,7 +182,7 @@ AUTO `workflow-invocation` 不承接 child Workflow 的 token：child node attem
 
 ### 4.5 计数字段
 
-`counters` 只出现在交付层的 `execution.completed` 终态事件中：Direct `turn`、Workflow `run`、AUTO `outer-run`。node attempt 和 unit attempt 不携带 counters，避免父子执行重复统计。五个字段全部必填、使用非负整数；没有发生时传 `0`。
+`counters` 只出现在交付层的 `execution.completed` 终态事件中：Direct `turn`、Workflow `run`、AUTO `outer-run`。node attempt 和 unit attempt 不携带 counters，避免父子执行重复统计。六个字段全部必填、使用非负整数；没有发生时传 `0`。
 
 ```json
 "counters": {
@@ -190,7 +190,8 @@ AUTO `workflow-invocation` 不承接 child Workflow 的 token：child node attem
   "resumeCount": 1,
   "permissionRequestCount": 2,
   "elicitationCount": 0,
-  "manualContinueCount": 1
+  "manualContinueCount": 1,
+  "followUpCount": 0
 }
 ```
 
@@ -202,7 +203,9 @@ AUTO `workflow-invocation` 不承接 child Workflow 的 token：child node attem
 | `elicitationCount` | turn/run/outer | 新的 elicitation request ID 首次进入 pending 的次数 |
 | `manualContinueCount` | turn/run/outer | 除 permission/elicitation 外，用户通过 manual check、分支决策、补充内容或继续按钮恢复 runtime 的次数；一次动作只能归入一个 Count |
 
-不增加其他 Count：attempt/retry 可由 attempt 事件追溯，执行/失败单元可由 unit 终态聚合，acceptance 次数已有 `acceptanceAttempt`，人工决策可由 `intervention.requested` 聚合，模型价值由 `modelUsages[]` 体现。`roundCount` 继续作为 Workflow run 的质量字段，不在 counters 中重复保存。
+| `followUpCount` | turn（Direct） | 同一 Direct task 内首轮之后的用户新输入次数；每次用户继续输入时累加，首轮与 permission/elicitation/automatic 等 runtime-continue 不计入 |
+
+除 followUpCount 外不增加其他 Count：attempt/retry 可由 attempt 事件追溯，执行/失败单元可由 unit 终态聚合，acceptance 次数已有 `acceptanceAttempt`，人工决策可由 `intervention.requested` 聚合，模型价值由 `modelUsages[]` 体现。`roundCount` 继续作为 Workflow run 的质量字段，不在 counters 中重复保存。
 
 ### 4.6 完整枚举定义
 
@@ -237,7 +240,7 @@ AUTO `workflow-invocation` 不承接 child Workflow 的 token：child node attem
 
 `runId` 不上报：run 自身以 `executionId` 标识，node attempt 通过 `parentExecutionId` 指向 run。`roundId` 不上报，改用有统计价值的 `roundIndex`。`childRunId` 继续用于 AUTO workflow-invocation 关联 child Workflow。
 
-`attemptId/attemptIndex` 对 `turn/node-attempt/unit-attempt` 必填，对 `run/outer-run` 不适用，并作为服务端 Usage 留存和重试顺序依据。Direct turn 满足 `attemptId == executionId` 且 `attemptIndex=1`；Workflow/AUTO 满足 `attemptId != executionId`，多个重试 attempt 共享逻辑 node/unit executionId，并通过 `parentExecutionId` 关联 run/outer-run，attemptIndex 从 1 严格递增。ACP/provider 在同一 attempt 内部的重连、多次 prompt 或模型切换不创建新的指标 attempt；节点或 unit 真正重试才同时生成新的 attemptId 和 attemptIndex。
+`attemptId/attemptIndex` 对 `turn/node-attempt/unit-attempt` 必填，对 `run/outer-run` 不适用，并作为服务端 Usage 留存和重试顺序依据。Direct 的 executionId/attemptId 等于 task UUID 且 attemptIndex 固定为 1，同一 task 多次输入在同一 attempt 内累加 usage/counters；Workflow/AUTO 满足 `attemptId != executionId`，多个重试 attempt 共享逻辑 node/unit executionId，并通过 `parentExecutionId` 关联 run/outer-run，attemptIndex 从 1 严格递增。ACP/provider 在同一 attempt 内部的重连、多次 prompt 或模型切换不创建新的指标 attempt；节点或 unit 真正重试才同时生成新的 attemptId 和 attemptIndex。
 
 ## 5. 价值维度覆盖
 
@@ -293,7 +296,7 @@ run 进入 running 后发布 started；node attempt 在 provider 调用开始和
 
 ### 9.1 采集状态所有权
 
-每个 execution 维护单调 `eventRevision`；五个 Count、permission/elicitation request ID 去重集合和分模型 usage accumulator 由生命周期状态所有者统一管理，metrics subscriber 不自行累加。
+每个 execution 维护单调 `eventRevision`；六个 Count、permission/elicitation request ID 去重集合和分模型 usage accumulator 由生命周期状态所有者统一管理，metrics subscriber 不自行累加。
 
 采集状态保存到 execution 独立的 `observability.snapshot.json`：业务状态先持久化，随后通过后台队列原子写 snapshot。新 execution 的 `collectionStateRecovered` 省略；成功恢复为 `true`；仅在确实存在但损坏的 snapshot 恢复失败时为 `false`。outer-run 的 counters 与 acceptanceAttempts 由同一状态和同一 snapshot 管理。
 
@@ -304,7 +307,7 @@ run 进入 running 后发布 started；node attempt 在 provider 调用开始和
 - Direct 首轮不重复计数；AUTO workflow invocation 与 child Workflow 不重复聚合成本。
 - provider/model、分模型 token、ACP 时间来自真实执行快照；模型切换前后 usage 不串归属。
 - eventRevision 在重启、异步分发和重试后保持单调；同 revision 不产生两份不同事件。
-- 五个 Count 均符合状态转换定义，只出现在交付层终态，父子执行不重复计数。
+- 六个 Count 均符合状态转换定义，只出现在交付层终态，父子执行不重复计数。
 - `metrics.log` 包含每次请求的日志时间和完整请求体，且不包含 API Key。
 - 每条事件包含产生时的原始 `userId/workspace`。
 - default 渠道零采集、零排队、零上报。
@@ -316,7 +319,7 @@ run 进入 running 后发布 started；node attempt 在 provider 调用开始和
 
 桌面端已完成旧节点快照协议的破坏式删除，并落地 `events[]` DTO、有界非阻塞队列、批量/按月拆分、有限重试、wb 注册门禁和单文件受限日志。runtime 已发布 Direct、Workflow、AUTO outer/unit、resume、acceptance、分模型 Usage 和持久化 revision 的权威事实；subscriber 只负责校验、纯 DTO 映射和非阻塞入队，不扫描目录推断业务状态。
 
-core 的不可变事实与 `ExecutionObservabilityState` 已实现；状态对象负责 revision、五项 counters、请求 ID 去重和分模型 usage，桌面 subscriber 仅执行纯 DTO 映射与 `try_send`。snapshot 缺失时从零状态开始且不传 `collectionStateRecovered`；已有 snapshot 损坏时从零状态继续并携带 `collectionStateRecovered=false`；后台写失败不回滚业务状态。
+core 的不可变事实与 `ExecutionObservabilityState` 已实现；状态对象负责 revision、六项 counters、请求 ID 去重和分模型 usage，桌面 subscriber 仅执行纯 DTO 映射与 `try_send`。snapshot 缺失时从零状态开始且不传 `collectionStateRecovered`；已有 snapshot 损坏时从零状态继续并携带 `collectionStateRecovered=false`；后台写失败不回滚业务状态。
 
 截至 2026-08-01，Direct、Workflow、AUTO 的真实发布点均已接入上述事实模型。首次 Direct 内部 Worker 不再产生 Workflow 指标；AUTO dynamic node 明确携带 unitKind，acceptance 维护 outer 级尝试序号；metrics subscriber 只接收 `MetricsFact`，旧通知/UI lifecycle event 不进入上报队列。客户端实现与本文第 10 节可在本仓库固化的验收项一致。
 
@@ -333,3 +336,10 @@ core 的不可变事实与 `ExecutionObservabilityState` 已实现；状态对�
 - `acp.prompt-usage.jsonl` 在每次 prompt started/completed 时固化 resolved provider/model 和独立 Usage；node/unit 终态按 segment 聚合，正确支持 A→B→A，旧 journal 缺少 segment 元数据时才使用累计 totals 兼容读取。
 - `resumeCount` 对所有真实 paused→running 转换计数。恢复入口必须显式写入并持久化 `ResumeCause`：`manual-continue`、`permission-resolved`、`elicitation-resolved`、`automatic-recovery`；只有 `manual-continue` 增加 `manualContinueCount`，禁止再根据 `PauseReason` 推断。
 - AUTO outer-run 失败优先关联动态图中最新实际失败的 unit UUID；acceptance、invalid、killed、runtime error 分别映射为 `acceptance-rejected`、`validation-error`、`process-killed`、`runtime-error`，并在存在时携带结构化 `terminalReasonCode`。
+
+
+### 11.3 人工追问次数（2026-08-07）
+
+- Direct 同一 task 的 executionId/attemptId 保持 task UUID；首轮之后的用户新输入在同一 attempt 快照累加 `followUpCount`，usage 与 manualContinueCount 等计数也继续按累计快照上报。active turn 结束后仍通过同 attempt snapshot/usage baseline 识别后续输入，不依赖内存态。
+- `followUpCount` 只统计用户新提交的 Direct prompt；permission/elicitation/automatic recovery 等 runtime-continue 不计入。
+- 服务端 delivery stat 同步增加 `follow_up_count` 列，客户端 DTO 同步输出 `followUpCount`。

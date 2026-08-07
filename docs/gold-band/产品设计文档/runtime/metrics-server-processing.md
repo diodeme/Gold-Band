@@ -23,7 +23,7 @@
 | `ml_metric_event` | 一条 lifecycle event | 原始事件、eventId、revision、完整时间线 | 只插入，不更新 |
 | `ml_metric_attempt` | 一个 `attempt_id` | 一个“指标 attempt”（turn/node/unit 的一次真实尝试）的基础信息、终态、model usage | started 插入，terminal 更新 |
 | `ml_metric_logical_execution` | 一个逻辑 `execution_id` | Direct turn 或 Workflow/AUTO node/unit 的 attempts 投影、当前/最终 attempt 和逻辑终态 | attempt 变化时由服务端重算/更新 |
-| `ml_metric_delivery_stat` | 一个交付 execution | Direct turn、Workflow run、AUTO outer-run 的状态、质量字段和五个 Count | lifecycle 持续更新，terminal 覆盖统计快照 |
+| `ml_metric_delivery_stat` | 一个交付 execution | Direct turn、Workflow run、AUTO outer-run 的状态、质量字段和六个 Count | lifecycle 持续更新，terminal 覆盖统计快照 |
 
 客户端只上报生命周期事实、终态快照和关联字段，不上报成功率、首过率、故障率、token 汇总等统计指标。所有统计结果均由服务端从 event、attempt、logical execution 和 delivery 投影计算。`ml_metric_attempt` 不保存 `*_count`；`ml_metric_delivery_stat` 不保存 node/unit 模型用量。这样 attempt 事实与交付统计不会混在一张宽表里。
 
@@ -156,13 +156,13 @@ report_date = events[0].reportedAt 按 Asia/Shanghai 转换后的日期
 
 | executionKind | 指标 attempt 身份 | 客户端原始 attemptId |
 |---|---|---|
-| `turn` | 一个 turn 对应一个 `executionId` | 等于 `executionId`，每个 turn 唯一 |
+| `turn` | task UUID 即稳定 executionId/attemptId | 与 taskId/executionId 相同，同一 task 内不变；attemptIndex 固定为 1 |
 | `node-attempt` | 同一 run/round/node 对应稳定 `executionId` | 每次真实尝试独立 UUID；重试更换，本地目录序号不直接上报 |
 | `unit-attempt` | 同一 AUTO dynamic unit 对应稳定 `executionId` | 每次真实尝试独立 UUID；重试更换，本地目录序号不直接上报 |
 | `run` | 不写 attempt 表 | 不适用 |
 | `outer-run` | 不写 attempt 表 | 不适用 |
 
-Direct 满足 `attemptId == executionId` 且 `attemptIndex=1`；Workflow/AUTO 满足 `attemptId != executionId`。Workflow/AUTO 的 node/unit 首次尝试 `attemptIndex=1`，每次真正重试保持 executionId、生成新 attemptId，并将 attemptIndex 严格加一；同一 attempt 内的 ACP 重连、多次 prompt 和模型切换仍更新同一行，attemptId/attemptIndex 均不得变化。
+Direct 的 executionId/attemptId 均等于 task UUID，attemptIndex 固定为 1；同一 task 多次用户输入仍更新同一个 attempt，usage 与 counters 持续累加。Workflow/AUTO 满足 `attemptId != executionId`。Workflow/AUTO 的 node/unit 首次尝试 `attemptIndex=1`，每次真正重试保持 executionId、生成新 attemptId，并将 attemptIndex 严格加一；同一 attempt 内的 ACP 重连、多次 prompt 和模型切换仍更新同一行，attemptId/attemptIndex 均不得变化。
 
 同一 `(executionId, attemptIndex)` 在一个自然月内只能对应一个 attemptId，同一 `(executionId, attemptId)` 的 attemptIndex 必须恒定。允许因异步上报暂时缺少中间序号，但最终统计应暴露 `attempt_index_gap=1` 作为采集质量；不得由服务端猜测或重排 attemptIndex。
 
@@ -176,13 +176,13 @@ Direct 满足 `attemptId == executionId` 且 `attemptIndex=1`；Workflow/AUTO �
 
 | sessionMode | executionKind | ID 约束 |
 |---|---|---|
-| direct | turn | `attemptId == executionId`、`attemptIndex=1`、parent/node/unit 关联字段为空 |
+| direct | turn | `attemptId == executionId == taskId`、`attemptIndex == 1`、parent/node/unit 关联字段为空 |
 | workflow | run | attempt 字段为空；executionId 是 run UUID |
 | workflow | node-attempt | `attemptId != executionId`、attemptIndex>0、parentExecutionId/nodeId/roundIndex 必填；当前协议要求 `nodeId == executionId`，nodeId 是类型化查询别名，executionId 是通用生命周期主体 |
 | auto | outer-run | attempt 字段为空；executionId 是 outer run UUID |
 | auto | unit-attempt | `attemptId != executionId`、attemptIndex>0、parentExecutionId/unitId/unitKind 必填；unitId 与 executionId 均标识该动态单元，协议要求二者值相等 |
 
-`run/outer-run` 是交付层主体，不写 attempt 表；`turn` 同时是 Direct 的交付主体和唯一 attempt。服务端对不在表内的 sessionMode/executionKind 组合返回 `METRICS_FIELD_INVALID`。
+`run/outer-run` 是交付层主体，不写 attempt 表；`turn` 的 executionId/attemptId 是 Direct 会话/交付主体，等于 task UUID，同一 task 的所有用户输入属于同一个 attempt。服务端对不在表内的 sessionMode/executionKind 组合返回 `METRICS_FIELD_INVALID`。
 
 ### 4.6 UUID 输入格式
 
@@ -425,6 +425,7 @@ CREATE TABLE ml_metric_delivery_stat (
     permission_request_count INT UNSIGNED NULL,
     elicitation_count INT UNSIGNED NULL,
     manual_continue_count INT UNSIGNED NULL,
+    follow_up_count INT UNSIGNED NULL,
     last_event_id VARCHAR(64) NOT NULL,
     last_event_revision BIGINT UNSIGNED NOT NULL,
     start_event_missing TINYINT(1) NOT NULL DEFAULT 0,
@@ -446,7 +447,7 @@ PARTITION BY RANGE COLUMNS(report_date) (
 );
 ```
 
-Count 只存在于这张表；started/paused 状态时 Count 为 NULL，terminal 时五个 Count 全量覆盖。Direct turn 同时有一条 attempt 基础记录和一条 delivery stat，前者用于模型/usage，后者用于自动化和交付终局。
+Count 只存在于这张表；started/paused 状态时 Count 为 NULL，terminal 时六个 Count 全量覆盖。Direct turn 同时有一条 attempt 基础记录和一条 delivery stat，前者用于模型/usage，后者用于自动化和交付终局。
 
 `failedAttemptId` 本期暂不处理。客户端可以继续按采集协议上报，事件事实表通过 `raw_payload` 原样留存；服务端只执行字段级 UUID 格式校验，不校验其 attempt 是否存在、归属或终态，不写入 delivery 投影，不做乱序回填，也不用于失败归因和统计。delivery 的结果只由自身 `outcome/terminalReason` 决定。
 
@@ -530,7 +531,7 @@ revision 必须是大于等于 1 的正整数。允许第一条事件的 revisio
 | `execution.paused` | 插入 | turn 可更新 state=paused | delivery 更新 state=paused |
 | `execution.resumed` | 插入 | turn 可恢复 `state=running` | delivery 恢复 `state=running` |
 | `intervention.requested` | 插入 | 不增 Count | 不增 Count，只更新 revision |
-| `execution.completed` | 插入 | attempt 类型覆盖 terminal、usage、model | delivery 类型覆盖 terminal、quality、五个 Count |
+| `execution.completed` | 插入 | attempt 类型覆盖 terminal、usage、model | delivery 类型覆盖 terminal、quality、六个 Count |
 | `acceptance.completed` | 插入 | acceptance attempt 更新 passed/attempt/firstPass | 不直接修改 outer outcome |
 
 ### 6.6 terminal 更新规则
@@ -639,8 +640,10 @@ function apply_logical_execution_recompute(executionId, report_date):
 |---:|---|---|---|---|
 | 1 | `started` rev=1, kind=turn, exec=A, attemptId=A, attemptIndex=1 | INSERT running, started_at=T1 | INSERT running, latest=1/A, final=NULL | INSERT running, started_at=T1 |
 | 2 | `completed` rev=2, outcome=completed, usage tokens, counters | UPDATE terminal, outcome=completed, tokens, model_usages | UPDATE terminal, final=1/A, final_outcome=completed | UPDATE terminal, outcome=completed, counters 覆盖 |
+| 3 | `started` rev=3, kind=turn, exec=A, attemptId=A, attemptIndex=1 | UPDATE running（继续同一 attempt），started_at 保留 | UPDATE running, latest=1/A, final=NULL | UPDATE running |
+| 4 | `completed` rev=4, outcome=completed, usage 累计, counters 累计 | UPDATE terminal, tokens 累计, model_usages 累计 | UPDATE terminal, final=1/A, final_outcome=completed | UPDATE terminal, counters 累计覆盖 |
  
-注意 Direct turn 同时命中 attempt 和 delivery 两个投影分支。attempt 保存 usage/model，delivery 保存 counters，两表独立。`attemptId == executionId`，`attemptIndex=1` 固定。
+注意 Direct turn 同时命中 attempt 和 delivery 两个投影分支。attempt 保存 usage/model，delivery 保存 counters，两表独立。executionId/attemptId 等于 task UUID；同一 task 多次输入继续更新同一 attempt，usage 和 counters 按累计快照覆盖。
  
 **示例 2：Workflow node 重试（attempt 1 失败，attempt 2 成功）**
  
@@ -810,6 +813,7 @@ function apply_delivery_terminal_fields(row, event):
     row.permission_request_count = event.counters.permissionRequestCount
     row.elicitation_count        = event.counters.elicitationCount
     row.manual_continue_count    = event.counters.manualContinueCount
+    row.follow_up_count          = event.counters.followUpCount
     # roundCount 是 Workflow 质量字段，仅 run terminal 携带
     if event.executionKind == 'run':
         row.round_count = event.roundCount
@@ -895,7 +899,7 @@ terminalReason 用于原因分布；terminalReasonCode 只用于排障，不直�
 - `model_usages` 使用 MySQL `JSON_TABLE` 展开 provider/model。
 - 最终模型口径使用 `final_provider/final_model`；参与模型口径使用 JSON，二者不得混用。
 
-### 7.6 自动化 Count
+### 7.6 自动化与交互 Count
 
 | Count | 含义 | 统计用途 |
 |---|---|---|
@@ -904,8 +908,9 @@ terminalReason 用于原因分布；terminalReasonCode 只用于排障，不直�
 | permissionRequestCount | 唯一 permission request 次数 | 干预负担 |
 | elicitationCount | 唯一 elicitation request 次数 | 干预负担 |
 | manualContinueCount | 除 permission/elicitation 外的人工恢复次数 | 干预负担 |
+| followUpCount | 同一 Direct task 首轮之后的用户新输入次数 | 用户交互负担；不参与自动化判定 |
 
-无干预和全自动只判断后三个 Count；pause/resume 不参与自动化判定。
+无干预和全自动只判断 permissionRequestCount、elicitationCount、manualContinueCount 三个干预 Count；pause/resume 与 followUpCount 不参与自动化判定。
 
 ### 7.7 可靠性
 
@@ -956,7 +961,7 @@ terminalReason 用于原因分布；terminalReasonCode 只用于排障，不直�
 ### 数据库
 
 - 四表只有 `report_date` 一个 DATE 字段，EXPLAIN 分区裁剪生效。
-- attempt 表主键粒度为 attemptId；Direct 的 attemptId 等于 executionId，Workflow/AUTO 的同一 executionId 可对应多个重试 attemptId。
+- attempt 表主键粒度为 attemptId；Direct 同一会话 executionId/attemptId 等于 task UUID，attemptIndex 固定为 1，多次输入更新同一 attempt；Workflow/AUTO 的同一 executionId 可对应多个重试 attemptId。
 - attemptIndex 从 1 开始且月内 `(executionId, attemptIndex)` 唯一；逻辑投影的 final outcome 始终来自最大 attemptIndex 的 terminal attempt。
 - logical execution 投影可由 attempt 表完整重建，attempt 数、最终 attempt、序号缺口标记一致。
 - Count 只进入 delivery stat；usage/model 只进入 attempt。

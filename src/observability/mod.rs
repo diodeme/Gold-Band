@@ -161,13 +161,9 @@ pub struct RunEventData {
     pub details: Option<serde_json::Value>,
 }
 
-
 struct LocalTimer;
 impl tracing_subscriber::fmt::time::FormatTime for LocalTimer {
-    fn format_time(
-        &self,
-        w: &mut tracing_subscriber::fmt::format::Writer<'_>,
-    ) -> std::fmt::Result {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
         write!(
             w,
             "{}",

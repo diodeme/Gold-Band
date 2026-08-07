@@ -1,4 +1,4 @@
-﻿mod ids;
+mod ids;
 mod node_executor;
 mod notification;
 pub mod observability;
@@ -567,6 +567,30 @@ pub enum AcpTurnOutcome {
 }
 
 #[derive(Debug, Clone)]
+pub struct ActiveMetricTurn {
+    pub execution_id: String,
+    pub attempt_id: String,
+    pub attempt_index: u32,
+    pub usage_baseline_turn_seq: u64,
+}
+
+impl ActiveMetricTurn {
+    pub fn new(
+        execution_id: String,
+        attempt_id: String,
+        attempt_index: u32,
+        usage_baseline_turn_seq: u64,
+    ) -> Self {
+        Self {
+            execution_id,
+            attempt_id,
+            attempt_index,
+            usage_baseline_turn_seq,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum RuntimeLifecycleEvent {
     MetricsFact(observability::MetricsLifecycleFact),
     /// A node has started executing. The orchestrator is about to invoke the
@@ -716,7 +740,7 @@ pub struct App {
     observability_states:
         Arc<std::sync::Mutex<HashMap<String, observability::ExecutionObservabilityState>>>,
     metrics_collection_enabled: bool,
-    active_metric_turns: Arc<std::sync::Mutex<HashMap<String, String>>>,
+    active_metric_turns: Arc<std::sync::Mutex<HashMap<String, ActiveMetricTurn>>>,
 }
 
 fn default_task_search_indexer() -> Arc<dyn Fn(&Utf8Path, &str) + Send + Sync> {
@@ -1114,16 +1138,16 @@ impl App {
         self.metrics_collection_enabled
     }
 
-    pub fn begin_metrics_turn(&self, attempt_key: String, execution_id: String) {
+    pub fn begin_metrics_turn(&self, attempt_key: String, turn: ActiveMetricTurn) {
         if self.metrics_collection_enabled {
             self.active_metric_turns
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .insert(attempt_key, execution_id);
+                .insert(attempt_key, turn);
         }
     }
 
-    pub fn active_metrics_turn(&self, attempt_key: &str) -> Option<String> {
+    pub fn active_metrics_turn(&self, attempt_key: &str) -> Option<ActiveMetricTurn> {
         self.active_metric_turns
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1136,6 +1160,71 @@ impl App {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(attempt_key);
+    }
+
+    pub fn direct_usage_baseline(attempt_dir: Option<&camino::Utf8Path>) -> u64 {
+        let Some(attempt_dir) = attempt_dir else {
+            return 0;
+        };
+        crate::acp::usage::read_prompt_usage_segments(attempt_dir)
+            .last()
+            .map(|segment| segment.turn_seq)
+            .unwrap_or(0)
+    }
+
+    pub fn direct_metrics_is_follow_up(
+        &self,
+        attempt_key: &str,
+        attempt_dir: Option<&camino::Utf8Path>,
+        attempt_path: &camino::Utf8Path,
+    ) -> bool {
+        if self.active_metrics_turn(attempt_key).is_some() {
+            return true;
+        }
+        let has_usage_history = attempt_dir
+            .map(|dir| Self::direct_usage_baseline(Some(dir)))
+            .unwrap_or(0)
+            > 0;
+        has_usage_history
+            || observability::load_observability_snapshot(attempt_path).event_revision > 0
+    }
+
+    pub fn direct_usage_segments_after(
+        attempt_dir: Option<&camino::Utf8Path>,
+        baseline_turn_seq: u64,
+    ) -> Vec<crate::acp::usage::AcpPromptUsageSegment> {
+        let Some(attempt_dir) = attempt_dir else {
+            return Vec::new();
+        };
+        crate::acp::usage::read_prompt_usage_segments(attempt_dir)
+            .into_iter()
+            .filter(|segment| segment.turn_seq > baseline_turn_seq)
+            .collect()
+    }
+
+    pub fn direct_model_usages_from_segments(
+        segments: &[crate::acp::usage::AcpPromptUsageSegment],
+        fallback_provider: Option<&str>,
+        fallback_model: Option<&str>,
+    ) -> Vec<observability::ModelUsage> {
+        segments
+            .iter()
+            .filter_map(|segment| {
+                let provider = segment.provider.as_deref().or(fallback_provider)?;
+                let model = segment.model.as_deref().or(fallback_model)?;
+                Some(observability::ModelUsage {
+                    provider: provider.to_string(),
+                    model: model.to_string(),
+                    usage: observability::TokenUsage {
+                        input_tokens: segment.usage.input_tokens,
+                        output_tokens: segment.usage.output_tokens,
+                        cache_read_tokens: segment.usage.cached_read_tokens,
+                        total_tokens: segment.usage.effective_total_tokens(),
+                    },
+                    acp_session_elapsed_ms: segment.elapsed_ms,
+                })
+            })
+            .collect()
     }
 
     fn emit_derived_node_metrics_fact(&self, event: &RuntimeLifecycleEvent) {
@@ -1255,62 +1344,115 @@ impl App {
         if dynamic_kind.is_none()
             && direct_conversation_agent_label(&scoped_app, &task_id).is_some()
         {
-            // Direct 模式：发 turn 指标而不是 node-attempt 指标。
-            // 首次消息和后续追问的 NodeStarted/NodeCompleted 都走这里。
-            let turn_key = format!("{0}\u{0}{1}\u{0}{2}\u{0}{3}", task_id, run_id, logical_node_id, attempt_id);
-            let turn_execution_id = if event_type == LifecycleEventType::ExecutionStarted {
-                let id = uuid::Uuid::new_v4().to_string();
-                scoped_app.begin_metrics_turn(turn_key.clone(), id.clone());
-                id
-            } else {
-                let Some(id) = scoped_app.active_metrics_turn(&turn_key) else {
-                    return;
-                };
-                id
-            };
-            let turn_snapshot_path = scoped_app
+            // Direct: one stable task UUID for task/execution/attempt.
+            let execution_id = task_uuid.clone();
+            let turn_key = format!("direct:{task_uuid}");
+            let attempt_path = scoped_app
                 .paths
                 .run_dir(&task_id, &run_id)
                 .join("observability")
-                .join(&turn_execution_id)
+                .join(&execution_id)
+                .join(&execution_id)
                 .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
-            let turn_usage_snapshot = attempt_dir
-                .as_ref()
-                .map(|dir| crate::acp::events::read_attempt_metrics(
-                    &Utf8PathBuf::from(dir).join("acp.session.json"),
-                ));
-            let turn_state = scoped_app.update_observability_state(
-                &turn_execution_id,
-                turn_snapshot_path,
-                |state| {
-                    if let (Some(usage), Some(p), Some(m)) =
-                        (&turn_usage_snapshot, provider.as_ref(), model.as_ref())
-                    {
-                        let tu = TokenUsage {
-                            input_tokens: usage.input_tokens,
-                            output_tokens: usage.output_tokens,
-                            cache_read_tokens: usage.cache_read_tokens,
-                            total_tokens: usage.total_tokens,
-                        };
-                        if event_type == LifecycleEventType::ExecutionCompleted {
-                            state.record_cumulative_model_usage(
-                                p.clone(), m.clone(), tu, usage.elapsed_ms,
-                            );
-                        } else {
-                            state.set_cumulative_usage_baseline(
-                                p.clone(), tu, usage.elapsed_ms,
-                            );
-                        }
+            let is_follow_up = if event_type == LifecycleEventType::ExecutionStarted {
+                scoped_app.direct_metrics_is_follow_up(&turn_key, None, &attempt_path)
+            } else {
+                false
+            };
+            let active_turn = if event_type == LifecycleEventType::ExecutionStarted {
+                match scoped_app.active_metrics_turn(&turn_key) {
+                    Some(turn) => turn,
+                    None => {
+                        let usage_baseline = App::direct_usage_baseline(
+                            attempt_dir.as_ref().map(|dir| camino::Utf8Path::new(dir)),
+                        );
+                        let turn = ActiveMetricTurn::new(
+                            execution_id.clone(),
+                            execution_id.clone(),
+                            1,
+                            usage_baseline,
+                        );
+                        scoped_app.begin_metrics_turn(turn_key.clone(), turn.clone());
+                        turn
                     }
+                }
+            } else {
+                let Some(turn) = scoped_app.active_metrics_turn(&turn_key) else {
+                    return;
+                };
+                turn
+            };
+            let mut fallback_model = model.clone();
+            if let Some(session_path) = attempt_dir
+                .as_ref()
+                .map(|dir| Utf8PathBuf::from(dir).join("acp.session.json"))
+            {
+                fallback_model = crate::acp::events::read_attempt_session_model_name(&session_path)
+                    .or_else(|| fallback_model);
+            }
+            let attempt_state = scoped_app.update_observability_state(
+                &active_turn.attempt_id,
+                attempt_path,
+                |state| {
                     if event_type == LifecycleEventType::ExecutionStarted {
                         state.record_started_at(started_at.clone());
+                        if is_follow_up {
+                            state.record_follow_up();
+                        }
+                    }
+                    if event_type == LifecycleEventType::ExecutionCompleted {
+                        let segments = App::direct_usage_segments_after(
+                            attempt_dir.as_ref().map(|dir| camino::Utf8Path::new(dir)),
+                            active_turn.usage_baseline_turn_seq,
+                        );
+                        let usages = App::direct_model_usages_from_segments(
+                            &segments,
+                            provider.as_deref(),
+                            fallback_model.as_deref(),
+                        );
+                        for usage in usages {
+                            state.record_model_usage(usage);
+                        }
+                        let usage_snapshot = attempt_dir.as_ref().map(|dir| {
+                            crate::acp::events::read_attempt_metrics(
+                                &Utf8PathBuf::from(dir).join("acp.session.json"),
+                            )
+                        });
+                        if segments.is_empty()
+                            && let (Some(usage), Some(p), Some(m)) =
+                                (usage_snapshot, provider.as_ref(), fallback_model.as_ref())
+                        {
+                            state.record_cumulative_model_usage(
+                                p.clone(),
+                                m.clone(),
+                                TokenUsage {
+                                    input_tokens: usage.input_tokens,
+                                    output_tokens: usage.output_tokens,
+                                    cache_read_tokens: usage.cache_read_tokens,
+                                    total_tokens: usage.total_tokens,
+                                },
+                                usage.elapsed_ms,
+                            );
+                        }
                     }
                     state.next_revision();
                 },
             );
+            let mut resolved_provider = provider.clone();
+            let mut resolved_model = fallback_model.clone();
+            if event_type == LifecycleEventType::ExecutionCompleted {
+                if let Some(first_usage) = attempt_state.model_usages().into_iter().next() {
+                    if resolved_provider.is_none() {
+                        resolved_provider = Some(first_usage.provider.clone());
+                    }
+                    if resolved_model.is_none() {
+                        resolved_model = Some(first_usage.model.clone());
+                    }
+                }
+            }
             let mut turn_fact = MetricsLifecycleFact::new(
                 event_type,
-                turn_state.event_revision,
+                attempt_state.event_revision,
                 ended_at.clone().unwrap_or_else(|| started_at.clone()),
                 std::env::var("USERNAME")
                     .or_else(|_| std::env::var("USER"))
@@ -1319,13 +1461,13 @@ impl App {
                 MetricsSessionMode::Direct,
                 task_uuid.clone(),
                 ExecutionKind::Turn,
-                turn_execution_id.clone(),
+                active_turn.execution_id.clone(),
             );
-            turn_fact.attempt_id = Some(turn_execution_id.clone());
-            turn_fact.attempt_index = Some(1);
-            turn_fact.provider = provider.clone();
-            turn_fact.model = model.clone();
-            turn_fact.collection_state_recovered = turn_state.collection_state_recovered;
+            turn_fact.attempt_id = Some(active_turn.attempt_id.clone());
+            turn_fact.attempt_index = Some(active_turn.attempt_index);
+            turn_fact.provider = resolved_provider;
+            turn_fact.model = resolved_model;
+            turn_fact.collection_state_recovered = attempt_state.collection_state_recovered;
             if event_type == LifecycleEventType::ExecutionCompleted {
                 if let Some(outcome_str) = &outcome {
                     if outcome_str.eq_ignore_ascii_case("success") {
@@ -1339,14 +1481,12 @@ impl App {
                         turn_fact.terminal_reason = Some(TerminalReason::ProviderError);
                     }
                 }
-                let usages = turn_state.model_usages();
+                let usages = attempt_state.model_usages();
                 let sum_tokens = |get: fn(&TokenUsage) -> Option<u64>| {
                     usages
                         .iter()
                         .filter_map(|u| get(&u.usage))
-                        .fold(None, |acc, v| {
-                            Some(acc.unwrap_or(0u64).saturating_add(v))
-                        })
+                        .fold(None, |acc, v| Some(acc.unwrap_or(0u64).saturating_add(v)))
                 };
                 if !usages.is_empty() {
                     turn_fact.usage = Some(TokenUsage {
@@ -1358,20 +1498,25 @@ impl App {
                     turn_fact.model_usages = Some(usages);
                 }
                 turn_fact.timing = Some(LifecycleTiming {
-                    started_at: turn_state
+                    started_at: attempt_state
                         .started_at
                         .clone()
                         .unwrap_or_else(|| started_at.clone()),
                     ended_at: ended_at.clone(),
-                    acp_session_elapsed_ms: turn_usage_snapshot.and_then(|u| u.elapsed_ms),
+                    acp_session_elapsed_ms: attempt_dir.as_ref().and_then(|dir| {
+                        crate::acp::events::read_attempt_metrics(
+                            &Utf8PathBuf::from(dir).join("acp.session.json"),
+                        )
+                        .elapsed_ms
+                    }),
                 });
-                turn_fact.counters = Some(turn_state.counters.clone());
+                turn_fact.counters = Some(attempt_state.counters.clone());
             }
             scoped_app
                 .lifecycle_bus
                 .emit(RuntimeLifecycleEvent::MetricsFact(turn_fact));
             if event_type == LifecycleEventType::ExecutionCompleted {
-                scoped_app.release_observability_state(&turn_execution_id);
+                scoped_app.release_observability_state(&active_turn.execution_id);
                 scoped_app.end_metrics_turn(&turn_key);
             }
             return;
@@ -1431,6 +1576,14 @@ impl App {
             .as_ref()
             .map(|dir| crate::acp::usage::read_prompt_usage_segments(Utf8Path::new(dir)))
             .unwrap_or_default();
+        let metrics_model = attempt_dir
+            .as_ref()
+            .and_then(|dir| {
+                crate::acp::events::read_attempt_session_model_name(
+                    &Utf8PathBuf::from(dir).join("acp.session.json"),
+                )
+            })
+            .or_else(|| model.clone());
         let state = scoped_app.update_observability_state(
             &metrics_attempt_id,
             snapshot_path.clone(),
@@ -1459,7 +1612,7 @@ impl App {
                 // Preserve their cumulative totals without inventing segments.
                 if !recorded_segment
                     && let (Some(usage), Some(provider), Some(model)) =
-                        (&usage_snapshot, provider.as_ref(), model.as_ref())
+                        (&usage_snapshot, provider.as_ref(), metrics_model.as_ref())
                 {
                     state.record_cumulative_model_usage(
                         provider.clone(),
@@ -1504,7 +1657,7 @@ impl App {
         fact.role_name = node_name;
         fact.round_index = round_index;
         fact.provider = provider;
-        fact.model = model;
+        fact.model = metrics_model;
         fact.collection_state_recovered = state.collection_state_recovered;
         fact.unit_id = dynamic_kind.map(|_| execution_id.clone());
         fact.unit_kind = dynamic_kind.map(|kind| match kind {
@@ -4960,6 +5113,90 @@ mod tests {
         assert_eq!(usages[1].model, "model-b");
         assert_eq!(usages[1].usage.total_tokens, Some(20));
         assert_eq!(facts[0].usage.as_ref().unwrap().total_tokens, Some(60));
+    }
+
+    #[test]
+    fn direct_usage_segments_are_filtered_by_baseline() {
+        let temp = tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        let journal = attempt_dir.join("acp.prompt-usage.jsonl");
+        for (seq, provider, model, tokens) in [
+            (1, "provider-a", "model-a", 10),
+            (2, "provider-b", "model-b", 20),
+        ] {
+            let turn = format!("turn-{seq}");
+            crate::acp::usage::append_prompt_started(
+                &journal,
+                &turn,
+                seq,
+                "2026-08-01T00:00:00Z",
+                Some(provider),
+                Some(model),
+            )
+            .unwrap();
+            crate::acp::usage::append_prompt_completed(
+                &journal,
+                &turn,
+                seq,
+                "2026-08-01T00:00:01Z",
+                None,
+                &crate::acp::usage::AcpPromptTokenUsage {
+                    input_tokens: Some(tokens),
+                    total_tokens: Some(tokens),
+                    ..Default::default()
+                },
+                Some(provider),
+                Some(model),
+            )
+            .unwrap();
+        }
+        assert_eq!(App::direct_usage_baseline(Some(attempt_dir.as_path())), 2);
+        let after = App::direct_usage_segments_after(Some(attempt_dir.as_path()), 1);
+        assert_eq!(after.len(), 1);
+        let usages = App::direct_model_usages_from_segments(&after, None, None);
+        assert_eq!(usages.len(), 1);
+        assert_eq!(usages[0].model, "model-b");
+        assert_eq!(usages[0].usage.total_tokens, Some(20));
+    }
+
+    #[test]
+    fn direct_metrics_is_follow_up_detects_history_after_turn_ends() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root).with_metrics_collection_enabled(true);
+        let task_uuid = uuid::Uuid::new_v4().to_string();
+        let attempt_key = format!("direct:{task_uuid}");
+        let attempt_path = app
+            .paths
+            .run_dir("task-001", "run-001")
+            .join("observability")
+            .join(&task_uuid)
+            .join(&task_uuid)
+            .join(super::observability::OBSERVABILITY_SNAPSHOT_FILE);
+
+        assert!(!app.direct_metrics_is_follow_up(&attempt_key, None, &attempt_path));
+        app.begin_metrics_turn(
+            attempt_key.clone(),
+            super::ActiveMetricTurn::new(task_uuid.clone(), task_uuid.clone(), 1, 0),
+        );
+        assert!(app.direct_metrics_is_follow_up(&attempt_key, None, &attempt_path));
+        app.end_metrics_turn(&attempt_key);
+
+        let mut state = super::observability::ExecutionObservabilityState::default();
+        state.next_revision();
+        super::observability::persist_observability_snapshot_best_effort(
+            attempt_path.clone(),
+            state,
+        );
+        for _ in 0..100 {
+            if super::observability::load_observability_snapshot(&attempt_path).event_revision > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(app.direct_metrics_is_follow_up(&attempt_key, None, &attempt_path));
     }
 
     #[test]

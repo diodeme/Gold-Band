@@ -146,6 +146,7 @@ struct PromptTurnStart {
 pub struct AcpPromptUsageSegment {
     pub turn_id: String,
     pub turn_seq: u64,
+    pub elapsed_ms: Option<u64>,
     pub provider: Option<String>,
     pub model: Option<String>,
     pub usage: AcpPromptTokenUsage,
@@ -471,26 +472,53 @@ pub fn read_prompt_usage_segments(attempt_dir: &Utf8Path) -> Vec<AcpPromptUsageS
     let Ok(entries) = read_journal(&path) else {
         return Vec::new();
     };
-    let mut segments = entries
-        .into_iter()
-        .filter_map(|entry| match entry {
+    let model_metadata =
+        crate::acp::events::read_attempt_session_metadata(&attempt_dir.join("acp.snapshot.json"))
+            .or_else(|| {
+                crate::acp::events::read_attempt_session_metadata(
+                    &attempt_dir.join("acp.session.json"),
+                )
+            });
+    let mut starts = std::collections::HashMap::new();
+    let mut segments = Vec::new();
+    for entry in entries {
+        match entry {
+            AcpPromptUsageJournalEntry::PromptStarted {
+                turn_id, timestamp, ..
+            } => {
+                starts.insert(turn_id, timestamp);
+            }
             AcpPromptUsageJournalEntry::PromptCompleted {
                 turn_id,
                 turn_seq,
                 provider,
                 model,
                 usage,
+                timestamp,
                 ..
-            } => Some(AcpPromptUsageSegment {
-                turn_id,
-                turn_seq,
-                provider,
-                model,
-                usage,
-            }),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+            } => {
+                let elapsed_ms = starts
+                    .get(&turn_id)
+                    .and_then(|started_at| elapsed_ms_between(started_at, &timestamp));
+                segments.push(AcpPromptUsageSegment {
+                    turn_id,
+                    turn_seq,
+                    elapsed_ms,
+                    provider,
+                    model: model_metadata
+                        .as_ref()
+                        .and_then(|metadata| {
+                            model.as_deref().and_then(|model| {
+                                crate::acp::events::metrics_model_display_name(metadata, model)
+                            })
+                        })
+                        .or(model),
+                    usage,
+                });
+            }
+            _ => {}
+        }
+    }
     segments.sort_by_key(|segment| segment.turn_seq);
     segments
 }
@@ -633,6 +661,26 @@ fn timestamp_key(timestamp: &str) -> u64 {
     timestamp.trim_end_matches('Z').parse().unwrap_or_default()
 }
 
+fn timestamp_millis(timestamp: &str) -> Option<u64> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(timestamp) {
+        return u64::try_from(dt.timestamp_millis()).ok();
+    }
+    for format in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f"] {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(timestamp, format) {
+            return u64::try_from(dt.and_utc().timestamp_millis()).ok();
+        }
+    }
+    timestamp
+        .trim_end_matches('Z')
+        .parse::<u64>()
+        .ok()
+        .and_then(|seconds| seconds.checked_mul(1000))
+}
+
+fn elapsed_ms_between(started_at: &str, completed_at: &str) -> Option<u64> {
+    timestamp_millis(completed_at)?.checked_sub(timestamp_millis(started_at)?)
+}
+
 fn rpc_id_key(request_id: &Value) -> String {
     serde_json::to_string(request_id).unwrap_or_else(|_| "null".to_string())
 }
@@ -671,6 +719,77 @@ mod tests {
             direction: direction.to_string(),
             frame,
         }
+    }
+
+    #[test]
+    fn elapsed_ms_between_parses_iso_and_numeric_timestamps() {
+        assert_eq!(
+            elapsed_ms_between("2026-08-06T20:14:41.000Z", "2026-08-06T20:14:51.500Z"),
+            Some(10_500)
+        );
+        assert_eq!(
+            elapsed_ms_between(
+                "2026-08-06T20:14:41.000+08:00",
+                "2026-08-06T20:14:51.500+08:00"
+            ),
+            Some(10_500)
+        );
+        assert_eq!(elapsed_ms_between("100Z", "110Z"), Some(10_000));
+        assert_eq!(elapsed_ms_between("110Z", "100Z"), None);
+    }
+
+    #[test]
+    fn read_prompt_usage_segments_resolves_metrics_model_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        std::fs::write(
+            attempt_dir.join("acp.snapshot.json").as_std_path(),
+            r#"{
+                "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
+                "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
+                "modelOverride":"opus",
+                "configOptions":[
+                    {
+                        "id":"model",
+                        "currentValue":"opus",
+                        "options":[
+                            {"value":"opus","name":"glm-5.2"}
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let journal = attempt_dir.join("acp.prompt-usage.jsonl");
+        append_prompt_started(
+            &journal,
+            "turn-1",
+            1,
+            "2026-08-06T20:14:41.000Z",
+            Some("claude-acp"),
+            Some("opus"),
+        )
+        .unwrap();
+        append_prompt_completed(
+            &journal,
+            "turn-1",
+            1,
+            "2026-08-06T20:14:51.000Z",
+            None,
+            &AcpPromptTokenUsage {
+                input_tokens: Some(10),
+                total_tokens: Some(10),
+                ..Default::default()
+            },
+            Some("claude-acp"),
+            Some("opus"),
+        )
+        .unwrap();
+
+        let segments = read_prompt_usage_segments(&attempt_dir);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].provider.as_deref(), Some("claude-acp"));
+        assert_eq!(segments[0].model.as_deref(), Some("glm-5.2"));
     }
 
     #[test]
@@ -760,6 +879,8 @@ mod tests {
         assert_eq!(segments[0].model.as_deref(), Some("model-a"));
         assert_eq!(segments[1].provider.as_deref(), Some("provider-b"));
         assert_eq!(segments[1].model.as_deref(), Some("model-b"));
+        assert_eq!(segments[0].elapsed_ms, Some(10_000));
+        assert_eq!(segments[1].elapsed_ms, Some(10_000));
         assert_eq!(segments[1].usage.total_tokens, Some(120));
 
         let second_read = repair_attempt_usage(

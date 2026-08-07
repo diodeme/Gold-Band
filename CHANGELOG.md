@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.12.1](https://github.com/diodeme/Gold-Band/compare/v0.12.0...v0.12.1) (2026-08-07)
+
+
+### Bug Fixes
+
+* **agent-management:** refine agent management and composer behavior ([e9d3393](https://github.com/diodeme/Gold-Band/commit/e9d33934e2c752efb3ff24eeb5f22cc412983b54))
+* **direct:** settle queued prompts on durable acceptance ([18be8e1](https://github.com/diodeme/Gold-Band/commit/18be8e1bcd851374a4ef5a516f2eb3f4fc50b8a3))
+
+
+### Performance Improvements
+
+* **direct:** avoid timeline scans during prompt acceptance ([8aa3421](https://github.com/diodeme/Gold-Band/commit/8aa342186b4ef2d8e0d987d7500daa6fc4fecef0))
+
 ## [0.12.0](https://github.com/diodeme/Gold-Band/compare/v0.11.2...v0.12.0) (2026-08-07)
 
 

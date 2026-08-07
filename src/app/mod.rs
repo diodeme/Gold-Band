@@ -41,8 +41,8 @@ use crate::mcp::McpManager;
 use crate::process::kill_process_tree;
 use crate::provider::{
     DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
-    ProviderInfo, UserPromptRenderMode, provider_capabilities, provider_from_agent,
-    render_prompt_bundle, supported_models_from_capabilities, supported_modes_from_capabilities,
+    ProviderInfo, UserPromptRenderMode, provider_from_agent, render_prompt_bundle,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
@@ -406,7 +406,11 @@ fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> Str
 fn next_auto_template_id(store: &AutoTemplateStore) -> String {
     loop {
         let candidate = format!("auto-template-{}", generate_uuid());
-        if !store.templates.iter().any(|template| template.id == candidate) {
+        if !store
+            .templates
+            .iter()
+            .any(|template| template.id == candidate)
+        {
             return candidate;
         }
     }
@@ -1227,9 +1231,6 @@ impl App {
         config: ManagedAgentConfig,
     ) -> Result<SettingsConfig> {
         let mut agents = self.config.agents.clone();
-        if crate::config::managed_agent_preset(&agent_id).is_none() {
-            bail!("agent `{}` is not supported yet", agent_id.as_str());
-        }
         agents.insert(agent_id, config);
         self.set_user_agents(agents)
     }
@@ -1776,9 +1777,6 @@ impl App {
 
     pub fn provider_doctor_probe(&self, provider: &str) -> Result<ProviderDoctorProbe> {
         let (agent_id, config) = self.managed_agent(provider)?;
-        if crate::config::managed_agent_preset(&agent_id).is_none() {
-            bail!("agent `{provider}` is not supported yet");
-        }
         match acp_client::doctor(
             &agent_id,
             &config.adapter,
@@ -1806,7 +1804,7 @@ impl App {
     }
 
     pub fn provider_capabilities(&self, provider: &str) -> Result<ProviderCapabilities> {
-        provider_capabilities(provider)
+        Ok(self.provider_info(provider)?.capabilities)
     }
 
     pub fn with_config(repo_root: Utf8PathBuf, config: RuntimeConfig) -> Self {
@@ -3190,10 +3188,7 @@ impl App {
     pub fn validate_workflow_agents(&self, workflow: &ValidatedWorkflow) -> Result<()> {
         for node in workflow.nodes_by_id.values() {
             for provider in providers_for_node(node) {
-                let (agent_id, _) = self.managed_agent(&provider)?;
-                if crate::config::managed_agent_preset(&agent_id).is_none() {
-                    bail!("agent `{provider}` is not supported yet");
-                }
+                self.managed_agent(&provider)?;
             }
         }
         for node in workflow.nodes_by_id.values() {
@@ -3487,7 +3482,7 @@ mod tests {
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
-        MANAGED_AGENT_PRESETS, ProviderDiagnosticSnapshot, RuntimeConfig,
+        ProviderDiagnosticSnapshot, RuntimeConfig, catalog_agent_default_config,
     };
     use crate::domain::{
         NodeOutcome, NodeType, PauseReason, RoundTrigger, RunStatus, SessionMode, VERSION,
@@ -3567,13 +3562,10 @@ mod tests {
     ) -> App {
         set_test_home(&repo_root);
         let mut config = RuntimeConfig::default();
-        if let Some(preset) = MANAGED_AGENT_PRESETS
-            .iter()
-            .find(|preset| preset.id == provider)
-        {
+        if let Some(agent_config) = catalog_agent_default_config(provider) {
             config
                 .agents
-                .insert(preset.agent_id(), preset.default_config());
+                .insert(provider.parse().unwrap(), agent_config);
         }
         App::with_config_and_path_config(
             repo_root,

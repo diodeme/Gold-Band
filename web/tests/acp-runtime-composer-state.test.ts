@@ -764,6 +764,37 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canStop).toBe(true);
   });
 
+  it('hides the internal node handoff after a Direct turn completes', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      promptQueueEnabled: true,
+      lifecycle: lifecycle({
+        runtime: { status: 'running', active: true, current: true, phase: 'launching-next-node' },
+        acp: { status: 'completed', active: false, stopping: false, terminal: true },
+        promptQueue: { revision: 0, items: [], maxItems: 10 },
+      }),
+      acpStatus: 'completed',
+    }));
+
+    expect(state.processingKind).toBe('launching-next-node');
+    expect(state.statusActive).toBe(false);
+    expect(state.showStatus).toBe(false);
+    expect(state.hintKind).toBe('default');
+  });
+
+  it('keeps the node handoff visible for Workflow and AUTO runs', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: { status: 'running', active: true, current: true, phase: 'launching-next-node' },
+        acp: { status: 'completed', active: false, stopping: false, terminal: true },
+      }),
+      acpStatus: 'completed',
+    }));
+
+    expect(state.statusActive).toBe(true);
+    expect(state.showStatus).toBe(true);
+    expect(state.processingKind).toBe('launching-next-node');
+  });
+
   it('only blocks invalid workflow on runtime continue paths', () => {
     const completed = deriveAcpRuntimeComposerState(baseInput({ workflowValid: false }));
     const interrupted = deriveAcpRuntimeComposerState(baseInput({

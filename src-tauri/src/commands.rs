@@ -887,6 +887,8 @@ fn ensure_no_active_acp_prompts_for_provider(agent_id: &ManagedAgentId) -> Comma
 #[serde(rename_all = "camelCase")]
 pub struct ManagedAgentInput {
     pub display_name: String,
+    #[serde(default)]
+    pub icon: String,
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -897,23 +899,37 @@ pub struct ManagedAgentInput {
     #[serde(default)]
     pub compatible_agent_dirs: Vec<String>,
     #[serde(default)]
+    pub external_session_sync_supported: bool,
+    #[serde(default)]
     pub external_session_sync_enabled: bool,
 }
 
 impl ManagedAgentInput {
-    fn into_config(self) -> CommandResult<ManagedAgentConfig> {
-        let primary_agent_dir = self.primary_agent_dir.trim().to_string();
-        if primary_agent_dir.is_empty() {
+    fn into_config(
+        self,
+        system_prompt_delivery: gold_band::config::SystemPromptDelivery,
+    ) -> CommandResult<ManagedAgentConfig> {
+        let display_name = self.display_name.trim().to_string();
+        if display_name.is_empty() {
             return Err(CommandErrorVm::new(
-                "agent.primary-directory-required",
+                "agent.display-name-required",
                 serde_json::json!({}),
             ));
         }
+        let command = self.command.trim().to_string();
+        if command.is_empty() {
+            return Err(CommandErrorVm::new(
+                "agent.command-required",
+                serde_json::json!({}),
+            ));
+        }
+        let primary_agent_dir = self.primary_agent_dir.trim().to_string();
+        let primary_agent_dir = (!primary_agent_dir.is_empty()).then_some(primary_agent_dir);
         let mut compatible_agent_dirs = Vec::new();
         for directory in self.compatible_agent_dirs {
             let directory = directory.trim().to_string();
             if !directory.is_empty()
-                && directory != primary_agent_dir
+                && primary_agent_dir.as_deref() != Some(directory.as_str())
                 && !compatible_agent_dirs.contains(&directory)
             {
                 compatible_agent_dirs.push(directory);
@@ -921,16 +937,31 @@ impl ManagedAgentInput {
         }
         Ok(ManagedAgentConfig {
             adapter: AcpAdapterConfig {
-                command: self.command.trim().to_string(),
+                command,
                 args: self.args,
-                display_name: self.display_name,
+                display_name,
                 env: self.env,
+            },
+            icon: match self.icon.trim() {
+                "" => "agent".to_string(),
+                value => value.to_string(),
             },
             primary_agent_dir,
             compatible_agent_dirs,
-            external_session_sync_enabled: self.external_session_sync_enabled,
+            system_prompt_delivery,
+            external_session_sync_supported: self.external_session_sync_supported,
+            external_session_sync_enabled: self.external_session_sync_supported
+                && self.external_session_sync_enabled,
         })
     }
+}
+
+fn system_prompt_delivery_for_new_agent(
+    agent_id: &ManagedAgentId,
+) -> gold_band::config::SystemPromptDelivery {
+    gold_band::config::catalog_agent_default_config(agent_id.as_str())
+        .map(|config| config.system_prompt_delivery)
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1047,18 +1078,13 @@ pub fn create_agent(
 ) -> CommandResult<AgentRegistryVm> {
     let app = state.app().map_err(command_error)?;
     let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
-    if gold_band::config::managed_agent_preset(&agent_id).is_none() {
-        return Err(CommandErrorVm::new(
-            "agent.unsupported",
-            serde_json::json!({ "agentType": agent_id.as_str() }),
-        ));
-    }
     if app.managed_agents().contains_key(&agent_id) {
         return Err(CommandErrorVm::new(
             "agent.already-exists",
             serde_json::json!({ "agentType": agent_id.as_str() }),
         ));
     }
+    let system_prompt_delivery = system_prompt_delivery_for_new_agent(&agent_id);
     ensure_no_active_acp_prompts_for_provider(&agent_id)?;
     gold_band::acp::client::close_provider_connections_bounded(agent_id.as_str())
         .map_err(command_error)?;
@@ -1067,7 +1093,7 @@ pub fn create_agent(
         .map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let settings = app
-        .save_managed_agent(agent_id.clone(), input.into_config()?)
+        .save_managed_agent(agent_id.clone(), input.into_config(system_prompt_delivery)?)
         .map_err(command_error)?;
     state
         .update_settings_config(&settings)
@@ -1091,12 +1117,16 @@ pub fn update_agent(
 ) -> CommandResult<AgentRegistryVm> {
     let app = state.app().map_err(command_error)?;
     let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
-    if !app.managed_agents().contains_key(&agent_id) {
-        return Err(CommandErrorVm::new(
-            "agent.not-configured",
-            serde_json::json!({ "agentType": agent_id.as_str() }),
-        ));
-    }
+    let system_prompt_delivery = app
+        .managed_agents()
+        .get(&agent_id)
+        .map(|config| config.system_prompt_delivery)
+        .ok_or_else(|| {
+            CommandErrorVm::new(
+                "agent.not-configured",
+                serde_json::json!({ "agentType": agent_id.as_str() }),
+            )
+        })?;
     ensure_no_active_acp_prompts_for_provider(&agent_id)?;
     gold_band::acp::client::close_provider_connections_bounded(agent_id.as_str())
         .map_err(command_error)?;
@@ -1105,7 +1135,7 @@ pub fn update_agent(
         .map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let settings = app
-        .save_managed_agent(agent_id.clone(), input.into_config()?)
+        .save_managed_agent(agent_id.clone(), input.into_config(system_prompt_delivery)?)
         .map_err(command_error)?;
     state
         .update_settings_config(&settings)
@@ -5549,7 +5579,13 @@ pub fn get_skill_sync_status(
     let mut statuses = Vec::new();
 
     for (agent_id, config) in &app.config.agents {
-        let dir_name = &config.primary_agent_dir;
+        let Some(dir_name) = config.primary_agent_dir.as_deref() else {
+            statuses.push(SyncStatusEntryVm {
+                agent_type: agent_id.as_str().to_string(),
+                is_synced: false,
+            });
+            continue;
+        };
 
         // 检查全局 agent 目录
         let global_link =
@@ -5824,9 +5860,10 @@ mod tests {
     }
 
     #[test]
-    fn managed_agent_input_preserves_all_editable_config_fields() {
+    fn managed_agent_input_preserves_user_editable_fields_and_uses_internal_capability() {
         let input = ManagedAgentInput {
             display_name: "Claude Custom".to_string(),
+            icon: String::new(),
             command: "  npx  ".to_string(),
             args: vec!["agent".to_string()],
             env: std::collections::BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
@@ -5836,15 +5873,80 @@ mod tests {
                 ".agents".to_string(),
                 " ".to_string(),
             ],
+            external_session_sync_supported: false,
             external_session_sync_enabled: true,
         };
 
-        let config = input.into_config().unwrap();
+        let config = input
+            .into_config(gold_band::config::SystemPromptDelivery::MetaAppend)
+            .unwrap();
         assert_eq!(config.adapter.display_name, "Claude Custom");
         assert_eq!(config.adapter.command, "npx");
-        assert_eq!(config.primary_agent_dir, ".claude-custom");
+        assert_eq!(config.icon, "agent");
+        assert_eq!(config.primary_agent_dir.as_deref(), Some(".claude-custom"));
         assert_eq!(config.compatible_agent_dirs, vec![".agents"]);
-        assert!(config.external_session_sync_enabled);
+        assert!(config.supports_system_prompt());
+        assert!(!config.external_session_sync_enabled);
+    }
+
+    #[test]
+    fn managed_agent_input_cannot_override_internal_system_prompt_capability() {
+        let input: ManagedAgentInput = serde_json::from_value(serde_json::json!({
+            "displayName": "Custom Agent",
+            "icon": "agent",
+            "command": "custom-acp",
+            "supportsSystemPrompt": true
+        }))
+        .unwrap();
+
+        let config = input
+            .into_config(gold_band::config::SystemPromptDelivery::None)
+            .unwrap();
+
+        assert!(!config.supports_system_prompt());
+        assert_eq!(
+            system_prompt_delivery_for_new_agent(
+                &ManagedAgentId::from_str("custom-agent").unwrap()
+            ),
+            gold_band::config::SystemPromptDelivery::None
+        );
+        assert_eq!(
+            system_prompt_delivery_for_new_agent(&ManagedAgentId::from_str("claude-acp").unwrap()),
+            gold_band::config::SystemPromptDelivery::MetaAppend
+        );
+    }
+
+    #[test]
+    fn managed_agent_input_requires_display_name_and_command_at_the_command_boundary() {
+        let missing_name = ManagedAgentInput {
+            display_name: "  ".to_string(),
+            icon: String::new(),
+            command: "agent-acp".to_string(),
+            args: Vec::new(),
+            env: std::collections::BTreeMap::new(),
+            primary_agent_dir: String::new(),
+            compatible_agent_dirs: Vec::new(),
+            external_session_sync_supported: false,
+            external_session_sync_enabled: false,
+        }
+        .into_config(gold_band::config::SystemPromptDelivery::None)
+        .unwrap_err();
+        assert_eq!(missing_name.code, "agent.display-name-required");
+
+        let missing_command = ManagedAgentInput {
+            display_name: "Custom Agent".to_string(),
+            icon: String::new(),
+            command: "  ".to_string(),
+            args: Vec::new(),
+            env: std::collections::BTreeMap::new(),
+            primary_agent_dir: String::new(),
+            compatible_agent_dirs: Vec::new(),
+            external_session_sync_supported: false,
+            external_session_sync_enabled: false,
+        }
+        .into_config(gold_band::config::SystemPromptDelivery::None)
+        .unwrap_err();
+        assert_eq!(missing_command.code, "agent.command-required");
     }
 
     #[test]

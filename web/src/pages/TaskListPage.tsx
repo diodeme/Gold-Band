@@ -467,7 +467,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
       setWorkflowError(t('common.loading'));
       return null;
     }
-    const validation = validateWorkflowForSave(workflowDraft, profileList.profiles, agentRegistry.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true), t, templateStore ?? null, selectedTemplateId, selectedTemplate ? workflowTemplateDisplayName(selectedTemplate, t) : null, validateTemplateDuplicateId);
+    const validation = validateWorkflowForSave(workflowDraft, profileList.profiles, agentRegistry.agents.filter((agent) => agent.diagnostic?.available === true), t, templateStore ?? null, selectedTemplateId, selectedTemplate ? workflowTemplateDisplayName(selectedTemplate, t) : null, validateTemplateDuplicateId);
     if (!validation.valid) {
       setWorkflowNotice(null);
       setWorkflowError(validation.issues.map((issue) => issue.message).join('\n'));

@@ -156,7 +156,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
   }, [skillError]);
 
   const configuredAgents = useMemo(
-    () => (agentRegistry?.supportedTypes ?? []).filter((agent) => agent.configured),
+    () => (agentRegistry?.catalog ?? []).filter((agent) => agent.configured),
     [agentRegistry],
   );
 
@@ -1051,7 +1051,7 @@ function SkillSheet({
   editWorkspacePath: string | null;
   createSource: string;
   workspaces: SkillWorkspaceOption[];
-  configuredAgents: AgentRegistryVm['supportedTypes'];
+  configuredAgents: AgentRegistryVm['catalog'];
   skillTab: 'global' | 'project';
   selectedWorkspace: string;
   onOpenChange: (open: boolean) => void;

@@ -163,7 +163,9 @@
 
 ## Composer 状态
 
-运行中的状态提示必须放在 composer 内，compact 模式下也不能只展示耗时或 token。当前步骤状态应展示具体文案：发送中、处理中、思考中、工具调用中、响应中、停止中、拉起下一节点中；会话式运行页的 compact 用量栏需在会话累计前展示带轻量旋转图标的状态标签，例如“思考中...”“工具调用中...”或“拉起下一节点中...”。这类状态是否展示运行态视觉取决于后端 composer active/lifecycle，而不只取决于 ACP session 是否仍 active；当 ACP 已 completed 但 runtime 仍处于 `launching-next-node` 时，compact 栏仍必须展示旋转状态、会话累计与 token 用量。ACP completed 只表示上一轮 turn 已结束，不表示该会话不能继续追问；用户发起新的 same-session ACP prompt 后，发送中、处理中属于前端本地 turn overlay，不得被旧 terminal snapshot 压掉。旋转标识应避免 SVG stroke 在高频刷新下掉帧，优先使用 CSS 边框圆环。Round 详情等非 compact 面板继续使用 composer 内状态行，不作为消息流卡片。
+运行中的状态提示必须放在 composer 内，compact 模式下也不能只展示耗时或 token。当前步骤状态应展示具体文案：发送中、处理中、思考中、工具调用中、响应中、停止中、拉起下一节点中；会话式运行页的 compact 用量栏需在会话累计前展示带轻量旋转图标的状态标签，例如“思考中...”“工具调用中...”或“拉起下一节点中...”。这类状态是否展示运行态视觉取决于后端 composer active/lifecycle，而不只取决于 ACP session 是否仍 active；Workflow/AUTO 中 ACP 已 completed 但 runtime 仍处于 `launching-next-node` 时，compact 栏仍必须展示旋转状态、会话累计与 token 用量。Direct 的单 Agent 工作流只是内部运行载体，不存在对客可见的后继节点；Direct turn 已终态而内部 lifecycle 短暂处于 `launching-next-node` 时，前端保留该诊断事实但不展示状态文案，后续排队 prompt 真正进入发送/处理后再恢复对应状态。ACP completed 只表示上一轮 turn 已结束，不表示该会话不能继续追问；用户发起新的 same-session ACP prompt 后，发送中、处理中属于前端本地 turn overlay，不得被旧 terminal snapshot 压掉。旋转标识应避免 SVG stroke 在高频刷新下掉帧，优先使用 CSS 边框圆环。Round 详情等非 compact 面板继续使用 composer 内状态行，不作为消息流卡片。
+
+ACP 历史分页能力必须以当前 session `eventPage.hasOlder/hasNewer` 为权威，并仅在前端事件缓冲发生真实截断时由缓冲状态补充；分支视口缓存只负责恢复 scrollTop、锚点与是否贴底，不得把旧的 `hasOlder` 重新解释为当前会话仍有历史。完整 session 快照返回 `hasOlder=false` 时必须清除旧分页状态，避免流式消息、卡片折叠或布局重算期间闪现“上滑查看历史信息”。
 
 会话累计的口径是当前 ACP attempt 内所有 Gold Band prompt turn 的 agent 净处理耗时之和：每轮从 Gold Band synthetic/user prompt 写入 timeline 开始，到该轮最后一个可观察的处理事件结束；多次继续、恢复、余额错误重试或用户空闲造成的两轮 prompt 之间墙钟间隔不得计入。`available_commands_update`、`current_mode_update`、`session_info_update` 等会话元数据更新不推进处理耗时，`acp.snapshot.json.createdAt -> updatedAt` 只描述底层 ACP session 生命周期跨度，不能作为会话累计的 fallback。
 

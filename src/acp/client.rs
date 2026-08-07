@@ -291,7 +291,7 @@ use crate::config::{AcpAdapterConfig, ManagedAgentId, RuntimeConfig};
 use crate::domain::{SessionMode, VERSION};
 use crate::provider::{
     ACP_MCP_TRANSPORT_UNSUPPORTED_CODE, PromptBundle, PromptVisibility, SkippedAcpMcpServer,
-    gold_band_hidden_block, prepare_acp_mcp_servers, supports_system_prompt,
+    gold_band_hidden_block, prepare_acp_mcp_servers,
 };
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
 use crate::runtime_error::DEFAULT_AUTO_RETRY_MAX_ATTEMPTS;
@@ -1052,6 +1052,7 @@ pub struct AcpRuntimePolicy {
     pub max_idle_adapter_connections: usize,
     pub timeline_compaction: TimelineCompactionPolicy,
     pub external_session_sync_enabled: bool,
+    pub supports_system_prompt: bool,
     pub turn_file_capture: crate::acp::turn_files::TurnFileCaptureConfig,
 }
 
@@ -1067,6 +1068,7 @@ impl Default for AcpRuntimePolicy {
             max_idle_adapter_connections: 4,
             timeline_compaction: TimelineCompactionPolicy::default(),
             external_session_sync_enabled: false,
+            supports_system_prompt: false,
             turn_file_capture: crate::acp::turn_files::TurnFileCaptureConfig::default(),
         }
     }
@@ -1093,6 +1095,7 @@ impl From<&RuntimeConfig> for AcpRuntimePolicy {
                 patch_ratio: config.acp_timeline_compact_patch_ratio,
             },
             external_session_sync_enabled: false,
+            supports_system_prompt: false,
             turn_file_capture: config.turn_files.into(),
         }
     }
@@ -1101,6 +1104,11 @@ impl From<&RuntimeConfig> for AcpRuntimePolicy {
 impl AcpRuntimePolicy {
     pub fn with_external_session_sync_enabled(mut self, enabled: bool) -> Self {
         self.external_session_sync_enabled = enabled;
+        self
+    }
+
+    pub fn with_system_prompt_support(mut self, supported: bool) -> Self {
+        self.supports_system_prompt = supported;
         self
     }
 }
@@ -1955,6 +1963,7 @@ fn session_prompt_params(
     session_id: &str,
     prompt: &PromptBundle,
     restored: bool,
+    supports_system_prompt: bool,
 ) -> Value {
     let mut prompt_blocks: Vec<Value> = Vec::new();
 
@@ -1964,7 +1973,7 @@ fn session_prompt_params(
     }
 
     // Add the text block with user prompt
-    let text = session_prompt_text(provider_id, prompt, restored);
+    let text = session_prompt_text(provider_id, prompt, restored, supports_system_prompt);
     if !text.is_empty() {
         prompt_blocks.push(json!({
             "type": "text",
@@ -1978,11 +1987,13 @@ fn session_prompt_params(
     })
 }
 
-fn session_prompt_text(provider_id: &str, prompt: &PromptBundle, restored: bool) -> String {
-    if !restored
-        && !supports_system_prompt(provider_id).unwrap_or(false)
-        && !prompt.system_prompt.trim().is_empty()
-    {
+fn session_prompt_text(
+    _provider_id: &str,
+    prompt: &PromptBundle,
+    restored: bool,
+    supports_system_prompt: bool,
+) -> String {
+    if !restored && !supports_system_prompt && !prompt.system_prompt.trim().is_empty() {
         let system_prompt =
             gold_band_hidden_block("Gold Band stable system prompt", &prompt.system_prompt);
         return format!("{}\n\n{}", system_prompt, prompt.user_prompt);
@@ -2465,7 +2476,7 @@ impl<'a> AcpRuntime<'a> {
         mcp_servers: &[Value],
         skipped_mcp_servers: &[SkippedAcpMcpServer],
     ) -> Result<bool> {
-        let adapter_system_prompt = if supports_system_prompt(provider_id).unwrap_or(false) {
+        let adapter_system_prompt = if self.runtime_policy.supports_system_prompt {
             system_prompt
         } else {
             ""
@@ -3207,7 +3218,12 @@ impl<'a> AcpRuntime<'a> {
         let mut user_event = user_prompt_event(
             prompt_event_seq,
             session_id,
-            session_prompt_text(provider_id, prompt, restored),
+            session_prompt_text(
+                provider_id,
+                prompt,
+                restored,
+                self.runtime_policy.supports_system_prompt,
+            ),
             Some(prompt_id.clone()),
             hidden_from_chat,
             prompt.attachment_metas.clone(),
@@ -3502,7 +3518,13 @@ impl<'a> AcpRuntime<'a> {
         let _prompt_guard = self.connection.begin_prompt(session_id)?;
         let request = self.connection.begin_request(
             "session/prompt",
-            session_prompt_params(provider_id, session_id, prompt, restored),
+            session_prompt_params(
+                provider_id,
+                session_id,
+                prompt,
+                restored,
+                self.runtime_policy.supports_system_prompt,
+            ),
         )?;
         self.append_outbound_frame(&request.frame)?;
         let result = (|| {
@@ -7285,14 +7307,14 @@ mod tests {
             content_blocks: Vec::new(),
         };
 
-        let text = session_prompt_text("codex-acp", &prompt, false);
+        let text = session_prompt_text("codex-acp", &prompt, false, false);
         assert!(text.contains(
             "<hidden data-gold-band-hidden=\"true\" title=\"Gold Band stable system prompt\">"
         ));
         assert!(text.contains("node constraints"));
         assert!(text.ends_with("do the task"));
 
-        let params = session_prompt_params("codex-acp", "session-123", &prompt, false);
+        let params = session_prompt_params("codex-acp", "session-123", &prompt, false, false);
         assert_eq!(params["sessionId"], "session-123");
         assert_eq!(params["prompt"][0]["text"], text);
     }
@@ -7308,12 +7330,12 @@ mod tests {
             content_blocks: Vec::new(),
         };
 
-        let text = session_prompt_text("codex-acp", &prompt, true);
+        let text = session_prompt_text("codex-acp", &prompt, true, false);
         assert_eq!(text, "follow up");
         assert!(!text.contains("Gold Band stable system prompt"));
         assert!(!text.contains("node constraints"));
 
-        let params = session_prompt_params("codex-acp", "session-123", &prompt, true);
+        let params = session_prompt_params("codex-acp", "session-123", &prompt, true, false);
         assert_eq!(params["sessionId"], "session-123");
         assert_eq!(params["prompt"][0]["text"], "follow up");
     }
@@ -7330,11 +7352,11 @@ mod tests {
         };
 
         assert_eq!(
-            session_prompt_text("claude-acp", &prompt, false),
+            session_prompt_text("claude-acp", &prompt, false, true),
             "do the task"
         );
         assert_eq!(
-            session_prompt_text("claude-acp", &prompt, true),
+            session_prompt_text("claude-acp", &prompt, true, true),
             "do the task"
         );
     }

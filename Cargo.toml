@@ -42,5 +42,13 @@ atomic-write-file = "0.2"
 blake3 = "1"
 similar = "3.1"
 
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
+[target.'cfg(unix)'.dependencies]
+tempfile = "3"
+uzers = { version = "0.12", default-features = false }
+wait-timeout = "0.2"
+
 [dev-dependencies]
 tempfile = "3"

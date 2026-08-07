@@ -12,8 +12,8 @@ use gold_band::acp::client::PromptActivity;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    DesktopUpdateBadgeState, MANAGED_AGENT_PRESETS, ManagedAgentConfig, ManagedAgentId,
-    McpServerState, RuntimeConfig, RuntimeLogLevel,
+    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerState, RuntimeConfig,
+    RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -171,7 +171,7 @@ pub struct AppInfoVm {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRegistryVm {
     pub agents: Vec<ManagedAgentVm>,
-    pub supported_types: Vec<SupportedAgentTypeVm>,
+    pub catalog: Vec<AgentCatalogEntryVm>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -185,8 +185,9 @@ pub struct ManagedAgentVm {
     pub icon_key: String,
     pub primary_agent_dir: String,
     pub compatible_agent_dirs: Vec<String>,
+    pub supports_system_prompt: bool,
+    pub external_session_sync_supported: bool,
     pub external_session_sync_enabled: bool,
-    pub supported: bool,
     pub diagnostic: Option<ManagedAgentDiagnosticVm>,
     pub supported_modes: Option<Vec<AcpModeVm>>,
     pub supported_models: Option<Vec<AcpModeVm>>,
@@ -291,14 +292,19 @@ pub struct ManagedAgentDiagnosticVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SupportedAgentTypeVm {
+pub struct AgentCatalogEntryVm {
     pub agent_type: String,
     pub label: String,
     pub icon_key: String,
+    pub version: String,
+    pub description: String,
+    pub repository: Option<String>,
+    pub website: Option<String>,
     pub primary_agent_dir: String,
     pub compatible_agent_dirs: Vec<String>,
-    pub supported: bool,
     pub configured: bool,
+    pub supports_system_prompt: bool,
+    pub supports_external_session_sync: bool,
     pub default_display_name: String,
     pub default_command: String,
     pub default_args: Vec<String>,
@@ -1326,27 +1332,26 @@ pub fn agent_registry_vm(
             managed_agent_vm(agent_type, config, diagnostics.get(agent_type))
         })
         .collect::<Vec<_>>();
-    let supported_types = MANAGED_AGENT_PRESETS
-        .into_iter()
-        .map(|preset| {
-            let agent_id = preset.agent_id();
-            let default_config = preset.default_config();
-            SupportedAgentTypeVm {
-                agent_type: agent_id.as_str().to_string(),
-                label: preset.label.to_string(),
-                icon_key: preset.icon_key.to_string(),
-                primary_agent_dir: app
-                    .managed_agents()
-                    .get(&agent_id)
-                    .map(|config| config.primary_agent_dir.clone())
-                    .unwrap_or_else(|| default_config.primary_agent_dir.clone()),
-                compatible_agent_dirs: app
-                    .managed_agents()
-                    .get(&agent_id)
-                    .map(|config| config.compatible_agent_dirs.clone())
-                    .unwrap_or_else(|| default_config.compatible_agent_dirs.clone()),
-                supported: true,
+    let catalog = gold_band::agent_catalog::builtin_agent_catalog()
+        .agents
+        .iter()
+        .map(|entry| {
+            let agent_id =
+                ManagedAgentId::from_str(&entry.id).expect("built-in Agent catalog ids are valid");
+            let default_config = ManagedAgentConfig::from_catalog(entry);
+            AgentCatalogEntryVm {
+                agent_type: entry.id.clone(),
+                label: entry.label.clone(),
+                icon_key: entry.icon_key.clone(),
+                version: entry.version.clone(),
+                description: entry.description.clone(),
+                repository: entry.repository.clone(),
+                website: entry.website.clone(),
+                primary_agent_dir: default_config.primary_agent_dir.unwrap_or_default(),
+                compatible_agent_dirs: default_config.compatible_agent_dirs.clone(),
                 configured: app.managed_agents().contains_key(&agent_id),
+                supports_system_prompt: entry.supports_system_prompt,
+                supports_external_session_sync: entry.supports_external_session_sync,
                 default_display_name: default_config.adapter.display_name,
                 default_command: default_config.adapter.command,
                 default_args: default_config.adapter.args,
@@ -1359,10 +1364,7 @@ pub fn agent_registry_vm(
             }
         })
         .collect();
-    AgentRegistryVm {
-        agents,
-        supported_types,
-    }
+    AgentRegistryVm { agents, catalog }
 }
 
 fn managed_agent_vm(
@@ -1384,14 +1386,12 @@ fn managed_agent_vm(
                 value: value.clone(),
             })
             .collect(),
-        icon_key: gold_band::config::managed_agent_preset(agent_id)
-            .map(|preset| preset.icon_key)
-            .unwrap_or("agent")
-            .to_string(),
-        primary_agent_dir: config.primary_agent_dir.clone(),
+        icon_key: config.icon.clone(),
+        primary_agent_dir: config.primary_agent_dir.clone().unwrap_or_default(),
         compatible_agent_dirs: config.compatible_agent_dirs.clone(),
+        supports_system_prompt: config.supports_system_prompt(),
+        external_session_sync_supported: config.external_session_sync_supported,
         external_session_sync_enabled: config.external_session_sync_enabled,
-        supported: gold_band::config::managed_agent_preset(agent_id).is_some(),
         diagnostic: diagnostic.map(|diagnostic| ManagedAgentDiagnosticVm {
             status: if diagnostic.available {
                 "healthy"
@@ -1456,9 +1456,10 @@ fn managed_agent_vm(
     }
 }
 
-fn provider_icon_key(provider: &str) -> Option<String> {
-    let agent_id = ManagedAgentId::from_str(provider).ok()?;
-    gold_band::config::managed_agent_preset(&agent_id).map(|preset| preset.icon_key.to_string())
+fn provider_icon_key(app: &App, provider: &str) -> Option<String> {
+    app.managed_agent(provider)
+        .ok()
+        .map(|(_, config)| config.icon.clone())
 }
 
 pub fn task_list_vm(app: &App) -> Result<TaskListVm> {
@@ -1527,7 +1528,7 @@ pub fn workflow_vm(app: &App, task_id: &str) -> Result<WorkflowVm> {
     let workflow = read_json::<WorkflowDsl>(&app.paths.workflow_file(task_id)).ok();
     let graph = workflow
         .as_ref()
-        .map(workflow_graph_vm)
+        .map(|workflow| workflow_graph_vm(app, workflow))
         .unwrap_or_else(empty_graph);
     let control = workflow.as_ref().map(workflow_control_vm);
     let runs = newest_first(app.run_list(task_id)?)
@@ -1989,7 +1990,7 @@ fn round_attempt_nodes(
     Ok(nodes)
 }
 
-pub fn workflow_graph_vm(workflow: &WorkflowDsl) -> GraphVm {
+pub fn workflow_graph_vm(app: &App, workflow: &WorkflowDsl) -> GraphVm {
     GraphVm {
         nodes: workflow
             .nodes
@@ -2011,7 +2012,9 @@ pub fn workflow_graph_vm(workflow: &WorkflowDsl) -> GraphVm {
                 artifact_count: 0,
                 attachment_count: 0,
                 current: false,
-                icon_key: node.provider().and_then(provider_icon_key),
+                icon_key: node
+                    .provider()
+                    .and_then(|provider| provider_icon_key(app, provider)),
                 session_mode: None,
                 continue_from_node_id: None,
                 dynamic_summary: None,
@@ -2297,7 +2300,7 @@ fn round_trace_graph_vm(
                 n.resolved_config
                     .get("provider")
                     .and_then(|v| v.as_str())
-                    .and_then(provider_icon_key)
+                    .and_then(|provider| provider_icon_key(app, provider))
             }),
             session_mode: None,
             continue_from_node_id: None,
@@ -2627,7 +2630,10 @@ fn dynamic_node_graph_vm(
         artifact_count,
         attachment_count,
         current,
-        icon_key: node.provider.as_deref().and_then(provider_icon_key),
+        icon_key: node
+            .provider
+            .as_deref()
+            .and_then(|provider| provider_icon_key(app, provider)),
         session_mode: Some(enum_label(&node.session_mode)),
         continue_from_node_id: node.continue_from_node_id.clone(),
         dynamic_summary: None,
@@ -2966,7 +2972,7 @@ fn round_node_graph_vm(
             .resolved_config
             .get("provider")
             .and_then(|v| v.as_str())
-            .and_then(provider_icon_key),
+            .and_then(|provider| provider_icon_key(app, provider)),
         session_mode: None,
         continue_from_node_id: None,
         dynamic_summary,
@@ -3691,7 +3697,7 @@ pub fn dynamic_acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
-    let adapter_icon_key = provider_icon_key(&provider);
+    let adapter_icon_key = provider_icon_key(app, &provider);
     let session_elapsed_seconds = conversation_branch_elapsed_seconds(
         &branch_id,
         branch_record,
@@ -4097,7 +4103,7 @@ pub fn acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
-    let adapter_icon_key = provider_icon_key(&provider);
+    let adapter_icon_key = provider_icon_key(app, &provider);
     let session_elapsed_seconds = conversation_branch_elapsed_seconds(
         &branch_id,
         branch_record,
@@ -5190,9 +5196,8 @@ fn paginate_timeline(
             .iter()
             .filter(|block| block.newest_seq > cursor)
             .collect::<Vec<_>>();
-        changed_blocks.sort_by_key(|block| {
-            (block.newest_seq, block.oldest_seq, block.start, block.end)
-        });
+        changed_blocks
+            .sort_by_key(|block| (block.newest_seq, block.oldest_seq, block.start, block.end));
         let selected_count = if changed_blocks.len() > limit {
             let cutoff_revision = changed_blocks[limit - 1].newest_seq;
             changed_blocks.partition_point(|block| block.newest_seq <= cutoff_revision)

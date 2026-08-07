@@ -1,6 +1,7 @@
 import type {
   AcpSessionVm,
   AgentRegistryVm,
+  AgentCatalogEntryVm,
   AppBootstrapVm,
   ContentVm,
   LogPageVm,
@@ -462,8 +463,9 @@ export const mockAgentRegistry: AgentRegistryVm = {
       iconKey: 'claude',
       primaryAgentDir: '.claude',
       compatibleAgentDirs: [],
+      supportsSystemPrompt: true,
+      externalSessionSyncSupported: false,
       externalSessionSyncEnabled: false,
-      supported: true,
       diagnostic: {
         status: 'healthy',
         available: true,
@@ -494,14 +496,38 @@ export const mockAgentRegistry: AgentRegistryVm = {
       }],
     },
   ],
-  supportedTypes: [
-    { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', primaryAgentDir: '.claude', compatibleAgentDirs: [], supported: true, configured: true, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: ['-y', '@agentclientprotocol/claude-agent-acp@latest'], defaultEnv: [] },
-    { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', primaryAgentDir: '.codex', compatibleAgentDirs: ['.agents'], supported: true, configured: false, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: ['-y', '@agentclientprotocol/codex-acp@latest'], defaultEnv: [] },
-    { agentType: 'cursor', label: 'Cursor', iconKey: 'cursor', primaryAgentDir: '.cursor', compatibleAgentDirs: ['.agents'], supported: true, configured: false, defaultDisplayName: 'Cursor', defaultCommand: '.\\dist-package\\cursor-agent.cmd', defaultArgs: ['acp'], defaultEnv: [] },
-    { agentType: 'gemini', label: 'Gemini', iconKey: 'gemini', primaryAgentDir: '.gemini', compatibleAgentDirs: ['.agents'], supported: true, configured: false, defaultDisplayName: 'Gemini', defaultCommand: 'npx', defaultArgs: ['-y', '@google/gemini-cli@latest', '--acp'], defaultEnv: [] },
-    { agentType: 'opencode', label: 'OpenCode', iconKey: 'opencode', primaryAgentDir: '.opencode', compatibleAgentDirs: ['.agents'], supported: true, configured: false, defaultDisplayName: 'OpenCode', defaultCommand: '.\\opencode.exe', defaultArgs: ['acp'], defaultEnv: [] },
+  catalog: [
+    mockCatalogEntry({ agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', primaryAgentDir: '.claude', configured: true, supportsSystemPrompt: true, defaultDisplayName: 'Claude', defaultArgs: ['-y', '@agentclientprotocol/claude-agent-acp@0.65.0'] }),
+    mockCatalogEntry({ agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', primaryAgentDir: '.codex', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Codex', defaultArgs: ['-y', '@agentclientprotocol/codex-acp@1.1.13'] }),
+    mockCatalogEntry({ agentType: 'cursor', label: 'Cursor', iconKey: 'cursor', primaryAgentDir: '.cursor', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Cursor', defaultCommand: 'cursor-agent', defaultArgs: ['acp'] }),
+    mockCatalogEntry({ agentType: 'gemini', label: 'Gemini', iconKey: 'gemini', primaryAgentDir: '.gemini', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Gemini', defaultArgs: ['-y', '@google/gemini-cli@0.54.4', '--acp'] }),
+    mockCatalogEntry({ agentType: 'codebuddy-code', label: 'CodeBuddy', iconKey: 'codebuddy-code', primaryAgentDir: '.codebuddy', defaultDisplayName: 'CodeBuddy', defaultArgs: ['-y', '@tencent-ai/codebuddy-code@2.106.7', '--acp'] }),
+    mockCatalogEntry({ agentType: 'goose', label: 'Goose', iconKey: 'goose', primaryAgentDir: '.goose', defaultDisplayName: 'Goose', defaultCommand: 'goose', defaultArgs: ['acp'] }),
+    mockCatalogEntry({ agentType: 'qwen-code', label: 'Qwen Code', iconKey: 'qwen-code', primaryAgentDir: '.qwen', defaultDisplayName: 'Qwen Code', defaultArgs: ['-y', '@qwen-code/qwen-code@0.21.7', '--acp', '--experimental-skills'] }),
+    mockCatalogEntry({ agentType: 'opencode', label: 'OpenCode', iconKey: 'opencode', primaryAgentDir: '.opencode', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'OpenCode', defaultCommand: 'opencode', defaultArgs: ['acp'] }),
+    mockCatalogEntry({ agentType: 'kimi', label: 'Kimi Code', iconKey: 'kimi', primaryAgentDir: '.kimi-code', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Kimi Code', defaultCommand: 'kimi', defaultArgs: ['acp'] }),
+    mockCatalogEntry({ agentType: 'amp-acp', label: 'Amp', iconKey: 'amp-acp', primaryAgentDir: '.agents', compatibleAgentDirs: ['.claude'], defaultDisplayName: 'Amp', defaultCommand: 'amp-acp' }),
   ],
 };
+
+function mockCatalogEntry(input: Partial<AgentCatalogEntryVm> & Pick<AgentCatalogEntryVm, 'agentType' | 'label' | 'iconKey'>): AgentCatalogEntryVm {
+  return {
+    version: '1.0.0',
+    description: '',
+    repository: null,
+    website: null,
+    primaryAgentDir: '',
+    compatibleAgentDirs: [],
+    configured: false,
+    supportsSystemPrompt: false,
+    supportsExternalSessionSync: false,
+    defaultDisplayName: input.label,
+    defaultCommand: 'npx',
+    defaultArgs: [],
+    defaultEnv: [],
+    ...input,
+  };
+}
 
 export const mockTaskList: TaskListVm = {
   cards: [

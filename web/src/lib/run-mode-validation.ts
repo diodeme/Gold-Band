@@ -24,7 +24,6 @@ export type SelectableWorkflowOption = {
 };
 
 export function agentDoctorReason(agent: ManagedAgentVm, t: (key: string, options?: Record<string, unknown>) => string) {
-  if (!agent.supported) return t('runMode.agentUnavailable');
   if (agent.diagnostic?.available === true) return null;
   if (agent.diagnostic?.reason?.trim()) return agent.diagnostic.reason;
   return t('runMode.agentDoctorRequired');
@@ -150,7 +149,7 @@ export function validateWorkflowTemplateForConversationStart(
   if (!selectedId) return [t('conversation.home.selectWorkflowTemplate')];
   const template = workflowTemplates?.templates.find((item) => item.id === selectedId);
   if (!template) return [t('conversation.validation.workflow.not-found')];
-  const agents = agentRegistry?.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true) ?? [];
+  const agents = agentRegistry?.agents.filter((agent) => agent.diagnostic?.available === true) ?? [];
   const validation = validateWorkflowForSave(
     template.workflow,
     profiles,

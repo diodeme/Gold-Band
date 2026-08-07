@@ -726,13 +726,15 @@ pub(crate) fn execute_ai_node(
     };
     let attempt_dir_for_index = invocation.attempt_dir.clone();
     let live_update = app.acp_live_update_for(live_update_context.clone());
-    let session_update = app.acp_session_update_for(live_update_context);
+    let session_update = app.acp_session_update_for(live_update_context.clone());
+    let prompt_accepted = app.acp_prompt_accepted_for(live_update_context);
     let result = app
         .provider_for_id(provider_id)?
         .run_worker_with_callbacks(
             invocation,
             live_update.as_ref().map(|callback| callback as _),
             session_update.as_ref().map(|callback| callback as _),
+            prompt_accepted.as_ref().map(|callback| callback as _),
         )?;
 
     if !attempt_is_still_current_running(app, task_id, run_id, round_id, node_id, attempt_id)? {

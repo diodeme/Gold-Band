@@ -670,8 +670,9 @@ pub struct App {
         >,
     >,
     acp_session_update: Option<Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>>,
-    prompt_turn_finished:
-        Option<Arc<dyn Fn(AcpLiveEventContext, bool) -> Result<()> + Send + Sync>>,
+    prompt_turn_lifecycle: Option<
+        Arc<dyn Fn(AcpLiveEventContext, AcpPromptLifecycleEvent) -> Result<()> + Send + Sync>,
+    >,
     pub lifecycle_bus: observability::RuntimeLifecycleBus,
 }
 
@@ -688,6 +689,12 @@ pub struct AcpLiveEventContext {
     pub attempt_id: String,
     pub outer_node_id: Option<String>,
     pub outer_attempt_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcpPromptLifecycleEvent {
+    Accepted { prompt_id: String },
+    Finished { successful: bool },
 }
 
 pub fn is_run_continuable(run: &RunState) -> bool {
@@ -925,7 +932,7 @@ impl App {
             provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
-            prompt_turn_finished: self.prompt_turn_finished.clone(),
+            prompt_turn_lifecycle: self.prompt_turn_lifecycle.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
         }
     }
@@ -970,7 +977,7 @@ impl App {
             provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
-            prompt_turn_finished: self.prompt_turn_finished.clone(),
+            prompt_turn_lifecycle: self.prompt_turn_lifecycle.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
         }
     }
@@ -993,11 +1000,13 @@ impl App {
         self
     }
 
-    pub fn with_prompt_turn_finished(
+    pub fn with_prompt_turn_lifecycle(
         mut self,
-        callback: Arc<dyn Fn(AcpLiveEventContext, bool) -> Result<()> + Send + Sync>,
+        callback: Arc<
+            dyn Fn(AcpLiveEventContext, AcpPromptLifecycleEvent) -> Result<()> + Send + Sync,
+        >,
     ) -> Self {
-        self.prompt_turn_finished = Some(callback);
+        self.prompt_turn_lifecycle = Some(callback);
         self
     }
 
@@ -1040,6 +1049,21 @@ impl App {
         Some(move || session_update(context.clone()))
     }
 
+    pub fn acp_prompt_accepted_for<'a>(
+        &'a self,
+        context: AcpLiveEventContext,
+    ) -> Option<impl Fn(&str) -> Result<()> + 'a> {
+        let prompt_turn_lifecycle = self.prompt_turn_lifecycle.as_ref()?.clone();
+        Some(move |prompt_id: &str| {
+            prompt_turn_lifecycle(
+                context.clone(),
+                AcpPromptLifecycleEvent::Accepted {
+                    prompt_id: prompt_id.to_string(),
+                },
+            )
+        })
+    }
+
     pub fn emit_acp_session_update(&self, context: AcpLiveEventContext) -> Result<()> {
         if let Some(session_update) = &self.acp_session_update {
             session_update(context)?;
@@ -1052,8 +1076,8 @@ impl App {
         context: AcpLiveEventContext,
         successful: bool,
     ) -> Result<()> {
-        if let Some(callback) = &self.prompt_turn_finished {
-            callback(context, successful)?;
+        if let Some(callback) = &self.prompt_turn_lifecycle {
+            callback(context, AcpPromptLifecycleEvent::Finished { successful })?;
         }
         Ok(())
     }
@@ -1832,7 +1856,7 @@ impl App {
             provider_diagnostics: None,
             acp_live_update: None,
             acp_session_update: None,
-            prompt_turn_finished: None,
+            prompt_turn_lifecycle: None,
             lifecycle_bus: observability::RuntimeLifecycleBus::new(),
         }
     }
@@ -3476,8 +3500,8 @@ fn is_acp_session_active_status(status: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpLiveEventContext, App, AutoTemplateStore, CreateTaskInput, RuntimeLifecycleEvent,
-        WorkflowTemplate, WorkflowTemplateStore, next_auto_template_id,
+        AcpLiveEventContext, AcpPromptLifecycleEvent, App, AutoTemplateStore, CreateTaskInput,
+        RuntimeLifecycleEvent, WorkflowTemplate, WorkflowTemplateStore, next_auto_template_id,
     };
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
@@ -4146,6 +4170,46 @@ mod tests {
         assert_eq!(calls[0].attempt_id, context.attempt_id);
         assert_eq!(calls[0].outer_node_id, context.outer_node_id);
         assert_eq!(calls[0].outer_attempt_id, context.outer_attempt_id);
+    }
+
+    #[test]
+    fn prompt_lifecycle_reports_accepted_identity_and_finished_outcome() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_callback = seen.clone();
+        let app =
+            test_app(repo_root).with_prompt_turn_lifecycle(Arc::new(move |context, event| {
+                seen_for_callback.lock().unwrap().push((context, event));
+                Ok(())
+            }));
+        let context = AcpLiveEventContext {
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "direct-agent".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        };
+
+        app.acp_prompt_accepted_for(context.clone()).unwrap()("turn-queued-001").unwrap();
+        app.notify_prompt_turn_finished(context, false).unwrap();
+
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0.task_id, "task-001");
+        assert_eq!(
+            calls[0].1,
+            AcpPromptLifecycleEvent::Accepted {
+                prompt_id: "turn-queued-001".to_string(),
+            }
+        );
+        assert_eq!(
+            calls[1].1,
+            AcpPromptLifecycleEvent::Finished { successful: false }
+        );
     }
 
     fn dynamic_pause_test_app(temp: &tempfile::TempDir) -> App {

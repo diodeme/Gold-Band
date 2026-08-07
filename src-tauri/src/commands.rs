@@ -11,18 +11,17 @@ use gold_band::acp::permission::{
 use gold_band::acp::prompt_queue::{
     AUTO_DISPATCH_USER_PRIORITY_GRACE_MS, AutoClaimResult, PromptQueueError,
     auto_dispatch_is_suspended, claim_next_for_auto_dispatch, claim_queued_prompt,
-    clear_auto_dispatch_suspension, complete_accepted_dispatches, delete_queued_prompt,
-    enqueue_prompt, load_prompt_queue, mark_user_priority, release_queued_prompt,
-    request_auto_dispatch_suspension, settle_dispatching_prompts, suspend_auto_dispatch,
-    update_queued_prompt,
+    clear_auto_dispatch_suspension, complete_accepted_prompt, delete_queued_prompt, enqueue_prompt,
+    load_prompt_queue, mark_user_priority, release_queued_prompt, request_auto_dispatch_suspension,
+    settle_dispatching_prompts, suspend_auto_dispatch, update_queued_prompt,
 };
 use gold_band::acp::turn_files::{
     CHANGE_SET_NOT_FOUND, TurnFileChangeSet, TurnFileStore, VERSION_NOT_FOUND,
 };
 use gold_band::app::{
-    AcpTurnOutcome, App, AutoTemplate, AutoTemplateStore, CreateTaskInput, ProfileCommandError,
-    ProfileEntry, ProfileInput, ProfileList, RuntimeInterventionKind, RuntimeLifecycleEvent,
-    WorkflowTemplateStore,
+    AcpPromptLifecycleEvent, AcpTurnOutcome, App, AutoTemplate, AutoTemplateStore, CreateTaskInput,
+    ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, RuntimeInterventionKind,
+    RuntimeLifecycleEvent, WorkflowTemplateStore,
 };
 use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -604,32 +603,48 @@ pub(crate) fn configure_conversation_runtime_callbacks(
 ) -> App {
     let bg_app = app.clone_for_background();
     let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), project_id.clone());
-    let prompt_turn_finished =
-        prompt_turn_finished_callback(app_handle.clone(), project_id.clone());
+    let prompt_turn_lifecycle = prompt_turn_lifecycle_callback(
+        app_handle.clone(),
+        app.clone_for_background(),
+        project_id.clone(),
+    );
     app.with_acp_live_update(live_update)
         .with_acp_session_update(acp_session_update_emitter(app_handle, bg_app, project_id))
-        .with_prompt_turn_finished(prompt_turn_finished)
+        .with_prompt_turn_lifecycle(prompt_turn_lifecycle)
 }
 
-fn prompt_turn_finished_callback(
+fn prompt_turn_lifecycle_callback(
     app_handle: AppHandle,
+    app: App,
     project_id: Option<String>,
-) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, bool) -> anyhow::Result<()> + Send + Sync> {
-    Arc::new(move |context, successful| {
-        schedule_direct_prompt_queue_drain(
-            app_handle.clone(),
-            project_id.clone(),
-            AttemptLocator::new(
-                context.task_id,
-                context.run_id,
-                context.round_id,
-                context.node_id,
-                context.attempt_id,
-                context.outer_node_id,
-                context.outer_attempt_id,
-            ),
-            successful,
+) -> Arc<
+    dyn Fn(gold_band::app::AcpLiveEventContext, AcpPromptLifecycleEvent) -> anyhow::Result<()>
+        + Send
+        + Sync,
+> {
+    Arc::new(move |context, event| {
+        let locator = AttemptLocator::new(
+            context.task_id,
+            context.run_id,
+            context.round_id,
+            context.node_id,
+            context.attempt_id,
+            context.outer_node_id,
+            context.outer_attempt_id,
         );
+        match event {
+            AcpPromptLifecycleEvent::Accepted { prompt_id } => {
+                let _ = complete_accepted_prompt(&locator.attempt_dir(&app), &prompt_id);
+            }
+            AcpPromptLifecycleEvent::Finished { successful } => {
+                schedule_direct_prompt_queue_drain(
+                    app_handle.clone(),
+                    project_id.clone(),
+                    locator,
+                    successful,
+                );
+            }
+        }
         Ok(())
     })
 }
@@ -650,7 +665,9 @@ fn schedule_direct_prompt_queue_drain(
         return;
     }
     let attempt_dir = locator.attempt_dir(&app);
-    let _ = settle_dispatching_prompts(&attempt_dir);
+    let Ok(queue) = settle_dispatching_prompts(&attempt_dir) else {
+        return;
+    };
     if !successful {
         emit_acp_session_update(
             &app_handle,
@@ -667,9 +684,6 @@ fn schedule_direct_prompt_queue_drain(
         );
         return;
     }
-    let Ok(queue) = load_prompt_queue(&attempt_dir) else {
-        return;
-    };
     if queue.auto_dispatch_suspended || auto_dispatch_is_suspended(&attempt_dir) {
         return;
     }
@@ -1577,11 +1591,7 @@ pub fn start_run(
     task_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let base_app = state.app().map_err(command_error)?;
-    let bg_app = base_app.clone_for_background();
-    let live_update = acp_live_update_emitter_for_app(&base_app, app_handle.clone(), None);
-    let app = base_app
-        .with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, None));
+    let app = configure_conversation_runtime_callbacks(base_app, app_handle, None);
     app.run_start_background(&task_id, None)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -1727,11 +1737,7 @@ pub fn retry_run(
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
     let base_app = state.app().map_err(command_error)?;
-    let bg_app = base_app.clone_for_background();
-    let live_update = acp_live_update_emitter_for_app(&base_app, app_handle.clone(), None);
-    let app = base_app
-        .with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, None));
+    let app = configure_conversation_runtime_callbacks(base_app, app_handle, None);
     app.run_retry(&task_id, &run_id)
         .map(run_summary_vm)
         .map_err(command_error)
@@ -2093,21 +2099,6 @@ pub(crate) fn acp_session_update_emitter(
     project_id: Option<String>,
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync> {
     Arc::new(move |context| {
-        if conversation_run_mode(&app, &context.task_id)
-            == Some(gold_band::config::ConversationRunMode::Direct)
-        {
-            let attempt_dir = AttemptLocator::new(
-                context.task_id.clone(),
-                context.run_id.clone(),
-                context.round_id.clone(),
-                context.node_id.clone(),
-                context.attempt_id.clone(),
-                context.outer_node_id.clone(),
-                context.outer_attempt_id.clone(),
-            )
-            .attempt_dir(&app);
-            let _ = complete_accepted_dispatches(&attempt_dir);
-        }
         let session = if let (Some(outer_node_id), Some(outer_attempt_id)) = (
             context.outer_node_id.as_deref(),
             context.outer_attempt_id.as_deref(),
@@ -3137,6 +3128,15 @@ pub async fn send_acp_prompt(
                 outer_node_id_for_live.clone(),
                 outer_attempt_id_for_live.clone(),
             ));
+            let prompt_accepted = app.acp_prompt_accepted_for(acp_live_event_context(
+                &task_id_for_live,
+                &run_id_for_live,
+                &round_id_for_live,
+                &node_id_for_live,
+                &attempt_id_for_live,
+                outer_node_id_for_live.clone(),
+                outer_attempt_id_for_live.clone(),
+            ));
             let config_options = current_acp_session_config_option_overrides(&attempt_dir);
             let prompt_run = client::run_prompt(
                 provider,
@@ -3178,6 +3178,7 @@ pub async fn send_acp_prompt(
                     Vec::new()
                 }),
                 session_update.as_ref().map(|callback| callback as _),
+                prompt_accepted.as_ref().map(|callback| callback as _),
                 Some(client::RuntimeStopProbe {
                     run_file: app.paths.run_file(&task_id, &run_id),
                     round_id: round_id.clone(),
@@ -3292,6 +3293,15 @@ pub async fn send_acp_prompt(
             None,
             None,
         ));
+        let prompt_accepted = app.acp_prompt_accepted_for(acp_live_event_context(
+            &task_id_for_live,
+            &run_id_for_live,
+            &round_id_for_live,
+            &node_id_for_live,
+            &attempt_id_for_live,
+            None,
+            None,
+        ));
         let model = current_acp_session_model_override(&attempt_dir);
         let config_options = current_acp_session_config_option_overrides(&attempt_dir);
         let prompt_run = client::run_prompt(
@@ -3334,6 +3344,7 @@ pub async fn send_acp_prompt(
                 Vec::new()
             }),
             session_update.as_ref().map(|callback| callback as _),
+            prompt_accepted.as_ref().map(|callback| callback as _),
             Some(client::RuntimeStopProbe {
                 run_file: app.paths.run_file(&task_id, &run_id),
                 round_id: round_id.clone(),

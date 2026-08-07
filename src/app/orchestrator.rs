@@ -4871,7 +4871,8 @@ fn execute_dynamic_worker(
         }
         let live_update_context = dynamic_acp_live_event_context(ctx, &node.id, &attempt_id);
         let live_update = ctx.app.acp_live_update_for(live_update_context.clone());
-        let session_update = ctx.app.acp_session_update_for(live_update_context);
+        let session_update = ctx.app.acp_session_update_for(live_update_context.clone());
+        let prompt_accepted = ctx.app.acp_prompt_accepted_for(live_update_context);
         let invocation_build_started_at = Instant::now();
         dynamic_event_best_effort(
             ctx,
@@ -4976,6 +4977,7 @@ fn execute_dynamic_worker(
                 invocation,
                 live_update.as_ref().map(|callback| callback as _),
                 session_update.as_ref().map(|callback| callback as _),
+                prompt_accepted.as_ref().map(|callback| callback as _),
             )
             .with_context(|| format!("provider `{}` failed to run `{}`", provider_id, node.id))
         {
@@ -5358,7 +5360,8 @@ fn execute_dynamic_agent_stage(
     }
     let live_update_context = dynamic_acp_live_event_context(ctx, &node.id, &attempt_id);
     let live_update = ctx.app.acp_live_update_for(live_update_context.clone());
-    let session_update = ctx.app.acp_session_update_for(live_update_context);
+    let session_update = ctx.app.acp_session_update_for(live_update_context.clone());
+    let prompt_accepted = ctx.app.acp_prompt_accepted_for(live_update_context);
     let invocation_build_started_at = Instant::now();
     dynamic_event_best_effort(
         ctx,
@@ -5439,6 +5442,7 @@ fn execute_dynamic_agent_stage(
             invocation,
             live_update.as_ref().map(|callback| callback as _),
             session_update.as_ref().map(|callback| callback as _),
+            prompt_accepted.as_ref().map(|callback| callback as _),
         )
         .with_context(|| format!("provider `{provider_id}` failed to run `{}`", node.id))?;
     dynamic_event_best_effort(

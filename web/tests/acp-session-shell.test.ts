@@ -115,6 +115,16 @@ describe('resolveAcpSessionShellState', () => {
     })).toBe('initializing');
   });
 
+  it('keeps a durably established session available while its detail payload is temporarily absent', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: false,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      hasEstablishedSessionShell: true,
+      initialSessionLoading: false,
+    })).toBe('available');
+  });
+
   it('keeps runtime-active session switching in loading without initialization ownership', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: false,

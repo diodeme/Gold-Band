@@ -246,6 +246,7 @@ export interface AcpDirectSessionHeaderProps {
 interface ACPChatDialogProps {
   session?: AcpSessionVm | null;
   sessionEstablished?: boolean;
+  sessionReferenceId?: string | null;
   projectId: string;
   taskId: string;
   runId: string;
@@ -654,6 +655,7 @@ export function ACPChatDialog(
   {
     session,
     sessionEstablished = false,
+    sessionReferenceId,
     projectId,
     taskId,
     runId,
@@ -1067,16 +1069,38 @@ export function ACPChatDialog(
         : null,
     [allowEventOnlySessionShell, loadedEvents, runtimeActiveFromContext],
   );
+  const establishedSessionShell = useMemo(
+    () =>
+      sessionEstablished &&
+      !baseSession &&
+      !liveSessionShell
+        ? createEstablishedAcpSessionShell(
+            loadedEvents,
+            runtimeActiveFromContext ? "running" : "completed",
+            sessionReferenceId,
+          )
+        : null,
+    [
+      baseSession,
+      liveSessionShell,
+      loadedEvents,
+      runtimeActiveFromContext,
+      sessionEstablished,
+      sessionReferenceId,
+    ],
+  );
   const initializingSessionShell = useMemo(
     () =>
       showInitializingSessionShell &&
       runtimeActiveFromContext &&
       !baseSession &&
-      !liveSessionShell
+      !liveSessionShell &&
+      !establishedSessionShell
         ? createLiveAcpSessionShell(loadedEvents, "running")
         : null,
     [
       baseSession,
+      establishedSessionShell,
       liveSessionShell,
       loadedEvents,
       runtimeActiveFromContext,
@@ -1091,12 +1115,13 @@ export function ACPChatDialog(
             loadedEvents,
             effectiveLoadedEventBufferLimit,
           )
-        : (liveSessionShell ?? initializingSessionShell),
+        : (liveSessionShell ?? establishedSessionShell ?? initializingSessionShell),
     [
       baseSession,
       effectiveLoadedEventBufferLimit,
       initializingSessionShell,
       liveSessionShell,
+      establishedSessionShell,
       loadedEvents,
     ],
   );
@@ -1931,7 +1956,11 @@ export function ACPChatDialog(
               latestSessionRef.current,
               outerNodeId,
               outerAttemptId,
-            ).then((updated) => applySessionUpdate(updated, 'subscription-branch-refresh')).catch(() => {});
+            ).then((updated) => {
+              // A lifecycle-only update has no session payload. It must not erase
+              // the mounted branch while the authoritative session refresh catches up.
+              if (updated) applySessionUpdate(updated, 'subscription-branch-refresh');
+            }).catch(() => {});
             return;
           }
           // Guard against subscription refresh overwriting a pending user config change
@@ -1939,7 +1968,8 @@ export function ACPChatDialog(
           logAcpSessionReady("subscription-session:incoming", componentInstanceId, sessionIdentity, incoming ?? null, {
             hasPendingLocalConfigChange: configGenerationRef.current > 0,
           });
-          if (incoming && configGenerationRef.current > 0 && latestSessionRef.current?.config) {
+          if (!incoming) return;
+          if (configGenerationRef.current > 0 && latestSessionRef.current?.config) {
             const cfg = latestSessionRef.current.config;
             if (incoming.config) {
               incoming.config = {
@@ -1953,10 +1983,10 @@ export function ACPChatDialog(
               };
             }
           }
-          if (incoming && isSessionTerminalStatus(incoming.status)) {
+          if (isSessionTerminalStatus(incoming.status)) {
             settleLiveStreamingMarkdown();
           }
-          applySessionUpdate(incoming ?? null, "subscription-session");
+          applySessionUpdate(incoming, "subscription-session");
         }
       });
       await ensureConversationEventRouterStarted();
@@ -3011,6 +3041,7 @@ export function ACPChatDialog(
     hasBaseSession: Boolean(baseSession),
     baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
     hasLiveSessionShell: Boolean(liveSessionShell),
+    hasEstablishedSessionShell: Boolean(establishedSessionShell),
     initialSessionLoading: loadingInitialSession,
     initializationFailed: sessionInitializationFailed,
     initializationInterrupted: sessionInitializationInterrupted,
@@ -7770,6 +7801,18 @@ function displayRawDirection(
   if (direction === "inbound") return t("acp.rawInboundFrame");
   if (direction === "outbound") return t("acp.rawOutboundFrame");
   return direction ?? t("common.unknown");
+}
+
+function createEstablishedAcpSessionShell(
+  events: AcpUiEventVm[],
+  status: string,
+  sessionReferenceId?: string | null,
+): AcpSessionVm {
+  return {
+    ...createLiveAcpSessionShell(events, status),
+    sessionId: sessionReferenceId ?? events.at(-1)?.sessionId ?? events[0]?.sessionId ?? null,
+    restored: true,
+  };
 }
 
 function rawKindOptions(t: ReturnType<typeof useTranslation>["t"]) {

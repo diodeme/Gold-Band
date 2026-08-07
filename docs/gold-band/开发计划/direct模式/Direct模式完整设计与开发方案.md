@@ -1335,6 +1335,9 @@ Direct 与节点完成后的手动追问复用同一个 ACP attempt。原通知�
 - [x] 使用 shadcn Collapsible/Button/Tooltip/Textarea、Tailwind 和现有 prompt-kit composer；提供编辑、使用、删除 icon action 与无障碍标签。
 - [x] 入队响应不创建 optimistic 用户气泡、不进入 awaiting response；自动出队仍写标准用户 timeline 消息并复用标准样式。
 - [x] 编辑原位保存；停止/空闲后可指定使用；删除立即回灌后端 lifecycle。
+- [x] 修复 completed Direct session 进入 follow-up `session/resume` 时的会话壳竞态：同 attempt 快照合并不再降级已持久化的 `sessionEstablished / sessionId`；详细 session payload 短暂缺失时由持久化引用保持历史会话壳、composer 和待发送队列，不再误显示“ACP 会话失败”。
+- [x] 根因修正：排队的 lifecycle-only 更新不再被认为 session 清空；订阅层只在带有非空 authoritative session payload 时替换当前会话，从根上避免排队操作在 `session/resume` 窗口清掉 composer。
+- [x] 首轮自动出队根因修正：创建/重跑与继续入口统一装配 ACP live、session snapshot、`prompt_turn_finished` callback；首轮 `end_turn` 现在也会产生后继的 Direct 队列调度。
 
 接口级回归：
 
@@ -1343,5 +1346,6 @@ Direct 与节点完成后的手动追问复用同一个 ACP attempt。原通知�
 - [x] Web semantic composer：Direct 首次发送过渡期即使 lifecycle 尚未携带 queue，也可输入并入队。
 - [x] Rust conversation run VM：停止态 selected leaf 仍投影持久化队列。
 - [x] Web DOM：默认 3 条/展开、原位编辑、icon aria-label、运行中禁用手动使用。
+- [x] Web 会话壳：已建立 session 的 detail payload 临时为空时仍渲染 composer；same-attempt resume refresh 不丢失 session 引用和历史 payload。
 - [ ] 完整 Rust/Web test 与 build。
 - [ ] Direct deep link 页面验收（位置、展开、编辑、删除、停止后使用、深浅主题）并清理测试资源。

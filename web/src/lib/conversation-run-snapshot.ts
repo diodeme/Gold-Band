@@ -174,6 +174,23 @@ export function mergeConversationRunSnapshot(
   if (
     selectedKey &&
     currentLeaf &&
+    incomingLeaf &&
+    conversationSessionKeyFromParts(currentLeaf) === selectedKey &&
+    currentLeaf.sessionEstablished &&
+    (!incomingLeaf.sessionEstablished || (!incomingLeaf.sessionId && currentLeaf.sessionId))
+  ) {
+    merged = {
+      ...merged,
+      sessionTree: mapConversationTreeLeaf(merged.sessionTree, selectedKey, (leaf) => ({
+        ...leaf,
+        sessionId: leaf.sessionId ?? currentLeaf.sessionId,
+        sessionEstablished: true,
+      })),
+    };
+  }
+  if (
+    selectedKey &&
+    currentLeaf &&
     conversationSessionKeyFromParts(currentLeaf) === selectedKey &&
     isConversationActiveLeaf(currentLeaf) &&
     (!incomingLeaf || isConversationUnknownStatus(incomingLeaf.status))

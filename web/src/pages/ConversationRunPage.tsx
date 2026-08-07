@@ -412,6 +412,7 @@ export function ConversationRunPage({
             key={`${run.taskUuid ?? run.taskId}:${selectedSessionKey ?? 'empty'}`}
             session={selectedSession}
             sessionEstablished={selectedLeaf.sessionEstablished}
+            sessionReferenceId={selectedLeaf.sessionId}
             projectId={run.projectId}
             taskId={run.taskId}
             runId={run.runId}

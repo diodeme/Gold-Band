@@ -11,10 +11,10 @@ use gold_band::acp::permission::{
 use gold_band::acp::prompt_queue::{
     AUTO_DISPATCH_USER_PRIORITY_GRACE_MS, AutoClaimResult, PromptQueueError,
     auto_dispatch_is_suspended, claim_next_for_auto_dispatch, claim_queued_prompt,
-    clear_auto_dispatch_suspension, complete_accepted_dispatches, complete_queued_prompt,
-    delete_queued_prompt, enqueue_prompt, load_prompt_queue, mark_user_priority,
-    release_dispatching_prompts, release_queued_prompt, request_auto_dispatch_suspension,
-    suspend_auto_dispatch, update_queued_prompt,
+    clear_auto_dispatch_suspension, complete_accepted_dispatches, delete_queued_prompt,
+    enqueue_prompt, load_prompt_queue, mark_user_priority, release_queued_prompt,
+    request_auto_dispatch_suspension, settle_dispatching_prompts, suspend_auto_dispatch,
+    update_queued_prompt,
 };
 use gold_band::acp::turn_files::{
     CHANGE_SET_NOT_FOUND, TurnFileChangeSet, TurnFileStore, VERSION_NOT_FOUND,
@@ -650,10 +650,8 @@ fn schedule_direct_prompt_queue_drain(
         return;
     }
     let attempt_dir = locator.attempt_dir(&app);
-    if successful {
-        let _ = complete_accepted_dispatches(&attempt_dir);
-    } else {
-        let _ = release_dispatching_prompts(&attempt_dir);
+    let _ = settle_dispatching_prompts(&attempt_dir);
+    if !successful {
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -743,11 +741,7 @@ fn schedule_direct_prompt_queue_drain(
                     "completed" | "complete"
                 )
             });
-        if prompt_completed {
-            let _ = complete_queued_prompt(&attempt_dir, &claimed.id);
-        } else {
-            let _ = release_queued_prompt(&attempt_dir, &claimed.id);
-        }
+        let _ = settle_dispatching_prompts(&attempt_dir);
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -2099,6 +2093,21 @@ pub(crate) fn acp_session_update_emitter(
     project_id: Option<String>,
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync> {
     Arc::new(move |context| {
+        if conversation_run_mode(&app, &context.task_id)
+            == Some(gold_band::config::ConversationRunMode::Direct)
+        {
+            let attempt_dir = AttemptLocator::new(
+                context.task_id.clone(),
+                context.run_id.clone(),
+                context.round_id.clone(),
+                context.node_id.clone(),
+                context.attempt_id.clone(),
+                context.outer_node_id.clone(),
+                context.outer_attempt_id.clone(),
+            )
+            .attempt_dir(&app);
+            let _ = complete_accepted_dispatches(&attempt_dir);
+        }
         let session = if let (Some(outer_node_id), Some(outer_attempt_id)) = (
             context.outer_node_id.as_deref(),
             context.outer_attempt_id.as_deref(),
@@ -2782,10 +2791,8 @@ pub async fn use_conversation_queued_prompt(
     let runtime_started = result
         .as_ref()
         .is_ok_and(|result| result.kind == "runtime-continue-started");
-    if prompt_completed {
-        let _ = complete_queued_prompt(&attempt_dir, &claimed.id);
-    } else if !runtime_started {
-        let _ = release_queued_prompt(&attempt_dir, &claimed.id);
+    if !runtime_started {
+        let _ = settle_dispatching_prompts(&attempt_dir);
     }
     emit_prompt_queue_lifecycle(&app_handle, &app, project_id.clone(), &locator);
     if prompt_completed {

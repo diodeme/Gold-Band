@@ -270,10 +270,10 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 队列与 ACP/runtime lifecycle 归属同一 attempt。Workflow / AUTO 不投影队列，且不改变其运行中 composer 锁定策略；Direct 无队列时的普通发送、runtime continue、repair 也不进入用户优先等待窗口。
 - 队列列表紧贴 composer 上边缘，位于 usage/token 行下方。默认展示 FIFO 前 3 条，点击“查看更多”展示全部（最多 10 条）。每条使用 icon action 提供编辑、使用、删除，并包含 tooltip 与 aria-label；编辑保存后保持原顺序。
 - 运行中允许编辑和删除 queued 项；“使用”仅在会话停止/空闲时可用，用于指定某一条继续。被指定项以原稳定 prompt id 进入统一发送链路，不建立第二套消息展示。
-- 用户停止或应用关闭后不自动弹出/发送队列。点击停止时必须先在进程内同步设置发送门禁，并持久化 `autoDispatchSuspended=true`、递增 revision；这既取消已等待的候选，也阻止停止之后才到达的 success 终态重新注册候选。只有用户之后主动提交新消息或点击某条“使用”才解除门禁。失败、取消和停止会把尚未完成的 dispatching 项恢复到队列原位置，并且不继续出队。
+- 用户停止或应用关闭后不自动弹出/发送队列。点击停止时必须先在进程内同步设置发送门禁，并持久化 `autoDispatchSuspended=true`、递增 revision；这既取消已等待的候选，也阻止停止之后才到达的 success 终态重新注册候选。只有用户之后主动提交新消息或点击某条“使用”才解除门禁。失败、取消和停止不继续出队，并按 durable timeline 结算当前 dispatch：已存在稳定 prompt id 的项目已经发送，必须删除；只有尚未写入用户 timeline 的未接受项才恢复到队列原位置。
 - 自动候选先进入常量化 600 ms 用户优先窗口。窗口内真实用户提交会递增 queue revision，使低优先级自动 claim 失效，用户消息先进入已有 attempt 级 ACP prompt lock；该用户 turn 成功后再继续队列。仲裁位于后端，前端不使用 `setTimeout` 猜顺序。
 - attempt 级 ACP prompt lock 是所有 prompt 的统一发送串行器；revision 只决定窗口内优先级，不能替代串行器。任何时刻最多一个 prompt 进入 Provider。
-- 自动/手动出队先把项目标记为 `dispatching`，只有稳定 prompt id 已进入 durable timeline 且 turn 成功后才删除。进程内活动 dispatch 使用内存登记避免 UI 读取误触发 crash recovery；重启后没有活动登记的孤儿 dispatch，若 timeline 已接受则删除，否则恢复为 queued。
+- 自动/手动出队先把项目标记为 `dispatching`。稳定 prompt id 写入 canonical user timeline 即表示消息已经持久化并离开队列，现有 session update 必须立即完成 accepted dispatch；Agent 回复成功、失败或取消不再改变该事实，只决定是否继续调度下一条。进程内活动 dispatch 使用内存登记避免 UI 读取误触发 crash recovery；终态与重启恢复都使用同一原子结算：timeline 已接受则删除，尚未接受才恢复为 queued。队列加载还必须清理旧版本错误恢复成 queued、但 prompt id 已存在于 timeline 的历史重复项。已接受项不得在停止后回队，也不得保留原 prompt id 编辑成另一条逻辑消息进入 retry 链路。
 - 出队消息继续写标准 `goldBandPrompt`/用户 timeline 事件并使用普通用户消息气泡；仅内部 prompt id 表明来源于 runtime 队列，不增加特殊消息样式。
 
 ### 修复入口

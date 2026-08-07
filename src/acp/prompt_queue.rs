@@ -270,17 +270,6 @@ pub fn claim_queued_prompt(
     })
 }
 
-pub fn complete_queued_prompt(attempt_dir: &Utf8Path, item_id: &str) -> Result<PromptQueue> {
-    let result = with_queue_lock(attempt_dir, || {
-        let mut queue = load_and_reconcile_unlocked(attempt_dir)?;
-        queue.items.retain(|item| item.id != item_id);
-        persist_mutation_unlocked(attempt_dir, &mut queue)?;
-        Ok(queue)
-    });
-    clear_dispatch_active(attempt_dir, item_id)?;
-    result
-}
-
 pub fn release_queued_prompt(attempt_dir: &Utf8Path, item_id: &str) -> Result<PromptQueue> {
     let result = with_queue_lock(attempt_dir, || {
         let mut queue = load_and_reconcile_unlocked(attempt_dir)?;
@@ -294,23 +283,46 @@ pub fn release_queued_prompt(attempt_dir: &Utf8Path, item_id: &str) -> Result<Pr
     result
 }
 
-pub fn release_dispatching_prompts(attempt_dir: &Utf8Path) -> Result<PromptQueue> {
+/// Settles every in-process dispatch against the durable timeline.
+///
+/// A prompt already written to the canonical timeline has left the queue even
+/// if its provider turn later fails or is cancelled. Only dispatches that were
+/// never accepted are restored for a future send.
+pub fn settle_dispatching_prompts(attempt_dir: &Utf8Path) -> Result<PromptQueue> {
     let result = with_queue_lock(attempt_dir, || {
         let mut queue = load_and_reconcile_unlocked(attempt_dir)?;
-        for item in &mut queue.items {
-            if item.state == QueuedPromptState::Dispatching {
-                item.state = QueuedPromptState::Queued;
-            }
+        let accepted_prompt_ids = accepted_prompt_ids(attempt_dir);
+        let settled_ids = queue
+            .items
+            .iter()
+            .filter(|item| item.state == QueuedPromptState::Dispatching)
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>();
+        if settled_ids.is_empty() {
+            return Ok((queue, settled_ids));
         }
+        queue.items.retain_mut(|item| {
+            if item.state != QueuedPromptState::Dispatching {
+                return true;
+            }
+            if accepted_prompt_ids.contains(&item.prompt_id) {
+                return false;
+            }
+            item.state = QueuedPromptState::Queued;
+            true
+        });
         persist_mutation_unlocked(attempt_dir, &mut queue)?;
-        Ok(queue)
+        Ok((queue, settled_ids))
     });
-    clear_attempt_dispatches(attempt_dir)?;
-    result
+    let (queue, settled_ids) = result?;
+    for item_id in settled_ids {
+        clear_dispatch_active(attempt_dir, &item_id)?;
+    }
+    Ok(queue)
 }
 
-/// Finalizes an in-process dispatch only after its stable prompt id is present
-/// in the durable timeline. This is used by asynchronous runtime continuation.
+/// Finalizes accepted dispatches as soon as their stable prompt ids appear in
+/// the durable timeline, without disturbing a dispatch that is still starting.
 pub fn complete_accepted_dispatches(attempt_dir: &Utf8Path) -> Result<PromptQueue> {
     let result = with_queue_lock(attempt_dir, || {
         let mut queue = load_and_reconcile_unlocked(attempt_dir)?;
@@ -348,6 +360,14 @@ fn load_and_reconcile_unlocked(attempt_dir: &Utf8Path) -> Result<PromptQueue> {
     let accepted_prompt_ids = accepted_prompt_ids(attempt_dir);
     let mut changed = false;
     queue.items.retain_mut(|item| {
+        let accepted = accepted_prompt_ids.contains(&item.prompt_id);
+        if accepted
+            && (item.state != QueuedPromptState::Dispatching
+                || !dispatch_is_active(attempt_dir, &item.id))
+        {
+            changed = true;
+            return false;
+        }
         if item.state != QueuedPromptState::Dispatching {
             return true;
         }
@@ -355,7 +375,7 @@ fn load_and_reconcile_unlocked(attempt_dir: &Utf8Path) -> Result<PromptQueue> {
             return true;
         }
         changed = true;
-        if accepted_prompt_ids.contains(&item.prompt_id) {
+        if accepted {
             false
         } else {
             item.state = QueuedPromptState::Queued;
@@ -407,15 +427,6 @@ fn clear_dispatch_active(attempt_dir: &Utf8Path, item_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn clear_attempt_dispatches(attempt_dir: &Utf8Path) -> Result<()> {
-    let prefix = format!("{}::", queue_path(attempt_dir));
-    ACTIVE_DISPATCHES
-        .lock()
-        .map_err(|_| anyhow!("active prompt dispatch registry poisoned"))?
-        .retain(|key| !key.starts_with(&prefix));
-    Ok(())
-}
-
 fn dispatch_is_active(attempt_dir: &Utf8Path, item_id: &str) -> bool {
     ACTIVE_DISPATCHES
         .lock()
@@ -458,6 +469,7 @@ fn with_typed_queue_lock<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp::events::{append_timeline_patch, user_prompt_event};
 
     fn attempt_dir(temp: &tempfile::TempDir) -> Utf8PathBuf {
         Utf8PathBuf::from_path_buf(temp.path().join("attempt-001")).unwrap()
@@ -498,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_use_removes_selected_item_without_reordering_remaining_items() {
+    fn accepted_manual_use_removes_selected_item_without_reordering_remaining_items() {
         let temp = tempfile::tempdir().unwrap();
         let dir = attempt_dir(&temp);
         let first = enqueue_prompt(&dir, "first".to_string(), Vec::new()).unwrap();
@@ -506,7 +518,22 @@ mod tests {
         let third = enqueue_prompt(&dir, "third".to_string(), Vec::new()).unwrap();
         let claimed = claim_queued_prompt(&dir, &second.id).unwrap();
         assert_eq!(claimed.id, second.id);
-        let queue = complete_queued_prompt(&dir, &second.id).unwrap();
+        let event = user_prompt_event(
+            1,
+            "session-001".to_string(),
+            claimed.content,
+            Some(claimed.prompt_id),
+            false,
+            Vec::new(),
+        );
+        append_timeline_patch(
+            &dir.join("acp.timeline.jsonl"),
+            event.id.clone(),
+            event.seq,
+            &event,
+        )
+        .unwrap();
+        let queue = complete_accepted_dispatches(&dir).unwrap();
         assert_eq!(
             queue
                 .items
@@ -545,6 +572,76 @@ mod tests {
         assert_eq!(queue.items.len(), 1);
         assert_eq!(queue.items[0].content, "survives restart");
         assert_eq!(queue.items[0].state, QueuedPromptState::Queued);
+    }
+
+    #[test]
+    fn cancelled_turn_does_not_restore_a_durably_accepted_dispatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let item = enqueue_prompt(&dir, "accepted".to_string(), Vec::new()).unwrap();
+        claim_queued_prompt(&dir, &item.id).unwrap();
+        let event = user_prompt_event(
+            1,
+            "session-001".to_string(),
+            item.content.clone(),
+            Some(item.prompt_id.clone()),
+            false,
+            Vec::new(),
+        );
+        append_timeline_patch(
+            &dir.join("acp.timeline.jsonl"),
+            event.id.clone(),
+            event.seq,
+            &event,
+        )
+        .unwrap();
+
+        let queue = settle_dispatching_prompts(&dir).unwrap();
+
+        assert!(queue.items.is_empty());
+        assert!(load_prompt_queue(&dir).unwrap().items.is_empty());
+        assert_eq!(
+            update_queued_prompt(&dir, &item.id, "different prompt".to_string()),
+            Err(PromptQueueError::NotFound)
+        );
+    }
+
+    #[test]
+    fn failure_before_durable_acceptance_restores_the_dispatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let item = enqueue_prompt(&dir, "not accepted".to_string(), Vec::new()).unwrap();
+        claim_queued_prompt(&dir, &item.id).unwrap();
+
+        let queue = settle_dispatching_prompts(&dir).unwrap();
+
+        assert_eq!(queue.items.len(), 1);
+        assert_eq!(queue.items[0].id, item.id);
+        assert_eq!(queue.items[0].state, QueuedPromptState::Queued);
+    }
+
+    #[test]
+    fn legacy_queued_item_is_removed_when_its_prompt_was_already_accepted() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let item = enqueue_prompt(&dir, "legacy duplicate".to_string(), Vec::new()).unwrap();
+        let event = user_prompt_event(
+            1,
+            "session-001".to_string(),
+            item.content,
+            Some(item.prompt_id),
+            false,
+            Vec::new(),
+        );
+        append_timeline_patch(
+            &dir.join("acp.timeline.jsonl"),
+            event.id.clone(),
+            event.seq,
+            &event,
+        )
+        .unwrap();
+
+        assert!(load_prompt_queue(&dir).unwrap().items.is_empty());
     }
 
     #[test]

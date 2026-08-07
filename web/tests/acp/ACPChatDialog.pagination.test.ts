@@ -5,6 +5,7 @@ import {
   limitAcpEvents,
   loadedEventBufferLimit,
   mergeAcpEvents,
+  reconcileAcpEventPageForUpdate,
   resolveAcpHasOlderEvents,
 } from '../../src/components/acp/ACPChatDialog';
 import { normalizeAcpEventForAttempt } from '../../src/lib/acp-event-normalization';
@@ -24,6 +25,65 @@ function event(
 }
 
 describe('ACPChatDialog pagination buffer', () => {
+  it('does not turn an after-seq delta into a client-side history gap', () => {
+    const current = {
+      loadedCount: 4,
+      total: 4,
+      oldestSeq: 3,
+      newestSeq: 104,
+      hasOlder: false,
+      hasNewer: false,
+      oldestCursor: 'seq:3',
+      newestCursor: 'seq:104',
+    };
+    const delta = {
+      loadedCount: 2,
+      total: 6,
+      oldestSeq: 109,
+      newestSeq: 188,
+      hasOlder: true,
+      hasNewer: false,
+      oldestCursor: 'seq:109',
+      newestCursor: 'seq:188',
+    };
+
+    expect(reconcileAcpEventPageForUpdate(current, delta, 'append-newer')).toEqual({
+      ...delta,
+      loadedCount: 6,
+      oldestSeq: 3,
+      oldestCursor: 'seq:3',
+      hasOlder: false,
+    });
+  });
+
+  it('preserves a real older-page gap while appending live deltas', () => {
+    const current = {
+      loadedCount: 200,
+      total: 240,
+      oldestSeq: 41,
+      newestSeq: 240,
+      hasOlder: true,
+      hasNewer: false,
+      oldestCursor: 'seq:41',
+      newestCursor: 'seq:240',
+    };
+    const delta = {
+      loadedCount: 1,
+      total: 241,
+      oldestSeq: 241,
+      newestSeq: 241,
+      hasOlder: true,
+      hasNewer: false,
+      oldestCursor: 'seq:241',
+      newestCursor: 'seq:241',
+    };
+
+    const merged = reconcileAcpEventPageForUpdate(current, delta, 'append-newer');
+    expect(merged.hasOlder).toBe(true);
+    expect(merged.oldestSeq).toBe(41);
+    expect(merged.newestSeq).toBe(241);
+  });
+
   it('lets an authoritative session snapshot clear stale history availability', () => {
     expect(resolveAcpHasOlderEvents(false, 2, 2)).toBe(false);
   });

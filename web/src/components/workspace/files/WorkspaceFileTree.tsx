@@ -1,15 +1,22 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, File, FileCode2, Folder, FolderOpen, LoaderCircle, Search, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, FileCode2, Folder, FolderOpen, ListCollapse, ListTree, LoaderCircle, Search, X } from 'lucide-react';
 import { Tree, type NodeRendererProps, type TreeApi } from 'react-arborist';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { Input } from '@/components/ui/input';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { useMeasuredElementHeight } from '@/hooks/use-measured-element-height';
 import { openWorkspacePathInFileManager } from '@/api';
 import type { WorkspaceDirectoryEntryVm } from '@/types';
-import { fileExplorerStore, useFileExplorerSnapshot, type FileTreeNode } from './file-explorer-store';
+import {
+  fileExplorerStore,
+  fileTreeView,
+  useFileExplorerSnapshot,
+  type FileTreeDisplayMode,
+  type FileTreeViewNode,
+} from './file-explorer-store';
 import { WorkspaceDirectoryContextMenu } from './WorkspaceDirectoryContextMenu';
 
 interface WorkspaceFileTreeProps {
@@ -25,10 +32,13 @@ interface TreeRowContextValue {
   onOpenInFileManager: (relativePath: string) => void;
   onContextMenuOpenChange: (open: boolean) => void;
   canActivateFile: () => boolean;
+  displayMode: FileTreeDisplayMode;
 }
 
 const TreeRowContext = createContext<TreeRowContextValue | null>(null);
 const TREE_ROW_HEIGHT = 32;
+const TREE_ROW_BASE_MIN_WIDTH = 190;
+const TREE_ROW_INDENT = 14;
 
 export function treeViewportContentHeight(clientHeight: number, paddingTop: number, paddingBottom: number) {
   return Math.max(1, Math.floor(clientHeight - paddingTop - paddingBottom));
@@ -48,6 +58,30 @@ export function treeOverscanCount(viewportHeight: number, rowHeight = TREE_ROW_H
   return Math.min(96, Math.max(24, visibleRows * 2));
 }
 
+export function treeRowMinimumWidth(level: number) {
+  return TREE_ROW_BASE_MIN_WIDTH + Math.max(0, level) * TREE_ROW_INDENT;
+}
+
+export function treeRowOverflowStyle(displayMode: FileTreeDisplayMode, level: number) {
+  return displayMode === 'compact'
+    ? { width: 'max-content', minWidth: `max(100%, ${treeRowMinimumWidth(level)}px)` }
+    : { minWidth: treeRowMinimumWidth(level) };
+}
+
+export function fileTreeDisplayModeToggle(displayMode: FileTreeDisplayMode) {
+  return displayMode === 'compact'
+    ? {
+      currentIcon: 'compact' as const,
+      targetMode: 'tree' as const,
+      labelKey: 'workspace.filesPanel.switchToTreeView' as const,
+    }
+    : {
+      currentIcon: 'tree' as const,
+      targetMode: 'compact' as const,
+      labelKey: 'workspace.filesPanel.switchToCompactView' as const,
+    };
+}
+
 export { copyableAbsolutePath } from './WorkspaceDirectoryContextMenu';
 export { copyableRelativePath } from './WorkspaceDirectoryContextMenu';
 
@@ -61,7 +95,7 @@ function fileIcon(name: string) {
     : File;
 }
 
-function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeNode>) {
+function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeViewNode>) {
   const context = useContext(TreeRowContext);
   if (!context) return null;
   const entry = node.data;
@@ -70,7 +104,10 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeNode
   const row = (
     <div
       ref={dragHandle}
-      style={style}
+      style={{
+        ...style,
+        ...treeRowOverflowStyle(context.displayMode, node.level),
+      }}
       className={cn(
         'group flex h-full w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-xs outline-none transition-[background-color,color,box-shadow]',
         context.selectedPath === entry.canonicalPath
@@ -98,7 +135,11 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeNode
           ? 'text-gold-running'
           : 'text-foreground/65 group-hover:text-foreground',
       )} />
-      <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+      <span className={cn(
+        context.displayMode === 'compact'
+          ? 'shrink-0 whitespace-nowrap pr-2'
+          : 'min-w-0 flex-1 truncate',
+      )}>{entry.displayName}</span>
     </div>
   );
   return (
@@ -118,10 +159,13 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeNode
 export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: WorkspaceFileTreeProps) {
   const { t } = useTranslation();
   const snapshot = useFileExplorerSnapshot(projectId);
+  const displayModeToggle = fileTreeDisplayModeToggle(snapshot.displayMode);
+  const treeNodes = useMemo(() => fileTreeView(snapshot.roots, snapshot.displayMode), [snapshot.displayMode, snapshot.roots]);
   const { ref, height } = useMeasuredElementHeight(320, measureTreeViewportHeight);
-  const treeRef = useRef<TreeApi<FileTreeNode> | null>(null);
+  const treeRef = useRef<TreeApi<FileTreeViewNode> | null>(null);
   const pendingRevealPathRef = useRef<string | null>(null);
   const restoringScrollRef = useRef(true);
+  const syncingExpandedRef = useRef(false);
   const contextMenuOpenRef = useRef(false);
   const suppressContextMenuActivationRef = useRef(false);
   const contextMenuFrameRef = useRef<number | null>(null);
@@ -143,7 +187,20 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
       if (actionFailureTimerRef.current) clearTimeout(actionFailureTimerRef.current);
       if (contextMenuFrameRef.current !== null) cancelAnimationFrame(contextMenuFrameRef.current);
     };
-  }, [projectId]);
+  }, [projectId, snapshot.displayMode]);
+
+  useEffect(() => {
+    const tree = treeRef.current;
+    if (!tree) return;
+    syncingExpandedRef.current = true;
+    try {
+      for (const node of visibleTreeNodes(treeNodes)) {
+        if (snapshot.expanded.has(node.relativePath)) tree.open(node.id);
+      }
+    } finally {
+      syncingExpandedRef.current = false;
+    }
+  }, [snapshot.expanded, treeNodes]);
 
   useEffect(() => {
     if (!selectedPath) {
@@ -157,12 +214,12 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
   }, [projectId, selectedPath]);
 
   useEffect(() => {
-    const reveal = consumePendingTreeReveal(pendingRevealPathRef.current, snapshot.roots);
+    const reveal = consumePendingTreeReveal(pendingRevealPathRef.current, treeNodes);
     if (!reveal.targetId) return;
     pendingRevealPathRef.current = reveal.pendingPath;
     const frame = requestAnimationFrame(() => treeRef.current?.scrollTo(reveal.targetId!));
     return () => cancelAnimationFrame(frame);
-  }, [selectedPath, snapshot.roots]);
+  }, [selectedPath, treeNodes]);
 
   const onCopyFailed = useCallback(() => {
     if (actionFailureTimerRef.current) clearTimeout(actionFailureTimerRef.current);
@@ -198,33 +255,53 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
     onOpenInFileManager,
     onContextMenuOpenChange,
     canActivateFile,
-  }), [canActivateFile, onContextMenuOpenChange, onCopyFailed, onOpenFile, onOpenInFileManager, selectedPath]);
+    displayMode: snapshot.displayMode,
+  }), [canActivateFile, onContextMenuOpenChange, onCopyFailed, onOpenFile, onOpenInFileManager, selectedPath, snapshot.displayMode]);
   const searchEntries = snapshot.searchResult?.entries ?? [];
   const searching = snapshot.searchQuery.trim().length > 0;
 
   return (
     <aside className="relative flex h-full min-h-0 flex-col bg-muted/10" aria-label={t('workspace.filesPanel.workspaceTree')}>
-      <div className="relative shrink-0 border-b border-border/50 p-2">
-        <Search className="pointer-events-none absolute left-4 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          variant="toolbar"
-          value={snapshot.searchQuery}
-          onChange={(event) => fileExplorerStore.setSearchQuery(projectId, event.target.value)}
-          placeholder={t('workspace.filesPanel.filterPlaceholder')}
-          className="h-8 pl-8 pr-8 text-xs"
-        />
-        {snapshot.searchQuery ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="absolute right-3 top-1/2 size-6 -translate-y-1/2"
-            onClick={() => fileExplorerStore.setSearchQuery(projectId, '')}
-            aria-label={t('workspace.filesPanel.clearSearch')}
-          >
-            <X className="size-3" />
-          </Button>
-        ) : null}
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-border/50 p-2">
+        <div className="relative min-w-0 flex-1">
+          <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            variant="toolbar"
+            value={snapshot.searchQuery}
+            onChange={(event) => fileExplorerStore.setSearchQuery(projectId, event.target.value)}
+            placeholder={t('workspace.filesPanel.filterPlaceholder')}
+            className="h-8 pl-8 pr-8 text-xs"
+          />
+          {snapshot.searchQuery ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              className="absolute right-1 top-1/2 -translate-y-1/2"
+              onClick={() => fileExplorerStore.setSearchQuery(projectId, '')}
+              aria-label={t('workspace.filesPanel.clearSearch')}
+            >
+              <X className="size-3" />
+            </Button>
+          ) : null}
+        </div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="size-8 text-muted-foreground"
+              onClick={() => fileExplorerStore.setDisplayMode(projectId, displayModeToggle.targetMode)}
+              aria-label={t(displayModeToggle.labelKey)}
+            >
+              {displayModeToggle.currentIcon === 'tree' ? <ListTree className="size-4" /> : <ListCollapse className="size-4" />}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" sideOffset={6}>
+            {t(displayModeToggle.labelKey)}
+          </TooltipContent>
+        </Tooltip>
       </div>
       {actionFailure ? <div className="pointer-events-none absolute right-2 top-12 z-20 rounded-md border border-destructive/20 bg-popover/95 px-2 py-1 text-[11px] text-destructive shadow-sm">{t(actionFailure === 'copy' ? 'workspace.filesPanel.pathCopyFailed' : 'workspace.filesPanel.fileManagerOpenFailed')}</div> : null}
       <div ref={ref} className="min-h-0 flex-1 overflow-hidden p-1.5">
@@ -264,9 +341,10 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
           </div>
         ) : (
           <TreeRowContext.Provider value={contextValue}>
-            <Tree<FileTreeNode>
+            <Tree<FileTreeViewNode>
+              key={snapshot.displayMode}
               ref={treeRef}
-              data={snapshot.roots}
+              data={treeNodes}
               width="100%"
               height={height}
               rowHeight={TREE_ROW_HEIGHT}
@@ -274,15 +352,19 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
               overscanCount={treeOverscanCount(height)}
               idAccessor="id"
               childrenAccessor={(entry) => entry.kind === 'directory' ? (entry.children ?? []) : null}
-              initialOpenState={Object.fromEntries([...snapshot.expanded].map((id) => [id, true]))}
+              initialOpenState={treeOpenState(treeNodes, snapshot.expanded)}
               openByDefault={false}
               disableDrag
               disableDrop
               disableEdit
               disableMultiSelection
               selection={undefined}
-              onToggle={(id) => void fileExplorerStore.toggleDirectory(projectId, id, !snapshot.expanded.has(id))}
-              className="gold-themed-scrollbar !overflow-x-hidden overscroll-contain [overflow-anchor:none] [scrollbar-gutter:stable]"
+              onToggle={(id) => {
+                if (syncingExpandedRef.current) return;
+                const entry = findTreeNodeById(treeNodes, id);
+                if (entry) void fileExplorerStore.toggleDirectory(projectId, entry.relativePath, !snapshot.expanded.has(entry.relativePath));
+              }}
+              className="gold-themed-scrollbar !overflow-x-auto overscroll-contain [overflow-anchor:none] [scrollbar-gutter:stable]"
               rowClassName="w-full px-0.5"
               onScroll={({ scrollOffset, scrollUpdateWasRequested }) => {
                 if (!restoringScrollRef.current && !scrollUpdateWasRequested) {
@@ -303,7 +385,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
   );
 }
 
-export function consumePendingTreeReveal(pendingPath: string | null, nodes: FileTreeNode[]) {
+export function consumePendingTreeReveal(pendingPath: string | null, nodes: FileTreeViewNode[]) {
   if (!pendingPath) return { pendingPath: null, targetId: null };
   const selected = findTreeNodeByCanonicalPath(nodes, pendingPath);
   return selected
@@ -311,7 +393,7 @@ export function consumePendingTreeReveal(pendingPath: string | null, nodes: File
     : { pendingPath, targetId: null };
 }
 
-function findTreeNodeByCanonicalPath(nodes: FileTreeNode[], canonicalPath: string): FileTreeNode | null {
+function findTreeNodeByCanonicalPath(nodes: FileTreeViewNode[], canonicalPath: string): FileTreeViewNode | null {
   const target = normalizeCanonicalPath(canonicalPath);
   for (const node of nodes) {
     if (normalizeCanonicalPath(node.canonicalPath) === target) return node;
@@ -321,6 +403,28 @@ function findTreeNodeByCanonicalPath(nodes: FileTreeNode[], canonicalPath: strin
     }
   }
   return null;
+}
+
+function findTreeNodeById(nodes: FileTreeViewNode[], id: string): FileTreeViewNode | null {
+  for (const node of nodes) {
+    if (node.id === id) return node;
+    if (node.children) {
+      const child = findTreeNodeById(node.children, id);
+      if (child) return child;
+    }
+  }
+  return null;
+}
+
+function* visibleTreeNodes(nodes: FileTreeViewNode[]): Generator<FileTreeViewNode> {
+  for (const node of nodes) {
+    yield node;
+    if (node.children) yield* visibleTreeNodes(node.children);
+  }
+}
+
+export function treeOpenState(nodes: FileTreeViewNode[], expanded: ReadonlySet<string>) {
+  return Object.fromEntries([...visibleTreeNodes(nodes)].map((node) => [node.id, expanded.has(node.relativePath)]));
 }
 
 function normalizeCanonicalPath(path: string) {

@@ -7730,7 +7730,7 @@ mod tests {
 
         assert_eq!(value["workspaceLayout"]["shellMinWidth"], 480);
         assert_eq!(value["workspaceLayout"]["shellMinHeight"], 680);
-        assert_eq!(value["workspaceLayout"]["rightWorkspace"]["minWidth"], 320);
+        assert_eq!(value["workspaceLayout"]["rightWorkspace"]["minWidth"], 288);
         assert_eq!(
             value["workspaceLayout"]["rightWorkspace"]["defaultWidth"],
             440

@@ -128,6 +128,8 @@ pub struct MetricsCounters {
     pub permission_request_count: u32,
     pub elicitation_count: u32,
     pub manual_continue_count: u32,
+    #[serde(default)]
+    pub follow_up_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -381,6 +383,9 @@ impl ExecutionObservabilityState {
                 self.counters.manual_continue_count += 1;
             }
         }
+    }
+    pub fn record_follow_up(&mut self) {
+        self.counters.follow_up_count = self.counters.follow_up_count.saturating_add(1);
     }
     pub fn record_permission(&mut self, id: &str) {
         if self.permission_request_ids.insert(id.into()) {
@@ -708,6 +713,7 @@ mod tests {
         state.record_pause(true);
         state.record_pause(false);
         state.record_resume(true, ResumeCause::ManualContinue);
+        state.record_follow_up();
         state.record_permission("permission-1");
         state.record_permission("permission-1");
         state.record_elicitation("elicitation-1");
@@ -727,6 +733,7 @@ mod tests {
         assert_eq!(state.counters.pause_count, 1);
         assert_eq!(state.counters.resume_count, 1);
         assert_eq!(state.counters.manual_continue_count, 1);
+        assert_eq!(state.counters.follow_up_count, 1);
         assert_eq!(state.counters.permission_request_count, 1);
         assert_eq!(state.counters.elicitation_count, 1);
         let usages = state.model_usages();
@@ -871,12 +878,12 @@ mod tests {
             MetricsSessionMode::Direct,
             "task-uuid".into(),
             ExecutionKind::Turn,
-            "turn-uuid".into(),
+            "task-uuid".into(),
         );
-        turn.attempt_id = Some("turn-uuid".into());
+        turn.attempt_id = Some("task-uuid".into());
         turn.attempt_index = Some(1);
         assert!(turn.validate().is_ok());
-        turn.attempt_id = Some("session-attempt".into());
+        turn.attempt_id = Some("task-attempt".into());
         assert!(turn.validate().is_err());
 
         let mut run = MetricsLifecycleFact::new(
@@ -913,6 +920,107 @@ mod tests {
         assert_eq!(attempt_index_from_local_id("attempt-001"), Some(1));
         assert_eq!(attempt_index_from_local_id("attempt-002"), Some(2));
         assert_eq!(attempt_index_from_local_id("invalid"), None);
+    }
+
+    #[test]
+    fn direct_session_identity_is_task_scoped_single_attempt() {
+        let task_uuid = uuid::Uuid::new_v4().to_string();
+        let mut fact = MetricsLifecycleFact::new(
+            LifecycleEventType::ExecutionStarted,
+            1,
+            "2026-08-01T00:00:00Z".into(),
+            "user".into(),
+            "workspace".into(),
+            MetricsSessionMode::Direct,
+            task_uuid.clone(),
+            ExecutionKind::Turn,
+            task_uuid.clone(),
+        );
+        fact.attempt_id = Some(task_uuid.clone());
+        fact.attempt_index = Some(1);
+        assert!(fact.validate().is_ok());
+
+        fact.attempt_id = Some(uuid::Uuid::new_v4().to_string());
+        assert!(fact.validate().is_err());
+        fact.attempt_id = Some(task_uuid);
+        fact.attempt_index = Some(2);
+        assert!(fact.validate().is_err());
+    }
+
+    #[test]
+    fn direct_attempt_snapshot_accumulates_usage_and_counters_across_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("direct-attempt.json")).unwrap();
+        let mut first = ExecutionObservabilityState::default();
+        first.record_resume(true, ResumeCause::ManualContinue);
+        first.record_follow_up();
+        first.record_model_usage(ModelUsage {
+            provider: "codex-acp".into(),
+            model: "glm-5.1".into(),
+            usage: TokenUsage {
+                total_tokens: Some(10),
+                ..Default::default()
+            },
+            acp_session_elapsed_ms: Some(10),
+        });
+        persist_observability_snapshot_best_effort(path.clone(), first);
+
+        let mut second = load_observability_snapshot(&path);
+        for _ in 0..100 {
+            if second.counters.follow_up_count == 1
+                && second
+                    .model_usages()
+                    .first()
+                    .is_some_and(|u| u.usage.total_tokens == Some(10))
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            second = load_observability_snapshot(&path);
+        }
+        second.record_resume(true, ResumeCause::ManualContinue);
+        second.record_follow_up();
+        second.record_model_usage(ModelUsage {
+            provider: "codex-acp".into(),
+            model: "glm-5.1".into(),
+            usage: TokenUsage {
+                total_tokens: Some(20),
+                ..Default::default()
+            },
+            acp_session_elapsed_ms: Some(20),
+        });
+        persist_observability_snapshot_best_effort(path.clone(), second);
+
+        let mut state = load_observability_snapshot(&path);
+        for _ in 0..100 {
+            if state.counters.follow_up_count == 2
+                && state
+                    .model_usages()
+                    .first()
+                    .is_some_and(|u| u.usage.total_tokens == Some(30))
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            state = load_observability_snapshot(&path);
+        }
+        assert_eq!(state.counters.manual_continue_count, 2);
+        assert_eq!(state.counters.resume_count, 2);
+        assert_eq!(state.counters.follow_up_count, 2);
+        let usages = state.model_usages();
+        assert_eq!(usages.len(), 1);
+        assert_eq!(usages[0].usage.total_tokens, Some(30));
+        assert_eq!(usages[0].acp_session_elapsed_ms, Some(30));
+    }
+
+    #[test]
+    fn legacy_counters_json_defaults_follow_up_count() {
+        let raw = r#"{"pauseCount":1,"resumeCount":1,"permissionRequestCount":0,"elicitationCount":0,"manualContinueCount":1}"#;
+        let counters: MetricsCounters = serde_json::from_str(raw).unwrap();
+        assert_eq!(counters.pause_count, 1);
+        assert_eq!(counters.manual_continue_count, 1);
+        assert_eq!(counters.follow_up_count, 0);
     }
 
     #[test]

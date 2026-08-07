@@ -1,4 +1,4 @@
-﻿use std::io::Write;
+use std::io::Write;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -59,7 +59,9 @@ pub(crate) fn metrics_log(msg: &str) {
     let line = if line.len() as u64 > METRICS_LOG_LIMIT_BYTES {
         format!(
             "[{}] payload-too-large actualBytes={}\n",
-            chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string(),
+            chrono::Local::now()
+                .format("%Y-%m-%dT%H:%M:%S%.3f")
+                .to_string(),
             line.len()
         )
     } else {
@@ -69,7 +71,9 @@ pub(crate) fn metrics_log(msg: &str) {
         if metadata.len().saturating_add(line.len() as u64) > METRICS_LOG_LIMIT_BYTES {
             let reset = format!(
                 "[{}] log-reset reason=size-limit\n",
-                chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string()
+                chrono::Local::now()
+                    .format("%Y-%m-%dT%H:%M:%S%.3f")
+                    .to_string()
             );
             if let Err(error) = std::fs::write(log_path, reset) {
                 eprintln!("[metrics] failed to reset log {}: {}", log_path, error);
@@ -93,7 +97,9 @@ fn to_iso8601(ts: &str) -> String {
         return ts.to_string();
     }
     if let Some(dt) = chrono::DateTime::from_timestamp(secs, 0) {
-        dt.with_timezone(&chrono::Local).format("%Y-%m-%dT%H:%M:%S%.3f").to_string()
+        dt.with_timezone(&chrono::Local)
+            .format("%Y-%m-%dT%H:%M:%S%.3f%:z")
+            .to_string()
     } else {
         ts.to_string()
     }
@@ -319,6 +325,7 @@ pub struct MetricsCounters {
     pub permission_request_count: u32,
     pub elicitation_count: u32,
     pub manual_continue_count: u32,
+    pub follow_up_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -399,7 +406,9 @@ struct MetricsEventBatch {
 }
 
 fn iso_now() -> String {
-    chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string()
+    chrono::Local::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3f%:z")
+        .to_string()
 }
 
 fn map_runtime_event(event: RuntimeLifecycleEvent) -> Option<MetricsEventItem> {
@@ -479,6 +488,7 @@ fn map_metrics_fact(fact: MetricsLifecycleFact, reported_at: String) -> MetricsE
             permission_request_count: c.permission_request_count,
             elicitation_count: c.elicitation_count,
             manual_continue_count: c.manual_continue_count,
+            follow_up_count: c.follow_up_count,
         }),
         unit_id: fact.unit_id,
         unit_kind: fact.unit_kind.map(wire),
@@ -496,7 +506,11 @@ fn map_metrics_fact(fact: MetricsLifecycleFact, reported_at: String) -> MetricsE
         model: fact.model,
         usage: fact.usage,
         model_usages: fact.model_usages,
-        timing: fact.timing.map(|t| LifecycleTiming { started_at: to_iso8601(&t.started_at), ended_at: t.ended_at.map(|e| to_iso8601(&e)), acp_session_elapsed_ms: t.acp_session_elapsed_ms }),
+        timing: fact.timing.map(|t| LifecycleTiming {
+            started_at: to_iso8601(&t.started_at),
+            ended_at: t.ended_at.map(|e| to_iso8601(&e)),
+            acp_session_elapsed_ms: t.acp_session_elapsed_ms,
+        }),
         collection_state_recovered: fact.collection_state_recovered,
     }
 }
@@ -697,9 +711,9 @@ pub fn create_metrics_subscriber<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::{
-        METRICS_BATCH_LIMIT, MetricsEventType, MetricsExecutionKind, MetricsSessionMode,
+        METRICS_BATCH_LIMIT, MetricsEventType, MetricsExecutionKind, MetricsSessionMode, iso_now,
         map_metrics_fact, metrics_collection_enabled, metrics_settings, normalize_metrics_base_url,
-        run_metrics_reporter, same_report_month, should_retry_status, take_next_batch,
+        run_metrics_reporter, same_report_month, should_retry_status, take_next_batch, to_iso8601,
     };
     use gold_band::config::RuntimeConfig;
 
@@ -810,6 +824,14 @@ mod tests {
         assert!(!should_retry_status(reqwest::StatusCode::OK));
     }
 
+    #[test]
+    fn iso_timestamp_helpers_emit_timezone_offset() {
+        let converted = to_iso8601("1786018481Z");
+        assert!(chrono::DateTime::parse_from_rfc3339(&converted).is_ok());
+        assert_ne!(converted, "2026-08-06T20:14:41.000");
+        assert!(chrono::DateTime::parse_from_rfc3339(&iso_now()).is_ok());
+    }
+
     #[tokio::test]
     async fn bounded_queue_drops_new_event_without_waiting() {
         let (sender, _receiver) = tokio::sync::mpsc::channel(1);
@@ -868,6 +890,30 @@ mod tests {
     }
 
     #[test]
+    fn dto_serializes_follow_up_count_from_core_counters() {
+        let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
+            gold_band::app::observability::LifecycleEventType::ExecutionCompleted,
+            2,
+            "2026-08-01T00:00:00Z".into(),
+            "user".into(),
+            "workspace".into(),
+            gold_band::app::observability::MetricsSessionMode::Direct,
+            "task".into(),
+            gold_band::app::observability::ExecutionKind::Turn,
+            uuid::Uuid::new_v4().to_string(),
+        );
+        fact.outcome = Some(gold_band::app::observability::ExecutionOutcome::Completed);
+        fact.terminal_reason = Some(gold_band::app::observability::TerminalReason::Completed);
+        fact.counters = Some(gold_band::app::observability::MetricsCounters {
+            follow_up_count: 3,
+            ..Default::default()
+        });
+        let value =
+            serde_json::to_value(map_metrics_fact(fact, "2026-08-01T00:00:00Z".into())).unwrap();
+        assert_eq!(value["counters"]["followUpCount"].as_u64(), Some(3));
+    }
+
+    #[test]
     fn dto_serializes_attempt_index_only_for_attempt_events() {
         let execution_id = uuid::Uuid::new_v4().to_string();
         let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
@@ -881,7 +927,7 @@ mod tests {
             gold_band::app::observability::ExecutionKind::Turn,
             execution_id.clone(),
         );
-        fact.attempt_id = Some(execution_id);
+        fact.attempt_id = Some(uuid::Uuid::new_v4().to_string());
         fact.attempt_index = Some(1);
         let value =
             serde_json::to_value(map_metrics_fact(fact, "2026-08-01T00:00:00Z".into())).unwrap();

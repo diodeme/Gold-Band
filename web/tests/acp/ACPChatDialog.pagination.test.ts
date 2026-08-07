@@ -5,6 +5,7 @@ import {
   limitAcpEvents,
   loadedEventBufferLimit,
   mergeAcpEvents,
+  resolveAcpHasOlderEvents,
 } from '../../src/components/acp/ACPChatDialog';
 import { normalizeAcpEventForAttempt } from '../../src/lib/acp-event-normalization';
 import type { AcpSessionVm, AcpUiEventVm } from '../../src/types';
@@ -23,6 +24,14 @@ function event(
 }
 
 describe('ACPChatDialog pagination buffer', () => {
+  it('lets an authoritative session snapshot clear stale history availability', () => {
+    expect(resolveAcpHasOlderEvents(false, 2, 2)).toBe(false);
+  });
+
+  it('keeps history available when the local event buffer actually truncates events', () => {
+    expect(resolveAcpHasOlderEvents(false, 91, 90)).toBe(true);
+  });
+
   it('derives continuation cursors only from the active attempt window', () => {
     const previous = normalizeAcpEventForAttempt(
       event({ id: 'previous', seq: 1, timestamp: '1Z', kind: 'textDelta' }),

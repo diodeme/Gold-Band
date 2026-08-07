@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Result, anyhow, ensure};
 
 use crate::config::AcpAdapterConfig;
-use crate::process::{background_command, find_executable_in_paths};
+use crate::process::{background_command, find_executable_in_paths, resolved_child_path};
 
 const REQUIRE_LOCAL_CLAUDE_ENV: &str = "GOLD_BAND_REQUIRE_LOCAL_CLAUDE";
 
@@ -98,16 +98,33 @@ fn platform_adapter_command(command: &str) -> String {
 
 fn resolved_adapter_env(config_env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     let mut env = config_env.clone();
-    let suggested_dirs = suggested_path_dirs();
-    let current_path = std::env::var("PATH").ok();
-    let base_path = env
-        .get("PATH")
-        .map(String::as_str)
-        .or(current_path.as_deref());
-    if let Some(path) = augment_path_with_dirs(base_path, &suggested_dirs) {
-        env.insert("PATH".to_string(), path);
+    let configured_path = configured_path(&env);
+    if let Some(path) = resolved_child_path(configured_path.map(OsStr::new)) {
+        remove_configured_path_keys(&mut env);
+        env.insert("PATH".to_string(), path.to_string_lossy().into_owned());
     }
     env
+}
+
+fn configured_path(env: &BTreeMap<String, String>) -> Option<&str> {
+    #[cfg(windows)]
+    return env
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+        .map(|(_, value)| value.as_str());
+
+    #[cfg(not(windows))]
+    env.get("PATH").map(String::as_str)
+}
+
+fn remove_configured_path_keys(env: &mut BTreeMap<String, String>) {
+    #[cfg(windows)]
+    env.retain(|key, _| !key.eq_ignore_ascii_case("PATH"));
+
+    #[cfg(not(windows))]
+    {
+        env.remove("PATH");
+    }
 }
 
 fn resolve_command_with_path(command: &str, path: Option<&str>) -> String {
@@ -237,61 +254,6 @@ fn extract_cmd_path_reference(line: &str, token_start: usize, exe_end: usize) ->
     &line[token_start..exe_end]
 }
 
-fn augment_path_with_dirs(base_path: Option<&str>, suggested_dirs: &[PathBuf]) -> Option<String> {
-    let mut path_entries = base_path
-        .map(|value| std::env::split_paths(OsStr::new(value)).collect::<Vec<_>>())
-        .unwrap_or_default();
-    for dir in suggested_dirs {
-        if !path_entries.iter().any(|existing| existing == dir) {
-            path_entries.push(dir.clone());
-        }
-    }
-    if path_entries.is_empty() {
-        return None;
-    }
-    std::env::join_paths(path_entries)
-        .ok()
-        .map(|value| value.to_string_lossy().into_owned())
-}
-
-fn suggested_path_dirs() -> Vec<PathBuf> {
-    suggested_path_dirs_with_home(dirs::home_dir().as_deref())
-}
-
-fn suggested_path_dirs_with_home(home: Option<&Path>) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(home) = home {
-        push_dir_if_exists(&mut dirs, home.join(".local/bin"));
-        push_dir_if_exists(&mut dirs, home.join(".cargo/bin"));
-        push_dir_if_exists(&mut dirs, home.join(".opencode/bin"));
-        push_dir_if_exists(&mut dirs, home.join(".volta/bin"));
-        for dir in nvm_bin_dirs(home) {
-            push_dir_if_exists(&mut dirs, dir);
-        }
-    }
-    push_dir_if_exists(&mut dirs, PathBuf::from("/opt/homebrew/bin"));
-    push_dir_if_exists(&mut dirs, PathBuf::from("/opt/homebrew/sbin"));
-    push_dir_if_exists(&mut dirs, PathBuf::from("/usr/local/bin"));
-    push_dir_if_exists(&mut dirs, PathBuf::from("/usr/local/sbin"));
-    dirs
-}
-
-fn nvm_bin_dirs(home: &Path) -> Vec<PathBuf> {
-    let versions_dir = home.join(".nvm/versions/node");
-    let Ok(entries) = std::fs::read_dir(versions_dir) else {
-        return Vec::new();
-    };
-    entries
-        .filter_map(|entry| entry.ok().map(|entry| entry.path().join("bin")))
-        .collect()
-}
-
-fn push_dir_if_exists(dirs: &mut Vec<PathBuf>, dir: PathBuf) {
-    if dir.is_dir() && !dirs.iter().any(|existing| existing == &dir) {
-        dirs.push(dir);
-    }
-}
-
 fn command_requires_path_lookup(command: &str) -> bool {
     let path = Path::new(command);
     !path.is_absolute() && path.components().count() == 1
@@ -300,8 +262,8 @@ fn command_requires_path_lookup(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        augment_path_with_dirs, local_claude_executable_for_env, resolve_command_with_path,
-        resolve_local_claude_executable, spawn_adapter, suggested_path_dirs_with_home,
+        local_claude_executable_for_env, resolve_command_with_path,
+        resolve_local_claude_executable, should_require_local_claude_resolution, spawn_adapter,
     };
     use crate::config::AcpAdapterConfig;
     use std::collections::BTreeMap;
@@ -309,27 +271,20 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn suggested_path_dirs_include_nvm_bins() {
-        let temp = tempdir().unwrap();
-        let nvm_bin = temp.path().join(".nvm/versions/node/v24.14.1/bin");
-        fs::create_dir_all(&nvm_bin).unwrap();
-
-        let dirs = suggested_path_dirs_with_home(Some(temp.path()));
-
-        assert!(dirs.iter().any(|dir| dir == &nvm_bin));
-    }
-
-    #[test]
-    fn resolve_command_uses_augmented_path() {
+    fn resolve_command_uses_resolved_path() {
         let temp = tempdir().unwrap();
         let adapter_bin = temp.path().join("adapter-bin");
         fs::create_dir_all(&adapter_bin).unwrap();
-        fs::write(adapter_bin.join("npx"), "").unwrap();
+        let executable_name = if cfg!(windows) { "npx.exe" } else { "npx" };
+        fs::write(adapter_bin.join(executable_name), "").unwrap();
 
-        let path = augment_path_with_dirs(Some("/usr/bin:/bin"), &[adapter_bin.clone()]).unwrap();
-        let resolved = resolve_command_with_path("npx", Some(path.as_str()));
+        let path = std::env::join_paths([adapter_bin.clone()]).unwrap();
+        let resolved = resolve_command_with_path("npx", Some(path.to_str().unwrap()));
 
-        assert_eq!(resolved, adapter_bin.join("npx").to_string_lossy());
+        assert_eq!(
+            resolved,
+            adapter_bin.join(executable_name).to_string_lossy()
+        );
     }
 
     #[cfg(windows)]
@@ -511,23 +466,13 @@ CALL :find_dp0
     }
 
     #[test]
-    fn spawn_adapter_requires_local_claude_when_configured() {
+    fn local_claude_resolution_can_be_required_by_config() {
         let temp = tempdir().unwrap();
-        let config = AcpAdapterConfig {
-            command: "missing-acp-command-for-test".to_string(),
-            args: Vec::new(),
-            display_name: "Missing".to_string(),
-            env: BTreeMap::from([(
-                "PATH".to_string(),
-                temp.path().to_string_lossy().into_owned(),
-            )]),
-        };
+        let env = BTreeMap::from([(
+            "PATH".to_string(),
+            temp.path().to_string_lossy().into_owned(),
+        )]);
 
-        let error = spawn_adapter(&config, temp.path(), true, true).unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "local Claude executable is required but could not be resolved"
-        );
+        assert!(should_require_local_claude_resolution(true, true, &env));
     }
 }

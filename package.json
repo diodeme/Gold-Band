@@ -21,7 +21,10 @@
     "test:dev-watch-config": "node --test scripts/dev-watch-config.test.mjs",
     "test:dev-static": "node --test scripts/dev-static-channel.test.mjs",
     "web:build": "tsc -p web/tsconfig.build.json && vite build --config web/vite.config.ts",
-    "web:preview": "vite preview --config web/vite.config.ts"
+    "web:preview": "vite preview --config web/vite.config.ts",
+    "agent-catalog:refresh": "node scripts/prepare-agent-catalog.mjs",
+    "agent-catalog:offline": "node scripts/prepare-agent-catalog.mjs --offline",
+    "test:agent-catalog": "node --test scripts/prepare-agent-catalog.test.mjs"
   },
   "dependencies": {
     "@atomic-editor/editor": "0.6.2",

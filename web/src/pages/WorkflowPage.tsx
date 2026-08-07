@@ -84,7 +84,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
   const openWorkflowDrawer = (mode: WorkflowDrawerMode) => {
     setWorkflowDrawerMode(mode);
     if (mode !== 'view') {
-      if (!agentRegistry) getAgentRegistry().then(setAgentRegistry).catch(() => setAgentRegistry({ agents: [], supportedTypes: [] }));
+      if (!agentRegistry) getAgentRegistry().then(setAgentRegistry).catch(() => setAgentRegistry({ agents: [], catalog: [] }));
       if (!profileList) getProfiles().then(setProfileList).catch(() => setProfileList({ profiles: [] }));
       if (!templateStore) getWorkflowTemplates().then(setTemplateStore).catch(() => setTemplateStore({ version: '0.1', lastUsedTemplateId: null, lastCreatedWorkflow: null, templates: [] }));
     }

@@ -700,7 +700,7 @@ export function RunModeManagementPage({
   };
 
   const validateWfForTemplate = (workflow: WorkflowDsl, validateTemplateDuplicateId = true): WorkflowDsl | null => {
-    const supportedAgents = agents.filter((a) => a.supported && a.diagnostic?.available === true);
+    const supportedAgents = agents.filter((agent) => agent.diagnostic?.available === true);
     const validation = validateWorkflowForSave(workflow, profiles, supportedAgents, t, effectiveWorkflowTemplates ?? null, wfEditTemplateId, selectedWfTemplate ? workflowTemplateDisplayName(selectedWfTemplate, t) : null, validateTemplateDuplicateId);
     if (!validation.valid) {
       setWfError(validation.issues.map((issue) => issue.message).join('\n'));

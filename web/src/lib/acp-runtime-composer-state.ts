@@ -174,9 +174,15 @@ export function deriveAcpRuntimeComposerState(
     awaitingResponse,
     normalizeProcessingKind(backend?.processingKind),
   );
+  const directTurnHandoff = directQueueFacet
+    && acpTerminal
+    && processingKind === 'launching-next-node'
+    && !turnSubmitting
+    && !awaitingResponse;
   const statusActive =
     !input.waitingForPermission &&
     !composerLocked &&
+    !directTurnHandoff &&
     (turnSubmitting || awaitingResponse || sessionActive || stopInProgress || mode === 'runtime-active');
   const externalMessage = externalMessageForMode(input, mode, runtimeErrorMessage);
 

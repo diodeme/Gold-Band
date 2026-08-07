@@ -316,7 +316,7 @@ export interface AppInfoVm {
 
 export interface AgentRegistryVm {
   agents: ManagedAgentVm[];
-  supportedTypes: SupportedAgentTypeVm[];
+  catalog: AgentCatalogEntryVm[];
 }
 
 export interface ManagedAgentVm {
@@ -328,8 +328,9 @@ export interface ManagedAgentVm {
   iconKey: string;
   primaryAgentDir: string;
   compatibleAgentDirs: string[];
+  supportsSystemPrompt: boolean;
+  externalSessionSyncSupported: boolean;
   externalSessionSyncEnabled: boolean;
-  supported: boolean;
   diagnostic?: ManagedAgentDiagnosticVm | null;
   supportedModes?: AcpModeVm[] | null;
   supportedModels?: AcpModeVm[] | null;
@@ -397,14 +398,19 @@ export interface ManagedAgentDiagnosticVm {
   checkedAt: string;
 }
 
-export interface SupportedAgentTypeVm {
+export interface AgentCatalogEntryVm {
   agentType: string;
   label: string;
   iconKey: string;
+  version: string;
+  description: string;
+  repository?: string | null;
+  website?: string | null;
   primaryAgentDir: string;
   compatibleAgentDirs: string[];
-  supported: boolean;
   configured: boolean;
+  supportsSystemPrompt: boolean;
+  supportsExternalSessionSync: boolean;
   defaultDisplayName: string;
   defaultCommand: string;
   defaultArgs: string[];
@@ -413,11 +419,13 @@ export interface SupportedAgentTypeVm {
 
 export interface ManagedAgentInput {
   displayName: string;
+  icon: string;
   command: string;
   args: string[];
   env: Record<string, string>;
   primaryAgentDir: string;
   compatibleAgentDirs: string[];
+  externalSessionSyncSupported: boolean;
   externalSessionSyncEnabled: boolean;
 }
 

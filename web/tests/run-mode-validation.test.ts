@@ -29,8 +29,9 @@ const agentRegistry: AgentRegistryVm = {
     iconKey: 'claude',
     primaryAgentDir: '.claude',
     compatibleAgentDirs: [],
+    supportsSystemPrompt: true,
+    externalSessionSyncSupported: false,
     externalSessionSyncEnabled: false,
-    supported: true,
     supportedModes: [{ id: 'ask', name: 'Ask' }],
     supportedModels: [],
     configOptions: [{
@@ -42,7 +43,7 @@ const agentRegistry: AgentRegistryVm = {
     }],
     diagnostic: { status: 'ok', available: true, reason: null, checkedAt: '' },
   }],
-  supportedTypes: [],
+  catalog: [],
 };
 
 const profiles: ProfileVm[] = [{

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { SkillMetaVm, SupportedAgentTypeVm } from '../src/types';
+import type { AgentCatalogEntryVm, SkillMetaVm } from '../src/types';
 import {
   GOLD_BAND_AGENT_META,
   selectableSyncAgents,
@@ -9,9 +9,9 @@ import {
   skillSourceAgents,
 } from '../src/lib/skill-agent-display';
 
-const configuredAgents: SupportedAgentTypeVm[] = [
-  { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', primaryAgentDir: '.claude', compatibleAgentDirs: [], supported: true, configured: true, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
-  { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', primaryAgentDir: '.codex', compatibleAgentDirs: ['.agents'], supported: true, configured: true, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
+const configuredAgents: AgentCatalogEntryVm[] = [
+  { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', version: '1', description: '', repository: null, website: null, primaryAgentDir: '.claude', compatibleAgentDirs: [], configured: true, supportsSystemPrompt: true, supportsExternalSessionSync: false, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
+  { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', version: '1', description: '', repository: null, website: null, primaryAgentDir: '.codex', compatibleAgentDirs: ['.agents'], configured: true, supportsSystemPrompt: false, supportsExternalSessionSync: false, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
 ];
 
 function makeSkill(overrides: Partial<SkillMetaVm>): SkillMetaVm {

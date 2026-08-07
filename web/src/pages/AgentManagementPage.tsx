@@ -1,23 +1,25 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type InputHTMLAttributes, type TextareaHTMLAttributes } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type InputHTMLAttributes, type TextareaHTMLAttributes } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { createAgent, deleteAgent, doctorAgent, updateAgent } from '../api';
 import { displayAppError } from '../i18n';
-import type { AgentRegistryVm, ManagedAgentInput, ManagedAgentVm, SupportedAgentTypeVm } from '../types';
+import type { AgentCatalogEntryVm, AgentRegistryVm, ManagedAgentInput, ManagedAgentVm } from '../types';
 import { AppCard } from '@/components/AppCard';
 import { EmptyState, Page, PageHeader } from '@/components/PageScaffold';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { AlertTriangle, CheckCircle2, CircleHelp, LoaderCircle, Pencil, Plus, RefreshCw, Stethoscope, Trash2 } from 'lucide-react';
+import { AlertTriangle, Bot, CheckCircle2, CircleHelp, ImagePlus, LoaderCircle, Pencil, Plus, RefreshCw, Stethoscope, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
+import { AGENT_ICON_ACCEPT, agentIconClass, agentIconSrc, readAgentIconFile } from '@/lib/agent-icons';
 
 interface AgentManagementPageProps {
   vm: AgentRegistryVm | null;
@@ -33,26 +35,31 @@ const ACP_REGISTRY_URL = 'https://agentclientprotocol.com/get-started/registry';
 
 const defaultForm = (): ManagedAgentInput => ({
   displayName: '',
+  icon: 'agent',
   command: '',
   args: [],
   env: {},
   primaryAgentDir: '',
   compatibleAgentDirs: [],
+  externalSessionSyncSupported: false,
   externalSessionSyncEnabled: false,
 });
-const formFromSupportedAgent = (agentType?: SupportedAgentTypeVm): ManagedAgentInput => agentType ? ({
+const formFromCatalogAgent = (agentType?: AgentCatalogEntryVm): ManagedAgentInput => agentType ? ({
   displayName: agentType.defaultDisplayName,
+  icon: agentType.iconKey,
   command: agentType.defaultCommand,
   args: agentType.defaultArgs,
   env: Object.fromEntries(agentType.defaultEnv.map((entry) => [entry.key, entry.value])),
   primaryAgentDir: agentType.primaryAgentDir,
   compatibleAgentDirs: agentType.compatibleAgentDirs,
+  externalSessionSyncSupported: agentType.supportsExternalSessionSync,
   externalSessionSyncEnabled: false,
 }) : defaultForm();
 
 export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }: AgentManagementPageProps) {
   const { t } = useTranslation();
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [editorMode, setEditorMode] = useState<EditorMode>('create');
   const [selectedType, setSelectedType] = useState('');
   const [form, setForm] = useState<ManagedAgentInput>(defaultForm);
@@ -66,8 +73,9 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   const [deleteTarget, setDeleteTarget] = useState<ManagedAgentVm | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const iconFileInputRef = useRef<HTMLInputElement>(null);
 
-  const supportedTypes = vm?.supportedTypes ?? [];
+  const catalog = vm?.catalog ?? [];
   const configuredTypes = useMemo(() => new Set(vm?.agents.map((agent) => agent.agentType) ?? []), [vm]);
   const currentInput = useMemo(
     () => buildAgentInput(form, argsText, envText, compatibleAgentDirsText),
@@ -104,8 +112,8 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
       : { tone: 'error', message: t('agentManagement.diagnosticFailed', { reason: diagnostic.reason ?? t('agentManagement.diagnosticFailedFallback') }) });
   }, [automaticDiagnosingType, t, vm]);
 
-  const openCreate = (agentType: SupportedAgentTypeVm) => {
-    const nextForm = formFromSupportedAgent(agentType);
+  const openCreate = (agentType: AgentCatalogEntryVm) => {
+    const nextForm = formFromCatalogAgent(agentType);
     setEditorMode('create');
     setSelectedType(agentType.agentType);
     setForm(nextForm);
@@ -115,6 +123,21 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
     setInitialEditInput(null);
     setError(null);
     setSheetOpen(true);
+    setAddMenuOpen(false);
+  };
+
+  const openCustomCreate = () => {
+    const nextForm = defaultForm();
+    setEditorMode('create');
+    setSelectedType('');
+    setForm(nextForm);
+    setArgsText('');
+    setEnvText('');
+    setCompatibleAgentDirsText('');
+    setInitialEditInput(null);
+    setError(null);
+    setSheetOpen(true);
+    setAddMenuOpen(false);
   };
 
   const openEdit = (agent: ManagedAgentVm) => {
@@ -131,6 +154,20 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
     setInitialEditInput(buildAgentInput(nextForm, nextArgsText, nextEnvText, nextCompatibleAgentDirsText));
     setError(null);
     setSheetOpen(true);
+  };
+
+  const selectLocalIcon = async (file?: File) => {
+    if (!file) return;
+    setError(null);
+    try {
+      const icon = await readAgentIconFile(file);
+      setForm((current) => ({ ...current, icon }));
+    } catch (nextError) {
+      const code = nextError instanceof Error ? nextError.message : 'agent-icon.invalid-image-data';
+      setError(t(`agentManagement.iconErrors.${code}`, { defaultValue: t('agentManagement.iconErrors.fallback') }));
+    } finally {
+      if (iconFileInputRef.current) iconFileInputRef.current.value = '';
+    }
   };
 
   const submit = async () => {
@@ -198,28 +235,43 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
               <RefreshCw className={cn(loading && 'animate-spin')} />
               {t('common.refresh')}
             </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+            <Popover open={addMenuOpen} onOpenChange={setAddMenuOpen}>
+              <PopoverTrigger asChild>
                 <Button>
                   <Plus />
                   {t('agentManagement.addAgent')}
                 </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                {supportedTypes.map((agentType) => (
-                  <DropdownMenuItem
-                    key={agentType.agentType}
-                    disabled={!agentType.supported || agentType.configured}
-                    onClick={() => openCreate(agentType)}
-                  >
-                    <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                      <span className="truncate">{agentType.label}</span>
-                      {!agentType.supported ? <Badge variant="secondary">{t('agentManagement.pending')}</Badge> : agentType.configured ? <Badge variant="secondary">{t('agentManagement.configured')}</Badge> : null}
-                    </div>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-80 p-0">
+                <Command>
+                  <CommandInput placeholder={t('agentManagement.searchAgents')} />
+                  <CommandList>
+                    <CommandEmpty>{t('agentManagement.noMatchingAgents')}</CommandEmpty>
+                    <CommandGroup>
+                      <CommandItem value={t('agentManagement.customAgent')} onSelect={openCustomCreate}>
+                        <Bot className="size-4" />
+                        <span>{t('agentManagement.customAgent')}</span>
+                      </CommandItem>
+                    </CommandGroup>
+                    <CommandSeparator />
+                    <CommandGroup>
+                      {catalog.map((agentType) => (
+                        <CommandItem
+                          key={agentType.agentType}
+                          value={`${agentType.label} ${agentType.agentType}`}
+                          disabled={agentType.configured}
+                          onSelect={() => openCreate(agentType)}
+                        >
+                          <img src={agentIconSrc(agentType.iconKey)} alt="" className={agentIconClass(agentType.iconKey, 'size-4')} />
+                          <span className="min-w-0 flex-1 truncate">{agentType.label}</span>
+                          {agentType.configured ? <Badge variant="secondary">{t('agentManagement.configured')}</Badge> : null}
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
           </>
         )}
       />
@@ -268,8 +320,13 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
             <SheetDescription>{editorMode === 'create' ? t('agentManagement.createDescription') : t('agentManagement.editDescription')}</SheetDescription>
           </SheetHeader>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
-            <Field label={t('agentManagement.agentType')}>
-              <TextInput value={selectedType} disabled />
+            <Field label={t('agentManagement.agentId')} description={t('agentManagement.agentIdDescription')}>
+              <TextInput
+                value={selectedType}
+                disabled={editorMode === 'edit' || Boolean(catalog.find((entry) => entry.agentType === selectedType))}
+                placeholder={t('agentManagement.customAgentIdPlaceholder')}
+                onChange={(event) => setSelectedType(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
+              />
             </Field>
             <Field label={t('agentManagement.displayName')}>
               <TextInput value={form.displayName} onChange={(event: ChangeEvent<HTMLInputElement>) => setForm((current) => ({ ...current, displayName: event.target.value }))} />
@@ -293,6 +350,26 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
                 onChange={(event) => setEnvText(event.target.value)}
               />
             </Field>
+            <Field label={t('agentManagement.icon')} description={t('agentManagement.iconDescription')}>
+              <div className="flex items-center gap-3">
+                <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-border/60 bg-background">
+                  <img src={agentIconSrc(form.icon)} alt="" className={agentIconClass(form.icon, 'size-6')} />
+                </span>
+                <TextInput className="min-w-0 flex-1" value={form.icon} placeholder="agent" onChange={(event) => setForm((current) => ({ ...current, icon: event.target.value }))} />
+                <Button type="button" variant="outline" className="shrink-0" onClick={() => iconFileInputRef.current?.click()}>
+                  <ImagePlus />
+                  {t('agentManagement.selectLocalIcon')}
+                </Button>
+                <input
+                  ref={iconFileInputRef}
+                  type="file"
+                  accept={AGENT_ICON_ACCEPT}
+                  className="hidden"
+                  aria-label={t('agentManagement.selectLocalIcon')}
+                  onChange={(event) => void selectLocalIcon(event.target.files?.[0])}
+                />
+              </div>
+            </Field>
             <Field label={t('agentManagement.primaryAgentDir')} description={t('agentManagement.primaryAgentDirDescription')}>
               <TextInput
                 value={form.primaryAgentDir}
@@ -308,6 +385,17 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
                 onChange={(event) => setCompatibleAgentDirsText(event.target.value)}
               />
             </Field>
+            <CapabilitySwitch
+              id="external-session-sync-support"
+              label={t('agentManagement.externalSessionSyncSupport')}
+              description={t('agentManagement.externalSessionSyncSupportDescription')}
+              checked={form.externalSessionSyncSupported}
+              onCheckedChange={(checked) => setForm((current) => ({
+                ...current,
+                externalSessionSyncSupported: checked,
+                externalSessionSyncEnabled: checked ? current.externalSessionSyncEnabled : false,
+              }))}
+            />
             <div className="flex items-center justify-between gap-5 rounded-xl border border-border/60 bg-muted/10 px-4 py-3">
               <div className="min-w-0 space-y-1">
                 <ExternalSessionSyncHeading
@@ -320,6 +408,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
               </div>
               <Switch
                 id="external-session-sync"
+                disabled={!form.externalSessionSyncSupported}
                 checked={form.externalSessionSyncEnabled}
                 onCheckedChange={(checked) => setForm((current) => ({ ...current, externalSessionSyncEnabled: checked }))}
               />
@@ -327,7 +416,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
             {error ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">{error}</div> : null}
             <div className="flex justify-end gap-2 pt-1">
               <Button variant="outline" onClick={() => setSheetOpen(false)}>{t('common.close')}</Button>
-              <Button disabled={saving || !selectedType.trim() || !form.displayName.trim() || !form.command.trim() || !form.primaryAgentDir.trim() || !hasFormChanges} onClick={() => void submit()}>{t('common.save')}</Button>
+              <Button disabled={saving || !selectedType.trim() || !form.displayName.trim() || !form.command.trim() || !hasFormChanges} onClick={() => void submit()}>{t('common.save')}</Button>
             </div>
           </div>
         </SheetContent>
@@ -358,7 +447,7 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-3">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-border/60 bg-background">
-            <img src={agentIconSrc(agent.iconKey)} alt="" className="size-6 object-contain" />
+            <img src={agentIconSrc(agent.iconKey)} alt="" className={agentIconClass(agent.iconKey, 'size-6')} />
           </span>
           <div className="min-w-0 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -468,6 +557,30 @@ function Info({ label, value, mono = false }: { label: string; value: string; mo
   );
 }
 
+function CapabilitySwitch({
+  id,
+  label,
+  description,
+  checked,
+  onCheckedChange,
+}: {
+  id: string;
+  label: string;
+  description: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-5 rounded-xl border border-border/60 bg-muted/10 px-4 py-3">
+      <div className="min-w-0 space-y-1">
+        <label htmlFor={id} className="text-sm font-semibold text-foreground">{label}</label>
+        <div className="text-xs leading-5 text-muted-foreground">{description}</div>
+      </div>
+      <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} />
+    </div>
+  );
+}
+
 export function ExternalSessionSyncHeading({
   label,
   betaLabel,
@@ -519,11 +632,13 @@ export function buildAgentCardSummary(agent: ManagedAgentVm, t: (key: string) =>
 function agentInputFromVm(agent: ManagedAgentVm): ManagedAgentInput {
   return {
     displayName: agent.displayName,
+    icon: agent.iconKey,
     command: agent.command,
     args: agent.args,
     env: Object.fromEntries(agent.env.map((entry) => [entry.key, entry.value])),
     primaryAgentDir: agent.primaryAgentDir,
     compatibleAgentDirs: agent.compatibleAgentDirs,
+    externalSessionSyncSupported: agent.externalSessionSyncSupported,
     externalSessionSyncEnabled: agent.externalSessionSyncEnabled,
   };
 }
@@ -536,12 +651,14 @@ export function buildAgentInput(
 ): ManagedAgentInput {
   return {
     displayName: form.displayName,
+    icon: form.icon.trim() || 'agent',
     command: form.command.trim(),
     args: parseArgs(argsText),
     env: parseEnv(envText),
     primaryAgentDir: form.primaryAgentDir.trim(),
     compatibleAgentDirs: parseAgentDirs(compatibleAgentDirsText, form.primaryAgentDir),
-    externalSessionSyncEnabled: form.externalSessionSyncEnabled,
+    externalSessionSyncSupported: form.externalSessionSyncSupported,
+    externalSessionSyncEnabled: form.externalSessionSyncSupported && form.externalSessionSyncEnabled,
   };
 }
 
@@ -552,13 +669,15 @@ export function hasManagedAgentInputChanged(initial: ManagedAgentInput, current:
 function managedAgentInputFingerprint(input: ManagedAgentInput): string {
   return JSON.stringify({
     displayName: input.displayName,
+    icon: input.icon.trim() || 'agent',
     command: input.command.trim(),
     args: input.args,
     env: Object.entries(input.env).sort(([left], [right]) => left.localeCompare(right)),
     primaryAgentDir: input.primaryAgentDir.trim(),
     compatibleAgentDirs: [...new Set(input.compatibleAgentDirs.map((directory) => directory.trim()).filter(Boolean))]
       .filter((directory) => directory !== input.primaryAgentDir.trim()),
-    externalSessionSyncEnabled: input.externalSessionSyncEnabled,
+    externalSessionSyncSupported: input.externalSessionSyncSupported,
+    externalSessionSyncEnabled: input.externalSessionSyncSupported && input.externalSessionSyncEnabled,
   });
 }
 
@@ -600,8 +719,4 @@ function DiagnosticBadge({ diagnostic }: { diagnostic?: ManagedAgentVm['diagnost
       ? <AlertTriangle className="size-4 text-destructive" />
       : <CircleHelp className="size-4 text-muted-foreground" />;
   return <Badge variant="outline" className="rounded-full px-2 py-0 text-[11px]">{icon}<span className="ml-1">{t(`agentManagement.status.${status}`)}</span></Badge>;
-}
-
-function agentIconSrc(iconKey: string) {
-  return `/agent-icons/${iconKey}.svg`;
 }

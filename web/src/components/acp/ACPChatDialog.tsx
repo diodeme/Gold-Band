@@ -616,6 +616,14 @@ export function loadedEventBufferLimit(eventPageSize: number) {
   );
 }
 
+export function resolveAcpHasOlderEvents(
+  sessionHasOlder: boolean,
+  mergedEventCount: number,
+  visibleEventCount: number,
+) {
+  return sessionHasOlder || visibleEventCount < mergedEventCount;
+}
+
 export function ACPChatDialog(
   {
     session,
@@ -760,10 +768,10 @@ export function ACPChatDialog(
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [loadingLatest, setLoadingLatest] = useState(false);
   const [hasOlderEvents, setHasOlderEvents] = useState(
-    () => restoredSession?.eventPage.hasOlder ?? restoredBranchViewState?.hasOlder ?? false,
+    () => restoredSession?.eventPage.hasOlder ?? false,
   );
   const [hasNewerEvents, setHasNewerEvents] = useState(
-    () => restoredSession?.eventPage.hasNewer ?? restoredBranchViewState?.hasNewer ?? false,
+    () => restoredSession?.eventPage.hasNewer ?? false,
   );
   const hasOlderEventsRef = useRef(hasOlderEvents);
   const hasNewerEventsRef = useRef(hasNewerEvents);
@@ -896,11 +904,11 @@ export function ACPChatDialog(
         [],
         effectiveLoadedEventBufferLimit,
       );
-      const restoredView = restoreAcpBranchViewState(eventWindowKey);
+      const cachedSession = restoreAcpSession(eventWindowKey);
       loadedEventsRef.current = restored;
       setLoadedEvents(restored);
-      setHasOlderEvents(restoredView?.hasOlder ?? false);
-      setHasNewerEvents(restoredView?.hasNewer ?? false);
+      setHasOlderEvents(cachedSession?.eventPage.hasOlder ?? false);
+      setHasNewerEvents(cachedSession?.eventPage.hasNewer ?? false);
       return;
     }
     if (!session) return;
@@ -919,11 +927,15 @@ export function ACPChatDialog(
         "start",
         effectiveLoadedEventBufferLimit,
       );
+      setHasOlderEvents(resolveAcpHasOlderEvents(
+        session.eventPage.hasOlder,
+        merged.length,
+        limited.length,
+      ));
+      setHasNewerEvents(session.eventPage.hasNewer);
       loadedEventsRef.current = limited;
       return limited;
     });
-    setHasOlderEvents((current) => current || session.eventPage.hasOlder);
-    setHasNewerEvents((current) => current || session.eventPage.hasNewer);
   }, [effectiveLoadedEventBufferLimit, eventWindowKey, session]);
 
   useEffect(() => {
@@ -974,8 +986,8 @@ export function ACPChatDialog(
     setRawPage(null);
     setRawQuery({ page: 0, pageSize: 100, order: "desc" });
     setLoadingOlder(false);
-    setHasOlderEvents(cachedSession?.eventPage.hasOlder ?? storedBranchViewState?.hasOlder ?? false);
-    setHasNewerEvents(cachedSession?.eventPage.hasNewer ?? storedBranchViewState?.hasNewer ?? false);
+    setHasOlderEvents(cachedSession?.eventPage.hasOlder ?? false);
+    setHasNewerEvents(cachedSession?.eventPage.hasNewer ?? false);
     paginationDirectionRef.current = null;
     preservingScrollRef.current = false;
     paginationAnchorRef.current = null;
@@ -1356,9 +1368,11 @@ export function ACPChatDialog(
         "start",
         effectiveLoadedEventBufferLimit,
       );
-      setHasOlderEvents(
-        normalized.eventPage.hasOlder || limited.length < merged.length,
-      );
+      setHasOlderEvents(resolveAcpHasOlderEvents(
+        normalized.eventPage.hasOlder,
+        merged.length,
+        limited.length,
+      ));
       loadedEventsRef.current = limited;
       return limited;
     });
@@ -2293,9 +2307,11 @@ export function ACPChatDialog(
           "start",
           effectiveLoadedEventBufferLimit,
         );
-        setHasOlderEvents(
-          updated.eventPage.hasOlder || limited.length < merged.length,
-        );
+        setHasOlderEvents(resolveAcpHasOlderEvents(
+          updated.eventPage.hasOlder,
+          merged.length,
+          limited.length,
+        ));
         loadedEventsRef.current = limited;
         return limited;
       });

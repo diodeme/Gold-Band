@@ -11,7 +11,6 @@ const agentRegistry = {
   agents: [{
     agentType: 'claude-acp',
     displayName: 'Claude',
-    supported: true,
     diagnostic: { available: true },
     supportedModels: [{ id: 'sonnet', name: 'Sonnet' }],
     supportedModes: [{ id: 'acceptEdits', name: 'Accept Edits' }],
@@ -21,7 +20,7 @@ const agentRegistry = {
       options: [{ value: 'high', name: 'High' }],
     }],
   }],
-  supportedTypes: [],
+  catalog: [],
 } as AgentRegistryVm;
 
 describe('workflow and AUTO model configuration', () => {

@@ -1,6 +1,8 @@
 use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{artifact_uses_json_output, json_artifact_text_from_outputs};
-use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, managed_agent_preset};
+use crate::config::{
+    AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, catalog_agent_default_config,
+};
 pub use crate::domain::SessionRef;
 use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode};
 use crate::prompts::{
@@ -895,6 +897,7 @@ pub struct AcpProvider {
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
     runtime_policy: client::AcpRuntimePolicy,
+    supports_system_prompt: bool,
 }
 
 impl AcpProvider {
@@ -916,11 +919,18 @@ impl AcpProvider {
             acp_raw_max_size_bytes,
             acp_raw_target_size_bytes,
             runtime_policy: client::AcpRuntimePolicy::default(),
+            supports_system_prompt: false,
         }
     }
 
     pub fn with_runtime_policy(mut self, runtime_policy: client::AcpRuntimePolicy) -> Self {
         self.runtime_policy = runtime_policy;
+        self
+    }
+
+    pub fn with_system_prompt_support(mut self, supported: bool) -> Self {
+        self.supports_system_prompt = supported;
+        self.runtime_policy.supports_system_prompt = supported;
         self
     }
 }
@@ -933,7 +943,7 @@ impl ProviderAdapter for AcpProvider {
             capabilities: ProviderCapabilities {
                 supports_open_session: true,
                 supports_continue_session: true,
-                supports_system_prompt: self.provider_id == "claude-acp",
+                supports_system_prompt: self.supports_system_prompt,
                 supports_raw_stream: false,
             },
             is_default: self.provider_id == DEFAULT_PROVIDER,
@@ -1742,17 +1752,29 @@ pub fn provider_capabilities(provider_id: &str) -> Result<ProviderCapabilities> 
 }
 
 pub fn provider_capabilities_for_id(agent_id: &ManagedAgentId) -> Result<ProviderCapabilities> {
-    let preset = managed_agent_preset(agent_id)
-        .ok_or_else(|| anyhow::anyhow!("unsupported managed agent: {}", agent_id.as_str()))?;
+    let config = catalog_agent_default_config(agent_id.as_str()).unwrap_or_else(|| {
+        ManagedAgentConfig::new(
+            AcpAdapterConfig {
+                command: String::new(),
+                args: Vec::new(),
+                display_name: agent_id.as_str().to_string(),
+                env: BTreeMap::new(),
+            },
+            ".agent",
+            Vec::new(),
+        )
+    });
+    let supports_system_prompt = config.supports_system_prompt();
     Ok(AcpProvider::new(
         agent_id.as_str(),
-        preset.default_config().adapter,
+        config.adapter,
         false,
         false,
         false,
         5 * 1024 * 1024,
         4 * 1024 * 1024,
     )
+    .with_system_prompt_support(supports_system_prompt)
     .describe_provider()
     .capabilities)
 }
@@ -1775,8 +1797,6 @@ pub fn provider_from_agent(
     acp_raw_target_size_bytes: u64,
     runtime_policy: client::AcpRuntimePolicy,
 ) -> Result<Box<dyn ProviderAdapter>> {
-    managed_agent_preset(agent_id)
-        .ok_or_else(|| anyhow::anyhow!("unsupported managed agent: {}", agent_id.as_str()))?;
     Ok(Box::new(
         AcpProvider::new(
             agent_id.as_str(),
@@ -1789,7 +1809,8 @@ pub fn provider_from_agent(
         )
         .with_runtime_policy(
             runtime_policy.with_external_session_sync_enabled(config.external_session_sync_enabled),
-        ),
+        )
+        .with_system_prompt_support(config.supports_system_prompt()),
     ))
 }
 
@@ -1802,9 +1823,8 @@ pub fn provider_from_id(
     acp_raw_target_size_bytes: u64,
 ) -> Result<Box<dyn ProviderAdapter>> {
     let agent_id = ManagedAgentId::from_str(provider_id)?;
-    let preset = managed_agent_preset(&agent_id)
-        .ok_or_else(|| anyhow::anyhow!("unsupported managed agent: {provider_id}"))?;
-    let config = preset.default_config();
+    let config = catalog_agent_default_config(agent_id.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Agent `{provider_id}` has no built-in default config"))?;
     provider_from_agent(
         &agent_id,
         &config,

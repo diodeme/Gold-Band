@@ -976,7 +976,9 @@ pub fn roll_jsonl_unlocked(path: &Utf8Path, max_size: u64, target_size: u64) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CURRENT_SETTINGS_SCHEMA_VERSION, MANAGED_AGENT_PRESETS, ManagedAgentId};
+    use crate::config::{
+        CURRENT_SETTINGS_SCHEMA_VERSION, ManagedAgentId, catalog_agent_default_config,
+    };
     use std::str::FromStr;
     use tempfile;
 
@@ -1160,7 +1162,7 @@ mod tests {
         let legacy = serde_json::json!({
             "agents": {
                 "codex-cli": {
-                    "adapter": MANAGED_AGENT_PRESETS[1].default_config().adapter,
+                    "adapter": catalog_agent_default_config("codex-acp").unwrap().adapter,
                     "skillsDirOverride": ".custom-codex",
                     "externalSessionSyncEnabled": false
                 }
@@ -1172,7 +1174,7 @@ mod tests {
 
         let codex_id = ManagedAgentId::from_str("codex-acp").unwrap();
         let codex = &settings.agents.unwrap()[&codex_id];
-        assert_eq!(codex.primary_agent_dir, ".custom-codex");
+        assert_eq!(codex.primary_agent_dir.as_deref(), Some(".custom-codex"));
         assert_eq!(codex.compatible_agent_dirs, vec![".agents"]);
 
         let persisted: serde_json::Value = read_json(&path).unwrap();

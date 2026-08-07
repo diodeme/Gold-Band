@@ -2,7 +2,6 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
-use std::str::FromStr;
 
 use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
@@ -15,8 +14,8 @@ use crate::view_models::{
 use gold_band::acp::client::{PromptActivity, prompt_activity, prompt_activity_under};
 use gold_band::acp::prompt_queue::{MAX_QUEUED_PROMPTS, QueuedPromptState, load_prompt_queue};
 use gold_band::app::{App, CreateTaskInput, DEFAULT_WORKFLOW_TEMPLATE_ID, is_run_continuable};
+use gold_band::config::ConversationRunMode;
 use gold_band::config::StateConfig;
-use gold_band::config::{ConversationRunMode, ManagedAgentId, managed_agent_preset};
 use gold_band::domain::NodeType;
 use gold_band::domain::RunStatus;
 use gold_band::dsl::{
@@ -482,13 +481,11 @@ fn attach_direct_prompt_queue(
 }
 
 fn direct_agent_identity(app: &App, agent_type: &str) -> Option<ConversationAgentIdentityVm> {
-    let agent_id = ManagedAgentId::from_str(agent_type).ok()?;
     let (_, config) = app.managed_agent(agent_type).ok()?;
-    let icon_key = managed_agent_preset(&agent_id)?.icon_key;
     Some(ConversationAgentIdentityVm {
         agent_type: agent_type.to_string(),
         display_name: config.adapter.display_name.clone(),
-        icon_key: icon_key.to_string(),
+        icon_key: config.icon.clone(),
     })
 }
 
@@ -2305,7 +2302,11 @@ pub fn conversation_run_vm(
                         .map(|detail| detail.graph)
                 })
         })
-        .or_else(|| workflow_snapshot.as_ref().map(|dsl| workflow_graph_vm(dsl)))
+        .or_else(|| {
+            workflow_snapshot
+                .as_ref()
+                .map(|dsl| workflow_graph_vm(app, dsl))
+        })
         .unwrap_or_else(|| GraphVm {
             nodes: Vec::new(),
             edges: Vec::new(),

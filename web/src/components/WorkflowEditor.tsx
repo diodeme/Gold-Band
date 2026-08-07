@@ -63,9 +63,8 @@ import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 
-function providerToIconKey(provider: string): string | undefined {
-  const mapping: Record<string, string> = { 'claude-acp': 'claude', 'codex-acp': 'codex', cursor: 'cursor', gemini: 'gemini', opencode: 'opencode' };
-  return mapping[provider];
+export function workflowAgentIconKeys(agents: readonly ManagedAgentVm[]): ReadonlyMap<string, string> {
+  return new Map(agents.map((agent) => [agent.agentType, agent.iconKey?.trim() || 'agent']));
 }
 
 const UNSPECIFIED_PERMISSION_MODE = '__unspecified_permission_mode__';
@@ -94,12 +93,13 @@ const editorNodeTypes = { editorCanvas: EditorCanvasNode };
 const SCHEMA_VALIDATION_DELAY_MS = 2000;
 
 export function isWorkflowAgentDoctorReady(agent: ManagedAgentVm): boolean {
-  return agent.supported && agent.diagnostic?.available === true;
+  return agent.diagnostic?.available === true;
 }
 
 export function workflowEditorSupportedAgents(agentRegistry: AgentRegistryVm | null): ManagedAgentVm[] {
-  return agentRegistry?.agents.filter((agent) => agent.supported) ?? [];
+  return agentRegistry?.agents ?? [];
 }
+
 export function workerAgentSelectionPatch(provider: string): Partial<WorkflowWorkerNodeDsl> {
   return {
     provider,
@@ -114,7 +114,6 @@ export function optionalWorkerConfigOptions(
 ): Record<string, string> | undefined {
   return Object.keys(options).length > 0 ? options : undefined;
 }
-
 
 function AgentSelectItemContent({ agent, unavailableLabel }: { agent: ManagedAgentVm; unavailableLabel: string }) {
   const unavailableReason = isWorkflowAgentDoctorReady(agent)
@@ -202,6 +201,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   const handledValidationRequestIdRef = useRef(0);
   const restoredDraftAppliedRef = useRef(Boolean(initialSessionDraft));
   const agents = useMemo(() => workflowEditorSupportedAgents(agentRegistry), [agentRegistry]);
+  const agentIconKeys = useMemo(() => workflowAgentIconKeys(agents), [agents]);
   const doctorReadyAgents = useMemo(() => agents.filter(isWorkflowAgentDoctorReady), [agents]);
   const selectedNode = selectedNodeId ? workflow.nodes.find((node) => node.id === selectedNodeId) ?? null : null;
   const selectedEdgeIndex = selectedEdgeId ? Number(selectedEdgeId.split(':').at(-1)) : -1;
@@ -211,8 +211,8 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   const invalidNodeSignature = useMemo(() => stringSetSignature(invalidNodeIds), [invalidNodeIds]);
   const visibleTerminalSignature = useMemo(() => stringSetSignature(visibleTerminalIds), [visibleTerminalIds]);
   const { nodes, edges } = useMemo(
-    () => workflowToFlow(workflow, selectedNodeId, selectedEdgeId, invalidNodeIds, visibleTerminalIds, t),
-    [invalidNodeSignature, selectedEdgeId, selectedNodeId, t, visibleTerminalSignature, workflowGraphSignature],
+    () => workflowToFlow(workflow, selectedNodeId, selectedEdgeId, invalidNodeIds, visibleTerminalIds, agentIconKeys, t),
+    [agentIconKeys, invalidNodeSignature, selectedEdgeId, selectedNodeId, t, visibleTerminalSignature, workflowGraphSignature],
   );
 
   useEffect(() => {
@@ -1973,7 +1973,7 @@ function normalizeWorkflowEntryFromTopology(workflow: WorkflowDsl): WorkflowDsl 
   return workflow.entry === entry ? workflow : { ...workflow, entry };
 }
 
-function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, selectedEdgeId: string | null, invalidNodeIds: Set<string>, visibleTerminalIds: Set<string>, t: (key: string) => string): { nodes: Node<EditorNodeData>[]; edges: Edge[] } {
+function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, selectedEdgeId: string | null, invalidNodeIds: Set<string>, visibleTerminalIds: Set<string>, agentIconKeys: ReadonlyMap<string, string>, t: (key: string) => string): { nodes: Node<EditorNodeData>[]; edges: Edge[] } {
   const collectedNodes = collectAuthoringNodes(workflow);
   const collectedIds = new Set(collectedNodes.map((node) => node.id));
   const allNodes = [
@@ -1999,7 +1999,7 @@ function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, se
     const detail = node && 'goal' in node ? node.goal ?? '' : node?.type ?? item.id;
     const invalid = !item.terminal && invalidNodeIds.has(item.id);
     const provider = node && 'provider' in node ? node.provider : undefined;
-    const iconKey = provider ? providerToIconKey(provider) : undefined;
+    const iconKey = provider ? agentIconKeys.get(provider) : undefined;
     return {
       id: item.id,
       type: 'editorCanvas',

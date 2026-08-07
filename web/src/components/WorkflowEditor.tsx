@@ -61,10 +61,10 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { displayAppError } from '../i18n';
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
-import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
+import { DEFAULT_AGENT_ICON_KEY, agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 
 export function workflowAgentIconKeys(agents: readonly ManagedAgentVm[]): ReadonlyMap<string, string> {
-  return new Map(agents.map((agent) => [agent.agentType, agent.iconKey?.trim() || 'agent']));
+  return new Map(agents.map((agent) => [agent.agentType, agent.iconKey?.trim() || DEFAULT_AGENT_ICON_KEY]));
 }
 
 const UNSPECIFIED_PERMISSION_MODE = '__unspecified_permission_mode__';

@@ -378,8 +378,10 @@ const resources = {
         agentTypeRequired: "请填写 Agent ID。",
         displayName: "显示名称",
         icon: "图标",
-        iconDescription: "选择本地图片，或填写内置图标名、HTTPS 图片地址或 data URI；留空使用默认图标。",
+        iconDescription: "默认使用 Gold Band Logo，也可以选择本地图片。",
+        catalogIconDescription: "默认使用 {{agent}} 图标，也可以选择本地图片。",
         selectLocalIcon: "选择图片",
+        useDefaultIcon: "恢复默认图标",
         iconErrors: {
           "agent-icon.unsupported-image-type": "仅支持 PNG、JPEG、WebP 或 SVG 图片。",
           "agent-icon.image-too-large": "图片不能超过 1 MB。",
@@ -1922,8 +1924,10 @@ const resources = {
         agentTypeRequired: "Enter an Agent ID.",
         displayName: "Display Name",
         icon: "Icon",
-        iconDescription: "Choose a local image, or enter a built-in icon key, HTTPS image URL, or data URI. Leave empty for the default icon.",
+        iconDescription: "Uses the Gold Band logo by default. You can also choose a local image.",
+        catalogIconDescription: "Uses the {{agent}} icon by default. You can also choose a local image.",
         selectLocalIcon: "Choose Image",
+        useDefaultIcon: "Restore Default Icon",
         iconErrors: {
           "agent-icon.unsupported-image-type": "Choose a PNG, JPEG, WebP, or SVG image.",
           "agent-icon.image-too-large": "The image must be no larger than 1 MB.",

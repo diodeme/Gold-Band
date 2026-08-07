@@ -63,7 +63,10 @@ Agent Cards
 - 新增时预填 ACP Registry 当前快照中的推荐命令、参数和 display name，用户可按本机安装路径调整；npx 类 Agent 使用 Registry package，Cursor、Goose、OpenCode、Kimi 和 Amp 默认调用 PATH 中已安装的可执行文件
 - Gold Band 不下载、解压、托管或安装 Agent 二进制；非 npx Agent 的安装和 PATH 配置由用户负责，保存后 doctor 负责验证当前配置是否可运行
 - 自定义 Agent 复用同一编辑 Sheet；用户填写 Agent ID、icon、命令、参数、环境、Skills 目录和跨端会话能力。Agent ID 是持久化与 workflow `provider` 引用使用的稳定唯一标识，创建后不可修改
+- 编辑 Sheet 必须显式保存 `catalog / custom / existing` 来源状态，Agent ID 的可编辑性只由来源和创建/编辑生命周期决定，不得根据输入文本是否暂时匹配 Catalog ID 反推；因此自定义输入 `kimi` 后仍可继续填写为 `kimi-for-mine`
+- Agent ID 输入必须兼容中文等 IME 组合输入：组合期间保留输入法管理的临时文本，不执行小写化或非法字符过滤；`compositionend` 后再统一规范化为小写字母、数字和连字符，避免回车选词时丢失连字符或光标附近内容
 - system prompt 传递能力不在新建或编辑界面展示，也不接受 `ManagedAgentInput` 覆盖；内置 Agent 创建时由 Catalog 写入已验证能力，自定义 Agent 固定为不支持，编辑时保留实例已有的内部能力值
+- 新增 Agent 下拉使用 cmdk 的 active 项仅支持键盘确认，不表达业务选中态；下拉刚展开时所有可选项都不显示状态，只有鼠标悬停在具体项上时才显示 hover 背景，避免把“自定义 Agent”误看成默认选中
 - 构建与发版脚本从 `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` 拉取最新官方 Registry，筛选上述 10 个 Agent，生成并打包 Registry 快照、Catalog 和官方 SVG 图标；离线维护时可显式使用已提交快照重新生成 Catalog
 - Catalog 生成必须校验 10 个精选 Agent 全部存在；官方 Registry 缺项时构建失败，禁止静默发布残缺列表
 - Kimi Code 的主 Skills 根目录为 `.kimi-code`，兼容读取通用 `.agents`；Gold Band 在这些根目录下统一追加 `skills`
@@ -76,7 +79,14 @@ Agent Cards
 - command
 - args
 - env
-- icon（内置 key、HTTPS/data URI 或应用内绝对资源路径；也可通过系统文件选择器导入不超过 1 MB 的 PNG、JPEG、WebP 或 SVG，导入后以 data URI 随实例配置持久化，不依赖原文件路径；空值使用通用 Bot 图标；内置单色 Agent 图标在深色主题下统一反色以保证对比度，品牌彩色、自定义和默认金色图标保持原色）
+- icon（内置 key、HTTPS/data URI 或应用内绝对资源路径；也可通过系统文件选择器导入不超过 1 MB 的 PNG、JPEG、WebP 或 SVG，导入后以 data URI 随实例配置持久化，不依赖原文件路径；新建自定义 Agent 与空值使用 Gold Band Logo，已有明确保存为 `agent` 的实例继续使用通用 Bot 图标；内置单色 Agent 图标在深色主题下统一反色以保证对比度，品牌彩色、自定义和 Gold Band Logo 保持原色）
+- 图标字段的 key、URL 与 data URI 属于持久化实现，不在编辑 Sheet 中暴露文本输入；界面只提供当前图标预览、系统文件选择器和恢复默认 Logo 操作。既有实例中的 URL、data URI、内置 key 与旧 `agent` 值继续正常渲染
+- “选择图片”和“恢复默认图标”是一次性命令而不是可选模式，统一使用透明 `ghost` 样式；只有当前 hover 或键盘 `focus-visible` 的命令显示交互反馈，不得让两个操作同时呈现为已选中
+- 图标操作区包含多个交互控件，必须使用 `fieldset + legend` 分组，不得复用包裹单个输入框的整行 `<label>`；每个按钮的命中范围只限自身矩形，禁止整行转发到“选择图片”
+- “恢复默认图标”的目标随编辑器来源一起初始化：Catalog 新建或既有 Catalog Agent 恢复为该 Catalog 项自己的 `iconKey`，自定义 Agent 恢复为 Gold Band Logo；不得将所有 Agent 统一重置为 Gold Band Logo
+- 编辑器以单一生命周期状态统一管理 `open`、来源、Agent ID、表单、文本配置和初始快照；Catalog、自定义和既有实例入口一次性替换完整状态，关闭或保存成功只切换 `open=false`。Sheet 的退出动画期间保留当前 draft，下一次打开再整体初始化，避免内容闪变被误认为抽屉重新打开
+- 公共 Sheet 的 overlay 默认跟随 Root 的 `modal` 语义：模态 Sheet 保留遮罩，非模态侧栏默认不渲染遮罩。Agent 编辑器以及其他桌面编辑/详情侧栏统一使用非模态语义；仅窄屏工作区等真正覆盖主界面的 Sheet 保留模态遮罩，避免关闭侧栏时全局页面由暗变亮
+- 删除确认框以统一生命周期状态维护 `open + target`；确认、取消或失败只关闭弹窗，不在退出动画期间清空 target，确保 Agent 名称在动画完成前保持稳定
 - 主 Agent 目录
 - 兼容 Agent 目录
 - 跨端会话合并能力

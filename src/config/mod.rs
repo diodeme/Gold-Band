@@ -154,6 +154,8 @@ pub type DesktopFontPreference = String;
 #[serde(transparent)]
 pub struct ManagedAgentId(String);
 
+pub const DEFAULT_CUSTOM_AGENT_ICON: &str = "gold-band";
+
 impl ManagedAgentId {
     pub fn as_str(&self) -> &str {
         &self.0

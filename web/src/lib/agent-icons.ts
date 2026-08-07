@@ -21,6 +21,7 @@ const MONOCHROME_AGENT_ICONS = new Set([
 
 export const AGENT_ICON_ACCEPT = 'image/png,image/jpeg,image/webp,image/svg+xml';
 export const MAX_AGENT_ICON_BYTES = 1024 * 1024;
+export const DEFAULT_AGENT_ICON_KEY = 'gold-band';
 
 const SUPPORTED_AGENT_ICON_MIME_TYPES = new Set(AGENT_ICON_ACCEPT.split(','));
 
@@ -43,8 +44,7 @@ export async function readAgentIconFile(file: File): Promise<string> {
 
 export function agentIconSrc(iconKey: string) {
   const icon = iconKey.trim();
-  if (!icon) return '/agent-icons/agent.svg';
-  if (icon === 'gold-band') {
+  if (!icon || icon === DEFAULT_AGENT_ICON_KEY) {
     return '/logo.svg';
   }
   if (/^(?:https?:|data:|asset:|blob:|\/)/i.test(icon)) return icon;

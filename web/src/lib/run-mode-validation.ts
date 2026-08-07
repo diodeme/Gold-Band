@@ -16,6 +16,11 @@ export type SelectableAgentOption = {
   reason?: string;
 };
 
+export type SelectableAgentGroups = {
+  selectable: SelectableAgentOption[];
+  unavailable: SelectableAgentOption[];
+};
+
 export type SelectableWorkflowOption = {
   template: WorkflowTemplate;
   workflowId: string;
@@ -37,6 +42,18 @@ export function selectableAgentOptions(
     const reason = agentDoctorReason(agent, t);
     return { agent, selectable: !reason, reason: reason ?? undefined };
   });
+}
+
+/** Keeps catalog ordering within each health state for compact Agent pickers. */
+export function groupSelectableAgentOptions(
+  options: readonly SelectableAgentOption[],
+): SelectableAgentGroups {
+  const selectable: SelectableAgentOption[] = [];
+  const unavailable: SelectableAgentOption[] = [];
+  for (const option of options) {
+    (option.selectable ? selectable : unavailable).push(option);
+  }
+  return { selectable, unavailable };
 }
 
 export function selectableWorkflowOptions(

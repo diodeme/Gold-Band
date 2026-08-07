@@ -126,16 +126,18 @@ export function AcpConversationComposer({
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
-      <div className="mb-2">
-        <AttachmentChipsList
-          attachments={attachments}
-          compact
-          onRemove={onRemoveAttachment}
-          onPreview={onPreviewAttachment}
-          onClear={onClearAttachments}
-          clearLabel={t('common.clear') ?? 'Clear'}
-        />
-      </div>
+      {attachments.length > 0 ? (
+        <div className="mb-2" data-acp-composer-attachment-row="true">
+          <AttachmentChipsList
+            attachments={attachments}
+            compact
+            onRemove={onRemoveAttachment}
+            onPreview={onPreviewAttachment}
+            onClear={onClearAttachments}
+            clearLabel={t('common.clear') ?? 'Clear'}
+          />
+        </div>
+      ) : null}
       {fileError ? (
         <div className="mb-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
           {fileError}

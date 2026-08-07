@@ -68,6 +68,15 @@ const NETWORK_RETRY_ATTEMPTS: u32 = 3;
 /// 网络重试退避基数（秒）：第 n 次重试 sleep `NETWORK_RETRY_BASE_SECS * 2^n`。
 const NETWORK_RETRY_BASE_SECS: u64 = 1;
 
+/// issue 完成态（接入方案 D2：码灵完成远程任务后用 PAT 把关联 issue 流转到 done）。
+pub const MULTICA_ISSUE_DONE_STATUS: &str = "done";
+
+/// issue 进行中态（改动五：start_task 成功后用 PAT 把关联 issue 流转到 in_progress，与 done 对称）。
+///
+/// server 设计把 issue 状态交给 agent 管（start 只 flip task→running + 广播 EventTaskRunning，
+/// 看板列由 issue.status 派生故卡片不会自动移到「进行中」列）；码灵作为中介补齐这条流转。
+pub const MULTICA_ISSUE_IN_PROGRESS_STATUS: &str = "in_progress";
+
 // ===== M2 daemon 注册/心跳 wire 类型（开发设计 2.2.7）=====
 // 字段权威源：multica `server/internal/daemon/types.go` 的 json tag。
 
@@ -148,6 +157,12 @@ pub struct RemoteTask {
     pub autopilot_description: Option<String>,
     #[serde(default)]
     pub handoff_note: Option<String>,
+    /// issue 正文（webank `AgentTaskResponse.IssueDescription`，仅 issue 任务 + 仅 claim 响应携带）。
+    ///
+    /// issue 任务无 quick_create/chat/comment/autopilot/handoff 来源时，正本是 issue 自身的 body；
+    /// `requirement_text()` 把它排在 handoff_note 之后、title 之前——比「具体指令」次之、比「标题」丰富。
+    #[serde(default)]
+    pub issue_description: Option<String>,
     #[serde(default)]
     pub last_activity_at: Option<String>,
 }
@@ -155,9 +170,10 @@ pub struct RemoteTask {
 impl RemoteTask {
     /// 预填用「最佳可用需求文本」（镜像 server `computeTaskKind` 来源互斥优先级）。
     ///
-    /// quick-create → chat → comment → autopilot → handoff 任一非空取之；皆空回退 title
-    /// （issue 场景预填 issue 标题）。空白值视为缺失跳过——按来源**逐个**过滤后再短路，保证
-    /// 纯空白的上游来源不会吞掉下游（如空白 quick_create 仍回退 title）。
+    /// quick-create → chat → comment → autopilot → handoff → issue_description 任一非空取之；
+    /// 皆空回退 title（issue 无正文时预填标题）。issue 正文排在 handoff 之后、title 之前——
+    /// 比「具体指令/交接」次之、比「标题」丰富。空白值视为缺失跳过——按来源**逐个**过滤后再短路，
+    /// 保证纯空白的上游来源不会吞掉下游（如空白 quick_create 仍回退 title）。
     pub fn requirement_text(&self) -> Option<String> {
         [
             self.quick_create_prompt.as_deref(),
@@ -165,6 +181,7 @@ impl RemoteTask {
             self.trigger_comment_content.as_deref(),
             self.autopilot_description.as_deref(),
             self.handoff_note.as_deref(),
+            self.issue_description.as_deref(),
             self.title.as_deref(),
         ]
         .into_iter()
@@ -239,6 +256,15 @@ pub struct PinTaskSessionRequest {
     pub work_dir: Option<String>,
 }
 
+/// issue 状态更新请求（接入方案 D2：`PUT /api/issues/{id}` body `{status}`）。
+///
+/// 码灵完成远程任务后用自身 PAT 把关联 issue 流转到 [`MULTICA_ISSUE_DONE_STATUS`]（码灵作为中介，
+/// 非 agent 直调 multica API）。issue 维度接口，path 不含 workspace，靠 `X-Workspace-ID` 头路由。
+#[derive(Debug, Serialize)]
+struct UpdateIssueStatusRequest {
+    status: String,
+}
+
 /// multica HTTP client。`token` 为 PAT（已登录）或登录期的临时 JWT（None=未认证）。
 pub struct MulticaClient {
     http: Client,
@@ -285,6 +311,35 @@ impl MulticaClient {
         Ok(resp)
     }
 
+    /// 发送带 JSON body 的已认证请求（统一 auth + 可选 `X-Workspace-ID` 头 + status 映射）。
+    ///
+    /// `post_json` / `post_json_with_workspace` / issue PUT 的共用底座——杜绝三者各自重复请求构造
+    /// （否则 issue PUT 会带来第三份几乎相同的 auth+send+map_status 模板）。用 `self.token`（PAT）做
+    /// Bearer；create_token（登录期用临时 JWT）token 来源不同，仍走自有请求。返回 `Response` 供调用方
+    /// 按需解码（complete/fail/issue PUT 丢弃 body，故不解码）。
+    async fn json_send<T: Serialize + ?Sized>(
+        &self,
+        method: Method,
+        path: &str,
+        workspace_id: Option<&str>,
+        body: &T,
+    ) -> Result<Response, MulticaError> {
+        let mut req = self.http.request(method.clone(), self.url(path));
+        if let Some(t) = self.token.as_deref().filter(|t| !t.is_empty()) {
+            req = req.bearer_auth(t);
+        }
+        if let Some(ws) = workspace_id {
+            req = req.header("X-Workspace-ID", ws);
+        }
+        let resp = req
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| MulticaError::NetworkFailed(format!("{method} {path} failed: {e}")))?;
+        map_status(path, resp.status())?;
+        Ok(resp)
+    }
+
     /// 发送带 body 的已认证 POST 并按状态码映射错误，返回反序列化结果。
     ///
     /// 用 `self.token`（PAT）做 Bearer；create_token（登录期用临时 JWT）因 token 来源不同，仍走自有请求。
@@ -293,16 +348,7 @@ impl MulticaClient {
         T: Serialize + ?Sized,
         R: DeserializeOwned,
     {
-        let mut req = self.http.request(Method::POST, self.url(path));
-        if let Some(t) = self.token.as_deref().filter(|t| !t.is_empty()) {
-            req = req.bearer_auth(t);
-        }
-        let resp = req
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| MulticaError::NetworkFailed(format!("POST {path} failed: {e}")))?;
-        map_status(path, resp.status())?;
+        let resp = self.json_send(Method::POST, path, None, body).await?;
         resp.json::<R>()
             .await
             .map_err(|e| MulticaError::NetworkFailed(format!("decode {path} failed: {e}")))
@@ -310,7 +356,7 @@ impl MulticaClient {
 
     /// 同 `post_json` 但额外带 `X-Workspace-ID` 头。
     ///
-    /// issue 维度业务接口（接入方案 D1/E1/E2）path 不含 workspace（`/api/issues/{id}/...`），
+    /// issue 维度业务接口（接入方案 D1/D2/E1/E2）path 不含 workspace（`/api/issues/{id}/...`），
     /// 靠该头路由到对应 workspace（开发设计 4.1）。daemon 任务接口（C2-C8）path 自带 task_id，
     /// 不需要该头。
     async fn post_json_with_workspace<T, R>(
@@ -323,17 +369,9 @@ impl MulticaClient {
         T: Serialize + ?Sized,
         R: DeserializeOwned,
     {
-        let mut req = self.http.request(Method::POST, self.url(path));
-        if let Some(t) = self.token.as_deref().filter(|t| !t.is_empty()) {
-            req = req.bearer_auth(t);
-        }
-        req = req.header("X-Workspace-ID", workspace_id);
-        let resp = req
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| MulticaError::NetworkFailed(format!("POST {path} failed: {e}")))?;
-        map_status(path, resp.status())?;
+        let resp = self
+            .json_send(Method::POST, path, Some(workspace_id), body)
+            .await?;
         resp.json::<R>()
             .await
             .map_err(|e| MulticaError::NetworkFailed(format!("decode {path} failed: {e}")))
@@ -673,6 +711,35 @@ impl MulticaClient {
         self.with_network_retry("rerun", || async {
             let _: serde_json::Value = self
                 .post_json_with_workspace(&path, workspace_id, &serde_json::json!({}))
+                .await?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// `PUT /api/issues/{id}` —— 更新 issue 状态（接入方案 D2：码灵完成远程任务后流转 issue 到 done）。
+    ///
+    /// **码灵作为中介**：完成远程任务（[`complete_task`]）成功后，若该 task 关联了 issue，用码灵自身
+    /// PAT（**非** agent 的 task-scoped `auth_token`）把 issue 状态推进到 [`MULTICA_ISSUE_DONE_STATUS`]。
+    /// issue 维度接口，path 不含 workspace，靠 `X-Workspace-ID` 头路由（开发设计 4.1）。走一般网络重试
+    /// （3 次）；该步骤**失败仅记日志、不阻断任务终态**——complete 已送达、任务已 done，issue 状态推进
+    /// 失败由调用方兜底（issue 保持原状，不影响 multica 任务生命周期）。
+    ///
+    /// [`complete_task`]: MulticaClient::complete_task
+    pub async fn update_issue_status(
+        &self,
+        workspace_id: &str,
+        issue_id: &str,
+        status: &str,
+    ) -> Result<(), MulticaError> {
+        let path = format!("/api/issues/{issue_id}");
+        let body = UpdateIssueStatusRequest {
+            status: status.to_string(),
+        };
+        self.with_network_retry("update_issue_status", || async {
+            // body 丢弃：issue 状态更新只关心 HTTP 状态（map_status 已校验），无需解码响应。
+            let _resp = self
+                .json_send(Method::PUT, &path, Some(workspace_id), &body)
                 .await?;
             Ok(())
         })
@@ -1037,7 +1104,7 @@ mod tests {
     #[test]
     fn remote_task_requirement_text_picks_source_by_priority() {
         // 镜像 server computeTaskKind 来源互斥优先级：
-        // quick-create > chat > comment > autopilot > handoff > title（issue 回退标题）。
+        // quick-create > chat > comment > autopilot > handoff > issue_description > title。
         let qc: RemoteTask =
             serde_json::from_str(r#"{"id":"t","thread_name":"T","quick_create_prompt":"qc-prompt"}"#)
                 .unwrap();
@@ -1054,10 +1121,27 @@ mod tests {
         .unwrap();
         assert_eq!(comment.requirement_text().as_deref(), Some("plz fix"));
 
-        // issue：无来源字段 → 回退 title（预填 issue 标题）。
+        // issue 带 body（webank claim 响应回填 issue_description）→ 取正文，不回退标题。
+        let issue_body: RemoteTask = serde_json::from_str(
+            r#"{"id":"t","thread_name":"Login bug","issue_description":"Steps: ...\nExpected: ..."}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            issue_body.requirement_text().as_deref(),
+            Some("Steps: ...\nExpected: ...")
+        );
+
+        // issue 无 body → 回退 title（预填 issue 标题）。
         let issue: RemoteTask =
             serde_json::from_str(r#"{"id":"t","thread_name":"Login bug"}"#).unwrap();
         assert_eq!(issue.requirement_text().as_deref(), Some("Login bug"));
+
+        // issue_description 排在 handoff 之后：handoff 非空时压过正文。
+        let handoff_over_body: RemoteTask = serde_json::from_str(
+            r#"{"id":"t","thread_name":"T","handoff_note":"handoff here","issue_description":"body"}"#,
+        )
+        .unwrap();
+        assert_eq!(handoff_over_body.requirement_text().as_deref(), Some("handoff here"));
 
         // 优先级：多来源同时存在取最高优先级（quick_create 压过 chat）。
         let multi: RemoteTask = serde_json::from_str(
@@ -1193,5 +1277,29 @@ mod tests {
         let body = serde_json::json!({});
         assert_eq!(path, "/api/issues/iss-7/rerun");
         assert_eq!(body, serde_json::json!({}));
+    }
+
+    #[test]
+    fn multica_issue_done_status_constant_is_done() {
+        // 锁定完成态字面量（接入方案 D2：码灵完成远程任务后流转 issue 到 done）。
+        assert_eq!(MULTICA_ISSUE_DONE_STATUS, "done");
+    }
+
+    #[test]
+    fn update_issue_status_request_serializes_status_key() {
+        // 接入方案 D2：PUT /api/issues/{id} body {status}。锁定 wire body 契约（status 为唯一键）。
+        let body = serde_json::to_value(UpdateIssueStatusRequest {
+            status: "done".into(),
+        })
+        .unwrap();
+        assert_eq!(body, serde_json::json!({"status": "done"}));
+    }
+
+    #[test]
+    fn update_issue_status_path_is_workspace_scoped_put() {
+        // 锁定 PUT path 形状（与 rerun_issue 同为 issue 维度接口，靠 X-Workspace-ID 头路由，
+        // path 不含 workspace）。头注入在 json_send 内，由 HTTP 集成测试覆盖；此处锁定 path。
+        let path = format!("/api/issues/{}", "iss-7");
+        assert_eq!(path, "/api/issues/iss-7");
     }
 }

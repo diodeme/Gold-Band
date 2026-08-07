@@ -64,9 +64,9 @@ use gold_band::storage::sqlite::init_search_index;
 use metrics::start_heartbeat_polling;
 use multica::commands::{
     add_multica_workspace, cancel_multica_prepare_lease, cancel_multica_task, claim_multica_task,
-    get_multica_tasks, list_server_multica_workspaces, rebind_multica_workspace,
-    remove_multica_workspace, rerun_multica_task, set_active_multica_workspace,
-    start_multica_conversation_run,
+    get_multica_tasks,
+    list_server_multica_workspaces, rebind_multica_workspace, remove_multica_workspace,
+    rerun_multica_task, set_active_multica_workspace, start_multica_conversation_run,
 };
 use state::{DesktopContext, DesktopState};
 use tauri::Manager;

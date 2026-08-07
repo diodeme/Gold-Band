@@ -343,7 +343,7 @@ StateConfig 当前无 metrics 字段（metrics 无派生状态）。multica 需�
 pub multica_runtime_ids: Option<HashMap<String, String>>,   // {workspace_id: runtime_id}
 pub multica_pending_issues: Option<Vec<String>>,            // 失败待重试 issue_id（fail 写入 / complete·rerun 清除，见 §4.3）
 pub multica_task_conversations: Option<HashMap<String, MulticaTaskConversation>>,  // {task_id: 会话引用}，断点续跑用
-pub multica_completed_tasks: Option<Vec<MulticaCompletedTask>>,   // 终态任务本地历史（「最近完成」回看，M5-o），去重最新在前、截断 N=50
+pub multica_completed_tasks: Option<Vec<MulticaCompletedTask>>,   // 终态任务本地历史（M5-o；改动六起不再进扁平「最近完成」桶，而按 workspace_id 并入对应工作空间 tasksByWorkspace 组），去重最新在前、截断 N=50
 ```
 
 ```rust
@@ -362,7 +362,7 @@ pub struct MulticaTaskConversation {
 #[serde(rename_all = "camelCase")]
 pub struct MulticaCompletedTask {
     pub remote_task_id: String,    // 关联键
-    pub local_task_id: String,     // 「最近完成」行点击 → 按 (project_id, local_task_id, local_run_id) 直达本地会话
+    pub local_task_id: String,     // 终态行（改动六：并入所属 workspace 列表）整行点击 → 按 (project_id, local_task_id, local_run_id) 直达本地会话
     pub local_run_id: String,
     pub workspace_id: String,      // 经 workspaces 解析为 local_project_id（= project_id）供前端 onSelectRun
     pub issue_id: Option<String>,  // rerun 用
@@ -371,7 +371,7 @@ pub struct MulticaCompletedTask {
     pub completed_at: String,      // RFC3339，finalize_terminal 时戳
 }
 ```
-> `multica_runtime_ids` 是缓存（register 幂等取回），丢失下次启动重建；`multica_pending_issues` 记录**失败待重试**的 issue_id（M4 终态 fail 时写入、complete/rerun 时清除；claim 不写——避免 running 任务被误显为 retryable），用于失败回显 + rerun；`multica_task_conversations` 是断点续跑核心索引（remote_task_id → {local_task_id, local_run_id, session_id}）——claim 时若命中（remote_task_id 存在且 session_id 非空），带 prior_session_id 续跑同一会话；complete 后清条目（详见 3.2.7 / 4.4）；`multica_completed_tasks` 是「最近完成」回看历史——`finalize_terminal` 移除 active 前快照一行（status 来自 PendingUpdate：ClearOnSuccess→completed / AddOnFailure→failed），去重最新在前、截断 N=50（M5-o）。
+> `multica_runtime_ids` 是缓存（register 幂等取回），丢失下次启动重建；`multica_pending_issues` 记录**失败待重试**的 issue_id（M4 终态 fail 时写入、complete/rerun 时清除；claim 不写——避免 running 任务被误显为 retryable），用于失败回显 + rerun；`multica_task_conversations` 是断点续跑核心索引（remote_task_id → {local_task_id, local_run_id, session_id}）——claim 时若命中（remote_task_id 存在且 session_id 非空），带 prior_session_id 续跑同一会话；complete 后清条目（详见 3.2.7 / 4.4）；`multica_completed_tasks` 是终态任务回看历史——`finalize_terminal` 移除 active 前快照一行（status 来自 PendingUpdate：ClearOnSuccess→completed / AddOnFailure→failed），去重最新在前、截断 N=50（M5-o）；**改动六起消费方式变更**：`get_multica_tasks` 按 `workspace_id` 把这些终态行并入对应工作空间的 `tasksByWorkspace` 组（`from_completed` + `merge_workspace_tasks`，不再有扁平全局「最近完成」桶 / `recentlyCompleted` 字段）。
 
 #### 2.2.4 channel config（编译期默认，5 处改动）
 
@@ -481,11 +481,12 @@ pub enum MulticaError {
 - `register(req) -> RegisterResponse`（幂等）
 - `recover_orphans(runtime_id) -> ()`
 - `list_pending_tasks(runtime_id) -> Vec<RemoteTask>`（只读）
-- `claim_specific_task(runtime_id, task_id, prior_session_id?) -> RemoteTask`（断点续跑：命中本地 `task_conversations` 时带 prior_session_id）
+- `claim_specific_task(runtime_id, task_id, prior_session_id?) -> RemoteTask`（断点续跑：命中本地 `task_conversations` 时带 prior_session_id）。`RemoteTask` claim 响应携带需求来源字段（quick_create_prompt / chat_message / trigger_comment_content / autopilot_description / handoff_note / **issue_description**——改动四新增，webank `buildClaimedTaskResponse` issue 分支回填 `issue.Description.String`，pgtype.Text NULL→""）；`requirement_text(&self) -> Option<String>` 按来源互斥优先级取首个非空（issue 型取 issue_description 正文，无正文才回退 title），供 claim VM 回填 `requirement` 预填 composer
 - `start_task(task_id, force_fresh_session) / heartbeat / get_task_status`（本期状态只基础：start/complete/fail + 心跳，不接入 step/total 进度上报）
 - `pin_task_session(task_id, session_id, work_dir) -> ()`（写 task 行的 session_id/work_dir，断点续跑依据，对应接入方案 C8）
 - `complete_task / fail_task`（**重试幂等**：4/8/16/32/64s 共 6 次，确保终态送达）
 - `rerun_issue(issue_id, workspace_id) -> ()`（rerun=true/retry=false，触发整任务重跑，见接入方案 3.2.7）
+- `update_issue_status(workspace_id, issue_id, status) -> ()`（改动二：`PUT /api/issues/{id}` body `{status}` + `X-Workspace-ID` 头，`with_network_retry` 3 次；常量 `MULTICA_ISSUE_DONE_STATUS="done"` 用于完成流转，**`MULTICA_ISSUE_IN_PROGRESS_STATUS="in_progress"`（改动五新增）用于开始执行时流转**）
 
 **重试策略**：
 - **终态回调**（complete/fail）：严格 4/8/16/32/64s 共 6 次（初始尝试 + 5 次退避重试），服务端幂等。仅对 `NetworkFailed`（reqwest 传输/超时 + map_status 归类的 5xx + 解码错误）重试；AuthFailed/TaskNotFound/ClaimConflict 等确定错误码立即返回（重试无意义，与一般请求「4xx 不重试」同源）。由 `with_terminal_retry`（与 `with_network_retry` 同形，仅退避更长更密、次数 6）统一承载。
@@ -699,7 +700,7 @@ export interface MulticaSettingsVm {
   connected: boolean;
 }
 export interface MulticaWorkspaceRef { id: string; name: string; slug: string; localProjectId: string; provider: string }
-export interface RemoteTaskVm { id: string; issueId: string | null; status: 'queued'|'running'|'completed'|'failed'; retryable: boolean; workspaceId: string; title: string; requirement: string | null /* Req D：claim 响应回填的需求正文，供预填 composer；pending 列表只有 title，正文仅 claim 后有（issue 型为 null，回退 title） */; lastActivityAt: string | null }
+export interface RemoteTaskVm { id: string; issueId: string | null; status: 'queued'|'running'|'completed'|'failed'; retryable: boolean; workspaceId: string; title: string; requirement: string | null /* Req D：claim 响应回填的需求正文，供预填 composer；pending 列表只有 title，正文仅 claim 后有。改动四：issue 型 claim 响应带 issue_description（issue 正文），requirement_text 优先级取首个非空来源，issue 型不再回退 title 而是正文（无正文才回退） */; lastActivityAt: string | null; localTaskId: string | null; runId: string | null; projectId: string | null /* 改动六：仅终态行（completed/failed，来自 multica_completed_tasks）回填，供整行点击 onSelectRun(projectId, localTaskId, runId) 直达本地会话；active 行（queued/running）恒 null */ }
 // Req D：已删除 `MulticaRemoteTaskStartedVm`（原原子 claim+start 命令的返回类型）。执行改为 claim-at-click → 预填 composer → 发送复用本地链路，发送命令返回标准 `ConversationRunVm`。
 // 远程列表复用 ConversationSidebar 同一骨架：键名与 ConversationSidebarVm 一致，TaskRow 零改复用
 export interface RemoteConversationSidebarVm {
@@ -734,16 +735,16 @@ export interface RemoteConversationSidebarVm {
   - 已连接、无 workspace → 空状态卡 + 【添加工作空间】（选远程 + 选本地目录 + provider 绑定）。
   - 已连接、有 workspace → workspace 分组列表。
 - **远程列表形态对齐本地**：左侧 multica workspace 分组（sticky header）→ 每个 workspace 下展开该 workspace 的 queued 任务列表 → **末尾常驻【添加工作空间】Plus 行**（连接态始终可见，对齐本地 `ConversationSidebar` 末尾添加入口）→ 点击弹**模态对话框 `MulticaAddWorkspaceDialog`**（远程工作空间下拉 `listServerMulticaWorkspaces` 过滤已绑定 + provider 下拉 + 「绑定本地目录」按钮 `pickLocalDirectory()` 弹系统文件资源管理器选目录、显示选中路径 + 底部【添加】，三项齐全才可点 → `addMulticaWorkspace(id, name, provider, localPath)`）。**已连接但无绑定工作空间**时空状态文案区分（`conversation.sidebar.multica.noWorkspacesBound`，引导去添加，区别于「无会话」）。`get_multica_tasks` 返回**按 workspace 分组**、对齐 `ConversationSidebarVm` 形状的 VM（不限于 active）；**失败可重试任务与 queued 同列混排**，仅多一个 `retryable` 标记 + 【rerun】按钮（不单开失败区）；每条【执行】（Req D：claim-at-click）→ `claimMulticaTask(taskId, workspaceId)` 拿 `requirement` → 经 composer draft context `prefill(requirement ?? title, {remoteTaskId, workspaceId, localProjectId})` → `onNewConversationInWorkspace(localProjectId)`（与本地『+』同一回调），落到 conversation-home，输入框已预填需求；用户选模型/模式后点「发送」→ `startMulticaConversationRun`（复用本地发送链）。
-- **（M5-o）可折叠分区 + 「最近完成」回看 + 按 run 直达**：
-  - **可折叠**：workspace 分组 / pinned 失败段 / 「最近完成」段三段均**可折叠**（镜像本地 `ConversationSidebar` 的 `expandedWorkspaces` state + `ChevronDown` 旋转 + `<button>` header + 条件渲染；不用 shadcn Collapsible，跟随本地侧栏手动 toggle 风格）。
-  - **「最近完成」段**：workspace 分组下方新增可折叠分区，遍历 `vm.recentlyCompleted`（数据源 `state.multica_completed_tasks`，§2.2）；行显示 title + status badge + completedAt，点击 → `onSelectRun(projectId, localTaskId, runId)` 直达本地会话。即任务完成后在远程 tab 可回看（不再「完成后消失」，详见接入方案 M5-o）。
-  - **按 run 直达**：`MulticaRemoteTaskList` props 用 `onSelectRun(projectId, taskId, runId)`（复用本地侧栏直达指定 run 的现成回调），「最近完成」行点击 → `onSelectRun(ws.localProjectId, localTaskId, runId)`，绕开「在陈旧 sidebar 快照里查刚创建的任务」的根因（直达会话页）；`ConversationSidebar` 挂载处 `onSelectTask` → `onSelectRun`。
+- **（M5-o→改动六）可折叠分区 + 终态任务回看 + 按 run 直达**：
+  - **可折叠**：workspace 分组 / pinned 失败段两段均**可折叠**（镜像本地 `ConversationSidebar` 的 `expandedWorkspaces` state + `ChevronDown` 旋转 + `<button>` header + 条件渲染；不用 shadcn Collapsible，跟随本地侧栏手动 toggle 风格）。
+  - **终态任务并入所属工作空间组（改动六，取代 M5-o 扁平「最近完成」桶）**：原 M5-o 在 workspace 分组下方单设全局「最近完成」可折叠分区（遍历 `vm.recentlyCompleted`），不同 workspace 的终态任务挤在同一列、可读性差。改动六**删除**该分区 + `RemoteConversationSidebarVm.recentlyCompleted` 字段 + `MulticaCompletedTaskVm`（破坏式更新，无兼容层）；终态任务（`state.multica_completed_tasks`，§2.2）由 `get_multica_tasks` 按 `workspace_id` 经 workspaces 列表解析 `project_id` 后，并入对应工作空间的 `tasksByWorkspace` 组（`RemoteTaskVm::from_completed` + 纯函数 `merge_workspace_tasks`；**改动七升三参 running/pending/terminal、running > pending > terminal 按 `remote_task_id` 去重**，详见 §12.9；未绑定 workspace 的终态行跳过）。终态行行内带 `localTaskId/runId/projectId`，整行可点 → `onSelectRun(projectId, localTaskId, runId)` 直达本地会话；`completed_at` → `lastActivityAt` 复用既有时间渲染。即任务完成后留在自己 workspace 列表里（标 completed/failed），不再进全局桶。
+  - **按 run 直达**：`MulticaRemoteTaskList` props 用 `onSelectRun(projectId, taskId, runId)`（复用本地侧栏直达指定 run 的现成回调），终态行点击 → `onSelectRun(projectId, localTaskId, runId)`，绕开「在陈旧 sidebar 快照里查刚创建的任务」的根因（直达会话页）；`ConversationSidebar` 挂载处 `onSelectTask` → `onSelectRun`。
     > **（Req D：执行流程改造）** `handleClaimAndStart` → `handleClaimAndPrepare`：点【执行】不再原子 claim+start+按 run 直达，而是 claim（拿 `requirement`）→ 经 composer draft context 预填正文 + 记下 multica 绑定 → `onNewConversationInWorkspace(localProjectId)`（与本地『+』同一回调，落 conversation-home）。发送时 `App.tsx` conversation-home 的 `onSubmit` 据 `composerDraft.draft.multica` 分流：有绑定 → `startMulticaConversationRun(input, draft.multica.remoteTaskId, draft.multica.workspaceId)`（返回 `ConversationRunVm`），否则本地 `createConversationRun(input)`；二者后续导航/侧栏刷新/reset 完全一致。multica 绑定纳入 draft 生命周期——`reset`（发送成功 / 放弃 compose）即清掉，无需各 reset 点单独清理（根因收益）。composer 草稿 app-root 上提（`ConversationComposerDraftBoundary` 包 `<Shell>`，侧栏与页面均在 boundary 内），故侧栏 `prefill` 后导航到页面仍能读到。
-- **（M5-p）任务时间本地时区展示**：pending 行 `lastActivityAt` 与「最近完成」行 `completedAt` 改用既有 `web/src/lib/datetime.ts::formatLocalDateTime(iso)`（内置 Date 解析 ISO/epoch → 本地时区 `YYYY-MM-DD HH:mm:ss`），替换原 `.slice(0,19).replace('T',' ')`（旧实现把 UTC 墙钟当本地时间展示，偏差一个时区）。**UTC 存储不变**（`bridge.rs::finalize_terminal` 存 `Utc::now().to_rfc3339()` canonical 正确），纯展示层转本地。
+- **（M5-p）任务时间本地时区展示**：pending 行 `lastActivityAt` 与终态行 `lastActivityAt`（改动六：`from_completed` 把 `completed_at` 映射为 `lastActivityAt`）改用既有 `web/src/lib/datetime.ts::formatLocalDateTime(iso)`（内置 Date 解析 ISO/epoch → 本地时区 `YYYY-MM-DD HH:mm:ss`），替换原 `.slice(0,19).replace('T',' ')`（旧实现把 UTC 墙钟当本地时间展示，偏差一个时区）。**UTC 存储不变**（`bridge.rs::finalize_terminal` 存 `Utc::now().to_rfc3339()` canonical 正确），纯展示层转本地。
 
 ### 3.5 事件监听 + i18n
 
-- 监听 `gold-band://multica-task-updated`：**任务生命周期**（claim/start/complete/fail/cancel、取消检测作废）→ 远程任务列表 re-fetch（`listen<T>` 参考 desktop.ts:24-51）。由 bridge 终态上报 + loop 取消检测 emit。**（M5-o）App 顶层亦订阅此事件**：multica 任务创建会在本地工作空间落一条会话任务，需同步刷**本地侧栏**（`getConversationSidebar`+`applyConversationSidebar`，in-flight/pending 去抖，对齐 agent-registry 模式）——否则 multica 路径不像正常 `createConversationRun` 那样手动 refresh 本地侧栏，导致 multica 任务在本地侧栏不出现/状态不更新（「会话看不到」根因之一）。远程任务列表与 App 顶层**各订阅一份**（远程列表刷 `getMulticaTasks`，App 顶层刷本地侧栏，职责不同）。
+- 监听 `gold-band://multica-task-updated`：**任务生命周期**（claim/start/complete/fail/cancel、取消检测作废）→ 远程任务列表 re-fetch（`listen<T>` 参考 desktop.ts:24-51）。由 bridge 终态上报 + loop 取消检测 emit + **start_multica_conversation_run 成功路径 emit（改动七：active_runs 已登记，让 running 行即时刷出，见 §12.9）**。**（M5-o）App 顶层亦订阅此事件**：multica 任务创建会在本地工作空间落一条会话任务，需同步刷**本地侧栏**（`getConversationSidebar`+`applyConversationSidebar`，in-flight/pending 去抖，对齐 agent-registry 模式）——否则 multica 路径不像正常 `createConversationRun` 那样手动 refresh 本地侧栏，导致 multica 任务在本地侧栏不出现/状态不更新（「会话看不到」根因之一）。远程任务列表与 App 顶层**各订阅一份**（远程列表刷 `getMulticaTasks`，App 顶层刷本地侧栏，职责不同）。
 - 监听 `gold-band://multica-settings-updated`：**连接/工作空间配置变更**（connect/disconnect/save/add/rebind/remove/set_active）→ 任务列表 **+ 设置页** 都 re-fetch。任一处发起的配置改动，两端即时同步（杜绝「绑定发生在任务列表弹窗、设置页显示旧数据」之类的跨视图不一致）。
 - 监听 `gold-band://multica-runtime-status`：连接状态、register 结果提示。
 - i18n（`web/src/i18n.ts`）：新增 `settings.multica.*` 与 `tasks.remote.*` 中英文 key（CLAUDE.md 维护双语）。i18n key 命名参考 `settings.metrics.*`。**前端按错误码 code 查文案**，后端不返回对客文案。
@@ -1034,6 +1035,200 @@ start_multica_runtime()
 | 8 | **multica fail 与本地会话 Paused 状态张力** | remote_task fail 后本地会话作废不 continue；断点续跑走 prior_session_id 而非本地 Paused continue（4.4 厘清） |
 | 9 | **ACP session 跨重启可恢复性未验证（恢复断崖）** | 「多轮=task序列+session续跑」依赖 ACP provider（claude-acp）真持久化 session、能 `session/load`。未验证。**M1 第一个集成测试验证**：mock requirement 跑完采 session_id → 重启 → run_continue 带 prior_session_id → 确认 session/load 成功、上下文连续。若 claude-acp 不持久化，多轮降级为每轮新会话（功能降级，非阻塞） |
 | 10 | **run 终态 4 分支 + Paused 盲区**（本期补齐） | 订阅器必须穷举 Success/Failure/Killed/Paused（2.5 终态表），不能只 match success；Paused 期间 multica 继续显示 running（接受盲区）；不监听未实现的 AcpTurnFinished |
+
+---
+
+## 12. 联调修复（M5-r，2026-08）
+
+### 12.1 Fix 1：心跳自愈注册
+
+**现象**：码灵运行时心跳似乎没有保持连接。connect 后首心跳空转（没有 runtime_id）；心跳 404 后 runtime_id 被清但未补注册 → 永不长连。
+
+**根因**（设计缺陷）：
+- 注册原为「一次性」：启动全量跑一次 + workspace 绑定时注册。`connect_multica` 不注册；心跳循环不补注册。
+- 心跳 404（server 端 runtime 行被删或不对应）只打 log 不清本地缓存 → 一直发错误的 heartbeat。
+
+**修复**（`loop_.rs` + `state.rs` + `commands.rs`）：
+
+| 文件 | 变更 |
+|---|---|
+| `state.rs` | `runtime_id_pairs() -> Vec<(String, String)>` 返回 workspace→runtime 映射供自愈；`clear_runtime_id(workspace_id)` 单 key 清除 |
+| `loop_.rs` | 抽取 `register_workspace(...)` 共享 helper（构造 RegisterRequest + 调 client.register + 缓存 runtime_id）；`run_heartbeat_loop` 每 tick 先 `self_heal_registration` 补注册缺失 runtime_id；心跳 404 → `clear_runtime_id` → 下一 tick 自愈 |
+| `commands.rs` | `connect_multica` async 改为 await `register_all_bound_workspaces`（即时注册所有已绑定 workspace）|
+
+**测试**：`runtime_id_pairs_carries_workspace_for_self_heal` + `clear_runtime_id_singular_drops_one_keeps_rest`。
+
+### 12.2 Fix 2：start_task 失败回传 fail + 清孤儿 run
+
+**现象**：local start 成功但远端 `POST /tasks/{id}/start` 失败时，本地有 `active_run` 映射但远端任务还在 queued/pending，后续 `complete_task` 也失败（远端非 running）→ 任务永远 pending。
+
+**根因**（实现不完善）：
+- `start_multica_conversation_run` 的 Ok 分支原 `.map_err(|e| command_error(e.into()))?` 直接上抛 → 本地 run 已创建（`create_conversation_run_vm` 成功）但远端 start 失败时未清理 → 孤儿 run。
+- 第一层原因（prepare-lease 过期被回收）由 Fix 1 根治（自愈 + 续期）。
+
+**修复**（`commands.rs`）：
+```rust
+if let Err(start_err) = client.start_task(&remote_task_id, false).await {
+    let _ = client.fail_task(&remote_task_id, "local start failed", "agent_error").await;
+    // teardown: pause local run + cancel ACP + drop active_run
+    crate::multica::bridge::teardown_active_run(...);
+    emit_multica_task_updated(&app_handle);
+    return Err(command_error(start_err.into()));
+}
+```
+
+### 12.3 取消「显式完成远程任务」按钮（完成语义回归生命周期驱动）
+
+**背景**：原 §12.3 设想非 direct 模式暂停后由用户点按钮显式完成远端任务。评审后决定**不加按钮**：完成动作应跟随 run 生命周期自然发生，不引入额外的手动终态入口。
+
+**完成语义（删除按钮后，沿用既有 `bridge` 终态分支，无新代码）**：
+
+| 模式 | 完成路径 |
+|---|---|
+| direct | agent 跑完 -> `RunCompleted{Success}` -> `handle_run_completed` -> `classify_terminal(Success)` -> `TerminalAction::Complete` -> `complete_task` + `finalize_terminal` |
+| workflow | workflow run 跑到终态（自然结束 / 节点序列走完）-> 同上 `RunCompleted{Success}` -> `complete_task`。「按终止来完成」即完成由 run 终止事件驱动，不另设手动入口 |
+
+**已知缺口（已接受）**：open-ended workflow 在 interview/round 节点 `RunPaused`（等人工判定）时 `RunCompleted` 不 fire -> 远端保持 running；无手动完成入口，由 server sweeper（running-stuck 2.5h）兜底转 failed。agent-driven 模型下「暂停等人工」的预期代价，暂不补。
+
+**删除清单**：`bridge.rs` `complete_remote_task_explicit`；`commands.rs` `complete_multica_task` + `get_multica_active_run`；`vm.rs` `MulticaActiveRunVm`；前端四层 `completeMulticaTask`/`getMulticaActiveRun` + `ConversationRunHeader`/`ConversationRunPage` `onCompleteMulticaTask` + `App.tsx` active-run useEffect + `types.ts` `MulticaActiveRunVm` + `i18n.ts` `completeRemoteTask`。
+
+### 12.4 完成远程任务后流转 issue 到 done（接入方案 D2）
+
+**背景**：码灵完成远程任务（`complete_task` 送达）后，关联的 multica issue 需自动推进到 `done`，避免 issue 长期停留在「任务已跑完但 issue 未关闭」的不一致状态。
+
+**决策（选项 B：码灵作为中介，而非 A：agent 直调）**：
+
+| 选项 | 机制 | 取舍 |
+|---|---|---|
+| A（弃） | 给 agent 注入 task-scoped `MULTICA_TOKEN`，agent 跑完自行调 issue 状态 API | 违反「ACP agent 从不直接调 multica API」既有约束；agent 需感知 multica 业务接口，职责越界 |
+| **B（选）** | **码灵**用自身 PAT（`mul_` 用户级）在 `complete_task` 送达后调 issue 状态 API | 码灵作为 daemon 已持 PAT，天然适合做 issue 状态推进中介；agent 只管执行 |
+
+**数据（先定数据）**：
+- `client.rs` wire type `UpdateIssueStatusRequest { status }`（`PUT /api/issues/{id}` body）。
+- 常量 `MULTICA_ISSUE_DONE_STATUS: &str = "done"`（完成态字面量集中管理，杜绝硬编码）。
+
+**接口（再定接口）**：
+- `MulticaClient::update_issue_status(&self, workspace_id, issue_id, status) -> Result<(), MulticaError>`
+  - `PUT /api/issues/{issue_id}`，body `{status}`，带 `X-Workspace-ID` 头（issue 维度路由，开发设计 4.1）。
+  - 走 `with_network_retry`（3 次）；body 丢弃（只校验 HTTP 状态，不解码响应）。
+
+**实现（最后补实现）**：bridge `handle_run_completed` 的 `TerminalAction::Complete` 分支改造：
+- 原：`complete_task` 失败 `warn`，恒返回 `ClearOnSuccess`。
+- 现：`complete_task` **Ok** 后，若 `run.issue_id` 非空（`trim` 非空白）→ `update_issue_status(workspace_id, issue, "done")`；失败 `warn` 但不阻断（终态已上报）。`complete_task` **Err** → 仅 `warn`，**不流转 issue**（server 未收到 complete，issue 不应变 done）。
+- issue_id 缺失（如非 issue 来源任务）跳过——并非所有远程任务都有关联 issue。
+
+**重构（消除第三份重复）**：issue PUT 拉入第三种 JSON 请求方法，把 `post_json` / `post_json_with_workspace` 的「auth + send + map_status」模板上提为 `json_send(method, path, workspace: Option, body) -> Response`，三调用方（POST 无头 / POST 带头 / PUT 带头）共用。行为保持不变。
+
+**验证**：`cargo check --workspace` 通过；`cargo test -p gold-band-desktop multica::` **65 测全过**（新增 3：常量 / body / path）。无需 webank server 改动。
+
+---
+
+### 12.5 断点续跑落地（远程任务重派后续既有本地 run）
+
+**背景**：远程任务被 server 重派（码灵崩溃恢复 / agent 死亡被回收 / 失败自动重试 max_attempts=2）后，用户重新点「执行」→ `start_multica_conversation_run` 此前**总是 Fresh**（注释明说「断点续跑…不在此分支」），每次从第 1 轮重跑，丢失已完成的 round/node/部分产出。
+
+**根因（非补丁，补完消费者而非打补丁）**：断点续跑的**数据结构已就位、消费者被删**。
+- `multica_task_conversations[remote_task_id]`（{local_task_id, local_run_id, session_id, work_dir}）在 Fresh 成功时写入、bridge 在 NodeCompleted 回填 session_id。
+- 但消费它的 `classify_resume`（旧 `start_multica_remote_task` 里）在改 composer 流时一并删除——再无人用 checkpoint 把本地 run 续起来。
+- 附带不一致：`claim_multica_task` 只要 session_id 非空就传 `prior_session_id`，可紧接的 start 却 Fresh 建新 session（claim 说续 X、start 用 Y）。
+→ 改法：补完消费者 `classify_resume`（claim/start 共用），start 里 Resume/Fresh/回退三分支，并把 claim 的 prior_session_id 接到同一判定。
+
+**机制前提（已带 file:line 确认）**：
+1. ACP session 跨码灵完整重启可冷重连（adapter 自持 session 落盘，`session/load`）。
+2. 本地续跑链：`run_continue_background(task_id, run_id, prompt_id, prompt)`（app/mod.rs:2928）→ orchestrator 读 `<attempt_dir>/worker-ref.json` `continue_ref.acpSessionId` → `SessionMode::Continue`。
+3. `is_run_continuable(run)`（app/mod.rs:711）= Paused + outcome None + pause_reason ∈ {ProcessInterrupted, RuntimeAbnormal, WaitingForUserInput} + round/node/attempt 齐。
+4. 启动自愈：`main.rs` setup → `recover_interrupted_running_sessions` → `pause_all_running_sessions`（app/mod.rs:2370）把 stale-Running 翻成 Paused + ProcessInterrupted + outcome None → 崩溃重启后旧 run 自动满足 is_run_continuable。**限制：仅覆盖当前激活 workspace。**
+5. `start_task(task_id, force_fresh_session)`（client.rs:592）：续跑与 Fresh 都传 false（force_fresh=true 仅整任务重跑）。
+
+**数据（先定数据）**：无新结构，复用 `MulticaTaskConversation`。新增：
+- `enum ResumeDecision { Resume{local_task_id, local_run_id, session_id}, Fresh }`。
+- 纯函数 `classify_resume_from(conv: Option<&MulticaTaskConversation>, run: Option<&RunState>) -> ResumeDecision`（无 I/O，可单测）。
+- I/O 包装 `classify_resume(home_app: &App, remote_task_id: &str) -> ResumeDecision`（读 checkpoint → 由 work_dir 构造 workspace App → run_status → 委托纯函数）。
+
+**接口（再定接口）**：
+- `claim_multica_task`：`prior_session_id` 改为 `match classify_resume(&context.app(), &task_id) { Resume{session_id,..}=>Some, Fresh=>None }`（消除 claim/start 不一致）。
+- `start_multica_conversation_run`：校验通过后、建 run 前插三分支——
+  - **Resume**：`app.clone_for_background().run_continue_background(prior_task, prior_run, None, None)`（纯续跑）→ `register_active_run`(既有 ids) + `start_task(false)` + drop lease + `conversation_run_vm(既有 run)` 还原 VM 返回（导航既有会话）。Err → warn 落 Fresh。
+  - **Fresh**：现有 `create_conversation_run_vm` 链；**顺带修旧漏**——覆盖既有 checkpoint 时 `entry.session_id = None`（旧 session 随旧 run 失效；新 run 的 session_id 待 bridge 回填）。
+
+**决策（D1/D2）**：
+
+| 决策 | 选项 | 取舍 |
+|---|---|---|
+| D1 续跑文本 | **纯续跑 prompt=None（选）** | 续跑=接着被中断的编排往下跑（冷重连 session、续当前 attempt），不新增 turn、不换模型；重发整段需求当新 turn 会重复上下文、干扰半截工具调用。composer 预填文本仅作「任务是什么」展示 |
+| | composer 文本当新 turn（弃） | 更「像发送」，但对中断半截 run 不自然；未改文本会原样重发需求 |
+| D2 stale-Running 未重启 | **仅 is_run_continuable 时续（选）** | 不主动 pause-then-resume；崩溃重启主路径由启动自愈覆盖；运行期 ACP 死亡触发 pause 留将来 |
+| | 主动 pause-then-resume（弃） | 覆盖面大但要处理 pause 副作用与并发，MVP 不建议 |
+
+**已知限制（告知，非本期修）**：启动自愈只覆盖激活 workspace；非激活 workspace 的崩溃 run 不自愈→不续跑→Fresh。后续可扩 per-workspace 自愈 / 切换 workspace 时触发。
+
+**验证**：`cargo check` 通过（仅 4 既有死代码警告）；`cargo test -p gold-band-desktop multica::` **72 测全过**（新增 7：`classify_resume_from` 纯逻辑——无 checkpoint / session 缺或空白 / run 不可达 / Paused+ProcessInterrupted 命中 Resume 并校验 ids+session / Running→Fresh / Paused+ErrorBlocked→Fresh / 缺 locator→Fresh）。无需 webank server 改动。
+
+### 12.6 改动四：issue 正文预填（claim 响应带 issue_description）
+
+**背景**：码灵 claim 到远程分配的 issue 后，composer 输入框只预填 issue 标题（thread_name），而非 issue 正文（`issue.Description`）——演示里只见一行标题、不见需求内容，不合理。
+
+**根因（两层，server + client 各一）**：
+- **Layer 1（webank server）**：`buildClaimedTaskResponse`(daemon.go) issue 分支只回填 `resp.ThreadName = issue.Title`，**丢弃 `issue.Description`**；`AgentTaskResponse`(agent.go) 无 issue 正文字段（与 issue 级 durable 正文缺位，对比已有 project 级 `ProjectDescription`）。
+- **Layer 2（码灵 client）**：`requirement_text()` 来源优先级里 issue 型无正文来源 → 回退 title（M5-n/改动三 前 issue 型预填就是标题）。
+
+**修复**：
+- **Layer 1（multica-webank）**：`AgentTaskResponse` 加 `IssueDescription string`（与 `ProjectDescription` 对称的 issue 级 durable 正文，`json:"issue_description,omitempty"`）；`buildClaimedTaskResponse` issue 分支回填 `resp.IssueDescription = issue.Description.String`（pgtype.Text → "" when NULL）。
+- **Layer 2（码灵 client）**：`RemoteTask` 加 `issue_description: Option<String>`（`#[serde(default)]`）；`requirement_text()` 优先级在 `handoff_note` 后、`title` 前插入 `issue_description`（issue 型取正文，无正文才回退 title）。
+
+**验证**：webank 新增 `TestClaimTaskByRuntime_IssueDescription`（建 runtime+agent+issue → UPDATE description 为多行正文 → seed queued issue task → claim → 解码 `task.issue_description == 正文` 且 `thread_name` 不变）过；码灵 `remote_task_requirement_text_picks_source_by_priority` 扩 issue_body / handoff_over_body 两用例过。**需 rebuild + 重启 webank server**（Layer 1 是 server 改动）。
+
+### 12.7 改动五：开始执行时 issue 流转到 in_progress（与 done 对称）
+
+**背景**：码灵执行某 issue 时，multica 看板上该 issue 卡片仍停在「待办」列（只挂 task 队列的「正在进行」badge），未流转到「进行中」列。
+
+**根因（非补丁：补完对称缺失的流转，server 侧无 bug）**：multica server 的 `issue.status` 是 **agent/user-driven**（非 task 生命周期驱动）——`start_task`/`complete_task` 显式不动 issue.status（`task.go` 注释明示 "Issue status is NOT changed here — the agent manages it via the CLI"）。码灵此前只在**完成**时流转 issue（bridge `handle_run_completed` Success → `update_issue_status(.., "done")`，见 §12.4 改动二），**开始执行**时未流转 → 进行中态缺失。看板列由 `issue.status` 派生，「正在进行」badge 由 `agent_task_queue` 状态派生（两者独立，故出现「badge 在进行中、卡片仍在待办列」的错位）。issue 状态 enum（`backlog/todo/in_progress/in_review/done/blocked/cancelled`）与 `PUT /api/issues/{id}` 早已接受 `in_progress`，码灵 client 也已有 `update_issue_status`（改动二）——缺的只是「开始时调一次」。
+
+**修复（码灵 commands.rs，纯 client 侧，无 server 改动）**：`start_multica_conversation_run` 的 **Resume / Fresh 两分支**、`start_task` 成功后、返回 VM 前，调 `mark_issue_in_progress(&client, &workspace_id, lease.issue_id.as_deref())`——复用改动二的 `client.update_issue_status(.., MULTICA_ISSUE_IN_PROGRESS_STATUS)`，与完成时 done **对称**。失败仅 `warn!`（任务已 start，issue 流转不阻断执行；issue 保持原状由 server 扫描器/用户兜底）。
+
+**纯/IO 分离**（镜像 §12.5 classify_resume 模式）：`in_progress_target(issue_id: Option<&str>) -> Option<&str>`（过滤 None/空白）纯函数 + `mark_issue_in_progress` I/O 包装。
+
+**验证**：`cargo test -p gold-band-desktop multica::` **75 测全过**（新增 `in_progress_status_constant_is_in_progress` + `in_progress_target_skips_absent_or_blank_issue`）。**无需 webank server 改动**。
+
+### 12.8 改动六：终态任务留在所属工作空间列表（取代全局「最近完成」桶）
+
+**背景**：不同 workspace 的已完成任务全挤在左侧远程列表单一全局「最近完成」列，可读性差；用户希望完成后仍留在各自 workspace 列表里，只标 completed/failed 状态。
+
+**根因（设计选择迭代，非缺陷）**：M5-o 把终态历史放扁平全局「最近完成」桶（`recentlyCompleted`），跨 workspace 混排。改动六改为按 workspace 归组（与 active 任务同列）。
+
+**修复（破坏式更新，删旧路径无兼容层，CLAUDE.md 开发阶段破坏式更新）**：
+- **VM（vm.rs）**：`RemoteConversationSidebarVm` **删** `recently_completed` 字段；**删** `MulticaCompletedTaskVm` 整个结构；`RemoteTaskVm` 加 `local_task_id/run_id/project_id: Option<String>`（终态行才填，active 行恒 None）+ `from_completed(&MulticaCompletedTask, project_id)` 构造器（`completed_at` → `last_activity_at`，title 空白兜底 `remote_task_id`，`from_remote`/`from_failed_issue` 初始化 3 字段为 None）。
+- **装配（commands.rs `get_multica_tasks`）**：删 `recently_completed` 装配；`multica_completed_tasks` 按 `workspace_id` 经 workspaces 列表解析 `project_id`（**未绑定 workspace 的终态行跳过**——无 project_id 无法直达），`from_completed` 成 `RemoteTaskVm`，按 workspace 分组进 `completed_by_workspace: BTreeMap<String, Vec<RemoteTaskVm>>`，与该 workspace active 任务经纯函数 **`merge_workspace_tasks(active, terminal)`** 合并（active 优先、按 `remote_task_id` 去重——覆盖 re-dispatch/resume 同 task 既在 queued 又在 completed 历史的场景）。
+- **前端**：`MulticaRemoteTaskList.tsx` 删「最近完成」分区 + `CompletedTaskRow` + `recentlyCollapsed` state + `handleSelectCompleted`；`RemoteTaskRow` 加 `onSelectRun` prop，**终态行**（`localTaskId && runId && projectId`）内容区渲染为可点 `<button>` → `onSelectRun(projectId, localTaskId, runId)` 直达本地会话，active/pinned 行不绑点击。`types.ts` 删 `MulticaCompletedTaskVm` + `recentlyCompleted`、加 3 字段；i18n 删 `conversation.sidebar.multica.recentlyCompleted`（双语）；browser mock 同步。
+- **顺带修类型不一致**：`WorkspaceShell.onNewConversationInWorkspace` 误标可选（`?`）与下游 ConversationSidebar/MulticaRemoteTaskList 必填声明类型不一致（App 恒提供）→ 改必填，消除 tsc 报错。
+
+**纯/IO 分离**：`merge_workspace_tasks` 纯函数（active 优先 + remote_task_id 去重 + 终态追加）单测固化。
+
+**验证**：`cargo test -p gold-band-desktop multica::` **75 测全过**（新增 `merge_workspace_tasks_appends_terminal_after_active_with_dedup` + `from_completed_carries_local_run_link_and_terminal_status`）；web vitest `multica-remote-task-list` 用例更新全过（终态行进 workspace 组 + 点击 onSelectRun / 时间本地时区）；tsc 源码零错误。**无需 webank server 改动**。
+
+**既有无关失败（非本批次引入，留待单独处理）**：web `gold-themed-scrollbar.test.ts > keeps every theme scrollbar neutral and low contrast until hover` 在 Windows 失败——`src/styles.css` 提交为 LF，本机 `core.autocrlf=true` 检出转 CRLF，测试硬编码 `\n` 的 dark 双行选择器（`:root,\n:root[data-theme='dark']`）匹配失败（仅 dark 受影响，black/light/light-gray 单行不受影响）。属跨平台行结尾测试健壮性问题，与 multica 改动无关。
+
+### 12.9 改动七：执行中的远程任务在侧栏可见（running 行 + 进行中标识）
+
+**背景**：码灵点远程任务开始执行后，该任务从左侧远程列表消失，直到结束（completed/failed）才回来。用户希望执行中的任务也展示，只是标识不同（进行中）。
+
+**根因（好设计、实现不完整，非补丁）**：`get_multica_tasks` 给每个 workspace 拼列表时只有两个数据源——`pending`（server `list_pending_tasks`，可领取 queued）+ `terminal`（本地 `multica_completed_tasks`，已完成/失败）。而"我正在执行"的任务处在 `active_runs`（claim+start 后登记、终态移除）：它既不在 server pending 池（已被本 runtime 领走）、也还没进终态历史，于是整段执行期落进空档消失。前端其实早已预留 running：`STATUS_VARIANT` 有 `running → secondary`、`canCancel = status==='running'`、`RemoteTaskRow` 行可点直达逻辑齐备——只是后端从不产出 running 行。属"实现不完整"，补全即可，不重构。
+
+**同源不完整点（一并修，否则 running 行刷不出/标识不友好）**：
+- `start_multica_conversation_run` 的**成功路径不发 `multica-task-updated`**（此前只有失败 teardown / 终态 / loop 取消检测发）→ 点发送后侧栏不即时刷新。
+- 状态徽标直接渲染原始 `{task.status}`（字面 `"running"`），无 i18n → 标识不友好。
+
+**修复（纯客户端，无需 webank server 改动）**：
+- **VM（vm.rs）**：新增 `RemoteTaskVm::from_active_run(remote_task_id, &ActiveRemoteRun, project_id)`——status 固定 `"running"`、retryable=false、`last_activity_at = started_at`（在飞任务「最近活动」即启动时刻）、填 `local_task_id/run_id/project_id`（行整块可点直达进行中会话，与终态行同路径），title 空 → remote_task_id 兜底。`from_remote`/`from_failed_issue` 不变（queued/pinned 行仍无本地链接）。
+- **装配（commands.rs `get_multica_tasks`）**：每个 workspace **单次取锁**取在飞 running 行（`active_runs` 按 `workspace_id` 过滤 + `from_active_run`）+ `runtime_id`，再按 runtime_id 拉 server pending，最后并入本地终态；纯函数 `merge_workspace_tasks` **升三参 `(running, pending, terminal)`**，顺序 running→pending→terminal、按 `remote_task_id` 去重、优先级 running > pending > terminal（重派/竞态下 running 是当前真相）。局部变量 `active`（实为 pending）正名 `pending`。
+- **start 即时刷新（commands.rs `start_multica_conversation_run`）**：Resume/Fresh 两分支、`start_task` 成功 + `mark_issue_in_progress` 后、返回前补 `emit_multica_task_updated(&app_handle)`，让侧栏即时刷出 running 行（此前成功路径不发）。
+- **前端徽标 i18n**：`MulticaRemoteTaskList.tsx` 徽标 `{task.status}` → `t('conversation.sidebar.multica.status.' + task.status, task.status)`（缺键回退原值）；`i18n.ts` 新增 `conversation.sidebar.multica.status.{queued,running,completed,failed}`：zh 待领取/进行中/已完成/失败、en Queued/Running/Done/Failed（running 取「进行中」对齐 multica 看板列名）。running 行天然带 Cancel(Ban) 按钮 + 整行可点直达，无需额外改。
+
+**纯/IO 分离**：`from_active_run`（纯，无 I/O）+ `merge_workspace_tasks`（纯，三参顺序去重）单测固化。
+
+**不做（避免过度设计）**：不引入 compose 准备期(prepare_lease)行——窗口短、用户正盯 composer，不在侧栏焦点，超出本次诉求。
+
+**验证**：`cargo test -p gold-band-desktop multica::` **76 测全过**（新增 `from_active_run_marks_running_and_carries_local_link`；`merge_workspace_tasks_*` 用例改三参）；web vitest `multica-remote-task-list` **9 用例全过**（新增 running 行：渲染「进行中」key + 点击 onSelectRun + Cancel tooltip）；tsc 零错误；全量 vitest 831 过 / 1 既有无关 scrollbar 失败（Windows autocrlf，§12.8 已述）。**无需 webank server 改动**。
 
 ---
 

@@ -84,7 +84,6 @@ import { MulticaRemoteTaskList } from '@/components/conversation/MulticaRemoteTa
 
 const NO_TASKS_KEY = 'conversation.sidebar.multica.noTasksInWorkspace';
 const NO_WS_KEY = 'conversation.sidebar.multica.noWorkspacesBound';
-const RECENTLY_KEY = 'conversation.sidebar.multica.recentlyCompleted';
 
 function baseVm(overrides: Record<string, unknown> = {}) {
   return {
@@ -92,7 +91,6 @@ function baseVm(overrides: Record<string, unknown> = {}) {
     workspaces: [],
     tasksByWorkspace: {},
     pinnedTasks: [],
-    recentlyCompleted: [],
     lastActiveWorkspaceId: null,
     ...overrides,
   };
@@ -292,32 +290,36 @@ describe('multica remote task list', () => {
     expect(prefillSpy).toHaveBeenCalledWith('Issue title', expect.objectContaining({ remoteTaskId: 'rt-1' }));
   });
 
-  it('renders a recently completed task and navigates via onSelectRun on click', async () => {
+  it('renders a completed task in its workspace group and navigates via onSelectRun on click', async () => {
+    // 改动六：终态任务不再进扁平「最近完成」桶，而是并入所属工作空间组（带本地 run 链接）。
     const onSelectRun = vi.fn();
     getMulticaTasks.mockResolvedValue(baseVm({
       workspaces: [
         { id: 'ws-004', name: '004', slug: 'ws-004', localProjectId: 'proj-004', provider: 'claude-acp' },
       ],
-      tasksByWorkspace: { 'ws-004': [] },
-      recentlyCompleted: [
-        {
-          remoteTaskId: 'rt-done',
-          localTaskId: 'local-done',
-          runId: 'run-done',
-          workspaceId: 'ws-004',
-          projectId: 'proj-004',
-          title: 'Completed task',
-          status: 'completed',
-          completedAt: '2026-08-06T10:00:00Z',
-        },
-      ],
+      tasksByWorkspace: {
+        'ws-004': [
+          {
+            id: 'rt-done',
+            issueId: null,
+            workspaceId: 'ws-004',
+            title: 'Completed task',
+            status: 'completed',
+            retryable: false,
+            lastActivityAt: '2026-08-06T10:00:00Z',
+            localTaskId: 'local-done',
+            runId: 'run-done',
+            projectId: 'proj-004',
+            requirement: null,
+          },
+        ],
+      },
       lastActiveWorkspaceId: 'ws-004',
     }));
 
     const { container } = await renderList(onSelectRun);
 
-    // 「最近完成」分区标题 + 任务标题均渲染。
-    expect(container.textContent).toContain(RECENTLY_KEY);
+    // 终态任务并入工作空间组渲染（无独立「最近完成」分区）。
     expect(container.textContent).toContain('Completed task');
 
     const row = findButtonByText(container, 'Completed task');
@@ -332,6 +334,7 @@ describe('multica remote task list', () => {
   it('renders task timestamps in the local timezone, not raw UTC', async () => {
     // 时间显示修复（接入方案 M5-p）：UTC 存储、本地时区展示。复用真实
     // formatLocalDateTime 计算期望值，避免绑定测试机时区（任何 tz 下都成立）。
+    // 改动六：终态行 lastActivityAt 即 completed_at（from_completed 映射），与 pending 行同一渲染路径。
     const lastActivity = '2026-08-06T02:30:00Z';
     const completedAt = '2026-08-06T10:00:00Z';
 
@@ -342,30 +345,76 @@ describe('multica remote task list', () => {
       tasksByWorkspace: {
         'ws-004': [
           { id: 'rt-1', workspaceId: 'ws-004', title: 'Queued task', status: 'queued', retryable: true, lastActivityAt: lastActivity },
+          {
+            id: 'rt-done',
+            issueId: null,
+            workspaceId: 'ws-004',
+            title: 'Completed task',
+            status: 'completed',
+            retryable: false,
+            lastActivityAt: completedAt,
+            localTaskId: 'local-done',
+            runId: 'run-done',
+            projectId: 'proj-004',
+            requirement: null,
+          },
         ],
       },
-      recentlyCompleted: [
-        {
-          remoteTaskId: 'rt-done',
-          localTaskId: 'local-done',
-          runId: 'run-done',
-          workspaceId: 'ws-004',
-          projectId: 'proj-004',
-          title: 'Completed task',
-          status: 'completed',
-          completedAt,
-        },
-      ],
       lastActiveWorkspaceId: 'ws-004',
     }));
 
     const { container } = await renderList();
 
-    // pending 行 lastActivityAt 与「最近完成」行 completedAt 均按本地时区渲染。
+    // pending 行 lastActivityAt 与终态行（completed_at → lastActivityAt）均按本地时区渲染。
     expect(container.textContent).toContain(formatLocalDateTime(lastActivity));
     expect(container.textContent).toContain(formatLocalDateTime(completedAt));
     // 不应残留原始 UTC 字面量（旧实现 slice+replace 直接展示 UTC 墙钟）。
     expect(container.textContent).not.toContain('2026-08-06T02:30:00Z');
     expect(container.textContent).not.toContain('2026-08-06T10:00:00Z');
+  });
+
+  it('renders a running task in its workspace group with a status badge, click-to-jump and a cancel action', async () => {
+    // 改动七：执行中任务（active_runs → running 行）不再从侧栏消失，留在所属工作空间组，
+    // 带「进行中」标识、整行点击直达进行中会话，并保留 Cancel 动作。
+    const onSelectRun = vi.fn();
+    getMulticaTasks.mockResolvedValue(baseVm({
+      workspaces: [
+        { id: 'ws-004', name: '004', slug: 'ws-004', localProjectId: 'proj-004', provider: 'claude-acp' },
+      ],
+      tasksByWorkspace: {
+        'ws-004': [
+          {
+            id: 'rt-run',
+            issueId: 'iss-run',
+            workspaceId: 'ws-004',
+            title: 'In flight task',
+            status: 'running',
+            retryable: false,
+            lastActivityAt: '2026-08-07T03:00:00Z',
+            localTaskId: 'task-run',
+            runId: 'run-run',
+            projectId: 'proj-004',
+            requirement: null,
+          },
+        ],
+      },
+      lastActiveWorkspaceId: 'ws-004',
+    }));
+
+    const { container } = await renderList(onSelectRun);
+
+    // 进行中任务留在工作空间组（不再消失）。
+    expect(container.textContent).toContain('In flight task');
+    // 徽标走 i18n key（mock t 返回 key 本身）→ 进行中标识就位（前端按 key 映射「进行中」）。
+    expect(container.textContent).toContain('conversation.sidebar.multica.status.running');
+
+    // 整行点击直达进行中的会话（projectId + localTaskId + runId）。
+    const row = findButtonByText(container, 'In flight task');
+    expect(row).toBeTruthy();
+    await act(async () => { row.click(); });
+    expect(onSelectRun).toHaveBeenCalledWith('proj-004', 'task-run', 'run-run');
+
+    // 进行中行保留 Cancel 动作（cancelMulticaTask 入口；tooltip 文案渲染即可见）。
+    expect(container.textContent).toContain('conversation.sidebar.multica.cancelTask');
   });
 });

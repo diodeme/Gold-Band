@@ -590,14 +590,25 @@ fn resolve_command_app_with_emitters(
 ) -> Result<App, CommandErrorVm> {
     let app = resolve_command_app(state, project_id)?;
     let pid = project_id.map(|s| s.to_string());
+    Ok(configure_conversation_runtime_callbacks(
+        app,
+        app_handle.clone(),
+        pid,
+    ))
+}
+
+pub(crate) fn configure_conversation_runtime_callbacks(
+    app: App,
+    app_handle: AppHandle,
+    project_id: Option<String>,
+) -> App {
     let bg_app = app.clone_for_background();
-    let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), pid.clone());
-    let prompt_turn_finished = prompt_turn_finished_callback(app_handle.clone(), pid.clone());
-    let app = app
-        .with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, pid))
-        .with_prompt_turn_finished(prompt_turn_finished);
-    Ok(app)
+    let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), project_id.clone());
+    let prompt_turn_finished =
+        prompt_turn_finished_callback(app_handle.clone(), project_id.clone());
+    app.with_acp_live_update(live_update)
+        .with_acp_session_update(acp_session_update_emitter(app_handle, bg_app, project_id))
+        .with_prompt_turn_finished(prompt_turn_finished)
 }
 
 fn prompt_turn_finished_callback(

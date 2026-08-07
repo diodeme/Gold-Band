@@ -16,7 +16,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::commands::{
-    CommandErrorVm, CommandResult, acp_session_update_emitter, command_error,
+    CommandErrorVm, CommandResult, command_error, configure_conversation_runtime_callbacks,
     spawn_blocking_command,
 };
 use crate::conversation_workspace::{
@@ -285,21 +285,11 @@ pub async fn create_conversation_run(
             }),
         ));
     }
-    let live_update = crate::commands::acp_live_update_emitter_for_app(
-        &app,
+    let app = configure_conversation_runtime_callbacks(
+        app,
         app_handle.clone(),
-        Some(project_id_for_emit.clone()),
+        Some(project_id_for_emit),
     );
-    let app = app
-        .with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(
-            app_handle.clone(),
-            state
-                .app()
-                .map_err(command_error)?
-                .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone()),
-            Some(project_id_for_emit),
-        ));
     let run = tauri::async_runtime::spawn_blocking(move || {
         crate::view_models_conversation::create_conversation_run_vm(&app, &input)
             .map_err(command_error)
@@ -339,22 +329,11 @@ pub fn rerun_conversation_task(
         .app()
         .map_err(command_error)?
         .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
-    let app = workspace_app;
-    let live_update = crate::commands::acp_live_update_emitter_for_app(
-        &app,
+    let app = configure_conversation_runtime_callbacks(
+        workspace_app,
         app_handle.clone(),
         Some(resolved_project_id.clone()),
     );
-    let app = app
-        .with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(
-            app_handle.clone(),
-            state
-                .app()
-                .map_err(command_error)?
-                .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone()),
-            Some(resolved_project_id.clone()),
-        ));
     let run = crate::view_models_conversation::rerun_conversation_task_vm(
         &app,
         &resolved_project_id,

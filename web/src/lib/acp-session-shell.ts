@@ -30,6 +30,7 @@ export interface AcpSessionShellStateInput {
   hasBaseSession: boolean;
   baseSessionReady: boolean;
   hasLiveSessionShell: boolean;
+  hasEstablishedSessionShell?: boolean;
   initialSessionLoading: boolean;
   initializationInterrupted?: boolean;
   initializationFailed?: boolean;
@@ -67,6 +68,7 @@ export function shouldCreateLiveAcpSessionShell(input: AcpLiveSessionShellPolicy
 export function resolveAcpSessionShellState(input: AcpSessionShellStateInput): AcpSessionShellState {
   if (input.initializationFailed) return 'error';
   if (input.initializationInterrupted) return 'interrupted';
+  if (input.hasEstablishedSessionShell) return 'available';
   if (
     input.showInitializingShell &&
     input.runtimeActive &&

@@ -91,6 +91,40 @@ afterEach(() => {
 });
 
 describe('ACP composer render isolation', () => {
+  it('keeps the conversation shell mounted when an established session payload is temporarily absent', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <TooltipProvider>
+            <ACPChatDialog
+              session={null}
+              sessionEstablished
+              sessionReferenceId="persisted-session"
+              projectId="project-render"
+              taskId="task-render"
+              runId="run-render"
+              roundId="round-render"
+              nodeId="node-render"
+              attemptId="attempt-render"
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TooltipProvider>,
+        );
+      });
+
+      expect(container.querySelector('textarea')).not.toBeNull();
+      expect(container.textContent).not.toContain('ACP session failed');
+      expect(container.textContent).not.toContain('ACP 会话失败');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('keeps historical Markdown stable and measures textarea height once per input update', async () => {
     const scrollHeight = vi.spyOn(HTMLTextAreaElement.prototype, 'scrollHeight', 'get').mockReturnValue(72);
     const container = document.createElement('div');

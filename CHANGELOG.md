@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.11.2](https://github.com/diodeme/Gold-Band/compare/v0.11.1...v0.11.2) (2026-08-07)
+
+
+### Bug Fixes
+
+* **composer:** rebalance toolbar widths ([7e1fbdd](https://github.com/diodeme/Gold-Band/commit/7e1fbdd629c0957e02b0a163461353bcb46201ed))
+* **conversation:** refine workflow and workspace controls ([e60232e](https://github.com/diodeme/Gold-Band/commit/e60232e9c765a6a127c934ff72bdf1d224d4a08a))
+* **profiles:** localize built-in role metadata ([c50bedd](https://github.com/diodeme/Gold-Band/commit/c50beddf7c3b33015001128f4cdaa4b42df0e754))
+* **workspace:** expand run directory panel ([bd4d951](https://github.com/diodeme/Gold-Band/commit/bd4d95143ae7377f5c872dae2fdeb6324dccfae7))
+
 ## [0.11.1](https://github.com/diodeme/Gold-Band/compare/v0.11.0...v0.11.1) (2026-08-06)
 
 

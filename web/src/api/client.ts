@@ -106,9 +106,13 @@ export interface ConversationRunStateUpdatedEventVm {
 }
 
 export interface ConversationPromptSubmitVm {
-  kind: 'acp-session' | 'runtime-continue-started' | 'rejected' | string;
+  kind: 'acp-session' | 'runtime-continue-started' | 'queued' | 'rejected' | string;
   session?: AcpSessionVm | null;
   run?: RunSummaryVm | null;
+  lifecycle?: ConversationAttemptLifecycleVm | null;
+}
+
+export interface ConversationPromptQueueMutationVm {
   lifecycle?: ConversationAttemptLifecycleVm | null;
 }
 
@@ -178,6 +182,9 @@ export interface RuntimeApi {
   // 干预通知：OS Toast「查看详情」点击后后端转发导航事件，前端订阅做 deep-link。
   subscribeInterventionNavigate?(listener: (event: InterventionNavigateEventVm) => void): Promise<() => void>;
   submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]): Promise<ConversationPromptSubmitVm>;
+  updateConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, content: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
+  deleteConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
+  useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptSubmitVm>;
   sendAcpPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]): Promise<AcpSessionVm | null>;
   setAcpSessionModel(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   setAcpSessionPermissionMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;

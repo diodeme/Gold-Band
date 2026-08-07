@@ -13,6 +13,7 @@ use crate::view_models::{
     workflow_graph_vm,
 };
 use gold_band::acp::client::{PromptActivity, prompt_activity, prompt_activity_under};
+use gold_band::acp::prompt_queue::{MAX_QUEUED_PROMPTS, QueuedPromptState, load_prompt_queue};
 use gold_band::app::{App, CreateTaskInput, DEFAULT_WORKFLOW_TEMPLATE_ID, is_run_continuable};
 use gold_band::config::StateConfig;
 use gold_band::config::{ConversationRunMode, ManagedAgentId, managed_agent_preset};
@@ -203,6 +204,24 @@ pub struct ConversationAttemptLifecycleVm {
     pub runtime_display: RuntimeDisplayVm,
     pub continue_kind: Option<String>,
     pub composer: ConversationComposerVm,
+    pub prompt_queue: Option<ConversationPromptQueueVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPromptQueueVm {
+    pub revision: u64,
+    pub items: Vec<ConversationQueuedPromptVm>,
+    pub max_items: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationQueuedPromptVm {
+    pub id: String,
+    pub content: String,
+    pub attachment_count: usize,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -409,6 +428,57 @@ fn read_conversation_metadata(app: &App, task_id: &str) -> Option<ConversationMe
             .join("conversation.json"),
     )
     .ok()
+}
+
+pub(crate) fn conversation_run_mode(app: &App, task_id: &str) -> Option<ConversationRunMode> {
+    read_conversation_metadata(app, task_id).and_then(|metadata| match metadata.run_mode.as_str() {
+        "direct" => Some(ConversationRunMode::Direct),
+        "workflow" => Some(ConversationRunMode::Workflow),
+        "auto" => Some(ConversationRunMode::Auto),
+        _ => None,
+    })
+}
+
+fn direct_prompt_queue_vm(
+    app: &App,
+    task_id: &str,
+    attempt_dir: &Utf8Path,
+) -> Option<ConversationPromptQueueVm> {
+    if conversation_run_mode(app, task_id) != Some(ConversationRunMode::Direct) {
+        return None;
+    }
+    let queue = load_prompt_queue(attempt_dir).unwrap_or_default();
+    Some(ConversationPromptQueueVm {
+        revision: queue.revision,
+        items: queue
+            .items
+            .into_iter()
+            .filter(|item| item.state == QueuedPromptState::Queued)
+            .map(|item| ConversationQueuedPromptVm {
+                id: item.id,
+                content: item.content,
+                attachment_count: item.attachment_paths.len(),
+                created_at: item.created_at,
+            })
+            .collect(),
+        max_items: MAX_QUEUED_PROMPTS,
+    })
+}
+
+fn attach_direct_prompt_queue(
+    app: &App,
+    task_id: &str,
+    attempt_dir: &Utf8Path,
+    lifecycle: &mut ConversationAttemptLifecycleVm,
+) {
+    lifecycle.prompt_queue = direct_prompt_queue_vm(app, task_id, attempt_dir);
+    if lifecycle.prompt_queue.is_some()
+        && lifecycle.composer.mode == "runtime-active"
+        && !lifecycle.acp.stopping
+    {
+        lifecycle.composer.submit_target = "queue-prompt".to_string();
+        lifecycle.composer.lock_input = false;
+    }
 }
 
 fn direct_agent_identity(app: &App, agent_type: &str) -> Option<ConversationAgentIdentityVm> {
@@ -1444,6 +1514,7 @@ fn derive_conversation_attempt_lifecycle(
         runtime_display,
         continue_kind,
         composer,
+        prompt_queue: None,
     }
 }
 
@@ -1536,7 +1607,7 @@ pub fn conversation_attempt_lifecycle_vm(
             node_id,
             attempt_id,
         );
-        return Ok(derive_conversation_attempt_lifecycle(
+        let mut lifecycle = derive_conversation_attempt_lifecycle(
             session_status.as_deref(),
             prompt_activity(&attempt_dir),
             &runtime_status,
@@ -1545,7 +1616,9 @@ pub fn conversation_attempt_lifecycle_vm(
             pause_reason.as_deref(),
             leaf_resumable,
             false,
-        ));
+        );
+        attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
+        return Ok(lifecycle);
     }
 
     let session_status = acp_session_status(app, task_id, run_id, round_id, node_id, attempt_id)?;
@@ -1570,7 +1643,7 @@ pub fn conversation_attempt_lifecycle_vm(
     let attempt_dir = app
         .paths
         .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
-    Ok(derive_conversation_attempt_lifecycle(
+    let mut lifecycle = derive_conversation_attempt_lifecycle(
         session_status.as_deref(),
         prompt_activity(&attempt_dir),
         &runtime_status,
@@ -1579,7 +1652,9 @@ pub fn conversation_attempt_lifecycle_vm(
         pause_reason.as_deref(),
         runtime_resumable,
         node.manual_check_pending,
-    ))
+    );
+    attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
+    Ok(lifecycle)
 }
 
 #[cfg(test)]
@@ -1855,7 +1930,7 @@ pub fn conversation_run_vm(
                                     &dyn_node.id,
                                     dyn_attempt_id,
                                 );
-                                let lifecycle = derive_conversation_attempt_lifecycle(
+                                let mut lifecycle = derive_conversation_attempt_lifecycle(
                                     dyn_session_status.as_deref(),
                                     prompt_activity(&dyn_attempt_dir),
                                     &dyn_status,
@@ -1864,6 +1939,12 @@ pub fn conversation_run_vm(
                                     dyn_pause_reason.as_deref(),
                                     dyn_leaf_resumable,
                                     false,
+                                );
+                                attach_direct_prompt_queue(
+                                    app,
+                                    task_id,
+                                    &dyn_attempt_dir,
+                                    &mut lifecycle,
                                 );
                                 let dyn_status = lifecycle.display_status.clone();
                                 let dyn_runtime_display = lifecycle.runtime_display.clone();
@@ -1987,7 +2068,7 @@ pub fn conversation_run_vm(
                         &node.node_id,
                         &attempt.attempt_id,
                     );
-                    let lifecycle = derive_conversation_attempt_lifecycle(
+                    let mut lifecycle = derive_conversation_attempt_lifecycle(
                         session_status.as_deref(),
                         prompt_activity(&attempt_dir),
                         &runtime_status,
@@ -1997,6 +2078,7 @@ pub fn conversation_run_vm(
                         runtime_resumable,
                         manual_check_pending,
                     );
+                    attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
                     let status = lifecycle.display_status.clone();
                     let runtime_display = lifecycle.runtime_display.clone();
                     let is_active = lifecycle_is_active(&lifecycle, manual_check_pending);
@@ -2998,6 +3080,7 @@ mod tests {
         switch_conversation_session_vm,
     };
     use camino::{Utf8Path, Utf8PathBuf};
+    use gold_band::acp::prompt_queue::enqueue_prompt;
     use gold_band::app::{App, CreateTaskInput};
     use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, PromptEnvelopeMode};
     use serde_json::json;
@@ -4198,6 +4281,42 @@ mod tests {
             .unwrap();
         assert_eq!(leaf.artifact_count, 1);
         assert_eq!(leaf.attachment_count, 1);
+    }
+
+    #[test]
+    fn direct_conversation_run_vm_keeps_prompt_queue_on_stopped_leaf() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        write_sidebar_conversation_metadata_fixture(
+            &app,
+            "task-046",
+            "direct",
+            "2026-08-07T00:00:00Z",
+        );
+        let attempt_dir =
+            app.paths
+                .attempt_dir("task-046", "run-060", "round-001", "测试", "attempt-002");
+        enqueue_prompt(&attempt_dir, "persist after stop".to_string(), Vec::new()).unwrap();
+
+        let vm = conversation_run_vm(
+            &app,
+            "project-001",
+            "task-046",
+            "run-060",
+            Some("round-001/测试/attempt-002"),
+        )
+        .unwrap();
+        let leaf = find_leaf_by_key(
+            &vm.session_tree.rounds,
+            vm.session_tree.selected_session_key.as_deref().unwrap(),
+        )
+        .unwrap();
+        let queue = leaf.lifecycle.prompt_queue.as_ref().unwrap();
+
+        assert_eq!(leaf.lifecycle.composer.mode, "normal");
+        assert_eq!(queue.items.len(), 1);
+        assert_eq!(queue.items[0].content, "persist after stop");
     }
 
     #[test]

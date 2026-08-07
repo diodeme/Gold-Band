@@ -167,6 +167,73 @@ function browserCompletedConversationRun(): ConversationRunVm {
   return run;
 }
 
+function browserQueuedConversationRun(): ConversationRunVm {
+  const run = browserCompletedConversationRun();
+  run.runId = 'run-053';
+  run.title = 'Direct 待发送队列预览';
+  run.runStatus = 'running';
+  run.runOutcome = null;
+  if (run.selectedSession) {
+    run.selectedSession = {
+      ...run.selectedSession,
+      sessionId: 'browser-session-053',
+      status: 'running',
+      stopReason: null,
+    };
+  }
+  const attempt = run.sessionTree.rounds[0]?.nodes[0]?.attempts[0];
+  if (attempt?.lifecycle) {
+    attempt.status = 'running';
+    attempt.outcome = null;
+    attempt.lifecycle = {
+      ...attempt.lifecycle,
+      runtime: {
+        ...attempt.lifecycle.runtime,
+        status: 'running',
+        outcome: null,
+        active: true,
+        current: true,
+        continuable: false,
+        phase: 'provider-running',
+      },
+      acp: {
+        ...attempt.lifecycle.acp,
+        status: 'running',
+        phase: 'running',
+        active: true,
+        stopping: false,
+        terminal: false,
+      },
+      displayStatus: 'running',
+      composer: {
+        mode: 'runtime-active',
+        submitTarget: 'queue-prompt',
+        processingKind: 'responding',
+        statusKey: null,
+        canStop: true,
+        lockInput: false,
+      },
+      promptQueue: {
+        revision: 5,
+        maxItems: 10,
+        items: Array.from({ length: 5 }, (_, index) => ({
+          id: `browser-queued-${index + 1}`,
+          content: [
+            '完成当前修改后，补充对应的回归测试。',
+            '检查深色主题下的输入区层级。',
+            '把关键设计决策同步到产品文档。',
+            '验证停止后队列仍然可编辑和删除。',
+            '最后整理本轮变更摘要。',
+          ][index],
+          attachmentCount: index === 0 ? 1 : 0,
+          createdAt: `2026-08-07T08:00:0${index}Z`,
+        })),
+      },
+    };
+  }
+  return run;
+}
+
 const browserTurnFileChangeSet = {
   id: 'browser-change-set-052',
   turnId: 'browser-turn-052',
@@ -612,6 +679,15 @@ export const browserApi: RuntimeApi = {
   submitConversationPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _prompt, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
     return Promise.resolve({ kind: 'acp-session', session: fallback ?? null, run: null });
   },
+  updateConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _itemId, _content, _outerNodeId, _outerAttemptId) {
+    return Promise.resolve({ lifecycle: null });
+  },
+  deleteConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _itemId, _outerNodeId, _outerAttemptId) {
+    return Promise.resolve({ lifecycle: null });
+  },
+  useConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _itemId, _outerNodeId, _outerAttemptId) {
+    return Promise.resolve({ kind: 'acp-session', session: null, run: null, lifecycle: null });
+  },
   sendAcpPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _prompt, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
     return Promise.resolve(fallback ?? null);
   },
@@ -802,6 +878,7 @@ export const browserApi: RuntimeApi = {
   getConversationRun(_projectId, _taskId, runId) {
     if (runId === 'run-051') return Promise.resolve(mockErrorBlockedConversationRun);
     if (runId === 'run-052') return Promise.resolve(browserCompletedConversationRun());
+    if (runId === 'run-053') return Promise.resolve(browserQueuedConversationRun());
     const created = browserConversationRuns.get(runId);
     if (created) return Promise.resolve(created);
     const run: ConversationRunVm = {
@@ -827,6 +904,7 @@ export const browserApi: RuntimeApi = {
   switchConversationSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
     if (_runId === 'run-051') return Promise.resolve({ selectedSession: mockErrorBlockedConversationSession });
     if (_runId === 'run-052') return Promise.resolve({ selectedSession: browserCompletedConversationRun().selectedSession });
+    if (_runId === 'run-053') return Promise.resolve({ selectedSession: browserQueuedConversationRun().selectedSession });
     return Promise.resolve({ selectedSession: null });
   },
   validateConversationCreate(_input) {

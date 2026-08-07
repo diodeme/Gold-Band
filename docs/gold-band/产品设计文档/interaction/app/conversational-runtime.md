@@ -110,7 +110,7 @@
 - run 启动时必须先同步创建首个 `round/node/attempt` 的最小运行锚点并写入 `node.json`，再后台启动 agent/provider；`selectedSessionKey` 应能在首次 `getConversationRun` 中从当前 attempt 推导出来，不能依赖首个 ACP frame 到达后才出现。
 - 没有显式 `selectedSessionKey` 时，默认 session 选择顺序为：当前 runtime attempt → active/running attempt → 最近 session；只有不存在运行中锚点时才回退到最新历史 session。前端可用 `activeSessions` 做短暂兜底，但该兜底只用于极短竞态，不作为主事实源。
 - 新会话从会话式主页发起后，run 创建命令只负责落盘 task/run 初始状态并后台启动执行；前端收到该 run 的第一个 ACP live event 后必须立即刷新 session tree，插入对应 attempt，选中该 session，并把右侧详情切到该 session。后续同一 attempt 的普通流式消息由 ACP 会话详情订阅直接合并，不依赖整页轮询；后端应具备向前端推送完整 session snapshot 的基础通道，但当前自动 workflow 只在 run completed 完成态落盘后额外推送 terminal session snapshot，当前已选中 session 的 terminal session snapshot 仍必须触发 run VM 刷新，避免最后节点没有下一跳事件时父级 lifecycle 停留在 active。
-- run 已进入 `running` 但首个 attempt 尚未出现在 session tree 前，右侧主区域显示 `Agent 调起中` 状态，不回退为“暂无活跃会话”。attempt 已出现在 session tree 但尚无可见 thought/text/tool timeline item 时，消息主区域显示 `处理中...`；收到首个 thought 后自然切换为 `思考中...`，避免创建 session 后到首 token 前出现空白。会话式运行页必须把当前 attempt 的外层 runtime status 传入 ACPChatDialog，不能只依赖 ACP snapshot/session status；当前选中 attempt 运行中时必须展示阶段状态、禁用输入并显示停止按钮，当前选中 attempt 已结束时必须恢复正常追问输入且不显示停止按钮。
+- run 已进入 `running` 但首个 attempt 尚未出现在 session tree 前，右侧主区域显示 `Agent 调起中` 状态，不回退为“暂无活跃会话”。attempt 已出现在 session tree 但尚无可见 thought/text/tool timeline item 时，消息主区域显示 `处理中...`；收到首个 thought 后自然切换为 `思考中...`，避免创建 session 后到首 token 前出现空白。会话式运行页必须把当前 attempt 的外层 runtime status 传入 ACPChatDialog，不能只依赖 ACP snapshot/session status；当前选中 attempt 运行中时必须展示阶段状态和停止按钮。Workflow/AUTO 运行中继续禁用输入；Direct 从首次 prompt 的本地“发送中”开始保持输入可用，后续提交进入 attempt 持久化队列。当前选中 attempt 已结束时恢复正常追问输入且不显示停止按钮。
 
 ### 会话元数据展示
 
@@ -242,11 +242,11 @@ ElicitationCard 的单选、多选必须共享同一套选中语义：使用 `ac
 
 runtime 已 terminal/completed 且不可继续时，底层 ACP snapshot 中残留的 `running / sending / responding` 只能作为 stale 事实处理，不能让 leaf 或 composer 继续保持 active。反过来，当前 ACP session 已自然 `completed` 但 runtime 仍处于 active 时，后端必须用 `runtime.phase=launching-next-node` 与 `composer.processingKind=launching-next-node` 表达“拉起下一节点中”，前端不得自行 suppress runtime active 或把 composer 清空。停止后继续当前 paused leaf 不属于拉起后继节点；如果旧 ACP snapshot 是 `cancelled / failed / killed / error` 等 terminal 状态但 runtime 已接受继续，后端 lifecycle 应输出普通 `provider-running / processing`，不得复用 `launching-next-node`。只有后端 lifecycle/ACP facet 明确处于 stopping，或本地 stop 命令尚未返回时，才可以继续优先锁定 composer，但同一 attempt 已收到 `completed / cancelled / failed / killed / error` 等 ACP terminal snapshot 后，必须立即结束 ACP active/stopping 与本地 stopping 锁定。会话式运行页收到当前选中 session 的完整 session snapshot 时，必须先在 App 层更新 `ConversationRunVm.selectedSession`，再刷新 run tree/lifecycle；若 run refresh 返回的 `selectedSession` payload 临时为空，前端必须保留同 key 的现有 session payload；同 key 的完整 session snapshot 则作为 payload 权威更新替换旧值；selected session identity 变化时不得沿用旧 payload；会话组件也不得仅因本地已有 timeline events 就把缺失 payload 重建为 `running`，只有 runtime lifecycle 明确 active 时才允许创建临时 running shell 承载早期流式事件。
 
-composer 只消费后端 lifecycle/composer + ACP session live status + 少量本地 optimistic 状态；placeholder、输入禁用、停止按钮、状态文案和发送目标都来自同一个 semantic composer state。若 ACP facet 已进入 terminal，历史未匹配且不属于当前提交的 optimistic sending 只能作为过期本地提交看待，不得继续触发“发送中”或输入锁定；但用户刚发起的新 same-session ACP prompt 必须作为当前本地 turn 展示发送中/处理中，直到后端接受 prompt、返回拒绝、或返回未包含该 prompt 的 terminal/空 session 后显式收敛。`runtime-continue-started` 表示后端已经接受本次继续命令，即使命令返回不携带新的 ACP session payload，前端也必须立即结束本地 sending/awaiting optimistic 锁，把本次用户气泡视为已接受；后续是否锁输入只由返回的 lifecycle 与后续 session/lifecycle update 决定。
+composer 只消费后端 lifecycle/composer + ACP session live status + run mode capability + 少量本地 optimistic 状态；placeholder、输入禁用、停止按钮、状态文案和发送目标都来自同一个 semantic composer state。若 ACP facet 已进入 terminal，历史未匹配且不属于当前提交的 optimistic sending 只能作为过期本地提交看待，不得继续触发“发送中”或输入锁定；但用户刚发起的新 same-session ACP prompt 必须作为当前本地 turn 展示发送中/处理中，直到后端接受 prompt、返回拒绝、或返回未包含该 prompt 的 terminal/空 session 后显式收敛。Direct 的本地 sending overlay 不锁输入，第二条提交立即进入持久化队列；Workflow/AUTO 继续执行 active 锁定。`runtime-continue-started` 表示后端已经接受本次继续命令，即使命令返回不携带新的 ACP session payload，前端也必须立即结束本地 sending/awaiting optimistic 锁，把本次用户气泡视为已接受；后续输入策略由共享 lifecycle 与 run mode capability 共同投影。
 
 ### 互斥状态
 1. **正常输入**：当前 session 已正常结束时，用户可继续输入消息（含附件），发送目标为 ACP same-session prompt
-2. **运行中锁定**：当前 lifecycle 表示 runtime active 时不允许输入消息
+2. **运行中输入策略**：Workflow / AUTO 在 lifecycle 表示 runtime active 时继续锁定输入；Direct 保持输入可用，提交目标由后端 lifecycle 明确给出 `queue-prompt`，内容进入当前 attempt 的持久化待发送队列，不直接并发进入 Provider
 3. **停止中锁定**：本地 stop 命令未返回、ACP session 为 `cancelling/cancel_requested`、或 lifecycle 的 ACP facet 为 `stopping` 时，composer 显示“正在停止当前会话…”并锁定输入；但同一 session 的 ACP terminal snapshot 已到达时，本地 stop/cancelling 与 stale `acp.stopping` 必须让位
 4. **运行错误提示/操作**：当前 session 派生为 `runtimeDisplay.blockingError=true` 且后端 composer 给出 `runtime-error` 时，不允许输入，显示错误原因；`error-blocked` 必须优先展示后端 `runtimeErrorMessage`（来自 run-progress 阻塞摘要或等价 runtime 错误摘要，遇到结构化 `RuntimeErrorInfo` 时优先使用 `code + params` 映射文案），没有具体原因时才使用泛化文案；测试/验收节点正常完成后的 `failure / invalid` 只表示 workflow outcome，不触发 runtime-error 锁定态。`error-blocked` 表示不可重试的 runtime 阻塞，不提供 `runtime-continue` 输入入口；历史 killed/session failed 仍使用终止或失败文案。provider/auth/quota/rate-limit/model/catalog/workspace/transport 等异常应表现为 `runtime-abnormal`，不能因为 ACP session failed 或 provider stopReason=error 而进入 failure edge 或 runtime-error 锁定态。
    - workflow 控制流限制导致的终局失败（例如 `workflow_control_limit_exceeded`、`max_rounds_exceeded`）属于 run-level runtime 业务异常，不属于 ACP session failure，也不应把 composer 强制派生为 `runtime-error` 锁定态。后端会话 VM 必须复用 canonical control failure 解析结果，把标题与原因归一化到 `runtimeErrorMessage`；前端 ACP 会话页在顶部错误横幅中展示该消息，同时保持已终止会话的普通输入/追问能力。
@@ -254,6 +254,20 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 5. **工作流无效修复按钮**：只有 submit target 为 runtime continue 且 workflow 无效时才不允许输入并显示修改按钮；当前 session 已正常结束后的 ACP same-session 追问不受 workflow invalid 阻塞
 6. **人工 check 判定门**：当前 session 因 `waiting-for-user-input + manual_check_pending` 暂停时不显示继续按钮，输入框保持可用；普通文本只走 ACP same-session prompt，不推进 runtime edge，只有成功 / 失败判定按钮触发 `submit_manual_check`。
 7. **停止后用户介入 / 运行异常继续**：当前 session 因用户停止派生为 `process-interrupted`，或因可恢复异常派生为 `runtime-abnormal`，且可继续时，不显示继续按钮，恢复输入框；用户发送的文本仍走同一条 runtime `continue` 链路，只是把默认“继续”替换成用户发送内容，因此用户感知上是在会话中发出一条消息。`runtime-abnormal` 需要保留异常视觉与提示文案，但不进入 `runtime-error` 锁定态。若异常处于 `recovery=auto` 的 bounded retry 中，composer 锁定并展示重试中；重试耗尽后降级为 `runtime-abnormal + manual` 并恢复输入。
+
+### Direct 待发送队列
+
+Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待发送意图：
+
+- 数据持久化到 attempt 目录的 `acp.prompt-queue.json`，采用 FIFO，最多 10 条；每条保存稳定 item id、稳定 prompt id、正文、附件路径、创建时间和 `queued / dispatching` 状态。关闭应用、停止会话或切换页面都不得删除队列。
+- 队列与 ACP/runtime lifecycle 归属同一 attempt。Workflow / AUTO 不投影队列，且不改变其运行中 composer 锁定策略；Direct 无队列时的普通发送、runtime continue、repair 也不进入用户优先等待窗口。
+- 队列列表紧贴 composer 上边缘，位于 usage/token 行下方。默认展示 FIFO 前 3 条，点击“查看更多”展示全部（最多 10 条）。每条使用 icon action 提供编辑、使用、删除，并包含 tooltip 与 aria-label；编辑保存后保持原顺序。
+- 运行中允许编辑和删除 queued 项；“使用”仅在会话停止/空闲时可用，用于指定某一条继续。被指定项以原稳定 prompt id 进入统一发送链路，不建立第二套消息展示。
+- 用户停止或应用关闭后不自动弹出/发送队列。点击停止时必须先在进程内同步设置发送门禁，并持久化 `autoDispatchSuspended=true`、递增 revision；这既取消已等待的候选，也阻止停止之后才到达的 success 终态重新注册候选。只有用户之后主动提交新消息或点击某条“使用”才解除门禁。失败、取消和停止会把尚未完成的 dispatching 项恢复到队列原位置，并且不继续出队。
+- 自动候选先进入常量化 600 ms 用户优先窗口。窗口内真实用户提交会递增 queue revision，使低优先级自动 claim 失效，用户消息先进入已有 attempt 级 ACP prompt lock；该用户 turn 成功后再继续队列。仲裁位于后端，前端不使用 `setTimeout` 猜顺序。
+- attempt 级 ACP prompt lock 是所有 prompt 的统一发送串行器；revision 只决定窗口内优先级，不能替代串行器。任何时刻最多一个 prompt 进入 Provider。
+- 自动/手动出队先把项目标记为 `dispatching`，只有稳定 prompt id 已进入 durable timeline 且 turn 成功后才删除。进程内活动 dispatch 使用内存登记避免 UI 读取误触发 crash recovery；重启后没有活动登记的孤儿 dispatch，若 timeline 已接受则删除，否则恢复为 queued。
+- 出队消息继续写标准 `goldBandPrompt`/用户 timeline 事件并使用普通用户消息气泡；仅内部 prompt id 表明来源于 runtime 队列，不增加特殊消息样式。
 
 ### 修复入口
 
@@ -418,7 +432,7 @@ composer 只消费后端 lifecycle/composer + ACP session live status + 少量�
 - 消息、thought、plan、tool call、permission、elicitation、附件、raw frame、token、cost、context 和耗时继续复用现有 ACP/prompt-kit 管道。
 - composer 内的发送中、思考中、工具执行中、回复中、停止中和计时仍由 canonical lifecycle 驱动，不新增 Direct 专用 chat 组件。
 - completed run 上的 follow-up 仍可能存在实时 ACP prompt。后端必须读取 per-attempt `Starting / Running / CancelRequested` 活动状态；只有没有实时活动时，terminal runtime 才能压制磁盘残留的 stale `running` session snapshot。
-- 前端的 `sending / awaitingResponse / cancelling` 只覆盖命令往返窗口。页面切换或组件重挂载后，输入锁定、停止按钮、计时和 token 展示必须完全由后端 lifecycle/session snapshot 恢复。
+- 前端的 `sending / awaitingResponse / cancelling` 只覆盖命令往返窗口。页面切换或组件重挂载后，停止按钮、计时和 token 展示必须完全由后端 lifecycle/session snapshot 恢复；输入策略由同一 lifecycle 加 run mode capability 恢复，Direct active 可输入入队，Workflow/AUTO active 锁定。
 - prompt 写入 terminal session snapshot 前必须先将实时活动标记为 finished，避免终态事件到达后 UI 仍被旧活动状态锁定。
 
 ## ACP 会话 attachment、历史同步与有界资源

@@ -1842,6 +1842,18 @@ fn emit_run_completed_lifecycle_event(
         task_title: task_title(app, task_id),
         completion_agent_label: super::notification::direct_conversation_agent_label(app, task_id),
     });
+    let _ = app.notify_prompt_turn_finished(
+        crate::app::AcpLiveEventContext {
+            task_id: task_id.to_string(),
+            run_id: run.id.clone(),
+            round_id: round.id.clone(),
+            node_id: node.node_id.clone(),
+            attempt_id: node.attempt_id.clone(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        },
+        outcome == RunOutcome::Success,
+    );
 }
 
 fn intervention_kind_for_pause(

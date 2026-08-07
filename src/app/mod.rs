@@ -666,6 +666,8 @@ pub struct App {
         >,
     >,
     acp_session_update: Option<Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>>,
+    prompt_turn_finished:
+        Option<Arc<dyn Fn(AcpLiveEventContext, bool) -> Result<()> + Send + Sync>>,
     pub lifecycle_bus: observability::RuntimeLifecycleBus,
 }
 
@@ -919,6 +921,7 @@ impl App {
             provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
+            prompt_turn_finished: self.prompt_turn_finished.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
         }
     }
@@ -963,6 +966,7 @@ impl App {
             provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
+            prompt_turn_finished: self.prompt_turn_finished.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
         }
     }
@@ -982,6 +986,14 @@ impl App {
         session_update: Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>,
     ) -> Self {
         self.acp_session_update = Some(session_update);
+        self
+    }
+
+    pub fn with_prompt_turn_finished(
+        mut self,
+        callback: Arc<dyn Fn(AcpLiveEventContext, bool) -> Result<()> + Send + Sync>,
+    ) -> Self {
+        self.prompt_turn_finished = Some(callback);
         self
     }
 
@@ -1027,6 +1039,17 @@ impl App {
     pub fn emit_acp_session_update(&self, context: AcpLiveEventContext) -> Result<()> {
         if let Some(session_update) = &self.acp_session_update {
             session_update(context)?;
+        }
+        Ok(())
+    }
+
+    pub fn notify_prompt_turn_finished(
+        &self,
+        context: AcpLiveEventContext,
+        successful: bool,
+    ) -> Result<()> {
+        if let Some(callback) = &self.prompt_turn_finished {
+            callback(context, successful)?;
         }
         Ok(())
     }
@@ -1811,6 +1834,7 @@ impl App {
             provider_diagnostics: None,
             acp_live_update: None,
             acp_session_update: None,
+            prompt_turn_finished: None,
             lifecycle_bus: observability::RuntimeLifecycleBus::new(),
         }
     }

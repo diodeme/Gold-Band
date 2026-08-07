@@ -1386,6 +1386,19 @@ export interface ConversationComposerVm {
   lockInput: boolean;
 }
 
+export interface ConversationQueuedPromptVm {
+  id: string;
+  content: string;
+  attachmentCount: number;
+  createdAt: string;
+}
+
+export interface ConversationPromptQueueVm {
+  revision: number;
+  items: ConversationQueuedPromptVm[];
+  maxItems: number;
+}
+
 export interface ConversationAttemptLifecycleVm {
   runtime: ConversationRuntimeFacetVm;
   acp: ConversationAcpFacetVm;
@@ -1393,6 +1406,7 @@ export interface ConversationAttemptLifecycleVm {
   runtimeDisplay: RuntimeDisplayVm;
   continueKind?: 'input' | null;
   composer: ConversationComposerVm;
+  promptQueue?: ConversationPromptQueueVm | null;
 }
 
 export interface ConversationSessionLeafVm {

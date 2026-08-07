@@ -115,6 +115,7 @@ import {
 import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-service";
 import { AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
 import { AcpConversationComposer } from "@/components/conversation/AcpConversationComposer";
+import { ConversationPromptQueue } from "@/components/conversation/ConversationPromptQueue";
 import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from "@/lib/slash-command";
 import { useAgentCommands } from "@/hooks/useAgentCommands";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
@@ -148,6 +149,7 @@ import {
 } from "@/lib/acp-event-reducer";
 import {
   deriveAcpRuntimeComposerState,
+  mergeConversationAttemptLifecycle,
   isRuntimeActiveStatus,
   isSessionActiveStatus,
   isSessionCompletedStatus,
@@ -168,9 +170,12 @@ import {
   getAcpToolDetail,
   getAcpRawFrames,
   getAcpSession,
+  deleteConversationQueuedPrompt,
   respondAcpPermission,
   respondElicitation,
   submitConversationPrompt,
+  updateConversationQueuedPrompt,
+  useConversationQueuedPrompt,
   setAcpSessionModel,
   setAcpSessionConfigOption,
   setAcpSessionPermissionMode,
@@ -224,6 +229,7 @@ export type AcpLifecycleSnapshot = {
 
 export type AcpRuntimeComposerContext = {
   lifecycle?: ConversationAttemptLifecycleVm | null;
+  promptQueueEnabled?: boolean;
   runtimeStatus?: string | null;
   workflowValid: boolean;
   workflowError?: string | null;
@@ -717,6 +723,7 @@ export function ACPChatDialog(
   );
   const [prompt, setPrompt] = useState("");
   const [sending, setSending] = useState(false);
+  const [queueSubmitPending, setQueueSubmitPending] = useState(false);
   const [promptCommandPending, setPromptCommandPending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [awaitingResponse, setAwaitingResponse] = useState(
@@ -801,6 +808,7 @@ export function ACPChatDialog(
   const [stopCommandPending, setStopCommandPending] = useState(false);
   const [runtimeStopAccepted, setRuntimeStopAccepted] = useState(false);
   const [localRuntimeLifecycle, setLocalRuntimeLifecycle] = useState<ConversationAttemptLifecycleVm | null>(null);
+  const [queueMutationPending, setQueueMutationPending] = useState(false);
   const latestSessionRef = useRef<AcpSessionVm | null>(restoredSession);
   const sessionRefreshSeqRef = useRef(0);
   const configGenerationRef = useRef(0);
@@ -852,14 +860,17 @@ export function ACPChatDialog(
     setManualCheckSubmitting(false);
     setManualCheckError(null);
     setLocalRuntimeLifecycle(null);
+    setQueueSubmitPending(false);
   }, [attemptId, manualCheckPending, nodeId, roundId, runId, taskId]);
 
   useEffect(() => {
     const incoming = runtimeComposerContext?.lifecycle;
     if (!incoming) return;
-    setLocalRuntimeLifecycle((current) =>
-      shouldKeepLocalRuntimeLifecycleOverride(current, incoming) ? current : null,
-    );
+    setLocalRuntimeLifecycle((current) => {
+      if (shouldKeepLocalRuntimeLifecycleOverride(current, incoming)) return current;
+      const merged = mergeConversationAttemptLifecycle(current, incoming);
+      return merged === incoming ? null : merged;
+    });
   }, [runtimeComposerContext?.lifecycle]);
 
   useEffect(() => {
@@ -1230,6 +1241,7 @@ export function ACPChatDialog(
   const hasTurnResponse = hasResponseAfterActiveTurn;
   const composerState = deriveAcpRuntimeComposerState({
     lifecycle: localLifecycle,
+    promptQueueEnabled: runtimeComposerContext?.promptQueueEnabled,
     workflowValid: runtimeComposerContext?.workflowValid ?? true,
     workflowInvalidMessage: runtimeComposerContext?.workflowError,
     pauseMessage: runtimeComposerContext?.pauseMessage,
@@ -1268,6 +1280,10 @@ export function ACPChatDialog(
   );
   const composerPlaceholder = composerPlaceholderText(composerState, t);
   const canSubmitPrompt = composerState.canSubmit;
+  const promptQueue = localRuntimeLifecycle?.promptQueue
+    ?? runtimeComposerContext?.lifecycle?.promptQueue
+    ?? null;
+  const promptQueueVisible = Boolean(promptQueue?.items.length);
   const canStopSession = composerState.canStop;
   const sendButtonBusy =
     (sending || waitingForOptimisticPrompt) && !planInterventionOption;
@@ -1825,7 +1841,9 @@ export function ACPChatDialog(
       stopListening = subscribeConversationEvents((event) => {
         if (!active || !conversationEventMatchesAttempt(event, branchLocator)) return;
         if (event.lifecycle) {
-          setLocalRuntimeLifecycle(event.lifecycle);
+          setLocalRuntimeLifecycle((current) =>
+            mergeConversationAttemptLifecycle(current, event.lifecycle!),
+          );
         }
         if (event.event) {
           if ((event.branchId ?? 'root') !== branchId) return;
@@ -2329,6 +2347,46 @@ export function ACPChatDialog(
   };
 
   const submitPrompt = async (trimmed: string) => {
+    const enqueueing = composerState.submitTarget === "queue-prompt";
+    if (enqueueing) {
+      if (queueSubmitPending || cancelling || stopInProgress) return;
+      setQueueSubmitPending(true);
+      setSendError(null);
+      try {
+        const attachmentPaths = await resolveAttachmentPaths();
+        setPrompt((current) => current.trim() === trimmed ? "" : current);
+        clearAttachments();
+        requestAnimationFrame(() => composerTextareaRef.current?.focus());
+        const result = await submitConversationPrompt(
+          projectId,
+          taskId,
+          runId,
+          roundId,
+          nodeId,
+          attemptId,
+          trimmed,
+          null,
+          effective ?? null,
+          outerNodeId,
+          outerAttemptId,
+          attachmentPaths.length > 0 ? attachmentPaths : undefined,
+        );
+        if (result.kind !== "queued") {
+          throw new Error(`unexpected prompt queue response: ${result.kind}`);
+        }
+        if (result.lifecycle) {
+          setLocalRuntimeLifecycle((current) =>
+            mergeConversationAttemptLifecycle(current, result.lifecycle!),
+          );
+          emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
+        }
+      } catch (error) {
+        setSendError(displayAppError(t, error));
+      } finally {
+        setQueueSubmitPending(false);
+      }
+      return;
+    }
     const submittingRuntimeContinue = composerState.submitTarget === "runtime-continue";
     if (sending || activeAwaitingResponse || (!submittingRuntimeContinue && sessionActive) || cancelling) return;
     setSending(true);
@@ -2346,6 +2404,9 @@ export function ACPChatDialog(
     const effectivePrompt = trimmed;
     setPrompt("");
     clearAttachments();
+    if (localLifecycle?.promptQueue) {
+      requestAnimationFrame(() => composerTextareaRef.current?.focus());
+    }
     setSendError(null);
     chatContainerContextRef.current?.scrollToBottom({
       animation: "instant",
@@ -2374,7 +2435,9 @@ export function ACPChatDialog(
       const updated = result.session ?? null;
       if (updated) applySessionUpdate(updated);
       if (result.lifecycle) {
-        setLocalRuntimeLifecycle(result.lifecycle);
+        setLocalRuntimeLifecycle((current) =>
+          mergeConversationAttemptLifecycle(current, result.lifecycle!),
+        );
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
       if (result.kind === "runtime-continue-started") {
@@ -2472,6 +2535,68 @@ export function ACPChatDialog(
     }
   };
 
+  const applyQueueLifecycle = (lifecycle?: ConversationAttemptLifecycleVm | null) => {
+    if (!lifecycle) return;
+    setLocalRuntimeLifecycle((current) =>
+      mergeConversationAttemptLifecycle(current, lifecycle),
+    );
+    emitLifecycleSnapshot(lifecycle, effective ?? null);
+  };
+
+  const editQueuedPrompt = async (itemId: string, content: string) => {
+    if (queueMutationPending) return;
+    setQueueMutationPending(true);
+    setSendError(null);
+    try {
+      const result = await updateConversationQueuedPrompt(
+        projectId, taskId, runId, roundId, nodeId, attemptId,
+        itemId, content, outerNodeId, outerAttemptId,
+      );
+      applyQueueLifecycle(result.lifecycle);
+    } catch (error) {
+      setSendError(displayAppError(t, error));
+      throw error;
+    } finally {
+      setQueueMutationPending(false);
+    }
+  };
+
+  const deleteQueuedPrompt = async (itemId: string) => {
+    if (queueMutationPending) return;
+    setQueueMutationPending(true);
+    setSendError(null);
+    try {
+      const result = await deleteConversationQueuedPrompt(
+        projectId, taskId, runId, roundId, nodeId, attemptId,
+        itemId, outerNodeId, outerAttemptId,
+      );
+      applyQueueLifecycle(result.lifecycle);
+    } catch (error) {
+      setSendError(displayAppError(t, error));
+    } finally {
+      setQueueMutationPending(false);
+    }
+  };
+
+  const useQueuedPrompt = async (itemId: string) => {
+    if (queueMutationPending || sessionActive) return;
+    setQueueMutationPending(true);
+    setSendError(null);
+    try {
+      const result = await useConversationQueuedPrompt(
+        projectId, taskId, runId, roundId, nodeId, attemptId,
+        itemId, outerNodeId, outerAttemptId,
+      );
+      if (result.session) applySessionUpdate(result.session);
+      applyQueueLifecycle(result.lifecycle);
+      if (result.kind === "runtime-continue-started") onSessionStopped?.();
+    } catch (error) {
+      setSendError(displayAppError(t, error));
+    } finally {
+      setQueueMutationPending(false);
+    }
+  };
+
   const send = async () => {
     const trimmed = prompt.trim();
     if (!trimmed) return;
@@ -2514,7 +2639,9 @@ export function ACPChatDialog(
       awaitTerminalStopRef.current = awaitTerminalStop;
       setRuntimeStopAccepted(stopPlan.accepted || Boolean(result.run));
       if (result.lifecycle) {
-        setLocalRuntimeLifecycle(result.lifecycle);
+        setLocalRuntimeLifecycle((current) =>
+          mergeConversationAttemptLifecycle(current, result.lifecycle!),
+        );
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
       if (stopPlan.sessionSnapshot) applySessionUpdate(stopPlan.sessionSnapshot);
@@ -3033,6 +3160,16 @@ export function ACPChatDialog(
                 onFailure={() => void submitManualDecision("failure")}
               />
             ) : null}
+            {!readOnly && promptQueueVisible && promptQueue ? (
+              <ConversationPromptQueue
+                queue={promptQueue}
+                sessionActive={sessionActive || stopInProgress}
+                mutationPending={queueMutationPending}
+                onEdit={editQueuedPrompt}
+                onUse={useQueuedPrompt}
+                onDelete={deleteQueuedPrompt}
+              />
+            ) : null}
             {readOnly ? null : composerState.externalKind ? (
               <AcpExternalComposerState
                 kind={composerState.externalKind}
@@ -3086,8 +3223,8 @@ export function ACPChatDialog(
                 canStop={canStopSession}
                 stopInProgress={stopInProgress}
                 onStop={stopSession}
-                canSubmit={canSubmitPrompt}
-                sendButtonBusy={sendButtonBusy}
+                canSubmit={canSubmitPrompt && !queueSubmitPending}
+                sendButtonBusy={composerState.submitTarget === "queue-prompt" ? queueSubmitPending : sendButtonBusy}
                 configBar={(
                   <AcpSessionConfigBar
                     scopeKey={sessionIdentity}
@@ -3097,6 +3234,8 @@ export function ACPChatDialog(
                     onPermissionModeChange={handleAcpSessionPermissionModeChange}
                   />
                 )}
+                attachedQueueVisible={promptQueueVisible}
+                queueSubmit={composerState.submitTarget === "queue-prompt"}
               />
             )}
           </div>

@@ -485,7 +485,7 @@ Direct composer 展示映射：
 3. session VM 从 timeline 恢复最新 thought/tool/text 状态。
 4. timing 从 session metadata / timing event 恢复累计秒数。
 5. usage 从 session metadata / usage events 恢复 token。
-6. composer 根据后端 lifecycle 锁定输入并显示停止按钮。
+6. composer 根据共享后端 lifecycle 显示状态与停止按钮；Direct 依据显式 queue capability 保持输入可用并将后续提交入队，Workflow/AUTO 按 active lifecycle 锁定输入。
 
 前端 `awaitingResponse` 只负责当前组件内从点击发送到后端 activity 可见之间的短暂覆盖。
 
@@ -727,7 +727,7 @@ Direct header 建议展示：
 Direct runtime composer 继续复用 `ACPChatDialog`：
 
 - idle：正常输入。
-- active：锁定 textarea，显示当前 processing kind、计时和停止。
+- active：Direct 保持 textarea 可输入，后续提交进入持久化队列；Workflow/AUTO 仍锁定 textarea。三种模式继续显示当前 processing kind、计时和停止。
 - permission/elicitation：保持同一个 composer，仅锁定和展示提示。
 - failed：恢复输入，在输入区附近展示结构化错误和重试提示。
 
@@ -1069,7 +1069,7 @@ npm run web:build
 - [ ] 首轮自然结束后可继续输入。
 - [ ] 后续追问复用相同 ACP sessionId。
 - [ ] 切换到其他会话再回来，仍显示思考/工具/回复状态。
-- [ ] 正在执行时输入锁定且停止按钮可用。
+- [x] Direct 正在执行和首次 prompt“发送中”时输入保持可用，后续消息进入队列且停止按钮可用。
 - [ ] 耗时继续增长，token 继续更新。
 - [ ] 回复结束后输入恢复，计时停止增长。
 
@@ -1301,3 +1301,47 @@ Direct 与节点完成后的手动追问复用同一个 ACP attempt。原通知�
 - 核心通知模型 19 项定向测试通过。
 - 连续 elicitation、连续 permission 与非 pending 事件过滤测试通过。
 - `cargo test --workspace`：通过；核心库 326 项、桌面端 120 项及全部 integration/doc tests 无失败。
+
+## 26. 2026-08-07 Direct 运行中待发送队列
+
+状态：实现完成，正在执行完整回归与页面验收。
+
+本次不是在前端增加延时发送补丁，而是补齐 attempt 级发送意图和统一 turn 终态策略：Direct/Workflow/AUTO 继续共享 runtime、ACP session、timeline、停止与恢复生命周期，只有 Direct lifecycle 在 active 时把 composer submit target 投影为 `queue-prompt`。
+
+数据与接口：
+
+- [x] 新增 attempt 级 `acp.prompt-queue.json`、`PromptQueue / QueuedPrompt / QueuedPromptState`，FIFO 上限统一为 10。
+- [x] 队列项保存稳定 item/prompt identity、正文、附件、创建时间和 dispatch 状态；编辑不改变位置。
+- [x] 新增 update/delete/use Tauri commands，继续使用结构化 error code + params。
+- [x] lifecycle 仅为 Direct 投影 `promptQueue`；Workflow/AUTO 的数据和 composer 规则不变。
+- [x] App turn hook 从仅成功通知收敛为 success/failure 统一 finished 回调；成功才自动出下一条，失败/取消恢复 dispatching 项且停止排空。
+
+发送仲裁与持久化：
+
+- [x] prompt 成功后仅在 Direct 且存在 queued item 时注册 600 ms 低优先级候选。
+- [x] 窗口内真实用户提交通过 queue revision 取消候选并优先进入现有 ACP attempt prompt lock；空队列 Direct、Workflow、AUTO、runtime continue/repair 不承担等待。
+- [x] 所有发送继续受既有 attempt prompt lock 串行化，不允许两个 prompt 并发进入 Provider。
+- [x] `dispatching` 只有 durable timeline 接受且 turn 成功后才删除；进程内 active dispatch 与 crash orphan reconciliation 分离，避免 lifecycle 读取把在途项误恢复。
+- [x] 停止/失败/取消不触发下一条，队列保留；应用重启后未接受的孤儿 dispatch 恢复为 queued。
+- [x] 修正 stop 与 success 终态竞态：stop command 入口先设置进程内 suspension gate，再持久化 `autoDispatchSuspended` 和 revision；scheduler claim 与 Provider 入口双重检查，停止后到达的 success 不再自动发送。用户主动发送或手动“使用”才恢复自动队列策略。
+
+前端：
+
+- [x] Direct 运行中 composer 保持可输入，发送按钮显示“加入队列”；满 10 条时禁止继续入队。
+- [x] 队列紧贴 composer 上方、位于 usage/token 行下方；默认展示 3 条，可展开至全部 10 条。
+- [x] 队列 surface 属于 attempt 底部常驻区域，不属于 active/idle/stopped/runtime-error 的 composer 分支；只要持久化队列非空，停止、刷新或重新进入会话后仍展示并可编辑、删除。
+- [x] Direct 队列能力由 run mode 显式传入 composer 状态机；首次 prompt 尚处于本地“发送中”、后端 active lifecycle 尚未回传时，后续提交也立即路由到 `queue-prompt`，不出现短暂锁输入。
+- [x] Conversation run/session-tree 初始与刷新快照和单 attempt lifecycle 接口统一装配同一持久化队列，杜绝停止态刷新丢失队列。
+- [x] 使用 shadcn Collapsible/Button/Tooltip/Textarea、Tailwind 和现有 prompt-kit composer；提供编辑、使用、删除 icon action 与无障碍标签。
+- [x] 入队响应不创建 optimistic 用户气泡、不进入 awaiting response；自动出队仍写标准用户 timeline 消息并复用标准样式。
+- [x] 编辑原位保存；停止/空闲后可指定使用；删除立即回灌后端 lifecycle。
+
+接口级回归：
+
+- [x] Rust：容量、FIFO/编辑位置、用户 revision 抢占、stop suspension、主动恢复、指定使用顺序、进程内 dispatch、重启孤儿恢复。
+- [x] Web semantic composer：Direct active 可输入/可入队、容量满、非 Direct active 仍锁定。
+- [x] Web semantic composer：Direct 首次发送过渡期即使 lifecycle 尚未携带 queue，也可输入并入队。
+- [x] Rust conversation run VM：停止态 selected leaf 仍投影持久化队列。
+- [x] Web DOM：默认 3 条/展开、原位编辑、icon aria-label、运行中禁用手动使用。
+- [ ] 完整 Rust/Web test 与 build。
+- [ ] Direct deep link 页面验收（位置、展开、编辑、删除、停止后使用、深浅主题）并清理测试资源。

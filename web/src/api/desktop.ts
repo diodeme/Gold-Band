@@ -1,5 +1,5 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
-import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi, ScheduledTaskUpdatedEventVm } from './client';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, RoundSelection, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl } from '../types';
+import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
@@ -254,6 +254,13 @@ export const desktopApi: RuntimeApi = {
     });
     return () => unlisten();
   },
+  async subscribeScheduledOccurrenceUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<ScheduledOccurrenceUpdatedEventVm>('gold-band://scheduled-occurrence-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
   listScheduledTasks(projectId) {
     return invokeCommand<import('../types').ScheduledTaskVm[]>('list_scheduled_tasks', { projectId });
   },
@@ -271,6 +278,15 @@ export const desktopApi: RuntimeApi = {
   },
   deleteScheduledTask(projectId, scheduledTaskId) {
     return invokeCommand<void>('delete_scheduled_task', { projectId, scheduledTaskId });
+  },
+  listScheduledTaskOccurrences(projectId, scheduledTaskId, limit) {
+    return invokeCommand<ScheduledOccurrenceVm[]>('list_scheduled_task_occurrences', { projectId, scheduledTaskId, limit });
+  },
+  getScheduledTaskDiagnostics(projectId, scheduledTaskId) {
+    return invokeCommand<ScheduledTaskDiagnosticsVm>('get_scheduled_task_diagnostics', { projectId, scheduledTaskId });
+  },
+  runScheduledTaskNow(projectId, scheduledTaskId) {
+    return invokeCommand<RunScheduledTaskResultVm>('run_scheduled_task_now', { projectId, scheduledTaskId });
   },
   setAcpSessionConfigOption(projectId, taskId, runId, roundId, nodeId, attemptId, optionId, optionValue, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('set_acp_session_config_option', { projectId, taskId, runId, roundId, nodeId, attemptId, optionId, optionValue, outerNodeId, outerAttemptId });

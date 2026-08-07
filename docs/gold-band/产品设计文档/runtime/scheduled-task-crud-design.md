@@ -91,6 +91,26 @@ Direct session policy 是执行策略，不是内容身份，切换时不直接�
 
 ## 8. 验收
 
+## 9. SQLite-only application service (2026-08-06)
+
+The desktop scheduled-task commands use one shared `ScheduledTaskService`.
+SQLite is the only active definition and occurrence authority; legacy JSON is
+read only by the one-time migration loader. Create validates and persists the
+definition plus an immutable input snapshot, but creates no occurrence, Task,
+Run, Round, or ACP session and never calls a model. Explicit run-now is a
+separate coordinator request that creates one manual occurrence immediately
+without advancing `next_run_at`.
+
+Input files are copied into a job-specific unique staging directory and then
+atomically renamed before the SQLite create transaction. A failed transaction
+removes only that new job input directory. Delete atomically renames only the
+job input directory to a unique tombstone, deletes the SQLite definition and
+occurrences, restores the directory on database failure, and never deletes
+linked Task/Run/Round/ACP history. Service failures are returned as structured
+`ScheduledErrorCode + params + traceId`; customer-facing text remains in the
+frontend. The current coordinator handle is deliberately narrow so the
+deadline-driven coordinator can replace its internals in the next phase.
+
 Implementation note: the desktop boundary exposes typed scheduled-task
 read/update/delete/enable operations. Updates use `expectedUpdatedAt` for
 optimistic conflict detection; Direct Agent identity is read-only and a

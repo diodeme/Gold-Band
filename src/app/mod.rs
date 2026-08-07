@@ -13,6 +13,7 @@ pub use self::notification::{
     InterventionNotification, InterventionType, NotificationDedup, direct_conversation_agent_label,
     make_dedup_key, make_dedup_key_with_suffix, make_turn_dedup_key, reason_key,
 };
+pub use self::orchestrator::{AcceptedRun, PreparedRun};
 
 use crate::acp::client as acp_client;
 use crate::acp::commands::AcpCommandItem;
@@ -61,9 +62,11 @@ use std::io::{Read, Seek, SeekFrom};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use self::ids::{generate_uuid, next_task_id, next_workflow_id, now_rfc3339_like};
+use self::ids::{generate_uuid, next_workflow_id, now_rfc3339_like, reserve_next_task_dir};
 use self::orchestrator::{
-    build_dynamic_prompt_bundle, pause_dynamic_leaf_runtime_state,
+    build_dynamic_prompt_bundle,
+    launch_prepared_run_background as orchestrator_launch_prepared_run_background,
+    pause_dynamic_leaf_runtime_state, prepare_run as orchestrator_prepare_run,
     run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
     run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
@@ -78,6 +81,29 @@ pub struct ProviderDoctorProbe {
     pub commands: Vec<AcpCommandItem>,
 }
 use self::profile_resolver::resolve_workflow_profiles;
+
+struct OwnedTaskDirectory {
+    path: Utf8PathBuf,
+    armed: bool,
+}
+
+impl OwnedTaskDirectory {
+    fn new(path: Utf8PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for OwnedTaskDirectory {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_dir_all(self.path.as_std_path());
+        }
+    }
+}
 use self::profiles::{
     DefaultProfileIds, create_profile, delete_profile as delete_profile_file,
     ensure_default_user_profiles, list_profiles, show_profile, update_profile,
@@ -722,6 +748,7 @@ pub struct App {
     acp_session_update: Option<Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>>,
     pub lifecycle_bus: observability::RuntimeLifecycleBus,
     scheduled_occurrence_id: Option<String>,
+    scheduled_task_context: Option<crate::provider::ScheduledTaskContextInfo>,
 }
 
 fn default_task_search_indexer() -> Arc<dyn Fn(&Utf8Path, &str) + Send + Sync> {
@@ -918,6 +945,7 @@ impl App {
             acp_session_update: self.acp_session_update.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
             scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
+            scheduled_task_context: self.scheduled_task_context.clone(),
         }
     }
 
@@ -963,6 +991,7 @@ impl App {
             acp_session_update: self.acp_session_update.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
             scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
+            scheduled_task_context: self.scheduled_task_context.clone(),
         }
     }
 
@@ -996,6 +1025,18 @@ impl App {
 
     pub fn scheduled_occurrence_id(&self) -> Option<&str> {
         self.scheduled_occurrence_id.as_deref()
+    }
+
+    pub fn with_scheduled_task_context(
+        mut self,
+        context: Option<crate::provider::ScheduledTaskContextInfo>,
+    ) -> Self {
+        self.scheduled_task_context = context;
+        self
+    }
+
+    pub fn scheduled_task_context(&self) -> Option<&crate::provider::ScheduledTaskContextInfo> {
+        self.scheduled_task_context.as_ref()
     }
 
     pub fn with_lifecycle_subscriber(
@@ -1802,6 +1843,7 @@ impl App {
             acp_session_update: None,
             lifecycle_bus: observability::RuntimeLifecycleBus::new(),
             scheduled_occurrence_id: None,
+            scheduled_task_context: None,
         }
     }
 
@@ -1862,7 +1904,8 @@ impl App {
         }
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
 
-        let task_id = next_task_id(&self.paths.tasks_dir())?;
+        let (task_id, task_dir) = reserve_next_task_dir(&self.paths.tasks_dir())?;
+        let mut owned_task_dir = OwnedTaskDirectory::new(task_dir.clone());
         let task = TaskState {
             version: VERSION.to_string(),
             id: task_id.clone(),
@@ -1871,12 +1914,7 @@ impl App {
             uuid: Some(generate_uuid()),
         };
         validate_task_state(&task)?;
-        fs::create_dir_all(
-            self.paths
-                .task_dir(&task_id)
-                .join("authoring")
-                .as_std_path(),
-        )?;
+        fs::create_dir_all(task_dir.join("authoring").as_std_path())?;
         write_json(&self.paths.task_file(&task_id), &task)?;
         fs::write(
             self.paths.requirement_file(&task_id).as_std_path(),
@@ -1885,6 +1923,7 @@ impl App {
         write_json(&self.paths.workflow_file(&task_id), &validated.raw)?;
         self.record_created_task_workflow(validated.raw, input.workflow_template_id)?;
         let summary = self.task_summary(&task_id)?;
+        owned_task_dir.disarm();
         (self.task_search_indexer)(&self.paths.task_dir(&task_id), &task_id);
         Ok(summary)
     }
@@ -3045,6 +3084,22 @@ impl App {
         orchestrator_run_start_background(self, task_id, workflow_override)
     }
 
+    pub fn prepare_run(
+        &self,
+        task_id: &str,
+        workflow_override: Option<&Utf8Path>,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_run(self, task_id, workflow_override)
+    }
+
+    pub fn launch_prepared_run_background(
+        &self,
+        task_id: &str,
+        prepared: AcceptedRun,
+    ) -> Result<RunState> {
+        orchestrator_launch_prepared_run_background(self, task_id, prepared)
+    }
+
     pub fn validate_workflow_node_agent_options(&self, node: &NodeDsl) -> Result<()> {
         let provider_diagnostics = self.provider_diagnostics();
         for (provider, model) in worker_models_for_node(node) {
@@ -3388,7 +3443,9 @@ fn is_acp_session_active_status(status: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{AcpLiveEventContext, App, CreateTaskInput, RuntimeLifecycleEvent};
+    use super::{
+        AcpLiveEventContext, App, CreateTaskInput, OwnedTaskDirectory, RuntimeLifecycleEvent,
+    };
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
@@ -3535,6 +3592,55 @@ mod tests {
         let renamed_results = index.search_tasks("renamed", 10).unwrap();
         assert_eq!(renamed_results.len(), 1);
         assert_eq!(renamed_results[0].task_id, created.task.id);
+    }
+
+    #[test]
+    fn prepared_run_drop_removes_only_the_unaccepted_run() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = test_app(repo_root);
+        let mut workflow = worker_workflow(None, None);
+        let NodeDsl::Worker(worker) = &mut workflow.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        worker.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
+        let created = app
+            .create_task_from_requirement(CreateTaskInput {
+                title: Some("Prepared run".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "prepare without launching".to_string(),
+                workflow,
+                workflow_template_id: None,
+            })
+            .unwrap();
+
+        let prepared = app.prepare_run(&created.task.id, None).unwrap();
+        let run_id = prepared.run().id.clone();
+        assert!(app.paths.run_dir(&created.task.id, &run_id).exists());
+
+        drop(prepared);
+
+        assert!(!app.paths.run_dir(&created.task.id, &run_id).exists());
+        assert!(app.paths.task_file(&created.task.id).exists());
+    }
+
+    #[test]
+    fn owned_task_directory_rolls_back_until_disarmed() {
+        let temp = tempdir().unwrap();
+        let rollback_dir = Utf8PathBuf::from_path_buf(temp.path().join("rollback")).unwrap();
+        std::fs::create_dir_all(rollback_dir.as_std_path()).unwrap();
+        drop(OwnedTaskDirectory::new(rollback_dir.clone()));
+        assert!(!rollback_dir.exists());
+
+        let committed_dir = Utf8PathBuf::from_path_buf(temp.path().join("committed")).unwrap();
+        std::fs::create_dir_all(committed_dir.as_std_path()).unwrap();
+        let mut owned = OwnedTaskDirectory::new(committed_dir.clone());
+        owned.disarm();
+        drop(owned);
+        assert!(committed_dir.exists());
     }
 
     fn sample_run_paused_event() -> RuntimeLifecycleEvent {

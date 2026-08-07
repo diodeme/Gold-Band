@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use thiserror::Error;
 
+pub mod coordinator;
 pub mod db;
 pub mod fingerprint;
 pub mod occurrence;

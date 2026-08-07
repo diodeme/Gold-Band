@@ -47,6 +47,71 @@ pub struct ScheduledTaskVm {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledOccurrenceVm {
+    pub id: String,
+    pub scheduled_task_id: String,
+    pub scheduled_at: String,
+    pub trigger_kind: String,
+    pub status: String,
+    pub attempt: u32,
+    pub error_code: Option<String>,
+    pub error_params: Option<serde_json::Value>,
+    pub task_id: Option<String>,
+    pub run_id: Option<String>,
+    pub round_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+impl ScheduledOccurrenceVm {
+    pub fn from_occurrence(
+        occurrence: &gold_band::scheduler::occurrence::ScheduledOccurrence,
+    ) -> Self {
+        Self {
+            id: occurrence.id.clone(),
+            scheduled_task_id: occurrence.job_id.clone(),
+            scheduled_at: occurrence.scheduled_at.to_rfc3339(),
+            trigger_kind: occurrence.trigger_kind.to_string(),
+            status: occurrence.status.to_string(),
+            attempt: occurrence.attempt,
+            error_code: occurrence.error_code.map(|value| value.to_string()),
+            error_params: occurrence.error_params.clone(),
+            task_id: occurrence.task_id.clone(),
+            run_id: occurrence.run_id.clone(),
+            round_id: occurrence.round_id.clone(),
+            attempt_id: occurrence.attempt_id.clone(),
+            started_at: occurrence.started_at.map(|value| value.to_rfc3339()),
+            finished_at: occurrence.finished_at.map(|value| value.to_rfc3339()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTaskDiagnosticsVm {
+    pub scheduled_task_id: String,
+    pub project_id: String,
+    pub next_at: Option<String>,
+    pub last_status: Option<String>,
+    pub last_error: Option<String>,
+    pub run_count: u64,
+    pub retry_count: u8,
+    pub occurrences: Vec<ScheduledOccurrenceVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunScheduledTaskResultVm {
+    pub occurrence: ScheduledOccurrenceVm,
+    pub task_id: Option<String>,
+    pub run_id: Option<String>,
+    pub round_id: Option<String>,
+    pub attempt_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateScheduledTaskInputVm {
@@ -127,8 +192,13 @@ impl ScheduledTaskVm {
             schedule_label: scheduled_task_schedule_label(definition),
             timezone_label: scheduled_task_timezone_label(definition),
             next_at: definition
-                .schedule
-                .next_occurrence_after(chrono::Utc::now())
+                .enabled
+                .then(|| {
+                    definition
+                        .schedule
+                        .next_occurrence_after(chrono::Utc::now())
+                })
+                .flatten()
                 .map(|value| scheduled_task_datetime_label(definition, value)),
             status: scheduled_task_status(definition),
             last_trigger_at: definition.last_trigger_at.map(|value| value.to_rfc3339()),
@@ -199,10 +269,20 @@ pub fn scheduled_task_vms_from_sources(
         if project_id.is_some_and(|value| value != source.workspace.project_id) {
             continue;
         }
-        let store = gold_band::scheduler::store::ScheduledTaskStore::new(source.app.paths.clone());
-        tasks.extend(store.list()?.iter().map(|definition| {
-            ScheduledTaskVm::from_definition_in_workspace(definition, &source.workspace.name)
-        }));
+        let database = gold_band::scheduler::db::ScheduledTaskDatabase::open(
+            source.app.paths.scheduler_db_path(),
+        )?;
+        tasks.extend(
+            database
+                .list_job_definitions_for_project(&source.workspace.project_id)?
+                .iter()
+                .map(|definition| {
+                    ScheduledTaskVm::from_definition_in_workspace(
+                        definition,
+                        &source.workspace.name,
+                    )
+                }),
+        );
     }
     tasks.sort_by(|left, right| left.created_at.cmp(&right.created_at));
     Ok(tasks)
@@ -3019,10 +3099,49 @@ fn build_direct_workflow(config: &ConversationDirectConfigVm) -> WorkflowDsl {
     }
 }
 
-pub fn create_conversation_task_vm(
+pub struct PreparedConversationTask {
+    task_id: String,
+    task_uuid: Option<String>,
+    title: String,
+    task_dir: camino::Utf8PathBuf,
+    armed: bool,
+}
+
+impl PreparedConversationTask {
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
+
+    pub fn task_uuid(&self) -> Option<&str> {
+        self.task_uuid.as_deref()
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn accept(mut self) -> (String, Option<String>, String) {
+        self.armed = false;
+        (
+            std::mem::take(&mut self.task_id),
+            self.task_uuid.take(),
+            std::mem::take(&mut self.title),
+        )
+    }
+}
+
+impl Drop for PreparedConversationTask {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_dir_all(self.task_dir.as_std_path());
+        }
+    }
+}
+
+pub fn prepare_conversation_task_vm(
     app: &App,
     input: &ConversationCreateInputVm,
-) -> anyhow::Result<(String, Option<String>, String)> {
+) -> anyhow::Result<PreparedConversationTask> {
     let title =
         conversation_auto_title(&input.content, app.config.conversation_auto_title_max_chars);
 
@@ -3069,6 +3188,13 @@ pub fn create_conversation_task_vm(
 
     let task_id = summary.task.id.clone();
     let task_uuid = summary.task.uuid.clone().or_else(|| Some(task_id.clone()));
+    let prepared = PreparedConversationTask {
+        task_id: task_id.clone(),
+        task_uuid,
+        title,
+        task_dir: app.paths.task_dir(&task_id),
+        armed: true,
+    };
 
     // Save conversation metadata
     let authoring_dir = app.paths.task_dir(&task_id).join("authoring");
@@ -3121,12 +3247,19 @@ pub fn create_conversation_task_vm(
             let src_path = Path::new(src);
             if let Some(name) = src_path.file_name().and_then(|n| n.to_str()) {
                 let dest = attach_dir.join(name);
-                let _ = fs::copy(src_path, &dest);
+                fs::copy(src_path, &dest)?;
             }
         }
     }
 
-    Ok((task_id, task_uuid, title))
+    Ok(prepared)
+}
+
+pub fn create_conversation_task_vm(
+    app: &App,
+    input: &ConversationCreateInputVm,
+) -> anyhow::Result<(String, Option<String>, String)> {
+    Ok(prepare_conversation_task_vm(app, input)?.accept())
 }
 
 pub fn create_conversation_run_vm(
@@ -4278,6 +4411,31 @@ mod tests {
     }
 
     #[test]
+    fn conversation_task_creation_rolls_back_when_attachment_copy_fails() {
+        let app = App::new(temp_repo_root());
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: "task must roll back".to_string(),
+            run_mode: ConversationRunMode::Direct.as_str().to_string(),
+            workflow_template_id: None,
+            include_interview: None,
+            direct_config: Some(ConversationDirectConfigVm {
+                agent_type: "claude-acp".to_string(),
+                model_id: None,
+                permission_mode: None,
+                config_options: Default::default(),
+            }),
+            auto_config: None,
+            attachment_paths: Some(vec![app.paths.repo_root.join("missing.txt").to_string()]),
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+        };
+
+        assert!(create_conversation_task_vm(&app, &input).is_err());
+        assert!(app.task_list().unwrap().is_empty());
+    }
+
+    #[test]
     fn conversation_sidebar_vm_groups_tasks_by_workspace_source() {
         let repo_a = temp_repo_root();
         let repo_b = temp_repo_root();
@@ -4684,6 +4842,13 @@ mod tests {
             "gold-band-conversation-assets-test-{}",
             uuid::Uuid::new_v4()
         ));
+        std::fs::create_dir_all(&root).unwrap();
+        Utf8PathBuf::from_path_buf(root).unwrap()
+    }
+
+    fn short_temp_repo_root() -> Utf8PathBuf {
+        let mut root = std::env::temp_dir();
+        root.push(format!("gb-vm-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         Utf8PathBuf::from_path_buf(root).unwrap()
     }
@@ -5301,8 +5466,8 @@ mod tests {
 
     #[test]
     fn scheduled_task_management_aggregates_all_workspaces_and_can_filter_one() {
-        let app_a = App::new(temp_repo_root());
-        let app_b = App::new(temp_repo_root());
+        let app_a = App::new(short_temp_repo_root());
+        let app_b = App::new(short_temp_repo_root());
         let definition_a = gold_band::scheduler::ScheduledTaskDefinition::new(
             "workspace-a",
             "scheduled-a",
@@ -5323,11 +5488,19 @@ mod tests {
             gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
         )
         .unwrap();
-        gold_band::scheduler::store::ScheduledTaskStore::new(app_a.paths.clone())
-            .save(&definition_a)
+        gold_band::scheduler::db::ScheduledTaskDatabase::open(app_a.paths.scheduler_db_path())
+            .unwrap()
+            .create_job(
+                &definition_a,
+                gold_band::scheduler::db::derived_next_run_at(&definition_a),
+            )
             .unwrap();
-        gold_band::scheduler::store::ScheduledTaskStore::new(app_b.paths.clone())
-            .save(&definition_b)
+        gold_band::scheduler::db::ScheduledTaskDatabase::open(app_b.paths.scheduler_db_path())
+            .unwrap()
+            .create_job(
+                &definition_b,
+                gold_band::scheduler::db::derived_next_run_at(&definition_b),
+            )
             .unwrap();
         let sources = vec![
             ConversationWorkspaceSource {

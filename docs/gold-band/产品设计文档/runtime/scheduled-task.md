@@ -4,14 +4,14 @@
 
 定时任务是 Gold Band 的触发层，不是第四种运行模式。它可以触发现有的 Direct、Workflow 或 AUTO 执行链，最终仍然通过现有 `task -> run -> round -> attempt` 产生产物和状态。
 
-创建定时任务只保存任务定义，不在创建动作中调用模型。首次到达执行时间时，调度器才物化 task 并启动执行。
+普通“创建定时任务”动作只保存任务定义，不自动调用模型。如果用户没有执行其他操作，首次到达计划时间时调度器才物化 Task 并启动执行。创建成功后仍可随时使用“立即执行”；该显式操作会马上创建 `triggerKind = manual` 的 occurrence 并启动执行，无需等待首次计划时间，也不改变原计划的下一次执行时间。
 
 ## 2. Task / Run 生命周期
 
 - 新的执行内容是新的 task。
 - 相同内容再次执行时，Workflow/AUTO 在同一 task 下创建新的 run。
 - Workflow/AUTO 的每个 run 都冻结自己的 `workflow.snapshot.json`。
-- 修改 instruction、附件、Workflow 定义、AUTO 目标/允许工作流或 workspace 后，下一次触发创建新 task；历史 task 和 run 保留。
+- Workflow/AUTO 修改 instruction、附件、authoring 或 workspace 后，下一次触发创建新 task；历史 task 和 run 保留。Direct 编辑 instruction、附件或 session policy 时保留既有 Task 关联，由 new/continuous 策略决定下一次触发如何物化。
 - 修改 model、thought level 或 permission 只改变后续执行配置，不创建新 task；修改 Workflow/AUTO 的 Agent 选择属于 authoring 变化，下一次触发创建新 task。
 - Direct Agent 是 Direct 会话身份的一部分，定时任务创建后不可修改；需要更换 Agent 时创建新的定时任务。
 
@@ -23,7 +23,7 @@
 
 - `new`：每次触发创建新的 task、run 和 ACP session。
 - `continuous`：首次触发创建 task/run/session；后续触发向同一 ACP session 发送新的 prompt，不创建新的 run。
-- continuous 模式下 instruction 或 workspace 发生变化时，下一次触发重置为新的 task/run/session；Direct Agent 创建后不可修改。
+- continuous 模式下 instruction 或附件变化时保留既有 Task/session chain；workspace 和 Direct Agent 创建后不可修改，需要变更时创建新的定时任务。
 - continuous 会话在消息流中使用轻量的 AlarmClock 分隔线标识定时触发，不伪造普通用户即时发送时间。
 
 ### Workflow / AUTO
@@ -83,7 +83,8 @@ Direct session policy 是执行策略，不进入内容指纹。新会话与持�
 ## 5.1 编辑约束
 
 - 编辑 Direct 定时任务时只读展示 Agent，不提供修改入口；后端同样拒绝 Agent 变更。
-- instruction、附件、Workflow authoring、AUTO goal / allowed workflows、Workflow/AUTO Agent、workspace 或运行模式变化后，将 `taskId` 置空，下一次触发创建新 Task。
+- Workflow/AUTO 的 instruction、附件、authoring、Agent 或 workspace 变化后，将 `taskId` 置空，下一次触发创建新 Task。Direct 的 instruction、附件和 session policy 变化保留 `taskId`。
+- Direct 与 Workflow/AUTO 之间切换时清除 `taskId`，避免跨执行模式复用不兼容的 Task 链路。
 - 调度、时区、队列保护、model、thought level 或 permission 变化时保留 `taskId`。
 - 删除定时任务只删除调度定义和定时输入快照，保留历史 Task、Run、Round、ACP 会话和产物。
 
@@ -134,14 +135,37 @@ active 包括运行中、等待权限、等待 AskUserQuestion、等待用户恢
 
 occurrence 的成功只表示现有 Task/Run/ACP 链路真实结束；启动后台进程不等于完成。Occurrence 历史、Task/Run 历史和调度定义生命周期分别管理，删除调度定义不删除已物化的 Task/Run/ACP 历史。
 
-## 当前实现基线与待完善项
+## 10. 2026-08-05 统一完善修订
 
-当前版本已经具备结构化调度定义、内容指纹、Task/Run 复用规则、Composer 创建入口和基本管理页，但以下可靠性能力仍属于待实现阶段：
+当前版本已经具备 occurrence SQLite、原子 claim、lease/heartbeat、真实执行终态、missed、run-now、详情诊断和 Direct/Workflow/AUTO 的 occurrence 关联。活跃 CRUD 已经以 SQLite 为唯一权威，运行时由每个 enabled job 一个 deadline 的 coordinator 驱动；旧 JSON 和每秒全量轮询不再是活跃消费路径。
 
-- occurrence SQLite 存储、原子认领、lease/heartbeat、真实执行终态和迁移；
-- missed 唤醒恢复、立即执行、执行历史和诊断字段；
-- Direct full-auto 预检、permission/AskUserQuestion 的无人值守处理；
-- 每任务计时器、系统时区、DST、Hourly 和自然语言 skill；
-- Workflow/AUTO 对统一 occurrence 生命周期的完整接入。
+统一完善采用以下边界：
 
-实现完成前不得将启动后台执行标记为 `completed`，也不得依赖 definition 游标实现跨进程幂等。
+- SQLite 是 definition 与 occurrence 的唯一权威；旧 JSON 只按 migration marker 导入一次。
+- 单一 scheduler coordinator 使用每 job deadline 驱动，不再周期扫描全部工作区和任务。
+- Direct/new、Direct/continuous、Workflow、AUTO 共用 timer、claim、lease、queue、missed、recovery 和 notification，仅执行适配器不同。
+
+执行适配器由统一 `ScheduledExecutionAdapter` 接口承载，输入包含 occurrence 快照和任务定义，输出为 Task/Run/round/attempt 绑定。创建定时任务只保存定义与输入快照；只有首次到达计划时间或用户点击立即执行时才物化 Task/Run。用户回答 attention 时，先按原执行链接恢复同一 occurrence 的 claim 与 heartbeat，再写入 ACP 响应，避免恢复窗口内失去租约。
+- keep-awake 是全局设置，默认关闭；仅在用户开启且存在 enabled job 时阻止系统自动睡眠，允许显示器关闭。
+- occurrence 历史展示 `skipped`、`missed` 等全部状态，终态记录默认保留 30 天；Task/Run/ACP 历史不随 occurrence 清理。
+- 内置定时任务 Skill 和“沉淀为 Skill”使用现有 SkillManager 与类型化工具边界，资源同步维护 zh-CN/en，不在 Rust 中硬编码长 prompt。
+- 管理页和设置页使用统一 i18n、完整 IANA 时区列表、原生通知 deep link 和现有 shadcn/ui 组件。
+
+完整约束见 [`2026-08-05-scheduled-task-unified-runtime-design.md`](../../../superpowers/specs/2026-08-05-scheduled-task-unified-runtime-design.md)。
+
+### 10.1 SQLite command boundary
+
+Scheduled-task authoring commands converge on one shared application service.
+Create remains definition-only and stages the immutable input snapshot before
+the SQLite commit; it does not materialize execution state. Run-now remains a
+separate explicit command that asks the coordinator to create and start one
+manual occurrence while preserving the planned deadline. Delete uses an input
+directory tombstone for rollback and deletes no Task/Run/Round/ACP history.
+The legacy JSON store is migration input only, never an active read fallback or
+write target.
+
+### 10.2 Deadline coordinator
+
+桌面进程只运行一个 scheduler coordinator，并通过 `DelayQueue` 为每个 enabled job 保存一个 wakeup。CRUD 提交、workspace 注册/移除、系统 resume 和应用退出都通过类型化命令更新 coordinator；不再周期扫描全部 workspace/job。注册和触发都会重新读取 SQLite revision 与 deadline，陈旧 timer 只重排、不创建 occurrence。
+
+启动 reconcile 先处理 pending/retrying occurrence，再处理后续计划点。早于 `LATE_FIRE_GRACE` 的点写为 `missed`，grace 内近迟到点仍可执行。计划点只有到达 deadline 后才由事务物化；普通创建始终只保存定义。立即执行是独立 `RunNow` 命令，立即创建 manual occurrence，但不改变原计划 `next_run_at`。

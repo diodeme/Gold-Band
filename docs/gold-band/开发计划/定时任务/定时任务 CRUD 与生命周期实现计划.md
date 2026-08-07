@@ -2,6 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+## 2026-08-06 SQLite application-service replacement
+
+- [ ] Add RED interface tests proving create is definition/input-only and
+  explicit run-now is the only immediate manual execution path.
+- [ ] Route list/get/create/update/enable/run-now/delete through one shared
+  `ScheduledTaskService` and the project-scoped SQLite repository.
+- [ ] Remove active `ScheduledTaskStore` reads/writes and JSON fallback; retain
+  it only for marker-controlled legacy migration.
+- [ ] Add optimistic conflict, project scope, enable/pause, structured error,
+  and delete tombstone rollback/history-preservation regression tests.
+- [ ] Keep the current coordinator as a narrow replaceable handle; the
+  deadline-driven DelayQueue coordinator remains the next implementation task.
+
 **目标：** 完成定时任务的全局 CRUD、真实调度、三种模式的 Task/Run 生命周期，以及管理页和会话侧栏的可追踪展示。
 
 **架构：** 以 `ScheduledTaskDefinition` 作为唯一调度定义，使用结构化 authoring 快照计算内容指纹；调度器只负责生成触发并调用现有 Task/Run/ACP 创建链路。Workflow/AUTO 的 Agent 配置属于 authoring，变化后清空 `taskId`；模型、思考强度和权限属于执行配置，变化后复用 Task。管理页通过显式 CRUD 请求局部更新，只有 App 根层订阅调度事件并刷新左侧会话列表。

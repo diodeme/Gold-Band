@@ -44,4 +44,25 @@ describe('browser scheduled task API', () => {
     await browserApi.deleteScheduledTask('default', first.id);
     expect((await browserApi.listScheduledTasks('default')).some((task) => task.id === first.id)).toBe(false);
   });
+
+  it('keeps manual run occurrences and exposes diagnostics', async () => {
+    const task = await browserApi.createScheduledTask(input('run me now'));
+
+    const updates: string[] = [];
+    const unlisten = await browserApi.subscribeScheduledOccurrenceUpdates?.((event) => {
+      updates.push(event.status);
+    });
+    const result = await browserApi.runScheduledTaskNow('default', task.id);
+    const occurrences = await browserApi.listScheduledTaskOccurrences('default', task.id);
+    const diagnostics = await browserApi.getScheduledTaskDiagnostics('default', task.id);
+    unlisten?.();
+
+    expect(result.occurrence.triggerKind).toBe('manual');
+    expect(result.occurrence.status).toBe('succeeded');
+    expect(occurrences[0]?.id).toBe(result.occurrence.id);
+    expect(diagnostics.runCount).toBe(1);
+    expect(diagnostics.occurrences[0]?.status).toBe('succeeded');
+    expect(updates).toContain('running');
+    expect(updates).toContain('succeeded');
+  });
 });

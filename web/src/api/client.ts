@@ -52,6 +52,9 @@ import type {
   WorkflowTemplateStore,
   WorkflowVm,
   ScheduledTaskEditVm,
+  ScheduledOccurrenceVm,
+  ScheduledTaskDiagnosticsVm,
+  RunScheduledTaskResultVm,
   UpdateScheduledTaskInput,
 } from '../types';
 import { browserApi } from './browser';
@@ -88,6 +91,17 @@ export interface ScheduledTaskUpdatedEventVm {
   scheduledTaskId: string;
   taskId?: string | null;
   status: string;
+  task?: import('../types').ScheduledTaskVm | null;
+}
+
+export interface ScheduledOccurrenceUpdatedEventVm {
+  projectId: string;
+  scheduledTaskId: string;
+  occurrenceId: string;
+  status: string;
+  errorCode?: string | null;
+  taskId?: string | null;
+  runId?: string | null;
 }
 
 export interface ConversationPromptSubmitVm {
@@ -156,6 +170,7 @@ export interface RuntimeApi {
   subscribeAcpSessionUpdates?(listener: (event: AcpSessionUpdatedEventVm) => void): Promise<() => void>;
   subscribeConversationRunStateUpdates?(listener: (event: ConversationRunStateUpdatedEventVm) => void): Promise<() => void>;
   subscribeScheduledTaskUpdates?(listener: (event: ScheduledTaskUpdatedEventVm) => void): Promise<() => void>;
+  subscribeScheduledOccurrenceUpdates?(listener: (event: ScheduledOccurrenceUpdatedEventVm) => void): Promise<() => void>;
   // 干预通知：OS Toast「查看详情」点击后后端转发导航事件，前端订阅做 deep-link。
   subscribeInterventionNavigate?(listener: (event: InterventionNavigateEventVm) => void): Promise<() => void>;
   submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]): Promise<ConversationPromptSubmitVm>;
@@ -192,6 +207,9 @@ export interface RuntimeApi {
   getScheduledTask(projectId: string, scheduledTaskId: string): Promise<ScheduledTaskEditVm>;
   updateScheduledTask(input: UpdateScheduledTaskInput): Promise<ScheduledTaskEditVm>;
   deleteScheduledTask(projectId: string, scheduledTaskId: string): Promise<void>;
+  listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, limit?: number): Promise<ScheduledOccurrenceVm[]>;
+  getScheduledTaskDiagnostics(projectId: string, scheduledTaskId: string): Promise<ScheduledTaskDiagnosticsVm>;
+  runScheduledTaskNow(projectId: string, scheduledTaskId: string): Promise<RunScheduledTaskResultVm>;
   getConversationWorkspaces(): Promise<ConversationWorkspaceVm[]>;
   getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null): Promise<ConversationRunVm>;
   switchConversationSession(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationSessionSwitchVm>;

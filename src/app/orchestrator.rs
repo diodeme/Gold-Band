@@ -77,12 +77,47 @@ use super::{
     AcpLiveEventContext, App, RuntimeInterventionKind, RuntimeLifecycleEvent, is_run_continuable,
 };
 
-struct PreparedRun {
+struct PreparedRunData {
     validated: ValidatedWorkflow,
     resolved_profiles: super::profile_resolver::ResolvedWorkflowMetadata,
     run: RunState,
     round: RoundState,
     node: NodeState,
+}
+
+pub struct PreparedRun {
+    data: Option<PreparedRunData>,
+    run_dir: Utf8PathBuf,
+}
+
+impl PreparedRun {
+    pub fn run(&self) -> &RunState {
+        &self.data.as_ref().expect("prepared run data exists").run
+    }
+
+    pub fn accept(mut self) -> AcceptedRun {
+        AcceptedRun {
+            data: self.data.take().expect("prepared run data exists"),
+        }
+    }
+}
+
+impl Drop for PreparedRun {
+    fn drop(&mut self) {
+        if self.data.is_some() {
+            let _ = std::fs::remove_dir_all(self.run_dir.as_std_path());
+        }
+    }
+}
+
+pub struct AcceptedRun {
+    data: PreparedRunData,
+}
+
+impl AcceptedRun {
+    pub fn run(&self) -> &RunState {
+        &self.data.run
+    }
 }
 
 struct NextExecution {
@@ -370,13 +405,13 @@ pub(crate) fn run_start(
     task_id: &str,
     workflow_override: Option<&Utf8Path>,
 ) -> Result<RunState> {
-    let PreparedRun {
+    let PreparedRunData {
         validated,
         resolved_profiles,
         mut run,
         mut round,
         node,
-    } = prepare_run(app, task_id, workflow_override)?;
+    } = prepare_run(app, task_id, workflow_override)?.accept().data;
     drive_from_node(
         app,
         task_id,
@@ -394,44 +429,111 @@ pub(crate) fn run_start_background(
     task_id: &str,
     workflow_override: Option<&Utf8Path>,
 ) -> Result<RunState> {
-    let prepared = prepare_run(app, task_id, workflow_override)?;
-    let initial_run = prepared.run.clone();
+    let prepared = prepare_run(app, task_id, workflow_override)?.accept();
+    launch_prepared_run_background(app, task_id, prepared)
+}
+
+fn terminalize_background_drive_error(
+    app: &App,
+    task_id: &str,
+    fallback_run: &RunState,
+    fallback_round: &RoundState,
+    fallback_node: &NodeState,
+    error: &anyhow::Error,
+) {
+    let mut run = app
+        .run_status(task_id, &fallback_run.id)
+        .unwrap_or_else(|_| fallback_run.clone());
+    let (mut round, mut node) = current_attempt_state(app, task_id, &run).unwrap_or_else(|_| {
+        run.current_round = Some(fallback_round.id.clone());
+        run.current_node = Some(fallback_node.node_id.clone());
+        run.current_attempt = Some(fallback_node.attempt_id.clone());
+        (fallback_round.clone(), fallback_node.clone())
+    });
+    let now = now_rfc3339_like();
+    run.status = RunStatus::Paused;
+    run.outcome = None;
+    run.pause_reason = Some(PauseReason::RuntimeAbnormal);
+    run.updated_at = now.clone();
+    round.status = RunStatus::Paused;
+    round.outcome = None;
+    node.status = RunStatus::Paused;
+    node.outcome = None;
+    node.finished_at = Some(now.clone());
+    append_run_event_best_effort(
+        &app.paths,
+        task_id,
+        &run.id,
+        "background_drive_failed",
+        now,
+        run_event_data(
+            &ExecutionContext::for_run(task_id, &run.id)
+                .with_round(round.id.clone())
+                .with_node(node.node_id.clone())
+                .with_attempt(node.attempt_id.clone()),
+            Some(ProgressStage::Paused),
+            Some(run.status),
+            Some(format!("background execution failed: {error:#}")),
+            run.pause_reason,
+        ),
+    );
+    let _ = persist_runtime_state(app, task_id, &run, &round, &node);
+    emit_pause_side_effects(app, task_id, &run, &round, &node);
+}
+
+pub(crate) fn launch_prepared_run_background(
+    app: &App,
+    task_id: &str,
+    prepared: AcceptedRun,
+) -> Result<RunState> {
+    let initial_run = prepared.run().clone();
     let background_app = app.clone_for_background();
     let task_id = task_id.to_string();
 
-    thread::spawn(move || {
-        let app = background_app;
-        let PreparedRun {
-            validated,
-            resolved_profiles,
-            mut run,
-            mut round,
-            node,
-        } = prepared;
-        if let Err(err) = drive_from_node(
-            &app,
-            &task_id,
-            &validated,
-            &resolved_profiles,
-            &mut run,
-            &mut round,
-            node,
-        ) {
-            let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
-            let _ = std::fs::write(
-                app.paths
-                    .runs_dir(&task_id)
-                    .join("desktop-start-error.txt")
-                    .as_std_path(),
-                err.to_string(),
-            );
-        }
-    });
+    thread::Builder::new()
+        .name("gold-band-run".to_string())
+        .spawn(move || {
+            let app = background_app;
+            let PreparedRunData {
+                validated,
+                resolved_profiles,
+                mut run,
+                mut round,
+                node,
+            } = prepared.data;
+            let fallback_node = node.clone();
+            if let Err(err) = drive_from_node(
+                &app,
+                &task_id,
+                &validated,
+                &resolved_profiles,
+                &mut run,
+                &mut round,
+                node,
+            ) {
+                terminalize_background_drive_error(
+                    &app,
+                    &task_id,
+                    &run,
+                    &round,
+                    &fallback_node,
+                    &err,
+                );
+                let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
+                let _ = std::fs::write(
+                    app.paths
+                        .runs_dir(&task_id)
+                        .join("desktop-start-error.txt")
+                        .as_std_path(),
+                    err.to_string(),
+                );
+            }
+        })?;
 
     Ok(initial_run)
 }
 
-fn prepare_run(
+pub(crate) fn prepare_run(
     app: &App,
     task_id: &str,
     workflow_override: Option<&Utf8Path>,
@@ -450,7 +552,11 @@ fn prepare_run(
     )?;
     write_json(&app.paths.task_provenance_file(task_id), &resolved_profiles)?;
 
-    let (run_id, _) = reserve_next_run_dir(&app.paths.runs_dir(task_id))?;
+    let (run_id, run_dir) = reserve_next_run_dir(&app.paths.runs_dir(task_id))?;
+    let mut prepared = PreparedRun {
+        data: None,
+        run_dir,
+    };
     let round_id = "round-001".to_string();
     let attempt_id = "attempt-001".to_string();
     let now = now_rfc3339_like();
@@ -566,13 +672,14 @@ fn prepare_run(
         ),
     );
 
-    Ok(PreparedRun {
+    prepared.data = Some(PreparedRunData {
         validated,
         resolved_profiles,
         run,
         round,
         node,
-    })
+    });
+    Ok(prepared)
 }
 
 #[derive(Debug, Clone)]
@@ -8130,6 +8237,7 @@ fn build_dynamic_worker_invocation(
         cold_attachments: Vec::new(),
         input_attachment_paths,
         mcp_servers: Vec::new(),
+        scheduled_context: None,
     };
     dynamic_invocation_build_step_end(
         ctx,
@@ -10736,6 +10844,133 @@ mod tests {
             }
             event => panic!("expected RunCompleted event, got {event:?}"),
         }
+    }
+
+    #[test]
+    fn background_drive_error_terminalizes_runtime_and_emits_intervention() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured_events = events.clone();
+        let app = App::new(repo_root)
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                captured_events.lock().unwrap().push(event);
+            }));
+        let task_id = "task-001";
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-08-06T00:00:00Z".to_string(),
+            updated_at: "2026-08-06T00:00:00Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("worker".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+        };
+        let round = RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: run.id.clone(),
+            index: 1,
+            status: RunStatus::Running,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: "2026-08-06T00:00:00Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "worker".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            run_id: run.id.clone(),
+            round_id: round.id.clone(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-08-06T00:00:00Z".to_string(),
+            finished_at: None,
+            manual_check_pending: false,
+            resolved_config: crate::domain::ResolvedConfig::new(),
+            uuid: None,
+        };
+        persist_runtime_state(&app, task_id, &run, &round, &node).unwrap();
+
+        terminalize_background_drive_error(
+            &app,
+            task_id,
+            &run,
+            &round,
+            &node,
+            &anyhow!("provider startup failed"),
+        );
+
+        let persisted_run = app.run_status(task_id, &run.id).unwrap();
+        let (persisted_round, persisted_node) =
+            current_attempt_state(&app, task_id, &persisted_run).unwrap();
+        assert_eq!(persisted_run.status, RunStatus::Paused);
+        assert_eq!(
+            persisted_run.pause_reason,
+            Some(PauseReason::RuntimeAbnormal)
+        );
+        assert_eq!(persisted_run.outcome, None);
+        assert_eq!(persisted_round.status, RunStatus::Paused);
+        assert_eq!(persisted_round.outcome, None);
+        assert_eq!(persisted_node.status, RunStatus::Paused);
+        assert_eq!(persisted_node.outcome, None);
+        assert!(persisted_node.finished_at.is_some());
+
+        let captured = events.lock().unwrap();
+        assert_eq!(
+            captured
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    RuntimeLifecycleEvent::InterventionRequested {
+                        scheduled_occurrence_id: Some(occurrence_id),
+                        kind: RuntimeInterventionKind::RuntimeAbnormal,
+                        ..
+                    } if occurrence_id == "occurrence-001"
+                ))
+                .count(),
+            1
+        );
+        drop(captured);
+
+        events.lock().unwrap().clear();
+        terminalize_background_drive_error(
+            &app,
+            task_id,
+            &persisted_run,
+            &persisted_round,
+            &persisted_node,
+            &anyhow!("round persistence failed after run pause"),
+        );
+        let captured = events.lock().unwrap();
+        assert_eq!(
+            captured
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    RuntimeLifecycleEvent::InterventionRequested {
+                        scheduled_occurrence_id: Some(occurrence_id),
+                        kind: RuntimeInterventionKind::RuntimeAbnormal,
+                        ..
+                    } if occurrence_id == "occurrence-001"
+                ))
+                .count(),
+            1,
+            "a partially persisted pause still needs a terminal lifecycle event"
+        );
     }
 
     fn test_context<'a>(app: &'a App, dynamic: &'a AiDynamicNode) -> DynamicExecutionContext<'a> {

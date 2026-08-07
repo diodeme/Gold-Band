@@ -1,7 +1,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     str::FromStr,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicU8, Ordering},
+    },
 };
 
 use anyhow::{Context, Result};
@@ -182,8 +185,22 @@ impl NotificationAttentionState {
     }
 }
 
+const SCHEDULER_SHUTDOWN_RUNNING: u8 = 0;
+const SCHEDULER_SHUTDOWN_STARTED: u8 = 1;
+const SCHEDULER_SHUTDOWN_COMPLETED: u8 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchedulerExitAction {
+    StartShutdown,
+    WaitForShutdown,
+    AllowExit,
+}
+
 pub struct DesktopState {
     context: Mutex<DesktopContext>,
+    scheduled_service: Mutex<Option<Arc<crate::scheduled_service::ScheduledTaskService>>>,
+    scheduler_coordinator: Mutex<Option<crate::scheduled_runtime::SchedulerCoordinatorHandle>>,
+    scheduler_shutdown_phase: AtomicU8,
     agent_diagnostics: Arc<Mutex<BTreeMap<ManagedAgentId, AgentDiagnosticState>>>,
     agent_diagnostic_run_lock: Mutex<()>,
     agent_config_diagnostic_commit_lock: Mutex<()>,
@@ -206,6 +223,9 @@ impl DesktopState {
         let updater_last_checked_at = context.config.desktop_updater_last_checked_at.clone();
         Self {
             context: Mutex::new(context),
+            scheduled_service: Mutex::new(None),
+            scheduler_coordinator: Mutex::new(None),
+            scheduler_shutdown_phase: AtomicU8::new(SCHEDULER_SHUTDOWN_RUNNING),
             agent_diagnostics: Arc::new(Mutex::new(persisted_diagnostics)),
             agent_diagnostic_run_lock: Mutex::new(()),
             agent_config_diagnostic_commit_lock: Mutex::new(()),
@@ -309,6 +329,66 @@ impl DesktopState {
             .clone())
     }
 
+    pub fn install_scheduled_service(
+        &self,
+        service: Arc<crate::scheduled_service::ScheduledTaskService>,
+    ) -> Result<()> {
+        *self
+            .scheduled_service
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduled service lock poisoned"))? = Some(service);
+        Ok(())
+    }
+
+    pub fn scheduled_service(&self) -> Result<Arc<crate::scheduled_service::ScheduledTaskService>> {
+        self.scheduled_service
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduled service lock poisoned"))?
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("scheduled service is not initialized"))
+    }
+
+    pub fn install_scheduler_coordinator(
+        &self,
+        coordinator: crate::scheduled_runtime::SchedulerCoordinatorHandle,
+    ) -> Result<()> {
+        *self
+            .scheduler_coordinator
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduler coordinator lock poisoned"))? =
+            Some(coordinator);
+        Ok(())
+    }
+
+    pub fn scheduler_coordinator(
+        &self,
+    ) -> Result<crate::scheduled_runtime::SchedulerCoordinatorHandle> {
+        self.scheduler_coordinator
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduler coordinator lock poisoned"))?
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("scheduler coordinator is not initialized"))
+    }
+
+    pub fn begin_scheduler_shutdown(&self) -> SchedulerExitAction {
+        match self.scheduler_shutdown_phase.compare_exchange(
+            SCHEDULER_SHUTDOWN_RUNNING,
+            SCHEDULER_SHUTDOWN_STARTED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => SchedulerExitAction::StartShutdown,
+            Err(SCHEDULER_SHUTDOWN_STARTED) => SchedulerExitAction::WaitForShutdown,
+            Err(SCHEDULER_SHUTDOWN_COMPLETED) => SchedulerExitAction::AllowExit,
+            Err(_) => SchedulerExitAction::WaitForShutdown,
+        }
+    }
+
+    pub fn complete_scheduler_shutdown(&self) {
+        self.scheduler_shutdown_phase
+            .store(SCHEDULER_SHUTDOWN_COMPLETED, Ordering::Release);
+    }
+
     pub fn update_settings_config(&self, settings: &SettingsConfig) -> Result<()> {
         let mut guard = self
             .context
@@ -322,6 +402,9 @@ impl DesktopState {
             .apply_state(&state);
         drop(guard);
         self.prune_agent_diagnostics()?;
+        if let Ok(coordinator) = self.scheduler_coordinator() {
+            let _ = coordinator.send(crate::scheduled_runtime::SchedulerCommand::SettingsChanged);
+        }
         Ok(())
     }
 
@@ -986,6 +1069,25 @@ mod tests {
             outer_node_id: None,
             outer_attempt_id: None,
         }
+    }
+
+    #[test]
+    fn scheduler_exit_waits_for_shutdown_completion_and_allows_only_the_retry() {
+        let (_root, state) = desktop_state();
+
+        assert_eq!(
+            state.begin_scheduler_shutdown(),
+            SchedulerExitAction::StartShutdown
+        );
+        assert_eq!(
+            state.begin_scheduler_shutdown(),
+            SchedulerExitAction::WaitForShutdown
+        );
+        state.complete_scheduler_shutdown();
+        assert_eq!(
+            state.begin_scheduler_shutdown(),
+            SchedulerExitAction::AllowExit
+        );
     }
 
     #[test]

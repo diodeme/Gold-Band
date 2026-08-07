@@ -419,6 +419,19 @@ fn emit_acp_turn_finished(
     });
 }
 
+fn finish_acp_prompt_preflight<T>(
+    app: &App,
+    locator: &AttemptLocator,
+    turn_id: &str,
+    agent_label: &str,
+    result: CommandResult<T>,
+) -> CommandResult<T> {
+    if result.is_err() && app.scheduled_occurrence_id().is_some() {
+        emit_acp_turn_finished(app, locator, turn_id, agent_label, AcpTurnOutcome::Failed);
+    }
+    result
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AcpSessionUpdatedEventVm {
@@ -2152,28 +2165,32 @@ pub(crate) async fn send_acp_prompt_with_app(
         outer_node_id.clone(),
         outer_attempt_id.clone(),
     );
-    if let Ok(run) = app.run_status(&task_id, &run_id) {
-        let manual_check_pending = current_attempt_manual_check_pending(&app, &locator, &run)?;
-        if runtime_continue_required(&app, &locator, &run, manual_check_pending)? {
-            return Err(CommandErrorVm::new(
-                "acp.runtime-submit-required",
-                serde_json::json!({
-                    "taskId": task_id,
-                    "runId": run_id,
-                    "roundId": round_id,
-                    "nodeId": node_id,
-                    "attemptId": attempt_id,
-                    "outerNodeId": outer_node_id,
-                    "outerAttemptId": outer_attempt_id,
-                }),
-            ));
-        }
-    }
     let turn_id = prompt_id
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("turn-{}", uuid::Uuid::new_v4().simple()));
     let prompt_id = Some(turn_id.clone());
     let agent_label = acp_turn_agent_label(&app, &locator);
+    let preflight = (|| -> CommandResult<()> {
+        if let Ok(run) = app.run_status(&task_id, &run_id) {
+            let manual_check_pending = current_attempt_manual_check_pending(&app, &locator, &run)?;
+            if runtime_continue_required(&app, &locator, &run, manual_check_pending)? {
+                return Err(CommandErrorVm::new(
+                    "acp.runtime-submit-required",
+                    serde_json::json!({
+                        "taskId": task_id,
+                        "runId": run_id,
+                        "roundId": round_id,
+                        "nodeId": node_id,
+                        "attemptId": attempt_id,
+                        "outerNodeId": outer_node_id,
+                        "outerAttemptId": outer_attempt_id,
+                    }),
+                ));
+            }
+        }
+        Ok(())
+    })();
+    finish_acp_prompt_preflight(&app, &locator, &turn_id, &agent_label, preflight)?;
     let project_id_for_emit = project_id.clone();
     let project_id_for_spawn = project_id_for_emit.clone();
     let task_id_for_emit = task_id.clone();
@@ -3926,7 +3943,7 @@ pub fn open_in_file_manager(
 }
 
 #[tauri::command]
-pub fn respond_elicitation(
+pub async fn respond_elicitation(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -3942,6 +3959,21 @@ pub fn respond_elicitation(
     outer_attempt_id: Option<String>,
 ) -> CommandResult<()> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+
+    // Reclaim the durable scheduled occurrence before writing the response file.
+    // The ACP waiter may resume immediately after the file is visible.
+    if let Ok(coordinator) = state.scheduler_coordinator() {
+        coordinator
+            .resume_attention(
+                app.paths.repo_root.clone(),
+                task_id.clone(),
+                run_id.clone(),
+                round_id.clone(),
+                attempt_id.clone(),
+            )
+            .await
+            .map_err(|error| command_error(anyhow::anyhow!(error.to_string())))?;
+    }
 
     let action = match action.as_str() {
         "accept" => ElicitationAction::Accept,
@@ -4728,6 +4760,64 @@ mod tests {
                 );
                 assert_eq!(turn_id, "turn-002");
                 assert_eq!(agent_label, "Claude");
+                assert_eq!(*outcome, AcpTurnOutcome::Failed);
+            }
+            event => panic!("expected AcpTurnFinished, got {event:?}"),
+        }
+        drop(events);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scheduled_acp_preflight_failure_emits_one_failed_turn() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-scheduled-acp-preflight-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(root.clone()).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_subscriber = seen.clone();
+        let app = App::new(repo_root)
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                if let RuntimeLifecycleEvent::AcpTurnFinished { .. } = event {
+                    seen_for_subscriber.lock().unwrap().push(event);
+                }
+            }));
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "node-001".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+
+        let result: CommandResult<()> = finish_acp_prompt_preflight(
+            &app,
+            &locator,
+            "turn-001",
+            "Claude",
+            Err(CommandErrorVm::new(
+                "acp.runtime-submit-required",
+                serde_json::json!({}),
+            )),
+        );
+
+        assert_eq!(result.unwrap_err().code, "acp.runtime-submit-required");
+        let events = seen.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            RuntimeLifecycleEvent::AcpTurnFinished {
+                scheduled_occurrence_id,
+                turn_id,
+                outcome,
+                ..
+            } => {
+                assert_eq!(scheduled_occurrence_id.as_deref(), Some("occurrence-001"));
+                assert_eq!(turn_id, "turn-001");
                 assert_eq!(*outcome, AcpTurnOutcome::Failed);
             }
             event => panic!("expected AcpTurnFinished, got {event:?}"),

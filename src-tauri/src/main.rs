@@ -9,6 +9,7 @@ mod i18n;
 mod metrics;
 mod notifications;
 mod scheduled_runtime;
+mod scheduled_service;
 mod state;
 mod updater;
 mod view_models;
@@ -42,9 +43,10 @@ use commands_conversation::{
     add_conversation_workspace, choose_conversation_workspace, create_conversation_run,
     create_scheduled_task, delete_conversation_task, delete_scheduled_task, get_conversation_run,
     get_conversation_run_mode, get_conversation_sidebar, get_conversation_workspaces,
-    get_scheduled_task, get_supported_attachment_extensions, list_scheduled_tasks,
-    materialize_conversation_attachments, pin_conversation, remove_conversation_workspace,
-    reorder_pinned_conversations, rerun_conversation_task, save_conversation_preference,
+    get_scheduled_task, get_scheduled_task_diagnostics, get_supported_attachment_extensions,
+    list_scheduled_task_occurrences, list_scheduled_tasks, materialize_conversation_attachments,
+    pin_conversation, remove_conversation_workspace, reorder_pinned_conversations,
+    rerun_conversation_task, run_scheduled_task_now, save_conversation_preference,
     save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
     search_conversation_tasks, set_scheduled_task_enabled, show_conversation_attachment,
     show_conversation_message_attachment, stat_attachment_files, switch_conversation_session,
@@ -55,7 +57,7 @@ use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
 use metrics::start_heartbeat_polling;
-use state::{DesktopContext, DesktopState};
+use state::{DesktopContext, DesktopState, SchedulerExitAction};
 use tauri::{Manager, WindowEvent};
 use tracing::{info, warn};
 use updater::{retry_pending_startup_install, start_update_polling};
@@ -92,7 +94,7 @@ fn run() -> anyhow::Result<()> {
         window.title_bar_style = tauri::TitleBarStyle::Overlay;
         window.hidden_title = true;
     }
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -100,7 +102,10 @@ fn run() -> anyhow::Result<()> {
         .setup(|app| {
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
-            scheduled_runtime::start(app.handle().clone());
+            state.install_scheduled_service(std::sync::Arc::new(
+                scheduled_service::ScheduledTaskService::desktop(app.handle().clone()),
+            ))?;
+            scheduled_runtime::start(app.handle().clone())?;
             if let Ok(runtime_app) = state.app() {
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
                 let _ = runtime_app.recover_interrupted_running_sessions();
@@ -240,6 +245,9 @@ fn run() -> anyhow::Result<()> {
             save_desktop_ui_mode,
             get_conversation_sidebar,
             list_scheduled_tasks,
+            list_scheduled_task_occurrences,
+            get_scheduled_task_diagnostics,
+            run_scheduled_task_now,
             create_scheduled_task,
             get_scheduled_task,
             update_scheduled_task,
@@ -288,7 +296,43 @@ fn run() -> anyhow::Result<()> {
             get_skill_sync_status,
             check_skill_name_conflict,
         ])
-        .run(tauri_context)
+        .build(tauri_context)
         .context("tauri runtime failed")?;
+    app.run(|app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { code, api, .. } => {
+            let state = app_handle.state::<DesktopState>();
+            match state.begin_scheduler_shutdown() {
+                SchedulerExitAction::StartShutdown => {
+                    api.prevent_exit();
+                    let exit_code = code.unwrap_or(0);
+                    let handle = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let shutdown_result =
+                            match handle.state::<DesktopState>().scheduler_coordinator() {
+                                Ok(coordinator) => {
+                                    coordinator.shutdown().await.map_err(anyhow::Error::from)
+                                }
+                                Err(error) => Err(error),
+                            };
+                        if let Err(error) = shutdown_result {
+                            warn!(%error, "failed to complete scheduled runtime shutdown");
+                        }
+                        handle.state::<DesktopState>().complete_scheduler_shutdown();
+                        handle.exit(exit_code);
+                    });
+                }
+                SchedulerExitAction::WaitForShutdown => api.prevent_exit(),
+                SchedulerExitAction::AllowExit => {}
+            }
+        }
+        tauri::RunEvent::Resumed => {
+            if let Ok(coordinator) = app_handle.state::<DesktopState>().scheduler_coordinator() {
+                let _ = coordinator.send(scheduled_runtime::SchedulerCommand::Reconcile {
+                    reason: gold_band::scheduler::coordinator::ReconcileReason::SystemResume,
+                });
+            }
+        }
+        _ => {}
+    });
     Ok(())
 }

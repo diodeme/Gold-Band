@@ -294,7 +294,9 @@ use crate::provider::{
     gold_band_hidden_block, prepare_acp_mcp_servers,
 };
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
-use crate::runtime_error::DEFAULT_AUTO_RETRY_MAX_ATTEMPTS;
+use crate::runtime_error::{
+    DEFAULT_AUTO_RETRY_MAX_ATTEMPTS, RuntimeErrorDomain, blocked_runtime_error_info, runtime_error,
+};
 use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, roll_jsonl, write_json};
 
 const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(100);
@@ -315,6 +317,8 @@ const SESSION_LIST_MAX_PAGES: usize = 8;
 const SESSION_EVICTION_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const SESSION_SYSTEM_CONTEXT_VERSION: u32 = 1;
 const NESTED_AGENT_TRANSCRIPT_CAPABILITY: &str = "subagent-transcript";
+pub const ACP_SESSION_RESTORE_UNSUPPORTED_CODE: &str = "acp.session-restore-unsupported";
+pub const ACP_HISTORY_SYNC_UNSUPPORTED_CODE: &str = "acp.history-sync-unsupported";
 
 #[derive(Debug)]
 struct AcpCancelled;
@@ -1458,8 +1462,121 @@ struct AcpBranchTimelineStreams {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionUpdatePhase {
     Live,
-    Replaying,
+    RestoringWithoutReplay,
+    ReplayingHistory,
     AwaitingTurnStart,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionRestoreIntent {
+    ContinueOnly,
+    SyncHistory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionRestoreMethod {
+    Resume,
+    Load,
+}
+
+impl SessionRestoreMethod {
+    fn rpc_method(self) -> &'static str {
+        match self {
+            Self::Resume => "session/resume",
+            Self::Load => "session/load",
+        }
+    }
+
+    fn replays_history(self) -> bool {
+        self == Self::Load
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SessionRestoreCapabilities {
+    resume: bool,
+    load: bool,
+}
+
+impl SessionRestoreCapabilities {
+    fn from_agent_capabilities(capabilities: &Value) -> Self {
+        let capabilities = serde_json::from_value::<
+            agent_client_protocol_schema::v1::AgentCapabilities,
+        >(capabilities.clone())
+        .unwrap_or_default();
+        Self {
+            resume: capabilities.session_capabilities.resume.is_some(),
+            load: capabilities.load_session,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionRestorePlan {
+    Restore(SessionRestoreMethod),
+    StartNew,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+enum SessionRestorePlanError {
+    #[error("ACP session restore is unsupported by the agent")]
+    RestoreUnsupported,
+    #[error("ACP full-history synchronization is unsupported by the agent")]
+    HistorySyncUnsupported,
+}
+
+impl SessionRestorePlanError {
+    fn code(self) -> &'static str {
+        match self {
+            Self::RestoreUnsupported => ACP_SESSION_RESTORE_UNSUPPORTED_CODE,
+            Self::HistorySyncUnsupported => ACP_HISTORY_SYNC_UNSUPPORTED_CODE,
+        }
+    }
+}
+
+fn plan_session_restore(
+    intent: SessionRestoreIntent,
+    capabilities: SessionRestoreCapabilities,
+    strict_continue: bool,
+) -> std::result::Result<SessionRestorePlan, SessionRestorePlanError> {
+    match intent {
+        SessionRestoreIntent::SyncHistory if capabilities.load => {
+            Ok(SessionRestorePlan::Restore(SessionRestoreMethod::Load))
+        }
+        SessionRestoreIntent::SyncHistory if capabilities.resume => {
+            Err(SessionRestorePlanError::HistorySyncUnsupported)
+        }
+        SessionRestoreIntent::ContinueOnly if capabilities.resume => {
+            Ok(SessionRestorePlan::Restore(SessionRestoreMethod::Resume))
+        }
+        SessionRestoreIntent::ContinueOnly if capabilities.load => {
+            Ok(SessionRestorePlan::Restore(SessionRestoreMethod::Load))
+        }
+        _ if strict_continue => Err(SessionRestorePlanError::RestoreUnsupported),
+        _ => Ok(SessionRestorePlan::StartNew),
+    }
+}
+
+fn session_restore_plan_error(
+    error: SessionRestorePlanError,
+    intent: SessionRestoreIntent,
+    capabilities: SessionRestoreCapabilities,
+) -> anyhow::Error {
+    runtime_error(blocked_runtime_error_info(
+        RuntimeErrorDomain::Provider,
+        error.code(),
+        error.to_string(),
+        json!({
+            "intent": match intent {
+                SessionRestoreIntent::ContinueOnly => "continue-only",
+                SessionRestoreIntent::SyncHistory => "sync-history",
+            },
+            "capabilities": {
+                "resume": capabilities.resume,
+                "load": capabilities.load,
+            },
+        }),
+    ))
 }
 
 #[derive(Debug, Clone)]
@@ -1501,6 +1618,7 @@ pub fn doctor(
             &BTreeMap::new(),
             "",
             false,
+            &capabilities,
             &[],
             &[],
         )?;
@@ -1628,6 +1746,7 @@ pub fn run_prompt(
         &config_options,
         &prompt.system_prompt,
         strict_continue,
+        &capabilities,
         &mcp_preparation.accepted,
         &mcp_preparation.skipped,
     ) {
@@ -1900,6 +2019,27 @@ fn session_new_params(cwd: &Utf8Path, system_prompt: &str, mcp_servers: &[Value]
 }
 
 fn session_load_params(
+    cwd: &Utf8Path,
+    session_id: &str,
+    system_prompt: &str,
+    mcp_servers: &[Value],
+) -> Value {
+    let mut params = json!({
+        "cwd": cwd.as_str(),
+        "mcpServers": mcp_servers,
+        "sessionId": session_id,
+    });
+    if !system_prompt.trim().is_empty() {
+        params["_meta"] = json!({
+            "systemPrompt": {
+                "append": system_prompt,
+            },
+        });
+    }
+    params
+}
+
+fn session_resume_params(
     cwd: &Utf8Path,
     session_id: &str,
     system_prompt: &str,
@@ -2473,6 +2613,7 @@ impl<'a> AcpRuntime<'a> {
         config_options: &BTreeMap<String, String>,
         system_prompt: &str,
         strict_continue: bool,
+        agent_capabilities: &Value,
         mcp_servers: &[Value],
         skipped_mcp_servers: &[SkippedAcpMcpServer],
     ) -> Result<bool> {
@@ -2505,24 +2646,65 @@ impl<'a> AcpRuntime<'a> {
             )? {
                 return Ok(true);
             }
-            self.session_update_phase = SessionUpdatePhase::Replaying;
-            if self.runtime_policy.external_session_sync_enabled {
+            let restore_capabilities =
+                SessionRestoreCapabilities::from_agent_capabilities(agent_capabilities);
+            let restore_intent = if self.runtime_policy.external_session_sync_enabled {
+                SessionRestoreIntent::SyncHistory
+            } else {
+                SessionRestoreIntent::ContinueOnly
+            };
+            let restore_plan =
+                plan_session_restore(restore_intent, restore_capabilities, strict_continue)
+                    .map_err(|error| {
+                        session_restore_plan_error(error, restore_intent, restore_capabilities)
+                    })?;
+            let SessionRestorePlan::Restore(restore_method) = restore_plan else {
+                if strict_continue {
+                    unreachable!("strict continue cannot plan a new ACP session");
+                }
+                self.record_skipped_mcp_servers(provider_id, skipped_mcp_servers);
+                return self.start_new_session(
+                    provider_id,
+                    &cwd,
+                    permission_mode,
+                    model,
+                    config_options,
+                    adapter_system_prompt,
+                    mcp_servers,
+                );
+            };
+            self.session_update_phase = match restore_method {
+                SessionRestoreMethod::Resume => SessionUpdatePhase::RestoringWithoutReplay,
+                SessionRestoreMethod::Load => SessionUpdatePhase::ReplayingHistory,
+            };
+            if restore_method.replays_history() && self.runtime_policy.external_session_sync_enabled
+            {
                 self.provider_history_replay.begin(provider_id, session_id);
             }
             self.record_skipped_mcp_servers(provider_id, skipped_mcp_servers);
             skipped_mcp_diagnostic_recorded = true;
-            let load = self.request(
-                "session/load",
-                session_load_params(&cwd, session_id, adapter_system_prompt, mcp_servers),
-            );
-            let required_sync = self.sync_required;
-            match load {
+            let restore_params = match restore_method {
+                SessionRestoreMethod::Resume => {
+                    session_resume_params(&cwd, session_id, adapter_system_prompt, mcp_servers)
+                }
+                SessionRestoreMethod::Load => {
+                    session_load_params(&cwd, session_id, adapter_system_prompt, mcp_servers)
+                }
+            };
+            let restore = self.request(restore_method.rpc_method(), restore_params);
+            let required_sync = restore_intent == SessionRestoreIntent::SyncHistory;
+            match restore {
                 Ok(result) => {
                     self.capture_session_config(&result);
                     self.set_session_id(session_id.to_string());
+                    if restore_method == SessionRestoreMethod::Resume {
+                        self.session_update_phase = SessionUpdatePhase::AwaitingTurnStart;
+                    }
                     self.apply_session_mode_options(permission_mode, model, config_options)?;
-                    self.drain_session_replay_until_quiet(session_id)?;
-                    self.finish_provider_history_replay(Some(session_id.to_string()))?;
+                    if restore_method.replays_history() {
+                        self.drain_session_replay_until_quiet(session_id)?;
+                        self.finish_provider_history_replay(Some(session_id.to_string()))?;
+                    }
                     self.sync_required = false;
                     self.refresh_provider_freshness_best_effort(&cwd);
                     return Ok(true);
@@ -2532,7 +2714,13 @@ impl<'a> AcpRuntime<'a> {
                     append_diagnostic(
                         &self.paths.diagnostics,
                         "warn",
-                        format!("failed to load ACP session `{session_id}`: {err}"),
+                        format!(
+                            "failed to {} ACP session `{session_id}`: {err}",
+                            match restore_method {
+                                SessionRestoreMethod::Resume => "resume",
+                                SessionRestoreMethod::Load => "load",
+                            }
+                        ),
                         None,
                     )?;
                     if is_transport_interruption(&err) {
@@ -2543,7 +2731,10 @@ impl<'a> AcpRuntime<'a> {
                         bail!("failed to synchronize existing ACP session before prompt: {err}");
                     }
                     if strict_continue {
-                        bail!("failed to load existing ACP session for continue: {err}");
+                        bail!(
+                            "failed to restore existing ACP session for continue via {}: {err}",
+                            restore_method.rpc_method()
+                        );
                     }
                 }
             }
@@ -2556,10 +2747,31 @@ impl<'a> AcpRuntime<'a> {
         if !skipped_mcp_diagnostic_recorded {
             self.record_skipped_mcp_servers(provider_id, skipped_mcp_servers);
         }
+        self.start_new_session(
+            provider_id,
+            &cwd,
+            permission_mode,
+            model,
+            config_options,
+            adapter_system_prompt,
+            mcp_servers,
+        )
+    }
+
+    fn start_new_session(
+        &mut self,
+        provider_id: &str,
+        cwd: &Utf8Path,
+        permission_mode: Option<&str>,
+        model: Option<&str>,
+        config_options: &BTreeMap<String, String>,
+        adapter_system_prompt: &str,
+        mcp_servers: &[Value],
+    ) -> Result<bool> {
         let session_new_started_at = Instant::now();
         let session_new_result = self.request(
             "session/new",
-            session_new_params(&cwd, adapter_system_prompt, mcp_servers),
+            session_new_params(cwd, adapter_system_prompt, mcp_servers),
         );
         info!(
             target: "gold_band::perf",
@@ -2580,7 +2792,7 @@ impl<'a> AcpRuntime<'a> {
         self.session_update_phase = SessionUpdatePhase::Live;
         self.sync_required = false;
         self.apply_session_mode_options(permission_mode, model, config_options)?;
-        self.refresh_provider_freshness_best_effort(&cwd);
+        self.refresh_provider_freshness_best_effort(cwd);
         Ok(false)
     }
 
@@ -3499,7 +3711,7 @@ impl<'a> AcpRuntime<'a> {
             self.observe_prompt_cancel_request()?;
             return Err(anyhow!(AcpCancelled));
         }
-        if self.session_update_phase == SessionUpdatePhase::Replaying {
+        if self.session_update_phase == SessionUpdatePhase::ReplayingHistory {
             self.drain_session_replay_until_quiet(session_id)?;
             self.finish_provider_history_replay(Some(session_id.to_string()))?;
             self.session_update_phase = SessionUpdatePhase::AwaitingTurnStart;
@@ -3704,7 +3916,21 @@ impl<'a> AcpRuntime<'a> {
             self.available_commands = Some(commands);
         }
 
-        if self.session_update_phase == SessionUpdatePhase::Replaying {
+        if self.session_update_phase == SessionUpdatePhase::RestoringWithoutReplay {
+            if is_current_turn_content_update(&update) {
+                let _ = append_structured_diagnostic(
+                    &self.paths.diagnostics,
+                    "warning",
+                    "acp.unexpected-resume-replay",
+                    Some(json!({
+                        "sessionId": session_id,
+                        "sessionUpdate": update.get("sessionUpdate"),
+                    })),
+                );
+            }
+            return Ok(());
+        }
+        if self.session_update_phase == SessionUpdatePhase::ReplayingHistory {
             if !self.runtime_policy.external_session_sync_enabled {
                 return Ok(());
             }
@@ -5379,7 +5605,7 @@ fn should_suppress_session_update(
 ) -> bool {
     let identity = stable_session_update_item_id(session_id, update);
     match *phase {
-        SessionUpdatePhase::Replaying => true,
+        SessionUpdatePhase::RestoringWithoutReplay | SessionUpdatePhase::ReplayingHistory => true,
         SessionUpdatePhase::AwaitingTurnStart => {
             let starts_current_turn = is_current_turn_content_update(update)
                 && identity
@@ -5700,20 +5926,22 @@ mod tests {
         AcpRuntimePolicy, AcpUsageState, AttachedSessionReusePlan, CancelNotificationPhase,
         DOCTOR_DIAGNOSTIC_TARGET_SIZE, NESTED_AGENT_TRANSCRIPT_CAPABILITY, PriorAttemptMetrics,
         PromptActivity, PromptBundle, PromptVisibility, ProviderFreshnessBaseline,
-        RuntimeStopProbe, SessionModelResolution, SessionUpdatePhase, active_context_compaction,
-        active_timeline_streams, active_timeline_streams_by_branch, append_bounded,
-        attached_sync_required, cancel_attempt_prompt, canonical_prompt_event_identity,
-        cleanup_doctor_acp_dir_after_success, drain_frames_until_quiet,
-        drain_frames_until_quiet_with_timeout_error, drain_frames_until_route_watermark,
-        evaluate_provider_revision, initialize_params, is_pending_retry_prompt_event,
-        is_transport_interruption, latest_visible_turn_id, merge_tool_revision,
-        next_prompt_retry_attempt, permission_decision_timeline_event, plan_attached_session_reuse,
-        prompt_activity, prompt_cancellation_outcome, prompt_usage_transaction_id,
-        provider_thread_is_active, register_provider_control, request_prompt_cancel,
-        resolve_permission_mode, resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
+        RuntimeStopProbe, SessionModelResolution, SessionRestoreCapabilities, SessionRestoreIntent,
+        SessionRestoreMethod, SessionRestorePlan, SessionRestorePlanError, SessionUpdatePhase,
+        active_context_compaction, active_timeline_streams, active_timeline_streams_by_branch,
+        append_bounded, attached_sync_required, cancel_attempt_prompt,
+        canonical_prompt_event_identity, cleanup_doctor_acp_dir_after_success,
+        drain_frames_until_quiet, drain_frames_until_quiet_with_timeout_error,
+        drain_frames_until_route_watermark, evaluate_provider_revision, initialize_params,
+        is_pending_retry_prompt_event, is_transport_interruption, latest_visible_turn_id,
+        merge_tool_revision, next_prompt_retry_attempt, permission_decision_timeline_event,
+        plan_attached_session_reuse, plan_session_restore, prompt_activity,
+        prompt_cancellation_outcome, prompt_usage_transaction_id, provider_thread_is_active,
+        register_provider_control, request_prompt_cancel, resolve_permission_mode,
+        resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
         runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
-        session_new_params, session_prompt_params, session_prompt_text, settle_prompt_event,
-        should_suppress_session_update, stable_message_item_id,
+        session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
+        settle_prompt_event, should_suppress_session_update, stable_message_item_id,
         take_pending_live_update_for_stream_switch, unidentified_agent_output_failure,
         unregister_provider_control,
     };
@@ -6287,7 +6515,7 @@ mod tests {
             "assistant-thought-old".to_string(),
         ]);
         let mut current = HashSet::new();
-        let mut phase = SessionUpdatePhase::Replaying;
+        let mut phase = SessionUpdatePhase::ReplayingHistory;
         let old_message = json!({
             "sessionUpdate": "agent_message_chunk",
             "messageId": "old",
@@ -6334,6 +6562,43 @@ mod tests {
     }
 
     #[test]
+    fn resume_restore_suppresses_unexpected_content_until_prompt_turn_starts() {
+        let historical = HashSet::new();
+        let mut current = HashSet::new();
+        let mut phase = SessionUpdatePhase::RestoringWithoutReplay;
+        let unexpected = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "resume-replay",
+            "content": { "type": "text", "text": "old answer" }
+        });
+
+        assert!(should_suppress_session_update(
+            &mut phase,
+            &historical,
+            &mut current,
+            Some("session-1"),
+            &unexpected,
+        ));
+        assert_eq!(phase, SessionUpdatePhase::RestoringWithoutReplay);
+        assert!(current.is_empty());
+
+        phase = SessionUpdatePhase::AwaitingTurnStart;
+        let current_turn = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "current",
+            "content": { "type": "text", "text": "new answer" }
+        });
+        assert!(!should_suppress_session_update(
+            &mut phase,
+            &historical,
+            &mut current,
+            Some("session-1"),
+            &current_turn,
+        ));
+        assert_eq!(phase, SessionUpdatePhase::Live);
+    }
+
+    #[test]
     fn load_response_does_not_end_replay_before_delayed_agent_chunks_arrive() {
         let (sender, receiver) = std::sync::mpsc::channel();
         let sender_keepalive = sender.clone();
@@ -6347,7 +6612,7 @@ mod tests {
                 }))
                 .unwrap();
         });
-        let mut phase = SessionUpdatePhase::Replaying;
+        let mut phase = SessionUpdatePhase::ReplayingHistory;
         let historical = HashSet::new();
         let mut current = HashSet::new();
         let mut suppressed = Vec::new();
@@ -6373,7 +6638,7 @@ mod tests {
         drop(sender_keepalive);
         assert_eq!(drained, 1);
         assert_eq!(suppressed, vec![true]);
-        assert_eq!(phase, SessionUpdatePhase::Replaying);
+        assert_eq!(phase, SessionUpdatePhase::ReplayingHistory);
         assert!(current.is_empty());
     }
 
@@ -7255,6 +7520,105 @@ mod tests {
             load_params["_meta"]["systemPrompt"]["append"],
             "node constraints"
         );
+
+        let resume_params = session_resume_params(
+            camino::Utf8Path::new("/repo"),
+            "session-123",
+            "node constraints",
+            &[],
+        );
+        assert_eq!(resume_params["sessionId"], "session-123");
+        assert_eq!(resume_params["cwd"], "/repo");
+        assert_eq!(resume_params["mcpServers"], json!([]));
+        assert_eq!(
+            resume_params["_meta"]["systemPrompt"]["append"],
+            "node constraints"
+        );
+    }
+
+    #[test]
+    fn session_restore_capabilities_follow_v1_advertisement_shape() {
+        assert_eq!(
+            SessionRestoreCapabilities::from_agent_capabilities(&json!({
+                "loadSession": true,
+                "sessionCapabilities": { "resume": {} }
+            })),
+            SessionRestoreCapabilities {
+                resume: true,
+                load: true,
+            }
+        );
+        assert_eq!(
+            SessionRestoreCapabilities::from_agent_capabilities(&json!({})),
+            SessionRestoreCapabilities::default()
+        );
+    }
+
+    #[test]
+    fn restore_planning_prefers_resume_for_context_only_continuation() {
+        let both = SessionRestoreCapabilities {
+            resume: true,
+            load: true,
+        };
+        assert_eq!(
+            plan_session_restore(SessionRestoreIntent::ContinueOnly, both, true),
+            Ok(SessionRestorePlan::Restore(SessionRestoreMethod::Resume))
+        );
+        assert!(!SessionRestoreMethod::Resume.replays_history());
+    }
+
+    #[test]
+    fn restore_planning_falls_back_to_load_when_resume_is_unavailable() {
+        let load_only = SessionRestoreCapabilities {
+            resume: false,
+            load: true,
+        };
+        assert_eq!(
+            plan_session_restore(SessionRestoreIntent::ContinueOnly, load_only, true),
+            Ok(SessionRestorePlan::Restore(SessionRestoreMethod::Load))
+        );
+        assert!(SessionRestoreMethod::Load.replays_history());
+    }
+
+    #[test]
+    fn restore_planning_uses_load_for_external_history_sync() {
+        let both = SessionRestoreCapabilities {
+            resume: true,
+            load: true,
+        };
+        assert_eq!(
+            plan_session_restore(SessionRestoreIntent::SyncHistory, both, true),
+            Ok(SessionRestorePlan::Restore(SessionRestoreMethod::Load))
+        );
+    }
+
+    #[test]
+    fn restore_planning_rejects_history_sync_when_only_resume_is_available() {
+        let resume_only = SessionRestoreCapabilities {
+            resume: true,
+            load: false,
+        };
+        assert_eq!(
+            plan_session_restore(SessionRestoreIntent::SyncHistory, resume_only, false),
+            Err(SessionRestorePlanError::HistorySyncUnsupported)
+        );
+        assert_eq!(
+            SessionRestorePlanError::HistorySyncUnsupported.code(),
+            super::ACP_HISTORY_SYNC_UNSUPPORTED_CODE
+        );
+    }
+
+    #[test]
+    fn restore_planning_distinguishes_strict_and_non_strict_missing_capabilities() {
+        let neither = SessionRestoreCapabilities::default();
+        assert_eq!(
+            plan_session_restore(SessionRestoreIntent::ContinueOnly, neither, true),
+            Err(SessionRestorePlanError::RestoreUnsupported)
+        );
+        assert_eq!(
+            plan_session_restore(SessionRestoreIntent::ContinueOnly, neither, false),
+            Ok(SessionRestorePlan::StartNew)
+        );
     }
 
     #[test]
@@ -7279,9 +7643,16 @@ mod tests {
             "",
             &prepared.accepted,
         );
+        let resume_params = session_resume_params(
+            camino::Utf8Path::new("/repo"),
+            "session-123",
+            "",
+            &prepared.accepted,
+        );
 
         assert_eq!(new_params["mcpServers"], json!([servers[0], servers[1]]));
         assert_eq!(load_params["mcpServers"], json!([servers[0], servers[1]]));
+        assert_eq!(resume_params["mcpServers"], json!([servers[0], servers[1]]));
         assert_eq!(prepared.skipped.len(), 1);
         assert_eq!(prepared.skipped[0].name, "legacy");
     }
@@ -7294,6 +7665,10 @@ mod tests {
         let load_params =
             session_load_params(camino::Utf8Path::new("/repo"), "session-123", "", &[]);
         assert!(load_params.get("_meta").is_none());
+
+        let resume_params =
+            session_resume_params(camino::Utf8Path::new("/repo"), "session-123", "", &[]);
+        assert!(resume_params.get("_meta").is_none());
     }
 
     #[test]

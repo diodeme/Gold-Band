@@ -3149,7 +3149,8 @@ pub async fn send_acp_prompt(
                 app.config.acp_raw_max_size_bytes,
                 app.config.acp_raw_target_size_bytes,
                 client::AcpRuntimePolicy::from(&app.config)
-                    .with_external_session_sync_enabled(agent_config.external_session_sync_enabled),
+                    .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
+                    .with_system_prompt_support(agent_config.supports_system_prompt()),
                 client::AcpOutputPolicy::Conversation,
                 Some(&|event| {
                     live_update(
@@ -3304,7 +3305,8 @@ pub async fn send_acp_prompt(
             app.config.acp_raw_max_size_bytes,
             app.config.acp_raw_target_size_bytes,
             client::AcpRuntimePolicy::from(&app.config)
-                .with_external_session_sync_enabled(agent_config.external_session_sync_enabled),
+                .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
+                .with_system_prompt_support(agent_config.supports_system_prompt()),
             client::AcpOutputPolicy::Conversation,
             Some(&|event| {
                 live_update(
@@ -4153,6 +4155,9 @@ fn ensure_workflow_agents_doctor_ready(
 }
 
 pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
+    if let Some(error) = error.downcast_ref::<gold_band::runtime_error::RuntimeError>() {
+        return CommandErrorVm::new(error.info.code_str(), error.info.params.clone());
+    }
     if let Some(error) = error.downcast_ref::<WorkflowValidationError>() {
         return workflow_validation_command_error(error);
     }
@@ -5837,6 +5842,24 @@ mod tests {
         );
         assert_eq!(error.code, "acp.invalid-conversation-branch-id");
         assert_eq!(error.params, serde_json::json!({}));
+    }
+
+    #[test]
+    fn runtime_errors_keep_their_structured_command_code_and_params() {
+        let error = command_error(gold_band::runtime_error::runtime_error(
+            gold_band::runtime_error::blocked_runtime_error_info(
+                gold_band::runtime_error::RuntimeErrorDomain::Provider,
+                gold_band::acp::client::ACP_SESSION_RESTORE_UNSUPPORTED_CODE,
+                "internal diagnostic only",
+                serde_json::json!({ "capabilities": { "resume": false, "load": false } }),
+            ),
+        ));
+
+        assert_eq!(error.code, "acp.session-restore-unsupported");
+        assert_eq!(
+            error.params,
+            serde_json::json!({ "capabilities": { "resume": false, "load": false } })
+        );
     }
 
     #[test]

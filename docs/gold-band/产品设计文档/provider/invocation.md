@@ -154,7 +154,7 @@ AI agent 可以写自由格式附件，但必须写入当前 attempt 的 `attach
 每次 ACP worker 调用按如下顺序执行，确保前端在第一条 stream event 前拿到完整 session metadata：
 
 1. `initialize` — 启动 ACP adapter 进程
-2. `session/new` 或 `session/load` — 建立或复用 session，写入 raw outbound frame（含 `_meta.systemPrompt.append`）
+2. `session/new`、`session/resume` 或 `session/load` — 按 Agent capability 与恢复意图建立或复用 session，写入 raw outbound frame（含 `_meta.systemPrompt.append`）；普通上下文续接优先 `resume`，只有完整历史同步才优先 `load`
 3. `capture_session_config` — 从 adapter 响应捕获 `models`、`modes`、`configOptions`
 4. `apply_session_mode_options` — 按 workflow 节点配置设置 model / permission_mode
 5. `write_session("running")` — 写 `acp.snapshot.json`（此时已含 model、mode config）

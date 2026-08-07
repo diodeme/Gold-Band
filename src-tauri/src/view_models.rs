@@ -6208,7 +6208,7 @@ fn raw_has_successful_session_close(raw_path: &camino::Utf8Path) -> bool {
         let method = frame.get("method").and_then(|method| method.as_str());
         if matches!(
             method,
-            Some("session/new" | "session/load" | "session/prompt")
+            Some("session/new" | "session/load" | "session/resume" | "session/prompt")
         ) {
             close_request_ids.clear();
             close_completed_after_last_session_start = false;
@@ -6548,7 +6548,7 @@ fn scan_acp_diagnostics(path: &camino::Utf8Path) -> Result<AcpDiagnosticsScan> {
 }
 
 /// Extract system prompt append from the beginning of the raw ACP frame file.
-/// Only reads the first ~200 lines — system prompt is always in session/new or session/load frame at the start.
+/// Only reads the first 500 lines — system prompt is carried by the first session lifecycle frame.
 fn extract_system_prompt_append(path: &camino::Utf8Path) -> Option<String> {
     if !path.exists() {
         return None;
@@ -6564,7 +6564,10 @@ fn extract_system_prompt_append(path: &camino::Utf8Path) -> Option<String> {
             continue;
         }
         let method = value.pointer("/frame/method").and_then(|v| v.as_str());
-        if !matches!(method, Some("session/new" | "session/load")) {
+        if !matches!(
+            method,
+            Some("session/new" | "session/load" | "session/resume")
+        ) {
             continue;
         }
         return value
@@ -8698,7 +8701,7 @@ mod tests {
             [
                 r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":5,"method":"session/close","params":{"sessionId":"session-1"}}}"#,
                 r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":5,"result":{}}}"#,
-                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":6,"method":"session/load","params":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":6,"method":"session/resume","params":{"sessionId":"session-1"}}}"#,
                 r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":6,"result":{"sessionId":"session-1"}}}"#,
                 r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":"session-1","prompt":[]}}}"#,
             ]
@@ -8707,6 +8710,30 @@ mod tests {
         .unwrap();
 
         assert!(!raw_has_successful_session_close(&raw_path));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn system_prompt_append_is_extracted_from_session_resume() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-resume-system-prompt-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let raw_path = Utf8PathBuf::from_path_buf(dir.clone())
+            .unwrap()
+            .join("acp.raw.jsonl");
+        fs::write(
+            raw_path.as_std_path(),
+            r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":6,"method":"session/resume","params":{"sessionId":"session-1","cwd":"D:/repo","mcpServers":[],"_meta":{"systemPrompt":{"append":"stable context"}}}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            extract_system_prompt_append(&raw_path).as_deref(),
+            Some("stable context")
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }

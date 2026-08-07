@@ -7815,6 +7815,13 @@ function createEstablishedAcpSessionShell(
   };
 }
 
+export const ACP_RAW_SESSION_KIND_I18N_KEYS = {
+  "session/new": "acp.rawKindSessionNew",
+  "session/resume": "acp.rawKindSessionResume",
+  "session/load": "acp.rawKindSessionLoad",
+  "session/prompt": "acp.rawKindSessionPrompt",
+} as const;
+
 function rawKindOptions(t: ReturnType<typeof useTranslation>["t"]) {
   return [
     { value: "agent_message_chunk", label: t("acp.rawKindAgentMessage") },
@@ -7823,9 +7830,10 @@ function rawKindOptions(t: ReturnType<typeof useTranslation>["t"]) {
     { value: "tool_call_update", label: t("acp.rawKindToolUpdate") },
     { value: "usage_update", label: t("acp.rawKindUsage") },
     { value: "available_commands_update", label: t("acp.rawKindCommands") },
-    { value: "session/prompt", label: t("acp.rawKindSessionPrompt") },
-    { value: "session/new", label: t("acp.rawKindSessionNew") },
-    { value: "session/load", label: t("acp.rawKindSessionLoad") },
+    { value: "session/prompt", label: t(ACP_RAW_SESSION_KIND_I18N_KEYS["session/prompt"]) },
+    { value: "session/new", label: t(ACP_RAW_SESSION_KIND_I18N_KEYS["session/new"]) },
+    { value: "session/resume", label: t(ACP_RAW_SESSION_KIND_I18N_KEYS["session/resume"]) },
+    { value: "session/load", label: t(ACP_RAW_SESSION_KIND_I18N_KEYS["session/load"]) },
     { value: "result", label: t("acp.rawKindResult") },
     { value: "error", label: t("acp.rawKindError") },
     { value: "parse-error", label: t("acp.rawKindParseError") },
@@ -7838,9 +7846,10 @@ function displayRawKind(
 ) {
   const labels: Record<string, string> = {
     initialize: t("acp.rawKindInitialize"),
-    "session/new": t("acp.rawKindSessionNew"),
-    "session/load": t("acp.rawKindSessionLoad"),
-    "session/prompt": t("acp.rawKindSessionPrompt"),
+    "session/new": t(ACP_RAW_SESSION_KIND_I18N_KEYS["session/new"]),
+    "session/resume": t(ACP_RAW_SESSION_KIND_I18N_KEYS["session/resume"]),
+    "session/load": t(ACP_RAW_SESSION_KIND_I18N_KEYS["session/load"]),
+    "session/prompt": t(ACP_RAW_SESSION_KIND_I18N_KEYS["session/prompt"]),
     agent_message_chunk: t("acp.rawKindAgentMessage"),
     agent_thought_chunk: t("acp.rawKindThought"),
     user_message_chunk: t("acp.rawKindUserMessage"),

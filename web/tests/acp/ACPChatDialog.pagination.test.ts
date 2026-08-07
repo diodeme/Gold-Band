@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ACP_RAW_SESSION_KIND_I18N_KEYS,
   acpPaginationSeqBounds,
   createVisibleAcpSession,
   limitAcpEvents,
@@ -82,6 +83,13 @@ describe('ACPChatDialog pagination buffer', () => {
     expect(merged.hasOlder).toBe(true);
     expect(merged.oldestSeq).toBe(41);
     expect(merged.newestSeq).toBe(241);
+  });
+
+  it('exposes distinct raw-frame labels for resume and load lifecycle calls', () => {
+    expect(ACP_RAW_SESSION_KIND_I18N_KEYS).toMatchObject({
+      'session/resume': 'acp.rawKindSessionResume',
+      'session/load': 'acp.rawKindSessionLoad',
+    });
   });
 
   it('lets an authoritative session snapshot clear stale history availability', () => {

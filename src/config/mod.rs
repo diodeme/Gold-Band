@@ -903,7 +903,7 @@ impl RightWorkspaceLayoutConfig {
 impl Default for RightWorkspaceLayoutConfig {
     fn default() -> Self {
         Self {
-            min_width: 320,
+            min_width: 288,
             default_width: 440,
             max_width: 1440,
             file: FileWorkspaceLayoutConfig::default(),
@@ -1533,7 +1533,7 @@ mod tests {
 
         assert_eq!(layout.shell_min_width, 480);
         assert_eq!(layout.shell_min_height, 680);
-        assert_eq!(layout.right_workspace.min_width, 320);
+        assert_eq!(layout.right_workspace.min_width, 288);
         assert_eq!(layout.right_workspace.default_width, 440);
         assert_eq!(layout.right_workspace.max_width, 1440);
         assert_eq!(layout.right_workspace.file.preferred_width, 760);

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   FALLBACK_WORKSPACE_LAYOUT,
+  RIGHT_WORKSPACE_MIN_WIDTH,
+  WORKSPACE_LAYOUT_HYSTERESIS,
   WORKSPACE_SIDEBAR_MIN_WIDTH,
   reduceFileWorkspaceResponsiveState,
   reduceWorkspaceAutoCollapse,
@@ -140,10 +142,12 @@ describe('workspace auto collapse state machine', () => {
 
   it('uses hysteresis so a boundary oscillation does not flicker', () => {
     const input = { centerMinWidth: 420, centerAutoCollapseWidth: 480, sidebarWidth: 256, sidebarManuallyCollapsed: false, wantsRight: true };
-    const collapsed = reduceWorkspaceAutoCollapse(initial(), { ...input, availableWidth: 950 });
-    const nearBoundary = reduceWorkspaceAutoCollapse(collapsed, { ...input, availableWidth: 1_020 });
+    const collapseBoundary = input.centerMinWidth + input.sidebarWidth + RIGHT_WORKSPACE_MIN_WIDTH;
+    const restoreBoundary = collapseBoundary + WORKSPACE_LAYOUT_HYSTERESIS;
+    const collapsed = reduceWorkspaceAutoCollapse(initial(), { ...input, availableWidth: collapseBoundary - 1 });
+    const nearBoundary = reduceWorkspaceAutoCollapse(collapsed, { ...input, availableWidth: restoreBoundary });
     expect(nearBoundary.left).toBe(true);
-    const restored = reduceWorkspaceAutoCollapse(nearBoundary, { ...input, availableWidth: 1_050 });
+    const restored = reduceWorkspaceAutoCollapse(nearBoundary, { ...input, availableWidth: restoreBoundary + 1 });
     expect(restored.left).toBe(false);
   });
 
@@ -227,17 +231,18 @@ describe('workspace auto collapse state machine', () => {
 
   it('does not publish React presentation updates for per-pixel widths inside one threshold band', () => {
     const input = { centerMinWidth: 420, centerAutoCollapseWidth: 480, sidebarWidth: 256, sidebarManuallyCollapsed: false, wantsRight: true };
+    const collapseBoundary = input.centerMinWidth + input.sidebarWidth + RIGHT_WORKSPACE_MIN_WIDTH;
     let state = initial();
     let presentationUpdates = 0;
-    for (let availableWidth = 1_099; availableWidth >= 1_000; availableWidth -= 1) {
+    for (let availableWidth = 1_099; availableWidth >= collapseBoundary; availableWidth -= 1) {
       const next = reduceWorkspaceAutoCollapse(state, { ...input, availableWidth });
       if (workspaceAutoCollapsePresentationChanged(state, next)) presentationUpdates += 1;
       state = next;
     }
-    expect(state.previousWidth).toBe(1_000);
+    expect(state.previousWidth).toBe(collapseBoundary);
     expect(presentationUpdates).toBe(0);
 
-    const crossed = reduceWorkspaceAutoCollapse(state, { ...input, availableWidth: 995 });
+    const crossed = reduceWorkspaceAutoCollapse(state, { ...input, availableWidth: collapseBoundary - 1 });
     expect(workspaceAutoCollapsePresentationChanged(state, crossed)).toBe(true);
     expect(crossed).toMatchObject({ left: true, right: false });
   });

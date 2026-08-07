@@ -19,7 +19,6 @@ import { useConversationComposerDraft } from '@/lib/conversation-composer-draft'
 import { formatLocalDateTime } from '@/lib/datetime';
 import { displayAppError } from '../../i18n';
 import type {
-  MulticaCompletedTaskVm,
   MulticaWorkspaceRefVm,
   RemoteConversationSidebarVm,
   RemoteTaskVm,
@@ -51,7 +50,6 @@ export function MulticaRemoteTaskList({ onSelectRun, onNewConversationInWorkspac
   // 折叠态：镜像本地侧栏 expandedWorkspaces 模式（默认展开 = key 不存在视为 false 折叠）。
   const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Record<string, boolean>>({});
   const [pinnedCollapsed, setPinnedCollapsed] = useState(false);
-  const [recentlyCollapsed, setRecentlyCollapsed] = useState(false);
   const mountRef = useRef(true);
 
   const toggleWorkspace = useCallback((workspaceId: string) => {
@@ -118,10 +116,6 @@ export function MulticaRemoteTaskList({ onSelectRun, onNewConversationInWorkspac
     } finally {
       setBusyTaskId(null);
     }
-  }
-
-  function handleSelectCompleted(task: MulticaCompletedTaskVm) {
-    onSelectRun(task.projectId, task.localTaskId, task.runId);
   }
 
   async function handleCancel(task: RemoteTaskVm) {
@@ -208,6 +202,7 @@ export function MulticaRemoteTaskList({ onSelectRun, onNewConversationInWorkspac
                           onClaimAndPrepare={() => handleClaimAndPrepare(task)}
                           onCancel={() => handleCancel(task)}
                           onRerun={() => handleRerun(task)}
+                          onSelectRun={onSelectRun}
                           t={t}
                         />
                       ))
@@ -243,6 +238,7 @@ export function MulticaRemoteTaskList({ onSelectRun, onNewConversationInWorkspac
                       onClaimAndPrepare={() => handleClaimAndPrepare(task)}
                       onCancel={() => handleCancel(task)}
                       onRerun={() => handleRerun(task)}
+                      onSelectRun={onSelectRun}
                       t={t}
                     />
                   ))}
@@ -255,31 +251,6 @@ export function MulticaRemoteTaskList({ onSelectRun, onNewConversationInWorkspac
         /* 未绑定任何工作空间 → 引导添加（已绑定时即便无任务也逐组展示，不走此空状态） */
         <div className="px-3 py-4 text-center text-xs text-muted-foreground">
           {t('conversation.sidebar.multica.noWorkspacesBound')}
-        </div>
-      )}
-
-      {/* 「最近完成」回看（Issue 3C）：终态任务本地历史，点击直达本地会话。可折叠。 */}
-      {vm.recentlyCompleted.length > 0 && (
-        <div>
-          <button
-            type="button"
-            className="flex w-full items-center gap-1.5 px-1 py-0.5 text-left text-[12px] font-semibold uppercase tracking-[0.12em] text-sidebar-foreground hover:text-sidebar-accent-foreground"
-            onClick={() => setRecentlyCollapsed((v) => !v)}
-          >
-            <ChevronDown className={cn('size-3 shrink-0 transition-transform', recentlyCollapsed && '-rotate-90')} />
-            <span>{t('conversation.sidebar.multica.recentlyCompleted')}</span>
-          </button>
-          {!recentlyCollapsed ? (
-            <div className="space-y-0.5">
-              {vm.recentlyCompleted.map((task) => (
-                <CompletedTaskRow
-                  key={task.remoteTaskId}
-                  task={task}
-                  onSelect={() => handleSelectCompleted(task)}
-                />
-              ))}
-            </div>
-          ) : null}
         </div>
       )}
 
@@ -313,6 +284,7 @@ function RemoteTaskRow({
   onClaimAndPrepare,
   onCancel,
   onRerun,
+  onSelectRun,
   t,
 }: {
   task: RemoteTaskVm;
@@ -320,6 +292,7 @@ function RemoteTaskRow({
   onClaimAndPrepare: () => void;
   onCancel: () => void;
   onRerun: () => void;
+  onSelectRun: (projectId: string, taskId: string, runId: string) => void;
   t: ReturnType<typeof useTranslation>['t'];
 }) {
   const canClaim = task.status === 'queued';
@@ -327,6 +300,26 @@ function RemoteTaskRow({
   const canRerun = task.retryable && task.status === 'failed';
 
   const statusBadge = STATUS_VARIANT[task.status] || 'outline';
+
+  // 终态行（completed/failed 且带本地 run 链接）：内容区整块可点 → 直达本地 conversation-run
+  // （改动六：终态任务并入对应工作空间组，点击回看原会话）。
+  // active 行（queued/running）与失败回显行（pinned，无本地链接）不绑点击，走右侧 claim/cancel/rerun。
+  const { projectId, localTaskId, runId } = task;
+  const clickable = !!(projectId && localTaskId && runId);
+
+  const content = (
+    <>
+      <div className="truncate text-[14px] leading-snug text-sidebar-foreground">{task.title}</div>
+      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <Badge variant={statusBadge as any} className="h-4 px-1 text-[10px] leading-none">
+          {t(`conversation.sidebar.multica.status.${task.status}`, task.status)}
+        </Badge>
+        {task.lastActivityAt && (
+          <span className="truncate">{formatLocalDateTime(task.lastActivityAt)}</span>
+        )}
+      </div>
+    </>
+  );
 
   return (
     <div
@@ -336,15 +329,17 @@ function RemoteTaskRow({
       )}
     >
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[14px] leading-snug text-sidebar-foreground">{task.title}</div>
-        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          <Badge variant={statusBadge as any} className="h-4 px-1 text-[10px] leading-none">
-            {task.status}
-          </Badge>
-          {task.lastActivityAt && (
-            <span className="truncate">{formatLocalDateTime(task.lastActivityAt)}</span>
-          )}
-        </div>
+        {clickable && projectId && localTaskId && runId ? (
+          <button
+            type="button"
+            className="block w-full cursor-pointer text-left"
+            onClick={() => onSelectRun(projectId, localTaskId, runId)}
+          >
+            {content}
+          </button>
+        ) : (
+          content
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
         {canClaim && (
@@ -377,35 +372,5 @@ function RemoteTaskRow({
         )}
       </div>
     </div>
-  );
-}
-
-/// 「最近完成」行：终态任务回看入口，整行可点 → 直达本地会话。
-function CompletedTaskRow({
-  task,
-  onSelect,
-}: {
-  task: MulticaCompletedTaskVm;
-  onSelect: () => void;
-}) {
-  const statusBadge = STATUS_VARIANT[task.status] || 'outline';
-  return (
-    <button
-      type="button"
-      className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left transition-colors hover:bg-muted/40"
-      onClick={onSelect}
-    >
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[14px] leading-snug text-sidebar-foreground">{task.title}</div>
-        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          <Badge variant={statusBadge as any} className="h-4 px-1 text-[10px] leading-none">
-            {task.status}
-          </Badge>
-          {task.completedAt && (
-            <span className="truncate">{formatLocalDateTime(task.completedAt)}</span>
-          )}
-        </div>
-      </div>
-    </button>
   );
 }

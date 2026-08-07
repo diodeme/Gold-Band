@@ -94,6 +94,23 @@ impl MulticaRuntimeState {
         self.runtime_ids.clear();
     }
 
+    /// 清单个 workspace 的 runtime_id 缓存（心跳 404 runtime_not_found 时调用）。
+    ///
+    /// runtime 行已被服务端删除/失效时，旧 runtime_id 心跳永久 404；清掉后下个 tick
+    /// `self_heal_registration` 会重注册取回新 runtime_id（自愈，开发设计 4.1）。
+    pub fn clear_runtime_id(&mut self, workspace_id: &str) {
+        self.runtime_ids.remove(workspace_id);
+    }
+
+    /// 所有已注册 `(workspace_id, runtime_id)` 对（常驻心跳遍历用--需 workspace_id 才能在
+    /// 心跳 404 时按 workspace 清缓存触发自愈重注册）。
+    pub fn runtime_id_pairs(&self) -> Vec<(String, String)> {
+        self.runtime_ids
+            .iter()
+            .map(|(ws, rid)| (ws.clone(), rid.clone()))
+            .collect()
+    }
+
     /// 登记 remote task 的本地映射（M4-c claim+start 后调用）。
     pub fn register_active_run(&mut self, remote_task_id: &str, run: ActiveRemoteRun) {
         self.active_runs
@@ -221,6 +238,39 @@ mod tests {
 
         // 无 active_runs 也照常返回（连接后即持续在线）。
         assert!(state.active_runs.is_empty());
+    }
+
+    #[test]
+    fn runtime_id_pairs_carries_workspace_for_self_heal() {
+        // 心跳遍历需 workspace_id：runtime 行失效 404 时才能按 workspace 清缓存，下 tick 自愈重注册。
+        let mut state = MulticaRuntimeState::default();
+        state.set_runtime_id("ws-1", "rt-a");
+        state.set_runtime_id("ws-2", "rt-b");
+        let mut pairs = state.runtime_id_pairs();
+        pairs.sort();
+        assert_eq!(
+            pairs,
+            vec![
+                ("ws-1".into(), "rt-a".into()),
+                ("ws-2".into(), "rt-b".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn clear_runtime_id_singular_drops_one_keeps_rest() {
+        // 心跳 404 runtime_not_found：仅清失效那个 workspace 的缓存，其余保留。
+        let mut state = MulticaRuntimeState::default();
+        state.set_runtime_id("ws-1", "rt-a");
+        state.set_runtime_id("ws-2", "rt-b");
+
+        state.clear_runtime_id("ws-1");
+
+        assert!(state.runtime_id("ws-1").is_none(), "失效 workspace 应清掉");
+        assert_eq!(state.runtime_id("ws-2"), Some("rt-b"), "其余 workspace 不受影响");
+        // 再清不存在的 -> 无副作用。
+        state.clear_runtime_id("ws-x");
+        assert_eq!(state.runtime_id("ws-2"), Some("rt-b"));
     }
 
     #[test]

@@ -1420,7 +1420,12 @@ const resources = {
             addWorkspace: "添加工作空间",
             noWorkspacesBound: "尚未绑定工作空间",
             noTasksInWorkspace: "暂无任务",
-            recentlyCompleted: "最近完成",
+            status: {
+              queued: "待领取",
+              running: "进行中",
+              completed: "已完成",
+              failed: "失败",
+            },
             dialog: {
               title: "添加工作空间",
               remoteWorkspace: "远程工作空间",
@@ -3031,7 +3036,12 @@ const resources = {
             addWorkspace: "Add Workspace",
             noWorkspacesBound: "No workspaces bound",
             noTasksInWorkspace: "No tasks",
-            recentlyCompleted: "Recently completed",
+            status: {
+              queued: "Queued",
+              running: "Running",
+              completed: "Done",
+              failed: "Failed",
+            },
             dialog: {
               title: "Add Workspace",
               remoteWorkspace: "Remote workspace",

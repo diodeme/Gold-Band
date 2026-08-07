@@ -796,7 +796,6 @@ export const browserApi: RuntimeApi = {
       workspaces: [],
       tasksByWorkspace: {},
       pinnedTasks: [],
-      recentlyCompleted: [],
       lastActiveWorkspaceId: null,
       connected: false,
     });
@@ -811,6 +810,9 @@ export const browserApi: RuntimeApi = {
       title: 'Mock remote task',
       requirement: null,
       lastActivityAt: null,
+      localTaskId: null,
+      runId: null,
+      projectId: null,
     });
   },
   startMulticaConversationRun(input) {

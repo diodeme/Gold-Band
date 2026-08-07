@@ -108,27 +108,20 @@ export interface RemoteTaskVm {
   /// 仅 claim 后回填；pending 列表（get_multica_tasks）该字段恒为 null——预填 composer 必须先 claim。
   requirement: string | null;
   lastActivityAt: string | null;
+  /// 终态行（completed/failed）才回填：本地 run 链接，供整行点击 onSelectRun(projectId, taskId, runId) 直达会话。
+  /// active 行（queued/running）恒 null。
+  localTaskId: string | null;
+  runId: string | null;
+  projectId: string | null;
 }
 
 export interface RemoteConversationSidebarVm {
   workspaces: MulticaWorkspaceRefVm[];
+  /// 该工作空间的全部远程任务（active queued/running + 终态 completed/failed）；终态行带 localTaskId/runId/projectId 可直达会话。
   tasksByWorkspace: Record<string, RemoteTaskVm[]>;
   pinnedTasks: RemoteTaskVm[];
-  recentlyCompleted: MulticaCompletedTaskVm[];
   lastActiveWorkspaceId: string | null;
   connected: boolean;
-}
-
-/// 远程 tab「最近完成」回看行（点击 onSelectRun(projectId, taskId, runId) 直达本地会话）。
-export interface MulticaCompletedTaskVm {
-  remoteTaskId: string;
-  localTaskId: string;
-  runId: string;
-  workspaceId: string;
-  projectId: string;
-  title: string;
-  status: string;
-  completedAt: string;
 }
 
 export interface UpdateInfoVm {

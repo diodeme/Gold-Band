@@ -1667,6 +1667,9 @@ pub async fn connect_multica(
         .map_err(command_error)?;
     // 连接态变更 → 通知任务列表 + 设置页 re-fetch（跨视图同步）。
     crate::multica::bridge::emit_multica_settings_updated(&app_handle);
+    // 即时注册所有已绑定 workspace（根因修复 Bug 1：旧实现 connect 不注册，首连后心跳空转）。
+    // await：claim 需 runtime_id，注册完成后才返回，避免用户连上立即领取撞 RuntimeOffline。
+    crate::multica::loop_::register_all_bound_workspaces(&app_handle).await;
     let updated_context = state.context().map_err(command_error)?;
     Ok(multica_settings(&updated_context.config))
 }

@@ -3,9 +3,9 @@
 //! 订阅 `RuntimeLifecycleBus`，把本地会话 lifecycle 事件转译为 multica 终态上报：
 //! - `NodeCompleted`：读 `worker-ref.json` 采 ACP session_id → `pin_task_session` + 落
 //!   `multica_task_conversations`（断点续跑依据）；session 变更才写（避免每节点重复 pin）。
-//! - `RunCompleted`：按 `RunOutcome` 穷举上报（Success→complete / Failure→fail+记
-//!   pending_issues / Killed→fail(timeout)，agent 真死；cancel 路径皆经 run_pause→Paused
-//!   从不产生 Killed，故无需 cancel-detection 上下文消歧）。
+//! - `RunCompleted`：按 `RunOutcome` 穷举上报（Success→complete（complete 送达后再用 PAT 把关联
+//!   issue 流转到 done，接入方案 D2）/ Failure→fail+记 pending_issues / Killed→fail(timeout)，agent
+//!   真死；cancel 路径皆经 run_pause→Paused 从不产生 Killed，故无需 cancel-detection 上下文消歧）。
 //! - `RunPaused`/`InterventionRequested`：**绝对不上报终态**（multica 继续 running，本地处理
 //!   elicitation/permission，开发设计 2.5 Paused 盲区）。
 //!
@@ -26,7 +26,7 @@ use gold_band::runtime::WorkerRefState;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tracing::warn;
 
-use crate::multica::client::MulticaClient;
+use crate::multica::client::{MulticaClient, MULTICA_ISSUE_DONE_STATUS};
 use crate::multica::config::{get_pat, multica_base_url, multica_settings};
 use crate::multica::state::{ActiveRemoteRun, SharedMulticaState};
 use crate::state::{DesktopContext, DesktopState};
@@ -277,6 +277,10 @@ async fn handle_node_completed(
 }
 
 /// RunCompleted：按 outcome 4 分支上报终态 + 清本地索引。
+///
+/// Success 分支在 `complete_task` 送达后，额外用码灵 PAT 把关联 issue 流转到 `done`（接入方案 D2：
+/// 码灵作为中介）。该步骤失败仅记日志、不阻断终态（complete 已送达）；issue 关联缺失（issue_id 为空，
+/// 如非 issue 来源任务）则跳过。
 async fn handle_run_completed(
     app: AppHandle,
     remote_task_id: String,
@@ -298,11 +302,29 @@ async fn handle_run_completed(
             session_id,
             work_dir,
         } => {
-            if let Err(e) = client
+            match client
                 .complete_task(&remote_task_id, &output, session_id.as_deref(), work_dir.as_deref())
                 .await
             {
-                warn!(task = %remote_task_id, %e, "multica complete_task failed");
+                Ok(()) => {
+                    // complete_task 送达后，码灵用自身 PAT 把关联 issue 流转到 done（接入方案 D2：码灵作为
+                    // 中介，非 agent 直调 multica API）。失败仅记日志——任务终态已上报，issue 状态推进
+                    // 不阻断任务完成（issue 保持原状，server 扫描器/用户兜底）。
+                    if let Some(issue) = run.issue_id.as_deref().filter(|s| !s.trim().is_empty()) {
+                        if let Err(e) = client
+                            .update_issue_status(&run.workspace_id, issue, MULTICA_ISSUE_DONE_STATUS)
+                            .await
+                        {
+                            warn!(
+                                task = %remote_task_id,
+                                issue = %issue,
+                                %e,
+                                "multica update_issue_status(done) failed (task already completed; ignored)"
+                            );
+                        }
+                    }
+                }
+                Err(e) => warn!(task = %remote_task_id, %e, "multica complete_task failed"),
             }
             PendingUpdate::ClearOnSuccess
         }

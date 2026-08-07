@@ -100,6 +100,21 @@ export function isWorkflowAgentDoctorReady(agent: ManagedAgentVm): boolean {
 export function workflowEditorSupportedAgents(agentRegistry: AgentRegistryVm | null): ManagedAgentVm[] {
   return agentRegistry?.agents.filter((agent) => agent.supported) ?? [];
 }
+export function workerAgentSelectionPatch(provider: string): Partial<WorkflowWorkerNodeDsl> {
+  return {
+    provider,
+    permission_mode: undefined,
+    model: undefined,
+    config_options: undefined,
+  };
+}
+
+export function optionalWorkerConfigOptions(
+  options: Record<string, string>,
+): Record<string, string> | undefined {
+  return Object.keys(options).length > 0 ? options : undefined;
+}
+
 
 function AgentSelectItemContent({ agent, unavailableLabel }: { agent: ManagedAgentVm; unavailableLabel: string }) {
   const unavailableReason = isWorkflowAgentDoctorReady(agent)
@@ -775,7 +790,7 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
         />
       </Field>
       <Field label={t('workflowEditor.agent')} required errors={errorsFor('provider')}>
-        <Select value={node.provider ?? ''} onValueChange={(provider) => updateWorker({ provider, permission_mode: null, model: null, config_options: {} })}>
+        <Select value={node.provider ?? ''} onValueChange={(provider) => updateWorker(workerAgentSelectionPatch(provider))}>
           <SelectTrigger className={errorClass(errorsFor('provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
           <SelectContent>{agents.map((agent) => (
             <SelectItem value={agent.agentType} key={agent.agentType} disabled={!isWorkflowAgentDoctorReady(agent)}>
@@ -794,9 +809,11 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
             thoughtValue={thoughtLevel ? node.config_options?.[thoughtLevel.id] : null}
             compact
             triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('model')))}
-            onModelChange={(model) => updateWorker({ model })}
+            onModelChange={(model) => updateWorker({ model: model ?? undefined })}
             onThoughtChange={(optionId, value) => updateWorker({
-              config_options: updateAcpConfigOptionOverride(node.config_options, optionId, value),
+              config_options: optionalWorkerConfigOptions(
+                updateAcpConfigOptionOverride(node.config_options, optionId, value),
+              ),
             })}
           />
         </Field>
@@ -805,7 +822,7 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
         <ProfilePicker profiles={profiles} value={node.profile ?? null} invalid={errorsFor('profile').length > 0} onChange={(profile) => updateWorker({ profile })} t={t} />
       </Field>
       <Field label={t('workflowEditor.permissionMode')} errors={errorsFor('permission_mode')}>
-        <Select value={node.permission_mode ?? UNSPECIFIED_PERMISSION_MODE} onValueChange={(value) => updateWorker({ permission_mode: value === UNSPECIFIED_PERMISSION_MODE ? null : value })}>
+        <Select value={node.permission_mode ?? UNSPECIFIED_PERMISSION_MODE} onValueChange={(value) => updateWorker({ permission_mode: value === UNSPECIFIED_PERMISSION_MODE ? undefined : value })}>
           <SelectTrigger className={errorClass(errorsFor('permission_mode'))}>
             <SelectValue placeholder={t('workflowEditor.permissionModeUnspecified')} />
           </SelectTrigger>

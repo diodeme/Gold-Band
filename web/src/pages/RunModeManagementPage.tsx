@@ -24,7 +24,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { displayAppError } from '@/i18n';
 import { pruneMissingAutoConfigReferences, pruneMissingAutoAllowedProfileIds, pruneMissingAutoAllowedWorkflowIds, selectableAgentOptions, selectableWorkflowOptions, validateAutoConfig } from '@/lib/run-mode-validation';
-import { createBlankWorkflowDraft, workflowTemplateDisplayName } from '@/lib/workflow-template';
+import { createBlankWorkflowDraft, shouldShowDefaultWorkflowSaveAsNotice, workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { cn } from '@/lib/utils';
 
 interface RunModeManagementPageProps {
@@ -77,6 +77,7 @@ export function TemplateActionRow({
   label,
   picker,
   auxiliaryAction,
+  notice,
   showSaveCurrent = true,
   saving,
   saveCurrentLabel,
@@ -91,6 +92,7 @@ export function TemplateActionRow({
   label: ReactNode;
   picker: ReactNode;
   auxiliaryAction?: ReactNode;
+  notice?: ReactNode;
   showSaveCurrent?: boolean;
   saving: boolean;
   saveCurrentLabel: string;
@@ -103,19 +105,26 @@ export function TemplateActionRow({
   onSaveAs: () => void;
 }) {
   return (
-    <div data-testid="template-action-row" className="flex flex-wrap items-center gap-3">
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
-      {picker}
-      {auxiliaryAction}
-      {showSaveCurrent ? (
-        <Button size="sm" disabled={saving} onClick={onSaveCurrent}>
-          {saving ? savingLabel : saveCurrentLabel}
+    <div data-testid="template-action-row" className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-xs font-medium text-muted-foreground">{label}</span>
+        {picker}
+        {auxiliaryAction}
+        {showSaveCurrent ? (
+          <Button size="sm" disabled={saving} onClick={onSaveCurrent}>
+            {saving ? savingLabel : saveCurrentLabel}
+          </Button>
+        ) : null}
+        <Input className="h-8 w-40" disabled={saving} value={name} placeholder={namePlaceholder} onChange={(event) => onNameChange(event.target.value)} />
+        <Button size="sm" disabled={!name.trim() || saving} onClick={onSaveAs}>
+          {saveAsLabel}
         </Button>
+      </div>
+      {notice ? (
+        <p data-testid="template-action-notice" role="status" className="text-xs text-destructive">
+          {notice}
+        </p>
       ) : null}
-      <Input className="h-8 w-40" disabled={saving} value={name} placeholder={namePlaceholder} onChange={(event) => onNameChange(event.target.value)} />
-      <Button size="sm" disabled={!name.trim() || saving} onClick={onSaveAs}>
-        {saveAsLabel}
-      </Button>
     </div>
   );
 }
@@ -676,6 +685,11 @@ export function RunModeManagementPage({
   const selectedWfTemplate = effectiveWorkflowTemplates?.templates.find((t) => t.id === wfEditTemplateId) ?? null;
   const wfTemplateLabel = selectedWfTemplate ? workflowTemplateDisplayName(selectedWfTemplate, t) : (wfEditWorkflow ? t('taskList.create.unsavedWorkflowTemplate') : t('taskList.create.workflowTemplatePlaceholder'));
   const canUpdateWfTemplate = Boolean(wfEditTemplateId && wfEditTemplateId !== 'default');
+  const showDefaultWorkflowSaveAsNotice = shouldShowDefaultWorkflowSaveAsNotice(
+    wfEditTemplateId,
+    wfEditWorkflow,
+    selectedWfTemplate?.workflow,
+  );
   const lastUsedWfTemplate = effectiveWorkflowTemplates?.templates.find((t) => t.id === effectiveWorkflowTemplates?.lastUsedTemplateId) ?? null;
   const showWfLastUsedHint = Boolean(lastUsedWfTemplate && wfEditTemplateId !== lastUsedWfTemplate.id && !wfLastUsedHintDismissed);
 
@@ -1262,6 +1276,7 @@ export function RunModeManagementPage({
                   {t('taskList.create.selectLastUsedWorkflow', { name: workflowTemplateDisplayName(lastUsedWfTemplate, t) })}
                 </button>
               ) : null}
+              notice={showDefaultWorkflowSaveAsNotice ? t('taskList.create.defaultWorkflowSaveAsNotice') : null}
               showSaveCurrent={canUpdateWfTemplate}
               saving={wfSaving}
               saveCurrentLabel={t('taskList.create.saveCurrentWorkflow')}

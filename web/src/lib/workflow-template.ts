@@ -9,6 +9,22 @@ export function workflowTemplateDisplayName(template: WorkflowTemplate, t: Trans
     : template.name;
 }
 
+export function hasWorkflowDraftChanges(
+  workflow: WorkflowDsl | null | undefined,
+  baseline: WorkflowDsl | null | undefined,
+): boolean {
+  return Boolean(workflow && baseline && JSON.stringify(workflow) !== JSON.stringify(baseline));
+}
+
+export function shouldShowDefaultWorkflowSaveAsNotice(
+  templateId: string | null | undefined,
+  workflow: WorkflowDsl | null | undefined,
+  baseline: WorkflowDsl | null | undefined,
+): boolean {
+  return templateId === DEFAULT_WORKFLOW_TEMPLATE_ID
+    && hasWorkflowDraftChanges(workflow, baseline);
+}
+
 export function createBlankWorkflowDraft(): WorkflowDsl {
   return {
     version: '0.1',

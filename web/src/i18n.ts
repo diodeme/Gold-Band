@@ -589,6 +589,8 @@ const resources = {
           lastUsedWorkflowPrefix: "上次创建使用的是：",
           selectLastUsedWorkflow: "选择上次使用的工作流模板 {{name}}",
           workflowDirty: "有未保存改动",
+          defaultWorkflowSaveAsNotice:
+            "默认工作流不可覆盖，请输入名称并保存为新的工作流。",
           workflowTemplateName: "新工作流名称",
           saveTask: "保存任务",
           savingTask: "保存中…",
@@ -2106,6 +2108,8 @@ const resources = {
           lastUsedWorkflowPrefix: "Last created with: ",
           selectLastUsedWorkflow: "Select last used workflow template {{name}}",
           workflowDirty: "Unsaved changes",
+          defaultWorkflowSaveAsNotice:
+            "The default workflow cannot be overwritten. Enter a name and save it as a new workflow.",
           workflowTemplateName: "New workflow name",
           saveTask: "Save task",
           savingTask: "Saving…",

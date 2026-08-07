@@ -26,7 +26,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
-import { createBlankWorkflowDraft, workflowTemplateDisplayName } from '@/lib/workflow-template';
+import { createBlankWorkflowDraft, shouldShowDefaultWorkflowSaveAsNotice, workflowTemplateDisplayName } from '@/lib/workflow-template';
 
 type TaskListLoading = 'initial' | 'manual' | null;
 
@@ -317,6 +317,11 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
     workflow,
   } = draft;
   const workflowDirty = Boolean(workflow && baseWorkflow && canonicalWorkflow(workflow) !== canonicalWorkflow(baseWorkflow));
+  const showDefaultWorkflowSaveAsNotice = shouldShowDefaultWorkflowSaveAsNotice(
+    selectedTemplateId,
+    workflow,
+    baseWorkflow,
+  );
   const updateDraft = (patch: Partial<CreateTaskDraftState>) => {
     onDraftChange((current) => ({ ...current, ...patch }));
   };
@@ -758,10 +763,17 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
                     {workflowDirty ? <Badge variant="outline">{t('taskList.create.workflowDirty')}</Badge> : null}
                   </div>
                   {workflowDirty ? (
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                      {canUpdateSelectedTemplate ? <Button variant="outline" size="sm" disabled={saving} onClick={() => void saveCurrentTemplateChanges()}>{saving ? t('taskList.create.savingWorkflowTemplate') : t('taskList.create.saveCurrentWorkflow')}</Button> : null}
-                      <Input className="sm:w-52" value={saveTemplateName} placeholder={t('taskList.create.workflowTemplateName')} onChange={(event) => updateDraft({ saveTemplateName: event.target.value })} />
-                      <Button variant="outline" size="sm" disabled={!saveTemplateName.trim() || saving} onClick={() => void saveCurrentAsTemplate()}>{t('taskList.create.saveAsWorkflow')}</Button>
+                    <div className="space-y-1.5">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                        {canUpdateSelectedTemplate ? <Button variant="outline" size="sm" disabled={saving} onClick={() => void saveCurrentTemplateChanges()}>{saving ? t('taskList.create.savingWorkflowTemplate') : t('taskList.create.saveCurrentWorkflow')}</Button> : null}
+                        <Input className="sm:w-52" value={saveTemplateName} placeholder={t('taskList.create.workflowTemplateName')} onChange={(event) => updateDraft({ saveTemplateName: event.target.value })} />
+                        <Button variant="outline" size="sm" disabled={!saveTemplateName.trim() || saving} onClick={() => void saveCurrentAsTemplate()}>{t('taskList.create.saveAsWorkflow')}</Button>
+                      </div>
+                      {showDefaultWorkflowSaveAsNotice ? (
+                        <p role="status" className="text-xs text-destructive">
+                          {t('taskList.create.defaultWorkflowSaveAsNotice')}
+                        </p>
+                      ) : null}
                     </div>
                   ) : null}
                 </AppCard>

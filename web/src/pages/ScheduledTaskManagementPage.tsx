@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlarmClock, MoreHorizontal, Pause, Play, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
-import { deleteScheduledTask, getScheduledTask, listScheduledTasks, setScheduledTaskEnabled, updateScheduledTask } from '@/api';
+import { deleteScheduledTask, getScheduledTask, listScheduledTasks, runScheduledTaskNow, setScheduledTaskEnabled, subscribeScheduledTaskUpdates, updateScheduledTask } from '@/api';
 import { Button } from '@/components/ui/button';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -17,10 +17,19 @@ const modeLabels: Record<string, string> = {
 };
 
 export function scheduledTaskStatusLabel(status: string) {
-  return ({ enabled: '运行中', paused: '已停用', completed: '已完成', failed: '执行失败' } as Record<string, string>)[status] ?? status;
+  return ({ enabled: '运行中', paused: '已停用', completed: '已完成', failed: '执行失败', attention_required: '需要处理' } as Record<string, string>)[status] ?? status;
 }
 
-export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate }: { projectId?: string; onCreate?: () => void }) {
+export function formatTimestamp(value?: string | null) {
+  if (!value) return '--';
+  try {
+    return new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
+export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, onOpenDetail }: { projectId?: string; onCreate?: () => void; onOpenDetail?: (task: ScheduledTaskVm) => void }) {
   const [tasks, setTasks] = useState<ScheduledTaskVm[]>([]);
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [workspaceFilter, setWorkspaceFilter] = useState('all');
@@ -41,6 +50,28 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate }:
     void loadTasks();
   }, [loadTasks]);
 
+  // Local-merge: update only the matching task without a full reload.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void subscribeScheduledTaskUpdates((event) => {
+      setTasks((prev) =>
+        prev.map((item) =>
+          item.id === event.scheduledTaskId && event.task
+            ? { ...event.task!, workspaceName: item.workspaceName }
+            : item,
+        ),
+      );
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   const workspaces = useMemo(
     () => Array.from(new Set(tasks.map((task) => task.workspaceName))).sort((left, right) => left.localeCompare(right)),
     [tasks],
@@ -56,6 +87,11 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate }:
     void setScheduledTaskEnabled(task.projectId, task.id, enabled).then((updated) => {
       setTasks((current) => current.map((item) => item.id === updated.id ? updated : item));
     });
+  };
+
+  const runNow = async (task: ScheduledTaskVm) => {
+    await runScheduledTaskNow(task.projectId, task.id);
+    await loadTasks();
   };
 
   const openEdit = async (task: ScheduledTaskVm) => {
@@ -123,12 +159,16 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate }:
       {!loading && visibleTasks.length === 0 ? <div className="border-y border-border/60 py-14 text-center text-sm text-muted-foreground">暂无符合条件的定时任务</div> : null}
       {!loading && visibleTasks.length > 0 ? (
         <section className="min-w-[980px]">
-          <div className="grid grid-cols-[minmax(260px,1.35fr)_minmax(150px,0.9fr)_minmax(170px,1fr)_minmax(150px,0.9fr)_minmax(170px,1fr)_auto_auto] items-center gap-4 border-b border-border/60 px-3 pb-3 text-xs text-muted-foreground">
-            <span>任务</span><span>工作区</span><span>计划</span><span>下次执行</span><span>最近运行</span><span>启用</span><span />
+          <div className="grid grid-cols-[minmax(260px,1.35fr)_minmax(170px,1fr)_minmax(150px,0.9fr)_minmax(170px,1fr)_auto_auto] items-center gap-4 border-b border-border/60 px-3 pb-3 text-xs text-muted-foreground">
+            <span>任务</span><span>计划</span><span>下次执行</span><span>最近运行</span><span>启用</span><span />
           </div>
           <div className="divide-y divide-border/60">
             {visibleTasks.map((task) => (
-              <div key={task.id} className="grid grid-cols-[minmax(260px,1.35fr)_minmax(150px,0.9fr)_minmax(170px,1fr)_minmax(150px,0.9fr)_minmax(170px,1fr)_auto_auto] items-center gap-4 px-3 py-4 transition-colors hover:bg-muted/30">
+              <div
+                key={task.id}
+                className="grid cursor-pointer grid-cols-[minmax(260px,1.35fr)_minmax(170px,1fr)_minmax(150px,0.9fr)_minmax(170px,1fr)_auto_auto] items-center gap-4 px-3 py-4 transition-colors hover:bg-muted/30"
+                onClick={() => onOpenDetail?.(task)}
+              >
                 <div className="flex min-w-0 items-center gap-3">
                   <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary"><AlarmClock className="size-4" /></span>
                   <div className="min-w-0">
@@ -137,35 +177,37 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate }:
                   </div>
                 </div>
                 <div className="min-w-0 text-xs">
-                  <div className="truncate font-medium text-foreground">{task.workspaceName}</div>
-                  <div className="mt-1 truncate text-muted-foreground">{task.projectId}</div>
-                </div>
-                <div className="min-w-0 text-xs">
                   <div className="truncate font-medium text-foreground">{task.scheduleLabel || task.schedule}</div>
                   <div className="mt-1 truncate text-muted-foreground">{task.timezoneLabel}</div>
                 </div>
                 <div className="min-w-0 text-xs">
-                  <div className="truncate font-medium text-foreground">{task.nextAt ?? '已完成'}</div>
+                  <div className="truncate font-medium text-foreground">{task.enabled ? (task.nextAt ?? '已完成') : '已停用'}</div>
                   <div className="mt-1 text-muted-foreground">{task.enabled ? '等待下一次执行' : '任务已停用'}</div>
                 </div>
                 <div className="min-w-0 text-xs">
-                  <div className={`truncate font-medium ${task.lastTriggerStatus === 'failed' ? 'text-destructive' : 'text-foreground'}`}>{task.lastTriggerLabel}</div>
+                  <div className="truncate font-medium text-foreground">{task.lastTriggerLabel}</div>
                   <div className="mt-1 truncate text-muted-foreground">{task.lastTriggerStatus === 'skipped' ? '队列保护已跳过本次' : scheduledTaskStatusLabel(task.status)}</div>
                 </div>
-                <Switch checked={task.enabled} onCheckedChange={(enabled) => updateEnabled(task, enabled)} aria-label={task.enabled ? '停用定时任务' : '启用定时任务'} />
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon" className="size-8" aria-label="更多操作"><MoreHorizontal className="size-4" /></Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={() => void openEdit(task)} disabled={editLoading}><Pencil className="size-4" />编辑任务</DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => updateEnabled(task, !task.enabled)}>
-                      {task.enabled ? <Pause className="size-4" /> : <Play className="size-4" />}
-                      {task.enabled ? '停用任务' : '启用任务'}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeleting(task)}><Trash2 className="size-4" />删除任务</DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                <div onClick={(e) => e.stopPropagation()}>
+                  <Switch checked={task.enabled} onCheckedChange={(enabled) => updateEnabled(task, enabled)} aria-label={task.enabled ? '停用定时任务' : '启用定时任务'} />
+                </div>
+                <div onClick={(e) => e.stopPropagation()}>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="size-8" aria-label="更多操作"><MoreHorizontal className="size-4" /></Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => onOpenDetail?.(task)}><MoreHorizontal className="size-4" />查看详情</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => void runNow(task)}><Play className="size-4" />立即执行</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => void openEdit(task)} disabled={editLoading}><Pencil className="size-4" />编辑任务</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => updateEnabled(task, !task.enabled)}>
+                        {task.enabled ? <Pause className="size-4" /> : <Play className="size-4" />}
+                        {task.enabled ? '停用任务' : '启用任务'}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeleting(task)}><Trash2 className="size-4" />删除任务</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
               </div>
             ))}
           </div>

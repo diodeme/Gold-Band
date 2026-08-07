@@ -213,6 +213,10 @@ impl GoldBandPaths {
     }
 
     pub fn scheduler_db_path(&self) -> Utf8PathBuf {
+        self.runtime_root.join("scheduled-tasks.db")
+    }
+
+    pub fn legacy_scheduler_db_path(&self) -> Utf8PathBuf {
         self.user_gold_band_root.join("scheduled-tasks.db")
     }
 
@@ -1359,6 +1363,19 @@ mod tests {
                 .to_string()
                 .replace('\\', "/")
                 .ends_with("/scheduled-tasks.db")
+        );
+    }
+
+    #[test]
+    fn scheduler_db_path_is_scoped_to_project_runtime() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let paths = GoldBandPaths::new(repo_root);
+
+        assert_eq!(
+            paths.scheduler_db_path(),
+            paths.runtime_root.join("scheduled-tasks.db")
         );
     }
 }

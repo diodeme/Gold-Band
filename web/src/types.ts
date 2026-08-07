@@ -936,6 +936,7 @@ export type ConversationPage =
   | { kind: 'agents' }
   | { kind: 'contexts' }
   | { kind: 'scheduled-tasks' }
+  | { kind: 'scheduled-task-detail'; projectId: string; scheduledTaskId: string }
   | { kind: 'settings' };
 
 export interface ScheduledTaskVm {
@@ -956,6 +957,42 @@ export interface ScheduledTaskVm {
   lastTriggerLabel: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ScheduledOccurrenceVm {
+  id: string;
+  scheduledTaskId: string;
+  scheduledAt: string;
+  triggerKind: 'scheduled' | 'manual' | string;
+  status: 'pending' | 'running' | 'retrying' | 'succeeded' | 'failed' | 'skipped' | 'missed' | 'attention_required' | string;
+  attempt: number;
+  errorCode?: string | null;
+  errorParams?: Record<string, unknown> | null;
+  taskId?: string | null;
+  runId?: string | null;
+  roundId?: string | null;
+  attemptId?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+}
+
+export interface ScheduledTaskDiagnosticsVm {
+  scheduledTaskId: string;
+  projectId: string;
+  nextAt?: string | null;
+  lastStatus?: string | null;
+  lastError?: string | null;
+  runCount: number;
+  retryCount: number;
+  occurrences: ScheduledOccurrenceVm[];
+}
+
+export interface RunScheduledTaskResultVm {
+  occurrence: ScheduledOccurrenceVm;
+  taskId?: string | null;
+  runId?: string | null;
+  roundId?: string | null;
+  attemptId?: string | null;
 }
 
 export type ScheduledEveryUnit = 'minutes' | 'hours';

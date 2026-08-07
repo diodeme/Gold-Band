@@ -21,6 +21,19 @@ pub(crate) fn next_task_id(tasks_dir: &Utf8Path) -> Result<String> {
     Ok(format!("task-{max:03}", max = max_id + 1))
 }
 
+pub(crate) fn reserve_next_task_dir(tasks_dir: &Utf8Path) -> Result<(String, Utf8PathBuf)> {
+    fs::create_dir_all(tasks_dir.as_std_path())?;
+    loop {
+        let task_id = next_task_id(tasks_dir)?;
+        let task_dir = tasks_dir.join(&task_id);
+        match fs::create_dir(task_dir.as_std_path()) {
+            Ok(()) => return Ok((task_id, task_dir)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 pub(crate) fn next_run_id(runs_dir: &Utf8Path) -> Result<String> {
     let mut max_id = 0_u32;
     if runs_dir.exists() {
@@ -178,6 +191,44 @@ mod tests {
                 "run-007".to_string(),
                 "run-008".to_string(),
                 "run-009".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn reserve_next_task_dir_allocates_unique_owned_dirs_concurrently() {
+        let dir = TempDir::new().unwrap();
+        let tasks_dir = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(tasks_dir.join("task-001")).unwrap();
+        let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles = (0..8)
+            .map(|_| {
+                let tasks_dir = tasks_dir.clone();
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    reserve_next_task_dir(&tasks_dir).unwrap().0
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut task_ids = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+
+        task_ids.sort();
+
+        assert_eq!(
+            task_ids,
+            vec![
+                "task-002".to_string(),
+                "task-003".to_string(),
+                "task-004".to_string(),
+                "task-005".to_string(),
+                "task-006".to_string(),
+                "task-007".to_string(),
+                "task-008".to_string(),
+                "task-009".to_string(),
             ]
         );
     }

@@ -30,7 +30,8 @@ schemars = { version = "0.8", features = ["derive"] }
 jsonschema = { version = "0.17", default-features = false }
 minijinja = "2"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util"] }
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util", "sync", "time", "test-util"] }
+tokio-util = { version = "0.7", features = ["time"] }
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-appender = "0.2"

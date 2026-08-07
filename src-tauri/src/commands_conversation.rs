@@ -16,7 +16,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::commands::{
-    CommandErrorVm, CommandResult, acp_session_update_emitter, command_error, resolve_command_app,
+    CommandErrorVm, CommandResult, acp_session_update_emitter, command_error,
     spawn_blocking_command,
 };
 use crate::conversation_workspace::{
@@ -27,22 +27,16 @@ use crate::state::DesktopContext;
 use crate::state::DesktopState;
 use crate::view_models::ContentVm;
 
-fn scheduled_task_error(error: anyhow::Error) -> CommandErrorVm {
-    let message = error.to_string();
-    let code = if message.contains("workflow template not found") {
-        "scheduled-task.workflow-not-found"
-    } else if message.contains("direct config is required") {
-        "scheduled-task.direct-agent-required"
-    } else if message.contains("auto config is required") {
-        "scheduled-task.auto-agent-required"
-    } else if message.contains("unsupported scheduled task mode") {
-        "scheduled-task.mode-unsupported"
-    } else if message.contains("No such file") || message.contains("cannot find the path") {
-        "scheduled-task.attachment-not-found"
-    } else {
-        "scheduled-task.invalid"
-    };
-    CommandErrorVm::new(code, serde_json::json!({}))
+fn scheduled_service_error(
+    error: crate::scheduled_service::ScheduledServiceError,
+) -> CommandErrorVm {
+    let mut params = error.params;
+    if let Some(trace_id) = error.trace_id {
+        if let Some(object) = params.as_object_mut() {
+            object.insert("traceId".to_string(), serde_json::json!(trace_id));
+        }
+    }
+    CommandErrorVm::new(error.code.to_string(), params)
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,41 +158,158 @@ pub fn list_scheduled_tasks(
     state: State<'_, DesktopState>,
     project_id: Option<String>,
 ) -> CommandResult<Vec<crate::view_models_conversation::ScheduledTaskVm>> {
-    let context = state.context().map_err(command_error)?;
-    let app = context.app();
-    let app_state = app.load_state().map_err(command_error)?;
-    let sources =
-        conversation_sidebar_sources(&context, &app, &app_state).map_err(command_error)?;
-    crate::view_models_conversation::scheduled_task_vms_from_sources(
-        &sources,
-        project_id.as_deref(),
-    )
-    .map_err(command_error)
+    let service = state.scheduled_service().map_err(command_error)?;
+    service
+        .list(project_id.as_deref())
+        .map_err(scheduled_service_error)?
+        .into_iter()
+        .map(|definition| {
+            let workspace_name = service
+                .workspace_name(&definition.project_id)
+                .map_err(scheduled_service_error)?;
+            Ok(
+                crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
+                    &definition,
+                    &workspace_name,
+                ),
+            )
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub fn list_scheduled_task_occurrences(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    scheduled_task_id: String,
+    limit: Option<u32>,
+) -> CommandResult<Vec<crate::view_models_conversation::ScheduledOccurrenceVm>> {
+    state
+        .scheduled_service()
+        .map_err(command_error)?
+        .list_occurrences(
+            &project_id,
+            &scheduled_task_id,
+            limit.unwrap_or(50).clamp(1, 200) as usize,
+        )
+        .map(|occurrences| {
+            occurrences
+                .iter()
+                .filter(|occurrence| {
+                    !matches!(
+                        occurrence.status,
+                        gold_band::scheduler::occurrence::OccurrenceStatus::Skipped
+                            | gold_band::scheduler::occurrence::OccurrenceStatus::Missed
+                    )
+                })
+                .map(crate::view_models_conversation::ScheduledOccurrenceVm::from_occurrence)
+                .collect()
+        })
+        .map_err(scheduled_service_error)
+}
+
+#[tauri::command]
+pub fn get_scheduled_task_diagnostics(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    scheduled_task_id: String,
+) -> CommandResult<crate::view_models_conversation::ScheduledTaskDiagnosticsVm> {
+    let service = state.scheduled_service().map_err(command_error)?;
+    let record = service
+        .get(&project_id, &scheduled_task_id)
+        .map_err(scheduled_service_error)?;
+    let occurrences = service
+        .list_occurrences(&project_id, &scheduled_task_id, 200)
+        .map_err(scheduled_service_error)?;
+    Ok(scheduled_task_diagnostics_vm(
+        project_id,
+        scheduled_task_id,
+        record,
+        occurrences,
+    ))
+}
+
+fn scheduled_task_diagnostics_vm(
+    project_id: String,
+    scheduled_task_id: String,
+    record: gold_band::scheduler::db::ScheduledJobRecord,
+    occurrences: Vec<gold_band::scheduler::occurrence::ScheduledOccurrence>,
+) -> crate::view_models_conversation::ScheduledTaskDiagnosticsVm {
+    let run_count = occurrences
+        .iter()
+        .filter(|occurrence| occurrence.run_id.is_some())
+        .count() as u64;
+    crate::view_models_conversation::ScheduledTaskDiagnosticsVm {
+        scheduled_task_id,
+        project_id,
+        next_at: record.next_run_at.map(|value| value.to_rfc3339()),
+        last_status: record.definition.last_trigger_status,
+        last_error: record.definition.last_error,
+        run_count,
+        retry_count: record.definition.retry_count,
+        occurrences: occurrences
+            .iter()
+            .map(crate::view_models_conversation::ScheduledOccurrenceVm::from_occurrence)
+            .collect(),
+    }
+}
+
+#[tauri::command]
+pub async fn run_scheduled_task_now(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    scheduled_task_id: String,
+) -> CommandResult<crate::view_models_conversation::RunScheduledTaskResultVm> {
+    let service = state.scheduled_service().map_err(command_error)?;
+    let result = service
+        .run_now(&project_id, &scheduled_task_id)
+        .await
+        .map_err(scheduled_service_error)?;
+    let links = result.immediate_links;
+    Ok(crate::view_models_conversation::RunScheduledTaskResultVm {
+        occurrence: crate::view_models_conversation::ScheduledOccurrenceVm::from_occurrence(
+            &result.occurrence,
+        ),
+        task_id: links
+            .as_ref()
+            .and_then(|links| links.task_id.clone())
+            .or(result.occurrence.task_id),
+        run_id: links
+            .as_ref()
+            .and_then(|links| links.run_id.clone())
+            .or(result.occurrence.run_id),
+        round_id: links
+            .as_ref()
+            .and_then(|links| links.round_id.clone())
+            .or(result.occurrence.round_id),
+        attempt_id: links
+            .as_ref()
+            .and_then(|links| links.attempt_id.clone())
+            .or(result.occurrence.attempt_id),
+    })
 }
 
 #[tauri::command]
 pub fn set_scheduled_task_enabled(
-    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
     scheduled_task_id: String,
     enabled: bool,
 ) -> CommandResult<crate::view_models_conversation::ScheduledTaskVm> {
-    let context = state.context().map_err(command_error)?;
-    let state_config = context.app().load_state().map_err(command_error)?;
-    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-    let store = gold_band::scheduler::store::ScheduledTaskStore::new(app.paths.clone());
-    let definition = store
-        .set_enabled(&scheduled_task_id, enabled)
-        .map_err(command_error)?;
-    gold_band::scheduler::db::ScheduledTaskDatabase::open(app.paths.scheduler_db_path())
-        .and_then(|database| database.save_job_definition(&definition))
-        .map_err(|error| command_error(anyhow::anyhow!(error)))?;
-    crate::scheduled_runtime::emit_scheduled_task_updated(&app_handle, &definition);
-    let workspace_name = workspace_name_for_project(&state_config, &definition.project_id);
+    let service = state.scheduled_service().map_err(command_error)?;
+    let project_id = match project_id {
+        Some(project_id) => project_id,
+        None => state.app().map_err(command_error)?.paths.project_id,
+    };
+    let record = service
+        .set_enabled(&project_id, &scheduled_task_id, enabled)
+        .map_err(scheduled_service_error)?;
+    let workspace_name = service
+        .workspace_name(&record.definition.project_id)
+        .map_err(scheduled_service_error)?;
     Ok(
         crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
-            &definition,
+            &record.definition,
             &workspace_name,
         ),
     )
@@ -206,102 +317,17 @@ pub fn set_scheduled_task_enabled(
 
 #[tauri::command]
 pub fn create_scheduled_task(
-    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::CreateScheduledTaskInputVm,
 ) -> CommandResult<crate::view_models_conversation::ScheduledTaskVm> {
-    let context = state.context().map_err(command_error)?;
-    let global_app = context.app();
-    let app_state = global_app.load_state().map_err(command_error)?;
-    let Some((workspace_path, resolved_project_id)) =
-        workspace_entry_for_project(&app_state, &input.project_id)
-    else {
-        return Err(CommandErrorVm::new(
-            "workspace.not-found",
-            serde_json::json!({ "projectId": input.project_id }),
-        ));
-    };
-    if input.content.trim().is_empty() {
-        return Err(CommandErrorVm::new(
-            "content.required",
-            serde_json::json!({}),
-        ));
-    }
-    let app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
-    let validation_input = crate::view_models_conversation::ConversationCreateInputVm {
-        project_id: resolved_project_id.clone(),
-        content: input.content.clone(),
-        run_mode: input.run_mode.clone(),
-        workflow_template_id: input.workflow_template_id.clone(),
-        include_interview: input.include_interview,
-        direct_config: input.direct_config.clone(),
-        auto_config: input.auto_config.clone(),
-        attachment_paths: input.attachment_paths.clone(),
-        scheduled_task_id: None,
-        scheduled_content_fingerprint: None,
-    };
-    let validation =
-        crate::view_models_conversation::validate_conversation_create_vm(&app, &validation_input)
-            .map_err(command_error)?;
-    if !validation.valid {
-        return Err(CommandErrorVm::new(
-            "conversation.validation-failed",
-            serde_json::json!({ "codes": validation.missing_items.iter().map(|item| item.code.clone()).collect::<Vec<_>>() }),
-        ));
-    }
-    let id = format!("scheduled-{}", Uuid::new_v4());
-    let session_policy = input
-        .session_policy
-        .unwrap_or(gold_band::scheduler::SessionPolicy::New);
-    let mut definition = gold_band::scheduler::ScheduledTaskDefinition::new(
-        &resolved_project_id,
-        &id,
-        &input.run_mode,
-        input.schedule,
-        input.overlap_policy,
-    )
-    .map_err(|error| command_error(anyhow::anyhow!(error)))?
-    .with_session_policy(session_policy)
-    .map_err(|error| command_error(anyhow::anyhow!(error)))?;
-    definition.instruction = input.content.clone();
-    let snapshot =
-        crate::view_models_conversation::scheduled_content_snapshot(&app, &validation_input)
-            .map_err(scheduled_task_error)?;
-    definition.content_snapshot = snapshot;
-    definition
-        .recompute_content_fingerprint()
-        .map_err(scheduled_task_error)?;
-    definition.execution_config = serde_json::json!({
-        "runMode": input.run_mode,
-        "workflowTemplateId": input.workflow_template_id,
-        "includeInterview": input.include_interview,
-        "directConfig": input.direct_config,
-        "autoConfig": input.auto_config,
-    });
-    if let Some(paths) = input.attachment_paths {
-        let input_dir = app.paths.scheduled_task_dir(&id).join("inputs");
-        fs::create_dir_all(input_dir.as_std_path())
-            .map_err(|error| command_error(anyhow::anyhow!(error)))?;
-        for source in paths {
-            let source_path = Path::new(&source);
-            if let Some(name) = source_path.file_name().and_then(|name| name.to_str()) {
-                fs::copy(source_path, input_dir.join(name).as_std_path())
-                    .map_err(|error| command_error(anyhow::anyhow!(error)))?;
-                definition.attachment_names.push(name.to_string());
-            }
-        }
-    }
-    gold_band::scheduler::store::ScheduledTaskStore::new(app.paths.clone())
-        .save(&definition)
-        .map_err(command_error)?;
-    gold_band::scheduler::db::ScheduledTaskDatabase::open(app.paths.scheduler_db_path())
-        .and_then(|database| database.save_job_definition(&definition))
-        .map_err(|error| command_error(anyhow::anyhow!(error)))?;
-    crate::scheduled_runtime::emit_scheduled_task_updated(&app_handle, &definition);
-    let workspace_name = workspace_name_for_project(&app_state, &definition.project_id);
+    let service = state.scheduled_service().map_err(command_error)?;
+    let record = service.create(input).map_err(scheduled_service_error)?;
+    let workspace_name = service
+        .workspace_name(&record.definition.project_id)
+        .map_err(scheduled_service_error)?;
     Ok(
         crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
-            &definition,
+            &record.definition,
             &workspace_name,
         ),
     )
@@ -313,241 +339,38 @@ pub fn get_scheduled_task(
     project_id: String,
     scheduled_task_id: String,
 ) -> CommandResult<crate::view_models_conversation::ScheduledTaskEditVm> {
-    let app = resolve_command_app(state.inner(), Some(&project_id))?;
-    let definition = gold_band::scheduler::store::ScheduledTaskStore::new(app.paths.clone())
-        .load(&scheduled_task_id)
-        .map_err(|_error| {
-            CommandErrorVm::new(
-                "scheduled-task.not-found",
-                serde_json::json!({ "scheduledTaskId": scheduled_task_id }),
-            )
-        })?;
-    if definition.project_id != project_id {
-        return Err(CommandErrorVm::new(
-            "scheduled-task.not-found",
-            serde_json::json!({ "scheduledTaskId": scheduled_task_id }),
-        ));
-    }
-    Ok(crate::view_models_conversation::ScheduledTaskEditVm::from_definition(&definition))
+    let record = state
+        .scheduled_service()
+        .map_err(command_error)?
+        .get(&project_id, &scheduled_task_id)
+        .map_err(scheduled_service_error)?;
+    Ok(crate::view_models_conversation::ScheduledTaskEditVm::from_definition(&record.definition))
 }
 
 #[tauri::command]
 pub fn update_scheduled_task(
-    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::UpdateScheduledTaskInputVm,
 ) -> CommandResult<crate::view_models_conversation::ScheduledTaskEditVm> {
-    let app = resolve_command_app(state.inner(), Some(&input.project_id))?;
-    let store = gold_band::scheduler::store::ScheduledTaskStore::new(app.paths.clone());
-    let mut definition = store.load(&input.scheduled_task_id).map_err(|_error| {
-        CommandErrorVm::new(
-            "scheduled-task.not-found",
-            serde_json::json!({ "scheduledTaskId": input.scheduled_task_id }),
-        )
-    })?;
-    if definition.project_id != input.project_id {
-        return Err(CommandErrorVm::new(
-            "scheduled-task.not-found",
-            serde_json::json!({ "scheduledTaskId": input.scheduled_task_id }),
-        ));
-    }
-    let expected_updated_at = chrono::DateTime::parse_from_rfc3339(&input.expected_updated_at)
-        .map_err(|_| {
-            CommandErrorVm::new(
-                "scheduled-task.expected-updated-at-invalid",
-                serde_json::json!({ "expectedUpdatedAt": input.expected_updated_at }),
-            )
-        })?
-        .with_timezone(&chrono::Utc);
-    if definition.updated_at != expected_updated_at {
-        return Err(CommandErrorVm::new(
-            "scheduled-task.conflict",
-            serde_json::json!({ "scheduledTaskId": input.scheduled_task_id, "updatedAt": definition.updated_at }),
-        ));
-    }
-    if input.content.trim().is_empty() {
-        return Err(CommandErrorVm::new(
-            "content.required",
-            serde_json::json!({}),
-        ));
-    }
-    let attachment_paths = input.attachment_paths.clone().or_else(|| {
-        Some(
-            definition
-                .attachment_names
-                .iter()
-                .map(|name| {
-                    app.paths
-                        .scheduled_task_dir(&definition.id)
-                        .join("inputs")
-                        .join(name)
-                        .to_string()
-                })
-                .collect(),
-        )
-    });
-    let validation_input = crate::view_models_conversation::ConversationCreateInputVm {
-        project_id: input.project_id.clone(),
-        content: input.content.clone(),
-        run_mode: input.run_mode.clone(),
-        workflow_template_id: input.workflow_template_id.clone(),
-        include_interview: input.include_interview,
-        direct_config: input.direct_config.clone(),
-        auto_config: input.auto_config.clone(),
-        attachment_paths,
-        scheduled_task_id: None,
-        scheduled_content_fingerprint: None,
-    };
-    let validation =
-        crate::view_models_conversation::validate_conversation_create_vm(&app, &validation_input)
-            .map_err(command_error)?;
-    if !validation.valid {
-        return Err(CommandErrorVm::new(
-            "conversation.validation-failed",
-            serde_json::json!({ "codes": validation.missing_items.iter().map(|item| item.code.clone()).collect::<Vec<_>>() }),
-        ));
-    }
-    if definition.mode == gold_band::scheduler::ScheduledMode::Direct {
-        let old_agent = definition
-            .content_snapshot
-            .direct_agent_id
-            .clone()
-            .or_else(|| {
-                definition
-                    .execution_config
-                    .get("directConfig")
-                    .and_then(|config| config.get("agentType"))
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned)
-            });
-        let new_agent = input
-            .direct_config
-            .as_ref()
-            .map(|config| config.agent_type.clone());
-        if old_agent.as_deref() != new_agent.as_deref() {
-            return Err(CommandErrorVm::new(
-                "scheduled-task.direct-agent-immutable",
-                serde_json::json!({ "agentId": old_agent }),
-            ));
-        }
-    }
-
-    let previous_session_policy = definition.session_policy;
-    let new_snapshot =
-        crate::view_models_conversation::scheduled_content_snapshot(&app, &validation_input)
-            .map_err(scheduled_task_error)?;
-    let content_changed = new_snapshot != definition.content_snapshot;
-    definition.content_snapshot = new_snapshot;
-    definition
-        .recompute_content_fingerprint()
-        .map_err(scheduled_task_error)?;
-    definition.instruction = input.content.clone();
-    definition.schedule = input.schedule.clone();
-    definition.overlap_policy = input.overlap_policy;
-    let validated_session_policy = definition
-        .clone()
-        .with_session_policy(input.session_policy)
-        .map_err(|_error| {
-            CommandErrorVm::new(
-                "scheduled-task.session-policy-invalid",
-                serde_json::json!({}),
-            )
-        })?
-        .session_policy;
-    definition.session_policy = validated_session_policy;
-    definition.mode = scheduled_mode_from_run_mode(&validation_input.run_mode);
-    if content_changed || previous_session_policy != input.session_policy {
-        definition.task_id = None;
-    }
-    definition.execution_config = scheduled_execution_config(
-        &validation_input,
-        input.workflow_template_id.clone(),
-        input.include_interview,
-    );
-    if let Some(paths) = input.attachment_paths {
-        let input_dir = app.paths.scheduled_task_dir(&definition.id).join("inputs");
-        if input_dir.exists() {
-            fs::remove_dir_all(input_dir.as_std_path()).map_err(|_error| {
-                CommandErrorVm::new(
-                    "scheduled-task.attachment-update-failed",
-                    serde_json::json!({}),
-                )
-            })?;
-        }
-        fs::create_dir_all(input_dir.as_std_path()).map_err(|_error| {
-            CommandErrorVm::new(
-                "scheduled-task.attachment-update-failed",
-                serde_json::json!({}),
-            )
-        })?;
-        definition.attachment_names.clear();
-        for source in paths {
-            let source_path = Path::new(&source);
-            let Some(name) = source_path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            fs::copy(source_path, input_dir.join(name).as_std_path()).map_err(|_error| {
-                CommandErrorVm::new(
-                    "scheduled-task.attachment-update-failed",
-                    serde_json::json!({}),
-                )
-            })?;
-            definition.attachment_names.push(name.to_string());
-        }
-    }
-    definition.updated_at = chrono::Utc::now();
-    store.update(&definition).map_err(command_error)?;
-    gold_band::scheduler::db::ScheduledTaskDatabase::open(app.paths.scheduler_db_path())
-        .and_then(|database| database.save_job_definition(&definition))
-        .map_err(|error| command_error(anyhow::anyhow!(error)))?;
-    crate::scheduled_runtime::emit_scheduled_task_updated(&app_handle, &definition);
-    Ok(crate::view_models_conversation::ScheduledTaskEditVm::from_definition(&definition))
+    let record = state
+        .scheduled_service()
+        .map_err(command_error)?
+        .update(input)
+        .map_err(scheduled_service_error)?;
+    Ok(crate::view_models_conversation::ScheduledTaskEditVm::from_definition(&record.definition))
 }
 
 #[tauri::command]
 pub fn delete_scheduled_task(
-    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: String,
     scheduled_task_id: String,
 ) -> CommandResult<()> {
-    let app = resolve_command_app(state.inner(), Some(&project_id))?;
-    let store = gold_band::scheduler::store::ScheduledTaskStore::new(app.paths.clone());
-    let definition = store.load(&scheduled_task_id).map_err(command_error)?;
-    if definition.project_id != project_id {
-        return Err(CommandErrorVm::new(
-            "scheduled-task.not-found",
-            serde_json::json!({ "scheduledTaskId": scheduled_task_id }),
-        ));
-    }
-    store.delete(&scheduled_task_id).map_err(command_error)?;
-    gold_band::scheduler::db::ScheduledTaskDatabase::open(app.paths.scheduler_db_path())
-        .and_then(|database| database.delete_job(&scheduled_task_id))
-        .map_err(|error| command_error(anyhow::anyhow!(error)))?;
-    crate::scheduled_runtime::emit_scheduled_task_updated(&app_handle, &definition);
-    Ok(())
-}
-
-fn scheduled_mode_from_run_mode(value: &str) -> gold_band::scheduler::ScheduledMode {
-    match value {
-        "workflow" => gold_band::scheduler::ScheduledMode::Workflow,
-        "auto" => gold_band::scheduler::ScheduledMode::Auto,
-        _ => gold_band::scheduler::ScheduledMode::Direct,
-    }
-}
-
-fn scheduled_execution_config(
-    input: &crate::view_models_conversation::ConversationCreateInputVm,
-    workflow_template_id: Option<String>,
-    include_interview: Option<bool>,
-) -> serde_json::Value {
-    serde_json::json!({
-        "runMode": input.run_mode,
-        "workflowTemplateId": workflow_template_id,
-        "includeInterview": include_interview,
-        "directConfig": input.direct_config,
-        "autoConfig": input.auto_config,
-    })
+    state
+        .scheduled_service()
+        .map_err(command_error)?
+        .delete(&project_id, &scheduled_task_id)
+        .map_err(scheduled_service_error)
 }
 
 #[tauri::command]
@@ -1099,6 +922,7 @@ fn conversation_sidebar_sources(
         .collect()
 }
 
+#[cfg(test)]
 fn workspace_name_for_project(state: &gold_band::config::StateConfig, project_id: &str) -> String {
     state
         .conversation_workspaces
@@ -1330,6 +1154,7 @@ pub async fn add_conversation_workspace(
     path: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let context = state.context().map_err(command_error)?;
+    let coordinator = state.scheduler_coordinator().map_err(command_error)?;
     spawn_blocking_command(move || {
         let gold_band_app = context.app();
         let workspace_path = Utf8PathBuf::from(path);
@@ -1364,6 +1189,11 @@ pub async fn add_conversation_workspace(
             });
         state.last_conversation_workspace = Some(project_id.clone());
         gold_band_app.save_state(&state).map_err(command_error)?;
+        coordinator
+            .send(crate::scheduled_runtime::SchedulerCommand::RegisterWorkspace {
+                workspace_path: workspace_path.clone(),
+            })
+            .map_err(scheduled_service_error)?;
         info!(
             project_id = %project_id,
             workspace_count = state.conversation_workspaces.len(),
@@ -1413,6 +1243,7 @@ pub async fn sync_conversation_workspace(
     workspace_path: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let context = state.context().map_err(command_error)?;
+    let coordinator = state.scheduler_coordinator().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
         let name = std::path::Path::new(&workspace_path)
@@ -1439,6 +1270,13 @@ pub async fn sync_conversation_workspace(
         };
         state.last_conversation_workspace = Some(resolved_project_id);
         app.save_state(&state).map_err(command_error)?;
+        coordinator
+            .send(
+                crate::scheduled_runtime::SchedulerCommand::RegisterWorkspace {
+                    workspace_path: Utf8PathBuf::from(workspace_path.clone()),
+                },
+            )
+            .map_err(scheduled_service_error)?;
 
         conversation_sidebar_for_state(&context, &app, &state)
     })
@@ -1503,6 +1341,7 @@ pub async fn remove_conversation_workspace(
     project_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let context = state.context().map_err(command_error)?;
+    let coordinator = state.scheduler_coordinator().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
         let mut state = app.load_state().map_err(command_error)?;
@@ -1515,7 +1354,7 @@ pub async fn remove_conversation_workspace(
                 )
             })?;
         gold_band::acp::client::close_workspace_connections_bounded(&Utf8PathBuf::from(
-            workspace_path,
+            workspace_path.clone(),
         ))
         .map_err(command_error)?;
 
@@ -1526,6 +1365,13 @@ pub async fn remove_conversation_workspace(
             )
         })?;
         app.save_state(&state).map_err(command_error)?;
+        coordinator
+            .send(
+                crate::scheduled_runtime::SchedulerCommand::UnregisterWorkspace {
+                    workspace_path: Utf8PathBuf::from(workspace_path),
+                },
+            )
+            .map_err(scheduled_service_error)?;
 
         conversation_sidebar_for_state(&context, &app, &state)
     })
@@ -2029,13 +1875,14 @@ mod tests {
     use super::{
         MaterializeAttachmentFileInput, base64_encode, conversation_search_result_for_workspace,
         conversation_search_task_roots, materialize_attachment_files_to_dir,
-        message_attachment_content_from_attempt_dir,
+        message_attachment_content_from_attempt_dir, scheduled_service_error,
     };
     use camino::Utf8PathBuf;
     use gold_band::app::App;
     use gold_band::config::{ConversationWorkspaceEntry, StateConfig};
     use gold_band::domain::{RunStatus, VERSION};
     use gold_band::runtime::{RunState, TaskState};
+    use gold_band::scheduler::occurrence::ScheduledErrorCode;
     use gold_band::storage::{sqlite::TaskSearchResult, write_json};
     use uuid::Uuid;
 
@@ -2059,6 +1906,56 @@ mod tests {
             super::workspace_name_for_project(&state, "project-b"),
             "project-b"
         );
+    }
+
+    #[test]
+    fn scheduled_service_errors_keep_structured_command_contract() {
+        let error = crate::scheduled_service::ScheduledServiceError {
+            code: ScheduledErrorCode::Conflict,
+            params: serde_json::json!({
+                "scheduledTaskId": "scheduled-a",
+                "revision": 3,
+            }),
+            trace_id: Some("trace-a".to_string()),
+        };
+
+        let mapped = scheduled_service_error(error);
+
+        assert_eq!(mapped.code, "SCHEDULED_CONFLICT");
+        assert_eq!(
+            mapped.params,
+            serde_json::json!({
+                "scheduledTaskId": "scheduled-a",
+                "revision": 3,
+                "traceId": "trace-a",
+            })
+        );
+    }
+
+    #[test]
+    fn scheduled_diagnostics_uses_the_persisted_deadline() {
+        let definition = gold_band::scheduler::ScheduledTaskDefinition::new(
+            "project-a",
+            "scheduled-a",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::at(chrono::Utc::now() + chrono::Duration::hours(1)),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        let record = gold_band::scheduler::db::ScheduledJobRecord {
+            definition,
+            revision: 3,
+            next_run_at: None,
+        };
+
+        let diagnostics = super::scheduled_task_diagnostics_vm(
+            "project-a".to_string(),
+            "scheduled-a".to_string(),
+            record,
+            Vec::new(),
+        );
+
+        assert_eq!(diagnostics.next_at, None);
     }
 
     #[test]

@@ -186,6 +186,18 @@ pub struct WorkerInvocation {
     pub input_attachment_paths: Vec<String>,
     #[serde(default)]
     pub mcp_servers: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_context: Option<ScheduledTaskContextInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledTaskContextInfo {
+    pub title: String,
+    pub mode: String,
+    pub session_policy: String,
+    pub trigger_kind: String,
+    pub triggered_at: String,
+    pub instruction: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1058,7 +1070,47 @@ fn render_hidden_context(req: &WorkerInvocation) -> String {
         content.push_str(section.content.trim());
     }
     let content = compact_hidden_context_spacing(&content);
+    let content = if let Some(scheduled) = render_scheduled_context(req) {
+        format!("{content}\n\n{scheduled}")
+    } else {
+        content
+    };
     gold_band_hidden_block("Gold Band runtime context", &content)
+}
+
+fn render_scheduled_context(req: &WorkerInvocation) -> Option<String> {
+    let ctx = req.scheduled_context.as_ref()?;
+    let template = prompt_by_language(
+        req.runtime_context.language,
+        crate::prompts::RUNTIME_SCHEDULED_TASK_CONTEXT_ZH_CN,
+        crate::prompts::RUNTIME_SCHEDULED_TASK_CONTEXT_EN,
+    );
+    let rendered = crate::prompts::render(
+        template,
+        &ScheduledTaskContextTemplateContext {
+            scheduled_title: &ctx.title,
+            scheduled_mode: &ctx.mode,
+            scheduled_session_policy: &ctx.session_policy,
+            scheduled_trigger_kind: &ctx.trigger_kind,
+            scheduled_triggered_at: &ctx.triggered_at,
+            scheduled_instruction: ctx.instruction.as_deref(),
+        },
+    )
+    .ok()?;
+    Some(gold_band_hidden_block(
+        "Gold Band scheduled task context",
+        &rendered,
+    ))
+}
+
+#[derive(Serialize)]
+struct ScheduledTaskContextTemplateContext<'a> {
+    scheduled_title: &'a str,
+    scheduled_mode: &'a str,
+    scheduled_session_policy: &'a str,
+    scheduled_trigger_kind: &'a str,
+    scheduled_triggered_at: &'a str,
+    scheduled_instruction: Option<&'a str>,
 }
 
 fn compact_hidden_context_spacing(content: &str) -> String {
@@ -1615,6 +1667,7 @@ mod tests {
             cold_attachments: Vec::new(),
             input_attachment_paths: Vec::new(),
             mcp_servers: Vec::new(),
+            scheduled_context: None,
         };
 
         let prompt = render_prompt_bundle(&req).unwrap();

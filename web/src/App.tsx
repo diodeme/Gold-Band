@@ -86,6 +86,7 @@ import { ConversationSearchDialog } from './components/conversation/Conversation
 import { prioritizeConversationSidebarWorkspace } from './components/conversation/ConversationSidebar';
 import { RunModeManagementPage } from './pages/RunModeManagementPage';
 import { ScheduledTaskManagementPage } from './pages/ScheduledTaskManagementPage';
+import { ScheduledTaskDetailPage } from './pages/ScheduledTaskDetailPage';
 import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
@@ -1332,7 +1333,9 @@ export function App() {
         : primaryModule === 'knowledge-base'
           ? <ContextManagementPage />
            : conversationPage.kind === 'scheduled-tasks'
-             ? <ScheduledTaskManagementPage projectId={defaultProjectId} onCreate={() => onSelectConversation({ kind: 'conversation-home' })} />
+             ? <ScheduledTaskManagementPage projectId={defaultProjectId} onCreate={() => onSelectConversation({ kind: 'conversation-home' })} onOpenDetail={(task) => onSelectConversation({ kind: 'scheduled-task-detail', projectId: task.projectId, scheduledTaskId: task.id })} />
+          : conversationPage.kind === 'scheduled-task-detail'
+            ? <ScheduledTaskDetailPage projectId={conversationPage.projectId} scheduledTaskId={conversationPage.scheduledTaskId} onBack={() => onSelectConversation({ kind: 'scheduled-tasks' })} />
           : renderTaskContent();
 
   const onSelectConversation = (page: ConversationPage) => {
@@ -1622,7 +1625,10 @@ export function App() {
       );
     }
     if (conversationPage.kind === 'scheduled-tasks') {
-      return <ScheduledTaskManagementPage projectId={defaultProjectId} onCreate={() => onSelectConversation({ kind: 'conversation-home' })} />;
+      return <ScheduledTaskManagementPage projectId={defaultProjectId} onCreate={() => onSelectConversation({ kind: 'conversation-home' })} onOpenDetail={(task) => onSelectConversation({ kind: 'scheduled-task-detail', projectId: task.projectId, scheduledTaskId: task.id })} />;
+    }
+    if (conversationPage.kind === 'scheduled-task-detail') {
+      return <ScheduledTaskDetailPage projectId={conversationPage.projectId} scheduledTaskId={conversationPage.scheduledTaskId} onBack={() => onSelectConversation({ kind: 'scheduled-tasks' })} />;
     }
     if (conversationPage.kind === 'run-mode-management') {
       return (

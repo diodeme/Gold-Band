@@ -616,6 +616,7 @@ pub(crate) fn build_worker_invocation(
         cold_attachments,
         input_attachment_paths,
         mcp_servers,
+        scheduled_context: app.scheduled_task_context().cloned(),
     })
 }
 

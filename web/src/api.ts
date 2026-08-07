@@ -180,6 +180,10 @@ export function subscribeScheduledTaskUpdates(listener: Parameters<NonNullable<R
   return getRuntimeApi().subscribeScheduledTaskUpdates?.(listener) ?? Promise.resolve(() => {});
 }
 
+export function subscribeScheduledOccurrenceUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeScheduledOccurrenceUpdates']>>[0]) {
+  return getRuntimeApi().subscribeScheduledOccurrenceUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
 // 干预通知：OS Toast「查看详情」点击后由后端转发导航事件，前端订阅做 deep-link。
 export function subscribeInterventionNavigate(listener: Parameters<NonNullable<RuntimeApi['subscribeInterventionNavigate']>>[0]) {
   return getRuntimeApi().subscribeInterventionNavigate?.(listener) ?? Promise.resolve(() => {});
@@ -319,6 +323,18 @@ export function updateScheduledTask(input: Parameters<ReturnType<typeof getRunti
 
 export function deleteScheduledTask(projectId: string, scheduledTaskId: string) {
   return getRuntimeApi().deleteScheduledTask(projectId, scheduledTaskId);
+}
+
+export function listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, limit?: number) {
+  return getRuntimeApi().listScheduledTaskOccurrences(projectId, scheduledTaskId, limit);
+}
+
+export function getScheduledTaskDiagnostics(projectId: string, scheduledTaskId: string) {
+  return getRuntimeApi().getScheduledTaskDiagnostics(projectId, scheduledTaskId);
+}
+
+export function runScheduledTaskNow(projectId: string, scheduledTaskId: string) {
+  return getRuntimeApi().runScheduledTaskNow(projectId, scheduledTaskId);
 }
 
 export function getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null) {

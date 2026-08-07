@@ -89,6 +89,16 @@ impl std::str::FromStr for OccurrenceTriggerKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScheduledErrorCode {
+    #[serde(rename = "SCHEDULED_NOT_FOUND")]
+    NotFound,
+    #[serde(rename = "SCHEDULED_CONFLICT")]
+    Conflict,
+    #[serde(rename = "SCHEDULED_VALIDATION_FAILED")]
+    ValidationFailed,
+    #[serde(rename = "SCHEDULED_STORAGE_FAILED")]
+    StorageFailed,
+    #[serde(rename = "SCHEDULED_ATTACHMENT_FAILED")]
+    AttachmentFailed,
     #[serde(rename = "SCHEDULED_PERMISSION_REQUIRED")]
     PermissionRequired,
     #[serde(rename = "SCHEDULED_USER_INPUT_REQUIRED")]
@@ -118,6 +128,11 @@ pub enum ScheduledErrorCode {
 impl fmt::Display for ScheduledErrorCode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
+            Self::NotFound => "SCHEDULED_NOT_FOUND",
+            Self::Conflict => "SCHEDULED_CONFLICT",
+            Self::ValidationFailed => "SCHEDULED_VALIDATION_FAILED",
+            Self::StorageFailed => "SCHEDULED_STORAGE_FAILED",
+            Self::AttachmentFailed => "SCHEDULED_ATTACHMENT_FAILED",
             Self::PermissionRequired => "SCHEDULED_PERMISSION_REQUIRED",
             Self::UserInputRequired => "SCHEDULED_USER_INPUT_REQUIRED",
             Self::PreviousRunRequiresAttention => "SCHEDULED_PREVIOUS_RUN_REQUIRES_ATTENTION",
@@ -140,6 +155,11 @@ impl std::str::FromStr for ScheduledErrorCode {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
+            "SCHEDULED_NOT_FOUND" => Ok(Self::NotFound),
+            "SCHEDULED_CONFLICT" => Ok(Self::Conflict),
+            "SCHEDULED_VALIDATION_FAILED" => Ok(Self::ValidationFailed),
+            "SCHEDULED_STORAGE_FAILED" => Ok(Self::StorageFailed),
+            "SCHEDULED_ATTACHMENT_FAILED" => Ok(Self::AttachmentFailed),
             "SCHEDULED_PERMISSION_REQUIRED" => Ok(Self::PermissionRequired),
             "SCHEDULED_USER_INPUT_REQUIRED" => Ok(Self::UserInputRequired),
             "SCHEDULED_PREVIOUS_RUN_REQUIRES_ATTENTION" => Ok(Self::PreviousRunRequiresAttention),
@@ -272,6 +292,9 @@ pub struct LeaseConfig {
     pub heartbeat_seconds: i64,
 }
 
+const MIN_LEASE_SECONDS: i64 = 2;
+const MIN_HEARTBEAT_SECONDS: i64 = 1;
+
 impl Default for LeaseConfig {
     fn default() -> Self {
         Self {
@@ -283,11 +306,21 @@ impl Default for LeaseConfig {
 
 impl LeaseConfig {
     pub fn lease_until(self, now: DateTime<Utc>) -> DateTime<Utc> {
-        now + Duration::seconds(self.lease_seconds.max(1))
+        now + Duration::seconds(self.effective_lease_seconds())
     }
 
     pub fn heartbeat_interval(self) -> Duration {
-        Duration::seconds(self.heartbeat_seconds.max(1))
+        Duration::seconds(self.effective_heartbeat_seconds())
+    }
+
+    fn effective_lease_seconds(self) -> i64 {
+        self.lease_seconds.max(MIN_LEASE_SECONDS)
+    }
+
+    fn effective_heartbeat_seconds(self) -> i64 {
+        self.heartbeat_seconds
+            .max(MIN_HEARTBEAT_SECONDS)
+            .min(self.effective_lease_seconds() - MIN_HEARTBEAT_SECONDS)
     }
 }
 
@@ -296,7 +329,7 @@ mod tests {
     use super::{
         ClaimResult, LeaseConfig, OccurrenceStatus, OccurrenceTriggerKind, ScheduledErrorCode,
     };
-    use chrono::{TimeZone, Utc};
+    use chrono::{Duration, TimeZone, Utc};
 
     #[test]
     fn occurrence_status_round_trips_stable_values() {
@@ -375,5 +408,55 @@ mod tests {
 
         let encoded = serde_json::to_string(&ClaimResult::Busy).unwrap();
         assert_eq!(encoded, "\"busy\"");
+    }
+
+    #[test]
+    fn lease_config_normalizes_heartbeat_before_effective_lease_expiry() {
+        let now = Utc.with_ymd_and_hms(2026, 8, 3, 12, 0, 0).unwrap();
+        let cases = [
+            (
+                LeaseConfig {
+                    lease_seconds: 0,
+                    heartbeat_seconds: 0,
+                },
+                2,
+                1,
+            ),
+            (
+                LeaseConfig {
+                    lease_seconds: -10,
+                    heartbeat_seconds: -5,
+                },
+                2,
+                1,
+            ),
+            (
+                LeaseConfig {
+                    lease_seconds: 5,
+                    heartbeat_seconds: 5,
+                },
+                5,
+                4,
+            ),
+            (
+                LeaseConfig {
+                    lease_seconds: 5,
+                    heartbeat_seconds: 30,
+                },
+                5,
+                4,
+            ),
+        ];
+
+        for (config, effective_lease_seconds, effective_heartbeat_seconds) in cases {
+            let lease_until = config.lease_until(now);
+            let heartbeat = config.heartbeat_interval();
+            assert_eq!(
+                lease_until,
+                now + Duration::seconds(effective_lease_seconds)
+            );
+            assert_eq!(heartbeat, Duration::seconds(effective_heartbeat_seconds));
+            assert!(now + heartbeat < lease_until);
+        }
     }
 }

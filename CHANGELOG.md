@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.12.0](https://github.com/diodeme/Gold-Band/compare/v0.11.2...v0.12.0) (2026-08-07)
+
+
+### Features
+
+* **agent:** add extensible ACP agent catalog ([03f4cea](https://github.com/diodeme/Gold-Band/commit/03f4cea80784fd2184c8c38686938dce18dbab0d))
+* **direct:** add persistent prompt queue ([01d1335](https://github.com/diodeme/Gold-Band/commit/01d13352448a566d607d684d36e5c13576ed23d8))
+* **direct:** queue prompts during active sessions ([3df86b6](https://github.com/diodeme/Gold-Band/commit/3df86b6d2fc17650d4c7416a34e705abd7082180))
+* **workspace:** add compact file tree mode ([1a1a98d](https://github.com/diodeme/Gold-Band/commit/1a1a98db203dd530f04f1e6a3bfe1cb5230689e6))
+
+
+### Bug Fixes
+
+* **acp:** prefer resume for detached session restore ([53d41cb](https://github.com/diodeme/Gold-Band/commit/53d41cb3ecebd3bbe64ec80c2a483f274bc32e2d))
+* **acp:** preserve history boundaries across live deltas ([b77d574](https://github.com/diodeme/Gold-Band/commit/b77d574fab9cb160c9bbe213fe933be513c4d538))
+* **workflow:** clarify default template edits ([0b86efa](https://github.com/diodeme/Gold-Band/commit/0b86efab2a4ce5517b0a98b36355c47aa646ff4a))
+
 ## [0.11.2](https://github.com/diodeme/Gold-Band/compare/v0.11.1...v0.11.2) (2026-08-07)
 
 

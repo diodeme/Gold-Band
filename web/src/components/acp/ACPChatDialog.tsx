@@ -624,6 +624,32 @@ export function resolveAcpHasOlderEvents(
   return sessionHasOlder || visibleEventCount < mergedEventCount;
 }
 
+export type AcpSessionPaginationUpdateMode = "replace" | "append-newer";
+
+export function reconcileAcpEventPageForUpdate(
+  previous: AcpSessionVm["eventPage"] | null | undefined,
+  incoming: AcpSessionVm["eventPage"],
+  mode: AcpSessionPaginationUpdateMode,
+): AcpSessionVm["eventPage"] {
+  if (mode === "replace" || !previous) return incoming;
+  const incomingHasNewest = (incoming.newestSeq ?? Number.NEGATIVE_INFINITY)
+    >= (previous.newestSeq ?? Number.NEGATIVE_INFINITY);
+  return {
+    ...incoming,
+    loadedCount: Math.min(
+      incoming.total,
+      previous.loadedCount + incoming.loadedCount,
+    ),
+    oldestSeq: previous.oldestSeq ?? incoming.oldestSeq,
+    newestSeq: incomingHasNewest ? incoming.newestSeq : previous.newestSeq,
+    hasOlder: previous.hasOlder,
+    oldestCursor: previous.oldestCursor ?? incoming.oldestCursor,
+    newestCursor: incomingHasNewest
+      ? incoming.newestCursor
+      : previous.newestCursor,
+  };
+}
+
 export function ACPChatDialog(
   {
     session,
@@ -1343,10 +1369,24 @@ export function ACPChatDialog(
     if (!sessionActive) settleLiveStreamingMarkdown();
   }, [sessionActive, settleLiveStreamingMarkdown]);
 
-  const applySessionUpdate = useCallback((updated: AcpSessionVm | null, source = "session-update") => {
+  const applySessionUpdate = useCallback((
+    updated: AcpSessionVm | null,
+    source = "session-update",
+    paginationMode: AcpSessionPaginationUpdateMode = "replace",
+  ) => {
     const incoming = normalizeSessionUpdate(updated);
     const previous = latestSessionRef.current;
-    const normalized = reconcileAcpSessionForDisplay(previous, incoming);
+    const reconciled = reconcileAcpSessionForDisplay(previous, incoming);
+    const normalized = reconciled
+      ? {
+          ...reconciled,
+          eventPage: reconcileAcpEventPageForUpdate(
+            previous?.eventPage,
+            reconciled.eventPage,
+            paginationMode,
+          ),
+        }
+      : null;
     const refEquivalent = sessionsEquivalent(previous, normalized);
     logAcpSessionReady(source, componentInstanceId, sessionIdentity, normalized, {
       refEquivalent,
@@ -2060,7 +2100,7 @@ export function ACPChatDialog(
           ).catch(() => null);
           if (!active || sessionRefreshSeqRef.current !== refreshSeq) break;
           if (delta) {
-            applySessionUpdate(delta, "replay-gap-catch-up");
+            applySessionUpdate(delta, "replay-gap-catch-up", "append-newer");
             snapshotHeadSeq = Math.max(snapshotHeadSeq, acpSessionSnapshotHeadSeq(delta));
           }
           catchUpRetryAttempt = snapshotHeadSeq > previousHeadSeq

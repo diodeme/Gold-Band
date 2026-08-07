@@ -40,8 +40,8 @@ use std::{
 
 use camino::Utf8PathBuf;
 use gold_band::config::{
-    AcpAdapterConfig, ConversationAutoConfig, DesktopFontPreference, DesktopLanguage,
-    DesktopThemePreference, ManagedAgentConfig, ManagedAgentId,
+    AcpAdapterConfig, ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopFontPreference,
+    DesktopLanguage, DesktopThemePreference, ManagedAgentConfig, ManagedAgentId,
 };
 use gold_band::observability::set_runtime_log_level;
 use serde::{Deserialize, Serialize};
@@ -927,6 +927,7 @@ impl ManagedAgentInput {
     fn into_config(
         self,
         system_prompt_delivery: gold_band::config::SystemPromptDelivery,
+        default_icon: &str,
     ) -> CommandResult<ManagedAgentConfig> {
         let display_name = self.display_name.trim().to_string();
         if display_name.is_empty() {
@@ -962,7 +963,7 @@ impl ManagedAgentInput {
                 env: self.env,
             },
             icon: match self.icon.trim() {
-                "" => "agent".to_string(),
+                "" => default_icon.to_string(),
                 value => value.to_string(),
             },
             primary_agent_dir,
@@ -981,6 +982,12 @@ fn system_prompt_delivery_for_new_agent(
     gold_band::config::catalog_agent_default_config(agent_id.as_str())
         .map(|config| config.system_prompt_delivery)
         .unwrap_or_default()
+}
+
+fn default_icon_for_agent(agent_id: &ManagedAgentId) -> String {
+    gold_band::config::catalog_agent_default_config(agent_id.as_str())
+        .map(|config| config.icon)
+        .unwrap_or_else(|| DEFAULT_CUSTOM_AGENT_ICON.to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1104,6 +1111,7 @@ pub fn create_agent(
         ));
     }
     let system_prompt_delivery = system_prompt_delivery_for_new_agent(&agent_id);
+    let default_icon = default_icon_for_agent(&agent_id);
     ensure_no_active_acp_prompts_for_provider(&agent_id)?;
     gold_band::acp::client::close_provider_connections_bounded(agent_id.as_str())
         .map_err(command_error)?;
@@ -1112,7 +1120,10 @@ pub fn create_agent(
         .map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let settings = app
-        .save_managed_agent(agent_id.clone(), input.into_config(system_prompt_delivery)?)
+        .save_managed_agent(
+            agent_id.clone(),
+            input.into_config(system_prompt_delivery, &default_icon)?,
+        )
         .map_err(command_error)?;
     state
         .update_settings_config(&settings)
@@ -1146,6 +1157,7 @@ pub fn update_agent(
                 serde_json::json!({ "agentType": agent_id.as_str() }),
             )
         })?;
+    let default_icon = default_icon_for_agent(&agent_id);
     ensure_no_active_acp_prompts_for_provider(&agent_id)?;
     gold_band::acp::client::close_provider_connections_bounded(agent_id.as_str())
         .map_err(command_error)?;
@@ -1154,7 +1166,10 @@ pub fn update_agent(
         .map_err(command_error)?;
     let app = state.app().map_err(command_error)?;
     let settings = app
-        .save_managed_agent(agent_id.clone(), input.into_config(system_prompt_delivery)?)
+        .save_managed_agent(
+            agent_id.clone(),
+            input.into_config(system_prompt_delivery, &default_icon)?,
+        )
         .map_err(command_error)?;
     state
         .update_settings_config(&settings)
@@ -5930,11 +5945,14 @@ mod tests {
         };
 
         let config = input
-            .into_config(gold_band::config::SystemPromptDelivery::MetaAppend)
+            .into_config(
+                gold_band::config::SystemPromptDelivery::MetaAppend,
+                DEFAULT_CUSTOM_AGENT_ICON,
+            )
             .unwrap();
         assert_eq!(config.adapter.display_name, "Claude Custom");
         assert_eq!(config.adapter.command, "npx");
-        assert_eq!(config.icon, "agent");
+        assert_eq!(config.icon, DEFAULT_CUSTOM_AGENT_ICON);
         assert_eq!(config.primary_agent_dir.as_deref(), Some(".claude-custom"));
         assert_eq!(config.compatible_agent_dirs, vec![".agents"]);
         assert!(config.supports_system_prompt());
@@ -5952,7 +5970,10 @@ mod tests {
         .unwrap();
 
         let config = input
-            .into_config(gold_band::config::SystemPromptDelivery::None)
+            .into_config(
+                gold_band::config::SystemPromptDelivery::None,
+                DEFAULT_CUSTOM_AGENT_ICON,
+            )
             .unwrap();
 
         assert!(!config.supports_system_prompt());
@@ -5965,6 +5986,14 @@ mod tests {
         assert_eq!(
             system_prompt_delivery_for_new_agent(&ManagedAgentId::from_str("claude-acp").unwrap()),
             gold_band::config::SystemPromptDelivery::MetaAppend
+        );
+        assert_eq!(
+            default_icon_for_agent(&ManagedAgentId::from_str("claude-acp").unwrap()),
+            "claude"
+        );
+        assert_eq!(
+            default_icon_for_agent(&ManagedAgentId::from_str("custom-agent").unwrap()),
+            DEFAULT_CUSTOM_AGENT_ICON
         );
     }
 
@@ -5981,7 +6010,10 @@ mod tests {
             external_session_sync_supported: false,
             external_session_sync_enabled: false,
         }
-        .into_config(gold_band::config::SystemPromptDelivery::None)
+        .into_config(
+            gold_band::config::SystemPromptDelivery::None,
+            DEFAULT_CUSTOM_AGENT_ICON,
+        )
         .unwrap_err();
         assert_eq!(missing_name.code, "agent.display-name-required");
 
@@ -5996,7 +6028,10 @@ mod tests {
             external_session_sync_supported: false,
             external_session_sync_enabled: false,
         }
-        .into_config(gold_band::config::SystemPromptDelivery::None)
+        .into_config(
+            gold_band::config::SystemPromptDelivery::None,
+            DEFAULT_CUSTOM_AGENT_ICON,
+        )
         .unwrap_err();
         assert_eq!(missing_command.code, "agent.command-required");
     }

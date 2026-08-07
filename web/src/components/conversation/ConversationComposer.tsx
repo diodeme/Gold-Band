@@ -8,7 +8,7 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForAgent, includeInterviewForSubmit, normalizeConversationAutoConfigForSubmit, normalizeConversationDirectConfigForSubmit, optionalRunModeText, shouldShowInterviewToggle } from '@/lib/conversation-run-mode-config';
-import { normalizeConfigOptionOverrides, selectableAgentOptions, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
+import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectableAgentOptions, type SelectableAgentOption, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
@@ -106,6 +106,7 @@ export function ConversationComposer({
   const isDynamicAuto = autoStrategy === 'dynamic';
   const canSubmit = content.trim().length > 0 && !busy && !submittingAttachments;
   const agentOptions = useMemo(() => selectableAgentOptions(agentRegistry, t), [agentRegistry, t]);
+  const directAgentGroups = useMemo(() => groupSelectableAgentOptions(agentOptions), [agentOptions]);
   const agents = useMemo(
     () => agentOptions.filter((item) => item.selectable).map((item) => item.agent),
     [agentOptions],
@@ -122,6 +123,29 @@ export function ConversationComposer({
   const templates = workflowTemplates?.templates ?? [];
   const selectedWorkflowTemplateId = workflowTemplateId || runMode.workflowTemplateId || undefined;
   const showInterviewToggle = shouldShowInterviewToggle(runMode.mode, selectedWorkflowTemplateId);
+  const renderDirectAgentOption = ({ agent, selectable, reason }: SelectableAgentOption) => (
+    <Tooltip key={agent.agentType}>
+      <TooltipTrigger asChild>
+        <span>
+          <TabsTrigger
+            value={agent.agentType}
+            disabled={!selectable}
+            className="h-10 min-w-10 gap-2 rounded-full border border-transparent px-2.5 data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10"
+          >
+            <img
+              src={agentIconSrc(agent.iconKey)}
+              alt=""
+              className={agentIconClass(agent.iconKey, 'size-5')}
+            />
+            {selectedDirectAgent === agent.agentType ? (
+              <span className="max-w-36 truncate text-xs">{agent.displayName}</span>
+            ) : null}
+          </TabsTrigger>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{reason || agent.displayName}</TooltipContent>
+    </Tooltip>
+  );
   const workspacePath = workspaces.find((workspace) => workspace.projectId === projectId)?.workspacePath;
   const commandAgentType = isDirect
     ? selectedDirectAgent
@@ -531,29 +555,15 @@ export function ConversationComposer({
             <TooltipProvider>
               <Tabs value={selectedDirectAgent} onValueChange={selectDirectAgent} className={CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName}>
                 <TabsList variant="bare" className={CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsListClassName}>
-                  {agentOptions.map(({ agent, selectable, reason }) => (
-                    <Tooltip key={agent.agentType}>
-                      <TooltipTrigger asChild>
-                        <span>
-                          <TabsTrigger
-                            value={agent.agentType}
-                            disabled={!selectable}
-                            className="h-10 min-w-10 gap-2 rounded-full border border-transparent px-2.5 data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10"
-                          >
-                            <img
-                              src={agentIconSrc(agent.iconKey)}
-                              alt=""
-                              className={agentIconClass(agent.iconKey, 'size-5')}
-                            />
-                            {selectedDirectAgent === agent.agentType ? (
-                              <span className="max-w-36 truncate text-xs">{agent.displayName}</span>
-                            ) : null}
-                          </TabsTrigger>
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>{reason || agent.displayName}</TooltipContent>
-                    </Tooltip>
-                  ))}
+                  {directAgentGroups.selectable.map(renderDirectAgentOption)}
+                  {directAgentGroups.selectable.length > 0 && directAgentGroups.unavailable.length > 0 ? (
+                    <span
+                      aria-orientation="vertical"
+                      className="mx-1 h-6 w-px shrink-0 bg-border/70"
+                      role="separator"
+                    />
+                  ) : null}
+                  {directAgentGroups.unavailable.map(renderDirectAgentOption)}
                 </TabsList>
               </Tabs>
             </TooltipProvider>

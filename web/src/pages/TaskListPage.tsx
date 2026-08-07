@@ -619,7 +619,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
   };
 
   return (
-    <Sheet open={open} onOpenChange={requestOpenChange}>
+    <Sheet modal={false} open={open} onOpenChange={requestOpenChange}>
       <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey="task-list/create-task" defaultSize={1120} minSize={760} maxSize={1440} closeLabel={t('common.close')}>
         <SheetHeader className="border-b px-5 py-4 text-left">
           <div className="flex items-start justify-between gap-3 pr-9">

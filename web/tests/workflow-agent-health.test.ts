@@ -28,7 +28,7 @@ describe('workflow agent health', () => {
 
     expect(icons.get('kimi')).toBe('kimi');
     expect(icons.get('custom-acp')).toBe('data:image/png;base64,custom');
-    expect(icons.get('without-icon')).toBe('agent');
+    expect(icons.get('without-icon')).toBe('gold-band');
     expect(icons.has('not-configured')).toBe(false);
   });
 

@@ -3,13 +3,13 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-08-07T06:50:37.647Z"
+    "fetchedAt": "2026-08-07T19:23:50.506Z"
   },
   "agents": [
     {
       "id": "claude-acp",
       "label": "Claude",
-      "version": "0.65.0",
+      "version": "0.66.0",
       "description": "ACP wrapper for Anthropic's Claude",
       "repository": "https://github.com/agentclientprotocol/claude-agent-acp",
       "website": null,
@@ -18,7 +18,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@agentclientprotocol/claude-agent-acp@0.65.0"
+        "@agentclientprotocol/claude-agent-acp@0.66.0"
       ],
       "env": {},
       "primaryAgentDir": ".claude",
@@ -29,7 +29,7 @@
     {
       "id": "codex-acp",
       "label": "Codex",
-      "version": "1.1.13",
+      "version": "1.1.14",
       "description": "ACP adapter for OpenAI's coding assistant",
       "repository": "https://github.com/agentclientprotocol/codex-acp",
       "website": null,
@@ -38,7 +38,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@agentclientprotocol/codex-acp@1.1.13"
+        "@agentclientprotocol/codex-acp@1.1.14"
       ],
       "env": {},
       "primaryAgentDir": ".codex",
@@ -157,7 +157,7 @@
     {
       "id": "opencode",
       "label": "OpenCode",
-      "version": "1.18.14",
+      "version": "1.18.15",
       "description": "The open source coding agent",
       "repository": "https://github.com/anomalyco/opencode",
       "website": "https://opencode.ai",

@@ -20,7 +20,7 @@ Catalog 与实例必须分域管理：
 - 提供显式离线脚本，允许基于已提交 Registry 快照重建 Catalog；常规发版刷新失败时必须失败退出，不发布残缺 Catalog
 - Kimi 的主/兼容 Skills 目录为 `.kimi-code` / `.agents`；Amp 为 `.agents` / `.claude`
 
-自定义 Agent 表单需要用户配置稳定 Agent ID、display name、icon、命令、参数、环境、主/兼容 Skills 目录和跨端会话合并能力。界面将原“Agent 类型”准确命名为“Agent ID”，说明其创建后不可修改。system prompt 能力由 Gold Band 内部维护，不提供用户开关；自定义 Agent 固定为不支持。icon 可使用系统文件选择器导入不超过 1 MB 的 PNG、JPEG、WebP 或 SVG，并以 data URI 持久化；留空使用通用 Bot 图标。主 Skills 目录允许为空，表示该 Agent 不参与 Skills 读写与同步。
+自定义 Agent 表单需要用户配置稳定 Agent ID、display name、icon、命令、参数、环境、主/兼容 Skills 目录和跨端会话合并能力。界面将原“Agent 类型”准确命名为“Agent ID”，说明其创建后不可修改。编辑器显式维护 Catalog 新建、自定义新建、已有实例编辑三种来源状态，Agent ID 锁定规则不得从当前输入文本推导；自定义输入即使暂时与 `kimi` 等 Catalog ID 相同，也必须允许继续输入后缀。Agent ID 的即时规范化必须识别 IME composition 生命周期，组合期间不改写临时文本，组合结束后再过滤为小写字母、数字和连字符。system prompt 能力由 Gold Band 内部维护，不提供用户开关；自定义 Agent 固定为不支持。icon 可使用系统文件选择器导入不超过 1 MB 的 PNG、JPEG、WebP 或 SVG，并以 data URI 持久化；新建自定义 Agent 与空 icon 默认使用项目 `gold-band` Logo，已有明确保存为 `agent` 的实例不迁移。主 Skills 目录允许为空，表示该 Agent 不参与 Skills 读写与同步。
 agent需要有对应icon标识，参考 `docs\gold-band\资源\icon` 目录；应用打包实际读取 `web\public\agent-icons`，Cursor 图标也必须同步复制到该目录
 新增agent时，已经新增过的agent类型，不能重复新增
 agent配置需要做持久化管理；修改 Sheet 的参数和环境变量使用可换行的多行编辑区，编辑时不即时吞掉空行或换行；参数保存时按空格或换行拆分，环境变量保存时按行解析；保存成功后只清空当前 agent 的旧诊断状态，并由后端后台自动诊断该 agent 一次，保存接口不得等待本次或已经运行中的 doctor，持久化完成后前端立即关闭 Sheet 并提示“配置已保存，正在后台诊断”；自动诊断期间卡片显示诊断中并禁用重复修改、删除和诊断，完成后通过桌面事件刷新全局 Agent registry；新增、编辑或删除某个 agent 时，不允许把其他已诊断 agent 一并回退成未诊断
@@ -54,11 +54,19 @@ Agent 实例新增两个独立能力配置：
 - 已将 Catalog 通过 Rust `include_str!` 和 Vite public assets 打包；创建时复制模板，已有实例不读取 Catalog 默认值
 - 已开放自定义 Agent 创建、保存、doctor、Provider 和 workflow 运行链路，移除 preset 白名单门禁
 - 已新增 Agent 搜索选择器、自定义入口、本地图标选择、跨端能力和可选 Skills 目录编辑项，并复用现有 shadcn/ui 组件；system prompt 能力不向用户开放
-- 内置单色 Agent icon 已通过统一图标 helper 适配深色主题；品牌彩色、自定义 URL 和默认金色 icon 不做反色处理
+- 图标编辑已收敛为预览、选择本地图片和恢复默认 Logo，不向用户暴露 icon key、URL 或 data URI 文本输入；既有图标引用保持兼容
+- 图标命令按钮统一使用透明 ghost 样式，避免 outline 默认底色与相邻按钮 hover 底色叠加后被误认为“双选”；当前 hover 与键盘 focus-visible 反馈保持可用
+- 图标区从单输入框 `<label>` 容器拆为 `fieldset + legend` 操作组，修复整行 label 将 hover/click 语义转发到“选择图片”的扩大命中范围问题
+- 编辑器以单一生命周期状态统一管理 `open`、来源、Agent ID、表单、文本配置和初始快照；三个打开入口原子替换完整状态，关闭和保存成功只切换 `open=false`，退出动画期间保留当前 draft，下一次打开再整体替换，修复内容闪变造成的“抽屉关闭后又打开”错觉
+- 公共 Sheet 已让 overlay 默认跟随 `modal`：桌面编辑/详情侧栏统一标记为非模态且不再渲染遮罩，窄屏工作区等真正模态的 Sheet 继续保留遮罩，消除保存/关闭时全局页面由暗变亮的闪烁
+- Agent 删除确认框已将 `open` 与 target 统一管理；确认、取消或删除失败只关闭弹窗，退出动画期间保留 Agent 名称，避免文案中间消失
+- 编辑器来源状态同时保存默认 icon key 与名称：Catalog Agent 的恢复目标为自身 Catalog 图标，自定义 Agent 的恢复目标为 Gold Band Logo；Rust 创建接口对空 icon 使用同一来源规则
+- 内置单色 Agent icon 已通过统一图标 helper 适配深色主题；品牌彩色、自定义 URL 和默认 Gold Band Logo 不做反色处理
 - 已将 system prompt 和跨端会话能力下沉到实例运行策略，补齐 schema v3 一次性迁移
 - 接口级回归覆盖：精选十项完整性、Amp/GLM 范围、目录策略、空 Skills 目录、默认 icon、跨端能力归一化、system prompt 注入策略和 Catalog 生成失败策略
 - 验证结果：`cargo check --workspace --all-targets -j 1` 通过；Rust 库实际执行 518 项，517 项通过，本功能新增测试全部通过，唯一失败为既有 `acp::branches::tests::result_migration_v2_removes_legacy_background_acknowledgements`（期望 `queued`、实际 `completed`），单独复跑仍失败；桌面 `ManagedAgentInput` 命令边界测试 2 项全部通过
 - 验证结果：Catalog Node 测试 2 项通过，Agent 管理及 workflow/run-mode 相关前端测试 42 项通过，`npm run web:build` 通过；全量前端 880 项中 875 项通过，剩余 5 项失败集中在本轮范围外的 right-workspace/file-link 既有改动
 - 页面实测：通过 `/chat/agents` deep link 验证 10 个内置 Agent、Amp 搜索、自定义入口、默认 Bot icon、空 Skills 主目录保存、跨端能力联动和禁用态；页面 console 无 warning/error，测试页面、服务和临时进程已清理
+- 2026-08-08：新增 Agent 下拉收敛 cmdk active 态的视觉语义。`Command + Popover` 继续保留键盘 active 与回车确认能力，但下拉刚展开时不把第一项渲染为选中态；只有鼠标悬停项显示 hover 背景，避免“自定义 Agent”被误判为默认选中。前端测试固化该样式契约。
 - 已将 macOS / Linux ACP 子进程 PATH 从“常见目录猜测”升级为通用登录 Shell 环境发现：从 Unix 账户默认 Shell 读取 `-ilc` 环境，使用 2 秒总超时、输出边界、进程回收和进程生命周期缓存；移除 `~/.opencode/bin` Agent 特判，并让通用可执行文件查找与 ACP adapter 共用同一解析入口
 - PATH 接口验收：Windows `process` 测试 9 项、ACP adapter 测试 11 项全部通过，覆盖原生 binary、npm `.cmd`、无扩展名 Unix shim 与显式扩展名；Unix 专属 `process.rs` 最小工程在 `x86_64-unknown-linux-gnu` target 交叉编译通过；`cargo check --workspace --all-targets -j 1` 通过，仅保留本轮范围外的既有桌面端 warning

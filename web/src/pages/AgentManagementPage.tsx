@@ -16,10 +16,10 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { AlertTriangle, Bot, CheckCircle2, CircleHelp, ImagePlus, LoaderCircle, Pencil, Plus, RefreshCw, Stethoscope, Trash2 } from 'lucide-react';
+import { AlertTriangle, Bot, CheckCircle2, CircleHelp, ImagePlus, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Stethoscope, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
-import { AGENT_ICON_ACCEPT, agentIconClass, agentIconSrc, readAgentIconFile } from '@/lib/agent-icons';
+import { AGENT_ICON_ACCEPT, DEFAULT_AGENT_ICON_KEY, agentIconClass, agentIconSrc, readAgentIconFile } from '@/lib/agent-icons';
 
 interface AgentManagementPageProps {
   vm: AgentRegistryVm | null;
@@ -28,14 +28,40 @@ interface AgentManagementPageProps {
   onRegistryChange: (vm: AgentRegistryVm) => void;
 }
 
-type EditorMode = 'create' | 'edit';
+export type AgentEditorContext = {
+  mode: 'create' | 'edit';
+  source: 'catalog' | 'custom';
+  defaultIconKey: string;
+  defaultIconLabel: string;
+};
+
+export type AgentEditorState = {
+  open: boolean;
+  context: AgentEditorContext;
+  selectedType: string;
+  form: ManagedAgentInput;
+  argsText: string;
+  envText: string;
+  compatibleAgentDirsText: string;
+  initialEditInput: ManagedAgentInput | null;
+};
+
+export type AgentDeleteDialogState = {
+  open: boolean;
+  target: ManagedAgentVm | null;
+};
 type Notice = { tone: 'success' | 'error'; message: string };
 
 const ACP_REGISTRY_URL = 'https://agentclientprotocol.com/get-started/registry';
+export const agentAddMenuItemClassName = 'rounded-md transition-colors hover:bg-accent hover:text-accent-foreground data-[selected=true]:!bg-transparent data-[selected=true]:!text-foreground data-[selected=true]:hover:!bg-accent data-[selected=true]:hover:!text-accent-foreground';
+export const agentEditorSheetPresentation = {
+  modal: false,
+  showOverlay: false,
+} as const;
 
 const defaultForm = (): ManagedAgentInput => ({
   displayName: '',
-  icon: 'agent',
+  icon: DEFAULT_AGENT_ICON_KEY,
   command: '',
   args: [],
   env: {},
@@ -44,6 +70,31 @@ const defaultForm = (): ManagedAgentInput => ({
   externalSessionSyncSupported: false,
   externalSessionSyncEnabled: false,
 });
+
+const defaultEditorState = (): AgentEditorState => ({
+  open: false,
+  context: {
+    mode: 'create',
+    source: 'custom',
+    defaultIconKey: DEFAULT_AGENT_ICON_KEY,
+    defaultIconLabel: 'Gold Band Logo',
+  },
+  selectedType: '',
+  form: defaultForm(),
+  argsText: '',
+  envText: '',
+  compatibleAgentDirsText: '',
+  initialEditInput: null,
+});
+
+export function closeAgentEditorState(state: AgentEditorState): AgentEditorState {
+  return { ...state, open: false };
+}
+
+export function closeAgentDeleteDialogState(state: AgentDeleteDialogState): AgentDeleteDialogState {
+  return { ...state, open: false };
+}
+
 const formFromCatalogAgent = (agentType?: AgentCatalogEntryVm): ManagedAgentInput => agentType ? ({
   displayName: agentType.defaultDisplayName,
   icon: agentType.iconKey,
@@ -58,19 +109,12 @@ const formFromCatalogAgent = (agentType?: AgentCatalogEntryVm): ManagedAgentInpu
 
 export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }: AgentManagementPageProps) {
   const { t } = useTranslation();
-  const [sheetOpen, setSheetOpen] = useState(false);
+  const [editor, setEditor] = useState<AgentEditorState>(defaultEditorState);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
-  const [editorMode, setEditorMode] = useState<EditorMode>('create');
-  const [selectedType, setSelectedType] = useState('');
-  const [form, setForm] = useState<ManagedAgentInput>(defaultForm);
-  const [argsText, setArgsText] = useState('');
-  const [envText, setEnvText] = useState('');
-  const [compatibleAgentDirsText, setCompatibleAgentDirsText] = useState('');
-  const [initialEditInput, setInitialEditInput] = useState<ManagedAgentInput | null>(null);
   const [saving, setSaving] = useState(false);
   const [diagnosingType, setDiagnosingType] = useState<string | null>(null);
   const [automaticDiagnosingType, setAutomaticDiagnosingType] = useState<string | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<ManagedAgentVm | null>(null);
+  const [deleteDialog, setDeleteDialog] = useState<AgentDeleteDialogState>({ open: false, target: null });
   const [notice, setNotice] = useState<Notice | null>(null);
   const [error, setError] = useState<string | null>(null);
   const iconFileInputRef = useRef<HTMLInputElement>(null);
@@ -78,23 +122,12 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   const catalog = vm?.catalog ?? [];
   const configuredTypes = useMemo(() => new Set(vm?.agents.map((agent) => agent.agentType) ?? []), [vm]);
   const currentInput = useMemo(
-    () => buildAgentInput(form, argsText, envText, compatibleAgentDirsText),
-    [argsText, compatibleAgentDirsText, envText, form],
+    () => buildAgentInput(editor.form, editor.argsText, editor.envText, editor.compatibleAgentDirsText),
+    [editor.argsText, editor.compatibleAgentDirsText, editor.envText, editor.form],
   );
-  const hasFormChanges = editorMode === 'create'
-    || initialEditInput === null
-    || hasManagedAgentInputChanged(initialEditInput, currentInput);
-
-  useEffect(() => {
-    if (!sheetOpen) {
-      setForm(defaultForm());
-      setArgsText('');
-      setEnvText('');
-      setCompatibleAgentDirsText('');
-      setInitialEditInput(null);
-      setError(null);
-    }
-  }, [sheetOpen]);
+  const hasFormChanges = editor.context.mode === 'create'
+    || editor.initialEditInput === null
+    || hasManagedAgentInputChanged(editor.initialEditInput, currentInput);
 
   useEffect(() => {
     if (!notice) return;
@@ -114,46 +147,68 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
 
   const openCreate = (agentType: AgentCatalogEntryVm) => {
     const nextForm = formFromCatalogAgent(agentType);
-    setEditorMode('create');
-    setSelectedType(agentType.agentType);
-    setForm(nextForm);
-    setArgsText(formatArgs(nextForm.args));
-    setEnvText(formatEnv(Object.entries(nextForm.env).map(([key, value]) => ({ key, value }))));
-    setCompatibleAgentDirsText(formatAgentDirs(nextForm.compatibleAgentDirs));
-    setInitialEditInput(null);
+    setEditor({
+      open: true,
+      context: {
+        mode: 'create',
+        source: 'catalog',
+        defaultIconKey: agentType.iconKey,
+        defaultIconLabel: agentType.label,
+      },
+      selectedType: agentType.agentType,
+      form: nextForm,
+      argsText: formatArgs(nextForm.args),
+      envText: formatEnv(Object.entries(nextForm.env).map(([key, value]) => ({ key, value }))),
+      compatibleAgentDirsText: formatAgentDirs(nextForm.compatibleAgentDirs),
+      initialEditInput: null,
+    });
     setError(null);
-    setSheetOpen(true);
     setAddMenuOpen(false);
   };
 
   const openCustomCreate = () => {
     const nextForm = defaultForm();
-    setEditorMode('create');
-    setSelectedType('');
-    setForm(nextForm);
-    setArgsText('');
-    setEnvText('');
-    setCompatibleAgentDirsText('');
-    setInitialEditInput(null);
+    setEditor({
+      open: true,
+      context: {
+        mode: 'create',
+        source: 'custom',
+        defaultIconKey: DEFAULT_AGENT_ICON_KEY,
+        defaultIconLabel: 'Gold Band Logo',
+      },
+      selectedType: '',
+      form: nextForm,
+      argsText: '',
+      envText: '',
+      compatibleAgentDirsText: '',
+      initialEditInput: null,
+    });
     setError(null);
-    setSheetOpen(true);
     setAddMenuOpen(false);
   };
 
   const openEdit = (agent: ManagedAgentVm) => {
+    const catalogAgent = catalog.find((entry) => entry.agentType === agent.agentType);
     const nextForm = agentInputFromVm(agent);
     const nextArgsText = formatArgs(agent.args);
     const nextEnvText = formatEnv(agent.env);
     const nextCompatibleAgentDirsText = formatAgentDirs(agent.compatibleAgentDirs);
-    setEditorMode('edit');
-    setSelectedType(agent.agentType);
-    setForm(nextForm);
-    setArgsText(nextArgsText);
-    setEnvText(nextEnvText);
-    setCompatibleAgentDirsText(nextCompatibleAgentDirsText);
-    setInitialEditInput(buildAgentInput(nextForm, nextArgsText, nextEnvText, nextCompatibleAgentDirsText));
+    setEditor({
+      open: true,
+      context: {
+        mode: 'edit',
+        source: catalogAgent ? 'catalog' : 'custom',
+        defaultIconKey: catalogAgent?.iconKey ?? DEFAULT_AGENT_ICON_KEY,
+        defaultIconLabel: catalogAgent?.label ?? 'Gold Band Logo',
+      },
+      selectedType: agent.agentType,
+      form: nextForm,
+      argsText: nextArgsText,
+      envText: nextEnvText,
+      compatibleAgentDirsText: nextCompatibleAgentDirsText,
+      initialEditInput: buildAgentInput(nextForm, nextArgsText, nextEnvText, nextCompatibleAgentDirsText),
+    });
     setError(null);
-    setSheetOpen(true);
   };
 
   const selectLocalIcon = async (file?: File) => {
@@ -161,7 +216,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
     setError(null);
     try {
       const icon = await readAgentIconFile(file);
-      setForm((current) => ({ ...current, icon }));
+      setEditor((current) => ({ ...current, form: { ...current.form, icon } }));
     } catch (nextError) {
       const code = nextError instanceof Error ? nextError.message : 'agent-icon.invalid-image-data';
       setError(t(`agentManagement.iconErrors.${code}`, { defaultValue: t('agentManagement.iconErrors.fallback') }));
@@ -171,24 +226,25 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   };
 
   const submit = async () => {
-    if (!selectedType.trim()) {
+    const agentType = editor.selectedType;
+    if (!agentType.trim()) {
       setError(t('agentManagement.agentTypeRequired'));
       return;
     }
-    if (editorMode === 'edit' && initialEditInput && !hasManagedAgentInputChanged(initialEditInput, currentInput)) {
+    if (editor.context.mode === 'edit' && editor.initialEditInput && !hasManagedAgentInputChanged(editor.initialEditInput, currentInput)) {
       return;
     }
     setSaving(true);
     setError(null);
     try {
-      const next = editorMode === 'create'
-        ? await createAgent(selectedType, currentInput)
-        : await updateAgent(selectedType, currentInput);
+      const next = editor.context.mode === 'create'
+        ? await createAgent(agentType, currentInput)
+        : await updateAgent(agentType, currentInput);
       onRegistryChange(next);
-      setAutomaticDiagnosingType(selectedType);
+      setAutomaticDiagnosingType(agentType);
       setNotice({ tone: 'success', message: t('agentManagement.savedAndDiagnosing') });
       window.setTimeout(onRefresh, 250);
-      setSheetOpen(false);
+      setEditor(closeAgentEditorState);
     } catch (nextError) {
       setError(displayAppError(t, nextError));
     } finally {
@@ -215,13 +271,14 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   };
 
   const confirmDelete = async () => {
-    if (!deleteTarget) return;
+    const target = deleteDialog.target;
+    if (!target) return;
     try {
-      onRegistryChange(await deleteAgent(deleteTarget.agentType));
-      setDeleteTarget(null);
+      onRegistryChange(await deleteAgent(target.agentType));
+      setDeleteDialog(closeAgentDeleteDialogState);
     } catch (nextError) {
       setError(displayAppError(t, nextError));
-      setDeleteTarget(null);
+      setDeleteDialog(closeAgentDeleteDialogState);
     }
   };
 
@@ -248,7 +305,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
                   <CommandList>
                     <CommandEmpty>{t('agentManagement.noMatchingAgents')}</CommandEmpty>
                     <CommandGroup>
-                      <CommandItem value={t('agentManagement.customAgent')} onSelect={openCustomCreate}>
+                      <CommandItem value={t('agentManagement.customAgent')} className={agentAddMenuItemClassName} onSelect={openCustomCreate}>
                         <Bot className="size-4" />
                         <span>{t('agentManagement.customAgent')}</span>
                       </CommandItem>
@@ -259,6 +316,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
                         <CommandItem
                           key={agentType.agentType}
                           value={`${agentType.label} ${agentType.agentType}`}
+                          className={agentAddMenuItemClassName}
                           disabled={agentType.configured}
                           onSelect={() => openCreate(agentType)}
                         >
@@ -292,7 +350,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
           </AlertDescription>
         </Alert>
       ) : null}
-      {error && !sheetOpen ? <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div> : null}
+      {error && !editor.open ? <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div> : null}
 
       {vm && vm.agents.length > 0 ? (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -302,7 +360,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
               agent={agent}
               diagnosing={diagnosingType === agent.agentType || automaticDiagnosingType === agent.agentType}
               onEdit={() => openEdit(agent)}
-              onDelete={() => setDeleteTarget(agent)}
+              onDelete={() => setDeleteDialog({ open: true, target: agent })}
               onDoctor={() => void runDoctor(agent.agentType)}
             />
           ))}
@@ -313,53 +371,75 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
         </AppCard>
       )}
 
-      <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-        <SheetContent className="gap-0 overflow-hidden" resizeStorageKey="agent-management/editor" defaultSize={720} minSize={520} maxSize={960}>
+      <Sheet modal={agentEditorSheetPresentation.modal} open={editor.open} onOpenChange={(open) => {
+        if (!open) setEditor(closeAgentEditorState);
+      }}>
+        <SheetContent showOverlay={agentEditorSheetPresentation.showOverlay} className="gap-0 overflow-hidden" resizeStorageKey="agent-management/editor" defaultSize={720} minSize={520} maxSize={960}>
           <SheetHeader className="border-b border-border/60 px-6 py-4">
-            <SheetTitle>{editorMode === 'create' ? t('agentManagement.createTitle') : t('agentManagement.editTitle')}</SheetTitle>
-            <SheetDescription>{editorMode === 'create' ? t('agentManagement.createDescription') : t('agentManagement.editDescription')}</SheetDescription>
+            <SheetTitle>{editor.context.mode === 'create' ? t('agentManagement.createTitle') : t('agentManagement.editTitle')}</SheetTitle>
+            <SheetDescription>{editor.context.mode === 'create' ? t('agentManagement.createDescription') : t('agentManagement.editDescription')}</SheetDescription>
           </SheetHeader>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
             <Field label={t('agentManagement.agentId')} description={t('agentManagement.agentIdDescription')}>
-              <TextInput
-                value={selectedType}
-                disabled={editorMode === 'edit' || Boolean(catalog.find((entry) => entry.agentType === selectedType))}
+              <AgentIdInput
+                value={editor.selectedType}
+                disabled={!isAgentIdEditable(editor.context)}
                 placeholder={t('agentManagement.customAgentIdPlaceholder')}
-                onChange={(event) => setSelectedType(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
+                onValueChange={(selectedType) => setEditor((current) => ({ ...current, selectedType }))}
               />
             </Field>
             <Field label={t('agentManagement.displayName')}>
-              <TextInput value={form.displayName} onChange={(event: ChangeEvent<HTMLInputElement>) => setForm((current) => ({ ...current, displayName: event.target.value }))} />
+              <TextInput value={editor.form.displayName} onChange={(event: ChangeEvent<HTMLInputElement>) => setEditor((current) => ({ ...current, form: { ...current.form, displayName: event.target.value } }))} />
             </Field>
             <Field label={t('agentManagement.command')}>
-              <TextInput value={form.command} onChange={(event: ChangeEvent<HTMLInputElement>) => setForm((current) => ({ ...current, command: event.target.value }))} />
+              <TextInput value={editor.form.command} onChange={(event: ChangeEvent<HTMLInputElement>) => setEditor((current) => ({ ...current, form: { ...current.form, command: event.target.value } }))} />
             </Field>
             <Field label={t('agentManagement.args')} description={t('agentManagement.argsDescription')}>
               <ConfigTextarea
                 className="min-h-24"
-                value={argsText}
+                value={editor.argsText}
                 placeholder={'-y\n@agentclientprotocol/claude-agent-acp@latest'}
-                onChange={(event) => setArgsText(event.target.value)}
+                onChange={(event) => setEditor((current) => ({ ...current, argsText: event.target.value }))}
               />
             </Field>
             <Field label={t('agentManagement.env')} description={t('agentManagement.envDescription')}>
               <ConfigTextarea
                 className="min-h-28"
-                value={envText}
+                value={editor.envText}
                 placeholder={'ANTHROPIC_API_KEY=...\nNODE_OPTIONS=--max-old-space-size=4096'}
-                onChange={(event) => setEnvText(event.target.value)}
+                onChange={(event) => setEditor((current) => ({ ...current, envText: event.target.value }))}
               />
             </Field>
-            <Field label={t('agentManagement.icon')} description={t('agentManagement.iconDescription')}>
+            <FieldActionGroup
+              label={t('agentManagement.icon')}
+              description={editor.context.source === 'catalog'
+                ? t('agentManagement.catalogIconDescription', { agent: editor.context.defaultIconLabel })
+                : t('agentManagement.iconDescription')}
+            >
               <div className="flex items-center gap-3">
                 <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-border/60 bg-background">
-                  <img src={agentIconSrc(form.icon)} alt="" className={agentIconClass(form.icon, 'size-6')} />
+                  <img src={agentIconSrc(editor.form.icon)} alt="" className={agentIconClass(editor.form.icon, 'size-6')} />
                 </span>
-                <TextInput className="min-w-0 flex-1" value={form.icon} placeholder="agent" onChange={(event) => setForm((current) => ({ ...current, icon: event.target.value }))} />
-                <Button type="button" variant="outline" className="shrink-0" onClick={() => iconFileInputRef.current?.click()}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="shrink-0 bg-transparent"
+                  onClick={() => iconFileInputRef.current?.click()}
+                >
                   <ImagePlus />
                   {t('agentManagement.selectLocalIcon')}
                 </Button>
+                {editor.form.icon.trim() !== editor.context.defaultIconKey ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="shrink-0 bg-transparent"
+                    onClick={() => setEditor((current) => ({ ...current, form: { ...current.form, icon: current.context.defaultIconKey } }))}
+                  >
+                    <RotateCcw />
+                    {t('agentManagement.useDefaultIcon')}
+                  </Button>
+                ) : null}
                 <input
                   ref={iconFileInputRef}
                   type="file"
@@ -369,31 +449,34 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
                   onChange={(event) => void selectLocalIcon(event.target.files?.[0])}
                 />
               </div>
-            </Field>
+            </FieldActionGroup>
             <Field label={t('agentManagement.primaryAgentDir')} description={t('agentManagement.primaryAgentDirDescription')}>
               <TextInput
-                value={form.primaryAgentDir}
+                value={editor.form.primaryAgentDir}
                 placeholder={t('agentManagement.primaryAgentDirPlaceholder')}
-                onChange={(event: ChangeEvent<HTMLInputElement>) => setForm((current) => ({ ...current, primaryAgentDir: event.target.value }))}
+                onChange={(event: ChangeEvent<HTMLInputElement>) => setEditor((current) => ({ ...current, form: { ...current.form, primaryAgentDir: event.target.value } }))}
               />
             </Field>
             <Field label={t('agentManagement.compatibleAgentDirs')} description={t('agentManagement.compatibleAgentDirsDescription')}>
               <ConfigTextarea
                 className="min-h-20"
-                value={compatibleAgentDirsText}
+                value={editor.compatibleAgentDirsText}
                 placeholder={t('agentManagement.compatibleAgentDirsPlaceholder')}
-                onChange={(event) => setCompatibleAgentDirsText(event.target.value)}
+                onChange={(event) => setEditor((current) => ({ ...current, compatibleAgentDirsText: event.target.value }))}
               />
             </Field>
             <CapabilitySwitch
               id="external-session-sync-support"
               label={t('agentManagement.externalSessionSyncSupport')}
               description={t('agentManagement.externalSessionSyncSupportDescription')}
-              checked={form.externalSessionSyncSupported}
-              onCheckedChange={(checked) => setForm((current) => ({
+              checked={editor.form.externalSessionSyncSupported}
+              onCheckedChange={(checked) => setEditor((current) => ({
                 ...current,
-                externalSessionSyncSupported: checked,
-                externalSessionSyncEnabled: checked ? current.externalSessionSyncEnabled : false,
+                form: {
+                  ...current.form,
+                  externalSessionSyncSupported: checked,
+                  externalSessionSyncEnabled: checked ? current.form.externalSessionSyncEnabled : false,
+                },
               }))}
             />
             <div className="flex items-center justify-between gap-5 rounded-xl border border-border/60 bg-muted/10 px-4 py-3">
@@ -408,25 +491,27 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
               </div>
               <Switch
                 id="external-session-sync"
-                disabled={!form.externalSessionSyncSupported}
-                checked={form.externalSessionSyncEnabled}
-                onCheckedChange={(checked) => setForm((current) => ({ ...current, externalSessionSyncEnabled: checked }))}
+                disabled={!editor.form.externalSessionSyncSupported}
+                checked={editor.form.externalSessionSyncEnabled}
+                onCheckedChange={(checked) => setEditor((current) => ({ ...current, form: { ...current.form, externalSessionSyncEnabled: checked } }))}
               />
             </div>
             {error ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">{error}</div> : null}
             <div className="flex justify-end gap-2 pt-1">
-              <Button variant="outline" onClick={() => setSheetOpen(false)}>{t('common.close')}</Button>
-              <Button disabled={saving || !selectedType.trim() || !form.displayName.trim() || !form.command.trim() || !hasFormChanges} onClick={() => void submit()}>{t('common.save')}</Button>
+              <Button variant="outline" onClick={() => setEditor(closeAgentEditorState)}>{t('common.close')}</Button>
+              <Button disabled={saving || !editor.selectedType.trim() || !editor.form.displayName.trim() || !editor.form.command.trim() || !hasFormChanges} onClick={() => void submit()}>{t('common.save')}</Button>
             </div>
           </div>
         </SheetContent>
       </Sheet>
 
-      <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+      <AlertDialog open={deleteDialog.open} onOpenChange={(open) => {
+        if (!open) setDeleteDialog(closeAgentDeleteDialogState);
+      }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t('agentManagement.deleteTitle')}</AlertDialogTitle>
-            <AlertDialogDescription>{t('agentManagement.deleteDescription', { agent: deleteTarget?.displayName ?? deleteTarget?.agentType ?? '' })}</AlertDialogDescription>
+            <AlertDialogDescription>{t('agentManagement.deleteDescription', { agent: deleteDialog.target?.displayName ?? deleteDialog.target?.agentType ?? '' })}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
@@ -544,6 +629,45 @@ function TextInput(props: InputHTMLAttributes<HTMLInputElement>) {
   return <input {...props} className={cn('h-10 w-full rounded-md border border-border/60 bg-background px-3 text-sm text-foreground shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60', props.className)} />;
 }
 
+function FieldActionGroup({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
+  return (
+    <fieldset className="min-w-0 space-y-2 border-0 p-0">
+      <legend className="text-sm font-semibold text-foreground">{label}</legend>
+      {description ? <div className="text-xs text-muted-foreground">{description}</div> : null}
+      {children}
+    </fieldset>
+  );
+}
+
+export function AgentIdInput({
+  value,
+  disabled,
+  placeholder,
+  onValueChange,
+}: {
+  value: string;
+  disabled: boolean;
+  placeholder: string;
+  onValueChange: (value: string) => void;
+}) {
+  const composingRef = useRef(false);
+  return (
+    <TextInput
+      value={value}
+      disabled={disabled}
+      placeholder={placeholder}
+      onChange={(event) => onValueChange(agentIdInputValue(event.target.value, composingRef.current))}
+      onCompositionStart={() => {
+        composingRef.current = true;
+      }}
+      onCompositionEnd={(event) => {
+        composingRef.current = false;
+        onValueChange(agentIdInputValue(event.currentTarget.value, false));
+      }}
+    />
+  );
+}
+
 function ConfigTextarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return <Textarea {...props} className={cn('resize-y border-border/70 bg-card/70 font-mono text-sm leading-6 shadow-inner outline-none placeholder:text-muted-foreground/55 focus-visible:ring-primary/35', props.className)} />;
 }
@@ -651,7 +775,7 @@ export function buildAgentInput(
 ): ManagedAgentInput {
   return {
     displayName: form.displayName,
-    icon: form.icon.trim() || 'agent',
+    icon: form.icon.trim() || DEFAULT_AGENT_ICON_KEY,
     command: form.command.trim(),
     args: parseArgs(argsText),
     env: parseEnv(envText),
@@ -666,10 +790,18 @@ export function hasManagedAgentInputChanged(initial: ManagedAgentInput, current:
   return managedAgentInputFingerprint(initial) !== managedAgentInputFingerprint(current);
 }
 
+export function isAgentIdEditable(context: Pick<AgentEditorContext, 'mode' | 'source'>): boolean {
+  return context.mode === 'create' && context.source === 'custom';
+}
+
+export function agentIdInputValue(value: string, composing: boolean): string {
+  return composing ? value : value.toLowerCase().replace(/[^a-z0-9-]/g, '');
+}
+
 function managedAgentInputFingerprint(input: ManagedAgentInput): string {
   return JSON.stringify({
     displayName: input.displayName,
-    icon: input.icon.trim() || 'agent',
+    icon: input.icon.trim() || DEFAULT_AGENT_ICON_KEY,
     command: input.command.trim(),
     args: input.args,
     env: Object.entries(input.env).sort(([left], [right]) => left.localeCompare(right)),

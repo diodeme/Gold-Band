@@ -12,9 +12,14 @@ const defaultSheetViewportMargin = 16
 const sheetResizeStep = 24
 
 type SheetSide = "top" | "right" | "bottom" | "left"
+const SheetModalContext = React.createContext(true)
 
-function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
-  return <SheetPrimitive.Root data-slot="sheet" {...props} />
+function Sheet({ modal = true, ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
+  return (
+    <SheetModalContext.Provider value={modal}>
+      <SheetPrimitive.Root data-slot="sheet" modal={modal} {...props} />
+    </SheetModalContext.Provider>
+  )
 }
 
 const SheetTrigger = React.forwardRef<
@@ -107,7 +112,7 @@ function SheetContent({
   children,
   side = "right",
   showCloseButton = true,
-  showOverlay = true,
+  showOverlay,
   closeLabel = "Close",
   resizable = true,
   resizeStorageKey,
@@ -129,6 +134,8 @@ function SheetContent({
   maxSize?: number
   viewportMargin?: number
 }) {
+  const modal = React.useContext(SheetModalContext)
+  const overlayVisible = resolveSheetOverlayVisibility(modal, showOverlay)
   const contentRef = React.useRef<HTMLDivElement | null>(null)
   const [portalContainerEl, setPortalContainerEl] = React.useState<HTMLElement | null>(null)
   const setContentRef = React.useCallback((node: HTMLDivElement | null) => {
@@ -302,7 +309,7 @@ function SheetContent({
 
   return (
     <SheetPortal>
-      {showOverlay ? <SheetOverlay /> : null}
+      {overlayVisible ? <SheetOverlay /> : null}
       <SheetPrimitive.Content
         ref={setContentRef}
         data-slot="sheet-content"
@@ -362,6 +369,10 @@ function SheetContent({
       </SheetPrimitive.Content>
     </SheetPortal>
   )
+}
+
+export function resolveSheetOverlayVisibility(modal: boolean, showOverlay?: boolean) {
+  return showOverlay ?? modal
 }
 
 function SheetHeader({ className, ...props }: React.ComponentProps<"div">) {

@@ -2,7 +2,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import i18n from '../src/i18n';
-import { buildAgentCardSummary, buildAgentInput, ExternalSessionSyncHeading, hasManagedAgentInputChanged } from '../src/pages/AgentManagementPage';
+import { agentAddMenuItemClassName, agentEditorSheetPresentation, agentIdInputValue, buildAgentCardSummary, buildAgentInput, closeAgentDeleteDialogState, closeAgentEditorState, ExternalSessionSyncHeading, hasManagedAgentInputChanged, isAgentIdEditable, type AgentDeleteDialogState, type AgentEditorState } from '../src/pages/AgentManagementPage';
 import type { ManagedAgentInput, ManagedAgentVm } from '../src/types';
 
 function agentInput(overrides: Partial<ManagedAgentInput> = {}): ManagedAgentInput {
@@ -81,9 +81,13 @@ describe('Agent management input mapping', () => {
       primaryAgentDir: '   ',
     }), '', '', '');
 
-    expect(input.icon).toBe('agent');
+    expect(input.icon).toBe('gold-band');
     expect(input.primaryAgentDir).toBe('');
     expect(input.compatibleAgentDirs).toEqual([]);
+    expect(i18n.t('agentManagement.iconDescription', { lng: 'zh-CN' })).toContain('Gold Band Logo');
+    expect(i18n.t('agentManagement.catalogIconDescription', { lng: 'zh-CN', agent: 'Claude' })).toContain('Claude 图标');
+    expect(i18n.t('agentManagement.iconDescription', { lng: 'zh-CN' })).not.toContain('data URI');
+    expect(i18n.t('agentManagement.useDefaultIcon', { lng: 'en' })).toBe('Restore Default Icon');
   });
 
   it('disables external session sync when the Agent capability is unavailable', () => {
@@ -135,5 +139,76 @@ describe('Agent management input mapping', () => {
     expect(i18n.t('agentManagement.agentId', { lng: 'zh-CN' })).toBe('Agent ID');
     expect(i18n.t('agentManagement.agentIdDescription', { lng: 'zh-CN' })).toContain('创建后不可修改');
     expect(i18n.exists('agentManagement.systemPromptSupport', { lng: 'zh-CN' })).toBe(false);
+  });
+
+  it('keeps custom Agent IDs editable independently from Catalog ID text', () => {
+    expect(isAgentIdEditable({ mode: 'create', source: 'custom' })).toBe(true);
+    expect(isAgentIdEditable({ mode: 'create', source: 'catalog' })).toBe(false);
+    expect(isAgentIdEditable({ mode: 'edit', source: 'catalog' })).toBe(false);
+    expect(isAgentIdEditable({ mode: 'edit', source: 'custom' })).toBe(false);
+  });
+
+  it('keeps the current Agent draft intact while the Sheet exit animation is running', () => {
+    const form = agentInput({ icon: 'data:image/png;base64,custom-icon' });
+    const state: AgentEditorState = {
+      open: true,
+      context: {
+        mode: 'edit',
+        source: 'catalog',
+        defaultIconKey: 'claude',
+        defaultIconLabel: 'Claude',
+      },
+      selectedType: 'claude-acp',
+      form,
+      argsText: '-y\n@agentclientprotocol/claude-agent-acp@latest',
+      envText: 'TOKEN=value',
+      compatibleAgentDirsText: '.agents',
+      initialEditInput: form,
+    };
+
+    expect(closeAgentEditorState(state)).toEqual({ ...state, open: false });
+  });
+
+  it('keeps the side editor non-modal without a page-dimming overlay', () => {
+    expect(agentEditorSheetPresentation).toEqual({
+      modal: false,
+      showOverlay: false,
+    });
+  });
+
+  it('keeps the deleted Agent name available throughout the confirmation exit animation', () => {
+    const target: ManagedAgentVm = {
+      agentType: 'claude-acp',
+      displayName: 'Claude',
+      command: 'npx',
+      args: [],
+      env: [],
+      iconKey: 'claude',
+      primaryAgentDir: '.claude',
+      compatibleAgentDirs: ['.agents'],
+      supportsSystemPrompt: true,
+      externalSessionSyncSupported: false,
+      externalSessionSyncEnabled: false,
+      diagnostic: null,
+    };
+    const state: AgentDeleteDialogState = { open: true, target };
+
+    expect(closeAgentDeleteDialogState(state)).toEqual({ open: false, target });
+  });
+
+  it('does not rewrite an Agent ID while an IME composition is active', () => {
+    expect(agentIdInputValue('入-my', true)).toBe('入-my');
+    expect(agentIdInputValue('入-my', false)).toBe('-my');
+    expect(agentIdInputValue('KIMI-For-Mine', false)).toBe('kimi-for-mine');
+  });
+
+  it('keeps the add-Agent command active state invisible until pointer hover', () => {
+    expect(agentAddMenuItemClassName).toContain('data-[selected=true]:!bg-transparent');
+    expect(agentAddMenuItemClassName).toContain('data-[selected=true]:!text-foreground');
+    expect(agentAddMenuItemClassName).toContain('hover:bg-accent');
+    expect(agentAddMenuItemClassName).toContain('hover:text-accent-foreground');
+    expect(agentAddMenuItemClassName).toContain('data-[selected=true]:hover:!bg-accent');
+    expect(agentAddMenuItemClassName).toContain('data-[selected=true]:hover:!text-accent-foreground');
+    expect(agentAddMenuItemClassName).not.toContain('shadow-[');
   });
 });

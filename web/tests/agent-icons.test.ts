@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { AGENT_ICON_ACCEPT, MAX_AGENT_ICON_BYTES, agentIconClass, agentIconSrc, readAgentIconFile } from '../src/lib/agent-icons';
+import { AGENT_ICON_ACCEPT, DEFAULT_AGENT_ICON_KEY, MAX_AGENT_ICON_BYTES, agentIconClass, agentIconSrc, readAgentIconFile } from '../src/lib/agent-icons';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -20,7 +20,9 @@ describe('agent icon helpers', () => {
   });
 
   it('routes the Gold Band icon to the app logo', () => {
-    expect(agentIconSrc('gold-band')).toBe('/logo.svg');
+    expect(DEFAULT_AGENT_ICON_KEY).toBe('gold-band');
+    expect(agentIconSrc(DEFAULT_AGENT_ICON_KEY)).toBe('/logo.svg');
+    expect(agentIconSrc('')).toBe('/logo.svg');
     expect(agentIconSrc('claude')).toBe('/agent-icons/claude.svg');
   });
 

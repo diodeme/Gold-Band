@@ -1687,6 +1687,7 @@ pub fn run_prompt(
     live_update: Option<&dyn Fn(&AcpUiEvent) -> Result<()>>,
     mcp_servers: &[Value],
     session_update: Option<&dyn Fn() -> Result<()>>,
+    prompt_accepted: Option<&dyn Fn(&str) -> Result<()>>,
     stop_probe: Option<RuntimeStopProbe>,
 ) -> Result<AcpPromptRun> {
     let run_prompt_started_at = Instant::now();
@@ -1787,6 +1788,9 @@ pub fn run_prompt(
     )?;
     let prompt_turn = runtime.record_user_prompt_event(provider_id, prompt, restored)?;
     runtime.control.mark_accepted();
+    if let Some(prompt_accepted) = prompt_accepted {
+        let _ = prompt_accepted(&prompt_turn.id);
+    }
     runtime.write_session("running", restored, None, capabilities.clone())?;
     if acp_session_title_refresh_enabled {
         runtime.refresh_session_title_and_persist(

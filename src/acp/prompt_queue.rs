@@ -12,13 +12,20 @@ use crate::storage::{read_json, write_json};
 pub const PROMPT_QUEUE_FILE_NAME: &str = "acp.prompt-queue.json";
 pub const MAX_QUEUED_PROMPTS: usize = 10;
 pub const AUTO_DISPATCH_USER_PRIORITY_GRACE_MS: u64 = 600;
+const PROMPT_QUEUE_VERSION: u32 = 2;
 
 static PROMPT_QUEUE_LOCKS: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-static ACTIVE_DISPATCHES: LazyLock<Mutex<HashSet<String>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+static ACTIVE_DISPATCHES: LazyLock<Mutex<HashMap<String, ActiveDispatch>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 static AUTO_DISPATCH_SUSPENSIONS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveDispatch {
+    queue_path: String,
+    item_id: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -53,7 +60,7 @@ pub struct PromptQueue {
 impl Default for PromptQueue {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: PROMPT_QUEUE_VERSION,
             revision: 0,
             auto_dispatch_suspended: false,
             items: Vec::new(),
@@ -239,7 +246,7 @@ pub fn claim_next_for_auto_dispatch(
         item.state = QueuedPromptState::Dispatching;
         let claimed = item.clone();
         persist_mutation_unlocked(attempt_dir, &mut queue)?;
-        mark_dispatch_active(attempt_dir, &claimed.id)?;
+        mark_dispatch_active(attempt_dir, &claimed)?;
         Ok(AutoClaimResult::Claimed(claimed))
     })
 }
@@ -265,7 +272,7 @@ pub fn claim_queued_prompt(
         let claimed = item.clone();
         persist_mutation_unlocked(attempt_dir, &mut queue)
             .map_err(|_| PromptQueueError::Storage)?;
-        mark_dispatch_active(attempt_dir, &claimed.id).map_err(|_| PromptQueueError::Storage)?;
+        mark_dispatch_active(attempt_dir, &claimed).map_err(|_| PromptQueueError::Storage)?;
         Ok(claimed)
     })
 }
@@ -290,19 +297,23 @@ pub fn release_queued_prompt(attempt_dir: &Utf8Path, item_id: &str) -> Result<Pr
 /// never accepted are restored for a future send.
 pub fn settle_dispatching_prompts(attempt_dir: &Utf8Path) -> Result<PromptQueue> {
     let result = with_queue_lock(attempt_dir, || {
-        let mut queue = load_and_reconcile_unlocked(attempt_dir)?;
-        let accepted_prompt_ids = accepted_prompt_ids(attempt_dir);
+        let mut queue = load_queue_unlocked(attempt_dir)?;
+        let needs_version_reconciliation = queue.version < PROMPT_QUEUE_VERSION;
         let settled_ids = queue
             .items
             .iter()
             .filter(|item| item.state == QueuedPromptState::Dispatching)
             .map(|item| item.id.clone())
             .collect::<Vec<_>>();
-        if settled_ids.is_empty() {
+        if settled_ids.is_empty() && !needs_version_reconciliation {
             return Ok((queue, settled_ids));
         }
+        let accepted_prompt_ids = accepted_prompt_ids(attempt_dir);
         queue.items.retain_mut(|item| {
             if item.state != QueuedPromptState::Dispatching {
+                if needs_version_reconciliation && accepted_prompt_ids.contains(&item.prompt_id) {
+                    return false;
+                }
                 return true;
             }
             if accepted_prompt_ids.contains(&item.prompt_id) {
@@ -311,6 +322,7 @@ pub fn settle_dispatching_prompts(attempt_dir: &Utf8Path) -> Result<PromptQueue>
             item.state = QueuedPromptState::Queued;
             true
         });
+        queue.version = PROMPT_QUEUE_VERSION;
         persist_mutation_unlocked(attempt_dir, &mut queue)?;
         Ok((queue, settled_ids))
     });
@@ -321,57 +333,55 @@ pub fn settle_dispatching_prompts(attempt_dir: &Utf8Path) -> Result<PromptQueue>
     Ok(queue)
 }
 
-/// Finalizes accepted dispatches as soon as their stable prompt ids appear in
-/// the durable timeline, without disturbing a dispatch that is still starting.
-pub fn complete_accepted_dispatches(attempt_dir: &Utf8Path) -> Result<PromptQueue> {
-    let result = with_queue_lock(attempt_dir, || {
-        let mut queue = load_and_reconcile_unlocked(attempt_dir)?;
-        let accepted_prompt_ids = accepted_prompt_ids(attempt_dir);
-        let completed_ids = queue
-            .items
-            .iter()
-            .filter(|item| {
-                item.state == QueuedPromptState::Dispatching
-                    && accepted_prompt_ids.contains(&item.prompt_id)
-            })
-            .map(|item| item.id.clone())
-            .collect::<Vec<_>>();
-        if completed_ids.is_empty() {
-            return Ok((queue, completed_ids));
-        }
-        queue.items.retain(|item| !completed_ids.contains(&item.id));
-        persist_mutation_unlocked(attempt_dir, &mut queue)?;
-        Ok((queue, completed_ids))
-    });
-    let (queue, completed_ids) = result?;
-    for item_id in completed_ids {
-        clear_dispatch_active(attempt_dir, &item_id)?;
+/// Removes one active queue dispatch at the durable acceptance boundary.
+///
+/// The in-memory lookup is the hot-path guard: ordinary prompts return without
+/// reading either the queue or timeline files.
+pub fn complete_accepted_prompt(attempt_dir: &Utf8Path, prompt_id: &str) -> Result<bool> {
+    if !dispatch_prompt_is_active(attempt_dir, prompt_id) {
+        return Ok(false);
     }
-    Ok(queue)
+    let result = with_queue_lock(attempt_dir, || {
+        if !dispatch_prompt_is_active(attempt_dir, prompt_id) {
+            return Ok(false);
+        }
+        let mut queue = load_queue_unlocked(attempt_dir)?;
+        let before = queue.items.len();
+        queue.items.retain(|item| {
+            item.prompt_id != prompt_id || item.state != QueuedPromptState::Dispatching
+        });
+        let completed = queue.items.len() != before;
+        if completed {
+            persist_mutation_unlocked(attempt_dir, &mut queue)?;
+        }
+        Ok(completed)
+    });
+    let completed = result?;
+    clear_dispatch_active_prompt(attempt_dir, prompt_id)?;
+    Ok(completed)
 }
 
 fn load_and_reconcile_unlocked(attempt_dir: &Utf8Path) -> Result<PromptQueue> {
-    let path = queue_path(attempt_dir);
-    let mut queue = if path.exists() {
-        read_json::<PromptQueue>(&path)?
-    } else {
-        PromptQueue::default()
-    };
+    let mut queue = load_queue_unlocked(attempt_dir)?;
+    let needs_version_reconciliation = queue.version < PROMPT_QUEUE_VERSION;
+    let has_orphaned_dispatch = queue.items.iter().any(|item| {
+        item.state == QueuedPromptState::Dispatching && !dispatch_is_active(attempt_dir, item)
+    });
+    if !needs_version_reconciliation && !has_orphaned_dispatch {
+        return Ok(queue);
+    }
     let accepted_prompt_ids = accepted_prompt_ids(attempt_dir);
-    let mut changed = false;
+    let mut changed = needs_version_reconciliation;
     queue.items.retain_mut(|item| {
         let accepted = accepted_prompt_ids.contains(&item.prompt_id);
-        if accepted
-            && (item.state != QueuedPromptState::Dispatching
-                || !dispatch_is_active(attempt_dir, &item.id))
-        {
+        if accepted && item.state != QueuedPromptState::Dispatching {
             changed = true;
             return false;
         }
         if item.state != QueuedPromptState::Dispatching {
             return true;
         }
-        if dispatch_is_active(attempt_dir, &item.id) {
+        if dispatch_is_active(attempt_dir, item) {
             return true;
         }
         changed = true;
@@ -382,10 +392,20 @@ fn load_and_reconcile_unlocked(attempt_dir: &Utf8Path) -> Result<PromptQueue> {
             true
         }
     });
+    queue.version = PROMPT_QUEUE_VERSION;
     if changed {
         persist_mutation_unlocked(attempt_dir, &mut queue)?;
     }
     Ok(queue)
+}
+
+fn load_queue_unlocked(attempt_dir: &Utf8Path) -> Result<PromptQueue> {
+    let path = queue_path(attempt_dir);
+    if path.exists() {
+        read_json::<PromptQueue>(&path)
+    } else {
+        Ok(PromptQueue::default())
+    }
 }
 
 fn accepted_prompt_ids(attempt_dir: &Utf8Path) -> HashSet<String> {
@@ -407,33 +427,57 @@ fn accepted_prompt_ids(attempt_dir: &Utf8Path) -> HashSet<String> {
         .collect()
 }
 
-fn dispatch_key(attempt_dir: &Utf8Path, item_id: &str) -> String {
-    format!("{}::{item_id}", queue_path(attempt_dir))
-}
-
-fn mark_dispatch_active(attempt_dir: &Utf8Path, item_id: &str) -> Result<()> {
+fn mark_dispatch_active(attempt_dir: &Utf8Path, item: &QueuedPrompt) -> Result<()> {
     ACTIVE_DISPATCHES
         .lock()
         .map_err(|_| anyhow!("active prompt dispatch registry poisoned"))?
-        .insert(dispatch_key(attempt_dir, item_id));
+        .insert(
+            dispatch_prompt_key(attempt_dir, &item.prompt_id),
+            ActiveDispatch {
+                queue_path: queue_path(attempt_dir).to_string(),
+                item_id: item.id.clone(),
+            },
+        );
     Ok(())
 }
 
 fn clear_dispatch_active(attempt_dir: &Utf8Path, item_id: &str) -> Result<()> {
+    let queue_path = queue_path(attempt_dir).to_string();
     ACTIVE_DISPATCHES
         .lock()
         .map_err(|_| anyhow!("active prompt dispatch registry poisoned"))?
-        .remove(&dispatch_key(attempt_dir, item_id));
+        .retain(|_, dispatch| dispatch.queue_path != queue_path || dispatch.item_id != item_id);
     Ok(())
 }
 
-fn dispatch_is_active(attempt_dir: &Utf8Path, item_id: &str) -> bool {
+fn clear_dispatch_active_prompt(attempt_dir: &Utf8Path, prompt_id: &str) -> Result<()> {
     ACTIVE_DISPATCHES
         .lock()
-        .is_ok_and(|dispatches| dispatches.contains(&dispatch_key(attempt_dir, item_id)))
+        .map_err(|_| anyhow!("active prompt dispatch registry poisoned"))?
+        .remove(&dispatch_prompt_key(attempt_dir, prompt_id));
+    Ok(())
+}
+
+fn dispatch_prompt_is_active(attempt_dir: &Utf8Path, prompt_id: &str) -> bool {
+    ACTIVE_DISPATCHES.lock().is_ok_and(|dispatches| {
+        dispatches.contains_key(&dispatch_prompt_key(attempt_dir, prompt_id))
+    })
+}
+
+fn dispatch_is_active(attempt_dir: &Utf8Path, item: &QueuedPrompt) -> bool {
+    ACTIVE_DISPATCHES.lock().is_ok_and(|dispatches| {
+        dispatches
+            .get(&dispatch_prompt_key(attempt_dir, &item.prompt_id))
+            .is_some_and(|dispatch| dispatch.item_id == item.id)
+    })
+}
+
+fn dispatch_prompt_key(attempt_dir: &Utf8Path, prompt_id: &str) -> String {
+    format!("{}::{prompt_id}", queue_path(attempt_dir))
 }
 
 fn persist_mutation_unlocked(attempt_dir: &Utf8Path, queue: &mut PromptQueue) -> Result<()> {
+    queue.version = PROMPT_QUEUE_VERSION;
     queue.revision = queue.revision.saturating_add(1);
     write_json(&queue_path(attempt_dir), queue)
 }
@@ -518,22 +562,8 @@ mod tests {
         let third = enqueue_prompt(&dir, "third".to_string(), Vec::new()).unwrap();
         let claimed = claim_queued_prompt(&dir, &second.id).unwrap();
         assert_eq!(claimed.id, second.id);
-        let event = user_prompt_event(
-            1,
-            "session-001".to_string(),
-            claimed.content,
-            Some(claimed.prompt_id),
-            false,
-            Vec::new(),
-        );
-        append_timeline_patch(
-            &dir.join("acp.timeline.jsonl"),
-            event.id.clone(),
-            event.seq,
-            &event,
-        )
-        .unwrap();
-        let queue = complete_accepted_dispatches(&dir).unwrap();
+        assert!(complete_accepted_prompt(&dir, &claimed.prompt_id).unwrap());
+        let queue = load_prompt_queue(&dir).unwrap();
         assert_eq!(
             queue
                 .items
@@ -542,6 +572,50 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![first.id.as_str(), third.id.as_str()]
         );
+    }
+
+    #[test]
+    fn ordinary_prompt_acceptance_does_not_touch_queue_storage() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+
+        assert!(!complete_accepted_prompt(&dir, "ordinary-direct-prompt").unwrap());
+        assert!(!queue_path(&dir).exists());
+    }
+
+    #[test]
+    fn accepted_prompt_id_only_completes_its_active_dispatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let item = enqueue_prompt(&dir, "queued".to_string(), Vec::new()).unwrap();
+        claim_queued_prompt(&dir, &item.id).unwrap();
+
+        assert!(!complete_accepted_prompt(&dir, "different-prompt").unwrap());
+        assert_eq!(
+            load_prompt_queue(&dir).unwrap().items[0].state,
+            QueuedPromptState::Dispatching
+        );
+        assert!(complete_accepted_prompt(&dir, &item.prompt_id).unwrap());
+        assert!(load_prompt_queue(&dir).unwrap().items.is_empty());
+    }
+
+    #[test]
+    fn active_prompt_identity_is_scoped_to_its_attempt() {
+        let temp = tempfile::tempdir().unwrap();
+        let first_dir = Utf8PathBuf::from_path_buf(temp.path().join("attempt-001")).unwrap();
+        let second_dir = Utf8PathBuf::from_path_buf(temp.path().join("attempt-002")).unwrap();
+        let first = enqueue_prompt(&first_dir, "first".to_string(), Vec::new()).unwrap();
+        let second = enqueue_prompt(&second_dir, "second".to_string(), Vec::new()).unwrap();
+        let mut second_queue = load_prompt_queue(&second_dir).unwrap();
+        second_queue.items[0].prompt_id = first.prompt_id.clone();
+        write_json(&queue_path(&second_dir), &second_queue).unwrap();
+        claim_queued_prompt(&first_dir, &first.id).unwrap();
+        claim_queued_prompt(&second_dir, &second.id).unwrap();
+
+        assert!(complete_accepted_prompt(&first_dir, &first.prompt_id).unwrap());
+        assert!(load_prompt_queue(&first_dir).unwrap().items.is_empty());
+        assert_eq!(load_prompt_queue(&second_dir).unwrap().items.len(), 1);
+        assert!(complete_accepted_prompt(&second_dir, &first.prompt_id).unwrap());
     }
 
     #[test]
@@ -625,6 +699,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let dir = attempt_dir(&temp);
         let item = enqueue_prompt(&dir, "legacy duplicate".to_string(), Vec::new()).unwrap();
+        let mut legacy_queue = load_prompt_queue(&dir).unwrap();
+        legacy_queue.version = 1;
+        write_json(&queue_path(&dir), &legacy_queue).unwrap();
         let event = user_prompt_event(
             1,
             "session-001".to_string(),

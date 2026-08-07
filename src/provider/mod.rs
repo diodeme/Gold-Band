@@ -580,6 +580,7 @@ impl Default for PromptVisibility {
 
 pub type AcpLiveUpdate<'a> = &'a dyn Fn(&AcpUiEvent) -> Result<()>;
 pub type AcpSessionUpdate<'a> = &'a dyn Fn() -> Result<()>;
+pub type AcpPromptAccepted<'a> = &'a dyn Fn(&str) -> Result<()>;
 
 pub trait ProviderAdapter: Send + Sync {
     fn describe_provider(&self) -> ProviderInfo;
@@ -597,6 +598,7 @@ pub trait ProviderAdapter: Send + Sync {
         req: WorkerInvocation,
         live_update: Option<AcpLiveUpdate<'_>>,
         _session_update: Option<AcpSessionUpdate<'_>>,
+        _prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
         self.run_worker_with_live_update(req, live_update)
     }
@@ -994,7 +996,7 @@ impl ProviderAdapter for AcpProvider {
         req: WorkerInvocation,
         live_update: Option<AcpLiveUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
-        self.run_worker_with_callbacks(req, live_update, None)
+        self.run_worker_with_callbacks(req, live_update, None, None)
     }
 
     fn run_worker_with_callbacks(
@@ -1002,6 +1004,7 @@ impl ProviderAdapter for AcpProvider {
         req: WorkerInvocation,
         live_update: Option<AcpLiveUpdate<'_>>,
         session_update: Option<AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
         let prompt = render_prompt_bundle(&req)?;
         log_prompt_bundle(
@@ -1037,6 +1040,7 @@ impl ProviderAdapter for AcpProvider {
             live_update,
             &req.mcp_servers,
             session_update,
+            prompt_accepted,
             Some(client::RuntimeStopProbe {
                 run_file: req.runtime_context.run_dir.join("run.json"),
                 round_id: req.runtime_context.round_id.clone(),

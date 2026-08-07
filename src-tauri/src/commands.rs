@@ -8,6 +8,14 @@ use gold_band::acp::permission::{
     PendingPermissionState, cancel_pending_permission_requests,
     write_permission_response_if_pending,
 };
+use gold_band::acp::prompt_queue::{
+    AUTO_DISPATCH_USER_PRIORITY_GRACE_MS, AutoClaimResult, PromptQueueError,
+    auto_dispatch_is_suspended, claim_next_for_auto_dispatch, claim_queued_prompt,
+    clear_auto_dispatch_suspension, complete_accepted_dispatches, complete_queued_prompt,
+    delete_queued_prompt, enqueue_prompt, load_prompt_queue, mark_user_priority,
+    release_dispatching_prompts, release_queued_prompt, request_auto_dispatch_suspension,
+    suspend_auto_dispatch, update_queued_prompt,
+};
 use gold_band::acp::turn_files::{
     CHANGE_SET_NOT_FOUND, TurnFileChangeSet, TurnFileStore, VERSION_NOT_FOUND,
 };
@@ -24,7 +32,12 @@ use gold_band::skill::SkillCommandError;
 use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
 use std::path::{Component, Path, PathBuf};
-use std::{collections::BTreeSet, str::FromStr, sync::Arc, time::Instant};
+use std::{
+    collections::BTreeSet,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use camino::Utf8PathBuf;
 use gold_band::config::{
@@ -64,7 +77,7 @@ use crate::view_models::{
 };
 use crate::view_models_conversation::{
     ConversationAttemptLifecycleVm, ConversationTaskActivityVm, conversation_attempt_lifecycle_vm,
-    conversation_task_activity_from_prompt,
+    conversation_run_mode, conversation_task_activity_from_prompt,
 };
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
@@ -73,6 +86,7 @@ const AGENT_COMMANDS_UPDATED_EVENT: &str = "gold-band://agent-commands-updated";
 const CONVERSATION_RUN_STATE_EVENT: &str = "gold-band://conversation-run-state-updated";
 const PERMISSION_REQUESTED_DEDUP_SUFFIX: &str = "permission-requested";
 const ELICITATION_REQUESTED_DEDUP_SUFFIX: &str = "elicitation-requested";
+const QUEUED_PROMPT_ID_PREFIX: &str = "turn-queued-";
 
 pub type CommandResult<T> = Result<T, CommandErrorVm>;
 
@@ -222,11 +236,15 @@ fn runtime_continue_started_lifecycle_for_locator(
         lifecycle.runtime_display = runtime_display_vm(Some("running"), None, true, None, false);
         lifecycle.continue_kind = None;
         lifecycle.composer.mode = "runtime-active".to_string();
-        lifecycle.composer.submit_target = "none".to_string();
+        lifecycle.composer.submit_target = if lifecycle.prompt_queue.is_some() {
+            "queue-prompt".to_string()
+        } else {
+            "none".to_string()
+        };
         lifecycle.composer.processing_kind = "processing".to_string();
         lifecycle.composer.status_key = Some("conversation.runtime.runtimeActive".to_string());
         lifecycle.composer.can_stop = true;
-        lifecycle.composer.lock_input = true;
+        lifecycle.composer.lock_input = lifecycle.prompt_queue.is_none();
         lifecycle
     })
 }
@@ -574,10 +592,173 @@ fn resolve_command_app_with_emitters(
     let pid = project_id.map(|s| s.to_string());
     let bg_app = app.clone_for_background();
     let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), pid.clone());
+    let prompt_turn_finished = prompt_turn_finished_callback(app_handle.clone(), pid.clone());
     let app = app
         .with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, pid));
+        .with_acp_session_update(acp_session_update_emitter(app_handle.clone(), bg_app, pid))
+        .with_prompt_turn_finished(prompt_turn_finished);
     Ok(app)
+}
+
+fn prompt_turn_finished_callback(
+    app_handle: AppHandle,
+    project_id: Option<String>,
+) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, bool) -> anyhow::Result<()> + Send + Sync> {
+    Arc::new(move |context, successful| {
+        schedule_direct_prompt_queue_drain(
+            app_handle.clone(),
+            project_id.clone(),
+            AttemptLocator::new(
+                context.task_id,
+                context.run_id,
+                context.round_id,
+                context.node_id,
+                context.attempt_id,
+                context.outer_node_id,
+                context.outer_attempt_id,
+            ),
+            successful,
+        );
+        Ok(())
+    })
+}
+
+fn schedule_direct_prompt_queue_drain(
+    app_handle: AppHandle,
+    project_id: Option<String>,
+    locator: AttemptLocator,
+    successful: bool,
+) {
+    let state = app_handle.state::<DesktopState>();
+    let Ok(app) = resolve_command_app(state.inner(), project_id.as_deref()) else {
+        return;
+    };
+    if conversation_run_mode(&app, &locator.task_id)
+        != Some(gold_band::config::ConversationRunMode::Direct)
+    {
+        return;
+    }
+    let attempt_dir = locator.attempt_dir(&app);
+    if successful {
+        let _ = complete_accepted_dispatches(&attempt_dir);
+    } else {
+        let _ = release_dispatching_prompts(&attempt_dir);
+        emit_acp_session_update(
+            &app_handle,
+            &app,
+            project_id,
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            locator.outer_node_id,
+            locator.outer_attempt_id,
+            None,
+        );
+        return;
+    }
+    let Ok(queue) = load_prompt_queue(&attempt_dir) else {
+        return;
+    };
+    if queue.auto_dispatch_suspended || auto_dispatch_is_suspended(&attempt_dir) {
+        return;
+    }
+    if !queue
+        .items
+        .iter()
+        .any(|item| item.state == gold_band::acp::prompt_queue::QueuedPromptState::Queued)
+    {
+        return;
+    }
+    let expected_revision = queue.revision;
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(AUTO_DISPATCH_USER_PRIORITY_GRACE_MS)).await;
+        let state = app_handle.state::<DesktopState>();
+        let Ok(app) = resolve_command_app(state.inner(), project_id.as_deref()) else {
+            return;
+        };
+        let attempt_dir = locator.attempt_dir(&app);
+        if client::prompt_activity(&attempt_dir).is_some() {
+            return;
+        }
+        let claimed = match claim_next_for_auto_dispatch(&attempt_dir, expected_revision) {
+            Ok(AutoClaimResult::Claimed(item)) => item,
+            Ok(
+                AutoClaimResult::Empty | AutoClaimResult::Preempted | AutoClaimResult::Suspended,
+            )
+            | Err(_) => return,
+        };
+        emit_acp_session_update(
+            &app_handle,
+            &app,
+            project_id.clone(),
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            locator.outer_node_id.clone(),
+            locator.outer_attempt_id.clone(),
+            None,
+        );
+        if auto_dispatch_is_suspended(&attempt_dir) {
+            let _ = release_queued_prompt(&attempt_dir, &claimed.id);
+            return;
+        }
+        let result = send_acp_prompt(
+            app_handle.clone(),
+            state,
+            project_id.clone(),
+            locator.task_id.clone(),
+            locator.run_id.clone(),
+            locator.round_id.clone(),
+            locator.node_id.clone(),
+            locator.attempt_id.clone(),
+            claimed.content.clone(),
+            Some(claimed.prompt_id.clone()),
+            locator.outer_node_id.clone(),
+            locator.outer_attempt_id.clone(),
+            (!claimed.attachment_paths.is_empty()).then_some(claimed.attachment_paths.clone()),
+        )
+        .await;
+        let prompt_completed = result
+            .as_ref()
+            .ok()
+            .and_then(|session| session.as_ref())
+            .is_some_and(|session| {
+                matches!(
+                    session.status.trim().to_ascii_lowercase().as_str(),
+                    "completed" | "complete"
+                )
+            });
+        if prompt_completed {
+            let _ = complete_queued_prompt(&attempt_dir, &claimed.id);
+        } else {
+            let _ = release_queued_prompt(&attempt_dir, &claimed.id);
+        }
+        emit_acp_session_update(
+            &app_handle,
+            &app,
+            project_id.clone(),
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            locator.outer_node_id.clone(),
+            locator.outer_attempt_id.clone(),
+            None,
+        );
+        if prompt_completed {
+            schedule_direct_prompt_queue_drain(
+                app_handle.clone(),
+                project_id.clone(),
+                locator.clone(),
+                true,
+            );
+        }
+    });
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -616,6 +797,12 @@ pub struct ConversationPromptSubmitVm {
     pub kind: String,
     pub session: Option<AcpSessionVm>,
     pub run: Option<RunSummaryVm>,
+    pub lifecycle: Option<ConversationAttemptLifecycleVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPromptQueueMutationVm {
     pub lifecycle: Option<ConversationAttemptLifecycleVm>,
 }
 
@@ -1417,10 +1604,22 @@ pub async fn stop_active_session(
         outer_node_id,
         outer_attempt_id,
     );
+    let direct_mode = conversation_run_mode(&app, &locator.task_id)
+        == Some(gold_band::config::ConversationRunMode::Direct);
+    if direct_mode {
+        request_auto_dispatch_suspension(&locator.attempt_dir(&app)).map_err(command_error)?;
+    }
     let operation_id = Uuid::new_v4().to_string();
     let control_app = app.clone_for_background();
     let control_locator = locator.clone();
     let (attempt_dir, current_run, lifecycle) = spawn_blocking_command(move || {
+        if direct_mode {
+            let queue_attempt_dir = control_locator.attempt_dir(&control_app);
+            let queue = load_prompt_queue(&queue_attempt_dir).map_err(command_error)?;
+            if !queue.items.is_empty() {
+                suspend_auto_dispatch(&queue_attempt_dir).map_err(command_error)?;
+            }
+        }
         let attempt_dir = persist_active_session_stop(&control_app, &control_locator)?;
         let current_run = control_app
             .run_status(&control_locator.task_id, &control_locator.run_id)
@@ -2392,6 +2591,168 @@ pub fn renew_acp_session_lease(
         .saturating_mul(1000))
 }
 
+fn emit_prompt_queue_lifecycle(
+    app_handle: &AppHandle,
+    app: &App,
+    project_id: Option<String>,
+    locator: &AttemptLocator,
+) -> Option<ConversationAttemptLifecycleVm> {
+    emit_acp_session_update(
+        app_handle,
+        app,
+        project_id,
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+        locator.outer_node_id.clone(),
+        locator.outer_attempt_id.clone(),
+        None,
+    );
+    lifecycle_for_locator(app, locator)
+}
+
+#[tauri::command]
+pub fn update_conversation_queued_prompt(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    item_id: String,
+    content: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<ConversationPromptQueueMutationVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    update_queued_prompt(&locator.attempt_dir(&app), &item_id, content)
+        .map_err(prompt_queue_command_error)?;
+    Ok(ConversationPromptQueueMutationVm {
+        lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
+    })
+}
+
+#[tauri::command]
+pub fn delete_conversation_queued_prompt(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    item_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<ConversationPromptQueueMutationVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    delete_queued_prompt(&locator.attempt_dir(&app), &item_id)
+        .map_err(prompt_queue_command_error)?;
+    Ok(ConversationPromptQueueMutationVm {
+        lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
+    })
+}
+
+#[tauri::command]
+pub async fn use_conversation_queued_prompt(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    item_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<ConversationPromptSubmitVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let attempt_dir = locator.attempt_dir(&app);
+    if client::prompt_activity(&attempt_dir).is_some()
+        || app
+            .run_status(&locator.task_id, &locator.run_id)
+            .is_ok_and(|run| run.status == RunStatus::Running)
+    {
+        return Err(CommandErrorVm::new(
+            "conversation.prompt-queue-session-busy",
+            serde_json::json!({}),
+        ));
+    }
+    let claimed =
+        claim_queued_prompt(&attempt_dir, &item_id).map_err(prompt_queue_command_error)?;
+    emit_prompt_queue_lifecycle(&app_handle, &app, project_id.clone(), &locator);
+    let result = submit_conversation_prompt(
+        app_handle.clone(),
+        state,
+        project_id.clone(),
+        locator.task_id.clone(),
+        locator.run_id.clone(),
+        locator.round_id.clone(),
+        locator.node_id.clone(),
+        locator.attempt_id.clone(),
+        claimed.content.clone(),
+        Some(claimed.prompt_id.clone()),
+        locator.outer_node_id.clone(),
+        locator.outer_attempt_id.clone(),
+        (!claimed.attachment_paths.is_empty()).then_some(claimed.attachment_paths.clone()),
+    )
+    .await;
+    let prompt_completed = result.as_ref().is_ok_and(|result| {
+        result.session.as_ref().is_some_and(|session| {
+            matches!(
+                session.status.trim().to_ascii_lowercase().as_str(),
+                "completed" | "complete"
+            )
+        })
+    });
+    let runtime_started = result
+        .as_ref()
+        .is_ok_and(|result| result.kind == "runtime-continue-started");
+    if prompt_completed {
+        let _ = complete_queued_prompt(&attempt_dir, &claimed.id);
+    } else if !runtime_started {
+        let _ = release_queued_prompt(&attempt_dir, &claimed.id);
+    }
+    emit_prompt_queue_lifecycle(&app_handle, &app, project_id.clone(), &locator);
+    if prompt_completed {
+        schedule_direct_prompt_queue_drain(app_handle, project_id, locator, true);
+    }
+    result
+}
+
 #[tauri::command]
 pub async fn submit_conversation_prompt(
     app_handle: AppHandle,
@@ -2424,6 +2785,67 @@ pub async fn submit_conversation_prompt(
         .run_status(&locator.task_id, &locator.run_id)
         .map_err(command_error)?;
     let manual_check_pending = current_attempt_manual_check_pending(&app, &locator, &run)?;
+    let direct_mode = conversation_run_mode(&app, &locator.task_id)
+        == Some(gold_band::config::ConversationRunMode::Direct);
+    let attempt_dir = locator.attempt_dir(&app);
+    let live_prompt_active = matches!(
+        client::prompt_activity(&attempt_dir),
+        Some(
+            client::PromptActivity::Starting
+                | client::PromptActivity::Accepted
+                | client::PromptActivity::Running
+        )
+    );
+    if direct_mode && (live_prompt_active || run.status == RunStatus::Running) {
+        enqueue_prompt(&attempt_dir, prompt, attachment_paths.unwrap_or_default())
+            .map_err(prompt_queue_command_error)?;
+        emit_acp_session_update(
+            &app_handle,
+            &app,
+            project_id,
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            locator.outer_node_id.clone(),
+            locator.outer_attempt_id.clone(),
+            None,
+        );
+        let lifecycle = lifecycle_for_locator(&app, &locator);
+        if client::prompt_activity(&attempt_dir).is_none()
+            && app
+                .run_status(&locator.task_id, &locator.run_id)
+                .is_ok_and(|run| run.status == RunStatus::Completed)
+        {
+            let _ = app.notify_prompt_turn_finished(
+                acp_live_event_context(
+                    &locator.task_id,
+                    &locator.run_id,
+                    &locator.round_id,
+                    &locator.node_id,
+                    &locator.attempt_id,
+                    locator.outer_node_id.clone(),
+                    locator.outer_attempt_id.clone(),
+                ),
+                true,
+            );
+        }
+        return Ok(ConversationPromptSubmitVm {
+            kind: "queued".to_string(),
+            session: None,
+            run: None,
+            lifecycle,
+        });
+    }
+    if direct_mode {
+        let queue = load_prompt_queue(&attempt_dir).map_err(command_error)?;
+        if queue.items.is_empty() {
+            clear_auto_dispatch_suspension(&attempt_dir).map_err(command_error)?;
+        } else {
+            mark_user_priority(&attempt_dir).map_err(command_error)?;
+        }
+    }
     let submit_target = if runtime_continue_required(&app, &locator, &run, manual_check_pending)? {
         "runtime-continue"
     } else {
@@ -2543,6 +2965,7 @@ pub async fn send_acp_prompt(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("turn-{}", uuid::Uuid::new_v4().simple()));
     let prompt_id = Some(turn_id.clone());
+    let queued_dispatch = turn_id.starts_with(QUEUED_PROMPT_ID_PREFIX);
     let agent_label = acp_turn_agent_label(&app, &locator);
     let project_id_for_emit = project_id.clone();
     let project_id_for_spawn = project_id_for_emit.clone();
@@ -2568,6 +2991,12 @@ pub async fn send_acp_prompt(
                 &node_id,
                 &attempt_id,
             );
+            if queued_dispatch && auto_dispatch_is_suspended(&attempt_dir) {
+                return Err(CommandErrorVm::new(
+                    "conversation.prompt-queue-auto-dispatch-suspended",
+                    serde_json::json!({}),
+                ));
+            }
             let worker_ref_path = app.paths.dynamic_node_worker_ref_file(
                 &task_id,
                 &run_id,
@@ -2735,6 +3164,12 @@ pub async fn send_acp_prompt(
         let attempt_dir =
             app.paths
                 .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
+        if queued_dispatch && auto_dispatch_is_suspended(&attempt_dir) {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-queue-auto-dispatch-suspended",
+                serde_json::json!({}),
+            ));
+        }
         let worker_ref_path =
             app.paths
                 .worker_ref_file(&task_id, &run_id, &round_id, &node_id, &attempt_id);
@@ -2919,6 +3354,20 @@ pub async fn send_acp_prompt(
         session.clone(),
     );
     emit_acp_turn_finished(&app_for_emit, &locator, &turn_id, &agent_label, outcome);
+    if !turn_id.starts_with(QUEUED_PROMPT_ID_PREFIX) {
+        let _ = app_for_emit.notify_prompt_turn_finished(
+            acp_live_event_context(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+                locator.outer_node_id.clone(),
+                locator.outer_attempt_id.clone(),
+            ),
+            outcome == AcpTurnOutcome::Completed,
+        );
+    }
 
     // Fire-and-forget: index this attempt for cross-session search
     spawn_index_attempt(
@@ -3680,6 +4129,17 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
         return CommandErrorVm::new(code, serde_json::json!({ "message": message }));
     }
     CommandErrorVm::new("app.unexpected", serde_json::json!({ "message": message }))
+}
+
+fn prompt_queue_command_error(error: PromptQueueError) -> CommandErrorVm {
+    let code = match error {
+        PromptQueueError::Full => "conversation.prompt-queue-full",
+        PromptQueueError::NotFound => "conversation.prompt-queue-item-not-found",
+        PromptQueueError::Dispatching => "conversation.prompt-queue-item-dispatching",
+        PromptQueueError::Empty => "conversation.prompt-queue-empty",
+        PromptQueueError::Storage => "conversation.prompt-queue-storage-failed",
+    };
+    CommandErrorVm::new(code, serde_json::json!({}))
 }
 
 fn acp_storage_query_error(error: anyhow::Error, fallback_code: &'static str) -> CommandErrorVm {

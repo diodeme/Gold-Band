@@ -326,6 +326,7 @@ export function ConversationRunPage({
   const runtimeComposerContext: AcpRuntimeComposerContext | undefined = selectedLeaf
     ? {
         lifecycle: selectedLeaf.lifecycle,
+        promptQueueEnabled: isDirect,
         runtimeStatus: selectedLeaf.lifecycle?.runtime.status ?? selectedLeaf.status,
         workflowValid: isDirect || run.workflowValid,
         workflowError: isDirect ? undefined : t('conversation.runtime.workflowInvalid'),

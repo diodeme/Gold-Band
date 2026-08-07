@@ -180,16 +180,16 @@ Claude Code implementation 本身不决定策略，但建议 runtime 在调用 C
 
 - 未显式提供 `sessionMode`：默认 `new`
 - 只有 workflow edge 明确声明 `session = continue` 时才复用历史会话
-- continue 仍必须把当前节点的角色、文件规则和 output DSL 约束重新追加到 `session/load._meta.systemPrompt.append`
+- continue 仍必须把当前节点的角色、文件规则和 output DSL 约束重新追加到所选恢复请求的 `_meta.systemPrompt.append`；普通续接优先 `session/resume`，跨端完整历史同步使用 `session/load`
 
 原因：
-- Claude Agent ACP 的 `session/load` 在新 adapter 进程中会通过 SDK `resume` 创建新的 query 进程；这是恢复已有 Claude 会话，不是 Gold Band 语义上的新对话
-- 恢复后的模型不应依赖历史上下文记住节点输出契约，当前节点不可协商约束需要随 `session/load` 一起重新注入
+- Claude Agent ACP 的 `session/resume` 与 `session/load` 都是在恢复已有 Claude 会话，不是 Gold Band 语义上的新对话；两者区别是 load 必须回放完整历史，resume 只恢复上下文
+- 恢复后的模型不应依赖历史上下文记住节点输出契约，当前节点不可协商约束需要随选中的 resume/load 请求一起重新注入
 - 严格 continue 加载失败应直接失败而不是静默换新上下文
 - 对不消费 ACP `_meta.systemPrompt` 的 adapter（当前已知 Codex ACP 0.14.0），runtime 需要在 provider-specific 映射层把 system prompt 内联到 `session/prompt`，不能假设所有 ACP adapter 都支持 Claude Agent ACP 的 system prompt 扩展
 
 观测要求：
-- ACP 会话详情需要从 raw frame 中解析 `session/new._meta.systemPrompt.append` 或 `session/load._meta.systemPrompt.append`，提供只读查看入口，方便确认本次实际追加给 provider 的 system prompt
+- ACP 会话详情需要从 raw frame 中解析 `session/new._meta.systemPrompt.append`、`session/resume._meta.systemPrompt.append` 或 `session/load._meta.systemPrompt.append`，提供只读查看入口，方便确认本次实际追加给 provider 的 system prompt
 - 继续已有会话时 raw frame 应展示本次恢复重新追加的 system prompt
 - 桌面 ACP 会话面板中的手动追问同样属于已有会话恢复路径，不能使用空 system prompt 的临时调用
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { workflowTemplateDisplayName } from '@/lib/workflow-template';
+import { hasWorkflowDraftChanges, shouldShowDefaultWorkflowSaveAsNotice, workflowTemplateDisplayName } from '@/lib/workflow-template';
 
 const defaultTemplate = {
   id: 'default',
@@ -19,5 +19,17 @@ describe('workflow template display names', () => {
   it('preserves user-defined template names', () => {
     const t = (key: string) => key;
     expect(workflowTemplateDisplayName({ ...defaultTemplate, id: 'custom', name: 'Release checklist' }, t)).toBe('Release checklist');
+  });
+
+  it('shows the save-as notice only after the built-in default workflow changes', () => {
+    const baseline = { ...defaultTemplate.workflow, entry: 'plan' };
+    const changed = { ...baseline, entry: 'dev' };
+    const restored = { ...baseline, model: undefined, config_options: undefined };
+
+    expect(hasWorkflowDraftChanges(changed, baseline)).toBe(true);
+    expect(shouldShowDefaultWorkflowSaveAsNotice('default', changed, baseline)).toBe(true);
+    expect(shouldShowDefaultWorkflowSaveAsNotice('default', baseline, baseline)).toBe(false);
+    expect(shouldShowDefaultWorkflowSaveAsNotice('default', restored, baseline)).toBe(false);
+    expect(shouldShowDefaultWorkflowSaveAsNotice('custom', changed, baseline)).toBe(false);
   });
 });

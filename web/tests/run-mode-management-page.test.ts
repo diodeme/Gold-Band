@@ -191,6 +191,7 @@ describe('RunModeTabsToolbar', () => {
       React.createElement(TemplateActionRow, {
         label: 'AUTO 模板',
         picker: React.createElement('button', null, '不使用模板'),
+        notice: '默认工作流不可覆盖，请另存为新的工作流。',
         saving: false,
         saveCurrentLabel: '保存修改',
         savingLabel: '保存中…',
@@ -204,6 +205,9 @@ describe('RunModeTabsToolbar', () => {
     );
 
     expect(html).toContain('data-testid="template-action-row"');
+    expect(html).toContain('data-testid="template-action-notice"');
+    expect(html).toContain('role="status"');
+    expect(html).toContain('默认工作流不可覆盖，请另存为新的工作流。');
     expect(html.indexOf('不使用模板')).toBeLessThan(html.indexOf('保存修改'));
     expect(html.indexOf('保存修改')).toBeLessThan(html.indexOf('模板名称'));
     expect(html.indexOf('模板名称')).toBeLessThan(html.indexOf('另存模板'));

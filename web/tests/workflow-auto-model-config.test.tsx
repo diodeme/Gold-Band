@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
 import '@/i18n';
-import { WorkflowEditor } from '@/components/WorkflowEditor';
+import { optionalWorkerConfigOptions, workerAgentSelectionPatch, WorkflowEditor } from '@/components/WorkflowEditor';
 import { RunModeManagementPage } from '@/pages/RunModeManagementPage';
 import type { AgentRegistryVm, WorkflowDsl } from '@/types';
 
@@ -25,6 +25,26 @@ const agentRegistry = {
 } as AgentRegistryVm;
 
 describe('workflow and AUTO model configuration', () => {
+  it('restores omitted worker Agent options after switching back to the original Agent', () => {
+    const original = {
+      type: 'worker' as const,
+      id: 'interview',
+      provider: 'claude-acp',
+      profile: 'interview',
+      permission_mode: 'bypassPermissions',
+    };
+    const switched = { ...original, ...workerAgentSelectionPatch('cursor') };
+    const restored = {
+      ...switched,
+      ...workerAgentSelectionPatch('claude-acp'),
+      permission_mode: 'bypassPermissions',
+    };
+
+    expect(JSON.stringify(restored)).toBe(JSON.stringify(original));
+    expect(optionalWorkerConfigOptions({})).toBeUndefined();
+    expect(optionalWorkerConfigOptions({ reasoning_effort: 'high' })).toEqual({ reasoning_effort: 'high' });
+  });
+
   it('replays a worker node model and thought level through the shared composite selector', () => {
     const workflow: WorkflowDsl = {
       version: '0.1',

@@ -2031,24 +2031,18 @@ mod tests {
 
     #[test]
     fn multica_workspace_ref_serializes_camel_case() {
-        // 前端契约：JSON key 必须是 camelCase（localProjectId），防止 rename_all 被误删。
+        // 前端契约：JSON key 必须是 camelCase，防止 rename_all 被误删。
         let workspace = MulticaWorkspaceRef {
             id: "ws-1".to_string(),
             name: "Gold Band".to_string(),
             slug: "gold-band".to_string(),
-            local_project_id: "proj-1".to_string(),
             provider: "claude-acp".to_string(),
         };
         let json = serde_json::to_value(&workspace).unwrap();
         assert_eq!(json["id"], "ws-1");
-        assert_eq!(json["localProjectId"], "proj-1");
         assert_eq!(json["provider"], "claude-acp");
-        assert!(
-            json.get("local_project_id").is_none(),
-            "snake_case key must not be serialized"
-        );
         let roundtripped: MulticaWorkspaceRef = serde_json::from_value(json).unwrap();
-        assert_eq!(roundtripped.local_project_id, "proj-1");
+        assert_eq!(roundtripped.provider, "claude-acp");
     }
 
     #[test]
@@ -2087,7 +2081,6 @@ mod tests {
                 id: "ws-1".to_string(),
                 name: "Gold Band".to_string(),
                 slug: "gold-band".to_string(),
-                local_project_id: "proj-1".to_string(),
                 provider: "claude-acp".to_string(),
             }]),
             ..SettingsConfig::default()
@@ -2121,7 +2114,6 @@ mod tests {
                 id: "ws-1".to_string(),
                 name: "Gold Band".to_string(),
                 slug: "gold-band".to_string(),
-                local_project_id: "proj-1".to_string(),
                 provider: "claude-acp".to_string(),
             }]),
             desktop_multica_default_provider: Some("claude-acp".to_string()),
@@ -2134,7 +2126,6 @@ mod tests {
         let json = serde_json::to_string_pretty(&settings).unwrap();
         assert!(json.contains("\"desktopMulticaEnabled\": true"));
         assert!(json.contains("\"desktopMulticaBaseUrl\""));
-        assert!(json.contains("\"localProjectId\": \"proj-1\""));
         assert!(json.contains("\"zhangsan@maling.local\""));
         let roundtripped: SettingsConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtripped.desktop_multica_enabled, Some(true));
@@ -2191,6 +2182,7 @@ mod tests {
                 local_task_id: "task-1".to_string(),
                 local_run_id: "run-1".to_string(),
                 workspace_id: "ws-1".to_string(),
+                local_project_id: "proj-1".to_string(),
                 issue_id: Some("iss-1".to_string()),
                 status: "completed".to_string(),
                 title: "Fix bug".to_string(),
@@ -2263,15 +2255,16 @@ pub struct ConversationPin {
 }
 
 /// multica 远程工作区引用（SettingsConfig.desktop_multica_workspaces 条目）。
-/// 一个 multica workspace 绑定一个本地目录（local_project_id 指向
-/// conversation_workspaces.project_id）+ 一个执行 provider（绑定后不可变）。
+///
+/// 一个 multica workspace 只绑定一个执行 provider（绑定后不可变）；**本地工作目录不在
+/// 工作区级绑定**，推迟到每次任务执行时由用户在 composer 下拉选定，并随任务生命周期落到
+/// 任务级结构体（`ActiveRemoteRun` / `MulticaCompletedTask`）。详见 Multica远程任务管理设计 §3。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MulticaWorkspaceRef {
     pub id: String,
     pub name: String,
     pub slug: String,
-    pub local_project_id: String,
     pub provider: String,
 }
 
@@ -2311,6 +2304,9 @@ pub struct MulticaCompletedTask {
     pub local_task_id: String,
     pub local_run_id: String,
     pub workspace_id: String,
+    /// 该任务执行时选定的本地工作区 project_id（finalize 时从 `ActiveRemoteRun` 快照，
+    /// terminal 行本地深链用）。
+    pub local_project_id: String,
     pub issue_id: Option<String>,
     /// `completed` | `failed`（由 finalize 的 PendingUpdate 决定）。
     pub status: String,

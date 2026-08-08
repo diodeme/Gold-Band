@@ -1,4 +1,4 @@
-import { Pin, PinOff, MessageSquare, Search, Bot, Boxes, Workflow, Settings, ChevronDown, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Pin, PinOff, MessageSquare, Search, Bot, Boxes, Workflow, Settings, Globe, ChevronDown, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
@@ -12,7 +12,6 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { cn } from '@/lib/utils';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { formatCompactRelativeTime } from '@/lib/datetime';
-import { MulticaRemoteTaskList } from './MulticaRemoteTaskList';
 
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
@@ -63,7 +62,6 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   const [collapsedPinnedWorkspaces, setCollapsedPinnedWorkspaces] = useState<Record<string, boolean>>({});
   const [workspaceToRemove, setWorkspaceToRemove] = useState<ConversationWorkspaceVm | null>(null);
   const [workspaceRemovalPending, setWorkspaceRemovalPending] = useState(false);
-  const [remoteView, setRemoteView] = useState<'local' | 'remote'>('local');
   const pinnedTasksByWorkspace = useMemo(() => vm.pinnedTasks.reduce<Record<string, ConversationTaskRowVm[]>>((acc, task) => {
     (acc[task.projectId] ??= []).push(task);
     return acc;
@@ -223,6 +221,13 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             label={t('conversation.sidebar.runModeManagement')}
             onClick={() => onSelect({ kind: 'run-mode-management' })}
           />
+          <SidebarButton
+            compact
+            active={active.kind === 'multica-tasks'}
+            icon={<Globe />}
+            label={t('conversation.sidebar.multicaTaskManagement')}
+            onClick={() => onSelect({ kind: 'multica-tasks' })}
+          />
         </div>
 
         {/* Pinned section — fixed, collapsible, outside scroll */}
@@ -287,39 +292,10 @@ export const ConversationSidebar = memo(function ConversationSidebar({
           <Separator className="mx-1 my-0.75 opacity-45" />
         )}
 
-        {/* local/remote segmented toggle */}
-        <div className="mx-1 flex rounded-md bg-muted p-0.5">
-          <button
-            type="button"
-            className={cn(
-              'flex-1 rounded-sm px-2 py-1 text-xs font-medium transition-colors',
-              remoteView === 'local'
-                ? 'bg-background text-sidebar-accent-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-sidebar-foreground',
-            )}
-            onClick={() => setRemoteView('local')}
-          >
-            {t('conversation.sidebar.multica.localTab')}
-          </button>
-          <button
-            type="button"
-            className={cn(
-              'flex-1 rounded-sm px-2 py-1 text-xs font-medium transition-colors',
-              remoteView === 'remote'
-                ? 'bg-background text-sidebar-accent-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-sidebar-foreground',
-            )}
-            onClick={() => setRemoteView('remote')}
-          >
-            {t('conversation.sidebar.multica.remoteTab')}
-          </button>
-        </div>
-
-        {/* Main task list — local or remote */}
-        {remoteView === 'local' ? (
-          <ScrollArea className="min-h-0 flex-1">
-            <div className="pt-2.5">
-              {vm.workspaces.map((ws) => (
+        {/* Main task list — local workspaces + local tasks（远程任务独立成 multica-tasks 页） */}
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="pt-2.5">
+            {vm.workspaces.map((ws) => (
                 <div key={ws.projectId} className="mb-2.5">
                   <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-0.75">
                     <button
@@ -405,17 +381,6 @@ export const ConversationSidebar = memo(function ConversationSidebar({
               ) : null}
             </div>
           </ScrollArea>
-        ) : (
-          <ScrollArea className="min-h-0 flex-1">
-            <div className="pt-2.5">
-              <MulticaRemoteTaskList
-                onSelectRun={onSelectRun}
-                onNewConversationInWorkspace={onNewConversationInWorkspace}
-              />
-            </div>
-          </ScrollArea>
-        )}
-
 
         {/* Settings */}
         <Separator className="mx-1 my-0.75 opacity-45" />

@@ -91,6 +91,7 @@ import { ConversationRunPage } from './pages/ConversationRunPage';
 import { ConversationSearchDialog } from './components/conversation/ConversationSearchDialog';
 import { prioritizeConversationSidebarWorkspace } from './components/conversation/ConversationSidebar';
 import { RunModeManagementPage } from './pages/RunModeManagementPage';
+import { MulticaTaskManagementPage } from './pages/MulticaTaskManagementPage';
 import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
@@ -1852,7 +1853,8 @@ export function App() {
           onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
           onWorkspaceChange={(projectId) => {
-            resetConversationComposerDraft(composerDraftRef.current);
+            // composer 自身负责按 multica 绑定是否清空草稿（决策 d：multica 激活时保留绑定 + 预填内容）；
+            // App 这里只切工作区 + 加载对应运行模式。
             setDraftConversationWorkspaceId(projectId);
             void loadConversationRunMode(projectId);
           }}
@@ -1874,6 +1876,23 @@ export function App() {
           }}
           onSave={(mode) => updateConversationRunMode(mode, defaultProjectId)}
           onWorkflowTemplatesChange={setConversationWorkflowTemplates}
+          onBack={() => setConversationPage({ kind: 'conversation-home' })}
+        />
+      );
+    }
+    if (conversationPage.kind === 'multica-tasks') {
+      return (
+        <MulticaTaskManagementPage
+          onSelectRun={(projectId, taskId, runId) => {
+            setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
+          }}
+          onPrepareMulticaTask={() => {
+            // 决策 c：远程任务本地工作区延迟到执行时选，落 conversation-home 时预选最近活跃本地工作区
+            //（activeWorkspaceId ?? 持久化 lastActiveWorkspaceId），让 composer 下拉带着合理默认值并可改。
+            const preselect = activeWorkspaceIdRef.current ?? conversationSidebar.lastActiveWorkspaceId ?? null;
+            setDraftConversationWorkspaceId(preselect);
+            setConversationPage({ kind: 'conversation-home' });
+          }}
           onBack={() => setConversationPage({ kind: 'conversation-home' })}
         />
       );

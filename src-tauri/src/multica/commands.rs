@@ -15,9 +15,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use camino::Utf8PathBuf;
 use gold_band::app::{App, is_run_continuable};
-use gold_band::config::{
-    ConversationWorkspaceEntry, MulticaTaskConversation, MulticaWorkspaceRef,
-};
+use gold_band::config::{MulticaTaskConversation, MulticaWorkspaceRef};
 use tauri::{AppHandle, State};
 use tracing::{info, warn};
 
@@ -25,10 +23,10 @@ use crate::commands::{
     CommandErrorVm, CommandResult, acp_live_update_emitter_for_app, acp_session_update_emitter,
     command_error,
 };
-use crate::conversation_workspace::{project_id_for_workspace, project_ids_match, workspace_entry_for_project};
+use crate::conversation_workspace::workspace_entry_for_project;
 use crate::multica::client::{MULTICA_ISSUE_IN_PROGRESS_STATUS, MulticaClient, WorkspaceInfo};
 use crate::multica::config::{
-    MulticaSettingsVm, binding_for_multica, get_daemon_id, get_pat, multica_base_url, multica_settings,
+    MulticaSettingsVm, get_daemon_id, get_pat, multica_base_url, multica_settings,
 };
 use crate::multica::error::MulticaError;
 use crate::multica::state::{ActiveRemoteRun, SharedMulticaState};
@@ -81,21 +79,14 @@ pub async fn get_multica_tasks(
                 .iter()
                 .map(|issue_id| RemoteTaskVm::from_failed_issue(issue_id))
                 .collect();
-            // 终态行按 workspace_id 分组。project_id 经 workspaces 列表解析（workspace_id → local_project_id）；
-            // 未绑定/已解绑的 workspace 无 group 可归（无 project_id）→ 跳过（无可直达的本地会话）。
+            // 终态行按 workspace_id 分组。local_project_id 在 finalize 时从 ActiveRemoteRun 快照到
+            // MulticaCompletedTask（绑定模型下沉到任务级），terminal 行据此做本地深链，无需再查工作区绑定。
             let mut by_ws: BTreeMap<String, Vec<RemoteTaskVm>> = BTreeMap::new();
             for c in state_cfg.multica_completed_tasks.iter() {
-                let Some(project_id) = workspaces
-                    .iter()
-                    .find(|w| w.id == c.workspace_id)
-                    .map(|w| w.local_project_id.clone())
-                else {
-                    continue;
-                };
                 by_ws
                     .entry(c.workspace_id.clone())
                     .or_default()
-                    .push(RemoteTaskVm::from_completed(c, &project_id));
+                    .push(RemoteTaskVm::from_completed(c, &c.local_project_id));
             }
             (pinned, by_ws)
         }
@@ -117,7 +108,7 @@ pub async fn get_multica_tasks(
                     .active_runs
                     .iter()
                     .filter(|(_, r)| r.workspace_id == workspace.id)
-                    .map(|(rid, r)| RemoteTaskVm::from_active_run(rid, r, &workspace.local_project_id))
+                    .map(|(rid, r)| RemoteTaskVm::from_active_run(rid, r, &r.local_project_id))
                     .collect();
                 let runtime_id = guard.runtime_id(&workspace.id).map(str::to_string);
                 (running, runtime_id)
@@ -380,7 +371,8 @@ pub async fn start_multica_conversation_run(
         .ok_or(MulticaError::TaskNotFound)
         .map_err(|e| command_error(e.into()))?;
 
-    // ② resolve workspace（input.project_id = 绑定 workspace 的 local_project_id，前端预填时已确定）。
+    // ② resolve workspace（input.project_id = composer 下拉选定的本地工作区，执行时由用户决定；
+    //    绑定模型已下沉到任务级，工作区不再绑本地目录）。
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
     let Some((workspace_path, resolved_project_id)) =
@@ -467,6 +459,7 @@ pub async fn start_multica_conversation_run(
                         ActiveRemoteRun {
                             runtime_id: lease.runtime_id.clone(),
                             workspace_id: workspace_id.clone(),
+                            local_project_id: resolved_project_id.clone(),
                             local_task_id: register_task_id.clone(),
                             local_run_id: register_run_id.clone(),
                             issue_id: lease.issue_id.clone(),
@@ -520,6 +513,7 @@ pub async fn start_multica_conversation_run(
     let rt_id = lease.runtime_id.clone();
     let issue = lease.issue_id.clone();
     let title = lease.title.clone();
+    let local_project = resolved_project_id.clone();
     let ws_path = workspace_path.clone();
     let shared_clone = shared.inner().clone();
     let ctx_clone = context.clone();
@@ -535,6 +529,7 @@ pub async fn start_multica_conversation_run(
                     ActiveRemoteRun {
                         runtime_id: rt_id,
                         workspace_id: ws_id,
+                        local_project_id: local_project,
                         local_task_id: run.task_id.clone(),
                         local_run_id: run.run_id.clone(),
                         issue_id: issue,
@@ -642,12 +637,13 @@ pub async fn cancel_multica_task(
         .and_then(|guard| guard.active_run(&task_id))
         .ok_or(MulticaError::TaskNotFound)
         .map_err(|e| command_error(e.into()))?;
-    // 解析 workspace 目录（run.workspace_id → 绑定 workspace_path）。
+    // 解析 workspace 目录（任务级 local_project_id → workspace_path；绑定模型已下沉到任务级，
+    // 工作区不再绑本地目录，故从在飞 run 取 local_project_id 而非 workspace 绑定）。
     let home_state = context.app().load_state().map_err(command_error)?;
-    let (workspace_path, _) =
-        binding_for_multica(&context.config, &home_state, &run.workspace_id)
-            .ok_or(MulticaError::TaskNotFound)
-            .map_err(|e| command_error(e.into()))?;
+    let Some((workspace_path, _)) = workspace_entry_for_project(&home_state, &run.local_project_id)
+    else {
+        return Err(command_error(MulticaError::TaskNotFound.into()));
+    };
     let workspace_app = state
         .app()
         .map_err(command_error)?
@@ -717,10 +713,10 @@ pub async fn rerun_multica_task(
 
 // ===== M3.5 / M5-c：multica workspace 绑定 CRUD（开发设计 2.2.1 / 2.5）=====
 //
-// 一个 multica workspace 绑定一个本地目录（`local_project_id` 指向 `conversation_workspaces`
-// 条目）+ 一个执行 provider（绑定后不可变）。绑定目录复用 `conversation_workspace` 的 project_id
-// 派生与去重，**不在 multica 侧重复存 path**（避免双份不一致，见 binding_for_multica）。
-// 文件夹选择在前端经 `@tauri-apps/plugin-dialog` 完成（同 `add_conversation_workspace`），命令只接 path。
+// 一个 multica workspace 只绑定一个执行 provider（绑定后不可变）；**本地工作目录不在工作区级
+// 绑定**，推迟到每次任务执行时由用户在 composer 下拉选定，并随任务生命周期落到任务级结构体
+// （`ActiveRemoteRun` / `MulticaCompletedTask`，见 Multica远程任务管理设计 §3）。故此处不再派生
+// project_id、不再落 conversation_workspaces 条目。
 
 /// 列出 multica server 侧可见的 workspace（下拉单选用，id+name）。
 ///
@@ -742,10 +738,12 @@ pub async fn list_server_multica_workspaces(
         .map_err(|e| command_error(e.into()))
 }
 
-/// 绑定一个 multica workspace 到本地目录（首个绑定自动设为 active），并即时 register。
+/// 添加一个 multica 远程工作区绑定（首个自动设为 active），并即时 register。
 ///
-/// `slug`：server `list_workspaces` 不暴露 slug，用 `id` 兜底（与 `config.rs` 测试约定一致，
-/// slug 不在任何关键路径）。`provider` 绑定后不可变（改绑见 [`rebind_multica_workspace`]）。
+/// 仅绑定 provider（执行器类型，绑定后不可变）；本地工作目录推迟到任务执行时由 composer 下拉
+/// 选定，不在工作区级绑定（见 Multica远程任务管理设计 §3）。
+///
+/// `slug`：server `list_workspaces` 不暴露 slug，用 `id` 兜底（slug 不在任何关键路径）。
 ///
 /// 绑定后即时 register（取回 runtime_id）——「绑定即可用」，无需重启等启动 loop 全量 register
 /// （复刻 `loop_.rs::run_startup_registration` 单 workspace 逻辑，失败非致命，启动 loop 兜底）。
@@ -756,35 +754,12 @@ pub async fn add_multica_workspace(
     app_handle: AppHandle,
     workspace_id: String,
     workspace_name: String,
-    workspace_path: String,
     provider: String,
 ) -> CommandResult<MulticaSettingsVm> {
     let context = state.context().map_err(command_error)?;
     let app = context.app();
-    let workspace_path_str = Utf8PathBuf::from(&workspace_path).as_str().to_string();
-    let project_id = project_id_for_workspace(&workspace_path_str);
-    let local_name = std::path::Path::new(&workspace_path_str)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| workspace_path_str.clone());
 
-    // ① 落 conversation_workspaces 条目（该目录尚未添加才写，去重 by project_id）
-    let mut state_cfg = app.load_state().map_err(command_error)?;
-    if !state_cfg
-        .conversation_workspaces
-        .iter()
-        .any(|w| project_ids_match(&w.project_id, &project_id))
-    {
-        state_cfg.conversation_workspaces.push(ConversationWorkspaceEntry {
-            project_id: project_id.clone(),
-            workspace_path: workspace_path_str,
-            name: local_name,
-            added_at: chrono::Utc::now().to_rfc3339(),
-        });
-        app.save_state(&state_cfg).map_err(command_error)?;
-    }
-
-    // ② 落 multica 绑定（去重 by multica workspace id；SettingsConfig 字段为 Option<Vec>）
+    // 落 multica 绑定（去重 by multica workspace id；SettingsConfig 字段为 Option<Vec>）
     let mut settings = app.load_settings().map_err(command_error)?;
     let workspaces = settings.desktop_multica_workspaces.get_or_insert_with(Vec::new);
     if workspaces.iter().any(|w| w.id == workspace_id) {
@@ -797,7 +772,6 @@ pub async fn add_multica_workspace(
         id: workspace_id.clone(),
         name: workspace_name,
         slug: workspace_id.clone(),
-        local_project_id: project_id,
         provider: provider.clone(),
     });
     if settings.desktop_multica_active_workspace_id.is_none() {
@@ -806,10 +780,10 @@ pub async fn add_multica_workspace(
     app.save_settings(&settings).map_err(command_error)?;
     state.update_settings_config(&settings).map_err(command_error)?;
 
-    // ③ 即时 register：绑定后立即可用（无需重启等启动 loop）。失败非致命——启动 loop 兜底重试。
+    // 即时 register：绑定后立即可用（无需重启等启动 loop）。失败非致命——启动 loop 兜底重试。
     register_workspace_best_effort(&state, &shared, &workspace_id, &provider).await;
 
-    // ④ 工作空间绑定变更 → 通知任务列表 + 设置页 re-fetch（跨视图同步）。
+    // 工作空间绑定变更 → 通知任务列表 + 设置页 re-fetch（跨视图同步）。
     crate::multica::bridge::emit_multica_settings_updated(&app_handle);
 
     let updated_context = state.context().map_err(command_error)?;
@@ -862,61 +836,6 @@ async fn register_workspace_best_effort(
             "multica register-on-add failed (non-fatal, startup loop will retry)"
         ),
     }
-}
-
-/// 改绑 multica workspace 的本地目录（provider 绑定后不可变，仅换 path）。
-#[tauri::command]
-pub fn rebind_multica_workspace(
-    state: State<'_, DesktopState>,
-    app_handle: AppHandle,
-    workspace_id: String,
-    workspace_path: String,
-) -> CommandResult<MulticaSettingsVm> {
-    let context = state.context().map_err(command_error)?;
-    let app = context.app();
-    let workspace_path_str = Utf8PathBuf::from(&workspace_path).as_str().to_string();
-    let project_id = project_id_for_workspace(&workspace_path_str);
-    let local_name = std::path::Path::new(&workspace_path_str)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| workspace_path_str.clone());
-
-    // ① 落/去重 conversation_workspaces 条目（新目录尚未添加才写）
-    let mut state_cfg = app.load_state().map_err(command_error)?;
-    if !state_cfg
-        .conversation_workspaces
-        .iter()
-        .any(|w| project_ids_match(&w.project_id, &project_id))
-    {
-        state_cfg.conversation_workspaces.push(ConversationWorkspaceEntry {
-            project_id: project_id.clone(),
-            workspace_path: workspace_path_str,
-            name: local_name,
-            added_at: chrono::Utc::now().to_rfc3339(),
-        });
-        app.save_state(&state_cfg).map_err(command_error)?;
-    }
-
-    // ② 改绑 local_project_id（provider 不动；SettingsConfig 字段为 Option<Vec>）
-    let mut settings = app.load_settings().map_err(command_error)?;
-    let mref = settings
-        .desktop_multica_workspaces
-        .get_or_insert_with(Vec::new)
-        .iter_mut()
-        .find(|w| w.id == workspace_id)
-        .ok_or_else(|| {
-            CommandErrorVm::new(
-                "multica.workspace-not-found",
-                serde_json::json!({ "workspaceId": workspace_id }),
-            )
-        })?;
-    mref.local_project_id = project_id;
-    app.save_settings(&settings).map_err(command_error)?;
-    state.update_settings_config(&settings).map_err(command_error)?;
-    // 工作空间绑定变更 → 通知任务列表 + 设置页 re-fetch（跨视图同步）。
-    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
-    let updated_context = state.context().map_err(command_error)?;
-    Ok(multica_settings(&updated_context.config))
 }
 
 /// 移除 multica workspace 绑定（不删 conversation_workspaces 条目--其可能被本地会话复用）。

@@ -17,13 +17,14 @@ vi.mock('@/i18n', () => ({
   displayAppError: () => 'mock-error',
 }));
 
-// lucide 图标桩成空组件，避免引入真实图标逻辑
+// lucide 图标桩成空组件，避免引入真实图标逻辑（弹窗不再用 FolderInput：本地目录已移出）。
 vi.mock('lucide-react', () => ({
-  FolderInput: () => null,
   Loader2: () => null,
 }));
 
-// 将 shadcn ui 桩成最小 DOM：Dialog 按 open 渲染、Select 透传、Button 落成真 <button>
+// 将 shadcn ui 桩成最小 DOM：Dialog 按 open 渲染、Button 落成真 <button>。
+// Select 桩捕获 onValueChange，使 SelectItem 点击能驱动组件的 setWorkspaceChange（不引入真实 Radix）。
+const selectHolder = vi.hoisted(() => ({ onValueChange: (_value: string) => {} }));
 vi.mock('@/components/ui/dialog', () => ({
   Dialog: ({ open, children }: { open: boolean; children: ReactNode }) => (open ? children : null),
   DialogContent: ({ children }: { children: ReactNode }) => children,
@@ -32,11 +33,27 @@ vi.mock('@/components/ui/dialog', () => ({
   DialogFooter: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock('@/components/ui/select', () => ({
-  Select: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  Select: ({ children, onValueChange }: { children: ReactNode; onValueChange?: (v: string) => void }) => {
+    selectHolder.onValueChange = onValueChange ?? (() => {});
+    return <div>{children}</div>;
+  },
   SelectTrigger: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SelectValue: ({ placeholder }: { placeholder?: string }) => <span>{placeholder ?? ''}</span>,
   SelectContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  SelectItem: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  SelectItem: ({ value, children }: { value: string; children: ReactNode }) => {
+    // 捕获渲染时刻的 onValueChange（而非点击时刻）：弹窗有两个 Select（工作区 + provider），
+    // provider Select 后渲染会覆盖 holder；深度优先渲染保证工作区 SelectItem 先拿到 setWorkspaceId。
+    const onChange = selectHolder.onValueChange;
+    return (
+      <div
+        data-value={value}
+        role="option"
+        onClick={() => onChange(value)}
+      >
+        {children}
+      </div>
+    );
+  },
 }));
 vi.mock('@/components/ui/button', () => ({
   Button: (props: Record<string, unknown> & { children?: ReactNode }) => (
@@ -47,21 +64,18 @@ vi.mock('@/components/ui/button', () => ({
 const mocks = vi.hoisted(() => ({
   addMulticaWorkspace: vi.fn(),
   listServerMulticaWorkspaces: vi.fn(),
-  pickLocalDirectory: vi.fn(),
 }));
 
 vi.mock('@/api', () => ({
   addMulticaWorkspace: mocks.addMulticaWorkspace,
   listServerMulticaWorkspaces: mocks.listServerMulticaWorkspaces,
-  pickLocalDirectory: mocks.pickLocalDirectory,
 }));
 
-const { addMulticaWorkspace, listServerMulticaWorkspaces, pickLocalDirectory } = mocks;
+const { addMulticaWorkspace, listServerMulticaWorkspaces } = mocks;
 
 import { MulticaAddWorkspaceDialog } from '@/components/conversation/MulticaAddWorkspaceDialog';
 
 const DIALOG_KEY = 'conversation.sidebar.multica.dialog';
-const BIND_KEY = `${DIALOG_KEY}.bindDirectory`;
 const ADD_KEY = `${DIALOG_KEY}.add`;
 
 function findButton(container: HTMLElement, textKey: string): HTMLButtonElement | undefined {
@@ -82,7 +96,7 @@ afterEach(() => {
 });
 
 describe('multica add workspace dialog', () => {
-  it('fetches server workspaces on open and disables add until workspace + directory chosen', async () => {
+  it('fetches server workspaces on open and disables add until a workspace is chosen', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -104,13 +118,14 @@ describe('multica add workspace dialog', () => {
 
     const addButton = findButton(container, ADD_KEY);
     expect(addButton).toBeTruthy();
-    // 初始：未选工作空间 + 未选目录 → 禁用
+    // 绑定模型下沉后弹窗只收「远程工作空间 + provider」：未选工作空间 → 禁用（不再要求本地目录）。
     expect(addButton?.disabled).toBe(true);
   });
 
-  it('binds a local directory via pickLocalDirectory and still requires a workspace', async () => {
-    pickLocalDirectory.mockResolvedValue('D:/projects/demo');
-
+  it('calls addMulticaWorkspace with (id, name, provider) — no local path — once a workspace is chosen', async () => {
+    // 绑定模型已下沉到任务级：添加工作空间只绑 provider，本地目录推迟到执行时 composer 下拉选。
+    const onAdded = vi.fn();
+    const onOpenChange = vi.fn();
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -119,28 +134,30 @@ describe('multica add workspace dialog', () => {
       root.render(
         <MulticaAddWorkspaceDialog
           open
-          onOpenChange={() => {}}
+          onOpenChange={onOpenChange}
           boundWorkspaceIds={[]}
-          onAdded={() => {}}
+          onAdded={onAdded}
         />,
       );
     });
     await act(async () => { await Promise.resolve(); });
 
-    const bindButton = findButton(container, BIND_KEY);
-    expect(bindButton).toBeTruthy();
+    // 通过 Select 桩点击 Alpha（ws-1）选中远程工作空间。
+    const alphaItem = container.querySelector('[data-value="ws-1"]') as HTMLElement;
+    expect(alphaItem).toBeTruthy();
+    await act(async () => { alphaItem.click(); });
 
-    await act(async () => {
-      bindButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    const addButton = findButton(container, ADD_KEY);
+    expect(addButton).toBeTruthy();
+    expect(addButton?.disabled).toBe(false);
+
+    await act(async () => { addButton!.click(); });
     await act(async () => { await Promise.resolve(); });
 
-    expect(pickLocalDirectory).toHaveBeenCalledTimes(1);
-    // 选定目录后回显路径
-    expect(container.textContent).toContain('D:/projects/demo');
-    // 目录按钮文案切换为“更改目录”
-    expect(findButton(container, `${DIALOG_KEY}.changeDirectory`)).toBeTruthy();
-    // 仍未选工作空间 → 添加仍禁用
-    expect(findButton(container, ADD_KEY)?.disabled).toBe(true);
+    // addMulticaWorkspace 三参签名（id, name, provider），无 localPath；默认 provider = claude-acp。
+    expect(addMulticaWorkspace).toHaveBeenCalledTimes(1);
+    expect(addMulticaWorkspace).toHaveBeenCalledWith('ws-1', 'Alpha', 'claude-acp');
+    expect(onAdded).toHaveBeenCalledTimes(1);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 });

@@ -23,8 +23,6 @@ export interface ConversationComposerMulticaBinding {
   remoteTaskId: string;
   /// multica workspace id（start_multica_conversation_run 寻址）。
   workspaceId: string;
-  /// 本地 project id（预填后导航 conversation-home 用，与本地『+』同一路径回调）。
-  localProjectId: string;
 }
 
 export interface ConversationComposerDraftState {

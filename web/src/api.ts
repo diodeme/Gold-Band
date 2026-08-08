@@ -365,12 +365,8 @@ export function pickLocalDirectory() {
   return getRuntimeApi().pickLocalDirectory();
 }
 
-export function addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string, localPath: string) {
-  return getRuntimeApi().addMulticaWorkspace(workspaceId, workspaceName, provider, localPath);
-}
-
-export function rebindMulticaWorkspace(workspaceId: string, localPath: string) {
-  return getRuntimeApi().rebindMulticaWorkspace(workspaceId, localPath);
+export function addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string) {
+  return getRuntimeApi().addMulticaWorkspace(workspaceId, workspaceName, provider);
 }
 
 export function removeMulticaWorkspace(workspaceId: string) {

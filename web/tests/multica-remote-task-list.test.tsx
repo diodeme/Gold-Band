@@ -23,6 +23,7 @@ vi.mock('lucide-react', () => ({
   Play: () => null,
   Plus: () => null,
   RotateCw: () => null,
+  Server: () => null,
   Wifi: () => null,
   WifiOff: () => null,
 }));
@@ -80,7 +81,7 @@ const {
 
 import { formatLocalDateTime } from '@/lib/datetime';
 import { ConversationComposerDraftProvider } from '@/lib/conversation-composer-draft';
-import { MulticaRemoteTaskList } from '@/components/conversation/MulticaRemoteTaskList';
+import { MulticaRemoteTaskList, MULTICA_STATUS_TONE } from '@/components/conversation/MulticaRemoteTaskList';
 
 const NO_TASKS_KEY = 'conversation.sidebar.multica.noTasksInWorkspace';
 const NO_WS_KEY = 'conversation.sidebar.multica.noWorkspacesBound';
@@ -108,7 +109,7 @@ afterEach(() => {
 
 async function renderList(
   onSelectRun = vi.fn(),
-  onNewConversationInWorkspace = vi.fn(),
+  onPrepareMulticaTask = vi.fn(),
   prefill = vi.fn(),
 ) {
   const container = document.createElement('div');
@@ -128,14 +129,14 @@ async function renderList(
       <ConversationComposerDraftProvider value={draftValue}>
         <MulticaRemoteTaskList
           onSelectRun={onSelectRun}
-          onNewConversationInWorkspace={onNewConversationInWorkspace}
+          onPrepareMulticaTask={onPrepareMulticaTask}
         />
       </ConversationComposerDraftProvider>,
     );
   });
   // flush getMulticaTasks promise + 订阅 promise
   await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-  return { container, onSelectRun, onNewConversationInWorkspace, prefill };
+  return { container, onSelectRun, onPrepareMulticaTask, prefill };
 }
 
 function findButtonByText(container: HTMLElement, text: string): HTMLButtonElement {
@@ -148,7 +149,7 @@ describe('multica remote task list', () => {
     // 连接 + 已绑定 004 + 该 workspace 暂无任务（未 register / 服务端无 queued）。
     getMulticaTasks.mockResolvedValue(baseVm({
       workspaces: [
-        { id: 'ws-004', name: '004', slug: 'ws-004', localProjectId: 'proj-004', provider: 'claude-acp' },
+        { id: 'ws-004', name: '004', slug: 'ws-004', provider: 'claude-acp' },
       ],
       tasksByWorkspace: {},
       lastActiveWorkspaceId: 'ws-004',
@@ -184,7 +185,7 @@ describe('multica remote task list', () => {
   it('collapses and expands a workspace group via its header', async () => {
     getMulticaTasks.mockResolvedValue(baseVm({
       workspaces: [
-        { id: 'ws-004', name: '004', slug: 'ws-004', localProjectId: 'proj-004', provider: 'claude-acp' },
+        { id: 'ws-004', name: '004', slug: 'ws-004', provider: 'claude-acp' },
       ],
       tasksByWorkspace: {
         'ws-004': [
@@ -213,11 +214,11 @@ describe('multica remote task list', () => {
 
   it('claims a queued task, prefills the composer draft, then navigates to conversation-home (same as local "+")', async () => {
     const onSelectRun = vi.fn();
-    const onNewConversationInWorkspace = vi.fn();
+    const onPrepareMulticaTask = vi.fn();
     const prefill = vi.fn();
     getMulticaTasks.mockResolvedValue(baseVm({
       workspaces: [
-        { id: 'ws-004', name: '004', slug: 'ws-004', localProjectId: 'proj-004', provider: 'claude-acp' },
+        { id: 'ws-004', name: '004', slug: 'ws-004', provider: 'claude-acp' },
       ],
       tasksByWorkspace: {
         'ws-004': [
@@ -232,13 +233,12 @@ describe('multica remote task list', () => {
       workspaceId: 'ws-004', title: 'Some task', requirement: '远程任务需求正文', lastActivityAt: null,
     });
 
-    const { container, onNewConversationInWorkspace: navSpy, prefill: prefillSpy } =
-      await renderList(onSelectRun, onNewConversationInWorkspace, prefill);
+    const { container, onPrepareMulticaTask: navSpy, prefill: prefillSpy } =
+      await renderList(onSelectRun, onPrepareMulticaTask, prefill);
 
     // 领取按钮：queued 任务唯一的动作按钮，子节点为 null → textContent 为空。
-    const claimButton = Array.from(container.querySelectorAll('button')).find(
-      (b) => (b.textContent ?? '').trim() === '',
-    ) as HTMLButtonElement;
+    // 领取按钮按 aria-label 定位（claim Play 图标桩成 null；图标按钮均带 aria-label，避免与刷新等空文本按钮误匹配）。
+    const claimButton = container.querySelector('button[aria-label="conversation.sidebar.multica.executeTask"]') as HTMLButtonElement;
     expect(claimButton).toBeTruthy();
 
     await act(async () => { claimButton.click(); });
@@ -246,24 +246,23 @@ describe('multica remote task list', () => {
 
     // claim 即领取（claim-at-click），不再原子 claim+start。
     expect(claimMulticaTask).toHaveBeenCalledWith('rt-1', 'ws-004');
-    // 需求正文预填进 composer 草稿，并带上 multica 绑定（发送时据此分流远程 vs 本地）。
+    // 需求正文预填进 composer 草稿，并带上 multica 绑定（remoteTaskId + workspaceId，本地工作区执行时选）。
     expect(prefillSpy).toHaveBeenCalledWith('远程任务需求正文', {
       remoteTaskId: 'rt-1',
       workspaceId: 'ws-004',
-      localProjectId: 'proj-004',
     });
-    // 与本地工作空间「+」同一回调：导航到 conversation-home（仅 projectId），不再按 run 直达。
-    expect(navSpy).toHaveBeenCalledWith('proj-004');
+    // 落 conversation-home（无参回调）：本地工作区由 App 预选最近活跃，用户在 composer 下拉改（决策 c/d）。
+    expect(navSpy).toHaveBeenCalledWith();
     expect(onSelectRun).not.toHaveBeenCalled();
   });
 
   it('falls back to the task title when the claim response has no requirement body', async () => {
     const onSelectRun = vi.fn();
-    const onNewConversationInWorkspace = vi.fn();
+    const onPrepareMulticaTask = vi.fn();
     const prefill = vi.fn();
     getMulticaTasks.mockResolvedValue(baseVm({
       workspaces: [
-        { id: 'ws-004', name: '004', slug: 'ws-004', localProjectId: 'proj-004', provider: 'claude-acp' },
+        { id: 'ws-004', name: '004', slug: 'ws-004', provider: 'claude-acp' },
       ],
       tasksByWorkspace: {
         'ws-004': [
@@ -279,11 +278,10 @@ describe('multica remote task list', () => {
     });
 
     const { container, prefill: prefillSpy } =
-      await renderList(onSelectRun, onNewConversationInWorkspace, prefill);
+      await renderList(onSelectRun, onPrepareMulticaTask, prefill);
 
-    const claimButton = Array.from(container.querySelectorAll('button')).find(
-      (b) => (b.textContent ?? '').trim() === '',
-    ) as HTMLButtonElement;
+    // 领取按钮按 aria-label 定位（claim Play 图标桩成 null；图标按钮均带 aria-label，避免与刷新等空文本按钮误匹配）。
+    const claimButton = container.querySelector('button[aria-label="conversation.sidebar.multica.executeTask"]') as HTMLButtonElement;
     await act(async () => { claimButton.click(); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
@@ -295,7 +293,7 @@ describe('multica remote task list', () => {
     const onSelectRun = vi.fn();
     getMulticaTasks.mockResolvedValue(baseVm({
       workspaces: [
-        { id: 'ws-004', name: '004', slug: 'ws-004', localProjectId: 'proj-004', provider: 'claude-acp' },
+        { id: 'ws-004', name: '004', slug: 'ws-004', provider: 'claude-acp' },
       ],
       tasksByWorkspace: {
         'ws-004': [
@@ -340,7 +338,7 @@ describe('multica remote task list', () => {
 
     getMulticaTasks.mockResolvedValue(baseVm({
       workspaces: [
-        { id: 'ws-004', name: '004', slug: 'ws-004', localProjectId: 'proj-004', provider: 'claude-acp' },
+        { id: 'ws-004', name: '004', slug: 'ws-004', provider: 'claude-acp' },
       ],
       tasksByWorkspace: {
         'ws-004': [
@@ -379,7 +377,7 @@ describe('multica remote task list', () => {
     const onSelectRun = vi.fn();
     getMulticaTasks.mockResolvedValue(baseVm({
       workspaces: [
-        { id: 'ws-004', name: '004', slug: 'ws-004', localProjectId: 'proj-004', provider: 'claude-acp' },
+        { id: 'ws-004', name: '004', slug: 'ws-004', provider: 'claude-acp' },
       ],
       tasksByWorkspace: {
         'ws-004': [
@@ -416,5 +414,79 @@ describe('multica remote task list', () => {
 
     // 进行中行保留 Cancel 动作（cancelMulticaTask 入口；tooltip 文案渲染即可见）。
     expect(container.textContent).toContain('conversation.sidebar.multica.cancelTask');
+  });
+
+  it('renders a status badge for a queued task (待办)', async () => {
+    // point1：queued 任务显状态徽章（待办，看板词汇）。mock t 返回 key，断言 key 出现即证徽章按 status 渲染。
+    getMulticaTasks.mockResolvedValue(baseVm({
+      workspaces: [{ id: 'ws-004', name: '004', slug: 'ws-004', provider: 'claude-acp' }],
+      tasksByWorkspace: {
+        'ws-004': [{ id: 'rt-1', workspaceId: 'ws-004', title: 'Todo task', status: 'queued', retryable: true }],
+      },
+      lastActiveWorkspaceId: 'ws-004',
+    }));
+    const { container } = await renderList();
+    expect(container.textContent).toContain('conversation.sidebar.multica.status.queued');
+  });
+
+  it('renders a task-count indicator next to a workspace that has tasks', async () => {
+    // point3：有任务的工作空间，名称右侧渲染计数「（N个任务）」。mock t 返回 key，断言 key 出现即证计数按 tasks.length 渲染。
+    getMulticaTasks.mockResolvedValue(baseVm({
+      workspaces: [{ id: 'ws-004', name: '004', slug: 'ws-004', provider: 'claude-acp' }],
+      tasksByWorkspace: {
+        'ws-004': [
+          { id: 'rt-1', workspaceId: 'ws-004', title: 'Task A', status: 'queued', retryable: true },
+          { id: 'rt-2', workspaceId: 'ws-004', title: 'Task B', status: 'completed', retryable: false },
+        ],
+      },
+      lastActiveWorkspaceId: 'ws-004',
+    }));
+    const { container } = await renderList();
+    expect(container.textContent).toContain('conversation.sidebar.multica.taskCount');
+  });
+
+  it('omits the task-count indicator for an empty workspace', async () => {
+    // point3：0 任务时不渲染计数，避免与空状态文案「该工作空间下暂无远程任务」重复。
+    getMulticaTasks.mockResolvedValue(baseVm({
+      workspaces: [{ id: 'ws-004', name: '004', slug: 'ws-004', provider: 'claude-acp' }],
+      tasksByWorkspace: {},
+      lastActiveWorkspaceId: 'ws-004',
+    }));
+    const { container } = await renderList();
+    expect(container.textContent).not.toContain('conversation.sidebar.multica.taskCount');
+  });
+
+  it('manual refresh re-fetches the task list without remounting', async () => {
+    // point3：刷新按钮免切换页面重进即可拉最新列表。
+    getMulticaTasks.mockResolvedValue(baseVm({
+      workspaces: [{ id: 'ws-004', name: '004', slug: 'ws-004', provider: 'claude-acp' }],
+      tasksByWorkspace: {},
+      lastActiveWorkspaceId: 'ws-004',
+    }));
+    const { container } = await renderList();
+
+    // 挂载拉取一次。
+    expect(getMulticaTasks).toHaveBeenCalledTimes(1);
+
+    // 刷新按钮：aria-label = common.refresh（RotateCw 图标桩成 null，按 aria-label 定位）。
+    const refreshBtn = container.querySelector('button[aria-label="common.refresh"]') as HTMLButtonElement;
+    expect(refreshBtn).toBeTruthy();
+    await act(async () => { refreshBtn.click(); });
+    await act(async () => { await Promise.resolve(); });
+
+    // 刷新触发再次拉取（count → 2），无需重进页面。
+    expect(getMulticaTasks).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('multica status tone config', () => {
+  it('maps every canonical status to its board-vocabulary color (灰/黄/绿/红)', () => {
+    // point2：4 个 canonical status 各有色调，锁定看板词汇配色（待办=灰、进行中=黄、已完成=绿、失败=红）。
+    expect(MULTICA_STATUS_TONE.queued).toMatch(/muted/);
+    expect(MULTICA_STATUS_TONE.running).toMatch(/amber/);
+    expect(MULTICA_STATUS_TONE.completed).toMatch(/emerald/);
+    expect(MULTICA_STATUS_TONE.failed).toMatch(/destructive/);
+    // 无遗漏：恰好这 4 个 canonical status。
+    expect(Object.keys(MULTICA_STATUS_TONE).sort()).toEqual(['completed', 'failed', 'queued', 'running']);
   });
 });

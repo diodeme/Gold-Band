@@ -304,18 +304,11 @@ export const desktopApi: RuntimeApi = {
     const { open } = await import('@tauri-apps/plugin-dialog');
     return open({ directory: true });
   },
-  addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string, localPath: string) {
+  addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string) {
     return invokeCommand<MulticaSettingsVm>('add_multica_workspace', {
       workspaceId,
       workspaceName,
-      workspacePath: localPath,
       provider,
-    });
-  },
-  rebindMulticaWorkspace(workspaceId: string, localPath: string) {
-    return invokeCommand<MulticaSettingsVm>('rebind_multica_workspace', {
-      workspaceId,
-      workspacePath: localPath,
     });
   },
   removeMulticaWorkspace(workspaceId: string) {

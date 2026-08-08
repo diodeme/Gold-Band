@@ -68,7 +68,6 @@ export interface MulticaWorkspaceRefVm {
   id: string;
   name: string;
   slug: string;
-  localProjectId: string;
   provider: string;
 }
 
@@ -1310,6 +1309,7 @@ export type ConversationPage =
   | { kind: 'conversation-home' }
   | { kind: 'conversation-run'; projectId: string; taskId: string; runId: string }
   | { kind: 'run-mode-management' }
+  | { kind: 'multica-tasks' }
   | { kind: 'agents' }
   | { kind: 'contexts' }
   | { kind: 'settings' };

@@ -392,6 +392,7 @@ mod tests {
             local_task_id: "task-1".into(),
             local_run_id: "run-1".into(),
             workspace_id: "ws-1".into(),
+            local_project_id: "proj-1".into(),
             issue_id: Some("iss-1".into()),
             status: "completed".into(),
             title: "Done thing".into(),
@@ -429,6 +430,7 @@ mod tests {
         let run = ActiveRemoteRun {
             runtime_id: "rt-rt-1".into(),
             workspace_id: "ws-1".into(),
+            local_project_id: "proj-1".into(),
             local_task_id: "task-9".into(),
             local_run_id: "run-9".into(),
             issue_id: Some("iss-9".into()),

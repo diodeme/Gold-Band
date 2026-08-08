@@ -22,9 +22,10 @@ use gold_band::config::MulticaWorkspaceRef;
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::metrics::get_system_username;
+use crate::conversation_workspace::workspace_entry_for_project;
 use crate::multica::bridge::{emit_multica_task_updated, teardown_active_run};
 use crate::multica::client::{MulticaClient, RegisterRequest, RuntimeSpec};
-use crate::multica::config::{binding_for_multica, get_daemon_id, get_pat, multica_base_url, multica_settings};
+use crate::multica::config::{get_daemon_id, get_pat, multica_base_url, multica_settings};
 use crate::multica::error::MulticaError;
 use crate::multica::state::SharedMulticaState;
 use crate::state::DesktopState;
@@ -435,9 +436,10 @@ async fn spawn_invalidate<R: Runtime>(app: &AppHandle<R>, remote: &str) {
 
 /// 作废 remote task 对应本地 run（取消检测 / 启动 reconcile 共用）。
 ///
-/// 解析 `(workspace_path, local_task_id, local_run_id)`：active_run 优先（在飞场景，经
-/// `binding_for_multica` 解析 workspace_id->path）；回退 `task_conversations[remote]`（崩溃 orphan
-/// 场景，active_runs 已丢，用持久化 work_dir + local ids）。再交 `bridge::teardown_active_run` 收尾。
+/// 解析 `(workspace_path, local_task_id, local_run_id)`：active_run 优先（在飞场景，按任务级
+/// `local_project_id` 经 `workspace_entry_for_project` 解析路径——绑定模型已下沉到任务级）；
+/// 回退 `task_conversations[remote]`（崩溃 orphan 场景，active_runs 已丢，用持久化 work_dir + local ids）。
+/// 再交 `bridge::teardown_active_run` 收尾。
 fn invalidate_remote_task<R: Runtime>(app: &AppHandle<R>, remote: &str) {
     let Some(desktop) = app.try_state::<DesktopState>() else { return };
     let Ok(context) = desktop.context() else { return };
@@ -449,7 +451,7 @@ fn invalidate_remote_task<R: Runtime>(app: &AppHandle<R>, remote: &str) {
     let Some((workspace_path, local_task_id, local_run_id)) = active
         .and_then(|run| {
             let home_state = home_app.load_state().ok()?;
-            let (wp, _) = binding_for_multica(&context.config, &home_state, &run.workspace_id)?;
+            let (wp, _) = workspace_entry_for_project(&home_state, &run.local_project_id)?;
             Some((wp, run.local_task_id, run.local_run_id))
         })
         .or_else(|| {

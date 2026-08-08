@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check, ExternalLink, FolderInput, Loader2, Trash2 } from 'lucide-react';
+import { Check, ExternalLink, Loader2, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
@@ -12,8 +12,6 @@ import {
   disconnectMultica,
   getMulticaSettings,
   openExternalUrl,
-  pickLocalDirectory,
-  rebindMulticaWorkspace,
   removeMulticaWorkspace,
   saveMulticaSettings,
   setActiveMulticaWorkspace,
@@ -31,7 +29,7 @@ const MULTICA_PROVIDER_OPTIONS = [
 /// multica 设置区块：自管理状态（照搬 metrics 的 barrel 直连 + 本地 error 回显模式）。
 /// 仅渲染区块内字段，外层 `SettingsSection` 由 SettingsPage 包裹（与 metrics 一致）。
 /// 工作空间「添加」入口已收敛到会话侧栏远程任务列表的弹窗（见 MulticaAddWorkspaceDialog）；
-/// 本区块只保留配置 + 已绑定工作空间的管理（激活/改绑/删除）。
+/// 本区块只保留配置 + 已绑定工作空间的管理（激活/删除）。
 export function MulticaSettingsBlock() {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<MulticaSettingsVm | null>(null);
@@ -132,21 +130,6 @@ export function MulticaSettingsBlock() {
   async function handleSwitchAccount() {
     if (!appUrl) return;
     await openExternalUrl(appUrl);
-  }
-
-  async function handleRebind(id: string) {
-    const localPath = await pickLocalDirectory();
-    if (!localPath) return;
-    setWorkspaceBusy(`rebind:${id}`);
-    setError(null);
-    try {
-      const vm = await rebindMulticaWorkspace(id, localPath);
-      applyVm(vm);
-    } catch (err) {
-      catchError(err);
-    } finally {
-      setWorkspaceBusy(null);
-    }
   }
 
   async function handleRemove(id: string) {
@@ -292,7 +275,7 @@ export function MulticaSettingsBlock() {
             </Button>
           </div>
 
-          {/* 已绑定工作空间管理（激活/改绑/删除）；添加入口在会话侧栏远程任务列表弹窗 */}
+          {/* 已绑定工作空间管理（激活/删除）；添加入口在会话侧栏远程任务列表弹窗 */}
           <div className="space-y-2 border-t border-border/45 pt-3">
             <div className="text-xs font-medium text-muted-foreground">{t('settings.multica.workspaceList')}</div>
 
@@ -315,7 +298,7 @@ export function MulticaSettingsBlock() {
                           )}
                         </div>
                         <div className="truncate font-mono text-[11px] text-muted-foreground">
-                          {ws.provider} · {ws.localProjectId}
+                          {ws.provider}
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-0.5">
@@ -337,22 +320,6 @@ export function MulticaSettingsBlock() {
                             <TooltipContent side="top" className="text-xs">{t('settings.multica.setActive')}</TooltipContent>
                           </Tooltip>
                         )}
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span>
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="size-7"
-                                disabled={workspaceBusy !== null}
-                                onClick={() => void handleRebind(ws.id)}
-                              >
-                                <FolderInput className="size-3.5" />
-                              </Button>
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent side="top" className="text-xs">{t('settings.multica.rebind')}</TooltipContent>
-                        </Tooltip>
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <span>

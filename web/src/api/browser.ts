@@ -834,10 +834,7 @@ export const browserApi: RuntimeApi = {
   pickLocalDirectory() {
     return Promise.resolve(null);
   },
-  addMulticaWorkspace(_workspaceId: string, _workspaceName: string, _provider: string, _localPath: string) {
-    return this.getMulticaSettings();
-  },
-  rebindMulticaWorkspace(_workspaceId: string, _localPath: string) {
+  addMulticaWorkspace(_workspaceId: string, _workspaceName: string, _provider: string) {
     return this.getMulticaSettings();
   },
   removeMulticaWorkspace(_workspaceId: string) {

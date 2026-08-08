@@ -218,8 +218,7 @@ export interface RuntimeApi {
   rerunMulticaTask(issueId: string, workspaceId: string): Promise<void>;
   listServerMulticaWorkspaces(): Promise<MulticaServerWorkspaceVm[]>;
   pickLocalDirectory(): Promise<string | null>;
-  addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string, localPath: string): Promise<MulticaSettingsVm>;
-  rebindMulticaWorkspace(workspaceId: string, localPath: string): Promise<MulticaSettingsVm>;
+  addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string): Promise<MulticaSettingsVm>;
   removeMulticaWorkspace(workspaceId: string): Promise<MulticaSettingsVm>;
   setActiveMulticaWorkspace(workspaceId: string): Promise<MulticaSettingsVm>;
   getUpdateStatus(): Promise<UpdateStatusVm>;

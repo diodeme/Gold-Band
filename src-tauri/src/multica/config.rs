@@ -3,14 +3,11 @@
 //! 照搬 `metrics.rs` 的 channel-priority + normalize + 「永不回显明文 PAT」模式
 //! （`metrics_settings` metrics.rs:130-167 / `normalize_metrics_base_url` metrics.rs:90-114）。
 
-use gold_band::config::{
-    MulticaAccountRef, MulticaWorkspaceRef, RuntimeConfig, SettingsConfig, StateConfig,
-};
+use gold_band::config::{MulticaAccountRef, MulticaWorkspaceRef, RuntimeConfig, SettingsConfig};
 use serde::Serialize;
 use url::Url;
 
 use crate::channel::current_channel_config;
-use crate::conversation_workspace::workspace_entry_for_project;
 
 /// 前端 multica 设置 VM（开发设计 2.2.5）。
 ///
@@ -153,35 +150,12 @@ pub fn clear_multica_session(settings: &mut SettingsConfig) {
     settings.desktop_multica_active_workspace_id = None;
 }
 
-/// multica workspace → 绑定的 `(workspace_path, provider)`（开发设计 2.5）。
-///
-/// 解析链：`RuntimeConfig.desktop_multica_workspaces[id]` 取 `local_project_id` + `provider`
-/// → 复用 `workspace_entry_for_project`(conversation_workspace.rs:24) 在 `StateConfig` 的
-/// `conversation_workspaces` 里查 `workspace_path`。**不在 multica 侧重复存 path**（避免双份不一致）。
-///
-/// 未绑定 multica workspace / 本地目录缺失 → None（调用方报 `multica.task-not-found` 引导绑定）。
-pub fn binding_for_multica(
-    config: &RuntimeConfig,
-    state: &StateConfig,
-    multica_workspace_id: &str,
-) -> Option<(String, String)> {
-    let mref = config
-        .desktop_multica_workspaces
-        .iter()
-        .find(|w| w.id == multica_workspace_id)?;
-    let (workspace_path, _) = workspace_entry_for_project(state, &mref.local_project_id)?;
-    Some((workspace_path, mref.provider.clone()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        binding_for_multica, clear_multica_session, ensure_daemon_id, multica_settings,
-        normalize_multica_base_url,
+        clear_multica_session, ensure_daemon_id, multica_settings, normalize_multica_base_url,
     };
-    use gold_band::config::{
-        ConversationWorkspaceEntry, MulticaWorkspaceRef, RuntimeConfig, StateConfig,
-    };
+    use gold_band::config::{MulticaWorkspaceRef, RuntimeConfig};
 
     #[test]
     fn normalizes_multica_base_url_strips_trailing_slash_and_query() {
@@ -240,7 +214,7 @@ mod tests {
         let mut settings = gold_band::config::SettingsConfig::default();
         settings.desktop_multica_pat = Some("secret-token".into());
         ensure_daemon_id(&mut settings);
-        settings.desktop_multica_workspaces = Some(vec![multica_ref("ws-1", "proj-1", "claude-acp")]);
+        settings.desktop_multica_workspaces = Some(vec![multica_ref("ws-1", "claude-acp")]);
         settings.desktop_multica_active_workspace_id = Some("ws-1".into());
         settings.desktop_multica_account = Some(gold_band::config::MulticaAccountRef {
             name: Some("Demo".into()),
@@ -265,59 +239,21 @@ mod tests {
         assert!(settings.desktop_multica_daemon_id.is_some());
     }
 
-    fn multica_ref(id: &str, local_project_id: &str, provider: &str) -> MulticaWorkspaceRef {
+    fn multica_ref(id: &str, provider: &str) -> MulticaWorkspaceRef {
         MulticaWorkspaceRef {
             id: id.into(),
             name: format!("ws {id}"),
             slug: id.into(),
-            local_project_id: local_project_id.into(),
             provider: provider.into(),
         }
-    }
-
-    fn workspace_entry(project_id: &str, workspace_path: &str) -> ConversationWorkspaceEntry {
-        ConversationWorkspaceEntry {
-            project_id: project_id.into(),
-            workspace_path: workspace_path.into(),
-            name: format!("repo {project_id}"),
-            added_at: "2026-08-05T00:00:00".into(),
-        }
-    }
-
-    #[test]
-    fn binding_for_multica_resolves_workspace_path_and_provider() {
-        // multica ws-1 绑定本地 proj-1（workspace_path /repo）+ provider claude-acp。
-        let mut config = RuntimeConfig::default();
-        config.desktop_multica_workspaces.push(multica_ref("ws-1", "proj-1", "claude-acp"));
-        let mut state = StateConfig::default();
-        state.conversation_workspaces.push(workspace_entry("proj-1", "/repo"));
-        let bound = binding_for_multica(&config, &state, "ws-1");
-        assert_eq!(bound, Some(("/repo".to_string(), "claude-acp".to_string())));
-    }
-
-    #[test]
-    fn binding_for_multica_none_when_workspace_unbound() {
-        // multica workspace id 未登记 → None（调用方报 task-not-found 引导绑定）。
-        let config = RuntimeConfig::default();
-        let state = StateConfig::default();
-        assert!(binding_for_multica(&config, &state, "ws-missing").is_none());
-    }
-
-    #[test]
-    fn binding_for_multica_none_when_local_project_missing() {
-        // multica workspace 已登记但本地 conversation_workspace 条目缺失（目录被移除等）→ None。
-        let mut config = RuntimeConfig::default();
-        config.desktop_multica_workspaces.push(multica_ref("ws-1", "proj-1", "claude-acp"));
-        let state = StateConfig::default(); // 无 proj-1 条目
-        assert!(binding_for_multica(&config, &state, "ws-1").is_none());
     }
 
     #[test]
     fn multica_settings_exposes_bound_workspaces_and_active() {
         // add_multica_workspace 落绑后，VM 应回显 workspaces 列表 + activeWorkspaceId（M5-c 设置页契约）。
         let mut config = RuntimeConfig::default();
-        config.desktop_multica_workspaces.push(multica_ref("ws-1", "proj-1", "claude-acp"));
-        config.desktop_multica_workspaces.push(multica_ref("ws-2", "proj-2", "claude-acp"));
+        config.desktop_multica_workspaces.push(multica_ref("ws-1", "claude-acp"));
+        config.desktop_multica_workspaces.push(multica_ref("ws-2", "claude-acp"));
         config.desktop_multica_active_workspace_id = Some("ws-2".into());
         let vm = multica_settings(&config);
         assert_eq!(vm.workspaces.len(), 2);
@@ -326,24 +262,5 @@ mod tests {
         assert_eq!(vm.active_workspace_id.as_deref(), Some("ws-2"));
         // slug=id 兜底（add_multica_workspace 路径，server list_workspaces 不含 slug）。
         assert_eq!(vm.workspaces[0].slug, "ws-1");
-    }
-
-    #[test]
-    fn binding_for_multica_resolves_when_slug_falls_back_to_id() {
-        // add_multica_workspace 用 id 兜底 slug（server list_workspaces 不含 slug）--不影响绑定解析。
-        let mut config = RuntimeConfig::default();
-        config.desktop_multica_workspaces.push(MulticaWorkspaceRef {
-            id: "ws-9".into(),
-            name: "Server Workspace".into(),
-            slug: "ws-9".into(),
-            local_project_id: "proj-9".into(),
-            provider: "claude-acp".into(),
-        });
-        let mut state = StateConfig::default();
-        state.conversation_workspaces.push(workspace_entry("proj-9", "/srv"));
-        assert_eq!(
-            binding_for_multica(&config, &state, "ws-9"),
-            Some(("/srv".to_string(), "claude-acp".to_string()))
-        );
     }
 }

@@ -99,7 +99,15 @@ export function ConversationComposer({
   const showRunModeManagement = canOpenRunModeManagement(runMode.mode);
   const autoStrategy = runMode.autoConfig?.agentStrategy ?? 'fixed';
   const isDynamicAuto = autoStrategy === 'dynamic';
-  const canSubmit = content.trim().length > 0 && !busy && !submittingAttachments;
+  // multica 远程任务「点击执行」预填后，draft 带 multica 绑定。该绑定期内：工作区下拉强制显示（决策 d），
+  // 让「此远程任务跑在哪个本地工作区」成为显式选择；本地零工作区时禁用发送 + 引导先加（决策 e）。
+  const multicaActive = composerDraft.draft.multica !== null;
+  const hasLocalWorkspaces = workspaces.length > 0;
+  const canSubmit =
+    content.trim().length > 0
+    && !busy
+    && !submittingAttachments
+    && !(multicaActive && !hasLocalWorkspaces);
   const agentOptions = useMemo(() => selectableAgentOptions(agentRegistry, t), [agentRegistry, t]);
   const agents = useMemo(
     () => agentOptions.filter((item) => item.selectable).map((item) => item.agent),
@@ -398,8 +406,21 @@ export function ConversationComposer({
                   {attachments.length} file(s)
                 </span>
               ) : null}
-              {workspaces.length > 1 ? (
-                <Select value={projectId} onValueChange={onWorkspaceChange}>
+              {multicaActive && workspaces.length === 0 ? (
+                // 决策 e：远程任务执行但本地零工作区 → 引导先添加本地工作区，发送已由 canSubmit 禁用。
+                <span className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-9 items-center rounded-full border border-dashed border-border/50 bg-gold-surface-high/20 px-3 text-xs text-muted-foreground`}>
+                  {t('conversation.composer.multicaNeedLocalWorkspace')}
+                </span>
+              ) : workspaces.length > 1 || multicaActive ? (
+                // 工作区下拉：多工作区常显；multica 绑定激活时强制显示（即使仅 1 个本地工作区，决策 d），
+                // 让远程任务的本地落地工作区成为显式选择。改下拉：multica 激活则保留绑定 + 预填内容（决策 d）。
+                <Select
+                  value={projectId}
+                  onValueChange={(next) => {
+                    if (!composerDraft.draft.multica) composerDraft.reset();
+                    onWorkspaceChange(next);
+                  }}
+                >
                   <SelectTrigger className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} h-9 gap-2 rounded-full border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none hover:bg-gold-surface-high/55 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55`}>
                     <span className="flex min-w-0 items-center gap-2">
                       <Folders className="size-3.5 shrink-0 text-muted-foreground/80" />

@@ -392,6 +392,7 @@ fn finalize_terminal(
             local_task_id: run.local_task_id.clone(),
             local_run_id: run.local_run_id.clone(),
             workspace_id: run.workspace_id.clone(),
+            local_project_id: run.local_project_id.clone(),
             issue_id: run.issue_id.clone(),
             status: status.to_string(),
             title: run
@@ -553,6 +554,7 @@ mod tests {
             local_task_id: format!("task-{remote}"),
             local_run_id: format!("run-{remote}"),
             workspace_id: "ws-1".into(),
+            local_project_id: "proj-1".into(),
             issue_id: None,
             status: "completed".into(),
             title: format!("title-{remote}"),

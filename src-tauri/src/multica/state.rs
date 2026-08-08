@@ -33,6 +33,10 @@ pub struct ActiveRemoteRun {
     pub runtime_id: String,
     /// 该任务所属 multica workspace（complete/fail 路径不需，但失败回显/重跑需）。
     pub workspace_id: String,
+    /// 该任务执行时选定的本地工作区 project_id（绑定模型下沉到任务级：工作区不再绑本地
+    /// 目录，每次执行由 composer 下拉选定，start 时随 input.project_id 写入）。
+    /// running 行本地深链 + cancel 解析 workspace path 用。
+    pub local_project_id: String,
     /// 本地 task display id（事件归属键 = `RunCompleted.task_id`）。
     pub local_task_id: String,
     /// 本地 run display id（事件归属键 = `RunCompleted.run_id`，配 task_id 唯一定位）。
@@ -191,6 +195,7 @@ mod tests {
         ActiveRemoteRun {
             runtime_id: runtime_id.into(),
             workspace_id: "ws-1".into(),
+            local_project_id: format!("proj-{local}"),
             local_task_id: format!("task-{local}"),
             local_run_id: format!("run-{local}"),
             issue_id: Some(format!("issue-{local}")),

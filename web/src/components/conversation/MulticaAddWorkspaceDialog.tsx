@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FolderInput, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
@@ -13,7 +13,6 @@ import {
 import {
   addMulticaWorkspace,
   listServerMulticaWorkspaces,
-  pickLocalDirectory,
 } from '../../api';
 import { displayAppError } from '../../i18n';
 import type { MulticaServerWorkspaceVm } from '../../types';
@@ -33,10 +32,11 @@ interface MulticaAddWorkspaceDialogProps {
   onAdded: () => void;
 }
 
-/// 远程任务列表「添加工作空间」弹窗：远程工作空间下拉 + provider 下拉 + 绑定本地目录 + 添加。
+/// 远程任务管理「添加工作空间」弹窗：只收「远程工作空间 + provider」。
 ///
-/// 形态对齐本地任务列表的添加入口（可见、可选项明确），文件目录选择经 `pickLocalDirectory`
-/// 做成显式按钮（不再藏在 addMulticaWorkspace 内部黑盒）。仅新 UI（会话侧栏）。
+/// 绑定模型已下沉到任务级：远程工作区在添加时只绑 provider，本地目录推迟到每次执行时由
+/// composer 下拉选（决策 a/c）。故本弹窗不再收本地目录，也不再调 pickLocalDirectory。
+/// 仅新 UI（会话模式远程任务管理页）。
 export function MulticaAddWorkspaceDialog({
   open,
   onOpenChange,
@@ -47,7 +47,6 @@ export function MulticaAddWorkspaceDialog({
   const [serverWorkspaces, setServerWorkspaces] = useState<MulticaServerWorkspaceVm[]>([]);
   const [workspaceId, setWorkspaceId] = useState('');
   const [provider, setProvider] = useState<string>(MULTICA_PROVIDER_OPTIONS[0].value);
-  const [localPath, setLocalPath] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +56,6 @@ export function MulticaAddWorkspaceDialog({
     if (!open) return;
     setWorkspaceId('');
     setProvider(MULTICA_PROVIDER_OPTIONS[0].value);
-    setLocalPath(null);
     setError(null);
     let cancelled = false;
     setLoading(true);
@@ -68,18 +66,9 @@ export function MulticaAddWorkspaceDialog({
     return () => { cancelled = true; };
   }, [open, t]);
 
-  async function handlePickDirectory() {
-    const path = await pickLocalDirectory();
-    if (path) setLocalPath(path);
-  }
-
   async function handleAdd() {
     if (!workspaceId) {
       setError(t('conversation.sidebar.multica.dialog.needWorkspace'));
-      return;
-    }
-    if (!localPath) {
-      setError(t('conversation.sidebar.multica.dialog.needDirectory'));
       return;
     }
     const target = serverWorkspaces.find((ws) => ws.id === workspaceId);
@@ -87,7 +76,7 @@ export function MulticaAddWorkspaceDialog({
     setSubmitting(true);
     setError(null);
     try {
-      await addMulticaWorkspace(target.id, target.name, provider, localPath);
+      await addMulticaWorkspace(target.id, target.name, provider);
       onAdded();
       onOpenChange(false);
     } catch (err) {
@@ -144,23 +133,6 @@ export function MulticaAddWorkspaceDialog({
             </Select>
           </div>
 
-          <div className="space-y-1">
-            <div className="text-xs font-medium text-muted-foreground">
-              {t('conversation.sidebar.multica.dialog.bindDirectory')}
-            </div>
-            <div className="flex items-center gap-2">
-              <Button type="button" size="sm" variant="outline" className="shrink-0" disabled={submitting} onClick={() => void handlePickDirectory()}>
-                <FolderInput className="mr-1.5 size-3.5" />
-                {localPath
-                  ? t('conversation.sidebar.multica.dialog.changeDirectory')
-                  : t('conversation.sidebar.multica.dialog.bindDirectory')}
-              </Button>
-              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
-                {localPath ?? t('conversation.sidebar.multica.dialog.directoryPlaceholder')}
-              </span>
-            </div>
-          </div>
-
           {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
 
@@ -168,7 +140,7 @@ export function MulticaAddWorkspaceDialog({
           <Button
             type="button"
             size="sm"
-            disabled={submitting || !workspaceId || !localPath}
+            disabled={submitting || !workspaceId}
             onClick={() => void handleAdd()}
           >
             {submitting ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}

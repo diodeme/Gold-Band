@@ -19,7 +19,6 @@ vi.mock('@/i18n', () => ({
 vi.mock('lucide-react', () => ({
   Check: () => null,
   ExternalLink: () => null,
-  FolderInput: () => null,
   Loader2: () => null,
   Trash2: () => null,
 }));
@@ -64,8 +63,6 @@ vi.mock('@/api', () => ({
   disconnectMultica: vi.fn(),
   getMulticaSettings: mocks.getMulticaSettings,
   openExternalUrl: mocks.openExternalUrl,
-  pickLocalDirectory: vi.fn(),
-  rebindMulticaWorkspace: vi.fn(),
   removeMulticaWorkspace: vi.fn(),
   saveMulticaSettings: vi.fn(),
   setActiveMulticaWorkspace: vi.fn(),

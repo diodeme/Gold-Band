@@ -84,6 +84,18 @@ Multica server 有一个后台 sweeper（每 30s 扫一次），相关阈值**�
 - **auto-retry**（短期/自动）：fail 后若 failure_reason 命中白名单（`runtime_offline`/`runtime_recovery`/`timeout` 等 6 个），同事务克隆一条 queued 子任务重试（`force_fresh_session=false`，可续旧会话）。受 2h TTL 和重试次数限制。**码灵接受此机制作为兜底**（用户决策，最省接入），重派后码灵 claim 拿到 `prior_session_id` 即走会话级续跑（3.2.7）。
 - **issue rerun**（长期/主动）：`POST /api/issues/{id}/rerun` 随时把任务重新入队，**无时间限制、无次数上限**，是我们的长期恢复兜底。
 
+**现象速查：正常关闭码灵后控制台的可观察表现**（把上表几行串成现象链，避免误判为 bug；源码 `server/cmd/server/runtime_sweeper.go`）
+
+关闭码灵客户端（同构于崩溃/断电/强杀）→ 心跳停止 → 控制台依次出现：
+
+1. **runtime 仍显示「在线」约 3 分钟**：这是 `150s 判离线 + 30s sweeper 周期 = ≤180s` 的**设计内检测延迟**，不是 bug。`staleThresholdSeconds=150` 故意大于「DB flush 60s + 心跳 15s + 批量调度 30s = 105s 最坏 DB 滞后」并留 45s 余量（`runtime_sweeper.go:22-31` 注释明述），**调小会把「心跳正常但 DB 批量写未落盘」的健康 runtime 误判离线 → 误杀健康长任务**。
+2. **~3 分钟 runtime 翻「失联」**：sweeper 同一 tick 内 `SelectStaleOnlineRuntimes(150)` → 经 Redis liveness 复核（`runtimeLivenessTTL=90s`，key 已过期即确认真死，防 DB 滞后误判）→ `MarkRuntimesOfflineByIDs` 翻 offline；**紧接着同 tick** `FailTasksForOfflineRuntimes`（`runtime_sweeper.go:127/171`）把该 runtime 下所有 dispatched/running/waiting 任务置 `failed(runtime_offline)`——即上表「离线 → fail 在飞任务｜立即」的「立即」=「判离线的同一 sweep tick」。
+3. **任务可能始终不显示「失败」**：`runtime_offline` 命中 auto-retry 白名单（`max_attempts=2`），原始 attempt 失败的**同一事务**克隆出 attempt N+1（`force_fresh_session=false`）→ 控制台看到的是「重试中的新 active 任务」而非「失败行」。最终稳定显示 failed 的时机取决于重试落点：
+   - 重试 **dispatched 给已离线 runtime** → 下一个 sweep 再次 `runtime_offline` 失败 → 再重试 → 跑满 2 次 → **几分钟内**稳定 failed；
+   - 重试 **落回 queued**（无在线 daemon 认领）→ 等 **2h** `queuedTTL` 才 `failed(queued_expired)`（不在重试白名单）→ 停留 failed。
+
+> **结论（是否需要调整）**：码灵客户端**无需**为「3 分钟才失联」做任何调整——150s 阈值是「心跳缺席即失联」架构的下限，对正常关闭/崩溃/断电三种场景通用且鲁棒，调小反而引入误杀。唯一可选优化（**未采纳**）是码灵正常关闭时主动调 server deregister 端点，但仅对「干净退出」一种场景有效（崩溃/断电仍靠 150s 兜底），收益有限、复杂度不划算。
+
 ---
 
 ## 2. 码灵客户端接入后的流程（目标产品形态）
@@ -110,7 +122,9 @@ Multica server 有一个后台 sweeper（每 30s 扫一次），相关阈值**�
 2. **首次 register**：客户端生成 `daemon_id`（UUID），调 register → server 返回 `runtime_id`。
 3. **建 agent 绑 runtime**：管理员/开发者在 Multica Web UI 上建一个 agent，把它的 runtime 选成刚 register 出来的 runtime_id。（这一步在 Web UI 做，客户端无感知。）
 
-完成后本地持久化：**PAT、daemon_id、已添加 workspace 列表（每条含 `provider` + `local_project_id` 本地目录绑定）、active workspace、默认 provider**。**`runtime_id` 不必落盘**——register 是幂等的：启动时遍历已添加 workspace 全量 register、新添加 workspace 时 register 该 workspace，都带上同一个 `daemon_id`，server 命中同一行返回**同一个 `runtime_id`**（同一 workspace 永远稳定），所以现取即可（详见 3.2.6）。
+完成后本地持久化：**PAT、daemon_id、已添加 workspace 列表（每条只含 `provider`，**不再绑定本地目录**——见下「绑定模型下沉」）、active workspace、默认 provider**。**`runtime_id` 不必落盘**——register 是幂等的：启动时遍历已添加 workspace 全量 register、新添加 workspace 时 register 该 workspace，都带上同一个 `daemon_id`，server 命中同一行返回**同一个 `runtime_id`**（同一 workspace 永远稳定），所以现取即可（详见 3.2.6）。
+
+> **绑定模型下沉到任务级（当前模型，M5-z）**：远程 workspace **只绑 provider**，**不再绑本地目录**——本地工作目录推迟到**每次执行时**由 composer 下拉选择，选中的本地工作区在发送时随 `start_multica_conversation_run` 写入任务级生命周期结构（`ActiveRemoteRun.local_project_id`、`MulticaCompletedTask.local_project_id`）。即绑定从「workspace 级」下沉到「task 级」：同一个远程 workspace 可在不同本地目录重复执行（每次执行独立落地）。原 workspace → `local_project_id` → `workspace_path` 的 `binding_for_multica()` 查找函数已删除；执行/作废路径改为直接用任务级 `local_project_id` 经 `workspace_entry_for_project(&home_state, &local_project_id)` 解析路径。
 
 ### 2.3 日常使用流程（产品形态）
 
@@ -206,14 +220,14 @@ multica 的核心实体与码灵自有概念**同名但语义完全不同**，�
 | **runtime** | 执行目标实例（`agent_runtime` 一行） | 本地工作流运行时（task→run→round…） | `multica_runtime_id` |
 | **task** | issue 派生的远程任务 | 本地工作流任务（preset→task→run） | `remote_task` |
 | **agent** | workspace 智能体配置（绑 runtime） | ACP agent / provider（如 claude-acp） | `multica_agent` |
-| **workspace** | multica 多租户隔离边界（团队/组织资源池，agent/issue/task/runtime/member 均以其为外键硬隔离） | 本地项目目录（task 执行的 work_dir，码灵会话模式的 `conversation_workspaces` 条目） | `multica_workspaces`（已添加列表，每条**绑定一个本地 `local_project_id`**）+ `active_workspace_id` |
+| **workspace** | multica 多租户隔离边界（团队/组织资源池，agent/issue/task/runtime/member 均以其为外键硬隔离） | 本地项目目录（task 执行的 work_dir，码灵会话模式的 `conversation_workspaces` 条目） | `multica_workspaces`（已添加列表，**只绑 `provider`，不绑本地目录**）+ `active_workspace_id` |
 | **daemon** | multica 拉取/执行/回传桥 | —— | 码灵客户端本身即扮演此角色 |
 
 > 下文凡指 multica 侧的 runtime/task/agent/workspace，一律加 `multica_`/`remote_` 前缀。
 
-> **workspace 与本地目录一一绑定**：multica workspace 是远端 SaaS 多租户边界（决定「任务从哪个团队派来」），码灵本地项目目录是 work_dir（决定「任务在哪执行」）。两者**不再正交**——每个添加的 multica workspace **必须绑定一个本地工作目录**（复用码灵会话模式既有的 `conversation_workspaces` 记录，以 `local_project_id` 引用），该 workspace 的所有任务都在绑定的本地目录执行。绑定在「添加工作空间」时一次完成（选远程 workspace + folder picker 选本地目录），详见 3.2.6。一个 multica workspace 只能绑一个本地目录（`local_project_id` 在 `multica_workspaces` 内唯一）；本地目录可被多个 multica workspace 复用。
+> **workspace 与本地目录的关系（绑定模型下沉到任务级，M5-z）**：multica workspace 是远端 SaaS 多租户边界（决定「任务从哪个团队派来」），码灵本地项目目录是 work_dir（决定「任务在哪执行」）。**两者通过任务级 `local_project_id` 关联，不再在 workspace 级绑定**——添加 multica workspace 时**只选远程工作空间 + provider**（不弹本地目录 folder picker），本地工作目录推迟到每次执行时由 composer 下拉选择，随 `start_multica_conversation_run` 写入该次任务的生命周期结构（`ActiveRemoteRun.local_project_id` / `MulticaCompletedTask.local_project_id`）。同一个远程 workspace 可在不同本地目录重复执行（每次执行独立落地），`multica_workspaces` 列表本身无 `local_project_id` 字段。
 >
-> **三层 workspace 概念勿混**：① multica workspace（远端，`multica_workspaces` 条目，绑本地目录）；② 码灵本地工作目录（`conversation_workspaces` 条目，`workspace_path`，可被 ① 绑定，也可独立用于本地会话）；③ 码灵本地会话实例（一次会话打开的某个本地目录）。本方案中 multica workspace 的「执行落点」= 它绑定的 ② 的 `workspace_path`。
+> **三层 workspace 概念勿混**：① multica workspace（远端，`multica_workspaces` 条目，只绑 provider）；② 码灵本地工作目录（`conversation_workspaces` 条目，`workspace_path`，**执行时**由 composer 下拉选并写入任务级结构）；③ 码灵本地会话实例（一次会话打开的某个本地目录）。本方案中某次 multica 任务的「执行落点」= 该任务 `ActiveRemoteRun.local_project_id` 在 `conversation_workspaces` 解析出的 ② 的 `workspace_path`（不再是 workspace 级固定绑定）。
 
 #### 3.2.2 核心设计决策：remote_task → 码灵会话执行的映射
 
@@ -269,8 +283,8 @@ run 终局（订阅器穷举 4 分支，源码依据 provider/mod.rs:1086-1100 +
 | 子模块 | 职责 |
 |---|---|
 | `multica/client.rs` | reqwest client 封装 + **重试/退避**（项目目前缺失，见 3.2.4）+ 所有 multica HTTP 调用 |
-| `multica/config.rs` | PAT / base url / daemon_id / multica_workspaces（已添加列表，每条含 `local_project_id` 本地目录绑定）/ active_workspace_id / provider 等配置 VM 与读写；**绑定查找**：`multica workspace → local_project_id → conversation_workspaces.workspace_path` |
-| `multica/state.rs` | 运行期状态：per-workspace runtime_id 映射、在飞 remote_task↔本地 task 映射（`multica_pending_issues` 失败待重试 issue 持久化在 StateConfig，非 state.rs 内存）；**执行注入**：claim 后按 task 所属 workspace 取绑定的 `workspace_path` → `App::with_repo_root`（参考 `commands_conversation.rs:257`） |
+| `multica/config.rs` | PAT / base url / daemon_id / multica_workspaces（已添加列表，**只含 provider，不绑本地目录**）/ active_workspace_id / provider 等配置 VM 与读写 |
+| `multica/state.rs` | 运行期状态：per-workspace runtime_id 映射、在飞 remote_task↔本地 task 映射（`multica_pending_issues` 失败待重试 issue 持久化在 StateConfig，非 state.rs 内存）；**执行注入**：claim 后由 composer 下拉选定的本地工作区 → 发送时随 `start_multica_conversation_run` 写入 `ActiveRemoteRun.local_project_id` → 按 `workspace_entry_for_project(&home_state, &local_project_id)` 解析 `workspace_path` → `App::with_repo_root`（参考 `commands_conversation.rs:257`）。**原 workspace 级 `binding_for_multica()` 已删除（M5-z）** |
 | `multica/loop.rs` | 心跳循环、**启动全量 register 已添加 workspace / 新添加 workspace 时 register**/recover-orphans/失败任务供 rerun、取消检测轮询 |
 | `multica/bridge.rs` | remote_task ↔ 本地 task/run 衔接（**直接调 `gold-band` 库层 App API** + 订阅 lifecycle bus；不走 Tauri command 层） |
 
@@ -285,7 +299,7 @@ run 终局（订阅器穷举 4 分支，源码依据 provider/mod.rs:1086-1100 +
 | **启动流程** | 后台任务启动样板：`start_heartbeat_polling`（`metrics.rs:218`），在 `main.rs` setup 里 `tauri::async_runtime::spawn` | 新增 `start_multica_runtime`：**先 `GET /api/me` 校验 PAT**（有效则复用、进入全量 register；**无效则静默、不弹任何 UI**——等用户主动切到「远程任务列表」、在未连接空状态点【连接 Multica】才触发 3.2.6 登录；**首启绝不自动弹登录**）→ **遍历 `desktop_multica_workspaces` 已添加列表全量 register**（幂等取回各 runtime_id）→ recover-orphans → 失败任务留待用户 rerun；全部异步、失败不阻断客户端启动 | `src-tauri/src/main.rs`（setup 注册）、`multica/loop.rs` |
 | **HTTP 客户端与重试** | reqwest 0.12 已引入；但**全仓库无 retry/backoff**（metrics/feedback 均 fire-and-forget） | multica client 自建指数退避重试；终态回调（complete/fail）严格按 multica 协议 4/8/16/32/64s 共 6 次、服务端幂等；client 参照 `feedback.rs:282` builder 模式，PAT 走 `Authorization: Bearer` | `multica/client.rs` |
 | **心跳维持** | `start_heartbeat_polling`（15min metrics 心跳）是直接样板 | 新增 multica 心跳循环：**Req D 起为常驻**--连接后每 **15s** 一次 `POST /api/daemon/heartbeat`（≠ metrics 的 15min，两套并存），对所有已连接 workspace 的 runtime 持续心跳（不再仅 claim->complete 期间），否则 150s 后被判离线导致 fail；同 tick 续期 claim-at-click 后未 start 的 prepare lease | `multica/loop.rs`，照抄 `metrics.rs:218` 形态改间隔 |
-| **远程任务列表（UI）** | 前端四层封装：`invokeCommand`(`shared.ts:8`) → `RuntimeApi`(`client.ts:126`) → desktop.ts/browser.ts → api.ts；两套 UI（会话=新主入口 / 工作流=旧）；本地会话 `ConversationSidebar` 已是「workspace 分组 → 任务 → 末尾【添加工作空间】」骨架（`ConversationSidebar.tsx`，VM 为 `ConversationSidebarVm{workspaces, pinnedTasks, tasksByWorkspace, lastActiveWorkspaceId}`） | **仅会话模式（新 UI）做，工作流模式（旧 UI）暂不管**；**远程任务列表复用 `ConversationSidebar` 同一骨架**（左侧 multica workspace 分组 sticky header → 每个 workspace 下任务列表 → 末尾【添加工作空间】），在 sidebar 顶端加一个「本地 / 远程」segmented 切换——**本地任务列表零变化、不出现任何 multica 入口**；**未连接时（无 PAT / PAT 失效）远程列表区显示空状态卡 + 【连接 Multica】按钮**（点击进入 3.2.6 登录；首启不自动触发）；**按 multica workspace 分组**（每个 workspace 按各自 runtime_id + `X-Workspace-ID` 调 `GET /tasks/pending` 过滤 `status=='queued'`，并 join 本地 `multica_pending_issues` 失败任务以 `retryable` 同列混排）；新增命令 `get_multica_tasks`（返回**按 workspace 分组**、对齐 `ConversationSidebarVm` 形状的 VM） | `web/src/api/{client,desktop,browser}.ts`、`web/src/api.ts`、`web/src/components/conversation/ConversationSidebar.tsx`（复用 + source 切换层） |
+| **远程任务列表（UI）** | 前端四层封装：`invokeCommand`(`shared.ts:8`) → `RuntimeApi`(`client.ts:126`) → desktop.ts/browser.ts → api.ts；两套 UI（会话=新主入口 / 工作流=旧）；本地会话 `ConversationSidebar` 是「workspace 分组 → 任务 → 末尾【添加工作空间】」骨架（`ConversationSidebar.tsx`，VM 为 `ConversationSidebarVm{workspaces, pinnedTasks, tasksByWorkspace, lastActiveWorkspaceId}`） | **仅会话模式（新 UI）做，工作流模式（旧 UI）暂不管**；**远程任务管理改为独立的「远程任务管理」整页**（`MulticaTaskManagementPage`，新路由 `/chat/multica-tasks`，与 agent 管理/上下文管理/运行模式管理 并列的导航项，icon=Globe），内容镜像 `MulticaRemoteTaskList`——**会话侧栏 (`ConversationSidebar`) 移除「本地/远程」切换 UI，侧栏纯本地任务**（M5-z）；**未连接时（无 PAT / PAT 失效）远程任务管理页显示空状态卡 + 【连接 Multica】按钮**（点击进入 3.2.6 登录；首启不自动触发）；**按 multica workspace 分组**（每个 workspace 按各自 runtime_id + `X-Workspace-ID` 调 `GET /tasks/pending` 过滤 `status=='queued'`，并 join 本地 `multica_pending_issues` 失败任务以 `retryable` 同列混排）；新增命令 `get_multica_tasks`（返回**按 workspace 分组**、对齐 `ConversationSidebarVm` 形状的 VM） | `web/src/api/{client,desktop,browser}.ts`、`web/src/api.ts`、`web/src/pages/MulticaTaskManagementPage.tsx`（新整页）、`web/src/components/conversation/MulticaRemoteTaskList.tsx`（镜像内容） |
 | **任务领取** | -- | 调 3.1 新增的 selective claim（按 task_id 领取用户点的那条）；新增命令 `claim_multica_task(task_id, workspace_id)`（需 workspace_id 解析 runtime_id；命中 `multica_task_conversations[task_id].session_id` 带 prior_session_id 续跑）；**claim 不写 pending_issues**--失败回显改由 M4 终态 fail 写入（见状态持久化行）；**Req D：claim-at-click--只 claim + 写 prepare_lease + 回 requirement，不立即 start**（start 移到用户在 composer 点【发送】时的 `start_multica_conversation_run`） | `multica/client.rs`、新增 Tauri 命令 |
 | **任务执行（核心）** | 码灵库层 App API（`gold-band` / `src/app/`）：`App::with_config`+`with_lifecycle_bus` 构造 App -> 构造 Direct 模式 WorkflowDsl（复用 `gold_band::dsl::presets`）-> `create_task_from_requirement(content=requirement)` -> `run_start_background`；首轮 prompt = requirement.md，**不走 submit**；session_id 落 `worker-ref.json` 的 `continue_ref.acpSessionId`（NodeCompleted 后 `worker_ref_show` 读出） | **Req D：claim-at-click 拆分**。点【执行】只 `claim_multica_task`（claim + 写 prepare lease + 回 requirement）；用户在 composer 点【发送】才调 `start_multica_conversation_run`：**复用本地 `create_conversation_run_vm`** 构造会话（requirement 作首轮 prompt）+ `POST /tasks/{id}/start` -> running + 订阅 `RuntimeLifecycleBus`（NodeStarted/NodeCompleted/RunCompleted）转译为基础状态 + NodeCompleted 后 `worker_ref_show` 采集 session_id -> run outcome 转译为 complete/fail；放弃 compose 调 `cancel_multica_prepare_lease`，任务回 queued | `multica/commands.rs`、`multica/bridge.rs`、`multica/loop.rs`（常驻心跳 + lease 续期） |
 | **状态上报** | 会话事件流已是结构化的 | **只上报基础状态（最简版本）**：会话 run started → multica started；执行期每 **15s** 心跳 `POST /api/daemon/heartbeat`；run completed/failed → 终态。**本期不上报 step/total 进度**（用户决策：只要基础对应 multica 状态）；订阅器注册参考 `create_metrics_subscriber`(`metrics.rs:365`) | `multica/bridge.rs` |
@@ -303,7 +317,7 @@ run 终局（订阅器穷举 4 分支，源码依据 provider/mod.rs:1086-1100 +
   "desktop_multica_app_url": "",              // multica Web 前端地址（浏览器登录页 cli_callback 用；常与 base_url 同源，分离配置便于 API/Web 分部署）
   "desktop_multica_pat": "",                  // 明文 PAT，永不回显，只暴露 pat_set: bool
   "desktop_multica_daemon_id": "",            // 本机持久 UUID v7，首次启动生成
-  "desktop_multica_workspaces": [],           // 已添加的 multica workspace 列表，每条绑定一个本地目录 + 一个 provider：[{ "id": "<uuid>", "name": "...", "slug": "...", "local_project_id": "<conversation_workspaces.project_id>", "provider": "claude-acp" }]。添加时同步在 conversation_workspaces 建对应本地目录条目；provider 选定后不可变（变了=新 runtime=需重绑 agent，见 3.2.6）
+  "desktop_multica_workspaces": [],           // 已添加的 multica workspace 列表，**只绑 provider 不绑本地目录**：[{ "id": "<uuid>", "name": "...", "slug": "...", "provider": "claude-acp" }]。本地工作目录在每次执行时由 composer 下拉选并写入任务级结构（`ActiveRemoteRun.local_project_id` / `MulticaCompletedTask.local_project_id`）；provider 选定后不可变（变了=新 runtime=需重绑 agent，见 3.2.6）
   "desktop_multica_active_workspace_id": "",  // 当前查看的 workspace（workspaces 之一）；切换=纯视图，不触发 register
   "desktop_multica_default_provider": "claude-acp",  // 添加 workspace 时的默认 provider 预选项（码灵 ACP provider 标识，如 claude-acp/codex-acp/gemini-acp）；每个 workspace 实际选定的 provider 存在 desktop_multica_workspaces 条目里
 }
@@ -323,12 +337,13 @@ run 终局（订阅器穷举 4 分支，源码依据 provider/mod.rs:1086-1100 +
       "work_dir": "..."
     }
   },
-  "multica_completed_tasks": [                        // 终态任务本地历史（M5-o；改动六起不再进扁平「最近完成」桶，而按 workspace_id 并入对应工作空间 tasksByWorkspace 组）；finalize_terminal 移除 active 前快照一行进此（去重最新在前，截断 N=50）；title 快照自 ActiveRemoteRun.title，completed_at RFC3339
+  "multica_completed_tasks": [                        // 终态任务本地历史（M5-o；改动六起不再进扁平「最近完成」桶，而按 workspace_id 并入对应工作空间 tasksByWorkspace 组）；finalize_terminal 移除 active 前快照一行进此（去重最新在前，截断 N=50）；title 快照自 ActiveRemoteRun.title，completed_at RFC3339；**M5-z 起新增 `local_project_id`**（来自 `ActiveRemoteRun.local_project_id`，绑定模型下沉到任务级后任务自带本地目录、不再依赖 workspace 级绑定）
     {
       "remote_task_id": "...",
       "local_task_id": "...",
       "local_run_id": "...",       // 点击行按 (project_id, local_task_id, local_run_id) 经 onSelectRun 直达本地会话
       "workspace_id": "...",
+      "local_project_id": "...",   // M5-z 新增：该次执行的本地工作目录（project_id），终态行 onSelectRun 经此解析直达
       "issue_id": "...",           // 可空，rerun 用
       "status": "completed",       // "completed" | "failed"
       "title": "...",
@@ -354,7 +369,7 @@ multica.session-resume-failed   // 续跑时 ACP session 已失效（strict_cont
 ```
 
 **Tauri 命令**（新增，注册到 `generate_handler!`，参考 `save_metrics_settings`(`commands.rs:1501`) 风格）：
-`connect_multica`（PAT 失效时触发 3.2.6 浏览器登录 + localhost callback + 换 PAT）/ `list_server_multica_workspaces`（拉 server 全量供添加）/ `add_multica_workspace`（下拉单选添加 + register）/ `remove_multica_workspace` / `set_active_multica_workspace`（纯视图切换，不 register）/ `save_multica_settings` / `get_multica_settings` / `get_multica_tasks` / `claim_multica_task`（Req D：claim-at-click，只 claim + 写 prepare lease + 回 requirement，不立即 start）/ `start_multica_conversation_run`（Req D：复用本地 `create_conversation_run_vm`，发送时调，含 start + 会话级续跑 classify_resume 分支）/ `cancel_multica_prepare_lease`（Req D：放弃 compose 时释放 lease，任务回 queued）/ `cancel_multica_task` / `rerun_multica_task`（用户手动整 task 重跑，新会话）。原 `start_multica_remote_task` / `resume_multica_task` 已删除（Req D）。
+`connect_multica`（PAT 失效时触发 3.2.6 浏览器登录 + localhost callback + 换 PAT）/ `list_server_multica_workspaces`（拉 server 全量供添加）/ `add_multica_workspace`（**M5-z：签名只剩 `workspace_id + provider`，name 从 server 列表取，无 local_path**；下拉单选添加 + register）/ `remove_multica_workspace` / `set_active_multica_workspace`（纯视图切换，不 register）/ `save_multica_settings` / `get_multica_settings` / `get_multica_tasks` / `claim_multica_task`（Req D：claim-at-click，只 claim + 写 prepare lease + 回 requirement，不立即 start）/ `start_multica_conversation_run`（Req D：复用本地 `create_conversation_run_vm`，发送时调，**M5-z：用 composer 下拉选中的 `project_id` 写入 `ActiveRemoteRun.local_project_id`**，含 start + 会话级续跑 classify_resume 分支）/ `cancel_multica_prepare_lease`（Req D：放弃 compose 时释放 lease，任务回 queued）/ `cancel_multica_task` / `rerun_multica_task`（用户手动整 task 重跑，新会话）。原 `start_multica_remote_task` / `resume_multica_task` 已删除（Req D）；原 `rebind_multica_workspace` 已删除（M5-z，绑定模型下沉到任务级，全链路删除无兼容层）。
 
 **前端事件常量**（加在 `commands.rs:62` 旁，`gold-band://` 前缀）：
 `gold-band://multica-task-updated`、`gold-band://multica-runtime-status`。
@@ -384,8 +399,8 @@ multica.session-resume-failed   // 续跑时 ACP session 已失效（strict_cont
      → { "token": "mul_..." }（明文仅此一次）；JWT 用完即弃，不落盘
 ⑦ GET <MULTICA_BASE_URL>/api/workspaces (Bearer mul_...)  拉取用户在 server 的所有 workspace
      → 为空：提示先在 multica web 建 workspace（multica.workspace-empty）
-     → 否则进入【添加工作空间】：**从下拉列表选一个未添加的远程 workspace** → 为其选 ACP provider（默认 claude-acp）+ 用 folder picker 选一个本地目录绑定（非 git 警告不阻断）→ register（用该 provider，取回 runtime_id）→ 写入 desktop_multica_workspaces（带 provider + local_project_id，本地目录同步进 conversation_workspaces）；若为首个 workspace 则设为 active
-⑧ 持久化 PAT + workspaces 列表（含 provider + local_project_id 绑定）+ active_workspace_id（SettingsConfig 明文）+ 一个稳定 daemon_id（首启生成 UUID 后持久化，register/心跳/claim 全程复用）
+     → 否则进入【添加工作空间】（M5-z：**只收远程工作空间 + provider 两个下拉**）：**从下拉列表选一个未添加的远程 workspace** → 为其选 ACP provider（默认 claude-acp）→ register（用该 provider，取回 runtime_id）→ 写入 desktop_multica_workspaces（**只带 provider，不带本地目录**——本地目录在每次执行时由 composer 下拉选，见下「执行时落地」）；若为首个 workspace 则设为 active
+⑧ 持久化 PAT + workspaces 列表（**只含 provider，不含本地目录绑定**）+ active_workspace_id（SettingsConfig 明文）+ 一个稳定 daemon_id（首启生成 UUID 后持久化，register/心跳/claim 全程复用）
 ⑨ 新添加的 workspace 已在 ⑦ register；此后每次启动遍历已添加列表全量 register（见下「workspace」段）
 ⑩ 此后所有请求统一用 Authorization: Bearer <mul_...>
    PAT 临期(<7天)调 POST /api/tokens/current/renew 续期（原串不变，顺延 90 天）
@@ -393,15 +408,17 @@ multica.session-resume-failed   // 续跑时 ACP session 已失效（strict_cont
 
 **安全边界**：localhost callback 是 Multica CLI 同款机制，回调地址由 Multica Web 白名单校验（仅 localhost / 127.0.0.1 / RFC1918 私网，见 `validateCliCallback`），不会把 token 回跳到任意公网域名；临时 server 仅监听本机环回、登录完成后立即关停。登录本身走 Multica 原生邮箱/OAuth，凭证只在浏览器与 Multica Web 之间流转，码灵只接收一次性 JWT 再换 PAT，**全程不接触用户邮箱密码**。
 
-**workspace：添加 = 选远程 + 选本地目录 + 绑定 + register**：`multica_workspaces` 是用户从 server **主动添加并绑定本地目录**的 workspace 子集（≠ server 全量），外加 active 指针。**切换 active 是纯 UI 视图切换，不触发 register、也不切换执行目录**（执行目录由 task 所属 workspace 的绑定决定，与 active 无关）。register 只在两个时机发生：
-- **新添加 workspace 时**（**唯一入口：会话侧栏远程任务列表的常驻【添加工作空间】**）：① `GET /api/workspaces` 拉 server 全量（去除已添加的）→ **从下拉列表选一个要添加的远程 workspace**（每次只添加一个，可重复操作添加多个）；② 为该 workspace **选一个 ACP provider**（下拉来自码灵已配置 provider 列表，默认 `claude-acp`；选定后不可变）+ 用 folder picker 选一个本地目录（复用会话模式 `add_conversation_workspace`，取回 `project_id`；**非 git 目录给警告但不阻断**）；③ 写入 `desktop_multica_workspaces`（带 `provider` + `local_project_id`，本地目录同步进 `conversation_workspaces`）；④ 用同一持久化 `daemon_id` + 该 workspace 的 `provider` 调 register（幂等，取回 runtime_id 并缓存）。**每个 workspace 恰好一个 provider = 一个 runtime**（要换 provider = 换 runtime 行，需在 web 重绑 agent）。
-  > **添加入口形态（对齐本地任务列表）**：远程任务列表常驻一个【添加工作空间】行（Plus 图标，连接态始终可见，与本地 `ConversationSidebar` 末尾添加入口同形），点击弹**模态对话框**——内含「远程工作空间」下拉（`listServerMulticaWorkspaces` 数据源，过滤掉已绑定）+「provider」下拉（claude-acp/codex-acp）+「绑定本地目录」按钮（点击弹系统文件资源管理器选目录，选中后显示路径、可改选）+ 底部【添加】（三项齐全才可点）。文件目录选择经共享前端原语 `pickLocalDirectory()`（Tauri `@tauri-apps/plugin-dialog` `open({directory:true})`，浏览器态返回 null），**显式作为可见按钮**而非藏在 `addMulticaWorkspace` 内部黑盒——故 `addMulticaWorkspace(workspaceId, name, provider, localPath)` / `rebindMulticaWorkspace(workspaceId, localPath)` 均接收显式 `localPath` 入参。**设置页 multica 区块不再保留添加行**（开发阶段破坏式更新：删除旧入口/旧字段/旧消费路径，不留灰度/fallback），设置页只留配置 + 已绑定工作空间的管理（激活/改绑/删除）。仅会话模式（新 UI）有此入口。
+**workspace：添加 = 选远程 + 选 provider + register（M5-z：本地目录改为执行时选）**：`multica_workspaces` 是用户从 server **主动添加**的 workspace 子集（≠ server 全量），**每条只绑 provider、不绑本地目录**，外加 active 指针。**切换 active 是纯 UI 视图切换，不触发 register、也不切换执行目录**（执行目录由该次任务自己的 `local_project_id` 决定，与 workspace 绑定无关）。register 只在两个时机发生：
+- **新添加 workspace 时**（**唯一入口：远程任务管理页的常驻【添加工作空间】**）：① `GET /api/workspaces` 拉 server 全量（去除已添加的）→ **从下拉列表选一个要添加的远程 workspace**（每次只添加一个，可重复操作添加多个，name 从 server 列表取）；② 为该 workspace **选一个 ACP provider**（下拉来自码灵已配置 provider 列表，默认 `claude-acp`；选定后不可变）；③ 写入 `desktop_multica_workspaces`（**只带 `provider`，不带 `local_project_id`**）；④ 用同一持久化 `daemon_id` + 该 workspace 的 `provider` 调 register（幂等，取回 runtime_id 并缓存）。**每个 workspace 恰好一个 provider = 一个 runtime**（要换 provider = 换 runtime 行，需在 web 重绑 agent）。**不再有 folder picker / `pickLocalDirectory` / `rebindMulticaWorkspace`**（M5-z 全链路删除，无兼容层）。
+  > **添加入口形态（M5-z 后）**：远程任务管理页（`MulticaTaskManagementPage`）常驻一个【添加工作空间】行（Plus 图标，连接态始终可见），点击弹**模态对话框 `MulticaAddWorkspaceDialog`**——内含「远程工作空间」下拉（`listServerMulticaWorkspaces` 数据源，过滤掉已添加）+「provider」下拉（claude-acp/codex-acp）+ 底部【添加】（两项齐全才可点）；**不再有「绑定本地目录」按钮**。`addMulticaWorkspace(workspaceId, workspaceName, provider)`（三参，无 localPath）。**设置页 multica 区块不再保留添加行**（开发阶段破坏式更新：删除旧入口/旧字段/旧消费路径，不留灰度/fallback），设置页只留配置 + 已添加工作空间的管理（激活/删除；**rebind 已删除**）。仅会话模式（新 UI）有此入口，工作台（旧 UI）不做双胞胎。
 - **客户端启动时**：遍历 `desktop_multica_workspaces` 已添加列表，**逐个 register**（全量刷新 runtime_id 缓存，recover-orphans 依赖每个 workspace 的 runtime_id）。
 - register 幂等 ⇒ 同一 workspace 无关添加/启动次数，runtime_id 永远稳定：
   - 该 workspace **已绑过 agent** → runtime_id 不变 → **直接复用，无需重绑**；
   - 该 workspace **首次 register**（新 runtime 行）→ 需管理员在 multica web 绑 agent。
-- **绑定关系与执行落点**：`multica_workspaces[i].local_project_id` → 在 `conversation_workspaces` 查 `workspace_path`（复用 `workspace_entry_for_project` 查表，`conversation_workspace.rs:24`）。一个 multica workspace 只能绑一个本地目录（`local_project_id` 在 `multica_workspaces` 内唯一）；本地目录可被多个 multica workspace 复用（同一份代码服务多个团队）。支持「重新绑定」（换本地目录）。**执行时**：claim 的 task 所属 workspace → 查 `local_project_id` → 查 `workspace_path` → 构造绑定该目录的 App 实例 → `create_task_from_requirement`(requirement 作首轮 prompt) + `run_start_background`（按该 workspace 选定的 provider 编码进 Direct WorkflowDsl，见 3.2.2 执行映射）；**一个 task ↔ 一个本地 task**，断点续跑见 3.2.7。
-- 远程任务列表**形态复用本地 `ConversationSidebar` 同一骨架**：左侧 multica workspace 分组（sticky header）→ 每个 workspace 下展开该 workspace 的 queued 任务列表 → 末尾【添加工作空间】（不限于 active，每个 workspace 一组、按各自 runtime_id + `X-Workspace-ID` 拉取 queued）；**失败可重试任务与 queued 同列混排**，仅多一个 `retryable` 标记 + 【rerun】入口（数据源：远程 queued + 本地 `multica_pending_issues` 未完成 issue）；**执行目录与 provider 由 task 所属 workspace 的绑定决定，与 active 视图无关**。active 仅影响默认展开/高亮哪一组。
+- **执行时落地（M5-z 核心机制，claim-at-click → 执行时落地）**：在远程任务管理页点 play → `claimMulticaTask` 领取（后端登记 45s prepare lease，常驻心跳续期）→ 预填 composer（正文 + multica 绑定 `{remoteTaskId, workspaceId}`，**不含 localProjectId**）→ 落到 conversation-home。App 预选最近活跃本地工作区（`activeWorkspaceId ?? lastActiveWorkspaceId`），composer **强制显示本地工作区下拉**（即便只有 1 个，只要 multica 绑定激活就强制显示），用户可改；改工作区时**保留 multica 绑定与预填正文**。点击发送 → `startMulticaConversationRun`（用下拉选中的 `projectId`）→ 该远程任务出现在本地侧栏对应工作区。**0 个本地工作区时** composer 显示「请先添加本地工作空间」引导并禁用发送。`local_project_id` 写入 `ActiveRemoteRun`，执行/作废路径用 `workspace_entry_for_project(&home_state, &run.local_project_id)` 解析 `workspace_path` → 构造绑定该目录的 App 实例 → `create_task_from_requirement`(requirement 作首轮 prompt) + `run_start_background`（按该 workspace 选定的 provider 编码进 Direct WorkflowDsl，见 3.2.2 执行映射）；**一个 task ↔ 一个本地 task**，断点续跑见 3.2.7。**同一个远程 workspace 可在不同本地目录重复执行**（每次执行由 composer 下拉选不同本地工作区，各自独立落地）。
+- 远程任务管理页**形态独立成页**（M5-z）：`MulticaTaskManagementPage`（路由 `/chat/multica-tasks`）镜像 `MulticaRemoteTaskList`——左侧 multica workspace 分组（sticky header）→ 每个 workspace 下展开该 workspace 的 queued 任务列表 → 末尾【添加工作空间】（不限于 active，每个 workspace 一组、按各自 runtime_id + `X-Workspace-ID` 拉取 queued）；**失败可重试任务与 queued 同列混排**，仅多一个 `retryable` 标记 + 【rerun】入口（数据源：远程 queued + 本地 `multica_pending_issues` 未完成 issue）；**provider 由 task 所属 workspace 决定；本地工作目录由该次任务自己的 `local_project_id` 决定**，与 active 视图无关。active 仅影响默认展开/高亮哪一组。
+- **页头 UX（M5-aa）**：页头右侧含「任务来源」下拉（i18n `multica.taskManagement.source.label`，当前唯一项 Multica，由 `REMOTE_TASK_SOURCES` 配置数组驱动、页级 `source` state 作渲染分流唯一键，为未来多来源接入保留切换位）+ 副标题 `multica.taskManagement.subtitle`「查看并执行远程任务」（M5-ab 再精简：页头「任务来源」下拉已点名来源，副标题不再重复 "multica" 限定词；原尾部关于执行时选本地目录的半句早已删除——该流程已被 claim-at-click → composer 覆盖）；列表区内右侧常驻手动刷新按钮（`RotateCw` ghost 图标，`aria-label="common.refresh"`，`refreshing` 态驱动 `animate-spin`，调与 mount/事件订阅同源的 `fetchTasks()`）；状态词以有色 Badge 呈现，色调按看板词汇锁定并由导出常量 `MULTICA_STATUS_TONE` 集中管理（待办=灰 / 进行中=黄 / 已完成=绿 / 失败=红），`queued` 文案对齐看板列为「待办」（码灵作为 daemon 直接驱动 board issue.status，本地任务生命周期与看板词汇 1:1，不再用暗示独立「领取」中间态的旧词）。
+- **列表视觉/层级系统（M5-ab，统一一次做完非补丁）**：workspace→任务树状列表建立一致的间距节奏与层级表达——**workspace 分组头**=可折叠容器（统一 `ChevronDown` 折叠箭头规格 + 名称左侧 `Server` 图标标识「工作空间容器行」+ 名称右侧轻量任务计数 `（N个任务）`/`(N tasks)`，仅在该工作空间有任务时显示 + 整行 `rounded-md hover:bg-muted/40` 容器 hover 底色）；**任务行**=其下叶子节点（标题 14px font-medium 主文本、Badge 居左 + 时间戳 `ml-auto` 推右、相对组头统一缩进）；组间距 `mb-2` 加大、任务间距 `space-y-0.5`、水平 padding 组头 `px-1.5`/任务行 `px-2` 对齐；组内空状态居中带垂直留白（`px-2 py-4 text-center`），文案「该工作空间下暂无远程任务」明确所属与对象。pinned 失败段同规格（折叠箭头 + hover 底色 + 间距），但非 workspace 故不加 Server 图标。「服务器图标 = workspace 容器行 / 无图标 = 任务叶子行」一眼可读。
 
 **PAT 串号防护**：换机器/换账号重连时强制重新走浏览器登录 + mint PAT、不复用前任 PAT。
 
@@ -539,7 +556,7 @@ start_multica_conversation_run(...)   # Req D：未单列 resume_multica_task �
 **C6. 完成** ✅
 - `POST /api/daemon/tasks/{taskId}/complete` ｜ PAT
 - 请求：`{ "output": "<末轮产物摘要>", "session_id": "<ACP session_id>", "work_dir": "..." }`（后两个可选）
-- 说明：任务 → completed。带重试、幂等。`session_id` = 该会话的 ACP session_id（来自 `worker-ref.json` 的 `continue_ref.acpSessionId`，续跑依赖，故 complete 前先调 C8 `PinTaskSession` 回写）；`work_dir` 取自该 task 所属 multica workspace 绑定的本地目录（`local_project_id` → `conversation_workspaces.workspace_path`）。
+- 说明：任务 → completed。带重试、幂等。`session_id` = 该会话的 ACP session_id（来自 `worker-ref.json` 的 `continue_ref.acpSessionId`，续跑依赖，故 complete 前先调 C8 `PinTaskSession` 回写）；`work_dir` 取自该任务**任务级** `ActiveRemoteRun.local_project_id` → `conversation_workspaces.workspace_path`（M5-z：绑定下沉到任务级，不再走 workspace 级 `local_project_id`）。
 
 **C7. 失败** ❌
 - `POST /api/daemon/tasks/{taskId}/fail` ｜ PAT
@@ -582,7 +599,7 @@ Web    用户邮箱登录 → setLoggedInCookie → 校验 cli_callback 白名�
 App    收 JWT → 向浏览器回 302 → Web 根（带 cookie 落 multica web 登录态）→ 关 callback server → POST /api/tokens (Bearer JWT) → PAT（本地持久化）；JWT 用完即弃
 App    ──POST /api/daemon/register {daemon_id,...}──▶ Srv ──▶ runtime_id（每添加的 workspace 一次）
 管理员 ──Web UI 建 agent，runtime 绑本机──▶ Srv
-App    本地持久化：PAT / daemon_id / workspaces(含 local_project_id+provider) / active_workspace_id
+App    本地持久化：PAT / daemon_id / workspaces(只含 provider，本地目录执行时选) / active_workspace_id
 
 ━━━ 每次启动 ━━━
 App ──GET /api/me──▶ Srv   校验 PAT（无效则回到「一次性准备」的浏览器登录）
@@ -602,7 +619,7 @@ App    本地记 multica_task_conversations[task_id] + prepare_leases[task_id]�
 ━━━ 用户在 composer 选模型/模式后点【发送】（Req D：复用本地会话创建） ━━━
 App    start_multica_conversation_run：复用本地 create_conversation_run_vm 构造会话
 App ──POST /tasks/<id>/start──▶ Srv   → running（消费 prepare lease）
-App    取 workspace 绑定目录 → App::with_config(ws,config).with_lifecycle_bus(bus)
+App    取 task 级 local_project_id → 解析 workspace_path → App::with_config(ws,config).with_lifecycle_bus(bus)
        → 构造 Direct WorkflowDsl（gold_band::dsl::presets，provider 编码进 Worker 节点）
        → create_task_from_requirement(content=requirement)（首轮 prompt = requirement.md，不走 submit）
        → run_start_background(task_id)（后台驱动单节点工作流）
@@ -676,7 +693,7 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
 - [x] **M1 · 配置层**（开发设计 2.1 / 2.2）✅
   - [x] `src/config/mod.rs`：`SettingsConfig` 加 `desktop_multica_enabled/_base_url/_app_url/_pat/_daemon_id/_workspaces/_active_workspace_id/_default_provider`（全 `Option<T>`，PAT 明文存储、永不回显只暴露 `pat_set`）
   - [x] `RuntimeConfig` + `apply_settings` 三层映射（`default_provider` 缺省 `claude-acp`）
-  - [x] `MulticaWorkspaceRef { id, name, slug, local_project_id, provider }`（provider 绑定后不可变）
+  - [x] `MulticaWorkspaceRef { id, name, slug, provider }`（**M5-z：删除 `local_project_id`**，绑定下沉到任务级——`local_project_id` 现位于 `ActiveRemoteRun` / `MulticaCompletedTask`；provider 绑定后不可变）
   - [x] `configs/channels/*.json` + `channel.rs` 编译期预填 base_url / daemon_id
 - [x] **M2 · multica client + loop**（开发设计 2.3 / 2.6）✅
   - [x] `multica/client.rs`：浏览器登录(localhost callback) → 换 PAT → 列 workspace → register → selective claim → start → 15s heartbeat → PinTaskSession → complete/fail（**只基础状态，不上报 progress step/total**）→ recover-orphans → tasks/pending → rerun / resume_multica_task（会话级续跑）；指数退避重试（终态 4/8/16/32/64s ×6，服务端幂等）；**接受 multica auto-retry**；PAT 走 `Authorization: Bearer`，**严禁日志泄露**
@@ -725,7 +742,7 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
     - **空状态自诊断**：远程下拉为空的数据链路已验证正确（`GET /api/workspaces` 返裸数组 `[{id,name,slug,...}]`，`WorkspaceInfo{id,name}` 字段匹配、多余字段忽略、形状不匹配会报错而非返空）——故「下拉空且无报错」即 server 真返 `[]`。下拉为空时按 `serverWorkspaces.length===0`（去 multica Web 创建）vs `available.length===0`（全部已绑定）两态显示提示文案，不再静默空列表（i18n `noServerWorkspaces`/`allWorkspacesBound` 中英双语）。
     - 验证：tsc 源码零错误，`multica-add-workspace-dialog.test.tsx` 2/2 过，i18n 中英双语补 `noServerWorkspaces`/`allWorkspacesBound`。
   - [x] **M5-k**（本轮）绑定后任务列表/设置页不显示 + 即时可用（三缺陷同修）：
-    - **① 渲染 bug**：`MulticaRemoteTaskList` 原 `hasAnyTasks` 总开关 + 组内 `if(!tasks.length) return null`，把「已绑定但暂无任务 / 未 register」的 workspace 整组隐藏并回退「暂无会话」。改为始终按 `vm.workspaces` 成组展示，空组显「暂无任务」（`noTasksInWorkspace`），仅「无任何绑定」才 `noWorkspacesBound`——绑定后即便 0 任务也看得到工作空间。
+    - **① 渲染 bug**：`MulticaRemoteTaskList` 原 `hasAnyTasks` 总开关 + 组内 `if(!tasks.length) return null`，把「已绑定但当前无任务 / 未 register」的 workspace 整组隐藏并回退「暂无会话」。改为始终按 `vm.workspaces` 成组展示，空组显组内空状态文案（`noTasksInWorkspace`，M5-ab 起居中带垂直留白），仅「无任何绑定」才 `noWorkspacesBound`——绑定后即便 0 任务也看得到工作空间。
     - **② 设置页不刷新（非数据 bug，根因澄清）**：`get_multica_settings` 与 `get_multica_tasks` 读**同一份** RuntimeConfig；下拉能过滤已绑定 workspace 即证数据已落，设置页「显示空」纯因它只在 mount 时 fetch 一次、不订阅事件，绑定发生在任务列表弹窗里收不到通知。新增 `gold-band://multica-settings-updated` 事件（语义=连接/workspace 配置变更，区别于任务生命周期的 `multica-task-updated`），connect/disconnect/save/add/rebind/remove/set_active 统一 emit（connect/disconnect 自 task-updated 迁入），任务列表（订阅 task+settings）+ 设置页（订阅 settings）任一处改动两端同步 re-fetch。
     - **③ register-on-add（绑定即可用）**：register 原仅启动全量跑一次，`add_multica_workspace` 只落配置 → 绑定后须重启才有 runtime_id（任务拉不到、不能 claim）。改为 `add_multica_workspace` async，绑定后即时 `register_workspace_best_effort`（复刻 loop 单 workspace 注册，取回 runtime_id 缓存 `SharedMulticaState`，失败非致命、启动 loop 兜底）。
     - 验证：cargo check 过 + 52 multica 后端单测全过，tsc 零错误，新增 `multica-remote-task-list.test.tsx` 3 用例（空任务显 workspace 组 / 未连接显连接入口 / 订阅两事件）+ 既有 dialog 2 用例共 5 过，i18n 双语补 `noTasksInWorkspace`。
@@ -829,8 +846,43 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
 - [x] **M5-y**（本轮）改动七：执行中的远程任务在侧栏可见（开发设计 §12.9）：
   - **背景**：码灵点远程任务开始执行后，该任务从左侧远程列表消失，直到结束才回来；用户希望执行中任务也展示，标识区分（进行中）。
   - **根因（实现不完整）**：`get_multica_tasks` 列表只有 pending（server queued）+ terminal（本地 completed_tasks）两个来源；"正在执行"的任务处在 `active_runs`（已领取、未终态），落进空档消失。前端早预留 running（`STATUS_VARIANT` / `canCancel`），后端从不产出 running 行。同源缺：start 成功路径不发 `multica-task-updated`（侧栏不即时刷新）；徽标渲染原始 `{task.status}`（无 i18n）。
-  - **修复（纯客户端，无 webank server 改动）**：`vm.rs` 新增 `from_active_run`（running 行 + 本地链接 + started_at→last_activity_at）；`get_multica_tasks` 单次取锁取 active_runs running 行并入 workspace 组，`merge_workspace_tasks` 升三参 running/pending/terminal（running 优先去重）；`start_multica_conversation_run` 成功路径补 `emit_multica_task_updated` 让 running 行即时刷出；徽标改 i18n `status.{queued,running,completed,failed}`（zh 待领取/进行中/已完成/失败）。
+  - **修复（纯客户端，无 webank server 改动）**：`vm.rs` 新增 `from_active_run`（running 行 + 本地链接 + started_at→last_activity_at）；`get_multica_tasks` 单次取锁取 active_runs running 行并入 workspace 组，`merge_workspace_tasks` 升三参 running/pending/terminal（running 优先去重）；`start_multica_conversation_run` 成功路径补 `emit_multica_task_updated` 让 running 行即时刷出；徽标改 i18n `status.{queued,running,completed,failed}`（zh 待办/进行中/已完成/失败，M5-aa 起 queued 文案对齐看板列名「待办」、替换原暗示中间态的旧词）。
   - **验证**：`cargo test -p gold-band-desktop multica::` **76 测全过**（+`from_active_run_*`；merge 用例改三参）；web vitest `multica-remote-task-list` **9 用例全过**（+running 行渲染/点击/Cancel）；tsc 零错误。**无需 webank server 改动**。
+
+- [x] **M5-z**（本轮）绑定模型下沉到任务级 + 远程任务管理独立页（重构）：
+  - **背景**：原设计「添加工作空间时一次绑定本地目录（workspace 级 `local_project_id`）+ rebind 改绑 + 侧栏本地/远程 toggle」三件套。问题：同一远程 workspace 想换本地目录执行必须先 rebind（割裂）；远程任务挤在会话侧栏 segmented toggle 里（与本地任务列表争抢侧栏空间、视觉混乱）；workspace 级绑定把「团队边界」与「执行目录」过早耦合。属设计层面需重构（CLAUDE.md：宁愿多付成本修设计缺陷）。
+  - **核心：绑定模型下沉到任务级**：
+    - `MulticaWorkspaceRef` 结构**移除 `local_project_id` 字段**（只剩 `id, name, slug, provider`）。远程 workspace 在「添加工作空间」时**只绑 provider**。
+    - 本地工作目录推迟到**每次执行时**由 composer 下拉选择；选中的本地工作区在发送时随 `start_multica_conversation_run` 写入任务级生命周期结构：**`ActiveRemoteRun` 和 `MulticaCompletedTask` 各自新增 `local_project_id` 字段**。
+    - 删除 `binding_for_multica()` 查找函数（原 workspace → `local_project_id` → `conversation_workspaces.workspace_path`）。`invalidate_remote_task` 改为直接用 `workspace_entry_for_project(&home_state, &run.local_project_id)` 解析路径（任务自带本地目录）。
+  - **删除 rebind 全链路（破坏式更新，无兼容层）**：命令 `rebind_multica_workspace`、API 四层（client.ts/desktop.ts/browser.ts/api.ts）的 `rebindMulticaWorkspace`、前端 `handleRebind` 全部删除。`add_multica_workspace` 命令签名去掉本地目录参数（只剩 `workspace_id + provider`；name 从 server 列表取）。前端 `addMulticaWorkspace(workspaceId, workspaceName, provider)` 三参。
+  - **添加工作空间弹窗**：`MulticaAddWorkspaceDialog` 只收「远程工作空间 + provider」两个下拉，不再有本地目录 folder picker、不再调 `pickLocalDirectory`。
+  - **侧栏去本地/远程 toggle，独立成页**：会话侧栏 (`ConversationSidebar`) 移除「本地/远程」切换 UI（删 `localTab`/`remoteTab` 文案），侧栏纯本地任务。multica 远程任务管理改为**独立的「远程任务管理」整页**（新页面 `MulticaTaskManagementPage`、新路由 `/chat/multica-tasks`，与 agent 管理/上下文管理/运行模式管理 并列的导航项，icon=Globe），内容镜像 `MulticaRemoteTaskList`。仅会话模式（新 UI）有此页，工作台（旧 UI）不做双胞胎。
+  - **composer 执行时选本地工作区（claim-at-click → 执行时落地）**：在远程任务管理页点 play → `claimMulticaTask` 领取（后端登记 45s prepare lease，常驻心跳续期）→ 预填 composer（正文 + multica 绑定 `{remoteTaskId, workspaceId}`，**不含 localProjectId**）→ 落 conversation-home。App 预选最近活跃本地工作区（`activeWorkspaceId ?? lastActiveWorkspaceId`），composer **强制显示本地工作区下拉**（即便只有 1 个，只要 multica 绑定激活就强制显示），用户可改；改工作区时**保留 multica 绑定与预填正文**。点击发送 → `startMulticaConversationRun`（用下拉选中的 `projectId`）→ 该远程任务出现在本地侧栏对应工作区。
+    - 边界：当 0 个本地工作区时，composer 显示「请先添加本地工作空间」引导并禁用发送。
+  - **i18n**：新增 `multica.taskManagement.{title,subtitle}`、`conversation.sidebar.multicaTaskManagement`、`conversation.composer.multicaNeedLocalWorkspace`（中英双语）；删除已失效的 `conversation.sidebar.multica.localTab/remoteTab`、dialog 目录相关 key（bindDirectory/changeDirectory/directoryPlaceholder/needDirectory）、`settings.multica.{connecting,disconnecting,connected,disconnected,addWorkspace,selectServerWorkspace,selectProvider,selectFolder,rebind,notGitWarning}`。
+  - **验收标准**（已固化）：① 远程 workspace 添加只收 provider；本地目录执行时选。② 同一个远程 workspace 可在不同本地目录重复执行（每次执行独立落地）。③ 侧栏纯本地；远程任务在独立整页管理。④ claim-at-click：点 play 即领取 + 预填，发送才真正 start。⑤ rebind 全链路删除，无兼容层（开发阶段破坏式更新）。
+
+- [x] **M5-aa**（本轮）远程任务管理页 5 项前端打磨（看板词汇对齐 + 状态色调徽章 + 手动刷新 + 副标题精简 + 任务来源下拉，纯前端无 Rust 改动）：
+  - **心智**：码灵作为 multica Daemon 角色，自身即驱动 board issue.status（start 时 in_progress、complete 时 done），故本地任务生命周期与 multica 看板词汇 1:1 对应——canonical 状态 `queued|running|completed|failed` 的展示文案直接采用看板词汇。
+  - **① 状态词汇对齐看板**：`queued` 旧文案暗示独立的「领取」中间态（与 claim-at-click 语义冲突），现对齐看板列名为「待办」（Todo）；`running=进行中`/`completed=已完成`/`failed=失败` 不变。后端 canonical 状态不变，仅改 canonical→display 文案映射（i18n `conversation.sidebar.multica.status.queued` zh「待办」/ en「Todo」，替换原暗示中间态的旧词），不读看板实时状态。
+  - **② 状态色调徽章（`MULTICA_STATUS_TONE`）**：状态词以有色 Badge 呈现，色调按看板词汇锁定并集中管理为导出常量 `MULTICA_STATUS_TONE: Record<string, string>`（`web/src/components/conversation/MulticaRemoteTaskList.tsx`）：`queued`=灰（`bg-muted text-muted-foreground`）/ `running`=黄（`bg-amber-500/15 text-amber-600 dark:text-amber-300`）/ `completed`=绿（`bg-emerald-500/15 text-emerald-600 dark:text-emerald-300`）/ `failed`=红（`bg-destructive/15 text-destructive`）；每个 canonical status 一个 tone class，经 `Badge` className 应用（杜绝硬编码），缺键回退 `queued` 灰。
+  - **③ 手动刷新**：`MulticaRemoteTaskList` 顶部右侧新增 ghost 图标按钮（`RotateCw`，`aria-label={t('common.refresh')}`，Tooltip 同文案），点击调既有 `fetchTasks()`（getMulticaTasks，与 mount 和 `multica-task-updated`/`multica-settings-updated` 事件订阅同源）；`refreshing` 态驱动 `animate-spin` 并 disable 按钮（不复用 `loading`——loading 会用整屏 spinner 替换列表）。免切走/重进即可拉最新任务列表。
+  - **④ 副标题精简**：`multica.taskManagement.subtitle` 删除原尾部关于「执行时选本地目录」的赘述半句（该语义已被 claim-at-click → composer 执行时选本地工作区流程覆盖，副标题不再赘述实现细节）。**M5-ab 进一步删除 "multica" 限定词**（页头「任务来源」下拉已点名来源），最终副标题见 M5-ab。
+  - **⑤ 任务来源下拉（多来源切换位）**：远程任务管理页页头新增「任务来源」Select（i18n `multica.taskManagement.source.label` zh「任务来源」/ en「Task source」），当前唯一项 Multica（`multica.taskManagement.source.multica`）。页级 `source` state 是渲染分流唯一键（`source === 'multica' ? <MulticaRemoteTaskList/> : null`），由 `REMOTE_TASK_SOURCES` 配置数组（`web/src/pages/MulticaTaskManagementPage.tsx`）驱动；新增来源 = 向数组加一项 + body 按 `source` 分支渲染（各来源自带数据/刷新）。本期仅落地 multica，切换位为未来多来源接入保留。
+  - **验证**：纯前端，无 Rust/webank server 改动；i18n 中英双语同步（`status.queued` zh「待办」/en「Todo」、`multica.taskManagement.subtitle` 精简、`multica.taskManagement.source.{label,multica}` 新增、`common.refresh` 复用既有）。
+
+- [x] **M5-ab**（本轮）远程任务列表「树形视觉/层级系统」统一打磨（组头图标统一 + 工作空间图标 + 任务计数 + 组头 hover 底色 + 分组间距 + 任务行排版 + 空状态 + 间距系统统一，纯前端无 Rust 改动）：
+  - **心智（统一一次做完，非 8 个补丁）**：远程任务管理页 workspace→任务树状列表此前各项视觉参数（图标尺寸/颜色、组头 hover、组间距、任务行排版、空状态）散落各自一套、未成体系。本轮作为一次统一的「树形视觉/层级系统」打磨：组头 = 可折叠的 workspace 容器（Server 图标 + 名称 + 任务计数），任务行 = 其下的叶子节点（标题为主、元信息为辅），通过统一水平缩进、垂直节奏、hover 反馈让「workspace 容器 vs 任务叶子」层级一眼可读。仅 `MulticaRemoteTaskList.tsx`（会话模式远程任务管理页）改动，工作台/旧 UI 与本地侧栏不受影响。
+  - **① 副标题再精简**：`multica.taskManagement.subtitle` 在 M5-aa 版（已删尾部实现细节赘述）基础上**进一步删除 "multica" 限定词**，再精简为「查看并执行远程任务」/ "View and run remote tasks"——页头「任务来源」下拉已点名来源（当前唯一项 Multica），副标题不再重复 "multica" 限定词（UI 不展示冗余信息）。
+  - **② 组头图标统一 + 工作空间图标**：workspace 分组头与 pinned 分组头采用**统一折叠箭头规格**（`ChevronDown` size-3.5 text-muted-foreground，旋转表达展开/折叠）；workspace 名称左侧新增 `Server` 图标（lucide，同 size-3.5 text-muted-foreground）——「服务器图标 = workspace 容器行」与下方「无图标 = 任务叶子行」形成视觉区分；pinned 段不是 workspace、不加 Server 图标。
+  - **③ 任务计数**：workspace 名称右侧展示轻量任务计数 `（N个任务）`/`(N tasks)`（i18n 新键 `conversation.sidebar.multica.taskCount`，text-[11px] text-muted-foreground），仅在该 workspace 有任务时显示（0 任务由空状态文案表达，避免冗余）。
+  - **④ 组头 hover 底色**：workspace 分组头与 pinned 分组头由「仅文字变色」升级为整行 `rounded-md` + `hover:bg-muted/40`（+ transition-colors）——组头有明确 hover 底色容器感，与下方任务行清晰区分。
+  - **⑤ 分组间距加大**：workspace 分组之间垂直间距 mb-1 → mb-2，pinned 段对齐——分组之间块感更强。
+  - **⑥ 任务行排版**：标题保持 14px（侧栏密度上限）并用 font-medium + 全强前景色强调为主文本；元信息行 Badge 居左、时间戳 ml-auto 推右（对齐本地侧栏时间戳规格，明确为辅助信息）；整行保留 hover:bg-muted/40；任务列表容器统一 pl-2 缩进——任务行相对组头统一缩进，层级更清。
+  - **⑦ 空状态文案 + 样式**：组内空状态文案由旧的两词简短文案（语义模糊、不点明所属与对象）改为「该工作空间下暂无远程任务」/ "No remote tasks in this workspace yet"（明确所属=工作空间、对象=远程任务）；样式由贴左 px-2 py-1 改为**居中带垂直留白** px-2 py-4 text-center——不再单薄贴左。
+  - **⑧ 间距系统统一（统一以上各项的根设计）**：标准化整树水平 padding 与垂直节奏——水平 padding：组头 px-1.5、任务行 px-2（对齐、内容不再贴容器边）；垂直节奏：header(刷新工具栏)↔树 space-y-2、组↔组 mb-2、任务↔任务 space-y-0.5、组头↔其任务 mt-0.5。
+  - **验证**：纯前端（无 Rust / 无 webank server 改动）；i18n 中英双语同步（`multica.taskManagement.subtitle` 再精简、`conversation.sidebar.multica.taskCount` 新增、`conversation.sidebar.multica.noTasksInWorkspace` 文案更新）；vitest 19/19 全过、tsc 零错误。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin};
+use std::process::ChildStdin;
 use std::sync::{
     Arc, Condvar, LazyLock, Mutex, MutexGuard,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -19,7 +19,7 @@ use crate::acp::elicitation::cancel_pending_elicitation_requests;
 use crate::acp::events::{append_raw_frame, current_timestamp};
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::AcpAdapterConfig;
-use crate::process::kill_process_tree;
+use crate::process::{ManagedProcessGroup, PROCESS_GROUP_TERMINATION_GRACE};
 use crate::storage::{ensure_parent_dir, read_json, write_json};
 
 const CLOSE_RAW_MAX_SIZE: u64 = 5 * 1024 * 1024;
@@ -746,7 +746,7 @@ pub struct AdapterConnection {
     key: Option<AdapterConnectionKey>,
     adapter: ResolvedAcpAdapter,
     signature: AdapterConfigSignature,
-    child: Mutex<Child>,
+    child: Mutex<ManagedProcessGroup>,
     stdin: Mutex<ChildStdin>,
     next_id: Mutex<u64>,
     pending: Mutex<HashMap<u64, PendingRequestSender>>,
@@ -817,16 +817,13 @@ impl AdapterConnection {
             require_local_claude_executable,
         )?;
         let stdin = child
-            .stdin
-            .take()
+            .take_stdin()
             .ok_or_else(|| anyhow!("failed to capture ACP adapter stdin"))?;
         let stdout = child
-            .stdout
-            .take()
+            .take_stdout()
             .ok_or_else(|| anyhow!("failed to capture ACP adapter stdout"))?;
         let stderr = child
-            .stderr
-            .take()
+            .take_stderr()
             .ok_or_else(|| anyhow!("failed to capture ACP adapter stderr"))?;
         let connection = Arc::new(Self {
             key,
@@ -1289,13 +1286,8 @@ impl AdapterConnection {
         if let Ok(mut stdin) = self.stdin.lock() {
             let _ = stdin.flush();
         }
-        let pid = self.pid();
-        if pid != 0 {
-            let _ = kill_process_tree(pid);
-        }
         if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.terminate(PROCESS_GROUP_TERMINATION_GRACE);
         }
     }
 }

@@ -1,4 +1,15 @@
-import type { ConversationPage, ConversationRunVm } from '@/types';
+import type { ConversationPage, ConversationRunVm, InterventionNavigateEventVm } from '@/types';
+
+export function conversationPageForIntervention(
+  event: InterventionNavigateEventVm,
+): Extract<ConversationPage, { kind: 'conversation-run' }> {
+  return {
+    kind: 'conversation-run',
+    projectId: event.projectId,
+    taskId: event.taskId,
+    runId: event.runId,
+  };
+}
 
 export function conversationPageMatchesRun(
   page: ConversationPage,

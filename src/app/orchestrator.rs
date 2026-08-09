@@ -1769,6 +1769,7 @@ fn emit_run_paused_lifecycle_event(
     let reason = run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted);
     app.emit_lifecycle_event(RuntimeLifecycleEvent::RunPaused {
         event_id: super::notification::make_dedup_key(
+            &app.paths.project_id,
             &run.id,
             &round.id,
             &node.node_id,
@@ -1776,6 +1777,7 @@ fn emit_run_paused_lifecycle_event(
             reason,
         ),
         occurred_at: now_rfc3339_like(),
+        project_id: app.paths.project_id.clone(),
         task_id: task_id.to_string(),
         run_id: run.id.clone(),
         round_id: round.id.clone(),
@@ -1798,6 +1800,7 @@ fn emit_intervention_requested(
     let pause_reason = super::notification::pause_reason_for_intervention(kind);
     app.emit_lifecycle_event(RuntimeLifecycleEvent::InterventionRequested {
         event_id: super::notification::make_dedup_key(
+            &app.paths.project_id,
             &run.id,
             &round.id,
             &node.node_id,
@@ -1805,6 +1808,7 @@ fn emit_intervention_requested(
             pause_reason,
         ),
         occurred_at: now_rfc3339_like(),
+        project_id: app.paths.project_id.clone(),
         task_id: task_id.to_string(),
         run_id: run.id.clone(),
         round_id: round.id.clone(),
@@ -1826,12 +1830,14 @@ fn emit_run_completed_lifecycle_event(
 ) {
     app.emit_lifecycle_event(RuntimeLifecycleEvent::RunCompleted {
         event_id: super::notification::make_completion_dedup_key(
+            &app.paths.project_id,
             &run.id,
             &round.id,
             &node.node_id,
             &node.attempt_id,
         ),
         occurred_at: now_rfc3339_like(),
+        project_id: app.paths.project_id.clone(),
         task_id: task_id.to_string(),
         run_id: run.id.clone(),
         round_id: round.id.clone(),
@@ -1852,6 +1858,8 @@ fn emit_run_completed_lifecycle_event(
             outer_node_id: None,
             outer_attempt_id: None,
         },
+        super::direct_conversation_agent_label(app, task_id)
+            .map(|_| super::INITIAL_DIRECT_TURN_ID.to_string()),
         outcome == RunOutcome::Success,
     );
 }

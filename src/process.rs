@@ -1,22 +1,30 @@
 use anyhow::{Result, bail};
+use command_group::{CommandGroup, GroupChild};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, Stdio};
+use std::process::{
+    ChildStderr, ChildStdin, ChildStdout, Command as ProcessCommand, ExitStatus, Stdio,
+};
+use std::thread;
+use std::time::{Duration, Instant};
+use std::{collections::BTreeSet, sync::LazyLock};
 
 #[cfg(unix)]
 use std::io::{Read, Seek};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
-#[cfg(unix)]
-use std::sync::OnceLock;
-#[cfg(unix)]
-use std::time::{Duration, Instant};
-
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(unix)]
+use std::sync::OnceLock;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+pub const PROCESS_GROUP_TERMINATION_GRACE: Duration = Duration::from_secs(2);
+const PROCESS_GROUP_WAIT_INTERVAL: Duration = Duration::from_millis(20);
+static LIVE_PROCESS_GROUPS: LazyLock<std::sync::Mutex<BTreeSet<u32>>> =
+    LazyLock::new(|| std::sync::Mutex::new(BTreeSet::new()));
 
 #[cfg(unix)]
 const LOGIN_SHELL_PATH_TIMEOUT: Duration = Duration::from_secs(2);
@@ -316,8 +324,6 @@ fn run_login_shell_path(
     home: Option<&Path>,
     timeout: Duration,
 ) -> std::io::Result<Option<OsString>> {
-    use wait_timeout::ChildExt;
-
     let mut output_file = tempfile::tempfile()?;
     let child_output = output_file.try_clone()?;
     let mut command = background_command(shell);
@@ -333,10 +339,9 @@ fn run_login_shell_path(
         command.current_dir(home);
     }
 
-    let mut child = command.spawn()?;
+    let mut child = ManagedProcessGroup::spawn(&mut command)?;
     let Some(status) = child.wait_timeout(timeout)? else {
-        let _ = child.kill();
-        let _ = child.wait();
+        let _ = child.force_kill();
         return Ok(None);
     };
     if !status.success() {
@@ -435,7 +440,167 @@ pub fn apply_background_process_flags(_command: &mut ProcessCommand) {
     _command.creation_flags(CREATE_NO_WINDOW);
 }
 
-pub fn kill_process_tree(pid: u32) -> Result<()> {
+/// Owns a complete child process group (Unix) or Job Object (Windows).
+///
+/// All long-lived or piped background processes must use this wrapper so
+/// descendants cannot survive an error return while keeping stdio open.
+#[derive(Debug)]
+pub struct ManagedProcessGroup {
+    child: Option<GroupChild>,
+}
+
+impl ManagedProcessGroup {
+    pub fn spawn(command: &mut ProcessCommand) -> std::io::Result<Self> {
+        #[cfg(windows)]
+        let child = command
+            .group()
+            .kill_on_drop(true)
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()?;
+        #[cfg(not(windows))]
+        let child = command.group().spawn()?;
+
+        let id = child.id();
+        if let Ok(mut live) = LIVE_PROCESS_GROUPS.lock() {
+            live.insert(id);
+        }
+        Ok(Self { child: Some(child) })
+    }
+
+    fn child(&self) -> std::io::Result<&GroupChild> {
+        self.child.as_ref().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "process group was consumed",
+            )
+        })
+    }
+
+    fn child_mut(&mut self) -> std::io::Result<&mut GroupChild> {
+        self.child.as_mut().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "process group was consumed",
+            )
+        })
+    }
+
+    pub fn id(&self) -> u32 {
+        self.child().map(GroupChild::id).unwrap_or_default()
+    }
+
+    pub fn take_stdin(&mut self) -> Option<ChildStdin> {
+        self.child_mut().ok()?.inner().stdin.take()
+    }
+
+    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
+        self.child_mut().ok()?.inner().stdout.take()
+    }
+
+    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
+        self.child_mut().ok()?.inner().stderr.take()
+    }
+
+    pub fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        let status = self.child_mut()?.try_wait()?;
+        #[cfg(unix)]
+        if process_group_is_alive(self.id()) {
+            return Ok(None);
+        }
+        if status.is_some() {
+            self.unregister();
+        }
+        Ok(status)
+    }
+
+    pub fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        #[cfg(unix)]
+        loop {
+            if let Some(status) = self.try_wait()? {
+                return Ok(status);
+            }
+            thread::sleep(PROCESS_GROUP_WAIT_INTERVAL);
+        }
+        #[cfg(not(unix))]
+        {
+            let status = self.child_mut()?.wait()?;
+            self.unregister();
+            Ok(status)
+        }
+    }
+
+    pub fn wait_timeout(&mut self, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = self.try_wait()? {
+                return Ok(Some(status));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            thread::sleep(PROCESS_GROUP_WAIT_INTERVAL.min(remaining));
+        }
+    }
+
+    pub fn terminate(&mut self, _grace: Duration) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use command_group::{Signal, UnixChildExt};
+            let _ = self.child()?.signal(Signal::SIGTERM);
+            if self.wait_timeout(_grace)?.is_some() {
+                return Ok(());
+            }
+        }
+
+        self.force_kill()
+    }
+
+    pub fn force_kill(&mut self) -> std::io::Result<()> {
+        if let Err(error) = self.child_mut()?.kill()
+            && !matches!(
+                error.kind(),
+                std::io::ErrorKind::InvalidInput | std::io::ErrorKind::NotFound
+            )
+        {
+            return Err(error);
+        }
+        self.wait().map(|_| ())
+    }
+
+    fn unregister(&self) {
+        let id = self.id();
+        if id != 0
+            && let Ok(mut live) = LIVE_PROCESS_GROUPS.lock()
+        {
+            live.remove(&id);
+        }
+    }
+}
+
+impl Drop for ManagedProcessGroup {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.unregister();
+    }
+}
+
+#[cfg(unix)]
+fn process_group_is_alive(group_id: u32) -> bool {
+    let Ok(group_id) = i32::try_from(group_id) else {
+        return false;
+    };
+    // Signal 0 performs existence/permission checking without changing process state.
+    let result = unsafe { libc::kill(-group_id, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Best-effort cleanup for a process-group id persisted before an app crash.
+/// Live children must be stopped through `ManagedProcessGroup` instead.
+pub fn recover_persisted_process_group(pid: u32) -> Result<()> {
     #[cfg(windows)]
     {
         let status = background_command("taskkill")
@@ -450,20 +615,38 @@ pub fn kill_process_tree(pid: u32) -> Result<()> {
     #[cfg(not(windows))]
     {
         let status = background_command("kill")
-            .args(["-TERM", &pid.to_string()])
+            .args(["-TERM", &format!("-{pid}")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()?;
         if !status.success() {
-            bail!("failed to kill provider process for pid {pid}");
+            bail!("failed to recover provider process group for pgid {pid}");
         }
     }
     Ok(())
 }
 
+/// Emergency fallback used only after the bounded application cleanup expires.
+pub fn force_terminate_all_managed_process_groups() {
+    let ids = LIVE_PROCESS_GROUPS
+        .lock()
+        .map(|live| live.iter().copied().collect::<Vec<_>>())
+        .unwrap_or_default();
+    for id in ids {
+        let _ = recover_persisted_process_group(id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{merge_path_sources, paths_equal, resolved_child_path_from_sources};
+    use super::{
+        ManagedProcessGroup, merge_path_sources, paths_equal, resolved_child_path_from_sources,
+    };
     use std::ffi::OsString;
+    use std::io::{BufRead, BufReader, Read};
     use std::path::{Path, PathBuf};
+    use std::process::Stdio;
+    use std::time::Duration;
 
     #[test]
     fn path_sources_preserve_priority_and_remove_duplicates() {
@@ -540,6 +723,59 @@ mod tests {
                 Path::new("fallback-bin"),
             ]
         );
+    }
+
+    #[test]
+    fn managed_process_group_kills_descendants_and_closes_pipes() {
+        #[cfg(unix)]
+        let (program, args): (&str, Vec<&str>) = (
+            "/bin/sh",
+            vec!["-c", "(trap '' TERM; while :; do sleep 1; done) & echo $!"],
+        );
+        #[cfg(windows)]
+        let (program, args): (&str, Vec<&str>) = (
+            "powershell.exe",
+            vec![
+                "-NoProfile",
+                "-Command",
+                "$p=Start-Process ping.exe -ArgumentList '-n','60','127.0.0.1' -PassThru -WindowStyle Hidden; Write-Output $p.Id",
+            ],
+        );
+
+        let mut command = super::background_command(program);
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = ManagedProcessGroup::spawn(&mut command).unwrap();
+        let mut stdout = BufReader::new(child.take_stdout().unwrap());
+        let mut descendant_pid = String::new();
+        stdout.read_line(&mut descendant_pid).unwrap();
+        assert!(descendant_pid.trim().parse::<u32>().is_ok());
+
+        std::thread::sleep(Duration::from_millis(100));
+
+        child.terminate(Duration::from_millis(100)).unwrap();
+        let mut remainder = Vec::new();
+        stdout.read_to_end(&mut remainder).unwrap();
+        assert!(child.try_wait().unwrap().is_some());
+
+        #[cfg(windows)]
+        {
+            let descendant_pid = descendant_pid.trim();
+            let status = super::background_command("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    &format!(
+                        "if (Get-Process -Id {descendant_pid} -ErrorAction SilentlyContinue) {{ exit 1 }}"
+                    ),
+                ])
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
     }
 
     #[cfg(windows)]

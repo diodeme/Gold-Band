@@ -16,7 +16,7 @@ use gold_band::config::{
     ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig, SettingsConfig,
     StateConfig,
 };
-use gold_band::process::kill_process_tree;
+use gold_band::process::recover_persisted_process_group;
 use gold_band::provider::DoctorResult;
 use gold_band::storage::{
     GoldBandPaths, active_storage_path_config, load_settings_file, read_json, write_json,
@@ -111,6 +111,7 @@ pub struct NotificationAttentionInput {
 
 #[derive(Debug, Clone)]
 pub struct NotificationAttentionTarget<'a> {
+    pub project_id: &'a str,
     pub task_id: &'a str,
     pub run_id: &'a str,
     pub round_id: &'a str,
@@ -174,7 +175,8 @@ impl NotificationAttentionState {
         if !self.window_focused || self.window_minimized || !self.window_visible {
             return true;
         }
-        if self.task_id.as_deref() != Some(target.task_id)
+        if self.project_id.as_deref() != Some(target.project_id)
+            || self.task_id.as_deref() != Some(target.task_id)
             || self.run_id.as_deref() != Some(target.run_id)
         {
             return true;
@@ -489,7 +491,7 @@ impl DesktopState {
                 .ok()
                 .and_then(|value| value.trim().parse::<u32>().ok())
             {
-                let _ = kill_process_tree(pid);
+                let _ = recover_persisted_process_group(pid);
             }
             let _ = std::fs::remove_file(pid_path.as_std_path());
         }
@@ -1043,6 +1045,7 @@ mod tests {
 
     fn target() -> NotificationAttentionTarget<'static> {
         NotificationAttentionTarget {
+            project_id: "project-1",
             task_id: "task-1",
             run_id: "run-1",
             round_id: "round-1",
@@ -1081,6 +1084,11 @@ mod tests {
         minimized.window_minimized = true;
         state.update(minimized);
         assert!(state.should_notify(&target(), true));
+
+        let mut other_project = target();
+        other_project.project_id = "project-2";
+        state.update(input());
+        assert!(state.should_notify(&other_project, true));
 
         let mut other = input();
         other.attempt_id = Some("attempt-2".to_string());

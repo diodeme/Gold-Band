@@ -319,7 +319,7 @@ version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aeb1e2c1d58618bea806ccca5bbe65dc4e868be16f69ff118a39049389687548"
 dependencies = [
- "nix",
+ "nix 0.29.0",
  "rand",
 ]
 
@@ -713,6 +713,16 @@ checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
  "memchr",
+]
+
+[[package]]
+name = "command-group"
+version = "5.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a68fa787550392a9d58f44c21a3022cfb3ea3e2458b7f85d3b399d0ceeccf409"
+dependencies = [
+ "nix 0.27.1",
+ "winapi",
 ]
 
 [[package]]
@@ -1907,6 +1917,7 @@ dependencies = [
  "camino",
  "chrono",
  "clap",
+ "command-group",
  "config",
  "crossterm",
  "dirs",
@@ -1914,6 +1925,7 @@ dependencies = [
  "file-rotate",
  "indexmap 2.14.0",
  "jsonschema",
+ "libc",
  "minijinja",
  "ratatui",
  "reqwest 0.12.28",
@@ -1934,7 +1946,6 @@ dependencies = [
  "url",
  "uuid",
  "uzers",
- "wait-timeout",
  "winreg",
 ]
 
@@ -3101,6 +3112,17 @@ name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
+
+[[package]]
+name = "nix"
+version = "0.27.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2eb04e9c688eff1c89d72b407f168cf79bb9e867a9d3323ed6c01519eb9cc053"
+dependencies = [
+ "bitflags 2.12.1",
+ "cfg-if",
+ "libc",
+]
 
 [[package]]
 name = "nix"
@@ -6352,15 +6374,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fb067e4cbd1ff067d1df46c9194b5de0e98efd2810bbc95c5d5e5f25a3231150"
 dependencies = [
  "cc",
- "libc",
-]
-
-[[package]]
-name = "wait-timeout"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11"
-dependencies = [
  "libc",
 ]
 

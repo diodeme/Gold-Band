@@ -180,7 +180,9 @@ ACP 历史分页能力必须以客户端当前合并窗口为权威，并仅在�
 
 会触发系统通知的事件范围固定为：任务完成、Agent 单轮回复完成/失败、权限审批请求、ACP elicitation 提问、节点结束后请求人工判断是否成功、异常中断或错误阻塞。用户主动停止、会话内普通运行中、拉起下一节点中不触发系统通知；当前目标 session 在前台可见时继续抑制 OS 通知。
 
-通知发送前必须判断桌面注意力状态：窗口未聚焦、窗口最小化、窗口不可见，或当前前端页面不是该事件对应的 run/session 时才发送；如果用户正聚焦在 Gold Band 并查看对应 `taskId/runId/roundId/nodeId/attemptId`，则只更新页面内 composer、session tree 和工作流图，不弹 OS 通知。
+通知发送前必须判断桌面注意力状态：窗口未聚焦、窗口最小化、窗口不可见，或当前前端页面不是该事件对应的 run/session 时才发送；如果用户正聚焦在 Gold Band 并查看对应 `projectId/taskId/runId/roundId/nodeId/attemptId`，则只更新页面内 composer、session tree 和工作流图，不弹 OS 通知。项目内的 task/run 等编号允许从 `001` 重新计数，因此任何跨 workspace 的通知定位和去重都不得省略 `projectId`。
+
+通知点击导航使用“Rust 持久到取出的待导航队列 + 可丢失唤醒信号”，不把 Tauri event 本身当作业务事实。Windows 正文点击/查看按钮和 macOS/Linux `NotificationResponse::Default / Action("view")` 都先写入包含必填 `projectId` 的 `ViewActionPayload` 队列，清理对应 dedup，再调用桌面生命周期的 `ensure_main_window()`；窗口存在时显示、取消最小化并聚焦，窗口销毁时从 Tauri 配置重建。前端必须先注册 `gold-band://intervention-navigate`，再调用 `take_pending_intervention_navigations()` 原子 drain；同一 dedup payload 在入队和 drain 过程中不得重复。前端直接按 payload 的 `projectId` 加载 workspace，不允许遍历侧栏按 `taskId` 猜测项目。关闭、忽略和过期只清 dedup，不产生导航。
 
 ACP 权限请求与 elicitation 提问都必须收敛到统一 intervention notification 机制：runtime 控制下的暂停由 lifecycle 事件触发通知，ACP live event 同时做旁路桥接补齐实时提醒。这样权限请求、elicitation、人工判断、异常中断和任务完成共享同一套去重、点击跳转和前台抑制规则。permission/elicitation 的 canonical event id 必须包含 ACP request id：同一请求的重复 live update 只通知一次，同一 attempt 或 Direct 长会话中的后续请求必须独立通知；elicitation 还必须与 `waiting-for-user-input` 的人工确认通知使用不同 kind suffix。通知展示身份不得暴露 `direct-agent` 等内部 node id：Direct 使用 conversation metadata 中的 Agent 名称，普通节点优先使用实际 provider/Agent 展示名，只有历史数据缺失时才回退 node id。
 
@@ -480,8 +482,9 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 手动追问通知只覆盖 `submit_conversation_prompt -> acp-prompt` 的非 runtime continue 路径。停止/异常后的 runtime continue 仍属于 workflow 生命周期，由既有 intervention/run completion 通知表达，不能同时再发一条 Agent turn 通知。
 - 每个手动 prompt 在进入 ACP 前必须拥有稳定 `turnId`。前端未提供时由后端生成并写入 prompt event；通知去重键必须包含 `run / round / node / attempt / turnId`，同一 attempt 的连续追问不能互相去重。
 - turn 终态统一为 `Completed / Failed / Cancelled`。Completed 和 Failed 产生通知；用户主动停止对应 Cancelled，不产生完成或失败通知。adapter transport interrupted 属于 Failed，不得伪装为用户停止。
-- Direct 首轮仍由内部单 Worker run 驱动，但 `RunCompleted` 事件必须携带从 `authoring/conversation.json` 固化的 Agent 展示身份。通知订阅器不得根据 `direct-agent` 等节点 ID 判断 Direct，也不得依赖当前 UI 工作区回读元数据。
+- Direct 首轮仍由内部单 Worker run 驱动，但 `RunCompleted` 事件必须携带从 `authoring/conversation.json` 固化的 Agent 展示身份。成功的 Direct `RunCompleted` 只更新运行状态，通知必须延后交给同一 prompt queue 批次决策；失败仍立即通知。通知订阅器不得根据 `direct-agent` 等节点 ID 判断 Direct，也不得依赖当前 UI 工作区回读元数据。
 - 当前窗口失焦、最小化、隐藏，或用户正在查看其他 task/run/session 时发送通知；当前目标 session 正在前台可见时抑制通知。permission 与 elicitation 继续沿用即时通知，不等待 turn 结束。
+- 同一 Direct attempt 自动连续消费待发送队列时，从触发该批次的首条普通 prompt（包括 Direct 首轮）开始，所有成功 turn 都先进入统一的完成决策：`AcpPromptLifecycleEvent::Finished` 携带稳定 `promptId`，调度器等待 600ms 用户优先窗口并尝试领取后继。`AcpTurnFinished.batchProgress` 固定包含 `completedReplyCount + continues`；实际领取成功时仅累计计数并标记 `continues=true`，系统通知层不为该中间成功单独弹窗。队列清空、暂停、被用户优先输入抢占或无法继续领取时，终点事件携带整个连续批次的累计回复数并立即清理批次状态：计数为 1 使用“{Agent} 回复完成”，大于 1 使用“{Agent} 已连续回复 X 条”。批次计数属于当前进程内正在执行的 provider 生命周期，失败、取消或应用退出必须清理，不写入 durable prompt queue；应用重启后旧 provider turn 不可能继续回调。不得按 `turn-queued-*` 前缀区分首条与后续消息。Failed 始终立即通知，Cancelled 仍不通知；权限、elicitation、运行异常以及其他 project/session 的通知不参与合并。
 - 通知正文不包含 Agent 回复原文、工具参数或附件内容，避免在操作系统通知中心泄露会话正文；点击“查看详情”仍定位到对应 task/run/attempt。
 
 ## ACP 斜杠命令目录与输入交互

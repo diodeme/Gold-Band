@@ -354,8 +354,14 @@ function browserSvgDataUrl(content: string) {
 }
 
 export const browserApi: RuntimeApi = {
-  prepareAppExit() {
-    return Promise.resolve({ warnings: [] });
+  completeMainWindowClose() {
+    return Promise.resolve();
+  },
+  resolveAppExit() {
+    return Promise.resolve();
+  },
+  takePendingInterventionNavigations() {
+    return Promise.resolve([]);
   },
   checkLocalClaude() {
     return Promise.resolve({ found: false, path: null });
@@ -674,6 +680,9 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve(() => {});
   },
   subscribeInterventionNavigate() {
+    return Promise.resolve(() => {});
+  },
+  subscribeAppExitRequested() {
     return Promise.resolve(() => {});
   },
   submitConversationPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _prompt, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {

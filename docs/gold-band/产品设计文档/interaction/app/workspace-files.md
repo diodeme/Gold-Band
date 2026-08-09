@@ -68,6 +68,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 - 图片不使用 `file://`。Rust 完成文件签名、字节数、像素数和 revision 校验后签发 `WorkspaceFilePreviewGrantVm { token, expiresAtMs }`；SVG 禁止原始 DOM 注入和外部资源加载。
 - Markdown 图片不使用组件默认的原始 `<img src>`：工作空间内图片以及工作空间外 Markdown 同目录/子目录相对图片自动签发 preview grant；文档目录外引用按当前文档统一确认一次，且只授权文档实际引用的精确文件。grant 到期前按当前引用批量原子轮换，新 token 生效后再释放旧 token；页面重新可见、图片加载失败或开发后端重启导致内存 grant 丢失时幂等补发。UNC 和危险 scheme 不加载，网络图片只保留超链接。
 - 所有文件错误继续使用 `CommandErrorVm { code, params }`；Rust 不产生对客文案，前端同步维护中英文恢复提示。
+- “在文件管理器中显示”必须先由 Rust 按当前 project/attempt 根目录解析相对路径、执行 canonicalize 并完成越界校验，再把已授权 canonical path 交给官方 `tauri-plugin-opener` 的 `reveal_item_in_dir`。工作空间与运行/会话目录复用同一平台抽象，不在业务代码中拼接 Explorer 参数，也不维护 `xdg-open`/Finder 分支。
 
 ## 6. 领域与性能边界
 
@@ -83,6 +84,8 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 - `configs/app-config.toml` 是工作区布局阈值的权威来源。桌面 `get_app_bootstrap.appConfig.workspaceLayout` 必须完整投影 `shellMinWidth/shellMinHeight`、`rightWorkspace` 及各页面 profile；`rightWorkspace.file` 与右栏宽度属于同一生命周期契约，不能只存在于前端类型或 browser mock。桌面 bootstrap 完成后前端直接消费真实契约，不增加缺字段 fallback。
 
 ## 7. 实现状态
+
+2026-08-09 文件 reveal 已迁移到官方 `tauri-plugin-opener` Rust API。项目工作空间和会话运行目录仍分别使用原有受控 locator 解析路径，只有验证后的 canonical path 会交给 opener；删除 Explorer `/select` 参数拼接和 `xdg-open` 平台分支，使 Finder reveal 成为同一接口的 macOS 实现。
 
 2026-08-07 文件树已增加紧凑目录 / 树形目录切换：紧凑投影保持链首节点身份并把上下文操作绑定到链尾真实路径；两种模式的展开动作都会连续装载单目录链。watcher 局部结构刷新会重新装载已展开后代，保证新增文件动态拆分紧凑链。树形目录按层级最小行宽计算横向溢出，紧凑目录按层级宽度与完整合并名称的较大值计算，两种模式都只在真实溢出时出现横向滚动；模式按钮使用清晰的列表树 / 列表收合图标。右侧工作区整体最小宽度同步由 320px 收至 288px。上述数据、交互和溢出契约由 FileExplorerStore 与 WorkspaceFileTree 单元测试固化，并已在本地真实页面用深层 Java 路径完成模式切换、连续展开及有/无横向溢出的交互验证。
 

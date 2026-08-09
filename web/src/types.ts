@@ -1097,6 +1097,7 @@ export interface AcpElicitationRequestVm {
 // Navigation payload emitted after clicking "View details" in a system toast.
 // It carries the complete attempt locator and a deduplication key.
 export interface InterventionNavigateEventVm {
+  projectId: string;
   taskId: string;
   runId: string;
   roundId: string;
@@ -1392,6 +1393,17 @@ export interface ConversationComposerVm {
   statusKey?: string | null;
   canStop: boolean;
   lockInput: boolean;
+}
+
+export interface AppExitRequestVm {
+  requestId: string;
+}
+
+export type AppExitDecision = 'proceed' | 'cancel';
+
+export interface ResolveAppExitInput {
+  requestId: string;
+  decision: AppExitDecision;
 }
 
 export interface ConversationQueuedPromptVm {

@@ -129,6 +129,7 @@ import {
 } from '@/components/workspace/right-workspace-context';
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
 import {
+  conversationPageForIntervention,
   conversationPageMatchesRun,
   resolvePresentedConversationPage,
   shouldCommitConversationNavigation,
@@ -784,8 +785,7 @@ export function App() {
 
     void subscribeAcpSessionUpdates((event) => {
       if (!active) return;
-      if (event.taskId !== taskId || event.runId !== runId) return;
-      if (event.projectId && event.projectId !== projectId) return;
+      if (event.projectId !== projectId || event.taskId !== taskId || event.runId !== runId) return;
       const sidebarActivity = conversationTaskActivityFromUpdate(event);
       if (sidebarActivity !== undefined) {
         applyConversationTaskActivity(projectId, taskId, sidebarActivity);
@@ -1105,20 +1105,14 @@ export function App() {
     }
 
     // 会话模式：定位到 run，并在 sessionTree 内匹配叶子后切换 session。
-    const projectId = conversationSidebarRef.current
-      ? Object.entries(conversationSidebarRef.current.tasksByWorkspace)
-          .find(([, tasks]) => tasks.some((task) => task.taskId === event.taskId))
-          ?.[0]
-      : undefined;
-    const targetProjectId = projectId ?? effectiveWorkspaceId;
-    const runPage: ConversationPage = { kind: 'conversation-run', projectId: targetProjectId, taskId: event.taskId, runId: event.runId };
+    const runPage = conversationPageForIntervention(event);
+    const targetProjectId = event.projectId;
     setPrimaryModule('task-orchestration');
     setConversationPage(runPage);
     pushRoute('task-orchestration', taskPage, runPage);
 
     let run = conversationRunRef.current
-      && conversationRunRef.current.taskId === event.taskId
-      && conversationRunRef.current.runId === event.runId
+      && conversationPageMatchesRun(runPage, conversationRunRef.current)
       ? conversationRunRef.current
       : null;
     if (!run) {
@@ -1171,7 +1165,6 @@ export function App() {
     }
   }, [
     uiMode,
-    effectiveWorkspaceId,
     taskPage,
     applyConversationRunSnapshot,
     updateConversationSessionFollow,
@@ -1683,7 +1676,7 @@ export function App() {
           });
       }}
     >
-      <WindowCloseCoordinator />
+      <WindowCloseCoordinator platform={bootstrap?.platform} />
       <AlertDialog open={Boolean(error)} onOpenChange={(open) => { if (!open) setError(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>

@@ -10,8 +10,9 @@ mod state_factory;
 mod transition_context;
 
 pub use self::notification::{
-    InterventionNotification, InterventionType, NotificationDedup, direct_conversation_agent_label,
-    make_dedup_key, make_dedup_key_with_suffix, make_turn_dedup_key, reason_key,
+    INITIAL_DIRECT_TURN_ID, InterventionNotification, InterventionType, NotificationDedup,
+    direct_conversation_agent_label, make_dedup_key, make_dedup_key_with_suffix,
+    make_turn_dedup_key, reason_key,
 };
 
 use crate::acp::client as acp_client;
@@ -38,7 +39,7 @@ use crate::dynamic::{
     refresh_dynamic_current_leaf_ids,
 };
 use crate::mcp::McpManager;
-use crate::process::kill_process_tree;
+use crate::process::recover_persisted_process_group;
 use crate::provider::{
     DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
     ProviderInfo, UserPromptRenderMode, provider_from_agent, render_prompt_bundle,
@@ -545,6 +546,21 @@ pub enum AcpTurnOutcome {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcpTurnBatchProgress {
+    pub completed_reply_count: u32,
+    pub continues: bool,
+}
+
+impl AcpTurnBatchProgress {
+    pub const fn terminal(completed_reply_count: u32) -> Self {
+        Self {
+            completed_reply_count,
+            continues: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum RuntimeLifecycleEvent {
     /// A node has started executing. The orchestrator is about to invoke the
@@ -603,6 +619,7 @@ pub enum RuntimeLifecycleEvent {
     RunPaused {
         event_id: String,
         occurred_at: String,
+        project_id: String,
         task_id: String,
         run_id: String,
         round_id: String,
@@ -615,6 +632,7 @@ pub enum RuntimeLifecycleEvent {
     InterventionRequested {
         event_id: String,
         occurred_at: String,
+        project_id: String,
         task_id: String,
         run_id: String,
         round_id: String,
@@ -627,6 +645,7 @@ pub enum RuntimeLifecycleEvent {
     RunCompleted {
         event_id: String,
         occurred_at: String,
+        project_id: String,
         task_id: String,
         run_id: String,
         round_id: String,
@@ -645,6 +664,7 @@ pub enum RuntimeLifecycleEvent {
     AcpTurnFinished {
         event_id: String,
         occurred_at: String,
+        project_id: String,
         task_id: String,
         run_id: String,
         round_id: String,
@@ -653,6 +673,10 @@ pub enum RuntimeLifecycleEvent {
         turn_id: String,
         agent_label: String,
         outcome: AcpTurnOutcome,
+        /// Progress of the uninterrupted Direct prompt-queue reply batch.
+        /// Intermediate successes remain observable with `continues=true`; the
+        /// terminal event carries the total count used by the desktop notification.
+        batch_progress: AcpTurnBatchProgress,
         task_title: Option<String>,
     },
 }
@@ -693,8 +717,13 @@ pub struct AcpLiveEventContext {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AcpPromptLifecycleEvent {
-    Accepted { prompt_id: String },
-    Finished { successful: bool },
+    Accepted {
+        prompt_id: String,
+    },
+    Finished {
+        prompt_id: Option<String>,
+        successful: bool,
+    },
 }
 
 pub fn is_run_continuable(run: &RunState) -> bool {
@@ -1074,10 +1103,17 @@ impl App {
     pub fn notify_prompt_turn_finished(
         &self,
         context: AcpLiveEventContext,
+        prompt_id: Option<String>,
         successful: bool,
     ) -> Result<()> {
         if let Some(callback) = &self.prompt_turn_lifecycle {
-            callback(context, AcpPromptLifecycleEvent::Finished { successful })?;
+            callback(
+                context,
+                AcpPromptLifecycleEvent::Finished {
+                    prompt_id,
+                    successful,
+                },
+            )?;
         }
         Ok(())
     }
@@ -2697,7 +2733,7 @@ impl App {
         let Ok(pid) = pid_text.trim().parse::<u32>() else {
             return;
         };
-        let _ = kill_process_tree(pid);
+        let _ = recover_persisted_process_group(pid);
         let _ = fs::remove_file(pid_path.as_std_path());
     }
 
@@ -3680,8 +3716,9 @@ mod tests {
 
     fn sample_run_paused_event() -> RuntimeLifecycleEvent {
         RuntimeLifecycleEvent::RunPaused {
-            event_id: "run-1:round-1:node-1:attempt-1:waiting-for-user-input".to_string(),
+            event_id: "project-1:run-1:round-1:node-1:attempt-1:waiting-for-user-input".to_string(),
             occurred_at: "2026-01-01T00:00:00".to_string(),
+            project_id: "project-1".to_string(),
             task_id: "task-1".to_string(),
             run_id: "run-1".to_string(),
             round_id: "round-1".to_string(),
@@ -4195,7 +4232,8 @@ mod tests {
         };
 
         app.acp_prompt_accepted_for(context.clone()).unwrap()("turn-queued-001").unwrap();
-        app.notify_prompt_turn_finished(context, false).unwrap();
+        app.notify_prompt_turn_finished(context, Some("turn-queued-001".to_string()), false)
+            .unwrap();
 
         let calls = seen.lock().unwrap();
         assert_eq!(calls.len(), 2);
@@ -4208,7 +4246,10 @@ mod tests {
         );
         assert_eq!(
             calls[1].1,
-            AcpPromptLifecycleEvent::Finished { successful: false }
+            AcpPromptLifecycleEvent::Finished {
+                prompt_id: Some("turn-queued-001".to_string()),
+                successful: false,
+            }
         );
     }
 

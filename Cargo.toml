@@ -13,6 +13,7 @@ agent-client-protocol-schema = { version = "1.6.0", features = ["unstable_elicit
 anyhow = "1"
 camino = { version = "1", features = ["serde1"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+command-group = "5.0.1"
 dirs = "6"
 clap = { version = "4", features = ["derive"] }
 indexmap = { version = "2", features = ["serde"] }
@@ -46,9 +47,9 @@ similar = "3.1"
 winreg = "0.55"
 
 [target.'cfg(unix)'.dependencies]
+libc = "0.2"
 tempfile = "3"
 uzers = { version = "0.12", default-features = false }
-wait-timeout = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

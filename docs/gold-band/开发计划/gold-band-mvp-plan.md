@@ -901,3 +901,30 @@ attempt-001/
 - 根因修复：AUTO 模板曾从显示名称生成 slug ID；中文名称会退化成空串或少量数字，ID 身份与名称耦合，只能使用顺序后缀处理冲突。
 - 数据策略：新建 AUTO 模板改由后端生成 `auto-template-<uuid-v4-without-hyphens>`；名称只用于展示和重名校验。导入发生空 ID 或冲突时同样生成该分布式 ID；已有 ID 不迁移，避免破坏已保存的 `activeTemplateId` 引用。
 - 回归固化：核心单元测试验证 ID 与名称无关、具备规范前缀和 UUID 长度、连续生成不重复；浏览器预览 API 使用相同 UUID 策略。
+
+---
+
+## 2026-08-09：桌面生命周期与 macOS 跨平台能力收敛
+
+- 根因修复：将“关闭主窗口”和“退出应用”拆为两个领域动作，由 `DesktopLifecycleCoordinator` 统一管理 `Running / ClosingMainWindow / AwaitingFrontend / Cleaning / ReadyToExit`。macOS 红色关闭只销毁 WebViewWindow 并保留 runtime，Dock 重开显示或从 Tauri 配置重建；Windows/Linux 关闭、Cmd+Q、菜单退出和 updater 退出共用保存握手与 15 秒有界清理。
+- 进程治理：引入 `command-group 5.0.1` 的 `ManagedProcessGroup`。Windows 使用 Job Object 和 `CREATE_NO_WINDOW`，Unix 使用进程组 TERM→KILL；ACP、MCP stdio、Agent doctor 与登录 Shell PATH 探测已迁移，正常退出不再散落终止单个 PID。
+- 跨端集成：工作空间与会话目录 reveal 统一使用官方 `tauri-plugin-opener`；通知点击统一进入 Rust 待导航队列并恢复主窗口，Windows Toast 保持现有展示，macOS/Linux 使用 `notify-rust` typed response，消除窗口重建时事件早于监听器的竞态。
+- 发布策略：macOS 默认由 Tauri bundler ad-hoc 签名，同一 release 流水线继续产出 arm64/x64 DMG；Apple 凭证全空、部分、完整三种配置由脚本校验，完整时在同一 `tauri-action` 签名公证，构建后严格验证 `.app` 签名。产品不增加 unsigned 分支、文件名后缀或额外提示。
+- 详细设计与验收见 `开发计划/生命周期整理/桌面生命周期与跨平台集成重构.md`。
+
+---
+
+## 2026-08-09：系统通知跨项目导航身份修复
+
+- 根因修复：通知生命周期事件和点击载荷原先只携带项目内局部编号；多个 workspace 同时存在 `task-001/run-001` 时，前端会按 taskId 选择第一个项目并进入错误 run。通知定位协议现将 `projectId` 设为必填字段，从 runtime 生命周期事件贯穿核心通知模型、Toast action、待导航队列和前端 deep link。
+- 去重契约：canonical dedup key 增加 project 维度，不同 workspace 即使 run/round/node/attempt/turn 全部同名也不会互相抑制通知。
+- 前端路由：删除通过 sidebar `tasksByWorkspace` 按 taskId 反查第一个项目的模糊 fallback；当前 run 复用判断也必须同时匹配 project/task/run 完整身份。
+- 回归固化：Rust 测试覆盖跨项目同局部 ID 的通知身份与去重隔离、Toast action projectId roundtrip；Web 测试覆盖同 task/run 不同 project 时只匹配通知指定项目。
+
+---
+
+## 2026-08-09：Direct 自动队列完成通知合并
+
+- 根因修复：Direct 待发送队列此前为每个自动发送的成功 turn 创建独立 OS 通知，Windows 会把多个 Toast 串行排队，形成“点击一条后下一条继续弹出”的干扰。首版仅延迟 `turn-queued-*`，遗漏了触发同一批次的首条普通 `acp-prompt-*`，因此仍会先出现一条通知。通知策略现完整绑定队列的实际 claim 边界，不依赖 prompt id 前缀、Windows Toast 展示顺序或平台专用替换 API。
+- 生命周期契约：`AcpPromptLifecycleEvent::Finished` 携带稳定 `promptId`；Direct 首轮成功 `RunCompleted` 也只更新运行状态，通知延后进入相同队列决策。`AcpTurnFinished.batchProgress` 以 `completedReplyCount + continues` 表达批次进度：实际领取后继时累计并抑制中间成功，终点携带完整累计数后清理；计数 1 显示“回复完成”，大于 1 显示“已连续回复 X 条”。失败立即通知并清理批次，权限、elicitation、运行异常及不同会话完全不受影响。
+- 回归固化：核心 prompt queue 单测固定累计、终点重置和失败清理；通知模型单测固定多条文案；桌面生命周期单测固定连续事件的 `batchProgress`，通知策略单测固定 Direct 首轮延后、中间成功不通知、末尾成功通知和失败不抑制，并要求通知、桌面端测试和格式检查通过。

@@ -6,6 +6,7 @@ mod channel;
 mod commands;
 mod commands_conversation;
 mod conversation_workspace;
+mod desktop_lifecycle;
 mod feedback;
 mod i18n;
 mod metrics;
@@ -34,8 +35,8 @@ use commands::{
     get_workflow_templates, list_conversation_directory, list_mcp_servers, list_mcp_tools,
     list_project_skills, list_skills, mark_settings_advanced_update_seen,
     mark_settings_update_seen, open_conversation_directory_path_in_file_manager,
-    open_in_file_manager, pause_run, prepare_app_exit, read_conversation_directory_file,
-    read_skill, remove_recent_workspace, renew_acp_session_lease, replace_auto_templates,
+    open_in_file_manager, pause_run, read_conversation_directory_file, read_skill,
+    remove_recent_workspace, renew_acp_session_lease, replace_auto_templates,
     respond_acp_permission, respond_elicitation, retry_run, save_auto_template,
     save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
     save_metrics_settings, save_task_workflow, save_updater_settings, save_workflow_template,
@@ -115,6 +116,8 @@ fn run() -> anyhow::Result<()> {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(DesktopState::new(context))
+        .manage(desktop_lifecycle::DesktopLifecycleCoordinator::default())
+        .manage(notifications::PendingInterventionNavigations::default())
         .manage(WorkspaceFileRuntime::default())
         .manage(WorkspaceFileWatchRuntime::default());
     #[cfg(all(debug_assertions, target_os = "windows"))]
@@ -190,7 +193,9 @@ fn run() -> anyhow::Result<()> {
         })
         .invoke_handler(tauri::generate_handler![
             get_app_bootstrap,
-            prepare_app_exit,
+            desktop_lifecycle::complete_main_window_close,
+            desktop_lifecycle::resolve_app_exit,
+            notifications::take_pending_intervention_navigations,
             get_system_fonts,
             check_local_claude,
             get_agent_registry,
@@ -334,7 +339,8 @@ fn run() -> anyhow::Result<()> {
             #[cfg(all(debug_assertions, target_os = "windows"))]
             webview_heap_diagnostics::get_webview_heap_diagnostic,
         ])
-        .run(tauri_context)
-        .context("tauri runtime failed")?;
+        .build(tauri_context)
+        .context("failed to build tauri runtime")?
+        .run(desktop_lifecycle::handle_run_event);
     Ok(())
 }

@@ -934,4 +934,4 @@ attempt-001/
 ## 2026-08-09：非 Windows 通知响应编译契约修复
 
 - 根因修复：`notify-rust 4.18` 的 `ResponseHandler` 接收 `&NotificationResponse`，桌面适配器错误地按值推断参数，导致 Linux 与两个 macOS release job 在 Rust 编译阶段同时失败。适配器现显式遵守借用签名，并先把第三方响应映射为内部 `Navigate / ClearDedup` 处置后再操作导航队列和 dedup。
-- 回归固化：新增非 Windows 响应分类单测，覆盖正文、view、其他 action、reply 和 closed；PR checks 同时覆盖 `pull_request` 与 `main` push，release-please 的多平台构建必须等待 Linux Rust workspace 预检通过，避免平台专属编译错误直到昂贵的发布矩阵才暴露。
+- 回归固化：新增响应分类与 borrowed `ResponseHandler` 契约单测，覆盖正文、view、其他 action、reply 和 closed；PR checks 保留完整回归，两条 release 流水线的多平台构建必须等待 Linux `cargo check --workspace --all-targets` 通过。发布预检只验证平台代码可编译，不执行全量业务测试，避免无关的平台断言阻断打包。

@@ -111,6 +111,17 @@ jobs:
       - name: Ensure Tauri action npm script
         run: npm pkg set scripts.tauri=tauri
 
+      - name: Configure optional Apple credentials
+        if: startsWith(matrix.platform.name, 'macos-')
+        env:
+          MACOS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          MACOS_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          MACOS_APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          MACOS_APPLE_ID: ${{ secrets.APPLE_ID }}
+          MACOS_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          MACOS_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: node scripts/configure-macos-signing.mjs
+
       - name: Build and publish Tauri release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -124,6 +135,19 @@ jobs:
           releaseName: Gold Band ${{ env.RELEASE_TAG }}
           releaseDraft: true
           prerelease: false
+
+      - name: Verify macOS application signatures
+        if: startsWith(matrix.platform.name, 'macos-')
+        shell: bash
+        run: |
+          find target -type d -path '*/bundle/macos/*.app' -print > macos-app-bundles.txt
+          if [[ ! -s macos-app-bundles.txt ]]; then
+            echo "No macOS app bundle was produced."
+            exit 1
+          fi
+          while IFS= read -r app_bundle; do
+            codesign --verify --deep --strict "$app_bundle"
+          done < macos-app-bundles.txt
 
   updater-json:
     name: Generate updater manifest

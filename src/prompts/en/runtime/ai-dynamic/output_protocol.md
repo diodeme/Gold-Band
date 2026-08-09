@@ -4,7 +4,7 @@ Your final step must output only the JSON content for the `dynamic-node-completi
 This AI-DYNAMIC node uses the fixed-agent strategy: except for `workflow-invocation`, all internal worker, merge, and acceptance nodes will use the same fixed provider chosen by runtime. Do not output provider fields for any node.
 {{ model_policy }}
 {% else %}
-This AI-DYNAMIC node uses the dynamic-agent strategy: the bootstrap agent is already fixed by runtime, but for later worker / merge / acceptance nodes you must choose and output the provider for each node based on the routing guidance and available providers in this prompt.
+This AI-DYNAMIC node uses the dynamic-agent strategy: choose and output a provider only for later workers based on the routing guidance and available providers in this prompt. Merge / acceptance always use the bootstrap Agent, so do not output provider for them. Do not output `model` or `permissionMode` for any node; runtime reads saved configuration.
 {{ model_policy }}
 {% endif %}
 
@@ -16,7 +16,7 @@ The JSON Schema below is the effective output protocol for this run. Runtime gen
 
 Constraint reminders:
 {% if agent_strategy_mode == "fixed" %}- Under the fixed-agent strategy, do not output any `provider` fields. Runtime injects the fixed agent automatically.
-{% else %}- Under the dynamic-agent strategy, every `worker / merge / acceptance` must output a valid provider and it must follow the routing guidance in this prompt.
+{% else %}- Under the dynamic-agent strategy, workers must output a valid provider that follows the routing guidance in this prompt; `merge / acceptance` must omit provider because runtime always uses the bootstrap Agent.
 - Do not output `provider` for `workflow-invocation`.
 {% endif %}- {{ model_policy }}
 - When `next.type="end"`, do not include `node / groupId / nodes / merge / acceptance`.

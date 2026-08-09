@@ -32,10 +32,17 @@
 - 欢迎标题的时间状态由独立组件管理，首次进入时计算一次，并仅为下一个时段边界安排一个单次定时器；禁止使用按秒或按分钟轮询。
 - 应用从休眠或后台恢复、页面重新可见、窗口重新获得焦点时，必须按当前系统本地时间重新校准，以覆盖 WebView 后台定时器暂停和系统时区变化。
 - 跨时段只替换标题文本节点，不刷新页面，不重置 composer 正文、附件、workspace、Agent、模型、权限或运行模式状态。
+- 侧边栏展开或收起时，欢迎标题与 composer 始终按右侧可用主区做横向几何居中，不根据顶栏品牌或 composer 内部控件重量做水平偏移。纵向使用光学居中：通过 64–80px 响应式底部布局留白让整组内容自然上移约 32–40px，抵消标题下方多块配置区带来的下坠感；禁止使用不参与布局的 transform 位移。
 
 ### 输入区域
 1. 文本输入框：用户输入任意需求文本
+   - 主页 composer 与会话追问统一复用 prompt-kit 自动尺寸输入能力，不维护独立的原生 textarea 高度逻辑。
+   - prompt-kit textarea 本体在所有主题下保持透明并继承 composer 外层表面色；主页发起会话与会话追问不得出现独立的内层灰色输入色块。
+   - 主页主内容使用较紧凑的 `max-w-3xl` 可读宽度；正文输入区初始最小高度为 56px，随文字换行和内容增加同步增高，最高增长到 320px。未达到上限时隐藏正文区滚动条；超过上限后固定正文区高度并仅在正文区内部滚动，底部提示、附件、工作空间、模型、权限和发送操作不随正文滚动。
 2. 工作空间选择：下拉选择目标工作空间；在 composer 底栏与附件入口并列，使用低对比胶囊容器与周围深色表面融合，不出现突兀的独立深色块
+   - composer 底栏必须按自身可用宽度而不是整窗 viewport 响应。最窄容器下，附件与工作空间保持一行，模型、权限和发送依次占满独立行；容器达到中等宽度后，模型与权限等宽并列，发送保持独立整行；达到桌面宽度后才恢复模型、权限、发送同排，并在更宽容器中与附件/工作空间组合为完整单行。所有选择器必须允许布局层覆盖为 `w-full / max-w-none`，禁止组件内部最小宽度决定偶然换行结果。
+   - 桌面单行工具栏中，工作空间列使用较小的弹性份额（最小 12rem），模型、权限和发送所在配置列使用较大的弹性份额（最小 28rem）；模型与权限保持等宽，以优先展示其当前选择值。
+   - 处理模式与 Direct Agent 选择区使用同一 composer 容器断点：最窄容器中标签置于控件上方，处理模式三项等宽，Agent 列表始终保持单行；正常数量下不显示滚动条，只有内容确实超出可用宽度时才允许横向滚动，并必须显式禁止纵向溢出。Agent 行总高保持紧凑的 56px：外层只保留 4px 上下 padding，滚动容器内部再保留 4px 安全空间，避免 40px 选中药丸及其焦点边缘被裁切。宽度足够后再恢复标签与控件同排。触控目标高度不得低于 36px，主发送操作在最窄布局中使用整行按钮，避免与权限胶囊形成不齐的残缺行。
 3. 处理模式选择：WORKFLOW / AUTO 切换
 4. AUTO 模式：
    - 固定 Agent 策略下显示 agent、模型、权限模式下拉；agent 可以覆盖 AUTO tab 当前配置，模型可为空
@@ -131,7 +138,7 @@
 
 ### 会话行展示
 - 标题（自动生成或手动修改）
-- Workflow/AUTO 使用状态小圆点（绿/红/黄）；Direct 使用 Agent icon。两种标识必须占用相同宽度的身份槽位，使标题文字起点严格对齐；Direct icon 使用紧凑尺寸，不得挤占标题空间。
+- Workflow/AUTO 使用状态小圆点（绿/红/黄）；Direct 使用 Agent icon。两种标识必须占用相同宽度的身份槽位，使标题文字起点严格对齐；Direct icon 使用紧凑尺寸，不得挤占标题空间。Direct 存在当前活跃 turn 时，在 Agent icon 外显示轻量主色旋转环，结束后恢复静态 icon；不使用成功/暂停/失败颜色表达单轮结果。
 - 相对时间统一来自 task 行的 `lastActivityAt`（分/时/天/周/月/年；Workflow/AUTO 运行中不显示）。该字段由后端在会话元数据活动时间、创建时间和所有 run 的 `updatedAt` 中取真实时间最大值，不能由前端按运行模式重新选择时间源。紧凑时间区间必须连续：不足 1 分钟显示“刚刚”，1–59 分钟显示 `m`，1–23 小时显示 `h`，1–6 天显示 `d`，7–29 天显示 `w`，30–364 天显示 `mo`，365 天起显示 `y`；不得在周/月或月/年边界产生 `0mo`、`0y`。
 - hover 时在行尾显示重命名 / 置顶 / 删除操作；未 hover 时不为操作按钮预留占位，长标题只占用标题和时间可用区域
 - 删除会话前必须弹出不可撤销确认；确认文案明确说明将删除 `~/.gold-band` 下对应 task 目录，并在系统支持时优先移入回收站
@@ -148,7 +155,8 @@
 
 ## 状态规则
 - Workflow/AUTO 状态 = 最新 run 的最终状态；成功 = 绿色，失败/异常/停止 = 红色，暂停 = 黄色，运行中不显示时间
-- Direct 不用 run outcome 表达会话身份，不展示成功/暂停/失败色点
+- Direct 不用 run outcome 表达会话身份，不展示成功/暂停/失败色点。旋转环必须消费后端 task 级 canonical activity：同时覆盖首轮 runtime active、completed run 上的 same-session ACP follow-up 和 cancel requested；禁止只判断 `latestRun.status`，因为 Direct 后续追问期间底层 run 仍可能保持 completed。
+- 高频 ACP session update 必须直接携带从 per-attempt prompt control registry 投影的轻量 `activity`，包括 `starting / accepted / running / cancel-requested`；prompt 终态用显式 `null` 清除。该投影只读内存控制状态，不得为侧边栏圆环重建完整 lifecycle、session 或 timeline。前端优先消费此字段，并仅对旧的无 `activity` 事件回退到 lifecycle 投影。
 
 ## 性能与后台刷新
 
@@ -158,7 +166,7 @@
 ## Direct 快速会话
 
 - 快速会话模式固定按 `Direct / 工作流 / AUTO` 排列；三种模式各自保留配置，切换模式不清空正文和附件。
-- Direct 配置区使用 Agent icon 列表。当前 Agent 展示 icon + 名称，其他 Agent 只展示 icon；不可用 Agent 保留诊断提示但不能选中。
+- Direct 配置区使用 Agent icon 列表。当前 Agent 展示 icon + 名称，其他 Agent 只展示 icon；可用 Agent 与不可用 Agent 分别保持其注册表内的既有顺序并连续排列，两组同时存在时使用一条低对比竖线分隔。不可用 Agent 保留诊断提示但不能选中。
 - Direct 没有任何可选 Agent 时，空状态在提示文案旁展示紧凑的“+”按钮；按钮使用现有会话导航进入 Agent 管理页，用户添加完成后可返回继续当前快速会话草稿。
 - Direct 的模型和权限模式位于 composer 右下角、发送按钮之前，不复用 AUTO 的大配置面板；两者的空选项统一显示为“不指定”，发起会话前允许在具体值与“不指定”之间切换。
 - composer 主体宽度随右侧内容区增长，但保留桌面端可读上限和响应式左右 gutter；底部附件/工作空间组与 Direct 模型/权限/发送组按组参与换行，选择器允许在合理最小宽度内弹性收缩。窗口变窄、侧边栏展开、系统字体或显示缩放增大时，后组应完整下移到下一行，禁止与工作空间控件重叠或溢出输入框。
@@ -166,6 +174,6 @@
 - Direct 的模型和权限记忆范围是 `workspace + agentType`；切换 Agent 时恢复该 Agent 在当前 workspace 上一次使用的模型和权限。
 - 切换 workspace 后再返回时，必须恢复该 workspace 当前 Direct Agent 及其模型/权限；其他 workspace 的选择不得覆盖当前 workspace。切换期间 composer 的 workspace 与运行模式配置由同一个 App 层 workspace key 驱动，不保留组件内第二份 workspace 选择状态。
 - Direct 会话创建后 Agent 身份不可修改；更换 Agent 等价于创建新的 Direct 会话。会话内模型与权限模式分别使用独立显式 override：未指定时不干预 Agent 当前配置，选择具体值后不再允许回到“不指定”，但可以继续切换其他具体值。
-- Direct 侧边栏 task 行使用 Agent icon 代替 run 成功/暂停/失败状态点，相对时间来自 `lastActivityAt`。工作流和 AUTO 继续使用 run 状态点。
+- Direct 侧边栏 task 行使用 Agent icon 代替 run 成功/暂停/失败状态点；当前 turn 活跃时由 task 级 activity 在 icon 外显示旋转环，相对时间来自 `lastActivityAt`。工作流和 AUTO 继续使用 run 状态点。
 - Direct task 行点击后直接进入最近会话，不渲染 `run-00x` 子列表；底层 run 仅作为内部执行与存储结构。
 - Direct 的置顶区、workspace 区和搜索结果使用同一 Agent identity VM，不允许前端组件自行从 metadata 重复推断。

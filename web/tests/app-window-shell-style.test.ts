@@ -20,7 +20,7 @@ describe('App window shell style', () => {
 
   it('binds the host-provided frame policy on both desktop shells', () => {
     const workbenchShell = readFileSync(path.resolve(__dirname, '../src/components/Shell.tsx'), 'utf8');
-    const conversationShell = readFileSync(path.resolve(__dirname, '../src/components/conversation/ConversationShell.tsx'), 'utf8');
+    const conversationShell = readFileSync(path.resolve(__dirname, '../src/components/workspace/WorkspaceShell.tsx'), 'utf8');
 
     expect(workbenchShell).toContain('data-window-frame-style={windowFrameStyle}');
     expect(conversationShell).toContain('data-window-frame-style={windowFrameStyle}');
@@ -33,13 +33,33 @@ describe('App window shell style', () => {
     expect(styles).not.toContain('min-h-[680px]');
   });
 
-  it('keeps the conversation sidebar resize target wide without painting a thick accent divider', () => {
-    const shell = readFileSync(path.resolve(__dirname, '../src/components/conversation/ConversationShell.tsx'), 'utf8');
+  it('uses the shared shadcn resizable handles with low-contrast dividers', () => {
+    const shell = readFileSync(path.resolve(__dirname, '../src/components/workspace/WorkspaceShell.tsx'), 'utf8');
 
-    expect(shell).toContain("'absolute right-0 top-0 bottom-0 z-20 w-2 cursor-col-resize bg-transparent'");
-    expect(shell).toContain('data-testid="conversation-sidebar-resize-handle"');
-    expect(shell).toContain('border-l border-t border-sidebar-border/70 rounded-tl-2xl');
-    expect(shell).not.toContain('hover:bg-primary/40');
-    expect(shell).not.toContain('active:bg-primary/60');
+    expect(shell).toContain('ResizablePanelGroup');
+    expect(shell).toContain('data-testid="workspace-left-resize-handle"');
+    expect(shell).toContain('data-testid="workspace-right-resize-handle"');
+    expect(shell).toContain('bg-sidebar-border/70 hover:bg-primary/30');
+    expect(shell).not.toContain('mousemove');
+    expect(shell).not.toContain('mouseup');
+  });
+
+  it('lets the panel group grow and shrink the right workspace without imperative resize feedback', () => {
+    const shell = readFileSync(path.resolve(__dirname, '../src/components/workspace/WorkspaceShell.tsx'), 'utf8');
+
+    expect(shell).not.toContain('panel.resize(');
+    expect(shell).not.toContain('panel.getSize(');
+    expect(shell).toContain("groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-pixel-size' : 'preserve-relative-size'}");
+    expect(shell).toContain("groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-relative-size' : 'preserve-pixel-size'}");
+    expect(shell).toContain('maxSize={rightPanelMaxWidth}');
+    expect(shell).toContain('onResize={trackRightPanelSize}');
+    expect(shell).toContain('onPointerDown={beginRightPanelResize}');
+    expect(shell).toContain('flushSync(() => setRightPanelResizeActive(true))');
+    expect(shell).toContain('onPointerUp={endRightPanelResize}');
+    expect(shell).toContain('panelRef={leftPanelRef}');
+    expect(shell).toContain('panelRef={rightPanelRef}');
+    expect(shell).toContain('collapsedSize={0}');
+    expect(shell).toContain('if (panel.isCollapsed()) panel.expand()');
+    expect(shell).toContain('panel.collapse()');
   });
 });

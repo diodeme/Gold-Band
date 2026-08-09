@@ -11,6 +11,14 @@ export function getAppBootstrap() {
   return getRuntimeApi().getAppBootstrap();
 }
 
+export function completeMainWindowClose() {
+  return getRuntimeApi().completeMainWindowClose();
+}
+
+export function resolveAppExit(input: Parameters<ReturnType<typeof getRuntimeApi>['resolveAppExit']>[0]) {
+  return getRuntimeApi().resolveAppExit(input);
+}
+
 export function getSystemFonts() {
   return getRuntimeApi().getSystemFonts();
 }
@@ -172,6 +180,22 @@ export function getAcpSession(projectId: string | null | undefined, taskId: stri
   return getRuntimeApi().getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, fallback, outerNodeId, outerAttemptId);
 }
 
+export function getAcpActivityDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: Parameters<ReturnType<typeof getRuntimeApi>['getAcpActivityDetail']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().getAcpActivityDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);
+}
+
+export function getAcpToolDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: Parameters<ReturnType<typeof getRuntimeApi>['getAcpToolDetail']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().getAcpToolDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);
+}
+
+export function getTurnFileChangeSet(locator: Parameters<ReturnType<typeof getRuntimeApi>['getTurnFileChangeSet']>[0], changeSetId: string) {
+  return getRuntimeApi().getTurnFileChangeSet(locator, changeSetId);
+}
+
+export function getFileComparison(locator: Parameters<ReturnType<typeof getRuntimeApi>['getFileComparison']>[0], changeSetId: string, changeId: string) {
+  return getRuntimeApi().getFileComparison(locator, changeSetId, changeId);
+}
+
 export function subscribeAcpSessionUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeAcpSessionUpdates']>>[0]) {
   return getRuntimeApi().subscribeAcpSessionUpdates?.(listener) ?? Promise.resolve(() => {});
 }
@@ -185,8 +209,24 @@ export function subscribeInterventionNavigate(listener: Parameters<NonNullable<R
   return getRuntimeApi().subscribeInterventionNavigate?.(listener) ?? Promise.resolve(() => {});
 }
 
+export function subscribeAppExitRequested(listener: Parameters<NonNullable<RuntimeApi['subscribeAppExitRequested']>>[0]) {
+  return getRuntimeApi().subscribeAppExitRequested?.(listener) ?? Promise.resolve(() => {});
+}
+
 export function submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['submitConversationPrompt']>[8], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
   return getRuntimeApi().submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths);
+}
+
+export function updateConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, content: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().updateConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId);
+}
+
+export function deleteConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().deleteConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId);
+}
+
+export function useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().useConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId);
 }
 
 export function sendAcpPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['sendAcpPrompt']>[8], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
@@ -387,6 +427,82 @@ export function saveConversationPreference(key: string, value: unknown) {
 
 export function saveLastConversationWorkspace(projectId: string) {
   return getRuntimeApi().saveLastConversationWorkspace(projectId);
+}
+
+export function listWorkspaceDirectory(projectId: string, relativePath = '') {
+  return getRuntimeApi().listWorkspaceDirectory(projectId, relativePath);
+}
+
+export function openWorkspacePathInFileManager(projectId: string, relativePath = '') {
+  return getRuntimeApi().openWorkspacePathInFileManager(projectId, relativePath);
+}
+
+export function listConversationDirectory(input: import('./api/client').ConversationDirectoryInput) {
+  return getRuntimeApi().listConversationDirectory(input);
+}
+
+export function openConversationDirectoryPathInFileManager(input: import('./api/client').ConversationDirectoryInput) {
+  return getRuntimeApi().openConversationDirectoryPathInFileManager(input);
+}
+
+export function readConversationDirectoryFile(input: import('./api/client').ConversationDirectoryInput) {
+  return getRuntimeApi().readConversationDirectoryFile(input);
+}
+
+export function searchWorkspaceFiles(projectId: string, query: string, requestId: string, limit: number) {
+  return getRuntimeApi().searchWorkspaceFiles(projectId, query, requestId, limit);
+}
+
+export function resolveWorkspaceFileLink(projectId: string, rawHref: string, baseCanonicalPath?: string | null) {
+  return getRuntimeApi().resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath);
+}
+
+export function readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource = false) {
+  return getRuntimeApi().readFileResource(projectId, canonicalPath, externalAccessToken, preferSource);
+}
+
+export function resolveMarkdownImage(input: Parameters<ReturnType<typeof getRuntimeApi>['resolveMarkdownImage']>[0]) {
+  return getRuntimeApi().resolveMarkdownImage(input);
+}
+
+export function writeFileResource(input: Parameters<ReturnType<typeof getRuntimeApi>['writeFileResource']>[0]) {
+  return getRuntimeApi().writeFileResource(input);
+}
+
+export function releaseWorkspaceFilePreview(token: string) {
+  return getRuntimeApi().releaseWorkspaceFilePreview(token);
+}
+
+export function renewExternalFileAccess(token: string) {
+  return getRuntimeApi().renewExternalFileAccess(token);
+}
+
+export function releaseExternalFileAccess(token: string) {
+  return getRuntimeApi().releaseExternalFileAccess(token);
+}
+
+export function startWorkspaceFileWatch(projectId: string) {
+  return getRuntimeApi().startWorkspaceFileWatch(projectId);
+}
+
+export function stopWorkspaceFileWatch(projectId: string) {
+  return getRuntimeApi().stopWorkspaceFileWatch(projectId);
+}
+
+export function subscribeWorkspaceFileChanges(listener: Parameters<NonNullable<RuntimeApi['subscribeWorkspaceFileChanges']>>[0]) {
+  return getRuntimeApi().subscribeWorkspaceFileChanges?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function workspaceFilePreviewUrl(token: string, staticFrame = false) {
+  return getRuntimeApi().workspaceFilePreviewUrl(token, staticFrame);
+}
+
+export function openExternalUrl(url: string) {
+  return getRuntimeApi().openExternalUrl(url);
+}
+
+export function openFileWithSystemApp(path: string) {
+  return getRuntimeApi().openFileWithSystemApp(path);
 }
 // pickAttachmentFiles for file picker in desktop envs
 export function pickAttachmentFiles() {

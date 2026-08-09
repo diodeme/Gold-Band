@@ -559,16 +559,10 @@ fn dynamic_node_spec_schema(policy: &DynamicCompletionSchemaPolicy) -> serde_jso
 
 fn dynamic_agent_task_spec_schema(policy: &DynamicCompletionSchemaPolicy) -> serde_json::Value {
     let mut required = vec!["title", "task"];
-    if policy.provider_required {
-        required.push("provider");
-    }
     if policy.agent_task_model_required {
         required.push("model");
     }
-    let mut forbidden = Vec::new();
-    if !policy.provider_required {
-        forbidden.push("provider");
-    }
+    let mut forbidden = vec!["provider"];
     if policy.agent_task_model_visible && !policy.agent_task_model_required {
         forbidden.push("model");
     }
@@ -760,6 +754,69 @@ pub fn validate_dynamic_group_state(state: &DynamicGroupState) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_routing_contract_rejects_model_and_permission_mode() {
+        let schema = dynamic_completion_effective_schema(&DynamicCompletionSchemaPolicy {
+            provider_required: true,
+            node_model_required: false,
+            agent_task_model_required: false,
+            agent_task_model_visible: false,
+            provider_ids: vec!["claude-acp".to_string(), "codex-acp".to_string()],
+            max_fanout: 5,
+            ..Default::default()
+        });
+        let compiled = jsonschema::JSONSchema::compile(&schema).unwrap();
+        let proposal = serde_json::json!({
+            "version": VERSION,
+            "kind": DYNAMIC_COMPLETION_ARTIFACT,
+            "status": "success",
+            "summary": "route",
+            "next": {
+                "type": "single",
+                "node": {
+                    "id": "worker-1",
+                    "kind": "worker",
+                    "title": "Worker",
+                    "task": "Implement",
+                    "provider": "codex-acp"
+                }
+            }
+        });
+        assert!(compiled.is_valid(&proposal));
+
+        let mut with_model = proposal.clone();
+        with_model["next"]["node"]["model"] = serde_json::json!("gpt-5.6-sol");
+        assert!(!compiled.is_valid(&with_model));
+
+        let mut with_permission = proposal;
+        with_permission["next"]["node"]["permissionMode"] = serde_json::json!("agent-full-access");
+        assert!(!compiled.is_valid(&with_permission));
+    }
+
+    #[test]
+    fn dynamic_control_tasks_reject_provider_and_model() {
+        let schema = dynamic_agent_task_spec_schema(&DynamicCompletionSchemaPolicy {
+            provider_required: true,
+            agent_task_model_visible: false,
+            provider_ids: vec!["claude-acp".to_string(), "codex-acp".to_string()],
+            ..Default::default()
+        });
+        let compiled = jsonschema::JSONSchema::compile(&schema).unwrap();
+        let task = serde_json::json!({
+            "title": "Merge",
+            "task": "Merge branch results"
+        });
+        assert!(compiled.is_valid(&task));
+
+        let mut with_provider = task.clone();
+        with_provider["provider"] = serde_json::json!("codex-acp");
+        assert!(!compiled.is_valid(&with_provider));
+
+        let mut with_model = task;
+        with_model["model"] = serde_json::json!("gpt-5.6-sol");
+        assert!(!compiled.is_valid(&with_model));
+    }
 
     /// A DynamicNodeState without the `uuid` field (legacy on-disk data)
     /// must still deserialize thanks to `#[serde(default)]`.

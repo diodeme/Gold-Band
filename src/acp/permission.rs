@@ -6,10 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    acp::events::{
-        AcpUiEvent, append_ui_event, current_timestamp, latest_timeline_source_seq,
-        load_timeline_items, write_timeline_items,
-    },
+    acp::events::{AcpUiEvent, current_timestamp, load_timeline_items, write_timeline_items},
     storage::{ensure_parent_dir, read_json, write_json},
 };
 
@@ -49,6 +46,7 @@ pub fn cancel_pending_permission_requests(
     attempt_dir: &Utf8Path,
     decided_at: String,
 ) -> Result<()> {
+    crate::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
     let mut cancelled_request_ids = Vec::new();
     let Ok(entries) = fs::read_dir(attempt_dir.as_std_path()) else {
         return Ok(());
@@ -144,6 +142,7 @@ pub fn write_permission_response_if_pending(
     cancelled: bool,
     decided_at: String,
 ) -> Result<bool> {
+    crate::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
     if !pending_permission_file(attempt_dir, request_id).exists() {
         return Ok(false);
     }
@@ -208,14 +207,20 @@ pub fn upsert_permission_decision_event(
     option_id: Option<String>,
     cancelled: bool,
 ) -> Result<()> {
-    let timeline_path = attempt_dir.join("acp.timeline.jsonl");
-    let events_path = attempt_dir.join("acp.events.jsonl");
-    let source_seq = if timeline_path.exists() || !events_path.exists() {
-        latest_timeline_source_seq(&timeline_path) + 1
-    } else {
-        legacy_event_count(&events_path) + 1
-    };
+    crate::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
+    let all_timeline_events = crate::acp::branches::load_all_branch_events(attempt_dir)?;
+    let source_seq = all_timeline_events
+        .iter()
+        .map(|event| event.ended_seq.unwrap_or(event.seq))
+        .max()
+        .unwrap_or_default()
+        + 1;
     let existing = latest_permission_event(attempt_dir, request_id);
+    let branch_id = existing
+        .as_ref()
+        .map(crate::acp::branches::event_branch_id)
+        .unwrap_or_else(|| crate::acp::branches::ROOT_BRANCH_ID.to_string());
+    let timeline_path = crate::acp::branches::branch_timeline_path(attempt_dir, &branch_id);
     let mut event = if cancelled {
         cancelled_permission_event(source_seq, request_id.to_string(), existing.as_ref())
     } else {
@@ -242,12 +247,11 @@ pub fn upsert_permission_decision_event(
     );
     event.ended_at = Some(event.timestamp.clone());
 
-    if events_path.exists() && !timeline_path.exists() {
-        append_ui_event(&events_path, &event)?;
-    }
-
     let mut items = load_timeline_items(&timeline_path)?;
-    if let Some(existing) = items.iter_mut().find(|item| item.id == event.id) {
+    if let Some(existing) = items
+        .iter_mut()
+        .find(|item| permission_event_matches(item, request_id))
+    {
         *existing = event;
     } else {
         items.push(event);
@@ -352,38 +356,15 @@ fn selected_permission_event(
     }
 }
 
-fn legacy_event_count(path: &Utf8Path) -> u64 {
-    let Ok(content) = fs::read_to_string(path.as_std_path()) else {
-        return 0;
-    };
-    content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .count() as u64
-}
-
 fn latest_permission_status(attempt_dir: &Utf8Path, request_id: &str) -> Option<String> {
     latest_permission_event(attempt_dir, request_id).and_then(|event| event.status)
 }
 
 fn latest_permission_event(attempt_dir: &Utf8Path, request_id: &str) -> Option<AcpUiEvent> {
-    let timeline_event = load_timeline_items(&attempt_dir.join("acp.timeline.jsonl"))
+    crate::acp::branches::load_all_branch_events(attempt_dir)
         .ok()
         .into_iter()
         .flatten()
-        .filter(|event| permission_event_matches(event, request_id))
-        .max_by_key(|event| event.ended_seq.or(event.started_seq).unwrap_or(event.seq));
-    if timeline_event.is_some() {
-        return timeline_event;
-    }
-
-    let events_path = attempt_dir.join("acp.events.jsonl");
-    let Ok(content) = fs::read_to_string(events_path.as_std_path()) else {
-        return None;
-    };
-    content
-        .lines()
-        .filter_map(|line| serde_json::from_str::<AcpUiEvent>(line).ok())
         .filter(|event| permission_event_matches(event, request_id))
         .max_by_key(|event| event.ended_seq.or(event.started_seq).unwrap_or(event.seq))
 }
@@ -540,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn cancel_pending_permission_appends_legacy_event_when_no_timeline_exists() {
+    fn cancel_pending_permission_migrates_legacy_audit_without_writing_it() {
         let dir = tempdir().unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
         let request_id = "legacy";
@@ -561,7 +542,8 @@ mod tests {
         cancel_pending_permission_requests(&attempt_dir, "2Z".to_string()).unwrap();
 
         let events = fs::read_to_string(events_path.as_std_path()).unwrap();
-        assert!(events.contains("\"status\":\"cancelled\""));
+        assert!(events.contains("\"status\":\"pending\""));
+        assert!(!events.contains("\"status\":\"cancelled\""));
         let items = load_timeline_items(&attempt_dir.join("acp.timeline.jsonl")).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "permission-legacy");

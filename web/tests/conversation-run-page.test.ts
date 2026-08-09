@@ -13,8 +13,6 @@ function run(partial: Partial<ConversationRunVm> = {}): ConversationRunVm {
     sessionTree: { rounds: [], selectedSessionKey: null },
     selectedSession: null,
     activeSessions: [],
-    artifacts: [],
-    attachments: [],
     inputAttachments: [],
     workflowValid: true,
     workflowStatus: 'valid',
@@ -54,6 +52,7 @@ function session(partial: Partial<AcpSessionVm> = {}): AcpSessionVm {
       hasNewer: false,
     },
     pendingPermissions: [],
+    pendingElicitations: [],
     diagnostics: {
       rawFrameCount: 0,
       eventCount: 0,

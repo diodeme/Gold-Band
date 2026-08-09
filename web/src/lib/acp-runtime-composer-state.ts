@@ -12,6 +12,7 @@ export type AcpComposerMode =
 
 export type AcpComposerSubmitTarget =
   | 'acp-prompt'
+  | 'queue-prompt'
   | 'runtime-continue'
   | 'permission-response'
   | 'none';
@@ -45,6 +46,7 @@ export type AcpComposerHintKind =
 
 export interface AcpRuntimeComposerStateInput {
   lifecycle?: ConversationAttemptLifecycleVm | null;
+  promptQueueEnabled?: boolean;
   workflowValid: boolean;
   workflowInvalidMessage?: string | null;
   pauseMessage?: string | null;
@@ -93,11 +95,14 @@ export function deriveAcpRuntimeComposerState(
 ): AcpRuntimeComposerState {
   const backend = input.lifecycle?.composer;
   const runtimeActive = Boolean(input.lifecycle?.runtime.active);
-  const acpActive = Boolean(input.lifecycle?.acp.active);
-  const acpTerminal = Boolean(input.lifecycle?.acp.terminal);
-  const backendStopping = Boolean(input.lifecycle?.acp.stopping) || backend?.mode === 'stopping';
-  const waitingForPermission = input.waitingForPermission && !input.hasPlanIntervention;
   const localTurnInFlight = Boolean(input.localTurnInFlight);
+  const lifecycleAcpRunning = Boolean(input.lifecycle?.acp.active) && !Boolean(input.lifecycle?.acp.stopping);
+  const acpTerminal = !localTurnInFlight && !lifecycleAcpRunning && (
+    Boolean(input.lifecycle?.acp.terminal) || isSessionTerminalStatus(input.acpStatus)
+  );
+  const acpActive = !acpTerminal && Boolean(input.lifecycle?.acp.active);
+  const backendStopping = !acpTerminal && (Boolean(input.lifecycle?.acp.stopping) || backend?.mode === 'stopping');
+  const waitingForPermission = input.waitingForPermission && !input.hasPlanIntervention;
   const staleTerminalSnapshot = acpTerminal && !localTurnInFlight;
   const cancelling = !acpTerminal && input.cancelling;
   const stopCommandPending = !acpTerminal && input.stopCommandPending;
@@ -108,7 +113,12 @@ export function deriveAcpRuntimeComposerState(
   const runtimeContinueKind = runtimeContinueKindFromInput(input);
   const runtimeErrorMessage = runtimeErrorMessageFromInput(input);
   const runtimeContinueBlockedByWorkflow = runtimeContinueKind != null && !input.workflowValid;
-  const backendMode = normalizeComposerMode(backend?.mode);
+  const reportedBackendMode = normalizeComposerMode(backend?.mode);
+  const backendMode = acpTerminal && reportedBackendMode === 'stopping'
+    ? runtimeContinueKind === 'input'
+      ? 'interrupted-input'
+      : 'normal'
+    : reportedBackendMode;
   const mode = composerModeFromBackend({
     backendMode,
     waitingForPermission,
@@ -117,7 +127,20 @@ export function deriveAcpRuntimeComposerState(
     runtimeContinueBlockedByWorkflow,
     runtimeErrorMessage,
   });
-  const submitTarget = submitTargetFromBackend(input, mode, backend?.submitTarget);
+  const directQueueFacet = Boolean(input.promptQueueEnabled) || input.lifecycle?.promptQueue != null;
+  const submitTarget = directQueueFacet && shouldRouteDirectSubmissionToQueue({
+    input,
+    mode,
+    runtimeActive,
+    acpActive,
+    waitingForOptimisticPrompt,
+    awaitingResponse,
+  })
+    ? 'queue-prompt'
+    : submitTargetFromBackend(input, mode, backend?.submitTarget);
+  const queueAtCapacity = submitTarget === 'queue-prompt' && (
+    (input.lifecycle?.promptQueue?.items.length ?? 0) >= (input.lifecycle?.promptQueue?.maxItems ?? 10)
+  );
   const sessionActive = runtimeActive || acpActive || stopInProgress || waitingForPermission;
   const activePromptLocked =
     input.sending ||
@@ -127,9 +150,23 @@ export function deriveAcpRuntimeComposerState(
     stopInProgress;
   const showExternalState = mode === 'invalid-workflow' || mode === 'runtime-error';
   const composerLocked = waitingForPermission;
-  const backendInputLocked = mode !== 'normal' && Boolean(backend?.lockInput);
-  const inputDisabled = (composerLocked || backendInputLocked || activePromptLocked || mode === 'invalid-workflow' || mode === 'runtime-error') && !input.hasPlanIntervention;
-  const canSubmit = Boolean(input.prompt.trim()) && submitTarget !== 'none' && !inputDisabledForSubmit(inputDisabled, input.hasPlanIntervention, mode);
+  const staleStoppingBackend = acpTerminal && reportedBackendMode === 'stopping';
+  const backendInputLocked = !staleStoppingBackend && mode !== 'normal' && Boolean(backend?.lockInput);
+  const directInputDisabled =
+    composerLocked ||
+    stopInProgress ||
+    mode === 'invalid-workflow' ||
+    mode === 'runtime-error';
+  const inputDisabled = (
+    directQueueFacet
+      ? directInputDisabled
+      : composerLocked || backendInputLocked || activePromptLocked || mode === 'invalid-workflow' || mode === 'runtime-error'
+  ) && !input.hasPlanIntervention;
+  const canSubmit = Boolean(input.prompt.trim())
+    && submitTarget !== 'none'
+    && !queueAtCapacity
+    && !(input.sending && submitTarget !== 'queue-prompt')
+    && !inputDisabledForSubmit(inputDisabled, input.hasPlanIntervention, mode);
   const processingKind = processingKindForInput(
     input,
     stopInProgress,
@@ -137,9 +174,15 @@ export function deriveAcpRuntimeComposerState(
     awaitingResponse,
     normalizeProcessingKind(backend?.processingKind),
   );
+  const directTurnHandoff = directQueueFacet
+    && acpTerminal
+    && processingKind === 'launching-next-node'
+    && !turnSubmitting
+    && !awaitingResponse;
   const statusActive =
     !input.waitingForPermission &&
     !composerLocked &&
+    !directTurnHandoff &&
     (turnSubmitting || awaitingResponse || sessionActive || stopInProgress || mode === 'runtime-active');
   const externalMessage = externalMessageForMode(input, mode, runtimeErrorMessage);
 
@@ -149,11 +192,12 @@ export function deriveAcpRuntimeComposerState(
     inputDisabled,
     canSubmit,
     canStop:
-      Boolean(backend?.canStop) ||
+      (!acpTerminal && Boolean(backend?.canStop)) ||
       sessionActive ||
       awaitingResponse ||
       input.sending ||
       waitingForOptimisticPrompt ||
+      localTurnInFlight ||
       cancelling,
     stopInProgress,
     sessionActive,
@@ -166,7 +210,9 @@ export function deriveAcpRuntimeComposerState(
     processingKind,
     statusActive,
     showStatus: !input.waitingForPermission && statusActive,
-    placeholderKind: placeholderKindForMode(input, mode, activePromptLocked),
+    placeholderKind: directQueueFacet
+      ? 'default'
+      : placeholderKindForMode(input, mode, activePromptLocked),
     hintKind: hintKindForMode(input, mode, statusActive, turnSubmitting),
     message: externalMessage,
   };
@@ -187,6 +233,42 @@ export function shouldKeepLocalRuntimeLifecycleOverride(
     incoming.continueKind === 'input' &&
     incoming.composer.mode === 'interrupted-input'
   );
+}
+
+function shouldRouteDirectSubmissionToQueue(input: {
+  input: AcpRuntimeComposerStateInput;
+  mode: AcpComposerMode;
+  runtimeActive: boolean;
+  acpActive: boolean;
+  waitingForOptimisticPrompt: boolean;
+  awaitingResponse: boolean;
+}) {
+  if (
+    input.mode === 'permission-blocked' ||
+    input.mode === 'invalid-workflow' ||
+    input.mode === 'runtime-error' ||
+    input.mode === 'stopping' ||
+    input.input.hasPlanIntervention
+  ) {
+    return false;
+  }
+  return input.input.sending ||
+    input.waitingForOptimisticPrompt ||
+    input.awaitingResponse ||
+    input.runtimeActive ||
+    input.acpActive;
+}
+
+export function mergeConversationAttemptLifecycle(
+  local: ConversationAttemptLifecycleVm | null | undefined,
+  incoming: ConversationAttemptLifecycleVm,
+): ConversationAttemptLifecycleVm {
+  const localQueue = local?.promptQueue;
+  const incomingQueue = incoming.promptQueue;
+  if (localQueue && (!incomingQueue || localQueue.revision > incomingQueue.revision)) {
+    return { ...incoming, promptQueue: localQueue };
+  }
+  return incoming;
 }
 
 export function isSessionActiveStatus(status?: string | null) {
@@ -257,6 +339,7 @@ function submitTargetFromBackend(
   const normalized = normalizeStatus(backendSubmitTarget);
   if (
     normalized === 'acp-prompt' ||
+    normalized === 'queue-prompt' ||
     normalized === 'runtime-continue' ||
     normalized === 'permission-response' ||
     normalized === 'none'

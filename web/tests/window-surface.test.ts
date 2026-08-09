@@ -21,6 +21,8 @@ describe('desktop window surface', () => {
     expect(mainWindow.transparent).toBe(false);
     expect(mainWindow.shadow).toBe(true);
     expect(mainWindow.backgroundColor).toBe('#00000000');
+    expect(mainWindow.minWidth).toBeUndefined();
+    expect(mainWindow.minHeight).toBeUndefined();
 
     const mainSource = readFileSync(path.resolve(__dirname, '../../src-tauri/src/main.rs'), 'utf8');
     expect(mainSource).toContain('#[cfg(target_os = "windows")]');
@@ -46,7 +48,20 @@ describe('desktop window surface', () => {
     const capability = JSON.parse(readFileSync(path.resolve(__dirname, '../../src-tauri/capabilities/default.json'), 'utf8'));
 
     expect(capability.permissions).toContain('core:window:allow-set-background-color');
+    expect(capability.permissions).toContain('core:window:allow-inner-size');
+    expect(capability.permissions).toContain('core:window:allow-scale-factor');
+    expect(capability.permissions).toContain('core:window:allow-set-min-size');
+    expect(capability.permissions).toContain('core:window:allow-set-size');
     expect(capability.permissions).toContain('core:window:allow-show');
     expect(capability.permissions).not.toContain('core:webview:allow-set-webview-background-color');
+  });
+
+  it('applies the page minimum before revealing the initially hidden native window', () => {
+    const appSource = readFileSync(path.resolve(__dirname, '../src/App.tsx'), 'utf8');
+    const minimumIndex = appSource.indexOf('await syncDesktopWindowMinimum(');
+    const showIndex = appSource.indexOf('await appWindow.show()');
+
+    expect(minimumIndex).toBeGreaterThan(-1);
+    expect(showIndex).toBeGreaterThan(minimumIndex);
   });
 });

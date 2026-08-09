@@ -26,7 +26,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
-import { createBlankWorkflowDraft } from '@/lib/workflow-template';
+import { createBlankWorkflowDraft, shouldShowDefaultWorkflowSaveAsNotice, workflowTemplateDisplayName } from '@/lib/workflow-template';
 
 type TaskListLoading = 'initial' | 'manual' | null;
 
@@ -317,6 +317,11 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
     workflow,
   } = draft;
   const workflowDirty = Boolean(workflow && baseWorkflow && canonicalWorkflow(workflow) !== canonicalWorkflow(baseWorkflow));
+  const showDefaultWorkflowSaveAsNotice = shouldShowDefaultWorkflowSaveAsNotice(
+    selectedTemplateId,
+    workflow,
+    baseWorkflow,
+  );
   const updateDraft = (patch: Partial<CreateTaskDraftState>) => {
     onDraftChange((current) => ({ ...current, ...patch }));
   };
@@ -462,7 +467,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
       setWorkflowError(t('common.loading'));
       return null;
     }
-    const validation = validateWorkflowForSave(workflowDraft, profileList.profiles, agentRegistry.agents.filter((agent) => agent.supported && agent.diagnostic?.available === true), t, templateStore ?? null, selectedTemplateId, selectedTemplate?.name ?? null, validateTemplateDuplicateId);
+    const validation = validateWorkflowForSave(workflowDraft, profileList.profiles, agentRegistry.agents.filter((agent) => agent.diagnostic?.available === true), t, templateStore ?? null, selectedTemplateId, selectedTemplate ? workflowTemplateDisplayName(selectedTemplate, t) : null, validateTemplateDuplicateId);
     if (!validation.valid) {
       setWorkflowNotice(null);
       setWorkflowError(validation.issues.map((issue) => issue.message).join('\n'));
@@ -552,7 +557,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
 
   const defaultWorkflow = templateStore?.templates.find((template) => template.id === 'default')?.workflow ?? null;
   const selectedTemplate = templateStore?.templates.find((template) => template.id === selectedTemplateId) ?? null;
-  const workflowTemplateLabel = selectedTemplate?.name ?? (workflow ? t('taskList.create.unsavedWorkflowTemplate') : t('taskList.create.workflowTemplatePlaceholder'));
+  const workflowTemplateLabel = selectedTemplate ? workflowTemplateDisplayName(selectedTemplate, t) : (workflow ? t('taskList.create.unsavedWorkflowTemplate') : t('taskList.create.workflowTemplatePlaceholder'));
   const canUpdateSelectedTemplate = Boolean(selectedTemplateId && selectedTemplateId !== 'default');
   const lastUsedTemplate = templateStore?.templates.find((template) => template.id === templateStore.lastUsedTemplateId) ?? null;
   const showLastUsedHint = Boolean(lastUsedTemplate && selectedTemplateId !== lastUsedTemplate.id && !lastUsedHintDismissed);
@@ -614,7 +619,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
   };
 
   return (
-    <Sheet open={open} onOpenChange={requestOpenChange}>
+    <Sheet modal={false} open={open} onOpenChange={requestOpenChange}>
       <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey="task-list/create-task" defaultSize={1120} minSize={760} maxSize={1440} closeLabel={t('common.close')}>
         <SheetHeader className="border-b px-5 py-4 text-left">
           <div className="flex items-start justify-between gap-3 pr-9">
@@ -718,7 +723,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
                                     setTemplatePickerOpen(false);
                                   }}
                                 >
-                                  <span className="truncate">{template.name}</span>
+                                  <span className="truncate">{workflowTemplateDisplayName(template, t)}</span>
                                   {selected ? <Check className="size-4 shrink-0" /> : null}
                                 </button>
                                 <Button
@@ -748,20 +753,27 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
                         <button
                           type="button"
                           className="font-medium text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                          aria-label={t('taskList.create.selectLastUsedWorkflow', { name: lastUsedTemplate.name })}
+                          aria-label={t('taskList.create.selectLastUsedWorkflow', { name: workflowTemplateDisplayName(lastUsedTemplate, t) })}
                           onClick={() => selectWorkflowTemplate(lastUsedTemplate.id)}
                         >
-                          {lastUsedTemplate.name}
+                          {workflowTemplateDisplayName(lastUsedTemplate, t)}
                         </button>
                       </span>
                     ) : null}
                     {workflowDirty ? <Badge variant="outline">{t('taskList.create.workflowDirty')}</Badge> : null}
                   </div>
                   {workflowDirty ? (
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                      {canUpdateSelectedTemplate ? <Button variant="outline" size="sm" disabled={saving} onClick={() => void saveCurrentTemplateChanges()}>{saving ? t('taskList.create.savingWorkflowTemplate') : t('taskList.create.saveCurrentWorkflow')}</Button> : null}
-                      <Input className="sm:w-52" value={saveTemplateName} placeholder={t('taskList.create.workflowTemplateName')} onChange={(event) => updateDraft({ saveTemplateName: event.target.value })} />
-                      <Button variant="outline" size="sm" disabled={!saveTemplateName.trim() || saving} onClick={() => void saveCurrentAsTemplate()}>{t('taskList.create.saveAsWorkflow')}</Button>
+                    <div className="space-y-1.5">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                        {canUpdateSelectedTemplate ? <Button variant="outline" size="sm" disabled={saving} onClick={() => void saveCurrentTemplateChanges()}>{saving ? t('taskList.create.savingWorkflowTemplate') : t('taskList.create.saveCurrentWorkflow')}</Button> : null}
+                        <Input className="sm:w-52" value={saveTemplateName} placeholder={t('taskList.create.workflowTemplateName')} onChange={(event) => updateDraft({ saveTemplateName: event.target.value })} />
+                        <Button variant="outline" size="sm" disabled={!saveTemplateName.trim() || saving} onClick={() => void saveCurrentAsTemplate()}>{t('taskList.create.saveAsWorkflow')}</Button>
+                      </div>
+                      {showDefaultWorkflowSaveAsNotice ? (
+                        <p role="status" className="text-xs text-destructive">
+                          {t('taskList.create.defaultWorkflowSaveAsNotice')}
+                        </p>
+                      ) : null}
                     </div>
                   ) : null}
                 </AppCard>
@@ -782,7 +794,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
                   defaultWorkflow={defaultWorkflow}
                   workflowTemplates={templateStore}
                   currentTemplateId={selectedTemplateId}
-                  currentTemplateName={selectedTemplate?.name ?? null}
+                  currentTemplateName={selectedTemplate ? workflowTemplateDisplayName(selectedTemplate, t) : null}
                   allowAiDynamic
                   saving={saving}
                   onChange={(next) => {

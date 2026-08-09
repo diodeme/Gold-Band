@@ -1138,7 +1138,7 @@ fn skill_sort_key(left: &SkillMeta, right: &SkillMeta) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{MANAGED_AGENT_PRESETS, ManagedAgentConfig, ManagedAgentId};
+    use crate::config::{ManagedAgentConfig, ManagedAgentId, catalog_agent_default_config};
     use std::fs;
     use std::str::FromStr;
 
@@ -1154,11 +1154,11 @@ mod tests {
     }
 
     fn claude_acp_config() -> ManagedAgentConfig {
-        MANAGED_AGENT_PRESETS[0].default_config()
+        catalog_agent_default_config("claude-acp").unwrap()
     }
 
     fn codex_acp_config() -> ManagedAgentConfig {
-        MANAGED_AGENT_PRESETS[1].default_config()
+        catalog_agent_default_config("codex-acp").unwrap()
     }
 
     fn agent_id(value: &str) -> ManagedAgentId {
@@ -1198,7 +1198,7 @@ mod tests {
         agents.insert(agent_id("codex-acp"), codex_acp_config());
         agents.insert(
             agent_id("cursor"),
-            MANAGED_AGENT_PRESETS[2].default_config(),
+            catalog_agent_default_config("cursor").unwrap(),
         );
 
         let dirs = configured_agent_skill_read_dirs_at_root(temp.path(), &agents);
@@ -1285,7 +1285,7 @@ compatibility: claude-code-only
 
         let mut agents = BTreeMap::new();
         let mut claude_config = claude_acp_config();
-        claude_config.primary_agent_dir = tmp.join(".claude").to_string_lossy().to_string();
+        claude_config.primary_agent_dir = Some(tmp.join(".claude").to_string_lossy().to_string());
         agents.insert(agent_id("claude-acp"), claude_config);
 
         let manager = SkillManager::new(GoldBandPaths::new("."), agents);
@@ -1374,10 +1374,10 @@ compatibility: claude-code-only
 
         let mut agents = BTreeMap::new();
         let mut claude_config = claude_acp_config();
-        claude_config.primary_agent_dir = tmp.join(".claude").to_string_lossy().to_string();
+        claude_config.primary_agent_dir = Some(tmp.join(".claude").to_string_lossy().to_string());
         agents.insert(agent_id("claude-acp"), claude_config);
         let mut codex_config = codex_acp_config();
-        codex_config.primary_agent_dir = tmp.join(".codex").to_string_lossy().to_string();
+        codex_config.primary_agent_dir = Some(tmp.join(".codex").to_string_lossy().to_string());
         agents.insert(agent_id("codex-acp"), codex_config);
 
         fs::create_dir_all(tmp.join(".claude").join("skills")).unwrap();
@@ -1524,7 +1524,7 @@ compatibility: claude-code-only
         let mut agents = BTreeMap::new();
         agents.insert(agent_id("claude-acp"), claude_acp_config());
         let mut codex_config = codex_acp_config();
-        codex_config.primary_agent_dir = tmp.join(".codex").to_string_lossy().to_string();
+        codex_config.primary_agent_dir = Some(tmp.join(".codex").to_string_lossy().to_string());
         agents.insert(agent_id("codex-acp"), codex_config);
 
         let manager = SkillManager::new(GoldBandPaths::new(repo_root.clone()), agents);

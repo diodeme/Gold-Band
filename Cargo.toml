@@ -1,6 +1,6 @@
 [package]
 name = "gold-band"
-version = "0.9.0"
+version = "0.12.2"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -13,6 +13,7 @@ agent-client-protocol-schema = { version = "1.6.0", features = ["unstable_elicit
 anyhow = "1"
 camino = { version = "1", features = ["serde1"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+command-group = "5.0.1"
 dirs = "6"
 clap = { version = "4", features = ["derive"] }
 indexmap = { version = "2", features = ["serde"] }
@@ -27,10 +28,11 @@ jsonschema = { version = "0.17", default-features = false }
 minijinja = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "fs", "io-util"] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v5"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+walkdir = "2"
 file-rotate = "0.8"
 ratatui = "0.29"
 crossterm = "0.28"
@@ -39,6 +41,16 @@ rusqlite = { version = "0.34", features = ["bundled"] }
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 url = "2"
 atomic-write-file = "0.2"
+blake3 = "1"
+similar = "3.1"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+tempfile = "3"
+uzers = { version = "0.12", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

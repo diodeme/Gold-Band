@@ -13,11 +13,6 @@ const trailingMarkdownDelimiter = /(?:\\|[*_~]+|`+)$/u;
 const partialMarkdownImage = /(^|[^\\])!\[([^\]\n]*)(?:\](?:\([^\)\n]*)?)?$/u;
 const partialMarkdownLink = /(^|[^\\!])\[([^\]\n]*)(?:\](?:\([^\)\n]*)?)?$/u;
 
-/**
- * Keeps syntax-only suffixes out of the visible draft until they have enough
- * following content to be parsed as Markdown. The canonical source is never
- * changed; this only shapes the temporary presentation prefix.
- */
 export function normalizeStreamingMarkdownPrefix(prefix: string) {
   return prefix
     .replace(partialMarkdownImage, '$1$2')
@@ -45,18 +40,20 @@ export function syncStreamingMarkdownPresentation(
   canonical: string,
   streaming: boolean,
 ): StreamingMarkdownPresentation {
-  if (canonical === current.canonical) return current;
+  if (canonical === current.canonical) {
+    return settleFinishedStreamingMarkdownPresentation(current, streaming);
+  }
   if (current.canonical.length === 0 && current.offset === 0) {
     return createStreamingMarkdownPresentation(canonical, streaming);
   }
 
   const visibleCanonicalPrefix = current.canonical.slice(0, current.offset);
   if (canonical.startsWith(visibleCanonicalPrefix)) {
-    return {
+    return settleFinishedStreamingMarkdownPresentation({
       canonical,
       offset: Math.min(current.offset, canonical.length),
       carry: current.carry,
-    };
+    }, streaming);
   }
 
   return createStreamingMarkdownPresentation(canonical, streaming);
@@ -77,8 +74,8 @@ export function advanceStreamingMarkdownPresentation(
     ),
   );
   const nextCarry =
-    current.carry +
-    (charsPerSecond * Math.min(Math.max(elapsedMs, 0), 64)) / 1000;
+    current.carry
+    + (charsPerSecond * Math.min(Math.max(elapsedMs, 0), 64)) / 1000;
   const charBudget = Math.max(1, Math.floor(nextCarry));
   const nextOffset = advanceUntilVisibleChange(
     current.canonical,
@@ -121,13 +118,9 @@ function advanceUntilVisibleChange(
   );
   let nextOffset = advanceCodePoints(canonical, offset, charBudget);
 
-  // Markdown control characters and partial link destinations should not
-  // consume their own visual frame. Advance through them atomically until the
-  // rendered draft can actually change or the current snapshot is exhausted.
   while (
-    nextOffset < canonical.length &&
-    normalizeStreamingMarkdownPrefix(canonical.slice(0, nextOffset)) ===
-      currentText
+    nextOffset < canonical.length
+    && normalizeStreamingMarkdownPrefix(canonical.slice(0, nextOffset)) === currentText
   ) {
     nextOffset = advanceCodePoints(canonical, nextOffset, 1);
   }
@@ -144,4 +137,22 @@ function advanceCodePoints(source: string, offset: number, count: number) {
     if (remaining <= 0) break;
   }
   return nextOffset;
+}
+
+function settleFinishedStreamingMarkdownPresentation(
+  presentation: StreamingMarkdownPresentation,
+  streaming: boolean,
+) {
+  if (streaming) return presentation;
+  if (
+    presentation.offset >= presentation.canonical.length
+    && presentation.carry === 0
+  ) {
+    return presentation;
+  }
+  return {
+    canonical: presentation.canonical,
+    offset: presentation.canonical.length,
+    carry: 0,
+  };
 }

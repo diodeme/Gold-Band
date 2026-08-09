@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { ChevronDown } from "lucide-react";
@@ -8,11 +8,16 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import {
+  type ChatContainerContentExpansionToken,
+  useOptionalChatContainerContentExpansion,
+} from "@/components/prompt-kit/chat-container";
 import { resolvePromptBubbleInlineSize } from "@/lib/prompt-bubble-width";
 import { parseGoldBandHiddenSections } from "@/components/acp/hiddenPromptSections";
 
 export function HiddenPromptMessageContent({ content }: { content: string }) {
   const { t } = useTranslation();
+  const contentExpansion = useOptionalChatContainerContentExpansion();
   const parts = useMemo(() => parseGoldBandHiddenSections(content), [content]);
   const rootRef = useRef<HTMLDivElement>(null);
   const labelMeasureRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -21,6 +26,19 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
   const [openSections, setOpenSections] = useState<Record<number, boolean>>({});
   const [measurementRevision, setMeasurementRevision] = useState(0);
   const [measuredInlineSize, setMeasuredInlineSize] = useState<number | null>(null);
+  const expansionTokensRef = useRef(
+    new Map<number, ChatContainerContentExpansionToken>(),
+  );
+  const contentExpansionRef = useRef(contentExpansion);
+  contentExpansionRef.current = contentExpansion;
+
+  useEffect(() => () => {
+    const tokens = Array.from(expansionTokensRef.current.values());
+    expansionTokensRef.current.clear();
+    for (const token of tokens) {
+      contentExpansionRef.current?.endContentExpansion(token);
+    }
+  }, []);
 
   useLayoutEffect(() => {
     const messageRow = rootRef.current?.closest<HTMLElement>("[data-acp-message-row]");
@@ -62,6 +80,21 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
 
   if (parts.length === 0) return null;
 
+  const handleSectionOpenChange = (index: number, open: boolean) => {
+    if (open && !expansionTokensRef.current.has(index)) {
+      const token = contentExpansion?.beginContentExpansion() ?? null;
+      if (token !== null) expansionTokensRef.current.set(index, token);
+    } else if (!open) {
+      const token = expansionTokensRef.current.get(index) ?? null;
+      expansionTokensRef.current.delete(index);
+      contentExpansion?.endContentExpansion(token);
+    }
+    setOpenSections((current) => ({
+      ...current,
+      [index]: open,
+    }));
+  };
+
   return (
     <div
       ref={rootRef}
@@ -76,10 +109,7 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
               title={part.title}
               text={part.text}
               open={Boolean(openSections[index])}
-              onOpenChange={(open) => setOpenSections((current) => ({
-                ...current,
-                [index]: open,
-              }))}
+              onOpenChange={(open) => handleSectionOpenChange(index, open)}
             />
           );
         }

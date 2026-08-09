@@ -49,11 +49,17 @@ import {
   updateNotificationAttention,
 } from './api';
 import { isTauriRuntime } from './api/shared';
+import {
+  applyConversationSidebarTaskActivity,
+  conversationTaskActivityFromLifecycle,
+  conversationTaskActivityFromUpdate,
+} from './lib/conversation-sidebar-activity';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Breadcrumbs } from './components/Breadcrumbs';
 import { Button } from '@/components/ui/button';
 import { X } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { WindowCloseCoordinator } from '@/components/WindowCloseCoordinator';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
@@ -96,7 +102,6 @@ import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
 import { applyFont, applyTheme, resolveThemePreference, syncDesktopWindowSurface } from './theme';
-import { isConversationRunStopSettled } from '@/lib/conversation-run-stop';
 import { useInterventionNotifications } from './lib/use-intervention-notifications';
 import {
   shouldRunWorkbenchBackgroundRefresh,
@@ -117,12 +122,36 @@ import {
 import { ConversationRunModePersistence } from '@/lib/conversation-run-mode-persistence';
 import { createDefaultAvatarPreferences } from '@/lib/avatar';
 import { AvatarPreferencesProvider } from '@/components/avatar/AvatarPreferencesContext';
+import {
+  ConversationWorkspaceStore,
+  createConversationWorkspaceScope,
+  createDraftConversationWorkspaceScope,
+} from '@/components/workspace/right-workspace-context';
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
+import {
+  conversationPageForIntervention,
+  conversationPageMatchesRun,
+  resolvePresentedConversationPage,
+  shouldCommitConversationNavigation,
+} from '@/lib/conversation-navigation';
+import { preloadConversationTurnFileChangeSets } from '@/lib/turn-file-change-set-cache';
+import {
+  INITIAL_DESKTOP_WINDOW_MINIMUM_SYNC_STATE,
+  syncDesktopWindowMinimum,
+  type DesktopWindowMinimumSyncState,
+} from '@/lib/desktop-window-layout';
+import {
+  FALLBACK_WORKSPACE_FILES,
+  FALLBACK_WORKSPACE_LAYOUT,
+  workspaceLayoutProfileForSurface,
+} from '@/components/workspace/workspace-layout';
 import type {
   AgentRegistryVm,
   AppBootstrapVm,
   AppConfigVm,
   AppInfoVm,
+  ConversationAttemptLifecycleVm,
+  ConversationTaskActivityVm,
   ConversationPage,
   ConversationRunModeVm,
   ConversationRunVm,
@@ -193,6 +222,9 @@ const defaultAppInfo: AppInfoVm = {
 const defaultAppConfig: AppConfigVm = {
   acpSessionTitleRefreshEnabled: false,
   acpChatEventPageSize: 360,
+  turnFiles: { cardPreviewLimit: 3 },
+  workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
+  workspaceFiles: FALLBACK_WORKSPACE_FILES,
 };
 type RefreshMode = 'initial' | 'manual' | 'background';
 type VisibleRefreshMode = Exclude<RefreshMode, 'background'>;
@@ -237,9 +269,20 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof localStorage !== 'undefined' && localStorage.getItem('gold-band-sidebar-collapsed') === 'true');
   const [bootstrap, setBootstrap] = useState<AppBootstrapVm | null>(null);
   const windowRevealedRef = useRef(false);
+  const windowLayoutSyncRef = useRef<Promise<void>>(Promise.resolve());
+  const windowMinimumSyncStateRef = useRef<DesktopWindowMinimumSyncState>(
+    INITIAL_DESKTOP_WINDOW_MINIMUM_SYNC_STATE,
+  );
+  const activeWindowLayoutRef = useRef<{
+    layout: AppConfigVm['workspaceLayout'];
+    profile: AppConfigVm['workspaceLayout']['conversation'];
+  } | null>(null);
   const [primaryModule, setPrimaryModule] = useState<PrimaryModule>(initialRoute.module);
   const [taskPage, setTaskPage] = useState<TaskPage>(initialRoute.taskPage);
   const [conversationPage, setConversationPage] = useState<ConversationPage>(initialRoute.conversationPage);
+  const conversationPageRef = useRef<ConversationPage>(initialRoute.conversationPage);
+  const conversationStopRequestRef = useRef(0);
+  const conversationRunStopPendingRef = useRef(false);
   const [conversationSidebar, setConversationSidebar] = useState<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const conversationSidebarRef = useRef<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
@@ -249,15 +292,24 @@ export function App() {
   const [conversationRunModePersistence] = useState(
     () => new ConversationRunModePersistence(saveConversationRunMode),
   );
+  const [conversationWorkspaceStore] = useState(() => new ConversationWorkspaceStore());
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
-  const [conversationRunStopping, setConversationRunStopping] = useState(false);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
+  const conversationNavigationRequestRef = useRef(0);
+  const presentedConversationPage = useMemo(
+    () => resolvePresentedConversationPage(conversationPage, conversationRun),
+    [conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId],
+  );
   const conversationSessionFollowRef = useRef<ConversationSessionFollowState>({
     mode: 'auto',
     selectedSessionKey: null,
     version: 0,
   });
   const conversationSelectedSessionKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    conversationPageRef.current = conversationPage;
+  }, [conversationPage]);
   const [forceSettingsTab, setForceSettingsTab] = useState<'advanced' | null>(null);
   const [conversationWorkflowTemplates, setConversationWorkflowTemplates] = useState<WorkflowTemplateStore | null>(null);
   const [, startTransition] = useTransition();
@@ -298,6 +350,23 @@ export function App() {
     setConversationSidebar(nextSidebar);
   }, []);
 
+  const applyConversationTaskActivity = useCallback((
+    projectId: string,
+    taskId: string,
+    activity: ConversationTaskActivityVm | null,
+  ) => {
+    setConversationSidebar((current) => {
+      const next = applyConversationSidebarTaskActivity(
+        current,
+        projectId,
+        taskId,
+        activity,
+      );
+      conversationSidebarRef.current = next;
+      return next;
+    });
+  }, []);
+
   // Derive active workspace: explicit local state > persisted lastActiveWorkspaceId > first workspace
   const effectiveWorkspaceId =
     activeWorkspaceId
@@ -320,8 +389,8 @@ export function App() {
   const draftWorkspace = conversationSidebar.workspaces.find((w) => w.projectId === draftConversationWorkspaceId)
     ?? activeWorkspace
     ?? conversationSidebar.workspaces[0];
-  const sidebarFocusWorkspaceId = conversationPage.kind === 'conversation-run'
-    ? conversationPage.projectId
+  const sidebarFocusWorkspaceId = presentedConversationPage.kind === 'conversation-run'
+    ? presentedConversationPage.projectId
     : (draftConversationWorkspaceId ?? effectiveWorkspaceId);
   const defaultProjectId = draftWorkspace?.projectId ?? 'default';
   const defaultWorkspaceName = draftWorkspace?.name ?? 'Default Workspace';
@@ -366,10 +435,7 @@ export function App() {
   useEffect(() => {
     conversationRunRef.current = conversationRun;
     conversationSelectedSessionKeyRef.current = conversationRun?.sessionTree.selectedSessionKey ?? null;
-    if (conversationRunStopping && isConversationRunStopSettled(conversationRun)) {
-      setConversationRunStopping(false);
-    }
-  }, [conversationRun, conversationRunStopping]);
+  }, [conversationRun]);
 
   useEffect(() => {
     if (conversationPage.kind !== 'conversation-run') return;
@@ -402,6 +468,19 @@ export function App() {
   const showUpdatesSectionDot = availableUpdateVersion !== null;
   const appInfo = bootstrap?.appInfo ?? defaultAppInfo;
   const appConfig = bootstrap?.appConfig ?? defaultAppConfig;
+  const activeWorkspaceLayoutProfile = useMemo(
+    () => workspaceLayoutProfileForSurface({
+      uiMode,
+      conversationPage: presentedConversationPage,
+      primaryModule,
+      layout: appConfig.workspaceLayout,
+    }),
+    [appConfig.workspaceLayout, presentedConversationPage, primaryModule, uiMode],
+  );
+  activeWindowLayoutRef.current = {
+    layout: appConfig.workspaceLayout,
+    profile: activeWorkspaceLayoutProfile,
+  };
   const shouldShowUpdateAnnouncement = useMemo(
     () => availableUpdateVersion !== null && updateBadges.announcementClosedVersion !== availableUpdateVersion,
     [availableUpdateVersion, updateBadges.announcementClosedVersion],
@@ -430,16 +509,71 @@ export function App() {
   }, [sidebarCollapsed]);
 
   useEffect(() => {
-    if (!isTauriRuntime() || !bootstrap || windowRevealedRef.current) return;
-    windowRevealedRef.current = true;
+    if (!isTauriRuntime() || !bootstrap) return;
+    let cancelled = false;
     const revealWindow = async () => {
       const appWindow = getCurrentWindow();
-      await appWindow.setDecorations(false).catch(() => {});
-      await syncDesktopWindowSurface(resolveThemePreference(preferences.theme));
-      await appWindow.show().catch(() => {});
+      if (!windowRevealedRef.current) {
+        await syncDesktopWindowSurface(resolveThemePreference(preferences.theme));
+      }
+      await syncDesktopWindowMinimum(
+        appWindow,
+        appConfig.workspaceLayout,
+        activeWorkspaceLayoutProfile,
+        windowMinimumSyncStateRef.current,
+      ).then((state) => {
+        windowMinimumSyncStateRef.current = state;
+      }).catch(() => {});
+      if (cancelled || windowRevealedRef.current) return;
+      windowRevealedRef.current = true;
+      await appWindow.show().catch(() => {
+        windowRevealedRef.current = false;
+      });
     };
-    void revealWindow();
-  }, [bootstrap, preferences.theme]);
+    windowLayoutSyncRef.current = windowLayoutSyncRef.current
+      .catch(() => {})
+      .then(revealWindow);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeWorkspaceLayoutProfile, appConfig.workspaceLayout, bootstrap, preferences.theme]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return undefined;
+    const appWindow = getCurrentWindow();
+    let active = true;
+    let unlisten: (() => void) | undefined;
+
+    appWindow.onResized(() => {
+      if (!windowMinimumSyncStateRef.current.pending) return;
+      windowLayoutSyncRef.current = windowLayoutSyncRef.current
+        .catch(() => {})
+        .then(async () => {
+          if (!active || !windowMinimumSyncStateRef.current.pending) return;
+          const target = activeWindowLayoutRef.current;
+          if (!target) return;
+          const state = await syncDesktopWindowMinimum(
+            appWindow,
+            target.layout,
+            target.profile,
+            windowMinimumSyncStateRef.current,
+          );
+          if (active) windowMinimumSyncStateRef.current = state;
+        })
+        .catch(() => {});
+    }).then((dispose) => {
+      if (active) {
+        unlisten = dispose;
+      } else {
+        dispose();
+      }
+    }).catch(() => {});
+
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -536,8 +670,12 @@ export function App() {
   }, [applyConversationSidebar, bootstrap, uiMode]);
 
   useEffect(() => {
-    if (!bootstrap || uiMode !== 'conversation') return;
+    if (!bootstrap) return;
     getAgentRegistry().then(setAgentRegistry).catch(() => {});
+  }, [bootstrap]);
+
+  useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation') return;
     loadProfiles().catch(() => setProfiles([]));
     getWorkflowTemplates().then(setConversationWorkflowTemplates).catch(() => {});
   }, [bootstrap, loadProfiles, uiMode]);
@@ -551,15 +689,35 @@ export function App() {
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return;
     const { projectId, taskId, runId } = conversationPage;
+    const requestId = conversationNavigationRequestRef.current + 1;
+    conversationNavigationRequestRef.current = requestId;
+    let cancelled = false;
     getConversationRun(projectId, taskId, runId)
-      .then((run) => {
+      .then(async (run) => {
+        await preloadConversationTurnFileChangeSets(run);
+        if (cancelled || !shouldCommitConversationNavigation(
+          requestId,
+          conversationNavigationRequestRef.current,
+          conversationPageRef.current,
+          run,
+        )) return;
         applyConversationRunSnapshot(run, 'initial-load');
       })
-      .catch(() => setConversationRun(null));
-  }, [applyConversationRunSnapshot, bootstrap, uiMode, conversationPage]);
+      .catch((err: unknown) => {
+        if (cancelled || requestId !== conversationNavigationRequestRef.current) return;
+        if (conversationPageRef.current.kind === 'conversation-run'
+          && conversationPageRef.current.projectId === projectId
+          && conversationPageRef.current.taskId === taskId
+          && conversationPageRef.current.runId === runId) {
+          setError(displayAppError(t, err));
+        }
+      });
+    return () => { cancelled = true; };
+  }, [applyConversationRunSnapshot, bootstrap, t, uiMode, conversationPage]);
 
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return undefined;
+    if (!conversationPageMatchesRun(conversationPage, conversationRun)) return undefined;
     let active = true;
     let refreshTimer: number | null = null;
     let refreshInFlight = false;
@@ -627,8 +785,11 @@ export function App() {
 
     void subscribeAcpSessionUpdates((event) => {
       if (!active) return;
-      if (event.taskId !== taskId || event.runId !== runId) return;
-      if (event.projectId && event.projectId !== projectId) return;
+      if (event.projectId !== projectId || event.taskId !== taskId || event.runId !== runId) return;
+      const sidebarActivity = conversationTaskActivityFromUpdate(event);
+      if (sidebarActivity !== undefined) {
+        applyConversationTaskActivity(projectId, taskId, sidebarActivity);
+      }
       const sessionKey = conversationSessionKeyFromParts(event);
       const currentRun = conversationRunRef.current;
       const currentSelectedKey = conversationSelectedSessionKeyRef.current
@@ -719,7 +880,7 @@ export function App() {
       stopListeningAcp?.();
       stopListeningRun?.();
     };
-  }, [applyConversationRunSnapshot, applyConversationSidebar, bootstrap, uiMode, conversationPage]);
+  }, [applyConversationRunSnapshot, applyConversationSidebar, applyConversationTaskActivity, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -748,7 +909,7 @@ export function App() {
       }
     };
 
-    void listen('gold-band://agent-commands-updated', () => {
+    void listen('gold-band://agent-registry-updated', () => {
       if (active) void refreshAgentRegistry();
     }).then((dispose) => {
       if (active) {
@@ -944,20 +1105,14 @@ export function App() {
     }
 
     // 会话模式：定位到 run，并在 sessionTree 内匹配叶子后切换 session。
-    const projectId = conversationSidebarRef.current
-      ? Object.entries(conversationSidebarRef.current.tasksByWorkspace)
-          .find(([, tasks]) => tasks.some((task) => task.taskId === event.taskId))
-          ?.[0]
-      : undefined;
-    const targetProjectId = projectId ?? effectiveWorkspaceId;
-    const runPage: ConversationPage = { kind: 'conversation-run', projectId: targetProjectId, taskId: event.taskId, runId: event.runId };
+    const runPage = conversationPageForIntervention(event);
+    const targetProjectId = event.projectId;
     setPrimaryModule('task-orchestration');
     setConversationPage(runPage);
     pushRoute('task-orchestration', taskPage, runPage);
 
     let run = conversationRunRef.current
-      && conversationRunRef.current.taskId === event.taskId
-      && conversationRunRef.current.runId === event.runId
+      && conversationPageMatchesRun(runPage, conversationRunRef.current)
       ? conversationRunRef.current
       : null;
     if (!run) {
@@ -999,8 +1154,6 @@ export function App() {
           const next: ConversationRunVm = {
             ...prev,
             selectedSession: switched.selectedSession,
-            artifacts: switched.artifacts,
-            attachments: switched.attachments,
             sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
           };
           conversationRunRef.current = next;
@@ -1012,7 +1165,6 @@ export function App() {
     }
   }, [
     uiMode,
-    effectiveWorkspaceId,
     taskPage,
     applyConversationRunSnapshot,
     updateConversationSessionFollow,
@@ -1063,31 +1215,45 @@ export function App() {
   };
 
   const onConversationPauseRun = async (projectId: string, taskId: string, runId: string) => {
-    setConversationRunStopping(true);
-    let stopSettled = false;
-    let stopAccepted = false;
+    if (conversationRunStopPendingRef.current) return;
+    conversationRunStopPendingRef.current = true;
+    const requestVersion = conversationStopRequestRef.current + 1;
+    conversationStopRequestRef.current = requestVersion;
+    setError(null);
     try {
-      const paused = await runAction(() => pauseRun(taskId, runId, projectId));
-      if (!paused) return;
-      stopAccepted = true;
+      await pauseRun(taskId, runId, projectId);
       const selectedKey = conversationRunRef.current?.sessionTree.selectedSessionKey ?? null;
-      if (conversationPage.kind === 'conversation-run'
-        && conversationPage.projectId === projectId
-        && conversationPage.taskId === taskId
-        && conversationPage.runId === runId) {
-        const refreshed = await getConversationRun(projectId, taskId, runId, selectedKey);
-        stopSettled = isConversationRunStopSettled(refreshed);
+      const refreshSelectedRun = conversationPageRef.current.kind === 'conversation-run'
+        && conversationPageRef.current.projectId === projectId
+        && conversationPageRef.current.taskId === taskId
+        && conversationPageRef.current.runId === runId;
+      const [refreshed, sidebar] = await Promise.all([
+        refreshSelectedRun
+          ? getConversationRun(projectId, taskId, runId, selectedKey)
+          : Promise.resolve(null),
+        getConversationSidebar(),
+      ]);
+      if (conversationStopRequestRef.current !== requestVersion) return;
+      const currentPage = conversationPageRef.current;
+      if (refreshed
+        && currentPage.kind === 'conversation-run'
+        && currentPage.projectId === projectId
+        && currentPage.taskId === taskId
+        && currentPage.runId === runId) {
         applyConversationRunSnapshot(refreshed, 'session-stopped', {
           selectedSessionKey: selectedKey,
           preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
         });
-      } else {
-        stopSettled = true;
       }
-      const sidebar = await getConversationSidebar();
       applyConversationSidebar(sidebar);
+    } catch (err) {
+      if (conversationStopRequestRef.current === requestVersion) {
+        setError(displayAppError(t, err));
+      }
     } finally {
-      if (!stopAccepted || stopSettled) setConversationRunStopping(false);
+      if (conversationStopRequestRef.current === requestVersion) {
+        conversationRunStopPendingRef.current = false;
+      }
     }
   };
 
@@ -1375,7 +1541,7 @@ export function App() {
       : primaryModule === 'agent-management'
         ? <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />
         : primaryModule === 'knowledge-base'
-          ? <ContextManagementPage />
+          ? <ContextManagementPage agentRegistry={agentRegistry} onAgentRegistryChange={setAgentRegistry} />
           : renderTaskContent();
 
   const onSelectConversation = (page: ConversationPage) => {
@@ -1397,13 +1563,23 @@ export function App() {
     <Shell
       uiMode={uiMode}
       active={primaryModule}
-      conversationPage={conversationPage}
+      conversationPage={presentedConversationPage}
       conversationSidebar={conversationSidebar}
       activeWorkspaceId={sidebarFocusWorkspaceId}
+      conversationTaskUuid={
+        presentedConversationPage.kind === 'conversation-run'
+        && conversationRun?.projectId === presentedConversationPage.projectId
+        && conversationRun.taskId === presentedConversationPage.taskId
+        && conversationRun.runId === presentedConversationPage.runId
+          ? conversationRun.taskUuid
+          : null
+      }
+      conversationWorkspaceStore={conversationWorkspaceStore}
       appName={appInfo.appName}
       feedbackEnabled={appInfo.feedbackEnabled}
       platform={bootstrap?.platform}
       windowFrameStyle={bootstrap?.windowChrome.frameStyle}
+      appConfig={appConfig}
       repoRoot={bootstrap?.repoRoot}
       needsWorkspace={bootstrap?.needsWorkspace}
       showSettingsUpdateDot={showSettingsUpdateDot}
@@ -1437,7 +1613,6 @@ export function App() {
       onConversationSelectRun={(projectId, taskId, runId) => {
         setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
       }}
-      conversationRunStopping={conversationRunStopping}
       onConversationPauseRun={onConversationPauseRun}
       onConversationRenameTask={(projectId, taskId, title) => {
         updateTaskMetadata(projectId, taskId, title)
@@ -1451,6 +1626,7 @@ export function App() {
       onConversationDeleteTask={(projectId, taskId) => {
         deleteConversationTask(projectId, taskId)
           .then((sidebar) => {
+            conversationWorkspaceStore.deleteConversation(projectId, taskId);
             applyConversationSidebar(sidebar);
             if (conversationPage.kind === 'conversation-run' && conversationPage.projectId === projectId && conversationPage.taskId === taskId) {
               setConversationRun(null);
@@ -1476,6 +1652,7 @@ export function App() {
         setError(null);
         return removeConversationWorkspace(projectId)
           .then((sidebar) => {
+            conversationWorkspaceStore.deleteProject(projectId);
             const transition = resolveConversationWorkspaceRemovalTransition({
               removedProjectId: projectId,
               lastActiveWorkspaceId: sidebar.lastActiveWorkspaceId,
@@ -1499,6 +1676,7 @@ export function App() {
           });
       }}
     >
+      <WindowCloseCoordinator platform={bootstrap?.platform} />
       <AlertDialog open={Boolean(error)} onOpenChange={(open) => { if (!open) setError(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -1561,11 +1739,12 @@ export function App() {
   );
 
   function renderConversationContent() {
+    const conversationPage = presentedConversationPage;
     if (conversationPage.kind === 'agents') {
       return <AgentManagementPage vm={agentRegistry} loading={loading !== null} onRefresh={() => void refresh('manual')} onRegistryChange={setAgentRegistry} />;
     }
     if (conversationPage.kind === 'contexts') {
-      return <ContextManagementPage />;
+      return <ContextManagementPage agentRegistry={agentRegistry} onAgentRegistryChange={setAgentRegistry} />;
     }
     if (conversationPage.kind === 'settings') {
       return (
@@ -1634,6 +1813,15 @@ export function App() {
                 return validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n');
               }
               const run = await createConversationRun(input);
+              conversationWorkspaceStore.promoteDraft(
+                createDraftConversationWorkspaceScope(input.projectId),
+                createConversationWorkspaceScope({
+                  projectId: run.projectId,
+                  taskId: run.taskId,
+                  taskUuid: run.taskUuid,
+                  runId: run.runId,
+                }),
+              );
               rememberConversationWorkspace(run.projectId);
               updateConversationSessionFollow('auto', run.sessionTree.selectedSessionKey ?? null);
               applyConversationRunSnapshot(run, 'create');
@@ -1683,7 +1871,6 @@ export function App() {
           }}
           onSave={(mode) => updateConversationRunMode(mode, defaultProjectId)}
           onWorkflowTemplatesChange={setConversationWorkflowTemplates}
-          onBack={() => setConversationPage({ kind: 'conversation-home' })}
         />
       );
     }
@@ -1759,8 +1946,6 @@ export function App() {
                   const next = {
                     ...prev,
                     selectedSession: switched.selectedSession,
-                    artifacts: switched.artifacts,
-                    attachments: switched.attachments,
                     sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
                   };
                   conversationRunRef.current = next;
@@ -1772,8 +1957,6 @@ export function App() {
                 conversationRunRef.current = {
                   ...conversationRunRef.current,
                   selectedSession: switched.selectedSession,
-                  artifacts: switched.artifacts,
-                  attachments: switched.attachments,
                   sessionTree: {
                     ...conversationRunRef.current.sessionTree,
                     selectedSessionKey: key,
@@ -1783,6 +1966,11 @@ export function App() {
             }).catch(() => {});
           }}
           onLifecycleSnapshot={(snapshot) => {
+            applyConversationTaskActivity(
+              conversationPage.projectId,
+              snapshot.taskId,
+              conversationTaskActivityFromLifecycle(snapshot.lifecycle),
+            );
             setConversationRun((current) => {
               const selectedPatched = applyConversationSelectedSessionSnapshot(current, snapshot);
               const patched = selectedPatched === current

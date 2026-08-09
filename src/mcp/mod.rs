@@ -26,7 +26,7 @@ use crate::config::{
     McpServerConfig, McpServerHealthResult, McpServerState, McpTransportConfig, OAuthClientConfig,
     SettingsConfig,
 };
-use crate::process::background_command;
+use crate::process::{ManagedProcessGroup, PROCESS_GROUP_TERMINATION_GRACE, background_command};
 use crate::storage::write_json;
 
 /// MCP 协议版本（现代规范统一用日期字符串；stdio / http / sse 三传输共用，
@@ -355,57 +355,15 @@ impl McpManager {
 
     // ── ACP 序列化 ──
 
-    pub fn to_acp_mcp_servers(&self) -> Result<Vec<Value>> {
-        let servers = self.enabled_servers()?;
-        let mut cache = self.state_cache.borrow_mut();
-        Ok(servers
+    /// 解析当前启用的 MCP 配置，供 ACP session/new 或 session/load 使用。
+    ///
+    /// 会话启动路径只负责传递用户配置，不执行网络请求或子进程探活；健康状态由
+    /// `check_health` 等诊断入口独立维护，避免诊断生命周期阻塞会话生命周期。
+    pub fn configured_acp_mcp_servers(&self) -> Result<Vec<Value>> {
+        Ok(self
+            .enabled_servers()?
             .into_iter()
-            .filter(|s| {
-                let is_healthy = match cache.get(&s.id) {
-                    Some(McpServerState::Running { .. }) => true,
-                    Some(_) => false,
-                    None => {
-                        // 缓存未命中 → 运行健康检查并更新缓存
-                        match self.verify_server(s) {
-                            Ok(r) if r.status == "healthy" => {
-                                cache.insert(
-                                    s.id.clone(),
-                                    McpServerState::Running {
-                                        tools: r.tools.clone(),
-                                    },
-                                );
-                                true
-                            }
-                            Ok(r) => {
-                                let state = if r.status == "auth_required" {
-                                    McpServerState::AuthRequired {
-                                        auth_url: r.auth_url.clone(),
-                                    }
-                                } else {
-                                    McpServerState::Error {
-                                        message: r
-                                            .message
-                                            .unwrap_or_else(|| "unknown error".into()),
-                                    }
-                                };
-                                cache.insert(s.id.clone(), state);
-                                false
-                            }
-                            Err(e) => {
-                                cache.insert(
-                                    s.id.clone(),
-                                    McpServerState::Error {
-                                        message: e.to_string(),
-                                    },
-                                );
-                                false
-                            }
-                        }
-                    }
-                };
-                is_healthy
-            })
-            .map(|s| mcp_server_to_acp_json(&s))
+            .map(|server| mcp_server_to_acp_json(&server))
             .collect())
     }
 
@@ -585,12 +543,11 @@ fn verify_stdio_server(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let mut child = cmd
-        .spawn()
+    let mut child = ManagedProcessGroup::spawn(&mut cmd)
         .with_context(|| format!("failed to start command: {command}"))?;
 
-    let mut stdin = child.stdin.take().context("failed to capture stdin")?;
-    let stdout = child.stdout.take().context("failed to capture stdout")?;
+    let mut stdin = child.take_stdin().context("failed to capture stdin")?;
+    let stdout = child.take_stdout().context("failed to capture stdout")?;
 
     // 对标 Zed: 发送 MCP initialize 请求
     let request_line = serde_json::to_string(&build_initialize_request())? + "\n";
@@ -629,8 +586,7 @@ fn verify_stdio_server(
         .context("health check timed out")?
         .context("failed to read server response")?;
 
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.terminate(PROCESS_GROUP_TERMINATION_GRACE);
 
     parse_initialize_response(&response_line)
 }
@@ -1074,12 +1030,11 @@ fn fetch_stdio_tools(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let mut child = cmd
-        .spawn()
+    let mut child = ManagedProcessGroup::spawn(&mut cmd)
         .with_context(|| format!("failed to start command: {command}"))?;
 
-    let mut stdin = child.stdin.take().context("failed to capture stdin")?;
-    let stdout = child.stdout.take().context("failed to capture stdout")?;
+    let mut stdin = child.take_stdin().context("failed to capture stdin")?;
+    let stdout = child.take_stdout().context("failed to capture stdout")?;
 
     let (tx, rx) = mpsc::channel();
     let stdout_reader = std::thread::spawn(move || {
@@ -1131,8 +1086,7 @@ fn fetch_stdio_tools(
         parse_tools_list_response(&tools_response)
     })();
 
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.terminate(PROCESS_GROUP_TERMINATION_GRACE);
     let _ = stdout_reader.join();
 
     result
@@ -1768,6 +1722,56 @@ mod tests {
                 "url": "https://example.test/mcp/sse",
                 "headers": [],
             })
+        );
+    }
+
+    #[test]
+    fn configured_acp_servers_include_enabled_entries_without_health_checks() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = settings_path(&temp);
+        write_json(
+            &settings_path,
+            &SettingsConfig {
+                context_servers: Some(vec![
+                    McpServerConfig {
+                        id: "enabled-unreachable".into(),
+                        name: "Enabled Unreachable".into(),
+                        enabled: true,
+                        transport: McpTransportConfig::Stdio {
+                            command: "gold-band-command-that-does-not-exist".into(),
+                            args: vec!["--serve".into()],
+                            env: BTreeMap::new(),
+                        },
+                        managed: false,
+                        help_message: None,
+                    },
+                    McpServerConfig {
+                        id: "disabled-server".into(),
+                        name: "Disabled Server".into(),
+                        enabled: false,
+                        transport: McpTransportConfig::Http {
+                            url: "https://disabled.example.test/mcp".into(),
+                            headers: BTreeMap::new(),
+                            oauth: None,
+                        },
+                        managed: false,
+                        help_message: None,
+                    },
+                ]),
+                ..SettingsConfig::default()
+            },
+        )
+        .unwrap();
+
+        let servers = McpManager::new(settings_path)
+            .configured_acp_mcp_servers()
+            .unwrap();
+
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0]["name"], "Enabled Unreachable");
+        assert_eq!(
+            servers[0]["command"],
+            "gold-band-command-that-does-not-exist"
         );
     }
 

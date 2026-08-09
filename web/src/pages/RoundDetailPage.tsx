@@ -558,6 +558,7 @@ function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, 
           systemPromptOptions={systemPromptOptions}
           eventIdPrefix={selectedConversation ? attemptId : undefined}
           eventPageSize={appConfig.acpChatEventPageSize}
+          turnFileCardPreviewLimit={appConfig.turnFiles.cardPreviewLimit}
           taskId={vm.run.taskId}
           runId={vm.run.id}
           roundId={vm.round.id}
@@ -634,20 +635,34 @@ export function mergedConversationSession(conversation: NonNullable<NodeDetailVm
   conversation.attempts.forEach((attempt, index) => {
     if (index > 0) {
       events.push({
-        id: `separator:${attempt.attemptId}`,
+        id: `separator:continued:${attempt.attemptId}`,
         seq: seq++,
         timestamp: attempt.acpSession?.sessionStartedAt ?? base.sessionStartedAt ?? '',
         kind: 'attemptSeparator',
         sessionId: conversation.sessionId ?? attempt.acpSessionId ?? null,
-        title: attempt.attemptId,
+        title: null,
         content: null,
         toolCallId: null,
         status: attempt.status,
-        raw: { attemptId: attempt.attemptId, goldBandScope: { attemptId: attempt.attemptId, separator: true } },
+        raw: { boundaryKind: 'continued', attemptId: attempt.attemptId, goldBandScope: { attemptId: attempt.attemptId, separator: true } },
       });
     }
     for (const event of attempt.acpSession?.events ?? []) {
       events.push(normalizeAcpEventForAttempt(event, attempt.attemptId, seq++));
+    }
+    if (isStoppedConversationAttempt(attempt.acpSession)) {
+      events.push({
+        id: `separator:stopped:${attempt.attemptId}`,
+        seq: seq++,
+        timestamp: attempt.acpSession?.sessionUpdatedAt ?? base.sessionUpdatedAt ?? '',
+        kind: 'attemptSeparator',
+        sessionId: conversation.sessionId ?? attempt.acpSessionId ?? null,
+        title: null,
+        content: null,
+        toolCallId: null,
+        status: 'interrupted',
+        raw: { boundaryKind: 'stopped', attemptId: attempt.attemptId, goldBandScope: { attemptId: attempt.attemptId, separator: true } },
+      });
     }
   });
   return {
@@ -658,12 +673,30 @@ export function mergedConversationSession(conversation: NonNullable<NodeDetailVm
       ?? fallback?.systemPromptAppend
       ?? base.systemPromptAppend,
     events,
-    eventPage: {
-      ...base.eventPage,
-      loadedCount: events.length,
-      total: Math.max(base.eventPage.total, events.length),
+    timelineProjection: {
+      agents: conversation.attempts.flatMap(
+        (attempt) => (attempt.acpSession?.timelineProjection?.agents ?? []).map(
+          (agent) => ({ ...agent, attemptId: attempt.attemptId }),
+        ),
+      ),
+      todoEntries: activeAttempt?.acpSession?.timelineProjection?.todoEntries ?? [],
     },
+    // Pagination controls query the active attempt. Historical attempt events
+    // are display context and must not rewrite its backend-owned semantic page.
+    eventPage: base.eventPage,
   };
+}
+
+function isStoppedConversationAttempt(session?: AcpSessionVm | null) {
+  const reason = session?.stopReason?.trim().toLowerCase();
+  return [
+    'cancelled',
+    'canceled',
+    'process-interrupted',
+    'process_interrupted',
+    'user-cancelled',
+    'user_cancelled',
+  ].includes(reason ?? '');
 }
 
 export function buildConversationSystemPromptOptions(

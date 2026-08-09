@@ -8,13 +8,16 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde_json::Value;
 
 use crate::acp::events::{
-    AcpTimelineItem, AcpTimelinePatch, AcpUiEvent, load_timeline_items_unlocked,
+    AcpTimelineItem, AcpTimelinePatch, AcpUiEvent, load_timeline_items_for_storage_unlocked,
     merge_timeline_item_revision,
 };
+use crate::acp::turn_files::{FileVersionRef, TurnFileCaptureConfig, TurnFileStore};
 use crate::storage::{append_jsonl_unlocked, ensure_parent_dir, with_jsonl_file_lock};
 
 pub const DEFAULT_TIMELINE_COMPACT_MAX_SIZE_BYTES: u64 = 8 * 1024 * 1024;
 pub const DEFAULT_TIMELINE_COMPACT_PATCH_RATIO: usize = 4;
+pub const TIMELINE_BLOB_MIN_BYTES: usize = 64 * 1024;
+const TIMELINE_BLOB_REF_KEY: &str = "$goldBandBlob";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimelineCompactionPolicy {
@@ -45,8 +48,10 @@ pub struct TimelineStore {
     semantic_fingerprints: HashMap<String, u64>,
     canonical_items: HashMap<String, AcpUiEvent>,
     patch_count: usize,
+    patch_bytes: u64,
     redundant_revision_count: usize,
     file_signature: TimelineFileSignature,
+    blob_store: TurnFileStore,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,34 +62,43 @@ struct TimelineFileSignature {
 
 impl TimelineStore {
     pub fn open(path: Utf8PathBuf, policy: TimelineCompactionPolicy) -> Result<Self> {
-        let (semantic_fingerprints, canonical_items, patch_count, redundant_revision_count) =
-            with_jsonl_file_lock(&path, || {
-                let items = load_timeline_items_unlocked(&path)?;
-                let semantic_fingerprints = items
-                    .iter()
-                    .map(|item| Ok((item.id.clone(), semantic_fingerprint(item)?)))
-                    .collect::<Result<HashMap<_, _>>>()?;
-                let canonical_items = items
-                    .into_iter()
-                    .map(|item| (item.id.clone(), item))
-                    .collect();
-                let stats = timeline_file_stats(&path)?;
-                Ok((
-                    semantic_fingerprints,
-                    canonical_items,
-                    stats.patch_count,
-                    stats.redundant_revision_count,
-                ))
-            })?;
+        let (
+            semantic_fingerprints,
+            canonical_items,
+            patch_count,
+            patch_bytes,
+            redundant_revision_count,
+        ) = with_jsonl_file_lock(&path, || {
+            let items = load_timeline_items_for_storage_unlocked(&path)?;
+            let semantic_fingerprints = items
+                .iter()
+                .map(|item| Ok((item.id.clone(), semantic_fingerprint(item)?)))
+                .collect::<Result<HashMap<_, _>>>()?;
+            let canonical_items = items
+                .into_iter()
+                .map(|item| (item.id.clone(), item))
+                .collect();
+            let stats = timeline_file_stats(&path)?;
+            Ok((
+                semantic_fingerprints,
+                canonical_items,
+                stats.patch_count,
+                stats.patch_bytes,
+                stats.redundant_revision_count,
+            ))
+        })?;
         let file_signature = timeline_file_signature(&path);
+        let blob_store = timeline_blob_store(&path);
         let mut store = Self {
             path,
             policy,
             semantic_fingerprints,
             canonical_items,
             patch_count,
+            patch_bytes,
             redundant_revision_count,
             file_signature,
+            blob_store,
         };
         store.compact_if_needed()?;
         Ok(store)
@@ -92,16 +106,19 @@ impl TimelineStore {
 
     pub fn upsert(&mut self, revision: u64, item: &AcpUiEvent) -> Result<TimelineUpsertOutcome> {
         self.refresh_if_changed()?;
+        let mut storage_item = item.clone();
+        externalize_timeline_event(&self.blob_store, &mut storage_item)?;
         let canonical_item = self
             .canonical_items
             .get(&item.id)
-            .map(|existing| merge_timeline_item_revision(existing, item.clone()))
-            .unwrap_or_else(|| item.clone());
+            .map(|existing| merge_timeline_item_revision(existing, storage_item.clone()))
+            .unwrap_or(storage_item);
         let fingerprint = semantic_fingerprint(&canonical_item)?;
         if self.semantic_fingerprints.get(&item.id) == Some(&fingerprint) {
             return Ok(TimelineUpsertOutcome::Unchanged);
         }
 
+        let before_len = self.file_signature.len;
         with_jsonl_file_lock(&self.path, || {
             append_jsonl_unlocked(
                 &self.path,
@@ -119,6 +136,9 @@ impl TimelineStore {
         self.canonical_items.insert(item.id.clone(), canonical_item);
         self.patch_count = self.patch_count.saturating_add(1);
         self.file_signature = timeline_file_signature(&self.path);
+        self.patch_bytes = self
+            .patch_bytes
+            .saturating_add(self.file_signature.len.saturating_sub(before_len));
         if self.compact_if_needed()? {
             Ok(TimelineUpsertOutcome::AppendedAndCompacted)
         } else {
@@ -127,19 +147,16 @@ impl TimelineStore {
     }
 
     pub fn compact_if_needed(&mut self) -> Result<bool> {
-        let bytes = std::fs::metadata(self.path.as_std_path())
-            .map(|metadata| metadata.len())
-            .unwrap_or_default();
         let unique_items = self.semantic_fingerprints.len().max(1);
         let patch_heavy = self.patch_count > unique_items.saturating_mul(self.policy.patch_ratio);
-        if bytes <= self.policy.max_size_bytes && !patch_heavy && self.redundant_revision_count == 0
-        {
+        let patch_bytes_heavy = self.patch_bytes > self.policy.max_size_bytes;
+        if !patch_bytes_heavy && !patch_heavy && self.redundant_revision_count == 0 {
             return Ok(false);
         }
 
         let items = with_jsonl_file_lock(&self.path, || {
-            let items = load_timeline_items_unlocked(&self.path)?;
-            write_canonical_timeline_unlocked(&self.path, &items)?;
+            let items = load_timeline_items_for_storage_unlocked(&self.path)?;
+            write_canonical_timeline_unlocked(&self.path, &self.blob_store, &items)?;
             Ok(items)
         })?;
         self.semantic_fingerprints = items
@@ -151,6 +168,7 @@ impl TimelineStore {
             .map(|item| (item.id.clone(), item))
             .collect();
         self.patch_count = 0;
+        self.patch_bytes = 0;
         self.redundant_revision_count = 0;
         self.file_signature = timeline_file_signature(&self.path);
         Ok(true)
@@ -163,7 +181,7 @@ impl TimelineStore {
         }
         let (items, stats) = with_jsonl_file_lock(&self.path, || {
             Ok((
-                load_timeline_items_unlocked(&self.path)?,
+                load_timeline_items_for_storage_unlocked(&self.path)?,
                 timeline_file_stats(&self.path)?,
             ))
         })?;
@@ -176,6 +194,7 @@ impl TimelineStore {
             .map(|item| (item.id.clone(), item))
             .collect();
         self.patch_count = stats.patch_count;
+        self.patch_bytes = stats.patch_bytes;
         self.redundant_revision_count = stats.redundant_revision_count;
         self.file_signature = current;
         Ok(())
@@ -203,11 +222,17 @@ pub fn upsert_timeline_item(
     TimelineStore::open(path.to_path_buf(), policy)?.upsert(revision, item)
 }
 
-fn write_canonical_timeline_unlocked(path: &Utf8Path, items: &[AcpUiEvent]) -> Result<()> {
+fn write_canonical_timeline_unlocked(
+    path: &Utf8Path,
+    blob_store: &TurnFileStore,
+    items: &[AcpUiEvent],
+) -> Result<()> {
     ensure_parent_dir(path)?;
     let mut file = AtomicWriteFile::open(path.as_std_path())?;
     for item in items {
-        serde_json::to_writer(&mut file, &AcpTimelineItem { item: item.clone() })?;
+        let mut item = item.clone();
+        externalize_timeline_event(blob_store, &mut item)?;
+        serde_json::to_writer(&mut file, &AcpTimelineItem { item })?;
         file.write_all(b"\n")?;
     }
     file.commit()?;
@@ -217,6 +242,7 @@ fn write_canonical_timeline_unlocked(path: &Utf8Path, items: &[AcpUiEvent]) -> R
 #[derive(Debug, Default)]
 struct TimelineFileStats {
     patch_count: usize,
+    patch_bytes: u64,
     redundant_revision_count: usize,
 }
 
@@ -232,6 +258,9 @@ fn timeline_file_stats(path: &Utf8Path) -> Result<TimelineFileStats> {
                 continue;
             }
             stats.patch_count = stats.patch_count.saturating_add(1);
+            stats.patch_bytes = stats
+                .patch_bytes
+                .saturating_add(line.len().saturating_add(1) as u64);
             (patch.item_id, patch.item)
         } else if let Ok(entry) = serde_json::from_str::<AcpTimelineItem>(line) {
             (entry.item.id.clone(), entry.item)
@@ -252,6 +281,96 @@ fn timeline_file_stats(path: &Utf8Path) -> Result<TimelineFileStats> {
         canonical.insert(item_id, (merged, fingerprint));
     }
     Ok(stats)
+}
+
+fn timeline_attempt_dir(path: &Utf8Path) -> Utf8PathBuf {
+    if path.file_name() == Some("timeline.jsonl")
+        && path
+            .parent()
+            .and_then(Utf8Path::parent)
+            .and_then(Utf8Path::parent)
+            .is_some()
+    {
+        return path
+            .parent()
+            .and_then(Utf8Path::parent)
+            .and_then(Utf8Path::parent)
+            .expect("checked branch timeline ancestors")
+            .to_path_buf();
+    }
+    path.parent().unwrap_or(path).to_path_buf()
+}
+
+fn timeline_blob_store(path: &Utf8Path) -> TurnFileStore {
+    TurnFileStore::new(timeline_attempt_dir(path), TurnFileCaptureConfig::default())
+}
+
+pub(crate) fn externalize_timeline_event_for_storage(
+    path: &Utf8Path,
+    item: &mut AcpUiEvent,
+) -> Result<()> {
+    externalize_timeline_event(&timeline_blob_store(path), item)
+}
+
+fn externalize_timeline_event(store: &TurnFileStore, item: &mut AcpUiEvent) -> Result<()> {
+    if let Some(raw) = item.raw.as_mut() {
+        externalize_large_strings(store, raw)?;
+    }
+    Ok(())
+}
+
+fn externalize_large_strings(store: &TurnFileStore, value: &mut Value) -> Result<()> {
+    match value {
+        Value::String(content) if content.len() >= TIMELINE_BLOB_MIN_BYTES => {
+            let version = store.write_blob(content)?;
+            *value = serde_json::json!({ TIMELINE_BLOB_REF_KEY: version });
+        }
+        Value::Array(values) => {
+            for value in values {
+                externalize_large_strings(store, value)?;
+            }
+        }
+        Value::Object(object) => {
+            if object.contains_key(TIMELINE_BLOB_REF_KEY) {
+                return Ok(());
+            }
+            for value in object.values_mut() {
+                externalize_large_strings(store, value)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn hydrate_timeline_value(path: &Utf8Path, value: &mut Value) -> Result<()> {
+    hydrate_large_strings(&timeline_blob_store(path), value)
+}
+
+fn hydrate_large_strings(store: &TurnFileStore, value: &mut Value) -> Result<()> {
+    if let Some(reference) = value
+        .as_object()
+        .and_then(|object| object.get(TIMELINE_BLOB_REF_KEY))
+        .cloned()
+    {
+        let version: FileVersionRef = serde_json::from_value(reference)?;
+        *value = Value::String(store.read_blob(&version)?);
+        return Ok(());
+    }
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                hydrate_large_strings(store, value)?;
+            }
+        }
+        Value::Object(object) => {
+            for value in object.values_mut() {
+                hydrate_large_strings(store, value)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 pub fn semantic_fingerprint(item: &AcpUiEvent) -> Result<u64> {
@@ -309,7 +428,9 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    use super::{TimelineCompactionPolicy, TimelineStore, TimelineUpsertOutcome};
+    use super::{
+        TIMELINE_BLOB_MIN_BYTES, TimelineCompactionPolicy, TimelineStore, TimelineUpsertOutcome,
+    };
     use crate::acp::events::{AcpTimelinePatch, AcpUiEvent, load_timeline_items};
 
     fn event(id: &str, seq: u64, content: &str) -> AcpUiEvent {
@@ -464,5 +585,56 @@ mod tests {
             serde_json::to_value(&after).unwrap()
         );
         assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(), 1);
+    }
+
+    #[test]
+    fn canonical_file_larger_than_compaction_budget_does_not_recompact_every_patch() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let oversized = event("large-message", 1, &"x".repeat(9 * 1024 * 1024));
+        crate::acp::events::write_timeline_items(&path, &[oversized]).unwrap();
+        let mut store = TimelineStore::open(
+            path,
+            TimelineCompactionPolicy {
+                max_size_bytes: 1024,
+                patch_ratio: usize::MAX,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            store.upsert(2, &event("message-2", 2, "second")).unwrap(),
+            TimelineUpsertOutcome::Appended
+        );
+        assert_eq!(
+            store.upsert(3, &event("message-3", 3, "third")).unwrap(),
+            TimelineUpsertOutcome::Appended
+        );
+    }
+
+    #[test]
+    fn large_raw_strings_are_blob_backed_and_hydrated_on_load() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let large_output = "terminal-output".repeat(TIMELINE_BLOB_MIN_BYTES / 8);
+        let mut item = event("tool-1", 1, "");
+        item.kind = "toolCall".to_string();
+        item.raw = Some(json!({
+            "sessionUpdate": "tool_call_update",
+            "content": [{ "type": "content", "text": large_output }]
+        }));
+
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        store.upsert(1, &item).unwrap();
+
+        let stored = std::fs::read_to_string(&path).unwrap();
+        assert!(stored.contains("$goldBandBlob"));
+        assert!(stored.len() < TIMELINE_BLOB_MIN_BYTES);
+        assert_eq!(load_timeline_items(&path).unwrap()[0].raw, item.raw);
+        let blob_dir = dir.path().join("acp.file-blobs");
+        assert!(blob_dir.exists());
+        std::fs::remove_dir_all(blob_dir).unwrap();
+        TimelineStore::open(path, TimelineCompactionPolicy::default()).unwrap();
     }
 }

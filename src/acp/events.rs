@@ -13,6 +13,14 @@ use crate::storage::{
     append_jsonl, append_jsonl_unlocked, ensure_parent_dir, with_jsonl_file_lock, write_json,
 };
 
+const AGENT_TRANSCRIPT_META_KEY: &str = "agentTranscript";
+const CLAUDE_CODE_META_KEY: &str = "claudeCode";
+const CLAUDE_AGENT_TOOL_NAMES: [&str; 2] = ["agent", "task"];
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentMeta {
@@ -49,6 +57,11 @@ pub struct AcpSessionMetadata {
     pub config_option_overrides: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt_append: Option<String>,
+    /// Retry lifecycle of the latest logical prompt. Unlike session activity,
+    /// this survives terminal session status so a rebuilt provider runtime can
+    /// continue the same user turn without scanning the timeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_retry: Option<AcpPromptRetryState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,6 +96,26 @@ pub struct AcpSessionMetadata {
     pub updated_at: String,
 }
 
+/// Durable retry identity for the latest logical prompt turn.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpPromptRetryState {
+    pub prompt_id: String,
+    pub retry_attempt: u32,
+    /// Canonical timeline identity of this logical prompt. Provider runtime
+    /// retries upsert this event instead of appending another user bubble.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_event_seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_event_timestamp: Option<String>,
+    /// Hidden repair prompts can reuse a visible promptId, but they are a
+    /// different lifecycle and must never overwrite the visible user event.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub hidden_from_chat: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpRawFrame {
@@ -91,11 +124,64 @@ pub struct AcpRawFrame {
     pub frame: Value,
 }
 
+/// Preserve durable tool-call evidence across provider revisions. Providers
+/// commonly send input and diff content before a terminal status-only update;
+/// the terminal revision must not erase fields that it does not replace.
+pub fn merge_tool_revision_raw(incoming: &mut Value, previous: &Value) {
+    let (Some(incoming_object), Some(previous_object)) =
+        (incoming.as_object_mut(), previous.as_object())
+    else {
+        return;
+    };
+    for key in ["rawInput", "content", "locations"] {
+        merge_missing_json_field(incoming_object, previous_object, key);
+    }
+    if let Some(previous_tool_call) = previous_object.get("toolCall").and_then(Value::as_object) {
+        let incoming_tool_call = incoming_object
+            .entry("toolCall")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if let Some(incoming_tool_call) = incoming_tool_call.as_object_mut() {
+            for key in ["rawInput", "content", "locations"] {
+                merge_missing_json_field(incoming_tool_call, previous_tool_call, key);
+            }
+        }
+    }
+}
+
+fn merge_missing_json_field(
+    incoming: &mut serde_json::Map<String, Value>,
+    previous: &serde_json::Map<String, Value>,
+    key: &str,
+) {
+    let incoming_has_value = incoming.get(key).is_some_and(json_value_has_payload);
+    if incoming_has_value {
+        return;
+    }
+    if let Some(previous_value) = previous
+        .get(key)
+        .filter(|value| json_value_has_payload(value))
+    {
+        incoming.insert(key.to_string(), previous_value.clone());
+    }
+}
+
+fn json_value_has_payload(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::String(value) => !value.is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
+        Value::Bool(_) | Value::Number(_) => true,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpDiagnostic {
     pub timestamp: String,
     pub level: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
@@ -130,6 +216,23 @@ pub struct AcpUiEvent {
     pub timing: Option<AcpTimingPatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTranscriptRelation {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub agent_launch: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_tool_call_id: Option<String>,
+}
+
+impl AgentTranscriptRelation {
+    fn is_empty(&self) -> bool {
+        !self.agent_launch && self.tool_name.is_none() && self.parent_tool_call_id.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -781,7 +884,27 @@ pub fn append_diagnostic(
         &AcpDiagnostic {
             timestamp: current_timestamp(),
             level: level.into(),
+            code: None,
             message: message.into(),
+            data,
+        },
+    )
+}
+
+pub fn append_structured_diagnostic(
+    path: &Utf8Path,
+    level: impl Into<String>,
+    code: impl Into<String>,
+    data: Option<Value>,
+) -> Result<()> {
+    let code = code.into();
+    append_jsonl(
+        path,
+        &AcpDiagnostic {
+            timestamp: current_timestamp(),
+            level: level.into(),
+            code: Some(code.clone()),
+            message: code,
             data,
         },
     )
@@ -796,7 +919,9 @@ pub fn write_timeline_items(path: &Utf8Path, items: &[AcpUiEvent]) -> Result<()>
         ensure_parent_dir(path)?;
         let mut file = AtomicWriteFile::open(path.as_std_path())?;
         for item in items {
-            serde_json::to_writer(&mut file, &AcpTimelineItem { item: item.clone() })?;
+            let mut item = item.clone();
+            crate::acp::timeline::externalize_timeline_event_for_storage(path, &mut item)?;
+            serde_json::to_writer(&mut file, &AcpTimelineItem { item })?;
             use std::io::Write as _;
             file.write_all(b"\n")?;
         }
@@ -821,6 +946,53 @@ pub fn append_timeline_patch(
         crate::acp::timeline::TimelineCompactionPolicy::default(),
     )?;
     Ok(())
+}
+
+/// Settle the latest durable retry prompt at the attempt boundary. Stop can
+/// arrive while no ACP runtime owns an active prompt (for example during
+/// retry backoff), so cancellation cannot depend on runtime-local state.
+pub fn cancel_latest_processing_prompt_retry(path: &Utf8Path, decided_at: String) -> Result<bool> {
+    with_jsonl_file_lock(path, || {
+        let mut items = load_timeline_items_unlocked(path)?;
+        let Some(event) = items
+            .iter_mut()
+            .filter(|event| {
+                is_gold_band_user_prompt_event(event)
+                    && event.status.as_deref() == Some("processing")
+                    && event
+                        .raw
+                        .as_ref()
+                        .and_then(|raw| raw.pointer("/retry/attempt"))
+                        .and_then(Value::as_u64)
+                        .is_some_and(|attempt| attempt > 0)
+            })
+            .max_by_key(|event| event.ended_seq.unwrap_or(event.seq))
+        else {
+            return Ok(false);
+        };
+        let revision = latest_timeline_source_seq_unlocked(path)?.saturating_add(1);
+        event.status = Some("cancelled".to_string());
+        event.ended_seq = Some(revision);
+        event.ended_at = Some(decided_at);
+        let raw = event.raw.get_or_insert_with(|| serde_json::json!({}));
+        if !raw.is_object() {
+            *raw = serde_json::json!({});
+        }
+        raw["cancelled"] = Value::Bool(true);
+        let mut storage_event = event.clone();
+        crate::acp::timeline::externalize_timeline_event_for_storage(path, &mut storage_event)?;
+        append_jsonl_unlocked(
+            path,
+            &AcpTimelinePatch {
+                patch_type: "timelinePatch".to_string(),
+                item_id: storage_event.id.clone(),
+                revision,
+                op: "upsert".to_string(),
+                item: storage_event,
+            },
+        )?;
+        Ok(true)
+    })
 }
 
 pub fn load_timeline_items(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
@@ -883,6 +1055,16 @@ fn utf16_index(content: &str, byte_index: usize) -> usize {
 }
 
 pub(crate) fn load_timeline_items_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
+    let mut items = load_timeline_items_for_storage_unlocked(path)?;
+    for item in &mut items {
+        if let Some(raw) = item.raw.as_mut() {
+            crate::acp::timeline::hydrate_timeline_value(path, raw)?;
+        }
+    }
+    Ok(items)
+}
+
+pub(crate) fn load_timeline_items_for_storage_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
     let Ok(file) = std::fs::File::open(path.as_std_path()) else {
         return Ok(Vec::new());
     };
@@ -1120,39 +1302,40 @@ pub fn initial_acp_event_seq(path: &Utf8Path) -> u64 {
 }
 
 pub fn latest_timeline_source_seq(path: &Utf8Path) -> u64 {
-    with_jsonl_file_lock(path, || {
-        let Ok(file) = std::fs::File::open(path.as_std_path()) else {
-            return Ok(0);
-        };
-        let mut latest = 0;
-        for line in BufReader::new(file).lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            if let Ok(patch) = serde_json::from_str::<AcpTimelinePatch>(&line) {
-                latest = latest.max(patch.revision).max(
-                    patch
-                        .item
-                        .ended_seq
-                        .or(patch.item.started_seq)
-                        .unwrap_or(patch.item.seq),
-                );
-                continue;
-            }
-            if let Ok(entry) = serde_json::from_str::<AcpTimelineItem>(&line) {
-                latest = latest.max(
-                    entry
-                        .item
-                        .ended_seq
-                        .or(entry.item.started_seq)
-                        .unwrap_or(entry.item.seq),
-                );
-            }
+    with_jsonl_file_lock(path, || latest_timeline_source_seq_unlocked(path)).unwrap_or(0)
+}
+
+fn latest_timeline_source_seq_unlocked(path: &Utf8Path) -> Result<u64> {
+    let Ok(file) = std::fs::File::open(path.as_std_path()) else {
+        return Ok(0);
+    };
+    let mut latest = 0;
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
         }
-        Ok(latest)
-    })
-    .unwrap_or(0)
+        if let Ok(patch) = serde_json::from_str::<AcpTimelinePatch>(&line) {
+            latest = latest.max(patch.revision).max(
+                patch
+                    .item
+                    .ended_seq
+                    .or(patch.item.started_seq)
+                    .unwrap_or(patch.item.seq),
+            );
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_str::<AcpTimelineItem>(&line) {
+            latest = latest.max(
+                entry
+                    .item
+                    .ended_seq
+                    .or(entry.item.started_seq)
+                    .unwrap_or(entry.item.seq),
+            );
+        }
+    }
+    Ok(latest)
 }
 
 pub fn write_session_metadata(path: &Utf8Path, metadata: &AcpSessionMetadata) -> Result<()> {
@@ -1171,6 +1354,7 @@ pub fn normalize_session_update(
         .unwrap_or("unknown");
     let compaction_phase = context_compaction_phase(update);
     let mut raw_value = update.clone();
+    normalize_agent_transcript_metadata(&mut raw_value);
     if let Some(phase) = compaction_phase
         && let Some(object) = raw_value.as_object_mut()
     {
@@ -1242,6 +1426,7 @@ pub fn context_compaction_phase(update: &Value) -> Option<&'static str> {
 
 pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> AcpUiEvent {
     let mut raw = params;
+    normalize_agent_transcript_metadata(&mut raw);
     if let Some(object) = raw.as_object_mut() {
         object
             .entry("requestId".to_string())
@@ -1267,6 +1452,175 @@ pub fn permission_request_event(seq: u64, request_id: String, params: Value) -> 
         timing: None,
         raw: Some(raw),
     }
+}
+
+pub fn normalize_agent_transcript_metadata(value: &mut Value) -> Option<AgentTranscriptRelation> {
+    let relation = extract_agent_transcript_relation(value);
+    let tool_output = agent_transcript_tool_output(value).cloned();
+    if relation.is_none() && tool_output.is_none() {
+        return None;
+    }
+    let object = value.as_object_mut()?;
+    let meta = object
+        .entry("_meta".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !meta.is_object() {
+        *meta = Value::Object(serde_json::Map::new());
+    }
+    let mut normalized = relation
+        .as_ref()
+        .map(|relation| {
+            serde_json::to_value(relation).expect("AgentTranscriptRelation must serialize")
+        })
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(tool_output) = tool_output {
+        ensure_object(&mut normalized).insert("toolOutput".to_string(), tool_output);
+    }
+    meta.as_object_mut()?
+        .insert(AGENT_TRANSCRIPT_META_KEY.to_string(), normalized);
+    relation
+}
+
+pub fn agent_transcript_tool_output(raw: &Value) -> Option<&Value> {
+    raw.pointer(&format!("/_meta/{AGENT_TRANSCRIPT_META_KEY}/toolOutput"))
+        .or_else(|| {
+            raw.pointer(&format!(
+                "/toolCall/_meta/{AGENT_TRANSCRIPT_META_KEY}/toolOutput"
+            ))
+        })
+        .or_else(|| {
+            raw.pointer(&format!(
+                "/_meta/{CLAUDE_CODE_META_KEY}/toolResponse/content"
+            ))
+        })
+        .or_else(|| {
+            raw.pointer(&format!(
+                "/toolCall/_meta/{CLAUDE_CODE_META_KEY}/toolResponse/content"
+            ))
+        })
+}
+
+/// Remove provider-only Agent metadata and heavyweight tool output before a
+/// canonical live event crosses the desktop IPC boundary.
+///
+/// The complete event remains available in the branch timeline and can be
+/// queried through the single-tool detail API. Live consumers only need the
+/// stable Gold Band relation metadata, tool input, status, and summary fields.
+pub fn compact_live_conversation_event(event: &mut AcpUiEvent) {
+    let Some(raw) = event.raw.as_mut() else {
+        return;
+    };
+    remove_provider_agent_metadata(raw);
+    if !matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate") {
+        return;
+    }
+    for path in [
+        &["output"][..],
+        &["fields", "output"][..],
+        &["content", "output"][..],
+        &["toolCall", "output"][..],
+        &["toolCall", "content"][..],
+        &["toolCall", "fields", "output"][..],
+        &["_meta", AGENT_TRANSCRIPT_META_KEY, "toolOutput"][..],
+        &["_meta", "goldBandConversation", "toolOutput"][..],
+    ] {
+        remove_nested_json_key(raw, path);
+    }
+    if raw
+        .get("content")
+        .is_some_and(|content| !content.is_object())
+        && let Some(object) = raw.as_object_mut()
+    {
+        object.remove("content");
+    }
+    let raw_object = ensure_object(raw);
+    let meta = raw_object
+        .entry("_meta")
+        .or_insert_with(|| serde_json::json!({}));
+    let meta_object = ensure_object(meta);
+    let conversation = meta_object
+        .entry("goldBandConversation")
+        .or_insert_with(|| serde_json::json!({}));
+    ensure_object(conversation).insert("toolDetailAvailable".to_string(), Value::Bool(true));
+}
+
+fn remove_provider_agent_metadata(raw: &mut Value) {
+    for path in [
+        &["_meta", CLAUDE_CODE_META_KEY][..],
+        &["_meta", AGENT_TRANSCRIPT_META_KEY][..],
+        &["toolCall", "_meta", CLAUDE_CODE_META_KEY][..],
+        &["toolCall", "_meta", AGENT_TRANSCRIPT_META_KEY][..],
+    ] {
+        remove_nested_json_key(raw, path);
+    }
+}
+
+fn remove_nested_json_key(value: &mut Value, path: &[&str]) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let mut current = value;
+    for key in parents {
+        let Some(next) = current.get_mut(*key) else {
+            return;
+        };
+        current = next;
+    }
+    if let Some(object) = current.as_object_mut() {
+        object.remove(*last);
+    }
+}
+
+fn ensure_object(value: &mut Value) -> &mut serde_json::Map<String, Value> {
+    if !value.is_object() {
+        *value = serde_json::json!({});
+    }
+    value
+        .as_object_mut()
+        .expect("normalized conversation metadata must be an object")
+}
+
+pub fn extract_agent_transcript_relation(value: &Value) -> Option<AgentTranscriptRelation> {
+    let standard = value
+        .pointer(&format!("/_meta/{AGENT_TRANSCRIPT_META_KEY}"))
+        .or_else(|| value.pointer(&format!("/toolCall/_meta/{AGENT_TRANSCRIPT_META_KEY}")));
+    let claude = value
+        .pointer(&format!("/_meta/{CLAUDE_CODE_META_KEY}"))
+        .or_else(|| value.pointer(&format!("/toolCall/_meta/{CLAUDE_CODE_META_KEY}")));
+
+    let standard_launch = standard
+        .and_then(|meta| meta.get("agentLaunch"))
+        .and_then(Value::as_bool);
+    let standard_parent = standard
+        .and_then(|meta| meta.get("parentToolCallId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let standard_tool_name = standard
+        .and_then(|meta| meta.get("toolName"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let claude_subagent = claude
+        .and_then(|meta| meta.get("subagent"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let claude_tool_name = claude
+        .and_then(|meta| meta.get("toolName"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let claude_agent_tool = claude_tool_name.as_deref().is_some_and(|name| {
+        CLAUDE_AGENT_TOOL_NAMES.contains(&name.trim().to_ascii_lowercase().as_str())
+    });
+    let claude_parent = claude
+        .and_then(|meta| meta.get("parentToolUseId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let relation = AgentTranscriptRelation {
+        agent_launch: standard_launch.unwrap_or(claude_subagent || claude_agent_tool),
+        tool_name: standard_tool_name.or(claude_tool_name),
+        parent_tool_call_id: standard_parent.or(claude_parent),
+    };
+    (!relation.is_empty()).then_some(relation)
 }
 
 pub fn elicitation_request_event(
@@ -1486,13 +1840,90 @@ fn extract_status(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpSessionMetadata, AcpTimingState, AcpUiEvent, annotate_latest_runtime_control_output,
-        append_raw_frame, append_timeline_patch, context_compaction_phase,
-        elicitation_request_event, elicitation_response_event, extract_usage_fields,
-        kind_to_ui_kind, latest_timeline_source_seq, load_timeline_items, normalize_session_update,
+        AcpSessionMetadata, AcpTimingState, AcpUiEvent, agent_transcript_tool_output,
+        annotate_latest_runtime_control_output, append_raw_frame, append_structured_diagnostic,
+        append_timeline_patch, cancel_latest_processing_prompt_retry,
+        compact_live_conversation_event, context_compaction_phase, elicitation_request_event,
+        elicitation_response_event, extract_usage_fields, kind_to_ui_kind,
+        latest_timeline_source_seq, load_timeline_items, normalize_session_update,
         permission_request_event, user_prompt_event, write_timeline_items,
     };
     use serde_json::{Value, json};
+
+    #[test]
+    fn live_tool_event_keeps_input_but_defers_output_and_provider_metadata() {
+        let mut event = test_timeline_event("tool-1", 1, "");
+        event.kind = "toolCall".to_string();
+        event.raw = Some(json!({
+            "rawInput": { "path": "src/main.rs" },
+            "output": "large output",
+            "_meta": {
+                "goldBandConversation": {
+                    "branchId": "agent-internal",
+                    "toolName": "Read",
+                    "toolOutput": "large normalized output"
+                },
+                "claudeCode": {
+                    "subagent": true,
+                    "toolResponse": { "content": "large provider output" }
+                },
+                "agentTranscript": { "parentToolCallId": "provider-parent" }
+            }
+        }));
+
+        compact_live_conversation_event(&mut event);
+
+        let raw = event.raw.as_ref().unwrap();
+        assert_eq!(
+            raw.pointer("/rawInput/path").and_then(Value::as_str),
+            Some("src/main.rs")
+        );
+        assert_eq!(
+            raw.pointer("/_meta/goldBandConversation/branchId")
+                .and_then(Value::as_str),
+            Some("agent-internal")
+        );
+        assert_eq!(
+            raw.pointer("/_meta/goldBandConversation/toolDetailAvailable"),
+            Some(&Value::Bool(true))
+        );
+        assert!(raw.get("output").is_none());
+        assert!(
+            raw.pointer("/_meta/goldBandConversation/toolOutput")
+                .is_none()
+        );
+        assert!(raw.pointer("/_meta/claudeCode").is_none());
+        assert!(raw.pointer("/_meta/agentTranscript").is_none());
+    }
+
+    #[test]
+    fn structured_diagnostic_persists_stable_code_and_params() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = camino::Utf8PathBuf::from_path_buf(temp.path().join("acp.diagnostics.jsonl"))
+            .expect("utf8 path");
+
+        append_structured_diagnostic(
+            &path,
+            "warning",
+            "acp.mcp-transport-unsupported",
+            Some(json!({
+                "agentType": "codex-acp",
+                "skippedServers": [{
+                    "name": "legacy",
+                    "transport": "sse",
+                    "capability": "mcpCapabilities.sse"
+                }]
+            })),
+        )
+        .expect("append diagnostic");
+
+        let line = std::fs::read_to_string(path.as_std_path()).expect("read diagnostic");
+        let value: Value = serde_json::from_str(line.trim()).expect("parse diagnostic");
+        assert_eq!(value["level"], "warning");
+        assert_eq!(value["code"], "acp.mcp-transport-unsupported");
+        assert_eq!(value["message"], "acp.mcp-transport-unsupported");
+        assert_eq!(value["data"]["skippedServers"][0]["transport"], "sse");
+    }
 
     // --- extract_usage_fields ---
 
@@ -1673,6 +2104,219 @@ mod tests {
             event.content.as_deref(),
             Some("The log says Compacting... but work continues.")
         );
+    }
+
+    #[test]
+    fn normalizes_claude_agent_launch_into_internal_transcript_metadata() {
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call-agent",
+            "_meta": {
+                "claudeCode": {
+                    "toolName": "Agent",
+                    "subagent": true
+                }
+            }
+        });
+
+        let event = normalize_session_update(10, Some("session-1".to_string()), &update);
+
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/agentTranscript/agentLaunch"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/agentTranscript/toolName"))
+                .and_then(Value::as_str),
+            Some("Agent")
+        );
+    }
+
+    #[test]
+    fn normalizes_claude_tool_response_into_internal_transcript_metadata() {
+        let update = json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call-read",
+            "_meta": {
+                "claudeCode": {
+                    "toolName": "Read",
+                    "toolResponse": { "content": "normalized output" }
+                }
+            }
+        });
+
+        let event = normalize_session_update(10, Some("session-1".to_string()), &update);
+        let raw = event.raw.as_ref().expect("normalized raw event");
+        assert_eq!(
+            raw.pointer("/_meta/agentTranscript/toolOutput"),
+            Some(&json!("normalized output"))
+        );
+        assert_eq!(
+            agent_transcript_tool_output(raw),
+            Some(&json!("normalized output"))
+        );
+    }
+
+    #[test]
+    fn normalizes_claude_tool_name_for_a_parented_event_without_reclassifying_it_as_an_agent_launch()
+     {
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call-read",
+            "_meta": {
+                "claudeCode": {
+                    "toolName": "Read",
+                    "parentToolUseId": "call-agent"
+                }
+            }
+        });
+
+        let event = normalize_session_update(10, Some("session-1".to_string()), &update);
+        let transcript = event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.pointer("/_meta/agentTranscript"))
+            .expect("normalized transcript metadata");
+        assert!(transcript.get("agentLaunch").is_none());
+        assert_eq!(transcript["toolName"], "Read");
+        assert_eq!(transcript["parentToolCallId"], "call-agent");
+    }
+
+    #[test]
+    fn normalizes_claude_parent_tool_use_id_for_nested_events() {
+        let update = json!({
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {"type": "text", "text": "Inspecting"},
+            "_meta": {
+                "claudeCode": {
+                    "parentToolUseId": "call-parent"
+                }
+            }
+        });
+
+        let event = normalize_session_update(11, Some("session-1".to_string()), &update);
+
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/agentTranscript/parentToolCallId"))
+                .and_then(Value::as_str),
+            Some("call-parent")
+        );
+    }
+
+    #[test]
+    fn normalizes_nested_claude_agent_launch_with_both_relationship_fields() {
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call-child",
+            "_meta": {
+                "claudeCode": {
+                    "toolName": "Agent",
+                    "subagent": true,
+                    "parentToolUseId": "call-parent"
+                }
+            }
+        });
+
+        let event = normalize_session_update(12, Some("session-1".to_string()), &update);
+        let transcript = event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.pointer("/_meta/agentTranscript"))
+            .expect("normalized transcript metadata");
+
+        assert_eq!(transcript["agentLaunch"], true);
+        assert_eq!(transcript["parentToolCallId"], "call-parent");
+    }
+
+    #[test]
+    fn preserves_standard_agent_transcript_metadata_over_provider_extensions() {
+        let update = json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call-child",
+            "_meta": {
+                "agentTranscript": {
+                    "agentLaunch": false,
+                    "parentToolCallId": "standard-parent"
+                },
+                "claudeCode": {
+                    "toolName": "Agent",
+                    "subagent": true,
+                    "parentToolUseId": "claude-parent"
+                }
+            }
+        });
+
+        let event = normalize_session_update(13, Some("session-1".to_string()), &update);
+        let transcript = event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.pointer("/_meta/agentTranscript"))
+            .expect("normalized transcript metadata");
+
+        assert!(transcript.get("agentLaunch").is_none());
+        assert_eq!(transcript["parentToolCallId"], "standard-parent");
+    }
+
+    #[test]
+    fn normalizes_nested_permission_tool_metadata_at_the_same_boundary() {
+        let event = permission_request_event(
+            14,
+            "permission-1".to_string(),
+            json!({
+                "sessionId": "session-1",
+                "toolCall": {
+                    "toolCallId": "call-bash",
+                    "_meta": {
+                        "claudeCode": {
+                            "toolName": "Bash",
+                            "parentToolUseId": "call-agent"
+                        }
+                    }
+                }
+            }),
+        );
+
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/agentTranscript/parentToolCallId"))
+                .and_then(Value::as_str),
+            Some("call-agent")
+        );
+    }
+
+    #[test]
+    fn normalizes_top_level_claude_tool_name_without_marking_an_agent_launch() {
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call-read",
+            "_meta": {
+                "claudeCode": {
+                    "toolName": "Read"
+                }
+            }
+        });
+
+        let event = normalize_session_update(15, Some("session-1".to_string()), &update);
+        let transcript = event
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.pointer("/_meta/agentTranscript"))
+            .expect("normalized transcript metadata");
+        assert_eq!(transcript["toolName"], "Read");
+        assert!(transcript.get("agentLaunch").is_none());
+        assert!(transcript.get("parentToolCallId").is_none());
     }
 
     // --- existing tests ---
@@ -2115,6 +2759,97 @@ mod tests {
         assert_eq!(items[0].content.as_deref(), Some("new"));
         assert_eq!(items[1].id, "message-2");
         assert_eq!(items[1].content.as_deref(), Some("keep"));
+    }
+
+    #[test]
+    fn attempt_stop_settles_latest_processing_retry_prompt() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        let mut prompt = user_prompt_event(
+            7,
+            "session-1".to_string(),
+            "hi".to_string(),
+            Some("prompt-1".to_string()),
+            false,
+            Vec::new(),
+        );
+        prompt.status = Some("processing".to_string());
+        prompt.started_seq = Some(7);
+        prompt.ended_seq = Some(12);
+        prompt.started_at = Some("100Z".to_string());
+        prompt.ended_at = Some("120Z".to_string());
+        prompt.raw.as_mut().unwrap()["retry"] = json!({
+            "attempt": 2,
+            "maxAttempts": 3,
+        });
+        append_timeline_patch(&path, prompt.id.clone(), 12, &prompt).unwrap();
+
+        assert!(cancel_latest_processing_prompt_retry(&path, "130Z".to_string()).unwrap());
+
+        let items = load_timeline_items(&path).unwrap();
+        let settled = items
+            .iter()
+            .find(|event| event.id == prompt.id)
+            .expect("settled prompt");
+        assert_eq!(settled.status.as_deref(), Some("cancelled"));
+        assert_eq!(settled.started_seq, Some(7));
+        assert_eq!(settled.ended_seq, Some(13));
+        assert_eq!(settled.ended_at.as_deref(), Some("130Z"));
+        assert_eq!(settled.raw.as_ref().unwrap()["retry"]["attempt"], 2);
+        assert_eq!(settled.raw.as_ref().unwrap()["retry"]["maxAttempts"], 3);
+        assert_eq!(settled.raw.as_ref().unwrap()["cancelled"], true);
+        assert_eq!(latest_timeline_source_seq(&path), 13);
+
+        assert!(!cancel_latest_processing_prompt_retry(&path, "140Z".to_string()).unwrap());
+        assert_eq!(latest_timeline_source_seq(&path), 13);
+    }
+
+    #[test]
+    fn attempt_stop_does_not_rewrite_non_retry_or_terminal_prompts() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        let mut processing = user_prompt_event(
+            3,
+            "session-1".to_string(),
+            "plain".to_string(),
+            Some("prompt-plain".to_string()),
+            false,
+            Vec::new(),
+        );
+        processing.status = Some("processing".to_string());
+        processing.ended_seq = Some(4);
+        let mut completed_retry = user_prompt_event(
+            5,
+            "session-1".to_string(),
+            "done".to_string(),
+            Some("prompt-done".to_string()),
+            false,
+            Vec::new(),
+        );
+        completed_retry.ended_seq = Some(8);
+        completed_retry.raw.as_mut().unwrap()["retry"] = json!({
+            "attempt": 1,
+            "maxAttempts": 3,
+        });
+        write_timeline_items(&path, &[processing.clone(), completed_retry.clone()]).unwrap();
+
+        assert!(!cancel_latest_processing_prompt_retry(&path, "20Z".to_string()).unwrap());
+
+        let items = load_timeline_items(&path).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].id, processing.id);
+        assert_eq!(items[0].status, processing.status);
+        assert_eq!(items[0].ended_seq, processing.ended_seq);
+        assert_eq!(items[0].raw, processing.raw);
+        assert_eq!(items[1].id, completed_retry.id);
+        assert_eq!(items[1].status, completed_retry.status);
+        assert_eq!(items[1].ended_seq, completed_retry.ended_seq);
+        assert_eq!(items[1].raw, completed_retry.raw);
+        assert_eq!(latest_timeline_source_seq(&path), 8);
     }
 
     #[test]

@@ -35,6 +35,7 @@
 
 ## 实施状态
 
+- 2026-08-10：修复持久化 `ConversationBranchRoute` 只恢复 `branchId` 的设计缺口，统一恢复并校验 `launchedAgentExecutionId` 与 `toolName`；后台 Agent 遗留启动确认迁移不再误报 completed，并以路由往返及 migration v2 单测固化。
 - 2026-07-26：完成 Codex adapter preset 与 settings schema v2 迁移。
 - 2026-07-26：完成 provider source identity 驱动的 stream 切分、Codex warning 诊断归一化和 legacy events 身份合并修复。
 - 2026-07-26：Rust core 全量单元测试通过；Codex package 持久化迁移、warning 分类、同/不同消息身份与无身份 fallback 均已固化为接口级测试。

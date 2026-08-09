@@ -1905,6 +1905,7 @@ fn emit_run_metrics_fact(
         },
         task_uuid.clone(),
     );
+    fact.task_title = task_title(app, &run.task_id);
     fact.pause_reason = pause_reason.map(metrics_pause_reason);
     fact.previous_pause_reason =
         if event_type == super::observability::LifecycleEventType::ExecutionResumed {

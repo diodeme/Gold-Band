@@ -1,4 +1,4 @@
-use std::io::Write;
+﻿use std::io::Write;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -343,6 +343,8 @@ pub struct MetricsEventItem {
     pub execution_kind: MetricsExecutionKind,
     pub execution_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attempt_id: Option<String>,
@@ -468,6 +470,7 @@ fn map_metrics_fact(fact: MetricsLifecycleFact, reported_at: String) -> MetricsE
         session_mode,
         execution_kind,
         execution_id: fact.execution_id,
+        task_title: fact.task_title,
         node_id: fact.node_id,
         attempt_id: fact.attempt_id,
         attempt_index: fact.attempt_index,
@@ -925,6 +928,33 @@ mod tests {
         let value =
             serde_json::to_value(map_metrics_fact(fact, "2026-08-01T00:00:00Z".into())).unwrap();
         assert_eq!(value.get("attemptIndex").and_then(|v| v.as_u64()), Some(1));
+    }
+
+
+    #[test]
+    fn dto_serializes_task_title_when_set() {
+        let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
+            gold_band::app::observability::LifecycleEventType::ExecutionStarted,
+            1,
+            "2026-08-01T00:00:00Z".into(),
+            "user".into(),
+            "workspace".into(),
+            gold_band::app::observability::MetricsSessionMode::Direct,
+            "task".into(),
+            gold_band::app::observability::ExecutionKind::Turn,
+            uuid::Uuid::new_v4().to_string(),
+        );
+        // task_title defaults to None -- should be skipped in serialized JSON
+        let value_without =
+            serde_json::to_value(map_metrics_fact(fact.clone(), "2026-08-01T00:00:00Z".into()))
+                .unwrap();
+        assert!(value_without.get("taskTitle").is_none());
+
+        // When set, it should appear in serialized JSON
+        fact.task_title = Some("给项目添加 README".into());
+        let value_with =
+            serde_json::to_value(map_metrics_fact(fact, "2026-08-01T00:00:00Z".into())).unwrap();
+        assert_eq!(value_with["taskTitle"].as_str(), Some("给项目添加 README"));
     }
 
     #[tokio::test]

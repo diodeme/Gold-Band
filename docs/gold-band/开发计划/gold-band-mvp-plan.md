@@ -928,3 +928,10 @@ attempt-001/
 - 根因修复：Direct 待发送队列此前为每个自动发送的成功 turn 创建独立 OS 通知，Windows 会把多个 Toast 串行排队，形成“点击一条后下一条继续弹出”的干扰。首版仅延迟 `turn-queued-*`，遗漏了触发同一批次的首条普通 `acp-prompt-*`，因此仍会先出现一条通知。通知策略现完整绑定队列的实际 claim 边界，不依赖 prompt id 前缀、Windows Toast 展示顺序或平台专用替换 API。
 - 生命周期契约：`AcpPromptLifecycleEvent::Finished` 携带稳定 `promptId`；Direct 首轮成功 `RunCompleted` 也只更新运行状态，通知延后进入相同队列决策。`AcpTurnFinished.batchProgress` 以 `completedReplyCount + continues` 表达批次进度：实际领取后继时累计并抑制中间成功，终点携带完整累计数后清理；计数 1 显示“回复完成”，大于 1 显示“已连续回复 X 条”。失败立即通知并清理批次，权限、elicitation、运行异常及不同会话完全不受影响。
 - 回归固化：核心 prompt queue 单测固定累计、终点重置和失败清理；通知模型单测固定多条文案；桌面生命周期单测固定连续事件的 `batchProgress`，通知策略单测固定 Direct 首轮延后、中间成功不通知、末尾成功通知和失败不抑制，并要求通知、桌面端测试和格式检查通过。
+
+---
+
+## 2026-08-09：非 Windows 通知响应编译契约修复
+
+- 根因修复：`notify-rust 4.18` 的 `ResponseHandler` 接收 `&NotificationResponse`，桌面适配器错误地按值推断参数，导致 Linux 与两个 macOS release job 在 Rust 编译阶段同时失败。适配器现显式遵守借用签名，并先把第三方响应映射为内部 `Navigate / ClearDedup` 处置后再操作导航队列和 dedup。
+- 回归固化：新增非 Windows 响应分类单测，覆盖正文、view、其他 action、reply 和 closed；PR checks 同时覆盖 `pull_request` 与 `main` push，release-please 的多平台构建必须等待 Linux Rust workspace 预检通过，避免平台专属编译错误直到昂贵的发布矩阵才暴露。

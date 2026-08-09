@@ -2,6 +2,9 @@ name: PR checks
 
 on:
   pull_request:
+  push:
+    branches:
+      - main
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true

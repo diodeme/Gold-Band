@@ -391,6 +391,76 @@ fn acp_turn_agent_label(app: &App, locator: &AttemptLocator) -> String {
         .unwrap_or_else(|| locator.node_id.clone())
 }
 
+// ── Direct metrics background worker ──────────────────────────────────
+// The command thread must never block on file I/O or mutex operations.
+// These lightweight jobs carry only String data; the worker thread does
+// all heavy lifting (task_show, observability snapshot, ACP session read).
+
+#[derive(Debug, Clone)]
+enum DirectMetricsJob {
+    TurnStarted {
+        locator: AttemptLocator,
+    },
+    TurnFinished {
+        locator: AttemptLocator,
+        turn_id: String,
+        agent_label: String,
+        outcome: AcpTurnOutcome,
+    },
+    InterventionRequested {
+        context: gold_band::app::AcpLiveEventContext,
+        request_id: String,
+        kind: RuntimeInterventionKind,
+    },
+}
+
+const DIRECT_METRICS_QUEUE_CAPACITY: usize = 512;
+
+static DIRECT_METRICS_SENDER: std::sync::OnceLock<
+    std::sync::mpsc::SyncSender<DirectMetricsJob>,
+> = std::sync::OnceLock::new();
+
+fn direct_metrics_sender() -> Option<std::sync::mpsc::SyncSender<DirectMetricsJob>> {
+    DIRECT_METRICS_SENDER.get().cloned()
+}
+
+fn init_direct_metrics_worker(app: App) {
+    let (sender, receiver) =
+        std::sync::mpsc::sync_channel::<DirectMetricsJob>(DIRECT_METRICS_QUEUE_CAPACITY);
+    if DIRECT_METRICS_SENDER.set(sender).is_err() {
+        return; // already initialised
+    }
+
+    let _ = std::thread::Builder::new()
+        .name("direct-metrics-worker".into())
+        .spawn(move || {
+            while let Ok(job) = receiver.recv() {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    match job {
+                        DirectMetricsJob::TurnStarted { locator } => {
+                            build_direct_turn_metrics_fact(&app, &locator, None);
+                        }
+                        DirectMetricsJob::TurnFinished {
+                            locator,
+                            outcome,
+                            ..
+                        } => {
+                            build_direct_turn_metrics_fact(&app, &locator, Some(outcome));
+                        }
+                        DirectMetricsJob::InterventionRequested {
+                            context,
+                            request_id,
+                            kind,
+                        } => {
+                            build_request_intervention_metrics(&app, &context, &request_id, kind);
+                        }
+                    }
+                }));
+            }
+        });
+}
+
+
 fn emit_acp_turn_finished(
     app: &App,
     locator: &AttemptLocator,
@@ -415,19 +485,27 @@ fn emit_acp_turn_finished(
         turn_id: turn_id.to_string(),
         agent_label: agent_label.to_string(),
         outcome,
-        task_title: app
-            .task_show(&locator.task_id)
-            .ok()
-            .and_then(|task| task.title),
+        task_title: None,
     });
-    emit_direct_turn_metrics_fact(app, locator, Some(outcome));
+    if let Some(sender) = direct_metrics_sender() {
+        let _ = sender.try_send(DirectMetricsJob::TurnFinished {
+            locator: locator.clone(),
+            turn_id: turn_id.to_string(),
+            agent_label: agent_label.to_string(),
+            outcome,
+        });
+    }
 }
 
-fn emit_direct_turn_started(app: &App, locator: &AttemptLocator) {
-    emit_direct_turn_metrics_fact(app, locator, None);
+fn emit_direct_turn_started(_app: &App, locator: &AttemptLocator) {
+    if let Some(sender) = direct_metrics_sender() {
+        let _ = sender.try_send(DirectMetricsJob::TurnStarted {
+            locator: locator.clone(),
+        });
+    }
 }
 
-fn emit_direct_turn_metrics_fact(
+fn build_direct_turn_metrics_fact(
     app: &App,
     locator: &AttemptLocator,
     outcome: Option<AcpTurnOutcome>,
@@ -664,6 +742,7 @@ pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) 
             "desktop.metrics",
             crate::metrics::create_metrics_subscriber(app_handle.clone()),
         );
+        init_direct_metrics_worker(app.clone_for_background());
     }
     app.lifecycle_bus.subscribe_named(
         "desktop.notifications",
@@ -1883,6 +1962,21 @@ fn maybe_emit_elicitation_intervention(
 }
 
 fn emit_request_intervention_metrics(
+    _app: &App,
+    context: &gold_band::app::AcpLiveEventContext,
+    request_id: &str,
+    kind: RuntimeInterventionKind,
+) {
+    if let Some(sender) = direct_metrics_sender() {
+        let _ = sender.try_send(DirectMetricsJob::InterventionRequested {
+            context: context.clone(),
+            request_id: request_id.to_string(),
+            kind,
+        });
+    }
+}
+
+fn build_request_intervention_metrics(
     app: &App,
     context: &gold_band::app::AcpLiveEventContext,
     request_id: &str,

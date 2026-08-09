@@ -18,6 +18,12 @@ export interface MetricsSettingsVm {
 const noopUnlisten = () => {};
 
 export const desktopApi: RuntimeApi = {
+  getGitCapability(projectId) {
+    return invokeCommand('get_git_capability', { projectId });
+  },
+  initializeGitRepository(projectId) {
+    return invokeCommand('initialize_git_repository', { projectId });
+  },
   completeMainWindowClose() {
     return invokeCommand('complete_main_window_close');
   },

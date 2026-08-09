@@ -3,7 +3,7 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-08-07T19:23:50.506Z"
+    "fetchedAt": "2026-08-09T11:48:11.306Z"
   },
   "agents": [
     {
@@ -22,6 +22,7 @@
       ],
       "env": {},
       "primaryAgentDir": ".claude",
+      "projectPrimaryAgentDir": null,
       "compatibleAgentDirs": [],
       "supportsSystemPrompt": true,
       "supportsExternalSessionSync": false
@@ -42,6 +43,7 @@
       ],
       "env": {},
       "primaryAgentDir": ".codex",
+      "projectPrimaryAgentDir": null,
       "compatibleAgentDirs": [
         ".agents"
       ],
@@ -63,6 +65,7 @@
       ],
       "env": {},
       "primaryAgentDir": ".cursor",
+      "projectPrimaryAgentDir": null,
       "compatibleAgentDirs": [
         ".agents"
       ],
@@ -86,6 +89,7 @@
       ],
       "env": {},
       "primaryAgentDir": ".gemini",
+      "projectPrimaryAgentDir": null,
       "compatibleAgentDirs": [
         ".agents"
       ],
@@ -109,6 +113,7 @@
       ],
       "env": {},
       "primaryAgentDir": ".codebuddy",
+      "projectPrimaryAgentDir": null,
       "compatibleAgentDirs": [],
       "supportsSystemPrompt": false,
       "supportsExternalSessionSync": false
@@ -128,6 +133,7 @@
       ],
       "env": {},
       "primaryAgentDir": ".goose",
+      "projectPrimaryAgentDir": null,
       "compatibleAgentDirs": [],
       "supportsSystemPrompt": false,
       "supportsExternalSessionSync": false
@@ -135,7 +141,7 @@
     {
       "id": "qwen-code",
       "label": "Qwen Code",
-      "version": "0.21.7",
+      "version": "0.21.8",
       "description": "Alibaba's Qwen coding assistant",
       "repository": "https://github.com/QwenLM/qwen-code",
       "website": "https://qwenlm.github.io/qwen-code-docs/en/users/overview",
@@ -144,12 +150,13 @@
       "command": "npx",
       "args": [
         "-y",
-        "@qwen-code/qwen-code@0.21.7",
+        "@qwen-code/qwen-code@0.21.8",
         "--acp",
         "--experimental-skills"
       ],
       "env": {},
       "primaryAgentDir": ".qwen",
+      "projectPrimaryAgentDir": null,
       "compatibleAgentDirs": [],
       "supportsSystemPrompt": false,
       "supportsExternalSessionSync": false
@@ -169,6 +176,7 @@
       ],
       "env": {},
       "primaryAgentDir": ".opencode",
+      "projectPrimaryAgentDir": null,
       "compatibleAgentDirs": [
         ".agents"
       ],
@@ -190,6 +198,7 @@
       ],
       "env": {},
       "primaryAgentDir": ".kimi-code",
+      "projectPrimaryAgentDir": null,
       "compatibleAgentDirs": [
         ".agents"
       ],
@@ -209,8 +218,32 @@
       "args": [],
       "env": {},
       "primaryAgentDir": ".agents",
+      "projectPrimaryAgentDir": null,
       "compatibleAgentDirs": [
         ".claude"
+      ],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false
+    },
+    {
+      "id": "pi-acp",
+      "label": "Pi",
+      "version": "0.0.33",
+      "description": "ACP adapter for pi coding agent",
+      "repository": "https://github.com/svkozak/pi-acp",
+      "website": null,
+      "iconKey": "pi-acp",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/pi-acp.svg",
+      "command": "npx",
+      "args": [
+        "-y",
+        "pi-acp@0.0.33"
+      ],
+      "env": {},
+      "primaryAgentDir": ".pi/agent",
+      "projectPrimaryAgentDir": ".pi",
+      "compatibleAgentDirs": [
+        ".agents"
       ],
       "supportsSystemPrompt": false,
       "supportsExternalSessionSync": false

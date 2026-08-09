@@ -16,7 +16,7 @@
 - Internal node dir: {{ node_dir }}
 - Internal attempt dir: {{ attempt_dir }}
 - Internal attachments dir: {{ attachments_dir }}
-- Workspace mode: {{ workspace_mode }}
+- Workspace ID: {{ workspace_id }}
 - Workspace path: {{ workspace_path }}
 - Workspace capability:
 {{ workspace_capability }}

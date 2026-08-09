@@ -241,6 +241,10 @@ pub struct ManagedAgentConfig {
     /// Gold Band 写入、同步，同时也是 Agent 首个读取位置的主 Agent 目录。
     #[serde(default)]
     pub primary_agent_dir: Option<String>,
+    /// 项目 Skill 主目录。`None` 表示全局和项目共用 `primary_agent_dir`；
+    /// `Some` 表示启用作用域拆分，项目读写使用该目录。
+    #[serde(default)]
+    pub project_primary_agent_dir: Option<String>,
     /// Agent 额外读取但 Gold Band 不写入、不作为同步目标的兼容 Agent 目录。
     #[serde(default)]
     pub compatible_agent_dirs: Vec<String>,
@@ -258,8 +262,24 @@ pub struct ManagedAgentConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentSkillDirectoryPolicy {
+    pub global: AgentSkillDirectoryScopePolicy,
+    pub project: AgentSkillDirectoryScopePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSkillDirectoryScopePolicy {
     pub write_dir_names: Vec<String>,
     pub read_dir_names: Vec<String>,
+}
+
+impl AgentSkillDirectoryPolicy {
+    pub fn for_source(&self, source: SkillSource) -> Option<&AgentSkillDirectoryScopePolicy> {
+        match source {
+            SkillSource::Global => Some(&self.global),
+            SkillSource::Project => Some(&self.project),
+            SkillSource::BuiltIn => None,
+        }
+    }
 }
 
 impl ManagedAgentConfig {
@@ -272,6 +292,7 @@ impl ManagedAgentConfig {
             adapter,
             icon: default_agent_icon(),
             primary_agent_dir: Some(primary_agent_dir.into()),
+            project_primary_agent_dir: None,
             compatible_agent_dirs,
             system_prompt_delivery: SystemPromptDelivery::None,
             external_session_sync_supported: false,
@@ -289,6 +310,7 @@ impl ManagedAgentConfig {
             },
             icon: entry.icon_key.clone(),
             primary_agent_dir: entry.primary_agent_dir.clone(),
+            project_primary_agent_dir: entry.project_primary_agent_dir.clone(),
             compatible_agent_dirs: entry.compatible_agent_dirs.clone(),
             system_prompt_delivery: if entry.supports_system_prompt {
                 SystemPromptDelivery::MetaAppend
@@ -305,26 +327,42 @@ impl ManagedAgentConfig {
     }
 
     pub fn skill_directory_policy(&self) -> AgentSkillDirectoryPolicy {
-        let mut write_dir_names = Vec::new();
-        let mut read_dir_names = Vec::new();
-        if let Some(primary) = self
-            .primary_agent_dir
-            .as_ref()
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-        {
-            write_dir_names.push(primary.to_string());
-            read_dir_names.push(primary.to_string());
+        let global = skill_directory_scope_policy(
+            self.primary_agent_dir.as_deref(),
+            &self.compatible_agent_dirs,
+        );
+        let project = skill_directory_scope_policy(
+            self.project_primary_agent_dir
+                .as_deref()
+                .or(self.primary_agent_dir.as_deref()),
+            &self.compatible_agent_dirs,
+        );
+        AgentSkillDirectoryPolicy { global, project }
+    }
+}
+
+fn skill_directory_scope_policy(
+    primary_agent_dir: Option<&str>,
+    compatible_agent_dirs: &[String],
+) -> AgentSkillDirectoryScopePolicy {
+    let mut write_dir_names = Vec::new();
+    let mut read_dir_names = Vec::new();
+    if let Some(primary) = primary_agent_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        write_dir_names.push(primary.to_string());
+        read_dir_names.push(primary.to_string());
+    }
+    for compatible in compatible_agent_dirs {
+        let compatible = compatible.trim();
+        if !compatible.is_empty() && !read_dir_names.iter().any(|dir_name| dir_name == compatible) {
+            read_dir_names.push(compatible.to_string());
         }
-        for compatible in &self.compatible_agent_dirs {
-            if !read_dir_names.iter().any(|dir_name| dir_name == compatible) {
-                read_dir_names.push(compatible.clone());
-            }
-        }
-        AgentSkillDirectoryPolicy {
-            write_dir_names,
-            read_dir_names,
-        }
+    }
+    AgentSkillDirectoryScopePolicy {
+        write_dir_names,
+        read_dir_names,
     }
 }
 
@@ -1734,6 +1772,7 @@ mod tests {
                 (
                     entry.id.as_str(),
                     entry.primary_agent_dir.as_deref(),
+                    entry.project_primary_agent_dir.as_deref(),
                     entry
                         .compatible_agent_dirs
                         .iter()
@@ -1745,16 +1784,17 @@ mod tests {
         assert_eq!(
             defaults,
             vec![
-                ("claude-acp", Some(".claude"), vec![]),
-                ("codex-acp", Some(".codex"), vec![".agents"]),
-                ("cursor", Some(".cursor"), vec![".agents"]),
-                ("gemini", Some(".gemini"), vec![".agents"]),
-                ("codebuddy-code", Some(".codebuddy"), vec![]),
-                ("goose", Some(".goose"), vec![]),
-                ("qwen-code", Some(".qwen"), vec![]),
-                ("opencode", Some(".opencode"), vec![".agents"]),
-                ("kimi", Some(".kimi-code"), vec![".agents"]),
-                ("amp-acp", Some(".agents"), vec![".claude"]),
+                ("claude-acp", Some(".claude"), None, vec![]),
+                ("codex-acp", Some(".codex"), None, vec![".agents"]),
+                ("cursor", Some(".cursor"), None, vec![".agents"]),
+                ("gemini", Some(".gemini"), None, vec![".agents"]),
+                ("codebuddy-code", Some(".codebuddy"), None, vec![]),
+                ("goose", Some(".goose"), None, vec![]),
+                ("qwen-code", Some(".qwen"), None, vec![]),
+                ("opencode", Some(".opencode"), None, vec![".agents"]),
+                ("kimi", Some(".kimi-code"), None, vec![".agents"]),
+                ("amp-acp", Some(".agents"), None, vec![".claude"]),
+                ("pi-acp", Some(".pi/agent"), Some(".pi"), vec![".agents"]),
             ]
         );
     }
@@ -1995,15 +2035,29 @@ mod tests {
         for entry in &builtin_agent_catalog().agents {
             let config = ManagedAgentConfig::from_catalog(entry);
             let policy = config.skill_directory_policy();
-            let mut expected_reads = Vec::new();
+            let mut expected_global_reads = Vec::new();
             if let Some(primary) = &entry.primary_agent_dir {
-                assert_eq!(policy.write_dir_names, vec![primary.clone()]);
-                expected_reads.push(primary.clone());
+                assert_eq!(policy.global.write_dir_names, vec![primary.clone()]);
+                expected_global_reads.push(primary.clone());
             } else {
-                assert!(policy.write_dir_names.is_empty());
+                assert!(policy.global.write_dir_names.is_empty());
             }
-            expected_reads.extend(entry.compatible_agent_dirs.iter().cloned());
-            assert_eq!(policy.read_dir_names, expected_reads);
+            expected_global_reads.extend(entry.compatible_agent_dirs.iter().cloned());
+            assert_eq!(policy.global.read_dir_names, expected_global_reads);
+
+            let project_primary = entry
+                .project_primary_agent_dir
+                .as_ref()
+                .or(entry.primary_agent_dir.as_ref());
+            let mut expected_project_reads = Vec::new();
+            if let Some(primary) = project_primary {
+                assert_eq!(policy.project.write_dir_names, vec![primary.clone()]);
+                expected_project_reads.push(primary.clone());
+            } else {
+                assert!(policy.project.write_dir_names.is_empty());
+            }
+            expected_project_reads.extend(entry.compatible_agent_dirs.iter().cloned());
+            assert_eq!(policy.project.read_dir_names, expected_project_reads);
         }
     }
 
@@ -2014,8 +2068,10 @@ mod tests {
 
         let policy = config.skill_directory_policy();
 
-        assert!(policy.write_dir_names.is_empty());
-        assert!(policy.read_dir_names.is_empty());
+        assert!(policy.global.write_dir_names.is_empty());
+        assert!(policy.global.read_dir_names.is_empty());
+        assert!(policy.project.write_dir_names.is_empty());
+        assert!(policy.project.read_dir_names.is_empty());
     }
 
     #[test]
@@ -2026,8 +2082,12 @@ mod tests {
             vec!["custom-codex".to_string(), ".agents".to_string()],
         );
         let policy = config.skill_directory_policy();
-        assert_eq!(policy.write_dir_names, vec!["custom-codex"]);
-        assert_eq!(policy.read_dir_names, vec!["custom-codex", ".agents"]);
+        assert_eq!(policy.global.write_dir_names, vec!["custom-codex"]);
+        assert_eq!(
+            policy.global.read_dir_names,
+            vec!["custom-codex", ".agents"]
+        );
+        assert_eq!(policy.project, policy.global);
     }
 
     #[test]

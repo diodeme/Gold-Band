@@ -1,9 +1,15 @@
-import type { AgentCatalogEntryVm, SkillMetaVm } from '../types';
+import type { AgentRegistryVm, ManagedAgentVm, SkillMetaVm } from '../types';
 
 export interface SkillAgentDisplayMeta {
   agentType: string;
   label: string;
   iconKey: string;
+}
+
+export interface ConfiguredSkillAgentMeta extends SkillAgentDisplayMeta {
+  primaryAgentDir: string;
+  projectPrimaryAgentDir: string | null;
+  compatibleAgentDirs: string[];
 }
 
 export const GOLD_BAND_AGENT_META: SkillAgentDisplayMeta = {
@@ -12,20 +18,52 @@ export const GOLD_BAND_AGENT_META: SkillAgentDisplayMeta = {
   iconKey: 'gold-band',
 };
 
+function skillAgentMeta(agent: ManagedAgentVm): ConfiguredSkillAgentMeta {
+  return {
+    agentType: agent.agentType,
+    label: agent.displayName,
+    iconKey: agent.iconKey,
+    primaryAgentDir: agent.primaryAgentDir,
+    projectPrimaryAgentDir: agent.projectPrimaryAgentDir,
+    compatibleAgentDirs: agent.compatibleAgentDirs,
+  };
+}
+
+export function configuredSkillAgents(registry: AgentRegistryVm | null): ConfiguredSkillAgentMeta[] {
+  if (!registry) return [];
+  const managedByType = new Map(registry.agents.map((agent) => [agent.agentType, agent]));
+  const ordered: ConfiguredSkillAgentMeta[] = [];
+  const seen = new Set<string>();
+
+  for (const catalogAgent of registry.catalog) {
+    const managed = managedByType.get(catalogAgent.agentType);
+    if (!managed) continue;
+    ordered.push(skillAgentMeta(managed));
+    seen.add(managed.agentType);
+  }
+  for (const managed of registry.agents) {
+    if (seen.has(managed.agentType)) continue;
+    ordered.push(skillAgentMeta(managed));
+  }
+  return ordered;
+}
+
 export function skillSourceAgents(
   skill: SkillMetaVm,
-  configuredAgents: AgentCatalogEntryVm[],
+  configuredAgents: ConfiguredSkillAgentMeta[],
 ) {
   if (skill.agentSource === '.gold-band') return [GOLD_BAND_AGENT_META];
   return configuredAgents.filter((agent) => (
-    agent.primaryAgentDir === skill.agentSource
+    (skill.source === 'project'
+      ? agent.projectPrimaryAgentDir ?? agent.primaryAgentDir
+      : agent.primaryAgentDir) === skill.agentSource
     || agent.compatibleAgentDirs.includes(skill.agentSource)
   ));
 }
 
 export function skillAvailableAgentTypes(
   skill: SkillMetaVm,
-  configuredAgents: AgentCatalogEntryVm[],
+  configuredAgents: ConfiguredSkillAgentMeta[],
 ) {
   const available = new Set(skill.syncedAgentTypes);
   for (const sourceMeta of skillSourceAgents(skill, configuredAgents)) {
@@ -36,7 +74,7 @@ export function skillAvailableAgentTypes(
 
 export function skillDisplayAgents(
   skill: SkillMetaVm,
-  configuredAgents: AgentCatalogEntryVm[],
+  configuredAgents: ConfiguredSkillAgentMeta[],
 ) {
   const display: SkillAgentDisplayMeta[] = [];
   const seen = new Set<string>();
@@ -55,7 +93,7 @@ export function skillDisplayAgents(
 
 export function selectableSyncAgents(
   skill: SkillMetaVm | null,
-  configuredAgents: AgentCatalogEntryVm[],
+  configuredAgents: ConfiguredSkillAgentMeta[],
 ) {
   if (!skill || skill.agentSource === '.gold-band') return configuredAgents;
   const sourceAgentTypes = new Set(

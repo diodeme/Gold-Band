@@ -4,7 +4,7 @@ use gold_band::domain::{PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::WorkflowValidationError;
 use gold_band::dynamic::{
     DynamicCompletionSchemaPolicy, DynamicGraphState, DynamicGroupStatus, DynamicNodeKind,
-    DynamicNodeStatus, DynamicProposalValidationStatus, DynamicRunStatus,
+    DynamicNodeStatus, DynamicProposalValidationStatus, DynamicRunStatus, WorkspaceStatus,
     dynamic_completion_effective_schema,
 };
 use gold_band::provider::{
@@ -1290,8 +1290,16 @@ fn ai_dynamic_worktree_fanout_injects_merge_workspace_metadata() {
         .iter()
         .find(|node| node.id == "branch-b")
         .unwrap();
-    assert!(!branch_a.workspace_path.as_ref().unwrap().exists());
-    assert!(!branch_b.workspace_path.as_ref().unwrap().exists());
+    assert_ne!(branch_a.workspace_id, branch_b.workspace_id);
+    for branch in [branch_a, branch_b] {
+        let workspace = graph
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == branch.workspace_id)
+            .expect("fanout branch workspace should remain in the catalog");
+        assert_eq!(workspace.status, WorkspaceStatus::Released);
+        assert!(!workspace.path.exists());
+    }
 
     let invocations = provider.invocations.lock().unwrap();
     let merge_invocation = invocations

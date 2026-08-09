@@ -30,8 +30,8 @@ function content(overrides: Partial<SkillContentVm> = {}): SkillContentVm {
 }
 
 const agents: AgentCatalogEntryVm[] = [
-  { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', version: '1', description: '', repository: null, website: null, primaryAgentDir: '.claude', compatibleAgentDirs: [], configured: true, supportsSystemPrompt: true, supportsExternalSessionSync: false, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
-  { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', version: '1', description: '', repository: null, website: null, primaryAgentDir: '.codex', compatibleAgentDirs: ['.agents'], configured: true, supportsSystemPrompt: false, supportsExternalSessionSync: false, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
+  { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', version: '1', description: '', repository: null, website: null, primaryAgentDir: '.claude', projectPrimaryAgentDir: null, compatibleAgentDirs: [], configured: true, supportsSystemPrompt: true, supportsExternalSessionSync: false, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
+  { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', version: '1', description: '', repository: null, website: null, primaryAgentDir: '.codex', projectPrimaryAgentDir: null, compatibleAgentDirs: ['.agents'], configured: true, supportsSystemPrompt: false, supportsExternalSessionSync: false, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
 ];
 
 describe('skill sheet form helpers', () => {

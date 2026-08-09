@@ -963,6 +963,8 @@ pub struct ManagedAgentInput {
     #[serde(default)]
     pub primary_agent_dir: String,
     #[serde(default)]
+    pub project_primary_agent_dir: Option<String>,
+    #[serde(default)]
     pub compatible_agent_dirs: Vec<String>,
     #[serde(default)]
     pub external_session_sync_supported: bool,
@@ -992,11 +994,15 @@ impl ManagedAgentInput {
         }
         let primary_agent_dir = self.primary_agent_dir.trim().to_string();
         let primary_agent_dir = (!primary_agent_dir.is_empty()).then_some(primary_agent_dir);
+        let project_primary_agent_dir = self
+            .project_primary_agent_dir
+            .map(|directory| directory.trim().to_string());
         let mut compatible_agent_dirs = Vec::new();
         for directory in self.compatible_agent_dirs {
             let directory = directory.trim().to_string();
             if !directory.is_empty()
                 && primary_agent_dir.as_deref() != Some(directory.as_str())
+                && project_primary_agent_dir.as_deref() != Some(directory.as_str())
                 && !compatible_agent_dirs.contains(&directory)
             {
                 compatible_agent_dirs.push(directory);
@@ -1014,6 +1020,7 @@ impl ManagedAgentInput {
                 value => value.to_string(),
             },
             primary_agent_dir,
+            project_primary_agent_dir,
             compatible_agent_dirs,
             system_prompt_delivery,
             external_session_sync_supported: self.external_session_sync_supported,
@@ -1671,6 +1678,26 @@ pub fn start_run(
     let app = configure_conversation_runtime_callbacks(base_app, app_handle, None);
     app.run_start_background(&task_id, None)
         .map(run_summary_vm)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub fn get_git_capability(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+) -> CommandResult<gold_band::git::GitCapability> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    Ok(gold_band::git::GitRepositoryService::default().probe(&app.paths.repo_root))
+}
+
+#[tauri::command]
+pub fn initialize_git_repository(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+) -> CommandResult<gold_band::git::GitCapability> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    gold_band::git::GitRepositoryService::default()
+        .initialize(&app.paths.repo_root)
         .map_err(command_error)
 }
 
@@ -4276,6 +4303,9 @@ fn ensure_workflow_agents_doctor_ready(
 }
 
 pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
+    if let Some(error) = error.downcast_ref::<gold_band::git::GitPreflightError>() {
+        return CommandErrorVm::new(error.code, error.params());
+    }
     if let Some(error) = error.downcast_ref::<gold_band::runtime_error::RuntimeError>() {
         return CommandErrorVm::new(error.info.code_str(), error.info.params.clone());
     }
@@ -5711,24 +5741,27 @@ pub fn get_skill_sync_status(
     let mut statuses = Vec::new();
 
     for (agent_id, config) in &app.config.agents {
-        let Some(dir_name) = config.primary_agent_dir.as_deref() else {
-            statuses.push(SyncStatusEntryVm {
-                agent_type: agent_id.as_str().to_string(),
-                is_synced: false,
-            });
-            continue;
-        };
-
         // 检查全局 agent 目录
-        let global_link =
-            gold_band::skill::resolve_agent_skills_dir(&home, dir_name).join(skill_dir_name);
-        let global_synced = is_link_pointing_to(global_link.as_std_path(), &canonical_src);
+        let global_synced = config.primary_agent_dir.as_deref().is_some_and(|dir_name| {
+            let global_link =
+                gold_band::skill::resolve_agent_skills_dir(&home, dir_name).join(skill_dir_name);
+            is_link_pointing_to(global_link.as_std_path(), &canonical_src)
+        });
 
         // ????? agent ?????? workspace_path?
         let project_synced = workspace_path.as_deref().map_or(false, |ws| {
-            let project_link =
-                gold_band::skill::resolve_agent_skills_dir(std::path::Path::new(ws), dir_name)
-                    .join(skill_dir_name);
+            let Some(project_dir_name) = config
+                .project_primary_agent_dir
+                .as_deref()
+                .or(config.primary_agent_dir.as_deref())
+            else {
+                return false;
+            };
+            let project_link = gold_band::skill::resolve_agent_skills_dir(
+                std::path::Path::new(ws),
+                project_dir_name,
+            )
+            .join(skill_dir_name);
             is_link_pointing_to(project_link.as_std_path(), &canonical_src)
         });
 
@@ -6018,6 +6051,7 @@ mod tests {
             args: vec!["agent".to_string()],
             env: std::collections::BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
             primary_agent_dir: "  .claude-custom  ".to_string(),
+            project_primary_agent_dir: Some("  .claude-project  ".to_string()),
             compatible_agent_dirs: vec![
                 " .agents ".to_string(),
                 ".agents".to_string(),
@@ -6037,6 +6071,10 @@ mod tests {
         assert_eq!(config.adapter.command, "npx");
         assert_eq!(config.icon, DEFAULT_CUSTOM_AGENT_ICON);
         assert_eq!(config.primary_agent_dir.as_deref(), Some(".claude-custom"));
+        assert_eq!(
+            config.project_primary_agent_dir.as_deref(),
+            Some(".claude-project")
+        );
         assert_eq!(config.compatible_agent_dirs, vec![".agents"]);
         assert!(config.supports_system_prompt());
         assert!(!config.external_session_sync_enabled);
@@ -6089,6 +6127,7 @@ mod tests {
             args: Vec::new(),
             env: std::collections::BTreeMap::new(),
             primary_agent_dir: String::new(),
+            project_primary_agent_dir: None,
             compatible_agent_dirs: Vec::new(),
             external_session_sync_supported: false,
             external_session_sync_enabled: false,
@@ -6107,6 +6146,7 @@ mod tests {
             args: Vec::new(),
             env: std::collections::BTreeMap::new(),
             primary_agent_dir: String::new(),
+            project_primary_agent_dir: None,
             compatible_agent_dirs: Vec::new(),
             external_session_sync_supported: false,
             external_session_sync_enabled: false,
@@ -6495,8 +6535,7 @@ mod tests {
             "chainId": dynamic_node_id,
             "depth": 0,
             "dependsOn": [],
-            "workspace": { "mode": "readonly" },
-            "workspacePath": null,
+            "workspaceId": "workspace-main",
             "provider": "claude-acp",
             "profile": null,
             "permissionMode": null,
@@ -6538,6 +6577,23 @@ mod tests {
                 "run": dynamic_run,
                 "nodes": [dynamic_node.clone()],
                 "groups": [],
+                "workspaces": [{
+                    "version": gold_band::domain::VERSION,
+                    "id": "workspace-main",
+                    "dynamicRunId": "dynamic-run-001",
+                    "kind": "main",
+                    "ownership": "user",
+                    "repoRoot": app.paths.repo_root,
+                    "path": app.paths.repo_root,
+                    "branch": null,
+                    "parentWorkspaceId": null,
+                    "createdByGroupId": null,
+                    "forkCommit": "test-head",
+                    "checkpointCommit": null,
+                    "status": "active",
+                    "createdAt": "2026-06-16T00:00:00Z",
+                    "updatedAt": "2026-06-16T00:00:00Z"
+                }],
                 "proposals": []
             }),
         )
@@ -6613,6 +6669,23 @@ mod tests {
                 "run": dynamic_run,
                 "nodes": [dynamic_node],
                 "groups": [],
+                "workspaces": [{
+                    "version": gold_band::domain::VERSION,
+                    "id": "workspace-main",
+                    "dynamicRunId": "dynamic-run-001",
+                    "kind": "main",
+                    "ownership": "user",
+                    "repoRoot": app.paths.repo_root,
+                    "path": app.paths.repo_root,
+                    "branch": null,
+                    "parentWorkspaceId": null,
+                    "createdByGroupId": null,
+                    "forkCommit": "test-head",
+                    "checkpointCommit": null,
+                    "status": "active",
+                    "createdAt": "2026-06-16T00:00:00Z",
+                    "updatedAt": "2026-06-16T00:00:00Z"
+                }],
                 "proposals": []
             }),
         )
@@ -6670,8 +6743,7 @@ mod tests {
             "chainId": dynamic_node_id,
             "depth": 0,
             "dependsOn": [],
-            "workspace": { "mode": "readonly" },
-            "workspacePath": null,
+            "workspaceId": "workspace-main",
             "provider": "claude-acp",
             "profile": null,
             "permissionMode": null,
@@ -6713,6 +6785,23 @@ mod tests {
                 "run": dynamic_run,
                 "nodes": [dynamic_node.clone()],
                 "groups": [],
+                "workspaces": [{
+                    "version": gold_band::domain::VERSION,
+                    "id": "workspace-main",
+                    "dynamicRunId": "dynamic-run-001",
+                    "kind": "main",
+                    "ownership": "user",
+                    "repoRoot": app.paths.repo_root,
+                    "path": app.paths.repo_root,
+                    "branch": null,
+                    "parentWorkspaceId": null,
+                    "createdByGroupId": null,
+                    "forkCommit": "test-head",
+                    "checkpointCommit": null,
+                    "status": "active",
+                    "createdAt": "2026-06-16T00:00:00Z",
+                    "updatedAt": "2026-06-16T00:00:00Z"
+                }],
                 "proposals": []
             }),
         )

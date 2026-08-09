@@ -3545,7 +3545,7 @@ mod tests {
     };
     use crate::dynamic::{
         DynamicGraphState, DynamicNodeKind, DynamicNodeState, DynamicNodeStatus, DynamicRunState,
-        DynamicRunStatus, WorkspaceMode, WorkspacePolicy,
+        DynamicRunStatus, WorkspaceKind, WorkspaceOwnership, WorkspaceState, WorkspaceStatus,
     };
     use crate::observability::touch_log_file_best_effort;
     use crate::runtime::{NodeState, RoundState, RunState, TaskState};
@@ -4267,10 +4267,7 @@ mod tests {
             chain_id: id.to_string(),
             depth: 1,
             depends_on: Vec::new(),
-            workspace: WorkspacePolicy {
-                mode: WorkspaceMode::Worktree,
-            },
-            workspace_path: None,
+            workspace_id: "workspace-main".to_string(),
             provider: Some("claude-acp".to_string()),
             profile: None,
             permission_mode: None,
@@ -4371,6 +4368,23 @@ mod tests {
             },
             nodes,
             groups: Vec::new(),
+            workspaces: vec![WorkspaceState {
+                version: VERSION.to_string(),
+                id: "workspace-main".to_string(),
+                dynamic_run_id: "dynamic-run-001".to_string(),
+                kind: WorkspaceKind::Main,
+                ownership: WorkspaceOwnership::User,
+                repo_root: app.paths.repo_root.clone(),
+                path: app.paths.repo_root.clone(),
+                branch: None,
+                parent_workspace_id: None,
+                created_by_group_id: None,
+                fork_commit: "test-head".to_string(),
+                checkpoint_commit: None,
+                status: WorkspaceStatus::Active,
+                created_at: "2026-06-16T00:00:00Z".to_string(),
+                updated_at: "2026-06-16T00:00:00Z".to_string(),
+            }],
             proposals: Vec::new(),
         };
         write_json(

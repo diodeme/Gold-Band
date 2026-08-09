@@ -21,9 +21,10 @@
 {% endif %}- {{ model_policy }}
 - `next.type="end"` 时，`next` 中不要再放 `node / groupId / nodes / merge / acceptance`。
 - `next.type="single"` 时，必须提供完整的 `next.node`，不要提供 `groupId / nodes / merge / acceptance`。
-- `next.type="single"` 的节点不要使用 `workspace.mode="worktree"`；只有 `fanout` 分支可以使用 worktree，因为 runtime 只会为 fanout 创建后续 merge / acceptance。
+- 不要为任何节点输出 `workspace`、workspace mode、路径或分支；runtime 独占工作空间分配权。
+- `next.type="single"` 会自动继承当前节点的实际 workspace。
 - `next.type="fanout"` 时，必须同时提供 `groupId / nodes / merge / acceptance`，且 `nodes` 至少包含两个分支；只有一个后继节点时使用 `next.type="single"`。
-- `next.type="fanout"` 的分支节点不要使用 `workspace.mode="main"`；只读分支使用 `readonly`，会写文件的并行分支在 workspace 支持时使用 `worktree`。需要在 main 写入时，改用 `next.type="single"` 串行执行。
+- `next.type="fanout"` 的每个 child 会自动获得隔离 worktree；merge 与 acceptance 自动回到该 group 的父 workspace。
 - `profile` 只允许在 worker 节点中使用，选填；如果填写，必须使用 schema enum 或当前 prompt 中 `profileId=...` 后面的 ID，不要填写 displayName。
 - `merge` / `acceptance` 不要输出 `profile`；它们统一使用 runtime 内置的 AI-DYNAMIC merge / acceptance prompt。
 {% if agent_strategy_mode == "dynamic" %}- `provider` 如果填写，必须是 schema enum 或当前 prompt 中列出的可用 provider 之一。

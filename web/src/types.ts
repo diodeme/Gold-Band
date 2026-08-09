@@ -465,6 +465,13 @@ export interface AppErrorVm {
   params: Record<string, unknown>;
 }
 
+export interface GitCapabilityVm {
+  status: 'ready' | 'not-installed' | 'repository-required' | 'head-required' | 'worktree-required' | 'repository-unavailable';
+  repoRoot: string | null;
+  commonDir: string | null;
+  head: string | null;
+}
+
 export type WorkflowErrorVm = AppErrorVm;
 
 export interface TaskDetailVm {

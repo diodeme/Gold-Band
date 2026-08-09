@@ -39,7 +39,7 @@ Output `dev-report.md` and record the files and line numbers you modified. Inclu
 - Follow the planned steps strictly
 - Stop when blocked; do not guess
 {% if execution.surface == "aiDynamic" %}
-- Use the workspace assigned by runtime in the hidden context. Treat `main`, `worktree`, and `readonly` according to runtime capabilities and the current task; do not request separate branch confirmation.
+- Work only in the workspace assigned by runtime in the hidden context. Do not create, discover, or switch workspaces/branches, and do not request separate branch confirmation.
 {% else %}
 - Do not operate on the main/master branch unless the user explicitly agrees
 {% endif %}

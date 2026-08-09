@@ -61,6 +61,7 @@ import type {
   FeedbackInput,
   FeedbackResult,
   FeedbackArchivePreview,
+  GitCapabilityVm,
   ExternalFileAccessGrantVm,
   FileRevisionVm,
   ResolvedWorkspaceFileLinkVm,
@@ -131,6 +132,8 @@ export interface MaterializeAttachmentFileInput {
 }
 
 export interface RuntimeApi {
+  getGitCapability(projectId?: string | null): Promise<GitCapabilityVm>;
+  initializeGitRepository(projectId?: string | null): Promise<GitCapabilityVm>;
   checkLocalClaude(): Promise<LocalClaudeStatusVm>;
   getAppBootstrap(): Promise<AppBootstrapVm>;
   completeMainWindowClose(): Promise<void>;

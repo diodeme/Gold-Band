@@ -1,4 +1,4 @@
-mod ids;
+﻿mod ids;
 mod node_executor;
 mod notification;
 pub mod observability;
@@ -1779,6 +1779,7 @@ impl App {
             acceptance.acceptance_attempt = Some(acceptance_attempt);
             acceptance.first_pass = Some(passed && acceptance_attempt == 1);
             acceptance.collection_state_recovered = outer_state.collection_state_recovered;
+            acceptance.task_title = scoped_app.task_show(&task_id).ok().and_then(|t| t.title);
             self.lifecycle_bus
                 .emit(RuntimeLifecycleEvent::MetricsFact(acceptance));
         }

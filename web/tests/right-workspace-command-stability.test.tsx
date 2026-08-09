@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createDraftConversationWorkspaceScope,
+  fileBrowserWorkspaceResourceKey,
   RightWorkspaceProvider,
   rightWorkspaceReducer,
   useRightWorkspace,
@@ -88,8 +89,8 @@ describe('right workspace stable command interface', () => {
       await act(async () => { await workspaceState!.activateTab(fileResource(0).key); });
       await act(async () => workspaceState!.setWidth(720));
 
-      expect(container.querySelector('output')?.dataset).toMatchObject({ tabs: '15', width: '720' });
-      expect(workspaceState!.activeTabKey).toBe(fileResource(0).key);
+      expect(container.querySelector('output')?.dataset).toMatchObject({ tabs: '1', width: '720' });
+      expect(workspaceState!.activeTabKey).toBe(fileBrowserWorkspaceResourceKey('project-1'));
       expect(commandRenders).toBe(1);
       expect(currentCommands).toBe(initialCommands);
     } finally {

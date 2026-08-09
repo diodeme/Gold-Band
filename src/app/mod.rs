@@ -1478,6 +1478,7 @@ impl App {
                 ExecutionKind::Turn,
                 active_turn.execution_id.clone(),
             );
+            turn_fact.task_title = scoped_app.task_show(&task_id).ok().and_then(|t| t.title);
             turn_fact.attempt_id = Some(active_turn.attempt_id.clone());
             turn_fact.attempt_index = Some(active_turn.attempt_index);
             turn_fact.provider = resolved_provider;
@@ -1666,6 +1667,7 @@ impl App {
             },
             execution_id.clone(),
         );
+        fact.task_title = scoped_app.task_show(&task_id).ok().and_then(|t| t.title);
         fact.node_id = Some(node_metrics_id.clone());
         fact.attempt_id = Some(metrics_attempt_id.clone());
         fact.attempt_index = Some(attempt_index);

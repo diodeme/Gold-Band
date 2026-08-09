@@ -400,17 +400,20 @@ fn acp_turn_agent_label(app: &App, locator: &AttemptLocator) -> String {
 enum DirectMetricsJob {
     TurnStarted {
         locator: AttemptLocator,
+        repo_root: String,
     },
     TurnFinished {
         locator: AttemptLocator,
         turn_id: String,
         agent_label: String,
         outcome: AcpTurnOutcome,
+        repo_root: String,
     },
     InterventionRequested {
         context: gold_band::app::AcpLiveEventContext,
         request_id: String,
         kind: RuntimeInterventionKind,
+        repo_root: String,
     },
 }
 
@@ -436,23 +439,44 @@ fn init_direct_metrics_worker(app: App) {
         .spawn(move || {
             while let Ok(job) = receiver.recv() {
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    match job {
-                        DirectMetricsJob::TurnStarted { locator } => {
-                            build_direct_turn_metrics_fact(&app, &locator, None);
+                    let mut scoped_app = app.clone_for_background();
+                    match &job {
+                        DirectMetricsJob::TurnStarted { locator, repo_root } => {
+                            scoped_app.paths = gold_band::storage::GoldBandPaths::new(
+                                camino::Utf8PathBuf::from(repo_root),
+                            );
+                            build_direct_turn_metrics_fact(&scoped_app, locator, None);
                         }
                         DirectMetricsJob::TurnFinished {
                             locator,
                             outcome,
+                            repo_root,
                             ..
                         } => {
-                            build_direct_turn_metrics_fact(&app, &locator, Some(outcome));
+                            scoped_app.paths = gold_band::storage::GoldBandPaths::new(
+                                camino::Utf8PathBuf::from(repo_root),
+                            );
+                            build_direct_turn_metrics_fact(
+                                &scoped_app,
+                                locator,
+                                Some(*outcome),
+                            );
                         }
                         DirectMetricsJob::InterventionRequested {
                             context,
                             request_id,
                             kind,
+                            repo_root,
                         } => {
-                            build_request_intervention_metrics(&app, &context, &request_id, kind);
+                            scoped_app.paths = gold_band::storage::GoldBandPaths::new(
+                                camino::Utf8PathBuf::from(repo_root),
+                            );
+                            build_request_intervention_metrics(
+                                &scoped_app,
+                                context,
+                                request_id,
+                                *kind,
+                            );
                         }
                     }
                 }));
@@ -493,14 +517,16 @@ fn emit_acp_turn_finished(
             turn_id: turn_id.to_string(),
             agent_label: agent_label.to_string(),
             outcome,
+            repo_root: app.paths.repo_root.to_string(),
         });
     }
 }
 
-fn emit_direct_turn_started(_app: &App, locator: &AttemptLocator) {
+fn emit_direct_turn_started(app: &App, locator: &AttemptLocator) {
     if let Some(sender) = direct_metrics_sender() {
         let _ = sender.try_send(DirectMetricsJob::TurnStarted {
             locator: locator.clone(),
+            repo_root: app.paths.repo_root.to_string(),
         });
     }
 }
@@ -1962,7 +1988,7 @@ fn maybe_emit_elicitation_intervention(
 }
 
 fn emit_request_intervention_metrics(
-    _app: &App,
+    app: &App,
     context: &gold_band::app::AcpLiveEventContext,
     request_id: &str,
     kind: RuntimeInterventionKind,
@@ -1972,6 +1998,7 @@ fn emit_request_intervention_metrics(
             context: context.clone(),
             request_id: request_id.to_string(),
             kind,
+            repo_root: app.paths.repo_root.to_string(),
         });
     }
 }

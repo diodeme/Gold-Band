@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.3](https://github.com/diodeme/Gold-Band/compare/v0.12.2...v0.12.3) (2026-08-09)
+
+
+### Bug Fixes
+
+* **desktop:** enforce native notification response contract ([b5f14e6](https://github.com/diodeme/Gold-Band/commit/b5f14e6869a0e02448c3f4ee736243434d2f0c3a))
+
 ## [0.12.2](https://github.com/diodeme/Gold-Band/compare/v0.12.1...v0.12.2) (2026-08-09)
 
 

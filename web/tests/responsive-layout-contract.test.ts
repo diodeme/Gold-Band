@@ -9,6 +9,10 @@ const composerSource = readFileSync(
   fileURLToPath(new URL('../src/components/conversation/ConversationComposer.tsx', import.meta.url)),
   'utf8',
 );
+const stylesSource = readFileSync(
+  fileURLToPath(new URL('../src/styles.css', import.meta.url)),
+  'utf8',
+);
 const contextSource = readFileSync(
   fileURLToPath(new URL('../src/pages/ContextManagementPage.tsx', import.meta.url)),
   'utf8',
@@ -62,6 +66,11 @@ describe('responsive desktop layout contracts', () => {
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).not.toContain('px-4 py-3');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('overflow-x-auto');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('overflow-y-hidden');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('gold-scrollbar-hidden');
+    expect(stylesSource).toContain('.gold-scrollbar-hidden {');
+    expect(stylesSource).toContain('scrollbar-width: none;');
+    expect(stylesSource).toContain('.gold-scrollbar-hidden::-webkit-scrollbar {');
+    expect(stylesSource).toContain('display: none;');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('py-1');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('@sm/conversation-composer:flex-1');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsListClassName).toContain('w-max');

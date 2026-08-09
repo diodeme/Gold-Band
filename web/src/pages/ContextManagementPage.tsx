@@ -1,6 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { isTauriRuntime } from '@/api/shared';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { Check, ChevronsUpDown, CircleHelp, Edit, Eye, FolderOpen, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
@@ -11,7 +9,7 @@ import {
   toggleMcpServer, checkMcpServerHealth, listMcpTools,
   listSkills, listProjectSkills, readSkill, writeSkill, deleteSkill, getSkillSyncStatus,
   checkSkillNameConflict, updateSkillSyncTargets,
-  getConversationWorkspaces, getAgentRegistry, doctorAgent,
+  getConversationWorkspaces, doctorAgent,
 } from '../api';
 import { displayAppError } from '../i18n';
 import type {
@@ -53,13 +51,19 @@ import {
 } from '@/lib/skill-sheet-form';
 import { skillStorageHint } from '@/lib/skill-storage-hint';
 import { readRememberedSkillProjectWorkspace, rememberSkillProjectWorkspace } from '@/lib/skill-workspace-memory';
+import { initialProfileImportState, profileImportReducer } from '@/lib/profile-import-state';
 
 type ProfileSheetMode = 'view' | 'create' | 'edit';
 type ContextTab = 'profiles' | 'mcp' | 'skills';
 type ProfileListTab = 'built-in' | 'custom';
 const pageSizes = [6, 12, 24];
 
-export function ContextManagementPage() {
+interface ContextManagementPageProps {
+  agentRegistry: AgentRegistryVm | null;
+  onAgentRegistryChange: (registry: AgentRegistryVm) => void;
+}
+
+export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: ContextManagementPageProps) {
   const { t } = useTranslation();
   const [vm, setVm] = useState<ProfileListVm | null>(null);
   const [loading, setLoading] = useState(false);
@@ -78,11 +82,10 @@ export function ContextManagementPage() {
   const [deleting, setDeleting] = useState(false);
 
   // ── Profile import state ──
-  const [importOpen, setImportOpen] = useState(false);
-  const [importDynamicTemplate, setImportDynamicTemplate] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [importResult, setImportResult] = useState<ImportProfilesResult | null>(null);
-  const [importError, setImportError] = useState<string | null>(null);
+  const [profileImport, dispatchProfileImport] = useReducer(
+    profileImportReducer,
+    initialProfileImportState,
+  );
 
   // ── MCP state ──
   const [mcpServers, setMcpServers] = useState<McpServerVm[]>([]);
@@ -140,24 +143,7 @@ export function ContextManagementPage() {
   const [skillDeleting, setSkillDeleting] = useState(false);
   const [skillSyncPendingKey, setSkillSyncPendingKey] = useState<string | null>(null);
   const [skillEditWsPath, setSkillEditWsPath] = useState<string | null>(null);
-  const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
   const [mcpDiagnosingAgent, setMcpDiagnosingAgent] = useState<string | null>(null);
-  // 监听 agent 诊断完成事件，实时刷新 per-agent MCP 兼容性（后台诊断完一个 agent 即更新卡片，无需重进页面）
-  useEffect(() => {
-    if (!isTauriRuntime()) return undefined;
-    let disposed = false;
-    let unlisten: UnlistenFn | null = null;
-    void listen('gold-band://agent-registry-updated', () => {
-      if (!disposed) void getAgentRegistry().then(setAgentRegistry).catch(() => {});
-    }).then((stop) => {
-      if (disposed) stop();
-      else unlisten = stop;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
 
   const [skillTab, setSkillTab] = useState<'global' | 'project'>('global');
   const [skillQuery, setSkillQuery] = useState('');
@@ -177,7 +163,7 @@ export function ContextManagementPage() {
   }, [skillError]);
 
   const configuredAgents = useMemo(
-    () => (agentRegistry?.supportedTypes ?? []).filter((agent) => agent.configured),
+    () => (agentRegistry?.catalog ?? []).filter((agent) => agent.configured),
     [agentRegistry],
   );
 
@@ -266,7 +252,6 @@ export function ContextManagementPage() {
   useEffect(() => {
     if (!needsSkillContext) return;
     getConversationWorkspaces().then(setWorkspaces).catch(() => setWorkspaces([]));
-    getAgentRegistry().then(setAgentRegistry).catch(() => setAgentRegistry(null));
   }, [needsSkillContext]);
 
   const refresh = async () => {
@@ -436,32 +421,31 @@ export function ContextManagementPage() {
   };
 
   const handlePickImportFolder = async () => {
-    setImporting(true);
-    setImportError(null);
+    dispatchProfileImport({ type: 'begin-import' });
     try {
       const { open } = await import('@tauri-apps/plugin-dialog');
       const selected = await open({ directory: true, title: t('contextManagement.importPickFolderTitle') });
       if (!selected) {
+        dispatchProfileImport({ type: 'cancel-import' });
         return;
       }
       const folderPath = typeof selected === 'string' ? selected : selected[0];
-      setImportOpen(false);
-      const result = await importProfilesFromFolder(folderPath, importDynamicTemplate);
-      setImportResult(result);
+      const result = await importProfilesFromFolder(folderPath, profileImport.dynamicTemplate);
+      dispatchProfileImport({ type: 'import-succeeded', result });
       await refresh();
     } catch (err) {
-      setImportError(displayAppError(t, err));
-    } finally {
-      setImporting(false);
+      dispatchProfileImport({ type: 'import-failed', error: displayAppError(t, err) });
     }
   };
 
   const editImportedProfile = async (id: string) => {
+    dispatchProfileImport({ type: 'begin-edit' });
     try {
       const profile = await getProfile(id);
+      dispatchProfileImport({ type: 'edit-succeeded' });
       openSheet('edit', profile);
     } catch (err) {
-      setImportError(displayAppError(t, err));
+      dispatchProfileImport({ type: 'edit-failed', error: displayAppError(t, err) });
     }
   };
 
@@ -501,7 +485,7 @@ export function ContextManagementPage() {
                 <RefreshCw className={cn(loading && 'animate-spin')} />
                 {t('common.refresh')}
               </Button>
-              <Button variant="outline" disabled={loading || importing} onClick={() => { setImportError(null); setImportOpen(true); }}>
+              <Button variant="outline" disabled={loading || profileImport.importing} onClick={() => dispatchProfileImport({ type: 'open-settings' })}>
                 <FolderOpen />{t('contextManagement.importProfile')}
               </Button>
               <Button onClick={() => openSheet('create')}><Plus />{t('contextManagement.addProfile')}</Button>
@@ -624,7 +608,14 @@ export function ContextManagementPage() {
       </AlertDialog>
 
       {/* ── Profile Import Dialogs ── */}
-      <Dialog open={importOpen} onOpenChange={(open) => { if (!importing) setImportOpen(open); }}>
+      <Dialog
+        open={profileImport.settingsOpen}
+        onOpenChange={(open) => {
+          if (!profileImport.importing) {
+            dispatchProfileImport({ type: open ? 'open-settings' : 'close-settings' });
+          }
+        }}
+      >
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>{t('contextManagement.importProfile')}</DialogTitle>
@@ -636,25 +627,29 @@ export function ContextManagementPage() {
                 <div className="text-sm font-medium">{t('contextManagement.dynamicTemplate')}</div>
                 <p className="text-xs text-muted-foreground">{t('contextManagement.importDynamicTemplateDescription')}</p>
               </div>
-              <Switch checked={importDynamicTemplate} onCheckedChange={setImportDynamicTemplate} />
+              <Switch
+                checked={profileImport.dynamicTemplate}
+                onCheckedChange={(enabled) => dispatchProfileImport({ type: 'set-dynamic-template', enabled })}
+              />
             </div>
-            {importError ? (
-              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{importError}</div>
+            {profileImport.error ? (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{profileImport.error}</div>
             ) : null}
           </div>
           <DialogFooter>
-            <Button variant="outline" disabled={importing} onClick={() => setImportOpen(false)}>{t('common.close')}</Button>
-            <Button disabled={importing} onClick={() => void handlePickImportFolder()}>
-              {importing ? <Loader2 className="animate-spin" /> : <FolderOpen />}
-              {importing ? t('common.loading') : t('contextManagement.importPickFolder')}
+            <Button variant="outline" disabled={profileImport.importing} onClick={() => dispatchProfileImport({ type: 'close-settings' })}>{t('common.close')}</Button>
+            <Button disabled={profileImport.importing} onClick={() => void handlePickImportFolder()}>
+              {profileImport.importing ? <Loader2 className="animate-spin" /> : <FolderOpen />}
+              {profileImport.importing ? t('common.loading') : t('contextManagement.importPickFolder')}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       <ImportResultDialog
-        result={importResult}
-        onClose={() => setImportResult(null)}
+        result={profileImport.result}
+        error={profileImport.error}
+        onClose={() => dispatchProfileImport({ type: 'close-result' })}
         onEdit={(id) => void editImportedProfile(id)}
       />
 
@@ -750,6 +745,8 @@ export function ContextManagementPage() {
                     iconKey: a.iconKey,
                     mcpHttpSupported: a.mcpHttpSupported,
                     mcpSseSupported: a.mcpSseSupported,
+                    diagnosticAvailable: a.diagnostic?.available,
+                    diagnosticReason: a.diagnostic?.reason,
                   }))}
                   diagnosingAgentType={mcpDiagnosingAgent}
                   onDiagnoseAgent={async (agentType) => {
@@ -757,7 +754,7 @@ export function ContextManagementPage() {
                     setMcpDiagnosingAgent(agentType);
                     try {
                       const registry = await doctorAgent(agentType);
-                      setAgentRegistry(registry);
+                      onAgentRegistryChange(registry);
                     } catch {
                       // 忽略诊断错误；用户可重试
                     } finally {
@@ -993,7 +990,7 @@ export function ContextManagementPage() {
       </AlertDialog>
 
       {/* ── MCP Sheet (JSON Editor) ── */}
-      <Sheet open={mcpSheetOpen} onOpenChange={(open) => { if (!open) dismissMcpSheet(); }}>
+      <Sheet modal={false} open={mcpSheetOpen} onOpenChange={(open) => { if (!open) dismissMcpSheet(); }}>
         <SheetContent className="gap-0 overflow-hidden" resizeStorageKey="context-management/mcp-sheet" defaultSize={720} minSize={520} maxSize={960}>
           <SheetHeader className="border-b px-5 py-4">
             <SheetTitle>{mcpEditTarget ? t('contextManagement.mcp.editServer', '配置 MCP 服务器') : t('contextManagement.mcp.addServer', '添加 MCP 服务器')}</SheetTitle>
@@ -1046,7 +1043,7 @@ export function ContextManagementPage() {
       </AlertDialog>
 
       {/* ── MCP Tools Sheet ── */}
-      <Sheet open={Boolean(toolsSheetServer)} onOpenChange={(open) => { if (!open) { setToolsSheetServer(null); setToolsList(null); setToolsError(null); setToolsLoading(false); } }}>
+      <Sheet modal={false} open={Boolean(toolsSheetServer)} onOpenChange={(open) => { if (!open) { setToolsSheetServer(null); setToolsList(null); setToolsError(null); setToolsLoading(false); } }}>
         <SheetContent className="gap-0 overflow-hidden" resizeStorageKey="context-management/tools-sheet" defaultSize={560} minSize={420} maxSize={800}>
           <SheetHeader className="border-b px-5 py-4">
             <SheetTitle className="flex items-center gap-2">
@@ -1139,7 +1136,7 @@ function SkillSheet({
   editWorkspacePath: string | null;
   createSource: string;
   workspaces: SkillWorkspaceOption[];
-  configuredAgents: AgentRegistryVm['supportedTypes'];
+  configuredAgents: AgentRegistryVm['catalog'];
   skillTab: 'global' | 'project';
   selectedWorkspace: string;
   onOpenChange: (open: boolean) => void;
@@ -1234,7 +1231,7 @@ function SkillSheet({
   };
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
       <SheetContent className="gap-0 overflow-hidden" resizeStorageKey="context-management/skill-sheet" defaultSize={720} minSize={520} maxSize={960}>
         <SheetHeader className="border-b px-5 py-4">
           <SheetTitle>{mode === 'create' ? t('contextManagement.skills.createSkill', '创建 SKILL') : mode === 'edit' ? t('contextManagement.skills.editSkillTitle', { name: editTarget?.name ?? '', defaultValue: `编辑 ${editTarget?.name ?? ''}` }) : editTarget?.name ?? t('common.detail')}</SheetTitle>
@@ -1447,7 +1444,7 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
 
   return (
     <>
-      <Sheet open={mode !== null} onOpenChange={onOpenChange}>
+      <Sheet modal={false} open={mode !== null} onOpenChange={onOpenChange}>
         <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey="context-management/profile-sheet" defaultSize={720} minSize={520} maxSize={960}>
           <SheetHeader className="border-b px-5 py-4 text-left">
             <SheetTitle>{mode === 'create' ? t('contextManagement.createProfile') : mode === 'edit' ? t('contextManagement.editProfile') : profile?.name}</SheetTitle>
@@ -1591,8 +1588,9 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
   );
 }
 
-function ImportResultDialog({ result, onClose, onEdit }: {
+function ImportResultDialog({ result, error, onClose, onEdit }: {
   result: ImportProfilesResult | null;
+  error: string | null;
   onClose: () => void;
   onEdit: (id: string) => void;
 }) {
@@ -1614,6 +1612,11 @@ function ImportResultDialog({ result, onClose, onEdit }: {
         {result.truncated ? (
           <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700 dark:text-yellow-500">
             {t('contextManagement.importTruncated')}
+          </div>
+        ) : null}
+        {error ? (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
           </div>
         ) : null}
         <ScrollArea className="max-h-80">
@@ -1652,7 +1655,7 @@ function ImportResultDialog({ result, onClose, onEdit }: {
                   <div key={record.sourcePath} className="rounded-md border px-3 py-2">
                     <div className="truncate text-sm font-medium">{record.name || record.sourcePath}</div>
                     <div className="truncate text-xs text-destructive">
-                      {record.errorCode ? t(`errors.profile.import.${record.errorCode}`) : ''}
+                      {record.error ? t(`errors.profile.import.${record.error.code}`) : ''}
                     </div>
                   </div>
                 ))}

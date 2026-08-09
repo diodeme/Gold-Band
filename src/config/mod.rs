@@ -154,6 +154,8 @@ pub type DesktopFontPreference = String;
 #[serde(transparent)]
 pub struct ManagedAgentId(String);
 
+pub const DEFAULT_CUSTOM_AGENT_ICON: &str = "gold-band";
+
 impl ManagedAgentId {
     pub fn as_str(&self) -> &str {
         &self.0
@@ -186,93 +188,16 @@ impl<'de> Deserialize<'de> for ManagedAgentId {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct ManagedAgentPreset {
-    pub id: &'static str,
-    pub label: &'static str,
-    pub icon_key: &'static str,
-    pub command: &'static str,
-    pub args: &'static [&'static str],
-    pub primary_agent_dir: &'static str,
-    pub compatible_agent_dirs: &'static [&'static str],
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SystemPromptDelivery {
+    #[default]
+    None,
+    MetaAppend,
 }
 
-impl ManagedAgentPreset {
-    pub fn agent_id(self) -> ManagedAgentId {
-        ManagedAgentId::from_str(self.id).expect("built-in managed agent id is valid")
-    }
-
-    pub fn default_config(self) -> ManagedAgentConfig {
-        ManagedAgentConfig {
-            adapter: AcpAdapterConfig {
-                command: self.command.to_string(),
-                args: self.args.iter().map(|value| (*value).to_string()).collect(),
-                display_name: self.label.to_string(),
-                env: BTreeMap::new(),
-            },
-            primary_agent_dir: self.primary_agent_dir.to_string(),
-            compatible_agent_dirs: self
-                .compatible_agent_dirs
-                .iter()
-                .map(|value| (*value).to_string())
-                .collect(),
-            external_session_sync_enabled: false,
-        }
-    }
-}
-
-pub const MANAGED_AGENT_PRESETS: [ManagedAgentPreset; 5] = [
-    ManagedAgentPreset {
-        id: "claude-acp",
-        label: "Claude",
-        icon_key: "claude",
-        command: "npx",
-        args: &["-y", "@agentclientprotocol/claude-agent-acp@latest"],
-        primary_agent_dir: ".claude",
-        compatible_agent_dirs: &[],
-    },
-    ManagedAgentPreset {
-        id: "codex-acp",
-        label: "Codex",
-        icon_key: "codex",
-        command: "npx",
-        args: &["-y", "@agentclientprotocol/codex-acp@latest"],
-        primary_agent_dir: ".codex",
-        compatible_agent_dirs: &[".agents"],
-    },
-    ManagedAgentPreset {
-        id: "cursor",
-        label: "Cursor",
-        icon_key: "cursor",
-        command: "cursor-agent",
-        args: &["acp"],
-        primary_agent_dir: ".cursor",
-        compatible_agent_dirs: &[".agents"],
-    },
-    ManagedAgentPreset {
-        id: "gemini",
-        label: "Gemini",
-        icon_key: "gemini",
-        command: "npx",
-        args: &["-y", "@google/gemini-cli@latest", "--acp"],
-        primary_agent_dir: ".gemini",
-        compatible_agent_dirs: &[".agents"],
-    },
-    ManagedAgentPreset {
-        id: "opencode",
-        label: "OpenCode",
-        icon_key: "opencode",
-        command: "opencode",
-        args: &["acp"],
-        primary_agent_dir: ".opencode",
-        compatible_agent_dirs: &[".agents"],
-    },
-];
-
-pub fn managed_agent_preset(agent_id: &ManagedAgentId) -> Option<&'static ManagedAgentPreset> {
-    MANAGED_AGENT_PRESETS
-        .iter()
-        .find(|preset| preset.id == agent_id.as_str())
+pub fn catalog_agent_default_config(agent_id: &str) -> Option<ManagedAgentConfig> {
+    crate::agent_catalog::builtin_agent(agent_id).map(ManagedAgentConfig::from_catalog)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -288,7 +213,9 @@ pub struct AcpAdapterConfig {
 
 impl Default for AcpAdapterConfig {
     fn default() -> Self {
-        MANAGED_AGENT_PRESETS[0].default_config().adapter
+        catalog_agent_default_config("claude-acp")
+            .expect("Claude is present in the built-in Agent catalog")
+            .adapter
     }
 }
 
@@ -308,11 +235,21 @@ impl FromStr for DesktopLanguage {
 #[serde(rename_all = "camelCase")]
 pub struct ManagedAgentConfig {
     pub adapter: AcpAdapterConfig,
+    /// 用户实例自己的图标引用；新建后不再跟随 Catalog 更新。
+    #[serde(default = "default_agent_icon")]
+    pub icon: String,
     /// Gold Band 写入、同步，同时也是 Agent 首个读取位置的主 Agent 目录。
-    pub primary_agent_dir: String,
+    #[serde(default)]
+    pub primary_agent_dir: Option<String>,
     /// Agent 额外读取但 Gold Band 不写入、不作为同步目标的兼容 Agent 目录。
     #[serde(default)]
     pub compatible_agent_dirs: Vec<String>,
+    /// system prompt 的实际传递方式。当前仅实现 ACP `_meta.systemPrompt.append`。
+    #[serde(default)]
+    pub system_prompt_delivery: SystemPromptDelivery,
+    /// Agent 是否具备跨客户端共享同一线性 Session 的能力。
+    #[serde(default)]
+    pub external_session_sync_supported: bool,
     /// 是否允许 Gold Band 根据 Provider revision 重载并导入外部客户端会话历史。
     /// 仅适用于能跨客户端共享同一线性会话上下文的 Agent，默认关闭。
     #[serde(default)]
@@ -333,16 +270,52 @@ impl ManagedAgentConfig {
     ) -> Self {
         Self {
             adapter,
-            primary_agent_dir: primary_agent_dir.into(),
+            icon: default_agent_icon(),
+            primary_agent_dir: Some(primary_agent_dir.into()),
             compatible_agent_dirs,
+            system_prompt_delivery: SystemPromptDelivery::None,
+            external_session_sync_supported: false,
             external_session_sync_enabled: false,
         }
     }
 
+    pub fn from_catalog(entry: &crate::agent_catalog::AgentCatalogEntry) -> Self {
+        Self {
+            adapter: AcpAdapterConfig {
+                command: entry.command.clone(),
+                args: entry.args.clone(),
+                display_name: entry.label.clone(),
+                env: entry.env.clone(),
+            },
+            icon: entry.icon_key.clone(),
+            primary_agent_dir: entry.primary_agent_dir.clone(),
+            compatible_agent_dirs: entry.compatible_agent_dirs.clone(),
+            system_prompt_delivery: if entry.supports_system_prompt {
+                SystemPromptDelivery::MetaAppend
+            } else {
+                SystemPromptDelivery::None
+            },
+            external_session_sync_supported: entry.supports_external_session_sync,
+            external_session_sync_enabled: false,
+        }
+    }
+
+    pub fn supports_system_prompt(&self) -> bool {
+        self.system_prompt_delivery != SystemPromptDelivery::None
+    }
+
     pub fn skill_directory_policy(&self) -> AgentSkillDirectoryPolicy {
-        let primary = self.primary_agent_dir.clone();
-        let write_dir_names = vec![primary.clone()];
-        let mut read_dir_names = vec![primary];
+        let mut write_dir_names = Vec::new();
+        let mut read_dir_names = Vec::new();
+        if let Some(primary) = self
+            .primary_agent_dir
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            write_dir_names.push(primary.to_string());
+            read_dir_names.push(primary.to_string());
+        }
         for compatible in &self.compatible_agent_dirs {
             if !read_dir_names.iter().any(|dir_name| dir_name == compatible) {
                 read_dir_names.push(compatible.clone());
@@ -353,6 +326,10 @@ impl ManagedAgentConfig {
             read_dir_names,
         }
     }
+}
+
+fn default_agent_icon() -> String {
+    "agent".to_string()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -529,7 +506,7 @@ pub struct SettingsConfig {
     pub context_servers: Option<Vec<McpServerConfig>>,
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 3;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
 const CURRENT_CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp@latest";
@@ -566,6 +543,10 @@ impl SettingsConfig {
         }
         if version < 2 {
             migrate_codex_acp_package(settings)?;
+            migrated = true;
+        }
+        if version < 3 {
+            migrate_managed_agent_capabilities(settings)?;
             migrated = true;
         }
         if migrated {
@@ -623,8 +604,8 @@ fn migrate_managed_agent_directories(
             "gemini-cli" => "gemini",
             _ => legacy_id.as_str(),
         };
-        let agent_id = ManagedAgentId::from_str(canonical_id)?;
-        let preset = managed_agent_preset(&agent_id)
+        ManagedAgentId::from_str(canonical_id)?;
+        let (default_primary, default_compatible) = legacy_agent_directories(canonical_id)
             .ok_or_else(|| anyhow!("cannot migrate unsupported managed agent `{canonical_id}`"))?;
         let config = value
             .as_object_mut()
@@ -638,7 +619,7 @@ fn migrate_managed_agent_directories(
             config.insert(
                 "primaryAgentDir".to_string(),
                 serde_json::Value::String(
-                    legacy_override.unwrap_or_else(|| preset.primary_agent_dir.to_string()),
+                    legacy_override.unwrap_or_else(|| default_primary.to_string()),
                 ),
             );
         }
@@ -646,8 +627,7 @@ fn migrate_managed_agent_directories(
             config.insert(
                 "compatibleAgentDirs".to_string(),
                 serde_json::Value::Array(
-                    preset
-                        .compatible_agent_dirs
+                    default_compatible
                         .iter()
                         .map(|directory| serde_json::Value::String((*directory).to_string()))
                         .collect(),
@@ -659,6 +639,66 @@ fn migrate_managed_agent_directories(
                 "duplicate managed agent `{canonical_id}` after settings migration"
             ));
         }
+    }
+    Ok(())
+}
+
+fn legacy_agent_directories(agent_id: &str) -> Option<(&'static str, &'static [&'static str])> {
+    match agent_id {
+        "claude-acp" => Some((".claude", &[])),
+        "codex-acp" => Some((".codex", &[".agents"])),
+        "cursor" => Some((".cursor", &[".agents"])),
+        "gemini" => Some((".gemini", &[".agents"])),
+        "opencode" => Some((".opencode", &[".agents"])),
+        _ => None,
+    }
+}
+
+fn migrate_managed_agent_capabilities(
+    settings: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    let Some(agents) = settings
+        .get_mut("agents")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return Ok(());
+    };
+    for (agent_id, value) in agents {
+        let config = value
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("managed agent `{agent_id}` config must be an object"))?;
+        let sync_enabled = config
+            .get("externalSessionSyncEnabled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        config.entry("icon".to_string()).or_insert_with(|| {
+            serde_json::Value::String(
+                match agent_id.as_str() {
+                    "claude-acp" => "claude",
+                    "codex-acp" => "codex",
+                    "cursor" => "cursor",
+                    "gemini" => "gemini",
+                    "opencode" => "opencode",
+                    _ => "agent",
+                }
+                .to_string(),
+            )
+        });
+        config
+            .entry("systemPromptDelivery".to_string())
+            .or_insert_with(|| {
+                serde_json::Value::String(
+                    if agent_id == "claude-acp" {
+                        "meta-append"
+                    } else {
+                        "none"
+                    }
+                    .to_string(),
+                )
+            });
+        config
+            .entry("externalSessionSyncSupported".to_string())
+            .or_insert(serde_json::Value::Bool(sync_enabled));
     }
     Ok(())
 }
@@ -697,6 +737,7 @@ pub struct ProjectAppConfig {
     pub acp_raw_target_size_bytes: Option<u64>,
     pub acp_session_foreground_lease_ttl_secs: Option<u64>,
     pub acp_session_foreground_lease_renew_interval_secs: Option<u64>,
+    pub acp_prompt_terminal_route_timeout_ms: Option<u64>,
     pub acp_session_idle_ttl_secs: Option<u64>,
     pub acp_adapter_connection_idle_ttl_secs: Option<u64>,
     pub acp_max_idle_session_runtimes: Option<usize>,
@@ -707,7 +748,276 @@ pub struct ProjectAppConfig {
     pub notification_auto_dismiss_target_secs: Option<u64>,
     pub require_local_claude_executable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission_mode_mapping: Option<BTreeMap<String, BTreeMap<String, String>>>,
+    pub workspace_layout: Option<WorkspaceLayoutConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_files: Option<WorkspaceFilesConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_files: Option<TurnFilesConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnFilesConfig {
+    pub card_preview_limit: usize,
+    pub capture_max_entries: usize,
+    pub capture_max_file_bytes: usize,
+    pub capture_max_total_bytes: usize,
+    pub diff_text_max_bytes: usize,
+    pub diff_text_max_lines: usize,
+    pub blob_cache_max_bytes: usize,
+    pub blob_retention_policy: TurnFileBlobRetentionPolicy,
+}
+
+impl Default for TurnFilesConfig {
+    fn default() -> Self {
+        Self {
+            card_preview_limit: 3,
+            capture_max_entries: 256,
+            capture_max_file_bytes: 2 * 1024 * 1024,
+            capture_max_total_bytes: 16 * 1024 * 1024,
+            diff_text_max_bytes: 2 * 1024 * 1024,
+            diff_text_max_lines: 100_000,
+            blob_cache_max_bytes: 0,
+            blob_retention_policy: TurnFileBlobRetentionPolicy::Attempt,
+        }
+    }
+}
+
+impl TurnFilesConfig {
+    fn normalized(self) -> Self {
+        Self {
+            card_preview_limit: self.card_preview_limit.max(1),
+            capture_max_entries: self.capture_max_entries.max(1),
+            capture_max_file_bytes: self.capture_max_file_bytes.max(1),
+            capture_max_total_bytes: self
+                .capture_max_total_bytes
+                .max(self.capture_max_file_bytes),
+            diff_text_max_bytes: self.diff_text_max_bytes.max(1),
+            diff_text_max_lines: self.diff_text_max_lines.max(1),
+            blob_cache_max_bytes: self.blob_cache_max_bytes,
+            blob_retention_policy: self.blob_retention_policy,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TurnFileBlobRetentionPolicy {
+    Attempt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceLayoutProfileConfig {
+    pub center_min_width: u32,
+    pub center_auto_collapse_width: u32,
+    pub window_min_width: u32,
+}
+
+impl WorkspaceLayoutProfileConfig {
+    fn normalized(self, shell_min_width: u32) -> Self {
+        let center_min_width = self.center_min_width.max(1);
+        Self {
+            center_min_width,
+            center_auto_collapse_width: self.center_auto_collapse_width.max(center_min_width),
+            window_min_width: self
+                .window_min_width
+                .max(center_min_width)
+                .max(shell_min_width),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceLayoutConfig {
+    pub shell_min_width: u32,
+    pub shell_min_height: u32,
+    pub right_workspace: RightWorkspaceLayoutConfig,
+    pub conversation: WorkspaceLayoutProfileConfig,
+    pub context_cards: WorkspaceLayoutProfileConfig,
+    pub workflow_canvas: WorkspaceLayoutProfileConfig,
+    pub settings: WorkspaceLayoutProfileConfig,
+}
+
+impl WorkspaceLayoutConfig {
+    fn normalized(mut self) -> Self {
+        self.shell_min_width = self.shell_min_width.max(1);
+        self.shell_min_height = self.shell_min_height.max(1);
+        self.right_workspace = self.right_workspace.normalized();
+        self.conversation = self.conversation.normalized(self.shell_min_width);
+        self.context_cards = self.context_cards.normalized(self.shell_min_width);
+        self.workflow_canvas = self.workflow_canvas.normalized(self.shell_min_width);
+        self.settings = self.settings.normalized(self.shell_min_width);
+        self
+    }
+}
+
+impl Default for WorkspaceLayoutConfig {
+    fn default() -> Self {
+        Self {
+            shell_min_width: 480,
+            shell_min_height: 680,
+            right_workspace: RightWorkspaceLayoutConfig::default(),
+            conversation: WorkspaceLayoutProfileConfig {
+                center_min_width: 360,
+                center_auto_collapse_width: 420,
+                window_min_width: 480,
+            },
+            context_cards: WorkspaceLayoutProfileConfig {
+                center_min_width: 520,
+                center_auto_collapse_width: 520,
+                window_min_width: 520,
+            },
+            workflow_canvas: WorkspaceLayoutProfileConfig {
+                center_min_width: 640,
+                center_auto_collapse_width: 640,
+                window_min_width: 640,
+            },
+            settings: WorkspaceLayoutProfileConfig {
+                center_min_width: 480,
+                center_auto_collapse_width: 480,
+                window_min_width: 480,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileWorkspaceLayoutConfig {
+    pub preferred_width: u32,
+    pub split_min_width: u32,
+    pub tree_default_width: u32,
+    pub tree_min_width: u32,
+    pub tree_max_width: u32,
+}
+
+impl FileWorkspaceLayoutConfig {
+    fn normalized(mut self, right_min_width: u32, right_max_width: u32) -> Self {
+        self.preferred_width = self.preferred_width.clamp(right_min_width, right_max_width);
+        self.split_min_width = self.split_min_width.clamp(right_min_width, right_max_width);
+        self.tree_min_width = self.tree_min_width.max(1).min(right_max_width);
+        self.tree_max_width = self
+            .tree_max_width
+            .max(self.tree_min_width)
+            .min(right_max_width);
+        self.tree_default_width = self
+            .tree_default_width
+            .clamp(self.tree_min_width, self.tree_max_width);
+        self
+    }
+}
+
+impl Default for FileWorkspaceLayoutConfig {
+    fn default() -> Self {
+        Self {
+            preferred_width: 760,
+            split_min_width: 500,
+            tree_default_width: 280,
+            tree_min_width: 220,
+            tree_max_width: 420,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RightWorkspaceLayoutConfig {
+    pub min_width: u32,
+    pub default_width: u32,
+    pub max_width: u32,
+    pub file: FileWorkspaceLayoutConfig,
+}
+
+impl RightWorkspaceLayoutConfig {
+    fn normalized(mut self) -> Self {
+        self.min_width = self.min_width.max(1);
+        self.max_width = self.max_width.max(self.min_width);
+        self.default_width = self.default_width.clamp(self.min_width, self.max_width);
+        self.file = self.file.normalized(self.min_width, self.max_width);
+        self
+    }
+}
+
+impl Default for RightWorkspaceLayoutConfig {
+    fn default() -> Self {
+        Self {
+            min_width: 288,
+            default_width: 440,
+            max_width: 1440,
+            file: FileWorkspaceLayoutConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkspaceFilesConfig {
+    pub auto_save_delay_ms: u64,
+    pub search_debounce_ms: u64,
+    pub search_result_limit: usize,
+    pub text_editable_max_bytes: u64,
+    pub text_highlight_max_chars: usize,
+    pub text_read_only_max_bytes: u64,
+    pub image_preview_max_bytes: u64,
+    pub image_preview_max_pixels: u64,
+    pub content_cache_entries: usize,
+    pub content_cache_max_bytes: u64,
+    pub watch_debounce_ms: u64,
+    pub preview_token_ttl_seconds: u64,
+    pub external_access_grant_ttl_seconds: u64,
+    pub markdown_live_preview_max_chars: usize,
+    pub markdown_embedded_image_limit: usize,
+    pub markdown_embedded_image_max_concurrent: usize,
+}
+
+impl WorkspaceFilesConfig {
+    fn normalized(mut self) -> Self {
+        self.auto_save_delay_ms = self.auto_save_delay_ms.max(1);
+        self.search_debounce_ms = self.search_debounce_ms.max(1);
+        self.search_result_limit = self.search_result_limit.max(1);
+        self.text_editable_max_bytes = self.text_editable_max_bytes.max(1);
+        self.text_highlight_max_chars = self.text_highlight_max_chars.max(1);
+        self.text_read_only_max_bytes = self
+            .text_read_only_max_bytes
+            .max(self.text_editable_max_bytes);
+        self.image_preview_max_bytes = self.image_preview_max_bytes.max(1);
+        self.image_preview_max_pixels = self.image_preview_max_pixels.max(1);
+        self.content_cache_entries = self.content_cache_entries.max(1);
+        self.content_cache_max_bytes = self.content_cache_max_bytes.max(1);
+        self.watch_debounce_ms = self.watch_debounce_ms.max(1);
+        self.preview_token_ttl_seconds = self.preview_token_ttl_seconds.max(1);
+        self.external_access_grant_ttl_seconds = self.external_access_grant_ttl_seconds.max(1);
+        self.markdown_live_preview_max_chars = self.markdown_live_preview_max_chars.max(1);
+        self.markdown_embedded_image_limit = self.markdown_embedded_image_limit.max(1);
+        self.markdown_embedded_image_max_concurrent =
+            self.markdown_embedded_image_max_concurrent.max(1);
+        self
+    }
+}
+
+impl Default for WorkspaceFilesConfig {
+    fn default() -> Self {
+        Self {
+            auto_save_delay_ms: 300,
+            search_debounce_ms: 200,
+            search_result_limit: 500,
+            text_editable_max_bytes: 2 * 1024 * 1024,
+            text_highlight_max_chars: 120_000,
+            text_read_only_max_bytes: 10 * 1024 * 1024,
+            image_preview_max_bytes: 20 * 1024 * 1024,
+            image_preview_max_pixels: 40_000_000,
+            content_cache_entries: 12,
+            content_cache_max_bytes: 16 * 1024 * 1024,
+            watch_debounce_ms: 150,
+            preview_token_ttl_seconds: 300,
+            external_access_grant_ttl_seconds: 1_800,
+            markdown_live_preview_max_chars: 200_000,
+            markdown_embedded_image_limit: 100,
+            markdown_embedded_image_max_concurrent: 4,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -744,6 +1054,7 @@ pub struct RuntimeConfig {
     pub acp_raw_target_size_bytes: u64,
     pub acp_session_foreground_lease_ttl_secs: u64,
     pub acp_session_foreground_lease_renew_interval_secs: u64,
+    pub acp_prompt_terminal_route_timeout_ms: u64,
     pub acp_session_idle_ttl_secs: u64,
     pub acp_adapter_connection_idle_ttl_secs: u64,
     pub acp_max_idle_session_runtimes: usize,
@@ -752,7 +1063,9 @@ pub struct RuntimeConfig {
     pub acp_timeline_compact_patch_ratio: usize,
     pub conversation_auto_title_max_chars: usize,
     pub notification_auto_dismiss_target_secs: u64,
-    pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
+    pub workspace_layout: WorkspaceLayoutConfig,
+    pub workspace_files: WorkspaceFilesConfig,
+    pub turn_files: TurnFilesConfig,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub provider_diagnostics: BTreeMap<String, ProviderDiagnosticSnapshot>,
 }
@@ -760,8 +1073,12 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         let mut agents = BTreeMap::new();
-        let claude_preset = MANAGED_AGENT_PRESETS[0];
-        agents.insert(claude_preset.agent_id(), claude_preset.default_config());
+        let claude_id = ManagedAgentId::from_str("claude-acp").expect("valid Claude Agent id");
+        agents.insert(
+            claude_id,
+            catalog_agent_default_config("claude-acp")
+                .expect("Claude is present in the built-in Agent catalog"),
+        );
         let base = Self {
             log_level: RuntimeLogLevel::Info,
             log_prompts: true,
@@ -787,6 +1104,7 @@ impl Default for RuntimeConfig {
             acp_raw_target_size_bytes: 4 * 1024 * 1024,
             acp_session_foreground_lease_ttl_secs: 90,
             acp_session_foreground_lease_renew_interval_secs: 30,
+            acp_prompt_terminal_route_timeout_ms: 5_000,
             acp_session_idle_ttl_secs: 600,
             acp_adapter_connection_idle_ttl_secs: 600,
             acp_max_idle_session_runtimes: 8,
@@ -795,7 +1113,9 @@ impl Default for RuntimeConfig {
             acp_timeline_compact_patch_ratio: 4,
             conversation_auto_title_max_chars: DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS,
             notification_auto_dismiss_target_secs: DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS,
-            permission_mode_mapping: BTreeMap::new(),
+            workspace_layout: WorkspaceLayoutConfig::default(),
+            workspace_files: WorkspaceFilesConfig::default(),
+            turn_files: TurnFilesConfig::default(),
             provider_diagnostics: BTreeMap::new(),
         };
         base.apply_app_config(embedded_project_app_config())
@@ -877,6 +1197,12 @@ impl RuntimeConfig {
                 (self.acp_session_foreground_lease_ttl_secs / 3).max(1);
         }
         if let Some(value) = app_config
+            .acp_prompt_terminal_route_timeout_ms
+            .filter(|value| *value > 0)
+        {
+            self.acp_prompt_terminal_route_timeout_ms = value;
+        }
+        if let Some(value) = app_config
             .acp_session_idle_ttl_secs
             .filter(|value| *value > 0)
         {
@@ -927,8 +1253,14 @@ impl RuntimeConfig {
         if let Some(require_local_claude_executable) = app_config.require_local_claude_executable {
             self.require_local_claude_executable = require_local_claude_executable;
         }
-        if let Some(ref mapping) = app_config.permission_mode_mapping {
-            self.permission_mode_mapping = mapping.clone();
+        if let Some(workspace_layout) = &app_config.workspace_layout {
+            self.workspace_layout = workspace_layout.clone().normalized();
+        }
+        if let Some(workspace_files) = &app_config.workspace_files {
+            self.workspace_files = workspace_files.clone().normalized();
+        }
+        if let Some(turn_files) = app_config.turn_files {
+            self.turn_files = turn_files.normalized();
         }
         self
     }
@@ -947,16 +1279,6 @@ impl RuntimeConfig {
         self.provider_diagnostics = provider_diagnostics;
         self
     }
-
-    /// Resolve a normative permission mode (read_only/ask/full_access) to an agent-specific mode ID.
-    /// Falls back to the normative mode itself if no mapping is configured for the provider.
-    pub fn resolve_permission_mode(&self, provider: &str, normative_mode: &str) -> String {
-        self.permission_mode_mapping
-            .get(provider)
-            .and_then(|map| map.get(normative_mode))
-            .cloned()
-            .unwrap_or_else(|| normative_mode.to_string())
-    }
 }
 
 #[cfg(test)]
@@ -964,10 +1286,11 @@ mod tests {
     use super::{
         AcpAdapterConfig, ConsoleThemeName, ConversationDirectConfig, ConversationRunMode,
         ConversationRunModeEntry, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
-        DesktopUpdateBadgeState, MANAGED_AGENT_PRESETS, ManagedAgentConfig, ManagedAgentId,
-        ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
-        managed_agent_preset,
+        DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, ProjectAppConfig,
+        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, TurnFilesConfig,
+        WorkspaceLayoutConfig, catalog_agent_default_config,
     };
+    use crate::agent_catalog::builtin_agent_catalog;
     use std::collections::BTreeMap;
     use std::str::FromStr;
 
@@ -1159,8 +1482,13 @@ mod tests {
             notification_auto_dismiss_target_secs: Some(20),
             require_local_claude_executable: Some(true),
             acp_session_idle_ttl_secs: Some(900),
+            acp_prompt_terminal_route_timeout_ms: Some(2_500),
             acp_max_idle_session_runtimes: Some(12),
             acp_timeline_compact_patch_ratio: Some(6),
+            turn_files: Some(TurnFilesConfig {
+                card_preview_limit: 5,
+                ..TurnFilesConfig::default()
+            }),
             ..Default::default()
         };
         let json = serde_json::to_string_pretty(&app_config).unwrap();
@@ -1171,8 +1499,13 @@ mod tests {
         assert_eq!(roundtripped.notification_auto_dismiss_target_secs, Some(20));
         assert_eq!(roundtripped.require_local_claude_executable, Some(true));
         assert_eq!(roundtripped.acp_session_idle_ttl_secs, Some(900));
+        assert_eq!(
+            roundtripped.acp_prompt_terminal_route_timeout_ms,
+            Some(2_500)
+        );
         assert_eq!(roundtripped.acp_max_idle_session_runtimes, Some(12));
         assert_eq!(roundtripped.acp_timeline_compact_patch_ratio, Some(6));
+        assert_eq!(roundtripped.turn_files.unwrap().card_preview_limit, 5);
     }
 
     #[test]
@@ -1240,16 +1573,62 @@ mod tests {
     }
 
     #[test]
-    fn embedded_permission_mode_mapping_uses_current_codex_mode_ids() {
-        let config = RuntimeConfig::default();
+    fn embedded_app_config_defines_page_window_layout_profiles() {
+        let layout = RuntimeConfig::default().workspace_layout;
 
+        assert_eq!(layout.shell_min_width, 480);
+        assert_eq!(layout.shell_min_height, 680);
+        assert_eq!(layout.right_workspace.min_width, 288);
+        assert_eq!(layout.right_workspace.default_width, 440);
+        assert_eq!(layout.right_workspace.max_width, 1440);
+        assert_eq!(layout.right_workspace.file.preferred_width, 760);
+        assert_eq!(layout.conversation.center_min_width, 360);
+        assert_eq!(layout.conversation.center_auto_collapse_width, 420);
+        assert_eq!(layout.conversation.window_min_width, 480);
+        assert_eq!(layout.context_cards.window_min_width, 520);
+        assert_eq!(layout.workflow_canvas.window_min_width, 640);
+        assert_eq!(layout.settings.window_min_width, 480);
+    }
+
+    #[test]
+    fn app_config_normalizes_invalid_workspace_layout_thresholds() {
+        let mut layout = WorkspaceLayoutConfig::default();
+        layout.shell_min_width = 500;
+        layout.shell_min_height = 0;
+        layout.conversation.center_min_width = 420;
+        layout.conversation.center_auto_collapse_width = 360;
+        layout.conversation.window_min_width = 400;
+        layout.right_workspace.min_width = 500;
+        layout.right_workspace.default_width = 100;
+        layout.right_workspace.max_width = 400;
+        layout.right_workspace.file.tree_min_width = 300;
+        layout.right_workspace.file.tree_max_width = 200;
+
+        let config = RuntimeConfig::default().apply_app_config(&ProjectAppConfig {
+            workspace_layout: Some(layout),
+            ..Default::default()
+        });
+
+        assert_eq!(config.workspace_layout.shell_min_height, 1);
+        assert_eq!(config.workspace_layout.conversation.center_min_width, 420);
         assert_eq!(
-            config.resolve_permission_mode("codex-acp", "full_access"),
-            "agent-full-access"
+            config
+                .workspace_layout
+                .conversation
+                .center_auto_collapse_width,
+            420
+        );
+        assert_eq!(config.workspace_layout.conversation.window_min_width, 500);
+        assert_eq!(config.workspace_layout.right_workspace.min_width, 500);
+        assert_eq!(config.workspace_layout.right_workspace.default_width, 500);
+        assert_eq!(config.workspace_layout.right_workspace.max_width, 500);
+        assert_eq!(
+            config.workspace_layout.right_workspace.file.tree_min_width,
+            300
         );
         assert_eq!(
-            config.resolve_permission_mode("claude-acp", "full_access"),
-            "bypassPermissions"
+            config.workspace_layout.right_workspace.file.tree_max_width,
+            300
         );
     }
 
@@ -1347,25 +1726,35 @@ mod tests {
     }
 
     #[test]
-    fn managed_agent_presets_own_default_agent_directories() {
-        let defaults = MANAGED_AGENT_PRESETS
-            .into_iter()
-            .map(|preset| {
+    fn managed_agent_catalog_owns_default_agent_directories() {
+        let defaults = builtin_agent_catalog()
+            .agents
+            .iter()
+            .map(|entry| {
                 (
-                    preset.id,
-                    preset.primary_agent_dir,
-                    preset.compatible_agent_dirs,
+                    entry.id.as_str(),
+                    entry.primary_agent_dir.as_deref(),
+                    entry
+                        .compatible_agent_dirs
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
                 )
             })
             .collect::<Vec<_>>();
         assert_eq!(
             defaults,
             vec![
-                ("claude-acp", ".claude", &[] as &[&str]),
-                ("codex-acp", ".codex", &[".agents"]),
-                ("cursor", ".cursor", &[".agents"]),
-                ("gemini", ".gemini", &[".agents"]),
-                ("opencode", ".opencode", &[".agents"]),
+                ("claude-acp", Some(".claude"), vec![]),
+                ("codex-acp", Some(".codex"), vec![".agents"]),
+                ("cursor", Some(".cursor"), vec![".agents"]),
+                ("gemini", Some(".gemini"), vec![".agents"]),
+                ("codebuddy-code", Some(".codebuddy"), vec![]),
+                ("goose", Some(".goose"), vec![]),
+                ("qwen-code", Some(".qwen"), vec![]),
+                ("opencode", Some(".opencode"), vec![".agents"]),
+                ("kimi", Some(".kimi-code"), vec![".agents"]),
+                ("amp-acp", Some(".agents"), vec![".claude"]),
             ]
         );
     }
@@ -1380,7 +1769,7 @@ mod tests {
                         "externalSessionSyncEnabled": false
                     },
                     "codex-acp": {
-                        "adapter": MANAGED_AGENT_PRESETS[1].default_config().adapter,
+                        "adapter": catalog_agent_default_config("codex-acp").unwrap().adapter,
                         "externalSessionSyncEnabled": false
                     }
                 }
@@ -1394,10 +1783,10 @@ mod tests {
         );
         let agents = settings.agents.unwrap();
         let claude = &agents[&ManagedAgentId::from_str("claude-acp").unwrap()];
-        assert_eq!(claude.primary_agent_dir, ".claude");
+        assert_eq!(claude.primary_agent_dir.as_deref(), Some(".claude"));
         assert!(claude.compatible_agent_dirs.is_empty());
         let codex = &agents[&ManagedAgentId::from_str("codex-acp").unwrap()];
-        assert_eq!(codex.primary_agent_dir, ".codex");
+        assert_eq!(codex.primary_agent_dir.as_deref(), Some(".codex"));
         assert_eq!(codex.compatible_agent_dirs, vec![".agents"]);
     }
 
@@ -1436,14 +1825,24 @@ mod tests {
     }
 
     #[test]
-    fn current_codex_preset_uses_agentclientprotocol_adapter() {
-        let codex = managed_agent_preset(&ManagedAgentId::from_str("codex-acp").unwrap())
-            .unwrap()
-            .default_config();
+    fn current_codex_catalog_entry_uses_agentclientprotocol_adapter() {
+        let codex = catalog_agent_default_config("codex-acp").unwrap();
 
-        assert_eq!(
-            codex.adapter.args,
-            vec!["-y", "@agentclientprotocol/codex-acp@latest"]
+        assert_eq!(codex.adapter.command, "npx");
+        assert_eq!(codex.adapter.args.first().map(String::as_str), Some("-y"));
+        assert!(
+            codex
+                .adapter
+                .args
+                .iter()
+                .any(|arg| arg.starts_with("@agentclientprotocol/codex-acp@"))
+        );
+        assert!(
+            codex
+                .adapter
+                .args
+                .iter()
+                .all(|arg| !arg.starts_with("@zed-industries/codex-acp"))
         );
     }
 
@@ -1481,7 +1880,7 @@ mod tests {
             SettingsConfig::from_json_value_with_migration(serde_json::json!({
                 "agents": {
                     "codex-cli": {
-                        "adapter": MANAGED_AGENT_PRESETS[1].default_config().adapter,
+                        "adapter": catalog_agent_default_config("codex-acp").unwrap().adapter,
                         "skillsDirOverride": "  .custom-codex  "
                     }
                 }
@@ -1491,10 +1890,57 @@ mod tests {
         assert!(migrated);
         let agents = settings.agents.unwrap();
         let codex = &agents[&ManagedAgentId::from_str("codex-acp").unwrap()];
-        assert_eq!(codex.primary_agent_dir, ".custom-codex");
+        assert_eq!(codex.primary_agent_dir.as_deref(), Some(".custom-codex"));
         assert_eq!(codex.compatible_agent_dirs, vec![".agents"]);
         let serialized = serde_json::to_value(codex).unwrap();
         assert!(serialized.get("skillsDirOverride").is_none());
+    }
+
+    #[test]
+    fn settings_v2_migrates_instance_capabilities_without_catalog_linkage() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 2,
+                "agents": {
+                    "claude-acp": {
+                        "adapter": {
+                            "command": "custom-claude-acp",
+                            "args": ["--stdio"],
+                            "displayName": "My Claude",
+                            "env": {}
+                        },
+                        "primaryAgentDir": ".custom-claude",
+                        "compatibleAgentDirs": [],
+                        "externalSessionSyncEnabled": false
+                    },
+                    "private-agent": {
+                        "adapter": {
+                            "command": "private-agent",
+                            "args": [],
+                            "displayName": "Private Agent",
+                            "env": {}
+                        },
+                        "primaryAgentDir": null,
+                        "compatibleAgentDirs": [],
+                        "externalSessionSyncEnabled": true
+                    }
+                }
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        let agents = settings.agents.unwrap();
+        let claude = &agents[&ManagedAgentId::from_str("claude-acp").unwrap()];
+        assert_eq!(claude.adapter.command, "custom-claude-acp");
+        assert_eq!(claude.icon, "claude");
+        assert!(claude.supports_system_prompt());
+
+        let custom = &agents[&ManagedAgentId::from_str("private-agent").unwrap()];
+        assert_eq!(custom.icon, "agent");
+        assert!(custom.primary_agent_dir.is_none());
+        assert!(!custom.supports_system_prompt());
+        assert!(custom.external_session_sync_supported);
+        assert!(custom.external_session_sync_enabled);
     }
 
     #[test]
@@ -1521,7 +1967,7 @@ mod tests {
         let roundtripped: SettingsConfig = serde_json::from_value(value).unwrap();
         let agent = &roundtripped.agents.unwrap()[&agent_id];
         assert!(agent.external_session_sync_enabled);
-        assert_eq!(agent.primary_agent_dir, ".custom-agent");
+        assert_eq!(agent.primary_agent_dir.as_deref(), Some(".custom-agent"));
         assert_eq!(agent.compatible_agent_dirs, vec![".agents"]);
     }
 
@@ -1531,6 +1977,7 @@ mod tests {
             acp_session_foreground_lease_ttl_secs: Some(60),
             acp_session_foreground_lease_renew_interval_secs: Some(90),
             acp_session_idle_ttl_secs: Some(0),
+            acp_prompt_terminal_route_timeout_ms: Some(0),
             acp_max_idle_session_runtimes: Some(0),
             acp_timeline_compact_patch_ratio: Some(0),
             ..Default::default()
@@ -1538,20 +1985,37 @@ mod tests {
         assert_eq!(config.acp_session_foreground_lease_ttl_secs, 60);
         assert_eq!(config.acp_session_foreground_lease_renew_interval_secs, 20);
         assert_eq!(config.acp_session_idle_ttl_secs, 600);
+        assert_eq!(config.acp_prompt_terminal_route_timeout_ms, 5_000);
         assert_eq!(config.acp_max_idle_session_runtimes, 8);
         assert_eq!(config.acp_timeline_compact_patch_ratio, 4);
     }
 
     #[test]
     fn skill_directory_policy_separates_write_and_compatible_read_dirs() {
-        for preset in MANAGED_AGENT_PRESETS {
-            let config = preset.default_config();
+        for entry in &builtin_agent_catalog().agents {
+            let config = ManagedAgentConfig::from_catalog(entry);
             let policy = config.skill_directory_policy();
-            assert_eq!(policy.write_dir_names, vec![preset.primary_agent_dir]);
-            let mut expected_reads = vec![preset.primary_agent_dir];
-            expected_reads.extend_from_slice(preset.compatible_agent_dirs);
+            let mut expected_reads = Vec::new();
+            if let Some(primary) = &entry.primary_agent_dir {
+                assert_eq!(policy.write_dir_names, vec![primary.clone()]);
+                expected_reads.push(primary.clone());
+            } else {
+                assert!(policy.write_dir_names.is_empty());
+            }
+            expected_reads.extend(entry.compatible_agent_dirs.iter().cloned());
             assert_eq!(policy.read_dir_names, expected_reads);
         }
+    }
+
+    #[test]
+    fn skill_directory_policy_allows_agents_without_skill_directories() {
+        let mut config = ManagedAgentConfig::new(AcpAdapterConfig::default(), "unused", Vec::new());
+        config.primary_agent_dir = None;
+
+        let policy = config.skill_directory_policy();
+
+        assert!(policy.write_dir_names.is_empty());
+        assert!(policy.read_dir_names.is_empty());
     }
 
     #[test]
@@ -1714,7 +2178,11 @@ pub struct ConversationAutoConfig {
     pub agent_type: String,
     pub bootstrap_agent_type: Option<String>,
     pub bootstrap_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bootstrap_config_options: BTreeMap<String, String>,
     pub acceptance_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub acceptance_config_options: BTreeMap<String, String>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1734,6 +2202,9 @@ pub struct ConversationAutoConfig {
 pub struct ConversationDynamicAgentRef {
     pub provider: String,
     pub model: Option<String>,
+    pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_options: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

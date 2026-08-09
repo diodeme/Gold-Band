@@ -110,6 +110,200 @@ export interface AppBootstrapVm {
 export interface AppConfigVm {
   acpSessionTitleRefreshEnabled: boolean;
   acpChatEventPageSize: number;
+  turnFiles: TurnFilesVm;
+  workspaceLayout: WorkspaceLayoutVm;
+  workspaceFiles: WorkspaceFilesVm;
+}
+
+export interface TurnFilesVm {
+  cardPreviewLimit: number;
+}
+
+export interface WorkspaceFilesVm {
+  autoSaveDelayMs: number;
+  searchDebounceMs: number;
+  searchResultLimit: number;
+  textEditableMaxBytes: number;
+  textHighlightMaxChars: number;
+  textReadOnlyMaxBytes: number;
+  imagePreviewMaxBytes: number;
+  imagePreviewMaxPixels: number;
+  contentCacheEntries: number;
+  contentCacheMaxBytes: number;
+  watchDebounceMs: number;
+  externalAccessGrantTtlSeconds: number;
+  markdownLivePreviewMaxChars: number;
+  markdownEmbeddedImageLimit: number;
+  markdownEmbeddedImageMaxConcurrent: number;
+}
+
+export interface FileRevisionVm {
+  byteLength: number;
+  modifiedAtNs: string;
+  contentHash: string;
+}
+
+export interface WorkspaceFileLocatorVm {
+  projectId: string;
+  canonicalPath: string;
+  relativePath: string | null;
+  scope: 'workspace' | 'external';
+}
+
+export interface ExternalFileAccessGrantVm {
+  token: string;
+  permissions: Array<'read' | 'write'>;
+  expiresAtMs: string;
+}
+
+export interface FileTargetLocationVm {
+  line: number | null;
+  column: number | null;
+  endLine: number | null;
+}
+
+export interface ResolvedWorkspaceFileLinkVm {
+  locator: WorkspaceFileLocatorVm;
+  target: FileTargetLocationVm | null;
+  externalAccessGrant: ExternalFileAccessGrantVm | null;
+}
+
+export interface WorkspaceDirectoryEntryVm {
+  name: string;
+  relativePath: string;
+  canonicalPath: string;
+  kind: 'directory' | 'file' | 'symlink' | 'other';
+  hasChildren: boolean;
+  byteLength: number | null;
+  modifiedAtNs: string | null;
+}
+
+export interface WorkspaceFileSearchVm {
+  requestId: string;
+  entries: WorkspaceDirectoryEntryVm[];
+  truncated: boolean;
+}
+
+interface WorkspaceFileSnapshotBaseVm {
+  locator: WorkspaceFileLocatorVm;
+  name: string;
+  revision: FileRevisionVm;
+  externalAccessGrant: ExternalFileAccessGrantVm | null;
+}
+
+export interface TextFileSnapshotVm extends WorkspaceFileSnapshotBaseVm {
+  kind: 'text';
+  content: string;
+  encoding: string;
+  language: string | null;
+  lineEnding: 'lf' | 'crlf' | 'mixed';
+  editable: boolean;
+  limitationCode: string | null;
+}
+
+export interface WorkspaceFilePreviewGrantVm {
+  token: string;
+  expiresAtMs: string;
+}
+
+export interface ImageFileSnapshotVm extends WorkspaceFileSnapshotBaseVm {
+  kind: 'image';
+  mimeType: string;
+  width: number;
+  height: number;
+  animated: boolean;
+  previewGrant: WorkspaceFilePreviewGrantVm;
+  sourceEditable: boolean;
+}
+
+export interface UnsupportedFileSnapshotVm extends WorkspaceFileSnapshotBaseVm {
+  kind: 'unsupported';
+  mimeType: string | null;
+  limitationCode: string;
+}
+
+export type WorkspaceFileSnapshotVm =
+  | TextFileSnapshotVm
+  | ImageFileSnapshotVm
+  | UnsupportedFileSnapshotVm;
+
+export interface ResolveMarkdownImageInput {
+  projectId: string;
+  markdownCanonicalPath: string;
+  markdownExternalAccessToken: string | null;
+  rawSrc: string;
+  approvedExternalTargets: string[];
+}
+
+export type MarkdownImagePreviewVm =
+  | {
+      kind: 'ready';
+      canonicalPath: string;
+      previewGrant: WorkspaceFilePreviewGrantVm;
+      mimeType: string;
+      width: number;
+      height: number;
+      animated: boolean;
+    }
+  | {
+      kind: 'approvalRequired';
+      canonicalPath: string;
+      reason: 'outside-document-directory';
+    }
+  | {
+      kind: 'unsupported';
+      limitationCode: string;
+    };
+
+export interface WriteFileResourceInput {
+  projectId: string;
+  canonicalPath: string;
+  externalAccessToken: string | null;
+  content: string;
+  encoding: string;
+  lineEnding: string;
+  expectedRevision: FileRevisionVm;
+  operationId: string;
+  force: boolean;
+}
+
+export interface WorkspaceFileChangedEventVm {
+  projectId: string;
+  canonicalPath: string;
+  kind: 'created' | 'modified' | 'removed' | 'renamed';
+  revision: FileRevisionVm | null;
+  operationId: string | null;
+}
+
+export interface WorkspaceLayoutVm {
+  shellMinWidth: number;
+  shellMinHeight: number;
+  rightWorkspace: RightWorkspaceLayoutVm;
+  conversation: WorkspaceLayoutProfileVm;
+  contextCards: WorkspaceLayoutProfileVm;
+  workflowCanvas: WorkspaceLayoutProfileVm;
+  settings: WorkspaceLayoutProfileVm;
+}
+
+export interface FileWorkspaceLayoutVm {
+  preferredWidth: number;
+  splitMinWidth: number;
+  treeDefaultWidth: number;
+  treeMinWidth: number;
+  treeMaxWidth: number;
+}
+
+export interface RightWorkspaceLayoutVm {
+  minWidth: number;
+  defaultWidth: number;
+  maxWidth: number;
+  file: FileWorkspaceLayoutVm;
+}
+
+export interface WorkspaceLayoutProfileVm {
+  centerMinWidth: number;
+  centerAutoCollapseWidth: number;
+  windowMinWidth: number;
 }
 
 export interface AppInfoVm {
@@ -122,7 +316,7 @@ export interface AppInfoVm {
 
 export interface AgentRegistryVm {
   agents: ManagedAgentVm[];
-  supportedTypes: SupportedAgentTypeVm[];
+  catalog: AgentCatalogEntryVm[];
 }
 
 export interface ManagedAgentVm {
@@ -134,8 +328,9 @@ export interface ManagedAgentVm {
   iconKey: string;
   primaryAgentDir: string;
   compatibleAgentDirs: string[];
+  supportsSystemPrompt: boolean;
+  externalSessionSyncSupported: boolean;
   externalSessionSyncEnabled: boolean;
-  supported: boolean;
   diagnostic?: ManagedAgentDiagnosticVm | null;
   supportedModes?: AcpModeVm[] | null;
   supportedModels?: AcpModeVm[] | null;
@@ -203,14 +398,19 @@ export interface ManagedAgentDiagnosticVm {
   checkedAt: string;
 }
 
-export interface SupportedAgentTypeVm {
+export interface AgentCatalogEntryVm {
   agentType: string;
   label: string;
   iconKey: string;
+  version: string;
+  description: string;
+  repository?: string | null;
+  website?: string | null;
   primaryAgentDir: string;
   compatibleAgentDirs: string[];
-  supported: boolean;
   configured: boolean;
+  supportsSystemPrompt: boolean;
+  supportsExternalSessionSync: boolean;
   defaultDisplayName: string;
   defaultCommand: string;
   defaultArgs: string[];
@@ -219,11 +419,13 @@ export interface SupportedAgentTypeVm {
 
 export interface ManagedAgentInput {
   displayName: string;
+  icon: string;
   command: string;
   args: string[];
   env: Record<string, string>;
   primaryAgentDir: string;
   compatibleAgentDirs: string[];
+  externalSessionSyncSupported: boolean;
   externalSessionSyncEnabled: boolean;
 }
 
@@ -302,6 +504,7 @@ export interface WorkflowWorkerNodeDsl {
   output?: WorkflowOutputContractDsl | null;
   success_condition?: WorkflowJsonConditionDsl | null;
   permission_mode?: string | null;
+  config_options?: Record<string, string>;
   manual_check?: boolean | null;
 }
 
@@ -310,19 +513,25 @@ export type WorkflowAiDynamicAgentStrategyDsl = WorkflowAiDynamicFixedAgentStrat
 export interface DynamicAgentRefDsl {
   provider: string;
   model?: string | null;
+  permissionMode?: string | null;
+  configOptions?: Record<string, string>;
 }
 
 export interface WorkflowAiDynamicFixedAgentStrategyDsl {
   mode: 'fixed';
   provider: string;
   model?: string;
+  permissionMode?: string | null;
 }
 
 export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
   mode: 'dynamic';
   bootstrapProvider: string;
   bootstrapModel?: string | null;
+  permissionMode?: string | null;
+  bootstrapConfigOptions?: Record<string, string>;
   acceptanceModel?: string | null;
+  acceptanceConfigOptions?: Record<string, string>;
   routingPrompt: string;
   availableAgents: DynamicAgentRefDsl[];
 }
@@ -331,7 +540,7 @@ export interface WorkflowAiDynamicNodeDsl {
   type: 'ai-dynamic';
   id: string;
   agentStrategy: WorkflowAiDynamicAgentStrategyDsl;
-  permission_mode?: string | null;
+  configOptions?: Record<string, string>;
   allowedProfiles?: string[];
   globalGoal?: string | null;
   control: DynamicControlDsl;
@@ -450,13 +659,24 @@ export type ProfileFieldFallback =
   | 'frontmatter-missing'
   | 'dynamic-template-downgraded';
 
+export type ImportProfileErrorCode =
+  | 'read-failed'
+  | 'invalid-frontmatter'
+  | 'empty-file'
+  | 'missing-name'
+  | 'create-failed';
+
+export interface ImportProfileError {
+  code: ImportProfileErrorCode;
+}
+
 export interface ImportedProfileRecord {
   sourcePath: string;
   status: ImportRecordStatus;
   name: string;
   fallbacks: ProfileFieldFallback[];
   importedId: string | null;
-  errorCode: string | null;
+  error: ImportProfileError | null;
 }
 
 export interface ImportProfilesResult {
@@ -697,6 +917,10 @@ export interface AcpAttemptSessionVm {
 }
 
 export interface AcpSessionVm {
+  branchId: string;
+  parentBranchId?: string | null;
+  readOnly: boolean;
+  branchExecution?: AcpAgentExecutionVm | null;
   sessionId?: string | null;
   title?: string | null;
   roundId?: string | null;
@@ -721,20 +945,26 @@ export interface AcpSessionVm {
   config?: AcpSessionConfigVm | null;
   events: AcpUiEventVm[];
   eventPage: AcpEventPageVm;
+  timelineProjection: AcpTimelineProjectionVm | null;
   pendingPermissions: AcpPermissionRequestVm[];
+  pendingElicitations: AcpElicitationRequestVm[];
   availableCommands?: unknown[] | null;
   usage?: AcpUsageVm | null;
   diagnostics: AcpDiagnosticsVm;
 }
 
 export interface ActiveSessionStopVm {
-  kind: 'run-paused' | 'session-cancelled' | string;
+  operationId: string;
+  status: 'accepted' | string;
+  kind: 'stop-accepted' | string;
   run?: RunSummaryVm | null;
   session?: AcpSessionVm | null;
   lifecycle?: ConversationAttemptLifecycleVm | null;
 }
 
 export interface AcpSessionQueryInput {
+  traceId?: string;
+  branchId?: string;
   beforeSeq?: number;
   afterSeq?: number;
   beforeCursor?: string;
@@ -824,9 +1054,93 @@ export interface AcpPermissionOptionVm {
   kind: string;
 }
 
+export interface TurnFileLocatorVm {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  branchId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+}
+
+export type FileChangeKindVm = 'added' | 'modified' | 'deleted' | 'renamed';
+
+export interface FileVersionRefVm {
+  id: string;
+  storageKind: 'capturedBlob';
+  contentHash: string;
+  byteLength: number;
+  encoding?: string | null;
+  lineEnding?: string | null;
+}
+
+export interface TurnFileChangeVm {
+  id: string;
+  changeKind: FileChangeKindVm;
+  logicalPath: string;
+  previousLogicalPath?: string | null;
+  mimeType?: string | null;
+  text: boolean;
+  addedLines?: number | null;
+  deletedLines?: number | null;
+  beforeVersion?: FileVersionRefVm | null;
+  afterVersion?: FileVersionRefVm | null;
+  limitationCode?: string | null;
+}
+
+export interface TurnFileChangeSummaryVm {
+  fileCount: number;
+  addedFiles: number;
+  modifiedFiles: number;
+  deletedFiles: number;
+  addedLines: number;
+  deletedLines: number;
+}
+
+export interface TurnFileChangeSetVm {
+  schemaVersion?: number;
+  id: string;
+  turnId: string;
+  promptEventId: string;
+  branchId: string;
+  status: 'capturing' | 'finalized' | 'partial';
+  startedAt: string;
+  finishedAt?: string | null;
+  summary: TurnFileChangeSummaryVm;
+  changes: TurnFileChangeVm[];
+  limitationCodes: string[];
+}
+
+export interface CapturedTextSnapshotVm {
+  version: FileVersionRefVm;
+  content: string;
+}
+
+export interface FileComparisonVm {
+  changeSetId: string;
+  changeId: string;
+  path: string;
+  stats: { addedLines?: number | null; deletedLines?: number | null };
+  before?: CapturedTextSnapshotVm | null;
+  after?: CapturedTextSnapshotVm | null;
+  limitationCode?: string | null;
+}
+
+export interface AcpElicitationRequestVm {
+  elicitationId: string;
+  message: string;
+  toolCallId?: string | null;
+  requestedSchema: Record<string, unknown>;
+  raw: unknown;
+}
+
 // Navigation payload emitted after clicking "View details" in a system toast.
 // It carries the complete attempt locator and a deduplication key.
 export interface InterventionNavigateEventVm {
+  projectId: string;
   taskId: string;
   runId: string;
   roundId: string;
@@ -1016,10 +1330,60 @@ export interface ConversationTaskRowVm {
   workflowTemplateId?: string | null;
   agentIdentity?: ConversationAgentIdentityVm | null;
   lastActivityAt?: string | null;
+  activity?: ConversationTaskActivityVm | null;
   latestRun?: ConversationRunSummaryVm | null;
   runs: ConversationRunSummaryVm[];
   pinned: boolean;
   pinnedOrder?: number | null;
+}
+
+export interface AcpActivityDetailQueryInput {
+  branchId: string;
+  activityStartSeq: number;
+  activityEndSeq: number;
+  earlierCursor?: string | null;
+  limit?: number;
+}
+
+export interface AcpActivityDetailVm {
+  items: AcpUiEventVm[];
+  hasMoreEarlier: boolean;
+  earlierCursor?: string | null;
+}
+
+export interface AcpToolDetailQueryInput {
+  branchId: string;
+  eventId: string;
+  toolCallId?: string | null;
+}
+
+export interface AcpToolDetailVm {
+  event?: AcpUiEventVm | null;
+}
+
+export interface AcpTimelineProjectionVm {
+  agents: AcpAgentExecutionVm[];
+  todoEntries: Array<{ content?: string; status?: string; priority?: string }>;
+}
+
+export interface AcpAgentExecutionVm {
+  agentExecutionId: string;
+  parentAgentExecutionId?: string | null;
+  attemptId?: string | null;
+  executionStatus: string;
+  eventCount: number;
+  toolCallCount: number;
+  readFileCount: number;
+  writtenFileCount: number;
+  hasAttention: boolean;
+  title?: string | null;
+  description?: string | null;
+  todoEntries: Array<{ content?: string; status?: string; priority?: string }>;
+}
+
+export interface ConversationTaskActivityVm {
+  phase: string;
+  stopping: boolean;
 }
 
 export interface ConversationRunSummaryVm {
@@ -1074,6 +1438,30 @@ export interface ConversationComposerVm {
   lockInput: boolean;
 }
 
+export interface AppExitRequestVm {
+  requestId: string;
+}
+
+export type AppExitDecision = 'proceed' | 'cancel';
+
+export interface ResolveAppExitInput {
+  requestId: string;
+  decision: AppExitDecision;
+}
+
+export interface ConversationQueuedPromptVm {
+  id: string;
+  content: string;
+  attachmentCount: number;
+  createdAt: string;
+}
+
+export interface ConversationPromptQueueVm {
+  revision: number;
+  items: ConversationQueuedPromptVm[];
+  maxItems: number;
+}
+
 export interface ConversationAttemptLifecycleVm {
   runtime: ConversationRuntimeFacetVm;
   acp: ConversationAcpFacetVm;
@@ -1081,6 +1469,7 @@ export interface ConversationAttemptLifecycleVm {
   runtimeDisplay: RuntimeDisplayVm;
   continueKind?: 'input' | null;
   composer: ConversationComposerVm;
+  promptQueue?: ConversationPromptQueueVm | null;
 }
 
 export interface ConversationSessionLeafVm {
@@ -1099,6 +1488,7 @@ export interface ConversationSessionLeafVm {
   startedAt?: string | null;
   finishedAt?: string | null;
   sessionId?: string | null;
+  sessionEstablished?: boolean;
   artifactCount: number;
   attachmentCount: number;
 }
@@ -1144,8 +1534,6 @@ export interface ConversationRunVm {
   sessionTree: ConversationSessionTreeVm;
   selectedSession?: AcpSessionVm | null;
   activeSessions: ConversationActiveSessionVm[];
-  artifacts: AssetItemVm[];
-  attachments: AssetItemVm[];
   inputAttachments: AssetItemVm[];
   workflowStatus: string;
   workflowValid: boolean;
@@ -1159,8 +1547,6 @@ export interface ConversationRunVm {
 
 export interface ConversationSessionSwitchVm {
   selectedSession?: AcpSessionVm | null;
-  artifacts: AssetItemVm[];
-  attachments: AssetItemVm[];
 }
 
 export interface ConversationActiveSessionVm {
@@ -1175,6 +1561,7 @@ export interface ConversationActiveSessionVm {
   lifecycle?: ConversationAttemptLifecycleVm | null;
   manualCheckPending: boolean;
   sessionId?: string | null;
+  sessionEstablished?: boolean;
   startedAt?: string | null;
 }
 
@@ -1205,7 +1592,9 @@ export interface ConversationAutoConfigVm {
   agentType: string;
   bootstrapAgentType?: string | null;
   bootstrapModelId?: string | null;
+  bootstrapConfigOptions?: Record<string, string>;
   acceptanceModelId?: string | null;
+  acceptanceConfigOptions?: Record<string, string>;
   modelId?: string | null;
   permissionMode?: string | null;
   configOptions?: Record<string, string>;
@@ -1328,5 +1717,14 @@ export interface FeedbackArchivePreview {
   withinLimits: boolean;
   maxUncompressedBytes: number;
   maxFileCount: number;
+}
+
+export interface AppExitPreparationWarningVm {
+  code: string;
+  params: Record<string, unknown>;
+}
+
+export interface AppExitPreparationVm {
+  warnings: AppExitPreparationWarningVm[];
 }
 

@@ -83,3 +83,24 @@
 - ACP live flush、Markdown presentation、session follow、主题滚动条与新 ChatContainer 定向测试共 41 项通过。
 - 前端全量 86 个测试文件、576 项测试通过；`npm run web:build` 生产构建通过。
 - 浏览器调试模式通过 `/chat/projects/default/tasks/mock-task/runs/run-052` deep link 验证：消息区保持单一滚动 viewport、内容根节点高度正确、composer 布局无回归，控制台无 warning/error。
+
+## 2026-08-04 流式累计快照与右侧工作区内存修复
+
+### 根因
+
+- task-159 现场 `acp.raw.jsonl` 有 6021 帧，其中 5209 个 thought chunk、534 个 message chunk，单 chunk 最大仅 16 字符；最终 timeline 只有 96 条，说明异常内存不是业务数据量，而是高频累计快照的 UI 生命周期。
+- 每条历史消息、Agent link、Turn 文件卡片和 Markdown 文件链接 Provider 都订阅了包含 tabs、activeTab、requestedOpen、width 的完整右侧工作区 context。浏览文件会使整棵历史消息树失效，静态 Streamdown 被重复解析。
+- 125ms live flush 虽已有按 identity 合并的 Map，但每批再创建一个 `startTransition`；文件交互持续占用前台时，过期 transition 可同时持有多份累计字符串和对应 React 子树。
+
+### 根因修复
+
+- `RightWorkspaceProvider` 拆为可变 state context 与稳定 commands context；消息侧只消费 `scopeKey/projectId/openResource/getResource`，文件链接用 `getResource(key)` 调用时读取已打开资源，不订阅 tabs。
+- prompt-kit `Markdown` 增加 memo 静态边界；当文本与 streaming 状态不变时，侧栏状态变化不得重新进入 Streamdown。
+- live event buffer 显式收敛为 `AcpLatestWinsEventBuffer`，每个 stream/tool identity 只保留最新累计快照；单一 timer drain 后同步合并 React state，删除 per-flush transition 队列。lifecycle/terminal 事件仍先同步 flush，保持顺序。
+
+### 固化验收
+
+- 6021 帧分布回放验证最终累计内容、pending 上限由 24 个消息 stream 与 35 个 tool identity 约束、scheduled/in-flight publish 上限为 1。
+- jsdom 接口测试连续打开 15 个文件并切换 activeTab/width，稳定 commands 消费者只渲染一次；8 条历史 Markdown 的 Streamdown 解析次数不增加，Markdown 文件链接 handler 引用不变。
+- 自动化测试后继续执行真实 task-159 deep link 回放，并以 baseline（进入会话前）、target（流式并打开 15 文件后）、final（关闭文件/离开会话并 GC 后）堆快照交给 memlab；验收 detached DOM、CodeMirror EditorView、Streamdown/Markdown 子树和累计字符串保留链能够释放。
+- 实施复测使用可重复的 `web/tests/performance/acp-workspace-memlab.cjs`：baseline/target/final 为 20.2MB / 26.0MB / 25.6MB。final 相对 baseline 的主要常驻差异是首次打开编辑资源后加载的模块、parser 与语言描述缓存；memlab 泄漏 trace 中没有 CodeMirror EditorView、Streamdown/Markdown 或累计消息字符串。首轮发现的 Tab strip ResizeObserver 闭包簇修复后消失；剩余 3 簇合计约 34.8KB，retainer 分别为 Chromium `SVGDocumentExtensions` 文档缓存与 DevTools console global handle，作为浏览器内部观测噪声记录，不误报为 0。

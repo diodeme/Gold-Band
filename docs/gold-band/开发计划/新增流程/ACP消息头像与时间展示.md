@@ -187,7 +187,7 @@ function formatTime(isoTimestamp: string): string {
 | `web/src/components/acp/ToolCallCard.tsx` | 接入 `AcpAvatarWithTime`，移除旧缩进 |
 | `web/src/components/acp/ThoughtBlock.tsx` | 接入 `AcpAvatarWithTime`，移除旧缩进 |
 | `web/src/components/acp/PlanBlock.tsx` | 接入 `AcpAvatarWithTime`，移除旧缩进 |
-| `web/src/components/acp/ChildAgentGroupCard.tsx` | 子 Agent 分组卡片的 header 行接入 `AcpAvatarWithTime`（如适用） |
+| `web/src/components/acp/ACPChatDialog.tsx` 的 `AgentLinkRow` | Agent link 不展示头像时间组件，仅保留结构化状态与分支入口；Agent 正式文字在右侧分支会话中复用主消息时间样式 |
 
 ---
 

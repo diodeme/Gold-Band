@@ -87,6 +87,14 @@ ACP invocation 的 continue prompt state 由 runtime 统一决策，普通 workf
 
 `runtime-abnormal` 与用户停止的 `process-interrupted` 都保留当前 run / round / node / attempt，并允许通过 runtime continue 恢复；区别是前者需要以异常视觉提醒用户排查本地、协议层或 provider/config 条件。用户点击继续且后端接受后，会话输入区立即进入 runtime 控制态并保持锁定，直到 runtime active、停止中、错误或下一次可交互暂停事实到达；后台写入 running 文件前残留的旧 paused / interrupted-input 快照不得让输入区短暂恢复为可输入。错误分类优先使用 runtime 内部 typed error 与 source chain 中的 `std::io::Error` / transport error；只有 adapter、ACP 或第三方库没有稳定错误类型时，才允许在统一 normalization 层用字符串特征作为最后兜底。
 
+### 8.1 用户停止优先级与 ACP 收尾
+
+用户停止是 attempt 生命周期中的持续事实，不是一次性的 `session/cancel` 边缘通知。Stop 在本地 attempt 创建后即可接受，不依赖 provider 先报告 active：prompt 尚未发出时直接终止 dispatch；prompt 已发出但 provider 尚未 active 时发送一次 cancel，并在后续观察到 `threadStatus=active` 且 prompt 尚未 terminal 时补发一次。两次投递分别通过 `before-provider-active / after-provider-active` 门闩去重，同一阶段不得重复发送。
+
+runtime 写入 `Paused + ProcessInterrupted` 后，自动重试控制器必须在错误分类前、backoff 期间、runtime 重建前和再次发送 prompt 前重新读取当前 attempt 事实；只要 attempt 已停止，就不得写入新的 `runtime_auto_retry` 或再次调用 provider。停止后的 provider 输出不再进入当前 turn；晚到 provider/transport 错误只进入取消收尾诊断，不能覆盖用户停止终态，也不能重新触发自动重试。
+
+`session/cancel` 后仍需有界等待原 `session/prompt` terminal。若 deadline 到期，记录结构化 `acp.cancel-drain-timeout`，用户可见 attempt 仍保持 `Paused + ProcessInterrupted`，ACP turn 结算为 cancelled；该未收尾 session 必须从 attempt route、attached runtime registry 和 worker continue ref 中移除，后续继续使用新 session。adapter process 仍按 `provider_id + workspace_root` 复用，不因单个 session 收尾超时被 kill，也不得影响同 process 上的其他 session。
+
 若 ACP 在 session-ready、session id 或首批 timeline event 形成前已经进入 `runtime-error`，会话 UI 必须优先展示 runtime diagnostic 错误态并停止初始 loading；不能因为 session snapshot 尚未 ready 而持续显示加载中。已经建立 session 或已有事件的会话仍走正常会话错误展示路径，避免初始化错误规则覆盖可恢复的既有会话。
 
 ## 9. 错误阻塞

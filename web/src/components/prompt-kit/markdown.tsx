@@ -1,10 +1,15 @@
 import type React from 'react';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, memo, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { FileCode2 } from 'lucide-react';
 import {
+  defaultUrlTransform,
   Streamdown,
   type StreamdownProps,
 } from 'streamdown';
+import { openExternalUrl } from '@/api';
 import { cn } from '@/lib/utils';
+import { isExternalUrlHref, isLocalFileHref } from '@/lib/file-link';
+import { createIncrementalMarkdownBlockParser } from '@/lib/incremental-markdown-blocks';
 import {
   advanceStreamingMarkdownPresentation,
   createStreamingMarkdownPresentation,
@@ -19,6 +24,88 @@ export type MarkdownProps = {
   className?: string;
   streaming?: boolean;
 };
+
+export interface MarkdownResourceLinkHandler {
+  openLocalFile: (rawHref: string, baseCanonicalPath?: string | null) => void | Promise<void>;
+}
+
+const MarkdownResourceLinkContext = createContext<MarkdownResourceLinkHandler | null>(null);
+const LOCAL_FILE_PROXY_PREFIX = 'https://gold-band.local-file.invalid/?href=';
+
+export function MarkdownResourceLinkProvider({ handler, children }: { handler: MarkdownResourceLinkHandler | null; children: React.ReactNode }) {
+  return <MarkdownResourceLinkContext.Provider value={handler}>{children}</MarkdownResourceLinkContext.Provider>;
+}
+
+export function useMarkdownResourceLinkHandler() {
+  return useContext(MarkdownResourceLinkContext);
+}
+
+export { isLocalFileHref };
+
+export function proxyLocalFileLinks(markdown: string) {
+  return markdown.replace(/(?<!!)\[([^\]\n]+)\]\(([^)\n]+)\)/gu, (match, label: string, destination: string) => {
+    const trimmed = destination.trim();
+    const href = trimmed.startsWith('<') && trimmed.endsWith('>') ? trimmed.slice(1, -1) : trimmed;
+    return isLocalFileHref(href)
+      ? `[${label}](${LOCAL_FILE_PROXY_PREFIX}${encodeURIComponent(href)})`
+      : match;
+  });
+}
+
+function localHrefFromRenderedHref(href: string | undefined) {
+  if (!href) return null;
+  if (href.startsWith(LOCAL_FILE_PROXY_PREFIX)) {
+    try {
+      return decodeURIComponent(href.slice(LOCAL_FILE_PROXY_PREFIX.length));
+    } catch {
+      return null;
+    }
+  }
+  return isLocalFileHref(href) ? href : null;
+}
+
+const markdownUrlTransform: NonNullable<StreamdownProps['urlTransform']> = (url, key, node) => (
+  isLocalFileHref(url) ? url : defaultUrlTransform(url, key, node)
+);
+const markdownLinkSafety: NonNullable<StreamdownProps['linkSafety']> = { enabled: false };
+
+function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
+  const handler = useContext(MarkdownResourceLinkContext);
+  const localHref = localHrefFromRenderedHref(href);
+  const local = Boolean(localHref);
+  const enabledLocal = Boolean(handler && localHref);
+  const external = Boolean(href && isExternalUrlHref(href));
+  return (
+    <a
+      {...props}
+      className={cn(
+        'font-medium [overflow-wrap:anywhere] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-running/45',
+        enabledLocal
+          ? 'mx-0.5 inline-flex items-center gap-1 rounded-sm bg-muted/45 px-1 py-px align-baseline text-foreground/90 no-underline transition-colors hover:bg-accent hover:text-accent-foreground'
+          : 'text-gold-running underline decoration-gold-running/45 underline-offset-2 hover:decoration-gold-running',
+        local && !handler && 'cursor-not-allowed opacity-60',
+      )}
+      href={enabledLocal ? localHref ?? undefined : local ? undefined : href}
+      target={local || external ? undefined : props.target}
+      rel={local || external ? undefined : props.rel}
+      aria-disabled={local && !handler ? true : undefined}
+      onClick={local
+        ? (event) => {
+          event.preventDefault();
+          if (localHref && handler) void handler.openLocalFile(localHref);
+        }
+        : external
+          ? (event) => {
+            event.preventDefault();
+            if (href) void openExternalUrl(href);
+          }
+          : props.onClick}
+    >
+      {enabledLocal ? <FileCode2 className="size-[1em] shrink-0 self-center stroke-[2.35] text-gold-running" aria-hidden="true" /> : null}
+      {children}
+    </a>
+  );
+}
 
 function CompactHeading({ level, children }: { level: 1 | 2 | 3; children: React.ReactNode }) {
   if (level === 1) {
@@ -47,11 +134,7 @@ const markdownComponents = {
   p: ({ children }: { children?: React.ReactNode }) => <p className="my-0 min-w-0 break-words [overflow-wrap:anywhere]">{children}</p>,
   strong: ({ children }: { children?: React.ReactNode }) => <strong className="font-semibold text-foreground">{children}</strong>,
   em: ({ children }: { children?: React.ReactNode }) => <em className="text-foreground/90">{children}</em>,
-  a: ({ href, children }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
-    <a className="font-medium text-primary underline underline-offset-2 [overflow-wrap:anywhere] hover:text-primary/80" href={href} target="_blank" rel="noreferrer">
-      {children}
-    </a>
-  ),
+  a: MarkdownLink,
   ul: ({ children }: { children?: React.ReactNode }) => <ul className="my-1.5 list-disc space-y-1 pl-5 marker:text-muted-foreground">{children}</ul>,
   ol: ({ children }: { children?: React.ReactNode }) => <ol className="my-1.5 list-decimal space-y-1 pl-5 marker:text-muted-foreground">{children}</ol>,
   li: ({ children }: { children?: React.ReactNode }) => <li className="pl-1 leading-6">{children}</li>,
@@ -77,13 +160,18 @@ const markdownComponents = {
   hr: () => <hr className="my-3 border-border/70" />,
 } as NonNullable<StreamdownProps['components']>;
 
-export function Markdown({ children, className, streaming = false }: MarkdownProps) {
+export const Markdown = memo(function Markdown({ children, className, streaming = false }: MarkdownProps) {
   const [presentation, setPresentation] = useState(() =>
     createStreamingMarkdownPresentation(children, streaming),
   );
   const lastFrameAtRef = useRef(0);
   const hasStreamedRef = useRef(streaming);
   if (streaming) hasStreamedRef.current = true;
+  const streamdownMode = hasStreamedRef.current ? 'streaming' : 'static';
+  const blockParserRef = useRef<ReturnType<typeof createIncrementalMarkdownBlockParser> | null>(null);
+  if (!blockParserRef.current) {
+    blockParserRef.current = createIncrementalMarkdownBlockParser();
+  }
 
   useLayoutEffect(() => {
     setPresentation((current) =>
@@ -122,7 +210,6 @@ export function Markdown({ children, className, streaming = false }: MarkdownPro
   }, [pending, presentation.canonical.length, presentation.offset]);
 
   const presentationStreaming = streaming || pending;
-  const streamdownMode = hasStreamedRef.current ? 'streaming' : 'static';
   const visibleChildren = streamingMarkdownPresentationText(
     presentation,
     streaming,
@@ -137,9 +224,12 @@ export function Markdown({ children, className, streaming = false }: MarkdownPro
         isAnimating={presentationStreaming}
         mode={streamdownMode}
         parseIncompleteMarkdown={presentationStreaming}
+        parseMarkdownIntoBlocksFn={blockParserRef.current}
+        urlTransform={markdownUrlTransform}
+        linkSafety={markdownLinkSafety}
       >
-        {visibleChildren}
+        {proxyLocalFileLinks(visibleChildren)}
       </Streamdown>
     </div>
   );
-}
+});

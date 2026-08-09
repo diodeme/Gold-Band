@@ -571,6 +571,10 @@ Agent 消费结构化 elicitation `content`；UI 不再生成第二份格式化�
 - 确认按钮点击 → 调用 `handleSelect`（单步选择）或 `onRespond`（最后一步提交）
 - 单选与多选共享 `accent` / `accent-foreground` 选中语义，并通过 `aria-pressed` 固化可访问状态；实心勾选标记使用 `accent-foreground` 底与 `background` 反色勾线，不能把带透明度的 `accent` 用作图标前景；禁止回退到低对比的 `border-primary bg-primary/5`。
 
+### Pending 状态权威投影 ✅ 已收敛
+
+`elicitationRequest / elicitationResponse` 是持久化生命周期事实，但有限分页窗口和 `timing.waitReason` 都不是当前 pending 的权威来源。后端 session view model 必须提供从完整 timeline 生成的 `pendingElicitations`，字段结构包含 `elicitationId / message / toolCallId / requestedSchema / raw`；active session 中仅保留尚无 response 的 pending request，terminal session 返回空集合。前端全量 session 刷新直接采用该字段，live request/response 通过 session reducer 更新同一字段；ElicitationCard 只消费该权威状态。禁止重新从当前分页窗口加 timing 条件推断提问可见性，否则会在 snapshot/timing 竞态下形成“后台等待回答、前台仍显示工具调用中”的不可操作状态。
+
 ### 回答历史展示决策 ✅ 已收敛
 
 elicitation 答案是结构化工具交互结果，不是新的用户 prompt。回答提交后仅关闭交互卡片，不生成独立用户消息气泡；历史消息流保留 Agent 原生 `AskUserQuestion` 工具卡片及其 completed 输出，pending/answered 恢复继续依赖 `elicitationRequest` / `elicitationResponse` timeline 事实。

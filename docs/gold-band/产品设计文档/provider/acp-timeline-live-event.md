@@ -46,6 +46,12 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - 停止会话前后，同一消息内容一致。
 - 强刷后从磁盘恢复的会话内容与实时可见内容一致。
 
+## 前端发布与内存边界
+
+- 后端 timeline item 已经是累计快照；前端只能为每个稳定 text/thought/plan item 或 `toolCallId` 保留一个最新待发布值，新的累计快照原位替换旧值。待发布集合大小必须受活跃 stream/tool identity 数约束，不能受 raw frame 数约束。
+- UI publish 采用单飞 timer：任意时刻最多一个 scheduled/in-flight publish。timer drain 后直接进入一次 React state merge，不为每次 flush 创建可延后的 transition 队列；非流式 lifecycle 先同步 drain pending，再按协议顺序应用自身。
+- 现场回归以 task-159 的 6021 帧分布为基线：5209 thought chunk、534 message chunk、145 tool update、58 usage update、35 tool call 及其余 protocol/lifecycle 帧。回放必须得到正确最终累计文本、待发布集合有界、scheduled/in-flight publish 上限为 1。
+
 ## 上下文压缩生命周期事件
 
 Claude-compatible ACP adapter 通过独立的 `agent_message_chunk` 控制文本暴露上下文压缩：

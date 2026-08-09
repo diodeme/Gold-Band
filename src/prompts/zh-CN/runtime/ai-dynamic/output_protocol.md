@@ -4,7 +4,7 @@
 当前 AI-DYNAMIC 使用固定 agent 策略：除 `workflow-invocation` 外，所有 internal worker、merge、acceptance 节点都会由 runtime 自动使用同一个固定 provider。你不需要为任何节点输出 provider，输出中也不要包含 provider 字段。
 {{ model_policy }}
 {% else %}
-当前 AI-DYNAMIC 使用动态 agent 策略：初始分发节点 agent 已由 runtime 固定；你需要根据当前 prompt 里的“节点 agent 选择说明”和“可用 providers”，为后续每个 worker / merge / acceptance 节点明确输出对应的 provider。
+当前 AI-DYNAMIC 使用动态 agent 策略：你只需要根据当前 prompt 里的“节点 agent 选择说明”和“可用 providers”，为后续 worker 明确输出 provider。merge / acceptance 固定由初始分发 Agent 执行，不要为它们输出 provider。任何节点都不要输出 `model` 或 `permissionMode`；runtime 会读取预配置。
 {{ model_policy }}
 {% endif %}
 
@@ -16,7 +16,7 @@
 
 约束提醒：
 {% if agent_strategy_mode == "fixed" %}- 固定 agent 策略下，不要输出任何 `provider` 字段；runtime 会自动填充固定 agent。
-{% else %}- 动态 agent 策略下，所有 `worker / merge / acceptance` 都必须输出合法 provider，且必须符合当前 prompt 给出的节点 agent 选择说明。
+{% else %}- 动态 agent 策略下，worker 必须输出合法 provider，且必须符合当前 prompt 给出的节点 agent 选择说明；`merge / acceptance` 不要输出 provider，runtime 会固定使用初始分发 Agent。
 - `workflow-invocation` 不要输出 `provider`。
 {% endif %}- {{ model_policy }}
 - `next.type="end"` 时，`next` 中不要再放 `node / groupId / nodes / merge / acceptance`。

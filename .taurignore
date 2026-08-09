@@ -1,0 +1,3 @@
+# Documentation changes do not affect the desktop runtime.
+/docs/
+/README*.md

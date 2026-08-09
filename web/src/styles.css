@@ -90,6 +90,127 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
+.workspace-markdown-live-preview {
+  --atomic-editor-measure: 78ch;
+  --atomic-editor-body-size: 0.875rem;
+  --atomic-editor-body-leading: 1.65;
+  --atomic-editor-font: "Gold Band MiSans", "MiSans", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  --atomic-editor-font-mono: var(--font-mono, ui-monospace, monospace);
+  --atomic-editor-fg: var(--foreground);
+  --atomic-editor-fg-muted: var(--muted-foreground);
+  --atomic-editor-fg-faint: color-mix(in srgb, var(--muted-foreground) 72%, transparent);
+  --atomic-editor-bg: var(--background);
+  --atomic-editor-bg-panel: var(--popover);
+  --atomic-editor-bg-surface: var(--muted);
+  --atomic-editor-border: var(--border);
+  --atomic-editor-accent: var(--gold-running);
+  --atomic-editor-accent-bright: var(--gold-running);
+  --atomic-editor-accent-soft: color-mix(in srgb, var(--gold-running) 42%, var(--background));
+  --atomic-editor-link: var(--gold-running);
+  --atomic-editor-link-hover: color-mix(in srgb, var(--gold-running) 72%, var(--foreground));
+  --atomic-editor-code-bg: color-mix(in srgb, var(--gold-surface-high) 72%, var(--background));
+  --atomic-editor-code-rail: color-mix(in srgb, var(--gold-running) 48%, var(--border));
+}
+
+.workspace-markdown-live-preview .cm-content {
+  padding-block: 2rem 1.5rem;
+  padding-inline: 1rem;
+}
+
+.workspace-markdown-live-preview .cm-line.cm-atomic-h1 {
+  font-size: 1.75em;
+  line-height: 1.25;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+
+.workspace-markdown-live-preview .cm-line.cm-atomic-h2 {
+  font-size: 1.35em;
+  line-height: 1.35;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
+}
+
+.workspace-markdown-live-preview .cm-line.cm-atomic-h3 {
+  font-size: 1.14em;
+}
+
+.workspace-markdown-live-preview .cm-atomic-table {
+  box-sizing: border-box;
+  inline-size: 100%;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  overflow-x: hidden;
+  font-size: 0.94em;
+}
+
+.workspace-markdown-live-preview .cm-atomic-table table {
+  inline-size: 100%;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  table-layout: fixed;
+}
+
+.workspace-markdown-live-preview .cm-atomic-table th,
+.workspace-markdown-live-preview .cm-atomic-table td {
+  border-color: color-mix(in srgb, var(--border) 70%, transparent);
+  padding: 0.3em 0.55em;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.workspace-markdown-live-preview .cm-line.cm-gold-band-markdown-align-center {
+  text-align: center;
+}
+
+.workspace-markdown-live-preview .cm-line.cm-gold-band-markdown-align-right {
+  text-align: right;
+}
+
+.workspace-markdown-live-preview .cm-gold-band-markdown-image {
+  min-height: 2.5rem;
+}
+
+.workspace-markdown-live-preview .cm-gold-band-markdown-image img {
+  max-height: min(60vh, 44rem);
+  object-fit: contain;
+}
+
+.workspace-markdown-live-preview .cm-gold-band-markdown-image-placeholder {
+  display: inline-flex;
+  min-height: 2.5rem;
+  align-items: center;
+  border: 1px dashed color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  color: var(--muted-foreground);
+  font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+  font-size: 0.75rem;
+}
+
+.workspace-markdown-live-preview .cm-gold-band-markdown-remote-image-link {
+  color: var(--atomic-editor-link);
+  font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+  font-size: 0.875rem;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--atomic-editor-link) 45%, transparent);
+  text-underline-offset: 0.16em;
+}
+
+.workspace-markdown-live-preview .cm-gold-band-markdown-remote-image-link:hover {
+  color: var(--atomic-editor-link-hover);
+  text-decoration-color: currentColor;
+}
+
+.workspace-markdown-live-preview .cm-gold-band-markdown-image-inline {
+  display: inline-flex;
+  vertical-align: middle;
+}
+
+.workspace-markdown-live-preview .cm-gold-band-markdown-image-inline .cm-gold-band-markdown-image-placeholder {
+  min-height: 1.75rem;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.72rem;
+}
+
 :root {
   --conversation-message-max-inline-size: 82cqi;
 }
@@ -141,9 +262,9 @@
   --gold-success: #59b68b;
   --gold-warning: #d98547;
   --gold-danger: #df6b6b;
-  --gold-scrollbar-track: color-mix(in srgb, var(--gold-surface-high) 46%, transparent);
-  --gold-scrollbar-thumb: color-mix(in srgb, var(--foreground) 24%, var(--muted-foreground));
-  --gold-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 42%, var(--muted-foreground));
+  --gold-scrollbar-track: color-mix(in srgb, var(--foreground) 4%, transparent);
+  --gold-scrollbar-thumb: color-mix(in srgb, var(--foreground) 18%, transparent);
+  --gold-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 30%, transparent);
   --titlebar: var(--sidebar);
   --titlebar-foreground: #e8e8e8;
   --titlebar-muted: #9a9a9a;
@@ -196,9 +317,9 @@
   --gold-success: #59b68b;
   --gold-warning: #d98547;
   --gold-danger: #df6b6b;
-  --gold-scrollbar-track: color-mix(in srgb, var(--gold-surface-high) 50%, transparent);
-  --gold-scrollbar-thumb: color-mix(in srgb, var(--foreground) 22%, var(--muted-foreground));
-  --gold-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 40%, var(--muted-foreground));
+  --gold-scrollbar-track: color-mix(in srgb, var(--foreground) 4%, transparent);
+  --gold-scrollbar-thumb: color-mix(in srgb, var(--foreground) 20%, transparent);
+  --gold-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 32%, transparent);
   --titlebar: var(--sidebar);
   --titlebar-foreground: #e8e8e8;
   --titlebar-muted: #929292;
@@ -250,9 +371,9 @@
   --gold-success: #16794b;
   --gold-warning: #9a6b1f;
   --gold-danger: #c93c48;
-  --gold-scrollbar-track: color-mix(in srgb, var(--gold-surface-high) 46%, transparent);
-  --gold-scrollbar-thumb: color-mix(in srgb, var(--primary) 28%, var(--muted-foreground));
-  --gold-scrollbar-thumb-hover: color-mix(in srgb, var(--primary) 52%, var(--muted-foreground));
+  --gold-scrollbar-track: color-mix(in srgb, var(--foreground) 3%, transparent);
+  --gold-scrollbar-thumb: color-mix(in srgb, var(--foreground) 16%, transparent);
+  --gold-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 26%, transparent);
   --titlebar: var(--sidebar);
   --titlebar-foreground: #191c24;
   --titlebar-muted: #667085;
@@ -304,9 +425,9 @@
   --gold-success: #2e7954;
   --gold-warning: #966b22;
   --gold-danger: #c23b4a;
-  --gold-scrollbar-track: color-mix(in srgb, var(--gold-surface-high) 48%, transparent);
-  --gold-scrollbar-thumb: color-mix(in srgb, var(--primary) 28%, var(--muted-foreground));
-  --gold-scrollbar-thumb-hover: color-mix(in srgb, var(--primary) 50%, var(--muted-foreground));
+  --gold-scrollbar-track: color-mix(in srgb, var(--foreground) 3%, transparent);
+  --gold-scrollbar-thumb: color-mix(in srgb, var(--foreground) 16%, transparent);
+  --gold-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 26%, transparent);
   --titlebar: var(--sidebar);
   --titlebar-foreground: #2f2f2f;
   --titlebar-muted: #707070;
@@ -445,6 +566,29 @@
 
   .gold-themed-scrollbar::-webkit-scrollbar-corner {
     background: transparent;
+  }
+
+  .gold-themed-scrollbar.right-workspace-tab-scrollbar {
+    /* Chromium ignores ::-webkit-scrollbar sizing when standards-based thin wins. */
+    scrollbar-color: auto;
+    scrollbar-width: auto;
+  }
+
+  .gold-themed-scrollbar.right-workspace-tab-scrollbar::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+
+  .gold-themed-scrollbar.right-workspace-tab-scrollbar::-webkit-scrollbar-thumb {
+    min-width: 32px;
+    border: 0;
+  }
+
+  .gold-themed-scrollbar.right-workspace-tab-scrollbar::-webkit-scrollbar-button,
+  .gold-themed-scrollbar.right-workspace-tab-scrollbar::-webkit-scrollbar-button:horizontal {
+    display: none;
+    width: 0;
+    height: 0;
   }
 }
 
@@ -607,6 +751,11 @@
 }
 
 @media (prefers-reduced-motion: no-preference) {
+  .acp-activity-live-label,
+  .acp-retry-live-label {
+    animation: acp-activity-label-breathe 1.8s ease-in-out infinite;
+  }
+
   .workflow-node-running::before {
     animation: workflow-node-sheen 2.4s ease-in-out infinite;
   }
@@ -633,6 +782,15 @@
 
   .workflow-run-active {
     animation: workflow-row-enter 220ms ease-out both;
+  }
+}
+
+@keyframes acp-activity-label-breathe {
+  0%, 100% {
+    opacity: 0.48;
+  }
+  50% {
+    opacity: 1;
   }
 }
 

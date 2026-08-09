@@ -158,6 +158,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 2026-07-24 浅色 Tabs track 可见性修正：共享 `TabsList` 默认变体从 `muted` 调整为带 `border` 内描边的 `secondary` surface，覆盖设置页、会话运行模式、工作流编辑、任务筛选、运行模式管理和上下文管理；透明与 line 变体保持原设计。
 - 2026-07-24 科技灰侧栏文字层级修正：导航、分组与任务标题不再复用 `#666666` 辅助文字，而是统一消费深黑 `sidebar-foreground = #171717`；选中态前景同步保持深黑，时间和空状态等元信息继续使用辅助灰。
 - 2026-07-24 文本选区可见性修正：四套主题新增成对的文本选区 token，深色选区提升为明确中灰层级；移除 Input 对 selection 的局部 primary 覆盖，使普通文本、Markdown、输入框和 composer 呈现一致。
+- 2026-08-02 滚动条视觉层级校准：四套主题继续通过统一的 `gold-scrollbar-track` / `gold-scrollbar-thumb` / `gold-scrollbar-thumb-hover` 语义接口驱动原生滚动容器、主题滚动容器与 shadcn `ScrollArea`。滚动条改用中性前景色的低透明叠加，静止态不得混入品牌 `primary` 或不透明辅助文字色；轨道仅在容器 hover 时提供极弱反馈，thumb 在 hover 时再适度增强。两套浅色采用 3% / 16% / 26% 的轨道、静止、悬浮层级，石墨深色采用 4% / 18% / 30%，终端黑采用 4% / 20% / 32%，保证可发现但不抢占正文与导航的视觉重心。
 - 2026-07-24 胶囊 Tabs 边界收敛：共享 Tabs 新增 `bare` 变体，Agent 选择器和自带边界的 Round 详情 Tabs 不再继承默认 track ring，避免外层轨道与选中胶囊形成双重边界。
 - 2026-05-08 起应用内置默认字体切换为 MiSans（前端 family 为 `Gold Band MiSans`）；设置页删除三套 CJK 预设，只保留一个默认字体卡片与一个本机字体下拉列表。
 - 2026-05-08 验收修正：字体切换必须同步作用到导航栏、面包屑、任务 requirement 预览与完整需求抽屉；这些区域不再误用 mono token。

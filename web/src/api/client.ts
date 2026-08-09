@@ -7,6 +7,7 @@ import type {
   ActiveSessionStopVm,
   AgentRegistryVm,
   AppBootstrapVm,
+  AppExitRequestVm,
   AutoTemplate,
   AutoTemplateStore,
   ContentVm,
@@ -21,6 +22,7 @@ import type {
   ConversationWorkspaceVm,
   InterventionNavigateEventVm,
   NotificationAttentionInput,
+  ResolveAppExitInput,
   PinRef,
   CreateTaskInput,
   DesktopFontPreference,
@@ -54,17 +56,32 @@ import type {
   MetricsSettingsVm,
   WorkflowDsl,
   ConversationAttemptLifecycleVm,
+  ConversationTaskActivityVm,
   WorkflowTemplateStore,
   WorkflowVm,
   FeedbackInput,
   FeedbackResult,
   FeedbackArchivePreview,
+  ExternalFileAccessGrantVm,
+  FileRevisionVm,
+  ResolvedWorkspaceFileLinkVm,
+  WorkspaceDirectoryEntryVm,
+  WorkspaceFileChangedEventVm,
+  WorkspaceFileSearchVm,
+  WorkspaceFileSnapshotVm,
+  ResolveMarkdownImageInput,
+  MarkdownImagePreviewVm,
+  WriteFileResourceInput,
+  TurnFileLocatorVm,
+  TurnFileChangeSetVm,
+  FileComparisonVm,
 } from '../types';
 import { browserApi } from './browser';
 import { desktopApi } from './desktop';
 import { isTauriRuntime } from './shared';
 
 export interface AcpSessionUpdatedEventVm {
+  branchId?: string | null;
   projectId?: string | null;
   taskId: string;
   runId: string;
@@ -76,10 +93,11 @@ export interface AcpSessionUpdatedEventVm {
   session?: AcpSessionVm | null;
   event?: AcpUiEventVm | null;
   lifecycle?: ConversationAttemptLifecycleVm | null;
+  activity?: ConversationTaskActivityVm | null;
 }
 
 export interface ConversationRunStateUpdatedEventVm {
-  projectId?: string | null;
+  projectId: string;
   taskId: string;
   runId: string;
   roundId: string;
@@ -90,9 +108,13 @@ export interface ConversationRunStateUpdatedEventVm {
 }
 
 export interface ConversationPromptSubmitVm {
-  kind: 'acp-session' | 'runtime-continue-started' | 'rejected' | string;
+  kind: 'acp-session' | 'runtime-continue-started' | 'queued' | 'rejected' | string;
   session?: AcpSessionVm | null;
   run?: RunSummaryVm | null;
+  lifecycle?: ConversationAttemptLifecycleVm | null;
+}
+
+export interface ConversationPromptQueueMutationVm {
   lifecycle?: ConversationAttemptLifecycleVm | null;
 }
 
@@ -112,6 +134,8 @@ export interface MaterializeAttachmentFileInput {
 export interface RuntimeApi {
   checkLocalClaude(): Promise<LocalClaudeStatusVm>;
   getAppBootstrap(): Promise<AppBootstrapVm>;
+  completeMainWindowClose(): Promise<void>;
+  resolveAppExit(input: ResolveAppExitInput): Promise<void>;
   getSystemFonts(): Promise<string[]>;
   getAgentRegistry(): Promise<AgentRegistryVm>;
   getAgentCommandCatalog(agentType: string, workspacePath: string): Promise<import('../types').AcpCommandCatalogVm | null>;
@@ -152,12 +176,21 @@ export interface RuntimeApi {
   retryRun(taskId: string, runId: string): Promise<RunSummaryVm>;
   getLogPage(query: LogQueryInput): Promise<LogPageVm>;
   getAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpSessionQueryInput, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
+  getAcpActivityDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpActivityDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpActivityDetailVm>;
+  getAcpToolDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: import('../types').AcpToolDetailQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<import('../types').AcpToolDetailVm>;
+  getTurnFileChangeSet(locator: TurnFileLocatorVm, changeSetId: string): Promise<TurnFileChangeSetVm>;
+  getFileComparison(locator: TurnFileLocatorVm, changeSetId: string, changeId: string): Promise<FileComparisonVm>;
   renewAcpSessionLease?(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<number>;
   subscribeAcpSessionUpdates?(listener: (event: AcpSessionUpdatedEventVm) => void): Promise<() => void>;
   subscribeConversationRunStateUpdates?(listener: (event: ConversationRunStateUpdatedEventVm) => void): Promise<() => void>;
   // 干预通知：OS Toast「查看详情」点击后后端转发导航事件，前端订阅做 deep-link。
   subscribeInterventionNavigate?(listener: (event: InterventionNavigateEventVm) => void): Promise<() => void>;
+  subscribeAppExitRequested?(listener: (event: AppExitRequestVm) => void): Promise<() => void>;
+  takePendingInterventionNavigations(): Promise<InterventionNavigateEventVm[]>;
   submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]): Promise<ConversationPromptSubmitVm>;
+  updateConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, content: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
+  deleteConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
+  useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptSubmitVm>;
   sendAcpPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]): Promise<AcpSessionVm | null>;
   setAcpSessionModel(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   setAcpSessionPermissionMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
@@ -209,6 +242,25 @@ export interface RuntimeApi {
   syncConversationWorkspace(workspacePath: string): Promise<ConversationSidebarVm>;
   saveConversationPreference(key: string, value: unknown): Promise<void>;
   saveLastConversationWorkspace(projectId: string): Promise<void>;
+  listWorkspaceDirectory(projectId: string, relativePath: string): Promise<WorkspaceDirectoryEntryVm[]>;
+  openWorkspacePathInFileManager(projectId: string, relativePath?: string): Promise<void>;
+  listConversationDirectory(input: ConversationDirectoryInput): Promise<WorkspaceDirectoryEntryVm[]>;
+  openConversationDirectoryPathInFileManager(input: ConversationDirectoryInput): Promise<void>;
+  readConversationDirectoryFile(input: ConversationDirectoryInput): Promise<WorkspaceFileSnapshotVm>;
+  searchWorkspaceFiles(projectId: string, query: string, requestId: string, limit: number): Promise<WorkspaceFileSearchVm>;
+  resolveWorkspaceFileLink(projectId: string, rawHref: string, baseCanonicalPath?: string | null): Promise<ResolvedWorkspaceFileLinkVm>;
+  readFileResource(projectId: string, canonicalPath: string, externalAccessToken?: string | null, preferSource?: boolean): Promise<WorkspaceFileSnapshotVm>;
+  resolveMarkdownImage(input: ResolveMarkdownImageInput): Promise<MarkdownImagePreviewVm>;
+  writeFileResource(input: WriteFileResourceInput): Promise<FileRevisionVm>;
+  releaseWorkspaceFilePreview(token: string): Promise<void>;
+  renewExternalFileAccess(token: string): Promise<ExternalFileAccessGrantVm>;
+  releaseExternalFileAccess(token: string): Promise<void>;
+  startWorkspaceFileWatch(projectId: string): Promise<void>;
+  stopWorkspaceFileWatch(projectId: string): Promise<void>;
+  subscribeWorkspaceFileChanges?(listener: (event: WorkspaceFileChangedEventVm) => void): Promise<() => void>;
+  workspaceFilePreviewUrl(token: string, staticFrame?: boolean): string;
+  openExternalUrl(url: string): Promise<void>;
+  openFileWithSystemApp(path: string): Promise<void>;
   pickAttachmentFiles(): Promise<AttachmentFileRef[]>;
   materializeConversationAttachments(files: MaterializeAttachmentFileInput[]): Promise<AttachmentFileRef[]>;
   getSupportedAttachmentExtensions(): Promise<string[]>;
@@ -252,6 +304,18 @@ export interface RuntimeApi {
   ): Promise<string[]>;
   submitFeedback(input: FeedbackInput): Promise<FeedbackResult>;
   previewFeedbackSessionArchive(projectId: string | null, taskId: string | null): Promise<FeedbackArchivePreview | null>;
+}
+
+export interface ConversationDirectoryInput {
+  projectId?: string | null;
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  relativePath?: string;
 }
 
 export function getRuntimeApi(): RuntimeApi {

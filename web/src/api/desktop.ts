@@ -1,7 +1,8 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, ImportProfilesResult, ProfileInput, RoundSelection, WorkflowDsl } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, ResolveAppExitInput, RoundSelection, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { convertFileSrc } from '@tauri-apps/api/core';
 
 // ── Metrics Settings ──
 
@@ -17,6 +18,12 @@ export interface MetricsSettingsVm {
 const noopUnlisten = () => {};
 
 export const desktopApi: RuntimeApi = {
+  completeMainWindowClose() {
+    return invokeCommand('complete_main_window_close');
+  },
+  resolveAppExit(input: ResolveAppExitInput) {
+    return invokeCommand('resolve_app_exit', { input });
+  },
   async subscribeAcpSessionUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
     const unlisten: UnlistenFn = await listen<AcpSessionUpdatedEventVm>('gold-band://acp-session-updated', (event) => {
@@ -33,7 +40,33 @@ export const desktopApi: RuntimeApi = {
   },
   async subscribeInterventionNavigate(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
-    const unlisten: UnlistenFn = await listen<InterventionNavigateEventVm>('gold-band://intervention-navigate', (event) => {
+    let drain = Promise.resolve();
+    const drainPending = () => {
+      drain = drain.then(async () => {
+        const pending = await desktopApi.takePendingInterventionNavigations();
+        pending.forEach(listener);
+      }).catch(() => {});
+      return drain;
+    };
+    const unlisten: UnlistenFn = await listen('gold-band://intervention-navigate', () => {
+      void drainPending();
+    });
+    await drainPending();
+    return () => unlisten();
+  },
+  async subscribeAppExitRequested(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<AppExitRequestVm>('gold-band://app-exit-requested', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  takePendingInterventionNavigations() {
+    return invokeCommand('take_pending_intervention_navigations');
+  },
+  async subscribeWorkspaceFileChanges(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<WorkspaceFileChangedEventVm>('gold-band://workspace-file-changed', (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
@@ -167,11 +200,32 @@ export const desktopApi: RuntimeApi = {
   getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, _fallback, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('get_acp_session', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
   },
+  getAcpActivityDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
+    return invokeCommand<import('../types').AcpActivityDetailVm>('get_acp_activity_detail', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
+  },
+  getAcpToolDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
+    return invokeCommand<import('../types').AcpToolDetailVm>('get_acp_tool_detail', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
+  },
+  getTurnFileChangeSet(locator, changeSetId) {
+    return invokeCommand<import('../types').TurnFileChangeSetVm>('get_turn_file_change_set', { ...locator, changeSetId });
+  },
+  getFileComparison(locator, changeSetId, changeId) {
+    return invokeCommand<import('../types').FileComparisonVm>('get_file_comparison', { ...locator, changeSetId, changeId });
+  },
   renewAcpSessionLease(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand<number>('renew_acp_session_lease', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
   submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
     return invokeCommand('submit_conversation_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });
+  },
+  updateConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId) {
+    return invokeCommand('update_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId });
+  },
+  deleteConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId) {
+    return invokeCommand('delete_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId });
+  },
+  useConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId) {
+    return invokeCommand('use_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId });
   },
   sendAcpPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
     return invokeCommand<AcpSessionVm | null>('send_acp_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });
@@ -329,6 +383,60 @@ export const desktopApi: RuntimeApi = {
   },
   saveLastConversationWorkspace(projectId) {
     return invokeCommand('save_last_conversation_workspace', { projectId });
+  },
+  listWorkspaceDirectory(projectId, relativePath) {
+    return invokeCommand('list_workspace_directory', { input: { projectId, relativePath } });
+  },
+  openWorkspacePathInFileManager(projectId, relativePath = '') {
+    return invokeCommand('open_workspace_path_in_file_manager', { input: { projectId, relativePath } });
+  },
+  listConversationDirectory(input) {
+    return invokeCommand('list_conversation_directory', { input });
+  },
+  openConversationDirectoryPathInFileManager(input) {
+    return invokeCommand('open_conversation_directory_path_in_file_manager', { input });
+  },
+  readConversationDirectoryFile(input) { return invokeCommand('read_conversation_directory_file', { input }); },
+  searchWorkspaceFiles(projectId, query, requestId, limit) {
+    return invokeCommand('search_workspace_files', { input: { projectId, query, requestId, limit } });
+  },
+  resolveWorkspaceFileLink(projectId, rawHref, baseCanonicalPath = null) {
+    return invokeCommand('resolve_workspace_file_link', { input: { projectId, rawHref, baseCanonicalPath } });
+  },
+  readFileResource(projectId, canonicalPath, externalAccessToken = null, preferSource = false) {
+    return invokeCommand('read_file_resource', { input: { projectId, canonicalPath, externalAccessToken, preferSource } });
+  },
+  resolveMarkdownImage(input) {
+    return invokeCommand('resolve_markdown_image', { input });
+  },
+  writeFileResource(input) {
+    return invokeCommand('write_file_resource', { input });
+  },
+  releaseWorkspaceFilePreview(token) {
+    return invokeCommand('release_workspace_file_preview', { input: { token } });
+  },
+  renewExternalFileAccess(token) {
+    return invokeCommand('renew_external_file_access', { input: { token } });
+  },
+  releaseExternalFileAccess(token) {
+    return invokeCommand('release_external_file_access', { input: { token } });
+  },
+  startWorkspaceFileWatch(projectId) {
+    return invokeCommand('start_workspace_file_watch', { input: { projectId } });
+  },
+  stopWorkspaceFileWatch(projectId) {
+    return invokeCommand('stop_workspace_file_watch', { input: { projectId } });
+  },
+  workspaceFilePreviewUrl(token, staticFrame = false) {
+    return convertFileSrc(staticFrame ? `${token}/static` : token, 'gold-band-preview');
+  },
+  async openExternalUrl(url) {
+    const { openUrl } = await import('@tauri-apps/plugin-opener');
+    await openUrl(url);
+  },
+  async openFileWithSystemApp(path) {
+    const { openPath } = await import('@tauri-apps/plugin-opener');
+    await openPath(path);
   },
   async pickAttachmentFiles() {
     const { open } = await import('@tauri-apps/plugin-dialog');

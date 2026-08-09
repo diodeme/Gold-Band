@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   deriveAcpRuntimeComposerState,
+  mergeConversationAttemptLifecycle,
   shouldKeepLocalRuntimeLifecycleOverride,
   type AcpRuntimeComposerStateInput,
 } from '@/lib/acp-runtime-composer-state';
@@ -144,6 +145,97 @@ function baseInput(overrides: Partial<AcpRuntimeComposerStateInput> = {}): AcpRu
 }
 
 describe('deriveAcpRuntimeComposerState', () => {
+  it('keeps the Direct composer editable and queues submissions while a turn is active', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: { status: 'running', active: true, current: true, phase: 'provider-running' },
+        acp: { status: 'running', active: true, terminal: false },
+        composer: {
+          mode: 'runtime-active',
+          submitTarget: 'queue-prompt',
+          lockInput: false,
+          canStop: true,
+        },
+        promptQueue: { revision: 0, items: [], maxItems: 10 },
+      }),
+      acpStatus: 'running',
+    }));
+
+    expect(state.submitTarget).toBe('queue-prompt');
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canSubmit).toBe(true);
+    expect(state.placeholderKind).toBe('default');
+  });
+
+  it('keeps Direct input focusable through the initial sending transition', () => {
+    const initialSending = deriveAcpRuntimeComposerState(baseInput({
+      promptQueueEnabled: true,
+      lifecycle: lifecycle({
+        continueKind: 'input',
+        composer: { mode: 'interrupted-input', submitTarget: 'runtime-continue', lockInput: false },
+      }),
+      sending: true,
+      prompt: 'next prompt',
+    }));
+    const runningSending = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: { status: 'running', active: true, current: true, phase: 'provider-running' },
+        acp: { status: 'running', active: true, terminal: false },
+        composer: { mode: 'runtime-active', submitTarget: 'queue-prompt', lockInput: false },
+        promptQueue: { revision: 0, items: [], maxItems: 10 },
+      }),
+      acpStatus: 'running',
+      sending: true,
+      prompt: 'next prompt',
+    }));
+
+    expect(initialSending.inputDisabled).toBe(false);
+    expect(initialSending.submitTarget).toBe('queue-prompt');
+    expect(initialSending.canSubmit).toBe(true);
+    expect(runningSending.inputDisabled).toBe(false);
+    expect(runningSending.canSubmit).toBe(true);
+  });
+
+  it('rejects another queued submission when the Direct queue reaches capacity', () => {
+    const items = Array.from({ length: 10 }, (_, index) => ({
+      id: `queued-${index}`,
+      content: `prompt ${index}`,
+      attachmentCount: 0,
+      createdAt: '2026-08-07T00:00:00Z',
+    }));
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: { status: 'running', active: true, current: true, phase: 'provider-running' },
+        acp: { status: 'running', active: true, terminal: false },
+        composer: {
+          mode: 'runtime-active',
+          submitTarget: 'queue-prompt',
+          lockInput: false,
+          canStop: true,
+        },
+        promptQueue: { revision: 10, items, maxItems: 10 },
+      }),
+      acpStatus: 'running',
+    }));
+
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canSubmit).toBe(false);
+  });
+
+  it('does not unlock a non-Direct active composer without the backend queue target', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: { status: 'running', active: true, current: true, phase: 'provider-running' },
+        acp: { status: 'running', active: true, terminal: false },
+      }),
+      acpStatus: 'running',
+    }));
+
+    expect(state.submitTarget).toBe('none');
+    expect(state.inputDisabled).toBe(true);
+    expect(state.canSubmit).toBe(false);
+  });
+
   it('restores a completed-run live follow-up from backend lifecycle without optimistic state', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
@@ -171,6 +263,39 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.showStatus).toBe(true);
   });
 
+  it('keeps stop available when a previous terminal snapshot races a live follow-up', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'completed',
+          outcome: 'success',
+          active: false,
+          phase: 'provider-running',
+        },
+        acp: {
+          status: 'running',
+          phase: 'running',
+          active: true,
+          stopping: false,
+          terminal: false,
+        },
+      }),
+      acpStatus: 'completed',
+      localTurnInFlight: true,
+      awaitingResponse: false,
+      sending: false,
+      waitingForOptimisticPrompt: false,
+      timelineProcessingKind: 'tool',
+    }));
+
+    expect(state.acpActive).toBe(true);
+    expect(state.sessionActive).toBe(true);
+    expect(state.statusActive).toBe(true);
+    expect(state.processingKind).toBe('tool');
+    expect(state.canStop).toBe(true);
+    expect(state.inputDisabled).toBe(true);
+  });
+
   it('keeps stopping locked while ACP is cancelling', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
@@ -195,6 +320,34 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.stopInProgress).toBe(true);
     expect(state.inputDisabled).toBe(true);
     expect(state.canSubmit).toBe(false);
+  });
+
+  it('lets a terminal ACP snapshot override a stale cancelling lifecycle', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'paused',
+          outcome: null,
+          pauseReason: 'process-interrupted',
+          resumable: true,
+          current: true,
+          active: false,
+          continuable: true,
+        },
+        acp: { status: 'cancelling', active: true, stopping: true, terminal: false },
+        displayStatus: 'cancelling',
+        runtimeDisplay: pausedDisplay,
+        continueKind: 'input',
+      }),
+      acpStatus: 'cancelled',
+      cancelling: true,
+      stopCommandPending: true,
+    }));
+
+    expect(state.stopInProgress).toBe(false);
+    expect(state.mode).toBe('interrupted-input');
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canStop).toBe(false);
   });
 
   it('routes process-interrupted stopped input through runtime continue', () => {
@@ -611,6 +764,37 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canStop).toBe(true);
   });
 
+  it('hides the internal node handoff after a Direct turn completes', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      promptQueueEnabled: true,
+      lifecycle: lifecycle({
+        runtime: { status: 'running', active: true, current: true, phase: 'launching-next-node' },
+        acp: { status: 'completed', active: false, stopping: false, terminal: true },
+        promptQueue: { revision: 0, items: [], maxItems: 10 },
+      }),
+      acpStatus: 'completed',
+    }));
+
+    expect(state.processingKind).toBe('launching-next-node');
+    expect(state.statusActive).toBe(false);
+    expect(state.showStatus).toBe(false);
+    expect(state.hintKind).toBe('default');
+  });
+
+  it('keeps the node handoff visible for Workflow and AUTO runs', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: { status: 'running', active: true, current: true, phase: 'launching-next-node' },
+        acp: { status: 'completed', active: false, stopping: false, terminal: true },
+      }),
+      acpStatus: 'completed',
+    }));
+
+    expect(state.statusActive).toBe(true);
+    expect(state.showStatus).toBe(true);
+    expect(state.processingKind).toBe('launching-next-node');
+  });
+
   it('only blocks invalid workflow on runtime continue paths', () => {
     const completed = deriveAcpRuntimeComposerState(baseInput({ workflowValid: false }));
     const interrupted = deriveAcpRuntimeComposerState(baseInput({
@@ -635,6 +819,49 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(completed.submitTarget).toBe('acp-prompt');
     expect(interrupted.mode).toBe('invalid-workflow');
     expect(interrupted.submitTarget).toBe('none');
+  });
+});
+
+describe('mergeConversationAttemptLifecycle', () => {
+  it('keeps a newer Direct queue when a stale lifecycle snapshot arrives after stop', () => {
+    const local = lifecycle({
+      promptQueue: {
+        revision: 4,
+        maxItems: 10,
+        items: [{
+          id: 'queued-1',
+          content: 'keep visible',
+          attachmentCount: 0,
+          createdAt: '2026-08-07T00:00:00Z',
+        }],
+      },
+    });
+    const incoming = lifecycle({
+      runtime: { status: 'paused', active: false, phase: 'paused' },
+      promptQueue: { revision: 3, maxItems: 10, items: [] },
+    });
+
+    const merged = mergeConversationAttemptLifecycle(local, incoming);
+    expect(merged.runtime.status).toBe('paused');
+    expect(merged.promptQueue).toEqual(local.promptQueue);
+  });
+
+  it('accepts an empty queue when its revision is newer', () => {
+    const local = lifecycle({
+      promptQueue: {
+        revision: 4,
+        maxItems: 10,
+        items: [{
+          id: 'queued-1',
+          content: 'deleted',
+          attachmentCount: 0,
+          createdAt: '2026-08-07T00:00:00Z',
+        }],
+      },
+    });
+    const incoming = lifecycle({ promptQueue: { revision: 5, maxItems: 10, items: [] } });
+
+    expect(mergeConversationAttemptLifecycle(local, incoming)).toBe(incoming);
   });
 });
 

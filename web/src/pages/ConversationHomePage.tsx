@@ -1,5 +1,7 @@
 import { ConversationComposer } from '@/components/conversation/ConversationComposer';
 import { ConversationGreeting } from '@/components/conversation/ConversationGreeting';
+import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
+import { cn } from '@/lib/utils';
 import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../types';
 
 interface ConversationHomePageProps {
@@ -36,8 +38,11 @@ export function ConversationHomePage({
   onWorkspaceChange,
 }: ConversationHomePageProps) {
   return (
-    <div className="flex h-full flex-col items-center justify-center px-4 sm:px-6 lg:px-8">
-      <div className="w-full max-w-4xl space-y-5">
+    <div className={cn(
+      'flex h-full flex-col items-center justify-center px-4 sm:px-6 lg:px-8',
+      CONVERSATION_HOME_COMPOSER_LAYOUT.opticalBottomPaddingClassName,
+    )}>
+      <div className={cn('w-full space-y-5', CONVERSATION_HOME_COMPOSER_LAYOUT.contentMaxWidthClassName)}>
         <div className="text-center space-y-1.5">
           <ConversationGreeting />
         </div>

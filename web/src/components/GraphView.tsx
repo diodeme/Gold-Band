@@ -18,6 +18,7 @@ import {
   type Viewport,
 } from '@xyflow/react';
 import type { GraphNodeVm, GraphVm } from '../types';
+import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import {
   NODE_WIDTH,
   NODE_HEIGHT,
@@ -387,7 +388,7 @@ function WorkflowNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
       <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
       <div className="pointer-events-none absolute left-3 right-3 top-2 z-10 flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          {iconKey ? <img src={`/agent-icons/${iconKey}.svg`} alt="" className="size-4 shrink-0 rounded-sm" /> : null}
+          {iconKey ? <img src={agentIconSrc(iconKey)} alt="" className={agentIconClass(iconKey, 'size-4 shrink-0 rounded-sm')} /> : null}
           {isDynamicNode ? <Badge variant="outline" className="h-5 border-accent/35 bg-accent/10 px-1.5 text-[10px] text-accent-foreground">AI-DYNAMIC</Badge> : null}
           {node.attemptCount && node.attemptCount > 1 ? <Badge variant="outline" className="h-5 px-1.5 text-[10px]">attempt ×{node.attemptCount}</Badge> : null}
           {node.artifactCount > 0 ? <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{artifactLabel}:{node.artifactCount}</Badge> : null}

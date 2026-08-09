@@ -5,6 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { useLeadingAdornmentTextIndent } from "@/hooks/useLeadingAdornmentTextIndent"
 import React, {
+  useCallback,
   createContext,
   useContext,
   useLayoutEffect,
@@ -34,6 +35,23 @@ const PromptInputContext = createContext<PromptInputContextType>({
 
 function usePromptInput() {
   return useContext(PromptInputContext)
+}
+
+export function promptInputTextareaSize(
+  scrollHeight: number,
+  maxHeight: number | string,
+): { height: string; overflowY: "auto" | "hidden" } {
+  if (typeof maxHeight === "number") {
+    return {
+      height: `${Math.min(scrollHeight, maxHeight)}px`,
+      overflowY: scrollHeight > maxHeight ? "auto" : "hidden",
+    }
+  }
+
+  return {
+    height: `min(${scrollHeight}px, ${maxHeight})`,
+    overflowY: "auto",
+  }
 }
 
 const PROMPT_INPUT_INTERACTIVE_SELECTOR = [
@@ -153,19 +171,16 @@ function PromptInputTextarea({
   const hasLeadingAdornment = Boolean(leadingAdornment && effectiveValuePrefix)
   const leadingAdornmentLayout = useLeadingAdornmentTextIndent(hasLeadingAdornment)
 
-  const adjustHeight = (el: HTMLTextAreaElement | null) => {
+  const adjustHeight = useCallback((el: HTMLTextAreaElement | null) => {
     if (!el || disableAutosize) return
 
     el.style.height = "auto"
+    const size = promptInputTextareaSize(el.scrollHeight, maxHeight)
+    el.style.height = size.height
+    el.style.overflowY = size.overflowY
+  }, [disableAutosize, maxHeight])
 
-    if (typeof maxHeight === "number") {
-      el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
-    } else {
-      el.style.height = `min(${el.scrollHeight}px, ${maxHeight})`
-    }
-  }
-
-  const handleRef = (el: HTMLTextAreaElement | null) => {
+  const handleRef = useCallback((el: HTMLTextAreaElement | null) => {
     textareaRef.current = el
     if (typeof externalRef === "function") {
       externalRef(el)
@@ -173,24 +188,13 @@ function PromptInputTextarea({
       externalRef.current = el
     }
     adjustHeight(el)
-  }
+  }, [adjustHeight, externalRef, textareaRef])
 
   useLayoutEffect(() => {
-    if (!textareaRef.current || disableAutosize) return
-
-    const el = textareaRef.current
-    el.style.height = "auto"
-
-    if (typeof maxHeight === "number") {
-      el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
-    } else {
-      el.style.height = `min(${el.scrollHeight}px, ${maxHeight})`
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [textareaValue, maxHeight, disableAutosize])
+    adjustHeight(textareaRef.current)
+  }, [adjustHeight, textareaRef, textareaValue])
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    adjustHeight(e.target)
     setValue(`${effectiveValuePrefix}${e.target.value}`)
   }
 
@@ -211,7 +215,7 @@ function PromptInputTextarea({
       onChange={handleChange}
       onKeyDown={handleKeyDown}
       className={cn(
-        "text-primary min-h-[44px] min-w-0 flex-1 resize-none border-none bg-transparent shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0",
+        "text-primary min-h-[44px] min-w-0 flex-1 resize-none border-none bg-transparent shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent",
         hasLeadingAdornment && "px-0 py-0",
         className
       )}

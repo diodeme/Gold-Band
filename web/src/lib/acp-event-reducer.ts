@@ -13,16 +13,21 @@ export function mergeRawObject(previous: unknown, next: unknown) {
   if (!previousObject || !nextObject) return next ?? previous;
   const previousMeta = rawObject(previousObject._meta);
   const nextMeta = rawObject(nextObject._meta);
-  const previousClaudeCode = rawObject(previousMeta?.claudeCode);
-  const nextClaudeCode = rawObject(nextMeta?.claudeCode);
   const merged: RawObject = { ...previousObject, ...nextObject };
   if (previousMeta || nextMeta) {
     merged._meta = { ...previousMeta, ...nextMeta };
-    if (previousClaudeCode || nextClaudeCode) {
-      (merged._meta as RawObject).claudeCode = {
-        ...previousClaudeCode,
-        ...nextClaudeCode,
-      };
+    for (const key of new Set([
+      ...Object.keys(previousMeta ?? {}),
+      ...Object.keys(nextMeta ?? {}),
+    ])) {
+      const previousNested = rawObject(previousMeta?.[key]);
+      const nextNested = rawObject(nextMeta?.[key]);
+      if (previousNested || nextNested) {
+        (merged._meta as RawObject)[key] = {
+          ...previousNested,
+          ...nextNested,
+        };
+      }
     }
   }
   return merged;
@@ -32,6 +37,16 @@ export function mergeAcpEventSnapshots(
   existing: AcpUiEventVm,
   incoming: AcpUiEventVm,
 ): AcpUiEventVm {
+  const existingRevision = eventLifecycleRevision(existing);
+  const incomingRevision = eventLifecycleRevision(incoming);
+  if (
+    incomingRevision < existingRevision ||
+    (incomingRevision === existingRevision &&
+      isTerminalEventStatus(existing.status) &&
+      !isTerminalEventStatus(incoming.status))
+  ) {
+    return existing;
+  }
   if (
     isAcpTextStreamEventKind(existing.kind) &&
     isAcpTextStreamEventKind(incoming.kind) &&
@@ -42,6 +57,14 @@ export function mergeAcpEventSnapshots(
     return { ...merged, seq: existing.seq };
   }
   return { ...incoming, seq: existing.seq };
+}
+
+function eventLifecycleRevision(event: AcpUiEventVm) {
+  return event.endedSeq ?? event.startedSeq ?? originalSeqFromAcpEvent(event);
+}
+
+function isTerminalEventStatus(status?: string | null) {
+  return status === "completed" || status === "failed" || status === "cancelled";
 }
 
 export function mergeAcpEventWindows(

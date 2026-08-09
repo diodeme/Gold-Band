@@ -1,6 +1,6 @@
 import { Pin, PinOff, MessageSquare, Search, Bot, Boxes, Workflow, Settings, ChevronDown, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
 import { saveConversationPreference } from '../../api';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -12,6 +12,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { cn } from '@/lib/utils';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { formatCompactRelativeTime } from '@/lib/datetime';
+
+export const conversationSidebarActivityIconClass = 'motion-safe:animate-pulse';
 
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
@@ -32,7 +34,7 @@ interface ConversationSidebarProps {
   onRemoveWorkspace?: (projectId: string) => Promise<void>;
 }
 
-export function ConversationSidebar({
+export const ConversationSidebar = memo(function ConversationSidebar({
   vm,
   active,
   activeWorkspaceId,
@@ -62,6 +64,18 @@ export function ConversationSidebar({
   const [collapsedPinnedWorkspaces, setCollapsedPinnedWorkspaces] = useState<Record<string, boolean>>({});
   const [workspaceToRemove, setWorkspaceToRemove] = useState<ConversationWorkspaceVm | null>(null);
   const [workspaceRemovalPending, setWorkspaceRemovalPending] = useState(false);
+  const pinnedTasksByWorkspace = useMemo(() => vm.pinnedTasks.reduce<Record<string, ConversationTaskRowVm[]>>((acc, task) => {
+    (acc[task.projectId] ??= []).push(task);
+    return acc;
+  }, {}), [vm.pinnedTasks]);
+  const pinnedTaskKeys = useMemo(
+    () => new Set(vm.pinnedTasks.map((task) => conversationSidebarTaskKey(task.projectId, task.taskId))),
+    [vm.pinnedTasks],
+  );
+  const workspacesByProjectId = useMemo(
+    () => new Map(vm.workspaces.map((workspace) => [workspace.projectId, workspace])),
+    [vm.workspaces],
+  );
 
   // Sync pinned collapse from persisted preferences when sidebar VM reloads
   useEffect(() => {
@@ -224,13 +238,8 @@ export function ConversationSidebar({
             </button>
             {!pinnedCollapsed ? (
               <div>
-                {Object.entries(
-                  vm.pinnedTasks.reduce<Record<string, ConversationTaskRowVm[]>>((acc, task) => {
-                    (acc[task.projectId] ??= []).push(task);
-                    return acc;
-                  }, {}),
-                ).map(([projectId, tasks]) => {
-                  const ws = vm.workspaces.find((w) => w.projectId === projectId);
+                {Object.entries(pinnedTasksByWorkspace).map(([projectId, tasks]) => {
+                  const ws = workspacesByProjectId.get(projectId);
                   const isWsCollapsed = collapsedPinnedWorkspaces[projectId] ?? false;
                   return (
                     <div key={`pinned-ws-${projectId}`}>
@@ -321,7 +330,7 @@ export function ConversationSidebar({
                       <TaskRow
                         key={`${task.projectId}-${task.taskId}`}
                         task={task}
-                        pinned={vm.pinnedTasks.some((p) => p.projectId === task.projectId && p.taskId === task.taskId)}
+                        pinned={pinnedTaskKeys.has(conversationSidebarTaskKey(task.projectId, task.taskId))}
                         isActive={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) && active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
                         activeRunKey={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) ? activeRunKey : null}
                         expanded={expandedTaskKeys.workspace === conversationSidebarTaskKey(task.projectId, task.taskId)}
@@ -422,14 +431,14 @@ export function ConversationSidebar({
       </>
     </TooltipProvider>
   );
-}
+});
 
 // ── Task Row ──
 
-function runStatusColor(run: ConversationTaskRowVm['runs'][0]) {
+export function conversationSidebarRunStatusClass(run: ConversationTaskRowVm['runs'][0]) {
   if (run.outcome === 'success') return 'bg-emerald-500/50';
   if (run.outcome === 'failure' || run.outcome === 'killed') return 'bg-red-500/50';
-  if (run.status === 'running') return 'bg-transparent';
+  if (run.status === 'running') return 'bg-gold-running motion-safe:animate-pulse';
   return 'bg-yellow-500/50';
 }
 
@@ -458,6 +467,12 @@ export function shouldShowConversationSidebarRunList(
 
 export function conversationSidebarIdentityKind(task: Pick<ConversationTaskRowVm, 'runMode' | 'agentIdentity'>) {
   return task.runMode === 'direct' && task.agentIdentity ? 'agent-icon' : 'runtime-status';
+}
+
+export function shouldShowConversationSidebarActivity(
+  task: Pick<ConversationTaskRowVm, 'runMode' | 'agentIdentity' | 'activity'>,
+) {
+  return task.runMode === 'direct' && Boolean(task.agentIdentity && task.activity);
 }
 
 export type ConversationSidebarRunListScope = 'pinned' | 'workspace';
@@ -563,7 +578,8 @@ function TaskRow({
   const latestRun = task.latestRun;
   const isDirect = task.runMode === 'direct';
   const useAgentIdentity = conversationSidebarIdentityKind(task) === 'agent-icon';
-  const latestColor = latestRun ? runStatusColor(latestRun) : 'bg-muted-foreground/30';
+  const showActivity = shouldShowConversationSidebarActivity(task);
+  const latestColor = latestRun ? conversationSidebarRunStatusClass(latestRun) : 'bg-muted-foreground/30';
   const relativeTimeSource = task.lastActivityAt;
   const relativeTime = relativeTimeSource && (isDirect || latestRun?.status !== 'running')
     ? formatCompactRelativeTime(relativeTimeSource, t('conversation.runtime.justNow'))
@@ -621,14 +637,16 @@ function TaskRow({
     >
       <span className="flex size-4 shrink-0 items-center justify-center">
         {useAgentIdentity && task.agentIdentity ? (
-          <img
-            src={agentIconSrc(task.agentIdentity.iconKey)}
-            alt=""
-            title={task.agentIdentity.displayName}
-            className={agentIconClass(task.agentIdentity.iconKey, 'size-3')}
-          />
+          <span className="relative flex size-4 items-center justify-center" data-conversation-activity={showActivity ? task.activity?.phase : undefined}>
+            <img
+              src={agentIconSrc(task.agentIdentity.iconKey)}
+              alt=""
+              title={task.agentIdentity.displayName}
+              className={agentIconClass(task.agentIdentity.iconKey, cn('size-3', showActivity && conversationSidebarActivityIconClass))}
+            />
+          </span>
         ) : (
-          <span className={cn('size-1.5 rounded-full', latestColor, task.latestRun?.status === 'running' && 'border border-muted-foreground/40')} />
+          <span className={cn('size-1.5 rounded-full', latestColor)} />
         )}
       </span>
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden group-hover:pr-20">
@@ -680,7 +698,7 @@ function TaskRow({
       {expanded && hasRuns ? (
         <div className="ml-4 mt-1 space-y-1 border-l border-border/60 pl-3">
           {task.runs.map((run) => {
-            const color = runStatusColor(run);
+            const color = conversationSidebarRunStatusClass(run);
             const runTime = run.status !== 'running'
               ? formatCompactRelativeTime(run.updatedAt, t('conversation.runtime.justNow'))
               : null;
@@ -710,7 +728,7 @@ function TaskRow({
                     }
                   }}
                 >
-                  <span className={cn('size-1.5 shrink-0 rounded-full', color, run.status === 'running' && 'border border-muted-foreground/40')} />
+                  <span className={cn('size-1.5 shrink-0 rounded-full', color)} />
                   <span className="min-w-0 flex-1 truncate text-muted-foreground">{run.runId}</span>
                   {runTime ? (
                     <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{runTime}</span>

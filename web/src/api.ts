@@ -11,8 +11,12 @@ export function getAppBootstrap() {
   return getRuntimeApi().getAppBootstrap();
 }
 
-export function prepareAppExit() {
-  return getRuntimeApi().prepareAppExit();
+export function completeMainWindowClose() {
+  return getRuntimeApi().completeMainWindowClose();
+}
+
+export function resolveAppExit(input: Parameters<ReturnType<typeof getRuntimeApi>['resolveAppExit']>[0]) {
+  return getRuntimeApi().resolveAppExit(input);
 }
 
 export function getSystemFonts() {
@@ -199,6 +203,10 @@ export function subscribeConversationRunStateUpdates(listener: Parameters<NonNul
 // 干预通知：OS Toast「查看详情」点击后由后端转发导航事件，前端订阅做 deep-link。
 export function subscribeInterventionNavigate(listener: Parameters<NonNullable<RuntimeApi['subscribeInterventionNavigate']>>[0]) {
   return getRuntimeApi().subscribeInterventionNavigate?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function subscribeAppExitRequested(listener: Parameters<NonNullable<RuntimeApi['subscribeAppExitRequested']>>[0]) {
+  return getRuntimeApi().subscribeAppExitRequested?.(listener) ?? Promise.resolve(() => {});
 }
 
 export function submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['submitConversationPrompt']>[8], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {

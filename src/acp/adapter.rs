@@ -2,13 +2,15 @@ use std::{
     collections::BTreeMap,
     ffi::OsStr,
     path::{Path, PathBuf},
-    process::{Child, Stdio},
+    process::Stdio,
 };
 
 use anyhow::{Result, anyhow, ensure};
 
 use crate::config::AcpAdapterConfig;
-use crate::process::{background_command, find_executable_in_paths, resolved_child_path};
+use crate::process::{
+    ManagedProcessGroup, background_command, find_executable_in_paths, resolved_child_path,
+};
 
 const REQUIRE_LOCAL_CLAUDE_ENV: &str = "GOLD_BAND_REQUIRE_LOCAL_CLAUDE";
 
@@ -38,7 +40,7 @@ pub fn spawn_adapter(
     cwd: &std::path::Path,
     use_local_claude: bool,
     require_local_claude_executable: bool,
-) -> Result<(ResolvedAcpAdapter, Child)> {
+) -> Result<(ResolvedAcpAdapter, ManagedProcessGroup)> {
     let adapter = resolve_adapter(config)?;
     let executable = platform_adapter_command(&adapter.command);
     let resolved_env = resolved_adapter_env(&config.env);
@@ -70,8 +72,7 @@ pub fn spawn_adapter(
         }
         None => {}
     }
-    let child = command
-        .spawn()
+    let child = ManagedProcessGroup::spawn(&mut command)
         .map_err(|error| anyhow!("failed to start ACP adapter `{}`: {error}", executable))?;
     Ok((adapter, child))
 }

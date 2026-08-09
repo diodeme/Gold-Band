@@ -20,6 +20,8 @@ static ACTIVE_DISPATCHES: LazyLock<Mutex<HashMap<String, ActiveDispatch>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static AUTO_DISPATCH_SUSPENSIONS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
+static AUTO_DISPATCH_REPLY_BATCHES: LazyLock<Mutex<HashMap<String, u32>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ActiveDispatch {
@@ -218,6 +220,40 @@ pub fn auto_dispatch_is_suspended(attempt_dir: &Utf8Path) -> bool {
     AUTO_DISPATCH_SUSPENSIONS
         .lock()
         .is_ok_and(|suspensions| suspensions.contains(&queue_path(attempt_dir).to_string()))
+}
+
+/// Advances the successful-reply count for one uninterrupted automatic queue drain.
+///
+/// The batch is process-local by design: an application restart terminates the active
+/// provider turn, so no completion from the old batch can arrive afterward. Terminal
+/// completions remove the entry immediately to keep long-running desktop sessions bounded.
+pub fn record_auto_dispatch_reply_completion(
+    attempt_dir: &Utf8Path,
+    continues: bool,
+) -> Result<u32> {
+    let key = queue_path(attempt_dir).to_string();
+    let mut batches = AUTO_DISPATCH_REPLY_BATCHES
+        .lock()
+        .map_err(|_| anyhow!("prompt queue reply batch registry poisoned"))?;
+    let completed_reply_count = batches
+        .get(&key)
+        .copied()
+        .unwrap_or_default()
+        .saturating_add(1);
+    if continues {
+        batches.insert(key, completed_reply_count);
+    } else {
+        batches.remove(&key);
+    }
+    Ok(completed_reply_count)
+}
+
+pub fn clear_auto_dispatch_reply_batch(attempt_dir: &Utf8Path) -> Result<()> {
+    AUTO_DISPATCH_REPLY_BATCHES
+        .lock()
+        .map_err(|_| anyhow!("prompt queue reply batch registry poisoned"))?
+        .remove(&queue_path(attempt_dir).to_string());
+    Ok(())
 }
 
 pub fn current_revision(attempt_dir: &Utf8Path) -> Result<u64> {
@@ -551,6 +587,45 @@ mod tests {
             AutoClaimResult::Preempted
         );
         assert_eq!(load_prompt_queue(&dir).unwrap().items.len(), 1);
+    }
+
+    #[test]
+    fn automatic_reply_batch_counts_until_terminal_completion_then_resets() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+
+        assert_eq!(
+            record_auto_dispatch_reply_completion(&dir, true).unwrap(),
+            1
+        );
+        assert_eq!(
+            record_auto_dispatch_reply_completion(&dir, true).unwrap(),
+            2
+        );
+        assert_eq!(
+            record_auto_dispatch_reply_completion(&dir, false).unwrap(),
+            3
+        );
+        assert_eq!(
+            record_auto_dispatch_reply_completion(&dir, false).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn clearing_automatic_reply_batch_starts_the_next_batch_from_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+
+        assert_eq!(
+            record_auto_dispatch_reply_completion(&dir, true).unwrap(),
+            1
+        );
+        clear_auto_dispatch_reply_batch(&dir).unwrap();
+        assert_eq!(
+            record_auto_dispatch_reply_completion(&dir, false).unwrap(),
+            1
+        );
     }
 
     #[test]

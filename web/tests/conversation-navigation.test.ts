@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  conversationPageForIntervention,
   conversationPageMatchesRun,
   resolvePresentedConversationPage,
   shouldCommitConversationNavigation,
@@ -13,6 +14,31 @@ const oldRun = {
 } as ConversationRunVm;
 
 describe('conversation navigation presentation transaction', () => {
+  it('keeps project identity when local task and run ids collide across workspaces', () => {
+    const page = conversationPageForIntervention({
+      projectId: 'project-b',
+      taskId: 'task-001',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'direct-agent',
+      attemptId: 'attempt-001',
+      dedupKey: 'project-b:run-001:round-001:direct-agent:attempt-001:turn-1',
+    });
+
+    expect(page).toEqual({
+      kind: 'conversation-run',
+      projectId: 'project-b',
+      taskId: 'task-001',
+      runId: 'run-001',
+    });
+    expect(conversationPageMatchesRun(page, {
+      ...oldRun,
+      projectId: 'project-a',
+      taskId: 'task-001',
+      runId: 'run-001',
+    })).toBe(false);
+  });
+
   it('keeps the complete old conversation presented while a different target is loading', () => {
     const requested: ConversationPage = {
       kind: 'conversation-run',

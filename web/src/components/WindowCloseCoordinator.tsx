@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { prepareAppExit } from '@/api';
+import { completeMainWindowClose, resolveAppExit, subscribeAppExitRequested } from '@/api';
 import { isTauriRuntime } from '@/api/shared';
+import type { DesktopPlatform } from '@/types';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -21,12 +22,14 @@ import {
 
 interface WindowCloseSaveFailureDialogProps {
   open: boolean;
+  action: 'close' | 'exit';
   onOpenChange(open: boolean): void;
   onDecision(decision: WindowCloseSaveFailureDecision): void;
 }
 
 export function WindowCloseSaveFailureDialog({
   open,
+  action,
   onOpenChange,
   onDecision,
 }: WindowCloseSaveFailureDialogProps) {
@@ -37,7 +40,9 @@ export function WindowCloseSaveFailureDialog({
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{t('common.windowCloseSaveFailedTitle')}</AlertDialogTitle>
-          <AlertDialogDescription>{t('common.windowCloseSaveFailedDescription')}</AlertDialogDescription>
+          <AlertDialogDescription>
+            {t(action === 'close' ? 'common.windowCloseSaveFailedDescriptionClose' : 'common.windowCloseSaveFailedDescription')}
+          </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogAction variant="outline" onClick={() => onDecision('retry')}>
@@ -47,7 +52,7 @@ export function WindowCloseSaveFailureDialog({
             {t('common.cancelClose')}
           </AlertDialogCancel>
           <AlertDialogAction variant="destructive" onClick={() => onDecision('discard')}>
-            {t('common.discardChangesAndExit')}
+            {t(action === 'close' ? 'common.discardChangesAndClose' : 'common.discardChangesAndExit')}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -55,8 +60,9 @@ export function WindowCloseSaveFailureDialog({
   );
 }
 
-export function WindowCloseCoordinator() {
+export function WindowCloseCoordinator({ platform }: { platform?: DesktopPlatform | null }) {
   const [saveFailureDialogOpen, setSaveFailureDialogOpen] = useState(false);
+  const [pendingAction, setPendingAction] = useState<'close' | 'exit'>('exit');
   const decisionResolverRef = useRef<((decision: WindowCloseSaveFailureDecision) => void) | null>(null);
 
   const resolveSaveFailureDecision = useCallback((decision: WindowCloseSaveFailureDecision) => {
@@ -75,28 +81,45 @@ export function WindowCloseCoordinator() {
     if (!isTauriRuntime()) return;
     const appWindow = getCurrentWindow();
     let disposed = false;
-    let unlisten: (() => void) | null = null;
+    let unlistenClose: (() => void) | null = null;
+    let unlistenExit: (() => void) | null = null;
     const handleCloseRequested = createWindowCloseTransaction({
       flushPendingChanges: () => fileContentStore.flushAll(),
       requestSaveFailureDecision,
-      prepareAppExit,
-      destroyWindow: () => appWindow.destroy(),
+      completeClose: completeMainWindowClose,
     });
-    void appWindow.onCloseRequested(handleCloseRequested).then((dispose) => {
+    void appWindow.onCloseRequested((event) => {
+      setPendingAction(platform === 'macos' ? 'close' : 'exit');
+      return handleCloseRequested(event);
+    }).then((dispose) => {
       if (disposed) dispose();
-      else unlisten = dispose;
+      else unlistenClose = dispose;
+    });
+    void subscribeAppExitRequested(async ({ requestId }) => {
+      setPendingAction('exit');
+      const proceed = await handleCloseRequested.prepareToClose();
+      await resolveAppExit({ requestId, decision: proceed ? 'proceed' : 'cancel' }).catch(() => {});
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlistenExit = dispose;
     });
     return () => {
       disposed = true;
-      unlisten?.();
+      unlistenClose?.();
+      unlistenExit?.();
       decisionResolverRef.current?.('cancel');
       decisionResolverRef.current = null;
     };
-  }, [requestSaveFailureDecision]);
+  }, [platform, requestSaveFailureDecision]);
+
+  useEffect(() => {
+    setPendingAction(platform === 'macos' ? 'close' : 'exit');
+  }, [platform]);
 
   return (
     <WindowCloseSaveFailureDialog
       open={saveFailureDialogOpen}
+      action={pendingAction}
       onOpenChange={(open) => {
         if (!open) resolveSaveFailureDecision('cancel');
       }}

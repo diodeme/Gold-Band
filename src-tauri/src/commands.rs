@@ -11,17 +11,18 @@ use gold_band::acp::permission::{
 use gold_band::acp::prompt_queue::{
     AUTO_DISPATCH_USER_PRIORITY_GRACE_MS, AutoClaimResult, PromptQueueError,
     auto_dispatch_is_suspended, claim_next_for_auto_dispatch, claim_queued_prompt,
-    clear_auto_dispatch_suspension, complete_accepted_prompt, delete_queued_prompt, enqueue_prompt,
-    load_prompt_queue, mark_user_priority, release_queued_prompt, request_auto_dispatch_suspension,
+    clear_auto_dispatch_reply_batch, clear_auto_dispatch_suspension, complete_accepted_prompt,
+    delete_queued_prompt, enqueue_prompt, load_prompt_queue, mark_user_priority,
+    record_auto_dispatch_reply_completion, release_queued_prompt, request_auto_dispatch_suspension,
     settle_dispatching_prompts, suspend_auto_dispatch, update_queued_prompt,
 };
 use gold_band::acp::turn_files::{
     CHANGE_SET_NOT_FOUND, TurnFileChangeSet, TurnFileStore, VERSION_NOT_FOUND,
 };
 use gold_band::app::{
-    AcpPromptLifecycleEvent, AcpTurnOutcome, App, AutoTemplate, AutoTemplateStore, CreateTaskInput,
-    ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, RuntimeInterventionKind,
-    RuntimeLifecycleEvent, WorkflowTemplateStore,
+    AcpPromptLifecycleEvent, AcpTurnBatchProgress, AcpTurnOutcome, App, AutoTemplate,
+    AutoTemplateStore, CreateTaskInput, ProfileCommandError, ProfileEntry, ProfileInput,
+    ProfileList, RuntimeInterventionKind, RuntimeLifecycleEvent, WorkflowTemplateStore,
 };
 use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -46,6 +47,7 @@ use gold_band::config::{
 use gold_band::observability::set_runtime_log_level;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -422,9 +424,11 @@ fn emit_acp_turn_finished(
     turn_id: &str,
     agent_label: &str,
     outcome: AcpTurnOutcome,
+    batch_progress: AcpTurnBatchProgress,
 ) {
     app.emit_lifecycle_event(RuntimeLifecycleEvent::AcpTurnFinished {
         event_id: gold_band::app::make_turn_dedup_key(
+            &app.paths.project_id,
             &locator.run_id,
             &locator.round_id,
             &locator.node_id,
@@ -432,6 +436,7 @@ fn emit_acp_turn_finished(
             turn_id,
         ),
         occurred_at: current_timestamp(),
+        project_id: app.paths.project_id.clone(),
         task_id: locator.task_id.clone(),
         run_id: locator.run_id.clone(),
         round_id: locator.round_id.clone(),
@@ -440,11 +445,44 @@ fn emit_acp_turn_finished(
         turn_id: turn_id.to_string(),
         agent_label: agent_label.to_string(),
         outcome,
+        batch_progress,
         task_title: app
             .task_show(&locator.task_id)
             .ok()
             .and_then(|task| task.title),
     });
+}
+
+#[derive(Debug, Clone)]
+struct DeferredTurnCompletion {
+    turn_id: String,
+    agent_label: String,
+}
+
+fn emit_deferred_turn_completion(
+    app: &App,
+    locator: &AttemptLocator,
+    completion: Option<&DeferredTurnCompletion>,
+    auto_dispatch_continues: bool,
+) {
+    if let Some(completion) = completion {
+        let completed_reply_count = record_auto_dispatch_reply_completion(
+            &locator.attempt_dir(app),
+            auto_dispatch_continues,
+        )
+        .unwrap_or(1);
+        emit_acp_turn_finished(
+            app,
+            locator,
+            &completion.turn_id,
+            &completion.agent_label,
+            AcpTurnOutcome::Completed,
+            AcpTurnBatchProgress {
+                completed_reply_count,
+                continues: auto_dispatch_continues,
+            },
+        );
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -468,6 +506,7 @@ struct AcpSessionUpdatedEventVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ConversationRunStateUpdatedEventVm {
+    project_id: String,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -532,6 +571,7 @@ fn conversation_run_state_update_for_event(
 ) -> Option<ConversationRunStateUpdatedEventVm> {
     match event {
         RuntimeLifecycleEvent::RunPaused {
+            project_id,
             task_id,
             run_id,
             round_id,
@@ -539,6 +579,7 @@ fn conversation_run_state_update_for_event(
             attempt_id,
             ..
         } => Some(ConversationRunStateUpdatedEventVm {
+            project_id,
             task_id,
             run_id,
             round_id,
@@ -548,6 +589,7 @@ fn conversation_run_state_update_for_event(
             outcome: None,
         }),
         RuntimeLifecycleEvent::RunCompleted {
+            project_id,
             task_id,
             run_id,
             round_id,
@@ -556,6 +598,7 @@ fn conversation_run_state_update_for_event(
             outcome,
             ..
         } => Some(ConversationRunStateUpdatedEventVm {
+            project_id,
             task_id,
             run_id,
             round_id,
@@ -636,12 +679,20 @@ fn prompt_turn_lifecycle_callback(
             AcpPromptLifecycleEvent::Accepted { prompt_id } => {
                 let _ = complete_accepted_prompt(&locator.attempt_dir(&app), &prompt_id);
             }
-            AcpPromptLifecycleEvent::Finished { successful } => {
+            AcpPromptLifecycleEvent::Finished {
+                prompt_id,
+                successful,
+            } => {
+                let completion = prompt_id.map(|turn_id| DeferredTurnCompletion {
+                    turn_id,
+                    agent_label: acp_turn_agent_label(&app, &locator),
+                });
                 schedule_direct_prompt_queue_drain(
                     app_handle.clone(),
                     project_id.clone(),
                     locator,
                     successful,
+                    completion,
                 );
             }
         }
@@ -654,6 +705,7 @@ fn schedule_direct_prompt_queue_drain(
     project_id: Option<String>,
     locator: AttemptLocator,
     successful: bool,
+    completed_turn: Option<DeferredTurnCompletion>,
 ) {
     let state = app_handle.state::<DesktopState>();
     let Ok(app) = resolve_command_app(state.inner(), project_id.as_deref()) else {
@@ -665,10 +717,15 @@ fn schedule_direct_prompt_queue_drain(
         return;
     }
     let attempt_dir = locator.attempt_dir(&app);
-    let Ok(queue) = settle_dispatching_prompts(&attempt_dir) else {
-        return;
+    let queue = match settle_dispatching_prompts(&attempt_dir) {
+        Ok(queue) => queue,
+        Err(_) => {
+            emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
+            return;
+        }
     };
     if !successful {
+        let _ = clear_auto_dispatch_reply_batch(&attempt_dir);
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -685,6 +742,7 @@ fn schedule_direct_prompt_queue_drain(
         return;
     }
     if queue.auto_dispatch_suspended || auto_dispatch_is_suspended(&attempt_dir) {
+        emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
         return;
     }
     if !queue
@@ -692,6 +750,7 @@ fn schedule_direct_prompt_queue_drain(
         .iter()
         .any(|item| item.state == gold_band::acp::prompt_queue::QueuedPromptState::Queued)
     {
+        emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
         return;
     }
     let expected_revision = queue.revision;
@@ -703,6 +762,7 @@ fn schedule_direct_prompt_queue_drain(
         };
         let attempt_dir = locator.attempt_dir(&app);
         if client::prompt_activity(&attempt_dir).is_some() {
+            emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
             return;
         }
         let claimed = match claim_next_for_auto_dispatch(&attempt_dir, expected_revision) {
@@ -710,7 +770,10 @@ fn schedule_direct_prompt_queue_drain(
             Ok(
                 AutoClaimResult::Empty | AutoClaimResult::Preempted | AutoClaimResult::Suspended,
             )
-            | Err(_) => return,
+            | Err(_) => {
+                emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
+                return;
+            }
         };
         emit_acp_session_update(
             &app_handle,
@@ -727,9 +790,11 @@ fn schedule_direct_prompt_queue_drain(
         );
         if auto_dispatch_is_suspended(&attempt_dir) {
             let _ = release_queued_prompt(&attempt_dir, &claimed.id);
+            emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
             return;
         }
-        let result = send_acp_prompt(
+        emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), true);
+        let _result = send_acp_prompt(
             app_handle.clone(),
             state,
             project_id.clone(),
@@ -745,16 +810,6 @@ fn schedule_direct_prompt_queue_drain(
             (!claimed.attachment_paths.is_empty()).then_some(claimed.attachment_paths.clone()),
         )
         .await;
-        let prompt_completed = result
-            .as_ref()
-            .ok()
-            .and_then(|session| session.as_ref())
-            .is_some_and(|session| {
-                matches!(
-                    session.status.trim().to_ascii_lowercase().as_str(),
-                    "completed" | "complete"
-                )
-            });
         let _ = settle_dispatching_prompts(&attempt_dir);
         emit_acp_session_update(
             &app_handle,
@@ -769,14 +824,6 @@ fn schedule_direct_prompt_queue_drain(
             locator.outer_attempt_id.clone(),
             None,
         );
-        if prompt_completed {
-            schedule_direct_prompt_queue_drain(
-                app_handle.clone(),
-                project_id.clone(),
-                locator.clone(),
-                true,
-            );
-        }
     });
 }
 
@@ -845,11 +892,10 @@ impl CommandErrorVm {
     }
 }
 
-#[tauri::command]
-pub async fn prepare_app_exit(
-    app_handle: AppHandle,
-    state: State<'_, DesktopState>,
-) -> CommandResult<AppExitPreparationVm> {
+pub(crate) async fn prepare_app_exit_inner(
+    app_handle: &AppHandle,
+    state: &DesktopState,
+) -> AppExitPreparationVm {
     let mut result = AppExitPreparationVm::default();
 
     match state.app() {
@@ -877,7 +923,7 @@ pub async fn prepare_app_exit(
         result.record_warning("app-exit.update-install-failed", &error);
     }
 
-    Ok(result)
+    result
 }
 
 fn ensure_no_active_acp_prompts_in_workspace(
@@ -1877,18 +1923,28 @@ pub(crate) fn acp_live_update_emitter(
             .eq_ignore_ascii_case("pending");
         maybe_record_agent_commands(&app_handle, notification_app.as_ref(), &context, &event);
         if let Some(lifecycle_bus) = lifecycle_bus.as_ref() {
-            maybe_emit_permission_intervention(
-                lifecycle_bus,
-                notification_app.as_ref(),
-                &context,
-                &event,
-            );
-            maybe_emit_elicitation_intervention(
-                lifecycle_bus,
-                notification_app.as_ref(),
-                &context,
-                &event,
-            );
+            let notification_project_id = notification_app
+                .as_ref()
+                .map(|app| app.paths.project_id.as_str())
+                .or(project_id.as_deref());
+            if let Some(notification_project_id) = notification_project_id {
+                maybe_emit_permission_intervention(
+                    lifecycle_bus,
+                    notification_project_id,
+                    notification_app.as_ref(),
+                    &context,
+                    &event,
+                );
+                maybe_emit_elicitation_intervention(
+                    lifecycle_bus,
+                    notification_project_id,
+                    notification_app.as_ref(),
+                    &context,
+                    &event,
+                );
+            } else {
+                tracing::warn!("project id unavailable; ACP intervention notification dropped");
+            }
         }
         compact_live_conversation_event(&mut event);
         emit_acp_event_update(
@@ -1994,6 +2050,7 @@ fn maybe_record_agent_commands(
 /// event_id 包含 request id：同一请求的重复 update 去重，同一 attempt 的后续请求独立通知。
 fn maybe_emit_permission_intervention(
     lifecycle_bus: &gold_band::app::observability::RuntimeLifecycleBus,
+    project_id: &str,
     app: Option<&App>,
     context: &gold_band::app::AcpLiveEventContext,
     event: &AcpUiEvent,
@@ -2011,11 +2068,13 @@ fn maybe_emit_permission_intervention(
     }
     lifecycle_bus.emit(RuntimeLifecycleEvent::InterventionRequested {
         event_id: request_scoped_intervention_event_id(
+            project_id,
             context,
             event,
             PERMISSION_REQUESTED_DEDUP_SUFFIX,
         ),
         occurred_at: current_timestamp(),
+        project_id: project_id.to_string(),
         task_id: context.task_id.clone(),
         run_id: context.run_id.clone(),
         round_id: context.round_id.clone(),
@@ -2029,6 +2088,7 @@ fn maybe_emit_permission_intervention(
 
 fn maybe_emit_elicitation_intervention(
     lifecycle_bus: &gold_band::app::observability::RuntimeLifecycleBus,
+    project_id: &str,
     app: Option<&App>,
     context: &gold_band::app::AcpLiveEventContext,
     event: &AcpUiEvent,
@@ -2046,11 +2106,13 @@ fn maybe_emit_elicitation_intervention(
     }
     lifecycle_bus.emit(RuntimeLifecycleEvent::InterventionRequested {
         event_id: request_scoped_intervention_event_id(
+            project_id,
             context,
             event,
             ELICITATION_REQUESTED_DEDUP_SUFFIX,
         ),
         occurred_at: current_timestamp(),
+        project_id: project_id.to_string(),
         task_id: context.task_id.clone(),
         run_id: context.run_id.clone(),
         round_id: context.round_id.clone(),
@@ -2089,6 +2151,7 @@ fn acp_intervention_node_label(
 }
 
 fn request_scoped_intervention_event_id(
+    project_id: &str,
     context: &gold_band::app::AcpLiveEventContext,
     event: &AcpUiEvent,
     kind_suffix: &str,
@@ -2100,6 +2163,7 @@ fn request_scoped_intervention_event_id(
         format!("{kind_suffix}:{request_id}")
     };
     gold_band::app::make_dedup_key_with_suffix(
+        project_id,
         &context.run_id,
         &context.round_id,
         &context.node_id,
@@ -2786,14 +2850,6 @@ pub async fn use_conversation_queued_prompt(
         (!claimed.attachment_paths.is_empty()).then_some(claimed.attachment_paths.clone()),
     )
     .await;
-    let prompt_completed = result.as_ref().is_ok_and(|result| {
-        result.session.as_ref().is_some_and(|session| {
-            matches!(
-                session.status.trim().to_ascii_lowercase().as_str(),
-                "completed" | "complete"
-            )
-        })
-    });
     let runtime_started = result
         .as_ref()
         .is_ok_and(|result| result.kind == "runtime-continue-started");
@@ -2801,9 +2857,6 @@ pub async fn use_conversation_queued_prompt(
         let _ = settle_dispatching_prompts(&attempt_dir);
     }
     emit_prompt_queue_lifecycle(&app_handle, &app, project_id.clone(), &locator);
-    if prompt_completed {
-        schedule_direct_prompt_queue_drain(app_handle, project_id, locator, true);
-    }
     result
 }
 
@@ -2882,6 +2935,7 @@ pub async fn submit_conversation_prompt(
                     locator.outer_node_id.clone(),
                     locator.outer_attempt_id.clone(),
                 ),
+                None,
                 true,
             );
         }
@@ -3020,6 +3074,8 @@ pub async fn send_acp_prompt(
         .unwrap_or_else(|| format!("turn-{}", uuid::Uuid::new_v4().simple()));
     let prompt_id = Some(turn_id.clone());
     let queued_dispatch = turn_id.starts_with(QUEUED_PROMPT_ID_PREFIX);
+    let direct_mode = conversation_run_mode(&app, &locator.task_id)
+        == Some(gold_band::config::ConversationRunMode::Direct);
     let agent_label = acp_turn_agent_label(&app, &locator);
     let project_id_for_emit = project_id.clone();
     let project_id_for_spawn = project_id_for_emit.clone();
@@ -3393,22 +3449,26 @@ pub async fn send_acp_prompt(
     let (session, outcome) = match execution {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => {
+            let _ = clear_auto_dispatch_reply_batch(&locator.attempt_dir(&app_for_emit));
             emit_acp_turn_finished(
                 &app_for_emit,
                 &locator,
                 &turn_id,
                 &agent_label,
                 AcpTurnOutcome::Failed,
+                AcpTurnBatchProgress::terminal(1),
             );
             return Err(error);
         }
         Err(_) => {
+            let _ = clear_auto_dispatch_reply_batch(&locator.attempt_dir(&app_for_emit));
             emit_acp_turn_finished(
                 &app_for_emit,
                 &locator,
                 &turn_id,
                 &agent_label,
                 AcpTurnOutcome::Failed,
+                AcpTurnBatchProgress::terminal(1),
             );
             return Err(CommandErrorVm::new(
                 "app.task-join-failed",
@@ -3429,21 +3489,32 @@ pub async fn send_acp_prompt(
         outer_attempt_id_for_emit.clone(),
         session.clone(),
     );
-    emit_acp_turn_finished(&app_for_emit, &locator, &turn_id, &agent_label, outcome);
-    if !turn_id.starts_with(QUEUED_PROMPT_ID_PREFIX) {
-        let _ = app_for_emit.notify_prompt_turn_finished(
-            acp_live_event_context(
-                &locator.task_id,
-                &locator.run_id,
-                &locator.round_id,
-                &locator.node_id,
-                &locator.attempt_id,
-                locator.outer_node_id.clone(),
-                locator.outer_attempt_id.clone(),
-            ),
-            outcome == AcpTurnOutcome::Completed,
+    if !direct_mode || outcome != AcpTurnOutcome::Completed {
+        if outcome != AcpTurnOutcome::Completed {
+            let _ = clear_auto_dispatch_reply_batch(&locator.attempt_dir(&app_for_emit));
+        }
+        emit_acp_turn_finished(
+            &app_for_emit,
+            &locator,
+            &turn_id,
+            &agent_label,
+            outcome,
+            AcpTurnBatchProgress::terminal(1),
         );
     }
+    let _ = app_for_emit.notify_prompt_turn_finished(
+        acp_live_event_context(
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            locator.outer_node_id.clone(),
+            locator.outer_attempt_id.clone(),
+        ),
+        Some(turn_id.clone()),
+        outcome == AcpTurnOutcome::Completed,
+    );
 
     // Fire-and-forget: index this attempt for cross-session search
     spawn_index_attempt(
@@ -4131,7 +4202,8 @@ pub async fn check_update_manual(app: AppHandle) -> CommandResult<UpdateStatusVm
 pub async fn download_and_install_update(app: AppHandle) -> CommandResult<()> {
     run_download_and_install_update(&app)
         .await
-        .map_err(command_error)
+        .map_err(command_error)?;
+    crate::desktop_lifecycle::request_app_restart(&app)
 }
 
 fn providers_for_node(node: &NodeDsl) -> Vec<String> {
@@ -5027,25 +5099,20 @@ pub async fn list_conversation_directory(
 
 #[tauri::command]
 pub async fn open_conversation_directory_path_in_file_manager(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     input: ConversationDirectoryInput,
 ) -> CommandResult<()> {
     let path = conversation_directory_path(&input, state.inner())?;
-    spawn_blocking_command(move || {
-        let display_path = path.to_string_lossy();
-        let display_path = display_path.strip_prefix(r"\\?\").unwrap_or(&display_path);
-        gold_band::process::background_command("explorer.exe")
-            .arg(format!("/select,{display_path}"))
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| {
-                CommandErrorVm::new(
-                    "conversation-directory.file-manager-open-failed",
-                    serde_json::json!({ "reason": error.to_string() }),
-                )
-            })
-    })
-    .await
+    app_handle
+        .opener()
+        .reveal_item_in_dir(&path)
+        .map_err(|error| {
+            CommandErrorVm::new(
+                "conversation-directory.file-manager-open-failed",
+                serde_json::json!({ "reason": error.to_string() }),
+            )
+        })
 }
 
 #[tauri::command]
@@ -6172,7 +6239,7 @@ mod tests {
     }
 
     #[test]
-    fn acp_turn_finished_event_preserves_turn_identity_and_outcome() {
+    fn acp_turn_finished_event_preserves_turn_identity_outcome_and_batch_continuation() {
         let root = std::env::temp_dir().join(format!(
             "gold-band-acp-turn-event-test-{}",
             uuid::Uuid::new_v4()
@@ -6196,27 +6263,84 @@ mod tests {
             None,
         );
 
-        emit_acp_turn_finished(&app, &locator, "turn-002", "Claude", AcpTurnOutcome::Failed);
+        emit_acp_turn_finished(
+            &app,
+            &locator,
+            "turn-002",
+            "Claude",
+            AcpTurnOutcome::Failed,
+            AcpTurnBatchProgress::terminal(1),
+        );
+        emit_deferred_turn_completion(
+            &app,
+            &locator,
+            Some(&DeferredTurnCompletion {
+                turn_id: "acp-prompt-003".to_string(),
+                agent_label: "Claude".to_string(),
+            }),
+            true,
+        );
+        emit_deferred_turn_completion(
+            &app,
+            &locator,
+            Some(&DeferredTurnCompletion {
+                turn_id: "acp-prompt-004".to_string(),
+                agent_label: "Claude".to_string(),
+            }),
+            false,
+        );
 
         let events = seen.lock().unwrap();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 3);
         match &events[0] {
             RuntimeLifecycleEvent::AcpTurnFinished {
                 event_id,
                 turn_id,
                 agent_label,
                 outcome,
+                batch_progress,
                 ..
             } => {
                 assert_eq!(
                     event_id,
-                    "run-001:round-001:node-001:attempt-001:turn-002:acp-turn-finished"
+                    &format!(
+                        "{}:run-001:round-001:node-001:attempt-001:turn-002:acp-turn-finished",
+                        app.paths.project_id
+                    )
                 );
                 assert_eq!(turn_id, "turn-002");
                 assert_eq!(agent_label, "Claude");
                 assert_eq!(*outcome, AcpTurnOutcome::Failed);
+                assert_eq!(*batch_progress, AcpTurnBatchProgress::terminal(1));
             }
             event => panic!("expected AcpTurnFinished, got {event:?}"),
+        }
+        match &events[1] {
+            RuntimeLifecycleEvent::AcpTurnFinished {
+                turn_id,
+                outcome,
+                batch_progress,
+                ..
+            } => {
+                assert_eq!(turn_id, "acp-prompt-003");
+                assert_eq!(*outcome, AcpTurnOutcome::Completed);
+                assert_eq!(batch_progress.completed_reply_count, 1);
+                assert!(batch_progress.continues);
+            }
+            event => panic!("expected deferred AcpTurnFinished, got {event:?}"),
+        }
+        match &events[2] {
+            RuntimeLifecycleEvent::AcpTurnFinished {
+                turn_id,
+                outcome,
+                batch_progress,
+                ..
+            } => {
+                assert_eq!(turn_id, "acp-prompt-004");
+                assert_eq!(*outcome, AcpTurnOutcome::Completed);
+                assert_eq!(*batch_progress, AcpTurnBatchProgress::terminal(2));
+            }
+            event => panic!("expected terminal AcpTurnFinished, got {event:?}"),
         }
         drop(events);
         let _ = std::fs::remove_dir_all(root);
@@ -6266,6 +6390,7 @@ mod tests {
         let paused = conversation_run_state_update_for_event(RuntimeLifecycleEvent::RunPaused {
             event_id: "event-paused".to_string(),
             occurred_at: "2026-06-25T00:00:00Z".to_string(),
+            project_id: "project-1".to_string(),
             task_id: "task-001".to_string(),
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
@@ -6276,6 +6401,7 @@ mod tests {
             task_title: None,
         })
         .unwrap();
+        assert_eq!(paused.project_id, "project-1");
         assert_eq!(paused.task_id, "task-001");
         assert_eq!(paused.run_id, "run-001");
         assert_eq!(paused.round_id, "round-001");
@@ -6288,6 +6414,7 @@ mod tests {
             conversation_run_state_update_for_event(RuntimeLifecycleEvent::RunCompleted {
                 event_id: "event-completed".to_string(),
                 occurred_at: "2026-06-25T00:00:01Z".to_string(),
+                project_id: "project-1".to_string(),
                 task_id: "task-001".to_string(),
                 run_id: "run-001".to_string(),
                 round_id: "round-001".to_string(),
@@ -6764,6 +6891,7 @@ mod tests {
 
         maybe_emit_elicitation_intervention(
             &bus,
+            &app.paths.project_id,
             Some(&app),
             &gold_band::app::AcpLiveEventContext {
                 task_id: "task-001".to_string(),
@@ -6794,6 +6922,7 @@ mod tests {
         );
         maybe_emit_elicitation_intervention(
             &bus,
+            &app.paths.project_id,
             Some(&app),
             &gold_band::app::AcpLiveEventContext {
                 task_id: "task-001".to_string(),
@@ -6828,11 +6957,17 @@ mod tests {
         assert_eq!(events[0].0, RuntimeInterventionKind::ElicitationRequested);
         assert_eq!(
             events[0].1,
-            "run-001:round-001:plan:attempt-001:elicitation-requested:elicit-001"
+            format!(
+                "{}:run-001:round-001:plan:attempt-001:elicitation-requested:elicit-001",
+                app.paths.project_id
+            )
         );
         assert_eq!(
             events[1].1,
-            "run-001:round-001:plan:attempt-001:elicitation-requested:elicit-002"
+            format!(
+                "{}:run-001:round-001:plan:attempt-001:elicitation-requested:elicit-002",
+                app.paths.project_id
+            )
         );
         assert_eq!(events[0].2, "Claude");
         assert_eq!(events[1].2, "Claude");
@@ -6879,12 +7014,14 @@ mod tests {
 
         maybe_emit_permission_intervention(
             &bus,
+            "project-1",
             None,
             &context,
             &permission_event("permission-1", 1),
         );
         maybe_emit_permission_intervention(
             &bus,
+            "project-1",
             None,
             &context,
             &permission_event("permission-2", 2),
@@ -6895,11 +7032,11 @@ mod tests {
         assert_eq!(events[0].0, RuntimeInterventionKind::PermissionRequested);
         assert_eq!(
             events[0].1,
-            "run-001:round-001:plan:attempt-001:permission-requested:permission-1"
+            "project-1:run-001:round-001:plan:attempt-001:permission-requested:permission-1"
         );
         assert_eq!(
             events[1].1,
-            "run-001:round-001:plan:attempt-001:permission-requested:permission-2"
+            "project-1:run-001:round-001:plan:attempt-001:permission-requested:permission-2"
         );
     }
 
@@ -6916,6 +7053,7 @@ mod tests {
 
         maybe_emit_elicitation_intervention(
             &bus,
+            "project-1",
             None,
             &gold_band::app::AcpLiveEventContext {
                 task_id: "task-001".to_string(),

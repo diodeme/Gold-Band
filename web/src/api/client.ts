@@ -7,7 +7,7 @@ import type {
   ActiveSessionStopVm,
   AgentRegistryVm,
   AppBootstrapVm,
-  AppExitPreparationVm,
+  AppExitRequestVm,
   AutoTemplate,
   AutoTemplateStore,
   ContentVm,
@@ -22,6 +22,7 @@ import type {
   ConversationWorkspaceVm,
   InterventionNavigateEventVm,
   NotificationAttentionInput,
+  ResolveAppExitInput,
   PinRef,
   CreateTaskInput,
   DesktopFontPreference,
@@ -95,7 +96,7 @@ export interface AcpSessionUpdatedEventVm {
 }
 
 export interface ConversationRunStateUpdatedEventVm {
-  projectId?: string | null;
+  projectId: string;
   taskId: string;
   runId: string;
   roundId: string;
@@ -132,7 +133,8 @@ export interface MaterializeAttachmentFileInput {
 export interface RuntimeApi {
   checkLocalClaude(): Promise<LocalClaudeStatusVm>;
   getAppBootstrap(): Promise<AppBootstrapVm>;
-  prepareAppExit(): Promise<AppExitPreparationVm>;
+  completeMainWindowClose(): Promise<void>;
+  resolveAppExit(input: ResolveAppExitInput): Promise<void>;
   getSystemFonts(): Promise<string[]>;
   getAgentRegistry(): Promise<AgentRegistryVm>;
   getAgentCommandCatalog(agentType: string, workspacePath: string): Promise<import('../types').AcpCommandCatalogVm | null>;
@@ -181,6 +183,8 @@ export interface RuntimeApi {
   subscribeConversationRunStateUpdates?(listener: (event: ConversationRunStateUpdatedEventVm) => void): Promise<() => void>;
   // 干预通知：OS Toast「查看详情」点击后后端转发导航事件，前端订阅做 deep-link。
   subscribeInterventionNavigate?(listener: (event: InterventionNavigateEventVm) => void): Promise<() => void>;
+  subscribeAppExitRequested?(listener: (event: AppExitRequestVm) => void): Promise<() => void>;
+  takePendingInterventionNavigations(): Promise<InterventionNavigateEventVm[]>;
   submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]): Promise<ConversationPromptSubmitVm>;
   updateConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, content: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
   deleteConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;

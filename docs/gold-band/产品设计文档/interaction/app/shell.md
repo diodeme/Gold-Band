@@ -187,7 +187,9 @@ Agent 管理
 - 根会话耗时使用根 ACP attempt 的墙钟耗时，不把并行或串行 Agent 分支耗时求和。Agent 会话耗时只使用该 Agent execution 自身的开始与最后更新时间。
 - 根会话 Token 使用 ACP provider 对整个根 attempt 返回的累计 usage；Claude Agent ACP 的该累计值包含同一 turn 内嵌套 Agent 的模型调用。Gold Band 不从各分支 transcript 重复求和，Agent 分支在 provider 未提供独立 usage 时不伪造 Token 数字。
 - Todo、直属子 Agent 与活动统计按当前 branch ID 投影；Agent 会话标题区和任务列表只展示该 Agent 自身的数据，不能平铺到根会话或兄弟 Agent。
-- 桌面窗口关闭时，应用壳负责 best-effort 停止当前 workspace 内仍为 `running` 的 run，确保 provider 进程和 canonical run lifecycle 一致。
+- 主窗口关闭与应用退出是两个不同的生命周期动作。macOS 红色关闭只在前端冲刷编辑队列后销毁 `main` WebViewWindow，Rust runtime、ACP/MCP 连接和系统 Dock 应用继续存活；Windows/Linux 关闭主窗口则进入应用退出事务。Cmd+Q、系统菜单退出、updater 退出和无窗口退出统一由 Rust `DesktopLifecycleCoordinator` 协调，不能由前端直接销毁进程。
+- 应用退出状态固定为 `Running / ClosingMainWindow / AwaitingFrontend / Cleaning / ReadyToExit`。存在主窗口时，宿主发送带 `requestId` 的退出请求，前端复用同一保存事务并通过 `resolve_app_exit` 返回 `Proceed / Cancel`；监听失败或 15 秒内未响应必须取消退出，不能静默丢弃未保存内容。后端清理全局上限为 15 秒，超时后强制终止受管进程组，最终只调用一次 `app.exit(0)`。
+- macOS `RunEvent::Reopen` 和通知点击统一调用 `ensure_main_window()`：已有 `main` 时 show、unminimize、focus；窗口已销毁时使用 `WebviewWindowBuilder::from_config` 从权威 Tauri window config 重建，并继续复用 bootstrap 完成后的显示流程。此处 Dock 指 macOS 系统 Dock，与右侧 `RightWorkspaceDock` 无关。
 - 会话侧栏 Direct 任务的 Agent 图标在活动态叠加向外扩展 4px 的 2px 旋转环（外径 24px）；旋转环轨道与亮色段统一使用 `gold-running` 运行态语义色，保证深色和浅色主题都有足够对比度，不使用低对比度的通用 `primary` 色。
 
 ---
@@ -229,6 +231,8 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-08-03：修复最大化窗口切换页面时被还原。页面约束同步增加 applied/pending 状态：同约束切换不触发宿主 API；不同约束在最大化期间延迟，恢复普通窗口后由 resize 生命周期应用最新值。禁止使用“先退出再重新最大化”的闪动补偿。
 - 2026-08-04：会话文件入口统一资源化。用户消息附件、Agent artifact、prompt turn 历史原文与 diff 都打开右侧工作区 Tab；旧 composer 上方资产聚合栏和会话内预览 modal 已删除。右侧 Dock/Sheet 继续共享同一资源状态，新增历史资源一律只读，不改变 live workspace 文件的编辑与自动保存语义。
 - 2026-08-04：Conversation 主页面与 session switch payload 删除仅服务旧聚合栏的 `artifacts/attachments` 数组；Round/节点排障入口及按名读取接口保留。会话首屏只携带 change set summary 指针，文件清单和正文分别在卡片/Tab 打开时懒加载。
+- 2026-08-09：桌面生命周期收归 Rust `DesktopLifecycleCoordinator`。macOS 红色关闭只销毁主窗口，Dock 重开可显示或按配置重建；Windows/Linux 关闭、Cmd+Q、菜单退出和 updater 退出统一执行“前端保存握手 → 后端有界清理 → 单次退出”。ACP、MCP、Agent doctor 与登录 Shell 探测统一由 `command-group` 受管进程组拥有，正常退出不再散落调用 `taskkill`、单进程 `kill()` 或手写 Unix PID kill。
+- 2026-08-09：macOS 发布采用单一可选凭证流水线。基础 bundle 配置使用 ad-hoc identity `-`；无 Apple 凭证时仍由 GitHub macOS runner 生成 arm64/x64 DMG，并对产出的 `.app` 执行 `codesign --verify --deep --strict`。凭证部分配置时立即失败，配置完整时由同一 `tauri-action` 接收证书、Developer ID、Apple ID、app-specific password 与 Team ID 完成签名和公证。下载页、安装器和应用内不增加未公证提示，产物名不增加 unsigned 后缀。
 
 ---
 

@@ -1897,13 +1897,13 @@ fn emit_run_metrics_fact(
         } else {
             super::observability::MetricsSessionMode::Workflow
         },
-        task_uuid,
+        task_uuid.clone(),
         if is_auto {
             super::observability::ExecutionKind::OuterRun
         } else {
             super::observability::ExecutionKind::Run
         },
-        run_uuid.clone(),
+        task_uuid.clone(),
     );
     fact.pause_reason = pause_reason.map(metrics_pause_reason);
     fact.previous_pause_reason =
@@ -1979,7 +1979,7 @@ fn emit_run_metrics_fact(
     }
     app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsFact(fact));
     if outcome.is_some() {
-        app.release_observability_state(&run_uuid);
+        app.release_observability_state(&task_uuid);
     }
 }
 
@@ -10581,6 +10581,44 @@ fn drive_from_node_with_initial_session(
 
         if node.status == RunStatus::Completed {
             teardown_node_environment_best_effort(app, task_id, &run.id, &round.id, &node, &ctx);
+
+            // Emit NodeCompleted immediately when the node reaches terminal execution state.
+            // This must happen BEFORE any control flow decisions (manual check, invalid
+            // repair, transition, run completion) so metrics are reported for every node.
+            let node_attempt_dir = app
+                .paths
+                .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
+                .to_string();
+            let node_completed_snapshot =
+                completed_node_snapshot(round, &node, Some(node_attempt_dir.clone()));
+            app.emit_lifecycle_event(super::RuntimeLifecycleEvent::NodeCompleted {
+                task_id: task_id.to_string(),
+                task_uuid: run.task_uuid.clone(),
+                run_id: run.id.clone(),
+                run_uuid: run.uuid.clone(),
+                round_id: round.id.clone(),
+                round_uuid: round.uuid.clone(),
+                round_index: Some(round.index),
+                node_id: node.node_id.clone(),
+                node_uuid: node.uuid.clone(),
+                attempt_id: node.attempt_id.clone(),
+                repo_root: app.paths.repo_root.to_string(),
+                seq: node_completed_snapshot.seq,
+                node_name: node_completed_snapshot.node_name.clone(),
+                agent_type: node_completed_snapshot.agent_type.clone(),
+                resolved_model: node
+                    .resolved_config
+                    .get("model")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                started_at: node.started_at.clone(),
+                finished_at: node.finished_at.clone(),
+                outcome: node_completed_snapshot.status.clone(),
+                attempt_dir: node_attempt_dir,
+                suppress_sentinel: false,
+                metrics_unit_kind: None,
+                child_run_id: None,
+            });
         }
 
         if node.status == RunStatus::Paused {
@@ -10823,13 +10861,16 @@ fn drive_from_node_with_initial_session(
         );
         persist_runtime_state(app, task_id, run, round, &node)?;
 
-        // Build attempt_dir for both snapshot persistence and observability event.
-        let attempt_dir = app
-            .paths
-            .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
-            .to_string();
-
-        let completed_snapshot = completed_node_snapshot(round, &node, Some(attempt_dir.clone()));
+        // NodeCompleted already emitted above inside the if-completed block.
+        let completed_snapshot = completed_node_snapshot(
+            round,
+            &node,
+            Some(
+                app.paths
+                    .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
+                    .to_string(),
+            ),
+        );
         let decision = decide_next_step(workflow, run, round, &node);
 
         if let Some(next) = apply_control_decision(
@@ -10861,36 +10902,8 @@ fn drive_from_node_with_initial_session(
             invalid_output_repair_prompts = 0;
             continue;
         }
-        // Workflow ended — emit completed event for observability subscribers
-        run.last_executed_node = Some(completed_snapshot.clone());
-        app.emit_lifecycle_event(super::RuntimeLifecycleEvent::NodeCompleted {
-            task_id: task_id.to_string(),
-            task_uuid: run.task_uuid.clone(),
-            run_id: run.id.clone(),
-            run_uuid: run.uuid.clone(),
-            round_id: round.id.clone(),
-            round_uuid: round.uuid.clone(),
-            round_index: Some(round.index),
-            node_id: node.node_id.clone(),
-            node_uuid: node.uuid.clone(),
-            attempt_id: node.attempt_id.clone(),
-            repo_root: app.paths.repo_root.to_string(),
-            seq: completed_snapshot.seq,
-            node_name: completed_snapshot.node_name.clone(),
-            agent_type: completed_snapshot.agent_type.clone(),
-            resolved_model: node
-                .resolved_config
-                .get("model")
-                .and_then(|value| value.as_str())
-                .map(str::to_string),
-            started_at: node.started_at.clone(),
-            finished_at: node.finished_at.clone(),
-            outcome: completed_snapshot.status.clone(),
-            attempt_dir: attempt_dir.clone(),
-            suppress_sentinel: false,
-            metrics_unit_kind: None,
-            child_run_id: None,
-        });
+        // Workflow ended - NodeCompleted already emitted above before control decision.
+        run.last_executed_node = Some(completed_snapshot);
         return Ok(());
     }
 }

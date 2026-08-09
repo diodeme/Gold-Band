@@ -41,7 +41,8 @@ report_date = events[0].reportedAt 按 Asia/Shanghai 转换后的日期
 - 不设置 `partition_month`、`event_date`、`last_report_date` 等额外 DATE 字段。
 - `occurred_at/started_at/ended_at` 是 `DATETIME(3)` 生命周期时间戳，不是分区日期。
 - `received_at` 使用 `DATETIME(3)`，仅用于接收延迟和排障。
-- API 输入时间必须是带 offset 的 ISO-8601。服务端解析为时间点后统一转换为 UTC，所有 `DATETIME(3)` 字段均按 UTC 写入，数据库连接时区固定为 `+00:00`；只有 `report_date` 按 Asia/Shanghai 从 `reportedAt` 计算。
+- API 输入时间为本地时间，不带时区偏移量，格式 `yyyy-MM-ddTHH:mm:ss.SSS`。服务端解析为时间点后统一转换为 UTC，所有 `DATETIME(3)` 字段均按 UTC 写入，数据库连接时区固定为 `+00:00`；只有 `report_date` 按 Asia/Shanghai 从 `reportedAt` 计算。
+- 客户端不再单独上报 `taskId` 和 `parentExecutionId` 字段。`executionId` 即 `taskId`，服务端各表的 `task_id` 列直接从 `executionId` 提取。AUTO unit 的节点标识统一用 `nodeId`，不再有 `unitId` 字段。
 
 ### 3.2 批次分区规则
 
@@ -87,16 +88,14 @@ report_date = events[0].reportedAt 按 Asia/Shanghai 转换后的日期
     "eventId": "019c...",
     "eventRevision": 2,
     "eventType": "execution.completed",
-    "occurredAt": "2026-08-01T10:20:15.120+08:00",
-    "reportedAt": "2026-08-01T10:20:16.004+08:00",
+    "occurredAt": "2026-08-01T10:20:15.120",
+    "reportedAt": "2026-08-01T10:20:16.004",
     "userId": "raw-system-user",
     "workspace": "D:\\repo\\gold-band",
     "clientVersion": "0.1.0",
     "sessionMode": "workflow",
-    "taskId": "task-uuid",
     "executionKind": "node-attempt",
     "executionId": "logical-node-execution-uuid",
-    "parentExecutionId": "run-uuid",
     "attemptId": "node-attempt-uuid",
     "attemptIndex": 2,
     "nodeId": "node-uuid",
@@ -122,8 +121,8 @@ report_date = events[0].reportedAt 按 Asia/Shanghai 转换后的日期
       "acpSessionElapsedMs": 72120
     }],
     "timing": {
-      "startedAt": "2026-08-01T10:19:01.000+08:00",
-      "endedAt": "2026-08-01T10:20:15.120+08:00",
+      "startedAt": "2026-08-01T10:19:01.000",
+      "endedAt": "2026-08-01T10:20:15.120",
       "acpSessionElapsedMs": 72120
     }
   }]
@@ -135,9 +134,8 @@ report_date = events[0].reportedAt 按 Asia/Shanghai 转换后的日期
 | 字段 | event | attempt | delivery | 说明 |
 |---|---:|---:|---:|---|
 | `eventId/eventRevision/eventType` | 必填 | 投影 | 投影 | 在目标月及前一个月范围内进行事件幂等与顺序处理 |
-| `userId/workspace/taskId` | 必填 | 必填 | 必填 | 原始身份和 task UUID |
+| `userId/workspace` | 必填 | 必填 | 必填 | 原始身份和 workspace |
 | `executionId/executionKind` | 必填 | 必填 | 必填 | 生命周期主体 |
-| `parentExecutionId` | 子执行必填 | 必填 | 可选 | attempt 指向 run/outer-run |
 | `attemptId` | turn/node-attempt/unit-attempt 必填 | Usage 留存主粒度 | 不适用 | Direct 等于 executionId；Workflow/AUTO 与逻辑 executionId 分离，重试时变化 |
 | `attemptIndex` | attempt 必填 | attempt 顺序 | 不适用 | 从 1 开始；Direct 固定为 1，Workflow/AUTO 在同一 executionId 下严格递增 |
 | `nodeId` | node-attempt 必填 | 可选 | 不适用 | 逻辑节点 UUID |
@@ -156,9 +154,9 @@ report_date = events[0].reportedAt 按 Asia/Shanghai 转换后的日期
 
 | executionKind | 指标 attempt 身份 | 客户端原始 attemptId |
 |---|---|---|
-| `turn` | task UUID 即稳定 executionId/attemptId | 与 taskId/executionId 相同，同一 task 内不变；attemptIndex 固定为 1 |
-| `node-attempt` | 同一 run/round/node 对应稳定 `executionId` | 每次真实尝试独立 UUID；重试更换，本地目录序号不直接上报 |
-| `unit-attempt` | 同一 AUTO dynamic unit 对应稳定 `executionId` | 每次真实尝试独立 UUID；重试更换，本地目录序号不直接上报 |
+| `turn` | executionId 即稳定 attemptId | attemptId 等于 executionId，同一 task 内不变；attemptIndex 固定为 1 |
+| `node-attempt` | nodeId 由 run/round/node 派生，稳定不变 | 每次真实尝试独立 attemptId；重试更换 attemptId，nodeId 不变 |
+| `unit-attempt` | nodeId 为 DynamicNodeState.uuid，稳定不变 | 每次真实尝试独立 attemptId；重试更换 attemptId，nodeId 不变 |
 | `run` | 不写 attempt 表 | 不适用 |
 | `outer-run` | 不写 attempt 表 | 不适用 |
 
@@ -166,9 +164,9 @@ Direct 的 executionId/attemptId 均等于 task UUID，attemptIndex 固定为 1�
 
 同一 `(executionId, attemptIndex)` 在一个自然月内只能对应一个 attemptId，同一 `(executionId, attemptId)` 的 attemptIndex 必须恒定。允许因异步上报暂时缺少中间序号，但最终统计应暴露 `attempt_index_gap=1` 作为采集质量；不得由服务端猜测或重排 attemptIndex。
 
-层级查询固定为：delivery_stat 按 run/outer-run executionId 统计整次交付；attempt 按 executionId 分组统计一个逻辑 node/unit 的全部尝试；按 attemptId 查询单次尝试；通过 parentExecutionId 将逻辑 node/unit 及其 attempts 归属到 run/outer-run。不得用 attemptId 直接替代逻辑 executionId。
+层级查询固定为：delivery_stat 按 run/outer-run executionId 统计整次交付；attempt 按 executionId 分组统计一个逻辑 node/unit 的全部尝试；按 attemptId 查询单次尝试；AUTO unit 的 executionId 即 runUuid，天然归属 outer-run；Workflow node executionId 由 runUuid 派生，天然归属 run。不得用 attemptId 直接替代逻辑 executionId。
 
-`runId/roundId` 不上报。attempt 通过 `parentExecutionId` 关联 delivery；Workflow 使用 `roundIndex` 表示轮次。
+`runId/roundId` 不上报。AUTO unit 的 executionId 等于 outer run 的 runUuid，天然归属同一次交付；Workflow 使用 `roundIndex` 表示轮次。
 
 ### 4.5 ID 组合约束
 
@@ -176,17 +174,17 @@ Direct 的 executionId/attemptId 均等于 task UUID，attemptIndex 固定为 1�
 
 | sessionMode | executionKind | ID 约束 |
 |---|---|---|
-| direct | turn | `attemptId == executionId == taskId`、`attemptIndex == 1`、parent/node/unit 关联字段为空 |
+| direct | turn | `attemptId == executionId`、`attemptIndex == 1`、node/unit 关联字段为空 |
 | workflow | run | attempt 字段为空；executionId 是 run UUID |
-| workflow | node-attempt | `attemptId != executionId`、attemptIndex>0、parentExecutionId/nodeId/roundIndex 必填；当前协议要求 `nodeId == executionId`，nodeId 是类型化查询别名，executionId 是通用生命周期主体 |
+| workflow | node-attempt | `attemptId != executionId`、attemptIndex>0、nodeId/roundIndex 必填；当前协议要求 `nodeId == executionId`，nodeId 是类型化查询别名，executionId 是通用生命周期主体 |
 | auto | outer-run | attempt 字段为空；executionId 是 outer run UUID |
-| auto | unit-attempt | `attemptId != executionId`、attemptIndex>0、parentExecutionId/unitId/unitKind 必填；unitId 与 executionId 均标识该动态单元，协议要求二者值相等 |
+| auto | unit-attempt | `attemptId != executionId`、attemptIndex>0、nodeId/unitKind 必填；nodeId 与 executionId 均标识该动态单元，协议要求二者值相等 |
 
 `run/outer-run` 是交付层主体，不写 attempt 表；`turn` 的 executionId/attemptId 是 Direct 会话/交付主体，等于 task UUID，同一 task 的所有用户输入属于同一个 attempt。服务端对不在表内的 sessionMode/executionKind 组合返回 `METRICS_FIELD_INVALID`。
 
 ### 4.6 UUID 输入格式
 
-`eventId/taskId/executionId/parentExecutionId/attemptId/nodeId/unitId/childRunId/failedAttemptId` 出现时必须是 RFC 4122 UUID。API 同时接受 36 位带连字符 canonical 格式和 32 位 simple 格式，大小写不敏感；进入校验、唯一键比较和投影前统一解析并保存为小写 36 位 canonical 格式。禁止按原始字符串比较 UUID；非法长度、字符、variant 或 version 格式返回 `METRICS_FIELD_INVALID`。服务端不限制 UUID v4/v5，但客户端的稳定派生规则仍以采集协议为准。
+`eventId/executionId/attemptId/nodeId/childRunId/failedAttemptId` 出现时必须是 RFC 4122 UUID。API 同时接受 36 位带连字符 canonical 格式和 32 位 simple 格式，大小写不敏感；进入校验、唯一键比较和投影前统一解析并保存为小写 36 位 canonical 格式。禁止按原始字符串比较 UUID；非法长度、字符、variant 或 version 格式返回 `METRICS_FIELD_INVALID`。服务端不限制 UUID v4/v5，但客户端的稳定派生规则仍以采集协议为准。
 
 ### 4.7 成功响应
 
@@ -204,7 +202,7 @@ Direct 的 executionId/attemptId 均等于 task UUID，attemptIndex 固定为 1�
     "insertedDeliveryCount": 2,
     "updatedDeliveryCount": 4,
     "partition": "p202608",
-    "receivedAt": "2026-08-01T10:20:16.125+08:00"
+    "receivedAt": "2026-08-01T10:20:16.125"
   }
 }
 ```
@@ -292,18 +290,16 @@ CREATE TABLE ml_metric_attempt (
     report_date DATE NOT NULL,
     execution_id VARCHAR(192) NOT NULL,
     attempt_id VARCHAR(128) NOT NULL COMMENT 'Usage 留存主粒度；Direct 等于 execution_id，Workflow/AUTO 重试时独立变化',
-    attempt_index INT UNSIGNED NOT NULL COMMENT '同一逻辑 execution 下从 1 严格递增；Direct 固定为 1',
+    attempt_index INT UNSIGNED NOT NULL COMMENT '同一节点内从 1 严格递增；Direct 固定为 1',
     execution_kind VARCHAR(32) NOT NULL,
     session_mode VARCHAR(16) NOT NULL,
     user_id VARCHAR(128) NOT NULL,
     workspace VARCHAR(255) NOT NULL,
     client_version VARCHAR(64) NULL,
     task_id VARCHAR(128) NOT NULL,
-    parent_execution_id VARCHAR(192) NULL,
     node_id VARCHAR(128) NULL,
     round_index INT UNSIGNED NULL,
     role_name VARCHAR(255) NULL,
-    unit_id VARCHAR(128) NULL,
     unit_kind VARCHAR(32) NULL,
     child_run_id VARCHAR(128) NULL,
     state VARCHAR(16) NOT NULL,
@@ -336,13 +332,12 @@ CREATE TABLE ml_metric_attempt (
     PRIMARY KEY (report_date, attempt_id),
     UNIQUE KEY uk_attempt_execution_index (report_date, execution_id, attempt_index),
     KEY idx_attempt_execution (report_date, execution_id, attempt_index, state, outcome),
-    KEY idx_attempt_parent (report_date, parent_execution_id, execution_kind, state, outcome),
     KEY idx_attempt_node (report_date, node_id, outcome),
     KEY idx_attempt_role (report_date, role_name, outcome),
     KEY idx_attempt_model (report_date, final_provider, final_model),
     KEY idx_attempt_unit (report_date, unit_kind, outcome),
     UNIQUE KEY uk_acceptance_parent_attempt
-        (report_date, parent_execution_id, acceptance_attempt)
+        (report_date, execution_id, acceptance_attempt)
 ) ENGINE=InnoDB
 PARTITION BY RANGE COLUMNS(report_date) (
     PARTITION p202608 VALUES LESS THAN ('2026-09-01'),
@@ -366,11 +361,9 @@ CREATE TABLE ml_metric_logical_execution (
     user_id VARCHAR(128) NOT NULL,
     workspace VARCHAR(255) NOT NULL,
     task_id VARCHAR(128) NOT NULL,
-    parent_execution_id VARCHAR(192) NULL,
     node_id VARCHAR(128) NULL,
     round_index INT UNSIGNED NULL,
     role_name VARCHAR(255) NULL,
-    unit_id VARCHAR(128) NULL,
     unit_kind VARCHAR(32) NULL,
     attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
     terminal_attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
@@ -387,7 +380,6 @@ CREATE TABLE ml_metric_logical_execution (
                                   ON UPDATE CURRENT_TIMESTAMP(3),
     CONSTRAINT chk_logical_state CHECK (state IN ('running', 'paused', 'terminal')),
     PRIMARY KEY (report_date, execution_id),
-    KEY idx_logical_parent (report_date, parent_execution_id, execution_kind, final_outcome),
     KEY idx_logical_node (report_date, node_id, round_index, final_outcome),
     KEY idx_logical_unit (report_date, unit_kind, final_outcome),
     KEY idx_logical_role (report_date, role_name, final_outcome)
@@ -503,10 +495,10 @@ revision 必须是大于等于 1 的正整数。允许第一条事件的 revisio
 | 主体 | 不可变字段 |
 |---|---|
 | 所有 event | `eventId` 对应的 `revisionSubjectKind/revisionSubjectId` |
-| attempt | `attemptId`、`executionId`、`attemptIndex`、`executionKind`、`sessionMode`、`taskId`、`userId`、`workspace` |
-| Workflow node attempt | `parentExecutionId`、`nodeId`、`roundIndex` |
-| AUTO unit attempt | `parentExecutionId`、`unitId`、`unitKind`；workflow-invocation 的 `childRunId` 首次非 NULL 后不可修改 |
-| delivery | `executionId`、`executionKind`、`sessionMode`、`taskId`、`userId`、`workspace` |
+| attempt | `attemptId`、`executionId`、`attemptIndex`、`executionKind`、`sessionMode`、`userId`、`workspace` |
+| Workflow node attempt | `nodeId`、`roundIndex` |
+| AUTO unit attempt | `nodeId`、`unitKind`；workflow-invocation 的 `childRunId` 首次非 NULL 后不可修改 |
+| delivery | `executionId`、`executionKind`、`sessionMode`、`userId`、`workspace` |
 | logical execution | 从其 attempts 投影得到的 `executionId`、`executionKind`、`sessionMode`、归属字段 |
 
 `clientVersion`、`roleName`、`startedAt` 和 `collectionStateRecovered` 是开始快照字段：仅当现值为 NULL 时允许迟到 started 补齐，已有非 NULL 值不覆盖并设置 `projection_conflict=1`。
@@ -551,7 +543,7 @@ revision 必须是大于等于 1 的正整数。允许第一条事件的 revisio
 
 - terminal-first：插入 completed，`start_event_missing=1`。
 - paused/intervention-first：插入可表达状态，`start_event_missing=1`。
-- 后到的低 revision `execution.started` 只允许补充此前为 NULL 的不可变开始快照：`started_at`、`client_version`、`role_name`、`node_id`、`round_index`、`unit_id`、`unit_kind`、`child_run_id` 和 `collection_state_recovered`。已有非 NULL 值必须相同，否则记事实但不覆盖，并标记投影冲突。
+- 后到的低 revision `execution.started` 只允许补充此前为 NULL 的不可变开始快照：`started_at`、`client_version`、`role_name`、`node_id`、`round_index`、`unit_kind`、`child_run_id` 和 `collection_state_recovered`。已有非 NULL 值必须相同，否则记事实但不覆盖，并标记投影冲突。
 - 低 revision started 禁止修改：所有 ID 及归属字段、attemptIndex、state、outcome、terminalReason/Code、endedAt、Usage/modelUsages、acceptance 结果、counters、lastEventId 和 lastEventRevision。paused/resumed/intervention 低 revision 也只能保留事实，不修改任何投影字段。
 - 不自动清理永久 running，不设置 stale 阈值。
  
@@ -601,11 +593,9 @@ function apply_logical_execution_recompute(executionId, report_date):
     sample         = attempts[0]
     execution_kind = sample.execution_kind
     session_mode   = sample.session_mode
-    parent_id      = sample.parent_execution_id
     node_id        = sample.node_id
     round_index    = sample.round_index
     role_name      = sample.role_name
-    unit_id        = sample.unit_id
     unit_kind      = sample.unit_kind
     # 第 4 步：UPSERT 投影行
     if ml_metric_logical_execution row exists for (report_date, executionId):
@@ -698,7 +688,7 @@ function apply_attempt_projection(event, existing_attempt_row):
         if eventType == execution.started:
             fill_nullable_snapshot_if_null(row, event)
             # 补充 started_at, client_version, role_name, node_id,
-            # round_index, unit_id, unit_kind, child_run_id,
+            # round_index, unit_kind, child_run_id,
             # collection_state_recovered
             # 已有非 NULL 值且不同则标记 projection_conflict=1，不覆盖
         # 其余低 revision 事件：仅写事实表，不修改任何投影字段
@@ -707,9 +697,9 @@ function apply_attempt_projection(event, existing_attempt_row):
     # 第 2 步：不可变字段校验（6.3）
     verify_immutable_fields(row, event)
     # attemptId, executionId, attemptIndex, executionKind, sessionMode,
-    # taskId, userId, workspace 不得变化
-    # Workflow node: parentExecutionId, nodeId, roundIndex
-    # AUTO unit: parentExecutionId, unitId, unitKind, childRunId(首次非NULL后)
+    # userId, workspace 不得变化
+    # Workflow node: nodeId, roundIndex
+    # AUTO unit: nodeId, unitKind, childRunId(首次非NULL后)
     # 违反时 abort batch METRICS_FIELD_INVALID
     # 第 3 步：state 吸收态判断（6.4）
     if row.state == 'terminal':
@@ -785,7 +775,7 @@ function apply_delivery_projection(event, existing_delivery_row):
             fill_nullable_snapshot_if_null(row, event)
             # 补充 started_at, client_version, collection_state_recovered
         return
-    # 不可变字段校验（6.3）：executionId, executionKind, sessionMode, taskId, userId, workspace
+    # 不可变字段校验（6.3）：executionId, executionKind, sessionMode, userId, workspace
     verify_immutable_fields(row, event)
     # state 吸收态（同 attempt 第 3 步）
     if row.state == 'terminal' and eventType != execution.completed:
@@ -887,7 +877,7 @@ terminalReason 用于原因分布；terminalReasonCode 只用于排障，不直�
 - Workflow 平均交付轮次：success run 的 `AVG(round_count)`。
 - AUTO acceptance 首次通过率：`unit_kind=acceptance AND acceptance_attempt=1 AND acceptance_passed=1` / 首次 acceptance。
 - AUTO 最终通过率：每个 outer-run 是否存在 passed acceptance，再除以进入过 acceptance 的 outer-run。
-- AUTO 平均验收次数：先按 parentExecutionId 求 `MAX(acceptance_attempt)`，再求平均。
+- AUTO 平均验收次数：先按 executionId 求 `MAX(acceptance_attempt)`，再求平均。
 - `first_pass` 不作为可独立信任的客户端结论：服务端校验后按 `passed=1 AND acceptance_attempt=1` 计算和投影。首过率分母为每个 outer-run 的 `acceptanceAttempt=1` 记录；同一 outer-run 只能贡献一次分子和一次分母。
 
 ### 7.5 效率成本与模型切换

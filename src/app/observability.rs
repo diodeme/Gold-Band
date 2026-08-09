@@ -153,13 +153,11 @@ pub struct MetricsLifecycleFact {
     pub task_id: String,
     pub execution_kind: ExecutionKind,
     pub execution_id: String,
-    pub parent_execution_id: Option<String>,
     pub node_id: Option<String>,
     pub attempt_id: Option<String>,
     pub attempt_index: Option<u32>,
     pub round_index: Option<u32>,
     pub role_name: Option<String>,
-    pub unit_id: Option<String>,
     pub unit_kind: Option<UnitKind>,
     pub child_run_id: Option<String>,
     pub outcome: Option<ExecutionOutcome>,
@@ -206,13 +204,11 @@ impl MetricsLifecycleFact {
             task_id,
             execution_kind,
             execution_id,
-            parent_execution_id: None,
             node_id: None,
             attempt_id: None,
             attempt_index: None,
             round_index: None,
             role_name: None,
-            unit_id: None,
             unit_kind: None,
             child_run_id: None,
             outcome: None,
@@ -253,13 +249,6 @@ impl MetricsLifecycleFact {
         if self.counters.is_some() != (terminal && delivery) {
             return Err("counters are required only on delivery terminal events");
         }
-        if matches!(
-            self.execution_kind,
-            ExecutionKind::NodeAttempt | ExecutionKind::UnitAttempt
-        ) && self.parent_execution_id.is_none()
-        {
-            return Err("child execution requires parentExecutionId");
-        }
         let attempt = matches!(
             self.execution_kind,
             ExecutionKind::Turn | ExecutionKind::NodeAttempt | ExecutionKind::UnitAttempt
@@ -292,9 +281,9 @@ impl MetricsLifecycleFact {
             return Err("Workflow node attempt requires nodeId and positive roundIndex");
         }
         if self.execution_kind == ExecutionKind::UnitAttempt
-            && (self.unit_id.is_none() || self.unit_kind.is_none())
+            && (self.node_id.is_none() || self.unit_kind.is_none())
         {
-            return Err("AUTO unit attempt requires unitId and unitKind");
+            return Err("AUTO unit attempt requires nodeId and unitKind");
         }
         if matches!(
             self.execution_kind,
@@ -852,7 +841,6 @@ mod tests {
             ExecutionKind::NodeAttempt,
             "node-execution".into(),
         );
-        fact.parent_execution_id = Some("run-uuid".into());
         fact.attempt_id = Some("node-attempt".into());
         fact.attempt_index = Some(1);
         fact.node_id = Some("node-execution".into());

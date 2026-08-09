@@ -15,6 +15,7 @@ export const BUILTIN_AGENT_IDS = [
   'opencode',
   'kimi',
   'amp-acp',
+  'pi-acp',
 ];
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -59,6 +60,10 @@ const overrides = {
     label: 'Amp', iconKey: 'amp-acp', command: 'amp-acp', args: [],
     primaryAgentDir: '.agents', compatibleAgentDirs: ['.claude'],
   },
+  'pi-acp': {
+    label: 'Pi', iconKey: 'pi-acp', primaryAgentDir: '.pi/agent',
+    projectPrimaryAgentDir: '.pi', compatibleAgentDirs: ['.agents'],
+  },
 };
 
 export function buildAgentCatalog(registry, fetchedAt = new Date().toISOString()) {
@@ -88,6 +93,7 @@ export function buildAgentCatalog(registry, fetchedAt = new Date().toISOString()
       args: override.args ?? distribution.args,
       env: distribution.env,
       primaryAgentDir: override.primaryAgentDir ?? null,
+      projectPrimaryAgentDir: override.projectPrimaryAgentDir ?? null,
       compatibleAgentDirs: override.compatibleAgentDirs ?? [],
       supportsSystemPrompt: override.supportsSystemPrompt ?? false,
       supportsExternalSessionSync: false,

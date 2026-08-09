@@ -327,6 +327,7 @@ export interface ManagedAgentVm {
   env: AgentEnvEntryVm[];
   iconKey: string;
   primaryAgentDir: string;
+  projectPrimaryAgentDir: string | null;
   compatibleAgentDirs: string[];
   supportsSystemPrompt: boolean;
   externalSessionSyncSupported: boolean;
@@ -407,6 +408,7 @@ export interface AgentCatalogEntryVm {
   repository?: string | null;
   website?: string | null;
   primaryAgentDir: string;
+  projectPrimaryAgentDir: string | null;
   compatibleAgentDirs: string[];
   configured: boolean;
   supportsSystemPrompt: boolean;
@@ -424,6 +426,7 @@ export interface ManagedAgentInput {
   args: string[];
   env: Record<string, string>;
   primaryAgentDir: string;
+  projectPrimaryAgentDir: string | null;
   compatibleAgentDirs: string[];
   externalSessionSyncSupported: boolean;
   externalSessionSyncEnabled: boolean;

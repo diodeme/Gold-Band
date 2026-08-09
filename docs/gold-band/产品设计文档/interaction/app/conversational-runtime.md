@@ -492,7 +492,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 ## ACP 斜杠命令目录与输入交互
 
 - Gold Band 将 Agent 通过 ACP `available_commands_update` 公布的条目称为“ACP 原生命令”。ACP 没有标准 SKILL 发现接口，因此该列表不是最终命令目录；Doctor 还要从当前 Agent 的 Skill 读取目录扫描用户级与 workspace 级 `skills/*/SKILL.md`，只解析 `name / description` 元数据，不读取正文，也不进行 prompt injection。
-- `ManagedAgentConfig` 直接保存 `primaryAgentDir` 与 `compatibleAgentDirs`，不再由 Agent 类型分支推导目录。`AgentSkillDirectoryPolicy { writeDirNames, readDirNames }` 只根据实例配置生成：写列表为主 Agent 目录，读列表为主目录加兼容目录并去重；所有消费方统一在 Agent 目录后追加 `skills`。内置 preset 默认值为 Claude `.claude + []`，Codex `.codex + [.agents]`，Cursor `.cursor + [.agents]`，Gemini `.gemini + [.agents]`，OpenCode `.opencode + [.agents]`。
+- `ManagedAgentConfig` 直接保存公共/全局 `primaryAgentDir`、可选 `projectPrimaryAgentDir` 与 `compatibleAgentDirs`，不再由 Agent 类型分支推导目录。项目主目录为空缺字段时表示全局和项目共用公共主目录；字段存在时表示拆分作用域。`AgentSkillDirectoryPolicy { global, project }` 只根据实例配置生成，每个作用域的写列表为该作用域主目录，读列表为该作用域主目录加共用兼容目录并去重；所有消费方统一在 Agent 目录后追加 `skills`。Pi 默认使用全局 `.pi/agent`、项目 `.pi`、兼容 `[.agents]`，其他现有模板默认不拆分。
 - 最终目录按 `ACP 原生命令 > 读取目录发现的 SKILL` 合并，并以命令名不区分大小写去重。ACP 条目保留 `description / inputHint`，SKILL 条目使用 frontmatter 的 `name / description`；扫描支持 Agent 根目录下的 `skills` 以及 `.codex/skills/.system` 这类一层容器目录和 Skill 符号链接。
 - 命令菜单只是一份名称级展示索引，不决定 Agent 最终读取哪个 SKILL 实例。同名 SKILL 的展示元数据暂按“主目录优先于兼容目录；同一目录优先实体目录、再软链接”的确定性顺序选取，即 `主目录实体 > 主目录软链接 > 兼容目录实体 > 兼容目录软链接`；选择后仍只把命令文本发送给 Agent，由 Agent 按自身规则解析实际实例。
 - 命令目录的数据模型为 `AcpCommandCatalog { agentType, workspaceKey, acpCommands?, commands, updatedAt }`，其中 `acpCommands` 保存未混入 SKILL 的原始 ACP 列表，`commands` 保存最终列表，命令项为 `AcpCommandItem { name, description, inputHint? }`。目录必须以 `{agentType, workspace}` 为联合身份，因为同一 Agent 在不同 workspace 可发现不同的项目级 SKILL；查询目录时从原始 ACP 列表重新扫描，保证 Skill 增删不会被旧合并结果残留。

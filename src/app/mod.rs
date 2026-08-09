@@ -1227,6 +1227,21 @@ impl App {
             .collect()
     }
 
+    /// Returns true when the run's current node is an AI-DYNAMIC node (AUTO mode).
+    fn is_auto_run(&self, task_id: &str, run_id: &str) -> bool {
+        let Ok(run) = self.run_status(task_id, run_id) else {
+            return false;
+        };
+        run.current_round
+            .as_deref()
+            .zip(run.current_node.as_deref())
+            .zip(run.current_attempt.as_deref())
+            .and_then(|((round_id, node_id), attempt_id)| {
+                read_json::<NodeState>(&self.paths.node_file(task_id, run_id, round_id, node_id, attempt_id))
+                    .ok()
+            })
+            .is_some_and(|node| node.node_type == crate::domain::NodeType::AiDynamic)
+    }
     fn emit_derived_node_metrics_fact(&self, event: &RuntimeLifecycleEvent) {
         use observability::{
             ExecutionKind, ExecutionOutcome, LifecycleEventType, LifecycleTiming,
@@ -1521,32 +1536,33 @@ impl App {
             }
             return;
         }
-        let execution_id = if dynamic_kind.is_some() {
-            // DynamicNodeState is the logical AUTO unit and persists across its attempts.
-            node_uuid.clone()
-        } else {
-            // A Workflow node execution is stable within one run/round even when retried.
-            let Some(round_index) = round_index else {
-                return;
-            };
-            let Some(execution_id) = observability::derive_execution_id(
-                &run_uuid,
-                &format!("round:{round_index}:node:{logical_node_id}"),
-            ) else {
-                return;
-            };
-            execution_id
-        };
-        let metrics_attempt_id = if dynamic_kind.is_some() {
-            let Some(attempt_id) = observability::derive_attempt_id(&execution_id, &attempt_id)
+        // Skip AUTO wrapper nodes (not dynamic units) — they are implementation detail.
+        if dynamic_kind.is_none() && scoped_app.is_auto_run(&task_id, &run_id) {
+            return;
+        }
+        // executionId = taskId for all modes (Direct/AUTO/Workflow share the same identity).
+        let execution_id = task_uuid.clone();
+        // nodeId is the stable logical node identity; attemptId is unique per execution.
+        let (node_metrics_id, metrics_attempt_id) = if dynamic_kind.is_some() {
+            // AUTO unit: nodeId = DynamicNodeState.uuid, attemptId derived from nodeUuid.
+            let Some(metrics_attempt_id) =
+                observability::derive_attempt_id(&node_uuid, &attempt_id)
             else {
                 return;
             };
-            attempt_id
+            (node_uuid.clone(), metrics_attempt_id)
         } else {
-            // NodeState.uuid is created once with this concrete attempt.
-            node_uuid.clone()
+            // Workflow node: nodeId = derived logical node (stable across retries),
+            // attemptId = NodeState.uuid (new per concrete attempt).
+            let Some(round_index) = round_index else { return };
+            let logical = observability::derive_execution_id(
+                &run_uuid,
+                &format!("round:{round_index}:node:{logical_node_id}"),
+            )
+            .unwrap_or_else(|| node_uuid.clone());
+            (logical, node_uuid.clone())
         };
+
         let Some(attempt_index) = observability::attempt_index_from_local_id(&attempt_id) else {
             return;
         };
@@ -1604,7 +1620,7 @@ impl App {
                             cache_read_tokens: segment.usage.cached_read_tokens,
                             total_tokens: segment.usage.effective_total_tokens(),
                         },
-                        acp_session_elapsed_ms: None,
+                        acp_session_elapsed_ms: segment.elapsed_ms,
                     });
                     recorded_segment = true;
                 }
@@ -1650,16 +1666,14 @@ impl App {
             },
             execution_id.clone(),
         );
-        fact.parent_execution_id = Some(run_uuid.clone());
-        fact.node_id = dynamic_kind.is_none().then(|| execution_id.clone());
+        fact.node_id = Some(node_metrics_id.clone());
         fact.attempt_id = Some(metrics_attempt_id.clone());
         fact.attempt_index = Some(attempt_index);
         fact.role_name = node_name;
         fact.round_index = round_index;
         fact.provider = provider;
-        fact.model = metrics_model;
+        fact.model = if event_type == LifecycleEventType::ExecutionStarted { None } else { metrics_model.clone() };
         fact.collection_state_recovered = state.collection_state_recovered;
-        fact.unit_id = dynamic_kind.map(|_| execution_id.clone());
         fact.unit_kind = dynamic_kind.map(|kind| match kind {
             crate::dynamic::DynamicNodeKind::Worker => UnitKind::Worker,
             crate::dynamic::DynamicNodeKind::WorkflowInvocation => UnitKind::WorkflowInvocation,
@@ -1734,10 +1748,10 @@ impl App {
                 .paths
                 .run_dir(&task_id, &run_id)
                 .join("observability")
-                .join(&run_uuid)
+                .join(&task_uuid)
                 .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
             let outer_state =
-                scoped_app.update_observability_state(&run_uuid, outer_path, |state| {
+                scoped_app.update_observability_state(&task_uuid, outer_path, |state| {
                     state.next_revision();
                     state.next_acceptance_attempt();
                 });
@@ -1755,10 +1769,9 @@ impl App {
                 ExecutionKind::UnitAttempt,
                 execution_id.clone(),
             );
-            acceptance.parent_execution_id = Some(run_uuid);
             acceptance.attempt_id = Some(metrics_attempt_id.clone());
             acceptance.attempt_index = Some(attempt_index);
-            acceptance.unit_id = Some(execution_id.clone());
+            acceptance.node_id = Some(node_metrics_id.clone());
             acceptance.unit_kind = Some(UnitKind::Acceptance);
             acceptance.passed = Some(passed);
             acceptance.acceptance_attempt = Some(acceptance_attempt);
@@ -1811,16 +1824,16 @@ impl App {
         let Ok(run) = self.run_status(task_id, run_id) else {
             return;
         };
-        let Some(execution_id) = run.uuid else {
+        let Some(task_uuid) = run.task_uuid.clone() else {
             return;
         };
         let path = self
             .paths
             .run_dir(task_id, run_id)
             .join("observability")
-            .join(&execution_id)
+            .join(&task_uuid)
             .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
-        self.update_observability_state(&execution_id, path, |state| {
+        self.update_observability_state(&task_uuid, path, |state| {
             state.set_pending_resume_cause(cause);
         });
     }
@@ -1837,16 +1850,16 @@ impl App {
         let Ok(run) = self.run_status(task_id, run_id) else {
             return;
         };
-        let Some(execution_id) = run.uuid else {
+        let Some(task_uuid) = run.task_uuid.clone() else {
             return;
         };
         let path = self
             .paths
             .run_dir(task_id, run_id)
             .join("observability")
-            .join(&execution_id)
+            .join(&task_uuid)
             .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
-        self.update_observability_state(&execution_id, path, |state| {
+        self.update_observability_state(&task_uuid, path, |state| {
             state.clear_pending_resume_cause(expected);
         });
     }
@@ -4962,11 +4975,10 @@ mod tests {
         }));
         let node_uuid = uuid::Uuid::new_v4().to_string();
         let run_uuid = uuid::Uuid::new_v4().to_string();
-        let execution_id =
-            super::observability::derive_execution_id(&run_uuid, "round:1:node:node-001").unwrap();
+        let task_uuid = uuid::Uuid::new_v4().to_string();
         app.emit_lifecycle_event(RuntimeLifecycleEvent::NodeStarted {
             task_id: "task-001".into(),
-            task_uuid: Some(uuid::Uuid::new_v4().to_string()),
+            task_uuid: Some(task_uuid.clone()),
             run_id: "run-001".into(),
             run_uuid: Some(run_uuid),
             round_id: "round-001".into(),
@@ -5000,8 +5012,8 @@ mod tests {
         let event_snapshot = crate::storage::GoldBandPaths::new(event_root)
             .run_dir("task-001", "run-001")
             .join("observability")
-            .join(execution_id)
-            .join(node_uuid)
+            .join(&task_uuid)
+            .join(&node_uuid)
             .join(super::observability::OBSERVABILITY_SNAPSHOT_FILE);
         for _ in 0..50 {
             if event_snapshot.exists() {
@@ -5106,7 +5118,6 @@ mod tests {
         assert_eq!(facts[0].attempt_id.as_deref(), Some(execution_id.as_str()));
         assert_eq!(facts[0].attempt_index, Some(1));
         assert_ne!(facts[0].execution_id, execution_id);
-        assert!(facts[0].parent_execution_id.is_some());
         assert_eq!(usages.len(), 2);
         assert_eq!(usages[0].model, "model-a");
         assert_eq!(usages[0].usage.total_tokens, Some(40));

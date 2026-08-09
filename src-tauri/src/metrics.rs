@@ -98,7 +98,7 @@ fn to_iso8601(ts: &str) -> String {
     }
     if let Some(dt) = chrono::DateTime::from_timestamp(secs, 0) {
         dt.with_timezone(&chrono::Local)
-            .format("%Y-%m-%dT%H:%M:%S%.3f%:z")
+            .format("%Y-%m-%dT%H:%M:%S%.3f")
             .to_string()
     } else {
         ts.to_string()
@@ -340,11 +340,8 @@ pub struct MetricsEventItem {
     pub workspace: String,
     pub client_version: String,
     pub session_mode: MetricsSessionMode,
-    pub task_id: String,
     pub execution_kind: MetricsExecutionKind,
     pub execution_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_execution_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -361,8 +358,6 @@ pub struct MetricsEventItem {
     pub terminal_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub counters: Option<MetricsCounters>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub unit_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unit_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -407,7 +402,7 @@ struct MetricsEventBatch {
 
 fn iso_now() -> String {
     chrono::Local::now()
-        .format("%Y-%m-%dT%H:%M:%S%.3f%:z")
+        .format("%Y-%m-%dT%H:%M:%S%.3f")
         .to_string()
 }
 
@@ -471,10 +466,8 @@ fn map_metrics_fact(fact: MetricsLifecycleFact, reported_at: String) -> MetricsE
         workspace: fact.workspace,
         client_version: env!("CARGO_PKG_VERSION").into(),
         session_mode,
-        task_id: fact.task_id,
         execution_kind,
         execution_id: fact.execution_id,
-        parent_execution_id: fact.parent_execution_id,
         node_id: fact.node_id,
         attempt_id: fact.attempt_id,
         attempt_index: fact.attempt_index,
@@ -490,7 +483,6 @@ fn map_metrics_fact(fact: MetricsLifecycleFact, reported_at: String) -> MetricsE
             manual_continue_count: c.manual_continue_count,
             follow_up_count: c.follow_up_count,
         }),
-        unit_id: fact.unit_id,
         unit_kind: fact.unit_kind.map(wire),
         child_run_id: fact.child_run_id,
         terminal_reason_code: fact.terminal_reason_code,
@@ -825,11 +817,12 @@ mod tests {
     }
 
     #[test]
-    fn iso_timestamp_helpers_emit_timezone_offset() {
+    fn iso_timestamp_helpers_emit_local_time_without_offset() {
         let converted = to_iso8601("1786018481Z");
-        assert!(chrono::DateTime::parse_from_rfc3339(&converted).is_ok());
-        assert_ne!(converted, "2026-08-06T20:14:41.000");
-        assert!(chrono::DateTime::parse_from_rfc3339(&iso_now()).is_ok());
+        assert!(!converted.contains('+') && !converted.ends_with('Z'));
+        assert_eq!(converted, "2026-08-06T20:14:41.000");
+        let now = iso_now();
+        assert!(!now.contains('+') && !now.ends_with('Z'));
     }
 
     #[tokio::test]

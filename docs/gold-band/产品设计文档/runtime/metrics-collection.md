@@ -39,15 +39,15 @@ flowchart LR
 
 | `executionKind` | 模式 | 含义 | 稳定 `executionId` |
 |---|---|---|---|
-| `turn` | Direct | 一次用户消息到回复终态 | 同一 Direct 会话/task 使用 task UUID；executionId/attemptId 与 taskId 相同且不变化 |
-| `run` | Workflow | 一次 Workflow 运行 | `runUuid` |
-| `node-attempt` | Workflow | 某节点的一次实际尝试 | 同一 run/round/node 稳定派生的逻辑节点 execution UUID；重试不变 |
-| `outer-run` | AUTO | 一次 AUTO 总体交付 | 外层 `runUuid` |
-| `unit-attempt` | AUTO | worker、workflow invocation、merge、acceptance 的一次尝试 | 持久化的 `DynamicNodeState.uuid`；同一 unit 重试不变 |
+| `turn` | Direct | 一次用户消息到回复终态 | `taskId`（同一 task 不变）；attemptId 等于 taskId，attemptIndex 固定为 1 |
+| `run` | Workflow | 一次 Workflow 运行 | `taskId` |
+| `node-attempt` | Workflow | 某节点的一次实际尝试 | `taskId`（所有节点共享）；nodeId 为同一 run/round/node 稳定派生的逻辑节点 UUID，重试不变 |
+| `outer-run` | AUTO | 一次 AUTO 总体交付 | `taskId` |
+| `unit-attempt` | AUTO | worker、workflow invocation、merge、acceptance 的一次尝试 | `taskId`（所有 unit 共享）；nodeId 为 `DynamicNodeState.uuid`，重试不变 |
 
-子单元必须携带 `parentExecutionId`。Workflow node 指向 run，AUTO unit 指向 outer run；`workflow-invocation` 还携带 `childRunId`，用于关联其内部 Workflow run。
+所有模式的 `executionId` 统一为 `taskId`，不再有 `parentExecutionId`。AUTO 模式下的 workflow wrapper 节点不上报指标。`workflow-invocation` 携带 `childRunId`，用于关联其内部 Workflow run。
 
-`eventId`、`executionId`、`attemptId` 必须为 UUID。Direct turn 的 executionId/attemptId 直接等于 task UUID，同一 task 内不随 run/node/用户输入变化，attemptIndex 固定为 1。Workflow logical node executionId 由持久化 run UUID 与 round/node 逻辑键使用 UUID v5 稳定派生；AUTO unit executionId 使用持久化 DynamicNode UUID；attemptId 在 attempt 创建时生成或由 executionId 与持久化本地 attempt 序号稳定派生，attemptIndex 从同一领域序号产生。缺少生成条件或本地 attempt 标识不符合 `attempt-NNN` 时跳过事件并写本地诊断，HTTP 发送层不得猜测或重排。
+`eventId`、`executionId`、`nodeId`、`attemptId` 必须为 UUID。所有模式的 `executionId` 统一为 `taskId`。Direct turn 的 attemptId 等于 taskId，attemptIndex 固定为 1。Workflow node 的 `nodeId` 由 run UUID 与 round/node 逻辑键用 UUID v5 稳定派生（重试不变），`attemptId` 使用 NodeState UUID（每次执行新建）。AUTO unit 的 `nodeId` 为 `DynamicNodeState.uuid`（重试不变），`attemptId` 由 nodeId 与本地 attempt 序号用 UUID v5 派生。`attemptIndex` 从本地 `attempt-NNN` 序号产生。started 事件不携带 model（ACP session 尚未启动，真实模型未知）；completed 事件从 `acp.session.json` 解析实际模型名。
 
 ### 3.2 生命周期事件
 
@@ -70,16 +70,14 @@ flowchart LR
     "eventId": "01J...",
     "eventRevision": 2,
     "eventType": "execution.completed",
-    "occurredAt": "2026-07-31T13:20:15.120+08:00",
-    "reportedAt": "2026-07-31T13:20:16.004+08:00",
+    "occurredAt": "2026-07-31T13:20:15.120",
+    "reportedAt": "2026-07-31T13:20:16.004",
     "userId": "raw-system-user",
     "workspace": "D:\\repo\\gold-band",
     "clientVersion": "0.1.0",
     "sessionMode": "workflow",
-    "taskId": "task-uuid",
     "executionKind": "node-attempt",
-    "executionId": "logical-node-execution-uuid",
-    "parentExecutionId": "run-uuid",
+    "executionId": "task-uuid",
     "nodeId": "node-uuid",
     "attemptId": "attempt-uuid",
     "attemptIndex": 1,
@@ -107,7 +105,7 @@ flowchart LR
       "totalTokens": 1040,
       "acpSessionElapsedMs": 52120
     }],
-    "timing": {"startedAt": "2026-07-31T13:19:01.000+08:00", "endedAt": "2026-07-31T13:20:15.120+08:00", "acpSessionElapsedMs": 72120}
+    "timing": {"startedAt": "2026-07-31T13:19:01.000", "endedAt": "2026-07-31T13:20:15.120", "acpSessionElapsedMs": 72120}
   }]
 }
 ```
@@ -121,15 +119,14 @@ flowchart LR
 | `eventId` | string | 全局唯一事件 ID、服务端幂等键 |
 | `eventRevision` | integer | 同一 execution 内从 1 开始严格递增的状态版本；用于异步乱序排序 |
 | `eventType` | enum | 生命周期事实类型 |
-| `occurredAt` | ISO-8601 | 事实真实发生时间，带时区和毫秒 |
-| `reportedAt` | ISO-8601 | 事件进入待上报队列的时间；生成后冻结，所有重试保持不变 |
+| `occurredAt` | ISO-8601 | 事实真实发生时间，本地时间，精确到毫秒，不带时区偏移量 |
+| `reportedAt` | ISO-8601 | 事件进入待上报队列的时间，本地时间，精确到毫秒，不带时区偏移量；生成后冻结，所有重试保持不变 |
 | `userId` | string | 原始系统用户标识，不哈希、不替换为内部 UUID |
 | `workspace` | string | 原始 workspace 路径/标识，不哈希、不只传目录名 |
 | `clientVersion` | string | 客户端版本 |
 | `sessionMode` | enum | `direct/workflow/auto` |
-| `taskId` | string | task UUID；不得回退业务展示 ID |
 | `executionKind` | enum | 当前执行单元类型 |
-| `executionId` | string | 同一执行单元所有事件保持一致 |
+| `executionId` | string | 等于 `taskId`（不再单独上报 taskId）；同一 task 所有事件保持一致 |
 
 `userId/workspace` 必须在事件产生时从执行上下文快照，不能在延迟发送时读取当前 workspace，否则切换项目会串数据。
 共享生命周期总线中的 node/unit 事实必须携带事件所属 workspace 的 `repoRoot`。指标 producer 只能使用该事件路径创建作用域化 `GoldBandPaths`，读取 Usage、解析 child run、写 observability snapshot 和生成 `workspace` 字段；禁止使用 producer 注册时捕获的启动工作区路径。
@@ -138,14 +135,12 @@ flowchart LR
 
 | 字段 | 适用范围 | 说明 |
 |---|---|---|
-| `parentExecutionId` | 子单元 | 父 run/outer run ID |
-| `nodeId` | Workflow node attempt | 逻辑节点 UUID；用于关联同一节点的多次 attempt 和统计节点可靠性 |
-| `attemptId` | Direct turn、Workflow node attempt、AUTO unit attempt | 服务端 Usage 留存粒度。Direct 的 attemptId 等于 taskId/executionId，同一 task 内持续累加；Workflow/AUTO 与逻辑 executionId 分离，一次 attempt 从 started 到 terminal 固定，只有重试才生成新 UUID |
-| `attemptIndex` | Direct turn、Workflow node attempt、AUTO unit attempt | 同一逻辑 execution 内的尝试序号，从 1 开始；Direct 固定为 1，Workflow/AUTO 真正重试时严格加一；同一 attempt 生命周期内固定 |
+| `nodeId` | Workflow node attempt、AUTO unit attempt | 节点稳定标识，重试不变。Workflow 由 run UUID + round/node 派生；AUTO 为 `DynamicNodeState.uuid` |
+| `attemptId` | Direct turn、Workflow node attempt、AUTO unit attempt | 每次执行尝试唯一。Direct 的 attemptId 等于 executionId；Workflow 使用 NodeState UUID；AUTO 由 nodeId 与本地 attempt 序号派生 |
+| `attemptIndex` | Direct turn、Workflow node attempt、AUTO unit attempt | 同一节点内的尝试序号，从 1 开始；Direct 固定为 1，Workflow/AUTO 真正重试时严格加一 |
 | `roundIndex` | Workflow node attempt | 从 1 开始的 round 序号；用于首轮/后续轮次分析，不上报无统计价值的 round UUID |
 | `roleName` | Workflow node attempt；绑定 profile 的 AUTO unit | 执行开始时 resolved profile 名称快照；只用于展示和分组，不能作为唯一键 |
-| `unitId` | AUTO | dynamic node UUID |
-| `unitKind` | AUTO | `worker/workflow-invocation/merge/acceptance` |
+| `unitKind` | AUTO unit attempt | `worker/workflow-invocation/merge/acceptance` |
 | `childRunId` | workflow invocation | 被调用 Workflow run UUID |
 
 ### 4.3 结果、质量与可靠性字段
@@ -238,9 +233,9 @@ AUTO `workflow-invocation` 不承接 child Workflow 的 token：child node attem
 | node/unit attempt | `failure` | `provider-error/runtime-error/validation-error/execution-failed/retry-exhausted/acceptance-rejected/unknown` |
 | node/unit attempt | `cancelled` | `user-cancelled/process-killed` |
 
-`runId` 不上报：run 自身以 `executionId` 标识，node attempt 通过 `parentExecutionId` 指向 run。`roundId` 不上报，改用有统计价值的 `roundIndex`。`childRunId` 继续用于 AUTO workflow-invocation 关联 child Workflow。
+`runId` 不上报：run 自身以 `executionId` 标识。AUTO 模式下所有 unit 共享 outer run 的 `executionId`。`roundId` 不上报，改用有统计价值的 `roundIndex`。`childRunId` 继续用于 AUTO workflow-invocation 关联 child Workflow。
 
-`attemptId/attemptIndex` 对 `turn/node-attempt/unit-attempt` 必填，对 `run/outer-run` 不适用，并作为服务端 Usage 留存和重试顺序依据。Direct 的 executionId/attemptId 等于 task UUID 且 attemptIndex 固定为 1，同一 task 多次输入在同一 attempt 内累加 usage/counters；Workflow/AUTO 满足 `attemptId != executionId`，多个重试 attempt 共享逻辑 node/unit executionId，并通过 `parentExecutionId` 关联 run/outer-run，attemptIndex 从 1 严格递增。ACP/provider 在同一 attempt 内部的重连、多次 prompt 或模型切换不创建新的指标 attempt；节点或 unit 真正重试才同时生成新的 attemptId 和 attemptIndex。
+`attemptId/attemptIndex` 对 `turn/node-attempt/unit-attempt` 必填，对 `run/outer-run` 不适用，并作为服务端 Usage 留存和重试顺序依据。Direct 的 executionId/attemptId 等于 task UUID 且 attemptIndex 固定为 1，同一 task 多次输入在同一 attempt 内累加 usage/counters；Workflow/AUTO 满足 `attemptId != executionId`，多个重试 attempt 共享逻辑 node/unit executionId，AUTO unit 的 executionId 等于 outer run 的 `runUuid`，attemptIndex 从 1 严格递增。ACP/provider 在同一 attempt 内部的重连、多次 prompt 或模型切换不创建新的指标 attempt；节点或 unit 真正重试才同时生成新的 attemptId 和 attemptIndex。
 
 ## 5. 价值维度覆盖
 

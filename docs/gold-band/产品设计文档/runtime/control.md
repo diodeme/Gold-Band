@@ -109,6 +109,8 @@ ACP invocation 的 continue prompt state 由 runtime 统一决策，普通 workf
 
 runtime 写入 `Paused + ProcessInterrupted` 后，自动重试控制器必须在错误分类前、backoff 期间、runtime 重建前和再次发送 prompt 前重新读取当前 attempt 事实；只要 attempt 已停止，就不得写入新的 `runtime_auto_retry` 或再次调用 provider。停止后的 provider 输出不再进入当前 turn；晚到 provider/transport 错误只进入取消收尾诊断，不能覆盖用户停止终态，也不能重新触发自动重试。
 
+`provider.server-unavailable` 等 `RecoveryMode::Auto` 错误使用共享的 `RetryPolicy`，默认在初次调用后最多自动重试 3 次。AI-DYNAMIC 自动重试必须保持原 attempt、logical prompt 与 session mode，不生成 proposal repair prompt；预算耗尽后才收敛为 `Paused + RuntimeAbnormal`。运行时自动恢复与输出协议 repair 是两套独立状态机，调用次数和验收必须从共享 retry policy 推导，不能在测试或实现中另行硬编码。
+
 `session/cancel` 后仍需有界等待原 `session/prompt` terminal。若 deadline 到期，记录结构化 `acp.cancel-drain-timeout`，用户可见 attempt 仍保持 `Paused + ProcessInterrupted`，ACP turn 结算为 cancelled；该未收尾 session 必须从 attempt route、attached runtime registry 和 worker continue ref 中移除，后续继续使用新 session。adapter process 仍按 `provider_id + workspace_root` 复用，不因单个 session 收尾超时被 kill，也不得影响同 process 上的其他 session。
 
 若 ACP 在 session-ready、session id 或首批 timeline event 形成前已经进入 `runtime-error`，会话 UI 必须优先展示 runtime diagnostic 错误态并停止初始 loading；不能因为 session snapshot 尚未 ready 而持续显示加载中。已经建立 session 或已有事件的会话仍走正常会话错误展示路径，避免初始化错误规则覆盖可恢复的既有会话。

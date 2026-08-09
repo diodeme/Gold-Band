@@ -127,17 +127,28 @@ pub fn agent_relation(event: &AcpUiEvent) -> Option<AgentTranscriptRelation> {
 }
 
 pub fn branch_route_for_event(event: &AcpUiEvent) -> ConversationBranchRoute {
-    if let Some(branch_id) = event
+    if let Some(conversation) = event
         .raw
         .as_ref()
-        .and_then(|raw| raw.pointer(&format!("/_meta/{BRANCH_META_KEY}/branchId")))
-        .and_then(Value::as_str)
-        .filter(|branch_id| validate_conversation_branch_id(branch_id).is_ok())
+        .and_then(|raw| raw.pointer(&format!("/_meta/{BRANCH_META_KEY}")))
+        .and_then(Value::as_object)
+        && let Some(branch_id) = conversation
+            .get("branchId")
+            .and_then(Value::as_str)
+            .filter(|branch_id| validate_conversation_branch_id(branch_id).is_ok())
     {
         return ConversationBranchRoute {
             branch_id: branch_id.to_string(),
-            launched_agent_execution_id: None,
-            tool_name: None,
+            launched_agent_execution_id: conversation
+                .get("launchedAgentExecutionId")
+                .and_then(Value::as_str)
+                .filter(|branch_id| validate_conversation_branch_id(branch_id).is_ok())
+                .map(str::to_string),
+            tool_name: conversation
+                .get("toolName")
+                .and_then(Value::as_str)
+                .filter(|tool_name| !tool_name.is_empty())
+                .map(str::to_string),
         };
     }
     let relation = agent_relation(event);
@@ -1397,6 +1408,22 @@ mod tests {
             id,
             stable_agent_execution_id("session-1", "tool/use:unsafe")
         );
+    }
+
+    #[test]
+    fn persisted_branch_route_preserves_launch_metadata() {
+        let mut launch = event_at(
+            "launch",
+            1,
+            "toolCall",
+            Some("provider-child"),
+            Some("completed"),
+            json!({ "agentLaunch": true, "toolName": "Agent" }),
+            Some(json!({ "run_in_background": true })),
+        );
+
+        let expected = annotate_event_branch(&mut launch);
+        assert_eq!(branch_route_for_event(&launch), expected);
     }
 
     #[test]

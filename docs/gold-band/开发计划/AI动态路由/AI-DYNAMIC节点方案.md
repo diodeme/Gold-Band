@@ -138,6 +138,8 @@ typed commands / runtime
 
 动态图语义错误保留 code、path、actual、expected、allowedValues、suggestion 与 params，供 proposal repair 和 UI 诊断使用。
 
+`provider.server-unavailable` 等 `RecoveryMode::Auto` 错误使用共享 `RetryPolicy`，默认在初次调用后最多自动重试 3 次。AI-DYNAMIC 自动重试保持原 attempt、logical prompt 与 session mode，不生成 proposal repair prompt；预算耗尽后才收敛为 `Paused + RuntimeAbnormal`。运行时自动恢复与输出协议 repair 是两套独立状态机。
+
 ## 10. 验收标准
 
 - single 跨多个节点保持同一 workspaceId。
@@ -148,3 +150,4 @@ typed commands / runtime
 - workflow-invocation 使用分配 workspace 作为项目根目录。
 - Agent schema 与中英文 prompt 不再出现 workspace mode。
 - Git 门禁失败不创建 run；普通 worker 工作流仍可运行。
+- AI-DYNAMIC provider/runtime 自动重试次数从共享 `RetryPolicy` 推导，并与 proposal repair 预算分别验收。

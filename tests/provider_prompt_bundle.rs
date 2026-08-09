@@ -2,9 +2,9 @@ use camino::Utf8PathBuf;
 use gold_band::domain::{InvocationKind, SessionMode};
 use gold_band::prompts::PromptExecutionSurface;
 use gold_band::provider::{
-    ColdFileRef, PromptArtifactRef, PromptAttachmentRef, PromptHiddenSection, PromptOutputContract,
-    PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, StreamMode,
-    UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
+    ColdFileRef, OutputEmissionMode, PromptArtifactRef, PromptAttachmentRef, PromptHiddenSection,
+    PromptOutputContract, PromptPredecessorContext, PromptRuntimeContext, PromptVisibility,
+    StreamMode, UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
 };
 
 fn runtime_context() -> PromptRuntimeContext {
@@ -60,6 +60,8 @@ fn invocation() -> WorkerInvocation {
             })),
             schema_text: None,
             success_condition: Some("JSON field `$.result` equals `true`".to_string()),
+            finalize_context: None,
+            emission_mode: OutputEmissionMode::PostTurnProjection,
         }),
         runtime_context: runtime_context(),
         predecessors: vec![PromptPredecessorContext {

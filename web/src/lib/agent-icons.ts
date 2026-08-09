@@ -16,6 +16,7 @@ const MONOCHROME_AGENT_ICONS = new Set([
   'goose',
   'kimi',
   'opencode',
+  'pi-acp',
   'qwen-code',
 ]);
 

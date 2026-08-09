@@ -13,6 +13,7 @@ function agentInput(overrides: Partial<ManagedAgentInput> = {}): ManagedAgentInp
     args: [],
     env: {},
     primaryAgentDir: '.claude',
+    projectPrimaryAgentDir: null,
     compatibleAgentDirs: [],
     externalSessionSyncSupported: false,
     externalSessionSyncEnabled: false,
@@ -30,6 +31,7 @@ describe('Agent management input mapping', () => {
       env: [],
       iconKey: 'claude',
       primaryAgentDir: '.claude-custom',
+      projectPrimaryAgentDir: null,
       compatibleAgentDirs: [],
       supportsSystemPrompt: true,
       externalSessionSyncSupported: true,
@@ -57,6 +59,7 @@ describe('Agent management input mapping', () => {
       args: ['-y', 'agent'],
       env: { TOKEN: 'value' },
       primaryAgentDir: '.claude-custom',
+      projectPrimaryAgentDir: null,
       compatibleAgentDirs: ['.agents'],
       externalSessionSyncSupported: true,
       externalSessionSyncEnabled: true,
@@ -73,6 +76,23 @@ describe('Agent management input mapping', () => {
     expect(input.primaryAgentDir).toBe('.codex');
     expect(input.compatibleAgentDirs).toEqual(['.agents']);
     expect(input.externalSessionSyncEnabled).toBe(false);
+  });
+
+  it('preserves split global and project primary directories as one directory policy', () => {
+    const input = buildAgentInput(agentInput({
+      primaryAgentDir: ' .pi/agent ',
+      projectPrimaryAgentDir: ' .pi ',
+    }), '', '', '.agents\n.pi\n.pi/agent');
+
+    expect(input.primaryAgentDir).toBe('.pi/agent');
+    expect(input.projectPrimaryAgentDir).toBe('.pi');
+    expect(input.compatibleAgentDirs).toEqual(['.agents']);
+    expect(hasManagedAgentInputChanged(input, {
+      ...input,
+      projectPrimaryAgentDir: null,
+    })).toBe(true);
+    expect(i18n.t('agentManagement.splitPrimaryAgentDirs', { lng: 'zh-CN' }))
+      .toBe('拆分全局/项目主目录');
   });
 
   it('uses the default icon and allows an Agent without a Skills directory', () => {
@@ -185,6 +205,7 @@ describe('Agent management input mapping', () => {
       env: [],
       iconKey: 'claude',
       primaryAgentDir: '.claude',
+      projectPrimaryAgentDir: null,
       compatibleAgentDirs: ['.agents'],
       supportsSystemPrompt: true,
       externalSessionSyncSupported: false,

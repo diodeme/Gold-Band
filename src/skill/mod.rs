@@ -96,23 +96,28 @@ fn configured_agent_skill_read_dirs(
     agents: &BTreeMap<ManagedAgentId, ManagedAgentConfig>,
 ) -> Vec<AgentSkillReadDir> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    configured_agent_skill_read_dirs_at_root(&home, agents)
+    configured_agent_skill_read_dirs_at_root(&home, agents, SkillSource::Global)
 }
 
 fn configured_agent_skill_read_dirs_at_root(
     root: &Path,
     agents: &BTreeMap<ManagedAgentId, ManagedAgentConfig>,
+    source: SkillSource,
 ) -> Vec<AgentSkillReadDir> {
     let mut dirs = Vec::new();
     let mut seen_paths = BTreeSet::new();
     for config in agents.values() {
-        for dir_name in config.skill_directory_policy().read_dir_names {
+        let policy = config.skill_directory_policy();
+        let Some(scope_policy) = policy.for_source(source) else {
+            continue;
+        };
+        for dir_name in &scope_policy.read_dir_names {
             let skills_dir = resolve_agent_skills_dir(root, &dir_name);
             if skills_dir.as_std_path().exists() && skills_dir.as_std_path().is_dir() {
                 let canonical_path = canonicalize_lossy(skills_dir.as_std_path());
                 if seen_paths.insert(canonical_path) {
                     dirs.push(AgentSkillReadDir {
-                        dir_name,
+                        dir_name: dir_name.clone(),
                         skills_dir,
                     });
                 }
@@ -179,6 +184,7 @@ impl SkillManager {
         let project_agent_dirs = configured_agent_skill_read_dirs_at_root(
             self.paths.repo_root.as_std_path(),
             &self.agents_config,
+            SkillSource::Project,
         );
         for agent_dir in &project_agent_dirs {
             let agent_skills = scan_skills_dir(
@@ -212,6 +218,7 @@ impl SkillManager {
         let agent_dirs = configured_agent_skill_read_dirs_at_root(
             workspace_root.as_std_path(),
             &self.agents_config,
+            SkillSource::Project,
         );
         for agent_dir in &agent_dirs {
             let agent_skills = scan_skills_dir(
@@ -1070,14 +1077,18 @@ fn resolve_skill_dirs(
         {
             continue;
         }
-        for dir_name in config.skill_directory_policy().write_dir_names {
+        let policy = config.skill_directory_policy();
+        let Some(scope_policy) = policy.for_source(source) else {
+            continue;
+        };
+        for dir_name in &scope_policy.write_dir_names {
             let skills_dir = resolve_agent_skills_dir(&root, &dir_name);
             if include_missing
                 || (skills_dir.as_std_path().exists() && skills_dir.as_std_path().is_dir())
             {
                 dirs.push(AgentSkillDir {
                     agent_id: agent_id.clone(),
-                    dir_name,
+                    dir_name: dir_name.clone(),
                     skills_dir,
                 });
             }
@@ -1201,11 +1212,45 @@ mod tests {
             catalog_agent_default_config("cursor").unwrap(),
         );
 
-        let dirs = configured_agent_skill_read_dirs_at_root(temp.path(), &agents);
+        let dirs =
+            configured_agent_skill_read_dirs_at_root(temp.path(), &agents, SkillSource::Global);
 
         assert_eq!(dirs.len(), 2);
         assert_eq!(dirs[0].dir_name, ".codex");
         assert_eq!(dirs[1].dir_name, ".agents");
+    }
+
+    #[test]
+    fn configured_agent_skill_read_dirs_respect_split_scope_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        for directory in [".pi/agent/skills", ".pi/skills", ".agents/skills"] {
+            fs::create_dir_all(temp.path().join(directory)).unwrap();
+        }
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            agent_id("pi-acp"),
+            catalog_agent_default_config("pi-acp").unwrap(),
+        );
+
+        let global =
+            configured_agent_skill_read_dirs_at_root(temp.path(), &agents, SkillSource::Global);
+        let project =
+            configured_agent_skill_read_dirs_at_root(temp.path(), &agents, SkillSource::Project);
+
+        assert_eq!(
+            global
+                .iter()
+                .map(|directory| directory.dir_name.as_str())
+                .collect::<Vec<_>>(),
+            vec![".pi/agent", ".agents"]
+        );
+        assert_eq!(
+            project
+                .iter()
+                .map(|directory| directory.dir_name.as_str())
+                .collect::<Vec<_>>(),
+            vec![".pi", ".agents"]
+        );
     }
 
     #[test]

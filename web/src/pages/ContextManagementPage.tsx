@@ -20,6 +20,7 @@ import { AppCard } from '@/components/AppCard';
 import { EntitySection } from '@/components/EntitySection';
 import { McpServerCard } from '@/components/McpServerCard';
 import { EmptyState, Page, PageHeader } from '@/components/PageScaffold';
+import { SkillAgentOverflow } from '@/components/SkillAgentOverflow';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
@@ -40,7 +41,7 @@ import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatLocalDateTime } from '@/lib/datetime';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
-import { selectableSyncAgents, skillAvailableAgentTypes, skillSourceAgents } from '@/lib/skill-agent-display';
+import { configuredSkillAgents, selectableSyncAgents, skillAvailableAgentTypes, skillSourceAgents, type ConfiguredSkillAgentMeta } from '@/lib/skill-agent-display';
 import {
   buildSkillSaveRequest,
   createEmptySkillForm,
@@ -156,7 +157,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
   }, [skillError]);
 
   const configuredAgents = useMemo(
-    () => (agentRegistry?.catalog ?? []).filter((agent) => agent.configured),
+    () => configuredSkillAgents(agentRegistry),
     [agentRegistry],
   );
 
@@ -748,7 +749,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                 const syncAgents = selectableSyncAgents(skill, configuredAgents);
                 const syncedAgentTypes = new Set(skill.syncedAgentTypes);
                 return (
-                  <Card key={`${skill.source}:${skill.directoryPath}`} className="group flex h-40 gap-0 overflow-hidden border-border/50 py-0 transition-shadow hover:shadow-sm">
+                  <Card key={`${skill.source}:${skill.directoryPath}`} className="group flex h-44 gap-0 overflow-hidden border-border/50 py-0 transition-shadow hover:shadow-sm">
                     <div className="h-28 shrink-0 px-4 py-3">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0 flex-1">
@@ -761,72 +762,18 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                         <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{skill.source === 'global' ? t('contextManagement.skills.globalBadge', 'Global') : t('contextManagement.skills.projectBadge', 'Project')}</Badge>
                       </div>
                     </div>
-                    <div className="mt-auto flex h-12 shrink-0 items-center justify-between gap-2 border-t border-border/30 px-2 py-1">
-                      <div className="flex min-w-0 items-center gap-1.5 overflow-hidden px-2">
-                        {sourceAgents.length > 0 ? (
-                          <div className="flex min-w-0 items-center gap-0.5">
-                            {sourceAgents.map((sourceAgent) => (
-                              <TooltipProvider key={sourceAgent.agentType} delayDuration={300}>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <span className="flex size-6 shrink-0 items-center justify-center rounded-full">
-                                      <img src={agentIconSrc(sourceAgent.iconKey)} alt={sourceAgent.label} className={agentIconClass(sourceAgent.iconKey, 'size-3.5')} />
-                                    </span>
-                                  </TooltipTrigger>
-                                  <TooltipContent side="top">{sourceAgent.label}</TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
-                            ))}
-                          </div>
-                        ) : (
-                          <span className="truncate text-[11px] text-muted-foreground">{skill.agentSource || '.gold-band'}</span>
-                        )}
-                        {sourceAgents.length > 0 && syncAgents.length > 0 ? <span className="h-4 w-px shrink-0 bg-border/70" /> : null}
-                        {syncAgents.length > 0 ? (
-                          <div className="flex min-w-0 items-center gap-0.5">
-                            {syncAgents.map((agent) => {
-                              const isSynced = syncedAgentTypes.has(agent.agentType);
-                              const syncActionLabel = isSynced
-                                ? t('contextManagement.skills.unsyncAgent', { agent: agent.label, defaultValue: `取消同步 ${agent.label}` })
-                                : t('contextManagement.skills.syncAgent', { agent: agent.label, defaultValue: `同步到 ${agent.label}` });
-                              const pendingKey = `${skill.source}:${skill.directoryPath}:${agent.agentType}`;
-                              const isPending = skillSyncPendingKey === pendingKey;
-                              return (
-                                <TooltipProvider key={agent.agentType} delayDuration={300}>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button
-                                        type="button"
-                                        size="icon"
-                                        variant="ghost"
-                                        className="relative size-6 rounded-full hover:bg-muted"
-                                        disabled={isPending}
-                                        aria-label={syncActionLabel}
-                                        onClick={() => void handleSkillSyncToggle(skill, agent.agentType)}
-                                      >
-                                        {isPending ? (
-                                          <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
-                                        ) : (
-                                          <span className="relative grid size-5 place-items-center">
-                                            {isSynced ? <span className="pointer-events-none absolute left-0 top-0 z-10 size-1.5 rounded-full bg-emerald-500 ring-1 ring-background" /> : null}
-                                            <img
-                                              src={agentIconSrc(agent.iconKey)}
-                                              alt={agent.label}
-                                              className={agentIconClass(agent.iconKey, cn('relative z-0 size-3.5 transition-opacity', !isSynced && 'grayscale opacity-35'))}
-                                            />
-                                          </span>
-                                        )}
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="top">{syncActionLabel}</TooltipContent>
-                                  </Tooltip>
-                                </TooltipProvider>
-                              );
-                            })}
-                          </div>
-                        ) : null}
+                    <div className="mt-auto flex h-16 shrink-0 items-center justify-between gap-2 border-t border-border/30 px-2 py-1">
+                      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden px-2">
+                        {sourceAgents.length === 0 ? <span className="max-w-20 shrink-0 truncate text-[11px] text-muted-foreground">{skill.agentSource || '.gold-band'}</span> : null}
+                        <SkillAgentOverflow
+                          sourceAgents={sourceAgents}
+                          syncAgents={syncAgents}
+                          syncedAgentTypes={syncedAgentTypes}
+                          isPending={(agentType) => skillSyncPendingKey === `${skill.source}:${skill.directoryPath}:${agentType}`}
+                          onToggleAgent={(agentType) => void handleSkillSyncToggle(skill, agentType)}
+                        />
                       </div>
-                      <div className="flex items-center gap-1">
+                      <div className="flex shrink-0 items-center gap-1">
                         <TooltipProvider delayDuration={300}>
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -1051,7 +998,7 @@ function SkillSheet({
   editWorkspacePath: string | null;
   createSource: string;
   workspaces: SkillWorkspaceOption[];
-  configuredAgents: AgentRegistryVm['catalog'];
+  configuredAgents: ConfiguredSkillAgentMeta[];
   skillTab: 'global' | 'project';
   selectedWorkspace: string;
   onOpenChange: (open: boolean) => void;

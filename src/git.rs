@@ -58,9 +58,7 @@ impl GitCapability {
             GitCapabilityStatus::RepositoryRequired => Some("run.git-repository-required"),
             GitCapabilityStatus::HeadRequired => Some("run.git-head-required"),
             GitCapabilityStatus::WorktreeRequired => Some("run.git-worktree-required"),
-            GitCapabilityStatus::RepositoryUnavailable => {
-                Some("run.git-repository-unavailable")
-            }
+            GitCapabilityStatus::RepositoryUnavailable => Some("run.git-repository-unavailable"),
         }
     }
 }
@@ -108,6 +106,12 @@ pub struct GitRepositoryService {
 }
 
 impl GitRepositoryService {
+    pub fn initialize(&self, cwd: &Utf8Path) -> Result<GitCapability> {
+        let output = self.runner.run(cwd, &["init"])?;
+        ensure!(output.success, "git init failed: {}", details(&output));
+        Ok(self.probe(cwd))
+    }
+
     pub fn probe(&self, cwd: &Utf8Path) -> GitCapability {
         let version = match background_command("git").arg("--version").output() {
             Ok(output) if output.status.success() => output,
@@ -122,7 +126,9 @@ impl GitRepositoryService {
         };
         drop(version);
 
-        let Some(inside) = self.runner.capture(cwd, &["rev-parse", "--is-inside-work-tree"])
+        let Some(inside) = self
+            .runner
+            .capture(cwd, &["rev-parse", "--is-inside-work-tree"])
         else {
             return GitCapability {
                 status: GitCapabilityStatus::RepositoryRequired,
@@ -146,7 +152,10 @@ impl GitRepositoryService {
             .map(Utf8PathBuf::from);
         let common_dir = self
             .runner
-            .capture(cwd, &["rev-parse", "--path-format=absolute", "--git-common-dir"])
+            .capture(
+                cwd,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            )
             .map(Utf8PathBuf::from);
         if repo_root.is_none() || common_dir.is_none() {
             return GitCapability {
@@ -195,7 +204,11 @@ impl GitRepositoryService {
 
     pub fn head(&self, cwd: &Utf8Path) -> Result<String> {
         let output = self.runner.run(cwd, &["rev-parse", "HEAD"])?;
-        ensure!(output.success, "git rev-parse HEAD failed: {}", details(&output));
+        ensure!(
+            output.success,
+            "git rev-parse HEAD failed: {}",
+            details(&output)
+        );
         Ok(output.stdout)
     }
 
@@ -250,7 +263,11 @@ impl GitWorkspaceManager {
                 &message,
             ],
         )?;
-        ensure!(commit.success, "checkpoint commit failed: {}", details(&commit));
+        ensure!(
+            commit.success,
+            "checkpoint commit failed: {}",
+            details(&commit)
+        );
         ensure!(
             self.repository.status_porcelain(workspace)?.is_empty(),
             "workspace remained dirty after checkpoint"
@@ -270,16 +287,13 @@ impl GitWorkspaceManager {
         }
         let output = self.runner.run(
             repository_root,
-            &[
-                "worktree",
-                "add",
-                "-b",
-                branch,
-                path.as_str(),
-                fork_commit,
-            ],
+            &["worktree", "add", "-b", branch, path.as_str(), fork_commit],
         )?;
-        ensure!(output.success, "git worktree add failed: {}", details(&output));
+        ensure!(
+            output.success,
+            "git worktree add failed: {}",
+            details(&output)
+        );
         Ok(())
     }
 
@@ -293,7 +307,11 @@ impl GitWorkspaceManager {
             repository_root,
             &["worktree", "remove", "--force", path.as_str()],
         )?;
-        ensure!(remove.success, "git worktree remove failed: {}", details(&remove));
+        ensure!(
+            remove.success,
+            "git worktree remove failed: {}",
+            details(&remove)
+        );
         let branch_remove = self
             .runner
             .run(repository_root, &["branch", "-D", branch])?;
@@ -307,14 +325,32 @@ impl GitWorkspaceManager {
 
     pub fn validate_worktree(&self, path: &Utf8Path, branch: &str) -> Result<()> {
         let root = self.runner.run(path, &["rev-parse", "--show-toplevel"])?;
-        ensure!(root.success && root.stdout == path.as_str(), "workspace path is not the expected Git worktree");
+        ensure!(
+            root.success,
+            "workspace path is not a Git worktree: {}",
+            details(&root)
+        );
+        ensure!(
+            same_filesystem_path(Utf8Path::new(&root.stdout), path)?,
+            "workspace path is not the expected Git worktree"
+        );
         let actual = self.runner.run(path, &["branch", "--show-current"])?;
-        ensure!(actual.success && actual.stdout == branch, "workspace branch changed outside runtime");
+        ensure!(
+            actual.success && actual.stdout == branch,
+            "workspace branch changed outside runtime"
+        );
         Ok(())
     }
 
     fn ensure_no_in_progress_operation(&self, workspace: &Utf8Path) -> Result<()> {
-        for marker in ["MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
+        for marker in [
+            "MERGE_HEAD",
+            "REBASE_HEAD",
+            "rebase-merge",
+            "rebase-apply",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+        ] {
             let marker_path = self
                 .runner
                 .capture(workspace, &["rev-parse", "--git-path", marker])
@@ -326,6 +362,18 @@ impl GitWorkspaceManager {
         }
         Ok(())
     }
+}
+
+fn same_filesystem_path(left: &Utf8Path, right: &Utf8Path) -> Result<bool> {
+    let normalize = |path: &Utf8Path| -> Result<String> {
+        let canonical = std::fs::canonicalize(path.as_std_path())
+            .with_context(|| format!("failed to canonicalize Git workspace path `{path}`"))?;
+        let value = canonical.to_string_lossy().replace('\\', "/");
+        #[cfg(windows)]
+        let value = value.to_lowercase();
+        Ok(value)
+    };
+    Ok(normalize(left)? == normalize(right)?)
 }
 
 pub fn details(output: &GitCommandOutput) -> String {
@@ -341,6 +389,34 @@ pub fn details(output: &GitCommandOutput) -> String {
 mod tests {
     use super::*;
 
+    fn initialized_repository() -> (tempfile::TempDir, Utf8PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let runner = GitCommandRunner::default();
+        assert!(runner.run(&root, &["init"]).unwrap().success);
+        std::fs::write(root.join("README.md"), "initial\n").unwrap();
+        assert!(runner.run(&root, &["add", "README.md"]).unwrap().success);
+        assert!(
+            runner
+                .run(
+                    &root,
+                    &[
+                        "-c",
+                        "user.name=Gold Band Test",
+                        "-c",
+                        "user.email=test@gold-band.local",
+                        "commit",
+                        "--no-verify",
+                        "-m",
+                        "initial",
+                    ],
+                )
+                .unwrap()
+                .success
+        );
+        (dir, root)
+    }
+
     #[test]
     fn non_repository_has_repository_required_capability() {
         let dir = tempfile::tempdir().unwrap();
@@ -349,5 +425,90 @@ mod tests {
         if capability.status != GitCapabilityStatus::NotInstalled {
             assert_eq!(capability.status, GitCapabilityStatus::RepositoryRequired);
         }
+    }
+
+    #[test]
+    fn repository_without_head_is_rejected_before_run_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8Path::from_path(dir.path()).unwrap();
+        assert!(
+            GitCommandRunner::default()
+                .run(root, &["init"])
+                .unwrap()
+                .success
+        );
+        let capability = GitRepositoryService::default().probe(root);
+        assert_eq!(capability.status, GitCapabilityStatus::HeadRequired);
+        let error = GitRepositoryService::default()
+            .require_worktree(root)
+            .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<GitPreflightError>()
+                .map(|error| error.code),
+            Some("run.git-head-required")
+        );
+    }
+
+    #[test]
+    fn runtime_worktree_checkpoint_captures_tracked_and_untracked_changes() {
+        let (_dir, root) = initialized_repository();
+        let manager = GitWorkspaceManager::default();
+        let head = GitRepositoryService::default().head(&root).unwrap();
+        let worktree = root.join("runtime-worktrees").join("child");
+        manager
+            .create_worktree(&root, &worktree, "gb-test-child", &head)
+            .unwrap();
+        manager
+            .validate_worktree(&worktree, "gb-test-child")
+            .unwrap();
+        std::fs::write(worktree.join("README.md"), "changed\n").unwrap();
+        std::fs::write(worktree.join("new.txt"), "new\n").unwrap();
+
+        let checkpoint = manager
+            .checkpoint(&worktree, "workspace-child", Some("group-1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            checkpoint,
+            GitRepositoryService::default().head(&worktree).unwrap()
+        );
+        assert!(
+            GitRepositoryService::default()
+                .status_porcelain(&worktree)
+                .unwrap()
+                .is_empty()
+        );
+        let message = GitCommandRunner::default()
+            .run(&worktree, &["log", "-1", "--pretty=%B"])
+            .unwrap();
+        assert!(message.stdout.contains("Gold-Band-Internal: checkpoint"));
+        assert!(message.stdout.contains("Gold-Band-Group: group-1"));
+    }
+
+    #[test]
+    fn nested_worktree_can_fork_from_parent_checkpoint() {
+        let (_dir, root) = initialized_repository();
+        let manager = GitWorkspaceManager::default();
+        let head = GitRepositoryService::default().head(&root).unwrap();
+        let parent = root.join("runtime-worktrees").join("parent");
+        manager
+            .create_worktree(&root, &parent, "gb-test-parent", &head)
+            .unwrap();
+        std::fs::write(parent.join("parent.txt"), "checkpointed\n").unwrap();
+        let parent_checkpoint = manager
+            .checkpoint(&parent, "workspace-parent", Some("outer"))
+            .unwrap()
+            .unwrap();
+        let child = root.join("runtime-worktrees").join("nested-child");
+        manager
+            .create_worktree(&root, &child, "gb-test-nested", &parent_checkpoint)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(child.join("parent.txt"))
+                .unwrap()
+                .trim_end(),
+            "checkpointed"
+        );
     }
 }

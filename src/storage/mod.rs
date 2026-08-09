@@ -564,6 +564,20 @@ impl GoldBandPaths {
             .join(format!("{group_id}.json"))
     }
 
+    pub fn dynamic_workspace_file(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        workspace_id: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_dir(task_id, run_id, round_id, node_id, attempt_id)
+            .join("workspaces")
+            .join(format!("{workspace_id}.json"))
+    }
+
     pub fn dynamic_node_dir(
         &self,
         task_id: &str,

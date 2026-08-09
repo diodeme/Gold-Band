@@ -1,16 +1,12 @@
 import { useTranslation } from 'react-i18next';
 import { Info, Loader2, Pencil, Stethoscope, Trash2, Wrench } from 'lucide-react';
+import { McpAgentOverflow } from '@/components/McpAgentOverflow';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
-import {
-  mcpAgentSupportStatus,
-  shouldShowCompatibilityLoading,
-  type McpAgentCompatibility,
-} from '@/lib/mcp-agent-compatibility';
+import type { McpAgentCompatibility } from '@/lib/mcp-agent-compatibility';
 import { cn } from '@/lib/utils';
 import type { McpServerVm } from '../types';
 
@@ -72,7 +68,7 @@ export function McpServerCard({
   const { t } = useTranslation();
   const transportLabel = TRANSPORT_LABEL[server.transport] ?? server.transport;
   return (
-    <Card className={cn('group flex h-40 flex-col overflow-hidden border-border/50 py-0 transition-shadow hover:shadow-sm', !server.enabled && 'opacity-50')}>
+    <Card className={cn('group flex h-44 flex-col overflow-hidden border-border/50 py-0 transition-shadow hover:shadow-sm', !server.enabled && 'opacity-50')}>
       {/* ── 上区：名称 / 传输 / 健康点 / 开关 ── */}
       <div className="flex items-center gap-3 px-4 py-3">
         <TooltipProvider delayDuration={300}>
@@ -125,76 +121,16 @@ export function McpServerCard({
         </button>
       </div>
       {/* ── 下区（footer）：agent 兼容性图标 + 健康消息 / 操作按钮 ── */}
-      <div className="mt-auto flex items-center justify-between gap-2 border-t border-border/30 px-2 py-1.5">
-        <div className="flex min-w-0 items-center gap-2 px-2">
+      <div className="mt-auto flex h-16 shrink-0 items-center justify-between gap-2 border-t border-border/30 px-2 py-1.5">
+        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden px-2">
           {agentCompatibility && agentCompatibility.length > 0 ? (
-            <div className="flex shrink-0 items-center gap-0.5">
-              {agentCompatibility.map((agent) => {
-                const status = mcpAgentSupportStatus(server.transport, agent);
-                const isDiagnosing = diagnosingAgentType === agent.agentType;
-                const clickable = status === 'unknown' && !!onDiagnoseAgent && !isDiagnosing;
-                const showLoading = shouldShowCompatibilityLoading(status, isDiagnosing);
-                const tip =
-                  status === 'supported'
-                    ? t('contextManagement.mcp.agentSupports', { agent: agent.label, transport: transportLabel, defaultValue: '{{agent}} 支持 {{transport}} MCP 传输' })
-                    : status === 'unsupported'
-                      ? t('contextManagement.mcp.agentNotSupports', { agent: agent.label, transport: transportLabel, defaultValue: '{{agent}} 不支持 {{transport}} MCP 传输' })
-                      : status === 'unavailable'
-                        ? t('contextManagement.mcp.agentUnavailable', {
-                          agent: agent.label,
-                          reason: agent.diagnosticReason ?? t('agentManagement.diagnosticFailedFallback'),
-                          defaultValue: '{{agent}} 当前不可用：{{reason}}',
-                        })
-                        : isDiagnosing
-                          ? t('contextManagement.mcp.agentChecking', { agent: agent.label, defaultValue: '正在更新 {{agent}} 的 MCP 兼容性' })
-                          : t('contextManagement.mcp.agentUnknown', { agent: agent.label, defaultValue: '{{agent}} 尚未声明 MCP 兼容性，点击重新检测' });
-                return (
-                  <TooltipProvider key={agent.agentType} delayDuration={300}>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="inline-grid size-6 place-items-center rounded-full hover:bg-muted">
-                          <button
-                            type="button"
-                            className="relative grid size-6 place-items-center rounded-full disabled:pointer-events-none"
-                            disabled={!clickable}
-                            aria-busy={isDiagnosing}
-                            aria-label={tip}
-                            onClick={clickable ? () => onDiagnoseAgent?.(agent.agentType) : undefined}
-                          >
-                            {showLoading ? (
-                              <Loader2 className="size-3.5 animate-spin text-muted-foreground/70" />
-                            ) : (
-                              <span className="relative grid size-5 place-items-center">
-                                {status === 'supported' && (
-                                  <span className="pointer-events-none absolute left-0 top-0 z-10 size-1.5 rounded-full bg-emerald-500 ring-1 ring-background" />
-                                )}
-                                {status === 'unavailable' && (
-                                  <span className="pointer-events-none absolute left-0 top-0 z-10 size-1.5 rounded-full bg-red-500 ring-1 ring-background" />
-                                )}
-                                <img
-                                  src={agentIconSrc(agent.iconKey)}
-                                  alt={agent.label}
-                                  className={agentIconClass(
-                                    agent.iconKey,
-                                    cn(
-                                      'relative z-0 size-3.5 transition-opacity',
-                                      (status === 'unsupported' || status === 'unavailable') && 'grayscale opacity-35',
-                                      status === 'unknown' && 'grayscale opacity-55',
-                                      clickable && 'cursor-pointer',
-                                    ),
-                                  )}
-                                />
-                              </span>
-                            )}
-                          </button>
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent side="top">{tip}</TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                );
-              })}
-            </div>
+            <McpAgentOverflow
+              agents={agentCompatibility}
+              transport={server.transport}
+              transportLabel={transportLabel}
+              diagnosingAgentType={diagnosingAgentType}
+              onDiagnoseAgent={onDiagnoseAgent}
+            />
           ) : agentCompatLoading ? (
             <div className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
               <Loader2 className="size-3 animate-spin" />

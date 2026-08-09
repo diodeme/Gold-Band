@@ -15,8 +15,42 @@ permissions:
   contents: write
 
 jobs:
+  release-preflight:
+    name: Verify release tag on Linux
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Check Rust workspace
+        run: cargo check --workspace --all-targets
+
   build:
     name: Build ${{ matrix.platform.name }}
+    needs: release-preflight
     runs-on: ${{ matrix.platform.runner }}
 
     strategy:

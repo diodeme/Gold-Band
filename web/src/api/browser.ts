@@ -354,6 +354,12 @@ function browserSvgDataUrl(content: string) {
 }
 
 export const browserApi: RuntimeApi = {
+  getGitCapability() {
+    return Promise.resolve({ status: 'repository-required', repoRoot: null, commonDir: null, head: null });
+  },
+  initializeGitRepository() {
+    return Promise.resolve({ status: 'head-required', repoRoot: null, commonDir: null, head: null });
+  },
   completeMainWindowClose() {
     return Promise.resolve();
   },

@@ -15,6 +15,7 @@ describe('agent icon helpers', () => {
   it('inverts bundled monochrome icons only in dark mode', () => {
     expect(agentIconClass('claude', 'size-4')).toContain('dark:invert');
     expect(agentIconClass(' amp-acp ', 'size-4')).toContain('dark:invert');
+    expect(agentIconClass('pi-acp', 'size-4')).toContain('dark:invert');
     expect(agentIconClass('agent', 'size-4')).not.toContain('dark:invert');
     expect(agentIconClass('https://example.com/icon.svg', 'size-4')).not.toContain('dark:invert');
   });

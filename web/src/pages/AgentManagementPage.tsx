@@ -16,7 +16,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { AlertTriangle, Bot, CheckCircle2, CircleHelp, ImagePlus, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Stethoscope, Trash2 } from 'lucide-react';
+import { AlertTriangle, Bot, CheckCircle2, CircleHelp, ImagePlus, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Split, Stethoscope, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
 import { AGENT_ICON_ACCEPT, DEFAULT_AGENT_ICON_KEY, agentIconClass, agentIconSrc, readAgentIconFile } from '@/lib/agent-icons';
@@ -66,6 +66,7 @@ const defaultForm = (): ManagedAgentInput => ({
   args: [],
   env: {},
   primaryAgentDir: '',
+  projectPrimaryAgentDir: null,
   compatibleAgentDirs: [],
   externalSessionSyncSupported: false,
   externalSessionSyncEnabled: false,
@@ -102,6 +103,7 @@ const formFromCatalogAgent = (agentType?: AgentCatalogEntryVm): ManagedAgentInpu
   args: agentType.defaultArgs,
   env: Object.fromEntries(agentType.defaultEnv.map((entry) => [entry.key, entry.value])),
   primaryAgentDir: agentType.primaryAgentDir,
+  projectPrimaryAgentDir: agentType.projectPrimaryAgentDir,
   compatibleAgentDirs: agentType.compatibleAgentDirs,
   externalSessionSyncSupported: agentType.supportsExternalSessionSync,
   externalSessionSyncEnabled: false,
@@ -450,13 +452,70 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
                 />
               </div>
             </FieldActionGroup>
-            <Field label={t('agentManagement.primaryAgentDir')} description={t('agentManagement.primaryAgentDirDescription')}>
-              <TextInput
-                value={editor.form.primaryAgentDir}
-                placeholder={t('agentManagement.primaryAgentDirPlaceholder')}
-                onChange={(event: ChangeEvent<HTMLInputElement>) => setEditor((current) => ({ ...current, form: { ...current.form, primaryAgentDir: event.target.value } }))}
-              />
-            </Field>
+            <FieldActionGroup
+              label={t('agentManagement.primaryAgentDir')}
+              description={t('agentManagement.primaryAgentDirDescription')}
+              action={(
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant={editor.form.projectPrimaryAgentDir === null ? 'ghost' : 'secondary'}
+                        size="icon"
+                        className={cn(
+                          'size-8 shrink-0 rounded-md',
+                          editor.form.projectPrimaryAgentDir !== null && 'text-primary ring-1 ring-primary/25',
+                        )}
+                        aria-label={t('agentManagement.splitPrimaryAgentDirs')}
+                        aria-pressed={editor.form.projectPrimaryAgentDir !== null}
+                        onClick={() => setEditor((current) => ({
+                          ...current,
+                          form: {
+                            ...current.form,
+                            projectPrimaryAgentDir: current.form.projectPrimaryAgentDir === null
+                              ? current.form.primaryAgentDir
+                              : null,
+                          },
+                        }))}
+                      >
+                        <Split className="size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={6} className="text-xs">
+                      {t('agentManagement.splitPrimaryAgentDirs')}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
+            >
+              {editor.form.projectPrimaryAgentDir === null ? (
+                <TextInput
+                  value={editor.form.primaryAgentDir}
+                  placeholder={t('agentManagement.primaryAgentDirPlaceholder')}
+                  onChange={(event: ChangeEvent<HTMLInputElement>) => setEditor((current) => ({ ...current, form: { ...current.form, primaryAgentDir: event.target.value } }))}
+                />
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="space-y-1.5">
+                    <span className="text-xs font-medium text-muted-foreground">{t('agentManagement.globalPrimaryAgentDir')}</span>
+                    <TextInput
+                      value={editor.form.primaryAgentDir}
+                      placeholder={t('agentManagement.globalPrimaryAgentDirPlaceholder')}
+                      onChange={(event: ChangeEvent<HTMLInputElement>) => setEditor((current) => ({ ...current, form: { ...current.form, primaryAgentDir: event.target.value } }))}
+                    />
+                  </label>
+                  <label className="space-y-1.5">
+                    <span className="text-xs font-medium text-muted-foreground">{t('agentManagement.projectPrimaryAgentDir')}</span>
+                    <TextInput
+                      value={editor.form.projectPrimaryAgentDir}
+                      placeholder={t('agentManagement.projectPrimaryAgentDirPlaceholder')}
+                      onChange={(event: ChangeEvent<HTMLInputElement>) => setEditor((current) => ({ ...current, form: { ...current.form, projectPrimaryAgentDir: event.target.value } }))}
+                    />
+                  </label>
+                </div>
+              )}
+            </FieldActionGroup>
             <Field label={t('agentManagement.compatibleAgentDirs')} description={t('agentManagement.compatibleAgentDirsDescription')}>
               <ConfigTextarea
                 className="min-h-20"
@@ -629,11 +688,17 @@ function TextInput(props: InputHTMLAttributes<HTMLInputElement>) {
   return <input {...props} className={cn('h-10 w-full rounded-md border border-border/60 bg-background px-3 text-sm text-foreground shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60', props.className)} />;
 }
 
-function FieldActionGroup({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
+function FieldActionGroup({ label, description, action, children }: { label: string; description?: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
     <fieldset className="min-w-0 space-y-2 border-0 p-0">
-      <legend className="text-sm font-semibold text-foreground">{label}</legend>
-      {description ? <div className="text-xs text-muted-foreground">{description}</div> : null}
+      <legend className="sr-only">{label}</legend>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <div aria-hidden="true" className="text-sm font-semibold text-foreground">{label}</div>
+          {description ? <div className="text-xs text-muted-foreground">{description}</div> : null}
+        </div>
+        {action}
+      </div>
       {children}
     </fieldset>
   );
@@ -761,6 +826,7 @@ function agentInputFromVm(agent: ManagedAgentVm): ManagedAgentInput {
     args: agent.args,
     env: Object.fromEntries(agent.env.map((entry) => [entry.key, entry.value])),
     primaryAgentDir: agent.primaryAgentDir,
+    projectPrimaryAgentDir: agent.projectPrimaryAgentDir,
     compatibleAgentDirs: agent.compatibleAgentDirs,
     externalSessionSyncSupported: agent.externalSessionSyncSupported,
     externalSessionSyncEnabled: agent.externalSessionSyncEnabled,
@@ -780,7 +846,13 @@ export function buildAgentInput(
     args: parseArgs(argsText),
     env: parseEnv(envText),
     primaryAgentDir: form.primaryAgentDir.trim(),
-    compatibleAgentDirs: parseAgentDirs(compatibleAgentDirsText, form.primaryAgentDir),
+    projectPrimaryAgentDir: form.projectPrimaryAgentDir === null
+      ? null
+      : form.projectPrimaryAgentDir.trim(),
+    compatibleAgentDirs: parseAgentDirs(
+      compatibleAgentDirsText,
+      [form.primaryAgentDir, form.projectPrimaryAgentDir ?? ''],
+    ),
     externalSessionSyncSupported: form.externalSessionSyncSupported,
     externalSessionSyncEnabled: form.externalSessionSyncSupported && form.externalSessionSyncEnabled,
   };
@@ -806,8 +878,11 @@ function managedAgentInputFingerprint(input: ManagedAgentInput): string {
     args: input.args,
     env: Object.entries(input.env).sort(([left], [right]) => left.localeCompare(right)),
     primaryAgentDir: input.primaryAgentDir.trim(),
+    projectPrimaryAgentDir: input.projectPrimaryAgentDir === null
+      ? null
+      : input.projectPrimaryAgentDir.trim(),
     compatibleAgentDirs: [...new Set(input.compatibleAgentDirs.map((directory) => directory.trim()).filter(Boolean))]
-      .filter((directory) => directory !== input.primaryAgentDir.trim()),
+      .filter((directory) => ![input.primaryAgentDir.trim(), input.projectPrimaryAgentDir?.trim()].includes(directory)),
     externalSessionSyncSupported: input.externalSessionSyncSupported,
     externalSessionSyncEnabled: input.externalSessionSyncSupported && input.externalSessionSyncEnabled,
   });
@@ -825,10 +900,10 @@ function formatAgentDirs(directories: string[]) {
   return directories.join('\n');
 }
 
-function parseAgentDirs(value: string, primaryAgentDir: string) {
-  const primary = primaryAgentDir.trim();
+function parseAgentDirs(value: string, primaryAgentDirs: string[]) {
+  const primary = new Set(primaryAgentDirs.map((directory) => directory.trim()).filter(Boolean));
   return [...new Set(value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean))]
-    .filter((directory) => directory !== primary);
+    .filter((directory) => !primary.has(directory));
 }
 
 function parseArgs(value: string) {

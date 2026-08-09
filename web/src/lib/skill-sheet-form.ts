@@ -1,4 +1,4 @@
-import type { AgentCatalogEntryVm, SkillContentVm, SkillMetaVm } from '@/types';
+import type { SkillContentVm, SkillMetaVm } from '@/types';
 
 export type SkillSheetMode = 'view' | 'create' | 'edit';
 
@@ -37,7 +37,7 @@ export function createSkillFormFromContent(
 
 export function filterSkillSyncTargets(
   current: string[],
-  availableAgents: AgentCatalogEntryVm[],
+  availableAgents: Array<{ agentType: string }>,
 ) {
   const available = new Set(availableAgents.map((agent) => agent.agentType));
   return current.filter((agentType) => available.has(agentType));

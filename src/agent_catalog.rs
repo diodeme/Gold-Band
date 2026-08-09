@@ -36,6 +36,8 @@ pub struct AgentCatalogEntry {
     pub env: std::collections::BTreeMap<String, String>,
     pub primary_agent_dir: Option<String>,
     #[serde(default)]
+    pub project_primary_agent_dir: Option<String>,
+    #[serde(default)]
     pub compatible_agent_dirs: Vec<String>,
     #[serde(default)]
     pub supports_system_prompt: bool,
@@ -87,8 +89,14 @@ mod tests {
     #[test]
     fn embedded_catalog_contains_the_curated_agents() {
         let catalog = builtin_agent_catalog();
-        assert_eq!(catalog.agents.len(), 10);
+        assert_eq!(catalog.agents.len(), 11);
         assert!(builtin_agent("amp-acp").is_some());
+        let pi = builtin_agent("pi-acp").unwrap();
+        assert_eq!(pi.command, "npx");
+        assert_eq!(pi.args, ["-y", "pi-acp@0.0.33"]);
+        assert_eq!(pi.primary_agent_dir.as_deref(), Some(".pi/agent"));
+        assert_eq!(pi.project_primary_agent_dir.as_deref(), Some(".pi"));
+        assert_eq!(pi.compatible_agent_dirs, [".agents"]);
         assert!(builtin_agent("glm-acp-agent").is_none());
         let kimi = builtin_agent("kimi").unwrap();
         assert_eq!(kimi.primary_agent_dir.as_deref(), Some(".kimi-code"));

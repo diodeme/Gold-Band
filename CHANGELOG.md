@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.2](https://github.com/diodeme/Gold-Band/compare/v0.12.1...v0.12.2) (2026-08-09)
+
+
+### Bug Fixes
+
+* **desktop:** unify lifecycle and notification handling ([d529b6e](https://github.com/diodeme/Gold-Band/commit/d529b6e52582facce1612b19fd8b26bfa1fba554))
+
 ## [0.12.1](https://github.com/diodeme/Gold-Band/compare/v0.12.0...v0.12.1) (2026-08-07)
 
 

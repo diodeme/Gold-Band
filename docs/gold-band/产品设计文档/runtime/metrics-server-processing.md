@@ -42,7 +42,7 @@ report_date = events[0].reportedAt 按 Asia/Shanghai 转换后的日期
 - `occurred_at/started_at/ended_at` 是 `DATETIME(3)` 生命周期时间戳，不是分区日期。
 - `received_at` 使用 `DATETIME(3)`，仅用于接收延迟和排障。
 - API 输入时间为本地时间，不带时区偏移量，格式 `yyyy-MM-ddTHH:mm:ss.SSS`。服务端解析为时间点后统一转换为 UTC，所有 `DATETIME(3)` 字段均按 UTC 写入，数据库连接时区固定为 `+00:00`；只有 `report_date` 按 Asia/Shanghai 从 `reportedAt` 计算。
-- 客户端不再单独上报 `taskId` 和 `parentExecutionId` 字段。`executionId` 即 `taskId`，服务端各表的 `task_id` 列直接从 `executionId` 提取。客户端同时上报 `taskTitle`（任务标题，即工作空间下展示的名称），服务端各表的 `task_title` 列直接从 payload 提取、不做计算。AUTO unit 的节点标识统一用 `nodeId`，不再有 `unitId` 字段。
+- 客户端不再单独上报 `taskId` 和 `parentExecutionId` 字段。`executionId` 即 `taskId`，服务端不再保留独立的 `task_id` 列。客户端同时上报 `taskTitle`（任务标题，即工作空间下展示的名称），服务端各表的 `task_title` 列直接从 payload 提取、不做计算。AUTO unit 的节点标识统一用 `nodeId`，不再有 `unitId` 字段。
 
 ### 3.2 批次分区规则
 
@@ -260,7 +260,6 @@ CREATE TABLE ml_metric_event (
     received_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     user_id VARCHAR(128) NOT NULL,
     workspace VARCHAR(255) NOT NULL,
-    task_id VARCHAR(128) NOT NULL,
     task_title VARCHAR(255) NULL COMMENT '任务标题，即工作空间下展示的名称',
     session_mode VARCHAR(16) NOT NULL,
     execution_kind VARCHAR(32) NOT NULL,
@@ -297,7 +296,6 @@ CREATE TABLE ml_metric_attempt (
     user_id VARCHAR(128) NOT NULL,
     workspace VARCHAR(255) NOT NULL,
     client_version VARCHAR(64) NULL,
-    task_id VARCHAR(128) NOT NULL,
     task_title VARCHAR(255) NULL COMMENT '任务标题，即工作空间下展示的名称',
     node_id VARCHAR(128) NULL,
     round_index INT UNSIGNED NULL,
@@ -362,7 +360,6 @@ CREATE TABLE ml_metric_logical_execution (
     session_mode VARCHAR(16) NOT NULL,
     user_id VARCHAR(128) NOT NULL,
     workspace VARCHAR(255) NOT NULL,
-    task_id VARCHAR(128) NOT NULL,
     task_title VARCHAR(255) NULL COMMENT '任务标题，即工作空间下展示的名称',
     node_id VARCHAR(128) NULL,
     round_index INT UNSIGNED NULL,
@@ -407,7 +404,6 @@ CREATE TABLE ml_metric_delivery_stat (
     user_id VARCHAR(128) NOT NULL,
     workspace VARCHAR(255) NOT NULL,
     client_version VARCHAR(64) NULL,
-    task_id VARCHAR(128) NOT NULL,
     task_title VARCHAR(255) NULL COMMENT '任务标题，即工作空间下展示的名称',
     state VARCHAR(16) NOT NULL,
     outcome VARCHAR(16) NULL,
@@ -433,7 +429,7 @@ CREATE TABLE ml_metric_delivery_stat (
     CONSTRAINT chk_delivery_state CHECK (state IN ('running', 'paused', 'terminal')),
     PRIMARY KEY (report_date, execution_id),
     KEY idx_delivery_mode (report_date, session_mode, execution_kind, outcome),
-    KEY idx_delivery_user (report_date, user_id, workspace, task_id),
+    KEY idx_delivery_user (report_date, user_id, workspace, execution_id),
     KEY idx_delivery_reason (report_date, terminal_reason, outcome)
 ) ENGINE=InnoDB
 PARTITION BY RANGE COLUMNS(report_date) (

@@ -1,4 +1,4 @@
-# 指标上报客户端变更与服务端优化方案
+﻿# 指标上报客户端变更与服务端优化方案
 
 > 本文档梳理 `feature_metrics_report` 分支从 `8b622fb` 到 `70561c9` 共 6 个 commit 的客户端改动，分析其对服务端接收、校验、存储和投影逻辑的影响，并给出服务端适配优化清单。
 >
@@ -10,7 +10,7 @@
 
 | 变更类型 | 字段 | 说明 |
 |---|---|---|
-| **删除** | `taskId` | 不再单独上报，`executionId` 即 `taskId`，服务端各表 `task_id` 列从 `executionId` 提取 |
+| **删除** | `taskId` | 不再单独上报，`executionId` 即 `taskId`，服务端不再保留独立 `task_id` 列 |
 | **删除** | `parentExecutionId` | AUTO 模式不再有父子 execution 层级，所有节点共享同一 `executionId` |
 | **删除** | `unitId` | 节点标识统一用 `nodeId` |
 | **新增** | `taskTitle` | 任务标题，即工作空间下展示的名称；所有事件携带，`Option<String>` 缺失时跳过序列化 |
@@ -70,7 +70,7 @@
 |---|---|---|
 | **时间格式解析** | P0 | 服务端必须能解析无时区偏移量的 `yyyy-MM-ddTHH:mm:ss.SSS` 格式。旧的 RFC3339 解析器无法直接解析。需将时间字符串视为本地时间（客户端时区 = Asia/Shanghai），再转换为 UTC 存储 |
 | **executionId 语义** | P0 | 服务端所有以 `executionId` 为键的查找、投影和统计逻辑需要适配新语义。Workflow node 的 executionId 不再含 runUuid 前缀；AUTO unit 的 executionId 不再是 runUuid |
-| **taskId 字段移除** | P1 | 服务端 `task_id` 列的取值源从 `taskId` 字段改为 `executionId`。DDL 不变，提取逻辑需更新 |
+| **taskId 字段移除** | P1 | 服务端不再保留 `task_id` 列，`executionId` 已包含其语义。DDL 需删除 `task_id` 列 |
 | **parentExecutionId 移除** | P1 | 服务端不再需要处理 AUTO 的父子层级关联。投影查询简化：不再通过 parentExecutionId 查找子节点 |
 | **unitId 移除** | P1 | 服务端 `node_id` 列的取值源从 `unitId` 改为 `nodeId`。DDL 不变，提取逻辑需更新 |
 | **started 事件 model 为 null** | P2 | 服务端 attempt 表的 `final_model` 不能从 started 事件初始化，须等到 completed 事件 |
@@ -151,7 +151,7 @@ WHERE report_date = ? AND execution_id = ?;
 
 | 服务端列 | 旧提取路径 | 新提取路径 |
 |---|---|---|
-| `task_id` | `$.taskId` | `$.executionId`（值相同） |
+| ~~`task_id`~~ | `$.taskId` | 列已删除，`executionId` 即 `taskId` |
 | `task_title` | 不存在 | `$.taskTitle`（新增） |
 | `node_id` | `$.unitId`（AUTO）/ `$.nodeId`（Workflow） | `$.nodeId`（统一） |
 | `final_model` | 从 started 或 completed 均可取 | 仅从 completed 取（started 为 null） |
@@ -163,7 +163,7 @@ WHERE report_date = ? AND execution_id = ?;
 |---|---|---|
 | `occurredAt` 格式 | 必须为 RFC3339 | 必须为 `yyyy-MM-ddTHH:mm:ss.SSS`（无偏移量） |
 | `reportedAt` 格式 | 同上 | 同上 |
-| `taskId` 存在性 | 必填 | 字段已删除，不再校验 |
+| ~~`task_id` 列~~ | 从 `$.taskId` 提取 | 列已删除，`executionId` 已是 task UUID |
 | `parentExecutionId` | AUTO 必填 | 字段已删除，不再校验 |
 | `unitId` | AUTO 必填 | 字段已删除，不再校验 |
 | `nodeId` | AUTO 从 `unitId` 取 | AUTO 从 `nodeId` 取 |
@@ -206,7 +206,7 @@ GROUP BY d.execution_id, d.outcome;
 | 优先级 | 任务 | 阻塞性 |
 |---|---|---|
 | P0 | 时间格式解析适配（无偏移量本地时间 转 UTC） | 阻塞所有数据接收，当前返回 `METRICS_FIELD_INVALID` |
-| P0 | `task_id` 提取路径从 `taskId` 改为 `executionId` | 阻塞插入（NOT NULL 列无值） |
+| P0 | DDL 删除 `task_id` 列（`executionId` 已包含语义） | 阻塞建表 |
 | P1 | `node_id` 提取路径从 `unitId` 改为 `nodeId` | 影响 AUTO 数据写入 |
 | P1 | `task_title` 列和 `collectionStateRecovered` 字段提取 | 非阻塞（可为 NULL），但影响数据完整性 |
 | P1 | started 事件 `model` 允许为 null，不覆盖 `final_model` | 影响模型统计 |

@@ -64,6 +64,10 @@ export function createProfile(input: Parameters<ReturnType<typeof getRuntimeApi>
   return getRuntimeApi().createProfile(input);
 }
 
+export function importProfilesFromFolder(folderPath: string, dynamicTemplate: boolean) {
+  return getRuntimeApi().importProfilesFromFolder(folderPath, dynamicTemplate);
+}
+
 export function updateProfile(id: string, input: Parameters<ReturnType<typeof getRuntimeApi>['updateProfile']>[1]) {
   return getRuntimeApi().updateProfile(id, input);
 }

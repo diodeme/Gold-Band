@@ -1908,7 +1908,7 @@ dependencies = [
 
 [[package]]
 name = "gold-band"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "agent-client-protocol-schema",
  "anyhow",
@@ -1946,12 +1946,13 @@ dependencies = [
  "url",
  "uuid",
  "uzers",
+ "walkdir",
  "winreg",
 ]
 
 [[package]]
 name = "gold-band-desktop"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "anyhow",
  "atomic-write-file",

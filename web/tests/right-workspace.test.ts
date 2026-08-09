@@ -9,8 +9,10 @@ import {
   createConversationWorkspaceScope,
   createDraftConversationWorkspaceScope,
   createInitialRightWorkspaceState,
+  fileBrowserWorkspaceResourceKey,
   rightWorkspaceReducer,
   type AgentTranscriptLocator,
+  type FileWorkspaceResource,
   type RightWorkspaceResource,
 } from '@/components/workspace/right-workspace-context';
 
@@ -61,7 +63,7 @@ describe('right workspace resource model', () => {
     expect(state.openRevision).toBe(3);
   });
 
-  it('closes the active tab to its adjacent tab and leaves the empty workspace open', () => {
+  it('closes the active tab to its adjacent tab and collapses after the last tab closes', () => {
     let state = createInitialRightWorkspaceState();
     for (const branch of ['agent-a', 'agent-b', 'agent-c']) {
       state = rightWorkspaceReducer(state, { type: 'open', resource: agent(branch) });
@@ -72,7 +74,7 @@ describe('right workspace resource model', () => {
 
     state = rightWorkspaceReducer(state, { type: 'close', key: agent('agent-c').key });
     state = rightWorkspaceReducer(state, { type: 'close', key: agent('agent-a').key });
-    expect(state).toMatchObject({ tabs: [], activeTabKey: null, requestedOpen: true });
+    expect(state).toMatchObject({ tabs: [], activeTabKey: null, requestedOpen: false });
   });
 
   it('opens and closes an empty workspace independently from its resources', () => {
@@ -94,17 +96,30 @@ describe('right workspace resource model', () => {
     expect(state.requestedOpen).toBe(true);
   });
 
-  it('supports future resource kinds without storing resource contents in tab state', () => {
-    const file: RightWorkspaceResource = {
+  it('normalizes project files into one locator-only file browser tab', () => {
+    const file: FileWorkspaceResource = {
       kind: 'file',
       key: 'file:D:/repo/src/main.rs',
       scopeKey: 'draft:default',
+      projectId: 'default',
       title: 'main.rs',
-      path: 'D:/repo/src/main.rs',
       attention: false,
+      locator: {
+        projectId: 'default',
+        canonicalPath: 'D:/repo/src/main.rs',
+        relativePath: 'src/main.rs',
+        scope: 'workspace',
+      },
+      target: null,
+      targetRevision: 1,
     };
     const state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource: file });
-    expect(state.tabs).toEqual([file]);
+    expect(state.tabs).toHaveLength(1);
+    expect(state.tabs[0]).toMatchObject({
+      kind: 'file-browser',
+      key: fileBrowserWorkspaceResourceKey('default'),
+      selectedFile: file,
+    });
     expect(state.tabs[0]).not.toHaveProperty('content');
   });
 

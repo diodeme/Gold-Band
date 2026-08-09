@@ -653,6 +653,49 @@ export interface ProfileInput {
   dynamicTemplate: boolean;
 }
 
+export interface ImportProfilesInput {
+  folderPath: string;
+  dynamicTemplate: boolean;
+}
+
+export type ImportRecordStatus =
+  | 'imported'
+  | 'imported-with-fallbacks'
+  | 'failed';
+
+export type ProfileFieldFallback =
+  | 'name'
+  | 'summary'
+  | 'frontmatter-missing'
+  | 'dynamic-template-downgraded';
+
+export type ImportProfileErrorCode =
+  | 'read-failed'
+  | 'invalid-frontmatter'
+  | 'empty-file'
+  | 'missing-name'
+  | 'create-failed';
+
+export interface ImportProfileError {
+  code: ImportProfileErrorCode;
+}
+
+export interface ImportedProfileRecord {
+  sourcePath: string;
+  status: ImportRecordStatus;
+  name: string;
+  fallbacks: ProfileFieldFallback[];
+  importedId: string | null;
+  error: ImportProfileError | null;
+}
+
+export interface ImportProfilesResult {
+  totalScanned: number;
+  imported: ImportedProfileRecord[];
+  failed: ImportedProfileRecord[];
+  truncated: boolean;
+}
+
 export interface SaveWorkflowInput {
   workflow: WorkflowDsl;
 }

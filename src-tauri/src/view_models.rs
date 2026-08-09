@@ -8386,8 +8386,7 @@ mod tests {
                         "chainId": "bootstrap",
                         "depth": 0,
                         "dependsOn": [],
-                        "workspace": { "mode": "readonly" },
-                        "workspacePath": null,
+                        "workspaceId": "workspace-main",
                         "provider": "claude-acp",
                         "profile": null,
                         "permissionMode": "bypassPermissions",
@@ -8413,8 +8412,7 @@ mod tests {
                         "chainId": "bootstrap",
                         "depth": 1,
                         "dependsOn": [],
-                        "workspace": { "mode": "main" },
-                        "workspacePath": null,
+                        "workspaceId": "workspace-main",
                         "provider": "claude-acp",
                         "profile": "pf-builtin-dev",
                         "permissionMode": "bypassPermissions",
@@ -8429,6 +8427,23 @@ mod tests {
                     }
                 ],
                 "groups": [],
+                "workspaces": [{
+                    "version": "0.1",
+                    "id": "workspace-main",
+                    "dynamicRunId": "dynamic-run-001",
+                    "kind": "main",
+                    "ownership": "user",
+                    "repoRoot": app.paths.repo_root,
+                    "path": app.paths.repo_root,
+                    "branch": null,
+                    "parentWorkspaceId": null,
+                    "createdByGroupId": null,
+                    "forkCommit": "test-head",
+                    "checkpointCommit": null,
+                    "status": "active",
+                    "createdAt": "2026-06-17T10:00:00Z",
+                    "updatedAt": "2026-06-17T10:00:00Z"
+                }],
                 "proposals": []
             }),
         )

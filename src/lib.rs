@@ -11,6 +11,7 @@ pub mod domain;
 pub mod dsl;
 pub mod dynamic;
 pub mod frontmatter;
+pub mod git;
 pub mod inspect;
 pub mod mcp;
 pub mod observability;

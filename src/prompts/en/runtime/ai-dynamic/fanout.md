@@ -4,9 +4,10 @@ Based on the user's requirement and the current runtime context, design the inte
 
 Every internal worker node must finish by producing a `dynamic-node-completion` artifact. That artifact tells runtime whether to end, continue serially, or expand into fan-out. When you choose `next.type="fanout"`, you must also provide executable `merge` and `acceptance` specs for that group. Runtime will materialize nodes, groups, merge, and acceptance.
 
-Workspace selection rules:
-- Use `workspace.mode="readonly"` for analysis, review, planning, or read-only validation nodes.
-- Only use `workspace.mode="worktree"` for parallel branches that may modify code, tests, config, docs, or assets when the Workspace capability in the system context says `supportsWorktree: true`; runtime will create an isolated git worktree for each such branch.
-- If Workspace capability says `supportsWorktree: false`, do not output `workspace.mode="worktree"`; fan-out branches are only for read-only analysis. Use a serial `main` successor for writes, or end with a summary explaining that the user must initialize Git before writable parallel fan-out is available.
-- Do not assign `workspace.mode="main"` to fan-out branches; reserve `main` for merge, acceptance, or cleanup nodes. For non-git workspaces that need writes, prefer a single serial successor over writable fan-out.
+Runtime workspace rules:
+- Do not output a workspace, path, branch, or workspace mode in a proposal. Gold Band runtime owns all workspace assignment.
+- A single successor inherits the current node's actual workspace.
+- Gold Band runtime automatically assigns an isolated Git worktree to every fan-out child. Do not output, discover, or switch workspaces.
+- Every child starts from a stable fork commit of the current node workspace. Uncommitted user-main changes are not copied into children; a dirty runtime worktree is checkpointed before forking.
+- Merge and acceptance always return to this group's parent workspace, which is not necessarily main.
 - When splitting a fan-out, give each writable branch a clear and non-overlapping responsibility boundary to reduce merge conflicts.

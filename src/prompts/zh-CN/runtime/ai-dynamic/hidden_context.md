@@ -16,7 +16,7 @@
 - 内部节点目录：{{ node_dir }}
 - 内部 attempt 目录：{{ attempt_dir }}
 - 内部 attachments 目录：{{ attachments_dir }}
-- Workspace 模式：{{ workspace_mode }}
+- Workspace ID：{{ workspace_id }}
 - Workspace 路径：{{ workspace_path }}
 - Workspace 能力：
 {{ workspace_capability }}

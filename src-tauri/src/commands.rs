@@ -1666,6 +1666,26 @@ pub fn start_run(
 }
 
 #[tauri::command]
+pub fn get_git_capability(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+) -> CommandResult<gold_band::git::GitCapability> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    Ok(gold_band::git::GitRepositoryService::default().probe(&app.paths.repo_root))
+}
+
+#[tauri::command]
+pub fn initialize_git_repository(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+) -> CommandResult<gold_band::git::GitCapability> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    gold_band::git::GitRepositoryService::default()
+        .initialize(&app.paths.repo_root)
+        .map_err(command_error)
+}
+
+#[tauri::command]
 pub fn continue_run(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
@@ -4267,6 +4287,9 @@ fn ensure_workflow_agents_doctor_ready(
 }
 
 pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
+    if let Some(error) = error.downcast_ref::<gold_band::git::GitPreflightError>() {
+        return CommandErrorVm::new(error.code, error.params());
+    }
     if let Some(error) = error.downcast_ref::<gold_band::runtime_error::RuntimeError>() {
         return CommandErrorVm::new(error.info.code_str(), error.info.params.clone());
     }
@@ -6496,8 +6519,7 @@ mod tests {
             "chainId": dynamic_node_id,
             "depth": 0,
             "dependsOn": [],
-            "workspace": { "mode": "readonly" },
-            "workspacePath": null,
+            "workspaceId": "workspace-main",
             "provider": "claude-acp",
             "profile": null,
             "permissionMode": null,
@@ -6539,6 +6561,23 @@ mod tests {
                 "run": dynamic_run,
                 "nodes": [dynamic_node.clone()],
                 "groups": [],
+                "workspaces": [{
+                    "version": gold_band::domain::VERSION,
+                    "id": "workspace-main",
+                    "dynamicRunId": "dynamic-run-001",
+                    "kind": "main",
+                    "ownership": "user",
+                    "repoRoot": app.paths.repo_root,
+                    "path": app.paths.repo_root,
+                    "branch": null,
+                    "parentWorkspaceId": null,
+                    "createdByGroupId": null,
+                    "forkCommit": "test-head",
+                    "checkpointCommit": null,
+                    "status": "active",
+                    "createdAt": "2026-06-16T00:00:00Z",
+                    "updatedAt": "2026-06-16T00:00:00Z"
+                }],
                 "proposals": []
             }),
         )
@@ -6614,6 +6653,23 @@ mod tests {
                 "run": dynamic_run,
                 "nodes": [dynamic_node],
                 "groups": [],
+                "workspaces": [{
+                    "version": gold_band::domain::VERSION,
+                    "id": "workspace-main",
+                    "dynamicRunId": "dynamic-run-001",
+                    "kind": "main",
+                    "ownership": "user",
+                    "repoRoot": app.paths.repo_root,
+                    "path": app.paths.repo_root,
+                    "branch": null,
+                    "parentWorkspaceId": null,
+                    "createdByGroupId": null,
+                    "forkCommit": "test-head",
+                    "checkpointCommit": null,
+                    "status": "active",
+                    "createdAt": "2026-06-16T00:00:00Z",
+                    "updatedAt": "2026-06-16T00:00:00Z"
+                }],
                 "proposals": []
             }),
         )
@@ -6671,8 +6727,7 @@ mod tests {
             "chainId": dynamic_node_id,
             "depth": 0,
             "dependsOn": [],
-            "workspace": { "mode": "readonly" },
-            "workspacePath": null,
+            "workspaceId": "workspace-main",
             "provider": "claude-acp",
             "profile": null,
             "permissionMode": null,
@@ -6714,6 +6769,23 @@ mod tests {
                 "run": dynamic_run,
                 "nodes": [dynamic_node.clone()],
                 "groups": [],
+                "workspaces": [{
+                    "version": gold_band::domain::VERSION,
+                    "id": "workspace-main",
+                    "dynamicRunId": "dynamic-run-001",
+                    "kind": "main",
+                    "ownership": "user",
+                    "repoRoot": app.paths.repo_root,
+                    "path": app.paths.repo_root,
+                    "branch": null,
+                    "parentWorkspaceId": null,
+                    "createdByGroupId": null,
+                    "forkCommit": "test-head",
+                    "checkpointCommit": null,
+                    "status": "active",
+                    "createdAt": "2026-06-16T00:00:00Z",
+                    "updatedAt": "2026-06-16T00:00:00Z"
+                }],
                 "proposals": []
             }),
         )

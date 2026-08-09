@@ -28,7 +28,8 @@ afterEach(() => {
 function FileLinkHarness() {
   const handler = useMarkdownResourceLinkHandler();
   const workspace = useRightWorkspace();
-  const file = workspace.tabs.find((tab) => tab.kind === 'file');
+  const fileBrowser = workspace.tabs.find((tab) => tab.kind === 'file-browser');
+  const file = fileBrowser?.selectedFile;
   return (
     <>
       <button type="button" onClick={() => handler?.openLocalFile('docs/README.md#L47')}>open line</button>

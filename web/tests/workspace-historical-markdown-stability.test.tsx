@@ -24,6 +24,7 @@ import { Markdown, useMarkdownResourceLinkHandler } from '@/components/prompt-ki
 import { WorkspaceFileLinkProvider } from '@/components/workspace/files/WorkspaceFileLinkProvider';
 import {
   createDraftConversationWorkspaceScope,
+  fileBrowserWorkspaceResourceKey,
   RightWorkspaceProvider,
   useRightWorkspaceCommands,
   type FileWorkspaceResource,
@@ -96,7 +97,10 @@ describe('historical Markdown workspace isolation', () => {
       expect(initialMarkdownRenders).toBe(historicalMessages.length);
       expect(streamdownRender).toHaveBeenCalledTimes(initialMarkdownRenders);
       expect(linkHandlerRenders).toBe(initialLinkHandlerRenders);
-      expect(commands!.getResource(fileResource(14).key)).toMatchObject({ title: 'file-14.ts' });
+      expect(commands!.getResource(fileBrowserWorkspaceResourceKey('project-1'))).toMatchObject({
+        kind: 'file-browser',
+        selectedFile: { title: 'file-14.ts' },
+      });
     } finally {
       await act(async () => root.unmount());
     }

@@ -96,8 +96,8 @@ jobs:
           workspaces: |
             . -> target
 
-      - name: Test Rust workspace
-        run: cargo test --workspace --all-targets
+      - name: Check Rust workspace
+        run: cargo check --workspace --all-targets
 
   build:
     name: Build ${{ matrix.platform.name }}

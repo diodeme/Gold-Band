@@ -4,7 +4,7 @@ export const CONVERSATION_HOME_COMPOSER_LAYOUT = {
   textareaMinHeightClassName: 'min-h-14',
   textareaMaxHeightPx: 320,
   containerClassName: '@container/conversation-composer flex flex-col gap-4',
-  toolbarClassName: 'mt-3 grid grid-cols-1 gap-2 border-t border-border/40 pt-3 @2xl/conversation-composer:grid-cols-[minmax(15rem,1fr)_minmax(22rem,1fr)] @2xl/conversation-composer:items-center @2xl/conversation-composer:gap-3',
+  toolbarClassName: 'mt-3 grid grid-cols-1 gap-2 border-t border-border/40 pt-3 @2xl/conversation-composer:grid-cols-[minmax(12rem,0.75fr)_minmax(28rem,1.25fr)] @2xl/conversation-composer:items-center @2xl/conversation-composer:gap-3',
   leadingActionsClassName: 'flex min-w-0 items-center gap-2',
   workspaceControlClassName: 'min-w-0 max-w-none flex-1',
   trailingActionsClassName: 'grid min-w-0 grid-cols-1 gap-2 @sm/conversation-composer:grid-cols-2 @lg/conversation-composer:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] @2xl/conversation-composer:flex @2xl/conversation-composer:items-center @2xl/conversation-composer:justify-end',

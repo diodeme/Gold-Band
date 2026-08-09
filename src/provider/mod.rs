@@ -1,6 +1,8 @@
 use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{artifact_uses_json_output, json_artifact_text_from_outputs};
-use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, managed_agent_preset};
+use crate::config::{
+    AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, catalog_agent_default_config,
+};
 pub use crate::domain::SessionRef;
 use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode};
 use crate::prompts::{
@@ -8,7 +10,9 @@ use crate::prompts::{
     RUNTIME_SYSTEM_EN, RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN,
     profile_template_context, prompt_by_language, render as render_template,
 };
-use crate::runtime_error::{RuntimeErrorInfo, normalize_provider_runtime_failure};
+use crate::runtime_error::{
+    RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, normalize_provider_runtime_failure,
+};
 use crate::storage::active_storage_path_config;
 use anyhow::{Result, bail, ensure};
 use camino::Utf8PathBuf;
@@ -576,6 +580,7 @@ impl Default for PromptVisibility {
 
 pub type AcpLiveUpdate<'a> = &'a dyn Fn(&AcpUiEvent) -> Result<()>;
 pub type AcpSessionUpdate<'a> = &'a dyn Fn() -> Result<()>;
+pub type AcpPromptAccepted<'a> = &'a dyn Fn(&str) -> Result<()>;
 
 pub trait ProviderAdapter: Send + Sync {
     fn describe_provider(&self) -> ProviderInfo;
@@ -593,6 +598,7 @@ pub trait ProviderAdapter: Send + Sync {
         req: WorkerInvocation,
         live_update: Option<AcpLiveUpdate<'_>>,
         _session_update: Option<AcpSessionUpdate<'_>>,
+        _prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
         self.run_worker_with_live_update(req, live_update)
     }
@@ -893,6 +899,7 @@ pub struct AcpProvider {
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
     runtime_policy: client::AcpRuntimePolicy,
+    supports_system_prompt: bool,
 }
 
 impl AcpProvider {
@@ -914,11 +921,18 @@ impl AcpProvider {
             acp_raw_max_size_bytes,
             acp_raw_target_size_bytes,
             runtime_policy: client::AcpRuntimePolicy::default(),
+            supports_system_prompt: false,
         }
     }
 
     pub fn with_runtime_policy(mut self, runtime_policy: client::AcpRuntimePolicy) -> Self {
         self.runtime_policy = runtime_policy;
+        self
+    }
+
+    pub fn with_system_prompt_support(mut self, supported: bool) -> Self {
+        self.supports_system_prompt = supported;
+        self.runtime_policy.supports_system_prompt = supported;
         self
     }
 }
@@ -931,7 +945,7 @@ impl ProviderAdapter for AcpProvider {
             capabilities: ProviderCapabilities {
                 supports_open_session: true,
                 supports_continue_session: true,
-                supports_system_prompt: self.provider_id == "claude-acp",
+                supports_system_prompt: self.supports_system_prompt,
                 supports_raw_stream: false,
             },
             is_default: self.provider_id == DEFAULT_PROVIDER,
@@ -943,7 +957,18 @@ impl ProviderAdapter for AcpProvider {
             .ok()
             .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
             .unwrap_or_else(|| Utf8PathBuf::from("."));
+        let agent_id = match ManagedAgentId::from_str(&self.provider_id) {
+            Ok(agent_id) => agent_id,
+            Err(err) => {
+                return DoctorResult {
+                    available: false,
+                    reason: Some(err.to_string()),
+                    capabilities: None,
+                };
+            }
+        };
         match client::doctor(
+            &agent_id,
             &self.adapter_config,
             cwd,
             self.use_local_claude,
@@ -971,7 +996,7 @@ impl ProviderAdapter for AcpProvider {
         req: WorkerInvocation,
         live_update: Option<AcpLiveUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
-        self.run_worker_with_callbacks(req, live_update, None)
+        self.run_worker_with_callbacks(req, live_update, None, None)
     }
 
     fn run_worker_with_callbacks(
@@ -979,6 +1004,7 @@ impl ProviderAdapter for AcpProvider {
         req: WorkerInvocation,
         live_update: Option<AcpLiveUpdate<'_>>,
         session_update: Option<AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
         let prompt = render_prompt_bundle(&req)?;
         log_prompt_bundle(
@@ -1010,9 +1036,11 @@ impl ProviderAdapter for AcpProvider {
             self.acp_raw_max_size_bytes,
             self.acp_raw_target_size_bytes,
             self.runtime_policy,
+            acp_output_policy(req.output_contract.as_ref()),
             live_update,
             &req.mcp_servers,
             session_update,
+            prompt_accepted,
             Some(client::RuntimeStopProbe {
                 run_file: req.runtime_context.run_dir.join("run.json"),
                 round_id: req.runtime_context.round_id.clone(),
@@ -1036,7 +1064,11 @@ impl ProviderAdapter for AcpProvider {
         )
         .then(|| {
             req.output_contract.as_ref().and_then(|contract| {
-                output_artifact_payload_from_run(contract, &run.final_outputs, &run.final_text)
+                output_artifact_payload_from_run(
+                    contract,
+                    &run.output.identified_outputs,
+                    &run.output.identified_text,
+                )
             })
         })
         .flatten();
@@ -1062,20 +1094,44 @@ impl ProviderAdapter for AcpProvider {
     }
 }
 
+fn acp_output_policy(contract: Option<&PromptOutputContract>) -> client::AcpOutputPolicy {
+    if contract.is_some() {
+        client::AcpOutputPolicy::ArtifactContract
+    } else {
+        client::AcpOutputPolicy::Conversation
+    }
+}
+
 fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcome {
     if let Some(failure) = &run.terminal_failure {
-        return ProviderTerminalOutcome {
-            status: ProviderRunStatus::Failure,
-            runtime_error: Some(normalize_provider_runtime_failure(
+        let raw = Some(serde_json::json!({
+            "adapterId": run.adapter_id,
+            "adapterDisplayName": run.adapter_display_name,
+            "stopReason": run.stop_reason,
+            "terminalFailure": failure,
+        }));
+        let runtime_error = if failure.code == client::ACP_UNIDENTIFIED_AGENT_OUTPUT_CODE {
+            RuntimeErrorInfo::new(
+                RuntimeErrorDomain::Provider,
+                "provider.acp-unidentified-agent-output",
+                RecoveryMode::Manual,
+                failure.diagnostic(),
+                serde_json::json!({
+                    "acpCode": failure.code,
+                    "anonymousChunkCount": run.output.anonymous_chunk_count,
+                }),
+                raw,
+            )
+        } else {
+            normalize_provider_runtime_failure(
                 run.stop_reason.as_deref(),
                 failure.diagnostic(),
-                Some(serde_json::json!({
-                    "adapterId": run.adapter_id,
-                    "adapterDisplayName": run.adapter_display_name,
-                    "stopReason": run.stop_reason,
-                    "terminalFailure": failure,
-                })),
-            )),
+                raw,
+            )
+        };
+        return ProviderTerminalOutcome {
+            status: ProviderRunStatus::Failure,
+            runtime_error: Some(runtime_error),
         };
     }
 
@@ -1110,7 +1166,7 @@ fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcom
             status: ProviderRunStatus::Failure,
             runtime_error: Some(normalize_provider_runtime_failure(
                 run.stop_reason.as_deref(),
-                run.final_text.clone(),
+                run.output.visible_text.clone(),
                 Some(serde_json::json!({
                     "adapterId": run.adapter_id,
                     "adapterDisplayName": run.adapter_display_name,
@@ -1212,11 +1268,10 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     Ok(PromptBundle {
         system_prompt,
         user_prompt,
-        prompt_id: if is_continue {
-            req.resume_prompt_id.clone()
-        } else {
-            None
-        },
+        // Prompt identity is an orchestration concern, independent of ACP
+        // session mode.  In particular, an automatic retry may start a new
+        // ACP session while remaining the same visible user turn.
+        prompt_id: req.resume_prompt_id.clone(),
         visibility: if is_continue {
             req.resume_prompt_visibility
         } else {
@@ -1701,17 +1756,29 @@ pub fn provider_capabilities(provider_id: &str) -> Result<ProviderCapabilities> 
 }
 
 pub fn provider_capabilities_for_id(agent_id: &ManagedAgentId) -> Result<ProviderCapabilities> {
-    let preset = managed_agent_preset(agent_id)
-        .ok_or_else(|| anyhow::anyhow!("unsupported managed agent: {}", agent_id.as_str()))?;
+    let config = catalog_agent_default_config(agent_id.as_str()).unwrap_or_else(|| {
+        ManagedAgentConfig::new(
+            AcpAdapterConfig {
+                command: String::new(),
+                args: Vec::new(),
+                display_name: agent_id.as_str().to_string(),
+                env: BTreeMap::new(),
+            },
+            ".agent",
+            Vec::new(),
+        )
+    });
+    let supports_system_prompt = config.supports_system_prompt();
     Ok(AcpProvider::new(
         agent_id.as_str(),
-        preset.default_config().adapter,
+        config.adapter,
         false,
         false,
         false,
         5 * 1024 * 1024,
         4 * 1024 * 1024,
     )
+    .with_system_prompt_support(supports_system_prompt)
     .describe_provider()
     .capabilities)
 }
@@ -1734,8 +1801,6 @@ pub fn provider_from_agent(
     acp_raw_target_size_bytes: u64,
     runtime_policy: client::AcpRuntimePolicy,
 ) -> Result<Box<dyn ProviderAdapter>> {
-    managed_agent_preset(agent_id)
-        .ok_or_else(|| anyhow::anyhow!("unsupported managed agent: {}", agent_id.as_str()))?;
     Ok(Box::new(
         AcpProvider::new(
             agent_id.as_str(),
@@ -1748,7 +1813,8 @@ pub fn provider_from_agent(
         )
         .with_runtime_policy(
             runtime_policy.with_external_session_sync_enabled(config.external_session_sync_enabled),
-        ),
+        )
+        .with_system_prompt_support(config.supports_system_prompt()),
     ))
 }
 
@@ -1761,9 +1827,8 @@ pub fn provider_from_id(
     acp_raw_target_size_bytes: u64,
 ) -> Result<Box<dyn ProviderAdapter>> {
     let agent_id = ManagedAgentId::from_str(provider_id)?;
-    let preset = managed_agent_preset(&agent_id)
-        .ok_or_else(|| anyhow::anyhow!("unsupported managed agent: {provider_id}"))?;
-    let config = preset.default_config();
+    let config = catalog_agent_default_config(agent_id.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Agent `{provider_id}` has no built-in default config"))?;
     provider_from_agent(
         &agent_id,
         &config,
@@ -1920,8 +1985,7 @@ mod tests {
             adapter_display_name: "Codex".to_string(),
             stop_reason: stop_reason.map(str::to_string),
             terminal_failure,
-            final_text: String::new(),
-            final_outputs: Vec::new(),
+            output: client::AcpPromptOutput::default(),
             restored: false,
             used_tokens: None,
             context_window_size: None,
@@ -1964,6 +2028,52 @@ mod tests {
 
         assert_eq!(outcome.status, ProviderRunStatus::Success);
         assert!(outcome.runtime_error.is_none());
+    }
+
+    #[test]
+    fn output_contract_selects_strict_policy_without_mode_or_provider_branching() {
+        let contract = PromptOutputContract {
+            artifact: "dynamic-node-completion".to_string(),
+            kind: "json".to_string(),
+            schema: None,
+            schema_text: None,
+            success_condition: None,
+        };
+
+        assert_eq!(
+            acp_output_policy(None),
+            client::AcpOutputPolicy::Conversation
+        );
+        assert_eq!(
+            acp_output_policy(Some(&contract)),
+            client::AcpOutputPolicy::ArtifactContract
+        );
+    }
+
+    #[test]
+    fn anonymous_only_artifact_failure_is_manual_and_never_auto_retried() {
+        let mut run = acp_prompt_run(
+            Some("end_turn"),
+            Some(AcpPromptFailure {
+                code: client::ACP_UNIDENTIFIED_AGENT_OUTPUT_CODE.to_string(),
+                message: "ACP artifact prompt produced only anonymous output".to_string(),
+                details: Some("unexpected status 502 Bad Gateway".to_string()),
+                raw: serde_json::json!({ "anonymousChunkCount": 1 }),
+            }),
+        );
+        run.output.anonymous_text = "unexpected status 502 Bad Gateway".to_string();
+        run.output.visible_text = run.output.anonymous_text.clone();
+        run.output.anonymous_chunk_count = 1;
+
+        let outcome = classify_acp_prompt_run(&run);
+
+        assert_eq!(outcome.status, ProviderRunStatus::Failure);
+        let error = outcome
+            .runtime_error
+            .expect("strict anonymous output failure");
+        assert_eq!(error.code_str(), "provider.acp-unidentified-agent-output");
+        assert_eq!(error.recovery, RecoveryMode::Manual);
+        assert!(error.retry_policy.is_none());
     }
 
     #[test]
@@ -2079,6 +2189,11 @@ mod tests {
 
         let prompt = render_prompt_bundle(&req).unwrap();
         assert!(!prompt.system_prompt.contains("Output contract"));
+        assert_eq!(prompt.prompt_id, None);
+
+        req.resume_prompt_id = Some("logical-turn-001".to_string());
+        let prompt = render_prompt_bundle(&req).unwrap();
+        assert_eq!(prompt.prompt_id.as_deref(), Some("logical-turn-001"));
 
         req.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
         req.requirement_text = Some("  original direct prompt\n".to_string());

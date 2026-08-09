@@ -316,7 +316,7 @@ export interface AppInfoVm {
 
 export interface AgentRegistryVm {
   agents: ManagedAgentVm[];
-  supportedTypes: SupportedAgentTypeVm[];
+  catalog: AgentCatalogEntryVm[];
 }
 
 export interface ManagedAgentVm {
@@ -328,8 +328,9 @@ export interface ManagedAgentVm {
   iconKey: string;
   primaryAgentDir: string;
   compatibleAgentDirs: string[];
+  supportsSystemPrompt: boolean;
+  externalSessionSyncSupported: boolean;
   externalSessionSyncEnabled: boolean;
-  supported: boolean;
   diagnostic?: ManagedAgentDiagnosticVm | null;
   supportedModes?: AcpModeVm[] | null;
   supportedModels?: AcpModeVm[] | null;
@@ -397,14 +398,19 @@ export interface ManagedAgentDiagnosticVm {
   checkedAt: string;
 }
 
-export interface SupportedAgentTypeVm {
+export interface AgentCatalogEntryVm {
   agentType: string;
   label: string;
   iconKey: string;
+  version: string;
+  description: string;
+  repository?: string | null;
+  website?: string | null;
   primaryAgentDir: string;
   compatibleAgentDirs: string[];
-  supported: boolean;
   configured: boolean;
+  supportsSystemPrompt: boolean;
+  supportsExternalSessionSync: boolean;
   defaultDisplayName: string;
   defaultCommand: string;
   defaultArgs: string[];
@@ -413,11 +419,13 @@ export interface SupportedAgentTypeVm {
 
 export interface ManagedAgentInput {
   displayName: string;
+  icon: string;
   command: string;
   args: string[];
   env: Record<string, string>;
   primaryAgentDir: string;
   compatibleAgentDirs: string[];
+  externalSessionSyncSupported: boolean;
   externalSessionSyncEnabled: boolean;
 }
 
@@ -496,6 +504,7 @@ export interface WorkflowWorkerNodeDsl {
   output?: WorkflowOutputContractDsl | null;
   success_condition?: WorkflowJsonConditionDsl | null;
   permission_mode?: string | null;
+  config_options?: Record<string, string>;
   manual_check?: boolean | null;
 }
 
@@ -504,19 +513,25 @@ export type WorkflowAiDynamicAgentStrategyDsl = WorkflowAiDynamicFixedAgentStrat
 export interface DynamicAgentRefDsl {
   provider: string;
   model?: string | null;
+  permissionMode?: string | null;
+  configOptions?: Record<string, string>;
 }
 
 export interface WorkflowAiDynamicFixedAgentStrategyDsl {
   mode: 'fixed';
   provider: string;
   model?: string;
+  permissionMode?: string | null;
 }
 
 export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
   mode: 'dynamic';
   bootstrapProvider: string;
   bootstrapModel?: string | null;
+  permissionMode?: string | null;
+  bootstrapConfigOptions?: Record<string, string>;
   acceptanceModel?: string | null;
+  acceptanceConfigOptions?: Record<string, string>;
   routingPrompt: string;
   availableAgents: DynamicAgentRefDsl[];
 }
@@ -525,7 +540,7 @@ export interface WorkflowAiDynamicNodeDsl {
   type: 'ai-dynamic';
   id: string;
   agentStrategy: WorkflowAiDynamicAgentStrategyDsl;
-  permission_mode?: string | null;
+  configOptions?: Record<string, string>;
   allowedProfiles?: string[];
   globalGoal?: string | null;
   control: DynamicControlDsl;
@@ -896,7 +911,9 @@ export interface AcpSessionVm {
 }
 
 export interface ActiveSessionStopVm {
-  kind: 'run-paused' | 'session-cancelled' | string;
+  operationId: string;
+  status: 'accepted' | string;
+  kind: 'stop-accepted' | string;
   run?: RunSummaryVm | null;
   session?: AcpSessionVm | null;
   lifecycle?: ConversationAttemptLifecycleVm | null;
@@ -1080,6 +1097,7 @@ export interface AcpElicitationRequestVm {
 // Navigation payload emitted after clicking "View details" in a system toast.
 // It carries the complete attempt locator and a deduplication key.
 export interface InterventionNavigateEventVm {
+  projectId: string;
   taskId: string;
   runId: string;
   roundId: string;
@@ -1377,6 +1395,30 @@ export interface ConversationComposerVm {
   lockInput: boolean;
 }
 
+export interface AppExitRequestVm {
+  requestId: string;
+}
+
+export type AppExitDecision = 'proceed' | 'cancel';
+
+export interface ResolveAppExitInput {
+  requestId: string;
+  decision: AppExitDecision;
+}
+
+export interface ConversationQueuedPromptVm {
+  id: string;
+  content: string;
+  attachmentCount: number;
+  createdAt: string;
+}
+
+export interface ConversationPromptQueueVm {
+  revision: number;
+  items: ConversationQueuedPromptVm[];
+  maxItems: number;
+}
+
 export interface ConversationAttemptLifecycleVm {
   runtime: ConversationRuntimeFacetVm;
   acp: ConversationAcpFacetVm;
@@ -1384,6 +1426,7 @@ export interface ConversationAttemptLifecycleVm {
   runtimeDisplay: RuntimeDisplayVm;
   continueKind?: 'input' | null;
   composer: ConversationComposerVm;
+  promptQueue?: ConversationPromptQueueVm | null;
 }
 
 export interface ConversationSessionLeafVm {
@@ -1402,6 +1445,7 @@ export interface ConversationSessionLeafVm {
   startedAt?: string | null;
   finishedAt?: string | null;
   sessionId?: string | null;
+  sessionEstablished?: boolean;
   artifactCount: number;
   attachmentCount: number;
 }
@@ -1474,6 +1518,7 @@ export interface ConversationActiveSessionVm {
   lifecycle?: ConversationAttemptLifecycleVm | null;
   manualCheckPending: boolean;
   sessionId?: string | null;
+  sessionEstablished?: boolean;
   startedAt?: string | null;
 }
 
@@ -1504,7 +1549,9 @@ export interface ConversationAutoConfigVm {
   agentType: string;
   bootstrapAgentType?: string | null;
   bootstrapModelId?: string | null;
+  bootstrapConfigOptions?: Record<string, string>;
   acceptanceModelId?: string | null;
+  acceptanceConfigOptions?: Record<string, string>;
   modelId?: string | null;
   permissionMode?: string | null;
   configOptions?: Record<string, string>;

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use percent_encoding::percent_decode_str;
 
 use tauri::{AppHandle, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::commands::{CommandResult, spawn_blocking_command};
 use crate::state::DesktopState;
@@ -39,41 +40,18 @@ pub async fn list_workspace_directory(
 /// the desktop process to reveal arbitrary local paths.
 #[tauri::command]
 pub async fn open_workspace_path_in_file_manager(
+    app_handle: AppHandle,
     state: State<'_, DesktopState>,
     input: OpenWorkspacePathInFileManagerInput,
 ) -> CommandResult<()> {
     let root = resolve_workspace_root(state.inner(), &input.project_id)?;
     let path = resolve_workspace_relative_path(&root, &input.relative_path)?;
-    spawn_blocking_command(move || reveal_in_file_manager(&path)).await
-}
-
-fn reveal_in_file_manager(path: &Path) -> CommandResult<()> {
-    #[cfg(windows)]
-    {
-        gold_band::process::background_command("explorer.exe")
-            .arg(file_manager_select_argument(path))
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| {
-                paths::error(
-                    "workspace-file.file-manager-open-failed",
-                    serde_json::json!({ "path": paths::display_path(path), "reason": error.to_string() }),
-                )
-            })
-    }
-    #[cfg(not(windows))]
-    {
-        gold_band::process::background_command("xdg-open")
-            .arg(path)
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| {
-                paths::error(
-                    "workspace-file.file-manager-open-failed",
-                    serde_json::json!({ "path": paths::display_path(path), "reason": error.to_string() }),
-                )
-            })
-    }
+    app_handle.opener().reveal_item_in_dir(&path).map_err(|error| {
+        paths::error(
+            "workspace-file.file-manager-open-failed",
+            serde_json::json!({ "path": paths::display_path(&path), "reason": error.to_string() }),
+        )
+    })
 }
 
 pub(crate) fn read_file_from_directory_root(
@@ -101,10 +79,6 @@ pub(crate) fn read_file_from_directory_root(
         config: gold_band::config::WorkspaceFilesConfig::default(),
     };
     service::read_file(&root, &runtime, &path, None, false)
-}
-
-fn file_manager_select_argument(path: &Path) -> String {
-    format!("/select,{}", paths::display_path(path))
 }
 
 #[tauri::command]
@@ -453,14 +427,6 @@ pub fn preview_protocol_response(
 mod tests {
     use super::*;
     use tempfile::tempdir;
-
-    #[test]
-    fn file_manager_argument_selects_the_display_path_without_extended_prefix() {
-        assert_eq!(
-            file_manager_select_argument(Path::new(r"\\?\D:\repo\src\main.rs")),
-            r"/select,D:\repo\src\main.rs"
-        );
-    }
 
     #[test]
     fn external_grant_is_bound_to_exact_project_and_path() {

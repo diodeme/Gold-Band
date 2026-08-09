@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  groupSelectableAgentOptions,
   normalizeConfigOptionOverrides,
   validateAutoConfig,
   validateDirectConfig,
@@ -29,8 +30,9 @@ const agentRegistry: AgentRegistryVm = {
     iconKey: 'claude',
     primaryAgentDir: '.claude',
     compatibleAgentDirs: [],
+    supportsSystemPrompt: true,
+    externalSessionSyncSupported: false,
     externalSessionSyncEnabled: false,
-    supported: true,
     supportedModes: [{ id: 'ask', name: 'Ask' }],
     supportedModels: [],
     configOptions: [{
@@ -42,7 +44,7 @@ const agentRegistry: AgentRegistryVm = {
     }],
     diagnostic: { status: 'ok', available: true, reason: null, checkedAt: '' },
   }],
-  supportedTypes: [],
+  catalog: [],
 };
 
 const profiles: ProfileVm[] = [{
@@ -73,8 +75,7 @@ const workflowTemplates: WorkflowTemplateStore = {
       nodes: [{
         id: 'ai-dynamic1',
         type: 'ai-dynamic',
-        agentStrategy: { mode: 'fixed', provider: 'claude-acp' },
-        permission_mode: 'full_access',
+        agentStrategy: { mode: 'fixed', provider: 'claude-acp', permissionMode: 'full_access' },
         allowedProfiles: [],
         allowedWorkflows: [],
         control: {
@@ -94,6 +95,26 @@ const workflowTemplates: WorkflowTemplateStore = {
 };
 
 describe('run mode validation', () => {
+  it('groups selectable Agents ahead of unavailable Agents while preserving catalog order', () => {
+    const agents = [
+      { agent: { ...agentRegistry.agents[0], agentType: 'unavailable-first' }, selectable: false, reason: 'Authentication required' },
+      { agent: { ...agentRegistry.agents[0], agentType: 'ready-first' }, selectable: true },
+      { agent: { ...agentRegistry.agents[0], agentType: 'unavailable-last' }, selectable: false, reason: 'Not installed' },
+      { agent: { ...agentRegistry.agents[0], agentType: 'ready-last' }, selectable: true },
+    ];
+
+    expect(groupSelectableAgentOptions(agents)).toMatchObject({
+      selectable: [
+        { agent: { agentType: 'ready-first' } },
+        { agent: { agentType: 'ready-last' } },
+      ],
+      unavailable: [
+        { agent: { agentType: 'unavailable-first' } },
+        { agent: { agentType: 'unavailable-last' } },
+      ],
+    });
+  });
+
   it('normalizes stale config overrides without mutating the input', () => {
     const overrides = { thought: 'high', removed: 'legacy' };
     const snapshot = { ...overrides };

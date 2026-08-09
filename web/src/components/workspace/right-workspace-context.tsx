@@ -301,7 +301,12 @@ export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action:
       const activeTabKey = state.activeTabKey === action.key
         ? (tabs[Math.min(index, tabs.length - 1)]?.key ?? null)
         : state.activeTabKey;
-      return { ...state, tabs, activeTabKey };
+      return {
+        ...state,
+        tabs,
+        activeTabKey,
+        requestedOpen: tabs.length > 0 && state.requestedOpen,
+      };
     }
     case 'close-workspace':
       return { ...state, requestedOpen: false };

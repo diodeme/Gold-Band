@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, RoundSelection, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, ResolveAppExitInput, RoundSelection, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -18,8 +18,11 @@ export interface MetricsSettingsVm {
 const noopUnlisten = () => {};
 
 export const desktopApi: RuntimeApi = {
-  prepareAppExit() {
-    return invokeCommand('prepare_app_exit');
+  completeMainWindowClose() {
+    return invokeCommand('complete_main_window_close');
+  },
+  resolveAppExit(input: ResolveAppExitInput) {
+    return invokeCommand('resolve_app_exit', { input });
   },
   async subscribeAcpSessionUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
@@ -37,10 +40,29 @@ export const desktopApi: RuntimeApi = {
   },
   async subscribeInterventionNavigate(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
-    const unlisten: UnlistenFn = await listen<InterventionNavigateEventVm>('gold-band://intervention-navigate', (event) => {
+    let drain = Promise.resolve();
+    const drainPending = () => {
+      drain = drain.then(async () => {
+        const pending = await desktopApi.takePendingInterventionNavigations();
+        pending.forEach(listener);
+      }).catch(() => {});
+      return drain;
+    };
+    const unlisten: UnlistenFn = await listen('gold-band://intervention-navigate', () => {
+      void drainPending();
+    });
+    await drainPending();
+    return () => unlisten();
+  },
+  async subscribeAppExitRequested(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<AppExitRequestVm>('gold-band://app-exit-requested', (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
+  },
+  takePendingInterventionNavigations() {
+    return invokeCommand('take_pending_intervention_navigations');
   },
   async subscribeWorkspaceFileChanges(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
@@ -192,6 +214,15 @@ export const desktopApi: RuntimeApi = {
   },
   submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
     return invokeCommand('submit_conversation_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });
+  },
+  updateConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId) {
+    return invokeCommand('update_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId });
+  },
+  deleteConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId) {
+    return invokeCommand('delete_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId });
+  },
+  useConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId) {
+    return invokeCommand('use_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId });
   },
   sendAcpPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
     return invokeCommand<AcpSessionVm | null>('send_acp_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });

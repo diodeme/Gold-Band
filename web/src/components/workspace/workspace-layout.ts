@@ -13,9 +13,9 @@ export const FALLBACK_WORKSPACE_LAYOUT: WorkspaceLayoutVm = {
   shellMinWidth: 480,
   shellMinHeight: 680,
   rightWorkspace: {
-    minWidth: 320,
+    minWidth: 288,
     defaultWidth: 440,
-    maxWidth: 960,
+    maxWidth: 1440,
     file: {
       preferredWidth: 760,
       splitMinWidth: 500,
@@ -46,7 +46,7 @@ export const FALLBACK_WORKSPACE_FILES: WorkspaceFilesVm = {
   markdownEmbeddedImageLimit: 100,
   markdownEmbeddedImageMaxConcurrent: 4,
 };
-export const WORKSPACE_SIDEBAR_MIN_WIDTH = 200;
+export const WORKSPACE_SIDEBAR_MIN_WIDTH = 176;
 export const WORKSPACE_SIDEBAR_MAX_WIDTH = 420;
 export const WORKSPACE_SIDEBAR_DEFAULT_WIDTH = 256;
 export const RIGHT_WORKSPACE_MIN_WIDTH = FALLBACK_WORKSPACE_LAYOUT.rightWorkspace.minWidth;

@@ -19,9 +19,9 @@ shellMinWidth = 480
 shellMinHeight = 680
 
 [workspaceLayout.rightWorkspace]
-minWidth = 320
+minWidth = 288
 defaultWidth = 440
-maxWidth = 960
+maxWidth = 1440
 
 [workspaceLayout.rightWorkspace.file]
 preferredWidth = 760
@@ -77,13 +77,3 @@ diffTextMaxBytes = 2097152
 diffTextMaxLines = 100000
 blobCacheMaxBytes = 0
 blobRetentionPolicy = "attempt"
-
-[permissionModeMapping.claude-acp]
-read_only = "plan"
-ask = "acceptEdits"
-full_access = "bypassPermissions"
-
-[permissionModeMapping.codex-acp]
-read_only = "read-only"
-ask = "auto"
-full_access = "agent-full-access"

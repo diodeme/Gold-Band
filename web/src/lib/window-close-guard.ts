@@ -7,36 +7,54 @@ export type WindowCloseSaveFailureDecision = 'retry' | 'cancel' | 'discard';
 export interface WindowCloseTransactionDependencies {
   flushPendingChanges(): Promise<boolean>;
   requestSaveFailureDecision(): Promise<WindowCloseSaveFailureDecision>;
-  prepareAppExit(): Promise<unknown>;
-  destroyWindow(): Promise<void>;
+  completeClose(): Promise<void>;
 }
 
-export function createWindowCloseTransaction(dependencies: WindowCloseTransactionDependencies) {
+export interface WindowCloseTransaction {
+  (event: WindowCloseRequest): Promise<void>;
+  prepareToClose(): Promise<boolean>;
+}
+
+export function createWindowCloseTransaction(dependencies: WindowCloseTransactionDependencies): WindowCloseTransaction {
+  let activeSaveTransaction: Promise<boolean> | null = null;
   let activeTransaction: Promise<void> | null = null;
 
-  const runTransaction = async () => {
+  const runSaveTransaction = async () => {
     while (true) {
       const saved = await dependencies.flushPendingChanges().catch(() => false);
-      if (saved) break;
+      if (saved) return true;
 
       const decision = await dependencies.requestSaveFailureDecision();
       if (decision === 'retry') continue;
-      if (decision === 'cancel') return;
-      break;
+      return decision === 'discard';
     }
-
-    await dependencies.prepareAppExit();
-    await dependencies.destroyWindow();
   };
 
-  return (event: WindowCloseRequest) => {
+  const prepareToClose = () => {
+    if (activeSaveTransaction) return activeSaveTransaction;
+    const transaction = runSaveTransaction().finally(() => {
+      if (activeSaveTransaction === transaction) activeSaveTransaction = null;
+    });
+    activeSaveTransaction = transaction;
+    return transaction;
+  };
+
+  const handleCloseRequest = (event: WindowCloseRequest) => {
     event.preventDefault();
     if (activeTransaction) return activeTransaction;
 
-    const transaction = runTransaction().catch(() => undefined).finally(() => {
+    const transaction = prepareToClose()
+      .then(async (proceed) => {
+        if (proceed) await dependencies.completeClose();
+      })
+      .catch(() => undefined)
+      .finally(() => {
       if (activeTransaction === transaction) activeTransaction = null;
     });
     activeTransaction = transaction;
     return transaction;
   };
+
+  handleCloseRequest.prepareToClose = prepareToClose;
+  return handleCloseRequest;
 }

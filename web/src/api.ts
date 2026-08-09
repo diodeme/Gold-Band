@@ -11,8 +11,12 @@ export function getAppBootstrap() {
   return getRuntimeApi().getAppBootstrap();
 }
 
-export function prepareAppExit() {
-  return getRuntimeApi().prepareAppExit();
+export function completeMainWindowClose() {
+  return getRuntimeApi().completeMainWindowClose();
+}
+
+export function resolveAppExit(input: Parameters<ReturnType<typeof getRuntimeApi>['resolveAppExit']>[0]) {
+  return getRuntimeApi().resolveAppExit(input);
 }
 
 export function getSystemFonts() {
@@ -201,8 +205,24 @@ export function subscribeInterventionNavigate(listener: Parameters<NonNullable<R
   return getRuntimeApi().subscribeInterventionNavigate?.(listener) ?? Promise.resolve(() => {});
 }
 
+export function subscribeAppExitRequested(listener: Parameters<NonNullable<RuntimeApi['subscribeAppExitRequested']>>[0]) {
+  return getRuntimeApi().subscribeAppExitRequested?.(listener) ?? Promise.resolve(() => {});
+}
+
 export function submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['submitConversationPrompt']>[8], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
   return getRuntimeApi().submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths);
+}
+
+export function updateConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, content: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().updateConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId);
+}
+
+export function deleteConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().deleteConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId);
+}
+
+export function useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().useConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId);
 }
 
 export function sendAcpPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['sendAcpPrompt']>[8], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {

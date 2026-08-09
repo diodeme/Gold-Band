@@ -1,4 +1,5 @@
 pub mod acp;
+pub mod agent_catalog;
 pub mod app;
 pub mod artifacts;
 pub mod cli;

@@ -1,0 +1,353 @@
+use std::process::Output;
+
+use anyhow::{Context, Result, ensure};
+use camino::{Utf8Path, Utf8PathBuf};
+use serde::{Deserialize, Serialize};
+
+use crate::process::background_command;
+
+const CHECKPOINT_AUTHOR_NAME: &str = "Gold Band Runtime";
+const CHECKPOINT_AUTHOR_EMAIL: &str = "runtime@gold-band.local";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitCommandOutput {
+    pub success: bool,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl From<Output> for GitCommandOutput {
+    fn from(output: Output) -> Self {
+        Self {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GitCapabilityStatus {
+    Ready,
+    NotInstalled,
+    RepositoryRequired,
+    HeadRequired,
+    WorktreeRequired,
+    RepositoryUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCapability {
+    pub status: GitCapabilityStatus,
+    pub repo_root: Option<Utf8PathBuf>,
+    pub common_dir: Option<Utf8PathBuf>,
+    pub head: Option<String>,
+}
+
+impl GitCapability {
+    pub fn ready(&self) -> bool {
+        self.status == GitCapabilityStatus::Ready
+    }
+
+    pub fn error_code(&self) -> Option<&'static str> {
+        match self.status {
+            GitCapabilityStatus::Ready => None,
+            GitCapabilityStatus::NotInstalled => Some("run.git-not-installed"),
+            GitCapabilityStatus::RepositoryRequired => Some("run.git-repository-required"),
+            GitCapabilityStatus::HeadRequired => Some("run.git-head-required"),
+            GitCapabilityStatus::WorktreeRequired => Some("run.git-worktree-required"),
+            GitCapabilityStatus::RepositoryUnavailable => {
+                Some("run.git-repository-unavailable")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{code}")]
+pub struct GitPreflightError {
+    pub code: &'static str,
+    pub capability: GitCapability,
+}
+
+impl GitPreflightError {
+    pub fn params(&self) -> serde_json::Value {
+        serde_json::json!({
+            "repoRoot": self.capability.repo_root,
+            "commonDir": self.capability.common_dir,
+            "head": self.capability.head,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GitCommandRunner;
+
+impl GitCommandRunner {
+    pub fn run(&self, cwd: &Utf8Path, args: &[&str]) -> Result<GitCommandOutput> {
+        background_command("git")
+            .arg("-C")
+            .arg(cwd.as_str())
+            .args(args)
+            .output()
+            .map(GitCommandOutput::from)
+            .with_context(|| format!("failed to execute Git in `{cwd}`"))
+    }
+
+    fn capture(&self, cwd: &Utf8Path, args: &[&str]) -> Option<String> {
+        let output = self.run(cwd, args).ok()?;
+        output.success.then_some(output.stdout)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GitRepositoryService {
+    runner: GitCommandRunner,
+}
+
+impl GitRepositoryService {
+    pub fn probe(&self, cwd: &Utf8Path) -> GitCapability {
+        let version = match background_command("git").arg("--version").output() {
+            Ok(output) if output.status.success() => output,
+            _ => {
+                return GitCapability {
+                    status: GitCapabilityStatus::NotInstalled,
+                    repo_root: None,
+                    common_dir: None,
+                    head: None,
+                };
+            }
+        };
+        drop(version);
+
+        let Some(inside) = self.runner.capture(cwd, &["rev-parse", "--is-inside-work-tree"])
+        else {
+            return GitCapability {
+                status: GitCapabilityStatus::RepositoryRequired,
+                repo_root: None,
+                common_dir: None,
+                head: None,
+            };
+        };
+        if inside != "true" {
+            return GitCapability {
+                status: GitCapabilityStatus::RepositoryRequired,
+                repo_root: None,
+                common_dir: None,
+                head: None,
+            };
+        }
+
+        let repo_root = self
+            .runner
+            .capture(cwd, &["rev-parse", "--show-toplevel"])
+            .map(Utf8PathBuf::from);
+        let common_dir = self
+            .runner
+            .capture(cwd, &["rev-parse", "--path-format=absolute", "--git-common-dir"])
+            .map(Utf8PathBuf::from);
+        if repo_root.is_none() || common_dir.is_none() {
+            return GitCapability {
+                status: GitCapabilityStatus::RepositoryUnavailable,
+                repo_root,
+                common_dir,
+                head: None,
+            };
+        }
+        let head = self.runner.capture(cwd, &["rev-parse", "--verify", "HEAD"]);
+        if head.is_none() {
+            return GitCapability {
+                status: GitCapabilityStatus::HeadRequired,
+                repo_root,
+                common_dir,
+                head,
+            };
+        }
+        if self
+            .runner
+            .capture(cwd, &["worktree", "list", "--porcelain"])
+            .is_none()
+        {
+            return GitCapability {
+                status: GitCapabilityStatus::WorktreeRequired,
+                repo_root,
+                common_dir,
+                head,
+            };
+        }
+        GitCapability {
+            status: GitCapabilityStatus::Ready,
+            repo_root,
+            common_dir,
+            head,
+        }
+    }
+
+    pub fn require_worktree(&self, cwd: &Utf8Path) -> Result<GitCapability> {
+        let capability = self.probe(cwd);
+        if let Some(code) = capability.error_code() {
+            return Err(GitPreflightError { code, capability }.into());
+        }
+        Ok(capability)
+    }
+
+    pub fn head(&self, cwd: &Utf8Path) -> Result<String> {
+        let output = self.runner.run(cwd, &["rev-parse", "HEAD"])?;
+        ensure!(output.success, "git rev-parse HEAD failed: {}", details(&output));
+        Ok(output.stdout)
+    }
+
+    pub fn status_porcelain(&self, cwd: &Utf8Path) -> Result<String> {
+        let output = self
+            .runner
+            .run(cwd, &["status", "--porcelain=v1", "--untracked-files=all"])?;
+        ensure!(output.success, "git status failed: {}", details(&output));
+        Ok(output.stdout)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GitWorkspaceManager {
+    runner: GitCommandRunner,
+    repository: GitRepositoryService,
+}
+
+impl GitWorkspaceManager {
+    pub fn checkpoint(
+        &self,
+        workspace: &Utf8Path,
+        workspace_id: &str,
+        group_id: Option<&str>,
+    ) -> Result<Option<String>> {
+        if self.repository.status_porcelain(workspace)?.is_empty() {
+            return Ok(None);
+        }
+        self.ensure_no_in_progress_operation(workspace)?;
+        let add = self.runner.run(workspace, &["add", "-A"])?;
+        ensure!(add.success, "git add -A failed: {}", details(&add));
+
+        let mut message = format!(
+            "Gold Band checkpoint: {workspace_id}\n\nGold-Band-Internal: checkpoint\nGold-Band-Workspace: {workspace_id}"
+        );
+        if let Some(group_id) = group_id {
+            message.push_str(&format!("\nGold-Band-Group: {group_id}"));
+        }
+        let commit = self.runner.run(
+            workspace,
+            &[
+                "-c",
+                &format!("user.name={CHECKPOINT_AUTHOR_NAME}"),
+                "-c",
+                &format!("user.email={CHECKPOINT_AUTHOR_EMAIL}"),
+                "-c",
+                "commit.gpgSign=false",
+                "commit",
+                "--no-verify",
+                "--no-gpg-sign",
+                "-m",
+                &message,
+            ],
+        )?;
+        ensure!(commit.success, "checkpoint commit failed: {}", details(&commit));
+        ensure!(
+            self.repository.status_porcelain(workspace)?.is_empty(),
+            "workspace remained dirty after checkpoint"
+        );
+        self.repository.head(workspace).map(Some)
+    }
+
+    pub fn create_worktree(
+        &self,
+        repository_root: &Utf8Path,
+        path: &Utf8Path,
+        branch: &str,
+        fork_commit: &str,
+    ) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent.as_std_path())?;
+        }
+        let output = self.runner.run(
+            repository_root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                path.as_str(),
+                fork_commit,
+            ],
+        )?;
+        ensure!(output.success, "git worktree add failed: {}", details(&output));
+        Ok(())
+    }
+
+    pub fn remove_worktree(
+        &self,
+        repository_root: &Utf8Path,
+        path: &Utf8Path,
+        branch: &str,
+    ) -> Result<()> {
+        let remove = self.runner.run(
+            repository_root,
+            &["worktree", "remove", "--force", path.as_str()],
+        )?;
+        ensure!(remove.success, "git worktree remove failed: {}", details(&remove));
+        let branch_remove = self
+            .runner
+            .run(repository_root, &["branch", "-D", branch])?;
+        ensure!(
+            branch_remove.success,
+            "git branch -D failed: {}",
+            details(&branch_remove)
+        );
+        Ok(())
+    }
+
+    pub fn validate_worktree(&self, path: &Utf8Path, branch: &str) -> Result<()> {
+        let root = self.runner.run(path, &["rev-parse", "--show-toplevel"])?;
+        ensure!(root.success && root.stdout == path.as_str(), "workspace path is not the expected Git worktree");
+        let actual = self.runner.run(path, &["branch", "--show-current"])?;
+        ensure!(actual.success && actual.stdout == branch, "workspace branch changed outside runtime");
+        Ok(())
+    }
+
+    fn ensure_no_in_progress_operation(&self, workspace: &Utf8Path) -> Result<()> {
+        for marker in ["MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
+            let marker_path = self
+                .runner
+                .capture(workspace, &["rev-parse", "--git-path", marker])
+                .map(Utf8PathBuf::from);
+            ensure!(
+                !marker_path.as_ref().is_some_and(|path| path.exists()),
+                "workspace has an in-progress Git operation: {marker}"
+            );
+        }
+        Ok(())
+    }
+}
+
+pub fn details(output: &GitCommandOutput) -> String {
+    match (output.stdout.is_empty(), output.stderr.is_empty()) {
+        (true, true) => "no git output".to_string(),
+        (false, true) => format!("stdout: {}", output.stdout),
+        (true, false) => format!("stderr: {}", output.stderr),
+        (false, false) => format!("stdout: {}; stderr: {}", output.stdout, output.stderr),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_repository_has_repository_required_capability() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8Path::from_path(dir.path()).unwrap();
+        let capability = GitRepositoryService::default().probe(path);
+        if capability.status != GitCapabilityStatus::NotInstalled {
+            assert_eq!(capability.status, GitCapabilityStatus::RepositoryRequired);
+        }
+    }
+}

@@ -326,6 +326,7 @@ export function ConversationRunPage({
   const runtimeComposerContext: AcpRuntimeComposerContext | undefined = selectedLeaf
     ? {
         lifecycle: selectedLeaf.lifecycle,
+        promptQueueEnabled: isDirect,
         runtimeStatus: selectedLeaf.lifecycle?.runtime.status ?? selectedLeaf.status,
         workflowValid: isDirect || run.workflowValid,
         workflowError: isDirect ? undefined : t('conversation.runtime.workflowInvalid'),
@@ -388,6 +389,8 @@ export function ConversationRunPage({
                   lifecycle: session.lifecycle,
                   current: true,
                   manualCheckPending: session.manualCheckPending,
+                  sessionId: session.sessionId,
+                  sessionEstablished: session.sessionEstablished,
                   artifactCount: 0,
                   attachmentCount: 0,
                 }, true)}
@@ -408,6 +411,8 @@ export function ConversationRunPage({
           <ACPChatDialog
             key={`${run.taskUuid ?? run.taskId}:${selectedSessionKey ?? 'empty'}`}
             session={selectedSession}
+            sessionEstablished={selectedLeaf.sessionEstablished}
+            sessionReferenceId={selectedLeaf.sessionId}
             projectId={run.projectId}
             taskId={run.taskId}
             runId={run.runId}
@@ -468,7 +473,7 @@ function ConversationEmptySessionState({ label, active }: { label: string; activ
         {active ? (
           <span
             aria-hidden="true"
-            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary [animation-duration:900ms]"
+            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-gold-running/30 border-t-gold-running [animation-duration:900ms]"
           />
         ) : null}
         <span>{label}</span>

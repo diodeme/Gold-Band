@@ -57,7 +57,7 @@ Gold Band 使用场景：
 - 重跑、关闭或配置切换前需要释放的 active sessions。
 - 配置保存导致 adapter restart 前释放旧 connection 上的 sessions。
 - pool eviction / connection shutdown。
-- cancel timeout 后由用户或后台恢复策略选择 close session。
+- cancel timeout 后立即把该 session 从复用池和 continue ref 隔离；后台可另行 bounded close，但不能阻塞用户停止终态。
 
 ### 2.3 `session/delete`
 
@@ -102,7 +102,7 @@ Zed 参考：
 
 | 入口 | Runtime 状态 | ACP 操作 | Adapter process 操作 |
 |---|---|---|---|
-| 新 UI ACP Stop | 停止当前 leaf/session；普通 attempt 立即写 `Paused + ProcessInterrupted`，AI-DYNAMIC 内部 leaf 只暂停目标 dynamic node，父 run 由 active leaf 聚合决定 | 对目标 ACP session 发 `session/cancel` | 不 kill；cancel timeout 暴露 stop failed |
+| 新 UI ACP Stop | 停止当前 leaf/session；普通 attempt 立即写 `Paused + ProcessInterrupted`，AI-DYNAMIC 内部 leaf 只暂停目标 dynamic node，父 run 由 active leaf 聚合决定 | active 前可发送一次 `session/cancel`，provider 报告 active 后仍未 terminal 则补发一次；timeout 仍结算 cancelled 并隔离 session | 不 kill；保留共享 adapter process |
 | 旧 UI ACP Stop | 与新 UI leaf stop 一致 | `session/cancel` | 不 kill |
 | 旧 UI / 新 UI 侧边栏 Run Stop | 整个 run 写 `Paused + ProcessInterrupted`，所有 active leaf 一起暂停，已 completed leaf 不被覆盖 | 对当前 attempt 及 AI-DYNAMIC active descendants 的 live sessions 发 `session/cancel` | 不 kill |
 | 历史 killed run | 只读兼容展示，不再由新入口生成 | 不补发协议 | 不参与新的 adapter 操作 |
@@ -131,7 +131,7 @@ Zed 参考：
    - prompt response 返回 cancelled/interrupted；或
    - bounded cancel deadline 到期；或
    - adapter transport failed。
-5. cancel deadline 到期时，不 kill adapter 作为成功兜底，而是写明确 stop failed / cancel timeout 状态。
+5. cancel deadline 到期时写结构化 `acp.cancel-drain-timeout`；用户停止终态不升级为失败，未 drain session 从复用登记与 continue ref 中移除，adapter process 保持复用。
 6. 抽出一等公民 helper：
    - `send_session_cancel_notification(session_id)`
    - `close_session_bounded(session_id, timeout)`
@@ -181,7 +181,7 @@ PromptRunHandle
 - attempt locator
 - prompt request id
 - cancel requested timestamp
-- cancel sent flag
+- cancel sent before-provider-active / after-provider-active flags
 - cancel deadline
 - observed stop reason
 - runtime stop probe
@@ -329,13 +329,13 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
 
 1. `ProviderControlState::ForceStopping` 已收敛为 `CancelRequested`，对外入口改为 `request_prompt_cancel(...)`。
 2. stop command 继续立即写 `Paused + ProcessInterrupted`，并取消 pending permission、持久化 cancelled ACP snapshot/session。
-3. active runtime 收到 cancel request 后发送一次 `session/cancel`，并继续 drain 当前 `session/prompt`；只有收到 cancelled/interrupted 或 cancel deadline 才结束该 prompt。
-4. cancel timeout 返回明确错误，不再 kill adapter 作为成功兜底。
+3. cancel request 是持续门闩：provider active 前最多投递一次 `session/cancel`，后续观察到 active 且 prompt 未 terminal 时最多补发一次，并继续 drain 当前 `session/prompt`。
+4. cancel timeout 使用 typed `AcpCancelDrainTimeout` 进入内部诊断；用户可见 turn/session 仍结算 cancelled，不进入 transport failure 或 auto retry；未 drain session 被隔离，adapter process 不被 kill。
 5. doctor cleanup 已抽出 bounded `session/delete` / `session/close` helper，delete first，close fallback。
 6. `run_pause` / 旧 UI Run Stop 已改为 pause/interrupted 语义，普通停止不再按 `provider.pid` kill adapter。
 7. `session/prompt` 正常返回 `stopReason=cancelled/canceled/interrupted` 时，ACP session metadata 保持 `cancelled`，不会被写成 `completed`。
 
-第二轮已继续落地 Phase B-D 的主链路：JSON-RPC transport 已拆为 `src/acp/connection.rs`，普通 ACP worker 改为通过 `provider_id + workspace_root` 级 connection manager 复用 adapter process；`session/update` 与 permission request 通过 `sessionId` 路由回对应 attempt，request/response 通过 pending request id 路由；普通 runtime release 不再无条件 kill adapter。app close 已接入 bounded `session/close`，`run_kill / kill_run / killRun` 产生链路已废弃，agent/provider/MCP 配置保存作为 connection restart boundary；普通 workspace 切换不关闭旧 workspace connection，以支持新 UI 多 workspace 并存。配置保存遇到 active prompt 会先阻断并提示用户停止会话；停止后仍保留原 ACP `sessionId`，continue 必须用原 `sessionId` 恢复同一业务会话。`orchestrator` 的 `provider.pid exists => wait` continue guard 已删除，`provider.pid` 只保留为 adapter process metadata / orphan cleanup 线索。
+第二轮已继续落地 Phase B-D 的主链路：JSON-RPC transport 已拆为 `src/acp/connection.rs`，普通 ACP worker 改为通过 `provider_id + workspace_root` 级 connection manager 复用 adapter process；`session/update` 与 permission request 通过 `sessionId` 路由回对应 attempt，request/response 通过 pending request id 路由；普通 runtime release 不再无条件 kill adapter。app close 已接入 bounded `session/close`，`run_kill / kill_run / killRun` 产生链路已废弃，agent/provider/MCP 配置保存作为 connection restart boundary；普通 workspace 切换不关闭旧 workspace connection，以支持新 UI 多 workspace 并存。配置保存遇到 active prompt 会先阻断并提示用户停止会话；正常停止并成功 drain 后仍保留原 ACP `sessionId`，continue 使用原 `sessionId` 恢复同一业务会话；cancel drain timeout 的 session 例外，必须隔离并在 continue 时创建新 session。`orchestrator` 的 `provider.pid exists => wait` continue guard 已删除，`provider.pid` 只保留为 adapter process metadata / orphan cleanup 线索。
 
 ### Phase B：抽出 JSON-RPC transport
 
@@ -387,10 +387,11 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
 
 1. `stop_active_session` 立即写 `Paused + ProcessInterrupted`。
 2. active runtime 收到 cancel request 后发送 `session/cancel`，不发送 `session/close`。
-3. 重复 stop 只发送一次 cancel notification。
+3. 重复 stop 在同一 provider phase 只发送一次 cancel notification；active 前已发送且 provider 后续变为 active 时只补发一次。
 4. `session/prompt` 返回 `stopReason=cancelled` 后，provider result 映射为 interrupted。
 5. cancel 后迟到 success response 不写 success artifact、不推进 workflow。
-6. cancel timeout 不调用 kill adapter 作为成功兜底，而是写 stop failed / cancel timeout。
+6. cancel timeout 不调用 kill adapter，不把 attempt 改成失败，不触发 auto retry；写 `acp.cancel-drain-timeout` 并移除该 session 的复用/continue 能力。
+7. Direct 与 AI-DYNAMIC 自动重试在 backoff 前后和 provider 重建前检查 attempt；用户停止后不再产生新的 provider invocation。
 
 ### 7.2 Rust：close/delete
 

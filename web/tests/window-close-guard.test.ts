@@ -15,8 +15,7 @@ function dependencies(overrides: Partial<WindowCloseTransactionDependencies> = {
   return {
     flushPendingChanges: vi.fn().mockResolvedValue(true),
     requestSaveFailureDecision: vi.fn().mockResolvedValue('cancel'),
-    prepareAppExit: vi.fn().mockResolvedValue({ warnings: [] }),
-    destroyWindow: vi.fn().mockResolvedValue(undefined),
+    completeClose: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   } satisfies WindowCloseTransactionDependencies;
 }
@@ -32,22 +31,21 @@ describe('window close transaction', () => {
     expect(capability.permissions).toContain('core:window:allow-destroy');
   });
 
-  it('flushes files before preparing the backend and destroying the window', async () => {
+  it('flushes files before handing completion to the desktop lifecycle host', async () => {
     const order: string[] = [];
     const deps = dependencies({
       flushPendingChanges: vi.fn(async () => { order.push('flush'); return true; }),
-      prepareAppExit: vi.fn(async () => { order.push('prepare'); }),
-      destroyWindow: vi.fn(async () => { order.push('destroy'); }),
+      completeClose: vi.fn(async () => { order.push('complete'); }),
     });
     const event = closeRequest();
 
     await createWindowCloseTransaction(deps)(event);
 
     expect(event.preventDefault).toHaveBeenCalledTimes(1);
-    expect(order).toEqual(['flush', 'prepare', 'destroy']);
+    expect(order).toEqual(['flush', 'complete']);
   });
 
-  it('retries saving before any backend exit preparation', async () => {
+  it('retries saving before completing the close', async () => {
     const flush = vi.fn()
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true);
@@ -59,8 +57,7 @@ describe('window close transaction', () => {
     await createWindowCloseTransaction(deps)(closeRequest());
 
     expect(flush).toHaveBeenCalledTimes(2);
-    expect(deps.prepareAppExit).toHaveBeenCalledTimes(1);
-    expect(deps.destroyWindow).toHaveBeenCalledTimes(1);
+    expect(deps.completeClose).toHaveBeenCalledTimes(1);
   });
 
   it('cancels closing without stopping sessions when saving fails', async () => {
@@ -71,11 +68,10 @@ describe('window close transaction', () => {
 
     await createWindowCloseTransaction(deps)(closeRequest());
 
-    expect(deps.prepareAppExit).not.toHaveBeenCalled();
-    expect(deps.destroyWindow).not.toHaveBeenCalled();
+    expect(deps.completeClose).not.toHaveBeenCalled();
   });
 
-  it('prepares exit and destroys the window after the user discards changes', async () => {
+  it('completes the close after the user discards changes', async () => {
     const deps = dependencies({
       flushPendingChanges: vi.fn().mockResolvedValue(false),
       requestSaveFailureDecision: vi.fn().mockResolvedValue('discard'),
@@ -83,8 +79,7 @@ describe('window close transaction', () => {
 
     await createWindowCloseTransaction(deps)(closeRequest());
 
-    expect(deps.prepareAppExit).toHaveBeenCalledTimes(1);
-    expect(deps.destroyWindow).toHaveBeenCalledTimes(1);
+    expect(deps.completeClose).toHaveBeenCalledTimes(1);
   });
 
   it('treats an unexpected flush error as a save failure decision', async () => {
@@ -96,7 +91,7 @@ describe('window close transaction', () => {
     await createWindowCloseTransaction(deps)(closeRequest());
 
     expect(deps.requestSaveFailureDecision).toHaveBeenCalledTimes(1);
-    expect(deps.prepareAppExit).toHaveBeenCalledTimes(1);
+    expect(deps.completeClose).toHaveBeenCalledTimes(1);
   });
 
   it('shares one transaction across concurrent native close requests', async () => {
@@ -118,17 +113,24 @@ describe('window close transaction', () => {
 
     finishFlush?.(true);
     await Promise.all([firstClose, secondClose]);
-    expect(deps.prepareAppExit).toHaveBeenCalledTimes(1);
-    expect(deps.destroyWindow).toHaveBeenCalledTimes(1);
+    expect(deps.completeClose).toHaveBeenCalledTimes(1);
   });
 
-  it('does not destroy the window when backend exit preparation fails', async () => {
+  it('does not retry a failed host completion inside the save transaction', async () => {
     const deps = dependencies({
-      prepareAppExit: vi.fn().mockRejectedValue(new Error('ipc unavailable')),
+      completeClose: vi.fn().mockRejectedValue(new Error('ipc unavailable')),
     });
 
     await createWindowCloseTransaction(deps)(closeRequest());
 
-    expect(deps.destroyWindow).not.toHaveBeenCalled();
+    expect(deps.completeClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('can run the save guard for a native app-exit handshake without closing directly', async () => {
+    const deps = dependencies();
+    const transaction = createWindowCloseTransaction(deps);
+
+    expect(await transaction.prepareToClose()).toBe(true);
+    expect(deps.completeClose).not.toHaveBeenCalled();
   });
 });

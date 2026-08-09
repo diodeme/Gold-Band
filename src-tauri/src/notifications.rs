@@ -7,7 +7,10 @@
 //! 失败一律 `tracing::warn!`，不静默吞错（方案 §6.3/§12）。
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex};
+
+#[cfg(windows)]
+use std::sync::Once;
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use gold_band::app::{AcpTurnBatchProgress, InterventionNotification, RuntimeLifecycleEvent};
@@ -530,17 +533,14 @@ fn send_notify_rust(
         std::thread::spawn(move || {
             let response_app = handle_app.clone();
             let response_payload = payload.clone();
-            if let Err(error) = handle.wait_for_response(move |response| match response {
-                NotificationResponse::Default => {
-                    route_intervention_navigation(&response_app, response_payload)
-                }
-                NotificationResponse::Action(action) if action == "view" => {
-                    route_intervention_navigation(&response_app, response_payload)
-                }
-                NotificationResponse::Action(_)
-                | NotificationResponse::Reply(_)
-                | NotificationResponse::Closed(_) => {
-                    clear_notification_dedup(&response_app, &response_payload.dedup_key)
+            if let Err(error) = handle.wait_for_response(move |response: &NotificationResponse| {
+                match native_notification_response_disposition(response) {
+                    NativeNotificationResponseDisposition::Navigate => {
+                        route_intervention_navigation(&response_app, response_payload)
+                    }
+                    NativeNotificationResponseDisposition::ClearDedup => {
+                        clear_notification_dedup(&response_app, &response_payload.dedup_key)
+                    }
                 }
             }) {
                 warn!(?error, "waiting for native notification response failed");
@@ -553,6 +553,32 @@ fn send_notify_rust(
         let _ = auto_dismiss_target_secs;
         let _ = notification;
         let _ = app_handle;
+    }
+}
+
+#[cfg(all(feature = "native-notification", any(not(windows), test)))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeNotificationResponseDisposition {
+    Navigate,
+    ClearDedup,
+}
+
+#[cfg(all(feature = "native-notification", any(not(windows), test)))]
+fn native_notification_response_disposition(
+    response: &notify_rust::NotificationResponse,
+) -> NativeNotificationResponseDisposition {
+    match response {
+        notify_rust::NotificationResponse::Default => {
+            NativeNotificationResponseDisposition::Navigate
+        }
+        notify_rust::NotificationResponse::Action(action) if action == "view" => {
+            NativeNotificationResponseDisposition::Navigate
+        }
+        notify_rust::NotificationResponse::Action(_)
+        | notify_rust::NotificationResponse::Reply(_)
+        | notify_rust::NotificationResponse::Closed(_) => {
+            NativeNotificationResponseDisposition::ClearDedup
+        }
     }
 }
 
@@ -777,6 +803,46 @@ mod tests {
 
         assert_eq!(pending.take_all(), vec![first, second]);
         assert!(pending.take_all().is_empty());
+    }
+
+    #[cfg(feature = "native-notification")]
+    #[test]
+    fn native_notification_response_contract_routes_only_default_and_view() {
+        use notify_rust::{CloseReason, NotificationResponse, ResponseHandler};
+
+        fn assert_response_handler_contract(_handler: impl ResponseHandler) {}
+        assert_response_handler_contract(|response: &NotificationResponse| {
+            let _ = native_notification_response_disposition(response);
+        });
+
+        assert_eq!(
+            native_notification_response_disposition(&NotificationResponse::Default),
+            NativeNotificationResponseDisposition::Navigate
+        );
+        assert_eq!(
+            native_notification_response_disposition(&NotificationResponse::Action(
+                "view".to_string()
+            )),
+            NativeNotificationResponseDisposition::Navigate
+        );
+        assert_eq!(
+            native_notification_response_disposition(&NotificationResponse::Action(
+                "dismiss".to_string()
+            )),
+            NativeNotificationResponseDisposition::ClearDedup
+        );
+        assert_eq!(
+            native_notification_response_disposition(&NotificationResponse::Reply(
+                "ignored".to_string()
+            )),
+            NativeNotificationResponseDisposition::ClearDedup
+        );
+        assert_eq!(
+            native_notification_response_disposition(&NotificationResponse::Closed(
+                CloseReason::Dismissed
+            )),
+            NativeNotificationResponseDisposition::ClearDedup
+        );
     }
 
     #[test]

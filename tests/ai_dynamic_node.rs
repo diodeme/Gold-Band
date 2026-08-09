@@ -12,7 +12,9 @@ use gold_band::provider::{
     ProviderInfo, ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef,
     UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
 };
-use gold_band::runtime_error::{RuntimeErrorDomain, auto_runtime_error_info};
+use gold_band::runtime_error::{
+    DEFAULT_AUTO_RETRY_MAX_ATTEMPTS, RuntimeErrorDomain, auto_runtime_error_info,
+};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
@@ -1065,8 +1067,20 @@ fn ai_dynamic_provider_runtime_error_does_not_enter_proposal_repair() {
     );
 
     let invocations = provider.invocations.lock().unwrap();
-    assert_eq!(invocations.len(), 1);
-    assert_eq!(invocations[0].session_mode, SessionMode::New);
+    assert_eq!(
+        invocations.len(),
+        (DEFAULT_AUTO_RETRY_MAX_ATTEMPTS + 1) as usize
+    );
+    assert!(
+        invocations
+            .iter()
+            .all(|invocation| invocation.session_mode == SessionMode::New)
+    );
+    assert!(
+        invocations
+            .iter()
+            .all(|invocation| invocation.resume_prompt.is_none())
+    );
 }
 
 #[test]

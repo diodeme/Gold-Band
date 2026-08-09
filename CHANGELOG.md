@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.4](https://github.com/diodeme/Gold-Band/compare/v0.12.3...v0.12.4) (2026-08-09)
+
+
+### Bug Fixes
+
+* **ci:** keep release preflight compile-only ([63eaf68](https://github.com/diodeme/Gold-Band/commit/63eaf6863c1514e047eb7a64a6c2256bf4bab494))
+
 ## [0.12.3](https://github.com/diodeme/Gold-Band/compare/v0.12.2...v0.12.3) (2026-08-09)
 
 

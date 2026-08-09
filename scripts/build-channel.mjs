@@ -55,6 +55,17 @@ if (password) {
 }
 
 // ── build ──
+const catalogResult = spawnSync('node', ['scripts/prepare-agent-catalog.mjs'], {
+  cwd: repoRoot,
+  env,
+  stdio: 'inherit',
+  shell: process.platform === 'win32',
+});
+if (catalogResult.status !== 0) {
+  console.error('Agent catalog preparation failed.');
+  process.exit(catalogResult.status ?? 1);
+}
+
 const overlayPath = join(repoRoot, 'src-tauri', 'target', 'channel', `tauri.${channel}.conf.json`);
 writeTauriConfigOverlay(config, overlayPath, isDefaultChannel ? undefined : channelVersion);
 

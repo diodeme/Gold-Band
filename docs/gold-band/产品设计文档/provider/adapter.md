@@ -53,7 +53,7 @@ provider adapter 是 provider-specific 差异的隔离层。
 - 当前环境是否满足最小运行条件
 - 失败时给出明确原因
 
-桌面端持久化的 doctor 结果是 `~/.gold-band/desktop/agent-diagnostics.json`。doctor 运行时可以临时创建 `~/.gold-band/doctor/acp` 作为一次性 ACP 诊断 attempt 目录；每次运行前清理旧目录，成功后删除该目录，失败时只保留最近一次有界 raw/timeline/diagnostics JSONL bundle，并移除 `provider.pid`。这些文件只用于诊断，不参与 runtime、UI 状态、业务 session 判断，也不作为 `supports_system_prompt` 等静态 provider capability 的事实来源。
+桌面端持久化的 doctor 结果是 `~/.gold-band/desktop/agent-diagnostics.json`。每个 Agent 的 doctor 使用独立的 `~/.gold-band/doctor/acp/<agent-id>` 作为一次性 ACP 诊断 attempt 目录，并在目录内独立维护 `provider.pid`；每次运行前只清理本 Agent 的旧目录，成功后删除该目录，失败时只保留该 Agent 最近一次有界 raw/timeline/diagnostics JSONL bundle，并移除对应 `provider.pid`。因此全量周期诊断可以并行检查不同 Agent，但同一 Agent 仍必须 singleflight。手动诊断只执行一次，后台周期诊断首次失败后重试一次，第二次失败才成为最终结果。这些文件只用于诊断，不参与 runtime、UI 状态、业务 session 判断，也不作为 `supports_system_prompt` 等静态 provider capability 的事实来源。
 
 ### `runWorker()`
 运行一次 AI worker attempt。

@@ -6,6 +6,7 @@ mod channel;
 mod commands;
 mod commands_conversation;
 mod conversation_workspace;
+mod desktop_lifecycle;
 mod feedback;
 mod i18n;
 mod metrics;
@@ -24,27 +25,28 @@ use commands::{
     add_mcp_server, cancel_acp_session, check_local_claude, check_mcp_server_health,
     check_skill_name_conflict, check_update_manual, choose_workspace, clear_desktop_avatar,
     continue_run, create_agent, create_profile, create_task, delete_agent, delete_auto_template,
-    delete_mcp_server, delete_profile, delete_skill, delete_workflow_template,
-    dismiss_update_announcement, doctor_agent, download_and_install_update,
-    get_acp_activity_detail, get_acp_raw_frames, get_acp_session, get_acp_tool_detail,
-    get_agent_command_catalog, get_agent_registry, get_app_bootstrap, get_auto_templates,
-    get_file_comparison, get_log_page, get_metrics_settings, get_profile, get_profiles,
-    get_round_detail, get_run_detail, get_skill_sync_status, get_system_fonts, get_task_detail,
-    get_task_list, get_turn_file_change_set, get_update_status, get_workflow,
+    delete_conversation_queued_prompt, delete_mcp_server, delete_profile, delete_skill,
+    delete_workflow_template, dismiss_update_announcement, doctor_agent,
+    download_and_install_update, get_acp_activity_detail, get_acp_raw_frames, get_acp_session,
+    get_acp_tool_detail, get_agent_command_catalog, get_agent_registry, get_app_bootstrap,
+    get_auto_templates, get_file_comparison, get_log_page, get_metrics_settings, get_profile,
+    get_profiles, get_round_detail, get_run_detail, get_skill_sync_status, get_system_fonts,
+    get_task_detail, get_task_list, get_turn_file_change_set, get_update_status, get_workflow,
     get_workflow_templates, list_conversation_directory, list_mcp_servers, list_mcp_tools,
     list_project_skills, list_skills, mark_settings_advanced_update_seen,
     mark_settings_update_seen, open_conversation_directory_path_in_file_manager,
-    open_in_file_manager, pause_run, prepare_app_exit, read_conversation_directory_file,
-    read_skill, record_activity, remove_recent_workspace, renew_acp_session_lease,
-    replace_auto_templates, respond_acp_permission, respond_elicitation, retry_run,
-    save_auto_template, save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
+    open_in_file_manager, pause_run, read_conversation_directory_file, read_skill,
+    record_activity, remove_recent_workspace, renew_acp_session_lease, replace_auto_templates,
+    respond_acp_permission, respond_elicitation, retry_run, save_auto_template,
+    save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
     save_metrics_settings, save_task_workflow, save_updater_settings, save_workflow_template,
     search_acp_prompts, search_acp_sessions, search_tasks, select_recent_desktop_avatar,
     select_recent_workspace, send_acp_prompt, set_acp_session_config_option, set_acp_session_model,
     set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref, start_run,
     stop_active_session, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
-    update_agent, update_auto_template, update_mcp_server, update_notification_attention,
-    update_profile, update_skill_sync_targets, update_workflow_template, write_skill,
+    update_agent, update_auto_template, update_conversation_queued_prompt, update_mcp_server,
+    update_notification_attention, update_profile, update_skill_sync_targets,
+    update_workflow_template, use_conversation_queued_prompt, write_skill,
 };
 use commands_conversation::{
     add_conversation_workspace, choose_conversation_workspace, create_conversation_run,
@@ -114,6 +116,8 @@ fn run() -> anyhow::Result<()> {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(DesktopState::new(context))
+        .manage(desktop_lifecycle::DesktopLifecycleCoordinator::default())
+        .manage(notifications::PendingInterventionNavigations::default())
         .manage(WorkspaceFileRuntime::default())
         .manage(WorkspaceFileWatchRuntime::default());
     #[cfg(all(debug_assertions, target_os = "windows"))]
@@ -189,7 +193,9 @@ fn run() -> anyhow::Result<()> {
         })
         .invoke_handler(tauri::generate_handler![
             get_app_bootstrap,
-            prepare_app_exit,
+            desktop_lifecycle::complete_main_window_close,
+            desktop_lifecycle::resolve_app_exit,
+            notifications::take_pending_intervention_navigations,
             get_system_fonts,
             check_local_claude,
             get_agent_registry,
@@ -230,6 +236,9 @@ fn run() -> anyhow::Result<()> {
             get_acp_tool_detail,
             renew_acp_session_lease,
             submit_conversation_prompt,
+            update_conversation_queued_prompt,
+            delete_conversation_queued_prompt,
+            use_conversation_queued_prompt,
             send_acp_prompt,
             set_acp_session_model,
             set_acp_session_config_option,
@@ -331,7 +340,8 @@ fn run() -> anyhow::Result<()> {
             #[cfg(all(debug_assertions, target_os = "windows"))]
             webview_heap_diagnostics::get_webview_heap_diagnostic,
         ])
-        .run(tauri_context)
-        .context("tauri runtime failed")?;
+        .build(tauri_context)
+        .context("failed to build tauri runtime")?
+        .run(desktop_lifecycle::handle_run_event);
     Ok(())
 }

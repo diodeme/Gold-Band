@@ -1,5 +1,92 @@
 # Changelog
 
+## [0.12.4](https://github.com/diodeme/Gold-Band/compare/v0.12.3...v0.12.4) (2026-08-09)
+
+
+### Bug Fixes
+
+* **ci:** keep release preflight compile-only ([63eaf68](https://github.com/diodeme/Gold-Band/commit/63eaf6863c1514e047eb7a64a6c2256bf4bab494))
+
+## [0.12.3](https://github.com/diodeme/Gold-Band/compare/v0.12.2...v0.12.3) (2026-08-09)
+
+
+### Bug Fixes
+
+* **desktop:** enforce native notification response contract ([b5f14e6](https://github.com/diodeme/Gold-Band/commit/b5f14e6869a0e02448c3f4ee736243434d2f0c3a))
+
+## [0.12.2](https://github.com/diodeme/Gold-Band/compare/v0.12.1...v0.12.2) (2026-08-09)
+
+
+### Bug Fixes
+
+* **desktop:** unify lifecycle and notification handling ([d529b6e](https://github.com/diodeme/Gold-Band/commit/d529b6e52582facce1612b19fd8b26bfa1fba554))
+
+## [0.12.1](https://github.com/diodeme/Gold-Band/compare/v0.12.0...v0.12.1) (2026-08-07)
+
+
+### Bug Fixes
+
+* **agent-management:** refine agent management and composer behavior ([e9d3393](https://github.com/diodeme/Gold-Band/commit/e9d33934e2c752efb3ff24eeb5f22cc412983b54))
+* **direct:** settle queued prompts on durable acceptance ([18be8e1](https://github.com/diodeme/Gold-Band/commit/18be8e1bcd851374a4ef5a516f2eb3f4fc50b8a3))
+
+
+### Performance Improvements
+
+* **direct:** avoid timeline scans during prompt acceptance ([8aa3421](https://github.com/diodeme/Gold-Band/commit/8aa342186b4ef2d8e0d987d7500daa6fc4fecef0))
+
+## [0.12.0](https://github.com/diodeme/Gold-Band/compare/v0.11.2...v0.12.0) (2026-08-07)
+
+
+### Features
+
+* **agent:** add extensible ACP agent catalog ([03f4cea](https://github.com/diodeme/Gold-Band/commit/03f4cea80784fd2184c8c38686938dce18dbab0d))
+* **direct:** add persistent prompt queue ([01d1335](https://github.com/diodeme/Gold-Band/commit/01d13352448a566d607d684d36e5c13576ed23d8))
+* **direct:** queue prompts during active sessions ([3df86b6](https://github.com/diodeme/Gold-Band/commit/3df86b6d2fc17650d4c7416a34e705abd7082180))
+* **workspace:** add compact file tree mode ([1a1a98d](https://github.com/diodeme/Gold-Band/commit/1a1a98db203dd530f04f1e6a3bfe1cb5230689e6))
+
+
+### Bug Fixes
+
+* **acp:** prefer resume for detached session restore ([53d41cb](https://github.com/diodeme/Gold-Band/commit/53d41cb3ecebd3bbe64ec80c2a483f274bc32e2d))
+* **acp:** preserve history boundaries across live deltas ([b77d574](https://github.com/diodeme/Gold-Band/commit/b77d574fab9cb160c9bbe213fe933be513c4d538))
+* **workflow:** clarify default template edits ([0b86efa](https://github.com/diodeme/Gold-Band/commit/0b86efab2a4ce5517b0a98b36355c47aa646ff4a))
+
+## [0.11.2](https://github.com/diodeme/Gold-Band/compare/v0.11.1...v0.11.2) (2026-08-07)
+
+
+### Bug Fixes
+
+* **composer:** rebalance toolbar widths ([7e1fbdd](https://github.com/diodeme/Gold-Band/commit/7e1fbdd629c0957e02b0a163461353bcb46201ed))
+* **conversation:** refine workflow and workspace controls ([e60232e](https://github.com/diodeme/Gold-Band/commit/e60232e9c765a6a127c934ff72bdf1d224d4a08a))
+* **profiles:** localize built-in role metadata ([c50bedd](https://github.com/diodeme/Gold-Band/commit/c50beddf7c3b33015001128f4cdaa4b42df0e754))
+* **workspace:** expand run directory panel ([bd4d951](https://github.com/diodeme/Gold-Band/commit/bd4d95143ae7377f5c872dae2fdeb6324dccfae7))
+
+## [0.11.1](https://github.com/diodeme/Gold-Band/compare/v0.11.0...v0.11.1) (2026-08-06)
+
+
+### Bug Fixes
+
+* **acp:** make prompt cancellation durable ([6c3780d](https://github.com/diodeme/Gold-Band/commit/6c3780d9b58048e37b59bd8e1915931fb5a9de9b))
+* **acp:** stabilize automatic retry messages ([b2cfb9a](https://github.com/diodeme/Gold-Band/commit/b2cfb9a4588f7b984ef7002605166c49f602053d))
+* **acp:** unify prompt terminal and retry handling ([f7b4ea4](https://github.com/diodeme/Gold-Band/commit/f7b4ea44937c5f68cf073c0fd3c8f4acf5461817))
+* **agent-doctor:** isolate parallel diagnostics ([07e0c6a](https://github.com/diodeme/Gold-Band/commit/07e0c6a838470e7a5e30d83414d229b8223da61f))
+* **ai-dynamic:** align control agent model and permission config ([99dfe6d](https://github.com/diodeme/Gold-Band/commit/99dfe6dff893702a7e8a7d02882440124ec47a40))
+* **auto:** repair invalid template references ([852b017](https://github.com/diodeme/Gold-Band/commit/852b01762e6a8431e2d0eefa91240f5a2660245a))
+* **conversation:** eliminate session-switch flicker ([7d2444e](https://github.com/diodeme/Gold-Band/commit/7d2444efc330451defd0893b79ae8e454511b067))
+* **conversation:** harden snapshot handoff convergence ([af84990](https://github.com/diodeme/Gold-Band/commit/af8499042571ee123704070c1d891f8f2bff10fb))
+* **conversation:** keep concurrent sessions responsive ([a33ff87](https://github.com/diodeme/Gold-Band/commit/a33ff87481a01219ffcc0154f0cec1de614da93d))
+* **dev:** isolate static frontend snapshots ([b471ffc](https://github.com/diodeme/Gold-Band/commit/b471ffc8ed18f47e9f6902de0c34347b7e1ae676))
+* **run-mode:** refine template selection ([a8c7bee](https://github.com/diodeme/Gold-Band/commit/a8c7bee2080ba3e706e083ebd867a9032a137443))
+* **sidebar:** refine active session indicators ([92c592c](https://github.com/diodeme/Gold-Band/commit/92c592cf730e36c7cf688f1149d63d77e3b20414))
+* **ui:** fix workspace and ACP config menu lifecycle ([ca54ba2](https://github.com/diodeme/Gold-Band/commit/ca54ba2668b9d556001fc224f07d7620aeebee1b))
+* **workflow:** unify model and thought configuration ([69ef1cf](https://github.com/diodeme/Gold-Band/commit/69ef1cfa4f7220522cedfdbf83df506c3f1a08a0))
+* **workspace:** unify directory context actions ([fe10476](https://github.com/diodeme/Gold-Band/commit/fe1047617b263b4d9a20f97ccde34a6754158d9a))
+
+
+### Performance Improvements
+
+* **acp:** isolate concurrent session control ([6d0c58b](https://github.com/diodeme/Gold-Band/commit/6d0c58be9c11d62c9e37c14e7678f8578d0dbed0))
+
 ## [0.11.0](https://github.com/diodeme/Gold-Band/compare/v0.10.0...v0.11.0) (2026-08-05)
 
 

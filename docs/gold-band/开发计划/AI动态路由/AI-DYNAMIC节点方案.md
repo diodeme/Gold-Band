@@ -1,23 +1,23 @@
 # AI-DYNAMIC 节点方案
 
-## 0. 当前实现状态（2026-07-06）
+## 0. 当前实现状态（2026-08-06）
 
 本轮已完成 V1 成功路径的可运行闭环：
 
 - DSL 已支持 `worker | ai-dynamic`，并校验 AI-DYNAMIC fan-out provider、动态控制限制与 allowed workflow 引用；fan-out proposal 中的 merge/acceptance spec 由 runtime 在执行时校验。
 - workflow 编辑器已通过 `allowAiDynamic` 能力开关控制 AI-DYNAMIC 节点新增入口；新增按钮与默认节点名走 i18n，按钮旁说明统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可出现，不再复用自定义 tooltip 大面板。
-- AI-DYNAMIC Inspector 已调整为”节点 ID + 两个默认收起编辑块”：基础信息、Fan-out Agent；同时补齐与普通 worker 一致的权限模式下拉。该权限模式作为整个 AI-DYNAMIC 内部派生节点的默认权限设置来源；当前编辑器不再暴露”允许嵌套 AI-DYNAMIC”开关，前端作者态固定按不允许嵌套处理。merge/acceptance 不再由用户预配置，而是由 fan-out proposal 在运行时自主生成。
-- AI-DYNAMIC 节点作者态权限字段的编辑与回显统一使用 `permission_mode`。前端回显层需要兼容历史持久化数据中的 `permissionMode`，而 Rust DSL 的序列化/反序列化也必须兼容两种键名但统一持久化输出 `permission_mode`，否则用户保存自定义工作流后重新打开 Inspector 会看到权限模式被错误回退到“不指定”。当前编辑器中的权限模式是整个 AI-DYNAMIC 内部派生节点统一采用的默认设置，不额外暴露内部节点逐个覆写入口；该字段允许保存产品虚拟权限级别或 provider doctor 返回的真实 ACP mode id。虚拟值必须先按 provider 中央映射解析后再校验和调用，当前 `full_access` 对 Codex 映射为 `agent-full-access`、对 Claude 映射为 `bypassPermissions`，并由真实 doctor mode 目录的回归测试防止映射漂移。
+- AI-DYNAMIC Inspector 与 AUTO 动态配置不再提供跨所有内部节点的共享权限。fixed Agent 保存自己的模型与权限；dynamic 控制面按“初始分发 Agent、分发模型、验收模型、共享权限”配置，bootstrap/merge/acceptance 共用该 Agent 与权限；每个 `availableAgents[]` 候选保存 worker 自己的模型、thought/config options 和原生 ACP 权限。
+- 已删除产品侧 `read_only / ask / full_access` 统一枚举、`permissionModeMapping` 配置和 provider 中央解析路径。新增 ACP Agent 只要 doctor 暴露原生模式即可进入作者态配置，不需要先修改 Gold Band 映射表；能力已知时仍按 doctor 权威目录校验不支持的原生 id。
 - allowed workflow 选择已改为可搜索多选下拉，按可选/不可选分组展示；不可选项禁用并显示原因。默认工作流不豁免 `workflow.id` 重复限制；`workflowId` 存储 workflow DSL 内的 `workflow.id`，不再使用模板外层 `template.id`。
-- AI-DYNAMIC Agent 策略区分 fixed 与 dynamic：fixed 策略下 proposal 不输出 provider，runtime 为 worker / merge / acceptance 注入固定 provider；若 fixed provider 未配置模型且 provider 暴露可选模型列表，prompt 会要求 proposal 输出 `model`。dynamic 策略下 bootstrap 可独立选择模型，运行时调起 bootstrap 时只使用 `bootstrapModel`，不能被同 provider 的 `availableAgents[].model` 覆盖；可选动态 Agent 的模型始终允许清空并使用 provider 默认模型，不再因 agent / 模型决策指南为空而强制选择模型。若决策指南非空，普通 worker proposal 必须输出 `model`，但已配置模型的 Agent 仍由 runtime 固定使用配置模型，proposal 中的其他模型不会覆盖配置；merge / acceptance 在配置 `acceptanceModel` 时由 runtime 固定注入。workflow invocation 仍不输出 provider/model。
+- AI-DYNAMIC Agent 策略区分 fixed 与 dynamic：fixed 策略由 runtime 注入固定 provider/model/permission；dynamic 策略仅允许普通 worker 输出 provider，merge / acceptance 禁止输出 provider，所有节点都禁止输出 `model / permissionMode`。runtime 按 worker provider 查找 `availableAgents[]` 并注入候选预设；bootstrap、merge、acceptance 固定使用 `bootstrapProvider` 和控制面 `permissionMode`，分发模型使用 `bootstrapModel`，merge / acceptance 使用同一 Agent 目录中的 `acceptanceModel`。
 - runtime 已在外层 orchestrator 中识别 `NodeDsl::AiDynamic`，进入节点后创建独立 `dynamic/` 状态目录、bootstrap internal worker、proposal、group、以及由 fan-out proposal 驱动的 merge、acceptance 和 completion 派生逻辑。
 - prompt 目录当前按语言 + 职责组织：`src/prompts/zh-CN/profile/` 与 `src/prompts/en/profile/` 存放内置 profile，`src/prompts/zh-CN/runtime/` 与 `src/prompts/en/runtime/` 存放通用 runtime prompt（如 `system.md`、`invalid_output_repair.md`），`src/prompts/<lang>/runtime/ai-dynamic/` 存放 AI-DYNAMIC 相关 prompt（如 `system.md`、`hidden_context.md`、`proposal_repair.md`）；其中 AI-DYNAMIC system prompt 只保留稳定角色、文件边界、workspace 语义、两阶段执行和按 invocation 能力启用的 output contract 原则。每次 invocation 变化的信息由 runtime 按当前节点位置生成 `DynamicContextProjection`，再进入 hidden context 并合并到同一个 Gold Band hidden context 块中展示；AI-DYNAMIC 专用 hidden context 会替代普通 workflow 的 predecessor hidden context，避免普通 workflow 前序链逻辑错误显示“无前序”。projection 包含直接前序、当前 group、继承的父 group、并行兄弟边界、可用 attachments、运行预算、workspace、可复用会话和 agent/profile 选项；并行兄弟边界只给 group 内普通 worker / workflow invocation 分支查看，merge / acceptance 不展示 siblings；会话复用、运行预算和 agent/profile 选项只在启用 `dynamic-node-completion` output contract 的 worker / acceptance 中展示，merge 只保留合并执行所需的 group、workspace、直接前序和 attachments。requirement 与当前节点 task 进入 user prompt；外层 `globalGoal` 作为每个内部节点都必须继承的用户提示约束，进入独立 `# 用户提示` / `# User Tips` 块，不再拼进 `# 任务` / `# Task`。内部控制 artifact 不作为 runtime context 材料展示。
 - AI-DYNAMIC internal worker 的 hidden context 会额外注入”当前链路可复用会话节点”列表，只列 `nodeId / title / goal`。proposal 中后继节点支持 `sessionMode: new | continue` 与 `continueFromNodeId`；当 `sessionMode=continue` 时，只能引用这份列表内的 worker 节点，且 runtime 会校验 continue_ref 存在、provider 一致以及 `workflow-invocation` 禁止 continue。执行 continue 节点时，continue 只复用来源节点 ACP session 记忆，不继续执行来源节点任务；user prompt 的 `# 任务` / `# Task` 只放当前节点业务任务，当前 node id/title/kind 与 `continueFromNodeId` 等运行事实放 hidden context。
 - AI-DYNAMIC fanout 已明确为真正并行分组：`next.type=fanout` 必须创建至少两个 child 节点，只有一个后继任务时使用 `next.type=single`。fanout child 的 workspace 只允许 `readonly` 或 `worktree`，禁止 `main`；只读分析/审查/方案分支使用 `readonly`，可写并行分支必须使用 `workspace.mode=worktree`。proposal 中声明 `workspace.mode=worktree` 的分支由 runtime 创建独立 git worktree 与稳定 branch；worktree 根目录改为目标 repo 的 `.gold-band/worktrees/<task>/<run>/<short-id>`，`short-id` 由 round、外层节点、attempt 和内部节点稳定生成，避免 Windows 用户级运行目录叠加仓库长文件名后触发 checkout 路径限制并保证同一 run 内不冲突；merge 节点在 main workspace 执行，并在 prompt 中拿到当前 group 的 terminal nodes、worktree path、branch、head、mergeBase 与 dirty status，用于合并分支、解决冲突和验证结果。dynamic run 的 run/graph/node/group/proposal 状态读写已增加 run 级互斥锁，公共 JSON 状态写入改为同目录临时文件原子替换，避免状态推进期间读到半写入 graph 导致 `trailing characters` 等瞬时解析错误。
 - 非 git workspace worktree 能力检测：runtime 在启动 AI-DYNAMIC 时会探测当前 workspace 的 git/worktree 能力（`supportsWorktree`），非 git 目录、无 HEAD 提交或 git 不可用时，hidden context 与 proposal repair reference 会注入约束，fanout prompt 禁止模型输出 `worktree`；proposal 校验层对 worktree 模式返回结构化错误 `dynamic.node.workspace.worktree-git-required` 并建议同一 fanout child 改为 `readonly`，或把可写工作改成 `next.type=single` 的串行 `main`；`ensure_dynamic_workspace` 在执行前再做能力检查，并在创建前清理同名 stale branch 与不完整 worktree 目录，Git 创建失败时保留 stdout/stderr 作为 error-blocked 诊断，确保不因模型绕过或半失败状态而静默污染后续重试。
 - 单节点 worktree 语义校验：`next.type=single` 的后继节点即使在 Git/worktree 可用时也不能声明 `workspace.mode=worktree`，因为单节点链路没有自动 merge / acceptance 负责把隔离分支合回主工作区；runtime 在 typed proposal 语义校验层返回 `dynamic.node.workspace.single-worktree-unsupported`，提示改用 `fanout` + merge/acceptance 或 `main` 串行执行。
-- `dynamic-node-completion` 已支持 `end`、`single`、`fanout`；基础 schema 由 Rust DTO 通过 `schemars` 生成，runtime 会按当前 Agent 策略、provider/model 需求、worker profile、allowed workflow snapshot 与 `maxFanout` 生成有效 JSON Schema，并同时用于 prompt、provider output contract、runtime 结构校验与 repair 诊断。worker 和 acceptance 接入该 output contract；merge 保持执行型 agent stage，只负责合并和报告，不输出控制 artifact。
-- 桌面端维护全局 `agent_diagnostics` 缓存并由后台 doctor 定期刷新；workflow 启动命令会要求普通 worker provider、AI-DYNAMIC bootstrap provider 与 dynamic strategy 的 available agents 均有可用 doctor 结果。permissionMode 继续在 provider 能力已知时严格校验；模型目录则按快速变化的 provider 能力事实处理：加载/保存 workflow template、记录 last-created workflow、创建/读取 task authoring workflow、以及创建/加载 run snapshot 时，若最新 diagnostics 提供非空目录且明确不再包含普通 worker、fixed、`bootstrapModel`、`acceptanceModel` 或 `availableAgents[].model` 的配置值，统一清为“不指定”并持久化，保证作者态 JSON、运行快照和 UI 一致；run 生命周期记录 `model_config_normalized`。目录缺失时保留原值，allowed workflow snapshots 使用同一规则。ACP `session/new/load` 返回权威 config options 后再次校验，已过期模型不再发送配置 RPC，清除 override、记录 `acp_model_config_normalized` 并使用 provider 默认模型。AI-DYNAMIC 的 schema 生成、hidden context 可选模型列表和 permissionMode 校验继续读取当前缓存，不在 worker invocation 构建阶段同步 doctor provider capabilities；模型列表使用 ACP 配置项的 `value` 作为实际 DSL/调用值，`name` 只作为展示标签。
+- `dynamic-node-completion` 已支持 `end`、`single`、`fanout`；基础 schema 由 Rust DTO 通过 `schemars` 生成，runtime 会按当前 Agent 策略、可用 provider、worker profile、allowed workflow snapshot 与 `maxFanout` 生成有效 JSON Schema。dynamic 策略的接口级契约固定“只选择 Agent/provider”，禁止模型输出 `model / permissionMode`；worker 和 acceptance 接入该 output contract，merge 只负责执行。
+- 桌面端维护全局 `agent_diagnostics` 缓存并由后台 doctor 定期刷新；workflow 启动命令要求普通 worker provider、AI-DYNAMIC bootstrap provider 与 available agents 均有可用 doctor 结果。模型目录仍按快速变化事实做规范化；原生 permissionMode 在能力已知时严格校验，但不做跨 provider 翻译。ACP `session/new/load` 返回权威配置后继续支持会话内实时切换模型与权限，实时 override 优先于初始化配置，且不回写路由候选预设。
 - proposal repair 已统一使用结构化诊断：JSON Schema 结构错误、serde parse 错误与业务校验错误都会渲染 code、path、actual、expected、allowed values、suggested repair，并附带当前 provider/model、worker profile ID、allowed workflow ID 参考；缺失字段会尽量补细到 `next.merge.task` 这类可执行 JSON path。
 - fanout group 已支持 branch terminal 检测、merge agent、acceptance agent 和 group closed 后的 AI-DYNAMIC success；底层状态已加入 `parentGroupId`，支持多层 fanout 的父子 group 闭合关系。group 只有在 acceptance 输出 accepted 的 `dynamic-node-completion` 且 `next.type=end` 后才 closed；若 acceptance 输出 `single` 或 `fanout`，runtime 会 materialize 修复节点并重新打开该 group，等待修复链路、merge 与 acceptance 再次完成。
 - workflow invocation 已支持引用 run start 时冻结的 allowed workflow snapshot；child run 现在作为复合节点投影到外层 dynamic node：child success/failure/killed 会映射到外层 node outcome，child paused 会映射到外层 paused，继续时由 runtime 直接委托 `childRunId` 恢复。
@@ -237,12 +237,13 @@ type NodeDsl = WorkerNode | AiDynamicNode;
 
 动态 Agent 策略补充：
 
-- 新增可选 `acceptanceModel`，只用于 fanout 配套的 `merge` / `acceptance`。
+- 新增可选 `acceptanceModel`，只从 `bootstrapProvider` 的模型目录选择，用于 fanout 配套的 `merge` / `acceptance`。
 - 当 `acceptanceModel` 已配置时：
-  - `merge` / `acceptance` 继续必须输出合法 `provider`。
-  - `merge` / `acceptance` 的 schema 与提示词不再要求输出 `model`，并且不会再暴露这个字段。
+  - `merge` / `acceptance` 不输出 `provider`，runtime 固定注入初始分发 Agent。
+  - `merge` / `acceptance` 的 schema 与提示词不暴露 `model` 或 `permissionMode`。
   - runtime 会在 materialize 与实际调用阶段统一注入该模型。
-  - 普通 worker 的 `model` 规则保持不变，仍按原有 routing prompt / 锁模逻辑执行。
+  - 权限使用 dynamic 控制面 `permissionMode`，与 bootstrap 共用。
+- 普通 worker proposal 同样只输出 provider；runtime 从 `availableAgents[]` 注入模型、权限和 config options。未配置模型或权限时使用 provider 默认值。
 
 外层 edge 仍然普通：
 
@@ -576,7 +577,7 @@ V1 不引入：
 }
 ```
 
-说明：上例按 fixed Agent 策略展示，worker / merge / acceptance 不输出 provider，runtime 会注入固定 provider；dynamic Agent 策略下 worker / merge / acceptance 需要按 prompt 输出 provider。merge / acceptance 不输出 profile，统一使用 runtime 内置 prompt。worker profile 选填，若填写必须使用可用 profile ID。
+说明：上例按 fixed Agent 策略展示，worker / merge / acceptance 不输出 provider，runtime 会注入固定 provider；dynamic Agent 策略下只有 worker 按 prompt 输出 provider，merge / acceptance 固定使用初始分发 Agent。merge / acceptance 不输出 profile，统一使用 runtime 内置 prompt。worker profile 选填，若填写必须使用可用 profile ID。
 
 ### 10.4 status
 
@@ -1124,7 +1125,7 @@ proposal 的 rejected 结果使用结构化错误对象而不是裸字符串，�
 - title/task 非空
 - provider 可用；fixed 策略下 worker、merge、acceptance proposal 不输出 provider，runtime 注入固定 provider；dynamic 策略下 worker、merge、acceptance proposal 必须输出 provider；workflow-invocation 不输出 provider
 - profile 只允许出现在 worker proposal，且为选填；不填时不注入 profile 内容。若填写，必须是当前可解析且允许的 profile ID，不能使用 displayName。merge / acceptance 不接受 proposal profile，角色与任务约束由 `src/prompts` 内置 prompt 提供
-- model 是否需要输出由 output protocol 中的 model policy 决定；fixed provider 未配置模型且 provider 暴露可选模型列表时需要输出，dynamic 策略有 agent / 模型决策指南时需要输出
+- model 是否需要输出由 output protocol 中的 model policy 决定；fixed 策略可按 provider 目录要求模型，dynamic 策略始终只输出 provider，禁止输出 `model / permissionMode`
 - workspace mode 合法
 - `next.type=single` 的后继节点不能使用 `workspace.mode=worktree`；worktree 只允许在带 merge / acceptance 的 fanout 分支中使用
 - `next.type=fanout` 必须至少包含两个 child 节点；只有一个后继节点时必须使用 `next.type=single`

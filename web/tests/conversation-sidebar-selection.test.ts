@@ -11,14 +11,29 @@ import {
   selectConversationSidebarRunPauseAction,
   shouldShowConversationSidebarRunList,
   shouldShowConversationSidebarActivity,
+  conversationSidebarActivityIconClass,
+  conversationSidebarRunStatusClass,
   updateConversationSidebarExpandedTaskKeys,
 } from '@/components/conversation/ConversationSidebar';
 import {
   applyConversationSidebarTaskActivity,
   conversationTaskActivityFromLifecycle,
+  conversationTaskActivityFromUpdate,
 } from '@/lib/conversation-sidebar-activity';
 
 describe('ConversationSidebar run selection identity', () => {
+  it('uses a reduced-motion-safe breathing effect for active Direct Agent icons', () => {
+    expect(conversationSidebarActivityIconClass).toContain('motion-safe:animate-pulse');
+    expect(conversationSidebarActivityIconClass).not.toContain('animate-spin');
+  });
+
+  it('uses a blue breathing dot only for running workflow sessions', () => {
+    expect(conversationSidebarRunStatusClass({ status: 'running', outcome: null })).toContain('bg-gold-running');
+    expect(conversationSidebarRunStatusClass({ status: 'running', outcome: null })).toContain('motion-safe:animate-pulse');
+    expect(conversationSidebarRunStatusClass({ status: 'paused', outcome: null })).toBe('bg-yellow-500/50');
+    expect(conversationSidebarRunStatusClass({ status: 'completed', outcome: 'success' })).toBe('bg-emerald-500/50');
+  });
+
   it('uses Agent identity for Direct tasks and runtime status for other modes', () => {
     expect(conversationSidebarIdentityKind({
       runMode: 'direct',
@@ -70,6 +85,27 @@ describe('ConversationSidebar run selection identity', () => {
     expect(sidebar.pinnedTasks[0].activity).toEqual({ phase: 'running', stopping: false });
     expect(sidebar.tasksByWorkspace['project-a'][0].activity).toEqual({ phase: 'running', stopping: false });
   });
+
+  it('projects lightweight ACP activity without requiring a lifecycle snapshot and clears it explicitly', () => {
+    const event = {
+      taskId: 'task-a',
+      runId: 'run-001',
+      roundId: 'round-001',
+      nodeId: 'direct-agent',
+      attemptId: 'attempt-001',
+    };
+
+    expect(conversationTaskActivityFromUpdate({
+      ...event,
+      activity: { phase: 'running', stopping: false },
+    })).toEqual({ phase: 'running', stopping: false });
+    expect(conversationTaskActivityFromUpdate({
+      ...event,
+      activity: null,
+    })).toBeNull();
+    expect(conversationTaskActivityFromUpdate(event)).toBeUndefined();
+  });
+
   it('binds an active run to its parent project and task', () => {
     const activeRunKey = conversationSidebarRunKey('project-a', 'task-a', 'run-003');
 

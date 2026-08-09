@@ -16,6 +16,7 @@ import {
   partitionAcpLiveTimingUpdates,
   pendingElicitationFromEvents,
   pendingPermissionFromEvents,
+  promptRetryFooterKind,
   reconcileAcpSessionForDisplay,
   runtimeControlMessageParts,
   isAcpSessionReadyForInitialDisplay,
@@ -1294,6 +1295,51 @@ describe('ACP chat event handling', () => {
     ]);
 
     expect(timeline).toHaveLength(1);
+  });
+
+  it('folds retry attempts by prompt identity instead of matching their text', () => {
+    const timeline = buildAcpTimeline([
+      event({
+        id: 'gold-band-user-prompt-1', seq: 1, kind: 'userTextDelta',
+        content: 'first payload', status: 'completed',
+        raw: { source: 'goldBandPrompt', promptId: 'turn-1' },
+      }),
+      event({
+        id: 'gold-band-user-prompt-2', seq: 2, kind: 'userTextDelta',
+        content: 'payload normalized after reconnect', status: 'failed',
+        raw: {
+          source: 'goldBandPrompt', promptId: 'turn-1',
+          retry: { attempt: 3, maxAttempts: 3 },
+          terminalFailure: { code: 'provider.server-unavailable' },
+        },
+      }),
+    ]);
+
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]).toMatchObject({
+      content: 'first payload',
+      status: 'failed',
+      raw: { retry: { attempt: 3, maxAttempts: 3 } },
+    });
+  });
+
+  it('keeps a stopped retry result bound to its own prompt turn', () => {
+    const stopped = event({
+      id: 'gold-band-user-prompt-1',
+      kind: 'userTextDelta',
+      status: 'cancelled',
+      raw: { promptId: 'turn-1', retry: { attempt: 2, maxAttempts: 3 } },
+    });
+    const nextTurn = event({
+      id: 'gold-band-user-prompt-2',
+      seq: 2,
+      kind: 'userTextDelta',
+      status: 'processing',
+      raw: { promptId: 'turn-2' },
+    });
+
+    expect(promptRetryFooterKind(stopped)).toBe('cancelled');
+    expect(promptRetryFooterKind(nextTurn)).toBeNull();
   });
 
   it('keeps repeated external provider-history prompts as separate turns', () => {

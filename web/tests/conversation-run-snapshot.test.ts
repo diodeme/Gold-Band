@@ -537,6 +537,34 @@ describe('mergeConversationRunSnapshot', () => {
     expect(merged.selectedSession?.sessionId).toBe('session-1');
   });
 
+  it('does not downgrade an established session reference during a same-attempt resume refresh', () => {
+    const establishedLeaf = leaf('completed', runningDisplay, {
+      current: true,
+      sessionId: 'session-1',
+      sessionEstablished: true,
+    });
+    const transientLeaf = leaf('running', runningDisplay, {
+      current: true,
+      sessionId: null,
+      sessionEstablished: false,
+    });
+    const current = run({
+      runStatus: 'completed',
+      selectedSession: { sessionId: 'session-1', status: 'completed', events: [{ content: 'history' }] } as any,
+    }, [establishedLeaf]);
+    const incoming = run({
+      runStatus: 'running',
+      selectedSession: null,
+    }, [transientLeaf]);
+
+    const merged = mergeConversationRunSnapshot(current, incoming, 'live-refresh');
+    const mergedLeaf = merged.sessionTree.rounds[0].nodes[0].attempts[0];
+
+    expect(mergedLeaf.sessionEstablished).toBe(true);
+    expect(mergedLeaf.sessionId).toBe('session-1');
+    expect(merged.selectedSession?.events).toEqual([{ content: 'history' }]);
+  });
+
   it('replaces selected session payload when a same-key full snapshot arrives', () => {
     const current = run({
       runStatus: 'paused',

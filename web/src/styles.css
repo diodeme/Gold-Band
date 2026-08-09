@@ -751,7 +751,8 @@
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .acp-activity-live-label {
+  .acp-activity-live-label,
+  .acp-retry-live-label {
     animation: acp-activity-label-breathe 1.8s ease-in-out infinite;
   }
 

@@ -8,7 +8,7 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForAgent, includeInterviewForSubmit, normalizeConversationAutoConfigForSubmit, normalizeConversationDirectConfigForSubmit, optionalRunModeText, shouldShowInterviewToggle } from '@/lib/conversation-run-mode-config';
-import { normalizeConfigOptionOverrides, selectableAgentOptions, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
+import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectableAgentOptions, type SelectableAgentOption, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
@@ -17,12 +17,17 @@ import { useAgentCommands } from '@/hooks/useAgentCommands';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
 import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
 import { SlashCommandInputTag } from '@/components/conversation/SlashCommandInputTag';
-import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
+import {
+  AcpModelThoughtSelects,
+  findAcpThoughtLevel,
+  updateAcpConfigOptionOverride,
+} from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from '@/lib/slash-command';
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
 import { PromptInput, PromptInputTextarea } from '@/components/prompt-kit/prompt-input';
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
+import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 
 interface ConversationComposerProps {
   projectId: string;
@@ -101,6 +106,7 @@ export function ConversationComposer({
   const isDynamicAuto = autoStrategy === 'dynamic';
   const canSubmit = content.trim().length > 0 && !busy && !submittingAttachments;
   const agentOptions = useMemo(() => selectableAgentOptions(agentRegistry, t), [agentRegistry, t]);
+  const directAgentGroups = useMemo(() => groupSelectableAgentOptions(agentOptions), [agentOptions]);
   const agents = useMemo(
     () => agentOptions.filter((item) => item.selectable).map((item) => item.agent),
     [agentOptions],
@@ -109,18 +115,37 @@ export function ConversationComposer({
   const selectedDirectAgentObj = agents.find((agent) => agent.agentType === selectedDirectAgent);
   const directModels = selectedDirectAgentObj?.supportedModels ?? [];
   const directPermissionModes = selectedDirectAgentObj?.supportedModes ?? [];
-  const directThoughtLevel = selectedDirectAgentObj?.configOptions?.find((option) => option.category === 'thought_level') ?? null;
+  const directThoughtLevel = findAcpThoughtLevel(selectedDirectAgentObj?.configOptions);
   const models = selectedAgentObj?.supportedModels ?? [];
   const permissionModes = selectedAgentObj?.supportedModes ?? [];
-  const autoPermissionModes = isDynamicAuto ? [
-    { id: 'read_only', name: t('workflowEditor.permissionModeReadOnly') },
-    { id: 'ask', name: t('workflowEditor.permissionModeAsk') },
-    { id: 'full_access', name: t('workflowEditor.permissionModeFullAccess') },
-  ] : permissionModes;
-  const thoughtLevel = selectedAgentObj?.configOptions?.find((option) => option.category === 'thought_level') ?? null;
+  const autoPermissionModes = permissionModes;
+  const thoughtLevel = findAcpThoughtLevel(selectedAgentObj?.configOptions);
   const templates = workflowTemplates?.templates ?? [];
   const selectedWorkflowTemplateId = workflowTemplateId || runMode.workflowTemplateId || undefined;
   const showInterviewToggle = shouldShowInterviewToggle(runMode.mode, selectedWorkflowTemplateId);
+  const renderDirectAgentOption = ({ agent, selectable, reason }: SelectableAgentOption) => (
+    <Tooltip key={agent.agentType}>
+      <TooltipTrigger asChild>
+        <span>
+          <TabsTrigger
+            value={agent.agentType}
+            disabled={!selectable}
+            className="h-10 min-w-10 gap-2 rounded-full border border-transparent px-2.5 data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10"
+          >
+            <img
+              src={agentIconSrc(agent.iconKey)}
+              alt=""
+              className={agentIconClass(agent.iconKey, 'size-5')}
+            />
+            {selectedDirectAgent === agent.agentType ? (
+              <span className="max-w-36 truncate text-xs">{agent.displayName}</span>
+            ) : null}
+          </TabsTrigger>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{reason || agent.displayName}</TooltipContent>
+    </Tooltip>
+  );
   const workspacePath = workspaces.find((workspace) => workspace.projectId === projectId)?.workspacePath;
   const commandAgentType = isDirect
     ? selectedDirectAgent
@@ -203,8 +228,7 @@ export function ConversationComposer({
         agentStrategy: 'dynamic',
         agentType: base.agentType || base.bootstrapAgentType || nextAgent || '',
         ...patch,
-        permissionMode: nextPermissionMode || undefined,
-        configOptions: nextConfigOptions,
+        configOptions: undefined,
         globalGoal: optionalRunModeText(nextGlobalGoal),
       };
     }
@@ -438,9 +462,7 @@ export function ConversationComposer({
                       });
                     }}
                     onThoughtChange={(optionId, value) => {
-                      const next = { ...selectedDirectConfigOptions };
-                      if (value) next[optionId] = value;
-                      else delete next[optionId];
+                      const next = updateAcpConfigOptionOverride(selectedDirectConfigOptions, optionId, value);
                       setSelectedDirectConfigOptions(next);
                       updateDirectConfig({
                         agentType: selectedDirectAgent,
@@ -533,29 +555,15 @@ export function ConversationComposer({
             <TooltipProvider>
               <Tabs value={selectedDirectAgent} onValueChange={selectDirectAgent} className={CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName}>
                 <TabsList variant="bare" className={CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsListClassName}>
-                  {agentOptions.map(({ agent, selectable, reason }) => (
-                    <Tooltip key={agent.agentType}>
-                      <TooltipTrigger asChild>
-                        <span>
-                          <TabsTrigger
-                            value={agent.agentType}
-                            disabled={!selectable}
-                            className="h-10 min-w-10 gap-2 rounded-full border border-transparent px-2.5 data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10"
-                          >
-                            <img
-                              src={agentIconSrc(agent.iconKey)}
-                              alt=""
-                              className={agentIconClass(agent.iconKey, 'size-5')}
-                            />
-                            {selectedDirectAgent === agent.agentType ? (
-                              <span className="max-w-36 truncate text-xs">{agent.displayName}</span>
-                            ) : null}
-                          </TabsTrigger>
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>{reason || agent.displayName}</TooltipContent>
-                    </Tooltip>
-                  ))}
+                  {directAgentGroups.selectable.map(renderDirectAgentOption)}
+                  {directAgentGroups.selectable.length > 0 && directAgentGroups.unavailable.length > 0 ? (
+                    <span
+                      aria-orientation="vertical"
+                      className="mx-1 h-6 w-px shrink-0 bg-border/70"
+                      role="separator"
+                    />
+                  ) : null}
+                  {directAgentGroups.unavailable.map(renderDirectAgentOption)}
                 </TabsList>
               </Tabs>
             </TooltipProvider>
@@ -605,25 +613,25 @@ export function ConversationComposer({
                       updateAutoSession({ modelId: modelId || undefined });
                     }}
                     onThoughtChange={(optionId, value) => {
-                      const next = { ...selectedConfigOptions };
-                      if (value) next[optionId] = value;
-                      else delete next[optionId];
+                      const next = updateAcpConfigOptionOverride(selectedConfigOptions, optionId, value);
                       setSelectedConfigOptions(next);
                       updateAutoSession({ configOptions: next });
                     }}
                   />
                 ) : null}
-                <AcpSingleConfigMenu
-                  label={t('acp.permissionMode')}
-                  value={selectedPermissionMode}
-                  options={autoPermissionModes}
-                  unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
-                  onValueChange={(value) => {
-                    const next = value ?? '';
-                    setSelectedPermissionMode(next);
-                    updateAutoSession({ permissionMode: next || undefined });
-                  }}
-                />
+                {!isDynamicAuto ? (
+                  <AcpSingleConfigMenu
+                    label={t('acp.permissionMode')}
+                    value={selectedPermissionMode}
+                    options={autoPermissionModes}
+                    unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
+                    onValueChange={(value) => {
+                      const next = value ?? '';
+                      setSelectedPermissionMode(next);
+                      updateAutoSession({ permissionMode: next || undefined });
+                    }}
+                  />
+                ) : null}
                 <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={onOpenRunModeSettings}>
                   <Workflow className="size-3" />
                   {t('conversation.home.configureAuto')}
@@ -650,7 +658,7 @@ export function ConversationComposer({
               </SelectTrigger>
               <SelectContent position="popper" align="start">
                 {templates.map((tpl) => (
-                  <SelectItem key={tpl.id} value={tpl.id}>{tpl.name}</SelectItem>
+                  <SelectItem key={tpl.id} value={tpl.id}>{workflowTemplateDisplayName(tpl, t)}</SelectItem>
                 ))}
                 {templates.length === 0 ? (
                   <div className="px-2 py-3 text-xs text-muted-foreground">{t('conversation.home.noWorkflowTemplate')}</div>

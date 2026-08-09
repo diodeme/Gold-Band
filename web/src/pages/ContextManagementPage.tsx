@@ -156,7 +156,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
   }, [skillError]);
 
   const configuredAgents = useMemo(
-    () => (agentRegistry?.supportedTypes ?? []).filter((agent) => agent.configured),
+    () => (agentRegistry?.catalog ?? []).filter((agent) => agent.configured),
     [agentRegistry],
   );
 
@@ -905,7 +905,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
       </AlertDialog>
 
       {/* ── MCP Sheet (JSON Editor) ── */}
-      <Sheet open={mcpSheetOpen} onOpenChange={(open) => { if (!open) dismissMcpSheet(); }}>
+      <Sheet modal={false} open={mcpSheetOpen} onOpenChange={(open) => { if (!open) dismissMcpSheet(); }}>
         <SheetContent className="gap-0 overflow-hidden" resizeStorageKey="context-management/mcp-sheet" defaultSize={720} minSize={520} maxSize={960}>
           <SheetHeader className="border-b px-5 py-4">
             <SheetTitle>{mcpEditTarget ? t('contextManagement.mcp.editServer', '配置 MCP 服务器') : t('contextManagement.mcp.addServer', '添加 MCP 服务器')}</SheetTitle>
@@ -958,7 +958,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
       </AlertDialog>
 
       {/* ── MCP Tools Sheet ── */}
-      <Sheet open={Boolean(toolsSheetServer)} onOpenChange={(open) => { if (!open) { setToolsSheetServer(null); setToolsList(null); setToolsError(null); setToolsLoading(false); } }}>
+      <Sheet modal={false} open={Boolean(toolsSheetServer)} onOpenChange={(open) => { if (!open) { setToolsSheetServer(null); setToolsList(null); setToolsError(null); setToolsLoading(false); } }}>
         <SheetContent className="gap-0 overflow-hidden" resizeStorageKey="context-management/tools-sheet" defaultSize={560} minSize={420} maxSize={800}>
           <SheetHeader className="border-b px-5 py-4">
             <SheetTitle className="flex items-center gap-2">
@@ -1051,7 +1051,7 @@ function SkillSheet({
   editWorkspacePath: string | null;
   createSource: string;
   workspaces: SkillWorkspaceOption[];
-  configuredAgents: AgentRegistryVm['supportedTypes'];
+  configuredAgents: AgentRegistryVm['catalog'];
   skillTab: 'global' | 'project';
   selectedWorkspace: string;
   onOpenChange: (open: boolean) => void;
@@ -1146,7 +1146,7 @@ function SkillSheet({
   };
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
       <SheetContent className="gap-0 overflow-hidden" resizeStorageKey="context-management/skill-sheet" defaultSize={720} minSize={520} maxSize={960}>
         <SheetHeader className="border-b px-5 py-4">
           <SheetTitle>{mode === 'create' ? t('contextManagement.skills.createSkill', '创建 SKILL') : mode === 'edit' ? t('contextManagement.skills.editSkillTitle', { name: editTarget?.name ?? '', defaultValue: `编辑 ${editTarget?.name ?? ''}` }) : editTarget?.name ?? t('common.detail')}</SheetTitle>
@@ -1359,7 +1359,7 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
 
   return (
     <>
-      <Sheet open={mode !== null} onOpenChange={onOpenChange}>
+      <Sheet modal={false} open={mode !== null} onOpenChange={onOpenChange}>
         <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey="context-management/profile-sheet" defaultSize={720} minSize={520} maxSize={960}>
           <SheetHeader className="border-b px-5 py-4 text-left">
             <SheetTitle>{mode === 'create' ? t('contextManagement.createProfile') : mode === 'edit' ? t('contextManagement.editProfile') : profile?.name}</SheetTitle>

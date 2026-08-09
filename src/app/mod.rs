@@ -10,8 +10,9 @@ mod state_factory;
 mod transition_context;
 
 pub use self::notification::{
-    InterventionNotification, InterventionType, NotificationDedup, direct_conversation_agent_label,
-    make_dedup_key, make_dedup_key_with_suffix, make_turn_dedup_key, reason_key,
+    INITIAL_DIRECT_TURN_ID, InterventionNotification, InterventionType, NotificationDedup,
+    direct_conversation_agent_label, make_dedup_key, make_dedup_key_with_suffix,
+    make_turn_dedup_key, reason_key,
 };
 
 use crate::acp::client as acp_client;
@@ -38,11 +39,11 @@ use crate::dynamic::{
     refresh_dynamic_current_leaf_ids,
 };
 use crate::mcp::McpManager;
-use crate::process::kill_process_tree;
+use crate::process::recover_persisted_process_group;
 use crate::provider::{
     DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
-    ProviderInfo, UserPromptRenderMode, provider_capabilities, provider_from_agent,
-    render_prompt_bundle, supported_models_from_capabilities, supported_modes_from_capabilities,
+    ProviderInfo, UserPromptRenderMode, provider_from_agent, render_prompt_bundle,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
@@ -403,37 +404,17 @@ fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> Str
     candidate
 }
 
-fn unique_auto_template_id(store: &AutoTemplateStore, name: &str) -> String {
-    let slug = name
-        .trim()
-        .to_ascii_lowercase()
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string();
-    let base = if slug.is_empty() {
-        "auto-template".to_string()
-    } else {
-        slug
-    };
-    let mut candidate = base.clone();
-    let mut index = 1;
-    while store
-        .templates
-        .iter()
-        .any(|template| template.id == candidate)
-    {
-        index += 1;
-        candidate = format!("{base}-{index}");
+fn next_auto_template_id(store: &AutoTemplateStore) -> String {
+    loop {
+        let candidate = format!("auto-template-{}", generate_uuid());
+        if !store
+            .templates
+            .iter()
+            .any(|template| template.id == candidate)
+        {
+            return candidate;
+        }
     }
-    candidate
 }
 
 #[derive(Debug, Clone)]
@@ -565,6 +546,21 @@ pub enum AcpTurnOutcome {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcpTurnBatchProgress {
+    pub completed_reply_count: u32,
+    pub continues: bool,
+}
+
+impl AcpTurnBatchProgress {
+    pub const fn terminal(completed_reply_count: u32) -> Self {
+        Self {
+            completed_reply_count,
+            continues: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum RuntimeLifecycleEvent {
     /// A node has started executing. The orchestrator is about to invoke the
@@ -623,6 +619,7 @@ pub enum RuntimeLifecycleEvent {
     RunPaused {
         event_id: String,
         occurred_at: String,
+        project_id: String,
         task_id: String,
         run_id: String,
         round_id: String,
@@ -635,6 +632,7 @@ pub enum RuntimeLifecycleEvent {
     InterventionRequested {
         event_id: String,
         occurred_at: String,
+        project_id: String,
         task_id: String,
         run_id: String,
         round_id: String,
@@ -647,6 +645,7 @@ pub enum RuntimeLifecycleEvent {
     RunCompleted {
         event_id: String,
         occurred_at: String,
+        project_id: String,
         task_id: String,
         run_id: String,
         round_id: String,
@@ -665,6 +664,7 @@ pub enum RuntimeLifecycleEvent {
     AcpTurnFinished {
         event_id: String,
         occurred_at: String,
+        project_id: String,
         task_id: String,
         run_id: String,
         round_id: String,
@@ -673,6 +673,10 @@ pub enum RuntimeLifecycleEvent {
         turn_id: String,
         agent_label: String,
         outcome: AcpTurnOutcome,
+        /// Progress of the uninterrupted Direct prompt-queue reply batch.
+        /// Intermediate successes remain observable with `continues=true`; the
+        /// terminal event carries the total count used by the desktop notification.
+        batch_progress: AcpTurnBatchProgress,
         task_title: Option<String>,
     },
 }
@@ -690,6 +694,9 @@ pub struct App {
         >,
     >,
     acp_session_update: Option<Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>>,
+    prompt_turn_lifecycle: Option<
+        Arc<dyn Fn(AcpLiveEventContext, AcpPromptLifecycleEvent) -> Result<()> + Send + Sync>,
+    >,
     pub lifecycle_bus: observability::RuntimeLifecycleBus,
 }
 
@@ -706,6 +713,17 @@ pub struct AcpLiveEventContext {
     pub attempt_id: String,
     pub outer_node_id: Option<String>,
     pub outer_attempt_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcpPromptLifecycleEvent {
+    Accepted {
+        prompt_id: String,
+    },
+    Finished {
+        prompt_id: Option<String>,
+        successful: bool,
+    },
 }
 
 pub fn is_run_continuable(run: &RunState) -> bool {
@@ -855,10 +873,25 @@ fn configured_permission_modes_for_node(node: &NodeDsl) -> Vec<(String, Option<S
             .map(|provider| (provider.clone(), worker.permission_mode.clone()))
             .into_iter()
             .collect(),
-        NodeDsl::AiDynamic(dynamic) => providers_for_node(node)
-            .into_iter()
-            .map(|provider| (provider, dynamic.permission_mode.clone()))
-            .collect(),
+        NodeDsl::AiDynamic(dynamic) => match &dynamic.agent_strategy {
+            AiDynamicAgentStrategy::Fixed {
+                provider,
+                permission_mode,
+                ..
+            } => vec![(provider.clone(), permission_mode.clone())],
+            AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider,
+                permission_mode,
+                available_agents,
+                ..
+            } => std::iter::once((bootstrap_provider.clone(), permission_mode.clone()))
+                .chain(
+                    available_agents
+                        .iter()
+                        .map(|agent| (agent.provider.clone(), agent.permission_mode.clone())),
+                )
+                .collect(),
+        },
     }
 }
 
@@ -928,6 +961,7 @@ impl App {
             provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
+            prompt_turn_lifecycle: self.prompt_turn_lifecycle.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
         }
     }
@@ -972,6 +1006,7 @@ impl App {
             provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
+            prompt_turn_lifecycle: self.prompt_turn_lifecycle.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
         }
     }
@@ -991,6 +1026,16 @@ impl App {
         session_update: Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>,
     ) -> Self {
         self.acp_session_update = Some(session_update);
+        self
+    }
+
+    pub fn with_prompt_turn_lifecycle(
+        mut self,
+        callback: Arc<
+            dyn Fn(AcpLiveEventContext, AcpPromptLifecycleEvent) -> Result<()> + Send + Sync,
+        >,
+    ) -> Self {
+        self.prompt_turn_lifecycle = Some(callback);
         self
     }
 
@@ -1033,9 +1078,42 @@ impl App {
         Some(move || session_update(context.clone()))
     }
 
+    pub fn acp_prompt_accepted_for<'a>(
+        &'a self,
+        context: AcpLiveEventContext,
+    ) -> Option<impl Fn(&str) -> Result<()> + 'a> {
+        let prompt_turn_lifecycle = self.prompt_turn_lifecycle.as_ref()?.clone();
+        Some(move |prompt_id: &str| {
+            prompt_turn_lifecycle(
+                context.clone(),
+                AcpPromptLifecycleEvent::Accepted {
+                    prompt_id: prompt_id.to_string(),
+                },
+            )
+        })
+    }
+
     pub fn emit_acp_session_update(&self, context: AcpLiveEventContext) -> Result<()> {
         if let Some(session_update) = &self.acp_session_update {
             session_update(context)?;
+        }
+        Ok(())
+    }
+
+    pub fn notify_prompt_turn_finished(
+        &self,
+        context: AcpLiveEventContext,
+        prompt_id: Option<String>,
+        successful: bool,
+    ) -> Result<()> {
+        if let Some(callback) = &self.prompt_turn_lifecycle {
+            callback(
+                context,
+                AcpPromptLifecycleEvent::Finished {
+                    prompt_id,
+                    successful,
+                },
+            )?;
         }
         Ok(())
     }
@@ -1213,9 +1291,6 @@ impl App {
         config: ManagedAgentConfig,
     ) -> Result<SettingsConfig> {
         let mut agents = self.config.agents.clone();
-        if crate::config::managed_agent_preset(&agent_id).is_none() {
-            bail!("agent `{}` is not supported yet", agent_id.as_str());
-        }
         agents.insert(agent_id, config);
         self.set_user_agents(agents)
     }
@@ -1528,7 +1603,7 @@ impl App {
             bail!("auto template name `{name}` already exists");
         }
         let now = now_rfc3339_like();
-        let id = unique_auto_template_id(&store, name);
+        let id = next_auto_template_id(&store);
         store.templates.push(AutoTemplate {
             id,
             name: name.to_string(),
@@ -1605,7 +1680,7 @@ impl App {
             }
             let mut id = template.id.trim().to_string();
             if id.is_empty() || store.templates.iter().any(|item| item.id == id) {
-                id = unique_auto_template_id(&store, name);
+                id = next_auto_template_id(&store);
             }
             if store.templates.iter().any(|item| item.name == name) {
                 continue;
@@ -1762,10 +1837,8 @@ impl App {
 
     pub fn provider_doctor_probe(&self, provider: &str) -> Result<ProviderDoctorProbe> {
         let (agent_id, config) = self.managed_agent(provider)?;
-        if crate::config::managed_agent_preset(&agent_id).is_none() {
-            bail!("agent `{provider}` is not supported yet");
-        }
         match acp_client::doctor(
+            &agent_id,
             &config.adapter,
             self.paths.repo_root.clone(),
             self.config.use_local_claude,
@@ -1791,7 +1864,7 @@ impl App {
     }
 
     pub fn provider_capabilities(&self, provider: &str) -> Result<ProviderCapabilities> {
-        provider_capabilities(provider)
+        Ok(self.provider_info(provider)?.capabilities)
     }
 
     pub fn with_config(repo_root: Utf8PathBuf, config: RuntimeConfig) -> Self {
@@ -1819,6 +1892,7 @@ impl App {
             provider_diagnostics: None,
             acp_live_update: None,
             acp_session_update: None,
+            prompt_turn_lifecycle: None,
             lifecycle_bus: observability::RuntimeLifecycleBus::new(),
         }
     }
@@ -2649,7 +2723,6 @@ impl App {
     }
 
     pub fn request_attempt_prompt_cancel_best_effort(&self, attempt_dir: &Utf8Path) {
-        let _ = acp_client::request_prompt_cancel(attempt_dir);
         let _ = acp_client::cancel_attempt_prompt(attempt_dir);
     }
 
@@ -2660,13 +2733,18 @@ impl App {
         let Ok(pid) = pid_text.trim().parse::<u32>() else {
             return;
         };
-        let _ = kill_process_tree(pid);
+        let _ = recover_persisted_process_group(pid);
         let _ = fs::remove_file(pid_path.as_std_path());
     }
 
     pub fn persist_cancelled_session_snapshot_best_effort(&self, attempt_dir: &Utf8Path) {
-        let _ = self.persist_cancelled_session_file(&attempt_dir.join("acp.snapshot.json"));
-        let _ = self.persist_cancelled_session_file(&attempt_dir.join("acp.session.json"));
+        let _ = self.persist_cancelled_session_snapshot(attempt_dir);
+    }
+
+    pub fn persist_cancelled_session_snapshot(&self, attempt_dir: &Utf8Path) -> Result<()> {
+        self.persist_cancelled_session_file(&attempt_dir.join("acp.snapshot.json"))?;
+        self.persist_cancelled_session_file(&attempt_dir.join("acp.session.json"))?;
+        Ok(())
     }
 
     fn persist_cancelled_session_file(&self, path: &Utf8Path) -> Result<()> {
@@ -3075,9 +3153,6 @@ impl App {
                 if permission_mode.is_empty() {
                     continue;
                 }
-                let resolved = self
-                    .config
-                    .resolve_permission_mode(&provider, permission_mode);
                 let supported_modes = provider_diagnostics
                     .get(&provider)
                     .filter(|diagnostic| diagnostic.available)
@@ -3086,10 +3161,12 @@ impl App {
                     })
                     .unwrap_or_default();
                 if !supported_modes.is_empty()
-                    && !supported_modes.iter().any(|option| option.id == resolved)
+                    && !supported_modes
+                        .iter()
+                        .any(|option| option.id == permission_mode)
                 {
                     bail!(
-                        "worker permissionMode `{permission_mode}` (resolved to `{resolved}`) is not supported by provider `{provider}`"
+                        "worker permissionMode `{permission_mode}` is not supported by provider `{provider}`"
                     );
                 }
             }
@@ -3118,7 +3195,9 @@ impl App {
                     }
                 }
                 NodeDsl::AiDynamic(dynamic) => match &mut dynamic.agent_strategy {
-                    AiDynamicAgentStrategy::Fixed { provider, model } => clear_stale_model(
+                    AiDynamicAgentStrategy::Fixed {
+                        provider, model, ..
+                    } => clear_stale_model(
                         &diagnostics,
                         &dynamic.id,
                         "fixed",
@@ -3151,48 +3230,14 @@ impl App {
                                 &mut normalizations,
                             );
                         }
-                        let Some(configured) = acceptance_model
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|value| !value.is_empty())
-                        else {
-                            continue;
-                        };
-                        let mut providers = vec![bootstrap_provider.as_str()];
-                        for agent in available_agents.iter() {
-                            if !providers.contains(&agent.provider.as_str()) {
-                                providers.push(agent.provider.as_str());
-                            }
-                        }
-                        let providers_with_catalog = providers
-                            .iter()
-                            .filter(|provider| {
-                                diagnostics
-                                    .get(**provider)
-                                    .filter(|diagnostic| diagnostic.available)
-                                    .map(|diagnostic| {
-                                        !supported_models_from_capabilities(
-                                            diagnostic.capabilities.as_ref(),
-                                        )
-                                        .is_empty()
-                                    })
-                                    .unwrap_or(false)
-                            })
-                            .copied()
-                            .collect::<Vec<_>>();
-                        if !providers_with_catalog.is_empty()
-                            && providers_with_catalog.iter().all(|provider| {
-                                provider_model_is_stale(&diagnostics, provider, configured)
-                            })
-                        {
-                            normalizations.push(ModelConfigNormalization {
-                                node_id: dynamic.id.clone(),
-                                scope: "acceptance".to_string(),
-                                provider: None,
-                                previous_model: configured.to_string(),
-                            });
-                            *acceptance_model = None;
-                        }
+                        clear_stale_model(
+                            &diagnostics,
+                            &dynamic.id,
+                            "acceptance",
+                            bootstrap_provider,
+                            acceptance_model,
+                            &mut normalizations,
+                        );
                     }
                 },
             }
@@ -3203,10 +3248,7 @@ impl App {
     pub fn validate_workflow_agents(&self, workflow: &ValidatedWorkflow) -> Result<()> {
         for node in workflow.nodes_by_id.values() {
             for provider in providers_for_node(node) {
-                let (agent_id, _) = self.managed_agent(&provider)?;
-                if crate::config::managed_agent_preset(&agent_id).is_none() {
-                    bail!("agent `{provider}` is not supported yet");
-                }
+                self.managed_agent(&provider)?;
             }
         }
         for node in workflow.nodes_by_id.values() {
@@ -3494,13 +3536,13 @@ fn is_acp_session_active_status(status: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpLiveEventContext, App, CreateTaskInput, RuntimeLifecycleEvent, WorkflowTemplate,
-        WorkflowTemplateStore,
+        AcpLiveEventContext, AcpPromptLifecycleEvent, App, AutoTemplateStore, CreateTaskInput,
+        RuntimeLifecycleEvent, WorkflowTemplate, WorkflowTemplateStore, next_auto_template_id,
     };
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
-        MANAGED_AGENT_PRESETS, ProviderDiagnosticSnapshot, RuntimeConfig,
+        ProviderDiagnosticSnapshot, RuntimeConfig, catalog_agent_default_config,
     };
     use crate::domain::{
         NodeOutcome, NodeType, PauseReason, RoundTrigger, RunStatus, SessionMode, VERSION,
@@ -3536,6 +3578,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn auto_template_ids_are_name_independent_distributed_ids() {
+        let store = AutoTemplateStore {
+            version: VERSION.to_string(),
+            templates: Vec::new(),
+        };
+
+        let first = next_auto_template_id(&store);
+        let second = next_auto_template_id(&store);
+
+        assert!(first.starts_with("auto-template-"));
+        assert!(second.starts_with("auto-template-"));
+        assert_eq!(first.len(), "auto-template-".len() + 32);
+        assert_ne!(first, second);
+    }
+
     fn set_test_home(repo_root: &Utf8PathBuf) {
         unsafe {
             std::env::set_var(
@@ -3564,13 +3622,10 @@ mod tests {
     ) -> App {
         set_test_home(&repo_root);
         let mut config = RuntimeConfig::default();
-        if let Some(preset) = MANAGED_AGENT_PRESETS
-            .iter()
-            .find(|preset| preset.id == provider)
-        {
+        if let Some(agent_config) = catalog_agent_default_config(provider) {
             config
                 .agents
-                .insert(preset.agent_id(), preset.default_config());
+                .insert(provider.parse().unwrap(), agent_config);
         }
         App::with_config_and_path_config(
             repo_root,
@@ -3661,8 +3716,9 @@ mod tests {
 
     fn sample_run_paused_event() -> RuntimeLifecycleEvent {
         RuntimeLifecycleEvent::RunPaused {
-            event_id: "run-1:round-1:node-1:attempt-1:waiting-for-user-input".to_string(),
+            event_id: "project-1:run-1:round-1:node-1:attempt-1:waiting-for-user-input".to_string(),
             occurred_at: "2026-01-01T00:00:00".to_string(),
+            project_id: "project-1".to_string(),
             task_id: "task-1".to_string(),
             run_id: "run-1".to_string(),
             round_id: "round-1".to_string(),
@@ -3775,8 +3831,10 @@ mod tests {
             }),
         );
 
-        let accepted = validate_workflow(worker_workflow(Some("sonnet"), Some("ask"))).unwrap();
-        let rejected_model = validate_workflow(worker_workflow(Some("opus"), Some("ask"))).unwrap();
+        let accepted =
+            validate_workflow(worker_workflow(Some("sonnet"), Some("acceptEdits"))).unwrap();
+        let rejected_model =
+            validate_workflow(worker_workflow(Some("opus"), Some("acceptEdits"))).unwrap();
         let rejected_mode =
             validate_workflow(worker_workflow(Some("sonnet"), Some("full_access"))).unwrap();
 
@@ -3786,7 +3844,7 @@ mod tests {
     }
 
     #[test]
-    fn ai_dynamic_normative_full_access_resolves_to_current_codex_mode() {
+    fn ai_dynamic_accepts_native_permission_modes_per_agent() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -3812,14 +3870,18 @@ mod tests {
             agent_strategy: AiDynamicAgentStrategy::Dynamic {
                 bootstrap_provider: "codex-acp".to_string(),
                 bootstrap_model: None,
+                permission_mode: Some("agent-full-access".to_string()),
+                bootstrap_config_options: Default::default(),
                 acceptance_model: None,
+                acceptance_config_options: Default::default(),
                 routing_prompt: String::new(),
                 available_agents: vec![crate::dsl::DynamicAgentRef {
                     provider: "codex-acp".to_string(),
                     model: None,
+                    permission_mode: Some("agent-full-access".to_string()),
+                    config_options: Default::default(),
                 }],
             },
-            permission_mode: Some("full_access".to_string()),
             config_options: Default::default(),
             allowed_profiles: Vec::new(),
             global_goal: None,
@@ -3856,14 +3918,18 @@ mod tests {
                 agent_strategy: AiDynamicAgentStrategy::Dynamic {
                     bootstrap_provider: "claude-acp".to_string(),
                     bootstrap_model: Some("sonnet".to_string()),
+                    permission_mode: None,
+                    bootstrap_config_options: Default::default(),
                     acceptance_model: Some("sonnet".to_string()),
+                    acceptance_config_options: Default::default(),
                     routing_prompt: String::new(),
                     available_agents: vec![crate::dsl::DynamicAgentRef {
                         provider: "claude-acp".to_string(),
                         model: Some("future-model".to_string()),
+                        permission_mode: None,
+                        config_options: Default::default(),
                     }],
                 },
-                permission_mode: None,
                 config_options: Default::default(),
                 allowed_profiles: Vec::new(),
                 global_goal: None,
@@ -3924,14 +3990,18 @@ mod tests {
                     agent_strategy: AiDynamicAgentStrategy::Dynamic {
                         bootstrap_provider: "codex-acp".to_string(),
                         bootstrap_model: Some("gpt-5.6-sol".to_string()),
+                        permission_mode: None,
+                        bootstrap_config_options: Default::default(),
                         acceptance_model: Some("gpt-5.6-sol".to_string()),
+                        acceptance_config_options: Default::default(),
                         routing_prompt: String::new(),
                         available_agents: vec![crate::dsl::DynamicAgentRef {
                             provider: "codex-acp".to_string(),
                             model: Some("gpt-5.4".to_string()),
+                            permission_mode: None,
+                            config_options: Default::default(),
                         }],
                     },
-                    permission_mode: None,
                     config_options: Default::default(),
                     allowed_profiles: Vec::new(),
                     global_goal: None,
@@ -3943,8 +4013,8 @@ mod tests {
                     agent_strategy: AiDynamicAgentStrategy::Fixed {
                         provider: "codex-acp".to_string(),
                         model: Some("gpt-5.4".to_string()),
+                        permission_mode: None,
                     },
-                    permission_mode: None,
                     config_options: Default::default(),
                     allowed_profiles: Vec::new(),
                     global_goal: None,
@@ -4137,6 +4207,50 @@ mod tests {
         assert_eq!(calls[0].attempt_id, context.attempt_id);
         assert_eq!(calls[0].outer_node_id, context.outer_node_id);
         assert_eq!(calls[0].outer_attempt_id, context.outer_attempt_id);
+    }
+
+    #[test]
+    fn prompt_lifecycle_reports_accepted_identity_and_finished_outcome() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_callback = seen.clone();
+        let app =
+            test_app(repo_root).with_prompt_turn_lifecycle(Arc::new(move |context, event| {
+                seen_for_callback.lock().unwrap().push((context, event));
+                Ok(())
+            }));
+        let context = AcpLiveEventContext {
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "direct-agent".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        };
+
+        app.acp_prompt_accepted_for(context.clone()).unwrap()("turn-queued-001").unwrap();
+        app.notify_prompt_turn_finished(context, Some("turn-queued-001".to_string()), false)
+            .unwrap();
+
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0.task_id, "task-001");
+        assert_eq!(
+            calls[0].1,
+            AcpPromptLifecycleEvent::Accepted {
+                prompt_id: "turn-queued-001".to_string(),
+            }
+        );
+        assert_eq!(
+            calls[1].1,
+            AcpPromptLifecycleEvent::Finished {
+                prompt_id: Some("turn-queued-001".to_string()),
+                successful: false,
+            }
+        );
     }
 
     fn dynamic_pause_test_app(temp: &tempfile::TempDir) -> App {

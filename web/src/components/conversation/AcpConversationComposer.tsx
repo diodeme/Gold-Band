@@ -26,6 +26,7 @@ import { AttachmentChipsList } from '@/components/shared/AttachmentComponents';
 import { Button } from '@/components/ui/button';
 import type { AttachmentItem } from '@/lib/attachment-service';
 import type { AcpCommandItemVm } from '@/types';
+import { cn } from '@/lib/utils';
 
 export interface AcpConversationComposerProps {
   prompt: string;
@@ -66,6 +67,8 @@ export interface AcpConversationComposerProps {
   canSubmit: boolean;
   sendButtonBusy: boolean;
   configBar: ReactNode;
+  attachedQueueVisible: boolean;
+  queueSubmit: boolean;
 }
 
 /**
@@ -111,6 +114,8 @@ export function AcpConversationComposer({
   canSubmit,
   sendButtonBusy,
   configBar,
+  attachedQueueVisible,
+  queueSubmit,
 }: AcpConversationComposerProps) {
   const { t } = useTranslation();
   return (
@@ -121,16 +126,18 @@ export function AcpConversationComposer({
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
-      <div className="mb-2">
-        <AttachmentChipsList
-          attachments={attachments}
-          compact
-          onRemove={onRemoveAttachment}
-          onPreview={onPreviewAttachment}
-          onClear={onClearAttachments}
-          clearLabel={t('common.clear') ?? 'Clear'}
-        />
-      </div>
+      {attachments.length > 0 ? (
+        <div className="mb-2" data-acp-composer-attachment-row="true">
+          <AttachmentChipsList
+            attachments={attachments}
+            compact
+            onRemove={onRemoveAttachment}
+            onPreview={onPreviewAttachment}
+            onClear={onClearAttachments}
+            clearLabel={t('common.clear') ?? 'Clear'}
+          />
+        </div>
+      ) : null}
       {fileError ? (
         <div className="mb-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
           {fileError}
@@ -149,7 +156,10 @@ export function AcpConversationComposer({
           onValueChange={onPromptChange}
           onSubmit={onSubmit}
           isLoading={sending}
-          className="rounded-2xl bg-card/80 shadow-sm shadow-background/30 transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
+          className={cn(
+            'bg-card/80 shadow-sm shadow-background/30 transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10',
+            attachedQueueVisible ? 'rounded-t-none rounded-b-2xl' : 'rounded-2xl',
+          )}
         >
           {status}
           <PromptInputTextarea
@@ -211,7 +221,7 @@ export function AcpConversationComposer({
                   </Button>
                 </PromptInputAction>
               ) : null}
-              <PromptInputAction tooltip={t('acp.send')}>
+              <PromptInputAction tooltip={queueSubmit ? t('acp.promptQueue.enqueue') : t('acp.send')}>
                 <Button
                   className="h-8 gap-1.5 rounded-full px-3"
                   size="sm"
@@ -223,7 +233,7 @@ export function AcpConversationComposer({
                   ) : (
                     <Send className="size-3.5" />
                   )}
-                  {t('acp.send')}
+                  {queueSubmit ? t('acp.promptQueue.enqueue') : t('acp.send')}
                 </Button>
               </PromptInputAction>
             </PromptInputActions>

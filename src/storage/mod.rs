@@ -1,6 +1,6 @@
 pub mod sqlite;
 
-use crate::config::SettingsConfig;
+use crate::config::{ManagedAgentId, SettingsConfig};
 use crate::domain::VERSION;
 use anyhow::{Result, anyhow};
 use atomic_write_file::AtomicWriteFile;
@@ -200,12 +200,16 @@ impl GoldBandPaths {
         self.user_gold_band_root.join("doctor")
     }
 
-    pub fn doctor_acp_dir(&self) -> Utf8PathBuf {
+    pub fn doctor_acp_root_dir(&self) -> Utf8PathBuf {
         self.doctor_dir().join("acp")
     }
 
-    pub fn doctor_acp_provider_pid_file(&self) -> Utf8PathBuf {
-        self.doctor_acp_dir().join("provider.pid")
+    pub fn doctor_acp_dir(&self, agent_id: &ManagedAgentId) -> Utf8PathBuf {
+        self.doctor_acp_root_dir().join(agent_id.as_str())
+    }
+
+    pub fn doctor_acp_provider_pid_file(&self, agent_id: &ManagedAgentId) -> Utf8PathBuf {
+        self.doctor_acp_dir(agent_id).join("provider.pid")
     }
 
     pub fn sqlite_db_path(&self) -> Utf8PathBuf {
@@ -972,7 +976,9 @@ pub fn roll_jsonl_unlocked(path: &Utf8Path, max_size: u64, target_size: u64) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CURRENT_SETTINGS_SCHEMA_VERSION, MANAGED_AGENT_PRESETS, ManagedAgentId};
+    use crate::config::{
+        CURRENT_SETTINGS_SCHEMA_VERSION, ManagedAgentId, catalog_agent_default_config,
+    };
     use std::str::FromStr;
     use tempfile;
 
@@ -1156,7 +1162,7 @@ mod tests {
         let legacy = serde_json::json!({
             "agents": {
                 "codex-cli": {
-                    "adapter": MANAGED_AGENT_PRESETS[1].default_config().adapter,
+                    "adapter": catalog_agent_default_config("codex-acp").unwrap().adapter,
                     "skillsDirOverride": ".custom-codex",
                     "externalSessionSyncEnabled": false
                 }
@@ -1168,7 +1174,7 @@ mod tests {
 
         let codex_id = ManagedAgentId::from_str("codex-acp").unwrap();
         let codex = &settings.agents.unwrap()[&codex_id];
-        assert_eq!(codex.primary_agent_dir, ".custom-codex");
+        assert_eq!(codex.primary_agent_dir.as_deref(), Some(".custom-codex"));
         assert_eq!(codex.compatible_agent_dirs, vec![".agents"]);
 
         let persisted: serde_json::Value = read_json(&path).unwrap();
@@ -1379,6 +1385,26 @@ mod tests {
 
         let after = std::fs::read_to_string(path.as_std_path()).unwrap();
         assert_eq!(after, second);
+    }
+
+    #[test]
+    fn doctor_attempt_directories_are_isolated_by_agent_id() {
+        let root = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let paths = GoldBandPaths::new(repo_root);
+        let cursor = "cursor".parse::<ManagedAgentId>().unwrap();
+        let opencode = "opencode".parse::<ManagedAgentId>().unwrap();
+
+        assert_ne!(
+            paths.doctor_acp_dir(&cursor),
+            paths.doctor_acp_dir(&opencode)
+        );
+        assert!(paths.doctor_acp_dir(&cursor).ends_with("doctor/acp/cursor"));
+        assert!(
+            paths
+                .doctor_acp_dir(&opencode)
+                .ends_with("doctor/acp/opencode")
+        );
     }
 
     #[cfg(unix)]

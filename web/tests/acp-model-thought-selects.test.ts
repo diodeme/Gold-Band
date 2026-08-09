@@ -5,12 +5,15 @@ import { describe, expect, it } from 'vitest';
 import '@/i18n';
 import {
   AcpModelThoughtSelects,
+  findAcpThoughtLevel,
   formatAcpCompositeSelection,
   nextAcpCompositeSection,
+  updateAcpConfigOptionOverride,
 } from '@/components/acp/AcpModelThoughtSelects';
 import {
   ACP_COMPOSER_CONFIG_DROPDOWN_MODAL,
   DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
+  keepAcpConfigMenuOpenOnSelect,
 } from '@/components/acp/AcpComposerConfigTrigger';
 
 function triggerClass(markup: string, slot: string) {
@@ -20,6 +23,24 @@ function triggerClass(markup: string, slot: string) {
 }
 
 describe('ACP composite model selector', () => {
+  it('resolves thought-level capabilities without depending on provider-specific option ids', () => {
+    expect(findAcpThoughtLevel([
+      { id: 'theme', category: 'appearance', options: [] },
+      { id: 'reasoning_effort', category: 'thought_level', options: [{ value: 'high', name: 'High' }] },
+    ])?.id).toBe('reasoning_effort');
+    expect(findAcpThoughtLevel(null)).toBeNull();
+  });
+
+  it('updates generic config option overrides immutably and removes unspecified values', () => {
+    const current = { theme: 'dark', reasoning_effort: 'medium' };
+    const updated = updateAcpConfigOptionOverride(current, 'reasoning_effort', 'high');
+    const cleared = updateAcpConfigOptionOverride(updated, 'reasoning_effort', null);
+
+    expect(current).toEqual({ theme: 'dark', reasoning_effort: 'medium' });
+    expect(updated).toEqual({ theme: 'dark', reasoning_effort: 'high' });
+    expect(cleared).toEqual({ theme: 'dark' });
+  });
+
   it('anchors the main menu to the trigger start edge by default', () => {
     expect(DEFAULT_ACP_COMPOSER_CONFIG_ALIGN).toBe('start');
   });
@@ -40,6 +61,14 @@ describe('ACP composite model selector', () => {
 
     openSection = nextAcpCompositeSection(openSection, 'reasoning_effort', false);
     expect(openSection).toBeNull();
+  });
+
+  it('keeps the config menu open after selecting a model or thought level', () => {
+    const event = new Event('select', { cancelable: true });
+
+    keepAcpConfigMenuOpenOnSelect(event);
+
+    expect(event.defaultPrevented).toBe(true);
   });
 
   it('shows one unspecified state until a model or thought level is selected', () => {

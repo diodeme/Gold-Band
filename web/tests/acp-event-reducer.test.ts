@@ -119,6 +119,77 @@ describe("ACP event reducer", () => {
     expect(merged[0]!.content).toBe("我已发现实现与需求存在明显偏差：代码返回的是 `hello`，不是 `hello-world`。");
   });
 
+  it("does not let a stale retry snapshot reopen a settled prompt footer", () => {
+    const settled = event({
+      id: "gold-band-user-prompt-1",
+      kind: "userTextDelta",
+      seq: 1,
+      endedSeq: 30,
+      status: "cancelled",
+      raw: {
+        source: "goldBandPrompt",
+        promptId: "runtime-turn-1",
+        retry: { attempt: 1, maxAttempts: 3 },
+      },
+    });
+    const staleRetrying = event({
+      id: "gold-band-user-prompt-1",
+      kind: "userTextDelta",
+      seq: 1,
+      endedSeq: 20,
+      status: "processing",
+      raw: {
+        source: "goldBandPrompt",
+        promptId: "runtime-turn-1",
+        retry: { attempt: 1, maxAttempts: 3 },
+      },
+    });
+
+    const merged = mergeAcpEventWindows([settled], [staleRetrying]);
+
+    expect(merged[0]!.endedSeq).toBe(30);
+    expect(merged[0]!.status).toBe("cancelled");
+  });
+
+  it("keeps a terminal prompt when an equal-revision live snapshot is non-terminal", () => {
+    const settled = event({
+      id: "gold-band-user-prompt-1",
+      kind: "userTextDelta",
+      seq: 1,
+      endedSeq: 30,
+      status: "failed",
+    });
+    const retrying = event({
+      id: "gold-band-user-prompt-1",
+      kind: "userTextDelta",
+      seq: 1,
+      endedSeq: 30,
+      status: "processing",
+    });
+
+    expect(mergeAcpEventWindows([settled], [retrying])[0]!.status).toBe("failed");
+  });
+
+  it("keeps agent text without a provider messageId in the visible timeline", () => {
+    const anonymousAgentText = event({
+      id: "assistant-message-local-stream-1",
+      kind: "textDelta",
+      seq: 20,
+      content: "unexpected status 502 Bad Gateway",
+      raw: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "unexpected status 502 Bad Gateway" },
+      },
+    });
+
+    const merged = mergeAcpEventWindows([], [anonymousAgentText]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.kind).toBe("textDelta");
+    expect(merged[0]!.content).toBe("unexpected status 502 Bad Gateway");
+    expect(merged[0]!.raw).not.toHaveProperty("messageId");
+  });
+
   it("changes the session event signature when a non-last bubble receives more content", () => {
     const before = session([
       event({ id: "assistant-message-1", kind: "textDelta", seq: 10, content: "短文本" }),

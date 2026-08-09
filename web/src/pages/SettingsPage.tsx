@@ -268,7 +268,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                 </button>
               </div>
 
-              <Sheet open={themeSheetOpen} onOpenChange={setThemeSheetOpen}>
+              <Sheet modal={false} open={themeSheetOpen} onOpenChange={setThemeSheetOpen}>
                 {syncWithOs ? (
                   <div className="grid gap-3 @6xl/settings-content:grid-cols-2">
                     <ThemeSummaryCard

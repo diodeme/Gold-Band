@@ -12,8 +12,8 @@ use gold_band::acp::client::PromptActivity;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    DesktopUpdateBadgeState, MANAGED_AGENT_PRESETS, ManagedAgentConfig, ManagedAgentId,
-    McpServerState, RuntimeConfig, RuntimeLogLevel,
+    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerState, RuntimeConfig,
+    RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
@@ -171,7 +171,7 @@ pub struct AppInfoVm {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRegistryVm {
     pub agents: Vec<ManagedAgentVm>,
-    pub supported_types: Vec<SupportedAgentTypeVm>,
+    pub catalog: Vec<AgentCatalogEntryVm>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -185,8 +185,9 @@ pub struct ManagedAgentVm {
     pub icon_key: String,
     pub primary_agent_dir: String,
     pub compatible_agent_dirs: Vec<String>,
+    pub supports_system_prompt: bool,
+    pub external_session_sync_supported: bool,
     pub external_session_sync_enabled: bool,
-    pub supported: bool,
     pub diagnostic: Option<ManagedAgentDiagnosticVm>,
     pub supported_modes: Option<Vec<AcpModeVm>>,
     pub supported_models: Option<Vec<AcpModeVm>>,
@@ -291,14 +292,19 @@ pub struct ManagedAgentDiagnosticVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SupportedAgentTypeVm {
+pub struct AgentCatalogEntryVm {
     pub agent_type: String,
     pub label: String,
     pub icon_key: String,
+    pub version: String,
+    pub description: String,
+    pub repository: Option<String>,
+    pub website: Option<String>,
     pub primary_agent_dir: String,
     pub compatible_agent_dirs: Vec<String>,
-    pub supported: bool,
     pub configured: bool,
+    pub supports_system_prompt: bool,
+    pub supports_external_session_sync: bool,
     pub default_display_name: String,
     pub default_command: String,
     pub default_args: Vec<String>,
@@ -1326,27 +1332,26 @@ pub fn agent_registry_vm(
             managed_agent_vm(agent_type, config, diagnostics.get(agent_type))
         })
         .collect::<Vec<_>>();
-    let supported_types = MANAGED_AGENT_PRESETS
-        .into_iter()
-        .map(|preset| {
-            let agent_id = preset.agent_id();
-            let default_config = preset.default_config();
-            SupportedAgentTypeVm {
-                agent_type: agent_id.as_str().to_string(),
-                label: preset.label.to_string(),
-                icon_key: preset.icon_key.to_string(),
-                primary_agent_dir: app
-                    .managed_agents()
-                    .get(&agent_id)
-                    .map(|config| config.primary_agent_dir.clone())
-                    .unwrap_or_else(|| default_config.primary_agent_dir.clone()),
-                compatible_agent_dirs: app
-                    .managed_agents()
-                    .get(&agent_id)
-                    .map(|config| config.compatible_agent_dirs.clone())
-                    .unwrap_or_else(|| default_config.compatible_agent_dirs.clone()),
-                supported: true,
+    let catalog = gold_band::agent_catalog::builtin_agent_catalog()
+        .agents
+        .iter()
+        .map(|entry| {
+            let agent_id =
+                ManagedAgentId::from_str(&entry.id).expect("built-in Agent catalog ids are valid");
+            let default_config = ManagedAgentConfig::from_catalog(entry);
+            AgentCatalogEntryVm {
+                agent_type: entry.id.clone(),
+                label: entry.label.clone(),
+                icon_key: entry.icon_key.clone(),
+                version: entry.version.clone(),
+                description: entry.description.clone(),
+                repository: entry.repository.clone(),
+                website: entry.website.clone(),
+                primary_agent_dir: default_config.primary_agent_dir.unwrap_or_default(),
+                compatible_agent_dirs: default_config.compatible_agent_dirs.clone(),
                 configured: app.managed_agents().contains_key(&agent_id),
+                supports_system_prompt: entry.supports_system_prompt,
+                supports_external_session_sync: entry.supports_external_session_sync,
                 default_display_name: default_config.adapter.display_name,
                 default_command: default_config.adapter.command,
                 default_args: default_config.adapter.args,
@@ -1359,10 +1364,7 @@ pub fn agent_registry_vm(
             }
         })
         .collect();
-    AgentRegistryVm {
-        agents,
-        supported_types,
-    }
+    AgentRegistryVm { agents, catalog }
 }
 
 fn managed_agent_vm(
@@ -1384,14 +1386,12 @@ fn managed_agent_vm(
                 value: value.clone(),
             })
             .collect(),
-        icon_key: gold_band::config::managed_agent_preset(agent_id)
-            .map(|preset| preset.icon_key)
-            .unwrap_or("agent")
-            .to_string(),
-        primary_agent_dir: config.primary_agent_dir.clone(),
+        icon_key: config.icon.clone(),
+        primary_agent_dir: config.primary_agent_dir.clone().unwrap_or_default(),
         compatible_agent_dirs: config.compatible_agent_dirs.clone(),
+        supports_system_prompt: config.supports_system_prompt(),
+        external_session_sync_supported: config.external_session_sync_supported,
         external_session_sync_enabled: config.external_session_sync_enabled,
-        supported: gold_band::config::managed_agent_preset(agent_id).is_some(),
         diagnostic: diagnostic.map(|diagnostic| ManagedAgentDiagnosticVm {
             status: if diagnostic.available {
                 "healthy"
@@ -1456,9 +1456,10 @@ fn managed_agent_vm(
     }
 }
 
-fn provider_icon_key(provider: &str) -> Option<String> {
-    let agent_id = ManagedAgentId::from_str(provider).ok()?;
-    gold_band::config::managed_agent_preset(&agent_id).map(|preset| preset.icon_key.to_string())
+fn provider_icon_key(app: &App, provider: &str) -> Option<String> {
+    app.managed_agent(provider)
+        .ok()
+        .map(|(_, config)| config.icon.clone())
 }
 
 pub fn task_list_vm(app: &App) -> Result<TaskListVm> {
@@ -1527,7 +1528,7 @@ pub fn workflow_vm(app: &App, task_id: &str) -> Result<WorkflowVm> {
     let workflow = read_json::<WorkflowDsl>(&app.paths.workflow_file(task_id)).ok();
     let graph = workflow
         .as_ref()
-        .map(workflow_graph_vm)
+        .map(|workflow| workflow_graph_vm(app, workflow))
         .unwrap_or_else(empty_graph);
     let control = workflow.as_ref().map(workflow_control_vm);
     let runs = newest_first(app.run_list(task_id)?)
@@ -1989,7 +1990,7 @@ fn round_attempt_nodes(
     Ok(nodes)
 }
 
-pub fn workflow_graph_vm(workflow: &WorkflowDsl) -> GraphVm {
+pub fn workflow_graph_vm(app: &App, workflow: &WorkflowDsl) -> GraphVm {
     GraphVm {
         nodes: workflow
             .nodes
@@ -2011,7 +2012,9 @@ pub fn workflow_graph_vm(workflow: &WorkflowDsl) -> GraphVm {
                 artifact_count: 0,
                 attachment_count: 0,
                 current: false,
-                icon_key: node.provider().and_then(provider_icon_key),
+                icon_key: node
+                    .provider()
+                    .and_then(|provider| provider_icon_key(app, provider)),
                 session_mode: None,
                 continue_from_node_id: None,
                 dynamic_summary: None,
@@ -2297,7 +2300,7 @@ fn round_trace_graph_vm(
                 n.resolved_config
                     .get("provider")
                     .and_then(|v| v.as_str())
-                    .and_then(provider_icon_key)
+                    .and_then(|provider| provider_icon_key(app, provider))
             }),
             session_mode: None,
             continue_from_node_id: None,
@@ -2627,7 +2630,10 @@ fn dynamic_node_graph_vm(
         artifact_count,
         attachment_count,
         current,
-        icon_key: node.provider.as_deref().and_then(provider_icon_key),
+        icon_key: node
+            .provider
+            .as_deref()
+            .and_then(|provider| provider_icon_key(app, provider)),
         session_mode: Some(enum_label(&node.session_mode)),
         continue_from_node_id: node.continue_from_node_id.clone(),
         dynamic_summary: None,
@@ -2966,7 +2972,7 @@ fn round_node_graph_vm(
             .resolved_config
             .get("provider")
             .and_then(|v| v.as_str())
-            .and_then(provider_icon_key),
+            .and_then(|provider| provider_icon_key(app, provider)),
         session_mode: None,
         continue_from_node_id: None,
         dynamic_summary,
@@ -3691,7 +3697,7 @@ pub fn dynamic_acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
-    let adapter_icon_key = provider_icon_key(&provider);
+    let adapter_icon_key = provider_icon_key(app, &provider);
     let session_elapsed_seconds = conversation_branch_elapsed_seconds(
         &branch_id,
         branch_record,
@@ -4097,7 +4103,7 @@ pub fn acp_session_vm(
                 .ok()
                 .map(|(_, agent)| agent.adapter.display_name.clone())
         });
-    let adapter_icon_key = provider_icon_key(&provider);
+    let adapter_icon_key = provider_icon_key(app, &provider);
     let session_elapsed_seconds = conversation_branch_elapsed_seconds(
         &branch_id,
         branch_record,
@@ -4577,6 +4583,7 @@ fn scan_acp_timeline(
             let usage = cached.usage.clone();
             touch_timeline_cache(&mut cache, &cache_key);
             return paginate_timeline(
+                path,
                 &all_events,
                 event_count,
                 session_elapsed_seconds,
@@ -4612,6 +4619,7 @@ fn scan_acp_timeline(
     };
 
     paginate_timeline(
+        path,
         &all_events,
         event_count,
         session_elapsed_seconds,
@@ -5165,6 +5173,7 @@ fn provider_history_item_index_vm(event: &AcpUiEventVm) -> u64 {
 }
 
 fn paginate_timeline(
+    timeline_path: &camino::Utf8Path,
     all_events: &[AcpUiEventVm],
     event_count: usize,
     session_elapsed_seconds: Option<u64>,
@@ -5182,13 +5191,26 @@ fn paginate_timeline(
     let pending_elicitations = pending_elicitation_vms(all_events, session_active);
     let timeline_projection =
         build_acp_timeline_projection(all_events, latest_permission_events, session_active);
-    let selected_blocks = if let Some(cursor) = after_seq {
-        semantic_blocks
+    let (selected_blocks, after_cursor_has_newer) = if let Some(cursor) = after_seq {
+        let mut changed_blocks = semantic_blocks
             .iter()
-            .filter(|block| block.oldest_seq > cursor)
-            .take(limit)
-            .cloned()
-            .collect::<Vec<_>>()
+            .filter(|block| block.newest_seq > cursor)
+            .collect::<Vec<_>>();
+        changed_blocks
+            .sort_by_key(|block| (block.newest_seq, block.oldest_seq, block.start, block.end));
+        let selected_count = if changed_blocks.len() > limit {
+            let cutoff_revision = changed_blocks[limit - 1].newest_seq;
+            changed_blocks.partition_point(|block| block.newest_seq <= cutoff_revision)
+        } else {
+            changed_blocks.len()
+        };
+        let has_newer = selected_count < changed_blocks.len();
+        let mut selected = changed_blocks[..selected_count]
+            .iter()
+            .map(|block| (*block).clone())
+            .collect::<Vec<_>>();
+        selected.sort_by_key(|block| (block.start, block.end));
+        (selected, Some(has_newer))
     } else if let Some(cursor) = before_seq {
         let mut page = semantic_blocks
             .iter()
@@ -5198,11 +5220,11 @@ fn paginate_timeline(
         if page.len() > limit {
             page = page.split_off(page.len() - limit);
         }
-        page
+        (page, None)
     } else if total > limit {
-        semantic_blocks[total - limit..].to_vec()
+        (semantic_blocks[total - limit..].to_vec(), None)
     } else {
-        semantic_blocks.clone()
+        (semantic_blocks.clone(), None)
     };
     let loaded_semantic_count = selected_blocks.len();
     let filtered = compact_selected_semantic_blocks(all_events, &selected_blocks);
@@ -5243,12 +5265,14 @@ fn paginate_timeline(
         oldest_seq,
         newest_seq,
         has_older: oldest_index.is_some_and(|index| index > 0),
-        has_newer: newest_index.is_some_and(|index| index + 1 < total),
+        has_newer: after_cursor_has_newer
+            .unwrap_or_else(|| newest_index.is_some_and(|index| index + 1 < total)),
         oldest_cursor: oldest_seq.map(format_timeline_cursor),
         newest_cursor: newest_seq.map(format_timeline_cursor),
     };
     include_latest_permission_events(&mut filtered, latest_permission_events);
     order_provider_history_by_prompt_anchors_vm(&mut filtered);
+    hydrate_timeline_events(timeline_path, &mut filtered)?;
 
     Ok(AcpEventScan {
         events: filtered,
@@ -5262,6 +5286,18 @@ fn paginate_timeline(
         available_commands: available_commands.cloned(),
         usage: usage.cloned(),
     })
+}
+
+fn hydrate_timeline_events(
+    timeline_path: &camino::Utf8Path,
+    events: &mut [AcpUiEventVm],
+) -> Result<()> {
+    for event in events {
+        if let Some(raw) = event.raw.as_mut() {
+            gold_band::acp::timeline::hydrate_timeline_value(timeline_path, raw)?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -5462,6 +5498,8 @@ pub fn acp_activity_detail_vm_for_attempt(
         .map(|(item_id, _)| item_id.clone())
         .collect::<HashSet<_>>();
     let audit = load_selected_activity_detail_events(&timeline_path, &selected_ids)?;
+    let mut audit = audit;
+    hydrate_timeline_events(&timeline_path, &mut audit)?;
     let items = audit
         .into_iter()
         .map(compact_event_for_activity_audit)
@@ -5665,9 +5703,10 @@ pub fn acp_tool_detail_vm_for_attempt(
                 .unwrap_or(candidate),
         );
     }
-    Ok(AcpToolDetailVm {
-        event: detail.map(compact_event_for_session),
-    })
+    if let Some(event) = detail.as_mut() {
+        hydrate_timeline_events(&timeline_path, std::slice::from_mut(event))?;
+    }
+    Ok(AcpToolDetailVm { event: detail })
 }
 
 fn semantic_block_range(
@@ -6169,7 +6208,7 @@ fn raw_has_successful_session_close(raw_path: &camino::Utf8Path) -> bool {
         let method = frame.get("method").and_then(|method| method.as_str());
         if matches!(
             method,
-            Some("session/new" | "session/load" | "session/prompt")
+            Some("session/new" | "session/load" | "session/resume" | "session/prompt")
         ) {
             close_request_ids.clear();
             close_completed_after_last_session_start = false;
@@ -6509,7 +6548,7 @@ fn scan_acp_diagnostics(path: &camino::Utf8Path) -> Result<AcpDiagnosticsScan> {
 }
 
 /// Extract system prompt append from the beginning of the raw ACP frame file.
-/// Only reads the first ~200 lines — system prompt is always in session/new or session/load frame at the start.
+/// Only reads the first 500 lines — system prompt is carried by the first session lifecycle frame.
 fn extract_system_prompt_append(path: &camino::Utf8Path) -> Option<String> {
     if !path.exists() {
         return None;
@@ -6525,7 +6564,10 @@ fn extract_system_prompt_append(path: &camino::Utf8Path) -> Option<String> {
             continue;
         }
         let method = value.pointer("/frame/method").and_then(|v| v.as_str());
-        if !matches!(method, Some("session/new" | "session/load")) {
+        if !matches!(
+            method,
+            Some("session/new" | "session/load" | "session/resume")
+        ) {
             continue;
         }
         return value
@@ -7696,12 +7738,12 @@ mod tests {
 
         assert_eq!(value["workspaceLayout"]["shellMinWidth"], 480);
         assert_eq!(value["workspaceLayout"]["shellMinHeight"], 680);
-        assert_eq!(value["workspaceLayout"]["rightWorkspace"]["minWidth"], 320);
+        assert_eq!(value["workspaceLayout"]["rightWorkspace"]["minWidth"], 288);
         assert_eq!(
             value["workspaceLayout"]["rightWorkspace"]["defaultWidth"],
             440
         );
-        assert_eq!(value["workspaceLayout"]["rightWorkspace"]["maxWidth"], 960);
+        assert_eq!(value["workspaceLayout"]["rightWorkspace"]["maxWidth"], 1440);
         assert_eq!(
             value["workspaceLayout"]["rightWorkspace"]["file"],
             json!({
@@ -8659,7 +8701,7 @@ mod tests {
             [
                 r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":5,"method":"session/close","params":{"sessionId":"session-1"}}}"#,
                 r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":5,"result":{}}}"#,
-                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":6,"method":"session/load","params":{"sessionId":"session-1"}}}"#,
+                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":6,"method":"session/resume","params":{"sessionId":"session-1"}}}"#,
                 r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":6,"result":{"sessionId":"session-1"}}}"#,
                 r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":"session-1","prompt":[]}}}"#,
             ]
@@ -8668,6 +8710,30 @@ mod tests {
         .unwrap();
 
         assert!(!raw_has_successful_session_close(&raw_path));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn system_prompt_append_is_extracted_from_session_resume() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-resume-system-prompt-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let raw_path = Utf8PathBuf::from_path_buf(dir.clone())
+            .unwrap()
+            .join("acp.raw.jsonl");
+        fs::write(
+            raw_path.as_std_path(),
+            r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":6,"method":"session/resume","params":{"sessionId":"session-1","cwd":"D:/repo","mcpServers":[],"_meta":{"systemPrompt":{"append":"stable context"}}}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            extract_system_prompt_append(&raw_path).as_deref(),
+            Some("stable context")
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -10065,6 +10131,122 @@ mod tests {
     }
 
     #[test]
+    fn paginate_after_seq_includes_a_cumulative_block_extended_past_the_cursor() {
+        let mut cumulative = text_event_at(1_000);
+        cumulative.id = "assistant-message-1".to_string();
+        cumulative.seq = 20;
+        cumulative.started_seq = Some(2);
+        cumulative.ended_seq = Some(20);
+        cumulative.content = Some("检查已经完成，准备调用工具".to_string());
+
+        let scan = paginate_timeline(
+            camino::Utf8Path::new("acp.timeline.jsonl"),
+            std::slice::from_ref(&cumulative),
+            20,
+            Some(0),
+            &HashMap::new(),
+            None,
+            None,
+            true,
+            Some(10),
+            None,
+            30,
+        )
+        .unwrap();
+
+        assert_eq!(scan.events.len(), 1);
+        assert_eq!(scan.events[0].id, "assistant-message-1");
+        assert_eq!(scan.events[0].ended_seq, Some(20));
+        assert_eq!(scan.event_page.newest_seq, Some(20));
+    }
+
+    #[test]
+    fn paginate_after_seq_orders_changed_blocks_by_revision_without_skipping() {
+        let mut events = event_sequence(4, 1_000);
+        events[0].ended_seq = Some(100);
+        events[1].ended_seq = Some(20);
+        events[2].ended_seq = Some(30);
+        events[3].ended_seq = Some(40);
+
+        let first = paginate_timeline(
+            camino::Utf8Path::new("acp.timeline.jsonl"),
+            &events,
+            4,
+            Some(0),
+            &HashMap::new(),
+            None,
+            None,
+            true,
+            Some(10),
+            None,
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            first
+                .events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["evt-1", "evt-2"]
+        );
+        assert_eq!(first.event_page.newest_seq, Some(30));
+        assert!(first.event_page.has_newer);
+
+        let second = paginate_timeline(
+            camino::Utf8Path::new("acp.timeline.jsonl"),
+            &events,
+            4,
+            Some(0),
+            &HashMap::new(),
+            None,
+            None,
+            true,
+            first.event_page.newest_seq,
+            None,
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            second
+                .events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["evt-0", "evt-3"]
+        );
+        assert_eq!(second.event_page.newest_seq, Some(100));
+        assert!(!second.event_page.has_newer);
+    }
+
+    #[test]
+    fn paginate_after_seq_keeps_equal_revision_blocks_in_one_page() {
+        let mut events = event_sequence(3, 1_000);
+        events[0].ended_seq = Some(20);
+        events[1].ended_seq = Some(20);
+        events[2].ended_seq = Some(30);
+
+        let first = paginate_timeline(
+            camino::Utf8Path::new("acp.timeline.jsonl"),
+            &events,
+            3,
+            Some(0),
+            &HashMap::new(),
+            None,
+            None,
+            true,
+            Some(10),
+            None,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(first.events.len(), 2);
+        assert_eq!(first.event_page.newest_seq, Some(20));
+        assert!(first.event_page.has_newer);
+    }
+
+    #[test]
     fn paginate_excludes_resolved_permission_from_semantic_page() {
         let mut latest = HashMap::new();
         latest.insert(
@@ -10078,6 +10260,7 @@ mod tests {
         ];
 
         let scan = paginate_timeline(
+            camino::Utf8Path::new("acp.timeline.jsonl"),
             &events,
             events.len(),
             Some(0),
@@ -10123,6 +10306,7 @@ mod tests {
         let events = vec![user, plan, request, response, assistant];
 
         let scan = paginate_timeline(
+            camino::Utf8Path::new("acp.timeline.jsonl"),
             &events,
             events.len(),
             Some(0),
@@ -10151,6 +10335,7 @@ mod tests {
     fn pending_elicitation_is_one_current_semantic_block() {
         let request = elicitation_request_event_at("elicit-pending", 1_000);
         let scan = paginate_timeline(
+            camino::Utf8Path::new("acp.timeline.jsonl"),
             std::slice::from_ref(&request),
             1,
             Some(0),
@@ -10185,6 +10370,7 @@ mod tests {
             acp_event_at("later-message", "textDelta", Some("completed"), 2_000, None);
         let events = vec![request, later_message];
         let scan = paginate_timeline(
+            camino::Utf8Path::new("acp.timeline.jsonl"),
             &events,
             events.len(),
             Some(0),
@@ -10486,6 +10672,50 @@ mod tests {
                 .events
                 .iter()
                 .all(|event| event.kind != "permissionRequest")
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn paginated_tool_detail_hydrates_blob_backed_terminal_output() {
+        let dir =
+            std::env::temp_dir().join(format!("gb-blob-tool-detail-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let attempt = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let timeline_path = gold_band::acp::branches::branch_timeline_path(
+            &attempt,
+            gold_band::acp::branches::ROOT_BRANCH_ID,
+        );
+        let large_output = "terminal-output".repeat(8 * 1024);
+        let mut event = acp_event_at(
+            "tool-large",
+            "toolCall",
+            Some("completed"),
+            1_000,
+            Some(json!({ "output": large_output })),
+        );
+        event.tool_call_id = Some("call-large".to_string());
+        let stored_event: gold_band::acp::events::AcpUiEvent =
+            serde_json::from_value(serde_json::to_value(event).unwrap()).unwrap();
+        gold_band::acp::events::write_timeline_items(&timeline_path, &[stored_event]).unwrap();
+
+        let stored = fs::read_to_string(timeline_path.as_std_path()).unwrap();
+        assert!(stored.contains("$goldBandBlob"));
+        let detail = acp_tool_detail_vm_for_attempt(
+            &attempt,
+            AcpToolDetailQueryInput {
+                branch_id: gold_band::acp::branches::ROOT_BRANCH_ID.to_string(),
+                event_id: "tool-large".to_string(),
+                tool_call_id: Some("call-large".to_string()),
+            },
+        )
+        .unwrap()
+        .event
+        .unwrap();
+
+        assert_eq!(
+            detail.raw.unwrap()["output"].as_str(),
+            Some(large_output.as_str())
         );
         fs::remove_dir_all(dir).unwrap();
     }

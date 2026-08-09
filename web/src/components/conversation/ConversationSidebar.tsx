@@ -13,6 +13,8 @@ import { cn } from '@/lib/utils';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { formatCompactRelativeTime } from '@/lib/datetime';
 
+export const conversationSidebarActivityIconClass = 'motion-safe:animate-pulse';
+
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
   active: ConversationPage;
@@ -433,10 +435,10 @@ export const ConversationSidebar = memo(function ConversationSidebar({
 
 // ── Task Row ──
 
-function runStatusColor(run: ConversationTaskRowVm['runs'][0]) {
+export function conversationSidebarRunStatusClass(run: ConversationTaskRowVm['runs'][0]) {
   if (run.outcome === 'success') return 'bg-emerald-500/50';
   if (run.outcome === 'failure' || run.outcome === 'killed') return 'bg-red-500/50';
-  if (run.status === 'running') return 'bg-transparent';
+  if (run.status === 'running') return 'bg-gold-running motion-safe:animate-pulse';
   return 'bg-yellow-500/50';
 }
 
@@ -577,7 +579,7 @@ function TaskRow({
   const isDirect = task.runMode === 'direct';
   const useAgentIdentity = conversationSidebarIdentityKind(task) === 'agent-icon';
   const showActivity = shouldShowConversationSidebarActivity(task);
-  const latestColor = latestRun ? runStatusColor(latestRun) : 'bg-muted-foreground/30';
+  const latestColor = latestRun ? conversationSidebarRunStatusClass(latestRun) : 'bg-muted-foreground/30';
   const relativeTimeSource = task.lastActivityAt;
   const relativeTime = relativeTimeSource && (isDirect || latestRun?.status !== 'running')
     ? formatCompactRelativeTime(relativeTimeSource, t('conversation.runtime.justNow'))
@@ -636,21 +638,15 @@ function TaskRow({
       <span className="flex size-4 shrink-0 items-center justify-center">
         {useAgentIdentity && task.agentIdentity ? (
           <span className="relative flex size-4 items-center justify-center" data-conversation-activity={showActivity ? task.activity?.phase : undefined}>
-            {showActivity ? (
-              <span
-                aria-hidden="true"
-                className="absolute inset-0 animate-spin rounded-full border border-primary/20 border-t-primary [animation-duration:900ms]"
-              />
-            ) : null}
             <img
               src={agentIconSrc(task.agentIdentity.iconKey)}
               alt=""
               title={task.agentIdentity.displayName}
-              className={agentIconClass(task.agentIdentity.iconKey, showActivity ? 'size-2.5' : 'size-3')}
+              className={agentIconClass(task.agentIdentity.iconKey, cn('size-3', showActivity && conversationSidebarActivityIconClass))}
             />
           </span>
         ) : (
-          <span className={cn('size-1.5 rounded-full', latestColor, task.latestRun?.status === 'running' && 'border border-muted-foreground/40')} />
+          <span className={cn('size-1.5 rounded-full', latestColor)} />
         )}
       </span>
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden group-hover:pr-20">
@@ -702,7 +698,7 @@ function TaskRow({
       {expanded && hasRuns ? (
         <div className="ml-4 mt-1 space-y-1 border-l border-border/60 pl-3">
           {task.runs.map((run) => {
-            const color = runStatusColor(run);
+            const color = conversationSidebarRunStatusClass(run);
             const runTime = run.status !== 'running'
               ? formatCompactRelativeTime(run.updatedAt, t('conversation.runtime.justNow'))
               : null;
@@ -732,7 +728,7 @@ function TaskRow({
                     }
                   }}
                 >
-                  <span className={cn('size-1.5 shrink-0 rounded-full', color, run.status === 'running' && 'border border-muted-foreground/40')} />
+                  <span className={cn('size-1.5 shrink-0 rounded-full', color)} />
                   <span className="min-w-0 flex-1 truncate text-muted-foreground">{run.runId}</span>
                   {runTime ? (
                     <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{runTime}</span>

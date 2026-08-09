@@ -1,4 +1,4 @@
-use gold_band::acp::client;
+﻿use gold_band::acp::client;
 use gold_band::acp::commands::{AcpCommandCatalog, parse_available_commands};
 use gold_band::acp::elicitation::{
     ElicitationAction, cancel_pending_elicitation_requests, write_elicitation_response,
@@ -540,6 +540,7 @@ fn emit_direct_turn_metrics_fact(
         gold_band::app::observability::ExecutionKind::Turn,
         active_turn.execution_id.clone(),
     );
+    fact.task_title = task.title.clone();
     fact.attempt_id = Some(active_turn.attempt_id.clone());
     fact.attempt_index = Some(active_turn.attempt_index);
     fact.provider = provider;
@@ -1978,6 +1979,7 @@ fn emit_request_intervention_metrics(
         },
         execution_id.clone(),
     );
+    fact.task_title = app.task_show(&context.task_id).ok().and_then(|t| t.title);
     fact.intervention_kind = Some(match kind {
         RuntimeInterventionKind::PermissionRequested => {
             gold_band::app::observability::MetricsInterventionKind::Permission

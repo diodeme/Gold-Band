@@ -822,6 +822,7 @@ async fn register_workspace_best_effort(
         provider,
         &daemon_id,
         shared.inner(),
+        true,
     )
     .await
     {

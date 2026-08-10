@@ -15,7 +15,7 @@
 //! 复用 `metrics::start_heartbeat_polling` 骨架：`tauri::async_runtime::spawn` + 三层 guard
 //! （try_state -> context -> multica_settings）+ 每 tick 重读配置（用户改配置即时生效）。
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use camino::Utf8PathBuf;
 use gold_band::config::MulticaWorkspaceRef;
@@ -36,15 +36,20 @@ pub const MULTICA_HEARTBEAT_INTERVAL_SECS: u64 = 15;
 /// 注册单个 workspace 并缓存 runtime_id（启动全量 / 自愈增量 / connect 触发 / 绑定即时 共用底层）。
 ///
 /// 统一 register 逻辑，杜绝四处复制：构造 `RegisterRequest`（device_name/cli_version 内部推导）
-/// -> `client.register`（内含 with_network_retry）-> 取首个 runtime -> `set_runtime_id` 缓存。
+/// -> `client.register` 或 `client.register_once`（由 `retried` 选）-> 取首个 runtime -> `set_runtime_id` 缓存。
 /// 返回 runtime_id 供调用方日志；失败返回错误，调用方按场景定日志级别
 /// （启动 warn / 自愈 warn-and-retry / 绑定 best-effort）。
+///
+/// `retried` 区分一次性 vs 循环驱动：启动 / connect / 绑定即时传 `true`（无上层循环兜底，走 client 内
+/// `with_network_retry` 3 次）；常驻心跳自愈传 `false`（循环即重试，走单次 `register_once` + liveness
+/// 短超时——避免弱网下单 tick 嵌套 3×30s 退避阻塞后续续期/取消检测，prepare lease 45s 被回收）。
 pub(crate) async fn register_workspace(
     client: &MulticaClient,
     workspace_id: &str,
     provider: &str,
     daemon_id: &str,
     shared: &SharedMulticaState,
+    retried: bool,
 ) -> Result<String, MulticaError> {
     let device_name = get_system_username();
     let cli_version = env!("CARGO_PKG_VERSION").to_string();
@@ -60,7 +65,11 @@ pub(crate) async fn register_workspace(
             status: "ready".to_string(),
         }],
     };
-    let response = client.register(&request).await?;
+    let response = if retried {
+        client.register(&request).await?
+    } else {
+        client.register_once(&request).await?
+    };
     let row = response
         .runtimes
         .first()
@@ -91,6 +100,7 @@ pub(crate) async fn register_all_bound_workspaces<R: Runtime>(app: &AppHandle<R>
             &workspace.provider,
             &daemon_id,
             shared.inner(),
+            true,
         )
         .await
         {
@@ -145,6 +155,7 @@ async fn run_startup_registration<R: Runtime>(app: &AppHandle<R>) {
             &workspace.provider,
             &daemon_id,
             shared.inner(),
+            true,
         )
         .await
         {
@@ -192,12 +203,17 @@ async fn run_startup_registration<R: Runtime>(app: &AppHandle<R>) {
 /// 4. 取消检测：在飞 active_run 的 remote 若已 terminal（failed/cancelled/404）-> 作废本地 run（C5）。
 async fn run_heartbeat_loop<R: Runtime>(app: AppHandle<R>) {
     loop {
+        // tick 耗时埋点：量化退化网络下单 tick 是否威胁 prepare lease（45s）续期窗口（S2 验证依据）。
+        let tick_start = Instant::now();
         if let Some(client) = build_client(&app) {
             // ① 自愈注册：已连接但 runtime_ids 缺失的已绑定 workspace -> 重注册（根因修复 Bug 1）。
             //    旧实现心跳源 runtime_ids 缺失时永久空转 -> runtime 离线 -> 任务被 server 回收回 pending。
+            let stage = Instant::now();
             self_heal_registration(&app, &client).await;
+            trace_stage("self_heal", stage);
 
             // ② 心跳：遍历 (workspace_id, runtime_id)。runtime 行失效 404 -> 清缓存，下 tick 自愈重注册。
+            let stage = Instant::now();
             let pairs = collect_runtime_id_pairs(&app);
             let shared = app.try_state::<SharedMulticaState>();
             for (workspace_id, runtime_id) in &pairs {
@@ -223,14 +239,38 @@ async fn run_heartbeat_loop<R: Runtime>(app: AppHandle<R>) {
                     }
                 }
             }
+            trace_stage("heartbeat", stage);
 
             // ③ 续期 prepare lease：claim 后未 start 的任务（compose 期间），防 server 45s 回收。
+            let stage = Instant::now();
             extend_prepare_leases(&app, &client).await;
+            trace_stage("extend_lease", stage);
             // ④ 取消检测：active run 的 remote terminal -> 作废本地（接入方案 C5）。
+            let stage = Instant::now();
             detect_cancelled_active_runs(&app, &client).await;
+            trace_stage("cancel_detect", stage);
+        }
+        // tick 总耗时：正常 <1s；超 30s 视为 overrun（warn），便于弱网回归观测 S2 改善（单 tick 不再阻塞数分钟）。
+        let tick_elapsed = tick_start.elapsed();
+        if tick_elapsed >= Duration::from_secs(30) {
+            tracing::warn!(
+                elapsed_ms = tick_elapsed.as_millis() as u64,
+                "multica heartbeat tick overrun (degraded network? stages blocking)"
+            );
+        } else {
+            tracing::debug!(elapsed_ms = tick_elapsed.as_millis() as u64, "multica heartbeat tick done");
         }
         tokio::time::sleep(Duration::from_secs(MULTICA_HEARTBEAT_INTERVAL_SECS)).await;
     }
+}
+
+/// 单阶段耗时埋点（trace 级，低噪声）：观测心跳 tick 内哪一阶段在退化网络下变慢。
+fn trace_stage(stage: &'static str, start: Instant) {
+    tracing::trace!(
+        stage,
+        elapsed_ms = start.elapsed().as_millis() as u64,
+        "multica heartbeat tick stage"
+    );
 }
 
 /// 三层 guard + 取启动注册参数（未启用 / 无 PAT / 无 workspace -> None，静默跳过）。
@@ -287,7 +327,7 @@ async fn self_heal_registration<R: Runtime>(app: &AppHandle<R>, client: &Multica
         if already {
             continue;
         }
-        match register_workspace(client, &workspace.id, &workspace.provider, &daemon_id, &shared)
+        match register_workspace(client, &workspace.id, &workspace.provider, &daemon_id, &shared, false)
             .await
         {
             Ok(runtime_id) => tracing::info!(

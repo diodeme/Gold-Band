@@ -496,6 +496,11 @@ pub enum MulticaError {
 
 > ⚠️ **终态重试是超出 metrics fire-and-forget 模式的增强点**：metrics 失败只记日志（metrics.rs:206 "FAILED (ignored)"），multica 终态必须送达（否则任务悬空），故 client.rs 自建退避重试，是本模块相对 metrics 的主要新增逻辑。
 
+**性能优化（连接池复用 + liveness 短超时 + 自愈单次重试，详见 §12.13）**：
+- **进程级共享 `reqwest::Client`**：`shared_http()` 用 `std::sync::OnceLock`（与 `metrics.rs`/`view_models.rs` 同惯用，零新增依赖）持有唯一 client，`MulticaClient::new` 取其廉价 `clone`（reqwest `Client` 内部 `Arc`，构造昂贵/clone 廉价）。修复「每调用点重建 client → 连接池/TLS 上下文作废 → 每次重做 TCP+TLS 握手（弱网放大失败率）」。`MulticaClient` 因此 `derive(Clone)`，为并发扇出铺路。client 级 30s 超时仍在 `shared_http` 内设定。
+- **liveness per-request 短超时**（常量 `LIVENESS_TIMEOUT_SECS=10`，经 `send`/`json_send` 的 `per_request_timeout` 参数覆盖 client 级 30s）：心跳 tick 内高频调用（`heartbeat` / `extend_prepare_lease` / `get_task_status` / `register_once`）正常 <1s，server 慢响应时 10s 快速失败、下一 tick 重试。**非 liveness 调用**（verify_pat / list_workspaces / list_pending_tasks / claim / start / complete / fail / pin / rerun / update_issue_status）仍走 30s，可靠性优先于快速失败。
+- **自愈 register 单次重试**（`register_once`，见 §12.1/§12.13）：常驻心跳 tick 驱动的自愈「循环即重试」，不嵌套 client 内 `with_network_retry`（3×30s）——否则弱网下单 tick 可超 90s 阻塞续期/取消检测。`register`（带 3 次重试）仅留一次性路径（启动 / connect / 绑定即时）。
+
 ### 2.4 multica/config.rs
 
 职责：读写 SettingsConfig/StateConfig 的 multica 字段；`pat_set`/`daemon_id_set` getter（永不回显明文）；`daemon_id` 首次生成并落盘；channel base_url/app_url 默认值合并；`multica_settings()` 聚合 VM。
@@ -602,6 +607,10 @@ pub struct ActiveRemoteRun { pub local_task_uuid: String, pub local_project_id: 
 **启动入口** `start_multica_runtime`：先 `verify_pat`(GET /api/me) → 有效则全量 register；**无效则静默、不弹任何 UI**（等用户切到「远程任务列表」未连接空状态点【连接 Multica】才触发登录，见 4.1；**首启绝不自动弹登录**）。挂载点：`main.rs:185` `start_heartbeat_polling` **之后**加 `multica::loop_::start_multica_loop(app.handle().clone())`（setup hook 内，main.rs:137-187）。
 
 > 心跳间隔常量集中在本模块顶部（`const MULTICA_HEARTBEAT_INTERVAL_SECS: u64 = 15;`），杜绝硬编码。
+
+**tick 耗时埋点 + 单 tick 上界（§12.13）**：每 tick 记 `tick_start`，四阶段（self_heal / heartbeat / extend_lease / cancel_detect）各记 `trace_stage`（trace 级，低噪声，含 `stage` + `elapsed_ms`）；tick 末总耗时 `elapsed_ms`，正常 debug 级、**超 30s 升 warn**（"heartbeat tick overrun"）——量化弱网下单 tick 是否威胁 prepare lease（45s）续期窗口。配合 client 侧 liveness 短超时（§2.3）+ 自愈 `register_once`（§12.1），退化网络下单 tick 不再阻塞数分钟，而是快速失败、下一 tick 重试。
+
+**自愈 register 走单次重试**（§12.1/§12.13）：`self_heal_registration` 调 `register_workspace(retried=false)` → `client.register_once`（单次 + liveness 短超时），不再嵌套 client 内 3×30s 退避——「循环即重试」，避免单 tick 内自愈阻塞拖垮续期/取消检测。
 
 ### 2.7 multica/bridge.rs
 
@@ -1077,7 +1086,7 @@ start_multica_runtime()
 | 文件 | 变更 |
 |---|---|
 | `state.rs` | `runtime_id_pairs() -> Vec<(String, String)>` 返回 workspace→runtime 映射供自愈；`clear_runtime_id(workspace_id)` 单 key 清除 |
-| `loop_.rs` | 抽取 `register_workspace(...)` 共享 helper（构造 RegisterRequest + 调 client.register + 缓存 runtime_id）；`run_heartbeat_loop` 每 tick 先 `self_heal_registration` 补注册缺失 runtime_id；心跳 404 → `clear_runtime_id` → 下一 tick 自愈 |
+| `loop_.rs` | 抽取 `register_workspace(retried)` 共享 helper（构造 RegisterRequest + 按 `retried` 选 `client.register`/`register_once` + 缓存 runtime_id，见 §12.13）；`run_heartbeat_loop` 每 tick 先 `self_heal_registration`（`retried=false`，循环即重试）补注册缺失 runtime_id；心跳 404 → `clear_runtime_id` → 下一 tick 自愈 |
 | `commands.rs` | `connect_multica` async 改为 await `register_all_bound_workspaces`（即时注册所有已绑定 workspace）|
 
 **测试**：`runtime_id_pairs_carries_workspace_for_self_heal` + `clear_runtime_id_singular_drops_one_keeps_rest`。
@@ -1419,6 +1428,33 @@ if let Err(start_err) = client.start_task(&remote_task_id, false).await {
 - 间距 token 统一：组头 `px-1.5` / 任务行 `px-2`；组↔组 `mb-2`、任务↔任务 `space-y-0.5`、组头↔任务 `mt-0.5`、列表根 `space-y-2`。
 
 **验证**：纯前端（无 Rust / 无 webank server 改动）；i18n 中英双语同步（`multica.taskManagement.subtitle` 再精简、`conversation.sidebar.multica.taskCount` 新增 zh「（{{count}}个任务）」/ en「({{count}} tasks)」、`conversation.sidebar.multica.noTasksInWorkspace` 文案更新）；vitest 19/19 全过、tsc 零错误。
+
+### 12.13 改动十一：multica 接入性能优化（共享 client / liveness 短超时 / 自愈单次重试 / tick 埋点，M5-ac）
+
+**背景**：对 multica 接入做系统性性能检视（并发/IO/网络/内存/循环/重复查询/锁/资源释放/对象创建/超时重试 10 维度）。业务逻辑正确性前置确认无误（锁纪律从不跨 `.await`、终态上报严格重试、4xx 不重试、前端纯事件驱动无轮询、PAT 不回显）。本次仅落地两项**严重缺陷** + 埋点；并发扇出（heartbeat/lease/cancel-detect 并发）与前端 debounce 等增强项本期不做。
+
+**严重缺陷 S1：`reqwest::Client` 每调用重建（连接池失效）**
+- 现象：`MulticaClient::new` 每次 `Client::builder().timeout(30s).build()`，而 `new` 被每个调用点重建（心跳 tick / 启动 / bridge 终态事件 / 每条命令）。
+- 影响：`reqwest::Client` 内部持有连接池，官方明确「应创建一次并复用」。每次 new → 新连接池 → 旧 client 析构关闭连接 → 下次请求重做 TCP+TLS 握手。心跳 15s × N workspace 常驻握手开销；弱网下握手失败概率叠加放大重试成本。是「对象频繁创建 + 网络 + 超时」三维度叠加的系统性缺陷。
+- 修复（`client.rs`）：进程级 `shared_http() -> &'static Client`（`OnceLock`，零新增依赖，同 `metrics.rs`/`view_models.rs` 惯用）；`MulticaClient::new` 取 `shared_http().clone()`（廉价 Arc clone）；`MulticaClient` 加 `#[derive(Clone)]`（为并发扇出铺路）。client 级 30s 超时仍在 `shared_http` 内设定。
+
+**严重缺陷 S2：心跳 tick 串行 + 自愈嵌套 client 内重试 → 弱网下单 tick 超 45s**
+- 现象：`run_heartbeat_loop` 每 tick 串行四阶段；`self_heal_registration` → `register_workspace` → `client.register`（`with_network_retry` 3 次，单次复用 client 级 30s）。
+- 影响（弱网 / server 慢响应，恰是 runtime_id 缺失触发自愈的场景）：单个缺失 workspace 的 register 最坏 ≈ 30s+1s+30s+2s+30s ≈ 93s；多个 workspace ①阶段即数分钟 → ③`extend_prepare_lease` 推迟 > 45s → server `ReclaimStaleDispatchedTaskForRuntime` 回收用户正在 compose 的任务（功能受损，非单纯变慢）；④取消检测推迟 → 远端已取消任务本地空跑浪费算力。
+- 设计根因：`register` 的 client 内 3 次重试是为**一次性**调用（启动/connect/绑定）设计的；自愈是**循环驱动**的，「循环即重试」（与 heartbeat/extend_prepare_lease 同构）才是正确语义。自愈复用了启动期重试路径 → 单 tick 内嵌套重试 → tick 超时。
+- 修复（`client.rs` + `loop_.rs`）：
+  - **S2-a 自愈单次重试**：新增 `register_once`（单次 + liveness 短超时）；`register_workspace` 加 `retried: bool`——一次性路径（启动/connect/绑定 `commands.rs::register_workspace_best_effort`）传 `true` 走 `register`（3 次重试），自愈路径（`self_heal_registration`）传 `false` 走 `register_once`。
+  - **S2-b liveness 短超时**（常量 `LIVENESS_TIMEOUT_SECS=10`）：`send`/`json_send` 加 `per_request_timeout: Option<Duration>` 参数；`heartbeat` / `extend_prepare_lease` / `get_task_status` / `register_once` 传 `Some(10s)`，其余传 `None`（沿用 30s）。单 tick 在退化网络下快速失败、下一 tick（15s）重试。
+
+**tick 耗时埋点**（`loop_.rs`）：每 tick 记 `tick_start`，四阶段各 `trace_stage(stage, start)`（trace 级 `elapsed_ms`）；tick 末总耗时——正常 debug、超 30s 升 warn（"heartbeat tick overrun"）。量化 S2 改善的回归依据。
+
+**改动清单**：`src-tauri/src/multica/client.rs`（`shared_http` + `derive(Clone)` + `new` 复用 + `send`/`json_send` 加 timeout + `register_once` + 3 个 liveness 方法走 json_send/send + `LIVENESS_TIMEOUT_SECS` + 3 单测）、`src-tauri/src/multica/loop_.rs`（`register_workspace(retried)` + 自愈 `false` / 启动·connect·绑定 `true` + tick 埋点 + `trace_stage`）、`src-tauri/src/multica/commands.rs`（`register_workspace_best_effort` 调用传 `true`）。无 web / 无 webank server 改动。
+
+**验证**：`cargo check`（gold-band-desktop）零错误（4 个 warning 均为既有非 multica 项）；`cargo test ... multica` 75 全过（含新增 `multica_client_new_rejects_empty_base_url` / `multica_client_is_clone` / `liveness_timeout_is_bounded_under_global_default`）。弱网人肉验证待补：模拟限速/断网恢复，观察日志 tick `elapsed_ms` 不再超 30s、compose 期间任务不被回收。
+
+---
+
+## 附录 A：CLAUDE.md 合规自检
 
 ---
 

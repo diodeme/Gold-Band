@@ -13,6 +13,7 @@
 // 暂未全部接线，先一次定义完整接口（先定数据→再定接口→再补实现）。M5 完成后审查移除该 allow。
 #![allow(dead_code)]
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use reqwest::{Client, Method, Response, StatusCode};
@@ -67,6 +68,14 @@ const TERMINAL_RETRY_SCHEDULE_SECS: &[u64] = &[4, 8, 16, 32, 64];
 const NETWORK_RETRY_ATTEMPTS: u32 = 3;
 /// 网络重试退避基数（秒）：第 n 次重试 sleep `NETWORK_RETRY_BASE_SECS * 2^n`。
 const NETWORK_RETRY_BASE_SECS: u64 = 1;
+
+/// 单次 liveness/轻量请求超时（秒），覆盖 client 级 30s 默认值。
+///
+/// 心跳 tick 内的高频调用（heartbeat / 取消检测 / prepare-lease 续期 / 自愈 register）正常 <1s；
+/// server 慢响应或网络抖动时，若沿用 30s 全局超时，单 tick 串行阻塞会累积，威胁 prepare lease（45s）
+/// 的续期窗口与取消检测的及时性。给这些调用更短的 per-request 上界，使退化网络下单 tick 也能快速失败、
+/// 下一 tick（15s）重试——而非一个 tick 阻塞数分钟。
+const LIVENESS_TIMEOUT_SECS: u64 = 10;
 
 /// issue 完成态（接入方案 D2：码灵完成远程任务后用 PAT 把关联 issue 流转到 done）。
 pub const MULTICA_ISSUE_DONE_STATUS: &str = "done";
@@ -265,7 +274,32 @@ struct UpdateIssueStatusRequest {
     status: String,
 }
 
+/// 进程级共享的 `reqwest::Client`（连接池/TLS 上下文复用）。
+///
+/// `reqwest::Client` 内部为 `Arc`：构造昂贵（建连接池 + TLS 上下文）、clone 廉价。官方明确「应创建一次并复用」，
+/// 否则每次 `new` → 新连接池 → 旧 client 析构关闭连接 → 下次请求重做 TCP+TLS 握手（弱网下放大失败率）。
+/// 故全进程共享一个实例，[`MulticaClient::new`] 取其廉价 clone。用 `OnceLock`（本项目 metrics.rs /
+/// view_models.rs 已用同一惯用），零新增依赖。client 级 30s 超时在此设定（liveness 调用再 per-request 缩短）。
+///
+/// `Client::builder().build()` 在默认设置下实质不会失败（缺失 TLS provider 才会，那是进程级故障，每次 `new`
+/// 都会同样失败）——故用 `expect` 在首次初始化时快速失败，而非把不可恢复的构造错误一路包成 `NetworkFailed`。
+///
+/// [`MulticaClient::new`]: MulticaClient::new
+fn shared_http() -> &'static Client {
+    static HTTP: OnceLock<Client> = OnceLock::new();
+    HTTP.get_or_init(|| {
+        Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("reqwest client build with default settings must not fail")
+    })
+}
+
 /// multica HTTP client。`token` 为 PAT（已登录）或登录期的临时 JWT（None=未认证）。
+///
+/// `Clone` 廉价（`http` 是 `reqwest::Client` 的 Arc clone；`base_url`/`token` 仅 String）——供并发扇出
+/// （把 client clone 进 spawn 任务）。复用 [`shared_http`] 的连接池，杜绝每调用重建 client。
+#[derive(Clone)]
 pub struct MulticaClient {
     http: Client,
     base_url: String,
@@ -282,12 +316,8 @@ impl MulticaClient {
         if base_url.trim().is_empty() {
             return Err(MulticaError::NotConfigured);
         }
-        let http = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| MulticaError::NetworkFailed(format!("http client build failed: {e}")))?;
         Ok(Self {
-            http,
+            http: shared_http().clone(),
             base_url,
             token,
         })
@@ -298,10 +328,21 @@ impl MulticaClient {
     }
 
     /// 发送已认证请求并按状态码映射错误（map_status）。
-    async fn send(&self, method: Method, path: &str) -> Result<Response, MulticaError> {
+    ///
+    /// `per_request_timeout` 覆盖 client 级 30s 默认——liveness/轻量调用（取消检测）传短超时，
+    /// 使单次调用在 server 慢响应时快速失败，避免拖垮整个心跳 tick（prepare lease 45s 续期窗口）。
+    async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        per_request_timeout: Option<Duration>,
+    ) -> Result<Response, MulticaError> {
         let mut req = self.http.request(method.clone(), self.url(path));
         if let Some(t) = self.token.as_deref().filter(|t| !t.is_empty()) {
             req = req.bearer_auth(t);
+        }
+        if let Some(d) = per_request_timeout {
+            req = req.timeout(d);
         }
         let resp = req
             .send()
@@ -323,6 +364,7 @@ impl MulticaClient {
         path: &str,
         workspace_id: Option<&str>,
         body: &T,
+        per_request_timeout: Option<Duration>,
     ) -> Result<Response, MulticaError> {
         let mut req = self.http.request(method.clone(), self.url(path));
         if let Some(t) = self.token.as_deref().filter(|t| !t.is_empty()) {
@@ -330,6 +372,9 @@ impl MulticaClient {
         }
         if let Some(ws) = workspace_id {
             req = req.header("X-Workspace-ID", ws);
+        }
+        if let Some(d) = per_request_timeout {
+            req = req.timeout(d);
         }
         let resp = req
             .json(body)
@@ -348,7 +393,9 @@ impl MulticaClient {
         T: Serialize + ?Sized,
         R: DeserializeOwned,
     {
-        let resp = self.json_send(Method::POST, path, None, body).await?;
+        let resp = self
+            .json_send(Method::POST, path, None, body, None)
+            .await?;
         resp.json::<R>()
             .await
             .map_err(|e| MulticaError::NetworkFailed(format!("decode {path} failed: {e}")))
@@ -370,7 +417,7 @@ impl MulticaClient {
         R: DeserializeOwned,
     {
         let resp = self
-            .json_send(Method::POST, path, Some(workspace_id), body)
+            .json_send(Method::POST, path, Some(workspace_id), body, None)
             .await?;
         resp.json::<R>()
             .await
@@ -448,7 +495,7 @@ impl MulticaClient {
 
     /// `GET /api/me` —— 验证 PAT 有效，返回用户信息。
     pub async fn verify_pat(&self) -> Result<UserInfo, MulticaError> {
-        let resp = self.send(Method::GET, "/api/me").await?;
+        let resp = self.send(Method::GET, "/api/me", None).await?;
         resp.json::<UserInfo>()
             .await
             .map_err(|e| MulticaError::NetworkFailed(format!("decode /api/me failed: {e}")))
@@ -489,7 +536,7 @@ impl MulticaClient {
 
     /// `GET /api/workspaces` —— workspace 成员列表（容错包装/裸数组）。
     pub async fn list_workspaces(&self) -> Result<Vec<WorkspaceInfo>, MulticaError> {
-        let resp = self.send(Method::GET, "/api/workspaces").await?;
+        let resp = self.send(Method::GET, "/api/workspaces", None).await?;
         let parsed = resp
             .json::<WorkspacesResponse>()
             .await
@@ -504,7 +551,8 @@ impl MulticaClient {
 
     /// `POST /api/daemon/register` —— 全量注册（幂等），取回 server 分配的 runtime_id 列表。
     ///
-    /// 一般请求：网络错误重试 3 次，4xx 不重试（直接映射错误码）。
+    /// 一般请求：网络错误重试 3 次，4xx 不重试（直接映射错误码）。用于**一次性**调用（启动 / connect /
+    /// 绑定即时）——这些路径无上层循环兜底，故在 client 内退避重试。
     pub async fn register(
         &self,
         req: &RegisterRequest,
@@ -515,16 +563,46 @@ impl MulticaClient {
         .await
     }
 
+    /// `POST /api/daemon/register` —— 单次注册（无 client 内重试 + liveness 短超时），供常驻心跳 tick 自愈用。
+    ///
+    /// 与 [`register`](MulticaClient::register) 的区别：后者带 `with_network_retry`（3 次，单次最长 30s），
+    /// 适合一次性调用。而自愈注册由 15s 心跳 tick 驱动——**循环即重试**；若再嵌套 client 内 3×30s 退避，
+    /// 弱网下单 tick 可超 90s，阻塞后续续期/取消检测（prepare lease 45s 被 server 回收）。
+    /// 故自愈路径用单次 register + per-request 短超时：失败下 tick 自然重试，单 tick 耗时有界。
+    pub async fn register_once(&self, req: &RegisterRequest) -> Result<RegisterResponse, MulticaError> {
+        let resp = self
+            .json_send(
+                Method::POST,
+                "/api/daemon/register",
+                None,
+                req,
+                Some(Duration::from_secs(LIVENESS_TIMEOUT_SECS)),
+            )
+            .await?;
+        resp.json::<RegisterResponse>()
+            .await
+            .map_err(|e| MulticaError::NetworkFailed(format!("decode /api/daemon/register failed: {e}")))
+    }
+
     /// `POST /api/daemon/heartbeat` —— 维持 runtime 在线（执行期 15s）。
     ///
     /// body `{runtime_id, supports_batch_import: true}`。失败仅记日志（下一 tick 自然重试），
-    /// 不在 client 内重试（循环即重试），故走单次 `post_json`。
+    /// 不在 client 内重试（循环即重试）。走单次请求 + **liveness 短超时**（覆盖 client 级 30s），
+    /// 防 server 慢响应拖垮整个心跳 tick（prepare lease 45s 续期窗口）。
     pub async fn heartbeat(&self, runtime_id: &str) -> Result<(), MulticaError> {
         let body = serde_json::json!({
             "runtime_id": runtime_id,
             "supports_batch_import": true,
         });
-        let _: serde_json::Value = self.post_json("/api/daemon/heartbeat", &body).await?;
+        let _resp = self
+            .json_send(
+                Method::POST,
+                "/api/daemon/heartbeat",
+                None,
+                &body,
+                Some(Duration::from_secs(LIVENESS_TIMEOUT_SECS)),
+            )
+            .await?;
         Ok(())
     }
 
@@ -542,14 +620,23 @@ impl MulticaClient {
     /// server 的 prepare lease 仅 45s（`prepareLeaseDuration`），claim-at-click 后用户在 composer 选模型/
     /// 改需求可能超过该窗口；心跳循环每 tick 调本方法续期，防任务被 `ReclaimStaleDispatchedTaskForRuntime`
     /// 回收（与 multica daemon `startTaskPrepareLeaseExtender` 同构）。失败仅记日志（下一 tick 重试），
-    /// 不在 client 内重试（循环即重试），走单次 `post_json`。
+    /// 不在 client 内重试（循环即重试）。走单次请求 + **liveness 短超时**——这是续期窗口的关键路径，
+    /// 单次调用必须快速失败，否则被它阻塞会直接导致 45s lease 过期。
     pub async fn extend_prepare_lease(
         &self,
         runtime_id: &str,
         task_id: &str,
     ) -> Result<(), MulticaError> {
         let path = format!("/api/daemon/runtimes/{runtime_id}/tasks/{task_id}/prepare-lease");
-        let _: serde_json::Value = self.post_json(&path, &serde_json::json!({})).await?;
+        let _resp = self
+            .json_send(
+                Method::POST,
+                &path,
+                None,
+                &serde_json::json!({}),
+                Some(Duration::from_secs(LIVENESS_TIMEOUT_SECS)),
+            )
+            .await?;
         Ok(())
     }
 
@@ -564,7 +651,7 @@ impl MulticaClient {
     ) -> Result<Vec<RemoteTask>, MulticaError> {
         self.with_network_retry("list_pending", || async {
             let path = format!("/api/daemon/runtimes/{runtime_id}/tasks/pending");
-            let resp = self.send(Method::GET, &path).await?;
+            let resp = self.send(Method::GET, &path, None).await?;
             let parsed = resp
                 .json::<TasksListResponse>()
                 .await
@@ -619,7 +706,14 @@ impl MulticaClient {
     /// 执行期周期查询，`cancelled`/`failed`/404 → 调用方中断本地 run。读请求不重试（下一 tick 自然重试）。
     pub async fn get_task_status(&self, task_id: &str) -> Result<String, MulticaError> {
         let path = format!("/api/daemon/tasks/{task_id}/status");
-        let resp = self.send(Method::GET, &path).await?;
+        // liveness：取消检测读请求，per-request 短超时（覆盖 client 级 30s），防拖垮心跳 tick。
+        let resp = self
+            .send(
+                Method::GET,
+                &path,
+                Some(Duration::from_secs(LIVENESS_TIMEOUT_SECS)),
+            )
+            .await?;
         let parsed = resp
             .json::<TaskStatusResponse>()
             .await
@@ -739,7 +833,7 @@ impl MulticaClient {
         self.with_network_retry("update_issue_status", || async {
             // body 丢弃：issue 状态更新只关心 HTTP 状态（map_status 已校验），无需解码响应。
             let _resp = self
-                .json_send(Method::PUT, &path, Some(workspace_id), &body)
+                .json_send(Method::PUT, &path, Some(workspace_id), &body, None)
                 .await?;
             Ok(())
         })
@@ -1301,5 +1395,37 @@ mod tests {
         // path 不含 workspace）。头注入在 json_send 内，由 HTTP 集成测试覆盖；此处锁定 path。
         let path = format!("/api/issues/{}", "iss-7");
         assert_eq!(path, "/api/issues/iss-7");
+    }
+
+    #[test]
+    fn multica_client_new_rejects_empty_base_url() {
+        // S1：共享 client 后，空 base_url 守卫仍生效（NotConfigured，不构造 client）。
+        assert!(matches!(
+            MulticaClient::new("", None),
+            Err(MulticaError::NotConfigured)
+        ));
+        assert!(matches!(
+            MulticaClient::new("   ", None),
+            Err(MulticaError::NotConfigured)
+        ));
+        // 合法 base_url 构造成功（复用进程级共享 client，无网络副作用）。
+        assert!(MulticaClient::new("http://localhost:1", None).is_ok());
+    }
+
+    #[test]
+    fn multica_client_is_clone() {
+        // S1：MulticaClient 可廉价 Clone（http 是 reqwest::Client 的 Arc clone）。
+        // 锁定 derive(Clone)——并发扇出需要把 client move 进 spawn 任务（O1 前置）。
+        let client = MulticaClient::new("http://localhost:1", Some("mul_x".into())).unwrap();
+        let cloned = client.clone();
+        assert_eq!(cloned.base_url, client.base_url);
+    }
+
+    #[test]
+    fn liveness_timeout_is_bounded_under_global_default() {
+        // S2：liveness 调用（heartbeat/get_task_status/extend_prepare_lease/register_once）用更短的
+        // per-request 超时覆盖 client 级 30s，使单 tick 在退化网络下快速失败。锁定上界 < 30s 且 > 0。
+        assert!(LIVENESS_TIMEOUT_SECS > 0 && LIVENESS_TIMEOUT_SECS < 30);
+        assert_eq!(LIVENESS_TIMEOUT_SECS, 10);
     }
 }

@@ -52,6 +52,7 @@
 - 高级调度 / 多 run 并发 orchestration
 
 ### 桌面端 MVP 增量
+- 2026-08-10：完成 AI-DYNAMIC 工作空间树与 Git 基础设施 V2。破坏式删除 Agent-facing `WorkspaceMode / WorkspacePolicy`，runtime 以 `WorkspaceState` catalog 统一管理 main/worktree 的身份、父子关系、所有权和生命周期；`single` 继承来源 workspace，`fanout` 自动从来源 workspace checkpoint 分叉隔离 worktree，嵌套 fanout 的 merge/acceptance 回到 `group.targetWorkspaceId`。新增基于 Git CLI 的 typed `GitRepositoryService / GitWorkspaceManager`，供 runtime 与后续右侧 Git 面板共用；AUTO 和含 AI-DYNAMIC 的固定工作流在创建 run 前执行 Git/仓库/HEAD/worktree preflight，桌面端用 shadcn 对话框支持下载 Git、重新检测、初始化仓库或切换工作流。Rust 接口测试固化 preflight、checkpoint、single 继承、fanout 隔离和嵌套父 workspace 路由；后续右侧 Git 状态/提交面板继续复用该服务边界，不进入本次 UI 范围。
 - 2026-08-07：补齐内置角色元数据国际化。内置角色名称、摘要与正文统一按 `desktop_language` 选择中文或英文版本；`pf-builtin-*` profile ID、默认工作流 DSL、任务 workflow 和运行快照中的角色引用保持不变。Rust 单元测试覆盖全部内置角色的中英文名称、摘要差异与 ID 稳定性。
 - 2026-08-06：修正 AI-DYNAMIC 动态策略的控制面边界。AUTO 与 Workflow 依次配置初始分发 Agent、分发模型、验收模型和共享原生权限；验收模型目录只读取初始分发 Agent，不再聚合候选 worker Agent。bootstrap、merge、acceptance 固定使用该 Agent 并共用权限，只有 worker 由 proposal 选择 provider；output contract 禁止 merge / acceptance 输出 provider，并继续禁止模型输出 model/permissionMode。删除过渡字段 `bootstrapPermissionMode`，统一使用 dynamic strategy 的 `permissionMode`，候选 worker 仍各自保存模型与权限。
 - 2026-08-06：会话侧边栏进行中状态收敛为既有视觉载体的低强度呼吸动画：Workflow/AUTO run 为 `gold-running` 蓝色圆点，Direct 为现有 Agent icon；移除 Direct 图标外围旋转圈。暂停黄色、成功绿色、失败红色及其状态语义完全不变；所有动画通过 `motion-safe` 尊重 reduced-motion。Vitest 固化运行中蓝色动画与其余终态颜色不变的接口契约。
@@ -457,7 +458,9 @@ MVP 行为：
 
 ### schema 输出修复规则
 - 声明 `output.schema` 的 worker 输出不合法时，不走 edge。
-- runtime 在同一 attempt / provider session 中隐藏追问 agent 修复输出。
+- 普通 workflow / AI-DYNAMIC 工作节点先完成自然语言业务 turn，再在同一 attempt / provider session 中通过隐藏 finalize turn 请求 canonical artifact；只有 AI-DYNAMIC bootstrap 分发控制节点在首轮内联输出协议。
+- runtime 使用 attempt 根目录的 `artifact-emission.json(finalizing)` 固化两阶段边界；恢复或重试检测到该状态时只继续 finalize，不重复业务 turn。
+- runtime 在同一 artifact finalize 会话中隐藏追问 agent 修复输出。
 - 隐藏追问最多 3 次；仍不合法则 workflow failure。
 
 ---
@@ -710,91 +713,6 @@ attempt-001/
 
 ---
 
-## 2026-07-24：新会话搜索索引生命周期收敛
-
-- 根因修复：侧栏继续以文件系统为权威事实源，SQLite 仍为派生搜索索引；task 创建和元数据更新统一由 `App` 核心生命周期刷新索引，不再由任务工作台或会话 UI 各自补调用。
-- 跨 workspace 身份：task ID 只在项目内递增，SQLite schema v2 改用 `task_path` 作为主键；迁移保留现有索引行但不扫描旧任务，避免不同项目的 `task-001` 相互覆盖，删除也只清理目标路径。
-- workspace 路由：项目 ID 统一复用 `GoldBandPaths::project_id`，Windows 对历史 drive letter 大小写差异兼容匹配；搜索命中后使用状态中已有的规范 project ID 组装路由，避免索引有结果但 workspace 解析失败后被过滤。
-- 搜索 workspace 范围：会话搜索只覆盖 `conversationWorkspaces` 中显式存在的侧边栏工作空间，不再额外注入 `DesktopContext.repo_root`；不包含已移除或未注册的历史 workspace。允许的 task 目录在 SQLite FTS 排序与 `LIMIT` 之前过滤，避免范围外命中挤占可见结果。
-- 中英文子串搜索：SQLite task FTS 升级为内置 trigram tokenizer；3 字符以上关键词支持标题、描述、需求正文任意位置匹配，1～2 字符关键词在 sidebar workspace 范围内使用字面包含匹配，修复“你好可命中但随便无法命中随便用askUserQuestion”的分词缺陷。用户输入统一按普通文本转义，多关键词使用 AND 语义，标题命中优先排序。
-- 命中上下文展示：搜索接口新增 `matchPreview`，从真正命中的标题、描述或完整需求正文中截取上下文；短内容完整展示，只有长文本才在关键词前最多保留 10 个字符，避免短内容被误截断并保证关键词在单行内可见。关键词使用无底色、高对比 `foreground` 文字和轻量下划线高亮，兼容亮色与深色主题。
-- 新数据范围：本次不扫描、不重建既有 `tasks` 索引缺口；修复发布后新建的会话，以及之后更新标题/描述的 task，可按标题、描述和 requirement 搜索。
-- 可导航结果：会话搜索根据索引中的 `task_path` 解析 workspace，并从文件事实源补齐最新 Run；只返回能够形成 `projectId/taskId/runId` 路由的结果，点击后直接打开最近 Run。
-- 错误语义：搜索索引不可用或查询失败返回结构化错误码，前端展示搜索失败，不再伪装成“没有匹配结果”。
-- 回归固化：Rust 测试覆盖“创建 task 即可搜索、元数据更新刷新索引”、“搜索结果包含最新 Run”、“侧边栏 workspace 范围在 `LIMIT` 之前生效”和“随便/askUser/你好等中英文子串、短查询及命中摘要”；Web 测试覆盖 Tauri 搜索接口参数、搜索结果路由映射与关键词字面高亮，并要求桌面端完成“新建会话 → 搜索 → 查看命中上下文 → 打开”验证。
-
----
-
-## 2026-07-24：会话页头身份信息收敛
-
-- Direct 运行标题栏移除重复的 Agent、model、permission mode，仅保留目录按钮；Agent 身份统一由共享 ACP 会话信息栏承担。
-- `AcpSessionVm` 增加由后端 provider 注册信息派生的 `adapterIconKey`，前端不通过展示名称猜测图标；未知 provider 使用通用 Agent 图标。
-- 共享会话信息栏展示 Agent icon + 名称，移除会在会话中途变化的权限模式；session ID 支持点击复制，并通过自动消失的 Tooltip 提示复制成功。
-- 回归要求覆盖 Direct 页头不再渲染旧配置元数据、共享 ACP 页头图标/权限隐藏/复制入口，以及 Web build 与 Direct deep-link 实际交互。
-- Direct 在 session 就绪后不再渲染独立运行标题栏，而由 ACP 会话头组合标题、Agent/session 身份、原始帧与目录操作为单行；左侧身份组按自然宽度紧邻排列，Direct 标题不为透明编辑图标预留宽度，右侧操作组独立贴右，session 启动阶段仍保留运行标题占位，避免页头闪失。
-- 会话标题编辑提示从 HTML `title` 切换到 shadcn Tooltip，统一 Direct、Workflow、AUTO 的主题样式与键盘可访问行为，不再出现 Windows 原生提示框。
-
----
-
-## 2026-07-24：ACP 追问模型“不指定”语义修复
-
-- Direct 发起会话的 Gold Band 合成模型选项由“默认模型”改名为“不指定”，英文为 `Unspecified`；提交仍使用空模型配置，不向 ACP 发送 Agent 模型 ID。
-- attempt ACP session metadata 新增 `modelOverride`，与 Agent 返回的 `models.currentModelId / configOptions.currentValue` 分离。首次未指定模型时 override 为空，即使 Agent 报告 `currentModelId = default`，后续追问也不得把该值显式回传。
-- 会话详情在 override 为空时展示“不指定”和 Agent 返回的完整模型目录；选择任意 Agent 模型后写入 override，并从该 session 的下拉列表中移除“不指定”。Agent 的 `default` 作为普通不透明模型 ID 原样保留。
-- runtime continue、AI-DYNAMIC inner continue 和 ACP same-session prompt 统一只读取 `modelOverride`；具体模型继续通过 `session/set_config_option(model)` 应用，未指定则不设置模型并继承 Agent 环境配置。
-- 回归覆盖 Agent `currentModelId = default` 但 Gold Band 未指定时续聊得到 `None`、用户明确选择 Agent `default` 时续聊得到 `Some("default")`、前端配置视图保持“不指定”和 Agent current model 分离，以及 Web build。
-
----
-
-## 2026-07-27：ACP 权限模式“不指定”语义统一
-
-- Direct、AUTO 与工作流编辑器中的可空权限模式统一将“默认 / 不设置”改名为“不指定”，英文统一为 `Unspecified`；会话创建前仍允许清回空配置。
-- attempt ACP session metadata 新增 `permissionModeOverride`，与 Agent 返回的 `modes.currentModeId / configOptions.currentValue` 分离。首次未指定权限模式时 override 为空，即使 Agent 报告当前 mode，后续追问也不得把该值反推成 Gold Band 显式选择。
-- 会话详情在权限 override 为空时展示“不指定”和 Agent 返回的完整权限模式目录；选择任意 Agent mode 后写入显式 override，并从该 session 的下拉列表中移除“不指定”，但仍允许在具体 mode 之间切换。
-- runtime continue、AI-DYNAMIC inner continue 和 ACP same-session prompt 统一只读取 `permissionModeOverride`；未指定则不调用权限配置 API，继续继承 Agent 环境配置。模型与权限的 override/current 数据结构、显示和追问语义保持一致。
-- 回归覆盖 Agent `currentModeId = default` 但 Gold Band 未指定时续聊得到 `None`、用户明确选择 Agent `default` 时续聊得到 `Some("default")`、前端配置视图保持“不指定”和 Agent current mode 分离，以及 Rust/Web 测试、Web build 和 Direct deep-link 实际验证。
-
----
-
-## 2026-07-28：原始帧默认倒序与排序切换
-
-- `AcpRawFrameQueryInput` 增加类型化 `asc / desc` 排序参数，后端默认 `desc`，以 append-only JSONL 行号作为稳定记录时序完成跨页排序；同一时间戳下不依赖不稳定的文本比较。
-- Raw frames 筛选区复用 shadcn/ui `Select` 增加“最新优先 / 最早优先”，切换顺序、搜索或过滤后回到第 0 页；第一页、上一页和下一页文案按当前顺序表达实际时间方向。
-- 破坏式替换旧的“最新页内升序”行为，不保留前端当前页反转或旧 `latest` 字符串兼容路径。
-- Rust 接口层回归覆盖默认倒序、升序第二页、分页边界与返回排序枚举；Web build 和桌面端原始帧 deep link 验证控件默认值、切换结果及分页文案。
-
----
-
-## 2026-07-24：会话工作空间状态与安全移除修复
-
-- 根因修复：会话工作空间身份此前同时存在持久化 `conversationWorkspaces`、大小写不一致的 `projectId` key 和隐式 `DesktopContext.repo_root` 三条来源，导致 Direct 首轮可运行但追问按精确 key 报 `workspace.not-found`，移除时也可能删不中并重排相邻项。本次收敛为 `conversationWorkspaces` 单一列表来源，保留 workspace-scoped `App.paths.repo_root` 作为执行上下文，不再把桌面启动 workspace 当作会话成员。
-- 状态迁移：新增 `stateSchemaVersion=1`，启动时一次性重新生成规范 `projectId`、按规范化路径去重，并迁移最后活跃工作空间、运行模式和置顶。规范 key 的运行模式覆盖历史大小写 key，确保用户已选择的 Direct Agent/model/permission 不被旧 Workflow 配置覆盖；迁移写入继续使用原子文件替换。版本命中后直接返回，二次调用也不改变 JSON。
-- 统一解析：首轮创建、Direct completed-run follow-up、重跑、历史查看、权限/停止命令、附件、运行模式和置顶统一使用共享 resolver；Windows 历史 drive-letter 大小写可解析到状态中规范 ID，VM 与事件也继续使用规范 ID。
-- 删除语义：后端先解析目标工作空间，再关闭其 ACP 连接并删除持久化列表项，同时清理关联 pins/run modes/last；未知目标返回结构化错误，任何 task/run/session 和工作空间文件都不删除。
-- 删除交互：侧栏移除按钮先打开 shadcn/ui 确认框，展示工作空间名称并明确磁盘文件、历史会话保留；请求 pending 时禁止重复提交、取消和关闭，成功返回前不更新列表。删除当前会话所属工作空间后返回会话主页并选择后端 fallback。
-- 回归固化：Rust 覆盖用户原始大小写冲突状态、规范 Direct 配置优先、迁移仅一次、显式 sidebar/search 范围、大小写 resolver 和关联状态清理；Web 覆盖确认门控、pending 单次提交、当前页 fallback 与最终工作空间为空。生产构建和 `/chat` 视觉验证通过。
-- 编译契约修正：迁移代码使用的 `stateSchemaVersion` 固化到共享 `StateConfig`，补充非零版本 camelCase roundtrip、历史状态缺字段默认为 `0`、零值省略写回的单元测试，避免桌面 crate 与核心 crate 的状态模型再次不同步。
-- Round 编号清理：删除指标功能遗留但从未接入的 `next_round_id` 目录扫描 helper；新 round 继续唯一地由当前 `RoundState.index + 1` 生成 ID，避免文件系统扫描与 runtime 状态形成双事实源。
-- 全量回归修正：ACP timeline 计时测试原先把所有 fixture 事件写成相同 `seq=1`，解析进入 HashMap 后顺序不稳定，导致预期 11 秒而随机得到 1/8 秒；测试数据改为按落盘顺序生成单调递增序号，固化真实 timeline 接口契约，不修改生产计时算法。
-
----
-
-## 2026-07-28：会话侧边栏相对时间边界修正
-
-- 根因修复：原侧边栏以“周数小于 4”切换月份、以“月数小于 12”切换年份，但月份按 30 天、年份按 365 天取整，导致 28–29 天显示 `0mo`，360–364 天显示 `0y`。
-- 领域收敛：相对时间格式化从 React 组件下沉到共享 `datetime` 模块，任务行与 run 行使用同一接口；继续保持侧边栏既有 `m/h/d/w/mo/y` 紧凑展示，不引入改变文案形态的第三方格式化依赖。
-- 连续区间：不足 1 分钟显示“刚刚”，1–59 分钟显示分钟，1–23 小时显示小时，1–6 天显示天，7–29 天显示周，30–364 天显示月，365 天起显示年。
-- 回归固化：前端纯函数测试覆盖所有单位切换边界、Unix 秒时间戳、未来时间与非法输入；生产构建和侧边栏实际展示验证通过后完成验收。
-
----
-
-## 2026-07-29：用户反馈入口按渠道收口
-
-- 仅 `wb` 渠道在顶栏显示「帮助」按钮；复用启动信息中的 `appInfo.channel` 贯穿 Shell 到 AppTitleBar，其他渠道及启动信息未就绪时不渲染入口。
-- Web 回归测试分别固化 `wb` 可见与 `default` 不可见，避免后续渠道配置与 UI 能力再次脱节。
-
----
-
 ## 2026-07-30：WB 心跳上报状态机修复
 
 - heartbeat 仅在 `wb` 编译渠道启用，default/其他渠道在 Rust 配置层强制关闭。
@@ -945,3 +863,13 @@ attempt-001/
 
 - 根因修复：`notify-rust 4.18` 的 `ResponseHandler` 接收 `&NotificationResponse`，桌面适配器错误地按值推断参数，导致 Linux 与两个 macOS release job 在 Rust 编译阶段同时失败。适配器现显式遵守借用签名，并先把第三方响应映射为内部 `Navigate / ClearDedup` 处置后再操作导航队列和 dedup。
 - 回归固化：新增响应分类与 borrowed `ResponseHandler` 契约单测，覆盖正文、view、其他 action、reply 和 closed；PR checks 保留完整回归，两条 release 流水线的多平台构建必须等待 Linux `cargo check --workspace --all-targets` 通过。发布预检只验证平台代码可编译，不执行全量业务测试，避免无关的平台断言阻断打包。
+
+---
+
+## 2026-08-06：Runtime artifact 约定后置
+
+- 根因修复：原实现把“业务执行”和“runtime 控制结果归一化”压在同一个 prompt turn，导致 agent 在工作开始前就被结构化 artifact 协议约束，自然业务回复与控制 JSON 相互污染。保留现有 `output_contract` 作为 runtime 控制契约，并新增 `PostTurnProjection / InlineControl` 发射模式，不拆出第二套 contract 领域。
+- 执行契约：普通 workflow worker 与 AI-DYNAMIC 的 worker / workflow invocation / acceptance 先以 Conversation 策略完成可见业务 turn，再复用同一 ACP session 发送隐藏 `RuntimeFinalize` prompt 生成 artifact；AI-DYNAMIC bootstrap dispatcher 的职责就是分发，继续使用 `InlineControl` 在首轮接收并输出完整动态协议。Direct / `RawAgent` 不变。
+- 生命周期：业务 turn 成功后先原子写入 `artifact-emission.json(finalizing)`，再开始隐藏 finalize。停止、进程恢复和自动重试只要观察到该 durable phase，就跳过业务执行并继续 finalization；无 phase 时仍按业务 turn 恢复。finalize 输出 repair 只修复 artifact，不重新执行任务；损坏或版本不支持的 phase 不允许静默回退。
+- 提示词与观测：中英文 finalize 模板统一放入 `src/prompts/<language>/runtime/artifact_finalize.md`；可见业务 turn 不暴露 schema，隐藏 timeline reason 区分 `artifactFinalize` 与 `invalidOutputRepair`。
+- 回归固化：Rust 单元测试覆盖发射模式到 ACP 输出策略的映射、业务 prompt 不含 schema、隐藏 finalize 内容与 reason、durable finalizing 恢复、workflow 默认后置，以及 AI-DYNAMIC bootstrap/普通 worker/acceptance 的模式分流。

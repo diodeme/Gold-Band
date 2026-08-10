@@ -40,6 +40,14 @@ describe('desktopApi', () => {
     expect(invokeCommand).toHaveBeenCalledWith('create_profile', { input });
   });
 
+  it('forwards profile folder imports through the typed command contract', async () => {
+    await desktopApi.importProfilesFromFolder('D:/roles', true);
+
+    expect(invokeCommand).toHaveBeenCalledWith('import_profiles_from_folder', {
+      input: { folderPath: 'D:/roles', dynamicTemplate: true },
+    });
+  });
+
   it('forwards recent workspace removal to the Tauri command path', async () => {
     await desktopApi.removeRecentWorkspace('D:/Projects/code/ai/Gold-Band');
 

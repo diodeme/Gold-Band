@@ -31,16 +31,17 @@ use crate::dynamic::{
     DynamicGroupStatus, DynamicNext, DynamicNodeCompletion, DynamicNodeCompletionKind,
     DynamicNodeKind, DynamicNodeSpec, DynamicNodeSpecKind, DynamicNodeState, DynamicNodeStatus,
     DynamicProposalState, DynamicProposalValidationError, DynamicProposalValidationStatus,
-    DynamicRunState, DynamicRunStatus, WorkspaceMode, WorkspacePolicy,
-    dynamic_completion_effective_schema, dynamic_graph_has_active_leaf, dynamic_leaf_is_active,
-    refresh_dynamic_current_leaf_ids, validate_dynamic_group_state, validate_dynamic_node_state,
-    validate_dynamic_run_state,
+    DynamicRunState, DynamicRunStatus, WorkspaceKind, WorkspaceOwnership, WorkspaceState,
+    WorkspaceStatus, dynamic_completion_effective_schema, dynamic_graph_has_active_leaf,
+    dynamic_leaf_is_active, refresh_dynamic_current_leaf_ids, validate_dynamic_group_state,
+    validate_dynamic_node_state, validate_dynamic_run_state, validate_workspace_state,
+    validate_workspace_topology,
 };
+use crate::git::{GitCommandOutput, GitCommandRunner, GitRepositoryService, GitWorkspaceManager};
 use crate::observability::{
     ExecutionContext, ProgressStage, append_run_event_best_effort, progress, run_event_data,
     write_progress_hint, write_run_progress_best_effort,
 };
-use crate::process::background_command;
 use crate::prompts::{
     AI_DYNAMIC_ACCEPTANCE_EN, AI_DYNAMIC_ACCEPTANCE_ZH_CN, AI_DYNAMIC_FANOUT_EN,
     AI_DYNAMIC_FANOUT_ZH_CN, AI_DYNAMIC_HIDDEN_CONTEXT_EN, AI_DYNAMIC_HIDDEN_CONTEXT_ZH_CN,
@@ -52,10 +53,10 @@ use crate::prompts::{
     RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN, prompt_by_language, render as render_template,
 };
 use crate::provider::{
-    PromptBundle, PromptHiddenSection, PromptOutputContract, PromptRuntimeContext,
-    PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode, UserPromptRenderMode,
-    WorkerInvocation, render_prompt_bundle, supported_models_from_capabilities,
-    supported_modes_from_capabilities,
+    OutputEmissionMode, PromptBundle, PromptHiddenSection, PromptOutputContract,
+    PromptRuntimeContext, PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode,
+    UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, RunState, TaskState, WorkerRefState,
@@ -119,20 +120,6 @@ static DYNAMIC_RESUME_REGISTRY: OnceLock<
 static DYNAMIC_RESUME_PENDING: OnceLock<Mutex<HashMap<String, Vec<DynamicResumeOverride>>>> =
     OnceLock::new();
 static DYNAMIC_RESUME_STARTING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-
-#[derive(Debug)]
-struct GitCommandOutput {
-    success: bool,
-    stdout: String,
-    stderr: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DynamicWorkspaceCapability {
-    supports_worktree: bool,
-    reason_code: &'static str,
-    reason: String,
-}
 
 fn dynamic_validation_error(
     code: &str,
@@ -447,6 +434,9 @@ fn prepare_run(
         write_json(&workflow_path, &workflow)?;
     }
     let validated = validate_workflow_snapshot(workflow)?;
+    if workflow_contains_ai_dynamic(&validated.raw) {
+        GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
+    }
     app.validate_workflow_agents(&validated)?;
     let resolved_profiles =
         resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
@@ -872,6 +862,9 @@ pub(crate) fn run_continue(
 ) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow_snapshot(workflow)?;
+    if workflow_contains_ai_dynamic(&validated.raw) {
+        GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
+    }
     app.validate_workflow_agents(&validated)?;
     let resolved_profiles =
         resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
@@ -1492,6 +1485,9 @@ pub(crate) fn submit_manual_check_background(
 pub(crate) fn run_retry(app: &App, task_id: &str, run_id: &str) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow_snapshot(workflow)?;
+    if workflow_contains_ai_dynamic(&validated.raw) {
+        GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
+    }
     app.validate_workflow_agents(&validated)?;
     let resolved_profiles =
         resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
@@ -2661,17 +2657,6 @@ fn dynamic_invocation_build_step_end(
     dynamic_event_best_effort(ctx, "dynamic_worker_invocation_build_step_end", payload);
 }
 
-fn truncate_diagnostic_text(value: &str) -> String {
-    const MAX_LEN: usize = 500;
-    let trimmed = value.trim();
-    if trimmed.chars().count() <= MAX_LEN {
-        return trimmed.to_string();
-    }
-    let mut output = trimmed.chars().take(MAX_LEN).collect::<String>();
-    output.push_str("...");
-    output
-}
-
 struct DynamicResumeRegistration {
     key: String,
 }
@@ -3304,6 +3289,7 @@ fn dynamic_effective_completion_schema(
 fn dynamic_output_contract(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
+    emission_mode: OutputEmissionMode,
 ) -> PromptOutputContract {
     let language = ctx.app.config.desktop_language;
     let schema = dynamic_effective_completion_schema(ctx, graph);
@@ -3332,7 +3318,35 @@ fn dynamic_output_contract(
         schema: Some(schema),
         schema_text: Some(schema_text.trim().to_string()),
         success_condition: None,
+        finalize_context: None,
+        emission_mode,
     }
+}
+
+fn dynamic_node_is_bootstrap_dispatch(node: &DynamicNodeState) -> bool {
+    node.id == DYNAMIC_BOOTSTRAP_NODE_ID
+        && node.kind == DynamicNodeKind::Worker
+        && node.depth == 0
+        && node.group_id.is_none()
+        && node.depends_on.is_empty()
+        && node.chain_id == DYNAMIC_BOOTSTRAP_NODE_ID
+}
+
+fn dynamic_output_emission_mode(node: &DynamicNodeState) -> OutputEmissionMode {
+    if dynamic_node_is_bootstrap_dispatch(node) {
+        OutputEmissionMode::InlineControl
+    } else {
+        OutputEmissionMode::PostTurnProjection
+    }
+}
+
+fn dynamic_output_contract_for_node(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+    node: &DynamicNodeState,
+) -> Option<PromptOutputContract> {
+    dynamic_node_uses_completion_contract(node.kind)
+        .then(|| dynamic_output_contract(ctx, graph, dynamic_output_emission_mode(node)))
 }
 
 fn dynamic_attempt_id(_node: &DynamicNodeState) -> String {
@@ -3839,12 +3853,36 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         let _guard = lock
             .lock()
             .map_err(|_| anyhow!("dynamic state lock poisoned"))?;
-        return read_json(&graph_path);
+        let graph: DynamicGraphState = read_json(&graph_path)?;
+        validate_dynamic_workspace_catalog(&graph)?;
+        return Ok(graph);
     }
 
     let snapshots = freeze_allowed_workflow_snapshots(ctx.app, ctx.dynamic)?;
     let now = now_rfc3339_like();
     let dynamic_run_id = "dynamic-run-001".to_string();
+    let capability = GitRepositoryService::default().require_worktree(&ctx.app.paths.repo_root)?;
+    let main_workspace = WorkspaceState {
+        version: VERSION.to_string(),
+        id: "workspace-main".to_string(),
+        dynamic_run_id: dynamic_run_id.clone(),
+        kind: WorkspaceKind::Main,
+        ownership: WorkspaceOwnership::User,
+        repo_root: capability
+            .repo_root
+            .unwrap_or_else(|| ctx.app.paths.repo_root.clone()),
+        path: ctx.app.paths.repo_root.clone(),
+        branch: None,
+        parent_workspace_id: None,
+        created_by_group_id: None,
+        fork_commit: capability
+            .head
+            .ok_or_else(|| anyhow!("Git preflight returned no HEAD"))?,
+        checkpoint_commit: None,
+        status: WorkspaceStatus::Active,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    };
     let bootstrap = DynamicNodeState {
         version: VERSION.to_string(),
         id: DYNAMIC_BOOTSTRAP_NODE_ID.to_string(),
@@ -3860,10 +3898,7 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         chain_id: DYNAMIC_BOOTSTRAP_NODE_ID.to_string(),
         depth: 0,
         depends_on: Vec::new(),
-        workspace: WorkspacePolicy {
-            mode: WorkspaceMode::Readonly,
-        },
-        workspace_path: Some(ctx.app.paths.repo_root.clone()),
+        workspace_id: main_workspace.id.clone(),
         provider: ctx.dynamic.bootstrap_provider().map(ToOwned::to_owned),
         profile: None,
         permission_mode: dynamic_control_permission_mode(ctx.dynamic),
@@ -3898,6 +3933,7 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         run,
         nodes: vec![bootstrap],
         groups: Vec::new(),
+        workspaces: vec![main_workspace],
         proposals: Vec::new(),
     };
     append_dynamic_event(
@@ -3997,8 +4033,14 @@ fn drive_dynamic_graph(
             continue;
         }
         if dynamic_graph_completed(graph) {
-            for node in &graph.nodes {
-                teardown_dynamic_workspace_best_effort(ctx, node);
+            let workspace_ids = graph
+                .workspaces
+                .iter()
+                .filter(|workspace| workspace.ownership == WorkspaceOwnership::Runtime)
+                .map(|workspace| workspace.id.clone())
+                .collect::<Vec<_>>();
+            for workspace_id in workspace_ids {
+                release_dynamic_workspace_best_effort(ctx, graph, &workspace_id);
             }
             graph.run.status = DynamicRunStatus::Completed;
             graph.run.outcome = Some(RunOutcome::Success);
@@ -4128,7 +4170,7 @@ fn launch_ready_dynamic_nodes(
                 "nodeId": node_id_for_job,
                 "kind": node_clone.kind,
                 "sessionMode": node_clone.session_mode,
-                "workspaceMode": node_clone.workspace.mode,
+                "workspaceId": node_clone.workspace_id,
                 "providerId": node_clone.provider.clone(),
                 "model": node_clone.model.clone(),
                 "state": dynamic_timing_data(graph),
@@ -4677,7 +4719,7 @@ fn execute_dynamic_node_job(
         serde_json::json!({
             "nodeId": node.id,
             "kind": node.kind,
-            "workspaceMode": node.workspace.mode,
+            "workspaceId": node.workspace_id,
             "providerId": node.provider.clone(),
             "model": node.model.clone(),
         }),
@@ -4735,17 +4777,17 @@ fn execute_dynamic_worker(
     mut node: DynamicNodeState,
 ) -> Result<DynamicExecutionResult> {
     let workspace_started_at = Instant::now();
+    let workspace_path = ensure_dynamic_workspace(graph, &node)?;
     dynamic_event_best_effort(
         ctx,
         "dynamic_worker_workspace_begin",
         serde_json::json!({
             "nodeId": node.id,
             "kind": node.kind,
-            "workspaceMode": node.workspace.mode,
-            "workspacePath": node.workspace_path.clone(),
+            "workspaceId": node.workspace_id,
+            "workspacePath": workspace_path,
         }),
     );
-    ensure_dynamic_workspace(ctx, &mut node)?;
     dynamic_event_best_effort(
         ctx,
         "dynamic_worker_workspace_end",
@@ -4753,8 +4795,8 @@ fn execute_dynamic_worker(
             "nodeId": node.id,
             "kind": node.kind,
             "elapsedMs": elapsed_ms(workspace_started_at),
-            "workspaceMode": node.workspace.mode,
-            "workspacePath": node.workspace_path.clone(),
+            "workspaceId": node.workspace_id,
+            "workspacePath": workspace_path,
         }),
     );
     let attempt_id = dynamic_attempt_id(&node);
@@ -4896,7 +4938,8 @@ fn execute_dynamic_worker(
         );
         let output_contract_started_at =
             dynamic_invocation_build_step_begin(ctx, &node, &attempt_id, "output_contract");
-        let output_contract = dynamic_output_contract(ctx, graph);
+        let output_contract = dynamic_output_contract_for_node(ctx, graph, &node)
+            .expect("dynamic worker stage requires a completion contract");
         dynamic_invocation_build_step_end(
             ctx,
             &node,
@@ -5283,7 +5326,7 @@ fn execute_dynamic_agent_stage(
     mut node: DynamicNodeState,
 ) -> Result<DynamicExecutionResult> {
     let workspace_started_at = Instant::now();
-    node.workspace_path = Some(ctx.app.paths.repo_root.clone());
+    let workspace_path = ensure_dynamic_workspace(graph, &node)?;
     dynamic_event_best_effort(
         ctx,
         "dynamic_worker_workspace_end",
@@ -5291,8 +5334,8 @@ fn execute_dynamic_agent_stage(
             "nodeId": node.id,
             "kind": node.kind,
             "elapsedMs": elapsed_ms(workspace_started_at),
-            "workspaceMode": node.workspace.mode,
-            "workspacePath": node.workspace_path.clone(),
+            "workspaceId": node.workspace_id,
+            "workspacePath": workspace_path,
         }),
     );
     let attempt_id = dynamic_attempt_id(&node);
@@ -5482,7 +5525,6 @@ fn execute_dynamic_agent_stage(
             proposals: Vec::new(),
         });
     }
-    teardown_dynamic_workspace_best_effort(ctx, &node);
     if node.outcome != Some(NodeOutcome::Success) {
         bail!("dynamic stage `{}` failed", node.id);
     }
@@ -5506,7 +5548,7 @@ fn execute_dynamic_workflow_invocation(
     graph: &DynamicGraphState,
     mut node: DynamicNodeState,
 ) -> Result<DynamicExecutionResult> {
-    ensure_dynamic_workspace(ctx, &mut node)?;
+    let workspace_path = ensure_dynamic_workspace(graph, &node)?;
     let workflow_id = node.workflow_id.clone().ok_or_else(|| {
         blocked_runtime_error(format!(
             "workflow invocation `{}` is missing workflowId",
@@ -5560,6 +5602,8 @@ fn execute_dynamic_workflow_invocation(
             "snapshotId": snapshot.snapshot_id,
         }),
     )?;
+    let mut child_app = ctx.app.clone_for_background();
+    child_app.paths.repo_root = workspace_path;
     let child_run = match node.child_run_id.as_deref() {
         Some(child_run_id) => {
             if let Some(resume) = ctx
@@ -5567,27 +5611,24 @@ fn execute_dynamic_workflow_invocation(
                 .as_ref()
                 .filter(|resume| resume.node_id == node.id && resume.attempt_id == attempt_id)
             {
-                ctx.app.run_continue(
+                child_app.run_continue(
                     ctx.task_id,
                     child_run_id,
                     resume.prompt_id.clone(),
                     Some(resume.prompt.clone()),
                 )?
             } else if ctx.parent_continue_prompt.is_some() {
-                ctx.app.run_continue(
+                child_app.run_continue(
                     ctx.task_id,
                     child_run_id,
                     ctx.parent_continue_prompt_id.clone(),
                     ctx.parent_continue_prompt.clone(),
                 )?
             } else {
-                ctx.app
-                    .run_continue(ctx.task_id, child_run_id, None, None)?
+                child_app.run_continue(ctx.task_id, child_run_id, None, None)?
             }
         }
-        None => ctx
-            .app
-            .run_start(ctx.task_id, Some(child_workflow_path.as_path()))?,
+        None => child_app.run_start(ctx.task_id, Some(child_workflow_path.as_path()))?,
     };
     node.child_run_id = Some(child_run.id.clone());
     match child_run.status {
@@ -5637,10 +5678,8 @@ fn execute_dynamic_workflow_invocation(
         }),
     )?;
     if node.outcome != Some(NodeOutcome::Success) {
-        teardown_dynamic_workspace_best_effort(ctx, &node);
         bail!("child workflow invocation `{}` failed", node.id);
     }
-    teardown_dynamic_workspace_best_effort(ctx, &node);
     let proposal_id = format!("proposal-{}-001", safe_dynamic_ref(&node.id));
     let completion = DynamicNodeCompletion {
         version: VERSION.to_string(),
@@ -6695,7 +6734,7 @@ fn validate_dynamic_node_spec(
     source: &DynamicNodeState,
     spec: &DynamicNodeSpec,
     additional_nodes: usize,
-    allow_worktree: bool,
+    _allow_worktree: bool,
 ) -> Vec<DynamicProposalValidationError> {
     let mut errors = Vec::new();
     let resumable_nodes = dynamic_resumable_session_nodes(graph, source);
@@ -6759,72 +6798,6 @@ fn validate_dynamic_node_spec(
             }),
         ));
     }
-    if spec.workspace.mode == WorkspaceMode::Worktree {
-        if !allow_worktree {
-            let mut error = dynamic_validation_error(
-                "dynamic.node.workspace.single-worktree-unsupported",
-                format!(
-                    "dynamic single node `{}` cannot use workspace.mode=worktree because no merge/acceptance node will merge it back",
-                    spec.id
-                ),
-                serde_json::json!({
-                    "nodeId": spec.id,
-                    "field": "workspace.mode",
-                    "actual": "worktree",
-                    "expected": "readonly or main",
-                }),
-            );
-            error.allowed_values = vec!["readonly".to_string(), "main".to_string()];
-            error.suggestion = Some(
-                "use next.type=\"fanout\" with merge and acceptance for worktree branches, or keep this single successor on readonly/main".to_string(),
-            );
-            errors.push(error);
-        } else {
-            let capability = dynamic_workspace_capability(ctx);
-            if !capability.supports_worktree {
-                let suggestion = "replace writable parallel fan-out with serial main workspace work, or ask the user to initialize Git before using worktree fan-out";
-                let mut error = dynamic_validation_error(
-                    "dynamic.node.workspace.worktree-git-required",
-                    format!(
-                        "dynamic node `{}` cannot use workspace.mode=worktree because the current workspace cannot create git worktrees",
-                        spec.id
-                    ),
-                    serde_json::json!({
-                        "nodeId": spec.id,
-                        "field": "workspace.mode",
-                        "actual": "worktree",
-                        "expected": "readonly",
-                        "workspacePath": ctx.app.paths.repo_root,
-                        "reasonCode": capability.reason_code,
-                        "reason": capability.reason,
-                    }),
-                );
-                error.allowed_values = vec!["readonly".to_string()];
-                error.suggestion = Some(suggestion.to_string());
-                errors.push(error);
-            }
-        }
-    }
-    if allow_worktree && spec.workspace.mode == WorkspaceMode::Main {
-        let mut error = dynamic_validation_error(
-            "dynamic.fanout.workspace.main-unsupported",
-            format!(
-                "dynamic fanout node `{}` cannot use workspace.mode=main because parallel branches must not share the writable main workspace",
-                spec.id
-            ),
-            serde_json::json!({
-                "nodeId": spec.id,
-                "field": "workspace.mode",
-                "actual": "main",
-                "expected": "readonly or worktree",
-            }),
-        );
-        error.allowed_values = vec!["readonly".to_string(), "worktree".to_string()];
-        error.suggestion = Some(
-            "use workspace.mode=\"readonly\" for read-only fanout branches, workspace.mode=\"worktree\" for writable fanout branches, or use next.type=\"single\" for serial main workspace work".to_string(),
-        );
-        errors.push(error);
-    }
     for dependency in &spec.depends_on {
         if !graph.nodes.iter().any(|node| node.id == *dependency) {
             errors.push(dynamic_validation_error(
@@ -6839,6 +6812,27 @@ fn validate_dynamic_node_spec(
                 }),
             ));
         }
+    }
+    let dependency_workspace_ids = spec
+        .depends_on
+        .iter()
+        .filter_map(|dependency| graph.nodes.iter().find(|node| node.id == *dependency))
+        .map(|node| node.workspace_id.as_str())
+        .collect::<HashSet<_>>();
+    if dependency_workspace_ids.len() > 1 {
+        let mut error = dynamic_validation_error(
+            "dynamic.node.dependencies.workspace-diverged",
+            format!(
+                "dynamic node `{}` depends on nodes from multiple unmerged workspaces",
+                spec.id
+            ),
+            serde_json::json!({ "nodeId": spec.id, "workspaceIds": dependency_workspace_ids }),
+        );
+        error.suggestion = Some(
+            "converge the branches through their fanout group merge before creating this node"
+                .to_string(),
+        );
+        errors.push(error);
     }
     match spec.session_mode {
         SessionMode::New => {
@@ -7285,6 +7279,7 @@ fn materialize_dynamic_next(
     match next {
         DynamicNext::End => {
             let source = graph.nodes[source_index].clone();
+            checkpoint_dynamic_workspace(graph, &source.workspace_id, source.group_id.as_deref())?;
             if let Some(group_id) = source.group_id.as_deref() {
                 if let Some(group) = graph.groups.iter_mut().find(|group| group.id == group_id) {
                     if !group.terminal_node_ids.iter().any(|id| id == &source.id) {
@@ -7308,6 +7303,7 @@ fn materialize_dynamic_next(
                 node,
                 source.group_id.clone(),
                 source.chain_id.clone(),
+                source.workspace_id.clone(),
             )?;
             append_dynamic_event(
                 ctx,
@@ -7343,6 +7339,21 @@ fn materialize_dynamic_next(
                 .map(|group| group.depth + 1)
                 .unwrap_or(1);
             let root_node_ids = nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>();
+            let mut child_workspace_ids = Vec::with_capacity(nodes.len());
+            for node in &nodes {
+                child_workspace_ids.push(fork_dynamic_workspace(
+                    ctx,
+                    graph,
+                    &source.workspace_id,
+                    &group_id,
+                    &node.id,
+                )?);
+            }
+            {
+                let parent = dynamic_workspace_mut(graph, &source.workspace_id)?;
+                parent.status = WorkspaceStatus::Frozen;
+                parent.updated_at = now_rfc3339_like();
+            }
             let group = DynamicGroupState {
                 version: VERSION.to_string(),
                 id: group_id.clone(),
@@ -7352,6 +7363,8 @@ fn materialize_dynamic_next(
                 parent_group_id: source.group_id.clone(),
                 root_node_ids: root_node_ids.clone(),
                 terminal_node_ids: Vec::new(),
+                target_workspace_id: source.workspace_id.clone(),
+                child_workspace_ids: child_workspace_ids.clone(),
                 merge_node_id: None,
                 acceptance_node_id: None,
                 created_by_node_id: source.id.clone(),
@@ -7362,7 +7375,7 @@ fn materialize_dynamic_next(
             };
             validate_dynamic_group_state(&group)?;
             graph.groups.push(group);
-            for node in nodes {
+            for (node, workspace_id) in nodes.into_iter().zip(child_workspace_ids) {
                 let chain_id = node.id.clone();
                 let new_node = dynamic_node_state_from_spec(
                     ctx,
@@ -7371,6 +7384,7 @@ fn materialize_dynamic_next(
                     node,
                     Some(group_id.clone()),
                     chain_id,
+                    workspace_id,
                 )?;
                 append_dynamic_event(
                     ctx,
@@ -7428,6 +7442,7 @@ fn dynamic_node_state_from_spec(
     spec: DynamicNodeSpec,
     group_id: Option<String>,
     chain_id: String,
+    workspace_id: String,
 ) -> Result<DynamicNodeState> {
     let kind = match spec.kind {
         DynamicNodeSpecKind::Worker => DynamicNodeKind::Worker,
@@ -7470,8 +7485,7 @@ fn dynamic_node_state_from_spec(
         chain_id,
         depth: source.depth + 1,
         depends_on: spec.depends_on,
-        workspace: spec.workspace,
-        workspace_path: None,
+        workspace_id,
         provider,
         profile: spec.profile,
         model,
@@ -7542,8 +7556,18 @@ fn advance_dynamic_groups(
         let status = graph.groups[group_index].status;
         match status {
             DynamicGroupStatus::Open if dynamic_group_ready(graph, group_index) => {
-                let merge_node = create_dynamic_merge_node(ctx, graph, group_index)?;
                 let group_id = graph.groups[group_index].id.clone();
+                let child_workspace_ids = graph.groups[group_index].child_workspace_ids.clone();
+                for workspace_id in child_workspace_ids {
+                    checkpoint_dynamic_workspace(graph, &workspace_id, Some(&group_id))?;
+                }
+                let target_workspace_id = graph.groups[group_index].target_workspace_id.clone();
+                {
+                    let target = dynamic_workspace_mut(graph, &target_workspace_id)?;
+                    target.status = WorkspaceStatus::Merging;
+                    target.updated_at = now_rfc3339_like();
+                }
+                let merge_node = create_dynamic_merge_node(ctx, graph, group_index)?;
                 graph.groups[group_index].status = DynamicGroupStatus::Merging;
                 graph.groups[group_index].merge_node_id = Some(merge_node.id.clone());
                 graph.groups[group_index].updated_at = now_rfc3339_like();
@@ -7587,12 +7611,16 @@ fn advance_dynamic_groups(
                 ) =>
             {
                 let group_id = graph.groups[group_index].id.clone();
+                let child_workspace_ids = graph.groups[group_index].child_workspace_ids.clone();
+                let target_workspace_id = graph.groups[group_index].target_workspace_id.clone();
                 graph.groups[group_index].status = DynamicGroupStatus::Closed;
                 graph.groups[group_index].updated_at = now_rfc3339_like();
-                for node in &graph.nodes {
-                    if node.group_id.as_deref() == Some(group_id.as_str()) {
-                        teardown_dynamic_workspace_best_effort(ctx, node);
-                    }
+                for workspace_id in child_workspace_ids {
+                    release_dynamic_workspace_best_effort(ctx, graph, &workspace_id);
+                }
+                if let Ok(target) = dynamic_workspace_mut(graph, &target_workspace_id) {
+                    target.status = WorkspaceStatus::Active;
+                    target.updated_at = now_rfc3339_like();
                 }
                 attach_closed_child_group_to_parent(graph, group_index);
                 append_dynamic_event(
@@ -7824,10 +7852,7 @@ fn create_dynamic_merge_node(
         chain_id: id.clone(),
         depth: group.depth,
         depends_on: group.terminal_node_ids.clone(),
-        workspace: WorkspacePolicy {
-            mode: WorkspaceMode::Main,
-        },
-        workspace_path: None,
+        workspace_id: group.target_workspace_id.clone(),
         provider: Some(group.merge.provider.clone()),
         profile: None,
         model: group.merge.model.clone(),
@@ -7875,10 +7900,7 @@ fn create_dynamic_acceptance_node(
         chain_id: id.clone(),
         depth: group.depth,
         depends_on: vec![merge_node_id.clone()],
-        workspace: WorkspacePolicy {
-            mode: WorkspaceMode::Main,
-        },
-        workspace_path: None,
+        workspace_id: group.target_workspace_id.clone(),
         provider: Some(group.acceptance.provider.clone()),
         profile: None,
         model: group.acceptance.model.clone(),
@@ -7897,40 +7919,24 @@ fn create_dynamic_acceptance_node(
 }
 
 fn dynamic_group_workspace_summary(
-    ctx: &DynamicExecutionContext<'_>,
+    _ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     group: &DynamicGroupState,
 ) -> String {
-    let lines = graph
-        .nodes
-        .iter()
-        .filter(|node| node.group_id.as_deref() == Some(group.id.as_str()))
-        .filter_map(|node| node.workspace_path.as_ref().map(|path| (node, path)))
-        .map(|(node, path)| {
-            let mode = format!("{:?}", node.workspace.mode);
-            if node.workspace.mode != WorkspaceMode::Worktree {
-                return format!("- {}: mode={} path={}", node.id, mode, path);
-            }
-            let branch = dynamic_worktree_branch_name(ctx, &node.id);
-            let actual_branch = git_capture(path, &["rev-parse", "--abbrev-ref", "HEAD"])
-                .unwrap_or_else(|| branch.clone());
-            let head =
-                git_capture(path, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
-            let merge_base = git_capture(
-                &ctx.app.paths.repo_root,
-                &["merge-base", "HEAD", actual_branch.as_str()],
-            )
-            .unwrap_or_else(|| "unknown".to_string());
-            let status = git_capture(path, &["status", "--short"])
-                .map(|value| value.lines().collect::<Vec<_>>().join("; "))
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| "clean".to_string());
-            format!(
-                "- {}: mode={} path={} branch={} head={} mergeBase={} status={}",
-                node.id, mode, path, actual_branch, head, merge_base, status
-            )
-        })
-        .collect::<Vec<_>>();
+    let repository = GitRepositoryService::default();
+    let lines = group.child_workspace_ids.iter().filter_map(|workspace_id| {
+        let workspace = dynamic_workspace(graph, workspace_id).ok()?;
+        let head = repository.head(&workspace.path).unwrap_or_else(|_| "unknown".to_string());
+        let status = repository.status_porcelain(&workspace.path)
+            .map(|value| if value.is_empty() { "clean".to_string() } else { value.replace('\n', "; ") })
+            .unwrap_or_else(|_| "unavailable".to_string());
+        Some(format!(
+            "- workspaceId={} path={} branch={} parentWorkspaceId={} forkCommit={} checkpointCommit={} head={} status={}",
+            workspace.id, workspace.path, workspace.branch.as_deref().unwrap_or("none"),
+            workspace.parent_workspace_id.as_deref().unwrap_or("none"), workspace.fork_commit,
+            workspace.checkpoint_commit.as_deref().unwrap_or("none"), head, status,
+        ))
+    }).collect::<Vec<_>>();
     if lines.is_empty() {
         "none".to_string()
     } else {
@@ -8025,8 +8031,7 @@ pub(crate) fn build_dynamic_prompt_bundle(
         parent_continue_prompt_id: None,
         resume_override: None,
     };
-    let output_contract = dynamic_node_uses_completion_contract(node.kind)
-        .then(|| dynamic_output_contract(&ctx, &graph));
+    let output_contract = dynamic_output_contract_for_node(&ctx, &graph, &node);
     let invocation = build_dynamic_worker_invocation(
         &ctx,
         &graph,
@@ -8055,7 +8060,7 @@ fn build_dynamic_worker_invocation(
     graph: &DynamicGraphState,
     node: &DynamicNodeState,
     attempt_id: &str,
-    output_contract: Option<PromptOutputContract>,
+    mut output_contract: Option<PromptOutputContract>,
     session_mode: SessionMode,
     continue_ref: Option<serde_json::Value>,
     resume_prompt: Option<String>,
@@ -8100,9 +8105,10 @@ fn build_dynamic_worker_invocation(
         Some((_, content)) => Some(content.trim().to_string()),
         None => profile_entry.as_ref().map(|entry| entry.content.clone()),
     };
-    let profile_dynamic_template = profile_entry
-        .as_ref()
-        .is_some_and(|entry| entry.dynamic_template);
+    let profile_dynamic_template = builtin_profile.is_some()
+        || profile_entry
+            .as_ref()
+            .is_some_and(|entry| entry.dynamic_template);
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -8118,10 +8124,7 @@ fn build_dynamic_worker_invocation(
 
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "workspace_dir");
-    let workspace_dir = node
-        .workspace_path
-        .clone()
-        .unwrap_or_else(|| ctx.app.paths.repo_root.clone());
+    let workspace_dir = dynamic_workspace(graph, &node.workspace_id)?.path.clone();
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -8129,15 +8132,37 @@ fn build_dynamic_worker_invocation(
         "workspace_dir",
         step_started_at,
         serde_json::json!({
-            "workspaceMode": node.workspace.mode,
+            "workspaceId": node.workspace_id,
             "workspacePath": workspace_dir,
         }),
     );
 
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "system_sections");
-    let has_output_contract = output_contract.is_some();
+    let has_output_contract = output_contract
+        .as_ref()
+        .is_some_and(|contract| contract.emission_mode == OutputEmissionMode::InlineControl);
     let extra_system_sections = dynamic_system_sections(ctx, graph, node, has_output_contract)?;
+    let extra_hidden_sections = dynamic_hidden_sections(
+        ctx,
+        graph,
+        node,
+        attempt_id,
+        session_mode,
+        has_output_contract,
+    )?;
+    if let Some(contract) = output_contract
+        .as_mut()
+        .filter(|contract| contract.emission_mode == OutputEmissionMode::PostTurnProjection)
+    {
+        contract.finalize_context = Some(
+            dynamic_hidden_sections(ctx, graph, node, attempt_id, session_mode, true)?
+                .into_iter()
+                .map(|section| section.content)
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        );
+    }
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -8283,14 +8308,7 @@ fn build_dynamic_worker_invocation(
         predecessors,
         new_round_trigger: None,
         extra_system_sections,
-        extra_hidden_sections: dynamic_hidden_sections(
-            ctx,
-            graph,
-            node,
-            attempt_id,
-            session_mode,
-            has_output_contract,
-        )?,
+        extra_hidden_sections,
         task_instruction: Some(task_instruction.clone()),
         user_tips_instruction: dynamic_user_tips_instruction(ctx),
         resume_task_instruction: dynamic_resume_task_instruction(session_mode, &task_instruction),
@@ -8350,7 +8368,7 @@ fn dynamic_builtin_profile(
     node: &DynamicNodeState,
 ) -> Option<(&'static str, &'static str)> {
     match node.kind {
-        DynamicNodeKind::Worker if node.depth == 0 && node.chain_id == "bootstrap" => Some((
+        DynamicNodeKind::Worker if dynamic_node_is_bootstrap_dispatch(node) => Some((
             "ai-dynamic-fanout",
             prompt_by_language(language, AI_DYNAMIC_FANOUT_ZH_CN, AI_DYNAMIC_FANOUT_EN),
         )),
@@ -8748,7 +8766,7 @@ fn dynamic_node_list_summary(nodes: &[&DynamicNodeState]) -> String {
 
 fn dynamic_node_ref_summary(node: &DynamicNodeState) -> String {
     format!(
-        "{} title={} kind={:?} status={:?} outcome={} workspace={:?}",
+        "{} title={} kind={:?} status={:?} outcome={} workspaceId={}",
         node.id,
         node.title,
         node.kind,
@@ -8756,7 +8774,7 @@ fn dynamic_node_ref_summary(node: &DynamicNodeState) -> String {
         node.outcome
             .map(|outcome| format!("{outcome:?}"))
             .unwrap_or_else(|| "none".to_string()),
-        node.workspace.mode,
+        node.workspace_id,
     )
 }
 
@@ -8849,14 +8867,14 @@ fn dynamic_sibling_summary(graph: &DynamicGraphState, node: &DynamicNodeState) -
         .filter_map(|node_id| graph.nodes.iter().find(|candidate| candidate.id == *node_id))
         .map(|sibling| {
             format!(
-                "- {} (parallel sibling; not an input dependency) status={:?} outcome={} workspace={:?}",
+                "- {} (parallel sibling; not an input dependency) status={:?} outcome={} workspaceId={}",
                 sibling.id,
                 sibling.status,
                 sibling
                     .outcome
                     .map(|outcome| format!("{outcome:?}"))
                     .unwrap_or_else(|| "none".to_string()),
-                sibling.workspace.mode,
+                sibling.workspace_id,
             )
         })
         .collect::<Vec<_>>()
@@ -9238,11 +9256,9 @@ fn dynamic_hidden_sections(
     session_mode: SessionMode,
     has_output_contract: bool,
 ) -> Result<Vec<PromptHiddenSection>> {
-    let workspace_path = node
-        .workspace_path
-        .as_ref()
-        .map(|path| path.to_string())
-        .unwrap_or_else(|| ctx.app.paths.repo_root.to_string());
+    let workspace_path = dynamic_workspace(graph, &node.workspace_id)?
+        .path
+        .to_string();
     let dynamic_root = ctx.app.paths.dynamic_dir(
         ctx.task_id,
         ctx.run_id,
@@ -9277,7 +9293,7 @@ fn dynamic_hidden_sections(
             "node_dir": runtime_context.node_dir,
             "attempt_dir": runtime_context.attempt_dir,
             "attachments_dir": runtime_context.attachments_dir,
-            "workspace_mode": format!("{:?}", node.workspace.mode),
+            "workspace_id": node.workspace_id,
             "workspace_path": workspace_path,
             "workspace_capability": dynamic_workspace_capability_summary(ctx),
             "direct_predecessors": projection.direct_predecessors,
@@ -9387,21 +9403,21 @@ fn prepare_dynamic_attempt_dirs(
     Ok(())
 }
 
-fn dynamic_worktree_short_id(ctx: &DynamicExecutionContext<'_>, node_id: &str) -> String {
+fn dynamic_worktree_short_id(ctx: &DynamicExecutionContext<'_>, workspace_id: &str) -> String {
     let mut hasher = DefaultHasher::new();
     ctx.round_id.hash(&mut hasher);
     ctx.outer_node_id.hash(&mut hasher);
     ctx.outer_attempt_id.hash(&mut hasher);
-    node_id.hash(&mut hasher);
+    workspace_id.hash(&mut hasher);
     format!("dyn-{:016x}", hasher.finish())
 }
 
-fn dynamic_worktree_branch_name(ctx: &DynamicExecutionContext<'_>, node_id: &str) -> String {
+fn dynamic_worktree_branch_name(ctx: &DynamicExecutionContext<'_>, workspace_id: &str) -> String {
     format!(
         "gb-dyn-{}-{}-{}",
         safe_dynamic_ref(ctx.task_id),
         safe_dynamic_ref(ctx.run_id),
-        dynamic_worktree_short_id(ctx, node_id)
+        dynamic_worktree_short_id(ctx, workspace_id)
     )
 }
 
@@ -9414,403 +9430,203 @@ fn dynamic_worktree_base_dir(ctx: &DynamicExecutionContext<'_>) -> Utf8PathBuf {
         .join(safe_dynamic_ref(ctx.run_id))
 }
 
-fn dynamic_worktree_dir(ctx: &DynamicExecutionContext<'_>, node_id: &str) -> Utf8PathBuf {
-    dynamic_worktree_base_dir(ctx).join(dynamic_worktree_short_id(ctx, node_id))
+fn dynamic_worktree_dir(ctx: &DynamicExecutionContext<'_>, workspace_id: &str) -> Utf8PathBuf {
+    dynamic_worktree_base_dir(ctx).join(dynamic_worktree_short_id(ctx, workspace_id))
 }
 
 fn git_output(cwd: &Utf8Path, args: &[&str]) -> Result<GitCommandOutput> {
-    let output = background_command("git")
-        .arg("-C")
-        .arg(cwd.as_str())
-        .args(args)
-        .output()?;
-    Ok(GitCommandOutput {
-        success: output.status.success(),
-        stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-    })
+    GitCommandRunner::default().run(cwd, args)
 }
 
-fn git_command_details(output: &GitCommandOutput) -> String {
-    match (output.stdout.is_empty(), output.stderr.is_empty()) {
-        (true, true) => "no git output".to_string(),
-        (false, true) => format!("stdout: {}", output.stdout),
-        (true, false) => format!("stderr: {}", output.stderr),
-        (false, false) => format!("stdout: {}; stderr: {}", output.stdout, output.stderr),
-    }
+fn dynamic_workspace<'a>(
+    graph: &'a DynamicGraphState,
+    workspace_id: &str,
+) -> Result<&'a WorkspaceState> {
+    graph
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == workspace_id)
+        .ok_or_else(|| anyhow!("dynamic workspace `{workspace_id}` is missing"))
 }
 
-fn git_capture(cwd: &Utf8Path, args: &[&str]) -> Option<String> {
-    let output = git_output(cwd, args).ok()?;
-    if !output.success {
-        return None;
-    }
-    Some(output.stdout).filter(|value| !value.is_empty())
-}
-
-fn dynamic_worktree_is_git_worktree(path: &Utf8Path) -> bool {
-    git_capture(path, &["rev-parse", "--show-toplevel"])
-        .map(|root| Utf8PathBuf::from(root) == path)
-        .unwrap_or(false)
-}
-
-fn parse_git_branch_list_name(line: &str) -> Option<&str> {
-    line.trim_start_matches(['*', '+', ' '])
-        .split_whitespace()
-        .next()
-}
-
-fn delete_dynamic_worktree_branch(
-    ctx: &DynamicExecutionContext<'_>,
-    branch: &str,
-    missing_ok: bool,
-) -> Result<()> {
-    let list_output = git_output(&ctx.app.paths.repo_root, &["branch", "--list", branch])?;
-    if !list_output.success {
-        bail!(
-            "failed to inspect branch `{}`: {}",
-            branch,
-            git_command_details(&list_output)
-        );
-    }
-    let exists = list_output
-        .stdout
-        .lines()
-        .any(|line| parse_git_branch_list_name(line) == Some(branch));
-    if !exists {
-        ensure!(missing_ok, "branch `{}` does not exist", branch);
-        return Ok(());
-    }
-    let delete_output = git_output(&ctx.app.paths.repo_root, &["branch", "-D", branch])?;
-    ensure!(
-        delete_output.success,
-        "git branch -D `{}` failed: {}",
-        branch,
-        git_command_details(&delete_output)
-    );
-    Ok(())
-}
-
-fn dynamic_workspace_capability(ctx: &DynamicExecutionContext<'_>) -> DynamicWorkspaceCapability {
-    let repo_root = &ctx.app.paths.repo_root;
-    let Some(is_inside_work_tree) = git_capture(repo_root, &["rev-parse", "--is-inside-work-tree"])
-    else {
-        return DynamicWorkspaceCapability {
-            supports_worktree: false,
-            reason_code: "git-unavailable-or-non-git",
-            reason: format!(
-                "`{}` is not a Git working tree or the `git` command is unavailable",
-                repo_root
-            ),
-        };
-    };
-    if is_inside_work_tree != "true" {
-        return DynamicWorkspaceCapability {
-            supports_worktree: false,
-            reason_code: "non-git-workspace",
-            reason: format!("`{}` is not inside a Git working tree", repo_root),
-        };
-    }
-    if git_capture(repo_root, &["rev-parse", "--verify", "HEAD"]).is_none() {
-        return DynamicWorkspaceCapability {
-            supports_worktree: false,
-            reason_code: "missing-head",
-            reason: format!("`{}` has no HEAD commit for git worktree add", repo_root),
-        };
-    }
-    if git_capture(repo_root, &["worktree", "list", "--porcelain"]).is_none() {
-        return DynamicWorkspaceCapability {
-            supports_worktree: false,
-            reason_code: "worktree-unsupported",
-            reason: "git worktree is not available for the current workspace".to_string(),
-        };
-    }
-    DynamicWorkspaceCapability {
-        supports_worktree: true,
-        reason_code: "ready",
-        reason: "git worktree is available".to_string(),
-    }
-}
-
-fn dynamic_workspace_capability_summary(ctx: &DynamicExecutionContext<'_>) -> String {
-    let capability = dynamic_workspace_capability(ctx);
-    match (ctx.app.config.desktop_language, capability.supports_worktree) {
-        (DesktopLanguage::ZhCn, true) => {
-            "- supportsWorktree: true\n- 原因：git worktree 可用\n- 可写并行分支：需要隔离时可以使用 workspace.mode=\"worktree\"".to_string()
-        }
-        (DesktopLanguage::ZhCn, false) => format!(
-            "- supportsWorktree: false\n- reasonCode: {}\n- 原因：{}\n- 必须遵守：不要输出 workspace.mode=\"worktree\"；fanout 分支只能使用 readonly。需要写入时使用 next.type=\"single\" 的串行 main，或结束并说明需要用户初始化 Git 后才能使用并行可写 fan-out",
-            capability.reason_code,
-            capability.reason
-        ),
-        (DesktopLanguage::En, true) => {
-            "- supportsWorktree: true\n- reason: git worktree is available\n- writable parallel branches: use workspace.mode=\"worktree\" when isolation is needed".to_string()
-        }
-        (DesktopLanguage::En, false) => format!(
-            "- supportsWorktree: false\n- reasonCode: {}\n- reason: {}\n- required behavior: do not output workspace.mode=\"worktree\"; fanout branches may only use readonly. Use next.type=\"single\" with main for serial writable work, or end with a summary that asks the user to initialize Git before parallel writable fan-out",
-            capability.reason_code,
-            capability.reason
-        ),
-    }
-}
-
-fn dynamic_worktree_unavailable_error(
-    ctx: &DynamicExecutionContext<'_>,
-    node_id: &str,
-    capability: &DynamicWorkspaceCapability,
-) -> anyhow::Error {
-    runtime_error(manual_runtime_error_info(
-        RuntimeErrorDomain::Workspace,
-        "workspace.worktree-git-required",
-        format!(
-            "dynamic node `{}` requested workspace.mode=worktree but workspace `{}` cannot create git worktrees (reasonCode={}, reason={})",
-            node_id, ctx.app.paths.repo_root, capability.reason_code, capability.reason
-        ),
-        serde_json::json!({
-            "nodeId": node_id,
-            "workspace": ctx.app.paths.repo_root,
-            "reasonCode": capability.reason_code,
-        }),
-    ))
+fn dynamic_workspace_mut<'a>(
+    graph: &'a mut DynamicGraphState,
+    workspace_id: &str,
+) -> Result<&'a mut WorkspaceState> {
+    graph
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == workspace_id)
+        .ok_or_else(|| anyhow!("dynamic workspace `{workspace_id}` is missing"))
 }
 
 fn ensure_dynamic_workspace(
+    graph: &DynamicGraphState,
+    node: &DynamicNodeState,
+) -> Result<Utf8PathBuf> {
+    let workspace = dynamic_workspace(graph, &node.workspace_id)?;
+    ensure!(
+        !matches!(
+            workspace.status,
+            WorkspaceStatus::Released | WorkspaceStatus::Merged
+        ),
+        "dynamic workspace `{}` is no longer available",
+        workspace.id
+    );
+    if workspace.kind == WorkspaceKind::Worktree {
+        GitWorkspaceManager::default().validate_worktree(
+            &workspace.path,
+            workspace
+                .branch
+                .as_deref()
+                .ok_or_else(|| anyhow!("runtime worktree is missing branch"))?,
+        )?;
+    } else {
+        GitRepositoryService::default().require_worktree(&workspace.path)?;
+    }
+    Ok(workspace.path.clone())
+}
+
+fn dynamic_workspace_capability_summary(_ctx: &DynamicExecutionContext<'_>) -> String {
+    "- workspaceAssignedByRuntime: true\n- fanoutCreatesIsolatedWorktrees: true".to_string()
+}
+
+fn checkpoint_dynamic_workspace(
+    graph: &mut DynamicGraphState,
+    workspace_id: &str,
+    group_id: Option<&str>,
+) -> Result<String> {
+    let workspace = dynamic_workspace(graph, workspace_id)?.clone();
+    if workspace.ownership == WorkspaceOwnership::User {
+        return GitRepositoryService::default().head(&workspace.path);
+    }
+    let _guard = DYNAMIC_WORKTREE_GIT_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| anyhow!("dynamic worktree git lock poisoned"))?;
+    let checkpoint =
+        GitWorkspaceManager::default().checkpoint(&workspace.path, &workspace.id, group_id)?;
+    let head = GitRepositoryService::default().head(&workspace.path)?;
+    let state = dynamic_workspace_mut(graph, workspace_id)?;
+    if checkpoint.is_some() {
+        state.checkpoint_commit = checkpoint;
+    }
+    state.updated_at = now_rfc3339_like();
+    Ok(head)
+}
+
+fn fork_dynamic_workspace(
     ctx: &DynamicExecutionContext<'_>,
-    node: &mut DynamicNodeState,
-) -> Result<()> {
-    match node.workspace.mode {
-        WorkspaceMode::Readonly | WorkspaceMode::Main => {
-            node.workspace_path = Some(ctx.app.paths.repo_root.clone());
-            dynamic_event_best_effort(
-                ctx,
-                "dynamic_workspace_ready",
-                serde_json::json!({
-                    "nodeId": node.id,
-                    "workspaceMode": node.workspace.mode,
-                    "workspacePath": node.workspace_path.clone(),
-                }),
-            );
-            Ok(())
-        }
-        WorkspaceMode::Worktree => {
-            if node.workspace_path.is_some() {
-                dynamic_event_best_effort(
-                    ctx,
-                    "dynamic_worktree_ready",
-                    serde_json::json!({
-                        "nodeId": node.id,
-                        "workspaceMode": node.workspace.mode,
-                        "workspacePath": node.workspace_path.clone(),
-                        "reusedExistingPath": true,
-                    }),
-                );
-                return Ok(());
-            }
-            let capability_started_at = Instant::now();
-            dynamic_event_best_effort(
-                ctx,
-                "dynamic_worktree_capability_begin",
-                serde_json::json!({
-                    "nodeId": node.id,
-                    "workspaceMode": node.workspace.mode,
-                }),
-            );
-            let capability = dynamic_workspace_capability(ctx);
-            dynamic_event_best_effort(
-                ctx,
-                "dynamic_worktree_capability_end",
-                serde_json::json!({
-                    "nodeId": node.id,
-                    "elapsedMs": elapsed_ms(capability_started_at),
-                    "supportsWorktree": capability.supports_worktree,
-                    "reasonCode": capability.reason_code,
-                }),
-            );
-            if !capability.supports_worktree {
-                return Err(dynamic_worktree_unavailable_error(
-                    ctx,
-                    &node.id,
-                    &capability,
-                ));
-            }
-            let worktree_dir = dynamic_worktree_dir(ctx, &node.id);
-            let branch = dynamic_worktree_branch_name(ctx, &node.id);
-            let existing_check_started_at = Instant::now();
-            dynamic_event_best_effort(
-                ctx,
-                "dynamic_worktree_existing_check_begin",
-                serde_json::json!({
-                    "nodeId": node.id,
-                    "workspacePath": worktree_dir,
-                    "branch": branch,
-                    "exists": worktree_dir.exists(),
-                }),
-            );
-            if worktree_dir.exists() && !dynamic_worktree_is_git_worktree(&worktree_dir) {
-                std::fs::remove_dir_all(worktree_dir.as_std_path()).with_context(|| {
-                    format!(
-                        "failed to remove incomplete dynamic worktree directory `{}` for `{}`",
-                        worktree_dir, node.id
-                    )
-                })?;
-            }
-            if worktree_dir.exists() {
-                let actual_branch =
-                    git_capture(&worktree_dir, &["rev-parse", "--abbrev-ref", "HEAD"])
-                        .unwrap_or_else(|| "unknown".to_string());
-                ensure!(
-                    actual_branch == branch,
-                    "dynamic worktree `{}` for `{}` is on branch `{}` but expected `{}`",
-                    worktree_dir,
-                    node.id,
-                    actual_branch,
-                    branch
-                );
-            }
-            dynamic_event_best_effort(
-                ctx,
-                "dynamic_worktree_existing_check_end",
-                serde_json::json!({
-                    "nodeId": node.id,
-                    "elapsedMs": elapsed_ms(existing_check_started_at),
-                    "workspacePath": worktree_dir,
-                    "branch": branch,
-                    "exists": worktree_dir.exists(),
-                }),
-            );
-            if !worktree_dir.exists() {
-                std::fs::create_dir_all(
-                    worktree_dir
-                        .parent()
-                        .ok_or_else(|| anyhow!("dynamic worktree path has no parent"))?
-                        .as_std_path(),
-                )?;
-                let lock_wait_started_at = Instant::now();
-                dynamic_event_best_effort(
-                    ctx,
-                    "dynamic_worktree_git_lock_wait_begin",
-                    serde_json::json!({
-                        "nodeId": node.id,
-                        "workspacePath": worktree_dir,
-                        "branch": branch,
-                    }),
-                );
-                let _git_guard = DYNAMIC_WORKTREE_GIT_LOCK
-                    .get_or_init(|| Mutex::new(()))
-                    .lock()
-                    .map_err(|_| anyhow!("dynamic worktree git lock poisoned"))?;
-                dynamic_event_best_effort(
-                    ctx,
-                    "dynamic_worktree_git_lock_wait_end",
-                    serde_json::json!({
-                        "nodeId": node.id,
-                        "elapsedMs": elapsed_ms(lock_wait_started_at),
-                        "workspacePath": worktree_dir,
-                        "branch": branch,
-                    }),
-                );
-                let cleanup_started_at = Instant::now();
-                dynamic_event_best_effort(
-                    ctx,
-                    "dynamic_worktree_branch_cleanup_begin",
-                    serde_json::json!({
-                        "nodeId": node.id,
-                        "branch": branch,
-                    }),
-                );
-                delete_dynamic_worktree_branch(ctx, &branch, true).map_err(|error| {
-                    blocked_runtime_error(format!(
-                        "failed to clear stale dynamic worktree branch `{}` for `{}`: {error}",
-                        branch, node.id
-                    ))
-                })?;
-                dynamic_event_best_effort(
-                    ctx,
-                    "dynamic_worktree_branch_cleanup_end",
-                    serde_json::json!({
-                        "nodeId": node.id,
-                        "elapsedMs": elapsed_ms(cleanup_started_at),
-                        "branch": branch,
-                    }),
-                );
-                let add_started_at = Instant::now();
-                dynamic_event_best_effort(
-                    ctx,
-                    "dynamic_worktree_add_begin",
-                    serde_json::json!({
-                        "nodeId": node.id,
-                        "workspacePath": worktree_dir,
-                        "branch": branch,
-                    }),
-                );
-                let output = git_output(
-                    &ctx.app.paths.repo_root,
-                    &[
-                        "worktree",
-                        "add",
-                        "-b",
-                        &branch,
-                        worktree_dir.as_str(),
-                        "HEAD",
-                    ],
-                )?;
-                dynamic_event_best_effort(
-                    ctx,
-                    "dynamic_worktree_add_end",
-                    serde_json::json!({
-                        "nodeId": node.id,
-                        "elapsedMs": elapsed_ms(add_started_at),
-                        "workspacePath": worktree_dir,
-                        "branch": branch,
-                        "success": output.success,
-                        "stdout": truncate_diagnostic_text(&output.stdout),
-                        "stderr": truncate_diagnostic_text(&output.stderr),
-                    }),
-                );
-                if !output.success {
-                    let _ = delete_dynamic_worktree_branch(ctx, &branch, true);
-                    return Err(blocked_runtime_error(format!(
-                        "failed to create dynamic worktree for `{}` at `{}` with branch `{}`: {}",
-                        node.id,
-                        worktree_dir,
-                        branch,
-                        git_command_details(&output)
-                    )));
-                }
-            }
-            node.workspace_path = Some(worktree_dir.clone());
-            dynamic_event_best_effort(
-                ctx,
-                "dynamic_worktree_ready",
-                serde_json::json!({
-                    "nodeId": node.id,
-                    "workspaceMode": node.workspace.mode,
-                    "workspacePath": worktree_dir,
-                    "branch": branch,
-                    "reusedExistingPath": false,
-                }),
-            );
-            Ok(())
-        }
+    graph: &mut DynamicGraphState,
+    parent_workspace_id: &str,
+    group_id: &str,
+    node_id: &str,
+) -> Result<String> {
+    let fork_commit = checkpoint_dynamic_workspace(graph, parent_workspace_id, Some(group_id))?;
+    let workspace_id = format!(
+        "workspace-{}",
+        dynamic_worktree_short_id(ctx, &format!("{group_id}:{node_id}"))
+    );
+    let path = dynamic_worktree_dir(ctx, &workspace_id);
+    let branch = dynamic_worktree_branch_name(ctx, &workspace_id);
+    let parent = dynamic_workspace(graph, parent_workspace_id)?.clone();
+    let _guard = DYNAMIC_WORKTREE_GIT_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| anyhow!("dynamic worktree git lock poisoned"))?;
+    if path.exists() {
+        GitWorkspaceManager::default().validate_worktree(&path, &branch)?;
+    } else if let Err(error) = GitWorkspaceManager::default().create_worktree(
+        &parent.repo_root,
+        &path,
+        &branch,
+        &fork_commit,
+    ) {
+        let _ = git_output(
+            &parent.repo_root,
+            &["worktree", "remove", "--force", path.as_str()],
+        );
+        let _ = git_output(&parent.repo_root, &["branch", "-D", &branch]);
+        return Err(error)
+            .with_context(|| format!("failed to fork dynamic workspace `{workspace_id}`"));
+    }
+    let now = now_rfc3339_like();
+    let workspace = WorkspaceState {
+        version: VERSION.to_string(),
+        id: workspace_id.clone(),
+        dynamic_run_id: graph.run.id.clone(),
+        kind: WorkspaceKind::Worktree,
+        ownership: WorkspaceOwnership::Runtime,
+        repo_root: parent.repo_root,
+        path,
+        branch: Some(branch),
+        parent_workspace_id: Some(parent_workspace_id.to_string()),
+        created_by_group_id: Some(group_id.to_string()),
+        fork_commit,
+        checkpoint_commit: None,
+        status: WorkspaceStatus::Active,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    validate_workspace_state(&workspace)?;
+    graph.workspaces.push(workspace);
+    Ok(workspace_id)
+}
+
+fn release_dynamic_workspace_best_effort(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &mut DynamicGraphState,
+    workspace_id: &str,
+) {
+    let Ok(workspace) = dynamic_workspace(graph, workspace_id).cloned() else {
+        return;
+    };
+    if workspace.ownership != WorkspaceOwnership::Runtime
+        || workspace.status == WorkspaceStatus::Released
+    {
+        return;
+    }
+    let Some(branch) = workspace.branch.as_deref() else {
+        return;
+    };
+    let Ok(_guard) = DYNAMIC_WORKTREE_GIT_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+    else {
+        return;
+    };
+    if GitWorkspaceManager::default()
+        .remove_worktree(&workspace.repo_root, &workspace.path, branch)
+        .is_ok()
+        && let Ok(state) = dynamic_workspace_mut(graph, workspace_id)
+    {
+        state.status = WorkspaceStatus::Released;
+        state.updated_at = now_rfc3339_like();
+        dynamic_event_best_effort(
+            ctx,
+            "dynamic_workspace_released",
+            serde_json::json!({ "workspaceId": workspace_id }),
+        );
     }
 }
 
-fn teardown_dynamic_workspace_best_effort(
-    ctx: &DynamicExecutionContext<'_>,
-    node: &DynamicNodeState,
-) {
-    if node.workspace.mode != WorkspaceMode::Worktree {
-        return;
+fn validate_dynamic_workspace_catalog(graph: &DynamicGraphState) -> Result<()> {
+    validate_workspace_topology(graph)?;
+    for workspace in &graph.workspaces {
+        validate_workspace_state(workspace)?;
+        if workspace.ownership == WorkspaceOwnership::Runtime
+            && workspace.status != WorkspaceStatus::Released
+        {
+            GitWorkspaceManager::default().validate_worktree(
+                &workspace.path,
+                workspace
+                    .branch
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("runtime workspace branch is missing"))?,
+            )?;
+        }
     }
-    let Some(worktree_dir) = node.workspace_path.as_ref() else {
-        return;
-    };
-    let branch = dynamic_worktree_branch_name(ctx, &node.id);
-    let _ = git_output(
-        &ctx.app.paths.repo_root,
-        &["worktree", "remove", "--force", worktree_dir.as_str()],
-    );
-    let _ = delete_dynamic_worktree_branch(ctx, &branch, true);
+    Ok(())
 }
 
 fn persist_dynamic_graph(
@@ -9824,6 +9640,10 @@ fn persist_dynamic_graph(
     for group in &graph.groups {
         validate_dynamic_group_state(group)?;
     }
+    for workspace in &graph.workspaces {
+        validate_workspace_state(workspace)?;
+    }
+    validate_workspace_topology(graph)?;
     persist_dynamic_graph_for_resume(
         ctx.app,
         ctx.task_id,
@@ -9854,6 +9674,19 @@ fn persist_dynamic_graph(
                 &group.id,
             ),
             group,
+        )?;
+    }
+    for workspace in &graph.workspaces {
+        write_json(
+            &ctx.app.paths.dynamic_workspace_file(
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+                &workspace.id,
+            ),
+            workspace,
         )?;
     }
     for proposal in &graph.proposals {
@@ -11256,10 +11089,7 @@ mod tests {
             chain_id: id.to_string(),
             depth: 1,
             depends_on: Vec::new(),
-            workspace: WorkspacePolicy {
-                mode: WorkspaceMode::Worktree,
-            },
-            workspace_path: None,
+            workspace_id: "workspace-main".to_string(),
             provider: Some("claude-acp".to_string()),
             profile: None,
             permission_mode: None,
@@ -11334,7 +11164,30 @@ mod tests {
         persist_runtime_state(app, "task-006", &run, &round, &node).unwrap();
     }
 
-    fn test_dynamic_graph(nodes: Vec<DynamicNodeState>) -> DynamicGraphState {
+    fn test_workspace(repo_root: Utf8PathBuf) -> WorkspaceState {
+        WorkspaceState {
+            version: VERSION.to_string(),
+            id: "workspace-main".to_string(),
+            dynamic_run_id: "dynamic-run-001".to_string(),
+            kind: WorkspaceKind::Main,
+            ownership: WorkspaceOwnership::User,
+            repo_root: repo_root.clone(),
+            path: repo_root,
+            branch: None,
+            parent_workspace_id: None,
+            created_by_group_id: None,
+            fork_commit: "test-head".to_string(),
+            checkpoint_commit: None,
+            status: WorkspaceStatus::Active,
+            created_at: "2026-06-16T00:00:00Z".to_string(),
+            updated_at: "2026-06-16T00:00:00Z".to_string(),
+        }
+    }
+
+    fn test_dynamic_graph_at(
+        repo_root: Utf8PathBuf,
+        nodes: Vec<DynamicNodeState>,
+    ) -> DynamicGraphState {
         DynamicGraphState {
             version: VERSION.to_string(),
             run: DynamicRunState {
@@ -11355,8 +11208,13 @@ mod tests {
             },
             nodes,
             groups: Vec::new(),
+            workspaces: vec![test_workspace(repo_root)],
             proposals: Vec::new(),
         }
+    }
+
+    fn test_dynamic_graph(nodes: Vec<DynamicNodeState>) -> DynamicGraphState {
+        test_dynamic_graph_at(Utf8PathBuf::from("."), nodes)
     }
 
     fn test_group_state(
@@ -11377,6 +11235,8 @@ mod tests {
                 .into_iter()
                 .map(ToOwned::to_owned)
                 .collect(),
+            target_workspace_id: "workspace-main".to_string(),
+            child_workspace_ids: Vec::new(),
             merge_node_id: None,
             acceptance_node_id: None,
             created_by_node_id: created_by_node_id.to_string(),
@@ -11531,7 +11391,6 @@ mod tests {
             permission_mode: None,
             session_mode: SessionMode::New,
             continue_from_node_id: None,
-            workspace: WorkspacePolicy::default(),
             depends_on: Vec::new(),
             workflow_id: None,
         };
@@ -11552,7 +11411,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_fanout_requires_multiple_non_main_children() {
+    fn dynamic_fanout_requires_multiple_children_without_workspace_policy() {
         let (_temp, app) = test_app_with_provider_capabilities(serde_json::json!({
             "configOptions": [
                 {
@@ -11578,9 +11437,6 @@ mod tests {
             permission_mode: None,
             session_mode: SessionMode::New,
             continue_from_node_id: None,
-            workspace: WorkspacePolicy {
-                mode: WorkspaceMode::Main,
-            },
             depends_on: Vec::new(),
             workflow_id: None,
         };
@@ -11605,10 +11461,11 @@ mod tests {
                 && error.path.as_deref() == Some("next.nodes")
                 && error.actual.as_deref() == Some("1")
         }));
-        assert!(errors.iter().any(|error| {
-            error.code == "dynamic.fanout.workspace.main-unsupported"
-                && error.path.as_deref() == Some("next.nodes[id=only-child].workspace.mode")
-                && error.allowed_values == vec!["readonly".to_string(), "worktree".to_string()]
+        assert!(!errors.iter().any(|error| {
+            error
+                .path
+                .as_deref()
+                .is_some_and(|path| path.contains("workspace"))
         }));
     }
 
@@ -11748,12 +11605,11 @@ mod tests {
         let (_temp, repo_root) = init_repo();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_for_callback = seen.clone();
-        let app = App::with_config(repo_root, RuntimeConfig::default()).with_acp_session_update(
-            Arc::new(move |context| {
+        let app = App::with_config(repo_root.clone(), RuntimeConfig::default())
+            .with_acp_session_update(Arc::new(move |context| {
                 seen_for_callback.lock().unwrap().push(context);
                 Ok(())
-            }),
-        );
+            }));
         write_test_outer_run(&app);
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
@@ -11762,7 +11618,16 @@ mod tests {
         source.outcome = Some(NodeOutcome::Success);
         source.group_id = Some("python-classes".to_string());
         source.chain_id = "bootstrap".to_string();
-        let mut graph = test_dynamic_graph(vec![source]);
+        let mut graph = test_dynamic_graph_at(repo_root, vec![source]);
+        let child_workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "python-classes",
+            "bootstrap",
+        )
+        .unwrap();
+        graph.nodes[0].workspace_id = child_workspace_id.clone();
         graph.groups.push(DynamicGroupState {
             version: VERSION.to_string(),
             id: "python-classes".to_string(),
@@ -11772,6 +11637,8 @@ mod tests {
             parent_group_id: None,
             root_node_ids: vec!["bootstrap".to_string()],
             terminal_node_ids: vec!["bootstrap".to_string()],
+            target_workspace_id: "workspace-main".to_string(),
+            child_workspace_ids: vec![child_workspace_id],
             merge_node_id: None,
             acceptance_node_id: None,
             created_by_node_id: "bootstrap".to_string(),
@@ -11817,9 +11684,24 @@ mod tests {
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
         let mut node = test_worktree_node("good-night");
-        let worktree_dir = dynamic_worktree_dir(&ctx, &node.id);
-        node.workspace_path = Some(worktree_dir.clone());
-        let graph = test_dynamic_graph(vec![node.clone()]);
+        let worktree_id = "workspace-invocation";
+        let worktree_dir = dynamic_worktree_dir(&ctx, worktree_id);
+        let branch = dynamic_worktree_branch_name(&ctx, worktree_id);
+        GitWorkspaceManager::default()
+            .create_worktree(&repo_root, &worktree_dir, &branch, "HEAD")
+            .unwrap();
+        node.workspace_id = worktree_id.to_string();
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), vec![node.clone()]);
+        let mut workspace = test_workspace(repo_root.clone());
+        workspace.id = worktree_id.to_string();
+        workspace.kind = WorkspaceKind::Worktree;
+        workspace.ownership = WorkspaceOwnership::Runtime;
+        workspace.path = worktree_dir.clone();
+        workspace.branch = Some(branch);
+        workspace.parent_workspace_id = Some("workspace-main".to_string());
+        workspace.created_by_group_id = Some("group-invocation".to_string());
+        workspace.fork_commit = GitRepositoryService::default().head(&repo_root).unwrap();
+        graph.workspaces.push(workspace);
 
         let invocation = build_dynamic_worker_invocation(
             &ctx,
@@ -11849,15 +11731,16 @@ mod tests {
         let app = App::with_config(repo_root, RuntimeConfig::default());
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
-        let node = test_worktree_node("bootstrap");
-        let graph = test_dynamic_graph(vec![node.clone()]);
+        let mut node = test_worktree_node("bootstrap");
+        node.depth = 0;
+        let graph = test_dynamic_graph_at(app.paths.repo_root.clone(), vec![node.clone()]);
 
         let invocation = build_dynamic_worker_invocation(
             &ctx,
             &graph,
             &node,
             &dynamic_attempt_id(&node),
-            Some(dynamic_output_contract(&ctx, &graph)),
+            dynamic_output_contract_for_node(&ctx, &graph, &node),
             SessionMode::New,
             None,
             None,
@@ -11872,6 +11755,7 @@ mod tests {
         let prompt = render_prompt_bundle(&invocation).unwrap();
 
         assert!(prompt.system_prompt.contains("AI-DYNAMIC 稳定规则"));
+        assert!(prompt.system_prompt.contains("dynamic-node-completion"));
         assert!(!prompt.system_prompt.contains("内部 attempt 目录"));
         assert!(!prompt.system_prompt.contains("remaining dynamic nodes"));
         assert!(!prompt.system_prompt.contains("当前链路可复用会话节点"));
@@ -11915,7 +11799,7 @@ mod tests {
             &graph,
             &node,
             &dynamic_attempt_id(&node),
-            Some(dynamic_output_contract(&ctx, &graph)),
+            dynamic_output_contract_for_node(&ctx, &graph, &node),
             SessionMode::New,
             None,
             None,
@@ -11954,9 +11838,6 @@ mod tests {
         source.finished_at = Some("2026-06-16T00:00:00Z".to_string());
         let mut node = test_worktree_node("verify-good-morning");
         node.depends_on = vec![source.id.clone()];
-        node.workspace = WorkspacePolicy {
-            mode: WorkspaceMode::Readonly,
-        };
         let graph = test_dynamic_graph(vec![source.clone(), node.clone()]);
         let attachments_dir = app.paths.dynamic_node_attachments_dir(
             ctx.task_id,
@@ -11979,7 +11860,7 @@ mod tests {
             &graph,
             &node,
             &dynamic_attempt_id(&node),
-            Some(dynamic_output_contract(&ctx, &graph)),
+            dynamic_output_contract_for_node(&ctx, &graph, &node),
             SessionMode::New,
             None,
             None,
@@ -12003,6 +11884,8 @@ mod tests {
                 .contains("artifacts/dynamic-node-completion")
         );
         assert!(!prompt.user_prompt.contains("completion="));
+        assert!(!prompt.system_prompt.contains("dynamic-node-completion"));
+        assert!(prompt.system_prompt.contains("隐藏 finalize turn"));
     }
 
     #[test]
@@ -12043,7 +11926,7 @@ mod tests {
             &graph,
             &branch_a,
             &dynamic_attempt_id(&branch_a),
-            Some(dynamic_output_contract(&ctx, &graph)),
+            dynamic_output_contract_for_node(&ctx, &graph, &branch_a),
             SessionMode::New,
             None,
             None,
@@ -12079,9 +11962,6 @@ mod tests {
         let mut merge = test_worktree_node("group-core-merge");
         merge.kind = DynamicNodeKind::Merge;
         merge.group_id = Some("group-core".to_string());
-        merge.workspace = WorkspacePolicy {
-            mode: WorkspaceMode::Main,
-        };
         merge.depends_on = vec!["branch-a".to_string(), "branch-b".to_string()];
         let mut graph = test_dynamic_graph(vec![branch_a.clone(), branch_b.clone(), merge.clone()]);
         let mut group = test_group_state(
@@ -12155,9 +12035,6 @@ mod tests {
         acceptance.kind = DynamicNodeKind::Acceptance;
         acceptance.group_id = Some("group-core".to_string());
         acceptance.depends_on = vec![merge.id.clone()];
-        acceptance.workspace = WorkspacePolicy {
-            mode: WorkspaceMode::Main,
-        };
         let mut graph = test_dynamic_graph(vec![
             branch_a.clone(),
             branch_b.clone(),
@@ -12180,7 +12057,7 @@ mod tests {
             &graph,
             &acceptance,
             &dynamic_attempt_id(&acceptance),
-            Some(dynamic_output_contract(&ctx, &graph)),
+            dynamic_output_contract_for_node(&ctx, &graph, &acceptance),
             SessionMode::New,
             None,
             None,
@@ -12192,15 +12069,42 @@ mod tests {
             None,
         )
         .unwrap();
+        let finalize_context = invocation
+            .output_contract
+            .as_ref()
+            .and_then(|contract| contract.finalize_context.as_deref())
+            .expect("acceptance finalizer needs dynamic routing context");
+        assert!(finalize_context.contains("## 会话复用"));
+        assert!(finalize_context.contains("## 运行预算"));
+        assert!(finalize_context.contains("## Agent 与 profile 选项"));
         let prompt = render_prompt_bundle(&invocation).unwrap();
 
         assert!(prompt.user_prompt.contains("## 当前 group"));
         assert!(!prompt.user_prompt.contains("## 并行兄弟节点"));
-        assert!(prompt.user_prompt.contains("## 会话复用"));
-        assert!(prompt.user_prompt.contains("## 运行预算"));
-        assert!(prompt.user_prompt.contains("## Agent 与 profile 选项"));
-        assert!(prompt.system_prompt.contains("dynamic-node-completion"));
-        assert!(prompt.system_prompt.contains("next.type"));
+        assert!(!prompt.user_prompt.contains("## 会话复用"));
+        assert!(!prompt.user_prompt.contains("## 运行预算"));
+        assert!(!prompt.user_prompt.contains("## Agent 与 profile 选项"));
+        assert!(!prompt.system_prompt.contains("dynamic-node-completion"));
+        assert!(!prompt.system_prompt.contains("next.type"));
+        assert!(prompt.system_prompt.contains("隐藏 finalize turn"));
+
+        let mut finalize_invocation = invocation;
+        finalize_invocation
+            .output_contract
+            .as_mut()
+            .unwrap()
+            .emission_mode = OutputEmissionMode::InlineControl;
+        finalize_invocation.session_mode = SessionMode::Continue;
+        finalize_invocation.user_prompt_render_mode = UserPromptRenderMode::RuntimeFinalize;
+        finalize_invocation.resume_prompt_visibility = PromptVisibility::Hidden;
+        finalize_invocation.resume_prompt = Some("finalize".to_string());
+        let finalize_prompt = render_prompt_bundle(&finalize_invocation).unwrap();
+        assert!(
+            finalize_prompt
+                .system_prompt
+                .contains("dynamic-node-completion")
+        );
+        assert!(finalize_prompt.system_prompt.contains("next.type"));
     }
 
     #[test]
@@ -12268,7 +12172,7 @@ mod tests {
             &graph,
             &child_a,
             &dynamic_attempt_id(&child_a),
-            Some(dynamic_output_contract(&ctx, &graph)),
+            dynamic_output_contract_for_node(&ctx, &graph, &child_a),
             SessionMode::New,
             None,
             None,
@@ -12310,7 +12214,7 @@ mod tests {
             &graph,
             &node,
             &dynamic_attempt_id(&node),
-            Some(dynamic_output_contract(&ctx, &graph)),
+            dynamic_output_contract_for_node(&ctx, &graph, &node),
             SessionMode::Continue,
             Some(serde_json::json!({ "acpSessionId": "session-1" })),
             Some(localized_continue_prompt(ctx.app.config.desktop_language)),
@@ -12322,12 +12226,19 @@ mod tests {
             None,
         )
         .unwrap();
+        let finalize_context = invocation
+            .output_contract
+            .as_ref()
+            .and_then(|contract| contract.finalize_context.as_deref())
+            .expect("continued dynamic worker needs finalize context");
+        assert!(finalize_context.contains("continueFromNodeId"));
+        assert!(finalize_context.contains("hello-step"));
         let prompt = render_prompt_bundle(&invocation).unwrap();
 
         assert!(prompt.user_prompt.contains("# 目标"));
         assert!(prompt.user_prompt.contains("# 任务"));
         assert!(prompt.user_prompt.contains("goodbye-step"));
-        assert!(prompt.user_prompt.contains("continueFromNodeId"));
+        assert!(!prompt.user_prompt.contains("continueFromNodeId"));
         assert!(prompt.user_prompt.contains("hello-step"));
         assert!(
             prompt
@@ -12360,6 +12271,40 @@ mod tests {
         assert!(!dynamic_node_uses_completion_contract(
             DynamicNodeKind::Merge
         ));
+    }
+
+    #[test]
+    fn dynamic_bootstrap_is_inline_but_work_nodes_are_post_turn() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut bootstrap = test_worktree_node(DYNAMIC_BOOTSTRAP_NODE_ID);
+        bootstrap.depth = 0;
+        let worker = test_worktree_node("implementation");
+        let mut acceptance = test_worktree_node("acceptance");
+        acceptance.kind = DynamicNodeKind::Acceptance;
+        let graph = test_dynamic_graph(vec![bootstrap.clone(), worker.clone(), acceptance.clone()]);
+
+        assert!(dynamic_node_is_bootstrap_dispatch(&bootstrap));
+        assert_eq!(
+            dynamic_output_contract_for_node(&ctx, &graph, &bootstrap)
+                .unwrap()
+                .emission_mode,
+            OutputEmissionMode::InlineControl
+        );
+        assert_eq!(
+            dynamic_output_contract_for_node(&ctx, &graph, &worker)
+                .unwrap()
+                .emission_mode,
+            OutputEmissionMode::PostTurnProjection
+        );
+        assert_eq!(
+            dynamic_output_contract_for_node(&ctx, &graph, &acceptance)
+                .unwrap()
+                .emission_mode,
+            OutputEmissionMode::PostTurnProjection
+        );
     }
 
     fn accepted_proposal(source_node_id: &str, parsed: serde_json::Value) -> DynamicProposalState {
@@ -12413,8 +12358,7 @@ mod tests {
                     "id": "repair",
                     "kind": "worker",
                     "title": "Repair",
-                    "task": "Repair the failed acceptance item.",
-                    "workspace": { "mode": "main" }
+                    "task": "Repair the failed acceptance item."
                 }
             }
         });
@@ -12447,6 +12391,8 @@ mod tests {
             parent_group_id: None,
             root_node_ids: vec!["root".to_string()],
             terminal_node_ids: vec!["root".to_string()],
+            target_workspace_id: "workspace-main".to_string(),
+            child_workspace_ids: Vec::new(),
             merge_node_id: Some("python-classes-merge".to_string()),
             acceptance_node_id: Some("python-classes-accept".to_string()),
             created_by_node_id: "root".to_string(),
@@ -12472,9 +12418,6 @@ mod tests {
                     permission_mode: None,
                     session_mode: SessionMode::New,
                     continue_from_node_id: None,
-                    workspace: WorkspacePolicy {
-                        mode: WorkspaceMode::Main,
-                    },
                     depends_on: Vec::new(),
                     workflow_id: None,
                 },
@@ -12544,57 +12487,124 @@ mod tests {
     }
 
     #[test]
-    fn ensure_dynamic_workspace_clears_stale_branch_before_add() {
+    fn dynamic_single_inherits_source_workspace() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
-        let mut node = test_worktree_node("good-night");
-        let branch = dynamic_worktree_branch_name(&ctx, &node.id);
-        git(&repo_root, &["branch", &branch, "HEAD"]);
+        let mut source = test_worktree_node("source");
+        source.status = DynamicNodeStatus::Completed;
+        source.outcome = Some(NodeOutcome::Success);
+        let mut graph = test_dynamic_graph_at(repo_root, vec![source]);
 
-        ensure_dynamic_workspace(&ctx, &mut node).unwrap();
+        let visible = materialize_dynamic_next(
+            &ctx,
+            &mut graph,
+            0,
+            DynamicNext::Single {
+                node: DynamicNodeSpec {
+                    id: "successor".to_string(),
+                    kind: DynamicNodeSpecKind::Worker,
+                    title: "Successor".to_string(),
+                    task: "Continue in the same workspace.".to_string(),
+                    provider: None,
+                    profile: None,
+                    model: None,
+                    permission_mode: None,
+                    session_mode: SessionMode::New,
+                    continue_from_node_id: None,
+                    depends_on: Vec::new(),
+                    workflow_id: None,
+                },
+            },
+        )
+        .unwrap();
 
-        let worktree_path = node.workspace_path.as_ref().unwrap();
-        assert!(worktree_path.exists());
-        assert_eq!(
-            git_capture(worktree_path, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref(),
-            Some(branch.as_str())
-        );
-        let branch_list = git_capture(&repo_root, &["branch", "--list", &branch]).unwrap();
-        assert!(
-            branch_list
-                .lines()
-                .any(|line| parse_git_branch_list_name(line) == Some(branch.as_str()))
-        );
-        teardown_dynamic_workspace_best_effort(&ctx, &node);
-        assert!(git_capture(&repo_root, &["branch", "--list", &branch]).is_none());
+        let successor = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "successor")
+            .unwrap();
+        assert_eq!(successor.workspace_id, "workspace-main");
+        assert_eq!(visible, vec!["successor".to_string()]);
     }
 
     #[test]
-    fn ensure_dynamic_workspace_removes_incomplete_directory() {
+    fn nested_fanout_forks_from_and_targets_parent_runtime_workspace() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
-        let mut node = test_worktree_node("good-night");
-        let worktree_dir = dynamic_worktree_dir(&ctx, &node.id);
-        std::fs::create_dir_all(worktree_dir.as_std_path()).unwrap();
-        std::fs::write(worktree_dir.join("stale.txt").as_std_path(), "stale").unwrap();
+        let mut source = test_worktree_node("nested-source");
+        source.status = DynamicNodeStatus::Completed;
+        source.outcome = Some(NodeOutcome::Success);
+        let mut graph = test_dynamic_graph_at(repo_root, vec![source]);
+        let parent_workspace_id = fork_dynamic_workspace(
+            &ctx,
+            &mut graph,
+            "workspace-main",
+            "outer-group",
+            "nested-source",
+        )
+        .unwrap();
+        graph.nodes[0].workspace_id = parent_workspace_id.clone();
 
-        ensure_dynamic_workspace(&ctx, &mut node).unwrap();
+        let branch = |id: &str| DynamicNodeSpec {
+            id: id.to_string(),
+            kind: DynamicNodeSpecKind::Worker,
+            title: id.to_string(),
+            task: format!("Implement {id}."),
+            provider: None,
+            profile: None,
+            model: None,
+            permission_mode: None,
+            session_mode: SessionMode::New,
+            continue_from_node_id: None,
+            depends_on: Vec::new(),
+            workflow_id: None,
+        };
+        materialize_dynamic_next(
+            &ctx,
+            &mut graph,
+            0,
+            DynamicNext::Fanout {
+                group_id: "nested-group".to_string(),
+                nodes: vec![branch("child-a"), branch("child-b")],
+                merge: test_agent_task("merge"),
+                acceptance: test_agent_task("accept"),
+            },
+        )
+        .unwrap();
 
-        assert!(node.workspace_path.as_ref().unwrap().exists());
-        assert!(!worktree_dir.join("stale.txt").exists());
+        let group = graph
+            .groups
+            .iter()
+            .find(|group| group.id == "nested-group")
+            .unwrap();
+        assert_eq!(group.target_workspace_id, parent_workspace_id);
+        assert_eq!(group.child_workspace_ids.len(), 2);
+        assert_ne!(group.child_workspace_ids[0], group.child_workspace_ids[1]);
+        for child_id in &group.child_workspace_ids {
+            let child = dynamic_workspace(&graph, child_id).unwrap();
+            assert_eq!(
+                child.parent_workspace_id.as_deref(),
+                Some(parent_workspace_id.as_str())
+            );
+            assert_eq!(child.created_by_group_id.as_deref(), Some("nested-group"));
+            assert_eq!(child.status, WorkspaceStatus::Active);
+        }
         assert_eq!(
-            git_capture(
-                node.workspace_path.as_ref().unwrap(),
-                &["rev-parse", "--is-inside-work-tree"]
-            )
-            .as_deref(),
-            Some("true")
+            dynamic_workspace(&graph, &parent_workspace_id)
+                .unwrap()
+                .status,
+            WorkspaceStatus::Frozen
         );
-        teardown_dynamic_workspace_best_effort(&ctx, &node);
+
+        let child_ids = group.child_workspace_ids.clone();
+        for child_id in child_ids {
+            release_dynamic_workspace_best_effort(&ctx, &mut graph, &child_id);
+        }
+        release_dynamic_workspace_best_effort(&ctx, &mut graph, &parent_workspace_id);
     }
 
     #[test]
@@ -12779,6 +12789,7 @@ mod tests {
             },
             nodes: vec![target, other],
             groups: Vec::new(),
+            workspaces: vec![test_workspace(Utf8PathBuf::from("."))],
             proposals: Vec::new(),
         };
         let resume = DynamicResumeOverride {
@@ -13444,7 +13455,10 @@ mod tests {
         completed.status = DynamicNodeStatus::Completed;
         completed.outcome = Some(NodeOutcome::Success);
         completed.finished_at = Some("2026-06-16T00:00:00Z".to_string());
-        let mut graph = test_dynamic_graph(vec![test_worktree_node("good-morning")]);
+        let mut graph = test_dynamic_graph_at(
+            app.paths.repo_root.clone(),
+            vec![test_worktree_node("good-morning")],
+        );
         let dynamic_run_id = graph.run.id.clone();
 
         apply_dynamic_execution_message(
@@ -13497,7 +13511,10 @@ mod tests {
         completed.status = DynamicNodeStatus::Completed;
         completed.outcome = Some(NodeOutcome::Success);
         completed.finished_at = Some("2026-06-16T00:00:00Z".to_string());
-        let mut graph = test_dynamic_graph(vec![test_worktree_node("good-morning")]);
+        let mut graph = test_dynamic_graph_at(
+            app.paths.repo_root.clone(),
+            vec![test_worktree_node("good-morning")],
+        );
         let dynamic_run_id = graph.run.id.clone();
 
         apply_dynamic_execution_message(
@@ -13549,7 +13566,7 @@ mod tests {
         let mut paused = test_worktree_node("bootstrap");
         paused.status = DynamicNodeStatus::Paused;
         paused.finished_at = Some("2026-06-16T00:00:00Z".to_string());
-        let mut graph = test_dynamic_graph(vec![paused]);
+        let mut graph = test_dynamic_graph_at(app.paths.repo_root.clone(), vec![paused]);
         graph.run.status = DynamicRunStatus::Paused;
         graph.run.pause_reason = Some(PauseReason::RuntimeAbnormal);
         graph.run.current_node_ids = vec!["bootstrap".to_string()];
@@ -13771,6 +13788,7 @@ mod tests {
             },
             nodes: vec![node],
             groups: Vec::new(),
+            workspaces: vec![test_workspace(app.paths.repo_root.clone())],
             proposals: Vec::new(),
         };
 

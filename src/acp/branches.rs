@@ -1402,6 +1402,22 @@ mod tests {
     }
 
     #[test]
+    fn persisted_branch_route_preserves_launch_metadata() {
+        let mut launch = event_at(
+            "launch",
+            1,
+            "toolCall",
+            Some("provider-child"),
+            Some("completed"),
+            json!({ "agentLaunch": true, "toolName": "Agent" }),
+            Some(json!({ "run_in_background": true })),
+        );
+
+        let expected = annotate_event_branch(&mut launch);
+        assert_eq!(branch_route_for_event(&launch), expected);
+    }
+
+    #[test]
     fn branch_annotation_consumes_only_internal_tool_output() {
         let mut event = event_at(
             "tool",
@@ -2057,3 +2073,4 @@ mod tests {
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 }
+

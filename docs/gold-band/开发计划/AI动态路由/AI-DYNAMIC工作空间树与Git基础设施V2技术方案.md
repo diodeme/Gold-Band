@@ -2,11 +2,11 @@
 
 ## 0. 文档状态
 
-- 状态：终版设计，待实现
-- 日期：2026-08-06
+- 状态：已实现，作为当前运行时基线
+- 日期：2026-08-10
 - 范围：AI-DYNAMIC workspace 拓扑、嵌套 fanout、checkpoint、merge、Git 前置检查，以及后续右侧 Git 工作区共用的后端基础设施
-- 替代范围：本方案在后续实现时替代旧 AI-DYNAMIC 方案中 WorkspaceMode、readonly、single 不能进入 worktree、merge 固定进入 main、节点结束即清理 worktree 等规则
-- 非本期动作：本文档不代表当前代码已经完成迁移
+- 替代范围：本方案已替代旧 AI-DYNAMIC 方案中 WorkspaceMode、readonly、single 不能进入 worktree、merge 固定进入 main、节点结束即清理 worktree 等规则
+- 实现基线：`src/git.rs` 提供 CLI-backed typed Git 服务；`src/dynamic.rs` 提供 workspace catalog；编排器拓扑分配、checkpoint/恢复/清理、启动门禁和桌面引导均已按本文迁移。后续右侧 Git 面板复用该服务边界。
 
 ## 1. 结论
 

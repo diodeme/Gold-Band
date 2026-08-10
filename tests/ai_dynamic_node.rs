@@ -4,7 +4,7 @@ use gold_band::domain::{PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::WorkflowValidationError;
 use gold_band::dynamic::{
     DynamicCompletionSchemaPolicy, DynamicGraphState, DynamicGroupStatus, DynamicNodeKind,
-    DynamicNodeStatus, DynamicProposalValidationStatus, DynamicRunStatus,
+    DynamicNodeStatus, DynamicProposalValidationStatus, DynamicRunStatus, WorkspaceStatus,
     dynamic_completion_effective_schema,
 };
 use gold_band::provider::{
@@ -12,7 +12,9 @@ use gold_band::provider::{
     ProviderInfo, ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef,
     UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
 };
-use gold_band::runtime_error::{RuntimeErrorDomain, auto_runtime_error_info};
+use gold_band::runtime_error::{
+    DEFAULT_AUTO_RETRY_MAX_ATTEMPTS, RuntimeErrorDomain, auto_runtime_error_info,
+};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
@@ -1065,8 +1067,20 @@ fn ai_dynamic_provider_runtime_error_does_not_enter_proposal_repair() {
     );
 
     let invocations = provider.invocations.lock().unwrap();
-    assert_eq!(invocations.len(), 1);
-    assert_eq!(invocations[0].session_mode, SessionMode::New);
+    assert_eq!(
+        invocations.len(),
+        (DEFAULT_AUTO_RETRY_MAX_ATTEMPTS + 1) as usize
+    );
+    assert!(
+        invocations
+            .iter()
+            .all(|invocation| invocation.session_mode == SessionMode::New)
+    );
+    assert!(
+        invocations
+            .iter()
+            .all(|invocation| invocation.resume_prompt.is_none())
+    );
 }
 
 #[test]
@@ -1276,8 +1290,16 @@ fn ai_dynamic_worktree_fanout_injects_merge_workspace_metadata() {
         .iter()
         .find(|node| node.id == "branch-b")
         .unwrap();
-    assert!(!branch_a.workspace_path.as_ref().unwrap().exists());
-    assert!(!branch_b.workspace_path.as_ref().unwrap().exists());
+    assert_ne!(branch_a.workspace_id, branch_b.workspace_id);
+    for branch in [branch_a, branch_b] {
+        let workspace = graph
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == branch.workspace_id)
+            .expect("fanout branch workspace should remain in the catalog");
+        assert_eq!(workspace.status, WorkspaceStatus::Released);
+        assert!(!workspace.path.exists());
+    }
 
     let invocations = provider.invocations.lock().unwrap();
     let merge_invocation = invocations

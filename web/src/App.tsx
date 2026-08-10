@@ -98,6 +98,7 @@ import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
 import { resetConversationComposerDraft } from '@/lib/conversation-composer-draft';
+import { GitRequirementDialog } from '@/components/git/GitRequirementDialog';
 import { resolveConversationWorkspaceRemovalTransition } from '@/lib/conversation-workspace-removal';
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
@@ -244,6 +245,25 @@ function conversationTreeHasSessionKey(tree: ConversationSessionTreeVm, key: str
     }
   }
   return false;
+}
+
+function gitRequirementStatus(error: unknown) {
+  if (!error || typeof error !== 'object') return null;
+  const code = (error as { code?: unknown }).code;
+  switch (code) {
+    case 'run.git-not-installed':
+      return 'not-installed' as const;
+    case 'run.git-repository-required':
+      return 'repository-required' as const;
+    case 'run.git-head-required':
+      return 'head-required' as const;
+    case 'run.git-worktree-required':
+      return 'worktree-required' as const;
+    case 'run.git-repository-unavailable':
+      return 'repository-unavailable' as const;
+    default:
+      return null;
+  }
 }
 
 function selectedConversationLeaf(tree?: ConversationSessionTreeVm | null) {
@@ -409,6 +429,11 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [gitRequirement, setGitRequirement] = useState<{
+    status: 'not-installed' | 'repository-required' | 'head-required' | 'worktree-required' | 'repository-unavailable';
+    runKind: 'auto' | 'workflow';
+    projectId?: string | null;
+  } | null>(null);
 
   const loadConversationRunMode = useCallback((projectId: string) => {
     const requestId = (conversationRunModeRequestRef.current.get(projectId) ?? 0) + 1;
@@ -1202,8 +1227,12 @@ export function App() {
       await refresh('background');
       return result;
     } catch (err) {
+      const gitStatus = gitRequirementStatus(err);
+      if (gitStatus) {
+        setGitRequirement({ status: gitStatus, runKind: 'workflow', projectId: defaultProjectId });
+      }
       if (options?.surfaceError !== false) {
-        setError(displayAppError(t, err));
+        setError(gitStatus ? null : displayAppError(t, err));
       }
       if (options?.rethrow) {
         throw err;
@@ -1798,6 +1827,7 @@ export function App() {
     }
     if (conversationPage.kind === 'conversation-home') {
       return (
+        <>
         <ConversationHomePage
           projectId={defaultProjectId}
           workspaceName={defaultWorkspaceName}
@@ -1860,6 +1890,15 @@ export function App() {
               });
               return null;
             } catch (err) {
+              const gitStatus = gitRequirementStatus(err);
+              if (gitStatus) {
+                setGitRequirement({
+                  status: gitStatus,
+                  runKind: input.runMode === 'auto' ? 'auto' : 'workflow',
+                  projectId: input.projectId,
+                });
+                return displayAppError(t, err);
+              }
               return displayAppError(t, err);
             } finally {
               setBusy(false);
@@ -1873,6 +1912,22 @@ export function App() {
             void loadConversationRunMode(projectId);
           }}
         />
+        {gitRequirement ? (
+          <GitRequirementDialog
+            key={`${gitRequirement.projectId ?? 'default'}:${gitRequirement.status}`}
+            open
+            projectId={gitRequirement.projectId}
+            runKind={gitRequirement.runKind}
+            initialStatus={gitRequirement.status}
+            onReady={() => setGitRequirement(null)}
+            onUseOtherWorkflow={() => {
+              setGitRequirement(null);
+              setConversationPage({ kind: 'run-mode-management' });
+            }}
+            onOpenChange={(open) => { if (!open) setGitRequirement(null); }}
+          />
+        ) : null}
+        </>
       );
     }
     if (conversationPage.kind === 'run-mode-management') {
@@ -2053,6 +2108,7 @@ export function App() {
     }
     if (taskPage.kind === 'workflow') {
       return (
+        <>
         <WorkflowPage
           vm={workflow}
           busy={busy}
@@ -2066,6 +2122,22 @@ export function App() {
           onSaveWorkflow={onSaveTaskWorkflow}
           onOpenProfileManagement={openProfileManagement}
         />
+        {gitRequirement ? (
+          <GitRequirementDialog
+            key={`${gitRequirement.projectId ?? 'default'}:${gitRequirement.status}`}
+            open
+            projectId={gitRequirement.projectId}
+            runKind={gitRequirement.runKind}
+            initialStatus={gitRequirement.status}
+            onReady={() => setGitRequirement(null)}
+            onUseOtherWorkflow={() => {
+              setGitRequirement(null);
+              navigate({ kind: 'task-list' });
+            }}
+            onOpenChange={(open) => { if (!open) setGitRequirement(null); }}
+          />
+        ) : null}
+        </>
       );
     }
     return <RoundDetailPage vm={roundDetail} breadcrumbs={pageBreadcrumbs} selection={roundSelection} refreshing={loading === 'manual'} busy={busy} appConfig={appConfig} workspaceProjectId={bootstrap?.repoRoot ? bootstrap.repoRoot.toLowerCase().replace(/[^a-z0-9\-_]/g, '-') : undefined} onRefresh={() => void refresh('manual')} onSelect={setRoundSelection} />;

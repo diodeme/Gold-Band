@@ -40,6 +40,7 @@ import type {
   AvatarPreferencesVm,
   AvatarShape,
   SaveDesktopAvatarInput,
+  ImportProfilesResult,
   ProfileInput,
   ProfileListVm,
   ProfileVm,
@@ -61,6 +62,7 @@ import type {
   FeedbackInput,
   FeedbackResult,
   FeedbackArchivePreview,
+  GitCapabilityVm,
   ExternalFileAccessGrantVm,
   FileRevisionVm,
   ResolvedWorkspaceFileLinkVm,
@@ -131,6 +133,8 @@ export interface MaterializeAttachmentFileInput {
 }
 
 export interface RuntimeApi {
+  getGitCapability(projectId?: string | null): Promise<GitCapabilityVm>;
+  initializeGitRepository(projectId?: string | null): Promise<GitCapabilityVm>;
   checkLocalClaude(): Promise<LocalClaudeStatusVm>;
   getAppBootstrap(): Promise<AppBootstrapVm>;
   completeMainWindowClose(): Promise<void>;
@@ -146,6 +150,7 @@ export interface RuntimeApi {
   getProfiles(): Promise<ProfileListVm>;
   getProfile(id: string): Promise<ProfileVm>;
   createProfile(input: ProfileInput): Promise<ProfileVm>;
+  importProfilesFromFolder(folderPath: string, dynamicTemplate: boolean): Promise<ImportProfilesResult>;
   updateProfile(id: string, input: ProfileInput): Promise<ProfileVm>;
   deleteProfile(id: string, force?: boolean): Promise<ProfileListVm>;
   chooseWorkspace(): Promise<AppBootstrapVm | null>;
@@ -320,3 +325,4 @@ export interface ConversationDirectoryInput {
 export function getRuntimeApi(): RuntimeApi {
   return isTauriRuntime() ? desktopApi : browserApi;
 }
+

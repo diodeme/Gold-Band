@@ -21,9 +21,10 @@ Constraint reminders:
 {% endif %}- {{ model_policy }}
 - When `next.type="end"`, do not include `node / groupId / nodes / merge / acceptance`.
 - When `next.type="single"`, you must provide a complete `next.node`, and you must not provide `groupId / nodes / merge / acceptance`.
-- Do not use `workspace.mode="worktree"` on a `next.type="single"` node; only `fanout` branches may use worktrees because runtime only creates merge / acceptance after fanout.
+- Do not output `workspace`, a workspace mode, a path, or a branch for any node. Runtime exclusively owns workspace assignment.
+- A `next.type="single"` successor automatically inherits the current node's actual workspace.
 - When `next.type="fanout"`, you must provide `groupId / nodes / merge / acceptance` together, and `nodes` must contain at least two branches; use `next.type="single"` for one successor node.
-- Do not use `workspace.mode="main"` for `next.type="fanout"` branch nodes; use `readonly` for read-only branches and `worktree` for writable parallel branches when the workspace supports it. Use `next.type="single"` for serial main-workspace writes.
+- Every `next.type="fanout"` child automatically receives an isolated worktree; merge and acceptance automatically return to that group's parent workspace.
 - `profile` is only allowed on worker nodes and is optional. If present, use an ID from the schema enum or the ID after `profileId=...` in this prompt, not the displayName.
 - Do not output `profile` for `merge` / `acceptance`; runtime uses the built-in AI-DYNAMIC merge / acceptance prompts.
 {% if agent_strategy_mode == "dynamic" %}- If `provider` is present, it must be one of the available providers listed in the schema enum or this prompt.

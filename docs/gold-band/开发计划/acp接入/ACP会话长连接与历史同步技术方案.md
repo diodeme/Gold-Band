@@ -261,11 +261,12 @@ RuntimeRepair
 ManagedAgentConfig
   - adapter
   - primaryAgentDir
+  - projectPrimaryAgentDir?
   - compatibleAgentDirs[]
   - externalSessionSyncEnabled = false
 ```
 
-默认关闭，并以 Beta 能力展示。只有 Agent 明确保证不同客户端连接的是同一条线性上下文，或未来 Gold Band 能显式选择 Provider branch/leaf 时才允许开启。Agent 管理页的修改抽屉必须同时编辑 `adapter`、主 Agent 目录、兼容 Agent 目录和 `externalSessionSyncEnabled`；主目录不能为空，兼容目录规范化后只参与读取。同步开关标题右侧展示紧凑 Beta Badge 和可聚焦问号 Tooltip，Tooltip 解释“同步同一个 Session 在其他客户端中发生过的对话”，说明文案明确警告：仅在确认 Agent 支持跨客户端共享同一会话上下文时开启，否则可能造成历史顺序或上下文理解错误。列表主卡片仅保留命令、参数、环境变量和最近检测四项运行摘要，不展示高级配置。
+默认关闭，并以 Beta 能力展示。只有 Agent 明确保证不同客户端连接的是同一条线性上下文，或未来 Gold Band 能显式选择 Provider branch/leaf 时才允许开启。Agent 管理页的修改抽屉必须同时编辑 `adapter`、主 Agent 目录、兼容 Agent 目录和 `externalSessionSyncEnabled`；主目录允许按全局/项目作用域拆分，兼容目录规范化后在两端只参与读取。同步开关标题右侧展示紧凑 Beta Badge 和可聚焦问号 Tooltip，Tooltip 解释“同步同一个 Session 在其他客户端中发生过的对话”，说明文案明确警告：仅在确认 Agent 支持跨客户端共享同一会话上下文时开启，否则可能造成历史顺序或上下文理解错误。列表主卡片仅保留命令、参数、环境变量和最近检测四项运行摘要，不展示高级配置。
 
 Agent 配置是 Provider 级全局配置，不属于当前 workspace。新增、修改或删除 Agent 前，必须跨所有 workspace 检查该 Provider 是否存在 active prompt；保存前统一 detach 该 Provider 的 idle session runtime，并关闭所有 `provider + workspace` connection，使下一次 prompt 使用新配置，不能只失效当前 `App.paths.repo_root`。
 

@@ -269,8 +269,11 @@ export const desktopApi: RuntimeApi = {
   startRun(taskId: string) {
     return invokeCommand('start_run', { taskId });
   },
-  continueRun(projectId, taskId, runId, promptId, prompt) {
-    return invokeCommand('continue_run', { projectId, taskId, runId, promptId, prompt });
+  continueRun(projectId, taskId, runId) {
+    return invokeCommand('continue_run', { projectId, taskId, runId });
+  },
+  continueConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
+    return invokeCommand('continue_conversation_runtime', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
   pauseRun(taskId: string, runId: string, projectId?: string | null) {
     return invokeCommand('pause_run', { taskId, runId, projectId });

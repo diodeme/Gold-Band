@@ -324,6 +324,13 @@ const resources = {
         "manual-check": {
           "invalid-outcome": "人工 check 结果无效。",
         },
+        runtime: {
+          "conversation-not-available": "工作流正在运行，暂时不能发送普通消息。",
+          "continue-not-available": "当前节点不需要继续，可能已经恢复或不再可继续。",
+          "continue-already-active": "工作流正在恢复，请稍候。",
+          "continue-launch-failed": "工作流恢复失败，请检查当前状态后重试。",
+          "continue-launch-channel-closed": "工作流恢复未能启动，请重试。",
+        },
         conversation: {
           "task-not-found": "找不到该会话。",
           "task-running": "该会话仍在运行，请先停止后再删除。",
@@ -1376,6 +1383,9 @@ const resources = {
         manualCheckFailure: "失败",
         manualCheckSubmitting: "提交中",
         manualCheckSubmitFailed: "人工 check 提交失败",
+        continueWorkflow: "继续工作流",
+        continueWorkflowStarting: "正在继续",
+        continueWorkflowFailed: "继续工作流失败",
         stop: "停止",
         stopping: "正在停止",
         stopFailed: "停止失败",
@@ -1731,6 +1741,7 @@ const resources = {
           pauseReasonWaitingForUserInput: "等待用户输入",
           pauseReasonFallback: "已暂停",
           launchingNextNode: "拉起下一节点中",
+          preparingDevelopmentEnvironment: "正在准备开发环境…",
           composerRuntimeControlledPlaceholder:
             "当前会话由 runtime 运行中，暂不可输入",
           composerStoppingPlaceholder: "正在停止当前会话…",
@@ -2120,6 +2131,13 @@ const resources = {
         },
         "manual-check": {
           "invalid-outcome": "Manual check outcome is invalid.",
+        },
+        runtime: {
+          "conversation-not-available": "The workflow is running, so a normal message cannot be sent yet.",
+          "continue-not-available": "This node no longer needs to be continued. It may already be active or no longer resumable.",
+          "continue-already-active": "The workflow is already resuming. Please wait.",
+          "continue-launch-failed": "The workflow could not be resumed. Check its current state and try again.",
+          "continue-launch-channel-closed": "The workflow resume did not start. Try again.",
         },
         conversation: {
           "task-not-found": "This conversation could not be found.",
@@ -3211,6 +3229,9 @@ const resources = {
         manualCheckFailure: "Failure",
         manualCheckSubmitting: "Submitting",
         manualCheckSubmitFailed: "Manual check submission failed",
+        continueWorkflow: "Continue workflow",
+        continueWorkflowStarting: "Continuing",
+        continueWorkflowFailed: "Failed to continue workflow",
         stop: "Stop",
         stopping: "Stopping",
         stopFailed: "Stop failed",
@@ -3576,6 +3597,7 @@ const resources = {
           pauseReasonWaitingForUserInput: "Waiting for user input",
           pauseReasonFallback: "Paused",
           launchingNextNode: "Launching next node",
+          preparingDevelopmentEnvironment: "Preparing development environment…",
           composerRuntimeControlledPlaceholder:
             "This session is being controlled by the runtime, so input is temporarily unavailable",
           composerStoppingPlaceholder: "Stopping current session…",

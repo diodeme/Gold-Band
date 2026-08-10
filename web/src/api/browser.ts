@@ -909,8 +909,11 @@ export const browserApi: RuntimeApi = {
   startRun(taskId: string) {
     return Promise.resolve({ ...mockRunDetail.run, taskId });
   },
-  continueRun(_projectId, taskId, runId, _promptId, _prompt) {
+  continueRun(_projectId, taskId, runId) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
+  },
+  continueConversationRuntime(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
+    return Promise.resolve({ kind: 'runtime-continue-started', session: null, run: null, lifecycle: null });
   },
   pauseRun(taskId: string, runId: string, _projectId?: string | null) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId, status: 'paused', pauseReason: 'process-interrupted', resumable: true });

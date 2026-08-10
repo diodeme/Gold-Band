@@ -54,6 +54,14 @@ pub(crate) fn generate_uuid() -> String {
     Uuid::new_v4().simple().to_string()
 }
 
+pub(crate) fn next_runtime_execution_id() -> String {
+    format!("runtime-execution-{}", generate_uuid())
+}
+
+pub(crate) fn next_dynamic_resume_request_id() -> String {
+    format!("dynamic-resume-{}", generate_uuid())
+}
+
 pub(crate) fn next_attempt_id(node_dir: &Utf8Path) -> Result<String> {
     let next = latest_attempt_id(node_dir)?
         .and_then(|value| {
@@ -117,6 +125,17 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), 100);
+    }
+
+    #[test]
+    fn runtime_control_ids_are_namespaced_and_unique() {
+        let first_execution = next_runtime_execution_id();
+        let second_execution = next_runtime_execution_id();
+        let resume_request = next_dynamic_resume_request_id();
+
+        assert!(first_execution.starts_with("runtime-execution-"));
+        assert_ne!(first_execution, second_execution);
+        assert!(resume_request.starts_with("dynamic-resume-"));
     }
 
     #[test]

@@ -7,7 +7,9 @@ use tracing::{info, warn};
 
 use crate::acp::events::annotate_latest_runtime_control_output;
 use crate::artifacts::parse_json_artifact;
-use crate::domain::{InvocationKind, NodeOutcome, RunStatus, SessionMode, VERSION};
+use crate::domain::{
+    InvocationKind, NodeOutcome, RunStatus, SessionMode, TurnControlMode, VERSION,
+};
 use crate::dsl::{
     JsonConditionDsl, JsonPathSegment, NodeDsl, ValidatedWorkflow, WorkerNode, parse_json_path,
 };
@@ -604,6 +606,12 @@ pub(crate) fn build_worker_invocation(
 
     Ok(WorkerInvocation {
         invocation_kind,
+        turn_control_mode: if prompt_envelope == crate::dsl::PromptEnvelopeMode::RawAgent {
+            TurnControlMode::NonRuntimeControlled
+        } else {
+            TurnControlMode::RuntimeControlled
+        },
+        runtime_control_resume_candidate: false,
         prompt_envelope,
         execution_surface: PromptExecutionSurface::Workflow,
         profile,
@@ -679,11 +687,12 @@ pub(crate) fn execute_ai_node(
     resume_prompt_visibility: PromptVisibility,
     user_prompt_render_mode: UserPromptRenderMode,
     resume_input_attachment_paths: Vec<String>,
+    runtime_control_resume_candidate: bool,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
 ) -> Result<NodeState> {
     let round_id = round.id.as_str();
-    let invocation = build_worker_invocation(
+    let mut invocation = build_worker_invocation(
         app,
         task_id,
         run_id,
@@ -701,6 +710,7 @@ pub(crate) fn execute_ai_node(
         model_override,
         permission_mode_override,
     )?;
+    invocation.runtime_control_resume_candidate = runtime_control_resume_candidate;
 
     progress(&format!(
         "calling provider for {}/{}/{}",
@@ -1240,6 +1250,7 @@ mod tests {
             started_at: "2026-07-01T00:00:00Z".to_string(),
             finished_at: None,
             manual_check_pending: false,
+            runtime_execution_id: None,
             resolved_config: Default::default(),
             uuid: None,
         };
@@ -1329,6 +1340,7 @@ mod tests {
             started_at: "2026-07-01T00:00:00Z".to_string(),
             finished_at: None,
             manual_check_pending: false,
+            runtime_execution_id: None,
             resolved_config,
             uuid: None,
         };
@@ -1572,6 +1584,51 @@ mod tests {
         assert_eq!(
             invocation.input_attachment_paths,
             vec![original_input.to_string()]
+        );
+        assert_eq!(
+            invocation.turn_control_mode,
+            TurnControlMode::RuntimeControlled
+        );
+    }
+
+    #[test]
+    fn direct_raw_agent_first_turn_is_non_runtime_controlled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root =
+            Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
+        let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        let mut workflow = attachment_test_workflow();
+        let NodeDsl::Worker(worker) = &mut workflow.raw.nodes[0] else {
+            panic!("expected worker node");
+        };
+        worker.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
+        workflow
+            .nodes_by_id
+            .insert("dev".to_string(), workflow.raw.nodes[0].clone());
+
+        let invocation = build_worker_invocation(
+            &app,
+            "task-001",
+            "run-001",
+            &attachment_test_round(),
+            "attempt-001",
+            &workflow,
+            "dev",
+            SessionMode::New,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("direct invocation should build");
+
+        assert_eq!(
+            invocation.turn_control_mode,
+            TurnControlMode::NonRuntimeControlled
         );
     }
 }

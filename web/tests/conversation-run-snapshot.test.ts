@@ -190,8 +190,8 @@ describe('runtime-abnormal snapshots', () => {
         acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
         displayStatus: 'paused',
         runtimeDisplay: runtimeAbnormalDisplay,
-        continueKind: 'input',
-        composer: { mode: 'interrupted-input', submitTarget: 'runtime-continue', processingKind: 'processing', statusKey: null, canStop: false, lockInput: false },
+        continueKind: 'action',
+        composer: { mode: 'normal', submitTarget: 'acp-prompt', processingKind: 'processing', statusKey: null, canStop: false, lockInput: false },
       },
     });
 

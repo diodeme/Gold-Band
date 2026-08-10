@@ -177,7 +177,7 @@ describe('isAcpSessionInitializationFailed', () => {
     expect(isAcpSessionInitializationFailed({
       ...failedInput,
       runtimePauseReason: 'runtime-abnormal',
-      runtimeComposerMode: 'interrupted-input',
+      runtimeComposerMode: 'normal',
       runtimeErrorMessage: "Codex doesn't support MCP SSE transport protocol",
     })).toBe(true);
   });
@@ -211,7 +211,7 @@ describe('isAcpSessionInitializationFailed', () => {
     expect(isAcpSessionInitializationFailed({
       ...failedInput,
       runtimePauseReason: 'waiting-for-user-input',
-      runtimeComposerMode: 'interrupted-input',
+      runtimeComposerMode: 'normal',
     })).toBe(false);
   });
 });

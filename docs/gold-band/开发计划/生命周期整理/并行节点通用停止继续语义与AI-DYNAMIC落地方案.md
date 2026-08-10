@@ -91,7 +91,7 @@ AI-DYNAMIC fan-out 会在一个外层 AI-DYNAMIC attempt 下创建多个内部 l
 4. artifact 不存在、半截 JSON、schema 不合法或 proposal rejected 时，不进入 repair prompt，也不误判 success，保持原可继续暂停原因等待用户继续。
 5. killed、error-blocked、非当前 attempt 或其他不可继续暂停不能被该规则恢复。
 
-该规则不是“停止失败”，而是“业务结果已经完成，停止只晚一步到达”；因此完成优先只基于完整合法业务 artifact，不基于 ACP stop reason 文案。
+该早期“完成优先”规则已被统一 stop boundary 取代：artifact 只有在用户停止事实落盘前已经由当前 execution 完成校验并提交，才属于既有完成事实；停止落盘后的迟到 response 即使携带完整合法 artifact，也不能恢复 Runtime 或推进 graph。用户显式 continue 后由新的 execution generation 决定是否复用已落盘的可恢复事实。
 
 ## 7. 单 leaf continue
 

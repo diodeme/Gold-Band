@@ -35,15 +35,16 @@ use crate::dsl::{
     workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
-    DynamicGraphState, DynamicNodeStatus, DynamicRunStatus, dynamic_leaf_is_active,
-    refresh_dynamic_current_leaf_ids,
+    DynamicGraphState, DynamicNodeStatus, DynamicRunPhase, DynamicRunStatus,
+    dynamic_leaf_is_active, refresh_dynamic_current_leaf_ids,
 };
 use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
 use crate::provider::{
     DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
     ProviderInfo, UserPromptRenderMode, provider_from_agent, render_prompt_bundle,
-    supported_models_from_capabilities, supported_modes_from_capabilities,
+    runtime_control_suspended_context, supported_models_from_capabilities,
+    supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
@@ -58,13 +59,15 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use self::ids::{generate_uuid, next_task_id, next_workflow_id, now_rfc3339_like};
 use self::orchestrator::{
-    build_dynamic_prompt_bundle, pause_dynamic_leaf_runtime_state,
+    build_dynamic_prompt_bundle, dynamic_state_lock_for, pause_dynamic_leaf_runtime_state,
+    pause_dynamic_leaf_runtime_state_if_active_execution,
     run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
     run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
@@ -84,6 +87,31 @@ use self::profiles::{
     ensure_default_user_profiles, import_profiles_from_folder, list_profiles, show_profile,
     update_profile,
 };
+
+const ATTEMPT_RUNTIME_STATE_LOCK_SHARDS: usize = 64;
+static ATTEMPT_RUNTIME_STATE_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
+
+pub(crate) fn attempt_runtime_state_lock(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> &'static Mutex<()> {
+    let key = format!(
+        "{}/{task_id}/{run_id}/{round_id}/{node_id}/{attempt_id}",
+        app.paths.repo_root
+    );
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    let shard = hasher.finish() as usize % ATTEMPT_RUNTIME_STATE_LOCK_SHARDS;
+    &ATTEMPT_RUNTIME_STATE_LOCKS.get_or_init(|| {
+        (0..ATTEMPT_RUNTIME_STATE_LOCK_SHARDS)
+            .map(|_| Mutex::new(()))
+            .collect()
+    })[shard]
+}
 pub use self::profiles::{
     ImportProfilesInput, ImportProfilesResult, ProfileCommandError, ProfileEntry, ProfileInput,
     ProfileList, ProfileScope,
@@ -651,7 +679,7 @@ pub enum RuntimeLifecycleEvent {
         /// Direct 首轮以 Agent 回复语义展示；普通 Workflow/AUTO 为 None。
         completion_agent_label: Option<String>,
     },
-    /// 非 runtime-continue 的 ACP prompt turn 已结束。
+    /// 非 Runtime 控制的 ACP prompt turn 已结束。
     ///
     /// Direct 后续对话以及 Workflow/AUTO 节点完成后的手动追问统一走该事件；
     /// runtime 自身继续执行仍由 RunCompleted/InterventionRequested 表达，避免双重通知。
@@ -725,11 +753,7 @@ pub fn is_run_continuable(run: &RunState) -> bool {
         && run.outcome.is_none()
         && matches!(
             run.pause_reason,
-            Some(
-                PauseReason::ProcessInterrupted
-                    | PauseReason::RuntimeAbnormal
-                    | PauseReason::WaitingForUserInput
-            )
+            Some(PauseReason::ProcessInterrupted | PauseReason::RuntimeAbnormal)
         )
         && run.current_round.is_some()
         && run.current_node.is_some()
@@ -2523,48 +2547,45 @@ impl App {
         let graph_path = self
             .paths
             .dynamic_graph_file(task_id, run_id, round_id, node_id, attempt_id);
+        let Ok(state_lock) = dynamic_state_lock_for(
+            &self.paths.repo_root,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+        ) else {
+            return;
+        };
+        let _guard = state_lock.lock();
         let Ok(mut graph) = read_json::<DynamicGraphState>(&graph_path) else {
             return;
         };
+        let interrupted_nodes = graph
+            .nodes
+            .iter()
+            .map(|dynamic_node| {
+                (
+                    dynamic_node.id.clone(),
+                    dynamic_leaf_is_active(dynamic_node.status),
+                    dynamic_node.child_run_id.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
 
         for dynamic_node in &mut graph.nodes {
-            if dynamic_leaf_is_active(dynamic_node.status) {
-                let dynamic_node_dir = self.paths.dynamic_node_dir(
-                    task_id,
-                    run_id,
-                    round_id,
-                    node_id,
-                    attempt_id,
-                    &dynamic_node.id,
-                );
-                if let Ok(entries) = fs::read_dir(dynamic_node_dir.as_std_path()) {
-                    for entry in entries.flatten() {
-                        let attempt_path = entry.path();
-                        if !attempt_path.is_dir() {
-                            continue;
-                        }
-                        let Ok(attempt_dir) = Utf8PathBuf::from_path_buf(attempt_path) else {
-                            continue;
-                        };
-                        self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
-                        self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
-                        self.persist_cancelled_session_snapshot_best_effort(attempt_dir.as_path());
-                    }
-                }
-            }
-            if let Some(child_run_id) = dynamic_node.child_run_id.clone() {
-                let _ = self.run_pause(task_id, &child_run_id, pause_reason);
-            }
             if dynamic_node.status != DynamicNodeStatus::Completed {
                 dynamic_node.status = DynamicNodeStatus::Paused;
                 dynamic_node.outcome = None;
                 dynamic_node.pause_reason = Some(pause_reason);
                 dynamic_node.runtime_error = None;
+                dynamic_node.runtime_execution_id = None;
                 dynamic_node.finished_at = Some(now_rfc3339_like());
             }
         }
 
         graph.run.status = DynamicRunStatus::Paused;
+        graph.run.phase = DynamicRunPhase::Executing;
         graph.run.outcome = None;
         graph.run.pause_reason = Some(pause_reason);
         refresh_dynamic_current_leaf_ids(&mut graph);
@@ -2589,56 +2610,103 @@ impl App {
                 dynamic_node,
             );
         }
+        drop(_guard);
+
+        for (dynamic_node_id, was_active, child_run_id) in interrupted_nodes {
+            if was_active {
+                let dynamic_node_dir = self.paths.dynamic_node_dir(
+                    task_id,
+                    run_id,
+                    round_id,
+                    node_id,
+                    attempt_id,
+                    &dynamic_node_id,
+                );
+                if let Ok(entries) = fs::read_dir(dynamic_node_dir.as_std_path()) {
+                    for entry in entries.flatten() {
+                        let attempt_path = entry.path();
+                        if !attempt_path.is_dir() {
+                            continue;
+                        }
+                        let Ok(attempt_dir) = Utf8PathBuf::from_path_buf(attempt_path) else {
+                            continue;
+                        };
+                        self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
+                        self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
+                        self.persist_cancelled_session_snapshot_best_effort(attempt_dir.as_path());
+                    }
+                }
+            }
+            if let Some(child_run_id) = child_run_id {
+                let _ = self.run_pause(task_id, &child_run_id, pause_reason);
+            }
+        }
     }
 
     pub fn run_pause(&self, task_id: &str, run_id: &str, reason: PauseReason) -> Result<RunState> {
-        let mut run = self.run_status(task_id, run_id)?;
-        if run.status != RunStatus::Running {
-            return Ok(run);
-        }
-        let now = now_rfc3339_like();
-        let current_round = run.current_round.clone();
-        let current_node = run.current_node.clone();
-        let current_attempt = run.current_attempt.clone();
-        self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
-        run.status = RunStatus::Paused;
-        run.outcome = None;
-        run.pause_reason = Some(reason);
-        run.updated_at = now.clone();
-        validate_run_state(&run)?;
-        write_json(&self.paths.run_file(task_id, run_id), &run)?;
+        loop {
+            let observed = self.run_status(task_id, run_id)?;
+            if observed.status != RunStatus::Running {
+                return Ok(observed);
+            }
+            let (Some(round_id), Some(node_id), Some(attempt_id)) = (
+                observed.current_round.clone(),
+                observed.current_node.clone(),
+                observed.current_attempt.clone(),
+            ) else {
+                return Err(anyhow!("running run has no current attempt locator"));
+            };
+            let state_lock =
+                attempt_runtime_state_lock(self, task_id, run_id, &round_id, &node_id, &attempt_id);
+            let guard = state_lock
+                .lock()
+                .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+            let mut run = self.run_status(task_id, run_id)?;
+            if run.status != RunStatus::Running {
+                return Ok(run);
+            }
+            if run.current_round.as_deref() != Some(round_id.as_str())
+                || run.current_node.as_deref() != Some(node_id.as_str())
+                || run.current_attempt.as_deref() != Some(attempt_id.as_str())
+            {
+                drop(guard);
+                continue;
+            }
 
-        if let Some(round_id) = current_round.as_deref() {
-            let mut round: RoundState =
-                read_json(&self.paths.round_file(task_id, run_id, round_id))?;
+            let now = now_rfc3339_like();
+            run.status = RunStatus::Paused;
+            run.outcome = None;
+            run.pause_reason = Some(reason);
+            run.updated_at = now.clone();
+            validate_run_state(&run)?;
+            write_json(&self.paths.run_file(task_id, run_id), &run)?;
+
+            let round_path = self.paths.round_file(task_id, run_id, &round_id);
+            let mut round: RoundState = read_json(&round_path)?;
             round.status = RunStatus::Paused;
             round.outcome = None;
             validate_round_state(&round)?;
-            write_json(&self.paths.round_file(task_id, run_id, round_id), &round)?;
+            write_json(&round_path, &round)?;
 
-            if let (Some(node_id), Some(attempt_id)) =
-                (current_node.as_deref(), current_attempt.as_deref())
-            {
-                let node_path = self
-                    .paths
-                    .node_file(task_id, run_id, round_id, node_id, attempt_id);
-                if node_path.exists() {
-                    let mut node: NodeState = read_json(&node_path)?;
-                    if node.status != RunStatus::Completed {
-                        node.status = RunStatus::Paused;
-                        node.outcome = None;
-                        node.finished_at = Some(now.clone());
-                        validate_node_state(&node)?;
-                        write_json(&node_path, &node)?;
-                    }
-                    self.update_dynamic_descendants_best_effort(
-                        task_id, run_id, round_id, node_id, attempt_id, reason,
-                    );
+            let node_path = self
+                .paths
+                .node_file(task_id, run_id, &round_id, &node_id, &attempt_id);
+            if node_path.exists() {
+                let mut node: NodeState = read_json(&node_path)?;
+                if node.status != RunStatus::Completed {
+                    node.status = RunStatus::Paused;
+                    node.outcome = None;
+                    node.runtime_execution_id = None;
+                    node.finished_at = Some(now);
+                    validate_node_state(&node)?;
+                    write_json(&node_path, &node)?;
                 }
             }
-        }
+            drop(guard);
 
-        Ok(run)
+            self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
+            return Ok(run);
+        }
     }
 
     pub fn pause_attempt_runtime_state(
@@ -2650,15 +2718,81 @@ impl App {
         attempt_id: &str,
         reason: PauseReason,
     ) -> Result<()> {
+        self.pause_attempt_runtime_state_with_policy(
+            task_id, run_id, round_id, node_id, attempt_id, reason, false, None,
+        )
+        .map(|_| ())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pause_attempt_runtime_state_if_active_execution(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        execution_id: &str,
+        reason: PauseReason,
+    ) -> Result<bool> {
+        self.pause_attempt_runtime_state_with_policy(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            reason,
+            true,
+            Some(execution_id),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn pause_attempt_runtime_state_with_policy(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        reason: PauseReason,
+        require_active_attempt: bool,
+        expected_execution_id: Option<&str>,
+    ) -> Result<bool> {
+        let state_lock =
+            attempt_runtime_state_lock(self, task_id, run_id, round_id, node_id, attempt_id);
+        let _guard = state_lock
+            .lock()
+            .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
         let now = now_rfc3339_like();
+        let node_path = self
+            .paths
+            .node_file(task_id, run_id, round_id, node_id, attempt_id);
+        let mut node = if node_path.exists() {
+            Some(read_json::<NodeState>(&node_path)?)
+        } else {
+            None
+        };
+        if let Some(expected_execution_id) = expected_execution_id
+            && node
+                .as_ref()
+                .and_then(|node| node.runtime_execution_id.as_deref())
+                != Some(expected_execution_id)
+        {
+            return Ok(false);
+        }
         let run_path = self.paths.run_file(task_id, run_id);
+        let mut active_attempt = false;
         if run_path.exists() {
             let mut run: RunState = read_json(&run_path)?;
-            if run.status == RunStatus::Running
+            active_attempt = run.status == RunStatus::Running
                 && run.current_round.as_deref() == Some(round_id)
                 && run.current_node.as_deref() == Some(node_id)
-                && run.current_attempt.as_deref() == Some(attempt_id)
-            {
+                && run.current_attempt.as_deref() == Some(attempt_id);
+            if require_active_attempt && !active_attempt {
+                return Ok(false);
+            }
+            if active_attempt {
                 run.status = RunStatus::Paused;
                 run.outcome = None;
                 run.pause_reason = Some(reason);
@@ -2666,6 +2800,8 @@ impl App {
                 validate_run_state(&run)?;
                 write_json(&run_path, &run)?;
             }
+        } else if require_active_attempt {
+            return Ok(false);
         }
 
         let round_path = self.paths.round_file(task_id, run_id, round_id);
@@ -2678,21 +2814,18 @@ impl App {
             }
         }
 
-        let node_path = self
-            .paths
-            .node_file(task_id, run_id, round_id, node_id, attempt_id);
-        if node_path.exists() {
-            let mut node: NodeState = read_json(&node_path)?;
+        if let Some(node) = node.as_mut() {
             if node.status != RunStatus::Completed {
                 node.status = RunStatus::Paused;
                 node.outcome = None;
+                node.runtime_execution_id = None;
                 node.finished_at = Some(now);
                 validate_node_state(&node)?;
                 write_json(&node_path, &node)?;
             }
         }
 
-        Ok(())
+        Ok(active_attempt)
     }
 
     pub fn pause_dynamic_attempt_runtime_state(
@@ -2713,6 +2846,31 @@ impl App {
             outer_node_id,
             outer_attempt_id,
             node_id,
+            reason,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pause_dynamic_attempt_runtime_state_if_active_execution(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        outer_node_id: &str,
+        outer_attempt_id: &str,
+        node_id: &str,
+        execution_id: &str,
+        reason: PauseReason,
+    ) -> Result<bool> {
+        pause_dynamic_leaf_runtime_state_if_active_execution(
+            self,
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            node_id,
+            execution_id,
             reason,
         )
     }
@@ -2895,7 +3053,9 @@ impl App {
         )?;
         validate_round_state(&round)?;
         validate_node_state(&node)?;
-        let invocation = self::node_executor::build_worker_invocation(
+        let run: RunState = read_json(&self.paths.run_file(task_id, run_id))?;
+        validate_run_state(&run)?;
+        let mut invocation = self::node_executor::build_worker_invocation(
             self,
             task_id,
             run_id,
@@ -2913,7 +3073,21 @@ impl App {
             None,
             None,
         )?;
-        render_prompt_bundle(&invocation)
+        invocation.turn_control_mode = crate::domain::TurnControlMode::NonRuntimeControlled;
+        invocation.extra_hidden_sections.clear();
+        let suspended_context = if run.status == RunStatus::Paused
+            && run.pause_reason == Some(PauseReason::ProcessInterrupted)
+            && node.status == RunStatus::Paused
+        {
+            Some(runtime_control_suspended_context(
+                self.config.desktop_language,
+            ))
+        } else {
+            None
+        };
+        let mut bundle = render_prompt_bundle(&invocation)?;
+        bundle.runtime_control_suspended_context = suspended_context;
+        Ok(bundle)
     }
 
     pub fn dynamic_acp_prompt_bundle_for_attempt(
@@ -3546,15 +3720,17 @@ mod tests {
         ProviderDiagnosticSnapshot, RuntimeConfig, catalog_agent_default_config,
     };
     use crate::domain::{
-        NodeOutcome, NodeType, PauseReason, RoundTrigger, RunStatus, SessionMode, VERSION,
+        NodeOutcome, NodeType, PauseReason, RoundTrigger, RunOutcome, RunStatus, SessionMode,
+        VERSION,
     };
     use crate::dsl::{
         AiDynamicAgentStrategy, NodeDsl, WorkerNode, WorkflowControl, WorkflowDsl,
         validate_workflow,
     };
     use crate::dynamic::{
-        DynamicGraphState, DynamicNodeKind, DynamicNodeState, DynamicNodeStatus, DynamicRunState,
-        DynamicRunStatus, WorkspaceKind, WorkspaceOwnership, WorkspaceState, WorkspaceStatus,
+        DynamicGraphState, DynamicNodeKind, DynamicNodeState, DynamicNodeStatus, DynamicRunPhase,
+        DynamicRunState, DynamicRunStatus, WorkspaceKind, WorkspaceOwnership, WorkspaceState,
+        WorkspaceStatus,
     };
     use crate::observability::touch_log_file_best_effort;
     use crate::runtime::{NodeState, RoundState, RunState, TaskState};
@@ -3569,6 +3745,213 @@ mod tests {
             .get_or_init(|| std::sync::Mutex::new(()))
             .lock()
             .unwrap()
+    }
+
+    fn write_fixed_attempt_fixture(
+        app: &App,
+        status: RunStatus,
+        reason: Option<PauseReason>,
+        runtime_execution_id: Option<&str>,
+    ) {
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status,
+            outcome: None,
+            started_at: "2026-08-10T00:00:00Z".to_string(),
+            updated_at: "2026-08-10T00:00:01Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("worker".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: reason,
+            uuid: None,
+            last_executed_node: None,
+        };
+        let round = RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: "run-001".to_string(),
+            index: 1,
+            status,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: "2026-08-10T00:00:00Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "worker".to_string(),
+            node_type: NodeType::Worker,
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status,
+            outcome: None,
+            started_at: "2026-08-10T00:00:00Z".to_string(),
+            finished_at: (status == RunStatus::Paused).then(|| "2026-08-10T00:00:01Z".to_string()),
+            manual_check_pending: false,
+            runtime_execution_id: runtime_execution_id.map(str::to_string),
+            resolved_config: Default::default(),
+            uuid: None,
+        };
+        write_json(&app.paths.run_file("task-001", "run-001"), &run).unwrap();
+        write_json(
+            &app.paths.round_file("task-001", "run-001", "round-001"),
+            &round,
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .node_file("task-001", "run-001", "round-001", "worker", "attempt-001"),
+            &node,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn background_continue_reports_prelaunch_failure_without_claiming_running() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(
+            &app,
+            RunStatus::Paused,
+            Some(PauseReason::ProcessInterrupted),
+            None,
+        );
+
+        let error = app
+            .run_continue_background("task-001", "run-001", None, None)
+            .unwrap_err();
+        let runtime_error = error
+            .downcast_ref::<crate::runtime_error::RuntimeError>()
+            .expect("background continue returns a structured launch error");
+        assert_eq!(
+            runtime_error.info.code_str(),
+            "runtime.continue-launch-failed"
+        );
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+    }
+
+    #[test]
+    fn late_fixed_continue_failure_only_pauses_the_original_active_attempt() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+
+        assert!(
+            app.pause_attempt_runtime_state_if_active_execution(
+                "task-001",
+                "run-001",
+                "round-001",
+                "worker",
+                "attempt-001",
+                "execution-a",
+                PauseReason::RuntimeAbnormal,
+            )
+            .unwrap()
+        );
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        app.pause_attempt_runtime_state(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+            PauseReason::ProcessInterrupted,
+        )
+        .unwrap();
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-b"));
+        assert!(
+            !app.pause_attempt_runtime_state_if_active_execution(
+                "task-001",
+                "run-001",
+                "round-001",
+                "worker",
+                "attempt-001",
+                "execution-a",
+                PauseReason::RuntimeAbnormal,
+            )
+            .unwrap()
+        );
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let node: NodeState = read_json(&app.paths.node_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+        ))
+        .unwrap();
+        assert_eq!(run.status, RunStatus::Running);
+        assert_eq!(run.pause_reason, None);
+        assert_eq!(node.status, RunStatus::Running);
+        assert_eq!(node.runtime_execution_id.as_deref(), Some("execution-b"));
+    }
+
+    #[test]
+    fn run_pause_invalidates_the_execution_before_a_late_runtime_write() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        let mut stale_run: RunState =
+            read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let mut stale_round: RoundState =
+            read_json(&app.paths.round_file("task-001", "run-001", "round-001")).unwrap();
+        let mut stale_node: NodeState = read_json(&app.paths.node_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+        ))
+        .unwrap();
+
+        app.run_pause("task-001", "run-001", PauseReason::ProcessInterrupted)
+            .unwrap();
+        stale_run.status = RunStatus::Completed;
+        stale_run.outcome = Some(RunOutcome::Success);
+        stale_round.status = RunStatus::Completed;
+        stale_round.outcome = Some(RunOutcome::Success);
+        stale_node.status = RunStatus::Completed;
+        stale_node.outcome = Some(NodeOutcome::Success);
+        stale_node.finished_at = Some("2026-08-10T00:00:02Z".to_string());
+        assert!(
+            !super::state_access::persist_runtime_state_if_execution_current(
+                &app,
+                "task-001",
+                &stale_run,
+                &stale_round,
+                &stale_node,
+            )
+            .unwrap()
+        );
+
+        let durable_run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let durable_node: NodeState = read_json(&app.paths.node_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+        ))
+        .unwrap();
+        assert_eq!(durable_run.status, RunStatus::Paused);
+        assert_eq!(
+            durable_run.pause_reason,
+            Some(PauseReason::ProcessInterrupted)
+        );
+        assert_eq!(durable_node.status, RunStatus::Paused);
+        assert_eq!(durable_node.runtime_execution_id, None);
     }
 
     fn test_path_config() -> StoragePathConfig {
@@ -3760,7 +4143,7 @@ mod tests {
         assert!(super::is_run_continuable(&resumability_run(
             PauseReason::ProcessInterrupted
         )));
-        assert!(super::is_run_continuable(&resumability_run(
+        assert!(!super::is_run_continuable(&resumability_run(
             PauseReason::WaitingForUserInput
         )));
         assert!(!super::is_run_continuable(&resumability_run(
@@ -4272,6 +4655,7 @@ mod tests {
             outcome: None,
             pause_reason: None,
             runtime_error: None,
+            runtime_execution_id: None,
             group_id: None,
             chain_id: id.to_string(),
             depth: 1,
@@ -4352,6 +4736,7 @@ mod tests {
                 started_at: started_at.clone(),
                 finished_at: None,
                 manual_check_pending: false,
+                runtime_execution_id: None,
                 resolved_config: Default::default(),
                 uuid: None,
             },
@@ -4367,6 +4752,7 @@ mod tests {
                 parent_node_id: outer_node_id.to_string(),
                 parent_attempt_id: outer_attempt_id.to_string(),
                 status: DynamicRunStatus::Running,
+                phase: DynamicRunPhase::Executing,
                 outcome: None,
                 pause_reason: None,
                 started_at: started_at.clone(),
@@ -4650,6 +5036,105 @@ mod tests {
     }
 
     #[test]
+    fn late_dynamic_continue_failure_does_not_override_user_stop() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let app = dynamic_pause_test_app(&temp);
+        let mut first_execution = dynamic_pause_node("good-night", DynamicNodeStatus::Running);
+        first_execution.runtime_execution_id = Some("execution-a".to_string());
+        write_dynamic_pause_fixture(&app, vec![first_execution]);
+
+        app.pause_dynamic_attempt_runtime_state(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "good-night",
+            PauseReason::ProcessInterrupted,
+        )
+        .unwrap();
+        let mut resumed_execution = dynamic_pause_node("good-night", DynamicNodeStatus::Running);
+        resumed_execution.runtime_execution_id = Some("execution-b".to_string());
+        write_dynamic_pause_fixture(&app, vec![resumed_execution]);
+        assert!(
+            !app.pause_dynamic_attempt_runtime_state_if_active_execution(
+                "task-001",
+                "run-001",
+                "round-001",
+                "ai-dynamic",
+                "attempt-001",
+                "good-night",
+                "execution-a",
+                PauseReason::RuntimeAbnormal,
+            )
+            .unwrap()
+        );
+
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        ))
+        .unwrap();
+        assert_eq!(run.status, RunStatus::Running);
+        assert_eq!(run.pause_reason, None);
+        assert_eq!(graph.run.status, DynamicRunStatus::Running);
+        assert_eq!(graph.run.pause_reason, None);
+        assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Running);
+        assert_eq!(
+            graph.nodes[0].runtime_execution_id.as_deref(),
+            Some("execution-b")
+        );
+    }
+
+    #[test]
+    fn dynamic_continue_failure_reclaims_rearmed_leaf_state() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let app = dynamic_pause_test_app(&temp);
+        let mut rearmed = dynamic_pause_node("good-night", DynamicNodeStatus::Ready);
+        rearmed.runtime_execution_id = Some("execution-a".to_string());
+        write_dynamic_pause_fixture(&app, vec![rearmed]);
+
+        assert!(
+            app.pause_dynamic_attempt_runtime_state_if_active_execution(
+                "task-001",
+                "run-001",
+                "round-001",
+                "ai-dynamic",
+                "attempt-001",
+                "good-night",
+                "execution-a",
+                PauseReason::RuntimeAbnormal,
+            )
+            .unwrap()
+        );
+
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        ))
+        .unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        assert_eq!(run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+        assert_eq!(graph.run.status, DynamicRunStatus::Paused);
+        assert_eq!(graph.run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+        assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Paused);
+        assert_eq!(
+            graph.nodes[0].pause_reason,
+            Some(PauseReason::RuntimeAbnormal)
+        );
+    }
+
+    #[test]
     fn cancel_all_active_acp_attempts_also_cancels_follow_up_session_on_completed_run() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
@@ -4716,6 +5201,7 @@ mod tests {
                 started_at: "2026-06-28T00:00:00Z".to_string(),
                 finished_at: Some("2026-06-28T00:00:01Z".to_string()),
                 manual_check_pending: false,
+                runtime_execution_id: None,
                 resolved_config: Default::default(),
                 uuid: None,
             },

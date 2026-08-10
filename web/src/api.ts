@@ -152,8 +152,12 @@ export function startRun(taskId: string) {
   return getRuntimeApi().startRun(taskId);
 }
 
-export function continueRun(projectId: string | null | undefined, taskId: string, runId: string, promptId?: string | null, prompt?: string | null) {
-  return getRuntimeApi().continueRun(projectId, taskId, runId, promptId, prompt);
+export function continueRun(projectId: string | null | undefined, taskId: string, runId: string) {
+  return getRuntimeApi().continueRun(projectId, taskId, runId);
+}
+
+export function continueConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().continueConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }
 
 export function pauseRun(taskId: string, runId: string, projectId?: string | null) {

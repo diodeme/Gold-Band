@@ -73,11 +73,11 @@ Profile 数据增加 `dynamicTemplate: boolean`，默认值为 `false`。该字�
 | 变量 | 类型 / 枚举 | 含义 |
 | --- | --- | --- |
 | `execution.surface` | `workflow \| aiDynamic` | 普通工作流执行面，或 AI-DYNAMIC 内部调度执行面 |
-| `execution.can_route_next` | `boolean` | 当前节点是否具备 output contract 且可以通过 `dynamic-node-completion` 路由后继节点 |
-| `execution.has_output_contract` | `boolean` | 当前 invocation 是否存在 output contract |
+| `execution.can_route_next` | `boolean` | 当前 turn 是否位于 AI-DYNAMIC 执行面且启用了 `InlineControl`，可以在本 turn 通过 `dynamic-node-completion` 路由后继节点 |
+| `execution.has_output_contract` | `boolean` | 当前 turn 是否启用了 `InlineControl` output contract；`PostTurnProjection` 的业务 turn 为 `false`，隐藏 finalize turn 才负责控制输出 |
 | `execution.session_mode` | `new \| continue` | 当前 ACP session 调用模式 |
 
-`execution.surface` 必须由 invocation 创建入口显式赋值：普通 workflow worker 使用 `workflow`，AI-DYNAMIC 内部 worker / merge / acceptance 使用 `aiDynamic`。枚举值统一采用 camelCase，不得通过 `runtime_node_id`、目录结构、output artifact 名称或其他身份字段反推执行面；`runtime_node_id` 只保留动态节点定位职责。`execution.can_route_next` 在显式执行面为 `aiDynamic` 且当前 invocation 存在 output contract 时为 `true`。
+`execution.surface` 必须由 invocation 创建入口显式赋值：普通 workflow worker 使用 `workflow`，AI-DYNAMIC 内部 worker / merge / acceptance 使用 `aiDynamic`。枚举值统一采用 camelCase，不得通过 `runtime_node_id`、目录结构、output artifact 名称或其他身份字段反推执行面；`runtime_node_id` 只保留动态节点定位职责。`execution.can_route_next` 在显式执行面为 `aiDynamic` 且当前 turn 使用 `InlineControl` 时为 `true`。`PostTurnProjection` 业务 turn 即使 invocation 保留原始 contract，也必须渲染为 `false`，避免 Profile 提前要求 artifact；Runtime 后续以独立隐藏 finalize prompt 提供完整控制协议。
 
 角色编辑页提供“启用动态模板”开关，默认关闭；问号提示展示上述变量和枚举值。自定义角色可以复用同一套判断，不需要复制内置角色或修改 runtime 代码。内置角色扫描结果中，仅 `plan` 和 `dev` 需要根据执行面切换规则，因此两者开启该开关，其余内置角色保持关闭。
 

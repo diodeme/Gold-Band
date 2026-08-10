@@ -4,12 +4,15 @@ use crate::config::{
     AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, catalog_agent_default_config,
 };
 pub use crate::domain::SessionRef;
-use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode, VERSION};
+use crate::domain::{
+    DEFAULT_PROVIDER, InvocationKind, SessionMode, TurnControlMode, TurnControlTransitionCause,
+    VERSION,
+};
 use crate::prompts::{
     PromptExecutionSurface, RUNTIME_ARTIFACT_FINALIZE_EN, RUNTIME_ARTIFACT_FINALIZE_ZH_CN,
-    RUNTIME_HIDDEN_CONTEXT_EN, RUNTIME_HIDDEN_CONTEXT_ZH_CN, RUNTIME_SYSTEM_EN,
-    RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN, profile_template_context,
-    prompt_by_language, render as render_template,
+    RUNTIME_CONTROL_SUSPENDED_EN, RUNTIME_CONTROL_SUSPENDED_ZH_CN, RUNTIME_HIDDEN_CONTEXT_EN,
+    RUNTIME_HIDDEN_CONTEXT_ZH_CN, RUNTIME_SYSTEM_EN, RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN,
+    RUNTIME_USER_ZH_CN, profile_template_context, prompt_by_language, render as render_template,
 };
 use crate::runtime::WorkerRefState;
 use crate::runtime_error::{
@@ -129,6 +132,7 @@ impl DoctorResult {
 pub enum UserPromptRenderMode {
     RequirementTask,
     WorkflowResume,
+    RuntimeResume,
     RuntimeFinalize,
     RuntimeRepair,
     UserMessage,
@@ -143,6 +147,10 @@ impl Default for UserPromptRenderMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerInvocation {
     pub invocation_kind: InvocationKind,
+    #[serde(default)]
+    pub turn_control_mode: TurnControlMode,
+    #[serde(default)]
+    pub runtime_control_resume_candidate: bool,
     #[serde(default)]
     pub prompt_envelope: crate::dsl::PromptEnvelopeMode,
     pub execution_surface: PromptExecutionSurface,
@@ -383,6 +391,13 @@ pub struct PromptBundle {
     pub prompt_id: Option<String>,
     pub visibility: PromptVisibility,
     pub hidden_reason: Option<String>,
+    pub turn_control_mode: TurnControlMode,
+    pub runtime_control_resume_candidate: bool,
+    /// Candidate context rendered only after the per-session prompt lock is held.
+    pub runtime_control_suspended_context: Option<String>,
+    pub runtime_control_transition_id: Option<String>,
+    pub runtime_control_source_transition_id: Option<String>,
+    pub runtime_control_transition_cause: Option<TurnControlTransitionCause>,
     pub attachment_metas: Vec<AttachmentMeta>,
     pub content_blocks: Vec<AcpContentBlock>,
 }
@@ -1042,7 +1057,7 @@ impl AcpProvider {
             self.acp_raw_max_size_bytes,
             self.acp_raw_target_size_bytes,
             self.runtime_policy,
-            acp_output_policy(req.output_contract.as_ref()),
+            acp_output_policy(req.turn_control_mode, req.output_contract.as_ref()),
             live_update,
             &req.mcp_servers,
             session_update,
@@ -1061,13 +1076,15 @@ impl AcpProvider {
                     .clone()
                     .unwrap_or_else(|| req.runtime_context.attempt_id.clone()),
                 attempt_state_file: req.runtime_context.attempt_state_file.clone(),
+                turn_control_mode: req.turn_control_mode,
             }),
         )?;
         let terminal = classify_acp_prompt_run(&run);
-        let result_payload = matches!(
-            terminal.status,
-            ProviderRunStatus::Success | ProviderRunStatus::Interrupted
-        )
+        let result_payload = (req.turn_control_mode == TurnControlMode::RuntimeControlled
+            && matches!(
+                terminal.status,
+                ProviderRunStatus::Success | ProviderRunStatus::Interrupted
+            ))
         .then(|| {
             req.output_contract
                 .as_ref()
@@ -1242,9 +1259,11 @@ impl ProviderAdapter for AcpProvider {
         session_update: Option<AcpSessionUpdate<'_>>,
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
-        if req.output_contract.as_ref().is_some_and(|contract| {
-            contract.emission_mode == OutputEmissionMode::PostTurnProjection
-        }) {
+        if req.turn_control_mode == TurnControlMode::RuntimeControlled
+            && req.output_contract.as_ref().is_some_and(|contract| {
+                contract.emission_mode == OutputEmissionMode::PostTurnProjection
+            })
+        {
             self.run_post_turn_projection_with_callbacks(
                 req,
                 live_update,
@@ -1268,8 +1287,13 @@ impl ProviderAdapter for AcpProvider {
     }
 }
 
-fn acp_output_policy(contract: Option<&PromptOutputContract>) -> client::AcpOutputPolicy {
-    if contract.is_some_and(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
+fn acp_output_policy(
+    turn_control_mode: TurnControlMode,
+    contract: Option<&PromptOutputContract>,
+) -> client::AcpOutputPolicy {
+    if turn_control_mode == TurnControlMode::RuntimeControlled
+        && contract
+            .is_some_and(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
     {
         client::AcpOutputPolicy::ArtifactContract
     } else {
@@ -1408,12 +1432,13 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
             }
         }
         UserPromptRenderMode::WorkflowResume
+        | UserPromptRenderMode::RuntimeResume
         | UserPromptRenderMode::RuntimeFinalize
         | UserPromptRenderMode::RuntimeRepair
         | UserPromptRenderMode::UserMessage => String::new(),
     };
 
-    let (system_prompt, user_prompt) = match req.prompt_envelope {
+    let (system_prompt, mut user_prompt) = match req.prompt_envelope {
         crate::dsl::PromptEnvelopeMode::RuntimeManaged => (
             render_system_prompt(req)?,
             render_user_prompt(req, &requirement_text),
@@ -1427,6 +1452,12 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
             },
         ),
     };
+    if req.turn_control_mode == TurnControlMode::NonRuntimeControlled
+        && req.user_prompt_render_mode == UserPromptRenderMode::UserMessage
+        && !req.extra_hidden_sections.is_empty()
+    {
+        user_prompt = append_extra_hidden_sections(&user_prompt, &req.extra_hidden_sections);
+    }
     let is_continue = matches!(req.session_mode, SessionMode::Continue);
 
     // Resolve task input attachments
@@ -1454,10 +1485,17 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
             PromptVisibility::Visible
         },
         hidden_reason: match req.user_prompt_render_mode {
+            UserPromptRenderMode::RuntimeResume => Some("runtimeControlResume".to_string()),
             UserPromptRenderMode::RuntimeFinalize => Some("artifactFinalize".to_string()),
             UserPromptRenderMode::RuntimeRepair => Some("invalidOutputRepair".to_string()),
             _ => None,
         },
+        turn_control_mode: req.turn_control_mode,
+        runtime_control_resume_candidate: req.runtime_control_resume_candidate,
+        runtime_control_suspended_context: None,
+        runtime_control_transition_id: None,
+        runtime_control_source_transition_id: None,
+        runtime_control_transition_cause: None,
         attachment_metas,
         content_blocks,
     })
@@ -1477,6 +1515,7 @@ fn render_system_prompt(req: &WorkerInvocation) -> Result<String> {
 fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String {
     match req.user_prompt_render_mode {
         UserPromptRenderMode::UserMessage
+        | UserPromptRenderMode::RuntimeResume
         | UserPromptRenderMode::RuntimeFinalize
         | UserPromptRenderMode::RuntimeRepair => req
             .resume_prompt
@@ -1527,6 +1566,43 @@ fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String 
             compact_hidden_context_spacing(&content)
         }
     }
+}
+
+fn append_extra_hidden_sections(prompt: &str, sections: &[PromptHiddenSection]) -> String {
+    let content = sections
+        .iter()
+        .map(|section| section.content.trim())
+        .filter(|content| !content.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if content.is_empty() {
+        return prompt.to_string();
+    }
+    format!(
+        "{}\n\n{}",
+        prompt.trim(),
+        gold_band_hidden_block("Gold Band runtime context", &content)
+    )
+}
+
+pub(crate) fn append_runtime_control_suspended_context(prompt: &str, context: &str) -> String {
+    append_extra_hidden_sections(
+        prompt,
+        &[PromptHiddenSection {
+            title: "Gold Band runtime context".to_string(),
+            content: context.to_string(),
+        }],
+    )
+}
+
+pub fn runtime_control_suspended_context(language: crate::config::DesktopLanguage) -> String {
+    prompt_by_language(
+        language,
+        RUNTIME_CONTROL_SUSPENDED_ZH_CN,
+        RUNTIME_CONTROL_SUSPENDED_EN,
+    )
+    .trim()
+    .to_string()
 }
 
 fn render_hidden_context(req: &WorkerInvocation) -> String {
@@ -2085,6 +2161,8 @@ mod tests {
         };
         WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
+            turn_control_mode: TurnControlMode::RuntimeControlled,
+            runtime_control_resume_candidate: false,
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
             execution_surface: PromptExecutionSurface::Workflow,
             profile: None,
@@ -2316,16 +2394,20 @@ mod tests {
         let deferred = test_output_contract(OutputEmissionMode::PostTurnProjection);
 
         assert_eq!(
-            acp_output_policy(None),
+            acp_output_policy(TurnControlMode::RuntimeControlled, None),
             client::AcpOutputPolicy::Conversation
         );
         assert_eq!(
-            acp_output_policy(Some(&deferred)),
+            acp_output_policy(TurnControlMode::RuntimeControlled, Some(&deferred)),
             client::AcpOutputPolicy::Conversation
         );
         assert_eq!(
-            acp_output_policy(Some(&inline)),
+            acp_output_policy(TurnControlMode::RuntimeControlled, Some(&inline)),
             client::AcpOutputPolicy::ArtifactContract
+        );
+        assert_eq!(
+            acp_output_policy(TurnControlMode::NonRuntimeControlled, Some(&inline)),
+            client::AcpOutputPolicy::Conversation
         );
     }
 
@@ -2514,6 +2596,8 @@ mod tests {
         };
         let mut req = WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
+            turn_control_mode: TurnControlMode::RuntimeControlled,
+            runtime_control_resume_candidate: false,
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
             execution_surface: PromptExecutionSurface::Workflow,
             profile: None,

@@ -8,6 +8,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::acp::control::AcpRuntimeControlCursor;
 use crate::artifacts::json_artifact_display_span;
 use crate::storage::{
     append_jsonl, append_jsonl_unlocked, ensure_parent_dir, with_jsonl_file_lock, write_json,
@@ -62,6 +63,15 @@ pub struct AcpSessionMetadata {
     /// continue the same user turn without scanning the timeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_retry: Option<AcpPromptRetryState>,
+    /// Latest invocation-level Runtime/NonRuntime transition. This lives in
+    /// existing ACP session metadata so terminal snapshot rewrites preserve
+    /// the one-time suspension-context cursor without a new state file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_control: Option<AcpRuntimeControlCursor>,
+    /// Negative cache for legacy attempts without Runtime control metadata.
+    /// Once set, ordinary conversation turns never rescan the full timeline.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub runtime_control_timeline_scan_complete: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]

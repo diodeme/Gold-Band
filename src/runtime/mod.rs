@@ -101,6 +101,11 @@ pub struct NodeState {
     pub finished_at: Option<String>,
     #[serde(default)]
     pub manual_check_pending: bool,
+    /// Identifies the currently authorized Runtime invocation for this attempt.
+    /// A stop clears it and every explicit continue allocates a new value so
+    /// stale background work cannot mutate a newer execution of the same attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_execution_id: Option<String>,
     pub resolved_config: ResolvedConfig,
     #[serde(default)]
     pub uuid: Option<String>,

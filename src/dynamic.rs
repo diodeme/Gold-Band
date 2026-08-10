@@ -72,6 +72,14 @@ pub enum WorkspaceStatus {
     Released,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DynamicRunPhase {
+    #[default]
+    Executing,
+    PreparingWorkspace,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceState {
@@ -112,6 +120,11 @@ pub struct DynamicRunState {
     pub parent_node_id: String,
     pub parent_attempt_id: String,
     pub status: DynamicRunStatus,
+    /// Internal non-interruptible phase. Stop requests may be accepted while
+    /// workspace preparation is active, but become effective only after the
+    /// workspace/graph transition reaches a consistent boundary.
+    #[serde(default)]
+    pub phase: DynamicRunPhase,
     pub outcome: Option<RunOutcome>,
     #[serde(default)]
     pub pause_reason: Option<PauseReason>,
@@ -137,6 +150,10 @@ pub struct DynamicNodeState {
     pub pause_reason: Option<PauseReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_error: Option<RuntimeErrorInfo>,
+    /// Identifies the currently authorized Runtime invocation for this leaf.
+    /// It changes on every explicit continue and is cleared when the leaf pauses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_execution_id: Option<String>,
     pub group_id: Option<String>,
     pub chain_id: String,
     pub depth: u32,
@@ -687,6 +704,10 @@ pub fn validate_dynamic_run_state(state: &DynamicRunState) -> Result<()> {
     ensure!(
         !(state.status != DynamicRunStatus::Paused && state.pause_reason.is_some()),
         "non-paused dynamic run cannot have pauseReason"
+    );
+    ensure!(
+        state.status == DynamicRunStatus::Running || state.phase == DynamicRunPhase::Executing,
+        "non-running dynamic run cannot prepare workspace"
     );
     Ok(())
 }

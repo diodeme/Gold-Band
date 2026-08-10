@@ -27,6 +27,26 @@ AI-DYNAMIC 的判定依据是节点运行角色，而不是“执行 surface 是
 
 - 业务 turn 中断或失败且尚无 emission state：继续时仍恢复业务对话，不得假定任务已经完成。
 - emission state 已进入 `finalizing`：停止、进程退出、自动重试或用户继续后，只恢复隐藏 finalize，不得重新执行业务工作。
+- `finalizing` 只表示已经进入 artifact 归一化阶段，不表示被中断的回复完整。用户继续时必须丢弃中断 turn 的候选输出，重新发送完整 finalize prompt；只有新 turn terminal success 且 artifact 解析、schema 校验通过后才可完成节点。
+
+### Turn 控制模式与停止后自由会话
+
+每次 Agent invocation 都必须携带 `RuntimeControlled | NonRuntimeControlled` 控制模式。该模式属于 turn 级策略，不新增 Run / Round / Node 状态：
+
+- `RuntimeControlled` 允许 Runtime 消费 artifact、计算 outcome、执行 finalize/repair、完成人工 check 前置处理并推进 edge。
+- `NonRuntimeControlled` 只保存 ACP timeline/session；即使 Agent 输出符合原 `output_contract` 的 JSON，也不得提取 artifact、计算 outcome、完成节点或推进 edge。
+
+用户停止仍写入 `Paused + ProcessInterrupted`。停止后的 composer 保持普通输入，用户消息固定走 `NonRuntimeControlled`，不会因为 Agent 回复结束而恢复工作流。只有显式“继续工作流”动作可以恢复 Runtime；该动作发送隐藏 `RuntimeResume` prompt，不生成可见用户气泡。可恢复暂停的 lifecycle 固定投影为 `continueKind=action`、`composer.mode=normal`、`submitTarget=acp-prompt`，旧 `interrupted-input / runtime-continue` 文本提交语义废弃。
+
+RuntimeControlled → NonRuntimeControlled 后，第一条已被 ACP 接受的用户消息附加一次默认收缩、可展开的 `<hidden>` 运行上下文，说明当前无需遵循 Runtime artifact 要求且不得自行推进工作流。该边界通过既有 ACP snapshot/session/timeline 的 `runtimeControl` metadata 与 transition id 记录；NonRuntime 对话中再次停止不创建新边界、不重复注入。显式继续后再次停止 Runtime 才会创建下一条边界。
+
+Direct / `RawAgent` 从首轮开始就是 `NonRuntimeControlled`，不能先按 RuntimeControlled 启动、再依赖后续追问修正。停止后的首次 context 判定、user prompt event 落盘和 cursor commit 必须位于同一个 ACP session prompt lock 边界：并发普通消息只有第一条能够认领 suspended transition；显式继续则先生成包含 source transition id 的候选，只有 accepted user prompt event 已持久化后才以 CAS 提交 `WorkflowContinued`。ACP 初始化、session setup 或 prompt 接受前失败时 cursor 保持 NonRuntime，新的 stop transition 也不能被迟到的 resume 覆盖。
+
+固定工作流的显式 continue 在读取 paused 状态前先获取 per-run starting lease，同一 run 的重复请求只允许一个进入后台启动；lease 不跨 run，也不持有任何全局锁等待 Agent turn。Runtime control cursor 的 stop / accepted 写入使用固定数量的路径哈希短锁，只覆盖 snapshot/session 小文件的读取与原子写入；stop 控制面绝不触发 timeline 重建。只有普通恢复查询遇到 legacy attempt 缺少 cursor 时才最多回扫 timeline 一次，并把 `runtimeControlTimelineScanComplete` 作为 negative cache 回填，正常消息热路径不得反复 O(n) 扫描 timeline。
+
+通用“继续工作流”动作只允许恢复 `Paused + ProcessInterrupted` 与 `Paused + RuntimeAbnormal`。`WaitingForUserInput`、`PermissionRequested` 和 `ErrorBlocked` 都是结构化干预态，不能通过通用 continue 绕过：manual check 等待期间仍是 `NonRuntimeControlled`，只由成功/失败判定按钮提交 `NodeOutcome`；permission 与 elicitation 只接受各自响应接口；`ErrorBlocked` 必须先修复阻断原因。固定 workflow 与 AI-DYNAMIC leaf 共同调用 `PauseReason::allows_explicit_runtime_continue`，不得各自维护条件表。
+
+continue command 只有在目标 run/round/node（或 dynamic leaf）的 `Running` 事实已经持久化后才能返回 `runtime-continue-started`。后台执行使用一次性启动握手，不增加轮询；启动前校验或初始化失败同步返回结构化 `runtime.continue-launch-failed`，前端不得建立 optimistic Running。握手后发生的意外失败只在原 attempt 仍为当前 active 状态时收敛为 `Paused + RuntimeAbnormal`，并立即发布权威 session/lifecycle 刷新；若用户已停止、目标已完成或 current attempt 已变化，迟到失败不得覆盖新事实。AI-DYNAMIC 在启动失败时还必须清理 starting/pending resume 窗口并回收 re-arm 后的 `Ready | Running` leaf，不能留下没有执行线程的 active 状态。
 - finalize 输出不合法：repair 继续复用同一 session，只修复控制产物；`invalidOutputRepair` 与 `artifactFinalize` 在 timeline 中使用不同 hidden reason。
 - emission state 损坏或版本不支持：按 runtime 状态错误阻断，不能静默忽略后重新执行业务 turn。
 
@@ -101,7 +121,7 @@ ACP invocation 的 continue prompt state 由 runtime 统一决策，普通 workf
 - auth、quota、rate limit、provider 暂不可用、model invalid、catalog missing、provider 缺失、workspace 能力缺失等用户处理外部条件后可继续的异常。
 - 事件、timeline、raw frame 等观察性写入失败，且不会改变 workflow 前提条件。
 
-`runtime-abnormal` 与用户停止的 `process-interrupted` 都保留当前 run / round / node / attempt，并允许通过 runtime continue 恢复；区别是前者需要以异常视觉提醒用户排查本地、协议层或 provider/config 条件。用户点击继续且后端接受后，会话输入区立即进入 runtime 控制态并保持锁定，直到 runtime active、停止中、错误或下一次可交互暂停事实到达；后台写入 running 文件前残留的旧 paused / interrupted-input 快照不得让输入区短暂恢复为可输入。错误分类优先使用 runtime 内部 typed error 与 source chain 中的 `std::io::Error` / transport error；只有 adapter、ACP 或第三方库没有稳定错误类型时，才允许在统一 normalization 层用字符串特征作为最后兜底。
+`runtime-abnormal` 与用户停止的 `process-interrupted` 都保留当前 run / round / node / attempt，并允许通过显式“继续工作流”动作恢复；区别是前者需要以异常视觉提醒用户排查本地、协议层或 provider/config 条件。暂停期间输入区继续提供 NonRuntime 普通对话，独立 continue action 才恢复 Runtime。用户点击继续且后端接受后，会话输入区立即进入 runtime 控制态并保持锁定，直到 runtime active、停止中、错误或下一次可交互暂停事实到达；后台写入 running 文件前残留的旧 paused/action 快照不得让输入区短暂降级。错误分类优先使用 runtime 内部 typed error 与 source chain 中的 `std::io::Error` / transport error；只有 adapter、ACP 或第三方库没有稳定错误类型时，才允许在统一 normalization 层用字符串特征作为最后兜底。
 
 ### 8.1 用户停止优先级与 ACP 收尾
 
@@ -114,6 +134,19 @@ runtime 写入 `Paused + ProcessInterrupted` 后，自动重试控制器必须�
 `session/cancel` 后仍需有界等待原 `session/prompt` terminal。若 deadline 到期，记录结构化 `acp.cancel-drain-timeout`，用户可见 attempt 仍保持 `Paused + ProcessInterrupted`，ACP turn 结算为 cancelled；该未收尾 session 必须从 attempt route、attached runtime registry 和 worker continue ref 中移除，后续继续使用新 session。adapter process 仍按 `provider_id + workspace_root` 复用，不因单个 session 收尾超时被 kill，也不得影响同 process 上的其他 session。
 
 若 ACP 在 session-ready、session id 或首批 timeline event 形成前已经进入 `runtime-error`，会话 UI 必须优先展示 runtime diagnostic 错误态并停止初始 loading；不能因为 session snapshot 尚未 ready 而持续显示加载中。已经建立 session 或已有事件的会话仍走正常会话错误展示路径，避免初始化错误规则覆盖可恢复的既有会话。
+
+### 8.2 AI-DYNAMIC workspace 一致性边界
+
+AI-DYNAMIC 的 `DynamicRunState.phase` 统一管理 Graph + Git 一致性阶段：
+
+- `Executing`：普通 scheduler / Agent 执行阶段。
+- `PreparingWorkspace`：checkpoint、fanout worktree 创建、merge 前 checkpoint、child worktree release 或整图结束 release 正在执行。
+
+`PreparingWorkspace` 只允许出现在 Running dynamic run 中，并以 `dynamic-run.json + graph.json` 作为可恢复事实。workspace transition 必须继续持有该 graph 的 dynamic state lock，不能把 Git 操作拆到锁外，也不能通过补偿删除模拟事务。阶段开始时只持久化 phase 所需的两个权威文件；操作结束时恢复 `Executing` 并完整持久化 Graph catalog。失败路径同样必须恢复 `Executing`，不得留下永久“准备中”。
+
+用户在该阶段点击停止时，等待 workspace 交接的 completed leaf 没有可单独取消的 active execution，因此精确 session stop 升级为外层 run stop：Run / Round / Node 先写入 `Paused + ProcessInterrupted`，随后等待 dynamic state lock；仍为 active 的并行 leaf 则保持单 leaf stop，只在临界区结束后落盘 leaf pause。workspace transition 完整结束后，停止逻辑暂停对应 descendants 并返回。等待期间前端继续使用既有 stop pending overlay 显示“正在停止…”，不设置超时，不取消底层 Git 命令，也不报告伪失败。transition 已创建的 worktree 必须保留在 catalog；显式继续创建新的 execution generation，并复用该 workspace tree。
+
+外层停止事实一旦落盘，scheduler 在下一次持有一致状态后必须停止启动新 Agent。旧 execution 的迟到成功结果不得恢复外层 Runtime，即使结果包含完整合法 artifact；只有用户显式 continue 可以建立新的 Running generation。
 
 ## 9. 错误阻塞
 以下情况进入 `paused + error-blocked`：

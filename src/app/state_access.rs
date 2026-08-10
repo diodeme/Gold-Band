@@ -6,6 +6,7 @@ use crate::runtime::{NodeState, RoundState, RunState};
 use crate::storage::{read_json, write_json};
 
 use super::App;
+use super::attempt_runtime_state_lock;
 
 pub(crate) fn current_attempt_state(
     app: &App,
@@ -71,4 +72,40 @@ pub(crate) fn persist_runtime_state(
         node,
     )?;
     Ok(())
+}
+
+/// Persists a Runtime-controlled attempt only while its durable execution
+/// identity is still current. The same short lock is used by stop and failure
+/// convergence, making the identity comparison and state write one operation.
+pub(crate) fn persist_runtime_state_if_execution_current(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+    round: &RoundState,
+    node: &NodeState,
+) -> Result<bool> {
+    let Some(execution_id) = node.runtime_execution_id.as_deref() else {
+        persist_runtime_state(app, task_id, run, round, node)?;
+        return Ok(true);
+    };
+    let state_lock = attempt_runtime_state_lock(
+        app,
+        task_id,
+        &run.id,
+        &round.id,
+        &node.node_id,
+        &node.attempt_id,
+    );
+    let _guard = state_lock
+        .lock()
+        .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+    let node_path =
+        app.paths
+            .node_file(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id);
+    let current: NodeState = read_json(&node_path)?;
+    if current.runtime_execution_id.as_deref() != Some(execution_id) {
+        return Ok(false);
+    }
+    persist_runtime_state(app, task_id, run, round, node)?;
+    Ok(true)
 }

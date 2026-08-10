@@ -948,3 +948,20 @@ attempt-001/
 - 生命周期：业务 turn 成功后先原子写入 `artifact-emission.json(finalizing)`，再开始隐藏 finalize。停止、进程恢复和自动重试只要观察到该 durable phase，就跳过业务执行并继续 finalization；无 phase 时仍按业务 turn 恢复。finalize 输出 repair 只修复 artifact，不重新执行任务；损坏或版本不支持的 phase 不允许静默回退。
 - 提示词与观测：中英文 finalize 模板统一放入 `src/prompts/<language>/runtime/artifact_finalize.md`；可见业务 turn 不暴露 schema，隐藏 timeline reason 区分 `artifactFinalize` 与 `invalidOutputRepair`。
 - 回归固化：Rust 单元测试覆盖发射模式到 ACP 输出策略的映射、业务 prompt 不含 schema、隐藏 finalize 内容与 reason、durable finalizing 恢复、workflow 默认后置，以及 AI-DYNAMIC bootstrap/普通 worker/acceptance 的模式分流。
+
+---
+
+## 2026-08-10：工作流停止后 Runtime 控制与自由会话分离
+
+- 根因修复：将“Agent turn 是否由 Runtime 消费”从 prompt 内容与节点暂停状态中抽离为 invocation 级 `RuntimeControlled / NonRuntimeControlled`。普通消息不会再因为回复结束而读取 artifact、计算 outcome 或推进 workflow。
+- 交互收敛：`Paused + ProcessInterrupted` 不新增状态；composer 保持普通聊天，并提供独立“继续工作流”按钮。文本提交固定走 NonRuntime ACP prompt，显式继续调用 `continue_conversation_runtime` 并发送隐藏 `RuntimeResume`，不创建可见用户消息。
+- 边界提示：Runtime → NonRuntime 后第一条已接受消息附加一次默认收缩、可展开的运行上下文；transition cursor 复用 ACP snapshot/session/timeline metadata，NonRuntime 中再次停止不重复注入，恢复后再次停止才形成新边界。
+- artifact 完整性：PostTurn finalize 中断输出一律不可信；`artifact-emission.json(finalizing)` 恢复只跳过业务 turn并重新请求完整 finalize。InlineControl、PostTurnProjection 与 AI-DYNAMIC 精确 leaf resume 继续复用现有 contract 和 scheduler。
+- 并发与接受边界：suspended context 在 ACP prompt lock 内认领；`WorkflowContinued` 只在 accepted prompt event 落盘后以 source transition CAS 提交，迟到 resume 不覆盖新 stop。固定工作流 continue 使用 per-run starting lease 拦截双击，且不持有全局锁等待 Agent turn。
+- 性能收口：legacy cursor 缺失时只回扫 timeline 一次并持久化 negative cache；cursor 并发写入使用固定 64 路路径哈希短锁，不维护随 attempt 数增长并在热路径全表清理的锁注册表。Direct / `RawAgent` 首轮直接派生为 NonRuntimeControlled。
+- 回归固化：Rust 覆盖 control cursor、NonRuntime 重复 stop、accepted 后 resume commit、stale resume CAS、legacy negative cache、同 session 并发首次 context、固定 continue starting lease、Direct 首轮、stop probe、NonRuntime contract policy 与 interrupted PostTurn；Provider prompt bundle 覆盖 PostTurn 业务 turn 不暴露 output DSL，Web 覆盖 paused action + 普通 composer、显式继续入口和旧 `interrupted-input/runtime-continue` 语义删除。
+- 继续资格收紧：通用 continue 只恢复 `ProcessInterrupted / RuntimeAbnormal`；manual check 等待保持 NonRuntime 并只由成功/失败按钮推进，permission、elicitation/waiting 与 ErrorBlocked 不能被通用入口绕过。fixed 与 AI-DYNAMIC 复用同一领域判定。
+- durable acceptance：`runtime-continue-started` 改为 Running 状态落盘后的启动握手结果；启动前失败同步返回结构化错误。握手后意外失败只对原 active attempt 做 CAS 收敛并刷新权威 lifecycle，迟到错误不覆盖用户 stop/完成/attempt 切换；AI-DYNAMIC 同时回收 re-arm leaf 与 starting registry。
+- 性能约束：握手使用一次性 channel、无轮询；fixed starting lease 在 Running durable fact 后释放，不跨 Agent turn。失败状态 CAS 复用固定 64 路短锁和 dynamic graph lock，只覆盖小型状态文件写入。
+- workspace 一致性：AI-DYNAMIC 新增持久化 `Executing / PreparingWorkspace` 内部阶段，checkpoint、fork、merge 前准备与 release 继续在 dynamic graph lock 内完成。准备期间 UI 显示“正在准备开发环境…”，用户点击停止后沿用“正在停止…”并等待临界区结束；已创建 worktree 保留，continue 复用原 workspace tree。阶段开始只写 `dynamic-run.json + graph.json`，不重复重写全量分文件，也不新增轮询或 Agent turn。
+- stop boundary：外层 stop 落盘后，任何旧 dynamic execution 的迟到成功结果都不能恢复 Runtime；完整合法 completion 也必须等待用户显式 continue 建立新 execution generation。接口级回归覆盖 phase 持久化、停止 pending、临界区释放后 Paused、workspace 保留与前端 stopping 优先级。

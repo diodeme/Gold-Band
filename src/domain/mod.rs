@@ -44,6 +44,22 @@ pub enum SessionMode {
     Continue,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TurnControlMode {
+    #[default]
+    RuntimeControlled,
+    NonRuntimeControlled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TurnControlTransitionCause {
+    RuntimeInterrupted,
+    WorkflowContinued,
+    RuntimeTerminal,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PauseReason {
@@ -52,6 +68,12 @@ pub enum PauseReason {
     ErrorBlocked,
     WaitingForUserInput,
     PermissionRequested,
+}
+
+impl PauseReason {
+    pub fn allows_explicit_runtime_continue(self) -> bool {
+        matches!(self, Self::ProcessInterrupted | Self::RuntimeAbnormal)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,3 +100,17 @@ pub struct SessionRef {
 }
 
 pub type ResolvedConfig = BTreeMap<String, serde_json::Value>;
+
+#[cfg(test)]
+mod tests {
+    use super::PauseReason;
+
+    #[test]
+    fn explicit_runtime_continue_is_limited_to_recoverable_pause_reasons() {
+        assert!(PauseReason::ProcessInterrupted.allows_explicit_runtime_continue());
+        assert!(PauseReason::RuntimeAbnormal.allows_explicit_runtime_continue());
+        assert!(!PauseReason::WaitingForUserInput.allows_explicit_runtime_continue());
+        assert!(!PauseReason::PermissionRequested.allows_explicit_runtime_continue());
+        assert!(!PauseReason::ErrorBlocked.allows_explicit_runtime_continue());
+    }
+}

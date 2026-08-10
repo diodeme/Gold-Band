@@ -288,10 +288,10 @@ use crate::acp::usage::{
     append_prompt_started, repair_attempt_usage,
 };
 use crate::config::{AcpAdapterConfig, ManagedAgentId, RuntimeConfig};
-use crate::domain::{SessionMode, VERSION};
+use crate::domain::{SessionMode, TurnControlMode, TurnControlTransitionCause, VERSION};
 use crate::provider::{
     ACP_MCP_TRANSPORT_UNSUPPORTED_CODE, PromptBundle, PromptVisibility, SkippedAcpMcpServer,
-    gold_band_hidden_block, prepare_acp_mcp_servers,
+    append_runtime_control_suspended_context, gold_band_hidden_block, prepare_acp_mcp_servers,
 };
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
 use crate::runtime_error::{
@@ -815,10 +815,14 @@ pub struct RuntimeStopProbe {
     pub node_id: String,
     pub attempt_id: String,
     pub attempt_state_file: Option<Utf8PathBuf>,
+    pub turn_control_mode: TurnControlMode,
 }
 
 impl RuntimeStopProbe {
     fn is_stopped(&self) -> bool {
+        if self.turn_control_mode == TurnControlMode::NonRuntimeControlled {
+            return false;
+        }
         self.attempt_state_file
             .as_ref()
             .is_some_and(|path| self.attempt_state_is_stopped(path))
@@ -1695,6 +1699,9 @@ pub fn run_prompt(
     let _prompt_guard = prompt_lock
         .lock()
         .map_err(|_| anyhow!("ACP session prompt lock poisoned"))?;
+    let mut prompt = prompt.clone();
+    prepare_runtime_control_prompt(&attempt_dir, &mut prompt)?;
+    let prompt = &prompt;
     let mut runtime = AcpRuntime::start(
         provider_id,
         config,
@@ -1787,6 +1794,7 @@ pub fn run_prompt(
         true,
     )?;
     let prompt_turn = runtime.record_user_prompt_event(provider_id, prompt, restored)?;
+    commit_runtime_control_prompt(&runtime.paths.attempt_dir, prompt, &prompt_turn.id)?;
     runtime.control.mark_accepted();
     if let Some(prompt_accepted) = prompt_accepted {
         let _ = prompt_accepted(&prompt_turn.id);
@@ -1967,6 +1975,77 @@ pub fn run_prompt(
         runtime.release_managed_session();
     }
     Ok(run)
+}
+
+fn prepare_runtime_control_prompt(attempt_dir: &Utf8Path, prompt: &mut PromptBundle) -> Result<()> {
+    prompt.runtime_control_transition_id = None;
+    prompt.runtime_control_source_transition_id = None;
+    prompt.runtime_control_transition_cause = None;
+
+    if prompt.turn_control_mode == TurnControlMode::NonRuntimeControlled {
+        let Some(context) = prompt.runtime_control_suspended_context.take() else {
+            return Ok(());
+        };
+        let Some(suspension) = crate::acp::control::pending_runtime_suspension(attempt_dir)? else {
+            return Ok(());
+        };
+        prompt.user_prompt =
+            append_runtime_control_suspended_context(&prompt.user_prompt, &context);
+        prompt.runtime_control_transition_id = Some(suspension.transition_id);
+        prompt.runtime_control_transition_cause =
+            Some(TurnControlTransitionCause::RuntimeInterrupted);
+        return Ok(());
+    }
+
+    if prompt.runtime_control_resume_candidate
+        && let Some((source_transition_id, transition_id)) =
+            crate::acp::control::prepare_workflow_continued(attempt_dir)?
+    {
+        prompt.runtime_control_source_transition_id = Some(source_transition_id);
+        prompt.runtime_control_transition_id = Some(transition_id);
+        prompt.runtime_control_transition_cause =
+            Some(TurnControlTransitionCause::WorkflowContinued);
+    }
+    Ok(())
+}
+
+fn commit_runtime_control_prompt(
+    attempt_dir: &Utf8Path,
+    prompt: &PromptBundle,
+    accepted_prompt_id: &str,
+) -> Result<()> {
+    let Some(cause) = prompt.runtime_control_transition_cause else {
+        return Ok(());
+    };
+    let transition_id = prompt
+        .runtime_control_transition_id
+        .as_deref()
+        .ok_or_else(|| anyhow!("runtime control transition is missing its identity"))?;
+    let committed = match cause {
+        TurnControlTransitionCause::RuntimeInterrupted => {
+            crate::acp::control::mark_suspended_context_accepted(
+                attempt_dir,
+                transition_id,
+                accepted_prompt_id,
+            )?
+        }
+        TurnControlTransitionCause::WorkflowContinued => {
+            let source_transition_id = prompt
+                .runtime_control_source_transition_id
+                .as_deref()
+                .ok_or_else(|| anyhow!("runtime continue transition is missing its source"))?;
+            crate::acp::control::commit_workflow_continued(
+                attempt_dir,
+                source_transition_id,
+                transition_id,
+            )?
+        }
+        TurnControlTransitionCause::RuntimeTerminal => true,
+    };
+    if !committed {
+        bail!("runtime control transition changed before prompt acceptance");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3450,6 +3529,27 @@ impl<'a> AcpRuntime<'a> {
         {
             raw["reason"] = Value::String(reason.to_string());
         }
+        if let Some(raw) = user_event.raw.as_mut() {
+            raw["turnControlMode"] = serde_json::to_value(prompt.turn_control_mode)?;
+            if let (Some(transition_id), Some(transition_cause)) = (
+                prompt.runtime_control_transition_id.as_deref(),
+                prompt.runtime_control_transition_cause,
+            ) {
+                let mut runtime_control = json!({
+                    "currentMode": prompt.turn_control_mode,
+                    "transitionId": transition_id,
+                    "transitionCause": transition_cause,
+                    "changedAt": user_event.timestamp,
+                });
+                if transition_cause == TurnControlTransitionCause::RuntimeInterrupted {
+                    runtime_control["suspendedContextAcceptedFor"] =
+                        Value::String(transition_id.to_string());
+                    runtime_control["suspendedContextPromptId"] = Value::String(prompt_id.clone());
+                    raw["reason"] = Value::String("runtimeControlSuspended".to_string());
+                }
+                raw["runtimeControl"] = runtime_control;
+            }
+        }
         user_event.id = prompt_event_id.clone();
         user_event.timestamp = prompt_event_timestamp;
         if retry_attempt > 0 {
@@ -4619,17 +4719,23 @@ impl<'a> AcpRuntime<'a> {
         capabilities: Value,
     ) -> AcpSessionMetadata {
         let now = current_timestamp();
-        let created_at = if self.paths.snapshot.exists() {
-            read_json::<AcpSessionMetadata>(&self.paths.snapshot)
-                .map(|session| session.created_at)
-                .unwrap_or_else(|_| now.clone())
+        let previous_metadata = if self.paths.snapshot.exists() {
+            read_json::<AcpSessionMetadata>(&self.paths.snapshot).ok()
         } else if self.paths.session.exists() {
-            read_json::<AcpSessionMetadata>(&self.paths.session)
-                .map(|session| session.created_at)
-                .unwrap_or_else(|_| now.clone())
+            read_json::<AcpSessionMetadata>(&self.paths.session).ok()
         } else {
-            now.clone()
+            None
         };
+        let created_at = previous_metadata
+            .as_ref()
+            .map(|session| session.created_at.clone())
+            .unwrap_or_else(|| now.clone());
+        let runtime_control = previous_metadata
+            .as_ref()
+            .and_then(|session| session.runtime_control.clone());
+        let runtime_control_timeline_scan_complete = previous_metadata
+            .as_ref()
+            .is_some_and(|session| session.runtime_control_timeline_scan_complete);
         AcpSessionMetadata {
             adapter_id: self.connection.adapter().adapter_id.clone(),
             adapter_display_name: self.connection.adapter().display_name.clone(),
@@ -4647,6 +4753,8 @@ impl<'a> AcpRuntime<'a> {
             config_option_overrides: self.config_option_overrides.clone(),
             system_prompt_append: self.system_prompt_append.clone(),
             prompt_retry: self.prompt_retry.clone(),
+            runtime_control,
+            runtime_control_timeline_scan_complete,
             used_tokens: self.usage.context.confirmed_used,
             context_window_size: self.usage.context.window_size,
             total_cost_usd: self.usage.total_cost_usd,
@@ -5929,6 +6037,8 @@ mod tests {
 
     use serde_json::{Value, json};
 
+    use crate::domain::TurnControlMode;
+
     use super::{
         ACP_UNIDENTIFIED_AGENT_OUTPUT_CODE, AcpCancelDrainTimeout, AcpContextCompactionState,
         AcpOutputPolicy, AcpPromptFailure, AcpPromptOutputAccumulator, AcpPromptRetryState,
@@ -5955,6 +6065,67 @@ mod tests {
         take_pending_live_update_for_stream_switch, unidentified_agent_output_failure,
         unregister_provider_control,
     };
+
+    fn runtime_control_test_prompt(prompt_id: &str) -> PromptBundle {
+        PromptBundle {
+            system_prompt: String::new(),
+            user_prompt: "clarify".to_string(),
+            prompt_id: Some(prompt_id.to_string()),
+            visibility: PromptVisibility::Visible,
+            hidden_reason: None,
+            turn_control_mode: TurnControlMode::NonRuntimeControlled,
+            runtime_control_resume_candidate: false,
+            runtime_control_suspended_context: Some("runtime suspended".to_string()),
+            runtime_control_transition_id: None,
+            runtime_control_source_transition_id: None,
+            runtime_control_transition_cause: None,
+            attachment_metas: Vec::new(),
+            content_blocks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn prompt_lock_allows_only_one_suspended_context_injection() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        crate::acp::control::mark_runtime_interrupted(&attempt_dir).unwrap();
+
+        let handles = (0..2)
+            .map(|index| {
+                let attempt_dir = attempt_dir.clone();
+                std::thread::spawn(move || {
+                    let prompt_lock =
+                        super::AcpSessionRuntimeRegistry::shared().prompt_lock(&attempt_dir);
+                    let _guard = prompt_lock.lock().unwrap();
+                    let mut prompt = runtime_control_test_prompt(&format!("prompt-{index}"));
+                    super::prepare_runtime_control_prompt(&attempt_dir, &mut prompt).unwrap();
+                    let injected = prompt.runtime_control_transition_id.is_some();
+                    if injected {
+                        super::commit_runtime_control_prompt(
+                            &attempt_dir,
+                            &prompt,
+                            &format!("accepted-{index}"),
+                        )
+                        .unwrap();
+                    }
+                    (injected, prompt.user_prompt)
+                })
+            })
+            .collect::<Vec<_>>();
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(results.iter().filter(|(injected, _)| *injected).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|(_, prompt)| prompt.contains("runtime suspended"))
+                .count(),
+            1
+        );
+    }
     use crate::acp::{
         connection::AcpConnectionUnavailable,
         events::{
@@ -7689,6 +7860,12 @@ mod tests {
             prompt_id: Some("prompt-001".to_string()),
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
+            turn_control_mode: TurnControlMode::RuntimeControlled,
+            runtime_control_resume_candidate: false,
+            runtime_control_suspended_context: None,
+            runtime_control_transition_id: None,
+            runtime_control_source_transition_id: None,
+            runtime_control_transition_cause: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
         };
@@ -7713,6 +7890,12 @@ mod tests {
             prompt_id: Some("prompt-002".to_string()),
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
+            turn_control_mode: TurnControlMode::RuntimeControlled,
+            runtime_control_resume_candidate: false,
+            runtime_control_suspended_context: None,
+            runtime_control_transition_id: None,
+            runtime_control_source_transition_id: None,
+            runtime_control_transition_cause: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
         };
@@ -7735,6 +7918,12 @@ mod tests {
             prompt_id: None,
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
+            turn_control_mode: TurnControlMode::RuntimeControlled,
+            runtime_control_resume_candidate: false,
+            runtime_control_suspended_context: None,
+            runtime_control_transition_id: None,
+            runtime_control_source_transition_id: None,
+            runtime_control_transition_cause: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
         };
@@ -7846,6 +8035,7 @@ mod tests {
         .unwrap();
 
         let outer_probe = RuntimeStopProbe {
+            turn_control_mode: TurnControlMode::RuntimeControlled,
             run_file: run_file.clone(),
             round_id: "round-001".to_string(),
             node_id: "ai-dynamic1".to_string(),
@@ -7853,6 +8043,7 @@ mod tests {
             attempt_state_file: None,
         };
         let inner_probe = RuntimeStopProbe {
+            turn_control_mode: TurnControlMode::RuntimeControlled,
             run_file,
             round_id: "round-001".to_string(),
             node_id: "bootstrap".to_string(),
@@ -7903,6 +8094,7 @@ mod tests {
         .unwrap();
 
         let running_leaf_probe = RuntimeStopProbe {
+            turn_control_mode: TurnControlMode::RuntimeControlled,
             run_file: run_file.clone(),
             round_id: "round-001".to_string(),
             node_id: "ai-dynamic".to_string(),
@@ -7910,6 +8102,7 @@ mod tests {
             attempt_state_file: Some(own_state),
         };
         let paused_leaf_probe = RuntimeStopProbe {
+            turn_control_mode: TurnControlMode::RuntimeControlled,
             run_file,
             round_id: "round-001".to_string(),
             node_id: "ai-dynamic".to_string(),
@@ -7950,11 +8143,41 @@ mod tests {
         .unwrap();
 
         let probe = RuntimeStopProbe {
+            turn_control_mode: TurnControlMode::RuntimeControlled,
             run_file,
             round_id: "round-001".to_string(),
             node_id: "plan".to_string(),
             attempt_id: "attempt-001".to_string(),
             attempt_state_file: Some(manual_check_state),
+        };
+
+        assert!(!probe.is_stopped());
+    }
+
+    #[test]
+    fn runtime_stop_probe_does_not_cancel_non_runtime_conversation_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_file = camino::Utf8PathBuf::from_path_buf(dir.path().join("run.json")).unwrap();
+        std::fs::write(
+            run_file.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "paused",
+                "pause_reason": "process-interrupted",
+                "current_round": "round-001",
+                "current_node": "dev",
+                "current_attempt": "attempt-001"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let probe = RuntimeStopProbe {
+            turn_control_mode: TurnControlMode::NonRuntimeControlled,
+            run_file,
+            round_id: "round-001".to_string(),
+            node_id: "dev".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            attempt_state_file: None,
         };
 
         assert!(!probe.is_stopped());

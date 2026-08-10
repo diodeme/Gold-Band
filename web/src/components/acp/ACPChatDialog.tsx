@@ -22,6 +22,7 @@ import {
   Image as ImageIcon,
   ListTodo,
   Loader2,
+  Play,
   Search,
   Send,
   ShieldQuestion,
@@ -173,6 +174,7 @@ import {
   deleteConversationQueuedPrompt,
   respondAcpPermission,
   respondElicitation,
+  continueConversationRuntime,
   submitConversationPrompt,
   updateConversationQueuedPrompt,
   useConversationQueuedPrompt,
@@ -291,6 +293,7 @@ type AcpProcessingKind =
   | "compacting"
   | "responding"
   | "stopping"
+  | "preparing-workspace"
   | "launching-next-node";
 type AcpTimelineEvent = AcpUiEventVm & {
   startedAt?: string;
@@ -780,6 +783,8 @@ export function ACPChatDialog(
   const [manualCheckError, setManualCheckError] = useState<string | null>(null);
   const [manualCheckSubmitting, setManualCheckSubmitting] = useState(false);
   const [manualCheckResolved, setManualCheckResolved] = useState(false);
+  const [runtimeContinueSubmitting, setRuntimeContinueSubmitting] = useState(false);
+  const [runtimeContinueError, setRuntimeContinueError] = useState<string | null>(null);
   const [canvasMode, setCanvasMode] = useState<AcpCanvasMode>("chat");
   const [systemPromptOpen, setSystemPromptOpen] = useState(false);
   const [rawPage, setRawPage] = useState<AcpRawFramePageVm | null>(null);
@@ -895,6 +900,8 @@ export function ACPChatDialog(
     setManualCheckResolved(false);
     setManualCheckSubmitting(false);
     setManualCheckError(null);
+    setRuntimeContinueSubmitting(false);
+    setRuntimeContinueError(null);
     setLocalRuntimeLifecycle(null);
     setQueueSubmitPending(false);
   }, [attemptId, manualCheckPending, nodeId, roundId, runId, taskId]);
@@ -1268,10 +1275,10 @@ export function ACPChatDialog(
             phase: "paused",
           },
           displayStatus: "paused",
-          continueKind: "input",
+          continueKind: "action",
           composer: {
-            mode: "interrupted-input",
-            submitTarget: "runtime-continue",
+            mode: "normal",
+            submitTarget: "acp-prompt",
             processingKind: "processing",
             statusKey: null,
             canStop: false,
@@ -1279,6 +1286,12 @@ export function ACPChatDialog(
           },
         }
       : runtimeComposerContext?.lifecycle);
+  const showRuntimeContinueAction = Boolean(
+    localLifecycle?.continueKind === "action"
+      && localLifecycle.runtime.continuable
+      && !localLifecycle.runtime.active
+      && !localLifecycle.acp.active,
+  );
   const sessionInitializationInterrupted = isAcpSessionInitializationInterrupted({
     runtimeStatus: localLifecycle?.runtime.status ?? runtimeComposerContext?.runtimeStatus,
     runtimePauseReason: localLifecycle?.runtime.pauseReason,
@@ -2473,8 +2486,7 @@ export function ACPChatDialog(
       }
       return;
     }
-    const submittingRuntimeContinue = composerState.submitTarget === "runtime-continue";
-    if (sending || activeAwaitingResponse || (!submittingRuntimeContinue && sessionActive) || cancelling) return;
+    if (sending || activeAwaitingResponse || sessionActive || cancelling) return;
     setSending(true);
     setPromptCommandPending(true);
     setSendError(null);
@@ -2526,18 +2538,7 @@ export function ACPChatDialog(
         );
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
-      if (result.kind === "runtime-continue-started") {
-        setAwaitingResponse(false);
-        setActiveTurnStartedAt(optimisticEvent.timestamp);
-        updateOptimisticEvents((current) =>
-          current.map((event) =>
-            event.id === optimisticEvent.id
-              ? { ...event, status: "completed" }
-              : event,
-          ),
-        );
-        onSessionStopped?.();
-      } else if (result.kind === "rejected") {
+      if (result.kind === "rejected") {
         setSendError(t("errors.app.unexpected", { message: "" }));
         setAwaitingResponse(false);
         setActiveTurnPrompt(null);
@@ -2675,7 +2676,6 @@ export function ACPChatDialog(
       );
       if (result.session) applySessionUpdate(result.session);
       applyQueueLifecycle(result.lifecycle);
-      if (result.kind === "runtime-continue-started") onSessionStopped?.();
     } catch (error) {
       setSendError(displayAppError(t, error));
     } finally {
@@ -2793,6 +2793,34 @@ export function ACPChatDialog(
       setManualCheckError(displayAppError(t, error));
     } finally {
       setManualCheckSubmitting(false);
+    }
+  };
+
+  const continueRuntime = async () => {
+    if (!showRuntimeContinueAction || runtimeContinueSubmitting) return;
+    setRuntimeContinueError(null);
+    setRuntimeContinueSubmitting(true);
+    try {
+      const result = await continueConversationRuntime(
+        projectId,
+        taskId,
+        runId,
+        roundId,
+        nodeId,
+        attemptId,
+        outerNodeId,
+        outerAttemptId,
+      );
+      // Runtime continue is acknowledged only after the durable attempt/leaf
+      // state is active. Authoritative lifecycle events (or the parent refresh
+      // below) own projection; merging the command response here could regress
+      // a newer failure/stop event that arrived first.
+      setRuntimeStopAccepted(false);
+      onSessionStopped?.();
+    } catch (error) {
+      setRuntimeContinueError(displayAppError(t, error));
+    } finally {
+      setRuntimeContinueSubmitting(false);
     }
   };
 
@@ -3177,6 +3205,11 @@ export function ACPChatDialog(
                     reason={`${t("acp.manualCheckSubmitFailed")}：${manualCheckError}`}
                   />
                 ) : null}
+                {runtimeContinueError ? (
+                  <AcpErrorBanner
+                    reason={`${t("acp.continueWorkflowFailed")}：${runtimeContinueError}`}
+                  />
+                ) : null}
                 {permissionError ? (
                   <AcpErrorBanner reason={permissionError} />
                 ) : null}
@@ -3246,6 +3279,27 @@ export function ACPChatDialog(
                 onSuccess={() => void submitManualDecision("success")}
                 onFailure={() => void submitManualDecision("failure")}
               />
+            ) : null}
+            {!readOnly && showRuntimeContinueAction ? (
+              <div className="mb-1 flex justify-end">
+                <Button
+                  type="button"
+                  size="sm"
+                  className="gap-1.5"
+                  disabled={runtimeContinueSubmitting}
+                  onClick={() => void continueRuntime()}
+                  data-acp-continue-workflow="true"
+                >
+                  {runtimeContinueSubmitting ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Play className="size-3.5" />
+                  )}
+                  {runtimeContinueSubmitting
+                    ? t("acp.continueWorkflowStarting")
+                    : t("acp.continueWorkflow")}
+                </Button>
+              </div>
             ) : null}
             {!readOnly && promptQueueVisible && promptQueue ? (
               <ConversationPromptQueue
@@ -5959,6 +6013,8 @@ function processingLabel(
 ) {
   if (kind === "sending") return t("acp.sending");
   if (kind === "stopping") return t("acp.stopping");
+  if (kind === "preparing-workspace")
+    return t("conversation.runtime.preparingDevelopmentEnvironment");
   if (kind === "launching-next-node") return t("conversation.runtime.launchingNextNode");
   if (kind === "launching") return t("acp.launchingClaude");
   if (kind === "thinking") return t("acp.thinkingNow");
@@ -5987,7 +6043,6 @@ function composerPlaceholderText(
 ) {
   if (state.placeholderKind === "plan-intervention") return t("acp.planInterventionHint");
   if (state.placeholderKind === "stopping") return t("conversation.runtime.composerStoppingPlaceholder");
-  if (state.placeholderKind === "stopped") return t("conversation.runtime.composerStoppedPlaceholder");
   if (state.placeholderKind === "runtime-controlled") return t("conversation.runtime.composerRuntimeControlledPlaceholder");
   if (state.placeholderKind === "message") return state.message && state.message !== "runtime-error" ? state.message : t("acp.composerPlaceholder");
   return t("acp.composerPlaceholder");

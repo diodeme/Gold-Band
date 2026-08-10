@@ -112,8 +112,8 @@ function lifecycle(overrides: LifecycleOverrides = {}): ConversationAttemptLifec
         canStop: true,
         lockInput: true,
       };
-    } else if (merged.continueKind === 'input') {
-      merged.composer = { ...merged.composer, mode: 'interrupted-input', submitTarget: 'runtime-continue', lockInput: false };
+    } else if (merged.continueKind === 'action') {
+      merged.composer = { ...merged.composer, mode: 'normal', submitTarget: 'acp-prompt', lockInput: false };
     }
   }
   return merged;
@@ -171,8 +171,8 @@ describe('deriveAcpRuntimeComposerState', () => {
     const initialSending = deriveAcpRuntimeComposerState(baseInput({
       promptQueueEnabled: true,
       lifecycle: lifecycle({
-        continueKind: 'input',
-        composer: { mode: 'interrupted-input', submitTarget: 'runtime-continue', lockInput: false },
+        continueKind: 'action',
+        composer: { mode: 'normal', submitTarget: 'acp-prompt', lockInput: false },
       }),
       sending: true,
       prompt: 'next prompt',
@@ -311,7 +311,7 @@ describe('deriveAcpRuntimeComposerState', () => {
         acp: { status: 'cancelling', active: true, stopping: true, terminal: false },
         displayStatus: 'cancelling',
         runtimeDisplay: pausedDisplay,
-        continueKind: 'input',
+        continueKind: 'action',
       }),
       acpStatus: 'cancelling',
     }));
@@ -337,7 +337,7 @@ describe('deriveAcpRuntimeComposerState', () => {
         acp: { status: 'cancelling', active: true, stopping: true, terminal: false },
         displayStatus: 'cancelling',
         runtimeDisplay: pausedDisplay,
-        continueKind: 'input',
+        continueKind: 'action',
       }),
       acpStatus: 'cancelled',
       cancelling: true,
@@ -345,12 +345,12 @@ describe('deriveAcpRuntimeComposerState', () => {
     }));
 
     expect(state.stopInProgress).toBe(false);
-    expect(state.mode).toBe('interrupted-input');
+    expect(state.mode).toBe('normal');
     expect(state.inputDisabled).toBe(false);
     expect(state.canStop).toBe(false);
   });
 
-  it('routes process-interrupted stopped input through runtime continue', () => {
+  it('keeps process-interrupted stopped input as a non-runtime ACP prompt', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
         runtime: {
@@ -365,18 +365,18 @@ describe('deriveAcpRuntimeComposerState', () => {
         acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
         displayStatus: 'paused',
         runtimeDisplay: pausedDisplay,
-        continueKind: 'input',
+        continueKind: 'action',
       }),
       acpStatus: 'cancelled',
     }));
 
-    expect(state.mode).toBe('interrupted-input');
-    expect(state.submitTarget).toBe('runtime-continue');
+    expect(state.mode).toBe('normal');
+    expect(state.submitTarget).toBe('acp-prompt');
     expect(state.inputDisabled).toBe(false);
     expect(state.canSubmit).toBe(true);
   });
 
-  it('routes runtime-abnormal stopped input through runtime continue', () => {
+  it('keeps runtime-abnormal stopped input as a non-runtime ACP prompt', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
         runtime: {
@@ -391,13 +391,13 @@ describe('deriveAcpRuntimeComposerState', () => {
         acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
         displayStatus: 'runtime-abnormal',
         runtimeDisplay: runtimeAbnormalDisplay,
-        continueKind: 'input',
+        continueKind: 'action',
       }),
       acpStatus: 'cancelled',
     }));
 
-    expect(state.mode).toBe('interrupted-input');
-    expect(state.submitTarget).toBe('runtime-continue');
+    expect(state.mode).toBe('normal');
+    expect(state.submitTarget).toBe('acp-prompt');
     expect(state.inputDisabled).toBe(false);
     expect(state.canSubmit).toBe(true);
   });
@@ -448,14 +448,14 @@ describe('deriveAcpRuntimeComposerState', () => {
         acp: { status: 'failed', active: false, stopping: false, terminal: true },
         displayStatus: 'runtime-abnormal',
         runtimeDisplay: runtimeAbnormalDisplay,
-        continueKind: 'input',
+        continueKind: 'action',
       }),
       acpStatus: 'failed',
       runtimeErrorMessage: '当前会话运行失败，请查看错误原因',
     }));
 
-    expect(abnormalState.mode).toBe('interrupted-input');
-    expect(abnormalState.submitTarget).toBe('runtime-continue');
+    expect(abnormalState.mode).toBe('normal');
+    expect(abnormalState.submitTarget).toBe('acp-prompt');
     expect(abnormalState.externalKind).toBeNull();
     expect(abnormalState.inputDisabled).toBe(false);
   });
@@ -500,7 +500,7 @@ describe('deriveAcpRuntimeComposerState', () => {
           acp: { status: acpStatus, active: false, stopping: false, terminal: true },
           displayStatus: 'paused',
           runtimeDisplay: pausedDisplay,
-          continueKind: 'input',
+          continueKind: 'action',
         }),
         acpStatus,
         cancelling: true,
@@ -510,12 +510,12 @@ describe('deriveAcpRuntimeComposerState', () => {
         hasResponseAfterTurn: false,
       }));
 
-      expect(state.mode).toBe('interrupted-input');
+      expect(state.mode).toBe('normal');
       expect(state.stopInProgress).toBe(false);
       expect(state.sessionActive).toBe(false);
       expect(state.statusActive).toBe(false);
       expect(state.processingKind).toBe('responding');
-      expect(state.submitTarget).toBe('runtime-continue');
+      expect(state.submitTarget).toBe('acp-prompt');
       expect(state.inputDisabled).toBe(false);
       expect(state.canStop).toBe(false);
     }
@@ -537,7 +537,7 @@ describe('deriveAcpRuntimeComposerState', () => {
         acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
         displayStatus: 'paused',
         runtimeDisplay: pausedDisplay,
-        continueKind: 'input',
+        continueKind: 'action',
       }),
       acpStatus: 'cancelled',
       waitingForOptimisticPrompt: true,
@@ -546,7 +546,7 @@ describe('deriveAcpRuntimeComposerState', () => {
       hasResponseAfterTurn: false,
     }));
 
-    expect(state.mode).toBe('interrupted-input');
+    expect(state.mode).toBe('normal');
     expect(state.processingKind).toBe('responding');
     expect(state.statusActive).toBe(false);
     expect(state.inputDisabled).toBe(false);
@@ -764,6 +764,52 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canStop).toBe(true);
   });
 
+  it('shows workspace preparation from the backend lifecycle', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: { status: 'completed', active: false, current: true, phase: 'preparing-workspace' },
+        acp: { status: 'completed', active: false, stopping: false, terminal: true },
+        composer: {
+          mode: 'runtime-active',
+          submitTarget: 'none',
+          processingKind: 'preparing-workspace',
+          canStop: true,
+          lockInput: true,
+        },
+      }),
+      acpStatus: 'completed',
+      awaitingResponse: true,
+      turnAccepted: true,
+      hasResponseAfterTurn: false,
+    }));
+
+    expect(state.mode).toBe('runtime-active');
+    expect(state.processingKind).toBe('preparing-workspace');
+    expect(state.canStop).toBe(true);
+  });
+
+  it('keeps stopping ahead of workspace preparation after stop is clicked', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: { status: 'completed', active: false, current: true, phase: 'preparing-workspace' },
+        acp: { status: 'completed', active: false, stopping: false, terminal: true },
+        composer: {
+          mode: 'runtime-active',
+          submitTarget: 'none',
+          processingKind: 'preparing-workspace',
+          canStop: true,
+          lockInput: true,
+        },
+      }),
+      acpStatus: 'completed',
+      stopCommandPending: true,
+    }));
+
+    expect(state.mode).toBe('stopping');
+    expect(state.processingKind).toBe('stopping');
+    expect(state.stopInProgress).toBe(true);
+  });
+
   it('hides the internal node handoff after a Direct turn completes', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       promptQueueEnabled: true,
@@ -795,7 +841,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.processingKind).toBe('launching-next-node');
   });
 
-  it('only blocks invalid workflow on runtime continue paths', () => {
+  it('does not block non-runtime conversation when workflow validation fails', () => {
     const completed = deriveAcpRuntimeComposerState(baseInput({ workflowValid: false }));
     const interrupted = deriveAcpRuntimeComposerState(baseInput({
       workflowValid: false,
@@ -811,14 +857,14 @@ describe('deriveAcpRuntimeComposerState', () => {
         },
         displayStatus: 'paused',
         runtimeDisplay: pausedDisplay,
-        continueKind: 'input',
+        continueKind: 'action',
       }),
     }));
 
     expect(completed.mode).toBe('normal');
     expect(completed.submitTarget).toBe('acp-prompt');
-    expect(interrupted.mode).toBe('invalid-workflow');
-    expect(interrupted.submitTarget).toBe('none');
+    expect(interrupted.mode).toBe('normal');
+    expect(interrupted.submitTarget).toBe('acp-prompt');
   });
 });
 
@@ -905,10 +951,10 @@ describe('shouldKeepLocalRuntimeLifecycleOverride', () => {
       acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
       displayStatus: 'paused',
       runtimeDisplay: pausedDisplay,
-      continueKind: 'input',
+      continueKind: 'action',
       composer: {
-        mode: 'interrupted-input',
-        submitTarget: 'runtime-continue',
+        mode: 'normal',
+        submitTarget: 'acp-prompt',
         processingKind: 'processing',
         statusKey: null,
         canStop: false,

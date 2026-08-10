@@ -220,7 +220,8 @@ export interface RuntimeApi {
   getRunDetail(taskId: string, runId: string): Promise<RunDetailVm>;
   getRoundDetail(taskId: string, runId: string, roundId: string, selection?: RoundSelection): Promise<RoundDetailVm>;
   startRun(taskId: string): Promise<RunSummaryVm>;
-  continueRun(projectId: string | null | undefined, taskId: string, runId: string, promptId?: string | null, prompt?: string | null): Promise<RunSummaryVm>;
+  continueRun(projectId: string | null | undefined, taskId: string, runId: string): Promise<RunSummaryVm>;
+  continueConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptSubmitVm>;
   pauseRun(taskId: string, runId: string, projectId?: string | null): Promise<RunSummaryVm>;
   stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ActiveSessionStopVm>;
   submitManualCheck(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure'): Promise<RunSummaryVm>;

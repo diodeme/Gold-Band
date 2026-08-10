@@ -22,7 +22,7 @@ use gold_band::dsl::{
     AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, END_NODE, EdgeDsl,
     EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
 };
-use gold_band::dynamic::DynamicGraphState;
+use gold_band::dynamic::{DynamicGraphState, DynamicRunPhase, DynamicRunStatus};
 use gold_band::runtime::RunState;
 use gold_band::storage::{read_json, write_json};
 
@@ -1258,7 +1258,7 @@ fn runtime_continue_kind(
         return None;
     }
     match pause_reason.map(normalize_lifecycle_code).as_deref() {
-        Some("process-interrupted" | "runtime-abnormal") => Some("input".to_string()),
+        Some("process-interrupted" | "runtime-abnormal") => Some("action".to_string()),
         _ => None,
     }
 }
@@ -1316,15 +1316,14 @@ fn composer_for_lifecycle(
         "stopping"
     } else if runtime_active || acp_active {
         "runtime-active"
-    } else if continue_kind == Some("input") {
-        "interrupted-input"
+    } else if continue_kind == Some("action") {
+        "normal"
     } else if runtime_display.blocking_error {
         "runtime-error"
     } else {
         "normal"
     };
     let submit_target = match mode {
-        "interrupted-input" => "runtime-continue",
         "normal" => "acp-prompt",
         _ => "none",
     };
@@ -1350,8 +1349,48 @@ fn composer_for_lifecycle(
         processing_kind: processing_kind.to_string(),
         status_key: status_key.map(str::to_string),
         can_stop: runtime_active || acp_active || acp_stopping,
-        lock_input: !matches!(mode, "normal" | "interrupted-input"),
+        lock_input: mode != "normal",
     }
+}
+
+fn dynamic_workspace_transition_targets_node(graph: &DynamicGraphState, node_id: &str) -> bool {
+    graph.run.current_node_ids.iter().any(|id| id == node_id)
+        || (graph.run.current_node_ids.is_empty()
+            && graph.nodes.last().is_some_and(|node| node.id == node_id))
+}
+
+fn dynamic_runtime_owns_completed_leaf(graph: &DynamicGraphState, node_id: &str) -> bool {
+    graph.run.status == DynamicRunStatus::Running
+        && graph.run.current_node_ids.is_empty()
+        && graph.nodes.last().is_some_and(|node| {
+            node.id == node_id
+                && node.status == gold_band::dynamic::DynamicNodeStatus::Completed
+                && node.outcome.is_some()
+        })
+}
+
+fn apply_dynamic_workspace_transition_lifecycle(
+    lifecycle: &mut ConversationAttemptLifecycleVm,
+    graph: &DynamicGraphState,
+    node_id: &str,
+    outer_run_status: RunStatus,
+) {
+    if outer_run_status != RunStatus::Running
+        || graph.run.status != DynamicRunStatus::Running
+        || graph.run.phase != DynamicRunPhase::PreparingWorkspace
+        || !dynamic_workspace_transition_targets_node(graph, node_id)
+    {
+        return;
+    }
+
+    lifecycle.runtime.phase = "preparing-workspace".to_string();
+    lifecycle.composer.mode = "runtime-active".to_string();
+    lifecycle.composer.submit_target = "none".to_string();
+    lifecycle.composer.processing_kind = "preparing-workspace".to_string();
+    lifecycle.composer.status_key =
+        Some("conversation.runtime.preparingDevelopmentEnvironment".to_string());
+    lifecycle.composer.can_stop = true;
+    lifecycle.composer.lock_input = true;
 }
 
 fn derive_conversation_attempt_lifecycle(
@@ -1567,7 +1606,11 @@ pub fn conversation_attempt_lifecycle_vm(
             dynamic_node,
             run_pause_reason.as_deref(),
         );
-        let runtime_status = if run.status == RunStatus::Paused
+        let dynamic_runtime_owns_leaf =
+            dynamic_runtime_owns_completed_leaf(&dynamic_graph, node_id);
+        let runtime_status = if dynamic_runtime_owns_leaf {
+            "running".to_string()
+        } else if run.status == RunStatus::Paused
             && raw_runtime_status == "running"
             && dynamic_node.outcome.is_none()
             && is_runtime_continue_pause_reason(pause_reason.as_deref())
@@ -1589,6 +1632,7 @@ pub fn conversation_attempt_lifecycle_vm(
                 .current_node_ids
                 .iter()
                 .any(|id| id == node_id)
+                || dynamic_runtime_owns_leaf
                 || (run_paused_for_current_leaf
                     && dynamic_node.status == gold_band::dynamic::DynamicNodeStatus::Paused
                     && dynamic_node.outcome.is_none()));
@@ -1615,6 +1659,12 @@ pub fn conversation_attempt_lifecycle_vm(
             false,
         );
         attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
+        apply_dynamic_workspace_transition_lifecycle(
+            &mut lifecycle,
+            &dynamic_graph,
+            node_id,
+            run.status,
+        );
         return Ok(lifecycle);
     }
 
@@ -1942,6 +1992,12 @@ pub fn conversation_run_vm(
                                     task_id,
                                     &dyn_attempt_dir,
                                     &mut lifecycle,
+                                );
+                                apply_dynamic_workspace_transition_lifecycle(
+                                    &mut lifecycle,
+                                    &dynamic_graph,
+                                    &dyn_node.id,
+                                    run.status,
                                 );
                                 let dyn_status = lifecycle.display_status.clone();
                                 let dyn_runtime_display = lifecycle.runtime_display.clone();
@@ -3256,6 +3312,7 @@ mod tests {
 
         assert_eq!(lifecycle.display_status, "completed");
         assert!(!lifecycle.runtime.active);
+        assert_eq!(lifecycle.runtime.status, "completed");
         assert!(!lifecycle.acp.active);
         assert!(lifecycle.acp.terminal);
         assert!(!lifecycle_is_active(&lifecycle, false));
@@ -3362,7 +3419,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_runtime_pause_is_input_continue() {
+    fn interrupted_runtime_pause_has_explicit_continue_action_and_free_conversation() {
         let lifecycle = derive_conversation_attempt_lifecycle(
             Some("cancelled"),
             None,
@@ -3375,16 +3432,16 @@ mod tests {
         );
 
         assert_eq!(lifecycle.display_status, "paused");
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
         assert!(lifecycle.runtime.continuable);
         assert_eq!(lifecycle.runtime.phase, "paused");
-        assert_eq!(lifecycle.composer.mode, "interrupted-input");
-        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
         assert!(!lifecycle.composer.lock_input);
     }
 
     #[test]
-    fn runtime_abnormal_pause_is_input_continue_even_when_acp_failed() {
+    fn runtime_abnormal_pause_has_explicit_continue_action_even_when_acp_failed() {
         let lifecycle = derive_conversation_attempt_lifecycle(
             Some("failed"),
             None,
@@ -3397,14 +3454,14 @@ mod tests {
         );
 
         assert_eq!(lifecycle.display_status, "paused");
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
         assert!(lifecycle.runtime.continuable);
         assert_eq!(
             lifecycle.runtime.pause_reason.as_deref(),
             Some("runtime-abnormal")
         );
-        assert_eq!(lifecycle.composer.mode, "interrupted-input");
-        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
         assert!(!lifecycle.composer.lock_input);
     }
 
@@ -3528,9 +3585,9 @@ mod tests {
             lifecycle.runtime.pause_reason.as_deref(),
             Some("process-interrupted")
         );
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
-        assert_eq!(lifecycle.composer.mode, "interrupted-input");
-        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
     }
 
     #[test]
@@ -3563,8 +3620,8 @@ mod tests {
             lifecycle.runtime.pause_reason.as_deref(),
             Some("process-interrupted")
         );
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
-        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
     }
 
     #[test]
@@ -3594,7 +3651,7 @@ mod tests {
         assert_eq!(lifecycle.runtime.status, "paused");
         assert_eq!(lifecycle.runtime.phase, "paused");
         assert_eq!(lifecycle.composer.processing_kind, "processing");
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
     }
 
     #[test]
@@ -3627,9 +3684,9 @@ mod tests {
             lifecycle.runtime.pause_reason.as_deref(),
             Some("runtime-abnormal")
         );
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
-        assert_eq!(lifecycle.composer.mode, "interrupted-input");
-        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
         assert!(!lifecycle.composer.lock_input);
     }
 
@@ -3666,7 +3723,7 @@ mod tests {
             lifecycle.runtime.pause_reason.as_deref(),
             Some("runtime-abnormal")
         );
-        assert_eq!(lifecycle.composer.mode, "interrupted-input");
+        assert_eq!(lifecycle.composer.mode, "normal");
     }
 
     #[test]
@@ -3750,13 +3807,7 @@ mod tests {
     fn running_dynamic_leaf_with_terminal_acp_still_launches_next_node() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
-        write_dynamic_lifecycle_fixture(
-            &app,
-            "running",
-            json!(null),
-            "running",
-            vec!["good-morning"],
-        );
+        write_dynamic_lifecycle_fixture(&app, "running", json!(null), "completed", Vec::new());
         gold_band::storage::write_json(
             &app.paths
                 .dynamic_node_attempt_dir(
@@ -3793,6 +3844,55 @@ mod tests {
         assert_eq!(lifecycle.runtime.phase, "launching-next-node");
         assert_eq!(lifecycle.composer.processing_kind, "launching-next-node");
         assert_eq!(lifecycle.continue_kind, None);
+    }
+
+    #[test]
+    fn preparing_workspace_projects_runtime_owned_composer_state() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture(
+            &app,
+            "running",
+            json!(null),
+            "running",
+            vec!["good-morning"],
+        );
+        let graph_path = app.paths.dynamic_graph_file(
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        let mut graph: serde_json::Value = gold_band::storage::read_json(&graph_path).unwrap();
+        graph["run"]["phase"] = json!("preparing-workspace");
+        graph["nodes"][0]["outcome"] = json!("success");
+        gold_band::storage::write_json(&graph_path, &graph).unwrap();
+
+        let lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "good-morning",
+            "attempt-001",
+            Some("ai-dynamic"),
+            Some("attempt-001"),
+        )
+        .unwrap();
+
+        assert!(lifecycle.runtime.active);
+        assert_eq!(lifecycle.runtime.status, "running");
+        assert_eq!(lifecycle.runtime.phase, "preparing-workspace");
+        assert_eq!(lifecycle.composer.mode, "runtime-active");
+        assert_eq!(lifecycle.composer.submit_target, "none");
+        assert_eq!(lifecycle.composer.processing_kind, "preparing-workspace");
+        assert_eq!(
+            lifecycle.composer.status_key.as_deref(),
+            Some("conversation.runtime.preparingDevelopmentEnvironment")
+        );
+        assert!(lifecycle.composer.can_stop);
+        assert!(lifecycle.composer.lock_input);
     }
 
     #[test]
@@ -4794,7 +4894,7 @@ mod tests {
             "title": "Good morning",
             "task": "Say good morning",
             "status": dynamic_node_status,
-            "outcome": null,
+            "outcome": if dynamic_node_status == "completed" { json!("success") } else { json!(null) },
             "groupId": null,
             "chainId": dynamic_node_id,
             "depth": 1,
@@ -4810,7 +4910,7 @@ mod tests {
             "workflowSnapshotId": null,
             "childRunId": null,
             "startedAt": "2026-06-15T00:00:00Z",
-            "finishedAt": if dynamic_node_status == "paused" { json!("2026-06-15T00:00:02Z") } else { json!(null) }
+            "finishedAt": if dynamic_node_status == "paused" || dynamic_node_status == "completed" { json!("2026-06-15T00:00:02Z") } else { json!(null) }
         });
         gold_band::storage::write_json(
             &app.paths.dynamic_graph_file(

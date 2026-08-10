@@ -1440,8 +1440,8 @@ export interface ConversationAcpFacetVm {
 }
 
 export interface ConversationComposerVm {
-  mode: 'normal' | 'runtime-active' | 'stopping' | 'interrupted-input' | 'invalid-workflow' | 'runtime-error' | 'permission-blocked' | 'submitting' | string;
-  submitTarget: 'acp-prompt' | 'runtime-continue' | 'permission-response' | 'none' | string;
+  mode: 'normal' | 'runtime-active' | 'stopping' | 'invalid-workflow' | 'runtime-error' | 'permission-blocked' | 'submitting' | string;
+  submitTarget: 'acp-prompt' | 'queue-prompt' | 'permission-response' | 'none' | string;
   processingKind: 'sending' | 'launching' | 'processing' | 'thinking' | 'tool' | 'compacting' | 'responding' | 'stopping' | 'launching-next-node' | string;
   statusKey?: string | null;
   canStop: boolean;
@@ -1477,7 +1477,7 @@ export interface ConversationAttemptLifecycleVm {
   acp: ConversationAcpFacetVm;
   displayStatus: string;
   runtimeDisplay: RuntimeDisplayVm;
-  continueKind?: 'input' | null;
+  continueKind?: 'action' | null;
   composer: ConversationComposerVm;
   promptQueue?: ConversationPromptQueueVm | null;
 }

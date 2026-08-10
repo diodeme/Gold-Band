@@ -32,7 +32,7 @@
 - 不能通过 response 确认 adapter 已处理。
 - 适合用户点击“停止当前生成”。
 - 正常情况下不释放 ACP session，也不关闭 adapter process。
-- ACP session/snapshot 被记录为 `cancelled` 只表达协议层确实观察到用户停止；业务 runtime 仍必须根据当前 attempt/graph 的事实决定是 `Paused + ProcessInterrupted`、`Paused + RuntimeAbnormal`、`Completed + Success` 还是其他终态。AI-DYNAMIC worker 若已经产出完整合法的 `dynamic-node-completion`，即使 ACP stop reason 是 cancelled 或 driver 已异常暂停，业务层也按完成优先接受。
+- ACP session/snapshot 被记录为 `cancelled` 只表达协议层确实观察到用户停止；业务 runtime 仍必须根据当前 attempt/graph 与 execution generation 决定终态。artifact 若在停止落盘前已完成校验和提交，则保留既有完成事实；停止落盘后的 AI-DYNAMIC 迟到 response 即使包含完整合法 `dynamic-node-completion`，也不能恢复 Runtime 或推进 graph，只能等待用户显式 continue。
 
 Gold Band 使用场景：
 

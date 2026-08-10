@@ -1927,6 +1927,7 @@ dependencies = [
  "jsonschema",
  "libc",
  "minijinja",
+ "parking_lot",
  "ratatui",
  "reqwest 0.12.28",
  "rusqlite",

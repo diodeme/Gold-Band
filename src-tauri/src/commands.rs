@@ -74,8 +74,8 @@ use crate::view_models::{
     WorkflowVm, acp_activity_detail_vm_for_attempt, acp_raw_frame_page_vm, acp_session_vm,
     acp_tool_detail_vm_for_attempt, agent_registry_vm, bootstrap_vm, dynamic_acp_session_vm,
     log_page_vm, mcp_server_list_vm, preferences_vm, round_detail_vm, run_detail_vm,
-    run_summary_vm, runtime_display_vm, skill_content_vm, skill_list_vm, skill_meta_vm,
-    task_detail_vm, task_list_vm, workflow_vm,
+    run_summary_vm, skill_content_vm, skill_list_vm, skill_meta_vm, task_detail_vm, task_list_vm,
+    workflow_vm,
 };
 use crate::view_models_conversation::{
     ConversationAttemptLifecycleVm, ConversationTaskActivityVm, conversation_attempt_lifecycle_vm,
@@ -225,30 +225,7 @@ fn runtime_continue_started_lifecycle_for_locator(
     app: &App,
     locator: &AttemptLocator,
 ) -> Option<ConversationAttemptLifecycleVm> {
-    lifecycle_for_locator(app, locator).map(|mut lifecycle| {
-        lifecycle.runtime.status = "running".to_string();
-        lifecycle.runtime.outcome = None;
-        lifecycle.runtime.pause_reason = None;
-        lifecycle.runtime.resumable = false;
-        lifecycle.runtime.current = true;
-        lifecycle.runtime.active = true;
-        lifecycle.runtime.continuable = false;
-        lifecycle.runtime.phase = "provider-running".to_string();
-        lifecycle.display_status = "running".to_string();
-        lifecycle.runtime_display = runtime_display_vm(Some("running"), None, true, None, false);
-        lifecycle.continue_kind = None;
-        lifecycle.composer.mode = "runtime-active".to_string();
-        lifecycle.composer.submit_target = if lifecycle.prompt_queue.is_some() {
-            "queue-prompt".to_string()
-        } else {
-            "none".to_string()
-        };
-        lifecycle.composer.processing_kind = "processing".to_string();
-        lifecycle.composer.status_key = Some("conversation.runtime.runtimeActive".to_string());
-        lifecycle.composer.can_stop = true;
-        lifecycle.composer.lock_input = lifecycle.prompt_queue.is_none();
-        lifecycle
-    })
+    lifecycle_for_locator(app, locator)
 }
 
 fn current_attempt_manual_check_pending(
@@ -300,7 +277,11 @@ fn dynamic_leaf_runtime_continue_required(
     locator: &AttemptLocator,
     run: &RunState,
 ) -> CommandResult<bool> {
-    if run.pause_reason == Some(PauseReason::ErrorBlocked) {
+    if run.status == RunStatus::Paused
+        && !run
+            .pause_reason
+            .is_some_and(PauseReason::allows_explicit_runtime_continue)
+    {
         return Ok(false);
     }
     let (Some(outer_node_id), Some(outer_attempt_id)) =
@@ -316,6 +297,14 @@ fn dynamic_leaf_runtime_continue_required(
         outer_attempt_id,
     ))
     .map_err(command_error)?;
+    if dynamic_graph.run.status == DynamicRunStatus::Paused
+        && !dynamic_graph
+            .run
+            .pause_reason
+            .is_some_and(PauseReason::allows_explicit_runtime_continue)
+    {
+        return Ok(false);
+    }
     let dynamic_node = dynamic_graph
         .nodes
         .iter()
@@ -327,10 +316,20 @@ fn dynamic_leaf_runtime_continue_required(
             ))
         })?;
     if dynamic_node.status == DynamicNodeStatus::Paused && dynamic_node.outcome.is_none() {
-        return Ok(true);
+        return Ok(dynamic_node
+            .pause_reason
+            .is_some_and(PauseReason::allows_explicit_runtime_continue));
     }
-    let stale_resumable_leaf = (run.status == RunStatus::Paused
-        || dynamic_graph.run.status == DynamicRunStatus::Paused)
+    let stale_resumable_parent = (run.status == RunStatus::Paused
+        && run
+            .pause_reason
+            .is_some_and(PauseReason::allows_explicit_runtime_continue))
+        || (dynamic_graph.run.status == DynamicRunStatus::Paused
+            && dynamic_graph
+                .run
+                .pause_reason
+                .is_some_and(PauseReason::allows_explicit_runtime_continue));
+    let stale_resumable_leaf = stale_resumable_parent
         && matches!(
             dynamic_node.status,
             DynamicNodeStatus::Ready | DynamicNodeStatus::Running
@@ -354,11 +353,61 @@ fn runtime_continue_required(
     }
     if run.status == RunStatus::Paused
         && gold_band::app::is_run_continuable(run)
+        && run
+            .pause_reason
+            .is_some_and(PauseReason::allows_explicit_runtime_continue)
         && locator.matches_run_current(run)
     {
         return Ok(true);
     }
     Ok(false)
+}
+
+fn attempt_is_runtime_controlled(app: &App, locator: &AttemptLocator) -> CommandResult<bool> {
+    if conversation_run_mode(app, &locator.task_id)
+        == Some(gold_band::config::ConversationRunMode::Direct)
+    {
+        return Ok(false);
+    }
+    if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (locator.outer_node_id(), locator.outer_attempt_id())
+    {
+        let node = read_json::<gold_band::dynamic::DynamicNodeState>(&app.paths.dynamic_node_file(
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &locator.node_id,
+        ))
+        .map_err(command_error)?;
+        return Ok(node.status == DynamicNodeStatus::Running);
+    }
+    let node = read_json::<NodeState>(&app.paths.node_file(
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+    ))
+    .map_err(command_error)?;
+    Ok(node.status == RunStatus::Running && !node.manual_check_pending)
+}
+
+fn ensure_conversation_prompt_available(app: &App, locator: &AttemptLocator) -> CommandResult<()> {
+    if attempt_is_runtime_controlled(app, locator)? {
+        return Err(CommandErrorVm::new(
+            "runtime.conversation-not-available",
+            serde_json::json!({
+                "taskId": locator.task_id,
+                "runId": locator.run_id,
+                "roundId": locator.round_id,
+                "nodeId": locator.node_id,
+                "attemptId": locator.attempt_id,
+            }),
+        ));
+    }
+    Ok(())
 }
 
 fn acp_turn_outcome(run: &client::AcpPromptRun) -> AcpTurnOutcome {
@@ -1708,13 +1757,101 @@ pub fn continue_run(
     project_id: Option<String>,
     task_id: String,
     run_id: String,
-    prompt_id: Option<String>,
-    prompt: Option<String>,
 ) -> CommandResult<RunSummaryVm> {
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
-    app.run_continue_background(&task_id, &run_id, prompt_id, prompt)
+    app.run_continue_background(&task_id, &run_id, None, None)
         .map(run_summary_vm)
         .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn continue_conversation_runtime(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<ConversationPromptSubmitVm> {
+    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let app = app.clone_for_background();
+    spawn_blocking_command(move || {
+        let run = app
+            .run_status(&locator.task_id, &locator.run_id)
+            .map_err(command_error)?;
+        let manual_check_pending = current_attempt_manual_check_pending(&app, &locator, &run)?;
+        if !runtime_continue_required(&app, &locator, &run, manual_check_pending)? {
+            return Err(CommandErrorVm::new(
+                "runtime.continue-not-available",
+                serde_json::json!({
+                    "taskId": locator.task_id,
+                    "runId": locator.run_id,
+                    "roundId": locator.round_id,
+                    "nodeId": locator.node_id,
+                    "attemptId": locator.attempt_id,
+                }),
+            ));
+        }
+        if client::prompt_activity(&locator.attempt_dir(&app)).is_some() {
+            return Err(CommandErrorVm::new(
+                "runtime.continue-already-active",
+                serde_json::json!({}),
+            ));
+        }
+        let attempt_dir = locator.attempt_dir(&app);
+        let model_override = current_acp_session_model_override(&attempt_dir);
+        let permission_mode_override = current_acp_session_permission_mode_override(&attempt_dir);
+        let run = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+            (locator.outer_node_id(), locator.outer_attempt_id())
+        {
+            app.run_continue_dynamic_inner_background(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &locator.node_id,
+                &locator.attempt_id,
+                None,
+                String::new(),
+                Vec::new(),
+                model_override,
+                permission_mode_override,
+            )
+        } else {
+            app.run_continue_background_with_config_overrides(
+                &locator.task_id,
+                &locator.run_id,
+                None,
+                None,
+                Vec::new(),
+                model_override,
+                permission_mode_override,
+            )
+        }
+        .map(run_summary_vm)
+        .map_err(command_error)?;
+        Ok(ConversationPromptSubmitVm {
+            kind: "runtime-continue-started".to_string(),
+            session: None,
+            run: Some(run),
+            lifecycle: runtime_continue_started_lifecycle_for_locator(&app, &locator),
+        })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2893,12 +3030,7 @@ pub async fn use_conversation_queued_prompt(
         (!claimed.attachment_paths.is_empty()).then_some(claimed.attachment_paths.clone()),
     )
     .await;
-    let runtime_started = result
-        .as_ref()
-        .is_ok_and(|result| result.kind == "runtime-continue-started");
-    if !runtime_started {
-        let _ = settle_dispatching_prompts(&attempt_dir);
-    }
+    let _ = settle_dispatching_prompts(&attempt_dir);
     emit_prompt_queue_lifecycle(&app_handle, &app, project_id.clone(), &locator);
     result
 }
@@ -2934,7 +3066,6 @@ pub async fn submit_conversation_prompt(
     let run = app
         .run_status(&locator.task_id, &locator.run_id)
         .map_err(command_error)?;
-    let manual_check_pending = current_attempt_manual_check_pending(&app, &locator, &run)?;
     let direct_mode = conversation_run_mode(&app, &locator.task_id)
         == Some(gold_band::config::ConversationRunMode::Direct);
     let attempt_dir = locator.attempt_dir(&app);
@@ -2997,53 +3128,7 @@ pub async fn submit_conversation_prompt(
             mark_user_priority(&attempt_dir).map_err(command_error)?;
         }
     }
-    let submit_target = if runtime_continue_required(&app, &locator, &run, manual_check_pending)? {
-        "runtime-continue"
-    } else {
-        "acp-prompt"
-    };
-
-    if submit_target == "runtime-continue" {
-        let attempt_dir = locator.attempt_dir(&app);
-        let model_override = current_acp_session_model_override(&attempt_dir);
-        let permission_mode_override = current_acp_session_permission_mode_override(&attempt_dir);
-        let run = if let (Some(outer_node_id), Some(outer_attempt_id)) =
-            (locator.outer_node_id(), locator.outer_attempt_id())
-        {
-            app.run_continue_dynamic_inner_background(
-                &locator.task_id,
-                &locator.run_id,
-                &locator.round_id,
-                outer_node_id,
-                outer_attempt_id,
-                &locator.node_id,
-                &locator.attempt_id,
-                prompt_id,
-                prompt,
-                attachment_paths.unwrap_or_default(),
-                model_override,
-                permission_mode_override,
-            )
-        } else {
-            app.run_continue_background_with_config_overrides(
-                &locator.task_id,
-                &locator.run_id,
-                prompt_id,
-                Some(prompt),
-                attachment_paths.unwrap_or_default(),
-                model_override,
-                permission_mode_override,
-            )
-        }
-        .map(run_summary_vm)
-        .map_err(command_error)?;
-        return Ok(ConversationPromptSubmitVm {
-            kind: "runtime-continue-started".to_string(),
-            session: None,
-            run: Some(run),
-            lifecycle: runtime_continue_started_lifecycle_for_locator(&app, &locator),
-        });
-    }
+    ensure_conversation_prompt_available(&app, &locator)?;
 
     let session = send_acp_prompt(
         app_handle,
@@ -3095,23 +3180,7 @@ pub async fn send_acp_prompt(
         outer_node_id.clone(),
         outer_attempt_id.clone(),
     );
-    if let Ok(run) = app.run_status(&task_id, &run_id) {
-        let manual_check_pending = current_attempt_manual_check_pending(&app, &locator, &run)?;
-        if runtime_continue_required(&app, &locator, &run, manual_check_pending)? {
-            return Err(CommandErrorVm::new(
-                "acp.runtime-submit-required",
-                serde_json::json!({
-                    "taskId": task_id,
-                    "runId": run_id,
-                    "roundId": round_id,
-                    "nodeId": node_id,
-                    "attemptId": attempt_id,
-                    "outerNodeId": outer_node_id,
-                    "outerAttemptId": outer_attempt_id,
-                }),
-            ));
-        }
-    }
+    ensure_conversation_prompt_available(&app, &locator)?;
     let turn_id = prompt_id
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("turn-{}", uuid::Uuid::new_v4().simple()));
@@ -3306,6 +3375,7 @@ pub async fn send_acp_prompt(
                         outer_attempt_id,
                         &node_id,
                     )),
+                    turn_control_mode: prompt_bundle.turn_control_mode,
                 }),
             )
             .map_err(command_error)?;
@@ -3471,6 +3541,7 @@ pub async fn send_acp_prompt(
                     &node_id,
                     &attempt_id,
                 )),
+                turn_control_mode: prompt_bundle.turn_control_mode,
             }),
         )
         .map_err(command_error)?;
@@ -3668,6 +3739,7 @@ fn stop_acp_session(
     locator: AttemptLocator,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state, project_id.as_deref())?;
+    let runtime_was_controlled = attempt_is_runtime_controlled(&app, &locator)?;
     let requested_at = current_timestamp();
     let attempt_dir = resolve_acp_attempt_dir(
         &app,
@@ -3709,6 +3781,9 @@ fn stop_acp_session(
     }
 
     request_acp_cancel_and_persist_interrupted_snapshot(&app, &attempt_dir);
+    if runtime_was_controlled {
+        gold_band::acp::control::mark_runtime_interrupted(&attempt_dir).map_err(command_error)?;
+    }
 
     let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (locator.outer_node_id(), locator.outer_attempt_id())
@@ -3770,6 +3845,7 @@ fn persist_active_session_stop(
     locator: &AttemptLocator,
 ) -> CommandResult<Utf8PathBuf> {
     let attempt_dir = locator.attempt_dir(app);
+    let runtime_was_controlled = attempt_is_runtime_controlled(app, locator)?;
     if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (locator.outer_node_id(), locator.outer_attempt_id())
     {
@@ -3796,6 +3872,9 @@ fn persist_active_session_stop(
     }
     app.persist_cancelled_session_snapshot(&attempt_dir)
         .map_err(command_error)?;
+    if runtime_was_controlled {
+        gold_band::acp::control::mark_runtime_interrupted(&attempt_dir).map_err(command_error)?;
+    }
     client::request_prompt_cancel(&attempt_dir);
     Ok(attempt_dir)
 }
@@ -6487,6 +6566,58 @@ mod tests {
     }
 
     #[test]
+    fn fixed_runtime_continue_rejects_structured_intervention_states() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-runtime-continue-eligibility-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "node-001".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        let mut run = RunState {
+            version: gold_band::domain::VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "2026-08-10T00:00:00Z".to_string(),
+            updated_at: "2026-08-10T00:00:01Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("node-001".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::ProcessInterrupted),
+            uuid: None,
+            last_executed_node: None,
+        };
+
+        assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
+        run.pause_reason = Some(PauseReason::RuntimeAbnormal);
+        assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
+        assert!(!runtime_continue_required(&app, &locator, &run, true).unwrap());
+
+        for reason in [
+            PauseReason::WaitingForUserInput,
+            PauseReason::PermissionRequested,
+            PauseReason::ErrorBlocked,
+        ] {
+            run.pause_reason = Some(reason);
+            assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn paused_stale_cancelled_dynamic_leaf_requires_runtime_continue() {
         let temp = std::env::temp_dir().join(format!(
             "gold-band-stale-dynamic-leaf-test-{}",
@@ -6640,6 +6771,20 @@ mod tests {
         );
 
         assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
+        let mut waiting_run = run.clone();
+        waiting_run.pause_reason = Some(PauseReason::WaitingForUserInput);
+        assert!(!runtime_continue_required(&app, &locator, &waiting_run, false).unwrap());
+        let graph_path = app.paths.dynamic_graph_file(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+        );
+        let mut blocked_graph: DynamicGraphState = read_json(&graph_path).unwrap();
+        blocked_graph.run.pause_reason = Some(PauseReason::ErrorBlocked);
+        write_json(&graph_path, &blocked_graph).unwrap();
+        assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
         let dynamic_run = serde_json::json!({
             "version": gold_band::domain::VERSION,
             "id": "dynamic-run-001",

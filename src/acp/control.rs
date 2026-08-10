@@ -1,0 +1,437 @@
+use std::hash::{Hash, Hasher};
+use std::sync::{LazyLock, Mutex};
+
+use anyhow::{Result, anyhow};
+use camino::Utf8Path;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use uuid::Uuid;
+
+use crate::acp::events::{current_timestamp, load_timeline_items};
+use crate::domain::{TurnControlMode, TurnControlTransitionCause};
+use crate::storage::{ensure_parent_dir, read_json, write_json};
+
+const SNAPSHOT_FILE: &str = "acp.snapshot.json";
+const SESSION_FILE: &str = "acp.session.json";
+const TIMELINE_FILE: &str = "acp.timeline.jsonl";
+const TIMELINE_SCAN_COMPLETE_FIELD: &str = "runtimeControlTimelineScanComplete";
+
+const CURSOR_LOCK_STRIPES: usize = 64;
+static CURSOR_LOCKS: LazyLock<[Mutex<()>; CURSOR_LOCK_STRIPES]> =
+    LazyLock::new(|| std::array::from_fn(|_| Mutex::new(())));
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpRuntimeControlCursor {
+    pub current_mode: TurnControlMode,
+    pub transition_id: String,
+    pub transition_cause: TurnControlTransitionCause,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspended_context_accepted_for: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspended_context_prompt_id: Option<String>,
+    pub changed_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingRuntimeSuspension {
+    pub transition_id: String,
+}
+
+fn cursor_lock(attempt_dir: &Utf8Path) -> &'static Mutex<()> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    attempt_dir.hash(&mut hasher);
+    &CURSOR_LOCKS[(hasher.finish() as usize) % CURSOR_LOCK_STRIPES]
+}
+
+pub fn mark_runtime_interrupted(attempt_dir: &Utf8Path) -> Result<AcpRuntimeControlCursor> {
+    let lock = cursor_lock(attempt_dir);
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow!("runtime control cursor lock poisoned"))?;
+    if let Some(cursor) = load_persisted_cursor_unlocked(attempt_dir)?.0
+        && cursor.current_mode == TurnControlMode::NonRuntimeControlled
+    {
+        return Ok(cursor);
+    }
+    write_transition_unlocked(
+        attempt_dir,
+        TurnControlMode::NonRuntimeControlled,
+        TurnControlTransitionCause::RuntimeInterrupted,
+    )
+}
+
+pub fn prepare_workflow_continued(attempt_dir: &Utf8Path) -> Result<Option<(String, String)>> {
+    let lock = cursor_lock(attempt_dir);
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow!("runtime control cursor lock poisoned"))?;
+    let Some(cursor) = load_runtime_control_cursor_unlocked(attempt_dir)? else {
+        return Ok(None);
+    };
+    if cursor.current_mode != TurnControlMode::NonRuntimeControlled {
+        return Ok(None);
+    }
+    Ok(Some((
+        cursor.transition_id,
+        format!("runtime-control-{}", Uuid::new_v4().simple()),
+    )))
+}
+
+pub fn commit_workflow_continued(
+    attempt_dir: &Utf8Path,
+    source_transition_id: &str,
+    transition_id: &str,
+) -> Result<bool> {
+    let lock = cursor_lock(attempt_dir);
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow!("runtime control cursor lock poisoned"))?;
+    let Some(cursor) = load_runtime_control_cursor_unlocked(attempt_dir)? else {
+        return Ok(false);
+    };
+    if cursor.current_mode != TurnControlMode::NonRuntimeControlled
+        || cursor.transition_id != source_transition_id
+    {
+        return Ok(false);
+    }
+    persist_cursor_unlocked(
+        attempt_dir,
+        &AcpRuntimeControlCursor {
+            current_mode: TurnControlMode::RuntimeControlled,
+            transition_id: transition_id.to_string(),
+            transition_cause: TurnControlTransitionCause::WorkflowContinued,
+            suspended_context_accepted_for: None,
+            suspended_context_prompt_id: None,
+            changed_at: current_timestamp(),
+        },
+    )?;
+    Ok(true)
+}
+
+pub fn pending_runtime_suspension(
+    attempt_dir: &Utf8Path,
+) -> Result<Option<PendingRuntimeSuspension>> {
+    let lock = cursor_lock(attempt_dir);
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow!("runtime control cursor lock poisoned"))?;
+    let Some(cursor) = load_runtime_control_cursor_unlocked(attempt_dir)? else {
+        return Ok(None);
+    };
+    if cursor.current_mode != TurnControlMode::NonRuntimeControlled
+        || cursor.transition_cause != TurnControlTransitionCause::RuntimeInterrupted
+        || cursor.suspended_context_accepted_for.as_deref() == Some(&cursor.transition_id)
+    {
+        return Ok(None);
+    }
+    Ok(Some(PendingRuntimeSuspension {
+        transition_id: cursor.transition_id,
+    }))
+}
+
+pub fn mark_suspended_context_accepted(
+    attempt_dir: &Utf8Path,
+    transition_id: &str,
+    prompt_id: &str,
+) -> Result<bool> {
+    let lock = cursor_lock(attempt_dir);
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow!("runtime control cursor lock poisoned"))?;
+    let Some(mut cursor) = load_runtime_control_cursor_unlocked(attempt_dir)? else {
+        return Ok(false);
+    };
+    if cursor.current_mode != TurnControlMode::NonRuntimeControlled
+        || cursor.transition_cause != TurnControlTransitionCause::RuntimeInterrupted
+        || cursor.transition_id != transition_id
+    {
+        return Ok(false);
+    }
+    cursor.suspended_context_accepted_for = Some(transition_id.to_string());
+    cursor.suspended_context_prompt_id = Some(prompt_id.to_string());
+    cursor.changed_at = current_timestamp();
+    persist_cursor_unlocked(attempt_dir, &cursor)?;
+    Ok(true)
+}
+
+pub fn load_runtime_control_cursor(
+    attempt_dir: &Utf8Path,
+) -> Result<Option<AcpRuntimeControlCursor>> {
+    let lock = cursor_lock(attempt_dir);
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow!("runtime control cursor lock poisoned"))?;
+    load_runtime_control_cursor_unlocked(attempt_dir)
+}
+
+fn load_runtime_control_cursor_unlocked(
+    attempt_dir: &Utf8Path,
+) -> Result<Option<AcpRuntimeControlCursor>> {
+    let (cursor, timeline_scan_complete) = load_persisted_cursor_unlocked(attempt_dir)?;
+    if cursor.is_some() {
+        return Ok(cursor);
+    }
+    if timeline_scan_complete {
+        return Ok(None);
+    }
+    reconstruct_cursor_from_timeline_unlocked(attempt_dir)
+}
+
+fn load_persisted_cursor_unlocked(
+    attempt_dir: &Utf8Path,
+) -> Result<(Option<AcpRuntimeControlCursor>, bool)> {
+    let mut candidates: Vec<AcpRuntimeControlCursor> = Vec::with_capacity(2);
+    let mut timeline_scan_complete = false;
+    for name in [SNAPSHOT_FILE, SESSION_FILE] {
+        let path = attempt_dir.join(name);
+        let Ok(value) = read_json::<Value>(&path) else {
+            continue;
+        };
+        timeline_scan_complete |= value
+            .get(TIMELINE_SCAN_COMPLETE_FIELD)
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if let Some(cursor) = value
+            .get("runtimeControl")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+        {
+            candidates.push(cursor);
+        }
+    }
+    candidates.sort_by(|left, right| left.changed_at.cmp(&right.changed_at));
+    Ok((candidates.pop(), timeline_scan_complete))
+}
+
+fn write_transition_unlocked(
+    attempt_dir: &Utf8Path,
+    current_mode: TurnControlMode,
+    transition_cause: TurnControlTransitionCause,
+) -> Result<AcpRuntimeControlCursor> {
+    let cursor = AcpRuntimeControlCursor {
+        current_mode,
+        transition_id: format!("runtime-control-{}", Uuid::new_v4().simple()),
+        transition_cause,
+        suspended_context_accepted_for: None,
+        suspended_context_prompt_id: None,
+        changed_at: current_timestamp(),
+    };
+    persist_cursor_unlocked(attempt_dir, &cursor)?;
+    Ok(cursor)
+}
+
+fn persist_cursor_unlocked(attempt_dir: &Utf8Path, cursor: &AcpRuntimeControlCursor) -> Result<()> {
+    for name in [SNAPSHOT_FILE, SESSION_FILE] {
+        let path = attempt_dir.join(name);
+        let mut session = session_value(&path)?;
+        session["runtimeControl"] = serde_json::to_value(cursor)?;
+        session[TIMELINE_SCAN_COMPLETE_FIELD] = Value::Bool(true);
+        ensure_parent_dir(&path)?;
+        write_json(&path, &session)?;
+    }
+    Ok(())
+}
+
+fn reconstruct_cursor_from_timeline_unlocked(
+    attempt_dir: &Utf8Path,
+) -> Result<Option<AcpRuntimeControlCursor>> {
+    let timeline_path = attempt_dir.join(TIMELINE_FILE);
+    let cursor = if timeline_path.exists() {
+        load_timeline_items(&timeline_path)?
+            .into_iter()
+            .rev()
+            .find_map(|event| {
+                event
+                    .raw
+                    .as_ref()
+                    .and_then(|raw| raw.get("runtimeControl"))
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok())
+            })
+    } else {
+        None
+    };
+    if let Some(cursor) = cursor.as_ref() {
+        persist_cursor_unlocked(attempt_dir, cursor)?;
+    } else {
+        persist_timeline_scan_complete_unlocked(attempt_dir)?;
+    }
+    Ok(cursor)
+}
+
+fn persist_timeline_scan_complete_unlocked(attempt_dir: &Utf8Path) -> Result<()> {
+    for name in [SNAPSHOT_FILE, SESSION_FILE] {
+        let path = attempt_dir.join(name);
+        let mut session = session_value(&path)?;
+        session[TIMELINE_SCAN_COMPLETE_FIELD] = Value::Bool(true);
+        ensure_parent_dir(&path)?;
+        write_json(&path, &session)?;
+    }
+    Ok(())
+}
+
+fn session_value(path: &Utf8Path) -> Result<Value> {
+    if path.exists() {
+        return read_json(path);
+    }
+    Ok(serde_json::json!({
+        "status": "cancelled",
+        "restored": false,
+        "createdAt": current_timestamp(),
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::acp::events::{AcpUiEvent, write_timeline_items};
+
+    #[test]
+    fn non_runtime_stop_does_not_create_another_transition() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+        let first = mark_runtime_interrupted(attempt_dir).unwrap();
+        let repeated = mark_runtime_interrupted(attempt_dir).unwrap();
+        assert_eq!(repeated.transition_id, first.transition_id);
+        let pending = pending_runtime_suspension(attempt_dir).unwrap().unwrap();
+        assert_eq!(pending.transition_id, first.transition_id);
+
+        mark_suspended_context_accepted(attempt_dir, &first.transition_id, "prompt-1").unwrap();
+        assert!(pending_runtime_suspension(attempt_dir).unwrap().is_none());
+        assert_eq!(
+            load_runtime_control_cursor(attempt_dir)
+                .unwrap()
+                .unwrap()
+                .transition_id,
+            first.transition_id
+        );
+    }
+
+    #[test]
+    fn resumed_runtime_commits_only_after_acceptance() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+        let first = mark_runtime_interrupted(attempt_dir).unwrap();
+        let (source_id, resumed_id) = prepare_workflow_continued(attempt_dir).unwrap().unwrap();
+        assert_eq!(source_id, first.transition_id);
+        assert_eq!(
+            load_runtime_control_cursor(attempt_dir)
+                .unwrap()
+                .unwrap()
+                .current_mode,
+            TurnControlMode::NonRuntimeControlled
+        );
+
+        assert!(commit_workflow_continued(attempt_dir, &source_id, &resumed_id).unwrap());
+        let resumed = load_runtime_control_cursor(attempt_dir).unwrap().unwrap();
+        assert_eq!(resumed.current_mode, TurnControlMode::RuntimeControlled);
+        assert_eq!(resumed.transition_id, resumed_id);
+    }
+
+    #[test]
+    fn stale_resume_cannot_overwrite_a_new_stop_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+        mark_runtime_interrupted(attempt_dir).unwrap();
+        let (source_id, stale_resumed_id) =
+            prepare_workflow_continued(attempt_dir).unwrap().unwrap();
+        let (_, accepted_resumed_id) = prepare_workflow_continued(attempt_dir).unwrap().unwrap();
+        assert!(commit_workflow_continued(attempt_dir, &source_id, &accepted_resumed_id).unwrap());
+        let newer_stop = mark_runtime_interrupted(attempt_dir).unwrap();
+
+        assert!(!commit_workflow_continued(attempt_dir, &source_id, &stale_resumed_id).unwrap());
+        assert_eq!(
+            load_runtime_control_cursor(attempt_dir)
+                .unwrap()
+                .unwrap()
+                .transition_id,
+            newer_stop.transition_id
+        );
+    }
+
+    #[test]
+    fn missing_legacy_cursor_scans_timeline_only_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+        assert!(load_runtime_control_cursor(attempt_dir).unwrap().is_none());
+
+        let cursor = AcpRuntimeControlCursor {
+            current_mode: TurnControlMode::NonRuntimeControlled,
+            transition_id: "late-timeline-transition".to_string(),
+            transition_cause: TurnControlTransitionCause::RuntimeInterrupted,
+            suspended_context_accepted_for: None,
+            suspended_context_prompt_id: None,
+            changed_at: current_timestamp(),
+        };
+        write_timeline_items(
+            &attempt_dir.join(TIMELINE_FILE),
+            &[AcpUiEvent {
+                id: "late-event".to_string(),
+                seq: 1,
+                timestamp: current_timestamp(),
+                kind: "userPrompt".to_string(),
+                session_id: None,
+                content: Some("late".to_string()),
+                title: None,
+                tool_call_id: None,
+                status: Some("completed".to_string()),
+                started_seq: None,
+                ended_seq: None,
+                started_at: None,
+                ended_at: None,
+                timing: None,
+                raw: Some(serde_json::json!({ "runtimeControl": cursor })),
+            }],
+        )
+        .unwrap();
+
+        assert!(load_runtime_control_cursor(attempt_dir).unwrap().is_none());
+    }
+
+    #[test]
+    fn stop_transition_never_reconstructs_legacy_timeline() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+        let legacy_cursor = AcpRuntimeControlCursor {
+            current_mode: TurnControlMode::NonRuntimeControlled,
+            transition_id: "legacy-timeline-transition".to_string(),
+            transition_cause: TurnControlTransitionCause::RuntimeInterrupted,
+            suspended_context_accepted_for: None,
+            suspended_context_prompt_id: None,
+            changed_at: current_timestamp(),
+        };
+        write_timeline_items(
+            &attempt_dir.join(TIMELINE_FILE),
+            &[AcpUiEvent {
+                id: "legacy-event".to_string(),
+                seq: 1,
+                timestamp: current_timestamp(),
+                kind: "userPrompt".to_string(),
+                session_id: None,
+                content: Some("legacy".to_string()),
+                title: None,
+                tool_call_id: None,
+                status: Some("completed".to_string()),
+                started_seq: None,
+                ended_seq: None,
+                started_at: None,
+                ended_at: None,
+                timing: None,
+                raw: Some(serde_json::json!({ "runtimeControl": legacy_cursor })),
+            }],
+        )
+        .unwrap();
+
+        let interrupted = mark_runtime_interrupted(attempt_dir).unwrap();
+
+        assert_ne!(interrupted.transition_id, "legacy-timeline-transition");
+        assert_eq!(
+            load_runtime_control_cursor(attempt_dir)
+                .unwrap()
+                .unwrap()
+                .transition_id,
+            interrupted.transition_id
+        );
+    }
+}

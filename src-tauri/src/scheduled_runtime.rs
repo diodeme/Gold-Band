@@ -14,7 +14,8 @@ use gold_band::scheduler::occurrence::{
     ScheduledError, ScheduledErrorCode, ScheduledOccurrence,
 };
 use gold_band::scheduler::queue::{
-    ActiveExecution, LATE_FIRE_GRACE, MISSED_RECONCILE_BATCH_SIZE, QueueDecision, decide_queue,
+    ActiveExecution, DEFAULT_OCCURRENCE_RETENTION_DAYS, LATE_FIRE_GRACE,
+    MISSED_RECONCILE_BATCH_SIZE, QueueDecision, RETENTION_DELETE_BATCH_SIZE, decide_queue,
 };
 use gold_band::scheduler::store::ScheduledTaskStore;
 use gold_band::scheduler::{ScheduleKind, ScheduledMode, ScheduledTaskDefinition, SessionPolicy};
@@ -35,9 +36,14 @@ use crate::view_models_conversation::ConversationCreateInputVm;
 
 mod execution;
 mod lease;
+mod notification;
+pub(crate) mod power;
 
 use execution::{ScheduledExecutionContext, adapter_for};
 pub(crate) use lease::OccurrenceExecutionGuard;
+use notification::{
+    SCHEDULED_NOTIFICATION_EVENT, missed_notification_event, notification_event_for_occurrence,
+};
 
 const SCHEDULER_SUBSCRIBER_NAME: &str = "desktop.scheduled-runtime";
 const SCHEDULER_EVENT: &str = "gold-band://scheduled-occurrence-updated";
@@ -88,6 +94,9 @@ pub enum SchedulerCommand {
         reply: oneshot::Sender<ScheduledServiceResult<bool>>,
     },
     SettingsChanged,
+    CleanupWorkspace {
+        workspace_path: Utf8PathBuf,
+    },
     Reconcile {
         reason: ReconcileReason,
     },
@@ -340,9 +349,45 @@ pub fn emit_scheduled_task_deleted(app_handle: &AppHandle, definition: &Schedule
     );
 }
 
+fn emit_scheduled_occurrence_notification(
+    app_handle: &AppHandle,
+    project_id: &str,
+    occurrence: &ScheduledOccurrence,
+) {
+    let completion_notifications_enabled = app_handle
+        .state::<DesktopState>()
+        .context()
+        .map(|context| context.config.scheduled_completion_notifications_enabled)
+        .unwrap_or(true);
+    let Some(event) =
+        notification_event_for_occurrence(project_id, completion_notifications_enabled, occurrence)
+    else {
+        return;
+    };
+    if let Err(error) = app_handle.emit(SCHEDULED_NOTIFICATION_EVENT, event) {
+        warn!(%error, "failed to emit scheduled notification event");
+    }
+}
+
+fn emit_scheduled_missed_notification(
+    app_handle: &AppHandle,
+    project_id: &str,
+    scheduled_task_id: &str,
+    missed_count: u32,
+) {
+    if missed_count == 0 {
+        return;
+    }
+    let event = missed_notification_event(project_id, scheduled_task_id, missed_count);
+    if let Err(error) = app_handle.emit(SCHEDULED_NOTIFICATION_EVENT, event) {
+        warn!(%error, "failed to emit scheduled missed notification event");
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ActiveOccurrenceMetadata {
     database: ScheduledTaskDatabase,
+    workspace_path: Utf8PathBuf,
     owner_id: String,
     project_id: String,
     scheduled_task_id: String,
@@ -647,8 +692,13 @@ impl ScheduledRuntime {
             }
             ClaimResult::NotFound => anyhow::bail!("scheduled manual occurrence was not found"),
         };
-        let mut handoff =
-            self.claim_to_handoff_guard(&claimed, &definition, &database, expected_revision)?;
+        let mut handoff = self.claim_to_handoff_guard(
+            &claimed,
+            &definition,
+            &database,
+            &app.paths.repo_root,
+            expected_revision,
+        )?;
         let active_execution = active_execution_for_task(app, definition.task_id.as_deref())?;
         let queue_decision = decide_queue(
             definition.overlap_policy,
@@ -770,8 +820,13 @@ impl ScheduledRuntime {
             ClaimResult::Busy => return Ok(()),
             ClaimResult::NotFound => return Ok(()),
         };
-        let mut handoff =
-            self.claim_to_handoff_guard(&claimed, &definition, database, expected_revision)?;
+        let mut handoff = self.claim_to_handoff_guard(
+            &claimed,
+            &definition,
+            database,
+            &app.paths.repo_root,
+            expected_revision,
+        )?;
 
         if let Some((status, error)) = recovery_outcome_for_accepted_occurrence(app, &claimed)? {
             handoff.stop().await;
@@ -959,6 +1014,7 @@ impl ScheduledRuntime {
         occurrence: &ScheduledOccurrence,
         definition: &ScheduledTaskDefinition,
         database: &ScheduledTaskDatabase,
+        workspace_path: &Utf8Path,
         expected_revision: Option<i64>,
     ) -> anyhow::Result<ClaimToHandoffGuard> {
         ClaimToHandoffGuard::new_with_pending(
@@ -967,6 +1023,7 @@ impl ScheduledRuntime {
             occurrence.id.clone(),
             ActiveOccurrenceMetadata {
                 database: database.clone(),
+                workspace_path: workspace_path.to_path_buf(),
                 owner_id: self.owner_id.clone(),
                 project_id: definition.project_id.clone(),
                 scheduled_task_id: definition.id.clone(),
@@ -1038,9 +1095,13 @@ impl ScheduledRuntime {
             }
             ClaimResult::NotFound => return Ok(false),
         };
-        let _ = app;
-        let guard =
-            self.claim_to_handoff_guard(&claimed, &job.definition, database, Some(job.revision))?;
+        let guard = self.claim_to_handoff_guard(
+            &claimed,
+            &job.definition,
+            database,
+            &app.paths.repo_root,
+            Some(job.revision),
+        )?;
         guard.handoff();
         Ok(true)
     }
@@ -1075,6 +1136,7 @@ fn finish_lifecycle_occurrence(
 ) {
     match finish_occurrence_for_event(&active.database, &occurrence_id, &active.owner_id, &event) {
         Ok(Some(occurrence)) => {
+            let workspace_path = active.workspace_path.clone();
             if let Some(expected_revision) = active.expected_revision {
                 match active
                     .database
@@ -1105,6 +1167,7 @@ fn finish_lifecycle_occurrence(
                     }
                 }
             }
+            emit_scheduled_occurrence_notification(&app_handle, &active.project_id, &occurrence);
             let _ = app_handle.emit(
                 SCHEDULER_EVENT,
                 ScheduledOccurrenceUpdatedEventVm {
@@ -1117,6 +1180,9 @@ fn finish_lifecycle_occurrence(
                     run_id: occurrence.run_id,
                 },
             );
+            if let Ok(coordinator) = app_handle.state::<DesktopState>().scheduler_coordinator() {
+                let _ = coordinator.send(SchedulerCommand::CleanupWorkspace { workspace_path });
+            }
         }
         Ok(None) => {}
         Err(error) => warn!(%error, %occurrence_id, "failed to finish scheduled occurrence"),
@@ -1165,6 +1231,16 @@ trait CoordinatorRuntimeDriver: Send + Sync + 'static {
         Utc::now()
     }
 
+    fn scheduled_occurrence_retention_days(&self) -> u16 {
+        DEFAULT_OCCURRENCE_RETENTION_DAYS
+    }
+
+    fn reconcile_power_state(&self, _enabled_job_count: usize, _app_is_running: bool) {}
+
+    fn notify_occurrence(&self, _project_id: &str, _occurrence: &ScheduledOccurrence) {}
+
+    fn notify_missed(&self, _project_id: &str, _scheduled_task_id: &str, _missed_count: u32) {}
+
     async fn shutdown_active_leases(&self, _now: DateTime<Utc>) -> anyhow::Result<()> {
         Ok(())
     }
@@ -1203,6 +1279,47 @@ impl CoordinatorRuntimeDriver for ScheduledRuntime {
         let state = self.app_handle.state::<DesktopState>();
         let context = state.context()?;
         runtime_app_for_workspace(&state, &context, workspace_path.as_str())
+    }
+
+    fn scheduled_occurrence_retention_days(&self) -> u16 {
+        self.app_handle
+            .state::<DesktopState>()
+            .context()
+            .map(|context| context.config.scheduled_occurrence_retention_days)
+            .unwrap_or(DEFAULT_OCCURRENCE_RETENTION_DAYS)
+    }
+
+    fn reconcile_power_state(&self, enabled_job_count: usize, app_is_running: bool) {
+        match self
+            .app_handle
+            .state::<DesktopState>()
+            .reconcile_scheduled_power(enabled_job_count, app_is_running)
+        {
+            Ok(status) => {
+                if let Some(error) = status.error {
+                    warn!(
+                        code = %error.code,
+                        params = ?error.params,
+                        enabled_job_count,
+                        "scheduled power inhibitor acquisition failed"
+                    );
+                }
+            }
+            Err(error) => warn!(%error, "scheduled power state reconciliation failed"),
+        }
+    }
+
+    fn notify_occurrence(&self, project_id: &str, occurrence: &ScheduledOccurrence) {
+        emit_scheduled_occurrence_notification(&self.app_handle, project_id, occurrence);
+    }
+
+    fn notify_missed(&self, project_id: &str, scheduled_task_id: &str, missed_count: u32) {
+        emit_scheduled_missed_notification(
+            &self.app_handle,
+            project_id,
+            scheduled_task_id,
+            missed_count,
+        );
     }
 
     async fn shutdown_active_leases(&self, now: DateTime<Utc>) -> anyhow::Result<()> {
@@ -1298,6 +1415,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
                     if let Err(error) = &result {
                         error!(%error, "failed to release scheduled occurrence leases on shutdown");
                     }
+                    self.reconcile_power_state(false);
                     let _ = ack.send(result);
                     break;
                 }
@@ -1309,6 +1427,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
                     {
                         error!(%error, "failed to release scheduled occurrence leases on shutdown");
                     }
+                    self.reconcile_power_state(false);
                     break;
                 }
                 CoordinatorEvent::Command(Some(command)) => self.handle_command(command).await,
@@ -1339,6 +1458,19 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
     }
 
     async fn handle_command(&mut self, command: SchedulerCommand) {
+        let refresh_power = matches!(
+            &command,
+            SchedulerCommand::RegisterWorkspace { .. }
+                | SchedulerCommand::RetryRegisterWorkspace { .. }
+                | SchedulerCommand::UnregisterWorkspace { .. }
+                | SchedulerCommand::JobCreated { .. }
+                | SchedulerCommand::JobUpdated { .. }
+                | SchedulerCommand::JobEnabled { .. }
+                | SchedulerCommand::JobDisabled { .. }
+                | SchedulerCommand::JobDeleted { .. }
+                | SchedulerCommand::SettingsChanged
+                | SchedulerCommand::Reconcile { .. }
+        );
         let result = match command {
             SchedulerCommand::RegisterWorkspace { workspace_path } => {
                 self.register_workspace_with_retry(workspace_path, ReconcileReason::Startup)
@@ -1383,11 +1515,17 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             SchedulerCommand::SettingsChanged => {
                 self.reconcile_all(ReconcileReason::Explicit).await
             }
+            SchedulerCommand::CleanupWorkspace { workspace_path } => {
+                self.run_retention_for_workspace(&workspace_path).await
+            }
             SchedulerCommand::Reconcile { reason } => self.reconcile_all(reason).await,
             SchedulerCommand::Shutdown { .. } => Ok(()),
         };
         if let Err(error) = result {
             error!(%error, "scheduled coordinator command failed");
+        }
+        if refresh_power {
+            self.reconcile_power_state(true);
         }
     }
 
@@ -1449,6 +1587,14 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             self.restore_workspace_deadlines(&workspace_path, previous_deadlines);
             return Err(error);
         }
+        if let Err(error) = self.run_retention_for_registration(&candidate).await {
+            warn!(
+                code = %ScheduledErrorCode::StorageFailed,
+                params = ?serde_json::json!({ "reason": error.to_string() }),
+                workspace_path = %workspace_path,
+                "scheduled occurrence retention cleanup failed"
+            );
+        }
         self.workspaces.insert(workspace_path, candidate);
         Ok(())
     }
@@ -1484,6 +1630,84 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             self.reconcile_workspace(&workspace_path, reason).await?;
         }
         Ok(())
+    }
+
+    fn reconcile_power_state(&self, app_is_running: bool) {
+        let enabled_job_count = self
+            .workspaces
+            .values()
+            .try_fold(0usize, |count, registration| {
+                registration
+                    .database
+                    .enabled_job_count()
+                    .map(|workspace_count| count.saturating_add(workspace_count))
+            });
+        match enabled_job_count {
+            Ok(enabled_job_count) => self
+                .runtime
+                .reconcile_power_state(enabled_job_count, app_is_running),
+            Err(error) => warn!(%error, "failed to count enabled scheduled jobs for power state"),
+        }
+    }
+
+    async fn run_retention_for_workspace(&self, workspace_path: &Utf8Path) -> anyhow::Result<()> {
+        let registration = self
+            .workspaces
+            .get(workspace_path)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("scheduled workspace is not registered"))?;
+        self.run_retention_for_registration(&registration).await
+    }
+
+    async fn run_retention_for_registration(
+        &self,
+        registration: &WorkspaceRegistration,
+    ) -> anyhow::Result<()> {
+        let protected_run_ids = active_run_ids(&registration.app)?;
+        let cutoff = self.runtime.now()
+            - Duration::days(i64::from(
+                self.runtime.scheduled_occurrence_retention_days(),
+            ));
+        loop {
+            let result = registration.database.cleanup_terminal_occurrences(
+                cutoff,
+                RETENTION_DELETE_BATCH_SIZE,
+                &protected_run_ids,
+            )?;
+            if !result.has_more {
+                return Ok(());
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    async fn run_retention_best_effort(&self, registration: &WorkspaceRegistration) {
+        if let Err(error) = self.run_retention_for_registration(registration).await {
+            warn!(
+                code = %ScheduledErrorCode::StorageFailed,
+                params = ?serde_json::json!({ "reason": error.to_string() }),
+                workspace_path = %registration.app.paths.repo_root,
+                "scheduled occurrence retention cleanup failed"
+            );
+        }
+    }
+
+    fn notify_occurrence_best_effort(
+        &self,
+        registration: &WorkspaceRegistration,
+        occurrence_id: &str,
+    ) {
+        match registration.database.get_occurrence(occurrence_id) {
+            Ok(Some(occurrence)) => self
+                .runtime
+                .notify_occurrence(&registration.app.paths.project_id, &occurrence),
+            Ok(None) => {}
+            Err(error) => warn!(
+                %error,
+                occurrence_id,
+                "failed to reload occurrence for scheduled notification"
+            ),
+        }
     }
 
     async fn reconcile_workspace(
@@ -1556,6 +1780,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
                     .retry_at
                     .is_none_or(|retry_at| retry_at <= now)
                 {
+                    let occurrence_id = occurrence.id.clone();
                     self.runtime
                         .process_occurrence(
                             &registration.database,
@@ -1565,6 +1790,8 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
                             now,
                         )
                         .await?;
+                    self.notify_occurrence_best_effort(registration, &occurrence_id);
+                    self.run_retention_best_effort(registration).await;
                     self.refresh_job_from_registration(&key, registration, self.runtime.now())?;
                 } else {
                     self.register_record(key, recovery, now)?;
@@ -1572,7 +1799,9 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
                 continue;
             }
             if recovery.job.definition.enabled {
-                let _ = reconcile_missed_deadlines(&registration.database, &key, now)?;
+                let missed = reconcile_missed_deadlines(&registration.database, &key, now)?;
+                self.runtime
+                    .notify_missed(&key.project_id, &key.job_id, missed.missed_count);
             }
             self.refresh_job_from_registration(&key, registration, self.runtime.now())?;
         }
@@ -1624,6 +1853,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             {
                 return self.register_record(key.clone(), recovery, now);
             }
+            let occurrence_id = occurrence.id.clone();
             self.runtime
                 .process_occurrence(
                     &registration.database,
@@ -1633,13 +1863,17 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
                     now,
                 )
                 .await?;
+            self.notify_occurrence_best_effort(&registration, &occurrence_id);
+            self.run_retention_best_effort(&registration).await;
             return self.refresh_job(&key, self.runtime.now());
         }
         if registered
             .scheduled_deadline
             .is_some_and(|deadline| deadline < now - LATE_FIRE_GRACE)
         {
-            let _ = reconcile_missed_deadlines(&registration.database, &key, now)?;
+            let missed = reconcile_missed_deadlines(&registration.database, &key, now)?;
+            self.runtime
+                .notify_missed(&key.project_id, &key.job_id, missed.missed_count);
             return self.refresh_job(&key, self.runtime.now());
         }
         if let DueMaterialization::Ready { job, occurrence } = materialize_registered_deadline(
@@ -1649,6 +1883,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             registered,
             now,
         )? {
+            let occurrence_id = occurrence.id.clone();
             self.runtime
                 .process_occurrence(
                     &registration.database,
@@ -1658,6 +1893,8 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
                     now,
                 )
                 .await?;
+            self.notify_occurrence_best_effort(&registration, &occurrence_id);
+            self.run_retention_best_effort(&registration).await;
         }
         self.refresh_job(&key, self.runtime.now())
     }
@@ -1701,6 +1938,11 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             .run_manual(&registration.app, &record)
             .await
             .map_err(|_| coordinator_error("run-now"));
+        if let Ok(manual) = &result {
+            self.runtime
+                .notify_occurrence(&key.project_id, &manual.occurrence);
+        }
+        self.run_retention_best_effort(&registration).await;
         let _ = self.refresh_job(&key, self.runtime.now());
         result
     }
@@ -1928,23 +2170,41 @@ fn materialize_registered_deadline(
     Ok(database.materialize_due_occurrence(project_id, job_id, registered.revision, now)?)
 }
 
+struct MissedReconcileResult {
+    record: Option<ScheduledJobRecord>,
+    missed_count: u32,
+}
+
 fn reconcile_missed_deadlines(
     database: &ScheduledTaskDatabase,
     key: &ScheduledJobKey,
     now: DateTime<Utc>,
-) -> anyhow::Result<Option<ScheduledJobRecord>> {
+) -> anyhow::Result<MissedReconcileResult> {
+    let mut missed_count = 0u32;
     for _ in 0..MISSED_RECONCILE_BATCH_SIZE {
         let Some(current) = database.get_job_definition(&key.project_id, &key.job_id)? else {
-            return Ok(None);
+            return Ok(MissedReconcileResult {
+                record: None,
+                missed_count,
+            });
         };
         if !current.definition.enabled {
-            return Ok(Some(current));
+            return Ok(MissedReconcileResult {
+                record: Some(current),
+                missed_count,
+            });
         }
         let Some(deadline) = current.next_run_at else {
-            return Ok(Some(current));
+            return Ok(MissedReconcileResult {
+                record: Some(current),
+                missed_count,
+            });
         };
         if deadline >= now - LATE_FIRE_GRACE {
-            return Ok(Some(current));
+            return Ok(MissedReconcileResult {
+                record: Some(current),
+                missed_count,
+            });
         }
         let materialized = database.materialize_due_occurrence(
             &key.project_id,
@@ -1966,20 +2226,37 @@ fn reconcile_missed_deadlines(
         )? {
             Some(true) => {}
             Some(false) => {
-                return Ok(database.get_job_definition(&key.project_id, &key.job_id)?);
+                return Ok(MissedReconcileResult {
+                    record: database.get_job_definition(&key.project_id, &key.job_id)?,
+                    missed_count,
+                });
             }
-            None => return Ok(None),
+            None => {
+                return Ok(MissedReconcileResult {
+                    record: None,
+                    missed_count,
+                });
+            }
         }
+        missed_count = missed_count.saturating_add(1);
         advance_definition_after_point(&mut job.definition, occurrence.scheduled_at, "missed", now);
         if matches!(job.definition.schedule.kind, ScheduleKind::At { .. }) {
             job.definition.enabled = false;
         }
         match database.update_job_runtime_projection(&job.definition, job.revision)? {
             UpdateJobResult::Updated(_) | UpdateJobResult::Conflict(_) => {}
-            UpdateJobResult::NotFound => return Ok(None),
+            UpdateJobResult::NotFound => {
+                return Ok(MissedReconcileResult {
+                    record: None,
+                    missed_count,
+                });
+            }
         }
     }
-    Ok(database.get_job_definition(&key.project_id, &key.job_id)?)
+    Ok(MissedReconcileResult {
+        record: database.get_job_definition(&key.project_id, &key.job_id)?,
+        missed_count,
+    })
 }
 
 #[cfg(test)]
@@ -2228,6 +2505,18 @@ fn occurrence_status_for_run_outcome(outcome: RunOutcome) -> OccurrenceStatus {
         RunOutcome::Success => OccurrenceStatus::Succeeded,
         RunOutcome::Failure | RunOutcome::Killed => OccurrenceStatus::Failed,
     }
+}
+
+fn active_run_ids(app: &App) -> anyhow::Result<HashSet<String>> {
+    let mut active = HashSet::new();
+    for task in app.task_list()? {
+        for run in app.run_list(&task.id)? {
+            if run.status != RunStatus::Completed {
+                active.insert(run.id);
+            }
+        }
+    }
+    Ok(active)
 }
 
 #[derive(Debug, Clone)]
@@ -2827,7 +3116,9 @@ mod tests {
     use gold_band::scheduler::occurrence::{
         ClaimResult, LeaseConfig, OccurrenceStatus, OccurrenceTriggerKind, ScheduledErrorCode,
     };
-    use gold_band::scheduler::queue::{ActiveExecution, QueueDecision, decide_queue};
+    use gold_band::scheduler::queue::{
+        ActiveExecution, MISSED_RECONCILE_BATCH_SIZE, QueueDecision, decide_queue,
+    };
     use gold_band::scheduler::{
         OverlapPolicy, ScheduleSpec, ScheduledTaskDefinition, SessionPolicy,
     };
@@ -2913,6 +3204,7 @@ mod tests {
         registration_attempts: AtomicUsize,
         processed_occurrences: AtomicUsize,
         shutdown_releases: AtomicUsize,
+        power_reconciliations: Mutex<Vec<(usize, bool)>>,
     }
 
     impl LoopCoordinatorRuntime {
@@ -2925,6 +3217,7 @@ mod tests {
                 registration_attempts: AtomicUsize::new(0),
                 processed_occurrences: AtomicUsize::new(0),
                 shutdown_releases: AtomicUsize::new(0),
+                power_reconciliations: Mutex::new(Vec::new()),
             }
         }
 
@@ -2983,6 +3276,13 @@ mod tests {
                 anyhow::bail!("injected active lease release failure");
             }
             Ok(())
+        }
+
+        fn reconcile_power_state(&self, enabled_job_count: usize, app_is_running: bool) {
+            self.power_reconciliations
+                .lock()
+                .unwrap()
+                .push((enabled_job_count, app_is_running));
         }
 
         async fn process_occurrence(
@@ -3056,6 +3356,130 @@ mod tests {
         for _ in 0..8 {
             tokio::task::yield_now().await;
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn power_reconcile_counts_enabled_jobs_across_registered_workspaces() {
+        let first = tempdir().unwrap();
+        let second = tempdir().unwrap();
+        let first_path = camino::Utf8PathBuf::from_path_buf(first.path().to_path_buf()).unwrap();
+        let second_path = camino::Utf8PathBuf::from_path_buf(second.path().to_path_buf()).unwrap();
+        let first_app = gold_band::app::App::new(first_path.clone());
+        let second_app = gold_band::app::App::new(second_path.clone());
+        let first_db = ScheduledTaskDatabase::open(first_app.paths.scheduler_db_path()).unwrap();
+        let second_db = ScheduledTaskDatabase::open(second_app.paths.scheduler_db_path()).unwrap();
+        let deadline = Utc::now() + Duration::hours(1);
+        for (database, project_id, job_id) in [
+            (&first_db, first_app.paths.project_id.as_str(), "job-a"),
+            (&second_db, second_app.paths.project_id.as_str(), "job-b"),
+        ] {
+            let definition = ScheduledTaskDefinition::new(
+                project_id,
+                job_id,
+                "direct",
+                ScheduleSpec::at(deadline),
+                OverlapPolicy::SkipWhenRunning,
+            )
+            .unwrap();
+            database.create_job(&definition, Some(deadline)).unwrap();
+        }
+        let runtime = Arc::new(LoopCoordinatorRuntime::new(Utc::now(), 0));
+        let (_handle, mut coordinator) = command_loop_coordinator(runtime.clone());
+        coordinator.workspaces.insert(
+            first_path,
+            WorkspaceRegistration {
+                app: Arc::new(first_app),
+                database: first_db,
+            },
+        );
+        coordinator.workspaces.insert(
+            second_path,
+            WorkspaceRegistration {
+                app: Arc::new(second_app),
+                database: second_db,
+            },
+        );
+
+        coordinator.reconcile_power_state(true);
+
+        assert_eq!(
+            runtime.power_reconciliations.lock().unwrap().last(),
+            Some(&(2, true))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scheduler_shutdown_releases_power_state() {
+        let runtime = Arc::new(LoopCoordinatorRuntime::new(Utc::now(), 0));
+        let (handle, coordinator) = command_loop_coordinator(runtime.clone());
+        let loop_task = tokio::spawn(coordinator.run());
+
+        handle.shutdown().await.unwrap();
+        loop_task.await.unwrap();
+
+        assert_eq!(
+            runtime.power_reconciliations.lock().unwrap().last(),
+            Some(&(0, false))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn startup_registration_runs_occurrence_retention() {
+        let directory = tempdir().unwrap();
+        let workspace_path =
+            camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let app = gold_band::app::App::new(workspace_path.clone());
+        let database = ScheduledTaskDatabase::open(app.paths.scheduler_db_path()).unwrap();
+        let finished_at = Utc::now();
+        let definition = ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "retention-job",
+            "direct",
+            ScheduleSpec::at(finished_at + Duration::days(60)),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        database
+            .create_job(&definition, Some(finished_at + Duration::days(60)))
+            .unwrap();
+        let occurrence = database
+            .create_or_get_occurrence_for_existing_job(
+                &definition.project_id,
+                definition.id(),
+                finished_at,
+                OccurrenceTriggerKind::Manual,
+            )
+            .unwrap()
+            .unwrap();
+        database
+            .claim_occurrence(
+                &occurrence.id,
+                "retention-owner",
+                finished_at,
+                finished_at + Duration::minutes(5),
+            )
+            .unwrap();
+        database
+            .finish_occurrence(
+                &occurrence.id,
+                "retention-owner",
+                OccurrenceStatus::Succeeded,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let runtime = Arc::new(LoopCoordinatorRuntime::new(
+            finished_at + Duration::days(40),
+            0,
+        ));
+        let (_handle, mut coordinator) = command_loop_coordinator(runtime);
+        coordinator
+            .register_workspace(workspace_path, ReconcileReason::Startup)
+            .await
+            .unwrap();
+
+        assert!(database.get_occurrence(&occurrence.id).unwrap().is_none());
     }
 
     async fn drain_pending_guard_joins(pending: &PendingGuardJoins) {
@@ -3181,6 +3605,7 @@ mod tests {
         let pending_stops = Arc::new(Mutex::new(Vec::new()));
         let lease = ActiveOccurrenceMetadata {
             database: database.clone(),
+            workspace_path: camino::Utf8PathBuf::from("C:/workspace"),
             owner_id: owner_id.clone(),
             project_id: "project-1".to_string(),
             scheduled_task_id: "job-1".to_string(),
@@ -3433,6 +3858,7 @@ mod tests {
             };
             let lease = ActiveOccurrenceMetadata {
                 database: database.clone(),
+                workspace_path: app.paths.repo_root.clone(),
                 owner_id: owner_id.clone(),
                 project_id: definition.project_id.clone(),
                 scheduled_task_id: definition.id.clone(),
@@ -3467,6 +3893,7 @@ mod tests {
         let pending_stops = Arc::new(Mutex::new(Vec::new()));
         let lease = ActiveOccurrenceMetadata {
             database,
+            workspace_path: camino::Utf8PathBuf::from("C:/workspace"),
             owner_id,
             project_id: "project-1".to_string(),
             scheduled_task_id: "job-1".to_string(),
@@ -3499,6 +3926,7 @@ mod tests {
         let pending_stops = Arc::new(Mutex::new(Vec::new()));
         let lease = ActiveOccurrenceMetadata {
             database: database.clone(),
+            workspace_path: camino::Utf8PathBuf::from("C:/workspace"),
             owner_id,
             project_id: "project-1".to_string(),
             scheduled_task_id: "job-1".to_string(),
@@ -4486,8 +4914,9 @@ mod tests {
             ),
             now,
         )
-        .unwrap()
         .unwrap();
+        assert_eq!(reconciled.missed_count, 1);
+        let reconciled = reconciled.record.unwrap();
 
         assert_eq!(reconciled.next_run_at, Some(near_late_deadline));
         let occurrences = database.list_occurrences("job-a", 10).unwrap();
@@ -4537,8 +4966,9 @@ mod tests {
             ),
             now,
         )
-        .unwrap()
         .unwrap();
+        assert_eq!(reconciled.missed_count, MISSED_RECONCILE_BATCH_SIZE as u32);
+        let reconciled = reconciled.record.unwrap();
         let occurrences = database.list_occurrences(definition.id(), 1_000).unwrap();
 
         assert!(!occurrences.is_empty());

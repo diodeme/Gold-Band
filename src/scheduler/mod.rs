@@ -1,6 +1,6 @@
 use chrono::{
-    DateTime, Datelike, Duration, LocalResult, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc,
-    Weekday,
+    DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone,
+    Timelike, Utc, Weekday,
 };
 use chrono_tz::Tz;
 use cron::Schedule;
@@ -24,6 +24,13 @@ pub use fingerprint::{
 pub enum EveryUnit {
     Minutes,
     Hours,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LocalTimeDisambiguation {
+    Earlier,
+    Later,
 }
 
 impl EveryUnit {
@@ -53,8 +60,16 @@ pub enum ScheduleError {
     UnsupportedEveryUnit { unit: String },
     #[error("invalid timezone: {timezone}")]
     InvalidTimezone { timezone: String },
+    #[error("invalid local date: {date}")]
+    InvalidLocalDate { date: String },
     #[error("invalid local time: {time}")]
     InvalidTime { time: String },
+    #[error("nonexistent local time: {local_date} {local_time} {timezone}")]
+    NonexistentLocalTime {
+        local_date: String,
+        local_time: String,
+        timezone: String,
+    },
     #[error("weekly schedule requires at least one weekday")]
     EmptyWeekdays,
     #[error("invalid cron expression: {expression}")]
@@ -347,6 +362,45 @@ impl ScheduleSpec {
         })
     }
 
+    pub fn at_local(
+        local_date: &str,
+        local_time: &str,
+        timezone: &str,
+        disambiguation: LocalTimeDisambiguation,
+    ) -> Result<Self, ScheduleError> {
+        let date = NaiveDate::parse_from_str(local_date, "%Y-%m-%d").map_err(|_| {
+            ScheduleError::InvalidLocalDate {
+                date: local_date.to_string(),
+            }
+        })?;
+        let time = NaiveTime::parse_from_str(local_time, "%H:%M").map_err(|_| {
+            ScheduleError::InvalidTime {
+                time: local_time.to_string(),
+            }
+        })?;
+        let timezone_value = parse_timezone(timezone)?;
+        let local = NaiveDateTime::new(date, time);
+        let at = match timezone_value.from_local_datetime(&local) {
+            LocalResult::None => {
+                return Err(ScheduleError::NonexistentLocalTime {
+                    local_date: local_date.to_string(),
+                    local_time: local_time.to_string(),
+                    timezone: timezone.to_string(),
+                });
+            }
+            LocalResult::Single(candidate) => candidate.with_timezone(&Utc),
+            LocalResult::Ambiguous(first, second) => {
+                let first = first.with_timezone(&Utc);
+                let second = second.with_timezone(&Utc);
+                match disambiguation {
+                    LocalTimeDisambiguation::Earlier => first.min(second),
+                    LocalTimeDisambiguation::Later => first.max(second),
+                }
+            }
+        };
+        Self::at_in_timezone(at, timezone)
+    }
+
     pub fn repeat(
         preset: RepeatPreset,
         hour: u32,
@@ -570,7 +624,7 @@ fn next_cron_occurrence(
 
 #[cfg(test)]
 mod tests {
-    use super::RepeatPreset;
+    use super::{LocalTimeDisambiguation, RepeatPreset, ScheduleKind};
     use super::{
         EverySpec, OverlapPolicy, ScheduleError, ScheduleSpec, ScheduledTaskContentSnapshot,
         ScheduledTaskDefinition, system_timezone,
@@ -704,6 +758,102 @@ mod tests {
         let encoded = serde_json::to_value(&schedule).unwrap();
         let decoded: ScheduleSpec = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.timezone(), Some("America/New_York"));
+    }
+
+    #[test]
+    fn at_local_resolves_an_ordinary_wall_clock_time() {
+        let schedule = ScheduleSpec::at_local(
+            "2026-08-10",
+            "09:30",
+            "Asia/Shanghai",
+            LocalTimeDisambiguation::Earlier,
+        )
+        .unwrap();
+
+        assert_eq!(
+            schedule.kind,
+            ScheduleKind::At {
+                at: Utc.with_ymd_and_hms(2026, 8, 10, 1, 30, 0).unwrap(),
+                timezone: "Asia/Shanghai".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn at_local_rejects_a_nonexistent_dst_time() {
+        assert!(matches!(
+            ScheduleSpec::at_local(
+                "2026-03-08",
+                "02:30",
+                "America/New_York",
+                LocalTimeDisambiguation::Earlier,
+            ),
+            Err(ScheduleError::NonexistentLocalTime { .. })
+        ));
+    }
+
+    #[test]
+    fn at_local_honors_dst_overlap_disambiguation() {
+        let earlier = ScheduleSpec::at_local(
+            "2026-11-01",
+            "01:30",
+            "America/New_York",
+            LocalTimeDisambiguation::Earlier,
+        )
+        .unwrap();
+        let later = ScheduleSpec::at_local(
+            "2026-11-01",
+            "01:30",
+            "America/New_York",
+            LocalTimeDisambiguation::Later,
+        )
+        .unwrap();
+
+        let ScheduleKind::At { at: earlier_at, .. } = earlier.kind else {
+            panic!("expected At schedule");
+        };
+        let ScheduleKind::At { at: later_at, .. } = later.kind else {
+            panic!("expected At schedule");
+        };
+        assert_eq!(
+            earlier_at,
+            Utc.with_ymd_and_hms(2026, 11, 1, 5, 30, 0).unwrap()
+        );
+        assert_eq!(
+            later_at,
+            Utc.with_ymd_and_hms(2026, 11, 1, 6, 30, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn at_local_rejects_invalid_date_time_and_timezone() {
+        assert!(matches!(
+            ScheduleSpec::at_local(
+                "2026-02-30",
+                "09:30",
+                "UTC",
+                LocalTimeDisambiguation::Earlier,
+            ),
+            Err(ScheduleError::InvalidLocalDate { .. })
+        ));
+        assert!(matches!(
+            ScheduleSpec::at_local(
+                "2026-08-10",
+                "25:00",
+                "UTC",
+                LocalTimeDisambiguation::Earlier,
+            ),
+            Err(ScheduleError::InvalidTime { .. })
+        ));
+        assert!(matches!(
+            ScheduleSpec::at_local(
+                "2026-08-10",
+                "09:30",
+                "Invalid/Zone",
+                LocalTimeDisambiguation::Earlier,
+            ),
+            Err(ScheduleError::InvalidTimezone { .. })
+        ));
     }
 
     #[test]

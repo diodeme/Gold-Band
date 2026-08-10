@@ -1,12 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { browserApi } from '@/api/browser';
 
+const scheduleInput = {
+  kind: 'At' as const,
+  localDate: '2099-08-01',
+  localTime: '09:00',
+  timezone: 'Asia/Shanghai',
+  disambiguation: 'earlier' as const,
+};
+
 const input = (content: string) => ({
   projectId: 'default',
   content,
   runMode: 'direct' as const,
   directConfig: { agentType: 'claude-acp' },
-  schedule: { kind: 'At' as const, at: '2026-08-01T01:00:00.000Z', timezone: 'Asia/Shanghai' },
+  schedule: scheduleInput,
   overlapPolicy: 'skip_when_running' as const,
 });
 
@@ -35,7 +43,7 @@ describe('browser scheduled task API', () => {
       content: 'edited content',
       runMode: edit.runMode,
       directConfig: { agentType: 'claude-acp' },
-      schedule: edit.schedule,
+      schedule: scheduleInput,
       overlapPolicy: edit.overlapPolicy,
       sessionPolicy: edit.sessionPolicy,
     });

@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, RoundSelection, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -246,6 +246,22 @@ export const desktopApi: RuntimeApi = {
   },
   getConversationSidebar() {
     return invokeCommand<ConversationSidebarVm>('get_conversation_sidebar');
+  },
+  async subscribeScheduledNotifications(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<ScheduledNotificationEventVm>('gold-band://scheduled-notification', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  sendScheduledNativeNotification(input: ScheduledNativeNotificationInputVm) {
+    return invokeCommand('send_scheduled_native_notification', { input });
+  },
+  getScheduledRuntimeSettings() {
+    return invokeCommand('get_scheduled_runtime_settings');
+  },
+  saveScheduledRuntimeSettings(input) {
+    return invokeCommand('save_scheduled_runtime_settings', { input });
   },
   async subscribeScheduledTaskUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;

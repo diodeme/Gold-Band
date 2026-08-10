@@ -1,7 +1,7 @@
 # Gold Band 定时任务时间输入与校验设计
 
 **日期：** 2026-08-10  
-**状态：** 已确认
+**状态：** 已实现并验证
 **范围：** Direct、Workflow、AUTO 共用的定时任务创建/编辑输入；本次验收重点覆盖 Direct
 
 ## 1. 目标与非目标
@@ -171,3 +171,11 @@ SQLite ScheduleSpec
 - `docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md`。
 
 完成单元测试后启动前端，deep link 到定时任务创建/编辑路径，人工验证系统时区、非法 Cron、空 weekly、非法 Every、DST 不存在时间和 DST 重复时间选择。验证结束后关闭本次启动的开发服务器。
+
+### 8.1 验收记录
+
+- Rust scheduler 领域测试 20/20、Tauri scheduled service 测试 15/15；
+- Web 全量测试 95 files / 595 tests，production build 通过；
+- 真实 UI 在 1280×900 与 390×844 验证系统时区默认值、Cron/Weekly/Every 即时校验、保存禁用状态和无横向溢出；
+- DST 不存在、重复时间及 Earlier/Later UTC 映射由 Temporal、Rust 和 Tauri 三层自动化测试固化；浏览器原生日期控件在自动化层无法可靠派发 React change，不将该限制误记为人工点击证据；
+- 对话框明确设置 `aria-describedby={undefined}`，Radix 不再输出缺少描述关联的警告。

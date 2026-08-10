@@ -184,6 +184,22 @@ export function subscribeScheduledOccurrenceUpdates(listener: Parameters<NonNull
   return getRuntimeApi().subscribeScheduledOccurrenceUpdates?.(listener) ?? Promise.resolve(() => {});
 }
 
+export function subscribeScheduledNotifications(listener: Parameters<NonNullable<RuntimeApi['subscribeScheduledNotifications']>>[0]) {
+  return getRuntimeApi().subscribeScheduledNotifications?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function sendScheduledNativeNotification(input: Parameters<RuntimeApi['sendScheduledNativeNotification']>[0]) {
+  return getRuntimeApi().sendScheduledNativeNotification(input);
+}
+
+export function getScheduledRuntimeSettings() {
+  return getRuntimeApi().getScheduledRuntimeSettings();
+}
+
+export function saveScheduledRuntimeSettings(input: Parameters<RuntimeApi['saveScheduledRuntimeSettings']>[0]) {
+  return getRuntimeApi().saveScheduledRuntimeSettings(input);
+}
+
 // 干预通知：OS Toast「查看详情」点击后由后端转发导航事件，前端订阅做 deep-link。
 export function subscribeInterventionNavigate(listener: Parameters<NonNullable<RuntimeApi['subscribeInterventionNavigate']>>[0]) {
   return getRuntimeApi().subscribeInterventionNavigate?.(listener) ?? Promise.resolve(() => {});

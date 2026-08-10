@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make SQLite the only scheduled-task authority, replace fixed polling with deadline-driven coordination, preserve explicit run-now behavior, and complete Direct/Workflow/AUTO reliability, keep-awake, notifications, management UI, localized Skill tools, and user-confirmed Skill extraction.
+**Goal:** Make SQLite the only scheduled-task authority, replace fixed polling with deadline-driven coordination, preserve explicit run-now behavior, and complete Direct/Workflow/AUTO reliability, keep-awake, notifications, and management UI.
 
-**Architecture:** A workspace-local SQLite repository owns definitions, derived deadlines, migration markers, and occurrences. One process-level `SchedulerCoordinator` maintains a `tokio_util::time::DelayQueue`, while a shared `ScheduledTaskService` is the only command boundary used by Tauri and the internal MCP server. Mode adapters materialize existing Task/Run/ACP lifecycles; lifecycle events, not process start, finish occurrences.
+**Architecture:** A workspace-local SQLite repository owns definitions, derived deadlines, migration markers, and occurrences. One process-level `SchedulerCoordinator` maintains a `tokio_util::time::DelayQueue`, while a shared `ScheduledTaskService` is the only command boundary used by Tauri. Mode adapters materialize existing Task/Run/ACP lifecycles; lifecycle events, not process start, finish occurrences.
 
-**Tech Stack:** Rust 2024, `rusqlite`, Tokio, `tokio-util::time::DelayQueue`, `keepawake`, official Rust MCP SDK `rmcp`, Tauri 2, React 19, TypeScript, Tailwind CSS, shadcn/ui, prompt-kit, i18next, Vitest.
+**Tech Stack:** Rust 2024, `rusqlite`, Tokio, `tokio-util::time::DelayQueue`, `keepawake`, Tauri 2, React 19, TypeScript, Tailwind CSS, shadcn/ui, prompt-kit, i18next, Vitest.
 
 ---
 
@@ -25,19 +25,15 @@
 - `src/scheduler/db.rs`: schema migrations, one-time legacy import marker, definition CRUD, optimistic updates, occurrence transactions, retention cleanup.
 - `src/scheduler/coordinator.rs`: timer keys, deadline registry, deadline selection, and deterministic reconciliation state independent of Tauri UI.
 - `src/scheduler/mod.rs`: schedule/domain exports and next-occurrence calculations only.
-- `src-tauri/src/scheduled_service.rs`: shared application service used by Tauri commands and MCP tools; no UI strings.
+- `src-tauri/src/scheduled_service.rs`: shared application service used by Tauri commands; no UI strings.
 - `src-tauri/src/scheduled_runtime.rs`: runtime facade, start/shutdown, lifecycle subscriber, public coordinator handle.
 - `src-tauri/src/scheduled_runtime/execution.rs`: Direct/new, Direct/continuous, Workflow, AUTO adapters and execution bindings.
 - `src-tauri/src/scheduled_runtime/lease.rs`: per-occurrence heartbeat guard and lease-loss handling.
 - `src-tauri/src/scheduled_runtime/power.rs`: process-level system sleep inhibitor and idempotent state controller.
 - `src-tauri/src/scheduled_runtime/notification.rs`: structured scheduled-notification events and deduplication; no localized customer copy.
-- `src-tauri/src/scheduled_tools.rs`: in-process `rmcp` Streamable HTTP server and typed scheduling tools.
-- `src/skill/builtin.rs`: localized built-in Skill registry and read-only `SkillSource::BuiltIn` support.
-- `src/skill/scheduled.rs`: deterministic occurrence provenance and confirmed Skill write request validation.
-- `src/prompts/{zh-CN,en}/skills/scheduled-task/`: mirrored built-in Skill and Skill-draft prompts.
-- `web/src/components/scheduled-tasks/`: settings, timezone, occurrence navigation, and Skill-preview UI assembled from existing shadcn/ui primitives.
+- `web/src/components/scheduled-tasks/`: settings, timezone, and occurrence navigation UI assembled from existing shadcn/ui primitives.
 - `web/src/pages/ScheduledTaskManagementPage.tsx`: compact list, filters, quick actions, and effective keep-awake state.
-- `web/src/pages/ScheduledTaskDetailPage.tsx`: complete history, diagnostics, links, run-now, and Skill extraction.
+- `web/src/pages/ScheduledTaskDetailPage.tsx`: complete history, diagnostics, links, and run-now.
 - `web/src/i18n.ts`: all new and existing scheduled-task customer copy in zh-CN and en.
 
 ### Task 1: Repair The Test Baseline And Freeze Scheduler Contracts
@@ -84,10 +80,6 @@ assert_eq!(
     serde_json::to_string(&ScheduledErrorCode::NotificationFailed).unwrap(),
     "\"SCHEDULED_NOTIFICATION_FAILED\""
 );
-assert_eq!(
-    serde_json::to_string(&ScheduledErrorCode::SkillValidationFailed).unwrap(),
-    "\"SCHEDULED_SKILL_VALIDATION_FAILED\""
-);
 ```
 
 Run: `cargo test -p gold-band scheduler::occurrence` and `cargo test -p gold-band scheduler::queue`
@@ -103,7 +95,6 @@ MigrationConflict,
 CoordinatorUnavailable,
 PowerInhibitorFailed,
 NotificationFailed,
-SkillValidationFailed,
 ```
 
 Keep retry values only in `src/scheduler/queue.rs`:
@@ -937,244 +928,7 @@ git add package.json package-lock.json web docs/gold-band/产品设计文档/int
 git commit -m "feat: complete scheduled task management experience"
 ```
 
-### Task 9: Publish A Localized Built-In Skill And Typed Internal MCP Tools
-
-**Files:**
-- Modify: `Cargo.toml`
-- Modify: `Cargo.lock`
-- Modify: `src-tauri/Cargo.toml`
-- Create: `src/skill/builtin.rs`
-- Modify: `src/skill/mod.rs`
-- Modify: `src/app/mod.rs`
-- Modify: `src/app/node_executor.rs`
-- Modify: `src/prompts.rs`
-- Create: `src/prompts/zh-CN/skills/scheduled-task/SKILL.md`
-- Create: `src/prompts/en/skills/scheduled-task/SKILL.md`
-- Create: `src-tauri/src/scheduled_tools.rs`
-- Modify: `src-tauri/src/commands.rs`
-- Modify: `src-tauri/src/state.rs`
-- Modify: `src-tauri/src/main.rs`
-- Modify: `src-tauri/src/scheduled_service.rs`
-- Modify: `src-tauri/src/view_models.rs`
-- Modify: `web/src/types.ts`
-- Modify: `web/src/pages/ContextManagementPage.tsx`
-- Modify: `docs/gold-band/产品设计文档/MCP-SKILL管理-完整设计方案.md`
-- Modify: `docs/gold-band/产品设计文档/runtime/scheduled-task.md`
-- Modify: `docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md`
-- Test: `src/skill/builtin.rs`
-- Test: `src-tauri/src/scheduled_tools.rs`
-- Test: `web/tests/skill-agent-display.test.ts`
-
-- [ ] **Step 1: Add official MCP dependencies and failing registry/schema tests**
-
-Add compatible current versions:
-
-```toml
-rmcp = { version = "3.1.0", features = ["server", "macros", "transport-streamable-http-server"] }
-axum = "0.8"
-schemars = { version = "1.0", features = ["derive"] }
-```
-
-Tests must prove:
-
-```text
-zh-CN and en have the same relative built-in Skill paths
-SkillSource::BuiltIn lists and reads scheduled-task
-built-in Skills are read-only
-every MCP tool has a stable JSON schema
-create validates Direct/Workflow/AUTO required fields
-MCP create delegates to ScheduledTaskService and starts no execution
-pause/resume map to set_enabled
-run-now produces a manual occurrence and leaves next_run_at unchanged
-```
-
-Run: `cargo test -p gold-band skill::builtin` and `cargo test -p gold-band-desktop scheduled_tools`
-
-Expected: FAIL until registry and tool server exist.
-
-- [ ] **Step 2: Add a read-only localized built-in Skill registry**
-
-Add `built_in: Vec<SkillMeta>` to `SkillListResult`. Add `desktop_language: DesktopLanguage` to `SkillManager`, pass `App.config.desktop_language` from `App::skill_manager()`, and use it when `SkillManager::read(name, BuiltIn)` selects the localized resource. `SkillManager::list()` merges registry metadata separately from Global/Project precedence. Write/delete/sync requests for `BuiltIn` return `SCHEDULED_SKILL_VALIDATION_FAILED` or the existing read-only Skill error, never a filesystem path fallback.
-
-The two `SKILL.md` files use matching frontmatter and section structure. They teach the Agent to confirm ambiguous schedule/timezone/mode inputs, use typed tools, distinguish create from run-now, inspect structured results, and never claim completion before a terminal occurrence.
-
-- [ ] **Step 3: Define typed MCP input models**
-
-Keep all MCP schema types in the Tauri crate so they derive `schemars 1.x` without requiring the core crate's existing `schemars 0.8` domain types to implement the other version's trait. Use tagged mode-specific content rather than free-form JSON:
-
-```rust
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ScheduledToolSessionPolicy {
-    New,
-    Continuous,
-}
-
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ScheduledDirectToolConfig {
-    pub agent_type: String,
-    pub model_id: Option<String>,
-    pub permission_mode: Option<String>,
-    pub config_options: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-#[serde(tag = "mode", rename_all = "snake_case")]
-pub enum ScheduledToolContent {
-    Direct {
-        instruction: String,
-        direct_config: ScheduledDirectToolConfig,
-        session_policy: ScheduledToolSessionPolicy,
-    },
-    Workflow {
-        instruction: String,
-        workflow_template_id: String,
-        include_interview: Option<bool>,
-    },
-    Auto {
-        instruction: String,
-        auto_config: ConversationAutoConfigVm,
-    },
-}
-```
-
-Define Tauri-local `ScheduledToolSchedule`, `ScheduledWorkflowToolConfig`, and `ScheduledAutoToolConfig` with the same approach and explicit `TryFrom` conversions into `ScheduleSpec` and the existing conversation ViewModels. Do not use `serde_json::Value` for mode, schedule, Agent, workflow, or AUTO authoring inputs.
-
-Expose `scheduled_create`, `scheduled_list`, `scheduled_get`, `scheduled_update`, `scheduled_pause`, `scheduled_resume`, `scheduled_run_now`, and `scheduled_delete`. Every tool returns `{ data }` or `{ error: { code, params, traceId } }`.
-
-- [ ] **Step 4: Run one loopback Streamable HTTP server in-process**
-
-Bind `127.0.0.1:0`, retain its cancellation token and endpoint in `DesktopState`, and shut it down with the app. It must not persist a user-editable MCP entry, launch a CLI, use environment-variable protocols, or invoke `std::process::Command`.
-
-Merge its ephemeral endpoint into `App::acp_mcp_servers()`. Change Workflow node execution to call `app.acp_mcp_servers()` instead of constructing `McpManager` directly, so Direct, Workflow, and AUTO receive the same built-in tools.
-
-- [ ] **Step 5: Inject the built-in Skill as fixed runtime system context**
-
-Render through `src/prompts.rs` and add it to `WorkerInvocation.extra_system_sections` when the scheduled tool endpoint is available. Keep the long bilingual content out of Rust. The current task/goal remains user prompt content; tool rules and capability boundaries remain system context.
-
-- [ ] **Step 6: Pass Skill/tool/Web tests, update both document trees, and commit**
-
-Run: `cargo test -p gold-band skill` and `cargo test -p gold-band-desktop scheduled_tools` and `npm run web:test -- skill-agent-display`
-
-Expected: PASS.
-
-```bash
-git add Cargo.toml Cargo.lock src-tauri/Cargo.toml src/skill src/app src/prompts.rs src/prompts/zh-CN/skills src/prompts/en/skills src-tauri/src/scheduled_tools.rs src-tauri/src/commands.rs src-tauri/src/state.rs src-tauri/src/main.rs src-tauri/src/scheduled_service.rs src-tauri/src/view_models.rs web/src/types.ts web/src/pages/ContextManagementPage.tsx web/tests/skill-agent-display.test.ts docs/gold-band/产品设计文档/MCP-SKILL管理-完整设计方案.md docs/gold-band/产品设计文档/runtime/scheduled-task.md docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md
-git commit -m "feat: add typed scheduled task agent tools"
-```
-
-### Task 10: Add User-Confirmed “Save As Skill” From Successful Occurrences
-
-**Files:**
-- Create: `src/skill/scheduled.rs`
-- Modify: `src/skill/mod.rs`
-- Modify: `src/scheduler/mod.rs`
-- Create: `src/prompts/zh-CN/skills/scheduled-task/save-as-skill-draft.md`
-- Create: `src/prompts/en/skills/scheduled-task/save-as-skill-draft.md`
-- Modify: `src/prompts.rs`
-- Modify: `src-tauri/src/commands_conversation.rs`
-- Modify: `src-tauri/src/view_models_conversation.rs`
-- Modify: `src-tauri/src/main.rs`
-- Modify: `web/src/types.ts`
-- Modify: `web/src/api/client.ts`
-- Modify: `web/src/api/desktop.ts`
-- Modify: `web/src/api/browser.ts`
-- Modify: `web/src/api.ts`
-- Create: `web/src/components/ui/checkbox.tsx`
-- Create: `web/src/components/scheduled-tasks/SaveScheduledTaskAsSkillDialog.tsx`
-- Modify: `web/src/pages/ScheduledTaskDetailPage.tsx`
-- Modify: `web/src/i18n.ts`
-- Modify: `docs/gold-band/产品设计文档/MCP-SKILL管理-完整设计方案.md`
-- Modify: `docs/gold-band/产品设计文档/interaction/app/scheduled-task-management.md`
-- Modify: `docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md`
-- Test: `src/skill/scheduled.rs`
-- Test: `src-tauri/src/commands_conversation.rs`
-- Test: `web/tests/scheduled-task-save-as-skill.test.ts`
-
-- [ ] **Step 1: Write failing preview/confirm/conflict tests**
-
-Cover these rules:
-
-```text
-only succeeded occurrences can generate a draft
-preview reads instruction, mode, stable steps, artifacts, and execution provenance
-preview does not write a Skill
-confirm writes only Project or Global source selected by the user
-confirm never overwrites an existing Skill
-confirm does not modify the scheduled job unless linkSkill is explicitly true
-Direct/Workflow/AUTO provenance is retained in the draft request
-```
-
-Run: `cargo test -p gold-band skill::scheduled` and `cargo test -p gold-band-desktop scheduled_skill` and `npm run web:test -- scheduled-task-save-as-skill`
-
-Expected: FAIL until preview and confirm APIs exist.
-
-- [ ] **Step 2: Define preview and confirmed-write contracts**
-
-```rust
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScheduledSkillDraftVm {
-    pub draft_id: String,
-    pub suggested_name: String,
-    pub description: String,
-    pub content: String,
-    pub source_options: Vec<String>,
-    pub occurrence_id: String,
-    pub content_fingerprint: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConfirmScheduledSkillInputVm {
-    pub draft_id: String,
-    pub name: String,
-    pub description: String,
-    pub content: String,
-    pub source: SkillSource,
-    pub project_id: String,
-    pub link_skill: bool,
-}
-```
-
-`preview_scheduled_occurrence_skill` creates an expiring in-memory draft tied to occurrence ID and content fingerprint. `confirm_scheduled_occurrence_skill` revalidates the draft, checks name conflict, then delegates to the existing atomic `SkillManager` write flow.
-
-Add the traceable reference to the scheduled definition:
-
-```rust
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScheduledSkillReference {
-    pub name: String,
-    pub source: SkillSource,
-    pub content_sha256: String,
-    pub linked_at: DateTime<Utc>,
-}
-```
-
-`link_skill = true` saves this reference through the optimistic SQLite update after the Skill write succeeds. It does not overwrite the Skill, automatically update the reference when Skill content later changes, or change the planned `next_run_at`. `link_skill = false` leaves the definition unchanged. Use a named `SCHEDULED_SKILL_DRAFT_TTL` duration for draft expiry rather than an inline numeric timeout.
-
-- [ ] **Step 3: Render a deterministic draft from mirrored prompt resources**
-
-Render `save-as-skill-draft.md` with Minijinja using the occurrence goal, instruction, mode, captured tool/step provenance, artifacts, and output locations. This preview action does not call a model, so it does not need to choose or mutate an Agent session. Validate the rendered frontmatter and body through the existing Skill parser; invalid provenance or output returns `SCHEDULED_SKILL_VALIDATION_FAILED` with params.
-
-- [ ] **Step 4: Build the explicit preview and confirmation dialog**
-
-Show editable name, description, content, Project/Global source, conflict status, and optional “link this scheduled task to the Skill” checkbox. The primary confirm button is the only write action. Closing/canceling discards the draft. Generate the missing Checkbox through the shadcn/ui copy-in flow, then use Dialog/Input/Textarea/Select/Checkbox/Button components and localized copy.
-
-- [ ] **Step 5: Pass tests, update both document trees, and commit**
-
-Run: `cargo test -p gold-band skill::scheduled` and `cargo test -p gold-band-desktop scheduled_skill` and `npm run web:test -- scheduled-task-save-as-skill`
-
-Expected: PASS.
-
-```bash
-git add src/skill src/scheduler/mod.rs src/prompts.rs src/prompts/zh-CN/skills/scheduled-task src/prompts/en/skills/scheduled-task src-tauri/src web/src web/tests/scheduled-task-save-as-skill.test.ts docs/gold-band/产品设计文档/MCP-SKILL管理-完整设计方案.md docs/gold-band/产品设计文档/interaction/app/scheduled-task-management.md docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md
-git commit -m "feat: save successful scheduled runs as skills"
-```
-
-### Task 11: Full Regression, Desktop Deep-Link Verification, And Documentation Closure
+### Task 9: Full Regression, Desktop Deep-Link Verification, And Documentation Closure
 
 **Files:**
 - Modify: `docs/gold-band/产品设计文档/runtime/scheduled-task.md`
@@ -1182,7 +936,6 @@ git commit -m "feat: save successful scheduled runs as skills"
 - Modify: `docs/gold-band/产品设计文档/runtime/scheduled-task-runtime-implementation.md`
 - Modify: `docs/gold-band/产品设计文档/interaction/app/scheduled-task-management.md`
 - Modify: `docs/gold-band/产品设计文档/interaction/app/settings.md`
-- Modify: `docs/gold-band/产品设计文档/MCP-SKILL管理-完整设计方案.md`
 - Modify: `docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md`
 - Modify: `docs/gold-band/开发计划/功能点todo列表.md`
 
@@ -1219,15 +972,14 @@ skipped and missed rows remain visible
 Task/Run/attempt links navigate correctly
 IANA timezone search works
 keep-awake switch shows enabled versus effective state
-Skill preview writes nothing before confirmation
 zh-CN and en text fits without overlap
 ```
 
-Use the in-memory browser facade or a disposable temporary workspace so verification does not touch user projects. Stop the dev server afterward; discard the facade state or remove the entire validated temporary workspace so no scheduled definition, Skill, Task, or Run test resource remains.
+Use the in-memory browser facade or a disposable temporary workspace so verification does not touch user projects. Stop the dev server afterward; discard the facade state or remove the entire validated temporary workspace so no scheduled definition, Task, or Run test resource remains.
 
 - [ ] **Step 3: Record only verified completion in both document trees**
 
-Update architecture, schema, UI, Skill/MCP, migration, power, notification, retention, and testing sections. Change the feature todo row from the old “missed not implemented” statement only after the corresponding tests and visual checks pass.
+Update architecture, schema, UI, migration, power, notification, retention, and testing sections. Change the feature todo row from the old “missed not implemented” statement only after the corresponding tests and visual checks pass.
 
 - [ ] **Step 4: Review the final scope and commit documentation**
 
@@ -1255,6 +1007,4 @@ git commit -m "docs: close scheduled runtime verification"
 | Keep-awake behavior | fake inhibitor state-machine tests and narrow platform smoke test |
 | Full history and retention | repository cleanup tests and detail-page rendering tests |
 | Localized notifications | event mapping/dedup tests and zh-CN/en Web tests |
-| Built-in Skill tools | mirrored resource test, MCP schema test, service-delegation test |
-| Save as Skill confirmation | preview-no-write, conflict, confirm-write, explicit-link tests |
 | Desktop UX | deep-link screenshots at desktop and mobile widths |

@@ -8,7 +8,9 @@ use gold_band::scheduler::db::{
     ScheduledJobRecord, ScheduledTaskDatabase, UpdateJobResult, derived_next_run_at,
 };
 use gold_band::scheduler::occurrence::{OccurrenceLinks, ScheduledErrorCode, ScheduledOccurrence};
-use gold_band::scheduler::{ScheduleKind, ScheduledMode, ScheduledTaskDefinition, SessionPolicy};
+use gold_band::scheduler::{
+    ScheduleError, ScheduleKind, ScheduledMode, ScheduledTaskDefinition, SessionPolicy,
+};
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
@@ -78,6 +80,69 @@ impl std::error::Error for ScheduledServiceError {}
 pub type ScheduledServiceResult<T> = Result<T, ScheduledServiceError>;
 pub type CoordinatorRunFuture =
     Pin<Box<dyn Future<Output = ScheduledServiceResult<ManualRunResult>> + Send + 'static>>;
+
+fn schedule_input_error(error: ScheduleError) -> ScheduledServiceError {
+    let params = match error {
+        ScheduleError::InvalidCron { expression } => serde_json::json!({
+            "field": "schedule.cron",
+            "reason": "invalid-cron",
+            "expression": expression,
+        }),
+        ScheduleError::EmptyWeekdays => serde_json::json!({
+            "field": "schedule.weekdays",
+            "reason": "empty-weekdays",
+        }),
+        ScheduleError::InvalidEveryValue => serde_json::json!({
+            "field": "schedule.every",
+            "reason": "invalid-every-value",
+        }),
+        ScheduleError::UnsupportedEveryUnit { unit } => serde_json::json!({
+            "field": "schedule.every",
+            "reason": "unsupported-every-unit",
+            "unit": unit,
+        }),
+        ScheduleError::InvalidTimezone { timezone } => serde_json::json!({
+            "field": "schedule.timezone",
+            "reason": "invalid-timezone",
+            "timezone": timezone,
+        }),
+        ScheduleError::InvalidLocalDate { date } => serde_json::json!({
+            "field": "schedule.at",
+            "reason": "invalid-date",
+            "date": date,
+        }),
+        ScheduleError::InvalidTime { time } => serde_json::json!({
+            "field": "schedule.at",
+            "reason": "invalid-time",
+            "time": time,
+        }),
+        ScheduleError::NonexistentLocalTime {
+            local_date,
+            local_time,
+            timezone,
+        } => serde_json::json!({
+            "field": "schedule.at",
+            "reason": "nonexistent-local-time",
+            "localDate": local_date,
+            "localTime": local_time,
+            "timezone": timezone,
+        }),
+        ScheduleError::EmptyScheduledTaskId => serde_json::json!({
+            "field": "scheduledTaskId",
+            "reason": "empty-scheduled-task-id",
+        }),
+        ScheduleError::EmptyProjectId => serde_json::json!({
+            "field": "projectId",
+            "reason": "empty-project-id",
+        }),
+        ScheduleError::UnsupportedMode { mode } => serde_json::json!({
+            "field": "runMode",
+            "reason": "unsupported-mode",
+            "mode": mode,
+        }),
+    };
+    ScheduledServiceError::new(ScheduledErrorCode::ValidationFailed, params)
+}
 
 #[derive(Debug, Clone)]
 pub struct ManualRunResult {
@@ -252,6 +317,10 @@ impl ScheduledTaskService {
         &self,
         input: CreateScheduledTaskInputVm,
     ) -> ScheduledServiceResult<ScheduledJobRecord> {
+        let schedule = input
+            .schedule
+            .try_into_schedule_spec()
+            .map_err(schedule_input_error)?;
         let workspace = (self.resolve_workspace)(&input.project_id)?;
         let resolved_project_id = workspace.app.paths.project_id.clone();
         let validation_input = ConversationCreateInputVm {
@@ -292,7 +361,7 @@ impl ScheduledTaskService {
             &resolved_project_id,
             &id,
             &input.run_mode,
-            input.schedule,
+            schedule,
             input.overlap_policy,
         )
         .and_then(|definition| definition.with_session_policy(session_policy))
@@ -374,6 +443,10 @@ impl ScheduledTaskService {
         &self,
         input: UpdateScheduledTaskInputVm,
     ) -> ScheduledServiceResult<ScheduledJobRecord> {
+        let schedule = input
+            .schedule
+            .try_into_schedule_spec()
+            .map_err(schedule_input_error)?;
         let workspace = (self.resolve_workspace)(&input.project_id)?;
         let resolved_project_id = workspace.app.paths.project_id.clone();
         let database = ScheduledTaskDatabase::open(workspace.app.paths.scheduler_db_path())
@@ -483,7 +556,7 @@ impl ScheduledTaskService {
             )
         })?;
         definition.instruction = input.content;
-        definition.schedule = input.schedule;
+        definition.schedule = schedule;
         definition.overlap_policy = input.overlap_policy;
         let next_mode = scheduled_mode_from_run_mode(&input.run_mode);
         let mut policy_definition = definition.clone();
@@ -1057,14 +1130,15 @@ fn copy_attachments(
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use chrono::{Duration, Utc};
+    use chrono::{TimeZone, Utc};
     use gold_band::app::{App, DEFAULT_WORKFLOW_TEMPLATE_ID};
     use gold_band::scheduler::db::ScheduledTaskDatabase;
     use gold_band::scheduler::occurrence::{
         OccurrenceTriggerKind, ScheduledErrorCode, ScheduledOccurrence,
     };
     use gold_band::scheduler::{
-        OverlapPolicy, ScheduleSpec, ScheduledMode, ScheduledTaskDefinition, SessionPolicy,
+        LocalTimeDisambiguation, OverlapPolicy, RepeatPreset, ScheduleKind, ScheduledMode,
+        ScheduledTaskDefinition, SessionPolicy,
     };
     use tempfile::TempDir;
 
@@ -1072,7 +1146,10 @@ mod tests {
         ManualRunResult, ScheduledCoordinator, ScheduledTaskService, SchedulerCommand,
         should_reset_task_association,
     };
-    use crate::view_models_conversation::{CreateScheduledTaskInputVm, UpdateScheduledTaskInputVm};
+    use crate::view_models_conversation::{
+        CreateScheduledTaskInputVm, ScheduledEveryInputVm, ScheduledScheduleInputVm,
+        UpdateScheduledTaskInputVm,
+    };
 
     #[derive(Default)]
     struct CoordinatorSpy {
@@ -1091,6 +1168,10 @@ mod tests {
 
         fn start_count(&self) -> usize {
             *self.start_count.lock().unwrap()
+        }
+
+        fn command_count(&self) -> usize {
+            self.commands.lock().unwrap().len()
         }
     }
 
@@ -1138,6 +1219,15 @@ mod tests {
         service: ScheduledTaskService,
     }
 
+    fn valid_schedule_input() -> ScheduledScheduleInputVm {
+        ScheduledScheduleInputVm::At {
+            local_date: "2099-01-01".to_string(),
+            local_time: "09:00".to_string(),
+            timezone: "UTC".to_string(),
+            disambiguation: LocalTimeDisambiguation::Earlier,
+        }
+    }
+
     impl Fixture {
         fn new() -> Self {
             let temp = tempfile::tempdir().unwrap();
@@ -1166,7 +1256,7 @@ mod tests {
                 direct_config: None,
                 auto_config: None,
                 attachment_paths: None,
-                schedule: ScheduleSpec::at(Utc::now() + Duration::hours(1)),
+                schedule: valid_schedule_input(),
                 overlap_policy: OverlapPolicy::SkipWhenRunning,
                 session_policy: None,
             }
@@ -1188,7 +1278,7 @@ mod tests {
                 direct_config: None,
                 auto_config: None,
                 attachment_paths: None,
-                schedule: definition.schedule.clone(),
+                schedule: valid_schedule_input(),
                 overlap_policy: definition.overlap_policy,
                 session_policy: SessionPolicy::New,
             }
@@ -1257,6 +1347,86 @@ mod tests {
         );
     }
 
+    #[test]
+    fn create_rejects_invalid_cron_before_persisting_or_notifying() {
+        let fixture = Fixture::new();
+        let mut input = fixture.create_input();
+        input.schedule = ScheduledScheduleInputVm::Cron {
+            expression: "not a cron".to_string(),
+            timezone: "UTC".to_string(),
+        };
+
+        let error = fixture.service.create(input).unwrap_err();
+
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);
+        assert_eq!(error.params["field"], "schedule.cron");
+        assert_eq!(error.params["reason"], "invalid-cron");
+        assert!(fixture.database.list_job_definitions().unwrap().is_empty());
+        assert_eq!(fixture.coordinator.command_count(), 0);
+    }
+
+    #[test]
+    fn create_rejects_empty_weekly_days() {
+        let fixture = Fixture::new();
+        let mut input = fixture.create_input();
+        input.schedule = ScheduledScheduleInputVm::Repeat {
+            preset: RepeatPreset::Weekly {
+                weekdays: Vec::new(),
+            },
+            hour: 9,
+            minute: 0,
+            timezone: "UTC".to_string(),
+        };
+
+        let error = fixture.service.create(input).unwrap_err();
+
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);
+        assert_eq!(error.params["field"], "schedule.weekdays");
+        assert_eq!(error.params["reason"], "empty-weekdays");
+    }
+
+    #[test]
+    fn create_rejects_zero_every_value() {
+        let fixture = Fixture::new();
+        let mut input = fixture.create_input();
+        input.schedule = ScheduledScheduleInputVm::Every {
+            every: ScheduledEveryInputVm {
+                value: 0,
+                unit: "minutes".to_string(),
+            },
+            anchor_at: Utc::now(),
+            timezone: "UTC".to_string(),
+        };
+
+        let error = fixture.service.create(input).unwrap_err();
+
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);
+        assert_eq!(error.params["field"], "schedule.every");
+        assert_eq!(error.params["reason"], "invalid-every-value");
+    }
+
+    #[test]
+    fn create_normalizes_local_at_to_utc_and_keeps_timezone() {
+        let fixture = Fixture::new();
+        let mut input = fixture.create_input();
+        input.schedule = ScheduledScheduleInputVm::At {
+            local_date: "2026-11-01".to_string(),
+            local_time: "01:30".to_string(),
+            timezone: "America/New_York".to_string(),
+            disambiguation: LocalTimeDisambiguation::Later,
+        };
+
+        let created = fixture.service.create(input).unwrap();
+        let ScheduleKind::At { at, timezone } = created.definition.schedule.kind else {
+            panic!("expected At schedule");
+        };
+        assert_eq!(
+            at,
+            Utc.with_ymd_and_hms(2026, 11, 1, 6, 30, 0).unwrap()
+        );
+        assert_eq!(timezone, "America/New_York");
+    }
+
     #[tokio::test]
     async fn run_now_creates_manual_occurrence_without_advancing_planned_deadline() {
         let fixture = Fixture::new();
@@ -1317,6 +1487,29 @@ mod tests {
             error.params["updatedAt"],
             serde_json::json!(first.definition.updated_at)
         );
+    }
+
+    #[test]
+    fn update_rejects_invalid_schedule_without_mutating_the_job() {
+        let fixture = Fixture::new();
+        let created = fixture.service.create(fixture.create_input()).unwrap();
+        let command_count = fixture.coordinator.command_count();
+        let mut input = fixture.update_input(&created.definition, "unchanged");
+        input.schedule = ScheduledScheduleInputVm::Cron {
+            expression: "invalid".to_string(),
+            timezone: "UTC".to_string(),
+        };
+
+        let error = fixture.service.update(input).unwrap_err();
+        let persisted = fixture
+            .database
+            .get_job_definition(&created.definition.project_id, created.definition.id())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);
+        assert_eq!(persisted.definition.schedule, created.definition.schedule);
+        assert_eq!(fixture.coordinator.command_count(), command_count);
     }
 
     #[test]
@@ -1406,7 +1599,7 @@ mod tests {
             direct_config: None,
             auto_config: None,
             attachment_paths: None,
-            schedule: ScheduleSpec::at(Utc::now() + Duration::hours(1)),
+            schedule: valid_schedule_input(),
             overlap_policy: OverlapPolicy::SkipWhenRunning,
             session_policy: None,
         };

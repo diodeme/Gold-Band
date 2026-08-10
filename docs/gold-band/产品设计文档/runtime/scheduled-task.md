@@ -43,13 +43,23 @@
 | `every` | 固定间隔，只允许分钟或小时 |
 | `cron` | 自定义 Cron 表达式和 IANA 时区 |
 
+创建/更新命令使用独立的 authoring DTO，不直接接收持久化 `ScheduleSpec`：
+
+- `At` 提交 `localDate + localTime + timezone + disambiguation`，由 Rust 领域构造器权威转换为 UTC `at`；
+- `Repeat`、`Every`、`Cron` 也必须通过领域构造器校验后才能进入 `ScheduledTaskDefinition`；
+- SQLite 与查询响应继续使用规范化 `ScheduleSpec`，不保存第二套 authoring 表示；
+- 开发阶段删除旧的命令输入消费路径，不提供把持久化结构当写入 DTO 的兼容层。
+
 重复预设的规则：
 
 - 每小时是 wall-clock Cron，在每个整点执行，不等价于“每隔 1 小时”。
 - 每天使用本地执行时间。
 - 工作日固定为周一至周五。
 - 每周允许多选周一至周日，并使用本地执行时间；例如周一、周三、周五生成 `MON,WED,FRI`。
+- 每周至少选择一天；空 weekdays 在前端即时拒绝，并由 Rust 服务边界再次拒绝。
 - 每隔只允许 `minutes` 和 `hours` 两个单位，不支持天或周。
+- 每隔数值必须是正整数；空值、零、负数和小数不得静默修正。
+- 自定义 Cron 使用六字段产品语法，前端通过 `cron-parser` 即时校验，Rust 通过 `cron` crate 权威校验。
 
 ### 固定间隔起算
 
@@ -113,6 +123,16 @@ active 包括运行中、等待权限、等待 AskUserQuestion、等待用户恢
 
 所有 wall-clock 调度显式保存 IANA 时区，默认使用系统当前时区，例如 `Asia/Shanghai`。`every` 仍保存时区以便统一展示和日志解释，但实际计算依赖 `anchorAt` 的绝对时间间隔。
 
+一次性 `At` 的本地时间解析遵循以下规则：
+
+- 系统 IANA 时区不可用或无效时，创建界面默认回退 `UTC`；
+- DST 跳时导致的不存在时间禁止保存；
+- DST 回拨导致的重复时间要求选择 `earlier` 或 `later`，默认 `earlier`；
+- 前端使用 `@js-temporal/polyfill` 提供即时反馈，Rust `chrono-tz` 转换结果是写入边界的权威结果；
+- 后端校验失败只返回错误码及 `field/reason` 等结构化参数，不返回对客文案。
+
+时间输入的验收必须同时覆盖前端 Temporal 预校验、Rust 领域转换和 Tauri 应用服务副作用边界。真实 UI 验收负责确认系统时区默认值、字段错误、保存禁用状态及桌面/移动端布局；DST 不存在与重复时间的 UTC 映射由三层自动化测试固化，不能只依赖浏览器原生日期时间控件的手工表现。
+
 ## 全局任务管理
 
 定时任务管理页默认加载所有已登记工作区，使用工作区筛选控制可见行，不把当前会话工作区作为查询边界。每行展示工作区名称和任务内容摘要，内部 `scheduled-UUID` 仅用于接口操作。
@@ -146,9 +166,8 @@ occurrence 的成功只表示现有 Task/Run/ACP 链路真实结束；启动后�
 - Direct/new、Direct/continuous、Workflow、AUTO 共用 timer、claim、lease、queue、missed、recovery 和 notification，仅执行适配器不同。
 
 执行适配器由统一 `ScheduledExecutionAdapter` 接口承载，输入包含 occurrence 快照和任务定义，输出为 Task/Run/round/attempt 绑定。创建定时任务只保存定义与输入快照；只有首次到达计划时间或用户点击立即执行时才物化 Task/Run。用户回答 attention 时，先按原执行链接恢复同一 occurrence 的 claim 与 heartbeat，再写入 ACP 响应，避免恢复窗口内失去租约。
-- keep-awake 是全局设置，默认关闭；仅在用户开启且存在 enabled job 时阻止系统自动睡眠，允许显示器关闭。
-- occurrence 历史展示 `skipped`、`missed` 等全部状态，终态记录默认保留 30 天；Task/Run/ACP 历史不随 occurrence 清理。
-- 内置定时任务 Skill 和“沉淀为 Skill”使用现有 SkillManager 与类型化工具边界，资源同步维护 zh-CN/en，不在 Rust 中硬编码长 prompt。
+- keep-awake 是全局设置，默认关闭；仅在用户开启、跨 workspace 汇总后存在 enabled job 且应用仍运行时阻止系统自动睡眠，允许显示器关闭。实现统一使用 `keepawake 0.6.0`：Windows 使用 System Power API、macOS 使用 IOKit、Linux 使用系统 inhibit 后端；不启动外部命令，退出时释放进程级 guard。
+- occurrence 历史展示 `skipped`、`missed` 等全部状态，终态记录默认保留 30 天、可配置范围 `1..=3650` 天。启动 reconcile 与终态 occurrence 后按 500 条有界批次清理并在批次间让出 Tokio；`attention_required`、非终态、活动 Run 链接及全部 Task/Run/ACP 历史不随 occurrence 清理。
 - 管理页和设置页使用统一 i18n、完整 IANA 时区列表、原生通知 deep link 和现有 shadcn/ui 组件。
 
 完整约束见 [`2026-08-05-scheduled-task-unified-runtime-design.md`](../../../superpowers/specs/2026-08-05-scheduled-task-unified-runtime-design.md)。

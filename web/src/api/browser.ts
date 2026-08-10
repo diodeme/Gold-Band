@@ -1,8 +1,9 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, ScheduledScheduleSpec, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { browserPreviewState } from './browserState';
 import { localTimestamp, toRoundSelectionInput } from './shared';
+import { scheduledScheduleSpecFromInput } from '@/lib/scheduled-task-authoring';
 
 const browserFontCandidates = [
   'MiSans', 'Maple Mono NF CN', 'Microsoft YaHei UI', 'Microsoft YaHei', 'DengXian', 'DengXian Light', 'SimHei', 'SimSun', 'NSimSun', 'KaiTi', 'FangSong', 'YouYuan', 'LiSu', 'STXihei', 'STSong', 'STKaiti', 'STFangsong', 'PingFang SC', 'PingFang TC', 'PingFang HK', 'Hiragino Sans GB', 'Songti SC', 'Kaiti SC', 'Heiti SC', 'Heiti TC', 'Noto Sans CJK SC', 'Noto Sans CJK TC', 'Noto Sans SC', 'Noto Serif SC', 'Source Han Sans SC', 'Source Han Serif SC', 'Sarasa Gothic SC', 'LXGW WenKai', 'MiSans', 'HarmonyOS Sans SC', 'WenQuanYi Micro Hei', 'WenQuanYi Zen Hei', 'Segoe UI', 'Segoe UI Variable', 'Yu Gothic UI', 'Meiryo', 'Malgun Gothic', 'SF Pro Text', 'SF Pro Display', 'Inter', 'Roboto', 'Arial', 'Helvetica Neue', 'Helvetica', 'Ubuntu', 'Cantarell', 'DejaVu Sans', 'Liberation Sans',
@@ -18,6 +19,14 @@ const browserScheduledTaskListeners = new Set<(event: ScheduledTaskUpdatedEventV
 const browserScheduledOccurrences = new Map<string, ScheduledOccurrenceVm[]>();
 const browserScheduledOccurrenceListeners = new Set<(event: ScheduledOccurrenceUpdatedEventVm) => void>();
 let browserScheduledTaskSequence = 0;
+let browserScheduledRuntimeSettings = {
+  keepAwakeEnabled: false,
+  keepAwakeEffective: false,
+  completionNotificationsEnabled: true,
+  enabledJobCount: 0,
+  occurrenceRetentionDays: 30,
+  powerErrorCode: null,
+};
 
 function emitBrowserScheduledTaskUpdated(task: ScheduledTaskVm) {
   const event: ScheduledTaskUpdatedEventVm = {
@@ -39,41 +48,6 @@ function emitBrowserScheduledOccurrenceUpdated(occurrence: ScheduledOccurrenceVm
     runId: occurrence.runId ?? null,
   };
   browserScheduledOccurrenceListeners.forEach((listener) => listener(event));
-}
-
-function browserTimezoneLabel(timezone: string) {
-  return ({
-    'Asia/Shanghai': '中国（上海）',
-    'Asia/Tokyo': '日本（东京）',
-    'Europe/London': '英国（伦敦）',
-    'America/New_York': '美国（纽约）',
-  } as Record<string, string>)[timezone] ?? timezone;
-}
-
-function browserScheduleLabel(schedule: ScheduledScheduleSpec) {
-  if (schedule.kind === 'At') {
-    try {
-      const formatted = new Intl.DateTimeFormat('zh-CN', {
-        timeZone: schedule.timezone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hourCycle: 'h23',
-      }).format(new Date(schedule.at)).replaceAll('/', '-');
-      return `单次 ${formatted}`;
-    } catch {
-      return `单次 ${schedule.at}`;
-    }
-  }
-  if (schedule.kind === 'Every') return `每隔 ${schedule.every.value} ${schedule.every.unit === 'minutes' ? '分钟' : '小时'}`;
-  if (schedule.kind === 'Cron') return `Cron ${schedule.expression}`;
-  const weekdayLabels: Record<string, string> = { Mon: '周一', Tue: '周二', Wed: '周三', Thu: '周四', Fri: '周五', Sat: '周六', Sun: '周日' };
-  const preset = typeof schedule.preset === 'string'
-    ? ({ Hourly: '每小时', Daily: '每天', Weekdays: '工作日' } as Record<string, string>)[schedule.preset] ?? schedule.preset
-    : `每周 ${schedule.preset.Weekly.weekdays.map((day) => weekdayLabels[day] ?? day).join('、')}`;
-  return `${preset} ${String(schedule.hour).padStart(2, '0')}:${String(schedule.minute).padStart(2, '0')}`;
 }
 
 function browserAgentIdentity(agentType: string) {
@@ -181,6 +155,24 @@ function browserCompletedConversationRun(): ConversationRunVm {
 }
 
 export const browserApi: RuntimeApi = {
+  async subscribeScheduledNotifications() {
+    return () => {};
+  },
+  async sendScheduledNativeNotification() {},
+  async getScheduledRuntimeSettings() {
+    return structuredClone(browserScheduledRuntimeSettings);
+  },
+  async saveScheduledRuntimeSettings(input) {
+    if (input.occurrenceRetentionDays < 1 || input.occurrenceRetentionDays > 3650) {
+      throw { code: 'SCHEDULED_VALIDATION_FAILED', params: { field: 'occurrenceRetentionDays', minimum: 1, maximum: 3650, actual: input.occurrenceRetentionDays } };
+    }
+    browserScheduledRuntimeSettings = {
+      ...browserScheduledRuntimeSettings,
+      ...input,
+      keepAwakeEffective: false,
+    };
+    return structuredClone(browserScheduledRuntimeSettings);
+  },
   async subscribeScheduledTaskUpdates(listener) {
     browserScheduledTaskListeners.add(listener);
     return () => browserScheduledTaskListeners.delete(listener);
@@ -584,15 +576,13 @@ export const browserApi: RuntimeApi = {
       emitBrowserScheduledTaskUpdated(task);
       return Promise.resolve({ ...task });
     }
-    return Promise.resolve({ id: scheduledTaskId, projectId: 'default', workspaceName: 'Default Workspace', title: '示例定时任务', enabled, mode: 'direct', sessionPolicy: 'new', schedule: '', scheduleLabel: '', timezoneLabel: '中国（上海）', nextAt: null, status: enabled ? 'enabled' : 'paused', lastTriggerAt: null, lastTriggerStatus: null, lastTriggerLabel: '尚未运行', createdAt: '', updatedAt: '' });
+    return browserCommandError('scheduled-task.not-found');
   },
   createScheduledTask(input) {
     const now = new Date().toISOString();
     const id = `scheduled-${Date.now()}-${++browserScheduledTaskSequence}`;
-    const timezone = input.schedule.kind === 'At' || input.schedule.kind === 'Every' || input.schedule.kind === 'Repeat' || input.schedule.kind === 'Cron'
-      ? input.schedule.timezone ?? 'Asia/Shanghai'
-      : 'Asia/Shanghai';
-    const task: ScheduledTaskVm = { id, projectId: input.projectId, workspaceName: input.projectId === 'default' ? 'Default Workspace' : input.projectId, title: input.content.split(/\r?\n/)[0].slice(0, 48), enabled: true, mode: input.runMode, sessionPolicy: input.sessionPolicy ?? 'new', schedule: browserScheduleLabel(input.schedule), scheduleLabel: browserScheduleLabel(input.schedule), timezoneLabel: browserTimezoneLabel(timezone), nextAt: null, status: 'enabled', lastTriggerAt: null, lastTriggerStatus: null, lastTriggerLabel: '尚未运行', createdAt: now, updatedAt: now };
+    const schedule = scheduledScheduleSpecFromInput(input.schedule);
+    const task: ScheduledTaskVm = { id, projectId: input.projectId, workspaceName: input.projectId === 'default' ? 'Default Workspace' : input.projectId, title: input.content.split(/\r?\n/)[0].slice(0, 48), enabled: true, mode: input.runMode, sessionPolicy: input.sessionPolicy ?? 'new', schedule: structuredClone(schedule), nextAt: null, status: 'enabled', lastTriggerAt: null, lastTriggerStatus: null, createdAt: now, updatedAt: now };
     const definition: ScheduledTaskEditVm = {
       scheduledTaskId: id,
       projectId: input.projectId,
@@ -603,7 +593,7 @@ export const browserApi: RuntimeApi = {
       includeInterview: input.includeInterview,
       directConfig: input.directConfig,
       autoConfig: input.autoConfig,
-      schedule: input.schedule,
+      schedule,
       overlapPolicy: input.overlapPolicy,
       sessionPolicy: input.sessionPolicy ?? 'new',
       directAgentType: input.directConfig?.agentType ?? null,
@@ -624,25 +614,22 @@ export const browserApi: RuntimeApi = {
     if (!definition) return browserCommandError('scheduled-task.not-found');
     if (definition.expectedUpdatedAt !== input.expectedUpdatedAt) return browserCommandError('scheduled-task.conflict');
     const now = new Date().toISOString();
+    const schedule = scheduledScheduleSpecFromInput(input.schedule);
     const next: ScheduledTaskEditVm = {
       ...definition,
       ...input,
+      schedule,
       expectedUpdatedAt: now,
       directAgentType: input.directConfig?.agentType ?? definition.directAgentType ?? null,
     };
     browserScheduledTaskDefinitions.set(input.scheduledTaskId, next);
     const task = browserScheduledTasks.find((item) => item.id === input.scheduledTaskId);
     if (task) {
-      const timezone = input.schedule.kind === 'At' || input.schedule.kind === 'Every' || input.schedule.kind === 'Repeat' || input.schedule.kind === 'Cron'
-        ? input.schedule.timezone ?? 'Asia/Shanghai'
-        : 'Asia/Shanghai';
       Object.assign(task, {
         title: input.content.split(/\r?\n/)[0].slice(0, 48),
         mode: input.runMode,
         sessionPolicy: input.sessionPolicy,
-        schedule: browserScheduleLabel(input.schedule),
-        scheduleLabel: browserScheduleLabel(input.schedule),
-        timezoneLabel: browserTimezoneLabel(timezone),
+        schedule: structuredClone(schedule),
         updatedAt: now,
       });
       emitBrowserScheduledTaskUpdated(task);
@@ -710,7 +697,6 @@ export const browserApi: RuntimeApi = {
     Object.assign(task, {
       lastTriggerAt: finished.finishedAt,
       lastTriggerStatus: finished.status,
-      lastTriggerLabel: '执行成功',
       updatedAt: finished.finishedAt ?? now,
     });
     emitBrowserScheduledOccurrenceUpdated(finished, task.projectId);

@@ -6,6 +6,10 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+use gold_band::scheduler::{
+    LocalTimeDisambiguation, RepeatPreset, ScheduleError, ScheduleSpec,
+};
+
 use crate::view_models::{
     AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_status, acp_session_vm,
     dynamic_acp_session_status, dynamic_acp_session_vm, dynamic_runtime_graph_vm,
@@ -35,14 +39,11 @@ pub struct ScheduledTaskVm {
     pub enabled: bool,
     pub mode: String,
     pub session_policy: String,
-    pub schedule: String,
-    pub schedule_label: String,
-    pub timezone_label: String,
+    pub schedule: gold_band::scheduler::ScheduleSpec,
     pub next_at: Option<String>,
     pub status: String,
     pub last_trigger_at: Option<String>,
     pub last_trigger_status: Option<String>,
-    pub last_trigger_label: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -104,6 +105,25 @@ pub struct ScheduledTaskDiagnosticsVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ScheduledRuntimeSettingsVm {
+    pub keep_awake_enabled: bool,
+    pub keep_awake_effective: bool,
+    pub completion_notifications_enabled: bool,
+    pub enabled_job_count: usize,
+    pub occurrence_retention_days: u16,
+    pub power_error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledRuntimeSettingsInputVm {
+    pub keep_awake_enabled: bool,
+    pub completion_notifications_enabled: bool,
+    pub occurrence_retention_days: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunScheduledTaskResultVm {
     pub occurrence: ScheduledOccurrenceVm,
     pub task_id: Option<String>,
@@ -123,9 +143,81 @@ pub struct CreateScheduledTaskInputVm {
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub attachment_paths: Option<Vec<String>>,
-    pub schedule: gold_band::scheduler::ScheduleSpec,
+    pub schedule: ScheduledScheduleInputVm,
     pub overlap_policy: gold_band::scheduler::OverlapPolicy,
     pub session_policy: Option<gold_band::scheduler::SessionPolicy>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind")]
+#[serde(rename_all_fields = "camelCase")]
+pub enum ScheduledScheduleInputVm {
+    At {
+        local_date: String,
+        local_time: String,
+        timezone: String,
+        disambiguation: LocalTimeDisambiguation,
+    },
+    Repeat {
+        preset: RepeatPreset,
+        hour: u32,
+        minute: u32,
+        timezone: String,
+    },
+    Every {
+        every: ScheduledEveryInputVm,
+        anchor_at: chrono::DateTime<chrono::Utc>,
+        timezone: String,
+    },
+    Cron {
+        expression: String,
+        timezone: String,
+    },
+}
+
+impl ScheduledScheduleInputVm {
+    pub fn try_into_schedule_spec(self) -> Result<ScheduleSpec, ScheduleError> {
+        match self {
+            Self::At {
+                local_date,
+                local_time,
+                timezone,
+                disambiguation,
+            } => ScheduleSpec::at_local(
+                &local_date,
+                &local_time,
+                &timezone,
+                disambiguation,
+            ),
+            Self::Repeat {
+                preset,
+                hour,
+                minute,
+                timezone,
+            } => ScheduleSpec::repeat(preset, hour, minute, &timezone),
+            Self::Every {
+                every,
+                anchor_at,
+                timezone,
+            } => ScheduleSpec::every_in_timezone(
+                every.value,
+                &every.unit,
+                anchor_at,
+                &timezone,
+            ),
+            Self::Cron {
+                expression,
+                timezone,
+            } => ScheduleSpec::cron(&expression, &timezone),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledEveryInputVm {
+    pub value: u64,
+    pub unit: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -160,7 +252,7 @@ pub struct UpdateScheduledTaskInputVm {
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub attachment_paths: Option<Vec<String>>,
-    pub schedule: gold_band::scheduler::ScheduleSpec,
+    pub schedule: ScheduledScheduleInputVm,
     pub overlap_policy: gold_band::scheduler::OverlapPolicy,
     pub session_policy: gold_band::scheduler::SessionPolicy,
 }
@@ -188,9 +280,7 @@ impl ScheduledTaskVm {
                 .ok()
                 .and_then(|value| value.as_str().map(ToOwned::to_owned))
                 .unwrap_or_default(),
-            schedule: definition.display_schedule(),
-            schedule_label: scheduled_task_schedule_label(definition),
-            timezone_label: scheduled_task_timezone_label(definition),
+            schedule: definition.schedule.clone(),
             next_at: definition
                 .enabled
                 .then(|| {
@@ -199,11 +289,10 @@ impl ScheduledTaskVm {
                         .next_occurrence_after(chrono::Utc::now())
                 })
                 .flatten()
-                .map(|value| scheduled_task_datetime_label(definition, value)),
+                .map(|value| value.to_rfc3339()),
             status: scheduled_task_status(definition),
             last_trigger_at: definition.last_trigger_at.map(|value| value.to_rfc3339()),
             last_trigger_status: definition.last_trigger_status.clone(),
-            last_trigger_label: scheduled_task_last_trigger_label(definition),
             created_at: definition.created_at.to_rfc3339(),
             updated_at: definition.updated_at.to_rfc3339(),
         }
@@ -288,30 +377,6 @@ pub fn scheduled_task_vms_from_sources(
     Ok(tasks)
 }
 
-fn scheduled_task_last_trigger_label(
-    definition: &gold_band::scheduler::ScheduledTaskDefinition,
-) -> String {
-    let Some(status) = definition.last_trigger_status.as_deref() else {
-        return "尚未运行".to_string();
-    };
-    let time = definition
-        .last_trigger_at
-        .map(|value| scheduled_task_datetime_label(definition, value));
-    let label = match status {
-        "completed" => "成功",
-        "running" => "运行中",
-        "retrying" => "等待重试",
-        "skipped" if definition.last_error.as_deref() == Some("queue-busy") => "已跳过",
-        "skipped" => "已跳过",
-        "failed" => "执行失败",
-        _ => status,
-    };
-    match time {
-        Some(time) => format!("{label} {time}"),
-        None => label.to_string(),
-    }
-}
-
 pub fn scheduled_task_title(instruction: &str) -> String {
     let first_line = instruction
         .lines()
@@ -322,89 +387,7 @@ pub fn scheduled_task_title(instruction: &str) -> String {
     if normalized.chars().count() > 48 {
         title.push('…');
     }
-    if title.is_empty() {
-        "未命名定时任务".to_string()
-    } else {
-        title
-    }
-}
-
-fn scheduled_task_timezone(definition: &gold_band::scheduler::ScheduledTaskDefinition) -> &str {
-    definition.schedule.timezone().unwrap_or("Asia/Shanghai")
-}
-
-pub fn scheduled_task_timezone_label(
-    definition: &gold_band::scheduler::ScheduledTaskDefinition,
-) -> String {
-    match scheduled_task_timezone(definition) {
-        "Asia/Shanghai" => "中国（上海）".to_string(),
-        "Asia/Tokyo" => "日本（东京）".to_string(),
-        "Europe/London" => "英国（伦敦）".to_string(),
-        "America/New_York" => "美国（纽约）".to_string(),
-        timezone => timezone.to_string(),
-    }
-}
-
-fn scheduled_task_datetime_label(
-    definition: &gold_band::scheduler::ScheduledTaskDefinition,
-    value: chrono::DateTime<chrono::Utc>,
-) -> String {
-    value
-        .with_timezone(
-            &scheduled_task_timezone(definition)
-                .parse::<chrono_tz::Tz>()
-                .unwrap_or(chrono_tz::Asia::Shanghai),
-        )
-        .format("%Y-%m-%d %H:%M")
-        .to_string()
-}
-
-pub fn scheduled_task_schedule_label(
-    definition: &gold_band::scheduler::ScheduledTaskDefinition,
-) -> String {
-    use gold_band::scheduler::{EveryUnit, RepeatPreset, ScheduleKind};
-    match &definition.schedule.kind {
-        ScheduleKind::At { at, .. } => {
-            format!("单次 {}", scheduled_task_datetime_label(definition, *at))
-        }
-        ScheduleKind::Every { every, .. } => format!(
-            "每隔 {} {}",
-            every.value,
-            match every.unit {
-                EveryUnit::Minutes => "分钟",
-                EveryUnit::Hours => "小时",
-            }
-        ),
-        ScheduleKind::Repeat {
-            preset,
-            hour,
-            minute,
-            ..
-        } => match preset {
-            RepeatPreset::Hourly => "每小时".to_string(),
-            RepeatPreset::Daily => format!("每天 {:02}:{:02}", hour, minute),
-            RepeatPreset::Weekdays => format!("工作日 {:02}:{:02}", hour, minute),
-            RepeatPreset::Weekly { weekdays } => format!(
-                "每周 {} {:02}:{:02}",
-                weekdays
-                    .iter()
-                    .map(|day| match day {
-                        chrono::Weekday::Mon => "周一",
-                        chrono::Weekday::Tue => "周二",
-                        chrono::Weekday::Wed => "周三",
-                        chrono::Weekday::Thu => "周四",
-                        chrono::Weekday::Fri => "周五",
-                        chrono::Weekday::Sat => "周六",
-                        chrono::Weekday::Sun => "周日",
-                    })
-                    .collect::<Vec<_>>()
-                    .join("、"),
-                hour,
-                minute
-            ),
-        },
-        ScheduleKind::Cron { expression, .. } => format!("Cron {}", expression),
-    }
+    title
 }
 
 fn scheduled_task_status(definition: &gold_band::scheduler::ScheduledTaskDefinition) -> String {
@@ -3500,9 +3483,8 @@ mod tests {
         build_direct_workflow, conversation_attempt_lifecycle_vm, conversation_auto_title,
         conversation_run_vm, conversation_sidebar_vm_from_sources,
         conversation_status_from_session, conversation_workspace_vms, create_conversation_task_vm,
-        derive_conversation_attempt_lifecycle, lifecycle_is_active, scheduled_task_schedule_label,
-        scheduled_task_timezone_label, scheduled_task_vms_from_sources,
-        switch_conversation_session_vm,
+        derive_conversation_attempt_lifecycle, lifecycle_is_active,
+        scheduled_task_vms_from_sources, switch_conversation_session_vm,
     };
     use camino::Utf8PathBuf;
     use chrono::TimeZone;
@@ -5437,7 +5419,7 @@ mod tests {
             super::scheduled_task_title("  每天整理日报  \n补充说明"),
             "每天整理日报"
         );
-        assert_eq!(super::scheduled_task_title(""), "未命名定时任务");
+        assert_eq!(super::scheduled_task_title(""), "");
         assert_eq!(
             super::scheduled_task_title(&"x".repeat(60)).chars().count(),
             49
@@ -5445,7 +5427,7 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_task_management_labels_are_localized_and_timezone_aware() {
+    fn scheduled_task_management_returns_typed_schedule_without_display_labels() {
         let definition = gold_band::scheduler::ScheduledTaskDefinition::new(
             "project-a",
             "scheduled-1",
@@ -5460,8 +5442,13 @@ mod tests {
             gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
         )
         .unwrap();
-        assert_eq!(scheduled_task_schedule_label(&definition), "每天 09:00");
-        assert_eq!(scheduled_task_timezone_label(&definition), "中国（上海）");
+        let value =
+            serde_json::to_value(super::ScheduledTaskVm::from_definition(&definition)).unwrap();
+        assert_eq!(value["schedule"]["kind"], "Repeat");
+        assert_eq!(value["schedule"]["timezone"], "Asia/Shanghai");
+        assert!(value.get("scheduleLabel").is_none());
+        assert!(value.get("timezoneLabel").is_none());
+        assert!(value.get("lastTriggerLabel").is_none());
     }
 
     #[test]

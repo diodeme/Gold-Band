@@ -86,4 +86,22 @@ describe('browserApi', () => {
     expect(resolved.locator.relativePath).toBe('README.md');
     expect(resolved.target).toEqual({ line: 47, column: null, endLine: null });
   });
+
+  it('returns the shared comparison contract for GitHub pull request files', async () => {
+    const comparison = await browserApi.getGitComparison('default', {
+      kind: 'github-pr',
+      workspacePath: '/preview/gold-band',
+      host: 'github.com',
+      repository: 'gold-band/desktop',
+      prNumber: 42,
+      path: 'src/source-control.ts',
+    });
+
+    expect(comparison).toMatchObject({
+      path: 'src/source-control.ts',
+      stats: { addedLines: 4, deletedLines: 1 },
+      limitationCode: null,
+    });
+    expect(comparison.after?.content).toContain('gitHubPullRequests');
+  });
 });

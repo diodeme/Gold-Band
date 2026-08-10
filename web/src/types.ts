@@ -472,6 +472,404 @@ export interface GitCapabilityVm {
   head: string | null;
 }
 
+export type GitLockOwnerVm = 'user' | 'runtime';
+
+export interface GitLockVm {
+  locked: boolean;
+  owner?: GitLockOwnerVm | null;
+  operation?: string | null;
+}
+
+export interface GitUpstreamVm {
+  name: string;
+  ahead: number;
+  behind: number;
+}
+
+export interface GitRemoteVm {
+  name: string;
+  fetchUrls: string[];
+  pushUrls: string[];
+}
+
+export interface GitRepositorySnapshotVm {
+  projectId: string;
+  repoRoot: string;
+  commonDir: string;
+  workspacePath: string;
+  headOid?: string | null;
+  currentBranch?: string | null;
+  detached: boolean;
+  unborn: boolean;
+  upstream?: GitUpstreamVm | null;
+  remotes: GitRemoteVm[];
+  lock: GitLockVm;
+  revision: string;
+}
+
+export type GitFileChangeKindVm =
+  | 'added'
+  | 'modified'
+  | 'deleted'
+  | 'renamed'
+  | 'copied'
+  | 'type-changed'
+  | 'unmerged'
+  | 'untracked';
+
+export interface GitFileChangeVm {
+  path: string;
+  oldPath?: string | null;
+  kind: GitFileChangeKindVm;
+  indexStatus?: string | null;
+  worktreeStatus?: string | null;
+  binary: boolean;
+  submodule: boolean;
+  addedLines?: number | null;
+  deletedLines?: number | null;
+}
+
+export interface GitBranchStatusVm {
+  oid?: string | null;
+  head?: string | null;
+  upstream?: string | null;
+  ahead: number;
+  behind: number;
+}
+
+export interface GitWorkspaceStatusVm {
+  snapshotRevision: string;
+  branch: GitBranchStatusVm;
+  conflicts: GitFileChangeVm[];
+  staged: GitFileChangeVm[];
+  unstaged: GitFileChangeVm[];
+  untracked: GitFileChangeVm[];
+  operationInProgress?: { kind: string } | null;
+}
+
+export type GitRefKindVm = 'local-branch' | 'remote-branch' | 'tag';
+
+export interface GitRefVm {
+  fullName: string;
+  shortName: string;
+  kind: GitRefKindVm;
+  targetOid: string;
+  peeledOid?: string | null;
+  upstream?: string | null;
+  ahead?: number | null;
+  behind?: number | null;
+  checkedOutWorktreePaths: string[];
+}
+
+export interface GitWorktreeVm {
+  path: string;
+  headOid: string;
+  branch?: string | null;
+  main: boolean;
+  detached: boolean;
+  locked: boolean;
+  lockReason?: string | null;
+  prunable: boolean;
+  ownership: 'user' | 'runtime';
+  runtimeStatus?: string | null;
+}
+
+export interface GitSignatureVm {
+  name: string;
+  email?: string | null;
+  timestamp: string;
+}
+
+export interface GitStashEntryVm {
+  refName: string;
+  oid: string;
+  baseOid: string;
+  message: string;
+  author: GitSignatureVm;
+  createdAt: string;
+}
+
+export interface GitRefLabelVm {
+  fullName: string;
+  shortName: string;
+  kind: GitRefKindVm;
+}
+
+export interface GitCommitVm {
+  oid: string;
+  parentOids: string[];
+  subject: string;
+  body: string;
+  author: GitSignatureVm;
+  committer: GitSignatureVm;
+  refs: GitRefLabelVm[];
+  sourceRef?: string | null;
+  runtimeCheckpoint: boolean;
+}
+
+export interface GitHistoryQueryVm {
+  cursor?: string | null;
+  limit?: number | null;
+  revision?: string | null;
+  refName?: string | null;
+}
+
+export interface GitHistoryPageVm {
+  commits: GitCommitVm[];
+  nextCursor?: string | null;
+  revision: string;
+}
+
+export interface GitCommitFileChangeVm {
+  path: string;
+  oldPath?: string | null;
+  kind: GitFileChangeKindVm;
+  binary: boolean;
+  addedLines?: number | null;
+  deletedLines?: number | null;
+}
+
+export interface GitCommitDetailVm {
+  commit: GitCommitVm;
+  files: GitCommitFileChangeVm[];
+}
+
+export type GitCommitRelationKindVm = 'same' | 'ancestor' | 'descendant' | 'diverged';
+
+export interface GitCommitPairRelationVm {
+  leftOid: string;
+  rightOid: string;
+  relation: GitCommitRelationKindVm;
+  mergeBases: string[];
+  leftOnlyCount: number;
+  rightOnlyCount: number;
+}
+
+export type GitCommitMergeEntryStatusVm = 'direct' | 'merged' | 'not-contained-by-original-oid';
+
+export interface GitCommitMergeEntryVm {
+  oid: string;
+  targetOid: string;
+  status: GitCommitMergeEntryStatusVm;
+  firstMergeOid?: string | null;
+}
+
+export interface GitCommitRelationsQueryVm {
+  selectedOids: string[];
+  targetRef: string;
+}
+
+export interface GitCommitRelationsVm {
+  selectedOids: string[];
+  targetRef: string;
+  targetOid: string;
+  commonMergeBases: string[];
+  pairwise: GitCommitPairRelationVm[];
+  mergeEntries: GitCommitMergeEntryVm[];
+  comparisonFiles: GitCommitFileChangeVm[];
+}
+
+export interface GitSourceControlSnapshotVm {
+  repository: GitRepositorySnapshotVm;
+  status: GitWorkspaceStatusVm;
+  refs: GitRefVm[];
+  worktrees: GitWorktreeVm[];
+  stashes: GitStashEntryVm[];
+}
+
+export type GitMutationVm =
+  | { kind: 'stage-paths'; paths: string[] }
+  | { kind: 'stage-all' }
+  | { kind: 'unstage-paths'; paths: string[] }
+  | { kind: 'unstage-all' }
+  | { kind: 'commit'; subject: string; body?: string | null }
+  | { kind: 'branch-create'; name: string; startPoint?: string | null; checkout: boolean }
+  | { kind: 'branch-switch'; name: string }
+  | { kind: 'branch-rename'; oldName?: string | null; newName: string }
+  | { kind: 'branch-delete-safe'; name: string }
+  | { kind: 'tag-create'; name: string; target?: string | null; style: 'annotated' | 'lightweight'; message?: string | null }
+  | { kind: 'tag-delete-local'; name: string }
+  | { kind: 'worktree-create'; path: string; sourceRef: string; newBranch?: string | null };
+
+export type GitMutationRequestVm = GitMutationVm & {
+  expectedRevision?: string | null;
+};
+
+export interface GitMutationResultVm {
+  snapshot: GitSourceControlSnapshotVm;
+}
+
+export type GitPullStrategyVm = 'fast-forward-only' | 'merge' | 'rebase';
+
+export type GitOperationInputVm =
+  | { kind: 'fetch'; remote?: string | null; prune: boolean }
+  | { kind: 'pull'; remote?: string | null; branch?: string | null; strategy: GitPullStrategyVm }
+  | { kind: 'push'; remote: string; branch: string; setUpstream: boolean }
+  | { kind: 'push-tag'; remote: string; tag: string }
+  | { kind: 'stash-create'; message?: string | null; includeUntracked: boolean }
+  | { kind: 'stash-apply'; stashRef: string; restoreIndex: boolean };
+
+export type GitOperationRequestVm = GitOperationInputVm & {
+  expectedRevision?: string | null;
+};
+
+export type GitOperationStatusVm =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'conflicted';
+
+export interface GitOperationVm {
+  operationId: string;
+  kind: GitOperationInputVm['kind'];
+  repositoryCommonDir: string;
+  workspacePath?: string | null;
+  status: GitOperationStatusVm;
+  cancelable: boolean;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  error?: { code: string; params: Record<string, unknown> } | null;
+}
+
+export interface GitStateChangedEventVm {
+  projectId: string;
+  repositoryCommonDir: string;
+  workspacePath: string;
+  reason: 'workspace' | 'metadata' | 'operation';
+}
+
+export type GitHubCapabilityStatusVm = 'not-installed' | 'not-authenticated' | 'repository-unresolved' | 'ready';
+
+export interface GitHubCapabilityVm {
+  status: GitHubCapabilityStatusVm;
+  version?: string | null;
+  host?: string | null;
+  account?: string | null;
+  repository?: string | null;
+  remote?: string | null;
+  defaultBranch?: string | null;
+}
+
+export interface GitHubOperationVm {
+  operationId: string;
+  kind: 'login' | 'pr-create';
+  host: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+  cancelable: boolean;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  error?: { code: string; params: Record<string, unknown> } | null;
+  resultUrl?: string | null;
+}
+
+export interface GitHubPullRequestPreflightInputVm {
+  host: string;
+  repository: string;
+  head: string;
+  base: string;
+}
+
+export interface GitHubPullRequestCreateInputVm extends GitHubPullRequestPreflightInputVm {
+  title: string;
+  body: string;
+  draft: boolean;
+}
+
+export interface GitHubPullRequestPreflightVm {
+  remote: string;
+  head: string;
+  base: string;
+  aheadBy: number;
+  headPublished: boolean;
+  existingPullRequest?: GitHubPullRequestSummaryVm | null;
+}
+
+export interface GitHubActorVm { login: string; name?: string | null }
+export interface GitHubLabelVm { name: string; color?: string | null }
+export interface GitHubStatusCheckVm {
+  kind?: string | null;
+  name?: string | null;
+  context?: string | null;
+  state?: string | null;
+  status?: string | null;
+  conclusion?: string | null;
+}
+
+export interface GitHubPullRequestSummaryVm {
+  number: number;
+  title: string;
+  state: string;
+  draft: boolean;
+  author?: GitHubActorVm | null;
+  headRefName: string;
+  baseRefName: string;
+  updatedAt: string;
+  url: string;
+  reviewDecision?: string | null;
+  labels: GitHubLabelVm[];
+  statusChecks: GitHubStatusCheckVm[];
+}
+
+export interface GitHubPullRequestDetailVm extends GitHubPullRequestSummaryVm {
+  body: string;
+  mergeable?: string | null;
+  mergeStateStatus?: string | null;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  files: Array<{ path: string; additions: number; deletions: number }>;
+  latestReviews: Array<{ author?: GitHubActorVm | null; state: string }>;
+}
+
+export interface GitHubIssueSummaryVm {
+  number: number;
+  title: string;
+  state: string;
+  author?: GitHubActorVm | null;
+  assignees: GitHubActorVm[];
+  labels: GitHubLabelVm[];
+  updatedAt: string;
+  url: string;
+}
+
+export interface GitHubIssueDetailVm extends GitHubIssueSummaryVm {
+  body: string;
+  milestone?: { title: string } | null;
+}
+
+export type GitHubListStateVm = 'open' | 'closed' | 'all';
+export interface GitHubPullRequestQueryVm {
+  state: GitHubListStateVm;
+  author?: string | null;
+  base?: string | null;
+  head?: string | null;
+  label?: string | null;
+  search?: string | null;
+}
+export interface GitHubIssueQueryVm {
+  state: GitHubListStateVm;
+  author?: string | null;
+  assignee?: string | null;
+  label?: string | null;
+  milestone?: string | null;
+  search?: string | null;
+}
+
+export type GitComparisonSourceVm =
+  | { kind: 'workspace'; workspacePath?: string | null; path: string; area: 'staged' | 'unstaged' }
+  | { kind: 'commit'; workspacePath?: string | null; path: string; beforeOid?: string | null; afterOid: string }
+  | { kind: 'github-pr'; workspacePath?: string | null; host: string; repository: string; prNumber: number; path: string };
+
+export interface GitFileComparisonVm {
+  path: string;
+  stats: { addedLines: number; deletedLines: number };
+  before?: { content: string } | null;
+  after?: { content: string } | null;
+  limitationCode?: string | null;
+}
+
 export type WorkflowErrorVm = AppErrorVm;
 
 export interface TaskDetailVm {

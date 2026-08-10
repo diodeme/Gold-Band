@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, ResolveAppExitInput, RoundSelection, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, ResolveAppExitInput, RoundSelection, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -23,6 +23,90 @@ export const desktopApi: RuntimeApi = {
   },
   initializeGitRepository(projectId) {
     return invokeCommand('initialize_git_repository', { projectId });
+  },
+  getSourceControlSnapshot(projectId, workspacePath) {
+    return invokeCommand('get_source_control_snapshot', { projectId, workspacePath });
+  },
+  getGitHistory(projectId, workspacePath, query) {
+    return invokeCommand('get_git_history', { projectId, workspacePath, query });
+  },
+  getGitCommitDetail(projectId, workspacePath, oid) {
+    return invokeCommand('get_git_commit_detail', { projectId, workspacePath, oid });
+  },
+  analyzeGitCommitRelations(projectId, workspacePath, query) {
+    return invokeCommand('analyze_git_commit_relations', { projectId, workspacePath, query });
+  },
+  executeGitMutation(projectId, workspacePath, input) {
+    return invokeCommand('execute_git_mutation', { projectId, workspacePath, input });
+  },
+  getGitComparison(projectId, source) {
+    return invokeCommand('get_git_comparison', { projectId, source });
+  },
+  startGitOperation(projectId, workspacePath, input) {
+    return invokeCommand('start_git_operation', { projectId, workspacePath, input });
+  },
+  getGitOperation(operationId) {
+    return invokeCommand('get_git_operation', { operationId });
+  },
+  cancelGitOperation(operationId) {
+    return invokeCommand('cancel_git_operation', { operationId });
+  },
+  startGitStateMonitor(projectId, workspacePath) {
+    return invokeCommand('start_git_state_monitor', { projectId, workspacePath });
+  },
+  stopGitStateMonitor(projectId, workspacePath) {
+    return invokeCommand('stop_git_state_monitor', { projectId, workspacePath });
+  },
+  async subscribeGitOperationUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<GitOperationVm>('gold-band://git-operation-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  async subscribeGitStateChanges(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<GitStateChangedEventVm>('gold-band://git-state-changed', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  getGitHubCapability(projectId, workspacePath) {
+    return invokeCommand('get_github_capability', { projectId, workspacePath });
+  },
+  startGitHubLogin(projectId, workspacePath, host) {
+    return invokeCommand('start_github_login', { projectId, workspacePath, host });
+  },
+  getGitHubOperation(operationId) {
+    return invokeCommand('get_github_operation', { operationId });
+  },
+  cancelGitHubOperation(operationId) {
+    return invokeCommand('cancel_github_operation', { operationId });
+  },
+  async subscribeGitHubOperationUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<import('../types').GitHubOperationVm>('gold-band://github-operation-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  preflightGitHubPullRequest(projectId, workspacePath, input) {
+    return invokeCommand('preflight_github_pull_request', { projectId, workspacePath, input });
+  },
+  startGitHubPullRequestCreate(projectId, workspacePath, input) {
+    return invokeCommand('start_github_pull_request_create', { projectId, workspacePath, input });
+  },
+  listGitHubPullRequests(projectId, workspacePath, host, repository, query) {
+    return invokeCommand('list_github_pull_requests', { projectId, workspacePath, host, repository, query });
+  },
+  getGitHubPullRequest(projectId, workspacePath, host, repository, number) {
+    return invokeCommand('get_github_pull_request', { projectId, workspacePath, host, repository, number });
+  },
+  listGitHubIssues(projectId, workspacePath, host, repository, query) {
+    return invokeCommand('list_github_issues', { projectId, workspacePath, host, repository, query });
+  },
+  getGitHubIssue(projectId, workspacePath, host, repository, number) {
+    return invokeCommand('get_github_issue', { projectId, workspacePath, host, repository, number });
   },
   completeMainWindowClose() {
     return invokeCommand('complete_main_window_close');

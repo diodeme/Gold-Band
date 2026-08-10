@@ -392,7 +392,7 @@ pub fn stop_workspace_file_watch(
     input: WorkspaceFileWatchInput,
 ) -> CommandResult<()> {
     let root = resolve_workspace_root(state.inner(), &input.project_id)?;
-    watch_runtime.stop_workspace(&root.project_id)
+    watch_runtime.stop_workspace(&root.project_id, &root.path)
 }
 
 fn authorize_external_if_needed(

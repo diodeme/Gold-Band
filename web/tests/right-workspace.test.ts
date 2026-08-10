@@ -10,6 +10,7 @@ import {
   createDraftConversationWorkspaceScope,
   createInitialRightWorkspaceState,
   fileBrowserWorkspaceResourceKey,
+  gitFileComparisonWorkspaceResourceKey,
   rightWorkspaceReducer,
   type AgentTranscriptLocator,
   type FileWorkspaceResource,
@@ -121,6 +122,32 @@ describe('right workspace resource model', () => {
       selectedFile: file,
     });
     expect(state.tabs[0]).not.toHaveProperty('content');
+  });
+
+  it('keeps Git comparison tabs isolated by worktree and GitHub pull request', () => {
+    const first = gitFileComparisonWorkspaceResourceKey('project-1', {
+      kind: 'workspace',
+      workspacePath: 'D:/repo/worktree-a',
+      path: 'src/main.rs',
+      area: 'unstaged',
+    });
+    const second = gitFileComparisonWorkspaceResourceKey('project-1', {
+      kind: 'workspace',
+      workspacePath: 'D:/repo/worktree-b',
+      path: 'src/main.rs',
+      area: 'unstaged',
+    });
+    const pullRequest = gitFileComparisonWorkspaceResourceKey('project-1', {
+      kind: 'github-pr',
+      workspacePath: 'D:/repo/worktree-a',
+      host: 'github.com',
+      repository: 'acme/widgets',
+      prNumber: 42,
+      path: 'src/main.rs',
+    });
+
+    expect(first).not.toBe(second);
+    expect(pullRequest).toContain('github-pr:github.com:acme/widgets:42:src/main.rs');
   });
 
   it('isolates lightweight workspace state by conversation scope', () => {

@@ -188,6 +188,102 @@ export function initializeGitRepository(projectId?: string | null) {
   return getRuntimeApi().initializeGitRepository(projectId);
 }
 
+export function getSourceControlSnapshot(projectId: string, workspacePath?: string | null) {
+  return getRuntimeApi().getSourceControlSnapshot(projectId, workspacePath);
+}
+
+export function getGitHistory(projectId: string, workspacePath: string | null | undefined, query: Parameters<ReturnType<typeof getRuntimeApi>['getGitHistory']>[2]) {
+  return getRuntimeApi().getGitHistory(projectId, workspacePath, query);
+}
+
+export function getGitCommitDetail(projectId: string, workspacePath: string | null | undefined, oid: string) {
+  return getRuntimeApi().getGitCommitDetail(projectId, workspacePath, oid);
+}
+
+export function analyzeGitCommitRelations(projectId: string, workspacePath: string | null | undefined, query: Parameters<ReturnType<typeof getRuntimeApi>['analyzeGitCommitRelations']>[2]) {
+  return getRuntimeApi().analyzeGitCommitRelations(projectId, workspacePath, query);
+}
+
+export function executeGitMutation(projectId: string, workspacePath: string | null | undefined, input: Parameters<ReturnType<typeof getRuntimeApi>['executeGitMutation']>[2]) {
+  return getRuntimeApi().executeGitMutation(projectId, workspacePath, input);
+}
+
+export function getGitComparison(projectId: string, source: Parameters<ReturnType<typeof getRuntimeApi>['getGitComparison']>[1]) {
+  return getRuntimeApi().getGitComparison(projectId, source);
+}
+
+export function startGitOperation(projectId: string, workspacePath: string | null | undefined, input: Parameters<ReturnType<typeof getRuntimeApi>['startGitOperation']>[2]) {
+  return getRuntimeApi().startGitOperation(projectId, workspacePath, input);
+}
+
+export function getGitOperation(operationId: string) {
+  return getRuntimeApi().getGitOperation(operationId);
+}
+
+export function cancelGitOperation(operationId: string) {
+  return getRuntimeApi().cancelGitOperation(operationId);
+}
+
+export function startGitStateMonitor(projectId: string, workspacePath: string | null | undefined) {
+  return getRuntimeApi().startGitStateMonitor(projectId, workspacePath);
+}
+
+export function stopGitStateMonitor(projectId: string, workspacePath: string | null | undefined) {
+  return getRuntimeApi().stopGitStateMonitor(projectId, workspacePath);
+}
+
+export function subscribeGitOperationUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeGitOperationUpdates']>>[0]) {
+  return getRuntimeApi().subscribeGitOperationUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function subscribeGitStateChanges(listener: Parameters<NonNullable<RuntimeApi['subscribeGitStateChanges']>>[0]) {
+  return getRuntimeApi().subscribeGitStateChanges?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function getGitHubCapability(projectId: string, workspacePath?: string | null) {
+  return getRuntimeApi().getGitHubCapability(projectId, workspacePath);
+}
+
+export function startGitHubLogin(projectId: string, workspacePath: string | null | undefined, host: string) {
+  return getRuntimeApi().startGitHubLogin(projectId, workspacePath, host);
+}
+
+export function getGitHubOperation(operationId: string) {
+  return getRuntimeApi().getGitHubOperation(operationId);
+}
+
+export function cancelGitHubOperation(operationId: string) {
+  return getRuntimeApi().cancelGitHubOperation(operationId);
+}
+
+export function subscribeGitHubOperationUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeGitHubOperationUpdates']>>[0]) {
+  return getRuntimeApi().subscribeGitHubOperationUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function preflightGitHubPullRequest(projectId: string, workspacePath: string | null | undefined, input: Parameters<ReturnType<typeof getRuntimeApi>['preflightGitHubPullRequest']>[2]) {
+  return getRuntimeApi().preflightGitHubPullRequest(projectId, workspacePath, input);
+}
+
+export function startGitHubPullRequestCreate(projectId: string, workspacePath: string | null | undefined, input: Parameters<ReturnType<typeof getRuntimeApi>['startGitHubPullRequestCreate']>[2]) {
+  return getRuntimeApi().startGitHubPullRequestCreate(projectId, workspacePath, input);
+}
+
+export function listGitHubPullRequests(projectId: string, workspacePath: string | null | undefined, host: string, repository: string, query: Parameters<ReturnType<typeof getRuntimeApi>['listGitHubPullRequests']>[4]) {
+  return getRuntimeApi().listGitHubPullRequests(projectId, workspacePath, host, repository, query);
+}
+
+export function getGitHubPullRequest(projectId: string, workspacePath: string | null | undefined, host: string, repository: string, number: number) {
+  return getRuntimeApi().getGitHubPullRequest(projectId, workspacePath, host, repository, number);
+}
+
+export function listGitHubIssues(projectId: string, workspacePath: string | null | undefined, host: string, repository: string, query: Parameters<ReturnType<typeof getRuntimeApi>['listGitHubIssues']>[4]) {
+  return getRuntimeApi().listGitHubIssues(projectId, workspacePath, host, repository, query);
+}
+
+export function getGitHubIssue(projectId: string, workspacePath: string | null | undefined, host: string, repository: string, number: number) {
+  return getRuntimeApi().getGitHubIssue(projectId, workspacePath, host, repository, number);
+}
+
 export function getAcpActivityDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: Parameters<ReturnType<typeof getRuntimeApi>['getAcpActivityDetail']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().getAcpActivityDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);
 }

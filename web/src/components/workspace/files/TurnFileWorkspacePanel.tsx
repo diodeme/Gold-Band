@@ -5,11 +5,11 @@ import { EditorView, lineNumbers } from '@codemirror/view';
 import { getChunks, goToNextChunk, goToPreviousChunk, unifiedMergeView } from '@codemirror/merge';
 import { ChevronDown, ChevronUp, FileDiff, FileText, TriangleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { getFileComparison } from '@/api';
+import { getFileComparison, getGitComparison } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import type { FileComparisonVm } from '@/types';
-import type { TurnFileWorkspaceResource } from '../right-workspace-context';
+import type { FileComparisonVm, GitFileComparisonVm } from '@/types';
+import type { GitFileComparisonWorkspaceResource, TurnFileWorkspaceResource } from '../right-workspace-context';
 import { WorkspaceFileEditor } from './WorkspaceFileEditor';
 import {
   loadWorkspaceLanguageForPath,
@@ -19,10 +19,13 @@ import {
 import { isMarkdownDocumentPath } from './markdown-document';
 import type { MarkdownEditorMode } from './file-content-store';
 
-export function TurnFileWorkspacePanel({ resource }: { resource: TurnFileWorkspaceResource }) {
+type FileComparisonWorkspaceResource = TurnFileWorkspaceResource | GitFileComparisonWorkspaceResource;
+type WorkspaceComparisonVm = FileComparisonVm | GitFileComparisonVm;
+
+export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonWorkspaceResource }) {
   const { t } = useTranslation();
   const editorRef = useRef<ReactCodeMirrorRef>(null);
-  const [comparison, setComparison] = useState<FileComparisonVm | null>(null);
+  const [comparison, setComparison] = useState<WorkspaceComparisonVm | null>(null);
   const [language, setLanguage] = useState<Extension | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [markdownMode, setMarkdownMode] = useState<MarkdownEditorMode>('live-preview');
@@ -33,7 +36,10 @@ export function TurnFileWorkspacePanel({ resource }: { resource: TurnFileWorkspa
     setComparison(null);
     setErrorCode(null);
     setDiffChunkCount(0);
-    void getFileComparison(resource.locator, resource.changeSetId, resource.changeId)
+    const request = 'gitSource' in resource
+      ? getGitComparison(resource.projectId, resource.gitSource)
+      : getFileComparison(resource.locator, resource.changeSetId, resource.changeId);
+    void request
       .then((next) => { if (!cancelled) setComparison(next); })
       .catch((reason: unknown) => {
         if (cancelled) return;
@@ -42,7 +48,7 @@ export function TurnFileWorkspacePanel({ resource }: { resource: TurnFileWorkspa
           : 'turn-files.change-set-not-found');
       });
     return () => { cancelled = true; };
-  }, [resource.changeId, resource.changeSetId, resource.locator]);
+  }, [resource]);
 
   useEffect(() => {
     let cancelled = false;
@@ -107,7 +113,7 @@ export function TurnFileWorkspacePanel({ resource }: { resource: TurnFileWorkspa
         </div>
         {resource.kind === 'file-diff' ? (
           <div className="flex h-9 items-center gap-1 border-t border-border/40 px-2">
-            <span className="mr-auto px-1 text-xs text-muted-foreground">{t('turnFiles.turnDiff')}</span>
+            <span className="mr-auto px-1 text-xs text-muted-foreground">{'gitSource' in resource ? t('sourceControl.diff') : t('turnFiles.turnDiff')}</span>
             {showDiffChunkNavigation ? <>
               <Tooltip>
                 <TooltipTrigger asChild>

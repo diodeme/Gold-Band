@@ -6,7 +6,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { cn } from '@/lib/utils';
 import { useConversationBranchLiveSnapshot } from '@/lib/conversation-event-router';
 import { AgentConversationPanel } from './AgentConversationPanel';
-import { conversationDirectoryWorkspaceResourceKey, fileBrowserWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
+import { conversationDirectoryWorkspaceResourceKey, fileBrowserWorkspaceResourceKey, sourceControlWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
 import { useFileContentEntry } from './files/file-content-store';
 
 export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
@@ -112,7 +112,7 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
 });
 
 type WorkspaceEntryOption = {
-  id: 'file-browser' | 'conversation-directory';
+  id: 'file-browser' | 'source-control' | 'conversation-directory';
   label: string;
   description: string;
   icon: typeof FolderOpen;
@@ -137,6 +137,22 @@ function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu
           projectId,
           title: t('workspace.files'),
           description: t('workspace.browseWorkspaceFiles'),
+          attention: false,
+        });
+      },
+    }, {
+      id: 'source-control',
+      label: t('sourceControl.title'),
+      description: t('sourceControl.description'),
+      icon: GitBranch,
+      open: () => {
+        void openResource({
+          kind: 'source-control',
+          key: sourceControlWorkspaceResourceKey(projectId),
+          scopeKey,
+          projectId,
+          title: t('sourceControl.title'),
+          description: t('sourceControl.description'),
           attention: false,
         });
       },
@@ -262,8 +278,10 @@ function workspaceTabIcon(tab: RightWorkspaceResource) {
       ? <PencilLine className="size-3.5 shrink-0" />
       : tab.kind === 'system-prompt'
         ? <FileCode2 className="size-3.5 shrink-0" />
-        : tab.kind === 'raw-frames'
+          : tab.kind === 'raw-frames'
           ? <Braces className="size-3.5 shrink-0" />
+          : tab.kind === 'source-control'
+            ? <GitBranch className="size-3.5 shrink-0" />
           : tab.kind === 'file-browser'
             ? <FolderOpen className="size-3.5 shrink-0" />
             : tab.kind === 'file-diff'

@@ -2029,7 +2029,7 @@ fn build_request_intervention_metrics(
     let execution_id = active_turn
         .as_ref()
         .map(|turn| turn.execution_id.clone())
-        .unwrap_or_else(|| run_uuid.clone());
+        .unwrap_or_else(|| task_uuid.clone());
     let event_revision;
     let collection_state_recovered;
     let _state = if let Some(active_turn) = active_turn.as_ref() {

@@ -18,7 +18,7 @@
 | 数据源 | `C:\Users\kelvinzhou\AppData\Local\maling\metrics.log` |
 | 日志位置 | 第 `5901` 行至第 `5977` 行（去重后唯一事件） |
 
-本次会话共 `18` 条唯一事件，分布在 `17` 个上报批次中（已按 `eventId` 去重，忽略服务端错误导致的重试）。
+本次会话共 `22` 条（含 4 条访谈节点 elicitation 干预事件）唯一事件，分布在 `21` 个上报批次中（已按 `eventId` 去重，忽略服务端错误导致的重试）。
 
 **本轮验证要点：**
 - `executionId` 统一为 `taskId`（`49eacfbe...`），所有事件共享，不再有 `parentExecutionId` 或 `taskId` 字段。
@@ -140,6 +140,136 @@ orchestrator 进入 `drive_from_node_with_initial_session` 的节点执行循环
 #### 上报逻辑
 
 访谈节点 ACP session 执行完成。completed 事件携带实际模型名 `glm-5.2`（从 `acp.session.json` 解析）。`totalTokens=502780` 含大量 cacheReadTokens（448512），反映长上下文访谈场景。`acpSessionElapsedMs=300000`（5分钟）是 ACP session 的净处理时间。访谈节点耗时约 8 分 29 秒。
+### 第 3a 条：访谈节点 elicitation 干预（第 1 次）
+
+- 日志行号：`5905`
+- 请求时间：`2026-08-10T17:56:56`
+
+#### 原始 JSON
+
+```json
+{
+  "events": [{
+    "eventId": "54aa67b3-d213-401d-9ad6-d4b18982b7e0",
+    "eventRevision": 2,
+    "eventType": "intervention.requested",
+    "occurredAt": "2026-08-10T17:56:56.000",
+    "reportedAt": "2026-08-10T17:56:56.179",
+    "userId": "kelvinzhou",
+    "workspace": "D:\\IdeaProjects\\mall",
+    "clientVersion": "0.9.0",
+    "sessionMode": "workflow",
+    "executionKind": "run",
+    "executionId": "cc17bea4d4d44073b7fe283fd9c66058",
+    "taskTitle": "帮我写一个最简单的单例模式",
+    "interventionKind": "elicitation",
+    "collectionStateRecovered": true
+  }]
+}
+```
+
+#### 上报逻辑
+
+访谈节点执行过程中，AI agent 通过 ACP elicitation（AskUserQuestion）向用户提问。`maybe_emit_elicitation_intervention` 检测到 elicitation 事件后调用 `emit_request_intervention_metrics`，由后台 worker 构建 `intervention.requested` 事件。`interventionKind=elicitation` 表示这是 AI 主动向用户提问。
+
+> **异常：** 此事件的 `executionId` 为 `cc17bea4d4d44073b7fe283fd9c66058`（run UUID），而不是 `49eacfbe31dc4432b520936761c80a8e`（task UUID）。详见第 5 节分析。
+
+### 第 3b 条：访谈节点 elicitation 干预（第 2 次）
+
+- 日志行号：`5914`
+- 请求时间：`2026-08-10T18:00:09`
+
+#### 原始 JSON
+
+```json
+{
+  "events": [{
+    "eventId": "3000e99b-19ef-42c0-8c5e-9620fa839c54",
+    "eventRevision": 3,
+    "eventType": "intervention.requested",
+    "occurredAt": "2026-08-10T18:00:09.000",
+    "reportedAt": "2026-08-10T18:00:09.338",
+    "userId": "kelvinzhou",
+    "workspace": "D:\\IdeaProjects\\mall",
+    "clientVersion": "0.9.0",
+    "sessionMode": "workflow",
+    "executionKind": "run",
+    "executionId": "cc17bea4d4d44073b7fe283fd9c66058",
+    "taskTitle": "帮我写一个最简单的单例模式",
+    "interventionKind": "elicitation",
+    "collectionStateRecovered": true
+  }]
+}
+```
+
+#### 上报逻辑
+
+访谈节点继续执行，AI agent 发起第 2 次 elicitation 提问。同一 executionId（run UUID）下的 eventRevision 递增到 3。
+
+### 第 3c 条：访谈节点 elicitation 干预（第 3 次）
+
+- 日志行号：`5916`
+- 请求时间：`2026-08-10T18:01:28`
+
+#### 原始 JSON
+
+```json
+{
+  "events": [{
+    "eventId": "1b80e69c-bded-458c-a633-bb909e7786c0",
+    "eventRevision": 4,
+    "eventType": "intervention.requested",
+    "occurredAt": "2026-08-10T18:01:28.000",
+    "reportedAt": "2026-08-10T18:01:28.303",
+    "userId": "kelvinzhou",
+    "workspace": "D:\\IdeaProjects\\mall",
+    "clientVersion": "0.9.0",
+    "sessionMode": "workflow",
+    "executionKind": "run",
+    "executionId": "cc17bea4d4d44073b7fe283fd9c66058",
+    "taskTitle": "帮我写一个最简单的单例模式",
+    "interventionKind": "elicitation",
+    "collectionStateRecovered": true
+  }]
+}
+```
+
+#### 上报逻辑
+
+第 3 次 elicitation 提问，eventRevision 递增到 4。
+
+### 第 3d 条：访谈节点 elicitation 干预（第 4 次）
+
+- 日志行号：`5918`
+- 请求时间：`2026-08-10T18:03:00`
+
+#### 原始 JSON
+
+```json
+{
+  "events": [{
+    "eventId": "5eec28b1-e904-4cfb-ae0e-75aa0547cbcc",
+    "eventRevision": 5,
+    "eventType": "intervention.requested",
+    "occurredAt": "2026-08-10T18:03:00.000",
+    "reportedAt": "2026-08-10T18:03:00.376",
+    "userId": "kelvinzhou",
+    "workspace": "D:\\IdeaProjects\\mall",
+    "clientVersion": "0.9.0",
+    "sessionMode": "workflow",
+    "executionKind": "run",
+    "executionId": "cc17bea4d4d44073b7fe283fd9c66058",
+    "taskTitle": "帮我写一个最简单的单例模式",
+    "interventionKind": "elicitation",
+    "collectionStateRecovered": true
+  }]
+}
+```
+
+#### 上报逻辑
+
+第 4 次（最后一次）elicitation 提问，eventRevision 递增到 5。此后访谈节点 ACP session 完成（第 3 条 completed）。
+
 
 ### 第 4 条：方案节点 started
 
@@ -725,7 +855,12 @@ orchestrator 进入 `drive_from_node_with_initial_session` 的节点执行循环
 
 17:55:24  [1] run.started                rev=1  <- 用户提交任务
 17:55:24  [2] 访谈.started               rev=1
-    |         ACP session 运行 8m29s...
+    |         ACP session 运行中...
+17:56:56  [3a] elicitation              rev=2  execId=cc17bea4...(runUuid, BUG)
+18:00:09  [3b] elicitation              rev=3  execId=cc17bea4...(runUuid, BUG)
+18:01:28  [3c] elicitation              rev=4  execId=cc17bea4...(runUuid, BUG)
+18:03:00  [3d] elicitation              rev=5  execId=cc17bea4...(runUuid, BUG)
+    |         ACP session 继续运行...
 18:03:53  [3] 访谈.completed             rev=2  model=glm-5.2, totalTokens=502780
 18:03:53  [4] 方案.started               rev=1
     |         ACP session 运行 2m43s...
@@ -760,7 +895,8 @@ orchestrator 进入 `drive_from_node_with_initial_session` 的节点执行循环
 | 7 个节点均有 started+completed | 通过 |
 | run 级有 started+paused+intervention+completed | 通过 |
 | 所有事件携带 taskTitle | 通过 |
-| executionId 全程一致 | 通过 |
+| executionId 全程一致（主线事件） | 通过（49eacfbe/taskUuid） |
+| elicitation 事件 executionId 分离 | 异常（cc17bea4/runUuid），已修复 |
 | nodeId 在节点内不变、跨节点不同 | 通过 |
 | attemptIndex 全部为 1（无重试） | 通过 |
 | started 事件不携带 model | 通过 |
@@ -770,6 +906,66 @@ orchestrator 进入 `drive_from_node_with_initial_session` 的节点执行循环
 | pauseCount=1 对应 1 次 paused 事件 | 通过 |
 | roundCount=1 对应首轮 | 通过 |
 
-本次测试未发现数据缺口。所有字段符合协议预期。
+本次测试发现 1 个数据异常：elicitation 干预事件 executionId 分离（详见第 5 节），已在代码中修复。其余字段符合协议预期。
 
 **注意：** `counters.resumeCount=0`，但 run 实际从 paused 恢复了 1 次。这是因为 resume 事件在恢复时作为 `execution.resumed` lifecycle event 实时上报（未出现在本次去重事件中，因为它可能因服务端错误未重试成功），终态的 `resumeCount` 是从 observability snapshot 累计的。`collectionStateRecovered=true` 也佐证了终态数据来自恢复路径。
+## 5. 数据缺口：elicitation 干预事件 executionId 分离（已修复）
+
+### 现象
+
+4 条访谈节点的 elicitation 干预事件（第 3a-3d 条）使用了独立的 `executionId=cc17bea4d4d44073b7fe283fd9c66058`，与 run 主线事件的 `executionId=49eacfbe31dc4432b520936761c80a8e` 不一致。
+
+| 事件来源 | executionId | 含义 |
+|---|---|---|
+| run started/paused/intervention/completed（orchestrator 路径） | `49eacfbe...` | task UUID（正确） |
+| node started/completed（producer 路径） | `49eacfbe...` | task UUID（正确） |
+| elicitation intervention（Tauri 层路径） | `cc17bea4...` | run UUID（错误） |
+
+### 根因
+
+`build_request_intervention_metrics`（commands.rs）构建干预事件的 `execution_id` 时：
+
+```rust
+let execution_id = active_turn
+    .as_ref()
+    .map(|turn| turn.execution_id.clone())
+    .unwrap_or_else(|| run_uuid.clone());  // BUG: 应为 task_uuid
+```
+
+- **Direct 模式：** `active_turn` 存在，`execution_id` 取 `turn.execution_id`（等于 taskUuid），正确。
+- **Workflow/AUTO 模式：** `active_turn` 为 None，fallback 使用 `run_uuid`，而统一后的正确值应为 `task_uuid`。
+
+这导致 Workflow/AUTO 的 elicitation/permission 干预事件与 run 主线事件产生两个不同的 executionId，服务端无法将它们关联到同一次交付。
+
+### 影响
+
+1. 服务端 `ml_metric_delivery_stat` 会出现两行记录（一个 taskUuid + 一个 runUuid），同一 run 的 counters 被拆分。
+2. `elicitationCount` 在 runUuid 行累加，但 taskUuid 行（终态 delivery）的 counters 中没有这些 elicitation 计数。
+3. 服务端按 executionId 查询 attempt 时无法找到这些干预事件。
+
+### 修复
+
+将 fallback 从 `run_uuid.clone()` 改为 `task_uuid.clone()`：
+
+```rust
+let execution_id = active_turn
+    .as_ref()
+    .map(|turn| turn.execution_id.clone())
+    .unwrap_or_else(|| task_uuid.clone());  // FIXED
+```
+
+修复后，Workflow/AUTO 的干预事件 executionId 与 run 主线一致（都为 taskUuid），eventRevision 共享同一序列。
+
+### 补充：为什么 elicitation 事件的 eventRevision 从 2 开始
+
+`emit_run_metrics_fact`（orchestrator）和 `build_request_intervention_metrics`（Tauri 层）在修复前都使用 `run_uuid` 作为 observability state 的 HashMap key。这意味着它们共享同一个 `eventRevision` 计数器：
+
+1. `run.started`（orchestrator，prepare_run 阶段）→ `next_revision()` → **rev=1**
+2. 第 1 次 elicitation（Tauri 层）→ 同一 state → `next_revision()` → **rev=2**
+3. 第 2 次 elicitation → **rev=3**
+4. 第 3 次 elicitation → **rev=4**
+5. 第 4 次 elicitation → **rev=5**
+
+因此 elicitation 事件的 `eventRevision` 从 2 开始，而非 1。修复后，elicitation 事件改用 `task_uuid` 作为 executionId 和 observability state key，与 run 级事件使用不同的 state（run 级用 `run_uuid` key），revision 序列归为各自独立。
+
+> **注意：** run 级事件（paused=rev2, intervention=rev3, completed=rev4）的 revision 序列看起来与 elicitation 事件（rev2~5）有重叠。这是因为 `emit_run_metrics_fact` 内部的 observability state key 使用 `run_uuid`，而修复后 fact 中的 `executionId` 使用 `task_uuid`。两者 key 不同导致各自的 revision 计数器独立递增。这个 key 与 fact executionId 不一致的问题是一个已知的技术债，后续应统一为同一 key。

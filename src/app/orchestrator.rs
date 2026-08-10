@@ -37,7 +37,10 @@ use crate::dynamic::{
     validate_dynamic_node_state, validate_dynamic_run_state, validate_workspace_state,
     validate_workspace_topology,
 };
-use crate::git::{GitCommandOutput, GitCommandRunner, GitRepositoryService, GitWorkspaceManager};
+use crate::git::{
+    GitCommandOutput, GitCommandRunner, GitCoordinationService, GitRepositoryService,
+    GitSourceControlService, GitWorkspaceManager,
+};
 use crate::observability::{
     ExecutionContext, ProgressStage, append_run_event_best_effort, progress, run_event_data,
     write_progress_hint, write_run_progress_best_effort,
@@ -9542,11 +9545,23 @@ fn fork_dynamic_workspace(
         &branch,
         &fork_commit,
     ) {
-        let _ = git_output(
-            &parent.repo_root,
-            &["worktree", "remove", "--force", path.as_str()],
-        );
-        let _ = git_output(&parent.repo_root, &["branch", "-D", &branch]);
+        if let Ok(identity) =
+            GitSourceControlService::default().repository_identity(&parent.repo_root)
+        {
+            let _ = GitCoordinationService.with_runtime_write(
+                &identity.common_dir,
+                None,
+                "runtime-worktree-create-cleanup",
+                || {
+                    let _ = git_output(
+                        &parent.repo_root,
+                        &["worktree", "remove", "--force", path.as_str()],
+                    );
+                    let _ = git_output(&parent.repo_root, &["branch", "-D", &branch]);
+                    Ok(())
+                },
+            );
+        }
         return Err(error)
             .with_context(|| format!("failed to fork dynamic workspace `{workspace_id}`"));
     }

@@ -1,6 +1,7 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, FileRevisionVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { RuntimeApi } from './client';
+import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
 import { browserPreviewState } from './browserState';
 import { localTimestamp, toRoundSelectionInput } from './shared';
 
@@ -12,6 +13,47 @@ type LocalFontData = { family: string };
 type LocalFontWindow = Window & { queryLocalFonts?: () => Promise<LocalFontData[]> };
 
 const browserConversationRuns = new Map<string, ConversationRunVm>();
+const browserGitOperations = new Map<string, GitOperationVm>();
+const browserGitOperationListeners = new Set<(operation: GitOperationVm) => void>();
+const browserGitStateListeners = new Set<(event: GitStateChangedEventVm) => void>();
+const browserGitHubOperations = new Map<string, GitHubOperationVm>();
+const browserGitHubOperationListeners = new Set<(operation: GitHubOperationVm) => void>();
+
+const browserGitCommits: GitCommitVm[] = [
+  {
+    oid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241',
+    parentOids: ['8dc4ac2a3fc32f88e2348c0ea6682907c38acc89'],
+    subject: 'feat(git): add source control foundation',
+    body: 'Add the typed source control service and right workspace UI.',
+    author: { name: 'Gold Band', email: 'dev@example.com', timestamp: '2026-08-10T12:00:00Z' },
+    committer: { name: 'Gold Band', email: 'dev@example.com', timestamp: '2026-08-10T12:00:00Z' },
+    refs: [{ fullName: 'refs/heads/feature/source-control', shortName: 'feature/source-control', kind: 'local-branch' }],
+    sourceRef: 'refs/heads/feature/source-control',
+    runtimeCheckpoint: false,
+  },
+  {
+    oid: '8dc4ac2a3fc32f88e2348c0ea6682907c38acc89',
+    parentOids: ['73cc8bb94b23de03f11b90918c80f44db3299502'],
+    subject: 'refactor: prepare workspace resources',
+    body: '',
+    author: { name: 'Gold Band', email: 'dev@example.com', timestamp: '2026-08-09T10:00:00Z' },
+    committer: { name: 'Gold Band', email: 'dev@example.com', timestamp: '2026-08-09T10:00:00Z' },
+    refs: [{ fullName: 'refs/heads/main', shortName: 'main', kind: 'local-branch' }],
+    sourceRef: 'refs/heads/main',
+    runtimeCheckpoint: false,
+  },
+  {
+    oid: '73cc8bb94b23de03f11b90918c80f44db3299502',
+    parentOids: [],
+    subject: 'chore: initialize repository',
+    body: '',
+    author: { name: 'Gold Band', email: 'dev@example.com', timestamp: '2026-08-08T08:00:00Z' },
+    committer: { name: 'Gold Band', email: 'dev@example.com', timestamp: '2026-08-08T08:00:00Z' },
+    refs: [],
+    sourceRef: 'refs/heads/main',
+    runtimeCheckpoint: false,
+  },
+];
 
 function browserAgentIdentity(agentType: string) {
   const agent = mockAgentRegistry.agents.find((candidate) => candidate.agentType === agentType);
@@ -359,6 +401,284 @@ export const browserApi: RuntimeApi = {
   },
   initializeGitRepository() {
     return Promise.resolve({ status: 'head-required', repoRoot: null, commonDir: null, head: null });
+  },
+  getSourceControlSnapshot(projectId, workspacePath) {
+    const resolvedWorkspacePath = workspacePath ?? '/preview/gold-band';
+    return Promise.resolve({
+      repository: {
+        projectId,
+        repoRoot: '/preview/gold-band',
+        commonDir: '/preview/gold-band/.git',
+        workspacePath: resolvedWorkspacePath,
+        headOid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241',
+        currentBranch: 'feature/source-control',
+        detached: false,
+        unborn: false,
+        upstream: { name: 'origin/feature/source-control', ahead: 1, behind: 0 },
+        remotes: [{ name: 'origin', fetchUrls: ['https://github.com/example/gold-band.git'], pushUrls: ['https://github.com/example/gold-band.git'] }],
+        lock: { locked: false, owner: null, operation: null },
+        revision: 'browser-preview-revision',
+      },
+      status: {
+        snapshotRevision: 'browser-preview-revision',
+        branch: { oid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241', head: 'feature/source-control', upstream: 'origin/feature/source-control', ahead: 1, behind: 0 },
+        conflicts: [],
+        staged: [{ path: 'src/git/source_control.rs', oldPath: null, kind: 'added', indexStatus: 'A', worktreeStatus: null, binary: false, submodule: false, addedLines: 420, deletedLines: 0 }],
+        unstaged: [{ path: 'web/src/components/workspace/SourceControlWorkspacePanel.tsx', oldPath: null, kind: 'modified', indexStatus: null, worktreeStatus: 'M', binary: false, submodule: false, addedLines: 34, deletedLines: 8 }],
+        untracked: [{ path: 'docs/source-control-notes.md', oldPath: null, kind: 'untracked', indexStatus: null, worktreeStatus: '?', binary: false, submodule: false, addedLines: null, deletedLines: null }],
+        operationInProgress: null,
+      },
+      refs: [
+        { fullName: 'refs/heads/feature/source-control', shortName: 'feature/source-control', kind: 'local-branch', targetOid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241', peeledOid: null, upstream: 'origin/feature/source-control', ahead: 1, behind: 0, checkedOutWorktreePaths: [resolvedWorkspacePath] },
+        { fullName: 'refs/heads/main', shortName: 'main', kind: 'local-branch', targetOid: '8dc4ac2a3fc32f88e2348c0ea6682907c38acc89', peeledOid: null, upstream: 'origin/main', ahead: 0, behind: 0, checkedOutWorktreePaths: [] },
+      ],
+      worktrees: [{ path: resolvedWorkspacePath, headOid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241', branch: 'refs/heads/feature/source-control', main: workspacePath == null, detached: false, locked: false, lockReason: null, prunable: false, ownership: 'user', runtimeStatus: null }],
+      stashes: [],
+    });
+  },
+  getGitHistory() {
+    return Promise.resolve({
+      commits: structuredClone(browserGitCommits),
+      nextCursor: null,
+      revision: 'browser-preview-revision',
+    });
+  },
+  getGitCommitDetail(_projectId, _workspacePath, oid) {
+    const commit = browserGitCommits.find((candidate) => candidate.oid === oid) ?? browserGitCommits[0];
+    return Promise.resolve({
+      commit: structuredClone(commit),
+      files: [{
+        path: commit.oid === browserGitCommits[0].oid ? 'src/git/source_control.rs' : 'README.md',
+        oldPath: null,
+        kind: 'modified',
+        binary: false,
+        addedLines: commit.oid === browserGitCommits[0].oid ? 420 : 12,
+        deletedLines: commit.oid === browserGitCommits[0].oid ? 8 : 2,
+      }],
+    });
+  },
+  analyzeGitCommitRelations(_projectId, _workspacePath, query) {
+    const positions = new Map(browserGitCommits.map((commit, index) => [commit.oid, index]));
+    const pairwise = query.selectedOids.flatMap((leftOid, leftIndex) => query.selectedOids.slice(leftIndex + 1).map((rightOid) => {
+      const leftPosition = positions.get(leftOid);
+      const rightPosition = positions.get(rightOid);
+      const relation = leftPosition == null || rightPosition == null
+        ? 'diverged' as const
+        : leftPosition === rightPosition
+          ? 'same' as const
+          : leftPosition > rightPosition
+            ? 'ancestor' as const
+            : 'descendant' as const;
+      return {
+        leftOid,
+        rightOid,
+        relation,
+        mergeBases: [browserGitCommits[Math.max(leftPosition ?? 2, rightPosition ?? 2)].oid],
+        leftOnlyCount: Math.max(0, (rightPosition ?? 0) - (leftPosition ?? 0)),
+        rightOnlyCount: Math.max(0, (leftPosition ?? 0) - (rightPosition ?? 0)),
+      };
+    }));
+    return Promise.resolve({
+      selectedOids: [...query.selectedOids],
+      targetRef: query.targetRef,
+      targetOid: browserGitCommits[0].oid,
+      commonMergeBases: [browserGitCommits.at(-1)!.oid],
+      pairwise,
+      mergeEntries: query.selectedOids.map((oid) => ({
+        oid,
+        targetOid: browserGitCommits[0].oid,
+        status: positions.has(oid) ? 'direct' as const : 'not-contained-by-original-oid' as const,
+        firstMergeOid: null,
+      })),
+      comparisonFiles: query.selectedOids.length === 2 ? [{
+        path: 'src/git/source_control.rs',
+        oldPath: null,
+        kind: 'modified' as const,
+        binary: false,
+        addedLines: 24,
+        deletedLines: 6,
+      }] : [],
+    });
+  },
+  async executeGitMutation(projectId, workspacePath) {
+    return { snapshot: await browserApi.getSourceControlSnapshot(projectId, workspacePath) };
+  },
+  getGitComparison(_projectId, source) {
+    const staged = source.kind === 'workspace' && source.area === 'staged';
+    const pullRequest = source.kind === 'github-pr';
+    return Promise.resolve({
+      path: source.path,
+      stats: { addedLines: staged ? 3 : pullRequest ? 4 : 2, deletedLines: staged ? 0 : 1 },
+      before: { content: 'export const sourceControl = false;\n' },
+      after: { content: pullRequest
+        ? 'export const sourceControl = true;\nexport const gitHubPullRequests = true;\n'
+        : 'export const sourceControl = true;\nexport const gitHub = true;\n' },
+      limitationCode: null,
+    });
+  },
+  startGitOperation(_projectId, workspacePath, input) {
+    const operation: GitOperationVm = {
+      operationId: `browser-git-${Date.now().toString(36)}`,
+      kind: input.kind,
+      repositoryCommonDir: '/preview/gold-band/.git',
+      workspacePath,
+      status: 'succeeded',
+      cancelable: false,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      error: null,
+    };
+    browserGitOperations.set(operation.operationId, operation);
+    queueMicrotask(() => {
+      for (const listener of browserGitOperationListeners) listener(operation);
+    });
+    return Promise.resolve(operation);
+  },
+  getGitOperation(operationId) {
+    const operation = browserGitOperations.get(operationId);
+    return operation
+      ? Promise.resolve(operation)
+      : Promise.reject({ code: 'git.operation-not-found', params: { operationId } });
+  },
+  cancelGitOperation(operationId) {
+    const operation = browserGitOperations.get(operationId);
+    if (!operation) return Promise.reject({ code: 'git.operation-not-found', params: { operationId } });
+    const cancelled = { ...operation, status: 'cancelled' as const, cancelable: false, completedAt: new Date().toISOString() };
+    browserGitOperations.set(operationId, cancelled);
+    queueMicrotask(() => {
+      for (const listener of browserGitOperationListeners) listener(cancelled);
+    });
+    return Promise.resolve(cancelled);
+  },
+  startGitStateMonitor(_projectId, _workspacePath) {
+    return Promise.resolve();
+  },
+  stopGitStateMonitor(_projectId, _workspacePath) {
+    return Promise.resolve();
+  },
+  subscribeGitOperationUpdates(listener) {
+    browserGitOperationListeners.add(listener);
+    return Promise.resolve(() => browserGitOperationListeners.delete(listener));
+  },
+  subscribeGitStateChanges(listener) {
+    browserGitStateListeners.add(listener);
+    return Promise.resolve(() => browserGitStateListeners.delete(listener));
+  },
+  getGitHubCapability() {
+    return Promise.resolve({ status: 'ready', version: 'gh version 2.79.0', host: 'github.com', account: 'gold-band-preview', repository: 'example/gold-band', remote: 'origin', defaultBranch: 'main' });
+  },
+  startGitHubLogin(_projectId, _workspacePath, host) {
+    const operation: GitHubOperationVm = { operationId: `browser-gh-login-${Date.now().toString(36)}`, kind: 'login', host, status: 'succeeded', cancelable: false, startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), error: null, resultUrl: null };
+    browserGitHubOperations.set(operation.operationId, operation);
+    queueMicrotask(() => {
+      for (const listener of browserGitHubOperationListeners) listener(operation);
+    });
+    return Promise.resolve(operation);
+  },
+  getGitHubOperation(operationId) {
+    const operation = browserGitHubOperations.get(operationId);
+    return operation ? Promise.resolve(operation) : Promise.reject({ code: 'github.operation-not-found', params: { operationId } });
+  },
+  cancelGitHubOperation(operationId) {
+    const operation = browserGitHubOperations.get(operationId);
+    if (!operation) return Promise.reject({ code: 'github.operation-not-found', params: { operationId } });
+    const cancelled = { ...operation, status: 'cancelled' as const, cancelable: false, completedAt: new Date().toISOString() };
+    browserGitHubOperations.set(operationId, cancelled);
+    queueMicrotask(() => {
+      for (const listener of browserGitHubOperationListeners) listener(cancelled);
+    });
+    return Promise.resolve(cancelled);
+  },
+  subscribeGitHubOperationUpdates(listener) {
+    browserGitHubOperationListeners.add(listener);
+    return Promise.resolve(() => browserGitHubOperationListeners.delete(listener));
+  },
+  preflightGitHubPullRequest(_projectId, _workspacePath, input) {
+    return Promise.resolve({ remote: 'origin', head: input.head, base: input.base, aheadBy: 3, headPublished: true, existingPullRequest: null });
+  },
+  startGitHubPullRequestCreate(_projectId, _workspacePath, input) {
+    const operation: GitHubOperationVm = {
+      operationId: `browser-gh-pr-${Date.now().toString(36)}`,
+      kind: 'pr-create',
+      host: input.host,
+      status: 'succeeded',
+      cancelable: false,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      error: null,
+      resultUrl: 'https://github.com/example/gold-band/pull/43',
+    };
+    browserGitHubOperations.set(operation.operationId, operation);
+    queueMicrotask(() => {
+      for (const listener of browserGitHubOperationListeners) listener(operation);
+    });
+    return Promise.resolve(operation);
+  },
+  listGitHubPullRequests() {
+    return Promise.resolve([{
+      number: 42,
+      title: 'feat: add source control workspace',
+      state: 'OPEN',
+      draft: false,
+      author: { login: 'gold-band-preview', name: 'Gold Band' },
+      headRefName: 'feature/source-control',
+      baseRefName: 'main',
+      updatedAt: '2026-08-10T12:00:00Z',
+      url: 'https://github.com/example/gold-band/pull/42',
+      reviewDecision: 'REVIEW_REQUIRED',
+      labels: [{ name: 'feature', color: '1d76db' }],
+      statusChecks: [{ kind: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+    }]);
+  },
+  getGitHubPullRequest(_projectId, _workspacePath, _host, _repository, number) {
+    return Promise.resolve({
+      number,
+      title: 'feat: add source control workspace',
+      state: 'OPEN',
+      draft: false,
+      author: { login: 'gold-band-preview', name: 'Gold Band' },
+      headRefName: 'feature/source-control',
+      baseRefName: 'main',
+      updatedAt: '2026-08-10T12:00:00Z',
+      url: `https://github.com/example/gold-band/pull/${number}`,
+      reviewDecision: 'REVIEW_REQUIRED',
+      labels: [{ name: 'feature', color: '1d76db' }],
+      statusChecks: [{ kind: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+      body: '## Summary\n\nAdds the source control workspace and typed Git operations.',
+      mergeable: 'MERGEABLE',
+      mergeStateStatus: 'CLEAN',
+      additions: 320,
+      deletions: 18,
+      changedFiles: 7,
+      files: [{ path: 'src/git/source_control.rs', additions: 240, deletions: 8 }],
+      latestReviews: [],
+    });
+  },
+  listGitHubIssues() {
+    return Promise.resolve([{
+      number: 17,
+      title: 'Support repository status refresh events',
+      state: 'OPEN',
+      author: { login: 'contributor', name: null },
+      assignees: [],
+      labels: [{ name: 'enhancement', color: 'a2eeef' }],
+      updatedAt: '2026-08-09T09:30:00Z',
+      url: 'https://github.com/example/gold-band/issues/17',
+    }]);
+  },
+  getGitHubIssue(_projectId, _workspacePath, _host, _repository, number) {
+    return Promise.resolve({
+      number,
+      title: 'Support repository status refresh events',
+      state: 'OPEN',
+      author: { login: 'contributor', name: null },
+      assignees: [],
+      labels: [{ name: 'enhancement', color: 'a2eeef' }],
+      updatedAt: '2026-08-09T09:30:00Z',
+      url: `https://github.com/example/gold-band/issues/${number}`,
+      body: 'Refresh source control state when Git metadata changes.',
+      milestone: null,
+    });
   },
   completeMainWindowClose() {
     return Promise.resolve();

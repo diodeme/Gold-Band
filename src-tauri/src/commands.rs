@@ -1702,6 +1702,524 @@ pub fn initialize_git_repository(
 }
 
 #[tauri::command]
+pub async fn get_source_control_snapshot(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+) -> CommandResult<gold_band::git::GitSourceControlSnapshot> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .snapshot(&project_id, &workspace.workspace_path)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_git_history(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    query: gold_band::git::GitHistoryQuery,
+) -> CommandResult<gold_band::git::GitHistoryPage> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .history(&workspace.workspace_path, &query)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_git_commit_detail(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    oid: String,
+) -> CommandResult<gold_band::git::GitCommitDetail> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .commit_detail(&workspace.workspace_path, &oid)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn analyze_git_commit_relations(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    query: gold_band::git::GitCommitRelationsQuery,
+) -> CommandResult<gold_band::git::GitCommitRelations> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .analyze_commit_relations(&workspace.workspace_path, &query)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn execute_git_mutation(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    input: gold_band::git::GitMutationRequest,
+) -> CommandResult<gold_band::git::GitMutationResult> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .execute_mutation(&project_id, &workspace.workspace_path, &input)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_git_comparison(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    source: gold_band::git::GitComparisonSource,
+) -> CommandResult<gold_band::git::GitFileComparison> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace_path = source.workspace_path();
+        let workspace = service
+            .resolve_scoped_workspace(&project_root, workspace_path.map(camino::Utf8Path::new))
+            .map_err(command_error)?;
+        match &source {
+            gold_band::git::GitComparisonSource::GitHubPr {
+                host,
+                repository,
+                pr_number,
+                path,
+                ..
+            } => gold_band::git::GitHubCliService::default()
+                .pull_request_comparison(
+                    &workspace.workspace_path,
+                    host,
+                    repository,
+                    *pr_number,
+                    path,
+                )
+                .map_err(command_error),
+            _ => service
+                .comparison(&workspace.workspace_path, &source)
+                .map_err(command_error),
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn start_git_operation(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    input: gold_band::git::GitOperationRequest,
+) -> CommandResult<gold_band::git::GitOperation> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        let event_app_handle = app_handle.clone();
+        let update_sink: gold_band::git::GitOperationUpdateSink = Arc::new(move |operation| {
+            let _ = event_app_handle.emit("gold-band://git-operation-updated", operation);
+        });
+        service
+            .start_operation_with_update_sink(&workspace.workspace_path, &input, Some(update_sink))
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn start_git_state_monitor(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    file_runtime: State<'_, crate::workspace_files::WorkspaceFileRuntime>,
+    watch_runtime: State<'_, crate::workspace_files::WorkspaceFileWatchRuntime>,
+    monitor_runtime: State<'_, crate::git_state_monitor::GitStateMonitorRuntime>,
+    project_id: String,
+    workspace_path: Option<String>,
+) -> CommandResult<()> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    let debounce_ms = app.config.workspace_files.watch_debounce_ms;
+    let (identity, targets) = spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let identity = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        let targets = service
+            .metadata_watch_targets(&identity.workspace_path)
+            .map_err(command_error)?;
+        Ok((identity, targets))
+    })
+    .await?;
+    watch_runtime.start_workspace(
+        app_handle.clone(),
+        file_runtime.inner().clone(),
+        project_id.clone(),
+        identity.workspace_path.as_std_path().to_path_buf(),
+        debounce_ms,
+    )?;
+    if let Err(error) = monitor_runtime.start(
+        app_handle,
+        project_id.clone(),
+        &identity.common_dir,
+        &identity.workspace_path,
+        targets,
+        debounce_ms,
+    ) {
+        let _ = watch_runtime.stop_workspace(&project_id, identity.workspace_path.as_std_path());
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn stop_git_state_monitor(
+    state: State<'_, DesktopState>,
+    watch_runtime: State<'_, crate::workspace_files::WorkspaceFileWatchRuntime>,
+    monitor_runtime: State<'_, crate::git_state_monitor::GitStateMonitorRuntime>,
+    project_id: String,
+    workspace_path: Option<String>,
+) -> CommandResult<()> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    let identity = spawn_blocking_command(move || {
+        gold_band::git::GitSourceControlService::default()
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)
+    })
+    .await?;
+    monitor_runtime.stop(&identity.common_dir, &identity.workspace_path)?;
+    watch_runtime.stop_workspace(&project_id, identity.workspace_path.as_std_path())
+}
+
+#[tauri::command]
+pub async fn get_git_operation(
+    operation_id: String,
+) -> CommandResult<gold_band::git::GitOperation> {
+    spawn_blocking_command(move || {
+        gold_band::git::GitSourceControlService::default()
+            .get_operation(&operation_id)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn cancel_git_operation(
+    operation_id: String,
+) -> CommandResult<gold_band::git::GitOperation> {
+    spawn_blocking_command(move || {
+        gold_band::git::GitSourceControlService::default()
+            .cancel_operation(&operation_id)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_github_capability(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+) -> CommandResult<gold_band::git::GitHubCapability> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let git = gold_band::git::GitSourceControlService::default();
+        let workspace = git
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        gold_band::git::GitHubCliService::default()
+            .capability(&workspace.workspace_path)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn start_github_login(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    host: String,
+) -> CommandResult<gold_band::git::GitHubOperation> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let git = gold_band::git::GitSourceControlService::default();
+        let workspace = git
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        let event_app_handle = app_handle.clone();
+        let update_sink: gold_band::git::GitHubOperationUpdateSink = Arc::new(move |operation| {
+            let _ = event_app_handle.emit("gold-band://github-operation-updated", operation);
+        });
+        gold_band::git::GitHubCliService::default()
+            .start_login_with_update_sink(&workspace.workspace_path, &host, Some(update_sink))
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_github_operation(
+    operation_id: String,
+) -> CommandResult<gold_band::git::GitHubOperation> {
+    spawn_blocking_command(move || {
+        gold_band::git::GitHubCliService::default()
+            .get_operation(&operation_id)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn cancel_github_operation(
+    operation_id: String,
+) -> CommandResult<gold_band::git::GitHubOperation> {
+    spawn_blocking_command(move || {
+        gold_band::git::GitHubCliService::default()
+            .cancel_operation(&operation_id)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_github_pull_requests(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    host: String,
+    repository: String,
+    query: gold_band::git::GitHubPullRequestQuery,
+) -> CommandResult<Vec<gold_band::git::GitHubPullRequestSummary>> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let git = gold_band::git::GitSourceControlService::default();
+        let workspace = git
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        gold_band::git::GitHubCliService::default()
+            .list_pull_requests(&workspace.workspace_path, &host, &repository, &query)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_github_pull_request(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    host: String,
+    repository: String,
+    number: u64,
+) -> CommandResult<gold_band::git::GitHubPullRequestDetail> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let git = gold_band::git::GitSourceControlService::default();
+        let workspace = git
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        gold_band::git::GitHubCliService::default()
+            .pull_request_detail(&workspace.workspace_path, &host, &repository, number)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn preflight_github_pull_request(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    input: gold_band::git::GitHubPullRequestPreflightInput,
+) -> CommandResult<gold_band::git::GitHubPullRequestPreflight> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let git = gold_band::git::GitSourceControlService::default();
+        let workspace = git
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        gold_band::git::GitHubCliService::default()
+            .preflight_pull_request(&workspace.workspace_path, &input)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn start_github_pull_request_create(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    input: gold_band::git::GitHubPullRequestCreateInput,
+) -> CommandResult<gold_band::git::GitHubOperation> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let git = gold_band::git::GitSourceControlService::default();
+        let workspace = git
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        let event_app_handle = app_handle.clone();
+        let update_sink: gold_band::git::GitHubOperationUpdateSink = Arc::new(move |operation| {
+            let _ = event_app_handle.emit("gold-band://github-operation-updated", operation);
+        });
+        gold_band::git::GitHubCliService::default()
+            .start_pull_request_create_with_update_sink(
+                &workspace.workspace_path,
+                input,
+                Some(update_sink),
+            )
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_github_issues(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    host: String,
+    repository: String,
+    query: gold_band::git::GitHubIssueQuery,
+) -> CommandResult<Vec<gold_band::git::GitHubIssueSummary>> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let git = gold_band::git::GitSourceControlService::default();
+        let workspace = git
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        gold_band::git::GitHubCliService::default()
+            .list_issues(&workspace.workspace_path, &host, &repository, &query)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_github_issue(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    host: String,
+    repository: String,
+    number: u64,
+) -> CommandResult<gold_band::git::GitHubIssueDetail> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let git = gold_band::git::GitSourceControlService::default();
+        let workspace = git
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        gold_band::git::GitHubCliService::default()
+            .issue_detail(&workspace.workspace_path, &host, &repository, number)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
 pub fn continue_run(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
@@ -4305,6 +4823,12 @@ fn ensure_workflow_agents_doctor_ready(
 pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<gold_band::git::GitPreflightError>() {
         return CommandErrorVm::new(error.code, error.params());
+    }
+    if let Some(error) = error.downcast_ref::<gold_band::git::GitServiceError>() {
+        return CommandErrorVm::new(error.code, error.params.clone());
+    }
+    if let Some(error) = error.downcast_ref::<gold_band::git::GitHubServiceError>() {
+        return CommandErrorVm::new(error.code, error.params.clone());
     }
     if let Some(error) = error.downcast_ref::<gold_band::runtime_error::RuntimeError>() {
         return CommandErrorVm::new(error.info.code_str(), error.info.params.clone());

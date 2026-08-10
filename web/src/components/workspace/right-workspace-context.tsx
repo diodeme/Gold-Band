@@ -75,6 +75,18 @@ export type TurnFileWorkspaceResource = RightWorkspaceResourceBase & {
   changeId: string;
 };
 
+export type GitFileComparisonWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'file-diff';
+  projectId: string;
+  gitSource: import('@/types').GitComparisonSourceVm;
+};
+
+export type SourceControlWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'source-control';
+  projectId: string;
+  workspacePath?: string | null;
+};
+
 export type ConversationAssetWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'conversation-asset';
   locator: AcpAttemptWorkspaceLocator;
@@ -110,6 +122,8 @@ export type RightWorkspaceResource =
   | ConversationDirectoryWorkspaceResource
   | FileWorkspaceResource
   | TurnFileWorkspaceResource
+  | GitFileComparisonWorkspaceResource
+  | SourceControlWorkspaceResource
   | ConversationAssetWorkspaceResource
   | WorkflowViewWorkspaceResource
   | WorkflowEditWorkspaceResource
@@ -501,6 +515,22 @@ export function conversationRunWorkspaceResourceKey(kind: 'workflow-view' | 'wor
 
 export function fileBrowserWorkspaceResourceKey(projectId: string) {
   return `file-browser:${projectId}`;
+}
+
+export function sourceControlWorkspaceResourceKey(projectId: string, workspacePath?: string | null) {
+  const normalizedPath = workspacePath?.replaceAll('\\', '/');
+  return `source-control:${projectId}:${normalizedPath ?? 'main'}`;
+}
+
+export function gitFileComparisonWorkspaceResourceKey(projectId: string, source: import('@/types').GitComparisonSourceVm) {
+  const workspacePath = source.workspacePath?.replaceAll('\\', '/') ?? 'main';
+  if (source.kind === 'workspace') {
+    return `git-diff:${projectId}:${workspacePath}:workspace:${source.area}:${source.path}`;
+  }
+  if (source.kind === 'commit') {
+    return `git-diff:${projectId}:${workspacePath}:commit:${source.beforeOid ?? ''}:${source.afterOid}:${source.path}`;
+  }
+  return `git-diff:${projectId}:${workspacePath}:github-pr:${source.host}:${source.repository}:${source.prNumber}:${source.path}`;
 }
 
 export function conversationDirectoryWorkspaceResourceKey(locator: ConversationDirectoryWorkspaceResource['locator']) {

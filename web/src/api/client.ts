@@ -63,6 +63,30 @@ import type {
   FeedbackResult,
   FeedbackArchivePreview,
   GitCapabilityVm,
+  GitCommitDetailVm,
+  GitCommitRelationsQueryVm,
+  GitCommitRelationsVm,
+  GitHistoryPageVm,
+  GitHistoryQueryVm,
+  GitComparisonSourceVm,
+  GitFileComparisonVm,
+  GitMutationRequestVm,
+  GitMutationResultVm,
+  GitOperationRequestVm,
+  GitOperationVm,
+  GitStateChangedEventVm,
+  GitHubCapabilityVm,
+  GitHubOperationVm,
+  GitHubPullRequestCreateInputVm,
+  GitHubPullRequestPreflightInputVm,
+  GitHubPullRequestPreflightVm,
+  GitHubPullRequestQueryVm,
+  GitHubPullRequestSummaryVm,
+  GitHubPullRequestDetailVm,
+  GitHubIssueQueryVm,
+  GitHubIssueSummaryVm,
+  GitHubIssueDetailVm,
+  GitSourceControlSnapshotVm,
   ExternalFileAccessGrantVm,
   FileRevisionVm,
   ResolvedWorkspaceFileLinkVm,
@@ -135,6 +159,30 @@ export interface MaterializeAttachmentFileInput {
 export interface RuntimeApi {
   getGitCapability(projectId?: string | null): Promise<GitCapabilityVm>;
   initializeGitRepository(projectId?: string | null): Promise<GitCapabilityVm>;
+  getSourceControlSnapshot(projectId: string, workspacePath?: string | null): Promise<GitSourceControlSnapshotVm>;
+  getGitHistory(projectId: string, workspacePath: string | null | undefined, query: GitHistoryQueryVm): Promise<GitHistoryPageVm>;
+  getGitCommitDetail(projectId: string, workspacePath: string | null | undefined, oid: string): Promise<GitCommitDetailVm>;
+  analyzeGitCommitRelations(projectId: string, workspacePath: string | null | undefined, query: GitCommitRelationsQueryVm): Promise<GitCommitRelationsVm>;
+  executeGitMutation(projectId: string, workspacePath: string | null | undefined, input: GitMutationRequestVm): Promise<GitMutationResultVm>;
+  getGitComparison(projectId: string, source: GitComparisonSourceVm): Promise<GitFileComparisonVm>;
+  startGitOperation(projectId: string, workspacePath: string | null | undefined, input: GitOperationRequestVm): Promise<GitOperationVm>;
+  getGitOperation(operationId: string): Promise<GitOperationVm>;
+  cancelGitOperation(operationId: string): Promise<GitOperationVm>;
+  startGitStateMonitor(projectId: string, workspacePath: string | null | undefined): Promise<void>;
+  stopGitStateMonitor(projectId: string, workspacePath: string | null | undefined): Promise<void>;
+  subscribeGitOperationUpdates?(listener: (operation: GitOperationVm) => void): Promise<() => void>;
+  subscribeGitStateChanges?(listener: (event: GitStateChangedEventVm) => void): Promise<() => void>;
+  getGitHubCapability(projectId: string, workspacePath?: string | null): Promise<GitHubCapabilityVm>;
+  startGitHubLogin(projectId: string, workspacePath: string | null | undefined, host: string): Promise<GitHubOperationVm>;
+  getGitHubOperation(operationId: string): Promise<GitHubOperationVm>;
+  cancelGitHubOperation(operationId: string): Promise<GitHubOperationVm>;
+  subscribeGitHubOperationUpdates?(listener: (operation: GitHubOperationVm) => void): Promise<() => void>;
+  preflightGitHubPullRequest(projectId: string, workspacePath: string | null | undefined, input: GitHubPullRequestPreflightInputVm): Promise<GitHubPullRequestPreflightVm>;
+  startGitHubPullRequestCreate(projectId: string, workspacePath: string | null | undefined, input: GitHubPullRequestCreateInputVm): Promise<GitHubOperationVm>;
+  listGitHubPullRequests(projectId: string, workspacePath: string | null | undefined, host: string, repository: string, query: GitHubPullRequestQueryVm): Promise<GitHubPullRequestSummaryVm[]>;
+  getGitHubPullRequest(projectId: string, workspacePath: string | null | undefined, host: string, repository: string, number: number): Promise<GitHubPullRequestDetailVm>;
+  listGitHubIssues(projectId: string, workspacePath: string | null | undefined, host: string, repository: string, query: GitHubIssueQueryVm): Promise<GitHubIssueSummaryVm[]>;
+  getGitHubIssue(projectId: string, workspacePath: string | null | undefined, host: string, repository: string, number: number): Promise<GitHubIssueDetailVm>;
   checkLocalClaude(): Promise<LocalClaudeStatusVm>;
   getAppBootstrap(): Promise<AppBootstrapVm>;
   completeMainWindowClose(): Promise<void>;

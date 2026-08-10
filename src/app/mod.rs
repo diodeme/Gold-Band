@@ -81,10 +81,12 @@ pub struct ProviderDoctorProbe {
 use self::profile_resolver::resolve_workflow_profiles;
 use self::profiles::{
     DefaultProfileIds, create_profile, delete_profile as delete_profile_file,
-    ensure_default_user_profiles, list_profiles, show_profile, update_profile,
+    ensure_default_user_profiles, import_profiles_from_folder, list_profiles, show_profile,
+    update_profile,
 };
 pub use self::profiles::{
-    ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, ProfileScope,
+    ImportProfilesInput, ImportProfilesResult, ProfileCommandError, ProfileEntry, ProfileInput,
+    ProfileList, ProfileScope,
 };
 
 fn tail_text(text: &str, limit: usize) -> String {
@@ -149,28 +151,20 @@ fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
     match (language, key) {
         (DesktopLanguage::ZhCn, "plan") => "分析导入的需求并产出实施方案。",
         (DesktopLanguage::ZhCn, "dev") => "在当前工作区实现需求。",
-        (DesktopLanguage::ZhCn, "review") => {
-            "审查实现质量，并返回包含 result 和 reason 字段的 JSON。"
-        }
-        (DesktopLanguage::ZhCn, "test") => {
-            "执行或说明验证结果，并返回包含 result 和 reason 字段的 JSON。"
-        }
-        (DesktopLanguage::ZhCn, "accept") => {
-            "对照需求进行验收，并返回包含 result 和 reason 字段的 JSON。"
-        }
+        (DesktopLanguage::ZhCn, "review") => "审查实现质量并形成明确结论。",
+        (DesktopLanguage::ZhCn, "test") => "执行验证并形成明确结论。",
+        (DesktopLanguage::ZhCn, "accept") => "对照需求进行验收并形成明确结论。",
         (DesktopLanguage::ZhCn, "cleanup") => "清理资源、整理交付说明并清理 Git 工作区。",
         (DesktopLanguage::En, "plan") => {
             "Analyze the imported requirement and produce an implementation plan."
         }
         (DesktopLanguage::En, "dev") => "Implement the requirement in the workspace.",
         (DesktopLanguage::En, "review") => {
-            "Review the implementation and return JSON with result and reason fields."
+            "Review the implementation and reach a clear conclusion."
         }
-        (DesktopLanguage::En, "test") => {
-            "Run or describe verification and return JSON with result and reason fields."
-        }
+        (DesktopLanguage::En, "test") => "Run verification and reach a clear conclusion.",
         (DesktopLanguage::En, "accept") => {
-            "Validate acceptance and return JSON with result and reason fields."
+            "Validate acceptance against the requirement and reach a clear conclusion."
         }
         (DesktopLanguage::En, "cleanup") => {
             "Clean up resources, finalize handoff notes, and clean up the Git workspace."
@@ -1458,6 +1452,13 @@ impl App {
 
     pub fn create_profile(&self, input: ProfileInput) -> Result<ProfileEntry> {
         create_profile(&self.paths, input)
+    }
+
+    pub fn import_profiles_from_folder(
+        &self,
+        input: ImportProfilesInput,
+    ) -> Result<ImportProfilesResult> {
+        import_profiles_from_folder(&self.paths, input)
     }
 
     pub fn update_profile(&self, id: &str, input: ProfileInput) -> Result<ProfileEntry> {
@@ -3553,7 +3554,7 @@ mod tests {
     };
     use crate::dynamic::{
         DynamicGraphState, DynamicNodeKind, DynamicNodeState, DynamicNodeStatus, DynamicRunState,
-        DynamicRunStatus, WorkspaceMode, WorkspacePolicy,
+        DynamicRunStatus, WorkspaceKind, WorkspaceOwnership, WorkspaceState, WorkspaceStatus,
     };
     use crate::observability::touch_log_file_best_effort;
     use crate::runtime::{NodeState, RoundState, RunState, TaskState};
@@ -4275,10 +4276,7 @@ mod tests {
             chain_id: id.to_string(),
             depth: 1,
             depends_on: Vec::new(),
-            workspace: WorkspacePolicy {
-                mode: WorkspaceMode::Worktree,
-            },
-            workspace_path: None,
+            workspace_id: "workspace-main".to_string(),
             provider: Some("claude-acp".to_string()),
             profile: None,
             permission_mode: None,
@@ -4379,6 +4377,23 @@ mod tests {
             },
             nodes,
             groups: Vec::new(),
+            workspaces: vec![WorkspaceState {
+                version: VERSION.to_string(),
+                id: "workspace-main".to_string(),
+                dynamic_run_id: "dynamic-run-001".to_string(),
+                kind: WorkspaceKind::Main,
+                ownership: WorkspaceOwnership::User,
+                repo_root: app.paths.repo_root.clone(),
+                path: app.paths.repo_root.clone(),
+                branch: None,
+                parent_workspace_id: None,
+                created_by_group_id: None,
+                fork_commit: "test-head".to_string(),
+                checkpoint_commit: None,
+                status: WorkspaceStatus::Active,
+                created_at: "2026-06-16T00:00:00Z".to_string(),
+                updated_at: "2026-06-16T00:00:00Z".to_string(),
+            }],
             proposals: Vec::new(),
         };
         write_json(

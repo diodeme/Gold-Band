@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, ResolveAppExitInput, RoundSelection, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, ResolveAppExitInput, RoundSelection, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -18,6 +18,12 @@ export interface MetricsSettingsVm {
 const noopUnlisten = () => {};
 
 export const desktopApi: RuntimeApi = {
+  getGitCapability(projectId) {
+    return invokeCommand('get_git_capability', { projectId });
+  },
+  initializeGitRepository(projectId) {
+    return invokeCommand('initialize_git_repository', { projectId });
+  },
   completeMainWindowClose() {
     return invokeCommand('complete_main_window_close');
   },
@@ -109,6 +115,9 @@ export const desktopApi: RuntimeApi = {
   },
   createProfile(input: ProfileInput) {
     return invokeCommand('create_profile', { input });
+  },
+  importProfilesFromFolder(folderPath: string, dynamicTemplate: boolean) {
+    return invokeCommand<ImportProfilesResult>('import_profiles_from_folder', { input: { folderPath, dynamicTemplate } });
   },
   updateProfile(id: string, input: ProfileInput) {
     return invokeCommand('update_profile', { id, input });
@@ -535,3 +544,4 @@ export const desktopApi: RuntimeApi = {
     return invokeCommand('preview_feedback_session_archive', { projectId, taskId });
   },
 };
+

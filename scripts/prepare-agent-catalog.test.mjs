@@ -23,6 +23,14 @@ test('filters the official registry to the curated catalog without GLM', () => {
   assert.equal(kimi.primaryAgentDir, '.kimi-code');
   assert.deepEqual(kimi.compatibleAgentDirs, ['.agents']);
   assert.equal(kimi.supportsSystemPrompt, false);
+  const pi = catalog.agents.find((agent) => agent.id === 'pi-acp');
+  assert.equal(pi.command, 'npx');
+  assert.deepEqual(pi.args, ['-y', 'pi-acp@1.0.0', '--acp']);
+  assert.equal(pi.primaryAgentDir, '.pi/agent');
+  assert.equal(pi.projectPrimaryAgentDir, '.pi');
+  assert.deepEqual(pi.compatibleAgentDirs, ['.agents']);
+  assert.equal(pi.supportsSystemPrompt, false);
+  assert.equal(pi.supportsExternalSessionSync, false);
 });
 
 test('fails rather than silently publishing an incomplete catalog', () => {

@@ -17,6 +17,7 @@ const agents: ManagedAgentVm[] = [
     env: [],
     iconKey: 'claude',
     primaryAgentDir: '.claude',
+    projectPrimaryAgentDir: null,
     compatibleAgentDirs: [],
     supportsSystemPrompt: true,
     externalSessionSyncSupported: false,

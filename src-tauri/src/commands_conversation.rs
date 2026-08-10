@@ -1961,3 +1961,4 @@ mod tests {
         assert_eq!(state.last_conversation_workspace.as_deref(), Some("ws-b"));
     }
 }
+

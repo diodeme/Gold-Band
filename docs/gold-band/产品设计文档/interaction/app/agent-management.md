@@ -54,22 +54,24 @@ Agent Cards
 - OpenCode：`opencode`
 - Kimi Code：`kimi`
 - Amp：`amp-acp`
+- Pi：`pi-acp`
 - 自定义 Agent：由用户输入稳定 Agent ID 和完整启动配置
 
 限制：
 - 已配置过的 Agent ID 不可重复新增
 - Catalog 模板同时提供稳定 ID、名称、版本、图标、推荐命令、参数、主 Agent 目录、兼容 Agent 目录和已确认能力；新增时深拷贝为独立 `ManagedAgentConfig`，运行时不再根据 Agent ID 或 Catalog 推导实例配置
 - Catalog 更新只影响之后新建的 Agent；已经创建的实例无论是否被用户编辑，都不跟随 Catalog 的版本、命令、目录或能力变化
-- 新增时预填 ACP Registry 当前快照中的推荐命令、参数和 display name，用户可按本机安装路径调整；npx 类 Agent 使用 Registry package，Cursor、Goose、OpenCode、Kimi 和 Amp 默认调用 PATH 中已安装的可执行文件
+- 新增时预填 ACP Registry 当前快照中的推荐命令、参数和 display name，用户可按本机安装路径调整；npx 类 Agent 使用 Registry package，Cursor、Goose、OpenCode、Kimi 和 Amp 默认调用 PATH 中已安装的可执行文件。Pi 使用 Registry 的 `npx -y pi-acp@<version>` 适配器，同时要求用户自行安装并配置可由 PATH 发现的 Pi coding agent
 - Gold Band 不下载、解压、托管或安装 Agent 二进制；非 npx Agent 的安装和 PATH 配置由用户负责，保存后 doctor 负责验证当前配置是否可运行
 - 自定义 Agent 复用同一编辑 Sheet；用户填写 Agent ID、icon、命令、参数、环境、Skills 目录和跨端会话能力。Agent ID 是持久化与 workflow `provider` 引用使用的稳定唯一标识，创建后不可修改
 - 编辑 Sheet 必须显式保存 `catalog / custom / existing` 来源状态，Agent ID 的可编辑性只由来源和创建/编辑生命周期决定，不得根据输入文本是否暂时匹配 Catalog ID 反推；因此自定义输入 `kimi` 后仍可继续填写为 `kimi-for-mine`
 - Agent ID 输入必须兼容中文等 IME 组合输入：组合期间保留输入法管理的临时文本，不执行小写化或非法字符过滤；`compositionend` 后再统一规范化为小写字母、数字和连字符，避免回车选词时丢失连字符或光标附近内容
 - system prompt 传递能力不在新建或编辑界面展示，也不接受 `ManagedAgentInput` 覆盖；内置 Agent 创建时由 Catalog 写入已验证能力，自定义 Agent 固定为不支持，编辑时保留实例已有的内部能力值
 - 新增 Agent 下拉使用 cmdk 的 active 项仅支持键盘确认，不表达业务选中态；下拉刚展开时所有可选项都不显示状态，只有鼠标悬停在具体项上时才显示 hover 背景，避免把“自定义 Agent”误看成默认选中
-- 构建与发版脚本从 `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` 拉取最新官方 Registry，筛选上述 10 个 Agent，生成并打包 Registry 快照、Catalog 和官方 SVG 图标；离线维护时可显式使用已提交快照重新生成 Catalog
-- Catalog 生成必须校验 10 个精选 Agent 全部存在；官方 Registry 缺项时构建失败，禁止静默发布残缺列表
+- 构建与发版脚本从 `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` 拉取最新官方 Registry，筛选上述 11 个 Agent，生成并打包 Registry 快照、Catalog 和官方 SVG 图标；离线维护时可显式使用已提交快照重新生成 Catalog
+- Catalog 生成必须校验 11 个精选 Agent 全部存在；官方 Registry 缺项时构建失败，禁止静默发布残缺列表
 - Kimi Code 的主 Skills 根目录为 `.kimi-code`，兼容读取通用 `.agents`；Gold Band 在这些根目录下统一追加 `skills`
+- Pi 的官方 Skills 根目录按作用域不同：全局为 `~/.pi/agent/skills`，项目为 `<project>/.pi/skills`，两端兼容读取 `.agents/skills`；Pi 模板因此默认开启主目录拆分，全局主目录为 `.pi/agent`、项目主目录为 `.pi`
 
 ---
 
@@ -87,7 +89,7 @@ Agent Cards
 - 编辑器以单一生命周期状态统一管理 `open`、来源、Agent ID、表单、文本配置和初始快照；Catalog、自定义和既有实例入口一次性替换完整状态，关闭或保存成功只切换 `open=false`。Sheet 的退出动画期间保留当前 draft，下一次打开再整体初始化，避免内容闪变被误认为抽屉重新打开
 - 公共 Sheet 的 overlay 默认跟随 Root 的 `modal` 语义：模态 Sheet 保留遮罩，非模态侧栏默认不渲染遮罩。Agent 编辑器以及其他桌面编辑/详情侧栏统一使用非模态语义；仅窄屏工作区等真正覆盖主界面的 Sheet 保留模态遮罩，避免关闭侧栏时全局页面由暗变亮
 - 删除确认框以统一生命周期状态维护 `open + target`；确认、取消或失败只关闭弹窗，不在退出动画期间清空 target，确保 Agent 名称在动画完成前保持稳定
-- 主 Agent 目录
+- 主 Agent 目录（默认由全局与项目共用；可通过右侧分裂图标切换为全局主目录和项目主目录）
 - 兼容 Agent 目录
 - 跨端会话合并能力
 - 外部会话同步（Beta，仅在跨端会话合并能力开启时可用，默认关闭）
@@ -97,10 +99,10 @@ Agent Cards
 - `command` 在脏状态比较和持久化前统一移除前后空白；只增加或删除命令首尾空格不视为配置修改，前后端配置边界都必须执行同一规范化规则
 - `args` 按空格或换行分隔参数，编辑态保留原始多行文本，保存时按空白拆分为真实进程参数，避免一行内多个参数被合成一个参数
 - `env` 按 `KEY=VALUE` 输入，编辑态保留原始多行文本，保存时再解析
-- 主 Agent 目录允许为空；为空表示该 Agent 不参与 Skills 发现、写入和同步。非空时 Gold Band 在该目录下统一追加 `skills`，该目录同时用于 Skill 读取、写入和同步
-- 兼容 Agent 目录按行输入，保存时去除空项、重复项和与主目录相同的项；兼容目录只参与 Agent 的 Skill 读取，不作为 Gold Band 同步写入目标
-- 上下文管理中的全局与项目 SKILL 列表必须扫描所有已配置 Agent 的完整读取目录，即主 Agent 目录加兼容 Agent 目录；多个 Agent 共享 `.agents` 等同一物理目录时只扫描一次，卡片来源仍显示实际目录名
-- SKILL 创建、同步目标对账、冲突检测和同步状态只使用主 Agent 目录，不能因为兼容目录可读而向兼容目录创建文件或软链接
+- 主 Agent 目录允许为空；为空表示相应作用域不参与 Skills 发现、写入和同步。默认未拆分时，全局和项目都使用同一个主目录；点击主目录标题右侧的分裂图标后，按钮呈选中态并显示“全局主目录 / 项目主目录”两个输入框。分裂状态由可选项目主目录字段是否存在表达，不额外持久化布尔状态
+- 兼容 Agent 目录按行输入，保存时去除空项、重复项和与任一主目录相同的项；兼容目录在全局和项目作用域都参与 Agent 的 Skill 读取，但不作为 Gold Band 同步写入目标
+- 上下文管理中的全局与项目 SKILL 列表必须按作用域扫描所有已配置 Agent 的完整读取目录：全局主目录加兼容目录、项目主目录加兼容目录；未拆分时两端主目录相同。多个 Agent 共享 `.agents` 等同一物理目录时只扫描一次，卡片来源仍显示实际目录名
+- SKILL 创建、同步目标对账、冲突检测和同步状态只使用对应作用域的主 Agent 目录，不能因为兼容目录可读而向兼容目录创建文件或软链接
 - SKILL 卡片以实体目录为主体，软链接不生成独立卡片；右上角目录标识展示实体实际所在的 Agent 目录，同名但实体目录不同的 SKILL 允许分别展示
 - 卡片底部竖线左侧展示读取目录包含该实体目录的全部已配置 Agent；右侧展示不能直读该实体、可在自身主目录创建软链接的 Agent
 - 若某个 Agent 已能通过主目录或兼容目录直读实体，但其主目录仍保留历史软链接，则该 Agent 同时出现在左右两侧：左侧表示直读关系，右侧绿色状态图标仅提供删除现有软链接的入口；删除成功后右侧图标消失，左侧图标保留，并且不再提供重新创建冗余软链接的入口
@@ -145,7 +147,7 @@ Agent Cards
 - ACP adapter、doctor 共用 Rust 进程环境解析层，不得在调用点按 Kimi、Cursor、包管理器或固定安装目录增加特判。Windows 的稳定优先级为“Agent 显式配置 PATH → 当前桌面进程 PATH → 用户注册表 PATH → 系统注册表 PATH → 平台通用目录”，每次创建 ACP 进程前通过注册表 API 动态读取 `HKCU\Environment\Path` 与 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment\Path`，展开 `%VAR%` 后按大小写不敏感去重，因此用户在应用启动后安装并正式写入用户/系统 PATH 的 Agent 无需重启 Gold Band。macOS / Linux 的稳定优先级为“Agent 显式配置 PATH → 用户登录 Shell PATH → 当前桌面进程 PATH → 平台通用目录”，首次解析当前 Unix 账户的默认 Shell，以 `-ilc` 登录交互模式读取环境并在 2 秒总超时内回收异常 Shell；成功或失败结果均按应用进程生命周期缓存。Shell profile 输出通过边界标记解析，只采纳其中的 `PATH`，并禁用 Oh My Zsh 自动更新与 tmux 自动启动；解析失败时继续使用当前进程 PATH。Unix 按大小写敏感语义去重，平台通用目录仅补全 `~/.nvm/versions/node/*/bin`、`~/.local/bin`、`~/.cargo/bin`、`~/.volta/bin`、`/opt/homebrew/bin`、`/usr/local/bin` 等非 Agent 专属位置。登录 Shell/注册表读取和 PATH 合并只发生在 doctor / ACP 进程创建边界，不进入消息处理热路径
 - Windows 裸命令在每个 PATH 目录中只按 `.exe`、`.com`、`.cmd`、`.bat` 顺序选择可由后台进程稳定启动的候选，不自动选择 `.ps1`，也不把 npm 同目录生成的无扩展名 Unix shell shim 当作 Win32 应用；用户显式填写带扩展名命令时只按原名查找。必须使用 PowerShell 脚本的自定义 Agent 应显式配置 `pwsh` / `powershell` 与 `-NoProfile -File <script.ps1>` 参数
 - 若 adapter 启动失败，诊断原因必须保留底层 OS 错误文本，例如 `No such file or directory (os error 2)`，不能只显示泛化的“failed to start ACP adapter”
-- 当前固定参考官方 Registry 中的 Claude、Codex、Cursor、Gemini、CodeBuddy、Goose、Qwen Code、OpenCode、Kimi Code、Amp 十类精选 Agent，同时允许任意合法自定义 ACP Agent
+- 当前固定参考官方 Registry 中的 Claude、Codex、Cursor、Gemini、CodeBuddy、Goose、Qwen Code、OpenCode、Kimi Code、Amp、Pi 十一类精选 Agent，同时允许任意合法自定义 ACP Agent
 - 诊断 initialize 设置 5 分钟超时，超时视为异常诊断并返回页面，不允许阻塞客户端
 - 诊断结果除健康状态外，还要缓存 agent 返回的 `modes` / `configOptions` 能力摘要，供工作流编辑器直接复用
 - 诊断缓存需要持久化到当前 workspace 的本地运行时目录，客户端重启后仍可直接为节点展示可选权限模式，不要求用户每次重新手动诊断

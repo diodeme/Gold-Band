@@ -462,6 +462,7 @@ export const mockAgentRegistry: AgentRegistryVm = {
       env: [{ key: 'ANTHROPIC_API_KEY', value: '***' }],
       iconKey: 'claude',
       primaryAgentDir: '.claude',
+      projectPrimaryAgentDir: null,
       compatibleAgentDirs: [],
       supportsSystemPrompt: true,
       externalSessionSyncSupported: false,
@@ -507,6 +508,7 @@ export const mockAgentRegistry: AgentRegistryVm = {
     mockCatalogEntry({ agentType: 'opencode', label: 'OpenCode', iconKey: 'opencode', primaryAgentDir: '.opencode', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'OpenCode', defaultCommand: 'opencode', defaultArgs: ['acp'] }),
     mockCatalogEntry({ agentType: 'kimi', label: 'Kimi Code', iconKey: 'kimi', primaryAgentDir: '.kimi-code', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Kimi Code', defaultCommand: 'kimi', defaultArgs: ['acp'] }),
     mockCatalogEntry({ agentType: 'amp-acp', label: 'Amp', iconKey: 'amp-acp', primaryAgentDir: '.agents', compatibleAgentDirs: ['.claude'], defaultDisplayName: 'Amp', defaultCommand: 'amp-acp' }),
+    mockCatalogEntry({ agentType: 'pi-acp', label: 'Pi', iconKey: 'pi-acp', primaryAgentDir: '.pi/agent', projectPrimaryAgentDir: '.pi', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Pi', defaultArgs: ['-y', 'pi-acp@0.0.33'] }),
   ],
 };
 
@@ -517,6 +519,7 @@ function mockCatalogEntry(input: Partial<AgentCatalogEntryVm> & Pick<AgentCatalo
     repository: null,
     website: null,
     primaryAgentDir: '',
+    projectPrimaryAgentDir: null,
     compatibleAgentDirs: [],
     configured: false,
     supportsSystemPrompt: false,

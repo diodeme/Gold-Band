@@ -64,6 +64,10 @@ export function createProfile(input: Parameters<ReturnType<typeof getRuntimeApi>
   return getRuntimeApi().createProfile(input);
 }
 
+export function importProfilesFromFolder(folderPath: string, dynamicTemplate: boolean) {
+  return getRuntimeApi().importProfilesFromFolder(folderPath, dynamicTemplate);
+}
+
 export function updateProfile(id: string, input: Parameters<ReturnType<typeof getRuntimeApi>['updateProfile']>[1]) {
   return getRuntimeApi().updateProfile(id, input);
 }
@@ -174,6 +178,14 @@ export function getLogPage(query: Parameters<ReturnType<typeof getRuntimeApi>['g
 
 export function getAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpSession']>[6], fallback?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpSession']>[7], outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().getAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, query, fallback, outerNodeId, outerAttemptId);
+}
+
+export function getGitCapability(projectId?: string | null) {
+  return getRuntimeApi().getGitCapability(projectId);
+}
+
+export function initializeGitRepository(projectId?: string | null) {
+  return getRuntimeApi().initializeGitRepository(projectId);
 }
 
 export function getAcpActivityDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: Parameters<ReturnType<typeof getRuntimeApi>['getAcpActivityDetail']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -618,3 +630,4 @@ export function checkSkillNameConflict(
     syncTargets,
   );
 }
+

@@ -14,13 +14,29 @@ provider/auth/quota/rate-limit/model/catalog/transport/IO 等异常必须先归�
 
 模型配置过期不属于运行异常。模型目录是 provider 的快速变化能力事实：加载或保存 workflow template、创建或读取 task authoring workflow、以及创建或加载 run snapshot 时，若最新 Agent diagnostics 已提供非空模型目录且明确不再包含配置模型，runtime 将对应字段规范化为“不指定”、持久化回作者态 JSON 与运行快照，并在 run 生命周期记录结构化 `model_config_normalized` 事件；这样 UI、原始 JSON、快照与实际调用不会分叉。若目录缺失或为空，runtime 保留原值，不能把“无法确认”误判为“已经过期”。ACP `session/new/load` 返回权威 config options 后必须再次校验；若此时确认模型过期，则跳过模型配置 RPC、清除本次 override、记录 `acp_model_config_normalized` 诊断并继续使用 provider 默认模型。
 
+### 2.1 Output contract 发射模式
+
+`output_contract` 统一表示 runtime 控制产物，不拆分业务产物与控制产物；它额外声明控制产物在本次执行中的发射模式：
+
+- `PostTurnProjection`：用于普通 workflow worker，以及 AI-DYNAMIC 中实际执行工作或验收的 worker / workflow invocation / acceptance。provider 首先以 `Conversation` 策略完成可见业务 turn；该 turn 的 system prompt 只说明 runtime 会后置归一化，不包含 artifact 名称、schema 或输出协议。业务 turn 正常结束后，runtime 读取同一 attempt 的 durable worker ref，以 `session=continue` 发起隐藏 `RuntimeFinalize` turn，只允许 agent 根据已完成的会话内容生成 canonical artifact，不得继续执行任务或调用工具。只有该隐藏 turn 使用 `ArtifactContract` 策略并提取控制产物。
+- `InlineControl`：用于职责本身就是控制分发的节点。当前 AI-DYNAMIC bootstrap dispatcher 使用此模式，在首个 turn 直接获得完整 `dynamic-node-completion` 协议并输出控制 artifact。
+
+AI-DYNAMIC 的判定依据是节点运行角色，而不是“执行 surface 是 AI-DYNAMIC”或某个 node id 的单一特判：bootstrap 必须同时满足根层级、无 group、无前序、bootstrap chain 与 worker 控制角色；其余声明 completion contract 的动态节点统一后置投影。Direct 使用 `RawAgent` envelope，不注入 output contract，也不进入上述两阶段流程。
+
+业务 turn 成功、隐藏 finalize 发出前，runtime 必须在 attempt 根目录原子写入 `artifact-emission.json`，状态为 `finalizing`。该文件与 `worker-ref.json` 共同构成恢复事实：
+
+- 业务 turn 中断或失败且尚无 emission state：继续时仍恢复业务对话，不得假定任务已经完成。
+- emission state 已进入 `finalizing`：停止、进程退出、自动重试或用户继续后，只恢复隐藏 finalize，不得重新执行业务工作。
+- finalize 输出不合法：repair 继续复用同一 session，只修复控制产物；`invalidOutputRepair` 与 `artifactFinalize` 在 timeline 中使用不同 hidden reason。
+- emission state 损坏或版本不支持：按 runtime 状态错误阻断，不能静默忽略后重新执行业务 turn。
+
 ## 3. 控制决策
 
 | 当前 outcome | 决策 |
 | --- | --- |
 | `success` | 查找 `on=success` edge；无 edge 则等价于隐式 `success -> $end`，run success |
 | `failure` | 查找 `on=failure` edge；无 edge 则等价于隐式 `failure -> $end`，run failure |
-| `invalid` | 不查找 edge；若来自 `output.schema` 不合法则同 attempt 隐藏追问修复，最多 3 次；修复耗尽后 run failure |
+| `invalid` | 不查找 edge；若来自 `output.schema` 不合法则在同 attempt 的 artifact finalize 会话中隐藏追问修复，最多 3 次；修复耗尽后 run failure |
 | `killed` | run 完成 killed |
 | `None` | run 暂停，保留当前节点与 attempt |
 
@@ -92,6 +108,8 @@ ACP invocation 的 continue prompt state 由 runtime 统一决策，普通 workf
 用户停止是 attempt 生命周期中的持续事实，不是一次性的 `session/cancel` 边缘通知。Stop 在本地 attempt 创建后即可接受，不依赖 provider 先报告 active：prompt 尚未发出时直接终止 dispatch；prompt 已发出但 provider 尚未 active 时发送一次 cancel，并在后续观察到 `threadStatus=active` 且 prompt 尚未 terminal 时补发一次。两次投递分别通过 `before-provider-active / after-provider-active` 门闩去重，同一阶段不得重复发送。
 
 runtime 写入 `Paused + ProcessInterrupted` 后，自动重试控制器必须在错误分类前、backoff 期间、runtime 重建前和再次发送 prompt 前重新读取当前 attempt 事实；只要 attempt 已停止，就不得写入新的 `runtime_auto_retry` 或再次调用 provider。停止后的 provider 输出不再进入当前 turn；晚到 provider/transport 错误只进入取消收尾诊断，不能覆盖用户停止终态，也不能重新触发自动重试。
+
+`provider.server-unavailable` 等 `RecoveryMode::Auto` 错误使用共享的 `RetryPolicy`，默认在初次调用后最多自动重试 3 次。AI-DYNAMIC 自动重试必须保持原 attempt、logical prompt 与 session mode，不生成 proposal repair prompt；预算耗尽后才收敛为 `Paused + RuntimeAbnormal`。运行时自动恢复与输出协议 repair 是两套独立状态机，调用次数和验收必须从共享 retry policy 推导，不能在测试或实现中另行硬编码。
 
 `session/cancel` 后仍需有界等待原 `session/prompt` terminal。若 deadline 到期，记录结构化 `acp.cancel-drain-timeout`，用户可见 attempt 仍保持 `Paused + ProcessInterrupted`，ACP turn 结算为 cancelled；该未收尾 session 必须从 attempt route、attached runtime registry 和 worker continue ref 中移除，后续继续使用新 session。adapter process 仍按 `provider_id + workspace_root` 复用，不因单个 session 收尾超时被 kill，也不得影响同 process 上的其他 session。
 

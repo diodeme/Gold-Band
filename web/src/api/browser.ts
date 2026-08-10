@@ -354,6 +354,12 @@ function browserSvgDataUrl(content: string) {
 }
 
 export const browserApi: RuntimeApi = {
+  getGitCapability() {
+    return Promise.resolve({ status: 'repository-required', repoRoot: null, commonDir: null, head: null });
+  },
+  initializeGitRepository() {
+    return Promise.resolve({ status: 'head-required', repoRoot: null, commonDir: null, head: null });
+  },
   completeMainWindowClose() {
     return Promise.resolve();
   },
@@ -433,6 +439,9 @@ export const browserApi: RuntimeApi = {
     const now = localTimestamp();
     const profile: ProfileVm = { ...input, id: browserProfileId(), scope: 'user', isBuiltIn: false, createdAt: now, updatedAt: now, path: '' };
     return Promise.resolve(browserPreviewState.addProfile(profile));
+  },
+  importProfilesFromFolder(_folderPath: string, _dynamicTemplate: boolean) {
+    return Promise.resolve({ totalScanned: 0, imported: [], failed: [], truncated: false });
   },
   updateProfile(id: string, input: ProfileInput) {
     const existing = browserPreviewState.getProfiles().profiles.find((profile) => profile.id === id);

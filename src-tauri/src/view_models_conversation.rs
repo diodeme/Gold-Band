@@ -2799,6 +2799,12 @@ pub fn create_conversation_run_vm(
             (workflow, include_interview)
         };
 
+    // Git is an authoritative prerequisite for Auto and every workflow that
+    // directly contains AI-DYNAMIC. Check before creating either the task or run.
+    if gold_band::dsl::workflow_contains_ai_dynamic(&workflow) {
+        gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
+    }
+
     // Create task
     let summary = app.create_task_from_requirement(CreateTaskInput {
         title: Some(title.clone()),
@@ -4793,8 +4799,7 @@ mod tests {
             "chainId": dynamic_node_id,
             "depth": 1,
             "dependsOn": [],
-            "workspace": { "mode": "worktree" },
-            "workspacePath": null,
+            "workspaceId": "workspace-main",
             "provider": "claude-acp",
             "profile": null,
             "permissionMode": null,
@@ -4820,6 +4825,23 @@ mod tests {
                 "run": dynamic_run,
                 "nodes": [dynamic_node],
                 "groups": [],
+                "workspaces": [{
+                    "version": gold_band::domain::VERSION,
+                    "id": "workspace-main",
+                    "dynamicRunId": "dynamic-run-001",
+                    "kind": "main",
+                    "ownership": "user",
+                    "repoRoot": app.paths.repo_root,
+                    "path": app.paths.repo_root,
+                    "branch": null,
+                    "parentWorkspaceId": null,
+                    "createdByGroupId": null,
+                    "forkCommit": "test-head",
+                    "checkpointCommit": null,
+                    "status": "active",
+                    "createdAt": "2026-06-15T00:00:00Z",
+                    "updatedAt": "2026-06-15T00:00:00Z"
+                }],
                 "proposals": []
             }),
         )

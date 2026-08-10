@@ -5,7 +5,8 @@ pub const QUEUE_RETRY_INTERVAL: Duration = Duration::seconds(30);
 pub const QUEUE_MAX_RETRIES: u8 = 3;
 pub const LATE_FIRE_GRACE: Duration = Duration::seconds(60);
 pub const MISSED_RECONCILE_BATCH_SIZE: usize = 50;
-pub const DEFAULT_OCCURRENCE_RETENTION_DAYS: u16 = 30;
+pub const DEFAULT_OCCURRENCE_RETENTION_DAYS: u16 =
+    crate::config::DEFAULT_SCHEDULED_OCCURRENCE_RETENTION_DAYS;
 pub const MIN_OCCURRENCE_RETENTION_DAYS: u16 = 1;
 pub const MAX_OCCURRENCE_RETENTION_DAYS: u16 = 3650;
 pub const RETENTION_DELETE_BATCH_SIZE: usize = 500;

@@ -2,7 +2,7 @@
 
 **日期：** 2026-08-05
 **状态：** 已确认，等待书面规格复核
-**范围：** Direct、Workflow、AUTO 的统一调度可靠性、桌面唤醒、通知、诊断、Skill 与管理体验
+**范围：** Direct、Workflow、AUTO 的统一调度可靠性、桌面唤醒、通知、诊断与管理体验
 
 ## 1. 目标与非目标
 
@@ -22,10 +22,10 @@
 - 使用 Tokio timer，优先以 `tokio_util::time::DelayQueue` 保存每个 job 的独立 deadline，替代固定频率扫描；
 - 使用现有 Cron、IANA 时区和 DST 计算能力，不自行解析 Cron 或维护时区规则；
 - 使用现有原生 notification/intervention 管线，不建设第二套通知系统；
-- 使用现有 SkillManager、shadcn/ui、Tailwind CSS、prompt-kit 和 Lucide copy-in 组件；
+- 使用现有 shadcn/ui、Tailwind CSS、prompt-kit 和 Lucide copy-in 组件；
 - keep-awake 通过窄接口调用成熟平台电源 API。若平台实现需要外部 helper，必须经 `process::background_command()` 启动。
 
-AionCore 的 per-job timer、运行记录保留期和 AionUi 的 keep-awake/定时任务 Skill 是参考实现，但不直接移植其会话模型、CLI 环境变量协议或 `prevent-display-sleep` 默认策略。
+AionCore 的 per-job timer、运行记录保留期和 AionUi 的 keep-awake 是参考实现，但不直接移植其会话模型、CLI 环境变量协议或 `prevent-display-sleep` 默认策略。
 
 ## 3. 权威数据与迁移
 
@@ -111,21 +111,7 @@ keep_awake_enabled && enabled_job_count > 0 && app_is_running
 
 终态 occurrence 默认保留 30 天。后台维护任务按 repository 批量删除超过保留期的 occurrence；`attention_required` 以及仍关联未完成 Run 的记录不清理。job 的累计诊断计数和已物化 Task/Run/ACP 历史不受影响。保留天数作为范围为 1 至 3650 天的全局设置，首版 UI 只展示默认值时也不得硬编码在清理实现中。
 
-## 8. Skill 能力
-
-### 8.1 内置定时任务 Skill
-
-新增资源化的 zh-CN/en 内置 Skill，两种语言目录结构一致。长文本放在 `src/prompts/<locale>/skills/scheduled-task/`，由 built-in skill registry 发布给现有 SkillManager，Rust 实现不嵌入长 prompt。
-
-Skill 通过类型化内部 tool boundary 调用 create、list、get、update、pause、resume、run-now 和 delete，不使用 CLI、环境变量或自由格式 JSON。工具 schema 使用稳定枚举和结构化错误，按 Direct、Workflow、AUTO 校验各自必需字段。
-
-### 8.2 沉淀为 Skill
-
-成功 occurrence 的详情页提供“沉淀为 Skill”入口。系统基于该 occurrence 的输入、执行模式、稳定步骤和产物生成草稿，但必须展示预览并由用户确认后，才写入现有 Project/Global Skill 存储。
-
-该流程不自动修改 scheduled job，也不自动覆盖已有 Skill。用户显式选择后，job 才保存 Skill ID/version 引用；后续版本变化可追踪。Direct、Workflow、AUTO 共享建议流程，模式适配器只提供不同的执行 provenance。
-
-## 9. UI 与 i18n
+## 8. UI 与 i18n
 
 定时任务管理页保持紧凑列表，详情页承担诊断和历史。新增或调整的可见文案全部进入 `web/src/i18n.ts`，后端不返回中文或英文客户文案。
 
@@ -135,7 +121,7 @@ Skill 通过类型化内部 tool boundary 调用 create、list、get、update、
 - Task/Run/session 引用使用可点击操作，`attention_required` 直接进入待回答位置；
 - 使用 shadcn/ui、Tailwind CSS 和 Lucide；不新增终端式入口或自研基础控件。
 
-## 10. 错误与可观测性
+## 9. 错误与可观测性
 
 所有新增失败使用 `{ code, params, trace_id? }`，客户文案由前端 i18n 映射。至少新增或复用：
 
@@ -144,12 +130,11 @@ SCHEDULED_MIGRATION_CONFLICT
 SCHEDULED_COORDINATOR_UNAVAILABLE
 SCHEDULED_POWER_INHIBITOR_FAILED
 SCHEDULED_NOTIFICATION_FAILED
-SCHEDULED_SKILL_VALIDATION_FAILED
 ```
 
 通知失败、keep-awake 失败和清理失败不改变 occurrence 的执行结果，但写入结构化日志和诊断。claim/lease/finish 失败按所有权与错误类型决定重试，不以字符串匹配错误。
 
-## 11. 测试与验收
+## 10. 测试与验收
 
 实施遵循 TDD，先修复当前 scheduler 测试构造了已移除 event 字段导致的编译失败，再逐层固化接口：
 
@@ -158,18 +143,17 @@ SCHEDULED_SKILL_VALIDATION_FAILED
 3. adapters：Direct/new、Direct/continuous、Workflow、AUTO 的 Task/Run/session 规则和真实完成；
 4. power：fake inhibitor 验证设置、enabled job 数和退出状态机；平台 API 只做窄集成测试；
 5. notification：事件映射、去重、missed 聚合和 deep link；
-6. Skill：双语资源一致、tool schema、三模式校验和确认后写入；
-7. Web：完整历史、跳转、IANA 时区、keep-awake、i18n 和浏览器/桌面 facade；
-8. 全量 Rust/Web 测试、生产构建，并启动前端通过 deep link 做桌面与移动宽度验证，结束后清理测试资源。
+6. Web：完整历史、跳转、IANA 时区、keep-awake、i18n 和浏览器/桌面 facade；
+7. 全量 Rust/Web 测试、生产构建，并启动前端通过 deep link 做桌面与移动宽度验证，结束后清理测试资源。
 
-## 12. 实施顺序
+## 11. 实施顺序
 
 1. 修复测试基线并建立 SQLite-only repository contract。
 2. 删除活跃 JSON 路径，完成迁移 marker 和命令层切换。
 3. 引入 coordinator/DelayQueue，统一 queue policy 和恢复语义。
 4. 验证四个执行适配器（Direct 两种策略、Workflow、AUTO）。
 5. 接入 keep-awake、通知、全状态历史和保留期。
-6. 完成双语 Skill、沉淀为 Skill、IANA 时区和全量 i18n。
+6. 完成 IANA 时区和全量 i18n。
 7. 完成全量自动化与可视化验收，同步产品设计和开发计划。
 
 每一步均保持 SQLite 为唯一权威，不创建兼容层，不以旧 JSON fallback 换取局部可用性。

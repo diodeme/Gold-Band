@@ -200,6 +200,11 @@ pub struct DesktopState {
     context: Mutex<DesktopContext>,
     scheduled_service: Mutex<Option<Arc<crate::scheduled_service::ScheduledTaskService>>>,
     scheduler_coordinator: Mutex<Option<crate::scheduled_runtime::SchedulerCoordinatorHandle>>,
+    scheduled_power: Mutex<
+        crate::scheduled_runtime::power::ScheduledPowerManager<
+            crate::scheduled_runtime::power::PlatformSleepInhibitor,
+        >,
+    >,
     scheduler_shutdown_phase: AtomicU8,
     agent_diagnostics: Arc<Mutex<BTreeMap<ManagedAgentId, AgentDiagnosticState>>>,
     agent_diagnostic_run_lock: Mutex<()>,
@@ -225,6 +230,11 @@ impl DesktopState {
             context: Mutex::new(context),
             scheduled_service: Mutex::new(None),
             scheduler_coordinator: Mutex::new(None),
+            scheduled_power: Mutex::new(
+                crate::scheduled_runtime::power::ScheduledPowerManager::new(
+                    crate::scheduled_runtime::power::PlatformSleepInhibitor::default(),
+                ),
+            ),
             scheduler_shutdown_phase: AtomicU8::new(SCHEDULER_SHUTDOWN_RUNNING),
             agent_diagnostics: Arc::new(Mutex::new(persisted_diagnostics)),
             agent_diagnostic_run_lock: Mutex::new(()),
@@ -368,6 +378,41 @@ impl DesktopState {
             .map_err(|_| anyhow::anyhow!("scheduler coordinator lock poisoned"))?
             .clone()
             .ok_or_else(|| anyhow::anyhow!("scheduler coordinator is not initialized"))
+    }
+
+    pub fn reconcile_scheduled_power(
+        &self,
+        enabled_job_count: usize,
+        app_is_running: bool,
+    ) -> Result<crate::scheduled_runtime::power::ScheduledPowerStatus> {
+        let keep_awake_enabled = self
+            .context
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+            .config
+            .scheduled_keep_awake_enabled;
+        Ok(self
+            .scheduled_power
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduled power lock poisoned"))?
+            .reconcile(keep_awake_enabled, enabled_job_count, app_is_running))
+    }
+
+    pub fn reconcile_scheduled_power_setting(
+        &self,
+    ) -> Result<crate::scheduled_runtime::power::ScheduledPowerStatus> {
+        let enabled_job_count = self.scheduled_power_status()?.enabled_job_count;
+        self.reconcile_scheduled_power(enabled_job_count, true)
+    }
+
+    pub fn scheduled_power_status(
+        &self,
+    ) -> Result<crate::scheduled_runtime::power::ScheduledPowerStatus> {
+        Ok(self
+            .scheduled_power
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduled power lock poisoned"))?
+            .status())
     }
 
     pub fn begin_scheduler_shutdown(&self) -> SchedulerExitAction {

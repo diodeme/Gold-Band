@@ -24,8 +24,9 @@ import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from '@/lib/slash-command';
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
 import { ScheduledTaskDialog, type ScheduledTaskConfig } from '@/components/conversation/ScheduledTaskDialog';
-import type { ScheduledScheduleSpec } from '@/types';
+import type { ScheduledScheduleInput } from '@/types';
 import { validateScheduledConversationInput } from '@/lib/scheduled-task-validation';
+import { formatScheduledScheduleInput } from '@/lib/scheduled-task-formatting';
 
 interface ConversationComposerProps {
   projectId: string;
@@ -39,7 +40,7 @@ interface ConversationComposerProps {
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
-  onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleSpec; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
+  onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
@@ -107,15 +108,9 @@ export function ConversationComposer({
   const showRunModeManagement = canOpenRunModeManagement(runMode.mode);
   const autoStrategy = runMode.autoConfig?.agentStrategy ?? 'fixed';
   const isDynamicAuto = autoStrategy === 'dynamic';
-  const scheduledSummary = scheduledConfig?.schedule.kind === 'Every'
-    ? `每隔 ${scheduledConfig.schedule.every.value} ${scheduledConfig.schedule.every.unit === 'minutes' ? '分钟' : '小时'}`
-    : scheduledConfig?.schedule.kind === 'Cron'
-      ? `Cron ${scheduledConfig.schedule.expression}`
-      : scheduledConfig?.schedule.kind === 'Repeat'
-        ? '重复计划'
-        : scheduledConfig
-          ? '单次计划'
-          : '尚未配置执行计划';
+  const scheduledSummary = scheduledConfig
+    ? formatScheduledScheduleInput(t, scheduledConfig.schedule)
+    : t('scheduled.composer.unconfigured');
   const canSubmit = content.trim().length > 0 && !busy && !submittingAttachments;
   const agentOptions = useMemo(() => selectableAgentOptions(agentRegistry, t), [agentRegistry, t]);
   const agents = useMemo(
@@ -356,7 +351,7 @@ export function ConversationComposer({
         className="flex flex-col gap-4"
         {...dropZoneHandlers}
       >
-        {scheduledMode ? <div className="flex min-h-8 items-center gap-2 px-2 text-xs text-muted-foreground"><AlarmClock className="size-4 text-primary" /><span className="truncate"><strong className="font-medium text-foreground">{scheduledSummary}</strong> · 定时任务创建</span><Button variant="ghost" size="icon" className="ml-auto size-7 rounded-md" aria-label="退出定时任务创建" title="退出定时任务创建" onClick={() => { setScheduledMode(false); setScheduledConfig(null); }}><X className="size-3.5" /></Button></div> : null}
+        {scheduledMode ? <div className="flex min-h-8 items-center gap-2 px-2 text-xs text-muted-foreground"><AlarmClock className="size-4 text-primary" /><span className="truncate"><strong className="font-medium text-foreground">{scheduledSummary}</strong> · {t('scheduled.composer.creating')}</span><Button variant="ghost" size="icon" className="ml-auto size-7 rounded-md" aria-label={t('scheduled.composer.exit')} title={t('scheduled.composer.exit')} onClick={() => { setScheduledMode(false); setScheduledConfig(null); }}><X className="size-3.5" /></Button></div> : null}
         {/* Main text input */}
         <div className="rounded-2xl border border-border/60 bg-card/60 p-4 shadow-sm transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10">
           <SlashCommandMenu
@@ -499,15 +494,15 @@ export function ConversationComposer({
               ) : null}
               {scheduledMode ? (
                 <div className="flex items-center gap-1">
-                  <Button size="sm" className="h-8 shrink-0 gap-1.5 rounded-full px-3" disabled={busy || submittingAttachments || !onCreateScheduledTask} onClick={() => void createScheduledTask()}><AlarmClock className="size-3.5" />创建定时任务</Button>
-                  <Button variant="ghost" size="icon" className="size-8 rounded-full" aria-label="配置定时任务" title="配置定时任务" onClick={() => setScheduledDialogOpen(true)}><Settings2 className="size-3.5" /></Button>
+                  <Button size="sm" className="h-8 shrink-0 gap-1.5 rounded-full px-3" disabled={busy || submittingAttachments || !onCreateScheduledTask} onClick={() => void createScheduledTask()}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</Button>
+                  <Button variant="ghost" size="icon" className="size-8 rounded-full" aria-label={t('scheduled.composer.configure')} title={t('scheduled.composer.configure')} onClick={() => setScheduledDialogOpen(true)}><Settings2 className="size-3.5" /></Button>
                 </div>
               ) : (
                 <div className="flex items-center">
                   <Button size="sm" className="h-8 shrink-0 gap-1.5 rounded-l-full rounded-r-none px-3" disabled={!canSubmit} onClick={() => { void handleSubmit(); }}><Send className="size-3.5" />{t('acp.send')}</Button>
                   <DropdownMenu>
-                    <DropdownMenuTrigger asChild><Button size="sm" variant="secondary" className="h-8 rounded-l-none rounded-r-full px-2" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label="更多发送选项"><ChevronDown className="size-3.5" /></Button></DropdownMenuTrigger>
-                    <DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => { setScheduledMode(true); setScheduledConfig(null); }}><AlarmClock className="size-3.5" />创建定时任务</DropdownMenuItem></DropdownMenuContent>
+                    <DropdownMenuTrigger asChild><Button size="sm" variant="secondary" className="h-8 rounded-l-none rounded-r-full px-2" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-3.5" /></Button></DropdownMenuTrigger>
+                    <DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => { setScheduledMode(true); setScheduledConfig(null); }}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</DropdownMenuItem></DropdownMenuContent>
                   </DropdownMenu>
                 </div>
               )}
@@ -721,7 +716,7 @@ export function ConversationComposer({
           </div>
         ) : null}
       </div>
-      {onCreateScheduledTask ? <ScheduledTaskDialog allowContinuous={isDirect} open={scheduledDialogOpen} onOpenChange={setScheduledDialogOpen} onSave={async (config) => { setScheduledConfig(config); }} /> : null}
+      {onCreateScheduledTask ? <ScheduledTaskDialog allowContinuous={isDirect} open={scheduledDialogOpen} onOpenChange={setScheduledDialogOpen} draftConfig={scheduledConfig} onSave={async (config) => { setScheduledConfig(config); }} /> : null}
 
       <AttachmentPreviewDialogs
         previewImage={previewImage}

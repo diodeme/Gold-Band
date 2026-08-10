@@ -762,13 +762,66 @@ export interface AcpPermissionOptionVm {
 
 // Navigation payload emitted after clicking "View details" in a system toast.
 // It carries the complete attempt locator and a deduplication key.
-export interface InterventionNavigateEventVm {
+export interface InterventionAttemptNavigateEventVm {
   taskId: string;
   runId: string;
   roundId: string;
   nodeId: string;
   attemptId: string;
   dedupKey: string;
+}
+
+export interface ScheduledViewActionPayload {
+  kind: 'completion' | 'failed' | 'attentionRequired' | 'missed';
+  projectId: string;
+  scheduledTaskId: string;
+  occurrenceId?: string | null;
+  taskId?: string | null;
+  runId?: string | null;
+  roundId?: string | null;
+  attemptId?: string | null;
+  dedupKey: string;
+}
+
+export type InterventionNavigateEventVm =
+  | InterventionAttemptNavigateEventVm
+  | ScheduledViewActionPayload;
+
+export interface ScheduledNotificationEventVm {
+  eventId: string;
+  kind: 'completion' | 'failed' | 'attentionRequired' | 'missed';
+  projectId: string;
+  scheduledTaskId: string;
+  occurrenceId?: string | null;
+  errorCode?: string | null;
+  errorParams?: Record<string, unknown> | null;
+  links: {
+    taskId?: string | null;
+    runId?: string | null;
+    roundId?: string | null;
+    attemptId?: string | null;
+  };
+  missedCount?: number | null;
+}
+
+export interface ScheduledNativeNotificationInputVm extends ScheduledNotificationEventVm {
+  title: string;
+  body: string;
+}
+
+export interface ScheduledRuntimeSettingsVm {
+  keepAwakeEnabled: boolean;
+  keepAwakeEffective: boolean;
+  completionNotificationsEnabled: boolean;
+  enabledJobCount: number;
+  occurrenceRetentionDays: number;
+  powerErrorCode?: string | null;
+}
+
+export interface ScheduledRuntimeSettingsInputVm {
+  keepAwakeEnabled: boolean;
+  completionNotificationsEnabled: boolean;
+  occurrenceRetentionDays: number;
 }
 
 export interface NotificationAttentionInput {
@@ -931,7 +984,7 @@ export type DesktopUiMode = 'conversation' | 'workbench';
 
 export type ConversationPage =
   | { kind: 'conversation-home' }
-  | { kind: 'conversation-run'; projectId: string; taskId: string; runId: string }
+  | { kind: 'conversation-run'; projectId: string; taskId: string; runId: string; roundId?: string; attemptId?: string }
   | { kind: 'run-mode-management' }
   | { kind: 'agents' }
   | { kind: 'contexts' }
@@ -947,14 +1000,11 @@ export interface ScheduledTaskVm {
   enabled: boolean;
   mode: 'direct' | 'workflow' | 'auto' | string;
   sessionPolicy: 'new' | 'continuous' | string;
-  schedule: string;
-  scheduleLabel: string;
-  timezoneLabel: string;
+  schedule: ScheduledScheduleSpec;
   nextAt?: string | null;
   status: 'enabled' | 'paused' | 'completed' | 'failed' | string;
   lastTriggerAt?: string | null;
   lastTriggerStatus?: string | null;
-  lastTriggerLabel: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -996,16 +1046,36 @@ export interface RunScheduledTaskResultVm {
 }
 
 export type ScheduledEveryUnit = 'minutes' | 'hours';
+export type ScheduledAtDisambiguation = 'earlier' | 'later';
+export type ScheduledOverlapPolicy = 'skip_when_running' | 'retry_when_busy';
+export type ScheduledSessionPolicy = 'new' | 'continuous';
+export type ScheduledRepeatPreset =
+  | 'Hourly'
+  | 'Daily'
+  | 'Weekdays'
+  | { Weekly: { weekdays: string[] } };
 export type ScheduledScheduleSpec =
   | { kind: 'At'; at: string; timezone: string }
   | { kind: 'Every'; every: { value: number; unit: ScheduledEveryUnit }; anchorAt: string; timezone: string }
-  | { kind: 'Repeat'; preset: 'Hourly' | 'Daily' | 'Weekdays' | { Weekly: { weekdays: string[] } }; hour: number; minute: number; timezone: string }
+  | { kind: 'Repeat'; preset: ScheduledRepeatPreset; hour: number; minute: number; timezone: string }
+  | { kind: 'Cron'; expression: string; timezone: string };
+
+export type ScheduledScheduleInput =
+  | {
+      kind: 'At';
+      localDate: string;
+      localTime: string;
+      timezone: string;
+      disambiguation: ScheduledAtDisambiguation;
+    }
+  | { kind: 'Every'; every: { value: number; unit: ScheduledEveryUnit }; anchorAt: string; timezone: string }
+  | { kind: 'Repeat'; preset: ScheduledRepeatPreset; hour: number; minute: number; timezone: string }
   | { kind: 'Cron'; expression: string; timezone: string };
 
 export interface CreateScheduledTaskInput extends ConversationCreateInput {
-  schedule: ScheduledScheduleSpec;
-  overlapPolicy: 'skip_when_running' | 'retry_when_busy';
-  sessionPolicy?: 'new' | 'continuous';
+  schedule: ScheduledScheduleInput;
+  overlapPolicy: ScheduledOverlapPolicy;
+  sessionPolicy?: ScheduledSessionPolicy;
 }
 
 export interface ScheduledTaskEditVm {
@@ -1019,8 +1089,8 @@ export interface ScheduledTaskEditVm {
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   schedule: ScheduledScheduleSpec;
-  overlapPolicy: 'skip_when_running' | 'retry_when_busy';
-  sessionPolicy: 'new' | 'continuous';
+  overlapPolicy: ScheduledOverlapPolicy;
+  sessionPolicy: ScheduledSessionPolicy;
   directAgentType?: string | null;
   expectedUpdatedAt: string;
 }
@@ -1036,9 +1106,9 @@ export interface UpdateScheduledTaskInput {
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[] | null;
-  schedule: ScheduledScheduleSpec;
-  overlapPolicy: 'skip_when_running' | 'retry_when_busy';
-  sessionPolicy: 'new' | 'continuous';
+  schedule: ScheduledScheduleInput;
+  overlapPolicy: ScheduledOverlapPolicy;
+  sessionPolicy: ScheduledSessionPolicy;
 }
 
 export interface ConversationWorkspaceVm {

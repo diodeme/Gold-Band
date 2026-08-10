@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { AlarmClock, CalendarClock, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -7,12 +8,36 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import type { ScheduledScheduleSpec } from '@/types';
+import { TimezoneCombobox } from '@/components/scheduled-tasks/TimezoneCombobox';
+import {
+  analyzeScheduledLocalTime,
+  buildScheduledScheduleInput,
+  validateScheduledCron,
+  validateScheduledEvery,
+  validateScheduledWeeklyDays,
+  type ScheduledAuthoringTab,
+  type ScheduledRepeatFrequency,
+} from '@/lib/scheduled-task-authoring';
+import { getScheduledSystemTimezone, getScheduledTimezones } from '@/lib/scheduled-task-timezones';
+import type {
+  ScheduledAtDisambiguation,
+  ScheduledEveryUnit,
+  ScheduledOverlapPolicy,
+  ScheduledScheduleInput,
+  ScheduledScheduleSpec,
+  ScheduledSessionPolicy,
+} from '@/types';
 
 export type ScheduledTaskConfig = {
+  schedule: ScheduledScheduleInput;
+  overlapPolicy: ScheduledOverlapPolicy;
+  sessionPolicy: ScheduledSessionPolicy;
+};
+
+export type ScheduledTaskInitialConfig = {
   schedule: ScheduledScheduleSpec;
-  overlapPolicy: 'skip_when_running' | 'retry_when_busy';
-  sessionPolicy: 'new' | 'continuous';
+  overlapPolicy: ScheduledOverlapPolicy;
+  sessionPolicy: ScheduledSessionPolicy;
 };
 
 type ScheduledTaskDialogProps = {
@@ -20,55 +45,50 @@ type ScheduledTaskDialogProps = {
   onOpenChange: (open: boolean) => void;
   onSave: (config: ScheduledTaskConfig, content?: string) => Promise<void>;
   allowContinuous: boolean;
-  initialConfig?: ScheduledTaskConfig | null;
+  initialConfig?: ScheduledTaskInitialConfig | null;
+  draftConfig?: ScheduledTaskConfig | null;
   initialContent?: string;
   showContent?: boolean;
 };
 
-type ScheduleTab = 'at' | 'repeat' | 'cron';
-type RepeatFrequency = 'hourly' | 'daily' | 'weekdays' | 'weekly' | 'every';
+type ValidationField = 'atDate' | 'atTime' | 'at' | 'repeatTime' | 'weekdays' | 'every' | 'cron' | 'timezone';
+type ValidationReason =
+  | 'invalidDate'
+  | 'invalidTime'
+  | 'invalidTimezone'
+  | 'nonexistentLocalTime'
+  | 'emptyWeekdays'
+  | 'invalidEvery'
+  | 'invalidCron';
 
-const weekdays = [
-  ['Mon', '一'], ['Tue', '二'], ['Wed', '三'], ['Thu', '四'],
-  ['Fri', '五'], ['Sat', '六'], ['Sun', '日'],
-] as const;
+type ValidationIssue = {
+  field: ValidationField;
+  reason: ValidationReason;
+};
 
-const timezoneOptions = [
-  { value: 'Asia/Shanghai', label: '中国（上海）' },
-  { value: 'Asia/Tokyo', label: '日本（东京）' },
-  { value: 'Europe/London', label: '英国（伦敦）' },
-  { value: 'America/New_York', label: '美国（纽约）' },
-] as const;
+const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
+const defaultSelectedWeekdays = ['Mon', 'Wed', 'Fri'];
 
 function localDateValue() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
-function zonedDateTimeToUtcIso(date: string, time: string, timezone: string) {
-  const [year, month, day] = date.split('-').map(Number);
-  const [hour, minute] = time.split(':').map(Number);
-  const guess = Date.UTC(year, month - 1, day, hour, minute, 0);
-  const parts = new Intl.DateTimeFormat('en-US', {
+function localFieldsForInstant(instant: string, timezone: string) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: timezone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
-    second: '2-digit',
     hourCycle: 'h23',
-  }).formatToParts(new Date(guess));
+  }).formatToParts(new Date(instant));
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  const represented = Date.UTC(
-    Number(values.year),
-    Number(values.month) - 1,
-    Number(values.day),
-    Number(values.hour),
-    Number(values.minute),
-    Number(values.second),
-  );
-  return new Date(guess - (represented - guess)).toISOString();
+  return {
+    localDate: `${values.year}-${values.month}-${values.day}`,
+    localTime: `${values.hour}:${values.minute}`,
+  };
 }
 
 export function ScheduledTaskDialog({
@@ -77,61 +97,44 @@ export function ScheduledTaskDialog({
   onSave,
   allowContinuous,
   initialConfig,
+  draftConfig,
   initialContent,
   showContent = false,
 }: ScheduledTaskDialogProps) {
-  const [tab, setTab] = useState<ScheduleTab>('repeat');
+  const { t } = useTranslation();
+  const [tab, setTab] = useState<ScheduledAuthoringTab>('repeat');
   const [atDate, setAtDate] = useState(localDateValue);
   const [atTime, setAtTime] = useState('09:00');
-  const [frequency, setFrequency] = useState<RepeatFrequency>('daily');
-  const [selectedWeekdays, setSelectedWeekdays] = useState<string[]>(['Mon', 'Wed', 'Fri']);
+  const [atDisambiguation, setAtDisambiguation] = useState<ScheduledAtDisambiguation>('earlier');
+  const [frequency, setFrequency] = useState<ScheduledRepeatFrequency>('daily');
+  const [selectedWeekdays, setSelectedWeekdays] = useState<string[]>(defaultSelectedWeekdays);
   const [repeatTime, setRepeatTime] = useState('09:00');
   const [everyValue, setEveryValue] = useState('6');
-  const [everyUnit, setEveryUnit] = useState<'minutes' | 'hours'>('hours');
+  const [everyUnit, setEveryUnit] = useState<ScheduledEveryUnit>('hours');
   const [cron, setCron] = useState('0 0 9 * * *');
-  const [timezone, setTimezone] = useState('Asia/Shanghai');
+  const [timezone, setTimezone] = useState(getScheduledSystemTimezone);
   const [queueProtection, setQueueProtection] = useState(true);
-  const [sessionPolicy, setSessionPolicy] = useState<'new' | 'continuous'>('new');
+  const [sessionPolicy, setSessionPolicy] = useState<ScheduledSessionPolicy>('new');
   const [saving, setSaving] = useState(false);
   const [content, setContent] = useState('');
 
-  const syncInitialConfig = (config: ScheduledTaskConfig | null | undefined, initialContent: string | undefined) => {
-    if (!config) {
-      setContent(initialContent ?? '');
-      return;
-    }
-    setQueueProtection(config.overlapPolicy === 'skip_when_running');
-    setSessionPolicy(config.sessionPolicy);
-    setContent(initialContent ?? '');
-    const schedule = config.schedule;
+  const applyAuthoringSchedule = (schedule: ScheduledScheduleInput) => {
+    setTimezone(schedule.timezone);
     if (schedule.kind === 'At') {
       setTab('at');
-      const parts = new Intl.DateTimeFormat('en-CA', {
-        timeZone: schedule.timezone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hourCycle: 'h23',
-      }).formatToParts(new Date(schedule.at));
-      const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-      setAtDate(`${values.year}-${values.month}-${values.day}`);
-      setAtTime(`${values.hour}:${values.minute}`);
-      setTimezone(schedule.timezone);
+      setAtDate(schedule.localDate);
+      setAtTime(schedule.localTime);
+      setAtDisambiguation(schedule.disambiguation);
     } else if (schedule.kind === 'Every') {
       setTab('repeat');
       setFrequency('every');
       setEveryValue(String(schedule.every.value));
       setEveryUnit(schedule.every.unit);
-      setTimezone(schedule.timezone);
     } else if (schedule.kind === 'Cron') {
       setTab('cron');
       setCron(schedule.expression);
-      setTimezone(schedule.timezone);
     } else {
       setTab('repeat');
-      setTimezone(schedule.timezone);
       setRepeatTime(`${String(schedule.hour).padStart(2, '0')}:${String(schedule.minute).padStart(2, '0')}`);
       if (schedule.preset === 'Hourly') setFrequency('hourly');
       else if (schedule.preset === 'Daily') setFrequency('daily');
@@ -143,32 +146,168 @@ export function ScheduledTaskDialog({
     }
   };
 
+  const applyPersistedSchedule = (schedule: ScheduledScheduleSpec) => {
+    setTimezone(schedule.timezone);
+    if (schedule.kind === 'At') {
+      const fields = localFieldsForInstant(schedule.at, schedule.timezone);
+      const analysis = analyzeScheduledLocalTime(fields.localDate, fields.localTime, schedule.timezone);
+      setTab('at');
+      setAtDate(fields.localDate);
+      setAtTime(fields.localTime);
+      setAtDisambiguation(
+        analysis.kind === 'ambiguous' && Date.parse(analysis.laterInstant) === Date.parse(schedule.at)
+          ? 'later'
+          : 'earlier',
+      );
+    } else if (schedule.kind === 'Every') {
+      setTab('repeat');
+      setFrequency('every');
+      setEveryValue(String(schedule.every.value));
+      setEveryUnit(schedule.every.unit);
+    } else if (schedule.kind === 'Cron') {
+      setTab('cron');
+      setCron(schedule.expression);
+    } else {
+      setTab('repeat');
+      setRepeatTime(`${String(schedule.hour).padStart(2, '0')}:${String(schedule.minute).padStart(2, '0')}`);
+      if (schedule.preset === 'Hourly') setFrequency('hourly');
+      else if (schedule.preset === 'Daily') setFrequency('daily');
+      else if (schedule.preset === 'Weekdays') setFrequency('weekdays');
+      else {
+        setFrequency('weekly');
+        setSelectedWeekdays(schedule.preset.Weekly.weekdays);
+      }
+    }
+  };
+
+  const resetNewTask = () => {
+    setTab('repeat');
+    setAtDate(localDateValue());
+    setAtTime('09:00');
+    setAtDisambiguation('earlier');
+    setFrequency('daily');
+    setSelectedWeekdays(defaultSelectedWeekdays);
+    setRepeatTime('09:00');
+    setEveryValue('6');
+    setEveryUnit('hours');
+    setCron('0 0 9 * * *');
+    setTimezone(getScheduledSystemTimezone());
+    setQueueProtection(true);
+    setSessionPolicy('new');
+  };
+
   useEffect(() => {
-    if (open) syncInitialConfig(initialConfig, initialContent);
-  }, [initialConfig, initialContent, open]);
+    if (!open) return;
+    setContent(initialContent ?? '');
+    const config = initialConfig ?? draftConfig;
+    if (!config) {
+      resetNewTask();
+      return;
+    }
+    setQueueProtection(config.overlapPolicy === 'skip_when_running');
+    setSessionPolicy(config.sessionPolicy);
+    if (initialConfig) applyPersistedSchedule(initialConfig.schedule);
+    else if (draftConfig) applyAuthoringSchedule(draftConfig.schedule);
+  }, [draftConfig, initialConfig, initialContent, open]);
+
+  const timezoneValid = useMemo(() => getScheduledTimezones().includes(timezone), [timezone]);
+  const atDateValid = useMemo(
+    () => analyzeScheduledLocalTime(atDate, '00:00', 'UTC').kind !== 'invalid',
+    [atDate],
+  );
+  const atTimeValid = useMemo(
+    () => analyzeScheduledLocalTime('2000-01-01', atTime, 'UTC').kind !== 'invalid',
+    [atTime],
+  );
+  const repeatTimeValid = useMemo(
+    () => analyzeScheduledLocalTime('2000-01-01', repeatTime, 'UTC').kind !== 'invalid',
+    [repeatTime],
+  );
+  const atAnalysis = useMemo(
+    () => analyzeScheduledLocalTime(atDate, atTime, timezone),
+    [atDate, atTime, timezone],
+  );
+
+  const validationIssue = useMemo<ValidationIssue | null>(() => {
+    if (!timezoneValid) return { field: 'timezone', reason: 'invalidTimezone' };
+    if (tab === 'at') {
+      if (!atDateValid) return { field: 'atDate', reason: 'invalidDate' };
+      if (!atTimeValid) return { field: 'atTime', reason: 'invalidTime' };
+      if (atAnalysis.kind === 'nonexistent') {
+        return { field: 'at', reason: 'nonexistentLocalTime' };
+      }
+      if (atAnalysis.kind === 'invalid') return { field: 'atTime', reason: 'invalidTime' };
+      return null;
+    }
+    if (tab === 'cron') {
+      return validateScheduledCron(cron)
+        ? { field: 'cron', reason: 'invalidCron' }
+        : null;
+    }
+    if (frequency === 'weekly' && validateScheduledWeeklyDays(selectedWeekdays)) {
+      return { field: 'weekdays', reason: 'emptyWeekdays' };
+    }
+    if (frequency === 'every' && validateScheduledEvery(everyValue)) {
+      return { field: 'every', reason: 'invalidEvery' };
+    }
+    if (frequency !== 'every' && frequency !== 'hourly' && !repeatTimeValid) {
+      return { field: 'repeatTime', reason: 'invalidTime' };
+    }
+    return null;
+  }, [
+    atAnalysis.kind,
+    atDateValid,
+    atTimeValid,
+    cron,
+    everyValue,
+    frequency,
+    repeatTimeValid,
+    selectedWeekdays,
+    tab,
+    timezoneValid,
+  ]);
 
   const repeatDescription = useMemo(() => {
-    if (frequency === 'hourly') return '整点执行';
-    if (frequency === 'daily') return `每天 ${repeatTime}`;
-    if (frequency === 'weekdays') return `工作日 ${repeatTime}`;
-    if (frequency === 'weekly') return `每周 ${selectedWeekdays.join('、')} ${repeatTime}`;
-    return `每隔 ${everyValue || '1'} ${everyUnit === 'minutes' ? '分钟' : '小时'}`;
-  }, [everyUnit, everyValue, frequency, repeatTime, selectedWeekdays]);
+    if (frequency === 'hourly') return t('scheduled.dialog.hourlyDescription');
+    if (frequency === 'daily') return t('scheduled.schedule.daily', { time: repeatTime });
+    if (frequency === 'weekdays') return t('scheduled.schedule.weekdays', { time: repeatTime });
+    if (frequency === 'weekly') return t('scheduled.schedule.weekly', {
+      weekdays: selectedWeekdays.map((day) => t(`scheduled.weekdays.${day}`)).join(t('scheduled.schedule.weekdaySeparator')),
+      time: repeatTime,
+    });
+    return t('scheduled.schedule.every', { count: everyValue, unit: t(`scheduled.units.${everyUnit}`) });
+  }, [everyUnit, everyValue, frequency, repeatTime, selectedWeekdays, t]);
 
-  const canSave = tab !== 'at' || Boolean(atDate && atTime);
+  const canSave = validationIssue === null;
+  const validationMessage = (field: ValidationField) => (
+    validationIssue?.field === field
+      ? t(`scheduled.dialog.validation.${validationIssue.reason}`)
+      : null
+  );
 
   const save = async () => {
     if (!canSave) return;
-    const schedule: ScheduledScheduleSpec = tab === 'at'
-      ? { kind: 'At', at: zonedDateTimeToUtcIso(atDate, atTime, timezone), timezone }
-      : tab === 'cron'
-        ? { kind: 'Cron', expression: cron, timezone }
-        : frequency === 'every'
-          ? { kind: 'Every', every: { value: Math.max(1, Number(everyValue) || 1), unit: everyUnit }, anchorAt: new Date().toISOString(), timezone }
-          : { kind: 'Repeat', preset: frequency === 'weekly' ? { Weekly: { weekdays: selectedWeekdays } } : frequency === 'hourly' ? 'Hourly' : frequency === 'weekdays' ? 'Weekdays' : 'Daily', hour: Number(repeatTime.slice(0, 2)) || 0, minute: Number(repeatTime.slice(3, 5)) || 0, timezone };
+    const schedule = buildScheduledScheduleInput({
+      tab,
+      atDate,
+      atTime,
+      disambiguation: atDisambiguation,
+      frequency,
+      selectedWeekdays,
+      repeatTime,
+      everyValue,
+      everyUnit,
+      cron,
+      timezone,
+      anchorAt: new Date().toISOString(),
+    });
     setSaving(true);
     try {
-      await onSave({ schedule, overlapPolicy: queueProtection ? 'skip_when_running' : 'retry_when_busy', sessionPolicy: allowContinuous ? sessionPolicy : 'new' }, showContent ? content : undefined);
+      await onSave({
+        schedule,
+        overlapPolicy: queueProtection ? 'skip_when_running' : 'retry_when_busy',
+        sessionPolicy: allowContinuous ? sessionPolicy : 'new',
+      }, showContent ? content : undefined);
       onOpenChange(false);
     } finally {
       setSaving(false);
@@ -177,39 +316,171 @@ export function ScheduledTaskDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[590px] gap-0 overflow-hidden p-0">
+      <DialogContent
+        aria-describedby={undefined}
+        className="max-h-[min(760px,calc(100vh-2rem))] max-w-[590px] gap-0 overflow-hidden p-0"
+      >
         <DialogHeader className="border-b border-border/60 px-5 py-4 text-left">
-          <DialogTitle className="flex items-center gap-2 text-base"><AlarmClock className="size-4 text-primary" />定时任务设置</DialogTitle>
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <AlarmClock className="size-4 text-primary" />
+            {t('scheduled.dialog.title')}
+          </DialogTitle>
         </DialogHeader>
-        <div className="space-y-5 p-5">
-          {showContent ? <label className="block space-y-2 text-xs text-muted-foreground">任务内容<Textarea value={content} onChange={(event) => setContent(event.target.value)} className="min-h-28 resize-y text-sm" /></label> : null}
-          <Tabs value={tab} onValueChange={(value) => setTab(value as ScheduleTab)}>
+        <div className="space-y-5 overflow-y-auto p-5">
+          {showContent ? (
+            <label className="block space-y-2 text-xs text-muted-foreground">
+              {t('scheduled.dialog.content')}
+              <Textarea value={content} onChange={(event) => setContent(event.target.value)} className="min-h-28 resize-y text-sm" />
+            </label>
+          ) : null}
+          <Tabs value={tab} onValueChange={(value) => setTab(value as ScheduledAuthoringTab)}>
             <TabsList className="grid w-full grid-cols-3">
-              <TabsTrigger value="at">单次</TabsTrigger>
-              <TabsTrigger value="repeat">重复</TabsTrigger>
-              <TabsTrigger value="cron">Cron</TabsTrigger>
+              <TabsTrigger value="at">{t('scheduled.dialog.tabs.at')}</TabsTrigger>
+              <TabsTrigger value="repeat">{t('scheduled.dialog.tabs.repeat')}</TabsTrigger>
+              <TabsTrigger value="cron">{t('scheduled.dialog.tabs.cron')}</TabsTrigger>
             </TabsList>
           </Tabs>
 
-          {tab === 'at' ? <div className="grid grid-cols-2 gap-3"><label className="space-y-2 text-xs text-muted-foreground">日期<Input type="date" value={atDate} onChange={(event) => setAtDate(event.target.value)} /></label><label className="space-y-2 text-xs text-muted-foreground">时间<Input type="time" value={atTime} onChange={(event) => setAtTime(event.target.value)} /></label></div> : null}
+          {tab === 'at' ? (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label className="space-y-2 text-xs text-muted-foreground">
+                {t('scheduled.dialog.date')}
+                <Input type="date" value={atDate} aria-invalid={validationIssue?.field === 'atDate'} onChange={(event) => setAtDate(event.target.value)} />
+                {validationMessage('atDate') ? <span className="block text-destructive">{validationMessage('atDate')}</span> : null}
+              </label>
+              <label className="space-y-2 text-xs text-muted-foreground">
+                {t('scheduled.dialog.time')}
+                <Input type="time" value={atTime} aria-invalid={validationIssue?.field === 'atTime' || validationIssue?.field === 'at'} onChange={(event) => setAtTime(event.target.value)} />
+                {validationMessage('atTime') ? <span className="block text-destructive">{validationMessage('atTime')}</span> : null}
+              </label>
+              {validationMessage('at') ? <p className="text-xs text-destructive sm:col-span-2">{validationMessage('at')}</p> : null}
+              {atAnalysis.kind === 'ambiguous' ? (
+                <div className="space-y-2 sm:col-span-2">
+                  <span className="text-xs text-muted-foreground">{t('scheduled.dialog.disambiguation.label')}</span>
+                  <div className="grid grid-cols-2 rounded-md bg-secondary p-1" role="group" aria-label={t('scheduled.dialog.disambiguation.label')}>
+                    <Button type="button" variant={atDisambiguation === 'earlier' ? 'default' : 'ghost'} size="sm" className="h-8 text-xs" onClick={() => setAtDisambiguation('earlier')}>
+                      {t('scheduled.dialog.disambiguation.earlier', { offset: atAnalysis.earlierOffset })}
+                    </Button>
+                    <Button type="button" variant={atDisambiguation === 'later' ? 'default' : 'ghost'} size="sm" className="h-8 text-xs" onClick={() => setAtDisambiguation('later')}>
+                      {t('scheduled.dialog.disambiguation.later', { offset: atAnalysis.laterOffset })}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
-          {tab === 'repeat' ? <div className="space-y-4">
-            <label className="block space-y-2 text-xs text-muted-foreground">频率<Select value={frequency} onValueChange={(value) => setFrequency(value as RepeatFrequency)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="hourly">每小时</SelectItem><SelectItem value="daily">每天</SelectItem><SelectItem value="weekdays">工作日</SelectItem><SelectItem value="weekly">每周</SelectItem><SelectItem value="every">每隔</SelectItem></SelectContent></Select></label>
-            {frequency === 'weekly' ? <div className="space-y-2"><span className="text-xs text-muted-foreground">星期（可多选）</span><div className="grid grid-cols-7 gap-1.5">{weekdays.map(([day, label]) => <Button key={day} type="button" variant={selectedWeekdays.includes(day) ? 'secondary' : 'outline'} className="h-9 px-0 text-xs" aria-pressed={selectedWeekdays.includes(day)} onClick={() => setSelectedWeekdays((current) => current.includes(day) ? current.filter((item) => item !== day) : [...current, day])}>{label}</Button>)}</div></div> : null}
-            {frequency !== 'every' && frequency !== 'hourly' ? <label className="block space-y-2 text-xs text-muted-foreground">执行时间<Input type="time" value={repeatTime} onChange={(event) => setRepeatTime(event.target.value)} /></label> : null}
-            {frequency === 'every' ? <label className="block space-y-2 text-xs text-muted-foreground">间隔<div className="grid grid-cols-2 gap-2"><Input type="number" min="1" value={everyValue} onChange={(event) => setEveryValue(event.target.value)} /><Select value={everyUnit} onValueChange={(value) => setEveryUnit(value as typeof everyUnit)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="minutes">分钟</SelectItem><SelectItem value="hours">小时</SelectItem></SelectContent></Select></div></label> : null}
-            <div className="flex items-center gap-2 text-xs text-muted-foreground"><CalendarClock className="size-3.5 text-primary" />下次执行：{repeatDescription} · {timezoneOptions.find((option) => option.value === timezone)?.label}</div>
-            <div className="flex items-start gap-2 text-xs text-muted-foreground"><Info className="mt-0.5 size-3.5 shrink-0" /><span><strong className="font-medium text-primary">{frequency === 'every' ? '每隔' : frequency === 'weekly' ? '每周' : frequency === 'weekdays' ? '工作日' : frequency === 'hourly' ? '每小时' : '每天'}</strong> 将按当前配置计算下一次执行时间。</span></div>
-          </div> : null}
+          {tab === 'repeat' ? (
+            <div className="space-y-4">
+              <label className="block space-y-2 text-xs text-muted-foreground">
+                {t('scheduled.dialog.frequency')}
+                <Select value={frequency} onValueChange={(value) => setFrequency(value as ScheduledRepeatFrequency)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {(['hourly', 'daily', 'weekdays', 'weekly', 'every'] as const).map((value) => (
+                      <SelectItem key={value} value={value}>{t(`scheduled.dialog.frequencyOptions.${value}`)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              {frequency === 'weekly' ? (
+                <div className="space-y-2">
+                  <span className="text-xs text-muted-foreground">{t('scheduled.dialog.weekdaySelect')}</span>
+                  <div className="grid grid-cols-7 gap-1.5">
+                    {weekdays.map((day) => (
+                      <Button
+                        key={day}
+                        type="button"
+                        variant={selectedWeekdays.includes(day) ? 'secondary' : 'outline'}
+                        className="h-9 px-0 text-xs"
+                        aria-pressed={selectedWeekdays.includes(day)}
+                        onClick={() => setSelectedWeekdays((current) => current.includes(day) ? current.filter((item) => item !== day) : [...current, day])}
+                      >
+                        {t(`scheduled.weekdays.${day}`)}
+                      </Button>
+                    ))}
+                  </div>
+                  {validationMessage('weekdays') ? <p className="text-xs text-destructive">{validationMessage('weekdays')}</p> : null}
+                </div>
+              ) : null}
+              {frequency !== 'every' && frequency !== 'hourly' ? (
+                <label className="block space-y-2 text-xs text-muted-foreground">
+                  {t('scheduled.dialog.executionTime')}
+                  <Input type="time" value={repeatTime} aria-invalid={validationIssue?.field === 'repeatTime'} onChange={(event) => setRepeatTime(event.target.value)} />
+                  {validationMessage('repeatTime') ? <span className="block text-destructive">{validationMessage('repeatTime')}</span> : null}
+                </label>
+              ) : null}
+              {frequency === 'every' ? (
+                <label className="block space-y-2 text-xs text-muted-foreground">
+                  {t('scheduled.dialog.interval')}
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input type="number" min="1" step="1" value={everyValue} aria-invalid={validationIssue?.field === 'every'} onChange={(event) => setEveryValue(event.target.value)} />
+                    <Select value={everyUnit} onValueChange={(value) => setEveryUnit(value as ScheduledEveryUnit)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="minutes">{t('scheduled.units.minutes')}</SelectItem>
+                        <SelectItem value="hours">{t('scheduled.units.hours')}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {validationMessage('every') ? <span className="block text-destructive">{validationMessage('every')}</span> : null}
+                </label>
+              ) : null}
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <CalendarClock className="size-3.5 text-primary" />
+                {t('scheduled.dialog.nextRun', { description: repeatDescription, timezone })}
+              </div>
+              <div className="flex items-start gap-2 text-xs text-muted-foreground">
+                <Info className="mt-0.5 size-3.5 shrink-0" />
+                <span>{t('scheduled.dialog.repeatHint', { frequency: t(`scheduled.dialog.frequencyOptions.${frequency}`) })}</span>
+              </div>
+            </div>
+          ) : null}
 
-          {tab === 'cron' ? <div className="space-y-3"><label className="block space-y-2 text-xs text-muted-foreground">Cron 表达式<Input className="font-mono" value={cron} onChange={(event) => setCron(event.target.value)} /></label><div className="flex items-center gap-2 text-xs text-muted-foreground"><CalendarClock className="size-3.5 text-primary" />保存后显示下一次执行时间。</div></div> : null}
+          {tab === 'cron' ? (
+            <div className="space-y-3">
+              <label className="block space-y-2 text-xs text-muted-foreground">
+                {t('scheduled.dialog.cronExpression')}
+                <Input className="font-mono" value={cron} aria-invalid={validationIssue?.field === 'cron'} onChange={(event) => setCron(event.target.value)} />
+                {validationMessage('cron') ? <span className="block text-destructive">{validationMessage('cron')}</span> : null}
+              </label>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <CalendarClock className="size-3.5 text-primary" />
+                {t('scheduled.dialog.cronHint')}
+              </div>
+            </div>
+          ) : null}
 
-          <label className="block space-y-2 text-xs text-muted-foreground">时区<Select value={timezone} onValueChange={setTimezone}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{timezoneOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></label>
+          <label className="block space-y-2 text-xs text-muted-foreground">
+            {t('scheduled.dialog.timezone')}
+            <TimezoneCombobox value={timezone} onValueChange={setTimezone} />
+            {validationMessage('timezone') ? <span className="block text-destructive">{validationMessage('timezone')}</span> : null}
+          </label>
 
-          <div className="flex items-center justify-between gap-5 border-t border-border/60 pt-4"><div><strong className="block text-xs font-medium text-foreground">队列保护</strong><span className="text-[11px] text-muted-foreground">已有执行未结束时跳过本次</span></div><Switch checked={queueProtection} onCheckedChange={setQueueProtection} aria-label="队列保护" /></div>
-          {allowContinuous ? <div className="flex items-center justify-between gap-5 border-t border-border/60 pt-4"><div><strong className="block text-xs font-medium text-foreground">会话方式</strong><span className="text-[11px] text-muted-foreground">Direct 模式</span></div><div className="flex rounded-md bg-secondary p-1"><Button type="button" variant={sessionPolicy === 'new' ? 'default' : 'ghost'} size="sm" className="h-7 px-3 text-xs" onClick={() => setSessionPolicy('new')}>新会话</Button><Button type="button" variant={sessionPolicy === 'continuous' ? 'default' : 'ghost'} size="sm" className="h-7 px-3 text-xs" onClick={() => setSessionPolicy('continuous')}>持续会话</Button></div></div> : null}
+          <div className="flex items-center justify-between gap-5 border-t border-border/60 pt-4">
+            <div>
+              <strong className="block text-xs font-medium text-foreground">{t('scheduled.dialog.queueProtection')}</strong>
+              <span className="text-[11px] text-muted-foreground">{t('scheduled.dialog.queueProtectionDescription')}</span>
+            </div>
+            <Switch checked={queueProtection} onCheckedChange={setQueueProtection} aria-label={t('scheduled.dialog.queueProtection')} />
+          </div>
+          {allowContinuous ? (
+            <div className="flex items-center justify-between gap-5 border-t border-border/60 pt-4">
+              <div>
+                <strong className="block text-xs font-medium text-foreground">{t('scheduled.dialog.sessionPolicy')}</strong>
+                <span className="text-[11px] text-muted-foreground">{t('scheduled.dialog.directMode')}</span>
+              </div>
+              <div className="flex rounded-md bg-secondary p-1">
+                <Button type="button" variant={sessionPolicy === 'new' ? 'default' : 'ghost'} size="sm" className="h-7 px-3 text-xs" onClick={() => setSessionPolicy('new')}>{t('scheduled.session.new')}</Button>
+                <Button type="button" variant={sessionPolicy === 'continuous' ? 'default' : 'ghost'} size="sm" className="h-7 px-3 text-xs" onClick={() => setSessionPolicy('continuous')}>{t('scheduled.session.continuous')}</Button>
+              </div>
+            </div>
+          ) : null}
         </div>
-        <DialogFooter className="border-t border-border/60 px-5 py-4"><Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button><Button disabled={!canSave || saving} onClick={() => void save()}>完成</Button></DialogFooter>
+        <DialogFooter className="border-t border-border/60 px-5 py-4">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>{t('scheduled.dialog.cancel')}</Button>
+          <Button disabled={!canSave || saving} onClick={() => void save()}>{t('scheduled.dialog.done')}</Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

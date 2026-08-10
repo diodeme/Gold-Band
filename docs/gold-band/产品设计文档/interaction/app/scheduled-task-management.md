@@ -47,6 +47,14 @@ ChevronDown 菜单中提供 `创建定时任务`。选择后进入定时创建�
 
 Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 
+配置对话框使用单一 validation result 控制保存按钮，并在对应字段下即时显示本地化错误：
+
+- 新建时默认使用系统 IANA 时区，解析失败回退 `UTC`；编辑时将规范化 UTC `at` 按任务原时区还原为本地日期和时间；
+- DST 不存在时间禁用保存；DST 重复时间显示 Earlier/Later 分段选择及两个 UTC offset，默认 Earlier；
+- Cron 只接受六字段表达式；每周至少选择一天；Every 只接受正整数；
+- 配置合法时提交独立 `ScheduledScheduleInput`，不在前端猜测 offset 或生成持久化 UTC `ScheduleSpec`；
+- 前端校验只负责即时反馈，Rust 应用服务在持久化、复制附件和通知 coordinator 前再次权威校验。
+
 ## 4. 定时任务管理页
 
 采用安静、紧凑的列表布局，不提供永久固定详情面板。每行显示：
@@ -98,10 +106,31 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 
 ## 9. 统一完善交互（2026-08-05）
 
-- 管理页和设置页提供同一个“保持系统唤醒”开关。默认关闭；开启后仅在至少一个定时任务启用时生效，允许显示器关闭，并提示应用退出、关机和系统强制策略不在保障范围内。
+- “保持系统唤醒”、完成通知和历史保留天数只在设置页提供；定时任务管理页专注任务列表、筛选与任务操作，不重复展示全局运行设置。
 - 时区选择展示运行环境支持的完整 IANA 时区，默认系统时区，不再限制为少数硬编码选项。
 - 详情页默认展示全部 occurrence，包括 `skipped`、`missed`、`failed` 和 `attention_required`；状态筛选只改变视图，不删除诊断记录。
 - occurrence 有 Task、Run 或 ACP session 引用时提供对应跳转；需要用户回答时直接进入原问题位置。
 - 完成、失败、需要处理和聚合后的错过通知复用系统通知；点击后 deep link 到最有行动价值的目标。
-- 成功 occurrence 可由用户主动“沉淀为 Skill”。系统先展示草稿和保存范围，只有确认后才写入 SkillManager；不会自动修改当前定时任务。
 - 所有新增可见文案进入前端 i18n；后端只返回错误码和结构化参数。
+- 后端通过 `gold-band://scheduled-notification` 只发送 `kind/projectId/scheduledTaskId/occurrenceId/error/links/missedCount`，不生成对客文案；前端按当前语言生成标题和正文后调用既有原生通知管线。
+- `completion` 仅在全局完成通知开启时发送；`failed` 与 `attentionRequired` 立即发送；`missed` 按 reconcile 批次聚合；`skipped/retrying` 只进入历史。去重键为 `scheduled:{occurrenceId}:{kind}`，missed 使用批次 event ID。
+- 带 `scheduled_occurrence_id` 的 lifecycle 事件由定时任务运行时拥有通知决策权：通用会话通知订阅器不得再次把 `RunCompleted`、`InterventionRequested` 或 `AcpTurnFinished` 转成 OS 通知。这样完成开关只控制定时任务的成功通知，失败与需要处理仍由定时任务策略发送，且不会出现双通道重复提醒。
+- failed 与 missed 点击后进入定时任务详情；attentionRequired 和 completion 有 Task/Run 链接时进入对应 Run，否则回退定时任务详情。Windows action 与 macOS/Linux 通知复用同一 scheduled payload，不建设第二套通知状态。
+
+### 2026-08-07 实现收口
+
+- `ScheduledTaskVm` 只返回 typed `ScheduleSpec`、原始 IANA 时区和 RFC 3339 时间；计划、时区、最近状态与空标题均由前端按当前语言生成，不再消费后端中文展示字段。
+- 详情页历史不再过滤 `skipped`、`missed`，默认显示全部状态，并提供只改变当前视图的状态筛选。
+- occurrence 同时具备 Task 与 Run 链接时显示图标跳转；存在 Round/Attempt 时写入 conversation deep link，目标 Run 加载后直接选择对应 session attempt。
+- `ScheduledRuntimeSettings` 只挂载在设置页，使用 shadcn/ui `Switch` 与数值 `Input` 管理保持唤醒、完成通知和 `1..=3650` 天保留期；管理页不提供第二入口。
+- 时区控件使用 `Intl.supportedValuesOf('timeZone')`，并以 `@vvo/tzdb` 作为不支持该 API 时的维护型数据回退；列表去重、排序并始终包含 UTC 与系统时区。
+- 窄屏（小于等于 767px）自动收起 Shell 侧栏；管理页 header 改为纵向信息区与可换行操作区，避免固定桌面侧栏或筛选工具把任务标题、开关标签压成逐字换行。
+- 详情 deep link 必须在会话导航回调完成初始化后才求值页面内容；直接点击任务行和通知跳转都不得因回调暂时性死区导致 React 根节点崩溃。
+- Tooltip、Dialog 等跨页面 shadcn/Radix 基础上下文由应用根部统一提供，页面只声明具体控件。详情页即使存在可跳转的 occurrence 历史，也不得因缺少局部 Provider 卸载 React 根节点；桌面验收必须覆盖“存在执行历史后从列表进入详情”的路径。
+
+### 2026-08-10 时间输入与即时校验
+
+- 命令 authoring 输入与查询/持久化 `ScheduleSpec` 分离，At 使用本地日期、时间、IANA 时区和 Earlier/Later 选择。
+- `@js-temporal/polyfill` 负责前端 DST 状态分析，`cron-parser` 负责六字段 Cron 即时校验；Rust 领域构造器保持最终权威。
+- Weekly 空选择、Every 非正整数、非法 Cron、非法时区和 DST 不存在时间均在字段下显示中英文反馈并禁用保存。
+- 配置对话框在 1280×900 与 390×844 视口下不得产生横向溢出，移动端底部操作区必须完整可见；无描述正文时显式关闭 Radix `aria-describedby` 关联，避免控制台警告。

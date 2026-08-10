@@ -43,20 +43,21 @@ use commands_conversation::{
     add_conversation_workspace, choose_conversation_workspace, create_conversation_run,
     create_scheduled_task, delete_conversation_task, delete_scheduled_task, get_conversation_run,
     get_conversation_run_mode, get_conversation_sidebar, get_conversation_workspaces,
-    get_scheduled_task, get_scheduled_task_diagnostics, get_supported_attachment_extensions,
-    list_scheduled_task_occurrences, list_scheduled_tasks, materialize_conversation_attachments,
-    pin_conversation, remove_conversation_workspace, reorder_pinned_conversations,
-    rerun_conversation_task, run_scheduled_task_now, save_conversation_preference,
-    save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
-    search_conversation_tasks, set_scheduled_task_enabled, show_conversation_attachment,
-    show_conversation_message_attachment, stat_attachment_files, switch_conversation_session,
-    sync_conversation_workspace, unpin_conversation, update_scheduled_task, update_task_metadata,
-    validate_conversation_create,
+    get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
+    get_supported_attachment_extensions, list_scheduled_task_occurrences, list_scheduled_tasks,
+    materialize_conversation_attachments, pin_conversation, remove_conversation_workspace,
+    reorder_pinned_conversations, rerun_conversation_task, run_scheduled_task_now,
+    save_conversation_preference, save_conversation_run_mode, save_desktop_ui_mode,
+    save_last_conversation_workspace, save_scheduled_runtime_settings, search_conversation_tasks,
+    set_scheduled_task_enabled, show_conversation_attachment, show_conversation_message_attachment,
+    stat_attachment_files, switch_conversation_session, sync_conversation_workspace,
+    unpin_conversation, update_scheduled_task, update_task_metadata, validate_conversation_create,
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
 use metrics::start_heartbeat_polling;
+use notifications::send_scheduled_native_notification;
 use state::{DesktopContext, DesktopState, SchedulerExitAction};
 use tauri::{Manager, WindowEvent};
 use tracing::{info, warn};
@@ -231,6 +232,7 @@ fn run() -> anyhow::Result<()> {
             save_updater_settings,
             get_metrics_settings,
             update_notification_attention,
+            send_scheduled_native_notification,
             save_metrics_settings,
             get_update_status,
             mark_settings_update_seen,
@@ -247,6 +249,8 @@ fn run() -> anyhow::Result<()> {
             list_scheduled_tasks,
             list_scheduled_task_occurrences,
             get_scheduled_task_diagnostics,
+            get_scheduled_runtime_settings,
+            save_scheduled_runtime_settings,
             run_scheduled_task_now,
             create_scheduled_task,
             get_scheduled_task,

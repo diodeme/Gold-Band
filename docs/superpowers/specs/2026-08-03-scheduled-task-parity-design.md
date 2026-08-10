@@ -109,7 +109,7 @@ The scheduler never writes canonical Run status directly. It only maps executor 
 
 Direct must expose:
 
-- creation from the composer and from the built-in scheduled-task skill;
+- creation from the composer;
 - one-shot, every, hourly, daily, weekdays, weekly, and custom Cron schedules;
 - full IANA timezone support with system timezone as the default;
 - new-session and continuous-session execution;
@@ -118,7 +118,6 @@ Direct must expose:
 - busy retry, bounded retry count, missed detection, crash recovery, and duplicate prevention;
 - `next_run_at`, `last_error`, `run_count`, and `retry_count` diagnostics;
 - completion and attention notifications plus an explicit keep-awake setting;
-- Agent creation/query/update helpers through localized built-in skills.
 
 The explicit no-name decision is a Gold Band product choice. Instruction-derived titles replace AionUi's free-form name while all execution and history capabilities remain available.
 

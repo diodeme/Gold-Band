@@ -54,6 +54,10 @@ import type {
   ScheduledTaskEditVm,
   ScheduledOccurrenceVm,
   ScheduledTaskDiagnosticsVm,
+  ScheduledNotificationEventVm,
+  ScheduledNativeNotificationInputVm,
+  ScheduledRuntimeSettingsVm,
+  ScheduledRuntimeSettingsInputVm,
   RunScheduledTaskResultVm,
   UpdateScheduledTaskInput,
 } from '../types';
@@ -171,6 +175,10 @@ export interface RuntimeApi {
   subscribeConversationRunStateUpdates?(listener: (event: ConversationRunStateUpdatedEventVm) => void): Promise<() => void>;
   subscribeScheduledTaskUpdates?(listener: (event: ScheduledTaskUpdatedEventVm) => void): Promise<() => void>;
   subscribeScheduledOccurrenceUpdates?(listener: (event: ScheduledOccurrenceUpdatedEventVm) => void): Promise<() => void>;
+  subscribeScheduledNotifications?(listener: (event: ScheduledNotificationEventVm) => void): Promise<() => void>;
+  sendScheduledNativeNotification(input: ScheduledNativeNotificationInputVm): Promise<void>;
+  getScheduledRuntimeSettings(): Promise<ScheduledRuntimeSettingsVm>;
+  saveScheduledRuntimeSettings(input: ScheduledRuntimeSettingsInputVm): Promise<ScheduledRuntimeSettingsVm>;
   // 干预通知：OS Toast「查看详情」点击后后端转发导航事件，前端订阅做 deep-link。
   subscribeInterventionNavigate?(listener: (event: InterventionNavigateEventVm) => void): Promise<() => void>;
   submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]): Promise<ConversationPromptSubmitVm>;

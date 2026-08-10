@@ -18,14 +18,18 @@ describe('scheduled task composer entry', () => {
     expect(source).toContain('DropdownMenu');
     expect(source).toContain('scheduledMode');
     expect(source).toContain('Settings2');
-    expect(source).toContain('创建定时任务');
+    expect(source).toContain("t('scheduled.composer.create')");
     expect(source).toContain('scheduledMode ? createScheduledTask() : handleSubmit()');
   });
 
-  it('passes the selected timezone through one-time and interval schedule payloads', () => {
+  it('submits local authoring fields without guessing a UTC offset', () => {
     const source = readFileSync(fileURLToPath(new URL('../src/components/conversation/ScheduledTaskDialog.tsx', import.meta.url)), 'utf8');
-    expect(source).toContain("kind: 'At', at: zonedDateTimeToUtcIso(atDate, atTime, timezone), timezone");
-    expect(source).toContain("kind: 'Every', every: { value: Math.max(1, Number(everyValue) || 1), unit: everyUnit }, anchorAt: new Date().toISOString(), timezone");
+    expect(source).not.toContain('function zonedDateTimeToUtcIso');
+    expect(source).toContain('getScheduledSystemTimezone');
+    expect(source).toContain('analyzeScheduledLocalTime');
+    expect(source).toContain('disambiguation: atDisambiguation');
+    expect(source).toContain('validationIssue');
+    expect(source).toContain('disabled={!canSave || saving}');
   });
 
   it('rejects a scheduled Direct task before calling the desktop command when no Agent is selected', async () => {

@@ -2,9 +2,11 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { ScheduledTaskManagementPage } from '@/pages/ScheduledTaskManagementPage';
+import i18n from '@/i18n';
 
 describe('ScheduledTaskManagementPage', () => {
-  it('renders the global management surface with workspace filtering', () => {
+  it('renders the global management surface with workspace filtering', async () => {
+    await i18n.changeLanguage('zh-CN');
     const html = renderToStaticMarkup(React.createElement(ScheduledTaskManagementPage, { projectId: 'project-a' }));
 
     expect(html).toContain('定时任务');
@@ -19,10 +21,10 @@ describe('ScheduledTaskManagementPage', () => {
     expect(source).toContain('subscribeScheduledTaskUpdates');
     expect(source).toContain('runScheduledTaskNow');
     expect(source).toContain('onOpenDetail');
-    expect(source).toContain('编辑任务');
-    expect(source).toContain('删除任务');
-    expect(source).toContain('刷新定时任务');
-    expect(source).toContain('创建定时任务');
+    expect(source).toContain("t('scheduled.management.edit')");
+    expect(source).toContain("t('scheduled.management.delete')");
+    expect(source).toContain("t('scheduled.management.refresh')");
+    expect(source).toContain("t('scheduled.management.create')");
     // Detail controls moved to the dedicated detail page
     expect(source).not.toContain('getScheduledTaskDiagnostics');
     expect(source).not.toContain('subscribeScheduledOccurrenceUpdates');
@@ -38,8 +40,10 @@ describe('ScheduledTaskDetailPage', () => {
     expect(source).toContain('listScheduledTaskOccurrences');
     expect(source).toContain('subscribeScheduledTaskUpdates');
     expect(source).toContain('subscribeScheduledOccurrenceUpdates');
-    expect(source).toContain('返回定时任务');
-    expect(source).toContain('执行历史');
+    expect(source).toContain("t('scheduled.detail.back')");
+    expect(source).toContain("t('scheduled.detail.history')");
+    expect(source).toContain('statusFilter');
+    expect(source).toContain('scheduledOccurrenceTarget');
     // Event handlers only react to the matching task id
     expect(source).toContain("event.scheduledTaskId !== scheduledTaskId");
   });

@@ -307,6 +307,12 @@ run 终局（订阅器穷举 4 分支，源码依据 provider/mod.rs:1086-1100 +
 | **失败恢复 / 续跑** | gold-band 已有 `recover_interrupted_running_sessions`(`app/mod.rs:2397-2401`)；库层 `run_continue_background_with_config_overrides` 原生支持 ACP `session/load` 续接（内部自动读 worker-ref.json continue_ref） | ① 启动 recover-orphans 把残留在飞 task **无条件置失败**（runtime_recovery）② **resume-safe 失败**（runtime_offline / runtime_recovery / timeout）→ `run_continue_background_with_config_overrides(task_id, run_id, None, None, …)`，内部 `session/load` 续接（见 3.2.7）③ **resume-unsafe 失败**（agent_error）→ 整 task `POST /api/issues/{id}/rerun` 重新入队（新会话）④ **接受 multica auto-retry 兜底** + 用户可手动【rerun】 | `multica/loop.rs`、`StateConfig` 新增字段、新增 `rerun_multica_task` 命令 |
 | **取消检测** | gold-band 已有 stop/pause session 能力 | 长任务执行期周期 `GET /tasks/{id}/status`，发现 cancelled/failed/404 → 中断本地 run（复用 gold-band stop session） | `multica/loop.rs` |
 
+**性能优化（连接池复用 + liveness 短超时 + 自愈单次重试 + tick 埋点）**：上述 client/loop 落地后做了一次系统性性能检视（10 维度），前置确认业务逻辑正确（锁不跨 await、终态严格重试、4xx 不重试、前端纯事件驱动、PAT 不回显），修复两项严重缺陷（实现细节见开发设计 §12.13）：
+- **共享 `reqwest::Client`**：进程级 `OnceLock` 单例，`MulticaClient::new` 取廉价 clone——修复「每调用点重建 client → 连接池/TLS 上下文作废 → 每次重做 TCP+TLS 握手」（弱网放大失败率）。`MulticaClient: Clone`。client 级 30s 超时仍在单例内设定。
+- **liveness 短超时**（`LIVENESS_TIMEOUT_SECS=10`，per-request 覆盖 client 级 30s）：心跳 tick 内高频调用（heartbeat / extend_prepare_lease / get_task_status / 自愈 register）正常 <1s，server 慢响应时 10s 快速失败、下一 tick 重试；**非 liveness 调用**（claim/start/complete/fail/list/verify 等）仍 30s，可靠性优先。
+- **自愈 register 单次重试**（`register_once`）：常驻心跳的自愈注册「循环即重试」，不再嵌套 client 内 3×30s 退避——否则弱网下单 tick 超 90s，推迟 prepare-lease 续期（45s 被 server 回收 → 用户 compose 中的任务丢失，功能受损）与取消检测（远端已取消任务本地空跑）。一次性路径（启动/connect/绑定）仍走带重试的 `register`。
+- **tick 耗时埋点**：每 tick 四阶段 + 总耗时（超 30s 升 warn），弱网回归量化依据。
+
 #### 3.2.5 数据 / 接口 / 错误码规范
 
 **SettingsConfig 新增字段**（`src/config/mod.rs`，用户可编辑，设置页读写）：

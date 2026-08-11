@@ -15,6 +15,32 @@ import { formatCompactRelativeTime } from '@/lib/datetime';
 
 export const conversationSidebarActivityIconClass = 'motion-safe:animate-pulse';
 
+export type ConversationSidebarNavigationKey =
+  | 'quick-chat'
+  | 'agents'
+  | 'contexts'
+  | 'run-mode-management'
+  | 'scheduled-tasks'
+  | null;
+
+export function conversationSidebarNavigationKey(page: ConversationPage): ConversationSidebarNavigationKey {
+  switch (page.kind) {
+    case 'conversation-home':
+    case 'scheduled-task-create':
+      return 'quick-chat';
+    case 'agents':
+    case 'contexts':
+    case 'run-mode-management':
+    case 'scheduled-tasks':
+      return page.kind;
+    case 'scheduled-task-detail':
+      return 'scheduled-tasks';
+    case 'conversation-run':
+    case 'settings':
+      return null;
+  }
+}
+
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
   active: ConversationPage;
@@ -76,6 +102,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     () => new Map(vm.workspaces.map((workspace) => [workspace.projectId, workspace])),
     [vm.workspaces],
   );
+  const activeNavigationKey = conversationSidebarNavigationKey(active);
 
   // Sync pinned collapse from persisted preferences when sidebar VM reloads
   useEffect(() => {
@@ -186,7 +213,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
         {/* Quick actions */}
         <div className="flex flex-col gap-0.5">
           <SidebarButton
-            active={active.kind === 'conversation-home'}
+            active={activeNavigationKey === 'quick-chat'}
             icon={<MessageSquare />}
             label={t('conversation.sidebar.newChat')}
             onClick={onNewConversation}
@@ -204,28 +231,28 @@ export const ConversationSidebar = memo(function ConversationSidebar({
         <div className="flex flex-col gap-1">
           <SidebarButton
             compact
-            active={active.kind === 'agents'}
+            active={activeNavigationKey === 'agents'}
             icon={<Bot />}
             label={t('conversation.sidebar.agentManagement')}
             onClick={() => onSelect({ kind: 'agents' })}
           />
           <SidebarButton
             compact
-            active={active.kind === 'contexts'}
+            active={activeNavigationKey === 'contexts'}
             icon={<Boxes />}
             label={t('conversation.sidebar.contextManagement')}
             onClick={() => onSelect({ kind: 'contexts' })}
           />
           <SidebarButton
             compact
-            active={active.kind === 'run-mode-management'}
+            active={activeNavigationKey === 'run-mode-management'}
             icon={<Workflow />}
             label={t('conversation.sidebar.runModeManagement')}
             onClick={() => onSelect({ kind: 'run-mode-management' })}
           />
           <SidebarButton
             compact
-            active={active.kind === 'scheduled-tasks' || active.kind === 'scheduled-task-create' || active.kind === 'scheduled-task-detail'}
+            active={activeNavigationKey === 'scheduled-tasks'}
             icon={<AlarmClock />}
             label="定时任务"
             onClick={() => onSelect({ kind: 'scheduled-tasks' })}

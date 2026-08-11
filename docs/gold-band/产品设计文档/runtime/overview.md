@@ -135,3 +135,4 @@ ACP attempt 会在 `acp.diagnostics.jsonl` 写入 adapter 复用/新建结果和
 ## 9. 相关边界文件
 - [Worker Ref 规范](../provider/worker-ref.md)
 - [Progress 规范](../interaction/progress.md)
+- [状态、生命周期与数据完整性规则](../../rules/state-lifecycle-and-data-integrity.md) —— 实现和审查实体身份、canonical state、异步收敛、持久化、原子写入与错误隔离时的统一工程约束

@@ -233,6 +233,8 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-08-04：Conversation 主页面与 session switch payload 删除仅服务旧聚合栏的 `artifacts/attachments` 数组；Round/节点排障入口及按名读取接口保留。会话首屏只携带 change set summary 指针，文件清单和正文分别在卡片/Tab 打开时懒加载。
 - 2026-08-09：桌面生命周期收归 Rust `DesktopLifecycleCoordinator`。macOS 红色关闭只销毁主窗口，Dock 重开可显示或按配置重建；Windows/Linux 关闭、Cmd+Q、菜单退出和 updater 退出统一执行“前端保存握手 → 后端有界清理 → 单次退出”。ACP、MCP、Agent doctor 与登录 Shell 探测统一由 `command-group` 受管进程组拥有，正常退出不再散落调用 `taskkill`、单进程 `kill()` 或手写 Unix PID kill。
 - 2026-08-09：macOS 发布采用单一可选凭证流水线。基础 bundle 配置使用 ad-hoc identity `-`；无 Apple 凭证时仍由 GitHub macOS runner 生成 arm64/x64 DMG，并对产出的 `.app` 执行 `codesign --verify --deep --strict`。凭证部分配置时立即失败，配置完整时由同一 `tauri-action` 接收证书、Developer ID、Apple ID、app-specific password 与 Team ID 完成签名和公证。下载页、安装器和应用内不增加未公证提示，产物名不增加 unsigned 后缀。
+- 2026-08-11：右侧工作区宽度恢复明确以全局 `rightWorkspace.width` 为唯一事实源。`react-resizable-panels` 的 `defaultSize` 只负责 Panel 首次注册；快速对话 draft、定时创建和会话详情的右栏每次从折叠转为 Dock 展示时，必须通过 Panel imperative `expand + resize(preferredWidth)` 应用同一持久化像素宽度。异步 preference hydrate 或文件工作区推荐宽度更新时同样局部同步当前 Panel；连续拖拽仍由组件库管理，只在用户完成事件持久化一次。
+- 2026-08-11：中间工作区顶边、左边与右侧工作区 separator 统一使用不透明语义色 `workspace-divider`。该 token 由当前主题的 `sidebar-border` 与 `gold-workspace` 预混合，禁止在不同底色上分别叠加半透明 `sidebar-border/70`，避免高 DPI 下横竖边线交点出现色阶断层。Dock 展示时，中间 Panel 与右侧 Panel 必须各自绘制同为 1 CSS px 的顶边，使边界连续横跨两个区域，separator 从顶边下方形成 T 形交点；separator 的 1px 布局宽度、4px 命中区和 hover 状态保持不变。
 
 ---
 

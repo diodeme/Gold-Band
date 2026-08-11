@@ -13,6 +13,7 @@ import {
   resolveWorkspacePanelWidthFromLayout,
   shouldOpenRightWorkspaceSheet,
   shouldPersistRightWorkspaceWidth,
+  syncRightWorkspacePanelPresentation,
   workspaceAutoCollapsePresentationChanged,
   workspaceLayoutProfileForPage,
   workspaceLayoutProfileForSurface,
@@ -23,6 +24,36 @@ import {
 const initial = (): WorkspaceAutoCollapseState => ({ previousWidth: 1_100, left: false, right: false });
 
 describe('workspace auto collapse state machine', () => {
+  it('restores the canonical right workspace width whenever the dock becomes visible', () => {
+    const calls: string[] = [];
+    let collapsed = true;
+    const panel = {
+      collapse: () => { collapsed = true; calls.push('collapse'); },
+      expand: () => { collapsed = false; calls.push('expand'); },
+      isCollapsed: () => collapsed,
+      resize: (size: number | string) => { calls.push(`resize:${size}`); },
+    };
+
+    syncRightWorkspacePanelPresentation({ panel, visible: true, preferredWidth: 767 });
+
+    expect(calls).toEqual(['expand', 'resize:767']);
+  });
+
+  it('collapses a hidden right workspace without applying a stale width', () => {
+    const calls: string[] = [];
+    let collapsed = false;
+    const panel = {
+      collapse: () => { collapsed = true; calls.push('collapse'); },
+      expand: () => { collapsed = false; calls.push('expand'); },
+      isCollapsed: () => collapsed,
+      resize: (size: number | string) => { calls.push(`resize:${size}`); },
+    };
+
+    syncRightWorkspacePanelPresentation({ panel, visible: false, preferredWidth: 767 });
+
+    expect(calls).toEqual(['collapse']);
+  });
+
   it('allows the navigation sidebar to shrink to its compact readable width', () => {
     expect(WORKSPACE_SIDEBAR_MIN_WIDTH).toBe(176);
   });

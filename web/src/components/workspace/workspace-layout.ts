@@ -70,6 +70,30 @@ export interface FileWorkspaceResponsiveState {
 
 export type FileWorkspaceResizeDirection = 'growing' | 'shrinking' | 'stationary';
 
+export interface RightWorkspacePanelController {
+  collapse: () => void;
+  expand: () => void;
+  isCollapsed: () => boolean;
+  resize: (size: number | string) => void;
+}
+
+export function syncRightWorkspacePanelPresentation({
+  panel,
+  visible,
+  preferredWidth,
+}: {
+  panel: RightWorkspacePanelController;
+  visible: boolean;
+  preferredWidth: number;
+}) {
+  if (!visible) {
+    if (!panel.isCollapsed()) panel.collapse();
+    return;
+  }
+  if (panel.isCollapsed()) panel.expand();
+  panel.resize(preferredWidth);
+}
+
 export function resolveFileWorkspaceResizeDirection({
   previousShellWidth,
   shellWidth,

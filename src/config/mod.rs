@@ -2389,6 +2389,10 @@ impl ConversationRunMode {
             Self::Auto => "auto",
         }
     }
+
+    pub fn is_orchestrated(self) -> bool {
+        matches!(self, Self::Workflow | Self::Auto)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

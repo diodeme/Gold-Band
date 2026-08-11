@@ -3840,7 +3840,8 @@ export function displayAppError(t: TFunction, error: unknown) {
     }
     return t(`errors.${error.code}`, {
       ...error.params,
-      defaultValue: t("errors.app.unexpected"),
+      message: error.params.message ?? "",
+      defaultValue: t("errors.app.unexpected", { message: "" }),
     });
   }
   return String(error);

@@ -38,6 +38,10 @@ AI-DYNAMIC 的判定依据是节点运行角色，而不是“执行 surface 是
 
 用户停止仍写入 `Paused + ProcessInterrupted`。停止后的 composer 保持普通输入，用户消息固定走 `NonRuntimeControlled`，不会因为 Agent 回复结束而恢复工作流。只有显式“继续工作流”动作可以恢复 Runtime；该动作发送隐藏 `RuntimeResume` prompt，不生成可见用户气泡。可恢复暂停的 lifecycle 固定投影为 `continueKind=action`、`composer.mode=normal`、`submitTarget=acp-prompt`，旧 `interrupted-input / runtime-continue` 文本提交语义废弃。
 
+Runtime 是否可显式继续还必须受运行模式约束。`ConversationRunMode::is_orchestrated()` 对 `Auto / Workflow` 返回 true、对 `Direct` 返回 false；AI-DYNAMIC 是节点类型，不单独参与该判断。因此只有 Workflow/AUTO 的可恢复暂停投影 `continueKind=action`。Direct 停止只取消当前 ACP 回复并保持普通 composer，后续消息继续走 NonRuntime ACP prompt，不显示也不接受“继续工作流”。即使 Direct 底层容器仍保存 `Paused + ProcessInterrupted`，该事实也不能被解释为编排恢复资格。
+
+“继续工作流”属于 composer action，固定放在发送按钮旁边，并且只消费后端 lifecycle。前端不得在 stop command 返回后自行合成 `continuable` 或 `continueKind`。Direct 在首个 ACP session 尚未完整建立时停止，也应保留自由会话入口；不得因为 session 建立时机不同而要求用户重跑或调用 Runtime continue。
+
 RuntimeControlled → NonRuntimeControlled 后，第一条已被 ACP 接受的用户消息附加一次默认收缩、可展开的 `<hidden>` 运行上下文，说明当前无需遵循 Runtime artifact 要求且不得自行推进工作流。该边界通过既有 ACP snapshot/session/timeline 的 `runtimeControl` metadata 与 transition id 记录；NonRuntime 对话中再次停止不创建新边界、不重复注入。显式继续后再次停止 Runtime 才会创建下一条边界。
 
 Direct / `RawAgent` 从首轮开始就是 `NonRuntimeControlled`，不能先按 RuntimeControlled 启动、再依赖后续追问修正。停止后的首次 context 判定、user prompt event 落盘和 cursor commit 必须位于同一个 ACP session prompt lock 边界：并发普通消息只有第一条能够认领 suspended transition；显式继续则先生成包含 source transition id 的候选，只有 accepted user prompt event 已持久化后才以 CAS 提交 `WorkflowContinued`。ACP 初始化、session setup 或 prompt 接受前失败时 cursor 保持 NonRuntime，新的 stop transition 也不能被迟到的 resume 覆盖。

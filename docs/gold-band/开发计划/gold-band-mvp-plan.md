@@ -1001,3 +1001,4 @@ attempt-001/
 - 将历史身份串用、状态回退、恢复丢失、半完成写入和局部坏数据拖垮整体等问题收敛为统一工程规则：稳定身份与完整作用域、canonical state 单一权威、`status/outcome` 分离、异步单调合并、durable/transient 分层、原子幂等写入、局部失败隔离、能力发现和资源信任边界。
 - 根 `AGENTS.md` 只提供强制路由，详细约束由 `docs/gold-band/rules/state-lifecycle-and-data-integrity.md` 作为唯一真源；runtime 总览增加对应边界入口。
 - 新增经验沉淀机制：Bug 或设计修正完成并验证后先判断复用价值并检索现有规则；只有向用户说明原则与收益并获得明确同意后才可写入，规则必须精简、可执行、可验收且不复述具体问题。
+ - 2026-08-12 RunMode 边界修复：新增 `ConversationRunMode::is_orchestrated()`，统一由 Workflow/AUTO 获得 Runtime continue 资格，Direct 即使底层容器暂停也只保留 NonRuntime 普通发送。后端 continue command 与 lifecycle projection 同时执行该领域判定，前端删除 stop 后本地伪造的 action，并把“继续工作流”移入 prompt-kit composer 的发送 action 行。Direct 首轮提前停止、manual check、AI-DYNAMIC leaf、错误标题与 i18n 占位符均由接口/组件测试固化。

@@ -12,6 +12,7 @@ import {
   fileBrowserWorkspaceResourceKey,
   gitFileComparisonWorkspaceResourceKey,
   rightWorkspaceReducer,
+  scheduledTaskConfigWorkspaceResourceKey,
   type AgentTranscriptLocator,
   type FileWorkspaceResource,
   type RightWorkspaceResource,
@@ -62,6 +63,24 @@ describe('right workspace resource model', () => {
     expect(state.tabs[0]).toMatchObject({ title: 'Agent A updated', attention: true });
     expect(state.requestedOpen).toBe(true);
     expect(state.openRevision).toBe(3);
+  });
+
+  it('models scheduled authoring as one stable tab per draft scope', () => {
+    const scopeKey = 'draft:project-1';
+    const key = scheduledTaskConfigWorkspaceResourceKey(scopeKey);
+    const resource: RightWorkspaceResource = {
+      kind: 'scheduled-task-config',
+      key,
+      scopeKey,
+      title: 'Scheduled task settings',
+      attention: false,
+    };
+    let state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource });
+    state = rightWorkspaceReducer(state, { type: 'open', resource: { ...resource, title: 'Updated settings' } });
+
+    expect(key).toBe('scheduled-task-config:draft:project-1');
+    expect(state.tabs).toEqual([{ ...resource, title: 'Updated settings' }]);
+    expect(state).toMatchObject({ activeTabKey: key, requestedOpen: true });
   });
 
   it('closes the active tab to its adjacent tab and collapses after the last tab closes', () => {

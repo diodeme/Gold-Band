@@ -28,6 +28,20 @@ describe('ScheduledTaskManagementPage', () => {
     // Detail controls moved to the dedicated detail page
     expect(source).not.toContain('getScheduledTaskDiagnostics');
     expect(source).not.toContain('subscribeScheduledOccurrenceUpdates');
+    expect(source).toContain('<Sheet open={Boolean(editing)}');
+    expect(source).toContain('resizeStorageKey="scheduled-task-management/edit"');
+    expect(source).toContain('presentation="workspace"');
+  });
+
+  it('uses the full workspace width and a responsive row contract', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const source = readFileSync(fileURLToPath(new URL('../src/pages/ScheduledTaskManagementPage.tsx', import.meta.url)), 'utf8');
+    expect(source).toContain('flex h-full w-full min-w-0 flex-col');
+    expect(source).toContain('md:grid-cols-[minmax(0,1.35fr)');
+    expect(source).toContain('md:hidden');
+    expect(source).not.toContain('max-w-6xl');
+    expect(source).not.toContain('min-w-[980px]');
   });
 });
 

@@ -13,6 +13,7 @@ interface ConversationHomePageProps {
   workflowTemplates: WorkflowTemplateStore | null;
   profiles: ProfileVm[];
   busy: boolean;
+  initialScheduledMode?: boolean;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
@@ -20,6 +21,7 @@ interface ConversationHomePageProps {
   onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
+  onScheduledModeExit?: () => void;
 }
 
 export function ConversationHomePage({
@@ -31,6 +33,7 @@ export function ConversationHomePage({
   workflowTemplates,
   profiles,
   busy,
+  initialScheduledMode = false,
   onRunModeChange,
   onLoadProfiles,
   onSubmit,
@@ -38,6 +41,7 @@ export function ConversationHomePage({
   onOpenAgentManagement,
   onOpenRunModeSettings,
   onWorkspaceChange,
+  onScheduledModeExit,
 }: ConversationHomePageProps) {
   return (
     <div className={cn(
@@ -57,6 +61,7 @@ export function ConversationHomePage({
           workflowTemplates={workflowTemplates}
           profiles={profiles}
           busy={busy}
+          initialScheduledMode={initialScheduledMode}
           onRunModeChange={onRunModeChange}
           onLoadProfiles={onLoadProfiles}
           onSubmit={onSubmit}
@@ -64,6 +69,7 @@ export function ConversationHomePage({
           onOpenAgentManagement={onOpenAgentManagement}
           onOpenRunModeSettings={onOpenRunModeSettings}
           onWorkspaceChange={onWorkspaceChange}
+          onScheduledModeExit={onScheduledModeExit}
         />
       </div>
     </div>

@@ -9,6 +9,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { ScheduledTaskDialog, type ScheduledTaskInitialConfig } from '@/components/conversation/ScheduledTaskDialog';
 import { formatTimestamp, scheduledTaskStatusLabel } from './ScheduledTaskManagementPage';
 import { formatScheduledSchedule, scheduledScheduleTimezone } from '@/lib/scheduled-task-formatting';
@@ -280,34 +281,41 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
         )}
       </section>
 
-      <ScheduledTaskDialog
-        open={Boolean(editing)}
-        onOpenChange={(open) => { if (!open) setEditing(null); }}
-        allowContinuous={editing?.definition.runMode === 'direct'}
-        initialConfig={editing ? editConfig(editing.definition) : null}
-        initialContent={editing?.definition.content}
-        showContent
-        onSave={async (config, content) => {
-          if (!editing) return;
-          const definition = editing.definition;
-          await updateScheduledTask({
-            scheduledTaskId: definition.scheduledTaskId,
-            projectId: definition.projectId,
-            expectedUpdatedAt: definition.expectedUpdatedAt,
-            content: content ?? definition.content,
-            runMode: definition.runMode,
-            workflowTemplateId: definition.workflowTemplateId,
-            includeInterview: definition.includeInterview,
-            directConfig: definition.directConfig,
-            autoConfig: definition.autoConfig,
-            schedule: config.schedule,
-            overlapPolicy: config.overlapPolicy,
-            sessionPolicy: config.sessionPolicy,
-          });
-          setEditing(null);
-          await loadDetail(definition.projectId, scheduledTaskId);
-        }}
-      />
+      <Sheet open={Boolean(editing)} onOpenChange={(open) => { if (!open) setEditing(null); }}>
+        <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey="scheduled-task-detail/edit" defaultSize={720} minSize={520} maxSize={960} closeLabel={t('common.close')}>
+          <SheetTitle className="sr-only">{t('scheduled.dialog.title')}</SheetTitle>
+          {editing ? (
+            <ScheduledTaskDialog
+              open
+              presentation="workspace"
+              onOpenChange={(open) => { if (!open) setEditing(null); }}
+              allowContinuous={editing.definition.runMode === 'direct'}
+              initialConfig={editConfig(editing.definition)}
+              initialContent={editing.definition.content}
+              showContent
+              onSave={async (config, content) => {
+                const definition = editing.definition;
+                await updateScheduledTask({
+                  scheduledTaskId: definition.scheduledTaskId,
+                  projectId: definition.projectId,
+                  expectedUpdatedAt: definition.expectedUpdatedAt,
+                  content: content ?? definition.content,
+                  runMode: definition.runMode,
+                  workflowTemplateId: definition.workflowTemplateId,
+                  includeInterview: definition.includeInterview,
+                  directConfig: definition.directConfig,
+                  autoConfig: definition.autoConfig,
+                  schedule: config.schedule,
+                  overlapPolicy: config.overlapPolicy,
+                  sessionPolicy: config.sessionPolicy,
+                });
+                setEditing(null);
+                await loadDetail(definition.projectId, scheduledTaskId);
+              }}
+            />
+          ) : null}
+        </SheetContent>
+      </Sheet>
 
       <AlertDialog open={deleting} onOpenChange={(open) => { if (!open) setDeleting(false); }}>
         <AlertDialogContent>

@@ -110,7 +110,6 @@ import { applyFont, applyTheme, resolveThemePreference, syncDesktopWindowSurface
 import { useInterventionNotifications } from './lib/use-intervention-notifications';
 import { useScheduledNotifications } from './lib/use-scheduled-notifications';
 import { scheduledNotificationNavigation } from './lib/scheduled-task-notifications';
-import { shouldCollapseShellSidebar } from './lib/responsive-shell';
 import {
   shouldRunWorkbenchBackgroundRefresh,
   WORKBENCH_BACKGROUND_REFRESH_HIDDEN_INTERVAL_MS,
@@ -319,8 +318,7 @@ export function App() {
   const [uiMode, setUiMode] = useState<DesktopUiMode>(initialRoute.uiMode);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     const stored = typeof localStorage !== 'undefined' && localStorage.getItem('gold-band-sidebar-collapsed') === 'true';
-    const compact = typeof window !== 'undefined' && shouldCollapseShellSidebar(window.innerWidth);
-    return stored || compact;
+    return stored;
   });
   const [bootstrap, setBootstrap] = useState<AppBootstrapVm | null>(null);
   const windowRevealedRef = useRef(false);
@@ -567,14 +565,6 @@ export function App() {
     if (typeof localStorage === 'undefined') return;
     localStorage.setItem('gold-band-sidebar-collapsed', sidebarCollapsed ? 'true' : 'false');
   }, [sidebarCollapsed]);
-
-  useEffect(() => {
-    const updateCompactShell = () => {
-      if (shouldCollapseShellSidebar(window.innerWidth)) setSidebarCollapsed(true);
-    };
-    window.addEventListener('resize', updateCompactShell);
-    return () => window.removeEventListener('resize', updateCompactShell);
-  }, []);
 
   useEffect(() => {
     if (!isTauriRuntime() || !bootstrap) return;
@@ -1906,7 +1896,7 @@ export function App() {
         </TooltipProvider>
       );
     }
-    if (conversationPage.kind === 'conversation-home') {
+    if (conversationPage.kind === 'conversation-home' || conversationPage.kind === 'scheduled-task-create') {
       return (
         <>
         <ConversationHomePage
@@ -1918,6 +1908,7 @@ export function App() {
           workflowTemplates={conversationWorkflowTemplates}
           profiles={profiles}
           busy={busy}
+          initialScheduledMode={conversationPage.kind === 'scheduled-task-create'}
           onRunModeChange={updateConversationRunMode}
           onLoadProfiles={loadProfiles}
           onSubmit={async (input) => {
@@ -1990,6 +1981,9 @@ export function App() {
           }}
           onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
+          onScheduledModeExit={conversationPage.kind === 'scheduled-task-create'
+            ? () => onSelectConversation({ kind: 'conversation-home' })
+            : undefined}
           onWorkspaceChange={(projectId) => {
             resetConversationComposerDraft(composerDraftRef.current);
             setDraftConversationWorkspaceId(projectId);
@@ -2015,7 +2009,7 @@ export function App() {
       );
     }
     if (conversationPage.kind === 'scheduled-tasks') {
-      return <ScheduledTaskManagementPage projectId={defaultProjectId} onCreate={() => onSelectConversation({ kind: 'conversation-home' })} onOpenDetail={(task) => onSelectConversation({ kind: 'scheduled-task-detail', projectId: task.projectId, scheduledTaskId: task.id })} />;
+      return <ScheduledTaskManagementPage projectId={defaultProjectId} onCreate={() => onSelectConversation({ kind: 'scheduled-task-create' })} onOpenDetail={(task) => onSelectConversation({ kind: 'scheduled-task-detail', projectId: task.projectId, scheduledTaskId: task.id })} />;
     }
     if (conversationPage.kind === 'scheduled-task-detail') {
       return <ScheduledTaskDetailPage projectId={conversationPage.projectId} scheduledTaskId={conversationPage.scheduledTaskId} onBack={() => onSelectConversation({ kind: 'scheduled-tasks' })} onOpenOccurrence={onSelectConversation} />;

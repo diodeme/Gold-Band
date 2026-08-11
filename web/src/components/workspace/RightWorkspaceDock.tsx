@@ -1,4 +1,4 @@
-import { Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, PencilLine, Plus, X } from 'lucide-react';
+import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, PencilLine, Plus, X } from 'lucide-react';
 import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -278,6 +278,8 @@ function workspaceTabIcon(tab: RightWorkspaceResource) {
       ? <PencilLine className="size-3.5 shrink-0" />
       : tab.kind === 'system-prompt'
         ? <FileCode2 className="size-3.5 shrink-0" />
+        : tab.kind === 'scheduled-task-config'
+          ? <AlarmClock className="size-3.5 shrink-0" />
           : tab.kind === 'raw-frames'
           ? <Braces className="size-3.5 shrink-0" />
           : tab.kind === 'source-control'

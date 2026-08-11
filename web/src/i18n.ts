@@ -40,7 +40,7 @@ const resources = {
           workspace: "工作区", schedule: "计划", timezone: "时区", status: "状态", noHistory: "暂无执行记录", attempt: "第 {{count}} 次", openRun: "打开关联运行", filter: "历史状态", allStatuses: "全部状态",
         },
         dialog: {
-          title: "定时任务设置", content: "任务内容", tabs: { at: "单次", repeat: "重复", cron: "Cron" }, date: "日期", time: "时间", frequency: "频率",
+          title: "定时任务设置", content: "任务内容", tabs: { at: "单次", repeat: "重复", cron: "Cron" }, date: "日期", time: "时间", openTimePicker: "打开时间选择器", hours: "小时", minutes: "分钟", frequency: "频率",
           frequencyOptions: { hourly: "每小时", daily: "每天", weekdays: "工作日", weekly: "每周", every: "每隔" }, weekdaySelect: "星期（可多选）", executionTime: "执行时间", interval: "间隔",
           nextRun: "下次执行：{{description}} · {{timezone}}", repeatHint: "{{frequency}} 将按当前配置计算下一次执行时间。", hourlyDescription: "整点执行",
           cronExpression: "Cron 表达式", cronHint: "保存后显示下一次执行时间。", timezone: "时区", queueProtection: "队列保护", queueProtectionDescription: "已有执行未结束时跳过本次",
@@ -1912,7 +1912,7 @@ const resources = {
           workspace: "Workspace", schedule: "Schedule", timezone: "Timezone", status: "Status", noHistory: "No run history", attempt: "Attempt {{count}}", openRun: "Open linked run", filter: "History status", allStatuses: "All statuses",
         },
         dialog: {
-          title: "Scheduled task settings", content: "Task content", tabs: { at: "Once", repeat: "Repeat", cron: "Cron" }, date: "Date", time: "Time", frequency: "Frequency",
+          title: "Scheduled task settings", content: "Task content", tabs: { at: "Once", repeat: "Repeat", cron: "Cron" }, date: "Date", time: "Time", openTimePicker: "Open time picker", hours: "Hours", minutes: "Minutes", frequency: "Frequency",
           frequencyOptions: { hourly: "Hourly", daily: "Daily", weekdays: "Weekdays", weekly: "Weekly", every: "Interval" }, weekdaySelect: "Weekdays (select multiple)", executionTime: "Run time", interval: "Interval",
           nextRun: "Next run: {{description}} · {{timezone}}", repeatHint: "{{frequency}} uses the current settings to calculate the next run.", hourlyDescription: "At the top of every hour",
           cronExpression: "Cron expression", cronHint: "The next run appears after saving.", timezone: "Timezone", queueProtection: "Queue protection", queueProtectionDescription: "Skip when a previous run has not finished",

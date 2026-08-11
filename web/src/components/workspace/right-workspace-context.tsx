@@ -116,6 +116,10 @@ export type RawFramesWorkspaceResource = RightWorkspaceResourceBase & {
   locator: AcpAttemptWorkspaceLocator;
 };
 
+export type ScheduledTaskConfigWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'scheduled-task-config';
+};
+
 export type RightWorkspaceResource =
   | AgentTranscriptResource
   | FileBrowserWorkspaceResource
@@ -128,7 +132,8 @@ export type RightWorkspaceResource =
   | WorkflowViewWorkspaceResource
   | WorkflowEditWorkspaceResource
   | SystemPromptWorkspaceResource
-  | RawFramesWorkspaceResource;
+  | RawFramesWorkspaceResource
+  | ScheduledTaskConfigWorkspaceResource;
 
 export interface RightWorkspaceSessionState {
   tabs: RightWorkspaceResource[];
@@ -520,6 +525,10 @@ export function fileBrowserWorkspaceResourceKey(projectId: string) {
 export function sourceControlWorkspaceResourceKey(projectId: string, workspacePath?: string | null) {
   const normalizedPath = workspacePath?.replaceAll('\\', '/');
   return `source-control:${projectId}:${normalizedPath ?? 'main'}`;
+}
+
+export function scheduledTaskConfigWorkspaceResourceKey(scopeKey: string) {
+  return `scheduled-task-config:${scopeKey}`;
 }
 
 export function gitFileComparisonWorkspaceResourceKey(projectId: string, source: import('@/types').GitComparisonSourceVm) {

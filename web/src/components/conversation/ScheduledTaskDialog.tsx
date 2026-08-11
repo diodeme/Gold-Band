@@ -2,13 +2,14 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlarmClock, CalendarClock, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { TimezoneCombobox } from '@/components/scheduled-tasks/TimezoneCombobox';
+import { ScheduledTimePicker } from '@/components/scheduled-tasks/ScheduledTimePicker';
 import {
   analyzeScheduledLocalTime,
   buildScheduledScheduleInput,
@@ -18,7 +19,8 @@ import {
   type ScheduledAuthoringTab,
   type ScheduledRepeatFrequency,
 } from '@/lib/scheduled-task-authoring';
-import { getScheduledSystemTimezone, getScheduledTimezones } from '@/lib/scheduled-task-timezones';
+import { getScheduledTimezones } from '@/lib/scheduled-task-timezones';
+import { getPreferredScheduledTimezone, rememberScheduledTimezone } from '@/lib/scheduled-task-timezone-preference';
 import type {
   ScheduledAtDisambiguation,
   ScheduledEveryUnit,
@@ -49,6 +51,7 @@ type ScheduledTaskDialogProps = {
   draftConfig?: ScheduledTaskConfig | null;
   initialContent?: string;
   showContent?: boolean;
+  presentation?: 'dialog' | 'workspace';
 };
 
 type ValidationField = 'atDate' | 'atTime' | 'at' | 'repeatTime' | 'weekdays' | 'every' | 'cron' | 'timezone';
@@ -100,6 +103,7 @@ export function ScheduledTaskDialog({
   draftConfig,
   initialContent,
   showContent = false,
+  presentation = 'dialog',
 }: ScheduledTaskDialogProps) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<ScheduledAuthoringTab>('repeat');
@@ -112,7 +116,7 @@ export function ScheduledTaskDialog({
   const [everyValue, setEveryValue] = useState('6');
   const [everyUnit, setEveryUnit] = useState<ScheduledEveryUnit>('hours');
   const [cron, setCron] = useState('0 0 9 * * *');
-  const [timezone, setTimezone] = useState(getScheduledSystemTimezone);
+  const [timezone, setTimezone] = useState(getPreferredScheduledTimezone);
   const [queueProtection, setQueueProtection] = useState(true);
   const [sessionPolicy, setSessionPolicy] = useState<ScheduledSessionPolicy>('new');
   const [saving, setSaving] = useState(false);
@@ -191,7 +195,7 @@ export function ScheduledTaskDialog({
     setEveryValue('6');
     setEveryUnit('hours');
     setCron('0 0 9 * * *');
-    setTimezone(getScheduledSystemTimezone());
+    setTimezone(getPreferredScheduledTimezone());
     setQueueProtection(true);
     setSessionPolicy('new');
   };
@@ -314,18 +318,23 @@ export function ScheduledTaskDialog({
     }
   };
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        aria-describedby={undefined}
-        className="max-h-[min(760px,calc(100vh-2rem))] max-w-[590px] gap-0 overflow-hidden p-0"
-      >
-        <DialogHeader className="border-b border-border/60 px-5 py-4 text-left">
-          <DialogTitle className="flex items-center gap-2 text-base">
-            <AlarmClock className="size-4 text-primary" />
-            {t('scheduled.dialog.title')}
-          </DialogTitle>
-        </DialogHeader>
+  const editor = (
+    <>
+        {presentation === 'dialog' ? (
+          <DialogHeader className="border-b border-border/60 px-5 py-4 text-left">
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <AlarmClock className="size-4 text-primary" />
+              {t('scheduled.dialog.title')}
+            </DialogTitle>
+          </DialogHeader>
+        ) : (
+          <header className="border-b border-border/60 px-5 py-4">
+            <h2 className="flex items-center gap-2 text-sm font-semibold">
+              <AlarmClock className="size-4 text-primary" />
+              {t('scheduled.dialog.title')}
+            </h2>
+          </header>
+        )}
         <div className="space-y-5 overflow-y-auto p-5">
           {showContent ? (
             <label className="block space-y-2 text-xs text-muted-foreground">
@@ -350,7 +359,7 @@ export function ScheduledTaskDialog({
               </label>
               <label className="space-y-2 text-xs text-muted-foreground">
                 {t('scheduled.dialog.time')}
-                <Input type="time" value={atTime} aria-invalid={validationIssue?.field === 'atTime' || validationIssue?.field === 'at'} onChange={(event) => setAtTime(event.target.value)} />
+                <ScheduledTimePicker value={atTime} invalid={validationIssue?.field === 'atTime' || validationIssue?.field === 'at'} onValueChange={setAtTime} />
                 {validationMessage('atTime') ? <span className="block text-destructive">{validationMessage('atTime')}</span> : null}
               </label>
               {validationMessage('at') ? <p className="text-xs text-destructive sm:col-span-2">{validationMessage('at')}</p> : null}
@@ -406,7 +415,7 @@ export function ScheduledTaskDialog({
               {frequency !== 'every' && frequency !== 'hourly' ? (
                 <label className="block space-y-2 text-xs text-muted-foreground">
                   {t('scheduled.dialog.executionTime')}
-                  <Input type="time" value={repeatTime} aria-invalid={validationIssue?.field === 'repeatTime'} onChange={(event) => setRepeatTime(event.target.value)} />
+                  <ScheduledTimePicker value={repeatTime} invalid={validationIssue?.field === 'repeatTime'} onValueChange={setRepeatTime} />
                   {validationMessage('repeatTime') ? <span className="block text-destructive">{validationMessage('repeatTime')}</span> : null}
                 </label>
               ) : null}
@@ -453,7 +462,7 @@ export function ScheduledTaskDialog({
 
           <label className="block space-y-2 text-xs text-muted-foreground">
             {t('scheduled.dialog.timezone')}
-            <TimezoneCombobox value={timezone} onValueChange={setTimezone} />
+            <TimezoneCombobox value={timezone} onValueChange={(value) => { setTimezone(value); rememberScheduledTimezone(value); }} />
             {validationMessage('timezone') ? <span className="block text-destructive">{validationMessage('timezone')}</span> : null}
           </label>
 
@@ -477,10 +486,28 @@ export function ScheduledTaskDialog({
             </div>
           ) : null}
         </div>
-        <DialogFooter className="border-t border-border/60 px-5 py-4">
+        <div className="flex justify-end gap-2 border-t border-border/60 px-5 py-4">
           <Button variant="outline" onClick={() => onOpenChange(false)}>{t('scheduled.dialog.cancel')}</Button>
           <Button disabled={!canSave || saving} onClick={() => void save()}>{t('scheduled.dialog.done')}</Button>
-        </DialogFooter>
+        </div>
+    </>
+  );
+
+  if (presentation === 'workspace') {
+    return (
+      <section className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background" data-scheduled-task-config-panel="true">
+        {editor}
+      </section>
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        aria-describedby={undefined}
+        className="max-h-[min(760px,calc(100vh-2rem))] max-w-[590px] gap-0 overflow-hidden p-0"
+      >
+        {editor}
       </DialogContent>
     </Dialog>
   );

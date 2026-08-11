@@ -4,6 +4,11 @@ import {
   getScheduledSystemTimezone,
   getScheduledTimezones,
 } from '../src/lib/scheduled-task-timezones';
+import {
+  getPreferredScheduledTimezone,
+  rememberScheduledTimezone,
+  SCHEDULED_TIMEZONE_STORAGE_KEY,
+} from '../src/lib/scheduled-task-timezone-preference';
 
 describe('scheduled task timezones', () => {
   it('provides the complete IANA catalog with UTC and the system zone', () => {
@@ -29,5 +34,19 @@ describe('scheduled task timezones', () => {
     expect(getScheduledSystemTimezone(() => {
       throw new Error('resolver failed');
     })).toBe('UTC');
+  });
+
+  it('defaults to the system timezone and remembers the latest valid user choice', () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    expect(getPreferredScheduledTimezone(storage, 'Asia/Hong_Kong')).toBe('Asia/Hong_Kong');
+    expect(rememberScheduledTimezone('America/New_York', storage)).toBe(true);
+    expect(values.get(SCHEDULED_TIMEZONE_STORAGE_KEY)).toBe('America/New_York');
+    expect(getPreferredScheduledTimezone(storage, 'Asia/Hong_Kong')).toBe('America/New_York');
+    expect(rememberScheduledTimezone('Invalid/Zone', storage)).toBe(false);
+    expect(getPreferredScheduledTimezone(storage, 'Asia/Hong_Kong')).toBe('America/New_York');
   });
 });

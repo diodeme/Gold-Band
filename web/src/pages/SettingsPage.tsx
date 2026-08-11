@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppInfoVm, ConcreteDesktopTheme, DesktopFontPreference, DesktopLanguage, DesktopThemeMode, DesktopThemePreference, LocalClaudeStatusVm, MetricsSettingsVm, PreferencesVm, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm } from '../types';
+import type { AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, ConcreteDesktopTheme, DesktopFontPreference, DesktopLanguage, DesktopThemeMode, DesktopThemePreference, LocalClaudeStatusVm, MetricsSettingsVm, PreferencesVm, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm } from '../types';
 import {
   applyFont,
   applyTheme,
@@ -28,6 +28,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
 import { ScheduledRuntimeSettings } from '@/components/scheduled-tasks/ScheduledRuntimeSettings';
+import { AvatarSettings } from '@/components/settings/AvatarSettings';
 
 type ThemeDrawerMode = 'all' | DesktopThemeMode;
 
@@ -44,6 +45,10 @@ interface SettingsPageProps {
   busy: boolean;
   initialTab?: 'general' | 'appearance' | 'advanced';
   onSave: (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) => void;
+  onSaveAvatar: (input: SaveDesktopAvatarInput) => Promise<AvatarPreferencesVm | undefined>;
+  onSelectRecentAvatar: (kind: AvatarKind, avatarId: string) => Promise<AvatarPreferencesVm | undefined>;
+  onSaveAvatarShape: (kind: AvatarKind, shape: AvatarShape) => Promise<AvatarPreferencesVm | undefined>;
+  onClearAvatar: (kind: AvatarKind) => Promise<AvatarPreferencesVm | undefined>;
   metricsSettings?: MetricsSettingsVm | null;
   onSaveMetricsSettings?: (enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) => Promise<MetricsSettingsVm | undefined>;
   onSaveUpdaterSettings: (overrideUrl: string | null) => Promise<UpdaterSettingsVm | undefined>;
@@ -53,7 +58,7 @@ interface SettingsPageProps {
   onViewAdvanced: () => Promise<void> | void;
 }
 
-export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, initialTab, onSave, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
+export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, initialTab, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
   const { t } = useTranslation();
   const [theme, setTheme] = useState(preferences.theme);
   const [language, setLanguage] = useState(preferences.language);
@@ -267,7 +272,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                 </button>
               </div>
 
-              <Sheet open={themeSheetOpen} onOpenChange={setThemeSheetOpen}>
+              <Sheet modal={false} open={themeSheetOpen} onOpenChange={setThemeSheetOpen}>
                 {syncWithOs ? (
                   <div className="grid gap-3 @6xl/settings-content:grid-cols-2">
                     <ThemeSummaryCard
@@ -355,6 +360,17 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                 </div>
                 {selectedLocalFont ? <FontPreviewSample sample="任务编排 / AI Workflow" fontFamily={fontFamilyForPreference(selectedLocalFont)} /> : null}
               </div>
+            </SettingsSection>
+
+            <SettingsSection title={t('settings.avatar.title')} divided>
+              <AvatarSettings
+                preferences={preferences.avatars}
+                busy={busy}
+                onSaveAvatar={onSaveAvatar}
+                onSelectRecentAvatar={onSelectRecentAvatar}
+                onSaveAvatarShape={onSaveAvatarShape}
+                onClearAvatar={onClearAvatar}
+              />
             </SettingsSection>
           </AppCard>
         </TabsContent>

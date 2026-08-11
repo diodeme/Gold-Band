@@ -6,10 +6,14 @@
 //! 无 resolved 闭环。发送流程为 dedup → OS 通知 → emit，
 //! 失败一律 `tracing::warn!`，不静默吞错（方案 §6.3/§12）。
 
-use std::sync::{Arc, Once};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+#[cfg(windows)]
+use std::sync::Once;
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use gold_band::app::{InterventionNotification, RuntimeLifecycleEvent};
+use gold_band::app::{AcpTurnBatchProgress, InterventionNotification, RuntimeLifecycleEvent};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tracing::warn;
@@ -66,9 +70,10 @@ pub const ACTION_VIEW: &str = "view:";
 pub const ACTION_DISMISS: &str = "dismiss:";
 
 /// Toast「查看详情」按钮携带的完整定位字段（含 dedupKey，便于清后端去重）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewActionPayload {
+    pub project_id: String,
     pub task_id: String,
     pub run_id: String,
     pub round_id: String,
@@ -77,7 +82,7 @@ pub struct ViewActionPayload {
     pub dedup_key: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScheduledViewActionPayload {
     pub kind: String,
@@ -89,6 +94,25 @@ pub struct ScheduledViewActionPayload {
     pub round_id: Option<String>,
     pub attempt_id: Option<String>,
     pub dedup_key: String,
+}
+
+/// A native notification can navigate either to an ordinary conversation
+/// attempt or to scheduler-owned history/detail. Keep the ownership explicit
+/// while preserving the payload fields consumed by the frontend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "targetType", rename_all = "camelCase")]
+pub enum InterventionNavigationTarget {
+    Conversation(ViewActionPayload),
+    Scheduled(ScheduledViewActionPayload),
+}
+
+impl InterventionNavigationTarget {
+    fn dedup_key(&self) -> &str {
+        match self {
+            Self::Conversation(payload) => &payload.dedup_key,
+            Self::Scheduled(payload) => &payload.dedup_key,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -109,6 +133,37 @@ pub struct ScheduledNativeNotificationInputVm {
 #[serde(rename_all = "camelCase")]
 pub struct DismissActionPayload {
     pub dedup_key: String,
+}
+
+#[derive(Debug, Default)]
+pub struct PendingInterventionNavigations {
+    queue: Mutex<VecDeque<InterventionNavigationTarget>>,
+}
+
+impl PendingInterventionNavigations {
+    fn push(&self, target: InterventionNavigationTarget) {
+        if let Ok(mut queue) = self.queue.lock()
+            && !queue
+                .iter()
+                .any(|pending| pending.dedup_key() == target.dedup_key())
+        {
+            queue.push_back(target);
+        }
+    }
+
+    fn take_all(&self) -> Vec<InterventionNavigationTarget> {
+        self.queue
+            .lock()
+            .map(|mut queue| queue.drain(..).collect())
+            .unwrap_or_default()
+    }
+}
+
+#[tauri::command]
+pub fn take_pending_intervention_navigations(
+    pending: tauri::State<'_, PendingInterventionNavigations>,
+) -> Vec<InterventionNavigationTarget> {
+    pending.take_all()
 }
 
 /// 编码 `view:` + base64(json(payload))，消除旧的 `view|a|b|c|d` 脆弱解析（方案 §9.1）。
@@ -155,7 +210,11 @@ pub fn decode_action(raw: &str) -> Option<(bool, serde_json::Value)> {
 }
 
 /// 处理 Toast 点击 action：查看详情 → 前置窗口 + emit 导航 + 清 dedup；忽略 → 清 dedup。
-fn handle_toast_action(app_handle: &AppHandle, raw_action: Option<&str>) {
+fn handle_toast_action(
+    app_handle: &AppHandle,
+    raw_action: Option<&str>,
+    default_target: InterventionNavigationTarget,
+) {
     let Some(state) = app_handle.try_state::<DesktopState>() else {
         warn!("DesktopState unavailable when handling toast action");
         return;
@@ -172,11 +231,10 @@ fn handle_toast_action(app_handle: &AppHandle, raw_action: Option<&str>) {
                             return;
                         }
                     };
-                    dedup.clear_key(&payload.dedup_key);
-                    focus_main_window(app_handle);
-                    if let Err(error) = app_handle.emit(INTERVENTION_NAVIGATE_EVENT, &payload) {
-                        warn!(?error, "emit scheduled intervention-navigate failed");
-                    }
+                    route_intervention_navigation(
+                        app_handle,
+                        InterventionNavigationTarget::Scheduled(payload),
+                    );
                     return;
                 }
                 let payload: ViewActionPayload = match serde_json::from_value(value) {
@@ -186,12 +244,10 @@ fn handle_toast_action(app_handle: &AppHandle, raw_action: Option<&str>) {
                         return;
                     }
                 };
-                dedup.clear_key(&payload.dedup_key);
-                // 应用可能在后台/最小化：先把主窗口拉到前台，前端导航才有意义。
-                focus_main_window(app_handle);
-                if let Err(error) = app_handle.emit(INTERVENTION_NAVIGATE_EVENT, &payload) {
-                    warn!(?error, "emit intervention-navigate failed");
-                }
+                route_intervention_navigation(
+                    app_handle,
+                    InterventionNavigationTarget::Conversation(payload),
+                );
             }
             Some((false, value)) => {
                 let payload: DismissActionPayload = match serde_json::from_value(value) {
@@ -205,11 +261,7 @@ fn handle_toast_action(app_handle: &AppHandle, raw_action: Option<&str>) {
             }
             None => warn!(action, "unrecognized toast action, ignored"),
         },
-        // 点击 Toast 主体（无 action）：仅唤起应用窗口到前台，不清 dedup（避免误清）。
-        None => {
-            focus_main_window(app_handle);
-            tracing::debug!("toast body activated without action argument");
-        }
+        None => route_intervention_navigation(app_handle, default_target),
     }
 }
 
@@ -251,17 +303,28 @@ pub fn send_scheduled_native_notification(
     Ok(())
 }
 
-/// 把主窗口前置到前台（显示 + 取消最小化 + 聚焦）。
-///
-/// OS Toast 触发时应用常在后台或最小化，点「查看详情」需要先把窗口拉起，
-/// 否则前端即便执行了导航，用户也看不到界面跳转。
-fn focus_main_window(app_handle: &AppHandle) {
-    if let Some(window) = app_handle.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-    } else {
-        warn!("main webview window not found when focusing for intervention");
+fn clear_notification_dedup(app_handle: &AppHandle, dedup_key: &str) {
+    if let Some(state) = app_handle.try_state::<DesktopState>() {
+        state.notification_dedup().clear_key(dedup_key);
+    }
+}
+
+fn route_intervention_navigation(app_handle: &AppHandle, target: InterventionNavigationTarget) {
+    let Some(pending) = app_handle.try_state::<PendingInterventionNavigations>() else {
+        warn!("pending intervention navigation state unavailable");
+        return;
+    };
+    pending.push(target.clone());
+    clear_notification_dedup(app_handle, target.dedup_key());
+    if let Err(error) = crate::desktop_lifecycle::ensure_main_window(app_handle) {
+        warn!(
+            ?error,
+            "failed to restore main window for intervention navigation"
+        );
+        return;
+    }
+    if let Err(error) = app_handle.emit(INTERVENTION_NAVIGATE_EVENT, ()) {
+        warn!(?error, "emit intervention navigation availability failed");
     }
 }
 
@@ -301,7 +364,7 @@ fn send_os_notification(
     }
     #[cfg(not(windows))]
     {
-        send_notify_rust(auto_dismiss_target_secs, notification);
+        send_notify_rust(app_handle, auto_dismiss_target_secs, notification);
     }
 }
 
@@ -323,13 +386,14 @@ fn send_scheduled_os_notification(
             dedup_key: dedup_key.to_string(),
         });
         let handle = app_handle.clone();
+        let default_target = InterventionNavigationTarget::Scheduled(payload.clone());
         let toast = Toast::new(WINDOWS_AUMID)
             .title(&format!("{} - {}", APP_DISPLAY_NAME, title))
             .text1(body)
             .add_button("查看详情", &view_action)
             .add_button("忽略", &dismiss_action)
             .on_activated(move |action: Option<String>| {
-                handle_toast_action(&handle, action.as_deref());
+                handle_toast_action(&handle, action.as_deref(), default_target.clone());
                 Ok(())
             });
         let mut toast = apply_windows_toast_display_policy(toast, auto_dismiss_target_secs);
@@ -374,6 +438,7 @@ fn send_windows_toast(
     ensure_notification_registry();
 
     let payload = ViewActionPayload {
+        project_id: notification.project_id.clone(),
         task_id: notification.task_id.clone(),
         run_id: notification.run_id.clone(),
         round_id: notification.round_id.clone(),
@@ -388,13 +453,14 @@ fn send_windows_toast(
     let dismiss_action = encode_dismiss_action(&dismiss_payload);
 
     let handle = app_handle.clone();
+    let default_target = InterventionNavigationTarget::Conversation(payload.clone());
     let toast = Toast::new(WINDOWS_AUMID)
         .title(&format!("{} - {}", APP_DISPLAY_NAME, notification.title))
         .text1(&notification.body)
         .add_button("查看详情", &view_action)
         .add_button("忽略", &dismiss_action)
         .on_activated(move |action: Option<String>| {
-            handle_toast_action(&handle, action.as_deref());
+            handle_toast_action(&handle, action.as_deref(), default_target.clone());
             Ok(())
         });
     let mut toast = apply_windows_toast_display_policy(toast, auto_dismiss_target_secs);
@@ -602,26 +668,93 @@ fn create_or_rebuild_shortcut(
 }
 
 #[cfg(not(windows))]
-fn send_notify_rust(auto_dismiss_target_secs: u64, notification: &InterventionNotification) {
+fn send_notify_rust(
+    app_handle: &AppHandle,
+    auto_dismiss_target_secs: u64,
+    notification: &InterventionNotification,
+) {
     #[cfg(feature = "native-notification")]
     {
-        use notify_rust::{Notification, Timeout};
-        if let Err(error) = Notification::new()
+        use notify_rust::{Notification, NotificationResponse, Timeout};
+        let payload = ViewActionPayload {
+            project_id: notification.project_id.clone(),
+            task_id: notification.task_id.clone(),
+            run_id: notification.run_id.clone(),
+            round_id: notification.round_id.clone(),
+            node_id: notification.node_id.clone(),
+            attempt_id: notification.attempt_id.clone(),
+            dedup_key: notification.dedup_key.clone(),
+        };
+        let handle = match Notification::new()
             .appname(APP_DISPLAY_NAME)
             .summary(&format!("{} - {}", APP_DISPLAY_NAME, notification.title))
             .body(&notification.body)
+            .action("view", "查看详情")
             .timeout(Timeout::from(std::time::Duration::from_secs(
                 auto_dismiss_target_secs,
             )))
             .show()
         {
-            warn!(?error, dedup_key = %notification.dedup_key, "notify-rust failed");
-        }
+            Ok(handle) => handle,
+            Err(error) => {
+                warn!(?error, dedup_key = %notification.dedup_key, "notify-rust failed");
+                clear_notification_dedup(app_handle, &notification.dedup_key);
+                return;
+            }
+        };
+        let handle_app = app_handle.clone();
+        std::thread::spawn(move || {
+            let response_app = handle_app.clone();
+            let response_payload = payload.clone();
+            if let Err(error) = handle.wait_for_response(move |response: &NotificationResponse| {
+                match native_notification_response_disposition(response) {
+                    NativeNotificationResponseDisposition::Navigate => {
+                        route_intervention_navigation(
+                            &response_app,
+                            InterventionNavigationTarget::Conversation(response_payload),
+                        )
+                    }
+                    NativeNotificationResponseDisposition::ClearDedup => {
+                        clear_notification_dedup(&response_app, &response_payload.dedup_key)
+                    }
+                }
+            }) {
+                warn!(?error, "waiting for native notification response failed");
+                clear_notification_dedup(&handle_app, &payload.dedup_key);
+            }
+        });
     }
     #[cfg(not(feature = "native-notification"))]
     {
         let _ = auto_dismiss_target_secs;
         let _ = notification;
+        let _ = app_handle;
+    }
+}
+
+#[cfg(all(feature = "native-notification", any(not(windows), test)))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeNotificationResponseDisposition {
+    Navigate,
+    ClearDedup,
+}
+
+#[cfg(all(feature = "native-notification", any(not(windows), test)))]
+fn native_notification_response_disposition(
+    response: &notify_rust::NotificationResponse,
+) -> NativeNotificationResponseDisposition {
+    match response {
+        notify_rust::NotificationResponse::Default => {
+            NativeNotificationResponseDisposition::Navigate
+        }
+        notify_rust::NotificationResponse::Action(action) if action == "view" => {
+            NativeNotificationResponseDisposition::Navigate
+        }
+        notify_rust::NotificationResponse::Action(_)
+        | notify_rust::NotificationResponse::Reply(_)
+        | notify_rust::NotificationResponse::Closed(_) => {
+            NativeNotificationResponseDisposition::ClearDedup
+        }
     }
 }
 
@@ -650,6 +783,7 @@ fn intervention_notification_for_event(
     match event {
         RuntimeLifecycleEvent::InterventionRequested {
             event_id,
+            project_id,
             task_id,
             task_title,
             run_id,
@@ -661,6 +795,7 @@ fn intervention_notification_for_event(
             ..
         } => Some(InterventionNotification::from_intervention_event(
             &event_id,
+            &project_id,
             &task_id,
             task_title.as_deref(),
             &run_id,
@@ -672,6 +807,7 @@ fn intervention_notification_for_event(
         )),
         RuntimeLifecycleEvent::RunCompleted {
             event_id,
+            project_id,
             task_id,
             task_title,
             run_id,
@@ -682,19 +818,30 @@ fn intervention_notification_for_event(
             outcome,
             completion_agent_label,
             ..
-        } => InterventionNotification::from_run_completion(
-            &event_id,
-            &task_id,
-            task_title.as_deref(),
-            &run_id,
-            &round_id,
-            &node_id,
-            &attempt_id,
-            &node_label,
-            *outcome,
-            completion_agent_label.as_deref(),
-        ),
+        } => {
+            if should_defer_direct_run_completion_notification(
+                *outcome,
+                completion_agent_label.as_deref(),
+            ) {
+                None
+            } else {
+                InterventionNotification::from_run_completion(
+                    &event_id,
+                    &project_id,
+                    &task_id,
+                    task_title.as_deref(),
+                    &run_id,
+                    &round_id,
+                    &node_id,
+                    &attempt_id,
+                    &node_label,
+                    *outcome,
+                    completion_agent_label.as_deref(),
+                )
+            }
+        }
         RuntimeLifecycleEvent::AcpTurnFinished {
+            project_id,
             task_id,
             task_title,
             run_id,
@@ -704,18 +851,27 @@ fn intervention_notification_for_event(
             turn_id,
             agent_label,
             outcome,
+            batch_progress,
             ..
-        } => InterventionNotification::agent_turn_finished(
-            &task_id,
-            task_title.as_deref(),
-            &run_id,
-            &round_id,
-            &node_id,
-            &attempt_id,
-            &turn_id,
-            &agent_label,
-            *outcome,
-        ),
+        } => {
+            if !should_send_acp_turn_notification(*outcome, *batch_progress) {
+                None
+            } else {
+                InterventionNotification::agent_turn_finished(
+                    &project_id,
+                    &task_id,
+                    task_title.as_deref(),
+                    &run_id,
+                    &round_id,
+                    &node_id,
+                    &attempt_id,
+                    &turn_id,
+                    &agent_label,
+                    *outcome,
+                    batch_progress.completed_reply_count,
+                )
+            }
+        }
         _ => None,
     }
 }
@@ -734,6 +890,7 @@ pub fn create_intervention_notification_subscriber(
             return;
         };
         let target = crate::state::NotificationAttentionTarget {
+            project_id: &notification.project_id,
             task_id: &notification.task_id,
             run_id: &notification.run_id,
             round_id: &notification.round_id,
@@ -752,6 +909,20 @@ pub fn create_intervention_notification_subscriber(
     })
 }
 
+fn should_send_acp_turn_notification(
+    outcome: gold_band::app::AcpTurnOutcome,
+    batch_progress: AcpTurnBatchProgress,
+) -> bool {
+    outcome != gold_band::app::AcpTurnOutcome::Completed || !batch_progress.continues
+}
+
+fn should_defer_direct_run_completion_notification(
+    outcome: gold_band::domain::RunOutcome,
+    completion_agent_label: Option<&str>,
+) -> bool {
+    outcome == gold_band::domain::RunOutcome::Success && completion_agent_label.is_some()
+}
+
 /// Tauri 命令占位已移除：应用内弹窗删除后，前端不再调用点掉命令。去重清理统一由
 /// 后端 `handle_toast_action`（OS Toast「查看详情」/「忽略」点击时）完成。
 
@@ -761,12 +932,14 @@ mod tests {
 
     fn sample_view() -> ViewActionPayload {
         ViewActionPayload {
+            project_id: "project-1".to_string(),
             task_id: "task-1".to_string(),
             run_id: "run-1".to_string(),
             round_id: "round-1".to_string(),
             node_id: "node-1".to_string(),
             attempt_id: "attempt-1".to_string(),
-            dedup_key: "run-1:round-1:node-1:attempt-1:waiting-for-user-input".to_string(),
+            dedup_key: "project-1:run-1:round-1:node-1:attempt-1:waiting-for-user-input"
+                .to_string(),
         }
     }
 
@@ -780,6 +953,7 @@ mod tests {
         let (is_view, value) = decode_action(&encoded).expect("decode view action");
         assert!(is_view);
         let decoded: ViewActionPayload = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.project_id, "project-1");
         assert_eq!(decoded.task_id, "task-1");
         assert_eq!(decoded.dedup_key, payload.dedup_key);
         assert_eq!(decoded.node_id, "node-1");
@@ -789,7 +963,7 @@ mod tests {
     #[test]
     fn dismiss_action_roundtrip() {
         let payload = DismissActionPayload {
-            dedup_key: "run-1:round-1:node-1:attempt-1:permission-requested".to_string(),
+            dedup_key: "project-1:run-1:round-1:node-1:attempt-1:permission-requested".to_string(),
         };
         let encoded = encode_dismiss_action(&payload);
         assert!(encoded.starts_with(ACTION_DISMISS));
@@ -848,6 +1022,7 @@ mod tests {
             event_id: "run-completed-a".to_string(),
             occurred_at: "2026-08-09T08:00:00Z".to_string(),
             scheduled_occurrence_id: scheduled_occurrence_id.map(str::to_string),
+            project_id: "project-a".to_string(),
             task_id: "task-a".to_string(),
             run_id: "run-a".to_string(),
             round_id: "round-a".to_string(),
@@ -872,6 +1047,103 @@ mod tests {
         let event = run_completed_event(None);
 
         assert!(intervention_notification_for_event(&event).is_some());
+    }
+
+    #[test]
+    fn pending_navigation_queue_is_ordered_and_deduplicated() {
+        let pending = PendingInterventionNavigations::default();
+        let first = InterventionNavigationTarget::Conversation(sample_view());
+        let mut second = sample_view();
+        second.dedup_key = "second".to_string();
+        let second = InterventionNavigationTarget::Conversation(second);
+        pending.push(first.clone());
+        pending.push(first.clone());
+        pending.push(second.clone());
+
+        assert_eq!(pending.take_all(), vec![first, second]);
+        assert!(pending.take_all().is_empty());
+    }
+
+    #[cfg(feature = "native-notification")]
+    #[test]
+    fn native_notification_response_contract_routes_only_default_and_view() {
+        use notify_rust::{CloseReason, NotificationResponse, ResponseHandler};
+
+        fn assert_response_handler_contract(_handler: impl ResponseHandler) {}
+        assert_response_handler_contract(|response: &NotificationResponse| {
+            let _ = native_notification_response_disposition(response);
+        });
+
+        assert_eq!(
+            native_notification_response_disposition(&NotificationResponse::Default),
+            NativeNotificationResponseDisposition::Navigate
+        );
+        assert_eq!(
+            native_notification_response_disposition(&NotificationResponse::Action(
+                "view".to_string()
+            )),
+            NativeNotificationResponseDisposition::Navigate
+        );
+        assert_eq!(
+            native_notification_response_disposition(&NotificationResponse::Action(
+                "dismiss".to_string()
+            )),
+            NativeNotificationResponseDisposition::ClearDedup
+        );
+        assert_eq!(
+            native_notification_response_disposition(&NotificationResponse::Reply(
+                "ignored".to_string()
+            )),
+            NativeNotificationResponseDisposition::ClearDedup
+        );
+        assert_eq!(
+            native_notification_response_disposition(&NotificationResponse::Closed(
+                CloseReason::Dismissed
+            )),
+            NativeNotificationResponseDisposition::ClearDedup
+        );
+    }
+
+    #[test]
+    fn automatic_prompt_queue_only_notifies_for_the_terminal_success() {
+        use gold_band::app::AcpTurnOutcome;
+
+        assert!(!should_send_acp_turn_notification(
+            AcpTurnOutcome::Completed,
+            AcpTurnBatchProgress {
+                completed_reply_count: 2,
+                continues: true,
+            },
+        ));
+        assert!(should_send_acp_turn_notification(
+            AcpTurnOutcome::Completed,
+            AcpTurnBatchProgress::terminal(3),
+        ));
+        assert!(should_send_acp_turn_notification(
+            AcpTurnOutcome::Failed,
+            AcpTurnBatchProgress {
+                completed_reply_count: 2,
+                continues: true,
+            },
+        ));
+    }
+
+    #[test]
+    fn successful_direct_run_defers_notification_to_prompt_queue_batch() {
+        use gold_band::domain::RunOutcome;
+
+        assert!(should_defer_direct_run_completion_notification(
+            RunOutcome::Success,
+            Some("Claude"),
+        ));
+        assert!(!should_defer_direct_run_completion_notification(
+            RunOutcome::Failure,
+            Some("Claude"),
+        ));
+        assert!(!should_defer_direct_run_completion_notification(
+            RunOutcome::Success,
+            None,
+        ));
     }
 
     #[cfg(windows)]

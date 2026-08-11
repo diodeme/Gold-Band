@@ -2,30 +2,29 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
-use std::str::FromStr;
 
+use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
 
-use gold_band::scheduler::{
-    LocalTimeDisambiguation, RepeatPreset, ScheduleError, ScheduleSpec,
-};
+use gold_band::scheduler::{LocalTimeDisambiguation, RepeatPreset, ScheduleError, ScheduleSpec};
 
 use crate::view_models::{
-    AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_status, acp_session_vm,
-    dynamic_acp_session_status, dynamic_acp_session_vm, dynamic_runtime_graph_vm,
-    latest_control_failure_vm, round_detail_vm, runtime_display_vm, workflow_graph_vm,
+    AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_status, dynamic_acp_session_status,
+    dynamic_runtime_graph_vm, latest_control_failure_vm, round_detail_vm, runtime_display_vm,
+    workflow_graph_vm,
 };
-use gold_band::acp::client::{PromptActivity, prompt_activity};
+use gold_band::acp::client::{PromptActivity, prompt_activity, prompt_activity_under};
+use gold_band::acp::prompt_queue::{MAX_QUEUED_PROMPTS, QueuedPromptState, load_prompt_queue};
 use gold_band::app::{App, CreateTaskInput, DEFAULT_WORKFLOW_TEMPLATE_ID, is_run_continuable};
+use gold_band::config::ConversationRunMode;
 use gold_band::config::StateConfig;
-use gold_band::config::{ConversationRunMode, ManagedAgentId, managed_agent_preset};
 use gold_band::domain::NodeType;
 use gold_band::domain::RunStatus;
 use gold_band::dsl::{
     AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, END_NODE, EdgeDsl,
     EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
 };
-use gold_band::dynamic::DynamicGraphState;
+use gold_band::dynamic::{DynamicGraphState, DynamicRunPhase, DynamicRunStatus};
 use gold_band::runtime::RunState;
 use gold_band::storage::{read_json, write_json};
 
@@ -183,12 +182,7 @@ impl ScheduledScheduleInputVm {
                 local_time,
                 timezone,
                 disambiguation,
-            } => ScheduleSpec::at_local(
-                &local_date,
-                &local_time,
-                &timezone,
-                disambiguation,
-            ),
+            } => ScheduleSpec::at_local(&local_date, &local_time, &timezone, disambiguation),
             Self::Repeat {
                 preset,
                 hour,
@@ -199,12 +193,7 @@ impl ScheduledScheduleInputVm {
                 every,
                 anchor_at,
                 timezone,
-            } => ScheduleSpec::every_in_timezone(
-                every.value,
-                &every.unit,
-                anchor_at,
-                &timezone,
-            ),
+            } => ScheduleSpec::every_in_timezone(every.value, &every.unit, anchor_at, &timezone),
             Self::Cron {
                 expression,
                 timezone,
@@ -438,11 +427,19 @@ pub struct ConversationTaskRowVm {
     pub workflow_template_id: Option<String>,
     pub agent_identity: Option<ConversationAgentIdentityVm>,
     pub last_activity_at: Option<String>,
+    pub activity: Option<ConversationTaskActivityVm>,
     pub latest_run: Option<ConversationRunSummaryVm>,
     pub runs: Vec<ConversationRunSummaryVm>,
     pub pinned: bool,
     pub pinned_order: Option<usize>,
     pub scheduled_task_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTaskActivityVm {
+    pub phase: String,
+    pub stopping: bool,
 }
 
 pub struct ConversationWorkspaceSource {
@@ -498,8 +495,6 @@ pub struct ConversationRunVm {
     pub session_tree: ConversationSessionTreeVm,
     pub selected_session: Option<crate::view_models::AcpSessionVm>,
     pub active_sessions: Vec<ConversationActiveSessionVm>,
-    pub artifacts: Vec<crate::view_models::AssetItemVm>,
-    pub attachments: Vec<crate::view_models::AssetItemVm>,
     pub input_attachments: Vec<crate::view_models::AssetItemVm>,
     pub workflow_status: String,
     pub workflow_valid: bool,
@@ -516,8 +511,6 @@ pub struct ConversationRunVm {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSessionSwitchVm {
     pub selected_session: Option<crate::view_models::AcpSessionVm>,
-    pub artifacts: Vec<crate::view_models::AssetItemVm>,
-    pub attachments: Vec<crate::view_models::AssetItemVm>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -568,6 +561,7 @@ pub struct ConversationSessionLeafVm {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub session_id: Option<String>,
+    pub session_established: bool,
     pub artifact_count: usize,
     pub attachment_count: usize,
 }
@@ -581,6 +575,24 @@ pub struct ConversationAttemptLifecycleVm {
     pub runtime_display: RuntimeDisplayVm,
     pub continue_kind: Option<String>,
     pub composer: ConversationComposerVm,
+    pub prompt_queue: Option<ConversationPromptQueueVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPromptQueueVm {
+    pub revision: u64,
+    pub items: Vec<ConversationQueuedPromptVm>,
+    pub max_items: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationQueuedPromptVm {
+    pub id: String,
+    pub content: String,
+    pub attachment_count: usize,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -631,6 +643,7 @@ pub struct ConversationActiveSessionVm {
     pub lifecycle: ConversationAttemptLifecycleVm,
     pub manual_check_pending: bool,
     pub session_id: Option<String>,
+    pub session_established: bool,
     pub started_at: Option<String>,
 }
 
@@ -670,7 +683,11 @@ pub struct ConversationAutoConfigVm {
     pub agent_type: String,
     pub bootstrap_agent_type: Option<String>,
     pub bootstrap_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bootstrap_config_options: BTreeMap<String, String>,
     pub acceptance_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub acceptance_config_options: BTreeMap<String, String>,
     pub model_id: Option<String>,
     pub permission_mode: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -690,6 +707,9 @@ pub struct ConversationAutoConfigVm {
 pub struct ConversationDynamicAgentRefVm {
     pub provider: String,
     pub model: Option<String>,
+    pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_options: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -885,14 +905,63 @@ pub(crate) fn scheduled_content_fingerprint_for_task(app: &App, task_id: &str) -
         .and_then(|metadata| metadata.scheduled_content_fingerprint)
 }
 
+pub(crate) fn conversation_run_mode(app: &App, task_id: &str) -> Option<ConversationRunMode> {
+    read_conversation_metadata(app, task_id).and_then(|metadata| match metadata.run_mode.as_str() {
+        "direct" => Some(ConversationRunMode::Direct),
+        "workflow" => Some(ConversationRunMode::Workflow),
+        "auto" => Some(ConversationRunMode::Auto),
+        _ => None,
+    })
+}
+
+fn direct_prompt_queue_vm(
+    app: &App,
+    task_id: &str,
+    attempt_dir: &Utf8Path,
+) -> Option<ConversationPromptQueueVm> {
+    if conversation_run_mode(app, task_id) != Some(ConversationRunMode::Direct) {
+        return None;
+    }
+    let queue = load_prompt_queue(attempt_dir).unwrap_or_default();
+    Some(ConversationPromptQueueVm {
+        revision: queue.revision,
+        items: queue
+            .items
+            .into_iter()
+            .filter(|item| item.state == QueuedPromptState::Queued)
+            .map(|item| ConversationQueuedPromptVm {
+                id: item.id,
+                content: item.content,
+                attachment_count: item.attachment_paths.len(),
+                created_at: item.created_at,
+            })
+            .collect(),
+        max_items: MAX_QUEUED_PROMPTS,
+    })
+}
+
+fn attach_direct_prompt_queue(
+    app: &App,
+    task_id: &str,
+    attempt_dir: &Utf8Path,
+    lifecycle: &mut ConversationAttemptLifecycleVm,
+) {
+    lifecycle.prompt_queue = direct_prompt_queue_vm(app, task_id, attempt_dir);
+    if lifecycle.prompt_queue.is_some()
+        && lifecycle.composer.mode == "runtime-active"
+        && !lifecycle.acp.stopping
+    {
+        lifecycle.composer.submit_target = "queue-prompt".to_string();
+        lifecycle.composer.lock_input = false;
+    }
+}
+
 fn direct_agent_identity(app: &App, agent_type: &str) -> Option<ConversationAgentIdentityVm> {
-    let agent_id = ManagedAgentId::from_str(agent_type).ok()?;
     let (_, config) = app.managed_agent(agent_type).ok()?;
-    let icon_key = managed_agent_preset(&agent_id)?.icon_key;
     Some(ConversationAgentIdentityVm {
         agent_type: agent_type.to_string(),
         display_name: config.adapter.display_name.clone(),
-        icon_key: icon_key.to_string(),
+        icon_key: config.icon.clone(),
     })
 }
 
@@ -953,6 +1022,36 @@ fn latest_conversation_activity_at(
     .map(str::to_owned)
 }
 
+fn conversation_task_activity(
+    task_dir: &Utf8Path,
+    latest_run: Option<&ConversationRunSummaryVm>,
+) -> Option<ConversationTaskActivityVm> {
+    if let Some(activity) = prompt_activity_under(task_dir) {
+        return Some(conversation_task_activity_from_prompt(activity));
+    }
+    latest_run
+        .filter(|run| normalize_lifecycle_code(&run.status) == "running")
+        .map(|_| ConversationTaskActivityVm {
+            phase: "runtime-active".to_string(),
+            stopping: false,
+        })
+}
+
+pub(crate) fn conversation_task_activity_from_prompt(
+    activity: PromptActivity,
+) -> ConversationTaskActivityVm {
+    ConversationTaskActivityVm {
+        phase: match activity {
+            PromptActivity::Starting => "starting",
+            PromptActivity::Accepted => "accepted",
+            PromptActivity::Running => "running",
+            PromptActivity::CancelRequested => "cancel-requested",
+        }
+        .to_string(),
+        stopping: activity == PromptActivity::CancelRequested,
+    }
+}
+
 // ── Builder functions (stubs — full implementation in later phases) ──
 
 pub fn conversation_sidebar_vm_from_sources(
@@ -1009,6 +1108,10 @@ pub fn conversation_sidebar_vm_from_sources(
                 let latest_run = runs.first().cloned();
                 let last_activity_at =
                     latest_conversation_activity_at(metadata.as_ref(), latest_run.as_ref());
+                let activity = conversation_task_activity(
+                    &source.app.paths.task_dir(task_id),
+                    latest_run.as_ref(),
+                );
 
                 let row = ConversationTaskRowVm {
                     project_id: project_id.clone(),
@@ -1023,6 +1126,7 @@ pub fn conversation_sidebar_vm_from_sources(
                         .as_ref()
                         .and_then(|metadata| metadata.agent_identity.clone()),
                     last_activity_at,
+                    activity,
                     latest_run,
                     runs,
                     pinned,
@@ -1177,6 +1281,43 @@ fn acp_session_file_is_cancelled(path: &camino::Utf8Path) -> bool {
             .then_some(())
         })
         .is_some()
+}
+
+#[derive(Debug, Default)]
+struct AcpSessionPresence {
+    session_id: Option<String>,
+    established: bool,
+}
+
+fn acp_session_presence(attempt_dir: &Utf8Path) -> AcpSessionPresence {
+    let worker_ref = read_json::<serde_json::Value>(&attempt_dir.join("worker-ref.json")).ok();
+    let session_id = worker_ref
+        .as_ref()
+        .and_then(|value| {
+            value
+                .get("continue_ref")
+                .or_else(|| value.get("continueRef"))
+        })
+        .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let established = session_id.is_some()
+        || [
+            "acp.snapshot.json",
+            "acp.session.json",
+            "acp.timeline.jsonl",
+        ]
+        .iter()
+        .any(|name| {
+            fs::metadata(attempt_dir.join(name).as_std_path())
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+        });
+    AcpSessionPresence {
+        session_id,
+        established,
+    }
 }
 
 fn asset_item_vm(
@@ -1596,7 +1737,7 @@ fn runtime_continue_kind(
         return None;
     }
     match pause_reason.map(normalize_lifecycle_code).as_deref() {
-        Some("process-interrupted" | "runtime-abnormal") => Some("input".to_string()),
+        Some("process-interrupted" | "runtime-abnormal") => Some("action".to_string()),
         _ => None,
     }
 }
@@ -1654,15 +1795,14 @@ fn composer_for_lifecycle(
         "stopping"
     } else if runtime_active || acp_active {
         "runtime-active"
-    } else if continue_kind == Some("input") {
-        "interrupted-input"
+    } else if continue_kind == Some("action") {
+        "normal"
     } else if runtime_display.blocking_error {
         "runtime-error"
     } else {
         "normal"
     };
     let submit_target = match mode {
-        "interrupted-input" => "runtime-continue",
         "normal" => "acp-prompt",
         _ => "none",
     };
@@ -1688,8 +1828,48 @@ fn composer_for_lifecycle(
         processing_kind: processing_kind.to_string(),
         status_key: status_key.map(str::to_string),
         can_stop: runtime_active || acp_active || acp_stopping,
-        lock_input: !matches!(mode, "normal" | "interrupted-input"),
+        lock_input: mode != "normal",
     }
+}
+
+fn dynamic_workspace_transition_targets_node(graph: &DynamicGraphState, node_id: &str) -> bool {
+    graph.run.current_node_ids.iter().any(|id| id == node_id)
+        || (graph.run.current_node_ids.is_empty()
+            && graph.nodes.last().is_some_and(|node| node.id == node_id))
+}
+
+fn dynamic_runtime_owns_completed_leaf(graph: &DynamicGraphState, node_id: &str) -> bool {
+    graph.run.status == DynamicRunStatus::Running
+        && graph.run.current_node_ids.is_empty()
+        && graph.nodes.last().is_some_and(|node| {
+            node.id == node_id
+                && node.status == gold_band::dynamic::DynamicNodeStatus::Completed
+                && node.outcome.is_some()
+        })
+}
+
+fn apply_dynamic_workspace_transition_lifecycle(
+    lifecycle: &mut ConversationAttemptLifecycleVm,
+    graph: &DynamicGraphState,
+    node_id: &str,
+    outer_run_status: RunStatus,
+) {
+    if outer_run_status != RunStatus::Running
+        || graph.run.status != DynamicRunStatus::Running
+        || graph.run.phase != DynamicRunPhase::PreparingWorkspace
+        || !dynamic_workspace_transition_targets_node(graph, node_id)
+    {
+        return;
+    }
+
+    lifecycle.runtime.phase = "preparing-workspace".to_string();
+    lifecycle.composer.mode = "runtime-active".to_string();
+    lifecycle.composer.submit_target = "none".to_string();
+    lifecycle.composer.processing_kind = "preparing-workspace".to_string();
+    lifecycle.composer.status_key =
+        Some("conversation.runtime.preparingDevelopmentEnvironment".to_string());
+    lifecycle.composer.can_stop = true;
+    lifecycle.composer.lock_input = true;
 }
 
 fn derive_conversation_attempt_lifecycle(
@@ -1849,6 +2029,7 @@ fn derive_conversation_attempt_lifecycle(
         runtime_display,
         continue_kind,
         composer,
+        prompt_queue: None,
     }
 }
 
@@ -1868,7 +2049,7 @@ pub fn conversation_attempt_lifecycle_vm(
     let runtime_resumable = is_run_continuable(&run);
 
     if let (Some(outer_node_id), Some(outer_attempt_id)) = (outer_node_id, outer_attempt_id) {
-        let session_vm = dynamic_acp_session_vm(
+        let session_status = dynamic_acp_session_status(
             app,
             task_id,
             run_id,
@@ -1877,8 +2058,6 @@ pub fn conversation_attempt_lifecycle_vm(
             outer_attempt_id,
             node_id,
             attempt_id,
-            None,
-            None,
         )?;
         let dynamic_path = app.paths.dynamic_graph_file(
             task_id,
@@ -1906,7 +2085,11 @@ pub fn conversation_attempt_lifecycle_vm(
             dynamic_node,
             run_pause_reason.as_deref(),
         );
-        let runtime_status = if run.status == RunStatus::Paused
+        let dynamic_runtime_owns_leaf =
+            dynamic_runtime_owns_completed_leaf(&dynamic_graph, node_id);
+        let runtime_status = if dynamic_runtime_owns_leaf {
+            "running".to_string()
+        } else if run.status == RunStatus::Paused
             && raw_runtime_status == "running"
             && dynamic_node.outcome.is_none()
             && is_runtime_continue_pause_reason(pause_reason.as_deref())
@@ -1928,6 +2111,7 @@ pub fn conversation_attempt_lifecycle_vm(
                 .current_node_ids
                 .iter()
                 .any(|id| id == node_id)
+                || dynamic_runtime_owns_leaf
                 || (run_paused_for_current_leaf
                     && dynamic_node.status == gold_band::dynamic::DynamicNodeStatus::Paused
                     && dynamic_node.outcome.is_none()));
@@ -1943,8 +2127,8 @@ pub fn conversation_attempt_lifecycle_vm(
             node_id,
             attempt_id,
         );
-        return Ok(derive_conversation_attempt_lifecycle(
-            session_vm.as_ref().map(|session| session.status.as_str()),
+        let mut lifecycle = derive_conversation_attempt_lifecycle(
+            session_status.as_deref(),
             prompt_activity(&attempt_dir),
             &runtime_status,
             outcome.as_deref(),
@@ -1952,12 +2136,18 @@ pub fn conversation_attempt_lifecycle_vm(
             pause_reason.as_deref(),
             leaf_resumable,
             false,
-        ));
+        );
+        attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
+        apply_dynamic_workspace_transition_lifecycle(
+            &mut lifecycle,
+            &dynamic_graph,
+            node_id,
+            run.status,
+        );
+        return Ok(lifecycle);
     }
 
-    let session_vm = acp_session_vm(
-        app, task_id, run_id, round_id, node_id, attempt_id, None, None,
-    )?;
+    let session_status = acp_session_status(app, task_id, run_id, round_id, node_id, attempt_id)?;
     let node_path = app
         .paths
         .node_file(task_id, run_id, round_id, node_id, attempt_id);
@@ -1979,8 +2169,8 @@ pub fn conversation_attempt_lifecycle_vm(
     let attempt_dir = app
         .paths
         .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
-    Ok(derive_conversation_attempt_lifecycle(
-        session_vm.as_ref().map(|session| session.status.as_str()),
+    let mut lifecycle = derive_conversation_attempt_lifecycle(
+        session_status.as_deref(),
         prompt_activity(&attempt_dir),
         &runtime_status,
         outcome.as_deref(),
@@ -1988,9 +2178,12 @@ pub fn conversation_attempt_lifecycle_vm(
         pause_reason.as_deref(),
         runtime_resumable,
         node.manual_check_pending,
-    ))
+    );
+    attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
+    Ok(lifecycle)
 }
 
+#[cfg(test)]
 fn conversation_status_from_session(
     session_status: Option<&str>,
     runtime_status: &str,
@@ -2263,7 +2456,7 @@ pub fn conversation_run_vm(
                                     &dyn_node.id,
                                     dyn_attempt_id,
                                 );
-                                let lifecycle = derive_conversation_attempt_lifecycle(
+                                let mut lifecycle = derive_conversation_attempt_lifecycle(
                                     dyn_session_status.as_deref(),
                                     prompt_activity(&dyn_attempt_dir),
                                     &dyn_status,
@@ -2273,9 +2466,22 @@ pub fn conversation_run_vm(
                                     dyn_leaf_resumable,
                                     false,
                                 );
+                                attach_direct_prompt_queue(
+                                    app,
+                                    task_id,
+                                    &dyn_attempt_dir,
+                                    &mut lifecycle,
+                                );
+                                apply_dynamic_workspace_transition_lifecycle(
+                                    &mut lifecycle,
+                                    &dynamic_graph,
+                                    &dyn_node.id,
+                                    run.status,
+                                );
                                 let dyn_status = lifecycle.display_status.clone();
                                 let dyn_runtime_display = lifecycle.runtime_display.clone();
                                 let is_active = lifecycle_is_active(&lifecycle, false);
+                                let session_presence = acp_session_presence(&dyn_attempt_dir);
                                 let (artifacts, attachments) = conversation_session_assets(
                                     app,
                                     task_id,
@@ -2302,7 +2508,8 @@ pub fn conversation_run_vm(
                                     manual_check_pending: false,
                                     started_at: dyn_node.started_at.clone(),
                                     finished_at: dyn_node.finished_at.clone(),
-                                    session_id: None,
+                                    session_id: session_presence.session_id.clone(),
+                                    session_established: session_presence.established,
                                     artifact_count: artifacts.len(),
                                     attachment_count: attachments.len(),
                                 });
@@ -2319,7 +2526,8 @@ pub fn conversation_run_vm(
                                         runtime_display: dyn_runtime_display.clone(),
                                         lifecycle: lifecycle.clone(),
                                         manual_check_pending: false,
-                                        session_id: None,
+                                        session_id: session_presence.session_id.clone(),
+                                        session_established: session_presence.established,
                                         started_at: None,
                                     });
                                 }
@@ -2392,7 +2600,7 @@ pub fn conversation_run_vm(
                         &node.node_id,
                         &attempt.attempt_id,
                     );
-                    let lifecycle = derive_conversation_attempt_lifecycle(
+                    let mut lifecycle = derive_conversation_attempt_lifecycle(
                         session_status.as_deref(),
                         prompt_activity(&attempt_dir),
                         &runtime_status,
@@ -2402,9 +2610,11 @@ pub fn conversation_run_vm(
                         runtime_resumable,
                         manual_check_pending,
                     );
+                    attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
                     let status = lifecycle.display_status.clone();
                     let runtime_display = lifecycle.runtime_display.clone();
                     let is_active = lifecycle_is_active(&lifecycle, manual_check_pending);
+                    let session_presence = acp_session_presence(&attempt_dir);
                     let (artifacts, attachments) = conversation_session_assets(
                         app,
                         task_id,
@@ -2430,7 +2640,8 @@ pub fn conversation_run_vm(
                         manual_check_pending,
                         started_at: Some(attempt.started_at.clone()),
                         finished_at: attempt.finished_at.clone(),
-                        session_id: None,
+                        session_id: session_presence.session_id.clone(),
+                        session_established: session_presence.established,
                         artifact_count: artifacts.len(),
                         attachment_count: attachments.len(),
                     });
@@ -2447,7 +2658,8 @@ pub fn conversation_run_vm(
                             runtime_display: runtime_display.clone(),
                             lifecycle: lifecycle.clone(),
                             manual_check_pending,
-                            session_id: None,
+                            session_id: session_presence.session_id.clone(),
+                            session_established: session_presence.established,
                             started_at: Some(attempt.started_at.clone()),
                         });
                     }
@@ -2538,7 +2750,9 @@ pub fn conversation_run_vm(
     let effective_key: Option<String> = selected_leaf.as_ref().map(conversation_leaf_key);
 
     // Load the selected ACP session
-    let selected_session = if let Some(ref leaf) = selected_leaf {
+    let selected_session = if selected_session_key.is_some()
+        && let Some(ref leaf) = selected_leaf
+    {
         if let (Some(outer_id), Some(outer_attempt)) = (
             leaf.outer_node_id.as_deref(),
             leaf.outer_attempt_id.as_deref(),
@@ -2573,21 +2787,6 @@ pub fn conversation_run_vm(
         }
     } else {
         None
-    };
-
-    let (artifacts, attachments) = if let Some(ref leaf) = selected_leaf {
-        conversation_session_assets(
-            app,
-            task_id,
-            run_id,
-            &leaf.round_id,
-            &leaf.node_id,
-            &leaf.attempt_id,
-            leaf.outer_node_id.as_deref(),
-            leaf.outer_attempt_id.as_deref(),
-        )?
-    } else {
-        (Vec::new(), Vec::new())
     };
 
     let input_attachments = input_attachments_vm(app, task_id);
@@ -2638,7 +2837,11 @@ pub fn conversation_run_vm(
                         .map(|detail| detail.graph)
                 })
         })
-        .or_else(|| workflow_snapshot.as_ref().map(|dsl| workflow_graph_vm(dsl)))
+        .or_else(|| {
+            workflow_snapshot
+                .as_ref()
+                .map(|dsl| workflow_graph_vm(app, dsl))
+        })
         .unwrap_or_else(|| GraphVm {
             nodes: Vec::new(),
             edges: Vec::new(),
@@ -2674,8 +2877,6 @@ pub fn conversation_run_vm(
         },
         selected_session,
         active_sessions,
-        artifacts,
-        attachments,
         input_attachments,
         workflow_status: "valid".to_string(),
         workflow_valid,
@@ -2980,6 +3181,13 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
                                 .map(str::trim)
                                 .filter(|value| !value.is_empty())
                                 .map(str::to_string),
+                            permission_mode: agent
+                                .permission_mode
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                                .map(str::to_string),
+                            config_options: agent.config_options.clone(),
                         })
                     })
                     .collect::<Vec<_>>()
@@ -2989,12 +3197,21 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
                 vec![DynamicAgentRef {
                     provider: bootstrap_provider.clone(),
                     model: model_id.map(str::to_string),
+                    permission_mode: None,
+                    config_options: BTreeMap::new(),
                 }]
             });
         AiDynamicAgentStrategy::Dynamic {
             bootstrap_provider,
             bootstrap_model: bootstrap_model_id.map(str::to_string),
+            permission_mode: permission_mode.map(str::to_string),
+            bootstrap_config_options: config
+                .map(|config| config.bootstrap_config_options.clone())
+                .unwrap_or_default(),
             acceptance_model: acceptance_model_id.map(str::to_string),
+            acceptance_config_options: config
+                .map(|config| config.acceptance_config_options.clone())
+                .unwrap_or_default(),
             routing_prompt: config
                 .and_then(|c| c.routing_prompt.as_deref())
                 .map(str::trim)
@@ -3006,6 +3223,7 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
         AiDynamicAgentStrategy::Fixed {
             provider: agent_type.to_string(),
             model: model_id.map(str::to_string),
+            permission_mode: permission_mode.map(str::to_string),
         }
     };
 
@@ -3017,7 +3235,6 @@ fn build_auto_workflow(config: Option<&ConversationAutoConfigVm>) -> WorkflowDsl
         nodes: vec![NodeDsl::AiDynamic(AiDynamicNode {
             id: "ai-dynamic".to_string(),
             agent_strategy,
-            permission_mode: permission_mode.map(|s| s.to_string()),
             config_options: config
                 .map(|config| config.config_options.clone())
                 .unwrap_or_default(),
@@ -3159,6 +3376,12 @@ pub fn prepare_conversation_task_vm(
             (workflow, include_interview)
         };
 
+    // Git is an authoritative prerequisite for Auto and every workflow that
+    // directly contains AI-DYNAMIC. Check before creating either the task or run.
+    if gold_band::dsl::workflow_contains_ai_dynamic(&workflow) {
+        gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
+    }
+
     // Create task
     let summary = app.create_task_from_requirement(CreateTaskInput {
         title: Some(title.clone()),
@@ -3280,8 +3503,6 @@ pub fn create_conversation_run_vm(
             },
             selected_session: None,
             active_sessions: Vec::new(),
-            artifacts: Vec::new(),
-            attachments: Vec::new(),
             input_attachments: Vec::new(),
             workflow_status: "valid".to_string(),
             workflow_valid: true,
@@ -3402,8 +3623,6 @@ pub fn rerun_conversation_task_vm(
             },
             selected_session: None,
             active_sessions: Vec::new(),
-            artifacts: Vec::new(),
-            attachments: Vec::new(),
             input_attachments: Vec::new(),
             workflow_status: "valid".to_string(),
             workflow_valid: true,
@@ -3455,22 +3674,7 @@ pub fn switch_conversation_session_vm(
             .flatten()
         };
 
-    let (artifacts, attachments) = conversation_session_assets(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        outer_node_id,
-        outer_attempt_id,
-    )?;
-
-    let result = ConversationSessionSwitchVm {
-        selected_session,
-        artifacts,
-        attachments,
-    };
+    let result = ConversationSessionSwitchVm { selected_session };
     Ok(result)
 }
 
@@ -3478,16 +3682,18 @@ pub fn switch_conversation_session_vm(
 mod tests {
     use super::{
         ConversationAutoConfigVm, ConversationCreateInputVm, ConversationDirectConfigVm,
-        ConversationDynamicAgentRefVm, ConversationWorkspaceSource, ConversationWorkspaceVm,
-        PromptActivity, apply_workflow_interview_preference, build_auto_workflow,
-        build_direct_workflow, conversation_attempt_lifecycle_vm, conversation_auto_title,
-        conversation_run_vm, conversation_sidebar_vm_from_sources,
-        conversation_status_from_session, conversation_workspace_vms, create_conversation_task_vm,
-        derive_conversation_attempt_lifecycle, lifecycle_is_active,
+        ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationTaskActivityVm,
+        ConversationWorkspaceSource, ConversationWorkspaceVm, PromptActivity,
+        apply_workflow_interview_preference, build_auto_workflow, build_direct_workflow,
+        conversation_attempt_lifecycle_vm, conversation_auto_title, conversation_run_vm,
+        conversation_sidebar_vm_from_sources, conversation_status_from_session,
+        conversation_task_activity, conversation_workspace_vms, create_conversation_task_vm,
+        derive_conversation_attempt_lifecycle, find_leaf_by_key, lifecycle_is_active,
         scheduled_task_vms_from_sources, switch_conversation_session_vm,
     };
-    use camino::Utf8PathBuf;
+    use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
+    use gold_band::acp::prompt_queue::enqueue_prompt;
     use gold_band::app::{App, CreateTaskInput};
     use gold_band::config::ConversationRunMode;
     use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, PromptEnvelopeMode};
@@ -3657,6 +3863,7 @@ mod tests {
 
         assert_eq!(lifecycle.display_status, "completed");
         assert!(!lifecycle.runtime.active);
+        assert_eq!(lifecycle.runtime.status, "completed");
         assert!(!lifecycle.acp.active);
         assert!(lifecycle.acp.terminal);
         assert!(!lifecycle_is_active(&lifecycle, false));
@@ -3763,7 +3970,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_runtime_pause_is_input_continue() {
+    fn interrupted_runtime_pause_has_explicit_continue_action_and_free_conversation() {
         let lifecycle = derive_conversation_attempt_lifecycle(
             Some("cancelled"),
             None,
@@ -3776,16 +3983,16 @@ mod tests {
         );
 
         assert_eq!(lifecycle.display_status, "paused");
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
         assert!(lifecycle.runtime.continuable);
         assert_eq!(lifecycle.runtime.phase, "paused");
-        assert_eq!(lifecycle.composer.mode, "interrupted-input");
-        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
         assert!(!lifecycle.composer.lock_input);
     }
 
     #[test]
-    fn runtime_abnormal_pause_is_input_continue_even_when_acp_failed() {
+    fn runtime_abnormal_pause_has_explicit_continue_action_even_when_acp_failed() {
         let lifecycle = derive_conversation_attempt_lifecycle(
             Some("failed"),
             None,
@@ -3798,14 +4005,14 @@ mod tests {
         );
 
         assert_eq!(lifecycle.display_status, "paused");
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
         assert!(lifecycle.runtime.continuable);
         assert_eq!(
             lifecycle.runtime.pause_reason.as_deref(),
             Some("runtime-abnormal")
         );
-        assert_eq!(lifecycle.composer.mode, "interrupted-input");
-        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
         assert!(!lifecycle.composer.lock_input);
     }
 
@@ -3929,9 +4136,9 @@ mod tests {
             lifecycle.runtime.pause_reason.as_deref(),
             Some("process-interrupted")
         );
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
-        assert_eq!(lifecycle.composer.mode, "interrupted-input");
-        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
     }
 
     #[test]
@@ -3964,8 +4171,8 @@ mod tests {
             lifecycle.runtime.pause_reason.as_deref(),
             Some("process-interrupted")
         );
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
-        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
     }
 
     #[test]
@@ -3995,7 +4202,7 @@ mod tests {
         assert_eq!(lifecycle.runtime.status, "paused");
         assert_eq!(lifecycle.runtime.phase, "paused");
         assert_eq!(lifecycle.composer.processing_kind, "processing");
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
     }
 
     #[test]
@@ -4028,9 +4235,9 @@ mod tests {
             lifecycle.runtime.pause_reason.as_deref(),
             Some("runtime-abnormal")
         );
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
-        assert_eq!(lifecycle.composer.mode, "interrupted-input");
-        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
         assert!(!lifecycle.composer.lock_input);
     }
 
@@ -4067,7 +4274,7 @@ mod tests {
             lifecycle.runtime.pause_reason.as_deref(),
             Some("runtime-abnormal")
         );
-        assert_eq!(lifecycle.composer.mode, "interrupted-input");
+        assert_eq!(lifecycle.composer.mode, "normal");
     }
 
     #[test]
@@ -4151,13 +4358,7 @@ mod tests {
     fn running_dynamic_leaf_with_terminal_acp_still_launches_next_node() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
-        write_dynamic_lifecycle_fixture(
-            &app,
-            "running",
-            json!(null),
-            "running",
-            vec!["good-morning"],
-        );
+        write_dynamic_lifecycle_fixture(&app, "running", json!(null), "completed", Vec::new());
         gold_band::storage::write_json(
             &app.paths
                 .dynamic_node_attempt_dir(
@@ -4194,6 +4395,55 @@ mod tests {
         assert_eq!(lifecycle.runtime.phase, "launching-next-node");
         assert_eq!(lifecycle.composer.processing_kind, "launching-next-node");
         assert_eq!(lifecycle.continue_kind, None);
+    }
+
+    #[test]
+    fn preparing_workspace_projects_runtime_owned_composer_state() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture(
+            &app,
+            "running",
+            json!(null),
+            "running",
+            vec!["good-morning"],
+        );
+        let graph_path = app.paths.dynamic_graph_file(
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        let mut graph: serde_json::Value = gold_band::storage::read_json(&graph_path).unwrap();
+        graph["run"]["phase"] = json!("preparing-workspace");
+        graph["nodes"][0]["outcome"] = json!("success");
+        gold_band::storage::write_json(&graph_path, &graph).unwrap();
+
+        let lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "good-morning",
+            "attempt-001",
+            Some("ai-dynamic"),
+            Some("attempt-001"),
+        )
+        .unwrap();
+
+        assert!(lifecycle.runtime.active);
+        assert_eq!(lifecycle.runtime.status, "running");
+        assert_eq!(lifecycle.runtime.phase, "preparing-workspace");
+        assert_eq!(lifecycle.composer.mode, "runtime-active");
+        assert_eq!(lifecycle.composer.submit_target, "none");
+        assert_eq!(lifecycle.composer.processing_kind, "preparing-workspace");
+        assert_eq!(
+            lifecycle.composer.status_key.as_deref(),
+            Some("conversation.runtime.preparingDevelopmentEnvironment")
+        );
+        assert!(lifecycle.composer.can_stop);
+        assert!(lifecycle.composer.lock_input);
     }
 
     #[test]
@@ -4285,13 +4535,26 @@ mod tests {
             agent_type: "claude-acp".to_string(),
             bootstrap_agent_type: Some("claude-acp".to_string()),
             bootstrap_model_id: Some("bootstrap-model".to_string()),
+            bootstrap_config_options: std::collections::BTreeMap::from([(
+                "reasoning_effort".to_string(),
+                "high".to_string(),
+            )]),
             acceptance_model_id: Some("accept-model".to_string()),
+            acceptance_config_options: std::collections::BTreeMap::from([(
+                "reasoning_effort".to_string(),
+                "medium".to_string(),
+            )]),
             model_id: None,
-            permission_mode: None,
+            permission_mode: Some("acceptEdits".to_string()),
             config_options: Default::default(),
             available_agents: Some(vec![ConversationDynamicAgentRefVm {
                 provider: "claude-acp".to_string(),
                 model: Some("worker-model".to_string()),
+                permission_mode: Some("bypassPermissions".to_string()),
+                config_options: std::collections::BTreeMap::from([(
+                    "reasoning_effort".to_string(),
+                    "low".to_string(),
+                )]),
             }]),
             routing_prompt: Some("Pick worker models explicitly".to_string()),
             allowed_workflows: None,
@@ -4308,13 +4571,40 @@ mod tests {
         match &node.agent_strategy {
             AiDynamicAgentStrategy::Dynamic {
                 bootstrap_model,
+                permission_mode,
+                bootstrap_config_options,
                 acceptance_model,
+                acceptance_config_options,
                 available_agents,
                 ..
             } => {
                 assert_eq!(bootstrap_model.as_deref(), Some("bootstrap-model"));
+                assert_eq!(permission_mode.as_deref(), Some("acceptEdits"));
                 assert_eq!(acceptance_model.as_deref(), Some("accept-model"));
                 assert_eq!(available_agents[0].model.as_deref(), Some("worker-model"));
+                assert_eq!(
+                    available_agents[0].permission_mode.as_deref(),
+                    Some("bypassPermissions")
+                );
+                assert_eq!(
+                    bootstrap_config_options
+                        .get("reasoning_effort")
+                        .map(String::as_str),
+                    Some("high")
+                );
+                assert_eq!(
+                    acceptance_config_options
+                        .get("reasoning_effort")
+                        .map(String::as_str),
+                    Some("medium")
+                );
+                assert_eq!(
+                    available_agents[0]
+                        .config_options
+                        .get("reasoning_effort")
+                        .map(String::as_str),
+                    Some("low")
+                );
             }
             other => panic!("expected dynamic strategy, got {other:?}"),
         }
@@ -4553,6 +4843,34 @@ mod tests {
     }
 
     #[test]
+    fn conversation_sidebar_task_activity_uses_runtime_status_when_no_live_prompt_exists() {
+        let running = ConversationRunSummaryVm {
+            run_id: "run-001".to_string(),
+            status: "running".to_string(),
+            outcome: None,
+            started_at: "2026-07-31T00:00:00Z".to_string(),
+            updated_at: "2026-07-31T00:00:00Z".to_string(),
+            current_round: None,
+            current_node: None,
+            resumable: false,
+        };
+        let completed = ConversationRunSummaryVm {
+            status: "completed".to_string(),
+            ..running.clone()
+        };
+        let task_dir = Utf8Path::new("test/sidebar-task-without-live-prompt");
+
+        assert_eq!(
+            conversation_task_activity(task_dir, Some(&running)),
+            Some(ConversationTaskActivityVm {
+                phase: "runtime-active".to_string(),
+                stopping: false,
+            })
+        );
+        assert_eq!(conversation_task_activity(task_dir, Some(&completed)), None);
+    }
+
+    #[test]
     fn conversation_sidebar_vm_prioritizes_last_workspace() {
         let repo_a = temp_repo_root();
         let repo_b = temp_repo_root();
@@ -4649,7 +4967,7 @@ mod tests {
     }
 
     #[test]
-    fn conversation_run_vm_exposes_selected_session_assets_and_leaf_counts() {
+    fn conversation_run_vm_keeps_assets_out_of_session_dto_and_exposes_leaf_counts() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
         write_conversation_assets_fixture(&app);
@@ -4663,10 +4981,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(vm.artifacts.len(), 1);
-        assert_eq!(vm.artifacts[0].name, "测试-result");
-        assert_eq!(vm.attachments.len(), 1);
-        assert_eq!(vm.attachments[0].name, "test-report.md");
         assert_eq!(vm.task_uuid.as_deref(), Some("task-046-fixture-uuid"));
 
         let leaf = vm.session_tree.rounds[0].nodes[0]
@@ -4676,6 +4990,42 @@ mod tests {
             .unwrap();
         assert_eq!(leaf.artifact_count, 1);
         assert_eq!(leaf.attachment_count, 1);
+    }
+
+    #[test]
+    fn direct_conversation_run_vm_keeps_prompt_queue_on_stopped_leaf() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        write_sidebar_conversation_metadata_fixture(
+            &app,
+            "task-046",
+            "direct",
+            "2026-08-07T00:00:00Z",
+        );
+        let attempt_dir =
+            app.paths
+                .attempt_dir("task-046", "run-060", "round-001", "测试", "attempt-002");
+        enqueue_prompt(&attempt_dir, "persist after stop".to_string(), Vec::new()).unwrap();
+
+        let vm = conversation_run_vm(
+            &app,
+            "project-001",
+            "task-046",
+            "run-060",
+            Some("round-001/测试/attempt-002"),
+        )
+        .unwrap();
+        let leaf = find_leaf_by_key(
+            &vm.session_tree.rounds,
+            vm.session_tree.selected_session_key.as_deref().unwrap(),
+        )
+        .unwrap();
+        let queue = leaf.lifecycle.prompt_queue.as_ref().unwrap();
+
+        assert_eq!(leaf.lifecycle.composer.mode, "normal");
+        assert_eq!(queue.items.len(), 1);
+        assert_eq!(queue.items[0].content, "persist after stop");
     }
 
     #[test]
@@ -4722,6 +5072,115 @@ mod tests {
             vm.session_tree.selected_session_key.as_deref(),
             Some("round-001/测试/attempt-002")
         );
+    }
+
+    #[test]
+    fn conversation_run_summary_does_not_reconstruct_default_session_timeline() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        let timeline_path =
+            app.paths
+                .acp_timeline_file("task-046", "run-060", "round-001", "测试", "attempt-002");
+        std::fs::create_dir_all(timeline_path.as_std_path()).unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-046", "run-060", None).unwrap();
+
+        assert_eq!(
+            vm.session_tree.selected_session_key.as_deref(),
+            Some("round-001/测试/attempt-002")
+        );
+        assert!(vm.selected_session.is_none());
+    }
+
+    #[test]
+    fn conversation_run_summary_projects_established_session_without_reading_large_timeline() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        let attempt_dir =
+            app.paths
+                .attempt_dir("task-046", "run-060", "round-001", "测试", "attempt-002");
+        std::fs::write(
+            attempt_dir.join("acp.timeline.jsonl").as_std_path(),
+            vec![b'x'; 9 * 1024 * 1024],
+        )
+        .unwrap();
+        gold_band::storage::write_json(
+            &attempt_dir.join("worker-ref.json"),
+            &json!({
+                "version": "0.1",
+                "provider": "codex-acp",
+                "mode": "new",
+                "continue_ref": { "acpSessionId": "session-established" }
+            }),
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-046", "run-060", None).unwrap();
+        let selected_leaf = find_leaf_by_key(
+            &vm.session_tree.rounds,
+            vm.session_tree.selected_session_key.as_deref().unwrap(),
+        )
+        .unwrap();
+
+        assert!(vm.selected_session.is_none());
+        assert!(selected_leaf.session_established);
+        assert_eq!(
+            selected_leaf.session_id.as_deref(),
+            Some("session-established")
+        );
+    }
+
+    #[test]
+    fn conversation_run_summary_does_not_treat_outbound_session_new_as_established() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        let attempt_dir =
+            app.paths
+                .attempt_dir("task-046", "run-060", "round-001", "测试", "attempt-002");
+        std::fs::write(
+            attempt_dir.join("acp.raw.jsonl").as_std_path(),
+            r#"{"direction":"outbound","frame":{"method":"session/new"}}"#,
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-046", "run-060", None).unwrap();
+        let selected_leaf = find_leaf_by_key(
+            &vm.session_tree.rounds,
+            vm.session_tree.selected_session_key.as_deref().unwrap(),
+        )
+        .unwrap();
+
+        assert!(!selected_leaf.session_established);
+        assert!(selected_leaf.session_id.is_none());
+    }
+
+    #[test]
+    fn lifecycle_projection_does_not_read_timeline_detail() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_conversation_assets_fixture(&app);
+        let timeline_path =
+            app.paths
+                .acp_timeline_file("task-046", "run-060", "round-001", "测试", "attempt-002");
+        std::fs::create_dir_all(timeline_path.as_std_path()).unwrap();
+
+        let lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-046",
+            "run-060",
+            "round-001",
+            "测试",
+            "attempt-002",
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(lifecycle.runtime.status, "completed");
+        assert_eq!(lifecycle.runtime.phase, "terminal");
     }
 
     #[test]
@@ -4795,7 +5254,7 @@ mod tests {
     }
 
     #[test]
-    fn switch_conversation_session_vm_uses_same_asset_contract() {
+    fn switch_conversation_session_vm_returns_only_the_selected_session() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
         write_conversation_assets_fixture(&app);
@@ -4812,10 +5271,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(switched.artifacts.len(), 1);
-        assert_eq!(switched.artifacts[0].name, "测试-result");
-        assert_eq!(switched.attachments.len(), 1);
-        assert_eq!(switched.attachments[0].name, "test-report.md");
+        assert!(switched.selected_session.is_none());
+        let serialized = serde_json::to_value(switched).unwrap();
+        assert!(serialized.get("selectedSession").is_some());
+        assert!(serialized.get("artifacts").is_none());
+        assert!(serialized.get("attachments").is_none());
     }
 
     fn temp_repo_root() -> Utf8PathBuf {
@@ -5043,13 +5503,12 @@ mod tests {
             "title": "Good morning",
             "task": "Say good morning",
             "status": dynamic_node_status,
-            "outcome": null,
+            "outcome": if dynamic_node_status == "completed" { json!("success") } else { json!(null) },
             "groupId": null,
             "chainId": dynamic_node_id,
             "depth": 1,
             "dependsOn": [],
-            "workspace": { "mode": "worktree" },
-            "workspacePath": null,
+            "workspaceId": "workspace-main",
             "provider": "claude-acp",
             "profile": null,
             "permissionMode": null,
@@ -5060,7 +5519,7 @@ mod tests {
             "workflowSnapshotId": null,
             "childRunId": null,
             "startedAt": "2026-06-15T00:00:00Z",
-            "finishedAt": if dynamic_node_status == "paused" { json!("2026-06-15T00:00:02Z") } else { json!(null) }
+            "finishedAt": if dynamic_node_status == "paused" || dynamic_node_status == "completed" { json!("2026-06-15T00:00:02Z") } else { json!(null) }
         });
         gold_band::storage::write_json(
             &app.paths.dynamic_graph_file(
@@ -5075,6 +5534,23 @@ mod tests {
                 "run": dynamic_run,
                 "nodes": [dynamic_node],
                 "groups": [],
+                "workspaces": [{
+                    "version": gold_band::domain::VERSION,
+                    "id": "workspace-main",
+                    "dynamicRunId": "dynamic-run-001",
+                    "kind": "main",
+                    "ownership": "user",
+                    "repoRoot": app.paths.repo_root,
+                    "path": app.paths.repo_root,
+                    "branch": null,
+                    "parentWorkspaceId": null,
+                    "createdByGroupId": null,
+                    "forkCommit": "test-head",
+                    "checkpointCommit": null,
+                    "status": "active",
+                    "createdAt": "2026-06-15T00:00:00Z",
+                    "updatedAt": "2026-06-15T00:00:00Z"
+                }],
                 "proposals": []
             }),
         )

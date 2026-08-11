@@ -1,25 +1,26 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
-import { Check, ChevronsUpDown, CircleHelp, Edit, Eye, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { Check, ChevronsUpDown, CircleHelp, Edit, Eye, FolderOpen, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import {
-  createProfile, deleteProfile, getProfiles, updateProfile,
+  createProfile, deleteProfile, getProfile, getProfiles, importProfilesFromFolder, updateProfile,
   listMcpServers, addMcpServer, updateMcpServer, deleteMcpServer,
   toggleMcpServer, checkMcpServerHealth, listMcpTools,
   listSkills, listProjectSkills, readSkill, writeSkill, deleteSkill, getSkillSyncStatus,
   checkSkillNameConflict, updateSkillSyncTargets,
-  getConversationWorkspaces, getAgentRegistry,
+  getConversationWorkspaces, doctorAgent,
 } from '../api';
 import { displayAppError } from '../i18n';
 import type {
-  AppErrorVm, ProfileInput, ProfileListVm, ProfileScope, ProfileVm,
+  AppErrorVm, ImportedProfileRecord, ImportProfilesResult, ProfileFieldFallback, ProfileInput, ProfileListVm, ProfileScope, ProfileVm,
   McpServerVm, SkillListVm, SkillMetaVm, SkillContentVm, AgentRegistryVm, ToolInfo,
 } from '../types';
 import { AppCard } from '@/components/AppCard';
 import { EntitySection } from '@/components/EntitySection';
 import { McpServerCard } from '@/components/McpServerCard';
 import { EmptyState, Page, PageHeader } from '@/components/PageScaffold';
+import { SkillAgentOverflow } from '@/components/SkillAgentOverflow';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
@@ -40,7 +41,7 @@ import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatLocalDateTime } from '@/lib/datetime';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
-import { selectableSyncAgents, skillAvailableAgentTypes, skillSourceAgents } from '@/lib/skill-agent-display';
+import { configuredSkillAgents, selectableSyncAgents, skillAvailableAgentTypes, skillSourceAgents, type ConfiguredSkillAgentMeta } from '@/lib/skill-agent-display';
 import {
   buildSkillSaveRequest,
   createEmptySkillForm,
@@ -51,13 +52,19 @@ import {
 } from '@/lib/skill-sheet-form';
 import { skillStorageHint } from '@/lib/skill-storage-hint';
 import { readRememberedSkillProjectWorkspace, rememberSkillProjectWorkspace } from '@/lib/skill-workspace-memory';
+import { initialProfileImportState, profileImportReducer } from '@/lib/profile-import-state';
 
 type ProfileSheetMode = 'view' | 'create' | 'edit';
 type ContextTab = 'profiles' | 'mcp' | 'skills';
 type ProfileListTab = 'built-in' | 'custom';
 const pageSizes = [6, 12, 24];
 
-export function ContextManagementPage() {
+interface ContextManagementPageProps {
+  agentRegistry: AgentRegistryVm | null;
+  onAgentRegistryChange: (registry: AgentRegistryVm) => void;
+}
+
+export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: ContextManagementPageProps) {
   const { t } = useTranslation();
   const [vm, setVm] = useState<ProfileListVm | null>(null);
   const [loading, setLoading] = useState(false);
@@ -74,6 +81,12 @@ export function ContextManagementPage() {
   const [deleteError, setDeleteError] = useState<unknown>(null);
   const [deleteConfirmationError, setDeleteConfirmationError] = useState<AppErrorVm | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  // ── Profile import state ──
+  const [profileImport, dispatchProfileImport] = useReducer(
+    profileImportReducer,
+    initialProfileImportState,
+  );
 
   // ── MCP state ──
   const [mcpServers, setMcpServers] = useState<McpServerVm[]>([]);
@@ -131,7 +144,7 @@ export function ContextManagementPage() {
   const [skillDeleting, setSkillDeleting] = useState(false);
   const [skillSyncPendingKey, setSkillSyncPendingKey] = useState<string | null>(null);
   const [skillEditWsPath, setSkillEditWsPath] = useState<string | null>(null);
-  const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
+  const [mcpDiagnosingAgent, setMcpDiagnosingAgent] = useState<string | null>(null);
 
   const [skillTab, setSkillTab] = useState<'global' | 'project'>('global');
   const [skillQuery, setSkillQuery] = useState('');
@@ -151,7 +164,7 @@ export function ContextManagementPage() {
   }, [skillError]);
 
   const configuredAgents = useMemo(
-    () => (agentRegistry?.supportedTypes ?? []).filter((agent) => agent.configured),
+    () => configuredSkillAgents(agentRegistry),
     [agentRegistry],
   );
 
@@ -240,7 +253,6 @@ export function ContextManagementPage() {
   useEffect(() => {
     if (!needsSkillContext) return;
     getConversationWorkspaces().then(setWorkspaces).catch(() => setWorkspaces([]));
-    getAgentRegistry().then(setAgentRegistry).catch(() => setAgentRegistry(null));
   }, [needsSkillContext]);
 
   const refresh = async () => {
@@ -409,6 +421,35 @@ export function ContextManagementPage() {
     }
   };
 
+  const handlePickImportFolder = async () => {
+    dispatchProfileImport({ type: 'begin-import' });
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({ directory: true, title: t('contextManagement.importPickFolderTitle') });
+      if (!selected) {
+        dispatchProfileImport({ type: 'cancel-import' });
+        return;
+      }
+      const folderPath = typeof selected === 'string' ? selected : selected[0];
+      const result = await importProfilesFromFolder(folderPath, profileImport.dynamicTemplate);
+      dispatchProfileImport({ type: 'import-succeeded', result });
+      await refresh();
+    } catch (err) {
+      dispatchProfileImport({ type: 'import-failed', error: displayAppError(t, err) });
+    }
+  };
+
+  const editImportedProfile = async (id: string) => {
+    dispatchProfileImport({ type: 'begin-edit' });
+    try {
+      const profile = await getProfile(id);
+      dispatchProfileImport({ type: 'edit-succeeded' });
+      openSheet('edit', profile);
+    } catch (err) {
+      dispatchProfileImport({ type: 'edit-failed', error: displayAppError(t, err) });
+    }
+  };
+
   const listQuery = profileListTab === 'built-in' ? builtInQuery : customQuery;
   const onQueryChange = (value: string) => {
     if (profileListTab === 'built-in') {
@@ -444,6 +485,9 @@ export function ContextManagementPage() {
               <Button variant="outline" disabled={loading} onClick={() => void refresh()}>
                 <RefreshCw className={cn(loading && 'animate-spin')} />
                 {t('common.refresh')}
+              </Button>
+              <Button variant="outline" disabled={loading || profileImport.importing} onClick={() => dispatchProfileImport({ type: 'open-settings' })}>
+                <FolderOpen />{t('contextManagement.importProfile')}
               </Button>
               <Button onClick={() => openSheet('create')}><Plus />{t('contextManagement.addProfile')}</Button>
             </>
@@ -564,6 +608,52 @@ export function ContextManagementPage() {
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* ── Profile Import Dialogs ── */}
+      <Dialog
+        open={profileImport.settingsOpen}
+        onOpenChange={(open) => {
+          if (!profileImport.importing) {
+            dispatchProfileImport({ type: open ? 'open-settings' : 'close-settings' });
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t('contextManagement.importProfile')}</DialogTitle>
+            <DialogDescription>{t('contextManagement.importSettingsDescription')}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-1">
+            <div className="flex items-start justify-between gap-4 rounded-lg border px-3 py-3">
+              <div className="space-y-1">
+                <div className="text-sm font-medium">{t('contextManagement.dynamicTemplate')}</div>
+                <p className="text-xs text-muted-foreground">{t('contextManagement.importDynamicTemplateDescription')}</p>
+              </div>
+              <Switch
+                checked={profileImport.dynamicTemplate}
+                onCheckedChange={(enabled) => dispatchProfileImport({ type: 'set-dynamic-template', enabled })}
+              />
+            </div>
+            {profileImport.error ? (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{profileImport.error}</div>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={profileImport.importing} onClick={() => dispatchProfileImport({ type: 'close-settings' })}>{t('common.close')}</Button>
+            <Button disabled={profileImport.importing} onClick={() => void handlePickImportFolder()}>
+              {profileImport.importing ? <Loader2 className="animate-spin" /> : <FolderOpen />}
+              {profileImport.importing ? t('common.loading') : t('contextManagement.importPickFolder')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ImportResultDialog
+        result={profileImport.result}
+        error={profileImport.error}
+        onClose={() => dispatchProfileImport({ type: 'close-result' })}
+        onEdit={(id) => void editImportedProfile(id)}
+      />
+
       {/* ── MCP Tab Content ── */}
       {activeTab === 'mcp' && (
         <div className="min-h-0 flex-1 p-5 xl:p-6">
@@ -649,6 +739,29 @@ export function ContextManagementPage() {
                   }}
                   onEdit={s.managed ? undefined : () => { setMcpEditTarget(s); setMcpJsonContent(mcpServerToJson(s)); setMcpTransportTab(s.transport as 'stdio' | 'http' | 'sse'); setMcpSheetOpen(true); }}
                   onDelete={s.managed ? undefined : () => setMcpDeleteTarget(s)}
+                  agentCompatLoading={!agentRegistry}
+                  agentCompatibility={(agentRegistry?.agents ?? []).map((a) => ({
+                    agentType: a.agentType,
+                    label: a.displayName,
+                    iconKey: a.iconKey,
+                    mcpHttpSupported: a.mcpHttpSupported,
+                    mcpSseSupported: a.mcpSseSupported,
+                    diagnosticAvailable: a.diagnostic?.available,
+                    diagnosticReason: a.diagnostic?.reason,
+                  }))}
+                  diagnosingAgentType={mcpDiagnosingAgent}
+                  onDiagnoseAgent={async (agentType) => {
+                    if (mcpDiagnosingAgent) return;
+                    setMcpDiagnosingAgent(agentType);
+                    try {
+                      const registry = await doctorAgent(agentType);
+                      onAgentRegistryChange(registry);
+                    } catch {
+                      // 忽略诊断错误；用户可重试
+                    } finally {
+                      setMcpDiagnosingAgent(null);
+                    }
+                  }}
                 />
               ))}
             </div>
@@ -721,7 +834,7 @@ export function ContextManagementPage() {
                 const syncAgents = selectableSyncAgents(skill, configuredAgents);
                 const syncedAgentTypes = new Set(skill.syncedAgentTypes);
                 return (
-                  <Card key={`${skill.source}:${skill.directoryPath}`} className="group flex h-40 gap-0 overflow-hidden border-border/50 py-0 transition-shadow hover:shadow-sm">
+                  <Card key={`${skill.source}:${skill.directoryPath}`} className="group flex h-44 gap-0 overflow-hidden border-border/50 py-0 transition-shadow hover:shadow-sm">
                     <div className="h-28 shrink-0 px-4 py-3">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0 flex-1">
@@ -734,72 +847,18 @@ export function ContextManagementPage() {
                         <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{skill.source === 'global' ? t('contextManagement.skills.globalBadge', 'Global') : t('contextManagement.skills.projectBadge', 'Project')}</Badge>
                       </div>
                     </div>
-                    <div className="mt-auto flex h-12 shrink-0 items-center justify-between gap-2 border-t border-border/30 px-2 py-1">
-                      <div className="flex min-w-0 items-center gap-1.5 overflow-hidden px-2">
-                        {sourceAgents.length > 0 ? (
-                          <div className="flex min-w-0 items-center gap-0.5">
-                            {sourceAgents.map((sourceAgent) => (
-                              <TooltipProvider key={sourceAgent.agentType} delayDuration={300}>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <span className="flex size-6 shrink-0 items-center justify-center rounded-full">
-                                      <img src={agentIconSrc(sourceAgent.iconKey)} alt={sourceAgent.label} className={agentIconClass(sourceAgent.iconKey, 'size-3.5')} />
-                                    </span>
-                                  </TooltipTrigger>
-                                  <TooltipContent side="top">{sourceAgent.label}</TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
-                            ))}
-                          </div>
-                        ) : (
-                          <span className="truncate text-[11px] text-muted-foreground">{skill.agentSource || '.gold-band'}</span>
-                        )}
-                        {sourceAgents.length > 0 && syncAgents.length > 0 ? <span className="h-4 w-px shrink-0 bg-border/70" /> : null}
-                        {syncAgents.length > 0 ? (
-                          <div className="flex min-w-0 items-center gap-0.5">
-                            {syncAgents.map((agent) => {
-                              const isSynced = syncedAgentTypes.has(agent.agentType);
-                              const syncActionLabel = isSynced
-                                ? t('contextManagement.skills.unsyncAgent', { agent: agent.label, defaultValue: `取消同步 ${agent.label}` })
-                                : t('contextManagement.skills.syncAgent', { agent: agent.label, defaultValue: `同步到 ${agent.label}` });
-                              const pendingKey = `${skill.source}:${skill.directoryPath}:${agent.agentType}`;
-                              const isPending = skillSyncPendingKey === pendingKey;
-                              return (
-                                <TooltipProvider key={agent.agentType} delayDuration={300}>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button
-                                        type="button"
-                                        size="icon"
-                                        variant="ghost"
-                                        className="relative size-6 rounded-full hover:bg-muted"
-                                        disabled={isPending}
-                                        aria-label={syncActionLabel}
-                                        onClick={() => void handleSkillSyncToggle(skill, agent.agentType)}
-                                      >
-                                        {isPending ? (
-                                          <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
-                                        ) : (
-                                          <span className="relative grid size-5 place-items-center">
-                                            {isSynced ? <span className="pointer-events-none absolute left-0 top-0 z-10 size-1.5 rounded-full bg-emerald-500 ring-1 ring-background" /> : null}
-                                            <img
-                                              src={agentIconSrc(agent.iconKey)}
-                                              alt={agent.label}
-                                              className={agentIconClass(agent.iconKey, cn('relative z-0 size-3.5 transition-opacity', !isSynced && 'grayscale opacity-35'))}
-                                            />
-                                          </span>
-                                        )}
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="top">{syncActionLabel}</TooltipContent>
-                                  </Tooltip>
-                                </TooltipProvider>
-                              );
-                            })}
-                          </div>
-                        ) : null}
+                    <div className="mt-auto flex h-16 shrink-0 items-center justify-between gap-2 border-t border-border/30 px-2 py-1">
+                      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden px-2">
+                        {sourceAgents.length === 0 ? <span className="max-w-20 shrink-0 truncate text-[11px] text-muted-foreground">{skill.agentSource || '.gold-band'}</span> : null}
+                        <SkillAgentOverflow
+                          sourceAgents={sourceAgents}
+                          syncAgents={syncAgents}
+                          syncedAgentTypes={syncedAgentTypes}
+                          isPending={(agentType) => skillSyncPendingKey === `${skill.source}:${skill.directoryPath}:${agentType}`}
+                          onToggleAgent={(agentType) => void handleSkillSyncToggle(skill, agentType)}
+                        />
                       </div>
-                      <div className="flex items-center gap-1">
+                      <div className="flex shrink-0 items-center gap-1">
                         <TooltipProvider delayDuration={300}>
                           <Tooltip>
                             <TooltipTrigger asChild>
@@ -878,7 +937,7 @@ export function ContextManagementPage() {
       </AlertDialog>
 
       {/* ── MCP Sheet (JSON Editor) ── */}
-      <Sheet open={mcpSheetOpen} onOpenChange={(open) => { if (!open) dismissMcpSheet(); }}>
+      <Sheet modal={false} open={mcpSheetOpen} onOpenChange={(open) => { if (!open) dismissMcpSheet(); }}>
         <SheetContent className="gap-0 overflow-hidden" resizeStorageKey="context-management/mcp-sheet" defaultSize={720} minSize={520} maxSize={960}>
           <SheetHeader className="border-b px-5 py-4">
             <SheetTitle>{mcpEditTarget ? t('contextManagement.mcp.editServer', '配置 MCP 服务器') : t('contextManagement.mcp.addServer', '添加 MCP 服务器')}</SheetTitle>
@@ -931,7 +990,7 @@ export function ContextManagementPage() {
       </AlertDialog>
 
       {/* ── MCP Tools Sheet ── */}
-      <Sheet open={Boolean(toolsSheetServer)} onOpenChange={(open) => { if (!open) { setToolsSheetServer(null); setToolsList(null); setToolsError(null); setToolsLoading(false); } }}>
+      <Sheet modal={false} open={Boolean(toolsSheetServer)} onOpenChange={(open) => { if (!open) { setToolsSheetServer(null); setToolsList(null); setToolsError(null); setToolsLoading(false); } }}>
         <SheetContent className="gap-0 overflow-hidden" resizeStorageKey="context-management/tools-sheet" defaultSize={560} minSize={420} maxSize={800}>
           <SheetHeader className="border-b px-5 py-4">
             <SheetTitle className="flex items-center gap-2">
@@ -1024,7 +1083,7 @@ function SkillSheet({
   editWorkspacePath: string | null;
   createSource: string;
   workspaces: SkillWorkspaceOption[];
-  configuredAgents: AgentRegistryVm['supportedTypes'];
+  configuredAgents: ConfiguredSkillAgentMeta[];
   skillTab: 'global' | 'project';
   selectedWorkspace: string;
   onOpenChange: (open: boolean) => void;
@@ -1119,7 +1178,7 @@ function SkillSheet({
   };
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    <Sheet modal={false} open={open} onOpenChange={onOpenChange}>
       <SheetContent className="gap-0 overflow-hidden" resizeStorageKey="context-management/skill-sheet" defaultSize={720} minSize={520} maxSize={960}>
         <SheetHeader className="border-b px-5 py-4">
           <SheetTitle>{mode === 'create' ? t('contextManagement.skills.createSkill', '创建 SKILL') : mode === 'edit' ? t('contextManagement.skills.editSkillTitle', { name: editTarget?.name ?? '', defaultValue: `编辑 ${editTarget?.name ?? ''}` }) : editTarget?.name ?? t('common.detail')}</SheetTitle>
@@ -1332,7 +1391,7 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
 
   return (
     <>
-      <Sheet open={mode !== null} onOpenChange={onOpenChange}>
+      <Sheet modal={false} open={mode !== null} onOpenChange={onOpenChange}>
         <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey="context-management/profile-sheet" defaultSize={720} minSize={520} maxSize={960}>
           <SheetHeader className="border-b px-5 py-4 text-left">
             <SheetTitle>{mode === 'create' ? t('contextManagement.createProfile') : mode === 'edit' ? t('contextManagement.editProfile') : profile?.name}</SheetTitle>
@@ -1473,6 +1532,89 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+function ImportResultDialog({ result, error, onClose, onEdit }: {
+  result: ImportProfilesResult | null;
+  error: string | null;
+  onClose: () => void;
+  onEdit: (id: string) => void;
+}) {
+  const { t } = useTranslation();
+  if (!result) return null;
+  return (
+    <Dialog open={true} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{t('contextManagement.importResultTitle')}</DialogTitle>
+          <DialogDescription>
+            {t('contextManagement.importResultSummary', {
+              total: result.totalScanned,
+              success: result.imported.length,
+              failed: result.failed.length,
+            })}
+          </DialogDescription>
+        </DialogHeader>
+        {result.truncated ? (
+          <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700 dark:text-yellow-500">
+            {t('contextManagement.importTruncated')}
+          </div>
+        ) : null}
+        {error ? (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        ) : null}
+        <ScrollArea className="max-h-80">
+          <div className="space-y-3 pr-3">
+            {result.imported.length ? (
+              <div className="space-y-1.5">
+                <div className="text-xs font-medium text-muted-foreground">{t('contextManagement.importResultImported')}</div>
+                {result.imported.map((record) => (
+                  <div key={record.sourcePath} className="flex items-center justify-between gap-2 rounded-md border px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium">{record.name}</div>
+                      <div className="truncate text-xs text-muted-foreground">{record.sourcePath}</div>
+                      {record.fallbacks.length ? (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {record.fallbacks.map((fb) => (
+                            <Badge key={fb} variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground">
+                              {t(`contextManagement.importFallback.${fb}`)}
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                    {record.importedId ? (
+                      <Button variant="ghost" size="sm" className="shrink-0" onClick={() => onEdit(record.importedId!)}>
+                        {t('contextManagement.editProfile')}
+                      </Button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {result.failed.length ? (
+              <div className="space-y-1.5">
+                <div className="text-xs font-medium text-muted-foreground">{t('contextManagement.importResultFailed')}</div>
+                {result.failed.map((record) => (
+                  <div key={record.sourcePath} className="rounded-md border px-3 py-2">
+                    <div className="truncate text-sm font-medium">{record.name || record.sourcePath}</div>
+                    <div className="truncate text-xs text-destructive">
+                      {record.error ? t(`errors.profile.import.${record.error.code}`) : ''}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </ScrollArea>
+        <DialogFooter>
+          <Button onClick={onClose}>{t('common.close')}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

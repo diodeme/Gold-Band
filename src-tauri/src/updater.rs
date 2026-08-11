@@ -214,7 +214,6 @@ pub async fn download_and_install_update<R: Runtime>(app: &AppHandle<R>) -> Resu
         )
         .await
         .context("updater.install-failed")?;
-    app.request_restart();
     Ok(())
 }
 

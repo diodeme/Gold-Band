@@ -126,6 +126,7 @@ mod tests {
             event_id: "event-1".to_string(),
             occurred_at: "2026-01-01T00:00:00".to_string(),
             scheduled_occurrence_id: None,
+            project_id: "project-1".to_string(),
             task_id: "task-1".to_string(),
             run_id: "run-1".to_string(),
             round_id: "round-1".to_string(),

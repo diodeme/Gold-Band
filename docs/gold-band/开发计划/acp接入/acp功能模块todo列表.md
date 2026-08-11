@@ -3,15 +3,20 @@
 ## 当前实现状态
 
 - 默认 provider 已切换为 `claude-acp`，新运行路径通过 ACP stdio adapter 发送 `initialize` / `session/new|load` / `session/prompt`。
-- user project runtime attempt 目录新增 `worker-ref.json`、`acp.session.json`、`acp.events.jsonl`、`acp.raw.jsonl`、`acp.diagnostics.jsonl`；ACP session id 统一由 `worker-ref.json` 管理，`acp.session.json` 只作为 UI 运行态快照；这些过程文件不写入项目工作树。
+- user project runtime attempt 目录以 `worker-ref.json`、`acp.snapshot.json`、`acp.timeline.jsonl`、`acp.agents.jsonl`、`agents/<AgentExecutionId>/timeline.jsonl|snapshot.json`、`acp.raw.jsonl`、`acp.diagnostics.jsonl` 为当前事实源；ACP session id 由 `worker-ref.json` 管理，snapshot 只作为可重建物化状态。旧 `acp.events.jsonl` 仅保留为一次性迁移来源和审计，不参与运行时双读写；这些过程文件不写入项目工作树。
 - Round 节点详情的会话 Tab 已切换为 ACP Dialog / Chat UI，legacy progress/raw stream 不再作为主会话视图。
 - ACP Dialog / Chat UI 已接入 prompt-kit copy-in 组件：`ChatContainer`、`Message`、`PromptInput`、`Tool`、`ChainOfThought`。
 - 权限请求可落盘为 pending event，并通过 Tauri `respond_acp_permission` 写入 response 文件供 provider loop 恢复。
 - Plan 决策权限保留 composer 输入；用户提交自然语言反馈时自动选择继续规划并在当前 turn 完成后发送反馈。
 - ACP prompt 会在发送 `session/prompt` 前持久化 synthetic `userTextDelta`，用于展示初始 prompt 和继续输入。
 - Raw frames 诊断读取已从普通 session 刷新路径中解耦，普通刷新只统计行数；详情视图按 JSONL 行做后端分页、关键词检索、direction 和 kind/method 过滤，默认打开最新页，不把全量 `acp.raw.jsonl` 传给前端。
-- ACP Message List 已使用内容尺寸监听补齐流式消息增高时的底部贴合，并限制只有非底部顶部预取区才加载更早历史，避免生成回复时误触发 prepend 后跳顶。
-- MCP 管理已支持 stdio / HTTP / SSE 三类 transport、渠道内置 MCP 注入和工具列表查看。内置 MCP 仅由声明 `builtinMcpServers` 的渠道启用；首次注入使用渠道默认 `enabled`，后续启动同步保留用户本机启停状态，只刷新托管配置内容。`tools/list` 走后端接口验收：stdio 在同一子进程会话中等待 initialize 响应后继续读取 tools/list 响应，避免把首个 JSON-RPC 响应误判为工具列表。ACP `session/new|load` 的 `mcpServers` 走独立 wire-format 转换验收：不透传内部 `id` / `transport`，HTTP/SSE 使用 ACP `type` 字段，stdio 的 `env` 与 HTTP/SSE 的 `headers` 均发送 `{ name, value }` 数组。
+- ACP Message List 已使用内容尺寸监听补齐流式消息增高时的底部贴合，并限制只有非底部顶部预取区才加载更早历史，避免生成回复时误触发 prepend 后跳顶。回归覆盖 Activity 展开期间“pending 权限卡收缩为审计行 → 工具增长 → 下一张 pending 权限卡插入”的连续高度变化：已有贴底锁必须保持，用户主动上滚后不得强制追回底部。
+- Agent transcript 已收敛为统一 `ConversationBranch` 领域模型。Claude `_meta.claudeCode.subagent/toolName/parentToolUseId` 只在 ACP 事件适配边界转换；分支持久化和前端只消费稳定 `AgentExecutionId`、branch ID 与 `_meta.goldBandConversation`，不读取 Claude 本地 transcript，不解析 provider 私有字段，也不修改上游 ACP。根事件写入 `acp.timeline.jsonl`，Agent 事件写入 `agents/<稳定ID>/timeline.jsonl`；`acp.agents.jsonl` 与 snapshot 保存父子关系、状态、统计、attention 和 cursor。旧 `acp.events.jsonl` 只执行一次迁移并保留审计，不再参与运行时 seq、权限、elicitation 或查询双读写。
+- 主会话中的 Agent 已由嵌套 Collapsible 替换为 `AgentLinkRow`。点击后在通用右侧工作区打开只读 Agent Tab；嵌套 Agent 继续打开新 Tab，父分支不挂载或复制子 transcript。Agent 面板复用根会话的 `ConversationViewport`、Markdown、Activity、Tool、分页和 intervention，但不挂载 composer、配置、停止、继续或重试控件。pending permission/elicitation 仍可在 owning Agent 分支决策，终态权限不进入活动审计。
+- ACP 活动展示按语义块分页：连续 thought、普通/失败 tool 和 error 形成一个 `ActivityBatch`，正式文字、Agent link、attempt/压缩等边界结束活动段；折叠状态与内部事件数不改变会话 cursor。摘要只显示 ACP 返回的客观工具、状态和结构化统计，不猜意图。活动详情使用独立 `branchId + activityStartSeq + activityEndSeq + earlierCursor` 查询，后端只保留有限候选并只反序列化当前页；单条工具 raw output 再在该工具展开时查询。保持原生滚动、有限事件 buffer 和真实 DOM 锚点，不使用虚拟列表。
+- Agent execution 与 launch tool 状态已分离：后台 launch `completed` 只表示分发完成，其结构化启动回执不会生成 `agentBranchResult`；只有 synthetic Prompt 时 queued，子分支产生工具/文字后 running，pending interaction 时 waiting_permission。根 stop/cancel/failure 只中断仍活动的分支，已有正式结果证据的 Agent 保持 completed。一次性 v2 修复删除旧会话误生成的后台结果并回填缺失 Agent Prompt。Agent index projection 只返回当前分支的直属孩子，根只返回顶层 execution。TODO 以 `planOwnership = branch | unscoped` fail-closed 归属；存在 Agent execution 时根会话排除无法确认范围的 session-wide plan，不根据文本猜测。嵌套 pending interaction 只在 owning branch 展示，并向全部祖先 link/Tab 投影 attention。后端 Agent index 与 timeline 查询使用有界缓存，未变化 index/snapshot 不重复写盘。
+- 已完成 run 的 ACP same-session follow-up 已统一使用当前 `PromptActivity` 覆盖上一轮 terminal snapshot：stale completion fuse 在活跃 prompt 期间不再回写 `completed`，session VM、权限恢复和 Agent 投影共享同一 effective status；前端即时消费流式 update 的 lifecycle，并以尚未结算的 submit command 保持当前 turn 所有权。接口回归覆盖“旧 completed snapshot + 新 running prompt”时 Agent 保持 running、composer 保留停止入口，以及 prompt 结束后恢复 terminal。
+- MCP 管理已支持 stdio / HTTP / SSE 三类 transport、渠道内置 MCP 注入和工具列表查看。内置 MCP 仅由声明 `builtinMcpServers` 的渠道启用；首次注入使用渠道默认 `enabled`，后续启动同步保留用户本机启停状态，只刷新托管配置内容。`tools/list` 走后端接口验收：stdio 在同一子进程会话中等待 initialize 响应后继续读取 tools/list 响应，避免把首个 JSON-RPC 响应误判为工具列表。ACP `session/new|load` 的 `mcpServers` 走独立 wire-format 转换验收：不透传内部 `id` / `transport`，HTTP/SSE 使用 ACP `type` 字段，stdio 的 `env` 与 HTTP/SSE 的 `headers` 均发送 `{ name, value }` 数组。MCP 卡片的 Agent transport 兼容性已收敛到 App 级持久化 Agent Registry：页面打开立即复用已有 `mcpCapabilities`，doctor 期间保留旧状态并在完成事件后更新；Agent 不健康时展示不可用原因并禁止兼容性诊断，避免把不可用误显示成“尚未检测”。
 
 ## 设计原则
 
@@ -399,6 +404,7 @@
 ### 验收标准
 
 - 权限请求能阻塞并恢复 ACP 会话。
+- 收到单个 live `permissionRequest(pending)` 后，无需等待完整 session snapshot、下一条 ACP 事件或切换会话，当前消息流必须立即出现可操作卡片并进入权限等待态。
 - 用户决策能回传 ACP adapter。
 - 权限记录可用于排障。
 
@@ -583,7 +589,7 @@
 ### 主要任务
 
 - 验证 adapter 启动、initialize、session/new、session/prompt。
-- 验证 text、thought、tool call、plan、permission、error 展示。
+- 验证 root/Agent branch 的正式文字、Activity、工具详情、TODO、permission/elicitation、error 与 Agent link 展示。
 - 验证用户通过 composer 继续会话。
 - 验证 raw diagnostics 可用。
 - 验证不需要 legacy CLI fallback。
@@ -604,8 +610,10 @@
 ### ACP 特有检查项
 
 - 能成功启动 ACP adapter，并完成 initialize 与 session 创建。
-- 用户能在 Gold Band 中发起、查看、继续 ACP 会话。
-- ACP 输入输出以 Dialog / Chat UI 呈现，且 text、thought、tool call、plan、permission、error 展示完整。
+- 用户能在 Gold Band 中发起、查看、继续根 ACP 会话，并从 Agent link 在通用右侧工作区打开只读 Agent 分支。
+- 根与 Agent 输入输出复用同一 Chat UI；Agent Tab 不提供自由输入、停止、继续、重试或 Raw frames，但 owning branch 的 pending intervention 仍可决策。
+- Agent 子事件、嵌套 Agent、TODO 和权限不平铺回父 branch；根只显示顶层 Agent，任一 Agent 会话只显示直属孩子；无法确认范围的 session-wide plan 不显示为根 Todo。后台 launch 回执不提前完成 Agent，根停止不破坏已有 completed 终态。
+- branch 语义分页不受 Activity 内工具数或子 Agent 历史影响；Activity 详情和工具 raw output 按两级延迟查询。
 - 实时轮询过程中的 text / thought delta 不重复拼接前缀；关闭会话抽屉后重新进入时，历史重建内容必须与实时流式内容一致。
 - composer 可以继续发送消息并推动会话前进。
 - raw diagnostics 可用，便于排查事件归一化或渲染问题。

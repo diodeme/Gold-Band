@@ -3,6 +3,9 @@ use crate::observability::ProgressStage;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 
+/// Shared retry budget persisted with ACP retry progress for the UI.
+pub const DEFAULT_AUTO_RETRY_MAX_ATTEMPTS: u32 = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RecoveryMode {
@@ -42,7 +45,7 @@ pub struct RetryPolicy {
 impl Default for RetryPolicy {
     fn default() -> Self {
         Self {
-            max_attempts: 3,
+            max_attempts: DEFAULT_AUTO_RETRY_MAX_ATTEMPTS,
             backoff_ms: vec![1000, 3000, 10000],
             jitter: true,
         }
@@ -213,6 +216,30 @@ pub fn normalize_provider_failure(
             info.raw = raw;
             info
         })
+}
+
+pub fn normalize_provider_runtime_failure(
+    stop_reason: Option<&str>,
+    diagnostic: impl Into<String>,
+    raw: Option<serde_json::Value>,
+) -> RuntimeErrorInfo {
+    let diagnostic = diagnostic.into();
+    let reason = stop_reason.unwrap_or_default();
+    let text = if reason.is_empty() {
+        diagnostic.clone()
+    } else {
+        format!("{reason}: {diagnostic}")
+    };
+    let mut info = normalize_error_text(&text).unwrap_or_else(|| {
+        manual_runtime_error_info(
+            RuntimeErrorDomain::Provider,
+            "provider.execution-error",
+            diagnostic,
+            serde_json::json!({ "stopReason": reason }),
+        )
+    });
+    info.raw = raw;
+    info
 }
 
 fn io_error_is_auto_recoverable(error: &std::io::Error) -> bool {
@@ -418,6 +445,8 @@ fn normalize_error_text(message: &str) -> Option<RuntimeErrorInfo> {
             "server unavailable",
             "gateway unavailable",
             "usually temporary",
+            "high demand",
+            "temporary errors",
         ],
     ) {
         return Some(auto_runtime_error_info(
@@ -536,6 +565,19 @@ mod tests {
         );
 
         assert!(normalize_provider_failure(Some("refusal"), "model refused", None).is_none());
+    }
+
+    #[test]
+    fn provider_high_demand_terminal_failure_is_auto_recoverable() {
+        let info = normalize_provider_runtime_failure(
+            Some("end_turn"),
+            "We're currently experiencing high demand, which may cause temporary errors.",
+            Some(serde_json::json!({ "threadStatus": "systemError" })),
+        );
+
+        assert_eq!(info.code_str(), "provider.server-unavailable");
+        assert_eq!(info.recovery, RecoveryMode::Auto);
+        assert!(info.raw.is_some());
     }
 
     #[test]

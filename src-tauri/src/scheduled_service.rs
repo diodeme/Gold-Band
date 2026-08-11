@@ -1420,10 +1420,7 @@ mod tests {
         let ScheduleKind::At { at, timezone } = created.definition.schedule.kind else {
             panic!("expected At schedule");
         };
-        assert_eq!(
-            at,
-            Utc.with_ymd_and_hms(2026, 11, 1, 6, 30, 0).unwrap()
-        );
+        assert_eq!(at, Utc.with_ymd_and_hms(2026, 11, 1, 6, 30, 0).unwrap());
         assert_eq!(timezone, "America/New_York");
     }
 

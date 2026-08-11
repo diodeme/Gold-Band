@@ -6,13 +6,14 @@
 - 前端新增 ACP session / event / permission / diagnostics 类型，数据来自 Tauri `AcpSessionVm`。
 - `ACPChatDialog` 展示压缩 session header、消息流、thought、tool call、plan、permission、raw frames 和 composer。
 - 会话 UI 已采用 prompt-kit copy-in 组件承载基础交互：`ChatContainer` 负责消息滚动，`Message` 负责用户/agent 气泡，`PromptInput` 负责 composer，`Tool` 负责工具调用卡片，`ChainOfThought` 负责 thought 折叠展示；ACP 专属逻辑只负责事件映射、权限和诊断。
-- 系统提示弹窗正文、原始帧摘要展开详情、子 Agent 结果等长文本区统一跟随应用设置字体；仅在明确需要展示代码或固定宽度标识时才允许局部使用等宽字体。
+- 系统提示弹窗正文、原始帧摘要展开详情、子 Agent 结果等长文本区统一跟随应用设置字体；仅在明确需要展示代码或固定宽度标识时才允许局部使用等宽字体。系统提示正文直接复用 AtomEditor/CodeMirror 的 Markdown 查看器并固定 `editable=false`，复制源码与 Markdown/原文切换沿用该组件右上角的工具栏，不使用额外文字、Switch 或独立工具行。
 - 系统提示弹窗已收口为 shadcn/Radix Dialog + 原生 flex 滚动容器的单滚动面：标题栏固定，正文使用 Gold Band 统一滚动条且常驻，profile/runtime prompt 不做长度截断；长路径和连续字符在正文容器内强制断行，禁止由 `<pre>` 再创建嵌套滚动或把 Dialog 撑出视口。由于 Dialog 使用自然高度加 `max-height`，正文不得改用依赖百分比 viewport 高度的 Radix ScrollArea。前端回归测试固化 `max-height + flex column + min-height zero + direct overflow-y-scroll child` 布局契约。
 - ACP 会话流支持将 `Agent` 工具调用生命周期内的子 Agent transcript 聚合为可展开/收起分组，不再把主 Agent 与子 Agent 输出完全混排。
 - ACP session 初始化与后续追问必须分别维护 Gold Band 显式覆盖和 Agent 当前配置：模型只继承 `modelOverride`，权限模式只继承 `permissionModeOverride`，其余 ACP select 配置继承 `configOptionOverrides[实际 optionId]`；不得从 Agent 返回的 `currentModelId / currentModeId / currentValue` 反推 override。发起会话前模型、权限和思考强度都可切回“不指定”；会话详情仅在对应 override 尚为空时提供“不指定”，模型、权限或思考强度一旦选择具体值后都只能在具体值之间切换。same-session prompt、runtime continue 与 AI-DYNAMIC inner continue 只继续使用显式覆盖。
-- 发起会话前与已建立会话后的模型配置统一使用复合二级菜单；追问 composer 内的 PromptInput 点击聚焦逻辑必须忽略按钮、选择器、菜单项等交互后代，避免普通单击打开菜单后又因文本框抢焦点而关闭。
+- 发起会话前与已建立会话后的模型配置统一使用复合二级菜单；模型或思考强度选项被选中后保留菜单，允许继续选择另一项，用户点击菜单外部时再关闭；追问 composer 内的 PromptInput 点击聚焦逻辑必须忽略按钮、选择器、菜单项等交互后代，避免普通单击打开菜单后又因文本框抢焦点而关闭。
 - ACP session 配置归一化统一采用 `configOptions` 优先、旧 `models` / `modes` 回退：目录、当前值和显示名必须使用同一优先级，避免 Codex 等 adapter 同时返回纯模型 config option 与“模型 × 思考强度”旧目录时展示展开组合。缺少 `category=thought_level` 时继续退化为模型单下拉，不从模型 ID 或名称反向猜测思考强度；回归测试覆盖新旧字段冲突和 legacy-only adapter。
 - Composer 配置栏中的模型单选、模型复合菜单与权限单选统一基于非模态 shadcn/Radix DropdownMenu；相邻菜单必须支持双向一次点击切换，不能混用会拦截外部点击的 Select 弹层。
+- 待发送队列与追问 composer 已收口为同一个底部输入 surface：队列存在时 composer 使用无上圆角贴合形态；无附件时不渲染附件 chips 空容器，避免空 `margin-bottom` 把队列和输入框分开。前端回归测试固定覆盖该布局契约。
 - 会话运行区的产物/附件入口已改为与任务列表一致的 `Collapsible` 折叠面板：默认收起展示非零产物/附件计数，展开后点击文件项继续复用现有详情弹窗；当任务列表存在时，产物/附件面板固定在任务列表上方。
 - 节点详情抽屉中的 artifact / attachment 内容以二级详情层打开，返回或关闭产物详情时恢复原节点详情抽屉。
 - 节点详情抽屉顶部只保留紧凑“查看详情 / 查看会话”切换，不重复展示长节点说明。
@@ -84,14 +85,16 @@ Gold Band 需要吸收的是 Jockey 的 ACP 事件归一化和 Chat/Session UI �
 
 - UI 组件只依赖 Gold Band 会话详情 ViewModel，不直接绑定 ACP crate / adapter 原始结构。
 - Raw ACP frame 只在诊断入口展示，不作为普通用户主视图。
-- 普通 ACP session 查询必须返回事件窗口而不是完整会话文件；V2 优先读取 `acp.timeline.jsonl + acp.snapshot.json`，初始默认返回最近约 30 条聚合 timeline item，向上加载历史时单次加载条数由项目级 `configs/app-config.json` 的 `acpChatEventPageSize` 控制；前端额外保留有限多页缓冲保证滚动连续；分页主游标改为 `beforeCursor / afterCursor`，兼容期继续接受 `beforeSeq / afterSeq`。首个 session-ready 快照必须把 snapshot metadata 与首个 `goldBandPrompt` timeline item 一起暴露，不能让首屏只看到 agent thinking。
+- 普通 ACP session 查询必须返回指定 `branchId` 的语义块窗口，而不是完整会话文件。根分支读取 `acp.timeline.jsonl`，Agent 分支读取 `agents/<AgentExecutionId>/timeline.jsonl`；初始默认返回最近约 30 个语义块，前端保留有限多页缓冲。分页游标统一为 `beforeCursor / afterCursor`，折叠工具数、Activity 审计数和子 Agent 历史都不参与父 branch 的 `hasOlder`。首个 root session-ready 快照仍必须把 snapshot metadata 与首个 `goldBandPrompt` 一起暴露；Agent 分支以 synthetic Agent Prompt 作为只读会话起点。
 - `available_commands_update`、`usage_update`、session/mode/config update 等状态帧不渲染为聊天消息；它们只更新 session 状态或留在 Raw frames 中排障。
-- ACP runtime 文件位于 `~/.gold-band/projects/{project-id}/tasks/...`，不写入项目工作树；ACP 会话身份只以当前 user runtime attempt 的 `worker-ref.json` 为事实源：`continue_ref.acpSessionId` 决定 `session/load` 和 UI header 的 provider session id；`acp.session.json` 不再作为 session id 来源，但会保存 status、capabilities、adapter 配置快照、stop reason，以及通过可选 `session/list` 轮询 best-effort 拉取得到的 `title` 缓存。该能力受项目级 `configs/app-config.json` 控制，默认关闭。title 仅用于后续 UI/检索储备；本期不作为会话头部展示的依赖字段，拉取不到时保持为空。
+- ACP runtime 文件位于 `~/.gold-band/projects/{project-id}/tasks/...`，不写入项目工作树；ACP 会话身份只以当前 user runtime attempt 的 `worker-ref.json` 为事实源：`continue_ref.acpSessionId` 决定 resume/load 的目标 session 与 UI header 的 provider session id；`acp.session.json` 不再作为 session id 来源，但会保存 status、capabilities、adapter 配置快照、stop reason，以及通过可选 `session/list` 轮询 best-effort 拉取得到的 `title` 缓存。该能力受项目级 `configs/app-config.json` 控制，默认关闭。title 仅用于后续 UI/检索储备；本期不作为会话头部展示的依赖字段，拉取不到时保持为空。
 - `configs/app-config.json` 是版本内共享的项目级 app config 入口，不是用户本机偏好设置：适合开发期可选能力和共享 UI/runtime 参数的统一管理。CLI 与桌面端都读取同一份文件；未声明字段继续走代码默认值，不要求每个配置都显式写入。当前文件示例：`{ "acpSessionTitleRefreshEnabled": false, "acpChatEventPageSize": 360 }`。
 - session-wide metadata、pending permission、usage 和 diagnostics 由后端流式扫描全量事件得出，不允许为了 UI 轮询保留或传输全量事件数组。
-- `Agent` 工具调用的子 Agent 分组是前端 timeline projection：前端根据 `Agent` tool call 的 start seq 与 terminal update seq 计算生命周期窗口，将窗口内子事件框定展示，不新增后端 ACP UI event kind。
+- `Agent` execution 是后端规范分支模型：事件进入 timeline 前已按内部 branch metadata 路由，前端只将父 branch 的 launch item 投影为 `AgentLinkRow`，不得重新按 seq 生命周期窗口框选子事件。
 - 未识别事件应进入诊断区或系统提示，不应破坏会话流。
 - 初始 `get_acp_session` 返回 `null`（attempt 目录尚未写入 ACP 文件）时前端不立即显示 "ACP 会话失败"，而是以 120ms / 300ms / 700ms / 1200ms 递增间隔短暂重试，避免与后端首次 snapshot 写入形成竞争；所有重试耗尽仍为空时才降级为失败态。
+- 若 runtime 已在 session-ready、session id 或首批 timeline event 形成前进入失败状态，ACP 会话壳必须以外层 canonical run lifecycle 为准立即停止初始 loading，优先展示现有错误状态组件与具体原因；失败状态包括 `runtime-abnormal`、`error-blocked`、`failed/failure/error/killed` 以及明确的 `runtime-error` composer。Direct 模式同样必须把 runtime diagnostic 交给会话壳，不能因为没有建立 ACP session 而丢失真实错误。`process-interrupted` 继续进入中断状态，其他非错误 pause 不得误判为初始化失败；已经建立 session、已有 timeline event 或 runtime 仍 active 时继续走正常会话路径。
+- MCP transport 兼容性在 ACP `initialize` 与 `session/new|load` 之间统一收敛：使用本次连接实时返回的 `agentCapabilities.mcpCapabilities`，不按 `codex-acp` 等 Agent ID 硬编码。`stdio` 始终保留；HTTP/SSE 仅在 Agent 明确声明不支持时从本次请求剔除；能力字段缺失时保持兼容行为。真正发送 `session/new|load` 且发生过滤时，在 attempt 的 `acp.diagnostics.jsonl` 写入 warning，稳定 code 为 `acp.mcp-transport-unsupported`，data 至少包含 `agentType` 及 `skippedServers[].name/transport/capability`；直接复用已附着 session 时不重复写 warning；`acp.raw.jsonl` 中的 `session/new|load` 只记录实际发送的 accepted server。
 - ACP adapter 关闭时序已收口为 `open → draining → closed`：关闭连接前先将其移出复用池并拒绝新 prompt，再取消待处理 permission/elicitation、发送 session cancel，并按 ACP session id 有界等待活跃 prompt worker 收敛；排空后执行 `session/close`，最后关闭 transport。draining 期间保留在途 response 的写权限，避免 AskUserQuestion/permission worker 被唤醒后向已关闭 stdin 写入。若排空超时，后续 transport 错误统一映射为 `interrupted`，不写入 `ACP prompt failed` diagnostics。
 - 关闭恢复的单元验收固定覆盖：draining 拒绝新普通请求但允许 shutdown request；AskUserQuestion 等待中关闭会先生成 decline 并完成 prompt drain；worker 不收敛时等待必须按 timeout 返回；draining/closed 结构化错误必须被 prompt runtime 识别为 transport interruption。
 
@@ -104,16 +107,15 @@ Gold Band 需要吸收的是 Jockey 的 ACP 事件归一化和 Chat/Session UI �
    - Direct 标题与 Agent 身份使用独立组间距；长 session id 统一格式化为前 8 位与后 4 位的紧凑文本，Tooltip 和剪贴板仍消费完整值，避免技术标识挤压主标题。
    - session id 复制反馈与 Tooltip 由同一状态机管理；复制反馈结束或桌面窗口失焦后进入重开锁定，忽略切回应用时 WebView 残留 focus/pointer 产生的 `open=true`，直到鼠标移出或焦点在应用内移走后才解锁。回归测试必须覆盖“复制 → 反馈关闭”和“复制 → 切换应用 → 返回”两条路径。
 2. **Message List**：用户消息、agent 文本消息、系统提示。
-3. **Reasoning / Thought**：思考内容，默认折叠或弱化。
-4. **Tool Calls**：工具调用卡片，作为会话流中的结构化消息块。
-5. **Agent / Sub-agent Group**：`Agent` 工具调用触发的子 Agent transcript 分组，默认完成后收起、运行中展开。
-6. **Plan**：agent 计划与状态，作为独立 plan block。
-7. **Permission**：权限请求与用户响应，用于 ACP `session/request_permission`。
-8. **Composer**：用户输入区，用于继续会话、回答 agent 自由文本问题、提交下一次 `session/prompt`；输入区下方展示 ACP 配置。新建对话与详情页复用同一模型选择器：只有模型时渲染普通模型下拉；同时存在 `category=thought_level` 时，模型栏变为单个复合下拉，第一层提供模型和思考强度两个子入口，第二层展示对应选项，子菜单由 Radix 原生指针、点击和键盘状态管理，不额外绑定点击翻转。权限模式继续独立展示。模型和思考均为空时复合触发器显示“不指定”，只选择思考强度时显示 `不指定 · 思考强度`；UI 保留 Agent 返回的实际 config option ID，不对 `reasoning_effort/effort` 做分支。追问区的复合菜单嵌套在 PromptInput 内，PromptInput 只在点击空白或非交互内容时聚焦文本框，不得从按钮、选择器或菜单项抢焦点。
-   - 发起会话与追问会话的模型、权限触发器统一显示弱化配置名和当前主值，并复用同一套 composer 配置触发器样式：最终高度 36px，统一宽度、间距、无阴影表面、边框、深色背景、箭头和焦点态；模型复合值仍按 `模型 · 思考强度` 组合，不把思考强度拆成独立触发器。Composer 配置菜单统一使用非模态 `DropdownMenuTrigger`，回归必须覆盖追问区主菜单、二级菜单，以及“模型 → 权限”“权限 → 模型”的双向一次点击切换。
-9. **Terminal / File Details**：命令、cwd、输出、退出码、文件读写路径，作为 tool call 的详情，不作为主输出形态。
-10. **Errors**：ACP error、adapter crash、auth required、timeout。
-11. **Raw / Diagnostics**：原始 ACP frame / transcript 查看，仅用于排障。
+3. **Activity Summary**：连续 thought / tool / error 形成一个稳定语义块，默认折叠；展开后按局部 cursor 加载审计详情。
+4. **Agent Link**：父 branch 只显示 `AgentLinkRow`；点击后在右侧工作区打开只读 Agent 会话，不内嵌 transcript。
+5. **Plan / Todo**：只显示当前 branch 的最新计划快照，位于 composer 或只读会话底部状态区上方，不重复写入消息流。
+6. **Permission / Elicitation**：只展示当前 branch 的待决 intervention；Agent 阻塞时仍可在只读 Tab 内决策。
+7. **Composer**：仅根会话提供用户输入、停止与 ACP 配置；Agent branch 不挂载 composer。根输入用于继续会话、回答 agent 自由文本问题、提交下一次 `session/prompt`；输入区下方展示 ACP 配置。新建对话与详情页复用同一模型选择器：只有模型时渲染普通模型下拉；同时存在 `category=thought_level` 时，模型栏变为单个复合下拉，第一层提供模型和思考强度两个子入口，第二层展示对应选项，子菜单由 Radix 原生指针、点击和键盘状态管理，不额外绑定点击翻转。权限模式继续独立展示。模型和思考均为空时复合触发器显示“不指定”，只选择思考强度时显示 `不指定 · 思考强度`；UI 保留 Agent 返回的实际 config option ID，不对 `reasoning_effort/effort` 做分支。追问区的复合菜单嵌套在 PromptInput 内，PromptInput 只在点击空白或非交互内容时聚焦文本框，不得从按钮、选择器或菜单项抢焦点。
+   - 发起会话与追问会话的模型、权限触发器统一显示弱化配置名和当前主值，并复用同一套 composer 配置触发器样式：最终高度 36px，统一宽度、间距、无阴影表面、边框、深色背景、箭头和焦点态；模型复合值仍按 `模型 · 思考强度` 组合，不把思考强度拆成独立触发器。Composer 配置菜单统一使用非模态 `DropdownMenuTrigger`；选择模型或思考强度时只更新值并保持菜单打开，点击外部才关闭，回归必须覆盖追问区主菜单、二级菜单，以及“模型 → 权限”“权限 → 模型”的双向一次点击切换。
+8. **Terminal / File Details**：命令、cwd、输出、退出码、文件读写路径，作为 tool call 的详情，不作为主输出形态。
+9. **Errors**：ACP error、adapter crash、auth required、timeout；会话内错误归入 Activity 审计，阻断错误保留独立反馈。
+10. **Raw / Diagnostics**：原始 ACP frame / transcript 查看，仅用于根会话排障，不在只读 Agent Tab 展示入口。
 
 ## 5. 推荐组件拆分
 
@@ -122,21 +124,23 @@ Gold Band 需要吸收的是 Jockey 的 ACP 事件归一化和 Chat/Session UI �
 - 普通 `overflow-y-auto` message list：承载 ACP 历史浏览和向上分页；对 prepend 历史使用 scrollHeight 差值补偿 scrollTop，避免虚拟列表重新测量高度时闪回；对流式消息内容增高使用内容尺寸监听来维持底部贴合，避免只在事件数量变化时滚动。
 - `ChatContainerRoot / ChatContainerContent / ChatContainerScrollAnchor`：仅用于不需要历史分页的普通聊天容器场景。
 - `Message / MessageContent`：承载用户与 agent 气泡。
-- `PromptInput / PromptInputTextarea / PromptInputActions / PromptInputAction`：承载 composer、快捷键、loading 和 action 区域。
+- `PromptInput / PromptInputTextarea / PromptInputActions / PromptInputAction`：承载 composer、快捷键、loading 和 action 区域。受控输入的 autosize ref 必须稳定，每次 value 更新只在 layout effect 中测量一次，不能在 `onChange`、ref 重挂载和 layout effect 三条路径重复读写高度。
 - `Tool`：承载工具调用卡片的折叠、状态、输入输出展示。
 - `ChainOfThought / ChainOfThoughtStep / ChainOfThoughtTrigger / ChainOfThoughtContent`：承载 thought / reasoning 折叠展示。
 
 ACP 专属组件只做协议事件映射和业务状态组合：
 
-- `ACPChatDialog`：承载会话对话框或会话抽屉。
-- `ACPSessionHeader`：展示 session/provider/adapter/cwd/连接状态。
-- `ACPMessageList`：按时间顺序展示消息和结构化事件块。
-- `ACPEventRenderer`：根据归一化事件类型选择渲染组件。
+- `ACPChatDialog`：组合共享会话视口、intervention 与根会话 composer，并负责 branch 查询和实时事件合并。branch locator 使用稳定对象引用下发；composer 草稿逐键更新不得使历史 Markdown/Activity/Tool 消费者失去 memo 命中。
+- `ConversationViewport` / `ACPMessageList`：根会话与 Agent 分支共用的原生滚动消息视口，按语义块展示正式文字、活动摘要、TODO 和 Agent 链接。
+- `ACPSessionHeader`：展示 session/provider/adapter/cwd/连接状态；Agent 只读容器按只读边界隐藏不适用入口。
+- `ACPEventRenderer`：根据 Gold Band 规范事件类型选择渲染组件，不读取 provider 私有 metadata。
 - `ToolCallCard`：把 ACP `ToolCall` / `ToolCallUpdate` 映射为 prompt-kit `Tool` props。
-- `ChildAgentGroupCard`：把 `Agent` 工具调用与其生命周期内的子 Agent transcript 聚合为可展开/收起分组。
+- `AgentLinkRow`：在所属父分支中展示轻量 Agent execution 链接，不挂载子 transcript。
+- `RightWorkspaceDock` / `AgentConversationPanel`：用通用多 Tab 右侧工作区承载只读 Agent 分支会话；仅挂载激活 Tab 的完整视口。
+- `AcpActivityBatchRow`：展示一个稳定活动语义块，并在首次展开后按局部 cursor 延迟读取审计详情。摘要总数与本地详情完整性分开建模；即使已混入少量 live 尾部，只要本地审计数小于摘要总数，首次展开仍读取权威详情。
 - `ThoughtBlock`：把合并后的 `ThoughtDelta` 映射为 prompt-kit `ChainOfThought`，标题展示思考耗时而非字符数。
 - `PlanBlock`：展示计划条目和状态变化。
-- `PermissionRequestDialog`：展示权限请求、选项和用户决策。
+- `InterventionLayer` / `PermissionRequestCard`：只展示当前 branch 的待决权限或提问，并使用规范 request ID 提交决策。
 - `SessionStatusBar`：展示连接、恢复、错误和队列状态。
 - `RawFrameViewer`：按 event kind 查看和复制 ACP raw frame。
 
@@ -193,9 +197,11 @@ Tool call 卡片展示：
 - terminal metadata
 - raw input / raw output 展开入口
 
-Tool call update 应按 attempt-scoped `toolCallId` 更新同一张卡片，而不是生成重复卡片。多 attempt 会话和实时轮询必须共用同一套事件归一化 helper，同时作用到 `event.id`、`toolCallId` 和子 Agent `_meta.claudeCode.parentToolUseId`；实时轮询返回的 attempt-local `seq` 需要映射为会话内 display `seq`，merge key 不得依赖会变化的 `seq`。terminal / file 细节挂载到对应 tool call，不应成为主会话输出。工具卡片使用 prompt-kit `Tool` 承载折叠和状态展示，标题行左对齐显示“操作名 + 次级参数”，例如 `Glob .claude/**/*`、`Read xxx.js`；展开后展示路径、查询等关键参数块与输出摘要；不展示 tool call id、kind、input 或 raw details。工具卡展开/收起属于阅读动作，必须保留当前滚动位置，不能触发会话容器自动滑到底部；长路径、JSON 输出和连续字符必须在工具卡宽度内换行或内层滚动，不能撑宽抽屉。
+Tool call update 应按 attempt-scoped `toolCallId` 更新同一条审计项，而不是生成重复卡片。事件归一化、磁盘分支路由和 live push 共用稳定 `event.id / toolCallId / branchId`；merge key 不得依赖持续变化的 `seq`。terminal / file 细节挂载到对应 tool call，不应成为正式文字。工具卡使用 prompt-kit `Tool`，标题行左对齐显示“操作名 + 次级参数”，例如 `Glob .claude/**/*`、`Read xxx.js`；Activity 折叠时不构造工具详情，Activity 展开后只获得压缩审计项，单条工具再次展开时才通过 `get_acp_tool_detail` 读取 raw input/output。长路径、JSON 输出和连续字符必须在工具卡宽度内换行或内层滚动，不能撑宽会话视口。
 
-`Agent` 工具调用不按普通工具卡扁平展示子过程，而是由 `ChildAgentGroupCard` 聚合其生命周期窗口内的子 Agent transcript：普通工具仍使用 prompt-kit `Tool`；`Agent` 工具 header 显示子 Agent 类型、任务说明、状态和子事件数量；展开后内部继续复用 `ACPEventRenderer` 渲染文本、thought、tool call 和 plan；并发发起的多个 `Agent` 工具保持同层并列，不互相嵌套；子 Agent 内部工具优先按 `_meta.claudeCode.parentToolUseId` 归属到对应 Agent，只有缺少该元数据时才回退到 seq 生命周期窗口；如果当前历史窗口缺少 Agent opener，则暂时保持扁平展示，避免误把半截历史归入错误分组。
+`Agent` 工具调用在所属父 branch 中只渲染 `AgentLinkRow`，展示 Agent 名称、说明、统一 execution 状态以及 ACP 可客观确认的工具数和文件读写数。点击后通过稳定资源 key 在通用 `RightWorkspaceDock` 中打开或激活只读 `AgentConversationPanel`；紧凑窗口使用同源 Sheet。嵌套 Agent 在父 Agent 会话中继续显示相同链接并打开新 Tab，不递归挂载 transcript，不使用 Collapsible，也不按 seq 邻近关系猜分组。Claude `_meta.claudeCode.subagent/toolName/parentToolUseId` 只允许在 Rust ACP 适配边界转换为 `_meta.goldBandConversation` 与稳定 `AgentExecutionId`；前端、分页和持久化不得读取 Claude 字段。
+
+2026-08-02 破坏式替换旧 `ChildAgentGroupCard`：根 timeline、每个 Agent timeline 和 Agent lifecycle index 分离持久化；根/Agent 共用 branch 查询、消息渲染、语义分页和 intervention。后台 Agent launch 的 `completed` 只表示已接受，不能生成正式结果或把 execution 提前置为 completed；根停止只中断仍活动的 Agent，已有正式完成证据的 Agent 保持 completed。
 
 ### 6.5 Permission Request
 
@@ -228,7 +234,7 @@ agent message(question)
   -> next session/prompt(answer)
 ```
 
-Round 详情页顶部的“继续运行”属于 canonical workflow runtime 动作，不复用 composer 的任意用户输入。它只在当前 run / round / node 为可恢复 `paused` 时出现；`error_blocked` 在 UI 上显示为错误阻塞，但仍属于用户可显式继续的暂停态。点击后自动恢复当前 attempt 的 ACP session，并发送本地化短 prompt：中文 `继续`，英文 `Continue`。如果 `session/load` 失败，不允许 fallback 到新 ACP session。连续的用户 prompt 必须按事件边界独立成气泡展示，不能把恢复 prompt 拼接到上一条需求 prompt 末尾。
+Round 详情页顶部的“继续运行”属于 canonical workflow runtime 动作，不复用 composer 的任意用户输入。它只在当前 run / round / node 为可恢复 `paused` 时出现；`error_blocked` 在 UI 上显示为错误阻塞，但仍属于用户可显式继续的暂停态。点击后自动恢复当前 attempt 的 ACP session，并发送本地化短 prompt：中文 `继续`，英文 `Continue`。严格 continue 按能力选择 `session/resume` 或 load-only fallback；恢复 RPC 失败或 Agent 未声明任何恢复能力时，不允许 fallback 到新 ACP session。连续的用户 prompt 必须按事件边界独立成气泡展示，不能把恢复 prompt 拼接到上一条需求 prompt 末尾。
 
 ### 6.8 Raw / Diagnostics
 
@@ -255,7 +261,7 @@ Raw 视图不承担主交互，不把 ACP 原始 JSON 暴露为普通用户默�
 - 用户点击发送后立即清空 composer 并乐观生成右侧用户气泡；调起 ACP 到真实 `userTextDelta` 写入会话前显示“发送中...”，该提交阶段不参与计时。乐观用户气泡按 task / run / round / node / attempt 维度保留在前端运行态中，关闭并重新打开同一会话抽屉时必须恢复显示并继续锁定 composer，直到后端写入真实用户消息或发送失败。真实用户消息写入后移除乐观气泡，并从该消息时间点进入“处理中...”到首个非用户帧返回；首帧后按最新帧类型切换为“思考中 / 工具调用中 / 回复生成中”。composer action 行与发送按钮保留足够间距，避免按钮贴近输入框。
 - 同一会话中连续多次 `继续/Continue` 必须各自保留独立消息行；去重只能基于同一 prompt identity 的重复快照，不能只按文本内容去重。允许出现“历史继续 + 新继续”的两条独立气泡，但禁止把它们拼接成 `继续继续` 或把新回合错误合并进旧回合。新写入的 synthetic `goldBandPrompt` 必须携带 `raw.promptId`；历史数据缺失 promptId 时，前端渲染层只能按事件身份兜底保留多条 Gold Band prompt，不得按 `attemptId + text` 折叠真实多轮继续。
 - Composer 只保留两类计时：当前步骤/操作计时，以及 session 累计耗时。当前步骤计时从真实用户消息写入后的首个处理中阶段开始，并随“思考中 / 工具调用中 / 回复生成中”等状态切换；会话进入 completed / failed / cancelled 或等待用户权限决策时停止当前步骤计时。session 累计耗时不按墙钟跨度计算，而是由后端按同一 ACP 会话内每个用户 prompt turn 的实际运行时段累加得到的净处理耗时：每轮从真实用户消息写入开始，到该轮最后一个响应/思考/工具/计划事件结束为止，并扣除 `session/request_permission` 的 `permissionRequest(pending)` 到用户选择的等待区间；该扣除覆盖普通工具授权以及 `ExitPlanMode` / keep planning 等 plan 决策。继续会话时在历史累计值上继续增加，不把两轮之间的用户空闲时间计入总时长。
-- 继续 ACP session 时，runtime 的 replay phase 先按 user turn 判断本地回显与外部新增历史：本地 turn 不重复写入，外部 turn 先暂存；`session/load` response 后 drain inbound queue 并 finish 暂存历史，prompt 前仍处于 replay 时再次 finish 兜底，随后进入 `AwaitingTurnStart`。Provider history 在 `raw.historyPlacement` 保存 `version/afterPromptId/beforePromptId/gapTurnIndex`，`historyItemIndex` 保存组内位置；timeline 的 `seq/timestamp` 只表示审计到达顺序。后端投影与前端 merge 按“本地 prompt + Provider history 锚点”重建展示顺序，分页仍按审计 seq，并以窗口 min/max 审计 seq 生成 cursor。placement-only patch 保留首次 `seq/timestamp/start/end/timing`；旧版文本锚点清理只作用于缺少 placement 的历史，Provider-history patch 与既有本地 item identity 冲突时仍保留原始本地事件。raw/timeline 审计文件不重写。
+- 继续 ACP session 时，普通 `session/resume` 不建立 history importer，也不执行 replay quiet-drain；resume 响应后直接进入 `AwaitingTurnStart`，恢复阶段违规到达的历史 content 只保留 raw 并抑制。只有 `session/load` 的 replay phase 才先按 user turn 判断本地回显与外部新增历史：本地 turn 不重复写入，外部 turn 先暂存；load response 后 drain inbound queue 并 finish 暂存历史，prompt 前仍处于 replay 时再次 finish 兜底，随后进入 `AwaitingTurnStart`。ACP 规范要求 load 在响应前完成回放，quiet-drain 是针对已观测到的异步/不合规 adapter 的防御性保护。Provider history 在 `raw.historyPlacement` 保存 `version/afterPromptId/beforePromptId/gapTurnIndex`，`historyItemIndex` 保存组内位置；timeline 的 `seq/timestamp` 只表示审计到达顺序。后端投影与前端 merge 按“本地 prompt + Provider history 锚点”重建展示顺序，分页仍按审计 seq，并以窗口 min/max 审计 seq 生成 cursor。placement-only patch 保留首次 `seq/timestamp/start/end/timing`；旧版文本锚点清理只作用于缺少 placement 的历史，Provider-history patch 与既有本地 item identity 冲突时仍保留原始本地事件。raw/timeline 审计文件不重写。
 - Agent 文本展示左侧机器人头像；thought、tool call、plan 同属 assistant 结构化时间轴行，同样展示左侧机器人头像；所有展示头像的消息（用户消息、agent 文本、tool call、thought、plan）均在头像下方展示当前消息时间（`HH:mm` 格式）；处理中状态放 composer 内，不展示头像与时间；用户 prompt 保持右侧用户头像。
 
 ## 7. 与 Gold Band runtime 的关系
@@ -283,14 +289,15 @@ ACP UI 不按“第一阶段 / 第二阶段”组织，而按可独立实现的�
 5. `TextDelta` 流式消息合并。
 6. `ThoughtBlock` 折叠思考内容。
 7. `ToolCallCard` 工具调用卡片。
-8. `ChildAgentGroupCard` 子 Agent transcript 分组。
-9. `PermissionRequestDialog` / inline approval card。
-10. `PlanBlock` 计划块。
-11. `ModeUpdate` / `ConfigUpdate` / `SessionInfo` 状态提示。
-12. `RawFrameViewer` 诊断视图。
-13. 错误、断线、恢复、seq gap 提示。
-14. 快速对话与会话详情共用 `SlashCommandMenu` / `useSlashCommandController`：独立 `/query` 打开，分隔符关闭，选择后插入普通 `/${name} ` 文本；已存在于当前目录的完整命令在分隔符出现后以输入标签投影，底层发送值保持原始文本。
-15. ACP 命令目录由 Rust Core 按 Agent + workspace 持久化；每个 Agent 维护独立 Skill 写列表与读列表，Doctor 将 `available_commands_update` 的原生命令和用户级/workspace 级读目录中的 `SKILL.md` 元数据合并，ACP 条目优先并按名称去重。自动/手动 doctor、live update 与 SKILL 同步后刷新；连接层以有界 TTL early-session buffer 解决 `session/new` 返回前命令通知丢失。
+8. `AgentLinkRow` + `RightWorkspaceDock` + `AgentConversationPanel` Agent 分支资源展示。
+9. `AcpActivityBatchRow` 活动摘要与独立审计详情加载。
+10. `InterventionLayer` / inline permission 与 elicitation card。
+11. `PlanBlock` 当前 branch 计划块。
+12. `ModeUpdate` / `ConfigUpdate` / `SessionInfo` 状态提示。
+13. `RawFrameViewer` 诊断视图。
+14. 错误、断线、恢复、seq gap 提示。
+15. 快速对话与会话详情共用 `SlashCommandMenu` / `useSlashCommandController`：独立 `/query` 打开，分隔符关闭，选择后插入普通 `/${name} ` 文本；已存在于当前目录的完整命令在分隔符出现后以输入标签投影，底层发送值保持原始文本。
+16. ACP 命令目录由 Rust Core 按 Agent + workspace 持久化；每个 Agent 维护独立 Skill 写列表与读列表，Doctor 将 `available_commands_update` 的原生命令和用户级/workspace 级读目录中的 `SKILL.md` 元数据合并，ACP 条目优先并按名称去重。自动/手动 doctor、live update 与 SKILL 同步后刷新；连接层以有界 TTL early-session buffer 解决 `session/new` 返回前命令通知丢失。
 
 详细执行 todo 见：
 

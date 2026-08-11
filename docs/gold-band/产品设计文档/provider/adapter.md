@@ -34,6 +34,14 @@ provider adapter 是 provider-specific 差异的隔离层。
 - `providerId`
 - `displayName`
 - `capabilities`
+
+`capabilities` 当前包含以下静态 provider 能力（运行期声明，非 doctor 探测结果）：
+- `supports_open_session` / `supports_continue_session`：是否支持新建 / 续接 ACP session；
+- `supports_system_prompt`：是否接受 `session/new` 的 system prompt（claude-acp 支持，codex-acp 不支持）；
+- `supports_raw_stream`：是否支持 raw frame / transcript；
+- MCP transport 能力属于 MCP/Agent capability 领域，应以当前 ACP `initialize` 返回的 `agentCapabilities.mcpCapabilities` 为运行时事实源；provider adapter 不维护按 provider ID 硬编码的 transport 列表。Gold Band 在 `session/new|load` 前统一准备 MCP server：`stdio` 直接接受，HTTP/SSE 对明确声明为 `false` 的 transport 做过滤，Agent 未声明 `mcpCapabilities` 时保持原列表而不猜测。被过滤项以 `acp.mcp-transport-unsupported` 和结构化参数写入当前 attempt 的 `acp.diagnostics.jsonl`，实际请求只包含 accepted server，禁止静默丢弃。
+
+- Agent 的 `configOptions` 是会随 adapter 升级变化的能力目录。前端使用纯函数对已保存 override 做交集规范化，保留仍存在且 value 有效的项，返回被删除的 option id；校验函数不得修改 React/persisted 输入对象，也不得把 stale override 当成阻塞会话的错误。Direct/AUTO 在提交前使用规范化结果，并在能力目录刷新后同步清理当前配置。
 - `isDefault`
 
 ### `doctor()`
@@ -45,7 +53,7 @@ provider adapter 是 provider-specific 差异的隔离层。
 - 当前环境是否满足最小运行条件
 - 失败时给出明确原因
 
-桌面端持久化的 doctor 结果是 `~/.gold-band/desktop/agent-diagnostics.json`。doctor 运行时可以临时创建 `~/.gold-band/doctor/acp` 作为一次性 ACP 诊断 attempt 目录；每次运行前清理旧目录，成功后删除该目录，失败时只保留最近一次有界 raw/timeline/diagnostics JSONL bundle，并移除 `provider.pid`。这些文件只用于诊断，不参与 runtime、UI 状态、业务 session 判断，也不作为 `supports_system_prompt` 等静态 provider capability 的事实来源。
+桌面端持久化的 doctor 结果是 `~/.gold-band/desktop/agent-diagnostics.json`。每个 Agent 的 doctor 使用独立的 `~/.gold-band/doctor/acp/<agent-id>` 作为一次性 ACP 诊断 attempt 目录，并在目录内独立维护 `provider.pid`；每次运行前只清理本 Agent 的旧目录，成功后删除该目录，失败时只保留该 Agent 最近一次有界 raw/timeline/diagnostics JSONL bundle，并移除对应 `provider.pid`。因此全量周期诊断可以并行检查不同 Agent，但同一 Agent 仍必须 singleflight。手动诊断只执行一次，后台周期诊断首次失败后重试一次，第二次失败才成为最终结果。这些文件只用于诊断，不参与 runtime、UI 状态、业务 session 判断，也不作为 `supports_system_prompt` 等静态 provider capability 的事实来源。
 
 ### `runWorker()`
 运行一次 AI worker attempt。
@@ -78,6 +86,7 @@ provider adapter 是 provider-specific 差异的隔离层。
 - `status`
 - `exitCode`
 - `resultPayload`
+- `runtimeError`
 - `workerRefSeed`
 - `sessionEvents`（ACP normalized UI projection，聚合 patch 落盘到 `acp.timeline.jsonl`）
 - `rawSession`（ACP raw frame，落盘到 `acp.raw.jsonl`）
@@ -93,11 +102,31 @@ provider adapter 是 provider-specific 差异的隔离层。
 - provider diagnostic 必须写入 `acp.diagnostics.jsonl`，至少保存稳定 `code`、`level`、原始 message 和 provider/update 上下文；它不参与 assistant `final_text`、`final_outputs` 或聊天消息渲染
 - 若当前节点未声明 `output`，则 `resultPayload` 可以为空或缺省；runtime 不因此报错
 
+### ACP prompt 终态归约
+
+ACP prompt 的协议结束与 Gold Band Provider 执行结果是两个不同领域：
+
+- `stopReason` 只描述 `session/prompt` turn 为什么结束，不能单独证明 worker 成功。
+- `session/update` 中的 fatal session 状态属于本轮 prompt 生命周期证据，必须进入 Provider 返回值，不能只落入 timeline 或 diagnostics。
+- Provider 必须在一个集中归约函数中同时消费 `stopReason` 与结构化 terminal failure，不能让普通 worker、AI-DYNAMIC bootstrap/worker/merge/acceptance 各自推断。
+
+归约优先级固定为：
+
+1. 本轮出现 terminal failure，例如 Codex `_meta.codex.threadStatus.type = systemError`，无论 prompt response 是否返回 `end_turn`，都映射为 `ProviderRunStatus::Failure + RuntimeErrorInfo`。
+2. `cancelled`、`interrupted`、`max_turn_requests`、`max_tokens` 映射为 `Interrupted`。
+3. 等待用户输入和权限请求映射为对应暂停状态。
+4. `refusal` 是明确业务拒绝，映射为 `Failure`，但不伪装成 provider runtime error。
+5. 只有明确正常结束的 `end_turn` 且不存在 terminal failure 时才能映射为 `Success`。
+6. 缺失或未知 `stopReason` 必须按 ACP 协议异常返回结构化 `RuntimeErrorInfo`，禁止默认成功。
+
+Provider 只有在归约结果为 `Success` 或可接受中断结果时才提取 output artifact。Provider runtime error 必须先于 artifact/DSL 校验返回给 runtime；AI-DYNAMIC 不得把 provider 服务故障当成 proposal 格式错误进入 repair。
+
 ### Codex ACP 实现约束
 
 - 内置 `codex-acp` preset 使用维护中的 `@agentclientprotocol/codex-acp`，不再使用会丢失 Codex event/item 身份的 `@zed-industries/codex-acp`
 - `@agentclientprotocol/codex-acp` 的正常 agent text delta 必须携带 `messageId=itemId`；同一 ID 的 delta 累计，不同 ID 的 delta 分离
 - 该 adapter 把 Codex warning 映射为无 `messageId` 的 `agent_message_chunk`。Gold Band 只在确认当前运行的是上述 adapter 实现时，将这种无作用域文本归一化为 `codex_acp.warning` 诊断；不得按英文前缀、具体警告文案或时间间隔过滤
+- Codex `_meta.codex.error` 中 `willRetry=true` 仅记录为本轮候选错误信号；若后续恢复正常则不判失败。出现 `willRetry=false` 或 `_meta.codex.threadStatus.type=systemError` 时提升为本轮 terminal failure；后者应携带最近一次错误详情，供统一错误归一化识别 high demand、连接断开等可恢复异常
 - 自定义 ACP adapter 或旧 adapter 不得套用“无 `messageId` 即 warning”的 Codex 专属规则，避免误隐藏正常回答
 
 ### `openSession(ref)`

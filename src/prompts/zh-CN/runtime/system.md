@@ -46,6 +46,10 @@ Gold Band 文件规则：
 
 runtime 将使用以下条件判断节点结果：
 {{ output_contract.success_condition }}{% endif %}
+{% elif output_deferred %}
+- 当前业务执行 turn 不需要输出 canonical artifact。
+- runtime 会在本 turn 正常结束后，通过单独的隐藏 finalize turn 请求控制结果；本 turn 只需完成任务并自然回复。
+- 不要提前输出、猜测或查找 artifact schema。
 {% else %}
 - 当前节点未声明 output DSL，不需要产出 canonical artifact。
 - 不需要查找、推断或读取 artifact/output 约束；只需完成 # 任务 或 # 目标。

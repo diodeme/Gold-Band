@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ACPSessionHeader,
   formatAcpSessionIdForDisplay,
+  resolveRawFramesActionActive,
   reduceAcpSessionIdTooltipState,
 } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -28,6 +29,7 @@ function session(): AcpSessionVm {
       hasNewer: false,
     },
     pendingPermissions: [],
+    pendingElicitations: [],
   } as AcpSessionVm;
 }
 
@@ -42,6 +44,12 @@ function renderHeader(props: React.ComponentProps<typeof ACPSessionHeader>) {
 }
 
 describe('ACPSessionHeader', () => {
+  it('uses an active raw action only when the button actually switches the current canvas', () => {
+    expect(resolveRawFramesActionActive(false, true)).toBe(true);
+    expect(resolveRawFramesActionActive(true, true)).toBe(false);
+    expect(resolveRawFramesActionActive(true, false)).toBe(false);
+  });
+
   it('shortens long session ids while preserving compact ids', () => {
     expect(formatAcpSessionIdForDisplay('019f9417-0b0f-75c2-a79a-739cd4c94238'))
       .toBe('019f9417…4238');
@@ -120,7 +128,7 @@ describe('ACPSessionHeader', () => {
     expect(html).not.toContain('权限');
   });
 
-  it('combines the Direct title, session identity, diagnostics and folder action in one header row', () => {
+  it('combines the Direct title, session identity and diagnostics in one header row', () => {
     const html = renderHeader({
       session: session(),
       rawActive: false,
@@ -128,7 +136,6 @@ describe('ACPSessionHeader', () => {
       showSystemPromptAction: false,
       directSessionHeader: {
         title: 'Direct title',
-        onOpenInFileManager: () => undefined,
       },
       onToggleRaw: () => undefined,
       onOpenSystemPrompt: () => undefined,
@@ -138,7 +145,6 @@ describe('ACPSessionHeader', () => {
     expect(html).toContain('Claude');
     expect(html).toContain('session-1');
     expect(html).toContain('原始帧');
-    expect(html).toContain('aria-label="打开目录"');
     expect(html).toContain('py-0.5');
     expect(html).toContain('gap-1');
     expect(html).toContain('mr-2 min-w-0 max-w-[40%] shrink');

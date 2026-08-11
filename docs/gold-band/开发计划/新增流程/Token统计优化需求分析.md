@@ -355,3 +355,46 @@ RoundDetailPage → resolveNodeTokenUsage(多会话多attempt累加) → InfoGri
 - **仅 Claude ACP 适配器**：不扩展至其他 provider
 - **不展示 turn、费用、进度条**：经 Deep Interview 确认移除
 - **深色主题**：遵循 CLAUDE.md 约束，减少浅黑色方块和嵌套卡片
+
+---
+
+## 八、2026-07-30 Attempt 累计 Token 修正
+
+### 数据结构分域
+
+- `AcpPromptTokenUsage`：一次 `session/prompt` 返回的增量，只描述本轮输入、输出、缓存读、缓存写与总计。
+- `AcpAttemptTokenTotals`：一个 ACP attempt 内全部 prompt turn 的累计消耗，是会话详情当前 attempt Token 展示的权威状态。
+- `AcpContextUsageGauge`：上下文窗口的 `used / size` 状态量，继续与消耗累计分离。
+
+### snapshot 字段契约
+
+| 字段组 | 语义 | 当前消费者 |
+|---|---|---|
+| `inputTokens / outputTokens / cachedReadTokens / cachedWriteTokens / totalTokens` | 最后一轮 Prompt 快照 | 节点指标链路，后续单独讨论 |
+| `attemptInputTokens / attemptOutputTokens / attemptCachedReadTokens / attemptCachedWriteTokens / attemptTotalTokens` | 当前 ACP attempt 的累计消耗 | ACP 会话详情与 dynamic 会话详情 |
+| `usedTokens / contextWindowSize` | 当前上下文窗口状态 | 会话详情上下文窗口 |
+
+### 生命周期规则
+
+1. 每次 Prompt 终态解析单轮 usage，并以饱和加法写入 `AcpAttemptTokenTotals`。
+2. 保留中的 runtime 直接续算；同一 attempt 内 runtime 重建、停止后继续和节点完成后追问从 attempt usage journal 恢复后续算，snapshot 只承担查询加速和物化展示。
+3. 新 attempt 从空的 `AcpAttemptTokenTotals` 开始；resume 相同 Provider session 不继承旧 attempt totals。
+4. UI 不读取最后一轮字段，也不从 timeline、消息列表或 `used` 差值推导累计值。
+5. 本次不修改节点指标上报的触发时机和字段来源。
+
+### 崩溃一致性与恢复日志
+
+- attempt 目录新增 `acp.prompt-usage.jsonl`，记录 `attemptBaseline`、`promptStarted`、`promptCompleted` 三类事件。`promptStarted` 必须先于 Provider 调用持久化；成功响应的 usage 必须先写 durable completion，再更新内存与 snapshot。
+- journal 使用路径级文件锁、追加写、`flush()` 与 `sync_data()`；追加前检查尾部，截断进程崩溃留下的不可解析半行，保留完整但尚未补换行的记录。
+- snapshot 是 materialized cache，不再是唯一恢复源。恢复时以稳定 `turnId` 去重重放 completed；若 raw 已有成功结果而 completion 缺失，则按 Prompt 起止顺序配对并补写 `recoveredFromRaw=true` 的完成记录。
+- `acp.raw.jsonl` 有独立滚动生命周期。为避免部分 raw 把累计值变小，只允许恢复 baseline 时间之后的结果；升级前没有 `attempt*` 的旧 snapshot，以最后一轮值建立最低迁移 baseline。已被 raw 滚掉且从未进入 snapshot/journal 的历史轮次无法凭空还原。
+- 读取活跃 Prompt 时不扫描 raw，避免 UI 轮询与 Provider 写入竞争；journal 中已完成的 totals 仍可直接读取。Prompt 结束或 runtime 重建后再执行 raw 缺口修复。
+
+### 验收
+
+- 第一轮 `input=9057, output=15, cacheRead=7680, total=16752`，第二轮 `input=7453, output=315, cacheRead=16896, total=24664` 后，会话展示必须为 `input=16510, output=330, cacheRead=24576, total=41416`。
+- 同一 attempt 的 runtime 销毁并从 snapshot 恢复后继续 Prompt，累计值必须在原 totals 上增加；新 attempt 不读取旧 attempt totals。
+- Provider 缺少 `totalTokens` 但提供分项时，本轮 total 由四个分项求和；缺失字段不得清空历史累计。
+- 会话 VM 即使同时拿到最后一轮字段和 attempt 累计字段，也必须只向聊天 UI 投影 attempt 累计字段。
+- 模拟在 raw response 已追加、`promptCompleted` 与 snapshot 尚未写入时崩溃，重开后 totals 必须补齐；再次重开不得重复累计。
+- 模拟 journal 尾部半行后继续追加，新记录必须保持为独立合法 JSONL；旧 snapshot 没有 `attempt*` 时，迁移 baseline 不得把已有显示降为 0。

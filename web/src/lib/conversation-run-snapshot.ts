@@ -160,21 +160,32 @@ export function mergeConversationRunSnapshot(
       ? {
           ...merged,
           selectedSession: current.selectedSession,
-          artifacts: current.artifacts,
-          attachments: current.attachments,
         }
       : {
           ...merged,
           selectedSession: null,
-          artifacts: [],
-          attachments: [],
         };
   } else if (!merged.selectedSession && selectedKey && selectedKey === currentKey && current.selectedSession) {
     merged = {
       ...merged,
       selectedSession: current.selectedSession,
-      artifacts: current.artifacts,
-      attachments: current.attachments,
+    };
+  }
+  if (
+    selectedKey &&
+    currentLeaf &&
+    incomingLeaf &&
+    conversationSessionKeyFromParts(currentLeaf) === selectedKey &&
+    currentLeaf.sessionEstablished &&
+    (!incomingLeaf.sessionEstablished || (!incomingLeaf.sessionId && currentLeaf.sessionId))
+  ) {
+    merged = {
+      ...merged,
+      sessionTree: mapConversationTreeLeaf(merged.sessionTree, selectedKey, (leaf) => ({
+        ...leaf,
+        sessionId: leaf.sessionId ?? currentLeaf.sessionId,
+        sessionEstablished: true,
+      })),
     };
   }
   if (

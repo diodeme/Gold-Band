@@ -10,8 +10,9 @@ mod state_factory;
 mod transition_context;
 
 pub use self::notification::{
-    InterventionNotification, InterventionType, NotificationDedup, direct_conversation_agent_label,
-    make_dedup_key, make_dedup_key_with_suffix, make_turn_dedup_key, reason_key,
+    INITIAL_DIRECT_TURN_ID, InterventionNotification, InterventionType, NotificationDedup,
+    direct_conversation_agent_label, make_dedup_key, make_dedup_key_with_suffix,
+    make_turn_dedup_key, reason_key,
 };
 pub use self::orchestrator::{AcceptedRun, PreparedRun};
 
@@ -35,15 +36,16 @@ use crate::dsl::{
     workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
-    DynamicGraphState, DynamicNodeStatus, DynamicRunStatus, dynamic_leaf_is_active,
-    refresh_dynamic_current_leaf_ids,
+    DynamicGraphState, DynamicNodeStatus, DynamicRunPhase, DynamicRunStatus,
+    dynamic_leaf_is_active, refresh_dynamic_current_leaf_ids,
 };
 use crate::mcp::McpManager;
-use crate::process::kill_process_tree;
+use crate::process::recover_persisted_process_group;
 use crate::provider::{
     DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
-    ProviderInfo, UserPromptRenderMode, provider_capabilities, provider_from_agent,
-    render_prompt_bundle, supported_models_from_capabilities, supported_modes_from_capabilities,
+    ProviderInfo, UserPromptRenderMode, provider_from_agent, render_prompt_bundle,
+    runtime_control_suspended_context, supported_models_from_capabilities,
+    supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
@@ -58,16 +60,17 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use self::ids::{generate_uuid, next_workflow_id, now_rfc3339_like, reserve_next_task_dir};
 use self::orchestrator::{
-    build_dynamic_prompt_bundle,
+    build_dynamic_prompt_bundle, dynamic_state_lock_for,
     launch_prepared_run_background as orchestrator_launch_prepared_run_background,
-    pause_dynamic_leaf_runtime_state, prepare_run as orchestrator_prepare_run,
-    run_continue as orchestrator_run_continue,
+    pause_dynamic_leaf_runtime_state, pause_dynamic_leaf_runtime_state_if_active_execution,
+    prepare_run as orchestrator_prepare_run, run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
     run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
     run_start_background as orchestrator_run_start_background,
@@ -106,10 +109,37 @@ impl Drop for OwnedTaskDirectory {
 }
 use self::profiles::{
     DefaultProfileIds, create_profile, delete_profile as delete_profile_file,
-    ensure_default_user_profiles, list_profiles, show_profile, update_profile,
+    ensure_default_user_profiles, import_profiles_from_folder, list_profiles, show_profile,
+    update_profile,
 };
+
+const ATTEMPT_RUNTIME_STATE_LOCK_SHARDS: usize = 64;
+static ATTEMPT_RUNTIME_STATE_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
+
+pub(crate) fn attempt_runtime_state_lock(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> &'static Mutex<()> {
+    let key = format!(
+        "{}/{task_id}/{run_id}/{round_id}/{node_id}/{attempt_id}",
+        app.paths.repo_root
+    );
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    let shard = hasher.finish() as usize % ATTEMPT_RUNTIME_STATE_LOCK_SHARDS;
+    &ATTEMPT_RUNTIME_STATE_LOCKS.get_or_init(|| {
+        (0..ATTEMPT_RUNTIME_STATE_LOCK_SHARDS)
+            .map(|_| Mutex::new(()))
+            .collect()
+    })[shard]
+}
 pub use self::profiles::{
-    ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, ProfileScope,
+    ImportProfilesInput, ImportProfilesResult, ProfileCommandError, ProfileEntry, ProfileInput,
+    ProfileList, ProfileScope,
 };
 
 fn tail_text(text: &str, limit: usize) -> String {
@@ -174,28 +204,20 @@ fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
     match (language, key) {
         (DesktopLanguage::ZhCn, "plan") => "分析导入的需求并产出实施方案。",
         (DesktopLanguage::ZhCn, "dev") => "在当前工作区实现需求。",
-        (DesktopLanguage::ZhCn, "review") => {
-            "审查实现质量，并返回包含 result 和 reason 字段的 JSON。"
-        }
-        (DesktopLanguage::ZhCn, "test") => {
-            "执行或说明验证结果，并返回包含 result 和 reason 字段的 JSON。"
-        }
-        (DesktopLanguage::ZhCn, "accept") => {
-            "对照需求进行验收，并返回包含 result 和 reason 字段的 JSON。"
-        }
+        (DesktopLanguage::ZhCn, "review") => "审查实现质量并形成明确结论。",
+        (DesktopLanguage::ZhCn, "test") => "执行验证并形成明确结论。",
+        (DesktopLanguage::ZhCn, "accept") => "对照需求进行验收并形成明确结论。",
         (DesktopLanguage::ZhCn, "cleanup") => "清理资源、整理交付说明并清理 Git 工作区。",
         (DesktopLanguage::En, "plan") => {
             "Analyze the imported requirement and produce an implementation plan."
         }
         (DesktopLanguage::En, "dev") => "Implement the requirement in the workspace.",
         (DesktopLanguage::En, "review") => {
-            "Review the implementation and return JSON with result and reason fields."
+            "Review the implementation and reach a clear conclusion."
         }
-        (DesktopLanguage::En, "test") => {
-            "Run or describe verification and return JSON with result and reason fields."
-        }
+        (DesktopLanguage::En, "test") => "Run verification and reach a clear conclusion.",
         (DesktopLanguage::En, "accept") => {
-            "Validate acceptance and return JSON with result and reason fields."
+            "Validate acceptance against the requirement and reach a clear conclusion."
         }
         (DesktopLanguage::En, "cleanup") => {
             "Clean up resources, finalize handoff notes, and clean up the Git workspace."
@@ -429,37 +451,17 @@ fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> Str
     candidate
 }
 
-fn unique_auto_template_id(store: &AutoTemplateStore, name: &str) -> String {
-    let slug = name
-        .trim()
-        .to_ascii_lowercase()
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string();
-    let base = if slug.is_empty() {
-        "auto-template".to_string()
-    } else {
-        slug
-    };
-    let mut candidate = base.clone();
-    let mut index = 1;
-    while store
-        .templates
-        .iter()
-        .any(|template| template.id == candidate)
-    {
-        index += 1;
-        candidate = format!("{base}-{index}");
+fn next_auto_template_id(store: &AutoTemplateStore) -> String {
+    loop {
+        let candidate = format!("auto-template-{}", generate_uuid());
+        if !store
+            .templates
+            .iter()
+            .any(|template| template.id == candidate)
+        {
+            return candidate;
+        }
     }
-    candidate
 }
 
 #[derive(Debug, Clone)]
@@ -591,6 +593,21 @@ pub enum AcpTurnOutcome {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcpTurnBatchProgress {
+    pub completed_reply_count: u32,
+    pub continues: bool,
+}
+
+impl AcpTurnBatchProgress {
+    pub const fn terminal(completed_reply_count: u32) -> Self {
+        Self {
+            completed_reply_count,
+            continues: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum RuntimeLifecycleEvent {
     /// A node has started executing. The orchestrator is about to invoke the
@@ -650,6 +667,7 @@ pub enum RuntimeLifecycleEvent {
         event_id: String,
         occurred_at: String,
         scheduled_occurrence_id: Option<String>,
+        project_id: String,
         task_id: String,
         run_id: String,
         round_id: String,
@@ -663,6 +681,7 @@ pub enum RuntimeLifecycleEvent {
         event_id: String,
         occurred_at: String,
         scheduled_occurrence_id: Option<String>,
+        project_id: String,
         task_id: String,
         run_id: String,
         round_id: String,
@@ -676,6 +695,7 @@ pub enum RuntimeLifecycleEvent {
         event_id: String,
         occurred_at: String,
         scheduled_occurrence_id: Option<String>,
+        project_id: String,
         task_id: String,
         run_id: String,
         round_id: String,
@@ -687,7 +707,7 @@ pub enum RuntimeLifecycleEvent {
         /// Direct 首轮以 Agent 回复语义展示；普通 Workflow/AUTO 为 None。
         completion_agent_label: Option<String>,
     },
-    /// 非 runtime-continue 的 ACP prompt turn 已结束。
+    /// 非 Runtime 控制的 ACP prompt turn 已结束。
     ///
     /// Direct 后续对话以及 Workflow/AUTO 节点完成后的手动追问统一走该事件；
     /// runtime 自身继续执行仍由 RunCompleted/InterventionRequested 表达，避免双重通知。
@@ -695,6 +715,7 @@ pub enum RuntimeLifecycleEvent {
         event_id: String,
         occurred_at: String,
         scheduled_occurrence_id: Option<String>,
+        project_id: String,
         task_id: String,
         run_id: String,
         round_id: String,
@@ -703,6 +724,10 @@ pub enum RuntimeLifecycleEvent {
         turn_id: String,
         agent_label: String,
         outcome: AcpTurnOutcome,
+        /// Progress of the uninterrupted Direct prompt-queue reply batch.
+        /// Intermediate successes remain observable with `continues=true`; the
+        /// terminal event carries the total count used by the desktop notification.
+        batch_progress: AcpTurnBatchProgress,
         task_title: Option<String>,
     },
 }
@@ -746,6 +771,9 @@ pub struct App {
         >,
     >,
     acp_session_update: Option<Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>>,
+    prompt_turn_lifecycle: Option<
+        Arc<dyn Fn(AcpLiveEventContext, AcpPromptLifecycleEvent) -> Result<()> + Send + Sync>,
+    >,
     pub lifecycle_bus: observability::RuntimeLifecycleBus,
     scheduled_occurrence_id: Option<String>,
     scheduled_task_context: Option<crate::provider::ScheduledTaskContextInfo>,
@@ -766,16 +794,23 @@ pub struct AcpLiveEventContext {
     pub outer_attempt_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcpPromptLifecycleEvent {
+    Accepted {
+        prompt_id: String,
+    },
+    Finished {
+        prompt_id: Option<String>,
+        successful: bool,
+    },
+}
+
 pub fn is_run_continuable(run: &RunState) -> bool {
     run.status == RunStatus::Paused
         && run.outcome.is_none()
         && matches!(
             run.pause_reason,
-            Some(
-                PauseReason::ProcessInterrupted
-                    | PauseReason::RuntimeAbnormal
-                    | PauseReason::WaitingForUserInput
-            )
+            Some(PauseReason::ProcessInterrupted | PauseReason::RuntimeAbnormal)
         )
         && run.current_round.is_some()
         && run.current_node.is_some()
@@ -905,19 +940,7 @@ fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     }
 }
 
-fn worker_models_for_node(node: &NodeDsl) -> Vec<(String, Option<String>)> {
-    match node {
-        NodeDsl::Worker(worker) => worker
-            .provider
-            .as_ref()
-            .map(|p| (p.clone(), worker.model.clone()))
-            .into_iter()
-            .collect(),
-        NodeDsl::AiDynamic(_) => Vec::new(),
-    }
-}
-
-fn worker_permission_modes_for_node(node: &NodeDsl) -> Vec<(String, Option<String>)> {
+fn configured_permission_modes_for_node(node: &NodeDsl) -> Vec<(String, Option<String>)> {
     match node {
         NodeDsl::Worker(worker) => worker
             .provider
@@ -925,8 +948,78 @@ fn worker_permission_modes_for_node(node: &NodeDsl) -> Vec<(String, Option<Strin
             .map(|provider| (provider.clone(), worker.permission_mode.clone()))
             .into_iter()
             .collect(),
-        NodeDsl::AiDynamic(_) => Vec::new(),
+        NodeDsl::AiDynamic(dynamic) => match &dynamic.agent_strategy {
+            AiDynamicAgentStrategy::Fixed {
+                provider,
+                permission_mode,
+                ..
+            } => vec![(provider.clone(), permission_mode.clone())],
+            AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider,
+                permission_mode,
+                available_agents,
+                ..
+            } => std::iter::once((bootstrap_provider.clone(), permission_mode.clone()))
+                .chain(
+                    available_agents
+                        .iter()
+                        .map(|agent| (agent.provider.clone(), agent.permission_mode.clone())),
+                )
+                .collect(),
+        },
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelConfigNormalization {
+    pub node_id: String,
+    pub scope: String,
+    pub provider: Option<String>,
+    pub previous_model: String,
+}
+
+fn provider_model_is_stale(
+    diagnostics: &BTreeMap<String, ProviderDiagnosticSnapshot>,
+    provider: &str,
+    model: &str,
+) -> bool {
+    let supported_models = diagnostics
+        .get(provider)
+        .filter(|diagnostic| diagnostic.available)
+        .map(|diagnostic| supported_models_from_capabilities(diagnostic.capabilities.as_ref()))
+        .unwrap_or_default();
+    !supported_models.is_empty()
+        && !supported_models
+            .iter()
+            .any(|option| option.id == model || option.name.as_deref() == Some(model))
+}
+
+fn clear_stale_model(
+    diagnostics: &BTreeMap<String, ProviderDiagnosticSnapshot>,
+    node_id: &str,
+    scope: &str,
+    provider: &str,
+    model: &mut Option<String>,
+    normalizations: &mut Vec<ModelConfigNormalization>,
+) {
+    let Some(configured) = model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    if !provider_model_is_stale(diagnostics, provider, configured) {
+        return;
+    }
+    normalizations.push(ModelConfigNormalization {
+        node_id: node_id.to_string(),
+        scope: scope.to_string(),
+        provider: Some(provider.to_string()),
+        previous_model: configured.to_string(),
+    });
+    *model = None;
 }
 
 impl App {
@@ -943,6 +1036,7 @@ impl App {
             provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
+            prompt_turn_lifecycle: self.prompt_turn_lifecycle.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
             scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
             scheduled_task_context: self.scheduled_task_context.clone(),
@@ -989,6 +1083,7 @@ impl App {
             provider_diagnostics: self.provider_diagnostics.clone(),
             acp_live_update: self.acp_live_update.clone(),
             acp_session_update: self.acp_session_update.clone(),
+            prompt_turn_lifecycle: self.prompt_turn_lifecycle.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
             scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
             scheduled_task_context: self.scheduled_task_context.clone(),
@@ -1010,6 +1105,16 @@ impl App {
         session_update: Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>,
     ) -> Self {
         self.acp_session_update = Some(session_update);
+        self
+    }
+
+    pub fn with_prompt_turn_lifecycle(
+        mut self,
+        callback: Arc<
+            dyn Fn(AcpLiveEventContext, AcpPromptLifecycleEvent) -> Result<()> + Send + Sync,
+        >,
+    ) -> Self {
+        self.prompt_turn_lifecycle = Some(callback);
         self
     }
 
@@ -1037,6 +1142,14 @@ impl App {
 
     pub fn scheduled_task_context(&self) -> Option<&crate::provider::ScheduledTaskContextInfo> {
         self.scheduled_task_context.as_ref()
+    }
+
+    /// Convert a scheduler-scoped app clone back to ordinary conversation
+    /// semantics before dispatching a later user-authored prompt turn.
+    pub fn without_scheduled_turn_context(mut self) -> Self {
+        self.scheduled_occurrence_id = None;
+        self.scheduled_task_context = None;
+        self
     }
 
     pub fn with_lifecycle_subscriber(
@@ -1073,9 +1186,42 @@ impl App {
         Some(move || session_update(context.clone()))
     }
 
+    pub fn acp_prompt_accepted_for<'a>(
+        &'a self,
+        context: AcpLiveEventContext,
+    ) -> Option<impl Fn(&str) -> Result<()> + 'a> {
+        let prompt_turn_lifecycle = self.prompt_turn_lifecycle.as_ref()?.clone();
+        Some(move |prompt_id: &str| {
+            prompt_turn_lifecycle(
+                context.clone(),
+                AcpPromptLifecycleEvent::Accepted {
+                    prompt_id: prompt_id.to_string(),
+                },
+            )
+        })
+    }
+
     pub fn emit_acp_session_update(&self, context: AcpLiveEventContext) -> Result<()> {
         if let Some(session_update) = &self.acp_session_update {
             session_update(context)?;
+        }
+        Ok(())
+    }
+
+    pub fn notify_prompt_turn_finished(
+        &self,
+        context: AcpLiveEventContext,
+        prompt_id: Option<String>,
+        successful: bool,
+    ) -> Result<()> {
+        if let Some(callback) = &self.prompt_turn_lifecycle {
+            callback(
+                context,
+                AcpPromptLifecycleEvent::Finished {
+                    prompt_id,
+                    successful,
+                },
+            )?;
         }
         Ok(())
     }
@@ -1256,9 +1402,6 @@ impl App {
         config: ManagedAgentConfig,
     ) -> Result<SettingsConfig> {
         let mut agents = self.config.agents.clone();
-        if crate::config::managed_agent_preset(&agent_id).is_none() {
-            bail!("agent `{}` is not supported yet", agent_id.as_str());
-        }
         agents.insert(agent_id, config);
         self.set_user_agents(agents)
     }
@@ -1325,7 +1468,7 @@ impl App {
     }
 
     pub fn acp_mcp_servers(&self) -> Result<Vec<serde_json::Value>> {
-        self.mcp_manager().to_acp_mcp_servers()
+        self.mcp_manager().configured_acp_mcp_servers()
     }
 
     // ── SKILL (delegates to skill::SkillManager) ──
@@ -1428,6 +1571,13 @@ impl App {
         create_profile(&self.paths, input)
     }
 
+    pub fn import_profiles_from_folder(
+        &self,
+        input: ImportProfilesInput,
+    ) -> Result<ImportProfilesResult> {
+        import_profiles_from_folder(&self.paths, input)
+    }
+
     pub fn update_profile(&self, id: &str, input: ProfileInput) -> Result<ProfileEntry> {
         update_profile(&self.paths, id, input)
     }
@@ -1461,6 +1611,7 @@ impl App {
         }
         let mut store = self.load_workflow_template_store()?;
         let mut workflow = workflow;
+        self.normalize_workflow_models(&mut workflow);
         for attempt in 0..3 {
             workflow.id = next_workflow_id();
             let conflicts = store
@@ -1507,6 +1658,8 @@ impl App {
             bail!("default workflow template cannot be updated");
         }
         let mut store = self.load_workflow_template_store()?;
+        let mut workflow = workflow;
+        self.normalize_workflow_models(&mut workflow);
         let validated = validate_workflow(workflow)?;
         self.validate_workflow_agents(&validated)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
@@ -1568,7 +1721,7 @@ impl App {
             bail!("auto template name `{name}` already exists");
         }
         let now = now_rfc3339_like();
-        let id = unique_auto_template_id(&store, name);
+        let id = next_auto_template_id(&store);
         store.templates.push(AutoTemplate {
             id,
             name: name.to_string(),
@@ -1645,7 +1798,7 @@ impl App {
             }
             let mut id = template.id.trim().to_string();
             if id.is_empty() || store.templates.iter().any(|item| item.id == id) {
-                id = unique_auto_template_id(&store, name);
+                id = next_auto_template_id(&store);
             }
             if store.templates.iter().any(|item| item.name == name) {
                 continue;
@@ -1697,17 +1850,34 @@ impl App {
             } else {
                 store.templates.insert(0, default_template);
             }
+            self.normalize_workflow_template_store_models(&mut store);
             self.save_workflow_template_store(&store)?;
             return Ok(store);
         }
-        let store = WorkflowTemplateStore {
+        let mut store = WorkflowTemplateStore {
             version: VERSION.to_string(),
             last_used_template_id: Some("default".to_string()),
             last_created_workflow: None,
             templates: vec![default_template],
         };
+        self.normalize_workflow_template_store_models(&mut store);
         self.save_workflow_template_store(&store)?;
         Ok(store)
+    }
+
+    fn normalize_workflow_template_store_models(&self, store: &mut WorkflowTemplateStore) {
+        let now = now_rfc3339_like();
+        for template in &mut store.templates {
+            if !self
+                .normalize_workflow_models(&mut template.workflow)
+                .is_empty()
+            {
+                template.updated_at = now.clone();
+            }
+        }
+        if let Some(workflow) = store.last_created_workflow.as_mut() {
+            self.normalize_workflow_models(workflow);
+        }
     }
 
     fn save_workflow_template_store(&self, store: &WorkflowTemplateStore) -> Result<()> {
@@ -1735,9 +1905,10 @@ impl App {
 
     fn record_created_task_workflow(
         &self,
-        workflow: WorkflowDsl,
+        mut workflow: WorkflowDsl,
         template_id: Option<String>,
     ) -> Result<()> {
+        self.normalize_workflow_models(&mut workflow);
         let mut store = self.load_workflow_template_store()?;
         store.last_created_workflow = Some(workflow);
         if let Some(template_id) = template_id.filter(|value| !value.trim().is_empty()) {
@@ -1784,10 +1955,8 @@ impl App {
 
     pub fn provider_doctor_probe(&self, provider: &str) -> Result<ProviderDoctorProbe> {
         let (agent_id, config) = self.managed_agent(provider)?;
-        if crate::config::managed_agent_preset(&agent_id).is_none() {
-            bail!("agent `{provider}` is not supported yet");
-        }
         match acp_client::doctor(
+            &agent_id,
             &config.adapter,
             self.paths.repo_root.clone(),
             self.config.use_local_claude,
@@ -1813,7 +1982,7 @@ impl App {
     }
 
     pub fn provider_capabilities(&self, provider: &str) -> Result<ProviderCapabilities> {
-        provider_capabilities(provider)
+        Ok(self.provider_info(provider)?.capabilities)
     }
 
     pub fn with_config(repo_root: Utf8PathBuf, config: RuntimeConfig) -> Self {
@@ -1841,6 +2010,7 @@ impl App {
             provider_diagnostics: None,
             acp_live_update: None,
             acp_session_update: None,
+            prompt_turn_lifecycle: None,
             lifecycle_bus: observability::RuntimeLifecycleBus::new(),
             scheduled_occurrence_id: None,
             scheduled_task_context: None,
@@ -1881,7 +2051,9 @@ impl App {
             bail!("requirement content cannot be empty");
         }
 
-        let validated = validate_workflow(input.workflow.clone())?;
+        let mut workflow = input.workflow.clone();
+        self.normalize_workflow_models(&mut workflow);
+        let validated = validate_workflow(workflow)?;
         self.validate_workflow_agents(&validated)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         let store = self.load_workflow_template_store()?;
@@ -1947,6 +2119,8 @@ impl App {
 
     pub fn save_task_workflow(&self, task_id: &str, workflow: WorkflowDsl) -> Result<TaskSummary> {
         self.task_show(task_id)?;
+        let mut workflow = workflow;
+        self.normalize_workflow_models(&mut workflow);
         let validated = validate_workflow(workflow)?;
         self.validate_workflow_agents(&validated)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
@@ -2465,48 +2639,45 @@ impl App {
         let graph_path = self
             .paths
             .dynamic_graph_file(task_id, run_id, round_id, node_id, attempt_id);
+        let Ok(state_lock) = dynamic_state_lock_for(
+            &self.paths.repo_root,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+        ) else {
+            return;
+        };
+        let _guard = state_lock.lock();
         let Ok(mut graph) = read_json::<DynamicGraphState>(&graph_path) else {
             return;
         };
+        let interrupted_nodes = graph
+            .nodes
+            .iter()
+            .map(|dynamic_node| {
+                (
+                    dynamic_node.id.clone(),
+                    dynamic_leaf_is_active(dynamic_node.status),
+                    dynamic_node.child_run_id.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
 
         for dynamic_node in &mut graph.nodes {
-            if dynamic_leaf_is_active(dynamic_node.status) {
-                let dynamic_node_dir = self.paths.dynamic_node_dir(
-                    task_id,
-                    run_id,
-                    round_id,
-                    node_id,
-                    attempt_id,
-                    &dynamic_node.id,
-                );
-                if let Ok(entries) = fs::read_dir(dynamic_node_dir.as_std_path()) {
-                    for entry in entries.flatten() {
-                        let attempt_path = entry.path();
-                        if !attempt_path.is_dir() {
-                            continue;
-                        }
-                        let Ok(attempt_dir) = Utf8PathBuf::from_path_buf(attempt_path) else {
-                            continue;
-                        };
-                        self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
-                        self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
-                        self.persist_cancelled_session_snapshot_best_effort(attempt_dir.as_path());
-                    }
-                }
-            }
-            if let Some(child_run_id) = dynamic_node.child_run_id.clone() {
-                let _ = self.run_pause(task_id, &child_run_id, pause_reason);
-            }
             if dynamic_node.status != DynamicNodeStatus::Completed {
                 dynamic_node.status = DynamicNodeStatus::Paused;
                 dynamic_node.outcome = None;
                 dynamic_node.pause_reason = Some(pause_reason);
                 dynamic_node.runtime_error = None;
+                dynamic_node.runtime_execution_id = None;
                 dynamic_node.finished_at = Some(now_rfc3339_like());
             }
         }
 
         graph.run.status = DynamicRunStatus::Paused;
+        graph.run.phase = DynamicRunPhase::Executing;
         graph.run.outcome = None;
         graph.run.pause_reason = Some(pause_reason);
         refresh_dynamic_current_leaf_ids(&mut graph);
@@ -2531,56 +2702,103 @@ impl App {
                 dynamic_node,
             );
         }
+        drop(_guard);
+
+        for (dynamic_node_id, was_active, child_run_id) in interrupted_nodes {
+            if was_active {
+                let dynamic_node_dir = self.paths.dynamic_node_dir(
+                    task_id,
+                    run_id,
+                    round_id,
+                    node_id,
+                    attempt_id,
+                    &dynamic_node_id,
+                );
+                if let Ok(entries) = fs::read_dir(dynamic_node_dir.as_std_path()) {
+                    for entry in entries.flatten() {
+                        let attempt_path = entry.path();
+                        if !attempt_path.is_dir() {
+                            continue;
+                        }
+                        let Ok(attempt_dir) = Utf8PathBuf::from_path_buf(attempt_path) else {
+                            continue;
+                        };
+                        self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
+                        self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
+                        self.persist_cancelled_session_snapshot_best_effort(attempt_dir.as_path());
+                    }
+                }
+            }
+            if let Some(child_run_id) = child_run_id {
+                let _ = self.run_pause(task_id, &child_run_id, pause_reason);
+            }
+        }
     }
 
     pub fn run_pause(&self, task_id: &str, run_id: &str, reason: PauseReason) -> Result<RunState> {
-        let mut run = self.run_status(task_id, run_id)?;
-        if run.status != RunStatus::Running {
-            return Ok(run);
-        }
-        let now = now_rfc3339_like();
-        let current_round = run.current_round.clone();
-        let current_node = run.current_node.clone();
-        let current_attempt = run.current_attempt.clone();
-        self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
-        run.status = RunStatus::Paused;
-        run.outcome = None;
-        run.pause_reason = Some(reason);
-        run.updated_at = now.clone();
-        validate_run_state(&run)?;
-        write_json(&self.paths.run_file(task_id, run_id), &run)?;
+        loop {
+            let observed = self.run_status(task_id, run_id)?;
+            if observed.status != RunStatus::Running {
+                return Ok(observed);
+            }
+            let (Some(round_id), Some(node_id), Some(attempt_id)) = (
+                observed.current_round.clone(),
+                observed.current_node.clone(),
+                observed.current_attempt.clone(),
+            ) else {
+                return Err(anyhow!("running run has no current attempt locator"));
+            };
+            let state_lock =
+                attempt_runtime_state_lock(self, task_id, run_id, &round_id, &node_id, &attempt_id);
+            let guard = state_lock
+                .lock()
+                .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+            let mut run = self.run_status(task_id, run_id)?;
+            if run.status != RunStatus::Running {
+                return Ok(run);
+            }
+            if run.current_round.as_deref() != Some(round_id.as_str())
+                || run.current_node.as_deref() != Some(node_id.as_str())
+                || run.current_attempt.as_deref() != Some(attempt_id.as_str())
+            {
+                drop(guard);
+                continue;
+            }
 
-        if let Some(round_id) = current_round.as_deref() {
-            let mut round: RoundState =
-                read_json(&self.paths.round_file(task_id, run_id, round_id))?;
+            let now = now_rfc3339_like();
+            run.status = RunStatus::Paused;
+            run.outcome = None;
+            run.pause_reason = Some(reason);
+            run.updated_at = now.clone();
+            validate_run_state(&run)?;
+            write_json(&self.paths.run_file(task_id, run_id), &run)?;
+
+            let round_path = self.paths.round_file(task_id, run_id, &round_id);
+            let mut round: RoundState = read_json(&round_path)?;
             round.status = RunStatus::Paused;
             round.outcome = None;
             validate_round_state(&round)?;
-            write_json(&self.paths.round_file(task_id, run_id, round_id), &round)?;
+            write_json(&round_path, &round)?;
 
-            if let (Some(node_id), Some(attempt_id)) =
-                (current_node.as_deref(), current_attempt.as_deref())
-            {
-                let node_path = self
-                    .paths
-                    .node_file(task_id, run_id, round_id, node_id, attempt_id);
-                if node_path.exists() {
-                    let mut node: NodeState = read_json(&node_path)?;
-                    if node.status != RunStatus::Completed {
-                        node.status = RunStatus::Paused;
-                        node.outcome = None;
-                        node.finished_at = Some(now.clone());
-                        validate_node_state(&node)?;
-                        write_json(&node_path, &node)?;
-                    }
-                    self.update_dynamic_descendants_best_effort(
-                        task_id, run_id, round_id, node_id, attempt_id, reason,
-                    );
+            let node_path = self
+                .paths
+                .node_file(task_id, run_id, &round_id, &node_id, &attempt_id);
+            if node_path.exists() {
+                let mut node: NodeState = read_json(&node_path)?;
+                if node.status != RunStatus::Completed {
+                    node.status = RunStatus::Paused;
+                    node.outcome = None;
+                    node.runtime_execution_id = None;
+                    node.finished_at = Some(now);
+                    validate_node_state(&node)?;
+                    write_json(&node_path, &node)?;
                 }
             }
-        }
+            drop(guard);
 
-        Ok(run)
+            self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
+            return Ok(run);
+        }
     }
 
     pub fn pause_attempt_runtime_state(
@@ -2592,15 +2810,81 @@ impl App {
         attempt_id: &str,
         reason: PauseReason,
     ) -> Result<()> {
+        self.pause_attempt_runtime_state_with_policy(
+            task_id, run_id, round_id, node_id, attempt_id, reason, false, None,
+        )
+        .map(|_| ())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pause_attempt_runtime_state_if_active_execution(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        execution_id: &str,
+        reason: PauseReason,
+    ) -> Result<bool> {
+        self.pause_attempt_runtime_state_with_policy(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            reason,
+            true,
+            Some(execution_id),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn pause_attempt_runtime_state_with_policy(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        reason: PauseReason,
+        require_active_attempt: bool,
+        expected_execution_id: Option<&str>,
+    ) -> Result<bool> {
+        let state_lock =
+            attempt_runtime_state_lock(self, task_id, run_id, round_id, node_id, attempt_id);
+        let _guard = state_lock
+            .lock()
+            .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
         let now = now_rfc3339_like();
+        let node_path = self
+            .paths
+            .node_file(task_id, run_id, round_id, node_id, attempt_id);
+        let mut node = if node_path.exists() {
+            Some(read_json::<NodeState>(&node_path)?)
+        } else {
+            None
+        };
+        if let Some(expected_execution_id) = expected_execution_id
+            && node
+                .as_ref()
+                .and_then(|node| node.runtime_execution_id.as_deref())
+                != Some(expected_execution_id)
+        {
+            return Ok(false);
+        }
         let run_path = self.paths.run_file(task_id, run_id);
+        let mut active_attempt = false;
         if run_path.exists() {
             let mut run: RunState = read_json(&run_path)?;
-            if run.status == RunStatus::Running
+            active_attempt = run.status == RunStatus::Running
                 && run.current_round.as_deref() == Some(round_id)
                 && run.current_node.as_deref() == Some(node_id)
-                && run.current_attempt.as_deref() == Some(attempt_id)
-            {
+                && run.current_attempt.as_deref() == Some(attempt_id);
+            if require_active_attempt && !active_attempt {
+                return Ok(false);
+            }
+            if active_attempt {
                 run.status = RunStatus::Paused;
                 run.outcome = None;
                 run.pause_reason = Some(reason);
@@ -2608,6 +2892,8 @@ impl App {
                 validate_run_state(&run)?;
                 write_json(&run_path, &run)?;
             }
+        } else if require_active_attempt {
+            return Ok(false);
         }
 
         let round_path = self.paths.round_file(task_id, run_id, round_id);
@@ -2620,21 +2906,18 @@ impl App {
             }
         }
 
-        let node_path = self
-            .paths
-            .node_file(task_id, run_id, round_id, node_id, attempt_id);
-        if node_path.exists() {
-            let mut node: NodeState = read_json(&node_path)?;
+        if let Some(node) = node.as_mut() {
             if node.status != RunStatus::Completed {
                 node.status = RunStatus::Paused;
                 node.outcome = None;
+                node.runtime_execution_id = None;
                 node.finished_at = Some(now);
                 validate_node_state(&node)?;
                 write_json(&node_path, &node)?;
             }
         }
 
-        Ok(())
+        Ok(active_attempt)
     }
 
     pub fn pause_dynamic_attempt_runtime_state(
@@ -2659,6 +2942,31 @@ impl App {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pause_dynamic_attempt_runtime_state_if_active_execution(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        outer_node_id: &str,
+        outer_attempt_id: &str,
+        node_id: &str,
+        execution_id: &str,
+        reason: PauseReason,
+    ) -> Result<bool> {
+        pause_dynamic_leaf_runtime_state_if_active_execution(
+            self,
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            node_id,
+            execution_id,
+            reason,
+        )
+    }
+
     pub fn cancel_attempt_dir_best_effort(&self, attempt_dir: &Utf8Path) {
         let decided_at = now_rfc3339_like();
         let _ = cancel_pending_permission_requests(attempt_dir, decided_at.clone());
@@ -2666,7 +2974,6 @@ impl App {
     }
 
     pub fn request_attempt_prompt_cancel_best_effort(&self, attempt_dir: &Utf8Path) {
-        let _ = acp_client::request_prompt_cancel(attempt_dir);
         let _ = acp_client::cancel_attempt_prompt(attempt_dir);
     }
 
@@ -2677,13 +2984,18 @@ impl App {
         let Ok(pid) = pid_text.trim().parse::<u32>() else {
             return;
         };
-        let _ = kill_process_tree(pid);
+        let _ = recover_persisted_process_group(pid);
         let _ = fs::remove_file(pid_path.as_std_path());
     }
 
     pub fn persist_cancelled_session_snapshot_best_effort(&self, attempt_dir: &Utf8Path) {
-        let _ = self.persist_cancelled_session_file(&attempt_dir.join("acp.snapshot.json"));
-        let _ = self.persist_cancelled_session_file(&attempt_dir.join("acp.session.json"));
+        let _ = self.persist_cancelled_session_snapshot(attempt_dir);
+    }
+
+    pub fn persist_cancelled_session_snapshot(&self, attempt_dir: &Utf8Path) -> Result<()> {
+        self.persist_cancelled_session_file(&attempt_dir.join("acp.snapshot.json"))?;
+        self.persist_cancelled_session_file(&attempt_dir.join("acp.session.json"))?;
+        Ok(())
     }
 
     fn persist_cancelled_session_file(&self, path: &Utf8Path) -> Result<()> {
@@ -2833,7 +3145,9 @@ impl App {
         )?;
         validate_round_state(&round)?;
         validate_node_state(&node)?;
-        let invocation = self::node_executor::build_worker_invocation(
+        let run: RunState = read_json(&self.paths.run_file(task_id, run_id))?;
+        validate_run_state(&run)?;
+        let mut invocation = self::node_executor::build_worker_invocation(
             self,
             task_id,
             run_id,
@@ -2851,7 +3165,21 @@ impl App {
             None,
             None,
         )?;
-        render_prompt_bundle(&invocation)
+        invocation.turn_control_mode = crate::domain::TurnControlMode::NonRuntimeControlled;
+        invocation.extra_hidden_sections.clear();
+        let suspended_context = if run.status == RunStatus::Paused
+            && run.pause_reason == Some(PauseReason::ProcessInterrupted)
+            && node.status == RunStatus::Paused
+        {
+            Some(runtime_control_suspended_context(
+                self.config.desktop_language,
+            ))
+        } else {
+            None
+        };
+        let mut bundle = render_prompt_bundle(&invocation)?;
+        bundle.runtime_control_suspended_context = suspended_context;
+        Ok(bundle)
     }
 
     pub fn dynamic_acp_prompt_bundle_for_attempt(
@@ -3102,38 +3430,12 @@ impl App {
 
     pub fn validate_workflow_node_agent_options(&self, node: &NodeDsl) -> Result<()> {
         let provider_diagnostics = self.provider_diagnostics();
-        for (provider, model) in worker_models_for_node(node) {
-            if let Some(model) = model {
-                if model.trim().is_empty() {
-                    bail!(WorkflowValidationError::AgentModelBlank {
-                        provider: provider.clone(),
-                    });
-                }
-                let supported_models = provider_diagnostics
-                    .get(&provider)
-                    .filter(|diagnostic| diagnostic.available)
-                    .map(|diagnostic| {
-                        supported_models_from_capabilities(diagnostic.capabilities.as_ref())
-                    })
-                    .unwrap_or_default();
-                if !supported_models.is_empty()
-                    && !supported_models.iter().any(|option| {
-                        option.id == model || option.name.as_deref() == Some(model.as_str())
-                    })
-                {
-                    bail!("worker model `{model}` is not supported by provider `{provider}`");
-                }
-            }
-        }
-        for (provider, permission_mode) in worker_permission_modes_for_node(node) {
+        for (provider, permission_mode) in configured_permission_modes_for_node(node) {
             if let Some(permission_mode) = permission_mode {
                 let permission_mode = permission_mode.trim();
                 if permission_mode.is_empty() {
                     continue;
                 }
-                let resolved = self
-                    .config
-                    .resolve_permission_mode(&provider, permission_mode);
                 let supported_modes = provider_diagnostics
                     .get(&provider)
                     .filter(|diagnostic| diagnostic.available)
@@ -3142,10 +3444,12 @@ impl App {
                     })
                     .unwrap_or_default();
                 if !supported_modes.is_empty()
-                    && !supported_modes.iter().any(|option| option.id == resolved)
+                    && !supported_modes
+                        .iter()
+                        .any(|option| option.id == permission_mode)
                 {
                     bail!(
-                        "worker permissionMode `{permission_mode}` (resolved to `{resolved}`) is not supported by provider `{provider}`"
+                        "worker permissionMode `{permission_mode}` is not supported by provider `{provider}`"
                     );
                 }
             }
@@ -3153,13 +3457,81 @@ impl App {
         Ok(())
     }
 
+    pub(crate) fn normalize_workflow_models(
+        &self,
+        workflow: &mut WorkflowDsl,
+    ) -> Vec<ModelConfigNormalization> {
+        let diagnostics = self.provider_diagnostics();
+        let mut normalizations = Vec::new();
+        for node in &mut workflow.nodes {
+            match node {
+                NodeDsl::Worker(worker) => {
+                    if let Some(provider) = worker.provider.as_deref() {
+                        clear_stale_model(
+                            &diagnostics,
+                            &worker.id,
+                            "worker",
+                            provider,
+                            &mut worker.model,
+                            &mut normalizations,
+                        );
+                    }
+                }
+                NodeDsl::AiDynamic(dynamic) => match &mut dynamic.agent_strategy {
+                    AiDynamicAgentStrategy::Fixed {
+                        provider, model, ..
+                    } => clear_stale_model(
+                        &diagnostics,
+                        &dynamic.id,
+                        "fixed",
+                        provider,
+                        model,
+                        &mut normalizations,
+                    ),
+                    AiDynamicAgentStrategy::Dynamic {
+                        bootstrap_provider,
+                        bootstrap_model,
+                        acceptance_model,
+                        available_agents,
+                        ..
+                    } => {
+                        clear_stale_model(
+                            &diagnostics,
+                            &dynamic.id,
+                            "bootstrap",
+                            bootstrap_provider,
+                            bootstrap_model,
+                            &mut normalizations,
+                        );
+                        for agent in available_agents.iter_mut() {
+                            clear_stale_model(
+                                &diagnostics,
+                                &dynamic.id,
+                                "available-agent",
+                                &agent.provider,
+                                &mut agent.model,
+                                &mut normalizations,
+                            );
+                        }
+                        clear_stale_model(
+                            &diagnostics,
+                            &dynamic.id,
+                            "acceptance",
+                            bootstrap_provider,
+                            acceptance_model,
+                            &mut normalizations,
+                        );
+                    }
+                },
+            }
+        }
+        normalizations
+    }
+
     pub fn validate_workflow_agents(&self, workflow: &ValidatedWorkflow) -> Result<()> {
         for node in workflow.nodes_by_id.values() {
             for provider in providers_for_node(node) {
-                let (agent_id, _) = self.managed_agent(&provider)?;
-                if crate::config::managed_agent_preset(&agent_id).is_none() {
-                    bail!("agent `{provider}` is not supported yet");
-                }
+                self.managed_agent(&provider)?;
             }
         }
         for node in workflow.nodes_by_id.values() {
@@ -3376,10 +3748,13 @@ impl App {
             return Ok((Some("missing authoring/workflow.json".to_string()), None));
         }
 
-        let workflow: WorkflowDsl = match read_json(&path) {
+        let mut workflow: WorkflowDsl = match read_json(&path) {
             Ok(workflow) => workflow,
             Err(err) => return Ok((Some(err.to_string()), None)),
         };
+        if !self.normalize_workflow_models(&mut workflow).is_empty() {
+            write_json(&path, &workflow)?;
+        }
 
         let validated = match validate_workflow(workflow.clone()) {
             Ok(validated) => validated,
@@ -3444,12 +3819,14 @@ fn is_acp_session_active_status(status: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpLiveEventContext, App, CreateTaskInput, OwnedTaskDirectory, RuntimeLifecycleEvent,
+        AcpLiveEventContext, AcpPromptLifecycleEvent, App, AutoTemplateStore, CreateTaskInput,
+        OwnedTaskDirectory, RuntimeLifecycleEvent, WorkflowTemplate, WorkflowTemplateStore,
+        next_auto_template_id,
     };
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
-        ProviderDiagnosticSnapshot, RuntimeConfig,
+        ProviderDiagnosticSnapshot, RuntimeConfig, catalog_agent_default_config,
     };
     use crate::domain::{
         NodeOutcome, NodeType, PauseReason, RoundTrigger, RunOutcome, RunStatus, SessionMode,
@@ -3460,8 +3837,9 @@ mod tests {
         validate_workflow,
     };
     use crate::dynamic::{
-        DynamicGraphState, DynamicNodeKind, DynamicNodeState, DynamicNodeStatus, DynamicRunState,
-        DynamicRunStatus, WorkspaceMode, WorkspacePolicy,
+        DynamicGraphState, DynamicNodeKind, DynamicNodeState, DynamicNodeStatus, DynamicRunPhase,
+        DynamicRunState, DynamicRunStatus, WorkspaceKind, WorkspaceOwnership, WorkspaceState,
+        WorkspaceStatus,
     };
     use crate::observability::touch_log_file_best_effort;
     use crate::runtime::{NodeState, RoundState, RunState, TaskState};
@@ -3478,12 +3856,235 @@ mod tests {
             .unwrap()
     }
 
+    fn write_fixed_attempt_fixture(
+        app: &App,
+        status: RunStatus,
+        reason: Option<PauseReason>,
+        runtime_execution_id: Option<&str>,
+    ) {
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status,
+            outcome: None,
+            started_at: "2026-08-10T00:00:00Z".to_string(),
+            updated_at: "2026-08-10T00:00:01Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("worker".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: reason,
+            uuid: None,
+            last_executed_node: None,
+        };
+        let round = RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: "run-001".to_string(),
+            index: 1,
+            status,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: "2026-08-10T00:00:00Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "worker".to_string(),
+            node_type: NodeType::Worker,
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status,
+            outcome: None,
+            started_at: "2026-08-10T00:00:00Z".to_string(),
+            finished_at: (status == RunStatus::Paused).then(|| "2026-08-10T00:00:01Z".to_string()),
+            manual_check_pending: false,
+            runtime_execution_id: runtime_execution_id.map(str::to_string),
+            resolved_config: Default::default(),
+            uuid: None,
+        };
+        write_json(&app.paths.run_file("task-001", "run-001"), &run).unwrap();
+        write_json(
+            &app.paths.round_file("task-001", "run-001", "round-001"),
+            &round,
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .node_file("task-001", "run-001", "round-001", "worker", "attempt-001"),
+            &node,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn background_continue_reports_prelaunch_failure_without_claiming_running() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(
+            &app,
+            RunStatus::Paused,
+            Some(PauseReason::ProcessInterrupted),
+            None,
+        );
+
+        let error = app
+            .run_continue_background("task-001", "run-001", None, None)
+            .unwrap_err();
+        let runtime_error = error
+            .downcast_ref::<crate::runtime_error::RuntimeError>()
+            .expect("background continue returns a structured launch error");
+        assert_eq!(
+            runtime_error.info.code_str(),
+            "runtime.continue-launch-failed"
+        );
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+    }
+
+    #[test]
+    fn late_fixed_continue_failure_only_pauses_the_original_active_attempt() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+
+        assert!(
+            app.pause_attempt_runtime_state_if_active_execution(
+                "task-001",
+                "run-001",
+                "round-001",
+                "worker",
+                "attempt-001",
+                "execution-a",
+                PauseReason::RuntimeAbnormal,
+            )
+            .unwrap()
+        );
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        app.pause_attempt_runtime_state(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+            PauseReason::ProcessInterrupted,
+        )
+        .unwrap();
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-b"));
+        assert!(
+            !app.pause_attempt_runtime_state_if_active_execution(
+                "task-001",
+                "run-001",
+                "round-001",
+                "worker",
+                "attempt-001",
+                "execution-a",
+                PauseReason::RuntimeAbnormal,
+            )
+            .unwrap()
+        );
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let node: NodeState = read_json(&app.paths.node_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+        ))
+        .unwrap();
+        assert_eq!(run.status, RunStatus::Running);
+        assert_eq!(run.pause_reason, None);
+        assert_eq!(node.status, RunStatus::Running);
+        assert_eq!(node.runtime_execution_id.as_deref(), Some("execution-b"));
+    }
+
+    #[test]
+    fn run_pause_invalidates_the_execution_before_a_late_runtime_write() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        let mut stale_run: RunState =
+            read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let mut stale_round: RoundState =
+            read_json(&app.paths.round_file("task-001", "run-001", "round-001")).unwrap();
+        let mut stale_node: NodeState = read_json(&app.paths.node_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+        ))
+        .unwrap();
+
+        app.run_pause("task-001", "run-001", PauseReason::ProcessInterrupted)
+            .unwrap();
+        stale_run.status = RunStatus::Completed;
+        stale_run.outcome = Some(RunOutcome::Success);
+        stale_round.status = RunStatus::Completed;
+        stale_round.outcome = Some(RunOutcome::Success);
+        stale_node.status = RunStatus::Completed;
+        stale_node.outcome = Some(NodeOutcome::Success);
+        stale_node.finished_at = Some("2026-08-10T00:00:02Z".to_string());
+        assert!(
+            !super::state_access::persist_runtime_state_if_execution_current(
+                &app,
+                "task-001",
+                &stale_run,
+                &stale_round,
+                &stale_node,
+            )
+            .unwrap()
+        );
+
+        let durable_run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let durable_node: NodeState = read_json(&app.paths.node_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+        ))
+        .unwrap();
+        assert_eq!(durable_run.status, RunStatus::Paused);
+        assert_eq!(
+            durable_run.pause_reason,
+            Some(PauseReason::ProcessInterrupted)
+        );
+        assert_eq!(durable_node.status, RunStatus::Paused);
+        assert_eq!(durable_node.runtime_execution_id, None);
+    }
+
     fn test_path_config() -> StoragePathConfig {
         StoragePathConfig {
             app_key: "gold-band-app-test",
             config_dir_name: ".gold-band-app-test",
             home_env_var: "GOLD_BAND_APP_TEST_HOME",
         }
+    }
+
+    #[test]
+    fn auto_template_ids_are_name_independent_distributed_ids() {
+        let store = AutoTemplateStore {
+            version: VERSION.to_string(),
+            templates: Vec::new(),
+        };
+
+        let first = next_auto_template_id(&store);
+        let second = next_auto_template_id(&store);
+
+        assert!(first.starts_with("auto-template-"));
+        assert!(second.starts_with("auto-template-"));
+        assert_eq!(first.len(), "auto-template-".len() + 32);
+        assert_ne!(first, second);
     }
 
     fn set_test_home(repo_root: &Utf8PathBuf) {
@@ -3504,20 +4105,32 @@ mod tests {
         repo_root: Utf8PathBuf,
         capabilities: serde_json::Value,
     ) -> App {
+        test_app_with_named_provider_capabilities(repo_root, "claude-acp", capabilities)
+    }
+
+    fn test_app_with_named_provider_capabilities(
+        repo_root: Utf8PathBuf,
+        provider: &str,
+        capabilities: serde_json::Value,
+    ) -> App {
         set_test_home(&repo_root);
+        let mut config = RuntimeConfig::default();
+        if let Some(agent_config) = catalog_agent_default_config(provider) {
+            config
+                .agents
+                .insert(provider.parse().unwrap(), agent_config);
+        }
         App::with_config_and_path_config(
             repo_root,
-            RuntimeConfig::default().with_provider_diagnostics(std::collections::BTreeMap::from([
-                (
-                    "claude-acp".to_string(),
-                    ProviderDiagnosticSnapshot {
-                        available: true,
-                        reason: None,
-                        checked_at: "2026-06-24T00:00:00Z".to_string(),
-                        capabilities: Some(capabilities),
-                    },
-                ),
-            ])),
+            config.with_provider_diagnostics(std::collections::BTreeMap::from([(
+                provider.to_string(),
+                ProviderDiagnosticSnapshot {
+                    available: true,
+                    reason: None,
+                    checked_at: "2026-06-24T00:00:00Z".to_string(),
+                    capabilities: Some(capabilities),
+                },
+            )])),
             test_path_config(),
         )
     }
@@ -3645,9 +4258,10 @@ mod tests {
 
     fn sample_run_paused_event() -> RuntimeLifecycleEvent {
         RuntimeLifecycleEvent::RunPaused {
-            event_id: "run-1:round-1:node-1:attempt-1:waiting-for-user-input".to_string(),
+            event_id: "project-1:run-1:round-1:node-1:attempt-1:waiting-for-user-input".to_string(),
             occurred_at: "2026-01-01T00:00:00".to_string(),
             scheduled_occurrence_id: None,
+            project_id: "project-1".to_string(),
             task_id: "task-1".to_string(),
             run_id: "run-1".to_string(),
             round_id: "round-1".to_string(),
@@ -3688,7 +4302,7 @@ mod tests {
         assert!(super::is_run_continuable(&resumability_run(
             PauseReason::ProcessInterrupted
         )));
-        assert!(super::is_run_continuable(&resumability_run(
+        assert!(!super::is_run_continuable(&resumability_run(
             PauseReason::WaitingForUserInput
         )));
         assert!(!super::is_run_continuable(&resumability_run(
@@ -3738,7 +4352,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_model_and_permission_mode_validate_against_provider_cache() {
+    fn workflow_agent_validation_allows_stale_models_but_rejects_invalid_permission_modes() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -3760,18 +4374,69 @@ mod tests {
             }),
         );
 
-        let accepted = validate_workflow(worker_workflow(Some("sonnet"), Some("ask"))).unwrap();
-        let rejected_model = validate_workflow(worker_workflow(Some("opus"), Some("ask"))).unwrap();
+        let accepted =
+            validate_workflow(worker_workflow(Some("sonnet"), Some("acceptEdits"))).unwrap();
+        let rejected_model =
+            validate_workflow(worker_workflow(Some("opus"), Some("acceptEdits"))).unwrap();
         let rejected_mode =
             validate_workflow(worker_workflow(Some("sonnet"), Some("full_access"))).unwrap();
 
         assert!(app.validate_workflow_agents(&accepted).is_ok());
-        assert!(app.validate_workflow_agents(&rejected_model).is_err());
+        assert!(app.validate_workflow_agents(&rejected_model).is_ok());
         assert!(app.validate_workflow_agents(&rejected_mode).is_err());
     }
 
     #[test]
-    fn ai_dynamic_models_are_not_rejected_during_workflow_agent_validation() {
+    fn ai_dynamic_accepts_native_permission_modes_per_agent() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app_with_named_provider_capabilities(
+            repo_root,
+            "codex-acp",
+            serde_json::json!({
+                "configOptions": [
+                    {
+                        "id": "mode",
+                        "category": "mode",
+                        "options": [
+                            { "value": "read-only", "name": "Read-only" },
+                            { "value": "agent", "name": "Agent" },
+                            { "value": "agent-full-access", "name": "Agent (full access)" }
+                        ]
+                    }
+                ]
+            }),
+        );
+        let node = NodeDsl::AiDynamic(crate::dsl::AiDynamicNode {
+            id: "route".to_string(),
+            agent_strategy: AiDynamicAgentStrategy::Dynamic {
+                bootstrap_provider: "codex-acp".to_string(),
+                bootstrap_model: None,
+                permission_mode: Some("agent-full-access".to_string()),
+                bootstrap_config_options: Default::default(),
+                acceptance_model: None,
+                acceptance_config_options: Default::default(),
+                routing_prompt: String::new(),
+                available_agents: vec![crate::dsl::DynamicAgentRef {
+                    provider: "codex-acp".to_string(),
+                    model: None,
+                    permission_mode: Some("agent-full-access".to_string()),
+                    config_options: Default::default(),
+                }],
+            },
+            config_options: Default::default(),
+            allowed_profiles: Vec::new(),
+            global_goal: None,
+            control: crate::dsl::DynamicControlDsl::default(),
+            allowed_workflows: Vec::new(),
+        });
+
+        assert!(app.validate_workflow_node_agent_options(&node).is_ok());
+    }
+
+    #[test]
+    fn ai_dynamic_stale_models_are_cleared_in_runtime_snapshot() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -3793,11 +4458,21 @@ mod tests {
             entry: "route".to_string(),
             nodes: vec![NodeDsl::AiDynamic(crate::dsl::AiDynamicNode {
                 id: "route".to_string(),
-                agent_strategy: AiDynamicAgentStrategy::Fixed {
-                    provider: "claude-acp".to_string(),
-                    model: Some("future-model".to_string()),
+                agent_strategy: AiDynamicAgentStrategy::Dynamic {
+                    bootstrap_provider: "claude-acp".to_string(),
+                    bootstrap_model: Some("sonnet".to_string()),
+                    permission_mode: None,
+                    bootstrap_config_options: Default::default(),
+                    acceptance_model: Some("sonnet".to_string()),
+                    acceptance_config_options: Default::default(),
+                    routing_prompt: String::new(),
+                    available_agents: vec![crate::dsl::DynamicAgentRef {
+                        provider: "claude-acp".to_string(),
+                        model: Some("future-model".to_string()),
+                        permission_mode: None,
+                        config_options: Default::default(),
+                    }],
                 },
-                permission_mode: None,
                 config_options: Default::default(),
                 allowed_profiles: Vec::new(),
                 global_goal: None,
@@ -3813,9 +4488,173 @@ mod tests {
             }],
             control: WorkflowControl::default(),
         };
-        let validated = validate_workflow(workflow).unwrap();
+        let mut normalized_workflow = workflow;
+        let normalizations = app.normalize_workflow_models(&mut normalized_workflow);
+        assert_eq!(normalizations.len(), 1);
+        assert_eq!(normalizations[0].scope, "available-agent");
+        assert_eq!(normalizations[0].previous_model, "future-model");
 
-        assert!(app.validate_workflow_agents(&validated).is_ok());
+        let NodeDsl::AiDynamic(dynamic) = &normalized_workflow.nodes[0] else {
+            unreachable!();
+        };
+        let AiDynamicAgentStrategy::Dynamic {
+            available_agents, ..
+        } = &dynamic.agent_strategy
+        else {
+            unreachable!();
+        };
+        assert_eq!(available_agents[0].model, None);
+        assert!(validate_workflow(normalized_workflow).is_ok());
+    }
+
+    #[test]
+    fn workflow_template_and_task_authoring_persist_stale_models_as_unspecified() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app_with_named_provider_capabilities(
+            repo_root,
+            "codex-acp",
+            serde_json::json!({
+                "configOptions": [{
+                    "id": "model",
+                    "category": "model",
+                    "options": [{ "value": "gpt-5.6-sol", "name": "GPT-5.6-Sol" }]
+                }]
+            }),
+        );
+        let stale_workflow = WorkflowDsl {
+            version: "0.1".to_string(),
+            id: "workflow-stale-models".to_string(),
+            entry: "route".to_string(),
+            nodes: vec![
+                NodeDsl::AiDynamic(crate::dsl::AiDynamicNode {
+                    id: "route".to_string(),
+                    agent_strategy: AiDynamicAgentStrategy::Dynamic {
+                        bootstrap_provider: "codex-acp".to_string(),
+                        bootstrap_model: Some("gpt-5.6-sol".to_string()),
+                        permission_mode: None,
+                        bootstrap_config_options: Default::default(),
+                        acceptance_model: Some("gpt-5.6-sol".to_string()),
+                        acceptance_config_options: Default::default(),
+                        routing_prompt: String::new(),
+                        available_agents: vec![crate::dsl::DynamicAgentRef {
+                            provider: "codex-acp".to_string(),
+                            model: Some("gpt-5.4".to_string()),
+                            permission_mode: None,
+                            config_options: Default::default(),
+                        }],
+                    },
+                    config_options: Default::default(),
+                    allowed_profiles: Vec::new(),
+                    global_goal: None,
+                    control: crate::dsl::DynamicControlDsl::default(),
+                    allowed_workflows: Vec::new(),
+                }),
+                NodeDsl::AiDynamic(crate::dsl::AiDynamicNode {
+                    id: "fixed".to_string(),
+                    agent_strategy: AiDynamicAgentStrategy::Fixed {
+                        provider: "codex-acp".to_string(),
+                        model: Some("gpt-5.4".to_string()),
+                        permission_mode: None,
+                    },
+                    config_options: Default::default(),
+                    allowed_profiles: Vec::new(),
+                    global_goal: None,
+                    control: crate::dsl::DynamicControlDsl::default(),
+                    allowed_workflows: Vec::new(),
+                }),
+            ],
+            edges: vec![
+                crate::dsl::EdgeDsl {
+                    from: "route".to_string(),
+                    to: "fixed".to_string(),
+                    on: crate::dsl::EdgeOutcome::Success,
+                    session: None,
+                    new_round_entry: None,
+                },
+                crate::dsl::EdgeDsl {
+                    from: "fixed".to_string(),
+                    to: crate::dsl::END_NODE.to_string(),
+                    on: crate::dsl::EdgeOutcome::Success,
+                    session: None,
+                    new_round_entry: None,
+                },
+            ],
+            control: WorkflowControl::default(),
+        };
+        let store = WorkflowTemplateStore {
+            version: VERSION.to_string(),
+            last_used_template_id: Some("custom".to_string()),
+            last_created_workflow: Some(stale_workflow.clone()),
+            templates: vec![WorkflowTemplate {
+                id: "custom".to_string(),
+                name: "Custom".to_string(),
+                workflow: stale_workflow.clone(),
+                created_at: "2026-07-28T00:00:00Z".to_string(),
+                updated_at: "2026-07-28T00:00:00Z".to_string(),
+            }],
+        };
+        write_json(&app.paths.workflow_templates_file(), &store).unwrap();
+
+        let loaded = app.workflow_templates().unwrap();
+        let persisted: WorkflowTemplateStore =
+            read_json(&app.paths.workflow_templates_file()).unwrap();
+        for store in [&loaded, &persisted] {
+            let workflow = &store
+                .templates
+                .iter()
+                .find(|template| template.id == "custom")
+                .unwrap()
+                .workflow;
+            let NodeDsl::AiDynamic(route) = &workflow.nodes[0] else {
+                unreachable!();
+            };
+            let AiDynamicAgentStrategy::Dynamic {
+                available_agents, ..
+            } = &route.agent_strategy
+            else {
+                unreachable!();
+            };
+            assert_eq!(available_agents[0].model, None);
+            let NodeDsl::AiDynamic(fixed) = &workflow.nodes[1] else {
+                unreachable!();
+            };
+            let AiDynamicAgentStrategy::Fixed { model, .. } = &fixed.agent_strategy else {
+                unreachable!();
+            };
+            assert_eq!(*model, None);
+        }
+
+        let task = app
+            .create_task_from_requirement(CreateTaskInput {
+                title: Some("Stale model authoring".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "verify authoring normalization".to_string(),
+                workflow: stale_workflow,
+                workflow_template_id: None,
+            })
+            .unwrap();
+        let persisted_authoring: WorkflowDsl =
+            read_json(&app.paths.workflow_file(&task.task.id)).unwrap();
+        let NodeDsl::AiDynamic(route) = &persisted_authoring.nodes[0] else {
+            unreachable!();
+        };
+        let AiDynamicAgentStrategy::Dynamic {
+            available_agents, ..
+        } = &route.agent_strategy
+        else {
+            unreachable!();
+        };
+        assert_eq!(available_agents[0].model, None);
+        let NodeDsl::AiDynamic(fixed) = &persisted_authoring.nodes[1] else {
+            unreachable!();
+        };
+        let AiDynamicAgentStrategy::Fixed { model, .. } = &fixed.agent_strategy else {
+            unreachable!();
+        };
+        assert_eq!(*model, None);
     }
 
     #[test]
@@ -3865,6 +4704,7 @@ mod tests {
             event_id: "run-completed".to_string(),
             occurred_at: "2026-08-03T00:00:00Z".to_string(),
             scheduled_occurrence_id: None,
+            project_id: "project-001".to_string(),
             task_id: "task-001".to_string(),
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
@@ -3880,6 +4720,30 @@ mod tests {
             seen.lock().unwrap().as_slice(),
             &[Some("occurrence-001".to_string())]
         );
+    }
+
+    #[test]
+    fn queued_user_turn_drops_scheduler_occurrence_and_prompt_context() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root)
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_scheduled_task_context(Some(crate::provider::ScheduledTaskContextInfo {
+                title: "Daily review".to_string(),
+                mode: "direct".to_string(),
+                session_policy: "continuous".to_string(),
+                trigger_kind: "cron".to_string(),
+                triggered_at: "2026-08-03T00:00:00Z".to_string(),
+                instruction: Some("Review changes".to_string()),
+            }));
+
+        let ordinary_turn = app.clone_for_background().without_scheduled_turn_context();
+
+        assert_eq!(app.scheduled_occurrence_id(), Some("occurrence-001"));
+        assert!(app.scheduled_task_context().is_some());
+        assert_eq!(ordinary_turn.scheduled_occurrence_id(), None);
+        assert!(ordinary_turn.scheduled_task_context().is_none());
     }
 
     #[test]
@@ -3956,6 +4820,50 @@ mod tests {
         assert_eq!(calls[0].outer_attempt_id, context.outer_attempt_id);
     }
 
+    #[test]
+    fn prompt_lifecycle_reports_accepted_identity_and_finished_outcome() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_callback = seen.clone();
+        let app =
+            test_app(repo_root).with_prompt_turn_lifecycle(Arc::new(move |context, event| {
+                seen_for_callback.lock().unwrap().push((context, event));
+                Ok(())
+            }));
+        let context = AcpLiveEventContext {
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "direct-agent".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        };
+
+        app.acp_prompt_accepted_for(context.clone()).unwrap()("turn-queued-001").unwrap();
+        app.notify_prompt_turn_finished(context, Some("turn-queued-001".to_string()), false)
+            .unwrap();
+
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0.task_id, "task-001");
+        assert_eq!(
+            calls[0].1,
+            AcpPromptLifecycleEvent::Accepted {
+                prompt_id: "turn-queued-001".to_string(),
+            }
+        );
+        assert_eq!(
+            calls[1].1,
+            AcpPromptLifecycleEvent::Finished {
+                prompt_id: Some("turn-queued-001".to_string()),
+                successful: false,
+            }
+        );
+    }
+
     fn dynamic_pause_test_app(temp: &tempfile::TempDir) -> App {
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
         std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
@@ -3974,14 +4882,12 @@ mod tests {
             outcome: None,
             pause_reason: None,
             runtime_error: None,
+            runtime_execution_id: None,
             group_id: None,
             chain_id: id.to_string(),
             depth: 1,
             depends_on: Vec::new(),
-            workspace: WorkspacePolicy {
-                mode: WorkspaceMode::Worktree,
-            },
-            workspace_path: None,
+            workspace_id: "workspace-main".to_string(),
             provider: Some("claude-acp".to_string()),
             profile: None,
             permission_mode: None,
@@ -4057,6 +4963,7 @@ mod tests {
                 started_at: started_at.clone(),
                 finished_at: None,
                 manual_check_pending: false,
+                runtime_execution_id: None,
                 resolved_config: Default::default(),
                 uuid: None,
             },
@@ -4072,6 +4979,7 @@ mod tests {
                 parent_node_id: outer_node_id.to_string(),
                 parent_attempt_id: outer_attempt_id.to_string(),
                 status: DynamicRunStatus::Running,
+                phase: DynamicRunPhase::Executing,
                 outcome: None,
                 pause_reason: None,
                 started_at: started_at.clone(),
@@ -4082,6 +4990,23 @@ mod tests {
             },
             nodes,
             groups: Vec::new(),
+            workspaces: vec![WorkspaceState {
+                version: VERSION.to_string(),
+                id: "workspace-main".to_string(),
+                dynamic_run_id: "dynamic-run-001".to_string(),
+                kind: WorkspaceKind::Main,
+                ownership: WorkspaceOwnership::User,
+                repo_root: app.paths.repo_root.clone(),
+                path: app.paths.repo_root.clone(),
+                branch: None,
+                parent_workspace_id: None,
+                created_by_group_id: None,
+                fork_commit: "test-head".to_string(),
+                checkpoint_commit: None,
+                status: WorkspaceStatus::Active,
+                created_at: "2026-06-16T00:00:00Z".to_string(),
+                updated_at: "2026-06-16T00:00:00Z".to_string(),
+            }],
             proposals: Vec::new(),
         };
         write_json(
@@ -4338,6 +5263,105 @@ mod tests {
     }
 
     #[test]
+    fn late_dynamic_continue_failure_does_not_override_user_stop() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let app = dynamic_pause_test_app(&temp);
+        let mut first_execution = dynamic_pause_node("good-night", DynamicNodeStatus::Running);
+        first_execution.runtime_execution_id = Some("execution-a".to_string());
+        write_dynamic_pause_fixture(&app, vec![first_execution]);
+
+        app.pause_dynamic_attempt_runtime_state(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "good-night",
+            PauseReason::ProcessInterrupted,
+        )
+        .unwrap();
+        let mut resumed_execution = dynamic_pause_node("good-night", DynamicNodeStatus::Running);
+        resumed_execution.runtime_execution_id = Some("execution-b".to_string());
+        write_dynamic_pause_fixture(&app, vec![resumed_execution]);
+        assert!(
+            !app.pause_dynamic_attempt_runtime_state_if_active_execution(
+                "task-001",
+                "run-001",
+                "round-001",
+                "ai-dynamic",
+                "attempt-001",
+                "good-night",
+                "execution-a",
+                PauseReason::RuntimeAbnormal,
+            )
+            .unwrap()
+        );
+
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        ))
+        .unwrap();
+        assert_eq!(run.status, RunStatus::Running);
+        assert_eq!(run.pause_reason, None);
+        assert_eq!(graph.run.status, DynamicRunStatus::Running);
+        assert_eq!(graph.run.pause_reason, None);
+        assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Running);
+        assert_eq!(
+            graph.nodes[0].runtime_execution_id.as_deref(),
+            Some("execution-b")
+        );
+    }
+
+    #[test]
+    fn dynamic_continue_failure_reclaims_rearmed_leaf_state() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let app = dynamic_pause_test_app(&temp);
+        let mut rearmed = dynamic_pause_node("good-night", DynamicNodeStatus::Ready);
+        rearmed.runtime_execution_id = Some("execution-a".to_string());
+        write_dynamic_pause_fixture(&app, vec![rearmed]);
+
+        assert!(
+            app.pause_dynamic_attempt_runtime_state_if_active_execution(
+                "task-001",
+                "run-001",
+                "round-001",
+                "ai-dynamic",
+                "attempt-001",
+                "good-night",
+                "execution-a",
+                PauseReason::RuntimeAbnormal,
+            )
+            .unwrap()
+        );
+
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        ))
+        .unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        assert_eq!(run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+        assert_eq!(graph.run.status, DynamicRunStatus::Paused);
+        assert_eq!(graph.run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+        assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Paused);
+        assert_eq!(
+            graph.nodes[0].pause_reason,
+            Some(PauseReason::RuntimeAbnormal)
+        );
+    }
+
+    #[test]
     fn cancel_all_active_acp_attempts_also_cancels_follow_up_session_on_completed_run() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
@@ -4404,6 +5428,7 @@ mod tests {
                 started_at: "2026-06-28T00:00:00Z".to_string(),
                 finished_at: Some("2026-06-28T00:00:01Z".to_string()),
                 manual_check_pending: false,
+                runtime_execution_id: None,
                 resolved_config: Default::default(),
                 uuid: None,
             },
@@ -4426,8 +5451,13 @@ mod tests {
             &PendingElicitationState {
                 elicitation_id: "elicit-001".to_string(),
                 jsonrpc_id: serde_json::json!(1),
-                message: "继续吗".to_string(),
-                requested_schema: serde_json::json!({ "type": "object", "properties": {} }),
+                request: serde_json::from_value(serde_json::json!({
+                    "mode": "form",
+                    "sessionId": "session-test",
+                    "message": "继续吗",
+                    "requestedSchema": { "type": "object", "properties": {} }
+                }))
+                .unwrap(),
                 created_at: "1Z".to_string(),
             },
         )

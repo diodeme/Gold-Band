@@ -151,8 +151,20 @@ spawn command → stdin.write(initialize) → 读取匹配 id=1 的 initialize �
 
 **HTTP 流程：**
 ```
-POST url body=initialize_request → 200: parse response / 401: OAuth discovery → result
+POST initialize
+  → application/json: 校验 JSON-RPC response id
+  → text/event-stream: 增量解析 SSE event，忽略 notification/request/其他 id，等待 initialize response
+  → 记录 Mcp-Session-Id 与服务端协商的 protocolVersion
+  → notifications/initialized
+  → tools/list（同样按 response id 关联）
+  → DELETE + Mcp-Session-Id 释放短生命周期 session
 ```
+
+Streamable HTTP 的状态由 `StreamableHttpClient` 统一管理：静态 headers 属于配置域，`session_id` 与协商后的 `protocol_version` 属于同一连接生命周期，不能由健康检查和工具发现分别拼接。服务端返回 session 级 `404` 时，客户端清除旧 session，重新执行完整 initialize → initialized → request 流程；不允许只重放失败的业务请求。
+
+SSE 响应按标准 event framing 处理：多个 `data:` 字段使用换行拼接，comment/keepalive 不产生消息；服务端可以在目标 response 前发送 JSON-RPC request、notification 或其他 response，客户端只接受同时满足“无 method、包含 result/error、id 与当前 request 匹配”的消息。读取到目标 response 后立即结束本次 POST stream，不等待 HTTP body EOF。
+
+HTTP endpoint 必须配置最终 URL。客户端不自动跟随 301/302，避免 `POST` 被 HTTP 客户端降级为 `GET`；重定向响应作为配置错误返回，并提示使用最终 MCP endpoint。
 
 ### 2.4 健康门控与缓存
 
@@ -214,6 +226,9 @@ pub fn invalidate_health(&self, id: &str);
 - 保存 Sheet：保持打开 → "正在连接…" → 成功关闭 / 失败显示具体错误（6 秒自动消失 + ✕ 手动关闭）
 - 诊断按钮：每个服务器卡片的"MCP 服务诊断"按钮
 - 进入 Tab 时自动刷新 + 检查所有 enabled 服务器
+- MCP 卡片的 per-Agent transport 兼容性统一读取 App 级 `AgentRegistryVm`；该 Registry 在应用启动时从持久化的 `agent-diagnostics.json` 恢复，MCP 页面不得维护第二份局部 Registry，也不得因页面重新挂载把已有兼容性退回 loading。
+- Agent doctor 采用 stale-while-refresh 展示语义：检查期间继续展示上一次已知的 `mcpCapabilities`，doctor 完成并发布 `agent-registry-updated` 后一次性替换为新状态；只有从未获得过能力快照的 Agent 才显示诊断 loading。
+- Agent 健康状态优先于 MCP transport capability。不健康 Agent 展示不可用状态与 doctor 失败原因，不触发 MCP 兼容性检查，也不能把“当前不可用”误判为“不支持某 transport”。健康但未声明 `mcpCapabilities` 的 Agent 才展示未知态并允许手动重新诊断。
 
 ### 2.8 Zed 对标达成度
 
@@ -226,7 +241,8 @@ pub fn invalidate_health(&self, id: &str);
 | `to_acp_mcp_servers()` 缓存优先 + 健康门控 | ✅ |
 | 手动刷新/失效 | ✅ |
 | System prompt 渲染工具列表（缓存优先） | ✅ |
-| 多行响应处理 + 10s 超时保护 | ✅ |
+| SSE event 增量解析 + JSON-RPC id 关联 + 10s 超时保护 | ✅ |
+| Streamable HTTP session 失效重建与 DELETE 释放 | ✅ |
 | 长期进程管理 | 🔜 |
 | `tools/list` 自动发现 | ✅ |
 | `tools/list_changed` 订阅 | 🔜 |
@@ -435,6 +451,14 @@ Page
 
 上述入口都会访问文件系统或目录树，后端必须声明为 async Tauri command，并通过统一的 `spawn_blocking_command` 在 blocking pool 中完成读取和 VM 构建。该约束覆盖 `get_profiles`、`get_agent_registry`、`list_mcp_servers`、`list_skills`、`list_project_skills` 与 `get_conversation_workspaces`，确保任一 Tab 加载期间都不占用桌面 IPC 事件处理线程。
 
+SKILL 卡片底部的 Agent 区域采用“最多两行、超量聚合”的自适应布局。容器先按实际可用宽度展示一行，数量增加时自然使用第二行；只有两行仍无法容纳时，才在末尾保留 `+N` 入口。`+N` 使用无页面遮罩的 Popover 展示被隐藏 Agent，并按“直接读取 / 同步设置”分组；同步 Agent 行复用卡片上的同步/取消同步接口，操作后 Popover 保持打开，支持连续调整。详情、编辑、删除操作区固定在右侧，不参与 Agent 换行。容量由 `ResizeObserver` 驱动，不绑定内置 Agent 数量或窗口断点。
+
+SKILL 管理中的“当前已配置 Agent”必须以 `AgentRegistryVm.agents` 为配置真源，读取用户实际保存的显示名、图标、全局/项目主目录和兼容目录；`catalog` 只用于保持内置 Agent 的产品排序。Catalog 之外的自定义 Agent 追加到列表中，参与来源识别、Agent 筛选、创建时默认同步目标、编辑同步目标和卡片聚合展示。不得以 `catalog.configured` 代替实际运行配置，否则自定义 Agent 和用户修改后的内置 Agent 配置都会丢失。
+
+MCP 卡片的 Agent 兼容性区域复用相同的两行容量策略：先换行、两行放不下再显示 `+N`，右侧 MCP 诊断、工具、编辑、删除入口固定。Popover 展示隐藏 Agent 的名称和兼容状态；未知状态仍可点击执行单 Agent 诊断，操作后浮层保持打开。MCP 与 SKILL 分别维护领域展示组件，但共享同一容量计算与 `ResizeObserver` Hook，避免两套溢出规则漂移。
+
+Agent 来源识别必须服从 SKILL 作用域：全局 SKILL 使用 `primaryAgentDir` 匹配原生来源，项目 SKILL 使用 `projectPrimaryAgentDir ?? primaryAgentDir` 匹配原生来源，两种作用域都继续识别 `compatibleAgentDirs`。因此目录拆分 Agent（例如 Pi 的全局 `.pi/agent/skills` 与项目 `.pi/skills`）在卡片、筛选和同步目标计算中保持一致。
+
 ### 4.2 组件复用
 
 | 组件 | 用途 |
@@ -442,7 +466,7 @@ Page
 | `Card` / `AppCard` / `ScrollArea` | 卡片容器 + 滚动 |
 | `Sheet` / `AlertDialog` | 编辑面板 / 确认对话框 |
 | `Tabs` / `Select` / `Input` / `Textarea` | 导航和表单 |
-| `Tooltip` / `Badge` | 提示和标记 |
+| `Tooltip` / `Badge` / `Popover` | 提示、标记与 SKILL/MCP 超量 Agent 快速操作 |
 | `Markdown` | SKILL View 渲染 |
 | `Loader2` / `Stethoscope` / `Check` | 状态图标 |
 
@@ -574,7 +598,7 @@ settings.json
 | | 统一协议 (HTTP 也发 initialize) | ✅ | ✅ | — |
 | | 状态机 | ✅ (7 states) | ✅ (5 states) | 小幅 |
 | | 状态缓存 | ✅ (内存) | ✅ (RefCell) | — |
-| | 工具发现 (tools/list) | ✅ | 🔜 | 待实施 |
+| | 工具发现 (tools/list) | ✅ | ✅ | — |
 | | 工具订阅 (list_changed) | ✅ | 🔜 | 待实施 |
 | | 长期进程 | ✅ | 🔜 | 待实施 |
 | **MCP — 传递** | ACP mcpServers | ✅ | ✅ | — |
@@ -611,7 +635,6 @@ settings.json
 
 ### Phase 2 (后续 PR)
 - [ ] 长期进程管理 (Stdio 进程保持存活)
-- [ ] `tools/list` 自动发现
 - [ ] `tools/list_changed` 订阅
 - [ ] 信任门控 (C+1 方案: 本地自动信任 + 外部弹窗 + settings.json)
 

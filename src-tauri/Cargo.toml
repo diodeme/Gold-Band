@@ -1,6 +1,6 @@
 [package]
 name = "gold-band-desktop"
-version = "0.9.0"
+version = "0.12.4"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -12,34 +12,51 @@ url = "2"
 
 [dependencies]
 anyhow = "1"
+atomic-write-file = "0.2"
+blake3 = "1"
 camino = { version = "1", features = ["serde1"] }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 chrono-tz = "0.10"
 gold-band = { path = ".." }
 keepawake = "0.6.0"
+encoding_rs = "0.8"
+ignore = "0.4"
+infer = "0.19"
+imagesize = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 fontdb = "0.23"
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls-vendored"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "native-tls-vendored", "stream"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 open = "5"
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "test-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "test-util", "fs", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
 trash = "5"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 base64 = "0.22"
-# macOS / Linux OS 通知 fallback。
+tempfile = "3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+walkdir = "2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "ico"] }
+notify = "8"
+natord = "1"
+nucleo-matcher = "0.3.1"
+percent-encoding = "2"
+resvg = "0.45"
+# macOS / Linux OS 閫氱煡 fallback銆?
 notify-rust = { version = "4", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
-# Windows Toast 一等公民：干预通知 + 结构化 action（查看详情/忽略）。
+# Windows Toast 涓€绛夊叕姘戯細骞查閫氱煡 + 缁撴瀯鍖?action锛堟煡鐪嬭鎯?蹇界暐锛夈€?
 tauri-winrt-notification = "0.7"
 # 使用 RtlGetVersion 提供未受应用 manifest 影响的真实 Windows build，
 # 用于区分 Win10 的应用轮廓降级与 Win11 的 DWM 原生圆角。
@@ -47,5 +64,5 @@ windows-version = "0.1.7"
 
 [features]
 default = ["native-notification"]
-# 启用 OS 原生通知（Windows Toast 始终可用；macOS/Linux 经 notify-rust）。
+# 鍚敤 OS 鍘熺敓閫氱煡锛圵indows Toast 濮嬬粓鍙敤锛沵acOS/Linux 缁?notify-rust锛夈€?
 native-notification = ["dep:notify-rust"]

@@ -6,7 +6,7 @@ import {
   createSkillFormFromContent,
   filterSkillSyncTargets,
 } from '../src/lib/skill-sheet-form';
-import type { SkillContentVm, SkillMetaVm, SupportedAgentTypeVm } from '../src/types';
+import type { AgentCatalogEntryVm, SkillContentVm, SkillMetaVm } from '../src/types';
 
 function skill(overrides: Partial<SkillMetaVm> = {}): SkillMetaVm {
   return {
@@ -29,9 +29,9 @@ function content(overrides: Partial<SkillContentVm> = {}): SkillContentVm {
   };
 }
 
-const agents: SupportedAgentTypeVm[] = [
-  { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', primaryAgentDir: '.claude', compatibleAgentDirs: [], supported: true, configured: true, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
-  { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', primaryAgentDir: '.codex', compatibleAgentDirs: ['.agents'], supported: true, configured: true, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
+const agents: AgentCatalogEntryVm[] = [
+  { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', version: '1', description: '', repository: null, website: null, primaryAgentDir: '.claude', projectPrimaryAgentDir: null, compatibleAgentDirs: [], configured: true, supportsSystemPrompt: true, supportsExternalSessionSync: false, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
+  { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', version: '1', description: '', repository: null, website: null, primaryAgentDir: '.codex', projectPrimaryAgentDir: null, compatibleAgentDirs: ['.agents'], configured: true, supportsSystemPrompt: false, supportsExternalSessionSync: false, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: [], defaultEnv: [] },
 ];
 
 describe('skill sheet form helpers', () => {

@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AcpLatestWinsEventBuffer,
   decideAcpLiveEventFlush,
   isCoalescableAcpLiveEvent,
   mergeAcpLiveStreamEvent,
   mergeAcpLiveToolEvent,
-  shouldAutoScrollAfterAcpTimelineUpdate,
 } from '@/lib/acp-live-flush';
 
 describe('ACP live event flush policy', () => {
@@ -86,21 +86,6 @@ describe('ACP live event flush policy', () => {
       scheduleFlush: false,
       scheduleDelayMs: null,
     });
-  });
-
-  it('does not auto-scroll timeline updates during the interaction quiet window', () => {
-    expect(shouldAutoScrollAfterAcpTimelineUpdate({
-      pinned: true,
-      deferRemainingMs: 100,
-    })).toBe(false);
-    expect(shouldAutoScrollAfterAcpTimelineUpdate({
-      pinned: true,
-      deferRemainingMs: 0,
-    })).toBe(true);
-    expect(shouldAutoScrollAfterAcpTimelineUpdate({
-      pinned: false,
-      deferRemainingMs: 0,
-    })).toBe(false);
   });
 
   it('coalesces non-terminal tool calls while keeping terminal tool updates immediate', () => {
@@ -213,5 +198,101 @@ describe('ACP live event flush policy', () => {
 
     expect(merged.seq).toBe(11);
     expect(merged.content).toBe('carefully and avoid vague references.');
+  });
+
+  it('replays the 6021-frame incident with a bounded latest-wins single flight', () => {
+    type ReplayEvent = {
+      id: string;
+      kind: string;
+      content?: string;
+      toolCallId?: string;
+      status?: string;
+      seq: number;
+    };
+    const pending = new AcpLatestWinsEventBuffer<ReplayEvent>();
+    const finalText = new Map<string, string>();
+    const publishedText = new Map<string, string>();
+    let rawFrameCount = 0;
+    let scheduled = false;
+    let scheduledFlights = 0;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let maxPending = 0;
+
+    const flush = () => {
+      if (!scheduled && pending.size === 0) return;
+      scheduled = false;
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      for (const event of pending.drain()) {
+        if (event.kind === 'thoughtDelta' || event.kind === 'textDelta') {
+          publishedText.set(`${event.kind}:${event.id}`, event.content ?? '');
+        }
+      }
+      inFlight -= 1;
+    };
+    const enqueue = (event: ReplayEvent) => {
+      rawFrameCount += 1;
+      const decision = decideAcpLiveEventFlush({
+        coalescable: isCoalescableAcpLiveEvent(event),
+        paused: false,
+        flushDelayMs: 125,
+        hasScheduledFlush: scheduled,
+      });
+      if (decision.flushPendingBeforeApply) flush();
+      if (!decision.buffer) return;
+      const key = event.toolCallId ? `tool:${event.toolCallId}` : `stream:${event.kind}:${event.id}`;
+      const previous = pending.get(key);
+      const merged = event.toolCallId
+        ? mergeAcpLiveToolEvent(previous, event)
+        : mergeAcpLiveStreamEvent(previous, event);
+      pending.replace(key, merged);
+      maxPending = Math.max(maxPending, pending.size);
+      if (decision.scheduleFlush) {
+        scheduled = true;
+        scheduledFlights += 1;
+      }
+    };
+    const replayTextFrames = (kind: 'thoughtDelta' | 'textDelta', count: number, idOffset: number) => {
+      for (let seq = 0; seq < count; seq += 1) {
+        const id = `message-${idOffset + (seq % 12)}`;
+        const chunk = `${kind === 'thoughtDelta' ? '想' : '答'}${seq.toString(36)}`.slice(0, 16);
+        const cumulative = `${finalText.get(`${kind}:${id}`) ?? ''}${chunk}`;
+        finalText.set(`${kind}:${id}`, cumulative);
+        enqueue({ id, kind, content: cumulative, seq });
+      }
+    };
+
+    replayTextFrames('thoughtDelta', 5209, 0);
+    replayTextFrames('textDelta', 534, 12);
+    for (let seq = 0; seq < 35; seq += 1) {
+      enqueue({ id: `tool-${seq}`, kind: 'toolCall', toolCallId: `tool-${seq}`, status: 'running', seq });
+    }
+    for (let seq = 0; seq < 145; seq += 1) {
+      const terminal = seq >= 110;
+      enqueue({
+        id: `tool-update-${seq}`,
+        kind: 'toolCallUpdate',
+        toolCallId: `tool-${seq % 35}`,
+        status: terminal ? 'completed' : 'running',
+        seq,
+      });
+    }
+    for (let seq = 0; seq < 58; seq += 1) enqueue({ id: `usage-${seq}`, kind: 'usageUpdate', seq });
+    enqueue({ id: 'session-info', kind: 'sessionInfoUpdate', seq: 0 });
+    enqueue({ id: 'commands', kind: 'availableCommandsUpdate', seq: 0 });
+    rawFrameCount += 38; // Responses and non-session/update protocol frames from the capture.
+    flush();
+
+    expect(rawFrameCount).toBe(6021);
+    expect(finalText.size).toBe(24);
+    expect(Math.max(...[...finalText.values()].map((value) => value.length))).toBeGreaterThan(0);
+    expect(publishedText).toEqual(finalText);
+    expect(maxPending).toBeLessThanOrEqual(59); // 24 text streams + 35 tool identities.
+    expect(maxPending).toBeLessThan(rawFrameCount / 100);
+    expect(maxInFlight).toBe(1);
+    expect(scheduledFlights).toBeGreaterThan(0);
+    expect(pending.size).toBe(0);
+    expect(scheduled).toBe(false);
   });
 });

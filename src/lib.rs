@@ -1,4 +1,5 @@
 pub mod acp;
+pub mod agent_catalog;
 pub mod app;
 pub mod artifacts;
 pub mod cli;
@@ -10,6 +11,7 @@ pub mod domain;
 pub mod dsl;
 pub mod dynamic;
 pub mod frontmatter;
+pub mod git;
 pub mod inspect;
 pub mod mcp;
 pub mod observability;

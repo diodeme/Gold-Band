@@ -3,6 +3,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const baseTauriConfig = JSON.parse(
+  readFileSync(join(repoRoot, 'src-tauri', 'tauri.conf.json'), 'utf8'),
+);
 
 export function readChannelConfig(channel) {
   const configPath = join(repoRoot, 'configs', 'channels', `${channel}.json`);
@@ -29,20 +32,10 @@ export function tauriConfigOverlay(config, version) {
     productName: config.productName,
     identifier: config.identifier,
     app: {
-      windows: [
-        {
-          title: config.windowTitle,
-          width: 1280,
-          height: 800,
-          minWidth: 1040,
-          minHeight: 680,
-          decorations: false,
-          dragDropEnabled: false,
-        },
-      ],
-      security: {
-        csp: null,
-      },
+      ...baseTauriConfig.app,
+      windows: baseTauriConfig.app.windows.map((windowConfig, index) => index === 0
+        ? { ...windowConfig, title: config.windowTitle }
+        : { ...windowConfig }),
     },
     plugins: {
       updater: {

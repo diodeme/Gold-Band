@@ -48,26 +48,56 @@ pub enum DynamicGroupStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum WorkspaceMode {
-    Readonly,
-    Worktree,
+pub enum WorkspaceKind {
     Main,
+    Worktree,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkspaceOwnership {
+    User,
+    Runtime,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkspaceStatus {
+    Active,
+    Frozen,
+    Merging,
+    Merged,
+    Released,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DynamicRunPhase {
+    #[default]
+    Executing,
+    PreparingWorkspace,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkspacePolicy {
-    pub mode: WorkspaceMode,
-}
-
-impl Default for WorkspacePolicy {
-    fn default() -> Self {
-        Self {
-            mode: WorkspaceMode::Readonly,
-        }
-    }
+pub struct WorkspaceState {
+    pub version: String,
+    pub id: String,
+    pub dynamic_run_id: String,
+    pub kind: WorkspaceKind,
+    pub ownership: WorkspaceOwnership,
+    pub repo_root: Utf8PathBuf,
+    pub path: Utf8PathBuf,
+    pub branch: Option<String>,
+    pub parent_workspace_id: Option<String>,
+    pub created_by_group_id: Option<String>,
+    pub fork_commit: String,
+    pub checkpoint_commit: Option<String>,
+    pub status: WorkspaceStatus,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +120,11 @@ pub struct DynamicRunState {
     pub parent_node_id: String,
     pub parent_attempt_id: String,
     pub status: DynamicRunStatus,
+    /// Internal non-interruptible phase. Stop requests may be accepted while
+    /// workspace preparation is active, but become effective only after the
+    /// workspace/graph transition reaches a consistent boundary.
+    #[serde(default)]
+    pub phase: DynamicRunPhase,
     pub outcome: Option<RunOutcome>,
     #[serde(default)]
     pub pause_reason: Option<PauseReason>,
@@ -115,12 +150,15 @@ pub struct DynamicNodeState {
     pub pause_reason: Option<PauseReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_error: Option<RuntimeErrorInfo>,
+    /// Identifies the currently authorized Runtime invocation for this leaf.
+    /// It changes on every explicit continue and is cleared when the leaf pauses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_execution_id: Option<String>,
     pub group_id: Option<String>,
     pub chain_id: String,
     pub depth: u32,
     pub depends_on: Vec<String>,
-    pub workspace: WorkspacePolicy,
-    pub workspace_path: Option<Utf8PathBuf>,
+    pub workspace_id: String,
     pub provider: Option<String>,
     pub profile: Option<String>,
     #[serde(default)]
@@ -150,6 +188,8 @@ pub struct DynamicGroupState {
     pub parent_group_id: Option<String>,
     pub root_node_ids: Vec<String>,
     pub terminal_node_ids: Vec<String>,
+    pub target_workspace_id: String,
+    pub child_workspace_ids: Vec<String>,
     pub merge_node_id: Option<String>,
     pub acceptance_node_id: Option<String>,
     pub created_by_node_id: String,
@@ -229,6 +269,7 @@ pub struct DynamicGraphState {
     pub run: DynamicRunState,
     pub nodes: Vec<DynamicNodeState>,
     pub groups: Vec<DynamicGroupState>,
+    pub workspaces: Vec<WorkspaceState>,
     pub proposals: Vec<DynamicProposalState>,
 }
 
@@ -249,8 +290,6 @@ pub struct DynamicNodeSpec {
     pub session_mode: SessionMode,
     #[serde(default)]
     pub continue_from_node_id: Option<String>,
-    #[serde(default)]
-    pub workspace: WorkspacePolicy,
     #[serde(default)]
     pub depends_on: Vec<String>,
     pub workflow_id: Option<String>,
@@ -349,12 +388,6 @@ pub fn dynamic_completion_effective_schema(
         "SessionMode",
         enum_string_schema(["new", "continue"]),
     );
-    set_schema_definition(
-        &mut schema,
-        "WorkspaceMode",
-        enum_string_schema(["readonly", "worktree", "main"]),
-    );
-    set_schema_definition(&mut schema, "WorkspacePolicy", workspace_policy_schema());
     set_schema_definition(
         &mut schema,
         "DynamicNodeSpec",
@@ -493,17 +526,6 @@ fn conditional_schema(
     })
 }
 
-fn workspace_policy_schema() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "required": ["mode"],
-        "additionalProperties": false,
-        "properties": {
-            "mode": schema_ref("WorkspaceMode")
-        }
-    })
-}
-
 fn dynamic_node_spec_schema(policy: &DynamicCompletionSchemaPolicy) -> serde_json::Value {
     let mut worker_required = vec!["id", "kind", "title", "task"];
     if policy.provider_required {
@@ -533,7 +555,6 @@ fn dynamic_node_spec_schema(policy: &DynamicCompletionSchemaPolicy) -> serde_jso
             "model": optional_enum_or_string_schema(&policy.model_names),
             "sessionMode": schema_ref("SessionMode"),
             "continueFromNodeId": string_schema(),
-            "workspace": schema_ref("WorkspacePolicy"),
             "dependsOn": {
                 "type": "array",
                 "items": string_schema()
@@ -559,16 +580,10 @@ fn dynamic_node_spec_schema(policy: &DynamicCompletionSchemaPolicy) -> serde_jso
 
 fn dynamic_agent_task_spec_schema(policy: &DynamicCompletionSchemaPolicy) -> serde_json::Value {
     let mut required = vec!["title", "task"];
-    if policy.provider_required {
-        required.push("provider");
-    }
     if policy.agent_task_model_required {
         required.push("model");
     }
-    let mut forbidden = Vec::new();
-    if !policy.provider_required {
-        forbidden.push("provider");
-    }
+    let mut forbidden = vec!["provider"];
     if policy.agent_task_model_visible && !policy.agent_task_model_required {
         forbidden.push("model");
     }
@@ -690,6 +705,10 @@ pub fn validate_dynamic_run_state(state: &DynamicRunState) -> Result<()> {
         !(state.status != DynamicRunStatus::Paused && state.pause_reason.is_some()),
         "non-paused dynamic run cannot have pauseReason"
     );
+    ensure!(
+        state.status == DynamicRunStatus::Running || state.phase == DynamicRunPhase::Executing,
+        "non-running dynamic run cannot prepare workspace"
+    );
     Ok(())
 }
 
@@ -702,6 +721,10 @@ pub fn validate_dynamic_node_state(state: &DynamicNodeState) -> Result<()> {
     ensure!(
         !state.dynamic_run_id.trim().is_empty(),
         "dynamic node dynamicRunId cannot be empty"
+    );
+    ensure!(
+        !state.workspace_id.trim().is_empty(),
+        "dynamic node workspaceId cannot be empty"
     );
     ensure!(
         !state.title.trim().is_empty(),
@@ -754,12 +777,199 @@ pub fn validate_dynamic_group_state(state: &DynamicGroupState) -> Result<()> {
         !state.root_node_ids.is_empty(),
         "dynamic group must have root nodes"
     );
+    ensure!(
+        !state.target_workspace_id.trim().is_empty(),
+        "dynamic group targetWorkspaceId cannot be empty"
+    );
+    ensure!(
+        state.child_workspace_ids.len() == state.root_node_ids.len(),
+        "dynamic group must assign one child workspace per root node"
+    );
+    Ok(())
+}
+
+pub fn validate_workspace_state(state: &WorkspaceState) -> Result<()> {
+    ensure!(state.version == VERSION, "unsupported workspace version");
+    ensure!(!state.id.trim().is_empty(), "workspace id cannot be empty");
+    ensure!(
+        !state.dynamic_run_id.trim().is_empty(),
+        "workspace dynamicRunId cannot be empty"
+    );
+    ensure!(
+        !state.path.as_str().is_empty(),
+        "workspace path cannot be empty"
+    );
+    ensure!(
+        !state.fork_commit.trim().is_empty(),
+        "workspace forkCommit cannot be empty"
+    );
+    match state.kind {
+        WorkspaceKind::Main => {
+            ensure!(
+                state.ownership == WorkspaceOwnership::User,
+                "main workspace must be user-owned"
+            );
+            ensure!(
+                state.branch.is_none(),
+                "main workspace branch is not runtime-owned"
+            );
+            ensure!(
+                state.parent_workspace_id.is_none(),
+                "main workspace cannot have a parent"
+            );
+        }
+        WorkspaceKind::Worktree => {
+            ensure!(
+                state.ownership == WorkspaceOwnership::Runtime,
+                "worktree must be runtime-owned"
+            );
+            ensure!(
+                state
+                    .branch
+                    .as_ref()
+                    .is_some_and(|value| !value.trim().is_empty()),
+                "worktree branch is required"
+            );
+            ensure!(
+                state
+                    .parent_workspace_id
+                    .as_ref()
+                    .is_some_and(|value| !value.trim().is_empty()),
+                "worktree parentWorkspaceId is required"
+            );
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_workspace_topology(graph: &DynamicGraphState) -> Result<()> {
+    let workspace_ids = graph
+        .workspaces
+        .iter()
+        .map(|workspace| workspace.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    ensure!(
+        workspace_ids.len() == graph.workspaces.len(),
+        "workspace ids must be unique"
+    );
+    for node in &graph.nodes {
+        ensure!(
+            workspace_ids.contains(node.workspace_id.as_str()),
+            "node `{}` references unknown workspace `{}`",
+            node.id,
+            node.workspace_id
+        );
+    }
+    for group in &graph.groups {
+        ensure!(
+            workspace_ids.contains(group.target_workspace_id.as_str()),
+            "group `{}` references unknown target workspace",
+            group.id
+        );
+        for child_workspace_id in &group.child_workspace_ids {
+            let child = graph
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == *child_workspace_id)
+                .ok_or_else(|| anyhow::anyhow!("group child workspace is missing"))?;
+            ensure!(
+                child.parent_workspace_id.as_deref() == Some(group.target_workspace_id.as_str()),
+                "group child workspace must descend from target workspace"
+            );
+            ensure!(
+                child.created_by_group_id.as_deref() == Some(group.id.as_str()),
+                "group child workspace must reference its creating group"
+            );
+        }
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_routing_contract_rejects_model_and_permission_mode() {
+        let schema = dynamic_completion_effective_schema(&DynamicCompletionSchemaPolicy {
+            provider_required: true,
+            node_model_required: false,
+            agent_task_model_required: false,
+            agent_task_model_visible: false,
+            provider_ids: vec!["claude-acp".to_string(), "codex-acp".to_string()],
+            max_fanout: 5,
+            ..Default::default()
+        });
+        let compiled = jsonschema::JSONSchema::compile(&schema).unwrap();
+        let proposal = serde_json::json!({
+            "version": VERSION,
+            "kind": DYNAMIC_COMPLETION_ARTIFACT,
+            "status": "success",
+            "summary": "route",
+            "next": {
+                "type": "single",
+                "node": {
+                    "id": "worker-1",
+                    "kind": "worker",
+                    "title": "Worker",
+                    "task": "Implement",
+                    "provider": "codex-acp"
+                }
+            }
+        });
+        assert!(compiled.is_valid(&proposal));
+
+        let mut with_model = proposal.clone();
+        with_model["next"]["node"]["model"] = serde_json::json!("gpt-5.6-sol");
+        assert!(!compiled.is_valid(&with_model));
+
+        let mut with_permission = proposal;
+        with_permission["next"]["node"]["permissionMode"] = serde_json::json!("agent-full-access");
+        assert!(!compiled.is_valid(&with_permission));
+
+        let mut with_workspace = serde_json::json!({
+            "version": VERSION,
+            "kind": DYNAMIC_COMPLETION_ARTIFACT,
+            "status": "success",
+            "summary": "route",
+            "next": {
+                "type": "single",
+                "node": {
+                    "id": "worker-1",
+                    "kind": "worker",
+                    "title": "Worker",
+                    "task": "Implement",
+                    "provider": "codex-acp"
+                }
+            }
+        });
+        with_workspace["next"]["node"]["workspace"] = serde_json::json!({ "mode": "worktree" });
+        assert!(!compiled.is_valid(&with_workspace));
+    }
+
+    #[test]
+    fn dynamic_control_tasks_reject_provider_and_model() {
+        let schema = dynamic_agent_task_spec_schema(&DynamicCompletionSchemaPolicy {
+            provider_required: true,
+            agent_task_model_visible: false,
+            provider_ids: vec!["claude-acp".to_string(), "codex-acp".to_string()],
+            ..Default::default()
+        });
+        let compiled = jsonschema::JSONSchema::compile(&schema).unwrap();
+        let task = serde_json::json!({
+            "title": "Merge",
+            "task": "Merge branch results"
+        });
+        assert!(compiled.is_valid(&task));
+
+        let mut with_provider = task.clone();
+        with_provider["provider"] = serde_json::json!("codex-acp");
+        assert!(!compiled.is_valid(&with_provider));
+
+        let mut with_model = task;
+        with_model["model"] = serde_json::json!("gpt-5.6-sol");
+        assert!(!compiled.is_valid(&with_model));
+    }
 
     /// A DynamicNodeState without the `uuid` field (legacy on-disk data)
     /// must still deserialize thanks to `#[serde(default)]`.
@@ -776,7 +986,7 @@ mod tests {
             "chainId": "bootstrap",
             "depth": 0,
             "dependsOn": [],
-            "workspace": { "mode": "readonly" },
+            "workspaceId": "workspace-main",
             "sessionMode": "new"
         }"#;
         let node: DynamicNodeState =
@@ -800,7 +1010,7 @@ mod tests {
             "chainId": "bootstrap",
             "depth": 0,
             "dependsOn": [],
-            "workspace": { "mode": "readonly" },
+            "workspaceId": "workspace-main",
             "sessionMode": "new",
             "uuid": "abc123"
         }"#;
@@ -831,7 +1041,7 @@ mod tests {
             "chainId": "bootstrap",
             "depth": 0,
             "dependsOn": [],
-            "workspace": { "mode": "readonly" },
+            "workspaceId": "workspace-main",
             "sessionMode": "new"
         }"#;
         let node: DynamicNodeState = serde_json::from_str(json).unwrap();

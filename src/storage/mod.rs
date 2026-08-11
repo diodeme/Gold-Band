@@ -1,6 +1,6 @@
 pub mod sqlite;
 
-use crate::config::SettingsConfig;
+use crate::config::{ManagedAgentId, SettingsConfig};
 use crate::domain::VERSION;
 use anyhow::{Result, anyhow};
 use atomic_write_file::AtomicWriteFile;
@@ -200,12 +200,16 @@ impl GoldBandPaths {
         self.user_gold_band_root.join("doctor")
     }
 
-    pub fn doctor_acp_dir(&self) -> Utf8PathBuf {
+    pub fn doctor_acp_root_dir(&self) -> Utf8PathBuf {
         self.doctor_dir().join("acp")
     }
 
-    pub fn doctor_acp_provider_pid_file(&self) -> Utf8PathBuf {
-        self.doctor_acp_dir().join("provider.pid")
+    pub fn doctor_acp_dir(&self, agent_id: &ManagedAgentId) -> Utf8PathBuf {
+        self.doctor_acp_root_dir().join(agent_id.as_str())
+    }
+
+    pub fn doctor_acp_provider_pid_file(&self, agent_id: &ManagedAgentId) -> Utf8PathBuf {
+        self.doctor_acp_dir(agent_id).join("provider.pid")
     }
 
     pub fn sqlite_db_path(&self) -> Utf8PathBuf {
@@ -590,6 +594,20 @@ impl GoldBandPaths {
             .join(format!("{group_id}.json"))
     }
 
+    pub fn dynamic_workspace_file(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        workspace_id: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_dir(task_id, run_id, round_id, node_id, attempt_id)
+            .join("workspaces")
+            .join(format!("{workspace_id}.json"))
+    }
+
     pub fn dynamic_node_dir(
         &self,
         task_id: &str,
@@ -899,6 +917,29 @@ pub fn append_jsonl<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
     with_jsonl_file_lock(path, || append_jsonl_line_unlocked(path, &line))
 }
 
+/// Append one JSONL record and force its bytes to the operating-system storage
+/// boundary before returning. Use this for small write-ahead journals whose
+/// records must survive an application-process crash.
+pub fn append_jsonl_durable<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
+    with_jsonl_file_lock(path, || append_jsonl_durable_unlocked(path, value))
+}
+
+/// Durable JSONL append for callers that already hold this path's JSONL lock.
+pub fn append_jsonl_durable_unlocked<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
+    let line = serde_json::to_vec(value)?;
+    ensure_parent_dir(path)?;
+    repair_jsonl_tail_unlocked(path)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path.as_std_path())?;
+    file.write_all(&line)?;
+    file.write_all(b"\n")?;
+    file.flush()?;
+    file.sync_data()?;
+    Ok(())
+}
+
 pub fn append_jsonl_unlocked<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
     let line = serde_json::to_vec(value)?;
     append_jsonl_line_unlocked(path, &line)
@@ -912,6 +953,32 @@ fn append_jsonl_line_unlocked(path: &Utf8Path, line: &[u8]) -> Result<()> {
         .open(path.as_std_path())?;
     file.write_all(line)?;
     file.write_all(b"\n")?;
+    Ok(())
+}
+
+fn repair_jsonl_tail_unlocked(path: &Utf8Path) -> Result<()> {
+    let Ok(content) = std::fs::read(path.as_std_path()) else {
+        return Ok(());
+    };
+    if content.is_empty() || content.last() == Some(&b'\n') {
+        return Ok(());
+    }
+
+    let tail_start = content
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index.saturating_add(1));
+    let tail = &content[tail_start..];
+    if serde_json::from_slice::<serde_json::Value>(tail).is_ok() {
+        let mut file = OpenOptions::new().append(true).open(path.as_std_path())?;
+        file.write_all(b"\n")?;
+        return Ok(());
+    }
+
+    OpenOptions::new()
+        .write(true)
+        .open(path.as_std_path())?
+        .set_len(tail_start as u64)?;
     Ok(())
 }
 
@@ -953,7 +1020,9 @@ pub fn roll_jsonl_unlocked(path: &Utf8Path, max_size: u64, target_size: u64) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CURRENT_SETTINGS_SCHEMA_VERSION, MANAGED_AGENT_PRESETS, ManagedAgentId};
+    use crate::config::{
+        CURRENT_SETTINGS_SCHEMA_VERSION, ManagedAgentId, catalog_agent_default_config,
+    };
     use std::str::FromStr;
     use tempfile;
 
@@ -1137,7 +1206,7 @@ mod tests {
         let legacy = serde_json::json!({
             "agents": {
                 "codex-cli": {
-                    "adapter": MANAGED_AGENT_PRESETS[1].default_config().adapter,
+                    "adapter": catalog_agent_default_config("codex-acp").unwrap().adapter,
                     "skillsDirOverride": ".custom-codex",
                     "externalSessionSyncEnabled": false
                 }
@@ -1149,7 +1218,7 @@ mod tests {
 
         let codex_id = ManagedAgentId::from_str("codex-acp").unwrap();
         let codex = &settings.agents.unwrap()[&codex_id];
-        assert_eq!(codex.primary_agent_dir, ".custom-codex");
+        assert_eq!(codex.primary_agent_dir.as_deref(), Some(".custom-codex"));
         assert_eq!(codex.compatible_agent_dirs, vec![".agents"]);
 
         let persisted: serde_json::Value = read_json(&path).unwrap();
@@ -1313,6 +1382,42 @@ mod tests {
     }
 
     #[test]
+    fn durable_jsonl_append_repairs_torn_tail_before_writing_next_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("journal.jsonl")).unwrap();
+        std::fs::write(path.as_std_path(), b"{\"kind\":\"complete\"}\n{\"kind\":").unwrap();
+
+        append_jsonl_durable(&path, &serde_json::json!({ "kind": "next" })).unwrap();
+
+        let records = std::fs::read_to_string(path.as_std_path())
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["kind"], "complete");
+        assert_eq!(records[1]["kind"], "next");
+    }
+
+    #[test]
+    fn durable_jsonl_append_preserves_complete_tail_without_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("journal.jsonl")).unwrap();
+        std::fs::write(path.as_std_path(), b"{\"kind\":\"complete\"}").unwrap();
+
+        append_jsonl_durable(&path, &serde_json::json!({ "kind": "next" })).unwrap();
+
+        let records = std::fs::read_to_string(path.as_std_path())
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["kind"], "complete");
+        assert_eq!(records[1]["kind"], "next");
+    }
+
+    #[test]
     fn roll_jsonl_trims_unicode_file_without_trailing_newline() {
         let dir = tempfile::tempdir().unwrap();
         let path = Utf8PathBuf::from_path_buf(dir.path().join("unicode.jsonl")).unwrap();
@@ -1324,6 +1429,26 @@ mod tests {
 
         let after = std::fs::read_to_string(path.as_std_path()).unwrap();
         assert_eq!(after, second);
+    }
+
+    #[test]
+    fn doctor_attempt_directories_are_isolated_by_agent_id() {
+        let root = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let paths = GoldBandPaths::new(repo_root);
+        let cursor = "cursor".parse::<ManagedAgentId>().unwrap();
+        let opencode = "opencode".parse::<ManagedAgentId>().unwrap();
+
+        assert_ne!(
+            paths.doctor_acp_dir(&cursor),
+            paths.doctor_acp_dir(&opencode)
+        );
+        assert!(paths.doctor_acp_dir(&cursor).ends_with("doctor/acp/cursor"));
+        assert!(
+            paths
+                .doctor_acp_dir(&opencode)
+                .ends_with("doctor/acp/opencode")
+        );
     }
 
     #[cfg(unix)]

@@ -1,28 +1,38 @@
 import { useEffect, useState } from 'react';
-import { Copy, Minus, PanelLeft, Square, X } from 'lucide-react';
+import { Copy, MessageSquareWarning, Minus, PanelLeft, PanelRight, Square, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
 import type { DesktopPlatform } from '../types';
 import { isTauriRuntime } from '../api/shared';
 import { resolveWindowControlsPolicy } from '../lib/window-controls';
 import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { FeedbackDialog } from './feedback/FeedbackDialog';
 import { cn } from '@/lib/utils';
 
 interface AppTitleBarProps {
   appName: string;
+  feedbackEnabled?: boolean;
   platform?: DesktopPlatform | null;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
+  rightWorkspaceOpen?: boolean;
+  onToggleRightWorkspace?: () => void;
 }
 
 export function AppTitleBar({
   appName,
+  feedbackEnabled = false,
   platform,
   sidebarCollapsed,
   onToggleSidebar,
+  rightWorkspaceOpen = false,
+  onToggleRightWorkspace,
 }: AppTitleBarProps) {
   const { t } = useTranslation();
   const [isMaximized, setIsMaximized] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [helpMenuOpen, setHelpMenuOpen] = useState(false);
   const tauriRuntime = isTauriRuntime();
   const policy = resolveWindowControlsPolicy(platform);
 
@@ -75,24 +85,14 @@ export function AppTitleBar({
   const hasLeadingInset = policy.leadingInsetClassName.length > 0;
 
   return (
+    <>
     <header
       data-tauri-drag-region
       className="app-titlebar-drag-region flex h-11 shrink-0 select-none items-center bg-titlebar text-titlebar-foreground"
     >
-      <div className="flex items-center gap-2 px-2.5">
+      <div className="flex items-center px-2.5">
         {hasLeadingInset ? <div aria-hidden="true" className={cn('shrink-0', policy.leadingInsetClassName)} /> : null}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="app-titlebar-no-drag size-8 rounded-md text-titlebar-muted hover:bg-titlebar-hover hover:text-titlebar-foreground"
-          onClick={onToggleSidebar}
-          aria-label={sidebarCollapsed ? t('common.showSidebar') : t('common.collapseSidebar')}
-          title={sidebarCollapsed ? t('common.showSidebar') : t('common.collapseSidebar')}
-          data-titlebar-no-drag="true"
-        >
-          <PanelLeft className="size-4" />
-        </Button>
-        <div data-tauri-drag-region className="flex h-full items-center gap-2 pr-2">
+        <div data-tauri-drag-region data-titlebar-brand="true" className="flex h-full items-center gap-2 pr-3">
           <span data-tauri-drag-region className="grid h-7 w-10 shrink-0 place-items-center rounded-lg border border-titlebar-border bg-background/55 p-1">
             <img src="/logo.svg" alt="" className="h-full w-full object-contain pointer-events-none" />
           </span>
@@ -100,6 +100,22 @@ export function AppTitleBar({
             {appName}
           </span>
         </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className={cn(
+            'app-titlebar-no-drag size-7 rounded-[6px] text-titlebar-muted hover:bg-titlebar-hover hover:text-titlebar-foreground',
+            !sidebarCollapsed && 'bg-titlebar-hover/70 text-titlebar-foreground',
+          )}
+          onClick={onToggleSidebar}
+          aria-label={sidebarCollapsed ? t('common.showSidebar') : t('common.collapseSidebar')}
+          title={sidebarCollapsed ? t('common.showSidebar') : t('common.collapseSidebar')}
+          data-titlebar-no-drag="true"
+          data-titlebar-sidebar-toggle="left"
+          data-state={sidebarCollapsed ? 'closed' : 'open'}
+        >
+          <PanelLeft className="size-3.5" />
+        </Button>
       </div>
 
       <div
@@ -107,6 +123,60 @@ export function AppTitleBar({
         className="min-w-0 flex-1 self-stretch"
       />
 
+      {feedbackEnabled || onToggleRightWorkspace ? (
+        <div
+          className={cn(
+            'app-titlebar-no-drag flex h-full flex-none items-center gap-0.5',
+            !policy.showCustomControls && 'pr-2.5',
+          )}
+          data-titlebar-no-drag="true"
+          data-titlebar-trailing-actions="true"
+        >
+          {feedbackEnabled ? (
+            <DropdownMenu open={helpMenuOpen} onOpenChange={setHelpMenuOpen}>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="flex h-8 items-center rounded-md px-2.5 text-sm font-medium text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground"
+                  aria-label={t('common.help')}
+                  title={t('common.help')}
+                >
+                  {t('common.help')}
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-40">
+                <DropdownMenuItem
+                  onSelect={() => {
+                    setHelpMenuOpen(false);
+                    requestAnimationFrame(() => setFeedbackOpen(true));
+                  }}
+                  className="gap-2"
+                >
+                  <MessageSquareWarning className="size-4" />
+                  {t('common.userFeedback')}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+          {onToggleRightWorkspace ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn(
+                'size-7 rounded-[6px] text-titlebar-muted hover:bg-titlebar-hover hover:text-titlebar-foreground',
+                rightWorkspaceOpen && 'bg-titlebar-hover/70 text-titlebar-foreground',
+              )}
+              onClick={onToggleRightWorkspace}
+              aria-label={rightWorkspaceOpen ? t('workspace.closeWorkspace') : t('workspace.openWorkspace')}
+              title={rightWorkspaceOpen ? t('workspace.closeWorkspace') : t('workspace.openWorkspace')}
+              data-titlebar-sidebar-toggle="right"
+              data-state={rightWorkspaceOpen ? 'open' : 'closed'}
+            >
+              <PanelRight className="size-3.5" />
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       {policy.showCustomControls ? (
         <div
           className="app-titlebar-no-drag flex h-full w-max flex-none items-stretch pl-2"
@@ -142,5 +212,7 @@ export function AppTitleBar({
         </div>
       ) : null}
     </header>
+      <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} />
+    </>
   );
 }

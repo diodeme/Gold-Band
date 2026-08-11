@@ -1,4 +1,7 @@
+import { useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
+
+import { cn } from '@/lib/utils';
 
 import {
   ACP_COMPOSER_CONFIG_DROPDOWN_MODAL,
@@ -6,6 +9,7 @@ import {
   ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS,
   ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS,
   DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
+  keepAcpConfigMenuOpenOnSelect,
   acpComposerConfigTriggerVariants,
 } from '@/components/acp/AcpComposerConfigTrigger';
 import {
@@ -35,6 +39,7 @@ type Props = {
   compact?: boolean;
   contentSide?: 'top' | 'bottom';
   align?: 'start' | 'end';
+  triggerClassName?: string;
 };
 
 export function resolveAcpSingleConfigMenuValue(value: string) {
@@ -52,13 +57,31 @@ export function AcpSingleConfigMenu({
   compact = false,
   contentSide = 'bottom',
   align = DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
+  triggerClassName,
 }: Props) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const keepMenuOpenRef = useRef(false);
   const selectedOption = options.find((option) => option.id === value);
   const selectedLabel = valueLabel ?? selectedOption?.name ?? unspecifiedLabel;
+  const handleConfigOptionSelect = (event: Event) => {
+    keepAcpConfigMenuOpenOnSelect(event);
+    keepMenuOpenRef.current = true;
+    setTimeout(() => {
+      keepMenuOpenRef.current = false;
+    }, 0);
+  };
+  const handleMenuOpenChange = (open: boolean) => {
+    if (!open && keepMenuOpenRef.current) {
+      keepMenuOpenRef.current = false;
+      setMenuOpen(true);
+      return;
+    }
+    setMenuOpen(open);
+  };
 
   return (
-    <DropdownMenu modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL}>
-      <DropdownMenuTrigger className={acpComposerConfigTriggerVariants({ compact })}>
+    <DropdownMenu open={menuOpen} modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL} onOpenChange={handleMenuOpenChange}>
+      <DropdownMenuTrigger className={cn(acpComposerConfigTriggerVariants({ compact }), triggerClassName)}>
         <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{label}</span>
         <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>{selectedLabel}</span>
         <ChevronDown className={ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS} />
@@ -74,12 +97,12 @@ export function AcpSingleConfigMenu({
           onValueChange={(nextValue) => onValueChange(resolveAcpSingleConfigMenuValue(nextValue))}
         >
           {showUnspecified ? (
-            <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE}>
+            <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE} onSelect={handleConfigOptionSelect}>
               {unspecifiedLabel}
             </DropdownMenuRadioItem>
           ) : null}
           {options.map((option) => (
-            <DropdownMenuRadioItem key={option.id} value={option.id} className="items-start py-2">
+            <DropdownMenuRadioItem key={option.id} value={option.id} className="items-start py-2" onSelect={handleConfigOptionSelect}>
               <span className="block min-w-0">
                 <span className="block truncate font-medium">{option.name}</span>
                 {option.description ? (

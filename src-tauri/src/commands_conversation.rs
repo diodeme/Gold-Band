@@ -16,7 +16,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::commands::{
-    CommandErrorVm, CommandResult, acp_session_update_emitter, command_error,
+    CommandErrorVm, CommandResult, command_error, configure_conversation_runtime_callbacks,
     spawn_blocking_command,
 };
 use crate::conversation_workspace::{
@@ -465,7 +465,7 @@ pub async fn get_conversation_workspaces(
 }
 
 #[tauri::command]
-pub fn get_conversation_run(
+pub async fn get_conversation_run(
     state: State<'_, DesktopState>,
     project_id: String,
     task_id: String,
@@ -474,39 +474,45 @@ pub fn get_conversation_run(
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
     let started = Instant::now();
     let context = state.context().map_err(command_error)?;
-    let global_app = context.app();
-    let app_state = global_app.load_state().map_err(command_error)?;
-    let Some((workspace_path, resolved_project_id)) =
-        workspace_entry_for_project(&app_state, &project_id)
-    else {
-        return Err(CommandErrorVm::new(
-            "workspace.not-found",
-            serde_json::json!({ "projectId": project_id }),
-        ));
-    };
-    let workspace_app = state
-        .app()
-        .map_err(command_error)?
-        .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
-    let result = crate::view_models_conversation::conversation_run_vm(
-        &workspace_app,
-        &resolved_project_id,
-        &task_id,
-        &run_id,
-        selected_session_key.as_deref(),
-    );
+    let log_project_id = project_id.clone();
+    let log_task_id = task_id.clone();
+    let log_run_id = run_id.clone();
+    let log_selected_session_key = selected_session_key.clone();
+    let result = spawn_blocking_command(move || {
+        let global_app = context.app();
+        let app_state = global_app.load_state().map_err(command_error)?;
+        let Some((workspace_path, resolved_project_id)) =
+            workspace_entry_for_project(&app_state, &project_id)
+        else {
+            return Err(CommandErrorVm::new(
+                "workspace.not-found",
+                serde_json::json!({ "projectId": project_id }),
+            ));
+        };
+        let workspace_app =
+            global_app.with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
+        crate::view_models_conversation::conversation_run_vm(
+            &workspace_app,
+            &resolved_project_id,
+            &task_id,
+            &run_id,
+            selected_session_key.as_deref(),
+        )
+        .map_err(command_error)
+    })
+    .await;
     info!(
         target: "gold_band::perf",
         command = "get_conversation_run",
-        project_id = %project_id,
-        task_id = %task_id,
-        run_id = %run_id,
-        selected_session_key = ?selected_session_key,
+        project_id = %log_project_id,
+        task_id = %log_task_id,
+        run_id = %log_run_id,
+        selected_session_key = ?log_selected_session_key,
         elapsed_ms = started.elapsed().as_millis(),
         status = if result.is_ok() { "ok" } else { "error" },
         "conversation run view model loaded"
     );
-    result.map_err(command_error)
+    result
 }
 
 #[tauri::command]
@@ -541,6 +547,7 @@ pub async fn create_conversation_run(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::ConversationCreateInputVm,
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
+    let started = Instant::now();
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
@@ -577,21 +584,11 @@ pub async fn create_conversation_run(
             }),
         ));
     }
-    let live_update = crate::commands::acp_live_update_emitter_for_app(
-        &app,
+    let app = configure_conversation_runtime_callbacks(
+        app,
         app_handle.clone(),
-        Some(project_id_for_emit.clone()),
+        Some(project_id_for_emit),
     );
-    let app = app
-        .with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(
-            app_handle.clone(),
-            state
-                .app()
-                .map_err(command_error)?
-                .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone()),
-            Some(project_id_for_emit),
-        ));
     let run = tauri::async_runtime::spawn_blocking(move || {
         crate::view_models_conversation::create_conversation_run_vm(&app, &input)
             .map_err(command_error)
@@ -599,6 +596,13 @@ pub async fn create_conversation_run(
     .await
     .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))??;
     persist_last_conversation_workspace(&global_app, &project_id_for_current)?;
+    info!(
+        target: "gold_band::perf",
+        command = "create_conversation_run",
+        project_id = %project_id_for_current,
+        elapsed_ms = started.elapsed().as_millis(),
+        "conversation run created"
+    );
     Ok(run)
 }
 
@@ -624,22 +628,11 @@ pub fn rerun_conversation_task(
         .app()
         .map_err(command_error)?
         .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
-    let app = workspace_app;
-    let live_update = crate::commands::acp_live_update_emitter_for_app(
-        &app,
+    let app = configure_conversation_runtime_callbacks(
+        workspace_app,
         app_handle.clone(),
         Some(resolved_project_id.clone()),
     );
-    let app = app
-        .with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(
-            app_handle.clone(),
-            state
-                .app()
-                .map_err(command_error)?
-                .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone()),
-            Some(resolved_project_id.clone()),
-        ));
     let run = crate::view_models_conversation::rerun_conversation_task_vm(
         &app,
         &resolved_project_id,
@@ -1059,7 +1052,9 @@ pub fn get_conversation_run_mode(
                         agent_type: cfg.agent_type.clone(),
                         bootstrap_agent_type: cfg.bootstrap_agent_type.clone(),
                         bootstrap_model_id: cfg.bootstrap_model_id.clone(),
+                        bootstrap_config_options: cfg.bootstrap_config_options.clone(),
                         acceptance_model_id: cfg.acceptance_model_id.clone(),
+                        acceptance_config_options: cfg.acceptance_config_options.clone(),
                         model_id: cfg.model_id.clone(),
                         permission_mode: cfg.permission_mode.clone(),
                         config_options: cfg.config_options.clone(),
@@ -1070,6 +1065,8 @@ pub fn get_conversation_run_mode(
                                     crate::view_models_conversation::ConversationDynamicAgentRefVm {
                                         provider: agent.provider.clone(),
                                         model: agent.model.clone(),
+                                        permission_mode: agent.permission_mode.clone(),
+                                        config_options: agent.config_options.clone(),
                                     }
                                 })
                                 .collect()
@@ -1155,7 +1152,9 @@ pub fn save_conversation_run_mode(
                 agent_type: cfg.agent_type,
                 bootstrap_agent_type: cfg.bootstrap_agent_type,
                 bootstrap_model_id: cfg.bootstrap_model_id,
+                bootstrap_config_options: cfg.bootstrap_config_options,
                 acceptance_model_id: cfg.acceptance_model_id,
+                acceptance_config_options: cfg.acceptance_config_options,
                 model_id: cfg.model_id,
                 permission_mode: cfg.permission_mode,
                 config_options: cfg.config_options,
@@ -1165,6 +1164,8 @@ pub fn save_conversation_run_mode(
                         .map(|agent| ConversationDynamicAgentRef {
                             provider: agent.provider,
                             model: agent.model,
+                            permission_mode: agent.permission_mode,
+                            config_options: agent.config_options,
                         })
                         .collect()
                 }),

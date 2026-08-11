@@ -1,10 +1,10 @@
 use camino::Utf8PathBuf;
-use gold_band::domain::{InvocationKind, SessionMode};
+use gold_band::domain::{InvocationKind, SessionMode, TurnControlMode};
 use gold_band::prompts::PromptExecutionSurface;
 use gold_band::provider::{
-    ColdFileRef, PromptArtifactRef, PromptAttachmentRef, PromptHiddenSection, PromptOutputContract,
-    PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, StreamMode,
-    UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
+    ColdFileRef, OutputEmissionMode, PromptArtifactRef, PromptAttachmentRef, PromptHiddenSection,
+    PromptOutputContract, PromptPredecessorContext, PromptRuntimeContext, PromptVisibility,
+    StreamMode, UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
 };
 
 fn runtime_context() -> PromptRuntimeContext {
@@ -41,6 +41,8 @@ fn runtime_context() -> PromptRuntimeContext {
 fn invocation() -> WorkerInvocation {
     WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
+        turn_control_mode: TurnControlMode::RuntimeControlled,
+        runtime_control_resume_candidate: false,
         prompt_envelope: gold_band::dsl::PromptEnvelopeMode::RuntimeManaged,
         execution_surface: PromptExecutionSurface::Workflow,
         profile: Some("developer".to_string()),
@@ -60,6 +62,8 @@ fn invocation() -> WorkerInvocation {
             })),
             schema_text: None,
             success_condition: Some("JSON field `$.result` equals `true`".to_string()),
+            finalize_context: None,
+            emission_mode: OutputEmissionMode::PostTurnProjection,
         }),
         runtime_context: runtime_context(),
         predecessors: vec![PromptPredecessorContext {
@@ -354,7 +358,7 @@ fn render_prompt_bundle_renders_enabled_profile_for_workflow_surface() {
 }
 
 #[test]
-fn render_prompt_bundle_renders_enabled_profile_for_ai_dynamic_surface() {
+fn render_prompt_bundle_defers_dynamic_profile_routing_for_post_turn_projection() {
     let mut req = invocation();
     req.profile_dynamic_template = true;
     req.execution_surface = PromptExecutionSurface::AiDynamic;
@@ -364,8 +368,8 @@ fn render_prompt_bundle_renders_enabled_profile_for_ai_dynamic_surface() {
 
     let prompt = render_prompt_bundle(&req).unwrap();
 
-    assert!(prompt.system_prompt.contains("route-next"));
-    assert!(!prompt.system_prompt.contains("stop-here"));
+    assert!(!prompt.system_prompt.contains("route-next"));
+    assert!(prompt.system_prompt.contains("stop-here"));
 }
 
 #[test]
@@ -380,7 +384,7 @@ fn render_prompt_bundle_rejects_unknown_enabled_profile_template_variables() {
 }
 
 #[test]
-fn render_prompt_bundle_renders_predecessor_chain_and_output_dsl() {
+fn render_prompt_bundle_renders_predecessor_chain_and_defers_output_dsl() {
     let prompt = render_prompt_bundle(&invocation()).unwrap();
 
     assert!(
@@ -394,12 +398,12 @@ fn render_prompt_bundle_renders_predecessor_chain_and_output_dsl() {
     assert!(
         prompt
             .system_prompt
-            .contains("你必须在最后一步按照以下格式输出你的结果")
+            .contains("当前业务执行 turn 不需要输出 canonical artifact")
     );
-    assert!(prompt.system_prompt.contains("\"result\": \"boolean\""));
-    assert!(prompt.system_prompt.contains("\"reason\": \"string\""));
+    assert!(!prompt.system_prompt.contains("\"result\": \"boolean\""));
+    assert!(!prompt.system_prompt.contains("\"reason\": \"string\""));
     assert!(
-        prompt
+        !prompt
             .system_prompt
             .contains("JSON field `$.result` equals `true`")
     );
@@ -423,10 +427,11 @@ fn render_prompt_bundle_workflow_resume_uses_hidden_context_and_goal() {
     assert!(
         prompt
             .system_prompt
-            .contains("你必须在最后一步按照以下格式输出你的结果")
+            .contains("当前业务执行 turn 不需要输出 canonical artifact")
     );
+    assert!(!prompt.system_prompt.contains("\"result\": \"boolean\""));
     assert!(
-        prompt
+        !prompt
             .system_prompt
             .contains("JSON field `$.result` equals `true`")
     );
@@ -480,6 +485,53 @@ fn render_prompt_bundle_user_message_sends_user_text_without_hidden_context() {
     assert!(!prompt.user_prompt.contains("# 目标"));
     assert!(!prompt.user_prompt.contains("# 需求"));
     assert_eq!(prompt.prompt_id.as_deref(), Some("resume-user-001"));
+}
+
+#[test]
+fn render_non_runtime_message_keeps_contract_but_adds_suspension_context() {
+    let mut req = invocation();
+    req.output_contract.as_mut().unwrap().emission_mode = OutputEmissionMode::InlineControl;
+    req.turn_control_mode = TurnControlMode::NonRuntimeControlled;
+    req.session_mode = SessionMode::Continue;
+    req.user_prompt_render_mode = UserPromptRenderMode::UserMessage;
+    req.resume_prompt = Some("先解释一下刚才的选择".to_string());
+    req.extra_hidden_sections = vec![PromptHiddenSection {
+        title: "Gold Band runtime context".to_string(),
+        content: "当前工作流已停止；无需遵循 artifact 契约。".to_string(),
+    }];
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert_eq!(
+        prompt.turn_control_mode,
+        TurnControlMode::NonRuntimeControlled
+    );
+    assert!(
+        prompt
+            .system_prompt
+            .contains("你必须在最后一步按照以下格式输出你的结果")
+    );
+    assert!(prompt.user_prompt.starts_with("先解释一下刚才的选择"));
+    assert!(prompt.user_prompt.contains("Gold Band runtime context"));
+    assert!(prompt.user_prompt.contains("无需遵循 artifact 契约"));
+}
+
+#[test]
+fn render_runtime_resume_is_a_hidden_control_turn() {
+    let mut req = invocation();
+    req.session_mode = SessionMode::Continue;
+    req.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
+    req.resume_prompt = Some("用户已选择继续工作流。".to_string());
+    req.resume_prompt_visibility = PromptVisibility::Hidden;
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert_eq!(prompt.visibility, PromptVisibility::Hidden);
+    assert_eq!(
+        prompt.hidden_reason.as_deref(),
+        Some("runtimeControlResume")
+    );
+    assert!(prompt.user_prompt.contains("用户已选择继续工作流"));
 }
 
 #[test]

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  groupSelectableAgentOptions,
+  normalizeConfigOptionOverrides,
+  validateAutoConfig,
+  validateDirectConfig,
   validateWorkflowTemplateForConversationStart,
   validateWorkflowTemplateForConversationStartWithFreshProfiles,
 } from '../src/lib/run-mode-validation';
@@ -25,13 +29,23 @@ const agentRegistry: AgentRegistryVm = {
     env: [],
     iconKey: 'claude',
     primaryAgentDir: '.claude',
+    projectPrimaryAgentDir: null,
     compatibleAgentDirs: [],
-    supported: true,
+    supportsSystemPrompt: true,
+    externalSessionSyncSupported: false,
+    externalSessionSyncEnabled: false,
     supportedModes: [{ id: 'ask', name: 'Ask' }],
     supportedModels: [],
+    configOptions: [{
+      id: 'thought',
+      name: 'Thought',
+      description: '',
+      category: 'thought_level',
+      options: [{ value: 'high', name: 'High' }],
+    }],
     diagnostic: { status: 'ok', available: true, reason: null, checkedAt: '' },
   }],
-  supportedTypes: [],
+  catalog: [],
 };
 
 const profiles: ProfileVm[] = [{
@@ -62,8 +76,7 @@ const workflowTemplates: WorkflowTemplateStore = {
       nodes: [{
         id: 'ai-dynamic1',
         type: 'ai-dynamic',
-        agentStrategy: { mode: 'fixed', provider: 'claude-acp' },
-        permission_mode: 'full_access',
+        agentStrategy: { mode: 'fixed', provider: 'claude-acp', permissionMode: 'full_access' },
         allowedProfiles: [],
         allowedWorkflows: [],
         control: {
@@ -83,6 +96,62 @@ const workflowTemplates: WorkflowTemplateStore = {
 };
 
 describe('run mode validation', () => {
+  it('groups selectable Agents ahead of unavailable Agents while preserving catalog order', () => {
+    const agents = [
+      { agent: { ...agentRegistry.agents[0], agentType: 'unavailable-first' }, selectable: false, reason: 'Authentication required' },
+      { agent: { ...agentRegistry.agents[0], agentType: 'ready-first' }, selectable: true },
+      { agent: { ...agentRegistry.agents[0], agentType: 'unavailable-last' }, selectable: false, reason: 'Not installed' },
+      { agent: { ...agentRegistry.agents[0], agentType: 'ready-last' }, selectable: true },
+    ];
+
+    expect(groupSelectableAgentOptions(agents)).toMatchObject({
+      selectable: [
+        { agent: { agentType: 'ready-first' } },
+        { agent: { agentType: 'ready-last' } },
+      ],
+      unavailable: [
+        { agent: { agentType: 'unavailable-first' } },
+        { agent: { agentType: 'unavailable-last' } },
+      ],
+    });
+  });
+
+  it('normalizes stale config overrides without mutating the input', () => {
+    const overrides = { thought: 'high', removed: 'legacy' };
+    const snapshot = { ...overrides };
+    const normalized = normalizeConfigOptionOverrides(agentRegistry.agents[0], overrides);
+
+    expect(normalized).toEqual({
+      configOptions: { thought: 'high' },
+      removedOptionIds: ['removed'],
+    });
+    expect(overrides).toEqual(snapshot);
+  });
+
+  it('direct and auto validation tolerate stale overrides without mutation', () => {
+    const direct = { agentType: 'claude-acp', configOptions: { removed: 'legacy' } };
+    const auto = { agentType: 'claude-acp', configOptions: { removed: 'legacy' } };
+    const directSnapshot = structuredClone(direct);
+    const autoSnapshot = structuredClone(auto);
+
+    expect(validateDirectConfig(direct, agentRegistry, t)).toEqual([]);
+    expect(validateAutoConfig(auto, agentRegistry, null, t)).toEqual([]);
+    expect(direct).toEqual(directSnapshot);
+    expect(auto).toEqual(autoSnapshot);
+  });
+
+  it('allows dynamic agents to use the provider default model', () => {
+    const issues = validateAutoConfig({
+      agentStrategy: 'dynamic',
+      agentType: 'claude-acp',
+      bootstrapAgentType: 'claude-acp',
+      availableAgents: [{ provider: 'claude-acp' }],
+      routingPrompt: '',
+    }, agentRegistry, null, t);
+
+    expect(issues).toEqual([]);
+  });
+
   it('blocks invalid workflow templates before starting quick conversation', () => {
     const issues = validateWorkflowTemplateForConversationStart(
       'invalid-template',

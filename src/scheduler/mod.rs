@@ -624,11 +624,11 @@ fn next_cron_occurrence(
 
 #[cfg(test)]
 mod tests {
-    use super::{LocalTimeDisambiguation, RepeatPreset, ScheduleKind};
     use super::{
         EverySpec, OverlapPolicy, ScheduleError, ScheduleSpec, ScheduledTaskContentSnapshot,
         ScheduledTaskDefinition, system_timezone,
     };
+    use super::{LocalTimeDisambiguation, RepeatPreset, ScheduleKind};
     use chrono::{Duration, TimeZone, Utc, Weekday};
 
     #[test]

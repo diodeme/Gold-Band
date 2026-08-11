@@ -11,7 +11,6 @@ interface ConversationRunHeaderProps {
   onRerun: () => void;
   onEditWorkflow: () => void;
   onViewWorkflow: () => void;
-  onOpenInFileManager?: () => void;
   onToggleSessionSwitcher: () => void;
   sessionSwitcherOpen: boolean;
   selectedSessionLeaf?: ConversationSessionLeafVm | null;
@@ -25,7 +24,6 @@ export function ConversationRunHeader({
   onRerun,
   onEditWorkflow,
   onViewWorkflow,
-  onOpenInFileManager,
   onToggleSessionSwitcher,
   sessionSwitcherOpen,
   selectedSessionLeaf,
@@ -80,7 +78,7 @@ export function ConversationRunHeader({
           {canViewWorkflow ? (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="size-5.5" onClick={onViewWorkflow}>
+                <Button variant="ghost" size="icon" className="size-5.5" aria-label={t('conversation.runtime.viewWorkflow')} onClick={onViewWorkflow}>
                   <Eye className="size-3.5" />
                 </Button>
               </TooltipTrigger>
@@ -91,7 +89,7 @@ export function ConversationRunHeader({
           {canEditWorkflow ? (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="size-5.5" onClick={onEditWorkflow}>
+                <Button variant="ghost" size="icon" className="size-5.5" aria-label={t('conversation.runtime.editWorkflow')} onClick={onEditWorkflow}>
                   <Workflow className="size-3.5" />
                 </Button>
               </TooltipTrigger>
@@ -101,7 +99,7 @@ export function ConversationRunHeader({
 
           {!isDirect ? <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="size-5.5" onClick={onRerun}>
+              <Button variant="ghost" size="icon" className="size-5.5" aria-label={isRunning ? t('conversation.runtime.rerunConfirmAction') : t('conversation.runtime.rerun')} onClick={onRerun}>
                 <RotateCcw className="size-3.5" />
               </Button>
             </TooltipTrigger>
@@ -110,22 +108,6 @@ export function ConversationRunHeader({
             </TooltipContent>
           </Tooltip> : null}
 
-          {onOpenInFileManager ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-5.5"
-                  aria-label={t('conversation.runtime.openInFileManager')}
-                  onClick={onOpenInFileManager}
-                >
-                  <FolderOpen className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{t('conversation.runtime.openInFileManager')}</TooltipContent>
-            </Tooltip>
-          ) : null}
         </div>
       </div>
     </div>

@@ -26,9 +26,9 @@ describe('conversation run mode config text fields', () => {
     expect(canOpenRunModeManagement('workflow')).toBe(true);
     expect(canOpenRunModeManagement('auto')).toBe(true);
   });
-  it('uses default AUTO when a workspace has no saved run mode', () => {
-    expect(conversationRunModeOrDefault(null)).toEqual({ mode: 'auto' });
-    expect(conversationRunModeOrDefault(undefined)).toEqual({ mode: 'auto' });
+  it('uses default Direct when a workspace has no saved run mode', () => {
+    expect(conversationRunModeOrDefault(null)).toEqual({ mode: 'direct' });
+    expect(conversationRunModeOrDefault(undefined)).toEqual({ mode: 'direct' });
   });
 
   it('preserves in-progress spaces while editing session config', () => {
@@ -86,6 +86,47 @@ describe('conversation run mode config text fields', () => {
         agentType: 'claude-acp',
         modelId: 'sonnet',
       },
+    });
+  });
+
+  it('preserves the AUTO thought-level override at the submit boundary', () => {
+    expect(normalizeConversationAutoConfigForSubmit({
+      agentStrategy: 'fixed',
+      agentType: 'claude-acp',
+      modelId: 'sonnet',
+      configOptions: { reasoning_effort: 'high', blank: '   ' },
+    })).toEqual({
+      agentStrategy: 'fixed',
+      agentType: 'claude-acp',
+      modelId: 'sonnet',
+      configOptions: { reasoning_effort: 'high' },
+    });
+  });
+
+  it('normalizes role-scoped dynamic AUTO thought-level overrides', () => {
+    expect(normalizeConversationAutoConfigForSubmit({
+      agentStrategy: 'dynamic',
+      agentType: 'claude-acp',
+      bootstrapAgentType: 'claude-acp',
+      permissionMode: ' acceptEdits ',
+      bootstrapConfigOptions: { reasoning_effort: 'high', blank: ' ' },
+      acceptanceConfigOptions: { reasoning_effort: 'medium' },
+      availableAgents: [{
+        provider: 'claude-acp',
+        model: 'sonnet',
+        permissionMode: ' bypassPermissions ',
+        configOptions: { reasoning_effort: 'low', blank: '' },
+      }],
+    })).toMatchObject({
+      permissionMode: 'acceptEdits',
+      bootstrapConfigOptions: { reasoning_effort: 'high' },
+      acceptanceConfigOptions: { reasoning_effort: 'medium' },
+      availableAgents: [{
+        provider: 'claude-acp',
+        model: 'sonnet',
+        permissionMode: 'bypassPermissions',
+        configOptions: { reasoning_effort: 'low' },
+      }],
     });
   });
 
@@ -149,7 +190,7 @@ describe('conversation run mode config text fields', () => {
       conversationRunModeForWorkspace(modes, 'workspace-b'),
       'claude-acp',
     )).toEqual(workspaceB.directConfig);
-    expect(conversationRunModeForWorkspace(modes, 'workspace-missing')).toEqual({ mode: 'auto' });
+    expect(conversationRunModeForWorkspace(modes, 'workspace-missing')).toEqual({ mode: 'direct' });
   });
 
   it('keeps existing Workflow and AUTO memories isolated when another workspace uses Direct', () => {

@@ -11,6 +11,7 @@ pub const PROFILE_TEST_ZH_CN: &str = include_str!("prompts/zh-CN/profile/test.md
 pub const PROFILE_ACCEPT_ZH_CN: &str = include_str!("prompts/zh-CN/profile/accept.md");
 pub const PROFILE_CLEAN_ZH_CN: &str = include_str!("prompts/zh-CN/profile/clean.md");
 pub const PROFILE_INTERVIEW_ZH_CN: &str = include_str!("prompts/zh-CN/profile/interview.md");
+pub const PROFILE_GRILLME_ZH_CN: &str = include_str!("prompts/zh-CN/profile/GrillMe.md");
 pub const PROFILE_PLAN_EN: &str = include_str!("prompts/en/profile/plan.md");
 pub const PROFILE_DEV_EN: &str = include_str!("prompts/en/profile/dev.md");
 pub const PROFILE_REVIEW_EN: &str = include_str!("prompts/en/profile/review.md");
@@ -18,6 +19,7 @@ pub const PROFILE_TEST_EN: &str = include_str!("prompts/en/profile/test.md");
 pub const PROFILE_ACCEPT_EN: &str = include_str!("prompts/en/profile/accept.md");
 pub const PROFILE_CLEAN_EN: &str = include_str!("prompts/en/profile/clean.md");
 pub const PROFILE_INTERVIEW_EN: &str = include_str!("prompts/en/profile/interview.md");
+pub const PROFILE_GRILLME_EN: &str = include_str!("prompts/en/profile/GrillMe.md");
 pub const RUNTIME_SYSTEM_ZH_CN: &str = include_str!("prompts/zh-CN/runtime/system.md");
 pub const RUNTIME_SYSTEM_EN: &str = include_str!("prompts/en/runtime/system.md");
 pub const RUNTIME_HIDDEN_CONTEXT_ZH_CN: &str =
@@ -33,6 +35,18 @@ pub const RUNTIME_SCHEDULED_TASK_CONTEXT_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/scheduled_task_context.md");
 pub const RUNTIME_SCHEDULED_TASK_CONTEXT_EN: &str =
     include_str!("prompts/en/runtime/scheduled_task_context.md");
+pub const RUNTIME_ARTIFACT_FINALIZE_ZH_CN: &str =
+    include_str!("prompts/zh-CN/runtime/artifact_finalize.md");
+pub const RUNTIME_ARTIFACT_FINALIZE_EN: &str =
+    include_str!("prompts/en/runtime/artifact_finalize.md");
+pub const RUNTIME_CONTROL_SUSPENDED_ZH_CN: &str =
+    include_str!("prompts/zh-CN/runtime/runtime_control_suspended.md");
+pub const RUNTIME_CONTROL_SUSPENDED_EN: &str =
+    include_str!("prompts/en/runtime/runtime_control_suspended.md");
+pub const RUNTIME_CONTROL_RESUME_ZH_CN: &str =
+    include_str!("prompts/zh-CN/runtime/runtime_control_resume.md");
+pub const RUNTIME_CONTROL_RESUME_EN: &str =
+    include_str!("prompts/en/runtime/runtime_control_resume.md");
 pub const AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/ai-dynamic/proposal_repair.md");
 pub const AI_DYNAMIC_PROPOSAL_REPAIR_EN: &str =

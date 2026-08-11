@@ -1,10 +1,11 @@
 import { Bot, Boxes, ChevronsUpDown, Command, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopUiMode, DesktopWindowFrameStyle, PrimaryModule } from '../types';
+import type { AppConfigVm, ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopUiMode, DesktopWindowFrameStyle, PrimaryModule } from '../types';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { ConversationShell } from '@/components/conversation/ConversationShell';
+import { WorkspaceShell } from '@/components/workspace/WorkspaceShell';
+import type { ConversationWorkspaceStore } from '@/components/workspace/right-workspace-context';
 import { AppTitleBar } from './AppTitleBar';
 import { cn } from '@/lib/utils';
 
@@ -14,8 +15,10 @@ interface ShellProps {
   conversationPage: ConversationPage;
   conversationSidebar: ConversationSidebarVm;
   appName: string;
+  feedbackEnabled?: boolean;
   platform?: DesktopPlatform | null;
   windowFrameStyle?: DesktopWindowFrameStyle;
+  appConfig: AppConfigVm;
   repoRoot?: string;
   needsWorkspace?: boolean;
   showSettingsUpdateDot?: boolean;
@@ -28,7 +31,6 @@ interface ShellProps {
   onConversationSearch: () => void;
   onConversationSelectTask: (projectId: string, taskId: string) => void;
   onConversationSelectRun: (projectId: string, taskId: string, runId: string) => void;
-  conversationRunStopping?: boolean;
   onConversationPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
   onConversationRenameTask: (projectId: string, taskId: string, title: string) => void;
   onConversationDeleteTask: (projectId: string, taskId: string) => void;
@@ -38,16 +40,20 @@ interface ShellProps {
   onConversationAddWorkspace?: () => void;
   onConversationRemoveWorkspace?: (projectId: string) => Promise<void>;
   activeWorkspaceId?: string | null;
+  conversationTaskUuid?: string | null;
+  conversationWorkspaceStore: ConversationWorkspaceStore;
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, platform, windowFrameStyle = 'native-compositor', repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, conversationRunStopping = false, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, children }: ShellProps) {
+export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, conversationTaskUuid, conversationWorkspaceStore, children }: ShellProps) {
   if (uiMode === 'conversation') {
     return (
-      <ConversationShell
+      <WorkspaceShell
         appName={appName}
+        feedbackEnabled={feedbackEnabled}
         platform={platform}
         windowFrameStyle={windowFrameStyle}
+        appConfig={appConfig}
         vm={conversationSidebar}
         active={conversationPage}
         sidebarCollapsed={sidebarCollapsed}
@@ -57,7 +63,6 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
         onSearch={onConversationSearch}
         onSelectTask={onConversationSelectTask}
         onSelectRun={onConversationSelectRun}
-        stoppingRun={conversationRunStopping}
         onPauseRun={onConversationPauseRun}
         onPinTask={onConversationPinTask}
         onUnpinTask={onConversationUnpinTask}
@@ -67,15 +72,18 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
         onAddWorkspace={onConversationAddWorkspace}
         onRemoveWorkspace={onConversationRemoveWorkspace}
         activeWorkspaceId={activeWorkspaceId}
+        conversationTaskUuid={conversationTaskUuid}
+        conversationWorkspaceStore={conversationWorkspaceStore}
       >
         {children}
-      </ConversationShell>
+      </WorkspaceShell>
     );
   }
   return (
     <WorkbenchShell
       active={active}
       appName={appName}
+      feedbackEnabled={feedbackEnabled}
       platform={platform}
       windowFrameStyle={windowFrameStyle}
       repoRoot={repoRoot}
@@ -96,6 +104,7 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
 interface WorkbenchShellProps {
   active: PrimaryModule;
   appName: string;
+  feedbackEnabled?: boolean;
   platform?: DesktopPlatform | null;
   windowFrameStyle: DesktopWindowFrameStyle;
   repoRoot?: string;
@@ -108,7 +117,7 @@ interface WorkbenchShellProps {
   children: React.ReactNode;
 }
 
-function WorkbenchShell({ active, appName, platform, windowFrameStyle, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar }: WorkbenchShellProps) {
+function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFrameStyle, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar }: WorkbenchShellProps) {
   const { t } = useTranslation();
   return (
     <TooltipProvider>
@@ -119,6 +128,7 @@ function WorkbenchShell({ active, appName, platform, windowFrameStyle, repoRoot,
       >
         <AppTitleBar
           appName={appName}
+          feedbackEnabled={feedbackEnabled}
           platform={platform}
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={onToggleSidebar}

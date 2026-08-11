@@ -1,9 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const openerMocks = vi.hoisted(() => ({
+  openPath: vi.fn(() => Promise.resolve()),
+  openUrl: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('../../src/api/shared', () => ({
   invokeCommand: vi.fn(() => Promise.resolve({ profiles: [] })),
   toRoundSelectionInput: vi.fn((selection) => selection),
 }));
+vi.mock('@tauri-apps/plugin-opener', () => openerMocks);
 
 import { desktopApi } from '../../src/api/desktop';
 import { invokeCommand } from '../../src/api/shared';
@@ -11,6 +17,13 @@ import { invokeCommand } from '../../src/api/shared';
 describe('desktopApi', () => {
   beforeEach(() => {
     vi.mocked(invokeCommand).mockClear();
+    openerMocks.openUrl.mockClear();
+  });
+
+  it('opens Markdown web targets with the desktop URL opener', async () => {
+    await desktopApi.openExternalUrl('https://github.com/diodeme/Gold-Band/stargazers');
+
+    expect(openerMocks.openUrl).toHaveBeenCalledWith('https://github.com/diodeme/Gold-Band/stargazers');
   });
 
   it('forwards deleteProfile directly to the Tauri command path', async () => {
@@ -25,6 +38,14 @@ describe('desktopApi', () => {
     await desktopApi.createProfile(input);
 
     expect(invokeCommand).toHaveBeenCalledWith('create_profile', { input });
+  });
+
+  it('forwards profile folder imports through the typed command contract', async () => {
+    await desktopApi.importProfilesFromFolder('D:/roles', true);
+
+    expect(invokeCommand).toHaveBeenCalledWith('import_profiles_from_folder', {
+      input: { folderPath: 'D:/roles', dynamicTemplate: true },
+    });
   });
 
   it('forwards recent workspace removal to the Tauri command path', async () => {
@@ -101,6 +122,36 @@ describe('desktopApi', () => {
     expect(invokeCommand).toHaveBeenCalledWith('run_scheduled_task_now', {
       projectId: 'project-1',
       scheduledTaskId: 'scheduled-1',
+    });
+  });
+
+  it('queries a captured turn change set with the complete branch locator', async () => {
+    const locator = {
+      projectId: 'project-1', taskId: 'task-1', runId: 'run-1', roundId: 'round-1',
+      nodeId: 'node-1', attemptId: 'attempt-1', outerNodeId: 'dynamic-1',
+      outerAttemptId: 'dynamic-attempt-1', branchId: 'agent-1',
+    };
+
+    await desktopApi.getTurnFileChangeSet(locator, 'change-set-1');
+
+    expect(invokeCommand).toHaveBeenCalledWith('get_turn_file_change_set', {
+      ...locator,
+      changeSetId: 'change-set-1',
+    });
+  });
+
+  it('queries a historical comparison by change-set and change identity', async () => {
+    const locator = {
+      projectId: 'project-1', taskId: 'task-1', runId: 'run-1', roundId: 'round-1',
+      nodeId: 'node-1', attemptId: 'attempt-1', branchId: 'root',
+    };
+
+    await desktopApi.getFileComparison(locator, 'change-set-1', 'change-1');
+
+    expect(invokeCommand).toHaveBeenCalledWith('get_file_comparison', {
+      ...locator,
+      changeSetId: 'change-set-1',
+      changeId: 'change-1',
     });
   });
 });

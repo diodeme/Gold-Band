@@ -33,4 +33,18 @@ describe('ACP single config menu', () => {
     expect(markup).toContain('Full access');
     expect(markup).toContain('shadow-none');
   });
+
+  it('accepts a layout-owned trigger class without replacing shared trigger styles', () => {
+    const markup = renderToStaticMarkup(createElement(AcpSingleConfigMenu, {
+      label: '权限',
+      value: null,
+      options: [],
+      unspecifiedLabel: '不指定',
+      onValueChange: () => {},
+      triggerClassName: 'w-full max-w-none',
+    }));
+
+    expect(markup).toContain('w-full max-w-none');
+    expect(markup).toContain('rounded-full');
+  });
 });

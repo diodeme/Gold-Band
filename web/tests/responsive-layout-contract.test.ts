@@ -3,8 +3,14 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
+
 const composerSource = readFileSync(
   fileURLToPath(new URL('../src/components/conversation/ConversationComposer.tsx', import.meta.url)),
+  'utf8',
+);
+const stylesSource = readFileSync(
+  fileURLToPath(new URL('../src/styles.css', import.meta.url)),
   'utf8',
 );
 const contextSource = readFileSync(
@@ -27,14 +33,49 @@ const workflowEditorSource = readFileSync(
   fileURLToPath(new URL('../src/components/WorkflowEditor.tsx', import.meta.url)),
   'utf8',
 );
+const acpChatSource = readFileSync(
+  fileURLToPath(new URL('../src/components/acp/ACPChatDialog.tsx', import.meta.url)),
+  'utf8',
+);
 
 describe('responsive desktop layout contracts', () => {
-  it('lets the composer toolbar wrap its leading and trailing control groups', () => {
+  it('uses explicit container-query rows for the narrow composer toolbar', () => {
     expect(composerSource).toContain('data-slot="conversation-composer-toolbar"');
-    expect(composerSource).toContain('flex flex-wrap items-center gap-3');
-    expect(composerSource).toContain('basis-[15rem] flex-wrap');
-    expect(composerSource).toContain('basis-[22rem] flex-wrap');
-    expect(composerSource).not.toContain('h-8 w-[150px] rounded-full');
+    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName');
+    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.trailingActionsClassName');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName).toContain('@container/conversation-composer');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('grid grid-cols-1');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('@2xl/conversation-composer:grid-cols-');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('@2xl/conversation-composer:grid-cols-[minmax(12rem,0.75fr)_minmax(28rem,1.25fr)]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.trailingActionsClassName).toContain('@sm/conversation-composer:grid-cols-2');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.trailingActionsClassName).toContain('@lg/conversation-composer:grid-cols-');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configTriggerClassName).toBe('w-full max-w-none');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName).toContain('w-full');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName).toContain('@lg/conversation-composer:w-auto');
+    expect(composerSource).not.toContain('basis-[15rem]');
+    expect(composerSource).not.toContain('basis-[22rem]');
+  });
+
+  it('stacks run-mode and Agent controls before their composer container is wide enough', () => {
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.optionSectionClassName).toContain('flex-col');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.optionSectionClassName).toContain('@sm/conversation-composer:flex-row');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.optionTabsListClassName).toContain('w-full');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).toContain('flex-col');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).toContain('@sm/conversation-composer:flex-row');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).toContain('px-4 py-1');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).not.toContain('px-4 py-3');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('overflow-x-auto');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('overflow-y-hidden');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('gold-scrollbar-hidden');
+    expect(stylesSource).toContain('.gold-scrollbar-hidden {');
+    expect(stylesSource).toContain('scrollbar-width: none;');
+    expect(stylesSource).toContain('.gold-scrollbar-hidden::-webkit-scrollbar {');
+    expect(stylesSource).toContain('display: none;');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('py-1');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('@sm/conversation-composer:flex-1');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsListClassName).toContain('w-max');
+    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName');
+    expect(composerSource).not.toContain('className="min-w-0 overflow-x-auto"');
   });
 
   it('uses profile-list container width and wrapping card actions instead of viewport-only fixed rows', () => {
@@ -65,5 +106,12 @@ describe('responsive desktop layout contracts', () => {
     expect(workflowEditorSource).toContain('@container/workflow-editor');
     expect(workflowEditorSource).toContain('@5xl/workflow-editor:grid-cols-[minmax(0,1fr)_340px]');
     expect(workflowEditorSource).toContain('max-w-[calc(100%-1.5rem)] flex-wrap');
+  });
+
+  it('keeps raw frame search separate while filters wrap horizontally inside the workspace width', () => {
+    expect(acpChatSource).toContain('data-raw-frame-filters="true"');
+    expect(acpChatSource).toContain('flex min-w-0 flex-wrap items-center gap-2');
+    expect(acpChatSource).toContain('h-9 w-44 max-w-full');
+    expect(acpChatSource).not.toContain('@3xl/raw-frame:flex-row');
   });
 });

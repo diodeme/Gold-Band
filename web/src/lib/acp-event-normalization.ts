@@ -18,8 +18,6 @@ export function normalizeAcpEventForAttempt(event: AcpUiEventVm, attemptId: stri
   const scope = rawObject(raw?.goldBandScope);
   const originalId = stringValue(scope?.originalId) ?? unscopedAcpId(event.id, attemptId);
   const originalToolCallId = stringValue(scope?.originalToolCallId) ?? (event.toolCallId ? unscopedAcpId(event.toolCallId, attemptId) : null);
-  const parentId = parentToolUseIdFromRaw(raw);
-  const originalParentToolUseId = stringValue(scope?.originalParentToolUseId) ?? (parentId ? unscopedAcpId(parentId, attemptId) : null);
   const originalSeq = numberValue(scope?.originalSeq) ?? event.seq;
 
   return {
@@ -32,9 +30,8 @@ export function normalizeAcpEventForAttempt(event: AcpUiEventVm, attemptId: stri
       attemptId,
       originalId,
       originalToolCallId,
-      originalParentToolUseId,
       originalSeq,
-    }, originalParentToolUseId),
+    }),
   };
 }
 
@@ -61,29 +58,12 @@ export function isAcpAttemptSeparator(event: AcpUiEventVm) {
   return scope?.separator === true;
 }
 
-function normalizeAcpRaw(value: unknown, attemptId: string, scope: RawObject, originalParentToolUseId?: string | null) {
+function normalizeAcpRaw(value: unknown, attemptId: string, scope: RawObject) {
   const rawValue = rawObject(value);
   const raw: RawObject = rawValue ? { ...rawValue } : { value };
   raw.attemptId = attemptId;
   raw.goldBandScope = scope;
-  if (originalParentToolUseId) raw._meta = normalizeMeta(raw._meta, attemptId, originalParentToolUseId);
   return raw;
-}
-
-function normalizeMeta(value: unknown, attemptId: string, originalParentToolUseId: string) {
-  const metaValue = rawObject(value);
-  const meta: RawObject = metaValue ? { ...metaValue } : {};
-  const claudeCodeValue = rawObject(meta.claudeCode);
-  const claudeCode: RawObject = claudeCodeValue ? { ...claudeCodeValue } : {};
-  claudeCode.parentToolUseId = scopeAcpId(attemptId, originalParentToolUseId);
-  meta.claudeCode = claudeCode;
-  return meta;
-}
-
-function parentToolUseIdFromRaw(raw: RawObject | null) {
-  const meta = rawObject(raw?._meta);
-  const claudeCode = rawObject(meta?.claudeCode);
-  return stringValue(claudeCode?.parentToolUseId);
 }
 
 function unscopedAcpId(id: string, attemptId: string) {

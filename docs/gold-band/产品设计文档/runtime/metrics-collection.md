@@ -56,9 +56,11 @@ flowchart LR
 | `execution.started` | 单元真实进入执行 | provider/model、unitKind、startedAt |
 | `execution.completed` | 单元进入不可再运行终态 | outcome、terminalReason、usage、timing |
 | `execution.paused` | runtime 进入 paused | pauseReason、当前 node/unit |
-| `execution.resumed` | paused run 恢复 | previousPauseReason |
-| `intervention.requested` | 需要输入、授权或人工决策 | interventionKind |
+| `execution.resumed` | paused run 恢复 | previousPauseReason、当前 node/unit |
+| `intervention.requested` | 需要输入、授权或人工决策 | interventionKind、当前 node/unit |
 | `acceptance.completed` | AUTO acceptance 得到一次结果 | passed、acceptanceAttempt、firstPass |
+
+Workflow/AUTO 的 `execution.paused`、`execution.resumed`、`intervention.requested` 必须携带当前执行节点或 unit 的 `nodeId/attemptId/attemptIndex/roundIndex/roleName`。进程中断恢复时不再重复当前节点的 `execution.started`，只发布 `execution.resumed`。
 
 事件只能在领域状态完成持久化或 ACP turn 已确认终态后发布，避免上报“将要发生”的状态。不再用虚拟开始/结束节点表达 run 边界，也不在客户端预计算全自动交付率等报表结果。
 
@@ -137,11 +139,11 @@ flowchart LR
 
 | 字段 | 适用范围 | 说明 |
 |---|---|---|
-| `nodeId` | Workflow node attempt、AUTO unit attempt | 节点稳定标识，重试不变。Workflow 由 run UUID + round/node 派生；AUTO 为 `DynamicNodeState.uuid` |
-| `attemptId` | Direct turn、Workflow node attempt、AUTO unit attempt | 每次执行尝试唯一。Direct 的 attemptId 等于 executionId；Workflow 使用 NodeState UUID；AUTO 由 nodeId 与本地 attempt 序号派生 |
-| `attemptIndex` | Direct turn、Workflow node attempt、AUTO unit attempt | 同一节点内的尝试序号，从 1 开始；Direct 固定为 1，Workflow/AUTO 真正重试时严格加一 |
-| `roundIndex` | Workflow node attempt | 从 1 开始的 round 序号；用于首轮/后续轮次分析，不上报无统计价值的 round UUID |
-| `roleName` | Workflow node attempt；绑定 profile 的 AUTO unit | 执行开始时 resolved profile 名称快照；只用于展示和分组，不能作为唯一键 |
+| `nodeId` | Workflow node attempt、AUTO unit attempt、Workflow/AUTO run 中间态 | 节点稳定标识，重试不变。Workflow 由 run UUID + round/node 派生；AUTO 为 `DynamicNodeState.uuid` |
+| `attemptId` | Direct turn、Workflow node attempt、AUTO unit attempt、Workflow/AUTO run 中间态 | 每次执行尝试唯一。Direct 的 attemptId 等于 executionId；Workflow 使用 NodeState UUID；AUTO 由 nodeId 与本地 attempt 序号派生 |
+| `attemptIndex` | Direct turn、Workflow node attempt、AUTO unit attempt、Workflow/AUTO run 中间态 | 同一节点内的尝试序号，从 1 开始；Direct 固定为 1，Workflow/AUTO 真正重试时严格加一 |
+| `roundIndex` | Workflow node attempt、AUTO unit attempt、Workflow/AUTO run 中间态 | 从 1 开始的 round 序号；用于首轮/后续轮次分析，不上报无统计价值的 round UUID |
+| `roleName` | Workflow node attempt、AUTO unit attempt、Workflow/AUTO run 中间态 | 执行时节点/unit 的角色或标题快照；只用于展示和分组，不能作为唯一键 |
 | `unitKind` | AUTO unit attempt | `worker/workflow-invocation/merge/acceptance` |
 | `childRunId` | workflow invocation | 被调用 Workflow run UUID |
 
@@ -259,11 +261,11 @@ AUTO `workflow-invocation` 不承接 child Workflow 的 token：child node attem
 
 ### Workflow
 
-run 进入 running 后发布 started；node attempt 在 provider 调用开始和状态持久化完成后分别发布 started/completed，并快照 `roundIndex/roleName`。pause/resume 属于 run 生命周期；最终 success/failure/killed 从稳定 `RunState` 发布。run terminal 从已持久化 round 计算 `roundCount`。
+run 进入 running 后发布 started；node attempt 在 provider 调用开始和状态持久化完成后分别发布 started/completed，并快照 `roundIndex/roleName`。pause/resume 属于 run 生命周期，paused/resumed/intervention.requested 中间态必须携带当前节点的 `nodeId/attemptId/attemptIndex/roundIndex/roleName`；进程中断恢复时只发布 resumed，不重复当前节点 started。最终 success/failure/killed 从稳定 `RunState` 发布。run terminal 从已持久化 round 计算 `roundCount`。
 
 ### AUTO
 
-用户启动 AUTO 后发布 outer run started。dynamic worker、workflow invocation、merge、acceptance 均作为 unit attempt 上报真实 `unitKind`。每次 acceptance 完成额外发布结果，修复后再次验收递增 `acceptanceAttempt`。outer run 发布唯一终态，并用 `failedAttemptId` 定位决定终局的 leaf/unit attempt。
+用户启动 AUTO 后发布 outer run started。dynamic worker、workflow invocation、merge、acceptance 均作为 unit attempt 上报真实 `unitKind`。每次 acceptance 完成额外发布结果，修复后再次验收递增 `acceptanceAttempt`。outer run 发布唯一终态，并用 `failedAttemptId` 定位决定终局的 leaf/unit attempt。AUTO 中间态同样携带当前 unit 的 `nodeId/attemptId/attemptIndex/roundIndex/roleName`。
 
 ## 7. 非阻塞与失败策略
 

@@ -1844,7 +1844,7 @@ fn emit_run_metrics_fact(
     if !app.metrics_collection_enabled() {
         return;
     }
-    let (Some(task_uuid), Some(_run_uuid)) = (run.task_uuid.clone(), run.uuid.clone()) else {
+    let (Some(task_uuid), Some(run_uuid)) = (run.task_uuid.clone(), run.uuid.clone()) else {
         return;
     };
     // Direct conversations own their per-turn lifecycle in the ACP command
@@ -1873,7 +1873,7 @@ fn emit_run_metrics_fact(
             state.record_resume(true, cause);
         }
     });
-    let is_auto = run
+    let current_node_state = run
         .current_round
         .as_deref()
         .zip(run.current_node.as_deref())
@@ -1887,8 +1887,23 @@ fn emit_run_metrics_fact(
                 attempt_id,
             ))
             .ok()
+        });
+    let current_round_index = run
+        .current_round
+        .as_deref()
+        .and_then(|round_id| {
+            read_json::<RoundState>(&app.paths.round_file(&run.task_id, &run.id, round_id)).ok()
         })
+        .map(|round| round.index);
+    let is_auto = current_node_state
+        .as_ref()
         .is_some_and(|node| node.node_type == crate::domain::NodeType::AiDynamic);
+    let is_intermediate = matches!(
+        event_type,
+        super::observability::LifecycleEventType::ExecutionPaused
+            | super::observability::LifecycleEventType::ExecutionResumed
+            | super::observability::LifecycleEventType::InterventionRequested
+    );
     let mut fact = super::observability::MetricsLifecycleFact::new(
         event_type,
         revision,
@@ -1918,6 +1933,31 @@ fn emit_run_metrics_fact(
         };
     fact.intervention_kind = intervention_kind.map(metrics_intervention_kind);
     fact.collection_state_recovered = state.collection_state_recovered;
+    if is_intermediate {
+        if let Some(node) = &current_node_state {
+            fact.round_index = current_round_index;
+            fact.role_name = Some(node_label(node));
+            fact.attempt_index =
+                super::observability::attempt_index_from_local_id(&node.attempt_id);
+            if is_auto {
+                fact.node_id = node.uuid.clone();
+                fact.attempt_id = node.uuid.as_ref().and_then(|uuid| {
+                    super::observability::derive_attempt_id(uuid, &node.attempt_id)
+                });
+            } else {
+                let logical = current_round_index
+                    .and_then(|round_index| {
+                        super::observability::derive_execution_id(
+                            &run_uuid,
+                            &format!("round:{round_index}:node:{}", node.node_id),
+                        )
+                    })
+                    .or_else(|| node.uuid.clone());
+                fact.node_id = logical;
+                fact.attempt_id = node.uuid.clone();
+            }
+        }
+    }
     if let Some(outcome) = outcome {
         fact.outcome = Some(match outcome {
             RunOutcome::Success => super::observability::ExecutionOutcome::Success,
@@ -10354,8 +10394,8 @@ fn drive_from_node_with_initial_session(
             );
         }
 
-        // ── Observability: notify node started ──
-        {
+        // ── Observability: notify node started (skip on recovery) ──
+        if previous_pause_reason.is_none() {
             let seq = round
                 .trace
                 .iter()
@@ -10936,6 +10976,125 @@ mod tests {
         state.record_resume(true, cause);
         assert_eq!(state.counters.resume_count, 2);
         assert_eq!(state.counters.manual_continue_count, 1);
+    }
+
+    #[test]
+    fn run_intermediate_metrics_carry_current_workflow_node_context() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let bus = crate::app::observability::RuntimeLifecycleBus::new();
+        let app = App::new(repo_root)
+            .with_metrics_collection_enabled(true)
+            .with_lifecycle_bus(bus.clone());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_handler = seen.clone();
+        bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::MetricsFact(fact) = event {
+                seen_for_handler.lock().unwrap().push(fact);
+            }
+        }));
+        let task_id = "task-001";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let started_at = "2026-08-11T00:00:00Z".to_string();
+        let task_uuid = generate_uuid();
+        let run_uuid = generate_uuid();
+        let node_uuid = generate_uuid();
+        let run = RunState {
+            version: crate::domain::VERSION.into(),
+            id: run_id.into(),
+            task_id: task_id.into(),
+            task_uuid: Some(task_uuid),
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: started_at.clone(),
+            updated_at: started_at.clone(),
+            workflow_snapshot: "workflow.snapshot.json".into(),
+            current_round: Some(round_id.into()),
+            current_node: Some("plan".into()),
+            current_attempt: Some("attempt-001".into()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::WaitingForUserInput),
+            uuid: Some(run_uuid.clone()),
+            last_executed_node: None,
+        };
+        let round = RoundState {
+            version: crate::domain::VERSION.into(),
+            id: round_id.into(),
+            run_id: run_id.into(),
+            index: 1,
+            status: RunStatus::Running,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: started_at.clone(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let mut node = NodeState {
+            version: crate::domain::VERSION.into(),
+            node_id: "plan".into(),
+            node_type: crate::domain::NodeType::Worker,
+            run_id: run_id.into(),
+            round_id: round_id.into(),
+            attempt_id: "attempt-001".into(),
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: started_at.clone(),
+            finished_at: None,
+            manual_check_pending: false,
+            resolved_config: Default::default(),
+            uuid: Some(node_uuid.clone()),
+        };
+        node.resolved_config
+            .insert("profileName".into(), serde_json::json!("Planner"));
+        write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
+        write_json(&app.paths.round_file(task_id, run_id, round_id), &round).unwrap();
+        write_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, "plan", "attempt-001"),
+            &node,
+        )
+        .unwrap();
+
+        emit_run_metrics_fact(
+            &app,
+            &run,
+            crate::app::observability::LifecycleEventType::ExecutionPaused,
+            "paused-1".into(),
+            now_rfc3339_like(),
+            Some(PauseReason::WaitingForUserInput),
+            None,
+            None,
+        );
+        emit_run_metrics_fact(
+            &app,
+            &run,
+            crate::app::observability::LifecycleEventType::ExecutionResumed,
+            "resumed-1".into(),
+            now_rfc3339_like(),
+            Some(PauseReason::WaitingForUserInput),
+            None,
+            None,
+        );
+
+        let facts = seen.lock().unwrap();
+        assert_eq!(facts.len(), 2);
+        for fact in facts.iter() {
+            assert_eq!(fact.round_index, Some(1));
+            assert_eq!(fact.attempt_index, Some(1));
+            assert_eq!(fact.attempt_id.as_deref(), Some(node_uuid.as_str()));
+            assert_eq!(fact.role_name.as_deref(), Some("Planner"));
+            assert_eq!(
+                fact.node_id.as_deref(),
+                crate::app::observability::derive_execution_id(&run_uuid, "round:1:node:plan")
+                    .as_deref()
+            );
+        }
+        assert_eq!(
+            facts[1].previous_pause_reason,
+            Some(crate::app::observability::MetricsPauseReason::WaitingForUserInput)
+        );
     }
 
     #[test]

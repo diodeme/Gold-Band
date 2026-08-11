@@ -59,6 +59,15 @@ import type {
   ConversationTaskActivityVm,
   WorkflowTemplateStore,
   WorkflowVm,
+  ScheduledTaskEditVm,
+  ScheduledOccurrenceVm,
+  ScheduledTaskDiagnosticsVm,
+  ScheduledNotificationEventVm,
+  ScheduledNativeNotificationInputVm,
+  ScheduledRuntimeSettingsVm,
+  ScheduledRuntimeSettingsInputVm,
+  RunScheduledTaskResultVm,
+  UpdateScheduledTaskInput,
   FeedbackInput,
   FeedbackResult,
   FeedbackArchivePreview,
@@ -130,6 +139,24 @@ export interface ConversationRunStateUpdatedEventVm {
   attemptId: string;
   status: string;
   outcome?: string | null;
+}
+
+export interface ScheduledTaskUpdatedEventVm {
+  projectId: string;
+  scheduledTaskId: string;
+  taskId?: string | null;
+  status: string;
+  task?: import('../types').ScheduledTaskVm | null;
+}
+
+export interface ScheduledOccurrenceUpdatedEventVm {
+  projectId: string;
+  scheduledTaskId: string;
+  occurrenceId: string;
+  status: string;
+  errorCode?: string | null;
+  taskId?: string | null;
+  runId?: string | null;
 }
 
 export interface ConversationPromptSubmitVm {
@@ -235,6 +262,12 @@ export interface RuntimeApi {
   renewAcpSessionLease?(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<number>;
   subscribeAcpSessionUpdates?(listener: (event: AcpSessionUpdatedEventVm) => void): Promise<() => void>;
   subscribeConversationRunStateUpdates?(listener: (event: ConversationRunStateUpdatedEventVm) => void): Promise<() => void>;
+  subscribeScheduledTaskUpdates?(listener: (event: ScheduledTaskUpdatedEventVm) => void): Promise<() => void>;
+  subscribeScheduledOccurrenceUpdates?(listener: (event: ScheduledOccurrenceUpdatedEventVm) => void): Promise<() => void>;
+  subscribeScheduledNotifications?(listener: (event: ScheduledNotificationEventVm) => void): Promise<() => void>;
+  sendScheduledNativeNotification(input: ScheduledNativeNotificationInputVm): Promise<void>;
+  getScheduledRuntimeSettings(): Promise<ScheduledRuntimeSettingsVm>;
+  saveScheduledRuntimeSettings(input: ScheduledRuntimeSettingsInputVm): Promise<ScheduledRuntimeSettingsVm>;
   // 干预通知：OS Toast「查看详情」点击后后端转发导航事件，前端订阅做 deep-link。
   subscribeInterventionNavigate?(listener: (event: InterventionNavigateEventVm) => void): Promise<() => void>;
   subscribeAppExitRequested?(listener: (event: AppExitRequestVm) => void): Promise<() => void>;
@@ -274,6 +307,15 @@ export interface RuntimeApi {
   // ── Conversation UI ──
   saveDesktopUiMode(mode: 'conversation' | 'workbench'): Promise<void>;
   getConversationSidebar(): Promise<ConversationSidebarVm>;
+  listScheduledTasks(projectId?: string | null): Promise<import('../types').ScheduledTaskVm[]>;
+  setScheduledTaskEnabled(projectId: string | null | undefined, scheduledTaskId: string, enabled: boolean): Promise<import('../types').ScheduledTaskVm>;
+  createScheduledTask(input: import('../types').CreateScheduledTaskInput): Promise<import('../types').ScheduledTaskVm>;
+  getScheduledTask(projectId: string, scheduledTaskId: string): Promise<ScheduledTaskEditVm>;
+  updateScheduledTask(input: UpdateScheduledTaskInput): Promise<ScheduledTaskEditVm>;
+  deleteScheduledTask(projectId: string, scheduledTaskId: string): Promise<void>;
+  listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, limit?: number): Promise<ScheduledOccurrenceVm[]>;
+  getScheduledTaskDiagnostics(projectId: string, scheduledTaskId: string): Promise<ScheduledTaskDiagnosticsVm>;
+  runScheduledTaskNow(projectId: string, scheduledTaskId: string): Promise<RunScheduledTaskResultVm>;
   getConversationWorkspaces(): Promise<ConversationWorkspaceVm[]>;
   getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null): Promise<ConversationRunVm>;
   switchConversationSession(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationSessionSwitchVm>;

@@ -31,6 +31,10 @@ pub const RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/invalid_output_repair.md");
 pub const RUNTIME_INVALID_OUTPUT_REPAIR_EN: &str =
     include_str!("prompts/en/runtime/invalid_output_repair.md");
+pub const RUNTIME_SCHEDULED_TASK_CONTEXT_ZH_CN: &str =
+    include_str!("prompts/zh-CN/runtime/scheduled_task_context.md");
+pub const RUNTIME_SCHEDULED_TASK_CONTEXT_EN: &str =
+    include_str!("prompts/en/runtime/scheduled_task_context.md");
 pub const RUNTIME_ARTIFACT_FINALIZE_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/artifact_finalize.md");
 pub const RUNTIME_ARTIFACT_FINALIZE_EN: &str =

@@ -187,3 +187,12 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 ## 7. 一句话总结
 
 > 当前设置页只解决“我想用什么主题、字体和语言”，不承载任务编排、provider 配置或 workflow 编辑能力。
+
+## 9. 定时任务运行设置
+
+- 设置页是定时任务全局运行设置的唯一可见入口，通过 `get_scheduled_runtime_settings` / `save_scheduled_runtime_settings` 统一管理保持唤醒、完成通知和 occurrence 保留天数；保留范围固定为 `1..=3650` 天，越界返回 `SCHEDULED_VALIDATION_FAILED` 及结构化 `field/minimum/maximum/actual` 参数。
+- 保持唤醒同时展示用户启用值与系统实际生效值。只有用户开启、至少一个 job 为 enabled 且应用仍在运行时才生效；平台获取失败展示 `SCHEDULED_POWER_INHIBITOR_FAILED`，但不改变任务调度与 occurrence 结果。
+- Windows、macOS 和 Linux 使用 `keepawake 0.6.0` 的统一进程级 guard；Windows 走 System Power API，macOS 走 IOKit，Linux 走系统 inhibit 后端。配置允许显示器休眠，只阻止空闲导致的系统自动睡眠，应用退出时必须释放 guard。
+- macOS 不是后续兼容项，而是 Task 6 的同级目标平台：实现必须保留 `objc2-io-kit`/IOKit 后端与相同的启用、失效、退出释放语义。Windows 开发机无法替代 macOS 编译或真机验证；发布验收需要在 macOS CI 或真机上补充编译和开关 smoke test。
+- occurrence 默认保留 30 天。清理仅删除 SQLite 中过期的 `succeeded/failed/skipped/missed` 行，保留 `attention_required`、非终态和活动 Run 链接；Task、Run、Round、ACP 文件与产物不属于该清理事务。
+- 2026-08-09 起 `ScheduledRuntimeSettings` 只在通用设置页展示；定时任务管理页移除重复入口，但继续由同一命令和状态模型服务设置页，不增加页面级副本。

@@ -27,6 +27,7 @@ import { checkLocalClaude, getMetricsSettings, getSystemFonts, saveMetricsSettin
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
+import { ScheduledRuntimeSettings } from '@/components/scheduled-tasks/ScheduledRuntimeSettings';
 import { AvatarSettings } from '@/components/settings/AvatarSettings';
 
 type ThemeDrawerMode = 'all' | DesktopThemeMode;
@@ -237,6 +238,9 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   <SelectItem value="en">English</SelectItem>
                 </SelectContent>
               </Select>
+            </SettingsSection>
+            <SettingsSection title={t('scheduled.settings.title')} divided>
+              <ScheduledRuntimeSettings />
             </SettingsSection>
           </AppCard>
         </TabsContent>

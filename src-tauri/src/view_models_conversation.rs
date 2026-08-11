@@ -6,6 +6,8 @@ use std::path::Path;
 use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
 
+use gold_band::scheduler::{LocalTimeDisambiguation, RepeatPreset, ScheduleError, ScheduleSpec};
+
 use crate::view_models::{
     AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_status, dynamic_acp_session_status,
     dynamic_runtime_graph_vm, latest_control_failure_vm, round_detail_vm, runtime_display_vm,
@@ -25,6 +27,374 @@ use gold_band::dsl::{
 use gold_band::dynamic::{DynamicGraphState, DynamicRunPhase, DynamicRunStatus};
 use gold_band::runtime::RunState;
 use gold_band::storage::{read_json, write_json};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTaskVm {
+    pub id: String,
+    pub project_id: String,
+    pub workspace_name: String,
+    pub title: String,
+    pub enabled: bool,
+    pub mode: String,
+    pub session_policy: String,
+    pub schedule: gold_band::scheduler::ScheduleSpec,
+    pub next_at: Option<String>,
+    pub status: String,
+    pub last_trigger_at: Option<String>,
+    pub last_trigger_status: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledOccurrenceVm {
+    pub id: String,
+    pub scheduled_task_id: String,
+    pub scheduled_at: String,
+    pub trigger_kind: String,
+    pub status: String,
+    pub attempt: u32,
+    pub error_code: Option<String>,
+    pub error_params: Option<serde_json::Value>,
+    pub task_id: Option<String>,
+    pub run_id: Option<String>,
+    pub round_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+impl ScheduledOccurrenceVm {
+    pub fn from_occurrence(
+        occurrence: &gold_band::scheduler::occurrence::ScheduledOccurrence,
+    ) -> Self {
+        Self {
+            id: occurrence.id.clone(),
+            scheduled_task_id: occurrence.job_id.clone(),
+            scheduled_at: occurrence.scheduled_at.to_rfc3339(),
+            trigger_kind: occurrence.trigger_kind.to_string(),
+            status: occurrence.status.to_string(),
+            attempt: occurrence.attempt,
+            error_code: occurrence.error_code.map(|value| value.to_string()),
+            error_params: occurrence.error_params.clone(),
+            task_id: occurrence.task_id.clone(),
+            run_id: occurrence.run_id.clone(),
+            round_id: occurrence.round_id.clone(),
+            attempt_id: occurrence.attempt_id.clone(),
+            started_at: occurrence.started_at.map(|value| value.to_rfc3339()),
+            finished_at: occurrence.finished_at.map(|value| value.to_rfc3339()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTaskDiagnosticsVm {
+    pub scheduled_task_id: String,
+    pub project_id: String,
+    pub next_at: Option<String>,
+    pub last_status: Option<String>,
+    pub last_error: Option<String>,
+    pub run_count: u64,
+    pub retry_count: u8,
+    pub occurrences: Vec<ScheduledOccurrenceVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledRuntimeSettingsVm {
+    pub keep_awake_enabled: bool,
+    pub keep_awake_effective: bool,
+    pub completion_notifications_enabled: bool,
+    pub enabled_job_count: usize,
+    pub occurrence_retention_days: u16,
+    pub power_error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledRuntimeSettingsInputVm {
+    pub keep_awake_enabled: bool,
+    pub completion_notifications_enabled: bool,
+    pub occurrence_retention_days: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunScheduledTaskResultVm {
+    pub occurrence: ScheduledOccurrenceVm,
+    pub task_id: Option<String>,
+    pub run_id: Option<String>,
+    pub round_id: Option<String>,
+    pub attempt_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateScheduledTaskInputVm {
+    pub project_id: String,
+    pub content: String,
+    pub run_mode: String,
+    pub workflow_template_id: Option<String>,
+    pub include_interview: Option<bool>,
+    pub direct_config: Option<ConversationDirectConfigVm>,
+    pub auto_config: Option<ConversationAutoConfigVm>,
+    pub attachment_paths: Option<Vec<String>>,
+    pub schedule: ScheduledScheduleInputVm,
+    pub overlap_policy: gold_band::scheduler::OverlapPolicy,
+    pub session_policy: Option<gold_band::scheduler::SessionPolicy>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind")]
+#[serde(rename_all_fields = "camelCase")]
+pub enum ScheduledScheduleInputVm {
+    At {
+        local_date: String,
+        local_time: String,
+        timezone: String,
+        disambiguation: LocalTimeDisambiguation,
+    },
+    Repeat {
+        preset: RepeatPreset,
+        hour: u32,
+        minute: u32,
+        timezone: String,
+    },
+    Every {
+        every: ScheduledEveryInputVm,
+        anchor_at: chrono::DateTime<chrono::Utc>,
+        timezone: String,
+    },
+    Cron {
+        expression: String,
+        timezone: String,
+    },
+}
+
+impl ScheduledScheduleInputVm {
+    pub fn try_into_schedule_spec(self) -> Result<ScheduleSpec, ScheduleError> {
+        match self {
+            Self::At {
+                local_date,
+                local_time,
+                timezone,
+                disambiguation,
+            } => ScheduleSpec::at_local(&local_date, &local_time, &timezone, disambiguation),
+            Self::Repeat {
+                preset,
+                hour,
+                minute,
+                timezone,
+            } => ScheduleSpec::repeat(preset, hour, minute, &timezone),
+            Self::Every {
+                every,
+                anchor_at,
+                timezone,
+            } => ScheduleSpec::every_in_timezone(every.value, &every.unit, anchor_at, &timezone),
+            Self::Cron {
+                expression,
+                timezone,
+            } => ScheduleSpec::cron(&expression, &timezone),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledEveryInputVm {
+    pub value: u64,
+    pub unit: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTaskEditVm {
+    pub scheduled_task_id: String,
+    pub project_id: String,
+    pub content: String,
+    pub attachment_names: Vec<String>,
+    pub run_mode: String,
+    pub workflow_template_id: Option<String>,
+    pub include_interview: Option<bool>,
+    pub direct_config: Option<ConversationDirectConfigVm>,
+    pub auto_config: Option<ConversationAutoConfigVm>,
+    pub schedule: gold_band::scheduler::ScheduleSpec,
+    pub overlap_policy: gold_band::scheduler::OverlapPolicy,
+    pub session_policy: gold_band::scheduler::SessionPolicy,
+    pub direct_agent_type: Option<String>,
+    pub expected_updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateScheduledTaskInputVm {
+    pub scheduled_task_id: String,
+    pub project_id: String,
+    pub expected_updated_at: String,
+    pub content: String,
+    pub run_mode: String,
+    pub workflow_template_id: Option<String>,
+    pub include_interview: Option<bool>,
+    pub direct_config: Option<ConversationDirectConfigVm>,
+    pub auto_config: Option<ConversationAutoConfigVm>,
+    pub attachment_paths: Option<Vec<String>>,
+    pub schedule: ScheduledScheduleInputVm,
+    pub overlap_policy: gold_band::scheduler::OverlapPolicy,
+    pub session_policy: gold_band::scheduler::SessionPolicy,
+}
+
+impl ScheduledTaskVm {
+    pub fn from_definition(definition: &gold_band::scheduler::ScheduledTaskDefinition) -> Self {
+        Self::from_definition_in_workspace(definition, &definition.project_id)
+    }
+
+    pub fn from_definition_in_workspace(
+        definition: &gold_band::scheduler::ScheduledTaskDefinition,
+        workspace_name: &str,
+    ) -> Self {
+        Self {
+            id: definition.id.clone(),
+            project_id: definition.project_id.clone(),
+            workspace_name: workspace_name.to_string(),
+            title: scheduled_task_title(&definition.instruction),
+            enabled: definition.enabled,
+            mode: serde_json::to_value(definition.mode)
+                .ok()
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                .unwrap_or_default(),
+            session_policy: serde_json::to_value(definition.session_policy)
+                .ok()
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                .unwrap_or_default(),
+            schedule: definition.schedule.clone(),
+            next_at: definition
+                .enabled
+                .then(|| {
+                    definition
+                        .schedule
+                        .next_occurrence_after(chrono::Utc::now())
+                })
+                .flatten()
+                .map(|value| value.to_rfc3339()),
+            status: scheduled_task_status(definition),
+            last_trigger_at: definition.last_trigger_at.map(|value| value.to_rfc3339()),
+            last_trigger_status: definition.last_trigger_status.clone(),
+            created_at: definition.created_at.to_rfc3339(),
+            updated_at: definition.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+impl ScheduledTaskEditVm {
+    pub fn from_definition(definition: &gold_band::scheduler::ScheduledTaskDefinition) -> Self {
+        let run_mode = definition
+            .execution_config
+            .get("runMode")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| match definition.mode {
+                gold_band::scheduler::ScheduledMode::Direct => "direct".to_string(),
+                gold_band::scheduler::ScheduledMode::Workflow => "workflow".to_string(),
+                gold_band::scheduler::ScheduledMode::Auto => "auto".to_string(),
+            });
+        let workflow_template_id = definition
+            .execution_config
+            .get("workflowTemplateId")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned);
+        let include_interview = definition
+            .execution_config
+            .get("includeInterview")
+            .and_then(serde_json::Value::as_bool);
+        let direct_config = definition
+            .execution_config
+            .get("directConfig")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok());
+        let auto_config = definition
+            .execution_config
+            .get("autoConfig")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok());
+        Self {
+            scheduled_task_id: definition.id.clone(),
+            project_id: definition.project_id.clone(),
+            content: definition.instruction.clone(),
+            attachment_names: definition.attachment_names.clone(),
+            run_mode,
+            workflow_template_id,
+            include_interview,
+            direct_config,
+            auto_config,
+            schedule: definition.schedule.clone(),
+            overlap_policy: definition.overlap_policy,
+            session_policy: definition.session_policy,
+            direct_agent_type: definition.content_snapshot.direct_agent_id.clone(),
+            expected_updated_at: definition.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+pub fn scheduled_task_vms_from_sources(
+    sources: &[ConversationWorkspaceSource],
+    project_id: Option<&str>,
+) -> anyhow::Result<Vec<ScheduledTaskVm>> {
+    let mut tasks = Vec::new();
+    for source in sources {
+        if project_id.is_some_and(|value| value != source.workspace.project_id) {
+            continue;
+        }
+        let database = gold_band::scheduler::db::ScheduledTaskDatabase::open(
+            source.app.paths.scheduler_db_path(),
+        )?;
+        tasks.extend(
+            database
+                .list_job_definitions_for_project(&source.workspace.project_id)?
+                .iter()
+                .map(|definition| {
+                    ScheduledTaskVm::from_definition_in_workspace(
+                        definition,
+                        &source.workspace.name,
+                    )
+                }),
+        );
+    }
+    tasks.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    Ok(tasks)
+}
+
+pub fn scheduled_task_title(instruction: &str) -> String {
+    let first_line = instruction
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    let normalized = first_line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut title = normalized.chars().take(48).collect::<String>();
+    if normalized.chars().count() > 48 {
+        title.push('…');
+    }
+    title
+}
+
+fn scheduled_task_status(definition: &gold_band::scheduler::ScheduledTaskDefinition) -> String {
+    if !definition.enabled {
+        return "paused".to_string();
+    }
+    if definition.last_trigger_status.as_deref() == Some("failed") {
+        return "failed".to_string();
+    }
+    if definition
+        .schedule
+        .next_occurrence_after(chrono::Utc::now())
+        .is_none()
+    {
+        return "completed".to_string();
+    }
+    "enabled".to_string()
+}
 
 // ── Conversation View Models ──
 
@@ -62,6 +432,7 @@ pub struct ConversationTaskRowVm {
     pub runs: Vec<ConversationRunSummaryVm>,
     pub pinned: bool,
     pub pinned_order: Option<usize>,
+    pub scheduled_task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -133,6 +504,7 @@ pub struct ConversationRunVm {
     pub resumable: bool,
     pub pause_reason: Option<String>,
     pub runtime_error_message: Option<String>,
+    pub scheduled_task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -369,6 +741,101 @@ pub struct ConversationCreateInputVm {
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub attachment_paths: Option<Vec<String>>,
+    #[serde(default)]
+    pub scheduled_task_id: Option<String>,
+    #[serde(default)]
+    pub scheduled_content_fingerprint: Option<String>,
+}
+
+pub fn scheduled_content_snapshot(
+    app: &App,
+    input: &ConversationCreateInputVm,
+) -> anyhow::Result<gold_band::scheduler::ScheduledTaskContentSnapshot> {
+    use gold_band::scheduler::{AutoAuthoringIdentity, ScheduledMode};
+
+    let mode = match input.run_mode.as_str() {
+        "direct" => ScheduledMode::Direct,
+        "workflow" => ScheduledMode::Workflow,
+        "auto" => ScheduledMode::Auto,
+        other => anyhow::bail!("unsupported scheduled task mode: {other}"),
+    };
+    let attachment_hashes = input
+        .attachment_paths
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|path| gold_band::scheduler::fingerprint::attachment_file_hash(Path::new(path)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut snapshot = gold_band::scheduler::ScheduledTaskContentInput::new(
+        mode,
+        input.content.clone(),
+        attachment_hashes,
+        input.project_id.clone(),
+    );
+
+    match mode {
+        ScheduledMode::Direct => {
+            snapshot.direct_agent_id = Some(
+                input
+                    .direct_config
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("direct config is required"))?
+                    .agent_type
+                    .trim()
+                    .to_string(),
+            );
+        }
+        ScheduledMode::Workflow => {
+            let store = app.workflow_templates()?;
+            let template_id = input
+                .workflow_template_id
+                .as_deref()
+                .unwrap_or(DEFAULT_WORKFLOW_TEMPLATE_ID);
+            let mut workflow = store
+                .templates
+                .iter()
+                .find(|template| template.id == template_id)
+                .map(|template| template.workflow.clone())
+                .ok_or_else(|| anyhow::anyhow!("workflow template not found: {template_id}"))?;
+            apply_workflow_interview_preference(
+                template_id,
+                input.include_interview,
+                &mut workflow,
+            )?;
+            snapshot.workflow_authoring = Some(serde_json::to_value(workflow)?);
+        }
+        ScheduledMode::Auto => {
+            let config = input
+                .auto_config
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("auto config is required"))?;
+            let available_agent_types = config
+                .available_agents
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|agent| agent.provider.clone());
+            let allowed_workflow_ids = config
+                .allowed_workflows
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|workflow| workflow.workflow_id.clone());
+            snapshot.auto_authoring = Some(AutoAuthoringIdentity::new(
+                config
+                    .agent_strategy
+                    .clone()
+                    .unwrap_or_else(|| "fixed".to_string()),
+                config.agent_type.clone(),
+                config.bootstrap_agent_type.clone(),
+                available_agent_types,
+                config.global_goal.clone(),
+                allowed_workflow_ids,
+            ));
+        }
+    }
+
+    Ok(snapshot)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -417,6 +884,10 @@ pub(crate) struct ConversationMetadata {
     pub(crate) initial_attachment_names: Option<Vec<String>>,
     pub(crate) created_at: String,
     pub(crate) last_activity_at: Option<String>,
+    #[serde(default)]
+    pub(crate) scheduled_task_id: Option<String>,
+    #[serde(default)]
+    pub(crate) scheduled_content_fingerprint: Option<String>,
 }
 
 fn read_conversation_metadata(app: &App, task_id: &str) -> Option<ConversationMetadata> {
@@ -427,6 +898,11 @@ fn read_conversation_metadata(app: &App, task_id: &str) -> Option<ConversationMe
             .join("conversation.json"),
     )
     .ok()
+}
+
+pub(crate) fn scheduled_content_fingerprint_for_task(app: &App, task_id: &str) -> Option<String> {
+    read_conversation_metadata(app, task_id)
+        .and_then(|metadata| metadata.scheduled_content_fingerprint)
 }
 
 pub(crate) fn conversation_run_mode(app: &App, task_id: &str) -> Option<ConversationRunMode> {
@@ -655,6 +1131,9 @@ pub fn conversation_sidebar_vm_from_sources(
                     runs,
                     pinned,
                     pinned_order: pin_order,
+                    scheduled_task_id: metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.scheduled_task_id.clone()),
                 };
 
                 if pinned {
@@ -2406,6 +2885,9 @@ pub fn conversation_run_vm(
         resumable,
         pause_reason: run.pause_reason.map(|r| enum_label(&r)),
         runtime_error_message,
+        scheduled_task_id: conversation_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.scheduled_task_id.clone()),
     })
 }
 
@@ -2817,10 +3299,49 @@ fn build_direct_workflow(config: &ConversationDirectConfigVm) -> WorkflowDsl {
     }
 }
 
-pub fn create_conversation_run_vm(
+pub struct PreparedConversationTask {
+    task_id: String,
+    task_uuid: Option<String>,
+    title: String,
+    task_dir: camino::Utf8PathBuf,
+    armed: bool,
+}
+
+impl PreparedConversationTask {
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
+
+    pub fn task_uuid(&self) -> Option<&str> {
+        self.task_uuid.as_deref()
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn accept(mut self) -> (String, Option<String>, String) {
+        self.armed = false;
+        (
+            std::mem::take(&mut self.task_id),
+            self.task_uuid.take(),
+            std::mem::take(&mut self.title),
+        )
+    }
+}
+
+impl Drop for PreparedConversationTask {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_dir_all(self.task_dir.as_std_path());
+        }
+    }
+}
+
+pub fn prepare_conversation_task_vm(
     app: &App,
     input: &ConversationCreateInputVm,
-) -> anyhow::Result<ConversationRunVm> {
+) -> anyhow::Result<PreparedConversationTask> {
     let title =
         conversation_auto_title(&input.content, app.config.conversation_auto_title_max_chars);
 
@@ -2873,6 +3394,13 @@ pub fn create_conversation_run_vm(
 
     let task_id = summary.task.id.clone();
     let task_uuid = summary.task.uuid.clone().or_else(|| Some(task_id.clone()));
+    let prepared = PreparedConversationTask {
+        task_id: task_id.clone(),
+        task_uuid,
+        title,
+        task_dir: app.paths.task_dir(&task_id),
+        armed: true,
+    };
 
     // Save conversation metadata
     let authoring_dir = app.paths.task_dir(&task_id).join("authoring");
@@ -2912,6 +3440,8 @@ pub fn create_conversation_run_vm(
         ),
         created_at: created_at.clone(),
         last_activity_at: Some(created_at),
+        scheduled_task_id: input.scheduled_task_id.clone(),
+        scheduled_content_fingerprint: input.scheduled_content_fingerprint.clone(),
     };
     write_json(&authoring_dir.join("conversation.json"), &meta)?;
 
@@ -2923,10 +3453,26 @@ pub fn create_conversation_run_vm(
             let src_path = Path::new(src);
             if let Some(name) = src_path.file_name().and_then(|n| n.to_str()) {
                 let dest = attach_dir.join(name);
-                let _ = fs::copy(src_path, &dest);
+                fs::copy(src_path, &dest)?;
             }
         }
     }
+
+    Ok(prepared)
+}
+
+pub fn create_conversation_task_vm(
+    app: &App,
+    input: &ConversationCreateInputVm,
+) -> anyhow::Result<(String, Option<String>, String)> {
+    Ok(prepare_conversation_task_vm(app, input)?.accept())
+}
+
+pub fn create_conversation_run_vm(
+    app: &App,
+    input: &ConversationCreateInputVm,
+) -> anyhow::Result<ConversationRunVm> {
+    let (task_id, task_uuid, title) = create_conversation_task_vm(app, input)?;
 
     // Start the workflow in the background so the conversation surface can
     // display the session as soon as the first ACP events arrive.
@@ -2969,6 +3515,7 @@ pub fn create_conversation_run_vm(
             resumable: false,
             pause_reason: None,
             runtime_error_message: None,
+            scheduled_task_id: input.scheduled_task_id.clone(),
         })
     })
 }
@@ -3088,6 +3635,7 @@ pub fn rerun_conversation_task_vm(
             resumable: false,
             pause_reason: None,
             runtime_error_message: None,
+            scheduled_task_id: None,
         })
     })
 }
@@ -3133,18 +3681,21 @@ pub fn switch_conversation_session_vm(
 #[cfg(test)]
 mod tests {
     use super::{
-        ConversationAutoConfigVm, ConversationDirectConfigVm, ConversationDynamicAgentRefVm,
-        ConversationRunSummaryVm, ConversationTaskActivityVm, ConversationWorkspaceSource,
-        ConversationWorkspaceVm, PromptActivity, apply_workflow_interview_preference,
-        build_auto_workflow, build_direct_workflow, conversation_attempt_lifecycle_vm,
-        conversation_auto_title, conversation_run_vm, conversation_sidebar_vm_from_sources,
-        conversation_status_from_session, conversation_task_activity, conversation_workspace_vms,
+        ConversationAutoConfigVm, ConversationCreateInputVm, ConversationDirectConfigVm,
+        ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationTaskActivityVm,
+        ConversationWorkspaceSource, ConversationWorkspaceVm, PromptActivity,
+        apply_workflow_interview_preference, build_auto_workflow, build_direct_workflow,
+        conversation_attempt_lifecycle_vm, conversation_auto_title, conversation_run_vm,
+        conversation_sidebar_vm_from_sources, conversation_status_from_session,
+        conversation_task_activity, conversation_workspace_vms, create_conversation_task_vm,
         derive_conversation_attempt_lifecycle, find_leaf_by_key, lifecycle_is_active,
-        switch_conversation_session_vm,
+        scheduled_task_vms_from_sources, switch_conversation_session_vm,
     };
     use camino::{Utf8Path, Utf8PathBuf};
+    use chrono::TimeZone;
     use gold_band::acp::prompt_queue::enqueue_prompt;
     use gold_band::app::{App, CreateTaskInput};
+    use gold_band::config::ConversationRunMode;
     use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, PromptEnvelopeMode};
     use serde_json::json;
 
@@ -4106,6 +4657,57 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_task_materialization_creates_task_without_starting_run() {
+        let app = App::new(temp_repo_root());
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: "run this later".to_string(),
+            run_mode: ConversationRunMode::Direct.as_str().to_string(),
+            workflow_template_id: None,
+            include_interview: None,
+            direct_config: Some(ConversationDirectConfigVm {
+                agent_type: "claude-acp".to_string(),
+                model_id: None,
+                permission_mode: None,
+                config_options: Default::default(),
+            }),
+            auto_config: None,
+            attachment_paths: None,
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+        };
+
+        let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
+        assert!(app.paths.task_file(&task_id).exists());
+        assert!(!app.paths.runs_dir(&task_id).exists());
+    }
+
+    #[test]
+    fn conversation_task_creation_rolls_back_when_attachment_copy_fails() {
+        let app = App::new(temp_repo_root());
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: "task must roll back".to_string(),
+            run_mode: ConversationRunMode::Direct.as_str().to_string(),
+            workflow_template_id: None,
+            include_interview: None,
+            direct_config: Some(ConversationDirectConfigVm {
+                agent_type: "claude-acp".to_string(),
+                model_id: None,
+                permission_mode: None,
+                config_options: Default::default(),
+            }),
+            auto_config: None,
+            attachment_paths: Some(vec![app.paths.repo_root.join("missing.txt").to_string()]),
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+        };
+
+        assert!(create_conversation_task_vm(&app, &input).is_err());
+        assert!(app.task_list().unwrap().is_empty());
+    }
+
+    #[test]
     fn conversation_sidebar_vm_groups_tasks_by_workspace_source() {
         let repo_a = temp_repo_root();
         let repo_b = temp_repo_root();
@@ -4682,6 +5284,13 @@ mod tests {
             "gold-band-conversation-assets-test-{}",
             uuid::Uuid::new_v4()
         ));
+        std::fs::create_dir_all(&root).unwrap();
+        Utf8PathBuf::from_path_buf(root).unwrap()
+    }
+
+    fn short_temp_repo_root() -> Utf8PathBuf {
+        let mut root = std::env::temp_dir();
+        root.push(format!("gb-vm-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         Utf8PathBuf::from_path_buf(root).unwrap()
     }
@@ -5278,6 +5887,111 @@ mod tests {
             }),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn scheduled_task_title_uses_first_instruction_line_and_truncates() {
+        assert_eq!(
+            super::scheduled_task_title("  每天整理日报  \n补充说明"),
+            "每天整理日报"
+        );
+        assert_eq!(super::scheduled_task_title(""), "");
+        assert_eq!(
+            super::scheduled_task_title(&"x".repeat(60)).chars().count(),
+            49
+        );
+    }
+
+    #[test]
+    fn scheduled_task_management_returns_typed_schedule_without_display_labels() {
+        let definition = gold_band::scheduler::ScheduledTaskDefinition::new(
+            "project-a",
+            "scheduled-1",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::repeat(
+                gold_band::scheduler::RepeatPreset::Daily,
+                9,
+                0,
+                "Asia/Shanghai",
+            )
+            .unwrap(),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        let value =
+            serde_json::to_value(super::ScheduledTaskVm::from_definition(&definition)).unwrap();
+        assert_eq!(value["schedule"]["kind"], "Repeat");
+        assert_eq!(value["schedule"]["timezone"], "Asia/Shanghai");
+        assert!(value.get("scheduleLabel").is_none());
+        assert!(value.get("timezoneLabel").is_none());
+        assert!(value.get("lastTriggerLabel").is_none());
+    }
+
+    #[test]
+    fn scheduled_task_management_aggregates_all_workspaces_and_can_filter_one() {
+        let app_a = App::new(short_temp_repo_root());
+        let app_b = App::new(short_temp_repo_root());
+        let definition_a = gold_band::scheduler::ScheduledTaskDefinition::new(
+            "workspace-a",
+            "scheduled-a",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::at(
+                chrono::Utc.with_ymd_and_hms(2026, 8, 1, 1, 0, 0).unwrap(),
+            ),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        let definition_b = gold_band::scheduler::ScheduledTaskDefinition::new(
+            "workspace-b",
+            "scheduled-b",
+            "workflow",
+            gold_band::scheduler::ScheduleSpec::at(
+                chrono::Utc.with_ymd_and_hms(2026, 8, 2, 1, 0, 0).unwrap(),
+            ),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        gold_band::scheduler::db::ScheduledTaskDatabase::open(app_a.paths.scheduler_db_path())
+            .unwrap()
+            .create_job(
+                &definition_a,
+                gold_band::scheduler::db::derived_next_run_at(&definition_a),
+            )
+            .unwrap();
+        gold_band::scheduler::db::ScheduledTaskDatabase::open(app_b.paths.scheduler_db_path())
+            .unwrap()
+            .create_job(
+                &definition_b,
+                gold_band::scheduler::db::derived_next_run_at(&definition_b),
+            )
+            .unwrap();
+        let sources = vec![
+            ConversationWorkspaceSource {
+                workspace: ConversationWorkspaceVm {
+                    project_id: "workspace-a".to_string(),
+                    workspace_path: app_a.paths.repo_root.to_string(),
+                    name: "Workspace A".to_string(),
+                },
+                app: app_a,
+            },
+            ConversationWorkspaceSource {
+                workspace: ConversationWorkspaceVm {
+                    project_id: "workspace-b".to_string(),
+                    workspace_path: app_b.paths.repo_root.to_string(),
+                    name: "Workspace B".to_string(),
+                },
+                app: app_b,
+            },
+        ];
+
+        let all = scheduled_task_vms_from_sources(&sources, None).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].workspace_name, "Workspace A");
+        assert_eq!(all[1].workspace_name, "Workspace B");
+
+        let filtered = scheduled_task_vms_from_sources(&sources, Some("workspace-b")).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "scheduled-b");
     }
 }
 

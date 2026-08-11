@@ -5,6 +5,73 @@ import type { AppErrorVm, DesktopLanguage, WorkflowErrorVm } from "./types";
 const resources = {
   "zh-CN": {
     translation: {
+      scheduled: {
+        unnamed: "未命名定时任务",
+        neverRun: "尚未运行",
+        timezone: { search: "搜索时区", empty: "未找到时区" },
+        units: { minutes: "分钟", hours: "小时" },
+        weekdays: { Mon: "一", Tue: "二", Wed: "三", Thu: "四", Fri: "五", Sat: "六", Sun: "日" },
+        schedule: {
+          at: "单次 {{time}}", every: "每隔 {{count}} {{unit}}", cron: "Cron {{expression}}",
+          hourly: "每小时", daily: "每天 {{time}}", weekdays: "工作日 {{time}}",
+          weekly: "每周 {{weekdays}} {{time}}", weekdaySeparator: "、",
+        },
+        settings: {
+          title: "定时任务", keepAwake: "保持系统唤醒",
+          keepAwakeState: { effective: "已生效，{{count}} 个启用任务", enabledInactive: "已启用，当前未生效", disabled: "未启用" },
+          completionNotifications: "完成通知", completionNotificationsDescription: "任务成功完成时发送系统通知",
+          retention: "历史保留天数", retentionDescription: "保留已结束的执行记录",
+          loadFailed: "无法加载定时任务设置", saveFailed: "无法保存定时任务设置",
+        },
+        status: { enabled: "运行中", paused: "已停用", completed: "已完成", pending: "待执行", running: "执行中", retrying: "重试中", succeeded: "成功", failed: "失败", skipped: "已跳过", missed: "已错过", attention_required: "需要处理" },
+        session: { new: "新会话", continuous: "持续会话" },
+        trigger: { manual: "手动", scheduled: "计划" },
+        management: {
+          title: "定时任务", subtitle: "按计划执行并追踪最近一次运行", create: "创建定时任务", refresh: "刷新定时任务",
+          workspaceFilter: "工作区筛选", allWorkspaces: "全部工作区", statusFilter: "状态筛选", all: "全部", active: "运行中", disabled: "已停用",
+          loading: "正在加载", empty: "暂无符合条件的定时任务", columns: { task: "任务", schedule: "计划", next: "下次执行", recent: "最近运行", enabled: "启用" },
+          completed: "已完成", waiting: "等待下一次执行", taskDisabled: "任务已停用", queueSkipped: "队列保护已跳过本次",
+          more: "更多操作", detail: "查看详情", runNow: "立即执行", edit: "编辑任务", disable: "停用任务", enable: "启用任务", delete: "删除任务",
+          disableAria: "停用定时任务", enableAria: "启用定时任务", deleteTitle: "删除定时任务？", deleteDescription: "删除后不会再按计划执行，已经触发的会话不受影响。", cancel: "取消", confirmDelete: "删除",
+        },
+        detail: {
+          history: "执行历史", back: "返回定时任务", notFound: "未找到此定时任务", loadFailed: "无法加载执行详情", runFailed: "无法启动此定时任务", loading: "正在加载...",
+          starting: "启动中...", runNow: "立即执行", previousStatus: "上轮状态", runs: "执行次数", retries: "重试次数", next: "下次执行",
+          workspace: "工作区", schedule: "计划", timezone: "时区", status: "状态", noHistory: "暂无执行记录", attempt: "第 {{count}} 次", openRun: "打开关联运行", filter: "历史状态", allStatuses: "全部状态",
+        },
+        dialog: {
+          title: "定时任务设置", content: "任务内容", tabs: { at: "单次", repeat: "重复", cron: "Cron" }, date: "日期", time: "时间", frequency: "频率",
+          frequencyOptions: { hourly: "每小时", daily: "每天", weekdays: "工作日", weekly: "每周", every: "每隔" }, weekdaySelect: "星期（可多选）", executionTime: "执行时间", interval: "间隔",
+          nextRun: "下次执行：{{description}} · {{timezone}}", repeatHint: "{{frequency}} 将按当前配置计算下一次执行时间。", hourlyDescription: "整点执行",
+          cronExpression: "Cron 表达式", cronHint: "保存后显示下一次执行时间。", timezone: "时区", queueProtection: "队列保护", queueProtectionDescription: "已有执行未结束时跳过本次",
+          sessionPolicy: "会话方式", directMode: "Direct 模式", cancel: "取消", done: "完成",
+          validation: {
+            invalidDate: "请选择有效日期",
+            invalidTime: "请选择有效时间",
+            invalidTimezone: "请选择有效时区",
+            nonexistentLocalTime: "所选本地时间因夏令时切换而不存在",
+            invalidCron: "请输入有效的六字段 Cron 表达式",
+            emptyWeekdays: "请至少选择一个星期",
+            invalidEvery: "间隔必须是正整数",
+          },
+          disambiguation: {
+            label: "该本地时间出现两次，请选择执行时刻",
+            earlier: "较早（{{offset}}）",
+            later: "较晚（{{offset}}）",
+          },
+        },
+        composer: { create: "创建定时任务", unconfigured: "尚未配置执行计划", repeat: "重复计划", at: "单次计划", creating: "定时任务创建", exit: "退出定时任务创建", configure: "配置定时任务", moreSendOptions: "更多发送选项" },
+        errors: {
+          SCHEDULED_POWER_INHIBITOR_FAILED: "无法阻止系统自动休眠", SCHEDULED_PERMISSION_REQUIRED: "需要权限审批", SCHEDULED_USER_INPUT_REQUIRED: "需要用户输入",
+          SCHEDULED_PREVIOUS_RUN_REQUIRES_ATTENTION: "前序运行需处理", SCHEDULED_QUEUE_BUSY: "队列繁忙已跳过", SCHEDULED_AGENT_UNATTENDED_MODE_UNSUPPORTED: "Agent 不支持无人值守模式", SCHEDULED_EXECUTION_FAILED: "执行失败", SCHEDULED_LEASE_LOST: "执行超时租约丢失",
+        },
+        notifications: {
+          completion: { title: "定时任务已完成", body: "任务已成功完成。" },
+          failed: { title: "定时任务执行失败", body: "错误代码：{{code}}" },
+          attentionRequired: { title: "定时任务需要处理", body: "任务正在等待你的操作。" },
+          missed: { title: "定时任务已错过", body: "应用未运行期间错过 {{count}} 次计划执行。" },
+        },
+      },
       common: {
         taskOrchestration: "任务编排",
         agentManagement: "Agent 管理",
@@ -1810,6 +1877,73 @@ const resources = {
   },
   en: {
     translation: {
+      scheduled: {
+        unnamed: "Unnamed scheduled task",
+        neverRun: "Never run",
+        timezone: { search: "Search timezones", empty: "No timezone found" },
+        units: { minutes: "minutes", hours: "hours" },
+        weekdays: { Mon: "Mon", Tue: "Tue", Wed: "Wed", Thu: "Thu", Fri: "Fri", Sat: "Sat", Sun: "Sun" },
+        schedule: {
+          at: "Once at {{time}}", every: "Every {{count}} {{unit}}", cron: "Cron {{expression}}",
+          hourly: "Hourly", daily: "Daily at {{time}}", weekdays: "Weekdays at {{time}}",
+          weekly: "Every {{weekdays}} at {{time}}", weekdaySeparator: ", ",
+        },
+        settings: {
+          title: "Scheduled tasks", keepAwake: "Keep the system awake",
+          keepAwakeState: { effective: "Active for {{count}} enabled task", effective_other: "Active for {{count}} enabled tasks", enabledInactive: "Enabled, not currently active", disabled: "Disabled" },
+          completionNotifications: "Completion notifications", completionNotificationsDescription: "Send a system notification after a successful run",
+          retention: "History retention", retentionDescription: "Days to retain finished run history",
+          loadFailed: "Unable to load scheduled task settings", saveFailed: "Unable to save scheduled task settings",
+        },
+        status: { enabled: "Running", paused: "Disabled", completed: "Completed", pending: "Pending", running: "Running", retrying: "Retrying", succeeded: "Succeeded", failed: "Failed", skipped: "Skipped", missed: "Missed", attention_required: "Needs attention" },
+        session: { new: "New session", continuous: "Continuous session" },
+        trigger: { manual: "Manual", scheduled: "Scheduled" },
+        management: {
+          title: "Scheduled tasks", subtitle: "Run on schedule and track the latest result", create: "Create scheduled task", refresh: "Refresh scheduled tasks",
+          workspaceFilter: "Workspace filter", allWorkspaces: "All workspaces", statusFilter: "Status filter", all: "All", active: "Running", disabled: "Disabled",
+          loading: "Loading", empty: "No scheduled tasks match these filters", columns: { task: "Task", schedule: "Schedule", next: "Next run", recent: "Latest run", enabled: "Enabled" },
+          completed: "Completed", waiting: "Waiting for the next run", taskDisabled: "Task disabled", queueSkipped: "Skipped by queue protection",
+          more: "More actions", detail: "View details", runNow: "Run now", edit: "Edit task", disable: "Disable task", enable: "Enable task", delete: "Delete task",
+          disableAria: "Disable scheduled task", enableAria: "Enable scheduled task", deleteTitle: "Delete scheduled task?", deleteDescription: "The task will no longer run on schedule. Existing runs are not affected.", cancel: "Cancel", confirmDelete: "Delete",
+        },
+        detail: {
+          history: "Run history", back: "Back to scheduled tasks", notFound: "Scheduled task not found", loadFailed: "Unable to load run details", runFailed: "Unable to start this scheduled task", loading: "Loading...",
+          starting: "Starting...", runNow: "Run now", previousStatus: "Previous status", runs: "Runs", retries: "Retries", next: "Next run",
+          workspace: "Workspace", schedule: "Schedule", timezone: "Timezone", status: "Status", noHistory: "No run history", attempt: "Attempt {{count}}", openRun: "Open linked run", filter: "History status", allStatuses: "All statuses",
+        },
+        dialog: {
+          title: "Scheduled task settings", content: "Task content", tabs: { at: "Once", repeat: "Repeat", cron: "Cron" }, date: "Date", time: "Time", frequency: "Frequency",
+          frequencyOptions: { hourly: "Hourly", daily: "Daily", weekdays: "Weekdays", weekly: "Weekly", every: "Interval" }, weekdaySelect: "Weekdays (select multiple)", executionTime: "Run time", interval: "Interval",
+          nextRun: "Next run: {{description}} · {{timezone}}", repeatHint: "{{frequency}} uses the current settings to calculate the next run.", hourlyDescription: "At the top of every hour",
+          cronExpression: "Cron expression", cronHint: "The next run appears after saving.", timezone: "Timezone", queueProtection: "Queue protection", queueProtectionDescription: "Skip when a previous run has not finished",
+          sessionPolicy: "Session policy", directMode: "Direct mode", cancel: "Cancel", done: "Done",
+          validation: {
+            invalidDate: "Select a valid date",
+            invalidTime: "Select a valid time",
+            invalidTimezone: "Select a valid timezone",
+            nonexistentLocalTime: "This local time does not exist because of a daylight-saving transition",
+            invalidCron: "Enter a valid six-field Cron expression",
+            emptyWeekdays: "Select at least one weekday",
+            invalidEvery: "The interval must be a positive integer",
+          },
+          disambiguation: {
+            label: "This local time occurs twice; choose when to run",
+            earlier: "Earlier ({{offset}})",
+            later: "Later ({{offset}})",
+          },
+        },
+        composer: { create: "Create scheduled task", unconfigured: "No schedule configured", repeat: "Repeating schedule", at: "One-time schedule", creating: "Scheduled task creation", exit: "Exit scheduled task creation", configure: "Configure scheduled task", moreSendOptions: "More send options" },
+        errors: {
+          SCHEDULED_POWER_INHIBITOR_FAILED: "Unable to prevent automatic system sleep", SCHEDULED_PERMISSION_REQUIRED: "Permission approval required", SCHEDULED_USER_INPUT_REQUIRED: "User input required",
+          SCHEDULED_PREVIOUS_RUN_REQUIRES_ATTENTION: "Previous run needs attention", SCHEDULED_QUEUE_BUSY: "Skipped because the queue is busy", SCHEDULED_AGENT_UNATTENDED_MODE_UNSUPPORTED: "Agent does not support unattended mode", SCHEDULED_EXECUTION_FAILED: "Execution failed", SCHEDULED_LEASE_LOST: "Execution lease expired",
+        },
+        notifications: {
+          completion: { title: "Scheduled task completed", body: "The task completed successfully." },
+          failed: { title: "Scheduled task failed", body: "Error code: {{code}}" },
+          attentionRequired: { title: "Scheduled task needs attention", body: "The task is waiting for your action." },
+          missed: { title: "Scheduled runs missed", body: "{{count}} scheduled runs were missed while the app was not running." },
+        },
+      },
       common: {
         taskOrchestration: "Tasks",
         agentManagement: "Agents",
@@ -3693,6 +3827,15 @@ export function displayNodeType(t: TFunction, value?: string | null) {
 
 export function displayAppError(t: TFunction, error: unknown) {
   if (isAppError(error)) {
+    if (error.code === "conversation.validation-failed" && Array.isArray(error.params.codes)) {
+      return error.params.codes
+        .filter((code): code is string => typeof code === "string")
+        .map((code) => {
+          const key = `conversation.validation.${code}`;
+          return t(key, { defaultValue: key });
+        })
+        .join("\n");
+    }
     return t(`errors.${error.code}`, {
       ...error.params,
       defaultValue: t("errors.app.unexpected"),

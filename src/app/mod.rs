@@ -14,6 +14,7 @@ pub use self::notification::{
     direct_conversation_agent_label, make_dedup_key, make_dedup_key_with_suffix,
     make_turn_dedup_key, reason_key,
 };
+pub use self::orchestrator::{AcceptedRun, PreparedRun};
 
 use crate::acp::client as acp_client;
 use crate::acp::commands::AcpCommandItem;
@@ -64,11 +65,12 @@ use std::io::{Read, Seek, SeekFrom};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use self::ids::{generate_uuid, next_task_id, next_workflow_id, now_rfc3339_like};
+use self::ids::{generate_uuid, next_workflow_id, now_rfc3339_like, reserve_next_task_dir};
 use self::orchestrator::{
-    build_dynamic_prompt_bundle, dynamic_state_lock_for, pause_dynamic_leaf_runtime_state,
-    pause_dynamic_leaf_runtime_state_if_active_execution,
-    run_continue as orchestrator_run_continue,
+    build_dynamic_prompt_bundle, dynamic_state_lock_for,
+    launch_prepared_run_background as orchestrator_launch_prepared_run_background,
+    pause_dynamic_leaf_runtime_state, pause_dynamic_leaf_runtime_state_if_active_execution,
+    prepare_run as orchestrator_prepare_run, run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
     run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
     run_start_background as orchestrator_run_start_background,
@@ -82,6 +84,29 @@ pub struct ProviderDoctorProbe {
     pub commands: Vec<AcpCommandItem>,
 }
 use self::profile_resolver::resolve_workflow_profiles;
+
+struct OwnedTaskDirectory {
+    path: Utf8PathBuf,
+    armed: bool,
+}
+
+impl OwnedTaskDirectory {
+    fn new(path: Utf8PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for OwnedTaskDirectory {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_dir_all(self.path.as_std_path());
+        }
+    }
+}
 use self::profiles::{
     DefaultProfileIds, create_profile, delete_profile as delete_profile_file,
     ensure_default_user_profiles, import_profiles_from_folder, list_profiles, show_profile,
@@ -641,6 +666,7 @@ pub enum RuntimeLifecycleEvent {
     RunPaused {
         event_id: String,
         occurred_at: String,
+        scheduled_occurrence_id: Option<String>,
         project_id: String,
         task_id: String,
         run_id: String,
@@ -654,6 +680,7 @@ pub enum RuntimeLifecycleEvent {
     InterventionRequested {
         event_id: String,
         occurred_at: String,
+        scheduled_occurrence_id: Option<String>,
         project_id: String,
         task_id: String,
         run_id: String,
@@ -667,6 +694,7 @@ pub enum RuntimeLifecycleEvent {
     RunCompleted {
         event_id: String,
         occurred_at: String,
+        scheduled_occurrence_id: Option<String>,
         project_id: String,
         task_id: String,
         run_id: String,
@@ -686,6 +714,7 @@ pub enum RuntimeLifecycleEvent {
     AcpTurnFinished {
         event_id: String,
         occurred_at: String,
+        scheduled_occurrence_id: Option<String>,
         project_id: String,
         task_id: String,
         run_id: String,
@@ -701,6 +730,32 @@ pub enum RuntimeLifecycleEvent {
         batch_progress: AcpTurnBatchProgress,
         task_title: Option<String>,
     },
+}
+
+impl RuntimeLifecycleEvent {
+    fn set_scheduled_occurrence_id(&mut self, occurrence_id: Option<String>) {
+        match self {
+            Self::RunPaused {
+                scheduled_occurrence_id,
+                ..
+            }
+            | Self::InterventionRequested {
+                scheduled_occurrence_id,
+                ..
+            }
+            | Self::RunCompleted {
+                scheduled_occurrence_id,
+                ..
+            }
+            | Self::AcpTurnFinished {
+                scheduled_occurrence_id,
+                ..
+            } => {
+                *scheduled_occurrence_id = occurrence_id;
+            }
+            Self::NodeStarted { .. } | Self::NodeCompleted { .. } => {}
+        }
+    }
 }
 
 pub struct App {
@@ -720,6 +775,8 @@ pub struct App {
         Arc<dyn Fn(AcpLiveEventContext, AcpPromptLifecycleEvent) -> Result<()> + Send + Sync>,
     >,
     pub lifecycle_bus: observability::RuntimeLifecycleBus,
+    scheduled_occurrence_id: Option<String>,
+    scheduled_task_context: Option<crate::provider::ScheduledTaskContextInfo>,
 }
 
 fn default_task_search_indexer() -> Arc<dyn Fn(&Utf8Path, &str) + Send + Sync> {
@@ -981,6 +1038,8 @@ impl App {
             acp_session_update: self.acp_session_update.clone(),
             prompt_turn_lifecycle: self.prompt_turn_lifecycle.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
+            scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
+            scheduled_task_context: self.scheduled_task_context.clone(),
         }
     }
 
@@ -1026,6 +1085,8 @@ impl App {
             acp_session_update: self.acp_session_update.clone(),
             prompt_turn_lifecycle: self.prompt_turn_lifecycle.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
+            scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
+            scheduled_task_context: self.scheduled_task_context.clone(),
         }
     }
 
@@ -1059,6 +1120,35 @@ impl App {
 
     pub fn with_lifecycle_bus(mut self, lifecycle_bus: observability::RuntimeLifecycleBus) -> Self {
         self.lifecycle_bus = lifecycle_bus;
+        self
+    }
+
+    pub fn with_scheduled_occurrence_id(mut self, occurrence_id: Option<String>) -> Self {
+        self.scheduled_occurrence_id = occurrence_id;
+        self
+    }
+
+    pub fn scheduled_occurrence_id(&self) -> Option<&str> {
+        self.scheduled_occurrence_id.as_deref()
+    }
+
+    pub fn with_scheduled_task_context(
+        mut self,
+        context: Option<crate::provider::ScheduledTaskContextInfo>,
+    ) -> Self {
+        self.scheduled_task_context = context;
+        self
+    }
+
+    pub fn scheduled_task_context(&self) -> Option<&crate::provider::ScheduledTaskContextInfo> {
+        self.scheduled_task_context.as_ref()
+    }
+
+    /// Convert a scheduler-scoped app clone back to ordinary conversation
+    /// semantics before dispatching a later user-authored prompt turn.
+    pub fn without_scheduled_turn_context(mut self) -> Self {
+        self.scheduled_occurrence_id = None;
+        self.scheduled_task_context = None;
         self
     }
 
@@ -1136,7 +1226,10 @@ impl App {
         Ok(())
     }
 
-    pub fn emit_lifecycle_event(&self, event: RuntimeLifecycleEvent) {
+    pub fn emit_lifecycle_event(&self, mut event: RuntimeLifecycleEvent) {
+        if let Some(occurrence_id) = self.scheduled_occurrence_id.clone() {
+            event.set_scheduled_occurrence_id(Some(occurrence_id));
+        }
         self.lifecycle_bus.emit(event);
     }
 
@@ -1919,6 +2012,8 @@ impl App {
             acp_session_update: None,
             prompt_turn_lifecycle: None,
             lifecycle_bus: observability::RuntimeLifecycleBus::new(),
+            scheduled_occurrence_id: None,
+            scheduled_task_context: None,
         }
     }
 
@@ -1981,7 +2076,8 @@ impl App {
         }
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
 
-        let task_id = next_task_id(&self.paths.tasks_dir())?;
+        let (task_id, task_dir) = reserve_next_task_dir(&self.paths.tasks_dir())?;
+        let mut owned_task_dir = OwnedTaskDirectory::new(task_dir.clone());
         let task = TaskState {
             version: VERSION.to_string(),
             id: task_id.clone(),
@@ -1990,12 +2086,7 @@ impl App {
             uuid: Some(generate_uuid()),
         };
         validate_task_state(&task)?;
-        fs::create_dir_all(
-            self.paths
-                .task_dir(&task_id)
-                .join("authoring")
-                .as_std_path(),
-        )?;
+        fs::create_dir_all(task_dir.join("authoring").as_std_path())?;
         write_json(&self.paths.task_file(&task_id), &task)?;
         fs::write(
             self.paths.requirement_file(&task_id).as_std_path(),
@@ -2004,6 +2095,7 @@ impl App {
         write_json(&self.paths.workflow_file(&task_id), &validated.raw)?;
         self.record_created_task_workflow(validated.raw, input.workflow_template_id)?;
         let summary = self.task_summary(&task_id)?;
+        owned_task_dir.disarm();
         (self.task_search_indexer)(&self.paths.task_dir(&task_id), &task_id);
         Ok(summary)
     }
@@ -3320,6 +3412,22 @@ impl App {
         orchestrator_run_start_background(self, task_id, workflow_override)
     }
 
+    pub fn prepare_run(
+        &self,
+        task_id: &str,
+        workflow_override: Option<&Utf8Path>,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_run(self, task_id, workflow_override)
+    }
+
+    pub fn launch_prepared_run_background(
+        &self,
+        task_id: &str,
+        prepared: AcceptedRun,
+    ) -> Result<RunState> {
+        orchestrator_launch_prepared_run_background(self, task_id, prepared)
+    }
+
     pub fn validate_workflow_node_agent_options(&self, node: &NodeDsl) -> Result<()> {
         let provider_diagnostics = self.provider_diagnostics();
         for (provider, permission_mode) in configured_permission_modes_for_node(node) {
@@ -3712,7 +3820,8 @@ fn is_acp_session_active_status(status: &str) -> bool {
 mod tests {
     use super::{
         AcpLiveEventContext, AcpPromptLifecycleEvent, App, AutoTemplateStore, CreateTaskInput,
-        RuntimeLifecycleEvent, WorkflowTemplate, WorkflowTemplateStore, next_auto_template_id,
+        OwnedTaskDirectory, RuntimeLifecycleEvent, WorkflowTemplate, WorkflowTemplateStore,
+        next_auto_template_id,
     };
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
@@ -4098,10 +4207,60 @@ mod tests {
         assert_eq!(renamed_results[0].task_id, created.task.id);
     }
 
+    #[test]
+    fn prepared_run_drop_removes_only_the_unaccepted_run() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = test_app(repo_root);
+        let mut workflow = worker_workflow(None, None);
+        let NodeDsl::Worker(worker) = &mut workflow.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        worker.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
+        let created = app
+            .create_task_from_requirement(CreateTaskInput {
+                title: Some("Prepared run".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "prepare without launching".to_string(),
+                workflow,
+                workflow_template_id: None,
+            })
+            .unwrap();
+
+        let prepared = app.prepare_run(&created.task.id, None).unwrap();
+        let run_id = prepared.run().id.clone();
+        assert!(app.paths.run_dir(&created.task.id, &run_id).exists());
+
+        drop(prepared);
+
+        assert!(!app.paths.run_dir(&created.task.id, &run_id).exists());
+        assert!(app.paths.task_file(&created.task.id).exists());
+    }
+
+    #[test]
+    fn owned_task_directory_rolls_back_until_disarmed() {
+        let temp = tempdir().unwrap();
+        let rollback_dir = Utf8PathBuf::from_path_buf(temp.path().join("rollback")).unwrap();
+        std::fs::create_dir_all(rollback_dir.as_std_path()).unwrap();
+        drop(OwnedTaskDirectory::new(rollback_dir.clone()));
+        assert!(!rollback_dir.exists());
+
+        let committed_dir = Utf8PathBuf::from_path_buf(temp.path().join("committed")).unwrap();
+        std::fs::create_dir_all(committed_dir.as_std_path()).unwrap();
+        let mut owned = OwnedTaskDirectory::new(committed_dir.clone());
+        owned.disarm();
+        drop(owned);
+        assert!(committed_dir.exists());
+    }
+
     fn sample_run_paused_event() -> RuntimeLifecycleEvent {
         RuntimeLifecycleEvent::RunPaused {
             event_id: "project-1:run-1:round-1:node-1:attempt-1:waiting-for-user-input".to_string(),
             occurred_at: "2026-01-01T00:00:00".to_string(),
+            scheduled_occurrence_id: None,
             project_id: "project-1".to_string(),
             task_id: "task-1".to_string(),
             run_id: "run-1".to_string(),
@@ -4517,6 +4676,74 @@ mod tests {
         let bg = app.clone_for_background();
         bg.emit_lifecycle_event(sample_run_paused_event());
         assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn scheduled_origin_is_injected_into_background_lifecycle_events() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_callback = seen.clone();
+        let app = test_app(repo_root)
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                if let RuntimeLifecycleEvent::RunCompleted {
+                    scheduled_occurrence_id,
+                    ..
+                } = event
+                {
+                    seen_for_callback
+                        .lock()
+                        .unwrap()
+                        .push(scheduled_occurrence_id);
+                }
+            }));
+
+        app.emit_lifecycle_event(RuntimeLifecycleEvent::RunCompleted {
+            event_id: "run-completed".to_string(),
+            occurred_at: "2026-08-03T00:00:00Z".to_string(),
+            scheduled_occurrence_id: None,
+            project_id: "project-001".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "node-001".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            node_label: "node".to_string(),
+            outcome: RunOutcome::Success,
+            task_title: None,
+            completion_agent_label: None,
+        });
+
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[Some("occurrence-001".to_string())]
+        );
+    }
+
+    #[test]
+    fn queued_user_turn_drops_scheduler_occurrence_and_prompt_context() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root)
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_scheduled_task_context(Some(crate::provider::ScheduledTaskContextInfo {
+                title: "Daily review".to_string(),
+                mode: "direct".to_string(),
+                session_policy: "continuous".to_string(),
+                trigger_kind: "cron".to_string(),
+                triggered_at: "2026-08-03T00:00:00Z".to_string(),
+                instruction: Some("Review changes".to_string()),
+            }));
+
+        let ordinary_turn = app.clone_for_background().without_scheduled_turn_context();
+
+        assert_eq!(app.scheduled_occurrence_id(), Some("occurrence-001"));
+        assert!(app.scheduled_task_context().is_some());
+        assert_eq!(ordinary_turn.scheduled_occurrence_id(), None);
+        assert!(ordinary_turn.scheduled_task_context().is_none());
     }
 
     #[test]

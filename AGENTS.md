@@ -40,6 +40,14 @@ system prompt / user prompt 的固定区分标准：
 - AI chat / ACP / agent session UI 优先使用 prompt-kit copy-in 组件。
 - 不要自研消息容器、输入框、工具调用卡片、Markdown 渲染等基础控件；只在项目 i18n、数据映射或样式 token 需要时修改 copy-in 组件。
 
+## UI 交互详细规则
+
+涉及前端 UI、交互、页面布局、弹窗、抽屉、右侧工作区、响应式设计、选择器、按钮状态、导航状态或用户偏好记忆时，开始设计或修改前必须完整读取并遵守：
+
+- `docs/gold-band/rules/ui-interaction.md`
+
+修改上述交互原则时，必须同步维护该规则文件。不得把详细规则复制回本文件形成两份真源。
+
 ## 前端验证规则
 
 - 涉及 UI、交互、页面布局、样式或客户端流程时，必须启动前端并验证。

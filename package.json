@@ -15,6 +15,7 @@
     "build:wb": "node scripts/build-channel.mjs wb",
     "version:sync": "node scripts/sync-version.mjs",
     "release:tag": "node scripts/release-tag.mjs",
+    "test:release-config": "node --test scripts/release-please-config.test.mjs",
     "web:dev": "vite --config web/vite.config.ts --host 127.0.0.1 --port 1420",
     "web:test": "vitest run --config web/vitest.config.ts",
     "test:channel-config": "node --test scripts/channel-config.test.mjs",

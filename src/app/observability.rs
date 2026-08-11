@@ -248,6 +248,12 @@ impl MetricsLifecycleFact {
             self.execution_kind,
             ExecutionKind::Turn | ExecutionKind::Run | ExecutionKind::OuterRun
         );
+        let intermediate = matches!(
+            self.event_type,
+            LifecycleEventType::ExecutionPaused
+                | LifecycleEventType::ExecutionResumed
+                | LifecycleEventType::InterventionRequested
+        );
         if self.counters.is_some() != (terminal && delivery) {
             return Err("counters are required only on delivery terminal events");
         }
@@ -261,7 +267,9 @@ impl MetricsLifecycleFact {
         if attempt && self.attempt_index.is_none_or(|index| index == 0) {
             return Err("attempt execution requires positive attemptIndex");
         }
-        if !attempt && self.attempt_index.is_some() {
+        // Intermediate events (paused/resumed/intervention) on delivery kinds
+        // may carry node context including attemptIndex.
+        if !attempt && !intermediate && self.attempt_index.is_some() {
             return Err("delivery execution must not carry attemptIndex");
         }
         if self.execution_kind == ExecutionKind::Turn
@@ -893,6 +901,47 @@ mod tests {
         assert!(run.validate().is_ok());
         run.usage = Some(TokenUsage::default());
         assert!(run.validate().is_err());
+    }
+
+    #[test]
+    fn lifecycle_contract_allows_node_context_on_intermediate_delivery_events() {
+        // Intermediate events (paused/resumed/intervention) on delivery-level
+        // execution kinds (Run/OuterRun) may carry nodeId/attemptId/attemptIndex/
+        // roundIndex/roleName as node context.
+        let mut paused = MetricsLifecycleFact::new(
+            LifecycleEventType::ExecutionPaused,
+            3,
+            "2026-08-11T19:16:38.000".into(),
+            "user".into(),
+            "workspace".into(),
+            MetricsSessionMode::Workflow,
+            "task-uuid".into(),
+            ExecutionKind::Run,
+            "task-uuid".into(),
+        );
+        paused.pause_reason = Some(MetricsPauseReason::WaitingForUserInput);
+        paused.node_id = Some("node-uuid".into());
+        paused.attempt_id = Some("attempt-uuid".into());
+        paused.attempt_index = Some(1);
+        paused.round_index = Some(1);
+        paused.role_name = Some("Planner".into());
+        assert!(paused.validate().is_ok());
+
+        // Non-intermediate delivery events (started/completed on Run) must still
+        // reject attemptIndex.
+        let mut started = MetricsLifecycleFact::new(
+            LifecycleEventType::ExecutionStarted,
+            1,
+            "2026-08-11T19:16:24.000".into(),
+            "user".into(),
+            "workspace".into(),
+            MetricsSessionMode::Workflow,
+            "task-uuid".into(),
+            ExecutionKind::Run,
+            "task-uuid".into(),
+        );
+        started.attempt_index = Some(1);
+        assert!(started.validate().is_err());
     }
 
     #[test]

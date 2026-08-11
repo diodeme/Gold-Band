@@ -966,3 +966,11 @@ attempt-001/
 - 性能约束：握手使用一次性 channel、无轮询；fixed starting lease 在 Running durable fact 后释放，不跨 Agent turn。失败状态 CAS 复用固定 64 路短锁和 dynamic graph lock，只覆盖小型状态文件写入。
 - workspace 一致性：AI-DYNAMIC 新增持久化 `Executing / PreparingWorkspace` 内部阶段，checkpoint、fork、merge 前准备与 release 继续在 dynamic graph lock 内完成。准备期间 UI 显示“正在准备开发环境…”，用户点击停止后沿用“正在停止…”并等待临界区结束；已创建 worktree 保留，continue 复用原 workspace tree。阶段开始只写 `dynamic-run.json + graph.json`，不重复重写全量分文件，也不新增轮询或 Agent turn。
 - stop boundary：外层 stop 落盘后，任何旧 dynamic execution 的迟到成功结果都不能恢复 Runtime；完整合法 completion 也必须等待用户显式 continue 建立新 execution generation。接口级回归覆盖 phase 持久化、停止 pending、临界区释放后 Paused、workspace 保留与前端 stopping 优先级。
+
+---
+
+## 2026-08-11：状态、生命周期与数据完整性工程规则
+
+- 将历史身份串用、状态回退、恢复丢失、半完成写入和局部坏数据拖垮整体等问题收敛为统一工程规则：稳定身份与完整作用域、canonical state 单一权威、`status/outcome` 分离、异步单调合并、durable/transient 分层、原子幂等写入、局部失败隔离、能力发现和资源信任边界。
+- 根 `AGENTS.md` 只提供强制路由，详细约束由 `docs/gold-band/rules/state-lifecycle-and-data-integrity.md` 作为唯一真源；runtime 总览增加对应边界入口。
+- 新增经验沉淀机制：Bug 或设计修正完成并验证后先判断复用价值并检索现有规则；只有向用户说明原则与收益并获得明确同意后才可写入，规则必须精简、可执行、可验收且不复述具体问题。

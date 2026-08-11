@@ -323,14 +323,14 @@ export function ScheduledTaskDialog({
         {presentation === 'dialog' ? (
           <DialogHeader className="border-b border-border/60 px-5 py-4 text-left">
             <DialogTitle className="flex items-center gap-2 text-base">
-              <AlarmClock className="size-4 text-primary" />
+              <AlarmClock className="size-4 text-foreground" />
               {t('scheduled.dialog.title')}
             </DialogTitle>
           </DialogHeader>
         ) : (
           <header className="border-b border-border/60 px-5 py-4">
             <h2 className="flex items-center gap-2 text-sm font-semibold">
-              <AlarmClock className="size-4 text-primary" />
+              <AlarmClock className="size-4 text-foreground" />
               {t('scheduled.dialog.title')}
             </h2>
           </header>
@@ -436,7 +436,7 @@ export function ScheduledTaskDialog({
                 </label>
               ) : null}
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <CalendarClock className="size-3.5 text-primary" />
+                <CalendarClock className="size-3.5 text-foreground" />
                 {t('scheduled.dialog.nextRun', { description: repeatDescription, timezone })}
               </div>
               <div className="flex items-start gap-2 text-xs text-muted-foreground">
@@ -454,7 +454,7 @@ export function ScheduledTaskDialog({
                 {validationMessage('cron') ? <span className="block text-destructive">{validationMessage('cron')}</span> : null}
               </label>
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <CalendarClock className="size-3.5 text-primary" />
+                <CalendarClock className="size-3.5 text-foreground" />
                 {t('scheduled.dialog.cronHint')}
               </div>
             </div>

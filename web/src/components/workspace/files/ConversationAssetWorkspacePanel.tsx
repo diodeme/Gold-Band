@@ -74,7 +74,7 @@ export function ConversationAssetWorkspacePanel({ resource }: { resource: Conver
   return (
     <section className="flex min-h-0 flex-1 flex-col" data-conversation-asset-workspace={resource.assetKind}>
       <header className="flex h-9 shrink-0 items-center gap-2 border-b border-border/60 px-3 text-xs">
-        <FileText className="size-3.5 text-primary" />
+        <FileText className="size-3.5 text-foreground" />
         <span className="min-w-0 flex-1 truncate font-mono">{content.title || resource.name}</span>
         <span className="text-muted-foreground">{content.kind}</span>
       </header>

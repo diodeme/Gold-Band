@@ -1,7 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { ScheduledTaskManagementPage } from '@/pages/ScheduledTaskManagementPage';
+import { ScheduledTaskManagementPage, scheduledWorkspaceFilterTriggerClassName } from '@/pages/ScheduledTaskManagementPage';
 import i18n from '@/i18n';
 
 describe('ScheduledTaskManagementPage', () => {
@@ -10,8 +10,29 @@ describe('ScheduledTaskManagementPage', () => {
     const html = renderToStaticMarkup(React.createElement(ScheduledTaskManagementPage, { projectId: 'project-a' }));
 
     expect(html).toContain('定时任务');
-    expect(html).toContain('按计划执行并追踪最近一次运行');
+    expect(html).not.toContain('按计划执行并追踪最近一次运行');
     expect(html).toContain('全部工作区');
+  });
+
+  it('keeps the workspace filter width stable while workspace options load', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const source = readFileSync(fileURLToPath(new URL('../src/pages/ScheduledTaskManagementPage.tsx', import.meta.url)), 'utf8');
+
+    expect(scheduledWorkspaceFilterTriggerClassName).toContain('w-28');
+    expect(source).toContain('<Select value={workspaceFilter} onValueChange={setWorkspaceFilter}>');
+    expect(source).toContain('className={scheduledWorkspaceFilterTriggerClassName}');
+    expect(source).toContain("workspaceFilter === 'all' ? t('scheduled.management.allWorkspaces') : workspaceFilter");
+    expect(source).not.toContain('<select');
+  });
+
+  it('uses theme foreground tokens for task row icons', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const source = readFileSync(fileURLToPath(new URL('../src/pages/ScheduledTaskManagementPage.tsx', import.meta.url)), 'utf8');
+
+    expect(source).toContain('bg-foreground/10 text-foreground');
+    expect(source).not.toContain('bg-primary/10 text-primary"><AlarmClock');
   });
 
   it('subscribes to task updates and exposes run-now and edit controls', async () => {
@@ -37,7 +58,10 @@ describe('ScheduledTaskManagementPage', () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const source = readFileSync(fileURLToPath(new URL('../src/pages/ScheduledTaskManagementPage.tsx', import.meta.url)), 'utf8');
-    expect(source).toContain('flex h-full w-full min-w-0 flex-col');
+    expect(source).toContain('<Page flush className="flex flex-col">');
+    expect(source).toContain('<PageHeader');
+    expect(source).toContain('variant="integrated"');
+    expect(source).toContain('min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-4');
     expect(source).toContain('md:grid-cols-[minmax(0,1.35fr)');
     expect(source).toContain('md:hidden');
     expect(source).not.toContain('max-w-6xl');

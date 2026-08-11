@@ -250,7 +250,7 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
       <section className="mt-6" aria-label="Execution history">
         <div className="mb-2 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <ListChecks className="size-4 text-primary" />
+            <ListChecks className="size-4 text-foreground" />
             <h2 className="text-sm font-semibold">{t('scheduled.detail.history')}</h2>
           </div>
           <div className="flex items-center gap-2">

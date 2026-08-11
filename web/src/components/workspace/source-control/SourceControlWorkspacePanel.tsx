@@ -159,7 +159,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
     <section className="flex min-h-0 flex-1 flex-col" data-source-control-workspace="true">
       <header className="shrink-0 border-b border-border/60 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
-          <GitBranch className="size-4 shrink-0 text-primary" />
+          <GitBranch className="size-4 shrink-0 text-foreground" />
           <span className="min-w-0 flex-1 truncate text-sm font-medium">{snapshot.repository.currentBranch ?? t('sourceControl.detached')}</span>
           {snapshot.repository.upstream ? (
             <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">

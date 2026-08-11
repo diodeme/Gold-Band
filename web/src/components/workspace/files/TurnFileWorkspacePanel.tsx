@@ -106,7 +106,7 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
     <section className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col" data-turn-file-workspace={resource.kind}>
       <header className="z-10 shrink-0 border-b border-border/60 bg-background/95 backdrop-blur">
         <div className="flex h-9 items-center gap-2 px-3 text-xs">
-          {resource.kind === 'file-diff' ? <FileDiff className="size-3.5 text-primary" /> : <FileText className="size-3.5 text-primary" />}
+          {resource.kind === 'file-diff' ? <FileDiff className="size-3.5 text-foreground" /> : <FileText className="size-3.5 text-foreground" />}
           <span className="min-w-0 flex-1 truncate font-mono text-foreground">{comparison.path}</span>
           <span className="tabular-nums text-emerald-600 dark:text-emerald-400">+{comparison.stats.addedLines ?? 0}</span>
           <span className="tabular-nums text-destructive">-{comparison.stats.deletedLines ?? 0}</span>

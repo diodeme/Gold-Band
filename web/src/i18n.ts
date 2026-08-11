@@ -8,6 +8,7 @@ const resources = {
       scheduled: {
         unnamed: "未命名定时任务",
         neverRun: "尚未运行",
+        conversationMarker: "定时任务会话",
         timezone: { search: "搜索时区", empty: "未找到时区" },
         units: { minutes: "分钟", hours: "小时" },
         weekdays: { Mon: "一", Tue: "二", Wed: "三", Thu: "四", Fri: "五", Sat: "六", Sun: "日" },
@@ -27,7 +28,7 @@ const resources = {
         session: { new: "新会话", continuous: "持续会话" },
         trigger: { manual: "手动", scheduled: "计划" },
         management: {
-          title: "定时任务", subtitle: "按计划执行并追踪最近一次运行", create: "创建定时任务", refresh: "刷新定时任务",
+          title: "定时任务", create: "创建定时任务", refresh: "刷新定时任务",
           workspaceFilter: "工作区筛选", allWorkspaces: "全部工作区", statusFilter: "状态筛选", all: "全部", active: "运行中", disabled: "已停用",
           loading: "正在加载", empty: "暂无符合条件的定时任务", columns: { task: "任务", schedule: "计划", next: "下次执行", recent: "最近运行", enabled: "启用" },
           completed: "已完成", waiting: "等待下一次执行", taskDisabled: "任务已停用", queueSkipped: "队列保护已跳过本次",
@@ -1880,6 +1881,7 @@ const resources = {
       scheduled: {
         unnamed: "Unnamed scheduled task",
         neverRun: "Never run",
+        conversationMarker: "Scheduled task conversation",
         timezone: { search: "Search timezones", empty: "No timezone found" },
         units: { minutes: "minutes", hours: "hours" },
         weekdays: { Mon: "Mon", Tue: "Tue", Wed: "Wed", Thu: "Thu", Fri: "Fri", Sat: "Sat", Sun: "Sun" },
@@ -1899,7 +1901,7 @@ const resources = {
         session: { new: "New session", continuous: "Continuous session" },
         trigger: { manual: "Manual", scheduled: "Scheduled" },
         management: {
-          title: "Scheduled tasks", subtitle: "Run on schedule and track the latest result", create: "Create scheduled task", refresh: "Refresh scheduled tasks",
+          title: "Scheduled tasks", create: "Create scheduled task", refresh: "Refresh scheduled tasks",
           workspaceFilter: "Workspace filter", allWorkspaces: "All workspaces", statusFilter: "Status filter", all: "All", active: "Running", disabled: "Disabled",
           loading: "Loading", empty: "No scheduled tasks match these filters", columns: { task: "Task", schedule: "Schedule", next: "Next run", recent: "Latest run", enabled: "Enabled" },
           completed: "Completed", waiting: "Waiting for the next run", taskDisabled: "Task disabled", queueSkipped: "Skipped by queue protection",

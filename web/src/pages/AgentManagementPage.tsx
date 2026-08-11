@@ -287,16 +287,18 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   return (
     <Page flush className="flex flex-col">
       <PageHeader
+        variant="integrated"
+        icon={<Bot />}
         title={<span className="text-title">{t('agentManagement.title')}</span>}
         actions={(
           <>
-            <Button variant="outline" disabled={loading} onClick={onRefresh}>
+            <Button variant="outline" size="sm" disabled={loading} onClick={onRefresh}>
               <RefreshCw className={cn(loading && 'animate-spin')} />
               {t('common.refresh')}
             </Button>
             <Popover open={addMenuOpen} onOpenChange={setAddMenuOpen}>
               <PopoverTrigger asChild>
-                <Button>
+                <Button size="sm">
                   <Plus />
                   {t('agentManagement.addAgent')}
                 </Button>
@@ -336,7 +338,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
         )}
       />
 
-      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 xl:p-5">
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-6 pt-4">
         {notice ? (
         <Alert
           className={cn(

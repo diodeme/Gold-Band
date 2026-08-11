@@ -3,9 +3,11 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { AlarmClock, MoreHorizontal, Pause, Play, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { deleteScheduledTask, getScheduledTask, listScheduledTasks, runScheduledTaskNow, setScheduledTaskEnabled, subscribeScheduledTaskUpdates, updateScheduledTask } from '@/api';
+import { Page, PageHeader } from '@/components/PageScaffold';
 import { Button } from '@/components/ui/button';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { ScheduledTaskDialog, type ScheduledTaskInitialConfig } from '@/components/conversation/ScheduledTaskDialog';
@@ -13,6 +15,8 @@ import { formatScheduledSchedule, scheduledScheduleTimezone } from '@/lib/schedu
 import type { ScheduledTaskEditVm, ScheduledTaskVm } from '@/types';
 
 type StatusFilter = 'all' | 'running' | 'disabled';
+
+export const scheduledWorkspaceFilterTriggerClassName = 'w-28 text-xs';
 
 const modeLabels: Record<string, string> = {
   direct: 'Direct',
@@ -116,30 +120,25 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
   });
 
   return (
-    <main className="flex h-full w-full min-w-0 flex-col overflow-auto px-6 py-8">
-      <header className="mb-7 flex flex-col items-start justify-between gap-4 md:flex-row md:items-end">
-        <div className="flex items-center gap-3">
-          <AlarmClock className="size-5 text-primary" />
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="whitespace-nowrap text-lg font-semibold tracking-tight">{t('scheduled.management.title')}</h1>
-              <span className="text-sm text-muted-foreground">{tasks.length}</span>
-            </div>
-            <p className="mt-0.5 text-sm text-muted-foreground">{t('scheduled.management.subtitle')}</p>
-          </div>
-        </div>
-        <div className="flex w-full flex-wrap items-center gap-2 md:w-auto">
+    <Page flush className="flex flex-col">
+      <PageHeader
+        variant="integrated"
+        icon={<AlarmClock />}
+        title={<span className="text-title">{t('scheduled.management.title')}</span>}
+        badges={<span className="text-sm font-normal text-muted-foreground">{tasks.length}</span>}
+        actions={(
+          <>
           {onCreate ? <Button size="sm" className="h-8 gap-1.5" onClick={onCreate}><Plus className="size-3.5" />{t('scheduled.management.create')}</Button> : null}
           <Button variant="ghost" size="icon" className="size-8" onClick={() => void loadTasks()} disabled={loading} aria-label={t('scheduled.management.refresh')} title={t('scheduled.management.refresh')}><RefreshCw className="size-3.5" /></Button>
-          <select
-            value={workspaceFilter}
-            onChange={(event) => setWorkspaceFilter(event.target.value)}
-            className="h-8 rounded-md border border-border/70 bg-background px-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-ring"
-            aria-label={t('scheduled.management.workspaceFilter')}
-          >
-            <option value="all">{t('scheduled.management.allWorkspaces')}</option>
-            {workspaces.map((workspace) => <option key={workspace} value={workspace}>{workspace}</option>)}
-          </select>
+          <Select value={workspaceFilter} onValueChange={setWorkspaceFilter}>
+            <SelectTrigger size="sm" className={scheduledWorkspaceFilterTriggerClassName} aria-label={t('scheduled.management.workspaceFilter')}>
+              <SelectValue>{workspaceFilter === 'all' ? t('scheduled.management.allWorkspaces') : workspaceFilter}</SelectValue>
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value="all">{t('scheduled.management.allWorkspaces')}</SelectItem>
+              {workspaces.map((workspace) => <SelectItem key={workspace} value={workspace}>{workspace}</SelectItem>)}
+            </SelectContent>
+          </Select>
           <div className="flex items-center rounded-md border border-border/70 p-0.5" aria-label={t('scheduled.management.statusFilter')}>
             {([
               ['all', 'all'],
@@ -157,13 +156,15 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
               </button>
             ))}
           </div>
-        </div>
-      </header>
+          </>
+        )}
+      />
 
-      {loading ? <div className="border-y border-border/60 py-12 text-center text-sm text-muted-foreground">{t('scheduled.management.loading')}</div> : null}
-      {!loading && visibleTasks.length === 0 ? <div className="border-y border-border/60 py-14 text-center text-sm text-muted-foreground">{t('scheduled.management.empty')}</div> : null}
-      {!loading && visibleTasks.length > 0 ? (
-        <section className="w-full min-w-0">
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-4">
+        {loading ? <div className="border-y border-border/60 py-12 text-center text-sm text-muted-foreground">{t('scheduled.management.loading')}</div> : null}
+        {!loading && visibleTasks.length === 0 ? <div className="border-y border-border/60 py-14 text-center text-sm text-muted-foreground">{t('scheduled.management.empty')}</div> : null}
+        {!loading && visibleTasks.length > 0 ? (
+          <section className="w-full min-w-0">
           <div className="hidden grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,1fr)_2.75rem_2rem] items-center gap-4 border-b border-border/60 px-3 pb-3 text-xs text-muted-foreground md:grid">
             <span>{t('scheduled.management.columns.task')}</span><span>{t('scheduled.management.columns.schedule')}</span><span>{t('scheduled.management.columns.next')}</span><span>{t('scheduled.management.columns.recent')}</span><span>{t('scheduled.management.columns.enabled')}</span><span />
           </div>
@@ -175,7 +176,7 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
                 onClick={() => onOpenDetail?.(task)}
               >
                 <div className="flex min-w-0 items-center gap-3">
-                  <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary"><AlarmClock className="size-4" /></span>
+                  <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-foreground/10 text-foreground"><AlarmClock className="size-4" /></span>
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium">{task.title || t('scheduled.unnamed')}</div>
                     <div className="mt-1 truncate text-xs text-muted-foreground">{modeLabels[task.mode] ?? task.mode}{task.mode === 'direct' ? ` · ${t(`scheduled.session.${task.sessionPolicy}`)}` : ''}<span className="md:hidden"> · {formatScheduledSchedule(t, task.schedule)}</span></div>
@@ -216,8 +217,9 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
               </div>
             ))}
           </div>
-        </section>
-      ) : null}
+          </section>
+        ) : null}
+      </div>
       <Sheet open={Boolean(editing)} onOpenChange={(open) => { if (!open) setEditing(null); }}>
         <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey="scheduled-task-management/edit" defaultSize={720} minSize={520} maxSize={960} closeLabel={t('common.close')}>
           <SheetTitle className="sr-only">{t('scheduled.dialog.title')}</SheetTitle>
@@ -270,6 +272,6 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </main>
+    </Page>
   );
 }

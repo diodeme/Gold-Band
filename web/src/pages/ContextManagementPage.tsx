@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
-import { ArrowLeft, Check, ChevronsUpDown, CircleHelp, Edit, Eye, FolderOpen, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { ArrowLeft, Check, ChevronsUpDown, CircleHelp, Edit, Eye, FolderOpen, Library, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import {
@@ -16,10 +16,9 @@ import type {
   AppErrorVm, ImportedProfileRecord, ImportProfilesResult, ProfileFieldFallback, ProfileInput, ProfileListVm, ProfileScope, ProfileVm,
   McpServerVm, SkillListVm, SkillMetaVm, SkillContentVm, AgentRegistryVm, ToolInfo,
 } from '../types';
-import { AppCard } from '@/components/AppCard';
 import { EntitySection } from '@/components/EntitySection';
 import { McpServerCard } from '@/components/McpServerCard';
-import { EmptyState, Page, PageHeader } from '@/components/PageScaffold';
+import { EmptyState, Page, PageContent, PageHeader } from '@/components/PageScaffold';
 import { SkillAgentOverflow } from '@/components/SkillAgentOverflow';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -62,6 +61,19 @@ const pageSizes = [6, 12, 24];
 interface ContextManagementPageProps {
   agentRegistry: AgentRegistryVm | null;
   onAgentRegistryChange: (registry: AgentRegistryVm) => void;
+}
+
+function EntityRefreshButton({ label, loading, onRefresh }: { label: string; loading: boolean; onRefresh: () => void }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button variant="outline" size="icon" className="size-8" disabled={loading} onClick={onRefresh} aria-label={label}>
+          <RefreshCw className={cn('size-4', loading && 'animate-spin')} />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: ContextManagementPageProps) {
@@ -475,30 +487,34 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
 
   return (
     <Page flush className="flex flex-col">
-      <PageHeader title={<span className="text-title">{t('contextManagement.title')}</span>} />
-      <div className="border-b px-5 xl:px-6">
-        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ContextTab)}>
-          <TabsList className="rounded-none border-b-0">
-            <TabsTrigger value="profiles">{t('contextManagement.profileManagement')}</TabsTrigger>
-            <TabsTrigger value="mcp">{t('contextManagement.tabs.mcp', 'MCP 管理')}</TabsTrigger>
-            <TabsTrigger value="skills">{t('contextManagement.tabs.skills', 'SKILL 管理')}</TabsTrigger>
-          </TabsList>
-        </Tabs>
-      </div>
+      <PageHeader
+        variant="integrated"
+        icon={<Library />}
+        title={<span className="text-title">{t('contextManagement.title')}</span>}
+        navigationLabel={t('contextManagement.title')}
+        navigation={(
+          <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ContextTab)}>
+            <TabsList variant="line" className="rounded-none">
+              <TabsTrigger value="profiles">{t('contextManagement.profileManagement')}</TabsTrigger>
+              <TabsTrigger value="mcp">{t('contextManagement.tabs.mcp', 'MCP 管理')}</TabsTrigger>
+              <TabsTrigger value="skills">{t('contextManagement.tabs.skills', 'SKILL 管理')}</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        )}
+      />
       {/* ── Profiles Tab ── */}
       {activeTab === 'profiles' && (
-      <div className="min-h-0 flex-1 p-5 xl:p-6">
+      <PageContent variant="after-navigation">
         <EntitySection
           tab={profileListTab}
           onTabChange={(value) => setProfileListTab(value)}
-          customLabel={t('contextManagement.customSectionTitle')}
-          builtInLabel={t('contextManagement.builtInSectionTitle')}
+          tabs={[
+            { value: 'custom', label: t('contextManagement.customSectionTitle') },
+            { value: 'built-in', label: t('contextManagement.builtInSectionTitle') },
+          ]}
           actions={
             <>
-              <Button variant="outline" disabled={loading} onClick={() => void refresh()}>
-                <RefreshCw className={cn(loading && 'animate-spin')} />
-                {t('common.refresh')}
-              </Button>
+              <EntityRefreshButton label={t('common.refresh')} loading={loading} onRefresh={() => void refresh()} />
               <Button variant="outline" disabled={loading || profileImport.importing} onClick={() => dispatchProfileImport({ type: 'open-settings' })}>
                 <FolderOpen />{t('contextManagement.importProfile')}
               </Button>
@@ -569,7 +585,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
           {vm && profileListTab === 'built-in' && builtInProfiles.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.emptyProfiles')}</EmptyState></div> : null}
           {vm && profileListTab === 'custom' && customProfiles.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.emptyProfiles')}</EmptyState></div> : null}
         </EntitySection>
-      </div>
+      </PageContent>
       )}
       <ProfileSheet
         mode={sheetMode}
@@ -683,12 +699,14 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
 
       {/* ── MCP Tab Content ── */}
       {activeTab === 'mcp' && (
-        <div className="min-h-0 flex-1 p-5 xl:p-6">
+        <PageContent variant="after-navigation">
           <EntitySection
             tab={mcpListTab}
             onTabChange={setMcpListTab}
-            customLabel={t('contextManagement.mcp.customSectionTitle', '自定义 MCP')}
-            builtInLabel={t('contextManagement.mcp.builtInSectionTitle', '内置 MCP')}
+            tabs={[
+              { value: 'custom', label: t('contextManagement.mcp.customSectionTitle', '自定义 MCP') },
+              { value: 'built-in', label: t('contextManagement.mcp.builtInSectionTitle', '内置 MCP') },
+            ]}
             actions={
               <>
                 <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -696,7 +714,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                   <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-yellow-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'auth_required').length}</span>
                   <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-red-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'unhealthy').length}</span>
                 </span>
-                <Button variant="outline" size="sm" disabled={mcpLoading} onClick={() => void refreshMcp()}><RefreshCw className={cn('size-4', mcpLoading && 'animate-spin')} /></Button>
+                <EntityRefreshButton label={t('common.refresh')} loading={mcpLoading} onRefresh={() => void refreshMcp()} />
                 <Button size="sm" onClick={() => { setMcpEditTarget(null); setMcpJsonContent(MCP_STDIO_TEMPLATE); setMcpTransportTab('stdio'); setMcpSheetOpen(true); }}><Plus className="size-4" />{t('contextManagement.mcp.addServer', '添加')}</Button>
               </>
             }
@@ -795,23 +813,20 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
             {!mcpLoading && currentSectionMcpServers.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.mcp.emptyServers', '暂无 MCP 服务器')}</EmptyState></div> : null}
             {!mcpLoading && currentSectionMcpServers.length > 0 && filteredMcpServers.length === 0 ? <div className="p-5"><EmptyState>{t('common.noResults', '无匹配结果')}</EmptyState></div> : null}
           </EntitySection>
-        </div>
+        </PageContent>
       )}
 
       {/* ── SKILL Tab Content ── */}
       {activeTab === 'skills' && (
-        <div className="min-h-0 flex-1 p-5 xl:p-6">
-          <AppCard className="flex h-full min-h-0 flex-col gap-0 py-0">
-            <CardContent className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <Tabs value={skillTab} onValueChange={(v) => { const nextTab = v as 'global' | 'project'; setSkillTab(nextTab); setSkillQuery(''); setSkillAgentFilter('all'); if (nextTab === 'global') setProjectSkills([]); }}>
-                <TabsList variant="line">
-                  <TabsTrigger value="global">{t('contextManagement.skills.globalTab', '全局')}</TabsTrigger>
-                  <TabsTrigger value="project">{t('contextManagement.skills.projectTab', '项目')}</TabsTrigger>
-                </TabsList>
-              </Tabs>
-              {skillTab === 'project' && workspaces.length > 0 && (
+        <PageContent variant="after-navigation">
+          <EntitySection
+            tab={skillTab}
+            onTabChange={(nextTab) => { setSkillTab(nextTab); setSkillQuery(''); setSkillAgentFilter('all'); if (nextTab === 'global') setProjectSkills([]); }}
+            tabs={[
+              { value: 'global', label: t('contextManagement.skills.globalTab', '全局') },
+              { value: 'project', label: t('contextManagement.skills.projectTab', '项目') },
+            ]}
+            tabAccessory={skillTab === 'project' && workspaces.length > 0 ? (
                 <Select value={selectedWorkspace} onValueChange={(v) => { setSelectedWorkspace(v); rememberSkillProjectWorkspace(v); setSkillQuery(''); }}>
                   <SelectTrigger className="h-8 w-44 text-xs">
                     <SelectValue placeholder={t('contextManagement.skills.selectProject', '选择项目...')} />
@@ -822,16 +837,20 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                     ))}
                   </SelectContent>
                 </Select>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              {(skillTab === 'global' || selectedWorkspace) && (
+            ) : null}
+            actions={(
+              <>
+                <EntityRefreshButton label={t('common.refresh')} loading={skillLoading} onRefresh={() => void refreshSkills()} />
+                <Button size="sm" onClick={() => { setSkillEditTarget(null); setSkillSheetContent(null); setSkillEditWsPath(null); setSkillSheetMode('create'); }}><Plus className="size-4" />{t('contextManagement.skills.createSkill', '创建')}</Button>
+              </>
+            )}
+            toolbar={(skillTab === 'global' || selectedWorkspace) ? (
+              <>
                 <div className="relative min-w-[160px]">
                   <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                   <Input className="h-8 pl-8 text-xs" placeholder={t('contextManagement.skills.searchPlaceholder', '搜索 SKILL...')} value={skillQuery} onChange={(e) => setSkillQuery(e.target.value)} />
                 </div>
-              )}
-              {(skillTab === 'global' || selectedWorkspace) && configuredAgents.length > 0 && (
+                {configuredAgents.length > 0 ? (
                 <Select value={skillAgentFilter} onValueChange={setSkillAgentFilter}>
                   <SelectTrigger className="h-8 w-40 text-xs">
                     <SelectValue placeholder={t('contextManagement.skills.agentFilterPlaceholder', '按 Agent 筛选')} />
@@ -843,19 +862,17 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                     ))}
                   </SelectContent>
                 </Select>
-              )}
-              <Button variant="outline" size="sm" disabled={skillLoading} onClick={() => void refreshSkills()}><RefreshCw className={cn('size-4', skillLoading && 'animate-spin')} /></Button>
-              <Button size="sm" onClick={() => { setSkillEditTarget(null); setSkillSheetContent(null); setSkillEditWsPath(null); setSkillSheetMode('create'); }}><Plus className="size-4" />{t('contextManagement.skills.createSkill', '创建')}</Button>
-            </div>
-          </div>
-          {skillError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{skillError}</div> : null}
-          <ScrollArea className="min-h-0 flex-1">
-            {skillLoading && !skillList ? <EmptyState>{t('common.loading')}</EmptyState> : null}
-            {skillTab === 'project' && !selectedWorkspace ? <EmptyState>{t('contextManagement.skills.selectProjectEmpty', '选择项目以查看项目级 SKILL')}</EmptyState> : null}
-            {skillTab === 'global' && skillList && skillList.global.length === 0 ? <EmptyState>{t('contextManagement.skills.emptySkills', '暂无 SKILL')}</EmptyState> : null}
-            {skillTab === 'project' && selectedWorkspace && !skillLoading && projectSkills.length === 0 ? <EmptyState>{t('contextManagement.skills.emptySkills', '暂无 SKILL')}</EmptyState> : null}
-            {skillList && filteredSkills && filteredSkills.length === 0 && (skillQuery || skillAgentFilter !== 'all') ? <EmptyState>{t('common.noResults', '无匹配结果')}</EmptyState> : null}
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                ) : null}
+              </>
+            ) : undefined}
+            error={skillError}
+          >
+            {skillLoading && !skillList ? <div className="p-5"><EmptyState>{t('common.loading')}</EmptyState></div> : null}
+            {skillTab === 'project' && !selectedWorkspace ? <div className="p-5"><EmptyState>{t('contextManagement.skills.selectProjectEmpty', '选择项目以查看项目级 SKILL')}</EmptyState></div> : null}
+            {skillTab === 'global' && skillList && skillList.global.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.skills.emptySkills', '暂无 SKILL')}</EmptyState></div> : null}
+            {skillTab === 'project' && selectedWorkspace && !skillLoading && projectSkills.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.skills.emptySkills', '暂无 SKILL')}</EmptyState></div> : null}
+            {skillList && filteredSkills && filteredSkills.length === 0 && (skillQuery || skillAgentFilter !== 'all') ? <div className="p-5"><EmptyState>{t('common.noResults', '无匹配结果')}</EmptyState></div> : null}
+            <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
               {filteredSkills && filteredSkills.map((skill) => {
                 const sourceAgents = skillSourceAgents(skill, configuredAgents);
                 const syncAgents = selectableSyncAgents(skill, configuredAgents);
@@ -922,10 +939,8 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                 );
               })}
             </div>
-            </ScrollArea>
-          </CardContent>
-        </AppCard>
-        </div>
+          </EntitySection>
+        </PageContent>
       )}
 
       <AlertDialog open={Boolean(skillDeleteTarget)} onOpenChange={(open) => { if (!open && !skillDeleting) setSkillDeleteTarget(null); }}>

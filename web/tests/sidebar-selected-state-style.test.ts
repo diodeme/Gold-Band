@@ -27,4 +27,16 @@ describe('sidebar selected-state styles', () => {
     expect(source).toContain('tracking-[0.12em] text-sidebar-foreground');
     expect(source).toContain('tabular-nums text-muted-foreground');
   });
+
+  it('uses simple semantic Lucide icons for context and run-mode navigation', () => {
+    const source = readFileSync(
+      path.resolve(__dirname, '../src/components/conversation/ConversationSidebar.tsx'),
+      'utf8',
+    );
+
+    expect(source).toContain('icon={<Library />}');
+    expect(source).toContain('icon={<Route />}');
+    expect(source).not.toContain('icon={<Boxes />}');
+    expect(source).not.toContain('icon={<Workflow />}');
+  });
 });

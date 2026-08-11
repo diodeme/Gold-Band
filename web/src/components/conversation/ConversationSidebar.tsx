@@ -1,4 +1,4 @@
-import { Pin, PinOff, MessageSquare, Search, Bot, Boxes, Workflow, AlarmClock, Settings, ChevronDown, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Settings, ChevronDown, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
@@ -239,14 +239,14 @@ export const ConversationSidebar = memo(function ConversationSidebar({
           <SidebarButton
             compact
             active={activeNavigationKey === 'contexts'}
-            icon={<Boxes />}
+            icon={<Library />}
             label={t('conversation.sidebar.contextManagement')}
             onClick={() => onSelect({ kind: 'contexts' })}
           />
           <SidebarButton
             compact
             active={activeNavigationKey === 'run-mode-management'}
-            icon={<Workflow />}
+            icon={<Route />}
             label={t('conversation.sidebar.runModeManagement')}
             onClick={() => onSelect({ kind: 'run-mode-management' })}
           />
@@ -696,7 +696,7 @@ function TaskRow({
           />
         ) : (
           <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-[13px]">
-            {task.scheduledTaskId ? <AlarmClock className="size-3 shrink-0 text-primary" aria-label="定时任务会话" /> : null}
+            {task.scheduledTaskId ? <AlarmClock className="size-3 shrink-0 text-foreground" aria-label={t('scheduled.conversationMarker')} /> : null}
             <span className="truncate">{task.title}</span>
           </span>
         )}

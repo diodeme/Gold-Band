@@ -86,4 +86,21 @@ describe('scheduled task composer entry', () => {
     expect(header).toContain('run.scheduledTaskId');
     expect(sidebar).toContain('task.scheduledTaskId');
   });
+
+  it('keeps static scheduled-task icons readable in both themes', () => {
+    const sources = [
+      '../src/components/conversation/ConversationComposer.tsx',
+      '../src/components/conversation/ConversationRunHeader.tsx',
+      '../src/components/conversation/ConversationSidebar.tsx',
+      '../src/components/conversation/ScheduledTaskDialog.tsx',
+      '../src/pages/ScheduledTaskDetailPage.tsx',
+    ].map((path) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8'));
+
+    const scheduledIconWithPrimary = /<(?:AlarmClock|CalendarClock|ListChecks)[^>]*text-primary/;
+    for (const source of sources) {
+      expect(source).not.toMatch(scheduledIconWithPrimary);
+    }
+    expect(sources[1]).toContain('<TooltipContent>{t(\'scheduled.conversationMarker\')}</TooltipContent>');
+    expect(sources[1]).not.toContain('title="定时任务会话"');
+  });
 });

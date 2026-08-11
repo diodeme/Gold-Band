@@ -41,7 +41,16 @@ export function ConversationRunHeader({
   return (
     <div className="shrink-0 bg-content-header px-5 pb-0.5 pt-0.5">
       <div className="flex min-w-0 items-center gap-2">
-        {run.scheduledTaskId ? <span className="inline-flex shrink-0 items-center text-primary" title="定时任务会话" aria-label="定时任务会话"><AlarmClock className="size-3.5" /></span> : null}
+        {run.scheduledTaskId ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex shrink-0 items-center text-foreground" aria-label={t('scheduled.conversationMarker')}>
+                <AlarmClock className="size-3.5" />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{t('scheduled.conversationMarker')}</TooltipContent>
+          </Tooltip>
+        ) : null}
         <EditableConversationTitle
           title={run.title}
           metadata={!isDirect ? run.runId : null}

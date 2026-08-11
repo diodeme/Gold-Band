@@ -1646,9 +1646,27 @@ impl App {
                 state.next_revision();
             },
         );
+
+        // Global revision: all events for the same task share a single
+        // monotonically-increasing revision counter via the task_uuid
+        // observability state. Per-node state retains model_usages
+        // and per-node counters; only revision comes from the global state.
+        let outer_snapshot_path = scoped_app
+            .paths
+            .run_dir(&task_id, &run_id)
+            .join("observability")
+            .join(&task_uuid)
+            .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
+        let global_state = scoped_app.update_observability_state(
+            &task_uuid,
+            outer_snapshot_path.clone(),
+            |state| {
+                state.next_revision();
+            },
+        );
         let mut fact = MetricsLifecycleFact::new(
             event_type,
-            state.event_revision,
+            global_state.event_revision,
             ended_at.clone().unwrap_or_else(|| started_at.clone()),
             std::env::var("USERNAME")
                 .or_else(|_| std::env::var("USER"))
@@ -1739,28 +1757,18 @@ impl App {
         self.lifecycle_bus
             .emit(RuntimeLifecycleEvent::MetricsFact(fact));
         if let Some(passed) = acceptance_passed {
-            let acceptance_state = scoped_app.update_observability_state(
-                &metrics_attempt_id,
-                snapshot_path,
+            let outer_state = scoped_app.update_observability_state(
+                &task_uuid,
+                outer_snapshot_path,
                 |state| {
                     state.next_revision();
+                    state.next_acceptance_attempt();
                 },
             );
-            let outer_path = scoped_app
-                .paths
-                .run_dir(&task_id, &run_id)
-                .join("observability")
-                .join(&task_uuid)
-                .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
-            let outer_state =
-                scoped_app.update_observability_state(&task_uuid, outer_path, |state| {
-                    state.next_revision();
-                    state.next_acceptance_attempt();
-                });
             let acceptance_attempt = outer_state.next_acceptance_attempt_value();
             let mut acceptance = MetricsLifecycleFact::new(
                 LifecycleEventType::AcceptanceCompleted,
-                acceptance_state.event_revision,
+                outer_state.event_revision,
                 ended_at.unwrap_or_else(|| started_at.clone()),
                 std::env::var("USERNAME")
                     .or_else(|_| std::env::var("USER"))

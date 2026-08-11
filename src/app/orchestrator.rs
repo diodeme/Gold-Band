@@ -1844,7 +1844,7 @@ fn emit_run_metrics_fact(
     if !app.metrics_collection_enabled() {
         return;
     }
-    let (Some(task_uuid), Some(run_uuid)) = (run.task_uuid.clone(), run.uuid.clone()) else {
+    let (Some(task_uuid), Some(_run_uuid)) = (run.task_uuid.clone(), run.uuid.clone()) else {
         return;
     };
     // Direct conversations own their per-turn lifecycle in the ACP command
@@ -1856,9 +1856,9 @@ fn emit_run_metrics_fact(
         .paths
         .run_dir(&run.task_id, &run.id)
         .join("observability")
-        .join(&run_uuid)
+        .join(&task_uuid)
         .join(super::observability::OBSERVABILITY_SNAPSHOT_FILE);
-    let state = app.update_observability_state(&run_uuid, path, |state| {
+    let state = app.update_observability_state(&task_uuid, path, |state| {
         state.next_revision();
         if event_type == super::observability::LifecycleEventType::ExecutionPaused {
             state.record_pause(true);

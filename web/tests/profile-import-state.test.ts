@@ -7,8 +7,25 @@ import {
 import type { ImportProfilesResult } from '../src/types';
 
 const result: ImportProfilesResult = {
-  totalScanned: 1,
-  imported: [],
+  totalScanned: 3,
+  imported: [
+    {
+      sourcePath: 'D:/roles/writer.md',
+      status: 'imported-with-fallbacks',
+      name: 'Writer',
+      fallbacks: ['summary'],
+      importedId: 'profile-writer',
+      error: null,
+    },
+    {
+      sourcePath: 'D:/roles/reviewer.md',
+      status: 'imported',
+      name: 'Reviewer',
+      fallbacks: [],
+      importedId: 'profile-reviewer',
+      error: null,
+    },
+  ],
   failed: [{
     sourcePath: 'D:/roles/broken.md',
     status: 'failed',
@@ -21,7 +38,7 @@ const result: ImportProfilesResult = {
 };
 
 describe('profile import state', () => {
-  it('keeps the settings dialog open so import failures remain visible', () => {
+  it('keeps the settings sheet open so import failures remain visible', () => {
     const opened = profileImportReducer(initialProfileImportState, { type: 'open-settings' });
     const importing = profileImportReducer(opened, { type: 'begin-import' });
     const failed = profileImportReducer(importing, {
@@ -30,14 +47,14 @@ describe('profile import state', () => {
     });
 
     expect(failed).toMatchObject({
-      settingsOpen: true,
+      surface: 'settings',
       importing: false,
       result: null,
       error: 'Selected folder could not be read',
     });
   });
 
-  it('moves successful imports to the result dialog and surfaces edit failures there', () => {
+  it('moves successful imports to the result sheet and surfaces edit failures there', () => {
     const importing = profileImportReducer(
       profileImportReducer(initialProfileImportState, { type: 'open-settings' }),
       { type: 'begin-import' },
@@ -48,18 +65,62 @@ describe('profile import state', () => {
       { type: 'edit-failed', error: 'Profile could not be loaded' },
     );
 
-    expect(succeeded).toMatchObject({ settingsOpen: false, result, error: null });
-    expect(editFailed).toMatchObject({ result, error: 'Profile could not be loaded' });
+    expect(succeeded).toMatchObject({ surface: 'result', result, error: null });
+    expect(editFailed).toMatchObject({ surface: 'result', result, error: 'Profile could not be loaded' });
   });
 
-  it('closes the result before opening an imported profile editor', () => {
+  it('preserves the import result while editing and returns to it afterwards', () => {
     const succeeded = profileImportReducer(initialProfileImportState, {
       type: 'import-succeeded',
       result,
     });
+    const editing = profileImportReducer(succeeded, { type: 'edit-succeeded' });
+    const resumed = profileImportReducer(editing, { type: 'resume-result' });
 
-    expect(profileImportReducer(succeeded, { type: 'edit-succeeded' })).toMatchObject({
-      result: null,
+    expect(editing).toMatchObject({
+      surface: 'editing',
+      result,
+      error: null,
+    });
+    expect(resumed).toMatchObject({
+      surface: 'result',
+      result,
+      error: null,
+    });
+  });
+
+  it('synchronizes a saved profile name into its import record without losing diagnostics', () => {
+    const editing = profileImportReducer(
+      profileImportReducer(initialProfileImportState, {
+        type: 'import-succeeded',
+        result,
+      }),
+      { type: 'edit-succeeded' },
+    );
+    const updated = profileImportReducer(editing, {
+      type: 'profile-updated',
+      importedId: 'profile-writer',
+      name: 'Technical Writer',
+    });
+
+    expect(updated.surface).toBe('editing');
+    expect(updated.result?.imported).toEqual([
+      {
+        sourcePath: 'D:/roles/writer.md',
+        status: 'imported-with-fallbacks',
+        name: 'Technical Writer',
+        fallbacks: ['summary'],
+        importedId: 'profile-writer',
+        error: null,
+      },
+      result.imported[1],
+    ]);
+    expect(updated.result?.failed).toBe(result.failed);
+
+    const resumed = profileImportReducer(updated, { type: 'resume-result' });
+    expect(resumed).toMatchObject({
+      surface: 'result',
+      result: updated.result,
       error: null,
     });
   });

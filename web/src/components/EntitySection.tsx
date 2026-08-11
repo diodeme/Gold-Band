@@ -4,16 +4,19 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
-export type EntitySectionTab = 'custom' | 'built-in';
+export interface EntitySectionTabOption<TTab extends string> {
+  value: TTab;
+  label: ReactNode;
+}
 
-interface EntitySectionProps {
+interface EntitySectionProps<TTab extends string> {
   /** 当前激活的分段 */
-  tab: EntitySectionTab;
-  onTabChange: (tab: EntitySectionTab) => void;
-  /** 自定义分段标题 */
-  customLabel: string;
-  /** 内置分段标题 */
-  builtInLabel: string;
+  tab: TTab;
+  onTabChange: (tab: TTab) => void;
+  /** 分段选项 */
+  tabs: readonly EntitySectionTabOption<TTab>[];
+  /** 与分段同组的上下文选择器 */
+  tabAccessory?: ReactNode;
   /** 头部右侧操作区（刷新/添加等） */
   actions?: ReactNode;
   /** 标题下方的工具栏（搜索/筛选） */
@@ -31,27 +34,29 @@ interface EntitySectionProps {
  * 角色管理、MCP 管理、SKILL 管理等列表页共享此骨架，
  * 后续任意一处 UI 优化（头部、搜索栏、滚动区）即可全局同步。
  */
-export function EntitySection({
+export function EntitySection<TTab extends string>({
   tab,
   onTabChange,
-  customLabel,
-  builtInLabel,
+  tabs,
+  tabAccessory,
   actions,
   toolbar,
   error,
   footer,
   children,
-}: EntitySectionProps) {
+}: EntitySectionProps<TTab>) {
   return (
     <AppCard className="flex h-full min-h-0 flex-col gap-0 py-0">
-      <CardHeader className="border-b px-4 pt-2 pb-1">
+      <CardHeader className="border-b px-4 pt-2 [.border-b]:pb-1">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <Tabs value={tab} onValueChange={(value) => onTabChange(value as EntitySectionTab)}>
-            <TabsList variant="line">
-              <TabsTrigger value="custom">{customLabel}</TabsTrigger>
-              <TabsTrigger value="built-in">{builtInLabel}</TabsTrigger>
-            </TabsList>
-          </Tabs>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <Tabs value={tab} onValueChange={(value) => onTabChange(value as TTab)}>
+              <TabsList variant="line">
+                {tabs.map((option) => <TabsTrigger key={option.value} value={option.value}>{option.label}</TabsTrigger>)}
+              </TabsList>
+            </Tabs>
+            {tabAccessory}
+          </div>
           {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
         </div>
       </CardHeader>

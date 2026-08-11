@@ -226,7 +226,7 @@ function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu
             data-right-workspace-empty-option={option.id}
             onClick={option.open}
           >
-            <Icon className="size-4 shrink-0 text-primary" />
+            <Icon className="size-4 shrink-0 text-foreground" />
             <span className="min-w-0">
               <span className="block text-sm font-medium text-foreground">{option.label}</span>
               <span className="mt-0.5 block text-xs font-normal text-muted-foreground">{option.description}</span>

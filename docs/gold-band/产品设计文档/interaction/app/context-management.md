@@ -6,6 +6,14 @@
 
 角色管理提供搜索、新增、查看、修改、删除和文件夹批量导入。所有写操作直接进入 Tauri command，浏览器实现只用于预览，不参与桌面端状态判断。
 
+### 页面壳与一级导航
+
+- 页面级 Header 使用共享 `PageHeader` 的 `integrated` 管理页变体，与 Agent 管理、运行模式管理、定时任务管理保持同一页面表面；标题左侧使用与侧栏一致的 `Library` 语义图标，图标与标题组按视觉中心垂直对齐，并使用 `text-foreground` 随明暗主题自动反色；Header 采用 24px 水平内边距、32px 顶部内边距；一级 line Tabs 自身已经提供层级边界，其下方通过共享 `PageContent(after-navigation)` 到业务卡片保留约 12px 的紧凑间距，不重复叠加无导航管理页约 28px 的标题间距；标题使用紧凑层级，不设置独立背景、模糊、投影或底部分割线。
+- 角色 / MCP / SKILL 属于同一上下文管理领域的一级导航，作为 Header 的 `navigation` 槽位统一管理并复用 shadcn/ui line Tabs；只以当前项下划线和文字对比表达选中态，不再包裹独立灰底分段条或增加整行分割线。
+- 角色列表内部的自定义 / 内置切换、搜索和业务操作仍归属列表工作区，不提升到页面 Header，避免混淆页面导航与当前实体集合操作。
+- 角色、MCP、SKILL 三个业务区的内层切换统一复用类型化 `EntitySection`：tab 行的高度、上下内边距、底边界、同组选择器和右侧操作区由同一组件管理；SKILL 不再维护独立 Card + Tabs 壳。共享 CardHeader 必须显式覆盖 shadcn Card 的 `[.border-b]:pb-6` 默认规则，内层 tab 行底部使用 4px padding；结合 CardHeader 固有的 8px grid row-gap，Tab 到 Header 底边界的实际空间约 12px，避免下划线到工具栏之间出现过量空白。
+- 三个业务区的刷新操作统一使用 32px 图标按钮和共享 shadcn Tooltip：按钮保留本地化 `aria-label`，不设置会触发浏览器原生提示的 `title`；加载时只旋转 `RefreshCw`，不显示“刷新”文字。
+
 ## 2. 批量导入数据模型
 
 - `ImportProfilesInput`：用户选择的文件夹与本批次动态模板开关。

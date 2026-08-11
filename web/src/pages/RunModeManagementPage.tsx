@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Bot, ChevronDown, CircleHelp, Folders, Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, Bot, ChevronDown, CircleHelp, Folders, Plus, Route, Trash2 } from 'lucide-react';
 import type { AgentRegistryVm, AutoTemplate, ConversationAutoConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, DynamicAgentRefDsl, DynamicControlDsl, ProfileVm, WorkflowDsl, WorkflowTemplate, WorkflowTemplateStore } from '../types';
 import { deleteAutoTemplate as deleteAutoTemplateApi, deleteWorkflowTemplate, getAutoTemplates, getProfiles, replaceAutoTemplates, saveAutoTemplate, saveWorkflowTemplate, updateAutoTemplate, updateWorkflowTemplate } from '@/api';
 import { Page, PageHeader } from '@/components/PageScaffold';
@@ -887,10 +887,12 @@ export function RunModeManagementPage({
   return (
     <Page flush className="flex flex-col">
       <PageHeader
+        variant="integrated"
+        icon={<Route />}
         title={<span className="text-title">{t('runMode.title')}</span>}
       />
 
-      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 pb-6 pt-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <RunModeTabsToolbar
             mode={mode}

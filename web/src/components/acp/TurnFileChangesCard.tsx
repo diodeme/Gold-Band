@@ -93,7 +93,7 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
     <Card className="ml-10 max-w-[min(46rem,calc(100%-2.5rem))] gap-0 overflow-hidden rounded-xl border-border/60 bg-muted/10 py-0 shadow-none" data-turn-file-changes-card={changeSetId}>
       <CardHeader className="grid-cols-[1fr_auto] items-center gap-3 px-3 py-2.5">
         <CardTitle className="flex min-w-0 items-center gap-2 text-sm font-medium">
-          <FileDiff className="size-4 shrink-0 text-primary" />
+          <FileDiff className="size-4 shrink-0 text-foreground" />
           <span>{t('turnFiles.title', { count: summary.fileCount })}</span>
         </CardTitle>
         <div className="flex items-center gap-2 text-xs tabular-nums">

@@ -76,11 +76,31 @@ enum TurnControlMode {
 
 即使 Agent 在该 turn 中主动输出了符合原 contract 的 JSON，Runtime 也只能把它视为普通会话内容，不能意外完成节点。
 
-### 4.2 场景映射
+### 4.2 RunMode 编排属性
+
+`TurnControlMode` 只回答“当前 turn 是否由 Runtime 消费”，不能回答“当前会话是否存在可恢复的工作流”。后者统一由既有 `ConversationRunMode` 管理，不新增节点类型或运行模式枚举：
+
+```rust
+impl ConversationRunMode {
+    pub fn is_orchestrated(self) -> bool {
+        matches!(self, Self::Auto | Self::Workflow)
+    }
+}
+```
+
+- `Auto / Workflow` 返回 `true`，允许在可恢复暂停时派生通用 Runtime continue。
+- `Direct` 返回 `false`；即使底层复用 workflow DSL 和 `Paused + ProcessInterrupted` 容器事实，也只能继续普通 ACP 会话，不能显示或接受“继续工作流”。
+- AI-DYNAMIC 是节点类型，不是 RunMode。AUTO 生成的单 AI-DYNAMIC 工作流以及 Workflow 模板内的 AI-DYNAMIC 都通过外层 RunMode 被识别为编排运行。
+- 缺少会话 metadata 的历史普通 workflow 按 `Workflow` 处理，避免旧任务失去恢复能力。
+
+最终继续资格必须同时满足：`run_mode.is_orchestrated()`、当前 attempt/leaf 精确匹配、暂停原因允许显式恢复、非 manual check 判定门。普通消息提交只校验当前 turn 是否仍被 Runtime 控制，不复用继续资格校验。
+
+### 4.3 场景映射
 
 | 场景 | TurnControlMode | Runtime 状态变化 |
 |---|---|---|
 | Direct 首轮与后续消息 | `NonRuntimeControlled` | 无 workflow 推进 |
+| Direct 当前回复被停止 | `NonRuntimeControlled` | 取消 ACP turn；不产生 Runtime continue action，后续仍可普通发送 |
 | 固定工作流正常执行 | `RuntimeControlled` | 正常完成节点并沿 edge 推进 |
 | AI-DYNAMIC bootstrap / worker / acceptance | `RuntimeControlled` | 按节点角色应用 Inline 或 PostTurn |
 | PostTurn 隐藏 finalize / repair | `RuntimeControlled` | 生成、校验 canonical artifact |
@@ -89,7 +109,7 @@ enum TurnControlMode {
 | 节点或工作流结束后追问 | `NonRuntimeControlled` | 保持既有完成事实 |
 | 用户点击“继续工作流” | `RuntimeControlled` | 恢复当前 attempt 并继续执行链 |
 
-### 4.3 Prompt 渲染模式与控制模式分工
+### 4.4 Prompt 渲染模式与控制模式分工
 
 继续复用现有 `UserPromptRenderMode`：
 
@@ -109,7 +129,7 @@ enum UserPromptRenderMode {
 - `UserMessage` 不再隐含 runtime continue；停止后的用户消息、Direct 消息、人工 check 追问和完成后追问都可以是 `UserMessage + NonRuntimeControlled`。
 - 点击“继续工作流”使用 `RuntimeResume + RuntimeControlled`；`WorkflowResume` 继续保留给工作流内部的普通 session 继承，不由 composer 消息隐式触发。
 
-### 4.4 控制模式切换事实与会话游标
+### 4.5 控制模式切换事实与会话游标
 
 切换提示不能靠 `stop` 次数推断。最新切换直接记录为 ACP session metadata；被接受的 prompt event 同步携带该 metadata，形成可恢复的轻量会话游标：
 
@@ -154,6 +174,8 @@ Node.outcome     = None
 AI-DYNAMIC 单 leaf 停止继续复用 `DynamicNodeStatus::Paused + ProcessInterrupted`；父 graph / run 是否暂停仍按现有 active leaf 聚合规则决定。
 
 停止只改变业务执行状态并取消当前 ACP prompt，不关闭 ACP session，不删除 worker ref，也不新增“对话中”状态。
+
+该可恢复暂停语义只对 `run_mode.is_orchestrated() == true` 投影为 Runtime continue。Direct 停止仍可复用底层暂停容器与 cancelled ACP snapshot，但生命周期 VM 必须输出 `continueKind = null`、`runtime.continuable = false`、`composer.submitTarget = acp-prompt`。Direct 在 ACP session 尚未完整建立时停止，也不得进入“会话发起中断、只能重跑”的工作流 shell；停止落盘的 cancelled session shell 继续提供普通 composer，并由下一条消息建立或恢复 ACP 会话。
 
 ### 5.2 PostTurn finalize
 
@@ -245,6 +267,8 @@ continue workflow button
 
 工作流停止后，composer 继续负责普通会话；界面同时提供明确的“继续工作流”按钮。只有该按钮可以把当前 attempt 从可继续暂停态恢复为 Runtime 控制。
 
+该按钮只在 `run_mode.is_orchestrated()` 且后端 lifecycle 返回 `continueKind=action` 时出现，位置固定在 prompt-kit composer 的 action 行、发送按钮旁边。前端不得根据 stop command 成功自行合成 `continuable=true` 或 `continueKind=action`；停止响应和后续刷新都消费后端权威 lifecycle。Direct、Runtime active、manual check 和不可恢复暂停均不展示该按钮。
+
 不解析普通用户消息，不识别“继续”“没问题了”等关键词，也不在 Agent 回复结束后自动恢复。
 
 ### 7.2 NonRuntime → Runtime 继续提示
@@ -315,6 +339,7 @@ RuntimeControlled
 
 - RuntimeControlled prompt：继续要求对应 attempt 为当前 `Running`。
 - 用户停止后的 NonRuntime prompt：允许对应 attempt 为当前 `Paused + ProcessInterrupted`，但仍必须属于同一 current attempt / dynamic leaf。
+- Direct prompt：始终按 NonRuntime 普通消息许可；停止前后都不要求调用 `continue_conversation_runtime`。
 - 人工 check 与 completed follow-up：继续复用各自现有非 Runtime ACP prompt 许可。
 - 用户再次点击停止：通过现有 active prompt cancel 取消当前 Agent 回复；业务状态继续保持 Paused。
 - 应用关闭、session 删除、attempt 切换或显式 cancel 仍然可以终止该 prompt，不能因为允许 paused conversation 而失去取消能力。

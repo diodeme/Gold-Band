@@ -1858,8 +1858,11 @@ fn emit_run_metrics_fact(
         .join("observability")
         .join(&task_uuid)
         .join(super::observability::OBSERVABILITY_SNAPSHOT_FILE);
-    let state = app.update_observability_state(&task_uuid, path, |state| {
-        state.next_revision();
+    app.init_metric_revision_from_disk(&task_uuid, &path);
+    let revision = app.next_metric_revision(&task_uuid);
+    let state = app.update_observability_state(&task_uuid, path.clone(), |state| {
+        state.event_revision = revision;
+
         if event_type == super::observability::LifecycleEventType::ExecutionPaused {
             state.record_pause(true);
         }
@@ -1888,7 +1891,7 @@ fn emit_run_metrics_fact(
         .is_some_and(|node| node.node_type == crate::domain::NodeType::AiDynamic);
     let mut fact = super::observability::MetricsLifecycleFact::new(
         event_type,
-        state.event_revision,
+        revision,
         occurred_at,
         metrics_user_id(),
         app.paths.repo_root.to_string(),

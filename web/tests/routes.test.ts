@@ -32,6 +32,14 @@ describe('desktop entry routing', () => {
     });
   });
 
+  it('round-trips the dedicated scheduled task creation route', () => {
+    const path = '/chat/scheduled-tasks/new';
+    const page = routeFromPath(path).conversationPage;
+
+    expect(page).toEqual({ kind: 'scheduled-task-create' });
+    expect(pathFromRoute('task-orchestration', taskListPage, page)).toBe(path);
+  });
+
   it('round-trips scheduled occurrence run links with round and attempt selection', () => {
     const path = '/chat/projects/project-a/tasks/task-a/runs/run-a/rounds/round-a/attempts/attempt-a';
     const page = routeFromPath(path).conversationPage;

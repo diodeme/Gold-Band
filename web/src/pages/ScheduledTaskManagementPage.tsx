@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Switch } from '@/components/ui/switch';
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { ScheduledTaskDialog, type ScheduledTaskInitialConfig } from '@/components/conversation/ScheduledTaskDialog';
 import { formatScheduledSchedule, scheduledScheduleTimezone } from '@/lib/scheduled-task-formatting';
 import type { ScheduledTaskEditVm, ScheduledTaskVm } from '@/types';
@@ -115,7 +116,7 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
   });
 
   return (
-    <main className="mx-auto flex h-full w-full max-w-6xl flex-col overflow-auto px-6 py-8">
+    <main className="flex h-full w-full min-w-0 flex-col overflow-auto px-6 py-8">
       <header className="mb-7 flex flex-col items-start justify-between gap-4 md:flex-row md:items-end">
         <div className="flex items-center gap-3">
           <AlarmClock className="size-5 text-primary" />
@@ -162,33 +163,33 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
       {loading ? <div className="border-y border-border/60 py-12 text-center text-sm text-muted-foreground">{t('scheduled.management.loading')}</div> : null}
       {!loading && visibleTasks.length === 0 ? <div className="border-y border-border/60 py-14 text-center text-sm text-muted-foreground">{t('scheduled.management.empty')}</div> : null}
       {!loading && visibleTasks.length > 0 ? (
-        <section className="min-w-[980px]">
-          <div className="grid grid-cols-[minmax(260px,1.35fr)_minmax(170px,1fr)_minmax(150px,0.9fr)_minmax(170px,1fr)_auto_auto] items-center gap-4 border-b border-border/60 px-3 pb-3 text-xs text-muted-foreground">
+        <section className="w-full min-w-0">
+          <div className="hidden grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,1fr)_2.75rem_2rem] items-center gap-4 border-b border-border/60 px-3 pb-3 text-xs text-muted-foreground md:grid">
             <span>{t('scheduled.management.columns.task')}</span><span>{t('scheduled.management.columns.schedule')}</span><span>{t('scheduled.management.columns.next')}</span><span>{t('scheduled.management.columns.recent')}</span><span>{t('scheduled.management.columns.enabled')}</span><span />
           </div>
           <div className="divide-y divide-border/60">
             {visibleTasks.map((task) => (
               <div
                 key={task.id}
-                className="grid cursor-pointer grid-cols-[minmax(260px,1.35fr)_minmax(170px,1fr)_minmax(150px,0.9fr)_minmax(170px,1fr)_auto_auto] items-center gap-4 px-3 py-4 transition-colors hover:bg-muted/30"
+                className="grid cursor-pointer grid-cols-[minmax(0,1fr)_2.75rem_2rem] items-center gap-3 px-3 py-4 transition-colors hover:bg-muted/30 md:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,1fr)_2.75rem_2rem] md:gap-4"
                 onClick={() => onOpenDetail?.(task)}
               >
                 <div className="flex min-w-0 items-center gap-3">
                   <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary"><AlarmClock className="size-4" /></span>
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium">{task.title || t('scheduled.unnamed')}</div>
-                    <div className="mt-1 truncate text-xs text-muted-foreground">{modeLabels[task.mode] ?? task.mode}{task.mode === 'direct' ? ` · ${t(`scheduled.session.${task.sessionPolicy}`)}` : ''}</div>
+                    <div className="mt-1 truncate text-xs text-muted-foreground">{modeLabels[task.mode] ?? task.mode}{task.mode === 'direct' ? ` · ${t(`scheduled.session.${task.sessionPolicy}`)}` : ''}<span className="md:hidden"> · {formatScheduledSchedule(t, task.schedule)}</span></div>
                   </div>
                 </div>
-                <div className="min-w-0 text-xs">
+                <div className="hidden min-w-0 text-xs md:block">
                   <div className="truncate font-medium text-foreground">{formatScheduledSchedule(t, task.schedule)}</div>
                   <div className="mt-1 truncate text-muted-foreground">{scheduledScheduleTimezone(task.schedule)}</div>
                 </div>
-                <div className="min-w-0 text-xs">
+                <div className="hidden min-w-0 text-xs md:block">
                   <div className="truncate font-medium text-foreground">{task.enabled ? (formatTimestamp(task.nextAt) || t('scheduled.management.completed')) : t('scheduled.management.disabled')}</div>
                   <div className="mt-1 text-muted-foreground">{task.enabled ? t('scheduled.management.waiting') : t('scheduled.management.taskDisabled')}</div>
                 </div>
-                <div className="min-w-0 text-xs">
+                <div className="hidden min-w-0 text-xs md:block">
                   <div className="truncate font-medium text-foreground">{task.lastTriggerAt ? formatTimestamp(task.lastTriggerAt) : t('scheduled.neverRun')}</div>
                   <div className="mt-1 truncate text-muted-foreground">{task.lastTriggerStatus === 'skipped' ? t('scheduled.management.queueSkipped') : scheduledTaskStatusLabel(t, task.status)}</div>
                 </div>
@@ -217,34 +218,41 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
           </div>
         </section>
       ) : null}
-      <ScheduledTaskDialog
-        open={Boolean(editing)}
-        onOpenChange={(open) => { if (!open) setEditing(null); }}
-        allowContinuous={editing?.definition.runMode === 'direct'}
-        initialConfig={editing ? editConfig(editing.definition) : null}
-        initialContent={editing?.definition.content}
-        showContent
-        onSave={async (config, content) => {
-          if (!editing) return;
-          const definition = editing.definition;
-          await updateScheduledTask({
-            scheduledTaskId: definition.scheduledTaskId,
-            projectId: definition.projectId,
-            expectedUpdatedAt: definition.expectedUpdatedAt,
-            content: content ?? definition.content,
-            runMode: definition.runMode,
-            workflowTemplateId: definition.workflowTemplateId,
-            includeInterview: definition.includeInterview,
-            directConfig: definition.directConfig,
-            autoConfig: definition.autoConfig,
-            schedule: config.schedule,
-            overlapPolicy: config.overlapPolicy,
-            sessionPolicy: config.sessionPolicy,
-          });
-          setEditing(null);
-          await loadTasks();
-        }}
-      />
+      <Sheet open={Boolean(editing)} onOpenChange={(open) => { if (!open) setEditing(null); }}>
+        <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey="scheduled-task-management/edit" defaultSize={720} minSize={520} maxSize={960} closeLabel={t('common.close')}>
+          <SheetTitle className="sr-only">{t('scheduled.dialog.title')}</SheetTitle>
+          {editing ? (
+            <ScheduledTaskDialog
+              open
+              presentation="workspace"
+              onOpenChange={(open) => { if (!open) setEditing(null); }}
+              allowContinuous={editing.definition.runMode === 'direct'}
+              initialConfig={editConfig(editing.definition)}
+              initialContent={editing.definition.content}
+              showContent
+              onSave={async (config, content) => {
+                const definition = editing.definition;
+                await updateScheduledTask({
+                  scheduledTaskId: definition.scheduledTaskId,
+                  projectId: definition.projectId,
+                  expectedUpdatedAt: definition.expectedUpdatedAt,
+                  content: content ?? definition.content,
+                  runMode: definition.runMode,
+                  workflowTemplateId: definition.workflowTemplateId,
+                  includeInterview: definition.includeInterview,
+                  directConfig: definition.directConfig,
+                  autoConfig: definition.autoConfig,
+                  schedule: config.schedule,
+                  overlapPolicy: config.overlapPolicy,
+                  sessionPolicy: config.sessionPolicy,
+                });
+                setEditing(null);
+                await loadTasks();
+              }}
+            />
+          ) : null}
+        </SheetContent>
+      </Sheet>
       <AlertDialog open={Boolean(deleting)} onOpenChange={(open) => { if (!open) setDeleting(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>

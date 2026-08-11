@@ -13,7 +13,7 @@
 
 提交定时任务前沿用当前模式的 Agent、Workflow 和附件校验；校验失败时在 Composer 内显示具体原因，不提交空定义。配置对象以扁平 `kind` 标签传递，确保单次、重复、每隔和 Cron 使用同一条创建链路。
 
-实现版式与原型保持一致：普通态使用发送按钮右侧的 ChevronDown 菜单进入定时创建态；定时创建态只显示 AlarmClock 创建按钮和 Settings 齿轮，并在 Composer 上方显示计划摘要与退出按钮。配置面板采用“单次 / 重复 / Cron”三段式标签；重复面板内部选择每小时、每天、工作日、每周（星期多选）或每隔（分钟/小时）。
+普通态使用发送按钮右侧的 ChevronDown 菜单进入定时创建态；普通发送与定时创建必须使用同一套紧凑 split-button：主操作与箭头共享背景和圆角外轮廓，中间不显示分隔线，箭头区固定为 24px 的紧凑图标宽度，不得渲染成独立的大号浅色按钮。两个主操作复用同一提交资格：正文为空、正在提交或附件处理中均显示 shadcn Button 原生禁用态；定时模式的 ChevronDown 与配置按钮继续可用，以便切回发送或提前配置计划。定时创建态保留 AlarmClock 主操作和配置入口，并在 Composer 上方显示计划摘要与退出按钮。配置面板采用“单次 / 重复 / Cron”三段式标签；重复面板内部选择每小时、每天、工作日、每周（星期多选）或每隔（分钟/小时）。
 
 普通 composer 保持拆分发送按钮：
 
@@ -24,18 +24,22 @@
 ChevronDown 菜单中提供 `创建定时任务`。选择后进入定时创建状态：
 
 ```text
-[AlarmClock 创建定时任务] [Settings]
+[AlarmClock 创建定时任务] [ChevronDown] [Settings]
 ```
 
 - 主按钮保存定时任务定义并清空 composer。
+- 定时创建按钮必须带同款 ChevronDown；菜单可切回普通发送，切换时不提交正文，并清理未确认的定时配置草稿。
 - 齿轮只打开定时配置，不重复显示 Agent、workspace、model、thought level、permission 等已有控制。
+- 新建定时任务的配置不使用模态弹窗：点击配置入口后，在当前会话草稿作用域的右侧工作区打开唯一 `scheduled-task-config` Tab。重复打开只激活同一 Tab；完成、取消、退出定时模式或创建成功时按对应语义关闭该 Tab。配置草稿仍由 composer 生命周期统一持有，Tab 只是编辑视图。
+- 管理页“创建定时任务”不得只跳转普通会话主页；它导航到类型化的 `scheduled-task-create` 页面状态和 `/chat/scheduled-tasks/new` deep link。该页面复用会话主页 Composer，但初始即进入定时创建态并打开右侧配置 Tab；退出定时模式或创建成功后回到普通 `/chat`，直接打开普通主页不得被影响。
+- 2026-08-11 实现验收：内置浏览器从 `/chat/scheduled-tasks` 点击创建入口后确认 URL、定时创建模式和右侧配置 Tab 同步初始化；从模式菜单切回发送后确认 URL 返回 `/chat`，重新加载普通主页仍为普通发送模式，控制台无警告或错误。
 - 配置摘要显示在 composer 附近，带 AlarmClock 图标和关闭按钮；关闭只退出定时创建状态，不发送内容。
 - 定时模式创建不会立即执行；立即执行作为管理页的独立操作创建 manual occurrence，不改变下一次计划时间。
 - composer 当前正文就是定时任务 instruction；附件随创建动作复制到定时任务输入目录。
 
 ## 3. 配置内容
 
-配置对话框只负责：
+配置编辑器只负责：
 
 - 单次日期、时间、时区
 - 重复预设：每小时、每天、工作日、每周
@@ -47,9 +51,10 @@ ChevronDown 菜单中提供 `创建定时任务`。选择后进入定时创建�
 
 Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 
-配置对话框使用单一 validation result 控制保存按钮，并在对应字段下即时显示本地化错误：
+配置编辑器使用单一 validation result 控制保存按钮，并在对应字段下即时显示本地化错误。新建流程呈现在右侧工作区 Tab；管理页与详情页编辑既有任务时使用项目统一的可调整宽度右侧 Sheet 抽屉，不再显示模态 Dialog：
 
-- 新建时默认使用系统 IANA 时区，解析失败回退 `UTC`；编辑时将规范化 UTC `at` 按任务原时区还原为本地日期和时间；
+- 首次新建默认使用用户电脑的系统 IANA 时区，解析失败回退 `UTC`；用户主动选择时区后记忆最近一次合法选择，后续新建默认复用；编辑既有任务时仍先按任务自身时区恢复，只有用户再次更改才更新最近选择；
+- 时间选择使用 shadcn `Input + Popover + ScrollArea + Button` 组合：主输入框支持直接输入 `HH:mm`，并兼容在 Enter 或失焦时把 `H:m`、三/四位紧凑数字规范化为补零后的 24 小时制；非法小时或分钟只标记当前输入，不得覆盖已提交值。时钟按钮打开小时/分钟列表，输入值与列表选中态双向同步，选中态消费 `accent/accent-foreground` 主题 token；不使用 WebView 原生 `input[type=time]`，避免系统选区色、分钟循环断层和原生 picker 自动滚动回跳；
 - DST 不存在时间禁用保存；DST 重复时间显示 Earlier/Later 分段选择及两个 UTC offset，默认 Earlier；
 - Cron 只接受六字段表达式；每周至少选择一天；Every 只接受正整数；
 - 配置合法时提交独立 `ScheduledScheduleInput`，不在前端猜测 offset 或生成持久化 UTC `ScheduleSpec`；
@@ -68,7 +73,9 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 - 立即执行和查看详情/历史入口
 - 更多菜单
 
-编辑使用抽屉或对话框。任务不设置独立名称字段；标题始终取 instruction 第一条非空行。
+管理页列表必须占满主工作区可用宽度，不设置页面级最大宽度，也不使用迫使横向溢出的固定最小表宽。桌面宽度下各列使用 `minmax(0, fr)` 比例分配并允许内容截断；窄屏隐藏次要时间列，将计划摘要合并到任务信息中，只保留任务、启用开关和更多菜单。
+
+编辑统一使用右侧抽屉。任务不设置独立名称字段；标题始终取 instruction 第一条非空行。
 
 详情页显示 occurrence 历史、Task/Run/ACP 跳转、下次执行时间、最近错误、运行次数和重试次数。`attention_required` 状态直接提供“进入会话回答”入口。
 
@@ -107,7 +114,7 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 ## 9. 统一完善交互（2026-08-05）
 
 - “保持系统唤醒”、完成通知和历史保留天数只在设置页提供；定时任务管理页专注任务列表、筛选与任务操作，不重复展示全局运行设置。
-- 时区选择展示运行环境支持的完整 IANA 时区，默认系统时区，不再限制为少数硬编码选项。
+- 时区选择展示运行环境支持的完整 IANA 时区，首次默认系统时区，之后默认最近一次选择，不再限制为少数硬编码选项。
 - 详情页默认展示全部 occurrence，包括 `skipped`、`missed`、`failed` 和 `attention_required`；状态筛选只改变视图，不删除诊断记录。
 - occurrence 有 Task、Run 或 ACP session 引用时提供对应跳转；需要用户回答时直接进入原问题位置。
 - 完成、失败、需要处理和聚合后的错过通知复用系统通知；点击后 deep link 到最有行动价值的目标。
@@ -124,7 +131,7 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 - occurrence 同时具备 Task 与 Run 链接时显示图标跳转；存在 Round/Attempt 时写入 conversation deep link，目标 Run 加载后直接选择对应 session attempt。
 - `ScheduledRuntimeSettings` 只挂载在设置页，使用 shadcn/ui `Switch` 与数值 `Input` 管理保持唤醒、完成通知和 `1..=3650` 天保留期；管理页不提供第二入口。
 - 时区控件使用 `Intl.supportedValuesOf('timeZone')`，并以 `@vvo/tzdb` 作为不支持该 API 时的维护型数据回退；列表去重、排序并始终包含 UTC 与系统时区。
-- 窄屏（小于等于 767px）自动收起 Shell 侧栏；管理页 header 改为纵向信息区与可换行操作区，避免固定桌面侧栏或筛选工具把任务标题、开关标签压成逐字换行。
+- 窄屏由工作区临时自动收起 Shell 侧栏；不得把响应式折叠写入 `gold-band-sidebar-collapsed` 手动偏好。窗口拉宽时按既有状态机先恢复右侧工作区、再恢复用户原本展开的左侧栏。管理页 header 改为纵向信息区与可换行操作区，避免固定桌面侧栏或筛选工具把任务标题、开关标签压成逐字换行。
 - 详情 deep link 必须在会话导航回调完成初始化后才求值页面内容；直接点击任务行和通知跳转都不得因回调暂时性死区导致 React 根节点崩溃。
 - Tooltip、Dialog 等跨页面 shadcn/Radix 基础上下文由应用根部统一提供，页面只声明具体控件。详情页即使存在可跳转的 occurrence 历史，也不得因缺少局部 Provider 卸载 React 根节点；桌面验收必须覆盖“存在执行历史后从列表进入详情”的路径。
 

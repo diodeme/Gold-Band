@@ -225,7 +225,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
           />
           <SidebarButton
             compact
-            active={active.kind === 'scheduled-tasks'}
+            active={active.kind === 'scheduled-tasks' || active.kind === 'scheduled-task-create' || active.kind === 'scheduled-task-detail'}
             icon={<AlarmClock />}
             label="定时任务"
             onClick={() => onSelect({ kind: 'scheduled-tasks' })}

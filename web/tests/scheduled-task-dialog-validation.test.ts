@@ -89,5 +89,8 @@ describe('scheduled task dialog authoring contract', () => {
     expect(source).toContain("scheduled.dialog.disambiguation.earlier");
     expect(source).toContain("scheduled.dialog.disambiguation.later");
     expect(source).toContain('aria-describedby={undefined}');
+    expect(source).toContain('ScheduledTimePicker');
+    expect(source).not.toContain('type="time"');
+    expect(source).toContain('rememberScheduledTimezone(value)');
   });
 });

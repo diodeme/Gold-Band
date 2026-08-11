@@ -149,7 +149,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     rightWorkspaceLayout.maxWidth,
   );
   const rightWorkspaceScope = useMemo(() => {
-    if (props.active.kind === 'conversation-home') {
+    if (props.active.kind === 'conversation-home' || props.active.kind === 'scheduled-task-create') {
       return createDraftConversationWorkspaceScope(props.activeWorkspaceId ?? 'default');
     }
     if (props.active.kind === 'conversation-run') {

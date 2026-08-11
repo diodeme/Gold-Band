@@ -34,6 +34,11 @@ import { formatScheduledScheduleInput } from '@/lib/scheduled-task-formatting';
 import { PromptInput, PromptInputTextarea } from '@/components/prompt-kit/prompt-input';
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
+import {
+  scheduledTaskConfigWorkspaceResourceKey,
+  useOptionalRightWorkspace,
+  type RightWorkspaceResource,
+} from '@/components/workspace/right-workspace-context';
 
 interface ConversationComposerProps {
   projectId: string;
@@ -44,6 +49,7 @@ interface ConversationComposerProps {
   workflowTemplates: WorkflowTemplateStore | null;
   profiles: ProfileVm[];
   busy: boolean;
+  initialScheduledMode?: boolean;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
@@ -51,6 +57,7 @@ interface ConversationComposerProps {
   onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
+  onScheduledModeExit?: () => void;
 }
 
 export function ConversationComposer({
@@ -62,6 +69,7 @@ export function ConversationComposer({
   workflowTemplates,
   profiles,
   busy,
+  initialScheduledMode = false,
   onRunModeChange,
   onLoadProfiles,
   onSubmit,
@@ -69,6 +77,7 @@ export function ConversationComposer({
   onOpenAgentManagement,
   onOpenRunModeSettings,
   onWorkspaceChange,
+  onScheduledModeExit,
 }: ConversationComposerProps) {
   const { t } = useTranslation();
   const composerDraft = useConversationComposerDraft();
@@ -86,9 +95,11 @@ export function ConversationComposer({
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
   const [submittingAttachments, setSubmittingAttachments] = useState(false);
-  const [scheduledDialogOpen, setScheduledDialogOpen] = useState(false);
-  const [scheduledMode, setScheduledMode] = useState(false);
+  const [scheduledMode, setScheduledMode] = useState(initialScheduledMode);
   const [scheduledConfig, setScheduledConfig] = useState<ScheduledTaskConfig | null>(null);
+  const previousInitialScheduledModeRef = useRef(initialScheduledMode);
+  const initialScheduledModeOpenedRef = useRef(false);
+  const rightWorkspace = useOptionalRightWorkspace();
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const {
     attachments,
@@ -119,6 +130,70 @@ export function ConversationComposer({
     ? formatScheduledScheduleInput(t, scheduledConfig.schedule)
     : t('scheduled.composer.unconfigured');
   const canSubmit = content.trim().length > 0 && !busy && !submittingAttachments;
+  const canCreateScheduledTask = canSubmit && Boolean(onCreateScheduledTask);
+  const scheduledConfigResourceKey = rightWorkspace?.scopeKey
+    ? scheduledTaskConfigWorkspaceResourceKey(rightWorkspace.scopeKey)
+    : null;
+
+  const closeScheduledConfig = useCallback(() => {
+    if (scheduledConfigResourceKey) void rightWorkspace?.closeTab(scheduledConfigResourceKey);
+  }, [rightWorkspace?.closeTab, scheduledConfigResourceKey]);
+
+  const openScheduledConfig = useCallback(() => {
+    if (!rightWorkspace?.scopeKey || !scheduledConfigResourceKey) return;
+    setScheduledMode(true);
+    void rightWorkspace.openResource({
+      kind: 'scheduled-task-config',
+      key: scheduledConfigResourceKey,
+      scopeKey: rightWorkspace.scopeKey,
+      title: t('scheduled.dialog.title'),
+      description: t('scheduled.composer.configure'),
+      attention: false,
+    });
+  }, [rightWorkspace, scheduledConfigResourceKey, t]);
+
+  const exitScheduledMode = useCallback(() => {
+    setScheduledMode(false);
+    setScheduledConfig(null);
+    closeScheduledConfig();
+    onScheduledModeExit?.();
+  }, [closeScheduledConfig, onScheduledModeExit]);
+
+  useEffect(() => {
+    const wasInitiallyScheduled = previousInitialScheduledModeRef.current;
+    previousInitialScheduledModeRef.current = initialScheduledMode;
+    if (!initialScheduledMode) {
+      initialScheduledModeOpenedRef.current = false;
+      if (wasInitiallyScheduled) {
+        setScheduledMode(false);
+        setScheduledConfig(null);
+        closeScheduledConfig();
+      }
+      return;
+    }
+    setScheduledMode(true);
+    if (initialScheduledModeOpenedRef.current || !rightWorkspace?.scopeKey) return;
+    initialScheduledModeOpenedRef.current = true;
+    openScheduledConfig();
+  }, [closeScheduledConfig, initialScheduledMode, openScheduledConfig, rightWorkspace?.scopeKey]);
+
+  const renderScheduledConfig = useCallback((resource: RightWorkspaceResource) => (
+    resource.kind === 'scheduled-task-config' ? (
+      <ScheduledTaskDialog
+        allowContinuous={isDirect}
+        open
+        presentation="workspace"
+        onOpenChange={(open) => { if (!open) closeScheduledConfig(); }}
+        draftConfig={scheduledConfig}
+        onSave={async (config) => { setScheduledConfig(config); }}
+      />
+    ) : null
+  ), [closeScheduledConfig, isDirect, scheduledConfig]);
+
+  useEffect(() => {
+    if (!rightWorkspace) return;
+    return rightWorkspace.registerResourceRenderer('scheduled-task-config', renderScheduledConfig);
+  }, [renderScheduledConfig, rightWorkspace?.registerResourceRenderer]);
   const agentOptions = useMemo(() => selectableAgentOptions(agentRegistry, t), [agentRegistry, t]);
   const directAgentGroups = useMemo(() => groupSelectableAgentOptions(agentOptions), [agentOptions]);
   const agents = useMemo(
@@ -357,9 +432,9 @@ export function ConversationComposer({
   });
 
   const createScheduledTask = async () => {
-    if (busy || submittingAttachments || !onCreateScheduledTask) return;
+    if (!canCreateScheduledTask || !onCreateScheduledTask) return;
     if (!scheduledConfig) {
-      setScheduledDialogOpen(true);
+      openScheduledConfig();
       return;
     }
     const inputBase = scheduledConversationInput();
@@ -379,8 +454,7 @@ export function ConversationComposer({
       const paths = await resolveAttachmentPaths();
       await onCreateScheduledTask({ ...inputBase, ...scheduledConfig, attachmentPaths: paths.length ? paths : undefined });
       composerDraft.reset();
-      setScheduledMode(false);
-      setScheduledConfig(null);
+      exitScheduledMode();
       setRunModeError(null);
     } catch (error) {
       setRunModeError(displayAppError(t, error));
@@ -404,7 +478,7 @@ export function ConversationComposer({
         className={CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName}
         {...dropZoneHandlers}
       >
-        {scheduledMode ? <div className="flex min-h-8 items-center gap-2 px-2 text-xs text-muted-foreground"><AlarmClock className="size-4 text-primary" /><span className="truncate"><strong className="font-medium text-foreground">{scheduledSummary}</strong> · {t('scheduled.composer.creating')}</span><Button variant="ghost" size="icon" className="ml-auto size-7 rounded-md" aria-label={t('scheduled.composer.exit')} title={t('scheduled.composer.exit')} onClick={() => { setScheduledMode(false); setScheduledConfig(null); }}><X className="size-3.5" /></Button></div> : null}
+        {scheduledMode ? <div className="flex min-h-8 items-center gap-2 px-2 text-xs text-muted-foreground"><AlarmClock className="size-4 text-primary" /><span className="truncate"><strong className="font-medium text-foreground">{scheduledSummary}</strong> · {t('scheduled.composer.creating')}</span><Button variant="ghost" size="icon" className="ml-auto size-7 rounded-md" aria-label={t('scheduled.composer.exit')} title={t('scheduled.composer.exit')} onClick={exitScheduledMode}><X className="size-3.5" /></Button></div> : null}
         {/* Main text input */}
         <PromptInput
           value={visibleContent}
@@ -551,16 +625,22 @@ export function ConversationComposer({
                 </>
               ) : null}
               {scheduledMode ? (
-                <div className="flex items-center gap-1">
-                  <Button size="sm" className="h-8 shrink-0 gap-1.5 rounded-full px-3" disabled={busy || submittingAttachments || !onCreateScheduledTask} onClick={() => void createScheduledTask()}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</Button>
-                  <Button variant="ghost" size="icon" className="size-8 rounded-full" aria-label={t('scheduled.composer.configure')} title={t('scheduled.composer.configure')} onClick={() => setScheduledDialogOpen(true)}><Settings2 className="size-3.5" /></Button>
+                <div className="flex min-w-0 items-center gap-1">
+                  <div className="flex min-w-0 flex-1 overflow-hidden rounded-full bg-primary text-primary-foreground">
+                    <Button size="sm" className="h-8 min-w-0 flex-1 rounded-none px-3 shadow-none" disabled={!canCreateScheduledTask} onClick={() => void createScheduledTask()}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild><Button size="sm" className="h-8 w-6 rounded-none px-0 shadow-none" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-2.5" /></Button></DropdownMenuTrigger>
+                      <DropdownMenuContent align="end"><DropdownMenuItem onSelect={exitScheduledMode}><Send className="size-3.5" />{t('acp.send')}</DropdownMenuItem></DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                  <Button variant="ghost" size="icon-sm" className="rounded-full" aria-label={t('scheduled.composer.configure')} title={t('scheduled.composer.configure')} onClick={openScheduledConfig}><Settings2 className="size-3.5" /></Button>
                 </div>
               ) : (
-                <div className="flex items-center">
-                  <Button size="sm" className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName} rounded-r-none`} disabled={!canSubmit} onClick={() => { void handleSubmit(); }}><Send className="size-3.5" />{t('acp.send')}</Button>
+                <div className="flex min-w-0 overflow-hidden rounded-full bg-primary text-primary-foreground">
+                  <Button size="sm" className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName} min-w-0 flex-1 rounded-none shadow-none`} disabled={!canSubmit} onClick={() => { void handleSubmit(); }}><Send className="size-3.5" />{t('acp.send')}</Button>
                   <DropdownMenu>
-                    <DropdownMenuTrigger asChild><Button size="sm" variant="secondary" className="h-8 rounded-l-none rounded-r-full px-2" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-3.5" /></Button></DropdownMenuTrigger>
-                    <DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => { setScheduledMode(true); setScheduledConfig(null); }}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</DropdownMenuItem></DropdownMenuContent>
+                    <DropdownMenuTrigger asChild><Button size="sm" className="h-8 w-6 rounded-none px-0 shadow-none" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-2.5" /></Button></DropdownMenuTrigger>
+                    <DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => { setScheduledMode(true); setScheduledConfig(null); openScheduledConfig(); }}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</DropdownMenuItem></DropdownMenuContent>
                   </DropdownMenu>
                 </div>
               )}
@@ -760,8 +840,6 @@ export function ConversationComposer({
           </div>
         ) : null}
       </div>
-      {onCreateScheduledTask ? <ScheduledTaskDialog allowContinuous={isDirect} open={scheduledDialogOpen} onOpenChange={setScheduledDialogOpen} draftConfig={scheduledConfig} onSave={async (config) => { setScheduledConfig(config); }} /> : null}
-
       <AttachmentPreviewDialogs
         previewImage={previewImage}
         textPreview={textPreview}

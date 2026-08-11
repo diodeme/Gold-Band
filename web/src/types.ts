@@ -1770,6 +1770,7 @@ export type DesktopUiMode = 'conversation' | 'workbench';
 
 export type ConversationPage =
   | { kind: 'conversation-home' }
+  | { kind: 'scheduled-task-create' }
   | { kind: 'conversation-run'; projectId: string; taskId: string; runId: string; roundId?: string; attemptId?: string }
   | { kind: 'run-mode-management' }
   | { kind: 'agents' }

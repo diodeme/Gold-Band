@@ -84,6 +84,16 @@ describe('responsive desktop layout contracts', () => {
     expect(contextSource.match(/CardFooter className="[^"]*flex-wrap/g)?.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('keeps profile import settings and results in one resizable sheet workflow', () => {
+    expect(contextSource).toContain("profileImport.surface === 'result' ? 'profile-import-result-sheet' : 'profile-import-settings-sheet'");
+    expect(contextSource.match(/resizeStorageKey="context-management\/profile-import"/g)).toHaveLength(1);
+    expect(contextSource).toContain('data-slot="profile-import-result-list"');
+    expect(contextSource).toContain('className="min-h-0 w-full flex-1 overflow-hidden"');
+    expect(contextSource).toContain('sm:grid-cols-[minmax(0,1fr)_auto]');
+    expect(contextSource).toContain('break-all text-xs text-muted-foreground');
+    expect(contextSource).toContain("returnToImportResult={profileImport.surface === 'editing'}");
+  });
+
   it('uses nested container widths for settings sections and theme cards', () => {
     expect(settingsSource).toContain('@container/settings-section');
     expect(settingsSource).toContain('@container/settings-content');

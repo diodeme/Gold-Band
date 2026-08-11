@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
-import { Check, ChevronsUpDown, CircleHelp, Edit, Eye, FolderOpen, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { ArrowLeft, Check, ChevronsUpDown, CircleHelp, Edit, Eye, FolderOpen, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import {
@@ -383,21 +383,34 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
     setDeleteConfirmationError(null);
   };
 
+  const closeProfileSheet = () => {
+    setSheetMode(null);
+    setSelectedProfile(null);
+    if (profileImport.surface === 'editing') {
+      dispatchProfileImport({ type: 'resume-result' });
+    }
+  };
+
   const saveProfile = async (input: ProfileInput) => {
     if (sheetMode === 'edit' && selectedProfile && !selectedProfile.isBuiltIn) {
-      await updateProfile(selectedProfile.id, input);
+      const savedProfile = await updateProfile(selectedProfile.id, input);
+      if (profileImport.surface === 'editing') {
+        dispatchProfileImport({
+          type: 'profile-updated',
+          importedId: savedProfile.id,
+          name: savedProfile.name,
+        });
+      }
     } else {
       await createProfile(input);
     }
-    setSheetMode(null);
-    setSelectedProfile(null);
+    closeProfileSheet();
     await refresh();
   };
 
   const saveProfileAsNew = async (input: ProfileInput) => {
     await createProfile(input);
-    setSheetMode(null);
-    setSelectedProfile(null);
+    closeProfileSheet();
     await refresh();
   };
 
@@ -561,10 +574,10 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
       <ProfileSheet
         mode={sheetMode}
         profile={selectedProfile}
+        returnToImportResult={profileImport.surface === 'editing'}
         onOpenChange={(open) => {
           if (!open) {
-            setSheetMode(null);
-            setSelectedProfile(null);
+            closeProfileSheet();
           }
         }}
         onSave={saveProfile}
@@ -608,51 +621,65 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* ── Profile Import Dialogs ── */}
-      <Dialog
-        open={profileImport.settingsOpen}
+      {/* ── Profile Import Sheet Workflow ── */}
+      <Sheet
+        modal={false}
+        open={profileImport.surface === 'settings' || profileImport.surface === 'result'}
         onOpenChange={(open) => {
-          if (!profileImport.importing) {
-            dispatchProfileImport({ type: open ? 'open-settings' : 'close-settings' });
-          }
+          if (open || profileImport.importing) return;
+          dispatchProfileImport({ type: profileImport.surface === 'result' ? 'close-result' : 'close-settings' });
         }}
       >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{t('contextManagement.importProfile')}</DialogTitle>
-            <DialogDescription>{t('contextManagement.importSettingsDescription')}</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-1">
-            <div className="flex items-start justify-between gap-4 rounded-lg border px-3 py-3">
-              <div className="space-y-1">
-                <div className="text-sm font-medium">{t('contextManagement.dynamicTemplate')}</div>
-                <p className="text-xs text-muted-foreground">{t('contextManagement.importDynamicTemplateDescription')}</p>
-              </div>
-              <Switch
-                checked={profileImport.dynamicTemplate}
-                onCheckedChange={(enabled) => dispatchProfileImport({ type: 'set-dynamic-template', enabled })}
-              />
-            </div>
-            {profileImport.error ? (
-              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{profileImport.error}</div>
-            ) : null}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" disabled={profileImport.importing} onClick={() => dispatchProfileImport({ type: 'close-settings' })}>{t('common.close')}</Button>
-            <Button disabled={profileImport.importing} onClick={() => void handlePickImportFolder()}>
-              {profileImport.importing ? <Loader2 className="animate-spin" /> : <FolderOpen />}
-              {profileImport.importing ? t('common.loading') : t('contextManagement.importPickFolder')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <ImportResultDialog
-        result={profileImport.result}
-        error={profileImport.error}
-        onClose={() => dispatchProfileImport({ type: 'close-result' })}
-        onEdit={(id) => void editImportedProfile(id)}
-      />
+        <SheetContent
+          data-slot={profileImport.surface === 'result' ? 'profile-import-result-sheet' : 'profile-import-settings-sheet'}
+          className="gap-0 overflow-hidden p-0"
+          resizeStorageKey="context-management/profile-import"
+          defaultSize={640}
+          minSize={420}
+          maxSize={880}
+          closeLabel={t('common.close')}
+        >
+          {profileImport.surface === 'result' && profileImport.result ? (
+            <ImportResultContent
+              result={profileImport.result}
+              error={profileImport.error}
+              onClose={() => dispatchProfileImport({ type: 'close-result' })}
+              onEdit={(id) => void editImportedProfile(id)}
+            />
+          ) : (
+            <>
+              <SheetHeader className="border-b px-5 py-4 text-left">
+                <SheetTitle>{t('contextManagement.importProfile')}</SheetTitle>
+                <SheetDescription>{t('contextManagement.importSettingsDescription')}</SheetDescription>
+              </SheetHeader>
+              <ScrollArea className="min-h-0 flex-1">
+                <div className="space-y-4 p-5">
+                  <div className="flex items-start justify-between gap-4 rounded-lg border px-3 py-3">
+                    <div className="space-y-1">
+                      <div className="text-sm font-medium">{t('contextManagement.dynamicTemplate')}</div>
+                      <p className="text-xs text-muted-foreground">{t('contextManagement.importDynamicTemplateDescription')}</p>
+                    </div>
+                    <Switch
+                      checked={profileImport.dynamicTemplate}
+                      onCheckedChange={(enabled) => dispatchProfileImport({ type: 'set-dynamic-template', enabled })}
+                    />
+                  </div>
+                  {profileImport.error ? (
+                    <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{profileImport.error}</div>
+                  ) : null}
+                </div>
+              </ScrollArea>
+              <SheetFooter className="border-t px-5 py-4 sm:flex-row sm:justify-end">
+                <Button variant="outline" disabled={profileImport.importing} onClick={() => dispatchProfileImport({ type: 'close-settings' })}>{t('common.close')}</Button>
+                <Button disabled={profileImport.importing} onClick={() => void handlePickImportFolder()}>
+                  {profileImport.importing ? <Loader2 className="animate-spin" /> : <FolderOpen />}
+                  {profileImport.importing ? t('common.loading') : t('contextManagement.importPickFolder')}
+                </Button>
+              </SheetFooter>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
 
       {/* ── MCP Tab Content ── */}
       {activeTab === 'mcp' && (
@@ -1330,7 +1357,7 @@ function CustomProfileCard({ profile, onView, onEdit, onDelete }: { profile: Pro
   );
 }
 
-function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mode: ProfileSheetMode | null; profile: ProfileVm | null; onOpenChange: (open: boolean) => void; onSave: (input: ProfileInput) => Promise<void>; onSaveAsNew: (input: ProfileInput) => Promise<void> }) {
+function ProfileSheet({ mode, profile, returnToImportResult, onOpenChange, onSave, onSaveAsNew }: { mode: ProfileSheetMode | null; profile: ProfileVm | null; returnToImportResult: boolean; onOpenChange: (open: boolean) => void; onSave: (input: ProfileInput) => Promise<void>; onSaveAsNew: (input: ProfileInput) => Promise<void> }) {
   const { t } = useTranslation();
   const editing = mode === 'create' || mode === 'edit';
   const isBuiltIn = Boolean(profile?.isBuiltIn);
@@ -1394,6 +1421,18 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
       <Sheet modal={false} open={mode !== null} onOpenChange={onOpenChange}>
         <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey="context-management/profile-sheet" defaultSize={720} minSize={520} maxSize={960}>
           <SheetHeader className="border-b px-5 py-4 text-left">
+            {returnToImportResult ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="mb-1 w-fit -ml-2 text-muted-foreground"
+                onClick={() => onOpenChange(false)}
+              >
+                <ArrowLeft />
+                {t('common.back')}
+              </Button>
+            ) : null}
             <SheetTitle>{mode === 'create' ? t('contextManagement.createProfile') : mode === 'edit' ? t('contextManagement.editProfile') : profile?.name}</SheetTitle>
             {editing ? (
               <SheetDescription className={cn(!isBuiltIn && 'sr-only')}>
@@ -1535,47 +1574,52 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
   );
 }
 
-function ImportResultDialog({ result, error, onClose, onEdit }: {
-  result: ImportProfilesResult | null;
+function ImportResultContent({ result, error, onClose, onEdit }: {
+  result: ImportProfilesResult;
   error: string | null;
   onClose: () => void;
   onEdit: (id: string) => void;
 }) {
   const { t } = useTranslation();
-  if (!result) return null;
   return (
-    <Dialog open={true} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle>{t('contextManagement.importResultTitle')}</DialogTitle>
-          <DialogDescription>
-            {t('contextManagement.importResultSummary', {
-              total: result.totalScanned,
-              success: result.imported.length,
-              failed: result.failed.length,
-            })}
-          </DialogDescription>
-        </DialogHeader>
-        {result.truncated ? (
-          <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700 dark:text-yellow-500">
-            {t('contextManagement.importTruncated')}
-          </div>
-        ) : null}
-        {error ? (
-          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {error}
-          </div>
-        ) : null}
-        <ScrollArea className="max-h-80">
-          <div className="space-y-3 pr-3">
+    <>
+      <SheetHeader className="shrink-0 border-b px-5 py-4 text-left">
+        <SheetTitle>{t('contextManagement.importResultTitle')}</SheetTitle>
+        <SheetDescription>
+          {t('contextManagement.importResultSummary', {
+            total: result.totalScanned,
+            success: result.imported.length,
+            failed: result.failed.length,
+          })}
+        </SheetDescription>
+      </SheetHeader>
+      {result.truncated || error ? (
+        <div className="shrink-0 space-y-2 px-6 pb-4">
+          {result.truncated ? (
+            <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700 dark:text-yellow-500">
+              {t('contextManagement.importTruncated')}
+            </div>
+          ) : null}
+          {error ? (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      <ScrollArea data-slot="profile-import-result-list" className="min-h-0 w-full flex-1 overflow-hidden">
+        <div className="min-w-0 space-y-3 px-6 pb-4 pr-7">
             {result.imported.length ? (
               <div className="space-y-1.5">
                 <div className="text-xs font-medium text-muted-foreground">{t('contextManagement.importResultImported')}</div>
                 {result.imported.map((record) => (
-                  <div key={record.sourcePath} className="flex items-center justify-between gap-2 rounded-md border px-3 py-2">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium">{record.name}</div>
-                      <div className="truncate text-xs text-muted-foreground">{record.sourcePath}</div>
+                  <div
+                    key={record.sourcePath}
+                    className="grid min-w-0 max-w-full gap-2 rounded-md border px-3 py-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                  >
+                    <div className="min-w-0 overflow-hidden">
+                      <div className="break-words text-sm font-medium">{record.name}</div>
+                      <div className="break-all text-xs text-muted-foreground">{record.sourcePath}</div>
                       {record.fallbacks.length ? (
                         <div className="mt-1 flex flex-wrap gap-1">
                           {record.fallbacks.map((fb) => (
@@ -1587,7 +1631,7 @@ function ImportResultDialog({ result, error, onClose, onEdit }: {
                       ) : null}
                     </div>
                     {record.importedId ? (
-                      <Button variant="ghost" size="sm" className="shrink-0" onClick={() => onEdit(record.importedId!)}>
+                      <Button variant="ghost" size="sm" className="shrink-0 justify-self-start sm:justify-self-end" onClick={() => onEdit(record.importedId!)}>
                         {t('contextManagement.editProfile')}
                       </Button>
                     ) : null}
@@ -1599,22 +1643,21 @@ function ImportResultDialog({ result, error, onClose, onEdit }: {
               <div className="space-y-1.5">
                 <div className="text-xs font-medium text-muted-foreground">{t('contextManagement.importResultFailed')}</div>
                 {result.failed.map((record) => (
-                  <div key={record.sourcePath} className="rounded-md border px-3 py-2">
-                    <div className="truncate text-sm font-medium">{record.name || record.sourcePath}</div>
-                    <div className="truncate text-xs text-destructive">
+                  <div key={record.sourcePath} className="min-w-0 max-w-full rounded-md border px-3 py-2">
+                    <div className="break-all text-sm font-medium">{record.name || record.sourcePath}</div>
+                    <div className="break-words text-xs text-destructive">
                       {record.error ? t(`errors.profile.import.${record.error.code}`) : ''}
                     </div>
                   </div>
                 ))}
               </div>
             ) : null}
-          </div>
-        </ScrollArea>
-        <DialogFooter>
-          <Button onClick={onClose}>{t('common.close')}</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </div>
+      </ScrollArea>
+      <SheetFooter className="shrink-0 border-t px-5 py-4 sm:flex-row sm:justify-end">
+        <Button onClick={onClose}>{t('common.close')}</Button>
+      </SheetFooter>
+    </>
   );
 }
 

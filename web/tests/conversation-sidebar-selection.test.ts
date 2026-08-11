@@ -3,6 +3,7 @@ import {
   canOpenConversationSidebarRunMenu,
   canPauseConversationSidebarRun,
   conversationSidebarIdentityKind,
+  conversationSidebarNavigationKey,
   conversationSidebarRunKey,
   conversationSidebarTaskKey,
   isConversationSidebarRunListScopeActive,
@@ -22,6 +23,17 @@ import {
 } from '@/lib/conversation-sidebar-activity';
 
 describe('ConversationSidebar run selection identity', () => {
+  it('selects quick chat while authoring a new scheduled task', () => {
+    expect(conversationSidebarNavigationKey({ kind: 'conversation-home' })).toBe('quick-chat');
+    expect(conversationSidebarNavigationKey({ kind: 'scheduled-task-create' })).toBe('quick-chat');
+    expect(conversationSidebarNavigationKey({ kind: 'scheduled-tasks' })).toBe('scheduled-tasks');
+    expect(conversationSidebarNavigationKey({
+      kind: 'scheduled-task-detail',
+      projectId: 'project-a',
+      scheduledTaskId: 'scheduled-a',
+    })).toBe('scheduled-tasks');
+  });
+
   it('uses a reduced-motion-safe breathing effect for active Direct Agent icons', () => {
     expect(conversationSidebarActivityIconClass).toContain('motion-safe:animate-pulse');
     expect(conversationSidebarActivityIconClass).not.toContain('animate-spin');

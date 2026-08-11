@@ -494,6 +494,7 @@ pub const MAX_SKILL_FILE_SIZE: usize = 100 * 1024;
 pub const MAX_SKILL_DESCRIPTION_LEN: usize = 1024;
 pub const DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS: usize = 18;
 pub const DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS: u64 = 20;
+pub const DEFAULT_SCHEDULED_OCCURRENCE_RETENTION_DAYS: u16 = 30;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -540,11 +541,14 @@ pub struct SettingsConfig {
     pub desktop_metrics_enabled: Option<bool>,
     pub desktop_metrics_base_url: Option<String>,
     pub desktop_metrics_api_key: Option<String>,
+    pub scheduled_keep_awake_enabled: Option<bool>,
+    pub scheduled_completion_notifications_enabled: Option<bool>,
+    pub scheduled_occurrence_retention_days: Option<u16>,
     #[serde(default)]
     pub context_servers: Option<Vec<McpServerConfig>>,
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 4;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
 const CURRENT_CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp@latest";
@@ -583,7 +587,8 @@ impl SettingsConfig {
             migrate_codex_acp_package(settings)?;
             migrated = true;
         }
-        if version < 3 {
+        if version < 4 {
+            migrate_scheduled_runtime_settings(settings);
             migrate_managed_agent_capabilities(settings)?;
             migrated = true;
         }
@@ -597,6 +602,18 @@ impl SettingsConfig {
         let config = serde_json::from_value(value)?;
         Ok((config, migrated))
     }
+}
+
+fn migrate_scheduled_runtime_settings(settings: &mut serde_json::Map<String, serde_json::Value>) {
+    settings
+        .entry("scheduledKeepAwakeEnabled".to_string())
+        .or_insert_with(|| serde_json::json!(false));
+    settings
+        .entry("scheduledCompletionNotificationsEnabled".to_string())
+        .or_insert_with(|| serde_json::json!(true));
+    settings
+        .entry("scheduledOccurrenceRetentionDays".to_string())
+        .or_insert_with(|| serde_json::json!(DEFAULT_SCHEDULED_OCCURRENCE_RETENTION_DAYS));
 }
 
 fn migrate_codex_acp_package(
@@ -1101,6 +1118,10 @@ pub struct RuntimeConfig {
     pub acp_timeline_compact_patch_ratio: usize,
     pub conversation_auto_title_max_chars: usize,
     pub notification_auto_dismiss_target_secs: u64,
+    pub scheduled_keep_awake_enabled: bool,
+    pub scheduled_completion_notifications_enabled: bool,
+    pub scheduled_occurrence_retention_days: u16,
+    pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
     pub workspace_layout: WorkspaceLayoutConfig,
     pub workspace_files: WorkspaceFilesConfig,
     pub turn_files: TurnFilesConfig,
@@ -1151,6 +1172,10 @@ impl Default for RuntimeConfig {
             acp_timeline_compact_patch_ratio: 4,
             conversation_auto_title_max_chars: DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS,
             notification_auto_dismiss_target_secs: DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS,
+            scheduled_keep_awake_enabled: false,
+            scheduled_completion_notifications_enabled: true,
+            scheduled_occurrence_retention_days: DEFAULT_SCHEDULED_OCCURRENCE_RETENTION_DAYS,
+            permission_mode_mapping: BTreeMap::new(),
             workspace_layout: WorkspaceLayoutConfig::default(),
             workspace_files: WorkspaceFilesConfig::default(),
             turn_files: TurnFilesConfig::default(),
@@ -1198,6 +1223,20 @@ impl RuntimeConfig {
         }
         self.desktop_metrics_base_url = settings.desktop_metrics_base_url.clone();
         self.desktop_metrics_api_key = settings.desktop_metrics_api_key.clone();
+        if let Some(scheduled_keep_awake_enabled) = settings.scheduled_keep_awake_enabled {
+            self.scheduled_keep_awake_enabled = scheduled_keep_awake_enabled;
+        }
+        if let Some(scheduled_completion_notifications_enabled) =
+            settings.scheduled_completion_notifications_enabled
+        {
+            self.scheduled_completion_notifications_enabled =
+                scheduled_completion_notifications_enabled;
+        }
+        if let Some(scheduled_occurrence_retention_days) =
+            settings.scheduled_occurrence_retention_days
+        {
+            self.scheduled_occurrence_retention_days = scheduled_occurrence_retention_days;
+        }
         self
     }
 
@@ -1317,6 +1356,16 @@ impl RuntimeConfig {
         self.provider_diagnostics = provider_diagnostics;
         self
     }
+
+    /// Resolve a normative permission mode to the provider-specific ACP mode.
+    /// Providers without a configured mapping keep the normative identifier.
+    pub fn resolve_permission_mode(&self, provider: &str, normative_mode: &str) -> String {
+        self.permission_mode_mapping
+            .get(provider)
+            .and_then(|mapping| mapping.get(normative_mode))
+            .cloned()
+            .unwrap_or_else(|| normative_mode.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -1325,8 +1374,8 @@ mod tests {
         AcpAdapterConfig, ConsoleThemeName, ConversationDirectConfig, ConversationRunMode,
         ConversationRunModeEntry, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
         DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, ProjectAppConfig,
-        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, TurnFilesConfig,
-        WorkspaceLayoutConfig, catalog_agent_default_config,
+        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
+        TurnFilesConfig, WorkspaceLayoutConfig, catalog_agent_default_config,
     };
     use crate::agent_catalog::builtin_agent_catalog;
     use std::collections::BTreeMap;
@@ -1912,6 +1961,127 @@ mod tests {
         let codex = &agents[&ManagedAgentId::from_str("codex-acp").unwrap()];
         assert_eq!(codex.adapter.command, "custom-codex-acp.exe");
         assert_eq!(codex.adapter.args, vec!["--stdio"]);
+    }
+
+    #[test]
+    fn settings_v2_migrates_scheduled_runtime_defaults() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 2
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        assert_eq!(
+            settings.settings_schema_version.0,
+            super::CURRENT_SETTINGS_SCHEMA_VERSION
+        );
+        assert_eq!(settings.scheduled_keep_awake_enabled, Some(false));
+        assert_eq!(
+            settings.scheduled_completion_notifications_enabled,
+            Some(true)
+        );
+        assert_eq!(settings.scheduled_occurrence_retention_days, Some(30));
+    }
+
+    #[test]
+    fn settings_v2_preserves_explicit_scheduled_runtime_values() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 2,
+                "scheduledKeepAwakeEnabled": true,
+                "scheduledCompletionNotificationsEnabled": false,
+                "scheduledOccurrenceRetentionDays": 45
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        assert_eq!(settings.scheduled_keep_awake_enabled, Some(true));
+        assert_eq!(
+            settings.scheduled_completion_notifications_enabled,
+            Some(false)
+        );
+        assert_eq!(settings.scheduled_occurrence_retention_days, Some(45));
+    }
+
+    #[test]
+    fn settings_v3_from_main_adds_scheduler_defaults_without_losing_agent_capabilities() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 3,
+                "agents": {
+                    "custom-agent": {
+                        "adapter": AcpAdapterConfig::default(),
+                        "icon": "custom-icon",
+                        "systemPromptDelivery": "none",
+                        "externalSessionSyncSupported": true,
+                        "externalSessionSyncEnabled": true
+                    }
+                }
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        assert_eq!(settings.settings_schema_version.0, 4);
+        assert_eq!(settings.scheduled_keep_awake_enabled, Some(false));
+        assert_eq!(
+            settings.scheduled_completion_notifications_enabled,
+            Some(true)
+        );
+        let agents = settings.agents.unwrap();
+        let custom = &agents[&ManagedAgentId::from_str("custom-agent").unwrap()];
+        assert_eq!(custom.icon, "custom-icon");
+        assert!(custom.external_session_sync_supported);
+        assert!(custom.external_session_sync_enabled);
+    }
+
+    #[test]
+    fn settings_v3_from_scheduler_adds_agent_capabilities_without_losing_schedule_values() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 3,
+                "scheduledKeepAwakeEnabled": true,
+                "scheduledCompletionNotificationsEnabled": false,
+                "scheduledOccurrenceRetentionDays": 45,
+                "agents": {
+                    "claude-acp": {
+                        "adapter": AcpAdapterConfig::default(),
+                        "externalSessionSyncEnabled": false
+                    }
+                }
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        assert_eq!(settings.settings_schema_version.0, 4);
+        assert_eq!(settings.scheduled_keep_awake_enabled, Some(true));
+        assert_eq!(
+            settings.scheduled_completion_notifications_enabled,
+            Some(false)
+        );
+        assert_eq!(settings.scheduled_occurrence_retention_days, Some(45));
+        let agents = settings.agents.unwrap();
+        let claude = &agents[&ManagedAgentId::from_str("claude-acp").unwrap()];
+        assert_eq!(claude.icon, "claude");
+        assert_eq!(
+            claude.system_prompt_delivery,
+            SystemPromptDelivery::MetaAppend
+        );
+        assert!(!claude.external_session_sync_supported);
+    }
+
+    #[test]
+    fn runtime_config_applies_scheduled_runtime_settings() {
+        let config = RuntimeConfig::default().apply_settings(&SettingsConfig {
+            scheduled_keep_awake_enabled: Some(true),
+            scheduled_completion_notifications_enabled: Some(false),
+            scheduled_occurrence_retention_days: Some(90),
+            ..SettingsConfig::default()
+        });
+
+        assert!(config.scheduled_keep_awake_enabled);
+        assert!(!config.scheduled_completion_notifications_enabled);
+        assert_eq!(config.scheduled_occurrence_retention_days, 90);
     }
 
     #[test]

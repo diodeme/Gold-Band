@@ -16,6 +16,7 @@ const oldRun = {
 describe('conversation navigation presentation transaction', () => {
   it('keeps project identity when local task and run ids collide across workspaces', () => {
     const page = conversationPageForIntervention({
+      targetType: 'conversation',
       projectId: 'project-b',
       taskId: 'task-001',
       runId: 'run-001',

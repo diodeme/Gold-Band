@@ -12,6 +12,8 @@ mod git_state_monitor;
 mod i18n;
 mod metrics;
 mod notifications;
+mod scheduled_runtime;
+mod scheduled_service;
 mod state;
 mod updater;
 mod view_models;
@@ -58,19 +60,23 @@ use commands::{
 };
 use commands_conversation::{
     add_conversation_workspace, choose_conversation_workspace, create_conversation_run,
-    delete_conversation_task, get_conversation_run, get_conversation_run_mode,
-    get_conversation_sidebar, get_conversation_workspaces, get_supported_attachment_extensions,
+    create_scheduled_task, delete_conversation_task, delete_scheduled_task, get_conversation_run,
+    get_conversation_run_mode, get_conversation_sidebar, get_conversation_workspaces,
+    get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
+    get_supported_attachment_extensions, list_scheduled_task_occurrences, list_scheduled_tasks,
     materialize_conversation_attachments, pin_conversation, remove_conversation_workspace,
-    reorder_pinned_conversations, rerun_conversation_task, save_conversation_preference,
-    save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
-    search_conversation_tasks, show_conversation_attachment, show_conversation_message_attachment,
+    reorder_pinned_conversations, rerun_conversation_task, run_scheduled_task_now,
+    save_conversation_preference, save_conversation_run_mode, save_desktop_ui_mode,
+    save_last_conversation_workspace, save_scheduled_runtime_settings, search_conversation_tasks,
+    set_scheduled_task_enabled, show_conversation_attachment, show_conversation_message_attachment,
     stat_attachment_files, switch_conversation_session, sync_conversation_workspace,
-    unpin_conversation, update_task_metadata, validate_conversation_create,
+    unpin_conversation, update_scheduled_task, update_task_metadata, validate_conversation_create,
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
 use metrics::start_heartbeat_polling;
+use notifications::send_scheduled_native_notification;
 use state::{DesktopContext, DesktopState};
 use tauri::Manager;
 use tracing::info;
@@ -152,6 +158,10 @@ fn run() -> anyhow::Result<()> {
         .setup(|app| {
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
+            state.install_scheduled_service(std::sync::Arc::new(
+                scheduled_service::ScheduledTaskService::desktop(app.handle().clone()),
+            ))?;
+            scheduled_runtime::start(app.handle().clone())?;
             if let Ok(runtime_app) = state.app() {
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
                 let _ = runtime_app.recover_interrupted_running_sessions();
@@ -298,6 +308,7 @@ fn run() -> anyhow::Result<()> {
             save_updater_settings,
             get_metrics_settings,
             update_notification_attention,
+            send_scheduled_native_notification,
             save_metrics_settings,
             get_update_status,
             mark_settings_update_seen,
@@ -311,6 +322,17 @@ fn run() -> anyhow::Result<()> {
             // Conversation UI
             save_desktop_ui_mode,
             get_conversation_sidebar,
+            list_scheduled_tasks,
+            list_scheduled_task_occurrences,
+            get_scheduled_task_diagnostics,
+            get_scheduled_runtime_settings,
+            save_scheduled_runtime_settings,
+            run_scheduled_task_now,
+            create_scheduled_task,
+            get_scheduled_task,
+            update_scheduled_task,
+            delete_scheduled_task,
+            set_scheduled_task_enabled,
             get_conversation_workspaces,
             get_conversation_run,
             validate_conversation_create,

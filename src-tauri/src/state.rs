@@ -192,6 +192,13 @@ impl NotificationAttentionState {
 
 pub struct DesktopState {
     context: Mutex<DesktopContext>,
+    scheduled_service: Mutex<Option<Arc<crate::scheduled_service::ScheduledTaskService>>>,
+    scheduler_coordinator: Mutex<Option<crate::scheduled_runtime::SchedulerCoordinatorHandle>>,
+    scheduled_power: Mutex<
+        crate::scheduled_runtime::power::ScheduledPowerManager<
+            crate::scheduled_runtime::power::PlatformSleepInhibitor,
+        >,
+    >,
     agent_diagnostics: Arc<Mutex<BTreeMap<ManagedAgentId, AgentDiagnosticState>>>,
     agent_diagnostic_run_lock: Mutex<()>,
     agent_config_diagnostic_commit_lock: Mutex<()>,
@@ -214,6 +221,13 @@ impl DesktopState {
         let updater_last_checked_at = context.config.desktop_updater_last_checked_at.clone();
         Self {
             context: Mutex::new(context),
+            scheduled_service: Mutex::new(None),
+            scheduler_coordinator: Mutex::new(None),
+            scheduled_power: Mutex::new(
+                crate::scheduled_runtime::power::ScheduledPowerManager::new(
+                    crate::scheduled_runtime::power::PlatformSleepInhibitor::default(),
+                ),
+            ),
             agent_diagnostics: Arc::new(Mutex::new(persisted_diagnostics)),
             agent_diagnostic_run_lock: Mutex::new(()),
             agent_config_diagnostic_commit_lock: Mutex::new(()),
@@ -317,6 +331,82 @@ impl DesktopState {
             .clone())
     }
 
+    pub fn install_scheduled_service(
+        &self,
+        service: Arc<crate::scheduled_service::ScheduledTaskService>,
+    ) -> Result<()> {
+        *self
+            .scheduled_service
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduled service lock poisoned"))? = Some(service);
+        Ok(())
+    }
+
+    pub fn scheduled_service(&self) -> Result<Arc<crate::scheduled_service::ScheduledTaskService>> {
+        self.scheduled_service
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduled service lock poisoned"))?
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("scheduled service is not initialized"))
+    }
+
+    pub fn install_scheduler_coordinator(
+        &self,
+        coordinator: crate::scheduled_runtime::SchedulerCoordinatorHandle,
+    ) -> Result<()> {
+        *self
+            .scheduler_coordinator
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduler coordinator lock poisoned"))? =
+            Some(coordinator);
+        Ok(())
+    }
+
+    pub fn scheduler_coordinator(
+        &self,
+    ) -> Result<crate::scheduled_runtime::SchedulerCoordinatorHandle> {
+        self.scheduler_coordinator
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduler coordinator lock poisoned"))?
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("scheduler coordinator is not initialized"))
+    }
+
+    pub fn reconcile_scheduled_power(
+        &self,
+        enabled_job_count: usize,
+        app_is_running: bool,
+    ) -> Result<crate::scheduled_runtime::power::ScheduledPowerStatus> {
+        let keep_awake_enabled = self
+            .context
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+            .config
+            .scheduled_keep_awake_enabled;
+        Ok(self
+            .scheduled_power
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduled power lock poisoned"))?
+            .reconcile(keep_awake_enabled, enabled_job_count, app_is_running))
+    }
+
+    pub fn reconcile_scheduled_power_setting(
+        &self,
+    ) -> Result<crate::scheduled_runtime::power::ScheduledPowerStatus> {
+        let enabled_job_count = self.scheduled_power_status()?.enabled_job_count;
+        self.reconcile_scheduled_power(enabled_job_count, true)
+    }
+
+    pub fn scheduled_power_status(
+        &self,
+    ) -> Result<crate::scheduled_runtime::power::ScheduledPowerStatus> {
+        Ok(self
+            .scheduled_power
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduled power lock poisoned"))?
+            .status())
+    }
+
     pub fn update_settings_config(&self, settings: &SettingsConfig) -> Result<()> {
         let mut guard = self
             .context
@@ -330,6 +420,9 @@ impl DesktopState {
             .apply_state(&state);
         drop(guard);
         self.prune_agent_diagnostics()?;
+        if let Ok(coordinator) = self.scheduler_coordinator() {
+            let _ = coordinator.send(crate::scheduled_runtime::SchedulerCommand::SettingsChanged);
+        }
         Ok(())
     }
 

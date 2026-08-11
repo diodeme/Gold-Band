@@ -6,6 +6,7 @@ import {
   chooseWorkspace,
   continueRun,
   createConversationRun,
+  createScheduledTask,
   createTask,
   deleteConversationTask,
   dismissUpdateAnnouncement,
@@ -46,6 +47,7 @@ import {
   saveLastConversationWorkspace,
   subscribeAcpSessionUpdates,
   subscribeConversationRunStateUpdates,
+  subscribeScheduledTaskUpdates,
   updateNotificationAttention,
 } from './api';
 import { isTauriRuntime } from './api/shared';
@@ -93,6 +95,8 @@ import { ConversationRunPage } from './pages/ConversationRunPage';
 import { ConversationSearchDialog } from './components/conversation/ConversationSearchDialog';
 import { prioritizeConversationSidebarWorkspace } from './components/conversation/ConversationSidebar';
 import { RunModeManagementPage } from './pages/RunModeManagementPage';
+import { ScheduledTaskManagementPage } from './pages/ScheduledTaskManagementPage';
+import { ScheduledTaskDetailPage } from './pages/ScheduledTaskDetailPage';
 import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
@@ -104,6 +108,9 @@ import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
 import { applyFont, applyTheme, resolveThemePreference, syncDesktopWindowSurface } from './theme';
 import { useInterventionNotifications } from './lib/use-intervention-notifications';
+import { useScheduledNotifications } from './lib/use-scheduled-notifications';
+import { scheduledNotificationNavigation } from './lib/scheduled-task-notifications';
+import { shouldCollapseShellSidebar } from './lib/responsive-shell';
 import {
   shouldRunWorkbenchBackgroundRefresh,
   WORKBENCH_BACKGROUND_REFRESH_HIDDEN_INTERVAL_MS,
@@ -184,6 +191,30 @@ import type {
   AvatarShape,
   SaveDesktopAvatarInput,
 } from './types';
+
+function findScheduledLinkedLeaf(
+  tree: ConversationSessionTreeVm,
+  roundId: string,
+  attemptId?: string,
+): ConversationSessionLeafVm | null {
+  const walkNode = (node: ConversationTreeNodeVm): ConversationSessionLeafVm | null => {
+    const leaf = node.attempts.find((attempt) =>
+      attempt.roundId === roundId && (!attemptId || attempt.attemptId === attemptId));
+    if (leaf) return leaf;
+    for (const child of node.outerNodes ?? []) {
+      const nested = walkNode(child);
+      if (nested) return nested;
+    }
+    return null;
+  };
+  for (const round of tree.rounds) {
+    for (const node of round.nodes) {
+      const leaf = walkNode(node);
+      if (leaf) return leaf;
+    }
+  }
+  return null;
+}
 
 const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
 const defaultUpdaterSettings: UpdaterSettingsVm = {
@@ -286,7 +317,11 @@ function selectedConversationLeaf(tree?: ConversationSessionTreeVm | null) {
 export function App() {
   const initialRoute = routeFromPath(window.location.pathname);
   const [uiMode, setUiMode] = useState<DesktopUiMode>(initialRoute.uiMode);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof localStorage !== 'undefined' && localStorage.getItem('gold-band-sidebar-collapsed') === 'true');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    const stored = typeof localStorage !== 'undefined' && localStorage.getItem('gold-band-sidebar-collapsed') === 'true';
+    const compact = typeof window !== 'undefined' && shouldCollapseShellSidebar(window.innerWidth);
+    return stored || compact;
+  });
   const [bootstrap, setBootstrap] = useState<AppBootstrapVm | null>(null);
   const windowRevealedRef = useRef(false);
   const windowLayoutSyncRef = useRef<Promise<void>>(Promise.resolve());
@@ -534,6 +569,14 @@ export function App() {
   }, [sidebarCollapsed]);
 
   useEffect(() => {
+    const updateCompactShell = () => {
+      if (shouldCollapseShellSidebar(window.innerWidth)) setSidebarCollapsed(true);
+    };
+    window.addEventListener('resize', updateCompactShell);
+    return () => window.removeEventListener('resize', updateCompactShell);
+  }, []);
+
+  useEffect(() => {
     if (!isTauriRuntime() || !bootstrap) return;
     let cancelled = false;
     const revealWindow = async () => {
@@ -695,6 +738,26 @@ export function App() {
   }, [applyConversationSidebar, bootstrap, uiMode]);
 
   useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation') return;
+    let active = true;
+    let dispose: (() => void) | undefined;
+    void subscribeScheduledTaskUpdates(() => {
+      void getConversationSidebar()
+        .then((sidebar) => {
+          if (active) applyConversationSidebar(sidebar);
+        })
+        .catch(() => {});
+    }).then((unlisten) => {
+      if (active) dispose = unlisten;
+      else unlisten();
+    }).catch(() => {});
+    return () => {
+      active = false;
+      dispose?.();
+    };
+  }, [applyConversationSidebar, bootstrap, uiMode]);
+
+  useEffect(() => {
     if (!bootstrap) return;
     getAgentRegistry().then(setAgentRegistry).catch(() => {});
   }, [bootstrap]);
@@ -713,11 +776,18 @@ export function App() {
   // Load conversation run when navigating to a run page
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return;
-    const { projectId, taskId, runId } = conversationPage;
+    const { projectId, taskId, runId, roundId, attemptId } = conversationPage;
     const requestId = conversationNavigationRequestRef.current + 1;
     conversationNavigationRequestRef.current = requestId;
     let cancelled = false;
     getConversationRun(projectId, taskId, runId)
+      .then(async (run) => {
+        if (!roundId) return run;
+        const leaf = findScheduledLinkedLeaf(run.sessionTree, roundId, attemptId);
+        if (!leaf) return run;
+        const selectedSessionKey = conversationSessionKeyFromParts(leaf);
+        return getConversationRun(projectId, taskId, runId, selectedSessionKey);
+      })
       .then(async (run) => {
         await preloadConversationTurnFileChangeSets(run);
         if (cancelled || !shouldCommitConversationNavigation(
@@ -726,7 +796,10 @@ export function App() {
           conversationPageRef.current,
           run,
         )) return;
-        applyConversationRunSnapshot(run, 'initial-load');
+        applyConversationRunSnapshot(run, 'initial-load', {
+          selectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
+          preserveSelectedSession: false,
+        });
       })
       .catch((err: unknown) => {
         if (cancelled || requestId !== conversationNavigationRequestRef.current) return;
@@ -1119,6 +1192,32 @@ export function App() {
   // 干预弹窗「查看详情」导航：按 uiMode deep link 到对应节点。
   const handleInterventionNavigate = useCallback(async (event: InterventionNavigateEventVm) => {
     setWorkspacePickerOpen(false);
+    if ('scheduledTaskId' in event) {
+      const target = scheduledNotificationNavigation(event);
+      if (target.kind === 'scheduled-detail') {
+        const page: ConversationPage = {
+          kind: 'scheduled-task-detail',
+          projectId: target.projectId,
+          scheduledTaskId: target.scheduledTaskId,
+        };
+        setPrimaryModule('task-orchestration');
+        setConversationPage(page);
+        pushRoute('task-orchestration', taskPage, page);
+        return;
+      }
+      const page: ConversationPage = {
+        kind: 'conversation-run',
+        projectId: target.projectId,
+        taskId: target.taskId,
+        runId: target.runId,
+        roundId: target.roundId ?? undefined,
+        attemptId: target.attemptId ?? undefined,
+      };
+      setPrimaryModule('task-orchestration');
+      setConversationPage(page);
+      pushRoute('task-orchestration', taskPage, page);
+      return;
+    }
     if (uiMode !== 'conversation') {
       // 工作台模式：定位到 round-detail 并选中节点。
       setPrimaryModule('task-orchestration');
@@ -1196,6 +1295,7 @@ export function App() {
   ]);
 
   useInterventionNotifications(handleInterventionNavigate);
+  useScheduledNotifications();
 
   const runAction = async <T,>(
     action: () => Promise<T>,
@@ -1526,6 +1626,19 @@ export function App() {
     }
   };
 
+  const onSelectConversation = (page: ConversationPage) => {
+    setWorkspacePickerOpen(false);
+    setConversationPage(page);
+    if (page.kind === 'agents') {
+      setPrimaryModule('agent-management');
+    } else if (page.kind === 'contexts') {
+      setPrimaryModule('knowledge-base');
+    } else {
+      setPrimaryModule('task-orchestration');
+    }
+    pushRoute(primaryModule, taskPage, page);
+  };
+
   const content = uiMode === 'conversation'
     ? renderConversationContent()
     : shouldRenderWorkspacePicker(uiMode, workspacePickerOpen)
@@ -1572,19 +1685,6 @@ export function App() {
         : primaryModule === 'knowledge-base'
           ? <ContextManagementPage agentRegistry={agentRegistry} onAgentRegistryChange={setAgentRegistry} />
           : renderTaskContent();
-
-  const onSelectConversation = (page: ConversationPage) => {
-    setWorkspacePickerOpen(false);
-    setConversationPage(page);
-    if (page.kind === 'agents') {
-      setPrimaryModule('agent-management');
-    } else if (page.kind === 'contexts') {
-      setPrimaryModule('knowledge-base');
-    } else {
-      setPrimaryModule('task-orchestration');
-    }
-    pushRoute(primaryModule, taskPage, page);
-  };
 
   return (
     <AvatarPreferencesProvider preferences={preferences.avatars}>
@@ -1885,6 +1985,9 @@ export function App() {
               setBusy(false);
             }
           }}
+          onCreateScheduledTask={async (input) => {
+            await createScheduledTask(input);
+          }}
           onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
           onWorkspaceChange={(projectId) => {
@@ -1910,6 +2013,12 @@ export function App() {
         ) : null}
         </>
       );
+    }
+    if (conversationPage.kind === 'scheduled-tasks') {
+      return <ScheduledTaskManagementPage projectId={defaultProjectId} onCreate={() => onSelectConversation({ kind: 'conversation-home' })} onOpenDetail={(task) => onSelectConversation({ kind: 'scheduled-task-detail', projectId: task.projectId, scheduledTaskId: task.id })} />;
+    }
+    if (conversationPage.kind === 'scheduled-task-detail') {
+      return <ScheduledTaskDetailPage projectId={conversationPage.projectId} scheduledTaskId={conversationPage.scheduledTaskId} onBack={() => onSelectConversation({ kind: 'scheduled-tasks' })} onOpenOccurrence={onSelectConversation} />;
     }
     if (conversationPage.kind === 'run-mode-management') {
       return (

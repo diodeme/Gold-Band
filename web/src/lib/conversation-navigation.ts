@@ -1,7 +1,7 @@
 import type { ConversationPage, ConversationRunVm, InterventionNavigateEventVm } from '@/types';
 
 export function conversationPageForIntervention(
-  event: InterventionNavigateEventVm,
+  event: Extract<InterventionNavigateEventVm, { targetType: 'conversation' }>,
 ): Extract<ConversationPage, { kind: 'conversation-run' }> {
   return {
     kind: 'conversation-run',

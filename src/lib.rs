@@ -20,5 +20,6 @@ pub mod prompts;
 pub mod provider;
 pub mod runtime;
 pub mod runtime_error;
+pub mod scheduler;
 pub mod skill;
 pub mod storage;

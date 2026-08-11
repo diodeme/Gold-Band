@@ -1,9 +1,10 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
-import type { RuntimeApi } from './client';
+import type { RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
 import { browserPreviewState } from './browserState';
 import { localTimestamp, toRoundSelectionInput } from './shared';
+import { scheduledScheduleSpecFromInput } from '@/lib/scheduled-task-authoring';
 
 const browserFontCandidates = [
   'MiSans', 'Maple Mono NF CN', 'Microsoft YaHei UI', 'Microsoft YaHei', 'DengXian', 'DengXian Light', 'SimHei', 'SimSun', 'NSimSun', 'KaiTi', 'FangSong', 'YouYuan', 'LiSu', 'STXihei', 'STSong', 'STKaiti', 'STFangsong', 'PingFang SC', 'PingFang TC', 'PingFang HK', 'Hiragino Sans GB', 'Songti SC', 'Kaiti SC', 'Heiti SC', 'Heiti TC', 'Noto Sans CJK SC', 'Noto Sans CJK TC', 'Noto Sans SC', 'Noto Serif SC', 'Source Han Sans SC', 'Source Han Serif SC', 'Sarasa Gothic SC', 'LXGW WenKai', 'MiSans', 'HarmonyOS Sans SC', 'WenQuanYi Micro Hei', 'WenQuanYi Zen Hei', 'Segoe UI', 'Segoe UI Variable', 'Yu Gothic UI', 'Meiryo', 'Malgun Gothic', 'SF Pro Text', 'SF Pro Display', 'Inter', 'Roboto', 'Arial', 'Helvetica Neue', 'Helvetica', 'Ubuntu', 'Cantarell', 'DejaVu Sans', 'Liberation Sans',
@@ -13,6 +14,42 @@ type LocalFontData = { family: string };
 type LocalFontWindow = Window & { queryLocalFonts?: () => Promise<LocalFontData[]> };
 
 const browserConversationRuns = new Map<string, ConversationRunVm>();
+const browserScheduledTasks: ScheduledTaskVm[] = [];
+const browserScheduledTaskDefinitions = new Map<string, ScheduledTaskEditVm>();
+const browserScheduledTaskListeners = new Set<(event: ScheduledTaskUpdatedEventVm) => void>();
+const browserScheduledOccurrences = new Map<string, ScheduledOccurrenceVm[]>();
+const browserScheduledOccurrenceListeners = new Set<(event: ScheduledOccurrenceUpdatedEventVm) => void>();
+let browserScheduledTaskSequence = 0;
+let browserScheduledRuntimeSettings = {
+  keepAwakeEnabled: false,
+  keepAwakeEffective: false,
+  completionNotificationsEnabled: true,
+  enabledJobCount: 0,
+  occurrenceRetentionDays: 30,
+  powerErrorCode: null,
+};
+
+function emitBrowserScheduledTaskUpdated(task: ScheduledTaskVm) {
+  const event: ScheduledTaskUpdatedEventVm = {
+    projectId: task.projectId,
+    scheduledTaskId: task.id,
+    status: task.status,
+  };
+  browserScheduledTaskListeners.forEach((listener) => listener(event));
+}
+
+function emitBrowserScheduledOccurrenceUpdated(occurrence: ScheduledOccurrenceVm, projectId: string) {
+  const event: ScheduledOccurrenceUpdatedEventVm = {
+    projectId,
+    scheduledTaskId: occurrence.scheduledTaskId,
+    occurrenceId: occurrence.id,
+    status: occurrence.status,
+    errorCode: occurrence.errorCode ?? null,
+    taskId: occurrence.taskId ?? null,
+    runId: occurrence.runId ?? null,
+  };
+  browserScheduledOccurrenceListeners.forEach((listener) => listener(event));
+}
 const browserGitOperations = new Map<string, GitOperationVm>();
 const browserGitOperationListeners = new Set<(operation: GitOperationVm) => void>();
 const browserGitStateListeners = new Set<(event: GitStateChangedEventVm) => void>();
@@ -396,6 +433,32 @@ function browserSvgDataUrl(content: string) {
 }
 
 export const browserApi: RuntimeApi = {
+  async subscribeScheduledNotifications() {
+    return () => {};
+  },
+  async sendScheduledNativeNotification() {},
+  async getScheduledRuntimeSettings() {
+    return structuredClone(browserScheduledRuntimeSettings);
+  },
+  async saveScheduledRuntimeSettings(input) {
+    if (input.occurrenceRetentionDays < 1 || input.occurrenceRetentionDays > 3650) {
+      throw { code: 'SCHEDULED_VALIDATION_FAILED', params: { field: 'occurrenceRetentionDays', minimum: 1, maximum: 3650, actual: input.occurrenceRetentionDays } };
+    }
+    browserScheduledRuntimeSettings = {
+      ...browserScheduledRuntimeSettings,
+      ...input,
+      keepAwakeEffective: false,
+    };
+    return structuredClone(browserScheduledRuntimeSettings);
+  },
+  async subscribeScheduledTaskUpdates(listener) {
+    browserScheduledTaskListeners.add(listener);
+    return () => browserScheduledTaskListeners.delete(listener);
+  },
+  async subscribeScheduledOccurrenceUpdates(listener) {
+    browserScheduledOccurrenceListeners.add(listener);
+    return () => browserScheduledOccurrenceListeners.delete(listener);
+  },
   getGitCapability() {
     return Promise.resolve({ status: 'repository-required', repoRoot: null, commonDir: null, head: null });
   },
@@ -1212,6 +1275,153 @@ export const browserApi: RuntimeApi = {
       tasksByWorkspace: { default: [] },
     };
     return Promise.resolve(sidebar);
+  },
+  listScheduledTasks(projectId) {
+    return Promise.resolve(browserScheduledTasks
+      .filter((task) => !projectId || task.projectId === projectId)
+      .map((task) => ({ ...task })));
+  },
+  setScheduledTaskEnabled(_projectId, scheduledTaskId, enabled) {
+    const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId);
+    if (task) {
+      task.enabled = enabled;
+      task.status = enabled ? 'enabled' : 'paused';
+      task.updatedAt = new Date().toISOString();
+      emitBrowserScheduledTaskUpdated(task);
+      return Promise.resolve({ ...task });
+    }
+    return browserCommandError('scheduled-task.not-found');
+  },
+  createScheduledTask(input) {
+    const now = new Date().toISOString();
+    const id = `scheduled-${Date.now()}-${++browserScheduledTaskSequence}`;
+    const schedule = scheduledScheduleSpecFromInput(input.schedule);
+    const task: ScheduledTaskVm = { id, projectId: input.projectId, workspaceName: input.projectId === 'default' ? 'Default Workspace' : input.projectId, title: input.content.split(/\r?\n/)[0].slice(0, 48), enabled: true, mode: input.runMode, sessionPolicy: input.sessionPolicy ?? 'new', schedule: structuredClone(schedule), nextAt: null, status: 'enabled', lastTriggerAt: null, lastTriggerStatus: null, createdAt: now, updatedAt: now };
+    const definition: ScheduledTaskEditVm = {
+      scheduledTaskId: id,
+      projectId: input.projectId,
+      content: input.content,
+      attachmentNames: [],
+      runMode: input.runMode,
+      workflowTemplateId: input.workflowTemplateId,
+      includeInterview: input.includeInterview,
+      directConfig: input.directConfig,
+      autoConfig: input.autoConfig,
+      schedule,
+      overlapPolicy: input.overlapPolicy,
+      sessionPolicy: input.sessionPolicy ?? 'new',
+      directAgentType: input.directConfig?.agentType ?? null,
+      expectedUpdatedAt: now,
+    };
+    browserScheduledTaskDefinitions.set(id, definition);
+    browserScheduledOccurrences.set(id, []);
+    browserScheduledTasks.push(task);
+    emitBrowserScheduledTaskUpdated(task);
+    return Promise.resolve({ ...task });
+  },
+  getScheduledTask(_projectId, scheduledTaskId) {
+    const definition = browserScheduledTaskDefinitions.get(scheduledTaskId);
+    return definition ? Promise.resolve(structuredClone(definition)) : browserCommandError('scheduled-task.not-found');
+  },
+  updateScheduledTask(input: UpdateScheduledTaskInput) {
+    const definition = browserScheduledTaskDefinitions.get(input.scheduledTaskId);
+    if (!definition) return browserCommandError('scheduled-task.not-found');
+    if (definition.expectedUpdatedAt !== input.expectedUpdatedAt) return browserCommandError('scheduled-task.conflict');
+    const now = new Date().toISOString();
+    const schedule = scheduledScheduleSpecFromInput(input.schedule);
+    const next: ScheduledTaskEditVm = {
+      ...definition,
+      ...input,
+      schedule,
+      expectedUpdatedAt: now,
+      directAgentType: input.directConfig?.agentType ?? definition.directAgentType ?? null,
+    };
+    browserScheduledTaskDefinitions.set(input.scheduledTaskId, next);
+    const task = browserScheduledTasks.find((item) => item.id === input.scheduledTaskId);
+    if (task) {
+      Object.assign(task, {
+        title: input.content.split(/\r?\n/)[0].slice(0, 48),
+        mode: input.runMode,
+        sessionPolicy: input.sessionPolicy,
+        schedule: structuredClone(schedule),
+        updatedAt: now,
+      });
+      emitBrowserScheduledTaskUpdated(task);
+    }
+    return Promise.resolve(structuredClone(next));
+  },
+  deleteScheduledTask(_projectId, scheduledTaskId) {
+    const index = browserScheduledTasks.findIndex((task) => task.id === scheduledTaskId);
+    if (index < 0) return browserCommandError('scheduled-task.not-found');
+    const [task] = browserScheduledTasks.splice(index, 1);
+    browserScheduledTaskDefinitions.delete(scheduledTaskId);
+    browserScheduledOccurrences.delete(scheduledTaskId);
+    emitBrowserScheduledTaskUpdated({ ...task, status: 'deleted' });
+    return Promise.resolve();
+  },
+  listScheduledTaskOccurrences(projectId, scheduledTaskId, limit = 50) {
+    const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId && item.projectId === projectId);
+    if (!task) return browserCommandError('scheduled-task.not-found');
+    return Promise.resolve((browserScheduledOccurrences.get(scheduledTaskId) ?? []).slice(0, Math.max(1, Math.min(limit, 200))).map((occurrence) => structuredClone(occurrence)));
+  },
+  getScheduledTaskDiagnostics(projectId, scheduledTaskId) {
+    const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId && item.projectId === projectId);
+    if (!task) return browserCommandError('scheduled-task.not-found');
+    const occurrences = browserScheduledOccurrences.get(scheduledTaskId) ?? [];
+    const last = occurrences[0] ?? null;
+    return Promise.resolve({
+      scheduledTaskId,
+      projectId,
+      nextAt: task.nextAt ?? null,
+      lastStatus: last?.status ?? task.lastTriggerStatus ?? null,
+      lastError: last?.errorCode ?? null,
+      runCount: occurrences.filter((occurrence) => Boolean(occurrence.runId)).length,
+      retryCount: occurrences.reduce((count, occurrence) => count + Math.max(0, occurrence.attempt - 1), 0),
+      occurrences: occurrences.slice(0, 200).map((occurrence) => structuredClone(occurrence)),
+    });
+  },
+  runScheduledTaskNow(projectId, scheduledTaskId) {
+    const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId && item.projectId === projectId);
+    if (!task) return browserCommandError('scheduled-task.not-found');
+    const now = new Date().toISOString();
+    const occurrenceId = `occurrence-${Date.now()}-${++browserScheduledTaskSequence}`;
+    const taskId = `browser-task-${scheduledTaskId}`;
+    const runId = `browser-run-${Date.now()}-${browserScheduledTaskSequence}`;
+    const running: ScheduledOccurrenceVm = {
+      id: occurrenceId,
+      scheduledTaskId,
+      scheduledAt: now,
+      triggerKind: 'manual',
+      status: 'running',
+      attempt: 1,
+      errorCode: null,
+      errorParams: null,
+      taskId,
+      runId,
+      roundId: null,
+      attemptId: null,
+      startedAt: now,
+      finishedAt: null,
+    };
+    const history = browserScheduledOccurrences.get(scheduledTaskId) ?? [];
+    browserScheduledOccurrences.set(scheduledTaskId, [running, ...history]);
+    emitBrowserScheduledOccurrenceUpdated(running, task.projectId);
+    const finished: ScheduledOccurrenceVm = { ...running, status: 'succeeded', finishedAt: new Date().toISOString() };
+    browserScheduledOccurrences.set(scheduledTaskId, [finished, ...history]);
+    Object.assign(task, {
+      lastTriggerAt: finished.finishedAt,
+      lastTriggerStatus: finished.status,
+      updatedAt: finished.finishedAt ?? now,
+    });
+    emitBrowserScheduledOccurrenceUpdated(finished, task.projectId);
+    emitBrowserScheduledTaskUpdated(task);
+    return Promise.resolve({
+      occurrence: structuredClone(finished),
+      taskId,
+      runId,
+      roundId: null,
+      attemptId: null,
+    } satisfies RunScheduledTaskResultVm);
   },
   getConversationWorkspaces() {
     return Promise.resolve([{ projectId: 'default', workspacePath: '/default', name: 'Default Workspace' }]);

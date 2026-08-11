@@ -486,6 +486,7 @@ fn emit_acp_turn_finished(
             turn_id,
         ),
         occurred_at: current_timestamp(),
+        scheduled_occurrence_id: None,
         project_id: app.paths.project_id.clone(),
         task_id: locator.task_id.clone(),
         run_id: locator.run_id.clone(),
@@ -501,6 +502,26 @@ fn emit_acp_turn_finished(
             .ok()
             .and_then(|task| task.title),
     });
+}
+
+fn finish_acp_prompt_preflight<T>(
+    app: &App,
+    locator: &AttemptLocator,
+    turn_id: &str,
+    agent_label: &str,
+    result: CommandResult<T>,
+) -> CommandResult<T> {
+    if result.is_err() && app.scheduled_occurrence_id().is_some() {
+        emit_acp_turn_finished(
+            app,
+            locator,
+            turn_id,
+            agent_label,
+            AcpTurnOutcome::Failed,
+            AcpTurnBatchProgress::terminal(1),
+        );
+    }
+    result
 }
 
 #[derive(Debug, Clone)]
@@ -566,7 +587,7 @@ struct ConversationRunStateUpdatedEventVm {
     outcome: Option<RunOutcome>,
 }
 
-fn resolve_command_app(
+pub(crate) fn resolve_command_app(
     state: &DesktopState,
     project_id: Option<&str>,
 ) -> Result<App, CommandErrorVm> {
@@ -844,9 +865,10 @@ fn schedule_direct_prompt_queue_drain(
             return;
         }
         emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), true);
-        let _result = send_acp_prompt(
+        let queued_turn_app = app.clone_for_background().without_scheduled_turn_context();
+        let _result = send_acp_prompt_with_app(
             app_handle.clone(),
-            state,
+            queued_turn_app,
             project_id.clone(),
             locator.task_id.clone(),
             locator.run_id.clone(),
@@ -947,6 +969,15 @@ pub(crate) async fn prepare_app_exit_inner(
     state: &DesktopState,
 ) -> AppExitPreparationVm {
     let mut result = AppExitPreparationVm::default();
+
+    // Stop the scheduler before stopping ACP/runtime sessions so no new
+    // occurrence can acquire a lease while desktop cleanup is in progress.
+    // `shutdown` waits for both the coordinator acknowledgement and task join.
+    if let Ok(coordinator) = state.scheduler_coordinator()
+        && let Err(error) = coordinator.shutdown().await
+    {
+        result.record_warning("app-exit.scheduler-shutdown-failed", &error);
+    }
 
     match state.app() {
         Ok(runtime_app) => {
@@ -2772,6 +2803,8 @@ fn maybe_emit_permission_intervention(
             PERMISSION_REQUESTED_DEDUP_SUFFIX,
         ),
         occurred_at: current_timestamp(),
+        scheduled_occurrence_id: app
+            .and_then(|value| value.scheduled_occurrence_id().map(str::to_string)),
         project_id: project_id.to_string(),
         task_id: context.task_id.clone(),
         run_id: context.run_id.clone(),
@@ -2810,6 +2843,8 @@ fn maybe_emit_elicitation_intervention(
             ELICITATION_REQUESTED_DEDUP_SUFFIX,
         ),
         occurred_at: current_timestamp(),
+        scheduled_occurrence_id: app
+            .and_then(|value| value.scheduled_occurrence_id().map(str::to_string)),
         project_id: project_id.to_string(),
         task_id: context.task_id.clone(),
         run_id: context.run_id.clone(),
@@ -3689,6 +3724,39 @@ pub async fn send_acp_prompt(
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
+    send_acp_prompt_with_app(
+        app_handle,
+        app,
+        project_id,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        prompt,
+        prompt_id,
+        outer_node_id,
+        outer_attempt_id,
+        attachment_paths,
+    )
+    .await
+}
+
+pub(crate) async fn send_acp_prompt_with_app(
+    app_handle: AppHandle,
+    app: App,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    prompt: String,
+    prompt_id: Option<String>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    attachment_paths: Option<Vec<String>>,
+) -> CommandResult<Option<AcpSessionVm>> {
     let locator = AttemptLocator::new(
         task_id.clone(),
         run_id.clone(),
@@ -3707,6 +3775,27 @@ pub async fn send_acp_prompt(
     let direct_mode = conversation_run_mode(&app, &locator.task_id)
         == Some(gold_band::config::ConversationRunMode::Direct);
     let agent_label = acp_turn_agent_label(&app, &locator);
+    let preflight = (|| -> CommandResult<()> {
+        if let Ok(run) = app.run_status(&task_id, &run_id) {
+            let manual_check_pending = current_attempt_manual_check_pending(&app, &locator, &run)?;
+            if runtime_continue_required(&app, &locator, &run, manual_check_pending)? {
+                return Err(CommandErrorVm::new(
+                    "acp.runtime-submit-required",
+                    serde_json::json!({
+                        "taskId": task_id,
+                        "runId": run_id,
+                        "roundId": round_id,
+                        "nodeId": node_id,
+                        "attemptId": attempt_id,
+                        "outerNodeId": outer_node_id,
+                        "outerAttemptId": outer_attempt_id,
+                    }),
+                ));
+            }
+        }
+        Ok(())
+    })();
+    finish_acp_prompt_preflight(&app, &locator, &turn_id, &agent_label, preflight)?;
     let project_id_for_emit = project_id.clone();
     let project_id_for_spawn = project_id_for_emit.clone();
     let task_id_for_emit = task_id.clone();
@@ -4149,8 +4238,8 @@ pub async fn send_acp_prompt(
     );
 
     // Fire-and-forget: index this attempt for cross-session search
-    spawn_index_attempt(
-        state.inner(),
+    spawn_index_attempt_for_app(
+        &app_for_emit,
         &task_id_for_emit,
         &run_id_for_emit,
         &round_id_for_emit,
@@ -4445,8 +4534,30 @@ fn spawn_index_attempt(
     outer_attempt_id: Option<&str>,
 ) {
     let Ok(app) = state.app() else { return };
-    let attempt_dir = resolve_acp_attempt_dir(
+    spawn_index_attempt_for_app(
         &app,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+}
+
+fn spawn_index_attempt_for_app(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<&str>,
+    outer_attempt_id: Option<&str>,
+) {
+    let attempt_dir = resolve_acp_attempt_dir(
+        app,
         task_id,
         run_id,
         round_id,
@@ -5837,7 +5948,7 @@ fn list_conversation_directory_entries(
 }
 
 #[tauri::command]
-pub fn respond_elicitation(
+pub async fn respond_elicitation(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -5853,6 +5964,21 @@ pub fn respond_elicitation(
     outer_attempt_id: Option<String>,
 ) -> CommandResult<()> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+
+    // Reclaim the durable scheduled occurrence before writing the response file.
+    // The ACP waiter may resume immediately after the file is visible.
+    if let Ok(coordinator) = state.scheduler_coordinator() {
+        coordinator
+            .resume_attention(
+                app.paths.repo_root.clone(),
+                task_id.clone(),
+                run_id.clone(),
+                round_id.clone(),
+                attempt_id.clone(),
+            )
+            .await
+            .map_err(|error| command_error(anyhow::anyhow!(error.to_string())))?;
+    }
 
     let action = match action.as_str() {
         "accept" => ElicitationAction::Accept,
@@ -7006,6 +7132,64 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_acp_preflight_failure_emits_one_failed_turn() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-scheduled-acp-preflight-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(root.clone()).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_subscriber = seen.clone();
+        let app = App::new(repo_root)
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                if let RuntimeLifecycleEvent::AcpTurnFinished { .. } = event {
+                    seen_for_subscriber.lock().unwrap().push(event);
+                }
+            }));
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "node-001".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+
+        let result: CommandResult<()> = finish_acp_prompt_preflight(
+            &app,
+            &locator,
+            "turn-001",
+            "Claude",
+            Err(CommandErrorVm::new(
+                "acp.runtime-submit-required",
+                serde_json::json!({}),
+            )),
+        );
+
+        assert_eq!(result.unwrap_err().code, "acp.runtime-submit-required");
+        let events = seen.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            RuntimeLifecycleEvent::AcpTurnFinished {
+                scheduled_occurrence_id,
+                turn_id,
+                outcome,
+                ..
+            } => {
+                assert_eq!(scheduled_occurrence_id.as_deref(), Some("occurrence-001"));
+                assert_eq!(turn_id, "turn-001");
+                assert_eq!(*outcome, AcpTurnOutcome::Failed);
+            }
+            event => panic!("expected AcpTurnFinished, got {event:?}"),
+        }
+        drop(events);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn acp_live_event_context_preserves_standard_attempt_locator() {
         let context = acp_live_event_context(
             "task-001",
@@ -7049,6 +7233,7 @@ mod tests {
         let paused = conversation_run_state_update_for_event(RuntimeLifecycleEvent::RunPaused {
             event_id: "event-paused".to_string(),
             occurred_at: "2026-06-25T00:00:00Z".to_string(),
+            scheduled_occurrence_id: None,
             project_id: "project-1".to_string(),
             task_id: "task-001".to_string(),
             run_id: "run-001".to_string(),
@@ -7073,6 +7258,7 @@ mod tests {
             conversation_run_state_update_for_event(RuntimeLifecycleEvent::RunCompleted {
                 event_id: "event-completed".to_string(),
                 occurred_at: "2026-06-25T00:00:01Z".to_string(),
+                scheduled_occurrence_id: None,
                 project_id: "project-1".to_string(),
                 task_id: "task-001".to_string(),
                 run_id: "run-001".to_string(),

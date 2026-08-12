@@ -1066,12 +1066,18 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
         )
         .unwrap();
     assert!(manual_prompt.system_prompt.contains("Run: run-001"));
+    assert!(manual_prompt.system_prompt.contains("用户主动打断当前工作"));
     assert!(
         !manual_prompt
             .system_prompt
             .contains("你必须在最后一步按照以下格式输出你的结果")
     );
     assert_eq!(manual_prompt.user_prompt, "手动追问");
+    assert!(
+        !manual_prompt
+            .user_prompt
+            .contains("Gold Band runtime context")
+    );
     assert_eq!(
         manual_prompt.prompt_id.as_deref(),
         Some("manual-prompt-001")

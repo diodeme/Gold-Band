@@ -37,6 +37,8 @@ Gold Band 文件规则：
 {% endif %}
 
 当前节点 artifact 规则：
+如果用户主动打断当前工作并在同一会话中讨论其他内容，说明用户暂时离开了工作流执行；在 runtime 明确要求继续工作流之前，无需遵守本节的 artifact 输出语义，只需自然回应用户当前的问题。
+
 {% if output_contract %}
 - 输出 artifact: {{ output_contract.artifact }}
 - 输出类型: {{ output_contract.kind }}

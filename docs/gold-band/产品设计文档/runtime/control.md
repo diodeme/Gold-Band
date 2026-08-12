@@ -44,11 +44,11 @@ Runtime 是否可显式继续还必须受运行模式约束。`ConversationRunMo
 
 “继续工作流”属于 composer action，固定放在发送按钮旁边，并且只消费后端 lifecycle。前端不得在 stop command 返回后自行合成 `continuable` 或 `continueKind`。Direct 在首个 ACP session 尚未完整建立时停止，也应保留自由会话入口；不得因为 session 建立时机不同而要求用户重跑或调用 Runtime continue。
 
-RuntimeControlled → NonRuntimeControlled 后，第一条已被 ACP 接受的用户消息附加一次默认收缩、可展开的 `<hidden>` 运行上下文，说明当前无需遵循 Runtime artifact 要求且不得自行推进工作流。该边界通过既有 ACP snapshot/session/timeline 的 `runtimeControl` metadata 与 transition id 记录；NonRuntime 对话中再次停止不创建新边界、不重复注入。显式继续后再次停止 Runtime 才会创建下一条边界。
+Workflow/AUTO 的中英文基础 runtime system prompt 预先说明：用户主动打断当前工作并转向其他内容时，在 Runtime 明确恢复工作流前无需遵守当前 artifact 输出语义，应自然回应用户当前问题。AI-DYNAMIC 通过既有基础 system 组合自然继承，不重复写入专属 section。停止后的普通消息只发送用户原文，不追加一次性 suspended hidden context，不创建 accepted prompt cursor；Runtime 仍以 `NonRuntimeControlled` 独立保证不提取、不校验 artifact 且不推进节点。Direct / `RawAgent` system prompt 继续为空，从首轮开始就是 `NonRuntimeControlled`。
 
-Direct / `RawAgent` 从首轮开始就是 `NonRuntimeControlled`，不能先按 RuntimeControlled 启动、再依赖后续追问修正。停止后的首次 context 判定、user prompt event 落盘和 cursor commit 必须位于同一个 ACP session prompt lock 边界：并发普通消息只有第一条能够认领 suspended transition；显式继续则先生成包含 source transition id 的候选，只有 accepted user prompt event 已持久化后才以 CAS 提交 `WorkflowContinued`。ACP 初始化、session setup 或 prompt 接受前失败时 cursor 保持 NonRuntime，新的 stop transition 也不能被迟到的 resume 覆盖。
+显式继续先生成包含 source transition id 的候选，只有 accepted user prompt event 已持久化后才以 CAS 提交 `WorkflowContinued`。ACP 初始化、session setup 或 prompt 接受前失败时 cursor 保持 NonRuntime，新的 stop transition 也不能被迟到的 resume 覆盖。同一 ACP session 的普通消息和 Runtime 控制 prompt 继续共享 prompt lock，但该锁不再承担 suspended context 的一次性认领。
 
-固定工作流的显式 continue 在读取 paused 状态前先获取 per-run starting lease，同一 run 的重复请求只允许一个进入后台启动；lease 不跨 run，也不持有任何全局锁等待 Agent turn。Runtime control cursor 的 stop / accepted 写入使用固定数量的路径哈希短锁，只覆盖 snapshot/session 小文件的读取与原子写入；stop 控制面绝不触发 timeline 重建。只有普通恢复查询遇到 legacy attempt 缺少 cursor 时才最多回扫 timeline 一次，并把 `runtimeControlTimelineScanComplete` 作为 negative cache 回填，正常消息热路径不得反复 O(n) 扫描 timeline。
+固定工作流的显式 continue 在读取 paused 状态前先获取 per-run starting lease，同一 run 的重复请求只允许一个进入后台启动；lease 不跨 run，也不持有任何全局锁等待 Agent turn。Runtime control cursor 的 stop / resume CAS 写入使用固定数量的路径哈希短锁，只覆盖 snapshot/session 小文件的读取与原子写入；stop 控制面绝不触发 timeline 重建。只有控制恢复查询遇到 legacy attempt 缺少 cursor 时才最多回扫 timeline 一次，并把 `runtimeControlTimelineScanComplete` 作为 negative cache 回填，普通消息热路径不读取 cursor，也不扫描 timeline。
 
 通用“继续工作流”动作只允许恢复 `Paused + ProcessInterrupted` 与 `Paused + RuntimeAbnormal`。`WaitingForUserInput`、`PermissionRequested` 和 `ErrorBlocked` 都是结构化干预态，不能通过通用 continue 绕过：manual check 等待期间仍是 `NonRuntimeControlled`，只由成功/失败判定按钮提交 `NodeOutcome`；permission 与 elicitation 只接受各自响应接口；`ErrorBlocked` 必须先修复阻断原因。固定 workflow 与 AI-DYNAMIC leaf 共同调用 `PauseReason::allows_explicit_runtime_continue`，不得各自维护条件表。
 

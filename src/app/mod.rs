@@ -44,8 +44,7 @@ use crate::process::recover_persisted_process_group;
 use crate::provider::{
     DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
     ProviderInfo, UserPromptRenderMode, provider_from_agent, render_prompt_bundle,
-    runtime_control_suspended_context, supported_models_from_capabilities,
-    supported_modes_from_capabilities,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
@@ -3167,19 +3166,7 @@ impl App {
         )?;
         invocation.turn_control_mode = crate::domain::TurnControlMode::NonRuntimeControlled;
         invocation.extra_hidden_sections.clear();
-        let suspended_context = if run.status == RunStatus::Paused
-            && run.pause_reason == Some(PauseReason::ProcessInterrupted)
-            && node.status == RunStatus::Paused
-        {
-            Some(runtime_control_suspended_context(
-                self.config.desktop_language,
-            ))
-        } else {
-            None
-        };
-        let mut bundle = render_prompt_bundle(&invocation)?;
-        bundle.runtime_control_suspended_context = suspended_context;
-        Ok(bundle)
+        render_prompt_bundle(&invocation)
     }
 
     pub fn dynamic_acp_prompt_bundle_for_attempt(

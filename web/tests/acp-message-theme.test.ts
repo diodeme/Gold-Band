@@ -75,4 +75,17 @@ describe('ACP message theme contract', () => {
     expect(runHeaderSource).toContain('bg-content-header px-5');
     expect(chatSource).not.toContain('bg-gold-surface-high/60 px-5');
   });
+
+  it('animates only active retry progress and respects reduced motion', () => {
+    expect(chatSource).toContain(
+      'retryFooter === "retrying" && "acp-retry-live-label"',
+    );
+    expect(stylesSource).toContain('@media (prefers-reduced-motion: no-preference)');
+    expect(stylesSource).toContain('.acp-retry-live-label {');
+    expect(stylesSource).toContain(
+      'animation: acp-activity-label-breathe 1.8s ease-in-out infinite;',
+    );
+    expect(stylesSource).toContain('opacity: 0.48;');
+    expect(stylesSource).toContain('opacity: 1;');
+  });
 });

@@ -18,6 +18,8 @@ use crate::domain::{PauseReason, RunOutcome};
 
 use super::{AcpTurnOutcome, RuntimeInterventionKind};
 
+pub const INITIAL_DIRECT_TURN_ID: &str = "initial-direct-turn";
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConversationNotificationMetadata {
@@ -70,6 +72,7 @@ pub enum InterventionType {
 pub struct InterventionNotification {
     /// canonical 去重键：attempt 级干预使用 reason，ACP permission/elicitation 追加 request id。
     pub dedup_key: String,
+    pub project_id: String,
     pub task_id: String,
     pub task_title: Option<String>,
     pub run_id: String,
@@ -89,6 +92,7 @@ pub struct InterventionNotification {
 impl InterventionNotification {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        project_id: &str,
         task_id: &str,
         task_title: Option<&str>,
         run_id: &str,
@@ -100,12 +104,14 @@ impl InterventionNotification {
     ) -> Self {
         let kind = RuntimeInterventionKind::from(pause_reason);
         Self::from_intervention_kind(
-            task_id, task_title, run_id, round_id, node_id, attempt_id, node_label, kind,
+            project_id, task_id, task_title, run_id, round_id, node_id, attempt_id, node_label,
+            kind,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
     pub fn from_intervention_kind(
+        project_id: &str,
         task_id: &str,
         task_title: Option<&str>,
         run_id: &str,
@@ -116,7 +122,8 @@ impl InterventionNotification {
         kind: RuntimeInterventionKind,
     ) -> Self {
         Self::from_intervention_kind_with_event_id(
-            None, task_id, task_title, run_id, round_id, node_id, attempt_id, node_label, kind,
+            None, project_id, task_id, task_title, run_id, round_id, node_id, attempt_id,
+            node_label, kind,
         )
     }
 
@@ -126,6 +133,7 @@ impl InterventionNotification {
     #[allow(clippy::too_many_arguments)]
     pub fn from_intervention_event(
         event_id: &str,
+        project_id: &str,
         task_id: &str,
         task_title: Option<&str>,
         run_id: &str,
@@ -137,6 +145,7 @@ impl InterventionNotification {
     ) -> Self {
         Self::from_intervention_kind_with_event_id(
             Some(event_id),
+            project_id,
             task_id,
             task_title,
             run_id,
@@ -151,6 +160,7 @@ impl InterventionNotification {
     #[allow(clippy::too_many_arguments)]
     fn from_intervention_kind_with_event_id(
         event_id: Option<&str>,
+        project_id: &str,
         task_id: &str,
         task_title: Option<&str>,
         run_id: &str,
@@ -204,9 +214,20 @@ impl InterventionNotification {
             .map(str::to_string)
             .unwrap_or_else(|| {
                 dedup_suffix.map_or_else(
-                    || make_dedup_key(run_id, round_id, node_id, attempt_id, pause_reason),
+                    || {
+                        make_dedup_key(
+                            project_id,
+                            run_id,
+                            round_id,
+                            node_id,
+                            attempt_id,
+                            pause_reason,
+                        )
+                    },
                     |suffix| {
-                        make_dedup_key_with_suffix(run_id, round_id, node_id, attempt_id, suffix)
+                        make_dedup_key_with_suffix(
+                            project_id, run_id, round_id, node_id, attempt_id, suffix,
+                        )
                     },
                 )
             });
@@ -215,6 +236,7 @@ impl InterventionNotification {
 
         Self {
             dedup_key,
+            project_id: project_id.to_string(),
             task_id: task_id.to_string(),
             task_title: task_title.map(str::to_string),
             run_id: run_id.to_string(),
@@ -231,6 +253,7 @@ impl InterventionNotification {
 
     #[allow(clippy::too_many_arguments)]
     pub fn run_completed(
+        project_id: &str,
         task_id: &str,
         task_title: Option<&str>,
         run_id: &str,
@@ -248,7 +271,8 @@ impl InterventionNotification {
         };
         let pause_reason = PauseReason::WaitingForUserInput;
         Self {
-            dedup_key: make_completion_dedup_key(run_id, round_id, node_id, attempt_id),
+            dedup_key: make_completion_dedup_key(project_id, run_id, round_id, node_id, attempt_id),
+            project_id: project_id.to_string(),
             task_id: task_id.to_string(),
             task_title: task_title.map(str::to_string),
             run_id: run_id.to_string(),
@@ -266,6 +290,7 @@ impl InterventionNotification {
     #[allow(clippy::too_many_arguments)]
     pub fn from_run_completion(
         event_id: &str,
+        project_id: &str,
         task_id: &str,
         task_title: Option<&str>,
         run_id: &str,
@@ -278,7 +303,8 @@ impl InterventionNotification {
     ) -> Option<Self> {
         let Some(agent_label) = completion_agent_label else {
             return Some(Self::run_completed(
-                task_id, task_title, run_id, round_id, node_id, attempt_id, node_label, outcome,
+                project_id, task_id, task_title, run_id, round_id, node_id, attempt_id, node_label,
+                outcome,
             ));
         };
         let turn_outcome = match outcome {
@@ -287,6 +313,7 @@ impl InterventionNotification {
             RunOutcome::Killed => AcpTurnOutcome::Cancelled,
         };
         Self::agent_turn_finished(
+            project_id,
             task_id,
             task_title,
             run_id,
@@ -296,11 +323,13 @@ impl InterventionNotification {
             event_id,
             agent_label,
             turn_outcome,
+            1,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
     pub fn agent_turn_finished(
+        project_id: &str,
         task_id: &str,
         task_title: Option<&str>,
         run_id: &str,
@@ -310,6 +339,7 @@ impl InterventionNotification {
         turn_id: &str,
         agent_label: &str,
         outcome: AcpTurnOutcome,
+        completed_reply_count: u32,
     ) -> Option<Self> {
         if outcome == AcpTurnOutcome::Cancelled {
             return None;
@@ -321,7 +351,12 @@ impl InterventionNotification {
         } else {
             agent_label
         };
+        let completed_reply_count = completed_reply_count.max(1);
         let (title, body) = match outcome {
+            AcpTurnOutcome::Completed if completed_reply_count > 1 => (
+                format!("{agent_label} 已连续回复 {completed_reply_count} 条"),
+                format!("{task_label} · 已连续回复 {completed_reply_count} 条"),
+            ),
             AcpTurnOutcome::Completed => (
                 format!("{agent_label} 回复完成"),
                 format!("{task_label} · 已回复"),
@@ -333,7 +368,10 @@ impl InterventionNotification {
             AcpTurnOutcome::Cancelled => unreachable!("cancelled handled above"),
         };
         Some(Self {
-            dedup_key: make_turn_dedup_key(run_id, round_id, node_id, attempt_id, turn_id),
+            dedup_key: make_turn_dedup_key(
+                project_id, run_id, round_id, node_id, attempt_id, turn_id,
+            ),
+            project_id: project_id.to_string(),
             task_id: task_id.to_string(),
             task_title: task_title.map(str::to_string),
             run_id: run_id.to_string(),
@@ -385,38 +423,51 @@ pub const RUN_COMPLETED_DEDUP_SUFFIX: &str = "run-completed";
 pub const ACP_TURN_FINISHED_DEDUP_SUFFIX: &str = "acp-turn-finished";
 
 pub fn make_completion_dedup_key(
+    project_id: &str,
     run_id: &str,
     round_id: &str,
     node_id: &str,
     attempt_id: &str,
 ) -> String {
-    format!("{run_id}:{round_id}:{node_id}:{attempt_id}:{RUN_COMPLETED_DEDUP_SUFFIX}")
+    format!("{project_id}:{run_id}:{round_id}:{node_id}:{attempt_id}:{RUN_COMPLETED_DEDUP_SUFFIX}")
 }
 
 /// 单次 ACP prompt turn 的稳定去重键。attempt 只标识会话容器，turn_id 才能区分
 /// 同一会话中的连续追问。
 pub fn make_turn_dedup_key(
+    project_id: &str,
     run_id: &str,
     round_id: &str,
     node_id: &str,
     attempt_id: &str,
     turn_id: &str,
 ) -> String {
-    format!("{run_id}:{round_id}:{node_id}:{attempt_id}:{turn_id}:{ACP_TURN_FINISHED_DEDUP_SUFFIX}")
+    format!(
+        "{project_id}:{run_id}:{round_id}:{node_id}:{attempt_id}:{turn_id}:{ACP_TURN_FINISHED_DEDUP_SUFFIX}"
+    )
 }
 
-/// 生成统一去重键 `run:round:node:attempt:reason`（不含 request_id，方案 §8.2）。
+/// 生成统一去重键 `project:run:round:node:attempt:reason`（不含 request_id，方案 §8.2）。
 pub fn make_dedup_key(
+    project_id: &str,
     run_id: &str,
     round_id: &str,
     node_id: &str,
     attempt_id: &str,
     reason: PauseReason,
 ) -> String {
-    make_dedup_key_with_suffix(run_id, round_id, node_id, attempt_id, reason_key(reason))
+    make_dedup_key_with_suffix(
+        project_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        reason_key(reason),
+    )
 }
 
 pub fn make_dedup_key_with_suffix(
+    project_id: &str,
     run_id: &str,
     round_id: &str,
     node_id: &str,
@@ -424,8 +475,8 @@ pub fn make_dedup_key_with_suffix(
     suffix: &str,
 ) -> String {
     format!(
-        "{}:{}:{}:{}:{}",
-        run_id, round_id, node_id, attempt_id, suffix
+        "{}:{}:{}:{}:{}:{}",
+        project_id, run_id, round_id, node_id, attempt_id, suffix
     )
 }
 
@@ -476,10 +527,10 @@ impl NotificationDedup {
         guard.shift_remove(key);
     }
 
-    /// 批量清理某 run 的所有 key（run 终态治理）。幂等。
-    pub fn clear_run(&self, run_id: &str) {
+    /// 批量清理某 project/run 的所有 key（run 终态治理）。幂等。
+    pub fn clear_run(&self, project_id: &str, run_id: &str) {
         let mut guard = lock(&self.sent);
-        let prefix = format!("{run_id}:");
+        let prefix = format!("{project_id}:{run_id}:");
         let to_remove: Vec<String> = guard
             .iter()
             .filter(|k| k.starts_with(&prefix))
@@ -527,6 +578,7 @@ mod tests {
 
     fn sample(reason: PauseReason) -> InterventionNotification {
         InterventionNotification::new(
+            "project-1",
             "task-1",
             Some("登录模块"),
             "run-1",
@@ -545,7 +597,7 @@ mod tests {
         let n = sample(PauseReason::WaitingForUserInput);
         assert_eq!(
             n.dedup_key,
-            "run-1:round-1:node-1:attempt-1:waiting-for-user-input"
+            "project-1:run-1:round-1:node-1:attempt-1:waiting-for-user-input"
         );
     }
 
@@ -567,6 +619,7 @@ mod tests {
             InterventionType::PermissionRequest
         );
         let elicitation = InterventionNotification::from_intervention_kind(
+            "project-1",
             "task-1",
             Some("登录模块"),
             "run-1",
@@ -610,6 +663,7 @@ mod tests {
     #[test]
     fn run_completed_notification_has_dedicated_type_and_key() {
         let n = InterventionNotification::run_completed(
+            "project-1",
             "task-1",
             Some("登录模块"),
             "run-1",
@@ -621,13 +675,17 @@ mod tests {
         );
         assert_eq!(n.title, "任务完成");
         assert_eq!(n.intervention_type, InterventionType::RunCompleted);
-        assert_eq!(n.dedup_key, "run-1:round-1:node-1:attempt-1:run-completed");
+        assert_eq!(
+            n.dedup_key,
+            "project-1:run-1:round-1:node-1:attempt-1:run-completed"
+        );
     }
 
     #[test]
     fn direct_run_completion_maps_to_agent_turn_and_killed_is_suppressed() {
         let completed = InterventionNotification::from_run_completion(
             "initial-turn-event",
+            "project-1",
             "task-1",
             Some("登录模块"),
             "run-1",
@@ -642,12 +700,13 @@ mod tests {
         assert_eq!(completed.title, "Claude 回复完成");
         assert_eq!(
             completed.dedup_key,
-            "run-1:round-1:node-1:attempt-1:initial-turn-event:acp-turn-finished"
+            "project-1:run-1:round-1:node-1:attempt-1:initial-turn-event:acp-turn-finished"
         );
 
         assert!(
             InterventionNotification::from_run_completion(
                 "initial-turn-event",
+                "project-1",
                 "task-1",
                 None,
                 "run-1",
@@ -665,6 +724,7 @@ mod tests {
     #[test]
     fn agent_turn_notification_uses_turn_id_for_dedup() {
         let first = InterventionNotification::agent_turn_finished(
+            "project-1",
             "task-1",
             Some("登录模块"),
             "run-1",
@@ -674,9 +734,11 @@ mod tests {
             "turn-1",
             "Claude",
             AcpTurnOutcome::Completed,
+            1,
         )
         .unwrap();
         let second = InterventionNotification::agent_turn_finished(
+            "project-1",
             "task-1",
             Some("登录模块"),
             "run-1",
@@ -686,6 +748,7 @@ mod tests {
             "turn-2",
             "Claude",
             AcpTurnOutcome::Completed,
+            1,
         )
         .unwrap();
 
@@ -693,7 +756,7 @@ mod tests {
         assert_eq!(first.intervention_type, InterventionType::AgentTurnFinished);
         assert_eq!(
             first.dedup_key,
-            "run-1:round-1:node-1:attempt-1:turn-1:acp-turn-finished"
+            "project-1:run-1:round-1:node-1:attempt-1:turn-1:acp-turn-finished"
         );
         assert_ne!(first.dedup_key, second.dedup_key);
     }
@@ -701,6 +764,7 @@ mod tests {
     #[test]
     fn agent_turn_failure_has_failure_copy_and_cancelled_has_no_notification() {
         let failed = InterventionNotification::agent_turn_finished(
+            "project-1",
             "task-1",
             None,
             "run-1",
@@ -710,6 +774,7 @@ mod tests {
             "turn-1",
             "Codex",
             AcpTurnOutcome::Failed,
+            1,
         )
         .unwrap();
         assert_eq!(failed.title, "Codex 回复失败");
@@ -717,6 +782,7 @@ mod tests {
 
         assert!(
             InterventionNotification::agent_turn_finished(
+                "project-1",
                 "task-1",
                 None,
                 "run-1",
@@ -726,9 +792,31 @@ mod tests {
                 "turn-2",
                 "Codex",
                 AcpTurnOutcome::Cancelled,
+                1,
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn automatic_reply_batch_uses_terminal_completed_reply_count() {
+        let notification = InterventionNotification::agent_turn_finished(
+            "project-1",
+            "task-1",
+            Some("登录模块"),
+            "run-1",
+            "round-1",
+            "node-1",
+            "attempt-1",
+            "turn-3",
+            "Claude",
+            AcpTurnOutcome::Completed,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(notification.title, "Claude 已连续回复 3 条");
+        assert_eq!(notification.body, "登录模块 · 已连续回复 3 条");
     }
 
     #[test]
@@ -763,6 +851,7 @@ mod tests {
     #[test]
     fn task_title_none_falls_back_to_task_id_in_body() {
         let n = InterventionNotification::new(
+            "project-1",
             "task-9",
             None,
             "run-1",
@@ -784,9 +873,30 @@ mod tests {
     }
 
     #[test]
+    fn different_projects_with_same_local_ids_have_distinct_identity_and_dedup_keys() {
+        let first = sample(PauseReason::WaitingForUserInput);
+        let second = InterventionNotification::new(
+            "project-2",
+            "task-1",
+            Some("登录模块"),
+            "run-1",
+            "round-1",
+            "node-1",
+            "attempt-1",
+            "登录节点",
+            PauseReason::WaitingForUserInput,
+        );
+
+        assert_eq!(first.project_id, "project-1");
+        assert_eq!(second.project_id, "project-2");
+        assert_ne!(first.dedup_key, second.dedup_key);
+    }
+
+    #[test]
     fn elicitation_notification_uses_distinct_dedup_suffix() {
         let manual = sample(PauseReason::WaitingForUserInput).dedup_key;
         let elicitation = InterventionNotification::from_intervention_kind(
+            "project-1",
             "task-1",
             Some("登录模块"),
             "run-1",
@@ -799,7 +909,7 @@ mod tests {
         .dedup_key;
         assert_eq!(
             elicitation,
-            "run-1:round-1:node-1:attempt-1:elicitation-requested"
+            "project-1:run-1:round-1:node-1:attempt-1:elicitation-requested"
         );
         assert_ne!(manual, elicitation);
     }
@@ -807,7 +917,8 @@ mod tests {
     #[test]
     fn intervention_event_id_keeps_repeated_requests_in_one_attempt_distinct() {
         let first = InterventionNotification::from_intervention_event(
-            "run-1:round-1:node-1:attempt-1:elicitation-requested:elicit-1",
+            "project-1:run-1:round-1:node-1:attempt-1:elicitation-requested:elicit-1",
+            "project-1",
             "task-1",
             Some("登录模块"),
             "run-1",
@@ -818,7 +929,8 @@ mod tests {
             RuntimeInterventionKind::ElicitationRequested,
         );
         let second = InterventionNotification::from_intervention_event(
-            "run-1:round-1:node-1:attempt-1:elicitation-requested:elicit-2",
+            "project-1:run-1:round-1:node-1:attempt-1:elicitation-requested:elicit-2",
+            "project-1",
             "task-1",
             Some("登录模块"),
             "run-1",
@@ -879,23 +991,26 @@ mod tests {
     #[test]
     fn clear_run_evicts_all_keys_of_run() {
         let dedup = NotificationDedup::new();
-        dedup.try_send("run-1:round-1:node-1:attempt-1:error-blocked");
-        dedup.try_send("run-1:round-2:node-2:attempt-1:waiting-for-user-input");
-        dedup.try_send("run-2:round-1:node-1:attempt-1:error-blocked");
-        dedup.clear_run("run-1");
-        assert!(dedup.try_send("run-1:round-1:node-1:attempt-1:error-blocked"));
-        assert!(dedup.try_send("run-1:round-2:node-2:attempt-1:waiting-for-user-input"));
+        dedup.try_send("project-1:run-1:round-1:node-1:attempt-1:error-blocked");
+        dedup.try_send("project-1:run-1:round-2:node-2:attempt-1:waiting-for-user-input");
+        dedup.try_send("project-1:run-2:round-1:node-1:attempt-1:error-blocked");
+        dedup.try_send("project-2:run-1:round-1:node-1:attempt-1:error-blocked");
+        dedup.clear_run("project-1", "run-1");
+        assert!(dedup.try_send("project-1:run-1:round-1:node-1:attempt-1:error-blocked"));
+        assert!(dedup.try_send("project-1:run-1:round-2:node-2:attempt-1:waiting-for-user-input"));
         // 其他 run 的 key 不受影响。
-        assert!(!dedup.try_send("run-2:round-1:node-1:attempt-1:error-blocked"));
+        assert!(!dedup.try_send("project-1:run-2:round-1:node-1:attempt-1:error-blocked"));
+        // 其他 project 的同名 run 也不受影响。
+        assert!(!dedup.try_send("project-2:run-1:round-1:node-1:attempt-1:error-blocked"));
     }
 
     #[test]
     fn clear_run_does_not_match_prefix_only_run_ids() {
         let dedup = NotificationDedup::new();
-        dedup.try_send("run-1x:round-1:node-1:attempt-1:error-blocked");
-        dedup.clear_run("run-1");
-        // "run-1:" 不应误清 "run-1x:..."。
-        assert!(!dedup.try_send("run-1x:round-1:node-1:attempt-1:error-blocked"));
+        dedup.try_send("project-1:run-1x:round-1:node-1:attempt-1:error-blocked");
+        dedup.clear_run("project-1", "run-1");
+        // "project-1:run-1:" 不应误清 "project-1:run-1x:..."。
+        assert!(!dedup.try_send("project-1:run-1x:round-1:node-1:attempt-1:error-blocked"));
     }
 
     #[test]

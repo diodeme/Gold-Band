@@ -1067,7 +1067,7 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
         .unwrap();
     assert!(manual_prompt.system_prompt.contains("Run: run-001"));
     assert!(
-        manual_prompt
+        !manual_prompt
             .system_prompt
             .contains("你必须在最后一步按照以下格式输出你的结果")
     );
@@ -1092,9 +1092,14 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
     assert_eq!(invocations[1].session_mode, SessionMode::Continue);
     assert_eq!(
         invocations[1].user_prompt_render_mode,
-        UserPromptRenderMode::WorkflowResume
+        UserPromptRenderMode::RuntimeResume
     );
-    assert_eq!(invocations[1].resume_prompt.as_deref(), Some("继续"));
+    assert_eq!(
+        invocations[1].resume_prompt.as_deref(),
+        Some(
+            "用户已选择继续工作流。此前的普通对话阶段已经结束，请继续完成原任务；当前 Runtime 控制要求与输出契约重新生效。"
+        )
+    );
     assert_eq!(
         invocations[1].resume_prompt_id.as_deref(),
         Some("prompt-continue-001")

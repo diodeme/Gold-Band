@@ -12,15 +12,16 @@ const THEME_SCROLLBAR_TOKENS = {
 } as const;
 
 function getThemeBlock(styles: string, theme: keyof typeof THEME_SCROLLBAR_TOKENS) {
+  const normalizedStyles = styles.replace(/\r\n?/g, '\n');
   const selector = theme === 'dark'
     ? ":root,\n:root[data-theme='dark']"
     : `:root[data-theme='${theme}']`;
-  const start = styles.indexOf(`${selector} {`);
-  const end = styles.indexOf('\n}', start);
+  const start = normalizedStyles.indexOf(`${selector} {`);
+  const end = normalizedStyles.indexOf('\n}', start);
 
   expect(start).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
-  return styles.slice(start, end);
+  return normalizedStyles.slice(start, end);
 }
 
 describe('Gold themed scrollbar', () => {

@@ -1,12 +1,16 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { ChevronDown, FileDiff, FileMinus2, FilePlus2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { getTurnFileChangeSet } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
+import {
+  loadTurnFileChangeSet,
+  readCachedTurnFileChangeSet,
+  turnFileChangeSetCacheKey,
+} from '@/lib/turn-file-change-set-cache';
 import type {
   AcpUiEventVm,
   TurnFileChangeSetVm,
@@ -25,32 +29,47 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
   const previewLimit = Math.max(1, Math.floor(configuredPreviewLimit));
   const workspace = useOptionalRightWorkspaceCommands();
   const [expanded, setExpanded] = useState(false);
-  const [changeSet, setChangeSet] = useState<TurnFileChangeSetVm | null>(null);
-  const [error, setError] = useState(false);
+  const [hasUserToggled, setHasUserToggled] = useState(false);
   const raw = objectValue(event.raw);
   const changeSetId = stringValue(raw?.changeSetId);
   const inlineSummary = summaryValue(raw?.summary);
   const locatorKey = locator
     ? [locator.projectId, locator.taskId, locator.runId, locator.roundId, locator.nodeId, locator.attemptId, locator.branchId, locator.outerNodeId, locator.outerAttemptId].join('\0')
     : '';
+  const requestKey = locator && changeSetId ? turnFileChangeSetCacheKey(locator, changeSetId) : '';
+  const initialChangeSet = locator && changeSetId ? readCachedTurnFileChangeSet(locator, changeSetId) : null;
+  const [loadState, setLoadState] = useState<{ key: string; changeSet: TurnFileChangeSetVm | null; error: boolean }>(() => ({
+    key: requestKey,
+    changeSet: initialChangeSet,
+    error: false,
+  }));
 
   useEffect(() => {
     if (!locator || !changeSetId) return;
     let cancelled = false;
-    setError(false);
-    void getTurnFileChangeSet(locator, changeSetId)
-      .then((next) => { if (!cancelled) setChangeSet(next); })
-      .catch(() => { if (!cancelled) setError(true); });
+    const cached = readCachedTurnFileChangeSet(locator, changeSetId);
+    setLoadState({ key: requestKey, changeSet: cached, error: false });
+    if (cached) return () => { cancelled = true; };
+    void loadTurnFileChangeSet(locator, changeSetId)
+      .then((next) => { if (!cancelled) setLoadState({ key: requestKey, changeSet: next, error: false }); })
+      .catch(() => { if (!cancelled) setLoadState({ key: requestKey, changeSet: null, error: true }); });
     return () => { cancelled = true; };
   // The primitive locator key prevents completed cards from refetching when a provider value is recreated.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [changeSetId, locatorKey]);
+  }, [changeSetId, locatorKey, requestKey]);
 
+  const changeSet = loadState.key === requestKey ? loadState.changeSet : initialChangeSet;
+  const error = loadState.key === requestKey && loadState.error;
   const summary = changeSet?.summary ?? inlineSummary;
   const changes = changeSet?.changes ?? [];
   const previewChanges = changes.slice(0, previewLimit);
   const hiddenCount = Math.max(0, changes.length - previewLimit);
   if (!summary || summary.fileCount === 0 || !changeSetId) return null;
+
+  const handleOpenChange = (open: boolean) => {
+    setHasUserToggled(true);
+    setExpanded(open);
+  };
 
   const openChange = (change: TurnFileChangeVm) => {
     if (!workspace?.scopeKey || !locator || change.changeKind === 'deleted') return;
@@ -74,7 +93,7 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
     <Card className="ml-10 max-w-[min(46rem,calc(100%-2.5rem))] gap-0 overflow-hidden rounded-xl border-border/60 bg-muted/10 py-0 shadow-none" data-turn-file-changes-card={changeSetId}>
       <CardHeader className="grid-cols-[1fr_auto] items-center gap-3 px-3 py-2.5">
         <CardTitle className="flex min-w-0 items-center gap-2 text-sm font-medium">
-          <FileDiff className="size-4 shrink-0 text-primary" />
+          <FileDiff className="size-4 shrink-0 text-foreground" />
           <span>{t('turnFiles.title', { count: summary.fileCount })}</span>
         </CardTitle>
         <div className="flex items-center gap-2 text-xs tabular-nums">
@@ -88,7 +107,7 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
         ) : changes.length === 0 ? (
           <div className="px-3 py-2 text-xs text-muted-foreground">{t('turnFiles.loading')}</div>
         ) : (
-          <Collapsible open={expanded} onOpenChange={setExpanded}>
+          <Collapsible open={expanded} onOpenChange={handleOpenChange}>
             {!expanded ? (
               <div role="list" aria-label={t('turnFiles.fileList')}>
                 {previewChanges.map((change) => (
@@ -96,7 +115,10 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
                 ))}
               </div>
             ) : null}
-            <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden">
+            <CollapsibleContent className={cn(
+              'overflow-hidden',
+              hasUserToggled && 'data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down',
+            )}>
               <ScrollArea className={cn(changes.length > 8 ? 'h-64' : 'h-auto')}>
                 <div role="list" aria-label={t('turnFiles.fileList')}>
                   {changes.map((change) => (

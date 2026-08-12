@@ -89,6 +89,47 @@ describe('conversation run mode config text fields', () => {
     });
   });
 
+  it('preserves the AUTO thought-level override at the submit boundary', () => {
+    expect(normalizeConversationAutoConfigForSubmit({
+      agentStrategy: 'fixed',
+      agentType: 'claude-acp',
+      modelId: 'sonnet',
+      configOptions: { reasoning_effort: 'high', blank: '   ' },
+    })).toEqual({
+      agentStrategy: 'fixed',
+      agentType: 'claude-acp',
+      modelId: 'sonnet',
+      configOptions: { reasoning_effort: 'high' },
+    });
+  });
+
+  it('normalizes role-scoped dynamic AUTO thought-level overrides', () => {
+    expect(normalizeConversationAutoConfigForSubmit({
+      agentStrategy: 'dynamic',
+      agentType: 'claude-acp',
+      bootstrapAgentType: 'claude-acp',
+      permissionMode: ' acceptEdits ',
+      bootstrapConfigOptions: { reasoning_effort: 'high', blank: ' ' },
+      acceptanceConfigOptions: { reasoning_effort: 'medium' },
+      availableAgents: [{
+        provider: 'claude-acp',
+        model: 'sonnet',
+        permissionMode: ' bypassPermissions ',
+        configOptions: { reasoning_effort: 'low', blank: '' },
+      }],
+    })).toMatchObject({
+      permissionMode: 'acceptEdits',
+      bootstrapConfigOptions: { reasoning_effort: 'high' },
+      acceptanceConfigOptions: { reasoning_effort: 'medium' },
+      availableAgents: [{
+        provider: 'claude-acp',
+        model: 'sonnet',
+        permissionMode: 'bypassPermissions',
+        configOptions: { reasoning_effort: 'low' },
+      }],
+    });
+  });
+
   it('normalizes Direct config without adding runtime prompt fields', () => {
     expect(normalizeConversationDirectConfigForSubmit({
       agentType: ' codex-acp ',

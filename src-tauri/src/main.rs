@@ -6,11 +6,15 @@ mod channel;
 mod commands;
 mod commands_conversation;
 mod conversation_workspace;
+mod desktop_lifecycle;
 mod feedback;
+mod git_state_monitor;
 mod i18n;
 mod metrics;
 mod multica;
 mod notifications;
+mod scheduled_runtime;
+mod scheduled_service;
 mod state;
 mod updater;
 mod view_models;
@@ -22,41 +26,54 @@ mod workspace_files;
 
 use anyhow::Context;
 use commands::{
-    add_mcp_server, cancel_acp_session, check_local_claude, check_mcp_server_health,
+    add_mcp_server, analyze_git_commit_relations, cancel_acp_session, cancel_git_operation,
+    cancel_github_operation, check_local_claude, check_mcp_server_health,
     check_skill_name_conflict, check_update_manual, choose_workspace, clear_desktop_avatar,
-    connect_multica, continue_run, create_agent, create_profile, create_task, delete_agent, delete_auto_template,
+    connect_multica, continue_conversation_runtime, continue_run, create_agent, create_profile,
+    create_task, delete_agent, delete_auto_template, delete_conversation_queued_prompt,
     delete_mcp_server, delete_profile, delete_skill, delete_workflow_template,
     dismiss_update_announcement, disconnect_multica, doctor_agent, download_and_install_update,
-    get_acp_activity_detail, get_acp_raw_frames, get_acp_session, get_acp_tool_detail,
-    get_agent_command_catalog, get_agent_registry, get_app_bootstrap, get_auto_templates,
-    get_file_comparison, get_log_page, get_metrics_settings, get_multica_settings, get_profile,
-    get_profiles,
-    get_round_detail, get_run_detail, get_skill_sync_status, get_system_fonts, get_task_detail,
-    get_task_list, get_turn_file_change_set, get_update_status, get_workflow,
-    get_workflow_templates, list_mcp_servers, list_mcp_tools, list_project_skills, list_skills,
-    mark_settings_advanced_update_seen, mark_settings_update_seen, open_in_file_manager, pause_run,
-    prepare_app_exit, read_skill, remove_recent_workspace, renew_acp_session_lease,
+    execute_git_mutation, get_acp_activity_detail, get_acp_raw_frames, get_acp_session,
+    get_acp_tool_detail, get_agent_command_catalog, get_agent_registry, get_app_bootstrap,
+    get_auto_templates, get_file_comparison, get_git_capability, get_git_commit_detail,
+    get_git_comparison, get_git_history, get_git_operation, get_github_capability,
+    get_github_issue, get_github_operation, get_github_pull_request, get_log_page,
+    get_metrics_settings, get_multica_settings, get_profile, get_profiles,
+    get_round_detail, get_run_detail, get_skill_sync_status, get_source_control_snapshot,
+    get_system_fonts, get_task_detail, get_task_list, get_turn_file_change_set, get_update_status,
+    get_workflow, get_workflow_templates, import_profiles_from_folder, initialize_git_repository,
+    list_conversation_directory, list_github_issues, list_github_pull_requests, list_mcp_servers,
+    list_mcp_tools, list_project_skills, list_skills, mark_settings_advanced_update_seen,
+    mark_settings_update_seen, open_conversation_directory_path_in_file_manager,
+    open_in_file_manager, pause_run, preflight_github_pull_request,
+    read_conversation_directory_file, read_skill, remove_recent_workspace, renew_acp_session_lease,
     replace_auto_templates, respond_acp_permission, respond_elicitation, retry_run,
     save_auto_template, save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
     save_metrics_settings, save_multica_settings, save_task_workflow, save_updater_settings,
     save_workflow_template,
     search_acp_prompts, search_acp_sessions, search_tasks, select_recent_desktop_avatar,
     select_recent_workspace, send_acp_prompt, set_acp_session_config_option, set_acp_session_model,
-    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref, start_run,
-    stop_active_session, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
-    update_agent, update_auto_template, update_mcp_server, update_notification_attention,
-    update_profile, update_skill_sync_targets, update_workflow_template, write_skill,
+    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref,
+    start_git_operation, start_git_state_monitor, start_github_login,
+    start_github_pull_request_create, start_run, stop_active_session, stop_git_state_monitor,
+    submit_conversation_prompt, submit_manual_check, toggle_mcp_server, update_agent,
+    update_auto_template, update_conversation_queued_prompt, update_mcp_server,
+    update_notification_attention, update_profile, update_skill_sync_targets,
+    update_workflow_template, use_conversation_queued_prompt, write_skill,
 };
 use commands_conversation::{
     add_conversation_workspace, choose_conversation_workspace, create_conversation_run,
-    delete_conversation_task, get_conversation_run, get_conversation_run_mode,
-    get_conversation_sidebar, get_conversation_workspaces, get_supported_attachment_extensions,
+    create_scheduled_task, delete_conversation_task, delete_scheduled_task, get_conversation_run,
+    get_conversation_run_mode, get_conversation_sidebar, get_conversation_workspaces,
+    get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
+    get_supported_attachment_extensions, list_scheduled_task_occurrences, list_scheduled_tasks,
     materialize_conversation_attachments, pin_conversation, remove_conversation_workspace,
-    reorder_pinned_conversations, rerun_conversation_task, save_conversation_preference,
-    save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
-    search_conversation_tasks, show_conversation_attachment, show_conversation_message_attachment,
+    reorder_pinned_conversations, rerun_conversation_task, run_scheduled_task_now,
+    save_conversation_preference, save_conversation_run_mode, save_desktop_ui_mode,
+    save_last_conversation_workspace, save_scheduled_runtime_settings, search_conversation_tasks,
+    set_scheduled_task_enabled, show_conversation_attachment, show_conversation_message_attachment,
     stat_attachment_files, switch_conversation_session, sync_conversation_workspace,
-    unpin_conversation, update_task_metadata, validate_conversation_create,
+    unpin_conversation, update_scheduled_task, update_task_metadata, validate_conversation_create,
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::configure_storage_paths;
@@ -68,6 +85,7 @@ use multica::commands::{
     remove_multica_workspace, rerun_multica_task, set_active_multica_workspace,
     start_multica_conversation_run,
 };
+use notifications::send_scheduled_native_notification;
 use state::{DesktopContext, DesktopState};
 use tauri::Manager;
 use tracing::info;
@@ -121,6 +139,9 @@ fn run() -> anyhow::Result<()> {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(DesktopState::new(context))
+        .manage(desktop_lifecycle::DesktopLifecycleCoordinator::default())
+        .manage(notifications::PendingInterventionNavigations::default())
+        .manage(git_state_monitor::GitStateMonitorRuntime::default())
         .manage(WorkspaceFileRuntime::default())
         .manage(WorkspaceFileWatchRuntime::default())
         .manage(multica::shared_state());
@@ -147,6 +168,10 @@ fn run() -> anyhow::Result<()> {
         .setup(|app| {
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
+            state.install_scheduled_service(std::sync::Arc::new(
+                scheduled_service::ScheduledTaskService::desktop(app.handle().clone()),
+            ))?;
+            scheduled_runtime::start(app.handle().clone())?;
             if let Ok(runtime_app) = state.app() {
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
                 // home repo 自愈后，再清扫 multica 远程任务落在各 work_dir 的孤儿 run（断点续跑根因修复：
@@ -201,7 +226,9 @@ fn run() -> anyhow::Result<()> {
         })
         .invoke_handler(tauri::generate_handler![
             get_app_bootstrap,
-            prepare_app_exit,
+            desktop_lifecycle::complete_main_window_close,
+            desktop_lifecycle::resolve_app_exit,
+            notifications::take_pending_intervention_navigations,
             get_system_fonts,
             check_local_claude,
             get_agent_registry,
@@ -214,6 +241,7 @@ fn run() -> anyhow::Result<()> {
             get_profiles,
             get_profile,
             create_profile,
+            import_profiles_from_folder,
             update_profile,
             delete_profile,
             choose_workspace,
@@ -242,6 +270,9 @@ fn run() -> anyhow::Result<()> {
             get_acp_tool_detail,
             renew_acp_session_lease,
             submit_conversation_prompt,
+            update_conversation_queued_prompt,
+            delete_conversation_queued_prompt,
+            use_conversation_queued_prompt,
             send_acp_prompt,
             set_acp_session_model,
             set_acp_session_config_option,
@@ -251,6 +282,30 @@ fn run() -> anyhow::Result<()> {
             cancel_acp_session,
             get_acp_raw_frames,
             start_run,
+            get_git_capability,
+            initialize_git_repository,
+            get_source_control_snapshot,
+            get_git_history,
+            get_git_commit_detail,
+            analyze_git_commit_relations,
+            execute_git_mutation,
+            get_git_comparison,
+            start_git_operation,
+            start_git_state_monitor,
+            stop_git_state_monitor,
+            get_git_operation,
+            cancel_git_operation,
+            get_github_capability,
+            start_github_login,
+            get_github_operation,
+            cancel_github_operation,
+            list_github_pull_requests,
+            get_github_pull_request,
+            preflight_github_pull_request,
+            start_github_pull_request_create,
+            list_github_issues,
+            get_github_issue,
+            continue_conversation_runtime,
             continue_run,
             pause_run,
             stop_active_session,
@@ -267,6 +322,7 @@ fn run() -> anyhow::Result<()> {
             save_updater_settings,
             get_metrics_settings,
             update_notification_attention,
+            send_scheduled_native_notification,
             save_metrics_settings,
             get_multica_settings,
             save_multica_settings,
@@ -294,6 +350,17 @@ fn run() -> anyhow::Result<()> {
             // Conversation UI
             save_desktop_ui_mode,
             get_conversation_sidebar,
+            list_scheduled_tasks,
+            list_scheduled_task_occurrences,
+            get_scheduled_task_diagnostics,
+            get_scheduled_runtime_settings,
+            save_scheduled_runtime_settings,
+            run_scheduled_task_now,
+            create_scheduled_task,
+            get_scheduled_task,
+            update_scheduled_task,
+            delete_scheduled_task,
+            set_scheduled_task_enabled,
             get_conversation_workspaces,
             get_conversation_run,
             validate_conversation_create,
@@ -320,7 +387,11 @@ fn run() -> anyhow::Result<()> {
             save_last_conversation_workspace,
             get_supported_attachment_extensions,
             open_in_file_manager,
+            list_conversation_directory,
+            open_conversation_directory_path_in_file_manager,
+            read_conversation_directory_file,
             workspace_files::list_workspace_directory,
+            workspace_files::open_workspace_path_in_file_manager,
             workspace_files::search_workspace_files,
             workspace_files::resolve_workspace_file_link,
             workspace_files::read_file_resource,
@@ -352,7 +423,8 @@ fn run() -> anyhow::Result<()> {
             #[cfg(all(debug_assertions, target_os = "windows"))]
             webview_heap_diagnostics::get_webview_heap_diagnostic,
         ])
-        .run(tauri_context)
-        .context("tauri runtime failed")?;
+        .build(tauri_context)
+        .context("failed to build tauri runtime")?
+        .run(desktop_lifecycle::handle_run_event);
     Ok(())
 }

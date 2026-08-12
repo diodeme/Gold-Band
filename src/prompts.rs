@@ -31,6 +31,22 @@ pub const RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/invalid_output_repair.md");
 pub const RUNTIME_INVALID_OUTPUT_REPAIR_EN: &str =
     include_str!("prompts/en/runtime/invalid_output_repair.md");
+pub const RUNTIME_SCHEDULED_TASK_CONTEXT_ZH_CN: &str =
+    include_str!("prompts/zh-CN/runtime/scheduled_task_context.md");
+pub const RUNTIME_SCHEDULED_TASK_CONTEXT_EN: &str =
+    include_str!("prompts/en/runtime/scheduled_task_context.md");
+pub const RUNTIME_ARTIFACT_FINALIZE_ZH_CN: &str =
+    include_str!("prompts/zh-CN/runtime/artifact_finalize.md");
+pub const RUNTIME_ARTIFACT_FINALIZE_EN: &str =
+    include_str!("prompts/en/runtime/artifact_finalize.md");
+pub const RUNTIME_CONTROL_SUSPENDED_ZH_CN: &str =
+    include_str!("prompts/zh-CN/runtime/runtime_control_suspended.md");
+pub const RUNTIME_CONTROL_SUSPENDED_EN: &str =
+    include_str!("prompts/en/runtime/runtime_control_suspended.md");
+pub const RUNTIME_CONTROL_RESUME_ZH_CN: &str =
+    include_str!("prompts/zh-CN/runtime/runtime_control_resume.md");
+pub const RUNTIME_CONTROL_RESUME_EN: &str =
+    include_str!("prompts/en/runtime/runtime_control_resume.md");
 pub const AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/ai-dynamic/proposal_repair.md");
 pub const AI_DYNAMIC_PROPOSAL_REPAIR_EN: &str =

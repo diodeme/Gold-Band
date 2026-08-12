@@ -23,6 +23,7 @@ import { AvatarPreferencesProvider } from '@/components/avatar/AvatarPreferences
 import { RightWorkspaceDock } from '@/components/workspace/RightWorkspaceDock';
 import {
   agentTranscriptResourceKey,
+  conversationDirectoryWorkspaceResourceKey,
   ConversationWorkspaceStore,
   createConversationWorkspaceScope,
   RightWorkspaceProvider,
@@ -87,6 +88,30 @@ function SeedTabs({ branches }: { branches: string[] }) {
 function OpenEmptyWorkspace() {
   const workspace = useRightWorkspace();
   useEffect(() => workspace.openWorkspace(), [workspace.openWorkspace]);
+  return null;
+}
+
+function ConversationDirectoryEntry() {
+  const workspace = useRightWorkspace();
+  useEffect(() => {
+    if (!workspace.scopeKey) return;
+    workspace.setConversationDirectoryEntry({
+      kind: 'conversation-directory',
+      scopeKey: workspace.scopeKey,
+      title: '运行目录',
+      description: 'running',
+      attention: false,
+      locator: {
+        projectId: 'project-1',
+        taskId: 'task-1',
+        runId: 'run-1',
+        roundId: 'round-1',
+        nodeId: 'node-1',
+        attemptId: 'attempt-1',
+      },
+    });
+    return () => workspace.setConversationDirectoryEntry(null);
+  }, [workspace.scopeKey, workspace.setConversationDirectoryEntry]);
   return null;
 }
 
@@ -258,7 +283,44 @@ describe('right workspace DOM lifecycle', () => {
       });
       expect(container.querySelector('[data-right-workspace-empty="true"]')).not.toBeNull();
       expect(container.querySelector('[data-right-workspace-tab-strip="true"]')).toBeNull();
-      expect(container.querySelector<HTMLElement>('[data-right-workspace-empty-option="file-browser"]')?.className).toContain('w-full');
+      const workspaceOption = container.querySelector<HTMLElement>('[data-right-workspace-empty-option="file-browser"]');
+      expect(workspaceOption?.className).toContain('w-full');
+      expect(workspaceOption?.textContent).toContain('工作空间');
+      expect(container.querySelector('[data-right-workspace-empty-option="conversation-directory"]')).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('offers the current conversation run directory from both workspace entry surfaces', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const scope = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+    const expectedKey = conversationDirectoryWorkspaceResourceKey({
+      projectId: 'project-1', taskId: 'task-1', runId: 'run-1', roundId: 'round-1', nodeId: 'node-1', attemptId: 'attempt-1',
+    });
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider scope={scope}>
+            <OpenEmptyWorkspace />
+            <ConversationDirectoryEntry />
+            <RightWorkspaceDock />
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      const emptyOption = container.querySelector<HTMLButtonElement>('[data-right-workspace-empty-option="conversation-directory"]');
+      expect(emptyOption).not.toBeNull();
+      await act(async () => emptyOption?.click());
+      expect(container.querySelector('output')?.getAttribute('data-workspace-active-tab')).toBe(expectedKey);
+
+      const newTabMenu = container.querySelector<HTMLButtonElement>('[data-right-workspace-new-tab-menu="true"]');
+      await act(async () => {
+        newTabMenu?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));
+      });
+      expect(document.querySelector('[data-right-workspace-entry-option="conversation-directory"]')).not.toBeNull();
     } finally {
       await act(async () => root.unmount());
     }

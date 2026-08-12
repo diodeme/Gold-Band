@@ -128,7 +128,7 @@ describe('ACPSessionHeader', () => {
     expect(html).not.toContain('权限');
   });
 
-  it('combines the Direct title, session identity, diagnostics and folder action in one header row', () => {
+  it('combines the Direct title, session identity and diagnostics in one header row', () => {
     const html = renderHeader({
       session: session(),
       rawActive: false,
@@ -136,7 +136,6 @@ describe('ACPSessionHeader', () => {
       showSystemPromptAction: false,
       directSessionHeader: {
         title: 'Direct title',
-        onOpenInFileManager: () => undefined,
       },
       onToggleRaw: () => undefined,
       onOpenSystemPrompt: () => undefined,
@@ -146,7 +145,6 @@ describe('ACPSessionHeader', () => {
     expect(html).toContain('Claude');
     expect(html).toContain('session-1');
     expect(html).toContain('原始帧');
-    expect(html).toContain('aria-label="打开目录"');
     expect(html).toContain('py-0.5');
     expect(html).toContain('gap-1');
     expect(html).toContain('mr-2 min-w-0 max-w-[40%] shrink');

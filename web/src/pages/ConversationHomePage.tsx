@@ -3,7 +3,7 @@ import { ConversationGreeting } from '@/components/conversation/ConversationGree
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import type { ConversationComposerMulticaBinding } from '@/lib/conversation-composer-draft';
 import { cn } from '@/lib/utils';
-import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../types';
+import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore, ScheduledScheduleInput } from '../types';
 
 interface ConversationHomePageProps {
   projectId: string;
@@ -14,12 +14,15 @@ interface ConversationHomePageProps {
   workflowTemplates: WorkflowTemplateStore | null;
   profiles: ProfileVm[];
   busy: boolean;
+  initialScheduledMode?: boolean;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput, multica?: ConversationComposerMulticaBinding | null) => Promise<string | null | undefined> | string | null | undefined;
+  onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
+  onScheduledModeExit?: () => void;
 }
 
 export function ConversationHomePage({
@@ -31,12 +34,15 @@ export function ConversationHomePage({
   workflowTemplates,
   profiles,
   busy,
+  initialScheduledMode = false,
   onRunModeChange,
   onLoadProfiles,
   onSubmit,
+  onCreateScheduledTask,
   onOpenAgentManagement,
   onOpenRunModeSettings,
   onWorkspaceChange,
+  onScheduledModeExit,
 }: ConversationHomePageProps) {
   return (
     <div className={cn(
@@ -56,12 +62,15 @@ export function ConversationHomePage({
           workflowTemplates={workflowTemplates}
           profiles={profiles}
           busy={busy}
+          initialScheduledMode={initialScheduledMode}
           onRunModeChange={onRunModeChange}
           onLoadProfiles={onLoadProfiles}
           onSubmit={onSubmit}
+          onCreateScheduledTask={onCreateScheduledTask}
           onOpenAgentManagement={onOpenAgentManagement}
           onOpenRunModeSettings={onOpenRunModeSettings}
           onWorkspaceChange={onWorkspaceChange}
+          onScheduledModeExit={onScheduledModeExit}
         />
       </div>
     </div>

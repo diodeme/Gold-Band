@@ -37,6 +37,16 @@ export function mergeAcpEventSnapshots(
   existing: AcpUiEventVm,
   incoming: AcpUiEventVm,
 ): AcpUiEventVm {
+  const existingRevision = eventLifecycleRevision(existing);
+  const incomingRevision = eventLifecycleRevision(incoming);
+  if (
+    incomingRevision < existingRevision ||
+    (incomingRevision === existingRevision &&
+      isTerminalEventStatus(existing.status) &&
+      !isTerminalEventStatus(incoming.status))
+  ) {
+    return existing;
+  }
   if (
     isAcpTextStreamEventKind(existing.kind) &&
     isAcpTextStreamEventKind(incoming.kind) &&
@@ -47,6 +57,14 @@ export function mergeAcpEventSnapshots(
     return { ...merged, seq: existing.seq };
   }
   return { ...incoming, seq: existing.seq };
+}
+
+function eventLifecycleRevision(event: AcpUiEventVm) {
+  return event.endedSeq ?? event.startedSeq ?? originalSeqFromAcpEvent(event);
+}
+
+function isTerminalEventStatus(status?: string | null) {
+  return status === "completed" || status === "failed" || status === "cancelled";
 }
 
 export function mergeAcpEventWindows(

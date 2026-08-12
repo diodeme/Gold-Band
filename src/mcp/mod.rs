@@ -26,7 +26,7 @@ use crate::config::{
     McpServerConfig, McpServerHealthResult, McpServerState, McpTransportConfig, OAuthClientConfig,
     SettingsConfig,
 };
-use crate::process::background_command;
+use crate::process::{ManagedProcessGroup, PROCESS_GROUP_TERMINATION_GRACE, background_command};
 use crate::storage::write_json;
 
 /// MCP 协议版本（现代规范统一用日期字符串；stdio / http / sse 三传输共用，
@@ -543,12 +543,11 @@ fn verify_stdio_server(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let mut child = cmd
-        .spawn()
+    let mut child = ManagedProcessGroup::spawn(&mut cmd)
         .with_context(|| format!("failed to start command: {command}"))?;
 
-    let mut stdin = child.stdin.take().context("failed to capture stdin")?;
-    let stdout = child.stdout.take().context("failed to capture stdout")?;
+    let mut stdin = child.take_stdin().context("failed to capture stdin")?;
+    let stdout = child.take_stdout().context("failed to capture stdout")?;
 
     // 对标 Zed: 发送 MCP initialize 请求
     let request_line = serde_json::to_string(&build_initialize_request())? + "\n";
@@ -587,8 +586,7 @@ fn verify_stdio_server(
         .context("health check timed out")?
         .context("failed to read server response")?;
 
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.terminate(PROCESS_GROUP_TERMINATION_GRACE);
 
     parse_initialize_response(&response_line)
 }
@@ -1032,12 +1030,11 @@ fn fetch_stdio_tools(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let mut child = cmd
-        .spawn()
+    let mut child = ManagedProcessGroup::spawn(&mut cmd)
         .with_context(|| format!("failed to start command: {command}"))?;
 
-    let mut stdin = child.stdin.take().context("failed to capture stdin")?;
-    let stdout = child.stdout.take().context("failed to capture stdout")?;
+    let mut stdin = child.take_stdin().context("failed to capture stdin")?;
+    let stdout = child.take_stdout().context("failed to capture stdout")?;
 
     let (tx, rx) = mpsc::channel();
     let stdout_reader = std::thread::spawn(move || {
@@ -1089,8 +1086,7 @@ fn fetch_stdio_tools(
         parse_tools_list_response(&tools_response)
     })();
 
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.terminate(PROCESS_GROUP_TERMINATION_GRACE);
     let _ = stdout_reader.join();
 
     result

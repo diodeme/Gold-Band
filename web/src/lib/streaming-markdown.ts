@@ -2,7 +2,6 @@ export const STREAMING_MARKDOWN_FRAME_MS = 32;
 export const STREAMING_MARKDOWN_MIN_CHARS_PER_SECOND = 42;
 export const STREAMING_MARKDOWN_MAX_CHARS_PER_SECOND = 180;
 export const STREAMING_MARKDOWN_TARGET_CATCH_UP_MS = 320;
-export const STREAMING_MARKDOWN_FINAL_CATCH_UP_MS = 500;
 
 export type StreamingMarkdownPresentation = {
   canonical: string;
@@ -145,26 +144,15 @@ function settleFinishedStreamingMarkdownPresentation(
   streaming: boolean,
 ) {
   if (streaming) return presentation;
-
-  const remainingCodePoints = countCodePoints(
-    presentation.canonical,
-    presentation.offset,
-  );
-  const estimatedCatchUpMs =
-    (remainingCodePoints * 1000) / STREAMING_MARKDOWN_MAX_CHARS_PER_SECOND;
-  if (estimatedCatchUpMs <= STREAMING_MARKDOWN_FINAL_CATCH_UP_MS) {
+  if (
+    presentation.offset >= presentation.canonical.length
+    && presentation.carry === 0
+  ) {
     return presentation;
   }
-
   return {
     canonical: presentation.canonical,
     offset: presentation.canonical.length,
     carry: 0,
   };
-}
-
-function countCodePoints(source: string, offset: number) {
-  let count = 0;
-  for (const _char of source.slice(offset)) count += 1;
-  return count;
 }

@@ -16,7 +16,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::commands::{
-    CommandErrorVm, CommandResult, acp_session_update_emitter, command_error,
+    CommandErrorVm, CommandResult, command_error, configure_conversation_runtime_callbacks,
     spawn_blocking_command,
 };
 use crate::conversation_workspace::{
@@ -26,6 +26,88 @@ use crate::conversation_workspace::{
 use crate::state::DesktopContext;
 use crate::state::DesktopState;
 use crate::view_models::ContentVm;
+
+fn scheduled_service_error(
+    error: crate::scheduled_service::ScheduledServiceError,
+) -> CommandErrorVm {
+    let mut params = error.params;
+    if let Some(trace_id) = error.trace_id {
+        if let Some(object) = params.as_object_mut() {
+            object.insert("traceId".to_string(), serde_json::json!(trace_id));
+        }
+    }
+    CommandErrorVm::new(error.code.to_string(), params)
+}
+
+fn validate_scheduled_runtime_settings_input(
+    input: &crate::view_models_conversation::ScheduledRuntimeSettingsInputVm,
+) -> crate::scheduled_service::ScheduledServiceResult<()> {
+    use gold_band::scheduler::queue::{
+        MAX_OCCURRENCE_RETENTION_DAYS, MIN_OCCURRENCE_RETENTION_DAYS,
+    };
+
+    if !(MIN_OCCURRENCE_RETENTION_DAYS..=MAX_OCCURRENCE_RETENTION_DAYS)
+        .contains(&input.occurrence_retention_days)
+    {
+        return Err(crate::scheduled_service::ScheduledServiceError::new(
+            gold_band::scheduler::occurrence::ScheduledErrorCode::ValidationFailed,
+            serde_json::json!({
+                "field": "occurrenceRetentionDays",
+                "minimum": MIN_OCCURRENCE_RETENTION_DAYS,
+                "maximum": MAX_OCCURRENCE_RETENTION_DAYS,
+                "actual": input.occurrence_retention_days,
+            }),
+        ));
+    }
+    Ok(())
+}
+
+fn scheduled_runtime_settings_vm(
+    config: &gold_band::config::RuntimeConfig,
+    power: crate::scheduled_runtime::power::ScheduledPowerStatus,
+) -> crate::view_models_conversation::ScheduledRuntimeSettingsVm {
+    crate::view_models_conversation::ScheduledRuntimeSettingsVm {
+        keep_awake_enabled: config.scheduled_keep_awake_enabled,
+        keep_awake_effective: power.effective,
+        completion_notifications_enabled: config.scheduled_completion_notifications_enabled,
+        enabled_job_count: power.enabled_job_count,
+        occurrence_retention_days: config.scheduled_occurrence_retention_days,
+        power_error_code: power.error.map(|error| error.code.to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn get_scheduled_runtime_settings(
+    state: State<'_, DesktopState>,
+) -> CommandResult<crate::view_models_conversation::ScheduledRuntimeSettingsVm> {
+    let context = state.context().map_err(command_error)?;
+    let power = state.scheduled_power_status().map_err(command_error)?;
+    Ok(scheduled_runtime_settings_vm(&context.config, power))
+}
+
+#[tauri::command]
+pub fn save_scheduled_runtime_settings(
+    state: State<'_, DesktopState>,
+    input: crate::view_models_conversation::ScheduledRuntimeSettingsInputVm,
+) -> CommandResult<crate::view_models_conversation::ScheduledRuntimeSettingsVm> {
+    validate_scheduled_runtime_settings_input(&input).map_err(scheduled_service_error)?;
+
+    let app = state.app().map_err(command_error)?;
+    let mut settings = app.load_settings().map_err(command_error)?;
+    settings.scheduled_keep_awake_enabled = Some(input.keep_awake_enabled);
+    settings.scheduled_completion_notifications_enabled =
+        Some(input.completion_notifications_enabled);
+    settings.scheduled_occurrence_retention_days = Some(input.occurrence_retention_days);
+    app.save_settings(&settings).map_err(command_error)?;
+    state
+        .update_settings_config(&settings)
+        .map_err(command_error)?;
+    let power = state
+        .reconcile_scheduled_power_setting()
+        .map_err(command_error)?;
+    let context = state.context().map_err(command_error)?;
+    Ok(scheduled_runtime_settings_vm(&context.config, power))
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -142,6 +224,223 @@ pub async fn get_conversation_sidebar(
 }
 
 #[tauri::command]
+pub fn list_scheduled_tasks(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+) -> CommandResult<Vec<crate::view_models_conversation::ScheduledTaskVm>> {
+    let service = state.scheduled_service().map_err(command_error)?;
+    service
+        .list(project_id.as_deref())
+        .map_err(scheduled_service_error)?
+        .into_iter()
+        .map(|definition| {
+            let workspace_name = service
+                .workspace_name(&definition.project_id)
+                .map_err(scheduled_service_error)?;
+            Ok(
+                crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
+                    &definition,
+                    &workspace_name,
+                ),
+            )
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub fn list_scheduled_task_occurrences(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    scheduled_task_id: String,
+    limit: Option<u32>,
+) -> CommandResult<Vec<crate::view_models_conversation::ScheduledOccurrenceVm>> {
+    state
+        .scheduled_service()
+        .map_err(command_error)?
+        .list_occurrences(
+            &project_id,
+            &scheduled_task_id,
+            limit.unwrap_or(50).clamp(1, 200) as usize,
+        )
+        .map(|occurrences| scheduled_occurrence_vms_from_occurrences(&occurrences))
+        .map_err(scheduled_service_error)
+}
+
+fn scheduled_occurrence_vms_from_occurrences(
+    occurrences: &[gold_band::scheduler::occurrence::ScheduledOccurrence],
+) -> Vec<crate::view_models_conversation::ScheduledOccurrenceVm> {
+    occurrences
+        .iter()
+        .map(crate::view_models_conversation::ScheduledOccurrenceVm::from_occurrence)
+        .collect()
+}
+
+#[tauri::command]
+pub fn get_scheduled_task_diagnostics(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    scheduled_task_id: String,
+) -> CommandResult<crate::view_models_conversation::ScheduledTaskDiagnosticsVm> {
+    let service = state.scheduled_service().map_err(command_error)?;
+    let record = service
+        .get(&project_id, &scheduled_task_id)
+        .map_err(scheduled_service_error)?;
+    let occurrences = service
+        .list_occurrences(&project_id, &scheduled_task_id, 200)
+        .map_err(scheduled_service_error)?;
+    Ok(scheduled_task_diagnostics_vm(
+        project_id,
+        scheduled_task_id,
+        record,
+        occurrences,
+    ))
+}
+
+fn scheduled_task_diagnostics_vm(
+    project_id: String,
+    scheduled_task_id: String,
+    record: gold_band::scheduler::db::ScheduledJobRecord,
+    occurrences: Vec<gold_band::scheduler::occurrence::ScheduledOccurrence>,
+) -> crate::view_models_conversation::ScheduledTaskDiagnosticsVm {
+    let run_count = occurrences
+        .iter()
+        .filter(|occurrence| occurrence.run_id.is_some())
+        .count() as u64;
+    crate::view_models_conversation::ScheduledTaskDiagnosticsVm {
+        scheduled_task_id,
+        project_id,
+        next_at: record.next_run_at.map(|value| value.to_rfc3339()),
+        last_status: record.definition.last_trigger_status,
+        last_error: record.definition.last_error,
+        run_count,
+        retry_count: record.definition.retry_count,
+        occurrences: occurrences
+            .iter()
+            .map(crate::view_models_conversation::ScheduledOccurrenceVm::from_occurrence)
+            .collect(),
+    }
+}
+
+#[tauri::command]
+pub async fn run_scheduled_task_now(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    scheduled_task_id: String,
+) -> CommandResult<crate::view_models_conversation::RunScheduledTaskResultVm> {
+    let service = state.scheduled_service().map_err(command_error)?;
+    let result = service
+        .run_now(&project_id, &scheduled_task_id)
+        .await
+        .map_err(scheduled_service_error)?;
+    let links = result.immediate_links;
+    Ok(crate::view_models_conversation::RunScheduledTaskResultVm {
+        occurrence: crate::view_models_conversation::ScheduledOccurrenceVm::from_occurrence(
+            &result.occurrence,
+        ),
+        task_id: links
+            .as_ref()
+            .and_then(|links| links.task_id.clone())
+            .or(result.occurrence.task_id),
+        run_id: links
+            .as_ref()
+            .and_then(|links| links.run_id.clone())
+            .or(result.occurrence.run_id),
+        round_id: links
+            .as_ref()
+            .and_then(|links| links.round_id.clone())
+            .or(result.occurrence.round_id),
+        attempt_id: links
+            .as_ref()
+            .and_then(|links| links.attempt_id.clone())
+            .or(result.occurrence.attempt_id),
+    })
+}
+
+#[tauri::command]
+pub fn set_scheduled_task_enabled(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    scheduled_task_id: String,
+    enabled: bool,
+) -> CommandResult<crate::view_models_conversation::ScheduledTaskVm> {
+    let service = state.scheduled_service().map_err(command_error)?;
+    let project_id = match project_id {
+        Some(project_id) => project_id,
+        None => state.app().map_err(command_error)?.paths.project_id,
+    };
+    let record = service
+        .set_enabled(&project_id, &scheduled_task_id, enabled)
+        .map_err(scheduled_service_error)?;
+    let workspace_name = service
+        .workspace_name(&record.definition.project_id)
+        .map_err(scheduled_service_error)?;
+    Ok(
+        crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
+            &record.definition,
+            &workspace_name,
+        ),
+    )
+}
+
+#[tauri::command]
+pub fn create_scheduled_task(
+    state: State<'_, DesktopState>,
+    input: crate::view_models_conversation::CreateScheduledTaskInputVm,
+) -> CommandResult<crate::view_models_conversation::ScheduledTaskVm> {
+    let service = state.scheduled_service().map_err(command_error)?;
+    let record = service.create(input).map_err(scheduled_service_error)?;
+    let workspace_name = service
+        .workspace_name(&record.definition.project_id)
+        .map_err(scheduled_service_error)?;
+    Ok(
+        crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
+            &record.definition,
+            &workspace_name,
+        ),
+    )
+}
+
+#[tauri::command]
+pub fn get_scheduled_task(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    scheduled_task_id: String,
+) -> CommandResult<crate::view_models_conversation::ScheduledTaskEditVm> {
+    let record = state
+        .scheduled_service()
+        .map_err(command_error)?
+        .get(&project_id, &scheduled_task_id)
+        .map_err(scheduled_service_error)?;
+    Ok(crate::view_models_conversation::ScheduledTaskEditVm::from_definition(&record.definition))
+}
+
+#[tauri::command]
+pub fn update_scheduled_task(
+    state: State<'_, DesktopState>,
+    input: crate::view_models_conversation::UpdateScheduledTaskInputVm,
+) -> CommandResult<crate::view_models_conversation::ScheduledTaskEditVm> {
+    let record = state
+        .scheduled_service()
+        .map_err(command_error)?
+        .update(input)
+        .map_err(scheduled_service_error)?;
+    Ok(crate::view_models_conversation::ScheduledTaskEditVm::from_definition(&record.definition))
+}
+
+#[tauri::command]
+pub fn delete_scheduled_task(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    scheduled_task_id: String,
+) -> CommandResult<()> {
+    state
+        .scheduled_service()
+        .map_err(command_error)?
+        .delete(&project_id, &scheduled_task_id)
+        .map_err(scheduled_service_error)
+}
+
+#[tauri::command]
 pub async fn get_conversation_workspaces(
     state: State<'_, DesktopState>,
 ) -> CommandResult<Vec<crate::view_models_conversation::ConversationWorkspaceVm>> {
@@ -166,7 +465,7 @@ pub async fn get_conversation_workspaces(
 }
 
 #[tauri::command]
-pub fn get_conversation_run(
+pub async fn get_conversation_run(
     state: State<'_, DesktopState>,
     project_id: String,
     task_id: String,
@@ -175,39 +474,45 @@ pub fn get_conversation_run(
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
     let started = Instant::now();
     let context = state.context().map_err(command_error)?;
-    let global_app = context.app();
-    let app_state = global_app.load_state().map_err(command_error)?;
-    let Some((workspace_path, resolved_project_id)) =
-        workspace_entry_for_project(&app_state, &project_id)
-    else {
-        return Err(CommandErrorVm::new(
-            "workspace.not-found",
-            serde_json::json!({ "projectId": project_id }),
-        ));
-    };
-    let workspace_app = state
-        .app()
-        .map_err(command_error)?
-        .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
-    let result = crate::view_models_conversation::conversation_run_vm(
-        &workspace_app,
-        &resolved_project_id,
-        &task_id,
-        &run_id,
-        selected_session_key.as_deref(),
-    );
+    let log_project_id = project_id.clone();
+    let log_task_id = task_id.clone();
+    let log_run_id = run_id.clone();
+    let log_selected_session_key = selected_session_key.clone();
+    let result = spawn_blocking_command(move || {
+        let global_app = context.app();
+        let app_state = global_app.load_state().map_err(command_error)?;
+        let Some((workspace_path, resolved_project_id)) =
+            workspace_entry_for_project(&app_state, &project_id)
+        else {
+            return Err(CommandErrorVm::new(
+                "workspace.not-found",
+                serde_json::json!({ "projectId": project_id }),
+            ));
+        };
+        let workspace_app =
+            global_app.with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
+        crate::view_models_conversation::conversation_run_vm(
+            &workspace_app,
+            &resolved_project_id,
+            &task_id,
+            &run_id,
+            selected_session_key.as_deref(),
+        )
+        .map_err(command_error)
+    })
+    .await;
     info!(
         target: "gold_band::perf",
         command = "get_conversation_run",
-        project_id = %project_id,
-        task_id = %task_id,
-        run_id = %run_id,
-        selected_session_key = ?selected_session_key,
+        project_id = %log_project_id,
+        task_id = %log_task_id,
+        run_id = %log_run_id,
+        selected_session_key = ?log_selected_session_key,
         elapsed_ms = started.elapsed().as_millis(),
         status = if result.is_ok() { "ok" } else { "error" },
         "conversation run view model loaded"
     );
-    result.map_err(command_error)
+    result
 }
 
 #[tauri::command]
@@ -279,21 +584,11 @@ pub async fn create_conversation_run(
             }),
         ));
     }
-    let live_update = crate::commands::acp_live_update_emitter_for_app(
-        &app,
+    let app = configure_conversation_runtime_callbacks(
+        app,
         app_handle.clone(),
-        Some(project_id_for_emit.clone()),
+        Some(project_id_for_emit),
     );
-    let app = app
-        .with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(
-            app_handle.clone(),
-            state
-                .app()
-                .map_err(command_error)?
-                .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone()),
-            Some(project_id_for_emit),
-        ));
     let run = tauri::async_runtime::spawn_blocking(move || {
         crate::view_models_conversation::create_conversation_run_vm(&app, &input)
             .map_err(command_error)
@@ -333,22 +628,11 @@ pub fn rerun_conversation_task(
         .app()
         .map_err(command_error)?
         .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
-    let app = workspace_app;
-    let live_update = crate::commands::acp_live_update_emitter_for_app(
-        &app,
+    let app = configure_conversation_runtime_callbacks(
+        workspace_app,
         app_handle.clone(),
         Some(resolved_project_id.clone()),
     );
-    let app = app
-        .with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(
-            app_handle.clone(),
-            state
-                .app()
-                .map_err(command_error)?
-                .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone()),
-            Some(resolved_project_id.clone()),
-        ));
     let run = crate::view_models_conversation::rerun_conversation_task_vm(
         &app,
         &resolved_project_id,
@@ -698,6 +982,16 @@ fn conversation_sidebar_sources(
         .collect()
 }
 
+#[cfg(test)]
+fn workspace_name_for_project(state: &gold_band::config::StateConfig, project_id: &str) -> String {
+    state
+        .conversation_workspaces
+        .iter()
+        .find(|workspace| project_ids_match(&workspace.project_id, project_id))
+        .map(|workspace| workspace.name.clone())
+        .unwrap_or_else(|| project_id.to_string())
+}
+
 fn conversation_sidebar_for_state(
     context: &DesktopContext,
     app: &App,
@@ -758,7 +1052,9 @@ pub fn get_conversation_run_mode(
                         agent_type: cfg.agent_type.clone(),
                         bootstrap_agent_type: cfg.bootstrap_agent_type.clone(),
                         bootstrap_model_id: cfg.bootstrap_model_id.clone(),
+                        bootstrap_config_options: cfg.bootstrap_config_options.clone(),
                         acceptance_model_id: cfg.acceptance_model_id.clone(),
+                        acceptance_config_options: cfg.acceptance_config_options.clone(),
                         model_id: cfg.model_id.clone(),
                         permission_mode: cfg.permission_mode.clone(),
                         config_options: cfg.config_options.clone(),
@@ -769,6 +1065,8 @@ pub fn get_conversation_run_mode(
                                     crate::view_models_conversation::ConversationDynamicAgentRefVm {
                                         provider: agent.provider.clone(),
                                         model: agent.model.clone(),
+                                        permission_mode: agent.permission_mode.clone(),
+                                        config_options: agent.config_options.clone(),
                                     }
                                 })
                                 .collect()
@@ -854,7 +1152,9 @@ pub fn save_conversation_run_mode(
                 agent_type: cfg.agent_type,
                 bootstrap_agent_type: cfg.bootstrap_agent_type,
                 bootstrap_model_id: cfg.bootstrap_model_id,
+                bootstrap_config_options: cfg.bootstrap_config_options,
                 acceptance_model_id: cfg.acceptance_model_id,
+                acceptance_config_options: cfg.acceptance_config_options,
                 model_id: cfg.model_id,
                 permission_mode: cfg.permission_mode,
                 config_options: cfg.config_options,
@@ -864,6 +1164,8 @@ pub fn save_conversation_run_mode(
                         .map(|agent| ConversationDynamicAgentRef {
                             provider: agent.provider,
                             model: agent.model,
+                            permission_mode: agent.permission_mode,
+                            config_options: agent.config_options,
                         })
                         .collect()
                 }),
@@ -920,6 +1222,7 @@ pub async fn add_conversation_workspace(
     path: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let context = state.context().map_err(command_error)?;
+    let coordinator = state.scheduler_coordinator().map_err(command_error)?;
     spawn_blocking_command(move || {
         let gold_band_app = context.app();
         let workspace_path = Utf8PathBuf::from(path);
@@ -954,6 +1257,11 @@ pub async fn add_conversation_workspace(
             });
         state.last_conversation_workspace = Some(project_id.clone());
         gold_band_app.save_state(&state).map_err(command_error)?;
+        coordinator
+            .send(crate::scheduled_runtime::SchedulerCommand::RegisterWorkspace {
+                workspace_path: workspace_path.clone(),
+            })
+            .map_err(scheduled_service_error)?;
         info!(
             project_id = %project_id,
             workspace_count = state.conversation_workspaces.len(),
@@ -1003,6 +1311,7 @@ pub async fn sync_conversation_workspace(
     workspace_path: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let context = state.context().map_err(command_error)?;
+    let coordinator = state.scheduler_coordinator().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
         let name = std::path::Path::new(&workspace_path)
@@ -1029,6 +1338,13 @@ pub async fn sync_conversation_workspace(
         };
         state.last_conversation_workspace = Some(resolved_project_id);
         app.save_state(&state).map_err(command_error)?;
+        coordinator
+            .send(
+                crate::scheduled_runtime::SchedulerCommand::RegisterWorkspace {
+                    workspace_path: Utf8PathBuf::from(workspace_path.clone()),
+                },
+            )
+            .map_err(scheduled_service_error)?;
 
         conversation_sidebar_for_state(&context, &app, &state)
     })
@@ -1093,6 +1409,7 @@ pub async fn remove_conversation_workspace(
     project_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let context = state.context().map_err(command_error)?;
+    let coordinator = state.scheduler_coordinator().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
         let mut state = app.load_state().map_err(command_error)?;
@@ -1105,7 +1422,7 @@ pub async fn remove_conversation_workspace(
                 )
             })?;
         gold_band::acp::client::close_workspace_connections_bounded(&Utf8PathBuf::from(
-            workspace_path,
+            workspace_path.clone(),
         ))
         .map_err(command_error)?;
 
@@ -1116,6 +1433,13 @@ pub async fn remove_conversation_workspace(
             )
         })?;
         app.save_state(&state).map_err(command_error)?;
+        coordinator
+            .send(
+                crate::scheduled_runtime::SchedulerCommand::UnregisterWorkspace {
+                    workspace_path: Utf8PathBuf::from(workspace_path),
+                },
+            )
+            .map_err(scheduled_service_error)?;
 
         conversation_sidebar_for_state(&context, &app, &state)
     })
@@ -1619,14 +1943,198 @@ mod tests {
     use super::{
         MaterializeAttachmentFileInput, base64_encode, conversation_search_result_for_workspace,
         conversation_search_task_roots, materialize_attachment_files_to_dir,
-        message_attachment_content_from_attempt_dir,
+        message_attachment_content_from_attempt_dir, scheduled_occurrence_vms_from_occurrences,
+        scheduled_runtime_settings_vm, scheduled_service_error,
+        validate_scheduled_runtime_settings_input,
     };
     use camino::Utf8PathBuf;
     use gold_band::app::App;
+    use gold_band::config::{ConversationWorkspaceEntry, StateConfig};
     use gold_band::domain::{RunStatus, VERSION};
     use gold_band::runtime::{RunState, TaskState};
+    use gold_band::scheduler::occurrence::ScheduledErrorCode;
     use gold_band::storage::{sqlite::TaskSearchResult, write_json};
     use uuid::Uuid;
+
+    use crate::view_models_conversation::ScheduledRuntimeSettingsInputVm;
+
+    #[test]
+    fn scheduled_occurrence_list_keeps_skipped_and_missed_history() {
+        use chrono::{TimeZone, Utc};
+        use gold_band::scheduler::occurrence::{
+            OccurrenceStatus, OccurrenceTriggerKind, ScheduledOccurrence,
+        };
+
+        let now = Utc.with_ymd_and_hms(2026, 8, 7, 9, 0, 0).unwrap();
+        let make_occurrence = |id: &str, status| ScheduledOccurrence {
+            id: id.to_string(),
+            job_id: "scheduled-1".to_string(),
+            scheduled_at: now,
+            trigger_kind: OccurrenceTriggerKind::Scheduled,
+            status,
+            attempt: 1,
+            owner_id: None,
+            lease_until: None,
+            heartbeat_at: None,
+            task_id: None,
+            run_id: None,
+            round_id: None,
+            attempt_id: None,
+            error_code: None,
+            error_params: None,
+            started_at: None,
+            finished_at: Some(now),
+            created_at: now,
+            updated_at: now,
+        };
+        let occurrences = vec![
+            make_occurrence("skipped", OccurrenceStatus::Skipped),
+            make_occurrence("missed", OccurrenceStatus::Missed),
+        ];
+
+        let statuses = scheduled_occurrence_vms_from_occurrences(&occurrences)
+            .into_iter()
+            .map(|occurrence| occurrence.status)
+            .collect::<Vec<_>>();
+
+        assert_eq!(statuses, vec!["skipped", "missed"]);
+    }
+
+    #[test]
+    fn scheduled_runtime_settings_reject_retention_below_minimum() {
+        let error = validate_scheduled_runtime_settings_input(&ScheduledRuntimeSettingsInputVm {
+            keep_awake_enabled: true,
+            completion_notifications_enabled: true,
+            occurrence_retention_days: 0,
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);
+        assert_eq!(
+            error.params,
+            serde_json::json!({
+                "field": "occurrenceRetentionDays",
+                "minimum": 1,
+                "maximum": 3650,
+                "actual": 0,
+            })
+        );
+    }
+
+    #[test]
+    fn scheduled_runtime_settings_reject_retention_above_maximum() {
+        let error = validate_scheduled_runtime_settings_input(&ScheduledRuntimeSettingsInputVm {
+            keep_awake_enabled: false,
+            completion_notifications_enabled: false,
+            occurrence_retention_days: 3651,
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);
+        assert_eq!(error.params["actual"], 3651);
+    }
+
+    #[test]
+    fn scheduled_runtime_settings_report_config_and_effective_power_separately() {
+        let config = gold_band::config::RuntimeConfig {
+            scheduled_keep_awake_enabled: true,
+            scheduled_completion_notifications_enabled: false,
+            scheduled_occurrence_retention_days: 90,
+            ..gold_band::config::RuntimeConfig::default()
+        };
+        let vm = scheduled_runtime_settings_vm(
+            &config,
+            crate::scheduled_runtime::power::ScheduledPowerStatus {
+                effective: false,
+                enabled_job_count: 4,
+                error: Some(gold_band::scheduler::occurrence::ScheduledError::new(
+                    ScheduledErrorCode::PowerInhibitorFailed,
+                )),
+            },
+        );
+
+        assert!(vm.keep_awake_enabled);
+        assert!(!vm.keep_awake_effective);
+        assert!(!vm.completion_notifications_enabled);
+        assert_eq!(vm.enabled_job_count, 4);
+        assert_eq!(vm.occurrence_retention_days, 90);
+        assert_eq!(
+            vm.power_error_code.as_deref(),
+            Some("SCHEDULED_POWER_INHIBITOR_FAILED")
+        );
+    }
+
+    #[test]
+    fn workspace_name_for_project_uses_registered_workspace_name() {
+        let mut state = StateConfig::default();
+        state
+            .conversation_workspaces
+            .push(ConversationWorkspaceEntry {
+                project_id: "project-a".to_string(),
+                workspace_path: "D:/workspace-a".to_string(),
+                name: "Workspace A".to_string(),
+                added_at: "2026-07-30T00:00:00Z".to_string(),
+            });
+
+        assert_eq!(
+            super::workspace_name_for_project(&state, "project-a"),
+            "Workspace A"
+        );
+        assert_eq!(
+            super::workspace_name_for_project(&state, "project-b"),
+            "project-b"
+        );
+    }
+
+    #[test]
+    fn scheduled_service_errors_keep_structured_command_contract() {
+        let error = crate::scheduled_service::ScheduledServiceError {
+            code: ScheduledErrorCode::Conflict,
+            params: serde_json::json!({
+                "scheduledTaskId": "scheduled-a",
+                "revision": 3,
+            }),
+            trace_id: Some("trace-a".to_string()),
+        };
+
+        let mapped = scheduled_service_error(error);
+
+        assert_eq!(mapped.code, "SCHEDULED_CONFLICT");
+        assert_eq!(
+            mapped.params,
+            serde_json::json!({
+                "scheduledTaskId": "scheduled-a",
+                "revision": 3,
+                "traceId": "trace-a",
+            })
+        );
+    }
+
+    #[test]
+    fn scheduled_diagnostics_uses_the_persisted_deadline() {
+        let definition = gold_band::scheduler::ScheduledTaskDefinition::new(
+            "project-a",
+            "scheduled-a",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::at(chrono::Utc::now() + chrono::Duration::hours(1)),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        let record = gold_band::scheduler::db::ScheduledJobRecord {
+            definition,
+            revision: 3,
+            next_run_at: None,
+        };
+
+        let diagnostics = super::scheduled_task_diagnostics_vm(
+            "project-a".to_string(),
+            "scheduled-a".to_string(),
+            record,
+            Vec::new(),
+        );
+
+        assert_eq!(diagnostics.next_at, None);
+    }
 
     #[test]
     fn conversation_search_result_contains_latest_run_for_navigation() {

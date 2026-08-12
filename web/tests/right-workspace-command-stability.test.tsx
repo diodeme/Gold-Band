@@ -5,7 +5,9 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createDraftConversationWorkspaceScope,
+  fileBrowserWorkspaceResourceKey,
   RightWorkspaceProvider,
+  rightWorkspaceReducer,
   useRightWorkspace,
   useRightWorkspaceCommands,
   type FileWorkspaceResource,
@@ -37,6 +39,22 @@ function fileResource(index: number): FileWorkspaceResource {
 afterEach(() => document.body.replaceChildren());
 
 describe('right workspace stable command interface', () => {
+  it('collapses the right workspace when its last tab is closed', () => {
+    const resource = fileResource(0);
+    const state = {
+      tabs: [resource],
+      activeTabKey: resource.key,
+      requestedOpen: true,
+      openRevision: 1,
+    };
+
+    expect(rightWorkspaceReducer(state, { type: 'close', key: resource.key })).toMatchObject({
+      tabs: [],
+      activeTabKey: null,
+      requestedOpen: false,
+    });
+  });
+
   it('does not rerender command consumers when tabs, active tab, or width change', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -71,8 +89,8 @@ describe('right workspace stable command interface', () => {
       await act(async () => { await workspaceState!.activateTab(fileResource(0).key); });
       await act(async () => workspaceState!.setWidth(720));
 
-      expect(container.querySelector('output')?.dataset).toMatchObject({ tabs: '15', width: '720' });
-      expect(workspaceState!.activeTabKey).toBe(fileResource(0).key);
+      expect(container.querySelector('output')?.dataset).toMatchObject({ tabs: '1', width: '720' });
+      expect(workspaceState!.activeTabKey).toBe(fileBrowserWorkspaceResourceKey('project-1'));
       expect(commandRenders).toBe(1);
       expect(currentCommands).toBe(initialCommands);
     } finally {

@@ -1582,6 +1582,41 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.19 改动十七：合并 origin/main 进 feature_multica（M5-ag，2026-08-12）
+
+**背景**：feature_multica 落后 origin/main 115 commit（main 引入了 git/github 源代码管理、定时任务 scheduled-tasks、app-exit 协调器重构、agent catalog 等大量能力）；feature_multica 领先 9 commit（multica 远程任务接入）。用户要求合并 main 最新代码，冲突优先保 main，再考虑 multica 二次修复。
+
+**安全网**：合并前在 `8fe70d9` 打备份分支 `feature_multica_premerge_backup`。
+
+**冲突解决（11 文件全部「并集」解决——main 新能力与 multica 接入正交：定时任务 vs 远程任务，互不侵入）**：
+- 纯加法并集（main 全量 + multica 增量共存）：
+  - `src-tauri/Cargo.toml`：tokio features 取并集（补 `net`，main 的 macros/rt-multi-thread/sync/test-util）；保留 multica 依赖的 `thiserror = "1"`（`multica/error.rs` 用）。
+  - `src-tauri/src/main.rs`：命令 import 列表并集（main 全量 + 回插 `connect_multica`/`disconnect_multica`/`get_multica_settings`，`save_multica_settings` 已在公共尾）；`multica::commands` 块与 main 的 `notifications::send_scheduled_native_notification` 共存；invoke_handler / managed state / start_multica_loop 均自动合并保留。
+  - `src-tauri/src/commands.rs`：config import 并集（main 的 `DEFAULT_CUSTOM_AGENT_ICON` + multica 的 `MulticaAccountRef`）。
+  - `src/config/mod.rs`：`apply_settings` 两段并集（multica 字段段 + main 的 scheduled_keep_awake/completion_notifications/occurrence_retention 段）；测试 import 并集。
+  - `web/src/api/desktop.ts`：types import 并集（main 的 AppExit/Git/Scheduled* + multica 的 Multica*）。
+  - `web/src/App.tsx`：subscribe / page import 并集（`subscribeMulticaTaskUpdates`+`subscribeScheduledTaskUpdates`；`MulticaTaskManagementPage`+`ScheduledTaskManagementPage`+`ScheduledTaskDetailPage`）。
+  - `web/src/i18n.ts`：侧栏标签取 main 简化版（Agent / 上下文 / 运行模式）+ 保留 multica 的 `multicaTaskManagement` key（中英双版本同步）。
+  - `web/src/routes.ts`：路由并集（`multica-tasks` 路由 + main 的 `scheduled-tasks`/`-create`/`-detail` 路由块；`conversation-run` 路径取 main 版以支持 roundId/attemptId——类型已要求）。
+- 唯一语义融合（非冲突、非丢功能）：
+  - `web/src/components/conversation/ConversationComposer.tsx`：`onSubmit` 签名并集（保留 multica 第二参 `multica?` + main 的 `onCreateScheduledTask?`）；`canSubmit` 条件融合（main 的 scheduled 机制全保留 + multica 的 `!(multicaActive && !hasLocalWorkspaces)` 门并到同一 `canSubmit`）。multica 绑定预填流（draft.multica / onSubmit 转发）未被 main 重构触碰，零回归。
+  - `web/src/components/conversation/ConversationSidebar.tsx`：图标 import 并集（main 去掉的 Boxes/Workflow 不回加——已无引用；保留 multica 的 Globe + main 的 Library/Route/AlarmClock）；两个 SidebarButton 并存（multica 远程任务 + scheduled 定时任务）。
+  - `web/src/pages/ConversationHomePage.tsx`：`onSubmit` 签名并集（同 Composer）。
+
+**唯一合并诱发的代码修复（1 行）**：main 把侧栏导航从「`active.kind` 直查」重构为「`activeNavigationKey`（字符串 key）」系统，其 `conversationSidebarNavigationKey` switch 未覆盖合并后并入的 `multica-tasks` kind → TS2366。修法：switch 的 null 返回组补 `case 'multica-tasks'`（multica 按钮仍用 `active.kind === 'multica-tasks'` 直查高亮，nav key 返回 null 正确——该按钮不参与 key 系统）。
+
+**main 新增 npm 依赖（package.json 自动合并，需安装）**：`@tomplum/react-git-log`、`@js-temporal/polyfill`、`cron-parser`、`@vvo/tzdb`——`npm install` 已装。
+
+**验证**：`cargo check --all-targets` 绿（仅 main 既有的 dead-code warning：`scheduled_task_vms_from_sources`/`task_uuid`/`title`/`cancel_main_window_close` 等未用，非 multica、非本次引入）；`tsc -p tsconfig.build.json`（src only）绿、零错；`cargo test multica` **85 测全过、0 失败**（含 M5-af 三新测，零回归）。
+
+**遗留（非 multica、非本次合并引入，main 既有技术债）**：`tsc` 全量（含 tests/）50 错，全在 `tests/` 目录、0 处引用 multica——是 main 的 VM 类型演化快于测试 fixture（`PreferencesVm.avatars` / `AppInfoVm.feedbackEnabled` / `AppConfigVm.workspaceFiles` / `ManagedAgentVm.command/args/env` 缺字段，以及 `node:fs`/`__dirname` 节点类型配置缺）。未在本次合并处理（属 main 测试维护债）。
+
+**集成接缝备忘（供后续 multica 侧栏工作参考）**：multica 侧栏按钮用 `active.kind === 'multica-tasks'` 直查，main 体系用 `activeNavigationKey === '<key>'`。当前两者并存无 bug；若后续统一侧栏导航模型，应把 multica-tasks 纳入 `activeNavigationKey` 体系（届时移除此处 case，改用 key 比对）。
+
+**结论**：用户预设的「multica 二次修复开发」基本不需要——并集解冲突使 main 全量能力与 multica 全量接入共存，multica 模块/命令/前端页面/85 单测全部零回归。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 ---

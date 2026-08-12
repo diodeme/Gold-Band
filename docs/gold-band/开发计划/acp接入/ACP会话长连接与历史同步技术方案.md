@@ -261,11 +261,12 @@ RuntimeRepair
 ManagedAgentConfig
   - adapter
   - primaryAgentDir
+  - projectPrimaryAgentDir?
   - compatibleAgentDirs[]
   - externalSessionSyncEnabled = false
 ```
 
-默认关闭，并以 Beta 能力展示。只有 Agent 明确保证不同客户端连接的是同一条线性上下文，或未来 Gold Band 能显式选择 Provider branch/leaf 时才允许开启。Agent 管理页的修改抽屉必须同时编辑 `adapter`、主 Agent 目录、兼容 Agent 目录和 `externalSessionSyncEnabled`；主目录不能为空，兼容目录规范化后只参与读取。同步开关标题右侧展示紧凑 Beta Badge 和可聚焦问号 Tooltip，Tooltip 解释“同步同一个 Session 在其他客户端中发生过的对话”，说明文案明确警告：仅在确认 Agent 支持跨客户端共享同一会话上下文时开启，否则可能造成历史顺序或上下文理解错误。列表主卡片仅保留命令、参数、环境变量和最近检测四项运行摘要，不展示高级配置。
+默认关闭，并以 Beta 能力展示。只有 Agent 明确保证不同客户端连接的是同一条线性上下文，或未来 Gold Band 能显式选择 Provider branch/leaf 时才允许开启。Agent 管理页的修改抽屉必须同时编辑 `adapter`、主 Agent 目录、兼容 Agent 目录和 `externalSessionSyncEnabled`；主目录允许按全局/项目作用域拆分，兼容目录规范化后在两端只参与读取。同步开关标题右侧展示紧凑 Beta Badge 和可聚焦问号 Tooltip，Tooltip 解释“同步同一个 Session 在其他客户端中发生过的对话”，说明文案明确警告：仅在确认 Agent 支持跨客户端共享同一会话上下文时开启，否则可能造成历史顺序或上下文理解错误。列表主卡片仅保留命令、参数、环境变量和最近检测四项运行摘要，不展示高级配置。
 
 Agent 配置是 Provider 级全局配置，不属于当前 workspace。新增、修改或删除 Agent 前，必须跨所有 workspace 检查该 Provider 是否存在 active prompt；保存前统一 detach 该 Provider 的 idle session runtime，并关闭所有 `provider + workspace` connection，使下一次 prompt 使用新配置，不能只失效当前 `App.paths.repo_root`。
 
@@ -881,3 +882,25 @@ session/connection 被有界驱逐或失效：reload
 - Agent 配置保存边界升级为 Provider 全局失效：跨 workspace 阻断 active prompt，detach 所有该 Provider 的 idle attachment，并关闭所有 Provider connection。
 
 接口回归已覆盖：timeline replay 去重、内容变化 revision、compaction 前后投影等价、旧重复 revision 打开时自动压缩且投影不变、idle event pump、load response 后延迟到达的 replay agent chunk 仍保持抑制、MCP fingerprint 归一化与变更、Provider revision 判定矩阵、首次开启同步时即使 `session/list` 会超时仍优先 load、Provider 跨 workspace 连接筛选、配置边界，以及既有 ACP 全量 Rust 单元测试。
+
+## 20. 能力驱动的 resume/load 恢复策略（2026-08-07）
+
+旧实现把 detached session 的“恢复上下文”与“回放完整历史”统一交给 `session/load`，导致普通 continue 承担了不必要的 replay、history importer 与 quiet-drain。ACP v1 已将 `session/resume` 稳定为不回放历史的上下文恢复接口，因此恢复方法改由两类数据共同决定：恢复意图 `ContinueOnly | SyncHistory`，以及 `initialize.agentCapabilities` 中的 `sessionCapabilities.resume` / 顶层 `loadSession`。
+
+决策矩阵：
+
+| 恢复条件 | 方法 |
+| --- | --- |
+| attached runtime 有效且配置指纹未变化 | 直接 `session/prompt` |
+| 普通续接，支持 resume | `session/resume` |
+| 普通续接，不支持 resume 但支持 load | `session/load` fallback |
+| 需要跨端完整历史同步且支持 load | `session/load` |
+| 需要历史同步但仅支持 resume | `acp.history-sync-unsupported` |
+| strict continue 且两者均不支持 | `acp.session-restore-unsupported` |
+| non-strict 且两者均不支持 | `session/new` |
+
+生命周期拆分为 `RestoringWithoutReplay`、`ReplayingHistory`、`AwaitingTurnStart` 与 `Live`。resume 路径不启动 `ProviderHistoryReplay`、不等待 replay quiet barrier；恢复期间意外收到的 content update 只保留 raw 并写 `acp.unexpected-resume-replay` 结构化诊断。load 路径保留现有 importer、response 后 drain 与 prompt 前二次 drain；虽然 ACP 规范要求 load 在响应前完成回放，这层 quiet barrier 仍用于保护已经观测到的异步/不合规 adapter。
+
+resume/load 请求都携带 `sessionId`、`cwd`、过滤后的 `mcpServers` 与可选 `_meta.systemPrompt.append`。成功响应先更新 `models/modes/configOptions`，再在同一个 session config transaction 内依次应用模型、权限模式和其他 config option，最后才发送 `session/prompt`。Tauri command 层识别 `RuntimeError` 并只向前端返回结构化 `code + params`；Raw Frame 过滤器分别显示 Resume 与 Load，系统提示解析和 close fuse 生命周期边界同时识别 `session/resume`。
+
+接口回归覆盖 capability 解析、六类恢复决策、resume/load 参数、resume 无 replay 状态、load 延迟 replay 抑制、structured command error、resume 系统提示解析、close fuse 清除以及 Raw Frame i18n 映射。

@@ -7,7 +7,7 @@ const api = vi.hoisted(() => ({
 
 vi.mock('@/api', () => api);
 
-import { FileExplorerStore } from '@/components/workspace/files/file-explorer-store';
+import { FileExplorerStore, fileTreeView } from '@/components/workspace/files/file-explorer-store';
 import { FALLBACK_WORKSPACE_FILES } from '@/components/workspace/workspace-layout';
 import type { WorkspaceDirectoryEntryVm, WorkspaceFileChangedEventVm } from '@/types';
 
@@ -48,16 +48,24 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('FileExplorerStore lifecycle', () => {
-  it('loads one directory level at a time and restores expanded paths', async () => {
+  it('expands a single-directory chain until it reaches a non-directory child', async () => {
     const store = createStore();
     await store.loadRoot('project-1');
     expect(api.listWorkspaceDirectory).toHaveBeenCalledTimes(1);
     expect(store.snapshot('project-1').roots[0]?.children).toBeNull();
 
     await store.toggleDirectory('project-1', 'src', true);
-    await store.toggleDirectory('project-1', 'src/nested', true);
     expect(api.listWorkspaceDirectory.mock.calls.map((call) => call[1])).toEqual(['', 'src', 'src/nested']);
     expect(store.snapshot('project-1').expanded).toEqual(new Set(['src', 'src/nested']));
+  });
+
+  it('keeps the directory display mode in the project tree lifecycle', () => {
+    const store = createStore();
+    expect(store.snapshot('project-1').displayMode).toBe('compact');
+
+    store.setDisplayMode('project-1', 'tree');
+
+    expect(store.snapshot('project-1').displayMode).toBe('tree');
   });
 
   it('ignores an obsolete search response and keeps only the latest request', async () => {
@@ -179,6 +187,35 @@ describe('FileExplorerStore lifecycle', () => {
     expect(api.listWorkspaceDirectory).toHaveBeenCalledTimes(2);
   });
 
+  it('refreshes root structure without replacing the mounted tree with a loading state', async () => {
+    const store = createStore();
+    await store.loadRoot('project-1');
+    const beforeRefresh = store.snapshot('project-1');
+    let completeRefresh!: (entries: WorkspaceDirectoryEntryVm[]) => void;
+    api.listWorkspaceDirectory.mockImplementationOnce(() => new Promise((resolve) => {
+      completeRefresh = resolve;
+    }));
+
+    store.applyFileChange({
+      projectId: 'project-1',
+      canonicalPath: 'D:\\repo\\new.md',
+      kind: 'created',
+      revision: { byteLength: 0, modifiedAtNs: '2', contentHash: 'new' },
+      operationId: null,
+    });
+    await vi.advanceTimersByTimeAsync(FALLBACK_WORKSPACE_FILES.watchDebounceMs);
+
+    expect(store.snapshot('project-1').status).toBe('ready');
+    expect(store.snapshot('project-1').roots).toBe(beforeRefresh.roots);
+
+    completeRefresh([directory('src'), file('README.md'), file('new.md')]);
+    await Promise.resolve();
+
+    expect(store.snapshot('project-1').status).toBe('ready');
+    expect(store.snapshot('project-1').roots.map((entry) => entry.name)).toEqual(['src', 'README.md', 'new.md']);
+    expect(store.snapshot('project-1').treeScrollTop).toBe(beforeRefresh.treeScrollTop);
+  });
+
   it('invalidates directory structure when a known node is removed', async () => {
     const store = createStore();
     await store.loadRoot('project-1');
@@ -193,5 +230,37 @@ describe('FileExplorerStore lifecycle', () => {
     await vi.advanceTimersByTimeAsync(FALLBACK_WORKSPACE_FILES.watchDebounceMs);
 
     expect(api.listWorkspaceDirectory).toHaveBeenCalledTimes(2);
+  });
+
+  it('rehydrates expanded descendants when a new file splits a compact chain', async () => {
+    let splitChain = false;
+    api.listWorkspaceDirectory.mockImplementation(async (_projectId: string, path: string) => {
+      if (path === '') return [directory('src')];
+      if (path === 'src') return [directory('nested', 'src/nested')];
+      if (path === 'src/nested') {
+        return splitChain
+          ? [directory('deeper', 'src/nested/deeper'), file('new.md', 'src/nested/new.md')]
+          : [directory('deeper', 'src/nested/deeper')];
+      }
+      return [file('main.rs', 'src/nested/deeper/main.rs')];
+    });
+    const store = createStore();
+    await store.loadRoot('project-1');
+    await store.toggleDirectory('project-1', 'src', true);
+    splitChain = true;
+
+    store.applyFileChange({
+      projectId: 'project-1',
+      canonicalPath: 'D:\\repo\\src\\nested\\new.md',
+      kind: 'created',
+      revision: { byteLength: 0, modifiedAtNs: '2', contentHash: 'new' },
+      operationId: null,
+    });
+    await vi.advanceTimersByTimeAsync(FALLBACK_WORKSPACE_FILES.watchDebounceMs);
+
+    const compactRoot = fileTreeView(store.snapshot('project-1').roots, 'compact')[0];
+    expect(compactRoot?.displayName).toBe('src.nested');
+    expect(compactRoot?.children?.map((entry) => entry.displayName)).toEqual(['deeper', 'new.md']);
+    expect(compactRoot?.children?.[0]?.children?.[0]?.displayName).toBe('main.rs');
   });
 });

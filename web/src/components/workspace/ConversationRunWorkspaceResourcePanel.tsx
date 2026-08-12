@@ -152,7 +152,7 @@ function WorkflowEditPanel({
   useEffect(() => {
     let active = true;
     Promise.all([
-      registry ? Promise.resolve(registry) : getAgentRegistry().catch(() => ({ agents: [], supportedTypes: [] })),
+      registry ? Promise.resolve(registry) : getAgentRegistry().catch(() => ({ agents: [], catalog: [] })),
       getProfiles().then((result) => result.profiles).catch(() => []),
     ]).then(([nextRegistry, nextProfiles]) => {
       if (!active) return;

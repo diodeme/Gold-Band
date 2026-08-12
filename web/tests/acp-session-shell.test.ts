@@ -115,6 +115,16 @@ describe('resolveAcpSessionShellState', () => {
     })).toBe('initializing');
   });
 
+  it('keeps a durably established session available while its detail payload is temporarily absent', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: false,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      hasEstablishedSessionShell: true,
+      initialSessionLoading: false,
+    })).toBe('available');
+  });
+
   it('keeps runtime-active session switching in loading without initialization ownership', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: false,
@@ -167,7 +177,7 @@ describe('isAcpSessionInitializationFailed', () => {
     expect(isAcpSessionInitializationFailed({
       ...failedInput,
       runtimePauseReason: 'runtime-abnormal',
-      runtimeComposerMode: 'interrupted-input',
+      runtimeComposerMode: 'normal',
       runtimeErrorMessage: "Codex doesn't support MCP SSE transport protocol",
     })).toBe(true);
   });
@@ -201,7 +211,7 @@ describe('isAcpSessionInitializationFailed', () => {
     expect(isAcpSessionInitializationFailed({
       ...failedInput,
       runtimePauseReason: 'waiting-for-user-input',
-      runtimeComposerMode: 'interrupted-input',
+      runtimeComposerMode: 'normal',
     })).toBe(false);
   });
 });
@@ -223,6 +233,10 @@ describe('isAcpSessionInitializationInterrupted', () => {
   it('keeps established or displayable interrupted sessions on the normal conversation path', () => {
     expect(isAcpSessionInitializationInterrupted({
       ...interruptedInput,
+      sessionEstablished: true,
+    })).toBe(false);
+    expect(isAcpSessionInitializationInterrupted({
+      ...interruptedInput,
       sessionId: 'session-1',
     })).toBe(false);
     expect(isAcpSessionInitializationInterrupted({
@@ -233,6 +247,13 @@ describe('isAcpSessionInitializationInterrupted', () => {
       ...interruptedInput,
       loadedEventCount: 1,
     })).toBe(false);
+  });
+
+  it('still identifies an outbound-only session/new attempt as interrupted', () => {
+    expect(isAcpSessionInitializationInterrupted({
+      ...interruptedInput,
+      sessionEstablished: false,
+    })).toBe(true);
   });
 
   it('does not replace an active startup or another pause reason with interrupted', () => {

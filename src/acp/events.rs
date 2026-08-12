@@ -8,6 +8,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::acp::control::AcpRuntimeControlCursor;
 use crate::artifacts::json_artifact_display_span;
 use crate::storage::{
     append_jsonl, append_jsonl_unlocked, ensure_parent_dir, with_jsonl_file_lock, write_json,
@@ -57,6 +58,20 @@ pub struct AcpSessionMetadata {
     pub config_option_overrides: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt_append: Option<String>,
+    /// Retry lifecycle of the latest logical prompt. Unlike session activity,
+    /// this survives terminal session status so a rebuilt provider runtime can
+    /// continue the same user turn without scanning the timeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_retry: Option<AcpPromptRetryState>,
+    /// Latest invocation-level Runtime/NonRuntime transition. This lives in
+    /// existing ACP session metadata so terminal snapshot rewrites preserve
+    /// the one-time suspension-context cursor without a new state file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_control: Option<AcpRuntimeControlCursor>,
+    /// Negative cache for legacy attempts without Runtime control metadata.
+    /// Once set, ordinary conversation turns never rescan the full timeline.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub runtime_control_timeline_scan_complete: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -89,6 +104,26 @@ pub struct AcpSessionMetadata {
     pub timing: Option<AcpSessionTiming>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Durable retry identity for the latest logical prompt turn.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpPromptRetryState {
+    pub prompt_id: String,
+    pub retry_attempt: u32,
+    /// Canonical timeline identity of this logical prompt. Provider runtime
+    /// retries upsert this event instead of appending another user bubble.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_event_seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_event_timestamp: Option<String>,
+    /// Hidden repair prompts can reuse a visible promptId, but they are a
+    /// different lifecycle and must never overwrite the visible user event.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub hidden_from_chat: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -894,7 +929,9 @@ pub fn write_timeline_items(path: &Utf8Path, items: &[AcpUiEvent]) -> Result<()>
         ensure_parent_dir(path)?;
         let mut file = AtomicWriteFile::open(path.as_std_path())?;
         for item in items {
-            serde_json::to_writer(&mut file, &AcpTimelineItem { item: item.clone() })?;
+            let mut item = item.clone();
+            crate::acp::timeline::externalize_timeline_event_for_storage(path, &mut item)?;
+            serde_json::to_writer(&mut file, &AcpTimelineItem { item })?;
             use std::io::Write as _;
             file.write_all(b"\n")?;
         }
@@ -919,6 +956,53 @@ pub fn append_timeline_patch(
         crate::acp::timeline::TimelineCompactionPolicy::default(),
     )?;
     Ok(())
+}
+
+/// Settle the latest durable retry prompt at the attempt boundary. Stop can
+/// arrive while no ACP runtime owns an active prompt (for example during
+/// retry backoff), so cancellation cannot depend on runtime-local state.
+pub fn cancel_latest_processing_prompt_retry(path: &Utf8Path, decided_at: String) -> Result<bool> {
+    with_jsonl_file_lock(path, || {
+        let mut items = load_timeline_items_unlocked(path)?;
+        let Some(event) = items
+            .iter_mut()
+            .filter(|event| {
+                is_gold_band_user_prompt_event(event)
+                    && event.status.as_deref() == Some("processing")
+                    && event
+                        .raw
+                        .as_ref()
+                        .and_then(|raw| raw.pointer("/retry/attempt"))
+                        .and_then(Value::as_u64)
+                        .is_some_and(|attempt| attempt > 0)
+            })
+            .max_by_key(|event| event.ended_seq.unwrap_or(event.seq))
+        else {
+            return Ok(false);
+        };
+        let revision = latest_timeline_source_seq_unlocked(path)?.saturating_add(1);
+        event.status = Some("cancelled".to_string());
+        event.ended_seq = Some(revision);
+        event.ended_at = Some(decided_at);
+        let raw = event.raw.get_or_insert_with(|| serde_json::json!({}));
+        if !raw.is_object() {
+            *raw = serde_json::json!({});
+        }
+        raw["cancelled"] = Value::Bool(true);
+        let mut storage_event = event.clone();
+        crate::acp::timeline::externalize_timeline_event_for_storage(path, &mut storage_event)?;
+        append_jsonl_unlocked(
+            path,
+            &AcpTimelinePatch {
+                patch_type: "timelinePatch".to_string(),
+                item_id: storage_event.id.clone(),
+                revision,
+                op: "upsert".to_string(),
+                item: storage_event,
+            },
+        )?;
+        Ok(true)
+    })
 }
 
 pub fn load_timeline_items(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
@@ -981,6 +1065,16 @@ fn utf16_index(content: &str, byte_index: usize) -> usize {
 }
 
 pub(crate) fn load_timeline_items_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
+    let mut items = load_timeline_items_for_storage_unlocked(path)?;
+    for item in &mut items {
+        if let Some(raw) = item.raw.as_mut() {
+            crate::acp::timeline::hydrate_timeline_value(path, raw)?;
+        }
+    }
+    Ok(items)
+}
+
+pub(crate) fn load_timeline_items_for_storage_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
     let Ok(file) = std::fs::File::open(path.as_std_path()) else {
         return Ok(Vec::new());
     };
@@ -1218,39 +1312,40 @@ pub fn initial_acp_event_seq(path: &Utf8Path) -> u64 {
 }
 
 pub fn latest_timeline_source_seq(path: &Utf8Path) -> u64 {
-    with_jsonl_file_lock(path, || {
-        let Ok(file) = std::fs::File::open(path.as_std_path()) else {
-            return Ok(0);
-        };
-        let mut latest = 0;
-        for line in BufReader::new(file).lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            if let Ok(patch) = serde_json::from_str::<AcpTimelinePatch>(&line) {
-                latest = latest.max(patch.revision).max(
-                    patch
-                        .item
-                        .ended_seq
-                        .or(patch.item.started_seq)
-                        .unwrap_or(patch.item.seq),
-                );
-                continue;
-            }
-            if let Ok(entry) = serde_json::from_str::<AcpTimelineItem>(&line) {
-                latest = latest.max(
-                    entry
-                        .item
-                        .ended_seq
-                        .or(entry.item.started_seq)
-                        .unwrap_or(entry.item.seq),
-                );
-            }
+    with_jsonl_file_lock(path, || latest_timeline_source_seq_unlocked(path)).unwrap_or(0)
+}
+
+fn latest_timeline_source_seq_unlocked(path: &Utf8Path) -> Result<u64> {
+    let Ok(file) = std::fs::File::open(path.as_std_path()) else {
+        return Ok(0);
+    };
+    let mut latest = 0;
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
         }
-        Ok(latest)
-    })
-    .unwrap_or(0)
+        if let Ok(patch) = serde_json::from_str::<AcpTimelinePatch>(&line) {
+            latest = latest.max(patch.revision).max(
+                patch
+                    .item
+                    .ended_seq
+                    .or(patch.item.started_seq)
+                    .unwrap_or(patch.item.seq),
+            );
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_str::<AcpTimelineItem>(&line) {
+            latest = latest.max(
+                entry
+                    .item
+                    .ended_seq
+                    .or(entry.item.started_seq)
+                    .unwrap_or(entry.item.seq),
+            );
+        }
+    }
+    Ok(latest)
 }
 
 pub fn write_session_metadata(path: &Utf8Path, metadata: &AcpSessionMetadata) -> Result<()> {
@@ -1757,9 +1852,10 @@ mod tests {
     use super::{
         AcpSessionMetadata, AcpTimingState, AcpUiEvent, agent_transcript_tool_output,
         annotate_latest_runtime_control_output, append_raw_frame, append_structured_diagnostic,
-        append_timeline_patch, compact_live_conversation_event, context_compaction_phase,
-        elicitation_request_event, elicitation_response_event, extract_usage_fields,
-        kind_to_ui_kind, latest_timeline_source_seq, load_timeline_items, normalize_session_update,
+        append_timeline_patch, cancel_latest_processing_prompt_retry,
+        compact_live_conversation_event, context_compaction_phase, elicitation_request_event,
+        elicitation_response_event, extract_usage_fields, kind_to_ui_kind,
+        latest_timeline_source_seq, load_timeline_items, normalize_session_update,
         permission_request_event, user_prompt_event, write_timeline_items,
     };
     use serde_json::{Value, json};
@@ -2673,6 +2769,97 @@ mod tests {
         assert_eq!(items[0].content.as_deref(), Some("new"));
         assert_eq!(items[1].id, "message-2");
         assert_eq!(items[1].content.as_deref(), Some("keep"));
+    }
+
+    #[test]
+    fn attempt_stop_settles_latest_processing_retry_prompt() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        let mut prompt = user_prompt_event(
+            7,
+            "session-1".to_string(),
+            "hi".to_string(),
+            Some("prompt-1".to_string()),
+            false,
+            Vec::new(),
+        );
+        prompt.status = Some("processing".to_string());
+        prompt.started_seq = Some(7);
+        prompt.ended_seq = Some(12);
+        prompt.started_at = Some("100Z".to_string());
+        prompt.ended_at = Some("120Z".to_string());
+        prompt.raw.as_mut().unwrap()["retry"] = json!({
+            "attempt": 2,
+            "maxAttempts": 3,
+        });
+        append_timeline_patch(&path, prompt.id.clone(), 12, &prompt).unwrap();
+
+        assert!(cancel_latest_processing_prompt_retry(&path, "130Z".to_string()).unwrap());
+
+        let items = load_timeline_items(&path).unwrap();
+        let settled = items
+            .iter()
+            .find(|event| event.id == prompt.id)
+            .expect("settled prompt");
+        assert_eq!(settled.status.as_deref(), Some("cancelled"));
+        assert_eq!(settled.started_seq, Some(7));
+        assert_eq!(settled.ended_seq, Some(13));
+        assert_eq!(settled.ended_at.as_deref(), Some("130Z"));
+        assert_eq!(settled.raw.as_ref().unwrap()["retry"]["attempt"], 2);
+        assert_eq!(settled.raw.as_ref().unwrap()["retry"]["maxAttempts"], 3);
+        assert_eq!(settled.raw.as_ref().unwrap()["cancelled"], true);
+        assert_eq!(latest_timeline_source_seq(&path), 13);
+
+        assert!(!cancel_latest_processing_prompt_retry(&path, "140Z".to_string()).unwrap());
+        assert_eq!(latest_timeline_source_seq(&path), 13);
+    }
+
+    #[test]
+    fn attempt_stop_does_not_rewrite_non_retry_or_terminal_prompts() {
+        let dir = TempDir::new().unwrap();
+        let path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.timeline.jsonl");
+        let mut processing = user_prompt_event(
+            3,
+            "session-1".to_string(),
+            "plain".to_string(),
+            Some("prompt-plain".to_string()),
+            false,
+            Vec::new(),
+        );
+        processing.status = Some("processing".to_string());
+        processing.ended_seq = Some(4);
+        let mut completed_retry = user_prompt_event(
+            5,
+            "session-1".to_string(),
+            "done".to_string(),
+            Some("prompt-done".to_string()),
+            false,
+            Vec::new(),
+        );
+        completed_retry.ended_seq = Some(8);
+        completed_retry.raw.as_mut().unwrap()["retry"] = json!({
+            "attempt": 1,
+            "maxAttempts": 3,
+        });
+        write_timeline_items(&path, &[processing.clone(), completed_retry.clone()]).unwrap();
+
+        assert!(!cancel_latest_processing_prompt_retry(&path, "20Z".to_string()).unwrap());
+
+        let items = load_timeline_items(&path).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].id, processing.id);
+        assert_eq!(items[0].status, processing.status);
+        assert_eq!(items[0].ended_seq, processing.ended_seq);
+        assert_eq!(items[0].raw, processing.raw);
+        assert_eq!(items[1].id, completed_retry.id);
+        assert_eq!(items[1].status, completed_retry.status);
+        assert_eq!(items[1].ended_seq, completed_retry.ended_seq);
+        assert_eq!(items[1].raw, completed_retry.raw);
+        assert_eq!(latest_timeline_source_seq(&path), 8);
     }
 
     #[test]

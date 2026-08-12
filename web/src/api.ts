@@ -473,10 +473,6 @@ export function getMulticaSettings() {
   return getRuntimeApi().getMulticaSettings();
 }
 
-export function saveMulticaSettings(enabled: boolean, multicaBaseUrl: string | null, multicaAppUrl: string | null, defaultProvider: string | null, activeWorkspaceId: string | null) {
-  return getRuntimeApi().saveMulticaSettings(enabled, multicaBaseUrl, multicaAppUrl, defaultProvider, activeWorkspaceId);
-}
-
 export function connectMultica() {
   return getRuntimeApi().connectMultica();
 }
@@ -507,10 +503,6 @@ export function cancelMulticaPrepareLease(remoteTaskId: string) {
 
 export function cancelMulticaTask(taskId: string) {
   return getRuntimeApi().cancelMulticaTask(taskId);
-}
-
-export function rerunMulticaTask(issueId: string, workspaceId: string) {
-  return getRuntimeApi().rerunMulticaTask(issueId, workspaceId);
 }
 
 export function listServerMulticaWorkspaces() {

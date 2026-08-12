@@ -928,6 +928,34 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **遗留（main 既有技术债，非 multica）**：`tsc` 全量 50 错全在 `tests/`、0 处引用 multica（VM 类型演化快于 fixture + 节点类型配置缺），未在本次合并处理。
   - **结论**：用户预设的「multica 二次修复开发」基本不需要——并集解冲突使 main 与 multica 全量共存，multica 零回归。
 
+- [x] **M5-ah**（本轮）远程任务页评审改版——去设置页 multica 区块 + 工作空间下拉（选定空间过滤）+ 4 列竖向看板（待办/进行中/已完成/失败，列与动作 1:1）；pinned 账号级失败不再展示 → rerun 全链路死路径 + `save_multica_settings` 一并删除（码灵 client，开发设计 §12.20）：
+  - **评审 3 条 UX 调整**：①设置页不再暴露 multica 配置（初次连接即可，配置走渠道默认）；②远程任务页加工作空间下拉，选定后只看该空间任务（不再全部铺开）；③任务展示从「工作空间折叠分组列表」改为按状态的 4 列竖向看板。
+  - **数据层无变更**：`tasksByWorkspace` 已按工作空间分组、`RemoteTaskVm.status` 恰为 4 个 canonical 值（与看板列 1:1），`get_multica_tasks` 一次拉全部绑定空间——纯前端重构。
+  - **用户决策**：账号操作（切换/断开/添加/移除工作空间）集中到任务页头部账号菜单（设置页不再暴露）；账号级失败（pinned / `retryable=true` / 无工作空间）不再展示，失败列只显工作空间内失败任务；来源下拉（`REMOTE_TASK_SOURCES`，为未来多来源保留）保留。
+  - **列与动作 1:1**：待办(queued)→认领执行(claim)、进行中(running)→取消(cancel)、已完成/失败(completed/failed，带本地 run 链接)→点击回看会话(selectRun)。
+  - **死路径清理（dev-stage 破坏式）**：`save_multica_settings`（配置表单已无消费方）+ `rerun_multica_task`（pinned 不展示 → 展示中无 retryable 任务 → rerun 永不渲染）全链路删——前端 `api.{ts,/desktop,/browser,/client}` + 后端 `commands.rs`/`multica/commands.rs`/`multica/client.rs`（`rerun_issue` 唯一消费者即 rerun_multica_task，一并删 + 删其单测）+ `main.rs`。
+  - **验证**：`cargo test multica` **84 过 0 败**；`tsc -p tsconfig.build.json`（src only）绿零错；vitest 新增 board（`bucketTasksByStatus` + 渲染/动作）+ page（容器逻辑）共 21 测全过；旧 list/settings-block 两测随组件删除。
+
+- [x] **M5-ai**（本轮）远程任务页 UX 再打磨——工作空间 Popover picker（内嵌添加/移除）+ 页头对齐 sibling pages（`variant="integrated"`、去副标题/返回按钮）+ 底部工具条 source 门控 + 账号菜单简化（纯前端，开发设计 §12.21）：
+  - **背景**：M5-ah 落地后用户提 3 条调整：①添加/删除工作空间放入工作空间下拉框（不再散落账号菜单）；②页头风格对齐定时任务/运行模式管理页；③工作空间下拉选框 + 账号下拉选框移到底部工具条，source 门控（仅 multica 来源且已连接时显示——未来来源未必有工作空间/PAT 账号概念）。
+  - **工作空间 Popover picker**：选定当前空间 + 内嵌添加/移除。移除走 AlertDialog 确认（对齐定时任务 delete 模式）。选定值持久化 `setActiveMulticaWorkspace`，默认 `lastActiveWorkspaceId`（校验仍存在于当前列表，移除后自动回退）。
+  - **底部工具条**：仅 `source === 'multica' && connected` 时渲染（source 门控让页前向兼容未来来源）。左区：来源 Select + 工作空间 picker（仅 `hasWorkspaces` 时）；右区：账号菜单（切换/断开）+ 刷新。
+  - **账号菜单简化**：删添加/移除工作空间（已迁入 picker），仅保留切换账号 + 断开连接。
+  - **页头**：`PageHeader variant="integrated" icon={<Globe />}`（与定时任务/运行模式管理页同构），去返回按钮（ConversationSidebar 持久导航冗余）。
+  - **Props 删除 `onBack`**：`MulticaTaskManagementPage` 接口删 `onBack`，`App.tsx` 对应消费点清理。
+  - **验证**：`tsc` 绿零错；vitest `multica-task-management-page` 11 测全过（含 workspace-switch→Popover、remove→AlertDialog、source-gate）+ board 12 测全过；`cargo test multica` 84 测绿（零 Rust 变更）。
+
+- [x] **M5-aj**（本轮）远程任务页来源上移页头 + 会话-任务绑定可视化（独立 chip）（纯前端，开发设计 §12.22）：
+  - **背景**：用户提 2 条调整：①「任务来源」下拉框放底部不协调，应上移界面上部；②点远程任务「执行」后会话初始输入框编辑期间，一旦跳转切页，会话与任务的绑定"丢失"——希望预填带 multica 标签绑定会话与任务，且可删标签解绑。
+  - **根因（绑定并未丢失）**：`draft.multica` 由 `ConversationComposerDraftBoundary` 上提为 Shell 之上 owner 状态，跨 in-app 导航天然保留；服务端 prepare lease（45s TTL）由全局心跳 `extend_prepare_leases` 续期，与当前页无关。真实缺陷是绑定**不可见 + 不可控**（隐式状态无 UI、用户无法主动解除）——"好设计、实现不完善"，非设计缺陷。
+  - **独立 chip（非内嵌文本标签）**：内嵌文本标记脆弱（正文编辑残缺、发送需字符串解析、删除解除不可靠）；独立 chip 是 mention/tag 成熟范式，状态与正文解耦。用户已确认"同意独立 chip"。
+  - **绑定扩 `title`**：`ConversationComposerMulticaBinding` + `title`（仅 chip 展示，不参与发送寻址）；`prefill` 补传 `title`。
+  - **`clearMultica` reducer**：仅置 `multica=null`，保留正文+附件 → 解绑后降级普通本地会话；无绑定 no-op（稳定引用）。
+  - **chip 渲染**：`PromptInput` 首子节点；`Badge` + Globe + "Multica · {title}"（截断）+ × 关闭。
+  - **解绑两路径**（同 handler）：①× 按钮；②Backspace（仅 `multicaActive && 正文空 && 无 slash command`）→ `cancelMulticaPrepareLease`（释放 lease，幂等、失败静默）+ `clearMultica`。
+  - **来源上移**：`REMOTE_TASK_SOURCES` Select 从 footer 迁入 `PageHeader` actions（+ 来源 label），与定时任务管理页 header actions 同构；footer 仅剩工作空间 picker + 账号菜单 + 刷新。
+  - **验证**：`tsc` 绿零错；vitest `conversation-composer-draft` 16 测（含 clearMultica 2 新测）+ `multica-task-management-page` 11 测（source-gate 改写 + claim 断言补 title）+ board 12 测共 39 测绿；`cargo test multica` 84 测绿（零 Rust 变更）。
+
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）
 

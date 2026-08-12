@@ -1252,9 +1252,6 @@ export const browserApi: RuntimeApi = {
       connectedAccount: null,
     });
   },
-  saveMulticaSettings(_enabled: boolean, _multicaBaseUrl: string | null, _multicaAppUrl: string | null, _defaultProvider: string | null, _activeWorkspaceId: string | null) {
-    return this.getMulticaSettings();
-  },
   connectMultica() {
     return this.getMulticaSettings().then((s) => ({
       ...s,
@@ -1307,9 +1304,6 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve();
   },
   cancelMulticaTask(_taskId: string) {
-    return Promise.resolve();
-  },
-  rerunMulticaTask(_issueId: string, _workspaceId: string) {
     return Promise.resolve();
   },
   listServerMulticaWorkspaces() {

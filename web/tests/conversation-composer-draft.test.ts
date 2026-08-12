@@ -113,7 +113,7 @@ describe('ConversationComposer draft cross-page retention', () => {
 
   it('prefill writes requirement text + multica binding and drops prior attachments', () => {
     const state: ConversationComposerDraftState = { content: '本地草稿', attachments: [makeAttachment('a1')], multica: null };
-    const binding: ConversationComposerMulticaBinding = { remoteTaskId: 'rt-1', workspaceId: 'ws-1' };
+    const binding: ConversationComposerMulticaBinding = { remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1' };
     const next = conversationComposerDraftReducer(state, { type: 'prefill', content: '远程任务需求正文', multica: binding });
 
     expect(next.content).toBe('远程任务需求正文');
@@ -123,7 +123,7 @@ describe('ConversationComposer draft cross-page retention', () => {
   });
 
   it('editing prefilled content keeps the multica binding (setContent preserves multica)', () => {
-    const binding: ConversationComposerMulticaBinding = { remoteTaskId: 'rt-1', workspaceId: 'ws-1' };
+    const binding: ConversationComposerMulticaBinding = { remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1' };
     let state = conversationComposerDraftReducer(
       { content: '需求', attachments: [], multica: null },
       { type: 'prefill', content: '需求', multica: binding },
@@ -136,8 +136,25 @@ describe('ConversationComposer draft cross-page retention', () => {
     expect(state.multica).toEqual(binding);
   });
 
+  it('clearMultica drops the binding but keeps content and attachments (chip removed → local compose)', () => {
+    const binding: ConversationComposerMulticaBinding = { remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1' };
+    const state: ConversationComposerDraftState = { content: '需求正文', attachments: [makeAttachment('a1')], multica: binding };
+    const next = conversationComposerDraftReducer(state, { type: 'clearMultica' });
+
+    // 解绑后正文与附件保留，仅 multica 置空 → 发送降级为普通本地会话。
+    expect(next.multica).toBeNull();
+    expect(next.content).toBe('需求正文');
+    expect(next.attachments.map((a) => a.id)).toEqual(['a1']);
+  });
+
+  it('clearMultica is a no-op when no binding is present (stable reference)', () => {
+    const state: ConversationComposerDraftState = { content: 'x', attachments: [], multica: null };
+    const next = conversationComposerDraftReducer(state, { type: 'clearMultica' });
+    expect(next).toBe(state);
+  });
+
   it('reset clears a leftover multica binding so the next local compose is not mistaken for a remote run', () => {
-    const binding: ConversationComposerMulticaBinding = { remoteTaskId: 'rt-1', workspaceId: 'ws-1' };
+    const binding: ConversationComposerMulticaBinding = { remoteTaskId: 'rt-1', workspaceId: 'ws-1', title: 'T1' };
     let state: ConversationComposerDraftState = { content: '需求', attachments: [], multica: binding };
     state = conversationComposerDraftReducer(state, { type: 'reset' });
 
@@ -152,6 +169,7 @@ describe('ConversationComposer draft cross-page retention', () => {
       setContent: vi.fn(),
       setAttachments: vi.fn(),
       prefill: vi.fn(),
+      clearMultica: vi.fn(),
       reset,
     });
 

@@ -895,43 +895,6 @@ pub async fn cancel_multica_task(
     Ok(())
 }
 
-/// 用户手动重跑失败任务（开发设计 4.4 / 接入方案 D1）。
-///
-/// `POST /api/issues/{id}/rerun`（X-Workspace-ID 路由）→ server 创建全新 queued 任务
-/// （force_fresh_session，整任务重跑，不续跑旧 session）。成功后清本地 `multica_pending_issues`
-/// 中该 issue 的失败回显（rerun 已消费）。新 task 进列表由用户 fresh claim（新本地 task/run，
-/// 与旧 session 无关）。
-#[tauri::command]
-pub async fn rerun_multica_task(
-    state: State<'_, DesktopState>,
-    issue_id: String,
-    workspace_id: String,
-) -> CommandResult<()> {
-    let context = state.context().map_err(command_error)?;
-    if !multica_settings(&context.config).connected {
-        return Err(command_error(MulticaError::NotConfigured.into()));
-    }
-    let base_url = multica_base_url(&context.config).unwrap_or_default();
-    let pat = get_pat(&context.config).unwrap_or_default();
-    let client = MulticaClient::new(base_url, Some(pat)).map_err(|e| command_error(e.into()))?;
-
-    // D1：force_fresh_session 整任务重跑。失败按错误码返回（前端查文案）。
-    client
-        .rerun_issue(&workspace_id, &issue_id)
-        .await
-        .map_err(|e| command_error(e.into()))?;
-
-    // 清本地失败回显（rerun 已消费该 issue；新 task 完成时 complete 会再清，幂等）。
-    let app = context.app();
-    if let Ok(mut state_cfg) = app.load_state() {
-        if let Some(list) = state_cfg.multica_pending_issues.as_mut() {
-            list.retain(|i| i != &issue_id);
-        }
-        app.save_state(&state_cfg).map_err(command_error)?;
-    }
-    Ok(())
-}
-
 // ===== M3.5 / M5-c：multica workspace 绑定 CRUD（开发设计 2.2.1 / 2.5）=====
 //
 // 一个 multica workspace 只绑定一个执行 provider（绑定后不可变）；**本地工作目录不在工作区级

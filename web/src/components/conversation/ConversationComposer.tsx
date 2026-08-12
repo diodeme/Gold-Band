@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { displayAppError } from '@/i18n';
-import { Send, Paperclip, Workflow, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X } from 'lucide-react';
+import { Send, Paperclip, Workflow, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Globe } from 'lucide-react';
 import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { cancelMulticaPrepareLease } from '@/api';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
@@ -128,7 +130,8 @@ export function ConversationComposer({
   const isDynamicAuto = autoStrategy === 'dynamic';
   // multica 远程任务「点击执行」预填后，draft 带 multica 绑定。该绑定期内：工作区下拉强制显示（决策 d），
   // 让「此远程任务跑在哪个本地工作区」成为显式选择；本地零工作区时禁用发送 + 引导先加（决策 e）。
-  const multicaActive = composerDraft.draft.multica !== null;
+  const multicaBinding = composerDraft.draft.multica;
+  const multicaActive = multicaBinding !== null;
   const hasLocalWorkspaces = workspaces.length > 0;
   const scheduledSummary = scheduledConfig
     ? formatScheduledScheduleInput(t, scheduledConfig.schedule)
@@ -475,8 +478,28 @@ export function ConversationComposer({
     }
   };
 
+  // 解除 multica 绑定：释放服务端 prepare lease（best-effort，失败仅记日志，lease 亦会 TTL 兜底过期）+ 清 draft 绑定。
+  // 正文与附件保留——草稿降级为普通本地会话（发送走 create_conversation_run），正合「删掉 chip 后不再绑定任务」。
+  const handleUnbindMultica = useCallback(() => {
+    const binding = composerDraft.draft.multica;
+    if (!binding) return;
+    cancelMulticaPrepareLease(binding.remoteTaskId).catch(() => {});
+    composerDraft.clearMultica();
+  }, [composerDraft]);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (slashCommands.onKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>)) return;
+    // 空正文 + 无 slash 前缀时，Backspace 删掉 multica 绑定 chip（与 × 按钮等价；slash 提交时让位 slash 控制器）。
+    if (
+      e.key === 'Backspace'
+      && multicaActive
+      && !committedSlashCommand
+      && visibleContent.trim() === ''
+    ) {
+      e.preventDefault();
+      handleUnbindMultica();
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void (scheduledMode ? createScheduledTask() : handleSubmit());
@@ -500,6 +523,29 @@ export function ConversationComposer({
           disabled={busy || submittingAttachments}
           className="rounded-2xl border-border/60 bg-card/60 p-4 shadow-sm transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
         >
+          {multicaBinding ? (
+            // multica 绑定 chip：远程任务「点击执行」后可见的绑定标记。× 或空正文 Backspace 解绑（释放 lease，
+            // 草稿降级为普通本地会话）。独立于正文，不混入 textarea 文本（行业 chip 模式，避免脆弱的字符串解析）。
+            <div className="mb-2 flex items-center">
+              <Badge
+                variant="secondary"
+                className="gap-1 rounded-md border-primary/30 bg-primary/10 px-2 py-1 text-[0.75rem] font-medium text-primary"
+              >
+                <Globe className="size-3 shrink-0" />
+                <span className="max-w-[260px] truncate">
+                  {t('conversation.composer.multicaBindingTag', { title: multicaBinding.title })}
+                </span>
+                <button
+                  type="button"
+                  aria-label={t('conversation.composer.removeMulticaBinding')}
+                  onClick={handleUnbindMultica}
+                  className="ml-0.5 inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm hover:bg-primary/20"
+                >
+                  <X className="size-3" />
+                </button>
+              </Badge>
+            </div>
+          ) : null}
           <SlashCommandMenu
             open={slashCommands.isOpen}
             commands={slashCommands.filteredCommands}

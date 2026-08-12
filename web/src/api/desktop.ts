@@ -397,9 +397,6 @@ export const desktopApi: RuntimeApi = {
   getMulticaSettings() {
     return invokeCommand<MulticaSettingsVm>('get_multica_settings');
   },
-  saveMulticaSettings(enabled: boolean, multicaBaseUrl: string | null, multicaAppUrl: string | null, defaultProvider: string | null, activeWorkspaceId: string | null) {
-    return invokeCommand<MulticaSettingsVm>('save_multica_settings', { enabled, multicaBaseUrl, multicaAppUrl, defaultProvider, activeWorkspaceId });
-  },
   connectMultica() {
     return invokeCommand<MulticaSettingsVm>('connect_multica');
   },
@@ -420,9 +417,6 @@ export const desktopApi: RuntimeApi = {
   },
   cancelMulticaTask(taskId: string) {
     return invokeCommand<void>('cancel_multica_task', { taskId });
-  },
-  rerunMulticaTask(issueId: string, workspaceId: string) {
-    return invokeCommand<void>('rerun_multica_task', { issueId, workspaceId });
   },
   listServerMulticaWorkspaces() {
     return invokeCommand<MulticaServerWorkspaceVm[]>('list_server_multica_workspaces');

@@ -49,7 +49,7 @@ use commands::{
     read_conversation_directory_file, read_skill, remove_recent_workspace, renew_acp_session_lease,
     replace_auto_templates, respond_acp_permission, respond_elicitation, retry_run,
     save_auto_template, save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
-    save_metrics_settings, save_multica_settings, save_task_workflow, save_updater_settings,
+    save_metrics_settings, save_task_workflow, save_updater_settings,
     save_workflow_template,
     search_acp_prompts, search_acp_sessions, search_tasks, select_recent_desktop_avatar,
     select_recent_workspace, send_acp_prompt, set_acp_session_config_option, set_acp_session_model,
@@ -82,7 +82,7 @@ use metrics::start_heartbeat_polling;
 use multica::commands::{
     add_multica_workspace, cancel_multica_prepare_lease, cancel_multica_task, claim_multica_task,
     get_multica_tasks, list_server_multica_workspaces, recover_multica_work_dir_sessions,
-    remove_multica_workspace, rerun_multica_task, set_active_multica_workspace,
+    remove_multica_workspace, set_active_multica_workspace,
     start_multica_conversation_run,
 };
 use notifications::send_scheduled_native_notification;
@@ -325,7 +325,6 @@ fn run() -> anyhow::Result<()> {
             send_scheduled_native_notification,
             save_metrics_settings,
             get_multica_settings,
-            save_multica_settings,
             connect_multica,
             disconnect_multica,
             get_multica_tasks,
@@ -333,7 +332,6 @@ fn run() -> anyhow::Result<()> {
             start_multica_conversation_run,
             cancel_multica_prepare_lease,
             cancel_multica_task,
-            rerun_multica_task,
             list_server_multica_workspaces,
             add_multica_workspace,
             remove_multica_workspace,

@@ -1660,29 +1660,6 @@ const resources = {
           apiKeySet: "(已设置)",
           save: "保存",
         },
-        multica: {
-          title: "Multica 接入",
-          enable: "开启 Multica",
-          enableDescription:
-            "开启后，码灵作为 Daemon 接入 multica，可领取和执行远程任务。",
-          baseUrl: "Multica 服务地址",
-          appUrl: "Multica 应用地址",
-          defaultProvider: "默认 Agent Provider",
-          connect: "连接 Multica",
-          reconnect: "切换账号",
-          disconnect: "退出登录",
-          patSet: "凭证已设置",
-          patNotSet: "尚未设置凭证",
-          daemonIdSet: "Daemon 已注册",
-          daemonIdNotSet: "Daemon 尚未注册",
-          connectedAccount: "已连接账号",
-          switchAccountHint: "在浏览器中登出当前 multica 账号或切换到目标账号，然后回到此处「切换账号」",
-          workspaceList: "工作空间绑定",
-          remove: "解除绑定",
-          setActive: "设为当前",
-          active: "当前",
-          noWorkspaces: "尚未绑定工作空间",
-        },
         updater: {
           title: "更新",
           currentUrl: "更新地址",
@@ -1724,10 +1701,22 @@ const resources = {
       multica: {
         taskManagement: {
           title: "远程任务管理",
-          subtitle: "查看并执行远程任务",
           source: {
             label: "任务来源",
             multica: "Multica",
+          },
+          workspace: {
+            label: "工作空间",
+            remove: "移除工作空间",
+            removeConfirm: "确定移除该工作空间？该空间的远程任务将不再展示。",
+          },
+          column: {
+            empty: "暂无任务",
+          },
+          account: {
+            connected: "已连接",
+            switchAccount: "切换账号",
+            disconnect: "断开连接",
           },
         },
       },
@@ -1797,14 +1786,10 @@ const resources = {
             emptyTitle: "尚未连接 Multica",
             emptyDescription: "连接后可在此查看并领取 multica 远程任务。",
             connectButton: "连接 Multica",
-            retryButton: "重跑",
             cancelTask: "取消任务",
             executeTask: "执行",
-            notRetryable: "不可重试",
             addWorkspace: "添加工作空间",
             noWorkspacesBound: "尚未绑定工作空间",
-            noTasksInWorkspace: "该工作空间下暂无远程任务",
-            taskCount: "（{{count}}个任务）",
             status: {
               queued: "待办",
               running: "进行中",
@@ -1824,6 +1809,8 @@ const resources = {
         },
         composer: {
           multicaNeedLocalWorkspace: "请先添加本地工作空间，再执行远程任务",
+          multicaBindingTag: "Multica · {{title}}",
+          removeMulticaBinding: "解除任务绑定",
         },
         home: {
           greeting: {
@@ -3659,29 +3646,6 @@ const resources = {
           apiKeySet: "(Already set)",
           save: "Save",
         },
-        multica: {
-          title: "Multica Integration",
-          enable: "Enable Multica",
-          enableDescription:
-            "When enabled, Maling connects to multica as a Daemon to claim and run remote tasks.",
-          baseUrl: "Multica server URL",
-          appUrl: "Multica app URL",
-          defaultProvider: "Default Agent Provider",
-          connect: "Connect Multica",
-          reconnect: "Switch account",
-          disconnect: "Sign out",
-          patSet: "Credential set",
-          patNotSet: "Credential not set",
-          daemonIdSet: "Daemon registered",
-          daemonIdNotSet: "Daemon not registered",
-          connectedAccount: "Connected account",
-          switchAccountHint: "In your browser, sign out of the current multica account or sign in to the intended one, then return here and click Switch account",
-          workspaceList: "Workspace Bindings",
-          remove: "Unbind",
-          setActive: "Set active",
-          active: "Active",
-          noWorkspaces: "No workspaces bound",
-        },
         updater: {
           title: "Updates",
           currentUrl: "Update URL",
@@ -3724,10 +3688,22 @@ const resources = {
       multica: {
         taskManagement: {
           title: "Remote Tasks",
-          subtitle: "View and run remote tasks",
           source: {
             label: "Task source",
             multica: "Multica",
+          },
+          workspace: {
+            label: "Workspace",
+            remove: "Remove workspace",
+            removeConfirm: "Remove this workspace? Its remote tasks will no longer be shown.",
+          },
+          column: {
+            empty: "No tasks",
+          },
+          account: {
+            connected: "Connected",
+            switchAccount: "Switch account",
+            disconnect: "Disconnect",
           },
         },
       },
@@ -3800,14 +3776,10 @@ const resources = {
             emptyTitle: "Not connected to Multica",
             emptyDescription: "Connect to view and claim multica remote tasks.",
             connectButton: "Connect Multica",
-            retryButton: "Rerun",
             cancelTask: "Cancel task",
             executeTask: "Run",
-            notRetryable: "Not retryable",
             addWorkspace: "Add Workspace",
             noWorkspacesBound: "No workspaces bound",
-            noTasksInWorkspace: "No remote tasks in this workspace yet",
-            taskCount: "({{count}} tasks)",
             status: {
               queued: "Todo",
               running: "Running",
@@ -3827,6 +3799,8 @@ const resources = {
         },
         composer: {
           multicaNeedLocalWorkspace: "Add a local workspace before running a remote task",
+          multicaBindingTag: "Multica · {{title}}",
+          removeMulticaBinding: "Unbind task",
         },
         home: {
           greeting: {

@@ -25,6 +25,7 @@ use gold_band::dsl::{
     EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
 };
 use gold_band::dynamic::{DynamicGraphState, DynamicRunPhase, DynamicRunStatus};
+use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::runtime::RunState;
 use gold_band::storage::{read_json, write_json};
 
@@ -1621,7 +1622,7 @@ fn dynamic_leaf_runtime_error_message(
         outer_node_id,
         outer_attempt_id,
     );
-    let graph = read_json::<DynamicGraphState>(&graph_path).ok()?;
+    let graph = load_dynamic_graph(&graph_path, &app.paths.repo_root).ok()?;
     let diagnostic = graph
         .nodes
         .iter()
@@ -2082,7 +2083,7 @@ pub fn conversation_attempt_lifecycle_vm(
             outer_node_id,
             outer_attempt_id,
         );
-        let dynamic_graph = read_json::<DynamicGraphState>(&dynamic_path)?;
+        let dynamic_graph = load_dynamic_graph(&dynamic_path, &app.paths.repo_root)?;
         let dynamic_node = dynamic_graph
             .nodes
             .iter()
@@ -2371,7 +2372,9 @@ pub fn conversation_run_vm(
                         &node.node_id,
                         &latest_attempt.attempt_id,
                     );
-                    if let Ok(dynamic_graph) = read_json::<DynamicGraphState>(&dynamic_path) {
+                    if let Ok(dynamic_graph) =
+                        load_dynamic_graph(&dynamic_path, &app.paths.repo_root)
+                    {
                         let mut dynamic_tree_nodes: Vec<ConversationTreeNodeVm> = Vec::new();
                         for dyn_node in &dynamic_graph.nodes {
                             // Find the latest attempt for this dynamic child node
@@ -4562,6 +4565,58 @@ mod tests {
     }
 
     #[test]
+    fn conversation_run_vm_migrates_legacy_dynamic_graph_and_restores_session_tree() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture(
+            &app,
+            "paused",
+            json!("process-interrupted"),
+            "paused",
+            Vec::new(),
+        );
+        let graph_path = app.paths.dynamic_graph_file(
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        let mut legacy: serde_json::Value = gold_band::storage::read_json(&graph_path).unwrap();
+        legacy["version"] = json!("0.1");
+        legacy.as_object_mut().unwrap().remove("workspaces");
+        let node = legacy["nodes"][0].as_object_mut().unwrap();
+        node.remove("workspaceId");
+        node.insert("workspace".to_string(), json!({ "mode": "readonly" }));
+        node.insert(
+            "workspacePath".to_string(),
+            json!(app.paths.repo_root.clone()),
+        );
+        gold_band::storage::write_json(&graph_path, &legacy).unwrap();
+
+        let vm = conversation_run_vm(&app, "default", "task-dyn", "run-dyn", None).unwrap();
+
+        let outer_nodes = vm.session_tree.rounds[0].nodes[0]
+            .outer_nodes
+            .as_ref()
+            .unwrap();
+        assert_eq!(outer_nodes.len(), 1);
+        assert_eq!(outer_nodes[0].node_id, "good-morning");
+        assert_eq!(outer_nodes[0].attempts.len(), 1);
+        assert_eq!(
+            vm.session_tree.selected_session_key.as_deref(),
+            Some("round-001/ai-dynamic/attempt-001/good-morning/attempt-001")
+        );
+        let persisted: serde_json::Value = gold_band::storage::read_json(&graph_path).unwrap();
+        assert_eq!(
+            persisted["version"],
+            json!(gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION)
+        );
+        assert_eq!(persisted["nodes"][0]["workspaceId"], "workspace-main");
+        assert!(persisted["workspaces"].is_array());
+    }
+
+    #[test]
     fn ready_dynamic_child_without_attempt_is_active_launching_leaf() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
@@ -5596,7 +5651,7 @@ mod tests {
                 outer_attempt_id,
             ),
             &json!({
-                "version": gold_band::domain::VERSION,
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": dynamic_run,
                 "nodes": [dynamic_node],
                 "groups": [],

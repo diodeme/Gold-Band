@@ -39,6 +39,7 @@ use crate::dynamic::{
     DynamicGraphState, DynamicNodeStatus, DynamicRunPhase, DynamicRunStatus,
     dynamic_leaf_is_active, refresh_dynamic_current_leaf_ids,
 };
+use crate::dynamic_store::load_dynamic_graph;
 use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
 use crate::provider::{
@@ -2649,7 +2650,7 @@ impl App {
             return;
         };
         let _guard = state_lock.lock();
-        let Ok(mut graph) = read_json::<DynamicGraphState>(&graph_path) else {
+        let Ok(mut graph) = load_dynamic_graph(&graph_path, &self.paths.repo_root) else {
             return;
         };
         let interrupted_nodes = graph
@@ -4957,7 +4958,7 @@ mod tests {
         )
         .unwrap();
         let graph = DynamicGraphState {
-            version: VERSION.to_string(),
+            version: crate::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION.to_string(),
             run: DynamicRunState {
                 version: VERSION.to_string(),
                 id: "dynamic-run-001".to_string(),

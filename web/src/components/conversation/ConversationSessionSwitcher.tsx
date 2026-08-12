@@ -4,6 +4,7 @@ import type { ConversationSessionLeafVm, ConversationSessionTreeVm } from '../..
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
+import { runtimeStatusDotClass } from '@/lib/runtime-status-dot';
 
 interface ConversationSessionSwitcherProps {
   tree: ConversationSessionTreeVm;
@@ -115,8 +116,7 @@ function SessionLeaf({
   selected: boolean;
   onSelect: () => void;
 }) {
-  const isRunning = leaf.runtimeDisplay.tone === 'running';
-  const statusDotClass = runtimeDotClass(leaf.runtimeDisplay.tone);
+  const statusDotClass = runtimeStatusDotClass(leaf.runtimeDisplay.tone);
 
   return (
     <button
@@ -134,9 +134,6 @@ function SessionLeaf({
           selected && 'border-sidebar-accent/80',
         )}
       >
-        {isRunning ? (
-          <span className="absolute inset-0 rounded-full bg-primary/18 animate-ping" />
-        ) : null}
         <span
           className={cn(
             'relative inline-block size-2 rounded-full',
@@ -147,13 +144,4 @@ function SessionLeaf({
       <span className="truncate">{leaf.pathLabel}</span>
     </button>
   );
-}
-
-function runtimeDotClass(tone?: string | null) {
-  if (tone === 'success') return 'bg-emerald-500';
-  if (tone === 'danger') return 'bg-red-500';
-  if (tone === 'running') return 'bg-primary';
-  if (tone === 'warning') return 'bg-yellow-500';
-  if (tone === 'neutral') return 'bg-muted-foreground';
-  return 'bg-muted-foreground';
 }

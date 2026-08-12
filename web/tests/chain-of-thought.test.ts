@@ -5,6 +5,7 @@ import {
   ChainOfThought,
   ChainOfThoughtContent,
   ChainOfThoughtStep,
+  ChainOfThoughtText,
 } from '@/components/prompt-kit/chain-of-thought';
 
 function renderClosedContent(preserveMount: boolean) {
@@ -26,6 +27,19 @@ function renderClosedContent(preserveMount: boolean) {
 }
 
 describe('prompt-kit ChainOfThoughtContent', () => {
+  it('renders thought content as literal plain text instead of Markdown', () => {
+    const html = renderToStaticMarkup(
+      createElement(ChainOfThoughtText, null, '\n\n**Inspecting**\n- files\n\n'),
+    );
+
+    expect(html).toContain('**Inspecting**\n- files');
+    expect(html).not.toContain('\n\n**Inspecting**');
+    expect(html).not.toContain('- files\n\n');
+    expect(html).toContain('whitespace-pre-wrap');
+    expect(html).not.toContain('<strong>');
+    expect(html).not.toContain('<li>');
+  });
+
   it('keeps active streaming content mounted while closed without taking layout space', () => {
     const html = renderClosedContent(true);
 

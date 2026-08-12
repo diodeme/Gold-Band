@@ -7,6 +7,11 @@ export interface MessageAttachmentPreview {
   size: number;
 }
 
+export interface MessageAttachmentPreviewGroups {
+  images: MessageAttachmentPreview[];
+  files: MessageAttachmentPreview[];
+}
+
 function metadataRecord(metadata: unknown): Record<string, unknown> {
   return metadata && typeof metadata === 'object' && !Array.isArray(metadata)
     ? metadata as Record<string, unknown>
@@ -39,4 +44,30 @@ export function isImageMessageAttachment(attachment: MessageAttachmentPreview): 
 
 export function isTaskInputMessageAttachment(attachment: MessageAttachmentPreview): boolean {
   return attachment.path.replaceAll('\\', '/').startsWith('task-inputs/');
+}
+
+export function messageAttachmentPreviewsFromRaw(raw: unknown): MessageAttachmentPreview[] {
+  const attachments = metadataRecord(raw).attachments;
+  if (!Array.isArray(attachments)) return [];
+  return attachments.filter((attachment): attachment is MessageAttachmentPreview => {
+    const value = metadataRecord(attachment);
+    return typeof value.name === 'string'
+      && typeof value.path === 'string'
+      && typeof value.type === 'string'
+      && typeof value.size === 'number';
+  });
+}
+
+export function groupMessageAttachmentPreviews(
+  attachments: readonly MessageAttachmentPreview[],
+): MessageAttachmentPreviewGroups {
+  const groups: MessageAttachmentPreviewGroups = { images: [], files: [] };
+  for (const attachment of attachments) {
+    if (isImageMessageAttachment(attachment)) {
+      groups.images.push(attachment);
+    } else {
+      groups.files.push(attachment);
+    }
+  }
+  return groups;
 }

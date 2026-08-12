@@ -22,7 +22,7 @@
 - 角色创建、更新、查询接口使用 camelCase 字段 `dynamicTemplate`。
 - 开关关闭时正文原样注入。
 - 开关开启时使用 MiniJinja 严格模式渲染一次；保存时对支持的执行上下文进行预校验。
-- 可用变量为 `execution.surface`、`execution.can_route_next`、`execution.has_output_contract`、`execution.session_mode`。
+- 可用变量为 `execution.surface`、`execution.can_route_next`、`execution.has_output_contract`、`execution.session_mode`。其中后两项表达当前 turn 是否启用 `InlineControl`，不是 invocation 是否持有供后续 finalize 使用的原始 contract；`PostTurnProjection` 业务 turn 必须为 `false`，避免 Profile 提前要求 artifact。
 - 模板错误返回结构化错误码 `profile.dynamic-template-invalid`，前端负责本地化文案。
 
 ## 实施项
@@ -44,7 +44,7 @@
 | 自定义角色开启模板 | 保存合法条件模板并重新读取 | 开关和正文完整保留 |
 | 非法模板 | 开启模板并引用未知变量后保存 | 返回 `profile.dynamic-template-invalid` |
 | 普通工作流 | 渲染开启模板的 profile | 使用 `execution.surface=workflow` 分支 |
-| AI-DYNAMIC | 渲染开启模板的 profile | 使用 `execution.surface=aiDynamic`，可按 output contract 路由后继节点 |
+| AI-DYNAMIC | 渲染开启模板的 profile | `InlineControl` turn 使用 `execution.surface=aiDynamic + can_route_next=true`；`PostTurnProjection` 业务 turn 为 `false`，路由协议只在隐藏 finalize 生效 |
 | 关闭模板 | 正文包含 MiniJinja 标记 | 标记保持原样，不进行解释或校验 |
 | 内置 plan | AUTO / AI-DYNAMIC 中规划完成 | 不等待第二次确认；实现型目标继续安排开发节点 |
 | 内置 dev | AI-DYNAMIC 分配 main/worktree/readonly | 遵循 runtime workspace，不额外要求分支确认 |

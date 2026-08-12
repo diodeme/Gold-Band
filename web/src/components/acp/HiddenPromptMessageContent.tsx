@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { ChevronDown } from "lucide-react";
@@ -8,12 +8,21 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import {
+  type ChatContainerContentExpansionToken,
+  useOptionalChatContainerContentExpansion,
+} from "@/components/prompt-kit/chat-container";
 import { resolvePromptBubbleInlineSize } from "@/lib/prompt-bubble-width";
 import { parseGoldBandHiddenSections } from "@/components/acp/hiddenPromptSections";
 
 export function HiddenPromptMessageContent({ content }: { content: string }) {
   const { t } = useTranslation();
+  const contentExpansion = useOptionalChatContainerContentExpansion();
   const parts = useMemo(() => parseGoldBandHiddenSections(content), [content]);
+  const displayParts = useMemo(() => [
+    ...parts.map((part, sourceIndex) => ({ part, sourceIndex })).filter(({ part }) => part.type === "hidden"),
+    ...parts.map((part, sourceIndex) => ({ part, sourceIndex })).filter(({ part }) => part.type === "visible"),
+  ], [parts]);
   const rootRef = useRef<HTMLDivElement>(null);
   const labelMeasureRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const visibleMeasureRefs = useRef<Array<HTMLDivElement | null>>([]);
@@ -21,6 +30,19 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
   const [openSections, setOpenSections] = useState<Record<number, boolean>>({});
   const [measurementRevision, setMeasurementRevision] = useState(0);
   const [measuredInlineSize, setMeasuredInlineSize] = useState<number | null>(null);
+  const expansionTokensRef = useRef(
+    new Map<number, ChatContainerContentExpansionToken>(),
+  );
+  const contentExpansionRef = useRef(contentExpansion);
+  contentExpansionRef.current = contentExpansion;
+
+  useEffect(() => () => {
+    const tokens = Array.from(expansionTokensRef.current.values());
+    expansionTokensRef.current.clear();
+    for (const token of tokens) {
+      contentExpansionRef.current?.endContentExpansion(token);
+    }
+  }, []);
 
   useLayoutEffect(() => {
     const messageRow = rootRef.current?.closest<HTMLElement>("[data-acp-message-row]");
@@ -58,9 +80,24 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [measurementRevision, openSections, parts]);
+  }, [displayParts, measurementRevision, openSections]);
 
   if (parts.length === 0) return null;
+
+  const handleSectionOpenChange = (index: number, open: boolean) => {
+    if (open && !expansionTokensRef.current.has(index)) {
+      const token = contentExpansion?.beginContentExpansion() ?? null;
+      if (token !== null) expansionTokensRef.current.set(index, token);
+    } else if (!open) {
+      const token = expansionTokensRef.current.get(index) ?? null;
+      expansionTokensRef.current.delete(index);
+      contentExpansion?.endContentExpansion(token);
+    }
+    setOpenSections((current) => ({
+      ...current,
+      [index]: open,
+    }));
+  };
 
   return (
     <div
@@ -68,30 +105,27 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
       className="inline-grid min-w-0 max-w-full gap-2"
       style={measuredInlineSize ? { width: `${measuredInlineSize}px` } : undefined}
     >
-      {parts.map((part, index) => {
+      {displayParts.map(({ part, sourceIndex }, index) => {
         if (part.type === "hidden") {
           return (
             <HiddenPromptSection
-              key={`${index}:hidden`}
+              key={`${sourceIndex}:hidden`}
               title={part.title}
               text={part.text}
-              open={Boolean(openSections[index])}
-              onOpenChange={(open) => setOpenSections((current) => ({
-                ...current,
-                [index]: open,
-              }))}
+              open={Boolean(openSections[sourceIndex])}
+              onOpenChange={(open) => handleSectionOpenChange(sourceIndex, open)}
             />
           );
         }
 
         const displayText = visiblePromptText(
           part.text,
-          parts[index - 1]?.type === "hidden",
+          displayParts[index - 1]?.part.type === "hidden",
         );
 
         return (
           <div
-            key={`${index}:visible`}
+            key={`${sourceIndex}:visible`}
             className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
           >
             {displayText}
@@ -102,13 +136,13 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
         aria-hidden="true"
         className="pointer-events-none fixed left-0 top-0 -z-50 invisible grid h-0 overflow-visible"
       >
-        {parts.map((part, index) => {
+        {displayParts.map(({ part, sourceIndex }, index) => {
           if (part.type === "hidden") {
             const label = hiddenPromptTitle(part.title, t);
             return (
-              <div key={`${index}:hidden-measure`}>
+              <div key={`${sourceIndex}:hidden-measure`}>
                 <button
-                  ref={(element) => { labelMeasureRefs.current[index] = element; }}
+                  ref={(element) => { labelMeasureRefs.current[sourceIndex] = element; }}
                   className="grid w-max grid-cols-[max-content_auto] items-center gap-3 rounded-lg border px-3 py-2 text-xs"
                   tabIndex={-1}
                 >
@@ -119,7 +153,7 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
                   </span>
                 </button>
                 <pre
-                  ref={(element) => { hiddenMeasureRefs.current[index] = element; }}
+                  ref={(element) => { hiddenMeasureRefs.current[sourceIndex] = element; }}
                   className="w-[calc(var(--conversation-message-max-inline-size)-2rem)] whitespace-pre-wrap break-words px-3 py-2 font-sans text-xs leading-5 [overflow-wrap:anywhere]"
                 >
                   {part.text.trim()}
@@ -130,12 +164,12 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
 
           const displayText = visiblePromptText(
             part.text,
-            parts[index - 1]?.type === "hidden",
+            displayParts[index - 1]?.part.type === "hidden",
           );
           return (
             <div
-              key={`${index}:visible-measure`}
-              ref={(element) => { visibleMeasureRefs.current[index] = element; }}
+              key={`${sourceIndex}:visible-measure`}
+              ref={(element) => { visibleMeasureRefs.current[sourceIndex] = element; }}
               className="w-[calc(var(--conversation-message-max-inline-size)-2rem)] whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
             >
               {displayText}

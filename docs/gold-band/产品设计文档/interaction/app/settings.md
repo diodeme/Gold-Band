@@ -158,6 +158,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 2026-07-24 浅色 Tabs track 可见性修正：共享 `TabsList` 默认变体从 `muted` 调整为带 `border` 内描边的 `secondary` surface，覆盖设置页、会话运行模式、工作流编辑、任务筛选、运行模式管理和上下文管理；透明与 line 变体保持原设计。
 - 2026-07-24 科技灰侧栏文字层级修正：导航、分组与任务标题不再复用 `#666666` 辅助文字，而是统一消费深黑 `sidebar-foreground = #171717`；选中态前景同步保持深黑，时间和空状态等元信息继续使用辅助灰。
 - 2026-07-24 文本选区可见性修正：四套主题新增成对的文本选区 token，深色选区提升为明确中灰层级；移除 Input 对 selection 的局部 primary 覆盖，使普通文本、Markdown、输入框和 composer 呈现一致。
+- 2026-08-02 滚动条视觉层级校准：四套主题继续通过统一的 `gold-scrollbar-track` / `gold-scrollbar-thumb` / `gold-scrollbar-thumb-hover` 语义接口驱动原生滚动容器、主题滚动容器与 shadcn `ScrollArea`。滚动条改用中性前景色的低透明叠加，静止态不得混入品牌 `primary` 或不透明辅助文字色；轨道仅在容器 hover 时提供极弱反馈，thumb 在 hover 时再适度增强。两套浅色采用 3% / 16% / 26% 的轨道、静止、悬浮层级，石墨深色采用 4% / 18% / 30%，终端黑采用 4% / 20% / 32%，保证可发现但不抢占正文与导航的视觉重心。
 - 2026-07-24 胶囊 Tabs 边界收敛：共享 Tabs 新增 `bare` 变体，Agent 选择器和自带边界的 Round 详情 Tabs 不再继承默认 track ring，避免外层轨道与选中胶囊形成双重边界。
 - 2026-05-08 起应用内置默认字体切换为 MiSans（前端 family 为 `Gold Band MiSans`）；设置页删除三套 CJK 预设，只保留一个默认字体卡片与一个本机字体下拉列表。
 - 2026-05-08 验收修正：字体切换必须同步作用到导航栏、面包屑、任务 requirement 预览与完整需求抽屉；这些区域不再误用 mono token。
@@ -186,3 +187,12 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 ## 7. 一句话总结
 
 > 当前设置页只解决“我想用什么主题、字体和语言”，不承载任务编排、provider 配置或 workflow 编辑能力。
+
+## 9. 定时任务运行设置
+
+- 设置页是定时任务全局运行设置的唯一可见入口，通过 `get_scheduled_runtime_settings` / `save_scheduled_runtime_settings` 统一管理保持唤醒、完成通知和 occurrence 保留天数；保留范围固定为 `1..=3650` 天，越界返回 `SCHEDULED_VALIDATION_FAILED` 及结构化 `field/minimum/maximum/actual` 参数。
+- 保持唤醒同时展示用户启用值与系统实际生效值。只有用户开启、至少一个 job 为 enabled 且应用仍在运行时才生效；平台获取失败展示 `SCHEDULED_POWER_INHIBITOR_FAILED`，但不改变任务调度与 occurrence 结果。
+- Windows、macOS 和 Linux 使用 `keepawake 0.6.0` 的统一进程级 guard；Windows 走 System Power API，macOS 走 IOKit，Linux 走系统 inhibit 后端。配置允许显示器休眠，只阻止空闲导致的系统自动睡眠，应用退出时必须释放 guard。
+- macOS 不是后续兼容项，而是 Task 6 的同级目标平台：实现必须保留 `objc2-io-kit`/IOKit 后端与相同的启用、失效、退出释放语义。Windows 开发机无法替代 macOS 编译或真机验证；发布验收需要在 macOS CI 或真机上补充编译和开关 smoke test。
+- occurrence 默认保留 30 天。清理仅删除 SQLite 中过期的 `succeeded/failed/skipped/missed` 行，保留 `attention_required`、非终态和活动 Run 链接；Task、Run、Round、ACP 文件与产物不属于该清理事务。
+- 2026-08-09 起 `ScheduledRuntimeSettings` 只在通用设置页展示；定时任务管理页移除重复入口，但继续由同一命令和状态模型服务设置页，不增加页面级副本。

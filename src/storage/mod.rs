@@ -1,6 +1,6 @@
 pub mod sqlite;
 
-use crate::config::SettingsConfig;
+use crate::config::{ManagedAgentId, SettingsConfig};
 use crate::domain::VERSION;
 use anyhow::{Result, anyhow};
 use atomic_write_file::AtomicWriteFile;
@@ -200,16 +200,28 @@ impl GoldBandPaths {
         self.user_gold_band_root.join("doctor")
     }
 
-    pub fn doctor_acp_dir(&self) -> Utf8PathBuf {
+    pub fn doctor_acp_root_dir(&self) -> Utf8PathBuf {
         self.doctor_dir().join("acp")
     }
 
-    pub fn doctor_acp_provider_pid_file(&self) -> Utf8PathBuf {
-        self.doctor_acp_dir().join("provider.pid")
+    pub fn doctor_acp_dir(&self, agent_id: &ManagedAgentId) -> Utf8PathBuf {
+        self.doctor_acp_root_dir().join(agent_id.as_str())
+    }
+
+    pub fn doctor_acp_provider_pid_file(&self, agent_id: &ManagedAgentId) -> Utf8PathBuf {
+        self.doctor_acp_dir(agent_id).join("provider.pid")
     }
 
     pub fn sqlite_db_path(&self) -> Utf8PathBuf {
         self.user_gold_band_root.join("gold-band.db")
+    }
+
+    pub fn scheduler_db_path(&self) -> Utf8PathBuf {
+        self.runtime_root.join("scheduled-tasks.db")
+    }
+
+    pub fn legacy_scheduler_db_path(&self) -> Utf8PathBuf {
+        self.user_gold_band_root.join("scheduled-tasks.db")
     }
 
     // ── SKILL paths ──
@@ -234,6 +246,28 @@ impl GoldBandPaths {
 
     pub fn tasks_dir(&self) -> Utf8PathBuf {
         self.runtime_root.join("tasks")
+    }
+
+    pub fn scheduled_tasks_dir(&self) -> Utf8PathBuf {
+        self.runtime_root.join("scheduled-tasks")
+    }
+
+    pub fn scheduled_task_dir(&self, scheduled_task_id: &str) -> Utf8PathBuf {
+        self.scheduled_tasks_dir().join(scheduled_task_id)
+    }
+
+    pub fn scheduled_task_file(&self, scheduled_task_id: &str) -> Utf8PathBuf {
+        self.scheduled_task_dir(scheduled_task_id)
+            .join("scheduled-task.json")
+    }
+
+    pub fn scheduled_triggers_dir(&self, scheduled_task_id: &str) -> Utf8PathBuf {
+        self.scheduled_task_dir(scheduled_task_id).join("triggers")
+    }
+
+    pub fn scheduled_trigger_file(&self, scheduled_task_id: &str, trigger_id: &str) -> Utf8PathBuf {
+        self.scheduled_triggers_dir(scheduled_task_id)
+            .join(format!("{trigger_id}.json"))
     }
 
     pub fn task_dir(&self, task_id: &str) -> Utf8PathBuf {
@@ -558,6 +592,20 @@ impl GoldBandPaths {
         self.dynamic_dir(task_id, run_id, round_id, node_id, attempt_id)
             .join("groups")
             .join(format!("{group_id}.json"))
+    }
+
+    pub fn dynamic_workspace_file(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        workspace_id: &str,
+    ) -> Utf8PathBuf {
+        self.dynamic_dir(task_id, run_id, round_id, node_id, attempt_id)
+            .join("workspaces")
+            .join(format!("{workspace_id}.json"))
     }
 
     pub fn dynamic_node_dir(
@@ -972,7 +1020,9 @@ pub fn roll_jsonl_unlocked(path: &Utf8Path, max_size: u64, target_size: u64) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CURRENT_SETTINGS_SCHEMA_VERSION, MANAGED_AGENT_PRESETS, ManagedAgentId};
+    use crate::config::{
+        CURRENT_SETTINGS_SCHEMA_VERSION, ManagedAgentId, catalog_agent_default_config,
+    };
     use std::str::FromStr;
     use tempfile;
 
@@ -1156,7 +1206,7 @@ mod tests {
         let legacy = serde_json::json!({
             "agents": {
                 "codex-cli": {
-                    "adapter": MANAGED_AGENT_PRESETS[1].default_config().adapter,
+                    "adapter": catalog_agent_default_config("codex-acp").unwrap().adapter,
                     "skillsDirOverride": ".custom-codex",
                     "externalSessionSyncEnabled": false
                 }
@@ -1168,7 +1218,7 @@ mod tests {
 
         let codex_id = ManagedAgentId::from_str("codex-acp").unwrap();
         let codex = &settings.agents.unwrap()[&codex_id];
-        assert_eq!(codex.primary_agent_dir, ".custom-codex");
+        assert_eq!(codex.primary_agent_dir.as_deref(), Some(".custom-codex"));
         assert_eq!(codex.compatible_agent_dirs, vec![".agents"]);
 
         let persisted: serde_json::Value = read_json(&path).unwrap();
@@ -1381,6 +1431,26 @@ mod tests {
         assert_eq!(after, second);
     }
 
+    #[test]
+    fn doctor_attempt_directories_are_isolated_by_agent_id() {
+        let root = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let paths = GoldBandPaths::new(repo_root);
+        let cursor = "cursor".parse::<ManagedAgentId>().unwrap();
+        let opencode = "opencode".parse::<ManagedAgentId>().unwrap();
+
+        assert_ne!(
+            paths.doctor_acp_dir(&cursor),
+            paths.doctor_acp_dir(&opencode)
+        );
+        assert!(paths.doctor_acp_dir(&cursor).ends_with("doctor/acp/cursor"));
+        assert!(
+            paths
+                .doctor_acp_dir(&opencode)
+                .ends_with("doctor/acp/opencode")
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn root_workspace_uses_stable_non_empty_project_id() {
@@ -1401,6 +1471,36 @@ mod tests {
                 .to_string()
                 .replace('\\', "/")
                 .ends_with("/.gold-band-test-root/logs/runtime.log")
+        );
+    }
+
+    #[test]
+    fn scheduler_db_path_is_separate_from_search_database_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let paths = GoldBandPaths::new(repo_root);
+
+        assert_ne!(paths.scheduler_db_path(), paths.sqlite_db_path());
+        assert!(
+            paths
+                .scheduler_db_path()
+                .to_string()
+                .replace('\\', "/")
+                .ends_with("/scheduled-tasks.db")
+        );
+    }
+
+    #[test]
+    fn scheduler_db_path_is_scoped_to_project_runtime() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let paths = GoldBandPaths::new(repo_root);
+
+        assert_eq!(
+            paths.scheduler_db_path(),
+            paths.runtime_root.join("scheduled-tasks.db")
         );
     }
 }

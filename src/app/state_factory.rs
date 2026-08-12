@@ -3,7 +3,7 @@ use crate::domain::{ResolvedConfig, RunStatus, VERSION};
 use crate::dsl::{JsonConditionDsl, NodeDsl};
 use crate::runtime::NodeState;
 
-use super::ids::{generate_uuid, now_rfc3339_like};
+use super::ids::{generate_uuid, next_runtime_execution_id, now_rfc3339_like};
 
 pub(crate) fn create_node_state(
     run_id: &str,
@@ -25,6 +25,7 @@ pub(crate) fn create_node_state(
         started_at: now_rfc3339_like(),
         finished_at: None,
         manual_check_pending: false,
+        runtime_execution_id: Some(next_runtime_execution_id()),
         resolved_config: resolved_config_for_node(node_dsl, resolved_profile),
         uuid: Some(generate_uuid()),
     }
@@ -126,12 +127,6 @@ pub(crate) fn resolved_config_for_node(
                 serde_json::to_value(&dynamic.agent_strategy)
                     .expect("serialize ai-dynamic agent strategy"),
             );
-            if let Some(permission_mode) = &dynamic.permission_mode {
-                config.insert(
-                    "permissionMode".to_string(),
-                    serde_json::Value::String(permission_mode.clone()),
-                );
-            }
             if let Some(profile) = resolved_profile.as_ref() {
                 config.insert(
                     "profileName".to_string(),

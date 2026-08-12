@@ -16,7 +16,7 @@
 - Internal node dir: {{ node_dir }}
 - Internal attempt dir: {{ attempt_dir }}
 - Internal attachments dir: {{ attachments_dir }}
-- Workspace mode: {{ workspace_mode }}
+- Workspace ID: {{ workspace_id }}
 - Workspace path: {{ workspace_path }}
 - Workspace capability:
 {{ workspace_capability }}
@@ -63,11 +63,11 @@
 ## Agent and profile options
 - Dynamic node agent strategy: {{ agent_strategy_mode }}
 - Bootstrap agent: {{ bootstrap_provider }}
-{% if agent_strategy_mode == "dynamic" %}- Agent and model routing guidance:
+{% if agent_strategy_mode == "dynamic" %}- Agent routing guidance:
 {{ agent_routing_prompt }}
 - Merge / acceptance model policy:
 {{ acceptance_model_policy }}
-{% endif %}- Available agents and models:
+{% endif %}- Available agents and configured runtime options:
 {{ available_providers }}
 - Available profiles:
 {{ available_profiles }}

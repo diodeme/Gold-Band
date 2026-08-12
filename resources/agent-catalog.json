@@ -1,0 +1,252 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
+    "registryVersion": "1.0.0",
+    "fetchedAt": "2026-08-09T11:48:11.306Z"
+  },
+  "agents": [
+    {
+      "id": "claude-acp",
+      "label": "Claude",
+      "version": "0.66.0",
+      "description": "ACP wrapper for Anthropic's Claude",
+      "repository": "https://github.com/agentclientprotocol/claude-agent-acp",
+      "website": null,
+      "iconKey": "claude",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/claude-acp.svg",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@agentclientprotocol/claude-agent-acp@0.66.0"
+      ],
+      "env": {},
+      "primaryAgentDir": ".claude",
+      "projectPrimaryAgentDir": null,
+      "compatibleAgentDirs": [],
+      "supportsSystemPrompt": true,
+      "supportsExternalSessionSync": false
+    },
+    {
+      "id": "codex-acp",
+      "label": "Codex",
+      "version": "1.1.14",
+      "description": "ACP adapter for OpenAI's coding assistant",
+      "repository": "https://github.com/agentclientprotocol/codex-acp",
+      "website": null,
+      "iconKey": "codex",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/codex-acp.svg",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@agentclientprotocol/codex-acp@1.1.14"
+      ],
+      "env": {},
+      "primaryAgentDir": ".codex",
+      "projectPrimaryAgentDir": null,
+      "compatibleAgentDirs": [
+        ".agents"
+      ],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false
+    },
+    {
+      "id": "cursor",
+      "label": "Cursor",
+      "version": "2026.07.23",
+      "description": "Cursor's coding agent",
+      "repository": null,
+      "website": "https://cursor.com/docs/cli/acp",
+      "iconKey": "cursor",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/cursor.svg",
+      "command": "cursor-agent",
+      "args": [
+        "acp"
+      ],
+      "env": {},
+      "primaryAgentDir": ".cursor",
+      "projectPrimaryAgentDir": null,
+      "compatibleAgentDirs": [
+        ".agents"
+      ],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false
+    },
+    {
+      "id": "gemini",
+      "label": "Gemini",
+      "version": "0.54.4",
+      "description": "Google's official CLI for Gemini",
+      "repository": "https://github.com/google-gemini/gemini-cli",
+      "website": "https://geminicli.com",
+      "iconKey": "gemini",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/gemini.svg",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@google/gemini-cli@0.54.4",
+        "--acp"
+      ],
+      "env": {},
+      "primaryAgentDir": ".gemini",
+      "projectPrimaryAgentDir": null,
+      "compatibleAgentDirs": [
+        ".agents"
+      ],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false
+    },
+    {
+      "id": "codebuddy-code",
+      "label": "CodeBuddy",
+      "version": "2.106.7",
+      "description": "Tencent Cloud's official intelligent coding tool",
+      "repository": null,
+      "website": "https://www.codebuddy.cn/cli/",
+      "iconKey": "codebuddy-code",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/codebuddy-code.svg",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@tencent-ai/codebuddy-code@2.106.7",
+        "--acp"
+      ],
+      "env": {},
+      "primaryAgentDir": ".codebuddy",
+      "projectPrimaryAgentDir": null,
+      "compatibleAgentDirs": [],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false
+    },
+    {
+      "id": "goose",
+      "label": "Goose",
+      "version": "1.45.0",
+      "description": "A local, extensible, open source AI agent that automates engineering tasks",
+      "repository": "https://github.com/block/goose",
+      "website": "https://block.github.io/goose/",
+      "iconKey": "goose",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/goose.svg",
+      "command": "goose",
+      "args": [
+        "acp"
+      ],
+      "env": {},
+      "primaryAgentDir": ".goose",
+      "projectPrimaryAgentDir": null,
+      "compatibleAgentDirs": [],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false
+    },
+    {
+      "id": "qwen-code",
+      "label": "Qwen Code",
+      "version": "0.21.8",
+      "description": "Alibaba's Qwen coding assistant",
+      "repository": "https://github.com/QwenLM/qwen-code",
+      "website": "https://qwenlm.github.io/qwen-code-docs/en/users/overview",
+      "iconKey": "qwen-code",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/qwen-code.svg",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@qwen-code/qwen-code@0.21.8",
+        "--acp",
+        "--experimental-skills"
+      ],
+      "env": {},
+      "primaryAgentDir": ".qwen",
+      "projectPrimaryAgentDir": null,
+      "compatibleAgentDirs": [],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "version": "1.18.15",
+      "description": "The open source coding agent",
+      "repository": "https://github.com/anomalyco/opencode",
+      "website": "https://opencode.ai",
+      "iconKey": "opencode",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/opencode.svg",
+      "command": "opencode",
+      "args": [
+        "acp"
+      ],
+      "env": {},
+      "primaryAgentDir": ".opencode",
+      "projectPrimaryAgentDir": null,
+      "compatibleAgentDirs": [
+        ".agents"
+      ],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false
+    },
+    {
+      "id": "kimi",
+      "label": "Kimi Code",
+      "version": "1.49.0",
+      "description": "Moonshot AI's coding assistant",
+      "repository": "https://github.com/MoonshotAI/kimi-cli",
+      "website": "https://moonshotai.github.io/kimi-cli/",
+      "iconKey": "kimi",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/kimi.svg",
+      "command": "kimi",
+      "args": [
+        "acp"
+      ],
+      "env": {},
+      "primaryAgentDir": ".kimi-code",
+      "projectPrimaryAgentDir": null,
+      "compatibleAgentDirs": [
+        ".agents"
+      ],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false
+    },
+    {
+      "id": "amp-acp",
+      "label": "Amp",
+      "version": "0.9.0",
+      "description": "ACP wrapper for Amp - the frontier coding agent",
+      "repository": "https://github.com/tao12345666333/amp-acp",
+      "website": null,
+      "iconKey": "amp-acp",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/amp-acp.svg",
+      "command": "amp-acp",
+      "args": [],
+      "env": {},
+      "primaryAgentDir": ".agents",
+      "projectPrimaryAgentDir": null,
+      "compatibleAgentDirs": [
+        ".claude"
+      ],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false
+    },
+    {
+      "id": "pi-acp",
+      "label": "Pi",
+      "version": "0.0.33",
+      "description": "ACP adapter for pi coding agent",
+      "repository": "https://github.com/svkozak/pi-acp",
+      "website": null,
+      "iconKey": "pi-acp",
+      "iconUrl": "https://cdn.agentclientprotocol.com/registry/v1/latest/pi-acp.svg",
+      "command": "npx",
+      "args": [
+        "-y",
+        "pi-acp@0.0.33"
+      ],
+      "env": {},
+      "primaryAgentDir": ".pi/agent",
+      "projectPrimaryAgentDir": ".pi",
+      "compatibleAgentDirs": [
+        ".agents"
+      ],
+      "supportsSystemPrompt": false,
+      "supportsExternalSessionSync": false
+    }
+  ]
+}

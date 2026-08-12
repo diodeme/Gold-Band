@@ -1,4 +1,4 @@
-# Gold Band 文档导航
+﻿# Gold Band 文档导航
 
 Gold Band 当前文档按目录式结构整理为 5 个主板块：
 
@@ -7,12 +7,14 @@ Gold Band 当前文档按目录式结构整理为 5 个主板块：
 
 ## 2. 交互层
 - [交互层概览](interaction/overview.md)
+- [定时任务交互设计](interaction/app/scheduled-task-management.md)
 - [CLI 规范](interaction/cli.md)
 - [Console 概览](interaction/console-overview.md)
 - [Console 信息架构](interaction/console-information-architecture.md)
 - [Console 命令模型](interaction/console-command-model.md)
 - [Console 状态与事件](interaction/console-state-and-events.md)
 - [Progress 规范](interaction/progress.md)
+- [右侧工作区文件浏览与编辑](interaction/app/workspace-files.md)
 
 ## 3. Provider 层
 - [Provider 概览](provider/overview.md)
@@ -35,10 +37,14 @@ Gold Band 当前文档按目录式结构整理为 5 个主板块：
 - [Runtime 概览](runtime/overview.md)
 - [WB 会话指标采集与批量上报](runtime/metrics-collection.md)
 - [会话指标上报服务端处理](runtime/metrics-server-processing.md)
+- [定时任务运行时设计](runtime/scheduled-task.md)
+- [定时任务 CRUD 与生命周期](runtime/scheduled-task-crud-design.md)
+- [定时任务运行时实现补充](runtime/scheduled-task-runtime-implementation.md)
 - [控制层](runtime/control.md)
 - [目录布局](runtime/layout.md)
 - 状态文件规范
   - [task.json](runtime/state/task.json.md)
+  - [scheduled-task.json](runtime/state/scheduled-task.json.md)
   - [run.json](runtime/state/run.json.md)
   - [round.json](runtime/state/round.json.md)
   - [node.json](runtime/state/node.json.md)
@@ -49,3 +55,4 @@ Gold Band 当前文档按目录式结构整理为 5 个主板块：
 - 当前桌面端工程统一使用 `npm` 作为仓库级包管理器，依赖锁文件以根目录 `package-lock.json` 为准；未完成明确迁移前，不引入第二套仓库级 lockfile
 - 仓库协作与 Agent 提交流程约定统一维护在 [开发计划/新增流程/PR提交流程](../开发计划/新增流程/PR提交流程.md)，避免 commit 规范与 PR 规范分裂
 - 桌面端前端生产构建使用 `web/tsconfig.build.json` 只校验浏览器源码边界；`web/tests/` 下的回归测试由 `npm run web:test` 执行，允许使用 Vitest 的 Node 测试环境读取静态资源或源码文本
+- 桌面开发监听按运行时影响范围收口：Tauri 使用仓库根 `.taurignore` 排除 `docs/` 与根目录 `README*.md`，文档编辑不得触发 Rust 应用重建；源码、构建清单和运行时配置继续保持监听。修改 `.taurignore` 后需要重启一次 `npm run dev` 以重建 watcher。

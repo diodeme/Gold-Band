@@ -1,9 +1,10 @@
-import { Eye, FolderOpen, RotateCcw, Workflow, ChevronDown } from 'lucide-react';
+import { AlarmClock, Eye, FolderOpen, RotateCcw, Workflow, ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ConversationRunVm, ConversationSessionLeafVm } from '../../types';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { runtimeStatusDotClass } from '@/lib/runtime-status-dot';
 import { EditableConversationTitle } from '@/components/conversation/EditableConversationTitle';
 
 interface ConversationRunHeaderProps {
@@ -11,7 +12,6 @@ interface ConversationRunHeaderProps {
   onRerun: () => void;
   onEditWorkflow: () => void;
   onViewWorkflow: () => void;
-  onOpenInFileManager?: () => void;
   onToggleSessionSwitcher: () => void;
   sessionSwitcherOpen: boolean;
   selectedSessionLeaf?: ConversationSessionLeafVm | null;
@@ -25,7 +25,6 @@ export function ConversationRunHeader({
   onRerun,
   onEditWorkflow,
   onViewWorkflow,
-  onOpenInFileManager,
   onToggleSessionSwitcher,
   sessionSwitcherOpen,
   selectedSessionLeaf,
@@ -37,12 +36,21 @@ export function ConversationRunHeader({
   const isRunning = run.runStatus === 'running';
   const isDirect = run.runMode === 'direct';
   const selectedSessionDisplay = selectedSessionLeaf?.runtimeDisplay;
-  const selectedSessionRunning = selectedSessionDisplay?.tone === 'running';
-  const selectedSessionDotClass = runtimeDotClass(selectedSessionDisplay?.tone);
+  const selectedSessionDotClass = runtimeStatusDotClass(selectedSessionDisplay?.tone);
 
   return (
     <div className="shrink-0 bg-content-header px-5 pb-0.5 pt-0.5">
       <div className="flex min-w-0 items-center gap-2">
+        {run.scheduledTaskId ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex shrink-0 items-center text-foreground" aria-label={t('scheduled.conversationMarker')}>
+                <AlarmClock className="size-3.5" />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{t('scheduled.conversationMarker')}</TooltipContent>
+          </Tooltip>
+        ) : null}
         <EditableConversationTitle
           title={run.title}
           metadata={!isDirect ? run.runId : null}
@@ -62,9 +70,6 @@ export function ConversationRunHeader({
               aria-hidden="true"
               className="relative inline-flex size-3 shrink-0 items-center justify-center rounded-full border border-background/80"
             >
-              {selectedSessionRunning ? (
-                <span className="absolute inset-0 rounded-full bg-primary/18 animate-ping" />
-              ) : null}
               <span className={cn('relative inline-block size-2 rounded-full', selectedSessionDotClass)} />
             </span>
           ) : null}
@@ -79,7 +84,7 @@ export function ConversationRunHeader({
           {canViewWorkflow ? (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="size-5.5" onClick={onViewWorkflow}>
+                <Button variant="ghost" size="icon" className="size-5.5" aria-label={t('conversation.runtime.viewWorkflow')} onClick={onViewWorkflow}>
                   <Eye className="size-3.5" />
                 </Button>
               </TooltipTrigger>
@@ -90,7 +95,7 @@ export function ConversationRunHeader({
           {canEditWorkflow ? (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="size-5.5" onClick={onEditWorkflow}>
+                <Button variant="ghost" size="icon" className="size-5.5" aria-label={t('conversation.runtime.editWorkflow')} onClick={onEditWorkflow}>
                   <Workflow className="size-3.5" />
                 </Button>
               </TooltipTrigger>
@@ -100,7 +105,7 @@ export function ConversationRunHeader({
 
           {!isDirect ? <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="size-5.5" onClick={onRerun}>
+              <Button variant="ghost" size="icon" className="size-5.5" aria-label={isRunning ? t('conversation.runtime.rerunConfirmAction') : t('conversation.runtime.rerun')} onClick={onRerun}>
                 <RotateCcw className="size-3.5" />
               </Button>
             </TooltipTrigger>
@@ -109,33 +114,8 @@ export function ConversationRunHeader({
             </TooltipContent>
           </Tooltip> : null}
 
-          {onOpenInFileManager ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-5.5"
-                  aria-label={t('conversation.runtime.openInFileManager')}
-                  onClick={onOpenInFileManager}
-                >
-                  <FolderOpen className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{t('conversation.runtime.openInFileManager')}</TooltipContent>
-            </Tooltip>
-          ) : null}
         </div>
       </div>
     </div>
   );
-}
-
-function runtimeDotClass(tone?: string | null) {
-  if (tone === 'success') return 'bg-emerald-500';
-  if (tone === 'danger') return 'bg-red-500';
-  if (tone === 'running') return 'bg-primary';
-  if (tone === 'warning') return 'bg-yellow-500';
-  if (tone === 'neutral') return 'bg-muted-foreground';
-  return '';
 }

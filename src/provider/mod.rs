@@ -1,16 +1,26 @@
 use crate::acp::{client, events::AcpUiEvent};
 use crate::artifacts::{artifact_uses_json_output, json_artifact_text_from_outputs};
-use crate::config::{AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, managed_agent_preset};
-pub use crate::domain::SessionRef;
-use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode};
-use crate::prompts::{
-    PromptExecutionSurface, RUNTIME_HIDDEN_CONTEXT_EN, RUNTIME_HIDDEN_CONTEXT_ZH_CN,
-    RUNTIME_SYSTEM_EN, RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN,
-    profile_template_context, prompt_by_language, render as render_template,
+use crate::config::{
+    AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, catalog_agent_default_config,
 };
-use crate::runtime_error::{RuntimeErrorInfo, normalize_provider_runtime_failure};
-use crate::storage::active_storage_path_config;
-use anyhow::{Result, bail, ensure};
+pub use crate::domain::SessionRef;
+use crate::domain::{
+    DEFAULT_PROVIDER, InvocationKind, SessionMode, TurnControlMode, TurnControlTransitionCause,
+    VERSION,
+};
+use crate::prompts::{
+    PromptExecutionSurface, RUNTIME_ARTIFACT_FINALIZE_EN, RUNTIME_ARTIFACT_FINALIZE_ZH_CN,
+    RUNTIME_HIDDEN_CONTEXT_EN, RUNTIME_HIDDEN_CONTEXT_ZH_CN, RUNTIME_SYSTEM_EN,
+    RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN, profile_template_context,
+    prompt_by_language, render as render_template,
+};
+use crate::runtime::WorkerRefState;
+use crate::runtime_error::{
+    RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, blocked_runtime_error_info,
+    normalize_provider_runtime_failure, runtime_error,
+};
+use crate::storage::{active_storage_path_config, read_json, write_json};
+use anyhow::{Context, Result, bail, ensure};
 use camino::Utf8PathBuf;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -122,6 +132,8 @@ impl DoctorResult {
 pub enum UserPromptRenderMode {
     RequirementTask,
     WorkflowResume,
+    RuntimeResume,
+    RuntimeFinalize,
     RuntimeRepair,
     UserMessage,
 }
@@ -135,6 +147,10 @@ impl Default for UserPromptRenderMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerInvocation {
     pub invocation_kind: InvocationKind,
+    #[serde(default)]
+    pub turn_control_mode: TurnControlMode,
+    #[serde(default)]
+    pub runtime_control_resume_candidate: bool,
     #[serde(default)]
     pub prompt_envelope: crate::dsl::PromptEnvelopeMode,
     pub execution_surface: PromptExecutionSurface,
@@ -186,6 +202,18 @@ pub struct WorkerInvocation {
     pub input_attachment_paths: Vec<String>,
     #[serde(default)]
     pub mcp_servers: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_context: Option<ScheduledTaskContextInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledTaskContextInfo {
+    pub title: String,
+    pub mode: String,
+    pub session_policy: String,
+    pub trigger_kind: String,
+    pub triggered_at: String,
+    pub instruction: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -251,6 +279,69 @@ pub struct PromptOutputContract {
     pub schema: Option<serde_json::Value>,
     pub schema_text: Option<String>,
     pub success_condition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalize_context: Option<String>,
+    #[serde(default)]
+    pub emission_mode: OutputEmissionMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum OutputEmissionMode {
+    #[default]
+    PostTurnProjection,
+    InlineControl,
+}
+
+const ARTIFACT_EMISSION_STATE_FILE: &str = "artifact-emission.json";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ArtifactEmissionPhase {
+    Finalizing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ArtifactEmissionState {
+    version: String,
+    phase: ArtifactEmissionPhase,
+}
+
+fn post_turn_projection_is_finalizing(req: &WorkerInvocation) -> Result<bool> {
+    if matches!(
+        req.user_prompt_render_mode,
+        UserPromptRenderMode::RuntimeFinalize | UserPromptRenderMode::RuntimeRepair
+    ) {
+        return Ok(true);
+    }
+    let state_path = req.attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE);
+    if !state_path.exists() {
+        return Ok(false);
+    }
+    let state: ArtifactEmissionState = read_json(&state_path).map_err(|error| {
+        runtime_error(blocked_runtime_error_info(
+            RuntimeErrorDomain::Internal,
+            "runtime.artifact-emission-state-invalid",
+            format!("failed to read artifact emission state `{state_path}`: {error:#}"),
+            serde_json::json!({ "path": state_path }),
+        ))
+    })?;
+    if state.version != VERSION {
+        return Err(runtime_error(blocked_runtime_error_info(
+            RuntimeErrorDomain::Internal,
+            "runtime.artifact-emission-state-version-unsupported",
+            format!(
+                "unsupported artifact emission state version `{}`",
+                state.version
+            ),
+            serde_json::json!({
+                "path": state_path,
+                "actualVersion": state.version,
+                "expectedVersion": VERSION,
+            }),
+        )));
+    }
+    Ok(state.phase == ArtifactEmissionPhase::Finalizing)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -311,8 +402,186 @@ pub struct PromptBundle {
     pub user_prompt: String,
     pub prompt_id: Option<String>,
     pub visibility: PromptVisibility,
+    pub hidden_reason: Option<String>,
+    pub turn_control_mode: TurnControlMode,
+    pub runtime_control_resume_candidate: bool,
+    pub runtime_control_transition_id: Option<String>,
+    pub runtime_control_source_transition_id: Option<String>,
+    pub runtime_control_transition_cause: Option<TurnControlTransitionCause>,
     pub attachment_metas: Vec<AttachmentMeta>,
     pub content_blocks: Vec<AcpContentBlock>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachmentContentKind {
+    Image,
+    Text,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AttachmentFormat {
+    extensions: &'static [&'static str],
+    mime_type: &'static str,
+    content_kind: AttachmentContentKind,
+}
+
+const ATTACHMENT_FORMATS: &[AttachmentFormat] = &[
+    AttachmentFormat {
+        extensions: &["png"],
+        mime_type: "image/png",
+        content_kind: AttachmentContentKind::Image,
+    },
+    AttachmentFormat {
+        extensions: &["jpg", "jpeg"],
+        mime_type: "image/jpeg",
+        content_kind: AttachmentContentKind::Image,
+    },
+    AttachmentFormat {
+        extensions: &["webp"],
+        mime_type: "image/webp",
+        content_kind: AttachmentContentKind::Image,
+    },
+    AttachmentFormat {
+        extensions: &["gif"],
+        mime_type: "image/gif",
+        content_kind: AttachmentContentKind::Image,
+    },
+    AttachmentFormat {
+        extensions: &["bmp"],
+        mime_type: "image/bmp",
+        content_kind: AttachmentContentKind::Image,
+    },
+    AttachmentFormat {
+        extensions: &["txt"],
+        mime_type: "text/plain",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["md", "markdown"],
+        mime_type: "text/markdown",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["json", "jsonl"],
+        mime_type: "application/json",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["csv"],
+        mime_type: "text/csv",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["html", "htm"],
+        mime_type: "text/html",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["css"],
+        mime_type: "text/css",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["js", "jsx"],
+        mime_type: "text/javascript",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["ts", "tsx"],
+        mime_type: "text/typescript",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["rs"],
+        mime_type: "text/rust",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["py"],
+        mime_type: "text/python",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["go"],
+        mime_type: "text/go",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["java"],
+        mime_type: "text/java",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["c", "h"],
+        mime_type: "text/c",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["cpp", "hpp"],
+        mime_type: "text/cpp",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["yaml", "yml"],
+        mime_type: "text/yaml",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["xml"],
+        mime_type: "text/xml",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["toml"],
+        mime_type: "text/toml",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["log"],
+        mime_type: "text/plain",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["sql"],
+        mime_type: "text/plain",
+        content_kind: AttachmentContentKind::Text,
+    },
+    AttachmentFormat {
+        extensions: &["sh", "bash", "zsh"],
+        mime_type: "text/plain",
+        content_kind: AttachmentContentKind::Text,
+    },
+];
+
+fn attachment_format(extension: &str) -> Option<&'static AttachmentFormat> {
+    ATTACHMENT_FORMATS
+        .iter()
+        .find(|format| format.extensions.contains(&extension))
+}
+
+pub fn attachment_meta_for_path(
+    path: &std::path::Path,
+    storage_prefix: &str,
+) -> Result<Option<AttachmentMeta>> {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let Some(format) = attachment_format(&extension) else {
+        return Ok(None);
+    };
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+    Ok(Some(AttachmentMeta {
+        path: format!("{storage_prefix}/{name}"),
+        mime_type: format.mime_type.to_string(),
+        size: path.metadata()?.len(),
+        name,
+    }))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -333,60 +602,32 @@ pub fn resolve_attachments(
     let mut resolved = Vec::new();
     for path_str in paths {
         let std_path = std::path::Path::new(path_str);
-        let name = std_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let data = std::fs::read(std_path)?;
-        let size = data.len() as u64;
-        let ext = std_path
+        let Some(meta) = attachment_meta_for_path(std_path, storage_prefix)? else {
+            continue;
+        };
+        let extension = std_path
             .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-
-        let is_image = matches!(
-            ext.as_str(),
-            "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
-        );
-        let mime_type = mime_for_ext(&ext);
-
-        if is_image {
-            let b64 = base64_encode(&data);
-            let path_for_storage = format!("{}/{}", storage_prefix, name);
-            resolved.push(ResolvedAttachment {
-                meta: AttachmentMeta {
-                    name: name.clone(),
-                    path: path_for_storage,
-                    mime_type,
-                    size,
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let format = attachment_format(&extension)
+            .expect("attachment metadata is only created for a supported format");
+        let data = std::fs::read(std_path)?;
+        let uri = format!("file://{}", path_str.replace('\\', "/"));
+        let block = match format.content_kind {
+            AttachmentContentKind::Image => AcpContentBlock::Image(AcpImageBlock {
+                data: base64_encode(&data),
+                mime_type: format.mime_type.to_string(),
+                uri: Some(uri),
+            }),
+            AttachmentContentKind::Text => AcpContentBlock::Resource(AcpResourceBlock {
+                resource: AcpTextResourceContents {
+                    text: String::from_utf8(data).unwrap_or_else(|_| "[binary file]".to_string()),
+                    uri,
                 },
-                block: AcpContentBlock::Image(AcpImageBlock {
-                    data: b64,
-                    mime_type: mime_for_ext(&ext),
-                    uri: Some(format!("file://{}", path_str.replace('\\', "/"))),
-                }),
-            });
-        } else if is_text_ext(&ext) {
-            let text = String::from_utf8(data).unwrap_or_else(|_| "[binary file]".to_string());
-            let path_for_storage = format!("{}/{}", storage_prefix, name);
-            resolved.push(ResolvedAttachment {
-                meta: AttachmentMeta {
-                    name: name.clone(),
-                    path: path_for_storage,
-                    mime_type,
-                    size,
-                },
-                block: AcpContentBlock::Resource(AcpResourceBlock {
-                    resource: AcpTextResourceContents {
-                        text,
-                        uri: format!("file://{}", path_str.replace('\\', "/")),
-                    },
-                }),
-            });
-        }
-        // Non-image, non-text files are skipped for now
+            }),
+        };
+        resolved.push(ResolvedAttachment { meta, block });
     }
     Ok(resolved)
 }
@@ -394,76 +635,10 @@ pub fn resolve_attachments(
 /// Returns the set of file extensions supported as attachments.
 /// This is the single source of truth — the frontend queries it via Tauri command.
 pub fn supported_attachment_extensions() -> Vec<&'static str> {
-    vec![
-        "png", "jpg", "jpeg", "webp", "gif", "bmp", "txt", "md", "markdown", "json", "jsonl",
-        "csv", "html", "htm", "css", "js", "ts", "tsx", "jsx", "rs", "py", "go", "java", "c", "h",
-        "cpp", "hpp", "yaml", "yml", "xml", "toml", "log", "sql", "sh", "bash", "zsh",
-    ]
-}
-
-fn mime_for_ext(ext: &str) -> String {
-    match ext {
-        "png" => "image/png".to_string(),
-        "jpg" | "jpeg" => "image/jpeg".to_string(),
-        "webp" => "image/webp".to_string(),
-        "gif" => "image/gif".to_string(),
-        "bmp" => "image/bmp".to_string(),
-        "txt" => "text/plain".to_string(),
-        "md" | "markdown" => "text/markdown".to_string(),
-        "json" => "application/json".to_string(),
-        "csv" => "text/csv".to_string(),
-        "html" | "htm" => "text/html".to_string(),
-        "css" => "text/css".to_string(),
-        "js" => "text/javascript".to_string(),
-        "ts" => "text/typescript".to_string(),
-        "tsx" => "text/typescript".to_string(),
-        "jsx" => "text/javascript".to_string(),
-        "rs" => "text/rust".to_string(),
-        "py" => "text/python".to_string(),
-        "go" => "text/go".to_string(),
-        "java" => "text/java".to_string(),
-        "c" | "h" => "text/c".to_string(),
-        "cpp" | "hpp" => "text/cpp".to_string(),
-        "yaml" | "yml" => "text/yaml".to_string(),
-        "xml" => "text/xml".to_string(),
-        "toml" => "text/toml".to_string(),
-        _ => "application/octet-stream".to_string(),
-    }
-}
-
-fn is_text_ext(ext: &str) -> bool {
-    matches!(
-        ext,
-        "txt"
-            | "md"
-            | "markdown"
-            | "json"
-            | "csv"
-            | "html"
-            | "htm"
-            | "css"
-            | "js"
-            | "ts"
-            | "tsx"
-            | "jsx"
-            | "rs"
-            | "py"
-            | "go"
-            | "java"
-            | "c"
-            | "h"
-            | "cpp"
-            | "hpp"
-            | "yaml"
-            | "yml"
-            | "xml"
-            | "toml"
-            | "log"
-            | "sql"
-            | "sh"
-            | "bash"
-            | "zsh"
-    )
+    ATTACHMENT_FORMATS
+        .iter()
+        .flat_map(|format| format.extensions.iter().copied())
+        .collect()
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -498,6 +673,7 @@ impl Default for PromptVisibility {
 
 pub type AcpLiveUpdate<'a> = &'a dyn Fn(&AcpUiEvent) -> Result<()>;
 pub type AcpSessionUpdate<'a> = &'a dyn Fn() -> Result<()>;
+pub type AcpPromptAccepted<'a> = &'a dyn Fn(&str) -> Result<()>;
 
 pub trait ProviderAdapter: Send + Sync {
     fn describe_provider(&self) -> ProviderInfo;
@@ -515,6 +691,7 @@ pub trait ProviderAdapter: Send + Sync {
         req: WorkerInvocation,
         live_update: Option<AcpLiveUpdate<'_>>,
         _session_update: Option<AcpSessionUpdate<'_>>,
+        _prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
         self.run_worker_with_live_update(req, live_update)
     }
@@ -638,6 +815,99 @@ pub fn mcp_capabilities_from_capabilities(
     })
 }
 
+pub const ACP_MCP_TRANSPORT_UNSUPPORTED_CODE: &str = "acp.mcp-transport-unsupported";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AcpMcpTransport {
+    Stdio,
+    Http,
+    Sse,
+}
+
+impl AcpMcpTransport {
+    fn from_server(server: &Value) -> Self {
+        match server.get("type").and_then(Value::as_str) {
+            Some("http") => Self::Http,
+            Some("sse") => Self::Sse,
+            _ => Self::Stdio,
+        }
+    }
+
+    fn capability_path(self) -> Option<&'static str> {
+        match self {
+            Self::Stdio => None,
+            Self::Http => Some("mcpCapabilities.http"),
+            Self::Sse => Some("mcpCapabilities.sse"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedAcpMcpServer {
+    pub name: String,
+    pub transport: AcpMcpTransport,
+    pub capability: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AcpMcpPreparationResult {
+    pub accepted: Vec<Value>,
+    pub skipped: Vec<SkippedAcpMcpServer>,
+}
+
+/// Applies the current Agent's ACP initialize capabilities to the MCP list.
+/// Missing `mcpCapabilities` means the Agent did not declare remote transport
+/// support, so the existing list is preserved instead of guessing.
+pub fn prepare_acp_mcp_servers(
+    servers: &[Value],
+    agent_capabilities: Option<&Value>,
+) -> AcpMcpPreparationResult {
+    let Some(mcp_capabilities) =
+        agent_capabilities.and_then(|capabilities| capabilities.get("mcpCapabilities"))
+    else {
+        return AcpMcpPreparationResult {
+            accepted: servers.to_vec(),
+            skipped: Vec::new(),
+        };
+    };
+
+    let mut accepted = Vec::with_capacity(servers.len());
+    let mut skipped = Vec::new();
+    for server in servers {
+        let transport = AcpMcpTransport::from_server(server);
+        let supported = match transport {
+            AcpMcpTransport::Stdio => true,
+            AcpMcpTransport::Http => {
+                mcp_capabilities.get("http").and_then(Value::as_bool) != Some(false)
+            }
+            AcpMcpTransport::Sse => {
+                mcp_capabilities.get("sse").and_then(Value::as_bool) != Some(false)
+            }
+        };
+        if supported {
+            accepted.push(server.clone());
+            continue;
+        }
+        skipped.push(SkippedAcpMcpServer {
+            name: server
+                .get("name")
+                .or_else(|| server.get("id"))
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or("unnamed")
+                .to_string(),
+            transport,
+            capability: transport
+                .capability_path()
+                .expect("stdio MCP transport is always accepted")
+                .to_string(),
+        });
+    }
+    AcpMcpPreparationResult { accepted, skipped }
+}
+
 /// Extracts generic ACP select configuration options without assuming adapter-specific IDs.
 pub fn select_config_options_from_capabilities(
     capabilities: Option<&Value>,
@@ -722,6 +992,7 @@ pub struct AcpProvider {
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
     runtime_policy: client::AcpRuntimePolicy,
+    supports_system_prompt: bool,
 }
 
 impl AcpProvider {
@@ -743,12 +1014,189 @@ impl AcpProvider {
             acp_raw_max_size_bytes,
             acp_raw_target_size_bytes,
             runtime_policy: client::AcpRuntimePolicy::default(),
+            supports_system_prompt: false,
         }
     }
 
     pub fn with_runtime_policy(mut self, runtime_policy: client::AcpRuntimePolicy) -> Self {
         self.runtime_policy = runtime_policy;
         self
+    }
+
+    pub fn with_system_prompt_support(mut self, supported: bool) -> Self {
+        self.supports_system_prompt = supported;
+        self.runtime_policy.supports_system_prompt = supported;
+        self
+    }
+
+    fn run_worker_once_with_callbacks(
+        &self,
+        req: WorkerInvocation,
+        live_update: Option<AcpLiveUpdate<'_>>,
+        session_update: Option<AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
+    ) -> Result<ProviderRunResult> {
+        let prompt = render_prompt_bundle(&req)?;
+        log_prompt_bundle(
+            &prompt,
+            req.invocation_kind,
+            req.profile.as_deref(),
+            req.output_contract
+                .as_ref()
+                .filter(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
+                .map(|contract| contract.artifact.as_str()),
+            req.cold_artifacts.len(),
+            req.cold_attachments.len(),
+            req.log_prompts,
+        );
+        let run = client::run_prompt(
+            &self.provider_id,
+            &self.adapter_config,
+            req.adapter_workspace_dir.clone(),
+            req.workspace_dir.clone(),
+            req.attempt_dir.clone(),
+            &prompt,
+            req.session_mode,
+            req.permission_mode.clone(),
+            req.model.clone(),
+            req.config_options.clone(),
+            req.continue_ref.clone(),
+            self.use_local_claude,
+            self.require_local_claude_executable,
+            self.acp_session_title_refresh_enabled,
+            self.acp_raw_max_size_bytes,
+            self.acp_raw_target_size_bytes,
+            self.runtime_policy,
+            acp_output_policy(req.turn_control_mode, req.output_contract.as_ref()),
+            live_update,
+            &req.mcp_servers,
+            session_update,
+            prompt_accepted,
+            Some(client::RuntimeStopProbe {
+                run_file: req.runtime_context.run_dir.join("run.json"),
+                round_id: req.runtime_context.round_id.clone(),
+                node_id: req
+                    .runtime_context
+                    .runtime_node_id
+                    .clone()
+                    .unwrap_or_else(|| req.runtime_context.node_id.clone()),
+                attempt_id: req
+                    .runtime_context
+                    .runtime_attempt_id
+                    .clone()
+                    .unwrap_or_else(|| req.runtime_context.attempt_id.clone()),
+                attempt_state_file: req.runtime_context.attempt_state_file.clone(),
+                turn_control_mode: req.turn_control_mode,
+            }),
+        )?;
+        let terminal = classify_acp_prompt_run(&run);
+        let result_payload = (req.turn_control_mode == TurnControlMode::RuntimeControlled
+            && matches!(
+                terminal.status,
+                ProviderRunStatus::Success | ProviderRunStatus::Interrupted
+            ))
+        .then(|| {
+            req.output_contract
+                .as_ref()
+                .filter(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
+                .and_then(|contract| {
+                    output_artifact_payload_from_run(
+                        contract,
+                        &run.output.identified_outputs,
+                        &run.output.identified_text,
+                    )
+                })
+        })
+        .flatten();
+        Ok(ProviderRunResult {
+            status: terminal.status,
+            exit_code: None,
+            result_payload,
+            worker_ref_seed: None,
+            stream_path: None,
+            runtime_error: terminal.runtime_error,
+        })
+    }
+
+    fn run_post_turn_projection_with_callbacks(
+        &self,
+        req: WorkerInvocation,
+        live_update: Option<AcpLiveUpdate<'_>>,
+        session_update: Option<AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
+    ) -> Result<ProviderRunResult> {
+        let mut contract = req
+            .output_contract
+            .clone()
+            .expect("post-turn projection requires output contract");
+        let resumed_control_turn = matches!(
+            req.user_prompt_render_mode,
+            UserPromptRenderMode::RuntimeFinalize | UserPromptRenderMode::RuntimeRepair
+        );
+        let finalizing = post_turn_projection_is_finalizing(&req)?;
+
+        if !finalizing {
+            let work_result = self.run_worker_once_with_callbacks(
+                req.clone(),
+                live_update,
+                session_update,
+                prompt_accepted,
+            )?;
+            if work_result.runtime_error.is_some()
+                || work_result.status != ProviderRunStatus::Success
+            {
+                return Ok(work_result);
+            }
+        }
+
+        let state_path = req.attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE);
+        write_json(
+            &state_path,
+            &ArtifactEmissionState {
+                version: VERSION.to_string(),
+                phase: ArtifactEmissionPhase::Finalizing,
+            },
+        )?;
+        let worker_ref: WorkerRefState = read_json(&req.attempt_dir.join("worker-ref.json"))
+            .context("post-turn artifact finalization requires durable worker-ref")?;
+        ensure!(
+            worker_ref.supports_continue_session,
+            "post-turn artifact finalization requires a continuable provider session"
+        );
+        let continue_ref = worker_ref
+            .continue_ref
+            .context("post-turn artifact finalization requires provider continue reference")?;
+
+        let preserve_control_prompt = resumed_control_turn
+            && req
+                .resume_prompt
+                .as_deref()
+                .is_some_and(|prompt| !prompt.trim().is_empty());
+        let mut finalize_req = req;
+        contract.emission_mode = OutputEmissionMode::InlineControl;
+        finalize_req.output_contract = Some(contract.clone());
+        finalize_req.session_mode = SessionMode::Continue;
+        finalize_req.continue_ref = Some(continue_ref);
+        finalize_req.resume_prompt_visibility = PromptVisibility::Hidden;
+        finalize_req.input_attachment_paths.clear();
+        if !preserve_control_prompt {
+            finalize_req.resume_prompt = Some(render_artifact_finalize_prompt(
+                finalize_req.runtime_context.language,
+                &contract,
+            )?);
+            finalize_req.resume_prompt_id = Some(format!(
+                "artifact-finalize-{}",
+                finalize_req.runtime_context.attempt_id
+            ));
+            finalize_req.user_prompt_render_mode = UserPromptRenderMode::RuntimeFinalize;
+        }
+
+        self.run_worker_once_with_callbacks(
+            finalize_req,
+            live_update,
+            session_update,
+            prompt_accepted,
+        )
     }
 }
 
@@ -760,7 +1208,7 @@ impl ProviderAdapter for AcpProvider {
             capabilities: ProviderCapabilities {
                 supports_open_session: true,
                 supports_continue_session: true,
-                supports_system_prompt: self.provider_id == "claude-acp",
+                supports_system_prompt: self.supports_system_prompt,
                 supports_raw_stream: false,
             },
             is_default: self.provider_id == DEFAULT_PROVIDER,
@@ -772,7 +1220,18 @@ impl ProviderAdapter for AcpProvider {
             .ok()
             .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
             .unwrap_or_else(|| Utf8PathBuf::from("."));
+        let agent_id = match ManagedAgentId::from_str(&self.provider_id) {
+            Ok(agent_id) => agent_id,
+            Err(err) => {
+                return DoctorResult {
+                    available: false,
+                    reason: Some(err.to_string()),
+                    capabilities: None,
+                };
+            }
+        };
         match client::doctor(
+            &agent_id,
             &self.adapter_config,
             cwd,
             self.use_local_claude,
@@ -800,7 +1259,7 @@ impl ProviderAdapter for AcpProvider {
         req: WorkerInvocation,
         live_update: Option<AcpLiveUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
-        self.run_worker_with_callbacks(req, live_update, None)
+        self.run_worker_with_callbacks(req, live_update, None, None)
     }
 
     fn run_worker_with_callbacks(
@@ -808,75 +1267,22 @@ impl ProviderAdapter for AcpProvider {
         req: WorkerInvocation,
         live_update: Option<AcpLiveUpdate<'_>>,
         session_update: Option<AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
-        let prompt = render_prompt_bundle(&req)?;
-        log_prompt_bundle(
-            &prompt,
-            req.invocation_kind,
-            req.profile.as_deref(),
-            req.output_contract
-                .as_ref()
-                .map(|contract| contract.artifact.as_str()),
-            req.cold_artifacts.len(),
-            req.cold_attachments.len(),
-            req.log_prompts,
-        );
-        let run = client::run_prompt(
-            &self.provider_id,
-            &self.adapter_config,
-            req.adapter_workspace_dir.clone(),
-            req.workspace_dir.clone(),
-            req.attempt_dir.clone(),
-            &prompt,
-            req.session_mode,
-            req.permission_mode.clone(),
-            req.model.clone(),
-            req.config_options.clone(),
-            req.continue_ref.clone(),
-            self.use_local_claude,
-            self.require_local_claude_executable,
-            self.acp_session_title_refresh_enabled,
-            self.acp_raw_max_size_bytes,
-            self.acp_raw_target_size_bytes,
-            self.runtime_policy,
-            live_update,
-            &req.mcp_servers,
-            session_update,
-            Some(client::RuntimeStopProbe {
-                run_file: req.runtime_context.run_dir.join("run.json"),
-                round_id: req.runtime_context.round_id.clone(),
-                node_id: req
-                    .runtime_context
-                    .runtime_node_id
-                    .clone()
-                    .unwrap_or_else(|| req.runtime_context.node_id.clone()),
-                attempt_id: req
-                    .runtime_context
-                    .runtime_attempt_id
-                    .clone()
-                    .unwrap_or_else(|| req.runtime_context.attempt_id.clone()),
-                attempt_state_file: req.runtime_context.attempt_state_file.clone(),
-            }),
-        )?;
-        let terminal = classify_acp_prompt_run(&run);
-        let result_payload = matches!(
-            terminal.status,
-            ProviderRunStatus::Success | ProviderRunStatus::Interrupted
-        )
-        .then(|| {
-            req.output_contract.as_ref().and_then(|contract| {
-                output_artifact_payload_from_run(contract, &run.final_outputs, &run.final_text)
+        if req.turn_control_mode == TurnControlMode::RuntimeControlled
+            && req.output_contract.as_ref().is_some_and(|contract| {
+                contract.emission_mode == OutputEmissionMode::PostTurnProjection
             })
-        })
-        .flatten();
-        Ok(ProviderRunResult {
-            status: terminal.status,
-            exit_code: None,
-            result_payload,
-            worker_ref_seed: None,
-            stream_path: None,
-            runtime_error: terminal.runtime_error,
-        })
+        {
+            self.run_post_turn_projection_with_callbacks(
+                req,
+                live_update,
+                session_update,
+                prompt_accepted,
+            )
+        } else {
+            self.run_worker_once_with_callbacks(req, live_update, session_update, prompt_accepted)
+        }
     }
 
     fn open_session(&self, worker_ref: &SessionRef) -> Result<()> {
@@ -891,20 +1297,50 @@ impl ProviderAdapter for AcpProvider {
     }
 }
 
+fn acp_output_policy(
+    turn_control_mode: TurnControlMode,
+    contract: Option<&PromptOutputContract>,
+) -> client::AcpOutputPolicy {
+    if turn_control_mode == TurnControlMode::RuntimeControlled
+        && contract
+            .is_some_and(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
+    {
+        client::AcpOutputPolicy::ArtifactContract
+    } else {
+        client::AcpOutputPolicy::Conversation
+    }
+}
+
 fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcome {
     if let Some(failure) = &run.terminal_failure {
-        return ProviderTerminalOutcome {
-            status: ProviderRunStatus::Failure,
-            runtime_error: Some(normalize_provider_runtime_failure(
+        let raw = Some(serde_json::json!({
+            "adapterId": run.adapter_id,
+            "adapterDisplayName": run.adapter_display_name,
+            "stopReason": run.stop_reason,
+            "terminalFailure": failure,
+        }));
+        let runtime_error = if failure.code == client::ACP_UNIDENTIFIED_AGENT_OUTPUT_CODE {
+            RuntimeErrorInfo::new(
+                RuntimeErrorDomain::Provider,
+                "provider.acp-unidentified-agent-output",
+                RecoveryMode::Manual,
+                failure.diagnostic(),
+                serde_json::json!({
+                    "acpCode": failure.code,
+                    "anonymousChunkCount": run.output.anonymous_chunk_count,
+                }),
+                raw,
+            )
+        } else {
+            normalize_provider_runtime_failure(
                 run.stop_reason.as_deref(),
                 failure.diagnostic(),
-                Some(serde_json::json!({
-                    "adapterId": run.adapter_id,
-                    "adapterDisplayName": run.adapter_display_name,
-                    "stopReason": run.stop_reason,
-                    "terminalFailure": failure,
-                })),
-            )),
+                raw,
+            )
+        };
+        return ProviderTerminalOutcome {
+            status: ProviderRunStatus::Failure,
+            runtime_error: Some(runtime_error),
         };
     }
 
@@ -939,7 +1375,7 @@ fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcom
             status: ProviderRunStatus::Failure,
             runtime_error: Some(normalize_provider_runtime_failure(
                 run.stop_reason.as_deref(),
-                run.final_text.clone(),
+                run.output.visible_text.clone(),
                 Some(serde_json::json!({
                     "adapterId": run.adapter_id,
                     "adapterDisplayName": run.adapter_display_name,
@@ -1006,11 +1442,13 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
             }
         }
         UserPromptRenderMode::WorkflowResume
+        | UserPromptRenderMode::RuntimeResume
+        | UserPromptRenderMode::RuntimeFinalize
         | UserPromptRenderMode::RuntimeRepair
         | UserPromptRenderMode::UserMessage => String::new(),
     };
 
-    let (system_prompt, user_prompt) = match req.prompt_envelope {
+    let (system_prompt, mut user_prompt) = match req.prompt_envelope {
         crate::dsl::PromptEnvelopeMode::RuntimeManaged => (
             render_system_prompt(req)?,
             render_user_prompt(req, &requirement_text),
@@ -1024,6 +1462,12 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
             },
         ),
     };
+    if req.turn_control_mode == TurnControlMode::NonRuntimeControlled
+        && req.user_prompt_render_mode == UserPromptRenderMode::UserMessage
+        && !req.extra_hidden_sections.is_empty()
+    {
+        user_prompt = append_extra_hidden_sections(&user_prompt, &req.extra_hidden_sections);
+    }
     let is_continue = matches!(req.session_mode, SessionMode::Continue);
 
     // Resolve task input attachments
@@ -1041,16 +1485,26 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     Ok(PromptBundle {
         system_prompt,
         user_prompt,
-        prompt_id: if is_continue {
-            req.resume_prompt_id.clone()
-        } else {
-            None
-        },
+        // Prompt identity is an orchestration concern, independent of ACP
+        // session mode.  In particular, an automatic retry may start a new
+        // ACP session while remaining the same visible user turn.
+        prompt_id: req.resume_prompt_id.clone(),
         visibility: if is_continue {
             req.resume_prompt_visibility
         } else {
             PromptVisibility::Visible
         },
+        hidden_reason: match req.user_prompt_render_mode {
+            UserPromptRenderMode::RuntimeResume => Some("runtimeControlResume".to_string()),
+            UserPromptRenderMode::RuntimeFinalize => Some("artifactFinalize".to_string()),
+            UserPromptRenderMode::RuntimeRepair => Some("invalidOutputRepair".to_string()),
+            _ => None,
+        },
+        turn_control_mode: req.turn_control_mode,
+        runtime_control_resume_candidate: req.runtime_control_resume_candidate,
+        runtime_control_transition_id: None,
+        runtime_control_source_transition_id: None,
+        runtime_control_transition_cause: None,
         attachment_metas,
         content_blocks,
     })
@@ -1069,7 +1523,10 @@ fn render_system_prompt(req: &WorkerInvocation) -> Result<String> {
 
 fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String {
     match req.user_prompt_render_mode {
-        UserPromptRenderMode::UserMessage | UserPromptRenderMode::RuntimeRepair => req
+        UserPromptRenderMode::UserMessage
+        | UserPromptRenderMode::RuntimeResume
+        | UserPromptRenderMode::RuntimeFinalize
+        | UserPromptRenderMode::RuntimeRepair => req
             .resume_prompt
             .as_deref()
             .unwrap_or_default()
@@ -1120,6 +1577,23 @@ fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String 
     }
 }
 
+fn append_extra_hidden_sections(prompt: &str, sections: &[PromptHiddenSection]) -> String {
+    let content = sections
+        .iter()
+        .map(|section| section.content.trim())
+        .filter(|content| !content.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if content.is_empty() {
+        return prompt.to_string();
+    }
+    format!(
+        "{}\n\n{}",
+        prompt.trim(),
+        gold_band_hidden_block("Gold Band runtime context", &content)
+    )
+}
+
 fn render_hidden_context(req: &WorkerInvocation) -> String {
     let extra_sections = req
         .extra_hidden_sections
@@ -1147,7 +1621,47 @@ fn render_hidden_context(req: &WorkerInvocation) -> String {
         content.push_str(section.content.trim());
     }
     let content = compact_hidden_context_spacing(&content);
+    let content = if let Some(scheduled) = render_scheduled_context(req) {
+        format!("{content}\n\n{scheduled}")
+    } else {
+        content
+    };
     gold_band_hidden_block("Gold Band runtime context", &content)
+}
+
+fn render_scheduled_context(req: &WorkerInvocation) -> Option<String> {
+    let ctx = req.scheduled_context.as_ref()?;
+    let template = prompt_by_language(
+        req.runtime_context.language,
+        crate::prompts::RUNTIME_SCHEDULED_TASK_CONTEXT_ZH_CN,
+        crate::prompts::RUNTIME_SCHEDULED_TASK_CONTEXT_EN,
+    );
+    let rendered = crate::prompts::render(
+        template,
+        &ScheduledTaskContextTemplateContext {
+            scheduled_title: &ctx.title,
+            scheduled_mode: &ctx.mode,
+            scheduled_session_policy: &ctx.session_policy,
+            scheduled_trigger_kind: &ctx.trigger_kind,
+            scheduled_triggered_at: &ctx.triggered_at,
+            scheduled_instruction: ctx.instruction.as_deref(),
+        },
+    )
+    .ok()?;
+    Some(gold_band_hidden_block(
+        "Gold Band scheduled task context",
+        &rendered,
+    ))
+}
+
+#[derive(Serialize)]
+struct ScheduledTaskContextTemplateContext<'a> {
+    scheduled_title: &'a str,
+    scheduled_mode: &'a str,
+    scheduled_session_policy: &'a str,
+    scheduled_trigger_kind: &'a str,
+    scheduled_triggered_at: &'a str,
+    scheduled_instruction: Option<&'a str>,
 }
 
 fn compact_hidden_context_spacing(content: &str) -> String {
@@ -1179,6 +1693,7 @@ struct RuntimePromptTemplateContext {
     extra_system_sections: Option<String>,
     profile: RuntimeProfileTemplateContext,
     output_contract: Option<RuntimeOutputContractTemplateContext>,
+    output_deferred: bool,
 }
 
 #[derive(Serialize)]
@@ -1224,9 +1739,14 @@ struct RuntimeOutputContractTemplateContext {
     kind: String,
     schema: String,
     success_condition: Option<String>,
+    finalize_context: Option<String>,
 }
 
 fn runtime_system_context(req: &WorkerInvocation) -> Result<RuntimePromptTemplateContext> {
+    let inline_output_contract = req
+        .output_contract
+        .as_ref()
+        .filter(|contract| contract.emission_mode == OutputEmissionMode::InlineControl);
     let profile_content = match req
         .profile_content
         .as_deref()
@@ -1242,7 +1762,7 @@ fn runtime_system_context(req: &WorkerInvocation) -> Result<RuntimePromptTemplat
                 content,
                 profile_template_context(
                     req.execution_surface,
-                    req.output_contract.is_some(),
+                    inline_output_contract.is_some(),
                     session_mode,
                 ),
             )?)
@@ -1263,11 +1783,26 @@ fn runtime_system_context(req: &WorkerInvocation) -> Result<RuntimePromptTemplat
             id: req.profile.clone(),
             content: profile_content,
         },
-        output_contract: req
-            .output_contract
-            .as_ref()
-            .map(runtime_output_contract_context),
+        output_contract: inline_output_contract.map(runtime_output_contract_context),
+        output_deferred: req.output_contract.as_ref().is_some_and(|contract| {
+            contract.emission_mode == OutputEmissionMode::PostTurnProjection
+        }),
     })
+}
+
+fn render_artifact_finalize_prompt(
+    language: crate::config::DesktopLanguage,
+    contract: &PromptOutputContract,
+) -> Result<String> {
+    let context = runtime_output_contract_context(contract);
+    render_template(
+        prompt_by_language(
+            language,
+            RUNTIME_ARTIFACT_FINALIZE_ZH_CN,
+            RUNTIME_ARTIFACT_FINALIZE_EN,
+        ),
+        context,
+    )
 }
 
 fn runtime_hidden_context(req: &WorkerInvocation) -> RuntimeHiddenContextTemplateContext {
@@ -1497,6 +2032,7 @@ fn runtime_output_contract_context(
             })
             .unwrap_or_else(|| "当前节点未声明结构化 schema。".to_string()),
         success_condition: contract.success_condition.clone(),
+        finalize_context: contract.finalize_context.clone(),
     }
 }
 
@@ -1530,17 +2066,29 @@ pub fn provider_capabilities(provider_id: &str) -> Result<ProviderCapabilities> 
 }
 
 pub fn provider_capabilities_for_id(agent_id: &ManagedAgentId) -> Result<ProviderCapabilities> {
-    let preset = managed_agent_preset(agent_id)
-        .ok_or_else(|| anyhow::anyhow!("unsupported managed agent: {}", agent_id.as_str()))?;
+    let config = catalog_agent_default_config(agent_id.as_str()).unwrap_or_else(|| {
+        ManagedAgentConfig::new(
+            AcpAdapterConfig {
+                command: String::new(),
+                args: Vec::new(),
+                display_name: agent_id.as_str().to_string(),
+                env: BTreeMap::new(),
+            },
+            ".agent",
+            Vec::new(),
+        )
+    });
+    let supports_system_prompt = config.supports_system_prompt();
     Ok(AcpProvider::new(
         agent_id.as_str(),
-        preset.default_config().adapter,
+        config.adapter,
         false,
         false,
         false,
         5 * 1024 * 1024,
         4 * 1024 * 1024,
     )
+    .with_system_prompt_support(supports_system_prompt)
     .describe_provider()
     .capabilities)
 }
@@ -1563,8 +2111,6 @@ pub fn provider_from_agent(
     acp_raw_target_size_bytes: u64,
     runtime_policy: client::AcpRuntimePolicy,
 ) -> Result<Box<dyn ProviderAdapter>> {
-    managed_agent_preset(agent_id)
-        .ok_or_else(|| anyhow::anyhow!("unsupported managed agent: {}", agent_id.as_str()))?;
     Ok(Box::new(
         AcpProvider::new(
             agent_id.as_str(),
@@ -1577,7 +2123,8 @@ pub fn provider_from_agent(
         )
         .with_runtime_policy(
             runtime_policy.with_external_session_sync_enabled(config.external_session_sync_enabled),
-        ),
+        )
+        .with_system_prompt_support(config.supports_system_prompt()),
     ))
 }
 
@@ -1590,9 +2137,8 @@ pub fn provider_from_id(
     acp_raw_target_size_bytes: u64,
 ) -> Result<Box<dyn ProviderAdapter>> {
     let agent_id = ManagedAgentId::from_str(provider_id)?;
-    let preset = managed_agent_preset(&agent_id)
-        .ok_or_else(|| anyhow::anyhow!("unsupported managed agent: {provider_id}"))?;
-    let config = preset.default_config();
+    let config = catalog_agent_default_config(agent_id.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Agent `{provider_id}` has no built-in default config"))?;
     provider_from_agent(
         &agent_id,
         &config,
@@ -1623,6 +2169,200 @@ mod tests {
     use crate::acp::client::AcpPromptFailure;
     use crate::runtime_error::RecoveryMode;
 
+    fn test_worker_invocation(attempt_dir: Utf8PathBuf) -> WorkerInvocation {
+        let runtime_context = PromptRuntimeContext {
+            project_id: "project-001".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "dev".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            runtime_node_id: None,
+            runtime_attempt_id: None,
+            attempt_state_file: None,
+            language: crate::config::DesktopLanguage::ZhCn,
+            run_dir: attempt_dir.join("../../.."),
+            round_dir: attempt_dir.join("../.."),
+            node_dir: attempt_dir.join(".."),
+            attempt_dir: attempt_dir.clone(),
+            attachments_dir: attempt_dir.join("attachments"),
+            task_inputs_dir: None,
+        };
+        WorkerInvocation {
+            invocation_kind: InvocationKind::WorkerGeneric,
+            turn_control_mode: TurnControlMode::RuntimeControlled,
+            runtime_control_resume_candidate: false,
+            prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
+            execution_surface: PromptExecutionSurface::Workflow,
+            profile: None,
+            profile_content: None,
+            profile_dynamic_template: false,
+            requirement_path: None,
+            requirement_text: Some("Need a structured result".to_string()),
+            adapter_workspace_dir: Utf8PathBuf::from("/repo"),
+            workspace_dir: Utf8PathBuf::from("/repo"),
+            attempt_dir,
+            output_contract: None,
+            runtime_context,
+            predecessors: Vec::new(),
+            new_round_trigger: None,
+            extra_system_sections: Vec::new(),
+            extra_hidden_sections: Vec::new(),
+            task_instruction: Some("Create a structured result".to_string()),
+            user_tips_instruction: None,
+            resume_task_instruction: None,
+            session_mode: SessionMode::New,
+            user_prompt_render_mode: UserPromptRenderMode::RequirementTask,
+            permission_mode: None,
+            model: None,
+            config_options: Default::default(),
+            continue_ref: None,
+            resume_prompt: None,
+            resume_prompt_id: None,
+            resume_prompt_visibility: PromptVisibility::Visible,
+            stream_mode: StreamMode::StreamJson,
+            log_prompts: false,
+            log_provider_command: false,
+            attachments_dir: None,
+            cold_artifacts: Vec::new(),
+            cold_attachments: Vec::new(),
+            input_attachment_paths: Vec::new(),
+            mcp_servers: Vec::new(),
+            scheduled_context: None,
+        }
+    }
+
+    fn test_output_contract(emission_mode: OutputEmissionMode) -> PromptOutputContract {
+        PromptOutputContract {
+            artifact: "dynamic-node-completion".to_string(),
+            kind: "json".to_string(),
+            schema: Some(serde_json::json!({
+                "type": "object",
+                "required": ["status"]
+            })),
+            schema_text: Some("Return JSON with a required status field.".to_string()),
+            success_condition: None,
+            finalize_context: None,
+            emission_mode,
+        }
+    }
+
+    #[test]
+    fn every_advertised_attachment_extension_is_resolvable() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = supported_attachment_extensions()
+            .into_iter()
+            .map(|extension| {
+                let path = dir.path().join(format!("sample.{extension}"));
+                std::fs::write(&path, b"{}\n").unwrap();
+                path.to_string_lossy().to_string()
+            })
+            .collect::<Vec<_>>();
+
+        let resolved = resolve_attachments(&paths, "task-inputs").unwrap();
+
+        assert_eq!(resolved.len(), paths.len());
+        assert!(resolved.iter().all(|attachment| {
+            attachment.meta.path.starts_with("task-inputs/")
+                && attachment.meta.mime_type != "application/octet-stream"
+        }));
+    }
+
+    #[test]
+    fn jsonl_attachment_is_projected_as_text_resource_and_message_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("acp.raw.jsonl");
+        std::fs::write(&path, b"{\"event\":1}\n{\"event\":2}\n").unwrap();
+
+        let resolved =
+            resolve_attachments(&[path.to_string_lossy().to_string()], "task-inputs").unwrap();
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].meta.name, "acp.raw.jsonl");
+        assert_eq!(resolved[0].meta.path, "task-inputs/acp.raw.jsonl");
+        assert_eq!(resolved[0].meta.mime_type, "application/json");
+        assert!(matches!(
+            &resolved[0].block,
+            AcpContentBlock::Resource(resource)
+                if resource.resource.text.contains("{\"event\":2}")
+        ));
+    }
+
+    #[test]
+    fn prepare_acp_mcp_servers_filters_only_explicitly_unsupported_transports() {
+        let servers = vec![
+            serde_json::json!({"name": "local", "command": "node"}),
+            serde_json::json!({"type": "http", "name": "docs", "url": "https://example.com/mcp"}),
+            serde_json::json!({"type": "sse", "name": "legacy", "url": "https://example.com/sse"}),
+        ];
+        let capabilities = serde_json::json!({
+            "mcpCapabilities": {
+                "http": true,
+                "sse": false
+            }
+        });
+
+        let prepared = prepare_acp_mcp_servers(&servers, Some(&capabilities));
+
+        assert_eq!(prepared.accepted.len(), 2);
+        assert_eq!(prepared.skipped.len(), 1);
+        assert_eq!(prepared.skipped[0].name, "legacy");
+        assert_eq!(prepared.skipped[0].transport, AcpMcpTransport::Sse);
+        assert_eq!(prepared.skipped[0].capability, "mcpCapabilities.sse");
+    }
+
+    #[test]
+    fn prepare_acp_mcp_servers_preserves_servers_when_agent_does_not_declare_capabilities() {
+        let servers = vec![serde_json::json!({
+            "type": "sse",
+            "name": "legacy",
+            "url": "https://example.com/sse"
+        })];
+
+        let prepared = prepare_acp_mcp_servers(&servers, Some(&serde_json::json!({})));
+
+        assert_eq!(prepared.accepted, servers);
+        assert!(prepared.skipped.is_empty());
+    }
+
+    #[test]
+    fn prepare_acp_mcp_servers_preserves_transport_when_specific_flag_is_not_declared() {
+        let servers = vec![serde_json::json!({
+            "type": "sse",
+            "name": "legacy",
+            "url": "https://example.com/sse"
+        })];
+        let capabilities = serde_json::json!({
+            "mcpCapabilities": {
+                "http": true
+            }
+        });
+
+        let prepared = prepare_acp_mcp_servers(&servers, Some(&capabilities));
+
+        assert_eq!(prepared.accepted, servers);
+        assert!(prepared.skipped.is_empty());
+    }
+
+    #[test]
+    fn prepare_acp_mcp_servers_uses_capabilities_instead_of_agent_identity() {
+        let servers = vec![
+            serde_json::json!({"type": "http", "name": "docs", "url": "https://example.com/mcp"}),
+            serde_json::json!({"type": "sse", "name": "legacy", "url": "https://example.com/sse"}),
+        ];
+        let capabilities = serde_json::json!({
+            "mcpCapabilities": {
+                "http": false,
+                "sse": true
+            }
+        });
+
+        let prepared = prepare_acp_mcp_servers(&servers, Some(&capabilities));
+
+        assert_eq!(prepared.accepted, vec![servers[1].clone()]);
+        assert_eq!(prepared.skipped[0].transport, AcpMcpTransport::Http);
+    }
+
     fn acp_prompt_run(
         stop_reason: Option<&str>,
         terminal_failure: Option<AcpPromptFailure>,
@@ -1633,8 +2373,7 @@ mod tests {
             adapter_display_name: "Codex".to_string(),
             stop_reason: stop_reason.map(str::to_string),
             terminal_failure,
-            final_text: String::new(),
-            final_outputs: Vec::new(),
+            output: client::AcpPromptOutput::default(),
             restored: false,
             used_tokens: None,
             context_window_size: None,
@@ -1677,6 +2416,183 @@ mod tests {
 
         assert_eq!(outcome.status, ProviderRunStatus::Success);
         assert!(outcome.runtime_error.is_none());
+    }
+
+    #[test]
+    fn output_emission_mode_selects_acp_output_policy() {
+        let inline = test_output_contract(OutputEmissionMode::InlineControl);
+        let deferred = test_output_contract(OutputEmissionMode::PostTurnProjection);
+
+        assert_eq!(
+            acp_output_policy(TurnControlMode::RuntimeControlled, None),
+            client::AcpOutputPolicy::Conversation
+        );
+        assert_eq!(
+            acp_output_policy(TurnControlMode::RuntimeControlled, Some(&deferred)),
+            client::AcpOutputPolicy::Conversation
+        );
+        assert_eq!(
+            acp_output_policy(TurnControlMode::RuntimeControlled, Some(&inline)),
+            client::AcpOutputPolicy::ArtifactContract
+        );
+        assert_eq!(
+            acp_output_policy(TurnControlMode::NonRuntimeControlled, Some(&inline)),
+            client::AcpOutputPolicy::Conversation
+        );
+    }
+
+    #[test]
+    fn post_turn_projection_hides_contract_until_hidden_finalize_turn() {
+        let mut req = test_worker_invocation(Utf8PathBuf::from("/run/attempt-001"));
+        req.output_contract = Some(test_output_contract(OutputEmissionMode::PostTurnProjection));
+
+        let business_prompt = render_prompt_bundle(&req).unwrap();
+        assert_eq!(business_prompt.visibility, PromptVisibility::Visible);
+        assert_eq!(business_prompt.hidden_reason, None);
+        assert!(business_prompt.system_prompt.contains("隐藏 finalize turn"));
+        assert!(
+            !business_prompt
+                .system_prompt
+                .contains("required status field")
+        );
+        assert!(
+            !business_prompt
+                .system_prompt
+                .contains("dynamic-node-completion")
+        );
+
+        let contract = req.output_contract.as_mut().unwrap();
+        contract.emission_mode = OutputEmissionMode::InlineControl;
+        contract.finalize_context = Some("remaining nodes: 3".to_string());
+        let finalize_prompt =
+            render_artifact_finalize_prompt(req.runtime_context.language, contract).unwrap();
+        req.session_mode = SessionMode::Continue;
+        req.user_prompt_render_mode = UserPromptRenderMode::RuntimeFinalize;
+        req.resume_prompt_visibility = PromptVisibility::Hidden;
+        req.resume_prompt = Some(finalize_prompt);
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+        assert_eq!(prompt.visibility, PromptVisibility::Hidden);
+        assert_eq!(prompt.hidden_reason.as_deref(), Some("artifactFinalize"));
+        assert!(prompt.user_prompt.contains("dynamic-node-completion"));
+        assert!(prompt.user_prompt.contains("required status field"));
+        assert!(prompt.user_prompt.contains("remaining nodes: 3"));
+        assert!(prompt.user_prompt.contains("不要继续执行任务"));
+
+        req.user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
+        assert_eq!(
+            render_prompt_bundle(&req).unwrap().hidden_reason.as_deref(),
+            Some("invalidOutputRepair")
+        );
+    }
+
+    #[test]
+    fn runtime_system_exempts_interrupted_free_conversation_from_artifact_semantics() {
+        let mut req = test_worker_invocation(Utf8PathBuf::from("/run/attempt-001"));
+        req.output_contract = Some(test_output_contract(OutputEmissionMode::InlineControl));
+
+        let zh = render_prompt_bundle(&req).unwrap();
+        assert!(zh.system_prompt.contains("用户主动打断当前工作"));
+        assert!(
+            zh.system_prompt
+                .contains("无需遵守本节的 artifact 输出语义")
+        );
+
+        req.runtime_context.language = crate::config::DesktopLanguage::En;
+        let en = render_prompt_bundle(&req).unwrap();
+        assert!(
+            en.system_prompt
+                .contains("If the user interrupts the current work")
+        );
+        assert!(
+            en.system_prompt
+                .contains("do not need to follow the artifact-output semantics")
+        );
+    }
+
+    #[test]
+    fn runtime_resume_remains_a_hidden_control_prompt() {
+        let mut req = test_worker_invocation(Utf8PathBuf::from("/run/attempt-001"));
+        req.session_mode = SessionMode::Continue;
+        req.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
+        req.resume_prompt_visibility = PromptVisibility::Hidden;
+        req.resume_prompt = Some("resume runtime control".to_string());
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert_eq!(prompt.visibility, PromptVisibility::Hidden);
+        assert_eq!(
+            prompt.hidden_reason.as_deref(),
+            Some("runtimeControlResume")
+        );
+        assert_eq!(prompt.user_prompt, "resume runtime control");
+    }
+
+    #[test]
+    fn durable_finalizing_state_skips_the_business_phase_on_resume() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let req = test_worker_invocation(attempt_dir.clone());
+
+        assert!(!post_turn_projection_is_finalizing(&req).unwrap());
+        write_json(
+            &attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE),
+            &ArtifactEmissionState {
+                version: VERSION.to_string(),
+                phase: ArtifactEmissionPhase::Finalizing,
+            },
+        )
+        .unwrap();
+        assert!(post_turn_projection_is_finalizing(&req).unwrap());
+
+        let mut repair_req = test_worker_invocation(attempt_dir.join("repair"));
+        repair_req.user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
+        assert!(post_turn_projection_is_finalizing(&repair_req).unwrap());
+    }
+
+    #[test]
+    fn invalid_artifact_emission_state_never_replays_business_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        std::fs::write(
+            attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE),
+            "{ invalid state",
+        )
+        .unwrap();
+        let req = test_worker_invocation(attempt_dir);
+
+        let error = post_turn_projection_is_finalizing(&req).unwrap_err();
+        let info = crate::runtime_error::normalize_runtime_error(&error);
+
+        assert!(error.to_string().contains("artifact emission state"));
+        assert_eq!(info.code_str(), "runtime.artifact-emission-state-invalid");
+        assert_eq!(info.recovery, RecoveryMode::Blocked);
+    }
+
+    #[test]
+    fn anonymous_only_artifact_failure_is_manual_and_never_auto_retried() {
+        let mut run = acp_prompt_run(
+            Some("end_turn"),
+            Some(AcpPromptFailure {
+                code: client::ACP_UNIDENTIFIED_AGENT_OUTPUT_CODE.to_string(),
+                message: "ACP artifact prompt produced only anonymous output".to_string(),
+                details: Some("unexpected status 502 Bad Gateway".to_string()),
+                raw: serde_json::json!({ "anonymousChunkCount": 1 }),
+            }),
+        );
+        run.output.anonymous_text = "unexpected status 502 Bad Gateway".to_string();
+        run.output.visible_text = run.output.anonymous_text.clone();
+        run.output.anonymous_chunk_count = 1;
+
+        let outcome = classify_acp_prompt_run(&run);
+
+        assert_eq!(outcome.status, ProviderRunStatus::Failure);
+        let error = outcome
+            .runtime_error
+            .expect("strict anonymous output failure");
+        assert_eq!(error.code_str(), "provider.acp-unidentified-agent-output");
+        assert_eq!(error.recovery, RecoveryMode::Manual);
+        assert!(error.retry_policy.is_none());
     }
 
     #[test]
@@ -1752,6 +2668,8 @@ mod tests {
         };
         let mut req = WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
+            turn_control_mode: TurnControlMode::RuntimeControlled,
+            runtime_control_resume_candidate: false,
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
             execution_surface: PromptExecutionSurface::Workflow,
             profile: None,
@@ -1788,10 +2706,16 @@ mod tests {
             cold_attachments: Vec::new(),
             input_attachment_paths: Vec::new(),
             mcp_servers: Vec::new(),
+            scheduled_context: None,
         };
 
         let prompt = render_prompt_bundle(&req).unwrap();
         assert!(!prompt.system_prompt.contains("Output contract"));
+        assert_eq!(prompt.prompt_id, None);
+
+        req.resume_prompt_id = Some("logical-turn-001".to_string());
+        let prompt = render_prompt_bundle(&req).unwrap();
+        assert_eq!(prompt.prompt_id.as_deref(), Some("logical-turn-001"));
 
         req.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
         req.requirement_text = Some("  original direct prompt\n".to_string());
@@ -1823,6 +2747,8 @@ mod tests {
             schema: None,
             schema_text: None,
             success_condition: None,
+            finalize_context: None,
+            emission_mode: OutputEmissionMode::InlineControl,
         };
 
         let payload = output_artifact_payload_from_run(&contract, &[], "");
@@ -1838,6 +2764,8 @@ mod tests {
             schema: None,
             schema_text: None,
             success_condition: None,
+            finalize_context: None,
+            emission_mode: OutputEmissionMode::InlineControl,
         };
         let outputs = vec![
             "planning text".to_string(),
@@ -1862,6 +2790,8 @@ mod tests {
             schema: None,
             schema_text: None,
             success_condition: None,
+            finalize_context: None,
+            emission_mode: OutputEmissionMode::InlineControl,
         };
 
         let payload = output_artifact_payload_from_run(

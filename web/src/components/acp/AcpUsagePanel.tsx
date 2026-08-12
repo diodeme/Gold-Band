@@ -39,7 +39,7 @@ export function AcpUsagePanel({ usage, isRunning, compact, processingLabel, sess
         <span className="flex items-center gap-1.5 font-medium text-foreground">
           <span
             aria-hidden="true"
-            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary [animation-duration:900ms]"
+            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-gold-running/30 border-t-gold-running [animation-duration:900ms]"
           />
           <span>{processingLabel}...</span>
         </span>

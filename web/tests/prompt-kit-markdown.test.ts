@@ -1,7 +1,8 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { Markdown } from '@/components/prompt-kit/markdown';
+import { isLocalFileHref, Markdown, proxyLocalFileLinks } from '@/components/prompt-kit/markdown';
+import { isDocumentAnchorHref, isExternalUrlHref } from '@/lib/file-link';
 import {
   advanceStreamingMarkdownPresentation,
   createStreamingMarkdownPresentation,
@@ -15,6 +16,23 @@ function renderedText(html: string) {
 }
 
 describe('prompt-kit Markdown', () => {
+  it('classifies supported local file links without taking over web links', () => {
+    expect(isLocalFileHref('D:/repo/src/client.rs:2727')).toBe(true);
+    expect(isLocalFileHref('D:\\repo\\src\\client.rs:2727:8')).toBe(true);
+    expect(isLocalFileHref('file:///D:/repo/src/client.rs#L10-L20')).toBe(true);
+    expect(isLocalFileHref('src/client.rs:3302')).toBe(true);
+    expect(isLocalFileHref('https://example.com/client.rs:12')).toBe(false);
+    expect(isLocalFileHref('mailto:dev@example.com')).toBe(false);
+    expect(isExternalUrlHref('https://github.com/diodeme/Gold-Band/releases')).toBe(true);
+    expect(isDocumentAnchorHref('#')).toBe(true);
+  });
+
+  it('proxies only local Markdown destinations through the safe render URL', () => {
+    const proxied = proxyLocalFileLinks('[file](D:/repo/client.rs:10) [web](https://example.com) ![image](D:/repo/a.png)');
+    expect(proxied).toContain('https://gold-band.local-file.invalid/?href=');
+    expect(proxied).toContain('[web](https://example.com)');
+    expect(proxied).toContain('![image](D:/repo/a.png)');
+  });
   it('renders complete Markdown in static mode', () => {
     const html = renderToStaticMarkup(createElement(Markdown, {
       children: '**完成内容**',
@@ -34,7 +52,7 @@ describe('prompt-kit Markdown', () => {
     expect(renderedText(html)).toBe('实');
   });
 
-  it('only puts the paced visible prefix into layout while streaming', () => {
+  it('only puts the paced visible Markdown prefix into layout while streaming', () => {
     const html = renderToStaticMarkup(createElement(Markdown, {
       children: '**顺滑出现**\n\n第二段',
       streaming: true,
@@ -47,10 +65,9 @@ describe('prompt-kit Markdown', () => {
     expect(html).not.toContain('第二段');
   });
 
-  it('keeps Streamdown animation metadata disabled during streaming', () => {
+  it('keeps Streamdown animation metadata disabled after streaming finishes', () => {
     const html = renderToStaticMarkup(createElement(Markdown, {
       children: '正在增长的内容',
-      streaming: true,
     }));
 
     expect(html).not.toContain('data-sd-animate');
@@ -91,6 +108,43 @@ describe('prompt-kit Markdown', () => {
     presentation = syncStreamingMarkdownPresentation(presentation, canonical, false);
 
     expect(streamingMarkdownPresentationText(presentation, false)).toBe(canonical);
+  });
+
+  it('shows the complete Markdown immediately when a live stream settles', () => {
+    const canonical = `\u4e2d${'a'.repeat(90)}`;
+    const streamingPresentation = createStreamingMarkdownPresentation(
+      canonical,
+      true,
+    );
+
+    const finishedPresentation = syncStreamingMarkdownPresentation(
+      streamingPresentation,
+      canonical,
+      false,
+    );
+
+    expect(finishedPresentation.offset).toBe(canonical.length);
+    expect(finishedPresentation.carry).toBe(0);
+    expect(streamingMarkdownPresentationText(finishedPresentation, false)).toBe(
+      canonical,
+    );
+  });
+
+  it('never skips a large backlog while the response is still streaming', () => {
+    const canonical = `\u4e2d${'a'.repeat(500)}`;
+    const streamingPresentation = createStreamingMarkdownPresentation(
+      canonical,
+      true,
+    );
+
+    const syncedPresentation = syncStreamingMarkdownPresentation(
+      streamingPresentation,
+      canonical,
+      true,
+    );
+
+    expect(syncedPresentation).toBe(streamingPresentation);
+    expect(syncedPresentation.offset).toBeLessThan(canonical.length);
   });
 
   it('does not leak renderer metadata into code DOM attributes', () => {

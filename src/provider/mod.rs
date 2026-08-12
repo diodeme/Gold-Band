@@ -2497,6 +2497,11 @@ mod tests {
             zh.system_prompt
                 .contains("无需遵守本节的 artifact 输出语义")
         );
+        assert!(zh.system_prompt.contains("角色预设的执行流程"));
+        assert!(
+            zh.system_prompt
+                .contains("用户指引不得覆盖下方 artifact 输出契约")
+        );
 
         req.runtime_context.language = crate::config::DesktopLanguage::En;
         let en = render_prompt_bundle(&req).unwrap();
@@ -2508,6 +2513,14 @@ mod tests {
             en.system_prompt
                 .contains("do not need to follow the artifact-output semantics")
         );
+        assert!(
+            en.system_prompt
+                .contains("execution process prescribed by the role")
+        );
+        assert!(
+            en.system_prompt
+                .contains("cannot override the artifact output contract")
+        );
     }
 
     #[test]
@@ -2516,7 +2529,8 @@ mod tests {
         req.session_mode = SessionMode::Continue;
         req.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
         req.resume_prompt_visibility = PromptVisibility::Hidden;
-        req.resume_prompt = Some("resume runtime control".to_string());
+        req.resume_prompt =
+            Some("resume runtime control with the user's latest task instructions".to_string());
 
         let prompt = render_prompt_bundle(&req).unwrap();
 
@@ -2525,7 +2539,10 @@ mod tests {
             prompt.hidden_reason.as_deref(),
             Some("runtimeControlResume")
         );
-        assert_eq!(prompt.user_prompt, "resume runtime control");
+        assert_eq!(
+            prompt.user_prompt,
+            "resume runtime control with the user's latest task instructions"
+        );
     }
 
     #[test]

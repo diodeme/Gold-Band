@@ -38,6 +38,8 @@ AI-DYNAMIC 的判定依据是节点运行角色，而不是“执行 surface 是
 
 用户停止仍写入 `Paused + ProcessInterrupted`。停止后的 composer 保持普通输入，用户消息固定走 `NonRuntimeControlled`，不会因为 Agent 回复结束而恢复工作流。只有显式“继续工作流”动作可以恢复 Runtime；该动作发送隐藏 `RuntimeResume` prompt，不生成可见用户气泡。可恢复暂停的 lifecycle 固定投影为 `continueKind=action`、`composer.mode=normal`、`submitTarget=acp-prompt`，旧 `interrupted-input / runtime-continue` 文本提交语义废弃。
 
+普通消息与显式继续必须使用两套独立的后端资格判断：普通消息只在目标 attempt 当前仍由 Runtime 控制时拒绝；`Paused + ProcessInterrupted` 即使同时具备显式 continue 资格，也必须允许发送 NonRuntime ACP prompt。普通消息接口不得调用或复用 `runtime_continue_required` 作为门禁，不能因为界面同时显示“继续工作流”就强迫用户先恢复 Runtime。
+
 Runtime 是否可显式继续还必须受运行模式约束。`ConversationRunMode::is_orchestrated()` 对 `Auto / Workflow` 返回 true、对 `Direct` 返回 false；AI-DYNAMIC 是节点类型，不单独参与该判断。因此只有 Workflow/AUTO 的可恢复暂停投影 `continueKind=action`。Direct 停止只取消当前 ACP 回复并保持普通 composer，后续消息继续走 NonRuntime ACP prompt，不显示也不接受“继续工作流”。即使 Direct 底层容器仍保存 `Paused + ProcessInterrupted`，该事实也不能被解释为编排恢复资格。
 
 “继续工作流”属于 composer action，固定放在发送按钮旁边，并且只消费后端 lifecycle。前端不得在 stop command 返回后自行合成 `continuable` 或 `continueKind`。Direct 在首个 ACP session 尚未完整建立时停止，也应保留自由会话入口；不得因为 session 建立时机不同而要求用户重跑或调用 Runtime continue。

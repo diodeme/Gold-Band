@@ -375,7 +375,7 @@ export interface AppInfoVm {
 
 export interface AgentRegistryVm {
   agents: ManagedAgentVm[];
-  supportedTypes: SupportedAgentTypeVm[];
+  catalog: AgentCatalogEntryVm[];
 }
 
 export interface ManagedAgentVm {
@@ -386,9 +386,11 @@ export interface ManagedAgentVm {
   env: AgentEnvEntryVm[];
   iconKey: string;
   primaryAgentDir: string;
+  projectPrimaryAgentDir: string | null;
   compatibleAgentDirs: string[];
+  supportsSystemPrompt: boolean;
+  externalSessionSyncSupported: boolean;
   externalSessionSyncEnabled: boolean;
-  supported: boolean;
   diagnostic?: ManagedAgentDiagnosticVm | null;
   supportedModes?: AcpModeVm[] | null;
   supportedModels?: AcpModeVm[] | null;
@@ -456,14 +458,20 @@ export interface ManagedAgentDiagnosticVm {
   checkedAt: string;
 }
 
-export interface SupportedAgentTypeVm {
+export interface AgentCatalogEntryVm {
   agentType: string;
   label: string;
   iconKey: string;
+  version: string;
+  description: string;
+  repository?: string | null;
+  website?: string | null;
   primaryAgentDir: string;
+  projectPrimaryAgentDir: string | null;
   compatibleAgentDirs: string[];
-  supported: boolean;
   configured: boolean;
+  supportsSystemPrompt: boolean;
+  supportsExternalSessionSync: boolean;
   defaultDisplayName: string;
   defaultCommand: string;
   defaultArgs: string[];
@@ -472,11 +480,14 @@ export interface SupportedAgentTypeVm {
 
 export interface ManagedAgentInput {
   displayName: string;
+  icon: string;
   command: string;
   args: string[];
   env: Record<string, string>;
   primaryAgentDir: string;
+  projectPrimaryAgentDir: string | null;
   compatibleAgentDirs: string[];
+  externalSessionSyncSupported: boolean;
   externalSessionSyncEnabled: boolean;
 }
 
@@ -511,6 +522,411 @@ export interface TaskRowVm {
 export interface AppErrorVm {
   code: string;
   params: Record<string, unknown>;
+}
+
+export interface GitCapabilityVm {
+  status: 'ready' | 'not-installed' | 'repository-required' | 'head-required' | 'worktree-required' | 'repository-unavailable';
+  repoRoot: string | null;
+  commonDir: string | null;
+  head: string | null;
+}
+
+export type GitLockOwnerVm = 'user' | 'runtime';
+
+export interface GitLockVm {
+  locked: boolean;
+  owner?: GitLockOwnerVm | null;
+  operation?: string | null;
+}
+
+export interface GitUpstreamVm {
+  name: string;
+  ahead: number;
+  behind: number;
+}
+
+export interface GitRemoteVm {
+  name: string;
+  fetchUrls: string[];
+  pushUrls: string[];
+}
+
+export interface GitRepositorySnapshotVm {
+  projectId: string;
+  repoRoot: string;
+  commonDir: string;
+  workspacePath: string;
+  headOid?: string | null;
+  currentBranch?: string | null;
+  detached: boolean;
+  unborn: boolean;
+  upstream?: GitUpstreamVm | null;
+  remotes: GitRemoteVm[];
+  lock: GitLockVm;
+  revision: string;
+}
+
+export type GitFileChangeKindVm =
+  | 'added'
+  | 'modified'
+  | 'deleted'
+  | 'renamed'
+  | 'copied'
+  | 'type-changed'
+  | 'unmerged'
+  | 'untracked';
+
+export interface GitFileChangeVm {
+  path: string;
+  oldPath?: string | null;
+  kind: GitFileChangeKindVm;
+  indexStatus?: string | null;
+  worktreeStatus?: string | null;
+  binary: boolean;
+  submodule: boolean;
+  addedLines?: number | null;
+  deletedLines?: number | null;
+}
+
+export interface GitBranchStatusVm {
+  oid?: string | null;
+  head?: string | null;
+  upstream?: string | null;
+  ahead: number;
+  behind: number;
+}
+
+export interface GitWorkspaceStatusVm {
+  snapshotRevision: string;
+  branch: GitBranchStatusVm;
+  conflicts: GitFileChangeVm[];
+  staged: GitFileChangeVm[];
+  unstaged: GitFileChangeVm[];
+  untracked: GitFileChangeVm[];
+  operationInProgress?: { kind: string } | null;
+}
+
+export type GitRefKindVm = 'local-branch' | 'remote-branch' | 'tag';
+
+export interface GitRefVm {
+  fullName: string;
+  shortName: string;
+  kind: GitRefKindVm;
+  targetOid: string;
+  peeledOid?: string | null;
+  upstream?: string | null;
+  ahead?: number | null;
+  behind?: number | null;
+  checkedOutWorktreePaths: string[];
+}
+
+export interface GitWorktreeVm {
+  path: string;
+  headOid: string;
+  branch?: string | null;
+  main: boolean;
+  detached: boolean;
+  locked: boolean;
+  lockReason?: string | null;
+  prunable: boolean;
+  ownership: 'user' | 'runtime';
+  runtimeStatus?: string | null;
+}
+
+export interface GitSignatureVm {
+  name: string;
+  email?: string | null;
+  timestamp: string;
+}
+
+export interface GitStashEntryVm {
+  refName: string;
+  oid: string;
+  baseOid: string;
+  message: string;
+  author: GitSignatureVm;
+  createdAt: string;
+}
+
+export interface GitRefLabelVm {
+  fullName: string;
+  shortName: string;
+  kind: GitRefKindVm;
+}
+
+export interface GitCommitVm {
+  oid: string;
+  parentOids: string[];
+  subject: string;
+  body: string;
+  author: GitSignatureVm;
+  committer: GitSignatureVm;
+  refs: GitRefLabelVm[];
+  sourceRef?: string | null;
+  runtimeCheckpoint: boolean;
+}
+
+export interface GitHistoryQueryVm {
+  cursor?: string | null;
+  limit?: number | null;
+  revision?: string | null;
+  refName?: string | null;
+}
+
+export interface GitHistoryPageVm {
+  commits: GitCommitVm[];
+  nextCursor?: string | null;
+  revision: string;
+}
+
+export interface GitCommitFileChangeVm {
+  path: string;
+  oldPath?: string | null;
+  kind: GitFileChangeKindVm;
+  binary: boolean;
+  addedLines?: number | null;
+  deletedLines?: number | null;
+}
+
+export interface GitCommitDetailVm {
+  commit: GitCommitVm;
+  files: GitCommitFileChangeVm[];
+}
+
+export type GitCommitRelationKindVm = 'same' | 'ancestor' | 'descendant' | 'diverged';
+
+export interface GitCommitPairRelationVm {
+  leftOid: string;
+  rightOid: string;
+  relation: GitCommitRelationKindVm;
+  mergeBases: string[];
+  leftOnlyCount: number;
+  rightOnlyCount: number;
+}
+
+export type GitCommitMergeEntryStatusVm = 'direct' | 'merged' | 'not-contained-by-original-oid';
+
+export interface GitCommitMergeEntryVm {
+  oid: string;
+  targetOid: string;
+  status: GitCommitMergeEntryStatusVm;
+  firstMergeOid?: string | null;
+}
+
+export interface GitCommitRelationsQueryVm {
+  selectedOids: string[];
+  targetRef: string;
+}
+
+export interface GitCommitRelationsVm {
+  selectedOids: string[];
+  targetRef: string;
+  targetOid: string;
+  commonMergeBases: string[];
+  pairwise: GitCommitPairRelationVm[];
+  mergeEntries: GitCommitMergeEntryVm[];
+  comparisonFiles: GitCommitFileChangeVm[];
+}
+
+export interface GitSourceControlSnapshotVm {
+  repository: GitRepositorySnapshotVm;
+  status: GitWorkspaceStatusVm;
+  refs: GitRefVm[];
+  worktrees: GitWorktreeVm[];
+  stashes: GitStashEntryVm[];
+}
+
+export type GitMutationVm =
+  | { kind: 'stage-paths'; paths: string[] }
+  | { kind: 'stage-all' }
+  | { kind: 'unstage-paths'; paths: string[] }
+  | { kind: 'unstage-all' }
+  | { kind: 'commit'; subject: string; body?: string | null }
+  | { kind: 'branch-create'; name: string; startPoint?: string | null; checkout: boolean }
+  | { kind: 'branch-switch'; name: string }
+  | { kind: 'branch-rename'; oldName?: string | null; newName: string }
+  | { kind: 'branch-delete-safe'; name: string }
+  | { kind: 'tag-create'; name: string; target?: string | null; style: 'annotated' | 'lightweight'; message?: string | null }
+  | { kind: 'tag-delete-local'; name: string }
+  | { kind: 'worktree-create'; path: string; sourceRef: string; newBranch?: string | null };
+
+export type GitMutationRequestVm = GitMutationVm & {
+  expectedRevision?: string | null;
+};
+
+export interface GitMutationResultVm {
+  snapshot: GitSourceControlSnapshotVm;
+}
+
+export type GitPullStrategyVm = 'fast-forward-only' | 'merge' | 'rebase';
+
+export type GitOperationInputVm =
+  | { kind: 'fetch'; remote?: string | null; prune: boolean }
+  | { kind: 'pull'; remote?: string | null; branch?: string | null; strategy: GitPullStrategyVm }
+  | { kind: 'push'; remote: string; branch: string; setUpstream: boolean }
+  | { kind: 'push-tag'; remote: string; tag: string }
+  | { kind: 'stash-create'; message?: string | null; includeUntracked: boolean }
+  | { kind: 'stash-apply'; stashRef: string; restoreIndex: boolean };
+
+export type GitOperationRequestVm = GitOperationInputVm & {
+  expectedRevision?: string | null;
+};
+
+export type GitOperationStatusVm =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'conflicted';
+
+export interface GitOperationVm {
+  operationId: string;
+  kind: GitOperationInputVm['kind'];
+  repositoryCommonDir: string;
+  workspacePath?: string | null;
+  status: GitOperationStatusVm;
+  cancelable: boolean;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  error?: { code: string; params: Record<string, unknown> } | null;
+}
+
+export interface GitStateChangedEventVm {
+  projectId: string;
+  repositoryCommonDir: string;
+  workspacePath: string;
+  reason: 'workspace' | 'metadata' | 'operation';
+}
+
+export type GitHubCapabilityStatusVm = 'not-installed' | 'not-authenticated' | 'repository-unresolved' | 'ready';
+
+export interface GitHubCapabilityVm {
+  status: GitHubCapabilityStatusVm;
+  version?: string | null;
+  host?: string | null;
+  account?: string | null;
+  repository?: string | null;
+  remote?: string | null;
+  defaultBranch?: string | null;
+}
+
+export interface GitHubOperationVm {
+  operationId: string;
+  kind: 'login' | 'pr-create';
+  host: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+  cancelable: boolean;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  error?: { code: string; params: Record<string, unknown> } | null;
+  resultUrl?: string | null;
+}
+
+export interface GitHubPullRequestPreflightInputVm {
+  host: string;
+  repository: string;
+  head: string;
+  base: string;
+}
+
+export interface GitHubPullRequestCreateInputVm extends GitHubPullRequestPreflightInputVm {
+  title: string;
+  body: string;
+  draft: boolean;
+}
+
+export interface GitHubPullRequestPreflightVm {
+  remote: string;
+  head: string;
+  base: string;
+  aheadBy: number;
+  headPublished: boolean;
+  existingPullRequest?: GitHubPullRequestSummaryVm | null;
+}
+
+export interface GitHubActorVm { login: string; name?: string | null }
+export interface GitHubLabelVm { name: string; color?: string | null }
+export interface GitHubStatusCheckVm {
+  kind?: string | null;
+  name?: string | null;
+  context?: string | null;
+  state?: string | null;
+  status?: string | null;
+  conclusion?: string | null;
+}
+
+export interface GitHubPullRequestSummaryVm {
+  number: number;
+  title: string;
+  state: string;
+  draft: boolean;
+  author?: GitHubActorVm | null;
+  headRefName: string;
+  baseRefName: string;
+  updatedAt: string;
+  url: string;
+  reviewDecision?: string | null;
+  labels: GitHubLabelVm[];
+  statusChecks: GitHubStatusCheckVm[];
+}
+
+export interface GitHubPullRequestDetailVm extends GitHubPullRequestSummaryVm {
+  body: string;
+  mergeable?: string | null;
+  mergeStateStatus?: string | null;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  files: Array<{ path: string; additions: number; deletions: number }>;
+  latestReviews: Array<{ author?: GitHubActorVm | null; state: string }>;
+}
+
+export interface GitHubIssueSummaryVm {
+  number: number;
+  title: string;
+  state: string;
+  author?: GitHubActorVm | null;
+  assignees: GitHubActorVm[];
+  labels: GitHubLabelVm[];
+  updatedAt: string;
+  url: string;
+}
+
+export interface GitHubIssueDetailVm extends GitHubIssueSummaryVm {
+  body: string;
+  milestone?: { title: string } | null;
+}
+
+export type GitHubListStateVm = 'open' | 'closed' | 'all';
+export interface GitHubPullRequestQueryVm {
+  state: GitHubListStateVm;
+  author?: string | null;
+  base?: string | null;
+  head?: string | null;
+  label?: string | null;
+  search?: string | null;
+}
+export interface GitHubIssueQueryVm {
+  state: GitHubListStateVm;
+  author?: string | null;
+  assignee?: string | null;
+  label?: string | null;
+  milestone?: string | null;
+  search?: string | null;
+}
+
+export type GitComparisonSourceVm =
+  | { kind: 'workspace'; workspacePath?: string | null; path: string; area: 'staged' | 'unstaged' }
+  | { kind: 'commit'; workspacePath?: string | null; path: string; beforeOid?: string | null; afterOid: string }
+  | { kind: 'github-pr'; workspacePath?: string | null; host: string; repository: string; prNumber: number; path: string };
+
+export interface GitFileComparisonVm {
+  path: string;
+  stats: { addedLines: number; deletedLines: number };
+  before?: { content: string } | null;
+  after?: { content: string } | null;
+  limitationCode?: string | null;
 }
 
 export type WorkflowErrorVm = AppErrorVm;
@@ -555,6 +971,7 @@ export interface WorkflowWorkerNodeDsl {
   output?: WorkflowOutputContractDsl | null;
   success_condition?: WorkflowJsonConditionDsl | null;
   permission_mode?: string | null;
+  config_options?: Record<string, string>;
   manual_check?: boolean | null;
 }
 
@@ -563,19 +980,25 @@ export type WorkflowAiDynamicAgentStrategyDsl = WorkflowAiDynamicFixedAgentStrat
 export interface DynamicAgentRefDsl {
   provider: string;
   model?: string | null;
+  permissionMode?: string | null;
+  configOptions?: Record<string, string>;
 }
 
 export interface WorkflowAiDynamicFixedAgentStrategyDsl {
   mode: 'fixed';
   provider: string;
   model?: string;
+  permissionMode?: string | null;
 }
 
 export interface WorkflowAiDynamicDynamicAgentStrategyDsl {
   mode: 'dynamic';
   bootstrapProvider: string;
   bootstrapModel?: string | null;
+  permissionMode?: string | null;
+  bootstrapConfigOptions?: Record<string, string>;
   acceptanceModel?: string | null;
+  acceptanceConfigOptions?: Record<string, string>;
   routingPrompt: string;
   availableAgents: DynamicAgentRefDsl[];
 }
@@ -584,7 +1007,7 @@ export interface WorkflowAiDynamicNodeDsl {
   type: 'ai-dynamic';
   id: string;
   agentStrategy: WorkflowAiDynamicAgentStrategyDsl;
-  permission_mode?: string | null;
+  configOptions?: Record<string, string>;
   allowedProfiles?: string[];
   globalGoal?: string | null;
   control: DynamicControlDsl;
@@ -685,6 +1108,49 @@ export interface ProfileInput {
   summary: string;
   content: string;
   dynamicTemplate: boolean;
+}
+
+export interface ImportProfilesInput {
+  folderPath: string;
+  dynamicTemplate: boolean;
+}
+
+export type ImportRecordStatus =
+  | 'imported'
+  | 'imported-with-fallbacks'
+  | 'failed';
+
+export type ProfileFieldFallback =
+  | 'name'
+  | 'summary'
+  | 'frontmatter-missing'
+  | 'dynamic-template-downgraded';
+
+export type ImportProfileErrorCode =
+  | 'read-failed'
+  | 'invalid-frontmatter'
+  | 'empty-file'
+  | 'missing-name'
+  | 'create-failed';
+
+export interface ImportProfileError {
+  code: ImportProfileErrorCode;
+}
+
+export interface ImportedProfileRecord {
+  sourcePath: string;
+  status: ImportRecordStatus;
+  name: string;
+  fallbacks: ProfileFieldFallback[];
+  importedId: string | null;
+  error: ImportProfileError | null;
+}
+
+export interface ImportProfilesResult {
+  totalScanned: number;
+  imported: ImportedProfileRecord[];
+  failed: ImportedProfileRecord[];
+  truncated: boolean;
 }
 
 export interface SaveWorkflowInput {
@@ -955,7 +1421,9 @@ export interface AcpSessionVm {
 }
 
 export interface ActiveSessionStopVm {
-  kind: 'run-paused' | 'session-cancelled' | string;
+  operationId: string;
+  status: 'accepted' | string;
+  kind: 'stop-accepted' | string;
   run?: RunSummaryVm | null;
   session?: AcpSessionVm | null;
   lifecycle?: ConversationAttemptLifecycleVm | null;
@@ -1138,13 +1606,67 @@ export interface AcpElicitationRequestVm {
 
 // Navigation payload emitted after clicking "View details" in a system toast.
 // It carries the complete attempt locator and a deduplication key.
-export interface InterventionNavigateEventVm {
+export interface InterventionAttemptNavigateEventVm {
+  projectId: string;
   taskId: string;
   runId: string;
   roundId: string;
   nodeId: string;
   attemptId: string;
   dedupKey: string;
+}
+
+export interface ScheduledViewActionPayload {
+  kind: 'completion' | 'failed' | 'attentionRequired' | 'missed';
+  projectId: string;
+  scheduledTaskId: string;
+  occurrenceId?: string | null;
+  taskId?: string | null;
+  runId?: string | null;
+  roundId?: string | null;
+  attemptId?: string | null;
+  dedupKey: string;
+}
+
+export type InterventionNavigateEventVm =
+  | (InterventionAttemptNavigateEventVm & { targetType: 'conversation' })
+  | (ScheduledViewActionPayload & { targetType: 'scheduled' });
+
+export interface ScheduledNotificationEventVm {
+  eventId: string;
+  kind: 'completion' | 'failed' | 'attentionRequired' | 'missed';
+  projectId: string;
+  scheduledTaskId: string;
+  occurrenceId?: string | null;
+  errorCode?: string | null;
+  errorParams?: Record<string, unknown> | null;
+  links: {
+    taskId?: string | null;
+    runId?: string | null;
+    roundId?: string | null;
+    attemptId?: string | null;
+  };
+  missedCount?: number | null;
+}
+
+export interface ScheduledNativeNotificationInputVm extends ScheduledNotificationEventVm {
+  title: string;
+  body: string;
+}
+
+export interface ScheduledRuntimeSettingsVm {
+  keepAwakeEnabled: boolean;
+  keepAwakeEffective: boolean;
+  completionNotificationsEnabled: boolean;
+  enabledJobCount: number;
+  occurrenceRetentionDays: number;
+  powerErrorCode?: string | null;
+}
+
+export interface ScheduledRuntimeSettingsInputVm {
+  keepAwakeEnabled: boolean;
+  completionNotificationsEnabled: boolean;
+  occurrenceRetentionDays: number;
 }
 
 export interface NotificationAttentionInput {
@@ -1307,12 +1829,134 @@ export type DesktopUiMode = 'conversation' | 'workbench';
 
 export type ConversationPage =
   | { kind: 'conversation-home' }
-  | { kind: 'conversation-run'; projectId: string; taskId: string; runId: string }
+  | { kind: 'scheduled-task-create' }
+  | { kind: 'conversation-run'; projectId: string; taskId: string; runId: string; roundId?: string; attemptId?: string }
   | { kind: 'run-mode-management' }
   | { kind: 'multica-tasks' }
   | { kind: 'agents' }
   | { kind: 'contexts' }
+  | { kind: 'scheduled-tasks' }
+  | { kind: 'scheduled-task-detail'; projectId: string; scheduledTaskId: string }
   | { kind: 'settings' };
+
+export interface ScheduledTaskVm {
+  id: string;
+  projectId: string;
+  workspaceName: string;
+  title: string;
+  enabled: boolean;
+  mode: 'direct' | 'workflow' | 'auto' | string;
+  sessionPolicy: 'new' | 'continuous' | string;
+  schedule: ScheduledScheduleSpec;
+  nextAt?: string | null;
+  status: 'enabled' | 'paused' | 'completed' | 'failed' | string;
+  lastTriggerAt?: string | null;
+  lastTriggerStatus?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ScheduledOccurrenceVm {
+  id: string;
+  scheduledTaskId: string;
+  scheduledAt: string;
+  triggerKind: 'scheduled' | 'manual' | string;
+  status: 'pending' | 'running' | 'retrying' | 'succeeded' | 'failed' | 'skipped' | 'missed' | 'attention_required' | string;
+  attempt: number;
+  errorCode?: string | null;
+  errorParams?: Record<string, unknown> | null;
+  taskId?: string | null;
+  runId?: string | null;
+  roundId?: string | null;
+  attemptId?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+}
+
+export interface ScheduledTaskDiagnosticsVm {
+  scheduledTaskId: string;
+  projectId: string;
+  nextAt?: string | null;
+  lastStatus?: string | null;
+  lastError?: string | null;
+  runCount: number;
+  retryCount: number;
+  occurrences: ScheduledOccurrenceVm[];
+}
+
+export interface RunScheduledTaskResultVm {
+  occurrence: ScheduledOccurrenceVm;
+  taskId?: string | null;
+  runId?: string | null;
+  roundId?: string | null;
+  attemptId?: string | null;
+}
+
+export type ScheduledEveryUnit = 'minutes' | 'hours';
+export type ScheduledAtDisambiguation = 'earlier' | 'later';
+export type ScheduledOverlapPolicy = 'skip_when_running' | 'retry_when_busy';
+export type ScheduledSessionPolicy = 'new' | 'continuous';
+export type ScheduledRepeatPreset =
+  | 'Hourly'
+  | 'Daily'
+  | 'Weekdays'
+  | { Weekly: { weekdays: string[] } };
+export type ScheduledScheduleSpec =
+  | { kind: 'At'; at: string; timezone: string }
+  | { kind: 'Every'; every: { value: number; unit: ScheduledEveryUnit }; anchorAt: string; timezone: string }
+  | { kind: 'Repeat'; preset: ScheduledRepeatPreset; hour: number; minute: number; timezone: string }
+  | { kind: 'Cron'; expression: string; timezone: string };
+
+export type ScheduledScheduleInput =
+  | {
+      kind: 'At';
+      localDate: string;
+      localTime: string;
+      timezone: string;
+      disambiguation: ScheduledAtDisambiguation;
+    }
+  | { kind: 'Every'; every: { value: number; unit: ScheduledEveryUnit }; anchorAt: string; timezone: string }
+  | { kind: 'Repeat'; preset: ScheduledRepeatPreset; hour: number; minute: number; timezone: string }
+  | { kind: 'Cron'; expression: string; timezone: string };
+
+export interface CreateScheduledTaskInput extends ConversationCreateInput {
+  schedule: ScheduledScheduleInput;
+  overlapPolicy: ScheduledOverlapPolicy;
+  sessionPolicy?: ScheduledSessionPolicy;
+}
+
+export interface ScheduledTaskEditVm {
+  scheduledTaskId: string;
+  projectId: string;
+  content: string;
+  attachmentNames: string[];
+  runMode: 'direct' | 'workflow' | 'auto' | string;
+  workflowTemplateId?: string | null;
+  includeInterview?: boolean | null;
+  directConfig?: ConversationDirectConfigVm | null;
+  autoConfig?: ConversationAutoConfigVm | null;
+  schedule: ScheduledScheduleSpec;
+  overlapPolicy: ScheduledOverlapPolicy;
+  sessionPolicy: ScheduledSessionPolicy;
+  directAgentType?: string | null;
+  expectedUpdatedAt: string;
+}
+
+export interface UpdateScheduledTaskInput {
+  scheduledTaskId: string;
+  projectId: string;
+  expectedUpdatedAt: string;
+  content: string;
+  runMode: string;
+  workflowTemplateId?: string | null;
+  includeInterview?: boolean | null;
+  directConfig?: ConversationDirectConfigVm | null;
+  autoConfig?: ConversationAutoConfigVm | null;
+  attachmentPaths?: string[] | null;
+  schedule: ScheduledScheduleInput;
+  overlapPolicy: ScheduledOverlapPolicy;
+  sessionPolicy: ScheduledSessionPolicy;
+}
 
 export interface ConversationWorkspaceVm {
   projectId: string;
@@ -1334,6 +1978,7 @@ export interface ConversationTaskRowVm {
   runs: ConversationRunSummaryVm[];
   pinned: boolean;
   pinnedOrder?: number | null;
+  scheduledTaskId?: string | null;
 }
 
 export interface AcpActivityDetailQueryInput {
@@ -1429,12 +2074,36 @@ export interface ConversationAcpFacetVm {
 }
 
 export interface ConversationComposerVm {
-  mode: 'normal' | 'runtime-active' | 'stopping' | 'interrupted-input' | 'invalid-workflow' | 'runtime-error' | 'permission-blocked' | 'submitting' | string;
-  submitTarget: 'acp-prompt' | 'runtime-continue' | 'permission-response' | 'none' | string;
+  mode: 'normal' | 'runtime-active' | 'stopping' | 'invalid-workflow' | 'runtime-error' | 'permission-blocked' | 'submitting' | string;
+  submitTarget: 'acp-prompt' | 'queue-prompt' | 'permission-response' | 'none' | string;
   processingKind: 'sending' | 'launching' | 'processing' | 'thinking' | 'tool' | 'compacting' | 'responding' | 'stopping' | 'launching-next-node' | string;
   statusKey?: string | null;
   canStop: boolean;
   lockInput: boolean;
+}
+
+export interface AppExitRequestVm {
+  requestId: string;
+}
+
+export type AppExitDecision = 'proceed' | 'cancel';
+
+export interface ResolveAppExitInput {
+  requestId: string;
+  decision: AppExitDecision;
+}
+
+export interface ConversationQueuedPromptVm {
+  id: string;
+  content: string;
+  attachmentCount: number;
+  createdAt: string;
+}
+
+export interface ConversationPromptQueueVm {
+  revision: number;
+  items: ConversationQueuedPromptVm[];
+  maxItems: number;
 }
 
 export interface ConversationAttemptLifecycleVm {
@@ -1442,8 +2111,9 @@ export interface ConversationAttemptLifecycleVm {
   acp: ConversationAcpFacetVm;
   displayStatus: string;
   runtimeDisplay: RuntimeDisplayVm;
-  continueKind?: 'input' | null;
+  continueKind?: 'action' | null;
   composer: ConversationComposerVm;
+  promptQueue?: ConversationPromptQueueVm | null;
 }
 
 export interface ConversationSessionLeafVm {
@@ -1462,6 +2132,7 @@ export interface ConversationSessionLeafVm {
   startedAt?: string | null;
   finishedAt?: string | null;
   sessionId?: string | null;
+  sessionEstablished?: boolean;
   artifactCount: number;
   attachmentCount: number;
 }
@@ -1516,6 +2187,7 @@ export interface ConversationRunVm {
   resumable: boolean;
   pauseReason?: string | null;
   runtimeErrorMessage?: string | null;
+  scheduledTaskId?: string | null;
 }
 
 export interface ConversationSessionSwitchVm {
@@ -1534,6 +2206,7 @@ export interface ConversationActiveSessionVm {
   lifecycle?: ConversationAttemptLifecycleVm | null;
   manualCheckPending: boolean;
   sessionId?: string | null;
+  sessionEstablished?: boolean;
   startedAt?: string | null;
 }
 
@@ -1564,7 +2237,9 @@ export interface ConversationAutoConfigVm {
   agentType: string;
   bootstrapAgentType?: string | null;
   bootstrapModelId?: string | null;
+  bootstrapConfigOptions?: Record<string, string>;
   acceptanceModelId?: string | null;
+  acceptanceConfigOptions?: Record<string, string>;
   modelId?: string | null;
   permissionMode?: string | null;
   configOptions?: Record<string, string>;
@@ -1697,4 +2372,3 @@ export interface AppExitPreparationWarningVm {
 export interface AppExitPreparationVm {
   warnings: AppExitPreparationWarningVm[];
 }
-

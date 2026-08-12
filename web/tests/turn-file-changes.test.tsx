@@ -8,6 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TurnFileChangesCard } from '@/components/acp/TurnFileChangesCard';
 import { ACPMessageList } from '@/components/acp/ACPChatDialog';
+import { shouldShowDiffChunkNavigation } from '@/components/workspace/files/TurnFileWorkspacePanel';
+import {
+  clearTurnFileChangeSetCacheForTests,
+  loadTurnFileChangeSet,
+} from '@/lib/turn-file-change-set-cache';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import {
   RightWorkspaceProvider,
@@ -131,6 +136,7 @@ async function renderCard(container: HTMLElement, event = pointerEvent()) {
 }
 
 beforeEach(() => {
+  clearTurnFileChangeSetCacheForTests();
   getTurnFileChangeSetMock.mockReset();
   getTurnFileChangeSetMock.mockImplementation((_locator, id: string) => Promise.resolve(changeSet(id)));
 });
@@ -140,6 +146,22 @@ afterEach(() => {
 });
 
 describe('turn file changes card', () => {
+  it('renders a prefetched change set on the first committed frame without a loading row', async () => {
+    const prefetched = changeSet('prefetched');
+    getTurnFileChangeSetMock.mockResolvedValue(prefetched);
+    await loadTurnFileChangeSet(locator, prefetched.id);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = await renderCard(container, pointerEvent(prefetched.id));
+    try {
+      expect(container.textContent).not.toContain('正在加载文件变化');
+      expect(container.querySelectorAll('[role="listitem"]')).toHaveLength(3);
+      expect(getTurnFileChangeSetMock).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('opens added and modified captures in the right workspace, while deleted files remain non-interactive', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -217,12 +239,16 @@ describe('turn file changes card', () => {
       expect(container.querySelectorAll('[role="listitem"]')).toHaveLength(3);
       const trigger = container.querySelector<HTMLButtonElement>('button[aria-expanded="false"]');
       expect(trigger).not.toBeNull();
+      const initialContent = container.querySelector<HTMLElement>('[data-slot="collapsible-content"]');
+      expect(initialContent?.hidden).toBe(true);
+      expect(initialContent?.className).not.toContain('animate-collapsible-up');
       await act(async () => trigger?.click());
 
       const viewport = container.querySelector('[data-radix-scroll-area-viewport]');
       expect(viewport).not.toBeNull();
       expect(viewport?.querySelectorAll('[role="listitem"]')).toHaveLength(15);
       expect(container.querySelectorAll('[role="list"]')).toHaveLength(1);
+      expect(container.querySelector('[data-slot="collapsible-content"]')?.className).toContain('animate-collapsible-down');
     } finally {
       await act(async () => root.unmount());
     }
@@ -276,6 +302,12 @@ describe('conversation artifact workspace entry', () => {
 });
 
 describe('turn file viewer contract', () => {
+  it('shows change navigation only when the unified diff has multiple chunks', () => {
+    expect(shouldShowDiffChunkNavigation(0)).toBe(false);
+    expect(shouldShowDiffChunkNavigation(1)).toBe(false);
+    expect(shouldShowDiffChunkNavigation(2)).toBe(true);
+  });
+
   it('uses a read-only unified CodeMirror merge view', () => {
     const source = readFileSync(
       resolve(process.cwd(), 'web/src/components/workspace/files/TurnFileWorkspacePanel.tsx'),
@@ -290,5 +322,26 @@ describe('turn file viewer contract', () => {
     expect(source).toContain('[&_.cm-scroller]:overflow-x-hidden');
     expect(source).toContain('mergeControls: false');
     expect(source).toContain('collapseUnchanged:');
+    expect(source).toContain('getChunks(view.state)?.chunks.length');
+  });
+
+  it('does not enable a closing animation when an asynchronously loaded card first mounts collapsed', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'web/src/components/acp/TurnFileChangesCard.tsx'),
+      'utf8',
+    );
+    expect(source).toContain("hasUserToggled && 'data-[state=closed]:animate-collapsible-up");
+    expect(source).not.toContain('<CollapsibleContent className="data-[state=closed]:animate-collapsible-up');
+  });
+
+  it('uses the shared read-only Markdown viewer for fully added Markdown files', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'web/src/components/workspace/files/TurnFileWorkspacePanel.tsx'),
+      'utf8',
+    );
+    expect(source).toContain("resource.kind === 'file-version'");
+    expect(source).toContain('isMarkdownDocumentPath(');
+    expect(source).toContain('<WorkspaceFileEditor');
+    expect(source).toContain('editable={false}');
   });
 });

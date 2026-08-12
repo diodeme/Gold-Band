@@ -9,6 +9,10 @@ const composerSource = readFileSync(
   fileURLToPath(new URL('../src/components/conversation/ConversationComposer.tsx', import.meta.url)),
   'utf8',
 );
+const stylesSource = readFileSync(
+  fileURLToPath(new URL('../src/styles.css', import.meta.url)),
+  'utf8',
+);
 const contextSource = readFileSync(
   fileURLToPath(new URL('../src/pages/ContextManagementPage.tsx', import.meta.url)),
   'utf8',
@@ -42,6 +46,7 @@ describe('responsive desktop layout contracts', () => {
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName).toContain('@container/conversation-composer');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('grid grid-cols-1');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('@2xl/conversation-composer:grid-cols-');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('@2xl/conversation-composer:grid-cols-[minmax(12rem,0.75fr)_minmax(28rem,1.25fr)]');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.trailingActionsClassName).toContain('@sm/conversation-composer:grid-cols-2');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.trailingActionsClassName).toContain('@lg/conversation-composer:grid-cols-');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configTriggerClassName).toBe('w-full max-w-none');
@@ -61,6 +66,11 @@ describe('responsive desktop layout contracts', () => {
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).not.toContain('px-4 py-3');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('overflow-x-auto');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('overflow-y-hidden');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('gold-scrollbar-hidden');
+    expect(stylesSource).toContain('.gold-scrollbar-hidden {');
+    expect(stylesSource).toContain('scrollbar-width: none;');
+    expect(stylesSource).toContain('.gold-scrollbar-hidden::-webkit-scrollbar {');
+    expect(stylesSource).toContain('display: none;');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('py-1');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('@sm/conversation-composer:flex-1');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsListClassName).toContain('w-max');
@@ -72,6 +82,16 @@ describe('responsive desktop layout contracts', () => {
     expect(contextSource.match(/@container\/profile-list/g)?.length).toBe(2);
     expect(contextSource.match(/@6xl\/profile-list:grid-cols-3/g)?.length).toBe(2);
     expect(contextSource.match(/CardFooter className="[^"]*flex-wrap/g)?.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('keeps profile import settings and results in one resizable sheet workflow', () => {
+    expect(contextSource).toContain("profileImport.surface === 'result' ? 'profile-import-result-sheet' : 'profile-import-settings-sheet'");
+    expect(contextSource.match(/resizeStorageKey="context-management\/profile-import"/g)).toHaveLength(1);
+    expect(contextSource).toContain('data-slot="profile-import-result-list"');
+    expect(contextSource).toContain('className="min-h-0 w-full flex-1 overflow-hidden"');
+    expect(contextSource).toContain('sm:grid-cols-[minmax(0,1fr)_auto]');
+    expect(contextSource).toContain('break-all text-xs text-muted-foreground');
+    expect(contextSource).toContain("returnToImportResult={profileImport.surface === 'editing'}");
   });
 
   it('uses nested container widths for settings sections and theme cards', () => {

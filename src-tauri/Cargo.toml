@@ -1,6 +1,6 @@
 [package]
 name = "gold-band-desktop"
-version = "0.10.0"
+version = "0.12.4"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -15,9 +15,11 @@ anyhow = "1"
 atomic-write-file = "0.2"
 blake3 = "1"
 camino = { version = "1", features = ["serde1"] }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-encoding_rs = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+chrono-tz = "0.10"
 gold-band = { path = ".." }
+keepawake = "0.6.0"
+encoding_rs = "0.8"
 ignore = "0.4"
 infer = "0.19"
 imagesize = "0.14"
@@ -30,7 +32,7 @@ tauri-plugin-dialog = "2"
 open = "5"
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
-tokio = { version = "1", features = ["time", "fs", "io-util", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "test-util", "fs", "io-util", "net"] }
 thiserror = "1"
 tokio-util = { version = "0.7", features = ["io"] }
 trash = "5"

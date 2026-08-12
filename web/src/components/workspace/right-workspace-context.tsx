@@ -44,7 +44,15 @@ interface RightWorkspaceResourceBase {
 export type FileBrowserWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'file-browser';
   projectId: string;
+  selectedFile?: FileWorkspaceResource | null;
 };
+
+export type ConversationDirectoryWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'conversation-directory';
+  locator: ConversationRunLocator & { roundId: string; nodeId: string; attemptId: string; outerNodeId?: string | null; outerAttemptId?: string | null };
+};
+
+export type ConversationDirectoryWorkspaceEntry = Omit<ConversationDirectoryWorkspaceResource, 'key'>;
 
 export type AgentTranscriptResource = RightWorkspaceResourceBase & {
   kind: 'agent-transcript';
@@ -65,6 +73,18 @@ export type TurnFileWorkspaceResource = RightWorkspaceResourceBase & {
   locator: import('@/types').TurnFileLocatorVm;
   changeSetId: string;
   changeId: string;
+};
+
+export type GitFileComparisonWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'file-diff';
+  projectId: string;
+  gitSource: import('@/types').GitComparisonSourceVm;
+};
+
+export type SourceControlWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'source-control';
+  projectId: string;
+  workspacePath?: string | null;
 };
 
 export type ConversationAssetWorkspaceResource = RightWorkspaceResourceBase & {
@@ -96,16 +116,24 @@ export type RawFramesWorkspaceResource = RightWorkspaceResourceBase & {
   locator: AcpAttemptWorkspaceLocator;
 };
 
+export type ScheduledTaskConfigWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'scheduled-task-config';
+};
+
 export type RightWorkspaceResource =
   | AgentTranscriptResource
   | FileBrowserWorkspaceResource
+  | ConversationDirectoryWorkspaceResource
   | FileWorkspaceResource
   | TurnFileWorkspaceResource
+  | GitFileComparisonWorkspaceResource
+  | SourceControlWorkspaceResource
   | ConversationAssetWorkspaceResource
   | WorkflowViewWorkspaceResource
   | WorkflowEditWorkspaceResource
   | SystemPromptWorkspaceResource
-  | RawFramesWorkspaceResource;
+  | RawFramesWorkspaceResource
+  | ScheduledTaskConfigWorkspaceResource;
 
 export interface RightWorkspaceSessionState {
   tabs: RightWorkspaceResource[];
@@ -128,6 +156,8 @@ interface RightWorkspaceContextValue extends RightWorkspaceState {
   setWidth: (width: number) => void;
   renderResource: (resource: RightWorkspaceResource) => ReactNode;
   projectId: string | null;
+  conversationDirectoryEntry: ConversationDirectoryWorkspaceEntry | null;
+  setConversationDirectoryEntry: (entry: ConversationDirectoryWorkspaceEntry | null) => void;
   registerResourceRenderer: (kind: RightWorkspaceResourceKind, renderer: RightWorkspaceResourceRenderer) => () => void;
   registerResourceCloseResolver: (kind: RightWorkspaceResourceKind, resolver: RightWorkspaceResourceCloseResolver) => () => void;
 }
@@ -245,14 +275,30 @@ export class ConversationWorkspaceStore {
 export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action: RightWorkspaceAction): RightWorkspaceSessionState {
   switch (action.type) {
     case 'open': {
-      const existing = state.tabs.findIndex((tab) => tab.key === action.resource.key);
+      const fileProjectId = action.resource.kind === 'file' ? action.resource.projectId : null;
+      const existingFileBrowser = fileProjectId
+        ? state.tabs.find((tab): tab is FileBrowserWorkspaceResource => tab.kind === 'file-browser' && tab.projectId === fileProjectId)
+        : null;
+      const resource = action.resource.kind === 'file'
+        ? {
+          kind: 'file-browser' as const,
+          key: fileBrowserWorkspaceResourceKey(action.resource.projectId),
+          scopeKey: action.resource.scopeKey,
+          projectId: action.resource.projectId,
+          title: existingFileBrowser?.title ?? action.resource.title,
+          description: existingFileBrowser?.description ?? action.resource.description,
+          attention: action.resource.attention,
+          selectedFile: action.resource,
+        }
+        : action.resource;
+      const existing = state.tabs.findIndex((tab) => tab.key === resource.key);
       const tabs = existing < 0
-        ? [...state.tabs, action.resource]
-        : state.tabs.map((tab, index) => index === existing ? action.resource : tab);
+        ? [...state.tabs, resource]
+        : state.tabs.map((tab, index) => index === existing ? resource : tab);
       return {
         ...state,
         tabs,
-        activeTabKey: action.resource.key,
+        activeTabKey: resource.key,
         requestedOpen: true,
         openRevision: state.openRevision + 1,
       };
@@ -274,7 +320,12 @@ export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action:
       const activeTabKey = state.activeTabKey === action.key
         ? (tabs[Math.min(index, tabs.length - 1)]?.key ?? null)
         : state.activeTabKey;
-      return { ...state, tabs, activeTabKey };
+      return {
+        ...state,
+        tabs,
+        activeTabKey,
+        requestedOpen: tabs.length > 0 && state.requestedOpen,
+      };
     }
     case 'close-workspace':
       return { ...state, requestedOpen: false };
@@ -301,6 +352,7 @@ export function RightWorkspaceProvider({
   scopeRef.current = scope;
   const widthTouchedRef = useRef(false);
   const [width, setWidthState] = useState(initialWidth ?? DEFAULT_RIGHT_WORKSPACE_WIDTH);
+  const [conversationDirectoryEntry, setConversationDirectoryEntryState] = useState<ConversationDirectoryWorkspaceEntry | null>(null);
   const [revision, render] = useReducer((currentRevision) => currentRevision + 1, 0);
   const rendererRegistryRef = useRef(new Map<RightWorkspaceResourceKind, RightWorkspaceResourceRenderer>());
   const closeResolverRegistryRef = useRef(new Map<RightWorkspaceResourceKind, RightWorkspaceResourceCloseResolver>());
@@ -379,6 +431,9 @@ export function RightWorkspaceProvider({
     widthTouchedRef.current = true;
     setWidthState(nextWidth);
   }, []);
+  const setConversationDirectoryEntry = useCallback((entry: ConversationDirectoryWorkspaceEntry | null) => {
+    setConversationDirectoryEntryState(entry);
+  }, []);
   const renderResource = useCallback((resource: RightWorkspaceResource) => rendererRegistryRef.current.get(resource.kind)?.(resource) ?? null, []);
   const registerResourceRenderer = useCallback((kind: RightWorkspaceResourceKind, renderer: RightWorkspaceResourceRenderer) => {
     rendererRegistryRef.current.set(kind, renderer);
@@ -399,6 +454,8 @@ export function RightWorkspaceProvider({
     ...sessionState,
     scopeKey: scope?.key ?? null,
     projectId: scope?.projectId ?? null,
+    conversationDirectoryEntry: conversationDirectoryEntry?.scopeKey === scope?.key ? conversationDirectoryEntry : null,
+    setConversationDirectoryEntry,
     width,
     openResource,
     openWorkspace,
@@ -409,7 +466,7 @@ export function RightWorkspaceProvider({
     renderResource,
     registerResourceRenderer,
     registerResourceCloseResolver,
-  }), [activateTab, closeTab, closeWorkspace, openResource, openWorkspace, registerResourceCloseResolver, registerResourceRenderer, renderResource, rendererRevision, scope?.key, scope?.projectId, sessionState, setWidth, width]);
+  }), [activateTab, closeTab, closeWorkspace, conversationDirectoryEntry, openResource, openWorkspace, registerResourceCloseResolver, registerResourceRenderer, renderResource, rendererRevision, scope?.key, scope?.projectId, sessionState, setConversationDirectoryEntry, setWidth, width]);
   const commands = useMemo<RightWorkspaceCommands>(() => ({
     scopeKey: scope?.key ?? null,
     projectId: scope?.projectId ?? null,
@@ -463,6 +520,30 @@ export function conversationRunWorkspaceResourceKey(kind: 'workflow-view' | 'wor
 
 export function fileBrowserWorkspaceResourceKey(projectId: string) {
   return `file-browser:${projectId}`;
+}
+
+export function sourceControlWorkspaceResourceKey(projectId: string, workspacePath?: string | null) {
+  const normalizedPath = workspacePath?.replaceAll('\\', '/');
+  return `source-control:${projectId}:${normalizedPath ?? 'main'}`;
+}
+
+export function scheduledTaskConfigWorkspaceResourceKey(scopeKey: string) {
+  return `scheduled-task-config:${scopeKey}`;
+}
+
+export function gitFileComparisonWorkspaceResourceKey(projectId: string, source: import('@/types').GitComparisonSourceVm) {
+  const workspacePath = source.workspacePath?.replaceAll('\\', '/') ?? 'main';
+  if (source.kind === 'workspace') {
+    return `git-diff:${projectId}:${workspacePath}:workspace:${source.area}:${source.path}`;
+  }
+  if (source.kind === 'commit') {
+    return `git-diff:${projectId}:${workspacePath}:commit:${source.beforeOid ?? ''}:${source.afterOid}:${source.path}`;
+  }
+  return `git-diff:${projectId}:${workspacePath}:github-pr:${source.host}:${source.repository}:${source.prNumber}:${source.path}`;
+}
+
+export function conversationDirectoryWorkspaceResourceKey(locator: ConversationDirectoryWorkspaceResource['locator']) {
+  return ['conversation-directory', locator.projectId, locator.taskId, locator.runId, locator.roundId, locator.outerNodeId ?? '', locator.outerAttemptId ?? '', locator.nodeId, locator.attemptId].join(':');
 }
 
 export function fileWorkspaceResourceKey(projectId: string, canonicalPath: string) {

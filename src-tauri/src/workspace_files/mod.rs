@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use percent_encoding::percent_decode_str;
 
 use tauri::{AppHandle, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::commands::{CommandResult, spawn_blocking_command};
 use crate::state::DesktopState;
@@ -32,6 +33,52 @@ pub async fn list_workspace_directory(
     let root = resolve_workspace_root(state.inner(), &input.project_id)?;
     let directory = resolve_workspace_relative_path(&root, &input.relative_path)?;
     spawn_blocking_command(move || service::list_directory(&root, &directory)).await
+}
+
+/// Reveal an existing workspace entry in the native file manager. The path is
+/// resolved relative to the registered workspace root so callers cannot ask
+/// the desktop process to reveal arbitrary local paths.
+#[tauri::command]
+pub async fn open_workspace_path_in_file_manager(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    input: OpenWorkspacePathInFileManagerInput,
+) -> CommandResult<()> {
+    let root = resolve_workspace_root(state.inner(), &input.project_id)?;
+    let path = resolve_workspace_relative_path(&root, &input.relative_path)?;
+    app_handle.opener().reveal_item_in_dir(&path).map_err(|error| {
+        paths::error(
+            "workspace-file.file-manager-open-failed",
+            serde_json::json!({ "path": paths::display_path(&path), "reason": error.to_string() }),
+        )
+    })
+}
+
+pub(crate) fn read_file_from_directory_root(
+    project_id: String,
+    root_path: PathBuf,
+    path: PathBuf,
+    runtime: WorkspaceFileRuntime,
+) -> CommandResult<WorkspaceFileSnapshotVm> {
+    let root_path = std::fs::canonicalize(root_path).map_err(|error| {
+        paths::error(
+            "conversation-directory.not-found",
+            serde_json::json!({ "reason": error.to_string() }),
+        )
+    })?;
+    let path = canonicalize_file(&path, "read")?;
+    if !path_is_within(&path, &root_path) {
+        return Err(paths::error(
+            "conversation-directory.path-outside-root",
+            serde_json::json!({ "path": paths::display_path(&path) }),
+        ));
+    }
+    let root = paths::ResolvedWorkspaceRoot {
+        project_id,
+        path: root_path,
+        config: gold_band::config::WorkspaceFilesConfig::default(),
+    };
+    service::read_file(&root, &runtime, &path, None, false)
 }
 
 #[tauri::command]
@@ -345,7 +392,7 @@ pub fn stop_workspace_file_watch(
     input: WorkspaceFileWatchInput,
 ) -> CommandResult<()> {
     let root = resolve_workspace_root(state.inner(), &input.project_id)?;
-    watch_runtime.stop_workspace(&root.project_id)
+    watch_runtime.stop_workspace(&root.project_id, &root.path)
 }
 
 fn authorize_external_if_needed(

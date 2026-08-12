@@ -7,7 +7,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
-vi.mock('@/api', () => ({ prepareAppExit: vi.fn() }));
+vi.mock('@/api', () => ({
+  completeMainWindowClose: vi.fn(),
+  resolveAppExit: vi.fn(),
+  subscribeAppExitRequested: vi.fn(),
+}));
 vi.mock('@/api/shared', () => ({ isTauriRuntime: () => false }));
 
 import { WindowCloseSaveFailureDialog } from '@/components/WindowCloseCoordinator';
@@ -27,6 +31,7 @@ describe('window close save failure dialog', () => {
       root.render(
         <WindowCloseSaveFailureDialog
           open
+          action="exit"
           onOpenChange={() => {}}
           onDecision={onDecision}
         />,

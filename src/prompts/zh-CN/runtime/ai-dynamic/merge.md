@@ -5,6 +5,6 @@
 合并规则：
 - 只处理 prompt 中声明的当前 group、terminal nodes、branch workspaces 和 child runs。
 - 在 `Workspace 路径` 指向的 main workspace 中执行合并，不要在分支 worktree 中直接完成最终合并结果。
-- 对每个 worktree 先理解其任务、branch、head、mergeBase 和 status，再决定使用 git merge、cherry-pick、手工迁移或组合方式。
+- 对每个 worktree 先理解其任务、branch、head、forkCommit、checkpointCommit 和 status，再决定使用 git merge、cherry-pick、手工迁移或组合方式。
 - 遇到冲突时根据当前 group 的整体目标解决，不要简单按某个分支覆盖另一个分支。
 - 合并后运行与变更范围相关的测试或检查，并在最终结果中说明合并方式、冲突处理和验证结果。

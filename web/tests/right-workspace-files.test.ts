@@ -21,18 +21,37 @@ function fileResource(targetLine: number, targetRevision: number): FileWorkspace
   };
 }
 
+function anotherFileResource(): FileWorkspaceResource {
+  const canonicalPath = 'D:\\Repo\\src\\other.rs';
+  return {
+    ...fileResource(1, 1),
+    key: fileWorkspaceResourceKey('project-1', canonicalPath),
+    title: 'other.rs',
+    locator: { projectId: 'project-1', canonicalPath, relativePath: 'src/other.rs', scope: 'workspace' },
+  };
+}
+
 describe('right workspace file resources', () => {
   it('uses stable case-insensitive keys for Windows drive paths', () => {
     expect(fileWorkspaceResourceKey('project-1', 'D:\\Repo\\SRC\\client.rs'))
       .toBe(fileWorkspaceResourceKey('project-1', 'd:/repo/src/CLIENT.rs'));
   });
 
-  it('reuses the same tab and updates the target revision for another line', () => {
+  it('keeps file navigation inside one Files tab and updates the target revision', () => {
     const first = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource: fileResource(2727, 1) });
     const second = rightWorkspaceReducer(first, { type: 'open', resource: fileResource(3302, 2) });
 
     expect(second.tabs).toHaveLength(1);
-    expect(second.tabs[0]?.kind === 'file' && second.tabs[0].target?.line).toBe(3302);
-    expect(second.tabs[0]?.kind === 'file' && second.tabs[0].targetRevision).toBe(2);
+    expect(second.tabs[0]?.kind).toBe('file-browser');
+    expect(second.tabs[0]?.kind === 'file-browser' && second.tabs[0].selectedFile?.target?.line).toBe(3302);
+    expect(second.tabs[0]?.kind === 'file-browser' && second.tabs[0].selectedFile?.targetRevision).toBe(2);
+  });
+
+  it('replaces the selected file instead of creating a second Files tab', () => {
+    const first = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource: fileResource(10, 1) });
+    const second = rightWorkspaceReducer(first, { type: 'open', resource: anotherFileResource() });
+
+    expect(second.tabs).toHaveLength(1);
+    expect(second.tabs[0]?.kind === 'file-browser' && second.tabs[0].selectedFile?.title).toBe('other.rs');
   });
 });

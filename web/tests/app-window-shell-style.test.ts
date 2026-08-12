@@ -54,6 +54,7 @@ describe('App window shell style', () => {
     expect(shell).toContain('maxSize={rightPanelMaxWidth}');
     expect(shell).toContain('onResize={trackRightPanelSize}');
     expect(shell).toContain('onPointerDown={beginRightPanelResize}');
+    expect(shell).toContain('flushSync(() => setRightPanelResizeActive(true))');
     expect(shell).toContain('onPointerUp={endRightPanelResize}');
     expect(shell).toContain('panelRef={leftPanelRef}');
     expect(shell).toContain('panelRef={rightPanelRef}');

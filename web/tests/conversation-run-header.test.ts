@@ -35,7 +35,7 @@ function directRun(): ConversationRunVm {
 }
 
 describe('ConversationRunHeader', () => {
-  it('keeps only the folder action on the right for Direct sessions', () => {
+  it('does not duplicate the run-directory action in the conversation header', () => {
     const html = renderToStaticMarkup(
       React.createElement(
         TooltipProvider,
@@ -45,7 +45,6 @@ describe('ConversationRunHeader', () => {
           onRerun: () => undefined,
           onEditWorkflow: () => undefined,
           onViewWorkflow: () => undefined,
-          onOpenInFileManager: () => undefined,
           onToggleSessionSwitcher: () => undefined,
           sessionSwitcherOpen: false,
           canViewWorkflow: false,
@@ -54,8 +53,8 @@ describe('ConversationRunHeader', () => {
       ),
     );
 
-    expect(html).toContain('aria-label="打开目录"');
-    expect(html).toContain('lucide-folder-open');
+    expect(html).not.toContain('aria-label="打开目录"');
+    expect(html).not.toContain('lucide-folder-open');
     expect(html).not.toContain('Claude hidden');
     expect(html).not.toContain('sonnet-hidden');
     expect(html).not.toContain('bypass-hidden');

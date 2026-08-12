@@ -449,7 +449,17 @@ Page
 
 加载生命周期固定为：Profiles Tab 挂载只执行 `get_profiles`；MCP Tab 首次激活执行 MCP 列表；SKILL Tab 首次激活执行 SKILL 列表，并按需取得 `get_agent_registry + get_conversation_workspaces`。不同 Tab 的数据结构分属不同领域，不允许页面挂载时统一预取。完整会话侧栏属于会话运行领域，即使 App 壳已经缓存，也不能成为上下文管理的 workspace 下拉数据接口。
 
+角色批量导入统一使用可调整宽度的右侧 Sheet：设置与结果共享尺寸记忆，标题、状态提示与底部操作区固定，中间结果列表作为唯一可收缩滚动区。结果行使用 `minmax(0, 1fr)` 分配文本列，窄宽度下操作按钮自然换行；名称、Windows 路径与错误信息允许安全断行，任何单条记录都不能扩大抽屉或产生横向溢出。结果内编辑进入同一抽屉工作流的角色编辑层，保存、返回或关闭后恢复原批次结果；保存成功后使用接口返回实体，按 `importedId` 同步结果行名称，源路径与兜底诊断继续保留；任意时刻只挂载一个活动 Sheet。
+
 上述入口都会访问文件系统或目录树，后端必须声明为 async Tauri command，并通过统一的 `spawn_blocking_command` 在 blocking pool 中完成读取和 VM 构建。该约束覆盖 `get_profiles`、`get_agent_registry`、`list_mcp_servers`、`list_skills`、`list_project_skills` 与 `get_conversation_workspaces`，确保任一 Tab 加载期间都不占用桌面 IPC 事件处理线程。
+
+SKILL 卡片底部的 Agent 区域采用“最多两行、超量聚合”的自适应布局。容器先按实际可用宽度展示一行，数量增加时自然使用第二行；只有两行仍无法容纳时，才在末尾保留 `+N` 入口。`+N` 使用无页面遮罩的 Popover 展示被隐藏 Agent，并按“直接读取 / 同步设置”分组；同步 Agent 行复用卡片上的同步/取消同步接口，操作后 Popover 保持打开，支持连续调整。详情、编辑、删除操作区固定在右侧，不参与 Agent 换行。容量由 `ResizeObserver` 驱动，不绑定内置 Agent 数量或窗口断点。
+
+SKILL 管理中的“当前已配置 Agent”必须以 `AgentRegistryVm.agents` 为配置真源，读取用户实际保存的显示名、图标、全局/项目主目录和兼容目录；`catalog` 只用于保持内置 Agent 的产品排序。Catalog 之外的自定义 Agent 追加到列表中，参与来源识别、Agent 筛选、创建时默认同步目标、编辑同步目标和卡片聚合展示。不得以 `catalog.configured` 代替实际运行配置，否则自定义 Agent 和用户修改后的内置 Agent 配置都会丢失。
+
+MCP 卡片的 Agent 兼容性区域复用相同的两行容量策略：先换行、两行放不下再显示 `+N`，右侧 MCP 诊断、工具、编辑、删除入口固定。Popover 展示隐藏 Agent 的名称和兼容状态；未知状态仍可点击执行单 Agent 诊断，操作后浮层保持打开。MCP 与 SKILL 分别维护领域展示组件，但共享同一容量计算与 `ResizeObserver` Hook，避免两套溢出规则漂移。
+
+Agent 来源识别必须服从 SKILL 作用域：全局 SKILL 使用 `primaryAgentDir` 匹配原生来源，项目 SKILL 使用 `projectPrimaryAgentDir ?? primaryAgentDir` 匹配原生来源，两种作用域都继续识别 `compatibleAgentDirs`。因此目录拆分 Agent（例如 Pi 的全局 `.pi/agent/skills` 与项目 `.pi/skills`）在卡片、筛选和同步目标计算中保持一致。
 
 ### 4.2 组件复用
 
@@ -458,7 +468,7 @@ Page
 | `Card` / `AppCard` / `ScrollArea` | 卡片容器 + 滚动 |
 | `Sheet` / `AlertDialog` | 编辑面板 / 确认对话框 |
 | `Tabs` / `Select` / `Input` / `Textarea` | 导航和表单 |
-| `Tooltip` / `Badge` | 提示和标记 |
+| `Tooltip` / `Badge` / `Popover` | 提示、标记与 SKILL/MCP 超量 Agent 快速操作 |
 | `Markdown` | SKILL View 渲染 |
 | `Loader2` / `Stethoscope` / `Check` | 状态图标 |
 

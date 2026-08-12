@@ -2,9 +2,9 @@ import { Component, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AcpSessionVm, AcpUsageVm, AcpUiEventVm, AppConfigVm, AssetItemVm, ContentVm, GraphNodeVm, LogEntryVm, LogPageVm, LogQueryInput, NodeDetailVm, RoundDetailVm, RoundSelection } from '../types';
 import { displayAppError, displayStatus } from '../i18n';
-import { getLogPage, showArtifact, showAttachment, submitConversationPrompt } from '../api';
+import { continueConversationRuntime, getLogPage, showArtifact, showAttachment } from '../api';
 import { resolveNodeTokenUsage, formatDisplayToken } from '../lib/token-usage';
-import { ACPChatDialog, createAcpPromptId, optimisticUserEvent, updateAcpOptimisticEvents } from '../components/acp/ACPChatDialog';
+import { ACPChatDialog } from '../components/acp/ACPChatDialog';
 import { DetailViewerContent } from '../components/DetailViewer';
 import { GraphView } from '../components/GraphView';
 import { RequirementDetailSheet, RequirementTeaser, fullRequirementText } from '../components/RequirementDisclosure';
@@ -100,39 +100,19 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
   const handleContinueRun = async () => {
     const target = activeAttemptLocator(vm);
     if (!target) return;
-    const promptId = createAcpPromptId();
-    const optimisticKey = acpOptimisticKey(vm.run.taskId, vm.run.id, target.roundId, target.nodeId, target.attemptId);
-    const optimisticEvent = optimisticUserEvent(t('acp.continuePrompt'), promptId);
-    const appendOptimisticEvent = (events: AcpUiEventVm[]) => [...events.filter((event) => promptIdFromAcpEvent(event) !== promptId), optimisticEvent];
-    updateAcpOptimisticEvents(optimisticKey, appendOptimisticEvent);
-    setOptimisticAcpEventsByKey((current) => ({
-      ...current,
-      [optimisticKey]: appendOptimisticEvent(current[optimisticKey] ?? []),
-    }));
     try {
-      const result = await submitConversationPrompt(
+      const result = await continueConversationRuntime(
         workspaceProjectId ?? 'default',
         vm.run.taskId,
         vm.run.id,
         target.roundId,
         target.nodeId,
         target.attemptId,
-        '',
-        promptId,
-        null,
         target.outerNodeId,
         target.outerAttemptId,
       );
       if (result.kind === 'runtime-continue-started') onRefresh();
-    } catch {
-      const markPromptFailed = (events: AcpUiEventVm[]) => events.map((event) => promptIdFromAcpEvent(event) === promptId ? { ...event, status: 'failed' } : event);
-      updateAcpOptimisticEvents(optimisticKey, markPromptFailed);
-      setOptimisticAcpEventsByKey((current) => {
-        const events = markPromptFailed(current[optimisticKey] ?? []);
-        if (events.length === 0) return current;
-        return { ...current, [optimisticKey]: events };
-      });
-    }
+    } catch { /* page refresh remains the lifecycle source of truth */ }
   };
 
   return (
@@ -503,12 +483,6 @@ function AssetDetailSheet({ asset, content, loading, onBack }: { asset: AssetIte
       </SheetContent>
     </Sheet>
   );
-}
-
-function promptIdFromAcpEvent(event: AcpUiEventVm) {
-  if (!event.raw || typeof event.raw !== 'object' || Array.isArray(event.raw)) return null;
-  const promptId = (event.raw as { promptId?: unknown }).promptId;
-  return typeof promptId === 'string' ? promptId : null;
 }
 
 function acpOptimisticKey(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string) {

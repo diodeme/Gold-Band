@@ -9,6 +9,13 @@ export interface FileTreeNode extends WorkspaceDirectoryEntryVm {
   loading: boolean;
 }
 
+export type FileTreeDisplayMode = 'compact' | 'tree';
+
+export interface FileTreeViewNode extends FileTreeNode {
+  displayName: string;
+  children: FileTreeViewNode[] | null;
+}
+
 export interface FileExplorerSnapshot {
   projectId: string;
   status: 'idle' | 'loading' | 'ready' | 'error';
@@ -20,6 +27,7 @@ export interface FileExplorerSnapshot {
   searchResult: WorkspaceFileSearchVm | null;
   treeScrollTop: number;
   treeWidth: number | null;
+  displayMode: FileTreeDisplayMode;
 }
 
 interface ProjectRuntime {
@@ -44,6 +52,42 @@ function nodesFor(entries: WorkspaceDirectoryEntryVm[]): FileTreeNode[] {
     children: entry.kind === 'directory' ? null : [],
     loading: false,
   }));
+}
+
+function viewNodeFor(node: FileTreeNode, displayMode: FileTreeDisplayMode): FileTreeViewNode {
+  if (displayMode === 'tree' || node.kind !== 'directory') {
+    return {
+      ...node,
+      displayName: node.name,
+      children: node.children === null
+        ? null
+        : node.children.map((child) => viewNodeFor(child, displayMode)),
+    };
+  }
+
+  const chainHeadId = node.id;
+  const names = [node.name];
+  let tail = node;
+  while (
+    tail.kind === 'directory'
+    && tail.children?.length === 1
+    && tail.children[0]?.kind === 'directory'
+  ) {
+    tail = tail.children[0];
+    names.push(tail.name);
+  }
+  return {
+    ...tail,
+    id: chainHeadId,
+    displayName: names.join('.'),
+    children: tail.children === null
+      ? null
+      : tail.children.map((child) => viewNodeFor(child, displayMode)),
+  };
+}
+
+export function fileTreeView(nodes: FileTreeNode[], displayMode: FileTreeDisplayMode) {
+  return nodes.map((node) => viewNodeFor(node, displayMode));
 }
 
 function updateNode(nodes: FileTreeNode[], id: string, update: (node: FileTreeNode) => FileTreeNode): FileTreeNode[] {
@@ -113,11 +157,13 @@ function idleSnapshot(projectId: string): FileExplorerSnapshot {
     searchResult: null,
     treeScrollTop: 0,
     treeWidth: null,
+    displayMode: 'compact',
   };
 }
 
 export class FileExplorerStore {
   private static readonly MAX_PROJECTS = 24;
+  private static readonly DIRECTORY_CHAIN_EXPANSION_LIMIT = 64;
   private config: WorkspaceFilesVm = FALLBACK_WORKSPACE_FILES;
   private readonly projects = new Map<string, ProjectRuntime>();
   private readonly listeners = new Set<() => void>();
@@ -147,6 +193,12 @@ export class FileExplorerStore {
     runtime.snapshot = { ...runtime.snapshot, treeWidth: next };
   }
 
+  setDisplayMode(projectId: string, displayMode: FileTreeDisplayMode) {
+    const runtime = this.runtime(projectId);
+    if (runtime.snapshot.displayMode === displayMode) return;
+    this.setSnapshot(runtime, { ...runtime.snapshot, displayMode });
+  }
+
   takeSelectionReveal(projectId: string, canonicalPath: string | null) {
     const runtime = this.runtime(projectId);
     const next = canonicalPath ? normalizePath(canonicalPath) : null;
@@ -173,13 +225,46 @@ export class FileExplorerStore {
     }
   }
 
+  private async refreshRoot(projectId: string) {
+    const runtime = this.runtime(projectId);
+    if (runtime.snapshot.status !== 'ready') {
+      await this.loadRoot(projectId, true);
+      return;
+    }
+    try {
+      const entries = await listWorkspaceDirectory(projectId, '');
+      this.setSnapshot(runtime, { ...runtime.snapshot, roots: nodesFor(entries), errorCode: null });
+      const expanded = [...runtime.snapshot.expanded].sort((left, right) => pathDepth(left) - pathDepth(right));
+      for (const id of expanded) await this.loadDirectory(projectId, id);
+    } catch (reason) {
+      this.setSnapshot(runtime, {
+        ...runtime.snapshot,
+        errorCode: commandErrorCode(reason, 'workspace-file.read-failed'),
+      });
+    }
+  }
+
   async toggleDirectory(projectId: string, relativePath: string, open: boolean) {
     const runtime = this.runtime(projectId);
     const expanded = new Set(runtime.snapshot.expanded);
-    if (open) expanded.add(relativePath);
-    else expanded.delete(relativePath);
+    if (!open) {
+      expanded.delete(relativePath);
+      this.setSnapshot(runtime, { ...runtime.snapshot, expanded });
+      return;
+    }
+    expanded.add(relativePath);
     this.setSnapshot(runtime, { ...runtime.snapshot, expanded });
-    if (open) await this.loadDirectory(projectId, relativePath);
+    let current = relativePath;
+    for (let depth = 0; depth < FileExplorerStore.DIRECTORY_CHAIN_EXPANSION_LIMIT; depth += 1) {
+      await this.loadDirectory(projectId, current);
+      const target = findNode(runtime.snapshot.roots, current);
+      const onlyChild = target?.children?.length === 1 ? target.children[0] : null;
+      if (!onlyChild || onlyChild.kind !== 'directory') return;
+      current = onlyChild.relativePath;
+      const nextExpanded = new Set(runtime.snapshot.expanded);
+      nextExpanded.add(current);
+      this.setSnapshot(runtime, { ...runtime.snapshot, expanded: nextExpanded });
+    }
   }
 
   async loadDirectory(projectId: string, relativePath: string, force = false) {
@@ -264,8 +349,8 @@ export class FileExplorerStore {
     runtime.refreshTimer = setTimeout(() => {
       runtime.refreshTimer = null;
       const parent = canonicalPath ? relativeParentFor(runtime.snapshot, canonicalPath) : null;
-      if (parent) void this.loadDirectory(projectId, parent, true);
-      else void this.loadRoot(projectId, true);
+      if (parent) void this.refreshDirectory(projectId, parent);
+      else void this.refreshRoot(projectId);
     }, this.config.watchDebounceMs);
   }
 
@@ -288,6 +373,15 @@ export class FileExplorerStore {
         errorCode: commandErrorCode(reason, 'workspace-file.search-failed'),
       });
     }
+  }
+
+  private async refreshDirectory(projectId: string, relativePath: string) {
+    const runtime = this.runtime(projectId);
+    await this.loadDirectory(projectId, relativePath, true);
+    const descendants = [...runtime.snapshot.expanded]
+      .filter((path) => path.startsWith(`${relativePath}/`))
+      .sort((left, right) => pathDepth(left) - pathDepth(right));
+    for (const path of descendants) await this.loadDirectory(projectId, path);
   }
 
   private runtime(projectId: string, touch = true) {

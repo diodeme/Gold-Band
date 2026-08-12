@@ -190,8 +190,8 @@ describe('runtime-abnormal snapshots', () => {
         acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
         displayStatus: 'paused',
         runtimeDisplay: runtimeAbnormalDisplay,
-        continueKind: 'input',
-        composer: { mode: 'interrupted-input', submitTarget: 'runtime-continue', processingKind: 'processing', statusKey: null, canStop: false, lockInput: false },
+        continueKind: 'action',
+        composer: { mode: 'normal', submitTarget: 'acp-prompt', processingKind: 'processing', statusKey: null, canStop: false, lockInput: false },
       },
     });
 
@@ -535,6 +535,34 @@ describe('mergeConversationRunSnapshot', () => {
     expect(merged.sessionTree.selectedSessionKey).toBe('round-001/dev/attempt-001');
     expect(merged.selectedSession?.status).toBe('cancelled');
     expect(merged.selectedSession?.sessionId).toBe('session-1');
+  });
+
+  it('does not downgrade an established session reference during a same-attempt resume refresh', () => {
+    const establishedLeaf = leaf('completed', runningDisplay, {
+      current: true,
+      sessionId: 'session-1',
+      sessionEstablished: true,
+    });
+    const transientLeaf = leaf('running', runningDisplay, {
+      current: true,
+      sessionId: null,
+      sessionEstablished: false,
+    });
+    const current = run({
+      runStatus: 'completed',
+      selectedSession: { sessionId: 'session-1', status: 'completed', events: [{ content: 'history' }] } as any,
+    }, [establishedLeaf]);
+    const incoming = run({
+      runStatus: 'running',
+      selectedSession: null,
+    }, [transientLeaf]);
+
+    const merged = mergeConversationRunSnapshot(current, incoming, 'live-refresh');
+    const mergedLeaf = merged.sessionTree.rounds[0].nodes[0].attempts[0];
+
+    expect(mergedLeaf.sessionEstablished).toBe(true);
+    expect(mergedLeaf.sessionId).toBe('session-1');
+    expect(merged.selectedSession?.events).toEqual([{ content: 'history' }]);
   });
 
   it('replaces selected session payload when a same-key full snapshot arrives', () => {

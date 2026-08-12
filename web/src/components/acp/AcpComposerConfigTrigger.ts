@@ -3,6 +3,11 @@ import { cva } from 'class-variance-authority';
 export const DEFAULT_ACP_COMPOSER_CONFIG_ALIGN = 'start' as const;
 export const ACP_COMPOSER_CONFIG_DROPDOWN_MODAL = false;
 
+/** Keep related ACP configuration choices in the same menu interaction. */
+export function keepAcpConfigMenuOpenOnSelect(event: Event) {
+  event.preventDefault();
+}
+
 export const acpComposerConfigTriggerVariants = cva(
   'inline-flex h-9 w-auto min-w-0 items-center justify-between whitespace-nowrap rounded-full border px-3 py-0 text-xs font-normal text-foreground shadow-none outline-none transition-[color,box-shadow] focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 disabled:cursor-not-allowed disabled:opacity-50 [&>svg]:size-3.5 [&>svg]:shrink-0 [&>svg]:text-muted-foreground [&>svg]:opacity-100',
   {

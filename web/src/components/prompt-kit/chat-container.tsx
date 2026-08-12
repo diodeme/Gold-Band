@@ -1,7 +1,9 @@
 "use client"
 
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useImperativeHandle,
   useMemo,
@@ -19,11 +21,21 @@ import {
 
 export type ChatContainerContentExpansionToken = number
 
-export type ChatContainerContext = StickToBottomContext & {
+export type ChatContainerContentExpansionController = {
   beginContentExpansion: () => ChatContainerContentExpansionToken | null
   endContentExpansion: (
     token: ChatContainerContentExpansionToken | null,
   ) => boolean
+}
+
+export type ChatContainerContext = StickToBottomContext &
+  ChatContainerContentExpansionController
+
+const ChatContainerContentExpansionContext =
+  createContext<ChatContainerContentExpansionController | null>(null)
+
+export function useOptionalChatContainerContentExpansion() {
+  return useContext(ChatContainerContentExpansionContext)
 }
 
 export type ChatContainerRootProps = {
@@ -93,14 +105,15 @@ function ChatContainerRoot({
       role="log"
       {...props}
     >
-      {children}
       <ChatContainerLifecycle
         contextRef={contextRef}
         initialFollowing={initial !== false}
         onAtBottomChange={onAtBottomChange}
         onViewportScroll={onViewportScroll}
         onViewportWheel={onViewportWheel}
-      />
+      >
+        {children}
+      </ChatContainerLifecycle>
     </StickToBottom>
   )
 }
@@ -126,6 +139,7 @@ function ChatContainerContent({
 }
 
 function ChatContainerLifecycle({
+  children,
   contextRef,
   initialFollowing,
   onAtBottomChange,
@@ -133,7 +147,7 @@ function ChatContainerLifecycle({
   onViewportWheel,
 }: Pick<
   ChatContainerRootProps,
-  "contextRef" | "onAtBottomChange" | "onViewportScroll" | "onViewportWheel"
+  "children" | "contextRef" | "onAtBottomChange" | "onViewportScroll" | "onViewportWheel"
 > & { initialFollowing: boolean }) {
   const stickContext = useStickToBottomContext()
   const {
@@ -208,6 +222,11 @@ function ChatContainerLifecycle({
     })
     return true
   }, [libraryScrollToBottom, updateFollowIntent])
+
+  const contentExpansionController = useMemo<ChatContainerContentExpansionController>(
+    () => ({ beginContentExpansion, endContentExpansion }),
+    [beginContentExpansion, endContentExpansion],
+  )
 
   const exposedContext = useMemo<ChatContainerContext>(() => ({
     contentRef: stickContext.contentRef,
@@ -392,7 +411,13 @@ function ChatContainerLifecycle({
     }
   }, [])
 
-  return null
+  return (
+    <ChatContainerContentExpansionContext.Provider
+      value={contentExpansionController}
+    >
+      {children}
+    </ChatContainerContentExpansionContext.Provider>
+  )
 }
 
 function ChatContainerScrollAnchor({

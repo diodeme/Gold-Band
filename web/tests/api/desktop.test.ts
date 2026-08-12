@@ -40,6 +40,14 @@ describe('desktopApi', () => {
     expect(invokeCommand).toHaveBeenCalledWith('create_profile', { input });
   });
 
+  it('forwards profile folder imports through the typed command contract', async () => {
+    await desktopApi.importProfilesFromFolder('D:/roles', true);
+
+    expect(invokeCommand).toHaveBeenCalledWith('import_profiles_from_folder', {
+      input: { folderPath: 'D:/roles', dynamicTemplate: true },
+    });
+  });
+
   it('forwards recent workspace removal to the Tauri command path', async () => {
     await desktopApi.removeRecentWorkspace('D:/Projects/code/ai/Gold-Band');
 
@@ -94,6 +102,27 @@ describe('desktopApi', () => {
     await desktopApi.getConversationWorkspaces();
 
     expect(invokeCommand).toHaveBeenCalledWith('get_conversation_workspaces');
+  });
+
+  it('forwards scheduled occurrence diagnostics commands', async () => {
+    await desktopApi.listScheduledTaskOccurrences('project-1', 'scheduled-1', 25);
+    expect(invokeCommand).toHaveBeenCalledWith('list_scheduled_task_occurrences', {
+      projectId: 'project-1',
+      scheduledTaskId: 'scheduled-1',
+      limit: 25,
+    });
+
+    await desktopApi.getScheduledTaskDiagnostics('project-1', 'scheduled-1');
+    expect(invokeCommand).toHaveBeenCalledWith('get_scheduled_task_diagnostics', {
+      projectId: 'project-1',
+      scheduledTaskId: 'scheduled-1',
+    });
+
+    await desktopApi.runScheduledTaskNow('project-1', 'scheduled-1');
+    expect(invokeCommand).toHaveBeenCalledWith('run_scheduled_task_now', {
+      projectId: 'project-1',
+      scheduledTaskId: 'scheduled-1',
+    });
   });
 
   it('queries a captured turn change set with the complete branch locator', async () => {

@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { Layout, LayoutChangedMeta, PanelImperativeHandle, PanelSize } from 'react-resizable-panels';
 import type { AppConfigVm, ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
@@ -54,7 +55,6 @@ interface WorkspaceShellProps {
   onSearch: () => void;
   onSelectTask: (projectId: string, taskId: string) => void;
   onSelectRun: (projectId: string, taskId: string, runId: string) => void;
-  stoppingRun?: boolean;
   onPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
@@ -83,6 +83,8 @@ function loadWidth(prefs: Record<string, unknown> | null | undefined, key: strin
 const LazyFileWorkspacePanel = lazy(() => import('./files/FileWorkspacePanel').then((module) => ({ default: module.FileWorkspacePanel })));
 const LazyTurnFileWorkspacePanel = lazy(() => import('./files/TurnFileWorkspacePanel').then((module) => ({ default: module.TurnFileWorkspacePanel })));
 const LazyConversationAssetWorkspacePanel = lazy(() => import('./files/ConversationAssetWorkspacePanel').then((module) => ({ default: module.ConversationAssetWorkspacePanel })));
+const LazyConversationDirectoryWorkspacePanel = lazy(() => import('./ConversationDirectoryWorkspacePanel').then((module) => ({ default: module.ConversationDirectoryWorkspacePanel })));
+const LazySourceControlWorkspacePanel = lazy(() => import('./source-control/SourceControlWorkspacePanel').then((module) => ({ default: module.SourceControlWorkspacePanel })));
 
 function FileWorkspaceIntegration({
   config = FALLBACK_WORKSPACE_FILES,
@@ -106,6 +108,11 @@ function FileWorkspaceIntegration({
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyFileWorkspacePanel resource={resource} layout={layout} /></Suspense>
       : null
   )), [layout, workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceRenderer('conversation-directory', (resource: RightWorkspaceResource) => (
+    resource.kind === 'conversation-directory'
+      ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyConversationDirectoryWorkspacePanel resource={resource} layout={layout} /></Suspense>
+      : null
+  )), [layout, workspace.registerResourceRenderer]);
   useEffect(() => workspace.registerResourceRenderer('file-diff', (resource: RightWorkspaceResource) => (
     resource.kind === 'file-diff'
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyTurnFileWorkspacePanel resource={resource} /></Suspense>
@@ -119,6 +126,11 @@ function FileWorkspaceIntegration({
   useEffect(() => workspace.registerResourceRenderer('conversation-asset', (resource: RightWorkspaceResource) => (
     resource.kind === 'conversation-asset'
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyConversationAssetWorkspacePanel resource={resource} /></Suspense>
+      : null
+  )), [workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceRenderer('source-control', (resource: RightWorkspaceResource) => (
+    resource.kind === 'source-control'
+      ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazySourceControlWorkspacePanel resource={resource} /></Suspense>
       : null
   )), [workspace.registerResourceRenderer]);
   useEffect(() => workspace.registerResourceCloseResolver('file', (resource, reason) => (
@@ -139,7 +151,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     rightWorkspaceLayout.maxWidth,
   );
   const rightWorkspaceScope = useMemo(() => {
-    if (props.active.kind === 'conversation-home') {
+    if (props.active.kind === 'conversation-home' || props.active.kind === 'scheduled-task-create') {
       return createDraftConversationWorkspaceScope(props.activeWorkspaceId ?? 'default');
     }
     if (props.active.kind === 'conversation-run') {
@@ -178,7 +190,6 @@ function WorkspaceShellLayout({
   onSearch,
   onSelectTask,
   onSelectRun,
-  stoppingRun = false,
   onPauseRun,
   onPinTask,
   onUnpinTask,
@@ -266,7 +277,9 @@ function WorkspaceShellLayout({
   }, [rightPanelMaxWidth]);
   const beginRightPanelResize = useCallback(() => {
     rightResizeIntentRef.current = true;
-    setRightPanelResizeActive(true);
+    // react-resizable-panels reads maxSize as it starts the gesture. Commit the
+    // expanded bound in this same event so a saved narrow width cannot cap it.
+    flushSync(() => setRightPanelResizeActive(true));
   }, []);
   const endRightPanelResize = useCallback(() => {
     setRightPanelResizeActive(false);
@@ -494,14 +507,6 @@ function WorkspaceShellLayout({
         >
           <main className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-sidebar-border/70 bg-gold-workspace', showLeft && 'rounded-tl-2xl border-l')}>
             {children}
-            {stoppingRun ? (
-              <div className="absolute inset-0 z-40 flex items-center justify-center bg-background/55 backdrop-blur-sm">
-                <div className="flex items-center gap-3 rounded-full border border-border/60 bg-popover/95 px-4 py-2 text-sm font-medium text-popover-foreground shadow-lg">
-                  <span className="size-3.5 animate-spin rounded-full border-2 border-primary/25 border-t-primary" aria-hidden="true" />
-                  <span>{t('conversation.runtime.stoppingRunOverlay')}</span>
-                </div>
-              </div>
-            ) : null}
           </main>
         </ResizablePanel>
         <ResizableHandle

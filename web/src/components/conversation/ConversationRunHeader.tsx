@@ -1,4 +1,4 @@
-import { Eye, FolderOpen, RotateCcw, Workflow, ChevronDown } from 'lucide-react';
+import { AlarmClock, Eye, FolderOpen, RotateCcw, Workflow, ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ConversationRunVm, ConversationSessionLeafVm } from '../../types';
 import { Button } from '@/components/ui/button';
@@ -11,7 +11,6 @@ interface ConversationRunHeaderProps {
   onRerun: () => void;
   onEditWorkflow: () => void;
   onViewWorkflow: () => void;
-  onOpenInFileManager?: () => void;
   onToggleSessionSwitcher: () => void;
   sessionSwitcherOpen: boolean;
   selectedSessionLeaf?: ConversationSessionLeafVm | null;
@@ -25,7 +24,6 @@ export function ConversationRunHeader({
   onRerun,
   onEditWorkflow,
   onViewWorkflow,
-  onOpenInFileManager,
   onToggleSessionSwitcher,
   sessionSwitcherOpen,
   selectedSessionLeaf,
@@ -43,6 +41,16 @@ export function ConversationRunHeader({
   return (
     <div className="shrink-0 bg-content-header px-5 pb-0.5 pt-0.5">
       <div className="flex min-w-0 items-center gap-2">
+        {run.scheduledTaskId ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex shrink-0 items-center text-foreground" aria-label={t('scheduled.conversationMarker')}>
+                <AlarmClock className="size-3.5" />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{t('scheduled.conversationMarker')}</TooltipContent>
+          </Tooltip>
+        ) : null}
         <EditableConversationTitle
           title={run.title}
           metadata={!isDirect ? run.runId : null}
@@ -109,22 +117,6 @@ export function ConversationRunHeader({
             </TooltipContent>
           </Tooltip> : null}
 
-          {onOpenInFileManager ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-5.5"
-                  aria-label={t('conversation.runtime.openInFileManager')}
-                  onClick={onOpenInFileManager}
-                >
-                  <FolderOpen className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{t('conversation.runtime.openInFileManager')}</TooltipContent>
-            </Tooltip>
-          ) : null}
         </div>
       </div>
     </div>

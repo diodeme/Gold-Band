@@ -151,6 +151,7 @@ fn node_state_with_uuid() {
         started_at: "1Z".into(),
         finished_at: None,
         manual_check_pending: false,
+        runtime_execution_id: Some("runtime-execution-test".into()),
         resolved_config: Default::default(),
     };
     let json = serde_json::to_string(&node).unwrap();

@@ -3,6 +3,9 @@ use crate::observability::ProgressStage;
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 
+/// Shared retry budget persisted with ACP retry progress for the UI.
+pub const DEFAULT_AUTO_RETRY_MAX_ATTEMPTS: u32 = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RecoveryMode {
@@ -42,7 +45,7 @@ pub struct RetryPolicy {
 impl Default for RetryPolicy {
     fn default() -> Self {
         Self {
-            max_attempts: 3,
+            max_attempts: DEFAULT_AUTO_RETRY_MAX_ATTEMPTS,
             backoff_ms: vec![1000, 3000, 10000],
             jitter: true,
         }

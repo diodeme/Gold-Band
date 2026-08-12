@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Send, Paperclip, Workflow, Bot, Folders, Plus } from 'lucide-react';
+import { displayAppError } from '@/i18n';
+import { Send, Paperclip, Workflow, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X } from 'lucide-react';
 import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForAgent, includeInterviewForSubmit, normalizeConversationAutoConfigForSubmit, normalizeConversationDirectConfigForSubmit, optionalRunModeText, shouldShowInterviewToggle } from '@/lib/conversation-run-mode-config';
-import { normalizeConfigOptionOverrides, selectableAgentOptions, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
+import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectableAgentOptions, type SelectableAgentOption, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
 import { useConversationComposerDraft, type ConversationComposerMulticaBinding } from '@/lib/conversation-composer-draft';
@@ -17,12 +19,26 @@ import { useAgentCommands } from '@/hooks/useAgentCommands';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
 import { SlashCommandMenu } from '@/components/conversation/SlashCommandMenu';
 import { SlashCommandInputTag } from '@/components/conversation/SlashCommandInputTag';
-import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
+import {
+  AcpModelThoughtSelects,
+  findAcpThoughtLevel,
+  updateAcpConfigOptionOverride,
+} from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from '@/lib/slash-command';
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
+import { ScheduledTaskDialog, type ScheduledTaskConfig } from '@/components/conversation/ScheduledTaskDialog';
+import type { ScheduledScheduleInput } from '@/types';
+import { validateScheduledConversationInput } from '@/lib/scheduled-task-validation';
+import { formatScheduledScheduleInput } from '@/lib/scheduled-task-formatting';
 import { PromptInput, PromptInputTextarea } from '@/components/prompt-kit/prompt-input';
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
+import { workflowTemplateDisplayName } from '@/lib/workflow-template';
+import {
+  scheduledTaskConfigWorkspaceResourceKey,
+  useOptionalRightWorkspace,
+  type RightWorkspaceResource,
+} from '@/components/workspace/right-workspace-context';
 
 interface ConversationComposerProps {
   projectId: string;
@@ -33,12 +49,15 @@ interface ConversationComposerProps {
   workflowTemplates: WorkflowTemplateStore | null;
   profiles: ProfileVm[];
   busy: boolean;
+  initialScheduledMode?: boolean;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput, multica?: ConversationComposerMulticaBinding | null) => Promise<string | null | undefined> | string | null | undefined;
+  onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
+  onScheduledModeExit?: () => void;
 }
 
 export function ConversationComposer({
@@ -50,12 +69,15 @@ export function ConversationComposer({
   workflowTemplates,
   profiles,
   busy,
+  initialScheduledMode = false,
   onRunModeChange,
   onLoadProfiles,
   onSubmit,
+  onCreateScheduledTask,
   onOpenAgentManagement,
   onOpenRunModeSettings,
   onWorkspaceChange,
+  onScheduledModeExit,
 }: ConversationComposerProps) {
   const { t } = useTranslation();
   const composerDraft = useConversationComposerDraft();
@@ -73,6 +95,11 @@ export function ConversationComposer({
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
   const [submittingAttachments, setSubmittingAttachments] = useState(false);
+  const [scheduledMode, setScheduledMode] = useState(initialScheduledMode);
+  const [scheduledConfig, setScheduledConfig] = useState<ScheduledTaskConfig | null>(null);
+  const previousInitialScheduledModeRef = useRef(initialScheduledMode);
+  const initialScheduledModeOpenedRef = useRef(false);
+  const rightWorkspace = useOptionalRightWorkspace();
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const {
     attachments,
@@ -103,12 +130,80 @@ export function ConversationComposer({
   // 让「此远程任务跑在哪个本地工作区」成为显式选择；本地零工作区时禁用发送 + 引导先加（决策 e）。
   const multicaActive = composerDraft.draft.multica !== null;
   const hasLocalWorkspaces = workspaces.length > 0;
+  const scheduledSummary = scheduledConfig
+    ? formatScheduledScheduleInput(t, scheduledConfig.schedule)
+    : t('scheduled.composer.unconfigured');
   const canSubmit =
     content.trim().length > 0
     && !busy
     && !submittingAttachments
     && !(multicaActive && !hasLocalWorkspaces);
+  const canCreateScheduledTask = canSubmit && Boolean(onCreateScheduledTask);
+  const scheduledConfigResourceKey = rightWorkspace?.scopeKey
+    ? scheduledTaskConfigWorkspaceResourceKey(rightWorkspace.scopeKey)
+    : null;
+
+  const closeScheduledConfig = useCallback(() => {
+    if (scheduledConfigResourceKey) void rightWorkspace?.closeTab(scheduledConfigResourceKey);
+  }, [rightWorkspace?.closeTab, scheduledConfigResourceKey]);
+
+  const openScheduledConfig = useCallback(() => {
+    if (!rightWorkspace?.scopeKey || !scheduledConfigResourceKey) return;
+    setScheduledMode(true);
+    void rightWorkspace.openResource({
+      kind: 'scheduled-task-config',
+      key: scheduledConfigResourceKey,
+      scopeKey: rightWorkspace.scopeKey,
+      title: t('scheduled.dialog.title'),
+      description: t('scheduled.composer.configure'),
+      attention: false,
+    });
+  }, [rightWorkspace, scheduledConfigResourceKey, t]);
+
+  const exitScheduledMode = useCallback(() => {
+    setScheduledMode(false);
+    setScheduledConfig(null);
+    closeScheduledConfig();
+    onScheduledModeExit?.();
+  }, [closeScheduledConfig, onScheduledModeExit]);
+
+  useEffect(() => {
+    const wasInitiallyScheduled = previousInitialScheduledModeRef.current;
+    previousInitialScheduledModeRef.current = initialScheduledMode;
+    if (!initialScheduledMode) {
+      initialScheduledModeOpenedRef.current = false;
+      if (wasInitiallyScheduled) {
+        setScheduledMode(false);
+        setScheduledConfig(null);
+        closeScheduledConfig();
+      }
+      return;
+    }
+    setScheduledMode(true);
+    if (initialScheduledModeOpenedRef.current || !rightWorkspace?.scopeKey) return;
+    initialScheduledModeOpenedRef.current = true;
+    openScheduledConfig();
+  }, [closeScheduledConfig, initialScheduledMode, openScheduledConfig, rightWorkspace?.scopeKey]);
+
+  const renderScheduledConfig = useCallback((resource: RightWorkspaceResource) => (
+    resource.kind === 'scheduled-task-config' ? (
+      <ScheduledTaskDialog
+        allowContinuous={isDirect}
+        open
+        presentation="workspace"
+        onOpenChange={(open) => { if (!open) closeScheduledConfig(); }}
+        draftConfig={scheduledConfig}
+        onSave={async (config) => { setScheduledConfig(config); }}
+      />
+    ) : null
+  ), [closeScheduledConfig, isDirect, scheduledConfig]);
+
+  useEffect(() => {
+    if (!rightWorkspace) return;
+    return rightWorkspace.registerResourceRenderer('scheduled-task-config', renderScheduledConfig);
+  }, [renderScheduledConfig, rightWorkspace?.registerResourceRenderer]);
   const agentOptions = useMemo(() => selectableAgentOptions(agentRegistry, t), [agentRegistry, t]);
+  const directAgentGroups = useMemo(() => groupSelectableAgentOptions(agentOptions), [agentOptions]);
   const agents = useMemo(
     () => agentOptions.filter((item) => item.selectable).map((item) => item.agent),
     [agentOptions],
@@ -117,18 +212,37 @@ export function ConversationComposer({
   const selectedDirectAgentObj = agents.find((agent) => agent.agentType === selectedDirectAgent);
   const directModels = selectedDirectAgentObj?.supportedModels ?? [];
   const directPermissionModes = selectedDirectAgentObj?.supportedModes ?? [];
-  const directThoughtLevel = selectedDirectAgentObj?.configOptions?.find((option) => option.category === 'thought_level') ?? null;
+  const directThoughtLevel = findAcpThoughtLevel(selectedDirectAgentObj?.configOptions);
   const models = selectedAgentObj?.supportedModels ?? [];
   const permissionModes = selectedAgentObj?.supportedModes ?? [];
-  const autoPermissionModes = isDynamicAuto ? [
-    { id: 'read_only', name: t('workflowEditor.permissionModeReadOnly') },
-    { id: 'ask', name: t('workflowEditor.permissionModeAsk') },
-    { id: 'full_access', name: t('workflowEditor.permissionModeFullAccess') },
-  ] : permissionModes;
-  const thoughtLevel = selectedAgentObj?.configOptions?.find((option) => option.category === 'thought_level') ?? null;
+  const autoPermissionModes = permissionModes;
+  const thoughtLevel = findAcpThoughtLevel(selectedAgentObj?.configOptions);
   const templates = workflowTemplates?.templates ?? [];
   const selectedWorkflowTemplateId = workflowTemplateId || runMode.workflowTemplateId || undefined;
   const showInterviewToggle = shouldShowInterviewToggle(runMode.mode, selectedWorkflowTemplateId);
+  const renderDirectAgentOption = ({ agent, selectable, reason }: SelectableAgentOption) => (
+    <Tooltip key={agent.agentType}>
+      <TooltipTrigger asChild>
+        <span>
+          <TabsTrigger
+            value={agent.agentType}
+            disabled={!selectable}
+            className="h-10 min-w-10 gap-2 rounded-full border border-transparent px-2.5 data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10"
+          >
+            <img
+              src={agentIconSrc(agent.iconKey)}
+              alt=""
+              className={agentIconClass(agent.iconKey, 'size-5')}
+            />
+            {selectedDirectAgent === agent.agentType ? (
+              <span className="max-w-36 truncate text-xs">{agent.displayName}</span>
+            ) : null}
+          </TabsTrigger>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{reason || agent.displayName}</TooltipContent>
+    </Tooltip>
+  );
   const workspacePath = workspaces.find((workspace) => workspace.projectId === projectId)?.workspacePath;
   const commandAgentType = isDirect
     ? selectedDirectAgent
@@ -211,8 +325,7 @@ export function ConversationComposer({
         agentStrategy: 'dynamic',
         agentType: base.agentType || base.bootstrapAgentType || nextAgent || '',
         ...patch,
-        permissionMode: nextPermissionMode || undefined,
-        configOptions: nextConfigOptions,
+        configOptions: undefined,
         globalGoal: optionalRunModeText(nextGlobalGoal),
       };
     }
@@ -320,11 +433,53 @@ export function ConversationComposer({
     }
   };
 
+  const scheduledConversationInput = () => ({
+    projectId,
+    content: content.trim(),
+    runMode: runMode.mode,
+    workflowTemplateId: isAuto || isDirect ? undefined : selectedWorkflowTemplateId,
+    includeInterview: includeInterviewForSubmit(runMode, selectedWorkflowTemplateId),
+    directConfig: isDirect ? normalizeConversationDirectConfigForSubmit({ agentType: selectedDirectAgent, modelId: selectedDirectModel || undefined, permissionMode: selectedDirectPermissionMode || undefined, configOptions: selectedDirectConfigOptions }) : undefined,
+    autoConfig: isAuto ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession()) : undefined,
+  });
+
+  const createScheduledTask = async () => {
+    if (!canCreateScheduledTask || !onCreateScheduledTask) return;
+    if (!scheduledConfig) {
+      openScheduledConfig();
+      return;
+    }
+    const inputBase = scheduledConversationInput();
+    const localIssues = await validateScheduledConversationInput(inputBase, {
+      agentRegistry,
+      workflowTemplates,
+      profiles,
+      loadProfiles: onLoadProfiles,
+      t,
+    });
+    if (localIssues.length > 0) {
+      setRunModeError(localIssues.join('\n'));
+      return;
+    }
+    setSubmittingAttachments(true);
+    try {
+      const paths = await resolveAttachmentPaths();
+      await onCreateScheduledTask({ ...inputBase, ...scheduledConfig, attachmentPaths: paths.length ? paths : undefined });
+      composerDraft.reset();
+      exitScheduledMode();
+      setRunModeError(null);
+    } catch (error) {
+      setRunModeError(displayAppError(t, error));
+    } finally {
+      setSubmittingAttachments(false);
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (slashCommands.onKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>)) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      void handleSubmit();
+      void (scheduledMode ? createScheduledTask() : handleSubmit());
     }
   };
 
@@ -335,6 +490,7 @@ export function ConversationComposer({
         className={CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName}
         {...dropZoneHandlers}
       >
+        {scheduledMode ? <div className="flex min-h-8 items-center gap-2 px-2 text-xs text-muted-foreground"><AlarmClock className="size-4 text-foreground" /><span className="truncate"><strong className="font-medium text-foreground">{scheduledSummary}</strong> · {t('scheduled.composer.creating')}</span><Button variant="ghost" size="icon" className="ml-auto size-7 rounded-md" aria-label={t('scheduled.composer.exit')} title={t('scheduled.composer.exit')} onClick={exitScheduledMode}><X className="size-3.5" /></Button></div> : null}
         {/* Main text input */}
         <PromptInput
           value={visibleContent}
@@ -463,9 +619,7 @@ export function ConversationComposer({
                       });
                     }}
                     onThoughtChange={(optionId, value) => {
-                      const next = { ...selectedDirectConfigOptions };
-                      if (value) next[optionId] = value;
-                      else delete next[optionId];
+                      const next = updateAcpConfigOptionOverride(selectedDirectConfigOptions, optionId, value);
                       setSelectedDirectConfigOptions(next);
                       updateDirectConfig({
                         agentType: selectedDirectAgent,
@@ -495,10 +649,26 @@ export function ConversationComposer({
                   />
                 </>
               ) : null}
-              <Button size="sm" className={CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName} disabled={!canSubmit} onClick={() => { void handleSubmit(); }}>
-                <Send className="size-3.5" />
-                {t('acp.send')}
-              </Button>
+              {scheduledMode ? (
+                <div className="flex min-w-0 items-center gap-1">
+                  <div className="flex min-w-0 flex-1 overflow-hidden rounded-full bg-primary text-primary-foreground">
+                    <Button size="sm" className="h-8 min-w-0 flex-1 rounded-none px-3 shadow-none" disabled={!canCreateScheduledTask} onClick={() => void createScheduledTask()}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild><Button size="sm" className="h-8 w-6 rounded-none px-0 shadow-none" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-2.5" /></Button></DropdownMenuTrigger>
+                      <DropdownMenuContent align="end"><DropdownMenuItem onSelect={exitScheduledMode}><Send className="size-3.5" />{t('acp.send')}</DropdownMenuItem></DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                  <Button variant="ghost" size="icon-sm" className="rounded-full" aria-label={t('scheduled.composer.configure')} title={t('scheduled.composer.configure')} onClick={openScheduledConfig}><Settings2 className="size-3.5" /></Button>
+                </div>
+              ) : (
+                <div className="flex min-w-0 overflow-hidden rounded-full bg-primary text-primary-foreground">
+                  <Button size="sm" className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName} min-w-0 flex-1 rounded-none shadow-none`} disabled={!canSubmit} onClick={() => { void handleSubmit(); }}><Send className="size-3.5" />{t('acp.send')}</Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild><Button size="sm" className="h-8 w-6 rounded-none px-0 shadow-none" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-2.5" /></Button></DropdownMenuTrigger>
+                    <DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => { setScheduledMode(true); setScheduledConfig(null); openScheduledConfig(); }}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</DropdownMenuItem></DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              )}
             </div>
           </div>
         </PromptInput>
@@ -558,29 +728,15 @@ export function ConversationComposer({
             <TooltipProvider>
               <Tabs value={selectedDirectAgent} onValueChange={selectDirectAgent} className={CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName}>
                 <TabsList variant="bare" className={CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsListClassName}>
-                  {agentOptions.map(({ agent, selectable, reason }) => (
-                    <Tooltip key={agent.agentType}>
-                      <TooltipTrigger asChild>
-                        <span>
-                          <TabsTrigger
-                            value={agent.agentType}
-                            disabled={!selectable}
-                            className="h-10 min-w-10 gap-2 rounded-full border border-transparent px-2.5 data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10"
-                          >
-                            <img
-                              src={agentIconSrc(agent.iconKey)}
-                              alt=""
-                              className={agentIconClass(agent.iconKey, 'size-5')}
-                            />
-                            {selectedDirectAgent === agent.agentType ? (
-                              <span className="max-w-36 truncate text-xs">{agent.displayName}</span>
-                            ) : null}
-                          </TabsTrigger>
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>{reason || agent.displayName}</TooltipContent>
-                    </Tooltip>
-                  ))}
+                  {directAgentGroups.selectable.map(renderDirectAgentOption)}
+                  {directAgentGroups.selectable.length > 0 && directAgentGroups.unavailable.length > 0 ? (
+                    <span
+                      aria-orientation="vertical"
+                      className="mx-1 h-6 w-px shrink-0 bg-border/70"
+                      role="separator"
+                    />
+                  ) : null}
+                  {directAgentGroups.unavailable.map(renderDirectAgentOption)}
                 </TabsList>
               </Tabs>
             </TooltipProvider>
@@ -630,25 +786,25 @@ export function ConversationComposer({
                       updateAutoSession({ modelId: modelId || undefined });
                     }}
                     onThoughtChange={(optionId, value) => {
-                      const next = { ...selectedConfigOptions };
-                      if (value) next[optionId] = value;
-                      else delete next[optionId];
+                      const next = updateAcpConfigOptionOverride(selectedConfigOptions, optionId, value);
                       setSelectedConfigOptions(next);
                       updateAutoSession({ configOptions: next });
                     }}
                   />
                 ) : null}
-                <AcpSingleConfigMenu
-                  label={t('acp.permissionMode')}
-                  value={selectedPermissionMode}
-                  options={autoPermissionModes}
-                  unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
-                  onValueChange={(value) => {
-                    const next = value ?? '';
-                    setSelectedPermissionMode(next);
-                    updateAutoSession({ permissionMode: next || undefined });
-                  }}
-                />
+                {!isDynamicAuto ? (
+                  <AcpSingleConfigMenu
+                    label={t('acp.permissionMode')}
+                    value={selectedPermissionMode}
+                    options={autoPermissionModes}
+                    unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
+                    onValueChange={(value) => {
+                      const next = value ?? '';
+                      setSelectedPermissionMode(next);
+                      updateAutoSession({ permissionMode: next || undefined });
+                    }}
+                  />
+                ) : null}
                 <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={onOpenRunModeSettings}>
                   <Workflow className="size-3" />
                   {t('conversation.home.configureAuto')}
@@ -675,7 +831,7 @@ export function ConversationComposer({
               </SelectTrigger>
               <SelectContent position="popper" align="start">
                 {templates.map((tpl) => (
-                  <SelectItem key={tpl.id} value={tpl.id}>{tpl.name}</SelectItem>
+                  <SelectItem key={tpl.id} value={tpl.id}>{workflowTemplateDisplayName(tpl, t)}</SelectItem>
                 ))}
                 {templates.length === 0 ? (
                   <div className="px-2 py-3 text-xs text-muted-foreground">{t('conversation.home.noWorkflowTemplate')}</div>
@@ -709,7 +865,6 @@ export function ConversationComposer({
           </div>
         ) : null}
       </div>
-
       <AttachmentPreviewDialogs
         previewImage={previewImage}
         textPreview={textPreview}

@@ -1,4 +1,4 @@
-import { Pin, PinOff, MessageSquare, Search, Bot, Boxes, Workflow, Settings, Globe, ChevronDown, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Pin, PinOff, MessageSquare, Search, Bot, Settings, Globe, Library, Route, AlarmClock, ChevronDown, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
@@ -12,6 +12,35 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { cn } from '@/lib/utils';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { formatCompactRelativeTime } from '@/lib/datetime';
+
+export const conversationSidebarActivityIconClass = 'motion-safe:animate-pulse';
+
+export type ConversationSidebarNavigationKey =
+  | 'quick-chat'
+  | 'agents'
+  | 'contexts'
+  | 'run-mode-management'
+  | 'scheduled-tasks'
+  | null;
+
+export function conversationSidebarNavigationKey(page: ConversationPage): ConversationSidebarNavigationKey {
+  switch (page.kind) {
+    case 'conversation-home':
+    case 'scheduled-task-create':
+      return 'quick-chat';
+    case 'agents':
+    case 'contexts':
+    case 'run-mode-management':
+    case 'scheduled-tasks':
+      return page.kind;
+    case 'scheduled-task-detail':
+      return 'scheduled-tasks';
+    case 'conversation-run':
+    case 'settings':
+    case 'multica-tasks':
+      return null;
+  }
+}
 
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
@@ -74,6 +103,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     () => new Map(vm.workspaces.map((workspace) => [workspace.projectId, workspace])),
     [vm.workspaces],
   );
+  const activeNavigationKey = conversationSidebarNavigationKey(active);
 
   // Sync pinned collapse from persisted preferences when sidebar VM reloads
   useEffect(() => {
@@ -184,7 +214,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
         {/* Quick actions */}
         <div className="flex flex-col gap-0.5">
           <SidebarButton
-            active={active.kind === 'conversation-home'}
+            active={activeNavigationKey === 'quick-chat'}
             icon={<MessageSquare />}
             label={t('conversation.sidebar.newChat')}
             onClick={onNewConversation}
@@ -202,22 +232,22 @@ export const ConversationSidebar = memo(function ConversationSidebar({
         <div className="flex flex-col gap-1">
           <SidebarButton
             compact
-            active={active.kind === 'agents'}
+            active={activeNavigationKey === 'agents'}
             icon={<Bot />}
             label={t('conversation.sidebar.agentManagement')}
             onClick={() => onSelect({ kind: 'agents' })}
           />
           <SidebarButton
             compact
-            active={active.kind === 'contexts'}
-            icon={<Boxes />}
+            active={activeNavigationKey === 'contexts'}
+            icon={<Library />}
             label={t('conversation.sidebar.contextManagement')}
             onClick={() => onSelect({ kind: 'contexts' })}
           />
           <SidebarButton
             compact
-            active={active.kind === 'run-mode-management'}
-            icon={<Workflow />}
+            active={activeNavigationKey === 'run-mode-management'}
+            icon={<Route />}
             label={t('conversation.sidebar.runModeManagement')}
             onClick={() => onSelect({ kind: 'run-mode-management' })}
           />
@@ -227,6 +257,13 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             icon={<Globe />}
             label={t('conversation.sidebar.multicaTaskManagement')}
             onClick={() => onSelect({ kind: 'multica-tasks' })}
+          />
+          <SidebarButton
+            compact
+            active={activeNavigationKey === 'scheduled-tasks'}
+            icon={<AlarmClock />}
+            label="定时任务"
+            onClick={() => onSelect({ kind: 'scheduled-tasks' })}
           />
         </div>
 
@@ -439,10 +476,10 @@ export const ConversationSidebar = memo(function ConversationSidebar({
 
 // ── Task Row ──
 
-function runStatusColor(run: ConversationTaskRowVm['runs'][0]) {
+export function conversationSidebarRunStatusClass(run: ConversationTaskRowVm['runs'][0]) {
   if (run.outcome === 'success') return 'bg-emerald-500/50';
   if (run.outcome === 'failure' || run.outcome === 'killed') return 'bg-red-500/50';
-  if (run.status === 'running') return 'bg-transparent';
+  if (run.status === 'running') return 'bg-gold-running motion-safe:animate-pulse';
   return 'bg-yellow-500/50';
 }
 
@@ -583,7 +620,7 @@ function TaskRow({
   const isDirect = task.runMode === 'direct';
   const useAgentIdentity = conversationSidebarIdentityKind(task) === 'agent-icon';
   const showActivity = shouldShowConversationSidebarActivity(task);
-  const latestColor = latestRun ? runStatusColor(latestRun) : 'bg-muted-foreground/30';
+  const latestColor = latestRun ? conversationSidebarRunStatusClass(latestRun) : 'bg-muted-foreground/30';
   const relativeTimeSource = task.lastActivityAt;
   const relativeTime = relativeTimeSource && (isDirect || latestRun?.status !== 'running')
     ? formatCompactRelativeTime(relativeTimeSource, t('conversation.runtime.justNow'))
@@ -642,21 +679,15 @@ function TaskRow({
       <span className="flex size-4 shrink-0 items-center justify-center">
         {useAgentIdentity && task.agentIdentity ? (
           <span className="relative flex size-4 items-center justify-center" data-conversation-activity={showActivity ? task.activity?.phase : undefined}>
-            {showActivity ? (
-              <span
-                aria-hidden="true"
-                className="absolute inset-0 animate-spin rounded-full border border-primary/20 border-t-primary [animation-duration:900ms]"
-              />
-            ) : null}
             <img
               src={agentIconSrc(task.agentIdentity.iconKey)}
               alt=""
               title={task.agentIdentity.displayName}
-              className={agentIconClass(task.agentIdentity.iconKey, showActivity ? 'size-2.5' : 'size-3')}
+              className={agentIconClass(task.agentIdentity.iconKey, cn('size-3', showActivity && conversationSidebarActivityIconClass))}
             />
           </span>
         ) : (
-          <span className={cn('size-1.5 rounded-full', latestColor, task.latestRun?.status === 'running' && 'border border-muted-foreground/40')} />
+          <span className={cn('size-1.5 rounded-full', latestColor)} />
         )}
       </span>
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden group-hover:pr-20">
@@ -671,7 +702,10 @@ function TaskRow({
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <span className="min-w-0 flex-1 truncate text-[13px]">{task.title}</span>
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-[13px]">
+            {task.scheduledTaskId ? <AlarmClock className="size-3 shrink-0 text-foreground" aria-label={t('scheduled.conversationMarker')} /> : null}
+            <span className="truncate">{task.title}</span>
+          </span>
         )}
         {relativeTime ? (
           <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{relativeTime}</span>
@@ -708,7 +742,7 @@ function TaskRow({
       {expanded && hasRuns ? (
         <div className="ml-4 mt-1 space-y-1 border-l border-border/60 pl-3">
           {task.runs.map((run) => {
-            const color = runStatusColor(run);
+            const color = conversationSidebarRunStatusClass(run);
             const runTime = run.status !== 'running'
               ? formatCompactRelativeTime(run.updatedAt, t('conversation.runtime.justNow'))
               : null;
@@ -738,7 +772,7 @@ function TaskRow({
                     }
                   }}
                 >
-                  <span className={cn('size-1.5 shrink-0 rounded-full', color, run.status === 'running' && 'border border-muted-foreground/40')} />
+                  <span className={cn('size-1.5 shrink-0 rounded-full', color)} />
                   <span className="min-w-0 flex-1 truncate text-muted-foreground">{run.runId}</span>
                   {runTime ? (
                     <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{runTime}</span>

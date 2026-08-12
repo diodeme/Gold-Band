@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   FALLBACK_WORKSPACE_LAYOUT,
+  RIGHT_WORKSPACE_MIN_WIDTH,
+  WORKSPACE_LAYOUT_HYSTERESIS,
+  WORKSPACE_SIDEBAR_MIN_WIDTH,
   reduceFileWorkspaceResponsiveState,
   reduceWorkspaceAutoCollapse,
   resolveFileWorkspaceResizeDirection,
@@ -20,42 +23,46 @@ import {
 const initial = (): WorkspaceAutoCollapseState => ({ previousWidth: 1_100, left: false, right: false });
 
 describe('workspace auto collapse state machine', () => {
+  it('allows the navigation sidebar to shrink to its compact readable width', () => {
+    expect(WORKSPACE_SIDEBAR_MIN_WIDTH).toBe(176);
+  });
+
   it('keeps file workspace pixel widths outside React presentation state', () => {
     let state: FileWorkspaceResponsiveState = { split: false, widthAtTransition: 0 };
     const compactState = state;
 
-    for (let width = 320; width < 540; width += 1) {
-      state = reduceFileWorkspaceResponsiveState(state, width, 540);
+    for (let width = 320; width < 500; width += 1) {
+      state = reduceFileWorkspaceResponsiveState(state, width, 500);
       expect(state).toBe(compactState);
     }
 
-    state = reduceFileWorkspaceResponsiveState(state, 540, 540);
-    expect(state).toEqual({ split: true, widthAtTransition: 540 });
+    state = reduceFileWorkspaceResponsiveState(state, 500, 500);
+    expect(state).toEqual({ split: true, widthAtTransition: 500 });
     const splitState = state;
 
-    for (let width = 541; width <= 960; width += 1) {
-      state = reduceFileWorkspaceResponsiveState(state, width, 540);
+    for (let width = 501; width <= 1_440; width += 1) {
+      state = reduceFileWorkspaceResponsiveState(state, width, 500);
       expect(state).toBe(splitState);
     }
 
-    state = reduceFileWorkspaceResponsiveState(state, 539, 540);
-    expect(state).toEqual({ split: false, widthAtTransition: 539 });
+    state = reduceFileWorkspaceResponsiveState(state, 499, 500);
+    expect(state).toEqual({ split: false, widthAtTransition: 499 });
   });
 
   it('keeps file workspace presentation monotonic in the window resize direction', () => {
-    const split: FileWorkspaceResponsiveState = { split: true, widthAtTransition: 540 };
-    expect(reduceFileWorkspaceResponsiveState(split, 479, 540, 'growing')).toBe(split);
-    expect(reduceFileWorkspaceResponsiveState(split, 539, 540, 'shrinking'))
-      .toEqual({ split: false, widthAtTransition: 539 });
+    const split: FileWorkspaceResponsiveState = { split: true, widthAtTransition: 500 };
+    expect(reduceFileWorkspaceResponsiveState(split, 479, 500, 'growing')).toBe(split);
+    expect(reduceFileWorkspaceResponsiveState(split, 499, 500, 'shrinking'))
+      .toEqual({ split: false, widthAtTransition: 499 });
 
-    const compact: FileWorkspaceResponsiveState = { split: false, widthAtTransition: 539 };
-    expect(reduceFileWorkspaceResponsiveState(compact, 568, 540, 'shrinking')).toBe(compact);
-    expect(reduceFileWorkspaceResponsiveState(compact, 540, 540, 'growing'))
-      .toEqual({ split: true, widthAtTransition: 540 });
+    const compact: FileWorkspaceResponsiveState = { split: false, widthAtTransition: 499 };
+    expect(reduceFileWorkspaceResponsiveState(compact, 568, 500, 'shrinking')).toBe(compact);
+    expect(reduceFileWorkspaceResponsiveState(compact, 500, 500, 'growing'))
+      .toEqual({ split: true, widthAtTransition: 500 });
 
-    expect(reduceFileWorkspaceResponsiveState(split, 520, 540, 'stationary'))
-      .toEqual({ split: false, widthAtTransition: 520 });
-    expect(reduceFileWorkspaceResponsiveState(compact, 560, 540, 'stationary'))
+    expect(reduceFileWorkspaceResponsiveState(split, 480, 500, 'stationary'))
+      .toEqual({ split: false, widthAtTransition: 480 });
+    expect(reduceFileWorkspaceResponsiveState(compact, 560, 500, 'stationary'))
       .toEqual({ split: true, widthAtTransition: 560 });
   });
 
@@ -135,10 +142,12 @@ describe('workspace auto collapse state machine', () => {
 
   it('uses hysteresis so a boundary oscillation does not flicker', () => {
     const input = { centerMinWidth: 420, centerAutoCollapseWidth: 480, sidebarWidth: 256, sidebarManuallyCollapsed: false, wantsRight: true };
-    const collapsed = reduceWorkspaceAutoCollapse(initial(), { ...input, availableWidth: 950 });
-    const nearBoundary = reduceWorkspaceAutoCollapse(collapsed, { ...input, availableWidth: 1_020 });
+    const collapseBoundary = input.centerMinWidth + input.sidebarWidth + RIGHT_WORKSPACE_MIN_WIDTH;
+    const restoreBoundary = collapseBoundary + WORKSPACE_LAYOUT_HYSTERESIS;
+    const collapsed = reduceWorkspaceAutoCollapse(initial(), { ...input, availableWidth: collapseBoundary - 1 });
+    const nearBoundary = reduceWorkspaceAutoCollapse(collapsed, { ...input, availableWidth: restoreBoundary });
     expect(nearBoundary.left).toBe(true);
-    const restored = reduceWorkspaceAutoCollapse(nearBoundary, { ...input, availableWidth: 1_050 });
+    const restored = reduceWorkspaceAutoCollapse(nearBoundary, { ...input, availableWidth: restoreBoundary + 1 });
     expect(restored.left).toBe(false);
   });
 
@@ -222,17 +231,18 @@ describe('workspace auto collapse state machine', () => {
 
   it('does not publish React presentation updates for per-pixel widths inside one threshold band', () => {
     const input = { centerMinWidth: 420, centerAutoCollapseWidth: 480, sidebarWidth: 256, sidebarManuallyCollapsed: false, wantsRight: true };
+    const collapseBoundary = input.centerMinWidth + input.sidebarWidth + RIGHT_WORKSPACE_MIN_WIDTH;
     let state = initial();
     let presentationUpdates = 0;
-    for (let availableWidth = 1_099; availableWidth >= 1_000; availableWidth -= 1) {
+    for (let availableWidth = 1_099; availableWidth >= collapseBoundary; availableWidth -= 1) {
       const next = reduceWorkspaceAutoCollapse(state, { ...input, availableWidth });
       if (workspaceAutoCollapsePresentationChanged(state, next)) presentationUpdates += 1;
       state = next;
     }
-    expect(state.previousWidth).toBe(1_000);
+    expect(state.previousWidth).toBe(collapseBoundary);
     expect(presentationUpdates).toBe(0);
 
-    const crossed = reduceWorkspaceAutoCollapse(state, { ...input, availableWidth: 995 });
+    const crossed = reduceWorkspaceAutoCollapse(state, { ...input, availableWidth: collapseBoundary - 1 });
     expect(workspaceAutoCollapsePresentationChanged(state, crossed)).toBe(true);
     expect(crossed).toMatchObject({ left: true, right: false });
   });
@@ -263,19 +273,19 @@ describe('workspace auto collapse state machine', () => {
     expect(resolveRightWorkspacePanelMaxWidth({
       preferredWidth: 760,
       minWidth: 320,
-      maxWidth: 960,
+      maxWidth: 1440,
       userResizing: false,
     })).toBe(760);
     expect(resolveRightWorkspacePanelMaxWidth({
       preferredWidth: 760,
       minWidth: 320,
-      maxWidth: 960,
+      maxWidth: 1440,
       userResizing: true,
-    })).toBe(960);
+    })).toBe(1440);
     expect(resolveRightWorkspacePanelMaxWidth({
       preferredWidth: 200,
       minWidth: 320,
-      maxWidth: 960,
+      maxWidth: 1440,
       userResizing: false,
     })).toBe(320);
   });

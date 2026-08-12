@@ -27,6 +27,7 @@ import { checkLocalClaude, getMetricsSettings, getSystemFonts, saveMetricsSettin
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
+import { ScheduledRuntimeSettings } from '@/components/scheduled-tasks/ScheduledRuntimeSettings';
 import { AvatarSettings } from '@/components/settings/AvatarSettings';
 import { MulticaSettingsBlock } from '@/components/settings/MulticaSettingsBlock';
 
@@ -239,6 +240,9 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                 </SelectContent>
               </Select>
             </SettingsSection>
+            <SettingsSection title={t('scheduled.settings.title')} divided>
+              <ScheduledRuntimeSettings />
+            </SettingsSection>
           </AppCard>
         </TabsContent>
 
@@ -269,7 +273,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                 </button>
               </div>
 
-              <Sheet open={themeSheetOpen} onOpenChange={setThemeSheetOpen}>
+              <Sheet modal={false} open={themeSheetOpen} onOpenChange={setThemeSheetOpen}>
                 {syncWithOs ? (
                   <div className="grid gap-3 @6xl/settings-content:grid-cols-2">
                     <ThemeSummaryCard

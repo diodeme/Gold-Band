@@ -920,6 +920,14 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **不变量**：`StateConfig.multica_runtime_ids` 是死字段（仅声明、从不读写，真缓存在内存 `MulticaRuntimeState`），不处理。PAT 明文不回显（VM 仅 `pat_set`），换号清理不改变该约束。
   - **验证**：`cargo check` 过（无新增 warning）；`cargo test multica::config` **8 测全过**（+3 新：`multica_account_changed_judges_by_email_with_safe_default` / `clear_multica_workspace_bindings_clears_bindings_keeps_credentials_and_daemon_id` / `clear_multica_state_indices_empties_all_three_account_scoped_indices`；既有 `clear_multica_session_*` 签名不变零回归）。无前端 / 无 webank server 改动。
 
+- [x] **M5-ag** 合并 origin/main 进 feature_multica——main 新能力（git/github 源代码管理、定时任务 scheduled-tasks、app-exit 协调器、agent catalog 等）与 multica 远程任务接入共存（开发设计 §12.19）：
+  - **冲突解决策略**：11 文件全部「并集」解决——main 新能力与 multica 接入**正交**（定时任务 vs 远程任务，互不侵入），故无任何一方功能被丢弃。纯加法冲突（Cargo tokio features / 命令 import / config apply 段 / types import / 路由 / i18n / page import）取 main 全量 + multica 增量；唯一语义融合在 `ConversationComposer`（`onSubmit` 签名并集 + `canSubmit` 条件融合）与 `ConversationSidebar`（两个 SidebarButton 并存）。
+  - **唯一合并诱发的代码修复**：main 把侧栏导航重构为 `activeNavigationKey` 字符串 key 体系，其 switch 未覆盖合并并入的 `multica-tasks` kind → 补 `case 'multica-tasks': return null`（multica 按钮仍用 `active.kind` 直查，两者并存无 bug；后续若统一导航模型再把 multica-tasks 纳入 key 体系）。
+  - **main 新增依赖**：`@tomplum/react-git-log` / `@js-temporal/polyfill` / `cron-parser` / `@vvo/tzdb`（`npm install` 已装）。
+  - **验证**：`cargo check --all-targets` 绿（仅 main 既有 dead-code warning）；`tsc -p tsconfig.build.json`（src only）绿零错；`cargo test multica` **85 测全过、0 失败**（零回归）。安全网：合并前 `8fe70d9` 打备份分支 `feature_multica_premerge_backup`。
+  - **遗留（main 既有技术债，非 multica）**：`tsc` 全量 50 错全在 `tests/`、0 处引用 multica（VM 类型演化快于 fixture + 节点类型配置缺），未在本次合并处理。
+  - **结论**：用户预设的「multica 二次修复开发」基本不需要——并集解冲突使 main 与 multica 全量共存，multica 零回归。
+
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）
 

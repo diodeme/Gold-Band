@@ -46,6 +46,10 @@ Your final step must output the result in the following format:
 
 runtime will evaluate node success using the following condition:
 {{ output_contract.success_condition }}{% endif %}
+{% elif output_deferred %}
+- This business execution turn does not need to output the canonical artifact.
+- After this turn ends normally, runtime will request the control result in a separate hidden finalize turn. Complete the task and respond naturally in this turn.
+- Do not emit, infer, or search for the artifact schema ahead of time.
 {% else %}
 - This node does not declare an output DSL and does not need to produce a canonical artifact.
 - Do not search for, infer, or read artifact/output constraints. Just complete # Task or # Goal.

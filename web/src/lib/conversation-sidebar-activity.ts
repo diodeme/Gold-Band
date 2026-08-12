@@ -4,6 +4,7 @@ import type {
   ConversationTaskActivityVm,
   ConversationTaskRowVm,
 } from '@/types';
+import type { AcpSessionUpdatedEventVm } from '@/api/client';
 
 export function conversationTaskActivityFromLifecycle(
   lifecycle: ConversationAttemptLifecycleVm,
@@ -17,6 +18,17 @@ export function conversationTaskActivityFromLifecycle(
       : lifecycle.acp.phase ?? lifecycle.runtime.phase ?? lifecycle.composer.processingKind,
     stopping: lifecycle.acp.stopping,
   };
+}
+
+export function conversationTaskActivityFromUpdate(
+  event: AcpSessionUpdatedEventVm,
+): ConversationTaskActivityVm | null | undefined {
+  if (event.activity !== undefined) {
+    return event.activity ?? null;
+  }
+  return event.lifecycle
+    ? conversationTaskActivityFromLifecycle(event.lifecycle)
+    : undefined;
 }
 
 export function applyConversationSidebarTaskActivity(

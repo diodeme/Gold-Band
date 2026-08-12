@@ -1,4 +1,4 @@
-import { Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, PencilLine, Plus, X } from 'lucide-react';
+import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, PencilLine, Plus, X } from 'lucide-react';
 import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -6,7 +6,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { cn } from '@/lib/utils';
 import { useConversationBranchLiveSnapshot } from '@/lib/conversation-event-router';
 import { AgentConversationPanel } from './AgentConversationPanel';
-import { fileBrowserWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
+import { conversationDirectoryWorkspaceResourceKey, fileBrowserWorkspaceResourceKey, sourceControlWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
 import { useFileContentEntry } from './files/file-content-store';
 
 export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
@@ -112,7 +112,7 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
 });
 
 type WorkspaceEntryOption = {
-  id: 'file-browser';
+  id: 'file-browser' | 'source-control' | 'conversation-directory';
   label: string;
   description: string;
   icon: typeof FolderOpen;
@@ -121,10 +121,10 @@ type WorkspaceEntryOption = {
 
 function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu' }) {
   const { t } = useTranslation();
-  const { openResource, projectId, scopeKey } = useRightWorkspace();
+  const { conversationDirectoryEntry, openResource, projectId, scopeKey } = useRightWorkspace();
   const options = useMemo<WorkspaceEntryOption[]>(() => {
     if (!projectId || !scopeKey) return [];
-    return [{
+    const entries: WorkspaceEntryOption[] = [{
       id: 'file-browser',
       label: t('workspace.files'),
       description: t('workspace.browseWorkspaceFiles'),
@@ -140,8 +140,39 @@ function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu
           attention: false,
         });
       },
+    }, {
+      id: 'source-control',
+      label: t('sourceControl.title'),
+      description: t('sourceControl.description'),
+      icon: GitBranch,
+      open: () => {
+        void openResource({
+          kind: 'source-control',
+          key: sourceControlWorkspaceResourceKey(projectId),
+          scopeKey,
+          projectId,
+          title: t('sourceControl.title'),
+          description: t('sourceControl.description'),
+          attention: false,
+        });
+      },
     }];
-  }, [openResource, projectId, scopeKey, t]);
+    if (conversationDirectoryEntry) {
+      entries.push({
+        id: 'conversation-directory',
+        label: t('workspace.runDirectory'),
+        description: t('workspace.browseRunDirectory'),
+        icon: FolderOpen,
+        open: () => {
+          void openResource({
+            ...conversationDirectoryEntry,
+            key: conversationDirectoryWorkspaceResourceKey(conversationDirectoryEntry.locator),
+          });
+        },
+      });
+    }
+    return entries;
+  }, [conversationDirectoryEntry, openResource, projectId, scopeKey, t]);
 
   if (presentation === 'menu') {
     return (
@@ -195,7 +226,7 @@ function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu
             data-right-workspace-empty-option={option.id}
             onClick={option.open}
           >
-            <Icon className="size-4 shrink-0 text-primary" />
+            <Icon className="size-4 shrink-0 text-foreground" />
             <span className="min-w-0">
               <span className="block text-sm font-medium text-foreground">{option.label}</span>
               <span className="mt-0.5 block text-xs font-normal text-muted-foreground">{option.description}</span>
@@ -247,8 +278,12 @@ function workspaceTabIcon(tab: RightWorkspaceResource) {
       ? <PencilLine className="size-3.5 shrink-0" />
       : tab.kind === 'system-prompt'
         ? <FileCode2 className="size-3.5 shrink-0" />
-        : tab.kind === 'raw-frames'
+        : tab.kind === 'scheduled-task-config'
+          ? <AlarmClock className="size-3.5 shrink-0" />
+          : tab.kind === 'raw-frames'
           ? <Braces className="size-3.5 shrink-0" />
+          : tab.kind === 'source-control'
+            ? <GitBranch className="size-3.5 shrink-0" />
           : tab.kind === 'file-browser'
             ? <FolderOpen className="size-3.5 shrink-0" />
             : tab.kind === 'file-diff'

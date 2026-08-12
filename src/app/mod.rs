@@ -36,8 +36,8 @@ use crate::dsl::{
     workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
-    DynamicGraphState, DynamicNodeStatus, DynamicRunPhase, DynamicRunStatus,
-    dynamic_leaf_is_active, refresh_dynamic_current_leaf_ids,
+    DynamicNodeStatus, DynamicRunPhase, DynamicRunStatus, dynamic_leaf_is_active,
+    refresh_dynamic_current_leaf_ids,
 };
 use crate::dynamic_store::load_dynamic_graph;
 use crate::mcp::McpManager;
@@ -48,8 +48,9 @@ use crate::provider::{
     supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
-    NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
-    validate_round_state, validate_run_state, validate_task_state, validate_worker_ref_state,
+    NodeState, RoundState, RunState, RuntimeAttemptLocator, RuntimeExecutionPhase, TaskState,
+    WorkerRefState, validate_node_state, validate_round_state, validate_run_state,
+    validate_task_state, validate_worker_ref_state,
 };
 use crate::storage::{
     GoldBandPaths, StoragePathConfig, ensure_parent_dir, load_settings_file, read_json, sqlite,
@@ -1023,6 +1024,69 @@ fn clear_stale_model(
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn transition_runtime_execution_phase(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        outer_node_id: &str,
+        outer_attempt_id: &str,
+        inner: Option<(&str, &str)>,
+        phase: RuntimeExecutionPhase,
+    ) -> Result<RunState> {
+        let state_lock = attempt_runtime_state_lock(
+            self,
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+        );
+        let _guard = state_lock
+            .lock()
+            .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+        let mut run = self.run_status(task_id, run_id)?;
+        if run.status != RunStatus::Running
+            || run.current_round.as_deref() != Some(round_id)
+            || run.current_node.as_deref() != Some(outer_node_id)
+            || run.current_attempt.as_deref() != Some(outer_attempt_id)
+        {
+            bail!("runtime execution locator is no longer current");
+        }
+        let locator = match inner {
+            Some((node_id, attempt_id)) => RuntimeAttemptLocator {
+                round_id: round_id.to_string(),
+                node_id: node_id.to_string(),
+                attempt_id: attempt_id.to_string(),
+                outer_node_id: Some(outer_node_id.to_string()),
+                outer_attempt_id: Some(outer_attempt_id.to_string()),
+            },
+            None => RuntimeAttemptLocator {
+                round_id: round_id.to_string(),
+                node_id: outer_node_id.to_string(),
+                attempt_id: outer_attempt_id.to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            },
+        };
+        let phase = if phase == RuntimeExecutionPhase::RunningNode
+            && matches!(
+                run.execution.phase,
+                RuntimeExecutionPhase::FinalizingArtifact
+                    | RuntimeExecutionPhase::RepairingArtifact
+            ) {
+            run.execution.phase
+        } else {
+            phase
+        };
+        run.updated_at = now_rfc3339_like();
+        run.transition_execution(phase, Some(locator), run.updated_at.clone());
+        validate_run_state(&run)?;
+        write_json(&self.paths.run_file(task_id, run_id), &run)?;
+        Ok(run)
+    }
+
     pub fn new(repo_root: Utf8PathBuf) -> Self {
         Self::with_config(repo_root, RuntimeConfig::default())
     }
@@ -2163,7 +2227,14 @@ impl App {
     }
 
     pub fn run_list(&self, task_id: &str) -> Result<Vec<RunState>> {
-        self.read_json_dir_sorted(&self.paths.runs_dir(task_id))
+        let mut runs: Vec<RunState> = self.read_json_dir_sorted(&self.paths.runs_dir(task_id))?;
+        for run in &mut runs {
+            if run.reconcile_legacy_execution() {
+                write_json(&self.paths.run_file(task_id, &run.id), run)?;
+            }
+            validate_run_state(run)?;
+        }
+        Ok(runs)
     }
 
     pub fn latest_run(&self, task_id: &str) -> Result<Option<RunState>> {
@@ -2553,7 +2624,11 @@ impl App {
     }
 
     pub fn run_status(&self, task_id: &str, run_id: &str) -> Result<RunState> {
-        let run: RunState = read_json(&self.paths.run_file(task_id, run_id))?;
+        let path = self.paths.run_file(task_id, run_id);
+        let mut run: RunState = read_json(&path)?;
+        if run.reconcile_legacy_execution() {
+            write_json(&path, &run)?;
+        }
         validate_run_state(&run)?;
         Ok(run)
     }
@@ -2770,6 +2845,7 @@ impl App {
             run.outcome = None;
             run.pause_reason = Some(reason);
             run.updated_at = now.clone();
+            run.transition_current_execution(RuntimeExecutionPhase::Paused, now.clone());
             validate_run_state(&run)?;
             write_json(&self.paths.run_file(task_id, run_id), &run)?;
 
@@ -2889,6 +2965,7 @@ impl App {
                 run.outcome = None;
                 run.pause_reason = Some(reason);
                 run.updated_at = now.clone();
+                run.transition_current_execution(RuntimeExecutionPhase::Paused, now.clone());
                 validate_run_state(&run)?;
                 write_json(&run_path, &run)?;
             }
@@ -3008,13 +3085,18 @@ impl App {
                 .unwrap_or("session");
             serde_json::json!({
                 "sessionId": session_id,
-                "status": "cancelled",
+                "availability": "established",
+                "latestTurnStatus": "cancelled",
                 "restored": false,
                 "createdAt": crate::acp::events::current_timestamp(),
             })
         };
         let now = crate::acp::events::current_timestamp();
-        session["status"] = serde_json::json!("cancelled");
+        if let Some(object) = session.as_object_mut() {
+            object.remove("status");
+        }
+        session["availability"] = serde_json::json!("established");
+        session["latestTurnStatus"] = serde_json::json!("cancelled");
         session["stopReason"] = serde_json::json!("cancelled");
         session["updatedAt"] = serde_json::json!(now.clone());
         if session.get("updated_at").is_some() {
@@ -3072,22 +3154,20 @@ impl App {
     }
 
     fn attempt_has_active_acp_session(&self, attempt_dir: &Utf8Path) -> bool {
-        let snapshot_path = attempt_dir.join("acp.snapshot.json");
-        let session_path = attempt_dir.join("acp.session.json");
-        let metadata = if snapshot_path.exists() {
-            read_json::<serde_json::Value>(&snapshot_path).ok()
-        } else if session_path.exists() {
-            read_json::<serde_json::Value>(&session_path).ok()
-        } else {
-            None
-        };
-        let Some(metadata) = metadata else {
-            return false;
-        };
-        let Some(status) = metadata.get("status").and_then(|value| value.as_str()) else {
-            return false;
-        };
-        is_acp_session_active_status(status)
+        if acp_client::prompt_activity(attempt_dir).is_some() {
+            return true;
+        }
+        let path = ["acp.snapshot.json", "acp.session.json"]
+            .into_iter()
+            .map(|name| attempt_dir.join(name))
+            .find(|path| path.exists());
+        path.and_then(|path| crate::acp::events::load_session_metadata_value(&path, None).ok())
+            .is_some_and(|metadata| {
+                metadata
+                    .get("latestTurnStatus")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("none")
+            })
     }
 
     pub fn run_open_session(
@@ -3764,12 +3844,6 @@ impl App {
 
     pub fn find_active_or_resumable_run_id(&self, task_id: &str) -> Result<Option<String>> {
         let runs = self.run_list(task_id)?;
-        if let Some(run) = runs.iter().rev().find(|run| {
-            run.status == RunStatus::Running
-                && self.paths.run_progress_file(task_id, &run.id).exists()
-        }) {
-            return Ok(Some(run.id.clone()));
-        }
         if let Some(run) = runs
             .iter()
             .rev()
@@ -3791,17 +3865,6 @@ impl App {
         }
         Ok(None)
     }
-}
-
-fn is_acp_session_active_status(status: &str) -> bool {
-    matches!(
-        status
-            .trim()
-            .to_ascii_lowercase()
-            .replace('_', "-")
-            .as_str(),
-        "pending" | "running" | "in-progress" | "sending" | "cancelling" | "cancel-requested"
-    )
 }
 
 #[cfg(test)]
@@ -3830,7 +3893,7 @@ mod tests {
         WorkspaceStatus,
     };
     use crate::observability::touch_log_file_best_effort;
-    use crate::runtime::{NodeState, RoundState, RunState, TaskState};
+    use crate::runtime::{NodeState, RoundState, RunState, RuntimeExecutionPhase, TaskState};
     use crate::storage::{StoragePathConfig, read_json, sqlite::SearchIndex, write_json};
     use camino::Utf8PathBuf;
     use std::sync::{Arc, Mutex};
@@ -3867,6 +3930,7 @@ mod tests {
             pause_reason: reason,
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
         let round = RoundState {
             version: VERSION.to_string(),
@@ -3911,7 +3975,7 @@ mod tests {
     }
 
     #[test]
-    fn background_continue_reports_prelaunch_failure_without_claiming_running() {
+    fn background_continue_prelaunch_failure_converges_to_runtime_abnormal_pause() {
         let temp = tempdir().unwrap();
         let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
         write_fixed_attempt_fixture(
@@ -3933,7 +3997,9 @@ mod tests {
         );
         let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
         assert_eq!(run.status, RunStatus::Paused);
-        assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+        assert_eq!(run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+        assert_eq!(run.execution.phase, RuntimeExecutionPhase::Paused);
+        assert_eq!(run.execution.revision, 3);
     }
 
     #[test]
@@ -4047,8 +4113,54 @@ mod tests {
             durable_run.pause_reason,
             Some(PauseReason::ProcessInterrupted)
         );
+        assert_eq!(durable_run.execution.phase, RuntimeExecutionPhase::Paused);
+        assert_eq!(durable_run.execution.revision, 2);
         assert_eq!(durable_node.status, RunStatus::Paused);
         assert_eq!(durable_node.runtime_execution_id, None);
+    }
+
+    #[test]
+    fn startup_recovery_pauses_running_runtime_execution_authoritatively() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        write_json(
+            &app.paths.task_file("task-001"),
+            &TaskState::new("task-001"),
+        )
+        .unwrap();
+
+        let recovered = app.recover_interrupted_running_sessions().unwrap();
+
+        assert_eq!(recovered.len(), 1);
+        let run = app.run_status("task-001", "run-001").unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+        assert_eq!(run.execution.phase, RuntimeExecutionPhase::Paused);
+        assert_eq!(run.execution.revision, 2);
+    }
+
+    #[test]
+    fn active_or_resumable_run_selection_does_not_depend_on_progress_files() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(
+            &app,
+            RunStatus::Paused,
+            Some(PauseReason::ProcessInterrupted),
+            None,
+        );
+        write_json(
+            &app.paths.run_progress_file("task-001", "run-999"),
+            &serde_json::json!({ "status": "running" }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            app.find_active_or_resumable_run_id("task-001").unwrap(),
+            Some("run-001".to_string())
+        );
+        assert!(app.paths.run_progress_file("task-001", "run-001").exists() == false);
     }
 
     fn test_path_config() -> StoragePathConfig {
@@ -4279,6 +4391,7 @@ mod tests {
             pause_reason: Some(reason),
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         }
     }
 
@@ -4917,6 +5030,7 @@ mod tests {
                 pause_reason: None,
                 uuid: None,
                 last_executed_node: None,
+                execution: Default::default(),
             },
         )
         .unwrap();
@@ -5042,7 +5156,8 @@ mod tests {
                     &attempt_dir.join("acp.session.json"),
                     &serde_json::json!({
                         "sessionId": format!("{}-session", node.id),
-                        "status": "completed"
+                        "availability": "established",
+                        "latestTurnStatus": "completed"
                     }),
                 )
                 .unwrap();
@@ -5079,7 +5194,9 @@ mod tests {
             let session: serde_json::Value =
                 read_json(&attempt_dir.join("acp.session.json")).unwrap();
             assert_eq!(
-                session.get("status").and_then(|value| value.as_str()),
+                session
+                    .get("latestTurnStatus")
+                    .and_then(|value| value.as_str()),
                 Some("cancelled")
             );
             assert_eq!(
@@ -5133,13 +5250,13 @@ mod tests {
 
         assert_eq!(
             running_session
-                .get("status")
+                .get("latestTurnStatus")
                 .and_then(|value| value.as_str()),
             Some("cancelled")
         );
         assert_eq!(
             completed_session
-                .get("status")
+                .get("latestTurnStatus")
                 .and_then(|value| value.as_str()),
             Some("completed")
         );
@@ -5382,6 +5499,7 @@ mod tests {
                 pause_reason: None,
                 uuid: None,
                 last_executed_node: None,
+                execution: Default::default(),
             },
         )
         .unwrap();
@@ -5430,7 +5548,8 @@ mod tests {
             &attempt_dir.join("acp.snapshot.json"),
             &serde_json::json!({
                 "sessionId": "session-follow-up",
-                "status": "running"
+                "availability": "established",
+                "latestTurnStatus": "none"
             }),
         )
         .unwrap();
@@ -5455,7 +5574,9 @@ mod tests {
 
         let session: serde_json::Value = read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
             Some("cancelled")
         );
         assert!(

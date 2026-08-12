@@ -97,11 +97,14 @@ export function deriveAcpRuntimeComposerState(
     && backendProcessingKind === 'preparing-workspace';
   const runtimeActive = Boolean(input.lifecycle?.runtime.active);
   const localTurnInFlight = Boolean(input.localTurnInFlight);
-  const lifecycleAcpRunning = Boolean(input.lifecycle?.acp.active) && !Boolean(input.lifecycle?.acp.stopping);
-  const acpTerminal = !localTurnInFlight && !lifecycleAcpRunning && (
-    Boolean(input.lifecycle?.acp.terminal) || isSessionTerminalStatus(input.acpStatus)
+  const lifecycleAcpRunning = ['starting', 'accepted', 'running'].includes(
+    input.lifecycle?.acp.liveTurnActivity ?? 'idle',
   );
-  const acpActive = !acpTerminal && Boolean(input.lifecycle?.acp.active);
+  const acpTerminal = !localTurnInFlight && !lifecycleAcpRunning && (
+    (input.lifecycle?.acp.latestTurnStatus ?? 'none') !== 'none'
+      || (!input.lifecycle && isSessionTerminalStatus(input.acpStatus))
+  );
+  const acpActive = !acpTerminal && lifecycleAcpRunning;
   const backendStopping = !acpTerminal && (Boolean(input.lifecycle?.acp.stopping) || backend?.mode === 'stopping');
   const waitingForPermission = input.waitingForPermission && !input.hasPlanIntervention;
   const staleTerminalSnapshot = acpTerminal && !localTurnInFlight;
@@ -223,7 +226,7 @@ export function shouldKeepLocalRuntimeLifecycleOverride(
 ) {
   if (!local?.runtime.active) return false;
   if (!incoming) return true;
-  if (incoming.runtime.active || incoming.acp.active || incoming.acp.stopping) {
+  if (incoming.runtime.active || incoming.acp.liveTurnActivity !== 'idle' || incoming.acp.stopping) {
     return false;
   }
   if (incoming.composer.mode === 'runtime-error') return false;

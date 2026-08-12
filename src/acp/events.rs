@@ -11,7 +11,8 @@ use serde_json::Value;
 use crate::acp::control::AcpRuntimeControlCursor;
 use crate::artifacts::json_artifact_display_span;
 use crate::storage::{
-    append_jsonl, append_jsonl_unlocked, ensure_parent_dir, with_jsonl_file_lock, write_json,
+    append_jsonl, append_jsonl_unlocked, ensure_parent_dir, read_json, with_jsonl_file_lock,
+    write_json,
 };
 
 const AGENT_TRANSCRIPT_META_KEY: &str = "agentTranscript";
@@ -40,7 +41,12 @@ pub struct AcpSessionMetadata {
     pub cwd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub availability: AcpSessionAvailability,
+    #[serde(default)]
+    pub latest_turn_status: AcpLatestTurnStatus,
     pub restored: bool,
     pub stop_reason: Option<String>,
     pub capabilities: Value,
@@ -104,6 +110,26 @@ pub struct AcpSessionMetadata {
     pub timing: Option<AcpSessionTiming>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AcpSessionAvailability {
+    Established,
+    Restorable,
+    #[default]
+    Unavailable,
+    Closing,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AcpLatestTurnStatus {
+    #[default]
+    None,
+    Completed,
+    Cancelled,
+    Failed,
 }
 
 /// Durable retry identity for the latest logical prompt turn.
@@ -748,15 +774,13 @@ pub fn read_session_metrics(session_path: &Utf8Path) -> SessionMetrics {
     // 1. Read acp.snapshot.json (acp.session.json may not exist)
     let snapshot_path = session_path.parent().map(|p| p.join("acp.snapshot.json"));
     if let Some(ref sp) = snapshot_path {
-        if let Ok(contents) = std::fs::read_to_string(sp.as_std_path()) {
-            if let Ok(meta) = serde_json::from_str::<AcpSessionMetadata>(&contents) {
-                input = meta.input_tokens.unwrap_or(0);
-                output = meta.output_tokens.unwrap_or(0);
-                cache_read = meta.cached_read_tokens.unwrap_or(0);
-                total = meta.total_tokens.unwrap_or(0);
-                if let Some(t) = &meta.timing {
-                    session_elapsed_seconds = t.session_elapsed_seconds;
-                }
+        if let Ok(meta) = load_session_metadata(sp, None) {
+            input = meta.input_tokens.unwrap_or(0);
+            output = meta.output_tokens.unwrap_or(0);
+            cache_read = meta.cached_read_tokens.unwrap_or(0);
+            total = meta.total_tokens.unwrap_or(0);
+            if let Some(t) = &meta.timing {
+                session_elapsed_seconds = t.session_elapsed_seconds;
             }
         }
     }
@@ -1352,6 +1376,64 @@ pub fn write_session_metadata(path: &Utf8Path, metadata: &AcpSessionMetadata) ->
     write_json(path, metadata)
 }
 
+/// Loads ACP metadata and performs the development-stage, one-time migration
+/// away from the ambiguous legacy `status` field. The migrated representation
+/// is written back immediately so every later reader sees the split schema.
+pub fn load_session_metadata(
+    path: &Utf8Path,
+    established_session_id: Option<String>,
+) -> Result<AcpSessionMetadata> {
+    Ok(serde_json::from_value(load_session_metadata_value(
+        path,
+        established_session_id,
+    )?)?)
+}
+
+/// Value-level metadata loader used by lightweight control/read-model paths.
+/// Migration happens before typed deserialization so old minimal metadata
+/// shells can be upgraded without inventing unrelated adapter fields.
+pub fn load_session_metadata_value(
+    path: &Utf8Path,
+    established_session_id: Option<String>,
+) -> Result<Value> {
+    let mut value: Value = read_json(path)?;
+    let Some(legacy_status) = value
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return Ok(value);
+    };
+    let normalized = legacy_status.trim().to_ascii_lowercase().replace('_', "-");
+    if value.get("sessionId").is_none()
+        && let Some(session_id) = established_session_id
+    {
+        value["sessionId"] = Value::String(session_id);
+    }
+    value["availability"] = Value::String(
+        match normalized.as_str() {
+            "closing" | "cancelling" | "cancel-requested" => "closing",
+            "failed" | "failure" | "error" | "killed" => "restorable",
+            _ => "established",
+        }
+        .to_string(),
+    );
+    value["latestTurnStatus"] = Value::String(
+        match normalized.as_str() {
+            "completed" | "complete" => "completed",
+            "cancelled" | "canceled" => "cancelled",
+            "failed" | "failure" | "error" | "killed" => "failed",
+            _ => "none",
+        }
+        .to_string(),
+    );
+    if let Some(object) = value.as_object_mut() {
+        object.remove("status");
+    }
+    write_json(path, &value)?;
+    Ok(value)
+}
+
 pub fn normalize_session_update(
     seq: u64,
     session_id: Option<String>,
@@ -1850,14 +1932,17 @@ fn extract_status(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpSessionMetadata, AcpTimingState, AcpUiEvent, agent_transcript_tool_output,
-        annotate_latest_runtime_control_output, append_raw_frame, append_structured_diagnostic,
-        append_timeline_patch, cancel_latest_processing_prompt_retry,
-        compact_live_conversation_event, context_compaction_phase, elicitation_request_event,
-        elicitation_response_event, extract_usage_fields, kind_to_ui_kind,
-        latest_timeline_source_seq, load_timeline_items, normalize_session_update,
-        permission_request_event, user_prompt_event, write_timeline_items,
+        AcpLatestTurnStatus, AcpSessionAvailability, AcpSessionMetadata, AcpTimingState,
+        AcpUiEvent, agent_transcript_tool_output, annotate_latest_runtime_control_output,
+        append_raw_frame, append_structured_diagnostic, append_timeline_patch,
+        cancel_latest_processing_prompt_retry, compact_live_conversation_event,
+        context_compaction_phase, elicitation_request_event, elicitation_response_event,
+        extract_usage_fields, kind_to_ui_kind, latest_timeline_source_seq, load_session_metadata,
+        load_timeline_items, normalize_session_update, permission_request_event, user_prompt_event,
+        write_timeline_items,
     };
+    use crate::storage::{read_json, write_json};
+    use camino::Utf8PathBuf;
     use serde_json::{Value, json};
 
     #[test]
@@ -2372,6 +2457,37 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("You are Gold Band.")
         );
+    }
+
+    #[test]
+    fn legacy_session_status_migrates_once_to_split_lifecycle_facets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.snapshot.json")).unwrap();
+        write_json(
+            &path,
+            &json!({
+                "adapterId": "codex-acp",
+                "adapterDisplayName": "Codex",
+                "cwd": "C:/tmp/attempt",
+                "status": "completed",
+                "restored": true,
+                "stopReason": "end_turn",
+                "capabilities": {},
+                "createdAt": "1785232749Z",
+                "updatedAt": "1785233025Z"
+            }),
+        )
+        .unwrap();
+
+        let metadata = load_session_metadata(&path, Some("session-123".to_string())).unwrap();
+        assert_eq!(metadata.session_id.as_deref(), Some("session-123"));
+        assert_eq!(metadata.availability, AcpSessionAvailability::Established);
+        assert_eq!(metadata.latest_turn_status, AcpLatestTurnStatus::Completed);
+
+        let persisted: Value = read_json(&path).unwrap();
+        assert!(persisted.get("status").is_none());
+        assert_eq!(persisted["availability"], "established");
+        assert_eq!(persisted["latestTurnStatus"], "completed");
     }
 
     #[test]

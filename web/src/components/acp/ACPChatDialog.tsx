@@ -1200,10 +1200,10 @@ export function ACPChatDialog(
     ? findPlanInterventionOption(pendingPermission)
     : null;
   const projectionLifecycle = localRuntimeLifecycle ?? runtimeComposerContext?.lifecycle;
-  const projectedSessionStatus = projectionLifecycle?.acp.active
+  const projectedSessionStatus = projectionLifecycle && projectionLifecycle.acp.liveTurnActivity !== 'idle'
     ? (projectionLifecycle.acp.stopping
         ? "cancelling"
-        : (projectionLifecycle.acp.status || "running"))
+        : projectionLifecycle.acp.liveTurnActivity)
     : promptCommandPending
       ? "running"
       : effective?.status;
@@ -1218,7 +1218,7 @@ export function ACPChatDialog(
   const todoEntries = timelineProjection.todoEntries;
   const timeline = useStableAcpTimeline(timelineProjection.timeline);
   const acpSessionActive = isSessionActiveStatus(effective?.status);
-  const sessionActive = acpSessionActive || runtimeActive || Boolean(projectionLifecycle?.acp.active) || promptCommandPending;
+  const sessionActive = acpSessionActive || runtimeActive || projectionLifecycle?.acp.liveTurnActivity !== "idle" || promptCommandPending;
   const messageAttachmentLocator = useMemo<MessageAttachmentLocator>(
     () => ({
       projectId,
@@ -1271,7 +1271,7 @@ export function ACPChatDialog(
     localLifecycle?.continueKind === "action"
       && localLifecycle.runtime.continuable
       && !localLifecycle.runtime.active
-      && !localLifecycle.acp.active,
+      && localLifecycle.acp.liveTurnActivity === "idle",
   );
   useEffect(() => {
     if (!shouldSettleRuntimeContinueSubmission(runtimeContinueSubmitting, showRuntimeContinueAction)) return;

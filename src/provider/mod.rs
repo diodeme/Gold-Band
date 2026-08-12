@@ -21,7 +21,7 @@ use crate::runtime_error::{
 };
 use crate::storage::{active_storage_path_config, read_json, write_json};
 use anyhow::{Context, Result, bail, ensure};
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -314,7 +314,13 @@ fn post_turn_projection_is_finalizing(req: &WorkerInvocation) -> Result<bool> {
     ) {
         return Ok(true);
     }
-    let state_path = req.attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE);
+    post_turn_projection_checkpoint_is_finalizing(&req.attempt_dir)
+}
+
+pub(crate) fn post_turn_projection_checkpoint_is_finalizing(
+    attempt_dir: &Utf8Path,
+) -> Result<bool> {
+    let state_path = attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE);
     if !state_path.exists() {
         return Ok(false);
     }
@@ -675,6 +681,13 @@ pub type AcpLiveUpdate<'a> = &'a dyn Fn(&AcpUiEvent) -> Result<()>;
 pub type AcpSessionUpdate<'a> = &'a dyn Fn() -> Result<()>;
 pub type AcpPromptAccepted<'a> = &'a dyn Fn(&str) -> Result<()>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderRuntimePhase {
+    FinalizingArtifact,
+}
+
+pub type ProviderRuntimePhaseUpdate<'a> = &'a dyn Fn(ProviderRuntimePhase) -> Result<()>;
+
 pub trait ProviderAdapter: Send + Sync {
     fn describe_provider(&self) -> ProviderInfo;
     fn doctor(&self) -> DoctorResult;
@@ -694,6 +707,16 @@ pub trait ProviderAdapter: Send + Sync {
         _prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
         self.run_worker_with_live_update(req, live_update)
+    }
+    fn run_worker_with_runtime_callbacks(
+        &self,
+        req: WorkerInvocation,
+        live_update: Option<AcpLiveUpdate<'_>>,
+        session_update: Option<AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
+        _runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
+    ) -> Result<ProviderRunResult> {
+        self.run_worker_with_callbacks(req, live_update, session_update, prompt_accepted)
     }
     fn open_session(&self, worker_ref: &SessionRef) -> Result<()>;
     fn build_continue_command(&self, worker_ref: &SessionRef) -> Result<Option<String>>;
@@ -1124,6 +1147,7 @@ impl AcpProvider {
         live_update: Option<AcpLiveUpdate<'_>>,
         session_update: Option<AcpSessionUpdate<'_>>,
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
+        runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
         let mut contract = req
             .output_contract
@@ -1157,6 +1181,9 @@ impl AcpProvider {
                 phase: ArtifactEmissionPhase::Finalizing,
             },
         )?;
+        if let Some(runtime_phase_update) = runtime_phase_update {
+            runtime_phase_update(ProviderRuntimePhase::FinalizingArtifact)?;
+        }
         let worker_ref: WorkerRefState = read_json(&req.attempt_dir.join("worker-ref.json"))
             .context("post-turn artifact finalization requires durable worker-ref")?;
         ensure!(
@@ -1269,6 +1296,23 @@ impl ProviderAdapter for AcpProvider {
         session_update: Option<AcpSessionUpdate<'_>>,
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
+        self.run_worker_with_runtime_callbacks(
+            req,
+            live_update,
+            session_update,
+            prompt_accepted,
+            None,
+        )
+    }
+
+    fn run_worker_with_runtime_callbacks(
+        &self,
+        req: WorkerInvocation,
+        live_update: Option<AcpLiveUpdate<'_>>,
+        session_update: Option<AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
+        runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
+    ) -> Result<ProviderRunResult> {
         if req.turn_control_mode == TurnControlMode::RuntimeControlled
             && req.output_contract.as_ref().is_some_and(|contract| {
                 contract.emission_mode == OutputEmissionMode::PostTurnProjection
@@ -1279,6 +1323,7 @@ impl ProviderAdapter for AcpProvider {
                 live_update,
                 session_update,
                 prompt_accepted,
+                runtime_phase_update,
             )
         } else {
             self.run_worker_once_with_callbacks(req, live_update, session_update, prompt_accepted)

@@ -3711,6 +3711,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
         write_json(&app.paths.run_file("task-1", "run-1"), &run).unwrap();
 
@@ -3787,6 +3788,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
         write_json(&app.paths.run_file("task-1", "run-1"), &run).unwrap();
         let accepted = database.get_occurrence(&claimed.id).unwrap().unwrap();
@@ -5123,6 +5125,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
         let run_file = app.paths.run_file(task_id, run_id);
         std::fs::create_dir_all(run_file.parent().unwrap().as_std_path()).unwrap();

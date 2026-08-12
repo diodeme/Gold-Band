@@ -583,7 +583,7 @@ function activeSessionToLeaf(
 function isRestorableRuntimeLeaf(leaf: ConversationSessionLeafVm) {
   return Boolean(
     leaf.lifecycle?.runtime.active
-    || leaf.lifecycle?.acp.active
+    || leaf.lifecycle?.acp.liveTurnActivity !== 'idle'
     || leaf.lifecycle?.acp.stopping,
   ) || isActiveSessionStatus(leaf.status) || (leaf.current && !isTerminalSessionStatus(leaf.status));
 }

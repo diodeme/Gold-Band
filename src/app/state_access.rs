@@ -64,13 +64,16 @@ pub(crate) fn persist_runtime_state(
     round: &RoundState,
     node: &NodeState,
 ) -> Result<()> {
-    write_json(&app.paths.run_file(task_id, &run.id), run)?;
-    write_json(&app.paths.round_file(task_id, &run.id, &round.id), round)?;
+    // Commit the node outcome before publishing any Runtime transition that
+    // may point at a successor. This is the aggregate's crash-consistency
+    // boundary across the three atomic JSON files.
     write_json(
         &app.paths
             .node_file(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id),
         node,
     )?;
+    write_json(&app.paths.round_file(task_id, &run.id, &round.id), round)?;
+    write_json(&app.paths.run_file(task_id, &run.id), run)?;
     Ok(())
 }
 

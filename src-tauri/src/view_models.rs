@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::Result;
 use gold_band::acp::client::PromptActivity;
+use gold_band::acp::events::load_session_metadata;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
@@ -1551,6 +1552,12 @@ pub fn workflow_vm(app: &App, task_id: &str) -> Result<WorkflowVm> {
 
 pub fn run_detail_vm(app: &App, task_id: &str, run_id: &str) -> Result<RunDetailVm> {
     let run = app.run_status(task_id, run_id)?;
+    let progress = app.run_progress(task_id, run_id)?.filter(|progress| {
+        progress
+            .get("runtimeRevision")
+            .and_then(serde_json::Value::as_u64)
+            == Some(run.execution.revision)
+    });
     let rounds = app
         .round_list(task_id, run_id)?
         .into_iter()
@@ -1560,7 +1567,7 @@ pub fn run_detail_vm(app: &App, task_id: &str, run_id: &str) -> Result<RunDetail
         run: run_summary_vm(run),
         rounds,
         events: app.run_events(task_id, run_id)?,
-        progress: app.run_progress(task_id, run_id)?,
+        progress,
     })
 }
 
@@ -1820,13 +1827,6 @@ pub(crate) fn latest_control_failure_vm(
             .or_else(|| {
                 summary.and_then(|summary| control_failure_from_summary(summary, data, &event))
             });
-    }
-    if latest.is_none() {
-        if let Some(progress) = app.run_progress(task_id, run_id)? {
-            if let Some(summary) = progress.get("summary").and_then(|value| value.as_str()) {
-                latest = control_failure_from_summary(summary, &progress, &serde_json::Value::Null);
-            }
-        }
     }
     Ok(latest)
 }
@@ -3578,11 +3578,11 @@ pub fn dynamic_acp_session_vm(
         return Ok(None);
     }
     let mut session = if let Some(json) = preloaded_session_json {
-        json
+        normalize_preloaded_session_metadata(json)
     } else if snapshot_path.exists() {
-        read_json::<serde_json::Value>(&snapshot_path).unwrap_or_else(|_| serde_json::json!({}))
+        load_session_metadata_value(&snapshot_path).unwrap_or_else(|| serde_json::json!({}))
     } else if session_path.exists() {
-        read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({}))
+        load_session_metadata_value(&session_path).unwrap_or_else(|| serde_json::json!({}))
     } else {
         serde_json::json!({})
     };
@@ -3628,10 +3628,7 @@ pub fn dynamic_acp_session_vm(
         .or_else(|| extract_system_prompt_append(&raw_path));
     apply_stale_session_completion_fuse_dynamic(&attempt_dir, &node_path, &mut session)?;
     let config = acp_session_config_vm(&session);
-    let metadata_status = session
-        .get("status")
-        .and_then(|value| value.as_str())
-        .unwrap_or("unknown");
+    let metadata_status = session_metadata_status(&session);
     let root_status = effective_acp_session_status(
         metadata_status,
         gold_band::acp::client::prompt_activity(&attempt_dir),
@@ -3859,10 +3856,7 @@ pub fn dynamic_acp_session_status(
     );
     apply_stale_session_completion_fuse_dynamic(&attempt_dir, &node_path, &mut session)?;
     Ok(Some(effective_acp_session_status(
-        session
-            .get("status")
-            .and_then(|value| value.as_str())
-            .unwrap_or("unknown"),
+        session_metadata_status(&session),
         gold_band::acp::client::prompt_activity(&attempt_dir),
     )))
 }
@@ -3926,11 +3920,11 @@ pub fn acp_session_vm(
     }
 
     let mut session = if let Some(json) = preloaded_session_json {
-        json
+        normalize_preloaded_session_metadata(json)
     } else if snapshot_path.exists() {
-        read_json::<serde_json::Value>(&snapshot_path).unwrap_or_else(|_| serde_json::json!({}))
+        load_session_metadata_value(&snapshot_path).unwrap_or_else(|| serde_json::json!({}))
     } else if session_path.exists() {
-        read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({}))
+        load_session_metadata_value(&session_path).unwrap_or_else(|| serde_json::json!({}))
     } else {
         serde_json::json!({})
     };
@@ -4018,13 +4012,13 @@ pub fn acp_session_vm(
     trace_acp_session_query(
         &mut query_trace,
         "lifecycle-fuse",
-        serde_json::json!({ "status": session.get("status").and_then(Value::as_str) }),
+        serde_json::json!({
+            "availability": session.get("availability").and_then(Value::as_str),
+            "latestTurnStatus": session.get("latestTurnStatus").and_then(Value::as_str),
+        }),
     );
     let config = acp_session_config_vm(&session);
-    let metadata_status = session
-        .get("status")
-        .and_then(|value| value.as_str())
-        .unwrap_or("unknown");
+    let metadata_status = session_metadata_status(&session);
     let root_status = effective_acp_session_status(
         metadata_status,
         gold_band::acp::client::prompt_activity(&attempt_dir),
@@ -4275,10 +4269,7 @@ pub fn acp_session_status(
         &mut session,
     )?;
     Ok(Some(effective_acp_session_status(
-        session
-            .get("status")
-            .and_then(|value| value.as_str())
-            .unwrap_or("unknown"),
+        session_metadata_status(&session),
         gold_band::acp::client::prompt_activity(&attempt_dir),
     )))
 }
@@ -4300,15 +4291,10 @@ fn session_metadata_from_attempt_dir(attempt_dir: &camino::Utf8Path) -> Option<s
         return None;
     }
     if snapshot_path.exists() {
-        return Some(
-            read_json::<serde_json::Value>(&snapshot_path)
-                .unwrap_or_else(|_| serde_json::json!({})),
-        );
+        return Some(load_session_metadata_value(&snapshot_path).unwrap_or_default());
     }
     if session_path.exists() {
-        return Some(
-            read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({})),
-        );
+        return Some(load_session_metadata_value(&session_path).unwrap_or_default());
     }
     Some(serde_json::json!({}))
 }
@@ -6167,15 +6153,9 @@ fn apply_stale_session_completion_fuse_common(
     if prompt_active {
         return Ok(false);
     }
-    let metadata_status = session
-        .get("status")
-        .and_then(|value| value.as_str())
-        .unwrap_or("unknown");
-    if !is_acp_session_active_status(metadata_status) {
-        return Ok(false);
-    }
     if raw_has_successful_session_close(raw_path) {
-        session["status"] = serde_json::json!("cancelled");
+        session["availability"] = serde_json::json!("established");
+        session["latestTurnStatus"] = serde_json::json!("cancelled");
         session["stopReason"] = serde_json::json!("cancelled");
         session["updatedAt"] = serde_json::json!(current_epoch_timestamp());
         return Ok(true);
@@ -6186,10 +6166,13 @@ fn apply_stale_session_completion_fuse_common(
     if !node_completed {
         return Ok(false);
     }
+    if !matches!(session_metadata_status(session), "idle" | "unknown") {
+        return Ok(false);
+    }
     if node_completed && pid_path.exists() {
         let _ = fs::remove_file(pid_path.as_std_path());
     }
-    session["status"] = serde_json::json!("completed");
+    session["latestTurnStatus"] = serde_json::json!("completed");
     if session.get("stopReason").is_none() || session["stopReason"].is_null() {
         session["stopReason"] = serde_json::json!("end_turn");
     }
@@ -6768,6 +6751,65 @@ fn effective_acp_session_status(
         Some(PromptActivity::CancelRequested) => "cancelling".to_string(),
         None => persisted_status.to_string(),
     }
+}
+
+fn session_metadata_status(session: &serde_json::Value) -> &str {
+    let availability = session
+        .get("availability")
+        .and_then(Value::as_str)
+        .unwrap_or("unavailable");
+    if availability.eq_ignore_ascii_case("closing") {
+        return "closing";
+    }
+    match session
+        .get("latestTurnStatus")
+        .and_then(Value::as_str)
+        .unwrap_or("none")
+    {
+        "completed" => "completed",
+        "cancelled" => "cancelled",
+        "failed" => "failed",
+        _ if matches!(availability, "established" | "restorable") => "idle",
+        _ => "unknown",
+    }
+}
+
+fn load_session_metadata_value(path: &camino::Utf8Path) -> Option<serde_json::Value> {
+    load_session_metadata(path, None)
+        .ok()
+        .and_then(|metadata| serde_json::to_value(metadata).ok())
+}
+
+fn normalize_preloaded_session_metadata(mut session: serde_json::Value) -> serde_json::Value {
+    let legacy_status = session
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let Some(status) = legacy_status else {
+        return session;
+    };
+    let normalized = status.trim().to_ascii_lowercase().replace('_', "-");
+    let session_established = session
+        .get("sessionId")
+        .or_else(|| session.get("acpSessionId"))
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    session["availability"] = serde_json::json!(match normalized.as_str() {
+        "closing" | "cancelling" | "cancel-requested" => "closing",
+        "failed" | "failure" | "error" | "killed" if session_established => "restorable",
+        _ if session_established => "established",
+        _ => "unavailable",
+    });
+    session["latestTurnStatus"] = serde_json::json!(match normalized.as_str() {
+        "completed" | "complete" => "completed",
+        "cancelled" | "canceled" => "cancelled",
+        "failed" | "failure" | "error" | "killed" => "failed",
+        _ => "none",
+    });
+    if let Some(object) = session.as_object_mut() {
+        object.remove("status");
+    }
+    session
 }
 
 fn is_acp_session_stopping_status(status: &str) -> bool {
@@ -7734,7 +7776,10 @@ mod tests {
     use super::*;
     use camino::Utf8PathBuf;
     use gold_band::app::App;
+    use gold_band::domain::{PauseReason, RunStatus, VERSION};
+    use gold_band::runtime::{RunState, RuntimeExecutionPhase, RuntimeExecutionState};
     use serde_json::json;
+    use tempfile::tempdir;
 
     #[test]
     fn app_config_vm_exposes_workspace_layout_contract() {
@@ -7766,6 +7811,59 @@ mod tests {
         assert_eq!(
             value["workspaceLayout"]["workflowCanvas"]["windowMinWidth"],
             640
+        );
+    }
+
+    #[test]
+    fn run_detail_only_exposes_progress_for_the_authoritative_runtime_revision() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "t0".to_string(),
+            updated_at: "t1".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: None,
+            current_node: None,
+            current_attempt: None,
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::ProcessInterrupted),
+            uuid: None,
+            last_executed_node: None,
+            execution: RuntimeExecutionState {
+                revision: 7,
+                phase: RuntimeExecutionPhase::Paused,
+                locator: None,
+                updated_at: "t1".to_string(),
+            },
+        };
+        write_json(&app.paths.run_file("task-001", "run-001"), &run).unwrap();
+        write_json(
+            &app.paths.run_progress_file("task-001", "run-001"),
+            &json!({ "runtimeRevision": 6, "status": "running" }),
+        )
+        .unwrap();
+
+        let stale = run_detail_vm(&app, "task-001", "run-001").unwrap();
+        assert!(stale.progress.is_none());
+
+        write_json(
+            &app.paths.run_progress_file("task-001", "run-001"),
+            &json!({ "runtimeRevision": 7, "status": "paused" }),
+        )
+        .unwrap();
+        let current = run_detail_vm(&app, "task-001", "run-001").unwrap();
+        assert_eq!(
+            current
+                .progress
+                .as_ref()
+                .and_then(|value| value["status"].as_str()),
+            Some("paused")
         );
     }
 
@@ -8533,7 +8631,7 @@ mod tests {
         let pid_path = attempt_dir.join("provider.pid");
         let raw_path = attempt_dir.join("acp.raw.jsonl");
         fs::write(pid_path.as_std_path(), "12345").unwrap();
-        let mut session = json!({ "status": "running" });
+        let mut session = json!({ "availability": "established", "latestTurnStatus": "none" });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8546,7 +8644,9 @@ mod tests {
 
         assert!(fused);
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
             Some("completed")
         );
         assert!(!pid_path.exists());
@@ -8564,7 +8664,7 @@ mod tests {
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
         let pid_path = attempt_dir.join("provider.pid");
         let raw_path = attempt_dir.join("acp.raw.jsonl");
-        let mut session = json!({ "status": "running", "stopReason": null });
+        let mut session = json!({ "availability": "established", "latestTurnStatus": "none", "stopReason": null });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8576,7 +8676,7 @@ mod tests {
         .unwrap();
 
         assert!(!fused);
-        assert_eq!(session["status"], "running");
+        assert_eq!(session["latestTurnStatus"], "none");
         assert!(session["stopReason"].is_null());
 
         fs::remove_dir_all(dir).unwrap();
@@ -8608,7 +8708,7 @@ mod tests {
         let pid_path = attempt_dir.join("provider.pid");
         let raw_path = attempt_dir.join("acp.raw.jsonl");
         fs::write(pid_path.as_std_path(), "12345").unwrap();
-        let mut session = json!({ "status": "running" });
+        let mut session = json!({ "availability": "established", "latestTurnStatus": "none" });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8621,8 +8721,10 @@ mod tests {
 
         assert!(!fused);
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
-            Some("running")
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
+            Some("none")
         );
         assert!(pid_path.exists());
 
@@ -8639,7 +8741,7 @@ mod tests {
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
         let pid_path = attempt_dir.join("provider.pid");
         let raw_path = attempt_dir.join("acp.raw.jsonl");
-        let mut session = json!({ "status": "failed" });
+        let mut session = json!({ "availability": "restorable", "latestTurnStatus": "failed" });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8652,7 +8754,9 @@ mod tests {
 
         assert!(!fused);
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
             Some("failed")
         );
 
@@ -8778,7 +8882,7 @@ mod tests {
             .join("\n"),
         )
         .unwrap();
-        let mut session = json!({ "status": "running", "stopReason": null });
+        let mut session = json!({ "availability": "established", "latestTurnStatus": "none", "stopReason": null });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8791,7 +8895,9 @@ mod tests {
 
         assert!(fused);
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
             Some("cancelled")
         );
         assert_eq!(
@@ -8826,7 +8932,7 @@ mod tests {
             .join("\n"),
         )
         .unwrap();
-        let mut session = json!({ "status": "running", "stopReason": null });
+        let mut session = json!({ "availability": "established", "latestTurnStatus": "none", "stopReason": null });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8839,8 +8945,10 @@ mod tests {
 
         assert!(!fused);
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
-            Some("running")
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
+            Some("none")
         );
         assert!(pid_path.exists());
 

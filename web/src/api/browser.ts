@@ -262,10 +262,9 @@ function browserCompletedConversationRun(): ConversationRunVm {
       },
       acp: {
         ...attempt.lifecycle.acp,
-        status: 'completed',
-        active: false,
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'completed',
         stopping: false,
-        terminal: true,
       },
       displayStatus: 'success',
       composer: {
@@ -312,11 +311,9 @@ function browserQueuedConversationRun(): ConversationRunVm {
       },
       acp: {
         ...attempt.lifecycle.acp,
-        status: 'running',
-        phase: 'running',
-        active: true,
+        liveTurnActivity: 'running',
+        latestTurnStatus: 'none',
         stopping: false,
-        terminal: false,
       },
       displayStatus: 'running',
       composer: {

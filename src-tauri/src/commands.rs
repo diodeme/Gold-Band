@@ -1851,12 +1851,12 @@ pub async fn get_git_commit_detail(
 }
 
 #[tauri::command]
-pub async fn analyze_git_commit_relations(
+pub async fn get_git_commit_review(
     state: State<'_, DesktopState>,
     project_id: String,
     workspace_path: Option<String>,
-    query: gold_band::git::GitCommitRelationsQuery,
-) -> CommandResult<gold_band::git::GitCommitRelations> {
+    query: gold_band::git::GitCommitReviewQuery,
+) -> CommandResult<gold_band::git::GitCommitReview> {
     let app = resolve_command_app(state.inner(), Some(&project_id))?;
     let project_root = app.paths.repo_root;
     spawn_blocking_command(move || {
@@ -1868,7 +1868,31 @@ pub async fn analyze_git_commit_relations(
             )
             .map_err(command_error)?;
         service
-            .analyze_commit_relations(&workspace.workspace_path, &query)
+            .commit_review(&workspace.workspace_path, &query)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_git_commit_reachability(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    query: gold_band::git::GitCommitReachabilityQuery,
+) -> CommandResult<gold_band::git::GitCommitReachability> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .commit_reachability(&workspace.workspace_path, &query)
             .map_err(command_error)
     })
     .await
@@ -1892,7 +1916,7 @@ pub async fn execute_git_mutation(
             )
             .map_err(command_error)?;
         service
-            .execute_mutation(&project_id, &workspace.workspace_path, &input)
+            .execute_mutation(&workspace.workspace_path, &input)
             .map_err(command_error)
     })
     .await
@@ -1917,14 +1941,18 @@ pub async fn get_git_comparison(
                 host,
                 repository,
                 pr_number,
+                base_oid,
+                head_oid,
                 path,
                 ..
             } => gold_band::git::GitHubCliService::default()
-                .pull_request_comparison(
+                .pull_request_revision_comparison(
                     &workspace.workspace_path,
                     host,
                     repository,
                     *pr_number,
+                    base_oid,
+                    head_oid,
                     path,
                 )
                 .map_err(command_error),

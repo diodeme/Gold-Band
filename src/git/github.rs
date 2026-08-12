@@ -200,6 +200,8 @@ pub struct GitHubPullRequestFile {
 pub struct GitHubPullRequestDetail {
     #[serde(flatten)]
     pub summary: GitHubPullRequestSummary,
+    pub base_ref_oid: String,
+    pub head_ref_oid: String,
     pub body: String,
     pub mergeable: Option<String>,
     pub merge_state_status: Option<String>,
@@ -345,14 +347,6 @@ struct GitHubRepositoryView {
     default_branch_ref: Option<GitHubDefaultBranchRef>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GitHubPullRequestComparisonMetadata {
-    base_ref_oid: String,
-    head_ref_oid: String,
-    files: Vec<GitHubPullRequestFile>,
-}
-
 #[derive(Debug)]
 enum GitHubFileVersion {
     Missing,
@@ -491,15 +485,11 @@ impl GitHubCliService {
                 default_branch: None,
             });
         }
-        let snapshot = GitSourceControlService::default().snapshot("github-capability", cwd)?;
-        let Some(mapping) = resolve_repository_mapping(
-            &snapshot.repository.remotes,
-            snapshot
-                .repository
-                .upstream
-                .as_ref()
-                .map(|upstream| upstream.name.as_str()),
-        ) else {
+        let git = GitSourceControlService::default();
+        let status = git.status(cwd)?;
+        let remotes = git.remotes(cwd)?;
+        let Some(mapping) = resolve_repository_mapping(&remotes, status.branch.upstream.as_deref())
+        else {
             let (host, account) = accounts.first().cloned().unwrap();
             return Ok(GitHubCapability {
                 status: GitHubCapabilityStatus::RepositoryUnresolved,
@@ -526,17 +516,10 @@ impl GitHubCliService {
                 default_branch: None,
             });
         };
-        let repo_output = self.run(
-            cwd,
-            &[
-                "repo",
-                "view",
-                "--repo",
-                &repository_selector(&mapping.host, &mapping.repository)?,
-                "--json",
-                "nameWithOwner,defaultBranchRef",
-            ],
-        )?;
+        let repository = repository_selector(&mapping.host, &mapping.repository)?;
+        let repo_args = github_repository_view_args(&repository);
+        let repo_arg_refs = repo_args.iter().map(String::as_str).collect::<Vec<_>>();
+        let repo_output = self.run(cwd, &repo_arg_refs)?;
         if !repo_output.success {
             return Ok(GitHubCapability {
                 status: GitHubCapabilityStatus::RepositoryUnresolved,
@@ -590,19 +573,23 @@ impl GitHubCliService {
     ) -> Result<GitHubPullRequestDetail> {
         validate_repository(repository)?;
         let repository = repository_selector(host, repository)?;
-        self.require_json(cwd, &["pr".into(), "view".into(), number.to_string(), "--repo".into(), repository, "--json".into(), "number,title,body,state,isDraft,author,headRefName,baseRefName,updatedAt,url,reviewDecision,labels,statusCheckRollup,latestReviews,mergeable,mergeStateStatus,additions,deletions,changedFiles,files".into()], "github.pr-detail-failed")
+        self.require_json(cwd, &["pr".into(), "view".into(), number.to_string(), "--repo".into(), repository, "--json".into(), "number,title,body,state,isDraft,author,headRefName,baseRefName,baseRefOid,headRefOid,updatedAt,url,reviewDecision,labels,statusCheckRollup,latestReviews,mergeable,mergeStateStatus,additions,deletions,changedFiles,files".into()], "github.pr-detail-failed")
     }
 
-    pub fn pull_request_comparison(
+    pub fn pull_request_revision_comparison(
         &self,
         cwd: &Utf8Path,
         host: &str,
         repository: &str,
         number: u64,
+        base_oid: &str,
+        head_oid: &str,
         path: &str,
     ) -> Result<GitFileComparison> {
         validate_host(host)?;
         validate_repository(repository)?;
+        validate_github_oid(base_oid)?;
+        validate_github_oid(head_oid)?;
         validate_repo_relative_path(path)?;
         if number == 0 {
             return Err(GitHubServiceError::new(
@@ -611,75 +598,33 @@ impl GitHubCliService {
             )
             .into());
         }
-        let repository_selector = repository_selector(host, repository)?;
-        let number = number.to_string();
-        let diff_output = self.run(
-            cwd,
-            &[
-                "pr",
-                "diff",
-                &number,
-                "--repo",
-                &repository_selector,
-                "--name-only",
-                "--color",
-                "never",
-            ],
-        )?;
-        if !diff_output.success {
-            return Err(classify_github_error("github.pr-diff-failed", &diff_output).into());
-        }
-        if diff_output.stdout_truncated {
-            return Err(
-                GitHubServiceError::new("github.output-too-large", serde_json::json!({})).into(),
-            );
-        }
-        if !String::from_utf8_lossy(&diff_output.stdout)
-            .lines()
-            .any(|changed_path| changed_path == path)
-        {
-            return Err(GitHubServiceError::new(
-                "github.pr-file-not-found",
-                serde_json::json!({ "number": number, "path": path }),
-            )
-            .into());
-        }
-
-        let metadata: GitHubPullRequestComparisonMetadata = self.require_json(
-            cwd,
-            &[
-                "pr".into(),
-                "view".into(),
-                number.clone(),
-                "--repo".into(),
-                repository_selector,
-                "--json".into(),
-                "baseRefOid,headRefOid,files".into(),
-            ],
-            "github.pr-diff-metadata-failed",
-        )?;
-        let file = metadata
-            .files
-            .into_iter()
-            .find(|file| file.path == path)
-            .ok_or_else(|| {
+        let (before, after) = std::thread::scope(|scope| {
+            let before = scope
+                .spawn(|| self.pull_request_file_version(cwd, host, repository, base_oid, path));
+            let after = scope
+                .spawn(|| self.pull_request_file_version(cwd, host, repository, head_oid, path));
+            let before = before.join().map_err(|_| {
                 GitHubServiceError::new(
-                    "github.pr-file-metadata-unavailable",
-                    serde_json::json!({ "number": number, "path": path }),
+                    "github.pr-file-content-failed",
+                    serde_json::json!({ "number": number, "path": path, "revision": "base" }),
                 )
-            })?;
-        let before =
-            self.pull_request_file_version(cwd, host, repository, &metadata.base_ref_oid, path)?;
-        let after =
-            self.pull_request_file_version(cwd, host, repository, &metadata.head_ref_oid, path)?;
+            })??;
+            let after = after.join().map_err(|_| {
+                GitHubServiceError::new(
+                    "github.pr-file-content-failed",
+                    serde_json::json!({ "number": number, "path": path, "revision": "head" }),
+                )
+            })??;
+            Ok::<_, anyhow::Error>((before, after))
+        })?;
         if matches!(before, GitHubFileVersion::TooLarge)
             || matches!(after, GitHubFileVersion::TooLarge)
         {
             return Ok(GitFileComparison {
                 path: path.to_string(),
                 stats: GitDiffStats {
-                    added_lines: file.additions,
-                    deleted_lines: file.deletions,
+                    added_lines: 0,
+                    deleted_lines: 0,
                 },
                 before: None,
                 after: None,
@@ -703,12 +648,7 @@ impl GitHubCliService {
             )
             .into());
         }
-        let mut comparison = comparison_from_versions(path.to_string(), before, after)?;
-        comparison.stats = GitDiffStats {
-            added_lines: file.additions,
-            deleted_lines: file.deletions,
-        };
-        Ok(comparison)
+        comparison_from_versions(path.to_string(), before, after)
     }
 
     pub fn preflight_pull_request(
@@ -1641,6 +1581,14 @@ fn validate_repository(repository: &str) -> Result<()> {
     }
 }
 
+fn validate_github_oid(oid: &str) -> Result<()> {
+    if matches!(oid.len(), 40 | 64) && oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(GitHubServiceError::new("github.pr-revision-invalid", serde_json::json!({})).into())
+    }
+}
+
 fn repository_selector(host: &str, repository: &str) -> Result<String> {
     validate_host(host)?;
     let host = host.trim();
@@ -1649,6 +1597,16 @@ fn repository_selector(host: &str, repository: &str) -> Result<String> {
     } else {
         format!("{host}/{repository}")
     })
+}
+
+fn github_repository_view_args(repository: &str) -> Vec<String> {
+    vec![
+        "repo".to_string(),
+        "view".to_string(),
+        repository.to_string(),
+        "--json".to_string(),
+        "nameWithOwner,defaultBranchRef".to_string(),
+    ]
 }
 
 fn validate_host(host: &str) -> Result<()> {
@@ -1887,22 +1845,13 @@ mod tests {
 
         #[cfg(windows)]
         let script = "@echo off\r\n\
-            if \"%1\"==\"pr\" if \"%2\"==\"diff\" goto diff\r\n\
-            if \"%1\"==\"pr\" if \"%2\"==\"view\" goto view\r\n\
             if \"%1\"==\"api\" goto api\r\n\
             exit /b 1\r\n\
-            :diff\r\n\
-            echo src/app.ts\r\n\
-            echo added.txt\r\n\
-            echo removed.txt\r\n\
-            exit /b 0\r\n\
-            :view\r\n\
-            echo {\"baseRefOid\":\"base-oid\",\"headRefOid\":\"head-oid\",\"files\":[{\"path\":\"src/app.ts\",\"additions\":2,\"deletions\":1},{\"path\":\"added.txt\",\"additions\":1,\"deletions\":0},{\"path\":\"removed.txt\",\"additions\":0,\"deletions\":1}]}\r\n\
-            exit /b 0\r\n\
             :api\r\n\
-            echo %8 | findstr /C:\"added.txt\" >nul && echo %8 | findstr /C:\"ref=base-oid\" >nul && goto notfound\r\n\
-            echo %8 | findstr /C:\"removed.txt\" >nul && echo %8 | findstr /C:\"ref=head-oid\" >nul && goto notfound\r\n\
-            echo %8 | findstr /C:\"ref=base-oid\" >nul && goto base\r\n\
+            echo %8 | findstr /C:\"missing.txt\" >nul && goto notfound\r\n\
+            echo %8 | findstr /C:\"added.txt\" >nul && echo %8 | findstr /C:\"ref=1111111111111111111111111111111111111111\" >nul && goto notfound\r\n\
+            echo %8 | findstr /C:\"removed.txt\" >nul && echo %8 | findstr /C:\"ref=2222222222222222222222222222222222222222\" >nul && goto notfound\r\n\
+            echo %8 | findstr /C:\"ref=1111111111111111111111111111111111111111\" >nul && goto base\r\n\
             echo head-content\r\n\
             exit /b 0\r\n\
             :base\r\n\
@@ -1913,12 +1862,11 @@ mod tests {
             exit /b 1\r\n";
         #[cfg(not(windows))]
         let script = "#!/bin/sh\n\
-            if [ \"$1\" = \"pr\" ] && [ \"$2\" = \"diff\" ]; then printf 'src/app.ts\\nadded.txt\\nremoved.txt\\n'; exit 0; fi\n\
-            if [ \"$1\" = \"pr\" ] && [ \"$2\" = \"view\" ]; then echo '{\"baseRefOid\":\"base-oid\",\"headRefOid\":\"head-oid\",\"files\":[{\"path\":\"src/app.ts\",\"additions\":2,\"deletions\":1},{\"path\":\"added.txt\",\"additions\":1,\"deletions\":0},{\"path\":\"removed.txt\",\"additions\":0,\"deletions\":1}]}'; exit 0; fi\n\
             if [ \"$1\" = \"api\" ]; then\n\
-              case \"$8\" in *added.txt*ref=base-oid*) echo 'HTTP 404: Not Found' >&2; exit 1;; esac\n\
-              case \"$8\" in *removed.txt*ref=head-oid*) echo 'HTTP 404: Not Found' >&2; exit 1;; esac\n\
-              case \"$8\" in *ref=base-oid*) echo 'base-content'; exit 0;; esac\n\
+              case \"$8\" in *missing.txt*) echo 'HTTP 404: Not Found' >&2; exit 1;; esac\n\
+              case \"$8\" in *added.txt*ref=1111111111111111111111111111111111111111*) echo 'HTTP 404: Not Found' >&2; exit 1;; esac\n\
+              case \"$8\" in *removed.txt*ref=2222222222222222222222222222222222222222*) echo 'HTTP 404: Not Found' >&2; exit 1;; esac\n\
+              case \"$8\" in *ref=1111111111111111111111111111111111111111*) echo 'base-content'; exit 0;; esac\n\
               echo 'head-content'; exit 0\n\
             fi\n\
             exit 1\n";
@@ -1993,6 +1941,20 @@ mod tests {
     }
 
     #[test]
+    fn repository_view_uses_the_supported_positional_repository_argument() {
+        assert_eq!(
+            github_repository_view_args("acme/widgets"),
+            vec![
+                "repo",
+                "view",
+                "acme/widgets",
+                "--json",
+                "nameWithOwner,defaultBranchRef",
+            ]
+        );
+    }
+
+    #[test]
     fn pull_request_create_contract_uses_body_stdin() {
         let input = GitHubPullRequestCreateInput {
             host: "github.com".to_string(),
@@ -2058,26 +2020,52 @@ mod tests {
             executable: Some(create_fake_pr_diff_gh(temp.path())),
             git_executable: None,
         };
+        let base_oid = "1111111111111111111111111111111111111111";
+        let head_oid = "2222222222222222222222222222222222222222";
 
         let modified = service
-            .pull_request_comparison(&root, "github.com", "acme/widgets", 42, "src/app.ts")
+            .pull_request_revision_comparison(
+                &root,
+                "github.com",
+                "acme/widgets",
+                42,
+                base_oid,
+                head_oid,
+                "src/app.ts",
+            )
             .unwrap();
         assert_eq!(modified.before.unwrap().content.trim(), "base-content");
         assert_eq!(modified.after.unwrap().content.trim(), "head-content");
         assert_eq!(
             (modified.stats.added_lines, modified.stats.deleted_lines),
-            (2, 1)
+            (1, 1)
         );
 
         let added = service
-            .pull_request_comparison(&root, "github.com", "acme/widgets", 42, "added.txt")
+            .pull_request_revision_comparison(
+                &root,
+                "github.com",
+                "acme/widgets",
+                42,
+                base_oid,
+                head_oid,
+                "added.txt",
+            )
             .unwrap();
         assert!(added.before.is_none());
         assert_eq!(added.after.unwrap().content.trim(), "head-content");
         assert_eq!((added.stats.added_lines, added.stats.deleted_lines), (1, 0));
 
         let removed = service
-            .pull_request_comparison(&root, "github.com", "acme/widgets", 42, "removed.txt")
+            .pull_request_revision_comparison(
+                &root,
+                "github.com",
+                "acme/widgets",
+                42,
+                base_oid,
+                head_oid,
+                "removed.txt",
+            )
             .unwrap();
         assert_eq!(removed.before.unwrap().content.trim(), "base-content");
         assert!(removed.after.is_none());
@@ -2087,11 +2075,38 @@ mod tests {
         );
 
         let error = service
-            .pull_request_comparison(&root, "github.com", "acme/widgets", 42, "missing.txt")
+            .pull_request_revision_comparison(
+                &root,
+                "github.com",
+                "acme/widgets",
+                42,
+                base_oid,
+                head_oid,
+                "missing.txt",
+            )
             .unwrap_err();
         assert_eq!(
             error.downcast_ref::<GitHubServiceError>().unwrap().code,
-            "github.pr-file-not-found"
+            "github.pr-file-content-unavailable"
+        );
+
+        let invalid_revision = service
+            .pull_request_revision_comparison(
+                &root,
+                "github.com",
+                "acme/widgets",
+                42,
+                "not-an-oid",
+                head_oid,
+                "src/app.ts",
+            )
+            .unwrap_err();
+        assert_eq!(
+            invalid_revision
+                .downcast_ref::<GitHubServiceError>()
+                .unwrap()
+                .code,
+            "github.pr-revision-invalid"
         );
     }
 

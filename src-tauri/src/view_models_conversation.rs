@@ -4017,6 +4017,8 @@ mod tests {
         );
 
         assert_eq!(lifecycle.display_status, "paused");
+        assert_eq!(lifecycle.runtime_display.tone, "warning");
+        assert_eq!(lifecycle.runtime_display.icon, "pause");
         assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
         assert!(lifecycle.runtime.continuable);
         assert_eq!(lifecycle.runtime.phase, "paused");

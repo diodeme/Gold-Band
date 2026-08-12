@@ -73,8 +73,10 @@ import type {
   FeedbackArchivePreview,
   GitCapabilityVm,
   GitCommitDetailVm,
-  GitCommitRelationsQueryVm,
-  GitCommitRelationsVm,
+  GitCommitReachabilityQueryVm,
+  GitCommitReachabilityVm,
+  GitCommitReviewQueryVm,
+  GitCommitReviewVm,
   GitHistoryPageVm,
   GitHistoryQueryVm,
   GitComparisonSourceVm,
@@ -189,7 +191,8 @@ export interface RuntimeApi {
   getSourceControlSnapshot(projectId: string, workspacePath?: string | null): Promise<GitSourceControlSnapshotVm>;
   getGitHistory(projectId: string, workspacePath: string | null | undefined, query: GitHistoryQueryVm): Promise<GitHistoryPageVm>;
   getGitCommitDetail(projectId: string, workspacePath: string | null | undefined, oid: string): Promise<GitCommitDetailVm>;
-  analyzeGitCommitRelations(projectId: string, workspacePath: string | null | undefined, query: GitCommitRelationsQueryVm): Promise<GitCommitRelationsVm>;
+  getGitCommitReview(projectId: string, workspacePath: string | null | undefined, query: GitCommitReviewQueryVm): Promise<GitCommitReviewVm>;
+  getGitCommitReachability(projectId: string, workspacePath: string | null | undefined, query: GitCommitReachabilityQueryVm): Promise<GitCommitReachabilityVm>;
   executeGitMutation(projectId: string, workspacePath: string | null | undefined, input: GitMutationRequestVm): Promise<GitMutationResultVm>;
   getGitComparison(projectId: string, source: GitComparisonSourceVm): Promise<GitFileComparisonVm>;
   startGitOperation(projectId: string, workspacePath: string | null | undefined, input: GitOperationRequestVm): Promise<GitOperationVm>;

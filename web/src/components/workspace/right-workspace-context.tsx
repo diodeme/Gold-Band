@@ -79,6 +79,9 @@ export type GitFileComparisonWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'file-diff';
   projectId: string;
   gitSource: import('@/types').GitComparisonSourceVm;
+  reviewSessionId?: string | null;
+  reviewItemId?: string | null;
+  reviewLanding?: 'first' | 'last' | null;
 };
 
 export type SourceControlWorkspaceResource = RightWorkspaceResourceBase & {
@@ -537,9 +540,13 @@ export function gitFileComparisonWorkspaceResourceKey(projectId: string, source:
     return `git-diff:${projectId}:${workspacePath}:workspace:${source.area}:${source.path}`;
   }
   if (source.kind === 'commit') {
-    return `git-diff:${projectId}:${workspacePath}:commit:${source.beforeOid ?? ''}:${source.afterOid}:${source.path}`;
+    return `git-diff:${projectId}:${workspacePath}:commit:${source.beforeOid ?? ''}:${source.beforePath ?? ''}:${source.afterOid}:${source.path}`;
   }
-  return `git-diff:${projectId}:${workspacePath}:github-pr:${source.host}:${source.repository}:${source.prNumber}:${source.path}`;
+  return `git-diff:${projectId}:${workspacePath}:github-pr:${source.host}:${source.repository}:${source.prNumber}:${source.baseOid}:${source.headOid}:${source.path}`;
+}
+
+export function gitDiffReviewWorkspaceResourceKey(projectId: string, reviewSessionId: string) {
+  return `git-diff-review:${projectId}:${reviewSessionId}`;
 }
 
 export function conversationDirectoryWorkspaceResourceKey(locator: ConversationDirectoryWorkspaceResource['locator']) {

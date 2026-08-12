@@ -2,9 +2,9 @@
 
 ## 0. 文档状态
 
-- 状态：已完成（本地 Git 读取/写入、可取消远端与 stash 操作、GitHub capability/login、PR/Issue 查询、可取消 PR 创建、PR diff、提交图、提交详情、关系分析、会话缓存、Git 状态监控与 operation event subscription 均已完成）
-- 日期：2026-08-11
-- 范围：Gold Band 桌面端右侧源码管理、常见 Git 操作、提交 DAG、GitHub PR/Issue 集成
+- 状态：已完成（本地 Git 读取/写入、可取消远端与 stash 操作、GitHub capability/login、PR/Issue 查询、PR diff、Commit 主从审阅、提交归属、跨文件 Diff 导航、会话缓存、Git 状态监控与 operation event subscription 均已完成）
+- 日期：2026-08-12
+- 范围：Gold Band 桌面端右侧源码管理、常见 Git 操作、Commit Patch 审阅、GitHub PR/Issue 集成
 - Git 执行基线：系统 Git CLI + Rust typed service
 - GitHub 执行基线：系统 `gh` CLI，不捆绑、不自动安装、不由 Gold Band 保存 token
 - UI 基线：现有 Right Workspace、文件工作区、CodeMirror/Atomic、shadcn/ui、Tailwind CSS
@@ -47,7 +47,7 @@ Gold Band 不需要重新选择 Git 技术栈。现有 `src/git.rs` 使用系统
 - worktree 查看和创建。
 - fetch、pull、push。
 - stash create 与 stash apply。
-- 完整提交 DAG、单提交详情、两个提交 diff 和任意多个提交关系分析。
+- Commit 列表、标准桌面多选、IDEA 式按文件演化链聚合的最终 Diff、提交归属和跨文件 Diff 审阅。
 
 首版不包含：
 
@@ -108,44 +108,21 @@ pull 默认使用 `ff-only`。用户可显式选择 merge 或 rebase；若产生
 | 普通文件查看/编辑 | `WorkspaceFileEditor` | 直接复用现有 `file` resource |
 | Markdown 文档 | `WorkspaceFileEditor` + CodeMirror + Atomic 低层扩展 | PR/Issue 查看和 PR body 编辑统一复用 |
 | 文件 Diff | CodeMirror `unifiedMergeView` | 从现有 turn diff 提取通用 viewer |
-| 提交 DAG | `@tomplum/react-git-log` 3.5.1 | 已通过 PoC 并采用 HTML Grid renderer；通过本地 adapter 包装 |
+| Commit 历史 | shadcn Context Menu + `react-resizable-panels` | 响应式主从列表；复用成熟菜单和 split 组件，不保留 Git Graph |
 | GitHub | 系统 `gh` CLI JSON 输出 | 采用，不引入 Octokit，不读取 token |
 | 消息 Markdown | prompt-kit/Streamdown | 仅用于聊天和流式消息，不用于 PR/Issue 文档主体 |
 
-### 4.1 提交图组件
+### 4.1 Commit 历史交互
 
-采用 `@tomplum/react-git-log` 的 HTML Grid renderer：
+Git Graph 和关系分析不再作为首版能力。真实仓库的多 ref DAG 在窄右栏中占用空间、拖动成本高，不能直接帮助用户完成选 Commit、看文件和审阅 Diff；“经历过哪些分支”也不是 Commit 对象可恢复的事实。旧 renderer、adapter、类型、API、测试和 `@tomplum/react-git-log` 依赖全部删除，不保留隐藏入口或兼容层。
 
-- Apache-2.0。
-- 支持 React 19。
-- 接受 `hash + parents[] + branch`，能表示 merge DAG。
-- 支持分页、主题、自定义提交行和选择回调。
-- 可使用自定义行接入 shadcn Checkbox，实现多选提交。
+新历史区复用 `react-resizable-panels` 和 shadcn Context Menu/Dialog：
 
-该项目社区规模仍较小，Canvas 渲染仍有作者列出的已知问题，全分支模式需要完整历史，服务端分页模式只保证单一主分支及合入历史，因此仍不把整个组件视为无条件最优解。2026-08-10 的 PoC 已验证 300/1000/5000 commits、周期性复杂 merge、多 parent、300 行分页边界、任意多选与 DOM 数量；三种规模的单次渲染预算均为 5 秒，页面 DOM 固定在单页 300 行。内置浏览器进一步验证 288px 窄栏无横向溢出、多选状态同步且控制台无 warning/error。基于该结果正式采用 HTML Grid renderer，不采用未完成的 Canvas2D。
-
-业务代码不得直接依赖其内部类型。Gold Band 自有 `commit-graph-model.ts` 定义领域模型，`CommitGraph.tsx` 是唯一允许导入第三方包的 renderer adapter：
-
-```ts
-interface CommitGraphEntry {
-  hash: string;
-  branch: string;
-  parents: string[];
-  message: string;
-  committerDate: string;
-  author?: { name: string; email?: string | null } | null;
-  refs: GitRefLabelVm[];
-  runtimeCheckpoint: boolean;
-}
-```
-
-若未来替换 renderer，只替换 adapter 和展示层，不改变后端 Git history 协议。
-
-不采用：
-
-- 已归档、主要用于模拟 Git 操作的 `@gitgraph/react`。
-- 成熟度不足且缺少大历史分页验证的 `git-graph-svg`。
-- 强依赖 antd 和另一套 i18n/布局体系的 `@kne/git-graph`。
+- 无选择时为 Commit 单栏；选择后宽屏为左 Commit 列表、右聚合文件列表，窄屏离散退化为“提交/更改”单栏。
+- 单击单选，`Shift` 范围，`Ctrl/Cmd` 增减，`Ctrl/Cmd + Shift` 合并范围；选择以当前可见稳定 OID 数组计算，不使用 DOM index 作为身份。
+- 右键未选中的 Commit 时先收敛为单选；右键已选中的 Commit 保留当前 selection。
+- 右键菜单提供 8 位/完整 SHA 和提交归属；归属只展示当前 contains refs、相对目标分支路径、first merge 与父提交。
+- 长列表行使用 `content-visibility: auto` 限制布局开销，选择和 hover 不进入全局 Context。
 
 ## 5. 总体架构
 
@@ -276,7 +253,7 @@ interface GitWorktreeVm {
 }
 ```
 
-### 6.4 Commit 与关系分析
+### 6.4 Commit 审阅与归属
 
 ```ts
 interface GitCommitVm {
@@ -291,12 +268,26 @@ interface GitCommitVm {
   runtimeCheckpoint: boolean;
 }
 
-interface GitCommitRelationsVm {
+interface GitCommitReviewVm {
   selectedOids: string[];
+  revision: string;
+  commits: Array<{
+    commit: GitCommitVm;
+    beforeOid: string | null;
+    files: GitCommitFileChangeVm[];
+  }>;
+  files: Array<{ path: string; oldPath?: string; beforeOid?: string; beforePath?: string; afterOid: string }>;
+  totals: { commitCount: number; fileCount: number };
+}
+
+interface GitCommitReachabilityVm {
+  oid: string;
+  containingRefs: GitRefLabelVm[];
   targetRef: string;
-  commonMergeBases: string[];
-  pairwise: GitCommitPairRelationVm[];
-  mergeEntries: GitCommitMergeEntryVm[];
+  targetOid: string;
+  targetPath: 'tip' | 'direct' | 'merged' | 'not-contained';
+  firstMergeOid: string | null;
+  parentOids: string[];
 }
 ```
 
@@ -337,8 +328,8 @@ interface GitOperationVm {
 getSourceControlSnapshot(input): Promise<SourceControlSnapshotVm>
 getGitDiff(input: GitDiffInput): Promise<FileComparisonVm>
 getGitHistory(input: GitHistoryQueryVm): Promise<GitHistoryPageVm>
-getGitCommitDetail(input): Promise<GitCommitDetailVm>
-analyzeGitCommitRelations(input): Promise<GitCommitRelationsVm>
+getGitCommitReview(input): Promise<GitCommitReviewVm>
+getGitCommitReachability(input): Promise<GitCommitReachabilityVm>
 listGitStashes(input): Promise<GitStashEntryVm[]>
 ```
 
@@ -347,6 +338,18 @@ listGitStashes(input): Promise<GitStashEntryVm[]>
 ```ts
 executeGitMutation(input: GitMutationInput): Promise<GitMutationResultVm>
 ```
+
+```ts
+type GitMutationResultVm =
+  | {
+      scope: 'workspace';
+      status: GitWorkspaceStatusVm;
+      repositoryRevision: string;
+    }
+  | { scope: 'repository' };
+```
+
+`workspace` 结果用于只改变 index/worktree status 的 Stage/Unstage，前端局部合并；`repository` 表示 refs 或 repository 结构可能变化，前端并行刷新 snapshot/history。返回作用域是 mutation 领域契约，不由页面根据按钮名称猜测。
 
 `GitMutationInput` 是明确 tagged union，只允许：
 
@@ -502,6 +505,7 @@ interface FileComparisonVm {
 - merge/rebase 必须用户显式选择。
 - push 不提供 force；首次 push 可显式勾选 set-upstream。
 - non-fast-forward 返回结构化错误，不自动 pull/rebase。
+- 用户选择的 remote 以规范化 repository common-dir 为作用域写入带版本号、有容量上限的用户偏好；默认值依次取仍有效的偏好、upstream remote、第一项 remote，禁止每次打开对话框重置为第一项。
 
 ### 8.10 Stash
 
@@ -577,19 +581,36 @@ runtime 内部分支 push 默认禁用，避免发布 `gb-dyn/*` 等内部 refs�
 
 采用独立 `SourceControlStore`，以 `projectId + canonical workspacePath` 作为会话身份；首次请求前以规范化 requested path 建立路由别名，snapshot 返回后注册 canonical path 别名。每个会话统一保存：
 
-- repository snapshot、history pages、加载状态和稳定错误码。
+- repository snapshot、history pages、加载状态和完整结构化错误 `code + params`；Git operation 终态刷新后仍保留原始失败原因。
 - 当前源码管理分区、history page、selected OID Set 和 focused commit。
 - commit detail、relations detail、详情加载状态和请求 revision。
-- commit subject/body 草稿、当前 Git operation 及事件订阅状态。
+- commit subject/body 草稿、结构化 pending action `kind + path`、当前 Git operation 及事件订阅状态。
 
 失效规则：
 
 - 首次无缓存时加载，普通 Right Workspace Tab 切换、打开 Diff 和返回不失效。
 - 用户显式刷新时重新读取 snapshot/history；已有可展示数据不退回全屏 loading。
-- typed mutation 成功后使用返回 snapshot 并立即刷新 history；长操作结束后立即刷新 snapshot/history。
+- Stage/Unstage 成功后使用 `scope=workspace` 结果只合并最新 status 与 repository revision，不刷新未变化的 refs/worktree/stash/remotes/history。
+- Commit、branch、tag、worktree 等 refs/结构变化 mutation 返回 `scope=repository`，前端在命令成功后并行读取 snapshot/history，禁止先等完整 snapshot 再串行读取 history。
+- pending action 生命周期内禁用同 workspace 的其他 Git 写操作；单文件 Stage/Unstage 在目标行按钮显示旋转状态，Commit/Fetch/Pull/Push 在主操作按钮显示旋转状态。
+- 长操作结束后立即刷新 snapshot/history。
 - `GitStateMonitor` 事件使对应 repository/workspace 会话失效，不允许由每个组件自行轮询。
 - snapshot/history/detail 分别维护请求 revision；旧请求完成后不得覆盖较新刷新或操作结果。
 - 缓存最多保留 24 个非活跃会话，使用 LRU 淘汰；有订阅或正在执行 Git 操作的会话不可淘汰。
+
+### 10.2 GitHub 查询缓存与 PR Diff identity
+
+GitHub 数据不得保存在 `SourceControlGitHubView` 的组件本地生命周期中。使用独立 `GitHubDataStore`：
+
+- repository/workspace 会话 key 为规范化的 `projectId + commonDir + workspacePath`，最多 24 项。
+- capability、PR/Issue query、PR/Issue detail 分层缓存；同 key 的 in-flight Promise 复用，避免重复 `gh` 进程。
+- PR/Issue query 每会话最多 16 项，详情各最多 48 项；显式刷新只强制当前 query 或 detail。
+- capability 仅在首次缺失、用户“重新检测”或登录终态后读取；普通 Tab 往返直接返回缓存。
+- PR comparison 使用 `projectId + workspacePath + host + repository + prNumber + baseOid + headOid + path` 的不可变 key，最多 96 项；相同 revision 重开立即返回，head/base 改变后自动隔离。
+- repository/workspace 会话保存 `section + listState + committedSearch + selected(kind, number) + detailSection` 的轻量导航 locator；打开 Diff 卸载源码管理 renderer 后，重新激活源码管理必须从 locator 与详情缓存恢复原 PR/Issue 详情及子页。搜索输入草稿、loading、错误和正文仍留在最小消费边界，不写入导航状态。
+- 缓存是运行期只读投影，不持久化 GitHub token、正文或认证结果到 localStorage。
+
+`GitHubPullRequestDetailVm` 返回 `baseRefOid/headRefOid`。点击文件时把这两个稳定 revision 写入 typed comparison locator；后端校验 40/64 位十六进制 OID 和 repo-relative path，只并行执行 base/head 两次 raw content 请求。旧的每文件 `gh pr diff --name-only` 与 `gh pr view --json baseRefOid,headRefOid,files` 消费路径删除。
 
 ## 11. 提交历史与多选关系
 
@@ -699,11 +720,13 @@ type FileComparisonSource =
 
 ### 12.6 历史区
 
-- 提交图和提交列表同行对齐。
+- 首次无历史缓存时显示真实请求 loading；普通分区往返直接恢复 `SourceControlStore` 中的历史页、选择和详情，不插入伪 loading，不重新请求。
 - 支持 ref、作者、日期、文本筛选。
-- 单击选择并查看详情。
-- Checkbox 多选后显示关系分析 action bar。
-- 窄面板中详情作为同资源内二级视图，不增加嵌套卡片。
+- 宽面板使用 Commit 列表/变更文件主从双栏，窄面板使用“提交/更改”单栏切换，不增加嵌套卡片。
+- 单击单选，Shift 范围，Ctrl/Cmd 增减，Ctrl/Cmd+Shift 合并范围；不显示 Checkbox。
+- 任意多个 Commit 只收集各自 first-parent Changes，再按旧到新合并同一文件演化链；Root 与空树比较，同一路径只返回一个首尾终态。
+- 右键提供短/完整 SHA 和当前可验证的提交归属。
+- 文件进入有界 Diff review session，同一会话只占用一个 Tab，差异导航可跨文件。
 
 ### 12.7 仓库区
 
@@ -769,7 +792,9 @@ interface GitHubCapabilityVm {
 3. 当前 branch upstream remote
 4. `origin`
 5. 唯一 GitHub remote
-6. `gh repo view --repo <owner/repo> --json ...`
+6. `gh repo view <owner/repo> --json nameWithOwner,defaultBranchRef`
+
+`gh repo view` 的 repository 是 positional argument；该子命令不支持通用 `--repo` flag。命令参数必须由接口测试固定，避免把其他 `gh pr/issue` 子命令支持的 `--repo` 误套到 `gh repo view`。
 
 多 remote 仍有歧义时由用户选择。选择只写 Gold Band 用户级偏好，不调用 `gh repo set-default` 修改仓库配置。
 
@@ -797,6 +822,8 @@ interface GitHubCapabilityVm {
 
 检测在首次进入 GitHub 分区时懒执行。若之前为未安装/未登录，应用重新获得焦点时自动复检一次，同时保留手动重新检测。
 
+ready capability 按 repository/workspace session 缓存；已 ready 时窗口 focus 不复检。GitHub mapping 只读取 status/remotes 所需字段，不调用完整 source-control snapshot。
+
 ### 14.4 PR 查询
 
 使用 `gh pr list/view --json <explicit fields>`，只请求 UI 需要的字段。
@@ -821,10 +848,11 @@ interface GitHubCapabilityVm {
 
 PR 文件 Diff 使用 typed `GitComparisonSource::GitHubPr`：
 
-1. `gh pr diff <number> --repo <repo> --name-only --color never` 确认文件属于 PR diff。
-2. `gh pr view <number> --repo <repo> --json baseRefOid,headRefOid,files` 获取确定的两端 OID 和文件统计。
-3. `gh api --hostname <host> --method GET --header "Accept: application/vnd.github.raw+json" <contents-endpoint>` 分别读取 base/head 文件内容。
-4. 转换为现有 `GitFileComparison`，点击 PR 文件后打开现有 `file-diff` resource。
+1. PR 详情接口一次返回 changed file list 与不可变 `baseRefOid/headRefOid`；点击文件时直接写入 comparison locator，不再重复查询整 PR。
+2. `gh api --hostname <host> --method GET --header "Accept: application/vnd.github.raw+json" <contents-endpoint>` 按 base/head OID 并行读取两端文件内容。
+3. 转换为现有 `GitFileComparison`，点击 PR 文件后立即打开现有 `file-diff` resource，由新 Tab 展示 comparison loading。
+
+PR 列表项点击时先写入 `selected(kind, number)` locator 并显示详情 loading surface，再读取 detail cache/API；请求成功后原位收敛为详情，失败时保留返回入口与结构化错误。comparison 请求不得成为 PR 详情或文件 Tab 导航的前置条件。
 
 前端不能传递任意 `gh` 参数；repository、PR number、path 都通过 tagged union 字段进入后端校验。新增/删除文件通过缺失的一侧表达；二进制、非 UTF-8 和超过 4 MiB 的内容沿用 `git.binary-diff-unsupported`、`git.text-encoding-unsupported`、`git.diff-too-large`。comparison resource key 包含 project、worktree、host、repository、PR number 和 path，避免 linked worktree 或不同 PR 之间错误复用 tab。
 
@@ -876,6 +904,8 @@ interface AppErrorVm {
 
 后端不生成对客文案。前端根据 i18n error code 映射中文/英文文案。
 
+Git CLI 失败时，`params` 还必须包含 `exitCode` 和可选 `reason`。`reason` 是 Git 原始 stderr 与 stdout 的数据投影，不是后端对客文案；进入 DTO 前必须去空行、限制为 2000 字符并脱敏 URL userinfo。前端统一保存完整错误对象，在本地化原因/恢复建议下展示 `reason`，长文本安全换行。
+
 ### 15.2 Git 错误码
 
 至少包含：
@@ -887,6 +917,12 @@ interface AppErrorVm {
 - `git.runtime-workspace-restricted`
 - `git.auth-required`
 - `git.non-fast-forward`
+- `git.authentication-failed`
+- `git.permission-denied`
+- `git.remote-repository-not-found`
+- `git.remote-host-unreachable`
+- `git.remote-unreachable`
+- `git.remote-rejected`
 - `git.merge-conflict`
 - `git.rebase-conflict`
 - `git.stash-apply-conflict`
@@ -929,10 +965,10 @@ interface AppErrorVm {
 
 - porcelain v2 parser。
 - status/diff/refs/worktree/stash list。
-- [x] history page 与真实 parents DAG。
-- [x] commit detail 和多选关系分析。
+- [x] history page 与 Commit 元数据。
+- [x] 批量 first-parent Changes 收集、文件演化链终态聚合和提交归属。
 - [x] GitStateMonitor 与前端 snapshot subscription。
-- [x] `@tomplum/react-git-log` adapter 技术验证与接入。
+- [x] 删除 Git Graph renderer、adapter 和第三方依赖。
 
 ### 阶段 3：通用文件比较资源
 
@@ -949,14 +985,16 @@ interface AppErrorVm {
 - [x] fetch/pull/push 长操作与取消的后端模型和状态 UI。
 - [x] operation event subscription，替换完成状态轮询。
 - [x] lock/restriction/error UI 基础状态。
+- [x] Git command 失败原因的结构化透传、credential 脱敏和本地化恢复建议。
+- [x] Fetch/Push/Push Tag remote 的 repository-scoped 持久偏好与合法性回退。
 
 ### 阶段 5：右侧源码管理
 
 - [x] 新增 `source-control` resource 与入口。
 - [x] 更改、历史、仓库分区。
 - [x] 复用现有 file/file-browser resource。
-- [x] 提交图窄栏、键盘、多选、主题和 i18n 基础契约。
-- [x] 提交详情与关系 action bar。
+- [x] 历史主从双栏、窄栏切换、标准桌面多选、右键菜单和 i18n 契约。
+- [x] 所选 Commit 的按文件终态 Diff 聚合与跨文件 Diff 审阅导航。
 - [x] repository/workspace-scoped 源码管理会话缓存、请求去重和 stale response 防护。
 
 ### 阶段 6：GitHub
@@ -985,6 +1023,7 @@ interface AppErrorVm {
 - worktree create 与路径冲突。
 - stash create/apply、include-untracked、apply conflict。
 - fetch/pull ff-only/push/upstream/non-fast-forward。
+- Git operation 失败终态保留结构化 code、exitCode 和脱敏 reason。
 - runtime/UI lock 竞争。
 
 ### 17.2 历史测试
@@ -1025,12 +1064,25 @@ interface AppErrorVm {
 - `gh` 缺失时所有 GitHub 操作不可调用，但本地 Git 正常。
 - runtime lock 时只读功能可用、写按钮禁用。
 - commit 无 staged change 时禁用。
-- DAG 多选和关系 action bar。
+- 单击、Shift、Ctrl/Cmd 和 Ctrl/Cmd+Shift 选择语义。
+- 多 Commit 聚合按祖先拓扑连接文件演化链，跨分支等价文件 Patch 去重，内容不同的同路径旁支修改保留多条链并显示短 SHA；同时移除创建后删除的净空变化并跟踪重命名链，Root/Merge first-parent 语义与 file totals 正确。
+- 右键短/完整 SHA 与提交归属；同一审阅会话切换文件不增加 Tab。
+- 下一差异越过当前文件末尾后进入下一文件，上一差异反向进入前一文件末尾。
 - 源码管理 -> Diff -> 返回不得重新请求 snapshot/history，并恢复内部 Tab、分页、多选、详情和 commit 草稿。
 - 显式刷新、typed mutation 和长操作完成必须失效并刷新；不同 worktree 缓存隔离，旧请求不得覆盖新状态。
+- Stage/Unstage 不请求 snapshot/history，只合并 status-scoped 结果；refs 变化 mutation 的 snapshot/history 必须并行发起。
+- 单文件 Stage/Unstage pending 时目标按钮显示 spinner，其他 Git 写入口全部禁用，重复点击不得发起第二个接口请求。
+- GitHub capability 使用 `gh repo view <owner/repo> --json ...` positional 参数契约。
+- GitHub capability、PR/Issue query/detail 在普通 Tab 往返时命中有界缓存；相同 in-flight 查询只调用一次 API，显式刷新才重新请求。
+- PR/Issue 详情 locator 与“概览/文件”子页在打开 Diff、切换右侧 Tab和 renderer 卸载/重挂载后保持不变；返回源码管理不得退回列表。
+- 点击 PR 列表项后必须立即显示详情 loading 或缓存详情，不能在列表中无反馈等待网络完成；点击 PR 文件继续立即进入现有 Diff Tab，并由该 Tab 自己加载内容。
+- PR Diff source 必须携带 base/head OID；后端不得执行 `gh pr diff --name-only` 或重复 PR metadata 查询，base/head raw content 必须并行读取。
+- 同一 PR revision 的同文件重复打开命中 comparison cache；head OID 改变后生成新 key 并重新加载。
+- Push remote 切换后关闭并重新打开 Dialog、重新挂载资源仍恢复同仓库上次有效选择；偏好 remote 删除后回退到 upstream 或第一项。
+- Git operation 失败后同时展示本地化原因/恢复建议和脱敏的 Git 原始失败原因。
 - 四主题、宽/窄右栏和键盘可达性。
 
-已新增提交图 adapter DOM/性能测试：覆盖 300/1000/5000 commits、复杂 merge、多 parent、300 行 DOM 上限、分页边界和 Checkbox 外部多选；Vitest 中每种规模的单次渲染必须小于 5 秒且总 DOM 节点小于 25000。
+历史 Tab 契约测试固定缓存命中时立即恢复；首次加载历史与选择 Commit 聚合详情时立即显示对应局部中间态。新增 Store 接口测试覆盖标准桌面选择语义、历史/聚合缓存复用及会话清理，Rust 临时仓库测试覆盖 Root、重复 OID 去重、显式选择边界、同文件演化链终态聚合、删除/重命名端点、totals、Merge 首次进入路径以及 branch/tag contains refs；Diff 导航纯函数测试覆盖同文件 chunk、跨文件与会话边界。
 
 ### 17.5 实际页面验证
 
@@ -1040,22 +1092,36 @@ interface AppErrorVm {
 - branch/tag/worktree。
 - stash create/apply。
 - fetch/pull/push 状态和取消。
-- DAG 搜索、多选和详情。
+- Commit 范围/增减多选、按文件终态 Diff 聚合、右键归属和跨文件 Diff 导航。
 - `gh` 未安装、未登录、ready 三种状态。
 - PR 创建/详情/diff。
 - Issue 搜索/详情。
 
 验证完成后清理测试 repository、worktree、后台进程和浏览器页面。
 
+Browser preview 的源码管理 fixture 提供 `origin` 与 `fork` 两个 remote；短 mutation 和长 operation 均保留 700ms 可见 pending 窗口，Stage 会把目标文件移动到 staged，向 `fork` Push 会从 queued 进入与桌面接口同构的 `git.authentication-failed + exitCode + reason` 终态，用于可见交互回归按钮反馈、全局写锁、错误详情、长文本换行和 remote 记忆，不改变桌面生产后端行为。
+
+2026-08-11 已在 Gold-Band 实仓测量 Git 查询基线：status 平均约 110ms、refs 约 160ms、worktrees 约 127ms、stashes 约 223ms、双 remote 查询约 389ms、history 约 330ms。旧 Stage 在 `git add` 前后串行执行 revision 校验、完整 snapshot 和 history，Windows 多进程启动累计约 1.5–3 秒；现已改为 status-scoped result，删除 Stage/Unstage 后无关 snapshot/history 查询，refs 变化 mutation 的 snapshot/history 改为并行。浏览器 mock 实际验证目标 Stage 按钮立即显示 spinner，其他 Stage/Unstage、Commit 和刷新入口禁用，完成后文件移动到“已暂存”；Commit 显示 spinner 并锁住写入口；Push queued/running 时显示“正在推送分支”并禁用仓库操作。实际 `gh 2.93.0` 已确认旧 `gh repo view --repo ...` 返回 `unknown flag: --repo`，修正后的 positional `gh repo view diodeme/Gold-Band --json nameWithOwner,defaultBranchRef` 成功返回 `main`。
+
+2026-08-11 已使用浏览器 mock 实际验证 Push 错误与 remote 偏好：切换到 `fork` 后关闭并重开 Dialog 仍恢复选择，刷新页面并重新进入源码管理后也恢复 `fork`；确认 Push 后同时展示本地化身份验证原因、恢复建议和 Git 原始失败原因，窄右栏内长文本正常换行。验证页面、1422 端口 Vite 进程和临时日志已清理。
+
+2026-08-11 已在 Gold-Band 实仓测量 GitHub 基线：`gh auth status` 约 1.95 秒、`gh repo view` 约 1.58 秒；旧 PR 文件 Diff 串行执行 `pr diff --name-only` 约 3.82 秒、PR metadata 约 1.47 秒、base raw content 约 1.38 秒、head raw content 约 1.58 秒，单文件约 8.25 秒。现已用 repository/workspace 有界缓存消除普通 Tab 往返的重复 capability/list/detail 调用，并以 immutable base/head OID 删除前两次整 PR 查询、并行读取两个文件版本；同一实仓文件的并行 base/head 请求约 2.06 秒，首次读取耗时下降约 75%，同 revision 重开 comparison 直接命中缓存。
+
 2026-08-10 已使用浏览器 mock 实际验证 GitHub PR #42：详情“概览/文件”切换、文件统计、点击文件打开现有 `file-diff` tab、CodeMirror unified diff 内容与 `+4/-1` 统计均正确，控制台无 warning/error；验证页面和 Vite 进程已清理。
 
-2026-08-10 已使用浏览器 mock 实际验证提交图：288px 右栏中 HTML Grid 图线与提交行对齐且无横向溢出，refs/author/OID/时间保持紧凑展示，Checkbox 选择后外部 OID 集合与“已选择 1 个提交”同步，控制台无 warning/error；验证页面、浏览器标签和 1422 端口 Vite 进程已清理。
+2026-08-12 已将历史区完整替换为 Commit 主从审阅：删除 Canvas/HTML Git Graph、Checkbox 和关系分析前后端路径，改为标准桌面选择、当前归属和有界 Diff review session。2026-08-12 进一步对齐 IntelliJ IDEA Log：批量审阅只收集显式选中 Commit 的 first-parent Changes，最多 4 个 worker 并发读取后按旧到新执行文件演化链 zip，返回每条文件演化链的最早 before 与最终 after；同一拓扑链中的重复路径只展示一次，创建后删除的净空文件消失，重命名链保留首尾路径。Review 结果按 workspace + revision + ordered OIDs 进入 48 项有界缓存，不预读文件正文；会话清理或 LRU 淘汰时同步移除所属 Review 缓存。
 
-2026-08-11 已使用浏览器 mock 实际验证源码管理缓存、提交详情和关系分析：变更文件打开 `file-diff` 后返回时 commit subject、内部“更改”分区和 snapshot 原样恢复且不出现加载态；提交详情打开 commit file diff 后返回时详情原样恢复；两提交关系、目标引用包含状态和两点文件 Diff 均可用，控制台无 warning/error。验证页面、浏览器标签和 1422 端口 Vite 进程已清理。
+2026-08-12 修正跨分支同路径聚合边界：不再假设一个路径全局只有一条文件演化链，只在 Commit 祖先拓扑可连接时合并；相同功能在不同基线产生的等价文件 Patch 使用 `git patch-id --stable` 去重，真正不同的旁支修改保留独立链并在文件列表显示终点短 SHA。普通父子链无需额外查询；实现用 before-path 索引连接候选、用变更类型与增删统计 signature 分桶，只对同路径跨分支冲突候选执行 ancestry/patch-id 查询。选择上限仍为 32 个 Commit；Patch capture 达到 4 MiB 时保守地不去重，避免截断内容误判；文件列表重复路径计数为单次 O(n)，不引入正文缓存或无界状态。
+
+2026-08-12 已使用内置浏览器实际验证 440px 窄右栏：历史区正确退化为“提交/更改”单栏；Shift 从首项到末项选择 3 个 Commit，Ctrl 可独立移除中间项；右键已选 Commit 保留 selection，并展示短 SHA、完整 SHA 和提交归属；Diff 审阅在同一 Tab 支持跨差异与跨文件导航。最新布局契约为无选择时不挂载 splitter，首次选择同步显示高亮与右侧局部 loading，清空后恢复单栏。
 
 2026-08-11 已补齐 repository/workspace-scoped `GitStateMonitor` 与 operation event subscription：普通文件事件复用现有 workspace watcher，watcher 身份提升为 `projectId + canonical root` 以隔离 linked worktree；HEAD/index/refs/packed-refs 由 typed Git service 定位并独立监听。前端按会话过滤两类事件并二次 debounce，本地 Git 与 GitHub 登录/PR 创建的 operation running/terminal 均通过 Tauri event 推送，包含 command 返回前早到事件合并，删除 350/400ms 完成状态轮询。接口测试覆盖 Git/GitHub operation 事件终态、metadata/workspace 事件去抖、worktree 隔离、导航保留和 watcher 身份；浏览器 mock 再次验证变更 Diff 往返时 commit 草稿与“更改”分区原样恢复，无加载态且控制台无 warning/error，浏览器标签、1422 Vite 进程和临时日志均已清理。
 
-最终回归结果：Rust `git::` 接口测试 32/32 通过，`cargo check -p gold-band-desktop -j 1` 通过（仅 3 个既有无关 warning），Web 142 个测试文件 / 948 项测试通过，`npm run web:build`、`cargo fmt --all --check` 与 `git diff --check` 通过。最终浏览器 mock 还验证了 GitHub ready 页、PR 创建对话框和 command 返回前事件合并，成功展示“Pull Request 已创建”，控制台无 warning/error；浏览器标签、1422 Vite 进程、D/C 盘临时 Cargo 目录和日志均已清理。
+本次历史终态聚合回归：Rust 覆盖重复路径聚合、创建后删除净空、重命名链、显式选择边界和删除文件 before→不存在的 comparison，共 5 项定向测试通过；`cargo check -p gold-band --lib --no-default-features` 通过。Web 源码管理相关 5 个测试文件 / 33 项测试通过，覆盖选择/迟到响应、Review 缓存复用与会话清理、GitHub capability 预热、Diff 导航、browser fixture 和中英文文件数量文案；`npm run web:build`、`cargo fmt --all` 与 `git diff --check` 通过。
+
+本次跨分支聚合回归：真实 Gold-Band 历史确认 `870e077b → d12b9cd9` 的 `src-tauri/src/commands.rs` 终态为 `+173/-28`，旁支 `0cf78b22` 与 `870e077b` 的该文件 stable patch-id 相同；修复前错误跨基线比较为 `+868/-13`。Rust 7 项 `commit_review_` 测试全部通过，覆盖等价旁支去重、相同统计但内容不同的旁支保留，以及原有净空/重命名/显式选择/删除语义；Web 4 个相关测试文件共 32 项通过，生产构建与 `git diff --check` 通过。内置浏览器实际验证历史选择、聚合文件工作区、Tab 往返缓存和无 Canvas Graph，控制台无 warning/error。
+
+2026-08-12 历史缓存与分页回归：删除普通源码管理 Tab 往返时两帧延迟挂载的伪 loading，缓存命中后立即恢复原历史页、选择和详情。旧 `@tomplum/react-git-log@3.5.1` 白屏已确认为分页边界淡出线才触发 Canvas gradient，而该库把传入的 hex 颜色按 `rgb(r,g,b)` 解析导致 `NaN`；新历史列表不包含 Canvas/Graph 路径。Browser preview 新增 303 条确定性两页 fixture；实测从 300 条首页进入第 2/2 页显示剩余 3 条，再往返“仓库/历史”仍立即恢复第 2 页，无 loading、无 console error/warning。
 
 ## 18. 最终验收标准
 
@@ -1064,7 +1130,7 @@ interface AppErrorVm {
 3. 源码管理不复制完整文件树，文件浏览与编辑继续由现有文件工作区负责。
 4. turn、Git、commit、PR diff 使用同一通用 CodeMirror comparison viewer。
 5. PR/Issue 文档和 PR body 编辑复用 `WorkspaceFileEditor` 的 Atomic 能力。
-6. 提交图展示真实 parents DAG，支持任意多选关系分析。
+6. 历史区支持标准桌面多选、任意 Commit first-parent Changes 的按文件终态聚合、可验证的提交归属和同 Tab 跨文件 Diff 审阅。
 7. `gh` 缺失时 GitHub 区域明确禁用并提供安装入口，本地 Git 完全不受影响。
 8. Gold Band 不读取、保存或输出 GitHub token。
 9. runtime worktree/lock 与用户 Git 操作不会并发破坏同一 workspace。

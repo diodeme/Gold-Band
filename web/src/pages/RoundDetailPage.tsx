@@ -2,9 +2,9 @@ import { Component, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AcpSessionVm, AcpUsageVm, AcpUiEventVm, AppConfigVm, AssetItemVm, ContentVm, GraphNodeVm, LogEntryVm, LogPageVm, LogQueryInput, NodeDetailVm, RoundDetailVm, RoundSelection } from '../types';
 import { displayAppError, displayStatus } from '../i18n';
-import { getLogPage, showArtifact, showAttachment, submitConversationPrompt } from '../api';
+import { continueConversationRuntime, getLogPage, showArtifact, showAttachment } from '../api';
 import { resolveNodeTokenUsage, formatDisplayToken } from '../lib/token-usage';
-import { ACPChatDialog, createAcpPromptId, optimisticUserEvent, updateAcpOptimisticEvents } from '../components/acp/ACPChatDialog';
+import { ACPChatDialog } from '../components/acp/ACPChatDialog';
 import { DetailViewerContent } from '../components/DetailViewer';
 import { GraphView } from '../components/GraphView';
 import { RequirementDetailSheet, RequirementTeaser, fullRequirementText } from '../components/RequirementDisclosure';
@@ -100,39 +100,19 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
   const handleContinueRun = async () => {
     const target = activeAttemptLocator(vm);
     if (!target) return;
-    const promptId = createAcpPromptId();
-    const optimisticKey = acpOptimisticKey(vm.run.taskId, vm.run.id, target.roundId, target.nodeId, target.attemptId);
-    const optimisticEvent = optimisticUserEvent(t('acp.continuePrompt'), promptId);
-    const appendOptimisticEvent = (events: AcpUiEventVm[]) => [...events.filter((event) => promptIdFromAcpEvent(event) !== promptId), optimisticEvent];
-    updateAcpOptimisticEvents(optimisticKey, appendOptimisticEvent);
-    setOptimisticAcpEventsByKey((current) => ({
-      ...current,
-      [optimisticKey]: appendOptimisticEvent(current[optimisticKey] ?? []),
-    }));
     try {
-      const result = await submitConversationPrompt(
+      const result = await continueConversationRuntime(
         workspaceProjectId ?? 'default',
         vm.run.taskId,
         vm.run.id,
         target.roundId,
         target.nodeId,
         target.attemptId,
-        '',
-        promptId,
-        null,
         target.outerNodeId,
         target.outerAttemptId,
       );
       if (result.kind === 'runtime-continue-started') onRefresh();
-    } catch {
-      const markPromptFailed = (events: AcpUiEventVm[]) => events.map((event) => promptIdFromAcpEvent(event) === promptId ? { ...event, status: 'failed' } : event);
-      updateAcpOptimisticEvents(optimisticKey, markPromptFailed);
-      setOptimisticAcpEventsByKey((current) => {
-        const events = markPromptFailed(current[optimisticKey] ?? []);
-        if (events.length === 0) return current;
-        return { ...current, [optimisticKey]: events };
-      });
-    }
+    } catch { /* page refresh remains the lifecycle source of truth */ }
   };
 
   return (
@@ -505,12 +485,6 @@ function AssetDetailSheet({ asset, content, loading, onBack }: { asset: AssetIte
   );
 }
 
-function promptIdFromAcpEvent(event: AcpUiEventVm) {
-  if (!event.raw || typeof event.raw !== 'object' || Array.isArray(event.raw)) return null;
-  const promptId = (event.raw as { promptId?: unknown }).promptId;
-  return typeof promptId === 'string' ? promptId : null;
-}
-
 function acpOptimisticKey(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string) {
   return `${taskId}:${runId}:${roundId}:${nodeId}:${attemptId}`;
 }
@@ -558,6 +532,7 @@ function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, 
           systemPromptOptions={systemPromptOptions}
           eventIdPrefix={selectedConversation ? attemptId : undefined}
           eventPageSize={appConfig.acpChatEventPageSize}
+          turnFileCardPreviewLimit={appConfig.turnFiles.cardPreviewLimit}
           taskId={vm.run.taskId}
           runId={vm.run.id}
           roundId={vm.round.id}
@@ -566,6 +541,7 @@ function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, 
           outerNodeId={detail.outerNodeId}
           outerAttemptId={detail.outerAttemptId}
           runtimeComposerContext={{
+            isOrchestrated: true,
             runtimeStatus,
             workflowValid: true,
           }}
@@ -634,20 +610,34 @@ export function mergedConversationSession(conversation: NonNullable<NodeDetailVm
   conversation.attempts.forEach((attempt, index) => {
     if (index > 0) {
       events.push({
-        id: `separator:${attempt.attemptId}`,
+        id: `separator:continued:${attempt.attemptId}`,
         seq: seq++,
         timestamp: attempt.acpSession?.sessionStartedAt ?? base.sessionStartedAt ?? '',
         kind: 'attemptSeparator',
         sessionId: conversation.sessionId ?? attempt.acpSessionId ?? null,
-        title: attempt.attemptId,
+        title: null,
         content: null,
         toolCallId: null,
         status: attempt.status,
-        raw: { attemptId: attempt.attemptId, goldBandScope: { attemptId: attempt.attemptId, separator: true } },
+        raw: { boundaryKind: 'continued', attemptId: attempt.attemptId, goldBandScope: { attemptId: attempt.attemptId, separator: true } },
       });
     }
     for (const event of attempt.acpSession?.events ?? []) {
       events.push(normalizeAcpEventForAttempt(event, attempt.attemptId, seq++));
+    }
+    if (isStoppedConversationAttempt(attempt.acpSession)) {
+      events.push({
+        id: `separator:stopped:${attempt.attemptId}`,
+        seq: seq++,
+        timestamp: attempt.acpSession?.sessionUpdatedAt ?? base.sessionUpdatedAt ?? '',
+        kind: 'attemptSeparator',
+        sessionId: conversation.sessionId ?? attempt.acpSessionId ?? null,
+        title: null,
+        content: null,
+        toolCallId: null,
+        status: 'interrupted',
+        raw: { boundaryKind: 'stopped', attemptId: attempt.attemptId, goldBandScope: { attemptId: attempt.attemptId, separator: true } },
+      });
     }
   });
   return {
@@ -658,12 +648,30 @@ export function mergedConversationSession(conversation: NonNullable<NodeDetailVm
       ?? fallback?.systemPromptAppend
       ?? base.systemPromptAppend,
     events,
-    eventPage: {
-      ...base.eventPage,
-      loadedCount: events.length,
-      total: Math.max(base.eventPage.total, events.length),
+    timelineProjection: {
+      agents: conversation.attempts.flatMap(
+        (attempt) => (attempt.acpSession?.timelineProjection?.agents ?? []).map(
+          (agent) => ({ ...agent, attemptId: attempt.attemptId }),
+        ),
+      ),
+      todoEntries: activeAttempt?.acpSession?.timelineProjection?.todoEntries ?? [],
     },
+    // Pagination controls query the active attempt. Historical attempt events
+    // are display context and must not rewrite its backend-owned semantic page.
+    eventPage: base.eventPage,
   };
+}
+
+function isStoppedConversationAttempt(session?: AcpSessionVm | null) {
+  const reason = session?.stopReason?.trim().toLowerCase();
+  return [
+    'cancelled',
+    'canceled',
+    'process-interrupted',
+    'process_interrupted',
+    'user-cancelled',
+    'user_cancelled',
+  ].includes(reason ?? '');
 }
 
 export function buildConversationSystemPromptOptions(

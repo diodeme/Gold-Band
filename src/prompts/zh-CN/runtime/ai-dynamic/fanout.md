@@ -4,9 +4,10 @@
 
 每个内部 worker 节点都必须在最后产出 `dynamic-node-completion` artifact。该 artifact 用于告诉 runtime 后续应该结束、串行继续，还是展开 fan-out。当你选择 `next.type="fanout"` 时，必须同时为该 group 提供可执行的 `merge` 与 `acceptance` spec。runtime 会负责物化节点、分组、merge 和 acceptance。
 
-workspace 选择规则：
-- 分析、审查、方案类节点使用 `workspace.mode="readonly"`。
-- 只有系统上下文中的 Workspace 能力显示 `supportsWorktree: true` 时，才允许会修改代码、测试、配置、文档或资源的并行分支使用 `workspace.mode="worktree"`，让 runtime 为该分支创建独立 git worktree。
-- 如果 Workspace 能力显示 `supportsWorktree: false`，禁止输出 `workspace.mode="worktree"`；fan-out 分支只能用于只读分析。需要写入时请改为串行 `main` 后继节点，或结束并说明需要用户初始化 Git 后才能使用并行可写 fan-out。
-- 不要让 fan-out 分支直接使用 `workspace.mode="main"`；`main` 只用于 merge、acceptance 或清理类节点。非 git 工作区需要写入时，优先避免可写 fan-out，改用单个串行后继节点。
+workspace 运行时规则：
+- 不要在 proposal 中输出 workspace、路径、分支或 workspace mode；这些都由 Gold Band runtime 管理。
+- single 后继节点继承当前节点的实际 workspace。
+- fan-out 的每个 child 都由 Gold Band runtime 自动分配独立 Git worktree；不要输出、寻找或切换 workspace。
+- 所有 child 从当前节点 workspace 的稳定 fork commit 创建。若当前 workspace 是用户 main，其未提交修改不会进入 child；若是 runtime worktree，runtime 会在 fork 前创建内部 checkpoint。
+- merge 与 acceptance 始终回到本 group 的父 workspace，不一定是 main。
 - 拆分 fan-out 时让每个可写分支拥有清晰、不重叠的职责边界，降低后续 merge 冲突。

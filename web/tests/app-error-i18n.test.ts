@@ -32,4 +32,14 @@ describe('app error i18n', () => {
 
     expect(message).toBe('找不到该工作空间。');
   });
+
+  it('does not expose interpolation placeholders when an error has no message parameter', () => {
+    const message = displayAppError(i18n.t.bind(i18n), {
+      code: 'app.unexpected',
+      params: {},
+    });
+
+    expect(message).toBe('操作失败，请重试。');
+    expect(message).not.toContain('{{message}}');
+  });
 });

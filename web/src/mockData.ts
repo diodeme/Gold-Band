@@ -1,6 +1,7 @@
 import type {
   AcpSessionVm,
   AgentRegistryVm,
+  AgentCatalogEntryVm,
   AppBootstrapVm,
   ContentVm,
   LogPageVm,
@@ -22,6 +23,7 @@ import type {
   WorkflowVm,
   ConversationRunVm,
 } from './types';
+import { FALLBACK_WORKSPACE_FILES } from './components/workspace/workspace-layout';
 import { createDefaultAvatarPreferences } from './lib/avatar';
 
 const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
@@ -194,6 +196,9 @@ const errorBlockedLifecycle = {
 };
 
 export const mockErrorBlockedConversationSession: AcpSessionVm = {
+  branchId: 'root',
+  parentBranchId: null,
+  readOnly: false,
   sessionId: null,
   title: 'dev',
   provider: 'claude-acp',
@@ -210,8 +215,10 @@ export const mockErrorBlockedConversationSession: AcpSessionVm = {
   systemPromptAppend: null,
   config: null,
   events: [],
+  timelineProjection: null,
   eventPage: { loadedCount: 0, total: 0, oldestSeq: null, newestSeq: null, hasOlder: false, hasNewer: false, oldestCursor: null, newestCursor: null },
   pendingPermissions: [],
+  pendingElicitations: [],
   availableCommands: [],
   usage: null,
   diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0, lastError: null, lastErrorTimestamp: null },
@@ -265,8 +272,6 @@ export const mockErrorBlockedConversationRun: ConversationRunVm = {
   },
   selectedSession: mockErrorBlockedConversationSession,
   activeSessions: [],
-  artifacts: [],
-  attachments: [],
   inputAttachments: [],
   workflowStatus: 'valid',
   workflowValid: true,
@@ -300,6 +305,9 @@ const mockNodeDetail: NodeDetailVm = {
   manualCheckEnabled: false,
   manualCheckPending: false,
   acpSession: {
+    branchId: 'root',
+    parentBranchId: null,
+    readOnly: false,
     sessionId: 'acp-session-7f3',
     provider: 'claude-acp',
     adapterId: 'claude-agent-acp',
@@ -332,6 +340,8 @@ const mockNodeDetail: NodeDetailVm = {
       { id: 'e4', seq: 4, timestamp: '2026-05-02 16:11', kind: 'plan', sessionId: 'acp-session-7f3', raw: { entries: [{ content: '重构窗口状态', status: 'completed' }, { content: '修正 DPI 偏移', status: 'in_progress' }] } },
       { id: 'e5', seq: 5, timestamp: '2026-05-02 16:12', kind: 'permissionRequest', title: '允许写入窗口管理文件', toolCallId: 'tool-2', status: 'pending', sessionId: 'acp-session-7f3', raw: { options: [{ optionId: 'allow-once', name: '允许一次', kind: 'allow_once' }, { optionId: 'reject-once', name: '拒绝', kind: 'reject_once' }] } },
     ],
+    pendingElicitations: [],
+    timelineProjection: null,
   },
   artifacts: [
     { kind: 'artifact', name: 'window_manager_v2_core.rs', title: 'window_manager_v2_core.rs', tone: 'accent', preview: 'canonical artifact', roundId: 'round-001', nodeId: 'test', attemptId: 'att-test-001' },
@@ -364,6 +374,7 @@ const errorBlockedNodeDetail: NodeDetailVm = {
     diagnostics: { rawFrameCount: 5, eventCount: 2, errorCount: 1, lastError: 'ACP prompt failed: adapter returned malformed response', lastErrorTimestamp: '2026-05-15 10:02' },
     eventPage: { loadedCount: 3, total: 3, oldestSeq: 1, newestSeq: 3, hasOlder: false, hasNewer: false },
     pendingPermissions: [],
+    pendingElicitations: [],
     events: [
       { id: 'e1', seq: 1, timestamp: '2026-05-15 10:01', kind: 'userTextDelta', content: '初始需求 prompt', sessionId: 'acp-session-7f3', raw: { source: 'goldBandPrompt', synthetic: true } },
       { id: 'acp-diagnostic-error-1', seq: 2, timestamp: '2026-05-15 10:02', kind: 'runtimeError', content: 'ACP prompt failed: adapter returned malformed response', status: 'failed', raw: { source: 'acpDiagnostic', level: 'error' } },
@@ -415,6 +426,28 @@ export const mockBootstrap: AppBootstrapVm = {
   appConfig: {
     acpSessionTitleRefreshEnabled: false,
     acpChatEventPageSize: 360,
+    turnFiles: { cardPreviewLimit: 3 },
+    workspaceLayout: {
+      shellMinWidth: 480,
+      shellMinHeight: 680,
+      rightWorkspace: {
+        minWidth: 288,
+        defaultWidth: 440,
+        maxWidth: 1440,
+        file: {
+          preferredWidth: 760,
+          splitMinWidth: 500,
+          treeDefaultWidth: 280,
+          treeMinWidth: 200,
+          treeMaxWidth: 420,
+        },
+      },
+      conversation: { centerMinWidth: 360, centerAutoCollapseWidth: 420, windowMinWidth: 480 },
+      contextCards: { centerMinWidth: 520, centerAutoCollapseWidth: 520, windowMinWidth: 520 },
+      workflowCanvas: { centerMinWidth: 640, centerAutoCollapseWidth: 640, windowMinWidth: 640 },
+      settings: { centerMinWidth: 480, centerAutoCollapseWidth: 480, windowMinWidth: 480 },
+    },
+    workspaceFiles: FALLBACK_WORKSPACE_FILES,
   },
   needsWorkspace: false,
 };
@@ -429,9 +462,11 @@ export const mockAgentRegistry: AgentRegistryVm = {
       env: [{ key: 'ANTHROPIC_API_KEY', value: '***' }],
       iconKey: 'claude',
       primaryAgentDir: '.claude',
+      projectPrimaryAgentDir: null,
       compatibleAgentDirs: [],
+      supportsSystemPrompt: true,
+      externalSessionSyncSupported: false,
       externalSessionSyncEnabled: false,
-      supported: true,
       diagnostic: {
         status: 'healthy',
         available: true,
@@ -462,14 +497,40 @@ export const mockAgentRegistry: AgentRegistryVm = {
       }],
     },
   ],
-  supportedTypes: [
-    { agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', primaryAgentDir: '.claude', compatibleAgentDirs: [], supported: true, configured: true, defaultDisplayName: 'Claude', defaultCommand: 'npx', defaultArgs: ['-y', '@agentclientprotocol/claude-agent-acp@latest'], defaultEnv: [] },
-    { agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', primaryAgentDir: '.codex', compatibleAgentDirs: ['.agents'], supported: true, configured: false, defaultDisplayName: 'Codex', defaultCommand: 'npx', defaultArgs: ['-y', '@agentclientprotocol/codex-acp@latest'], defaultEnv: [] },
-    { agentType: 'cursor', label: 'Cursor', iconKey: 'cursor', primaryAgentDir: '.cursor', compatibleAgentDirs: ['.agents'], supported: true, configured: false, defaultDisplayName: 'Cursor', defaultCommand: '.\\dist-package\\cursor-agent.cmd', defaultArgs: ['acp'], defaultEnv: [] },
-    { agentType: 'gemini', label: 'Gemini', iconKey: 'gemini', primaryAgentDir: '.gemini', compatibleAgentDirs: ['.agents'], supported: true, configured: false, defaultDisplayName: 'Gemini', defaultCommand: 'npx', defaultArgs: ['-y', '@google/gemini-cli@latest', '--acp'], defaultEnv: [] },
-    { agentType: 'opencode', label: 'OpenCode', iconKey: 'opencode', primaryAgentDir: '.opencode', compatibleAgentDirs: ['.agents'], supported: true, configured: false, defaultDisplayName: 'OpenCode', defaultCommand: '.\\opencode.exe', defaultArgs: ['acp'], defaultEnv: [] },
+  catalog: [
+    mockCatalogEntry({ agentType: 'claude-acp', label: 'Claude', iconKey: 'claude', primaryAgentDir: '.claude', configured: true, supportsSystemPrompt: true, defaultDisplayName: 'Claude', defaultArgs: ['-y', '@agentclientprotocol/claude-agent-acp@0.65.0'] }),
+    mockCatalogEntry({ agentType: 'codex-acp', label: 'Codex', iconKey: 'codex', primaryAgentDir: '.codex', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Codex', defaultArgs: ['-y', '@agentclientprotocol/codex-acp@1.1.13'] }),
+    mockCatalogEntry({ agentType: 'cursor', label: 'Cursor', iconKey: 'cursor', primaryAgentDir: '.cursor', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Cursor', defaultCommand: 'cursor-agent', defaultArgs: ['acp'] }),
+    mockCatalogEntry({ agentType: 'gemini', label: 'Gemini', iconKey: 'gemini', primaryAgentDir: '.gemini', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Gemini', defaultArgs: ['-y', '@google/gemini-cli@0.54.4', '--acp'] }),
+    mockCatalogEntry({ agentType: 'codebuddy-code', label: 'CodeBuddy', iconKey: 'codebuddy-code', primaryAgentDir: '.codebuddy', defaultDisplayName: 'CodeBuddy', defaultArgs: ['-y', '@tencent-ai/codebuddy-code@2.106.7', '--acp'] }),
+    mockCatalogEntry({ agentType: 'goose', label: 'Goose', iconKey: 'goose', primaryAgentDir: '.goose', defaultDisplayName: 'Goose', defaultCommand: 'goose', defaultArgs: ['acp'] }),
+    mockCatalogEntry({ agentType: 'qwen-code', label: 'Qwen Code', iconKey: 'qwen-code', primaryAgentDir: '.qwen', defaultDisplayName: 'Qwen Code', defaultArgs: ['-y', '@qwen-code/qwen-code@0.21.7', '--acp', '--experimental-skills'] }),
+    mockCatalogEntry({ agentType: 'opencode', label: 'OpenCode', iconKey: 'opencode', primaryAgentDir: '.opencode', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'OpenCode', defaultCommand: 'opencode', defaultArgs: ['acp'] }),
+    mockCatalogEntry({ agentType: 'kimi', label: 'Kimi Code', iconKey: 'kimi', primaryAgentDir: '.kimi-code', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Kimi Code', defaultCommand: 'kimi', defaultArgs: ['acp'] }),
+    mockCatalogEntry({ agentType: 'amp-acp', label: 'Amp', iconKey: 'amp-acp', primaryAgentDir: '.agents', compatibleAgentDirs: ['.claude'], defaultDisplayName: 'Amp', defaultCommand: 'amp-acp' }),
+    mockCatalogEntry({ agentType: 'pi-acp', label: 'Pi', iconKey: 'pi-acp', primaryAgentDir: '.pi/agent', projectPrimaryAgentDir: '.pi', compatibleAgentDirs: ['.agents'], defaultDisplayName: 'Pi', defaultArgs: ['-y', 'pi-acp@0.0.33'] }),
   ],
 };
+
+function mockCatalogEntry(input: Partial<AgentCatalogEntryVm> & Pick<AgentCatalogEntryVm, 'agentType' | 'label' | 'iconKey'>): AgentCatalogEntryVm {
+  return {
+    version: '1.0.0',
+    description: '',
+    repository: null,
+    website: null,
+    primaryAgentDir: '',
+    projectPrimaryAgentDir: null,
+    compatibleAgentDirs: [],
+    configured: false,
+    supportsSystemPrompt: false,
+    supportsExternalSessionSync: false,
+    defaultDisplayName: input.label,
+    defaultCommand: 'npx',
+    defaultArgs: [],
+    defaultEnv: [],
+    ...input,
+  };
+}
 
 export const mockTaskList: TaskListVm = {
   cards: [

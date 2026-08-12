@@ -12,9 +12,14 @@ const defaultSheetViewportMargin = 16
 const sheetResizeStep = 24
 
 type SheetSide = "top" | "right" | "bottom" | "left"
+const SheetModalContext = React.createContext(true)
 
-function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
-  return <SheetPrimitive.Root data-slot="sheet" {...props} />
+function Sheet({ modal = true, ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
+  return (
+    <SheetModalContext.Provider value={modal}>
+      <SheetPrimitive.Root data-slot="sheet" modal={modal} {...props} />
+    </SheetModalContext.Provider>
+  )
 }
 
 const SheetTrigger = React.forwardRef<
@@ -107,7 +112,7 @@ function SheetContent({
   children,
   side = "right",
   showCloseButton = true,
-  showOverlay = true,
+  showOverlay,
   closeLabel = "Close",
   resizable = true,
   resizeStorageKey,
@@ -129,6 +134,8 @@ function SheetContent({
   maxSize?: number
   viewportMargin?: number
 }) {
+  const modal = React.useContext(SheetModalContext)
+  const overlayVisible = resolveSheetOverlayVisibility(modal, showOverlay)
   const contentRef = React.useRef<HTMLDivElement | null>(null)
   const [portalContainerEl, setPortalContainerEl] = React.useState<HTMLElement | null>(null)
   const setContentRef = React.useCallback((node: HTMLDivElement | null) => {
@@ -302,7 +309,7 @@ function SheetContent({
 
   return (
     <SheetPortal>
-      {showOverlay ? <SheetOverlay /> : null}
+      {overlayVisible ? <SheetOverlay /> : null}
       <SheetPrimitive.Content
         ref={setContentRef}
         data-slot="sheet-content"
@@ -325,7 +332,7 @@ function SheetContent({
           {children}
         </PortalContainerContext.Provider>
         {showCloseButton && (
-          <SheetPrimitive.Close className="absolute top-4 right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-secondary">
+          <SheetPrimitive.Close className="absolute top-4 right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-hidden disabled:pointer-events-none">
             <XIcon className="size-4" />
             <span className="sr-only">{closeLabel}</span>
           </SheetPrimitive.Close>
@@ -362,6 +369,10 @@ function SheetContent({
       </SheetPrimitive.Content>
     </SheetPortal>
   )
+}
+
+export function resolveSheetOverlayVisibility(modal: boolean, showOverlay?: boolean) {
+  return showOverlay ?? modal
 }
 
 function SheetHeader({ className, ...props }: React.ComponentProps<"div">) {

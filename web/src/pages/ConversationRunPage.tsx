@@ -1,21 +1,15 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
-import { ACPChatDialog, type ACPChatDialogHandle, type AcpLifecycleSnapshot, type AcpRuntimeComposerContext } from '@/components/acp/ACPChatDialog';
+import { ACPChatDialog, type AcpLifecycleSnapshot, type AcpRuntimeComposerContext } from '@/components/acp/ACPChatDialog';
 import { ConversationRunHeader } from '@/components/conversation/ConversationRunHeader';
 import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
-import { StatusBadge } from '@/components/StatusBadge';
-import { WorkflowEditor, parseWorkflowJson } from '@/components/WorkflowEditor';
-import { GraphView } from '@/components/GraphView';
-import { conversationAssetsForLeaf } from '@/lib/conversation-session-assets';
+import { confirmCloseConversationRunWorkspaceResource, ConversationRunWorkspaceResourcePanel } from '@/components/workspace/ConversationRunWorkspaceResourcePanel';
+import { conversationRunWorkspaceResourceKey, useRightWorkspace, type ConversationDirectoryWorkspaceEntry, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
-import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm, GraphVm, ProfileVm } from '../types';
-import { getAgentRegistry, getProfiles, openInFileManager } from '@/api';
-
-type WorkflowSheetMode = 'edit' | 'repair' | 'view';
+import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm } from '../types';
 
 function activeSessionKey(session: {
   roundId: string;
@@ -77,6 +71,7 @@ export function ConversationRunPage({
   onTitleChange,
 }: ConversationRunPageProps) {
   const { t } = useTranslation();
+  const workspace = useRightWorkspace();
   const translatePauseReason = (reason?: string | null) => {
     if (!reason) return t('conversation.runtime.sessionPaused');
     switch (reason) {
@@ -100,18 +95,11 @@ export function ConversationRunPage({
   };
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
   const [rerunConfirmOpen, setRerunConfirmOpen] = useState(false);
-  const [workflowSheet, setWorkflowSheet] = useState<{ open: boolean; mode: WorkflowSheetMode }>({ open: false, mode: 'view' });
-  const [workflowValidationRequestId, setWorkflowValidationRequestId] = useState(0);
-  const [workflowAgentRegistry, setWorkflowAgentRegistry] = useState<AgentRegistryVm | null>(null);
-  const [workflowProfiles, setWorkflowProfiles] = useState<ProfileVm[] | null>(null);
-  const effectiveAgentRegistry = workflowAgentRegistry ?? agentRegistry;
-  const effectiveProfiles = workflowProfiles ?? [];
   const isAtBottomRef = useRef(true);
   const manualAutoFollowDisabledRef = useRef(false);
   const pendingAutoFollowRestoreSessionKeyRef = useRef<string | null>(null);
   const onAutoFollowChangeRef = useRef(onAutoFollowChange);
   const headerAreaRef = useRef<HTMLDivElement>(null);
-  const chatDialogRef = useRef<ACPChatDialogHandle>(null);
   const activeSessionKeys = useMemo(
     () => run.activeSessions.map((session) => activeSessionKey(session)),
     [run.activeSessions],
@@ -139,25 +127,25 @@ export function ConversationRunPage({
     return () => document.removeEventListener('mousedown', handler);
   }, [sessionSwitcherOpen]);
 
-  // Lazy-load workflow editor dependencies when opening the workflow sheet.
-  const openWorkflowEditor = useCallback((mode: Exclude<WorkflowSheetMode, 'view'>) => {
+  const workflowLocator = useMemo(() => ({
+    projectId: run.projectId,
+    taskId: run.taskId,
+    runId: run.runId,
+  }), [run.projectId, run.runId, run.taskId]);
+
+  const openWorkflowEditor = useCallback((mode: 'edit' | 'repair') => {
     onEditWorkflow();
-    const open = () => {
-      setWorkflowSheet({ open: true, mode });
-      if (mode === 'repair') setWorkflowValidationRequestId((value) => value + 1);
-    };
-    const registryPromise = effectiveAgentRegistry
-      ? Promise.resolve(effectiveAgentRegistry)
-      : getAgentRegistry().catch(() => ({ agents: [], supportedTypes: [] }));
-    const profilesPromise = workflowProfiles
-      ? Promise.resolve(workflowProfiles)
-      : getProfiles().then((result) => result.profiles).catch(() => []);
-    Promise.all([registryPromise, profilesPromise]).then(([registry, profiles]) => {
-      setWorkflowAgentRegistry(registry);
-      setWorkflowProfiles(profiles);
-      open();
+    if (!workspace.scopeKey) return;
+    workspace.openResource({
+      kind: 'workflow-edit',
+      key: conversationRunWorkspaceResourceKey('workflow-edit', workflowLocator),
+      scopeKey: workspace.scopeKey,
+      title: mode === 'repair' ? t('workflow.repairWorkflowTitle') : t('conversation.runtime.editWorkflow'),
+      attention: false,
+      mode,
+      locator: workflowLocator,
     });
-  }, [effectiveAgentRegistry, onEditWorkflow, workflowProfiles]);
+  }, [onEditWorkflow, t, workflowLocator, workspace.openResource, workspace.scopeKey]);
 
   const handleEditWorkflow = useCallback(() => {
     openWorkflowEditor('edit');
@@ -168,16 +156,16 @@ export function ConversationRunPage({
   }, [openWorkflowEditor]);
 
   const handleViewWorkflow = useCallback(() => {
-    setWorkflowSheet({ open: true, mode: 'view' });
-  }, []);
-
-  const handleWorkflowValidationIssues = useCallback(() => {
-    setWorkflowValidationRequestId((value) => value + 1);
-  }, []);
-
-  const handleWorkflowSheetClose = useCallback(() => {
-    setWorkflowSheet((current) => ({ ...current, open: false }));
-  }, []);
+    if (!workspace.scopeKey) return;
+    workspace.openResource({
+      kind: 'workflow-view',
+      key: conversationRunWorkspaceResourceKey('workflow-view', workflowLocator),
+      scopeKey: workspace.scopeKey,
+      title: t('conversation.runtime.viewWorkflow'),
+      attention: false,
+      locator: workflowLocator,
+    });
+  }, [t, workflowLocator, workspace.openResource, workspace.scopeKey]);
 
   const handleWorkflowNodeOpenSession = useCallback((graphNode: GraphNodeVm) => {
     const leaf = conversationSessionLeafForGraphNode(run.sessionTree, graphNode);
@@ -186,8 +174,43 @@ export function ConversationRunPage({
     manualAutoFollowDisabledRef.current = true;
     onAutoFollowChange?.(false);
     onSelectSession(leaf);
-    setWorkflowSheet({ open: false, mode: workflowSheet.mode });
-  }, [run.sessionTree, onAutoFollowChange, onSelectSession, workflowSheet.mode]);
+  }, [run.sessionTree, onAutoFollowChange, onSelectSession]);
+
+  const renderWorkspaceResource = useCallback((resource: RightWorkspaceResource) => {
+    if (
+      resource.kind !== 'workflow-view' &&
+      resource.kind !== 'workflow-edit' &&
+      resource.kind !== 'system-prompt' &&
+      resource.kind !== 'raw-frames'
+    ) return null;
+    return (
+      <ConversationRunWorkspaceResourcePanel
+        key={resource.key}
+        resource={resource}
+        run={run}
+        agentRegistry={agentRegistry}
+        onSaveWorkflow={onSaveWorkflow}
+        onNodeOpenSession={handleWorkflowNodeOpenSession}
+      />
+    );
+  }, [agentRegistry, handleWorkflowNodeOpenSession, onSaveWorkflow, run]);
+
+  useEffect(() => {
+    const unregister = [
+      workspace.registerResourceRenderer('workflow-view', renderWorkspaceResource),
+      workspace.registerResourceRenderer('workflow-edit', renderWorkspaceResource),
+      workspace.registerResourceRenderer('system-prompt', renderWorkspaceResource),
+      workspace.registerResourceRenderer('raw-frames', renderWorkspaceResource),
+    ];
+    return () => unregister.forEach((dispose) => dispose());
+  }, [renderWorkspaceResource, workspace.registerResourceRenderer]);
+  useEffect(
+    () => workspace.registerResourceCloseResolver('workflow-edit', (resource) => confirmCloseConversationRunWorkspaceResource(
+      resource,
+      () => window.confirm(t('workspace.discardWorkflowChanges')),
+    )),
+    [t, workspace.registerResourceCloseResolver],
+  );
 
   const isRunning = run.runStatus === 'running';
   const isDirect = run.runMode === 'direct';
@@ -195,19 +218,31 @@ export function ConversationRunPage({
   const selectedSessionKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
   const showLaunchingSession = isRunning && !selectedLeaf;
 
-  const handleOpenInFileManager = useCallback(() => {
-    if (!selectedLeaf) return;
-    openInFileManager(
-      run.projectId,
-      run.taskId,
-      run.runId,
-      selectedLeaf.roundId,
-      selectedLeaf.nodeId,
-      selectedLeaf.attemptId,
-      selectedLeaf.outerNodeId,
-      selectedLeaf.outerAttemptId,
-    );
-  }, [run.projectId, run.taskId, run.runId, selectedLeaf]);
+  const conversationDirectoryEntry = useMemo<ConversationDirectoryWorkspaceEntry | null>(() => {
+    if (!workspace.scopeKey || !selectedLeaf) return null;
+    return {
+      kind: 'conversation-directory',
+      scopeKey: workspace.scopeKey,
+      title: t('workspace.runDirectory'),
+      description: selectedLeaf.runtimeDisplay?.code ?? null,
+      attention: false,
+      locator: {
+        projectId: run.projectId,
+        taskId: run.taskId,
+        runId: run.runId,
+        roundId: selectedLeaf.roundId,
+        nodeId: selectedLeaf.nodeId,
+        attemptId: selectedLeaf.attemptId,
+        outerNodeId: selectedLeaf.outerNodeId,
+        outerAttemptId: selectedLeaf.outerAttemptId,
+      },
+    };
+  }, [run.projectId, run.runId, run.taskId, selectedLeaf, t, workspace.scopeKey]);
+
+  useEffect(() => {
+    workspace.setConversationDirectoryEntry(conversationDirectoryEntry);
+    return () => workspace.setConversationDirectoryEntry(null);
+  }, [conversationDirectoryEntry, workspace.setConversationDirectoryEntry]);
 
   const isAutoFollowRestorableLeaf = useCallback((leaf: ConversationSessionLeafVm | null) => {
     if (!leaf) return false;
@@ -273,8 +308,6 @@ export function ConversationRunPage({
 
   const selectedSessionMatchesLeaf = sessionBelongsToLeaf(run.selectedSession, run, selectedLeaf);
   const selectedSession = selectedSessionMatchesLeaf ? run.selectedSession : null;
-  const selectedArtifacts = conversationAssetsForLeaf(run.artifacts, selectedLeaf);
-  const selectedAttachments = conversationAssetsForLeaf(run.attachments, selectedLeaf);
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
   const selectedSessionRuntimeControlError = run.runtimeErrorMessage && !(
     selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionDisplay?.code === 'error-blocked'
@@ -292,12 +325,14 @@ export function ConversationRunPage({
   const canViewWorkflow = !isDirect && canViewConversationRuntimeWorkflow(run, selectedLeaf);
   const runtimeComposerContext: AcpRuntimeComposerContext | undefined = selectedLeaf
     ? {
+        isOrchestrated: run.runMode !== 'direct',
         lifecycle: selectedLeaf.lifecycle,
+        promptQueueEnabled: isDirect,
         runtimeStatus: selectedLeaf.lifecycle?.runtime.status ?? selectedLeaf.status,
         workflowValid: isDirect || run.workflowValid,
         workflowError: isDirect ? undefined : t('conversation.runtime.workflowInvalid'),
         pauseMessage: isDirect ? undefined : translatePauseReason(selectedSessionPauseReason),
-        runtimeError: isDirect ? undefined : selectedRuntimeErrorMessage,
+        runtimeError: selectedRuntimeErrorMessage,
         onRepair: handleRepairWorkflow,
       }
     : undefined;
@@ -314,7 +349,6 @@ export function ConversationRunPage({
             onRerun={handleRerun}
             onEditWorkflow={handleEditWorkflow}
             onViewWorkflow={handleViewWorkflow}
-            onOpenInFileManager={handleOpenInFileManager}
             onToggleSessionSwitcher={() => setSessionSwitcherOpen((prev) => !prev)}
             sessionSwitcherOpen={sessionSwitcherOpen}
             onTitleChange={onTitleChange}
@@ -356,6 +390,8 @@ export function ConversationRunPage({
                   lifecycle: session.lifecycle,
                   current: true,
                   manualCheckPending: session.manualCheckPending,
+                  sessionId: session.sessionId,
+                  sessionEstablished: session.sessionEstablished,
                   artifactCount: 0,
                   attachmentCount: 0,
                 }, true)}
@@ -374,9 +410,10 @@ export function ConversationRunPage({
       <div className="min-h-0 flex-1">
         {selectedLeaf ? (
           <ACPChatDialog
-            ref={chatDialogRef}
             key={`${run.taskUuid ?? run.taskId}:${selectedSessionKey ?? 'empty'}`}
             session={selectedSession}
+            sessionEstablished={selectedLeaf.sessionEstablished}
+            sessionReferenceId={selectedLeaf.sessionId}
             projectId={run.projectId}
             taskId={run.taskId}
             runId={run.runId}
@@ -386,22 +423,18 @@ export function ConversationRunPage({
             outerNodeId={selectedLeaf.outerNodeId}
             outerAttemptId={selectedLeaf.outerAttemptId}
             eventPageSize={appConfig.acpChatEventPageSize}
+            turnFileCardPreviewLimit={appConfig.turnFiles.cardPreviewLimit}
             onLifecycleSnapshot={onLifecycleSnapshot}
             onAtBottomChange={handleAtBottomChange}
             allowEventOnlySessionShell={false}
+            showInitializingSessionShell={selectedLeaf.current}
             runtimeComposerContext={runtimeComposerContext}
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
             showSystemPromptAction={!isDirect}
             directSessionHeader={isDirect ? {
               title: run.title,
               onTitleChange,
-              onOpenInFileManager: handleOpenInFileManager,
             } : undefined}
-            liveUpdatesPaused={workflowSheet.open}
-            artifacts={selectedArtifacts}
-            attachments={selectedAttachments}
-            allArtifacts={run.artifacts}
-            allAttachments={run.attachments}
             usageCompact
             cacheNamespace={run.taskUuid ?? `${run.projectId}:${run.taskId}`}
           />
@@ -429,23 +462,6 @@ export function ConversationRunPage({
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Workflow sheet (edit / view) */}
-      {!isDirect ? <WorkflowSheet
-        open={workflowSheet.open}
-        mode={workflowSheet.mode}
-        workflowJson={run.workflowJson}
-        workflowGraph={run.workflowGraph}
-        agentRegistry={effectiveAgentRegistry}
-        profiles={effectiveProfiles}
-        workflowValid={run.workflowValid}
-        workflowErrorMessage={!run.workflowValid ? t('conversation.runtime.workflowInvalid') : selectedRuntimeErrorMessage}
-        validationRequestId={workflowValidationRequestId}
-        onShowValidationIssues={handleWorkflowValidationIssues}
-        onSave={onSaveWorkflow}
-        onClose={handleWorkflowSheetClose}
-        onNodeOpenSession={handleWorkflowNodeOpenSession}
-        t={t}
-      /> : null}
     </div>
     </TooltipProvider>
   );
@@ -458,7 +474,7 @@ function ConversationEmptySessionState({ label, active }: { label: string; activ
         {active ? (
           <span
             aria-hidden="true"
-            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary [animation-duration:900ms]"
+            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-gold-running/30 border-t-gold-running [animation-duration:900ms]"
           />
         ) : null}
         <span>{label}</span>
@@ -587,117 +603,3 @@ function isActiveSessionStatus(status?: string | null) {
 function isTerminalSessionStatus(status?: string | null) {
   return ['completed', 'complete', 'success', 'failed', 'failure', 'error', 'killed', 'cancelled', 'canceled'].includes(normalizeSessionStatus(status));
 }
-
-// ── Workflow sheet (edit / view) ──
-
-const WorkflowSheet = memo(function WorkflowSheet({
-  open,
-  mode,
-  workflowJson,
-  workflowGraph,
-  agentRegistry,
-  profiles,
-  workflowValid,
-  workflowErrorMessage,
-  validationRequestId,
-  onShowValidationIssues,
-  onSave,
-  onClose,
-  onNodeOpenSession,
-  t,
-}: {
-  open: boolean;
-  mode: WorkflowSheetMode;
-  workflowJson?: string | null;
-  workflowGraph: GraphVm;
-  agentRegistry: AgentRegistryVm | null;
-  profiles: ProfileVm[];
-  workflowValid: boolean;
-  workflowErrorMessage?: string | null;
-  validationRequestId: number;
-  onShowValidationIssues: () => void;
-  onSave?: (json: string) => Promise<void>;
-  onClose: () => void;
-  onNodeOpenSession?: (node: GraphNodeVm) => void;
-  t: (key: string) => string;
-}) {
-  const workflow = useMemo(
-    () => (open ? parseWorkflowJson(workflowJson) : null),
-    [open, workflowJson],
-  );
-
-  if (!open) return null;
-
-  if (mode === 'edit' || mode === 'repair') {
-    const repairMode = mode === 'repair';
-    return (
-      <Sheet open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-        <SheetContent
-          className="gap-0 overflow-hidden border-border bg-card p-0 sm:max-w-5xl"
-          resizeStorageKey={`conversation/workflow-${mode}`}
-          closeLabel={t('common.close')}
-        >
-          <SheetHeader className="shrink-0 gap-3 border-b px-5 py-4 text-left">
-            <div className="flex min-w-0 flex-wrap items-center gap-3">
-              <SheetTitle>{repairMode ? t('workflow.repairWorkflowTitle') : t('conversation.runtime.editWorkflow')}</SheetTitle>
-              {repairMode ? <StatusBadge value={workflowValid ? 'valid' : 'invalid'} label={workflowValid ? t('status.valid') : t('status.invalid')} /> : null}
-            </div>
-            {repairMode && workflowErrorMessage ? (
-              <Button
-                type="button"
-                variant="link"
-                size="sm"
-                className="h-auto justify-start px-0 text-sm text-primary underline-offset-4 hover:underline"
-                onClick={onShowValidationIssues}
-              >
-                {t('workflow.viewErrorReasons')}
-              </Button>
-            ) : null}
-            {repairMode && workflowErrorMessage ? (
-              <p className="text-sm text-muted-foreground">{workflowErrorMessage}</p>
-            ) : null}
-          </SheetHeader>
-          <div className="min-h-0 flex-1 overflow-auto">
-            {workflow ? (
-              <WorkflowEditor
-                value={workflow}
-                agentRegistry={agentRegistry}
-                profiles={profiles}
-                validationRequestId={repairMode ? validationRequestId : 0}
-                onSave={async (dsl) => {
-                  if (onSave) await onSave(JSON.stringify(dsl));
-                  onClose();
-                }}
-              />
-            ) : (
-              <div className="flex items-center justify-center p-12 text-sm text-muted-foreground">{t('common.empty')}</div>
-            )}
-          </div>
-        </SheetContent>
-      </Sheet>
-    );
-  }
-
-  // view mode — reuse GraphView from old UI
-  const hasGraph = workflowGraph.nodes.length > 0;
-  return (
-    <Sheet open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <SheetContent
-        className="gap-0 overflow-hidden border-border bg-card p-0 sm:max-w-6xl"
-        resizeStorageKey="conversation/workflow-view"
-        closeLabel={t('common.close')}
-      >
-        <SheetHeader className="shrink-0 border-b px-5 py-4 text-left">
-          <SheetTitle>{t('conversation.runtime.viewWorkflow')}</SheetTitle>
-        </SheetHeader>
-        <div className="min-h-0 flex-1 p-3">
-          {hasGraph ? (
-            <GraphView graph={workflowGraph} variant="actual" onNodeOpenDetail={onNodeOpenSession} onNodeOpenSession={onNodeOpenSession} />
-          ) : (
-            <div className="flex items-center justify-center p-12 text-sm text-muted-foreground">{t('common.empty')}</div>
-          )}
-        </div>
-      </SheetContent>
-    </Sheet>
-  );
-});

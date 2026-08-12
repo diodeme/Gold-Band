@@ -3,6 +3,7 @@
 ## 1. 核心对象
 Runtime 当前围绕以下对象组织：
 - task
+- scheduled task
 - run
 - round
 - attempt
@@ -27,14 +28,16 @@ preset -> task -> run -> round/attempt
 - `paused` 只属于 `status`，不属于 `outcome`
 - `ai-dynamic` 内部状态归属外层节点 attempt，外层 round graph 只保留一个复合节点
 - AI-DYNAMIC prompt 分层遵循：runtime 决定的身份、历史、路径、限制、可用资源和输出协议进入 system prompt，并通过 minijinja 模板渲染；requirement 与当前 goal 进入 user prompt
-- 桌面端维护全局 `agent_diagnostics` 缓存并由后台 doctor 定期刷新；workflow 启动命令会要求普通 worker provider、AI-DYNAMIC bootstrap provider 与 dynamic strategy 的 available agents 均有可用 doctor 结果。permissionMode 先通过项目级中央映射解析为当前 provider 的真实 ACP mode id，再使用 doctor 权威目录校验；例如 Codex `full_access` 当前解析为 `agent-full-access`。模型目录属于快速变化能力事实：作者态 workflow/template 与运行快照中的明确过期模型都统一规范化并持久化为“不指定”，ACP session 返回权威 config options 后再次兜底，不因模型迭代要求用户手工修改配置，也不允许作者态 JSON 与实际调用分叉。AI-DYNAMIC schema、prompt 和权限校验读取当前缓存，不在执行中同步 doctor provider capabilities；prompt 和 schema 中的模型枚举必须使用 ACP `configOptions[].options[].value`，展示名只作为辅助标签。
+- 桌面端维护全局 `agent_diagnostics` 缓存并由后台 doctor 定期刷新；workflow 启动命令要求普通 worker provider、AI-DYNAMIC bootstrap provider 与 dynamic strategy 的 available agents 均有可用 doctor 结果。permissionMode 直接保存并校验当前 provider doctor 返回的原生 ACP mode id，不存在产品统一权限枚举或跨 provider 中央映射。模型目录属于快速变化能力事实：作者态 workflow/template 与运行快照中的明确过期模型统一规范化为“不指定”，ACP session 返回权威 config options 后再次兜底。AI-DYNAMIC dynamic 策略只让 output contract 选择 provider，runtime 从对应候选配置注入模型与权限；prompt/schema 不允许模型输出 `model / permissionMode`。
 - runtime 自身的修复提示也统一放在 `src/prompts/<lang>/runtime/`，例如节点输出不满足 output DSL 时使用 `src/prompts/<lang>/runtime/invalid_output_repair.md` 生成隐藏 repair prompt
 
 ## 4. 子文档结构
+- [定时任务运行时设计](scheduled-task.md)
 - [控制层](control.md)
 - [目录布局](layout.md)
 - 状态文件规范
   - [task.json](state/task.json.md)
+  - [scheduled-task.json](state/scheduled-task.json.md)
   - [run.json](state/run.json.md)
   - [round.json](state/round.json.md)
   - [node.json](state/node.json.md)
@@ -132,3 +135,4 @@ ACP attempt 会在 `acp.diagnostics.jsonl` 写入 adapter 复用/新建结果和
 ## 9. 相关边界文件
 - [Worker Ref 规范](../provider/worker-ref.md)
 - [Progress 规范](../interaction/progress.md)
+- [状态、生命周期与数据完整性规则](../../rules/state-lifecycle-and-data-integrity.md) —— 实现和审查实体身份、canonical state、异步收敛、持久化、原子写入与错误隔离时的统一工程约束

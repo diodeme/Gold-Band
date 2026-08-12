@@ -288,13 +288,6 @@ pub enum PromptEnvelopeMode {
 pub struct AiDynamicNode {
     pub id: String,
     pub agent_strategy: AiDynamicAgentStrategy,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        rename = "permission_mode",
-        alias = "permissionMode"
-    )]
-    pub permission_mode: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config_options: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -315,8 +308,6 @@ struct AiDynamicNodeCompat {
     pub agent_strategy: Option<AiDynamicAgentStrategy>,
     #[serde(default)]
     pub provider: Option<String>,
-    #[serde(default, rename = "permission_mode", alias = "permissionMode")]
-    pub permission_mode: Option<String>,
     #[serde(default)]
     pub config_options: BTreeMap<String, String>,
     #[serde(default)]
@@ -346,16 +337,13 @@ impl<'de> Deserialize<'de> for AiDynamicNode {
                 AiDynamicAgentStrategy::Fixed {
                     provider,
                     model: None,
+                    permission_mode: None,
                 }
             }
         };
         Ok(Self {
             id: raw.id,
             agent_strategy,
-            permission_mode: raw
-                .permission_mode
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
             config_options: raw.config_options,
             allowed_profiles: raw
                 .allowed_profiles
@@ -392,10 +380,6 @@ impl AiDynamicNode {
         }
     }
 
-    pub fn permission_mode(&self) -> Option<&str> {
-        self.permission_mode.as_deref()
-    }
-
     pub fn global_goal(&self) -> Option<&str> {
         self.global_goal.as_deref()
     }
@@ -409,6 +393,8 @@ pub enum AiDynamicAgentStrategy {
         provider: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permission_mode: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     Dynamic {
@@ -416,7 +402,13 @@ pub enum AiDynamicAgentStrategy {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bootstrap_model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        permission_mode: Option<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        bootstrap_config_options: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         acceptance_model: Option<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        acceptance_config_options: BTreeMap<String, String>,
         routing_prompt: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         available_agents: Vec<DynamicAgentRef>,
@@ -429,6 +421,10 @@ pub struct DynamicAgentRef {
     pub provider: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_options: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -639,7 +635,11 @@ fn validate_worker_node(worker: &WorkerNode, id: &str) -> Result<()> {
 
 fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
     match &node.agent_strategy {
-        AiDynamicAgentStrategy::Fixed { provider, model } => {
+        AiDynamicAgentStrategy::Fixed {
+            provider,
+            model,
+            permission_mode,
+        } => {
             ensure!(
                 !provider.trim().is_empty(),
                 "ai-dynamic node `{id}` fixed provider cannot be blank"
@@ -651,11 +651,20 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
                     });
                 }
             }
+            if let Some(mode) = permission_mode {
+                ensure!(
+                    !mode.trim().is_empty(),
+                    "ai-dynamic node `{id}` fixed permissionMode cannot be blank"
+                );
+            }
         }
         AiDynamicAgentStrategy::Dynamic {
             bootstrap_provider,
             bootstrap_model,
+            permission_mode,
+            bootstrap_config_options: _,
             acceptance_model,
+            acceptance_config_options: _,
             routing_prompt: _,
             available_agents,
         } => {
@@ -669,6 +678,12 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
                         node_id: id.to_string(),
                     });
                 }
+            }
+            if let Some(mode) = permission_mode {
+                ensure!(
+                    !mode.trim().is_empty(),
+                    "ai-dynamic node `{id}` permissionMode cannot be blank"
+                );
             }
             if let Some(model) = acceptance_model {
                 if model.trim().is_empty() {
@@ -703,14 +718,14 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
                         });
                     }
                 }
+                if let Some(mode) = &agent_ref.permission_mode {
+                    ensure!(
+                        !mode.trim().is_empty(),
+                        "ai-dynamic node `{id}` available agent `{provider}` permissionMode cannot be blank"
+                    );
+                }
             }
         }
-    }
-    if let Some(permission_mode) = &node.permission_mode {
-        ensure!(
-            !permission_mode.trim().is_empty(),
-            "ai-dynamic node `{id}` permissionMode cannot be blank"
-        );
     }
     ensure!(
         node.control.max_dynamic_nodes > 0,

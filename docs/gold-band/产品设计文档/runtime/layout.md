@@ -92,6 +92,8 @@ Layout 定义 Gold Band 的文件边界：项目仓库只保留项目级可覆�
       project.json
       tasks/
         task-001/
+      scheduled-tasks/
+        scheduled-task-001/
 ```
 
 ### 4.1 用户级 context

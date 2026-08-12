@@ -78,6 +78,7 @@ Gold Band 桌面客户端是面向本地项目的 AI workflow 编排与观测工
 - [任务工作流页](task-workflow.md)
 - [Round 详情页](round-detail.md)
 - [Agent 管理页](agent-management.md)
+- [上下文管理与角色批量导入](context-management.md)
 - [设置页](settings.md)
 
 ---
@@ -141,9 +142,11 @@ UI 不应根据日志直接推断 workflow 终局，终局状态以 canonical st
 - 前端位于 `web/`，只负责桌面应用壳、页面栈、图形展示与直接操作。
 - 前后端通过 Tauri commands 交换 view model，终局状态仍以 canonical state 为准。
 - 桌面端 workspace 不依赖 Tauri 进程启动目录：启动时恢复用户记忆，或向上查找 `.gold-band/` 作为项目根；用户可通过原生目录选择器切换 workspace。
-- 启动命令为 `npm run dev`，默认渠道构建命令为 `npm run build` / `npm run build:default`，wb 内网渠道本地临时构建命令为 `npm run build:wb`。
-- Tauri updater 按构建渠道内置更新配置：default 指向 GitHub Release `latest.json`，wb 指向内网占位地址；两个渠道内置不同 public key，避免跨渠道更新包互相验证通过。default 渠道由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在，并附加桌面安装包、签名和 `latest.json`；该 workflow 支持 `main` push 自动触发和 GitHub Actions 页面手动触发，便于 release-please 主链路补跑；manifest 始终使用 release tag 生成版本号和下载 URL，Windows 平台优先指向签名的 setup exe 安装包；手动 fallback 重建时应用源码来自 release tag，发布脚本来自所选 workflow 分支；macOS arm64 使用 `macos-15`，macOS x64 使用 `macos-15-intel`，release publish 后客户端才会从 latest 地址看到更新。
+- 开发热加载启动命令为 `npm run dev`；需要固定当前源码快照、且不随前端或 Rust 文件修改热加载/重启时，使用默认渠道静态开发启动命令 `npm run dev:static`。该命令先将一次性 `web:build` 直接输出到本次进程独占的 `src-tauri/target/static-dev/<channel>/<snapshot>/frontend`，再让 Tauri `frontendDist` 只服务该不可变目录；退出后清理本次前端快照。后续其他进程改写 `web/dist` 不会触发当前客户端刷新，深层会话路由也不会在并行构建的清空窗口内落入临时 404。该模式同时关闭 Tauri source watcher，使用独立 Cargo target，并关闭 static dev 专用 Cargo dev profile 的 Rust debug symbols，避免与普通构建争用 Windows PDB 或触发容量限制；普通 `npm run dev` 的源码级调试能力不受影响。默认渠道构建命令为 `npm run build` / `npm run build:default`，wb 内网渠道本地临时构建命令为 `npm run build:wb`。
+- Tauri updater 按构建渠道内置更新配置：default 指向 GitHub Release `latest.json`，wb 指向内网占位地址；两个渠道内置不同 public key，避免跨渠道更新包互相验证通过。default 渠道由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在，并附加桌面安装包、签名和 `latest.json`；该 workflow 支持 `main` push 自动触发和 GitHub Actions 页面手动触发，便于 release-please 主链路补跑；项目处于 `0.x` 阶段时，breaking change 按 minor 版本发布，例如 `0.12.x` 的 breaking change 发布为 `0.13.0`，避免在产品尚未进入稳定版时自动提升到 `1.0.0`；manifest 始终使用 release tag 生成版本号和下载 URL，Windows 平台优先指向签名的 setup exe 安装包；手动 fallback 重建时应用源码来自 release tag，发布脚本来自所选 workflow 分支；macOS arm64 使用 `macos-15`，macOS x64 使用 `macos-15-intel`，release publish 后客户端才会从 latest 地址看到更新。
 - Windows release 包按 GUI 桌面应用启动，不附带 cmd 控制台窗口；仅 debug/dev 构建保留控制台输出以便开发调试；后台子进程通过统一 process helper 启动，ACP provider、诊断清理、Toast AUMID 注册等 npx/codex/taskkill/reg/PowerShell 调用不弹控制台窗口。
+- macOS release 不维护 signed/unsigned 两套产品逻辑。`tauri.conf.json` 默认使用 ad-hoc signing identity `-`；两种架构继续走同一 release job 和原文件名。CI 中 Apple 凭证全部缺失时只设置 `APPLE_SIGNING_IDENTITY=-`，部分缺失直接失败，完整时把全部凭证交给 Tauri bundler 签名、公证；构建后只做严格 codesign 完整性验证，不对未公证包执行必然失败的 Gatekeeper assess。
+- ACP、MCP stdio、Agent doctor 和登录 Shell PATH 探测统一由 `ManagedProcessGroup` 管理。Windows 使用 Job Object 并继承隐藏控制台标志，macOS/Linux 使用独立进程组和 TERM→宽限期→KILL；正常生命周期不再按单个 PID 清理，持久化 PID/PGID 适配器只用于崩溃后的下次启动恢复。
 
 MVP 范围：
 - 实现任务列表、任务工作流、Round 详情、Agent 管理和设置页；任务详情并入任务工作流页，run 详情并入工作流页 run 分组。
@@ -322,11 +325,12 @@ MVP 范围：
 
 ## 11. 2026-06-18 系统通知干预弹窗
 
-编排器在人工确认 / 权限请求 / 执行错误 / 进程中断四类暂停场景下，通过 **OS 系统通知**（Windows Toast，含「查看详情」「忽略」按钮，左上角展示码灵图标）单一表面主动提醒用户：应用未聚焦时仍可触达。Windows Toast 首次发送时会幂等注册 AUMID 与开始菜单快捷方式；该注册属于后台非交互流程，所有 `reg` / PowerShell helper 必须通过统一 process helper 隐藏控制台窗口。
+编排器在人工确认 / 权限请求 / 执行错误 / 进程中断四类暂停场景下，通过 OS 系统通知单一表面主动提醒用户：Windows 保留现有 Toast、按钮、AUMID 与图标实现，macOS/Linux 使用 `notify-rust` 的 typed `NotificationResponse`。Windows Toast 首次发送时会幂等注册 AUMID 与开始菜单快捷方式；该注册属于后台非交互流程，所有 `reg` / PowerShell helper 必须通过统一 process helper 隐藏控制台窗口。
 
 交互约束：
 - 系统通知展示时长由 `configs/app-config.toml` 的 `notificationAutoDismissTargetSecs` 统一管理，当前产品目标为 20 秒。Windows 原生 Toast 只提供 Short（约 7 秒）和 Long（约 25 秒）两档，因此按最近档位解析为非持久的 Long，实际约 25 秒后自动收起；Windows 仍可能按用户的辅助功能通知时长设置调整实际展示时间。未点击的通知保留在通知中心，避免用户错过关键提醒。
 - 通知无解决闭环。点击「忽略」或「查看详情」时由后端清 dedup key，允许同节点再次弹出；横幅自然超时不代表业务问题已处理，不清理 dedup key。
+- Windows 通知正文点击、Windows「查看详情」、macOS/Linux 默认点击与 `view` action 统一生成 `ViewActionPayload`。后端先将 payload 放入待导航队列，再恢复或重建 `main` 窗口并发送“导航可用”信号；前端先注册监听，再通过 `take_pending_intervention_navigations()` 原子排空。该数据/信号分层保证窗口销毁后重建时不会因事件早于监听器而丢失或重复导航。
 - 「查看详情」按当前 uiMode deep link 到对应节点：工作台模式定位到 Round 详情并选中节点；会话模式定位到会话 run 并在 sessionTree 内匹配节点 session。
 - 弹窗只承载「提醒 + 跳转」，不承载决策本身——权限/人工确认的 Allow/Reject 仍走主干卡片与命令，与弹窗点掉是两个独立动作。
 

@@ -132,14 +132,22 @@ fn native_skill_roots(
 ) -> Vec<NativeSkillRoot> {
     let mut roots = Vec::new();
     let mut seen = BTreeSet::new();
-    for (directory_priority, dir_name) in policy.read_dir_names.iter().enumerate() {
-        for (scope_priority, (base, source)) in [
-            (home, SkillSource::Global),
-            (workspace, SkillSource::Project),
+    let max_directory_count = policy
+        .global
+        .read_dir_names
+        .len()
+        .max(policy.project.read_dir_names.len());
+    for directory_priority in 0..max_directory_count {
+        for (scope_priority, (scope, base, source)) in [
+            (&policy.global, home, SkillSource::Global),
+            (&policy.project, workspace, SkillSource::Project),
         ]
         .into_iter()
         .enumerate()
         {
+            let Some(dir_name) = scope.read_dir_names.get(directory_priority) else {
+                continue;
+            };
             let root = resolve_agent_skills_dir(base, dir_name).into_std_path_buf();
             if seen.insert(root.clone()) {
                 roots.push(NativeSkillRoot {
@@ -271,7 +279,7 @@ fn is_command_char(character: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{collections::BTreeSet, fs};
 
     use camino::Utf8Path;
     use serde_json::json;
@@ -282,7 +290,20 @@ mod tests {
         merge_native_skill_commands_at_home, native_skill_candidate_order,
         parse_available_commands, workspace_key,
     };
-    use crate::config::AgentSkillDirectoryPolicy;
+    use crate::config::{AgentSkillDirectoryPolicy, AgentSkillDirectoryScopePolicy};
+
+    fn shared_skill_policy(primary: &str, compatible: &[&str]) -> AgentSkillDirectoryPolicy {
+        let scope = AgentSkillDirectoryScopePolicy {
+            write_dir_names: vec![primary.to_string()],
+            read_dir_names: std::iter::once(primary.to_string())
+                .chain(compatible.iter().map(|directory| (*directory).to_string()))
+                .collect(),
+        };
+        AgentSkillDirectoryPolicy {
+            global: scope.clone(),
+            project: scope,
+        }
+    }
 
     #[test]
     fn parses_and_deduplicates_acp_commands() {
@@ -367,10 +388,7 @@ mod tests {
             .unwrap();
         }
         let workspace = camino::Utf8PathBuf::from_path_buf(workspace.path().to_path_buf()).unwrap();
-        let policy = AgentSkillDirectoryPolicy {
-            write_dir_names: vec![".codex".to_string()],
-            read_dir_names: vec![".codex".to_string(), ".agents".to_string()],
-        };
+        let policy = shared_skill_policy(".codex", &[".agents"]);
         let commands = merge_native_skill_commands_at_home(
             &policy,
             &workspace,
@@ -391,6 +409,62 @@ mod tests {
                 .any(|command| command.name == "agent-browser")
         );
         assert!(commands.iter().any(|command| command.name == "openai-docs"));
+    }
+
+    #[test]
+    fn split_directory_policy_reads_the_correct_global_and_project_roots() {
+        let home = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        for (root, name) in [
+            (home.path().join(".pi/agent/skills"), "global-primary"),
+            (workspace.path().join(".pi/skills"), "project-primary"),
+            (home.path().join(".agents/skills"), "global-compatible"),
+            (
+                workspace.path().join(".agents/skills"),
+                "project-compatible",
+            ),
+            (home.path().join(".pi/skills"), "wrong-global-root"),
+            (
+                workspace.path().join(".pi/agent/skills"),
+                "wrong-project-root",
+            ),
+        ] {
+            let skill_dir = root.join(name);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: test\n---\n"),
+            )
+            .unwrap();
+        }
+        let workspace = camino::Utf8PathBuf::from_path_buf(workspace.path().to_path_buf()).unwrap();
+        let policy = AgentSkillDirectoryPolicy {
+            global: AgentSkillDirectoryScopePolicy {
+                write_dir_names: vec![".pi/agent".to_string()],
+                read_dir_names: vec![".pi/agent".to_string(), ".agents".to_string()],
+            },
+            project: AgentSkillDirectoryScopePolicy {
+                write_dir_names: vec![".pi".to_string()],
+                read_dir_names: vec![".pi".to_string(), ".agents".to_string()],
+            },
+        };
+
+        let commands =
+            merge_native_skill_commands_at_home(&policy, &workspace, home.path(), Vec::new());
+        let names = commands
+            .iter()
+            .map(|command| command.name.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            names,
+            BTreeSet::from([
+                "global-primary",
+                "project-primary",
+                "global-compatible",
+                "project-compatible",
+            ])
+        );
     }
 
     #[test]
@@ -418,10 +492,7 @@ mod tests {
             .unwrap();
         }
         let workspace = camino::Utf8PathBuf::from_path_buf(workspace.path().to_path_buf()).unwrap();
-        let policy = AgentSkillDirectoryPolicy {
-            write_dir_names: vec![".codex".to_string()],
-            read_dir_names: vec![".codex".to_string(), ".agents".to_string()],
-        };
+        let policy = shared_skill_policy(".codex", &[".agents"]);
 
         let commands =
             merge_native_skill_commands_at_home(&policy, &workspace, home.path(), Vec::new());
@@ -472,10 +543,7 @@ mod tests {
             .unwrap();
         }
         let workspace = camino::Utf8PathBuf::from_path_buf(workspace.path().to_path_buf()).unwrap();
-        let policy = AgentSkillDirectoryPolicy {
-            write_dir_names: vec![".claude".to_string()],
-            read_dir_names: vec![".claude".to_string()],
-        };
+        let policy = shared_skill_policy(".claude", &[]);
 
         let commands =
             merge_native_skill_commands_at_home(&policy, &workspace, home.path(), Vec::new());
@@ -502,10 +570,7 @@ mod tests {
             return;
         }
         let workspace = camino::Utf8PathBuf::from_path_buf(workspace.path().to_path_buf()).unwrap();
-        let policy = AgentSkillDirectoryPolicy {
-            write_dir_names: vec![".codex".to_string()],
-            read_dir_names: vec![".codex".to_string(), ".agents".to_string()],
-        };
+        let policy = shared_skill_policy(".codex", &[".agents"]);
 
         let commands =
             merge_native_skill_commands_at_home(&policy, &workspace, home.path(), Vec::new());
@@ -540,10 +605,7 @@ mod tests {
         )
         .unwrap();
         let workspace = camino::Utf8PathBuf::from_path_buf(workspace.path().to_path_buf()).unwrap();
-        let policy = AgentSkillDirectoryPolicy {
-            write_dir_names: vec![".codex".to_string()],
-            read_dir_names: vec![".codex".to_string(), ".agents".to_string()],
-        };
+        let policy = shared_skill_policy(".codex", &[".agents"]);
 
         let commands =
             merge_native_skill_commands_at_home(&policy, &workspace, home.path(), Vec::new());

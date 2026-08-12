@@ -23,6 +23,8 @@ export interface ConversationComposerMulticaBinding {
   remoteTaskId: string;
   /// multica workspace id（start_multica_conversation_run 寻址）。
   workspaceId: string;
+  /// 任务标题，仅用于 composer 绑定 chip 的展示（不参与发送寻址）。
+  title: string;
 }
 
 export interface ConversationComposerDraftState {
@@ -44,6 +46,7 @@ export type ConversationComposerDraftAction =
   | { type: 'setContent'; content: string }
   | { type: 'setAttachments'; attachments: AttachmentItem[] }
   | { type: 'prefill'; content: string; multica: ConversationComposerMulticaBinding }
+  | { type: 'clearMultica' }
   | { type: 'reset' };
 
 export function conversationComposerDraftReducer(
@@ -58,6 +61,9 @@ export function conversationComposerDraftReducer(
     case 'prefill':
       // 远程任务 prepare：正文预填 + 绑定 multica，并清空既有附件（新的远程任务草稿，不复用上一条本地草稿的附件）。
       return { content: action.content, attachments: [], multica: action.multica };
+    case 'clearMultica':
+      // 解除 multica 绑定但保留正文与附件：用户删掉绑定 chip 后，草稿降级为普通本地会话（发送走 create_conversation_run）。
+      return state.multica === null ? state : { ...state, multica: null };
     case 'reset':
       return createInitialConversationComposerDraft();
     default:
@@ -73,6 +79,8 @@ export interface ConversationComposerDraftContextValue {
   ) => void;
   /// 远程任务 claim 后预填：写正文 + 绑定 multica，清空既有附件。仅在 draft boundary 内可用。
   prefill: (content: string, multica: ConversationComposerMulticaBinding) => void;
+  /// 解除 multica 绑定（保留正文与附件）。仅清 draft 状态；释放服务端 prepare lease 由消费方调 cancelMulticaPrepareLease。
+  clearMultica: () => void;
   reset: () => void;
 }
 
@@ -158,8 +166,12 @@ export function useConversationComposerDraftOwner(): ConversationComposerDraftCo
     });
   }, []);
 
+  const clearMultica = useCallback(() => {
+    setDraft((prev) => conversationComposerDraftReducer(prev, { type: 'clearMultica' }));
+  }, []);
+
   return useMemo(
-    () => ({ draft, setContent, setAttachments, prefill, reset }),
-    [draft, setContent, setAttachments, prefill, reset],
+    () => ({ draft, setContent, setAttachments, prefill, clearMultica, reset }),
+    [draft, setContent, setAttachments, prefill, clearMultica, reset],
   );
 }

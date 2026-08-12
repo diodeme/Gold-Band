@@ -799,25 +799,6 @@ impl MulticaClient {
         .await
     }
 
-    /// `POST /api/issues/{id}/rerun` —— 用户手动重跑失败任务（接入方案 D1）。
-    ///
-    /// 带 `X-Workspace-ID` 头（issue 维度路由）；server 创建全新 queued 任务（force_fresh_session，
-    /// 不续跑旧 session——失败重跑视为全新任务）。一般网络重试。
-    pub async fn rerun_issue(
-        &self,
-        workspace_id: &str,
-        issue_id: &str,
-    ) -> Result<(), MulticaError> {
-        let path = format!("/api/issues/{issue_id}/rerun");
-        self.with_network_retry("rerun", || async {
-            let _: serde_json::Value = self
-                .post_json_with_workspace(&path, workspace_id, &serde_json::json!({}))
-                .await?;
-            Ok(())
-        })
-        .await
-    }
-
     /// `PUT /api/issues/{id}` —— 更新 issue 状态（接入方案 D2：码灵完成远程任务后流转 issue 到 done）。
     ///
     /// **码灵作为中介**：完成远程任务（[`complete_task`]）成功后，若该 task 关联了 issue，用码灵自身
@@ -1371,18 +1352,6 @@ mod tests {
     fn terminal_retry_attempts_count_matches_schedule_plus_one() {
         // 锁定终态重试次数 = schedule.len() + 1（初始尝试 + 每个退避一次重试 = 6，开发设计第 5 章）。
         assert_eq!(TERMINAL_RETRY_SCHEDULE_SECS.len() + 1, 6);
-    }
-
-    #[test]
-    fn rerun_issue_request_shape_is_workspace_scoped() {
-        // 接入方案 D1：POST /api/issues/{id}/rerun，body {}，靠 X-Workspace-ID 头路由。
-        // 该测试锁定 path 形状 + 空 body + workspace 维度（头注入在 post_json_with_workspace 内，
-        // 由 HTTP 集成测试覆盖；此处锁定 path/body 契约）。
-        let issue_id = "iss-7";
-        let path = format!("/api/issues/{issue_id}/rerun");
-        let body = serde_json::json!({});
-        assert_eq!(path, "/api/issues/iss-7/rerun");
-        assert_eq!(body, serde_json::json!({}));
     }
 
     #[test]

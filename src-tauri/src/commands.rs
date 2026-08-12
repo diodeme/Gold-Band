@@ -2650,39 +2650,6 @@ pub fn get_multica_settings(state: State<'_, DesktopState>) -> CommandResult<Mul
     Ok(multica_settings(&context.config))
 }
 
-#[tauri::command]
-pub fn save_multica_settings(
-    state: State<'_, DesktopState>,
-    app_handle: AppHandle,
-    enabled: bool,
-    multica_base_url: Option<String>,
-    multica_app_url: Option<String>,
-    default_provider: Option<String>,
-    active_workspace_id: Option<String>,
-) -> CommandResult<MulticaSettingsVm> {
-    let context = state.context().map_err(command_error)?;
-    let app = context.app();
-    let mut existing = app.load_settings().map_err(command_error)?;
-    existing.desktop_multica_enabled = Some(enabled);
-    existing.desktop_multica_base_url = multica_base_url
-        .as_deref()
-        .and_then(normalize_multica_base_url);
-    existing.desktop_multica_app_url = multica_app_url
-        .as_deref()
-        .and_then(normalize_multica_base_url);
-    existing.desktop_multica_default_provider = default_provider.filter(|s| !s.trim().is_empty());
-    existing.desktop_multica_active_workspace_id =
-        active_workspace_id.filter(|s| !s.is_empty());
-    app.save_settings(&existing).map_err(command_error)?;
-    state
-        .update_settings_config(&existing)
-        .map_err(command_error)?;
-    // 配置变更 → 通知任务列表 + 设置页 re-fetch（跨视图同步）。
-    crate::multica::bridge::emit_multica_settings_updated(&app_handle);
-    let updated_context = state.context().map_err(command_error)?;
-    Ok(multica_settings(&updated_context.config))
-}
-
 /// 触发浏览器登录：开浏览器 → JWT → PAT → verify → 落盘 PAT + 首次生成 daemon_id。
 /// PAT 永不回显（VM 仅暴露 `pat_set`）。
 #[tauri::command]

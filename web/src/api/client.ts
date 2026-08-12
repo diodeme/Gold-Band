@@ -304,7 +304,6 @@ export interface RuntimeApi {
   getMetricsSettings(): Promise<MetricsSettingsVm>;
   saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null): Promise<MetricsSettingsVm>;
   getMulticaSettings(): Promise<MulticaSettingsVm>;
-  saveMulticaSettings(enabled: boolean, multicaBaseUrl: string | null, multicaAppUrl: string | null, defaultProvider: string | null, activeWorkspaceId: string | null): Promise<MulticaSettingsVm>;
   connectMultica(): Promise<MulticaSettingsVm>;
   disconnectMultica(): Promise<MulticaSettingsVm>;
   getMulticaTasks(): Promise<RemoteConversationSidebarVm>;
@@ -315,7 +314,6 @@ export interface RuntimeApi {
   /// 放弃远程任务 prepare（claim 后未发送即离开）时调用：移除 prepare lease，停止心跳续期（兜底为 45s 自然回收）。
   cancelMulticaPrepareLease(remoteTaskId: string): Promise<void>;
   cancelMulticaTask(taskId: string): Promise<void>;
-  rerunMulticaTask(issueId: string, workspaceId: string): Promise<void>;
   listServerMulticaWorkspaces(): Promise<MulticaServerWorkspaceVm[]>;
   pickLocalDirectory(): Promise<string | null>;
   addMulticaWorkspace(workspaceId: string, workspaceName: string, provider: string): Promise<MulticaSettingsVm>;

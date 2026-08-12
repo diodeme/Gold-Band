@@ -2098,7 +2098,6 @@ export function App() {
             setDraftConversationWorkspaceId(preselect);
             setConversationPage({ kind: 'conversation-home' });
           }}
-          onBack={() => setConversationPage({ kind: 'conversation-home' })}
         />
       );
     }

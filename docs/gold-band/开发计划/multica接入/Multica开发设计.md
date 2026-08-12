@@ -1617,6 +1617,70 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.20 改动十八：远程任务页评审改版——去设置页 + 工作空间下拉 + 4 列看板（M5-ah，2026-08-12）
+
+**背景（评审反馈，3 条 UX 调整）**：multica 接入评审后用户要求：①设置页不再暴露 multica 配置（实际使用只需初次连接，配置项走渠道默认）；②远程任务页加「工作空间下拉」，选定后只看该空间的任务（不再全部铺开）；③任务展示从「工作空间折叠分组列表」改为按状态的 4 列竖向看板：待办 / 进行中 / 已完成 / 失败。
+
+**数据层无变更（纯前端重构）**：`RemoteConversationSidebarVm.tasksByWorkspace` 已按工作空间分组；`RemoteTaskVm.status` 恰为 4 个 canonical 值（`queued`/`running`/`completed`/`failed`，见 `vm.rs normalize_remote_status`），与看板列 1:1；`get_multica_tasks` 一次拉全部绑定工作空间。本次仅前端重组 + 连带死路径清理。
+
+**用户决策（AskUserQuestion 确认）**：账号操作（切换/断开/添加/移除工作空间）集中到远程任务页头部的账号菜单（设置页不再暴露）；账号级失败任务（pinned，无工作空间、retryable）不再单独展示（失败列只显工作空间内失败任务）；来源下拉框（`REMOTE_TASK_SOURCES`，为未来多来源保留）保留。
+
+**关键推论（pinned 不展示 → rerun 死路径）**：`retryable=true` 只有 pinned 任务（`from_failed_issue`）；所有工作空间内任务（`from_active_run`/`from_pending`/`from_claimed`/`from_completed`）`retryable=false`。pinned 不展示后 → 展示中的任务没有可重试的 → rerun 按钮永不渲染。按 dev-stage 破坏式清理一并移除 rerun 全链路，看板卡片动作与列 1:1：待办(queued)→认领执行(claim)、进行中(running)→取消(cancel)、已完成/失败(completed/failed，带本地 run 链接)→点击回看会话(selectRun)。
+
+**实现**：
+- **去设置页**：删 `SettingsPage` 的 multica section（import + JSX）+ 删 `MulticaSettingsBlock.tsx`；i18n 删 `settings.multica.*` 整块。配置项（baseUrl/appUrl/defaultProvider/enabled）不再有 UI，后端 `SettingsConfig` 字段 + 渠道默认逻辑保留（connect 仍依赖）。
+- **页升级为容器**：`MulticaTaskManagementPage` 从薄壳扩为容器，承接原 `MulticaRemoteTaskList` 的数据/订阅/动作（mount 拉 `getMulticaTasks`+`getMulticaSettings`，订阅 task/settings 事件 re-fetch）。页头：来源下拉 + 工作空间下拉（选定值=active workspace，持久化 `setActiveMulticaWorkspace`，默认 `lastActiveWorkspaceId ?? workspaces[0]`）+ 账号菜单（shadcn DropdownMenu：切换账号/断开/添加/移除工作空间）+ 刷新 + 返回。体按连接/绑定态分流：未连接→连接空态、无工作空间→添加引导、否则→4 列看板（仅渲染 `tasksByWorkspace[effectiveWorkspaceId]`）。
+- **看板（presentational）**：新建 `MulticaRemoteTaskBoard.tsx`（原 `MulticaRemoteTaskList.tsx` 删除，数据逻辑上移到页）。纯函数 `bucketTasksByStatus(tasks)→Record<'queued'|'running'|'completed'|'failed', RemoteTaskVm[]>`（未知 status 兜底丢弃）；布局 `grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4`（页级垂直滚动，列 `min-w-0`）；卡片包 shadcn Card（title + 状态 Badge + 时间 + claim/cancel/selectRun，clickability 规则 `projectId && localTaskId && runId` 不变）。
+- **死路径清理（前后端，dev-stage 破坏式）**：`save_multica_settings`（配置表单已无消费方）+ `rerun_multica_task`（pinned 不展示后无 retryable 任务）全链路删除——前端 `api.{ts,/desktop,/browser,/client}` + 后端 `commands.rs`（save）/`multica/commands.rs`（rerun）/`multica/client.rs`（`rerun_issue` 唯一消费者即 rerun_multica_task，一并删 + 删其单测）+ `main.rs` import/invoke_handler。保留 `connectMultica`/`disconnectMultica`/`setActiveMulticaWorkspace`/`removeMulticaWorkspace`/`getMulticaSettings`/`getMulticaTasks`（页消费）+ `MulticaSettingsVm` 类型。
+
+**验收**：`cargo test multica` **84 测全过、0 失败**（删 `rerun_issue_request_shape_is_workspace_scoped` 1 测，零回归）；`tsc -p tsconfig.build.json`（src only）绿零错；vitest 新增 `multica-remote-task-board`（`bucketTasksByStatus` 4 不变量 + 配色结构 + 渲染/claim/cancel/selectRun/时间本地时区）+ `multica-task-management-page`（容器：挂载拉取 + 双订阅 + 工作空间默认过滤 + 下拉切换持久化 + claim 预填/cancel/手动刷新）共 **21 测全过**；旧 `multica-remote-task-list`/`multica-settings-block` 两测随组件删除。
+
+**遗留（非 multica、非本次引入）**：`scheduled-task-i18n.test` 1 失败——`ConversationComposer.tsx` 含中文注释触发其 `/[㐀-鿿]/` 扫描（该文件不在本次 diff，HEAD 即红，main 既有技术债）。
+
+### 12.21 改动十九：远程任务页 UX 再打磨——工作空间 Popover picker + 页头对齐 + 底部工具条 source 门控（M5-ai，2026-08-12）
+
+**背景（用户 3 条调整要求）**：M5-ah 落地的远程任务管理页有 3 处打磨调整：①添加/删除工作空间应放到工作空间下拉框内（而非散落在账号菜单中）；②页头风格需与定时任务/运行模式管理页一致（`variant="integrated"`，无分割线、无副标题、无返回按钮）；③工作空间下拉选框移到底部工具条，且仅在 multica 来源下显示（未来来源未必有工作空间概念）；账号下拉选框同理（PAT/切换账号/断开连接均为 multica 专属）。
+
+**分析（账号菜单是否同理）**：是。账号菜单只含切换账号/断开连接，两者都基于 multica PAT 认证，新来源未必有 PAT/账号概念。两者与工作空间 picker 一起移到底部工具条，受 `source === 'multica' && connected` 双重门控——连接前不显示、非 multica 来源不显示。
+
+**实现（纯前端，无 Rust/server 改动）**：
+- **工作空间 Popover picker**：shadcn `Popover` + `PopoverTrigger`（Button outline + Folders 图标 + 当前工作空间名 + ChevronDown）→ `PopoverContent`（`w-[260px] p-0`），内含 **添加工作空间** 幽灵按钮（Plus 图标 + 文案，点击关闭 picker 并打开添加弹窗）+ Separator + 可滚动列表（`max-h-64 overflow-auto p-1`），每行 = 选中按钮（`data-testid="ws-pick-{id}"`，选定行 `bg-accent text-accent-foreground`）+ 垃圾箱移除按钮（`data-testid="ws-remove-{id}"`，Trash2 图标，aria-label 移除文案）。移除走 AlertDialog 确认（对齐定时任务 delete 模式 + ui-interaction §1）。
+- **页头对齐**：`PageHeader variant="integrated"` + `icon={<Globe />}` + `title`（无 subtitle、无 actions slot、无返回按钮——会话模式 ConversationSidebar 已提供持久侧栏导航，返回按钮冗余）。
+- **底部工具条（footer）**：`shrink-0 border-t border-border/60 bg-background/60 px-5 py-3 backdrop-blur xl:px-6`，渲染条件 `source === 'multica' && connected`。左区：来源 Select + 工作空间 Popover picker（仅 `hasWorkspaces` 时渲染）；右区：账号 DropdownMenu（切换账号/断开连接）+ 刷新 Tooltip 按钮。
+- **账号菜单简化**：删添加/移除工作空间项（已迁入 workspace picker），仅保留切换账号（disabled 无 `multicaAppUrl` 时）和断开连接（`text-destructive`）。
+- **`effectiveWorkspaceId` 健壮化**：`lastActive` 校验 `workspaces.some(w => w.id === lastActive)`，防止移除活跃空间后回退到已失效 id（state-lifecycle §4）。
+- **Props 删除 `onBack`**：页不再需要返回按钮，`App.tsx` 对应调用点删除 `onBack` prop。
+
+**文件**：`web/src/pages/MulticaTaskManagementPage.tsx`（重写 footer/header/workspace-picker）、`web/src/App.tsx`（删 onBack）、`web/src/i18n.ts`（删 subtitle + account.removeWorkspace/removeConfirm → 迁至 workspace.remove/removeConfirm）、`web/tests/multica-task-management-page.test.tsx`（更新全量：加 Popover/AlertDialog/Separator mock + Globe/Folders/Plus/Trash2 图标 + 删 onBack + 工作空间切换改 Popover 交互 + 行级移除→AlertDialog 确认 + 底部工具条 source 门控）。
+
+**验收**：`tsc -p tsconfig.build.json`（src only）绿零错；vitest multica-task-management-page **11 测全过**（含 workspace-switch→Popover 交互、remove→AlertDialog confirm、source-gate 共 3 新/改写测试）+ board 12 测仍绿；`cargo test multica` 84 测 0 败（无 Rust 变更零回归）。
+
+---
+
+### 12.22 改动二十：远程任务页来源上移页头 + 会话-任务绑定可视化（独立 chip）（M5-aj，2026-08-12）
+
+**背景（用户 2 条调整要求）**：①远程任务页「任务来源」下拉框放底部工具条不协调，应单独上移到界面上部；②点击远程任务「执行」进入会话初始输入框编辑时，一旦点别处（跳转/切页）这条会话与任务的绑定就"丢失"了——希望预填内容带一个 multica 标签把会话与任务绑定，且用户可删掉该标签解除绑定。
+
+**根因分析（point 2，先定数据再下结论）**：核实绑定链路后发现绑定本身**并未丢失**，缺陷是**不可见 + 不可控**：
+- `ConversationComposerDraftBoundary`（App.tsx）把草稿 owner 状态上提到 Shell 之上，`draft.multica` 绑定随 owner 状态存活，跨 in-app 导航（卸载/重挂 composer）天然保留。
+- 服务端 prepare lease（45s TTL）由**全局**心跳 `extend_prepare_leases`（loop_.rs）每 tick 续期，与当前显示哪一页无关，compose 期间不会因切页被回收。
+- 即绑定与 lease **都已跨页持久**。用户感知的"丢失"实为：绑定是纯隐式状态，UI 无任何指示，用户既看不到"此会话已绑某任务"，也无法主动解除——属"好设计、实现不完善"（CLAUDE.md），非根本性设计缺陷。
+
+**方案（point 2）**：用**独立 chip**而非用户字面的"正文开头内嵌文本标签"。内嵌文本标签脆弱：正文可被随意编辑导致标记残缺、发送时需字符串解析还原绑定、删除键解除不可靠。独立 chip 是行业成熟范式（mention/recipient/tag），状态与正文解耦、可见可控、删除语义明确。用户已确认（"同意独立 chip"）。
+
+**实现（纯前端，无 Rust/server 改动）**：
+- **绑定结构扩 `title`**：`ConversationComposerMulticaBinding` 增 `title: string`（仅供 chip 展示，注释明示"不参与发送寻址"——发送寻址仍只看 `remoteTaskId` + composer 下拉的 `projectId`）。`handleClaimAndPrepare` 的 `prefill` 调用补传 `title: task.title`。
+- **reducer 增 `clearMultica`**：`clearMultica` 仅置 `multica = null`，**保留正文与附件**——解绑后草稿降级为普通本地会话（发送走 `create_conversation_run`）。无绑定时 no-op（返回同一引用，setContent 同款稳定引用语义）。owner hook 暴露 `clearMultica()`；boundary handle 仍只对 App 暴露 `reset`（clearMultica 是 composer 局部动作，不上提）。
+- **chip 渲染**：在 `PromptInput` 内作为**首子节点**（block-flow，位于 SlashCommandMenu 之前、输入区最上方）。`Badge`（`border-primary/30 bg-primary/10 text-primary`）+ Globe 图标 + `multicaBindingTag`（"Multica · {title}"，title 截断 `max-w-[260px]`）+ × 关闭按钮（aria-label `removeMulticaBinding`）。
+- **解除绑定两条路径**（都走同一 handler `handleUnbindMultica`）：①点击 chip × 按钮；②Backspace 且 `multicaActive && visibleContent.trim() === '' && !committedSlashCommand`（正文为空才允许退格删 chip，避免误删用户正文；`visibleContent = committedSlashCommand?.suffix ?? content`）。handler 调 `cancelMulticaPrepareLease(remoteTaskId)`（释放服务端 lease，幂等）+ `clearMultica()`（清本地绑定）。lease 取消 best-effort，失败静默（lease 自身有 TTL 兜底）。
+- **point 1 来源上移**：`REMOTE_TASK_SOURCES` 的 `<Select>` 从 footer 左区移到 `PageHeader` 的 `actions` 槽（+ 来源 label），与定时任务管理页 header actions 同构。footer 注释更新为"来源已上移页头；此处仅 multica 专属控件"。footer 渲染条件不变（`source === 'multica' && connected`），内容只剩工作空间 picker + 账号菜单 + 刷新。
+
+**文件**：`web/src/lib/conversation-composer-draft.ts`（binding +title、`clearMultica` action/owner hook）、`web/src/pages/MulticaTaskManagementPage.tsx`（prefill +title、来源 Select 迁入 PageHeader actions、footer 删 source 块）、`web/src/components/conversation/ConversationComposer.tsx`（chip 渲染 + `handleUnbindMultica` + Backspace 解绑分支）、`web/src/i18n.ts`（zh/en 各加 `multicaBindingTag` + `removeMulticaBinding`）、`web/tests/conversation-composer-draft.test.ts`（binding 字面量补 title + 新增 clearMultica 2 测）、`web/tests/multica-task-management-page.test.tsx`（PageHeader mock 渲染 actions + source-gate 测改写为"来源常驻 header / footer 按刷新按钮门控" + claim 测断言补 title）。
+
+**验收**：`tsc -p tsconfig.build.json`（src only）绿零错；vitest `conversation-composer-draft` **16 测全过**（含 clearMultica 保留正文/附件、无绑定 no-op 2 新测）+ `multica-task-management-page` **11 测全过**（source-gate 改写 + claim 断言补 title）+ board 12 测仍绿，共 **39 测**；`cargo test multica` 84 测 0 败（无 Rust 变更零回归）。chip 渲染/handler 接线由 tsc 校验——home `ConversationComposer` 过重不挂组件测，与既有"纯逻辑 reducer 测 + 容器测"套件策略一致。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 ---

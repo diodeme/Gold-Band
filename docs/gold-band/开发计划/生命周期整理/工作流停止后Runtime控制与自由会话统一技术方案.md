@@ -363,6 +363,8 @@ RuntimeControlled
 
 普通消息接口不得携带“恢复 Runtime”的隐式副作用。
 
+接口 preflight 只校验目标 attempt 是否仍处于 RuntimeControlled 执行态，不得调用 `runtime_continue_required`。显式 continue 资格与普通消息资格可以同时为真：前者驱动 composer 中的独立 action，后者允许同一 paused session 继续 NonRuntime 对话。普通消息被 ACP 接受后只更新 session/timeline，run、node 和 continue 资格保持原状。
+
 ### 9.2 Runtime continue
 
 Runtime continue 成为纯动作接口：

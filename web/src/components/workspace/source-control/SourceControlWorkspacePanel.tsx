@@ -164,6 +164,10 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
   const activeOperationPending = Boolean(activeOperation && ['queued', 'running'].includes(activeOperation.status));
   const busyActionKind = pendingAction?.kind ?? (activeOperationPending ? activeOperation?.kind ?? null : null);
   const busy = busyActionKind !== null;
+  const workspaceClean = snapshot.status.conflicts.length
+    + snapshot.status.staged.length
+    + snapshot.status.unstaged.length
+    + snapshot.status.untracked.length === 0;
   const canCommit = snapshot.status.staged.length > 0 && !hasConflicts && !writeLocked && subject.trim().length > 0;
 
   return (
@@ -192,47 +196,53 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
 
         <TabsContent value="changes" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col">
           <SourceControlChangesToolbar snapshot={snapshot} busyActionKind={busyActionKind} locked={writeLocked} onMutation={mutate} onOperation={startOperation} />
-          <ScrollArea className="min-h-0 flex-1">
-            <div className="py-1">
-              <ChangeGroup title={t('sourceControl.conflicts')} changes={snapshot.status.conflicts} tone="conflict" onOpen={(change) => void openConflictFile(change)} />
-              <ChangeGroup
-                title={t('sourceControl.staged')}
-                changes={snapshot.status.staged}
-                tone="staged"
-                onOpen={(change) => openDiff(change, 'staged')}
-                actionLabel={t('sourceControl.unstage')}
-                actionIcon={<Undo2 className="size-3" />}
-                pendingPath={pendingAction?.kind === 'unstage-paths' ? pendingAction.path : null}
-                disabled={writeLocked || busy}
-                onAction={(change) => mutate({ kind: 'unstage-paths', paths: [change.path] })}
-              />
-              <ChangeGroup
-                title={t('sourceControl.unstaged')}
-                changes={snapshot.status.unstaged}
-                tone="unstaged"
-                onOpen={(change) => openDiff(change, 'unstaged')}
-                actionLabel={t('sourceControl.stage')}
-                actionIcon={<Check className="size-3" />}
-                pendingPath={pendingAction?.kind === 'stage-paths' ? pendingAction.path : null}
-                disabled={writeLocked || busy}
-                onAction={(change) => mutate({ kind: 'stage-paths', paths: [change.path] })}
-              />
-              <ChangeGroup
-                title={t('sourceControl.untracked')}
-                changes={snapshot.status.untracked}
-                tone="untracked"
-                onOpen={(change) => openDiff(change, 'unstaged')}
-                actionLabel={t('sourceControl.stage')}
-                actionIcon={<Check className="size-3" />}
-                pendingPath={pendingAction?.kind === 'stage-paths' ? pendingAction.path : null}
-                disabled={writeLocked || busy}
-                onAction={(change) => mutate({ kind: 'stage-paths', paths: [change.path] })}
-              />
-              {snapshot.status.conflicts.length + snapshot.status.staged.length + snapshot.status.unstaged.length + snapshot.status.untracked.length === 0
-                ? <PanelState text={t('sourceControl.clean')} />
-                : null}
+          {workspaceClean ? (
+            <div
+              className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-sm text-muted-foreground"
+              data-source-control-changes-empty="true"
+            >
+              {t('sourceControl.clean')}
             </div>
-          </ScrollArea>
+          ) : (
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="py-1">
+                <ChangeGroup title={t('sourceControl.conflicts')} changes={snapshot.status.conflicts} tone="conflict" onOpen={(change) => void openConflictFile(change)} />
+                <ChangeGroup
+                  title={t('sourceControl.staged')}
+                  changes={snapshot.status.staged}
+                  tone="staged"
+                  onOpen={(change) => openDiff(change, 'staged')}
+                  actionLabel={t('sourceControl.unstage')}
+                  actionIcon={<Undo2 className="size-3" />}
+                  pendingPath={pendingAction?.kind === 'unstage-paths' ? pendingAction.path : null}
+                  disabled={writeLocked || busy}
+                  onAction={(change) => mutate({ kind: 'unstage-paths', paths: [change.path] })}
+                />
+                <ChangeGroup
+                  title={t('sourceControl.unstaged')}
+                  changes={snapshot.status.unstaged}
+                  tone="unstaged"
+                  onOpen={(change) => openDiff(change, 'unstaged')}
+                  actionLabel={t('sourceControl.stage')}
+                  actionIcon={<Check className="size-3" />}
+                  pendingPath={pendingAction?.kind === 'stage-paths' ? pendingAction.path : null}
+                  disabled={writeLocked || busy}
+                  onAction={(change) => mutate({ kind: 'stage-paths', paths: [change.path] })}
+                />
+                <ChangeGroup
+                  title={t('sourceControl.untracked')}
+                  changes={snapshot.status.untracked}
+                  tone="untracked"
+                  onOpen={(change) => openDiff(change, 'unstaged')}
+                  actionLabel={t('sourceControl.stage')}
+                  actionIcon={<Check className="size-3" />}
+                  pendingPath={pendingAction?.kind === 'stage-paths' ? pendingAction.path : null}
+                  disabled={writeLocked || busy}
+                  onAction={(change) => mutate({ kind: 'stage-paths', paths: [change.path] })}
+                />
+              </div>
+            </ScrollArea>
+          )}
           <div className="shrink-0 border-t border-border/60 p-2.5">
             <Input
               value={subject}

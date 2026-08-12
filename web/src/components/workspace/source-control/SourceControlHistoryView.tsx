@@ -24,7 +24,9 @@ import { diffReviewStore, gitDiffReviewItemId, type GitDiffReviewItem } from './
 import { sourceControlStore, type SourceControlSessionSnapshot } from './source-control-store';
 
 const HISTORY_PAGE_SIZE = 300;
-const HISTORY_SPLIT_MIN_WIDTH = 620;
+export const HISTORY_LIST_MIN_WIDTH = 220;
+export const HISTORY_REVIEW_MIN_WIDTH = 280;
+export const HISTORY_SPLIT_MIN_WIDTH = 520;
 
 export function SourceControlHistoryView({
   resource,
@@ -158,9 +160,9 @@ export function SourceControlHistoryView({
       <div className="min-h-0 flex-1">
         {responsiveState.split && session.selectedCommitOids.size > 0 ? (
           <ResizablePanelGroup orientation="horizontal" className="h-full">
-            <ResizablePanel id="commit-list" defaultSize="43%" minSize={260} className="min-w-0">{list}</ResizablePanel>
+            <ResizablePanel id="commit-list" defaultSize="43%" minSize={HISTORY_LIST_MIN_WIDTH} className="min-w-0">{list}</ResizablePanel>
             <ResizableHandle className="bg-border/50" />
-            <ResizablePanel id="commit-review" defaultSize="57%" minSize={300} className="min-w-0">{detail}</ResizablePanel>
+            <ResizablePanel id="commit-review" defaultSize="57%" minSize={HISTORY_REVIEW_MIN_WIDTH} className="min-w-0">{detail}</ResizablePanel>
           </ResizablePanelGroup>
         ) : compactView === 'detail' && session.selectedCommitOids.size > 0 ? detail : list}
       </div>

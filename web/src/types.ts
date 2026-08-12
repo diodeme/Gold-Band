@@ -2029,14 +2029,18 @@ export interface ConversationRuntimeFacetVm {
   active: boolean;
   continuable: boolean;
   phase: string;
+  revision?: number | null;
+}
+
+export interface ConversationControlFacetVm {
+  mode: 'runtime-controlled' | 'non-runtime-controlled';
 }
 
 export interface ConversationAcpFacetVm {
-  status?: string | null;
-  phase?: 'starting' | 'running' | 'cancel-requested' | null;
-  active: boolean;
+  sessionAvailability: 'established' | 'restorable' | 'unavailable' | 'closing';
+  liveTurnActivity: 'idle' | 'starting' | 'accepted' | 'running' | 'cancel-requested';
+  latestTurnStatus: 'none' | 'completed' | 'cancelled' | 'failed';
   stopping: boolean;
-  terminal: boolean;
 }
 
 export interface ConversationComposerVm {
@@ -2074,6 +2078,7 @@ export interface ConversationPromptQueueVm {
 
 export interface ConversationAttemptLifecycleVm {
   runtime: ConversationRuntimeFacetVm;
+  control: ConversationControlFacetVm;
   acp: ConversationAcpFacetVm;
   displayStatus: string;
   runtimeDisplay: RuntimeDisplayVm;

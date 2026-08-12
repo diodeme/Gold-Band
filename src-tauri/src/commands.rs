@@ -3,7 +3,9 @@ use gold_band::acp::commands::{AcpCommandCatalog, parse_available_commands};
 use gold_band::acp::elicitation::{
     ElicitationAction, cancel_pending_elicitation_requests, write_elicitation_response,
 };
-use gold_band::acp::events::{AcpUiEvent, compact_live_conversation_event, current_timestamp};
+use gold_band::acp::events::{
+    AcpUiEvent, compact_live_conversation_event, current_timestamp, load_session_metadata,
+};
 use gold_band::acp::permission::{
     PendingPermissionState, cancel_pending_permission_requests,
     write_permission_response_if_pending,
@@ -5225,9 +5227,8 @@ fn current_acp_session_override(attempt_dir: &Utf8PathBuf, override_key: &str) -
     } else {
         return None;
     };
-    std::fs::read_to_string(path)
+    gold_band::acp::events::load_session_metadata_value(&path, None)
         .ok()
-        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
         .and_then(|value| {
             value
                 .get(override_key)
@@ -5258,9 +5259,8 @@ fn current_acp_session_config_option_overrides(
     } else {
         return Default::default();
     };
-    std::fs::read_to_string(path)
+    gold_band::acp::events::load_session_metadata_value(&path, None)
         .ok()
-        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
         .and_then(|value| value.get("configOptionOverrides").cloned())
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default()
@@ -5332,13 +5332,13 @@ pub async fn set_acp_session_model(
         return Ok(None);
     };
 
-    let session_json = std::fs::read_to_string(&path).map_err(|error| {
+    let metadata = load_session_metadata(&path, None).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-read-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let mut value: serde_json::Value = serde_json::from_str(&session_json).map_err(|error| {
+    let mut value = serde_json::to_value(metadata).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-parse-error",
             serde_json::json!({ "error": error.to_string() }),
@@ -5449,13 +5449,13 @@ pub async fn set_acp_session_permission_mode(
         return Ok(None);
     };
 
-    let session_json = std::fs::read_to_string(&path).map_err(|error| {
+    let metadata = load_session_metadata(&path, None).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-read-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let mut value: serde_json::Value = serde_json::from_str(&session_json).map_err(|error| {
+    let mut value = serde_json::to_value(metadata).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-parse-error",
             serde_json::json!({ "error": error.to_string() }),
@@ -5566,13 +5566,13 @@ pub async fn set_acp_session_config_option(
     } else {
         return Ok(None);
     };
-    let session_json = std::fs::read_to_string(&path).map_err(|error| {
+    let metadata = load_session_metadata(&path, None).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-read-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let mut value: serde_json::Value = serde_json::from_str(&session_json).map_err(|error| {
+    let mut value = serde_json::to_value(metadata).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-parse-error",
             serde_json::json!({ "error": error.to_string() }),
@@ -6724,7 +6724,8 @@ mod tests {
         assert_eq!(run["status"], "paused");
         let snapshot: serde_json::Value =
             read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
-        assert_eq!(snapshot["status"], "cancelled");
+        assert_eq!(snapshot["availability"], "established");
+        assert_eq!(snapshot["latestTurnStatus"], "cancelled");
         assert!(timeline_path.is_dir());
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -7327,6 +7328,7 @@ mod tests {
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
 
         assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
@@ -7425,6 +7427,7 @@ mod tests {
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
 
         assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
@@ -7498,6 +7501,7 @@ mod tests {
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
 
         assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
@@ -7544,6 +7548,7 @@ mod tests {
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
         write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
         let dynamic_node = serde_json::json!({
@@ -7766,6 +7771,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
         write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
         let dynamic_node = serde_json::json!({

@@ -64,7 +64,10 @@
 
 建议结构：
 
-- `runtime.phase`: `idle | launching-session | provider-running | finalizing-attempt | launching-next-node | paused | terminal`
+- `runtime.phase`: `starting-node | running-node | finalizing-artifact | repairing-artifact | awaiting-manual-check | transitioning | launching-next-node | preparing-workspace | paused | terminal`；Workflow/AUTO 只从 `run.json.execution` 投影，Direct 为 `idle`
+- `runtime.revision`: execution 的单调版本，用于拒绝 stale progress/响应
+- `control.mode`: `runtime-controlled | non-runtime-controlled`
+- `acp.sessionAvailability / liveTurnActivity / latestTurnStatus / stopping`: session、当前 turn 与历史结果分离
 - `composer.mode`: `normal | runtime-active | stopping | invalid-workflow | runtime-error | permission-blocked | submitting`
 - `composer.submitTarget`: `acp-prompt | queue-prompt | permission-response | none`
 - `composer.processingKind`: 现有 processing kind 加 `launching-next-node`
@@ -73,12 +76,12 @@
 
 后端派生规则：
 
-- runtime active 优先于已 completed 的 ACP 会话；如果 runtime 仍 active 且 ACP 已 terminal，则 composer 显示 `launching-next-node`。
+- runtime phase 与 ACP turn 互不反推；只有 execution phase 明确为 `launching-next-node` 时 composer 才显示该状态。
 - runtime terminal 时，抑制 stale ACP active。
 - `paused + process-interrupted/runtime-abnormal + resumable` 表示 composer 继续以 `acp-prompt` 进行 NonRuntime 普通对话，并额外提供 `continueKind=action` 的显式“继续工作流”动作；`paused + error-blocked` 表示不可重试阻塞，composer 进入 `runtime-error` 且 submit target 为 `none`。
 - `paused + waiting-for-user-input + manual_check_pending` 表示人工 check 判定门，不再使用继续按钮；composer 保持可输入，普通文本提交目标是 `acp-prompt`，只有成功 / 失败按钮触发 `submit_manual_check` 并恢复 edge 流转。
 - 人工 check 判定门从当前 attempt 的 `NodeState.manual_check_pending` 持久化恢复；关闭应用再打开后仍必须恢复判定按钮、输入框和后续 submit_manual_check 能力。
-- ACP lifecycle facet 为 `stopping`、本地 stop 命令未返回，或 ACP session metadata 明确为 `cancelling / cancel-requested` 时进入 `stopping`；`provider.pid` 只作为 kill/cleanup/诊断事实，不能反推 composer 停止中。
+- 当前进程 prompt registry/lifecycle facet 为 `stopping`，或本地 stop 命令未返回时进入 `stopping`；ACP session metadata 与 `provider.pid` 都不能在重启后反推 live turn 或 composer 停止中。
 - workflow invalid / runtime error 由后端给出 mode，前端不再自行猜测。
 
 ### 2. 生命周期 Hook Bus
@@ -378,7 +381,8 @@ RuntimeLifecycleBus
 - subscriber 可使用 `eventId` / `dedupKey` / locator 做幂等，通知重复触发仍被 dedup。
 - `RunPaused/NodePaused` 类事件能触发 intervention notification，非干预 pause reason 不触发。
 - `clone_for_background` 传播同一个 lifecycle hook bus，不再传播独立 notifier。
-- runtime running + ACP completed => composer active + `launching-next-node`。
+- runtime `StartingNode/RunningNode` + ACP latest completed => 保持 authoritative phase，不产生 `launching-next-node`。
+- 只有 runtime execution 明确提交 `LaunchingNextNode` => composer active + `launching-next-node`。
 - dynamic paused + ACP cancelled + `process-interrupted` + resumable => `continueKind = action` 且 `submitTarget = acp-prompt`。
 - runtime terminal => 抑制 stale ACP active。
 - lifecycle stopping / explicit ACP cancelling metadata => `stopping`；provider pid + running metadata 不得显示 stopping。

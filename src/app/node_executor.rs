@@ -665,10 +665,9 @@ fn current_acp_config_option_overrides(attempt_dir: &camino::Utf8Path) -> BTreeM
     } else {
         return BTreeMap::new();
     };
-    read_json::<serde_json::Value>(&path)
+    crate::acp::events::load_session_metadata(&path, None)
         .ok()
-        .and_then(|value| value.get("configOptionOverrides").cloned())
-        .and_then(|value| serde_json::from_value(value).ok())
+        .map(|metadata| metadata.config_option_overrides)
         .unwrap_or_default()
 }
 
@@ -741,13 +740,54 @@ pub(crate) fn execute_ai_node(
     let live_update = app.acp_live_update_for(live_update_context.clone());
     let session_update = app.acp_session_update_for(live_update_context.clone());
     let prompt_accepted = app.acp_prompt_accepted_for(live_update_context);
+    let runtime_prompt_accepted = |prompt_id: &str| {
+        app.transition_runtime_execution_phase(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            None,
+            crate::runtime::RuntimeExecutionPhase::RunningNode,
+        )?;
+        if let Some(callback) = prompt_accepted.as_ref() {
+            callback(prompt_id)?;
+        }
+        Ok(())
+    };
+    let runtime_phase_update = |phase| {
+        let phase = match phase {
+            crate::provider::ProviderRuntimePhase::FinalizingArtifact => {
+                crate::runtime::RuntimeExecutionPhase::FinalizingArtifact
+            }
+        };
+        let state_lock =
+            super::attempt_runtime_state_lock(app, task_id, run_id, round_id, node_id, attempt_id);
+        let _guard = state_lock
+            .lock()
+            .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+        let run_path = app.paths.run_file(task_id, run_id);
+        let mut durable_run: crate::runtime::RunState = read_json(&run_path)?;
+        if durable_run.status != RunStatus::Running
+            || durable_run.current_round.as_deref() != Some(round_id)
+            || durable_run.current_node.as_deref() != Some(node_id)
+            || durable_run.current_attempt.as_deref() != Some(attempt_id)
+        {
+            return Ok(());
+        }
+        durable_run.updated_at = super::ids::now_rfc3339_like();
+        durable_run.transition_current_execution(phase, durable_run.updated_at.clone());
+        crate::runtime::validate_run_state(&durable_run)?;
+        write_json(&run_path, &durable_run)
+    };
     let result = app
         .provider_for_id(provider_id)?
-        .run_worker_with_callbacks(
+        .run_worker_with_runtime_callbacks(
             invocation,
             live_update.as_ref().map(|callback| callback as _),
             session_update.as_ref().map(|callback| callback as _),
-            prompt_accepted.as_ref().map(|callback| callback as _),
+            Some(&runtime_prompt_accepted),
+            Some(&runtime_phase_update),
         )?;
 
     if !attempt_is_still_current_running(app, task_id, run_id, round_id, node_id, attempt_id)? {

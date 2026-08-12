@@ -188,7 +188,13 @@ const errorBlockedGraph = {
 
 const errorBlockedLifecycle = {
   runtime: { status: 'paused', outcome: null, pauseReason: 'error-blocked', resumable: false, current: true, active: false, continuable: false, phase: 'paused' },
-  acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+  control: { mode: 'non-runtime-controlled' as const },
+  acp: {
+    sessionAvailability: 'restorable' as const,
+    liveTurnActivity: 'idle' as const,
+    latestTurnStatus: 'cancelled' as const,
+    stopping: false,
+  },
   displayStatus: 'paused',
   runtimeDisplay: runtimeDisplay('paused', null, true, 'error-blocked'),
   continueKind: null,

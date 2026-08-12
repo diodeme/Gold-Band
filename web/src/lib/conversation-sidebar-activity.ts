@@ -9,13 +9,15 @@ import type { AcpSessionUpdatedEventVm } from '@/api/client';
 export function conversationTaskActivityFromLifecycle(
   lifecycle: ConversationAttemptLifecycleVm,
 ): ConversationTaskActivityVm | null {
-  if (!lifecycle.runtime.active && !lifecycle.acp.active && !lifecycle.acp.stopping) {
+  if (!lifecycle.runtime.active && lifecycle.acp.liveTurnActivity === 'idle' && !lifecycle.acp.stopping) {
     return null;
   }
   return {
     phase: lifecycle.acp.stopping
       ? 'cancel-requested'
-      : lifecycle.acp.phase ?? lifecycle.runtime.phase ?? lifecycle.composer.processingKind,
+      : lifecycle.acp.liveTurnActivity !== 'idle'
+        ? lifecycle.acp.liveTurnActivity
+        : lifecycle.runtime.phase ?? lifecycle.composer.processingKind,
     stopping: lifecycle.acp.stopping,
   };
 }

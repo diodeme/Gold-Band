@@ -1836,13 +1836,18 @@ fn persist_cancelled_session_file(path: &Utf8Path) -> Result<()> {
             .unwrap_or("session");
         json!({
             "sessionId": session_id,
-            "status": "cancelled",
+            "availability": "established",
+            "latestTurnStatus": "cancelled",
             "restored": false,
             "createdAt": current_timestamp(),
         })
     };
     let now = current_timestamp();
-    session["status"] = json!("cancelled");
+    if let Some(object) = session.as_object_mut() {
+        object.remove("status");
+    }
+    session["availability"] = json!("established");
+    session["latestTurnStatus"] = json!("cancelled");
     session["stopReason"] = json!("cancelled");
     session["updatedAt"] = json!(now.clone());
     if session.get("updated_at").is_some() {
@@ -2391,7 +2396,9 @@ mod tests {
         let snapshot: serde_json::Value =
             read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
         assert_eq!(
-            snapshot.get("status").and_then(|value| value.as_str()),
+            snapshot
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
             Some("cancelled")
         );
         assert_eq!(

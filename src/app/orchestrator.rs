@@ -67,8 +67,9 @@ use crate::provider::{
     supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
-    NodeState, RoundState, RoundTraceStep, RunState, TaskState, WorkerRefState,
-    validate_round_state, validate_run_state, validate_worker_ref_state,
+    NodeState, RoundState, RoundTraceStep, RunState, RuntimeAttemptLocator, RuntimeExecutionPhase,
+    RuntimeExecutionState, TaskState, WorkerRefState, validate_round_state, validate_run_state,
+    validate_worker_ref_state,
 };
 use crate::runtime_error::{
     RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, blocked_runtime_error_info,
@@ -598,6 +599,7 @@ fn terminalize_background_drive_error(
     run.outcome = None;
     run.pause_reason = Some(PauseReason::RuntimeAbnormal);
     run.updated_at = now.clone();
+    run.transition_current_execution(RuntimeExecutionPhase::Paused, now.clone());
     round.status = RunStatus::Paused;
     round.outcome = None;
     node.status = RunStatus::Paused;
@@ -714,6 +716,13 @@ pub(crate) fn prepare_run(
     let task_uuid = read_json::<TaskState>(&app.paths.task_file(task_id))
         .ok()
         .and_then(|t| t.uuid);
+    let execution_locator = RuntimeAttemptLocator {
+        round_id: round_id.clone(),
+        node_id: validated.raw.entry.clone(),
+        attempt_id: attempt_id.clone(),
+        outer_node_id: None,
+        outer_attempt_id: None,
+    };
     let run = RunState {
         version: VERSION.to_string(),
         id: run_id.clone(),
@@ -731,6 +740,11 @@ pub(crate) fn prepare_run(
         pause_reason: None,
         uuid: Some(generate_uuid()),
         last_executed_node: None,
+        execution: RuntimeExecutionState::new(
+            RuntimeExecutionPhase::StartingNode,
+            Some(execution_locator),
+            now.clone(),
+        ),
     };
     validate_run_state(&run)?;
     write_json(&app.paths.run_file(task_id, &run_id), &run)?;
@@ -1023,6 +1037,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         run.outcome = None;
         run.pause_reason = Some(reason);
         run.updated_at = now.clone();
+        run.transition_current_execution(RuntimeExecutionPhase::Paused, now.clone());
         validate_run_state(&run)?;
         write_json(&run_path, &run)?;
     }
@@ -1124,8 +1139,15 @@ fn run_continue_with_launch_signal(
             "runtime continue execution was superseded before launch"
         );
     }
-    let resumes_interrupted_runtime = node.status == RunStatus::Paused
-        && run.pause_reason == Some(PauseReason::ProcessInterrupted);
+    let claimed_runtime_resume = expected_execution_id.is_some()
+        && run.status == RunStatus::Running
+        && matches!(
+            run.execution.phase,
+            RuntimeExecutionPhase::StartingNode | RuntimeExecutionPhase::FinalizingArtifact
+        );
+    let resumes_interrupted_runtime = claimed_runtime_resume
+        || (node.status == RunStatus::Paused
+            && run.pause_reason == Some(PauseReason::ProcessInterrupted));
     let ctx = ExecutionContext::for_run(task_id, &run.id)
         .with_round(round.id.clone())
         .with_node(node.node_id.clone())
@@ -1171,7 +1193,7 @@ fn run_continue_with_launch_signal(
         initial_permission_mode_override,
     ) = match node.status {
         RunStatus::Paused => {
-            if !is_run_continuable(&run) {
+            if !is_run_continuable(&run) && !claimed_runtime_resume {
                 bail!("current attempt is paused but not resumable by continue");
             }
             if node.manual_check_pending {
@@ -1652,7 +1674,7 @@ pub(crate) fn run_continue_background(
         let _guard = state_lock
             .lock()
             .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
-        let current_run = app.run_status(task_id, run_id)?;
+        let mut current_run = app.run_status(task_id, run_id)?;
         ensure!(
             is_run_continuable(&current_run)
                 && current_run.current_round.as_deref() == Some(round.id.as_str())
@@ -1674,12 +1696,31 @@ pub(crate) fn run_continue_background(
             "current attempt is not resumable by continue"
         );
         node.runtime_execution_id = Some(execution_id.clone());
+        let resumed_at = now_rfc3339_like();
+        let attempt_dir =
+            app.paths
+                .attempt_dir(task_id, run_id, &round.id, &node.node_id, &node.attempt_id);
+        let resume_phase =
+            if crate::provider::post_turn_projection_checkpoint_is_finalizing(&attempt_dir)? {
+                RuntimeExecutionPhase::FinalizingArtifact
+            } else {
+                RuntimeExecutionPhase::StartingNode
+            };
+        current_run.status = RunStatus::Running;
+        current_run.pause_reason = None;
+        current_run.updated_at = resumed_at.clone();
+        current_run.transition_current_execution(resume_phase, resumed_at);
         crate::runtime::validate_node_state(&node)?;
-        write_json(
-            &app.paths
-                .node_file(task_id, run_id, &round.id, &node.node_id, &node.attempt_id),
-            &node,
-        )?;
+        validate_run_state(&current_run)?;
+        let node_path =
+            app.paths
+                .node_file(task_id, run_id, &round.id, &node.node_id, &node.attempt_id);
+        write_json(&node_path, &node)?;
+        if let Err(error) = write_json(&app.paths.run_file(task_id, run_id), &current_run) {
+            node.runtime_execution_id = None;
+            let _ = write_json(&node_path, &node);
+            return Err(error);
+        }
     }
     let background_app = app.clone_for_background();
     let task_id = task_id.to_string();
@@ -1797,6 +1838,12 @@ pub(crate) fn submit_manual_check(
     node.outcome = Some(outcome);
     node.manual_check_pending = false;
     node.finished_at = Some(now_rfc3339_like());
+    run.status = RunStatus::Running;
+    run.pause_reason = None;
+    run.updated_at = now_rfc3339_like();
+    run.transition_current_execution(RuntimeExecutionPhase::Transitioning, run.updated_at.clone());
+    round.status = RunStatus::Running;
+    round.outcome = None;
 
     let ctx = ExecutionContext::for_run(task_id, &run.id)
         .with_round(round.id.clone())
@@ -2040,6 +2087,7 @@ fn fail_workflow_control_limit(
     run.outcome = Some(RunOutcome::Failure);
     run.pause_reason = None;
     run.updated_at = now.clone();
+    run.transition_current_execution(RuntimeExecutionPhase::Terminal, now.clone());
     round.status = RunStatus::Completed;
     round.outcome = Some(RunOutcome::Failure);
     progress(&summary);
@@ -2526,20 +2574,19 @@ fn attempt_dir_was_cancelled(attempt_dir: &Utf8Path) -> bool {
     let snapshot_path = attempt_dir.join("acp.snapshot.json");
     let session_path = attempt_dir.join("acp.session.json");
     [snapshot_path, session_path].iter().any(|path| {
-        read_json::<serde_json::Value>(path)
+        crate::acp::events::load_session_metadata_value(path, None)
             .ok()
-            .and_then(|value| {
-                value
-                    .get("stopReason")
-                    .or_else(|| value.get("stop_reason"))
-                    .and_then(|reason| reason.as_str().map(str::to_string))
-                    .or_else(|| {
-                        value
-                            .get("status")
-                            .and_then(|status| status.as_str().map(str::to_string))
-                    })
+            .is_some_and(|metadata| {
+                metadata
+                    .get("latestTurnStatus")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("cancelled")
+                    || metadata
+                        .get("stopReason")
+                        .or_else(|| metadata.get("stop_reason"))
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|reason| reason.eq_ignore_ascii_case("cancelled"))
             })
-            .is_some_and(|value| value.eq_ignore_ascii_case("cancelled"))
     })
 }
 
@@ -2642,6 +2689,12 @@ fn apply_control_decision(
     }
     match decision {
         ControlDecision::TransitionToNode { node_id, session } => {
+            run.transition_current_execution(
+                RuntimeExecutionPhase::Transitioning,
+                now_rfc3339_like(),
+            );
+            validate_run_state(run)?;
+            persist_runtime_state(app, task_id, run, round, node)?;
             let next_node_dsl = workflow
                 .get_node(&node_id)
                 .expect("validated transition target exists");
@@ -2719,6 +2772,10 @@ fn apply_control_decision(
             run.status = RunStatus::Running;
             run.pause_reason = None;
             run.updated_at = now_rfc3339_like();
+            run.transition_current_execution(
+                RuntimeExecutionPhase::LaunchingNextNode,
+                run.updated_at.clone(),
+            );
             let transition_summary = format!(
                 "transitioned to {}/{}/{}",
                 round.id, node_id, next_attempt_id
@@ -2759,6 +2816,12 @@ fn apply_control_decision(
             }))
         }
         ControlDecision::OpenNewRound { entry_node_id } => {
+            run.transition_current_execution(
+                RuntimeExecutionPhase::Transitioning,
+                now_rfc3339_like(),
+            );
+            validate_run_state(run)?;
+            persist_runtime_state(app, task_id, run, round, node)?;
             if let Some(max_rounds) = workflow.raw.control.max_rounds {
                 let proposed_rounds = run.new_rounds_opened + 1;
                 if proposed_rounds > max_rounds {
@@ -2835,6 +2898,10 @@ fn apply_control_decision(
             run.status = RunStatus::Running;
             run.pause_reason = None;
             run.updated_at = now_rfc3339_like();
+            run.transition_current_execution(
+                RuntimeExecutionPhase::LaunchingNextNode,
+                run.updated_at.clone(),
+            );
             let round_summary = format!(
                 "opened {} and restarted at {}/{}",
                 round.id, next_node.node_id, next_attempt_id
@@ -2877,6 +2944,7 @@ fn apply_control_decision(
             run.status = RunStatus::Paused;
             run.pause_reason = Some(reason);
             run.updated_at = now_rfc3339_like();
+            run.transition_current_execution(RuntimeExecutionPhase::Paused, run.updated_at.clone());
             round.status = RunStatus::Paused;
             round.outcome = None;
             let pause_stage = if reason == PauseReason::ErrorBlocked {
@@ -2923,6 +2991,10 @@ fn apply_control_decision(
             run.outcome = Some(outcome);
             run.pause_reason = None;
             run.updated_at = now_rfc3339_like();
+            run.transition_current_execution(
+                RuntimeExecutionPhase::Terminal,
+                run.updated_at.clone(),
+            );
             round.status = RunStatus::Completed;
             round.outcome = Some(outcome);
             let complete_summary = format!("run {} completed with {:?}", run.id, outcome);
@@ -4774,16 +4846,16 @@ fn drive_dynamic_graph(
                 }
             };
             let _message_guard = state_lock.lock();
-                *graph = load_dynamic_graph(
-                    &ctx.app.paths.dynamic_graph_file(
-                        ctx.task_id,
-                        ctx.run_id,
-                        ctx.round_id,
-                        ctx.outer_node_id,
-                        ctx.outer_attempt_id,
-                    ),
-                    &ctx.app.paths.repo_root,
-                )?;
+            *graph = load_dynamic_graph(
+                &ctx.app.paths.dynamic_graph_file(
+                    ctx.task_id,
+                    ctx.run_id,
+                    ctx.round_id,
+                    ctx.outer_node_id,
+                    ctx.outer_attempt_id,
+                ),
+                &ctx.app.paths.repo_root,
+            )?;
             apply_dynamic_execution_message(ctx, graph, message)?;
             if graph.run.status == DynamicRunStatus::Paused {
                 return Ok(());
@@ -4804,16 +4876,16 @@ fn drive_dynamic_graph(
                     }
                 };
                 let _message_guard = state_lock.lock();
-            *graph = load_dynamic_graph(
-                &ctx.app.paths.dynamic_graph_file(
-                    ctx.task_id,
-                    ctx.run_id,
-                    ctx.round_id,
-                    ctx.outer_node_id,
-                    ctx.outer_attempt_id,
-                ),
-                &ctx.app.paths.repo_root,
-            )?;
+                *graph = load_dynamic_graph(
+                    &ctx.app.paths.dynamic_graph_file(
+                        ctx.task_id,
+                        ctx.run_id,
+                        ctx.round_id,
+                        ctx.outer_node_id,
+                        ctx.outer_attempt_id,
+                    ),
+                    &ctx.app.paths.repo_root,
+                )?;
                 apply_dynamic_execution_message(ctx, graph, message)?;
                 if graph.run.status == DynamicRunStatus::Paused {
                     return Ok(());
@@ -4974,6 +5046,15 @@ fn persist_dynamic_node_running_and_ack(
         .rposition(|resume| resume.node_id == node_id_for_job)
         .map(|index| launch_resume_overrides.remove(index));
     persist_dynamic_graph(ctx, graph)?;
+    ctx.app.transition_runtime_execution_phase(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        Some((&node_clone.id, &dynamic_attempt_id(&node_clone))),
+        RuntimeExecutionPhase::StartingNode,
+    )?;
     if let Some(resume) = resume_override.as_mut() {
         notify_dynamic_resume_started(ctx, resume);
     }
@@ -5617,6 +5698,21 @@ fn execute_dynamic_worker(
         let live_update = ctx.app.acp_live_update_for(live_update_context.clone());
         let session_update = ctx.app.acp_session_update_for(live_update_context.clone());
         let prompt_accepted = ctx.app.acp_prompt_accepted_for(live_update_context);
+        let runtime_prompt_accepted = |prompt_id: &str| {
+            ctx.app.transition_runtime_execution_phase(
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+                Some((&node.id, &attempt_id)),
+                RuntimeExecutionPhase::RunningNode,
+            )?;
+            if let Some(callback) = prompt_accepted.as_ref() {
+                callback(prompt_id)?;
+            }
+            Ok(())
+        };
         let invocation_build_started_at = Instant::now();
         dynamic_event_best_effort(
             ctx,
@@ -5634,6 +5730,23 @@ fn execute_dynamic_worker(
             dynamic_invocation_build_step_begin(ctx, &node, &attempt_id, "output_contract");
         let output_contract = dynamic_output_contract_for_node(ctx, graph, &node)
             .expect("dynamic worker stage requires a completion contract");
+        let runtime_phase_update = |phase| {
+            let phase = match phase {
+                crate::provider::ProviderRuntimePhase::FinalizingArtifact => {
+                    RuntimeExecutionPhase::FinalizingArtifact
+                }
+            };
+            ctx.app.transition_runtime_execution_phase(
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+                Some((&node.id, &attempt_id)),
+                phase,
+            )?;
+            Ok(())
+        };
         let accept_interrupted_completion =
             interrupted_dynamic_completion_is_trusted(output_contract.emission_mode);
         dynamic_invocation_build_step_end(
@@ -5724,11 +5837,12 @@ fn execute_dynamic_worker(
         })?;
         let provider_resolve_elapsed_ms = elapsed_ms(provider_started_at);
         let result = match provider
-            .run_worker_with_callbacks(
+            .run_worker_with_runtime_callbacks(
                 invocation,
                 live_update.as_ref().map(|callback| callback as _),
                 session_update.as_ref().map(|callback| callback as _),
-                prompt_accepted.as_ref().map(|callback| callback as _),
+                Some(&runtime_prompt_accepted),
+                Some(&runtime_phase_update),
             )
             .with_context(|| format!("provider `{}` failed to run `{}`", provider_id, node.id))
         {
@@ -9124,10 +9238,9 @@ fn dynamic_acp_config_option_overrides(attempt_dir: &Utf8Path) -> BTreeMap<Strin
     } else {
         return BTreeMap::new();
     };
-    crate::storage::read_json::<serde_json::Value>(&path)
+    crate::acp::events::load_session_metadata(&path, None)
         .ok()
-        .and_then(|value| value.get("configOptionOverrides").cloned())
-        .and_then(|value| serde_json::from_value(value).ok())
+        .map(|metadata| metadata.config_option_overrides)
         .unwrap_or_default()
 }
 
@@ -10549,6 +10662,15 @@ fn with_dynamic_workspace_transition<T>(
         let _ = persist_dynamic_workspace_phase(ctx, graph);
         return Err(error.context("failed to persist dynamic workspace transition start"));
     }
+    ctx.app.transition_runtime_execution_phase(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        None,
+        RuntimeExecutionPhase::PreparingWorkspace,
+    )?;
     dynamic_event_best_effort(
         ctx,
         "dynamic_workspace_transition_started",
@@ -10565,6 +10687,17 @@ fn with_dynamic_workspace_transition<T>(
     } else {
         Ok(())
     };
+    if phase_restore_result.is_ok() {
+        let _ = ctx.app.transition_runtime_execution_phase(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+            None,
+            RuntimeExecutionPhase::RunningNode,
+        );
+    }
     if phase_restore_result.is_ok() {
         dynamic_event_best_effort(
             ctx,
@@ -10817,6 +10950,12 @@ fn drive_from_node_with_initial_session(
         run.status = RunStatus::Running;
         run.pause_reason = None;
         run.updated_at = now_rfc3339_like();
+        let starting_phase = match run.execution.phase {
+            RuntimeExecutionPhase::FinalizingArtifact => RuntimeExecutionPhase::FinalizingArtifact,
+            RuntimeExecutionPhase::RepairingArtifact => RuntimeExecutionPhase::RepairingArtifact,
+            _ => RuntimeExecutionPhase::StartingNode,
+        };
+        run.transition_current_execution(starting_phase, run.updated_at.clone());
         round.status = RunStatus::Running;
         if node.status == RunStatus::Paused {
             node.status = RunStatus::Running;
@@ -11085,6 +11224,10 @@ fn drive_from_node_with_initial_session(
                 run.status = RunStatus::Paused;
                 run.pause_reason = Some(pause_reason);
                 run.updated_at = now_rfc3339_like();
+                run.transition_current_execution(
+                    RuntimeExecutionPhase::Paused,
+                    run.updated_at.clone(),
+                );
                 round.status = RunStatus::Paused;
                 let mut failed_node = node;
                 failed_node.status = RunStatus::Paused;
@@ -11164,6 +11307,7 @@ fn drive_from_node_with_initial_session(
             run.status = RunStatus::Paused;
             run.pause_reason = Some(pause_reason);
             run.updated_at = now_rfc3339_like();
+            run.transition_current_execution(RuntimeExecutionPhase::Paused, run.updated_at.clone());
             round.status = RunStatus::Paused;
             round.outcome = None;
             let summary = format!(
@@ -11301,6 +11445,10 @@ fn drive_from_node_with_initial_session(
                 run.status = RunStatus::Running;
                 run.pause_reason = None;
                 run.updated_at = now_rfc3339_like();
+                run.transition_current_execution(
+                    RuntimeExecutionPhase::RepairingArtifact,
+                    run.updated_at.clone(),
+                );
                 round.status = RunStatus::Running;
                 if !persist_runtime_state_if_execution_current(app, task_id, run, round, &node)? {
                     return Ok(());
@@ -11323,6 +11471,10 @@ fn drive_from_node_with_initial_session(
             run.status = RunStatus::Paused;
             run.pause_reason = Some(PauseReason::WaitingForUserInput);
             run.updated_at = now_rfc3339_like();
+            run.transition_current_execution(
+                RuntimeExecutionPhase::AwaitingManualCheck,
+                run.updated_at.clone(),
+            );
             round.status = RunStatus::Paused;
             round.outcome = None;
             let summary = format!(
@@ -11754,6 +11906,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
         let mut round = RoundState {
             version: VERSION.to_string(),
@@ -11863,6 +12016,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
         let round = RoundState {
             version: VERSION.to_string(),
@@ -12027,6 +12181,7 @@ mod tests {
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
         let round = RoundState {
             version: crate::domain::VERSION.to_string(),
@@ -12104,6 +12259,7 @@ mod tests {
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
         let round = RoundState {
             version: crate::domain::VERSION.to_string(),
@@ -12196,6 +12352,7 @@ mod tests {
             pause_reason,
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
         let round = RoundState {
             version: VERSION.to_string(),
@@ -12739,6 +12896,7 @@ mod tests {
     fn failed_workspace_transition_restores_executing_phase() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
         let mut graph = test_dynamic_graph_at(repo_root, vec![test_worktree_node("bootstrap")]);
@@ -12873,6 +13031,7 @@ mod tests {
     fn dynamic_worktree_invocation_uses_repo_adapter_workspace_and_worktree_session_workspace() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
         let mut node = test_worktree_node("good-night");
@@ -13736,6 +13895,7 @@ mod tests {
     fn nested_fanout_forks_from_and_targets_parent_runtime_workspace() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        write_test_outer_run(&app);
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
         let mut source = test_worktree_node("nested-source");
@@ -15027,7 +15187,10 @@ mod tests {
     fn dynamic_resume_reconciles_existing_valid_completion_before_launch() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root, RuntimeConfig::default());
-        write_test_outer_attempt(&app, RunStatus::Paused, Some(PauseReason::RuntimeAbnormal));
+        // The continue command claims the outer Runtime before reconciliation;
+        // the dynamic leaf itself remains paused until its durable completion
+        // is accepted below.
+        write_test_outer_run(&app);
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
         let mut paused = test_worktree_node("bootstrap");

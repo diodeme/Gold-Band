@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::acp::events::{current_timestamp, load_timeline_items};
+use crate::acp::events::{current_timestamp, load_session_metadata_value, load_timeline_items};
 use crate::domain::{TurnControlMode, TurnControlTransitionCause};
-use crate::storage::{ensure_parent_dir, read_json, write_json};
+use crate::storage::{ensure_parent_dir, write_json};
 
 const SNAPSHOT_FILE: &str = "acp.snapshot.json";
 const SESSION_FILE: &str = "acp.session.json";
@@ -128,7 +128,7 @@ fn load_persisted_cursor_unlocked(
     let mut timeline_scan_complete = false;
     for name in [SNAPSHOT_FILE, SESSION_FILE] {
         let path = attempt_dir.join(name);
-        let Ok(value) = read_json::<Value>(&path) else {
+        let Ok(value) = load_session_metadata_value(&path, None) else {
             continue;
         };
         timeline_scan_complete |= value
@@ -214,10 +214,11 @@ fn persist_timeline_scan_complete_unlocked(attempt_dir: &Utf8Path) -> Result<()>
 
 fn session_value(path: &Utf8Path) -> Result<Value> {
     if path.exists() {
-        return read_json(path);
+        return load_session_metadata_value(path, None);
     }
     Ok(serde_json::json!({
-        "status": "cancelled",
+        "availability": "established",
+        "latestTurnStatus": "cancelled",
         "restored": false,
         "createdAt": current_timestamp(),
     }))

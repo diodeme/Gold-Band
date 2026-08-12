@@ -1950,8 +1950,8 @@ mod tests {
     use camino::Utf8PathBuf;
     use gold_band::app::App;
     use gold_band::config::{ConversationWorkspaceEntry, StateConfig};
-    use gold_band::domain::{RunStatus, VERSION};
-    use gold_band::runtime::{RunState, TaskState};
+    use gold_band::domain::{RunOutcome, RunStatus, VERSION};
+    use gold_band::runtime::{RunState, RuntimeExecutionPhase, RuntimeExecutionState, TaskState};
     use gold_band::scheduler::occurrence::ScheduledErrorCode;
     use gold_band::storage::{sqlite::TaskSearchResult, write_json};
     use uuid::Uuid;
@@ -2167,7 +2167,7 @@ mod tests {
                 task_id: task_id.to_string(),
                 task_uuid: None,
                 status: RunStatus::Completed,
-                outcome: None,
+                outcome: Some(RunOutcome::Success),
                 started_at: "2026-07-24T00:00:00Z".to_string(),
                 updated_at: "2026-07-24T00:01:00Z".to_string(),
                 workflow_snapshot: "workflow.snapshot.json".to_string(),
@@ -2178,6 +2178,11 @@ mod tests {
                 pause_reason: None,
                 uuid: None,
                 last_executed_node: None,
+                execution: RuntimeExecutionState::new(
+                    RuntimeExecutionPhase::Terminal,
+                    None,
+                    "2026-07-24T00:01:00Z",
+                ),
             },
         )
         .unwrap();

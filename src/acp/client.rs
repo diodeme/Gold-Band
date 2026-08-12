@@ -271,10 +271,11 @@ use crate::acp::elicitation::{
     upsert_elicitation_response_event, wait_for_elicitation_response, write_pending_elicitation,
 };
 use crate::acp::events::{
-    AcpAttemptPaths, AcpPromptRetryState, AcpSessionMetadata, AcpSessionTiming, AcpTimingState,
-    AcpUiEvent, append_diagnostic, append_raw_frame, append_structured_diagnostic,
-    cancel_latest_processing_prompt_retry, current_timestamp, latest_timeline_source_seq,
-    normalize_session_update, permission_request_event, user_prompt_event, write_session_metadata,
+    AcpAttemptPaths, AcpLatestTurnStatus, AcpPromptRetryState, AcpSessionAvailability,
+    AcpSessionMetadata, AcpSessionTiming, AcpTimingState, AcpUiEvent, append_diagnostic,
+    append_raw_frame, append_structured_diagnostic, cancel_latest_processing_prompt_retry,
+    current_timestamp, latest_timeline_source_seq, load_session_metadata, normalize_session_update,
+    permission_request_event, user_prompt_event, write_session_metadata,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::permission::{
@@ -2323,7 +2324,7 @@ fn read_prior_attempt_metrics(snapshot_path: &Utf8Path) -> PriorAttemptMetrics {
     if !snapshot_path.exists() {
         return PriorAttemptMetrics::default();
     }
-    let Ok(meta) = read_json::<crate::acp::events::AcpSessionMetadata>(snapshot_path) else {
+    let Ok(meta) = load_session_metadata(snapshot_path, None) else {
         return PriorAttemptMetrics::default();
     };
     PriorAttemptMetrics {
@@ -2528,7 +2529,7 @@ impl<'a> AcpRuntime<'a> {
             .iter()
             .map(|item| item.id.clone())
             .collect();
-        let prompt_retry = read_json::<AcpSessionMetadata>(&paths.snapshot)
+        let prompt_retry = load_session_metadata(&paths.snapshot, None)
             .ok()
             .and_then(|metadata| metadata.prompt_retry);
         let pending_retry_prompt_event = prompt_retry
@@ -4695,9 +4696,9 @@ impl<'a> AcpRuntime<'a> {
     ) -> AcpSessionMetadata {
         let now = current_timestamp();
         let previous_metadata = if self.paths.snapshot.exists() {
-            read_json::<AcpSessionMetadata>(&self.paths.snapshot).ok()
+            load_session_metadata(&self.paths.snapshot, self.session_id.clone()).ok()
         } else if self.paths.session.exists() {
-            read_json::<AcpSessionMetadata>(&self.paths.session).ok()
+            load_session_metadata(&self.paths.session, self.session_id.clone()).ok()
         } else {
             None
         };
@@ -4716,7 +4717,22 @@ impl<'a> AcpRuntime<'a> {
             adapter_display_name: self.connection.adapter().display_name.clone(),
             cwd: self.paths.attempt_dir.to_string(),
             title: self.session_title.clone(),
-            status: status.to_string(),
+            session_id: self.session_id.clone(),
+            availability: match status {
+                "cancelling" | "cancel-requested" | "closing" => AcpSessionAvailability::Closing,
+                "failed" if self.session_id.is_some() => AcpSessionAvailability::Restorable,
+                _ if self.session_id.is_some() => AcpSessionAvailability::Established,
+                _ => AcpSessionAvailability::Unavailable,
+            },
+            latest_turn_status: match status {
+                "completed" => AcpLatestTurnStatus::Completed,
+                "cancelled" | "canceled" => AcpLatestTurnStatus::Cancelled,
+                "failed" => AcpLatestTurnStatus::Failed,
+                _ => previous_metadata
+                    .as_ref()
+                    .map(|metadata| metadata.latest_turn_status)
+                    .unwrap_or_default(),
+            },
             restored,
             stop_reason,
             capabilities,

@@ -60,6 +60,7 @@
 - 高级调度 / 多 run 并发 orchestration
 
 ### 桌面端 MVP 增量
+- 2026-08-12：完成 Workflow Runtime execution 与 ACP 生命周期解耦。`run.json.execution` 以显式 phase、精确 locator 和单调 revision 成为 Workflow/AUTO 阶段唯一权威源；Runtime control、ACP session availability、进程内 live turn 与 latest turn 历史分别投影。破坏式删除 `runtime active + ACP terminal => launching-next-node` 及通用 ACP active/terminal DTO 消费，`acp.snapshot.json / acp.session.json` 也从混合 `status` 迁移为 `availability + latestTurnStatus`，旧文件首次读取后一次性回写。停止后的 NonRuntime 追问结束仍保持 Paused，继续命令在后台启动前先提交 checkpoint phase。`run-progress.json` 仅作 revision 对齐后的观测，启动恢复仍统一收敛为 `Paused + ProcessInterrupted`。Rust/Web 接口回归覆盖停止/恢复、manual check、Direct、AI-DYNAMIC、stale snapshot/progress、metadata migration 与 sidebar/composer 单调收敛；不增加轮询、timeline 扫描或 token 热路径写入。
 - 2026-08-10：完成 AI-DYNAMIC 工作空间树与 Git 基础设施 V2。破坏式删除 Agent-facing `WorkspaceMode / WorkspacePolicy`，runtime 以 `WorkspaceState` catalog 统一管理 main/worktree 的身份、父子关系、所有权和生命周期；`single` 继承来源 workspace，`fanout` 自动从来源 workspace checkpoint 分叉隔离 worktree，嵌套 fanout 的 merge/acceptance 回到 `group.targetWorkspaceId`。新增基于 Git CLI 的 typed `GitRepositoryService / GitWorkspaceManager`，供 runtime 与后续右侧 Git 面板共用；AUTO 和含 AI-DYNAMIC 的固定工作流在创建 run 前执行 Git/仓库/HEAD/worktree preflight，桌面端用 shadcn 对话框支持下载 Git、重新检测、初始化仓库或切换工作流。Rust 接口测试固化 preflight、checkpoint、single 继承、fanout 隔离和嵌套父 workspace 路由；后续右侧 Git 状态/提交面板继续复用该服务边界，不进入本次 UI 范围。
 - 2026-08-07：补齐内置角色元数据国际化。内置角色名称、摘要与正文统一按 `desktop_language` 选择中文或英文版本；`pf-builtin-*` profile ID、默认工作流 DSL、任务 workflow 和运行快照中的角色引用保持不变。Rust 单元测试覆盖全部内置角色的中英文名称、摘要差异与 ID 稳定性。
 - 2026-08-06：修正 AI-DYNAMIC 动态策略的控制面边界。AUTO 与 Workflow 依次配置初始分发 Agent、分发模型、验收模型和共享原生权限；验收模型目录只读取初始分发 Agent，不再聚合候选 worker Agent。bootstrap、merge、acceptance 固定使用该 Agent 并共用权限，只有 worker 由 proposal 选择 provider；output contract 禁止 merge / acceptance 输出 provider，并继续禁止模型输出 model/permissionMode。删除过渡字段 `bootstrapPermissionMode`，统一使用 dynamic strategy 的 `permissionMode`，候选 worker 仍各自保存模型与权限。
@@ -1018,3 +1019,11 @@ attempt-001/
 - 根因修复：AI-DYNAMIC workspace catalog V2 曾在 graph 仍标记 `0.1` 时直接替换 `workspace/workspacePath` 为 `workspaces + workspaceId`，历史 graph 因反序列化失败而被会话树读取路径忽略。现将 graph schema 单独提升为 `0.2`，所有生产消费方统一经过版本化存储边界，不在 Conversation VM 或前端增加特例。
 - 迁移契约：首次读取旧 `0.1` graph 时确定性构建 main/runtime workspace catalog 和 group workspace 拓扑，校验后使用原子替换写回；并发读取按文件串行化，当前 `0.2` 与第二次读取均不改盘。dynamic run、node、attempt/session locator 身份保持不变，无法证明仍安全可用的历史 workspace 标记为 `released`。
 - 性能与回归：不做启动全量扫描；单图首次迁移为 `O(nodes + groups)` 内存转换、按旧 worktree 数量进行有界 Git 校验并执行一次原子写入，后续恢复普通读取成本。core 测试覆盖磁盘一次性/幂等写入、当前版本 no-op、未来版本拒绝、readonly/worktree fanout 拓扑与 released 降级；桌面 Conversation VM 接口测试覆盖旧 AUTO graph 恢复 dynamic session leaf、默认选中 key 并落盘 `0.2`。
+- 编译契约修正：Git HEAD 查询失败分支按 `Result` 接收并忽略错误值后回退到稳定的 `legacy-unknown`，保持原迁移数据、接口、I/O 次数和复杂度不变。
+
+## 2026-08-12：会话 disclosure 密度、处理动画与停止收敛
+
+- 隐藏 system/runtime context 的展示投影改为先分组隐藏段、再合并可见片段，并只在展示层移除隐藏段边界产生的前导空行；保持 provider prompt 原文不变，消除折叠项与需求正文之间的模板 spacer。
+- 活动摘要与 composer/compact 用量栏复用同一个 CSS 边框圆环组件，统一 900ms transform 动画、`will-change` 与 reduced-motion 行为，不再让高频更新中的 Lucide SVG stroke spinner 参与重绘。
+- 同一 `activityStartSeq` 的活动摘要采用单调 `live -> archived` 展示生命周期。停止期间一旦归档，迟到的 active snapshot 不能把它重新投影为“正在操作”；后续新活动通过新的 start sequence 建立新 identity。
+- 回归验收覆盖隐藏段展示投影、CSS spinner 契约、活动摘要在 `running -> cancelled -> stale running` 序列中不复活，以及既有 Activity 披露/详情交互；聚焦 46 项 Web 测试和 Web 生产构建通过。该改动不新增 I/O、定时器、缓存或历史扫描，每次稳定合并仅作常数级 lifecycle 判断，渲染范围保持在当前活动行。

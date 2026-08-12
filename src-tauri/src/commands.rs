@@ -580,7 +580,6 @@ fn build_direct_turn_metrics_fact(
     };
     let provider = acp_turn_provider_id(app, locator);
     let model = current_acp_session_model_name(&attempt_dir);
-    let direct_revision = app.next_metric_revision(&execution_id);
     let attempt_state =
         app.update_observability_state(&active_turn.attempt_id, attempt_path, |state| {
             if outcome.is_none() {
@@ -621,8 +620,9 @@ fn build_direct_turn_metrics_fact(
                     );
                 }
             }
-            state.event_revision = direct_revision;
+            state.next_revision();
         });
+    let direct_revision = attempt_state.event_revision;
     let event_type = if outcome.is_some() {
         gold_band::app::observability::LifecycleEventType::ExecutionCompleted
     } else {
@@ -2027,7 +2027,6 @@ fn build_request_intervention_metrics(
         .unwrap_or_else(|| task_uuid.clone());
     let event_revision;
     let collection_state_recovered;
-    let intervention_revision = app.next_metric_revision(&execution_id);
     let _state = if let Some(active_turn) = active_turn.as_ref() {
         let attempt_path = app
             .paths
@@ -2047,9 +2046,9 @@ fn build_request_intervention_metrics(
                     }
                     _ => {}
                 }
-                state.event_revision = intervention_revision;
+                state.next_revision();
             });
-        event_revision = intervention_revision;
+        event_revision = attempt_state.event_revision;
         collection_state_recovered = attempt_state.collection_state_recovered;
         attempt_state
     } else {
@@ -2067,9 +2066,9 @@ fn build_request_intervention_metrics(
                 }
                 _ => {}
             }
-            state.event_revision = intervention_revision;
+            state.next_revision();
         });
-        event_revision = intervention_revision;
+        event_revision = state.event_revision;
         collection_state_recovered = state.collection_state_recovered;
         state
     };

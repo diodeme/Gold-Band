@@ -739,7 +739,6 @@ pub struct App {
     pub lifecycle_bus: observability::RuntimeLifecycleBus,
     observability_states:
         Arc<std::sync::Mutex<HashMap<String, observability::ExecutionObservabilityState>>>,
-    metric_revision_counters: Arc<std::sync::Mutex<HashMap<String, u64>>>,
     metrics_collection_enabled: bool,
     active_metric_turns: Arc<std::sync::Mutex<HashMap<String, ActiveMetricTurn>>>,
 }
@@ -981,7 +980,6 @@ impl App {
             acp_session_update: self.acp_session_update.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
             observability_states: self.observability_states.clone(),
-            metric_revision_counters: self.metric_revision_counters.clone(),
             metrics_collection_enabled: self.metrics_collection_enabled,
             active_metric_turns: self.active_metric_turns.clone(),
         }
@@ -1029,7 +1027,6 @@ impl App {
             acp_session_update: self.acp_session_update.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
             observability_states: self.observability_states.clone(),
-            metric_revision_counters: self.metric_revision_counters.clone(),
             metrics_collection_enabled: self.metrics_collection_enabled,
             active_metric_turns: self.active_metric_turns.clone(),
         }
@@ -1055,6 +1052,24 @@ impl App {
 
     pub fn with_lifecycle_bus(mut self, lifecycle_bus: observability::RuntimeLifecycleBus) -> Self {
         self.lifecycle_bus = lifecycle_bus;
+        self
+    }
+
+    pub fn with_observability_states(
+        mut self,
+        states: Arc<
+            std::sync::Mutex<HashMap<String, observability::ExecutionObservabilityState>>,
+        >,
+    ) -> Self {
+        self.observability_states = states;
+        self
+    }
+
+    pub fn with_active_metric_turns(
+        mut self,
+        turns: Arc<std::sync::Mutex<HashMap<String, ActiveMetricTurn>>>,
+    ) -> Self {
+        self.active_metric_turns = turns;
         self
     }
 
@@ -1408,7 +1423,6 @@ impl App {
                 fallback_model = crate::acp::events::read_attempt_session_model_name(&session_path)
                     .or_else(|| fallback_model);
             }
-            let direct_revision = scoped_app.next_metric_revision(&task_uuid);
             let attempt_state = scoped_app.update_observability_state(
                 &active_turn.attempt_id,
                 attempt_path,
@@ -1454,9 +1468,10 @@ impl App {
                             );
                         }
                     }
-                    state.event_revision = direct_revision;
+                    state.next_revision();
                 },
             );
+            let direct_revision = attempt_state.event_revision;
             let mut resolved_provider = provider.clone();
             let mut resolved_model = fallback_model.clone();
             if event_type == LifecycleEventType::ExecutionCompleted {
@@ -1661,15 +1676,14 @@ impl App {
             .join("observability")
             .join(&task_uuid)
             .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
-        scoped_app.init_metric_revision_from_disk(&task_uuid, &outer_snapshot_path);
-        let revision = scoped_app.next_metric_revision(&task_uuid);
-        scoped_app.update_observability_state(
+        let outer_state = scoped_app.update_observability_state(
             &task_uuid,
             outer_snapshot_path.clone(),
             |state| {
-                state.event_revision = revision;
+                state.next_revision();
             },
         );
+        let revision = outer_state.event_revision;
         let mut fact = MetricsLifecycleFact::new(
             event_type,
             revision,
@@ -1763,15 +1777,15 @@ impl App {
         self.lifecycle_bus
             .emit(RuntimeLifecycleEvent::MetricsFact(fact));
         if let Some(passed) = acceptance_passed {
-            let acceptance_revision = scoped_app.next_metric_revision(&task_uuid);
             let outer_state = scoped_app.update_observability_state(
                 &task_uuid,
                 outer_snapshot_path,
                 |state| {
-                    state.event_revision = acceptance_revision;
+                    state.next_revision();
                     state.next_acceptance_attempt();
                 },
             );
+            let acceptance_revision = outer_state.event_revision;
             let acceptance_attempt = outer_state.next_acceptance_attempt_value();
             let mut acceptance = MetricsLifecycleFact::new(
                 LifecycleEventType::AcceptanceCompleted,
@@ -1803,31 +1817,6 @@ impl App {
         }
     }
 
-    pub fn next_metric_revision(&self, task_uuid: &str) -> u64 {
-        let mut counters = self
-            .metric_revision_counters
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let entry = counters.entry(task_uuid.to_string()).or_insert(0);
-        *entry += 1;
-        *entry
-    }
-
-    pub fn init_metric_revision_from_disk(
-        &self,
-        task_uuid: &str,
-        snapshot_path: &camino::Utf8Path,
-    ) {
-        let mut counters = self
-            .metric_revision_counters
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !counters.contains_key(task_uuid) {
-            let state = observability::load_observability_snapshot(snapshot_path);
-            counters.insert(task_uuid.to_string(), state.event_revision);
-        }
-    }
-
     pub fn update_observability_state(
         &self,
         execution_id: &str,
@@ -1843,7 +1832,7 @@ impl App {
             .or_insert_with(|| observability::load_observability_snapshot(&snapshot_path));
         update(state);
         let snapshot = state.clone();
-        observability::persist_observability_snapshot_best_effort(snapshot_path, snapshot.clone());
+        observability::persist_observability_snapshot_sync(snapshot_path, snapshot.clone());
         drop(states);
         snapshot
     }
@@ -2684,7 +2673,6 @@ impl App {
             acp_session_update: None,
             lifecycle_bus: observability::RuntimeLifecycleBus::new(),
             observability_states: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            metric_revision_counters: Arc::new(std::sync::Mutex::new(HashMap::new())),
             metrics_collection_enabled: false,
             active_metric_turns: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }

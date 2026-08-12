@@ -3,10 +3,12 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import './i18n';
 import { installUiErrorDiagnostics, logUiErrorDiagnostic, shouldLogUiError } from '@/lib/ui-error-diagnostics';
+import { disposeAcpComposerDrafts } from '@/lib/acp-composer-draft';
 import '@xyflow/react/dist/style.css';
 import './styles.css';
 
 installUiErrorDiagnostics();
+window.addEventListener('pagehide', disposeAcpComposerDrafts);
 
 createRoot(document.getElementById('root') as HTMLElement, {
   onUncaughtError(error, errorInfo) {

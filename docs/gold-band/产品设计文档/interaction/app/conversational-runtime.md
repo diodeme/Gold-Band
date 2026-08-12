@@ -416,6 +416,14 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 ## Composer 配置栏
 
+### 追问草稿生命周期
+
+- 会话详情 composer 的未发送正文与待发送附件属于同一运行期草稿，由 ACP composer draft store 统一管理，不散落在 `ACPChatDialog` 的组件本地状态中。
+- 草稿使用完整 `projectId + taskId + runId + roundId + nodeId + attemptId + outer attempt + branch` locator 隔离；切换 task、run、节点、attempt 或 Agent 分支后，再返回原会话必须恢复原正文、图片与其他附件，不能按显示名、当前选中项或末级 ID 反查。
+- 草稿只在应用进程内保留，不写入 SQLite、localStorage、sessionStorage 或文件系统；退出应用后允许丢失。发送接受后、用户明确清空或删除附件时立即清除对应内容，普通会话切换和组件卸载不得清除。
+- 浏览器 `File`、图片 object URL 与草稿同生命周期。运行期 store 必须同时限制草稿条目数和附件总字节数；淘汰、明确清空与应用退出时释放预览 URL，避免长时间会话切换形成无界内存增长。
+- 当前 composer 只订阅当前 locator 的草稿；键入正文不得更新应用壳 Context、会话侧栏、历史消息或 Markdown。该能力继续复用 prompt-kit composer 与既有附件选择器，不新增第二套输入或附件组件。
+
 - 新建对话 composer 与会话详情 composer 共享同一套 ACP 配置选择器。Agent 只提供模型时展示普通模型下拉；同时提供 `configOptions[category=thought_level]` 时，模型栏切换为单槽位复合下拉，权限仍是相邻的独立下拉，不按 Codex `reasoning_effort`、Claude `effort` 等具体 ID 写死。
 - ACP select 配置以 `configOptions` 为当前协议事实源：模型目录、当前模型和值展示优先读取 `configOptions[category=model]`，权限模式同理优先读取 `configOptions[category=mode]`；旧 `models` / `modes` 只在对应 config option 缺失时作为兼容回退。两套字段同时存在但内容冲突时不得让旧字段覆盖 config option，也不得解析模型名称或 ID 中的 `(low)`、`[max]` 等 adapter 私有组合格式来推断思考强度。
 - 复合下拉的第一层只展示“模型”和“思考强度”两个入口及其已选值，点击后进入各自选项。主下拉面板默认以触发器左边缘为锚点对齐，面板更宽时向右展开，避免向左悬出并打断相邻控件的阅读顺序。composer 配置菜单使用非模态 DropdownMenu，打开模型菜单后直接点击相邻权限触发器时，必须在同一次点击中关闭模型并打开权限，不得要求第二次点击。两个子栏使用受控 click-to-open 交互，同一时刻只允许一个展开，打开其中一个必须自动关闭另一个；同一使用位置的两个子选项面板固定向同一侧展开，避免因选项宽度不同左右跳变。会话详情内列表默认向上弹出，新建对话按可用空间弹出，超出高度时内部滚动。

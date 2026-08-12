@@ -112,6 +112,7 @@ import {
   type MessageAttachmentPreview,
 } from "@/lib/asset-preview";
 import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-service";
+import { useAcpComposerDraft } from "@/lib/acp-composer-draft";
 import { AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
 import { AcpConversationComposer } from "@/components/conversation/AcpConversationComposer";
 import { ConversationPromptQueue } from "@/components/conversation/ConversationPromptQueue";
@@ -734,6 +735,7 @@ export function ACPChatDialog(
   );
   const eventWindowKey = `${sessionKey}:${outerNodeId ?? ""}:${outerAttemptId ?? ""}:${branchId}:${eventIdPrefix ?? ""}`;
   const sessionIdentity = eventWindowKey;
+  const composerDraft = useAcpComposerDraft(eventWindowKey);
   const restoredSession = session ?? restoreAcpSession(eventWindowKey);
   const componentInstanceIdRef = useRef(createAcpChatDialogInstanceId());
   const componentInstanceId = componentInstanceIdRef.current;
@@ -760,7 +762,8 @@ export function ACPChatDialog(
   const [optimisticEvents, setOptimisticEvents] = useState<AcpUiEventVm[]>(
     () => restoredOptimisticEvents,
   );
-  const [prompt, setPrompt] = useState("");
+  const prompt = composerDraft.draft.content;
+  const setPrompt = composerDraft.setContent;
   const [sending, setSending] = useState(false);
   const [queueSubmitPending, setQueueSubmitPending] = useState(false);
   const [promptCommandPending, setPromptCommandPending] = useState(false);
@@ -836,7 +839,9 @@ export function ACPChatDialog(
     textPreview,
     setTextPreview,
     handlePreviewAttachment,
-  } = useAttachmentPicker();
+  } = useAttachmentPicker({
+    attachments: [composerDraft.draft.attachments, composerDraft.setAttachments],
+  });
   useWindowDragGuard();
   const paginationDirectionRef = useRef<"older" | "newer" | null>(null);
   const preservingScrollRef = useRef(false);

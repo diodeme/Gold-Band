@@ -794,7 +794,9 @@ Git 操作成功后再原子更新 WorkspaceState。若 Git 已成功但状态�
 - 删除节点完成即 teardown worktree 的路径。
 - 删除旧 UI workspace mode 展示与配置。
 
-不为旧 dynamic graph 增加兼容层或 fallback。旧开发运行不能按 V2 resume 时，应明确标记为旧版本不可恢复并允许重新运行，不能猜测 workspace 血缘。
+dynamic graph schema 使用独立版本：V2 catalog graph 为 `0.2`，内部 run/node/group/workspace 继续保持领域版本 `0.1`。统一存储读取边界按需识别历史 graph `0.1`，将旧 `workspace/workspacePath` 确定性迁移为 catalog 与 group workspace 拓扑，完整校验通过后原子写回；同一文件的并发迁移串行化，第二次读取必须是无写入的幂等路径。历史 dynamic run、node、attempt/session locator 身份全部保持不变。
+
+迁移不猜测可恢复能力：只有仍由当前 Git repository 注册、路径与 runtime worktree 身份可证明有效且 group 未关闭的旧 worktree 才保留 `active`；缺失、已关闭、共享 main checkout 或其他无法证明安全的旧 workspace 统一记录为 `released`，用于恢复历史会话树但不承诺 resume。读取时仅迁移目标 graph，不在应用启动时全量扫描历史运行；不增加前端兼容层或空态 fallback。
 
 ## 19. 实施顺序
 

@@ -947,13 +947,11 @@ fn write_dynamic_workflow_with_agent_strategy(
 }
 
 fn dynamic_graph(app: &App, task_id: &str) -> DynamicGraphState {
-    gold_band::storage::read_json(&app.paths.dynamic_graph_file(
-        task_id,
-        "run-001",
-        "round-001",
-        "router",
-        "attempt-001",
-    ))
+    gold_band::dynamic_store::load_dynamic_graph(
+        &app.paths
+            .dynamic_graph_file(task_id, "run-001", "round-001", "router", "attempt-001"),
+        &app.paths.repo_root,
+    )
     .unwrap()
 }
 

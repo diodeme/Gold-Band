@@ -38,6 +38,9 @@ use crate::dynamic::{
     validate_dynamic_group_state, validate_dynamic_node_state, validate_dynamic_run_state,
     validate_workspace_state, validate_workspace_topology,
 };
+use crate::dynamic_store::{
+    CURRENT_DYNAMIC_GRAPH_VERSION, load_dynamic_graph, validate_dynamic_graph,
+};
 use crate::git::{
     GitCommandOutput, GitCommandRunner, GitCoordinationService, GitRepositoryService,
     GitSourceControlService, GitWorkspaceManager,
@@ -927,7 +930,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         app.paths
             .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id);
     if !require_active_leaf
-        && read_json::<DynamicGraphState>(&graph_path).is_ok_and(|graph| {
+        && load_dynamic_graph(&graph_path, &app.paths.repo_root).is_ok_and(|graph| {
             graph.run.status == DynamicRunStatus::Running
                 && graph.run.phase == DynamicRunPhase::PreparingWorkspace
                 && graph.nodes.iter().any(|node| {
@@ -950,7 +953,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
     let _guard = state_lock.lock();
     let now = now_rfc3339_like();
     if graph_path.exists() {
-        let mut graph: DynamicGraphState = read_json(&graph_path)?;
+        let mut graph = load_dynamic_graph(&graph_path, &app.paths.repo_root)?;
         let target_index = graph
             .nodes
             .iter()
@@ -1385,7 +1388,7 @@ fn run_continue_dynamic_inner(
             outer_node_id,
             outer_attempt_id,
         );
-        let mut graph = read_json::<DynamicGraphState>(&graph_path)?;
+        let mut graph = load_dynamic_graph(&graph_path, &app.paths.repo_root)?;
         if run.status == RunStatus::Paused
             && recover_legacy_cancelled_dynamic_leaves_for_paused_graph(
                 app,
@@ -2421,7 +2424,7 @@ fn attempt_was_user_cancelled(
     let graph_path =
         app.paths
             .dynamic_graph_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id);
-    let Ok(graph) = read_json::<DynamicGraphState>(&graph_path) else {
+    let Ok(graph) = load_dynamic_graph(&graph_path, &app.paths.repo_root) else {
         return false;
     };
     graph.nodes.iter().any(|dynamic_node| {
@@ -4524,7 +4527,7 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
     if graph_path.exists() {
         let lock = dynamic_state_lock(ctx)?;
         let _guard = lock.lock();
-        let graph: DynamicGraphState = read_json(&graph_path)?;
+        let graph = load_dynamic_graph(&graph_path, &ctx.app.paths.repo_root)?;
         validate_dynamic_workspace_catalog(&graph)?;
         return Ok(graph);
     }
@@ -4602,7 +4605,7 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         current_node_ids: vec![bootstrap.id.clone()],
     };
     let graph = DynamicGraphState {
-        version: VERSION.to_string(),
+        version: CURRENT_DYNAMIC_GRAPH_VERSION.to_string(),
         run,
         nodes: vec![bootstrap],
         groups: Vec::new(),
@@ -4637,13 +4640,16 @@ fn drive_dynamic_graph(
         scheduler_loop_count = scheduler_loop_count.saturating_add(1);
         let state_lock = dynamic_state_lock(ctx)?;
         let state_guard = state_lock.lock();
-        *graph = read_json(&ctx.app.paths.dynamic_graph_file(
-            ctx.task_id,
-            ctx.run_id,
-            ctx.round_id,
-            ctx.outer_node_id,
-            ctx.outer_attempt_id,
-        ))?;
+        *graph = load_dynamic_graph(
+            &ctx.app.paths.dynamic_graph_file(
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+            ),
+            &ctx.app.paths.repo_root,
+        )?;
         if !outer_attempt_is_still_current_running(ctx)? {
             mark_dynamic_graph_paused_in_memory(graph, PauseReason::ProcessInterrupted);
             return Ok(());
@@ -4768,13 +4774,16 @@ fn drive_dynamic_graph(
                 }
             };
             let _message_guard = state_lock.lock();
-            *graph = read_json(&ctx.app.paths.dynamic_graph_file(
-                ctx.task_id,
-                ctx.run_id,
-                ctx.round_id,
-                ctx.outer_node_id,
-                ctx.outer_attempt_id,
-            ))?;
+                *graph = load_dynamic_graph(
+                    &ctx.app.paths.dynamic_graph_file(
+                        ctx.task_id,
+                        ctx.run_id,
+                        ctx.round_id,
+                        ctx.outer_node_id,
+                        ctx.outer_attempt_id,
+                    ),
+                    &ctx.app.paths.repo_root,
+                )?;
             apply_dynamic_execution_message(ctx, graph, message)?;
             if graph.run.status == DynamicRunStatus::Paused {
                 return Ok(());
@@ -4795,13 +4804,16 @@ fn drive_dynamic_graph(
                     }
                 };
                 let _message_guard = state_lock.lock();
-                *graph = read_json(&ctx.app.paths.dynamic_graph_file(
+            *graph = load_dynamic_graph(
+                &ctx.app.paths.dynamic_graph_file(
                     ctx.task_id,
                     ctx.run_id,
                     ctx.round_id,
                     ctx.outer_node_id,
                     ctx.outer_attempt_id,
-                ))?;
+                ),
+                &ctx.app.paths.repo_root,
+            )?;
                 apply_dynamic_execution_message(ctx, graph, message)?;
                 if graph.run.status == DynamicRunStatus::Paused {
                     return Ok(());
@@ -5216,13 +5228,16 @@ fn dynamic_leaf_attempt_is_still_running(
         ctx.outer_attempt_id,
     )?;
     let _guard = state_lock.lock();
-    let graph: DynamicGraphState = read_json(&ctx.app.paths.dynamic_graph_file(
-        ctx.task_id,
-        ctx.run_id,
-        ctx.round_id,
-        ctx.outer_node_id,
-        ctx.outer_attempt_id,
-    ))?;
+    let graph = load_dynamic_graph(
+        &ctx.app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ),
+        &ctx.app.paths.repo_root,
+    )?;
     Ok(graph.nodes.iter().any(|node| {
         node.id == node_id
             && dynamic_attempt_id(node) == attempt_id
@@ -5344,7 +5359,10 @@ fn execute_dynamic_node_job(
     let state_load_started_at = Instant::now();
     let (run, mut graph): (DynamicRunState, DynamicGraphState) = {
         let _guard = state_lock.lock();
-        (read_json(&dynamic_run_path)?, read_json(&graph_path)?)
+        (
+            read_json(&dynamic_run_path)?,
+            load_dynamic_graph(&graph_path, &app.paths.repo_root)?,
+        )
     };
     let state_load_elapsed_ms = elapsed_ms(state_load_started_at);
     let ctx = DynamicExecutionContext {
@@ -6756,13 +6774,16 @@ fn build_dynamic_completion_from_raw(
     let graph: DynamicGraphState = {
         let lock = dynamic_state_lock(ctx)?;
         let _guard = lock.lock();
-        read_json(&ctx.app.paths.dynamic_graph_file(
-            ctx.task_id,
-            ctx.run_id,
-            ctx.round_id,
-            ctx.outer_node_id,
-            ctx.outer_attempt_id,
-        ))?
+        load_dynamic_graph(
+            &ctx.app.paths.dynamic_graph_file(
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+            ),
+            &ctx.app.paths.repo_root,
+        )?
     };
     let (completion, parsed, schema_errors) = parse_dynamic_completion_artifact(ctx, &graph, raw)?;
     let raw_output_path = ctx
@@ -7133,13 +7154,16 @@ fn build_dynamic_completion_proposal(
     let graph: DynamicGraphState = {
         let lock = dynamic_state_lock(ctx)?;
         let _guard = lock.lock();
-        read_json(&ctx.app.paths.dynamic_graph_file(
-            ctx.task_id,
-            ctx.run_id,
-            ctx.round_id,
-            ctx.outer_node_id,
-            ctx.outer_attempt_id,
-        ))?
+        load_dynamic_graph(
+            &ctx.app.paths.dynamic_graph_file(
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+            ),
+            &ctx.app.paths.repo_root,
+        )?
     };
     let index = graph
         .nodes
@@ -8740,13 +8764,11 @@ pub(crate) fn build_dynamic_prompt_bundle(
     validate_run_state(&run)?;
     let round: RoundState = read_json(&app.paths.round_file(task_id, run_id, round_id))?;
     validate_round_state(&round)?;
-    let graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
-        task_id,
-        run_id,
-        round_id,
-        outer_node_id,
-        outer_attempt_id,
-    ))?;
+    let graph = load_dynamic_graph(
+        &app.paths
+            .dynamic_graph_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id),
+        &app.paths.repo_root,
+    )?;
     let node: DynamicNodeState = read_json(&app.paths.dynamic_node_file(
         task_id,
         run_id,
@@ -10391,17 +10413,7 @@ fn persist_dynamic_graph(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
 ) -> Result<()> {
-    validate_dynamic_run_state(&graph.run)?;
-    for node in &graph.nodes {
-        validate_dynamic_node_state(node)?;
-    }
-    for group in &graph.groups {
-        validate_dynamic_group_state(group)?;
-    }
-    for workspace in &graph.workspaces {
-        validate_workspace_state(workspace)?;
-    }
-    validate_workspace_topology(graph)?;
+    validate_dynamic_graph(graph)?;
     persist_dynamic_graph_for_resume(
         ctx.app,
         ctx.task_id,
@@ -11132,13 +11144,16 @@ fn drive_from_node_with_initial_session(
 
         if node.status == RunStatus::Paused {
             let pause_reason = if node.node_type == crate::domain::NodeType::AiDynamic {
-                let graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
-                    task_id,
-                    &run.id,
-                    &round.id,
-                    &node.node_id,
-                    &node.attempt_id,
-                ))?;
+                let graph = load_dynamic_graph(
+                    &app.paths.dynamic_graph_file(
+                        task_id,
+                        &run.id,
+                        &round.id,
+                        &node.node_id,
+                        &node.attempt_id,
+                    ),
+                    &app.paths.repo_root,
+                )?;
                 graph
                     .run
                     .pause_reason
@@ -12242,7 +12257,7 @@ mod tests {
         nodes: Vec<DynamicNodeState>,
     ) -> DynamicGraphState {
         DynamicGraphState {
-            version: VERSION.to_string(),
+            version: CURRENT_DYNAMIC_GRAPH_VERSION.to_string(),
             run: DynamicRunState {
                 version: VERSION.to_string(),
                 id: "dynamic-run-001".to_string(),
@@ -14052,7 +14067,7 @@ mod tests {
         other.status = DynamicNodeStatus::Paused;
         other.finished_at = Some("2026-06-16T00:00:00Z".to_string());
         let mut graph = DynamicGraphState {
-            version: VERSION.to_string(),
+            version: CURRENT_DYNAMIC_GRAPH_VERSION.to_string(),
             run: DynamicRunState {
                 version: VERSION.to_string(),
                 id: "dynamic-run-001".to_string(),
@@ -15230,7 +15245,7 @@ mod tests {
         let ctx = test_context(&app, &dynamic);
         let node = test_worktree_node("good-night");
         let mut graph = DynamicGraphState {
-            version: VERSION.to_string(),
+            version: CURRENT_DYNAMIC_GRAPH_VERSION.to_string(),
             run: DynamicRunState {
                 version: VERSION.to_string(),
                 id: "dynamic-run-001".to_string(),

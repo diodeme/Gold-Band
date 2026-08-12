@@ -10,6 +10,7 @@ pub mod control;
 pub mod domain;
 pub mod dsl;
 pub mod dynamic;
+pub mod dynamic_store;
 pub mod frontmatter;
 pub mod git;
 pub mod inspect;

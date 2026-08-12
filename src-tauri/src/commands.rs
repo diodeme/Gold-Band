@@ -28,6 +28,7 @@ use gold_band::app::{
 use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::{DynamicGraphState, DynamicNodeStatus, DynamicRunStatus};
+use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::runtime::{NodeState, RunState, WorkerRefState};
 use gold_band::skill::SkillCommandError;
 use gold_band::storage::read_json;
@@ -289,14 +290,15 @@ fn dynamic_leaf_runtime_continue_required(
     else {
         return Ok(false);
     };
-    let dynamic_graph = read_json::<DynamicGraphState>(&app.paths.dynamic_graph_file(
+    let dynamic_graph_path = app.paths.dynamic_graph_file(
         &locator.task_id,
         &locator.run_id,
         &locator.round_id,
         outer_node_id,
         outer_attempt_id,
-    ))
-    .map_err(command_error)?;
+    );
+    let dynamic_graph =
+        load_dynamic_graph(&dynamic_graph_path, &app.paths.repo_root).map_err(command_error)?;
     if dynamic_graph.run.status == DynamicRunStatus::Paused
         && !dynamic_graph
             .run
@@ -7595,7 +7597,7 @@ mod tests {
                 outer_attempt_id,
             ),
             &serde_json::json!({
-                "version": gold_band::domain::VERSION,
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": dynamic_run,
                 "nodes": [dynamic_node.clone()],
                 "groups": [],
@@ -7701,7 +7703,7 @@ mod tests {
                 outer_attempt_id,
             ),
             &serde_json::json!({
-                "version": gold_band::domain::VERSION,
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": dynamic_run,
                 "nodes": [dynamic_node],
                 "groups": [],
@@ -7817,7 +7819,7 @@ mod tests {
                 outer_attempt_id,
             ),
             &serde_json::json!({
-                "version": gold_band::domain::VERSION,
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": dynamic_run,
                 "nodes": [dynamic_node.clone()],
                 "groups": [],

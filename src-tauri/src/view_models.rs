@@ -18,6 +18,7 @@ use gold_band::config::{
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::DynamicGraphState;
+use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::provider::{
     attachment_meta_for_path, mcp_capabilities_from_capabilities,
     select_config_options_from_capabilities, supported_models_from_capabilities,
@@ -2489,7 +2490,7 @@ fn dynamic_graph_state_optional(
         .paths
         .dynamic_graph_file(task_id, run_id, round_id, node_id, attempt_id);
     path.exists()
-        .then(|| read_json::<DynamicGraphState>(&path).ok())
+        .then(|| load_dynamic_graph(&path, &app.paths.repo_root).ok())
         .flatten()
 }
 
@@ -8355,7 +8356,7 @@ mod tests {
             &app.paths
                 .dynamic_graph_file(task_id, run_id, round_id, "ai-dynamic1", "attempt-001"),
             &json!({
-                "version": "0.1",
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": {
                     "version": "0.1",
                     "id": "dynamic-run-001",

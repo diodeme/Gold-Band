@@ -25,7 +25,8 @@ pub mod vm;
 
 pub use client::MulticaClient;
 pub use config::{
-    clear_multica_session, ensure_daemon_id, multica_app_url, multica_base_url, multica_settings,
+    clear_multica_session, clear_multica_state_indices, clear_multica_workspace_bindings,
+    ensure_daemon_id, multica_account_changed, multica_app_url, multica_base_url, multica_settings,
     normalize_multica_base_url, MulticaSettingsVm,
 };
 pub use error::MulticaError;

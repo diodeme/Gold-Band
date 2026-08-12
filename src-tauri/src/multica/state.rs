@@ -52,9 +52,10 @@ pub struct ActiveRemoteRun {
 /// compose 期间心跳循环每 tick 调 `extend_prepare_lease(runtime_id, task_id)` 续期 45s 窗口，
 /// 防 server 回收任务（与 multica daemon `startTaskPrepareLeaseExtender` 同构）。
 ///
-/// 同时承载 claim 时捕获的任务身份（`issue_id` / `title`）—— start 命令无权再读 claim 响应，
-/// 但 `register_active_run` 需要 issue_id（bridge 终态/重跑归属）与 title（thread_name，「最近完成」快照避免读盘），
-/// 故 claim 时一并存入，start 时消费。start 消费后整个 lease 移除。
+/// 同时承载 claim 时捕获的任务身份与续跑血缘（`issue_id` / `title` / `parent_task_id` /
+/// `prior_session_id`）—— start 命令无权再读 claim 响应，但 `register_active_run` 需要 issue_id/title，
+/// 且断点续跑判定（commands.rs::classify_resume）需 `parent_task_id` 反查父任务本地索引。故 claim 时
+/// 一并存入，start 时消费。start 消费后整个 lease 移除。
 #[derive(Debug, Clone)]
 pub struct PrepareLease {
     /// 该任务所属 runtime（续期请求按它寻址）。
@@ -63,6 +64,11 @@ pub struct PrepareLease {
     pub issue_id: Option<String>,
     /// thread_name（start 时进 active_run.title，Issue 3C「最近完成」快照避免读盘）。
     pub title: Option<String>,
+    /// 续跑血缘：claim 响应带回的父任务 id（auto-retry 子任务 T' 指向父 T）。
+    /// start 续跑判定按它反查父任务的本地索引（commands.rs::classify_resume）。
+    pub parent_task_id: Option<String>,
+    /// 服务端回填的父 ACP session_id（兜底/校验用；主路径是 parent_task_id 反查本地索引）。
+    pub prior_session_id: Option<String>,
 }
 
 /// 共享句柄：loop 创建（managed），bridge（M4）取同一份。
@@ -147,13 +153,16 @@ impl MulticaRuntimeState {
 
     /// 登记 prepare lease（claim-at-click 后调用；心跳循环据此续期，防 compose 期间 45s 回收）。
     ///
-    /// 同时捕获 `issue_id` / `title`（claim 响应里的任务身份），start 命令消费时进 `active_run`。
+    /// 同时捕获任务身份与续跑血缘（`issue_id` / `title` / `parent_task_id` / `prior_session_id`，
+    /// 均取自 claim 响应）：身份进 `active_run`，`parent_task_id` 供 start 续跑判定反查父任务索引。
     pub fn register_prepare_lease(
         &mut self,
         remote_task_id: &str,
         runtime_id: String,
         issue_id: Option<String>,
         title: Option<String>,
+        parent_task_id: Option<String>,
+        prior_session_id: Option<String>,
     ) {
         self.prepare_leases.insert(
             remote_task_id.to_string(),
@@ -161,6 +170,8 @@ impl MulticaRuntimeState {
                 runtime_id,
                 issue_id,
                 title,
+                parent_task_id,
+                prior_session_id,
             },
         );
     }
@@ -326,6 +337,8 @@ mod tests {
             "rt-a".into(),
             Some("issue-1".into()),
             Some("Fix login".into()),
+            None,
+            None,
         );
         let snapshot = state.prepare_leases_snapshot();
         assert_eq!(snapshot.as_slice(), &[("remote-1".into(), "rt-a".into())]);
@@ -344,8 +357,8 @@ mod tests {
     fn prepare_lease_snapshot_carries_multiple_runtimes() {
         // 多 runtime 各持一条 lease → snapshot 逐条续期（不同 workspace 并发 compose）。
         let mut state = MulticaRuntimeState::default();
-        state.register_prepare_lease("remote-a", "rt-1".into(), None, None);
-        state.register_prepare_lease("remote-b", "rt-2".into(), None, None);
+        state.register_prepare_lease("remote-a", "rt-1".into(), None, None, None, None);
+        state.register_prepare_lease("remote-b", "rt-2".into(), None, None, None, None);
         let mut snapshot = state.prepare_leases_snapshot();
         snapshot.sort();
         assert_eq!(
@@ -355,6 +368,23 @@ mod tests {
                 ("remote-b".into(), "rt-2".into()),
             ]
         );
+    }
+
+    #[test]
+    fn prepare_lease_carries_resume_lineage() {
+        // 断点续跑方案 §3.3：claim 响应的 parent_task_id/prior_session_id 经 lease 传给 start 续跑判定。
+        let mut state = MulticaRuntimeState::default();
+        state.register_prepare_lease(
+            "remote-child",
+            "rt-a".into(),
+            Some("issue-1".into()),
+            Some("Thread".into()),
+            Some("remote-parent".into()),
+            Some("acp-session-9".into()),
+        );
+        let lease = state.prepare_lease("remote-child").expect("应命中");
+        assert_eq!(lease.parent_task_id.as_deref(), Some("remote-parent"));
+        assert_eq!(lease.prior_session_id.as_deref(), Some("acp-session-9"));
     }
 }
 

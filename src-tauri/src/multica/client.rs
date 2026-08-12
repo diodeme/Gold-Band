@@ -142,9 +142,20 @@ pub struct RemoteTask {
     /// 执行该 task 用的短期凭证（claim 响应带；M4 bridge 注入 ACP 执行）。
     #[serde(default)]
     pub auth_token: Option<String>,
-    /// 续跑用：server 返回的上次 PinTaskSession 的 session_id（claim 响应可能带，开发设计 2.5）。
+    /// 续跑指针（**只输出**）：server claim 响应回填的父任务 ACP session_id。
+    ///
+    /// 角色为「从响应消费」——server claim 处理器**不读请求体**，续跑指针全由响应回填
+    /// （webank `daemon.go:2025-2054` 经 `GetLastTaskSession` 解析父任务 session）。客户端用它做
+    /// 续跑兜底/校验；主路径是 [`Self::parent_task_id`] 反查本地索引（更稳，不依赖 server session 解析）。
     #[serde(default)]
     pub prior_session_id: Option<String>,
+    /// 续跑血缘：server claim 响应/任务列表携带的父任务 id（auto-retry 子任务 T' 指向父任务 T）。
+    ///
+    /// webank `AgentTaskResponse.ParentTaskID`（JSON `parent_task_id`，`agent.go:296,635`）。客户端
+    /// 续跑判定按它反查父任务的本地索引（断点续跑方案 §3.3），使「崩溃/关闭重启后领取重试子任务」
+    /// 能续上父任务被中断的本地 run + ACP session。
+    #[serde(default)]
+    pub parent_task_id: Option<String>,
     /// 任务标题（pending 列表展示；缺失前端用 id 兜底）。
     ///
     /// wire 字段权威源：webank `AgentTaskResponse.ThreadName`（JSON `thread_name`），
@@ -200,13 +211,12 @@ impl RemoteTask {
     }
 }
 
-/// selective claim 请求（接入方案 B2：body `{}`；命中本地 task_conversations 时带 prior_session_id）。
+/// selective claim 请求（接入方案 B2：body 恒 `{}`）。
+///
+/// 服务端 claim 处理器**不解码请求体**（webank `daemon.go:2508,2671`）——续跑指针
+/// （`prior_session_id` / `parent_task_id`）全由**响应**回填，非请求传入。故 body 恒为空对象。
 #[derive(Debug, Serialize)]
-pub struct ClaimRequest {
-    /// None 时序列化为 `{}`（接入方案 B2），Some 时带 prior_session_id（开发设计 4.4 续跑）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prior_session_id: Option<String>,
-}
+pub struct ClaimRequest {}
 
 /// claim 响应：`{ "task": <RemoteTask> }`（接入方案 B2 / line 578）。
 #[derive(Debug, Deserialize)]
@@ -666,19 +676,16 @@ impl MulticaClient {
 
     /// `POST /api/daemon/runtimes/{rid}/tasks/{tid}/claim` —— selective claim（点哪领哪，接入方案 B2）。
     ///
-    /// 命中本地 `multica_task_conversations[task_id].session_id` 时传 `prior_session_id` 续跑同一 ACP session
-    /// （开发设计 2.5 / 4.4）。返回的 `RemoteTask` 含 `auth_token`（执行凭证）+ 可能的 `prior_session_id`。
+    /// body 恒 `{}`（服务端不读请求体）；续跑指针（`parent_task_id` / `prior_session_id`）由**响应**回填，
+    /// 调用方从返回的 `RemoteTask` 消费。返回值含 `auth_token`（执行凭证）+ 续跑血缘。
     /// 一般请求：网络错误重试 3 次，404/409 直接映射 TaskNotFound/ClaimConflict。
     pub async fn claim_specific_task(
         &self,
         runtime_id: &str,
         task_id: &str,
-        prior_session_id: Option<&str>,
     ) -> Result<RemoteTask, MulticaError> {
         let path = format!("/api/daemon/runtimes/{runtime_id}/tasks/{task_id}/claim");
-        let body = ClaimRequest {
-            prior_session_id: prior_session_id.map(String::from),
-        };
+        let body = ClaimRequest {};
         self.with_network_retry("claim", || async {
             let resp: ClaimResponse = self.post_json(&path, &body).await?;
             Ok(resp.task)
@@ -1196,6 +1203,21 @@ mod tests {
     }
 
     #[test]
+    fn remote_task_reads_parent_task_id_lineage() {
+        // webank AgentTaskResponse.ParentTaskID → JSON `parent_task_id`（auto-retry 子任务 T' 指向父 T）。
+        // 断点续跑方案 §3.3：客户端按它反查父任务本地索引续跑。锁定 wire 契约。
+        let child: RemoteTask = serde_json::from_str(
+            r#"{"id":"t-child","status":"queued","parent_task_id":"t-parent"}"#,
+        )
+        .unwrap();
+        assert_eq!(child.parent_task_id.as_deref(), Some("t-parent"));
+        // 非重试任务（首发）无血缘 → None，缺字段不阻断解析。
+        let first: RemoteTask =
+            serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
+        assert!(first.parent_task_id.is_none());
+    }
+
+    #[test]
     fn remote_task_requirement_text_picks_source_by_priority() {
         // 镜像 server computeTaskKind 来源互斥优先级：
         // quick-create > chat > comment > autopilot > handoff > issue_description > title。
@@ -1252,20 +1274,10 @@ mod tests {
     }
 
     #[test]
-    fn claim_request_omits_prior_session_when_none() {
-        // 接入方案 B2：body `{}`（无 prior_session_id）。
-        let none_body = serde_json::to_value(ClaimRequest {
-            prior_session_id: None,
-        })
-        .unwrap();
-        assert_eq!(none_body, serde_json::json!({}));
-
-        // 开发设计 4.4：续跑带 prior_session_id。
-        let some_body = serde_json::to_value(ClaimRequest {
-            prior_session_id: Some("sess-9".into()),
-        })
-        .unwrap();
-        assert_eq!(some_body, serde_json::json!({"prior_session_id": "sess-9"}));
+    fn claim_request_is_empty_object() {
+        // 接入方案 B2：body 恒 `{}`（服务端不读请求体，续跑指针由响应回填，断点续跑方案 §3.3）。
+        let body = serde_json::to_value(ClaimRequest {}).unwrap();
+        assert_eq!(body, serde_json::json!({}));
     }
 
     #[test]

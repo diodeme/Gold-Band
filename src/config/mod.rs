@@ -2281,8 +2281,8 @@ pub struct MulticaAccountRef {
 }
 
 /// multica remote_task ↔ 本地会话的断点续跑索引（StateConfig.multica_task_conversations 条目，
-/// 键 = remote_task_id）。claim 命中（session_id 非空）时带 prior_session_id 续跑同一 ACP session；
-/// complete 后清条目。
+/// 键 = remote_task_id）。续跑判定按「字面 id → parent_task_id」两级反查（断点续跑方案 §3.3）；
+/// 续跑成功后索引迁移到子任务 id；complete 后清条目。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MulticaTaskConversation {

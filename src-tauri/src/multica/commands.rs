@@ -177,10 +177,13 @@ fn merge_workspace_tasks(
 #[derive(Debug)]
 enum ResumeDecision {
     /// 续既有本地 run：冷重连 ACP session，接着被中断的编排往下跑（不新建 run、不新增一轮）。
+    ///
+    /// 只携带本地 task/run id——ACP session 由 run 自身状态恢复（`run_continue_background` →
+    /// `session/load`），不经此字段。命中此分支的前提（checkpoint 解析出本地 ids、run 可续）
+    /// 已在 [`classify_resume_from`] 内校验。
     Resume {
         local_task_id: String,
         local_run_id: String,
-        session_id: String,
     },
     /// 新建本地 run（与本地工作空间「+」一致）。
     Fresh,
@@ -189,19 +192,23 @@ enum ResumeDecision {
 /// 纯判定（无 I/O，可单测）：给定断点 checkpoint 与本地 run 状态，决定续跑 vs 新建。
 ///
 /// 判定规则（与 `is_run_continuable` 对齐）：
-/// - 无 checkpoint / `session_id` 空（含纯空白） / 本地 run 不存在 → [`ResumeDecision::Fresh`]。
+/// - 无 checkpoint / 本地 run 不存在 → [`ResumeDecision::Fresh`]。
 /// - 本地 run 处于可续态（Paused + outcome None + pause_reason ∈ {ProcessInterrupted,
 ///   RuntimeAbnormal, WaitingForUserInput} + round/node/attempt 齐）→ [`ResumeDecision::Resume`]。
 ///   其中 ProcessInterrupted 是崩溃重启后启动自愈（`pause_all_running_sessions`）写入的态。
 /// - 其余（Running / 已终态 / 缺 locator）→ [`ResumeDecision::Fresh`]。
+///
+/// **不以 checkpoint 的 `session_id` 作为续跑门**：ACP session 由 run 自身恢复——
+/// [`App::run_continue_background`] 直接读 `worker-ref.json` 的 `continue_ref.acpSessionId`，
+/// 不经 checkpoint 的 `session_id` 字段。checkpoint 的 `session_id` 由 bridge 在 `NodeCompleted`
+/// 回填（仅供 server `pin_task_session`），但崩溃常发生在首个节点完成前、该字段尚未回填——若以其为
+/// 续跑门，会把一个实际可续（locator 齐 → attempt 已起 → worker-ref 已写 session）的 run 误判新建。
+/// 可续性以 run 的真实状态（`is_run_continuable`）为准；真无可续 session 时续跑执行会失败并落 Fresh 兜底。
 fn classify_resume_from(
     conv: Option<&MulticaTaskConversation>,
     run: Option<&gold_band::runtime::RunState>,
 ) -> ResumeDecision {
     let Some(conv) = conv else {
-        return ResumeDecision::Fresh;
-    };
-    let Some(session_id) = conv.session_id.as_deref().filter(|s| !s.trim().is_empty()) else {
         return ResumeDecision::Fresh;
     };
     let Some(run) = run else {
@@ -211,24 +218,59 @@ fn classify_resume_from(
         ResumeDecision::Resume {
             local_task_id: conv.local_task_id.clone(),
             local_run_id: conv.local_run_id.clone(),
-            session_id: session_id.to_string(),
         }
     } else {
         ResumeDecision::Fresh
     }
 }
 
-/// 断点续跑判定（claim 与 start 共用，保证两者对「续跑 vs 新建」一致）。
+/// 纯逻辑（可单测）：从续跑索引按「字面 id → 父任务 id」两级解析出 checkpoint。
 ///
-/// 读 home-repo `multica_task_conversations[remote_task_id]` → 由 `work_dir` 构造 workspace-bound
-/// App 查本地 run 状态 → 委托 [`classify_resume_from`]。仅判定，不改状态：start 命中 Resume 才真正
-/// 续跑；命中 Fresh 时由 start 覆盖 checkpoint（`session_id` 重置 None）。
-fn classify_resume(home_app: &App, remote_task_id: &str) -> ResumeDecision {
-    let conv = home_app
+/// 镜像 [`classify_resume`] 的索引解析顺序：
+/// 1. 先查 `remote_task_id`（同 id 场景：dispatched lease 过期后同 row 重派回本机）；
+/// 2. miss 且有 `parent_task_id` → 查父任务（auto-retry 子任务场景：server 克隆新 id 子任务 T'，
+///    父任务 T 的本地索引才是续跑指针——「崩溃/关闭重启后领取重试子任务」续跑的关键）。
+fn resolve_resume_checkpoint(
+    map: &std::collections::HashMap<String, MulticaTaskConversation>,
+    remote_task_id: &str,
+    parent_task_id: Option<&str>,
+) -> Option<MulticaTaskConversation> {
+    map.get(remote_task_id)
+        .cloned()
+        .or_else(|| parent_task_id.and_then(|pid| map.get(pid).cloned()))
+}
+
+/// 断点续跑判定（start 续跑分支用，决定续既有 run vs 新建）。
+///
+/// 读 home-repo `multica_task_conversations` → [`resolve_resume_checkpoint`] 两级解析出 checkpoint →
+/// 由 `work_dir` 构造 workspace-bound App 查本地 run 状态 → 委托 [`classify_resume_from`]
+/// （`is_run_continuable` 校验）。仅判定，不改状态：start 命中 Resume 才真正续跑。
+fn classify_resume(
+    home_app: &App,
+    remote_task_id: &str,
+    parent_task_id: Option<&str>,
+) -> ResumeDecision {
+    let map = home_app
         .load_state()
         .ok()
-        .and_then(|state_cfg| state_cfg.multica_task_conversations)
-        .and_then(|map| map.get(remote_task_id).cloned());
+        .and_then(|state_cfg| state_cfg.multica_task_conversations);
+    // checkpoint 解析路径（诊断用）：literal = 子 task id 直接命中；parent = 经 parent_task_id 反查命中。
+    let (conv, resolved_via) = match map.as_ref() {
+        Some(m) => {
+            if m.get(remote_task_id).is_some() {
+                (resolve_resume_checkpoint(m, remote_task_id, parent_task_id), "literal")
+            } else if parent_task_id.is_some_and(|pid| m.get(pid).is_some()) {
+                (resolve_resume_checkpoint(m, remote_task_id, parent_task_id), "parent")
+            } else {
+                (None, "none")
+            }
+        }
+        None => (None, "no-map"),
+    };
+    let session_present = conv
+        .as_ref()
+        .and_then(|c| c.session_id.as_deref())
+        .is_some_and(|s| !s.trim().is_empty());
     let run = conv.as_ref().and_then(|conv| {
         let work_dir = conv.work_dir.as_deref()?.trim();
         if work_dir.is_empty() {
@@ -240,7 +282,168 @@ fn classify_resume(home_app: &App, remote_task_id: &str) -> ResumeDecision {
             .run_status(&conv.local_task_id, &conv.local_run_id)
             .ok()
     });
-    classify_resume_from(conv.as_ref(), run.as_ref())
+    let continuable = run.as_ref().is_some_and(is_run_continuable);
+    let decision = classify_resume_from(conv.as_ref(), run.as_ref());
+    info!(
+        task = remote_task_id,
+        parent = parent_task_id,
+        resolved_via,
+        session_present,
+        run_status = ?run.as_ref().map(|r| r.status),
+        continuable,
+        decision = ?decision,
+        "multica classify_resume decision"
+    );
+    decision
+}
+
+/// 纯逻辑（可单测）：把续跑索引从父任务迁移到子任务（断点续跑方案 §3.3，返回新 map 不原地改）。
+///
+/// 插入 `child_task_id` 条目（继承父条目的 `session_id`/`work_dir`，`local_task_id`/`local_run_id`
+/// 用本次续跑的实际 run）；移除被取代的 `parent_task_id` 条目。父条目缺失时仍插入 child
+/// （local ids 已知，session/work_dir 置 None 待 bridge 回填），保证多次重试 T→T'→T'' 链式可续。
+fn migrate_resume_index_map(
+    mut map: std::collections::HashMap<String, MulticaTaskConversation>,
+    child_task_id: &str,
+    parent_task_id: &str,
+    local_task_id: &str,
+    local_run_id: &str,
+) -> std::collections::HashMap<String, MulticaTaskConversation> {
+    let (session_id, work_dir) = map
+        .get(parent_task_id)
+        .map(|p| (p.session_id.clone(), p.work_dir.clone()))
+        .unwrap_or((None, None));
+    map.insert(
+        child_task_id.into(),
+        MulticaTaskConversation {
+            local_task_id: local_task_id.into(),
+            local_run_id: local_run_id.into(),
+            session_id,
+            work_dir,
+        },
+    );
+    map.remove(parent_task_id);
+    map
+}
+
+/// 续跑成功后把续跑索引从父任务迁到子任务（断点续跑方案 §3.3）。
+///
+/// auto-retry 子任务 T' 续的是父 T 的本地 run/session，索引原挂 T 名下；迁到 T' 后后续再次重试
+/// （T'→T''）仍能链式反查。**best-effort**：续跑已成功（run 正在继续），迁移失败（盘 I/O）仅 `warn!`
+/// 不阻断——退化为本轮可续、下次崩溃落 Fresh（与修复前等价，不劣化）。
+fn migrate_resume_index(
+    home_app: &App,
+    child_task_id: &str,
+    parent_task_id: &str,
+    local_task_id: &str,
+    local_run_id: &str,
+) {
+    let Ok(mut state_cfg) = home_app.load_state() else {
+        warn!(
+            child = child_task_id,
+            parent = parent_task_id,
+            "multica migrate_resume_index: load_state failed (skipped)"
+        );
+        return;
+    };
+    let conversations = state_cfg
+        .multica_task_conversations
+        .clone()
+        .unwrap_or_default();
+    let migrated = migrate_resume_index_map(
+        conversations,
+        child_task_id,
+        parent_task_id,
+        local_task_id,
+        local_run_id,
+    );
+    state_cfg.multica_task_conversations = Some(migrated);
+    if let Err(error) = home_app.save_state(&state_cfg) {
+        warn!(
+            child = child_task_id,
+            parent = parent_task_id,
+            %error,
+            "multica migrate_resume_index: save_state failed (resume continues; next crash falls back to fresh)"
+        );
+    }
+}
+
+/// 纯逻辑（可单测）：从续跑索引汇总需要启动自愈的 work_dir 集合。
+///
+/// 取 `multica_task_conversations` 全部条目的 `work_dir`，trim 后去重、丢空。返回值即 multica 子系统
+/// 管理 run 的全部独立 repo——启动自愈需逐个覆盖（home repo 自愈够不到这些 work_dir）。
+fn collect_multica_work_dirs(
+    map: &std::collections::HashMap<String, MulticaTaskConversation>,
+) -> Vec<String> {
+    let mut dirs: Vec<String> = map
+        .values()
+        .filter_map(|conv| conv.work_dir.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string))
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+/// 启动自愈：把 multica 远程任务落在各 `work_dir` 的孤儿 Running run pause 成 ProcessInterrupted。
+///
+/// **根因修复**：`main.rs` 启动时的 `recover_interrupted_running_sessions()` 只跑在 home repo 上，其
+/// `pause_all_running_sessions` 仅遍历单一 repo 的 `task_list`；而 multica 远程任务的 run 落在 task 自身
+/// `work_dir`（独立 repo）→ 重启后残留 stale `Running` → `classify_resume` 读 `is_run_continuable` = false
+/// → 误落 Fresh（断点续跑失效）。此函数遍历 `multica_task_conversations` 的全部 work_dir 逐个自愈，
+/// 与 `classify_resume` 读同一张权威表，保证被判定为可续的 run 在判定前已被 pause。
+///
+/// 安全前提：启动瞬间磁盘上所有 `Running` 都是上一轮崩溃遗留的孤儿态（进程刚起，无在飞 run）。
+/// 单 work_dir 自愈失败（盘 I/O）仅 `warn!` 不阻断其余。
+pub fn recover_multica_work_dir_sessions(home_app: &App) {
+    // 无条件打一条 beacon：存在即证明「改动十三」代码已编进二进制（区分旧 binary 仍落 Fresh）。
+    let conv_count = home_app
+        .load_state()
+        .ok()
+        .and_then(|state_cfg| state_cfg.multica_task_conversations)
+        .map(|c| c.len())
+        .unwrap_or(0);
+    let convs = home_app
+        .load_state()
+        .ok()
+        .and_then(|state_cfg| state_cfg.multica_task_conversations);
+    let work_dirs = convs
+        .as_ref()
+        .map(collect_multica_work_dirs)
+        .unwrap_or_default();
+    if work_dirs.is_empty() {
+        info!(
+            conv_count,
+            "multica startup recovery: no multica work_dir to sweep (断点续跑根因修复代码已加载)"
+        );
+        return;
+    }
+    let mut recovered = 0usize;
+    for work_dir in &work_dirs {
+        let workspace_app = home_app.with_repo_root(Utf8PathBuf::from(work_dir), home_app.config.clone());
+        match workspace_app.recover_interrupted_running_sessions() {
+            Ok(paused) => {
+                recovered += paused.len();
+                if !paused.is_empty() {
+                    info!(
+                        work_dir,
+                        count = paused.len(),
+                        "multica startup recovery: paused orphaned running sessions in work_dir"
+                    );
+                }
+            }
+            Err(error) => warn!(
+                work_dir,
+                %error,
+                "multica startup recovery: recover work_dir failed (skipped)"
+            ),
+        }
+    }
+    info!(
+        work_dir_count = work_dirs.len(),
+        conv_count,
+        recovered,
+        "multica startup recovery: swept multica work_dir repos for orphaned runs"
+    );
 }
 
 /// selective claim：点哪领哪（claim-at-click，开发设计 2.4 / 4.4）。
@@ -272,26 +475,23 @@ pub async fn claim_multica_task(
         .ok_or(MulticaError::RuntimeOffline)
         .map_err(|e| command_error(e.into()))?;
 
-    // 续跑判定与 start 共用 classify_resume：仅当本地 run 真正可续跑时才带 prior_session_id，
-    // 避免「claim 声称续 session X、start 却新建 session Y」的不一致。
-    let prior_session_id = match classify_resume(&context.app(), &task_id) {
-        ResumeDecision::Resume { session_id, .. } => Some(session_id),
-        ResumeDecision::Fresh => None,
-    };
-
+    // claim body 恒 `{}`（服务端不读请求体）；续跑指针（parent_task_id / prior_session_id）由响应回填。
     let task = client
-        .claim_specific_task(&runtime_id, &task_id, prior_session_id.as_deref())
+        .claim_specific_task(&runtime_id, &task_id)
         .await
         .map_err(|e| command_error(e.into()))?;
 
-    // claim 成功 → 登记 prepare lease（心跳循环续期 + 缓存任务身份供 start 消费）。
-    // issue_id/title 取自 claim 响应（start 命令无权再读 claim，靠 lease 传递）。
+    // claim 成功 → 登记 prepare lease（心跳循环续期 + 缓存任务身份与续跑血缘供 start 消费）。
+    // issue_id/title/parent_task_id/prior_session_id 均取自 claim 响应（start 命令无权再读 claim，靠 lease 传递）：
+    // parent_task_id 供 start 续跑判定反查父任务本地索引（断点续跑方案 §3.3）。
     if let Ok(mut guard) = shared.lock() {
         guard.register_prepare_lease(
             &task_id,
             runtime_id,
             task.issue_id.clone(),
             task.title.clone(),
+            task.parent_task_id.clone(),
+            task.prior_session_id.clone(),
         );
     }
 
@@ -429,20 +629,41 @@ pub async fn start_multica_conversation_run(
     if let ResumeDecision::Resume {
         local_task_id,
         local_run_id,
-        session_id: _,
-    } = classify_resume(&context.app(), &remote_task_id)
+    } = classify_resume(
+        &context.app(),
+        &remote_task_id,
+        lease.parent_task_id.as_deref(),
+    )
     {
         let prior_task_id = local_task_id;
         let prior_run_id = local_run_id;
         let register_task_id = prior_task_id.clone();
         let register_run_id = prior_run_id.clone();
         let resume_project_id = resolved_project_id.clone();
+        // 续跑索引迁移所需：子任务 id（= remote_task_id）、父任务 id（claim 响应血缘）、home-repo App。
+        // 仅当续跑经父任务反查解析（parent_task_id 有且 ≠ 子 id）时迁；同 id 场景索引已挂正确键，跳过。
+        let resume_remote_task_id = remote_task_id.clone();
+        let resume_parent_task_id = lease.parent_task_id.clone();
+        let resume_home_app = context.app();
         // clone_for_background 保留全部字段（含 ACP emitter）→ 续跑事件仍流向前端；原 `app` 留给 Fresh 兜底。
         let resume_app = app.clone_for_background();
         let join = tauri::async_runtime::spawn_blocking(
             move || -> anyhow::Result<ConversationRunVm> {
                 // 纯续跑：prompt=None，接着被中断的编排往下跑（不新增一轮用户消息、不换模型/模式）。
                 resume_app.run_continue_background(&prior_task_id, &prior_run_id, None, None)?;
+                // 续跑成功 → 迁移续跑索引到子任务（断点续跑方案 §3.3）：子任务 T' 续的是父 T 的本地
+                // run/session，索引原挂 T 名下；迁到 T' 后后续再次重试（T'→T''）仍能链式反查。
+                if let Some(parent) = resume_parent_task_id.as_deref() {
+                    if parent != resume_remote_task_id.as_str() {
+                        migrate_resume_index(
+                            &resume_home_app,
+                            &resume_remote_task_id,
+                            parent,
+                            &prior_task_id,
+                            &prior_run_id,
+                        );
+                    }
+                }
                 // 从既有 run 还原 VM（导航到既有会话，非新建）。
                 conversation_run_vm(&resume_app, &resume_project_id, &prior_task_id, &prior_run_id, None)
             },
@@ -915,7 +1136,7 @@ mod tests {
         shared
             .lock()
             .unwrap()
-            .register_prepare_lease("remote-1", "rt-a".into(), None, None);
+            .register_prepare_lease("remote-1", "rt-a".into(), None, None, None, None);
         assert!(shared.lock().unwrap().drop_prepare_lease("remote-1").is_some());
         assert!(shared.lock().unwrap().drop_prepare_lease("remote-1").is_none());
     }
@@ -929,6 +1150,8 @@ mod tests {
             "rt-a".into(),
             Some("issue-1".into()),
             Some("Thread name".into()),
+            None,
+            None,
         );
         // peek 不移除 → snapshot 仍含该条（心跳仍续期）。
         let peeked = shared.lock().unwrap().prepare_lease("remote-1").expect("应命中");
@@ -987,17 +1210,26 @@ mod tests {
     }
 
     #[test]
-    fn resume_fresh_when_session_id_missing_or_blank() {
-        // session_id None / 纯空白 → 新建（无可续跑的 ACP session）。
+    fn resume_when_session_id_missing_or_blank() {
+        // session_id None / 纯空白 **不再阻断续跑**：ACP session 由 run 自身状态恢复
+        // （`run_continue_background` 读 `worker-ref.json` 的 `continue_ref.acpSessionId`），
+        // 不经 checkpoint 的 session_id 字段。崩溃常发生在首个 NodeCompleted 前（bridge 未回填
+        // session_id），若以其为门会把可续 run 误判新建。这里 run 可续（Paused + ProcessInterrupted
+        // + locator 齐）→ Resume，无视 checkpoint 的 session_id 缺失/空白。
         let conv = checkpoint(None, Some("/ws"));
+        let run = run_state(
+            RunStatus::Paused,
+            Some(PauseReason::ProcessInterrupted),
+            true,
+        );
         assert!(matches!(
-            classify_resume_from(Some(&conv), None),
-            ResumeDecision::Fresh
+            classify_resume_from(Some(&conv), Some(&run)),
+            ResumeDecision::Resume { .. }
         ));
         let conv_blank = checkpoint(Some("   "), Some("/ws"));
         assert!(matches!(
-            classify_resume_from(Some(&conv_blank), None),
-            ResumeDecision::Fresh
+            classify_resume_from(Some(&conv_blank), Some(&run)),
+            ResumeDecision::Resume { .. }
         ));
     }
 
@@ -1024,11 +1256,9 @@ mod tests {
             ResumeDecision::Resume {
                 local_task_id,
                 local_run_id,
-                session_id,
             } => {
                 assert_eq!(local_task_id, "local-task");
                 assert_eq!(local_run_id, "local-run");
-                assert_eq!(session_id, "acp-session-1");
             }
             other => panic!("期望 Resume，实际 {other:?}"),
         }
@@ -1070,6 +1300,98 @@ mod tests {
             classify_resume_from(Some(&conv), Some(&run)),
             ResumeDecision::Fresh
         ));
+    }
+
+    // ---- 断点续跑方案 §3.3：父系反查 + 索引迁移（纯逻辑固化）----
+    #[test]
+    fn resolve_resume_checkpoint_prefers_literal_id_then_parent() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "t-parent".into(),
+            checkpoint(Some("sess-parent"), Some("/ws-parent")),
+        );
+        map.insert(
+            "t-child".into(),
+            checkpoint(Some("sess-child"), Some("/ws-child")),
+        );
+
+        // 1. 字面 id 命中（同 id 场景）→ 用 child 自己的 entry，不看 parent。
+        let hit = resolve_resume_checkpoint(&map, "t-child", Some("t-parent"));
+        assert_eq!(
+            hit.as_ref().and_then(|c| c.session_id.as_deref()),
+            Some("sess-child")
+        );
+
+        // 2. 字面 id miss、parent 命中（auto-retry 子任务场景）→ 用父 entry（父的 run/session 才是要续的）。
+        let via_parent = resolve_resume_checkpoint(&map, "t-child-new", Some("t-parent"));
+        assert_eq!(
+            via_parent.as_ref().and_then(|c| c.session_id.as_deref()),
+            Some("sess-parent")
+        );
+
+        // 3. 字面 miss 且 parent 也 miss / parent 为 None → None（落 Fresh）。
+        assert!(resolve_resume_checkpoint(&map, "t-unknown", Some("t-missing")).is_none());
+        assert!(resolve_resume_checkpoint(&map, "t-unknown", None).is_none());
+    }
+
+    #[test]
+    fn migrate_resume_index_map_moves_parent_entry_to_child() {
+        // 子任务 T' 续父 T 的 run：索引从 T 迁到 T'（继承 session/work_dir，local ids 用本次 run）。
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "t-parent".into(),
+            MulticaTaskConversation {
+                local_task_id: "old-task".into(),
+                local_run_id: "old-run".into(),
+                session_id: Some("acp-sess".into()),
+                work_dir: Some("/ws".into()),
+            },
+        );
+        let migrated = migrate_resume_index_map(map, "t-child", "t-parent", "new-task", "new-run");
+
+        // 子条目：继承父 session/work_dir，local ids 为本次续跑 run。
+        let child = migrated.get("t-child").expect("子条目应存在");
+        assert_eq!(child.local_task_id, "new-task");
+        assert_eq!(child.local_run_id, "new-run");
+        assert_eq!(child.session_id.as_deref(), Some("acp-sess"));
+        assert_eq!(child.work_dir.as_deref(), Some("/ws"));
+        // 父条目已清（被取代）。
+        assert!(!migrated.contains_key("t-parent"), "父条目应被移除");
+    }
+
+    #[test]
+    fn migrate_resume_index_map_inserts_child_even_if_parent_missing() {
+        // 兜底：父 entry 已被 finalize 清掉但续跑仍成功 → 插入 child（local ids 已知，
+        // session/work_dir 置 None 待 bridge 回填），保证下次重试仍可链式续。
+        let map = std::collections::HashMap::new();
+        let migrated = migrate_resume_index_map(map, "t-child", "t-parent", "task-1", "run-1");
+        let child = migrated.get("t-child").expect("子条目应插入");
+        assert_eq!(child.local_task_id, "task-1");
+        assert_eq!(child.local_run_id, "run-1");
+        assert!(child.session_id.is_none());
+        assert!(child.work_dir.is_none());
+    }
+
+    // ---- 改动十三：启动自愈覆盖 multica work_dir（collect_multica_work_dirs 纯逻辑固化）----
+    #[test]
+    fn collect_multica_work_dirs_dedup_trims_and_drops_empty() {
+        // 续跑索引汇总待自愈 work_dir：去重 + trim + 丢空/None（home 自愈够不到这些独立 repo）。
+        let mut map = std::collections::HashMap::new();
+        map.insert("t-1".into(), checkpoint(Some("s-1"), Some("/ws-a")));
+        map.insert("t-2".into(), checkpoint(Some("s-2"), Some("  /ws-b  "))); // trim
+        map.insert("t-3".into(), checkpoint(Some("s-3"), Some("/ws-a"))); // 与 t-1 重复
+        map.insert("t-4".into(), checkpoint(Some("s-4"), Some("   "))); // 纯空白 → 丢
+        map.insert("t-5".into(), checkpoint(Some("s-5"), None)); // None → 丢
+
+        let dirs = collect_multica_work_dirs(&map);
+        assert_eq!(dirs, vec!["/ws-a".to_string(), "/ws-b".to_string()]);
+    }
+
+    #[test]
+    fn collect_multica_work_dirs_empty_map_yields_empty() {
+        // 无续跑索引 → 无 work_dir 待自愈（recover_multica_work_dir_sessions 提前返回）。
+        let map = std::collections::HashMap::<String, MulticaTaskConversation>::new();
+        assert!(collect_multica_work_dirs(&map).is_empty());
     }
 
     #[test]

@@ -3,7 +3,9 @@
 //! 照搬 `metrics.rs` 的 channel-priority + normalize + 「永不回显明文 PAT」模式
 //! （`metrics_settings` metrics.rs:130-167 / `normalize_metrics_base_url` metrics.rs:90-114）。
 
-use gold_band::config::{MulticaAccountRef, MulticaWorkspaceRef, RuntimeConfig, SettingsConfig};
+use gold_band::config::{
+    MulticaAccountRef, MulticaWorkspaceRef, RuntimeConfig, SettingsConfig, StateConfig,
+};
 use serde::Serialize;
 use url::Url;
 
@@ -134,28 +136,71 @@ pub fn ensure_daemon_id(settings: &mut SettingsConfig) -> bool {
     true
 }
 
+/// 清 workspace 绑定（Settings 侧账号作用域）：`workspaces` + `active_workspace_id`。
+///
+/// 仅清绑定，**保留** PAT / 账号身份 / daemon_id。换号重连专用：旧账号 PAT 发现的 `workspace_id`
+/// 对新账号无意义（且新账号可能根本不是其成员），换号即作废；但 PAT / 账号身份紧接着由新登录覆写，
+/// daemon_id 是本机持久标识，均不在此清。运行期 register 缓存（`MulticaRuntimeState::runtime_ids`，
+/// workspace→runtime_id）由命令层另行清。
+pub fn clear_multica_workspace_bindings(settings: &mut SettingsConfig) {
+    settings.desktop_multica_workspaces = None;
+    settings.desktop_multica_active_workspace_id = None;
+}
+
+/// 清任务/会话本地索引（State 侧账号作用域）：`pending_issues` + `task_conversations` + `completed_tasks`。
+///
+/// 三者均以当前账号的 remote task/issue id 为键，换号/断开后对新账号无意义且会跨账号泄漏（典型：
+/// 旧账号失败 issue 经 `multica_pending_issues` → `pinned_tasks` 进新账号置顶列表）。凭证变更时与
+/// [`clear_multica_workspace_bindings`] 配套调用，构成「作废账号作用域状态」的完整覆盖（Settings 绑定 +
+/// State 索引）。`multica_runtime_ids` 是死字段（仅声明、从不读写，真缓存在内存 `MulticaRuntimeState`），
+/// 不在此处理。
+pub fn clear_multica_state_indices(state: &mut StateConfig) {
+    state.multica_pending_issues = None;
+    state.multica_task_conversations = None;
+    state.multica_completed_tasks.clear();
+}
+
+/// 判定重连是否发生账号切换：以 email 为稳定标识。
+///
+/// 旧账号身份与新登录 email 不同 → 换号 → 账号作用域状态（workspace 绑定 + 任务/会话索引）需作废。
+/// 任一方 email 缺失（旧 server 未返回 / 首次连接 / 断开后重连无旧身份）→ 无法判定 → 视为「未切换」：
+/// 同账号重连是主流派，保留绑定；若确属脏绑定，register 时被服务端 404 自愈。
+pub fn multica_account_changed(
+    existing: Option<&MulticaAccountRef>,
+    new_email: Option<&str>,
+) -> bool {
+    let old_email = existing.and_then(|a| a.email.as_deref());
+    matches!((old_email, new_email), (Some(old), Some(new)) if old != new)
+}
+
 /// 清除 multica 登录态（与 [`connect_multica`](crate::commands::connect_multica) 对称的断开）。
 ///
 /// 账号作用域的状态在此一并清空：PAT（`connected` 判定依据）、账号身份（`/api/me`）、
 /// workspace 绑定与 active workspace——它们的 `workspace_id` 都由当前账号 PAT 发现、仅在登录态下有效，
 /// 断开/换号后残留即脏数据，故与登录态同生共灭（杜绝「断开后设置页仍展示上个账号绑定的工作空间」，
 /// 与左侧远程任务列表 `connected=false` 空态对齐）。**保留** daemon_id（本机持久标识，换账号/重连不变）；
-/// 断开后回到干净入口，重连同账号需重新绑定 workspace。运行期 register 缓存由命令层另行清 `MulticaRuntimeState`。
+/// 断开后回到干净入口，重连同账号需重新绑定 workspace。State 侧任务/会话索引（`pending_issues` 等）
+/// 由命令层在断开时另行调 [`clear_multica_state_indices`] 清（同样账号作用域，换号/断开须一并作废）。
+/// 运行期 register 缓存由命令层另行清 `MulticaRuntimeState`。
 pub fn clear_multica_session(settings: &mut SettingsConfig) {
     settings.desktop_multica_pat = None;
     // 账号身份与登录态同生命周期：断开即清，杜绝展示「已连接」却已无凭证的错位状态。
     settings.desktop_multica_account = None;
     // workspace 绑定同样账号作用域（workspace_id 由当前 PAT 发现）：随登录态一并清空。
-    settings.desktop_multica_workspaces = None;
-    settings.desktop_multica_active_workspace_id = None;
+    clear_multica_workspace_bindings(settings);
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_multica_session, ensure_daemon_id, multica_settings, normalize_multica_base_url,
+        clear_multica_session, clear_multica_state_indices, clear_multica_workspace_bindings,
+        ensure_daemon_id, multica_account_changed, multica_settings, normalize_multica_base_url,
     };
-    use gold_band::config::{MulticaWorkspaceRef, RuntimeConfig};
+    use gold_band::config::{
+        MulticaAccountRef, MulticaCompletedTask, MulticaTaskConversation, MulticaWorkspaceRef,
+        RuntimeConfig, StateConfig,
+    };
+    use std::collections::HashMap;
 
     #[test]
     fn normalizes_multica_base_url_strips_trailing_slash_and_query() {
@@ -237,6 +282,115 @@ mod tests {
         );
         // daemon_id 是本机持久标识（换账号/重连不变）：保留。
         assert!(settings.desktop_multica_daemon_id.is_some());
+    }
+
+    fn populated_state() -> StateConfig {
+        // 三个账号作用域索引均非空：模拟旧账号登录期产生的本地簿记。
+        let mut convs = HashMap::new();
+        convs.insert(
+            "remote-1".to_string(),
+            MulticaTaskConversation {
+                local_task_id: "task-1".into(),
+                local_run_id: "run-1".into(),
+                session_id: Some("acp-1".into()),
+                work_dir: Some("/repo/a".into()),
+            },
+        );
+        StateConfig {
+            multica_pending_issues: Some(vec!["issue-1".into()]),
+            multica_task_conversations: Some(convs),
+            multica_completed_tasks: vec![MulticaCompletedTask {
+                remote_task_id: "remote-1".into(),
+                local_task_id: "task-1".into(),
+                local_run_id: "run-1".into(),
+                workspace_id: "ws-1".into(),
+                local_project_id: "proj-1".into(),
+                issue_id: Some("issue-1".into()),
+                status: "completed".into(),
+                title: "T1".into(),
+                completed_at: "2026-08-11T00:00:00".into(),
+            }],
+            ..StateConfig::default()
+        }
+    }
+
+    #[test]
+    fn clear_multica_state_indices_empties_all_three_account_scoped_indices() {
+        // 换号/断开：State 侧三索引（失败回显 + 续跑索引 + 完成历史）均账号作用域，一并作废。
+        let mut state = populated_state();
+        assert!(state.multica_pending_issues.is_some());
+        assert!(state.multica_task_conversations.is_some());
+        assert!(!state.multica_completed_tasks.is_empty());
+
+        clear_multica_state_indices(&mut state);
+
+        assert!(
+            state.multica_pending_issues.is_none(),
+            "失败回显清空（杜绝跨账号泄漏到新账号置顶列表）"
+        );
+        assert!(
+            state.multica_task_conversations.is_none(),
+            "续跑索引清空（旧 remote id 对新账号无意义）"
+        );
+        assert!(
+            state.multica_completed_tasks.is_empty(),
+            "完成历史清空（不再串号到新账号）"
+        );
+    }
+
+    #[test]
+    fn clear_multica_workspace_bindings_clears_bindings_keeps_credentials_and_daemon_id() {
+        // 换号重连：仅清 workspace 绑定，PAT/账号身份/daemon_id 保留
+        // （PAT/账号由新登录紧接着覆写，daemon_id 本机持久不变）。
+        let mut settings = gold_band::config::SettingsConfig::default();
+        settings.desktop_multica_pat = Some("secret-token".into());
+        ensure_daemon_id(&mut settings);
+        settings.desktop_multica_account = Some(MulticaAccountRef {
+            name: Some("Demo".into()),
+            email: Some("demo@maling.local".into()),
+        });
+        settings.desktop_multica_workspaces = Some(vec![multica_ref("ws-1", "claude-acp")]);
+        settings.desktop_multica_active_workspace_id = Some("ws-1".into());
+
+        clear_multica_workspace_bindings(&mut settings);
+
+        assert!(
+            settings.desktop_multica_workspaces.is_none(),
+            "workspace 绑定属账号作用域：换号即清"
+        );
+        assert!(
+            settings.desktop_multica_active_workspace_id.is_none(),
+            "active 随绑定清空，避免悬空引用"
+        );
+        assert!(settings.desktop_multica_pat.is_some(), "换号路径 PAT 由新登录覆写，不在此清");
+        assert!(settings.desktop_multica_account.is_some(), "账号身份同理保留，由新登录覆写");
+        assert!(settings.desktop_multica_daemon_id.is_some(), "daemon_id 本机持久，不变");
+    }
+
+    #[test]
+    fn multica_account_changed_judges_by_email_with_safe_default() {
+        let acc = |email: Option<&str>| MulticaAccountRef {
+            name: Some("N".into()),
+            email: email.map(Into::into),
+        };
+        // 同 email → 未切换（同账号重连主流派，保留绑定）。
+        assert!(!multica_account_changed(
+            Some(&acc(Some("a@maling.local"))),
+            Some("a@maling.local"),
+        ));
+        // 不同 email → 切换。
+        assert!(multica_account_changed(
+            Some(&acc(Some("a@maling.local"))),
+            Some("b@maling.local"),
+        ));
+        // 任一 email 缺失 → 无法判定 → false（脏绑定由 register 404 自愈）。
+        assert!(!multica_account_changed(Some(&acc(None)), Some("a@maling.local")));
+        assert!(!multica_account_changed(
+            Some(&acc(Some("a@maling.local"))),
+            None,
+        ));
+        assert!(!multica_account_changed(None, Some("a@maling.local")));
+        assert!(!multica_account_changed(None, None));
     }
 
     fn multica_ref(id: &str, provider: &str) -> MulticaWorkspaceRef {

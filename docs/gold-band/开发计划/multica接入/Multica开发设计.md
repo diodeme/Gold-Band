@@ -439,8 +439,8 @@ pub struct RegisterRequest {
 pub struct RuntimeSpec { pub name: String, pub r#type: String /*=provider 固定*/, pub version: String, pub status: String }
 pub struct RegisterResponse { pub runtimes: Vec<RuntimeRow> }
 pub struct RuntimeRow { pub id: String /*=runtime_id*/ }
-pub struct RemoteTask { pub id: String, pub issue_id: Option<String>, pub status: String, pub auth_token: Option<String>, pub prior_session_id: Option<String>, pub title: Option<String> /*=wire thread_name*/, pub requirement: Option<String>, pub last_activity_at: Option<String> }
-pub struct ClaimRequest { pub prior_session_id: Option<String> }   // 断点续跑：命中本地 task_conversations 时带
+pub struct RemoteTask { pub id: String, pub issue_id: Option<String>, pub status: String, pub auth_token: Option<String>, pub prior_session_id: Option<String> /*=响应回填，客户端只消费不发送*/, pub parent_task_id: Option<String> /*=auto-retry 子任务 T' 指向父 T；客户端续跑反查主路径（§12.14）*/, pub title: Option<String> /*=wire thread_name*/, pub requirement: Option<String>, pub last_activity_at: Option<String> }
+pub struct ClaimRequest {}   // 服务端 claim 处理器不解码 body；prior_session_id 是「响应只输出」字段（agent.go:311），客户端消费响应而非塞请求体（§12.14）
 pub struct PinTaskSessionRequest { pub session_id: String, pub work_dir: Option<String> }
 pub struct StartRequest { pub force_fresh_session: bool }          // rerun 时 true（详见 4.4 / 接入方案 3.2.7）
 pub struct CompleteRequest { pub output: String, pub session_id: Option<String>, pub work_dir: Option<String> }
@@ -537,7 +537,7 @@ pub struct ActiveRemoteRun { pub local_task_uuid: String, pub local_project_id: 
 
 > **关键澄清**：码灵库层**不存在「会话 / 工作流」二分**——前端会话模式（新 UI）的 VM 内部恰恰就是调 `create_task_from_requirement` + `run_start_background`（`view_models_conversation.rs` 会话 VM 即此实现）。multica 复用同一套库层 API：**一个 remote_task = 一个本地 task**，首轮 prompt = requirement（由 `create_task_from_requirement` 写入 `requirement.md`，Worker 节点自动读取 `node_executor.rs:610`），**不走 `submit_conversation_prompt`**。bridge 直接调库层，不经 Tauri command 层、不需前端 AttemptLocator。
 >
-> **会话完成判定（单轮即完成，无多轮歧义）**：**一个 remote_task = 一次执行（一个 run），不是可多轮的会话**。码灵作为 daemon 只跑 requirement 这一轮——首轮 requirement 驱动的 run 具 runtime-continue 性质，跑完自然 `RunCompleted`（码灵**不在单 remote task 上承载追问**，对话发起方是 multica）。不存在「多轮会话何时算完」的问题。**「多轮对话」由 task 序列承载**：用户在 multica web 对同一 issue 发新需求 → 新 queued task → 码灵 claim 带 `prior_session_id` 续跑**同一 ACP session**（上下文连续，见 4.4）=「多轮」，而非一个 task 内多轮。
+> **会话完成判定（单轮即完成，无多轮歧义）**：**一个 remote_task = 一次执行（一个 run），不是可多轮的会话**。码灵作为 daemon 只跑 requirement 这一轮——首轮 requirement 驱动的 run 具 runtime-continue 性质，跑完自然 `RunCompleted`（码灵**不在单 remote task 上承载追问**，对话发起方是 multica）。不存在「多轮会话何时算完」的问题。**「多轮对话」由 task 序列承载**：用户在 multica web 对同一 issue 发新需求 → 新 queued task → 码灵 claim 子任务后按响应 `parent_task_id` 反查父任务本地索引，续跑**同一 ACP session**（上下文连续，见 4.4 / §12.14）=「多轮」，而非一个 task 内多轮。
 >
 > **run 终态 4 分支（订阅器必须穷举，不能只 match success）**（源码依据 `provider/mod.rs:1086-1100` stop_reason 分类 → `node_executor.rs:998-1067` 节点 outcome → `control/mod.rs:25-43` decide_next_step → `orchestrator.rs:2388-2437` RunCompleted 发射）：
 >
@@ -820,8 +820,8 @@ start_multica_runtime()
 
 ```
 用户在远程任务管理页点某条【执行】(play)  ← claim-at-click（Req D + M5-z 执行时落地）
-  ├─ claim_multica_task(task_id, workspace_id) : POST /runtimes/{rid}/tasks/{tid}/claim {prior_session_id?}  ← selective claim
-  │     → {task:{id, issue_id, auth_token, ... + 来源字段}}；命中本地 multica_task_conversations[tid] 时带 prior_session_id 续跑
+  ├─ claim_multica_task(task_id, workspace_id) : POST /runtimes/{rid}/tasks/{tid}/claim {}  ← selective claim（body 空，服务端不读请求体）
+  │     → {task:{id, issue_id, auth_token, prior_session_id?, parent_task_id?, ...}}；claim 响应的 parent_task_id/prior_session_id 写入 prepare_leases[tid]，供 start 续跑判定按 parent_task_id 反查父任务本地索引（见 §12.14）
   │     → 后端回填 VM.requirement（来源优先级取首个非空）；写入 state.prepare_leases[tid]（让常驻循环续期 45s lease）
   │     → 前端（M5-z）：composerDraft.prefill(requirement ?? title, {remoteTaskId, workspaceId})  ← multica 绑定不含 localProjectId
   │              → onNewConversationInWorkspace()（不传 localProjectId，与本地『+』同一回调）→ 落 conversation-home（composer 已预填）
@@ -866,12 +866,15 @@ start_multica_runtime()
          → 创建全新 queued 任务（force_fresh_session），按 issue assignee 的 runtime 路由
          → 新 task_id → 本地 multica_task_conversations 新条目（与旧 session 无关，整任务重跑）
 
-断点续跑（runtime_recovery / runtime_offline 重派回本机，同 task_id）
-  ├─ claim 时 multica_task_conversations[tid].session_id 命中 → claim 带 prior_session_id
+断点续跑（runtime_recovery / runtime_offline 重派回本机——**auto-retry 克隆新 id 的子任务 T'，非同 task_id**，续跑靠 parent_task_id 反查父 T 本地索引，见 §12.14）
+  ├─ claim 响应带回 parent_task_id（指向父任务 T）+ prior_session_id（服务端回填的父 session）→ 写入 prepare_leases[T']
   ├─ **单一执行入口**（Req D：改名 `start_multica_conversation_run`，原 `start_multica_remote_task`）：
-  │     复用 `create_conversation_run_vm` 建 task+run 前先 `classify_resume(Option<&MulticaTaskConversation>)`
-  │     分支——命中先前未终态 local run（local_task_id+local_run_id 非空）→ Resume；否则 Fresh
-  ├─ Resume：run_continue_background_with_config_overrides(local_task_id, local_run_id, None,None,[],None,None)（内部读 worker-ref continue_ref，session/load 续跑同一会话）
+  │     复用 `create_conversation_run_vm` 建 task+run 前先 `classify_resume(&app, remote_task_id, parent_task_id)`
+  │     两级反查——① multica_task_conversations[T'.id]（同 id 场景：dispatched lease 过期同 row 重派）
+  │                ② miss 且 parent_task_id 有 → multica_task_conversations[T]（auto-retry 子任务场景）
+  │     命中后仍校验本地 run is_run_continuable → Resume；否则 Fresh
+  ├─ Resume：run_continue_background_with_config_overrides(local_task_id, local_run_id, None,None,[],None,None)（沿用父任务 local ids；内部读 worker-ref continue_ref，session/load 续跑同一会话）
+  │           续跑成功后**迁移索引**：multica_task_conversations[T'] = 父 entry（local ids + session 沿用），remove(T)——保证多次重试 T→T'→T'' 链式可续
   └─ session 已死（strict_continue 报错 acp/client.rs:2132-2141）或任何 resume Err → fresh fallback：
         复用 create_conversation_run_vm 建 task+run + start_task(force_fresh_session=true)（新本地 task，整任务重跑）
 ```
@@ -883,7 +886,7 @@ start_multica_runtime()
 > - **结论**：码灵客户端无需为「3 分钟才失联」调整——属心跳缺席架构下限，三种中断场景通用；可选的「正常关闭主动 deregister」未采纳（仅对干净退出有效，收益有限）。
 
 > **⚠️ 远程 fail 本地作废的「failed」歧义（M4-d 决策，偏离设计字面）**：
-> `GET /tasks/{id}/status` 返回 `failed` 无法区分 **retryable**（resume-safe，server 重派带 prior_session_id 断点续跑）与 **terminal**（agent_error，应作废）。若一律作废会丢失续跑索引、击穿断点续跑。决策：
+> `GET /tasks/{id}/status` 返回 `failed` 无法区分 **retryable**（resume-safe，server 重派子任务供客户端按 parent_task_id 反查续跑）与 **terminal**（agent_error，应作废）。若一律作废会丢失续跑索引、击穿断点续跑。决策：
 > - **C2 启动 reconcile**（崩溃残留 orphan）：**仅 `cancelled`/404 作废，不在 `failed` 作废**——保 retryable 续跑；terminal-failed 的本地 Paused run 由 **strict_continue fallback** 兜底（用户续跑死 session→自动降级 fresh）。
 > - **C3 周期 cancel-detection**（在飞 active_run）：`failed`/`cancelled`/404 作废——active run + remote terminal = 停本地（省算力、同步状态），与 resume 路径（崩溃后 Paused run 的 re-claim）互斥，无冲突。
 > - 取消/作废共用 `bridge::teardown_active_run`（run_pause+杀 ACP+清 active_runs+清 task_conversations[remote]）。
@@ -935,7 +938,7 @@ start_multica_runtime()
 - **完成判定**：**一个 remote_task = 一个本地 run（一次执行），不是多轮会话**。run 终结（`RunCompleted`）↔ remote `completed`/`failed`，无「多轮何时算完」歧义。码灵不在单 remote task 上承载追问；「多轮」= 新 remote_task claim 时带 `prior_session_id` 续跑同一 ACP session（4.4），每个 task 独立 complete。**run 终态 4 分支映射见 2.5**（Success→complete / Failure→fail / **Killed→fail(timeout)（M4-d）** / Paused→不上报本地处理）。
 - remote `running` ↔ 本地会话执行中（NodeStarted→running；含本地 Paused 等待输入期间——multica 端无 paused 态，继续显示 running，见 2.5「Paused 盲区」；本期不上报 step/total progress）
 - remote `completed`/`failed` ↔ 本地会话 outcome（success/failure）
-- remote `failed`（recover-orphans 后，retryable）↔ 本地会话**暂不作废**（保断点续跑索引，等 server 重派带 prior_session_id 续跑）；仅 remote `cancelled`/404（C2 启动 reconcile）/ 在飞 active_run 的 `failed`+`cancelled`+404（C3 周期检测）→ 作废本地 run（4.4 ⚠️）
+- remote `failed`（recover-orphans 后，retryable）↔ 本地会话**暂不作废**（保断点续跑索引，等 server 重派子任务供客户端按 parent_task_id 反查续跑）；仅 remote `cancelled`/404（C2 启动 reconcile）/ 在飞 active_run 的 `failed`+`cancelled`+404（C3 周期检测）→ 作废本地 run（4.4 ⚠️）
 
 ---
 
@@ -996,7 +999,7 @@ start_multica_runtime()
 - **config.rs**：pat_set 永不回显明文 / daemon_id 首次生成并落盘 / 旧配置 Option 兼容。
 - **bridge.rs**：会话事件 → multica 基础状态转译；**run 终态 4 分支穷举**（Success→complete / Failure→fail+记 pending_issues / Killed→不上报假设取消检测已命中 multica cancelled / Paused·Intervention→不上报本地处理）；ACP session_id 采集（`NodeCompleted.attempt_dir/worker-ref.json` 的 `continue_ref.{acpSessionId,cwd}`，复用库层 `WorkerRefState`）+ `pin_task_session`（session 变更才写）；remote fail → 本地会话作废（4.4）；**多 workspace 并发事件归属反查**（`active_runs` 反查 (local_task_id, local_run_id) → remote_task_id；`RunCompleted` 事件**无 repo_root**，仅 `Node*` 有，故归属键是本地 display task_id+run_id 双键，非 repo_root）；HTTP 调用经 `tauri::async_runtime::spawn` 异步执行（订阅器回调在 runtime 热路径）。
 - **ACP session 跨重启可恢复（M1 首验）**：mock requirement 跑完采 session_id → 重启进程 → run_continue_background_with_config_overrides 带 prior_session_id → 验证 session/load 续跑成功、上下文连续；session 已死 → 降级 force_fresh_session 整任务重跑。
-- **断点续跑**：claim 带 prior_session_id 命中→strict_continue 续跑；session 已死→降级 force_fresh_session 整任务重跑；`multica_task_conversations` complete 后清条目。
+- **断点续跑**：claim 子任务 T' 按 parent_task_id 反查父索引命中→沿用父 local ids 走 strict_continue 续跑；session 已死→降级 force_fresh_session 整任务重跑；续跑成功后迁移索引到子任务 id（§12.14）；`multica_task_conversations` complete 后清条目。
 
 ### 9.3 接口层固化（回归用）
 - 首启登录链路、启动全量 register、任务执行循环、失败恢复链路各一条端到端集成测试（mock multica server）。
@@ -1063,10 +1066,10 @@ start_multica_runtime()
 | 3 | **两套心跳并存**：metrics 15min + multica 15s | 独立循环，互不干扰；**multica 心跳 Req D 起改为常驻**（建立连接后对全部已连接 workspace 的 runtime 持续，非仅执行期）；同一常驻循环还承载 claim-at-click 后的 prepare-lease 续期 |
 | 4 | **PAT 明文存储** | 项目无 keyring，与 metrics API Key 一致；永不回显明文（pat_set）；换机器/账号强制重连不复用 PAT |
 | 5 | **multica 版本升级** | M0 唯一改造（selective claim）为独立增量，rebase 成本可控（见 1.3）；登录无 server 改动零 rebase |
-| 6 | **接受 multica auto-retry + 断点续跑** | resume-safe 失败（runtime_recovery 等）server 自动重试 max_attempts=2，重派带 prior_session_id 续跑；resume-unsafe（agent_error）用户 rerun；session 已死降级整任务重跑（4.4） |
+| 6 | **接受 multica auto-retry + 断点续跑** | resume-safe 失败（runtime_recovery 等）server 自动重试 max_attempts=2，克隆新 id 子任务 T'；客户端 claim T' 时按响应 parent_task_id 反查父 T 本地索引续跑（§12.14）；resume-unsafe（agent_error）用户 rerun；session 已死降级整任务重跑（4.4） |
 | 7 | **终态重试是新增逻辑** | metrics 为 fire-and-forget，multica 终态必须送达 → client.rs 自建退避重试（2.3），是本模块相对 metrics 的主要新增 |
-| 8 | **multica fail 与本地会话 Paused 状态张力** | remote_task fail 后本地会话作废不 continue；断点续跑走 prior_session_id 而非本地 Paused continue（4.4 厘清） |
-| 9 | **ACP session 跨重启可恢复性未验证（恢复断崖）** | 「多轮=task序列+session续跑」依赖 ACP provider（claude-acp）真持久化 session、能 `session/load`。未验证。**M1 第一个集成测试验证**：mock requirement 跑完采 session_id → 重启 → run_continue 带 prior_session_id → 确认 session/load 成功、上下文连续。若 claude-acp 不持久化，多轮降级为每轮新会话（功能降级，非阻塞） |
+| 8 | **multica fail 与本地会话 Paused 状态张力** | remote_task fail 后本地会话作废不 continue；断点续跑走 parent_task_id 反查父索引（§12.14）而非本地 Paused continue（4.4 厘清） |
+| 9 | **ACP session 跨重启可恢复性未验证（恢复断崖）** | 「多轮=task序列+session续跑」依赖 ACP provider（claude-acp）真持久化 session、能 `session/load`。未验证。**M1/Step 0 首验**：mock requirement 跑完采 session_id → 重启 → 领取子任务 T' → run_continue_background 沿用父 local ids（内部读 worker-ref continue_ref）→ 确认 session/load 成功、上下文连续。若 claude-acp 不持久化，多轮降级为每轮新会话（功能降级，非阻塞） |
 | 10 | **run 终态 4 分支 + Paused 盲区**（本期补齐） | 订阅器必须穷举 Success/Failure/Killed/Paused（2.5 终态表），不能只 match success；Paused 期间 multica 继续显示 running（接受盲区）；不监听未实现的 AcpTurnFinished |
 
 ---
@@ -1158,6 +1161,8 @@ if let Err(start_err) = client.start_task(&remote_task_id, false).await {
 
 ### 12.5 断点续跑落地（远程任务重派后续既有本地 run）
 
+> ⚠️ **本节记录 M5-u 初版落地**，其 `classify_resume` 当时按**字面 remote_task_id 查本地索引**——与服务端「auto-retry 克隆新 id 子任务」错配，导致崩溃重启主场景下续跑空转（落 Fresh）。该实现缺口由 **§12.14（改动十二）补完**：客户端消费 claim 响应的 `parent_task_id` 反查父任务本地索引 + 续跑后迁移索引。下面「机制前提」仍成立，签名/判定以 §12.14 为准。
+
 **背景**：远程任务被 server 重派（码灵崩溃恢复 / agent 死亡被回收 / 失败自动重试 max_attempts=2）后，用户重新点「执行」→ `start_multica_conversation_run` 此前**总是 Fresh**（注释明说「断点续跑…不在此分支」），每次从第 1 轮重跑，丢失已完成的 round/node/部分产出。
 
 **根因（非补丁，补完消费者而非打补丁）**：断点续跑的**数据结构已就位、消费者被删**。
@@ -1170,7 +1175,7 @@ if let Err(start_err) = client.start_task(&remote_task_id, false).await {
 1. ACP session 跨码灵完整重启可冷重连（adapter 自持 session 落盘，`session/load`）。
 2. 本地续跑链：`run_continue_background(task_id, run_id, prompt_id, prompt)`（app/mod.rs:2928）→ orchestrator 读 `<attempt_dir>/worker-ref.json` `continue_ref.acpSessionId` → `SessionMode::Continue`。
 3. `is_run_continuable(run)`（app/mod.rs:711）= Paused + outcome None + pause_reason ∈ {ProcessInterrupted, RuntimeAbnormal, WaitingForUserInput} + round/node/attempt 齐。
-4. 启动自愈：`main.rs` setup → `recover_interrupted_running_sessions` → `pause_all_running_sessions`（app/mod.rs:2370）把 stale-Running 翻成 Paused + ProcessInterrupted + outcome None → 崩溃重启后旧 run 自动满足 is_run_continuable。**限制：仅覆盖当前激活 workspace。**
+4. 启动自愈：`main.rs` setup → `recover_interrupted_running_sessions` → `pause_all_running_sessions`（app/mod.rs:2370）把 stale-Running 翻成 Paused + ProcessInterrupted + outcome None → 崩溃重启后旧 run 自动满足 is_run_continuable。**原限制：仅覆盖 home repo（激活 workspace）**——multica 远程任务的 run 落在各 task 自身 `work_dir`（独立 repo），home 自愈够不到；**§12.15（改动十三）补全**：home 自愈后追加 `recover_multica_work_dir_sessions`，遍历 `multica_task_conversations` 的全部 work_dir 逐个自愈。
 5. `start_task(task_id, force_fresh_session)`（client.rs:592）：续跑与 Fresh 都传 false（force_fresh=true 仅整任务重跑）。
 
 **数据（先定数据）**：无新结构，复用 `MulticaTaskConversation`。新增：
@@ -1195,7 +1200,11 @@ if let Err(start_err) = client.start_task(&remote_task_id, false).await {
 
 **已知限制（告知，非本期修）**：启动自愈只覆盖激活 workspace；非激活 workspace 的崩溃 run 不自愈→不续跑→Fresh。后续可扩 per-workspace 自愈 / 切换 workspace 时触发。
 
+> ✅ **multica 子系统已于 §12.15（改动十三）补全**：`recover_multica_work_dir_sessions` 在 home 自愈后遍历 `multica_task_conversations` 的全部 `work_dir` 逐个 `recover_interrupted_running_sessions`，把 multica 远程任务在各 work_dir 的孤儿 Running run 翻成 Paused + ProcessInterrupted → `classify_resume` 命中 Resume。**通用 workspace（非 multica）的该限制仍告知**。
+
 **验证**：`cargo check` 通过（仅 4 既有死代码警告）；`cargo test -p gold-band-desktop multica::` **72 测全过**（新增 7：`classify_resume_from` 纯逻辑——无 checkpoint / session 缺或空白 / run 不可达 / Paused+ProcessInterrupted 命中 Resume 并校验 ids+session / Running→Fresh / Paused+ErrorBlocked→Fresh / 缺 locator→Fresh）。无需 webank server 改动。
+
+> ⚠️ 其中「session 缺或空白 → Fresh」断言后被 **§12.17（改动十五）反转**：`session_id` 不再作为续跑门（崩溃常发生在首节点完成前、bridge 尚未回填 session_id，会误把可续 run 判 Fresh）。判定以 §12.17 为准。
 
 ### 12.6 改动四：issue 正文预填（claim 响应带 issue_description）
 
@@ -1451,6 +1460,125 @@ if let Err(start_err) = client.start_task(&remote_task_id, false).await {
 **改动清单**：`src-tauri/src/multica/client.rs`（`shared_http` + `derive(Clone)` + `new` 复用 + `send`/`json_send` 加 timeout + `register_once` + 3 个 liveness 方法走 json_send/send + `LIVENESS_TIMEOUT_SECS` + 3 单测）、`src-tauri/src/multica/loop_.rs`（`register_workspace(retried)` + 自愈 `false` / 启动·connect·绑定 `true` + tick 埋点 + `trace_stage`）、`src-tauri/src/multica/commands.rs`（`register_workspace_best_effort` 调用传 `true`）。无 web / 无 webank server 改动。
 
 **验证**：`cargo check`（gold-band-desktop）零错误（4 个 warning 均为既有非 multica 项）；`cargo test ... multica` 75 全过（含新增 `multica_client_new_rejects_empty_base_url` / `multica_client_is_clone` / `liveness_timeout_is_bounded_under_global_default`）。弱网人肉验证待补：模拟限速/断网恢复，观察日志 tick `elapsed_ms` 不再超 30s、compose 期间任务不被回收。
+
+### 12.14 改动十二：断点续跑补完——client 消费 parent_task_id 反查父索引（M5-ad）
+
+**背景**：§12.5（M5-u）落地的断点续跑，`classify_resume` 按**字面 `remote_task_id` 查本地索引**。但服务端 auto-retry 走 `CreateRetryTask`（`agent.sql:418,423,432`）**克隆新 id 的子任务 T'**（不复用父 T 的 id）。崩溃/关闭后重启，用户重新领取的是**子任务 T'**（父 T 已 failed 无领取按钮），`classify_resume(T'.id)` 查 `multica_task_conversations[T'.id]` → 查不到 → 落 Fresh。本地那个 Paused(ProcessInterrupted) 的 run、`multica_task_conversations[T]` 索引、pin 过的 ACP session 全在磁盘上，但**id 对不上碰不到**——整条续跑链路在主场景下空转。
+
+**根因（修根因非打补丁）**：客户端续跑判定与服务端任务模型错配——客户端按「**同 task_id** 重派回本机」的假设写字面查找（只有服务器复用同一 id 才成立），而服务端实际用子任务。客户端同时还漏收服务端**已正确提供**的血缘：claim 响应携带 `parent_task_id`（`agent.go:296,635`）+ `prior_session_id`（响应只输出，`agent.go:311`），且 claim 处理器**不解码请求体**（`daemon.go:2508,2671`）——客户端反而往请求体塞 `prior_session_id`（死逻辑，服务端从不读）。
+
+**修复（纯客户端，无服务端/无前端改动）**：让客户端消费服务端已给的 `parent_task_id`，续跑判定从「只按字面 id 查」升级为「字面 id 查不到时按 `parent_task_id` 反查父任务索引」，喂给**现成的** Resume 分支（不改执行引擎）。续跑成功后迁移索引到子任务 id，保证链式重试可续。
+
+**数据（先定数据）**：
+- `PrepareLease`（`state.rs`）+= `parent_task_id: Option<String>`（claim 响应带回，续跑反查主路径）+ `prior_session_id: Option<String>`（服务端回填的父 session，兜底/校验用）。
+- `RemoteTask`（`client.rs`）+= `parent_task_id: Option<String>`（`#[serde(default)]`）；既有 `prior_session_id` 角色从「待发送」变为「从响应消费」。
+- `ClaimRequest` → `pub struct ClaimRequest {}`（服务端不读请求体）。
+
+**接口（再定接口）**：
+- 纯函数 `resolve_resume_checkpoint(map, remote_task_id, parent_task_id) -> Option<MulticaTaskConversation>`：两级查找——`map.get(remote_task_id)` 命中（同 id 场景）→ 用之；否则 `parent_task_id.and_then(|p| map.get(p))`（子任务场景）。
+- `classify_resume` 新签名 `classify_resume(home_app, remote_task_id, parent_task_id: Option<&str>) -> ResumeDecision`（读 checkpoint → 两级反查 → `is_run_continuable` 校验）。
+- 纯函数 `migrate_resume_index_map(map, child_id, parent_id, local_task_id, local_run_id)`：子任务 entry 继承父 session_id/work_dir，`remove(parent_id)` 清掉被取代的父 entry；I/O 包装 `migrate_resume_index(&App, …)` best-effort load/pure/save（续跑已成功，迁移失败仅 `warn!`）。
+- `claim_multica_task`：从 claim 响应取 `parent_task_id`/`prior_session_id` 写入 `register_prepare_lease`；**删除**往请求体塞 `prior_session_id` 的死逻辑，`claim_specific_task(runtime_id, task_id)`（body=`{}`）。
+- `start_multica_conversation_run` Resume 分支：`classify_resume(&app, &remote_task_id, lease.parent_task_id.as_deref())`；Resume 成功且 `parent_task_id` 指向父任务（≠ 当前 id）时调 `migrate_resume_index` 把索引迁到子任务 id。
+
+**ResumeDecision 清理**：`Resume{local_task_id, local_run_id, session_id}` 的 `session_id` 字段在 §12.5 落地后已无消费者（claim 不再需要回传它）→ 删除该字段（破坏式清理，无 fallback）。
+
+**一致性自检**：Resume 分支以父 local ids 注册 `active_runs[T']`，bridge `find_active_run_by_local` 按父 local ids 命中 T'，终态 `finalize_terminal` 清 `active_runs[T']` + `multica_task_conversations[T']`——迁移后键链自洽。
+
+**效果边界**：关闭/崩溃后 **2h 内**重启 → 重新领取重试子任务 T' → 续跑父任务本地 Paused run + 旧 ACP session；**超 2h** → T' 已 expired（queued TTL），只能 rerun（force_fresh_session）。续跑失败（session 死 / run 不可续）仍落 Fresh 兜底，不劣化于现状。
+
+**前置验证（Step 0，gating）**：续跑最后一公里是 `run_continue_background` → ACP `session/load` 能否跨进程重启恢复旧会话——设计文档 §9 风险 9 / §9.2 M1 一直未验证。结果决定续跑是真续还是兜底重跑；若不可恢复，本方案仍正确（必要条件），但会落 Fresh，需另立「ACP session 持久化」课题。
+
+**改动清单**：`commands.rs`（resolve_resume_checkpoint / migrate_resume_index(_map) / classify_resume 新签名 + parent 参数 / claim 消费响应血缘 + 删请求体死逻辑 / start Resume 分支迁移索引 + ResumeDecision 去字段）、`state.rs`（PrepareLease += parent_task_id/prior_session_id + register_prepare_lease 新参）、`client.rs`（RemoteTask += parent_task_id / ClaimRequest{} / claim_specific_task 去入参）、`config/mod.rs`（MulticaTaskConversation 文档订正两级解析）。无 web / 无 webank server 改动。
+
+**验证**：`cargo test -p gold-band-desktop multica::` **80 测全过**（新增 `resolve_resume_checkpoint_prefers_literal_id_then_parent` / `migrate_resume_index_map_moves_parent_entry_to_child` / `migrate_resume_index_map_inserts_child_even_if_parent_missing` / `prepare_lease_carries_resume_lineage` / `remote_task_reads_parent_task_id_lineage` / `claim_request_is_empty_object`；同步更新 `resume_when_run_paused_process_interrupted`）。`cargo clippy --all-targets` 无新增 lint。运行时 e2e（kill 重启续跑、T→T'→T'' 链式、续跑失败落 Fresh、超 2h rerun、同 id 回归）待 §31 Step 0 通过后跑。
+
+### 12.15 改动十三：断点续跑根因修复——启动自愈覆盖 multica work_dir（M5-ad 收尾）
+
+**背景（实测复现）**：§12.14 把续跑指针从字面 id 改为 `parent_task_id` 反查父索引后，真实崩溃重启场景仍落 Fresh——启动远程任务 → 关码灵 → 10 分钟后重开 → 远程任务管理点「运行」→ **新会话**。代码级排查逐层排除：① `npm run dev` = `tauri dev` 会重编 Rust（fix 已生效）；② server `buildClaimedTaskResponse`(daemon.go:1592) 经 `taskToResponse` 继承 `ParentTaskID`（响应带 parent_task_id）；③ `RemoteTask`(client.rs:158) serde 正确解析。三者均非因。
+
+**根因**：启动自愈 `recover_interrupted_running_sessions()`（main.rs:152）跑在 `state.app()` = **home repo** 上；其 `pause_all_running_sessions()`（app/mod.rs:2370）只遍历 `self.task_list()`，作用域锁死单一 repo。而 multica 远程任务的 run 落在**该任务自己的 `work_dir`**（独立 repo）→ 重启时**从不被 pause** → 残留 stale `Running` → `classify_resume` 读 `run_status` → `is_run_continuable` = **false** → **Fresh**。这正是 §12.5「已知限制」从「限制」升级为「bug」。
+
+**修复（根因级，非补丁）**：把启动自愈扩展到 `multica_task_conversations` 引用的**全部 work_dir**——与 `classify_resume` 读同一张权威表，保证被判定可续的 run 在判定前已被 pause。
+
+**数据**：无新结构。新增纯函数 `collect_multica_work_dirs(map: &HashMap<String, MulticaTaskConversation>) -> Vec<String>`（取全部 `work_dir`，trim 后去重、丢空，可单测）。
+
+**接口/实现**：
+- `recover_multica_work_dir_sessions(home_app: &App)`：load_state → `collect_multica_work_dirs` → 逐个 `home_app.with_repo_root(work_dir, config)` 构造 workspace App → `recover_interrupted_running_sessions()`；单 work_dir 失败仅 `warn!` 不阻断；末尾 `info!` 汇总（work_dir_count / recovered）。
+- `main.rs` setup：home `recover_interrupted_running_sessions()` 后紧接 `recover_multica_work_dir_sessions(&runtime_app)`。
+- `classify_resume` 加诊断 `info!`：`resolved_via`(literal/parent/none/no-map) / `session_present` / `run_status` / `continuable` / `decision`——供运行时复测确认修复生效（命中 Resume 时应为 `resolved_via=parent, continuable=true, decision=Resume`）。
+- 安全前提：启动瞬间磁盘上所有 `Running` 都是上一轮崩溃遗留的孤儿态（进程刚起，无在飞 run），pause 全部正确。
+
+**改动清单**：`src-tauri/src/multica/commands.rs`（`collect_multica_work_dirs` + `recover_multica_work_dir_sessions` + `classify_resume` 诊断日志 + 2 单测）、`src-tauri/src/main.rs`（import + setup 调用）。无 webank server 改动。
+
+**验证**：`cargo check -p gold-band-desktop` 通过（仅 4 既有死代码警告）；`cargo test -p gold-band-desktop multica::` **82 测全过**（新增 `collect_multica_work_dirs_dedup_trims_and_drops_empty` / `collect_multica_work_dirs_empty_map_yields_empty`）。前端 `multica-settings-block.test.tsx` 3 测过。运行时 e2e 复测**仍落 Fresh**——本节新增的诊断 `info!` 暴露 `session_present=false → decision=Fresh`，最终根因（`session_id` 门用错信号）与修复见 **§12.17（改动十五）**。
+
+---
+
+### 12.16 改动十四：multica 设置按钮改名（切换账号 / 退出登录）
+
+**背景**：设置页 multica 接入的「重新连接 / 断开连接」语义偏技术；按产品心智改为「切换账号 / 退出登录」。未连接态首连按钮「连接 Multica」不变。
+
+**改动**：纯 i18n 值替换（key `reconnect`/`disconnect` 不变，组件已引用）：zh `重新连接`→`切换账号`、`断开连接`→`退出登录`；en `Reconnect`→`Switch account`、`Disconnect`→`Sign out`。`connect` 保持。
+
+**逃生口外链保留**：账号邮箱旁的「切换账号逃生口」外链按钮（`handleSwitchAccount`→`openExternalUrl(appUrl)`）是 cookie 兜底——`browser_login` 见 cookie 即签 JWT，cookie 是错账号时静默连错；点「切换账号」只是再跑一次 browser_login，同样的错 cookie 会再连错，故「去 Web 手动登出/登录」外链仍不可少（根因待 webank 加授权确认屏 M5-l）。仅把其 tooltip 里引用的旧按钮名「重新连接」改为「切换账号」。
+
+**改动清单**：`web/src/i18n.ts`（zh/en 4 处文案 + tooltip 2 处）、`web/src/components/settings/MulticaSettingsBlock.tsx`（注释同步）。无 Rust / 无 webank server 改动。
+
+**验证**：`npx tsc --noEmit` 无新增错误（仅既有 tests/* 噪声）；`vitest multica-settings-block` 3 测过。
+
+---
+
+### 12.17 改动十五：断点续跑最终根因——删除 classify_resume_from 的 session_id 门（M5-ae）
+
+**背景（实测复现，§12.15 收尾后）**：§12.15 把启动自愈扩到 multica work_dir 后，用户复测仍落 Fresh。§12.15 新增的诊断 `info!`（`multica classify_resume decision`）四条记录精确定位到一行：
+
+```
+resolved_via="parent" session_present=false run_status=Some(Paused) continuable=true decision=Fresh
+```
+
+即：父系反查命中（`resolved_via=parent`）✓、启动自愈把 run 翻成可续（`run_status=Paused` + `continuable=true`）✓——**唯独 `session_present=false` 触发了 Fresh**。
+
+**根因（设计层的门用错信号，非补丁）**：`classify_resume_from` 以 `checkpoint.session_id` 非空作为续跑门。但该字段**仅由 bridge 在 `NodeCompleted` 回填**（Fresh 写入时为 `None`，bridge 于节点完成后 pin 回填）。崩溃常发生在**首个节点完成前**——`worker-ref.json` 已写 ACP session（故 run 可续、`继续` 能跑），但 `NodeCompleted` 未触发 → bridge 未回填 → `checkpoint.session_id` 恒 `None` → 门误判 Fresh。
+
+关键：该门把「checkpoint 记录了 session」当成「run 有可续 session」的代理，而这是**错代理**——续跑执行器 `run_continue_background(task_id, run_id, None, None)` 直接读 `worker-ref.json` 的 `continue_ref.acpSessionId` 恢复 session，**完全不读 checkpoint 的 `session_id` 字段**；该字段仅供 server `pin_task_session`。可续性应以 run 的真实状态（`is_run_continuable`：locator 齐 → attempt 已起 → worker-ref 已写 session）为准，而非一个回填滞后的字段。
+
+**修复（根因级——删门而非放宽阈值）**：`classify_resume_from` 删除 `session_id` 空判定分支，续跑决策收敛为「checkpoint 解析出本地 ids + run 存在 + `is_run_continuable`」。安全前提：可续 run 必有 locator → attempt 已起 → worker-ref 有 session；即便极端（worker-ref 缺/损坏）`run_continue_background` 失败，§12.5 既有的「续跑失败 → 落 Fresh」兜底（commands.rs `Err` 分支 `warn!` + fallthrough）仍生效，无回退风险。`classify_resume` 的诊断 `info!` 仍计算 `session_present`——降级为纯诊断字段（观察 bridge 是否已回填），不再参与判定。
+
+**改动清单**：`src-tauri/src/multica/commands.rs`（`classify_resume_from` 删门 + docstring 重写；`ResumeDecision::Resume` 文档微调；单测 `resume_fresh_when_session_id_missing_or_blank` → `resume_when_session_id_missing_or_blank`，断言反转为「session_id 缺/空白 + 可续 run → Resume」）。无 webank server 改动。
+
+**验证**：`cargo test --bin gold-band-desktop multica::commands::` **17 测全过**（含反转后的 `resume_when_session_id_missing_or_blank`）。运行时 e2e（kill 重启续跑确认 `decision=Resume` 即便 `session_present=false`）待用户复测。
+
+---
+
+### 12.18 改动十六：换号/断开统一作废账号作用域状态——补齐 State 层索引 + connect 换号检测（M5-af）
+
+**背景（M5-m 的不完整根治）**：M5-m（接入方案 M5-m）把 PAT/账号身份/workspace 绑定/active 定为账号作用域、disconnect 时清。但账号作用域状态实际**横跨两层配置**，M5-m 只清了 `SettingsConfig`，漏了 `StateConfig` 三个同样账号作用域的索引：
+
+- `multica_pending_issues`（失败回显 issue id）
+- `multica_task_conversations`（断点续跑索引，键 = remote_task_id）
+- `multica_completed_tasks`（最近完成历史）
+
+三者均以当前账号的 remote id 为键，换号/断开后对新账号无意义。且 `connect_multica` 完全不清——换号重连时旧账号状态原样保留。
+
+**两个症状同根**：
+
+1. 换号后设置页/任务列表仍见旧账号 workspace 绑定（M5-m 已修 disconnect，但 connect 换号路径仍漏）。
+2. 换号后「置顶」折叠列表里残留旧账号失败 issue 且**点不进去**——失败回显行经 `RemoteTaskVm::from_failed_issue` 构造，**故意**不填 `local_task_id/run_id/project_id`（它是「显示失败 + 提供重试」入口，非「回看会话」入口），前端 `clickable = projectId && localTaskId && runId`（`MulticaRemoteTaskList.tsx:344`）恒 false → 不可点是**设计**；但它跨账号残留是 `multica_pending_issues` 未随换号作废的**泄漏**。
+
+**根因（好的设计——账号作用域——但实现不完善）**：M5-m 的账号/机器作用域划分是对的（CLAUDE.md「好的设计但实现不够完善」分支）。缺的是：(a) 账号作用域全集漏了 State 三索引；(b) 只有 disconnect 一条触发路径，connect 换号未触发。补全实现而非改设计。
+
+**修复（统一作废，非两处各打补丁）**：账号作用域状态 = Settings（workspaces/active）+ State（pending_issues/task_conversations/completed_tasks）两层全集；凭证变更（换号/断开）统一作废这两层，daemon_id（机器作用域）保留。一个不变量、两条触发路径。
+
+**改动清单**：
+
+- `src-tauri/src/multica/config.rs`：抽 `clear_multica_workspace_bindings(&mut SettingsConfig)`（清 workspaces/active，保留 pat/account/daemon_id——换号专用，pat/account 由新登录覆写）；新增 `clear_multica_state_indices(&mut StateConfig)`（清三索引）；`clear_multica_session` 签名不变、内部复用前者（disconnect 行为不变）；新增 `multica_account_changed(existing, new_email) -> bool`——以 email 判换号，任一 email 缺失 → false（同账号重连主流派保留绑定，脏绑定由 register 404 自愈）。+3 单测固化契约。
+- `src-tauri/src/multica/mod.rs`：re-export 三个新 helper。
+- `src-tauri/src/commands.rs`：`connect_multica` 加 `shared: State<'_, SharedMulticaState>` 参数（Tauri 按类型注入，main.rs 注册无需改）；browser_login 返回新 (pat,user) 后、覆写 pat/account 前——`multica_account_changed` 为真 → `clear_multica_workspace_bindings` + best-effort `clear_multica_state_indices`+save_state + `clear_runtime_ids`。`disconnect_multica` 在 `clear_multica_session` 后补 best-effort `clear_multica_state_indices`+save_state（补 M5-m 漏掉的 State 三索引）。
+
+**不变量**：`StateConfig.multica_runtime_ids` 是死字段（仅声明、从不读写，真缓存在内存 `MulticaRuntimeState`），不处理。PAT 明文不回显（VM 仅 `pat_set`），换号清理不改变该约束。daemon_id 机器作用域，换号/断开均保留。
+
+**验证**：`cargo check` 过（无新增 warning）；`cargo test multica::config` **8 测全过**（+3 新：`multica_account_changed_judges_by_email_with_safe_default` / `clear_multica_workspace_bindings_clears_bindings_keeps_credentials_and_daemon_id` / `clear_multica_state_indices_empties_all_three_account_scoped_indices`；既有 `clear_multica_session_*` 签名不变零回归）。无前端 / 无 webank server 改动。
 
 ---
 

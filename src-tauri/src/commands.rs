@@ -1760,23 +1760,31 @@ pub fn start_run(
 }
 
 #[tauri::command]
-pub fn get_git_capability(
+pub async fn get_git_capability(
     state: State<'_, DesktopState>,
     project_id: Option<String>,
 ) -> CommandResult<gold_band::git::GitCapability> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-    Ok(gold_band::git::GitRepositoryService::default().probe(&app.paths.repo_root))
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        Ok(gold_band::git::GitRepositoryService::default().probe(&project_root))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn initialize_git_repository(
+pub async fn initialize_git_repository(
     state: State<'_, DesktopState>,
     project_id: Option<String>,
 ) -> CommandResult<gold_band::git::GitCapability> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-    gold_band::git::GitRepositoryService::default()
-        .initialize(&app.paths.repo_root)
-        .map_err(command_error)
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        gold_band::git::GitRepositoryService::default()
+            .initialize(&project_root)
+            .map_err(command_error)
+    })
+    .await
 }
 
 #[tauri::command]

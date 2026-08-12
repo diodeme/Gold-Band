@@ -46,13 +46,15 @@ Git metadata watcher 必须覆盖 `MERGE_HEAD`、`REBASE_HEAD`、`rebase-merge`�
 
 提交历史与分页定位属于 repository/workspace 会话缓存：首次无数据时使用真实请求中间态；普通源码管理 Tab 往返必须直接恢复已缓存列表，不插入延时或伪 loading，不重新请求 history。已经显示的历史数据在后台刷新时继续保留，不退回全屏 loading。
 
-历史工作区默认只有 Commit 单栏；至少选中一个 Commit 后才挂载响应式主从布局，空间充足时左侧为 Commit 列表、右侧为所选 Commit 的聚合变更文件，清空选择后立即恢复单栏。空间不足时退化为“提交/更改”单栏切换。单击执行单选，`Shift + Click` 按当前可见稳定 OID 顺序范围选择，`Ctrl/Cmd + Click` 增减选择，`Ctrl/Cmd + Shift + Click` 合并范围；不显示 Checkbox，也不增加独立多选模式。选择颜色与右栏 loading 必须在同一次同步状态提交中出现，不能等待 Review IPC；旧请求不得覆盖新选择。
+历史工作区默认只有 Commit 单栏；至少选中一个 Commit 后才挂载响应式主从布局。布局按历史内容区的实际 CSS 宽度判断：达到 `520px` 时进入双栏，左侧 Commit 列表最低 `220px`，右侧聚合变更最低 `280px`，余量留给分隔条；低于该阈值退化为“提交/更改”单栏切换。清空选择后无论宽度都立即恢复 Commit 单栏。单击执行单选，`Shift + Click` 按当前可见稳定 OID 顺序范围选择，`Ctrl/Cmd + Click` 增减选择，`Ctrl/Cmd + Shift + Click` 合并范围；不显示 Checkbox，也不增加独立多选模式。选择颜色与右栏 loading 必须在同一次同步状态提交中出现，不能等待 Review IPC；旧请求不得覆盖新选择。
 
 多提交“总 Diff”采用 IntelliJ IDEA Log 的 `collectChanges + zipChanges` 心智：只收集显式选中 Commit 的 first-parent Changes，再按历史从旧到新连接同一文件的演化链。文件路径不是全局唯一演化身份：只有祖先拓扑可连接的修改才进入同一条链；跨分支但文件 Patch 等价的重复修改按 stable patch identity 去重；跨分支且内容不同的修改保留为多条独立链，此时右栏允许同一路径出现多次并显示各自终点的 8 位短 SHA。每条链打开后比较该文件最早相关变化之前的版本与最后相关变化之后的版本，按正常文件行号展示最终 Diff，不按 Commit 分段。创建后又删除且没有净端点的文件不显示；重命名沿 `oldPath → path` 串联。非连续选择不会纳入只由未选中 Commit 触碰的其他文件，但首尾版本之间未选中 Commit 对同一文件的影响可能出现在最终内容中。Root Commit 与空树比较，Merge Commit 使用 first-parent Changes。Commit 右键菜单提供 8 位短 SHA、完整 SHA 和“查看提交归属”。提交归属只展示当前包含它的本地/远端分支与 Tag、是否进入当前分支、第一父主线/首次 Merge 路径和父提交，不使用 reflog 推断、也不声称能还原历史分支来源。
 
 点击变更文件创建一个审阅会话并打开同一个 Diff Tab。Tab 支持上/下一个差异、上/下一个文件；当前文件最后一处差异继续向下时进入下一文件，反向同理。审阅会话只在有界运行期 Store 保存文件序列，Tab locator 仅保存 `reviewSessionId + reviewItemId`；同一会话切换文件替换原 Tab，不新增 Tab。文件内容按需加载，仅缓存当前和相邻项，迟到响应不得覆盖当前文件。
 
 更改列表是紧凑 Git 领域列表。完整目录浏览、普通文件编辑继续使用现有文件工作区；变更和提交比较复用统一 CodeMirror comparison viewer。
+
+工作区没有冲突、已暂存、未暂存或未跟踪文件时，“工作区没有变更”占满更改工具栏与 Commit composer 之间的剩余内容区并水平、垂直居中，使用弱化前景色表达非阻塞空状态；不得复用带主标题强调的错误/能力提示样式，也不得仅在滚动内容顶部居中。
 
 ## 4. Git 操作约束
 

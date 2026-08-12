@@ -740,12 +740,13 @@ Fetch Dialog 的 `prune` 开关默认关闭，UI 使用用户领域文案“移�
 - commit composer 紧贴面板底部，包含 subject、可展开 body、commit 按钮。
 - 没有 staged change、workspace locked 或存在未解决冲突时禁止 commit。
 - stash 放在工具栏菜单，不作为文件行操作。
+- 工作区无任何变更时，空状态占满工具栏与 commit composer 之间的剩余高度并水平、垂直居中，使用 `muted-foreground` 弱化展示；有文件时才挂载变更列表滚动区。
 
 ### 12.6 历史区
 
 - 首次无历史缓存时显示真实请求 loading；普通分区往返直接恢复 `SourceControlStore` 中的历史页、选择和详情，不插入伪 loading，不重新请求。
 - 支持 ref、作者、日期、文本筛选。
-- 宽面板使用 Commit 列表/变更文件主从双栏，窄面板使用“提交/更改”单栏切换，不增加嵌套卡片。
+- 历史内容区达到 `520px` 时使用 Commit 列表/变更文件主从双栏，列表与详情最低宽度分别为 `220px / 280px`；低于阈值使用“提交/更改”单栏切换，不增加嵌套卡片。断点必须根据历史内容区容器实测宽度判断，不能依赖整个窗口断点。
 - 单击单选，Shift 范围，Ctrl/Cmd 增减，Ctrl/Cmd+Shift 合并范围；不显示 Checkbox。
 - 任意多个 Commit 只收集各自 first-parent Changes，再按旧到新合并同一文件演化链；Root 与空树比较，同一路径只返回一个首尾终态。
 - 右键提供短/完整 SHA 和当前可验证的提交归属。

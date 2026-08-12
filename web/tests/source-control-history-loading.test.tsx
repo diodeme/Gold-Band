@@ -107,6 +107,41 @@ afterEach(() => {
 });
 
 describe('source control history cache presentation', () => {
+  it('centers the clean workspace state in the remaining Changes area with subdued text', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      const session = sourceControlSession();
+      sessionRuntime.session = {
+        ...session,
+        snapshot: {
+          ...session.snapshot,
+          status: {
+            ...session.snapshot.status,
+            conflicts: [],
+            staged: [],
+            unstaged: [],
+            untracked: [],
+          },
+        },
+      };
+      await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+      }} /></RightWorkspaceProvider>));
+
+      const emptyState = container.querySelector('[data-source-control-changes-empty="true"]');
+      expect(emptyState?.textContent).toBe('sourceControl.clean');
+      expect(emptyState?.classList.contains('flex-1')).toBe(true);
+      expect(emptyState?.classList.contains('items-center')).toBe(true);
+      expect(emptyState?.classList.contains('justify-center')).toBe(true);
+      expect(emptyState?.classList.contains('text-muted-foreground')).toBe(true);
+      expect(emptyState?.classList.contains('text-foreground')).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('shows distinct Git installation and repository initialization states', async () => {
     const container = document.createElement('div');
     document.body.append(container);

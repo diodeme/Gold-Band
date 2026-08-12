@@ -1,9 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import { resolveDiffReviewNavigation } from '@/components/workspace/source-control/diff-review-store';
-import { commitReviewPathCounts } from '@/components/workspace/source-control/SourceControlHistoryView';
+import {
+  HISTORY_LIST_MIN_WIDTH,
+  HISTORY_REVIEW_MIN_WIDTH,
+  HISTORY_SPLIT_MIN_WIDTH,
+  commitReviewPathCounts,
+} from '@/components/workspace/source-control/SourceControlHistoryView';
+import { reduceFileWorkspaceResponsiveState } from '@/components/workspace/workspace-layout';
 import type { GitCommitReviewFileVm } from '@/types';
 
 describe('diff review navigation', () => {
+  it('uses the readable master-detail minimum as the history split boundary', () => {
+    expect(HISTORY_SPLIT_MIN_WIDTH).toBeGreaterThanOrEqual(HISTORY_LIST_MIN_WIDTH + HISTORY_REVIEW_MIN_WIDTH);
+    expect(reduceFileWorkspaceResponsiveState(
+      { split: false, widthAtTransition: 0 },
+      HISTORY_SPLIT_MIN_WIDTH - 1,
+      HISTORY_SPLIT_MIN_WIDTH,
+    ).split).toBe(false);
+    expect(reduceFileWorkspaceResponsiveState(
+      { split: false, widthAtTransition: 0 },
+      HISTORY_SPLIT_MIN_WIDTH,
+      HISTORY_SPLIT_MIN_WIDTH,
+    ).split).toBe(true);
+  });
+
   it('moves between chunks before crossing into the next file', () => {
     expect(resolveDiffReviewNavigation({ itemIndex: 0, itemCount: 3, chunkIndex: 0, chunkCount: 2, direction: 1 }))
       .toEqual({ kind: 'chunk', index: 1 });

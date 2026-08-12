@@ -43,7 +43,8 @@ use crate::conversation_workspace::workspace_entry_for_project;
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
 use crate::multica::{
-    clear_multica_session, ensure_daemon_id, multica_app_url, multica_base_url, multica_settings,
+    clear_multica_session, clear_multica_state_indices, clear_multica_workspace_bindings,
+    ensure_daemon_id, multica_account_changed, multica_app_url, multica_base_url, multica_settings,
     normalize_multica_base_url, MulticaClient, MulticaError, MulticaSettingsVm,
 };
 use crate::multica::state::SharedMulticaState;
@@ -1638,6 +1639,7 @@ pub fn save_multica_settings(
 #[tauri::command]
 pub async fn connect_multica(
     state: State<'_, DesktopState>,
+    shared: State<'_, SharedMulticaState>,
     app_handle: AppHandle,
 ) -> CommandResult<MulticaSettingsVm> {
     let context = state.context().map_err(command_error)?;
@@ -1653,6 +1655,23 @@ pub async fn connect_multica(
     let context = state.context().map_err(command_error)?;
     let app = context.app();
     let mut existing = app.load_settings().map_err(command_error)?;
+    // 换号检测：旧账号身份与新登录 email 不同 → 旧账号 PAT 发现的 workspace 绑定 + 任务/会话本地索引
+    // 均成脏数据（且跨账号泄漏，典型：旧账号失败 issue 经 multica_pending_issues 进新账号置顶列表）。
+    // 换号即统一作废账号作用域状态（Settings 绑定 + State 三索引）+ register 缓存；
+    // daemon_id 保留（本机持久），PAT/账号身份紧接着由新登录覆写。任一 email 缺失视为未切换
+    // （同账号重连主流派保留绑定；脏绑定由 register 404 自愈）。
+    if multica_account_changed(existing.desktop_multica_account.as_ref(), user.email.as_deref()) {
+        clear_multica_workspace_bindings(&mut existing);
+        if let Ok(mut state_cfg) = app.load_state() {
+            clear_multica_state_indices(&mut state_cfg);
+            if let Err(error) = app.save_state(&state_cfg) {
+                warn!(%error, "multica connect: save_state after account-switch clear failed");
+            }
+        }
+        if let Ok(mut guard) = shared.lock() {
+            guard.clear_runtime_ids();
+        }
+    }
     existing.desktop_multica_pat = Some(pat);
     ensure_daemon_id(&mut existing);
     // 记录已连接账号身份（`/api/me`），供 UI 展示「已连接：<email>」，让用户核对浏览器 cookie
@@ -1674,10 +1693,12 @@ pub async fn connect_multica(
     Ok(multica_settings(&updated_context.config))
 }
 
-/// 断开 multica 连接：与 [`connect_multica`] 对称。清账号作用域状态（PAT、账号身份、workspace 绑定、
-/// active workspace——均由当前账号 PAT 发现、仅登录态下有效），保留 daemon_id（本机持久标识），
-/// 并清运行期 register 缓存（重连后 loop 重建）。断开后 `connected=false`，前端任务列表与设置页
-/// 均回到空态（换账号 / 退出 / 本地反复联调用）；重连同账号需重新绑定 workspace。
+/// 断开 multica 连接：与 [`connect_multica`] 对称。清账号作用域状态——Settings 侧（PAT、账号身份、
+/// workspace 绑定、active workspace）与 State 侧任务/会话索引（`pending_issues`/`task_conversations`/
+/// `completed_tasks`，均以当前账号 remote id 为键）一并作废，杜绝跨账号泄漏（旧账号失败 issue 不残留
+/// 进新账号置顶列表）。保留 daemon_id（本机持久标识），并清运行期 register 缓存（重连后 loop 重建）。
+/// 断开后 `connected=false`，前端任务列表与设置页均回到空态（换账号 / 退出 / 本地反复联调用）；
+/// 重连同账号需重新绑定 workspace。
 #[tauri::command]
 pub fn disconnect_multica(
     state: State<'_, DesktopState>,
@@ -1688,6 +1709,14 @@ pub fn disconnect_multica(
     let app = context.app();
     let mut existing = app.load_settings().map_err(command_error)?;
     clear_multica_session(&mut existing);
+    // State 侧三索引同属账号作用域：随登录态一并作废。best-effort 落盘：state 读不出时不阻断断开
+    // （该次未清的索引下次启动自愈）。
+    if let Ok(mut state_cfg) = app.load_state() {
+        clear_multica_state_indices(&mut state_cfg);
+        if let Err(error) = app.save_state(&state_cfg) {
+            warn!(%error, "multica disconnect: save_state failed");
+        }
+    }
     app.save_settings(&existing).map_err(command_error)?;
     state
         .update_settings_config(&existing)

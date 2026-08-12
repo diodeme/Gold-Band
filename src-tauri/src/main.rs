@@ -64,9 +64,9 @@ use gold_band::storage::sqlite::init_search_index;
 use metrics::start_heartbeat_polling;
 use multica::commands::{
     add_multica_workspace, cancel_multica_prepare_lease, cancel_multica_task, claim_multica_task,
-    get_multica_tasks,
-    list_server_multica_workspaces, remove_multica_workspace,
-    rerun_multica_task, set_active_multica_workspace, start_multica_conversation_run,
+    get_multica_tasks, list_server_multica_workspaces, recover_multica_work_dir_sessions,
+    remove_multica_workspace, rerun_multica_task, set_active_multica_workspace,
+    start_multica_conversation_run,
 };
 use state::{DesktopContext, DesktopState};
 use tauri::Manager;
@@ -149,7 +149,10 @@ fn run() -> anyhow::Result<()> {
             let _ = state.cleanup_agent_diagnostic_processes();
             if let Ok(runtime_app) = state.app() {
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
+                // home repo 自愈后，再清扫 multica 远程任务落在各 work_dir 的孤儿 run（断点续跑根因修复：
+                // home 自愈够不到 task 自身 work_dir，残留 Running 会使 classify_resume 误落 Fresh）。
                 let _ = runtime_app.recover_interrupted_running_sessions();
+                recover_multica_work_dir_sessions(&runtime_app);
             }
             // Initialize SQLite search index (best-effort; failures are non-fatal).
             // On first run (empty DB), a background thread backfills existing tasks/sessions.

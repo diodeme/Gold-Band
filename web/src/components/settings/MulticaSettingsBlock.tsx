@@ -125,7 +125,7 @@ export function MulticaSettingsBlock() {
   }
 
   // 切换账号逃生口：码灵把认证委托给浏览器，浏览器 cookie 不受控——若连到了非预期账号，
-  // 此处打开 multica Web（在浏览器内登出当前账号 / 登录目标账号），再回此点「重新连接」。
+  // 此处打开 multica Web（在浏览器内登出当前账号 / 登录目标账号），再回此点「切换账号」。
   // 根因（webank 见 cookie 即签 JWT）需在 multica-webank 侧加授权确认屏，见设计文档 M5-l。
   async function handleSwitchAccount() {
     if (!appUrl) return;

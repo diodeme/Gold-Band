@@ -223,6 +223,7 @@ continue workflow button
 
 ```text
 当用户主动打断当前工作并在同一会话中讨论其他内容时，说明用户暂时离开了工作流执行；在 Runtime 明确要求继续工作流之前，无需遵守当前 artifact 输出语义，只需自然回应用户当前的问题。
+用户在中断期间针对当前任务给出的最新明确指引，在 Runtime 恢复工作流后继续有效；这类指引可以调整任务内容、交付结果或角色预设的执行流程。恢复 Runtime 控制本身不表示必须回到中断前的角色流程。与当前任务无关的普通对话不改变任务，用户指引也不得覆盖 artifact 输出契约、Gold Band 文件规则以及安全和能力边界。
 ```
 
 要求：
@@ -267,7 +268,7 @@ PostTurn 业务 turn 本身未暴露具体 schema，但仍复用相同的 system
 建议语义：
 
 ```text
-用户已选择继续工作流。此前的普通对话阶段已经结束，请继续完成原任务；当前 Runtime 控制要求与输出契约重新生效。
+用户已选择将当前节点重新交由 Runtime 控制。当前输出契约（如有）重新生效。
 ```
 
 中英文模板必须统一放置在：
@@ -276,6 +277,8 @@ PostTurn 业务 turn 本身未暴露具体 schema，但仍复用相同的 system
 - `src/prompts/en/runtime/runtime_control_resume.md`
 
 用户打断规则直接进入中英文基础 runtime system；AI-DYNAMIC 通过既有 system 组合自然继承。continue 模板可根据是否存在当前 artifact contract、是否处于 finalizing 渲染必要变量，但不得在实现代码中硬编码长 prompt。
+
+这里的“继续”只恢复 Runtime 对本轮结果的消费、artifact 校验与后续节点决策，不恢复一份独立的“原始角色流程”快照。Agent 应继续使用同一 ACP 会话历史，并以中断期间针对当前任务的最新明确用户指引决定业务执行方式；无关闲聊不构成任务变更。这些规则由基础 system prompt 稳定承载，resume prompt 只作为控制边界信号，不重复说明指令优先级。
 
 ### 7.3 恢复目标
 

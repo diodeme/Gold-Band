@@ -91,7 +91,7 @@
 - 当前选中 session 的顶部 trigger 也显示同一枚状态标记，与下拉树中的 attempt 行保持一致
 - 点击展开 round → node → attempt 层级树
 - 用户可切换具体 session
-- 每个 attempt 前仅显示轻量状态圆点，颜色只来自后端 `runtimeDisplay.tone`：绿色成功、红色失败/错误阻塞、黄色暂停、灰色待处理/未知；运行中使用主色圆点配外圈脉冲 halo
+- 每个 attempt 前仅显示轻量状态圆点，颜色只来自后端 `runtimeDisplay.tone`：绿色成功、红色失败/错误阻塞、黄色暂停、灰色待处理/未知；运行中统一使用 `gold-running` 蓝色圆点的低强度呼吸动画，并遵守 reduced-motion，不叠加另一套外圈 ping halo。
 - 已选中的 session 行仍保留同一枚状态标记，不能因为选中高亮而丢失运行态/结果态识别
 - `status / outcome / pauseReason` 只作为运行事实字段保留；Session Switcher、顶部选中栏、工作流查看 Sheet 不在前端自行推断成功/失败/暂停，而是统一消费后端派生的 `runtimeDisplay.code / tone / icon / terminal / resumable / reasonCode`
 - `completed + outcome=null` 不展示为成功；成功必须来自 `outcome=success` 派生出的 `runtimeDisplay.tone=success`
@@ -310,7 +310,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 会话态与旧 Round 详情中的普通文本都调用 `submit_conversation_prompt`，该 command 只路由 NonRuntime ACP prompt；显式继续统一调用 `continue_conversation_runtime`，不接收可见 prompt，不创建 optimistic 用户消息。`send_acp_prompt` 仍是底层同 session ACP helper，command 层必须先用 control mode / current attempt 许可隔离 Runtime 与 NonRuntime。
 - 通用继续资格只覆盖 `process-interrupted` 与 `runtime-abnormal`。`waiting-for-user-input + manual_check_pending` 是 NonRuntime 会话加独立成功/失败判定按钮，不展示也不接受通用继续；permission、elicitation 与 `error-blocked` 同样只能走对应结构化入口。固定 workflow 与 AI-DYNAMIC leaf 必须使用同一后端领域判定。
 - `runtime-continue-started` 是 durable acceptance：后端必须等到目标 Running 状态落盘后才能返回。启动前失败直接返回结构化错误，前端不建立 Running override；启动后意外失败由后端对原 active attempt 做 compare-and-set 收敛为 `runtime-abnormal` 并发送权威 lifecycle。用户 stop、节点完成或 attempt 切换形成的新事实优先，迟到失败不能覆盖。AI-DYNAMIC 启动失败还要回收 re-arm leaf 和 starting resume registry。
-- RuntimeControlled turn 被用户停止后，首条已接受的普通消息在正文后附加一次默认收缩、可展开的 `<hidden>` 运行上下文；同一 NonRuntime 阶段的后续消息以及再次停止普通回复都不得重复附加。UI 不完全隐藏该说明，继续沿用现有 hidden runtime context 气泡表现。显式继续 prompt 本身使用 `PromptVisibility::Hidden + reason=runtimeControlResume`。
+- RuntimeControlled turn 被用户停止后，首条已接受的普通消息在 prompt 正文后附加一次默认收缩、可展开的 `<hidden>` 运行上下文；同一 NonRuntime 阶段的后续消息以及再次停止普通回复都不得重复附加。UI 不完全隐藏该说明，继续沿用现有 hidden runtime context 气泡表现，并统一把 hidden 折叠块投影在可见正文上方，不改变发送给 Agent 的原始 prompt 顺序。显式继续 prompt 本身使用 `PromptVisibility::Hidden + reason=runtimeControlResume`。
 - suspended context 的认领与 accepted cursor 提交必须和 user prompt event 共用 ACP session prompt lock；同一 session 的两条并发普通消息只有第一条附加说明。固定 workflow 的 continue 还必须在状态读取前认领 per-run starting lease，双击或并发请求只接受一个；lease 只保护后台启动窗口，不持锁等待 Agent，不同 run、不同 session 和 AI-DYNAMIC leaf 保持并行。
 - `WorkflowContinued` 采用 source transition CAS：prompt 在 accepted event 落盘前只携带候选 transition，不提前把 session 持久化为 RuntimeControlled；初始化或接受失败时仍可重试，新的 stop 边界也不会被旧 resume 回写覆盖。Direct / `RawAgent` 首轮直接使用 NonRuntime，不创建伪 Runtime 边界。
 - legacy attempt 缺少 `runtimeControl` metadata 时允许回看一次 timeline；无 transition 的结果通过 snapshot/session 的 `runtimeControlTimelineScanComplete` 形成 negative cache。后续消息只读取小型 metadata，不得随 timeline 长度增加重复扫描成本。
@@ -358,7 +358,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 当 selected AI-DYNAMIC leaf 的 ACP 与节点状态已经 terminal、但外层 dynamic run 仍在驱动下一节点或执行 `PreparingWorkspace` 时，Conversation VM 的 Runtime facet 继续投影为 active/running；普通交接阶段显示“正在启动下一节点”，workspace 临界区显示“正在准备开发环境…”。不得因 leaf terminal 把 composer 提前降为自由会话，也不得丢失停止按钮。
 - runtime 异常、agent/provider 异常与 workflow DSL 无效必须分开提示：只有 `workflowValid=false` 或明确的 workflow validation error 才展示“修改/修复工作流”入口；`runtime-abnormal` 表示异常但可继续，恢复输入框并保留异常提示；provider/model/catalog/workspace 等 manual 可恢复异常也归入 `runtime-abnormal`；`error-blocked`、session failure、session killed 等不可继续运行期异常只提示查看错误原因，不默认引导用户修改工作流。
 - 当前选中 session 已有 `diagnostics.lastError` 时，错误面板文案应直接拼接具体错误原因，避免用户再额外寻找日志入口。
-- 新 UI 中，`process-interrupted` 都恢复普通输入框，但只有 `runMode=workflow/auto` 且后端 lifecycle 返回 `continueKind=action` 时展示“继续工作流”。该动作位于 composer 发送按钮旁；前端不得在 stop 响应后自行合成继续资格。发送文本只产生 `UserMessage + NonRuntimeControlled`，不调用 `run_continue()`；点击按钮才产生隐藏 `RuntimeResume + RuntimeControlled`，且不携带用户可见文本。Direct 停止后只保留普通发送，即使首个 session 尚未完整建立也不进入工作流重跑提示。AI-DYNAMIC 的继续动作必须携带精确 leaf locator，不能通过外层 parent continue 批量恢复 paused worker。
+- 新 UI 中，`process-interrupted` 都恢复普通输入框，但只有 `runMode=workflow/auto` 且后端 lifecycle 返回 `continueKind=action` 时展示“继续工作流”。该动作位于 composer 发送按钮旁；前端不得在 stop 响应后自行合成继续资格。发送文本只产生 `UserMessage + NonRuntimeControlled`，不调用 `run_continue()`；点击按钮才产生隐藏 `RuntimeResume + RuntimeControlled`，且不携带用户可见文本。continue command 返回的已持久化 active lifecycle 必须立即用于当前 leaf、composer 以及左侧 sidebar 中同一 task/run 的 `latestRun` 和 `runs[]` 摘要，使按钮从“正在继续”直接切换为“停止”、两级侧栏圆点同步变为 Running；不能等到下一节点启动后才校准，也不能把仅 ACP active 的 NonRuntime 普通追问误投影为 workflow run Running。本地 pending 只在权威 lifecycle 离开 continuable 后释放，不能因父级刷新稍晚而短暂回退成“继续工作流”。Direct 停止后只保留普通发送，即使首个 session 尚未完整建立也不进入工作流重跑提示。AI-DYNAMIC 的继续动作必须携带精确 leaf locator，不能通过外层 parent continue 批量恢复 paused worker。
 
 ## 会话信息栏（ACPSessionHeader）
 

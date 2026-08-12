@@ -230,7 +230,7 @@ continue workflow button
 要求：
 
 1. 复用现有用户消息 `<hidden data-gold-band-hidden="true">` runtime context 结构，不新增 system prompt 通道。
-2. 用户原始输入仍作为消息正文；运行说明在同一消息气泡中显示为默认收缩、可展开的“运行上下文”模块，维持现有设计，不做真正不可见处理。
+2. 用户原始输入仍作为消息正文；运行说明在同一消息气泡中显示为默认收缩、可展开的“运行上下文”模块，维持现有设计，不做真正不可见处理。prompt 保持正文后追加 hidden 的发送顺序，展示层则统一把 hidden 折叠模块放在可见正文上方。
 3. context reason / identity 使用稳定类型，例如 `runtimeControlSuspended`，不能伪装成 repair。
 4. 同一次 `RuntimeControlled -> NonRuntimeControlled` 切换后的第二条及后续用户消息不重复追加。
 5. 在 NonRuntime 普通对话中再次点击停止，只是取消当前 Agent 回复，控制模式仍是 `NonRuntimeControlled`，不产生新切换边界；下一条用户消息不得重复追加解除说明。
@@ -532,8 +532,10 @@ Conversation VM 在外层仍 Running 且 phase 为 `PreparingWorkspace` 时，�
 3. 点击“继续工作流”调用 continue command，不携带可见用户 prompt。
 4. `<hidden>` runtime context 保持默认收缩且可展开；resume / finalize / repair 沿用既有 Runtime prompt 展示策略，不渲染成用户手写文本。
 5. Agent 普通回复结束后 run 仍 paused，“继续工作流”按钮仍存在。
-6. Direct、completed follow-up 和 manual check 普通消息行为不回归。
-7. AI-DYNAMIC 选中 paused leaf 时 continue action 只携带目标 leaf locator。
+6. 点击继续后，composer 使用 command 返回的 durable active lifecycle 立即从“正在继续”单调收敛到“停止”；同一 snapshot 同步更新 session tree、sidebar task 的 `latestRun` 与 `runs[]`，两级侧栏圆点立即进入 Running。父级 run/sidebar 刷新只做校准，不能在两者之间重新显示“继续工作流”，也不能等待下一节点启动才显示运行态。
+7. Direct、completed follow-up 和 manual check 普通消息行为不回归。
+8. AI-DYNAMIC 选中 paused leaf 时 continue action 只携带目标 leaf locator。
+9. session tree/header 的 Running 圆点复用侧边栏 `gold-running + motion-safe:animate-pulse`，不保留额外 ping halo；暂停和终态保持静态。
 
 ### 14.3 页面验证
 

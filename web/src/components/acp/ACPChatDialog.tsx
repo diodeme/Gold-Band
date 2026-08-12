@@ -149,6 +149,7 @@ import {
 import {
   deriveAcpRuntimeComposerState,
   mergeConversationAttemptLifecycle,
+  shouldSettleRuntimeContinueSubmission,
   isRuntimeActiveStatus,
   isSessionActiveStatus,
   isSessionCompletedStatus,
@@ -1267,6 +1268,10 @@ export function ACPChatDialog(
       && !localLifecycle.runtime.active
       && !localLifecycle.acp.active,
   );
+  useEffect(() => {
+    if (!shouldSettleRuntimeContinueSubmission(runtimeContinueSubmitting, showRuntimeContinueAction)) return;
+    setRuntimeContinueSubmitting(false);
+  }, [runtimeContinueSubmitting, showRuntimeContinueAction]);
   const sessionInitializationInterrupted = isAcpSessionInitializationInterrupted({
     orchestrated: runtimeComposerContext?.isOrchestrated ?? true,
     runtimeStatus: localLifecycle?.runtime.status ?? runtimeComposerContext?.runtimeStatus,
@@ -2787,15 +2792,16 @@ export function ACPChatDialog(
         outerNodeId,
         outerAttemptId,
       );
-      // Runtime continue is acknowledged only after the durable attempt/leaf
-      // state is active. Authoritative lifecycle events (or the parent refresh
-      // below) own projection; merging the command response here could regress
-      // a newer failure/stop event that arrived first.
+      if (result.lifecycle) {
+        setLocalRuntimeLifecycle((current) =>
+          mergeConversationAttemptLifecycle(current, result.lifecycle!),
+        );
+        emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
+      }
       setRuntimeStopAccepted(false);
       onSessionStopped?.();
     } catch (error) {
       setRuntimeContinueError(displayAppError(t, error));
-    } finally {
       setRuntimeContinueSubmitting(false);
     }
   };

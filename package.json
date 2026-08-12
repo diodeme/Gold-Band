@@ -52,7 +52,6 @@
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-opener": "^2.5.0",
-    "@tomplum/react-git-log": "3.5.1",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vvo/tzdb": "^6.198.0",

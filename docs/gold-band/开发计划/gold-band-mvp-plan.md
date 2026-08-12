@@ -967,6 +967,7 @@ attempt-001/
 - workspace 一致性：AI-DYNAMIC 新增持久化 `Executing / PreparingWorkspace` 内部阶段，checkpoint、fork、merge 前准备与 release 继续在 dynamic graph lock 内完成。准备期间 UI 显示“正在准备开发环境…”，用户点击停止后沿用“正在停止…”并等待临界区结束；已创建 worktree 保留，continue 复用原 workspace tree。阶段开始只写 `dynamic-run.json + graph.json`，不重复重写全量分文件，也不新增轮询或 Agent turn。
 - stop boundary：外层 stop 落盘后，任何旧 dynamic execution 的迟到成功结果都不能恢复 Runtime；完整合法 completion 也必须等待用户显式 continue 建立新 execution generation。接口级回归覆盖 phase 持久化、停止 pending、临界区释放后 Paused、workspace 保留与前端 stopping 优先级。
 - 普通追问门禁修复：删除 conversation submit 中复用 `runtime_continue_required` 的旧 preflight；Workflow/AUTO 的 `Paused + ProcessInterrupted` 可以同时具备 NonRuntime 普通发送与显式 continue 两项能力。普通发送仍只在 attempt 当前由 Runtime 控制时拒绝，接受后不得改变 run/node 暂停事实或消费 continue 资格；Rust 接口回归固定两项能力相互独立。
+- 停止/继续交互收敛：session tree/header 的 starting、sending、cancelling、cancel-requested 状态统一投影为可见运行/暂停语义点，停止后不再出现与深色背景融为一体的 neutral 点；追加在正文后的 suspended hidden context 仅在展示层复用既有折叠组件移动到正文上方；continue command 的 durable active lifecycle 立即局部收敛 composer、session tree 与 sidebar task/run 摘要，使“正在继续”直接切换为“停止”且两级侧栏立即变为 Running，不等待下一节点或父级刷新。session tree/header 的 Running 点复用 sidebar 的 reduced-motion-safe 呼吸动画，不增加轮询或独立动画状态。
 
 ---
 

@@ -162,11 +162,13 @@ describe('right workspace resource model', () => {
       host: 'github.com',
       repository: 'acme/widgets',
       prNumber: 42,
+      baseOid: '1111111111111111111111111111111111111111',
+      headOid: '2222222222222222222222222222222222222222',
       path: 'src/main.rs',
     });
 
     expect(first).not.toBe(second);
-    expect(pullRequest).toContain('github-pr:github.com:acme/widgets:42:src/main.rs');
+    expect(pullRequest).toContain('github-pr:github.com:acme/widgets:42:1111111111111111111111111111111111111111:2222222222222222222222222222222222222222:src/main.rs');
   });
 
   it('isolates lightweight workspace state by conversation scope', () => {

@@ -12,7 +12,7 @@ export default defineConfig({
     environment: 'node',
     server: {
       deps: {
-        inline: ['@atomic-editor/editor', '@tomplum/react-git-log'],
+        inline: ['@atomic-editor/editor'],
       },
     },
   },

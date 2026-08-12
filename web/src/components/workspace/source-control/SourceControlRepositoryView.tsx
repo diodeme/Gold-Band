@@ -7,6 +7,7 @@ import {
   FileCode2,
   GitBranch,
   GitPullRequestArrow,
+  LoaderCircle,
   Plus,
   Tags,
 } from 'lucide-react';
@@ -39,6 +40,7 @@ import type {
   GitPullStrategyVm,
   GitSourceControlSnapshotVm,
 } from '@/types';
+import { rememberPreferredGitRemote, resolvePreferredGitRemote } from './source-control-preferences';
 
 type RepositoryActionKind =
   | 'fetch'
@@ -58,16 +60,16 @@ type RepositoryAction = { kind: RepositoryActionKind; target?: string };
 
 export function SourceControlRepositoryView({
   snapshot,
-  busy,
+  busyActionKind,
   locked,
   onMutation,
   onOperation,
 }: {
   snapshot: GitSourceControlSnapshotVm;
-  busy: boolean;
+  busyActionKind: string | null;
   locked: boolean;
-  onMutation: (input: GitMutationRequestVm, operation: string) => void;
-  onOperation: (input: GitOperationRequestVm, operation: string) => void;
+  onMutation: (input: GitMutationRequestVm) => void;
+  onOperation: (input: GitOperationRequestVm) => void;
 }) {
   const { t } = useTranslation();
   const [action, setAction] = useState<RepositoryAction | null>(null);
@@ -77,11 +79,17 @@ export function SourceControlRepositoryView({
   const [path, setPath] = useState('');
   const [flag, setFlag] = useState(false);
   const [style, setStyle] = useState<'annotated' | 'lightweight'>('annotated');
-  const [remote, setRemote] = useState(snapshot.repository.remotes[0]?.name ?? '');
+  const [remote, setRemote] = useState('');
   const [pullStrategy, setPullStrategy] = useState<GitPullStrategyVm>('fast-forward-only');
+  const busy = busyActionKind !== null;
   const localBranches = snapshot.refs.filter((ref) => ref.kind === 'local-branch');
   const tags = snapshot.refs.filter((ref) => ref.kind === 'tag');
-  const defaultRemote = snapshot.repository.remotes[0]?.name ?? '';
+  const remoteNames = snapshot.repository.remotes.map((item) => item.name);
+  const defaultRemote = resolvePreferredGitRemote(
+    snapshot.repository.commonDir,
+    remoteNames,
+    snapshot.repository.upstream?.name,
+  );
 
   const openAction = (next: RepositoryAction) => {
     setAction(next);
@@ -95,47 +103,52 @@ export function SourceControlRepositoryView({
     setPullStrategy('fast-forward-only');
   };
 
+  const selectRemote = (value: string) => {
+    setRemote(value);
+    rememberPreferredGitRemote(snapshot.repository.commonDir, value);
+  };
+
   const submit = () => {
     if (!action) return;
     switch (action.kind) {
       case 'fetch':
-        onOperation({ kind: 'fetch', remote: remote || null, prune: flag }, 'fetch');
+        onOperation({ kind: 'fetch', remote: remote || null, prune: flag });
         break;
       case 'pull':
-        onOperation({ kind: 'pull', remote: null, branch: null, strategy: pullStrategy }, 'pull');
+        onOperation({ kind: 'pull', remote: null, branch: null, strategy: pullStrategy });
         break;
       case 'push': {
         const branch = snapshot.repository.currentBranch;
         if (!branch || !remote) return;
-        onOperation({ kind: 'push', remote, branch, setUpstream: !snapshot.repository.upstream }, 'push');
+        onOperation({ kind: 'push', remote, branch, setUpstream: !snapshot.repository.upstream });
         break;
       }
       case 'branch-create':
-        onMutation({ kind: 'branch-create', name: name.trim(), startPoint: target.trim() || 'HEAD', checkout: flag }, 'branch-create');
+        onMutation({ kind: 'branch-create', name: name.trim(), startPoint: target.trim() || 'HEAD', checkout: flag });
         break;
       case 'branch-rename':
-        onMutation({ kind: 'branch-rename', oldName: action.target, newName: name.trim() }, 'branch-rename');
+        onMutation({ kind: 'branch-rename', oldName: action.target, newName: name.trim() });
         break;
       case 'branch-delete':
-        onMutation({ kind: 'branch-delete-safe', name: action.target ?? '' }, 'branch-delete');
+        onMutation({ kind: 'branch-delete-safe', name: action.target ?? '' });
         break;
       case 'tag-create':
-        onMutation({ kind: 'tag-create', name: name.trim(), target: target.trim() || 'HEAD', style, message: message.trim() || null }, 'tag-create');
+        onMutation({ kind: 'tag-create', name: name.trim(), target: target.trim() || 'HEAD', style, message: message.trim() || null });
         break;
       case 'tag-delete':
-        onMutation({ kind: 'tag-delete-local', name: action.target ?? '' }, 'tag-delete');
+        onMutation({ kind: 'tag-delete-local', name: action.target ?? '' });
         break;
       case 'push-tag':
-        if (remote) onOperation({ kind: 'push-tag', remote, tag: action.target ?? '' }, 'push-tag');
+        if (remote) onOperation({ kind: 'push-tag', remote, tag: action.target ?? '' });
         break;
       case 'worktree-create':
-        onMutation({ kind: 'worktree-create', path: path.trim(), sourceRef: target.trim() || 'HEAD', newBranch: name.trim() || null }, 'worktree-create');
+        onMutation({ kind: 'worktree-create', path: path.trim(), sourceRef: target.trim() || 'HEAD', newBranch: name.trim() || null });
         break;
       case 'stash-create':
-        onOperation({ kind: 'stash-create', message: message.trim() || null, includeUntracked: flag }, 'stash-create');
+        onOperation({ kind: 'stash-create', message: message.trim() || null, includeUntracked: flag });
         break;
       case 'stash-apply':
-        onOperation({ kind: 'stash-apply', stashRef: action.target ?? '', restoreIndex: flag }, 'stash-apply');
+        onOperation({ kind: 'stash-apply', stashRef: action.target ?? '', restoreIndex: flag });
         break;
     }
     setAction(null);
@@ -158,13 +171,13 @@ export function SourceControlRepositoryView({
     <div className="flex min-h-0 flex-1 flex-col" data-source-control-repository="true">
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border/50 px-2">
         <Button size="sm" variant="ghost" disabled={busy || !defaultRemote} onClick={() => openAction({ kind: 'fetch' })}>
-          <CloudDownload className="size-3.5" />{t('sourceControl.fetch')}
+          {busyActionKind === 'fetch' ? <LoaderCircle className="size-3.5 animate-spin" /> : <CloudDownload className="size-3.5" />}{t('sourceControl.fetch')}
         </Button>
         <Button size="sm" variant="ghost" disabled={busy || locked || !snapshot.repository.upstream} onClick={() => openAction({ kind: 'pull' })}>
-          <GitPullRequestArrow className="size-3.5" />{t('sourceControl.pull')}
+          {busyActionKind === 'pull' ? <LoaderCircle className="size-3.5 animate-spin" /> : <GitPullRequestArrow className="size-3.5" />}{t('sourceControl.pull')}
         </Button>
         <Button size="sm" variant="ghost" disabled={busy || !defaultRemote || !snapshot.repository.currentBranch} onClick={() => openAction({ kind: 'push' })}>
-          <CloudUpload className="size-3.5" />{t('sourceControl.push')}
+          {busyActionKind === 'push' ? <LoaderCircle className="size-3.5 animate-spin" /> : <CloudUpload className="size-3.5" />}{t('sourceControl.push')}
         </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -186,7 +199,7 @@ export function SourceControlRepositoryView({
               <DropdownMenu>
                 <DropdownMenuTrigger asChild><Button size="icon-xs" variant="ghost" disabled={busy}><Ellipsis className="size-3.5" /></Button></DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem disabled={locked || ref.shortName === snapshot.repository.currentBranch || ref.checkedOutWorktreePaths.length > 0} onSelect={() => onMutation({ kind: 'branch-switch', name: ref.shortName }, 'branch-switch')}>{t('sourceControl.switchBranch')}</DropdownMenuItem>
+                  <DropdownMenuItem disabled={locked || ref.shortName === snapshot.repository.currentBranch || ref.checkedOutWorktreePaths.length > 0} onSelect={() => onMutation({ kind: 'branch-switch', name: ref.shortName })}>{t('sourceControl.switchBranch')}</DropdownMenuItem>
                   <DropdownMenuItem disabled={locked} onSelect={() => openAction({ kind: 'branch-rename', target: ref.shortName })}>{t('sourceControl.rename')}</DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem variant="destructive" disabled={ref.shortName === snapshot.repository.currentBranch || ref.checkedOutWorktreePaths.length > 0} onSelect={() => openAction({ kind: 'branch-delete', target: ref.shortName })}>{t('common.delete')}</DropdownMenuItem>
@@ -230,14 +243,14 @@ export function SourceControlRepositoryView({
         style={style}
         remote={remote}
         pullStrategy={pullStrategy}
-        remotes={snapshot.repository.remotes.map((item) => item.name)}
+        remotes={remoteNames}
         onName={setName}
         onTarget={setTarget}
         onMessage={setMessage}
         onPath={setPath}
         onFlag={setFlag}
         onStyle={setStyle}
-        onRemote={setRemote}
+        onRemote={selectRemote}
         onPullStrategy={setPullStrategy}
         onClose={() => setAction(null)}
         onSubmit={submit}

@@ -52,6 +52,7 @@ import {
 } from './api';
 import { isTauriRuntime } from './api/shared';
 import {
+  applyConversationSidebarRunLifecycle,
   applyConversationSidebarTaskActivity,
   conversationTaskActivityFromLifecycle,
   conversationTaskActivityFromUpdate,
@@ -414,6 +415,32 @@ export function App() {
         projectId,
         taskId,
         activity,
+      );
+      conversationSidebarRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const applyConversationLifecycleSnapshotToSidebar = useCallback((
+    projectId: string,
+    taskId: string,
+    runId: string,
+    lifecycle: Parameters<typeof conversationTaskActivityFromLifecycle>[0],
+    activity = conversationTaskActivityFromLifecycle(lifecycle),
+  ) => {
+    setConversationSidebar((current) => {
+      const withActivity = applyConversationSidebarTaskActivity(
+        current,
+        projectId,
+        taskId,
+        activity,
+      );
+      const next = applyConversationSidebarRunLifecycle(
+        withActivity,
+        projectId,
+        taskId,
+        runId,
+        lifecycle,
       );
       conversationSidebarRef.current = next;
       return next;
@@ -875,7 +902,17 @@ export function App() {
       if (!active) return;
       if (event.projectId !== projectId || event.taskId !== taskId || event.runId !== runId) return;
       const sidebarActivity = conversationTaskActivityFromUpdate(event);
-      if (sidebarActivity !== undefined) {
+      if (event.lifecycle) {
+        applyConversationLifecycleSnapshotToSidebar(
+          projectId,
+          taskId,
+          runId,
+          event.lifecycle,
+          sidebarActivity === undefined
+            ? conversationTaskActivityFromLifecycle(event.lifecycle)
+            : sidebarActivity,
+        );
+      } else if (sidebarActivity !== undefined) {
         applyConversationTaskActivity(projectId, taskId, sidebarActivity);
       }
       const sessionKey = conversationSessionKeyFromParts(event);
@@ -968,7 +1005,7 @@ export function App() {
       stopListeningAcp?.();
       stopListeningRun?.();
     };
-  }, [applyConversationRunSnapshot, applyConversationSidebar, applyConversationTaskActivity, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId]);
+  }, [applyConversationLifecycleSnapshotToSidebar, applyConversationRunSnapshot, applyConversationSidebar, applyConversationTaskActivity, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -2124,10 +2161,11 @@ export function App() {
             }).catch(() => {});
           }}
           onLifecycleSnapshot={(snapshot) => {
-            applyConversationTaskActivity(
+            applyConversationLifecycleSnapshotToSidebar(
               conversationPage.projectId,
               snapshot.taskId,
-              conversationTaskActivityFromLifecycle(snapshot.lifecycle),
+              snapshot.runId,
+              snapshot.lifecycle,
             );
             setConversationRun((current) => {
               const selectedPatched = applyConversationSelectedSessionSnapshot(current, snapshot);

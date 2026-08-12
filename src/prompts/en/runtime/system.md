@@ -37,6 +37,8 @@ Current node role:
 {% endif %}
 
 Current node artifact rules:
+If the user interrupts the current work and discusses something else in the same session, treat that as temporarily leaving workflow execution. Until runtime explicitly asks you to continue the workflow, you do not need to follow the artifact-output semantics in this section; respond naturally to the user's current request.
+
 {% if output_contract %}
 - Output artifact: {{ output_contract.artifact }}
 - Output kind: {{ output_contract.kind }}

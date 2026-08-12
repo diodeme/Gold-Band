@@ -956,18 +956,18 @@ attempt-001/
 
 - 根因修复：将“Agent turn 是否由 Runtime 消费”从 prompt 内容与节点暂停状态中抽离为 invocation 级 `RuntimeControlled / NonRuntimeControlled`。普通消息不会再因为回复结束而读取 artifact、计算 outcome 或推进 workflow。
 - 交互收敛：`Paused + ProcessInterrupted` 不新增状态；composer 保持普通聊天，并提供独立“继续工作流”按钮。文本提交固定走 NonRuntime ACP prompt，显式继续调用 `continue_conversation_runtime` 并发送隐藏 `RuntimeResume`，不创建可见用户消息。
-- 边界提示：Runtime → NonRuntime 后第一条已接受消息附加一次默认收缩、可展开的运行上下文；transition cursor 复用 ACP snapshot/session/timeline metadata，NonRuntime 中再次停止不重复注入，恢复后再次停止才形成新边界。
+- 边界提示：Workflow/AUTO 的中英文基础 runtime system prompt 预先声明用户主动打断并转向其他内容时，在 Runtime 明确恢复前无需遵守 artifact 输出语义；AI-DYNAMIC 通过既有 system 组合自然继承且不重复提示。停止后的普通消息保持用户原文，不再追加一次性 suspended hidden context；Runtime 仍以 NonRuntime 控制模式独立禁止 artifact 消费与工作流推进，显式继续的隐藏 `runtimeControlResume` 保持不变。
 - artifact 完整性：PostTurn finalize 中断输出一律不可信；`artifact-emission.json(finalizing)` 恢复只跳过业务 turn并重新请求完整 finalize。InlineControl、PostTurnProjection 与 AI-DYNAMIC 精确 leaf resume 继续复用现有 contract 和 scheduler。
-- 并发与接受边界：suspended context 在 ACP prompt lock 内认领；`WorkflowContinued` 只在 accepted prompt event 落盘后以 source transition CAS 提交，迟到 resume 不覆盖新 stop。固定工作流 continue 使用 per-run starting lease 拦截双击，且不持有全局锁等待 Agent turn。
+- 并发与接受边界：`WorkflowContinued` 只在 accepted prompt event 落盘后以 source transition CAS 提交，迟到 resume 不覆盖新 stop。固定工作流 continue 使用 per-run starting lease 拦截双击，且不持有全局锁等待 Agent turn。
 - 性能收口：legacy cursor 缺失时只回扫 timeline 一次并持久化 negative cache；cursor 并发写入使用固定 64 路路径哈希短锁，不维护随 attempt 数增长并在热路径全表清理的锁注册表。Direct / `RawAgent` 首轮直接派生为 NonRuntimeControlled。
-- 回归固化：Rust 覆盖 control cursor、NonRuntime 重复 stop、accepted 后 resume commit、stale resume CAS、legacy negative cache、同 session 并发首次 context、固定 continue starting lease、Direct 首轮、stop probe、NonRuntime contract policy 与 interrupted PostTurn；Provider prompt bundle 覆盖 PostTurn 业务 turn 不暴露 output DSL，Web 覆盖 paused action + 普通 composer、显式继续入口和旧 `interrupted-input/runtime-continue` 语义删除。
+- 回归固化：Rust 覆盖 control cursor、NonRuntime 重复 stop、accepted 后 resume commit、stale resume CAS、legacy negative cache、停止后普通 prompt 原文透传、固定 continue starting lease、Direct 首轮、stop probe、NonRuntime contract policy 与 interrupted PostTurn；Provider prompt bundle 覆盖 PostTurn 业务 turn 不暴露 output DSL，Web 覆盖 paused action + 普通 composer、显式继续入口和旧 `interrupted-input/runtime-continue` 语义删除。
 - 继续资格收紧：通用 continue 只恢复 `ProcessInterrupted / RuntimeAbnormal`；manual check 等待保持 NonRuntime 并只由成功/失败按钮推进，permission、elicitation/waiting 与 ErrorBlocked 不能被通用入口绕过。fixed 与 AI-DYNAMIC 复用同一领域判定。
 - durable acceptance：`runtime-continue-started` 改为 Running 状态落盘后的启动握手结果；启动前失败同步返回结构化错误。握手后意外失败只对原 active attempt 做 CAS 收敛并刷新权威 lifecycle，迟到错误不覆盖用户 stop/完成/attempt 切换；AI-DYNAMIC 同时回收 re-arm leaf 与 starting registry。
 - 性能约束：握手使用一次性 channel、无轮询；fixed starting lease 在 Running durable fact 后释放，不跨 Agent turn。失败状态 CAS 复用固定 64 路短锁和 dynamic graph lock，只覆盖小型状态文件写入。
 - workspace 一致性：AI-DYNAMIC 新增持久化 `Executing / PreparingWorkspace` 内部阶段，checkpoint、fork、merge 前准备与 release 继续在 dynamic graph lock 内完成。准备期间 UI 显示“正在准备开发环境…”，用户点击停止后沿用“正在停止…”并等待临界区结束；已创建 worktree 保留，continue 复用原 workspace tree。阶段开始只写 `dynamic-run.json + graph.json`，不重复重写全量分文件，也不新增轮询或 Agent turn。
 - stop boundary：外层 stop 落盘后，任何旧 dynamic execution 的迟到成功结果都不能恢复 Runtime；完整合法 completion 也必须等待用户显式 continue 建立新 execution generation。接口级回归覆盖 phase 持久化、停止 pending、临界区释放后 Paused、workspace 保留与前端 stopping 优先级。
 - 普通追问门禁修复：删除 conversation submit 中复用 `runtime_continue_required` 的旧 preflight；Workflow/AUTO 的 `Paused + ProcessInterrupted` 可以同时具备 NonRuntime 普通发送与显式 continue 两项能力。普通发送仍只在 attempt 当前由 Runtime 控制时拒绝，接受后不得改变 run/node 暂停事实或消费 continue 资格；Rust 接口回归固定两项能力相互独立。
-- 停止/继续交互收敛：session tree/header 的 starting、sending、cancelling、cancel-requested 状态统一投影为可见运行/暂停语义点，停止后不再出现与深色背景融为一体的 neutral 点；追加在正文后的 suspended hidden context 仅在展示层复用既有折叠组件移动到正文上方；continue command 的 durable active lifecycle 立即局部收敛 composer、session tree 与 sidebar task/run 摘要，使“正在继续”直接切换为“停止”且两级侧栏立即变为 Running，不等待下一节点或父级刷新。session tree/header 的 Running 点复用 sidebar 的 reduced-motion-safe 呼吸动画，不增加轮询或独立动画状态。
+- 停止/继续交互收敛：session tree/header 的 starting、sending、cancelling、cancel-requested 状态统一投影为可见运行/暂停语义点，停止后不再出现与深色背景融为一体的 neutral 点；continue command 的 durable active lifecycle 立即局部收敛 composer、session tree 与 sidebar task/run 摘要，使“正在继续”直接切换为“停止”且两级侧栏立即变为 Running，不等待下一节点或父级刷新。session tree/header 的 Running 点复用 sidebar 的 reduced-motion-safe 呼吸动画，不增加轮询或独立动画状态。
 
 ---
 

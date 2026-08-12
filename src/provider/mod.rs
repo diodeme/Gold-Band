@@ -10,9 +10,9 @@ use crate::domain::{
 };
 use crate::prompts::{
     PromptExecutionSurface, RUNTIME_ARTIFACT_FINALIZE_EN, RUNTIME_ARTIFACT_FINALIZE_ZH_CN,
-    RUNTIME_CONTROL_SUSPENDED_EN, RUNTIME_CONTROL_SUSPENDED_ZH_CN, RUNTIME_HIDDEN_CONTEXT_EN,
-    RUNTIME_HIDDEN_CONTEXT_ZH_CN, RUNTIME_SYSTEM_EN, RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN,
-    RUNTIME_USER_ZH_CN, profile_template_context, prompt_by_language, render as render_template,
+    RUNTIME_HIDDEN_CONTEXT_EN, RUNTIME_HIDDEN_CONTEXT_ZH_CN, RUNTIME_SYSTEM_EN,
+    RUNTIME_SYSTEM_ZH_CN, RUNTIME_USER_EN, RUNTIME_USER_ZH_CN, profile_template_context,
+    prompt_by_language, render as render_template,
 };
 use crate::runtime::WorkerRefState;
 use crate::runtime_error::{
@@ -405,8 +405,6 @@ pub struct PromptBundle {
     pub hidden_reason: Option<String>,
     pub turn_control_mode: TurnControlMode,
     pub runtime_control_resume_candidate: bool,
-    /// Candidate context rendered only after the per-session prompt lock is held.
-    pub runtime_control_suspended_context: Option<String>,
     pub runtime_control_transition_id: Option<String>,
     pub runtime_control_source_transition_id: Option<String>,
     pub runtime_control_transition_cause: Option<TurnControlTransitionCause>,
@@ -1504,7 +1502,6 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         },
         turn_control_mode: req.turn_control_mode,
         runtime_control_resume_candidate: req.runtime_control_resume_candidate,
-        runtime_control_suspended_context: None,
         runtime_control_transition_id: None,
         runtime_control_source_transition_id: None,
         runtime_control_transition_cause: None,
@@ -1595,26 +1592,6 @@ fn append_extra_hidden_sections(prompt: &str, sections: &[PromptHiddenSection]) 
         prompt.trim(),
         gold_band_hidden_block("Gold Band runtime context", &content)
     )
-}
-
-pub(crate) fn append_runtime_control_suspended_context(prompt: &str, context: &str) -> String {
-    append_extra_hidden_sections(
-        prompt,
-        &[PromptHiddenSection {
-            title: "Gold Band runtime context".to_string(),
-            content: context.to_string(),
-        }],
-    )
-}
-
-pub fn runtime_control_suspended_context(language: crate::config::DesktopLanguage) -> String {
-    prompt_by_language(
-        language,
-        RUNTIME_CONTROL_SUSPENDED_ZH_CN,
-        RUNTIME_CONTROL_SUSPENDED_EN,
-    )
-    .trim()
-    .to_string()
 }
 
 fn render_hidden_context(req: &WorkerInvocation) -> String {
@@ -2507,6 +2484,48 @@ mod tests {
             render_prompt_bundle(&req).unwrap().hidden_reason.as_deref(),
             Some("invalidOutputRepair")
         );
+    }
+
+    #[test]
+    fn runtime_system_exempts_interrupted_free_conversation_from_artifact_semantics() {
+        let mut req = test_worker_invocation(Utf8PathBuf::from("/run/attempt-001"));
+        req.output_contract = Some(test_output_contract(OutputEmissionMode::InlineControl));
+
+        let zh = render_prompt_bundle(&req).unwrap();
+        assert!(zh.system_prompt.contains("用户主动打断当前工作"));
+        assert!(
+            zh.system_prompt
+                .contains("无需遵守本节的 artifact 输出语义")
+        );
+
+        req.runtime_context.language = crate::config::DesktopLanguage::En;
+        let en = render_prompt_bundle(&req).unwrap();
+        assert!(
+            en.system_prompt
+                .contains("If the user interrupts the current work")
+        );
+        assert!(
+            en.system_prompt
+                .contains("do not need to follow the artifact-output semantics")
+        );
+    }
+
+    #[test]
+    fn runtime_resume_remains_a_hidden_control_prompt() {
+        let mut req = test_worker_invocation(Utf8PathBuf::from("/run/attempt-001"));
+        req.session_mode = SessionMode::Continue;
+        req.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
+        req.resume_prompt_visibility = PromptVisibility::Hidden;
+        req.resume_prompt = Some("resume runtime control".to_string());
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert_eq!(prompt.visibility, PromptVisibility::Hidden);
+        assert_eq!(
+            prompt.hidden_reason.as_deref(),
+            Some("runtimeControlResume")
+        );
+        assert_eq!(prompt.user_prompt, "resume runtime control");
     }
 
     #[test]

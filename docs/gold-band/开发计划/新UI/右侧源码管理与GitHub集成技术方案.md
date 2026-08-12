@@ -126,6 +126,16 @@ Git Graph 和关系分析不再作为首版能力。真实仓库的多 ref DAG �
 
 ## 5. 总体架构
 
+源码管理首次加载复用已有 `GitRepositoryService.probe()`、`get_git_capability` 与 `initialize_git_repository`，建立 capability gate，而不是直接把完整 snapshot 的任意失败投影成一个 error：
+
+- `not-installed`：不请求 snapshot/history，显示 Git 安装引导和重新检测。
+- `repository-required`：显示非 Git 仓库状态，typed command 执行 `git init`；不 stage、不 commit。
+- `head-required`：允许读取源码管理 snapshot；history 对 unborn HEAD 返回稳定空页，用户从“更改”完成首次提交。
+- `worktree-required / repository-unavailable`：按稳定 capability 状态展示针对性恢复建议。
+- `ready`：snapshot/history 并行加载，真实命令失败才进入结构化错误态。
+
+capability 仅在首次进入、不可用状态的显式重试或初始化终态读取；已 ready 的后台 watcher refresh 不重复 probe。Tauri capability/init command 进入 blocking pool，避免 Git 进程等待占用 IPC event loop。
+
 ```text
 Right Workspace / Source Control
   -> RuntimeApi typed commands + events
@@ -494,7 +504,16 @@ interface FileComparisonVm {
 - checkout 已被其他 worktree 占用的分支。
 - 对 runtime-owned worktree 使用用户创建流程覆盖。
 
-首版只查看和创建，不删除 worktree。
+Worktree 还支持 Git 原生安全删除：
+
+- 前端仅提交 typed `worktree-remove { path }`，后端先将路径规范化并与 `git worktree list` 的权威记录精确匹配。
+- 当前 command 所在 worktree 禁止删除；不存在或已经变化的目标返回稳定错误码。
+- 删除使用 repository write lock 和 `git worktree remove`，不使用 `--force`，不调用文件系统递归删除，也不顺带删除关联 branch。
+- dirty/untracked worktree 由 Git 拒绝，映射为 `git.worktree-remove-dirty` 并保留脱敏后的原始原因。
+- UI 使用行级菜单与确认 Dialog，展示完整目标路径；pending action 保存目标 path，仅目标行显示 spinner。
+- 仓库四个列表的容器、滚动区与行建立完整 `min-width: 0 / overflow-hidden` 约束链，主文案和辅助 path/ref 分配有界弹性空间，操作区固定，长 Stash/Worktree 文本不得撑宽右侧客户端。
+
+Merge/Rebase 状态机的 marker 语义不同：`MERGE_HEAD` 可判定 Merge 进行中，Rebase 进行中只以 `rebase-merge` / `rebase-apply` 目录为准；`REBASE_HEAD` 仅提供当前重放 Commit 的 OID/subject，因为 Git 成功结束后仍可能保留该文件。watcher 继续监听全部 marker 以触发刷新，但 snapshot 不得把事件触发源误当成生命周期事实。
 
 ### 8.9 Fetch/Pull/Push
 
@@ -589,10 +608,10 @@ runtime 内部分支 push 默认禁用，避免发布 `gb-dyn/*` 等内部 refs�
 失效规则：
 
 - 首次无缓存时加载，普通 Right Workspace Tab 切换、打开 Diff 和返回不失效。
-- 用户显式刷新时重新读取 snapshot/history；已有可展示数据不退回全屏 loading。
+- 已加载源码管理页面依赖 workspace/Git metadata watcher 自动刷新 snapshot/history，不显示普通本地刷新按钮；首次加载失败仍允许重试。Fetch 是显式远程同步命令，不等价于本地刷新。
 - Stage/Unstage 成功后使用 `scope=workspace` 结果只合并最新 status 与 repository revision，不刷新未变化的 refs/worktree/stash/remotes/history。
 - Commit、branch、tag、worktree 等 refs/结构变化 mutation 返回 `scope=repository`，前端在命令成功后并行读取 snapshot/history，禁止先等完整 snapshot 再串行读取 history。
-- pending action 生命周期内禁用同 workspace 的其他 Git 写操作；单文件 Stage/Unstage 在目标行按钮显示旋转状态，Commit/Fetch/Pull/Push 在主操作按钮显示旋转状态。
+- pending action 生命周期内禁用同 workspace 的其他 Git 写操作；单文件 Stage/Unstage 仅在目标行按钮显示旋转状态，其他文件行操作按钮不渲染。后台 watcher 刷新使用独立 `refreshing` 状态，不禁用 commit subject/body 或文件操作。Commit/Fetch/Pull/Push 在主操作按钮显示旋转状态。
 - 长操作结束后立即刷新 snapshot/history。
 - `GitStateMonitor` 事件使对应 repository/workspace 会话失效，不允许由每个组件自行轮询。
 - snapshot/history/detail 分别维护请求 revision；旧请求完成后不得覆盖较新刷新或操作结果。
@@ -711,6 +730,10 @@ type FileComparisonSource =
 
 ### 12.5 更改区
 
+仓库标题右侧使用动态同步按钮：`behind > 0` 时显示 `↓behind ↑ahead` 并执行 Pull，否则显示 `↑ahead` 并执行 Push；同步为零时禁用，未设置 upstream 时允许首次 Push。Fetch 保持独立，用于联网更新 remote refs。Push non-fast-forward 不自动触发 Pull，只展示结构化失败，由用户显式 Fetch、Pull、Push。按钮打开原有 typed 对话框，复用 repository-scoped remote 偏好和统一 operation 状态。更改区工具栏不再重复展示同步文字按钮，仅保留右侧 `…`，承载全部暂存、全部取消暂存和保存为 stash。terminal operation 结果保留在 repository/workspace 会话中，跨 Tab 可见，直到用户关闭或下一次 operation 替换。
+
+Fetch Dialog 的 `prune` 开关默认关闭，UI 使用用户领域文案“移除远端已删除的分支记录”，并明确说明不会删除本地分支或工作区文件；接口仍使用 typed `prune: boolean`，不从文案反推行为。
+
 - 顶部显示当前分支、upstream、ahead/behind 和同步操作。
 - 分区顺序：冲突、已暂存、未暂存、未跟踪。
 - 每行显示状态、路径、rename old path、增删统计和可用操作。
@@ -730,7 +753,17 @@ type FileComparisonSource =
 
 ### 12.7 仓库区
 
-仓库区包含分支、tags、worktrees、stash 四个子视图，使用 shadcn Tabs/DropdownMenu/Dialog/Command 等 copy-in 组件。
+仓库区包含分支、tags、worktrees、stash 四个同层级二级 Tabs，使用 shadcn Tabs/DropdownMenu/Dialog/Command 等 copy-in 组件。一次只挂载当前领域列表，`repositoryTab` 与源码管理主分区、分页、选择和 commit 草稿一起进入 repository/workspace 会话缓存；普通主 Tab 往返、打开文件或 Diff 后返回不得重置。
+
+### 12.8 Pull 冲突流程
+
+不实现可视化冲突块合并工具。`GitWorkspaceStatus.operationInProgress` 收紧为 typed `merge | rebase | cherry-pick | revert`，Rebase 同时返回当前 `oid + subject`；前端只投影 canonical Git metadata，不根据 stderr 文案猜状态。
+
+- Merge：确认后只暂存 `git diff --name-only --diff-filter=U -z` 返回的路径，再执行 `git merge --continue`；允许 `git merge --abort`。
+- Rebase：确认后只暂存当前 unmerged 路径，再执行 `git rebase --continue`；危险菜单提供 `git rebase --skip` 和 `git rebase --abort`。Skip 确认必须展示当前 Commit 短 SHA/标题并说明整个 Commit 的改动不会应用。
+- continue/add/原生命令在同一 workspace 写锁内执行，避免其他写操作插入；设置非交互 editor 环境，命令不会弹出终端编辑器。
+- watcher 增加 `MERGE_HEAD / REBASE_HEAD / rebase-merge / rebase-apply` 目标，外部 IDE 的 add/continue/skip/abort 与 Gold Band 自身操作使用同一 snapshot 收敛路径，无轮询。
+- 冲突期间普通 Commit、同步、Stage/Unstage 和仓库写操作禁用；冲突文件打开现有普通文件编辑 Tab。
 
 ## 13. PR/Issue Markdown 与 Atomic 复用
 
@@ -1069,7 +1102,7 @@ Git CLI 失败时，`params` 还必须包含 `exitCode` 和可选 `reason`。`re
 - 右键短/完整 SHA 与提交归属；同一审阅会话切换文件不增加 Tab。
 - 下一差异越过当前文件末尾后进入下一文件，上一差异反向进入前一文件末尾。
 - 源码管理 -> Diff -> 返回不得重新请求 snapshot/history，并恢复内部 Tab、分页、多选、详情和 commit 草稿。
-- 显式刷新、typed mutation 和长操作完成必须失效并刷新；不同 worktree 缓存隔离，旧请求不得覆盖新状态。
+- workspace/Git metadata watcher、typed mutation 和长操作完成必须使对应本地领域失效并刷新；不同 worktree 缓存隔离，旧请求不得覆盖新状态。GitHub 查询仍保留自身的显式刷新。
 - Stage/Unstage 不请求 snapshot/history，只合并 status-scoped 结果；refs 变化 mutation 的 snapshot/history 必须并行发起。
 - 单文件 Stage/Unstage pending 时目标按钮显示 spinner，其他 Git 写入口全部禁用，重复点击不得发起第二个接口请求。
 - GitHub capability 使用 `gh repo view <owner/repo> --json ...` positional 参数契约。
@@ -1101,7 +1134,7 @@ Git CLI 失败时，`params` 还必须包含 `exitCode` 和可选 `reason`。`re
 
 Browser preview 的源码管理 fixture 提供 `origin` 与 `fork` 两个 remote；短 mutation 和长 operation 均保留 700ms 可见 pending 窗口，Stage 会把目标文件移动到 staged，向 `fork` Push 会从 queued 进入与桌面接口同构的 `git.authentication-failed + exitCode + reason` 终态，用于可见交互回归按钮反馈、全局写锁、错误详情、长文本换行和 remote 记忆，不改变桌面生产后端行为。
 
-2026-08-11 已在 Gold-Band 实仓测量 Git 查询基线：status 平均约 110ms、refs 约 160ms、worktrees 约 127ms、stashes 约 223ms、双 remote 查询约 389ms、history 约 330ms。旧 Stage 在 `git add` 前后串行执行 revision 校验、完整 snapshot 和 history，Windows 多进程启动累计约 1.5–3 秒；现已改为 status-scoped result，删除 Stage/Unstage 后无关 snapshot/history 查询，refs 变化 mutation 的 snapshot/history 改为并行。浏览器 mock 实际验证目标 Stage 按钮立即显示 spinner，其他 Stage/Unstage、Commit 和刷新入口禁用，完成后文件移动到“已暂存”；Commit 显示 spinner 并锁住写入口；Push queued/running 时显示“正在推送分支”并禁用仓库操作。实际 `gh 2.93.0` 已确认旧 `gh repo view --repo ...` 返回 `unknown flag: --repo`，修正后的 positional `gh repo view diodeme/Gold-Band --json nameWithOwner,defaultBranchRef` 成功返回 `main`。
+2026-08-11 已在 Gold-Band 实仓测量 Git 查询基线：status 平均约 110ms、refs 约 160ms、worktrees 约 127ms、stashes 约 223ms、双 remote 查询约 389ms、history 约 330ms。旧 Stage 在 `git add` 前后串行执行 revision 校验、完整 snapshot 和 history，Windows 多进程启动累计约 1.5–3 秒；现已改为 status-scoped result，删除 Stage/Unstage 后无关 snapshot/history 查询，refs 变化 mutation 的 snapshot/history 改为并行。DOM 回归固定目标 Stage 按钮立即显示 spinner、其他文件行操作按钮不渲染，完成后文件移动到“已暂存”；后台 watcher 刷新不锁 commit 草稿，Commit 和长 operation 仍锁住同 workspace 写入口。实际 `gh 2.93.0` 已确认旧 `gh repo view --repo ...` 返回 `unknown flag: --repo`，修正后的 positional `gh repo view diodeme/Gold-Band --json nameWithOwner,defaultBranchRef` 成功返回 `main`。
 
 2026-08-11 已使用浏览器 mock 实际验证 Push 错误与 remote 偏好：切换到 `fork` 后关闭并重开 Dialog 仍恢复选择，刷新页面并重新进入源码管理后也恢复 `fork`；确认 Push 后同时展示本地化身份验证原因、恢复建议和 Git 原始失败原因，窄右栏内长文本正常换行。验证页面、1422 端口 Vite 进程和临时日志已清理。
 

@@ -544,7 +544,11 @@ export interface GitWorkspaceStatusVm {
   staged: GitFileChangeVm[];
   unstaged: GitFileChangeVm[];
   untracked: GitFileChangeVm[];
-  operationInProgress?: { kind: string } | null;
+  operationInProgress?: {
+    kind: 'merge' | 'rebase' | 'cherry-pick' | 'revert';
+    currentOid?: string | null;
+    currentSubject?: string | null;
+  } | null;
 }
 
 export type GitRefKindVm = 'local-branch' | 'remote-branch' | 'tag';
@@ -694,7 +698,8 @@ export type GitMutationVm =
   | { kind: 'branch-delete-safe'; name: string }
   | { kind: 'tag-create'; name: string; target?: string | null; style: 'annotated' | 'lightweight'; message?: string | null }
   | { kind: 'tag-delete-local'; name: string }
-  | { kind: 'worktree-create'; path: string; sourceRef: string; newBranch?: string | null };
+  | { kind: 'worktree-create'; path: string; sourceRef: string; newBranch?: string | null }
+  | { kind: 'worktree-remove'; path: string };
 
 export type GitMutationRequestVm = GitMutationVm & {
   expectedRevision?: string | null;
@@ -716,7 +721,12 @@ export type GitOperationInputVm =
   | { kind: 'push'; remote: string; branch: string; setUpstream: boolean }
   | { kind: 'push-tag'; remote: string; tag: string }
   | { kind: 'stash-create'; message?: string | null; includeUntracked: boolean }
-  | { kind: 'stash-apply'; stashRef: string; restoreIndex: boolean };
+  | { kind: 'stash-apply'; stashRef: string; restoreIndex: boolean }
+  | { kind: 'merge-continue' }
+  | { kind: 'merge-abort' }
+  | { kind: 'rebase-continue' }
+  | { kind: 'rebase-skip' }
+  | { kind: 'rebase-abort' };
 
 export type GitOperationRequestVm = GitOperationInputVm & {
   expectedRevision?: string | null;

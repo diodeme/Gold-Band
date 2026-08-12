@@ -1,16 +1,23 @@
-import { useCallback, useEffect, useMemo, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   Check,
+  CheckCircle2,
   ChevronRight,
+  CircleX,
+  Download,
   GitBranch,
   GitCommitHorizontal,
   LoaderCircle,
-  RefreshCw,
+  MoreHorizontal,
   TriangleAlert,
   Undo2,
+  X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { openExternalUrl, resolveWorkspaceFileLink } from '@/api';
 import { Button } from '@/components/ui/button';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -21,17 +28,22 @@ import type {
   GitMutationRequestVm,
   GitOperationErrorVm,
   GitOperationRequestVm,
+  GitSourceControlSnapshotVm,
 } from '@/types';
 import {
   gitFileComparisonWorkspaceResourceKey,
+  fileWorkspaceResourceKey,
   useRightWorkspace,
   type SourceControlWorkspaceResource,
 } from '../right-workspace-context';
 import { SourceControlRepositoryView } from './SourceControlRepositoryView';
+import { SourceControlChangesToolbar, SourceControlSyncActions } from './SourceControlChangesToolbar';
 import { SourceControlGitHubView } from './SourceControlGitHubView';
 import { SourceControlHistoryView } from './SourceControlHistoryView';
 import { githubDataStore, githubRepositorySessionKey } from './github-data-store';
-import { sourceControlStore, useSourceControlSession, type SourceControlTab } from './source-control-store';
+import { sourceControlStore, useSourceControlSession, type SourceControlSessionSnapshot, type SourceControlTab } from './source-control-store';
+
+const GIT_DOWNLOAD_URL = 'https://git-scm.com/downloads';
 
 export function SourceControlWorkspacePanel({ resource }: { resource: SourceControlWorkspaceResource }) {
   const { t } = useTranslation();
@@ -41,8 +53,10 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
     activeOperation,
     activeTab,
     body,
+    capability,
     error,
     pendingAction,
+    repositoryTab,
     snapshot,
     subject,
   } = session;
@@ -70,6 +84,10 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
     sourceControlStore.setActiveTab(resource.projectId, resource.workspacePath, value);
   }, [resource.projectId, resource.workspacePath]);
 
+  const changeRepositoryTab = useCallback((value: import('./source-control-store').SourceControlRepositoryTab) => {
+    sourceControlStore.setRepositoryTab(resource.projectId, resource.workspacePath, value);
+  }, [resource.projectId, resource.workspacePath]);
+
   const mutate = useCallback((input: GitMutationRequestVm) => {
     void sourceControlStore.mutate(resource.projectId, resource.workspacePath, input);
   }, [resource.projectId, resource.workspacePath]);
@@ -80,6 +98,14 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
 
   const cancelOperation = useCallback(() => {
     void sourceControlStore.cancelOperation(resource.projectId, resource.workspacePath);
+  }, [resource.projectId, resource.workspacePath]);
+
+  const dismissOperation = useCallback(() => {
+    sourceControlStore.dismissOperationResult(resource.projectId, resource.workspacePath);
+  }, [resource.projectId, resource.workspacePath]);
+
+  const initializeRepository = useCallback(() => {
+    void sourceControlStore.initializeRepository(resource.projectId, resource.workspacePath);
   }, [resource.projectId, resource.workspacePath]);
 
   const openDiff = useCallback((change: GitFileChangeVm, area: 'staged' | 'unstaged') => {
@@ -97,7 +123,34 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
     });
   }, [resource.projectId, resource.workspacePath, workspace]);
 
+  const openConflictFile = useCallback(async (change: GitFileChangeVm) => {
+    if (!workspace.scopeKey) return;
+    const resolved = await resolveWorkspaceFileLink(resource.projectId, change.path, snapshot?.repository.workspacePath ?? null);
+    workspace.openResource({
+      kind: 'file',
+      key: fileWorkspaceResourceKey(resource.projectId, resolved.locator.canonicalPath),
+      scopeKey: workspace.scopeKey,
+      projectId: resource.projectId,
+      title: change.path.split('/').at(-1) ?? change.path,
+      description: change.path,
+      attention: false,
+      locator: resolved.locator,
+      target: null,
+      targetRevision: 0,
+    });
+  }, [resource.projectId, snapshot?.repository.workspacePath, workspace]);
+
   if (!snapshot && !error) {
+    if (session.status === 'unavailable' && capability) {
+      return (
+        <SourceControlUnavailableState
+          capability={capability}
+          initializing={pendingAction?.kind === 'repository-initialize'}
+          onInitialize={initializeRepository}
+          onRetry={load}
+        />
+      );
+    }
     return <PanelState icon={<LoaderCircle className="size-4 animate-spin" />} text={t('sourceControl.loading')} />;
   }
   if (!snapshot) {
@@ -105,11 +158,13 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
   }
 
   const locked = snapshot.repository.lock.locked;
+  const conflictWorkflowActive = snapshot.status.operationInProgress?.kind === 'merge' || snapshot.status.operationInProgress?.kind === 'rebase';
+  const writeLocked = locked || conflictWorkflowActive;
   const hasConflicts = snapshot.status.conflicts.length > 0;
   const activeOperationPending = Boolean(activeOperation && ['queued', 'running'].includes(activeOperation.status));
   const busyActionKind = pendingAction?.kind ?? (activeOperationPending ? activeOperation?.kind ?? null : null);
   const busy = busyActionKind !== null;
-  const canCommit = snapshot.status.staged.length > 0 && !hasConflicts && !locked && subject.trim().length > 0;
+  const canCommit = snapshot.status.staged.length > 0 && !hasConflicts && !writeLocked && subject.trim().length > 0;
 
   return (
     <section className="flex min-h-0 flex-1 flex-col" data-source-control-workspace="true">
@@ -117,25 +172,14 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
         <div className="flex min-w-0 items-center gap-2">
           <GitBranch className="size-4 shrink-0 text-foreground" />
           <span className="min-w-0 flex-1 truncate text-sm font-medium">{snapshot.repository.currentBranch ?? t('sourceControl.detached')}</span>
-          {snapshot.repository.upstream ? (
-            <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
-              ↑{snapshot.repository.upstream.ahead} ↓{snapshot.repository.upstream.behind}
-            </span>
-          ) : null}
-          <Button
-            type="button"
-            size="icon-xs"
-            variant="ghost"
-            disabled={busy}
-            aria-label={t('common.refresh')}
-            onClick={() => void load()}
-          >
-            <RefreshCw className={cn('size-3.5', pendingAction?.kind === 'refresh' && 'animate-spin')} />
-          </Button>
+          <SourceControlSyncActions snapshot={snapshot} busyActionKind={busyActionKind} locked={writeLocked} onOperation={startOperation} />
         </div>
         {locked ? <div className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">{t('sourceControl.locked', { operation: snapshot.repository.lock.operation ?? '' })}</div> : null}
-        {activeOperation && ['queued', 'running'].includes(activeOperation.status) ? <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground"><LoaderCircle className="size-3 animate-spin" /><span className="min-w-0 flex-1 truncate">{t(`sourceControl.operationKinds.${activeOperation.kind}`)}</span>{activeOperation.cancelable ? <Button size="xs" variant="ghost" onClick={cancelOperation}>{t('common.cancel')}</Button> : null}</div> : null}
+        {activeOperation ? <SourceControlOperationStatus operation={activeOperation} onCancel={cancelOperation} onDismiss={dismissOperation} /> : null}
         {error ? <SourceControlError error={error} /> : null}
+        {snapshot.status.operationInProgress?.kind === 'merge' || snapshot.status.operationInProgress?.kind === 'rebase'
+          ? <SourceControlConflictWorkflow operation={snapshot.status.operationInProgress} busy={busy} onOperation={startOperation} />
+          : null}
       </header>
 
       <Tabs value={activeTab} onValueChange={(value) => changeTab(value as SourceControlTab)} className="min-h-0 flex-1 gap-0">
@@ -147,9 +191,10 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
         </TabsList>
 
         <TabsContent value="changes" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col">
+          <SourceControlChangesToolbar snapshot={snapshot} busyActionKind={busyActionKind} locked={writeLocked} onMutation={mutate} onOperation={startOperation} />
           <ScrollArea className="min-h-0 flex-1">
             <div className="py-1">
-              <ChangeGroup title={t('sourceControl.conflicts')} changes={snapshot.status.conflicts} tone="conflict" onOpen={(change) => openDiff(change, 'unstaged')} />
+              <ChangeGroup title={t('sourceControl.conflicts')} changes={snapshot.status.conflicts} tone="conflict" onOpen={(change) => void openConflictFile(change)} />
               <ChangeGroup
                 title={t('sourceControl.staged')}
                 changes={snapshot.status.staged}
@@ -158,7 +203,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
                 actionLabel={t('sourceControl.unstage')}
                 actionIcon={<Undo2 className="size-3" />}
                 pendingPath={pendingAction?.kind === 'unstage-paths' ? pendingAction.path : null}
-                disabled={locked || busy}
+                disabled={writeLocked || busy}
                 onAction={(change) => mutate({ kind: 'unstage-paths', paths: [change.path] })}
               />
               <ChangeGroup
@@ -169,7 +214,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
                 actionLabel={t('sourceControl.stage')}
                 actionIcon={<Check className="size-3" />}
                 pendingPath={pendingAction?.kind === 'stage-paths' ? pendingAction.path : null}
-                disabled={locked || busy}
+                disabled={writeLocked || busy}
                 onAction={(change) => mutate({ kind: 'stage-paths', paths: [change.path] })}
               />
               <ChangeGroup
@@ -180,7 +225,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
                 actionLabel={t('sourceControl.stage')}
                 actionIcon={<Check className="size-3" />}
                 pendingPath={pendingAction?.kind === 'stage-paths' ? pendingAction.path : null}
-                disabled={locked || busy}
+                disabled={writeLocked || busy}
                 onAction={(change) => mutate({ kind: 'stage-paths', paths: [change.path] })}
               />
               {snapshot.status.conflicts.length + snapshot.status.staged.length + snapshot.status.unstaged.length + snapshot.status.untracked.length === 0
@@ -193,14 +238,14 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
               value={subject}
               onChange={(event) => sourceControlStore.setSubject(resource.projectId, resource.workspacePath, event.target.value)}
               placeholder={t('sourceControl.commitSubject')}
-              disabled={locked || busy}
+              disabled={writeLocked || busy}
               className="h-8 text-xs"
             />
             <Textarea
               value={body}
               onChange={(event) => sourceControlStore.setBody(resource.projectId, resource.workspacePath, event.target.value)}
               placeholder={t('sourceControl.commitBody')}
-              disabled={locked || busy}
+              disabled={writeLocked || busy}
               className="mt-2 min-h-16 resize-y text-xs"
             />
             <div className="mt-2 flex items-center justify-between gap-2">
@@ -222,7 +267,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
         </TabsContent>
 
         <TabsContent value="repository" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1 data-[state=active]:flex-col">
-          <SourceControlRepositoryView snapshot={snapshot} busyActionKind={busyActionKind} locked={locked} onMutation={mutate} onOperation={startOperation} />
+          <SourceControlRepositoryView snapshot={snapshot} busyActionKind={busyActionKind} busyActionPath={pendingAction?.path ?? null} locked={writeLocked} onMutation={mutate} onOperation={startOperation} activeTab={repositoryTab} onTabChange={changeRepositoryTab} />
         </TabsContent>
 
         <TabsContent value="github" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1">
@@ -241,6 +286,91 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
         </TabsContent>
       </Tabs>
     </section>
+  );
+}
+
+function SourceControlUnavailableState({ capability, initializing, onInitialize, onRetry }: {
+  capability: NonNullable<SourceControlSessionSnapshot['capability']>;
+  initializing: boolean;
+  onInitialize: () => void;
+  onRetry: () => void | Promise<void>;
+}) {
+  const { t } = useTranslation();
+  if (capability.status === 'not-installed') {
+    return <PanelState icon={<Download className="size-4" />} text={t('sourceControl.gitNotInstalled')} description={t('sourceControl.gitNotInstalledDescription')} action={<div className="flex flex-wrap justify-center gap-2"><Button size="sm" onClick={() => void openExternalUrl(GIT_DOWNLOAD_URL)}>{t('sourceControl.openGitDownload')}</Button><Button size="sm" variant="outline" onClick={() => void onRetry()}>{t('sourceControl.checkAgain')}</Button></div>} />;
+  }
+  if (capability.status === 'repository-required') {
+    return <PanelState icon={<GitBranch className="size-4" />} text={t('sourceControl.repositoryRequired')} description={t('sourceControl.repositoryRequiredDescription')} action={<Button size="sm" disabled={initializing} onClick={onInitialize}>{initializing ? <LoaderCircle className="size-3.5 animate-spin" /> : null}{initializing ? t('sourceControl.initializingRepository') : t('sourceControl.initializeRepository')}</Button>} />;
+  }
+  return <PanelState icon={<TriangleAlert className="size-4 text-destructive" />} text={t(`sourceControl.capability.${capability.status}.title`)} description={t(`sourceControl.capability.${capability.status}.description`)} action={<Button size="sm" variant="outline" onClick={() => void onRetry()}>{t('sourceControl.checkAgain')}</Button>} />;
+}
+
+function SourceControlOperationStatus({ operation, onCancel, onDismiss }: {
+  operation: NonNullable<SourceControlSessionSnapshot['activeOperation']>;
+  onCancel: () => void;
+  onDismiss: () => void;
+}) {
+  const { t } = useTranslation();
+  const pending = operation.status === 'queued' || operation.status === 'running';
+  const failed = operation.status === 'failed' || operation.status === 'conflicted';
+  const operationName = t(`sourceControl.operationNames.${operation.kind}`);
+  const text = pending
+    ? t(`sourceControl.operationKinds.${operation.kind}`)
+    : t(`sourceControl.operationResults.${operation.status}`, { operation: operationName });
+  return (
+    <div
+      className={cn('mt-1 flex min-w-0 items-center gap-2 text-[11px]', failed ? 'text-destructive' : operation.status === 'succeeded' ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground')}
+      role={failed ? 'alert' : 'status'}
+      aria-live="polite"
+      data-source-control-operation-status={operation.status}
+    >
+      {pending ? <LoaderCircle className="size-3 shrink-0 animate-spin" /> : operation.status === 'succeeded' ? <CheckCircle2 className="size-3 shrink-0" /> : <CircleX className="size-3 shrink-0" />}
+      <span className="min-w-0 flex-1 truncate">{text}</span>
+      {pending && operation.cancelable ? <Button size="xs" variant="ghost" onClick={onCancel}>{t('common.cancel')}</Button> : null}
+      {!pending ? <Button type="button" size="icon-xs" variant="ghost" aria-label={t('sourceControl.dismissOperationResult')} onClick={onDismiss}><X className="size-3" /></Button> : null}
+    </div>
+  );
+}
+
+function SourceControlConflictWorkflow({ operation, busy, onOperation }: {
+  operation: NonNullable<GitSourceControlSnapshotVm['status']['operationInProgress']>;
+  busy: boolean;
+  onOperation: (input: GitOperationRequestVm) => void;
+}) {
+  const { t } = useTranslation();
+  const [confirm, setConfirm] = useState<'continue' | 'abort' | 'skip' | null>(null);
+  const rebase = operation.kind === 'rebase';
+  const submit = () => {
+    if (confirm === 'continue') onOperation({ kind: rebase ? 'rebase-continue' : 'merge-continue' });
+    if (confirm === 'abort') onOperation({ kind: rebase ? 'rebase-abort' : 'merge-abort' });
+    if (confirm === 'skip' && rebase) onOperation({ kind: 'rebase-skip' });
+    setConfirm(null);
+  };
+  return (
+    <div className="mt-2 flex min-w-0 items-center gap-2 rounded-md bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-300" data-source-control-conflict-workflow={operation.kind}>
+      <span className="min-w-0 flex-1 truncate">{t(`sourceControl.conflictWorkflow.${operation.kind}InProgress`)}</span>
+      <Button type="button" size="xs" disabled={busy} onClick={() => setConfirm('continue')}>{t(`sourceControl.conflictWorkflow.${rebase ? 'continueRebase' : 'completeMerge'}`)}</Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild><Button type="button" size="icon-xs" variant="ghost" disabled={busy} aria-label={t('sourceControl.conflictWorkflow.moreActions')}><MoreHorizontal className="size-3.5" /></Button></DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {rebase ? <DropdownMenuItem variant="destructive" onSelect={() => setConfirm('skip')}>{t('sourceControl.conflictWorkflow.skipCommit')}</DropdownMenuItem> : null}
+          <DropdownMenuItem variant="destructive" onSelect={() => setConfirm('abort')}>{t(`sourceControl.conflictWorkflow.${rebase ? 'abortRebase' : 'abortMerge'}`)}</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <AlertDialog open={confirm !== null} onOpenChange={(open) => { if (!open) setConfirm(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t(`sourceControl.conflictWorkflow.confirm.${confirm ?? 'continue'}.title`, { operation: rebase ? 'Rebase' : 'Merge' })}</AlertDialogTitle>
+            <AlertDialogDescription>{t(`sourceControl.conflictWorkflow.confirm.${confirm ?? 'continue'}.description`, {
+              operation: rebase ? 'Rebase' : 'Merge',
+              sha: operation.currentOid?.slice(0, 8) ?? '',
+              subject: operation.currentSubject ?? '',
+            })}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel><AlertDialogAction className={confirm === 'continue' ? undefined : 'bg-destructive text-destructive-foreground hover:bg-destructive/90'} onClick={submit}>{t('common.confirm')}</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
   );
 }
 
@@ -294,7 +424,7 @@ function ChangeGroup({
             {change.deletedLines != null ? <span className="text-[10px] tabular-nums text-destructive">-{change.deletedLines}</span> : null}
             <ChevronRight className="size-3 text-muted-foreground/60" />
           </button>
-          {onAction ? <Button type="button" size="icon-xs" variant="ghost" className={cn('opacity-0 group-hover:opacity-100 focus-visible:opacity-100', actionPending && 'opacity-100')} disabled={disabled} aria-busy={actionPending} aria-label={`${actionLabel}: ${change.path}`} onClick={() => onAction(change)}>{actionPending ? <LoaderCircle className="size-3 animate-spin" /> : actionIcon}</Button> : null}
+          {onAction && (!disabled || actionPending) ? <Button type="button" size="icon-xs" variant="ghost" className={cn('opacity-0 group-hover:opacity-100 focus-visible:opacity-100', actionPending && 'opacity-100 disabled:opacity-100')} disabled={disabled} aria-busy={actionPending} aria-label={`${actionLabel}: ${change.path}`} onClick={() => onAction(change)}>{actionPending ? <LoaderCircle className="size-3 animate-spin" /> : actionIcon}</Button> : null}
         </div>
         );
       })}
@@ -307,8 +437,8 @@ function ChangeStatus({ kind, tone }: { kind: GitFileChangeVm['kind']; tone: str
   return <span className={cn('flex size-4 shrink-0 items-center justify-center rounded text-[10px] font-semibold', tone === 'conflict' ? 'bg-destructive/15 text-destructive' : tone === 'staged' ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' : 'bg-muted text-muted-foreground')}>{label}</span>;
 }
 
-function PanelState({ icon, text, action }: { icon?: ReactNode; text: string; action?: ReactNode }) {
-  return <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center text-sm text-muted-foreground"><span className="flex items-center gap-2">{icon}{text}</span>{action}</div>;
+function PanelState({ icon, text, description, action }: { icon?: ReactNode; text: string; description?: string; action?: ReactNode }) {
+  return <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center text-sm text-muted-foreground"><span className="flex items-center gap-2 font-medium text-foreground">{icon}{text}</span>{description ? <p className="max-w-sm text-xs leading-relaxed">{description}</p> : null}{action}</div>;
 }
 
 function formatCommitTime(timestamp: string) {

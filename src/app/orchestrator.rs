@@ -1858,10 +1858,8 @@ fn emit_run_metrics_fact(
         .join("observability")
         .join(&task_uuid)
         .join(super::observability::OBSERVABILITY_SNAPSHOT_FILE);
-    app.init_metric_revision_from_disk(&task_uuid, &path);
-    let revision = app.next_metric_revision(&task_uuid);
     let state = app.update_observability_state(&task_uuid, path.clone(), |state| {
-        state.event_revision = revision;
+        state.next_revision();
 
         if event_type == super::observability::LifecycleEventType::ExecutionPaused {
             state.record_pause(true);
@@ -1873,6 +1871,7 @@ fn emit_run_metrics_fact(
             state.record_resume(true, cause);
         }
     });
+    let revision = state.event_revision;
     let current_node_state = run
         .current_round
         .as_deref()

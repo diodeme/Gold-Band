@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::source_control::{
-    GitDiffStats, GitFileComparison, comparison_from_versions, validate_repo_relative_path,
+    GitDiffStats, GitFileChangeKind, GitFileComparison, comparison_from_versions,
+    validate_repo_relative_path,
 };
 use crate::git::{GitRemote, GitSourceControlService};
 use crate::process::{
@@ -191,8 +192,19 @@ pub struct GitHubReview {
 #[serde(rename_all = "camelCase")]
 pub struct GitHubPullRequestFile {
     pub path: String,
+    pub old_path: Option<String>,
+    pub kind: GitFileChangeKind,
     pub additions: u64,
     pub deletions: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubApiPullRequestFile {
+    filename: String,
+    status: String,
+    previous_filename: Option<String>,
+    additions: u64,
+    deletions: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,6 +220,7 @@ pub struct GitHubPullRequestDetail {
     pub additions: u64,
     pub deletions: u64,
     pub changed_files: u64,
+    #[serde(default)]
     pub files: Vec<GitHubPullRequestFile>,
     #[serde(default)]
     pub latest_reviews: Vec<GitHubReview>,
@@ -572,8 +585,18 @@ impl GitHubCliService {
         number: u64,
     ) -> Result<GitHubPullRequestDetail> {
         validate_repository(repository)?;
-        let repository = repository_selector(host, repository)?;
-        self.require_json(cwd, &["pr".into(), "view".into(), number.to_string(), "--repo".into(), repository, "--json".into(), "number,title,body,state,isDraft,author,headRefName,baseRefName,baseRefOid,headRefOid,updatedAt,url,reviewDecision,labels,statusCheckRollup,latestReviews,mergeable,mergeStateStatus,additions,deletions,changedFiles,files".into()], "github.pr-detail-failed")
+        validate_host(host)?;
+        let selector = repository_selector(host, repository)?;
+        let mut detail: GitHubPullRequestDetail = self.require_json(cwd, &["pr".into(), "view".into(), number.to_string(), "--repo".into(), selector, "--json".into(), "number,title,body,state,isDraft,author,headRefName,baseRefName,baseRefOid,headRefOid,updatedAt,url,reviewDecision,labels,statusCheckRollup,latestReviews,mergeable,mergeStateStatus,additions,deletions,changedFiles".into()], "github.pr-detail-failed")?;
+        let file_args = github_pull_request_files_args(host, repository, number);
+        let pages: Vec<Vec<GitHubApiPullRequestFile>> =
+            self.require_json(cwd, &file_args, "github.pr-detail-files-failed")?;
+        detail.files = pages
+            .into_iter()
+            .flatten()
+            .map(github_pull_request_file)
+            .collect::<Result<Vec<_>>>()?;
+        Ok(detail)
     }
 
     pub fn pull_request_revision_comparison(
@@ -585,12 +608,16 @@ impl GitHubCliService {
         base_oid: &str,
         head_oid: &str,
         path: &str,
+        before_path: Option<&str>,
     ) -> Result<GitFileComparison> {
         validate_host(host)?;
         validate_repository(repository)?;
         validate_github_oid(base_oid)?;
         validate_github_oid(head_oid)?;
         validate_repo_relative_path(path)?;
+        if let Some(before_path) = before_path {
+            validate_repo_relative_path(before_path)?;
+        }
         if number == 0 {
             return Err(GitHubServiceError::new(
                 "github.pr-number-invalid",
@@ -599,8 +626,15 @@ impl GitHubCliService {
             .into());
         }
         let (before, after) = std::thread::scope(|scope| {
-            let before = scope
-                .spawn(|| self.pull_request_file_version(cwd, host, repository, base_oid, path));
+            let before = scope.spawn(|| {
+                self.pull_request_file_version(
+                    cwd,
+                    host,
+                    repository,
+                    base_oid,
+                    before_path.unwrap_or(path),
+                )
+            });
             let after = scope
                 .spawn(|| self.pull_request_file_version(cwd, host, repository, head_oid, path));
             let before = before.join().map_err(|_| {
@@ -1581,6 +1615,45 @@ fn validate_repository(repository: &str) -> Result<()> {
     }
 }
 
+fn github_pull_request_file(file: GitHubApiPullRequestFile) -> Result<GitHubPullRequestFile> {
+    validate_repo_relative_path(&file.filename)?;
+    if let Some(previous_filename) = file.previous_filename.as_deref() {
+        validate_repo_relative_path(previous_filename)?;
+    }
+    let kind = match file.status.as_str() {
+        "added" => GitFileChangeKind::Added,
+        "removed" => GitFileChangeKind::Deleted,
+        "renamed" => GitFileChangeKind::Renamed,
+        "copied" => GitFileChangeKind::Copied,
+        "modified" | "changed" | "unchanged" => GitFileChangeKind::Modified,
+        _ => {
+            return Err(GitHubServiceError::new(
+                "github.pr-file-status-unsupported",
+                serde_json::json!({ "status": file.status }),
+            )
+            .into());
+        }
+    };
+    Ok(GitHubPullRequestFile {
+        path: file.filename,
+        old_path: file.previous_filename,
+        kind,
+        additions: file.additions,
+        deletions: file.deletions,
+    })
+}
+
+fn github_pull_request_files_args(host: &str, repository: &str, number: u64) -> Vec<String> {
+    vec![
+        "api".to_string(),
+        "--hostname".to_string(),
+        host.to_string(),
+        format!("repos/{repository}/pulls/{number}/files"),
+        "--paginate".to_string(),
+        "--slurp".to_string(),
+    ]
+}
+
 fn validate_github_oid(oid: &str) -> Result<()> {
     if matches!(oid.len(), 40 | 64) && oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         Ok(())
@@ -2005,6 +2078,63 @@ mod tests {
     }
 
     #[test]
+    fn maps_pull_request_file_statuses_to_typed_diff_kinds() {
+        for (status, expected) in [
+            ("added", GitFileChangeKind::Added),
+            ("removed", GitFileChangeKind::Deleted),
+            ("renamed", GitFileChangeKind::Renamed),
+            ("copied", GitFileChangeKind::Copied),
+            ("modified", GitFileChangeKind::Modified),
+        ] {
+            let file = github_pull_request_file(GitHubApiPullRequestFile {
+                filename: "src/new.rs".to_string(),
+                status: status.to_string(),
+                previous_filename: (status == "renamed").then(|| "src/old.rs".to_string()),
+                additions: 3,
+                deletions: 1,
+            })
+            .unwrap();
+            assert_eq!(file.kind, expected);
+            assert_eq!(
+                file.old_path.as_deref(),
+                (status == "renamed").then_some("src/old.rs")
+            );
+        }
+    }
+
+    #[test]
+    fn pull_request_files_contract_uses_one_paginated_api_query() {
+        assert_eq!(
+            github_pull_request_files_args("github.example.com", "acme/widgets", 42),
+            vec![
+                "api",
+                "--hostname",
+                "github.example.com",
+                "repos/acme/widgets/pulls/42/files",
+                "--paginate",
+                "--slurp",
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_pull_request_file_status() {
+        let error = github_pull_request_file(GitHubApiPullRequestFile {
+            filename: "src/app.rs".to_string(),
+            status: "mystery".to_string(),
+            previous_filename: None,
+            additions: 0,
+            deletions: 0,
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("github.pr-file-status-unsupported")
+        );
+    }
+
+    #[test]
     fn bounded_output_reports_truncation_without_stopping_the_reader() {
         let bytes = vec![b'x'; GITHUB_OUTPUT_LIMIT + 17];
         let output = read_bounded_output(std::io::Cursor::new(bytes)).unwrap();
@@ -2032,6 +2162,7 @@ mod tests {
                 base_oid,
                 head_oid,
                 "src/app.ts",
+                None,
             )
             .unwrap();
         assert_eq!(modified.before.unwrap().content.trim(), "base-content");
@@ -2050,6 +2181,7 @@ mod tests {
                 base_oid,
                 head_oid,
                 "added.txt",
+                None,
             )
             .unwrap();
         assert!(added.before.is_none());
@@ -2065,6 +2197,7 @@ mod tests {
                 base_oid,
                 head_oid,
                 "removed.txt",
+                None,
             )
             .unwrap();
         assert_eq!(removed.before.unwrap().content.trim(), "base-content");
@@ -2083,6 +2216,7 @@ mod tests {
                 base_oid,
                 head_oid,
                 "missing.txt",
+                None,
             )
             .unwrap_err();
         assert_eq!(
@@ -2099,6 +2233,7 @@ mod tests {
                 "not-an-oid",
                 head_oid,
                 "src/app.ts",
+                None,
             )
             .unwrap_err();
         assert_eq!(
@@ -2108,6 +2243,30 @@ mod tests {
                 .code,
             "github.pr-revision-invalid"
         );
+    }
+
+    #[test]
+    fn renamed_pull_request_file_reads_the_previous_path_at_the_base_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let service = GitHubCliService {
+            executable: Some(create_fake_pr_diff_gh(temp.path())),
+            git_executable: None,
+        };
+        let comparison = service
+            .pull_request_revision_comparison(
+                &root,
+                "github.com",
+                "acme/widgets",
+                42,
+                "1111111111111111111111111111111111111111",
+                "2222222222222222222222222222222222222222",
+                "renamed.txt",
+                Some("src/app.ts"),
+            )
+            .unwrap();
+        assert_eq!(comparison.before.unwrap().content.trim(), "base-content");
+        assert_eq!(comparison.after.unwrap().content.trim(), "head-content");
     }
 
     #[test]

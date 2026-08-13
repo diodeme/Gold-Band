@@ -28,7 +28,7 @@ GitHub capability、PR/Issue 查询和详情同样独立于 React 组件生命�
 源码管理包含四个页签：
 
 1. 更改：conflict、staged、unstaged、untracked 分组，文件级和全部 stage/unstage，staged-only commit，以及保存当前更改为 stash。
-2. 历史：提交列表、标准桌面多选、按文件聚合的最终 Diff 审阅、提交归属和分页。
+2. 历史：当前工作树 HEAD 可达的完整提交列表、标准桌面多选、按文件聚合的最终 Diff 审阅、提交归属和分页；其他分支只有用户显式选择对应 ref 时才进入历史范围，默认不得用 `--all` 混入旁支提交。
 3. 仓库：分支、tag、worktree 与已有 stash 的查看/应用，不承载日常同步入口。
 
 仓库标题右侧使用一个动态同步按钮和一个独立 Fetch 按钮。`behind > 0` 时同步按钮同时显示 `↓behind ↑ahead`，主动作固定为 Pull；`behind = 0` 时只显示 `↑ahead`，主动作是 Push，`ahead = 0` 时禁用；未设置 upstream 的当前分支显示上箭头并允许首次 Push。Push 遇到 non-fast-forward 只返回结构化错误，不自动 Pull，用户需自行 Fetch、Pull 后再 Push。点击可用入口后进入对应确认/配置对话框，执行中在原入口显示旋转状态，结束后在仓库标题下保留成功、失败、冲突或取消结果，直到用户关闭或开始下一次操作。更改区不重复显示 Fetch/Pull/Push，只在 `…` 菜单提供全部暂存、全部取消暂存和保存为 stash。Git watcher 自动收敛本地工作区和 Git metadata 状态，因此已加载页面不提供普通“重新读取本地状态”按钮；Fetch 不能删除，因为 watcher 不感知远端服务器的新提交，必须由用户显式联网更新 remote refs。
@@ -48,9 +48,13 @@ Git metadata watcher 必须覆盖 `MERGE_HEAD`、`REBASE_HEAD`、`rebase-merge`�
 
 历史工作区默认只有 Commit 单栏；至少选中一个 Commit 后才挂载响应式主从布局。布局按历史内容区的实际 CSS 宽度判断：达到 `520px` 时进入双栏，左侧 Commit 列表最低 `220px`，右侧聚合变更最低 `280px`，余量留给分隔条；低于该阈值退化为“提交/更改”单栏切换。清空选择后无论宽度都立即恢复 Commit 单栏。单击执行单选，`Shift + Click` 按当前可见稳定 OID 顺序范围选择，`Ctrl/Cmd + Click` 增减选择，`Ctrl/Cmd + Shift + Click` 合并范围；不显示 Checkbox，也不增加独立多选模式。选择颜色与右栏 loading 必须在同一次同步状态提交中出现，不能等待 Review IPC；旧请求不得覆盖新选择。
 
-多提交“总 Diff”采用 IntelliJ IDEA Log 的 `collectChanges + zipChanges` 心智：只收集显式选中 Commit 的 first-parent Changes，再按历史从旧到新连接同一文件的演化链。文件路径不是全局唯一演化身份：只有祖先拓扑可连接的修改才进入同一条链；跨分支但文件 Patch 等价的重复修改按 stable patch identity 去重；跨分支且内容不同的修改保留为多条独立链，此时右栏允许同一路径出现多次并显示各自终点的 8 位短 SHA。每条链打开后比较该文件最早相关变化之前的版本与最后相关变化之后的版本，按正常文件行号展示最终 Diff，不按 Commit 分段。创建后又删除且没有净端点的文件不显示；重命名沿 `oldPath → path` 串联。非连续选择不会纳入只由未选中 Commit 触碰的其他文件，但首尾版本之间未选中 Commit 对同一文件的影响可能出现在最终内容中。Root Commit 与空树比较，Merge Commit 使用 first-parent Changes。Commit 右键菜单提供 8 位短 SHA、完整 SHA 和“查看提交归属”。提交归属只展示当前包含它的本地/远端分支与 Tag、是否进入当前分支、第一父主线/首次 Merge 路径和父提交，不使用 reflog 推断、也不声称能还原历史分支来源。
+Commit 列表与当前聚合文件列表是两个独立滚动域，按 repository/workspace 运行期会话保存轻量 scroll offset；打开 Diff Tab 再返回时分别恢复，不能互相覆盖。滚动恢复必须在审阅 viewport 重挂载并完成布局后应用，不能只在数据 identity 变化时设置一次。切换历史页属于新列表导航，Commit 列表必须回到顶部；聚合文件滚动位置只在相同 review identity 下恢复。鼠标点击 Commit 不保留普通焦点方框，键盘 Tab 导航仍保留 `focus-visible` 可访问焦点。
 
-点击变更文件创建一个审阅会话并打开同一个 Diff Tab。Tab 支持上/下一个差异、上/下一个文件；当前文件最后一处差异继续向下时进入下一文件，反向同理。审阅会话只在有界运行期 Store 保存文件序列，Tab locator 仅保存 `reviewSessionId + reviewItemId`；同一会话切换文件替换原 Tab，不新增 Tab。文件内容按需加载，仅缓存当前和相邻项，迟到响应不得覆盖当前文件。
+多提交“总 Diff”采用 IntelliJ IDEA Log 的 `collectChanges + zipChanges` 心智：只收集显式选中 Commit 的 first-parent Changes，再按历史从旧到新连接同一文件的演化链。文件路径不是全局唯一演化身份：只有祖先拓扑可连接的修改才进入同一条链；跨分支但文件 Patch 等价的重复修改按 stable patch identity 去重；跨分支且内容不同的修改保留为多条独立链，此时右栏允许同一路径出现多次并显示各自终点的 8 位短 SHA。每条链打开后比较该文件最早相关变化之前的版本与最后相关变化之后的版本，按正常文件行号展示最终 Diff，不按 Commit 分段。创建后又删除且没有净端点的文件不显示；重命名沿 `oldPath → path` 串联。非连续选择不会纳入只由未选中 Commit 触碰的其他文件，但首尾版本之间未选中 Commit 对同一文件的影响可能出现在最终内容中。Root Commit 与空树比较，Merge Commit 使用 first-parent Changes。点击 Commit 必须在同一事件链立即发布选中态和详情 loading；聚合文件 summary 按相同首尾端点分组执行批量 numstat，不允许为每个文件读取正文或产生 N+1 Git 命令，正文只在进入 Diff Tab 后加载。Commit 右键菜单提供 8 位短 SHA、完整 SHA 和“查看提交归属”。提交归属只展示当前包含它的本地/远端分支与 Tag、是否进入当前分支、第一父主线/首次 Merge 路径和父提交，不使用 reflog 推断、也不声称能还原历史分支来源。
+
+更改区、历史聚合区和 PR 文件区点击文件都创建同一种审阅会话并打开同一个 Diff Tab。Tab 支持上/下一个差异、上/下一个文件，四个图标按钮都使用 shadcn Tooltip 明确语义；从文件列表首次打开以及使用左/右文件按钮切换时从文件顶部开始，只有在当前文件最后一处差异继续向下或第一处差异继续向上时，才进入下一/上一文件并定位其首/末差异。更改区的 staged 与 unstaged/untracked 分别形成独立序列，PR 使用 immutable base/head OID 下的全部文件。审阅会话只在有界运行期 Store 保存文件 locator 序列和列表已有的权威增删统计，Tab locator 仅保存 `reviewSessionId + reviewItemId`；同一会话切换文件替换原 Tab，不新增 Tab。文件内容按需加载，仅缓存当前和相邻项，迟到响应不得覆盖当前文件。Git numstat/GitHub files summary 与 CodeMirror 正文匹配算法可能对移动代码产生不同统计，列表与 Diff Tab 必须统一展示领域 summary，CodeMirror 只负责差异块渲染，不建立第二统计事实源。
+
+三处文件列表统一使用 `Diff type + path + summary` 行：新增/未跟踪显示绿色 `A`，删除显示红色 `D`，修改、重命名、复制、类型变化和未合并统一显示蓝色 `M`；summary 固定为 `+added -deleted`。工作区 tracked 文件的 summary 来自 staged、unstaged 各一次批量 `git diff --numstat -z`，命令数不得随文件数增长；未跟踪文件在进入 index 前不主动扫描正文统计，避免状态刷新读取任意大小的新文件。历史 summary 来自每条聚合演化链首尾版本的批量 numstat，不能相加单 Commit 统计或逐文件读取正文；PR kind、旧路径和 summary 来自一次分页批量读取的 GitHub PR files API，不能由前端猜测。Stage/Unstage 等纯图标文件操作必须同时提供视觉 Tooltip；已暂存行的回转图标只表示“取消暂存”，Discard 必须使用不同语义和入口。
 
 更改列表是紧凑 Git 领域列表。完整目录浏览、普通文件编辑继续使用现有文件工作区；变更和提交比较复用统一 CodeMirror comparison viewer。
 
@@ -80,7 +84,7 @@ Git metadata watcher 必须覆盖 `MERGE_HEAD`、`REBASE_HEAD`、`rebase-merge`�
 
 未安装时禁用 GitHub 操作并提供 GitHub CLI 官方安装入口，本地 Git 不受影响。未登录时由用户按钮启动 `gh auth login --web --clipboard`；后台进程隐藏窗口，浏览器完成授权，UI 提供取消与重新检测。应用不读取、保存或输出 GitHub token。
 
-PR/Issue 正文查看和 PR body 编辑复用现有 `WorkspaceFileEditor` Markdown/Atomic 能力；PR diff 继续复用统一 comparison viewer。
+PR/Issue 正文查看和 PR body 编辑复用现有 `WorkspaceFileEditor` Markdown/Atomic 能力；PR diff 继续复用统一 comparison viewer。PR 详情通过一次 `gh api repos/{owner}/{repo}/pulls/{number}/files --paginate --slurp` 批量取得权威 status、previous filename 和增删统计，禁止逐文件查询或前端猜测类型。
 
 PR 列表项点击后先进入由选中 locator 驱动的详情 loading 状态，再异步读取 PR 详情；不得让列表在请求期间保持无反馈，也不得通过延迟切页掩盖请求耗时。PR 详情提供“概览/文件”分区，并随详情返回 base/head OID。文件列表只承担 PR 变更导航，点击文件后打开现有右侧 `file-diff` resource，并由新 Tab 自己展示 comparison loading；typed `github-pr` comparison source 携带后端已经解析的不可变 base/head OID，后端校验 host、repository、OID 和路径后，并行按两个 OID 读取文件内容，不再为每个文件重复执行整 PR 的 `gh pr diff --name-only` 与 `gh pr view --json files`。前端不能传递任意 `gh` 参数。新增、删除、二进制、非 UTF-8 和超限文件继续使用统一 `GitFileComparison` 与 limitation code；加载期间 viewer 显示 spinner。
 
@@ -90,6 +94,7 @@ PR 列表项点击后先进入由选中 locator 驱动的详情 loading 状态�
 - 完整文件树：现有 `FileWorkspacePanel`、`WorkspaceFileTree` 和对应 stores。
 - 文件编辑与 Markdown：现有 `WorkspaceFileEditor`。
 - Diff：现有 CodeMirror `unifiedMergeView` 展示链路。
+- 文本 comparison 在统计和返回正文前统一将 CRLF、CR 规范为 LF，保证右上角 summary 与 CodeMirror 使用同一文本语义；仅换行风格不同不得把整文件判为修改。CodeMirror 默认折叠 unchanged content，只展开差异及必要上下文。大源文件必须提高成熟 Merge 组件默认过低的 diff scan limit，并同时设置主线程计算超时边界；不能因扫描提前降级而把大段 unchanged content 渲染为新增/删除。
 - 历史布局与菜单：复用 `react-resizable-panels`、shadcn Context Menu/Dialog 和现有响应式 split 模式；不保留 Git Graph renderer。
 - GitHub：系统 `gh` 的结构化 JSON 输出。
 
@@ -101,6 +106,8 @@ PR 列表项点击后先进入由选中 locator 驱动的详情 loading 状态�
 
 Git 失败链路已完整保留 `code + params.reason`：常见的身份验证、权限、仓库不存在、主机解析、网络不可达、远端拒绝和 non-fast-forward 使用稳定错误码，未细分失败仍展示脱敏后的 Git 原始原因。Fetch/Push/Push Tag 的 remote 选择已按 repository common-dir 持久记忆，重新打开对话框和重新挂载源码管理资源后继续使用上次有效选择。
 
-GitHub 已完成 CLI capability、网页登录、repository/default branch/remote mapping、PR/Issue 列表与详情、带 typed preflight 的可取消 PR 创建，以及 PR 文件 Diff。仓库探测使用 GitHub CLI 支持的 positional repository 参数，并以命令参数契约测试防止回退到无效 `--repo` flag；capability、列表、详情和 immutable-revision comparison 已进入有界缓存并合并 in-flight 请求。预检覆盖 head/base、ahead、发布状态和已有 open PR；未发布分支必须由用户显式 push。PR body 使用可编辑 `WorkspaceFileEditor`，只经 stdin 传给 `gh`。PR 文件列表会打开现有 CodeMirror comparison viewer，base/head 内容并行读取，modified/added/deleted 与输出截断已有 fake `gh` 接口测试。
+GitHub 已完成 CLI capability、网页登录、repository/default branch/remote mapping、PR/Issue 列表与详情、带 typed preflight 的可取消 PR 创建，以及 PR 文件 Diff。仓库探测使用 GitHub CLI 支持的 positional repository 参数，并以命令参数契约测试防止回退到无效 `--repo` flag；capability、列表、详情和 immutable-revision comparison 已进入有界缓存并合并 in-flight 请求。预检覆盖 head/base、ahead、发布状态和已有 open PR；未发布分支必须由用户显式 push。PR body 使用可编辑 `WorkspaceFileEditor`，只经 stdin 传给 `gh`。PR 文件列表进入与更改/历史相同的连续 CodeMirror 审阅会话，base/head 内容并行读取；权威文件状态映射和输出截断已有接口测试。
+
+GitHub 列表与详情必须以右侧面板宽度为硬边界，根容器、Tabs、滚动区和行建立完整的 `min-width: 0 / overflow: hidden` 约束链。PR/Issue 标题、账号、head/base 分支及文件路径占用可压缩空间并省略；返回、打开远端、状态 Badge 和增删统计保持固定，不允许任何远端长文本撑宽客户端或制造横向滚动。
 
 旧 Git Graph、Checkbox 多选和两两关系分析已完整删除，包括第三方依赖、前后端模型、命令与测试；不再把不可恢复的“历史分支来源”包装成分析结果。新的 `GitCommitReview` 与 `GitCommitReachability` typed service 分离管理聚合文件终态和当前归属。源码管理 snapshot/history、内部 Tab、分页、选择、审阅和 commit 草稿位于 repository/workspace-scoped 有界会话 Store，Review 结果和 Diff 审阅序列使用独立有界缓存，源码管理会话清理或 LRU 淘汰时同步清理所属 Review 缓存；Stage/Unstage 使用 status-scoped mutation result 局部收敛，refs 变更 mutation 并行刷新 snapshot/history，并通过各领域独立 request revision 阻止 stale response。

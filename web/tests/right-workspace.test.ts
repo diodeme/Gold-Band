@@ -168,7 +168,7 @@ describe('right workspace resource model', () => {
     });
 
     expect(first).not.toBe(second);
-    expect(pullRequest).toContain('github-pr:github.com:acme/widgets:42:1111111111111111111111111111111111111111:2222222222222222222222222222222222222222:src/main.rs');
+    expect(pullRequest).toContain('github-pr:github.com:acme/widgets:42:1111111111111111111111111111111111111111:2222222222222222222222222222222222222222::src/main.rs');
   });
 
   it('isolates lightweight workspace state by conversation scope', () => {

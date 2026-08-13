@@ -595,6 +595,8 @@ export const browserApi: RuntimeApi = {
       oldPath: null,
       kind: 'modified' as const,
       binary: false,
+      addedLines: 24,
+      deletedLines: 6,
     }])).values());
     return Promise.resolve({
       selectedOids: [...query.selectedOids],
@@ -811,7 +813,7 @@ export const browserApi: RuntimeApi = {
       additions: 320,
       deletions: 18,
       changedFiles: 7,
-      files: [{ path: 'src/git/source_control.rs', additions: 240, deletions: 8 }],
+      files: [{ path: 'src/git/source_control.rs', oldPath: null, kind: 'modified', additions: 240, deletions: 8 }],
       latestReviews: [],
     };
   },

@@ -800,6 +800,8 @@ pub struct GitCommitReviewFile {
     pub before_oid: Option<String>,
     pub before_path: Option<String>,
     pub after_oid: String,
+    pub added_lines: Option<u64>,
+    pub deleted_lines: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1108,6 +1110,7 @@ pub enum GitComparisonSource {
         base_oid: String,
         head_oid: String,
         path: String,
+        before_path: Option<String>,
     },
 }
 
@@ -1294,6 +1297,26 @@ impl GitSourceControlService {
     }
 
     pub fn status(&self, cwd: &Utf8Path) -> Result<GitWorkspaceStatus> {
+        let mut status = self.status_without_stats(cwd)?;
+        let (staged_stats, unstaged_stats) = std::thread::scope(|scope| {
+            let staged = scope.spawn(|| self.workspace_numstat(cwd, true));
+            let unstaged = scope.spawn(|| self.workspace_numstat(cwd, false));
+            let staged = staged.join().map_err(|_| {
+                GitServiceError::new("git.status-diff-query-failed", serde_json::json!({}))
+            })??;
+            let unstaged = unstaged.join().map_err(|_| {
+                GitServiceError::new("git.status-diff-query-failed", serde_json::json!({}))
+            })??;
+            Ok::<_, anyhow::Error>((staged, unstaged))
+        })?;
+        apply_workspace_stats(&mut status.staged, &staged_stats);
+        apply_workspace_stats(&mut status.unstaged, &unstaged_stats);
+        apply_workspace_stats(&mut status.conflicts, &unstaged_stats);
+        apply_workspace_stats(&mut status.conflicts, &staged_stats);
+        Ok(status)
+    }
+
+    fn status_without_stats(&self, cwd: &Utf8Path) -> Result<GitWorkspaceStatus> {
         let output = self.runner.require(
             cwd,
             &[
@@ -1308,6 +1331,30 @@ impl GitSourceControlService {
         let mut status = parse_porcelain_v2(&output.stdout)?;
         status.operation_in_progress = self.in_progress_operation(cwd)?;
         Ok(status)
+    }
+
+    fn workspace_numstat(
+        &self,
+        cwd: &Utf8Path,
+        staged: bool,
+    ) -> Result<HashMap<String, CommitFileStats>> {
+        let mut args = vec!["diff"];
+        if staged {
+            args.push("--cached");
+        }
+        args.extend([
+            "--numstat",
+            "-z",
+            "--no-ext-diff",
+            "--no-textconv",
+            "-M",
+            "-C",
+            "--",
+        ]);
+        let output = self
+            .runner
+            .require(cwd, &args, "git.status-diff-query-failed")?;
+        parse_numstat(&output.stdout, "git.status-diff-parse-failed")
     }
 
     pub fn refs(&self, cwd: &Utf8Path) -> Result<Vec<GitRef>> {
@@ -1350,7 +1397,7 @@ impl GitSourceControlService {
 
     pub fn history(&self, cwd: &Utf8Path, query: &GitHistoryQuery) -> Result<GitHistoryPage> {
         let refs = self.refs(cwd)?;
-        let status = self.status(cwd)?;
+        let status = self.status_without_stats(cwd)?;
         let revision = repository_revision(&status.branch, &refs);
         if let Some(expected) = query.revision.as_deref()
             && expected != revision
@@ -1398,7 +1445,7 @@ impl GitSourceControlService {
             validate_revision(ref_name)?;
             owned_args.push(ref_name.to_string());
         } else {
-            owned_args.push("--all".to_string());
+            owned_args.push("HEAD".to_string());
         }
         let args = owned_args.iter().map(String::as_str).collect::<Vec<_>>();
         let output = self
@@ -1498,7 +1545,7 @@ impl GitSourceControlService {
         }
 
         let refs = self.refs(cwd)?;
-        let status = self.status(cwd)?;
+        let status = self.status_without_stats(cwd)?;
         let revision = repository_revision(&status.branch, &refs);
         if let Some(expected) = query.revision.as_deref()
             && expected != revision
@@ -1558,8 +1605,9 @@ impl GitSourceControlService {
             Ok::<_, anyhow::Error>(entries)
         })?;
         commits.sort_by_key(|(index, _)| *index);
-        let files =
+        let mut files =
             self.aggregate_commit_review_files(cwd, commits.into_iter().map(|(_, entry)| entry))?;
+        self.populate_commit_review_stats(cwd, &mut files)?;
         let totals = GitCommitReviewTotals {
             commit_count: selected_oids.len(),
             file_count: files.len(),
@@ -1831,6 +1879,91 @@ impl GitSourceControlService {
         Ok(files)
     }
 
+    fn populate_commit_review_stats(
+        &self,
+        cwd: &Utf8Path,
+        files: &mut [GitCommitReviewFile],
+    ) -> Result<()> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        let mut endpoint_groups = HashMap::<(Option<String>, String), Vec<usize>>::new();
+        for (index, file) in files.iter().enumerate() {
+            endpoint_groups
+                .entry((file.before_oid.clone(), file.after_oid.clone()))
+                .or_default()
+                .push(index);
+        }
+        for ((before_oid, after_oid), indexes) in endpoint_groups {
+            let mut paths = Vec::new();
+            for index in &indexes {
+                let file = &files[*index];
+                if let Some(before_path) = file.before_path.as_ref()
+                    && !paths.contains(before_path)
+                {
+                    paths.push(before_path.clone());
+                }
+                if !paths.contains(&file.path) {
+                    paths.push(file.path.clone());
+                }
+            }
+            let stats = self.commit_numstat(cwd, before_oid.as_deref(), &after_oid, &paths)?;
+            for index in indexes {
+                let file = &mut files[index];
+                let Some(file_stats) = stats.get(&file.path) else {
+                    continue;
+                };
+                file.binary = file_stats.binary;
+                file.added_lines = file_stats.added_lines;
+                file.deleted_lines = file_stats.deleted_lines;
+            }
+        }
+        Ok(())
+    }
+
+    fn commit_numstat(
+        &self,
+        cwd: &Utf8Path,
+        before_oid: Option<&str>,
+        after_oid: &str,
+        paths: &[String],
+    ) -> Result<HashMap<String, CommitFileStats>> {
+        let output = if let Some(before_oid) = before_oid {
+            let mut args = vec![
+                "diff".to_string(),
+                "--numstat".to_string(),
+                "-z".to_string(),
+                "-M".to_string(),
+                "-C".to_string(),
+                before_oid.to_string(),
+                after_oid.to_string(),
+                "--".to_string(),
+            ];
+            args.extend(paths.iter().cloned());
+            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+            self.runner
+                .require(cwd, &args, "git.commit-diff-query-failed")?
+        } else {
+            let mut args = vec![
+                "diff-tree".to_string(),
+                "--root".to_string(),
+                "--no-commit-id".to_string(),
+                "-r".to_string(),
+                "--numstat".to_string(),
+                "-z".to_string(),
+                "-M".to_string(),
+                "-C".to_string(),
+                after_oid.to_string(),
+                "--".to_string(),
+            ];
+            args.extend(paths.iter().cloned());
+            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+            self.runner
+                .require(cwd, &args, "git.commit-diff-query-failed")?
+        };
+        parse_commit_numstat(&output.stdout)
+    }
+
     fn commit_review_file_patch_id(
         &self,
         cwd: &Utf8Path,
@@ -1961,42 +2094,9 @@ impl GitSourceControlService {
                 "git.commit-diff-query-failed",
             )?
         };
-        let numstat_output = if let Some(before_oid) = before_oid {
-            self.runner.require(
-                cwd,
-                &[
-                    "diff",
-                    "--numstat",
-                    "-z",
-                    "-M",
-                    "-C",
-                    before_oid,
-                    after_oid,
-                    "--",
-                ],
-                "git.commit-diff-query-failed",
-            )?
-        } else {
-            self.runner.require(
-                cwd,
-                &[
-                    "diff-tree",
-                    "--root",
-                    "--no-commit-id",
-                    "-r",
-                    "--numstat",
-                    "-z",
-                    "-M",
-                    "-C",
-                    after_oid,
-                    "--",
-                ],
-                "git.commit-diff-query-failed",
-            )?
-        };
         merge_commit_file_changes(
             parse_commit_name_status(&name_output.stdout)?,
-            parse_commit_numstat(&numstat_output.stdout)?,
+            self.commit_numstat(cwd, before_oid, after_oid, &[])?,
         )
     }
 
@@ -2017,7 +2117,7 @@ impl GitSourceControlService {
                 &identity.workspace_path,
                 "update-index",
                 || {
-                    let current_status = self.status(cwd)?;
+                    let current_status = self.status_without_stats(cwd)?;
                     let refs = self.refs(cwd)?;
                     if let Some(expected_revision) = request.expected_revision.as_deref() {
                         let actual_revision = workspace_snapshot_revision(&current_status, &refs);
@@ -2053,7 +2153,7 @@ impl GitSourceControlService {
             );
         }
         if let Some(expected_revision) = request.expected_revision.as_deref() {
-            let status = self.status(cwd)?;
+            let status = self.status_without_stats(cwd)?;
             let refs = self.refs(cwd)?;
             let actual_revision = workspace_snapshot_revision(&status, &refs);
             if expected_revision != actual_revision {
@@ -2151,7 +2251,7 @@ impl GitSourceControlService {
     ) -> Result<GitOperation> {
         let identity = self.repository_identity(cwd)?;
         if let Some(expected_revision) = request.expected_revision.as_deref() {
-            let status = self.status(cwd)?;
+            let status = self.status_without_stats(cwd)?;
             let refs = self.refs(cwd)?;
             let actual_revision = workspace_snapshot_revision(&status, &refs);
             if expected_revision != actual_revision {
@@ -2297,7 +2397,7 @@ impl GitSourceControlService {
             GitOperationInput::StashCreate {
                 include_untracked, ..
             } => {
-                let status = self.status(cwd)?;
+                let status = self.status_without_stats(cwd)?;
                 let tracked_changes = !status.staged.is_empty()
                     || !status.unstaged.is_empty()
                     || !status.conflicts.is_empty();
@@ -2505,7 +2605,7 @@ impl GitSourceControlService {
                 GitServiceError::new("git.invalid-commit-subject", serde_json::json!({})).into(),
             );
         }
-        if self.status(cwd)?.staged.is_empty() {
+        if self.status_without_stats(cwd)?.staged.is_empty() {
             return Err(GitServiceError::new("git.nothing-staged", serde_json::json!({})).into());
         }
         let mut message = subject.to_string();
@@ -3379,11 +3479,13 @@ pub(crate) fn comparison_from_versions(
     let before = before
         .map(String::from_utf8)
         .transpose()
-        .context("validated Git text was not UTF-8")?;
+        .context("validated Git text was not UTF-8")?
+        .map(normalize_line_endings);
     let after = after
         .map(String::from_utf8)
         .transpose()
-        .context("validated Git text was not UTF-8")?;
+        .context("validated Git text was not UTF-8")?
+        .map(normalize_line_endings);
     let diff = similar::TextDiff::from_lines(
         before.as_deref().unwrap_or_default(),
         after.as_deref().unwrap_or_default(),
@@ -3407,6 +3509,25 @@ pub(crate) fn comparison_from_versions(
         after: after.map(|content| GitTextVersion { content }),
         limitation_code: None,
     })
+}
+
+fn normalize_line_endings(content: String) -> String {
+    if !content.contains('\r') {
+        return content;
+    }
+    let mut normalized = String::with_capacity(content.len());
+    let mut characters = content.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\r' {
+            if characters.peek() == Some(&'\n') {
+                characters.next();
+            }
+            normalized.push('\n');
+        } else {
+            normalized.push(character);
+        }
+    }
+    normalized
 }
 
 fn parse_porcelain_v2(bytes: &[u8]) -> Result<GitWorkspaceStatus> {
@@ -3899,6 +4020,8 @@ fn aggregate_commit_review_files(
                 before_oid: file.before_oid,
                 before_path: file.before_path,
                 after_oid: file.after_oid,
+                added_lines: None,
+                deleted_lines: None,
             }
         })
         .collect()
@@ -3962,6 +4085,13 @@ fn parse_commit_name_status(bytes: &[u8]) -> Result<Vec<CommitFileStatusRecord>>
 }
 
 fn parse_commit_numstat(bytes: &[u8]) -> Result<HashMap<String, CommitFileStats>> {
+    parse_numstat(bytes, "git.commit-diff-parse-failed")
+}
+
+fn parse_numstat(
+    bytes: &[u8],
+    error_code: &'static str,
+) -> Result<HashMap<String, CommitFileStats>> {
     let fields = nul_fields(bytes);
     let mut index = 0;
     let mut stats = HashMap::new();
@@ -3971,16 +4101,12 @@ fn parse_commit_numstat(bytes: &[u8]) -> Result<HashMap<String, CommitFileStats>
         let mut header_fields = header.splitn(3, '\t');
         let added = header_fields.next().unwrap_or_default();
         let deleted = header_fields.next().unwrap_or_default();
-        let inline_path = header_fields.next().ok_or_else(|| {
-            GitServiceError::new("git.commit-diff-parse-failed", serde_json::json!({}))
-        })?;
+        let inline_path = header_fields
+            .next()
+            .ok_or_else(|| GitServiceError::new(error_code, serde_json::json!({})))?;
         let path = if inline_path.is_empty() {
             if index + 1 >= fields.len() {
-                return Err(GitServiceError::new(
-                    "git.commit-diff-parse-failed",
-                    serde_json::json!({}),
-                )
-                .into());
+                return Err(GitServiceError::new(error_code, serde_json::json!({})).into());
             }
             let path = text(&fields[index + 1]);
             index += 2;
@@ -3994,11 +4120,7 @@ fn parse_commit_numstat(bytes: &[u8]) -> Result<HashMap<String, CommitFileStats>
                 Ok(None)
             } else {
                 value.parse::<u64>().map(Some).map_err(|_| {
-                    GitServiceError::new(
-                        "git.commit-diff-parse-failed",
-                        serde_json::json!({ "value": value }),
-                    )
-                    .into()
+                    GitServiceError::new(error_code, serde_json::json!({ "value": value })).into()
                 })
             }
         };
@@ -4012,6 +4134,17 @@ fn parse_commit_numstat(bytes: &[u8]) -> Result<HashMap<String, CommitFileStats>
         );
     }
     Ok(stats)
+}
+
+fn apply_workspace_stats(changes: &mut [GitFileChange], stats: &HashMap<String, CommitFileStats>) {
+    for change in changes {
+        let Some(file_stats) = stats.get(&change.path) else {
+            continue;
+        };
+        change.binary = file_stats.binary;
+        change.added_lines = file_stats.added_lines;
+        change.deleted_lines = file_stats.deleted_lines;
+    }
 }
 
 fn merge_commit_file_changes(
@@ -4697,6 +4830,8 @@ mod tests {
         assert_eq!(review.files[0].after_oid, second);
         assert_eq!(review.files[0].path, "shared.txt");
         assert_eq!(review.files[0].kind, GitFileChangeKind::Added);
+        assert_eq!(review.files[0].added_lines, Some(2));
+        assert_eq!(review.files[0].deleted_lines, Some(0));
         assert_eq!(review.totals.commit_count, 2);
         assert_eq!(review.totals.file_count, 1);
     }
@@ -4790,6 +4925,8 @@ mod tests {
             .unwrap();
         assert_eq!(comparison.stats.added_lines, 3);
         assert_eq!(comparison.stats.deleted_lines, 1);
+        assert_eq!(review.files[0].added_lines, Some(3));
+        assert_eq!(review.files[0].deleted_lines, Some(1));
     }
 
     #[test]
@@ -5553,6 +5690,89 @@ mod tests {
     }
 
     #[test]
+    fn workspace_status_reports_staged_and_unstaged_numstat_in_batches() {
+        let (_temp, root) = initialized_repository();
+        commit_file(&root, "tracked.txt", "first\nsecond\nthird\n", "baseline");
+        std::fs::write(root.join("tracked.txt"), "first\nchanged\nthird\n").unwrap();
+        let service = GitSourceControlService::default();
+
+        let unstaged = service.status(&root).unwrap();
+        let tracked = unstaged
+            .unstaged
+            .iter()
+            .find(|change| change.path == "tracked.txt")
+            .unwrap();
+        assert_eq!(tracked.added_lines, Some(1));
+        assert_eq!(tracked.deleted_lines, Some(1));
+        assert!(!tracked.binary);
+
+        let runner = GitCommandRunner;
+        assert!(
+            runner
+                .run(&root, &["add", "--", "tracked.txt"])
+                .unwrap()
+                .success
+        );
+        std::fs::write(root.join("tracked.txt"), "first\nchanged\nthird\nfourth\n").unwrap();
+
+        let split = service.status(&root).unwrap();
+        let staged = split
+            .staged
+            .iter()
+            .find(|change| change.path == "tracked.txt")
+            .unwrap();
+        assert_eq!(staged.added_lines, Some(1));
+        assert_eq!(staged.deleted_lines, Some(1));
+        let unstaged = split
+            .unstaged
+            .iter()
+            .find(|change| change.path == "tracked.txt")
+            .unwrap();
+        assert_eq!(unstaged.added_lines, Some(1));
+        assert_eq!(unstaged.deleted_lines, Some(0));
+    }
+
+    #[test]
+    fn comparison_normalizes_line_endings_before_rendering_and_counting() {
+        let comparison = comparison_from_versions(
+            "mixed.txt".to_string(),
+            Some(b"first\r\nsecond\rthird\r\n".to_vec()),
+            Some(b"first\nsecond\nthird\nadded\n".to_vec()),
+        )
+        .unwrap();
+
+        assert_eq!(comparison.before.unwrap().content, "first\nsecond\nthird\n");
+        assert_eq!(
+            comparison.after.unwrap().content,
+            "first\nsecond\nthird\nadded\n"
+        );
+        assert_eq!(comparison.stats.added_lines, 1);
+        assert_eq!(comparison.stats.deleted_lines, 0);
+    }
+
+    #[test]
+    fn large_line_ending_only_changes_do_not_expand_the_whole_diff() {
+        let before = (0..8_000)
+            .map(|line| format!("line {line}\r\n"))
+            .collect::<String>();
+        let mut after = (0..8_000)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        after.push_str("added one\nadded two\n");
+
+        let comparison = comparison_from_versions(
+            "large-source.rs".to_string(),
+            Some(before.into_bytes()),
+            Some(after.into_bytes()),
+        )
+        .unwrap();
+
+        assert_eq!(comparison.stats.added_lines, 2);
+        assert_eq!(comparison.stats.deleted_lines, 0);
+        assert!(!comparison.before.unwrap().content.contains('\r'));
+    }
+
+    #[test]
     fn comparison_contract_uses_stable_limitation_codes() {
         let binary = comparison_from_versions(
             "binary.dat".to_string(),
@@ -5635,7 +5855,8 @@ mod tests {
             "prNumber": 42,
             "baseOid": "1111111111111111111111111111111111111111",
             "headOid": "2222222222222222222222222222222222222222",
-            "path": "src/main.rs"
+            "path": "src/main.rs",
+            "beforePath": null
         }))
         .unwrap();
         assert!(matches!(
@@ -5652,7 +5873,8 @@ mod tests {
                 "prNumber": 42,
                 "baseOid": "1111111111111111111111111111111111111111",
                 "headOid": "2222222222222222222222222222222222222222",
-                "path": "src/main.rs"
+                "path": "src/main.rs",
+                "beforePath": null
             })
         );
     }

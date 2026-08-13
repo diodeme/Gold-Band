@@ -996,6 +996,12 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
 
 > **M5-al–ao** 为 multica 全链路审计（#75–#78）回溯加固：#75（🔴 running 孤儿）纠正「server running 无逐任务 liveness」下的终态上报契约；#76（M1）清理 M5-ah 起的 pinned/retryable 死管线（取代 M3 数据模型）；#77（M2）根治远程任务页订阅竞态 + 事件去重；#78（M3）补齐 StateConfig 并发 RMW 原子性。正文 §3 终态上报契约以 M5-al/ao 为准。
 
+- [x] **M5-ap**（本轮）multica 绑定 chip 内嵌输入框 + Backspace 删除条件放宽（纯前端，开发设计 §12.28）：
+  - **背景 / 根因**：用户要求 chip「放在输入框里面，删除键可直接删除」，其余样式不变。§12.22（M5-aj）独立 chip 正确，但两点可完善：① chip 在 `PromptInput` 首子节点 block 行（输入区上方独立行），与正文分离；② Backspace 删 chip 要求正文为空，体感不够直接。
+  - **方案**：① chip 内嵌——复用 slash 命令标签同款 leading adornment 机制（`useLeadingAdornmentTextIndent`）：chip 移进 textarea 的 `relative` 容器、绝对定位左上角，正文首行 text-indent 缩进让位（换行后回左侧），chip 与 slash 互斥（slash 优先）；② Backspace 放宽——触发条件从「正文为空」改为「光标在正文起点且无选区（`selectionStart===0 && selectionEnd===0`）」，模拟删首个 token，正文非空 / 光标在中末 / 有选区时照常删字不误删；③ 提取纯函数 `shouldBackspaceClearMulticaBinding` 固化交互契约（home composer 过重不挂组件测）。
+  - **验证**：tsc 零错；生产构建绿；vitest `conversation-composer-multica-chip` 9 测 + composer/multica 回归 102 测全过。
+  - **更新**：§12.22（M5-aj）chip 渲染位置 + Backspace 删除条件；chip 与正文解耦 / × 解绑 / claim-at-send 删 chip 纯本地等设计不变。
+
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）
 

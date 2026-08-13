@@ -15,6 +15,7 @@ import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectable
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
 import { useConversationComposerDraft, type ConversationComposerMulticaBinding } from '@/lib/conversation-composer-draft';
+import { shouldBackspaceClearMulticaBinding } from '@/lib/conversation-composer-multica-chip';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { useAgentCommands } from '@/hooks/useAgentCommands';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
@@ -267,7 +268,10 @@ export function ConversationComposer({
     [agentCommands.commands, content],
   );
   const visibleContent = committedSlashCommand?.suffix ?? content;
-  const committedInputLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand));
+  // multica 绑定 chip 与 slash 命令标签同属正文最前的 leading adornment：二者互斥（slash 优先——绑定预填的是任务需求文本、非 slash 命令），
+  // 共用同一套 text-indent 让位机制：首行缩进避开标签宽度，换行后回到左侧（CSS text-indent 只作用于首行的标准表现）。
+  const multicaChipActive = Boolean(multicaBinding) && !committedSlashCommand;
+  const leadingAdornmentLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand) || multicaChipActive);
 
   useEffect(() => {
     const fallbackAgent = runMode.directConfig?.agentType
@@ -487,13 +491,15 @@ export function ConversationComposer({
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (slashCommands.onKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>)) return;
-    // 空正文 + 无 slash 前缀时，Backspace 删掉 multica 绑定 chip（与 × 按钮等价；slash 提交时让位 slash 控制器）。
-    if (
-      e.key === 'Backspace'
-      && multicaActive
-      && !committedSlashCommand
-      && visibleContent.trim() === ''
-    ) {
+    // multica 绑定 chip 作为正文最前的 leading adornment，Backspace 删除策略见 shouldBackspaceClearMulticaBinding：
+    // 仅光标停在正文最前且无选区时删 chip（模拟删首个 token），其余情况照常删字。slash 提交时让位 slash 控制器。
+    if (shouldBackspaceClearMulticaBinding({
+      key: e.key,
+      multicaActive,
+      hasCommittedSlashCommand: Boolean(committedSlashCommand),
+      selectionStart: composerTextareaRef.current?.selectionStart ?? -1,
+      selectionEnd: composerTextareaRef.current?.selectionEnd ?? -1,
+    })) {
       e.preventDefault();
       handleUnbindMultica();
       return;
@@ -521,29 +527,6 @@ export function ConversationComposer({
           disabled={busy || submittingAttachments}
           className="rounded-2xl border-border/60 bg-card/60 p-4 shadow-sm transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
         >
-          {multicaBinding ? (
-            // multica 绑定 chip：远程任务「点击执行」后可见的绑定标记。× 或空正文 Backspace 解绑（释放 lease，
-            // 草稿降级为普通本地会话）。独立于正文，不混入 textarea 文本（行业 chip 模式，避免脆弱的字符串解析）。
-            <div className="mb-2 flex items-center">
-              <Badge
-                variant="secondary"
-                className="gap-1 rounded-md border-primary/30 bg-primary/10 px-2 py-1 text-[0.75rem] font-medium text-primary"
-              >
-                <Globe className="size-3 shrink-0" />
-                <span className="max-w-[260px] truncate">
-                  {t('conversation.composer.multicaBindingTag', { title: multicaBinding.title })}
-                </span>
-                <button
-                  type="button"
-                  aria-label={t('conversation.composer.removeMulticaBinding')}
-                  onClick={handleUnbindMultica}
-                  className="ml-0.5 inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm hover:bg-primary/20"
-                >
-                  <X className="size-3" />
-                </button>
-              </Badge>
-            </div>
-          ) : null}
           <SlashCommandMenu
             open={slashCommands.isOpen}
             commands={slashCommands.filteredCommands}
@@ -555,16 +538,36 @@ export function ConversationComposer({
           >
             <div className="relative min-w-0">
               {committedSlashCommand ? (
-                <span ref={committedInputLayout.adornmentRef} className="absolute left-0 top-0 z-10 inline-flex">
+                <span ref={leadingAdornmentLayout.adornmentRef} className="absolute left-0 top-0 z-10 inline-flex">
                   <SlashCommandInputTag
                     prefix={committedSlashCommand.prefix}
                     description={committedSlashCommand.command.description}
                   />
                 </span>
+              ) : multicaBinding ? (
+                <span ref={leadingAdornmentLayout.adornmentRef} className="absolute left-0 top-0 z-10 inline-flex">
+                  <Badge
+                    variant="secondary"
+                    className="gap-1 h-6 rounded-md border-primary/30 bg-primary/10 px-2 text-[0.75rem] font-medium text-primary"
+                  >
+                    <Globe className="size-3 shrink-0" />
+                    <span className="max-w-[260px] truncate">
+                      {t('conversation.composer.multicaBindingTag', { title: multicaBinding.title })}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={t('conversation.composer.removeMulticaBinding')}
+                      onClick={handleUnbindMultica}
+                      className="ml-0.5 inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm hover:bg-primary/20"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </Badge>
+                </span>
               ) : null}
               <PromptInputTextarea
                 ref={composerTextareaRef}
-                style={committedInputLayout.textareaStyle}
+                style={leadingAdornmentLayout.textareaStyle}
                 className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMinHeightClassName} w-full overflow-y-hidden px-0 py-0 text-sm leading-6 text-foreground placeholder:text-muted-foreground`}
                 placeholder={t('conversation.home.inputPlaceholder')}
                 onKeyDown={handleKeyDown}

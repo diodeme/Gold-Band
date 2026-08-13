@@ -1785,6 +1785,30 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.28 改动二十六：multica 绑定 chip 内嵌输入框（leading adornment + text-indent 让位）+ Backspace 删除条件放宽（M5-ap，2026-08-13）
+
+**背景（用户 UX 调整）**：用户要求 multica 绑定 chip「不是放在输入框的上面，而是放在输入框里面，用户用删除键都可以直接删除的那种」；并明确「其余这个标签是符合预期的」（样式/文案/显示时机不变）。
+
+**根因（好设计、实现可完善）**：§12.22（M5-aj）的独立 chip 方案（与正文解耦、可见可控、删除语义明确）本身正确，但两点实现可完善：① chip 作为 `PromptInput` 的首子节点（block-flow，输入区**上方独立行**），与正文分离，不像「正文的一部分」；② Backspace 删除要求**正文为空**（`visibleContent.trim() === ''`，避免误删正文），体感上「不够直接」——用户希望删 chip 像删正文最前一个字一样自然。
+
+**方案（复用既有 leading adornment 机制 + 提取可测纯函数）**：
+- **chip 内嵌（复用 slash 同款机制）**：chip 从 `PromptInput` 首子节点 block 行移进 textarea 的 `relative` 容器，作为正文最前的 leading adornment——绝对定位左上角（`absolute left-0 top-0 z-10`），正文首行经 `useLeadingAdornmentTextIndent`（`text-indent = chip 宽度 + 0.25rem`）缩进让位；CSS `text-indent` 只作用于首行，换行后正文回到左侧（chip 只占首行高度，不与后续行重叠）。chip 与 slash 命令标签互斥（**slash 优先**——绑定预填的是任务需求文本、非 slash 命令），共用同一套 `leadingAdornmentLayout`（原仅服务 slash 的 `committedInputLayout` 重命名 + `enabled` 泛化为 `committedSlashCommand || multicaChipActive`）。× 关闭按钮保留（点 × 仍删 chip）。
+- **Backspace 删除条件放宽**：从「正文为空」改为「光标停在正文最前且无选区（`selectionStart === 0 && selectionEnd === 0`）」——模拟「chip 是正文首个 token」：文本起点的 Backspace 本就是 no-op，劫持它删 chip；正文非空、光标在中间/末尾（`selectionStart > 0`）或存在选区（`selectionEnd !== 0`，即便起点为 0）时照常删字、不误伤 chip。slash 提交时让位 slash 控制器。
+- **提取纯函数固化交互契约**：把 Backspace 触发条件从 `handleKeyDown` inline 提取为 `web/src/lib/conversation-composer-multica-chip.ts` 的 `shouldBackspaceClearMulticaBinding({key, multicaActive, hasCommittedSlashCommand, selectionStart, selectionEnd})`，单测覆盖 5 维输入分支。home `ConversationComposer` 依赖过重（draft context + agent commands + attachment + slash controller + right workspace）不挂组件测，与既有「纯逻辑 reducer 测 + 容器测」套件策略一致（§12.22 验收同款理由）。
+
+**实现（纯前端，无 Rust/server 改动）**：
+- `ConversationComposer.tsx`：删 `PromptInput` 首子节点 chip block；`relative min-w-0` 容器 ternary 改为 `committedSlashCommand ? <SlashTag/> : multicaBinding ? <chip Badge/> : null`，两 adornment 共用 `leadingAdornmentLayout.adornmentRef` + `.textareaStyle`；`handleKeyDown` 调 `shouldBackspaceClearMulticaBinding`（`selectionStart/End` 从 `composerTextareaRef.current` 取，ref 缺失时 `?? -1` 兜底为不删）。
+- `conversation-composer-multica-chip.ts`（新）：`MulticaBindingBackspaceInput` + `shouldBackspaceClearMulticaBinding` 纯函数。
+- `conversation-composer-multica-chip.test.ts`（新）：9 测——光标起点删（含正文非空）/ 非 Backspace / 无绑定 / 有 slash / 光标在中末 / 有选区 / ref 缺失兜底。
+
+**文件**：`web/src/components/conversation/ConversationComposer.tsx`（chip 移入 relative 容器 + hook 重命名泛化 + Backspace 调纯函数）、`web/src/lib/conversation-composer-multica-chip.ts`（新）、`web/tests/conversation-composer-multica-chip.test.ts`（新）。
+
+**验收**：`tsc --noEmit -p web/tsconfig.build.json` 零错；生产构建（`web:build` = tsc + vite build）绿；vitest `conversation-composer-multica-chip` 9 测 + composer/multica 回归 11 套件 102 测全过。
+
+> 本节更新 §12.22（M5-aj）chip 渲染位置（`PromptInput` 首子节点 block 行 → 输入框内首行内嵌 leading adornment）与 Backspace 删除条件（正文为空 → 光标在正文起点且无选区）。chip 与正文解耦、× 按钮解绑、claim-at-send（§12.23）下删 chip 纯本地等设计不变。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 ---

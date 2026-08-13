@@ -405,7 +405,6 @@ mod tests {
     fn from_active_run_marks_running_and_carries_local_link() {
         // 改动七：在飞任务（active_runs）→ running 行，带本地 run 链接供整行点击直达进行中的会话。
         let run = ActiveRemoteRun {
-            runtime_id: "rt-rt-1".into(),
             workspace_id: "ws-1".into(),
             local_project_id: "proj-1".into(),
             local_task_id: "task-9".into(),

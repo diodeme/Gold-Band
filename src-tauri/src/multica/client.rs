@@ -9,10 +9,6 @@
 //!
 //! 后端只返回 `MulticaError`（→ `CommandErrorVm { code, params }`），不含任何对客文案。
 
-// M2-M5 分里程碑接入：register/heartbeat/list_workspaces/claim/start/终态上报等预留 API
-// 暂未全部接线，先一次定义完整接口（先定数据→再定接口→再补实现）。M5 完成后审查移除该 allow。
-#![allow(dead_code)]
-
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -139,8 +135,13 @@ pub struct RemoteTask {
     pub issue_id: Option<String>,
     #[serde(default)]
     pub status: String,
-    /// 执行该 task 用的短期凭证（claim 响应带；M4 bridge 注入 ACP 执行）。
+    /// server 在 claim 时签发的 task-scoped 短期凭证（mat_，webank `GenerateAgentTaskToken`）。
+    ///
+    /// **码灵 Option B 中介设计下不消费**：ACP agent 从不直接调 multica API（开发设计 选项 B：
+    /// 码灵作为中介，而非 agent 直调），所有 multica 调用由码灵用自身 PAT 完成；本字段仅按 wire 契约
+    /// 反序列化（server 必回），不读取。
     #[serde(default)]
+    #[allow(dead_code)]
     pub auth_token: Option<String>,
     /// 续跑指针（**只输出**）：server claim 响应回填的父任务 ACP session_id。
     ///
@@ -148,6 +149,7 @@ pub struct RemoteTask {
     /// （webank `daemon.go:2025-2054` 经 `GetLastTaskSession` 解析父任务 session）。客户端用它做
     /// 续跑兜底/校验；主路径是 [`Self::parent_task_id`] 反查本地索引（更稳，不依赖 server session 解析）。
     #[serde(default)]
+    #[allow(dead_code)]
     pub prior_session_id: Option<String>,
     /// 续跑血缘：server claim 响应/任务列表携带的父任务 id（auto-retry 子任务 T' 指向父任务 T）。
     ///
@@ -362,8 +364,8 @@ impl MulticaClient {
 
     /// 发送带 JSON body 的已认证请求（统一 auth + 可选 `X-Workspace-ID` 头 + status 映射）。
     ///
-    /// `post_json` / `post_json_with_workspace` / issue PUT 的共用底座——杜绝三者各自重复请求构造
-    /// （否则 issue PUT 会带来第三份几乎相同的 auth+send+map_status 模板）。用 `self.token`（PAT）做
+    /// `post_json` / issue PUT 的共用底座——杜绝重复请求构造
+    /// （否则 issue PUT 会带来另一份几乎相同的 auth+send+map_status 模板）。用 `self.token`（PAT）做
     /// Bearer；create_token（登录期用临时 JWT）token 来源不同，仍走自有请求。返回 `Response` 供调用方
     /// 按需解码（complete/fail/issue PUT 丢弃 body，故不解码）。
     async fn json_send<T: Serialize + ?Sized>(
@@ -402,29 +404,6 @@ impl MulticaClient {
         R: DeserializeOwned,
     {
         let resp = self.json_send(Method::POST, path, None, body, None).await?;
-        resp.json::<R>()
-            .await
-            .map_err(|e| MulticaError::NetworkFailed(format!("decode {path} failed: {e}")))
-    }
-
-    /// 同 `post_json` 但额外带 `X-Workspace-ID` 头。
-    ///
-    /// issue 维度业务接口（接入方案 D1/D2/E1/E2）path 不含 workspace（`/api/issues/{id}/...`），
-    /// 靠该头路由到对应 workspace（开发设计 4.1）。daemon 任务接口（C2-C8）path 自带 task_id，
-    /// 不需要该头。
-    async fn post_json_with_workspace<T, R>(
-        &self,
-        path: &str,
-        workspace_id: &str,
-        body: &T,
-    ) -> Result<R, MulticaError>
-    where
-        T: Serialize + ?Sized,
-        R: DeserializeOwned,
-    {
-        let resp = self
-            .json_send(Method::POST, path, Some(workspace_id), body, None)
-            .await?;
         resp.json::<R>()
             .await
             .map_err(|e| MulticaError::NetworkFailed(format!("decode {path} failed: {e}")))
@@ -1427,8 +1406,8 @@ mod tests {
 
     #[test]
     fn update_issue_status_path_is_workspace_scoped_put() {
-        // 锁定 PUT path 形状（与 rerun_issue 同为 issue 维度接口，靠 X-Workspace-ID 头路由，
-        // path 不含 workspace）。头注入在 json_send 内，由 HTTP 集成测试覆盖；此处锁定 path。
+        // 锁定 PUT path 形状（issue 维度接口，靠 X-Workspace-ID 头路由，path 不含 workspace）。
+        // 头注入在 json_send 内，由 HTTP 集成测试覆盖；此处锁定 path。
         let path = format!("/api/issues/{}", "iss-7");
         assert_eq!(path, "/api/issues/iss-7");
     }

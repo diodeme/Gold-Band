@@ -486,14 +486,12 @@ const resources = {
         multica: {
           "not-configured": "尚未配置 Multica，请先在设置中完成接入。",
           "auth-failed": "Multica 鉴权失败：{{message}}",
-          "workspace-empty": "尚未绑定工作空间，请先在设置中绑定。",
           "network-failed": "Multica 网络请求失败：{{message}}",
           "register-failed": "Daemon 注册失败：{{message}}",
           "claim-conflict": "该任务已被其他 Daemon 领取。",
           "task-not-found": "找不到该 Multica 任务。",
           "runtime-offline": "运行时未就绪，请稍后重试。",
           "session-resume-failed": "会话恢复失败，将以全新任务重跑。",
-          "pin-session-failed": "绑定任务会话失败：{{message}}",
           "workspace-already-bound": "该工作空间已绑定。",
           "workspace-not-found": "找不到该工作空间绑定。",
         },
@@ -2526,7 +2524,6 @@ const resources = {
           "not-configured":
             "Multica is not configured. Complete setup in Settings first.",
           "auth-failed": "Multica authentication failed: {{message}}",
-          "workspace-empty": "No workspace is bound. Bind one in Settings first.",
           "network-failed": "Multica network request failed: {{message}}",
           "register-failed": "Daemon registration failed: {{message}}",
           "claim-conflict": "This task has already been claimed by another daemon.",
@@ -2534,7 +2531,6 @@ const resources = {
           "runtime-offline": "Runtime is not ready. Please try again shortly.",
           "session-resume-failed":
             "Session resume failed. A fresh run will be started.",
-          "pin-session-failed": "Failed to bind task session: {{message}}",
           "workspace-already-bound": "This workspace is already bound.",
           "workspace-not-found": "This workspace binding could not be found.",
         },

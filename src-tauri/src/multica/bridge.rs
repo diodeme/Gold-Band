@@ -14,10 +14,6 @@
 //! 反查 (local_task_id, local_run_id) → remote_task_id（多 workspace/多 run 不串台）。
 //! HTTP 调用经 `tauri::async_runtime::spawn` 异步执行（订阅器回调在 runtime 热路径，不可阻塞）。
 
-// M5 前端接入前，订阅器虽已注册但无 multica 任务在飞（active_runs 由 M4-c start 填充）。
-// M5 完成后审查移除该 allow。
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
 use gold_band::app::{App, RuntimeLifecycleEvent};

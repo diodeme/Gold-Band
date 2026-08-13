@@ -759,7 +759,6 @@ pub async fn start_multica_conversation_run(
                     guard.register_active_run(
                         &remote_task_id,
                         ActiveRemoteRun {
-                            runtime_id: runtime_id.clone(),
                             workspace_id: workspace_id.clone(),
                             local_project_id: resolved_project_id.clone(),
                             local_task_id: register_task_id.clone(),
@@ -833,7 +832,6 @@ pub async fn start_multica_conversation_run(
     // 搬运到 spawn_blocking 闭包的 multica 簿记数据。
     let remote = remote_task_id.clone();
     let ws_id = workspace_id.clone();
-    let rt_id = runtime_id.clone();
     let issue = issue_id.clone();
     let title = title.clone();
     let local_project = resolved_project_id.clone();
@@ -850,7 +848,6 @@ pub async fn start_multica_conversation_run(
                 guard.register_active_run(
                     &remote,
                     ActiveRemoteRun {
-                        runtime_id: rt_id,
                         workspace_id: ws_id,
                         local_project_id: local_project,
                         local_task_id: run.task_id.clone(),

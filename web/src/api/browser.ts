@@ -14,6 +14,7 @@ type LocalFontData = { family: string };
 type LocalFontWindow = Window & { queryLocalFonts?: () => Promise<LocalFontData[]> };
 
 const browserConversationRuns = new Map<string, ConversationRunVm>();
+const browserConversationRunModes = new Map<string, ConversationRunModeVm>();
 const browserScheduledTasks: ScheduledTaskVm[] = [];
 const browserScheduledTaskDefinitions = new Map<string, ScheduledTaskEditVm>();
 const browserScheduledTaskListeners = new Set<(event: ScheduledTaskUpdatedEventVm) => void>();
@@ -28,6 +29,17 @@ let browserScheduledRuntimeSettings = {
   occurrenceRetentionDays: 30,
   powerErrorCode: null,
 };
+
+function resolveBrowserOptionalEntry(
+  runMode: string,
+  workflowTemplateId: string | null | undefined,
+  includeOptionalEntry: boolean | null | undefined,
+) {
+  if (runMode !== 'workflow') return includeOptionalEntry;
+  if (includeOptionalEntry != null) return includeOptionalEntry;
+  return mockWorkflowTemplates.templates.find((template) => template.id === workflowTemplateId)
+    ?.optionalEntryStage?.defaultEnabled;
+}
 
 function emitBrowserScheduledTaskUpdated(task: ScheduledTaskVm) {
   const event: ScheduledTaskUpdatedEventVm = {
@@ -990,6 +1002,7 @@ export const browserApi: RuntimeApi = {
     const template = {
       id: name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `workflow-${current.templates.length + 1}`,
       name,
+      isBuiltIn: false,
       workflow: nextWorkflow,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -1002,6 +1015,9 @@ export const browserApi: RuntimeApi = {
   },
   updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl) {
     const current = browserPreviewState.getWorkflowTemplates();
+    if (current.templates.find((template) => template.id === templateId)?.isBuiltIn) {
+      return Promise.reject(browserCommandError('workflow-template.readonly-built-in'));
+    }
     return Promise.resolve(browserPreviewState.setWorkflowTemplates({
       ...current,
       lastUsedTemplateId: templateId,
@@ -1010,6 +1026,9 @@ export const browserApi: RuntimeApi = {
   },
   deleteWorkflowTemplate(templateId: string) {
     const current = browserPreviewState.getWorkflowTemplates();
+    if (current.templates.find((template) => template.id === templateId)?.isBuiltIn) {
+      return Promise.reject(browserCommandError('workflow-template.readonly-built-in'));
+    }
     return Promise.resolve(browserPreviewState.setWorkflowTemplates({
       ...current,
       lastUsedTemplateId: current.lastUsedTemplateId === templateId ? 'default' : current.lastUsedTemplateId,
@@ -1389,7 +1408,11 @@ export const browserApi: RuntimeApi = {
       attachmentNames: [],
       runMode: input.runMode,
       workflowTemplateId: input.workflowTemplateId,
-      includeInterview: input.includeInterview,
+      includeOptionalEntry: resolveBrowserOptionalEntry(
+        input.runMode,
+        input.workflowTemplateId,
+        input.includeOptionalEntry,
+      ),
       directConfig: input.directConfig,
       autoConfig: input.autoConfig,
       schedule,
@@ -1417,6 +1440,11 @@ export const browserApi: RuntimeApi = {
     const next: ScheduledTaskEditVm = {
       ...definition,
       ...input,
+      includeOptionalEntry: resolveBrowserOptionalEntry(
+        input.runMode,
+        input.workflowTemplateId,
+        input.includeOptionalEntry,
+      ),
       schedule,
       expectedUpdatedAt: now,
       directAgentType: input.directConfig?.agentType ?? definition.directAgentType ?? null,
@@ -1592,10 +1620,12 @@ export const browserApi: RuntimeApi = {
   searchConversationTasks(_query, _limit) {
     return Promise.resolve([]);
   },
-  getConversationRunMode(_projectId) {
-    return Promise.resolve({ mode: 'auto' });
+  getConversationRunMode(projectId) {
+    const mode = browserConversationRunModes.get(projectId);
+    return Promise.resolve(mode ? structuredClone(mode) : { mode: 'auto' });
   },
-  saveConversationRunMode() {
+  saveConversationRunMode(projectId, mode) {
+    browserConversationRunModes.set(projectId, structuredClone(mode));
     return Promise.resolve();
   },
   chooseConversationWorkspace() {
@@ -1908,7 +1938,6 @@ function quoteFontFamily(family: string) {
   return `"${family.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
 }
 
-void mockWorkflowTemplates;
 void toRoundSelectionInput;
 void mockBootstrap;
 void mockContent;

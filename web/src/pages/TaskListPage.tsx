@@ -318,7 +318,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
   } = draft;
   const workflowDirty = Boolean(workflow && baseWorkflow && canonicalWorkflow(workflow) !== canonicalWorkflow(baseWorkflow));
   const showDefaultWorkflowSaveAsNotice = shouldShowDefaultWorkflowSaveAsNotice(
-    selectedTemplateId,
+    templateStore?.templates.find((template) => template.id === selectedTemplateId),
     workflow,
     baseWorkflow,
   );
@@ -504,7 +504,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
   };
 
   const saveCurrentTemplateChanges = async () => {
-    if (!workflow || !selectedTemplateId || selectedTemplateId === 'default') return;
+    if (!workflow || !selectedTemplateId || selectedTemplate?.isBuiltIn) return;
     const validatedWorkflow = validateTemplateWorkflow(workflow);
     if (!validatedWorkflow) return;
     setSaving(true);
@@ -530,7 +530,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
   };
 
   const confirmDeleteWorkflowTemplate = async () => {
-    if (!deleteTemplateTarget || deleteTemplateTarget.id === 'default') return;
+    if (!deleteTemplateTarget || deleteTemplateTarget.isBuiltIn) return;
     setSaving(true);
     try {
       const deletedTemplateId = deleteTemplateTarget.id;
@@ -558,7 +558,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
   const defaultWorkflow = templateStore?.templates.find((template) => template.id === 'default')?.workflow ?? null;
   const selectedTemplate = templateStore?.templates.find((template) => template.id === selectedTemplateId) ?? null;
   const workflowTemplateLabel = selectedTemplate ? workflowTemplateDisplayName(selectedTemplate, t) : (workflow ? t('taskList.create.unsavedWorkflowTemplate') : t('taskList.create.workflowTemplatePlaceholder'));
-  const canUpdateSelectedTemplate = Boolean(selectedTemplateId && selectedTemplateId !== 'default');
+  const canUpdateSelectedTemplate = Boolean(selectedTemplateId && !selectedTemplate?.isBuiltIn);
   const lastUsedTemplate = templateStore?.templates.find((template) => template.id === templateStore.lastUsedTemplateId) ?? null;
   const showLastUsedHint = Boolean(lastUsedTemplate && selectedTemplateId !== lastUsedTemplate.id && !lastUsedHintDismissed);
 
@@ -711,7 +711,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
                           </Button>
                           <div className="my-1 border-t" />
                           {templateStore?.templates.map((template) => {
-                            const isDefaultTemplate = template.id === 'default';
+                            const isDefaultTemplate = template.isBuiltIn;
                             const selected = template.id === selectedTemplateId;
                             return (
                               <div key={template.id} className={cn('flex items-center gap-1 rounded-md p-1', selected && 'bg-accent text-accent-foreground')}>

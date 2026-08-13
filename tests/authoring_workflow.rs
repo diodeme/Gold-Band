@@ -200,8 +200,13 @@ fn default_workflow_template_includes_simplified_output_schema() {
         .iter()
         .find(|template| template.id == "default")
         .unwrap();
-    assert!(default.workflow.control.max_attempts.is_none());
-    assert!(default.workflow.control.max_rounds.is_none());
+    assert_eq!(default.workflow.control.max_attempts, Some(10));
+    assert_eq!(default.workflow.control.max_rounds, Some(3));
+    assert!(default.is_built_in);
+    assert_eq!(
+        default.optional_entry_stage.as_ref().unwrap().node_id,
+        "interview"
+    );
     let review = default
         .workflow
         .nodes
@@ -265,6 +270,137 @@ fn default_workflow_template_includes_simplified_output_schema() {
         panic!("plan should be a worker node");
     };
     assert_eq!(plan.goal.as_deref(), Some("分析导入的需求并产出实施方案。"));
+}
+
+#[test]
+fn built_in_workflow_templates_include_lightweight_topology_and_are_idempotent() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+
+    let first = app.workflow_templates().unwrap();
+    let second = app.workflow_templates().unwrap();
+    assert_eq!(
+        second
+            .templates
+            .iter()
+            .map(|template| template.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["default", "default-lightweight"]
+    );
+    assert_eq!(first.templates.len(), second.templates.len());
+
+    let lightweight = second
+        .templates
+        .iter()
+        .find(|template| template.id == "default-lightweight")
+        .unwrap();
+    assert!(lightweight.is_built_in);
+    assert_eq!(lightweight.workflow.control.max_attempts, Some(10));
+    assert_eq!(lightweight.workflow.control.max_rounds, Some(3));
+    assert_eq!(lightweight.workflow.entry, "grill");
+    assert_eq!(lightweight.workflow.nodes.len(), 3);
+    assert_eq!(lightweight.workflow.edges.len(), 4);
+    assert!(
+        lightweight
+            .workflow
+            .nodes
+            .iter()
+            .any(|node| node.id() == "dev-test")
+    );
+    assert!(lightweight.workflow.edges.iter().any(|edge| {
+        edge.from == "accept"
+            && edge.to == gold_band::dsl::NEW_ROUND_NODE
+            && edge.new_round_entry.as_deref() == Some("dev-test")
+    }));
+    assert_eq!(
+        lightweight.optional_entry_stage.as_ref().unwrap().node_id,
+        "grill"
+    );
+}
+
+#[test]
+fn optional_entry_preference_trims_only_built_in_optional_entry() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+    let store = app.workflow_templates().unwrap();
+
+    for (template_id, expected_entry, removed_node) in [
+        ("default", "plan", "interview"),
+        ("default-lightweight", "dev-test", "grill"),
+    ] {
+        let template = store
+            .templates
+            .iter()
+            .find(|item| item.id == template_id)
+            .unwrap();
+        let original = template.workflow.clone();
+        let mut effective = original.clone();
+        assert_eq!(
+            gold_band::app::apply_optional_entry_preference(template, Some(false), &mut effective)
+                .unwrap(),
+            Some(false)
+        );
+        assert_eq!(effective.entry, expected_entry);
+        assert!(!effective.nodes.iter().any(|node| node.id() == removed_node));
+        assert_eq!(
+            serde_json::to_value(&template.workflow).unwrap(),
+            serde_json::to_value(&original).unwrap()
+        );
+    }
+
+    let mut custom = store.templates[0].clone();
+    custom.id = "custom".to_string();
+    custom.is_built_in = false;
+    custom.optional_entry_stage = None;
+    let original = custom.workflow.clone();
+    let mut effective = original.clone();
+    assert_eq!(
+        gold_band::app::apply_optional_entry_preference(&custom, Some(false), &mut effective)
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        serde_json::to_value(&effective).unwrap(),
+        serde_json::to_value(&original).unwrap()
+    );
+}
+
+#[test]
+fn built_in_workflow_templates_are_read_only_by_metadata() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+    let store = app.workflow_templates().unwrap();
+
+    for template_id in ["default", "default-lightweight"] {
+        let workflow = store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .unwrap()
+            .workflow
+            .clone();
+        let update_error = app
+            .update_workflow_template(template_id, workflow)
+            .unwrap_err();
+        assert_eq!(
+            update_error
+                .downcast_ref::<gold_band::app::WorkflowTemplateCommandError>()
+                .unwrap()
+                .code(),
+            "workflow-template.readonly-built-in"
+        );
+        let delete_error = app.delete_workflow_template(template_id).unwrap_err();
+        assert_eq!(
+            delete_error
+                .downcast_ref::<gold_band::app::WorkflowTemplateCommandError>()
+                .unwrap()
+                .code(),
+            "workflow-template.readonly-built-in"
+        );
+    }
 }
 
 #[test]

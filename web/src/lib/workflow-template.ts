@@ -1,12 +1,10 @@
 import type { WorkflowDsl, WorkflowTemplate } from '@/types';
-import { DEFAULT_WORKFLOW_TEMPLATE_ID } from '@/lib/conversation-run-mode-config';
-
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 export function workflowTemplateDisplayName(template: WorkflowTemplate, t: Translate): string {
-  return template.id === DEFAULT_WORKFLOW_TEMPLATE_ID
-    ? t('taskList.create.defaultWorkflow')
-    : template.name;
+  if (template.id === 'default') return t('taskList.create.defaultFullWorkflow');
+  if (template.id === 'default-lightweight') return t('taskList.create.defaultLightweightWorkflow');
+  return template.name;
 }
 
 export function hasWorkflowDraftChanges(
@@ -17,11 +15,11 @@ export function hasWorkflowDraftChanges(
 }
 
 export function shouldShowDefaultWorkflowSaveAsNotice(
-  templateId: string | null | undefined,
+  template: WorkflowTemplate | null | undefined,
   workflow: WorkflowDsl | null | undefined,
   baseline: WorkflowDsl | null | undefined,
 ): boolean {
-  return templateId === DEFAULT_WORKFLOW_TEMPLATE_ID
+  return Boolean(template?.isBuiltIn)
     && hasWorkflowDraftChanges(workflow, baseline);
 }
 

@@ -184,6 +184,41 @@ pub(crate) fn task_input_attachment_paths(app: &App, task_id: &str) -> Vec<Strin
 }
 
 pub const DEFAULT_WORKFLOW_TEMPLATE_ID: &str = "default";
+pub const DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID: &str = "default-lightweight";
+const DEFAULT_WORKFLOW_MAX_ATTEMPTS: u32 = 10;
+const DEFAULT_WORKFLOW_MAX_ROUNDS: u32 = 3;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionalEntryStage {
+    pub node_id: String,
+    pub label_key: String,
+    pub default_enabled: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WorkflowTemplateCommandError {
+    #[error("workflow-template.readonly-built-in")]
+    ReadonlyBuiltIn,
+    #[error("workflow.optional-entry.invalid")]
+    InvalidOptionalEntry { reason: &'static str },
+}
+
+impl WorkflowTemplateCommandError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::ReadonlyBuiltIn => "workflow-template.readonly-built-in",
+            Self::InvalidOptionalEntry { .. } => "workflow.optional-entry.invalid",
+        }
+    }
+
+    pub fn params(&self) -> serde_json::Value {
+        match self {
+            Self::ReadonlyBuiltIn => serde_json::json!({}),
+            Self::InvalidOptionalEntry { reason } => serde_json::json!({ "reason": reason }),
+        }
+    }
+}
 
 fn default_workflow_template(
     profiles: &DefaultProfileIds,
@@ -192,8 +227,34 @@ fn default_workflow_template(
     let now = now_rfc3339_like();
     WorkflowTemplate {
         id: DEFAULT_WORKFLOW_TEMPLATE_ID.to_string(),
-        name: "默认工作流".to_string(),
+        name: "默认完整工作流".to_string(),
+        is_built_in: true,
+        optional_entry_stage: Some(OptionalEntryStage {
+            node_id: "interview".to_string(),
+            label_key: "conversation.home.includeInterview".to_string(),
+            default_enabled: true,
+        }),
         workflow: default_workflow_dsl("claude-acp", profiles, language),
+        created_at: now.clone(),
+        updated_at: now,
+    }
+}
+
+fn default_lightweight_workflow_template(
+    profiles: &DefaultProfileIds,
+    language: DesktopLanguage,
+) -> WorkflowTemplate {
+    let now = now_rfc3339_like();
+    WorkflowTemplate {
+        id: DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID.to_string(),
+        name: "默认轻量工作流".to_string(),
+        is_built_in: true,
+        optional_entry_stage: Some(OptionalEntryStage {
+            node_id: "grill".to_string(),
+            label_key: "conversation.home.includeGrill".to_string(),
+            default_enabled: true,
+        }),
+        workflow: default_lightweight_workflow_dsl("claude-acp", profiles, language),
         created_at: now.clone(),
         updated_at: now,
     }
@@ -207,6 +268,10 @@ fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
         (DesktopLanguage::ZhCn, "test") => "执行验证并形成明确结论。",
         (DesktopLanguage::ZhCn, "accept") => "对照需求进行验收并形成明确结论。",
         (DesktopLanguage::ZhCn, "cleanup") => "清理资源、整理交付说明并清理 Git 工作区。",
+        (DesktopLanguage::ZhCn, "grill") => {
+            "持续拷问需求直至达成共同理解，并产出 grill-consensus.md。"
+        }
+        (DesktopLanguage::ZhCn, "dev-test") => "在当前工作区完成需求实现、自动化测试和必要回归。",
         (DesktopLanguage::En, "plan") => {
             "Analyze the imported requirement and produce an implementation plan."
         }
@@ -220,6 +285,12 @@ fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
         }
         (DesktopLanguage::En, "cleanup") => {
             "Clean up resources, finalize handoff notes, and clean up the Git workspace."
+        }
+        (DesktopLanguage::En, "grill") => {
+            "Challenge the requirement until shared understanding is reached and produce grill-consensus.md."
+        }
+        (DesktopLanguage::En, "dev-test") => {
+            "Implement the requirement and run automated verification in the current workspace."
         }
         _ => "Execute this workflow node.",
     }
@@ -274,8 +345,8 @@ fn default_workflow_dsl(
         id: "task-workflow".to_string(),
         entry: "interview".to_string(),
         control: WorkflowControl {
-            max_attempts: None,
-            max_rounds: None,
+            max_attempts: Some(DEFAULT_WORKFLOW_MAX_ATTEMPTS),
+            max_rounds: Some(DEFAULT_WORKFLOW_MAX_ROUNDS),
         },
         nodes: vec![
             worker(
@@ -417,6 +488,116 @@ fn default_workflow_dsl(
     }
 }
 
+fn default_lightweight_workflow_dsl(
+    provider: &str,
+    profiles: &DefaultProfileIds,
+    language: DesktopLanguage,
+) -> WorkflowDsl {
+    fn worker(
+        provider: &str,
+        profiles: &DefaultProfileIds,
+        id: &str,
+        role_key: &str,
+        goal: &str,
+        validation: bool,
+    ) -> NodeDsl {
+        let artifact = validation.then(|| format!("{id}-result"));
+        NodeDsl::Worker(WorkerNode {
+            id: id.to_string(),
+            provider: Some(provider.to_string()),
+            model: None,
+            profile: Some(
+                profiles
+                    .get(role_key)
+                    .expect("default role id exists")
+                    .to_string(),
+            ),
+            goal: Some(goal.to_string()),
+            output: artifact.clone().map(|artifact| OutputContractDsl {
+                kind: OutputKind::Json,
+                artifact,
+                schema: Some(serde_json::json!({
+                    "reason": "String",
+                    "result": "boolean",
+                })),
+            }),
+            success_condition: validation.then(|| JsonConditionDsl::Expression {
+                expression: "$.result == true".to_string(),
+            }),
+            permission_mode: Some("bypassPermissions".to_string()),
+            config_options: Default::default(),
+            manual_check: None,
+            prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
+        })
+    }
+
+    WorkflowDsl {
+        version: "0.1".to_string(),
+        id: "task-workflow-lightweight".to_string(),
+        entry: "grill".to_string(),
+        control: WorkflowControl {
+            max_attempts: Some(DEFAULT_WORKFLOW_MAX_ATTEMPTS),
+            max_rounds: Some(DEFAULT_WORKFLOW_MAX_ROUNDS),
+        },
+        nodes: vec![
+            worker(
+                provider,
+                profiles,
+                "grill",
+                "grill",
+                default_workflow_goal(language, "grill"),
+                false,
+            ),
+            worker(
+                provider,
+                profiles,
+                "dev-test",
+                "dev-test",
+                default_workflow_goal(language, "dev-test"),
+                false,
+            ),
+            worker(
+                provider,
+                profiles,
+                "accept",
+                "accept",
+                default_workflow_goal(language, "accept"),
+                true,
+            ),
+        ],
+        edges: vec![
+            EdgeDsl {
+                from: "grill".to_string(),
+                to: "dev-test".to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            },
+            EdgeDsl {
+                from: "dev-test".to_string(),
+                to: "accept".to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            },
+            EdgeDsl {
+                from: "accept".to_string(),
+                to: END_NODE.to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            },
+            EdgeDsl {
+                from: "accept".to_string(),
+                to: NEW_ROUND_NODE.to_string(),
+                on: EdgeOutcome::Failure,
+                session: None,
+                new_round_entry: Some("dev-test".to_string()),
+            },
+        ],
+    }
+}
+
 fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> String {
     let slug = name
         .trim()
@@ -448,6 +629,93 @@ fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> Str
         candidate = format!("{base}-{index}");
     }
     candidate
+}
+
+fn upsert_built_in_workflow_template(
+    templates: &mut Vec<WorkflowTemplate>,
+    built_in: WorkflowTemplate,
+    index: usize,
+) {
+    if let Some(current_index) = templates
+        .iter()
+        .position(|template| template.id == built_in.id)
+    {
+        templates[current_index] = built_in;
+        if current_index != index {
+            let template = templates.remove(current_index);
+            templates.insert(index.min(templates.len()), template);
+        }
+    } else {
+        templates.insert(index.min(templates.len()), built_in);
+    }
+}
+
+pub fn apply_optional_entry_preference(
+    template: &WorkflowTemplate,
+    include_optional_entry: Option<bool>,
+    workflow: &mut WorkflowDsl,
+) -> Result<Option<bool>> {
+    let Some(stage) = template.optional_entry_stage.as_ref() else {
+        return Ok(None);
+    };
+    if !template.is_built_in {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "requires-built-in-template",
+        }
+        .into());
+    }
+    if workflow.entry != stage.node_id {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "must-be-workflow-entry",
+        }
+        .into());
+    }
+    if !workflow.nodes.iter().any(|node| node.id() == stage.node_id) {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "entry-node-missing",
+        }
+        .into());
+    }
+    let mut successors = workflow
+        .edges
+        .iter()
+        .filter(|edge| edge.from == stage.node_id && edge.on == EdgeOutcome::Success)
+        .map(|edge| edge.to.as_str());
+    let next_entry =
+        successors
+            .next()
+            .ok_or(WorkflowTemplateCommandError::InvalidOptionalEntry {
+                reason: "missing-success-successor",
+            })?;
+    if successors.next().is_some() {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "multiple-success-successors",
+        }
+        .into());
+    }
+    if next_entry == END_NODE || next_entry == NEW_ROUND_NODE {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "successor-must-be-real-node",
+        }
+        .into());
+    }
+    if !workflow.nodes.iter().any(|node| node.id() == next_entry) {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "successor-node-missing",
+        }
+        .into());
+    }
+
+    let include = include_optional_entry.unwrap_or(stage.default_enabled);
+    if !include {
+        let next_entry = next_entry.to_string();
+        workflow.nodes.retain(|node| node.id() != stage.node_id);
+        workflow
+            .edges
+            .retain(|edge| edge.from != stage.node_id && edge.to != stage.node_id);
+        workflow.entry = next_entry;
+    }
+    Ok(Some(include))
 }
 
 fn next_auto_template_id(store: &AutoTemplateStore) -> String {
@@ -489,6 +757,10 @@ pub struct WorkflowTemplateStore {
 pub struct WorkflowTemplate {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub is_built_in: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optional_entry_stage: Option<OptionalEntryStage>,
     pub workflow: WorkflowDsl,
     #[serde(alias = "created_at")]
     pub created_at: String,
@@ -1635,6 +1907,8 @@ impl App {
         store.templates.push(WorkflowTemplate {
             id: id.clone(),
             name: name.to_string(),
+            is_built_in: false,
+            optional_entry_stage: None,
             workflow: validated.raw,
             created_at: now.clone(),
             updated_at: now,
@@ -1653,10 +1927,15 @@ impl App {
         if template_id.is_empty() {
             bail!("workflow template id cannot be empty");
         }
-        if template_id == "default" {
-            bail!("default workflow template cannot be updated");
-        }
         let mut store = self.load_workflow_template_store()?;
+        if store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .is_some_and(|template| template.is_built_in)
+        {
+            return Err(WorkflowTemplateCommandError::ReadonlyBuiltIn.into());
+        }
         let mut workflow = workflow;
         self.normalize_workflow_models(&mut workflow);
         let validated = validate_workflow(workflow)?;
@@ -1687,11 +1966,15 @@ impl App {
         if template_id.is_empty() {
             bail!("workflow template id cannot be empty");
         }
-        if template_id == "default" {
-            bail!("default workflow template cannot be deleted");
-        }
-
         let mut store = self.load_workflow_template_store()?;
+        if store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .is_some_and(|template| template.is_built_in)
+        {
+            return Err(WorkflowTemplateCommandError::ReadonlyBuiltIn.into());
+        }
         let original_len = store.templates.len();
         store
             .templates
@@ -1826,6 +2109,8 @@ impl App {
         let default_profiles = ensure_default_user_profiles(&self.paths)?;
         let default_template =
             default_workflow_template(&default_profiles, self.config.desktop_language);
+        let lightweight_template =
+            default_lightweight_workflow_template(&default_profiles, self.config.desktop_language);
         let path = self.paths.workflow_templates_file();
         if !path.exists() {
             let legacy_path = self.paths.legacy_project_workflow_templates_file();
@@ -1838,17 +2123,8 @@ impl App {
         }
         if path.exists() {
             let mut store: WorkflowTemplateStore = read_json(&path)?;
-            if store.templates.is_empty() {
-                store.templates.push(default_template);
-            } else if let Some(template) = store
-                .templates
-                .iter_mut()
-                .find(|template| template.id == "default")
-            {
-                *template = default_template;
-            } else {
-                store.templates.insert(0, default_template);
-            }
+            upsert_built_in_workflow_template(&mut store.templates, lightweight_template, 0);
+            upsert_built_in_workflow_template(&mut store.templates, default_template, 0);
             self.normalize_workflow_template_store_models(&mut store);
             self.save_workflow_template_store(&store)?;
             return Ok(store);
@@ -1857,7 +2133,7 @@ impl App {
             version: VERSION.to_string(),
             last_used_template_id: Some("default".to_string()),
             last_created_workflow: None,
-            templates: vec![default_template],
+            templates: vec![default_template, lightweight_template],
         };
         self.normalize_workflow_template_store_models(&mut store);
         self.save_workflow_template_store(&store)?;
@@ -4577,6 +4853,8 @@ mod tests {
             templates: vec![WorkflowTemplate {
                 id: "custom".to_string(),
                 name: "Custom".to_string(),
+                is_built_in: false,
+                optional_entry_stage: None,
                 workflow: stale_workflow.clone(),
                 created_at: "2026-07-28T00:00:00Z".to_string(),
                 updated_at: "2026-07-28T00:00:00Z".to_string(),

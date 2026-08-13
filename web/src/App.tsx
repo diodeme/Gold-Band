@@ -1962,7 +1962,11 @@ export function App() {
               }
               : input.runMode === 'auto'
                 ? { mode: 'auto', autoConfig: input.autoConfig ?? conversationRunMode.autoConfig }
-                : { mode: 'workflow', workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId, includeInterview: input.includeInterview ?? conversationRunMode.includeInterview };
+                : {
+                  mode: 'workflow',
+                  workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId,
+                  optionalEntryPreferences: conversationRunMode.optionalEntryPreferences,
+                };
             setBusy(true);
             void updateConversationRunMode(nextMode, input.projectId);
             try {

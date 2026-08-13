@@ -684,9 +684,9 @@ export function RunModeManagementPage({
 
   const selectedWfTemplate = effectiveWorkflowTemplates?.templates.find((t) => t.id === wfEditTemplateId) ?? null;
   const wfTemplateLabel = selectedWfTemplate ? workflowTemplateDisplayName(selectedWfTemplate, t) : (wfEditWorkflow ? t('taskList.create.unsavedWorkflowTemplate') : t('taskList.create.workflowTemplatePlaceholder'));
-  const canUpdateWfTemplate = Boolean(wfEditTemplateId && wfEditTemplateId !== 'default');
+  const canUpdateWfTemplate = Boolean(wfEditTemplateId && !selectedWfTemplate?.isBuiltIn);
   const showDefaultWorkflowSaveAsNotice = shouldShowDefaultWorkflowSaveAsNotice(
-    wfEditTemplateId,
+    selectedWfTemplate,
     wfEditWorkflow,
     selectedWfTemplate?.workflow,
   );
@@ -767,7 +767,7 @@ export function RunModeManagementPage({
   };
 
   const deleteWfTemplate = async () => {
-    if (!wfDeleteTarget || wfDeleteTarget.id === 'default') return;
+    if (!wfDeleteTarget || wfDeleteTarget.isBuiltIn) return;
     setWfSaving(true);
     try {
       const nextStore = await deleteWorkflowTemplate(wfDeleteTarget.id);
@@ -1242,7 +1242,7 @@ export function RunModeManagementPage({
                     <div className={templatePickerSavedListClass}>
                       {workflowTemplateList.map((tpl) => {
                         const selected = tpl.id === wfEditTemplateId;
-                        const isDefault = tpl.id === 'default';
+                        const isDefault = tpl.isBuiltIn;
                         return (
                           <div key={tpl.id} className={cn('flex items-center gap-1 rounded-sm p-1', selected && 'bg-accent text-accent-foreground')}>
                             <button

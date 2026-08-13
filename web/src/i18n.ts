@@ -819,6 +819,8 @@ const resources = {
           confirmDiscardAction: "放弃草稿",
           workflowTemplate: "工作流模板",
           defaultWorkflow: "默认工作流",
+          defaultFullWorkflow: "默认完整工作流",
+          defaultLightweightWorkflow: "默认轻量工作流",
           workflowTemplatePlaceholder: "选择工作流",
           unsavedWorkflowTemplate: "新增模板（未保存）",
           noWorkflowTemplate:
@@ -1870,6 +1872,7 @@ const resources = {
           configureAuto: "修改 AUTO",
           configureWorkflow: "修改工作流",
           includeInterview: "需求采访",
+          includeGrill: "需求拷问",
         },
         runtime: {
           justNow: "刚刚",
@@ -2803,6 +2806,8 @@ const resources = {
           confirmDiscardAction: "Discard draft",
           workflowTemplate: "Workflow template",
           defaultWorkflow: "Default workflow",
+          defaultFullWorkflow: "Default full workflow",
+          defaultLightweightWorkflow: "Default lightweight workflow",
           workflowTemplatePlaceholder: "Select workflow",
           unsavedWorkflowTemplate: "New template (unsaved)",
           noWorkflowTemplate:
@@ -3883,6 +3888,7 @@ const resources = {
           configureAuto: "Edit AUTO",
           configureWorkflow: "Edit Workflow",
           includeInterview: "Requirement Interview",
+          includeGrill: "Requirement Grilling",
         },
         runtime: {
           justNow: "Just now",

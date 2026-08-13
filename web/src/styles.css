@@ -1,6 +1,53 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "streamdown/styles.css";
 @source "../../node_modules/streamdown/dist/*.js";
+
+@keyframes gold-band-stream-token-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+[data-gb-streaming-markdown="true"] [data-sd-animate] {
+  animation: none;
+  display: none;
+}
+
+[data-gb-streaming-markdown="true"] [data-sd-animate][data-gb-stream-state="revealed"] {
+  display: inline;
+  animation: gold-band-stream-token-in 180ms cubic-bezier(0.22, 0.61, 0.25, 1) both;
+}
+
+[data-gb-streaming-markdown="true"] [data-sd-animate][data-gb-stream-state="settled"] {
+  display: inline;
+  animation: none;
+  opacity: 1;
+}
+
+[data-gb-streaming-markdown="true"] [data-gb-stream-block]:not([data-gb-stream-block-state]),
+[data-gb-streaming-markdown="true"] [data-gb-stream-block-state="pending"] {
+  display: none;
+}
+
+[data-gb-streaming-markdown="true"] [data-gb-stream-block-state="visible"] {
+  display: contents;
+}
+
+[data-gb-streaming-markdown="true"] li::marker {
+  color: transparent;
+}
+
+[data-gb-streaming-markdown="true"] li:not([data-gb-stream-item-visible="true"]) {
+  display: none;
+}
+
+[data-gb-streaming-markdown="true"] li[data-gb-stream-item-visible="true"]::marker {
+  color: var(--muted-foreground);
+}
 
 @font-face {
   font-family: "Gold Band MiSans";

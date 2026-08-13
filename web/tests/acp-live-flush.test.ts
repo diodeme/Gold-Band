@@ -200,6 +200,26 @@ describe('ACP live event flush policy', () => {
     expect(merged.content).toBe('carefully and avoid vague references.');
   });
 
+  it('bounds interaction deferral by the pending batch starvation deadline', () => {
+    expect(decideAcpLiveEventFlush({
+      coalescable: true,
+      paused: false,
+      hasScheduledFlush: false,
+      flushDelayMs: 125,
+      deferRemainingMs: 180,
+      maxDeferRemainingMs: 40,
+    }).scheduleDelayMs).toBe(40);
+
+    expect(decideAcpLiveEventFlush({
+      coalescable: true,
+      paused: false,
+      hasScheduledFlush: false,
+      flushDelayMs: 0,
+      deferRemainingMs: 180,
+      maxDeferRemainingMs: 40,
+    }).scheduleDelayMs).toBe(40);
+  });
+
   it('replays the 6021-frame incident with a bounded latest-wins single flight', () => {
     type ReplayEvent = {
       id: string;

@@ -13,7 +13,7 @@ interface ConversationViewportProps {
   contextRef?: ChatContainerRootProps['contextRef'];
   onAtBottomChange?: ChatContainerRootProps['onAtBottomChange'];
   onViewportScroll?: ChatContainerRootProps['onViewportScroll'];
-  onViewportWheel?: ChatContainerRootProps['onViewportWheel'];
+  onViewportUserScroll?: ChatContainerRootProps['onViewportUserScroll'];
   className?: string;
   contentClassName?: string;
 }
@@ -24,7 +24,7 @@ export function ConversationViewport({
   contextRef,
   onAtBottomChange,
   onViewportScroll,
-  onViewportWheel,
+  onViewportUserScroll,
   className,
   contentClassName,
 }: ConversationViewportProps) {
@@ -37,7 +37,7 @@ export function ConversationViewport({
       contextRef={contextRef}
       onAtBottomChange={onAtBottomChange}
       onViewportScroll={onViewportScroll}
-      onViewportWheel={onViewportWheel}
+      onViewportUserScroll={onViewportUserScroll}
     >
       <ChatContainerContent
         className={cn('min-h-full', contentClassName)}

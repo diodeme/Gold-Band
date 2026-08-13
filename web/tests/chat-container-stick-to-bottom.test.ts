@@ -67,6 +67,42 @@ afterEach(() => {
 });
 
 describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
+  it('reports only explicit wheel, keyboard, or scrollbar-pointer input as user scrolling', async () => {
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    const contextRef = React.createRef<ChatContainerContext>();
+    const userScrolls: number[] = [];
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            ChatContainerRoot,
+            { contextRef, onViewportUserScroll: () => userScrolls.push(1) },
+            React.createElement(ChatContainerContent, null, 'streaming content'),
+          ),
+        );
+      });
+      const viewport = contextRef.current?.scrollRef.current as HTMLDivElement;
+
+      await act(async () => {
+        viewport.dispatchEvent(new Event('scroll'));
+      });
+      expect(userScrolls).toHaveLength(0);
+
+      await act(async () => {
+        viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 }));
+        viewport.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp' }));
+        viewport.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      });
+      expect(userScrolls).toHaveLength(3);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('restores bottom following when a layout scroll races ahead of content resize observation', async () => {
     vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (

@@ -63,6 +63,8 @@ const PROMPT_INPUT_INTERACTIVE_SELECTOR = [
   '[role="button"]',
   '[role="combobox"]',
   '[role="menuitem"]',
+  '[role="menuitemcheckbox"]',
+  '[role="menuitemradio"]',
   '[contenteditable="true"]',
   "[data-prompt-input-interactive]",
 ].join(",")

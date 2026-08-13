@@ -38,6 +38,12 @@ export function findAcpThoughtLevel(
   return configOptions?.find((option) => option.category === ACP_THOUGHT_LEVEL_CATEGORY) ?? null;
 }
 
+export function acpConfigMenuSelectionMode(
+  thoughtLevel: AcpSelectConfigOptionVm | null | undefined,
+) {
+  return thoughtLevel && thoughtLevel.options.length > 0 ? 'composite' : 'single';
+}
+
 export function updateAcpConfigOptionOverride(
   overrides: Record<string, string> | null | undefined,
   optionId: string,
@@ -105,7 +111,7 @@ export function AcpModelThoughtSelects({
   const triggerClass = acpComposerConfigTriggerVariants({ compact });
   const selectedModel = models.find((model) => model.id === modelValue);
   const selectedThought = thoughtLevel?.options.find((option) => option.value === thoughtValue);
-  const hasThoughtLevel = Boolean(thoughtLevel && thoughtLevel.options.length > 0);
+  const selectionMode = acpConfigMenuSelectionMode(thoughtLevel);
   const handleConfigOptionSelect = (event: Event) => {
     keepAcpConfigMenuOpenOnSelect(event);
     keepMenuOpenRef.current = true;
@@ -123,7 +129,7 @@ export function AcpModelThoughtSelects({
     if (!open) setOpenSection(null);
   };
 
-  if (!hasThoughtLevel) {
+  if (selectionMode === 'single') {
     return models.length > 0 ? (
       <AcpSingleConfigMenu
         label={t('acp.currentModel')}

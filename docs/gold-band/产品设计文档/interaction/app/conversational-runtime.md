@@ -446,9 +446,9 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 - 新建对话 composer 与会话详情 composer 共享同一套 ACP 配置选择器。Agent 只提供模型时展示普通模型下拉；同时提供 `configOptions[category=thought_level]` 时，模型栏切换为单槽位复合下拉，权限仍是相邻的独立下拉，不按 Codex `reasoning_effort`、Claude `effort` 等具体 ID 写死。
 - ACP select 配置以 `configOptions` 为当前协议事实源：模型目录、当前模型和值展示优先读取 `configOptions[category=model]`，权限模式同理优先读取 `configOptions[category=mode]`；旧 `models` / `modes` 只在对应 config option 缺失时作为兼容回退。两套字段同时存在但内容冲突时不得让旧字段覆盖 config option，也不得解析模型名称或 ID 中的 `(low)`、`[max]` 等 adapter 私有组合格式来推断思考强度。
-- 复合下拉的第一层只展示“模型”和“思考强度”两个入口及其已选值，点击后进入各自选项。主下拉面板默认以触发器左边缘为锚点对齐，面板更宽时向右展开，避免向左悬出并打断相邻控件的阅读顺序。composer 配置菜单使用非模态 DropdownMenu，打开模型菜单后直接点击相邻权限触发器时，必须在同一次点击中关闭模型并打开权限，不得要求第二次点击。两个子栏使用受控 click-to-open 交互，同一时刻只允许一个展开，打开其中一个必须自动关闭另一个；同一使用位置的两个子选项面板固定向同一侧展开，避免因选项宽度不同左右跳变。会话详情内列表默认向上弹出，新建对话按可用空间弹出，超出高度时内部滚动。
+- 复合下拉的第一层只展示“模型”和“思考强度”两个入口及其已选值，点击后进入各自选项。主下拉面板默认以触发器左边缘为锚点对齐，面板更宽时向右展开，避免向左悬出并打断相邻控件的阅读顺序。composer 配置菜单使用非模态 DropdownMenu，打开模型菜单后直接点击相邻权限触发器时，必须在同一次点击中关闭模型并打开权限，不得要求第二次点击。两个子栏使用受控 click-to-open 交互，同一时刻只允许一个展开，打开其中一个必须自动关闭另一个；同一使用位置的两个子选项面板固定向同一侧展开，避免因选项宽度不同左右跳变。只有同时存在模型与思考强度子入口的复合菜单在选择具体项后保持打开、等待点击外部关闭；纯模型菜单与权限菜单属于单项菜单，选择后立即关闭。会话详情内列表默认向上弹出，新建对话按可用空间弹出，超出高度时内部滚动。
 - Gold Band 的模型与思考强度初始均为空，复合触发器统一显示“不指定”，表示不覆盖 Agent 自己的 `currentValue`；只选择模型时显示模型名，只选择思考强度时显示 `不指定 · 思考强度`，两者都选择后显示 `模型 · 思考强度`。发起会话前可清除任一选择；进入会话详情后，每个配置仅在自身 override 尚为空时提供“不指定”，模型、权限和思考强度一旦选择具体值便只能在具体值之间切换。
-- 模型、思考强度和权限都是当前 ACP session 的可切换配置；选中列表项后立即更新会话快照，并在下一次 prompt 前通过 ACP `session/set_config_option` 或 provider 能力等价路径同步到底层会话。
+- 模型、思考强度和权限都是当前 ACP session 的可切换配置；选中列表项后立即更新会话快照，并在下一次 prompt 前通过 ACP `session/set_config_option` 或 provider 能力等价路径同步到底层会话。配置项点击只负责更新配置与菜单生命周期，不得主动聚焦 composer 输入框；PromptInput 的空白点击聚焦判定必须把普通、复选和单选菜单项都视为交互元素。
 - 后续同一 ACP session 的每次追问和 runtime continue 只复用 Gold Band 的显式覆盖：`modelOverride`、`permissionModeOverride` 与 `configOptionOverrides`。不得从 Agent 返回的 `currentModelId/currentModeId/currentValue` 反推用户覆盖；未指定时继续交由 Agent 决定默认值。
 - 运行时应用顺序固定为模型、权限模式、其余通用 config option。模型切换后以 Agent 返回的新 `configOptions` 作为后续配置事实源，通用选项必须按实际 option ID 和可选值校验。
 - 复合下拉第一层未选择的子栏不显示占位值，触发器和已选态只展示名称；长描述只在具体选项中换行展示，不允许撑破触发器或越出窗口边界。协议解析统一收敛在 ACP session config 工具中，展示组件只消费归一化后的 id/name/description。

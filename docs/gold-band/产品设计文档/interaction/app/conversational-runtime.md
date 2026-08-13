@@ -555,3 +555,4 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - Ctrl-wheel 通过稳定 viewport 的 non-passive 监听归一化 `deltaMode`、限制单事件增量，并用乘法曲线约束在 `0.1–8`；缩放以指针为中心，同一动画帧内的输入合并为一次 transform，缩放百分比通过局部 DOM ref 更新。
 - Windows 桌面窗口开启 WebView2 pinch 输入；应用根节点阻止页面级 Ctrl-wheel/键盘缩放但不停止事件传播，使图片 viewport 可以消费局部缩放事件。
 - pinch 与 Ctrl-wheel 指数灵敏度为 `0.003`，单事件归一化增量限制为 `120px`；每帧变换提交前原子写回权威 transform ref，连续手势不得依赖第三方组件滞后的回调状态。
+- Composer 上下文功能区必须与其下方正文使用同一水平内容 inset：快速对话的附件缩略图、命令标签与普通文字共用无额外缩进的左边缘；会话详情追问的附件/引用标签与 prompt-kit textarea 共用 `px-3` 左边缘。共享上下文组件不得内置一套固定水平 padding，否则不同 composer 外层 padding 会产生错位。

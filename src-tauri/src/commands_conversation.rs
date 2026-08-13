@@ -233,14 +233,15 @@ pub fn list_scheduled_tasks(
         .list(project_id.as_deref())
         .map_err(scheduled_service_error)?
         .into_iter()
-        .map(|definition| {
+        .map(|record| {
             let workspace_name = service
-                .workspace_name(&definition.project_id)
+                .workspace_name(&record.definition.project_id)
                 .map_err(scheduled_service_error)?;
             Ok(
                 crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
-                    &definition,
+                    &record.definition,
                     &workspace_name,
+                    record.next_run_at,
                 ),
             )
         })
@@ -378,6 +379,7 @@ pub fn set_scheduled_task_enabled(
         crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
             &record.definition,
             &workspace_name,
+            record.next_run_at,
         ),
     )
 }
@@ -396,6 +398,7 @@ pub fn create_scheduled_task(
         crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
             &record.definition,
             &workspace_name,
+            record.next_run_at,
         ),
     )
 }

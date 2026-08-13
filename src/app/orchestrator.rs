@@ -643,15 +643,32 @@ pub(crate) fn launch_prepared_run_background(
                 node,
             } = prepared.data;
             let fallback_node = node.clone();
-            if let Err(err) = drive_from_node(
-                &app,
-                &task_id,
-                &validated,
-                &resolved_profiles,
-                &mut run,
-                &mut round,
-                node,
-            ) {
+            // 用 catch_unwind 包裹 drive_from_node：panic 也走 terminalize_background_drive_error，
+            // 否则后台线程 panic 会跳过终止事件，导致订阅 scheduled_occurrence 的 occurrence 永久卡 running。
+            let drive_result = catch_unwind(AssertUnwindSafe(|| {
+                drive_from_node(
+                    &app,
+                    &task_id,
+                    &validated,
+                    &resolved_profiles,
+                    &mut run,
+                    &mut round,
+                    node,
+                )
+            }));
+            let err = match drive_result {
+                Ok(Ok(())) => None,
+                Ok(Err(err)) => Some(err),
+                Err(panic_payload) => Some(anyhow::anyhow!(
+                    "background drive panicked: {}",
+                    panic_payload
+                        .downcast_ref::<String>()
+                        .map(String::as_str)
+                        .or_else(|| panic_payload.downcast_ref::<&'static str>().copied())
+                        .unwrap_or("<non-string panic payload>")
+                )),
+            };
+            if let Some(err) = err {
                 terminalize_background_drive_error(
                     &app,
                     &task_id,

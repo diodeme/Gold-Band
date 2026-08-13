@@ -51,6 +51,7 @@ import {
   updateNotificationAttention,
 } from './api';
 import { isTauriRuntime } from './api/shared';
+import { prefetchScheduledRuntimeSettings } from '@/components/scheduled-tasks/useScheduledRuntimeSettings';
 import {
   applyConversationSidebarTaskActivity,
   conversationTaskActivityFromLifecycle,
@@ -712,6 +713,8 @@ export function App() {
     getAppBootstrap()
       .then((bootstrap) => {
         setBootstrap(bootstrap);
+        // 静默预取定时任务运行时设置，让首次进入「设置 → 定时任务」也免加载闪烁。
+        void prefetchScheduledRuntimeSettings();
         if (shouldAutoOpenWorkspacePicker(bootstrap, uiMode)) {
           setWorkspacePickerOpen(true);
         }

@@ -10,7 +10,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::dsl::{EdgeDsl, EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowControl, WorkflowDsl, END_NODE};
+use crate::dsl::{
+    END_NODE, EdgeDsl, EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowControl,
+    WorkflowDsl,
+};
 
 /// Direct 模式工作流预设：单个 raw-agent Worker 节点 → `$end`。
 ///

@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use reqwest::{Client, Method, Response, StatusCode};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::multica::error::MulticaError;
@@ -318,10 +318,7 @@ pub struct MulticaClient {
 
 impl MulticaClient {
     /// 构造 client（`base_url` 应已 normalize）。`token=None` 时请求不带 Authorization。
-    pub fn new(
-        base_url: impl Into<String>,
-        token: Option<String>,
-    ) -> Result<Self, MulticaError> {
+    pub fn new(base_url: impl Into<String>, token: Option<String>) -> Result<Self, MulticaError> {
         let base_url = base_url.into();
         if base_url.trim().is_empty() {
             return Err(MulticaError::NotConfigured);
@@ -404,9 +401,7 @@ impl MulticaClient {
         T: Serialize + ?Sized,
         R: DeserializeOwned,
     {
-        let resp = self
-            .json_send(Method::POST, path, None, body, None)
-            .await?;
+        let resp = self.json_send(Method::POST, path, None, body, None).await?;
         resp.json::<R>()
             .await
             .map_err(|e| MulticaError::NetworkFailed(format!("decode {path} failed: {e}")))
@@ -548,10 +543,9 @@ impl MulticaClient {
     /// `GET /api/workspaces` —— workspace 成员列表（容错包装/裸数组）。
     pub async fn list_workspaces(&self) -> Result<Vec<WorkspaceInfo>, MulticaError> {
         let resp = self.send(Method::GET, "/api/workspaces", None).await?;
-        let parsed = resp
-            .json::<WorkspacesResponse>()
-            .await
-            .map_err(|e| MulticaError::NetworkFailed(format!("decode /api/workspaces failed: {e}")))?;
+        let parsed = resp.json::<WorkspacesResponse>().await.map_err(|e| {
+            MulticaError::NetworkFailed(format!("decode /api/workspaces failed: {e}"))
+        })?;
         Ok(match parsed {
             WorkspacesResponse::Wrapped { workspaces } => workspaces,
             WorkspacesResponse::Bare(v) => v,
@@ -564,10 +558,7 @@ impl MulticaClient {
     ///
     /// 一般请求：网络错误重试 3 次，4xx 不重试（直接映射错误码）。用于**一次性**调用（启动 / connect /
     /// 绑定即时）——这些路径无上层循环兜底，故在 client 内退避重试。
-    pub async fn register(
-        &self,
-        req: &RegisterRequest,
-    ) -> Result<RegisterResponse, MulticaError> {
+    pub async fn register(&self, req: &RegisterRequest) -> Result<RegisterResponse, MulticaError> {
         self.with_network_retry("register", || async {
             self.post_json("/api/daemon/register", req).await
         })
@@ -580,7 +571,10 @@ impl MulticaClient {
     /// 适合一次性调用。而自愈注册由 15s 心跳 tick 驱动——**循环即重试**；若再嵌套 client 内 3×30s 退避，
     /// 弱网下单 tick 可超 90s，阻塞后续心跳/取消检测（runtime 离线超 150s 会被 sweeper 回收）。
     /// 故自愈路径用单次 register + per-request 短超时：失败下 tick 自然重试，单 tick 耗时有界。
-    pub async fn register_once(&self, req: &RegisterRequest) -> Result<RegisterResponse, MulticaError> {
+    pub async fn register_once(
+        &self,
+        req: &RegisterRequest,
+    ) -> Result<RegisterResponse, MulticaError> {
         let resp = self
             .json_send(
                 Method::POST,
@@ -590,9 +584,9 @@ impl MulticaClient {
                 Some(Duration::from_secs(LIVENESS_TIMEOUT_SECS)),
             )
             .await?;
-        resp.json::<RegisterResponse>()
-            .await
-            .map_err(|e| MulticaError::NetworkFailed(format!("decode /api/daemon/register failed: {e}")))
+        resp.json::<RegisterResponse>().await.map_err(|e| {
+            MulticaError::NetworkFailed(format!("decode /api/daemon/register failed: {e}"))
+        })
     }
 
     /// `POST /api/daemon/heartbeat` —— 维持 runtime 在线（执行期 15s）。
@@ -708,11 +702,7 @@ impl MulticaClient {
     /// **best-effort、不重试**：仅在失败路径调用，失败只记日志。server 侧该端点对「已非 dispatched」幂等
     /// 返回 200（no-op），故即便任务已被 sweeper 回收也不会报错；真正的 404（任务不存在）映射
     /// [`TaskNotFound`](MulticaError::TaskNotFound)，调用方忽略即可。body 丢弃——只关心 HTTP 状态。
-    pub async fn release_task(
-        &self,
-        runtime_id: &str,
-        task_id: &str,
-    ) -> Result<(), MulticaError> {
+    pub async fn release_task(&self, runtime_id: &str, task_id: &str) -> Result<(), MulticaError> {
         let path = format!("/api/daemon/runtimes/{runtime_id}/tasks/{task_id}/release");
         let _: serde_json::Value = self.post_json(&path, &serde_json::json!({})).await?;
         Ok(())
@@ -728,7 +718,9 @@ impl MulticaClient {
         force_fresh_session: bool,
     ) -> Result<(), MulticaError> {
         let path = format!("/api/daemon/tasks/{task_id}/start");
-        let body = StartRequest { force_fresh_session };
+        let body = StartRequest {
+            force_fresh_session,
+        };
         let _: serde_json::Value = self.post_json(&path, &body).await?;
         Ok(())
     }
@@ -871,7 +863,9 @@ impl MulticaClient {
         // 1. IPv4 listener（cmd_auth.go:246 用 tcp4 避免 IPv6-only 不可达）
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .map_err(|e| MulticaError::NetworkFailed(format!("bind local callback listener failed: {e}")))?;
+            .map_err(|e| {
+                MulticaError::NetworkFailed(format!("bind local callback listener failed: {e}"))
+            })?;
         let port = listener
             .local_addr()
             .map_err(|e| MulticaError::NetworkFailed(format!("local listener addr failed: {e}")))?
@@ -884,8 +878,7 @@ impl MulticaClient {
         let state = generate_state();
 
         // 3. 构造 loginURL（cmd_auth.go:262）并开浏览器（cmd_auth.go:295）
-        let mut login_url = url::Url::parse(app_url)
-            .map_err(|_| MulticaError::NotConfigured)?; // app_url 无效视为未配置
+        let mut login_url = url::Url::parse(app_url).map_err(|_| MulticaError::NotConfigured)?; // app_url 无效视为未配置
         login_url.set_path("/login");
         {
             let mut q = login_url.query_pairs_mut();
@@ -905,7 +898,9 @@ impl MulticaClient {
                 let (stream, _) = listener.accept().await.map_err(|e| {
                     MulticaError::NetworkFailed(format!("accept callback failed: {e}"))
                 })?;
-                if let Some((token, returned_state)) = parse_callback_request(stream, &app_root).await {
+                if let Some((token, returned_state)) =
+                    parse_callback_request(stream, &app_root).await
+                {
                     if returned_state != expected_state {
                         // CSRF 不匹配，忽略并继续等（cmd_auth.go:276 返回 400 但 loop）
                         continue;
@@ -915,7 +910,9 @@ impl MulticaClient {
             }
         })
         .await
-        .map_err(|_| MulticaError::NetworkFailed("timed out waiting for authentication".into()))??;
+        .map_err(|_| {
+            MulticaError::NetworkFailed("timed out waiting for authentication".into())
+        })??;
 
         // 5. JWT → PAT
         let login_client = MulticaClient::new(base_url, None)?;
@@ -940,7 +937,9 @@ fn map_status(path: &str, status: StatusCode) -> Result<(), MulticaError> {
         401 | 403 => Err(MulticaError::AuthFailed(format!("{path}: HTTP {status}"))),
         404 => Err(MulticaError::TaskNotFound),
         409 => Err(MulticaError::ClaimConflict),
-        _ => Err(MulticaError::NetworkFailed(format!("{path}: HTTP {status}"))),
+        _ => Err(MulticaError::NetworkFailed(format!(
+            "{path}: HTTP {status}"
+        ))),
     }
 }
 
@@ -964,7 +963,9 @@ async fn parse_callback_request(
     let parts: Vec<&str> = request_line.split_whitespace().collect();
     if parts.len() < 2 || !parts[0].eq_ignore_ascii_case("GET") {
         let _ = stream
-            .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .write_all(
+                b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
             .await;
         return None;
     }
@@ -1203,10 +1204,9 @@ mod tests {
     fn remote_task_reads_thread_name_wire_key() {
         // webank 权威源：AgentTaskResponse.ThreadName → JSON `thread_name`，
         // claim 响应与 pending 列表均带此键。锁定 wire 契约 thread_name → task.title。
-        let task: RemoteTask = serde_json::from_str(
-            r#"{"id":"t-1","thread_name":"Fix login bug","status":"queued"}"#,
-        )
-        .unwrap();
+        let task: RemoteTask =
+            serde_json::from_str(r#"{"id":"t-1","thread_name":"Fix login bug","status":"queued"}"#)
+                .unwrap();
         assert_eq!(task.title.as_deref(), Some("Fix login bug"));
     }
 
@@ -1220,8 +1220,7 @@ mod tests {
         .unwrap();
         assert_eq!(child.parent_task_id.as_deref(), Some("t-parent"));
         // 非重试任务（首发）无血缘 → None，缺字段不阻断解析。
-        let first: RemoteTask =
-            serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
+        let first: RemoteTask = serde_json::from_str(r#"{"id":"t-1","status":"queued"}"#).unwrap();
         assert!(first.parent_task_id.is_none());
     }
 
@@ -1229,9 +1228,10 @@ mod tests {
     fn remote_task_requirement_text_picks_source_by_priority() {
         // 镜像 server computeTaskKind 来源互斥优先级：
         // quick-create > chat > comment > autopilot > handoff > issue_description > title。
-        let qc: RemoteTask =
-            serde_json::from_str(r#"{"id":"t","thread_name":"T","quick_create_prompt":"qc-prompt"}"#)
-                .unwrap();
+        let qc: RemoteTask = serde_json::from_str(
+            r#"{"id":"t","thread_name":"T","quick_create_prompt":"qc-prompt"}"#,
+        )
+        .unwrap();
         assert_eq!(qc.requirement_text().as_deref(), Some("qc-prompt"));
 
         let chat: RemoteTask =
@@ -1265,7 +1265,10 @@ mod tests {
             r#"{"id":"t","thread_name":"T","handoff_note":"handoff here","issue_description":"body"}"#,
         )
         .unwrap();
-        assert_eq!(handoff_over_body.requirement_text().as_deref(), Some("handoff here"));
+        assert_eq!(
+            handoff_over_body.requirement_text().as_deref(),
+            Some("handoff here")
+        );
 
         // 优先级：多来源同时存在取最高优先级（quick_create 压过 chat）。
         let multi: RemoteTask = serde_json::from_str(
@@ -1315,7 +1318,10 @@ mod tests {
 
         // 反向锁定：包裹信封 `{task:{...}}` 不能直接解成 RemoteTask（id 在信封层、对象层缺失）。
         let wrapped = serde_json::from_str::<RemoteTask>(r#"{"task":{"id":"t-1"}}"#);
-        assert!(wrapped.is_err(), "GET 任务详情必须是裸对象，不得包裹 task 信封");
+        assert!(
+            wrapped.is_err(),
+            "GET 任务详情必须是裸对象，不得包裹 task 信封"
+        );
     }
 
     #[test]

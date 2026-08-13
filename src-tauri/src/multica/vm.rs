@@ -384,7 +384,10 @@ mod tests {
         assert_eq!(vm.project_id.as_deref(), Some("proj-1"));
 
         // title 空白 → 用 remote_task_id 兜底（不留空标签）。
-        let blank = MulticaCompletedTask { title: "  ".into(), ..c.clone() };
+        let blank = MulticaCompletedTask {
+            title: "  ".into(),
+            ..c.clone()
+        };
         assert_eq!(RemoteTaskVm::from_completed(&blank, "proj-1").title, "rt-1");
 
         // failed 终态同样进列表（status 原样透传）。
@@ -392,7 +395,10 @@ mod tests {
             status: "failed".into(),
             ..c
         };
-        assert_eq!(RemoteTaskVm::from_completed(&failed, "proj-1").status, "failed");
+        assert_eq!(
+            RemoteTaskVm::from_completed(&failed, "proj-1").status,
+            "failed"
+        );
     }
 
     #[test]
@@ -423,9 +429,21 @@ mod tests {
         assert_eq!(vm.project_id.as_deref(), Some("proj-1"));
 
         // title 空/纯空白 → remote_task_id 兜底（不留空标签，与其它构造器一致）。
-        let blank = ActiveRemoteRun { title: None, ..run.clone() };
-        assert_eq!(RemoteTaskVm::from_active_run("remote-9", &blank, "proj-1").title, "remote-9");
-        let ws = ActiveRemoteRun { title: Some("   ".into()), ..run.clone() };
-        assert_eq!(RemoteTaskVm::from_active_run("remote-9", &ws, "proj-1").title, "remote-9");
+        let blank = ActiveRemoteRun {
+            title: None,
+            ..run.clone()
+        };
+        assert_eq!(
+            RemoteTaskVm::from_active_run("remote-9", &blank, "proj-1").title,
+            "remote-9"
+        );
+        let ws = ActiveRemoteRun {
+            title: Some("   ".into()),
+            ..run.clone()
+        };
+        assert_eq!(
+            RemoteTaskVm::from_active_run("remote-9", &ws, "proj-1").title,
+            "remote-9"
+        );
     }
 }

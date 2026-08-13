@@ -21,8 +21,8 @@ use gold_band::config::MulticaWorkspaceRef;
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::channel::current_channel_config;
-use crate::metrics::get_system_username;
 use crate::conversation_workspace::workspace_entry_for_project;
+use crate::metrics::get_system_username;
 use crate::multica::bridge::{emit_multica_task_updated, teardown_active_run};
 use crate::multica::client::{MulticaClient, RegisterRequest, RuntimeSpec};
 use crate::multica::config::{get_daemon_id, get_pat, multica_base_url, multica_settings};
@@ -254,7 +254,10 @@ async fn run_heartbeat_loop<R: Runtime>(app: AppHandle<R>) {
                 "multica heartbeat tick overrun (degraded network? stages blocking)"
             );
         } else {
-            tracing::debug!(elapsed_ms = tick_elapsed.as_millis() as u64, "multica heartbeat tick done");
+            tracing::debug!(
+                elapsed_ms = tick_elapsed.as_millis() as u64,
+                "multica heartbeat tick done"
+            );
         }
         tokio::time::sleep(Duration::from_secs(MULTICA_HEARTBEAT_INTERVAL_SECS)).await;
     }
@@ -323,8 +326,15 @@ async fn self_heal_registration<R: Runtime>(app: &AppHandle<R>, client: &Multica
         if already {
             continue;
         }
-        match register_workspace(client, &workspace.id, &workspace.provider, &daemon_id, &shared, false)
-            .await
+        match register_workspace(
+            client,
+            &workspace.id,
+            &workspace.provider,
+            &daemon_id,
+            &shared,
+            false,
+        )
+        .await
         {
             Ok(runtime_id) => tracing::info!(
                 workspace = %workspace.id,
@@ -398,7 +408,7 @@ async fn detect_cancelled_active_runs<R: Runtime>(app: &AppHandle<R>, client: &M
         let invalidate = match client.get_task_status(&remote).await {
             Ok(status) => is_active_terminal(&status),
             Err(MulticaError::TaskNotFound) => true, // 404：task 已删
-            Err(_) => false,                          // 暂态网络/解码 -> 下 tick 重试
+            Err(_) => false,                         // 暂态网络/解码 -> 下 tick 重试
         };
         if invalidate {
             spawn_invalidate(app, &remote).await;
@@ -427,7 +437,12 @@ async fn reconcile_startup_orphans<R: Runtime>(app: &AppHandle<R>, client: &Mult
 /// 在飞 active_run 的 remote_task_id 集合（取消检测遍历用）。
 fn active_run_remote_ids<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
     app.try_state::<SharedMulticaState>()
-        .and_then(|shared| shared.lock().ok().map(|g| g.active_runs.keys().cloned().collect()))
+        .and_then(|shared| {
+            shared
+                .lock()
+                .ok()
+                .map(|g| g.active_runs.keys().cloned().collect())
+        })
         .unwrap_or_default()
 }
 
@@ -445,7 +460,8 @@ fn orphan_remote_ids<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
 async fn spawn_invalidate<R: Runtime>(app: &AppHandle<R>, remote: &str) {
     let app = app.clone();
     let remote = remote.to_string();
-    let _ = tauri::async_runtime::spawn_blocking(move || invalidate_remote_task(&app, &remote)).await;
+    let _ =
+        tauri::async_runtime::spawn_blocking(move || invalidate_remote_task(&app, &remote)).await;
 }
 
 /// 作废 remote task 对应本地 run（取消检测 / 启动 reconcile 共用）。
@@ -455,9 +471,15 @@ async fn spawn_invalidate<R: Runtime>(app: &AppHandle<R>, remote: &str) {
 /// 回退 `task_conversations[remote]`（崩溃 orphan 场景，active_runs 已丢，用持久化 work_dir + local ids）。
 /// 再交 `bridge::teardown_active_run` 收尾。
 fn invalidate_remote_task<R: Runtime>(app: &AppHandle<R>, remote: &str) {
-    let Some(desktop) = app.try_state::<DesktopState>() else { return };
-    let Ok(context) = desktop.context() else { return };
-    let Some(shared) = app.try_state::<SharedMulticaState>() else { return };
+    let Some(desktop) = app.try_state::<DesktopState>() else {
+        return;
+    };
+    let Ok(context) = desktop.context() else {
+        return;
+    };
+    let Some(shared) = app.try_state::<SharedMulticaState>() else {
+        return;
+    };
     let home_app = context.app();
 
     // active_run 优先（在飞）-> 回退 task_conversations（崩溃 orphan）。
@@ -479,8 +501,16 @@ fn invalidate_remote_task<R: Runtime>(app: &AppHandle<R>, remote: &str) {
     };
 
     tracing::info!(task = %remote, "multica cancel-detection: invalidating local run");
-    let workspace_app = home_app.with_repo_root(Utf8PathBuf::from(workspace_path), context.config.clone());
-    teardown_active_run(&workspace_app, &shared, &home_app, remote, &local_task_id, &local_run_id);
+    let workspace_app =
+        home_app.with_repo_root(Utf8PathBuf::from(workspace_path), context.config.clone());
+    teardown_active_run(
+        &workspace_app,
+        &shared,
+        &home_app,
+        remote,
+        &local_task_id,
+        &local_run_id,
+    );
 }
 
 #[cfg(test)]

@@ -97,8 +97,7 @@ impl MulticaRuntimeState {
 
     /// 登记 remote task 的本地映射（M4-c claim+start 后调用）。
     pub fn register_active_run(&mut self, remote_task_id: &str, run: ActiveRemoteRun) {
-        self.active_runs
-            .insert(remote_task_id.to_string(), run);
+        self.active_runs.insert(remote_task_id.to_string(), run);
     }
 
     /// 移除 remote task 映射（终态/取消后调用），返回被移除项供副作用使用。
@@ -211,7 +210,11 @@ mod tests {
         state.clear_runtime_id("ws-1");
 
         assert!(state.runtime_id("ws-1").is_none(), "失效 workspace 应清掉");
-        assert_eq!(state.runtime_id("ws-2"), Some("rt-b"), "其余 workspace 不受影响");
+        assert_eq!(
+            state.runtime_id("ws-2"),
+            Some("rt-b"),
+            "其余 workspace 不受影响"
+        );
         // 再清不存在的 -> 无副作用。
         state.clear_runtime_id("ws-x");
         assert_eq!(state.runtime_id("ws-2"), Some("rt-b"));
@@ -225,7 +228,11 @@ mod tests {
         let found = state.find_active_run_by_local("task-9", "run-9");
         assert_eq!(found.as_ref().map(|(r, _)| r.as_str()), Some("remote-9"));
         // 串台防护：仅 task_id 匹配但 run_id 不同 → 不命中（多 workspace/多 run 不串台）。
-        assert!(state.find_active_run_by_local("task-9", "run-other").is_none());
+        assert!(
+            state
+                .find_active_run_by_local("task-9", "run-other")
+                .is_none()
+        );
         // 完全不命中。
         assert!(state.find_active_run_by_local("task-x", "run-x").is_none());
     }
@@ -254,4 +261,3 @@ mod tests {
         assert!(state.active_run("remote-x").is_none());
     }
 }
-

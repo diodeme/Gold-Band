@@ -145,10 +145,16 @@ fn main() {
     );
     let multica_base_url =
         env::var("GOLD_BAND_MULTICA_BASE_URL").unwrap_or(config.multica_base_url.clone());
-    println!("cargo:rustc-env=GOLD_BAND_MULTICA_BASE_URL={}", multica_base_url);
+    println!(
+        "cargo:rustc-env=GOLD_BAND_MULTICA_BASE_URL={}",
+        multica_base_url
+    );
     let multica_app_url =
         env::var("GOLD_BAND_MULTICA_APP_URL").unwrap_or(config.multica_app_url.clone());
-    println!("cargo:rustc-env=GOLD_BAND_MULTICA_APP_URL={}", multica_app_url);
+    println!(
+        "cargo:rustc-env=GOLD_BAND_MULTICA_APP_URL={}",
+        multica_app_url
+    );
 
     tauri_build::build()
 }

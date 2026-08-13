@@ -218,7 +218,7 @@ fn session_value(path: &Utf8Path) -> Result<Value> {
     }
     Ok(serde_json::json!({
         "availability": "established",
-        "latestTurnStatus": "cancelled",
+        "latestTurnStatus": "none",
         "restored": false,
         "createdAt": current_timestamp(),
     }))
@@ -228,6 +228,46 @@ fn session_value(path: &Utf8Path) -> Result<Value> {
 mod tests {
     use super::*;
     use crate::acp::events::{AcpUiEvent, write_timeline_items};
+
+    #[test]
+    fn runtime_control_cursor_does_not_invent_a_terminal_turn_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+
+        mark_runtime_interrupted(attempt_dir).unwrap();
+
+        for name in [SNAPSHOT_FILE, SESSION_FILE] {
+            let metadata = load_session_metadata_value(&attempt_dir.join(name), None).unwrap();
+            assert_eq!(metadata["latestTurnStatus"], "none");
+            assert_eq!(
+                metadata["runtimeControl"]["currentMode"],
+                "non-runtime-controlled"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_control_cursor_preserves_an_existing_turn_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+        write_json(
+            &attempt_dir.join(SNAPSHOT_FILE),
+            &serde_json::json!({
+                "sessionId": "session-existing",
+                "availability": "established",
+                "latestTurnStatus": "completed",
+                "restored": false,
+                "createdAt": current_timestamp(),
+            }),
+        )
+        .unwrap();
+
+        mark_runtime_interrupted(attempt_dir).unwrap();
+
+        let metadata = load_session_metadata_value(&attempt_dir.join(SNAPSHOT_FILE), None).unwrap();
+        assert_eq!(metadata["latestTurnStatus"], "completed");
+        assert_eq!(metadata["sessionId"], "session-existing");
+    }
 
     #[test]
     fn non_runtime_stop_does_not_create_another_transition() {

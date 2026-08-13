@@ -4542,8 +4542,6 @@ fn persist_active_session_stop(
         )
         .map_err(command_error)?;
     }
-    app.persist_cancelled_session_snapshot(&attempt_dir)
-        .map_err(command_error)?;
     if runtime_was_controlled {
         gold_band::acp::control::mark_runtime_interrupted(&attempt_dir).map_err(command_error)?;
     }
@@ -6896,8 +6894,11 @@ mod tests {
         assert_eq!(run["status"], "paused");
         let snapshot: serde_json::Value =
             read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
-        assert_eq!(snapshot["availability"], "established");
-        assert_eq!(snapshot["latestTurnStatus"], "cancelled");
+        assert_eq!(snapshot["latestTurnStatus"], "none");
+        assert_eq!(
+            snapshot["runtimeControl"]["currentMode"],
+            "non-runtime-controlled"
+        );
         assert!(timeline_path.is_dir());
         std::fs::remove_dir_all(root).unwrap();
     }

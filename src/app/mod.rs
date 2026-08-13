@@ -3164,9 +3164,13 @@ impl App {
         path.and_then(|path| crate::acp::events::load_session_metadata_value(&path, None).ok())
             .is_some_and(|metadata| {
                 metadata
-                    .get("latestTurnStatus")
+                    .get("sessionId")
                     .and_then(serde_json::Value::as_str)
-                    == Some("none")
+                    .is_some()
+                    && metadata
+                        .get("latestTurnStatus")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("none")
             })
     }
 
@@ -5584,6 +5588,38 @@ mod tests {
                 .join("acp.elicitation-response.elicit-001.json")
                 .exists()
         );
+    }
+
+    #[test]
+    fn runtime_control_only_metadata_is_not_an_active_acp_session() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = test_app(repo_root);
+        let attempt_dir = app.paths.attempt_dir(
+            "task-001",
+            "run-001",
+            "round-001",
+            "node-001",
+            "attempt-001",
+        );
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "availability": "established",
+                "latestTurnStatus": "none",
+                "runtimeControl": {
+                    "currentMode": "non-runtime-controlled",
+                    "transitionId": "runtime-control-test",
+                    "transitionCause": "runtime-interrupted",
+                    "changedAt": "1Z"
+                }
+            }),
+        )
+        .unwrap();
+
+        assert!(!app.attempt_has_active_acp_session(&attempt_dir));
     }
 
     #[test]

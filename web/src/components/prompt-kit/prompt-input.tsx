@@ -135,6 +135,7 @@ function PromptInput({
             className
           )}
           {...props}
+          data-slot="prompt-input"
         >
           {children}
         </div>

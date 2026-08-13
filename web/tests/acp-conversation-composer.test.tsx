@@ -19,6 +19,9 @@ function baseProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
     sending: false,
     status: null,
     attachments: [],
+    quotes: [],
+    contextError: null,
+    onRemoveQuote: vi.fn(),
     onRemoveAttachment: vi.fn(),
     onPreviewAttachment: vi.fn(),
     onClearAttachments: vi.fn(),
@@ -87,13 +90,34 @@ describe('AcpConversationComposer', () => {
   it('renders config, workflow continuation, and send in one bottom command bar', async () => {
     await renderComposer({ showRuntimeContinue: true, configBar: <span data-test-config="true">config</span> });
 
+    const commandBar = host.querySelector('[data-acp-composer-command-bar="true"]');
     const continueButton = host.querySelector('[data-acp-continue-workflow="true"]');
     const sendButton = host.querySelector('[data-acp-send="true"]');
-    expect(continueButton).toBeTruthy();
-    const commandBar = host.querySelector('[data-acp-composer-command-bar="true"]');
-    expect(sendButton).toBeTruthy();
-    expect(continueButton?.parentElement?.parentElement).toBe(sendButton?.parentElement?.parentElement);
     const config = host.querySelector('[data-test-config="true"]');
     expect(commandBar).toBeTruthy();
+    expect(continueButton).toBeTruthy();
+    expect(sendButton).toBeTruthy();
+    expect(commandBar?.contains(continueButton)).toBe(true);
+    expect(commandBar?.contains(sendButton)).toBe(true);
+    expect(commandBar?.contains(config)).toBe(true);
+  });
+
+  it('renders quotes and attachments inside the prompt input context area', async () => {
+    await renderComposer({
+      quotes: [{ id: 'quote-1', sourceKey: 'answer-1', text: '引用内容' }],
+      attachments: [{ id: 'image-1', name: 'image.png', size: 12, mime: 'image/png', source: 'dialog', previewUrl: 'blob:image' }],
+    });
+
+    const contextArea = host.querySelector('[data-composer-context-area="true"]');
+    const promptInput = host.querySelector('[data-slot="prompt-input"]');
+    const textarea = host.querySelector('textarea');
+    expect(contextArea).toBeTruthy();
+    expect(promptInput).toBeTruthy();
+    expect(promptInput?.contains(contextArea)).toBe(true);
+    expect(promptInput?.contains(textarea)).toBe(true);
+    expect(contextArea?.querySelector('[data-composer-quote-chip="true"]')).toBeTruthy();
+    const imageChip = contextArea?.querySelector('[data-composer-attachment-chip="true"]');
+    expect(imageChip?.querySelector('img')).toBeTruthy();
+    expect(imageChip?.textContent).not.toContain('image.png');
   });
 });

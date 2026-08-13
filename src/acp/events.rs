@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use crate::acp::control::AcpRuntimeControlCursor;
 use crate::artifacts::json_artifact_display_span;
+use crate::provider::UserPromptQuote;
 use crate::storage::{
     append_jsonl, append_jsonl_unlocked, ensure_parent_dir, read_json, with_jsonl_file_lock,
     write_json,
@@ -1813,6 +1814,26 @@ pub fn user_prompt_event(
     hidden_from_chat: bool,
     attachments: Vec<AttachmentMeta>,
 ) -> AcpUiEvent {
+    user_prompt_event_with_quotes(
+        seq,
+        session_id,
+        content,
+        prompt_id,
+        hidden_from_chat,
+        attachments,
+        Vec::new(),
+    )
+}
+
+pub fn user_prompt_event_with_quotes(
+    seq: u64,
+    session_id: String,
+    content: String,
+    prompt_id: Option<String>,
+    hidden_from_chat: bool,
+    attachments: Vec<AttachmentMeta>,
+    quotes: Vec<UserPromptQuote>,
+) -> AcpUiEvent {
     let mut raw = serde_json::json!({
         "source": "goldBandPrompt",
         "synthetic": true,
@@ -1826,6 +1847,9 @@ pub fn user_prompt_event(
     }
     if !attachments.is_empty() {
         raw["attachments"] = serde_json::to_value(&attachments).unwrap_or_default();
+    }
+    if !quotes.is_empty() {
+        raw["quotes"] = serde_json::to_value(&quotes).unwrap_or_default();
     }
     AcpUiEvent {
         id: format!("gold-band-user-prompt-{seq}"),
@@ -1939,8 +1963,9 @@ mod tests {
         context_compaction_phase, elicitation_request_event, elicitation_response_event,
         extract_usage_fields, kind_to_ui_kind, latest_timeline_source_seq, load_session_metadata,
         load_timeline_items, normalize_session_update, permission_request_event, user_prompt_event,
-        write_timeline_items,
+        user_prompt_event_with_quotes, write_timeline_items,
     };
+    use crate::provider::UserPromptQuote;
     use crate::storage::{read_json, write_json};
     use camino::Utf8PathBuf;
     use serde_json::{Value, json};
@@ -2563,6 +2588,33 @@ mod tests {
                 .and_then(|raw| raw.get("promptId"))
                 .and_then(|value| value.as_str()),
             Some("prompt-123")
+        );
+    }
+
+    #[test]
+    fn user_prompt_event_persists_explicit_quotes_without_changing_display_content() {
+        let event = user_prompt_event_with_quotes(
+            7,
+            "session-123".to_string(),
+            "> 用户自己输入的正文".to_string(),
+            Some("prompt-123".to_string()),
+            false,
+            Vec::new(),
+            vec![UserPromptQuote {
+                id: "quote-1".to_string(),
+                source_message_key: "message-1".to_string(),
+                text: "Agent 原文".to_string(),
+            }],
+        );
+
+        assert_eq!(event.content.as_deref(), Some("> 用户自己输入的正文"));
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/quotes/0/text"))
+                .and_then(Value::as_str),
+            Some("Agent 原文")
         );
     }
 

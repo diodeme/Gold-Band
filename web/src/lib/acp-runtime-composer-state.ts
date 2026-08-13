@@ -12,7 +12,6 @@ export type AcpComposerMode =
 export type AcpComposerSubmitTarget =
   | 'acp-prompt'
   | 'queue-prompt'
-  | 'permission-response'
   | 'none';
 
 export type AcpComposerProcessingKind =
@@ -31,7 +30,6 @@ export type AcpComposerPlaceholderKind =
   | 'default'
   | 'runtime-controlled'
   | 'stopping'
-  | 'plan-intervention'
   | 'message';
 
 export type AcpComposerHintKind =
@@ -52,7 +50,6 @@ export interface AcpRuntimeComposerStateInput {
   acpStatus?: string | null;
   prompt: string;
   waitingForPermission: boolean;
-  hasPlanIntervention: boolean;
   sending: boolean;
   awaitingResponse: boolean;
   waitingForOptimisticPrompt: boolean;
@@ -106,7 +103,7 @@ export function deriveAcpRuntimeComposerState(
   );
   const acpActive = !acpTerminal && lifecycleAcpRunning;
   const backendStopping = !acpTerminal && (Boolean(input.lifecycle?.acp.stopping) || backend?.mode === 'stopping');
-  const waitingForPermission = input.waitingForPermission && !input.hasPlanIntervention;
+  const waitingForPermission = input.waitingForPermission;
   const staleTerminalSnapshot = acpTerminal && !localTurnInFlight;
   const cancelling = !acpTerminal && input.cancelling;
   const stopCommandPending = (!acpTerminal || backendWorkspacePreparing) && input.stopCommandPending;
@@ -150,11 +147,10 @@ export function deriveAcpRuntimeComposerState(
     sessionActive ||
     stopInProgress;
   const showExternalState = mode === 'invalid-workflow' || mode === 'runtime-error';
-  const composerLocked = waitingForPermission;
+  const composerLocked = waitingForPermission && !directQueueFacet;
   const staleStoppingBackend = acpTerminal && reportedBackendMode === 'stopping';
   const backendInputLocked = !staleStoppingBackend && mode !== 'normal' && Boolean(backend?.lockInput);
   const directInputDisabled =
-    composerLocked ||
     stopInProgress ||
     mode === 'invalid-workflow' ||
     mode === 'runtime-error';
@@ -162,12 +158,12 @@ export function deriveAcpRuntimeComposerState(
     directQueueFacet
       ? directInputDisabled
       : composerLocked || backendInputLocked || activePromptLocked || mode === 'invalid-workflow' || mode === 'runtime-error'
-  ) && !input.hasPlanIntervention;
+  );
   const canSubmit = Boolean(input.prompt.trim())
     && submitTarget !== 'none'
     && !queueAtCapacity
     && !(input.sending && submitTarget !== 'queue-prompt')
-    && !inputDisabledForSubmit(inputDisabled, input.hasPlanIntervention, mode);
+    && !inputDisabled;
   const processingKind = processingKindForInput(
     input,
     stopInProgress,
@@ -253,11 +249,9 @@ function shouldRouteDirectSubmissionToQueue(input: {
   awaitingResponse: boolean;
 }) {
   if (
-    input.mode === 'permission-blocked' ||
     input.mode === 'invalid-workflow' ||
     input.mode === 'runtime-error' ||
-    input.mode === 'stopping' ||
-    input.input.hasPlanIntervention
+    input.mode === 'stopping'
   ) {
     return false;
   }
@@ -342,24 +336,17 @@ function submitTargetFromBackend(
   mode: AcpComposerMode,
   backendSubmitTarget?: string | null,
 ): AcpComposerSubmitTarget {
-  if (mode === 'permission-blocked' || input.hasPlanIntervention) return 'permission-response';
+  if (mode === 'permission-blocked') return 'none';
   if (mode === 'invalid-workflow' || mode === 'runtime-error' || mode === 'stopping') return 'none';
   const normalized = normalizeStatus(backendSubmitTarget);
   if (
     normalized === 'acp-prompt' ||
     normalized === 'queue-prompt' ||
-    normalized === 'permission-response' ||
     normalized === 'none'
   ) {
     return normalized;
   }
   return 'none';
-}
-
-function inputDisabledForSubmit(inputDisabled: boolean, hasPlanIntervention: boolean, mode: AcpComposerMode) {
-  if (hasPlanIntervention) return false;
-  if (mode === 'normal') return false;
-  return inputDisabled;
 }
 
 function processingKindForInput(
@@ -384,7 +371,6 @@ function placeholderKindForMode(
   mode: AcpComposerMode,
   activePromptLocked: boolean,
 ): AcpComposerPlaceholderKind {
-  if (input.hasPlanIntervention) return 'plan-intervention';
   if (input.waitingForPermission) return 'runtime-controlled';
   if (mode === 'stopping') return 'stopping';
   if (mode === 'invalid-workflow' || mode === 'runtime-error') return 'message';

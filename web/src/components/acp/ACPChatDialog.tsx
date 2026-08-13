@@ -75,6 +75,7 @@ import {
   acpAttemptWorkspaceResourceKey,
   agentTranscriptResourceKey,
   conversationAssetWorkspaceResourceKey,
+  draftAttachmentWorkspaceResourceKey,
   useOptionalRightWorkspaceCommands,
   type AcpAttemptWorkspaceLocator,
   type AgentTranscriptLocator,
@@ -111,17 +112,33 @@ import {
   messageAttachmentPreviewsFromRaw,
   type MessageAttachmentPreview,
 } from "@/lib/asset-preview";
-import { useAttachmentPicker, useWindowDragGuard } from "@/lib/attachment-service";
-import { useAcpComposerDraft } from "@/lib/acp-composer-draft";
+import {
+  revokeAttachmentPreviewUrls,
+  useAttachmentPicker,
+  useWindowDragGuard,
+  type AttachmentItem,
+} from "@/lib/attachment-service";
+import { useAcpComposerDraft, type AcpComposerDraft } from "@/lib/acp-composer-draft";
+import {
+  addComposerQuote,
+  createUserPromptSubmission,
+  serializeUserPromptSubmission,
+  userPromptQuotesFromRaw,
+} from "@/lib/composer-context";
+import type { ConversationPromptInput } from "@/types";
+import type { AgentMessageSelection } from "@/lib/agent-message-selection";
 import { AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
 import { AcpConversationComposer } from "@/components/conversation/AcpConversationComposer";
+import { AgentSelectionQuoteButton } from "@/components/conversation/AgentSelectionQuoteButton";
 import { ConversationPromptQueue } from "@/components/conversation/ConversationPromptQueue";
+import { UserMessageQuotes } from "@/components/conversation/UserMessageQuotes";
 import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from "@/lib/slash-command";
 import { useAgentCommands } from "@/hooks/useAgentCommands";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { AcpAvatar, AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
 import { AcpUsagePanel } from "@/components/acp/AcpUsagePanel";
 import { HiddenPromptMessageContent } from "@/components/acp/HiddenPromptMessageContent";
+import { AcpProcessingSpinner } from "@/components/acp/AcpProcessingSpinner";
 import { WorkspaceFileEditor } from "@/components/workspace/files/WorkspaceFileEditor";
 import {
   DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT,
@@ -764,6 +781,10 @@ export function ACPChatDialog(
   );
   const prompt = composerDraft.draft.content;
   const setPrompt = composerDraft.setContent;
+  const quotes = composerDraft.draft.quotes;
+  const setQuotes = composerDraft.setQuotes;
+  const conversationRootRef = useRef<HTMLDivElement>(null);
+  const [composerContextError, setComposerContextError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [queueSubmitPending, setQueueSubmitPending] = useState(false);
   const [promptCommandPending, setPromptCommandPending] = useState(false);
@@ -820,9 +841,6 @@ export function ACPChatDialog(
   const [answeredElicitations, setAnsweredElicitations] = useState<
     Map<string, Record<string, unknown>>
   >(() => new Map());
-  const [queuedInterventionPrompt, setQueuedInterventionPrompt] = useState<
-    string | null
-  >(null);
   const {
     attachments: pendingAttachments,
     fileError,
@@ -834,8 +852,6 @@ export function ACPChatDialog(
     resolveAttachmentPaths,
     dropZoneHandlers,
     extractPasteFiles,
-    previewImage,
-    setPreviewImage,
     textPreview,
     setTextPreview,
     handlePreviewAttachment,
@@ -1196,9 +1212,6 @@ export function ACPChatDialog(
   const pendingElicitation = pendingElicitationRequest
     ? pendingElicitationFromRequest(pendingElicitationRequest)
     : null;
-  const planInterventionOption = pendingPermission
-    ? findPlanInterventionOption(pendingPermission)
-    : null;
   const projectionLifecycle = localRuntimeLifecycle ?? runtimeComposerContext?.lifecycle;
   const projectedSessionStatus = projectionLifecycle && projectionLifecycle.acp.liveTurnActivity !== 'idle'
     ? (projectionLifecycle.acp.stopping
@@ -1273,6 +1286,39 @@ export function ACPChatDialog(
       && !localLifecycle.runtime.active
       && localLifecycle.acp.liveTurnActivity === "idle",
   );
+
+  const handleOpenComposerAttachment = useCallback((attachment: AttachmentItem) => {
+    if (!rightWorkspace?.scopeKey || !attachment.mime.startsWith('image/') || !attachment.previewUrl) {
+      handlePreviewAttachment(attachment);
+      return;
+    }
+    void rightWorkspace.openResource({
+      kind: 'draft-attachment',
+      key: draftAttachmentWorkspaceResourceKey(rightWorkspace.scopeKey, attachment.id),
+      scopeKey: rightWorkspace.scopeKey,
+      projectId,
+      title: attachment.name,
+      description: attachment.path,
+      attention: false,
+      attachment,
+    });
+  }, [handlePreviewAttachment, projectId, rightWorkspace]);
+
+  const closeComposerAttachmentPreview = useCallback((attachment: AttachmentItem) => {
+    if (!rightWorkspace?.scopeKey) return;
+    void rightWorkspace.closeTab(draftAttachmentWorkspaceResourceKey(rightWorkspace.scopeKey, attachment.id));
+  }, [rightWorkspace]);
+
+  const removeComposerAttachment = useCallback((id: string) => {
+    const attachment = pendingAttachments.find((item) => item.id === id);
+    if (attachment) closeComposerAttachmentPreview(attachment);
+    removeAttachment(id);
+  }, [closeComposerAttachmentPreview, pendingAttachments, removeAttachment]);
+
+  const clearComposerAttachments = useCallback(() => {
+    pendingAttachments.forEach(closeComposerAttachmentPreview);
+    clearAttachments();
+  }, [clearAttachments, closeComposerAttachmentPreview, pendingAttachments]);
   useEffect(() => {
     if (!shouldSettleRuntimeContinueSubmission(runtimeContinueSubmitting, showRuntimeContinueAction)) return;
     setRuntimeContinueSubmitting(false);
@@ -1311,7 +1357,6 @@ export function ACPChatDialog(
     acpStatus: effective?.status,
     prompt,
     waitingForPermission,
-    hasPlanIntervention: Boolean(planInterventionOption),
     sending,
     awaitingResponse: activeAwaitingResponse,
     waitingForOptimisticPrompt,
@@ -1347,8 +1392,7 @@ export function ACPChatDialog(
     ?? null;
   const promptQueueVisible = Boolean(promptQueue?.items.length);
   const canStopSession = composerState.canStop;
-  const sendButtonBusy =
-    (sending || waitingForOptimisticPrompt) && !planInterventionOption;
+  const sendButtonBusy = sending || waitingForOptimisticPrompt;
   const lastEvent = effectiveEvents.at(-1);
 
   const normalizeSessionUpdate = useCallback(
@@ -2431,17 +2475,30 @@ export function ACPChatDialog(
     }
   };
 
-  const submitPrompt = async (trimmed: string) => {
+  const releaseSubmittedAttachments = (attachments: AttachmentItem[]) => {
+    attachments.forEach(closeComposerAttachmentPreview);
+    revokeAttachmentPreviewUrls(attachments);
+  };
+
+  const submitPrompt = async (
+    submission: ConversationPromptInput,
+    draftSnapshot?: AcpComposerDraft,
+  ) => {
+    const { displayText: draftContent, quotes: submittedQuotes } = submission;
     const enqueueing = composerState.submitTarget === "queue-prompt";
     if (enqueueing) {
       if (queueSubmitPending || cancelling || stopInProgress) return;
       setQueueSubmitPending(true);
       setSendError(null);
+      let detachedDraft: AcpComposerDraft | null = null;
+      let submissionAccepted = false;
       try {
         const attachmentPaths = await resolveAttachmentPaths();
-        setPrompt((current) => current.trim() === trimmed ? "" : current);
-        clearAttachments();
-        requestAnimationFrame(() => composerTextareaRef.current?.focus());
+        detachedDraft = draftSnapshot && composerDraft.clearIfUnchanged(draftSnapshot)
+          ? draftSnapshot
+          : null;
+        if (draftSnapshot && !detachedDraft) return;
+        if (detachedDraft) setComposerContextError(null);
         const result = await submitConversationPrompt(
           projectId,
           taskId,
@@ -2449,7 +2506,7 @@ export function ACPChatDialog(
           roundId,
           nodeId,
           attemptId,
-          trimmed,
+          submission,
           null,
           effective ?? null,
           outerNodeId,
@@ -2458,6 +2515,11 @@ export function ACPChatDialog(
         );
         if (result.kind !== "queued") {
           throw new Error(`unexpected prompt queue response: ${result.kind}`);
+        }
+        submissionAccepted = true;
+        if (detachedDraft) {
+          releaseSubmittedAttachments(detachedDraft.attachments);
+          requestAnimationFrame(() => composerTextareaRef.current?.focus());
         }
         if (result.lifecycle) {
           setLocalRuntimeLifecycle((current) =>
@@ -2468,6 +2530,9 @@ export function ACPChatDialog(
       } catch (error) {
         setSendError(displayAppError(t, error));
       } finally {
+        if (detachedDraft && !submissionAccepted) {
+          composerDraft.restoreIfEmpty(detachedDraft);
+        }
         setQueueSubmitPending(false);
       }
       return;
@@ -2483,11 +2548,18 @@ export function ACPChatDialog(
       setSending(false);
       return;
     }
-    const optimisticEvent = optimisticUserEvent(trimmed);
+    const effectivePrompt = serializeUserPromptSubmission(submission);
+    const optimisticEvent = optimisticUserEvent(draftContent, undefined, submittedQuotes);
     const promptId = promptIdFromEvent(optimisticEvent);
-    const effectivePrompt = trimmed;
-    setPrompt("");
-    clearAttachments();
+    const detachedDraft = draftSnapshot && composerDraft.clearIfUnchanged(draftSnapshot)
+      ? draftSnapshot
+      : null;
+    if (draftSnapshot && !detachedDraft) {
+      setSending(false);
+      setPromptCommandPending(false);
+      return;
+    }
+    if (detachedDraft) setComposerContextError(null);
     if (localLifecycle?.promptQueue) {
       requestAnimationFrame(() => composerTextareaRef.current?.focus());
     }
@@ -2501,6 +2573,7 @@ export function ACPChatDialog(
     setActiveTurnStartedAt(null);
     setAwaitingResponse(true);
     updateOptimisticEvents((current) => [...current, optimisticEvent]);
+    let submissionAccepted = false;
     try {
       const result = await submitConversationPrompt(
         projectId,
@@ -2509,7 +2582,7 @@ export function ACPChatDialog(
         roundId,
         nodeId,
         attemptId,
-        effectivePrompt,
+        submission,
         promptId,
         effective ?? null,
         outerNodeId,
@@ -2541,11 +2614,12 @@ export function ACPChatDialog(
         const acceptedEvents = mergeAcpEvents(loadedEventsRef.current, updated.events);
         const acceptedPrompt = findMatchingGoldBandUserPrompt(
           acceptedEvents,
-          effectivePrompt,
+          draftContent,
           promptId,
           optimisticEvent.timestamp,
         );
         if (acceptedPrompt) {
+          submissionAccepted = true;
           setActiveTurnStartedAt(acceptedPrompt.timestamp);
           if (isSessionTerminalStatus(updated.status)) setAwaitingResponse(false);
           updateOptimisticEvents((current) =>
@@ -2581,6 +2655,7 @@ export function ACPChatDialog(
       }
     } catch (error) {
       if (cancelRequestedRef.current) {
+        submissionAccepted = true;
         setAwaitingResponse(true);
         setActiveTurnPrompt(null);
         setActiveTurnPromptId(null);
@@ -2603,6 +2678,13 @@ export function ACPChatDialog(
         ),
       );
     } finally {
+      if (detachedDraft) {
+        if (submissionAccepted) {
+          releaseSubmittedAttachments(detachedDraft.attachments);
+        } else {
+          composerDraft.restoreIfEmpty(detachedDraft);
+        }
+      }
       setSending(false);
       setPromptCommandPending(false);
     }
@@ -2672,20 +2754,40 @@ export function ACPChatDialog(
   const send = async () => {
     const trimmed = prompt.trim();
     if (!trimmed) return;
-    if (pendingPermission && planInterventionOption) {
-      setPrompt("");
-      setQueuedInterventionPrompt(trimmed);
-      setAwaitingResponse(true);
-      await answerPermission(
-        pendingPermission,
-        planInterventionOption.optionId,
-      );
-      return;
-    }
+    const draftSnapshot = composerDraft.draft;
+    const submission = createUserPromptSubmission(trimmed, quotes);
     if (composerState.submitTarget !== "none") {
-      await submitPrompt(trimmed);
+      await submitPrompt(submission, draftSnapshot);
     }
   };
+
+  const addSelectedQuote = useCallback((selection: AgentMessageSelection) => {
+    setQuotes((current) => {
+      const result = addComposerQuote(current, {
+        id: crypto.randomUUID(),
+        sourceKey: selection.sourceKey,
+        text: selection.text,
+      });
+      if (!result.ok) {
+        setComposerContextError(
+          result.code === 'composer.quote.limit-exceeded'
+            ? t('acp.quoteLimitExceeded', { max: result.maxChars.toLocaleString() })
+            : result.code === 'composer.quote.count-exceeded'
+              ? t('acp.quoteCountExceeded', { max: result.maxQuotes })
+              : t('acp.quoteDuplicate'),
+        );
+        return current;
+      }
+      setComposerContextError(null);
+      requestAnimationFrame(() => composerTextareaRef.current?.focus());
+      return result.quotes;
+    });
+  }, [setQuotes, t]);
+
+  const removeQuote = useCallback((id: string) => {
+    setQuotes((current) => current.filter((quote) => quote.id !== id));
+    setComposerContextError(null);
+  }, [setQuotes]);
 
   const stopSession = async () => {
     if (!canStopSession || stopInProgress) return;
@@ -2864,7 +2966,6 @@ export function ACPChatDialog(
         next.delete(request.requestId);
         return next;
       });
-      setQueuedInterventionPrompt(null);
       setPermissionError(displayAppError(t, error));
     }
   };
@@ -2929,28 +3030,6 @@ export function ACPChatDialog(
       });
     }
   };
-
-  useEffect(() => {
-    if (
-      !queuedInterventionPrompt ||
-      sending ||
-      pendingPermission ||
-      sessionActive ||
-      activeAwaitingResponse ||
-      cancelling
-    )
-      return;
-    const queued = queuedInterventionPrompt;
-    setQueuedInterventionPrompt(null);
-    void submitPrompt(queued);
-  }, [
-    activeAwaitingResponse,
-    cancelling,
-    pendingPermission,
-    queuedInterventionPrompt,
-    sending,
-    sessionActive,
-  ]);
 
   const loadRawFrames = async (query: AcpRawFrameQueryInput) => {
     setRawLoading(true);
@@ -3094,7 +3173,7 @@ export function ACPChatDialog(
   return (
     <TurnFileCardPreviewLimitContext.Provider value={turnFileCardPreviewLimit}>
     <AcpBranchLocatorContext.Provider value={attemptWorkspaceLocator}>
-    <div className="flex h-full min-h-0 min-w-0 flex-col bg-background" data-conversation-branch-id={branchId}>
+    <div ref={conversationRootRef} className="flex h-full min-h-0 min-w-0 flex-col bg-background" data-conversation-branch-id={branchId}>
       <ACPSessionHeader
         session={effective}
         rawActive={resolveRawFramesActionActive(Boolean(rightWorkspace?.scopeKey), canvasMode === "raw")}
@@ -3305,9 +3384,12 @@ export function ACPChatDialog(
                   />
                 ) : null}
                 attachments={pendingAttachments}
-                onRemoveAttachment={removeAttachment}
-                onPreviewAttachment={handlePreviewAttachment}
-                onClearAttachments={clearAttachments}
+                quotes={quotes}
+                contextError={composerContextError}
+                onRemoveQuote={removeQuote}
+                onRemoveAttachment={removeComposerAttachment}
+                onPreviewAttachment={handleOpenComposerAttachment}
+                onClearAttachments={clearComposerAttachments}
                 fileError={fileError}
                 slashCommands={slashCommands.filteredCommands}
                 slashMenuOpen={slashCommands.isOpen}
@@ -3356,11 +3438,10 @@ export function ACPChatDialog(
         </div>
       ) : null}
       <AttachmentPreviewDialogs
-        previewImage={previewImage}
         textPreview={textPreview}
-        onCloseImage={() => setPreviewImage(null)}
         onCloseText={() => setTextPreview(null)}
       />
+      {!readOnly ? <AgentSelectionQuoteButton rootRef={conversationRootRef} onQuote={addSelectedQuote} /> : null}
     </div>
     </AcpBranchLocatorContext.Provider>
     </TurnFileCardPreviewLimitContext.Provider>
@@ -4586,7 +4667,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
             className="h-auto min-h-8 w-full min-w-0 justify-start gap-2 rounded-lg px-2 py-1.5 text-left font-normal text-muted-foreground hover:bg-muted/30 hover:text-foreground"
           >
             {event.live ? (
-              <Loader2 className="size-3.5 shrink-0 animate-spin text-primary motion-reduce:animate-none" />
+              <AcpProcessingSpinner className="size-3.5" />
             ) : (
               <ChevronDown
                 className={cn(
@@ -4782,10 +4863,7 @@ const AcpComposerStatus = memo(function AcpComposerStatus({
     <div className="flex min-w-0 flex-wrap items-center gap-2 px-3 pb-1 pt-2 text-xs text-muted-foreground">
       {active ? (
         <>
-          <span
-            aria-hidden="true"
-            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-gold-running/30 border-t-gold-running [animation-duration:900ms]"
-          />
+        <AcpProcessingSpinner className="size-3.5" />
           <span className="font-medium text-foreground">{label}</span>
           {kind === "sending" ? (
             <AnimatedEllipsis />
@@ -4832,6 +4910,7 @@ const MessageBubble = memo(function MessageBubble({
   const streamingDraft =
     !isUser && timelineEventKey(event) === streamingMarkdownItemKey;
   const rawAttachments = messageAttachmentPreviewsFromRaw(event.raw);
+  const userQuotes = isUser ? userPromptQuotesFromRaw(event.raw) : [];
   const hasAttachments = isUser && !event.optimistic && rawAttachments.length > 0;
   const attachmentGroups = groupMessageAttachmentPreviews(rawAttachments);
   const runtimeControlParts = !isUser && !streamingDraft
@@ -4841,6 +4920,7 @@ const MessageBubble = memo(function MessageBubble({
     ? runtimeControlParts.visibleText
     : (event.content ?? "");
   const showMessageBubble = isUser || streamingDraft || messageText.trim().length > 0;
+  const quotableAgentMessage = !isUser && !streamingDraft && !failed && messageText.trim().length > 0;
   const openArtifact = useCallback((name: string) => {
     if (!branchLocator || !workspace?.scopeKey) return;
     void workspace.openResource({
@@ -4874,8 +4954,11 @@ const MessageBubble = memo(function MessageBubble({
           nested && "w-full max-w-full",
         )}
       >
+        <UserMessageQuotes quotes={userQuotes} />
         {showMessageBubble ? (
           <MessageContent
+            data-agent-quotable-text={quotableAgentMessage ? "true" : undefined}
+            data-agent-message-key={quotableAgentMessage ? timelineEventKey(event) : undefined}
             variant={isUser ? "user" : "assistant"}
             className={cn(
               "rounded-2xl px-4 py-3 text-sm leading-6 [overflow-wrap:anywhere]",
@@ -6014,25 +6097,10 @@ function composerPlaceholderText(
   state: ReturnType<typeof deriveAcpRuntimeComposerState>,
   t: ReturnType<typeof useTranslation>["t"],
 ) {
-  if (state.placeholderKind === "plan-intervention") return t("acp.planInterventionHint");
   if (state.placeholderKind === "stopping") return t("conversation.runtime.composerStoppingPlaceholder");
   if (state.placeholderKind === "runtime-controlled") return t("conversation.runtime.composerRuntimeControlledPlaceholder");
   if (state.placeholderKind === "message") return state.message && state.message !== "runtime-error" ? state.message : t("acp.composerPlaceholder");
   return t("acp.composerPlaceholder");
-}
-
-function findPlanInterventionOption(request: AcpPermissionRequestVm) {
-  return (
-    request.options.find((option) => {
-      const label =
-        `${option.optionId} ${option.name} ${option.kind}`.toLowerCase();
-      return (
-        label.includes("keep planning") ||
-        label.includes("继续规划") ||
-        label.includes("keep-planning")
-      );
-    }) ?? null
-  );
 }
 
 export function pendingPermissionFromEvents(
@@ -6323,6 +6391,7 @@ function stabilizeTimelineItem(
   if (isActivityBatch(next) || isActivityBatch(previous)) {
     if (!isActivityBatch(next) || !isActivityBatch(previous)) return next;
     const events = stabilizeTimelineItems(next.events, previous.events) as AcpTimelineEvent[];
+    const live = previous.live && next.live;
     if (
       events === previous.events &&
       next.seq === previous.seq &&
@@ -6330,7 +6399,7 @@ function stabilizeTimelineItem(
       next.activityEndSeq === previous.activityEndSeq &&
       next.endedSeq === previous.endedSeq &&
       next.endedAt === previous.endedAt &&
-      next.live === previous.live &&
+      live === previous.live &&
       next.totalEventCount === previous.totalEventCount &&
       next.toolCallCount === previous.toolCallCount &&
       next.thoughtCount === previous.thoughtCount &&
@@ -6343,7 +6412,7 @@ function stabilizeTimelineItem(
     ) {
       return previous;
     }
-    return { ...next, events };
+    return { ...next, live, events };
   }
   if (isAgentLink(next) !== isAgentLink(previous)) return next;
   if (isAgentLink(next) && isAgentLink(previous)) {
@@ -7601,6 +7670,7 @@ export function createAcpPromptId() {
 export function optimisticUserEvent(
   content: string,
   promptId = createAcpPromptId(),
+  quotes: import('@/types').UserPromptQuote[] = [],
 ): AcpUiEventVm {
   const createdAt = Math.floor(Date.now() / 1000);
   return {
@@ -7610,7 +7680,12 @@ export function optimisticUserEvent(
     kind: "userTextDelta",
     content,
     status: "sending",
-    raw: { source: "goldBandPrompt", optimistic: true, promptId },
+    raw: {
+      source: "goldBandPrompt",
+      optimistic: true,
+      promptId,
+      ...(quotes.length > 0 ? { quotes } : {}),
+    },
   };
 }
 

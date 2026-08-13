@@ -156,12 +156,22 @@
 - 只有一个 session 运行中 → 自动展开该 session
 - 多个 session 运行中 → 显示折叠行（session 名 + 实时状态），用户点击进入
 
-## Composer 附件
+## Composer 上下文功能区与引用
+
+快速对话与会话详情的 composer 共用一个位于输入框内部、无独立边框或分隔面的上下文功能区。功能区只承载本次发送携带的引用与附件；没有内容时不渲染，出现第一项后 composer 自然增高，宽度不足时自动换行，最多占两行高度，超出后区域内部滚动，不继续挤压消息视口。
+
+- **引用边界**：只有已经完成的 agent `textDelta` 正式消息正文可引用；用户消息、流式中的 agent 文本、thought、activity/tool、权限申请、elicitation、附件、头像和时间均不可引用。选区起点与终点必须位于同一个正式消息正文 DOM 边界内；跨消息或跨折叠区选择不显示引用入口。
+- **多引用草稿**：用户可以按选择顺序添加多个引用；引用与正文、附件归属于同一个 keyed session 未发送草稿，切换 session/branch 后严格隔离并可恢复。相同来源消息中的相同选区不重复添加；单条用户消息最多 64 条引用，所有引用正文合计最多 12,000 字符，超限不改变已有草稿并在 composer 内显示本地化提示。
+- **发送与展示数据**：引用不是正文语法，也不得通过 Markdown `>` 反推。发送 DTO 只提交用户亲自输入的 `displayText` 与带稳定 `id + sourceMessageKey + text` 的 `quotes`；引用文字与来源元数据都属于用户可控输入，不构成权限或数据完整性信任边界。后端只校验引用条数、唯一且有界的 ID、有界的来源键、非空正文和 12,000 字符总上限，不加载 timeline、不验证来源是否存在，也不限定未来只能引用消息；随后统一构造 Agent 消费的完整 prompt。前端创建消息引用时仍只允许选区完全位于单个已完成 Agent 正文 DOM 边界，跨消息、Activity、Thought、Tool、Permission 或 Elicitation 不出现引用动作。canonical `userTextDelta.raw.quotes` 与 optimistic event 保存同一结构化元数据，气泡正文只使用 `displayText`。用户自行输入 `> 文本` 仍是普通正文，不产生引用入口；开发阶段旧事件没有元数据时保持原展示，不增加文本推断兼容层。发送时原子分离整份 keyed 草稿；提交失败只恢复到原 session/branch 的空草稿，不得覆盖其他 session 或用户其间的新输入。
+- **消息引用入口**：带结构化 `quotes` 的用户消息在气泡上方显示“n 条引用”紧凑入口，使用 shadcn Popover 按选择顺序查看详情；正文中不重复展示引用原文。详情只有点击后挂载，弹层最大高度为 `min(24rem, 视口高度 - 4rem)`，标题固定，只有引用列表内部滚动；超长单条文本在同一滚动区换行。Direct 待发送队列展示 `quoteCount`，编辑正文保留既有结构化引用。
+- **标签交互**：引用标签显示顺序编号，hover/focus 通过 shadcn Tooltip 查看完整内容，支持逐项删除。整个功能区与输入区共享 prompt-kit `PromptInput` 的背景、圆角、边框与 focus ring，不形成嵌套卡片。
+
+### Composer 附件
 
 继续对话时可上传附件作为本轮输入内容：
 
 - **入口**：纸夹按钮、拖拽、粘贴（统一走 same-session 附件模型）；桌面端必须在基础 Tauri 配置和 channel overlay 中关闭原生 WebView file-drop，让文件拖拽进入前端 HTML5 drop zone，拖入 composer 时稳定显示可投放状态
-- **预览**：图片文件在 composer 内显示缩略图，点击可打开沉浸式大图预览；预览使用单层深色遮罩按合适尺寸展示原图，不支持缩放或拖拽，点击空白遮罩关闭
+- **预览与布局**：附件从 composer 外部独立区域迁入统一上下文功能区。图片只显示固定方形缩略图，不显示文件名；hover/focus Tooltip 展示文件名和大小，点击沿用右侧工作区图片预览。文本/普通文件显示图标与截断文件名并沿用文本预览。单项删除按钮在 hover/focus 可见，触摸设备保持可见。
 - **消息展示**：用户消息下方的图片附件显示为固定尺寸小缩略图，点击进入独立全屏原图预览，不进入附件详情弹窗；文本/代码附件继续显示为紧凑文件 chip 并走附件详情。base64/data URL 只作为内部图片数据承载，不直接作为可见文本展示。消息流附件预览必须按 timeline `raw.attachments[].path` 区分来源：`task-inputs/<name>` 属于新会话首轮 task 输入附件，继续读取 task 级 `authoring/inputs`；`user-inputs/<name>` 属于继续/追问本轮新附件，按当前 session locator 读取该 attempt 下的相对文件。两类附件不得混用读取入口，否则首轮需求附件或完成后追问附件会在 UI 中丢失内容。
 - **消息附件布局**：同一条消息中的图片与普通文件必须按媒体类型分为两个独立附件行，图片行在上、文件行在下，禁止混排；同类多项只在各自行内换行。图片保持固定缩略图尺寸，普通文件使用内容宽度的紧凑 pill，不能被消息容器拉伸成大卡片。
 - **传输**：新会话初始输入附件只进入 task 级 `authoring/inputs/`，并且只在 `SessionMode::New` 的首次 ACP session 初始化时作为 provider `task-inputs` content block 发送；同一个 ACP session 内的 `continue` / resume 不自动重发 task-level input attachments，避免历史输入在每轮用户消息下重复出现。发送前若附件来自粘贴、拖拽或浏览器 File 对象，前端先通过桌面命令 materialize 到 Gold Band 临时输入附件区，拿到本地路径后再进入对应输入链路。本轮 composer 显式选择的附件属于 resume prompt attachments，只随本轮 same-session prompt 发送。输入附件作为 ACP content block 发送给 agent，不混入 agent 输出产物目录。
@@ -285,6 +295,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 自动候选先进入常量化 600 ms 用户优先窗口。窗口内真实用户提交会递增 queue revision，使低优先级自动 claim 失效，用户消息先进入已有 attempt 级 ACP prompt lock；该用户 turn 成功后再继续队列。仲裁位于后端，前端不使用 `setTimeout` 猜顺序。
 - attempt 级 ACP prompt lock 是所有 prompt 的统一发送串行器；revision 只决定窗口内优先级，不能替代串行器。任何时刻最多一个 prompt 进入 Provider。
 - 自动/手动出队先把项目标记为 `dispatching`。稳定 prompt id 写入 canonical user timeline 即表示消息已经持久化并离开队列；统一 prompt lifecycle 在落盘后发送 `Accepted { promptId }`，按进程内 active dispatch 精确删除对应项，不通过 session refresh 扫描 timeline。普通 Direct、Workflow、AUTO prompt 未命中 active queue dispatch 时不得读取队列或 timeline。`Finished { successful }` 只决定是否继续调度下一条；失败或取消只能恢复尚未接受的 dispatch。
+- ACP prompt 发送采用“标准入口 + 已配置内部入口”两层接口：普通发送和 Direct 自动出队必须走标准入口，由它统一安装 live update、session update、`Accepted` 与 `Finished` callback；内部入口只接受已完成配置的受控 App 类型，禁止裸 `App` 绕过生命周期装配。scheduled continuous 因需保留 occurrence 上下文可以使用内部入口，但必须经过同一完整配置函数。每条自动出队消息完成后都必须再次进入 `Finished` 调度，直至队列为空、暂停、失败或被用户优先操作抢占。
 - 队列持久化版本负责恢复边界：当前进程的 active dispatch 由 prompt id 索引，在线 accepted 结算为 `O(1)` active lookup + `O(queue)` 精确删除；timeline 只允许在旧版本队列迁移或应用重启后发现孤儿 `dispatching` 时扫描一次。恢复时 timeline 已接受则删除，尚未接受才恢复为 queued；旧版本错误恢复成 queued、但 prompt id 已存在于 timeline 的历史重复项也在一次性迁移中清理。已接受项不得在停止后回队，也不得保留原 prompt id 编辑成另一条逻辑消息进入 retry 链路。
 - 出队消息继续写标准 `goldBandPrompt`/用户 timeline 事件并使用普通用户消息气泡；仅内部 prompt id 表明来源于 runtime 队列，不增加特殊消息样式。
 
@@ -549,10 +560,12 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - shell/Bash 命令本身不是文件变化事实源。只有 provider 对该 tool call 返回标准 `content[type=diff]` 才能统计；若 `rm`、重定向或脚本写入只返回普通 stdout/完成状态，Gold Band 不解析命令文本、不读取磁盘补偿，也不会把该操作猜成文件变化。
 - 用户消息附件和 canonical artifact 保持各自消息归属，点击后打开右侧会话资源，不进入文件变化卡。Conversation 主 DTO 不再聚合当前 session 的 artifacts/attachments，composer 上方也不再显示独立资产展开栏。
 - 根会话和 Agent branch 按持久化 branch ownership 各自查询 change set。前端不根据路径或自然语言推断归属，也不把 sibling branch 的变化投影到当前会话。
-## 图片工作区
+## Composer 附件与图片工作区
 
-- 已发送消息图片与 artifact 图片统一使用右侧图片看板。图片面板形成连续的 `min-height: 0` 纵向 flex 链，图片在真实视口内水平、垂直居中，背景使用明暗主题语义纯色。普通滚轮与触摸板双指滚动不得缩放或平移；只有 `Ctrl + 滚轮`、浏览器映射为 Ctrl-wheel 的触摸板 pinch、触摸屏 pinch 和工具栏按钮改变缩放，放大后可用鼠标拖拽平移。
-- Ctrl-wheel 通过稳定 viewport 的 non-passive 监听归一化 `deltaMode`、限制单事件增量，并用乘法曲线约束在 `0.1–8`；缩放以指针为中心，同一动画帧内的输入合并为一次 transform，缩放百分比通过局部 DOM ref 更新。
-- Windows 桌面窗口开启 WebView2 pinch 输入；应用根节点阻止页面级 Ctrl-wheel/键盘缩放但不停止事件传播，使图片 viewport 可以消费局部缩放事件。
-- pinch 与 Ctrl-wheel 指数灵敏度为 `0.003`，单事件归一化增量限制为 `120px`；每帧变换提交前原子写回权威 transform ref，连续手势不得依赖第三方组件滞后的回调状态。
+- 快速对话与会话详情追问的未发送图片使用同一 `draft-attachment` 右侧工作区资源；点击附件 chip 不打开遮罩式图片 Dialog。图片被移除、清空或随 prompt 提交后，必须在同一事件链关闭对应预览 Tab，不能保留引用已释放 Object URL 的僵尸资源。
 - Composer 上下文功能区必须与其下方正文使用同一水平内容 inset：快速对话的附件缩略图、命令标签与普通文字共用无额外缩进的左边缘；会话详情追问的附件/引用标签与 prompt-kit textarea 共用 `px-3` 左边缘。共享上下文组件不得内置一套固定水平 padding，否则不同 composer 外层 padding 会产生错位。
+- 系统文件选择器得到的本地图片不得把真实文件路径交给 WebView；桌面后端在 blocking pool 中读取元数据并签发短期 preview grant，前端只消费协议 URL。粘贴、拖放和浏览器文件选择继续使用受草稿生命周期管理的 Object URL。
+- 已发送消息图片、artifact 图片与未发送图片统一使用右侧图片看板。图片面板的内容承载层与看板必须形成连续的 `min-height: 0` 纵向 flex 链，让手势 viewport 占满标题栏以下的全部可用高度；图片在该真实视口内水平、垂直居中，背景只使用明暗主题语义纯色，不使用透明棋盘格。普通滚轮与触摸板双指滚动不得缩放或平移；只有 `Ctrl + 滚轮`、浏览器映射为 Ctrl-wheel 的原生触摸板 pinch、触摸屏 pinch 和工具栏按钮改变缩放，放大后可用鼠标拖拽平移；“适应窗口”回到由视口约束计算的完整图片尺寸，不等同于最小缩放。
+- Ctrl-wheel 缩放必须经过独立输入适配层：Gold Band 自有的稳定 viewport DOM 持有原生非 passive `wheel` 监听，不把监听 ref 下放给可能覆盖外部 ref 的第三方 transform 容器；监听负责阻止 WebView 页面缩放，先按 `deltaMode` 将像素、行、页单位归一化，再限制单事件最大增量，并用乘法曲线把结果约束在 `0.1–8`。不得把平台原始 `deltaY` 直接交给缩放库的 step 算法，否则 Windows 高分辨率滚轮或触摸板会一步跳到上下限。缩放以指针位置为中心，同一动画帧内的连续输入合并为一次 transform；缩放百分比只更新看板内部 DOM，不得触发会话历史、Markdown 或 composer 重渲染。触摸屏 pinch 与鼠标拖拽继续由 `react-zoom-pan-pinch` 处理。
+- Windows 精确式触摸板 pinch 的能力边界位于 WebView2，不是普通 DOM pointer：桌面窗口必须在 WebView 创建前开启 WRY `zoom_hotkeys_enabled`，使其对应的 WebView2 `IsPinchZoomEnabled` 允许 pinch 进入 Chromium 输入链。应用根节点用一个 capture、non-passive guard 阻止 Ctrl-wheel 与缩放快捷键改变整个桌面页面，但不得停止事件传播；图片 viewport 因此仍能消费同一 Ctrl-wheel 事件并执行局部缩放。图片区域外捏合、`Ctrl +/-/0` 均不得改变应用页面倍率。
+- 触摸板 pinch 与 Ctrl-wheel 共用指数缩放灵敏度 `0.003`；相较上一版 `0.002` 提升 50%，相较初版 `0.0015` 提升 100%，减少手指需要移动的距离。单事件归一化增量仍限制为 `120px`，因此任意单次极端输入从 100% 最多变化到约 143% 或 70%，不得以提速为由取消限幅或回退到线性 step。连续手势的每帧变换在提交给缩放组件前必须原子写回权威 transform ref，后续输入不得仅依赖第三方组件可能滞后的回调状态。

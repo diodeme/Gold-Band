@@ -2,6 +2,55 @@
 @import "tw-animate-css";
 @import "streamdown/styles.css";
 @source "../../node_modules/streamdown/dist/*.js";
+@source "../../node_modules/@streamdown/code/dist/*.js";
+
+[data-streamdown="code-block"] {
+  margin-block: 0.5rem;
+  gap: 0.25rem;
+  border-color: color-mix(in oklab, var(--border) 65%, transparent);
+  background: color-mix(in oklab, var(--muted) 35%, transparent);
+}
+
+[data-streamdown="code-block-header"] {
+  height: 1.75rem;
+}
+
+[data-streamdown="code-block-body"] {
+  border-color: transparent;
+  background: transparent;
+  overflow-x: hidden;
+  padding: 0.75rem;
+  font-family: var(--font-mono);
+  font-size: var(--app-ui-code-font-size);
+  line-height: 1.25rem;
+}
+
+[data-streamdown="code-block-body"] pre,
+[data-streamdown="code-block-body"] code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+[data-streamdown="code-block-body"] code > span {
+  display: block;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+[data-streamdown="code-block-body"] code > span > span {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+[data-streamdown="code-block-actions"] {
+  border-color: transparent;
+  background: transparent;
+  backdrop-filter: none;
+}
 
 @keyframes gold-band-stream-token-in {
   from {

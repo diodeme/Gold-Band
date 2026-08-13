@@ -165,6 +165,8 @@
 - **发送与展示数据**：引用不是正文语法，也不得通过 Markdown `>` 反推。发送 DTO 只提交用户亲自输入的 `displayText` 与带稳定 `id + sourceMessageKey + text` 的 `quotes`；引用文字与来源元数据都属于用户可控输入，不构成权限或数据完整性信任边界。后端只校验引用条数、唯一且有界的 ID、有界的来源键、非空正文和 12,000 字符总上限，不加载 timeline、不验证来源是否存在，也不限定未来只能引用消息；随后统一构造 Agent 消费的完整 prompt。前端创建消息引用时仍只允许选区完全位于单个已完成 Agent 正文 DOM 边界，跨消息、Activity、Thought、Tool、Permission 或 Elicitation 不出现引用动作。canonical `userTextDelta.raw.quotes` 与 optimistic event 保存同一结构化元数据，气泡正文只使用 `displayText`。用户自行输入 `> 文本` 仍是普通正文，不产生引用入口；开发阶段旧事件没有元数据时保持原展示，不增加文本推断兼容层。发送时原子分离整份 keyed 草稿；提交失败只恢复到原 session/branch 的空草稿，不得覆盖其他 session 或用户其间的新输入。
 - **消息引用入口**：带结构化 `quotes` 的用户消息在气泡上方显示“n 条引用”紧凑入口，使用 shadcn Popover 按选择顺序查看详情；正文中不重复展示引用原文。详情只有点击后挂载，弹层最大高度为 `min(24rem, 视口高度 - 4rem)`，标题固定，只有引用列表内部滚动；超长单条文本在同一滚动区换行。Direct 待发送队列展示 `quoteCount`，编辑正文保留既有结构化引用。
 - **标签交互**：引用标签显示顺序编号，hover/focus 通过 shadcn Tooltip 查看完整内容，支持逐项删除。整个功能区与输入区共享 prompt-kit `PromptInput` 的背景、圆角、边框与 focus ring，不形成嵌套卡片。
+- **Agent 正文复制**：已经退出流式态、非失败且正文非空的 Agent `textDelta` 在正文下方提供复制操作；桌面指针 hover 或键盘 focus 时显示，无法 hover 的触摸环境保持可见，操作区预留固定高度以避免消息布局跳动。复制内容直接使用该消息用于渲染的 canonical Markdown 原文；带 runtime control 的消息只复制剥离隐藏控制协议后的可见正文。Thought、Activity/Tool、Permission、Elicitation、用户消息及仍在流式输出的正文不提供该入口。复制反馈只属于单条消息的局部状态，不提升到会话 timeline 状态。
+- **围栏代码块**：共享 prompt-kit Markdown 渲染器使用 Streamdown 官方代码块与 `@streamdown/code` Shiki 插件。带语言标记的 fenced code block 在顶部展示声明语言并按该语言高亮，右上角始终提供该代码块自己的复制按钮；复制内容只包含代码正文，不包含围栏或语言标记。一条消息的多个代码块相互独立；未声明语言时保持纯文本，不进行自动语言探测。代码正文保留源码换行与缩进，单行超过消息宽度时在代码块内部自动折行，不产生横向撑宽或横向滚动。代码块复制与消息级 Markdown 原文复制并存，分别满足局部代码和整条回复的复制需求。
 
 ### Composer 附件
 

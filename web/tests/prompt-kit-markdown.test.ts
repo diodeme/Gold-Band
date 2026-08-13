@@ -86,6 +86,11 @@ describe('prompt-kit Markdown', () => {
     }));
 
     expect(html).toContain('const value = 1;');
+    expect(html).toContain('data-streamdown="code-block"');
+    expect(html).toContain('data-streamdown="code-block-header"');
+    expect(html).toContain('data-language="ts"');
+    expect(html).toContain('data-streamdown="code-block-copy-button"');
+    expect(html).toContain('title="common.copyCode"');
     expect(html).not.toContain('node=');
   });
 });

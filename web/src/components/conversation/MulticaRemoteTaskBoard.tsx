@@ -11,12 +11,12 @@ import type { RemoteTaskVm } from '../../types';
 /**
  * 远程任务看板（presentational）。
  *
- * 数据/订阅/动作（connect/claim/cancel/refresh/workspace 选择）由容器页
+ * 数据/订阅/动作（connect/prepare/cancel/refresh/workspace 选择）由容器页
  * `MulticaTaskManagementPage` 持有；本组件只接收「选定工作空间的扁平任务列表」，
  * 按 canonical status 分桶到 4 列（待办 / 进行中 / 已完成 / 失败），逐任务渲染卡片。
  *
  * 列与动作 1:1（pinned 不展示后，展示中的任务都不可重试 → 无 rerun）：
- * - queued   → 认领执行(claim)
+ * - queued   → 准备执行(prepare)：只读取需求正文 + 绑定 composer，任务仍 queued，发送时才 claim+start
  * - running  → 取消(cancel)
  * - completed/failed（带本地 run 链接）→ 点击回看会话(onSelectRun)
  */
@@ -62,10 +62,11 @@ export function bucketTasksByStatus(tasks: RemoteTaskVm[]): Record<BoardColumnSt
 interface MulticaRemoteTaskBoardProps {
   /// 选定工作空间的全部远程任务（active queued/running + 终态 completed/failed）。
   tasks: RemoteTaskVm[];
-  /// 当前正在执行异步动作的任务 id（claim/cancel），对应卡片禁用 + spin。
+  /// 当前正在执行异步动作的任务 id（prepare/cancel），对应卡片禁用 + spin。
   busyTaskId: string | null;
-  /// 认领 queued 任务（claim-at-click）：容器负责 claim + 预填 composer + 跳会话准备页。
-  onClaim: (task: RemoteTaskVm) => void;
+  /// 准备执行 queued 任务（claim-at-send 的只读取）：容器负责拉需求正文 + 预填 composer + 跳会话准备页，
+  /// **不领取任务**（仍 queued），发送时才 claim+start。
+  onPrepare: (task: RemoteTaskVm) => void;
   /// 取消 running 任务。
   onCancel: (task: RemoteTaskVm) => void;
   /// 终态行（带本地 run 链接）整块点击 → 直达本地 conversation-run。
@@ -75,7 +76,7 @@ interface MulticaRemoteTaskBoardProps {
 export function MulticaRemoteTaskBoard({
   tasks,
   busyTaskId,
-  onClaim,
+  onPrepare,
   onCancel,
   onSelectRun,
 }: MulticaRemoteTaskBoardProps) {
@@ -106,7 +107,7 @@ export function MulticaRemoteTaskBoard({
                     key={task.id}
                     task={task}
                     busy={busyTaskId === task.id}
-                    onClaim={onClaim}
+                    onPrepare={onPrepare}
                     onCancel={onCancel}
                     onSelectRun={onSelectRun}
                     t={t}
@@ -130,14 +131,14 @@ type TranslationFn = ReturnType<typeof useTranslation>['t'];
 function MulticaRemoteTaskCard({
   task,
   busy,
-  onClaim,
+  onPrepare,
   onCancel,
   onSelectRun,
   t,
 }: {
   task: RemoteTaskVm;
   busy: boolean;
-  onClaim: (task: RemoteTaskVm) => void;
+  onPrepare: (task: RemoteTaskVm) => void;
   onCancel: (task: RemoteTaskVm) => void;
   onSelectRun: (projectId: string, taskId: string, runId: string) => void;
   t: TranslationFn;
@@ -147,7 +148,7 @@ function MulticaRemoteTaskCard({
   const statusTone = MULTICA_STATUS_TONE[task.status as BoardColumnStatus] ?? MULTICA_STATUS_TONE.queued;
 
   // 终态行（completed/failed 且带本地 run 链接）：内容区整块可点 → 直达本地 conversation-run。
-  // active 行（queued/running）无本地链接，不绑点击，走右侧 claim/cancel。
+  // active 行（queued/running）无本地链接，不绑点击，走右侧 prepare/cancel。
   const { projectId, localTaskId, runId } = task;
   const clickable = !!(projectId && localTaskId && runId);
 
@@ -191,7 +192,7 @@ function MulticaRemoteTaskCard({
                 variant="ghost"
                 className="size-7"
                 disabled={busy}
-                onClick={() => onClaim(task)}
+                onClick={() => onPrepare(task)}
                 aria-label={t('conversation.sidebar.multica.executeTask')}
               >
                 {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}

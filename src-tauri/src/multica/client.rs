@@ -71,9 +71,9 @@ const NETWORK_RETRY_BASE_SECS: u64 = 1;
 
 /// 单次 liveness/轻量请求超时（秒），覆盖 client 级 30s 默认值。
 ///
-/// 心跳 tick 内的高频调用（heartbeat / 取消检测 / prepare-lease 续期 / 自愈 register）正常 <1s；
-/// server 慢响应或网络抖动时，若沿用 30s 全局超时，单 tick 串行阻塞会累积，威胁 prepare lease（45s）
-/// 的续期窗口与取消检测的及时性。给这些调用更短的 per-request 上界，使退化网络下单 tick 也能快速失败、
+/// 心跳 tick 内的高频调用（heartbeat / 取消检测 / 自愈 register）正常 <1s；server 慢响应或网络抖动时，
+/// 若沿用 30s 全局超时，单 tick 串行阻塞会累积，威胁 runtime 在线维持（离线超 150s 被 sweeper 回收）
+/// 与取消检测的及时性。给这些调用更短的 per-request 上界，使退化网络下单 tick 也能快速失败、
 /// 下一 tick（15s）重试——而非一个 tick 阻塞数分钟。
 const LIVENESS_TIMEOUT_SECS: u64 = 10;
 
@@ -340,7 +340,8 @@ impl MulticaClient {
     /// 发送已认证请求并按状态码映射错误（map_status）。
     ///
     /// `per_request_timeout` 覆盖 client 级 30s 默认——liveness/轻量调用（取消检测）传短超时，
-    /// 使单次调用在 server 慢响应时快速失败，避免拖垮整个心跳 tick（prepare lease 45s 续期窗口）。
+    /// 使单次调用在 server 慢响应时快速失败，避免拖垮整个心跳 tick（15s 周期，单 tick 阻塞会延误
+    /// runtime 在线维持与取消检测）。
     async fn send(
         &self,
         method: Method,
@@ -577,7 +578,7 @@ impl MulticaClient {
     ///
     /// 与 [`register`](MulticaClient::register) 的区别：后者带 `with_network_retry`（3 次，单次最长 30s），
     /// 适合一次性调用。而自愈注册由 15s 心跳 tick 驱动——**循环即重试**；若再嵌套 client 内 3×30s 退避，
-    /// 弱网下单 tick 可超 90s，阻塞后续续期/取消检测（prepare lease 45s 被 server 回收）。
+    /// 弱网下单 tick 可超 90s，阻塞后续心跳/取消检测（runtime 离线超 150s 会被 sweeper 回收）。
     /// 故自愈路径用单次 register + per-request 短超时：失败下 tick 自然重试，单 tick 耗时有界。
     pub async fn register_once(&self, req: &RegisterRequest) -> Result<RegisterResponse, MulticaError> {
         let resp = self
@@ -598,7 +599,7 @@ impl MulticaClient {
     ///
     /// body `{runtime_id, supports_batch_import: true}`。失败仅记日志（下一 tick 自然重试），
     /// 不在 client 内重试（循环即重试）。走单次请求 + **liveness 短超时**（覆盖 client 级 30s），
-    /// 防 server 慢响应拖垮整个心跳 tick（prepare lease 45s 续期窗口）。
+    /// 防 server 慢响应拖垮整个心跳 tick（单 tick 阻塞会延误 runtime 在线维持与取消检测）。
     pub async fn heartbeat(&self, runtime_id: &str) -> Result<(), MulticaError> {
         let body = serde_json::json!({
             "runtime_id": runtime_id,
@@ -622,31 +623,6 @@ impl MulticaClient {
     pub async fn recover_orphans(&self, runtime_id: &str) -> Result<(), MulticaError> {
         let path = format!("/api/daemon/runtimes/{runtime_id}/recover-orphans");
         let _: serde_json::Value = self.post_json(&path, &serde_json::json!({})).await?;
-        Ok(())
-    }
-
-    /// `POST /api/daemon/runtimes/{rid}/tasks/{tid}/prepare-lease` —— claim 后 compose 期间续期 prepare lease。
-    ///
-    /// server 的 prepare lease 仅 45s（`prepareLeaseDuration`），claim-at-click 后用户在 composer 选模型/
-    /// 改需求可能超过该窗口；心跳循环每 tick 调本方法续期，防任务被 `ReclaimStaleDispatchedTaskForRuntime`
-    /// 回收（与 multica daemon `startTaskPrepareLeaseExtender` 同构）。失败仅记日志（下一 tick 重试），
-    /// 不在 client 内重试（循环即重试）。走单次请求 + **liveness 短超时**——这是续期窗口的关键路径，
-    /// 单次调用必须快速失败，否则被它阻塞会直接导致 45s lease 过期。
-    pub async fn extend_prepare_lease(
-        &self,
-        runtime_id: &str,
-        task_id: &str,
-    ) -> Result<(), MulticaError> {
-        let path = format!("/api/daemon/runtimes/{runtime_id}/tasks/{task_id}/prepare-lease");
-        let _resp = self
-            .json_send(
-                Method::POST,
-                &path,
-                None,
-                &serde_json::json!({}),
-                Some(Duration::from_secs(LIVENESS_TIMEOUT_SECS)),
-            )
-            .await?;
         Ok(())
     }
 
@@ -674,6 +650,31 @@ impl MulticaClient {
         .await
     }
 
+    /// `GET /api/daemon/runtimes/{rid}/tasks/{tid}` —— 只读取单个任务详情（接入方案 B3，claim-at-send）。
+    ///
+    /// claim-at-send：点击「认领执行」只读拉需求正文 + 续跑血缘预填 composer、绑定 chip，**不**改 server
+    /// 任务状态（任务仍 queued）；真正 claim（pending→dispatched）推迟到用户点「发送」时由
+    /// [`claim_specific_task`] 执行。响应即裸 `AgentTaskResponse`（与 pending 列表项同构 +
+    /// `resolveTaskRequirementBody` 回填的需求来源字段），Rust 直接反序列化成 [`RemoteTask`]。一般请求：
+    /// 网络错误重试 3 次，404 直接映射 [`TaskNotFound`](MulticaError::TaskNotFound)。
+    ///
+    /// 注意：该端点**不**回填 claim-only 富字段（skills / mcp overlay / `prior_session_id` /
+    /// connected_apps / repos / 用户上下文等）——这些在发送时由 [`claim_specific_task`] 取回。
+    pub async fn get_task_requirement(
+        &self,
+        runtime_id: &str,
+        task_id: &str,
+    ) -> Result<RemoteTask, MulticaError> {
+        self.with_network_retry("get_task_requirement", || async {
+            let path = format!("/api/daemon/runtimes/{runtime_id}/tasks/{task_id}");
+            let resp = self.send(Method::GET, &path, None).await?;
+            resp.json::<RemoteTask>()
+                .await
+                .map_err(|e| MulticaError::NetworkFailed(format!("decode {path} failed: {e}")))
+        })
+        .await
+    }
+
     /// `POST /api/daemon/runtimes/{rid}/tasks/{tid}/claim` —— selective claim（点哪领哪，接入方案 B2）。
     ///
     /// body 恒 `{}`（服务端不读请求体）；续跑指针（`parent_task_id` / `prior_session_id`）由**响应**回填，
@@ -691,6 +692,26 @@ impl MulticaClient {
             Ok(resp.task)
         })
         .await
+    }
+
+    /// `POST /api/daemon/runtimes/{rid}/tasks/{tid}/release` —— claim 回滚（接入方案 B4，claim-at-send 失败恢复）。
+    ///
+    /// claim-at-send 下「发送」先 claim（pending→dispatched）再起本地 run；若 claim 成功但本地起 run 失败
+    /// （workspace 校验 / ACP run-start 失败），任务会卡在 dispatched（无本地 run、无心跳）。此方法暴露
+    /// server 的 `RequeueTaskAfterClaimFailure`（CAS `dispatched→queued`）做事务性回滚，把任务还回可领取态，
+    /// 替代旧 prepare-lease 的「45s 自然过期」兜底（lease 已移除，不再有自然过期路径）。
+    ///
+    /// **best-effort、不重试**：仅在失败路径调用，失败只记日志。server 侧该端点对「已非 dispatched」幂等
+    /// 返回 200（no-op），故即便任务已被 sweeper 回收也不会报错；真正的 404（任务不存在）映射
+    /// [`TaskNotFound`](MulticaError::TaskNotFound)，调用方忽略即可。body 丢弃——只关心 HTTP 状态。
+    pub async fn release_task(
+        &self,
+        runtime_id: &str,
+        task_id: &str,
+    ) -> Result<(), MulticaError> {
+        let path = format!("/api/daemon/runtimes/{runtime_id}/tasks/{task_id}/release");
+        let _: serde_json::Value = self.post_json(&path, &serde_json::json!({})).await?;
+        Ok(())
     }
 
     /// `POST /api/daemon/tasks/{tid}/start` —— dispatched→running（接入方案 C2）。
@@ -1117,7 +1138,8 @@ mod tests {
             device_name: "maling-host".into(),
             cli_version: "0.1.0".into(),
             runtimes: vec![RuntimeSpec {
-                name: "claude-acp".into(),
+                // name = 客户端展示名（channel app_name，默认 "Gold Band"），≠ type(=provider)。
+                name: "Gold Band".into(),
                 runtime_type: "claude-acp".into(),
                 version: "0.1.0".into(),
                 status: "ready".into(),
@@ -1128,7 +1150,8 @@ mod tests {
         assert_eq!(json["daemon_id"], "d-abc");
         assert_eq!(json["device_name"], "maling-host");
         assert_eq!(json["cli_version"], "0.1.0");
-        // provider 固定编码进单个 runtime 的 type 字段。
+        // name 是展示名（独立序列化键），type 是 provider 路由键——二者分离。
+        assert_eq!(json["runtimes"][0]["name"], "Gold Band");
         assert_eq!(json["runtimes"][0]["type"], "claude-acp");
         assert_eq!(json["runtimes"][0]["status"], "ready");
     }
@@ -1270,6 +1293,28 @@ mod tests {
     }
 
     #[test]
+    fn get_task_requirement_response_is_bare_remote_task() {
+        // 接入方案 B3（claim-at-send 只读取）：GET /runtimes/{rid}/tasks/{tid} 返回**裸** AgentTaskResponse，
+        // 直接反序列化成 RemoteTask——与 claim 响应的 `{task:...}` 包裹形状**刻意不同**（claim 是动作、有信封；
+        // GET 是只读资源、RESTful 裸对象）。锁定此契约：若 server 误加 `{task:...}` 信封，id 缺失会解析失败。
+        let bare: RemoteTask = serde_json::from_str(
+            r#"{"id":"t-1","status":"queued","thread_name":"Fix login","issue_description":"Steps..."}"#,
+        )
+        .unwrap();
+        assert_eq!(bare.id, "t-1");
+        assert_eq!(bare.status, "queued");
+        // claim-at-send 只读取：GET 响应不带执行凭证 / 续跑 session（claim-only 富字段）。
+        assert!(bare.auth_token.is_none());
+        assert!(bare.prior_session_id.is_none());
+        // 需求正文已由 resolveTaskRequirementBody 回填 → requirement_text 取正文（预填 composer）。
+        assert_eq!(bare.requirement_text().as_deref(), Some("Steps..."));
+
+        // 反向锁定：包裹信封 `{task:{...}}` 不能直接解成 RemoteTask（id 在信封层、对象层缺失）。
+        let wrapped = serde_json::from_str::<RemoteTask>(r#"{"task":{"id":"t-1"}}"#);
+        assert!(wrapped.is_err(), "GET 任务详情必须是裸对象，不得包裹 task 信封");
+    }
+
+    #[test]
     fn tasks_list_response_accepts_wrapped_and_bare() {
         let wrapped: TasksListResponse =
             serde_json::from_str(r#"{"tasks":[{"id":"t-1","status":"queued"}]}"#).unwrap();
@@ -1404,8 +1449,8 @@ mod tests {
 
     #[test]
     fn liveness_timeout_is_bounded_under_global_default() {
-        // S2：liveness 调用（heartbeat/get_task_status/extend_prepare_lease/register_once）用更短的
-        // per-request 超时覆盖 client 级 30s，使单 tick 在退化网络下快速失败。锁定上界 < 30s 且 > 0。
+        // S2：liveness 调用（heartbeat/get_task_status/register_once）用更短的 per-request 超时
+        // 覆盖 client 级 30s，使单 tick 在退化网络下快速失败。锁定上界 < 30s 且 > 0。
         assert!(LIVENESS_TIMEOUT_SECS > 0 && LIVENESS_TIMEOUT_SECS < 30);
         assert_eq!(LIVENESS_TIMEOUT_SECS, 10);
     }

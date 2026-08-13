@@ -80,10 +80,9 @@ use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
 use metrics::start_heartbeat_polling;
 use multica::commands::{
-    add_multica_workspace, cancel_multica_prepare_lease, cancel_multica_task, claim_multica_task,
-    get_multica_tasks, list_server_multica_workspaces, recover_multica_work_dir_sessions,
-    remove_multica_workspace, set_active_multica_workspace,
-    start_multica_conversation_run,
+    add_multica_workspace, cancel_multica_task, get_multica_task_requirement, get_multica_tasks,
+    list_server_multica_workspaces, recover_multica_work_dir_sessions, remove_multica_workspace,
+    set_active_multica_workspace, start_multica_conversation_run,
 };
 use notifications::send_scheduled_native_notification;
 use state::{DesktopContext, DesktopState};
@@ -328,9 +327,8 @@ fn run() -> anyhow::Result<()> {
             connect_multica,
             disconnect_multica,
             get_multica_tasks,
-            claim_multica_task,
+            get_multica_task_requirement,
             start_multica_conversation_run,
-            cancel_multica_prepare_lease,
             cancel_multica_task,
             list_server_multica_workspaces,
             add_multica_workspace,

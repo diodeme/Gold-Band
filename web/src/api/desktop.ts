@@ -406,14 +406,11 @@ export const desktopApi: RuntimeApi = {
   getMulticaTasks() {
     return invokeCommand<RemoteConversationSidebarVm>('get_multica_tasks');
   },
-  claimMulticaTask(taskId: string, workspaceId: string) {
-    return invokeCommand<RemoteTaskVm>('claim_multica_task', { taskId, workspaceId });
+  getMulticaTaskRequirement(taskId: string, workspaceId: string) {
+    return invokeCommand<RemoteTaskVm>('get_multica_task_requirement', { taskId, workspaceId });
   },
   startMulticaConversationRun(input, remoteTaskId, workspaceId) {
     return invokeCommand<ConversationRunVm>('start_multica_conversation_run', { input, remoteTaskId, workspaceId });
-  },
-  cancelMulticaPrepareLease(remoteTaskId) {
-    return invokeCommand<void>('cancel_multica_prepare_lease', { remoteTaskId });
   },
   cancelMulticaTask(taskId: string) {
     return invokeCommand<void>('cancel_multica_task', { taskId });

@@ -126,14 +126,14 @@ describe('multica status tone config', () => {
 async function renderBoard(props: {
   tasks: RemoteTaskVm[];
   busyTaskId?: string | null;
-  onClaim?: (t: RemoteTaskVm) => void;
+  onPrepare?: (t: RemoteTaskVm) => void;
   onCancel?: (t: RemoteTaskVm) => void;
   onSelectRun?: (p: string, t: string, r: string) => void;
 }) {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
-  const onClaim = props.onClaim ?? vi.fn();
+  const onPrepare = props.onPrepare ?? vi.fn();
   const onCancel = props.onCancel ?? vi.fn();
   const onSelectRun = props.onSelectRun ?? vi.fn();
   await act(async () => {
@@ -141,13 +141,13 @@ async function renderBoard(props: {
       <MulticaRemoteTaskBoard
         tasks={props.tasks}
         busyTaskId={props.busyTaskId ?? null}
-        onClaim={onClaim}
+        onPrepare={onPrepare}
         onCancel={onCancel}
         onSelectRun={onSelectRun}
       />,
     );
   });
-  return { container, onClaim, onCancel, onSelectRun };
+  return { container, onPrepare, onCancel, onSelectRun };
 }
 
 describe('MulticaRemoteTaskBoard render', () => {
@@ -175,17 +175,17 @@ describe('MulticaRemoteTaskBoard render', () => {
     expect(container.textContent).toContain('multica.taskManagement.column.empty');
   });
 
-  it('renders a claim button only for queued tasks and forwards onClaim', async () => {
-    const onClaim = vi.fn();
+  it('renders a prepare button only for queued tasks and forwards onPrepare', async () => {
+    const onPrepare = vi.fn();
     const { container } = await renderBoard({
       tasks: [task({ id: 'q', status: 'queued', title: 'Todo' })],
-      onClaim,
+      onPrepare,
     });
     const claimBtn = container.querySelector('button[aria-label="conversation.sidebar.multica.executeTask"]') as HTMLButtonElement;
     expect(claimBtn).toBeTruthy();
     await act(async () => { claimBtn.click(); });
-    expect(onClaim).toHaveBeenCalledTimes(1);
-    expect((onClaim.mock.calls[0] as [RemoteTaskVm])[0].id).toBe('q');
+    expect(onPrepare).toHaveBeenCalledTimes(1);
+    expect((onPrepare.mock.calls[0] as [RemoteTaskVm])[0].id).toBe('q');
   });
 
   it('renders a cancel button only for running tasks and forwards onCancel', async () => {

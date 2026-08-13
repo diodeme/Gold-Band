@@ -307,12 +307,12 @@ export interface RuntimeApi {
   connectMultica(): Promise<MulticaSettingsVm>;
   disconnectMultica(): Promise<MulticaSettingsVm>;
   getMulticaTasks(): Promise<RemoteConversationSidebarVm>;
-  claimMulticaTask(taskId: string, workspaceId: string): Promise<RemoteTaskVm>;
-  /// 远程任务「点击执行」后复用本地 composer：用户在预填页选模型/模式后发送，
-  /// 经此命令复用 create_conversation_run_vm 建会话并叠加 multica 簿记（register_active_run + start_task）。
+  /// claim-at-send 的只读取：点击 queued 任务时拉取需求正文（pending 列表只有 thread_name，正文仅任务详情里有）。
+  /// **不改动服务端任务状态**（任务仍 queued）；本地仅据此预填 composer + 绑定 chip。
+  getMulticaTaskRequirement(taskId: string, workspaceId: string): Promise<RemoteTaskVm>;
+  /// 远程任务「发送」时复用本地 composer 链：claim（pending→dispatched）+ start（dispatched→running）+ 建会话
+  /// + 叠加 multica 簿记（register_active_run）。claim 成功但 start 失败时后端自动 release（dispatched→queued）回滚。
   startMulticaConversationRun(input: ConversationCreateInput, remoteTaskId: string, workspaceId: string): Promise<ConversationRunVm>;
-  /// 放弃远程任务 prepare（claim 后未发送即离开）时调用：移除 prepare lease，停止心跳续期（兜底为 45s 自然回收）。
-  cancelMulticaPrepareLease(remoteTaskId: string): Promise<void>;
   cancelMulticaTask(taskId: string): Promise<void>;
   listServerMulticaWorkspaces(): Promise<MulticaServerWorkspaceVm[]>;
   pickLocalDirectory(): Promise<string | null>;

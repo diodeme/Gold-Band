@@ -24,10 +24,10 @@ pub struct RemoteTaskVm {
     pub workspace_id: String,
     pub title: String,
     pub last_activity_at: Option<String>,
-    /// claim 响应才回填：远程任务需求正文（来自 `requirement_text()`），供 composer 预填输入框。
+    /// 任务详情（claim-at-send 只读拉取 / claim 响应）才回填：远程任务需求正文（来自 `requirement_text()`），供 composer 预填输入框。
     ///
-    /// pending 列表不回填（server pending 只给 thread_name，正文仅在 claim 响应里），
-    /// 故 `from_pending` 留 None，`from_claimed` 才覆盖。前端按 Some/None 决定是否预填。
+    /// pending 列表不回填（server pending 只给 thread_name，正文仅在任务详情里），
+    /// 故 `from_pending` 留 None，`from_detail` 才覆盖。前端按 Some/None 决定是否预填。
     pub requirement: Option<String>,
     /// 本地 run 链接，供前端整行点击直达本地 conversation-run。
     /// queued 行（`from_pending`）恒 None（无可直达的本地会话）；running 行（`from_active_run`，
@@ -60,8 +60,10 @@ impl RemoteTaskVm {
         Self::from_remote(task, workspace_id, false)
     }
 
-    /// claim 响应行（领取成功，retryable=false）。回填 `requirement`（正文仅 claim 响应才有）。
-    pub fn from_claimed(task: &RemoteTask, workspace_id: &str) -> Self {
+    /// 任务详情行（claim-at-send 只读拉取 / claim 响应，retryable=false）。回填 `requirement`
+    /// （正文仅任务详情端点才有：pending 列表只给 thread_name）。read 与 claim 共用此构造——二者响应同构、
+    /// 都带 requirement 来源字段；区别仅在调用时机（read 不改 server 状态、任务仍 queued；claim 置 dispatched）。
+    pub fn from_detail(task: &RemoteTask, workspace_id: &str) -> Self {
         let mut vm = Self::from_remote(task, workspace_id, false);
         vm.requirement = task.requirement_text();
         vm
@@ -149,7 +151,7 @@ impl RemoteTaskVm {
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| task.id.clone()),
             last_activity_at: task.last_activity_at.clone(),
-            // pending 列表无正文来源（server pending 只给 thread_name）；claim 响应由 from_claimed 覆盖。
+            // pending 列表无正文来源（server pending 只给 thread_name）；任务详情由 from_detail 覆盖。
             requirement: None,
             local_task_id: None,
             run_id: None,
@@ -227,8 +229,8 @@ mod tests {
     }
 
     #[test]
-    fn from_claimed_fills_requirement_from_source_priority() {
-        // claim 响应：requirement 取来源优先级首个非空（quick_create > chat > ... > title）。
+    fn from_detail_fills_requirement_from_source_priority() {
+        // 任务详情（claim-at-send read / claim 响应）：requirement 取来源优先级首个非空（quick_create > chat > ... > title）。
         let task = RemoteTask {
             id: "t-1".into(),
             issue_id: Some("iss-1".into()),
@@ -245,7 +247,7 @@ mod tests {
             issue_description: None,
             last_activity_at: Some("2026-08-04T10:00:00Z".into()),
         };
-        let vm = RemoteTaskVm::from_claimed(&task, "ws-1");
+        let vm = RemoteTaskVm::from_detail(&task, "ws-1");
         assert_eq!(vm.requirement.as_deref(), Some("Full prompt body"));
         // title 与 requirement 各司其职（title 仍是 thread_name，不混进正文）。
         assert_eq!(vm.title, "Thread name");
@@ -268,13 +270,13 @@ mod tests {
             last_activity_at: None,
         };
         assert_eq!(
-            RemoteTaskVm::from_claimed(&issue, "ws-1")
+            RemoteTaskVm::from_detail(&issue, "ws-1")
                 .requirement
                 .as_deref(),
             Some("Login bug")
         );
 
-        // issue 带 body（改动四：webank claim 响应回填 issue_description）→ requirement 取正文而非标题。
+        // issue 带 body（改动四：任务详情端点回填 issue_description）→ requirement 取正文而非标题。
         let issue_body = RemoteTask {
             id: "t-3".into(),
             issue_id: Some("iss-3".into()),
@@ -291,7 +293,7 @@ mod tests {
             issue_description: Some("Steps to repro...".into()),
             last_activity_at: None,
         };
-        let vm_body = RemoteTaskVm::from_claimed(&issue_body, "ws-1");
+        let vm_body = RemoteTaskVm::from_detail(&issue_body, "ws-1");
         assert_eq!(vm_body.requirement.as_deref(), Some("Steps to repro..."));
         // title 仍是 thread_name，不混进正文。
         assert_eq!(vm_body.title, "Login bug");

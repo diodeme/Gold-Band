@@ -108,11 +108,11 @@ vi.mock('@/components/ui/tooltip', () => ({
   TooltipContent: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
 
-// Board 桩：渲染收到的任务标题 + claim/cancel/open 触发按钮，把容器逻辑与看板内部解耦。
+// Board 桩：渲染收到的任务标题 + prepare/cancel/open 触发按钮，把容器逻辑与看板内部解耦。
 vi.mock('@/components/conversation/MulticaRemoteTaskBoard', () => ({
-  MulticaRemoteTaskBoard: ({ tasks, onClaim, onCancel, onSelectRun }: {
+  MulticaRemoteTaskBoard: ({ tasks, onPrepare, onCancel, onSelectRun }: {
     tasks: { id: string; title: string; status: string; projectId?: string | null; localTaskId?: string | null; runId?: string | null }[];
-    onClaim: (t: unknown) => void;
+    onPrepare: (t: unknown) => void;
     onCancel: (t: unknown) => void;
     onSelectRun: (p: string, t: string, r: string) => void;
   }) => (
@@ -121,7 +121,7 @@ vi.mock('@/components/conversation/MulticaRemoteTaskBoard', () => ({
         <div key={task.id} data-testid={`task-${task.id}`}>
           <span>{task.title}</span>
           {task.status === 'queued' && (
-            <button aria-label="conversation.sidebar.multica.executeTask" onClick={() => onClaim(task)} />
+            <button aria-label="conversation.sidebar.multica.executeTask" onClick={() => onPrepare(task)} />
           )}
           {task.status === 'running' && (
             <button aria-label="conversation.sidebar.multica.cancelTask" onClick={() => onCancel(task)} />
@@ -144,7 +144,7 @@ const mocks = vi.hoisted(() => ({
   getMulticaSettings: vi.fn(),
   connectMultica: vi.fn(),
   disconnectMultica: vi.fn(),
-  claimMulticaTask: vi.fn(),
+  getMulticaTaskRequirement: vi.fn(),
   cancelMulticaTask: vi.fn(),
   removeMulticaWorkspace: vi.fn(),
   setActiveMulticaWorkspace: vi.fn(),
@@ -158,7 +158,7 @@ vi.mock('@/api', () => ({
   getMulticaSettings: mocks.getMulticaSettings,
   connectMultica: mocks.connectMultica,
   disconnectMultica: mocks.disconnectMultica,
-  claimMulticaTask: mocks.claimMulticaTask,
+  getMulticaTaskRequirement: mocks.getMulticaTaskRequirement,
   cancelMulticaTask: mocks.cancelMulticaTask,
   removeMulticaWorkspace: mocks.removeMulticaWorkspace,
   setActiveMulticaWorkspace: mocks.setActiveMulticaWorkspace,
@@ -174,7 +174,7 @@ const noopUnlisten = () => {};
 const {
   getMulticaTasks,
   getMulticaSettings,
-  claimMulticaTask,
+  getMulticaTaskRequirement,
   cancelMulticaTask,
   setActiveMulticaWorkspace,
   subscribeMulticaTaskUpdates,
@@ -354,7 +354,7 @@ describe('MulticaTaskManagementPage (container)', () => {
     expect(connectedContainer.querySelector('button[aria-label="common.refresh"]')).not.toBeNull();
   });
 
-  it('claims a queued task, prefills the composer draft, then navigates to conversation-home', async () => {
+  it('prepares a queued task (read-only) — fetches requirement, prefills composer draft, then navigates to conversation-home', async () => {
     const onSelectRun = vi.fn();
     const onPrepareMulticaTask = vi.fn();
     getMulticaTasks.mockResolvedValue(baseVm({
@@ -364,8 +364,8 @@ describe('MulticaTaskManagementPage (container)', () => {
         'ws-004': [{ id: 'rt-1', workspaceId: 'ws-004', title: 'Some task', status: 'queued', retryable: false } as RemoteTaskVm],
       },
     }));
-    // claim 响应回填需求正文（pending 列表只有 thread_name，正文仅 claim 响应里有）。
-    claimMulticaTask.mockResolvedValue({
+    // 任务详情回填需求正文（pending 列表只有 thread_name，正文仅任务详情里有）。
+    getMulticaTaskRequirement.mockResolvedValue({
       id: 'rt-1', issueId: null, status: 'queued', retryable: false,
       workspaceId: 'ws-004', title: 'Some task', requirement: '远程任务需求正文', lastActivityAt: null,
     });
@@ -376,14 +376,14 @@ describe('MulticaTaskManagementPage (container)', () => {
     await act(async () => { claimBtn.click(); });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
-    // claim 即领取（claim-at-click），预填正文 + multica 绑定，落 conversation-home。
-    expect(claimMulticaTask).toHaveBeenCalledWith('rt-1', 'ws-004');
+    // claim-at-send：点击只读取（任务仍 queued），预填正文 + multica 绑定，落 conversation-home；发送时才 claim+start。
+    expect(getMulticaTaskRequirement).toHaveBeenCalledWith('rt-1', 'ws-004');
     expect(draftMocks.prefill).toHaveBeenCalledWith('远程任务需求正文', { remoteTaskId: 'rt-1', workspaceId: 'ws-004', title: 'Some task' });
     expect(onPrepareMulticaTask).toHaveBeenCalledWith();
     expect(onSelectRun).not.toHaveBeenCalled();
   });
 
-  it('falls back to the task title when the claim response has no requirement body', async () => {
+  it('falls back to the task title when the requirement response has no body', async () => {
     getMulticaTasks.mockResolvedValue(baseVm({
       workspaces: [ws004],
       lastActiveWorkspaceId: 'ws-004',
@@ -391,7 +391,7 @@ describe('MulticaTaskManagementPage (container)', () => {
         'ws-004': [{ id: 'rt-1', workspaceId: 'ws-004', title: 'Issue title', status: 'queued', retryable: false } as RemoteTaskVm],
       },
     }));
-    claimMulticaTask.mockResolvedValue({
+    getMulticaTaskRequirement.mockResolvedValue({
       id: 'rt-1', issueId: 'issue-1', status: 'queued', retryable: true,
       workspaceId: 'ws-004', title: 'Issue title', requirement: null, lastActivityAt: null,
     });

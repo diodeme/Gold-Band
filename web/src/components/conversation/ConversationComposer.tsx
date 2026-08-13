@@ -5,7 +5,6 @@ import { Send, Paperclip, Workflow, Bot, Folders, Plus, ChevronDown, Settings2, 
 import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { cancelMulticaPrepareLease } from '@/api';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
@@ -478,12 +477,11 @@ export function ConversationComposer({
     }
   };
 
-  // 解除 multica 绑定：释放服务端 prepare lease（best-effort，失败仅记日志，lease 亦会 TTL 兜底过期）+ 清 draft 绑定。
-  // 正文与附件保留——草稿降级为普通本地会话（发送走 create_conversation_run），正合「删掉 chip 后不再绑定任务」。
+  // 解除 multica 绑定（claim-at-send）：点击只读取过需求、未领取任务，故删 chip 纯属本地解绑，
+  // 不触碰服务端（任务仍 queued）。正文与附件保留——草稿降级为普通本地会话（发送走 create_conversation_run）。
   const handleUnbindMultica = useCallback(() => {
     const binding = composerDraft.draft.multica;
     if (!binding) return;
-    cancelMulticaPrepareLease(binding.remoteTaskId).catch(() => {});
     composerDraft.clearMultica();
   }, [composerDraft]);
 

@@ -141,7 +141,7 @@ fn migrate_v01_workspace_policy_to_catalog(value: &mut Value, repo_root: &Utf8Pa
     let updated_at = required_string(run, "updatedAt")?.to_string();
     let main_head = GitRepositoryService::default()
         .head(repo_root)
-        .unwrap_or_else(|| "legacy-unknown".to_string());
+        .unwrap_or_else(|_| "legacy-unknown".to_string());
 
     let groups = root
         .get("groups")

@@ -798,6 +798,8 @@ dynamic graph schema 使用独立版本：V2 catalog graph 为 `0.2`，内部 ru
 
 迁移不猜测可恢复能力：只有仍由当前 Git repository 注册、路径与 runtime worktree 身份可证明有效且 group 未关闭的旧 worktree 才保留 `active`；缺失、已关闭、共享 main checkout 或其他无法证明安全的旧 workspace 统一记录为 `released`，用于恢复历史会话树但不承诺 resume。读取时仅迁移目标 graph，不在应用启动时全量扫描历史运行；不增加前端兼容层或空态 fallback。
 
+Git HEAD 查询沿用 `GitRepositoryService` 的 `Result` 契约；查询失败时迁移器使用稳定的 `legacy-unknown` 占位提交身份完成历史只读投影，错误分支不增加额外 Git 调用、目录扫描或写入，也不得改变 graph/session 身份与幂等写回语义。
+
 ## 19. 实施顺序
 
 ### Phase 1：数据与 Git 服务

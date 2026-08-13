@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   applyAcpScrollAnchorCompensation,
+  captureAcpBranchScrollState,
   captureAcpBranchViewState,
   resetAcpResourceCache,
   restoreAcpBranchViewState,
@@ -131,5 +132,21 @@ describe('ACP branch view state cache', () => {
     expect(applyAcpScrollAnchorCompensation(scroller, 'message-anchor', 60)).toBe(true);
     expect(scroller.scrollTop).toBe(120);
     expect(applyAcpScrollAnchorCompensation(scroller, 'missing', 60)).toBe(false);
+  });
+
+  it('updates scroll state without reading or scanning message DOM in the scroll hot path', () => {
+    const querySelectorAll = () => {
+      throw new Error('scroll hot path must not scan message DOM');
+    };
+    const scroller = { scrollTop: 240, querySelectorAll };
+
+    expect(captureAcpBranchScrollState(scroller, true, false, true)).toEqual({
+      anchorKey: null,
+      anchorOffset: 0,
+      scrollTop: 240,
+      atBottom: true,
+      hasOlder: false,
+      hasNewer: true,
+    });
   });
 });

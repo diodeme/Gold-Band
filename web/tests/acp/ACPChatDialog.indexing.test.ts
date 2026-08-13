@@ -15,6 +15,7 @@ import {
   stabilizeTimelineItems,
   storeAcpLoadedEvents,
   timelineEventKey,
+  timelineRenderKey,
 } from '../../src/components/acp/ACPChatDialog';
 import type { AcpTimelineProjectionVm, AcpUiEventVm } from '../../src/types';
 
@@ -227,6 +228,20 @@ describe('ACPChatDialog branch timeline helpers', () => {
     expect(timeline.map(timelineEventKey)).toEqual(['activity-1', 'textDelta-text-1', 'activity-4']);
     expect(timeline[0]?.kind === 'activityBatch' ? timeline[0].live : null).toBe(false);
     expect(timeline[2]?.kind === 'activityBatch' ? timeline[2].live : null).toBe(true);
+  });
+
+  it('scopes message render identity to the conversation event window', () => {
+    const message = event({
+      id: 'provider-reused-id',
+      seq: 1,
+      timestamp: '1Z',
+      kind: 'textDelta',
+      content: 'first session',
+    });
+
+    expect(timelineRenderKey('session-a:root', message)).not.toBe(
+      timelineRenderKey('session-b:root', message),
+    );
   });
 
   it('keeps an archived activity terminal when a stale active snapshot arrives after stop', () => {

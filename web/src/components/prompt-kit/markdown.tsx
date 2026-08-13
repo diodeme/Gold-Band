@@ -1,9 +1,11 @@
 import type React from 'react';
-import { createContext, memo, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, memo, useContext, useLayoutEffect, useRef } from 'react';
 import { FileCode2 } from 'lucide-react';
 import {
+  Block,
   defaultUrlTransform,
   Streamdown,
+  type BlockProps,
   type StreamdownProps,
 } from 'streamdown';
 import { openExternalUrl } from '@/api';
@@ -11,13 +13,9 @@ import { cn } from '@/lib/utils';
 import { isExternalUrlHref, isLocalFileHref } from '@/lib/file-link';
 import { createIncrementalMarkdownBlockParser } from '@/lib/incremental-markdown-blocks';
 import {
-  advanceStreamingMarkdownPresentation,
-  createStreamingMarkdownPresentation,
-  isStreamingMarkdownPresentationPending,
-  STREAMING_MARKDOWN_FRAME_MS,
-  streamingMarkdownPresentationText,
-  syncStreamingMarkdownPresentation,
-} from '@/lib/streaming-markdown';
+  createStreamingMarkdownPlayback,
+  type StreamingMarkdownPlayback,
+} from '@/lib/streaming-markdown-playback';
 
 export type MarkdownProps = {
   children: string;
@@ -160,75 +158,72 @@ const markdownComponents = {
   hr: () => <hr className="my-3 border-border/70" />,
 } as NonNullable<StreamdownProps['components']>;
 
-export const Markdown = memo(function Markdown({ children, className, streaming = false }: MarkdownProps) {
-  const [presentation, setPresentation] = useState(() =>
-    createStreamingMarkdownPresentation(children, streaming),
+const streamdownPlaybackTokens: NonNullable<StreamdownProps['animated']> = {
+  animation: 'fadeIn',
+  duration: 0,
+  easing: 'linear',
+  sep: 'char',
+  stagger: 0,
+};
+
+function StreamingMarkdownBlock(props: BlockProps) {
+  return (
+    <div className="contents" data-gb-stream-block="true">
+      <Block {...props} />
+    </div>
   );
-  const lastFrameAtRef = useRef(0);
-  const hasStreamedRef = useRef(streaming);
-  if (streaming) hasStreamedRef.current = true;
-  const streamdownMode = hasStreamedRef.current ? 'streaming' : 'static';
+}
+
+export const Markdown = memo(function Markdown({ children, className, streaming = false }: MarkdownProps) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const playbackRef = useRef<StreamingMarkdownPlayback | null>(null);
   const blockParserRef = useRef<ReturnType<typeof createIncrementalMarkdownBlockParser> | null>(null);
   if (!blockParserRef.current) {
     blockParserRef.current = createIncrementalMarkdownBlockParser();
   }
 
   useLayoutEffect(() => {
-    setPresentation((current) =>
-      syncStreamingMarkdownPresentation(current, children, streaming),
-    );
-  }, [children, streaming]);
-
-  const pending = isStreamingMarkdownPresentationPending(presentation);
-  useEffect(() => {
-    if (!pending || typeof window === 'undefined') return;
-    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
-      setPresentation((current) => ({
-        ...current,
-        offset: current.canonical.length,
-        carry: 0,
-      }));
-      return;
-    }
-
-    let frameId = 0;
-    const tick = (now: number) => {
-      const elapsed = lastFrameAtRef.current === 0
-        ? STREAMING_MARKDOWN_FRAME_MS
-        : now - lastFrameAtRef.current;
-      if (elapsed < STREAMING_MARKDOWN_FRAME_MS) {
-        frameId = window.requestAnimationFrame(tick);
-        return;
-      }
-      lastFrameAtRef.current = now;
-      setPresentation((current) =>
-        advanceStreamingMarkdownPresentation(current, elapsed),
-      );
+    const root = rootRef.current;
+    if (!root) return;
+    const playback = createStreamingMarkdownPlayback(root, {
+      canonical: children,
+      streaming,
+    });
+    playbackRef.current = playback;
+    return () => {
+      playback.dispose();
+      if (playbackRef.current === playback) playbackRef.current = null;
     };
-    frameId = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(frameId);
-  }, [pending, presentation.canonical.length, presentation.offset]);
+  }, []);
 
-  const presentationStreaming = streaming || pending;
-  const visibleChildren = streamingMarkdownPresentationText(
-    presentation,
-    streaming,
-  );
+  useLayoutEffect(() => {
+    playbackRef.current?.setCanonical(children);
+  }, [children]);
+
+  useLayoutEffect(() => {
+    playbackRef.current?.setStreaming(streaming);
+  }, [streaming]);
 
   return (
-    <div className={cn('min-w-0 max-w-full space-y-2 break-words text-sm leading-6 [overflow-wrap:anywhere]', className)}>
+    <div
+      className={cn('min-w-0 max-w-full space-y-2 break-words text-sm leading-6 [overflow-wrap:anywhere]', className)}
+      data-gb-streaming-markdown={streaming ? 'true' : undefined}
+      ref={rootRef}
+    >
       <Streamdown
+        animated={streaming ? streamdownPlaybackTokens : false}
+        BlockComponent={StreamingMarkdownBlock}
         className="space-y-2"
         components={markdownComponents}
         controls={false}
-        isAnimating={presentationStreaming}
-        mode={streamdownMode}
-        parseIncompleteMarkdown={presentationStreaming}
+        isAnimating={streaming}
+        mode={streaming ? 'streaming' : 'static'}
+        parseIncompleteMarkdown={streaming}
         parseMarkdownIntoBlocksFn={blockParserRef.current}
         urlTransform={markdownUrlTransform}
         linkSafety={markdownLinkSafety}
       >
-        {proxyLocalFileLinks(visibleChildren)}
+        {proxyLocalFileLinks(children)}
       </Streamdown>
     </div>
   );

@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import './i18n';
 import { installUiErrorDiagnostics, logUiErrorDiagnostic, shouldLogUiError } from '@/lib/ui-error-diagnostics';
+import '@/lib/acp-streaming-diagnostics';
 import { disposeAcpComposerDrafts } from '@/lib/acp-composer-draft';
 import { installDesktopPageZoomGuard } from '@/lib/desktop-page-zoom';
 import '@xyflow/react/dist/style.css';

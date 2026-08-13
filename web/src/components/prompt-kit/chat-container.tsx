@@ -11,6 +11,10 @@ import {
   useState,
 } from "react"
 import { cn } from "@/lib/utils"
+import {
+  isAcpStreamingDiagnosticsEnabled,
+  recordAcpStreamingDiagnostic,
+} from "@/lib/acp-streaming-diagnostics"
 import { GOLD_THEMED_SCROLLBAR_CLASS } from "@/lib/themed-scrollbar"
 import {
   StickToBottom,
@@ -46,7 +50,7 @@ export type ChatContainerRootProps = {
   contextRef?: React.Ref<ChatContainerContext>
   onAtBottomChange?: (atBottom: boolean) => void
   onViewportScroll?: (viewport: HTMLDivElement) => void
-  onViewportWheel?: (event: WheelEvent, viewport: HTMLDivElement) => void
+  onViewportUserScroll?: (viewport: HTMLDivElement) => void
 } & React.HTMLAttributes<HTMLDivElement>
 
 export type ChatContainerContentProps = {
@@ -62,6 +66,7 @@ export type ChatContainerScrollAnchorProps = {
 
 export const CHAT_CONTAINER_BOTTOM_REJOIN_TOLERANCE_PX = 2
 const CHAT_CONTAINER_FOLLOW_RECOVERY_DELAY_MS = 4
+const CHAT_CONTAINER_DIAGNOSTIC_SAMPLE_MS = 500
 
 const CHAT_CONTAINER_SCROLL_UP_KEYS = new Set([
   "ArrowUp",
@@ -94,7 +99,7 @@ function ChatContainerRoot({
   contextRef,
   onAtBottomChange,
   onViewportScroll,
-  onViewportWheel,
+  onViewportUserScroll,
   ...props
 }: ChatContainerRootProps) {
   return (
@@ -110,7 +115,7 @@ function ChatContainerRoot({
         initialFollowing={initial !== false}
         onAtBottomChange={onAtBottomChange}
         onViewportScroll={onViewportScroll}
-        onViewportWheel={onViewportWheel}
+        onViewportUserScroll={onViewportUserScroll}
       >
         {children}
       </ChatContainerLifecycle>
@@ -144,10 +149,10 @@ function ChatContainerLifecycle({
   initialFollowing,
   onAtBottomChange,
   onViewportScroll,
-  onViewportWheel,
+  onViewportUserScroll,
 }: Pick<
   ChatContainerRootProps,
-  "children" | "contextRef" | "onAtBottomChange" | "onViewportScroll" | "onViewportWheel"
+  "children" | "contextRef" | "onAtBottomChange" | "onViewportScroll" | "onViewportUserScroll"
 > & { initialFollowing: boolean }) {
   const stickContext = useStickToBottomContext()
   const {
@@ -165,6 +170,21 @@ function ChatContainerLifecycle({
   const nextContentExpansionTokenRef = useRef(0)
   const contentExpansionTokensRef = useRef<Set<number> | null>(null)
   const contentExpansionRestoreFrameRef = useRef<number | null>(null)
+  const lastLayoutDiagnosticAtRef = useRef(0)
+  const layoutDiagnosticRef = useRef({
+    callbackCount: 0,
+    durationMs: 0,
+    heightDelta: 0,
+    longestCallbackMs: 0,
+    maxHeightDelta: 0,
+  })
+  const lastFollowDiagnosticAtRef = useRef(0)
+  const followDiagnosticRef = useRef({
+    checkCount: 0,
+    callbackDurationMs: 0,
+    longestCallbackMs: 0,
+    scrollWriteCount: 0,
+  })
 
   const updateFollowIntent = useCallback((following: boolean) => {
     isFollowingRef.current = following
@@ -264,15 +284,54 @@ function ChatContainerLifecycle({
     recoveryTimerRef.current = window.setTimeout(() => {
       recoveryTimerRef.current = null
       recoveryFrameRef.current = requestAnimationFrame(() => {
+        const startedAt = performance.now()
         recoveryFrameRef.current = null
         if (!isFollowingRef.current) return
         const viewport = scrollRef.current as HTMLDivElement | null
-        if (
+        const beforeScrollTop = viewport?.scrollTop ?? null
+        const shouldRecover = Boolean(
           viewport &&
           (!isChatContainerViewportAtBottom(viewport) ||
             !stickContext.state.isAtBottom)
-        ) {
+        )
+        if (shouldRecover) {
           void libraryScrollToBottom({ animation: "instant" })
+        }
+        if (isAcpStreamingDiagnosticsEnabled()) {
+          const durationMs = performance.now() - startedAt
+          const diagnostic = followDiagnosticRef.current
+          diagnostic.checkCount += 1
+          diagnostic.callbackDurationMs += durationMs
+          diagnostic.longestCallbackMs = Math.max(
+            diagnostic.longestCallbackMs,
+            durationMs,
+          )
+          if (
+            shouldRecover
+            && viewport
+            && beforeScrollTop !== viewport.scrollTop
+          ) diagnostic.scrollWriteCount += 1
+          const now = performance.now()
+          if (
+            lastFollowDiagnosticAtRef.current === 0
+            || now - lastFollowDiagnosticAtRef.current >= CHAT_CONTAINER_DIAGNOSTIC_SAMPLE_MS
+          ) {
+            recordAcpStreamingDiagnostic("chat-follow-sample", () => ({
+              sampleDurationMs: lastFollowDiagnosticAtRef.current === 0
+                ? null
+                : Math.round((now - lastFollowDiagnosticAtRef.current) * 10) / 10,
+              checkCount: diagnostic.checkCount,
+              scrollWriteCount: diagnostic.scrollWriteCount,
+              callbackDurationMs: Math.round(diagnostic.callbackDurationMs * 10) / 10,
+              longestCallbackMs: Math.round(diagnostic.longestCallbackMs * 10) / 10,
+              following: isFollowingRef.current,
+            }))
+            lastFollowDiagnosticAtRef.current = now
+            diagnostic.checkCount = 0
+            diagnostic.scrollWriteCount = 0
+            diagnostic.callbackDurationMs = 0
+            diagnostic.longestCallbackMs = 0
+          }
         }
       })
     }, CHAT_CONTAINER_FOLLOW_RECOVERY_DELAY_MS)
@@ -312,6 +371,7 @@ function ChatContainerLifecycle({
       scheduleFollowRecovery()
     }
     const handleWheel = (event: WheelEvent) => {
+      if (event.deltaX !== 0 || event.deltaY !== 0) onViewportUserScroll?.(viewport)
       if (contentExpansionTokensRef.current && event.deltaY !== 0) {
         stopScroll()
       } else if (
@@ -320,9 +380,9 @@ function ChatContainerLifecycle({
       ) {
         stopScroll()
       }
-      onViewportWheel?.(event, viewport)
     }
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (CHAT_CONTAINER_SCROLL_KEYS.has(event.key)) onViewportUserScroll?.(viewport)
       const scrollsUp = CHAT_CONTAINER_SCROLL_UP_KEYS.has(event.key)
         || (event.key === " " && event.shiftKey)
       if (
@@ -336,6 +396,7 @@ function ChatContainerLifecycle({
     }
     const handlePointerDown = (event: PointerEvent) => {
       pointerScrollingRef.current = event.target === viewport
+      if (pointerScrollingRef.current) onViewportUserScroll?.(viewport)
     }
     const handlePointerEnd = () => {
       pointerScrollingRef.current = false
@@ -362,7 +423,7 @@ function ChatContainerLifecycle({
     }
   }, [
     onViewportScroll,
-    onViewportWheel,
+    onViewportUserScroll,
     scheduleFollowRecovery,
     cancelContentExpansionRestore,
     scrollRef,
@@ -373,7 +434,12 @@ function ChatContainerLifecycle({
   useEffect(() => {
     const content = contentRef.current
     if (!content) return
-    const observer = new ResizeObserver(() => {
+    let previousHeight: number | null = null
+    const observer = new ResizeObserver(([entry]) => {
+      const startedAt = performance.now()
+      const height = entry?.contentRect.height ?? content.getBoundingClientRect().height
+      const heightDelta = previousHeight === null ? 0 : height - previousHeight
+      previousHeight = height
       const viewport = scrollRef.current as HTMLDivElement | null
       if (
         contentExpansionTokensRef.current &&
@@ -384,9 +450,48 @@ function ChatContainerLifecycle({
         cancelContentExpansionRestore()
         updateFollowIntent(true)
         void libraryScrollToBottom({ animation: "instant" })
-        return
+      } else {
+        scheduleFollowRecovery()
       }
-      scheduleFollowRecovery()
+      if (isAcpStreamingDiagnosticsEnabled()) {
+        const durationMs = performance.now() - startedAt
+        const diagnostic = layoutDiagnosticRef.current
+        diagnostic.callbackCount += 1
+        diagnostic.durationMs += durationMs
+        diagnostic.heightDelta += heightDelta
+        diagnostic.longestCallbackMs = Math.max(
+          diagnostic.longestCallbackMs,
+          durationMs,
+        )
+        diagnostic.maxHeightDelta = Math.max(
+          diagnostic.maxHeightDelta,
+          Math.abs(heightDelta),
+        )
+        const now = performance.now()
+        if (
+          lastLayoutDiagnosticAtRef.current === 0
+          || now - lastLayoutDiagnosticAtRef.current >= CHAT_CONTAINER_DIAGNOSTIC_SAMPLE_MS
+        ) {
+          recordAcpStreamingDiagnostic("chat-layout-sample", () => ({
+            sampleDurationMs: lastLayoutDiagnosticAtRef.current === 0
+              ? null
+              : Math.round((now - lastLayoutDiagnosticAtRef.current) * 10) / 10,
+            callbackCount: diagnostic.callbackCount,
+            heightDelta: Math.round(diagnostic.heightDelta * 10) / 10,
+            maxHeightDelta: Math.round(diagnostic.maxHeightDelta * 10) / 10,
+            callbackDurationMs: Math.round(diagnostic.durationMs * 10) / 10,
+            longestCallbackMs: Math.round(diagnostic.longestCallbackMs * 10) / 10,
+            following: isFollowingRef.current,
+            atBottom: viewport ? isChatContainerViewportAtBottom(viewport) : null,
+          }))
+          lastLayoutDiagnosticAtRef.current = now
+          diagnostic.callbackCount = 0
+          diagnostic.heightDelta = 0
+          diagnostic.maxHeightDelta = 0
+          diagnostic.durationMs = 0
+          diagnostic.longestCallbackMs = 0
+        }
+      }
     })
     observer.observe(content)
     return () => observer.disconnect()

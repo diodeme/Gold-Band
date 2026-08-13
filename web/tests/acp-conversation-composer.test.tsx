@@ -84,13 +84,16 @@ describe('AcpConversationComposer', () => {
     expect(composerRoot?.querySelector('[class*="rounded-t-none"]')).toBeTruthy();
   });
 
-  it('renders workflow continuation inside the composer action row beside send', async () => {
-    await renderComposer({ showRuntimeContinue: true });
+  it('renders config, workflow continuation, and send in one bottom command bar', async () => {
+    await renderComposer({ showRuntimeContinue: true, configBar: <span data-test-config="true">config</span> });
 
     const continueButton = host.querySelector('[data-acp-continue-workflow="true"]');
     const sendButton = host.querySelector('[data-acp-send="true"]');
     expect(continueButton).toBeTruthy();
+    const commandBar = host.querySelector('[data-acp-composer-command-bar="true"]');
     expect(sendButton).toBeTruthy();
     expect(continueButton?.parentElement?.parentElement).toBe(sendButton?.parentElement?.parentElement);
+    const config = host.querySelector('[data-test-config="true"]');
+    expect(commandBar).toBeTruthy();
   });
 });

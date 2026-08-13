@@ -10,9 +10,9 @@
 - 系统提示弹窗已收口为 shadcn/Radix Dialog + 原生 flex 滚动容器的单滚动面：标题栏固定，正文使用 Gold Band 统一滚动条且常驻，profile/runtime prompt 不做长度截断；长路径和连续字符在正文容器内强制断行，禁止由 `<pre>` 再创建嵌套滚动或把 Dialog 撑出视口。由于 Dialog 使用自然高度加 `max-height`，正文不得改用依赖百分比 viewport 高度的 Radix ScrollArea。前端回归测试固化 `max-height + flex column + min-height zero + direct overflow-y-scroll child` 布局契约。
 - ACP 会话流支持将 `Agent` 工具调用生命周期内的子 Agent transcript 聚合为可展开/收起分组，不再把主 Agent 与子 Agent 输出完全混排。
 - ACP session 初始化与后续追问必须分别维护 Gold Band 显式覆盖和 Agent 当前配置：模型只继承 `modelOverride`，权限模式只继承 `permissionModeOverride`，其余 ACP select 配置继承 `configOptionOverrides[实际 optionId]`；不得从 Agent 返回的 `currentModelId / currentModeId / currentValue` 反推 override。发起会话前模型、权限和思考强度都可切回“不指定”；会话详情仅在对应 override 尚为空时提供“不指定”，模型、权限或思考强度一旦选择具体值后都只能在具体值之间切换。same-session prompt、runtime continue 与 AI-DYNAMIC inner continue 只继续使用显式覆盖。
-- 发起会话前与已建立会话后的模型配置统一使用复合二级菜单；模型或思考强度选项被选中后保留菜单，允许继续选择另一项，用户点击菜单外部时再关闭；追问 composer 内的 PromptInput 点击聚焦逻辑必须忽略按钮、选择器、菜单项等交互后代，避免普通单击打开菜单后又因文本框抢焦点而关闭。
+- 发起会话前与已建立会话后的模型配置按 Agent 能力选择载体：同时存在模型与思考强度时使用复合二级菜单，选择任一子项后保留菜单以便继续配置，点击外部才关闭；只有模型时使用普通单项菜单，权限始终使用单项菜单，两者选择后立即关闭。追问 composer 内的 PromptInput 点击聚焦逻辑必须忽略按钮、选择器以及 `menuitem`、`menuitemcheckbox`、`menuitemradio` 等菜单项，配置选择只生效而不主动聚焦文本框。
 - ACP session 配置归一化统一采用 `configOptions` 优先、旧 `models` / `modes` 回退：目录、当前值和显示名必须使用同一优先级，避免 Codex 等 adapter 同时返回纯模型 config option 与“模型 × 思考强度”旧目录时展示展开组合。缺少 `category=thought_level` 时继续退化为模型单下拉，不从模型 ID 或名称反向猜测思考强度；回归测试覆盖新旧字段冲突和 legacy-only adapter。
-- Composer 配置栏中的模型单选、模型复合菜单与权限单选统一基于非模态 shadcn/Radix DropdownMenu；相邻菜单必须支持双向一次点击切换，不能混用会拦截外部点击的 Select 弹层。
+- Composer 配置栏中的模型单选、模型复合菜单与权限单选统一基于非模态 shadcn/Radix DropdownMenu；相邻菜单必须支持双向一次点击切换，不能混用会拦截外部点击的 Select 弹层。单项菜单沿用 Radix 的选择即关闭语义，只有复合菜单拦截子项默认关闭事件。
 - 待发送队列与追问 composer 已收口为同一个底部输入 surface：队列存在时 composer 使用无上圆角贴合形态；无附件时不渲染附件 chips 空容器，避免空 `margin-bottom` 把队列和输入框分开。前端回归测试固定覆盖该布局契约。
 - 会话运行区的产物/附件入口已改为与任务列表一致的 `Collapsible` 折叠面板：默认收起展示非零产物/附件计数，展开后点击文件项继续复用现有详情弹窗；当任务列表存在时，产物/附件面板固定在任务列表上方。
 - 节点详情抽屉中的 artifact / attachment 内容以二级详情层打开，返回或关闭产物详情时恢复原节点详情抽屉。

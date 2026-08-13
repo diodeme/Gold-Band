@@ -33,8 +33,11 @@ export const desktopApi: RuntimeApi = {
   getGitCommitDetail(projectId, workspacePath, oid) {
     return invokeCommand('get_git_commit_detail', { projectId, workspacePath, oid });
   },
-  analyzeGitCommitRelations(projectId, workspacePath, query) {
-    return invokeCommand('analyze_git_commit_relations', { projectId, workspacePath, query });
+  getGitCommitReview(projectId, workspacePath, query) {
+    return invokeCommand('get_git_commit_review', { projectId, workspacePath, query });
+  },
+  getGitCommitReachability(projectId, workspacePath, query) {
+    return invokeCommand('get_git_commit_reachability', { projectId, workspacePath, query });
   },
   executeGitMutation(projectId, workspacePath, input) {
     return invokeCommand('execute_git_mutation', { projectId, workspacePath, input });

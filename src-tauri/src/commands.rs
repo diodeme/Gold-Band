@@ -85,7 +85,7 @@ use crate::view_models::{
 };
 use crate::view_models_conversation::{
     ConversationAttemptLifecycleVm, ConversationTaskActivityVm, conversation_attempt_lifecycle_vm,
-    conversation_run_mode, conversation_task_activity_from_prompt,
+    conversation_is_orchestrated, conversation_run_mode, conversation_task_activity_from_prompt,
 };
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
@@ -351,7 +351,7 @@ fn runtime_continue_required(
     run: &RunState,
     manual_check_pending: bool,
 ) -> CommandResult<bool> {
-    if manual_check_pending {
+    if !conversation_is_orchestrated(app, &locator.task_id) || manual_check_pending {
         return Ok(false);
     }
     if locator.matches_run_current(run) && locator.outer_node_id().is_some() {
@@ -370,9 +370,7 @@ fn runtime_continue_required(
 }
 
 fn attempt_is_runtime_controlled(app: &App, locator: &AttemptLocator) -> CommandResult<bool> {
-    if conversation_run_mode(app, &locator.task_id)
-        == Some(gold_band::config::ConversationRunMode::Direct)
-    {
+    if !conversation_is_orchestrated(app, &locator.task_id) {
         return Ok(false);
     }
     if let (Some(outer_node_id), Some(outer_attempt_id)) =
@@ -1772,23 +1770,31 @@ pub fn start_run(
 }
 
 #[tauri::command]
-pub fn get_git_capability(
+pub async fn get_git_capability(
     state: State<'_, DesktopState>,
     project_id: Option<String>,
 ) -> CommandResult<gold_band::git::GitCapability> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-    Ok(gold_band::git::GitRepositoryService::default().probe(&app.paths.repo_root))
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        Ok(gold_band::git::GitRepositoryService::default().probe(&project_root))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn initialize_git_repository(
+pub async fn initialize_git_repository(
     state: State<'_, DesktopState>,
     project_id: Option<String>,
 ) -> CommandResult<gold_band::git::GitCapability> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-    gold_band::git::GitRepositoryService::default()
-        .initialize(&app.paths.repo_root)
-        .map_err(command_error)
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        gold_band::git::GitRepositoryService::default()
+            .initialize(&project_root)
+            .map_err(command_error)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1863,12 +1869,12 @@ pub async fn get_git_commit_detail(
 }
 
 #[tauri::command]
-pub async fn analyze_git_commit_relations(
+pub async fn get_git_commit_review(
     state: State<'_, DesktopState>,
     project_id: String,
     workspace_path: Option<String>,
-    query: gold_band::git::GitCommitRelationsQuery,
-) -> CommandResult<gold_band::git::GitCommitRelations> {
+    query: gold_band::git::GitCommitReviewQuery,
+) -> CommandResult<gold_band::git::GitCommitReview> {
     let app = resolve_command_app(state.inner(), Some(&project_id))?;
     let project_root = app.paths.repo_root;
     spawn_blocking_command(move || {
@@ -1880,7 +1886,31 @@ pub async fn analyze_git_commit_relations(
             )
             .map_err(command_error)?;
         service
-            .analyze_commit_relations(&workspace.workspace_path, &query)
+            .commit_review(&workspace.workspace_path, &query)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_git_commit_reachability(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    query: gold_band::git::GitCommitReachabilityQuery,
+) -> CommandResult<gold_band::git::GitCommitReachability> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .commit_reachability(&workspace.workspace_path, &query)
             .map_err(command_error)
     })
     .await
@@ -1904,7 +1934,7 @@ pub async fn execute_git_mutation(
             )
             .map_err(command_error)?;
         service
-            .execute_mutation(&project_id, &workspace.workspace_path, &input)
+            .execute_mutation(&workspace.workspace_path, &input)
             .map_err(command_error)
     })
     .await
@@ -1929,14 +1959,18 @@ pub async fn get_git_comparison(
                 host,
                 repository,
                 pr_number,
+                base_oid,
+                head_oid,
                 path,
                 ..
             } => gold_band::git::GitHubCliService::default()
-                .pull_request_comparison(
+                .pull_request_revision_comparison(
                     &workspace.workspace_path,
                     host,
                     repository,
                     *pr_number,
+                    base_oid,
+                    head_oid,
                     path,
                 )
                 .map_err(command_error),
@@ -3879,7 +3913,6 @@ pub(crate) async fn send_acp_prompt_with_app(
         outer_node_id.clone(),
         outer_attempt_id.clone(),
     );
-    ensure_conversation_prompt_available(&app, &locator)?;
     let turn_id = prompt_id
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("turn-{}", uuid::Uuid::new_v4().simple()));
@@ -3888,26 +3921,7 @@ pub(crate) async fn send_acp_prompt_with_app(
     let direct_mode = conversation_run_mode(&app, &locator.task_id)
         == Some(gold_band::config::ConversationRunMode::Direct);
     let agent_label = acp_turn_agent_label(&app, &locator);
-    let preflight = (|| -> CommandResult<()> {
-        if let Ok(run) = app.run_status(&task_id, &run_id) {
-            let manual_check_pending = current_attempt_manual_check_pending(&app, &locator, &run)?;
-            if runtime_continue_required(&app, &locator, &run, manual_check_pending)? {
-                return Err(CommandErrorVm::new(
-                    "acp.runtime-submit-required",
-                    serde_json::json!({
-                        "taskId": task_id,
-                        "runId": run_id,
-                        "roundId": round_id,
-                        "nodeId": node_id,
-                        "attemptId": attempt_id,
-                        "outerNodeId": outer_node_id,
-                        "outerAttemptId": outer_attempt_id,
-                    }),
-                ));
-            }
-        }
-        Ok(())
-    })();
+    let preflight = ensure_conversation_prompt_available(&app, &locator);
     finish_acp_prompt_preflight(&app, &locator, &turn_id, &agent_label, preflight)?;
     let project_id_for_emit = project_id.clone();
     let project_id_for_spawn = project_id_for_emit.clone();
@@ -7280,12 +7294,15 @@ mod tests {
             "turn-001",
             "Claude",
             Err(CommandErrorVm::new(
-                "acp.runtime-submit-required",
+                "runtime.conversation-not-available",
                 serde_json::json!({}),
             )),
         );
 
-        assert_eq!(result.unwrap_err().code, "acp.runtime-submit-required");
+        assert_eq!(
+            result.unwrap_err().code,
+            "runtime.conversation-not-available"
+        );
         let events = seen.lock().unwrap();
         assert_eq!(events.len(), 1);
         match &events[0] {
@@ -7439,6 +7456,170 @@ mod tests {
             run.pause_reason = Some(reason);
             assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
         }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stopped_workflow_allows_conversation_without_consuming_runtime_continue() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-stopped-workflow-conversation-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
+        write_json(
+            &app.paths
+                .task_dir("task-001")
+                .join("authoring")
+                .join("conversation.json"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "source": "conversation",
+                "runMode": "workflow",
+                "workflowTemplateId": "default",
+                "includeInterview": true,
+                "directConfig": null,
+                "agentIdentity": null,
+                "titleAutoGenerated": false,
+                "initialAttachmentNames": null,
+                "createdAt": "2026-08-12T00:00:00Z",
+                "lastActivityAt": null
+            }),
+        )
+        .unwrap();
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "node-001".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        write_json(
+            &app.paths.node_file(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+            ),
+            &NodeState {
+                version: gold_band::domain::VERSION.to_string(),
+                node_id: locator.node_id.clone(),
+                node_type: gold_band::domain::NodeType::Worker,
+                run_id: locator.run_id.clone(),
+                round_id: locator.round_id.clone(),
+                attempt_id: locator.attempt_id.clone(),
+                status: RunStatus::Paused,
+                outcome: None,
+                started_at: "2026-08-12T00:00:00Z".to_string(),
+                finished_at: Some("2026-08-12T00:00:01Z".to_string()),
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: gold_band::domain::ResolvedConfig::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let run = RunState {
+            version: gold_band::domain::VERSION.to_string(),
+            id: locator.run_id.clone(),
+            task_id: locator.task_id.clone(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "2026-08-12T00:00:00Z".to_string(),
+            updated_at: "2026-08-12T00:00:01Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some(locator.round_id.clone()),
+            current_node: Some(locator.node_id.clone()),
+            current_attempt: Some(locator.attempt_id.clone()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::ProcessInterrupted),
+            uuid: None,
+            last_executed_node: None,
+        };
+
+        assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
+        assert!(!attempt_is_runtime_controlled(&app, &locator).unwrap());
+        assert!(ensure_conversation_prompt_available(&app, &locator).is_ok());
+
+        let persisted_node: NodeState = read_json(&app.paths.node_file(
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+        ))
+        .unwrap();
+        assert_eq!(persisted_node.status, RunStatus::Paused);
+        assert_eq!(persisted_node.outcome, None);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn direct_runtime_never_requires_explicit_workflow_continue() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-direct-runtime-continue-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
+        write_json(
+            &app.paths
+                .task_dir("task-001")
+                .join("authoring")
+                .join("conversation.json"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "source": "conversation",
+                "runMode": "direct",
+                "workflowTemplateId": null,
+                "includeInterview": null,
+                "directConfig": null,
+                "agentIdentity": null,
+                "titleAutoGenerated": false,
+                "initialAttachmentNames": null,
+                "createdAt": "2026-08-12T00:00:00Z",
+                "lastActivityAt": null
+            }),
+        )
+        .unwrap();
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "node-001".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        let run = RunState {
+            version: gold_band::domain::VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "2026-08-12T00:00:00Z".to_string(),
+            updated_at: "2026-08-12T00:00:01Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("node-001".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::ProcessInterrupted),
+            uuid: None,
+            last_executed_node: None,
+        };
+
+        assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
+        assert!(!attempt_is_runtime_controlled(&app, &locator).unwrap());
+        assert!(ensure_conversation_prompt_available(&app, &locator).is_ok());
+        assert!(!gold_band::config::ConversationRunMode::Direct.is_orchestrated());
+        assert!(gold_band::config::ConversationRunMode::Auto.is_orchestrated());
+        assert!(gold_band::config::ConversationRunMode::Workflow.is_orchestrated());
 
         let _ = std::fs::remove_dir_all(root);
     }

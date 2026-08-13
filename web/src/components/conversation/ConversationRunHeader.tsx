@@ -4,6 +4,7 @@ import type { ConversationRunVm, ConversationSessionLeafVm } from '../../types';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { runtimeStatusDotClass } from '@/lib/runtime-status-dot';
 import { EditableConversationTitle } from '@/components/conversation/EditableConversationTitle';
 
 interface ConversationRunHeaderProps {
@@ -35,8 +36,7 @@ export function ConversationRunHeader({
   const isRunning = run.runStatus === 'running';
   const isDirect = run.runMode === 'direct';
   const selectedSessionDisplay = selectedSessionLeaf?.runtimeDisplay;
-  const selectedSessionRunning = selectedSessionDisplay?.tone === 'running';
-  const selectedSessionDotClass = runtimeDotClass(selectedSessionDisplay?.tone);
+  const selectedSessionDotClass = runtimeStatusDotClass(selectedSessionDisplay?.tone);
 
   return (
     <div className="shrink-0 bg-content-header px-5 pb-0.5 pt-0.5">
@@ -70,9 +70,6 @@ export function ConversationRunHeader({
               aria-hidden="true"
               className="relative inline-flex size-3 shrink-0 items-center justify-center rounded-full border border-background/80"
             >
-              {selectedSessionRunning ? (
-                <span className="absolute inset-0 rounded-full bg-primary/18 animate-ping" />
-              ) : null}
               <span className={cn('relative inline-block size-2 rounded-full', selectedSessionDotClass)} />
             </span>
           ) : null}
@@ -121,13 +118,4 @@ export function ConversationRunHeader({
       </div>
     </div>
   );
-}
-
-function runtimeDotClass(tone?: string | null) {
-  if (tone === 'success') return 'bg-emerald-500';
-  if (tone === 'danger') return 'bg-red-500';
-  if (tone === 'running') return 'bg-primary';
-  if (tone === 'warning') return 'bg-yellow-500';
-  if (tone === 'neutral') return 'bg-muted-foreground';
-  return '';
 }

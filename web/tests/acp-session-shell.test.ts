@@ -218,6 +218,7 @@ describe('isAcpSessionInitializationFailed', () => {
 
 describe('isAcpSessionInitializationInterrupted', () => {
   const interruptedInput = {
+    orchestrated: true,
     runtimeStatus: 'paused',
     runtimePauseReason: 'process-interrupted',
     runtimeActive: false,
@@ -228,6 +229,13 @@ describe('isAcpSessionInitializationInterrupted', () => {
 
   it('identifies a stopped runtime attempt that never established an ACP session', () => {
     expect(isAcpSessionInitializationInterrupted(interruptedInput)).toBe(true);
+  });
+
+  it('keeps Direct attempts on the free-conversation path after an early stop', () => {
+    expect(isAcpSessionInitializationInterrupted({
+      ...interruptedInput,
+      orchestrated: false,
+    })).toBe(false);
   });
 
   it('keeps established or displayable interrupted sessions on the normal conversation path', () => {

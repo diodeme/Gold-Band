@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AcpUsageVm } from '@/types';
 import { cn } from '@/lib/utils';
+import { AcpProcessingSpinner } from '@/components/acp/AcpProcessingSpinner';
 import { formatTokenCount } from '@/lib/format-token';
 
 export { formatTokenCount } from '@/lib/format-token';
@@ -37,10 +38,7 @@ export function AcpUsagePanel({ usage, isRunning, compact, processingLabel, sess
       {/* Timing (compact mode, at the front) */}
       {showProcessing ? (
         <span className="flex items-center gap-1.5 font-medium text-foreground">
-          <span
-            aria-hidden="true"
-            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-gold-running/30 border-t-gold-running [animation-duration:900ms]"
-          />
+          <AcpProcessingSpinner className="size-3.5" />
           <span>{processingLabel}...</span>
         </span>
       ) : null}

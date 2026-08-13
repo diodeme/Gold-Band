@@ -1874,6 +1874,7 @@ fn error_blocked_run_is_not_continuable() {
         task_uuid: None,
         uuid: None,
         last_executed_node: None,
+        execution: Default::default(),
     };
 
     assert!(!is_run_continuable(&run));

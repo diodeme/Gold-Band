@@ -176,6 +176,7 @@ export interface AttachmentFileRef {
   path: string;
   name: string;
   size: number;
+  previewUrl?: string | null;
 }
 
 export interface MaterializeAttachmentFileInput {

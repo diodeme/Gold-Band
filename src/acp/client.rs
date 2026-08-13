@@ -275,7 +275,7 @@ use crate::acp::events::{
     AcpSessionMetadata, AcpSessionTiming, AcpTimingState, AcpUiEvent, append_diagnostic,
     append_raw_frame, append_structured_diagnostic, cancel_latest_processing_prompt_retry,
     current_timestamp, latest_timeline_source_seq, load_session_metadata, normalize_session_update,
-    permission_request_event, user_prompt_event, write_session_metadata,
+    permission_request_event, user_prompt_event_with_quotes, write_session_metadata,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::permission::{
@@ -3492,18 +3492,21 @@ impl<'a> AcpRuntime<'a> {
             prompt_event_timestamp: Some(prompt_event_timestamp.clone()),
             hidden_from_chat,
         });
-        let mut user_event = user_prompt_event(
+        let mut user_event = user_prompt_event_with_quotes(
             prompt_event_seq,
             session_id,
-            session_prompt_text(
-                provider_id,
-                prompt,
-                restored,
-                self.runtime_policy.supports_system_prompt,
-            ),
+            prompt.display_text.clone().unwrap_or_else(|| {
+                session_prompt_text(
+                    provider_id,
+                    prompt,
+                    restored,
+                    self.runtime_policy.supports_system_prompt,
+                )
+            }),
             Some(prompt_id.clone()),
             hidden_from_chat,
             prompt.attachment_metas.clone(),
+            prompt.quotes.clone(),
         );
         if hidden_from_chat
             && let Some(reason) = prompt.hidden_reason.as_deref()
@@ -6061,6 +6064,8 @@ mod tests {
         PromptBundle {
             system_prompt: String::new(),
             user_prompt: "clarify".to_string(),
+            display_text: None,
+            quotes: Vec::new(),
             prompt_id: Some(prompt_id.to_string()),
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
@@ -6087,6 +6092,7 @@ mod tests {
         assert!(prompt.runtime_control_transition_id.is_none());
         assert!(prompt.runtime_control_transition_cause.is_none());
     }
+
     use crate::acp::{
         connection::AcpConnectionUnavailable,
         events::{
@@ -7818,6 +7824,8 @@ mod tests {
         let prompt = PromptBundle {
             system_prompt: "node constraints".to_string(),
             user_prompt: "do the task".to_string(),
+            display_text: None,
+            quotes: Vec::new(),
             prompt_id: Some("prompt-001".to_string()),
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
@@ -7847,6 +7855,8 @@ mod tests {
         let prompt = PromptBundle {
             system_prompt: "node constraints".to_string(),
             user_prompt: "follow up".to_string(),
+            display_text: None,
+            quotes: Vec::new(),
             prompt_id: Some("prompt-002".to_string()),
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
@@ -7874,6 +7884,8 @@ mod tests {
         let prompt = PromptBundle {
             system_prompt: "node constraints".to_string(),
             user_prompt: "do the task".to_string(),
+            display_text: None,
+            quotes: Vec::new(),
             prompt_id: None,
             visibility: PromptVisibility::Visible,
             hidden_reason: None,

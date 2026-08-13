@@ -42,7 +42,7 @@ AI-DYNAMIC 的判定依据是节点运行角色，而不是“执行 surface 是
 
 Runtime 是否可显式继续还必须受运行模式约束。`ConversationRunMode::is_orchestrated()` 对 `Auto / Workflow` 返回 true、对 `Direct` 返回 false；AI-DYNAMIC 是节点类型，不单独参与该判断。因此只有 Workflow/AUTO 的可恢复暂停投影 `continueKind=action`。Direct 停止只取消当前 ACP 回复并保持普通 composer，后续消息继续走 NonRuntime ACP prompt，不显示也不接受“继续工作流”。即使 Direct 底层容器仍保存 `Paused + ProcessInterrupted`，该事实也不能被解释为编排恢复资格。
 
-“继续工作流”属于 composer action，固定放在发送按钮旁边，并且只消费后端 lifecycle。前端不得在 stop command 返回后自行合成 `continuable` 或 `continueKind`。Direct 在首个 ACP session 尚未完整建立时停止，也应保留自由会话入口；不得因为 session 建立时机不同而要求用户重跑或调用 Runtime continue。
+“继续工作流”属于 composer action，固定与模型、思考强度、权限和发送按钮放在 composer 底部 command bar；附件入口与键盘提示单独占据上方辅助行。窄宽度时 command bar 可以整体换行，但继续与发送必须保持在配置项同一操作域。该动作只消费后端 lifecycle，前端不得在 stop command 返回后自行合成 `continuable` 或 `continueKind`。Direct 在首个 ACP session 尚未完整建立时停止，也应保留自由会话入口；不得因为 session 建立时机不同而要求用户重跑或调用 Runtime continue。
 
 Workflow/AUTO 的中英文基础 runtime system prompt 预先说明：用户主动打断当前工作并转向其他内容时，在 Runtime 明确恢复工作流前无需遵守当前 artifact 输出语义，应自然回应用户当前问题。中断期间用户针对当前任务给出的最新明确指引在恢复后继续有效，可以调整任务内容、交付结果或角色预设流程；无关闲聊不改变任务，且这些指引不能覆盖 artifact contract、Gold Band 文件规则、安全与能力边界。恢复 Runtime 控制只恢复结果消费和输出协议，不等价于恢复中断前的角色流程；hidden resume 只声明控制权与当前 output contract 重新生效，不重复 system 中的指令优先级规则。AI-DYNAMIC 通过既有基础 system 组合自然继承，不重复写入专属 section。停止后的普通消息只发送用户原文，不追加一次性 suspended hidden context，不创建 accepted prompt cursor；Runtime 仍以 `NonRuntimeControlled` 独立保证不提取、不校验 artifact 且不推进节点。Direct / `RawAgent` system prompt 继续为空，从首轮开始就是 `NonRuntimeControlled`。
 

@@ -234,6 +234,13 @@ export function shouldKeepLocalRuntimeLifecycleOverride(
   );
 }
 
+export function shouldSettleRuntimeContinueSubmission(
+  submitting: boolean,
+  showRuntimeContinueAction: boolean,
+) {
+  return submitting && !showRuntimeContinueAction;
+}
+
 function shouldRouteDirectSubmissionToQueue(input: {
   input: AcpRuntimeComposerStateInput;
   mode: AcpComposerMode;

@@ -204,8 +204,12 @@ export function getGitCommitDetail(projectId: string, workspacePath: string | nu
   return getRuntimeApi().getGitCommitDetail(projectId, workspacePath, oid);
 }
 
-export function analyzeGitCommitRelations(projectId: string, workspacePath: string | null | undefined, query: Parameters<ReturnType<typeof getRuntimeApi>['analyzeGitCommitRelations']>[2]) {
-  return getRuntimeApi().analyzeGitCommitRelations(projectId, workspacePath, query);
+export function getGitCommitReview(projectId: string, workspacePath: string | null | undefined, query: Parameters<ReturnType<typeof getRuntimeApi>['getGitCommitReview']>[2]) {
+  return getRuntimeApi().getGitCommitReview(projectId, workspacePath, query);
+}
+
+export function getGitCommitReachability(projectId: string, workspacePath: string | null | undefined, query: Parameters<ReturnType<typeof getRuntimeApi>['getGitCommitReachability']>[2]) {
+  return getRuntimeApi().getGitCommitReachability(projectId, workspacePath, query);
 }
 
 export function executeGitMutation(projectId: string, workspacePath: string | null | undefined, input: Parameters<ReturnType<typeof getRuntimeApi>['executeGitMutation']>[2]) {

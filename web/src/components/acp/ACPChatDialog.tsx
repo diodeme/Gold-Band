@@ -22,9 +22,7 @@ import {
   Image as ImageIcon,
   ListTodo,
   Loader2,
-  Play,
   Search,
-  Send,
   ShieldQuestion,
   Terminal,
 } from "lucide-react";
@@ -151,6 +149,7 @@ import {
 import {
   deriveAcpRuntimeComposerState,
   mergeConversationAttemptLifecycle,
+  shouldSettleRuntimeContinueSubmission,
   isRuntimeActiveStatus,
   isSessionActiveStatus,
   isSessionCompletedStatus,
@@ -230,6 +229,7 @@ export type AcpLifecycleSnapshot = {
 };
 
 export type AcpRuntimeComposerContext = {
+  isOrchestrated: boolean;
   lifecycle?: ConversationAttemptLifecycleVm | null;
   promptQueueEnabled?: boolean;
   runtimeStatus?: string | null;
@@ -1261,38 +1261,19 @@ export function ACPChatDialog(
 
 
   const showManualCheckActions = manualCheckPending && !manualCheckResolved;
-  const localLifecycle = localRuntimeLifecycle
-    ?? (runtimeStopAccepted && runtimeComposerContext?.lifecycle
-      ? {
-          ...runtimeComposerContext.lifecycle,
-          runtime: {
-            ...runtimeComposerContext.lifecycle.runtime,
-            status: "paused",
-            pauseReason: "process-interrupted",
-            resumable: true,
-            active: false,
-            continuable: true,
-            phase: "paused",
-          },
-          displayStatus: "paused",
-          continueKind: "action",
-          composer: {
-            mode: "normal",
-            submitTarget: "acp-prompt",
-            processingKind: "processing",
-            statusKey: null,
-            canStop: false,
-            lockInput: false,
-          },
-        }
-      : runtimeComposerContext?.lifecycle);
+  const localLifecycle = localRuntimeLifecycle ?? runtimeComposerContext?.lifecycle;
   const showRuntimeContinueAction = Boolean(
     localLifecycle?.continueKind === "action"
       && localLifecycle.runtime.continuable
       && !localLifecycle.runtime.active
       && !localLifecycle.acp.active,
   );
+  useEffect(() => {
+    if (!shouldSettleRuntimeContinueSubmission(runtimeContinueSubmitting, showRuntimeContinueAction)) return;
+    setRuntimeContinueSubmitting(false);
+  }, [runtimeContinueSubmitting, showRuntimeContinueAction]);
   const sessionInitializationInterrupted = isAcpSessionInitializationInterrupted({
+    orchestrated: runtimeComposerContext?.isOrchestrated ?? true,
     runtimeStatus: localLifecycle?.runtime.status ?? runtimeComposerContext?.runtimeStatus,
     runtimePauseReason: localLifecycle?.runtime.pauseReason,
     runtimeActive: runtimeActiveFromContext,
@@ -2811,15 +2792,16 @@ export function ACPChatDialog(
         outerNodeId,
         outerAttemptId,
       );
-      // Runtime continue is acknowledged only after the durable attempt/leaf
-      // state is active. Authoritative lifecycle events (or the parent refresh
-      // below) own projection; merging the command response here could regress
-      // a newer failure/stop event that arrived first.
+      if (result.lifecycle) {
+        setLocalRuntimeLifecycle((current) =>
+          mergeConversationAttemptLifecycle(current, result.lifecycle!),
+        );
+        emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
+      }
       setRuntimeStopAccepted(false);
       onSessionStopped?.();
     } catch (error) {
       setRuntimeContinueError(displayAppError(t, error));
-    } finally {
       setRuntimeContinueSubmitting(false);
     }
   };
@@ -3192,22 +3174,26 @@ export function ACPChatDialog(
               <InterventionLayer>
                 {sendError ? (
                   <AcpErrorBanner
-                    reason={`${t("acp.sendFailed")}：${sendError}`}
+                    title={t("acp.sendFailed")}
+                    reason={sendError}
                   />
                 ) : null}
                 {cancelError ? (
                   <AcpErrorBanner
-                    reason={`${t("acp.stopFailed")}：${cancelError}`}
+                    title={t("acp.stopFailed")}
+                    reason={cancelError}
                   />
                 ) : null}
                 {manualCheckError ? (
                   <AcpErrorBanner
-                    reason={`${t("acp.manualCheckSubmitFailed")}：${manualCheckError}`}
+                    title={t("acp.manualCheckSubmitFailed")}
+                    reason={manualCheckError}
                   />
                 ) : null}
                 {runtimeContinueError ? (
                   <AcpErrorBanner
-                    reason={`${t("acp.continueWorkflowFailed")}：${runtimeContinueError}`}
+                    title={t("acp.continueWorkflowFailed")}
+                    reason={runtimeContinueError}
                   />
                 ) : null}
                 {permissionError ? (
@@ -3280,27 +3266,6 @@ export function ACPChatDialog(
                 onFailure={() => void submitManualDecision("failure")}
               />
             ) : null}
-            {!readOnly && showRuntimeContinueAction ? (
-              <div className="mb-1 flex justify-end">
-                <Button
-                  type="button"
-                  size="sm"
-                  className="gap-1.5"
-                  disabled={runtimeContinueSubmitting}
-                  onClick={() => void continueRuntime()}
-                  data-acp-continue-workflow="true"
-                >
-                  {runtimeContinueSubmitting ? (
-                    <Loader2 className="size-3.5 animate-spin" />
-                  ) : (
-                    <Play className="size-3.5" />
-                  )}
-                  {runtimeContinueSubmitting
-                    ? t("acp.continueWorkflowStarting")
-                    : t("acp.continueWorkflow")}
-                </Button>
-              </div>
-            ) : null}
             {!readOnly && promptQueueVisible && promptQueue ? (
               <ConversationPromptQueue
                 queue={promptQueue}
@@ -3366,6 +3331,9 @@ export function ACPChatDialog(
                 onStop={stopSession}
                 canSubmit={canSubmitPrompt && !queueSubmitPending}
                 sendButtonBusy={composerState.submitTarget === "queue-prompt" ? queueSubmitPending : sendButtonBusy}
+                showRuntimeContinue={showRuntimeContinueAction}
+                runtimeContinueSubmitting={runtimeContinueSubmitting}
+                onRuntimeContinue={continueRuntime}
                 configBar={(
                   <AcpSessionConfigBar
                     scopeKey={sessionIdentity}
@@ -3683,12 +3651,12 @@ function AcpChatSkeleton() {
   );
 }
 
-function AcpErrorBanner({ reason }: { reason: string }) {
+function AcpErrorBanner({ reason, title }: { reason: string; title?: string }) {
   const { t } = useTranslation();
   return (
     <div className="shrink-0 border-b border-destructive/20 bg-destructive/5 px-5 py-3 text-sm">
       <span className="font-semibold text-destructive">
-        {t("acp.sessionFailed")}
+        {title ?? t("acp.sessionFailed")}
       </span>
       <span className="ml-2 text-muted-foreground">{reason}</span>
     </div>

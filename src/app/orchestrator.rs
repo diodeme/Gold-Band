@@ -61,8 +61,7 @@ use crate::provider::{
     OutputEmissionMode, PromptBundle, PromptHiddenSection, PromptOutputContract,
     PromptRuntimeContext, PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode,
     UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
-    runtime_control_suspended_context, supported_models_from_capabilities,
-    supported_modes_from_capabilities,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, RunState, TaskState, WorkerRefState,
@@ -8796,18 +8795,7 @@ pub(crate) fn build_dynamic_prompt_bundle(
     )?;
     invocation.turn_control_mode = TurnControlMode::NonRuntimeControlled;
     invocation.extra_hidden_sections.clear();
-    let suspended_context = if node.status == DynamicNodeStatus::Paused
-        && node.pause_reason == Some(PauseReason::ProcessInterrupted)
-    {
-        Some(runtime_control_suspended_context(
-            ctx.app.config.desktop_language,
-        ))
-    } else {
-        None
-    };
-    let mut bundle = render_prompt_bundle(&invocation)?;
-    bundle.runtime_control_suspended_context = suspended_context;
-    Ok(bundle)
+    render_prompt_bundle(&invocation)
 }
 
 fn build_dynamic_worker_invocation(
@@ -12944,6 +12932,7 @@ mod tests {
         let prompt = render_prompt_bundle(&invocation).unwrap();
 
         assert!(prompt.system_prompt.contains("AI-DYNAMIC 稳定规则"));
+        assert!(prompt.system_prompt.contains("用户主动打断当前工作"));
         assert!(prompt.system_prompt.contains("dynamic-node-completion"));
         assert!(!prompt.system_prompt.contains("内部 attempt 目录"));
         assert!(!prompt.system_prompt.contains("remaining dynamic nodes"));

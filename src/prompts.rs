@@ -39,10 +39,6 @@ pub const RUNTIME_ARTIFACT_FINALIZE_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/artifact_finalize.md");
 pub const RUNTIME_ARTIFACT_FINALIZE_EN: &str =
     include_str!("prompts/en/runtime/artifact_finalize.md");
-pub const RUNTIME_CONTROL_SUSPENDED_ZH_CN: &str =
-    include_str!("prompts/zh-CN/runtime/runtime_control_suspended.md");
-pub const RUNTIME_CONTROL_SUSPENDED_EN: &str =
-    include_str!("prompts/en/runtime/runtime_control_suspended.md");
 pub const RUNTIME_CONTROL_RESUME_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/runtime_control_resume.md");
 pub const RUNTIME_CONTROL_RESUME_EN: &str =

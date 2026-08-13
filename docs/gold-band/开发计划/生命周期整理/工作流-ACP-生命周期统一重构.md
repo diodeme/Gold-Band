@@ -254,7 +254,7 @@ RuntimeLifecycleBus
 3. `runtime-continue-started` 表示后端已接受显式继续；返回体立即合成 `runtime-active / provider-running` lifecycle，不能回传旧 paused/action 快照。
 4. 普通消息继续透传本轮 `attachment_paths`；隐藏 RuntimeResume 不携带可见用户文本或 optimistic 用户气泡。
 5. 新 UI 会话页与旧 Round 详情都把文本提交与继续按钮拆开：前者调用 `submit_conversation_prompt`，后者调用 `continue_conversation_runtime`。
-6. suspended context 的一次性认领、user prompt event 持久化与 cursor commit 共用 ACP session prompt lock；显式 continue 的 `WorkflowContinued` 在 accepted event 后以 source transition id 做 CAS，不在 provider 接受前提前切换 Runtime mode。固定 workflow 额外使用 per-run starting lease，重复点击不会创建第二个后台启动线程。
+6. 停止后的普通消息只发送用户原文；用户打断后可暂不遵守 artifact、恢复后继续采用中断期间最新任务指引的语义预先放入中英文基础 runtime system prompt，AI-DYNAMIC 通过既有 system 组合继承，不再执行一次性 suspended context 认领。显式 continue 只恢复 Runtime 结果消费和 output contract，不自动恢复中断前的角色流程；`WorkflowContinued` 在 accepted event 后以 source transition id 做 CAS，不在 provider 接受前提前切换 Runtime mode。固定 workflow 额外使用 per-run starting lease，重复点击不会创建第二个后台启动线程。
 7. Direct / `RawAgent` 首轮即为 `NonRuntimeControlled`。legacy attempt 缺 cursor 时只允许扫描 timeline 一次，无结果写入 `runtimeControlTimelineScanComplete` negative cache；cursor stop/commit 使用固定路径哈希短锁，不持有跨 session 长锁等待 Agent。
 8. 对 `codex-acp` 等不支持原生 `systemPrompt` 的 provider，首轮新 session 可把 stable system prompt 作为 hidden user block 内联发送并持久化；同一 ACP session 的后续 continue/追问必须复用历史上下文，不再重复内联 stable system prompt，timeline 中的 user prompt 记录也必须与实际发送内容一致。
 9. timeline 中用户消息附件必须按 `raw.attachments[].path` 分流展示：`task-inputs/<name>` 是首轮 task 输入附件，前端继续通过 task 级 `authoring/inputs` 读取；`user-inputs/<name>` 是继续/追问本轮新附件，前端必须传入 `projectId + taskId + runId + roundId + nodeId + attemptId + outer locator + path`，由后端从对应 attempt 目录读取。两类路径不能统一压成一个读取入口。

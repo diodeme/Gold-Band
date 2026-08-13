@@ -439,7 +439,7 @@ pub struct RegisterRequest {
 pub struct RuntimeSpec { pub name: String, pub r#type: String /*=provider 固定*/, pub version: String, pub status: String }
 pub struct RegisterResponse { pub runtimes: Vec<RuntimeRow> }
 pub struct RuntimeRow { pub id: String /*=runtime_id*/ }
-pub struct RemoteTask { pub id: String, pub issue_id: Option<String>, pub status: String, pub auth_token: Option<String>, pub prior_session_id: Option<String> /*=响应回填，客户端只消费不发送*/, pub parent_task_id: Option<String> /*=auto-retry 子任务 T' 指向父 T；客户端续跑反查主路径（§12.14）*/, pub title: Option<String> /*=wire thread_name*/, pub requirement: Option<String>, pub last_activity_at: Option<String> }
+pub struct RemoteTask { pub id: String, pub issue_id: Option<String>, pub status: String, pub auth_token: Option<String> /*=server 回传 mat_；Option B 中介下不消费，§12.29 起定点 #[allow(dead_code)]*/, pub prior_session_id: Option<String> /*=响应回填，客户端只消费不发送；§12.29 起定点 #[allow(dead_code)]（主路径 parent_task_id）*/, pub parent_task_id: Option<String> /*=auto-retry 子任务 T' 指向父 T；客户端续跑反查主路径（§12.14）*/, pub title: Option<String> /*=wire thread_name*/, pub requirement: Option<String>, pub last_activity_at: Option<String> }
 pub struct ClaimRequest {}   // 服务端 claim 处理器不解码 body；prior_session_id 是「响应只输出」字段（agent.go:311），客户端消费响应而非塞请求体（§12.14）
 pub struct PinTaskSessionRequest { pub session_id: String, pub work_dir: Option<String> }
 pub struct StartRequest { pub force_fresh_session: bool }          // rerun 时 true（详见 4.4 / 接入方案 3.2.7）
@@ -456,15 +456,18 @@ multica 错误统一走项目 `CommandErrorVm { code, params }`(commands.rs:581-
 pub enum MulticaError {
     #[error("not configured")] NotConfigured,
     #[error("auth failed: {0}")] AuthFailed(String),
-    #[error("workspace empty")] WorkspaceEmpty,
     #[error("network failed: {0}")] NetworkFailed(String),
     #[error("register failed: {0}")] RegisterFailed(String),
     #[error("claim conflict")] ClaimConflict,
     #[error("task not found")] TaskNotFound,
     #[error("runtime offline")] RuntimeOffline,
-    #[error("session resume failed, will rerun")] SessionResumeFailed, // **M4-d：变体保留在错误码表（multica.session-resume-failed），但断点续跑路径不 emit/不匹配**——改为「任何 resume Err→fresh fallback」更稳（无需 fragile 串匹配）
-    #[error("pin task session failed: {0}")] PinSessionFailed(String),
+    // M4-d：保留在错误码表（multica.session-resume-failed），但断点续跑路径不 emit——任何 resume Err
+    // 改走 silent fresh-fallback（更稳，无需 fragile 串匹配）。变体标 #[allow(dead_code)]（§12.29）。
+    #[allow(dead_code)]
+    #[error("session resume failed, will rerun")] SessionResumeFailed,
 }
+// §12.29（M5-aq）dead_code 清理：WorkspaceEmpty / PinSessionFailed 变体删除（全链路零构造——
+// 前端空态 UI 守卫 / pin 失败仅记日志），i18n workspace-empty + pin-session-failed 同步删除。
 ```
 命令层通过 `command_error`(commands.rs:3529-3547) 把 `MulticaError` 映射为 `CommandErrorVm`（code: `multica.not-configured` / `multica.auth-failed` / …，params 携带 task_id/workspace_id 等上下文，**不含对客文案**）。client.rs 的 HTTP 错误按状态码映射：401→AuthFailed（PAT 失效触发重新登录），403→AuthFailed，404→TaskNotFound，409→ClaimConflict，网络超时→NetworkFailed。完整码表见第 5 章。
 
@@ -486,7 +489,6 @@ pub enum MulticaError {
 - `start_task(task_id, force_fresh_session) / heartbeat / get_task_status`（本期状态只基础：start/complete/fail + 心跳，不接入 step/total 进度上报）
 - `pin_task_session(task_id, session_id, work_dir) -> ()`（写 task 行的 session_id/work_dir，断点续跑依据，对应接入方案 C8）
 - `complete_task / fail_task`（**重试幂等**：4/8/16/32/64s 共 6 次，确保终态送达）
-- `rerun_issue(issue_id, workspace_id) -> ()`（rerun=true/retry=false，触发整任务重跑，见接入方案 3.2.7）
 - `update_issue_status(workspace_id, issue_id, status) -> ()`（改动二：`PUT /api/issues/{id}` body `{status}` + `X-Workspace-ID` 头，`with_network_retry` 3 次；常量 `MULTICA_ISSUE_DONE_STATUS="done"` 用于完成流转，**`MULTICA_ISSUE_IN_PROGRESS_STATUS="in_progress"`（改动五新增）用于开始执行时流转**）
 
 **重试策略**：
@@ -1806,6 +1808,31 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **验收**：`tsc --noEmit -p web/tsconfig.build.json` 零错；生产构建（`web:build` = tsc + vite build）绿；vitest `conversation-composer-multica-chip` 9 测 + composer/multica 回归 11 套件 102 测全过。
 
 > 本节更新 §12.22（M5-aj）chip 渲染位置（`PromptInput` 首子节点 block 行 → 输入框内首行内嵌 leading adornment）与 Backspace 删除条件（正文为空 → 光标在正文起点且无选区）。chip 与正文解耦、× 按钮解绑、claim-at-send（§12.23）下删 chip 纯本地等设计不变。
+
+---
+
+### 12.29 改动二十七：multica dead_code 清理——移除 4 个模块级 `#![allow(dead_code)]`，分类 retire / 定点 allow（M5-aq，2026-08-13）
+
+**背景**：M2–M5 分里程碑接入时，`multica/{error,state,bridge,client}.rs` 顶部各挂了临时 `#![allow(dead_code)]`（注释「M5 完成后审查移除」）。M5 + 26 项加固（M5-r…M5-ap）已全部落地，到了审查窗口：移除这 4 个模块级 allow，把暴露的 dead_code 逐项分类——真死的删、契约保留的改定点 `#[allow(dead_code)]` + 注释，杜绝模块级静默。
+
+**分类与处置**：
+
+*删除（真死代码，dev-stage 破坏式）*：
+- `error.rs` `WorkspaceEmpty`：全链路零构造——空 workspace 由前端空态 UI 守卫（远程任务页「无工作空间」空态），后端从不 emit。删变体 + `code()` 臂 + 单测；i18n `workspace-empty`（zh/en）同步删。
+- `error.rs` `PinSessionFailed(String)`：全链路零构造——`pin_task_session` 契约为 best-effort（失败仅 `warn!` 记日志、不阻断终态，client.rs:808），从不 raise。删变体 + `code()`/`params()` 臂 + 单测；i18n `pin-session-failed`（zh/en）同步删。
+- `state.rs` `ActiveRemoteRun.runtime_id`：写入但零读取——心跳/自愈按 `MulticaRuntimeState.runtime_ids` map 寻址（`runtime_id_pairs()`），非此字段（原「心跳按它寻址」注释失真）。删字段 + 6 处构造点（commands.rs ×2、vm.rs 测试、state.rs `sample_run` + 4 调用方）；`sample_run` 同步去掉首参。
+- `client.rs` `post_json_with_workspace`：零调用——唯一 issue 维度接口 `update_issue_status` 用 `json_send(PUT)` 直发；原注释提的 `rerun_issue`（接入方案 D1/D2/E1/E2 POST）随 M5-ah rerun 死链删除已不存在。删方法 + 清两处失效注释（`json_send` 共用底座 / 测试 path 注释里的 `rerun_issue` 残留）。
+
+*保留（契约/决策性，改定点 allow + 注释）*：
+- `error.rs` `SessionResumeFailed`：**M4-d 明确保留在码表**（`multica.session-resume-failed`）——resume 路径不 emit/不匹配，任何 resume Err 改 silent fresh-fallback（更稳，无需 fragile 串匹配）。变体标 `#[allow(dead_code)]` + 内联 M4-d 由来；i18n 与 `code()` 臂/单测保留（码表完整性）。
+- `client.rs` `RemoteTask.auth_token`：server claim 时签发的 task-scoped 短期凭证（mat_，webank `GenerateAgentTaskToken`）。**Option B 中介设计下不消费**（选项 B：码灵作中介，agent 从不直调 multica API，所有调用用码灵 PAT）——仅按 wire 契约反序列化。**修正失真注释**（原写「M4 bridge 注入 ACP 执行」，与 Option B 矛盾）+ 定点 allow。
+- `client.rs` `RemoteTask.prior_session_id`：续跑兜底指针（server 响应回填），主路径是 `parent_task_id` 反查本地索引。定点 allow（注释本就准确）。
+
+**附带清理**：`bridge.rs` 模块级 allow 移除后无 bridge dead_code 暴露（该 allow 本就过期）；`开发设计.md` §2.3 方法清单的 `rerun_issue` 行（M5-ah 删 rerun 死链时的遗漏）一并删除。
+
+**验证**：`cargo check -p gold-band-desktop` 绿——**multica 零 warning**（仅 main 既有 9 条非 multica dead-code：`scheduled_task_vms_from_sources`/`task_uuid`/`title`/`task_has_active_execution*`/`provider_diagnostic_snapshots`/`refresh_agent_command_catalog_for_workspace`/`NodeMetricBatch` 可见性/`expected_windows_toast_auto_dismiss_seconds`/`normalize_multica_base_url` 未用 import 等，非本次引入）；`cargo test multica::` **83 测全过、0 失败**；`tsc -p web/tsconfig.build.json` 零错；vitest **1124/1124 全过**。
+
+**文件**：`src-tauri/src/multica/{error,state,bridge,client,commands,vm}.rs`（删 allow + retire + 定点 allow + 注释订正）、`web/src/i18n.ts`（删 workspace-empty + pin-session-failed zh/en）。
 
 ---
 

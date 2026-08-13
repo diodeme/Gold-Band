@@ -26,16 +26,7 @@ pub struct AcpRuntimeControlCursor {
     pub current_mode: TurnControlMode,
     pub transition_id: String,
     pub transition_cause: TurnControlTransitionCause,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suspended_context_accepted_for: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suspended_context_prompt_id: Option<String>,
     pub changed_at: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingRuntimeSuspension {
-    pub transition_id: String,
 }
 
 fn cursor_lock(attempt_dir: &Utf8Path) -> &'static Mutex<()> {
@@ -101,57 +92,9 @@ pub fn commit_workflow_continued(
             current_mode: TurnControlMode::RuntimeControlled,
             transition_id: transition_id.to_string(),
             transition_cause: TurnControlTransitionCause::WorkflowContinued,
-            suspended_context_accepted_for: None,
-            suspended_context_prompt_id: None,
             changed_at: current_timestamp(),
         },
     )?;
-    Ok(true)
-}
-
-pub fn pending_runtime_suspension(
-    attempt_dir: &Utf8Path,
-) -> Result<Option<PendingRuntimeSuspension>> {
-    let lock = cursor_lock(attempt_dir);
-    let _guard = lock
-        .lock()
-        .map_err(|_| anyhow!("runtime control cursor lock poisoned"))?;
-    let Some(cursor) = load_runtime_control_cursor_unlocked(attempt_dir)? else {
-        return Ok(None);
-    };
-    if cursor.current_mode != TurnControlMode::NonRuntimeControlled
-        || cursor.transition_cause != TurnControlTransitionCause::RuntimeInterrupted
-        || cursor.suspended_context_accepted_for.as_deref() == Some(&cursor.transition_id)
-    {
-        return Ok(None);
-    }
-    Ok(Some(PendingRuntimeSuspension {
-        transition_id: cursor.transition_id,
-    }))
-}
-
-pub fn mark_suspended_context_accepted(
-    attempt_dir: &Utf8Path,
-    transition_id: &str,
-    prompt_id: &str,
-) -> Result<bool> {
-    let lock = cursor_lock(attempt_dir);
-    let _guard = lock
-        .lock()
-        .map_err(|_| anyhow!("runtime control cursor lock poisoned"))?;
-    let Some(mut cursor) = load_runtime_control_cursor_unlocked(attempt_dir)? else {
-        return Ok(false);
-    };
-    if cursor.current_mode != TurnControlMode::NonRuntimeControlled
-        || cursor.transition_cause != TurnControlTransitionCause::RuntimeInterrupted
-        || cursor.transition_id != transition_id
-    {
-        return Ok(false);
-    }
-    cursor.suspended_context_accepted_for = Some(transition_id.to_string());
-    cursor.suspended_context_prompt_id = Some(prompt_id.to_string());
-    cursor.changed_at = current_timestamp();
-    persist_cursor_unlocked(attempt_dir, &cursor)?;
     Ok(true)
 }
 
@@ -213,8 +156,6 @@ fn write_transition_unlocked(
         current_mode,
         transition_id: format!("runtime-control-{}", Uuid::new_v4().simple()),
         transition_cause,
-        suspended_context_accepted_for: None,
-        suspended_context_prompt_id: None,
         changed_at: current_timestamp(),
     };
     persist_cursor_unlocked(attempt_dir, &cursor)?;
@@ -294,11 +235,6 @@ mod tests {
         let first = mark_runtime_interrupted(attempt_dir).unwrap();
         let repeated = mark_runtime_interrupted(attempt_dir).unwrap();
         assert_eq!(repeated.transition_id, first.transition_id);
-        let pending = pending_runtime_suspension(attempt_dir).unwrap().unwrap();
-        assert_eq!(pending.transition_id, first.transition_id);
-
-        mark_suspended_context_accepted(attempt_dir, &first.transition_id, "prompt-1").unwrap();
-        assert!(pending_runtime_suspension(attempt_dir).unwrap().is_none());
         assert_eq!(
             load_runtime_control_cursor(attempt_dir)
                 .unwrap()
@@ -360,8 +296,6 @@ mod tests {
             current_mode: TurnControlMode::NonRuntimeControlled,
             transition_id: "late-timeline-transition".to_string(),
             transition_cause: TurnControlTransitionCause::RuntimeInterrupted,
-            suspended_context_accepted_for: None,
-            suspended_context_prompt_id: None,
             changed_at: current_timestamp(),
         };
         write_timeline_items(
@@ -397,8 +331,6 @@ mod tests {
             current_mode: TurnControlMode::NonRuntimeControlled,
             transition_id: "legacy-timeline-transition".to_string(),
             transition_cause: TurnControlTransitionCause::RuntimeInterrupted,
-            suspended_context_accepted_for: None,
-            suspended_context_prompt_id: None,
             changed_at: current_timestamp(),
         };
         write_timeline_items(

@@ -47,6 +47,9 @@ function baseProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
     onStop: vi.fn(),
     canSubmit: true,
     sendButtonBusy: false,
+    showRuntimeContinue: false,
+    runtimeContinueSubmitting: false,
+    onRuntimeContinue: vi.fn(),
     configBar: null,
     attachedQueueVisible: true,
     queueSubmit: true,
@@ -79,5 +82,15 @@ describe('AcpConversationComposer', () => {
     const composerRoot = host.querySelector('[data-conversation-composer="acp"]');
     expect(composerRoot?.querySelector('[data-acp-composer-attachment-row="true"]')).toBeNull();
     expect(composerRoot?.querySelector('[class*="rounded-t-none"]')).toBeTruthy();
+  });
+
+  it('renders workflow continuation inside the composer action row beside send', async () => {
+    await renderComposer({ showRuntimeContinue: true });
+
+    const continueButton = host.querySelector('[data-acp-continue-workflow="true"]');
+    const sendButton = host.querySelector('[data-acp-send="true"]');
+    expect(continueButton).toBeTruthy();
+    expect(sendButton).toBeTruthy();
+    expect(continueButton?.parentElement?.parentElement).toBe(sendButton?.parentElement?.parentElement);
   });
 });

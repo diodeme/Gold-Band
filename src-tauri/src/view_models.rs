@@ -554,9 +554,8 @@ pub fn runtime_display_vm(
             ("killed", "danger", "error", true)
         }
         _ => match status.as_deref() {
-            Some("running") | Some("in-progress") | Some("in_progress") | Some("active") => {
-                ("running", "running", "dot", false)
-            }
+            Some("running") | Some("in-progress") | Some("in_progress") | Some("active")
+            | Some("starting") | Some("sending") => ("running", "running", "dot", false),
             Some("paused") if current && reason_code.as_deref() == Some("error-blocked") => {
                 ("error-blocked", "danger", "error", false)
             }
@@ -564,6 +563,7 @@ pub fn runtime_display_vm(
                 ("runtime-abnormal", "danger", "error", false)
             }
             Some("paused") => ("paused", "warning", "pause", false),
+            Some("cancelling") | Some("cancel-requested") => ("paused", "warning", "pause", false),
             Some("pending") | Some("ready") => ("pending", "neutral", "dot", false),
             Some("completed") | Some("complete") => ("completed", "neutral", "dot", true),
             Some("failed") | Some("failure") | Some("error") => {

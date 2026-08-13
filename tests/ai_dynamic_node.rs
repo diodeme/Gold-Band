@@ -2006,6 +2006,9 @@ fn ai_dynamic_continue_prompt_bundle_preserves_prompt_id() {
         .unwrap();
 
     assert_eq!(prompt.user_prompt, "继续");
+    assert!(prompt.system_prompt.contains("用户主动打断当前工作"));
+    assert!(prompt.system_prompt.contains("角色预设的执行流程"));
+    assert!(!prompt.user_prompt.contains("Gold Band runtime context"));
     assert_eq!(prompt.prompt_id.as_deref(), Some("acp-prompt-test"));
 }
 

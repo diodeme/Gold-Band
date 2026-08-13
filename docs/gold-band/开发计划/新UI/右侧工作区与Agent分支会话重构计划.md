@@ -485,6 +485,7 @@ ACP live event(branchId)
 - 共享顶栏改为品牌在前、左右栏开关在后；右栏开关与资源 Tab 解耦，无资源时呈现空白入口页。
 - 左右栏开关缩小按钮与图标尺寸并保留独立打开态；左栏入口留在品牌后，右栏入口通过尾部 flex 操作区靠近窗口右侧，降低识别成本并兼容 macOS 原生 traffic lights。
 - 修正右栏宽度恢复：Provider 接收异步 preference hydrate，拖动结束使用 group layout 用户事件持久化真实像素宽度。
+- 统一 Shell 边界线：中间区顶部/左侧边界、右侧 Panel 顶边与右栏 separator 共享不透明 `workspace-divider` 主题 token；中间区和右侧区分别绘制同为 1 CSS px 的顶边，保证横向边界连续并与 separator 形成 T 形交点，消除半透明叠色与右侧缺线造成的交点色差/粗细错觉；不修改 Resizable 拖拽命中区和宽度热路径。
 - 实现通用 Tab model、激活、关闭、去重、溢出列表。
 - Tab 溢出入口改为由 `ResizeObserver + scrollWidth/clientWidth` 驱动，只在真实溢出时出现；修正为 Gold Band 主题滚动条并将该横向轨道独立压缩到 4px。Tab 条显式恢复 WebKit 伪元素控制权，避免 Chromium 的 `scrollbar-width: thin` 覆盖专属尺寸和两端按钮隐藏规则。
 - 会话页面 `centerMinWidth` 从设计初值 420px 校准到 360px；上下文卡片、工作流画布和设置 profile 保持不变。
@@ -629,6 +630,7 @@ ACP live event(branchId)
 - 根事件只进入根 timeline，Agent 事件只进入所属 Agent timeline。
 - Agent index 能恢复父子层级、状态和统计。
 - 应用重启后打开 Agent link 能恢复历史并继续接收实时更新。
+- 快速对话 draft、定时创建与会话详情共用全局右栏宽度偏好；任一页面完成 separator 拖拽后，切换页面、折叠重开或重启应用都恢复同一有界像素宽度，不得回退到 Panel 首次注册尺寸或最小宽度。实现使用 `react-resizable-panels` 的 imperative `resize()` 在离散展示/hydrate 时恢复，pointermove 热路径不写 React state 或存储。
 - 文件名和目录只使用 Gold Band 稳定 ID，不使用未经处理的 provider ID。
 - storage query 使用结构化错误码，不返回后端对客文案。
 

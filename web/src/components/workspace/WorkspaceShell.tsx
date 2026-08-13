@@ -30,6 +30,7 @@ import {
   FALLBACK_WORKSPACE_FILES,
   shouldOpenRightWorkspaceSheet,
   shouldPersistRightWorkspaceWidth,
+  syncRightWorkspacePanelPresentation,
   WORKSPACE_SIDEBAR_DEFAULT_WIDTH,
   WORKSPACE_SIDEBAR_MAX_WIDTH,
   WORKSPACE_SIDEBAR_MIN_WIDTH,
@@ -337,15 +338,15 @@ function WorkspaceShellLayout({
     const panel = rightPanelRef.current;
     if (!panel) return;
     try {
-      if (showRightDock) {
-        if (panel.isCollapsed()) panel.expand();
-      } else if (!panel.isCollapsed()) {
-        panel.collapse();
-      }
+      syncRightWorkspacePanelPresentation({
+        panel,
+        visible: showRightDock,
+        preferredWidth: workspace.width,
+      });
     } catch {
       // The panel group may be unmounting while the desktop surface changes.
     }
-  }, [showRightDock]);
+  }, [showRightDock, workspace.width]);
 
   useEffect(() => {
     if (handledWorkspaceScopeRef.current !== workspace.scopeKey) {
@@ -503,13 +504,13 @@ function WorkspaceShellLayout({
           className="min-w-0"
           groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-pixel-size' : 'preserve-relative-size'}
         >
-          <main className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-sidebar-border/70 bg-gold-workspace', showLeft && 'rounded-tl-2xl border-l')}>
+          <main className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-workspace-divider bg-gold-workspace', showLeft && 'rounded-tl-2xl border-l')}>
             {children}
           </main>
         </ResizablePanel>
         <ResizableHandle
           className={cn(
-            'z-20 bg-sidebar-border/70 hover:bg-primary/30',
+            'z-20 bg-workspace-divider hover:bg-primary/30',
             !showRightDock && 'pointer-events-none opacity-0',
           )}
           data-testid="workspace-right-resize-handle"
@@ -533,7 +534,10 @@ function WorkspaceShellLayout({
           collapsible
           groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-relative-size' : 'preserve-pixel-size'}
           onResize={trackRightPanelSize}
-          className={cn(!showRightDock && 'pointer-events-none overflow-hidden')}
+          className={cn(
+            'border-t border-workspace-divider',
+            !showRightDock && 'pointer-events-none overflow-hidden',
+          )}
         >
           {showRightDock ? <RightWorkspaceDock /> : null}
         </ResizablePanel>

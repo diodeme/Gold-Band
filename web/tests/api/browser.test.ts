@@ -2,6 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { browserApi } from '../../src/api/browser';
 
 describe('browserApi', () => {
+  it('provides deterministic multi-page Git history for browser interaction regression', async () => {
+    const first = await browserApi.getGitHistory('project-1', 'D:/repo', { limit: 300 });
+    expect(first.commits).toHaveLength(300);
+    expect(first.nextCursor).toBe('browser-history:300');
+
+    const second = await browserApi.getGitHistory('project-1', 'D:/repo', {
+      cursor: first.nextCursor,
+      limit: 300,
+      revision: first.revision,
+    });
+    expect(second.commits).toHaveLength(3);
+    expect(second.nextCursor).toBeNull();
+    expect(new Set([...first.commits, ...second.commits].map((commit) => commit.oid)).size).toBe(303);
+  });
+
   it('keeps the current preview workspace in the recent list', async () => {
     const bootstrap = await browserApi.getAppBootstrap();
 
@@ -94,6 +109,8 @@ describe('browserApi', () => {
       host: 'github.com',
       repository: 'gold-band/desktop',
       prNumber: 42,
+      baseOid: '1111111111111111111111111111111111111111',
+      headOid: '2222222222222222222222222222222222222222',
       path: 'src/source-control.ts',
     });
 

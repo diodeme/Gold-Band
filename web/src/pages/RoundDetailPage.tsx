@@ -541,6 +541,7 @@ function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, 
           outerNodeId={detail.outerNodeId}
           outerAttemptId={detail.outerAttemptId}
           runtimeComposerContext={{
+            isOrchestrated: true,
             runtimeStatus,
             workflowValid: true,
           }}

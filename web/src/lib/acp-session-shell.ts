@@ -39,6 +39,7 @@ export interface AcpSessionShellStateInput {
 }
 
 export interface AcpSessionInitializationInterruptedInput {
+  orchestrated: boolean;
   runtimeStatus?: string | null;
   runtimePauseReason?: string | null;
   runtimeActive: boolean;
@@ -108,6 +109,7 @@ export function isAcpSessionInitializationInterrupted(
   const runtimeStatus = normalizeLifecycleCode(input.runtimeStatus);
   const pauseReason = normalizeLifecycleCode(input.runtimePauseReason);
   return (
+    input.orchestrated &&
     !input.runtimeActive &&
     runtimeStatus === 'paused' &&
     pauseReason === 'process-interrupted' &&

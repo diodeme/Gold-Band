@@ -544,7 +544,11 @@ export interface GitWorkspaceStatusVm {
   staged: GitFileChangeVm[];
   unstaged: GitFileChangeVm[];
   untracked: GitFileChangeVm[];
-  operationInProgress?: { kind: string } | null;
+  operationInProgress?: {
+    kind: 'merge' | 'rebase' | 'cherry-pick' | 'revert';
+    currentOid?: string | null;
+    currentSubject?: string | null;
+  } | null;
 }
 
 export type GitRefKindVm = 'local-branch' | 'remote-branch' | 'tag';
@@ -634,39 +638,44 @@ export interface GitCommitDetailVm {
   files: GitCommitFileChangeVm[];
 }
 
-export type GitCommitRelationKindVm = 'same' | 'ancestor' | 'descendant' | 'diverged';
-
-export interface GitCommitPairRelationVm {
-  leftOid: string;
-  rightOid: string;
-  relation: GitCommitRelationKindVm;
-  mergeBases: string[];
-  leftOnlyCount: number;
-  rightOnlyCount: number;
+export interface GitCommitReviewQueryVm {
+  selectedOids: string[];
+  revision?: string | null;
 }
 
-export type GitCommitMergeEntryStatusVm = 'direct' | 'merged' | 'not-contained-by-original-oid';
+export interface GitCommitReviewFileVm {
+  path: string;
+  oldPath?: string | null;
+  kind: GitFileChangeKindVm;
+  binary: boolean;
+  beforeOid?: string | null;
+  beforePath?: string | null;
+  afterOid: string;
+}
 
-export interface GitCommitMergeEntryVm {
+export interface GitCommitReviewVm {
+  selectedOids: string[];
+  revision: string;
+  files: GitCommitReviewFileVm[];
+  totals: {
+    commitCount: number;
+    fileCount: number;
+  };
+}
+
+export interface GitCommitReachabilityQueryVm {
   oid: string;
+  targetRef: string;
+}
+
+export interface GitCommitReachabilityVm {
+  oid: string;
+  containingRefs: GitRefLabelVm[];
+  targetRef: string;
   targetOid: string;
-  status: GitCommitMergeEntryStatusVm;
+  targetPath: 'tip' | 'direct' | 'merged' | 'not-contained';
   firstMergeOid?: string | null;
-}
-
-export interface GitCommitRelationsQueryVm {
-  selectedOids: string[];
-  targetRef: string;
-}
-
-export interface GitCommitRelationsVm {
-  selectedOids: string[];
-  targetRef: string;
-  targetOid: string;
-  commonMergeBases: string[];
-  pairwise: GitCommitPairRelationVm[];
-  mergeEntries: GitCommitMergeEntryVm[];
-  comparisonFiles: GitCommitFileChangeVm[];
+  parentOids: string[];
 }
 
 export interface GitSourceControlSnapshotVm {
@@ -689,15 +698,20 @@ export type GitMutationVm =
   | { kind: 'branch-delete-safe'; name: string }
   | { kind: 'tag-create'; name: string; target?: string | null; style: 'annotated' | 'lightweight'; message?: string | null }
   | { kind: 'tag-delete-local'; name: string }
-  | { kind: 'worktree-create'; path: string; sourceRef: string; newBranch?: string | null };
+  | { kind: 'worktree-create'; path: string; sourceRef: string; newBranch?: string | null }
+  | { kind: 'worktree-remove'; path: string };
 
 export type GitMutationRequestVm = GitMutationVm & {
   expectedRevision?: string | null;
 };
 
-export interface GitMutationResultVm {
-  snapshot: GitSourceControlSnapshotVm;
-}
+export type GitMutationResultVm =
+  | {
+    scope: 'workspace';
+    status: GitWorkspaceStatusVm;
+    repositoryRevision: string;
+  }
+  | { scope: 'repository' };
 
 export type GitPullStrategyVm = 'fast-forward-only' | 'merge' | 'rebase';
 
@@ -707,7 +721,12 @@ export type GitOperationInputVm =
   | { kind: 'push'; remote: string; branch: string; setUpstream: boolean }
   | { kind: 'push-tag'; remote: string; tag: string }
   | { kind: 'stash-create'; message?: string | null; includeUntracked: boolean }
-  | { kind: 'stash-apply'; stashRef: string; restoreIndex: boolean };
+  | { kind: 'stash-apply'; stashRef: string; restoreIndex: boolean }
+  | { kind: 'merge-continue' }
+  | { kind: 'merge-abort' }
+  | { kind: 'rebase-continue' }
+  | { kind: 'rebase-skip' }
+  | { kind: 'rebase-abort' };
 
 export type GitOperationRequestVm = GitOperationInputVm & {
   expectedRevision?: string | null;
@@ -721,6 +740,11 @@ export type GitOperationStatusVm =
   | 'cancelled'
   | 'conflicted';
 
+export interface GitOperationErrorVm {
+  code: string;
+  params: Record<string, unknown>;
+}
+
 export interface GitOperationVm {
   operationId: string;
   kind: GitOperationInputVm['kind'];
@@ -730,7 +754,7 @@ export interface GitOperationVm {
   cancelable: boolean;
   startedAt?: string | null;
   completedAt?: string | null;
-  error?: { code: string; params: Record<string, unknown> } | null;
+  error?: GitOperationErrorVm | null;
 }
 
 export interface GitStateChangedEventVm {
@@ -813,6 +837,8 @@ export interface GitHubPullRequestSummaryVm {
 }
 
 export interface GitHubPullRequestDetailVm extends GitHubPullRequestSummaryVm {
+  baseRefOid: string;
+  headRefOid: string;
   body: string;
   mergeable?: string | null;
   mergeStateStatus?: string | null;
@@ -859,8 +885,8 @@ export interface GitHubIssueQueryVm {
 
 export type GitComparisonSourceVm =
   | { kind: 'workspace'; workspacePath?: string | null; path: string; area: 'staged' | 'unstaged' }
-  | { kind: 'commit'; workspacePath?: string | null; path: string; beforeOid?: string | null; afterOid: string }
-  | { kind: 'github-pr'; workspacePath?: string | null; host: string; repository: string; prNumber: number; path: string };
+  | { kind: 'commit'; workspacePath?: string | null; path: string; beforeOid?: string | null; beforePath?: string | null; afterOid: string }
+  | { kind: 'github-pr'; workspacePath?: string | null; host: string; repository: string; prNumber: number; baseOid: string; headOid: string; path: string };
 
 export interface GitFileComparisonVm {
   path: string;

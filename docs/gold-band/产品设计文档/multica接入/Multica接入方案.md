@@ -367,13 +367,12 @@ multica.not-configured          // 未填 base_url / app_url / PAT
 multica.auth-failed             // PAT 无效 / JWT 换 PAT 失败
 multica.login-callback-timeout  // 浏览器登录 5min 内未回跳 callback（用户未完成登录或关闭浏览器）
 multica.login-callback-failed   // callback 回跳但缺 token / Multica Web 拒绝 cli_callback（非白名单）
-multica.workspace-empty         // 用户在 multica 无 workspace，需先建
 multica.network-failed          // HTTP 不可达（重试用尽）
 multica.register-failed
 multica.claim-conflict          // task 已被领 / 非 queued → 409
 multica.task-not-found          // 404
 multica.runtime-offline
-multica.session-resume-failed   // 续跑时 ACP session 已失效（strict_continue 报错），只能 fallback 整 task rerun
+multica.session-resume-failed   // 保留在码表但 M4-d 起不 emit（resume Err 一律 silent fresh-fallback）；见开发设计 §12.29 / M5-aq
 ```
 
 **Tauri 命令**（新增，注册到 `generate_handler!`，参考 `save_metrics_settings`(`commands.rs:1501`) 风格）：
@@ -406,7 +405,7 @@ multica.session-resume-failed   // 续跑时 ACP session 已失效（strict_cont
      Body: { "name": "Maling Desktop", "expires_in_days": 90 }
      → { "token": "mul_..." }（明文仅此一次）；JWT 用完即弃，不落盘
 ⑦ GET <MULTICA_BASE_URL>/api/workspaces (Bearer mul_...)  拉取用户在 server 的所有 workspace
-     → 为空：提示先在 multica web 建 workspace（multica.workspace-empty）
+     → 为空：前端空态提示先在 multica web 建 workspace（无错误码——empty 由前端空态 UI 守卫，见开发设计 §12.29 / M5-aq）
      → 否则进入【添加工作空间】（M5-z：**只收远程工作空间 + provider 两个下拉**）：**从下拉列表选一个未添加的远程 workspace** → 为其选 ACP provider（默认 claude-acp）→ register（用该 provider，取回 runtime_id）→ 写入 desktop_multica_workspaces（**只带 provider，不带本地目录**——本地目录在每次执行时由 composer 下拉选，见下「执行时落地」）；若为首个 workspace 则设为 active
 ⑧ 持久化 PAT + workspaces 列表（**只含 provider，不含本地目录绑定**）+ active_workspace_id（SettingsConfig 明文）+ 一个稳定 daemon_id（首启生成 UUID 后持久化，register/心跳/claim 全程复用）
 ⑨ 新添加的 workspace 已在 ⑦ register；此后每次启动遍历已添加列表全量 register（见下「workspace」段）
@@ -1001,6 +1000,12 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **方案**：① chip 内嵌——复用 slash 命令标签同款 leading adornment 机制（`useLeadingAdornmentTextIndent`）：chip 移进 textarea 的 `relative` 容器、绝对定位左上角，正文首行 text-indent 缩进让位（换行后回左侧），chip 与 slash 互斥（slash 优先）；② Backspace 放宽——触发条件从「正文为空」改为「光标在正文起点且无选区（`selectionStart===0 && selectionEnd===0`）」，模拟删首个 token，正文非空 / 光标在中末 / 有选区时照常删字不误删；③ 提取纯函数 `shouldBackspaceClearMulticaBinding` 固化交互契约（home composer 过重不挂组件测）。
   - **验证**：tsc 零错；生产构建绿；vitest `conversation-composer-multica-chip` 9 测 + composer/multica 回归 102 测全过。
   - **更新**：§12.22（M5-aj）chip 渲染位置 + Backspace 删除条件；chip 与正文解耦 / × 解绑 / claim-at-send 删 chip 纯本地等设计不变。
+
+- [x] **M5-aq**（本轮）multica dead_code 清理——移除 `error/state/bridge/client.rs` 4 个临时模块级 `#![allow(dead_code)]`，暴露项分类处置（开发设计 §12.29）：
+  - **删**：`WorkspaceEmpty` / `PinSessionFailed` 变体（零构造——前端空态守卫 / pin best-effort 记日志）+ i18n；`ActiveRemoteRun.runtime_id` 字段（零读取，心跳走 runtime_ids map）；`client.rs::post_json_with_workspace`（零调用，issue 接口走 `json_send(PUT)`）。
+  - **留（定点 allow）**：`SessionResumeFailed`（M4-d 保留码表、resume 改 silent fresh-fallback）；`RemoteTask.auth_token`（Option B 中介下不消费，订正失真注释）；`RemoteTask.prior_session_id`（parent_task_id 主路径）。
+  - **错误码表订正**：删 `multica.workspace-empty`；`multica.session-resume-failed` 标注「保留码表但不 emit」。
+  - **验证**：`cargo check` multica 零 warning（仅 main 既有 9 条非 multica）；`cargo test multica::` 83 过；tsc 零错；vitest 1124/1124。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

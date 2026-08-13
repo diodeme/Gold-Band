@@ -128,8 +128,10 @@ export function ConversationComposer({
   const showRunModeManagement = canOpenRunModeManagement(runMode.mode);
   const autoStrategy = runMode.autoConfig?.agentStrategy ?? 'fixed';
   const isDynamicAuto = autoStrategy === 'dynamic';
-  // multica 远程任务「点击执行」预填后，draft 带 multica 绑定。该绑定期内：工作区下拉强制显示（决策 d），
-  // 让「此远程任务跑在哪个本地工作区」成为显式选择；本地零工作区时禁用发送 + 引导先加（决策 e）。
+  // After a multica remote task is prefilled via "click to run", the draft carries a multica
+  // binding. While bound, the workspace dropdown is force-shown (decision d) so the local landing
+  // workspace becomes an explicit choice; with zero local workspaces, send is disabled and the
+  // user is guided to add one first (decision e).
   const multicaBinding = composerDraft.draft.multica;
   const multicaActive = multicaBinding !== null;
   const hasLocalWorkspaces = workspaces.length > 0;
@@ -268,8 +270,11 @@ export function ConversationComposer({
     [agentCommands.commands, content],
   );
   const visibleContent = committedSlashCommand?.suffix ?? content;
-  // multica 绑定 chip 与 slash 命令标签同属正文最前的 leading adornment：二者互斥（slash 优先——绑定预填的是任务需求文本、非 slash 命令），
-  // 共用同一套 text-indent 让位机制：首行缩进避开标签宽度，换行后回到左侧（CSS text-indent 只作用于首行的标准表现）。
+  // The multica binding chip and the slash-command label are both leading adornments at the very
+  // front of the body. They are mutually exclusive (slash wins — the binding prefills task
+  // requirement text, not a slash command) and share the same text-indent mechanism: the first
+  // line indents to clear the label width, wrapped lines return to the left edge (standard CSS
+  // text-indent behavior, which only affects the first line).
   const multicaChipActive = Boolean(multicaBinding) && !committedSlashCommand;
   const leadingAdornmentLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand) || multicaChipActive);
 
@@ -419,7 +424,8 @@ export function ConversationComposer({
       }
       const paths = await resolveAttachmentPaths();
       setRunModeError(null);
-      // 把当前 draft 的 multica 绑定一并交给 onSubmit：发送方据此分流远程任务 vs 本地新建（composer 自身不做决策，仅转发）。
+      // Forward the draft's multica binding to onSubmit: the caller routes remote task vs. local
+      // new conversation accordingly. The composer itself makes no decision here — it only forwards.
       const submitError = await onSubmit(
         {
           ...inputBase,
@@ -481,8 +487,10 @@ export function ConversationComposer({
     }
   };
 
-  // 解除 multica 绑定（claim-at-send）：点击只读取过需求、未领取任务，故删 chip 纯属本地解绑，
-  // 不触碰服务端（任务仍 queued）。正文与附件保留——草稿降级为普通本地会话（发送走 create_conversation_run）。
+  // Drop the multica binding (claim-at-send): the click only read the requirement without claiming
+  // the task, so removing the chip is a purely local unbind — the server is untouched (the task
+  // stays queued). Body text and attachments are kept: the draft degrades to a normal local
+  // conversation (send goes through create_conversation_run).
   const handleUnbindMultica = useCallback(() => {
     const binding = composerDraft.draft.multica;
     if (!binding) return;
@@ -491,8 +499,11 @@ export function ConversationComposer({
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (slashCommands.onKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>)) return;
-    // multica 绑定 chip 作为正文最前的 leading adornment，Backspace 删除策略见 shouldBackspaceClearMulticaBinding：
-    // 仅光标停在正文最前且无选区时删 chip（模拟删首个 token），其余情况照常删字。slash 提交时让位 slash 控制器。
+    // The multica binding chip is a leading adornment at the very front of the body; the Backspace
+    // removal rule lives in shouldBackspaceClearMulticaBinding: the chip is deleted only when the
+    // cursor sits at the very start with no selection (mimicking deleting the first token); all
+    // other cases delete a character normally. When a slash command is committed, the slash
+    // controller takes over.
     if (shouldBackspaceClearMulticaBinding({
       key: e.key,
       multicaActive,
@@ -610,13 +621,16 @@ export function ConversationComposer({
                 </span>
               ) : null}
               {multicaActive && workspaces.length === 0 ? (
-                // 决策 e：远程任务执行但本地零工作区 → 引导先添加本地工作区，发送已由 canSubmit 禁用。
+                // Decision e: a remote task is running but there is no local workspace → guide the
+                // user to add a local workspace first; send is already disabled by canSubmit.
                 <span className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-9 items-center rounded-full border border-dashed border-border/50 bg-gold-surface-high/20 px-3 text-xs text-muted-foreground`}>
                   {t('conversation.composer.multicaNeedLocalWorkspace')}
                 </span>
               ) : workspaces.length > 1 || multicaActive ? (
-                // 工作区下拉：多工作区常显；multica 绑定激活时强制显示（即使仅 1 个本地工作区，决策 d），
-                // 让远程任务的本地落地工作区成为显式选择。改下拉：multica 激活则保留绑定 + 预填内容（决策 d）。
+                // Workspace dropdown: always shown with multiple workspaces; force-shown when a
+                // multica binding is active (even with a single local workspace, decision d), so
+                // the local landing workspace for a remote task is an explicit choice. On change:
+                // when multica is active, keep the binding + prefilled content (decision d).
                 <Select
                   value={projectId}
                   onValueChange={(next) => {

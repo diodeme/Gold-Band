@@ -485,8 +485,8 @@ export function getMulticaTasks() {
   return getRuntimeApi().getMulticaTasks();
 }
 
-export function claimMulticaTask(taskId: string, workspaceId: string) {
-  return getRuntimeApi().claimMulticaTask(taskId, workspaceId);
+export function getMulticaTaskRequirement(taskId: string, workspaceId: string) {
+  return getRuntimeApi().getMulticaTaskRequirement(taskId, workspaceId);
 }
 
 export function startMulticaConversationRun(
@@ -495,10 +495,6 @@ export function startMulticaConversationRun(
   workspaceId: string,
 ) {
   return getRuntimeApi().startMulticaConversationRun(input, remoteTaskId, workspaceId);
-}
-
-export function cancelMulticaPrepareLease(remoteTaskId: string) {
-  return getRuntimeApi().cancelMulticaPrepareLease(remoteTaskId);
 }
 
 export function cancelMulticaTask(taskId: string) {

@@ -1281,7 +1281,7 @@ export const browserApi: RuntimeApi = {
       connected: false,
     });
   },
-  claimMulticaTask(_taskId: string, _workspaceId: string) {
+  getMulticaTaskRequirement(_taskId: string, _workspaceId: string) {
     return Promise.resolve({
       id: 'mock-remote-task',
       issueId: null,
@@ -1299,9 +1299,6 @@ export const browserApi: RuntimeApi = {
   startMulticaConversationRun(input) {
     // 浏览器桩：复用本地 createConversationRun 桩返回同样的会话 VM（多机端仅桌面端真实执行）。
     return this.createConversationRun(input);
-  },
-  cancelMulticaPrepareLease(_remoteTaskId: string) {
-    return Promise.resolve();
   },
   cancelMulticaTask(_taskId: string) {
     return Promise.resolve();

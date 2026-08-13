@@ -35,10 +35,10 @@ import { cn } from '@/lib/utils';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
 import {
   cancelMulticaTask,
-  claimMulticaTask,
   connectMultica,
   disconnectMultica,
   getMulticaSettings,
+  getMulticaTaskRequirement,
   getMulticaTasks,
   openExternalUrl,
   removeMulticaWorkspace,
@@ -176,15 +176,16 @@ export function MulticaTaskManagementPage({
     }
   }
 
-  async function handleClaimAndPrepare(task: RemoteTaskVm) {
+  async function handlePrepareRemoteTask(task: RemoteTaskVm) {
     if (!task.workspaceId) return;
     setBusyTaskId(task.id);
     setError(null);
     try {
-      // claim 即领取（claim-at-click）：拿到需求正文（pending 列表只有 thread_name，正文仅 claim 响应里有）；
-      // 后端同时登记 prepare lease，常驻心跳在 compose 期间续期，防 45s 被回收。
-      const claimed = await claimMulticaTask(task.id, task.workspaceId);
-      const requirement = claimed.requirement ?? claimed.title ?? '';
+      // claim-at-send 的只读取：拿到需求正文（pending 列表只有 thread_name，正文仅任务详情里有），
+      // **不领取任务**（任务仍 queued）——只在发送时由 start_multica_conversation_run claim+start。
+      // 删 chip 只清本地绑定、不触碰服务端，故此处不持有任何 lease。
+      const detail = await getMulticaTaskRequirement(task.id, task.workspaceId);
+      const requirement = detail.requirement ?? detail.title ?? '';
       // 绑定只记 remoteTaskId + workspaceId（决策 a/c）：本地工作区延迟到执行时由 composer 下拉选，
       // 不再随绑定钉死。发送时 input.projectId（下拉值）-> startMulticaConversationRun。
       composerDraft.prefill(requirement, {
@@ -320,7 +321,7 @@ export function MulticaTaskManagementPage({
           <MulticaRemoteTaskBoard
             tasks={selectedTasks}
             busyTaskId={busyTaskId}
-            onClaim={(task) => void handleClaimAndPrepare(task)}
+            onPrepare={(task) => void handlePrepareRemoteTask(task)}
             onCancel={(task) => void handleCancel(task)}
             onSelectRun={onSelectRun}
           />

@@ -139,6 +139,8 @@ Multica server 有一个后台 sweeper（每 30s 扫一次），相关阈值**�
 ② 用户点【拉取任务】按钮
    └─ GET /tasks/pending（只读）→ 展示该 runtime 名下的 queued 任务列表
 
+> ⚠️ **下方 ③~④ 为 M5-q 的 claim-at-click 原始设计记录，已被 M5-ak（开发设计 §12.23）claim-at-send 取代**——点「执行」现只读拉需求正文（任务仍 queued），claim+start 推迟到点「发送」，prepare-lease 续期整条删除；放弃 compose 不再调 `cancel_multica_prepare_lease`（删 chip 纯本地解绑）。判定以 M5-ak 为准。
+
 ③ 用户在列表里点某条【执行】（Req D：claim-at-click，不再立即拉起会话）
    ├─ selective claim 该任务（按 task_id 领取那一条）→ status: dispatched（含 prepare lease 45s）；claim 回 requirement
    ├─ 进入与本地「+」相同的 composer/prepare 页，输入框预填该任务 requirement；compose 期间常驻循环续期 prepare lease（防 45s 回收）
@@ -955,6 +957,19 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **解绑两路径**（同 handler）：①× 按钮；②Backspace（仅 `multicaActive && 正文空 && 无 slash command`）→ `cancelMulticaPrepareLease`（释放 lease，幂等、失败静默）+ `clearMultica`。
   - **来源上移**：`REMOTE_TASK_SOURCES` Select 从 footer 迁入 `PageHeader` actions（+ 来源 label），与定时任务管理页 header actions 同构；footer 仅剩工作空间 picker + 账号菜单 + 刷新。
   - **验证**：`tsc` 绿零错；vitest `conversation-composer-draft` 16 测（含 clearMultica 2 新测）+ `multica-task-management-page` 11 测（source-gate 改写 + claim 断言补 title）+ board 12 测共 39 测绿；`cargo test multica` 84 测绿（零 Rust 变更）。
+
+- [x] **M5-ak**（本轮）claim-at-send 重构——点「发送」才 claim+start，移除 prepare-lease（码灵 client + webank server，开发设计 §12.23）：
+  - **背景 / 根因**：用户报「删 chip 后再点执行报『找不到该 Multica 任务』」。根因是 M5-q 的 claim-at-click 把领取（有状态副作用）前置到「点执行」——任务进 dispatched + 45s lease，删 chip 后再点执行命中 server 串行化守卫 / 未过期 lease → 404。用户意图：删不删 chip 任务都应仍待办，只有点发送才执行并更新服务端；删 chip 只解绑、降级普通会话。
+  - **方案（纠正时机，非补丁）**：claim 从「点执行」推迟到「点发送」，与 start 合并为单一事务边界。点执行降级为**只读**——`get_multica_task_requirement`（GET 任务详情，任务仍 queued）取正文预填 + 记本地绑定；删 chip 纯属本地 `clearMultica`。整套 prepare-lease 续期机制（4 文件）随之移除。
+  - **只读端点（webank）**：新增 `GET /api/daemon/runtimes/{rid}/tasks/{tid}`（裸 AgentTaskResponse，不 claim、不回填 claim-only 富字段）；client `get_task_requirement`；命令 `get_multica_task_requirement`。
+  - **claim-at-send**：`start_multica_conversation_run` = claim_specific_task(pending→dispatched) → 复用本地 create_conversation_run_vm → start_task(dispatched→running)。发送即事务边界。
+  - **release 回滚端点（webank）**：claim 成功但起 run 失败会让任务卡 dispatched。新增 `POST .../release`（RequeueTaskAfterClaimFailure，CAS dispatched→queued），`release_after_run_start_failure` 在 start_run 5 个失败点调用；best-effort、不重试、对「已非 dispatched」幂等 200。替代旧 prepare-lease 45s 过期兜底。
+  - **prepare-lease 全量移除**：state.rs（prepare_leases HashMap + PrepareLease + 4 方法）、loop_.rs（extend_prepare_leases）、client.rs（extend_prepare_lease）、commands.rs（cancel_multica_prepare_lease）。runtime_ids / active_runs / resume-on-restart 保留。
+  - **前端 wiring**：`getMulticaTaskRequirement`（只读）替 `claimMulticaTask`；移除 `cancelMulticaPrepareLease`；新增 `startMulticaConversationRun`；board `onClaim`→`onPrepare`；page `handleClaimAndPrepare`→`handlePrepareRemoteTask`；`handleUnbindMultica` 只调 `clearMultica`。
+  - **发送失败不清 chip（刻意）**：服务端已 release（任务回 queued 可重试），chip 仍有效；失败可能是本地瞬态（workspace/git），清 chip 反误导。
+  - **Issue 2（runtime 展示名）**：runtime `name` 原传 provider（"claude-acp"），改用 `current_channel_config().app_name`（默认 "Gold Band"）——name（展示名）与 runtime_type（provider 路由键）分离（loop_.rs register_workspace + client.rs 测试）。
+  - **验证**：`cargo check` 绿零新 warning；`cargo test multica` 全过；tsc 零错；vitest multica 2 套件 23 测全过。**需 rebuild + 重启 webank**（只读 + release 两端点）。联调 agent-browser deep-link 验证待跑。
+  - **取代**：M5-aj「删 chip → cancelMulticaPrepareLease 释放 lease」与 M5-q claim-at-click + prepare-lease 续期机制——时机纠正后整体废弃。正文 §3 流程图保留 claim-at-click 原始设计记录，以 ⚠️ 指向开发设计 §12.23 为准。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

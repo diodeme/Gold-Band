@@ -10,16 +10,16 @@ import { revokeAttachmentPreviewUrls, type AttachmentItem } from './attachment-s
  * 不会清空草稿，与 createTaskDraft 跨页面保留同一心智。
  */
 /**
- * multica 远程任务「点击执行」的 prepare 绑定（claim-at-click）。
+ * multica 远程任务「点击执行」的 prepare 绑定（claim-at-send）。
  *
- * 点远程任务执行按钮时 claim 拿到需求正文，写入 draft 预填 composer，同时记下这份绑定；
- * composer 复用本地『+』页（选模型/模式 → 发送）。发送时若 draft 仍带这份绑定，
- * 则走 `start_multica_conversation_run`（复用本地发送链 + 叠加 multica 簿记），
- * 否则走本地 `create_conversation_run`。草稿 reset（发送成功 / 放弃 compose）即清掉绑定，
- * 无需各 reset 点单独清理——这是把 multica 绑定纳入 draft 生命周期的根本收益。
+ * 点远程任务执行按钮时**只读取**需求正文（get_multica_task_requirement，任务仍 queued），写入 draft
+ * 预填 composer，同时记下这份绑定；composer 复用本地『+』页（选模型/模式 → 发送）。发送时若 draft 仍带
+ * 这份绑定，则走 `start_multica_conversation_run`（claim+start + 复用本地发送链 + 叠加 multica 簿记），
+ * 否则走本地 `create_conversation_run`。删 chip 只清这份绑定、不触碰服务端（任务仍 queued，可再次点执行）。
+ * 草稿 reset（发送成功）即清掉绑定，无需各 reset 点单独清理——这是把 multica 绑定纳入 draft 生命周期的根本收益。
  */
 export interface ConversationComposerMulticaBinding {
-  /// multica remote task id（start_multica_conversation_run / cancel_multica_prepare_lease 寻址）。
+  /// multica remote task id（start_multica_conversation_run 寻址）。
   remoteTaskId: string;
   /// multica workspace id（start_multica_conversation_run 寻址）。
   workspaceId: string;
@@ -77,9 +77,9 @@ export interface ConversationComposerDraftContextValue {
   setAttachments: (
     next: AttachmentItem[] | ((prev: AttachmentItem[]) => AttachmentItem[]),
   ) => void;
-  /// 远程任务 claim 后预填：写正文 + 绑定 multica，清空既有附件。仅在 draft boundary 内可用。
+  /// 远程任务点击执行后预填：写正文 + 绑定 multica，清空既有附件。仅在 draft boundary 内可用。
   prefill: (content: string, multica: ConversationComposerMulticaBinding) => void;
-  /// 解除 multica 绑定（保留正文与附件）。仅清 draft 状态；释放服务端 prepare lease 由消费方调 cancelMulticaPrepareLease。
+  /// 解除 multica 绑定（保留正文与附件）。claim-at-send 下删 chip 纯属本地解绑——任务未被领取（仍 queued），无需通知服务端。
   clearMultica: () => void;
   reset: () => void;
 }

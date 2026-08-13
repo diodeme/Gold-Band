@@ -5756,7 +5756,9 @@ mod tests {
         let app = test_app(repo_root);
         // 先落一条种子。
         app.with_state(|state| {
-            state.multica_completed_tasks.push(completed_entry("rt-seed"));
+            state
+                .multica_completed_tasks
+                .push(completed_entry("rt-seed"));
             true
         })
         .unwrap();
@@ -5781,7 +5783,8 @@ mod tests {
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root);
         let mut seed = StateConfig::default();
-        seed.multica_completed_tasks.push(completed_entry("rt-seed"));
+        seed.multica_completed_tasks
+            .push(completed_entry("rt-seed"));
         app.save_state(&seed).unwrap();
 
         let mut seen = None;
@@ -5794,7 +5797,11 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(seen.as_deref(), Some("rt-seed"), "with_state 应加载磁盘当前状态");
+        assert_eq!(
+            seen.as_deref(),
+            Some("rt-seed"),
+            "with_state 应加载磁盘当前状态"
+        );
     }
 
     /// 并发 RMW 不丢失写入（lost-update 回归）：N 个线程各 with_state 追加一条唯一条目，
@@ -5825,7 +5832,9 @@ mod tests {
                         test_path_config(),
                     );
                     app.with_state(|state| {
-                        state.multica_completed_tasks.push(completed_entry(&format!("rt-{i}")));
+                        state
+                            .multica_completed_tasks
+                            .push(completed_entry(&format!("rt-{i}")));
                         true
                     })
                     .unwrap();

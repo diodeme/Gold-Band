@@ -59,12 +59,13 @@ use crate::avatar::{
 use crate::conversation_workspace::workspace_entry_for_project;
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
-use crate::multica::{
-    clear_multica_session, clear_multica_state_indices, clear_multica_workspace_bindings,
-    ensure_daemon_id, multica_account_changed, multica_app_url, multica_base_url, multica_settings,
-    normalize_multica_base_url, MulticaClient, MulticaError, MulticaSettingsVm,
-};
 use crate::multica::state::SharedMulticaState;
+use crate::multica::{
+    MulticaClient, MulticaError, MulticaSettingsVm, clear_multica_session,
+    clear_multica_state_indices, clear_multica_workspace_bindings, ensure_daemon_id,
+    multica_account_changed, multica_app_url, multica_base_url, multica_settings,
+    normalize_multica_base_url,
+};
 use crate::state::{DesktopState, NotificationAttentionInput, UpdateBadgeSeenTarget};
 use crate::updater::{
     UpdateStatusVm, UpdaterSettingsVm, check_update,
@@ -2710,7 +2711,10 @@ pub async fn connect_multica(
     // 换号即统一作废账号作用域状态（Settings 绑定 + State 两索引）+ register 缓存；
     // daemon_id 保留（本机持久），PAT/账号身份紧接着由新登录覆写。任一 email 缺失视为未切换
     // （同账号重连主流派保留绑定；脏绑定由 register 404 自愈）。
-    if multica_account_changed(existing.desktop_multica_account.as_ref(), user.email.as_deref()) {
+    if multica_account_changed(
+        existing.desktop_multica_account.as_ref(),
+        user.email.as_deref(),
+    ) {
         clear_multica_workspace_bindings(&mut existing);
         if let Ok(mut state_cfg) = app.load_state() {
             clear_multica_state_indices(&mut state_cfg);

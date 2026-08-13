@@ -8,7 +8,7 @@
 // M5 完成后审查移除该 allow。
 #![allow(dead_code)]
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// multica 模块统一错误。
 ///
@@ -78,7 +78,10 @@ mod tests {
             MulticaError::AuthFailed("401".into()).code(),
             "multica.auth-failed"
         );
-        assert_eq!(MulticaError::WorkspaceEmpty.code(), "multica.workspace-empty");
+        assert_eq!(
+            MulticaError::WorkspaceEmpty.code(),
+            "multica.workspace-empty"
+        );
         assert_eq!(
             MulticaError::NetworkFailed("timeout".into()).code(),
             "multica.network-failed"
@@ -89,7 +92,10 @@ mod tests {
         );
         assert_eq!(MulticaError::ClaimConflict.code(), "multica.claim-conflict");
         assert_eq!(MulticaError::TaskNotFound.code(), "multica.task-not-found");
-        assert_eq!(MulticaError::RuntimeOffline.code(), "multica.runtime-offline");
+        assert_eq!(
+            MulticaError::RuntimeOffline.code(),
+            "multica.runtime-offline"
+        );
         assert_eq!(
             MulticaError::SessionResumeFailed.code(),
             "multica.session-resume-failed"

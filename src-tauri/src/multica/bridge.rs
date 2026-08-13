@@ -27,7 +27,7 @@ use gold_band::runtime::WorkerRefState;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tracing::warn;
 
-use crate::multica::client::{MulticaClient, MULTICA_ISSUE_DONE_STATUS};
+use crate::multica::client::{MULTICA_ISSUE_DONE_STATUS, MulticaClient};
 use crate::multica::config::{get_pat, multica_base_url, multica_settings};
 use crate::multica::state::{ActiveRemoteRun, SharedMulticaState};
 use crate::state::{DesktopContext, DesktopState};
@@ -298,7 +298,12 @@ async fn handle_run_completed(
         return;
     };
     let (session_id, work_dir) = current_session(context.app(), &remote_task_id);
-    let action = classify_terminal(outcome, &node_label, session_id.as_deref(), work_dir.as_deref());
+    let action = classify_terminal(
+        outcome,
+        &node_label,
+        session_id.as_deref(),
+        work_dir.as_deref(),
+    );
     let Some(client) = multica_client(&context) else {
         return;
     };
@@ -309,7 +314,12 @@ async fn handle_run_completed(
             work_dir,
         } => {
             match client
-                .complete_task(&remote_task_id, &output, session_id.as_deref(), work_dir.as_deref())
+                .complete_task(
+                    &remote_task_id,
+                    &output,
+                    session_id.as_deref(),
+                    work_dir.as_deref(),
+                )
                 .await
             {
                 Ok(()) => {
@@ -318,7 +328,11 @@ async fn handle_run_completed(
                     // 不阻断任务完成（issue 保持原状，server 扫描器/用户兜底）。
                     if let Some(issue) = run.issue_id.as_deref().filter(|s| !s.trim().is_empty()) {
                         if let Err(e) = client
-                            .update_issue_status(&run.workspace_id, issue, MULTICA_ISSUE_DONE_STATUS)
+                            .update_issue_status(
+                                &run.workspace_id,
+                                issue,
+                                MULTICA_ISSUE_DONE_STATUS,
+                            )
                             .await
                         {
                             warn!(
@@ -584,7 +598,10 @@ mod tests {
         // 超 MAX 的旧条目被截断（最新 MAX 条保留，仍按时间倒序）。
         let mut state = StateConfig::default();
         for i in 0..(MAX_MULTICA_COMPLETED_HISTORY + 5) {
-            record_completed_task(&mut state, completed(&format!("rt-{i}"), "2026-08-06T00:00:00Z"));
+            record_completed_task(
+                &mut state,
+                completed(&format!("rt-{i}"), "2026-08-06T00:00:00Z"),
+            );
         }
         assert_eq!(
             state.multica_completed_tasks.len(),

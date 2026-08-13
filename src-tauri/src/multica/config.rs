@@ -228,7 +228,10 @@ mod tests {
             vm.multica_base_url.is_some(),
             "频道默认应回退出 base_url（零配置直连前提）"
         );
-        assert!(vm.enabled, "default 频道 enabled + URL → fresh config 即 enabled");
+        assert!(
+            vm.enabled,
+            "default 频道 enabled + URL → fresh config 即 enabled"
+        );
         assert!(!vm.pat_set);
         assert!(!vm.connected);
         assert_eq!(vm.default_provider, "claude-acp");
@@ -241,10 +244,7 @@ mod tests {
         assert!(ensure_daemon_id(&mut settings), "首次应生成 daemon_id");
         let first = settings.desktop_multica_daemon_id.clone().unwrap();
         assert!(!first.is_empty());
-        assert!(
-            !ensure_daemon_id(&mut settings),
-            "已存在不应重复生成"
-        );
+        assert!(!ensure_daemon_id(&mut settings), "已存在不应重复生成");
         assert_eq!(
             settings.desktop_multica_daemon_id.as_deref(),
             Some(first.as_str())
@@ -354,9 +354,18 @@ mod tests {
             settings.desktop_multica_active_workspace_id.is_none(),
             "active 随绑定清空，避免悬空引用"
         );
-        assert!(settings.desktop_multica_pat.is_some(), "换号路径 PAT 由新登录覆写，不在此清");
-        assert!(settings.desktop_multica_account.is_some(), "账号身份同理保留，由新登录覆写");
-        assert!(settings.desktop_multica_daemon_id.is_some(), "daemon_id 本机持久，不变");
+        assert!(
+            settings.desktop_multica_pat.is_some(),
+            "换号路径 PAT 由新登录覆写，不在此清"
+        );
+        assert!(
+            settings.desktop_multica_account.is_some(),
+            "账号身份同理保留，由新登录覆写"
+        );
+        assert!(
+            settings.desktop_multica_daemon_id.is_some(),
+            "daemon_id 本机持久，不变"
+        );
     }
 
     #[test]
@@ -376,7 +385,10 @@ mod tests {
             Some("b@maling.local"),
         ));
         // 任一 email 缺失 → 无法判定 → false（脏绑定由 register 404 自愈）。
-        assert!(!multica_account_changed(Some(&acc(None)), Some("a@maling.local")));
+        assert!(!multica_account_changed(
+            Some(&acc(None)),
+            Some("a@maling.local")
+        ));
         assert!(!multica_account_changed(
             Some(&acc(Some("a@maling.local"))),
             None,
@@ -398,8 +410,12 @@ mod tests {
     fn multica_settings_exposes_bound_workspaces_and_active() {
         // add_multica_workspace 落绑后，VM 应回显 workspaces 列表 + activeWorkspaceId（M5-c 设置页契约）。
         let mut config = RuntimeConfig::default();
-        config.desktop_multica_workspaces.push(multica_ref("ws-1", "claude-acp"));
-        config.desktop_multica_workspaces.push(multica_ref("ws-2", "claude-acp"));
+        config
+            .desktop_multica_workspaces
+            .push(multica_ref("ws-1", "claude-acp"));
+        config
+            .desktop_multica_workspaces
+            .push(multica_ref("ws-2", "claude-acp"));
         config.desktop_multica_active_workspace_id = Some("ws-2".into());
         let vm = multica_settings(&config);
         assert_eq!(vm.workspaces.len(), 2);

@@ -1272,7 +1272,8 @@ impl RuntimeConfig {
             .desktop_multica_workspaces
             .clone()
             .unwrap_or_default();
-        self.desktop_multica_active_workspace_id = settings.desktop_multica_active_workspace_id.clone();
+        self.desktop_multica_active_workspace_id =
+            settings.desktop_multica_active_workspace_id.clone();
         self.desktop_multica_default_provider = settings
             .desktop_multica_default_provider
             .clone()
@@ -1428,10 +1429,9 @@ mod tests {
     use super::{
         AcpAdapterConfig, ConsoleThemeName, ConversationDirectConfig, ConversationRunMode,
         ConversationRunModeEntry, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
-        DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId,
-        MulticaAccountRef, MulticaCompletedTask, MulticaTaskConversation, MulticaWorkspaceRef,
-        ProjectAppConfig, RuntimeConfig,
-        RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
+        DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, MulticaAccountRef,
+        MulticaCompletedTask, MulticaTaskConversation, MulticaWorkspaceRef, ProjectAppConfig,
+        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
         TurnFilesConfig, WorkspaceLayoutConfig, catalog_agent_default_config,
     };
     use crate::agent_catalog::builtin_agent_catalog;
@@ -2483,7 +2483,9 @@ mod tests {
             1
         );
         // 账号身份 roundtrip（camelCase name/email）。
-        let account = roundtripped.desktop_multica_account.expect("account roundtripped");
+        let account = roundtripped
+            .desktop_multica_account
+            .expect("account roundtripped");
         assert_eq!(account.name.as_deref(), Some("张三"));
         assert_eq!(account.email.as_deref(), Some("zhangsan@maling.local"));
     }

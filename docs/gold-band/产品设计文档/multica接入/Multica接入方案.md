@@ -971,6 +971,31 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **验证**：`cargo check` 绿零新 warning；`cargo test multica` 全过；tsc 零错；vitest multica 2 套件 23 测全过。**需 rebuild + 重启 webank**（只读 + release 两端点）。联调 agent-browser deep-link 验证待跑。
   - **取代**：M5-aj「删 chip → cancelMulticaPrepareLease 释放 lease」与 M5-q claim-at-click + prepare-lease 续期机制——时机纠正后整体废弃。正文 §3 流程图保留 claim-at-click 原始设计记录，以 ⚠️ 指向开发设计 §12.23 为准。
 
+- [x] **M5-al**（本轮）🔴 running 任务永久卡 running——start 响应丢失消歧 + 手动取消远端终态上报（审计 #75，码灵 client，开发设计 §12.24）：
+  - **根因**：webank 对 **running 任务无逐任务 liveness**（`FailStaleTasks` running 分支要求 daemon 离线才兜底），码灵静默 drop 一个 remote running 任务会永久卡 running。两条制造孤儿的码灵侧路径：①`start_task` 响应传输层丢失（server 已 running、码灵拿到 NetworkFailed）→ 旧代码无脑 `release`（对 running 是 no-op）→ 任务卡 running + 本地 run 被 teardown；②`cancel_multica_task` 旧实现只做本地 teardown、**不上报远端** → remote running 无人终态化。
+  - **方案**：①start 失败消歧——新增纯函数 `decide_start_failure_action(get_task_status 结果)`：`running`→Continue（start 实已成功、响应丢失，本地 run 与 server 一致，继续）/ 非 running→RollbackRelease（release 正确 CAS + teardown）/ 查询失败(None)→Terminate（`fail_task(timeout)` 唯一能确定终结 running + teardown）；新增 `fail_after_run_start_failure`，两处 start 失败点统一走决策。②手动取消双通道——`cancel_multica_task` 增通道 1 best-effort `fail_task(agent_error)`（bare agent_error 不可重试，用户取消不应被 auto-requeue），原 teardown 收编为通道 2。
+  - **契约澄清**：`release_task` 文档补明主动 release 为首选恢复，server 的 prepare-lease（码灵不续约）+ dispatched/running sweeper 仅被动兜底。
+  - **验证**：`cargo test multica` 全过（+4 决策测：continue/rollback/terminate/status-sensitive-not-truthy）。
+
+- [x] **M5-am**（本轮）🟠 pinned_tasks / retryable 死管线删除（审计 #76 / M1，码灵 client + 前端，开发设计 §12.25）：
+  - **根因**：M5-ah 起 pinned（账号级失败回显）不再展示，`retryable=true` 只 pinned 任务有、展示中无任何可重试任务、rerun 按钮永不渲染（rerun 命令 M5-ah 已删）——但 VM `retryable`/`pinned_tasks`/`from_failed_issue`、StateConfig `multica_pending_issues`、bridge `finalize_terminal` pending 处置整条死管线仍残留。
+  - **方案（dev-stage 破坏式全链路删）**：删 StateConfig `multica_pending_issues` 字段（无 `deny_unknown_fields`，旧磁盘残留键静默忽略，迁移安全）+ VM `retryable`/`pinned_tasks`/`from_failed_issue` + bridge `PendingUpdate` 枚举语义重定义为「completed 历史 status 选择」（Success→completed / Failure→failed，不增新类型）+ `clear_multica_state_indices` 收窄（三索引→两索引）+ `get_multica_tasks` 删 pinned 组装 + 前端 types/mock 同步。
+  - **数据模型影响（取代 M3 设计）**：§5.2 M3 的 `multica_pending_issues` / `retryable` / `pinned_tasks` 数据模型自此废弃，sidebar 只剩 `workspaces` + `tasks_by_workspace`（终态行已在 M5-f 归入对应工作空间组）。
+  - **验证**：`cargo test multica` 全过（死管线测随实现删除/改名，零回归）；前端 tsc + vitest 绿（断言 retryable/pinnedTasks 已从序列化结果消失）。
+
+- [x] **M5-an**（本轮）🟠 远程任务页订阅竞态 + 事件去重（审计 #77 / M2，纯前端，开发设计 §12.26）：
+  - **根因**：`MulticaTaskManagementPage` 订阅 effect 三缺陷：①订阅竞态（Tauri `listen` 异步 resolve，unmount 抢跑致 listener 泄漏 + setState on dead component）；②fetch storm（每事件独立触发 refreshAll，并发请求风暴）；③effect 依赖耦合（`[refreshAll]` 引用变即重订阅，放大泄漏窗口）。`App.tsx` 侧栏订阅同源 ①②。
+  - **方案（抽通用 `useEventDrivenRefresh` hook）**：in-flight + pending 合并（6 并发事件 → 2 次刷新）+ async-unsubscribe-race 处理（active 标志 + resolve 时若已 inactive 立即 dispose，杜绝泄漏）+ ref 解耦（effect `[]`、订阅只注册一次、最新回调从 ref 读）。零依赖纯 React hook，`MulticaTaskManagementPage` + `App.tsx` 侧栏两处共用。
+  - **验证**：vitest `use-event-driven-refresh` 10 测全过（含并发合并 6→2、unsubscribe-race、卸载后守卫）；multica page/board 回归绿；tsc 零错。
+
+- [x] **M5-ao**（本轮）🟠 StateConfig 并发 RMW lost-update——App 层 with_state 原子原语（审计 #78 / M3，码灵 client，开发设计 §12.27）：
+  - **根因**：bridge 终态收尾（finalize_terminal/handle_node_completed/teardown_active_run）与 commands（migrate_resume_index/start-run upsert）经 `App::load_state→mutate→save_state` 三步操作 StateConfig（普通文件 I/O、**无锁**）。同一 remote 的并发事件两个 load-then-save 交错 → 后写覆盖前写（lost-update），续跑索引残留脏数据。违反 state-lifecycle-and-data-integrity §6（RMW 须原子）。
+  - **方案（App 层原子 RMW 原语，最小临界区）**：新增 `App::with_state(update) -> Result<bool>`——per-repo_root 分片 Mutex（32 shard，镜像 `ATTEMPT_RUNTIME_STATE_LOCKS`），锁**仅**包文件 RMW、**不含网络**（§6 临界区最小化）；update 返回 dirty、clean 跳过 save。bridge 3 处 + commands 2 处共 5 写点迁移；pin/终态 HTTP 在锁外。非 multica 写点（用户低并发）未迁移——`with_state` 作增量采用原语。
+  - **附带（非 multica，解锁验证）**：删 `src/config/mod.rs` 测试模块 2 处死 import（`MANAGED_AGENT_PRESETS`/`managed_agent_preset`，符号早不存在、lib 测 crate 从未编译故未暴露），使 `cargo test -p gold-band` 可编译。
+  - **验证**：`cargo test -p gold-band --lib with_state` 4 测全过（含 32 线程并发 RMW 终态 len==32、无 lost-update）；`cargo test multica` 83 测全过（5 迁移点零回归）。
+
+> **M5-al–ao** 为 multica 全链路审计（#75–#78）回溯加固：#75（🔴 running 孤儿）纠正「server running 无逐任务 liveness」下的终态上报契约；#76（M1）清理 M5-ah 起的 pinned/retryable 死管线（取代 M3 数据模型）；#77（M2）根治远程任务页订阅竞态 + 事件去重；#78（M3）补齐 StateConfig 并发 RMW 原子性。正文 §3 终态上报契约以 M5-al/ao 为准。
+
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）
 

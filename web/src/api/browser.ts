@@ -1276,7 +1276,6 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve({
       workspaces: [],
       tasksByWorkspace: {},
-      pinnedTasks: [],
       lastActiveWorkspaceId: null,
       connected: false,
     });
@@ -1286,7 +1285,6 @@ export const browserApi: RuntimeApi = {
       id: 'mock-remote-task',
       issueId: null,
       status: 'queued',
-      retryable: false,
       workspaceId: 'mock-workspace',
       title: 'Mock remote task',
       requirement: null,

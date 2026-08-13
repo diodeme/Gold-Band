@@ -2672,8 +2672,8 @@ pub async fn connect_multica(
     let app = context.app();
     let mut existing = app.load_settings().map_err(command_error)?;
     // 换号检测：旧账号身份与新登录 email 不同 → 旧账号 PAT 发现的 workspace 绑定 + 任务/会话本地索引
-    // 均成脏数据（且跨账号泄漏，典型：旧账号失败 issue 经 multica_pending_issues 进新账号置顶列表）。
-    // 换号即统一作废账号作用域状态（Settings 绑定 + State 三索引）+ register 缓存；
+    // 均成脏数据（且跨账号泄漏，典型：旧账号 remote task 续跑索引/完成历史串到新账号）。
+    // 换号即统一作废账号作用域状态（Settings 绑定 + State 两索引）+ register 缓存；
     // daemon_id 保留（本机持久），PAT/账号身份紧接着由新登录覆写。任一 email 缺失视为未切换
     // （同账号重连主流派保留绑定；脏绑定由 register 404 自愈）。
     if multica_account_changed(existing.desktop_multica_account.as_ref(), user.email.as_deref()) {

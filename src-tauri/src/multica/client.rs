@@ -698,8 +698,12 @@ impl MulticaClient {
     ///
     /// claim-at-send 下「发送」先 claim（pending→dispatched）再起本地 run；若 claim 成功但本地起 run 失败
     /// （workspace 校验 / ACP run-start 失败），任务会卡在 dispatched（无本地 run、无心跳）。此方法暴露
-    /// server 的 `RequeueTaskAfterClaimFailure`（CAS `dispatched→queued`）做事务性回滚，把任务还回可领取态，
-    /// 替代旧 prepare-lease 的「45s 自然过期」兜底（lease 已移除，不再有自然过期路径）。
+    /// server 的 `RequeueTaskAfterClaimFailure`（CAS `dispatched→queued`）做事务性回滚，把任务还回可领取态。
+    ///
+    /// 主动 release 是 claim-at-send 失败的**首选恢复**（立即回可领取态供重试）；server 仍保留 prepare-lease
+    /// （claim 时写 `prepare_lease_expires_at = now+45s`）与 dispatched 兜底 sweeper（`FailStaleTasks`：
+    /// `dispatched_at + 300s` 未 start 即 fail）作为**被动兜底**。码灵不在 45s 内续 lease，故 lease 兜底实际
+    /// 不可靠——显式 release 才是正确契约，仅在 release 不可达时由 5min dispatched sweeper 兜底。
     ///
     /// **best-effort、不重试**：仅在失败路径调用，失败只记日志。server 侧该端点对「已非 dispatched」幂等
     /// 返回 200（no-op），故即便任务已被 sweeper 回收也不会报错；真正的 404（任务不存在）映射

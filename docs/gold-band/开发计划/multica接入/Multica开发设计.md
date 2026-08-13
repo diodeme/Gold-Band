@@ -1713,6 +1713,78 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.24 改动二十二：🔴 running 任务永久卡 running——start 响应丢失消歧 + 手动取消远端终态上报（审计 #75，M5-al，2026-08-13）
+
+**背景（审计复盘）**：claim-at-send（§12.23）落地后回溯 multica 全链路，发现 webank 对 **running 任务无逐任务 liveness**——`FailStaleTasks` 的 running 分支要求 daemon 非 online 才兜底，只要码灵存活并在心跳（哪怕为别的任务），一个 remote running 任务一旦失去对应本地 run 就会**永久卡 running**。两条码灵侧路径制造这种孤儿：
+
+1. **`start_task` 响应丢失**：`start_task` 的 HTTP 响应可能在传输层丢失——server 侧 `dispatched→running` 已落库，码灵却拿到 `NetworkFailed`。旧实现无脑 `release_task` 回滚：但 `release` 对 **running** 是 no-op（只 CAS `dispatched→queued`），任务留在 running、本地 run 却被 teardown → 永久孤儿。
+2. **手动取消未上报远端**：`cancel_multica_task` 旧实现只做本地 teardown（`run_pause` + 杀 ACP + 清索引），**不通知 server**——remote running 任务无人终态化 → 永久孤儿。
+
+**方案（消歧决策表 + 双通道收尾，杜绝孤儿）**：
+- **start 失败消歧（纯函数）**：新增 `decide_start_failure_action(status: Option<&str>) -> StartFailureAction`，`start_task` 失败时先 `get_task_status` 查询实际状态再决策：`Some("running")`→`Continue`（start 实际成功、响应丢失，本地 run 与 server 都 running、一致 → 继续执行，续跑进度不浪费，不 teardown）/ `Some(其他)`→`RollbackRelease`（start 未生效或已终态 → release 回滚，对 dispatched 正确 CAS、对终态幂等 no-op + 本地 teardown）/ `None`（查询失败、无法确认）→`Terminate`（**不能 release**，可能已 running 是 no-op → `fail_task(reason=timeout)` resume-safe 可 auto-retry，唯一能确定终结 running 的动作 + 本地 teardown）。新增 `fail_after_run_start_failure`（与 `release_after_run_start_failure` 对称的 best-effort 上报）。两处 `start_task` 失败点（续跑分支 + fresh 分支）统一走该决策。
+- **手动取消双通道**：`cancel_multica_task` 增**通道 1**——best-effort `fail_task("cancelled by user (manual cancel)", "agent_error")` 把 remote running 终态化为 failed。bare `agent_error` 不在 webank `retryableReasons` → **不可重试**（用户主动取消不应被自动 requeue）。原本地 teardown 收编为**通道 2**。两通道职责分离：远端终态由通道 1 负责，本地 `run_pause→Paused` 事件不复用为远端上报（bridge 对 Paused 本就不上报）。
+
+**契约澄清（client.rs 注释，无行为变更）**：`release_task` 文档补明——主动 release 是 claim-at-send 失败的**首选恢复**；server 仍写 `prepare_lease_expires_at=now+45s`（码灵不续约）+ `FailStaleTasks`（`dispatched_at+300s`）/ `FailTasksForOfflineRuntimes` 作**被动兜底**。码灵不续 lease 故 lease 兜底实际不可靠——显式 release 才是正确契约。
+
+**文件**：`src-tauri/src/multica/commands.rs`（`StartFailureAction` 枚举 + `decide_start_failure_action` 纯函数 + `fail_after_run_start_failure` + 两处 start 失败分支改走决策 + `cancel_multica_task` 通道1 + 4 单测）、`src-tauri/src/multica/client.rs`（`release_task` 文档）。
+
+**验收**：`cargo test -p gold-band-desktop multica::` 全过（含 4 新决策测：continue-when-running / rollback-when-other-non-running / terminate-when-unknown / status-sensitive-not-truthy）。
+
+---
+
+### 12.25 改动二十三：🟠 pinned_tasks / retryable 死管线删除（审计 #76 / M1，M5-am，2026-08-13）
+
+**背景（审计复盘）**：§12.20（M5-ah）评审改版后，pinned（账号级失败回显）任务不再展示——失败列只显工作空间内失败任务。回溯发现 `retryable=true` **只**有 pinned 任务（`from_failed_issue`），所有工作空间内任务 `retryable=false`；pinned 不展示 → 展示中无任何可重试任务 → rerun 按钮永不渲染（rerun 命令已在 §12.20 删除）。但 **VM 的 `retryable` 字段、`pinned_tasks` 字段、`from_failed_issue` 构造、StateConfig 的 `multica_pending_issues` 字段、bridge `finalize_terminal` 的 pending 处置逻辑**整条死管线仍残留（rerun 命令虽删，其数据源 / VM 映射未清）。
+
+**方案（dev-stage 破坏式全链路删除，无兼容层）**：
+- **StateConfig**：删 `multica_pending_issues: Option<Vec<String>>`（`src/config/mod.rs`）。`StateConfig` 无 `deny_unknown_fields` → 旧磁盘残留该键反序列化静默忽略，迁移安全。
+- **VM**：删 `RemoteTaskVm.retryable` + `RemoteConversationSidebarVm.pinned_tasks` + `from_failed_issue` 构造；`from_remote` 去掉 `retryable` 形参；4 构造点 + 全部 VM 单测同步。前端 `web/src/types.ts` 两 interface 同步删字段、`web/src/api/browser.ts` mock fixture 同步。
+- **bridge `finalize_terminal`**：原 `PendingUpdate` 枚举语义 = 「失败回显（pending_issues）增删」（Success 清除 / Failure 记录）。pending_issues 删除后枚举重定义为 **completed 历史快照的 status 选择**（`ClearOnSuccess`→`"completed"` / `AddOnFailure`→`"failed"`）——同一枚举、语义随数据结构下沉而迁移，不增新类型。`multica/config.rs::clear_multica_state_indices` 同步删 `multica_pending_issues` 清理（三索引→两索引：`task_conversations` + `completed_tasks`），换号/断开作废覆盖随之收窄。
+- **commands `get_multica_tasks`**：删 pinned 组装（`from_failed_issue` 映射 + `pinned_tasks` 出参），sidebar 只剩 `workspaces` + `tasks_by_workspace`（终态行已在 §12.9 归入对应工作空间组）。
+- **注释**：top-level `commands.rs` 换号检测注释「三索引」→「两索引」、泄漏示例从「失败 issue 进置顶列表」改为「续跑索引/完成历史串号」。
+
+**文件**：`src/config/mod.rs`（字段删）、`src-tauri/src/multica/{config.rs, vm.rs, commands.rs, bridge.rs}`（死管线清除 + 注释 + 单测）、`src-tauri/src/commands.rs`（注释）、`web/src/{types.ts, api/browser.ts}`（类型 + mock）。
+
+**验收**：`cargo test -p gold-band-desktop multica::` 全过（`from_failed_issue` / `clear_..._three` 测随实现删除/改名，零回归）；前端 `tsc` + vitest 绿（board/page 测断言 retryable / pinnedTasks 已从序列化结果消失）。
+
+---
+
+### 12.26 改动二十四：🟠 远程任务页订阅竞态 + 事件去重（审计 #77 / M2，M5-an，2026-08-13）
+
+**背景（审计复盘）**：`MulticaTaskManagementPage` 原订阅 effect 三缺陷：①**订阅竞态**——Tauri `listen` 异步 resolve，组件在 resolve 前卸载时 cleanup 抢跑，listener 泄漏（卸载后仍触发刷新 / setState on dead component）；②**fetch storm**——事件爆发期（多个 task 状态变更）每个事件独立触发 `refreshAll`，并发请求风暴；③**effect 依赖耦合**——`useEffect(..., [refreshAll])`，refreshAll 引用变即重订阅，放大泄漏窗口。`App.tsx` 侧栏订阅有同源 ①②。
+
+**方案（抽通用 `useEventDrivenRefresh` hook，根治三缺陷）**：
+- **in-flight + pending 合并**：事件触发时若已有刷新在飞，仅置 `pending=true` 不新发；在飞刷新结束后若 pending 则**拖尾重跑一次**（最多 1 in-flight + 1 pending）。6 个并发事件 → 2 次刷新（非 6 次），消除风暴。
+- **async-unsubscribe-race 处理**：`active` 标志 + resolve 时若已 inactive 则**立即 dispose**（不进 disposes 数组），杜绝「resolve 晚于 unmount」的 listener 泄漏；listener 内 `active` 守卫拦截卸载后刷新。
+- **ref 解耦**：`refresh` / `subscribeFns` / `refreshOnMount` 全存 ref、effect 依赖 `[]`——订阅**只注册一次**，最新回调从 ref 读，避免重订阅放大竞态窗口。`undefined` 通道过滤（browser client 省略 desktop-only 订阅）。失败 best-effort（吞 reject、不阻断后续 pending 消费）。
+
+**实现**：新建 `web/src/lib/use-event-driven-refresh.ts`（~50 行，零依赖纯 React hook）。`MulticaTaskManagementPage` 换用该 hook（`refreshAll` 改返回 Promise、`refreshOnMount:true`、双通道订阅 task+settings）；`App.tsx` 侧栏订阅同步换用（原 40 行内联 effect → 一行 hook 调用）。
+
+**文件**：`web/src/lib/use-event-driven-refresh.ts`（新）、`web/src/pages/MulticaTaskManagementPage.tsx`、`web/src/App.tsx`、`web/tests/use-event-driven-refresh.test.tsx`（新，10 测：refreshOnMount 开/关、并发合并 6→2、跨通道合并、每通道单 listener、卸载 dispose、unsubscribe-race、卸载后守卫、undefined 过滤、reject best-effort）。
+
+**验收**：vitest `use-event-driven-refresh` 10 测全过；`multica-task-management-page` + `multica-remote-task-board` 回归绿；`tsc` 零错。
+
+---
+
+### 12.27 改动二十五：🟠 StateConfig 并发 RMW lost-update——App 层 with_state 原子原语（审计 #78 / M3，M5-ao，2026-08-13）
+
+**背景（审计复盘）**：bridge 终态收尾（`finalize_terminal` / `handle_node_completed` / `teardown_active_run`）与 commands（`migrate_resume_index` / start-run 索引 upsert）经 `App::load_state() → mutate → save_state()` 三步操作 StateConfig（普通文件 I/O，**无锁**）。同一 remote task 的 `NodeCompleted`（bridge）与 `RunCompleted`（bridge）或启动 upsert（commands）并发时，两个 load-then-save 交错 → **后写覆盖前写（lost update）**：如终态清 `task_conversations[remote]` 与并发 pin 写回交错，终态清理被 pin 的旧快照覆盖 → 续跑索引残留脏数据。违反 state-lifecycle-and-data-integrity §6（RMW 须原子）。
+
+**方案（App 层加原子 RMW 原语，最小临界区）**：
+- **`App::with_state<F>(&self, update: F) -> Result<bool>`**：per-`repo_root` 分片 `Mutex`（32 shard，`DefaultHasher` 取模，镜像既有 `ATTEMPT_RUNTIME_STATE_LOCKS` 模式）——锁**仅**包住 `load_state → update → save_state` 的文件 RMW，**不含网络**（rule §6：临界区最小化、网络在锁外）。`update` 返回 `dirty: bool`，clean 则跳过 save（读改判不脏不写）。
+- **5 处写点迁移**：bridge 3 处（`teardown_active_run` / `handle_node_completed` / `finalize_terminal`）+ commands 2 处（`migrate_resume_index` / start-run `task_conversations` upsert）全改 `with_state(|state| {...; true/false})`。pin / 终态的**网络上报（HTTP）在锁外**——`handle_node_completed` 先 `with_state` 落库 + 判 session 是否变，再据返回值决定是否发 `pin_task_session` HTTP；`finalize_terminal` 先 `with_state` 落 completed 历史，终态 HTTP 在调用方 `handle_run_completed`（锁外）。
+- **诚实边界**：非 multica 的 StateConfig 写点（pin/unpin、workspace 等用户低并发操作）本期未迁移——`with_state` 作为**增量采用原语**，后续写点逐步迁入即可，不破坏现状。
+
+**附带（非 multica，解锁验证）**：`src/config/mod.rs` 测试模块有 2 处死 import（`MANAGED_AGENT_PRESETS` / `managed_agent_preset`——符号早已不存在，仅 test `use` 残留；lib 测 crate 从未被编译故未暴露）。删除以解锁 `cargo test -p gold-band` 编译，使 `with_state` 单测可运行。
+
+**文件**：`src/app/mod.rs`（`STATE_CONFIG_LOCKS` 分片 + `state_config_lock` + `with_state` + 4 单测：persists-mutation / skips-save-when-clean / reads-current-disk / serializes-concurrent-rmw 32 线程无 lost-update）、`src-tauri/src/multica/{bridge.rs, commands.rs}`（5 写点迁移）、`src/config/mod.rs`（死 import 清理）。
+
+**验收**：`cargo test -p gold-band --lib with_state` 4 测全过（含 32 线程并发 RMW 终态 len==32、无 lost-update）；`cargo test -p gold-band-desktop multica::` 83 测全过（5 迁移点零回归）。
+
+> §12.24–12.27 为 multica 全链路审计（#75–#78）回溯加固：#75（🔴 running 孤儿）纠正「server running 无逐任务 liveness」下的终态上报契约；#76（M1）清理 §12.20 起的 pinned/retryable 死管线；#77（M2）根治远程任务页订阅竞态 + 事件去重；#78（M3）补齐 StateConfig 并发 RMW 原子性。接入方案 §3 终态上报契约、§5.2 M3 数据模型（`multica_pending_issues`/`retryable`/`pinned_tasks` 已废）以本四节为准。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 ---

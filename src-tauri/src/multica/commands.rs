@@ -1,14 +1,11 @@
 //! multica 远程任务命令（开发设计 2.4 / 第 6 章表）。
 //!
-//! - [`get_multica_tasks`]：按 workspace 分组的远程 pending 列表 + 本地失败回显（`multica_pending_issues`）。
+//! - [`get_multica_tasks`]：按 workspace 分组的远程 pending 列表 + 本地终态历史（`multica_completed_tasks`）。
 //! - [`get_multica_task_requirement`]：claim-at-send 只读取——拉任务详情 + 需求正文预填 composer、绑定 chip，
 //!   不改 server 状态（任务仍 queued）。删除 chip 即解绑回普通会话。
 //! - [`start_multica_conversation_run`]：发送预填好的远程任务——发送即事务边界：先 claim（pending→dispatched）
 //!   再**复用**本地会话创建链路（`create_conversation_run_vm`：建工作流 + 建任务 + 写 conversation.json + 启动 run）
 //!   + start_task（dispatched→running）；claim 后、running 前任意失败由 release 回滚（dispatched→queued）。
-//!
-//! `pending_issues` 语义 = 失败待重试 issue（"失败回显"）：由 M4 终态 fail 写入、complete/rerun
-//! 清除；**claim 不写**（刚领取的 running 任务不是 failed/retryable，写入会让 VM 把 in-flight 误显为可重试）。
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -38,8 +35,8 @@ use crate::view_models_conversation::{
 
 /// 远程任务列表（按 workspace 分组，对齐 `ConversationSidebarVm` 形状）。
 ///
-/// 数据源：远程 queued（`list_pending_tasks`，逐已注册 workspace）+ 本地失败回显
-/// （`multica_pending_issues` → `pinned_tasks`，retryable=true）。未连接（无 PAT）→ 空状态 sidebar
+/// 数据源：远程 queued（`list_pending_tasks`，逐已注册 workspace）+ 本地终态历史
+/// （`multica_completed_tasks`，按 workspace 归组）。未连接（无 PAT）→ 空状态 sidebar
 /// （`connected=false`，前端展示连接入口，不报错、不另查 patSet）。
 #[tauri::command]
 pub async fn get_multica_tasks(
@@ -56,7 +53,6 @@ pub async fn get_multica_tasks(
         return Ok(RemoteConversationSidebarVm {
             workspaces,
             tasks_by_workspace: BTreeMap::new(),
-            pinned_tasks: Vec::new(),
             last_active_workspace_id,
             connected: false,
         });
@@ -66,18 +62,10 @@ pub async fn get_multica_tasks(
     let pat = get_pat(&context.config).unwrap_or_default();
     let client = MulticaClient::new(base_url, Some(pat)).map_err(|e| command_error(e.into()))?;
 
-    // 本地终态历史（multica_completed_tasks，最新在前）+ 失败回显（multica_pending_issues）：
-    // 同一次 load_state 读取。读失败不阻断列表（仅记日志返回空）。
+    // 本地终态历史（multica_completed_tasks，最新在前）：同一次 load_state 读取。读失败不阻断列表（仅记日志返回空）。
     // 改动六：终态行不再进扁平全局「最近完成」桶，改为按 workspace_id 归入对应工作空间组。
-    let (pinned_tasks, completed_by_workspace) = match context.app().load_state() {
+    let completed_by_workspace = match context.app().load_state() {
         Ok(state_cfg) => {
-            let pinned: Vec<RemoteTaskVm> = state_cfg
-                .multica_pending_issues
-                .clone()
-                .unwrap_or_default()
-                .iter()
-                .map(|issue_id| RemoteTaskVm::from_failed_issue(issue_id))
-                .collect();
             // 终态行按 workspace_id 分组。local_project_id 在 finalize 时从 ActiveRemoteRun 快照到
             // MulticaCompletedTask（绑定模型下沉到任务级），terminal 行据此做本地深链，无需再查工作区绑定。
             let mut by_ws: BTreeMap<String, Vec<RemoteTaskVm>> = BTreeMap::new();
@@ -87,11 +75,11 @@ pub async fn get_multica_tasks(
                     .or_default()
                     .push(RemoteTaskVm::from_completed(c, &c.local_project_id));
             }
-            (pinned, by_ws)
+            by_ws
         }
         Err(error) => {
-            warn!(%error, "multica load_state for pending/completed failed");
-            (Vec::new(), BTreeMap::new())
+            warn!(%error, "multica load_state for completed failed");
+            BTreeMap::new()
         }
     };
 
@@ -142,7 +130,6 @@ pub async fn get_multica_tasks(
     Ok(RemoteConversationSidebarVm {
         workspaces,
         tasks_by_workspace,
-        pinned_tasks,
         last_active_workspace_id,
         connected: true,
     })
@@ -337,32 +324,24 @@ fn migrate_resume_index(
     local_task_id: &str,
     local_run_id: &str,
 ) {
-    let Ok(mut state_cfg) = home_app.load_state() else {
-        warn!(
-            child = child_task_id,
-            parent = parent_task_id,
-            "multica migrate_resume_index: load_state failed (skipped)"
+    // RMW 经 with_state 原子化：迁移 task_conversations 与终态/取消收尾并发 save 互不覆盖（lost-update）。
+    if let Err(error) = home_app.with_state(|state| {
+        let conversations = state.multica_task_conversations.take().unwrap_or_default();
+        let migrated = migrate_resume_index_map(
+            conversations,
+            child_task_id,
+            parent_task_id,
+            local_task_id,
+            local_run_id,
         );
-        return;
-    };
-    let conversations = state_cfg
-        .multica_task_conversations
-        .clone()
-        .unwrap_or_default();
-    let migrated = migrate_resume_index_map(
-        conversations,
-        child_task_id,
-        parent_task_id,
-        local_task_id,
-        local_run_id,
-    );
-    state_cfg.multica_task_conversations = Some(migrated);
-    if let Err(error) = home_app.save_state(&state_cfg) {
+        state.multica_task_conversations = Some(migrated);
+        true
+    }) {
         warn!(
             child = child_task_id,
             parent = parent_task_id,
             %error,
-            "multica migrate_resume_index: save_state failed (resume continues; next crash falls back to fresh)"
+            "multica migrate_resume_index: state rmw failed (resume continues; next crash falls back to fresh)"
         );
     }
 }
@@ -485,16 +464,73 @@ pub async fn get_multica_task_requirement(
 
 /// claim-at-send 失败回滚（开发设计 2.5 / 接入方案 B4）。
 ///
-/// claim 已把任务置 dispatched，但其后任意一步（workspace 解析 / 模型校验 / 本地建 run / start_task）
-/// 失败、任务尚未真正进入 running → best-effort `release_task`（CAS dispatched→queued）把任务还回可领取态，
-/// 替代旧 prepare-lease 的「45s 自然过期」兜底（lease 已移除，不再有无脑回收路径）。失败仅 `warn!`：
-/// server 侧 dispatched 任务仍有 running backstop（2.5h）超时兜底，且 release 对「已非 dispatched」幂等返回 200。
+/// claim 已把任务置 dispatched，但其后任意一步（workspace 解析 / 模型校验 / 本地建 run）失败、任务尚未真正
+/// 进入 running → best-effort `release_task`（CAS dispatched→queued）把任务还回可领取态。失败仅 `warn!`：
+/// server 侧 dispatched 任务有 `FailStaleTasks`（`dispatched_at + 300s`）+ `FailTasksForOfflineRuntimes`
+/// （daemon 离线）兜底，且 release 对「已非 dispatched」幂等返回 200。
+///
+/// **仅适用于「任务确实还在 dispatched」的失败点**（claim 后、start 前）。`start_task` 之后的失败点不能调本函数
+/// ——start 响应可能在传输层丢失而 server 已 running，此时 release 是 no-op、任务会永久卡 running（见
+/// [`decide_start_failure_action`] / [`fail_after_run_start_failure`]）。
+///
+/// 注：server 在 claim 时仍写 `prepare_lease_expires_at = now()+45s`，码灵不续约该 lease（仅用一次性的
+/// `dispatched_at + 300s` 硬超时兜底），故不存在「lease 自然过期」的旧回收路径。
 async fn release_after_run_start_failure(client: &MulticaClient, runtime_id: &str, task_id: &str) {
     if let Err(e) = client.release_task(runtime_id, task_id).await {
         warn!(
             task = %task_id,
             %e,
             "multica release after run-start failure failed (server backstop will recover)"
+        );
+    }
+}
+
+/// `start_task` 失败后的处置决策（纯函数，可单测）。
+///
+/// `start_task` 的 HTTP 响应可能在传输层丢失：server 侧 `dispatched→running` 已落库，但码灵拿到网络错误
+/// （`NetworkFailed`）。此时**不能**假定「start 未生效」直接 release+teardown——release 对 running 是 no-op，
+/// 而 running 任务**无 per-task liveness**（webank `FailStaleTasks` 的 running 分支要求 daemon 非 online 才兜底），
+/// 只要码灵存活并在心跳（哪怕为别的任务），该任务就永久卡 running。用 [`MulticaClient::get_task_status`] 消歧：
+///
+/// - 查询返回 `running` → start 实际成功（响应丢失）→ [`StartFailureAction::Continue`]：本地 run 正在执行、
+///   server 也 running，两者一致，继续即可（尤其续跑分支已 `run_continue` 的进度不浪费）。
+/// - 查询返回其他非 running（dispatched/failed/cancelled/…）→ [`StartFailureAction::RollbackRelease`]：start 未生效
+///   或任务已终态 → `release` 回滚（对 dispatched 正确；对终态幂等 no-op）+ 本地 teardown。
+/// - 查询本身失败（`None`，无法确认）→ [`StartFailureAction::Terminate`]：不能 release（可能 running）→
+///   `fail_task`（reason=`timeout`，resume-safe、可 auto-retry）保证 server 侧任务终结，杜绝任何卡 running。
+#[derive(Debug, PartialEq, Eq)]
+enum StartFailureAction {
+    /// start 已生效（server running）→ 调用方继续执行已建好的 run。
+    Continue,
+    /// start 未生效 / 已终态（非 running）→ `release` 回滚 + 本地 teardown。
+    RollbackRelease,
+    /// 无法确认（status 查询失败）→ `fail_task` 终结 + 本地 teardown，保证不卡 running。
+    Terminate,
+}
+
+/// `status` = `get_task_status` 的结果：`Some(s)` 成功、`None` 查询失败。
+fn decide_start_failure_action(status: Option<&str>) -> StartFailureAction {
+    match status {
+        Some("running") => StartFailureAction::Continue,
+        Some(_) => StartFailureAction::RollbackRelease,
+        None => StartFailureAction::Terminate,
+    }
+}
+
+/// start 后无法确认任务状态时的兜底终结（与 [`release_after_run_start_failure`] 对称的最佳努力上报）。
+///
+/// `get_task_status` 查询失败（无法区分 running vs dispatched）时调用：`fail_task`（reason=`timeout`，
+/// resume-safe、可 auto-retry）保证 server 侧任务终结，杜绝「start 已成功但码灵以为失败」导致的永久卡 running。
+/// 走 `fail_task` 自带的终态严格重试；最终仍失败仅 `warn!`（dispatched 子情形仍有 5min backstop 兜底）。
+async fn fail_after_run_start_failure(client: &MulticaClient, task_id: &str) {
+    if let Err(e) = client
+        .fail_task(task_id, "start ack lost; terminated to avoid orphan run", "timeout")
+        .await
+    {
+        warn!(
+            task = %task_id,
+            %e,
+            "multica fail after run-start failure failed (server backstop will recover)"
         );
     }
 }
@@ -711,8 +747,28 @@ pub async fn start_multica_conversation_run(
                 }
                 // 通知 server dispatched→running（续跑与 Fresh 都 false；force_fresh 仅整任务重跑）。
                 if let Err(start_err) = client.start_task(&remote_task_id, false).await {
-                    // start_task 失败：续跑已起，须作废避免孤儿 + release 回滚（dispatched→queued，任务回可领取态）。
-                    release_after_run_start_failure(&client, &runtime_id, &remote_task_id).await;
+                    // start 响应可能在传输层丢失而 server 已 running：盲目 release 会致任务永久卡 running
+                    // （release 对 running 是 no-op）。用 get_task_status 消歧，决策见 decide_start_failure_action。
+                    let action = decide_start_failure_action(
+                        client.get_task_status(&remote_task_id).await.ok().as_deref(),
+                    );
+                    if action == StartFailureAction::Continue {
+                        // start 实际成功（响应丢失）：续跑 run 正在执行、server running，一致 → 继续。
+                        mark_issue_in_progress(&client, &workspace_id, issue_id.as_deref()).await;
+                        crate::multica::bridge::emit_multica_task_updated(&app_handle);
+                        return Ok(vm);
+                    }
+                    // 未生效（release）或无法确认（fail）→ 回滚 server，再本地 teardown。
+                    match action {
+                        StartFailureAction::RollbackRelease => {
+                            release_after_run_start_failure(&client, &runtime_id, &remote_task_id)
+                                .await
+                        }
+                        StartFailureAction::Terminate => {
+                            fail_after_run_start_failure(&client, &remote_task_id).await
+                        }
+                        StartFailureAction::Continue => unreachable!(),
+                    }
                     let home_app = context.app();
                     let workspace_app = home_app
                         .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
@@ -778,22 +834,24 @@ pub async fn start_multica_conversation_run(
                 // 建成 run + 登记 active_run（claim-at-send 无 lease 需释放）。
             }
             // 落断点续跑索引（home-repo StateConfig）：新 run 的 local ids + work_dir；session_id 待 bridge 回填。
-            let mut state_cfg = ctx_clone.app().load_state()?;
-            let mut conversations = state_cfg.multica_task_conversations.clone().unwrap_or_default();
-            let entry = conversations.entry(remote.clone()).or_insert(MulticaTaskConversation {
-                local_task_id: run.task_id.clone(),
-                local_run_id: run.run_id.clone(),
-                session_id: None,
-                work_dir: Some(ws_path.clone()),
-            });
-            entry.local_task_id = run.task_id.clone();
-            entry.local_run_id = run.run_id.clone();
-            // 命中 stale checkpoint 时重置 session_id（旧 session 随旧 run 失效；新 run 的 session_id
-            // 待 bridge 在 NodeCompleted 回填）。修旧漏：此前 Fresh 覆盖既有 checkpoint 时漏清 session_id。
-            entry.session_id = None;
-            entry.work_dir = Some(ws_path);
-            state_cfg.multica_task_conversations = Some(conversations);
-            ctx_clone.app().save_state(&state_cfg)?;
+            // RMW 经 with_state 原子化：与 bridge NodeCompleted/终态收尾并发 save 互不覆盖（lost-update）。
+            ctx_clone.app().with_state(|state| {
+                let mut conversations = state.multica_task_conversations.take().unwrap_or_default();
+                let entry = conversations.entry(remote.clone()).or_insert(MulticaTaskConversation {
+                    local_task_id: run.task_id.clone(),
+                    local_run_id: run.run_id.clone(),
+                    session_id: None,
+                    work_dir: Some(ws_path.clone()),
+                });
+                entry.local_task_id = run.task_id.clone();
+                entry.local_run_id = run.run_id.clone();
+                // 命中 stale checkpoint 时重置 session_id（旧 session 随旧 run 失效；新 run 的 session_id
+                // 待 bridge 在 NodeCompleted 回填）。修旧漏：此前 Fresh 覆盖既有 checkpoint 时漏清 session_id。
+                entry.session_id = None;
+                entry.work_dir = Some(ws_path.clone());
+                state.multica_task_conversations = Some(conversations);
+                true
+            })?;
             Ok(run)
         },
     )
@@ -805,9 +863,27 @@ pub async fn start_multica_conversation_run(
             // 本地 run 已登记 → 通知 server dispatched→running。
             // composer 流总是 fresh（与本地「+」一致；断点续跑由 server 重派 + bridge 兜底，不在此分支）。
             if let Err(start_err) = client.start_task(&remote_task_id, false).await {
-                // start_task 失败（任务被回收/取消/网络）：本地 run 已建，须作废避免孤儿 +
-                // release 回滚（dispatched→queued，任务回可领取态）。
-                release_after_run_start_failure(&client, &runtime_id, &remote_task_id).await;
+                // start 响应可能在传输层丢失而 server 已 running：盲目 release 会致任务永久卡 running
+                // （release 对 running 是 no-op）。用 get_task_status 消歧，决策见 decide_start_failure_action。
+                let action = decide_start_failure_action(
+                    client.get_task_status(&remote_task_id).await.ok().as_deref(),
+                );
+                if action == StartFailureAction::Continue {
+                    // start 实际成功（响应丢失）：本地 run 正在执行、server running，一致 → 继续。
+                    mark_issue_in_progress(&client, &workspace_id, issue_id.as_deref()).await;
+                    crate::multica::bridge::emit_multica_task_updated(&app_handle);
+                    return Ok(run);
+                }
+                // 未生效（release）或无法确认（fail）→ 回滚 server，再本地 teardown。
+                match action {
+                    StartFailureAction::RollbackRelease => {
+                        release_after_run_start_failure(&client, &runtime_id, &remote_task_id).await
+                    }
+                    StartFailureAction::Terminate => {
+                        fail_after_run_start_failure(&client, &remote_task_id).await
+                    }
+                    StartFailureAction::Continue => unreachable!(),
+                }
                 let home_app = context.app();
                 let workspace_app = home_app
                     .with_repo_root(Utf8PathBuf::from(&workspace_path), context.config.clone());
@@ -837,12 +913,20 @@ pub async fn start_multica_conversation_run(
     }
 }
 
-/// 中断 multica 远程任务的本地 run（开发设计 2.8 / 4.4 取消检测）。
+/// 用户手动中断 multica 远程任务（前端看板 running 列「取消」按钮触发）。
 ///
-/// 取消检测命中（remote cancelled/failed/404）或用户手动取消时调用：`run_pause(ProcessInterrupted)`
-/// + 杀 ACP 子进程（复用 gold-band stop session），并清本地索引（`active_runs` + 该 remote task 的
-/// `multica_task_conversations` 条目）——cancelled task 不再断点续跑。bridge 对 RunPaused 不上报终态
-/// （Paused 盲区），multica 侧已 terminal，无需 complete/fail。
+/// 双通道收尾，缺一即致 running 孤儿（🔴 根因：webank 对 running 任务无逐任务 liveness，
+/// 码灵静默 drop 会让它永久卡 running）：
+/// 1. **远端终态上报**：`fail_task(reason=agent_error)` 把 remote running 任务终态化为 failed。
+///    bare `agent_error` 是**不可重试**（webank retryableReasons 不含），用户主动取消的任务不自动 requeue。
+///    best-effort：任务已被 sweeper/他端终态化时 fail 返回 4xx，吞掉即可（与 fail_after_run_start_failure
+///    同语义；失败不阻断本地收尾，本地 run 无论如何都要作废）。
+/// 2. **本地收尾**：`run_pause(ProcessInterrupted)` + 杀 ACP + 清 `active_runs`/`task_conversations`，
+///    cancelled task 不再断点续跑。bridge 对 RunPaused 不上报终态（Paused 盲区）——远端终态由通道 1 负责，
+///    本地 pause 事件不复用为远端上报，两通道职责分离。
+///
+/// 注：取消检测（remote 已 cancelled/failed/404，loop 命中）是**独立路径**，不经本命令；那里 remote 已
+/// terminal，无需 fail。本命令恒为「码灵侧 running 任务的主动取消」。
 #[tauri::command]
 pub async fn cancel_multica_task(
     state: State<'_, DesktopState>,
@@ -869,6 +953,25 @@ pub async fn cancel_multica_task(
         .map_err(command_error)?
         .with_repo_root(Utf8PathBuf::from(workspace_path), context.config.clone());
 
+    // 通道 1：远端终态上报（best-effort）。码灵主动取消的 running 任务须 fail 化，否则永久卡 running。
+    // bare agent_error 非重试——用户取消不应被 webank 自动 requeue。
+    if let (Some(base_url), Some(pat)) =
+        (multica_base_url(&context.config), get_pat(&context.config))
+    {
+        if let Ok(client) = MulticaClient::new(base_url, Some(pat)) {
+            if let Err(fail_err) = client
+                .fail_task(&task_id, "cancelled by user (manual cancel)", "agent_error")
+                .await
+            {
+                warn!(
+                    error = %fail_err,
+                    task_id = %task_id,
+                    "multica cancel: best-effort fail_task failed (task may already be terminal); proceeding with local teardown"
+                );
+            }
+        }
+    }
+
     let local_task_id = run.local_task_id.clone();
     let local_run_id = run.local_run_id.clone();
     let remote = task_id.clone();
@@ -877,7 +980,7 @@ pub async fn cancel_multica_task(
 
     tauri::async_runtime::spawn_blocking(
         move || {
-            // 作废本地 run（Paused，bridge 不上报）+ 杀 ACP + 清 active_runs/task_conversations。
+            // 通道 2：作废本地 run（Paused，bridge 不上报）+ 杀 ACP + 清 active_runs/task_conversations。
             // 复用 bridge::teardown_active_run（取消检测 / 启动 reconcile 共用同一收尾）。
             crate::multica::bridge::teardown_active_run(
                 &workspace_app,
@@ -1375,7 +1478,6 @@ mod tests {
             id: id.into(),
             issue_id: None,
             status: status.into(),
-            retryable: false,
             workspace_id: String::new(),
             title: id.into(),
             last_activity_at: None,
@@ -1384,5 +1486,56 @@ mod tests {
             run_id: None,
             project_id: None,
         }
+    }
+
+    // ---- 改动十八（🔴）：start 响应丢失消歧决策（decide_start_failure_action 纯逻辑固化）----
+    // 决策表：get_task_status 返回值 → 如何收尾，避免盲目 release 致 running 永久卡死。
+    #[test]
+    fn start_failure_action_continue_when_running() {
+        // start 实际成功（响应丢失）→ server 已 running，与本地 run 一致 → 继续，不收尾。
+        assert_eq!(
+            decide_start_failure_action(Some("running")),
+            StartFailureAction::Continue
+        );
+    }
+
+    #[test]
+    fn start_failure_action_rollback_when_other_non_running_status() {
+        // 仍 dispatched（start 未生效）/ queued（已被 requeue）/ 终态化（failed/cancelled）→
+        // release 回滚（dispatched→queued CAS；对非 dispatched 幂等 no-op）。
+        for status in ["dispatched", "queued", "failed", "cancelled", "completed"] {
+            assert_eq!(
+                decide_start_failure_action(Some(status)),
+                StartFailureAction::RollbackRelease,
+                "status={status} 应回滚 release"
+            );
+        }
+    }
+
+    #[test]
+    fn start_failure_action_terminate_when_status_unknown() {
+        // 查询本身失败（None）→ 无法确认是否已 running → 终态化（fail_task），不能 release
+        // （release 对 running 是 no-op 会致孤儿）。fail 是唯一能终结 running 的确定动作。
+        assert_eq!(
+            decide_start_failure_action(None),
+            StartFailureAction::Terminate
+        );
+    }
+
+    #[test]
+    fn start_failure_action_is_status_sensitive_not_truthy() {
+        // 守恒：仅精确 "running" 继续；任意非 running 字符串（含含 running 子串的怪值）一律回滚。
+        assert_eq!(
+            decide_start_failure_action(Some("Running")),
+            StartFailureAction::RollbackRelease
+        );
+        assert_eq!(
+            decide_start_failure_action(Some("running ")),
+            StartFailureAction::RollbackRelease
+        );
+        assert_eq!(
+            decide_start_failure_action(Some("not-running")),
+            StartFailureAction::RollbackRelease
+        );
     }
 }

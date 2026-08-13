@@ -147,15 +147,13 @@ pub fn clear_multica_workspace_bindings(settings: &mut SettingsConfig) {
     settings.desktop_multica_active_workspace_id = None;
 }
 
-/// 清任务/会话本地索引（State 侧账号作用域）：`pending_issues` + `task_conversations` + `completed_tasks`。
+/// 清任务/会话本地索引（State 侧账号作用域）：`task_conversations` + `completed_tasks`。
 ///
-/// 三者均以当前账号的 remote task/issue id 为键，换号/断开后对新账号无意义且会跨账号泄漏（典型：
-/// 旧账号失败 issue 经 `multica_pending_issues` → `pinned_tasks` 进新账号置顶列表）。凭证变更时与
+/// 两者均以当前账号的 remote task id 为键，换号/断开后对新账号无意义且会跨账号泄漏。凭证变更时与
 /// [`clear_multica_workspace_bindings`] 配套调用，构成「作废账号作用域状态」的完整覆盖（Settings 绑定 +
 /// State 索引）。`multica_runtime_ids` 是死字段（仅声明、从不读写，真缓存在内存 `MulticaRuntimeState`），
 /// 不在此处理。
 pub fn clear_multica_state_indices(state: &mut StateConfig) {
-    state.multica_pending_issues = None;
     state.multica_task_conversations = None;
     state.multica_completed_tasks.clear();
 }
@@ -179,8 +177,8 @@ pub fn multica_account_changed(
 /// workspace 绑定与 active workspace——它们的 `workspace_id` 都由当前账号 PAT 发现、仅在登录态下有效，
 /// 断开/换号后残留即脏数据，故与登录态同生共灭（杜绝「断开后设置页仍展示上个账号绑定的工作空间」，
 /// 与左侧远程任务列表 `connected=false` 空态对齐）。**保留** daemon_id（本机持久标识，换账号/重连不变）；
-/// 断开后回到干净入口，重连同账号需重新绑定 workspace。State 侧任务/会话索引（`pending_issues` 等）
-/// 由命令层在断开时另行调 [`clear_multica_state_indices`] 清（同样账号作用域，换号/断开须一并作废）。
+/// 断开后回到干净入口，重连同账号需重新绑定 workspace。State 侧任务/会话索引（`task_conversations`/
+/// `completed_tasks`）由命令层在断开时另行调 [`clear_multica_state_indices`] 清（同样账号作用域，换号/断开须一并作废）。
 /// 运行期 register 缓存由命令层另行清 `MulticaRuntimeState`。
 pub fn clear_multica_session(settings: &mut SettingsConfig) {
     settings.desktop_multica_pat = None;
@@ -285,7 +283,7 @@ mod tests {
     }
 
     fn populated_state() -> StateConfig {
-        // 三个账号作用域索引均非空：模拟旧账号登录期产生的本地簿记。
+        // 两个账号作用域索引均非空：模拟旧账号登录期产生的本地簿记。
         let mut convs = HashMap::new();
         convs.insert(
             "remote-1".to_string(),
@@ -297,7 +295,6 @@ mod tests {
             },
         );
         StateConfig {
-            multica_pending_issues: Some(vec!["issue-1".into()]),
             multica_task_conversations: Some(convs),
             multica_completed_tasks: vec![MulticaCompletedTask {
                 remote_task_id: "remote-1".into(),
@@ -315,19 +312,14 @@ mod tests {
     }
 
     #[test]
-    fn clear_multica_state_indices_empties_all_three_account_scoped_indices() {
-        // 换号/断开：State 侧三索引（失败回显 + 续跑索引 + 完成历史）均账号作用域，一并作废。
+    fn clear_multica_state_indices_empties_both_account_scoped_indices() {
+        // 换号/断开：State 侧两索引（续跑索引 + 完成历史）均账号作用域，一并作废。
         let mut state = populated_state();
-        assert!(state.multica_pending_issues.is_some());
         assert!(state.multica_task_conversations.is_some());
         assert!(!state.multica_completed_tasks.is_empty());
 
         clear_multica_state_indices(&mut state);
 
-        assert!(
-            state.multica_pending_issues.is_none(),
-            "失败回显清空（杜绝跨账号泄漏到新账号置顶列表）"
-        );
         assert!(
             state.multica_task_conversations.is_none(),
             "续跑索引清空（旧 remote id 对新账号无意义）"

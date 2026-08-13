@@ -54,7 +54,6 @@ function task(overrides: Partial<RemoteTaskVm> = {}): RemoteTaskVm {
     id: 'rt-1',
     issueId: null,
     status: 'queued',
-    retryable: false,
     workspaceId: 'ws-1',
     title: 'Task',
     requirement: null,
@@ -63,7 +62,7 @@ function task(overrides: Partial<RemoteTaskVm> = {}): RemoteTaskVm {
     runId: null,
     projectId: null,
     ...overrides,
-  } as RemoteTaskVm;
+  };
 }
 
 afterEach(() => {

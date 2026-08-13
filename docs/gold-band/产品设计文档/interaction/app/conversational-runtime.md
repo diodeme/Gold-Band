@@ -549,3 +549,9 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - shell/Bash 命令本身不是文件变化事实源。只有 provider 对该 tool call 返回标准 `content[type=diff]` 才能统计；若 `rm`、重定向或脚本写入只返回普通 stdout/完成状态，Gold Band 不解析命令文本、不读取磁盘补偿，也不会把该操作猜成文件变化。
 - 用户消息附件和 canonical artifact 保持各自消息归属，点击后打开右侧会话资源，不进入文件变化卡。Conversation 主 DTO 不再聚合当前 session 的 artifacts/attachments，composer 上方也不再显示独立资产展开栏。
 - 根会话和 Agent branch 按持久化 branch ownership 各自查询 change set。前端不根据路径或自然语言推断归属，也不把 sibling branch 的变化投影到当前会话。
+## 图片工作区
+
+- 已发送消息图片与 artifact 图片统一使用右侧图片看板。图片面板形成连续的 `min-height: 0` 纵向 flex 链，图片在真实视口内水平、垂直居中，背景使用明暗主题语义纯色。普通滚轮与触摸板双指滚动不得缩放或平移；只有 `Ctrl + 滚轮`、浏览器映射为 Ctrl-wheel 的触摸板 pinch、触摸屏 pinch 和工具栏按钮改变缩放，放大后可用鼠标拖拽平移。
+- Ctrl-wheel 通过稳定 viewport 的 non-passive 监听归一化 `deltaMode`、限制单事件增量，并用乘法曲线约束在 `0.1–8`；缩放以指针为中心，同一动画帧内的输入合并为一次 transform，缩放百分比通过局部 DOM ref 更新。
+- Windows 桌面窗口开启 WebView2 pinch 输入；应用根节点阻止页面级 Ctrl-wheel/键盘缩放但不停止事件传播，使图片 viewport 可以消费局部缩放事件。
+- pinch 与 Ctrl-wheel 指数灵敏度为 `0.003`，单事件归一化增量限制为 `120px`；每帧变换提交前原子写回权威 transform ref，连续手势不得依赖第三方组件滞后的回调状态。

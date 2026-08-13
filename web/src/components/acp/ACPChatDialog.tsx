@@ -3713,7 +3713,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
   if (!showModels && !showPermissionModes && !thoughtLevel) return null;
 
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-t border-border/50 px-2 py-1.5 text-xs text-muted-foreground">
+    <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground" data-acp-session-config-bar="true">
       <AcpModelThoughtSelects
         compact
         contentSide="top"

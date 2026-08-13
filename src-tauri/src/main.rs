@@ -110,6 +110,10 @@ fn run() -> anyhow::Result<()> {
         // application-owned inset outline instead.
         window.transparent = true;
         window.shadow = desktop_window_chrome.native_shadow;
+        // WRY maps this setting to both WebView2 IsZoomControlEnabled and
+        // IsPinchZoomEnabled. The renderer prevents page-level zoom and routes
+        // precision-touchpad pinch events only to zoom-aware surfaces.
+        window.zoom_hotkeys_enabled = true;
         #[cfg(debug_assertions)]
         {
             window.additional_browser_args =

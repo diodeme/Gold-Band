@@ -19,6 +19,34 @@ const input = (content: string) => ({
 });
 
 describe('browser scheduled task API', () => {
+  it('freezes the selected workflow optional entry default in the definition', async () => {
+    const projectId = `browser-scheduled-workflow-${Date.now()}`;
+    const task = await browserApi.createScheduledTask({
+      ...input('workflow task'),
+      projectId,
+      runMode: 'workflow',
+      directConfig: undefined,
+      workflowTemplateId: 'default-lightweight',
+    });
+
+    const edit = await browserApi.getScheduledTask(projectId, task.id);
+    expect(edit.includeOptionalEntry).toBe(true);
+
+    const updated = await browserApi.updateScheduledTask({
+      scheduledTaskId: task.id,
+      projectId,
+      expectedUpdatedAt: edit.expectedUpdatedAt,
+      content: edit.content,
+      runMode: 'workflow',
+      workflowTemplateId: 'default-lightweight',
+      includeOptionalEntry: false,
+      schedule: scheduleInput,
+      overlapPolicy: edit.overlapPolicy,
+      sessionPolicy: edit.sessionPolicy,
+    });
+    expect(updated.includeOptionalEntry).toBe(false);
+  });
+
   it('keeps multiple scheduled task definitions instead of replacing the previous one', async () => {
     const first = await browserApi.createScheduledTask(input('first task'));
     const second = await browserApi.createScheduledTask(input('second task'));

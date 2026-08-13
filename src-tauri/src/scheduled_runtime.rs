@@ -3071,8 +3071,8 @@ fn scheduled_create_input(
         .get("workflowTemplateId")
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned);
-    let include_interview = config
-        .get("includeInterview")
+    let include_optional_entry = config
+        .get("includeOptionalEntry")
         .and_then(|value| value.as_bool());
     let input_dir = app.paths.scheduled_task_dir(&definition.id).join("inputs");
     let attachment_paths = definition
@@ -3090,7 +3090,7 @@ fn scheduled_create_input(
             .unwrap_or_else(|| ConversationRunMode::Direct.as_str())
             .to_string(),
         workflow_template_id,
-        include_interview,
+        include_optional_entry,
         direct_config,
         auto_config,
         attachment_paths: (!attachment_paths.is_empty()).then_some(attachment_paths),

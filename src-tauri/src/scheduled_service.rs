@@ -3,7 +3,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use gold_band::app::App;
+use gold_band::app::{App, DEFAULT_WORKFLOW_TEMPLATE_ID};
 use gold_band::scheduler::db::{
     ScheduledJobRecord, ScheduledTaskDatabase, UpdateJobResult, derived_next_run_at,
 };
@@ -328,7 +328,7 @@ impl ScheduledTaskService {
             content: input.content.clone(),
             run_mode: input.run_mode.clone(),
             workflow_template_id: input.workflow_template_id.clone(),
-            include_interview: input.include_interview,
+            include_optional_entry: input.include_optional_entry,
             direct_config: input.direct_config.clone(),
             auto_config: input.auto_config.clone(),
             attachment_paths: input.attachment_paths.clone(),
@@ -385,10 +385,16 @@ impl ScheduledTaskService {
                 serde_json::json!({ "projectId": resolved_project_id }),
             )
         })?;
+        let effective_optional_entry = effective_optional_entry_choice(
+            &workspace.app,
+            &input.run_mode,
+            input.workflow_template_id.as_deref(),
+            input.include_optional_entry,
+        )?;
         definition.execution_config = serde_json::json!({
             "runMode": input.run_mode,
             "workflowTemplateId": input.workflow_template_id,
-            "includeInterview": input.include_interview,
+            "includeOptionalEntry": effective_optional_entry,
             "directConfig": input.direct_config,
             "autoConfig": input.auto_config,
         });
@@ -491,7 +497,7 @@ impl ScheduledTaskService {
             content: input.content.clone(),
             run_mode: input.run_mode.clone(),
             workflow_template_id: input.workflow_template_id.clone(),
-            include_interview: input.include_interview,
+            include_optional_entry: input.include_optional_entry,
             direct_config: input.direct_config.clone(),
             auto_config: input.auto_config.clone(),
             attachment_paths: Some(attachment_paths),
@@ -581,10 +587,16 @@ impl ScheduledTaskService {
         ) {
             definition.task_id = None;
         }
+        let effective_optional_entry = effective_optional_entry_choice(
+            &workspace.app,
+            &input.run_mode,
+            input.workflow_template_id.as_deref(),
+            input.include_optional_entry,
+        )?;
         definition.execution_config = serde_json::json!({
             "runMode": input.run_mode,
             "workflowTemplateId": input.workflow_template_id,
-            "includeInterview": input.include_interview,
+            "includeOptionalEntry": effective_optional_entry,
             "directConfig": input.direct_config,
             "autoConfig": input.auto_config,
         });
@@ -750,6 +762,38 @@ impl ScheduledTaskService {
             .run_now(workspace.app, record.definition)
             .await
     }
+}
+
+fn effective_optional_entry_choice(
+    app: &App,
+    run_mode: &str,
+    template_id: Option<&str>,
+    requested: Option<bool>,
+) -> ScheduledServiceResult<Option<bool>> {
+    if run_mode != "workflow" {
+        return Ok(None);
+    }
+    let template_id = template_id.unwrap_or(DEFAULT_WORKFLOW_TEMPLATE_ID);
+    let store = app.workflow_templates().map_err(|_| {
+        ScheduledServiceError::invalid(
+            "resolve-workflow-template",
+            serde_json::json!({ "workflowTemplateId": template_id }),
+        )
+    })?;
+    let template = store
+        .templates
+        .iter()
+        .find(|template| template.id == template_id)
+        .ok_or_else(|| {
+            ScheduledServiceError::invalid(
+                "resolve-workflow-template",
+                serde_json::json!({ "workflowTemplateId": template_id }),
+            )
+        })?;
+    Ok(template
+        .optional_entry_stage
+        .as_ref()
+        .map(|stage| requested.unwrap_or(stage.default_enabled)))
 }
 
 struct DesktopScheduledCoordinator {
@@ -1252,7 +1296,7 @@ mod tests {
                 content: "Generate the scheduled report".to_string(),
                 run_mode: "workflow".to_string(),
                 workflow_template_id: Some(DEFAULT_WORKFLOW_TEMPLATE_ID.to_string()),
-                include_interview: Some(false),
+                include_optional_entry: Some(false),
                 direct_config: None,
                 auto_config: None,
                 attachment_paths: None,
@@ -1274,7 +1318,7 @@ mod tests {
                 content: content.to_string(),
                 run_mode: "workflow".to_string(),
                 workflow_template_id: Some(DEFAULT_WORKFLOW_TEMPLATE_ID.to_string()),
-                include_interview: Some(false),
+                include_optional_entry: Some(false),
                 direct_config: None,
                 auto_config: None,
                 attachment_paths: None,
@@ -1422,6 +1466,36 @@ mod tests {
         };
         assert_eq!(at, Utc.with_ymd_and_hms(2026, 11, 1, 6, 30, 0).unwrap());
         assert_eq!(timezone, "America/New_York");
+    }
+
+    #[test]
+    fn workflow_schedule_freezes_optional_entry_choice_and_effective_workflow() {
+        let fixture = Fixture::new();
+        let created = fixture.service.create(fixture.create_input()).unwrap();
+
+        assert_eq!(
+            created.definition.execution_config["includeOptionalEntry"],
+            serde_json::json!(false)
+        );
+        let workflow: gold_band::dsl::WorkflowDsl = serde_json::from_value(
+            created
+                .definition
+                .content_snapshot
+                .workflow_authoring
+                .clone()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(workflow.entry, "plan");
+        assert!(!workflow.nodes.iter().any(|node| node.id() == "interview"));
+
+        let mut default_input = fixture.create_input();
+        default_input.include_optional_entry = None;
+        let defaulted = fixture.service.create(default_input).unwrap();
+        assert_eq!(
+            defaulted.definition.execution_config["includeOptionalEntry"],
+            serde_json::json!(true)
+        );
     }
 
     #[tokio::test]
@@ -1592,7 +1666,7 @@ mod tests {
             content: content.to_string(),
             run_mode: "workflow".to_string(),
             workflow_template_id: Some(DEFAULT_WORKFLOW_TEMPLATE_ID.to_string()),
-            include_interview: Some(false),
+            include_optional_entry: Some(false),
             direct_config: None,
             auto_config: None,
             attachment_paths: None,

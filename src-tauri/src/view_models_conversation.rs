@@ -15,7 +15,10 @@ use crate::view_models::{
 };
 use gold_band::acp::client::{PromptActivity, prompt_activity, prompt_activity_under};
 use gold_band::acp::prompt_queue::{MAX_QUEUED_PROMPTS, QueuedPromptState, load_prompt_queue};
-use gold_band::app::{App, CreateTaskInput, DEFAULT_WORKFLOW_TEMPLATE_ID, is_run_continuable};
+use gold_band::app::{
+    App, CreateTaskInput, DEFAULT_WORKFLOW_TEMPLATE_ID, apply_optional_entry_preference,
+    is_run_continuable,
+};
 use gold_band::config::ConversationRunMode;
 use gold_band::config::StateConfig;
 use gold_band::domain::NodeType;
@@ -138,7 +141,7 @@ pub struct CreateScheduledTaskInputVm {
     pub content: String,
     pub run_mode: String,
     pub workflow_template_id: Option<String>,
-    pub include_interview: Option<bool>,
+    pub include_optional_entry: Option<bool>,
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub attachment_paths: Option<Vec<String>>,
@@ -218,7 +221,7 @@ pub struct ScheduledTaskEditVm {
     pub attachment_names: Vec<String>,
     pub run_mode: String,
     pub workflow_template_id: Option<String>,
-    pub include_interview: Option<bool>,
+    pub include_optional_entry: Option<bool>,
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub schedule: gold_band::scheduler::ScheduleSpec,
@@ -237,7 +240,7 @@ pub struct UpdateScheduledTaskInputVm {
     pub content: String,
     pub run_mode: String,
     pub workflow_template_id: Option<String>,
-    pub include_interview: Option<bool>,
+    pub include_optional_entry: Option<bool>,
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub attachment_paths: Option<Vec<String>>,
@@ -305,9 +308,9 @@ impl ScheduledTaskEditVm {
             .get("workflowTemplateId")
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned);
-        let include_interview = definition
+        let include_optional_entry = definition
             .execution_config
-            .get("includeInterview")
+            .get("includeOptionalEntry")
             .and_then(serde_json::Value::as_bool);
         let direct_config = definition
             .execution_config
@@ -326,7 +329,7 @@ impl ScheduledTaskEditVm {
             attachment_names: definition.attachment_names.clone(),
             run_mode,
             workflow_template_id,
-            include_interview,
+            include_optional_entry,
             direct_config,
             auto_config,
             schedule: definition.schedule.clone(),
@@ -652,7 +655,7 @@ pub struct ConversationActiveSessionVm {
 pub struct ConversationRunModeVm {
     pub mode: String,
     pub workflow_template_id: Option<String>,
-    pub include_interview: Option<bool>,
+    pub optional_entry_preferences: HashMap<String, bool>,
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub direct_preferences: HashMap<String, ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
@@ -737,7 +740,7 @@ pub struct ConversationCreateInputVm {
     pub content: String,
     pub run_mode: String,
     pub workflow_template_id: Option<String>,
-    pub include_interview: Option<bool>,
+    pub include_optional_entry: Option<bool>,
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub attachment_paths: Option<Vec<String>>,
@@ -791,17 +794,13 @@ pub fn scheduled_content_snapshot(
                 .workflow_template_id
                 .as_deref()
                 .unwrap_or(DEFAULT_WORKFLOW_TEMPLATE_ID);
-            let mut workflow = store
+            let template = store
                 .templates
                 .iter()
                 .find(|template| template.id == template_id)
-                .map(|template| template.workflow.clone())
                 .ok_or_else(|| anyhow::anyhow!("workflow template not found: {template_id}"))?;
-            apply_workflow_interview_preference(
-                template_id,
-                input.include_interview,
-                &mut workflow,
-            )?;
+            let mut workflow = template.workflow.clone();
+            apply_optional_entry_preference(template, input.include_optional_entry, &mut workflow)?;
             snapshot.workflow_authoring = Some(serde_json::to_value(workflow)?);
         }
         ScheduledMode::Auto => {
@@ -877,7 +876,7 @@ pub(crate) struct ConversationMetadata {
     pub(crate) source: String,
     pub(crate) run_mode: String,
     pub(crate) workflow_template_id: Option<String>,
-    pub(crate) include_interview: Option<bool>,
+    pub(crate) include_optional_entry: Option<bool>,
     pub(crate) direct_config: Option<ConversationDirectConfigVm>,
     pub(crate) agent_identity: Option<ConversationAgentIdentityVm>,
     pub(crate) title_auto_generated: bool,
@@ -3370,35 +3369,33 @@ pub fn prepare_conversation_task_vm(
         conversation_auto_title(&input.content, app.config.conversation_auto_title_max_chars);
 
     // Build workflow
-    let (workflow, effective_include_interview) =
-        if input.run_mode == ConversationRunMode::Direct.as_str() {
-            let config = input
-                .direct_config
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("direct config is required"))?;
-            (build_direct_workflow(config), None)
-        } else if input.run_mode == ConversationRunMode::Auto.as_str() {
-            (build_auto_workflow(input.auto_config.as_ref()), None)
-        } else {
-            // Load from template
-            let store = app.workflow_templates()?;
-            let template_id = input
-                .workflow_template_id
-                .as_deref()
-                .unwrap_or(DEFAULT_WORKFLOW_TEMPLATE_ID);
-            let mut workflow = store
-                .templates
-                .iter()
-                .find(|t| t.id == template_id)
-                .map(|t| t.workflow.clone())
-                .ok_or_else(|| anyhow::anyhow!("workflow template not found: {template_id}"))?;
-            let include_interview = apply_workflow_interview_preference(
-                template_id,
-                input.include_interview,
-                &mut workflow,
-            )?;
-            (workflow, include_interview)
-        };
+    let (workflow, effective_include_optional_entry) = if input.run_mode
+        == ConversationRunMode::Direct.as_str()
+    {
+        let config = input
+            .direct_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("direct config is required"))?;
+        (build_direct_workflow(config), None)
+    } else if input.run_mode == ConversationRunMode::Auto.as_str() {
+        (build_auto_workflow(input.auto_config.as_ref()), None)
+    } else {
+        // Load from template
+        let store = app.workflow_templates()?;
+        let template_id = input
+            .workflow_template_id
+            .as_deref()
+            .unwrap_or(DEFAULT_WORKFLOW_TEMPLATE_ID);
+        let template = store
+            .templates
+            .iter()
+            .find(|t| t.id == template_id)
+            .ok_or_else(|| anyhow::anyhow!("workflow template not found: {template_id}"))?;
+        let mut workflow = template.workflow.clone();
+        let include_optional_entry =
+            apply_optional_entry_preference(template, input.include_optional_entry, &mut workflow)?;
+        (workflow, include_optional_entry)
+    };
 
     // Git is an authoritative prerequisite for Auto and every workflow that
     // directly contains AI-DYNAMIC. Check before creating either the task or run.
@@ -3440,7 +3437,7 @@ pub fn prepare_conversation_task_vm(
         source: "conversation-ui".to_string(),
         run_mode: input.run_mode.clone(),
         workflow_template_id: input.workflow_template_id.clone(),
-        include_interview: effective_include_interview,
+        include_optional_entry: effective_include_optional_entry,
         direct_config: input.direct_config.clone(),
         agent_identity,
         title_auto_generated: true,
@@ -3542,57 +3539,6 @@ pub fn create_conversation_run_vm(
             scheduled_task_id: input.scheduled_task_id.clone(),
         })
     })
-}
-
-fn remove_default_workflow_interview_stage(workflow: &mut WorkflowDsl) -> anyhow::Result<()> {
-    const INTERVIEW_NODE_ID: &str = "interview";
-
-    if workflow.entry != INTERVIEW_NODE_ID {
-        anyhow::bail!("default workflow interview stage must be the entry node");
-    }
-    if !workflow
-        .nodes
-        .iter()
-        .any(|node| node.id() == INTERVIEW_NODE_ID)
-    {
-        anyhow::bail!("default workflow interview stage is missing");
-    }
-
-    let mut successors = workflow
-        .edges
-        .iter()
-        .filter(|edge| edge.from == INTERVIEW_NODE_ID && edge.on == EdgeOutcome::Success)
-        .map(|edge| edge.to.as_str());
-    let next_entry = successors
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("default workflow interview stage has no success edge"))?;
-    if successors.next().is_some() {
-        anyhow::bail!("default workflow interview stage has multiple success edges");
-    }
-    let next_entry = next_entry.to_string();
-
-    workflow.nodes.retain(|node| node.id() != INTERVIEW_NODE_ID);
-    workflow
-        .edges
-        .retain(|edge| edge.from != INTERVIEW_NODE_ID && edge.to != INTERVIEW_NODE_ID);
-    workflow.entry = next_entry;
-    Ok(())
-}
-
-fn apply_workflow_interview_preference(
-    template_id: &str,
-    include_interview: Option<bool>,
-    workflow: &mut WorkflowDsl,
-) -> anyhow::Result<Option<bool>> {
-    if template_id != DEFAULT_WORKFLOW_TEMPLATE_ID {
-        return Ok(None);
-    }
-
-    let include_interview = include_interview.unwrap_or(true);
-    if !include_interview {
-        remove_default_workflow_interview_stage(workflow)?;
-    }
-    Ok(Some(include_interview))
 }
 
 pub fn rerun_conversation_task_vm(
@@ -3707,18 +3653,17 @@ mod tests {
     use super::{
         ConversationAutoConfigVm, ConversationCreateInputVm, ConversationDirectConfigVm,
         ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationTaskActivityVm,
-        ConversationWorkspaceSource, ConversationWorkspaceVm, PromptActivity,
-        apply_workflow_interview_preference, build_auto_workflow, build_direct_workflow,
-        conversation_attempt_lifecycle_vm, conversation_auto_title, conversation_run_vm,
-        conversation_sidebar_vm_from_sources, conversation_status_from_session,
-        conversation_task_activity, conversation_workspace_vms, create_conversation_task_vm,
-        derive_conversation_attempt_lifecycle, find_leaf_by_key, lifecycle_is_active,
-        scheduled_task_vms_from_sources, switch_conversation_session_vm,
+        ConversationWorkspaceSource, ConversationWorkspaceVm, PromptActivity, build_auto_workflow,
+        build_direct_workflow, conversation_attempt_lifecycle_vm, conversation_auto_title,
+        conversation_run_vm, conversation_sidebar_vm_from_sources,
+        conversation_status_from_session, conversation_task_activity, conversation_workspace_vms,
+        create_conversation_task_vm, derive_conversation_attempt_lifecycle, find_leaf_by_key,
+        lifecycle_is_active, scheduled_task_vms_from_sources, switch_conversation_session_vm,
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
     use gold_band::acp::prompt_queue::enqueue_prompt;
-    use gold_band::app::{App, CreateTaskInput};
+    use gold_band::app::{App, CreateTaskInput, OptionalEntryStage, WorkflowTemplate};
     use gold_band::config::ConversationRunMode;
     use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, PromptEnvelopeMode};
     use serde_json::json;
@@ -3742,26 +3687,71 @@ mod tests {
     }
 
     #[test]
-    fn interview_preference_only_changes_the_builtin_default_workflow() {
+    fn optional_entry_preference_only_changes_a_template_that_declares_the_capability() {
         let mut custom = workflow_with_interview();
-        let result =
-            apply_workflow_interview_preference("custom", Some(false), &mut custom).unwrap();
+        let custom_template = WorkflowTemplate {
+            id: "custom".to_string(),
+            name: "Custom".to_string(),
+            is_built_in: false,
+            optional_entry_stage: None,
+            workflow: custom.clone(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let result = gold_band::app::apply_optional_entry_preference(
+            &custom_template,
+            Some(false),
+            &mut custom,
+        )
+        .unwrap();
         assert_eq!(result, None);
         assert_eq!(custom.entry, "interview");
         assert!(custom.nodes.iter().any(|node| node.id() == "interview"));
 
         let mut default = workflow_with_interview();
-        let result =
-            apply_workflow_interview_preference("default", Some(false), &mut default).unwrap();
+        let default_template = WorkflowTemplate {
+            id: "default".to_string(),
+            name: "Default".to_string(),
+            is_built_in: true,
+            optional_entry_stage: Some(OptionalEntryStage {
+                node_id: "interview".to_string(),
+                label_key: "conversation.home.includeInterview".to_string(),
+                default_enabled: true,
+            }),
+            workflow: default.clone(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let result = gold_band::app::apply_optional_entry_preference(
+            &default_template,
+            Some(false),
+            &mut default,
+        )
+        .unwrap();
         assert_eq!(result, Some(false));
         assert_eq!(default.entry, "plan");
         assert!(!default.nodes.iter().any(|node| node.id() == "interview"));
     }
 
     #[test]
-    fn default_workflow_interview_is_enabled_when_the_preference_is_missing() {
+    fn optional_entry_uses_the_template_default_when_the_preference_is_missing() {
         let mut workflow = workflow_with_interview();
-        let result = apply_workflow_interview_preference("default", None, &mut workflow).unwrap();
+        let template = WorkflowTemplate {
+            id: "default".to_string(),
+            name: "Default".to_string(),
+            is_built_in: true,
+            optional_entry_stage: Some(OptionalEntryStage {
+                node_id: "interview".to_string(),
+                label_key: "conversation.home.includeInterview".to_string(),
+                default_enabled: true,
+            }),
+            workflow: workflow.clone(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let result =
+            gold_band::app::apply_optional_entry_preference(&template, None, &mut workflow)
+                .unwrap();
         assert_eq!(result, Some(true));
         assert_eq!(workflow.entry, "interview");
     }
@@ -4727,7 +4717,7 @@ mod tests {
             content: "run this later".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
             workflow_template_id: None,
-            include_interview: None,
+            include_optional_entry: None,
             direct_config: Some(ConversationDirectConfigVm {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
@@ -4753,7 +4743,7 @@ mod tests {
             content: "task must roll back".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
             workflow_template_id: None,
-            include_interview: None,
+            include_optional_entry: None,
             direct_config: Some(ConversationDirectConfigVm {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
@@ -5439,7 +5429,7 @@ mod tests {
                 "source": "conversation-ui",
                 "runMode": run_mode,
                 "workflowTemplateId": null,
-                "includeInterview": null,
+                "includeOptionalEntry": null,
                 "directConfig": null,
                 "agentIdentity": null,
                 "titleAutoGenerated": false,

@@ -1032,6 +1032,12 @@ export interface WorkflowTemplateStore {
 export interface WorkflowTemplate {
   id: string;
   name: string;
+  isBuiltIn: boolean;
+  optionalEntryStage?: {
+    nodeId: string;
+    labelKey: string;
+    defaultEnabled: boolean;
+  } | null;
   workflow: WorkflowDsl;
   createdAt: string;
   updatedAt: string;
@@ -1898,7 +1904,7 @@ export interface ScheduledTaskEditVm {
   attachmentNames: string[];
   runMode: 'direct' | 'workflow' | 'auto' | string;
   workflowTemplateId?: string | null;
-  includeInterview?: boolean | null;
+  includeOptionalEntry?: boolean | null;
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   schedule: ScheduledScheduleSpec;
@@ -1915,7 +1921,7 @@ export interface UpdateScheduledTaskInput {
   content: string;
   runMode: string;
   workflowTemplateId?: string | null;
-  includeInterview?: boolean | null;
+  includeOptionalEntry?: boolean | null;
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[] | null;
@@ -2179,7 +2185,7 @@ export interface ConversationActiveSessionVm {
 export interface ConversationRunModeVm {
   mode: 'direct' | 'auto' | 'workflow';
   workflowTemplateId?: string | null;
-  includeInterview?: boolean | null;
+  optionalEntryPreferences?: Record<string, boolean>;
   directConfig?: ConversationDirectConfigVm | null;
   directPreferences?: Record<string, ConversationDirectConfigVm>;
   autoConfig?: ConversationAutoConfigVm | null;
@@ -2224,7 +2230,7 @@ export interface ConversationCreateInput {
   content: string;
   runMode: 'direct' | 'auto' | 'workflow';
   workflowTemplateId?: string | null;
-  includeInterview?: boolean | null;
+  includeOptionalEntry?: boolean | null;
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[];

@@ -66,6 +66,7 @@ const workflowTemplates: WorkflowTemplateStore = {
   templates: [{
     id: 'invalid-template',
     name: '非法工作流',
+    isBuiltIn: false,
     createdAt: '',
     updatedAt: '',
     workflow: {
@@ -182,6 +183,7 @@ describe('run mode validation', () => {
       templates: [{
         id: 'fresh-template',
         name: '新角色工作流',
+        isBuiltIn: false,
         createdAt: '',
         updatedAt: '',
         workflow: {

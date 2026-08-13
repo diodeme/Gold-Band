@@ -651,6 +651,8 @@ export interface GitCommitReviewFileVm {
   beforeOid?: string | null;
   beforePath?: string | null;
   afterOid: string;
+  addedLines?: number | null;
+  deletedLines?: number | null;
 }
 
 export interface GitCommitReviewVm {
@@ -845,7 +847,7 @@ export interface GitHubPullRequestDetailVm extends GitHubPullRequestSummaryVm {
   additions: number;
   deletions: number;
   changedFiles: number;
-  files: Array<{ path: string; additions: number; deletions: number }>;
+  files: Array<{ path: string; oldPath?: string | null; kind: GitFileChangeKindVm; additions: number; deletions: number }>;
   latestReviews: Array<{ author?: GitHubActorVm | null; state: string }>;
 }
 
@@ -886,7 +888,7 @@ export interface GitHubIssueQueryVm {
 export type GitComparisonSourceVm =
   | { kind: 'workspace'; workspacePath?: string | null; path: string; area: 'staged' | 'unstaged' }
   | { kind: 'commit'; workspacePath?: string | null; path: string; beforeOid?: string | null; beforePath?: string | null; afterOid: string }
-  | { kind: 'github-pr'; workspacePath?: string | null; host: string; repository: string; prNumber: number; baseOid: string; headOid: string; path: string };
+  | { kind: 'github-pr'; workspacePath?: string | null; host: string; repository: string; prNumber: number; baseOid: string; headOid: string; path: string; beforePath?: string | null };
 
 export interface GitFileComparisonVm {
   path: string;

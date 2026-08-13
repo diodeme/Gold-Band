@@ -8,7 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TurnFileChangesCard } from '@/components/acp/TurnFileChangesCard';
 import { ACPMessageList } from '@/components/acp/ACPChatDialog';
-import { shouldShowDiffChunkNavigation } from '@/components/workspace/files/TurnFileWorkspacePanel';
+import {
+  DIFF_VIEW_SCAN_LIMIT,
+  DIFF_VIEW_TIMEOUT_MS,
+  shouldShowDiffChunkNavigation,
+} from '@/components/workspace/files/TurnFileWorkspacePanel';
 import {
   clearTurnFileChangeSetCacheForTests,
   loadTurnFileChangeSet,
@@ -322,7 +326,25 @@ describe('turn file viewer contract', () => {
     expect(source).toContain('[&_.cm-scroller]:overflow-x-hidden');
     expect(source).toContain('mergeControls: false');
     expect(source).toContain('collapseUnchanged:');
+    expect(source).toContain('diffConfig: { scanLimit: DIFF_VIEW_SCAN_LIMIT, timeout: DIFF_VIEW_TIMEOUT_MS }');
     expect(source).toContain('getChunks(view.state)?.chunks.length');
+  });
+
+  it('keeps large source diffs precise within a bounded main-thread budget', () => {
+    expect(DIFF_VIEW_SCAN_LIMIT).toBeGreaterThanOrEqual(5_000);
+    expect(DIFF_VIEW_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(DIFF_VIEW_TIMEOUT_MS).toBeLessThanOrEqual(300);
+  });
+
+  it('opens review files at the top and only focuses chunks for cross-file change navigation', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'web/src/components/workspace/files/TurnFileWorkspacePanel.tsx'),
+      'utf8',
+    );
+    expect(source).toContain("navigateReviewFile(-1, 'top')");
+    expect(source).toContain("navigateReviewFile(1, 'top')");
+    expect(source).toContain("resource.reviewLanding === 'first-change' || resource.reviewLanding === 'last-change'");
+    expect(source).not.toContain("reviewLanding === 'last'");
   });
 
   it('does not enable a closing animation when an asynchronously loaded card first mounts collapsed', () => {

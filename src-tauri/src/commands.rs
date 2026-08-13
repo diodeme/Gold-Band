@@ -1986,6 +1986,7 @@ pub async fn get_git_comparison(
                 base_oid,
                 head_oid,
                 path,
+                before_path,
                 ..
             } => gold_band::git::GitHubCliService::default()
                 .pull_request_revision_comparison(
@@ -1996,6 +1997,7 @@ pub async fn get_git_comparison(
                     base_oid,
                     head_oid,
                     path,
+                    before_path.as_deref(),
                 )
                 .map_err(command_error),
             _ => service

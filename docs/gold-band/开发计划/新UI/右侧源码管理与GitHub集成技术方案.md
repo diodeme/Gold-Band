@@ -451,6 +451,10 @@ git stash list --format=<explicit fields>
 - commit：两个 tree/commit。
 - PR：GitHub PR base/head 或 `gh pr diff` 结果转换后的统一 comparison。
 
+工作区 status 在 porcelain v2 之后并行执行 staged、unstaged 各一次批量 `git diff --numstat -z --no-ext-diff --no-textconv -M -C`，按路径合并 tracked 文件统计；Git 命令数固定为 2，不允许退化为逐文件 N+1。未跟踪文件在进入 index 前不读取正文计算行数，避免 watcher 刷新触发无界文件 I/O。只需要 branch/revision/冲突判断的内部调用使用轻量 status，不附带 numstat 查询。
+
+所有文本 comparison 在限制判断和 UTF-8 校验后统一规范换行符：CRLF 和单独 CR 均转换为 LF，统计与返回给 CodeMirror 的 before/after 共用规范化内容。CodeMirror `collapseUnchanged` 默认折叠未变化内容，仅展示差异与上下文；不能因工作树与 Git blob 的换行风格不同产生全文件 Diff 或错误 summary。
+
 文本内容最终转成统一 `FileComparisonVm`：
 
 ```ts
@@ -631,13 +635,17 @@ GitHub 数据不得保存在 `SourceControlGitHubView` 的组件本地生命周�
 
 `GitHubPullRequestDetailVm` 返回 `baseRefOid/headRefOid`。点击文件时把这两个稳定 revision 写入 typed comparison locator；后端校验 40/64 位十六进制 OID 和 repo-relative path，只并行执行 base/head 两次 raw content 请求。旧的每文件 `gh pr diff --name-only` 与 `gh pr view --json baseRefOid,headRefOid,files` 消费路径删除。
 
+GitHub PR/Issue 列表和详情的宽度链从领域根容器贯穿 Tabs、TabsContent、ScrollArea 到单行，统一使用 `min-w-0 / overflow-hidden / max-w-full` 限制在右侧面板内。标题、账号、head/base 分支、label 与文件路径是可压缩省略列；导航按钮、状态和增删统计为固定列，长远端文本不得改变客户端宽度或生成横向滚动。
+
 ## 11. 提交历史与多选关系
 
 ### 11.1 历史加载
 
 - 使用 topo order。
+- 默认查询当前工作树 `HEAD` 的完整可达历史，不使用 `git log --all` 混入未合并旁支；只有显式 ref 筛选才改用目标 ref。
 - 初始加载 300 条。
 - 后续按 300 条增量加载。
+- 页码只展示当前页，不以已加载页数冒充总页数；`nextCursor` 存在时“较早”保持可用，直到实际 Root Commit 所在末页。
 - 每页携带 refs revision；refs 已变化时放弃旧 cursor 并重载。
 - 历史搜索可按 hash、subject、author 和 ref 收窄。
 - runtime checkpoint 默认压缩，可展开。
@@ -737,6 +745,7 @@ Fetch Dialog 的 `prune` 开关默认关闭，UI 使用用户领域文案“移�
 - 顶部显示当前分支、upstream、ahead/behind 和同步操作。
 - 分区顺序：冲突、已暂存、未暂存、未跟踪。
 - 每行显示状态、路径、rename old path、增删统计和可用操作。
+- tracked 文件增删统计由 staged/unstaged 两次批量 numstat 提供；未跟踪文件在暂存前不显示统计，暂存后由 index 统计。
 - commit composer 紧贴面板底部，包含 subject、可展开 body、commit 按钮。
 - 没有 staged change、workspace locked 或存在未解决冲突时禁止 commit。
 - stash 放在工具栏菜单，不作为文件行操作。
@@ -750,7 +759,9 @@ Fetch Dialog 的 `prune` 开关默认关闭，UI 使用用户领域文案“移�
 - 单击单选，Shift 范围，Ctrl/Cmd 增减，Ctrl/Cmd+Shift 合并范围；不显示 Checkbox。
 - 任意多个 Commit 只收集各自 first-parent Changes，再按旧到新合并同一文件演化链；Root 与空树比较，同一路径只返回一个首尾终态。
 - 右键提供短/完整 SHA 和当前可验证的提交归属。
-- 文件进入有界 Diff review session，同一会话只占用一个 Tab，差异导航可跨文件。
+- 更改、历史聚合、PR 文件统一进入有界 Diff review session，同一会话只占用一个 Tab；左右文件导航与上下差异导航均使用 Tooltip，差异导航可跨文件。
+- 三个领域复用同一文件行组件：绿色 A / 蓝色 M / 红色 D + 可压缩 path + `+n -n`。历史统计计算聚合链首尾终态，并按相同 before/after 端点分组执行批量 numstat；禁止逐文件读取正文或 N+1 Git 查询。PR 文件状态一次分页批量读取 REST files API，禁止逐文件请求或前端猜测。
+- 文件行纯图标操作使用 shadcn Tooltip；已暂存文件的回转图标明确为 Unstage，不与 Discard 共用语义。
 
 ### 12.7 仓库区
 
@@ -880,11 +891,11 @@ ready capability 按 repository/workspace session 缓存；已 ready 时窗口 f
 - changed file list。
 - URL。
 
-PR 文件 Diff 使用 typed `GitComparisonSource::GitHubPr`：
+PR 文件 Diff 使用 typed `GitComparisonSource::GitHubPr`，PR 详情先批量读取权威 files status/previous filename/stats 后构建连续审阅序列：
 
-1. PR 详情接口一次返回 changed file list 与不可变 `baseRefOid/headRefOid`；点击文件时直接写入 comparison locator，不再重复查询整 PR。
+1. PR 详情接口用 `gh api repos/{owner}/{repo}/pulls/{number}/files --paginate --slurp` 一次批量返回 typed changed file list 与不可变 `baseRefOid/headRefOid`；点击文件时直接写入 review locator，不再重复查询整 PR。
 2. `gh api --hostname <host> --method GET --header "Accept: application/vnd.github.raw+json" <contents-endpoint>` 按 base/head OID 并行读取两端文件内容。
-3. 转换为现有 `GitFileComparison`，点击 PR 文件后立即打开现有 `file-diff` resource，由新 Tab 展示 comparison loading。
+3. 转换为现有 `GitFileComparison`，点击 PR 文件后立即打开现有 `file-diff` review resource，由新 Tab 展示 comparison loading，并支持同 PR 上/下文件连续审阅。
 
 PR 列表项点击时先写入 `selected(kind, number)` locator 并显示详情 loading surface，再读取 detail cache/API；请求成功后原位收敛为详情，失败时保留返回入口与结构化错误。comparison 请求不得成为 PR 详情或文件 Tab 导航的前置条件。
 
@@ -1048,6 +1059,8 @@ Git CLI 失败时，`params` 还必须包含 `exitCode` 和可选 `reason`。`re
 
 - Git 未安装/非 repository/unborn HEAD/detached HEAD。
 - staged/unstaged/untracked/conflict。
+- staged/unstaged 批量 numstat，包含同一文件 index/worktree 分层统计、rename 和 binary。
+- CRLF/LF 与单独 CR 统一为 LF；8000 行文件仅换行风格不同且新增 2 行时必须为 `+2/-0`，正文不含 CR。
 - 空格、Unicode、引号、换行文件名。
 - rename/copy/type-change/submodule。
 - 初次 commit 与普通 commit hooks。
@@ -1063,6 +1076,7 @@ Git CLI 失败时，`params` 还必须包含 `exitCode` 和可选 `reason`。`re
 ### 17.2 历史测试
 
 - 线性历史。
+- 默认 HEAD 历史排除未合并旁支，并跨多页一直到 Root Commit。
 - 双分支 merge。
 - 多层 merge。
 - octopus merge。
@@ -1116,7 +1130,7 @@ Git CLI 失败时，`params` 还必须包含 `exitCode` 和可选 `reason`。`re
 - Git operation 失败后同时展示本地化原因/恢复建议和脱敏的 Git 原始失败原因。
 - 四主题、宽/窄右栏和键盘可达性。
 
-历史 Tab 契约测试固定缓存命中时立即恢复；首次加载历史与选择 Commit 聚合详情时立即显示对应局部中间态。新增 Store 接口测试覆盖标准桌面选择语义、历史/聚合缓存复用及会话清理，Rust 临时仓库测试覆盖 Root、重复 OID 去重、显式选择边界、同文件演化链终态聚合、删除/重命名端点、totals、Merge 首次进入路径以及 branch/tag contains refs；Diff 导航纯函数测试覆盖同文件 chunk、跨文件与会话边界。
+历史 Tab 契约测试固定缓存命中时立即恢复；首次加载历史与选择 Commit 聚合详情时立即显示对应局部中间态。Commit 点击必须同步发布 selected/focused/loading，再异步执行详情请求；Merge Commit 多文件 summary 使用端点分组 numstat，不读取每个文件正文。新增 Store 接口测试覆盖标准桌面选择语义、历史/聚合缓存复用及会话清理，Rust 临时仓库测试覆盖 Root、默认 HEAD 分页排除旁支、重复 OID 去重、显式选择边界、同文件演化链终态聚合、删除/重命名端点、totals、Merge 首次进入路径以及 branch/tag contains refs；Diff 导航纯函数测试覆盖同文件 chunk、跨文件与会话边界。
 
 ### 17.5 实际页面验证
 
@@ -1153,9 +1167,17 @@ Browser preview 的源码管理 fixture 提供 `origin` 与 `fork` 两个 remote
 
 本次历史终态聚合回归：Rust 覆盖重复路径聚合、创建后删除净空、重命名链、显式选择边界和删除文件 before→不存在的 comparison，共 5 项定向测试通过；`cargo check -p gold-band --lib --no-default-features` 通过。Web 源码管理相关 5 个测试文件 / 33 项测试通过，覆盖选择/迟到响应、Review 缓存复用与会话清理、GitHub capability 预热、Diff 导航、browser fixture 和中英文文件数量文案；`npm run web:build`、`cargo fmt --all` 与 `git diff --check` 通过。
 
+2026-08-12 Diff 统计与换行语义回归：真实临时仓库接口测试覆盖同一 tracked 文件 staged/unstaged 分层 numstat，以及 8000 行 CRLF blob 对 LF worktree 仅新增 2 行的 comparison，2 项均通过；后者稳定返回 `+2/-0` 且 before/after 均不含 CR。完整 UI status 只并行执行 staged/unstaged 两次批量 numstat，命令数不随文件数增长；history、revision 校验和 stash/commit 前置判断继续使用轻量 status。Web 源码管理相关 8 个测试文件 / 55 项通过，TypeScript、生产构建、Rust lib/desktop check 与 `git diff --check` 通过。本轮按用户要求未启动前端、浏览器或客户端，实际页面视觉验收由用户执行。
+
 本次跨分支聚合回归：真实 Gold-Band 历史确认 `870e077b → d12b9cd9` 的 `src-tauri/src/commands.rs` 终态为 `+173/-28`，旁支 `0cf78b22` 与 `870e077b` 的该文件 stable patch-id 相同；修复前错误跨基线比较为 `+868/-13`。Rust 7 项 `commit_review_` 测试全部通过，覆盖等价旁支去重、相同统计但内容不同的旁支保留，以及原有净空/重命名/显式选择/删除语义；Web 4 个相关测试文件共 32 项通过，生产构建与 `git diff --check` 通过。内置浏览器实际验证历史选择、聚合文件工作区、Tab 往返缓存和无 Canvas Graph，控制台无 warning/error。
 
 2026-08-12 历史缓存与分页回归：删除普通源码管理 Tab 往返时两帧延迟挂载的伪 loading，缓存命中后立即恢复原历史页、选择和详情。旧 `@tomplum/react-git-log@3.5.1` 白屏已确认为分页边界淡出线才触发 Canvas gradient，而该库把传入的 hex 颜色按 `rgb(r,g,b)` 解析导致 `NaN`；新历史列表不包含 Canvas/Graph 路径。Browser preview 新增 303 条确定性两页 fixture；实测从 300 条首页进入第 2/2 页显示剩余 3 条，再往返“仓库/历史”仍立即恢复第 2 页，无 loading、无 console error/warning。
+
+2026-08-12 当前分支历史范围与点击性能回归：默认历史从 `git log --all` 修正为当前工作树 `HEAD` 的可达祖先链；Gold-Band 实仓基线为 main 698 条、all 839 条，原截图底部实际是 `--all` 的第 298–300 项旁支混排结果。真实临时仓库接口测试固定默认查询排除未合并旁支，并持续分页到 parent 为空的 Root Commit。Commit 行修正 Context Menu trigger 事件边界，点击同步发布 selected/focused/loading；聚合文件统计按首尾端点批量执行 numstat，删除逐文件正文读取的 N+1。内置浏览器实测首项点击立即选中并进入 1 文件详情，第 1 页 300 条、第 2 页 3 条且末页禁用“较早”，控制台无 error/warning。
+
+2026-08-12 大文件 Diff 精度与初始定位回归：Gold-Band `2ab91a05..6b965885` 的 `src-tauri/src/commands.rs` 权威 Git 终态为 `+221/-40`。CodeMirror Merge 默认 `scanLimit=500` 在约 7700 行文件上提前降级，实测把真实约 98 个变化块误渲染为 `+3896/-3715` 的大片变化；提高到 10000 后恢复为 `+203/-22` 的精确 CodeMirror 字符/行块投影，20 次本地算法基线平均约 131ms，并设置 300ms timeout 防止极端输入长期占用主线程。审阅 landing 状态拆为 `top / first-change / last-change`：文件列表和左右文件切换从顶部打开，只有上下差异跨文件时定位首/末变化，消除首次打开直接跳到第 27 个差异的问题。该修改不增加任何后端 Git 命令、正文请求或缓存体积。
+
+2026-08-13 审阅 summary 与滚动状态回归：确认 Git `numstat` 与 CodeMirror diff 对移动/重复代码可能给出不同增删统计，审阅 item 现携带历史 numstat、workspace numstat 或 GitHub PR files API 的领域 summary，列表与 Diff Tab 统一消费；正文算法只渲染 chunks，权威 summary 缺失时才使用 comparison fallback。历史 Commit 列表和聚合文件列表使用 repository/workspace-scoped 独立轻量 scroll offset，相同 review 从 Diff 返回时在 viewport 重挂载并完成布局后恢复文件位置，分页在状态提交前把 Commit offset 归零；scroll handler 只写运行期数字，不发布 React state。鼠标 Commit 点击后主动释放普通 button focus，键盘 focus-visible 保留。以上修改不增加 Git/网络请求、正文解析、缓存条目或重渲染范围；布局后只执行一次常数级滚动恢复。
 
 ## 18. 最终验收标准
 

@@ -5,9 +5,6 @@
 //! 404→task-not-found、409→claim-conflict、其余≥400→network-failed。
 
 // 完整错误码表一次定义：注册/领取冲突/会话恢复等 variant 分 M2-M4 启用。
-// M5 完成后审查移除该 allow。
-#![allow(dead_code)]
-
 use serde_json::{Value, json};
 
 /// multica 模块统一错误。
@@ -20,8 +17,6 @@ pub enum MulticaError {
     NotConfigured,
     #[error("multica auth failed: {0}")]
     AuthFailed(String),
-    #[error("multica workspace empty")]
-    WorkspaceEmpty,
     #[error("multica network failed: {0}")]
     NetworkFailed(String),
     #[error("multica register failed: {0}")]
@@ -32,10 +27,11 @@ pub enum MulticaError {
     TaskNotFound,
     #[error("multica runtime offline")]
     RuntimeOffline,
+    // M4-d：保留在错误码表（multica.session-resume-failed），但断点续跑路径不 emit——任何 resume Err
+    // 改走 silent fresh-fallback（更稳，无需 fragile 串匹配）。见开发设计 §2.2.8。
+    #[allow(dead_code)]
     #[error("multica session resume failed, will rerun")]
     SessionResumeFailed,
-    #[error("multica pin task session failed: {0}")]
-    PinSessionFailed(String),
 }
 
 impl MulticaError {
@@ -44,14 +40,12 @@ impl MulticaError {
         match self {
             Self::NotConfigured => "multica.not-configured",
             Self::AuthFailed(_) => "multica.auth-failed",
-            Self::WorkspaceEmpty => "multica.workspace-empty",
             Self::NetworkFailed(_) => "multica.network-failed",
             Self::RegisterFailed(_) => "multica.register-failed",
             Self::ClaimConflict => "multica.claim-conflict",
             Self::TaskNotFound => "multica.task-not-found",
             Self::RuntimeOffline => "multica.runtime-offline",
             Self::SessionResumeFailed => "multica.session-resume-failed",
-            Self::PinSessionFailed(_) => "multica.pin-session-failed",
         }
     }
 
@@ -60,8 +54,7 @@ impl MulticaError {
         match self {
             Self::AuthFailed(msg)
             | Self::NetworkFailed(msg)
-            | Self::RegisterFailed(msg)
-            | Self::PinSessionFailed(msg) => json!({ "message": msg }),
+            | Self::RegisterFailed(msg) => json!({ "message": msg }),
             _ => json!({}),
         }
     }
@@ -77,10 +70,6 @@ mod tests {
         assert_eq!(
             MulticaError::AuthFailed("401".into()).code(),
             "multica.auth-failed"
-        );
-        assert_eq!(
-            MulticaError::WorkspaceEmpty.code(),
-            "multica.workspace-empty"
         );
         assert_eq!(
             MulticaError::NetworkFailed("timeout".into()).code(),
@@ -99,10 +88,6 @@ mod tests {
         assert_eq!(
             MulticaError::SessionResumeFailed.code(),
             "multica.session-resume-failed"
-        );
-        assert_eq!(
-            MulticaError::PinSessionFailed("x".into()).code(),
-            "multica.pin-session-failed"
         );
     }
 

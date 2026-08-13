@@ -5,10 +5,6 @@
 //! `runtime_ids` 为缓存（register 幂等取回，丢失下次启动重建），M2 仅内存持有；
 //! 待持久化的 pending_issues / task_conversations 在 M4 进库层 StateConfig。
 
-// `ActiveRemoteRun.runtime_id` 目前写入但暂无读取方（cancel/fail 路径按 remote_task_id 寻址，
-// 未用到任务所属 runtime）。属已知待消费字段，待后续 cancel-by-runtime 等路径接入后移除该 allow。
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -27,8 +23,6 @@ pub struct MulticaRuntimeState {
 /// 同形，bridge 据此反向归属：本地 lifecycle 事件 → remote task）。
 #[derive(Debug, Clone)]
 pub struct ActiveRemoteRun {
-    /// 该任务所属 runtime（心跳按它寻址）。
-    pub runtime_id: String,
     /// 该任务所属 multica workspace（complete/fail 路径不需，但失败回显/重跑需）。
     pub workspace_id: String,
     /// 该任务执行时选定的本地工作区 project_id（绑定模型下沉到任务级：工作区不再绑本地
@@ -129,9 +123,8 @@ impl MulticaRuntimeState {
 mod tests {
     use super::*;
 
-    fn sample_run(runtime_id: &str, local: &str) -> ActiveRemoteRun {
+    fn sample_run(local: &str) -> ActiveRemoteRun {
         ActiveRemoteRun {
-            runtime_id: runtime_id.into(),
             workspace_id: "ws-1".into(),
             local_project_id: format!("proj-{local}"),
             local_task_id: format!("task-{local}"),
@@ -159,7 +152,7 @@ mod tests {
         let mut state = MulticaRuntimeState::default();
         state.set_runtime_id("ws-1", "rt-a");
         state.set_runtime_id("ws-2", "rt-b");
-        state.register_active_run("remote-1", sample_run("rt-a", "1"));
+        state.register_active_run("remote-1", sample_run("1"));
 
         state.clear_runtime_ids();
 
@@ -223,7 +216,7 @@ mod tests {
     #[test]
     fn find_active_run_by_local_matches_and_misses() {
         let mut state = MulticaRuntimeState::default();
-        state.register_active_run("remote-9", sample_run("rt-a", "9"));
+        state.register_active_run("remote-9", sample_run("9"));
         // 命中：local_task_id + local_run_id 双键匹配。
         let found = state.find_active_run_by_local("task-9", "run-9");
         assert_eq!(found.as_ref().map(|(r, _)| r.as_str()), Some("remote-9"));
@@ -240,7 +233,7 @@ mod tests {
     #[test]
     fn drop_active_run_returns_and_removes() {
         let mut state = MulticaRuntimeState::default();
-        state.register_active_run("remote-9", sample_run("rt-a", "9"));
+        state.register_active_run("remote-9", sample_run("9"));
         let dropped = state.drop_active_run("remote-9");
         assert!(dropped.is_some());
         assert_eq!(dropped.unwrap().local_task_id, "task-9");
@@ -253,7 +246,7 @@ mod tests {
     fn active_run_looks_up_by_remote_id() {
         // cancel 命令按 remote_task_id 直查（键即 remote id）。
         let mut state = MulticaRuntimeState::default();
-        state.register_active_run("remote-9", sample_run("rt-a", "9"));
+        state.register_active_run("remote-9", sample_run("9"));
         let found = state.active_run("remote-9").expect("已登记应命中");
         assert_eq!(found.local_task_id, "task-9");
         assert_eq!(found.local_run_id, "run-9");

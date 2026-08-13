@@ -194,7 +194,7 @@ export function AcpModelThoughtSelects({
                 <DropdownMenuRadioItem key={model.id} value={model.id} className="items-start py-2" onSelect={handleConfigOptionSelect}>
                   <span className="block min-w-0">
                     <span className="block truncate font-medium">{model.name}</span>
-                    {model.description ? <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">{model.description}</span> : null}
+                    {model.description ? <span className="mt-0.5 block whitespace-normal break-words text-ui-caption leading-4 text-muted-foreground">{model.description}</span> : null}
                   </span>
                 </DropdownMenuRadioItem>
               ))}
@@ -230,7 +230,7 @@ export function AcpModelThoughtSelects({
                 <DropdownMenuRadioItem key={option.value} value={option.value} className="items-start py-2" onSelect={handleConfigOptionSelect}>
                   <span className="block min-w-0">
                     <span className="block truncate font-medium">{option.name}</span>
-                    {option.description ? <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">{option.description}</span> : null}
+                    {option.description ? <span className="mt-0.5 block whitespace-normal break-words text-ui-caption leading-4 text-muted-foreground">{option.description}</span> : null}
                   </span>
                 </DropdownMenuRadioItem>
               ))}

@@ -1479,33 +1479,44 @@ pub async fn stat_attachment_files(
     paths: Vec<String>,
 ) -> CommandResult<Vec<AttachmentFileVm>> {
     let runtime = runtime.inner().clone();
-    spawn_blocking_command(move || Ok(paths
-        .into_iter()
-        .filter_map(|p| {
-            let path = Path::new(&p);
-            let name = path.file_name()?.to_str()?.to_string();
-            let size = path.metadata().ok()?.len();
-            let ext = path.extension().and_then(|value| value.to_str())?.to_ascii_lowercase();
-            let mime = attachment_mime_for_ext(&ext);
-            let preview_url = mime.starts_with("image/").then(|| {
-                let revision = crate::workspace_files::revision_for_preview(path).ok()?;
-                runtime.issue_attachment_preview(
-                    "attachment-picker".to_string(),
-                    path.to_path_buf(),
-                    revision,
-                    mime.to_string(),
-                    60 * 60,
-                ).ok().map(|grant| grant.token)
-            }).flatten();
-            Some(AttachmentFileVm {
-                path: p,
-                name,
-                size,
-                preview_url,
+    spawn_blocking_command(move || {
+        Ok(paths
+            .into_iter()
+            .filter_map(|p| {
+                let path = Path::new(&p);
+                let name = path.file_name()?.to_str()?.to_string();
+                let size = path.metadata().ok()?.len();
+                let ext = path
+                    .extension()
+                    .and_then(|value| value.to_str())?
+                    .to_ascii_lowercase();
+                let mime = attachment_mime_for_ext(&ext);
+                let preview_url = mime
+                    .starts_with("image/")
+                    .then(|| {
+                        let revision = crate::workspace_files::revision_for_preview(path).ok()?;
+                        runtime
+                            .issue_attachment_preview(
+                                "attachment-picker".to_string(),
+                                path.to_path_buf(),
+                                revision,
+                                mime.to_string(),
+                                60 * 60,
+                            )
+                            .ok()
+                            .map(|grant| grant.token)
+                    })
+                    .flatten();
+                Some(AttachmentFileVm {
+                    path: p,
+                    name,
+                    size,
+                    preview_url,
+                })
             })
-        })
-        .collect()))
-        .await
+            .collect())
+    })
+    .await
 }
 
 #[tauri::command]

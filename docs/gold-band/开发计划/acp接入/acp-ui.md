@@ -85,6 +85,10 @@ Gold Band 需要吸收的是 Jockey 的 ACP 事件归一化和 Chat/Session UI �
 
 - UI 组件只依赖 Gold Band 会话详情 ViewModel，不直接绑定 ACP crate / adapter 原始结构。
 - Raw ACP frame 只在诊断入口展示，不作为普通用户主视图。
+- 为定位“live event 已到达但打字机未激活”的间歇性问题，增加默认关闭的 ACP streaming 结构化诊断轨迹：覆盖 router、attempt/branch locator、animation readiness/replay 水位、streaming target、Markdown render 与 terminal settle。轨迹不保存消息正文，最多保留 2,000 条并可从 DevTools 导出 JSON；单元测试固化容量上限、快照隔离和 locator 差异报告。
+- ACP Markdown 播放复用单个 Streamdown 文档的 renderer token，并由每条消息唯一的文档水位严格顺序释放；列表 marker、各列表项、后续标题和段落不得各自启动动画。播放器按 Streamdown block DOM 身份缓存 token 索引，累计快照更新只重建变化 block，稳定 block 不重复扫描或校准。播放积压只调整 token 释放速度，不改变 canonical 发布频率或 Markdown 解析边界；工具、用户、终态或会话切换必须立即 settle。
+- ACP streaming 调试开关同时采样浏览器 Long Animation Frame、播放 tick、会话 ResizeObserver 和自动贴底；高频 Resize/贴底只按 500ms 汇总，Long Animation Frame 只保留 blocking/render/style-layout 时长与最多三个 script attribution，不保存正文或脚本 URL。
+- ACP streaming 诊断额外覆盖播放层 init/reconcile/约 500ms sample/超过 50ms long-frame/settle；只记录 canonical 长度、token 总数与水位、积压、帧数、释放数、最长帧、reconcile 耗时和原因，禁止记录正文或每字符事件，确保诊断不会成为新的热路径。
 - 普通 ACP session 查询必须返回指定 `branchId` 的语义块窗口，而不是完整会话文件。根分支读取 `acp.timeline.jsonl`，Agent 分支读取 `agents/<AgentExecutionId>/timeline.jsonl`；初始默认返回最近约 30 个语义块，前端保留有限多页缓冲。分页游标统一为 `beforeCursor / afterCursor`，折叠工具数、Activity 审计数和子 Agent 历史都不参与父 branch 的 `hasOlder`。首个 root session-ready 快照仍必须把 snapshot metadata 与首个 `goldBandPrompt` 一起暴露；Agent 分支以 synthetic Agent Prompt 作为只读会话起点。
 - `available_commands_update`、`usage_update`、session/mode/config update 等状态帧不渲染为聊天消息；它们只更新 session 状态或留在 Raw frames 中排障。
 - ACP runtime 文件位于 `~/.gold-band/projects/{project-id}/tasks/...`，不写入项目工作树；ACP 会话身份只以当前 user runtime attempt 的 `worker-ref.json` 为事实源：`continue_ref.acpSessionId` 决定 resume/load 的目标 session 与 UI header 的 provider session id；`acp.session.json` 不再作为 session id 来源，但会保存 status、capabilities、adapter 配置快照、stop reason，以及通过可选 `session/list` 轮询 best-effort 拉取得到的 `title` 缓存。该能力受项目级 `configs/app-config.json` 控制，默认关闭。title 仅用于后续 UI/检索储备；本期不作为会话头部展示的依赖字段，拉取不到时保持为空。
@@ -179,6 +183,10 @@ ACP 专属组件只做协议事件映射和业务状态组合：
 - 保留原始时间顺序。
 - 与 tool call / plan block 同处一个会话流。
 - 文本输出以 agent message bubble 呈现，不以 stdout/stderr 日志呈现。
+- 实时 text/thought 累计快照继续使用 stable identity 的 latest-wins 单项缓冲和 125ms 合并窗口；普通 DOM `scroll` 不再视作用户交互，只有 wheel、滚动键或滚动条 pointer 输入开启 180ms quiet window。每批 pending 更新设 250ms 绝对发布 deadline，避免自动贴底或持续滚动把正文饿死到 `usageUpdate/session terminal` 才一次显示。
+- 消息视口的 scroll handler 每动画帧至多执行一次，只保存 O(1) 的滚动位置、贴底和分页状态；不得在滚动热路径遍历 `[data-acp-item-key]` 或逐项读取 `getBoundingClientRect()`。精确消息 anchor 在卸载/会话切换时捕获，prepend 历史继续使用独立 pagination anchor 补偿。
+- 前端回归覆盖：自动/布局 scroll 不触发 interaction quiet；wheel、键盘和滚动条输入会触发；持续交互仍受 pending deadline 限制；scroll 热路径不扫描消息 DOM；终态事件保持正文先 flush、生命周期后收敛。
+- 流式 Markdown 移除 Gold Band 自制的 32ms visible-prefix RAF，改用 Streamdown 2.5 单文档实例的 `animated + isAnimating` renderer token，由 Gold Band 的唯一轻量 RAF 只沿 block cursor 释放严格连续的文档前缀；Gold Band 只管理 canonical snapshot、live target、会话 identity 和 token 播放索引，不判断未闭合 Markdown。回归固定：每条流式消息最多一个 RAF、streaming canonical 全文在 DOM、稳定 block 索引复用、settle 后旧消息静态完整、新消息独立动画、跨块文档语义保持，以及不同会话复用 provider event id 时 render key 隔离。
 
 ### 6.3 Thought / Reasoning
 
@@ -188,6 +196,7 @@ ACP 专属组件只做协议事件映射和业务状态组合：
 - Thought delta 与 text delta 分流，不混入最终回答正文。
 - 连续 thought delta 应合并为一个思考过程块；如果中间只穿插 usage / available commands 等隐藏状态帧，仍按同一个 thought block 展示。
 - Thought 标题展示从 ACP event timestamp 派生的思考耗时（如 `12 秒` / `12s`），不展示字符数。
+- 2026-08-13 会话运行态视觉收敛：Thought 普通态去除嵌套卡片阴影，展开正文限制为 `max-h-72` 并提供可聚焦的内部纵向滚动区；长思考不会无限拉长消息流，滚动状态保持在 Thought 自身，不进入会话根状态或 Context。
 
 ### 6.4 Tool Call
 
@@ -202,6 +211,8 @@ Tool call 卡片展示：
 - raw input / raw output 展开入口
 
 Tool call update 应按 attempt-scoped `toolCallId` 更新同一条审计项，而不是生成重复卡片。事件归一化、磁盘分支路由和 live push 共用稳定 `event.id / toolCallId / branchId`；merge key 不得依赖持续变化的 `seq`。terminal / file 细节挂载到对应 tool call，不应成为正式文字。工具卡使用 prompt-kit `Tool`，标题行左对齐显示“操作名 + 次级参数”，例如 `Glob .claude/**/*`、`Read xxx.js`；Activity 折叠时不构造工具详情，Activity 展开后只获得压缩审计项，单条工具再次展开时才通过 `get_acp_tool_detail` 读取 raw input/output。长路径、JSON 输出和连续字符必须在工具卡宽度内换行或内层滚动，不能撑宽会话视口。
+
+2026-08-13 工具调用与运行态样式继续复用 prompt-kit `Tool`、shadcn `Collapsible/Button` 和 Lucide：普通工具卡收敛为低边界透明紧凑行，关键参数使用单个等宽 chip，详情以左侧细竖线展开；Activity 的详情懒加载和单工具按需读取接口保持不变。Todo 展开区改为状态标记、正文和弱状态文案组成的任务行：完成使用勾选、进行中使用运行环、待处理使用小号中性空心点，不再显示重复顺序的编号圆环；composer 的 canonical session 耗时跟随状态栏正文排版，只用 `tabular-nums` 稳定数字宽度并复用既有间距，不增加装饰分隔点、新依赖、额外缓存、100ms timer 或 shimmer。目标 Web 回归覆盖长 Thought 滚动、工具详情按需读取、Todo 状态映射及计时排版；性能评审结论为渲染范围和数据加载量不变，无需 benchmark。
 
 `Agent` 工具调用在所属父 branch 中只渲染 `AgentLinkRow`，展示 Agent 名称、说明、统一 execution 状态以及 ACP 可客观确认的工具数和文件读写数。点击后通过稳定资源 key 在通用 `RightWorkspaceDock` 中打开或激活只读 `AgentConversationPanel`；紧凑窗口使用同源 Sheet。嵌套 Agent 在父 Agent 会话中继续显示相同链接并打开新 Tab，不递归挂载 transcript，不使用 Collapsible，也不按 seq 邻近关系猜分组。Claude `_meta.claudeCode.subagent/toolName/parentToolUseId` 只允许在 Rust ACP 适配边界转换为 `_meta.goldBandConversation` 与稳定 `AgentExecutionId`；前端、分页和持久化不得读取 Claude 字段。
 

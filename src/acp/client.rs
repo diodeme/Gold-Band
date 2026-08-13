@@ -266,9 +266,10 @@ use crate::acp::connection::{
     SessionEventPump, SessionRouteTryRecvError, SessionRouteWatermark,
 };
 use crate::acp::elicitation::{
-    ELICITATION_DEFAULT_TIMEOUT, PendingElicitationState, cancel_pending_elicitation_requests,
-    elicitation_response_result, remove_elicitation_signal_files,
-    upsert_elicitation_response_event, wait_for_elicitation_response, write_pending_elicitation,
+    ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, PendingElicitationState,
+    cancel_pending_elicitation_requests, elicitation_response_result,
+    remove_elicitation_signal_files, upsert_elicitation_response_event,
+    wait_for_elicitation_response_until_cancelled, write_pending_elicitation,
 };
 use crate::acp::events::{
     AcpAttemptPaths, AcpLatestTurnStatus, AcpPromptRetryState, AcpSessionAvailability,
@@ -280,8 +281,8 @@ use crate::acp::events::{
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::permission::{
     PermissionResponseState, acp_permission_response_result, cancel_pending_permission_requests,
-    permission_response_file, remove_permission_signal_files, wait_for_permission_response,
-    write_pending_permission,
+    permission_response_file, remove_permission_signal_files,
+    wait_for_permission_response_until_cancelled, write_pending_permission,
 };
 use crate::acp::timeline::{TimelineCompactionPolicy, TimelineStore};
 use crate::acp::usage::{
@@ -4334,6 +4335,9 @@ impl<'a> AcpRuntime<'a> {
             .ok_or_else(|| anyhow!("ACP permission request missing JSON-RPC id"))?;
         let request_id = rpc_id_to_string(&rpc_id);
         let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
+        if self.is_prompt_cancel_requested() {
+            return self.send_cancelled_permission_response(rpc_id, &request_id);
+        }
         self.seq += 1;
         write_pending_permission(
             &self.paths.attempt_dir,
@@ -4353,7 +4357,11 @@ impl<'a> AcpRuntime<'a> {
             event.raw.get_or_insert_with(|| json!({}))["cancelled"] = json!(true);
         }
         self.persist_event(&event)?;
-        let response = wait_for_permission_response(&self.paths.attempt_dir, &request_id)?;
+        let response = wait_for_permission_response_until_cancelled(
+            &self.paths.attempt_dir,
+            &request_id,
+            || self.is_prompt_cancel_requested(),
+        )?;
         self.seq += 1;
         let decision_event = permission_decision_timeline_event(
             self.seq,
@@ -4364,6 +4372,22 @@ impl<'a> AcpRuntime<'a> {
         self.persist_event(&decision_event)?;
         let _ = remove_permission_signal_files(&self.paths.attempt_dir, &request_id);
         let result = acp_permission_response_result(response)?;
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id.clone(),
+            "result": result.clone(),
+        });
+        self.append_outbound_frame(&frame)?;
+        self.connection.send_response(rpc_id, result)
+    }
+
+    fn send_cancelled_permission_response(&self, rpc_id: Value, request_id: &str) -> Result<()> {
+        let result = acp_permission_response_result(PermissionResponseState {
+            request_id: request_id.to_string(),
+            option_id: None,
+            cancelled: true,
+            decided_at: current_timestamp(),
+        })?;
         let frame = json!({
             "jsonrpc": "2.0",
             "id": rpc_id.clone(),
@@ -4436,6 +4460,10 @@ impl<'a> AcpRuntime<'a> {
             .get("id")
             .cloned()
             .ok_or_else(|| anyhow!("ACP elicitation request missing JSON-RPC id"))?;
+        let elicitation_id = format!("elicit-{}", uuid::Uuid::new_v4().simple());
+        if self.is_prompt_cancel_requested() {
+            return self.send_declined_elicitation_response(rpc_id, &elicitation_id);
+        }
         let params = value
             .get("params")
             .cloned()
@@ -4444,8 +4472,6 @@ impl<'a> AcpRuntime<'a> {
             agent_client_protocol_schema::v1::CreateElicitationRequest,
         >(params)
         .context("invalid ACP elicitation/create params")?;
-
-        let elicitation_id = format!("elicit-{}", uuid::Uuid::new_v4().simple());
 
         // 1. 持久化请求到 attempt dir
         write_pending_elicitation(
@@ -4468,10 +4494,11 @@ impl<'a> AcpRuntime<'a> {
         self.persist_event(&event)?;
 
         // 3. 同步阻塞等待用户响应（含超时保护）
-        let response = wait_for_elicitation_response(
+        let response = wait_for_elicitation_response_until_cancelled(
             &self.paths.attempt_dir,
             &elicitation_id,
             ELICITATION_DEFAULT_TIMEOUT,
+            || self.is_prompt_cancel_requested(),
         )?;
         upsert_elicitation_response_event(
             &self.paths.attempt_dir,
@@ -4504,6 +4531,27 @@ impl<'a> AcpRuntime<'a> {
         let _ = remove_elicitation_signal_files(&self.paths.attempt_dir, &elicitation_id);
 
         Ok(())
+    }
+
+    fn send_declined_elicitation_response(
+        &self,
+        rpc_id: Value,
+        elicitation_id: &str,
+    ) -> Result<()> {
+        let response = crate::acp::elicitation::ElicitationResponseState {
+            elicitation_id: elicitation_id.to_string(),
+            action: ElicitationAction::Decline,
+            content: None,
+            decided_at: current_timestamp(),
+        };
+        let result = elicitation_response_result(&response);
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id.clone(),
+            "result": result.clone(),
+        });
+        self.append_outbound_frame(&frame)?;
+        self.connection.send_response(rpc_id, result)
     }
 
     fn drain_available_inbound(&mut self) -> Result<()> {

@@ -247,7 +247,7 @@ Raw 视图用于排障：
 - Raw frames 按需加载，普通 `get_acp_session` 只统计 raw frame 行数，不解析完整 raw JSONL；Raw frames 详情读取也应有体积上限，避免大文件拖慢会话主 UI。
 - 普通 session 返回的 UI event raw 只能保留渲染 tool、plan、permission 所需的摘要字段，超长字符串和超大 raw payload 必须截断；完整原始内容只通过 Raw frames 分页查看。
 - 最新 ACP error diagnostic 或 Raw frame 中的 JSON-RPC `frame.error.message` 必须显示为会话顶部错误横幅，不再重复插入消息流；若该错误时间之后出现新的正常 agent 输出，横幅自动消失。
-- ACP stop 点击后必须先同步把当前 attempt / run / round 收敛到 `paused + process_interrupted`，让 ACP 抽屉和 Round 详情立即退出 active / stopping 态；随后运行中的 ACP runtime 观察到取消标记后，发送不带 `id` 的 JSON-RPC notification `session/cancel`，不能把它当 request 等待响应；若短暂宽限后 provider 仍未结束，再清理 provider pid 并强制 kill，对应 session 最迟在 15 秒 fuse 后兜底写为 `cancelled`，避免 composer 永久显示“停止中”。
+- ACP stop 点击后同步把业务 runtime 收敛到 `paused + process_interrupted`，并把当前 turn 的进程内活动状态设为 `CancelRequested`；返回 `accepted` 不等于 ACP 已停止，composer 继续显示 stopping。Runtime control cursor 只记录控制权切换，不得把 `latestTurnStatus` 改成 `cancelled`；metadata 不存在时以 `none` 初始化。runtime 发送不带 `id` 的 JSON-RPC notification `session/cancel` 后等待原 `session/prompt` RPC 返回；取消期间 pending 或迟到 permission / elicitation 由同一取消闸门自动回复 cancelled / decline，不能阻塞 30 秒 bounded drain。prompt 返回 cancelled/interrupted、transport 中断或 deadline 到期后才由统一收尾路径写 terminal snapshot；deadline 到期隔离 session 直接复用，不通过 `provider.pid` 强杀共享 adapter，也不提前伪造“停止成功”。
 - Raw frames 按 JSONL 一行一个 frame 的形式由后端分页展示，查询接口以 append-only 行号作为稳定记录时序，默认 `desc`（最新优先、page 0 为最新一页且页内递减），并支持切换 `asc`（最早优先、page 0 为最早一页且页内递增）；排序与过滤变更统一回到 page 0，前端不得只反转当前页，第一页/上一页/下一页文案随排序方向切换；摘要默认单行截断，时间统一显示为本地系统时区 `YYYY-MM-DD HH:MM:SS`；点击该行后以 pretty JSON 或纯文本多行展开，使用克制的暗色代码面板和柔和选中态；短 frame 自然展开不显示内层滚动条，只有超长 frame 才限制高度并显示细滚动条；超长连续字符主动切分换行，内容必须在容器内显示，不能撑出窗口，且展开正文跟随应用设置字体。
 - 支持服务端关键词检索，不把全量 `acp.raw.jsonl` 传给前端。
 - 支持按 direction（inbound/outbound）和 kind/method 过滤。

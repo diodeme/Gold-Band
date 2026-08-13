@@ -32,6 +32,10 @@
 - 不能通过 response 确认 adapter 已处理。
 - 适合用户点击“停止当前生成”。
 - 正常情况下不释放 ACP session，也不关闭 adapter process。
+- Gold Band 不等待 `session/cancel` response；取消确认来自原先仍在等待的 `session/prompt` RPC 返回 `stopReason=cancelled/interrupted`。若 transport 中断或现有 30 秒 cancel drain 到期，则本地以 interrupted/deadline 终止等待，并隔离该 session 的直接复用，不能声称 provider 已确认取消。
+- 当前 turn 的 `ProviderControl::CancelRequested` 是 permission / elicitation 的统一取消闸门。请求到达前和同步等待期间都必须检查该状态；命中后直接返回协议级 cancelled / decline，不创建新的 pending 文件或 UI 决策卡片。禁止依赖停止瞬间的一次目录扫描，因为 provider 可以在 `session/cancel` 之后继续发送多个迟到请求。
+- `stop_active_session` 的同步阶段只持久化 runtime `Paused + ProcessInterrupted` 并设置取消闸门，返回 `accepted`；不得提前写 ACP `latestTurnStatus=cancelled`。ACP terminal snapshot 只由 prompt 的统一收尾路径写入，保证 UI 单调显示“正在停止 → 已停止”。
+- Runtime control cursor 与 ACP turn 终态分域持久化：cursor 更新必须保留已有 `latestTurnStatus`，metadata 不存在时以非终态 `none` 初始化，禁止用 cursor 写入旁路制造 cancelled 终态；恢复清理判定 persisted active session 时同时要求稳定 `sessionId`，避免把 cursor-only metadata 当成运行中会话。
 - ACP session/snapshot 被记录为 `cancelled` 只表达协议层确实观察到用户停止；业务 runtime 仍必须根据当前 attempt/graph 与 execution generation 决定终态。artifact 若在停止落盘前已完成校验和提交，则保留既有完成事实；停止落盘后的 AI-DYNAMIC 迟到 response 即使包含完整合法 `dynamic-node-completion`，也不能恢复 Runtime 或推进 graph，只能等待用户显式 continue。
 
 Gold Band 使用场景：
@@ -97,6 +101,17 @@ Zed 参考：
 
 - `D:/Projects/code/ai/zed/crates/agent_servers/src/acp.rs`：用户停止走 `CancelNotification`，close session 走 `CloseSessionRequest` 并 await response。
 - `D:/Projects/code/ai/zed/crates/acp_thread/src/acp_thread.rs`：thread cancel 后等待原 prompt task 收尾，并把 cancelled stop reason 映射为停止状态。
+
+## 2026-08-13 迟到交互阻塞取消修复
+
+- [x] permission 与 elicitation 的同步等待复用当前 turn `ProviderControl`，取消后在最多一个 200ms 轮询周期内返回 cancelled / decline。
+- [x] 取消后迟到的 permission / elicitation 在进入 pending 持久化和 UI 事件前直接回复，不再要求用户逐个拒绝。
+- [x] 删除无生产调用者的 elicitation 专用 cancel marker，避免 attempt 目录形成第二套取消事实和跨 turn 污染。
+- [x] `stop_active_session` accepted 阶段不再提前生成 cancelled snapshot，终态由原 `session/prompt`、transport interruption 或既有 bounded deadline 的统一收尾路径写入。
+- [x] 修正 runtime control metadata 的缺省状态为 `none`，避免 cursor 写入旁路制造假 cancelled；回归覆盖 snapshot/session 两个落盘文件、既有终态保持不变，以及 cursor-only metadata 不进入 active session 恢复清理。
+- [x] 回归测试固定 permission / elicitation 等待中的取消以及 accepted 阶段不产生假终态。
+
+性能与过度设计评审：不新增依赖、线程、缓存、队列或状态机；正常 prompt 路径只增加请求到达时一次现有 mutex 状态读取，交互等待期间沿用 200ms 轮询并增加一次 O(1) 状态读取。取消路径减少 pending 文件 I/O、无限轮询和事件线程阻塞。没有数据规模或算法热点风险，不增加无意义 benchmark。
 
 ## 4. 统一停止点矩阵
 
@@ -328,7 +343,7 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
 本轮已落地：
 
 1. `ProviderControlState::ForceStopping` 已收敛为 `CancelRequested`，对外入口改为 `request_prompt_cancel(...)`。
-2. stop command 继续立即写 `Paused + ProcessInterrupted`，并取消 pending permission、持久化 cancelled ACP snapshot/session。
+2. stop command 继续立即写 `Paused + ProcessInterrupted` 并取消 pending permission；runtime control cursor 只记录控制权切换，不写 cancelled，ACP terminal snapshot/session 由 prompt 统一收尾路径持久化。
 3. cancel request 是持续门闩：provider active 前最多投递一次 `session/cancel`，后续观察到 active 且 prompt 未 terminal 时最多补发一次，并继续 drain 当前 `session/prompt`。
 4. cancel timeout 使用 typed `AcpCancelDrainTimeout` 进入内部诊断；用户可见 turn/session 仍结算 cancelled，不进入 transport failure 或 auto retry；未 drain session 被隔离，adapter process 不被 kill。
 5. doctor cleanup 已抽出 bounded `session/delete` / `session/close` helper，delete first，close fallback。

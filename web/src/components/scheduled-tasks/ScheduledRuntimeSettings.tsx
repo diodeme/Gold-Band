@@ -1,37 +1,41 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getScheduledRuntimeSettings, saveScheduledRuntimeSettings } from '@/api';
+import { saveScheduledRuntimeSettings } from '@/api';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
+import { readScheduledRuntimeSettingsCache, useScheduledRuntimeSettings } from './useScheduledRuntimeSettings';
 import type { ScheduledRuntimeSettingsVm } from '@/types';
 
-interface ScheduledRuntimeSettingsProps {
-  initialSettings?: ScheduledRuntimeSettingsVm;
-}
+type SaveInput = Pick<
+  ScheduledRuntimeSettingsVm,
+  'keepAwakeEnabled' | 'completionNotificationsEnabled' | 'occurrenceRetentionDays'
+>;
 
-export function ScheduledRuntimeSettings({ initialSettings }: ScheduledRuntimeSettingsProps) {
+export function ScheduledRuntimeSettings() {
   const { t } = useTranslation();
-  const [settings, setSettings] = useState<ScheduledRuntimeSettingsVm | null>(initialSettings ?? null);
-  const [retention, setRetention] = useState(String(initialSettings?.occurrenceRetentionDays ?? 30));
+  const { settings, loadError, replace } = useScheduledRuntimeSettings();
+  const [retention, setRetention] = useState<string>(() => {
+    const cached = readScheduledRuntimeSettingsCache();
+    return cached ? String(cached.occurrenceRetentionDays) : '';
+  });
+  const retentionSynced = useRef(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
 
+  // settings 首次到位后初始化保留天数输入框；后续后台刷新不覆盖用户编辑。
   useEffect(() => {
-    if (initialSettings) return;
-    getScheduledRuntimeSettings()
-      .then((value) => {
-        setSettings(value);
-        setRetention(String(value.occurrenceRetentionDays));
-      })
-      .catch(() => setSaveError(true));
-  }, [initialSettings]);
+    if (settings && !retentionSynced.current) {
+      setRetention(String(settings.occurrenceRetentionDays));
+      retentionSynced.current = true;
+    }
+  }, [settings]);
 
-  const save = async (next: Pick<ScheduledRuntimeSettingsVm, 'keepAwakeEnabled' | 'completionNotificationsEnabled' | 'occurrenceRetentionDays'>) => {
+  const save = async (next: SaveInput) => {
     setSaving(true);
     setSaveError(false);
     try {
       const saved = await saveScheduledRuntimeSettings(next);
-      setSettings(saved);
+      replace(saved);
       setRetention(String(saved.occurrenceRetentionDays));
     } catch {
       setSaveError(true);
@@ -41,7 +45,11 @@ export function ScheduledRuntimeSettings({ initialSettings }: ScheduledRuntimeSe
   };
 
   if (!settings) {
-    return <div className="py-2 text-sm text-muted-foreground">{saveError ? t('scheduled.settings.loadFailed') : t('common.loading')}</div>;
+    return (
+      <div className="py-2 text-sm text-muted-foreground">
+        {loadError ? t('scheduled.settings.loadFailed') : t('common.loading')}
+      </div>
+    );
   }
 
   const effectiveKey = settings.keepAwakeEnabled

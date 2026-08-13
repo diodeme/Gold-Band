@@ -760,6 +760,7 @@ fn prompt_turn_lifecycle_callback(
                 });
                 schedule_direct_prompt_queue_drain(
                     app_handle.clone(),
+                    direct_prompt_queue_drain_app(&app),
                     project_id.clone(),
                     locator,
                     successful,
@@ -771,17 +772,22 @@ fn prompt_turn_lifecycle_callback(
     })
 }
 
+fn direct_prompt_queue_drain_app(app: &App) -> App {
+    app.clone_for_background()
+}
+
+fn queued_user_turn_app(app: &App) -> App {
+    app.clone_for_background().without_scheduled_turn_context()
+}
+
 fn schedule_direct_prompt_queue_drain(
     app_handle: AppHandle,
+    app: App,
     project_id: Option<String>,
     locator: AttemptLocator,
     successful: bool,
     completed_turn: Option<DeferredTurnCompletion>,
 ) {
-    let state = app_handle.state::<DesktopState>();
-    let Ok(app) = resolve_command_app(state.inner(), project_id.as_deref()) else {
-        return;
-    };
     if conversation_run_mode(&app, &locator.task_id)
         != Some(gold_band::config::ConversationRunMode::Direct)
     {
@@ -827,10 +833,6 @@ fn schedule_direct_prompt_queue_drain(
     let expected_revision = queue.revision;
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(AUTO_DISPATCH_USER_PRIORITY_GRACE_MS)).await;
-        let state = app_handle.state::<DesktopState>();
-        let Ok(app) = resolve_command_app(state.inner(), project_id.as_deref()) else {
-            return;
-        };
         let attempt_dir = locator.attempt_dir(&app);
         if client::prompt_activity(&attempt_dir).is_some() {
             emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
@@ -865,7 +867,11 @@ fn schedule_direct_prompt_queue_drain(
             return;
         }
         emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), true);
-        let queued_turn_app = app.clone_for_background().without_scheduled_turn_context();
+        let queued_turn_app = configure_conversation_runtime_callbacks(
+            queued_user_turn_app(&app),
+            app_handle.clone(),
+            project_id.clone(),
+        );
         let _result = send_acp_prompt_with_app(
             app_handle.clone(),
             queued_turn_app,
@@ -7128,6 +7134,60 @@ mod tests {
             event => panic!("expected terminal AcpTurnFinished, got {event:?}"),
         }
         drop(events);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn direct_queue_drain_keeps_the_originating_scheduled_turn_context() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-direct-drain-context-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap())
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()));
+
+        let drain_app = direct_prompt_queue_drain_app(&app);
+
+        assert_eq!(drain_app.scheduled_occurrence_id(), Some("occurrence-001"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn queued_user_turn_clears_only_the_scheduled_origin() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-queued-turn-context-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let seen = Arc::new(Mutex::new(0usize));
+        let seen_for_callback = seen.clone();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap())
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_prompt_turn_lifecycle(Arc::new(move |_, _| {
+                *seen_for_callback.lock().unwrap() += 1;
+                Ok(())
+            }));
+
+        let queued_app = queued_user_turn_app(&app);
+        queued_app
+            .notify_prompt_turn_finished(
+                acp_live_event_context(
+                    "task-001",
+                    "run-001",
+                    "round-001",
+                    "node-001",
+                    "attempt-001",
+                    None,
+                    None,
+                ),
+                Some("turn-001".to_string()),
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(queued_app.scheduled_occurrence_id(), None);
+        assert_eq!(*seen.lock().unwrap(), 1);
         let _ = std::fs::remove_dir_all(root);
     }
 

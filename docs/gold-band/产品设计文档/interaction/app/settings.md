@@ -196,3 +196,4 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - macOS 不是后续兼容项，而是 Task 6 的同级目标平台：实现必须保留 `objc2-io-kit`/IOKit 后端与相同的启用、失效、退出释放语义。Windows 开发机无法替代 macOS 编译或真机验证；发布验收需要在 macOS CI 或真机上补充编译和开关 smoke test。
 - occurrence 默认保留 30 天。清理仅删除 SQLite 中过期的 `succeeded/failed/skipped/missed` 行，保留 `attention_required`、非终态和活动 Run 链接；Task、Run、Round、ACP 文件与产物不属于该清理事务。
 - 2026-08-09 起 `ScheduledRuntimeSettings` 只在通用设置页展示；定时任务管理页移除重复入口，但继续由同一命令和状态模型服务设置页，不增加页面级副本。
+- 2026-08-11 起定时任务运行设置接入前端 stale-while-revalidate 缓存：App 启动后台预取一次填充模块级缓存，进入设置页与在「通用」标签页间切换时命中缓存立即渲染，不再出现「加载中…」闪烁；缓存命中后在新鲜期内不重复请求，过期或保存成功后才静默刷新动态字段（生效情况、启用任务数、电源错误码）。该缓存以独立运行时缓存形态存在，不并入启动静态快照 `AppBootstrapVm`，因为这些值混合了运行时状态而非纯静态配置。

@@ -132,10 +132,12 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
   const updateEnabled = useCallback(async (enabled: boolean) => {
     if (!task) return;
     try {
-      const updated = await setScheduledTaskEnabled(task.projectId, task.id, enabled);
-      setTask(updated);
+      await setScheduledTaskEnabled(task.projectId, task.id, enabled);
+      // Reload the complete detail projection because diagnostics and occurrence history
+      // depend on backend state that the task-only command response cannot refresh.
+      await loadDetail(task.projectId, task.id);
     } catch { /* keep previous state */ }
-  }, [task]);
+  }, [loadDetail, task]);
 
   const runNow = useCallback(async () => {
     if (!task) return;

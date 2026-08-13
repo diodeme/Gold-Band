@@ -437,7 +437,12 @@ impl ScheduledTaskDatabase {
                  definition_json = excluded.definition_json,
                  created_at = excluded.created_at,
                  updated_at = excluded.updated_at,
-                 revision = scheduled_jobs.revision + 1",
+                 revision = scheduled_jobs.revision + 1
+             WHERE scheduled_jobs.project_id IS NOT excluded.project_id
+                OR scheduled_jobs.enabled IS NOT excluded.enabled
+                OR scheduled_jobs.definition_json IS NOT excluded.definition_json
+                OR scheduled_jobs.created_at IS NOT excluded.created_at
+                OR scheduled_jobs.updated_at IS NOT excluded.updated_at",
             params![
                 definition.id(),
                 definition.project_id,
@@ -583,7 +588,10 @@ impl ScheduledTaskDatabase {
         Ok(definitions)
     }
 
-    fn list_job_records_for_project(&self, project_id: &str) -> Result<Vec<ScheduledJobRecord>> {
+    pub fn list_job_records_for_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ScheduledJobRecord>> {
         let connection = self.lock_connection()?;
         let mut statement = connection.prepare(
             "SELECT definition_json, revision, next_run_at
@@ -1158,6 +1166,27 @@ impl ScheduledTaskDatabase {
             .map_err(SchedulerDatabaseError::from)
     }
 
+    /// 列出某个 job 当前处于 running 状态的 occurrence，用于主动状态对账：
+    /// 这些 occurrence 理论上有 Task/Run 在执行；若其 Task/Run 已不再 active，
+    /// scheduler 应当对账收尾，避免 occurrence 因 lifecycle 事件丢失而永久卡 running。
+    pub fn list_running_occurrences_for_job(
+        &self,
+        job_id: &str,
+    ) -> Result<Vec<ScheduledOccurrence>> {
+        let connection = self.lock_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, job_id, scheduled_at, trigger_kind, status, attempt,
+                    owner_id, lease_until, heartbeat_at, task_id, run_id, round_id, attempt_id,
+                    error_code, error_params, started_at, finished_at, created_at, updated_at
+             FROM scheduled_occurrences
+             WHERE job_id = ?1 AND status = 'running'
+             ORDER BY scheduled_at ASC, created_at ASC",
+        )?;
+        let rows = statement.query_map(params![job_id], map_occurrence)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(SchedulerDatabaseError::from)
+    }
+
     pub fn oldest_runnable_occurrence(&self, job_id: &str) -> Result<Option<ScheduledOccurrence>> {
         let connection = self.lock_connection()?;
         connection
@@ -1693,6 +1722,11 @@ pub fn derived_next_run_at(definition: &ScheduledTaskDefinition) -> Option<DateT
     if !definition.enabled {
         return None;
     }
+    // 基准用 last_trigger_at（回退到创建时刻前 1s），保证：
+    // - 周期性 schedule（Every/Cron/Repeat）：从上次触发点连续算下一次；
+    // - 一次性 At schedule：返回 at 本身（即使已过，legacy 导入历史 job 仍保留触发点）。
+    // next_run_at 不会因此倒退——非 schedule 字段的编辑路径会保留 scheduler 已推进的值，
+    // 只有 schedule 变化/启停时才用本函数重算。
     let baseline = definition.last_trigger_at.unwrap_or_else(|| {
         definition
             .created_at
@@ -2053,7 +2087,7 @@ fn to_conversion_error(error: impl std::fmt::Display) -> rusqlite::Error {
 mod tests {
     use super::{
         DueMaterialization, LEGACY_JSON_MIGRATION, LEGACY_SHARED_DB_MIGRATION,
-        LegacySchedulerSnapshot, ScheduledTaskDatabase, UpdateJobResult,
+        LegacySchedulerSnapshot, ScheduledTaskDatabase, UpdateJobResult, derived_next_run_at,
     };
     use crate::scheduler::occurrence::{
         ClaimResult, OccurrenceLinks, OccurrenceStatus, OccurrenceTriggerKind,
@@ -2061,7 +2095,7 @@ mod tests {
     use crate::scheduler::store::{ScheduledTaskStore, ScheduledTriggerRecord};
     use crate::scheduler::{OverlapPolicy, ScheduleSpec, ScheduledTaskDefinition};
     use camino::Utf8PathBuf;
-    use chrono::{Duration, TimeZone, Utc};
+    use chrono::{DateTime, Duration, TimeZone, Utc};
     use rusqlite::{Connection, params};
     use std::collections::{BTreeMap, HashSet};
     use std::sync::{Arc, Barrier};
@@ -2551,6 +2585,62 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored, job);
+    }
+
+    #[test]
+    fn due_materialization_advances_a_millisecond_persisted_every_deadline_once() {
+        let (_temp, database) = database();
+        let anchor = DateTime::parse_from_rfc3339("2026-08-12T07:16:49.249706300Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let deadline = DateTime::parse_from_rfc3339("2026-08-12T08:22:49.249Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let definition = definition(
+            "project-a",
+            "job-millisecond-deadline",
+            ScheduleSpec::every(3, "minutes", anchor).unwrap(),
+        );
+        let created = database.create_job(&definition, Some(deadline)).unwrap();
+
+        let DueMaterialization::Ready { job, occurrence } = database
+            .materialize_due_occurrence(
+                &definition.project_id,
+                definition.id(),
+                created.revision,
+                deadline,
+            )
+            .unwrap()
+        else {
+            panic!("expected a due occurrence");
+        };
+
+        assert_eq!(occurrence.scheduled_at, deadline);
+        assert_eq!(
+            job.next_run_at,
+            Some(
+                DateTime::parse_from_rfc3339("2026-08-12T08:25:49.249Z")
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+        assert_eq!(job.revision, created.revision + 1);
+        assert!(matches!(
+            database
+                .materialize_due_occurrence(
+                    &definition.project_id,
+                    definition.id(),
+                    job.revision,
+                    deadline,
+                )
+                .unwrap(),
+            DueMaterialization::NotDue
+        ));
+        let stored = database
+            .get_job_definition(&definition.project_id, definition.id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.revision, job.revision);
     }
 
     #[test]
@@ -3683,5 +3773,108 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn saving_an_unchanged_definition_is_revision_idempotent() {
+        let (_temp, database) = database();
+        let definition = definition(
+            "project-a",
+            "job-idempotent-save",
+            ScheduleSpec::every(3, "minutes", fixed_time()).unwrap(),
+        );
+
+        database.save_job_definition(&definition).unwrap();
+        let first = database
+            .get_job_definition(&definition.project_id, definition.id())
+            .unwrap()
+            .unwrap();
+        database.save_job_definition(&definition).unwrap();
+        let second = database
+            .get_job_definition(&definition.project_id, definition.id())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(second.revision, first.revision);
+        assert_eq!(second.definition, first.definition);
+    }
+
+    #[test]
+    fn derived_next_run_at_for_every_schedule_always_yields_future_point() {
+        let now = Utc::now();
+        // 「每 3 分钟」周期性 schedule，last_trigger_at 故意设为很早的过去值：
+        // derived 仍应给出一个不早于 now 的未来触发点（Every 总是从 anchor 向前推进到下一个周期）。
+        let mut def = definition(
+            "project-a",
+            "job-derived",
+            ScheduleSpec::every(3, "minutes", now).unwrap(),
+        );
+        def.last_trigger_at = Some(now - Duration::days(1));
+
+        let derived = derived_next_run_at(&def).expect("enabled every job derives a next run at");
+        assert!(
+            derived >= now,
+            "derived next_run_at for every schedule must not be in the past"
+        );
+    }
+
+    #[test]
+    fn derived_next_run_at_disabled_returns_none() {
+        let now = Utc::now();
+        let mut def = definition(
+            "project-a",
+            "job-disabled",
+            ScheduleSpec::every(3, "minutes", now).unwrap(),
+        );
+        def.enabled = false;
+        assert!(derived_next_run_at(&def).is_none());
+    }
+
+    #[test]
+    fn list_running_occurrences_for_job_returns_only_running() {
+        let (_temp, database) = database();
+        let deadline = fixed_time() - Duration::minutes(10);
+        let def = definition(
+            "project-a",
+            "job-running",
+            ScheduleSpec::every(1, "hours", deadline).unwrap(),
+        );
+        let created = database.create_job(&def, Some(deadline)).unwrap();
+        let owner = "owner-a";
+
+        // 两条 occurrence：一条 running（有 task_id/run_id），一条 succeeded（终态）。
+        let running = database
+            .materialize_due_occurrence("project-a", "job-running", created.revision, fixed_time())
+            .unwrap();
+        let running = match running {
+            DueMaterialization::Ready { occurrence, .. } => occurrence,
+            other => panic!("unexpected materialization: {other:?}"),
+        };
+        database
+            .claim_occurrence(
+                &running.id,
+                owner,
+                fixed_time(),
+                fixed_time() + Duration::minutes(1),
+            )
+            .unwrap();
+        let _succeeded = database
+            .create_or_get_occurrence(
+                "job-running",
+                fixed_time() + Duration::hours(1),
+                OccurrenceTriggerKind::Scheduled,
+            )
+            .unwrap();
+
+        let listed = database
+            .list_running_occurrences_for_job("job-running")
+            .unwrap();
+        assert_eq!(
+            listed.len(),
+            1,
+            "only the running occurrence should be listed"
+        );
+        assert_eq!(listed[0].id, running.id);
+        assert_eq!(listed[0].status, OccurrenceStatus::Running);
     }
 }

@@ -29,7 +29,7 @@ use gold_band::app::{
 };
 use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, WorkflowDsl, WorkflowValidationError};
-use gold_band::dynamic::{DynamicGraphState, DynamicNodeStatus, DynamicRunStatus};
+use gold_band::dynamic::{DynamicNodeStatus, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::runtime::{NodeState, RunState, WorkerRefState};
 use gold_band::skill::SkillCommandError;
@@ -37,7 +37,7 @@ use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
 use std::path::{Component, Path, PathBuf};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashSet},
     str::FromStr,
     sync::Arc,
     time::{Duration, Instant},
@@ -49,6 +49,10 @@ use gold_band::config::{
     DesktopLanguage, DesktopThemePreference, ManagedAgentConfig, ManagedAgentId,
 };
 use gold_band::observability::set_runtime_log_level;
+use gold_band::provider::{
+    ConversationPromptInput, MAX_USER_PROMPT_QUOTE_CHARS, MAX_USER_PROMPT_QUOTE_ID_BYTES,
+    MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES, MAX_USER_PROMPT_QUOTES, conversation_prompt_text,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -702,7 +706,7 @@ fn resolve_command_app_with_emitters(
     app_handle: &AppHandle,
     state: &DesktopState,
     project_id: Option<&str>,
-) -> Result<App, CommandErrorVm> {
+) -> Result<ConfiguredConversationApp, CommandErrorVm> {
     let app = resolve_command_app(state, project_id)?;
     let pid = project_id.map(|s| s.to_string());
     Ok(configure_conversation_runtime_callbacks(
@@ -712,11 +716,27 @@ fn resolve_command_app_with_emitters(
     ))
 }
 
+pub(crate) struct ConfiguredConversationApp(App);
+
+impl std::ops::Deref for ConfiguredConversationApp {
+    type Target = App;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl ConfiguredConversationApp {
+    fn into_inner(self) -> App {
+        self.0
+    }
+}
+
 pub(crate) fn configure_conversation_runtime_callbacks(
     app: App,
     app_handle: AppHandle,
     project_id: Option<String>,
-) -> App {
+) -> ConfiguredConversationApp {
     let bg_app = app.clone_for_background();
     let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), project_id.clone());
     let prompt_turn_lifecycle = prompt_turn_lifecycle_callback(
@@ -724,9 +744,11 @@ pub(crate) fn configure_conversation_runtime_callbacks(
         app.clone_for_background(),
         project_id.clone(),
     );
-    app.with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(app_handle, bg_app, project_id))
-        .with_prompt_turn_lifecycle(prompt_turn_lifecycle)
+    ConfiguredConversationApp(
+        app.with_acp_live_update(live_update)
+            .with_acp_session_update(acp_session_update_emitter(app_handle, bg_app, project_id))
+            .with_prompt_turn_lifecycle(prompt_turn_lifecycle),
+    )
 }
 
 fn prompt_turn_lifecycle_callback(
@@ -748,42 +770,51 @@ fn prompt_turn_lifecycle_callback(
             context.outer_node_id,
             context.outer_attempt_id,
         );
-        match event {
-            AcpPromptLifecycleEvent::Accepted { prompt_id } => {
-                let _ = complete_accepted_prompt(&locator.attempt_dir(&app), &prompt_id);
-            }
-            AcpPromptLifecycleEvent::Finished {
-                prompt_id,
+        process_prompt_turn_lifecycle(&app, locator, event, |locator, successful, completion| {
+            schedule_direct_prompt_queue_drain(
+                app_handle.clone(),
+                project_id.clone(),
+                app.clone_for_background(),
+                locator,
                 successful,
-            } => {
-                let completion = prompt_id.map(|turn_id| DeferredTurnCompletion {
-                    turn_id,
-                    agent_label: acp_turn_agent_label(&app, &locator),
-                });
-                schedule_direct_prompt_queue_drain(
-                    app_handle.clone(),
-                    project_id.clone(),
-                    locator,
-                    successful,
-                    completion,
-                );
-            }
-        }
+                completion,
+            );
+        });
         Ok(())
     })
+}
+
+fn process_prompt_turn_lifecycle(
+    app: &App,
+    locator: AttemptLocator,
+    event: AcpPromptLifecycleEvent,
+    mut schedule_finished: impl FnMut(AttemptLocator, bool, Option<DeferredTurnCompletion>),
+) {
+    match event {
+        AcpPromptLifecycleEvent::Accepted { prompt_id } => {
+            let _ = complete_accepted_prompt(&locator.attempt_dir(app), &prompt_id);
+        }
+        AcpPromptLifecycleEvent::Finished {
+            prompt_id,
+            successful,
+        } => {
+            let completion = prompt_id.map(|turn_id| DeferredTurnCompletion {
+                turn_id,
+                agent_label: acp_turn_agent_label(app, &locator),
+            });
+            schedule_finished(locator, successful, completion);
+        }
+    }
 }
 
 fn schedule_direct_prompt_queue_drain(
     app_handle: AppHandle,
     project_id: Option<String>,
+    app: App,
     locator: AttemptLocator,
     successful: bool,
     completed_turn: Option<DeferredTurnCompletion>,
 ) {
-    let state = app_handle.state::<DesktopState>();
-    let Ok(app) = resolve_command_app(state.inner(), project_id.as_deref()) else {
-        return;
-    };
     if conversation_run_mode(&app, &locator.task_id)
         != Some(gold_band::config::ConversationRunMode::Direct)
     {
@@ -830,9 +861,6 @@ fn schedule_direct_prompt_queue_drain(
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(AUTO_DISPATCH_USER_PRIORITY_GRACE_MS)).await;
         let state = app_handle.state::<DesktopState>();
-        let Ok(app) = resolve_command_app(state.inner(), project_id.as_deref()) else {
-            return;
-        };
         let attempt_dir = locator.attempt_dir(&app);
         if client::prompt_activity(&attempt_dir).is_some() {
             emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
@@ -867,17 +895,19 @@ fn schedule_direct_prompt_queue_drain(
             return;
         }
         emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), true);
-        let queued_turn_app = app.clone_for_background().without_scheduled_turn_context();
-        let _result = send_acp_prompt_with_app(
+        let _result = send_acp_prompt(
             app_handle.clone(),
-            queued_turn_app,
+            state,
             project_id.clone(),
             locator.task_id.clone(),
             locator.run_id.clone(),
             locator.round_id.clone(),
             locator.node_id.clone(),
             locator.attempt_id.clone(),
-            claimed.content.clone(),
+            ConversationPromptInput {
+                display_text: claimed.content.clone(),
+                quotes: claimed.quotes.clone(),
+            },
             Some(claimed.prompt_id.clone()),
             locator.outer_node_id.clone(),
             locator.outer_attempt_id.clone(),
@@ -3614,7 +3644,10 @@ pub async fn use_conversation_queued_prompt(
         locator.round_id.clone(),
         locator.node_id.clone(),
         locator.attempt_id.clone(),
-        claimed.content.clone(),
+        ConversationPromptInput {
+            display_text: claimed.content.clone(),
+            quotes: claimed.quotes.clone(),
+        },
         Some(claimed.prompt_id.clone()),
         locator.outer_node_id.clone(),
         locator.outer_attempt_id.clone(),
@@ -3636,7 +3669,7 @@ pub async fn submit_conversation_prompt(
     round_id: String,
     node_id: String,
     attempt_id: String,
-    prompt: String,
+    input: ConversationPromptInput,
     prompt_id: Option<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
@@ -3652,6 +3685,7 @@ pub async fn submit_conversation_prompt(
         outer_node_id,
         outer_attempt_id,
     );
+    validate_conversation_prompt_input(&input)?;
     crate::view_models_conversation::touch_conversation_activity(&app, &locator.task_id)
         .map_err(command_error)?;
     let run = app
@@ -3669,7 +3703,7 @@ pub async fn submit_conversation_prompt(
         )
     );
     if direct_mode && (live_prompt_active || run.status == RunStatus::Running) {
-        enqueue_prompt(&attempt_dir, prompt, attachment_paths.unwrap_or_default())
+        enqueue_prompt(&attempt_dir, input, attachment_paths.unwrap_or_default())
             .map_err(prompt_queue_command_error)?;
         emit_acp_session_update(
             &app_handle,
@@ -3730,7 +3764,7 @@ pub async fn submit_conversation_prompt(
         locator.round_id.clone(),
         locator.node_id.clone(),
         locator.attempt_id.clone(),
-        prompt,
+        input,
         prompt_id,
         locator.outer_node_id.clone(),
         locator.outer_attempt_id.clone(),
@@ -3755,14 +3789,15 @@ pub async fn send_acp_prompt(
     round_id: String,
     node_id: String,
     attempt_id: String,
-    prompt: String,
+    input: ConversationPromptInput,
     prompt_id: Option<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
-    send_acp_prompt_with_app(
+    validate_conversation_prompt_input(&input)?;
+    send_acp_prompt_with_configured_app(
         app_handle,
         app,
         project_id,
@@ -3771,7 +3806,7 @@ pub async fn send_acp_prompt(
         round_id,
         node_id,
         attempt_id,
-        prompt,
+        input,
         prompt_id,
         outer_node_id,
         outer_attempt_id,
@@ -3780,21 +3815,22 @@ pub async fn send_acp_prompt(
     .await
 }
 
-pub(crate) async fn send_acp_prompt_with_app(
+pub(crate) async fn send_acp_prompt_with_configured_app(
     app_handle: AppHandle,
-    app: App,
+    app: ConfiguredConversationApp,
     project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
     node_id: String,
     attempt_id: String,
-    prompt: String,
+    input: ConversationPromptInput,
     prompt_id: Option<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
+    let app = app.into_inner();
     let locator = AttemptLocator::new(
         task_id.clone(),
         run_id.clone(),
@@ -3826,6 +3862,11 @@ pub(crate) async fn send_acp_prompt_with_app(
     let app_for_emit = app.clone_for_background();
     let app_handle_for_task = app_handle.clone();
     let execution = tauri::async_runtime::spawn_blocking(move || -> CommandResult<_> {
+        let ConversationPromptInput {
+            display_text,
+            quotes,
+        } = input;
+        let prompt = conversation_prompt_text(&display_text, &quotes);
         if let (Some(outer_node_id), Some(outer_attempt_id)) =
             (outer_node_id.as_deref(), outer_attempt_id.as_deref())
         {
@@ -3892,6 +3933,8 @@ pub(crate) async fn send_acp_prompt_with_app(
                     continue_ref.clone(),
                 )
                 .map_err(command_error)?;
+            prompt_bundle.display_text = Some(display_text.clone());
+            prompt_bundle.quotes = quotes.clone();
             // Resolve attachments
             if let Some(ref paths) = attachment_paths {
                 if !paths.is_empty() {
@@ -4062,6 +4105,8 @@ pub(crate) async fn send_acp_prompt_with_app(
                 continue_ref.clone(),
             )
             .map_err(command_error)?;
+        prompt_bundle.display_text = Some(display_text);
+        prompt_bundle.quotes = quotes;
         // Resolve attachments
         if let Some(ref paths) = attachment_paths {
             if !paths.is_empty() {
@@ -5069,6 +5114,56 @@ fn prompt_queue_command_error(error: PromptQueueError) -> CommandErrorVm {
         PromptQueueError::Storage => "conversation.prompt-queue-storage-failed",
     };
     CommandErrorVm::new(code, serde_json::json!({}))
+}
+
+fn validate_conversation_prompt_input(input: &ConversationPromptInput) -> CommandResult<()> {
+    if input.display_text.trim().is_empty() {
+        return Err(CommandErrorVm::new(
+            "conversation.prompt-empty",
+            serde_json::json!({}),
+        ));
+    }
+    if input.quotes.len() > MAX_USER_PROMPT_QUOTES {
+        return Err(CommandErrorVm::new(
+            "conversation.prompt-quote-count-exceeded",
+            serde_json::json!({ "maxQuotes": MAX_USER_PROMPT_QUOTES }),
+        ));
+    }
+    let mut quote_ids = HashSet::with_capacity(input.quotes.len());
+    let mut quote_chars = 0usize;
+    for quote in &input.quotes {
+        if quote.id.trim().is_empty()
+            || quote.source_message_key.trim().is_empty()
+            || quote.text.trim().is_empty()
+            || !quote_ids.insert(quote.id.as_str())
+        {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-quote-invalid",
+                serde_json::json!({}),
+            ));
+        }
+        if quote.id.len() > MAX_USER_PROMPT_QUOTE_ID_BYTES
+            || quote.source_message_key.len() > MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES
+        {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-quote-metadata-too-long",
+                serde_json::json!({
+                    "maxIdBytes": MAX_USER_PROMPT_QUOTE_ID_BYTES,
+                    "maxSourceKeyBytes": MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES,
+                }),
+            ));
+        }
+        let remaining = MAX_USER_PROMPT_QUOTE_CHARS.saturating_sub(quote_chars);
+        let chars = quote.text.chars().take(remaining + 1).count();
+        quote_chars += chars;
+        if quote_chars > MAX_USER_PROMPT_QUOTE_CHARS {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-quote-limit-exceeded",
+                serde_json::json!({ "maxChars": MAX_USER_PROMPT_QUOTE_CHARS }),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn acp_storage_query_error(error: anyhow::Error, fallback_code: &'static str) -> CommandErrorVm {
@@ -6572,8 +6667,83 @@ fn parse_skill_source(source: &str) -> Result<gold_band::config::SkillSource, Co
 mod tests {
     use super::*;
     use camino::Utf8PathBuf;
+    use gold_band::dynamic::DynamicGraphState;
     use gold_band::storage::write_json;
     use std::sync::{Arc, Mutex};
+
+    fn prompt_with_quote(source_message_key: &str, text: &str) -> ConversationPromptInput {
+        ConversationPromptInput {
+            display_text: "继续".to_string(),
+            quotes: vec![gold_band::provider::UserPromptQuote {
+                id: "quote-1".to_string(),
+                source_message_key: source_message_key.to_string(),
+                text: text.to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn prompt_quote_validation_enforces_bounded_shape_without_loading_sources() {
+        let valid = prompt_with_quote("textDelta-answer-1", "Agent 原文");
+        assert!(validate_conversation_prompt_input(&valid).is_ok());
+
+        let mut duplicate = valid.clone();
+        duplicate.quotes.push(duplicate.quotes[0].clone());
+        assert_eq!(
+            validate_conversation_prompt_input(&duplicate)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-invalid"
+        );
+
+        let over_limit = prompt_with_quote(
+            "textDelta-answer-1",
+            &"字".repeat(MAX_USER_PROMPT_QUOTE_CHARS + 1),
+        );
+        assert_eq!(
+            validate_conversation_prompt_input(&over_limit)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-limit-exceeded"
+        );
+        let mut too_many = valid.clone();
+        too_many.quotes = (0..=MAX_USER_PROMPT_QUOTES)
+            .map(|index| gold_band::provider::UserPromptQuote {
+                id: format!("quote-{index}"),
+                source_message_key: format!("source-{index}"),
+                text: "x".to_string(),
+            })
+            .collect();
+        assert_eq!(
+            validate_conversation_prompt_input(&too_many)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-count-exceeded"
+        );
+
+        let too_long_id = ConversationPromptInput {
+            display_text: "继续".to_string(),
+            quotes: vec![gold_band::provider::UserPromptQuote {
+                id: "x".repeat(MAX_USER_PROMPT_QUOTE_ID_BYTES + 1),
+                source_message_key: "arbitrary-source".to_string(),
+                text: "用户提供的任意引用内容".to_string(),
+            }],
+        };
+        assert_eq!(
+            validate_conversation_prompt_input(&too_long_id)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-metadata-too-long"
+        );
+
+        assert!(
+            validate_conversation_prompt_input(&prompt_with_quote(
+                "code-selection:anywhere",
+                "引用不需要在消息时间线中存在",
+            ))
+            .is_ok()
+        );
+    }
 
     #[test]
     fn blocking_command_runs_outside_the_caller_thread() {
@@ -7246,6 +7416,82 @@ mod tests {
         assert_eq!(context.attempt_id, "attempt-002");
         assert_eq!(context.outer_node_id.as_deref(), Some("ai-dynamic"));
         assert_eq!(context.outer_attempt_id.as_deref(), Some("attempt-001"));
+    }
+
+    #[test]
+    fn prompt_lifecycle_acceptance_and_completion_drain_every_queued_turn() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-prompt-lifecycle-drain-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let repo_root = Utf8PathBuf::from_path_buf(root.clone()).unwrap();
+        let app = App::new(repo_root);
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "direct-agent".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        let attempt_dir = locator.attempt_dir(&app);
+        let expected_contents = ["first", "second", "third"];
+        for content in expected_contents {
+            enqueue_prompt(&attempt_dir, content.to_string(), Vec::new()).unwrap();
+        }
+
+        let queue = load_prompt_queue(&attempt_dir).unwrap();
+        let mut current = match claim_next_for_auto_dispatch(&attempt_dir, queue.revision).unwrap()
+        {
+            AutoClaimResult::Claimed(item) => Some(item),
+            result => panic!("expected first queued prompt, got {result:?}"),
+        };
+        let mut dispatched_contents = Vec::new();
+
+        while let Some(item) = current.take() {
+            dispatched_contents.push(item.content.clone());
+            process_prompt_turn_lifecycle(
+                &app,
+                locator.clone(),
+                AcpPromptLifecycleEvent::Accepted {
+                    prompt_id: item.prompt_id.clone(),
+                },
+                |_, _, _| panic!("accepted must not schedule the next prompt"),
+            );
+            assert!(
+                load_prompt_queue(&attempt_dir)
+                    .unwrap()
+                    .items
+                    .iter()
+                    .all(|queued| queued.prompt_id != item.prompt_id),
+                "accepted prompt must leave the queue before its provider turn finishes"
+            );
+
+            process_prompt_turn_lifecycle(
+                &app,
+                locator.clone(),
+                AcpPromptLifecycleEvent::Finished {
+                    prompt_id: Some(item.prompt_id),
+                    successful: true,
+                },
+                |_, successful, completion| {
+                    assert!(successful);
+                    assert!(completion.is_some());
+                    let queue = load_prompt_queue(&attempt_dir).unwrap();
+                    current =
+                        match claim_next_for_auto_dispatch(&attempt_dir, queue.revision).unwrap() {
+                            AutoClaimResult::Claimed(item) => Some(item),
+                            AutoClaimResult::Empty => None,
+                            result => panic!("unexpected automatic claim result: {result:?}"),
+                        };
+                },
+            );
+        }
+
+        assert_eq!(dispatched_contents, expected_contents);
+        assert!(load_prompt_queue(&attempt_dir).unwrap().items.is_empty());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

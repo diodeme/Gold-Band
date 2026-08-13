@@ -131,7 +131,6 @@ function baseInput(overrides: Partial<AcpRuntimeComposerStateInput> = {}): AcpRu
     acpStatus: 'completed',
     prompt: 'hello',
     waitingForPermission: false,
-    hasPlanIntervention: false,
     sending: false,
     awaitingResponse: false,
     waitingForOptimisticPrompt: false,
@@ -616,7 +615,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canSubmit).toBe(true);
   });
 
-  it('keeps permission waits as a locked runtime composer state', () => {
+  it('keeps permission waits locked when the session has no prompt queue', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle(),
       waitingForPermission: true,
@@ -624,7 +623,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     }));
 
     expect(state.mode).toBe('permission-blocked');
-    expect(state.submitTarget).toBe('permission-response');
+    expect(state.submitTarget).toBe('none');
     expect(state.sessionActive).toBe(true);
     expect(state.composerLocked).toBe(true);
     expect(state.inputDisabled).toBe(true);
@@ -634,6 +633,30 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.placeholderKind).toBe('runtime-controlled');
     expect(state.hintKind).toBe('permission-pending');
     expect(state.showStatus).toBe(false);
+  });
+
+  it('routes a Direct message to the existing queue while permission remains pending', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        acp: {
+          sessionAvailability: 'established',
+          liveTurnActivity: 'running',
+          latestTurnStatus: 'none',
+          stopping: false,
+        },
+        promptQueue: { revision: 0, items: [], maxItems: 10 },
+      }),
+      promptQueueEnabled: true,
+      waitingForPermission: true,
+      prompt: '排队发送',
+    }));
+
+    expect(state.mode).toBe('permission-blocked');
+    expect(state.submitTarget).toBe('queue-prompt');
+    expect(state.composerLocked).toBe(false);
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canSubmit).toBe(true);
+    expect(state.hintKind).toBe('permission-pending');
   });
 
   it('does not turn workflow outcome failure into runtime error', () => {

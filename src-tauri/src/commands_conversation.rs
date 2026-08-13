@@ -26,6 +26,7 @@ use crate::conversation_workspace::{
 use crate::state::DesktopContext;
 use crate::state::DesktopState;
 use crate::view_models::ContentVm;
+use crate::workspace_files::WorkspaceFileRuntime;
 
 fn scheduled_service_error(
     error: crate::scheduled_service::ScheduledServiceError,
@@ -1452,6 +1453,8 @@ pub struct AttachmentFileVm {
     pub path: String,
     pub name: String,
     pub size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1471,21 +1474,38 @@ pub struct MaterializeConversationAttachmentsInput {
 }
 
 #[tauri::command]
-pub fn stat_attachment_files(paths: Vec<String>) -> CommandResult<Vec<AttachmentFileVm>> {
-    let files: Vec<AttachmentFileVm> = paths
+pub async fn stat_attachment_files(
+    runtime: State<'_, WorkspaceFileRuntime>,
+    paths: Vec<String>,
+) -> CommandResult<Vec<AttachmentFileVm>> {
+    let runtime = runtime.inner().clone();
+    spawn_blocking_command(move || Ok(paths
         .into_iter()
         .filter_map(|p| {
             let path = Path::new(&p);
             let name = path.file_name()?.to_str()?.to_string();
             let size = path.metadata().ok()?.len();
+            let ext = path.extension().and_then(|value| value.to_str())?.to_ascii_lowercase();
+            let mime = attachment_mime_for_ext(&ext);
+            let preview_url = mime.starts_with("image/").then(|| {
+                let revision = crate::workspace_files::revision_for_preview(path).ok()?;
+                runtime.issue_attachment_preview(
+                    "attachment-picker".to_string(),
+                    path.to_path_buf(),
+                    revision,
+                    mime.to_string(),
+                    60 * 60,
+                ).ok().map(|grant| grant.token)
+            }).flatten();
             Some(AttachmentFileVm {
                 path: p,
                 name,
                 size,
+                preview_url,
             })
         })
-        .collect();
-    Ok(files)
+        .collect()))
+        .await
 }
 
 #[tauri::command]
@@ -1798,6 +1818,7 @@ fn materialize_attachment_files_to_dir(
             path: path.to_string(),
             name,
             size,
+            preview_url: None,
         });
     }
 

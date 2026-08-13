@@ -8258,7 +8258,11 @@ mod tests {
         )
     }
 
-    fn plan_permission_event_at(request_id: &str, status: &str, timestamp: u64) -> AcpUiEventVm {
+    fn multi_option_permission_event_at(
+        request_id: &str,
+        status: &str,
+        timestamp: u64,
+    ) -> AcpUiEventVm {
         acp_event_at(
             request_id,
             "permissionRequest",
@@ -8267,8 +8271,8 @@ mod tests {
             Some(json!({
                 "requestId": request_id,
                 "options": [
-                    { "optionId": "keep-planning", "name": "继续规划", "kind": "keep_planning" },
-                    { "optionId": "accept-plan", "name": "Accept plan", "kind": "accept" }
+                    { "optionId": "allow-once", "name": "Allow once", "kind": "allow_once" },
+                    { "optionId": "reject-once", "name": "Reject", "kind": "reject_once" }
                 ]
             })),
         )
@@ -9393,8 +9397,8 @@ mod tests {
         let elapsed = elapsed_for(
             vec![
                 gold_band_prompt_at(100),
-                plan_permission_event_at("plan-permission-1", "pending", 110),
-                plan_permission_event_at("plan-permission-1", "selected", 160),
+                multi_option_permission_event_at("permission-1", "pending", 110),
+                multi_option_permission_event_at("permission-1", "selected", 160),
                 text_event_at(180),
             ],
             false,

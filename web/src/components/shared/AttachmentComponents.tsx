@@ -118,9 +118,9 @@ export function AttachmentChipsList({
 }
 
 export interface AttachmentPreviewDialogsProps {
-  previewImage: AttachmentItem | null;
+  previewImage?: AttachmentItem | null;
   textPreview: { name: string; content: string } | null;
-  onCloseImage: () => void;
+  onCloseImage?: () => void;
   onCloseText: () => void;
 }
 
@@ -132,7 +132,7 @@ export function AttachmentPreviewDialogs({
 }: AttachmentPreviewDialogsProps) {
   return (
     <>
-      <Dialog open={!!previewImage} onOpenChange={(open) => { if (!open) onCloseImage(); }}>
+      <Dialog open={!!previewImage} onOpenChange={(open) => { if (!open) onCloseImage?.(); }}>
         <DialogContent
           showCloseButton={false}
           overlayClassName="bg-black/70"

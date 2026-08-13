@@ -23,9 +23,10 @@ import {
   PromptInputActions,
   PromptInputTextarea,
 } from '@/components/prompt-kit/prompt-input';
-import { AttachmentChipsList } from '@/components/shared/AttachmentComponents';
+import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
 import { Button } from '@/components/ui/button';
 import type { AttachmentItem } from '@/lib/attachment-service';
+import type { ComposerQuote } from '@/lib/composer-context';
 import type { AcpCommandItemVm } from '@/types';
 import { cn } from '@/lib/utils';
 
@@ -36,6 +37,9 @@ export interface AcpConversationComposerProps {
   sending: boolean;
   status: ReactNode;
   attachments: AttachmentItem[];
+  quotes: readonly ComposerQuote[];
+  contextError: string | null;
+  onRemoveQuote: (id: string) => void;
   onRemoveAttachment: (id: string) => void;
   onPreviewAttachment: (item: AttachmentItem) => void;
   onClearAttachments: () => void;
@@ -89,6 +93,9 @@ export function AcpConversationComposer({
   sending,
   status,
   attachments,
+  quotes,
+  contextError,
+  onRemoveQuote,
   onRemoveAttachment,
   onPreviewAttachment,
   onClearAttachments,
@@ -133,18 +140,6 @@ export function AcpConversationComposer({
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
-      {attachments.length > 0 ? (
-        <div className="mb-2" data-acp-composer-attachment-row="true">
-          <AttachmentChipsList
-            attachments={attachments}
-            compact
-            onRemove={onRemoveAttachment}
-            onPreview={onPreviewAttachment}
-            onClear={onClearAttachments}
-            clearLabel={t('common.clear') ?? 'Clear'}
-          />
-        </div>
-      ) : null}
       {fileError ? (
         <div className="mb-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
           {fileError}
@@ -169,6 +164,14 @@ export function AcpConversationComposer({
           )}
         >
           {status}
+          <ComposerContextArea
+            quotes={quotes}
+            attachments={attachments}
+            error={contextError}
+            onRemoveQuote={onRemoveQuote}
+            onRemoveAttachment={onRemoveAttachment}
+            onPreviewAttachment={onPreviewAttachment}
+          />
           <PromptInputTextarea
             ref={textareaRef}
             className="min-h-16 text-sm leading-6 text-foreground placeholder:text-muted-foreground"

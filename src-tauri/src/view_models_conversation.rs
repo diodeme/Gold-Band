@@ -596,6 +596,7 @@ pub struct ConversationQueuedPromptVm {
     pub id: String,
     pub content: String,
     pub attachment_count: usize,
+    pub quote_count: usize,
     pub created_at: String,
 }
 
@@ -954,6 +955,7 @@ fn direct_prompt_queue_vm(
                 id: item.id,
                 content: item.content,
                 attachment_count: item.attachment_paths.len(),
+                quote_count: item.quotes.len(),
                 created_at: item.created_at,
             })
             .collect(),

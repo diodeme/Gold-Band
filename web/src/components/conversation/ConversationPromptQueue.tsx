@@ -4,6 +4,7 @@ import {
   CornerDownLeft,
   Paperclip,
   Pencil,
+  MessageSquareQuote,
   Trash2,
   X,
 } from 'lucide-react';
@@ -190,11 +191,21 @@ function QueueItem({
           <p className="line-clamp-2 whitespace-pre-wrap break-words text-sm leading-5 text-foreground/90">
             {item.content}
           </p>
-          {item.attachmentCount > 0 ? (
-            <span className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-              <Paperclip className="size-3" />
-              {item.attachmentCount}
-            </span>
+          {item.attachmentCount > 0 || item.quoteCount > 0 ? (
+            <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+              {item.quoteCount > 0 ? (
+                <span className="inline-flex items-center gap-1">
+                  <MessageSquareQuote className="size-3" />
+                  {t('acp.userQuoteCount', { count: item.quoteCount })}
+                </span>
+              ) : null}
+              {item.attachmentCount > 0 ? (
+                <span className="inline-flex items-center gap-1">
+                  <Paperclip className="size-3" />
+                  {item.attachmentCount}
+                </span>
+              ) : null}
+            </div>
           ) : null}
         </div>
       )}

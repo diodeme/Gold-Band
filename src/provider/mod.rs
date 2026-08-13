@@ -31,6 +31,56 @@ use tracing::debug;
 
 use crate::acp::events::AttachmentMeta;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserPromptQuote {
+    pub id: String,
+    pub source_message_key: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPromptInput {
+    pub display_text: String,
+    #[serde(default)]
+    pub quotes: Vec<UserPromptQuote>,
+}
+
+impl From<String> for ConversationPromptInput {
+    fn from(prompt: String) -> Self {
+        Self {
+            display_text: prompt.clone(),
+            quotes: Vec::new(),
+        }
+    }
+}
+
+pub const MAX_USER_PROMPT_QUOTE_CHARS: usize = 12_000;
+pub const MAX_USER_PROMPT_QUOTES: usize = 64;
+pub const MAX_USER_PROMPT_QUOTE_ID_BYTES: usize = 128;
+pub const MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES: usize = 512;
+
+pub fn conversation_prompt_text(display_text: &str, quotes: &[UserPromptQuote]) -> String {
+    let display_text = display_text.trim();
+    if quotes.is_empty() {
+        return display_text.to_string();
+    }
+    let quote_blocks = quotes
+        .iter()
+        .map(|quote| {
+            quote
+                .text
+                .lines()
+                .map(|line| format!("> {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!("{quote_blocks}\n\n{display_text}")
+}
+
 /// Content block types for ACP session/prompt requests.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -406,6 +456,8 @@ pub struct OutputArtifactPayload {
 pub struct PromptBundle {
     pub system_prompt: String,
     pub user_prompt: String,
+    pub display_text: Option<String>,
+    pub quotes: Vec<UserPromptQuote>,
     pub prompt_id: Option<String>,
     pub visibility: PromptVisibility,
     pub hidden_reason: Option<String>,
@@ -1530,6 +1582,8 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     Ok(PromptBundle {
         system_prompt,
         user_prompt,
+        display_text: None,
+        quotes: Vec::new(),
         // Prompt identity is an orchestration concern, independent of ACP
         // session mode.  In particular, an automatic retry may start a new
         // ACP session while remaining the same visible user turn.

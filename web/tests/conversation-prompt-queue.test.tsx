@@ -17,6 +17,7 @@ const queue: ConversationPromptQueueVm = {
     id: `item-${index + 1}`,
     content: `queued prompt ${index + 1}`,
     attachmentCount: index === 0 ? 2 : 0,
+    quoteCount: index === 1 ? 2 : 0,
     createdAt: `2026-08-07T00:00:0${index}Z`,
   })),
 };
@@ -96,5 +97,11 @@ describe('ConversationPromptQueue', () => {
     const useButtons = host.querySelectorAll<HTMLButtonElement>('button[aria-label="使用"]');
     expect(useButtons).toHaveLength(3);
     expect(Array.from(useButtons).every((button) => button.disabled)).toBe(true);
+  });
+
+  it('shows the structured quote count without expanding quote content', async () => {
+    await renderQueue();
+    const secondRow = host.querySelector('[data-queue-item-id="item-2"]') as HTMLElement;
+    expect(secondRow.textContent).toContain('2 条引用');
   });
 });

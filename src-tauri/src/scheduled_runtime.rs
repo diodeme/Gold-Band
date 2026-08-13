@@ -28,8 +28,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::commands::acp_live_update_emitter_for_app;
-use crate::commands::acp_session_update_emitter;
+use crate::commands::configure_conversation_runtime_callbacks;
 use crate::scheduled_service::{ManualRunResult, ScheduledServiceError, ScheduledServiceResult};
 use crate::state::DesktopState;
 use crate::view_models_conversation::ConversationCreateInputVm;
@@ -2868,19 +2867,11 @@ pub(super) fn execute_definition_with_action(
                         trigger_kind,
                         scheduled_at,
                     )));
-                let live_update = acp_live_update_emitter_for_app(
-                    &scheduled_app,
+                let scheduled_app = configure_conversation_runtime_callbacks(
+                    scheduled_app,
                     app_handle.clone(),
                     Some(definition.project_id.clone()),
                 );
-                let background_app = scheduled_app.clone_for_background();
-                let scheduled_app = scheduled_app
-                    .with_acp_live_update(live_update)
-                    .with_acp_session_update(acp_session_update_emitter(
-                        app_handle.clone(),
-                        background_app,
-                        Some(definition.project_id.clone()),
-                    ));
                 let handle = app_handle.clone();
                 let project_id = Some(definition.project_id.clone());
                 let task_id_for_thread = task_id.clone();
@@ -2905,7 +2896,7 @@ pub(super) fn execute_definition_with_action(
                             .name("scheduled-continuous-prompt".to_string())
                             .spawn(move || {
                                 let result = tauri::async_runtime::block_on(
-                                    crate::commands::send_acp_prompt_with_app(
+                                    crate::commands::send_acp_prompt_with_configured_app(
                                         handle,
                                         scheduled_app,
                                         project_id,
@@ -2914,7 +2905,7 @@ pub(super) fn execute_definition_with_action(
                                         round_id_for_thread,
                                         node_id_for_thread,
                                         attempt_id_for_thread,
-                                        input.content,
+                                        input.content.into(),
                                         None,
                                         None,
                                         None,
@@ -2942,19 +2933,11 @@ pub(super) fn execute_definition_with_action(
                     trigger_kind,
                     scheduled_at,
                 )));
-            let live_update = acp_live_update_emitter_for_app(
-                &scheduled_app,
+            let scheduled_app = configure_conversation_runtime_callbacks(
+                scheduled_app,
                 app_handle.clone(),
                 Some(definition.project_id.clone()),
             );
-            let background_app = scheduled_app.clone_for_background();
-            let scheduled_app = scheduled_app
-                .with_acp_live_update(live_update)
-                .with_acp_session_update(acp_session_update_emitter(
-                    app_handle.clone(),
-                    background_app,
-                    Some(definition.project_id.clone()),
-                ));
             let prepared_run = scheduled_app.prepare_run(&task_id, None)?;
             let run = prepared_run.run().clone();
             let links = OccurrenceLinks {
@@ -2991,19 +2974,11 @@ pub(super) fn execute_definition_with_action(
             trigger_kind,
             scheduled_at,
         )));
-    let live_update = acp_live_update_emitter_for_app(
-        &scheduled_app,
+    let run_app = configure_conversation_runtime_callbacks(
+        scheduled_app,
         app_handle.clone(),
         Some(definition.project_id.clone()),
     );
-    let background_app = scheduled_app.clone_for_background();
-    let run_app = scheduled_app
-        .with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(
-            app_handle.clone(),
-            background_app,
-            Some(definition.project_id.clone()),
-        ));
     let prepared_task =
         crate::view_models_conversation::prepare_conversation_task_vm(&run_app, &input)?;
     let task_id = prepared_task.task_id().to_string();

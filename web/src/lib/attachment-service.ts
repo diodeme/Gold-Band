@@ -261,6 +261,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
           size: f.size,
           mime: guessMimeFromExtension(f.name),
           path: f.path,
+          previewUrl: f.previewUrl ?? undefined,
           source: 'dialog' as const,
         }));
         validateAndAdd(items);

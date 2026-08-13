@@ -7,12 +7,13 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::acp::events::load_timeline_items;
+use crate::provider::{ConversationPromptInput, UserPromptQuote};
 use crate::storage::{read_json, write_json};
 
 pub const PROMPT_QUEUE_FILE_NAME: &str = "acp.prompt-queue.json";
 pub const MAX_QUEUED_PROMPTS: usize = 10;
 pub const AUTO_DISPATCH_USER_PRIORITY_GRACE_MS: u64 = 600;
-const PROMPT_QUEUE_VERSION: u32 = 2;
+const PROMPT_QUEUE_VERSION: u32 = 4;
 
 static PROMPT_QUEUE_LOCKS: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -42,6 +43,8 @@ pub struct QueuedPrompt {
     pub id: String,
     pub prompt_id: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quotes: Vec<UserPromptQuote>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachment_paths: Vec<String>,
     pub created_at: String,
@@ -102,10 +105,11 @@ pub fn load_prompt_queue(attempt_dir: &Utf8Path) -> Result<PromptQueue> {
 
 pub fn enqueue_prompt(
     attempt_dir: &Utf8Path,
-    content: String,
+    input: impl Into<ConversationPromptInput>,
     attachment_paths: Vec<String>,
 ) -> Result<QueuedPrompt, PromptQueueError> {
-    if content.trim().is_empty() {
+    let input = input.into();
+    if input.display_text.trim().is_empty() {
         return Err(PromptQueueError::Empty);
     }
     with_typed_queue_lock(attempt_dir, || {
@@ -118,7 +122,8 @@ pub fn enqueue_prompt(
         let item = QueuedPrompt {
             prompt_id: format!("turn-{id}"),
             id,
-            content,
+            content: input.display_text,
+            quotes: input.quotes,
             attachment_paths,
             created_at: chrono::Utc::now().to_rfc3339(),
             state: QueuedPromptState::Queued,
@@ -408,6 +413,11 @@ fn load_and_reconcile_unlocked(attempt_dir: &Utf8Path) -> Result<PromptQueue> {
     }
     let accepted_prompt_ids = accepted_prompt_ids(attempt_dir);
     let mut changed = needs_version_reconciliation;
+    if needs_version_reconciliation {
+        for item in &mut queue.items {
+            item.quotes.retain(|quote| !quote.text.trim().is_empty());
+        }
+    }
     queue.items.retain_mut(|item| {
         let accepted = accepted_prompt_ids.contains(&item.prompt_id);
         if accepted && item.state != QueuedPromptState::Dispatching {
@@ -550,6 +560,7 @@ fn with_typed_queue_lock<T>(
 mod tests {
     use super::*;
     use crate::acp::events::{append_timeline_patch, user_prompt_event};
+    use crate::provider::conversation_prompt_text;
 
     fn attempt_dir(temp: &tempfile::TempDir) -> Utf8PathBuf {
         Utf8PathBuf::from_path_buf(temp.path().join("attempt-001")).unwrap()
@@ -573,6 +584,55 @@ mod tests {
             enqueue_prompt(&dir, "overflow".to_string(), Vec::new()),
             Err(PromptQueueError::Full)
         );
+    }
+
+    #[test]
+    fn queue_preserves_structured_quotes_until_dispatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let queued = enqueue_prompt(
+            &dir,
+            ConversationPromptInput {
+                display_text: "继续解释".to_string(),
+                quotes: vec![UserPromptQuote {
+                    id: "quote-1".to_string(),
+                    source_message_key: "message-1".to_string(),
+                    text: "Agent 原文".to_string(),
+                }],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+
+        let claimed = claim_queued_prompt(&dir, &queued.id).unwrap();
+        assert_eq!(claimed.content, "继续解释");
+        assert!(
+            conversation_prompt_text(&claimed.content, &claimed.quotes).starts_with("> Agent 原文")
+        );
+        assert_eq!(claimed.quotes[0].source_message_key, "message-1");
+    }
+
+    #[test]
+    fn editing_queued_body_preserves_structured_quotes() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let queued = enqueue_prompt(
+            &dir,
+            ConversationPromptInput {
+                display_text: "原正文".to_string(),
+                quotes: vec![UserPromptQuote {
+                    id: "quote-1".to_string(),
+                    source_message_key: "textDelta-message-1".to_string(),
+                    text: "Agent 原文".to_string(),
+                }],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+
+        let queue = update_queued_prompt(&dir, &queued.id, "新正文".to_string()).unwrap();
+        assert_eq!(queue.items[0].content, "新正文");
+        assert_eq!(queue.items[0].quotes, queued.quotes);
     }
 
     #[test]

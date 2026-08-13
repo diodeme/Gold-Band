@@ -2067,7 +2067,19 @@ export interface ConversationQueuedPromptVm {
   id: string;
   content: string;
   attachmentCount: number;
+  quoteCount: number;
   createdAt: string;
+}
+
+export interface UserPromptQuote {
+  id: string;
+  sourceMessageKey: string;
+  text: string;
+}
+
+export interface ConversationPromptInput {
+  displayText: string;
+  quotes: UserPromptQuote[];
 }
 
 export interface ConversationPromptQueueVm {

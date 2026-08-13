@@ -163,8 +163,23 @@ function browserCompletedConversationRun(): ConversationRunVm {
         seq: 1,
         timestamp: '2026-08-04 10:00',
         kind: 'userTextDelta',
-        content: '请更新工作区配置并补充说明。',
-        raw: { promptId: 'browser-prompt-052' },
+        content: '> 这是用户自己输入的 Markdown 引用。\n\n请更新工作区配置并补充说明。',
+        raw: {
+          promptId: 'browser-prompt-052',
+          quotes: Array.from({ length: 8 }, (_, index) => ({
+            id: `browser-quote-052-${index + 1}`,
+            sourceMessageKey: `textDelta-browser-agent-message-${index + 1}`,
+            text: index === 0
+              ? `请优先检查工作区配置中的权限边界。\n${'这是一段用于验证长引用内部换行与滚动边界的内容。'.repeat(16)}`
+              : `第 ${index + 1} 条引用：补充核对配置项、权限范围和对应说明。`,
+          })),
+          attachments: [{
+            name: 'browser-zoom-fixture.png',
+            path: 'task-inputs/browser-zoom-fixture.png',
+            type: 'image/png',
+            size: 68,
+          }],
+        },
       },
       {
         id: 'browser-tool-call-052',
@@ -337,6 +352,7 @@ function browserQueuedConversationRun(): ConversationRunVm {
             '最后整理本轮变更摘要。',
           ][index],
           attachmentCount: index === 0 ? 1 : 0,
+          quoteCount: index === 1 ? 2 : 0,
           createdAt: `2026-08-07T08:00:0${index}Z`,
         })),
       },
@@ -1162,7 +1178,7 @@ export const browserApi: RuntimeApi = {
   subscribeAppExitRequested() {
     return Promise.resolve(() => {});
   },
-  submitConversationPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _prompt, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
+  submitConversationPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _input, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
     return Promise.resolve({ kind: 'acp-session', session: fallback ?? null, run: null });
   },
   updateConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _itemId, _content, _outerNodeId, _outerAttemptId) {

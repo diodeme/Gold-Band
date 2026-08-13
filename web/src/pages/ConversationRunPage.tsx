@@ -325,6 +325,7 @@ export function ConversationRunPage({
   const canViewWorkflow = !isDirect && canViewConversationRuntimeWorkflow(run, selectedLeaf);
   const runtimeComposerContext: AcpRuntimeComposerContext | undefined = selectedLeaf
     ? {
+        isOrchestrated: run.runMode !== 'direct',
         lifecycle: selectedLeaf.lifecycle,
         promptQueueEnabled: isDirect,
         runtimeStatus: selectedLeaf.lifecycle?.runtime.status ?? selectedLeaf.status,

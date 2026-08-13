@@ -902,13 +902,24 @@ pub(crate) fn scheduled_content_fingerprint_for_task(app: &App, task_id: &str) -
         .and_then(|metadata| metadata.scheduled_content_fingerprint)
 }
 
-pub(crate) fn conversation_run_mode(app: &App, task_id: &str) -> Option<ConversationRunMode> {
-    read_conversation_metadata(app, task_id).and_then(|metadata| match metadata.run_mode.as_str() {
+fn conversation_run_mode_from_label(value: &str) -> Option<ConversationRunMode> {
+    match value {
         "direct" => Some(ConversationRunMode::Direct),
         "workflow" => Some(ConversationRunMode::Workflow),
         "auto" => Some(ConversationRunMode::Auto),
         _ => None,
-    })
+    }
+}
+
+pub(crate) fn conversation_run_mode(app: &App, task_id: &str) -> Option<ConversationRunMode> {
+    read_conversation_metadata(app, task_id)
+        .and_then(|metadata| conversation_run_mode_from_label(&metadata.run_mode))
+}
+
+pub(crate) fn conversation_is_orchestrated(app: &App, task_id: &str) -> bool {
+    conversation_run_mode(app, task_id)
+        .unwrap_or(ConversationRunMode::Workflow)
+        .is_orchestrated()
 }
 
 fn direct_prompt_queue_vm(
@@ -1726,8 +1737,10 @@ fn runtime_continue_kind(
     pause_reason: Option<&str>,
     runtime_resumable: bool,
     manual_check_pending: bool,
+    is_orchestrated: bool,
 ) -> Option<String> {
-    if manual_check_pending
+    if !is_orchestrated
+        || manual_check_pending
         || !runtime_resumable
         || normalize_lifecycle_code(runtime_status) != "paused"
     {
@@ -1878,6 +1891,7 @@ fn derive_conversation_attempt_lifecycle(
     pause_reason: Option<&str>,
     runtime_resumable: bool,
     manual_check_pending: bool,
+    is_orchestrated: bool,
 ) -> ConversationAttemptLifecycleVm {
     let session_status = session_status
         .map(str::trim)
@@ -1985,6 +1999,7 @@ fn derive_conversation_attempt_lifecycle(
         pause_reason,
         runtime_resumable,
         manual_check_pending,
+        is_orchestrated,
     );
     let runtime_phase = runtime_phase_for_lifecycle(
         runtime_status,
@@ -2044,6 +2059,7 @@ pub fn conversation_attempt_lifecycle_vm(
     let run = app.run_status(task_id, run_id)?;
     let run_pause_reason = run.pause_reason.as_ref().map(enum_label);
     let runtime_resumable = is_run_continuable(&run);
+    let is_orchestrated = conversation_is_orchestrated(app, task_id);
 
     if let (Some(outer_node_id), Some(outer_attempt_id)) = (outer_node_id, outer_attempt_id) {
         let session_status = dynamic_acp_session_status(
@@ -2133,6 +2149,7 @@ pub fn conversation_attempt_lifecycle_vm(
             pause_reason.as_deref(),
             leaf_resumable,
             false,
+            is_orchestrated,
         );
         attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
         apply_dynamic_workspace_transition_lifecycle(
@@ -2175,6 +2192,7 @@ pub fn conversation_attempt_lifecycle_vm(
         pause_reason.as_deref(),
         runtime_resumable,
         node.manual_check_pending,
+        is_orchestrated,
     );
     attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
     Ok(lifecycle)
@@ -2196,6 +2214,7 @@ fn conversation_status_from_session(
         run_pause_reason,
         runtime_resumable,
         false,
+        true,
     )
     .display_status
 }
@@ -2279,6 +2298,9 @@ pub fn conversation_run_vm(
         .as_ref()
         .map(|metadata| (metadata.run_mode.clone(), metadata.title_auto_generated))
         .unwrap_or_else(|| ("workflow".to_string(), false));
+    let is_orchestrated = conversation_run_mode_from_label(&run_mode)
+        .unwrap_or(ConversationRunMode::Workflow)
+        .is_orchestrated();
 
     // Build the session tree from rounds/nodes/attempts
     // Read workflow snapshot once for node order + validity + raw JSON
@@ -2462,6 +2484,7 @@ pub fn conversation_run_vm(
                                     dyn_pause_reason.as_deref(),
                                     dyn_leaf_resumable,
                                     false,
+                                    is_orchestrated,
                                 );
                                 attach_direct_prompt_queue(
                                     app,
@@ -2606,6 +2629,7 @@ pub fn conversation_run_vm(
                         display_pause_reason.as_deref(),
                         runtime_resumable,
                         manual_check_pending,
+                        is_orchestrated,
                     );
                     attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
                     let status = lifecycle.display_status.clone();
@@ -3774,6 +3798,7 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "running");
@@ -3800,6 +3825,7 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.runtime.phase, "launching-next-node");
@@ -3833,6 +3859,7 @@ mod tests {
             Some("process-interrupted"),
             true,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "cancelling");
@@ -3856,6 +3883,7 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "completed");
@@ -3877,6 +3905,7 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "running");
@@ -3900,6 +3929,7 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "starting");
@@ -3919,6 +3949,7 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "running");
@@ -3938,6 +3969,7 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "cancelling");
@@ -3957,6 +3989,7 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "completed");
@@ -3977,12 +4010,37 @@ mod tests {
             Some("process-interrupted"),
             true,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "paused");
+        assert_eq!(lifecycle.runtime_display.tone, "warning");
+        assert_eq!(lifecycle.runtime_display.icon, "pause");
         assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
         assert!(lifecycle.runtime.continuable);
         assert_eq!(lifecycle.runtime.phase, "paused");
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
+        assert!(!lifecycle.composer.lock_input);
+    }
+
+    #[test]
+    fn interrupted_direct_attempt_has_free_conversation_without_runtime_continue() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("cancelled"),
+            None,
+            "paused",
+            None,
+            true,
+            Some("process-interrupted"),
+            true,
+            false,
+            false,
+        );
+
+        assert_eq!(lifecycle.display_status, "paused");
+        assert_eq!(lifecycle.continue_kind, None);
+        assert!(!lifecycle.runtime.continuable);
         assert_eq!(lifecycle.composer.mode, "normal");
         assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
         assert!(!lifecycle.composer.lock_input);
@@ -3999,6 +4057,7 @@ mod tests {
             Some("runtime-abnormal"),
             true,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "paused");
@@ -4024,6 +4083,7 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "paused");
@@ -4045,6 +4105,7 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "paused");
@@ -4064,6 +4125,7 @@ mod tests {
             None,
             true,
             Some("waiting-for-user-input"),
+            true,
             true,
             true,
         );
@@ -4088,6 +4150,7 @@ mod tests {
             Some("error-blocked"),
             true,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "paused");
@@ -5021,6 +5084,9 @@ mod tests {
         let queue = leaf.lifecycle.prompt_queue.as_ref().unwrap();
 
         assert_eq!(leaf.lifecycle.composer.mode, "normal");
+        assert_eq!(leaf.lifecycle.composer.submit_target, "acp-prompt");
+        assert_eq!(leaf.lifecycle.continue_kind, None);
+        assert!(!leaf.lifecycle.runtime.continuable);
         assert_eq!(queue.items.len(), 1);
         assert_eq!(queue.items[0].content, "persist after stop");
     }

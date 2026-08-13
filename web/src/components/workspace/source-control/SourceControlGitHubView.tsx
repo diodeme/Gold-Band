@@ -3,11 +3,6 @@ import { ArrowLeft, CircleDot, ExternalLink, FileDiff, GitPullRequest, LoaderCir
 import { useTranslation } from 'react-i18next';
 import {
   cancelGitHubOperation,
-  getGitHubCapability,
-  getGitHubIssue,
-  getGitHubPullRequest,
-  listGitHubIssues,
-  listGitHubPullRequests,
   openExternalUrl,
   preflightGitHubPullRequest,
   startGitHubLogin,
@@ -36,6 +31,12 @@ import type {
 import { WorkspaceFileEditor } from '../files/WorkspaceFileEditor';
 import { gitFileComparisonWorkspaceResourceKey, useRightWorkspace } from '../right-workspace-context';
 import { githubOperationEventStore } from './github-operation-store';
+import {
+  githubDataStore,
+  githubRepositorySessionKey,
+  useGitHubRepositoryNavigation,
+  type GitHubRepositoryDetailSection,
+} from './github-data-store';
 
 const GITHUB_CLI_INSTALL_URL = 'https://cli.github.com/';
 
@@ -53,23 +54,33 @@ export function SourceControlGitHubView({
   onPush: (remote: string, branch: string) => void;
 }) {
   const { t } = useTranslation();
-  const [capability, setCapability] = useState<GitHubCapabilityVm | null>(null);
+  const sessionKey = githubRepositorySessionKey(
+    projectId,
+    snapshot.repository.commonDir,
+    snapshot.repository.workspacePath,
+  );
+  const [capability, setCapability] = useState<GitHubCapabilityVm | null>(
+    () => githubDataStore.peekCapability(sessionKey),
+  );
   const [login, setLogin] = useState<GitHubOperationVm | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
 
-  const detect = useCallback(async () => {
+  const detect = useCallback(async (force = false) => {
     setErrorCode(null);
     try {
-      setCapability(await getGitHubCapability(projectId, workspacePath));
+      setCapability(await githubDataStore.getCapability(sessionKey, projectId, workspacePath, force));
     } catch (reason) {
       setErrorCode(errorCodeFrom(reason, 'github.capability-failed'));
     }
-  }, [projectId, workspacePath]);
+  }, [projectId, sessionKey, workspacePath]);
 
-  useEffect(() => { void detect(); }, [detect]);
+  useEffect(() => {
+    setCapability(githubDataStore.peekCapability(sessionKey));
+    void detect();
+  }, [detect, sessionKey]);
   useEffect(() => {
     if (!capability || !['not-installed', 'not-authenticated'].includes(capability.status)) return;
-    const onFocus = () => { void detect(); };
+    const onFocus = () => { void detect(true); };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [capability, detect]);
@@ -77,44 +88,48 @@ export function SourceControlGitHubView({
     setLogin((current) => current?.operationId === operation.operationId ? operation : current);
   }), []);
   useEffect(() => {
-    if (login?.status === 'succeeded') void detect();
+    if (login?.status === 'succeeded') {
+      githubDataStore.invalidateRepository(sessionKey);
+      void detect(true);
+    }
     if (login?.error?.code) setErrorCode(login.error.code);
-  }, [detect, login]);
+  }, [detect, login, sessionKey]);
 
   if (!capability) return <GitHubState icon={<LoaderCircle className="size-4 animate-spin" />} text={t('sourceControl.githubDetecting')} />;
-  if (errorCode) return <GitHubState icon={<TriangleAlert className="size-4 text-destructive" />} text={t(`errors.${errorCode}`, { defaultValue: t('sourceControl.githubDetectionFailed') })} action={<Button size="sm" variant="outline" onClick={() => void detect()}>{t('sourceControl.detectAgain')}</Button>} />;
+  if (errorCode) return <GitHubState icon={<TriangleAlert className="size-4 text-destructive" />} text={t(`errors.${errorCode}`, { defaultValue: t('sourceControl.githubDetectionFailed') })} action={<Button size="sm" variant="outline" onClick={() => void detect(true)}>{t('sourceControl.detectAgain')}</Button>} />;
   if (capability.status === 'not-installed') {
-    return <GitHubState icon={<GitPullRequest className="size-5" />} text={t('sourceControl.githubNotInstalled')} description={t('sourceControl.githubNotInstalledDescription')} action={<div className="flex gap-2"><Button size="sm" onClick={() => void openExternalUrl(GITHUB_CLI_INSTALL_URL)}>{t('sourceControl.openInstallPage')}</Button><Button size="sm" variant="outline" onClick={() => void detect()}>{t('sourceControl.detectAgain')}</Button></div>} />;
+    return <GitHubState icon={<GitPullRequest className="size-5" />} text={t('sourceControl.githubNotInstalled')} description={t('sourceControl.githubNotInstalledDescription')} action={<div className="flex gap-2"><Button size="sm" onClick={() => void openExternalUrl(GITHUB_CLI_INSTALL_URL)}>{t('sourceControl.openInstallPage')}</Button><Button size="sm" variant="outline" onClick={() => void detect(true)}>{t('sourceControl.detectAgain')}</Button></div>} />;
   }
   if (capability.status === 'not-authenticated') {
     const waiting = login && ['queued', 'running'].includes(login.status);
-    return <GitHubState icon={waiting ? <LoaderCircle className="size-5 animate-spin" /> : <LogIn className="size-5" />} text={waiting ? t('sourceControl.githubLoginWaiting') : t('sourceControl.githubNotAuthenticated')} description={t('sourceControl.githubLoginDescription')} action={waiting ? <div className="flex gap-2"><Button size="sm" variant="outline" disabled={!login.cancelable} onClick={() => void cancelGitHubOperation(login.operationId).then((operation) => setLogin(githubOperationEventStore.reconcile(operation)))}>{t('common.cancel')}</Button><Button size="sm" variant="ghost" onClick={() => void detect()}>{t('sourceControl.detectAgain')}</Button></div> : <div className="flex gap-2"><Button size="sm" onClick={() => void startGitHubLogin(projectId, workspacePath, capability.host ?? 'github.com').then((operation) => setLogin(githubOperationEventStore.reconcile(operation)))}><LogIn className="size-3.5" />{t('sourceControl.loginWithBrowser')}</Button><Button size="sm" variant="outline" onClick={() => void detect()}>{t('sourceControl.detectAgain')}</Button></div>} />;
+    return <GitHubState icon={waiting ? <LoaderCircle className="size-5 animate-spin" /> : <LogIn className="size-5" />} text={waiting ? t('sourceControl.githubLoginWaiting') : t('sourceControl.githubNotAuthenticated')} description={t('sourceControl.githubLoginDescription')} action={waiting ? <div className="flex gap-2"><Button size="sm" variant="outline" disabled={!login.cancelable} onClick={() => void cancelGitHubOperation(login.operationId).then((operation) => setLogin(githubOperationEventStore.reconcile(operation)))}>{t('common.cancel')}</Button><Button size="sm" variant="ghost" onClick={() => void detect(true)}>{t('sourceControl.detectAgain')}</Button></div> : <div className="flex gap-2"><Button size="sm" onClick={() => void startGitHubLogin(projectId, workspacePath, capability.host ?? 'github.com').then((operation) => setLogin(githubOperationEventStore.reconcile(operation)))}><LogIn className="size-3.5" />{t('sourceControl.loginWithBrowser')}</Button><Button size="sm" variant="outline" onClick={() => void detect(true)}>{t('sourceControl.detectAgain')}</Button></div>} />;
   }
   if (capability.status === 'repository-unresolved' || !capability.repository || !capability.host) {
-    return <GitHubState icon={<TriangleAlert className="size-5" />} text={t('sourceControl.githubRepositoryUnresolved')} description={t('sourceControl.githubRepositoryUnresolvedDescription')} action={<Button size="sm" variant="outline" onClick={() => void detect()}><RefreshCw className="size-3.5" />{t('sourceControl.detectAgain')}</Button>} />;
+    return <GitHubState icon={<TriangleAlert className="size-5" />} text={t('sourceControl.githubRepositoryUnresolved')} description={t('sourceControl.githubRepositoryUnresolvedDescription')} action={<Button size="sm" variant="outline" onClick={() => void detect(true)}><RefreshCw className="size-3.5" />{t('sourceControl.detectAgain')}</Button>} />;
   }
-  return <GitHubReadyView projectId={projectId} workspacePath={workspacePath} capability={capability} snapshot={snapshot} busy={busy} onPush={onPush} />;
+  return <GitHubReadyView sessionKey={sessionKey} projectId={projectId} workspacePath={workspacePath} capability={capability} snapshot={snapshot} busy={busy} onPush={onPush} />;
 }
 
 type GitHubSelection = { kind: 'pr'; detail: GitHubPullRequestDetailVm } | { kind: 'issue'; detail: GitHubIssueDetailVm };
 
-function GitHubReadyView({ projectId, workspacePath, capability, snapshot, busy, onPush }: { projectId: string; workspacePath?: string | null; capability: GitHubCapabilityVm; snapshot: GitSourceControlSnapshotVm; busy: boolean; onPush: (remote: string, branch: string) => void }) {
+function GitHubReadyView({ sessionKey, projectId, workspacePath, capability, snapshot, busy, onPush }: { sessionKey: string; projectId: string; workspacePath?: string | null; capability: GitHubCapabilityVm; snapshot: GitSourceControlSnapshotVm; busy: boolean; onPush: (remote: string, branch: string) => void }) {
   const { t } = useTranslation();
   const { scopeKey, openResource } = useRightWorkspace();
   const host = capability.host!;
   const repository = capability.repository!;
-  const [section, setSection] = useState<'prs' | 'issues'>('prs');
-  const [state, setState] = useState<GitHubListStateVm>('open');
-  const [searchDraft, setSearchDraft] = useState('');
-  const [search, setSearch] = useState('');
+  const navigation = useGitHubRepositoryNavigation(sessionKey);
+  const [searchDraft, setSearchDraft] = useState(navigation.search);
   const [prs, setPrs] = useState<GitHubPullRequestSummaryVm[]>([]);
   const [issues, setIssues] = useState<GitHubIssueSummaryVm[]>([]);
   const [selection, setSelection] = useState<GitHubSelection | null>(null);
   const [loading, setLoading] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
 
-  const openPullRequestFile = useCallback((number: number, path: string) => {
+  useEffect(() => setSearchDraft(navigation.search), [navigation.search]);
+
+  const openPullRequestFile = useCallback((number: number, baseOid: string, headOid: string, path: string) => {
     if (!scopeKey) return;
     const source = {
       kind: 'github-pr' as const,
@@ -122,6 +137,8 @@ function GitHubReadyView({ projectId, workspacePath, capability, snapshot, busy,
       host,
       repository,
       prNumber: number,
+      baseOid,
+      headOid,
       path,
     };
     void openResource({
@@ -136,54 +153,78 @@ function GitHubReadyView({ projectId, workspacePath, capability, snapshot, busy,
     });
   }, [host, openResource, projectId, repository, scopeKey, workspacePath]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (force = false) => {
     setLoading(true);
     setErrorCode(null);
     try {
-      if (section === 'prs') {
-        setPrs(await listGitHubPullRequests(projectId, workspacePath, host, repository, { state, search: search || null, author: null, base: null, head: null, label: null }));
+      if (navigation.section === 'prs') {
+        setPrs(await githubDataStore.listPullRequests(sessionKey, projectId, workspacePath, host, repository, { state: navigation.listState, search: navigation.search || null, author: null, base: null, head: null, label: null }, force));
       } else {
-        setIssues(await listGitHubIssues(projectId, workspacePath, host, repository, { state, search: search || null, author: null, assignee: null, label: null, milestone: null }));
+        setIssues(await githubDataStore.listIssues(sessionKey, projectId, workspacePath, host, repository, { state: navigation.listState, search: navigation.search || null, author: null, assignee: null, label: null, milestone: null }, force));
       }
     } catch (reason) {
-      setErrorCode(errorCodeFrom(reason, section === 'prs' ? 'github.pr-list-failed' : 'github.issue-list-failed'));
+      setErrorCode(errorCodeFrom(reason, navigation.section === 'prs' ? 'github.pr-list-failed' : 'github.issue-list-failed'));
     } finally {
       setLoading(false);
     }
-  }, [host, projectId, repository, search, section, state, workspacePath]);
-  useEffect(() => { setSelection(null); void load(); }, [load]);
+  }, [host, navigation.listState, navigation.search, navigation.section, projectId, repository, sessionKey, workspacePath]);
+  useEffect(() => {
+    if (!navigation.selection) void load();
+  }, [load, navigation.selection]);
 
-  const selectPr = async (item: GitHubPullRequestSummaryVm) => {
-    setLoading(true);
-    try { setSelection({ kind: 'pr', detail: await getGitHubPullRequest(projectId, workspacePath, host, repository, item.number) }); }
-    catch (reason) { setErrorCode(errorCodeFrom(reason, 'github.pr-detail-failed')); }
-    finally { setLoading(false); }
-  };
-  const selectIssue = async (item: GitHubIssueSummaryVm) => {
-    setLoading(true);
-    try { setSelection({ kind: 'issue', detail: await getGitHubIssue(projectId, workspacePath, host, repository, item.number) }); }
-    catch (reason) { setErrorCode(errorCodeFrom(reason, 'github.issue-detail-failed')); }
-    finally { setLoading(false); }
-  };
+  useEffect(() => {
+    let cancelled = false;
+    const locator = navigation.selection;
+    if (!locator) {
+      setSelection(null);
+      setDetailLoading(false);
+      return () => { cancelled = true; };
+    }
+    const cached = locator.kind === 'pr'
+      ? githubDataStore.peekPullRequest(sessionKey, host, repository, locator.number)
+      : githubDataStore.peekIssue(sessionKey, host, repository, locator.number);
+    if (cached) {
+      setSelection({ kind: locator.kind, detail: cached } as GitHubSelection);
+      setDetailLoading(false);
+      return () => { cancelled = true; };
+    }
+    setSelection(null);
+    setDetailLoading(true);
+    setErrorCode(null);
+    const request = locator.kind === 'pr'
+      ? githubDataStore.getPullRequest(sessionKey, projectId, workspacePath, host, repository, locator.number)
+      : githubDataStore.getIssue(sessionKey, projectId, workspacePath, host, repository, locator.number);
+    void request.then((detail) => {
+      if (!cancelled) setSelection({ kind: locator.kind, detail } as GitHubSelection);
+    }).catch((reason: unknown) => {
+      if (!cancelled) setErrorCode(errorCodeFrom(reason, locator.kind === 'pr' ? 'github.pr-detail-failed' : 'github.issue-detail-failed'));
+    }).finally(() => {
+      if (!cancelled) setDetailLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [host, navigation.selection, projectId, repository, sessionKey, workspacePath]);
 
-  if (selection) return <GitHubDetail selection={selection} host={host} repository={repository} onBack={() => setSelection(null)} onOpenPullRequestFile={openPullRequestFile} />;
+  if (navigation.selection) {
+    if (selection) return <GitHubDetail selection={selection} host={host} repository={repository} section={navigation.detailSection} onSectionChange={(section) => githubDataStore.setDetailSection(sessionKey, section)} onBack={() => githubDataStore.select(sessionKey, null)} onOpenPullRequestFile={openPullRequestFile} />;
+    return <div className="flex min-h-0 flex-1" data-source-control-github-detail-state={detailLoading ? 'loading' : 'error'}><GitHubState icon={detailLoading ? <LoaderCircle className="size-4 animate-spin" /> : <TriangleAlert className="size-4 text-destructive" />} text={detailLoading ? t('sourceControl.githubDetailLoading') : t(`errors.${errorCode}`, { defaultValue: t('sourceControl.operationFailed') })} action={!detailLoading ? <Button size="sm" variant="outline" onClick={() => githubDataStore.select(sessionKey, null)}>{t('common.back')}</Button> : undefined} /></div>;
+  }
 
   return (
     <>
       <div className="flex min-h-0 flex-1 flex-col" data-source-control-github-ready="true">
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border/50 px-3 text-xs"><GitPullRequest className="size-3.5" /><span className="min-w-0 flex-1 truncate font-medium">{repository}</span><span className="truncate text-muted-foreground">@{capability.account}</span></div>
-      <Tabs value={section} onValueChange={(value) => setSection(value as typeof section)} className="min-h-0 flex-1 gap-0">
+      <Tabs value={navigation.section} onValueChange={(value) => githubDataStore.setListContext(sessionKey, { section: value as typeof navigation.section })} className="min-h-0 flex-1 gap-0">
         <TabsList variant="line" className="h-9 w-full justify-start border-b border-border/50 px-2"><TabsTrigger value="prs">{t('sourceControl.pullRequests')}</TabsTrigger><TabsTrigger value="issues">{t('sourceControl.issues')}</TabsTrigger></TabsList>
         <div className="flex h-10 items-center gap-1.5 border-b border-border/40 px-2">
-          <Select value={state} onValueChange={(value) => setState(value as GitHubListStateVm)}><SelectTrigger size="sm" className="w-24"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="open">{t('sourceControl.open')}</SelectItem><SelectItem value="closed">{t('sourceControl.closed')}</SelectItem><SelectItem value="all">{t('common.all')}</SelectItem></SelectContent></Select>
-          <Input value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') setSearch(searchDraft.trim()); }} className="h-8 min-w-0 flex-1 text-xs" placeholder={t('sourceControl.githubSearch')} />
-          <Button size="icon-xs" variant="ghost" aria-label={t('sourceControl.githubSearch')} onClick={() => setSearch(searchDraft.trim())}><Search className="size-3.5" /></Button>
-          <Button size="icon-xs" variant="ghost" aria-label={t('common.refresh')} onClick={() => void load()}><RefreshCw className={loading ? 'size-3.5 animate-spin' : 'size-3.5'} /></Button>
-          {section === 'prs' ? <Button size="icon-xs" variant="ghost" disabled={busy} aria-label={t('sourceControl.createPullRequest')} onClick={() => setCreateOpen(true)}><Plus className="size-3.5" /></Button> : null}
+          <Select value={navigation.listState} onValueChange={(value) => githubDataStore.setListContext(sessionKey, { listState: value as GitHubListStateVm })}><SelectTrigger size="sm" className="w-24"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="open">{t('sourceControl.open')}</SelectItem><SelectItem value="closed">{t('sourceControl.closed')}</SelectItem><SelectItem value="all">{t('common.all')}</SelectItem></SelectContent></Select>
+          <Input value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') githubDataStore.setListContext(sessionKey, { search: searchDraft.trim() }); }} className="h-8 min-w-0 flex-1 text-xs" placeholder={t('sourceControl.githubSearch')} />
+          <Button size="icon-xs" variant="ghost" aria-label={t('sourceControl.githubSearch')} onClick={() => githubDataStore.setListContext(sessionKey, { search: searchDraft.trim() })}><Search className="size-3.5" /></Button>
+          <Button size="icon-xs" variant="ghost" aria-label={t('common.refresh')} onClick={() => void load(true)}><RefreshCw className={loading ? 'size-3.5 animate-spin' : 'size-3.5'} /></Button>
+          {navigation.section === 'prs' ? <Button size="icon-xs" variant="ghost" disabled={busy} aria-label={t('sourceControl.createPullRequest')} onClick={() => setCreateOpen(true)}><Plus className="size-3.5" /></Button> : null}
         </div>
         {errorCode ? <div className="px-3 py-2 text-xs text-destructive">{t(`errors.${errorCode}`, { defaultValue: t('sourceControl.operationFailed') })}</div> : null}
-        <TabsContent value="prs" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1"><ScrollArea className="min-h-0 flex-1"><div className="divide-y divide-border/40">{prs.map((item) => <GitHubListRow key={item.number} number={item.number} title={item.title} state={item.state} subtitle={`${item.headRefName} → ${item.baseRefName}`} labels={item.labels.map((label) => label.name)} onClick={() => void selectPr(item)} />)}</div>{!loading && prs.length === 0 ? <GitHubState text={t('sourceControl.noPullRequests')} /> : null}</ScrollArea></TabsContent>
-        <TabsContent value="issues" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1"><ScrollArea className="min-h-0 flex-1"><div className="divide-y divide-border/40">{issues.map((item) => <GitHubListRow key={item.number} number={item.number} title={item.title} state={item.state} subtitle={item.author?.login ?? ''} labels={item.labels.map((label) => label.name)} onClick={() => void selectIssue(item)} />)}</div>{!loading && issues.length === 0 ? <GitHubState text={t('sourceControl.noIssues')} /> : null}</ScrollArea></TabsContent>
+        <TabsContent value="prs" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1"><ScrollArea className="min-h-0 flex-1"><div className="divide-y divide-border/40">{prs.map((item) => <GitHubListRow key={item.number} number={item.number} title={item.title} state={item.state} subtitle={`${item.headRefName} → ${item.baseRefName}`} labels={item.labels.map((label) => label.name)} onClick={() => githubDataStore.select(sessionKey, { kind: 'pr', number: item.number })} />)}</div>{!loading && prs.length === 0 ? <GitHubState text={t('sourceControl.noPullRequests')} /> : null}</ScrollArea></TabsContent>
+        <TabsContent value="issues" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-1"><ScrollArea className="min-h-0 flex-1"><div className="divide-y divide-border/40">{issues.map((item) => <GitHubListRow key={item.number} number={item.number} title={item.title} state={item.state} subtitle={item.author?.login ?? ''} labels={item.labels.map((label) => label.name)} onClick={() => githubDataStore.select(sessionKey, { kind: 'issue', number: item.number })} />)}</div>{!loading && issues.length === 0 ? <GitHubState text={t('sourceControl.noIssues')} /> : null}</ScrollArea></TabsContent>
       </Tabs>
       </div>
       <CreatePullRequestDialog
@@ -195,7 +236,7 @@ function GitHubReadyView({ projectId, workspacePath, capability, snapshot, busy,
         snapshot={snapshot}
         busy={busy}
         onPush={onPush}
-        onCreated={() => void load()}
+        onCreated={() => void load(true)}
       />
     </>
   );
@@ -352,19 +393,21 @@ function GitHubDetail({
   selection,
   host,
   repository,
+  section,
+  onSectionChange,
   onBack,
   onOpenPullRequestFile,
 }: {
   selection: GitHubSelection;
   host: string;
   repository: string;
+  section: GitHubRepositoryDetailSection;
+  onSectionChange: (section: GitHubRepositoryDetailSection) => void;
   onBack: () => void;
-  onOpenPullRequestFile: (number: number, path: string) => void;
+  onOpenPullRequestFile: (number: number, baseOid: string, headOid: string, path: string) => void;
 }) {
   const { t } = useTranslation();
   const detail = selection.detail;
-  const [section, setSection] = useState<'overview' | 'files'>('overview');
-  useEffect(() => setSection('overview'), [detail.number, selection.kind]);
   const openMarkdownLink = (href: string) => {
     const url = githubMarkdownUrl(href, host, repository, selection.kind === 'pr' ? selection.detail.headRefName : 'HEAD');
     if (url) void openExternalUrl(url);
@@ -383,7 +426,7 @@ function GitHubDetail({
         {selection.kind === 'pr' ? <><span>{selection.detail.headRefName} → {selection.detail.baseRefName}</span><span className="ml-auto text-emerald-600">+{selection.detail.additions}</span><span className="text-destructive">-{selection.detail.deletions}</span></> : null}
       </div>
       {selection.kind === 'issue' ? <div className="min-h-0 flex-1">{body}</div> : (
-        <Tabs value={section} onValueChange={(value) => setSection(value as typeof section)} className="min-h-0 flex-1 gap-0">
+        <Tabs value={section} onValueChange={(value) => onSectionChange(value as GitHubRepositoryDetailSection)} className="min-h-0 flex-1 gap-0">
           <TabsList variant="line" className="h-9 w-full justify-start border-b border-border/50 px-2">
             <TabsTrigger value="overview">{t('sourceControl.overview')}</TabsTrigger>
             <TabsTrigger value="files">{t('sourceControl.githubChangedFiles', { count: selection.detail.files.length })}</TabsTrigger>
@@ -393,7 +436,7 @@ function GitHubDetail({
             <ScrollArea className="min-h-0 flex-1">
               <div className="divide-y divide-border/40">
                 {selection.detail.files.map((file) => (
-                  <button key={file.path} type="button" className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left hover:bg-muted/40" onClick={() => onOpenPullRequestFile(selection.detail.number, file.path)}>
+                  <button key={file.path} type="button" className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left hover:bg-muted/40" onClick={() => onOpenPullRequestFile(selection.detail.number, selection.detail.baseRefOid, selection.detail.headRefOid, file.path)}>
                     <FileDiff className="size-3.5 shrink-0 text-muted-foreground" />
                     <span className="min-w-0 flex-1 truncate font-mono text-xs">{file.path}</span>
                     <span className="text-[10px] tabular-nums text-emerald-600 dark:text-emerald-400">+{file.additions}</span>

@@ -34,12 +34,20 @@ describe('App window shell style', () => {
   });
 
   it('uses the shared shadcn resizable handles with low-contrast dividers', () => {
+    const styles = readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
     const shell = readFileSync(path.resolve(__dirname, '../src/components/workspace/WorkspaceShell.tsx'), 'utf8');
+    const workbenchShell = readFileSync(path.resolve(__dirname, '../src/components/Shell.tsx'), 'utf8');
 
+    expect(styles).toContain('--color-workspace-divider: var(--workspace-divider)');
+    expect(styles).toContain('--workspace-divider: color-mix(in srgb, var(--sidebar-border) 70%, var(--gold-workspace))');
     expect(shell).toContain('ResizablePanelGroup');
     expect(shell).toContain('data-testid="workspace-left-resize-handle"');
     expect(shell).toContain('data-testid="workspace-right-resize-handle"');
-    expect(shell).toContain('bg-sidebar-border/70 hover:bg-primary/30');
+    expect(shell).toContain('border-t border-workspace-divider bg-gold-workspace');
+    expect(shell).toContain('bg-workspace-divider hover:bg-primary/30');
+    expect(shell).toContain("'border-t border-workspace-divider',");
+    expect(shell).not.toContain('bg-sidebar-border/70 hover:bg-primary/30');
+    expect(workbenchShell).toContain('border-l border-t border-workspace-divider');
     expect(shell).not.toContain('mousemove');
     expect(shell).not.toContain('mouseup');
   });

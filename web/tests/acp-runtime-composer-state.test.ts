@@ -3,6 +3,7 @@ import {
   deriveAcpRuntimeComposerState,
   mergeConversationAttemptLifecycle,
   shouldKeepLocalRuntimeLifecycleOverride,
+  shouldSettleRuntimeContinueSubmission,
   type AcpRuntimeComposerStateInput,
 } from '@/lib/acp-runtime-composer-state';
 import type { ConversationAttemptLifecycleVm, RuntimeDisplayVm } from '@/types';
@@ -908,6 +909,14 @@ describe('mergeConversationAttemptLifecycle', () => {
     const incoming = lifecycle({ promptQueue: { revision: 5, maxItems: 10, items: [] } });
 
     expect(mergeConversationAttemptLifecycle(local, incoming)).toBe(incoming);
+  });
+});
+
+describe('shouldSettleRuntimeContinueSubmission', () => {
+  it('keeps the pending label until the lifecycle removes the continue action', () => {
+    expect(shouldSettleRuntimeContinueSubmission(true, true)).toBe(false);
+    expect(shouldSettleRuntimeContinueSubmission(true, false)).toBe(true);
+    expect(shouldSettleRuntimeContinueSubmission(false, false)).toBe(false);
   });
 });
 

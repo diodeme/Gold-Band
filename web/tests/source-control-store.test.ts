@@ -1,20 +1,79 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SourceControlStore } from '@/components/workspace/source-control/source-control-store';
+import i18n from '@/i18n';
 import type {
+  GitCapabilityVm,
   GitHistoryPageVm,
+  GitCommitReviewVm,
+  GitMutationResultVm,
   GitOperationVm,
   GitSourceControlSnapshotVm,
 } from '@/types';
 
 describe('source control session store', () => {
+  it('models missing Git and non-repositories before requesting heavy repository data', async () => {
+    const api = fakeApi();
+    api.getCapability.mockResolvedValueOnce(capability('not-installed'));
+    const store = new SourceControlStore(api);
+
+    await store.ensureLoaded('project-1', 'D:/not-a-repository');
+
+    expect(store.session('project-1', 'D:/not-a-repository')).toMatchObject({
+      status: 'unavailable',
+      capability: { status: 'not-installed' },
+      error: null,
+    });
+    expect(api.getSnapshot).not.toHaveBeenCalled();
+    expect(api.getHistory).not.toHaveBeenCalled();
+  });
+
+  it('initializes a non-repository and loads its unborn Git workspace without a second error state', async () => {
+    const api = fakeApi();
+    api.getCapability
+      .mockResolvedValueOnce(capability('repository-required'))
+      .mockResolvedValueOnce(capability('head-required'));
+    api.initializeRepository.mockResolvedValueOnce(capability('head-required'));
+    const emptySnapshot = repositorySnapshot('D:/repo');
+    emptySnapshot.repository.headOid = null;
+    emptySnapshot.repository.currentBranch = null;
+    emptySnapshot.repository.unborn = true;
+    api.getSnapshot.mockResolvedValueOnce(emptySnapshot);
+    api.getHistory.mockResolvedValueOnce(historyPage('unborn-history'));
+    const store = new SourceControlStore(api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+
+    const request = store.initializeRepository('project-1', 'D:/repo');
+    expect(store.session('project-1', 'D:/repo').pendingAction).toEqual({ kind: 'repository-initialize', path: null });
+    await request;
+
+    expect(api.initializeRepository).toHaveBeenCalledWith('project-1');
+    expect(store.session('project-1', 'D:/repo')).toMatchObject({
+      status: 'ready',
+      capability: { status: 'head-required' },
+      snapshot: { repository: { unborn: true } },
+      error: null,
+    });
+  });
+
+  it('localizes the aggregated changed-file count in both supported languages', () => {
+    expect(i18n.t('sourceControl.changedFileCount', { count: 2, lng: 'zh-CN' })).toBe('2 个变更文件');
+    expect(i18n.t('sourceControl.changedFileCount', { count: 2, lng: 'en' })).toBe('2 changed files');
+  });
+
+  it('localizes commit review topology and patch identity failures', () => {
+    expect(i18n.t('errors.git.commit-review-topology-query-failed', { lng: 'zh-CN' })).not.toContain('errors.git');
+    expect(i18n.t('errors.git.commit-review-patch-identity-failed', { lng: 'en' })).not.toContain('errors.git');
+  });
+
   it('restores repository data and view state after a Diff tab round trip without reloading', async () => {
     const api = fakeApi();
     const store = new SourceControlStore(api);
 
     await store.ensureLoaded('project-1', 'D:/repo');
     store.setActiveTab('project-1', 'D:/repo', 'history');
+    store.setRepositoryTab('project-1', 'D:/repo', 'stashes');
     store.setHistoryPage('project-1', 'D:/repo', 2);
-    store.toggleCommitSelection('project-1', 'D:/repo', 'commit-1');
+    store.selectCommit('project-1', 'D:/repo', 'commit-1', ['commit-1'], { additive: false, range: false });
 
     // Remounting SourceControlWorkspacePanel calls ensureLoaded again.
     await store.ensureLoaded('project-1', 'D:/repo');
@@ -24,6 +83,7 @@ describe('source control session store', () => {
     expect(store.session('project-1', 'D:/repo')).toMatchObject({
       status: 'ready',
       activeTab: 'history',
+      repositoryTab: 'stashes',
       historyPage: 2,
       canonicalWorkspacePath: 'D:/repo',
     });
@@ -35,7 +95,7 @@ describe('source control session store', () => {
     const store = new SourceControlStore(api);
     await store.ensureLoaded('project-1', 'D:/repo');
     store.setHistoryPage('project-1', 'D:/repo', 3);
-    store.toggleCommitSelection('project-1', 'D:/repo', 'commit-1');
+    store.selectCommit('project-1', 'D:/repo', 'commit-1', ['commit-1'], { additive: false, range: false });
 
     await store.refresh('project-1', 'D:/repo');
 
@@ -45,19 +105,207 @@ describe('source control session store', () => {
     expect(store.session('project-1', 'D:/repo').selectedCommitOids.size).toBe(0);
   });
 
-  it('uses a successful mutation snapshot and refreshes history immediately', async () => {
+  it('deduplicates an in-flight next-page request and advances the cached history atomically', async () => {
+    const nextPage = deferred<GitHistoryPageVm>();
+    const api = fakeApi();
+    api.getHistory
+      .mockResolvedValueOnce({
+        commits: Array.from({ length: 300 }, (_, index) => historyCommit(index)),
+        nextCursor: 'cursor-300',
+        revision: 'history-1',
+      })
+      .mockReturnValueOnce(nextPage.promise);
+    const store = new SourceControlStore(api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+
+    const firstRequest = store.loadMoreHistory('project-1', 'D:/repo', true);
+    const duplicateRequest = store.loadMoreHistory('project-1', 'D:/repo', true);
+
+    expect(api.getHistory).toHaveBeenCalledTimes(2);
+    expect(api.getHistory).toHaveBeenLastCalledWith('project-1', 'D:/repo', {
+      cursor: 'cursor-300',
+      limit: 300,
+      revision: 'history-1',
+    });
+    expect(store.session('project-1', 'D:/repo').pendingAction).toEqual({
+      kind: 'history-more',
+      path: null,
+    });
+
+    nextPage.resolve({
+      commits: [historyCommit(300)],
+      nextCursor: null,
+      revision: 'history-1',
+    });
+    await Promise.all([firstRequest, duplicateRequest]);
+
+    expect(store.session('project-1', 'D:/repo')).toMatchObject({
+      historyPage: 1,
+      pendingAction: null,
+    });
+    expect(store.session('project-1', 'D:/repo').history?.commits).toHaveLength(301);
+  });
+
+  it('merges a workspace-only mutation result without refreshing snapshot or history', async () => {
     const api = fakeApi();
     const store = new SourceControlStore(api);
     await store.ensureLoaded('project-1', 'D:/repo');
-    api.executeMutation.mockResolvedValueOnce({ snapshot: repositorySnapshot('D:/repo', 'revision-2') });
+    const nextSnapshot = repositorySnapshot('D:/repo', 'revision-2');
+    nextSnapshot.status.staged = [{
+      path: 'src/app.ts',
+      oldPath: null,
+      kind: 'modified',
+      indexStatus: 'M',
+      worktreeStatus: null,
+      binary: false,
+      submodule: false,
+      addedLines: 1,
+      deletedLines: 0,
+    }];
+    api.executeMutation.mockResolvedValueOnce({
+      scope: 'workspace',
+      status: nextSnapshot.status,
+      repositoryRevision: 'revision-2',
+    });
 
-    await store.mutate('project-1', 'D:/repo', { kind: 'stage-all' }, 'stage-all');
+    await store.mutate('project-1', 'D:/repo', { kind: 'stage-all' });
 
     expect(api.executeMutation).toHaveBeenCalledWith('project-1', 'D:/repo', {
       kind: 'stage-all',
       expectedRevision: 'revision-1',
     });
-    expect(api.getHistory).toHaveBeenCalledTimes(2);
+    expect(api.getSnapshot).toHaveBeenCalledTimes(1);
+    expect(api.getHistory).toHaveBeenCalledTimes(1);
+    expect(store.session('project-1', 'D:/repo').snapshot?.repository.revision).toBe('revision-2');
+    expect(store.session('project-1', 'D:/repo').snapshot?.status.staged[0]?.path).toBe('src/app.ts');
+  });
+
+  it('implements single, additive, range, and additive-range commit selection', async () => {
+    const api = fakeApi();
+    const store = new SourceControlStore(api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+    const visible = ['commit-1', 'commit-2', 'commit-3', 'commit-4'];
+
+    store.selectCommit('project-1', 'D:/repo', 'commit-2', visible, { additive: false, range: false });
+    store.selectCommit('project-1', 'D:/repo', 'commit-4', visible, { additive: false, range: true });
+    expect([...store.session('project-1', 'D:/repo').selectedCommitOids]).toEqual(['commit-2', 'commit-3', 'commit-4']);
+
+    store.selectCommit('project-1', 'D:/repo', 'commit-1', visible, { additive: true, range: false });
+    expect([...store.session('project-1', 'D:/repo').selectedCommitOids]).toEqual(['commit-1', 'commit-2', 'commit-3', 'commit-4']);
+
+    store.selectCommit('project-1', 'D:/repo', 'commit-3', visible, { additive: true, range: true });
+    expect(new Set(store.session('project-1', 'D:/repo').selectedCommitOids)).toEqual(new Set(visible));
+  });
+
+  it('preserves a selected group on right-click and selects an unselected commit alone', async () => {
+    const api = fakeApi();
+    const store = new SourceControlStore(api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+    const visible = ['commit-1', 'commit-2', 'commit-3'];
+    store.selectCommit('project-1', 'D:/repo', 'commit-1', visible, { additive: false, range: false });
+    store.selectCommit('project-1', 'D:/repo', 'commit-2', visible, { additive: true, range: false });
+
+    store.selectCommitForContextMenu('project-1', 'D:/repo', 'commit-2');
+    expect([...store.session('project-1', 'D:/repo').selectedCommitOids]).toEqual(['commit-1', 'commit-2']);
+
+    store.selectCommitForContextMenu('project-1', 'D:/repo', 'commit-3');
+    expect([...store.session('project-1', 'D:/repo').selectedCommitOids]).toEqual(['commit-3']);
+  });
+
+  it('prevents an older commit review response from replacing the latest selection', async () => {
+    const first = deferred<GitCommitReviewVm>();
+    const second = deferred<GitCommitReviewVm>();
+    const api = fakeApi();
+    api.getCommitReview.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const store = new SourceControlStore(api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+    const visible = ['commit-1', 'commit-2'];
+    store.selectCommit('project-1', 'D:/repo', 'commit-1', visible, { additive: false, range: false });
+    store.selectCommit('project-1', 'D:/repo', 'commit-2', visible, { additive: false, range: false });
+
+    second.resolve(commitReview(['commit-2']));
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').commitReview?.selectedOids).toEqual(['commit-2']));
+    first.resolve(commitReview(['commit-1']));
+    await Promise.resolve();
+
+    expect(store.session('project-1', 'D:/repo').commitReview?.selectedOids).toEqual(['commit-2']);
+  });
+
+  it('reuses a commit review result for the same ordered selection and revision', async () => {
+    const api = fakeApi();
+    const store = new SourceControlStore(api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+    const visible = ['commit-1', 'commit-2'];
+
+    store.selectCommit('project-1', 'D:/repo', 'commit-1', visible, { additive: false, range: false });
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').historyDetailLoading).toBe(false));
+    store.clearCommitSelection('project-1', 'D:/repo');
+    store.selectCommit('project-1', 'D:/repo', 'commit-1', visible, { additive: false, range: false });
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').historyDetailLoading).toBe(false));
+
+    expect(api.getCommitReview).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops commit review cache entries when their repository session is cleared', async () => {
+    const api = fakeApi();
+    const store = new SourceControlStore(api);
+    const visible = ['commit-1'];
+    await store.ensureLoaded('project-1', 'D:/repo');
+    store.selectCommit('project-1', 'D:/repo', 'commit-1', visible, { additive: false, range: false });
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').historyDetailLoading).toBe(false));
+
+    store.clear('project-1', 'D:/repo');
+    await store.ensureLoaded('project-1', 'D:/repo');
+    store.selectCommit('project-1', 'D:/repo', 'commit-1', visible, { additive: false, range: false });
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').historyDetailLoading).toBe(false));
+
+    expect(api.getCommitReview).toHaveBeenCalledTimes(2);
+  });
+
+  it('tracks the pending file identity and rejects a second mutation until Stage settles', async () => {
+    const result = deferred<GitMutationResultVm>();
+    const api = fakeApi();
+    api.executeMutation.mockReturnValueOnce(result.promise);
+    const store = new SourceControlStore(api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+
+    const mutation = store.mutate('project-1', 'D:/repo', { kind: 'stage-paths', paths: ['src/app.ts'] });
+    expect(store.session('project-1', 'D:/repo').pendingAction).toEqual({
+      kind: 'stage-paths',
+      path: 'src/app.ts',
+    });
+    await store.mutate('project-1', 'D:/repo', { kind: 'stage-paths', paths: ['src/other.ts'] });
+    expect(api.executeMutation).toHaveBeenCalledTimes(1);
+
+    const nextSnapshot = repositorySnapshot('D:/repo', 'revision-2');
+    result.resolve({
+      scope: 'workspace',
+      status: nextSnapshot.status,
+      repositoryRevision: 'revision-2',
+    });
+    await mutation;
+    expect(store.session('project-1', 'D:/repo').pendingAction).toBeNull();
+  });
+
+  it('refreshes repository snapshot and history in parallel after a ref-changing mutation', async () => {
+    const nextSnapshot = deferred<GitSourceControlSnapshotVm>();
+    const nextHistory = deferred<GitHistoryPageVm>();
+    const api = fakeApi();
+    const store = new SourceControlStore(api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+    api.executeMutation.mockResolvedValueOnce({ scope: 'repository' });
+    api.getSnapshot.mockReturnValueOnce(nextSnapshot.promise);
+    api.getHistory.mockReturnValueOnce(nextHistory.promise);
+
+    const mutation = store.mutate('project-1', 'D:/repo', { kind: 'commit', subject: 'Commit', body: null });
+    await vi.waitFor(() => {
+      expect(api.getSnapshot).toHaveBeenCalledTimes(2);
+      expect(api.getHistory).toHaveBeenCalledTimes(2);
+    });
+
+    nextSnapshot.resolve(repositorySnapshot('D:/repo', 'revision-2'));
+    nextHistory.resolve(historyPage('revision-2'));
+    await mutation;
     expect(store.session('project-1', 'D:/repo').snapshot?.repository.revision).toBe('revision-2');
   });
 
@@ -92,6 +340,7 @@ describe('source control session store', () => {
     const store = new SourceControlStore(api);
 
     const older = store.ensureLoaded('project-1', 'D:/repo');
+    await vi.waitFor(() => expect(api.getSnapshot).toHaveBeenCalledTimes(1));
     const newer = store.refresh('project-1', 'D:/repo');
     await newer;
     firstSnapshot.resolve(repositorySnapshot('D:/repo', 'revision-old'));
@@ -130,7 +379,7 @@ describe('source control session store', () => {
     const store = new SourceControlStore(events.api);
     await store.ensureLoaded('project-1', 'D:/repo');
 
-    await store.startOperation('project-1', 'D:/repo', { kind: 'fetch', prune: true }, 'fetch');
+    await store.startOperation('project-1', 'D:/repo', { kind: 'fetch', prune: true });
     events.emitOperation({
       ...queued,
       status: 'succeeded',
@@ -138,9 +387,60 @@ describe('source control session store', () => {
       completedAt: '2026-08-11T00:00:00.000Z',
     });
 
-    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').pendingOperation).toBeNull());
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').pendingAction).toBeNull());
     expect(events.api.getSnapshot).toHaveBeenCalledTimes(2);
     expect(events.api.getOperation).not.toHaveBeenCalled();
+    expect(store.session('project-1', 'D:/repo').activeOperation).toMatchObject({
+      operationId: 'operation-1',
+      status: 'succeeded',
+    });
+
+    store.setActiveTab('project-1', 'D:/repo', 'repository');
+    store.setActiveTab('project-1', 'D:/repo', 'changes');
+    expect(store.session('project-1', 'D:/repo').activeOperation?.status).toBe('succeeded');
+
+    store.dismissOperationResult('project-1', 'D:/repo');
+    expect(store.session('project-1', 'D:/repo').activeOperation).toBeNull();
+  });
+
+  it('preserves a structured Git failure reason after the terminal refresh', async () => {
+    const events = eventApi();
+    const queued: GitOperationVm = {
+      operationId: 'operation-failed',
+      kind: 'push',
+      repositoryCommonDir: 'D:/repo/.git',
+      workspacePath: 'D:/repo',
+      status: 'queued',
+      cancelable: true,
+      startedAt: null,
+      completedAt: null,
+      error: null,
+    };
+    events.api.startOperation.mockResolvedValueOnce(queued);
+    const store = new SourceControlStore(events.api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+
+    await store.startOperation('project-1', 'D:/repo', { kind: 'push', remote: 'origin', branch: 'main', setUpstream: true });
+    events.emitOperation({
+      ...queued,
+      status: 'failed',
+      cancelable: false,
+      completedAt: '2026-08-11T00:00:00.000Z',
+      error: {
+        code: 'git.authentication-failed',
+        params: { exitCode: 128, reason: "fatal: Authentication failed for 'https://github.com/example/repo.git/'" },
+      },
+    });
+
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').pendingAction).toBeNull());
+    expect(store.session('project-1', 'D:/repo').error).toEqual({
+      code: 'git.authentication-failed',
+      params: { exitCode: 128, reason: "fatal: Authentication failed for 'https://github.com/example/repo.git/'" },
+    });
+
+    store.dismissOperationResult('project-1', 'D:/repo');
+    expect(store.session('project-1', 'D:/repo').activeOperation).toBeNull();
+    expect(store.session('project-1', 'D:/repo').error).toBeNull();
   });
 
   it('debounces matching repository events and preserves navigation during snapshot invalidation', async () => {
@@ -151,6 +451,12 @@ describe('source control session store', () => {
       await store.ensureLoaded('project-1', 'D:/repo');
       store.setActiveTab('project-1', 'D:/repo', 'history');
       store.setHistoryPage('project-1', 'D:/repo', 4);
+      store.setSubject('project-1', 'D:/repo', 'draft subject');
+      store.setBody('project-1', 'D:/repo', 'draft body');
+      const snapshotRefresh = deferred<GitSourceControlSnapshotVm>();
+      const historyRefresh = deferred<GitHistoryPageVm>();
+      events.api.getSnapshot.mockReturnValueOnce(snapshotRefresh.promise);
+      events.api.getHistory.mockReturnValueOnce(historyRefresh.promise);
 
       events.emitState({
         projectId: 'project-1',
@@ -171,7 +477,15 @@ describe('source control session store', () => {
       expect(store.session('project-1', 'D:/repo')).toMatchObject({
         activeTab: 'history',
         historyPage: 4,
+        pendingAction: null,
+        refreshing: 'background',
+        subject: 'draft subject',
+        body: 'draft body',
       });
+      snapshotRefresh.resolve(repositorySnapshot('D:/repo', 'revision-2'));
+      historyRefresh.resolve(historyPage('history-2'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.session('project-1', 'D:/repo').refreshing).toBeNull();
     } finally {
       vi.useRealTimers();
     }
@@ -199,14 +513,39 @@ describe('source control session store', () => {
 
 function fakeApi() {
   return {
+    getCapability: vi.fn(async () => capability('ready')),
+    initializeRepository: vi.fn(async () => capability('head-required')),
     getSnapshot: vi.fn(async (_projectId: string, workspacePath?: string | null) => repositorySnapshot(workspacePath ?? 'D:/repo')),
     getHistory: vi.fn(async () => historyPage('history-1')),
-    getCommitDetail: vi.fn(),
-    analyzeCommitRelations: vi.fn(),
+    getCommitReview: vi.fn(async (_projectId: string, _workspacePath: string | null | undefined, query: { selectedOids: string[] }) => ({
+      selectedOids: query.selectedOids,
+      revision: 'history-1',
+      files: [],
+      totals: { commitCount: query.selectedOids.length, fileCount: 0 },
+    })),
+    getCommitReachability: vi.fn(),
     executeMutation: vi.fn(),
     startOperation: vi.fn(),
     getOperation: vi.fn(),
     cancelOperation: vi.fn(),
+  };
+}
+
+function capability(status: GitCapabilityVm['status']): GitCapabilityVm {
+  return {
+    status,
+    repoRoot: status === 'not-installed' || status === 'repository-required' ? null : 'D:/repo',
+    commonDir: status === 'not-installed' || status === 'repository-required' ? null : 'D:/repo/.git',
+    head: status === 'ready' ? 'a'.repeat(40) : null,
+  };
+}
+
+function commitReview(selectedOids: string[]): GitCommitReviewVm {
+  return {
+    selectedOids,
+    revision: 'history-1',
+    files: [],
+    totals: { commitCount: selectedOids.length, fileCount: 0 },
   };
 }
 
@@ -284,6 +623,21 @@ function repositorySnapshot(workspacePath: string, revision = 'revision-1'): Git
 
 function historyPage(revision: string): GitHistoryPageVm {
   return { commits: [], nextCursor: null, revision };
+}
+
+function historyCommit(index: number): GitHistoryPageVm['commits'][number] {
+  const oid = index.toString(16).padStart(40, '0');
+  return {
+    oid,
+    parentOids: index > 0 ? [(index - 1).toString(16).padStart(40, '0')] : [],
+    subject: `commit ${index}`,
+    body: '',
+    author: { name: 'Ada', email: null, timestamp: '2026-08-12T00:00:00Z' },
+    committer: { name: 'Ada', email: null, timestamp: '2026-08-12T00:00:00Z' },
+    refs: [],
+    sourceRef: 'refs/heads/main',
+    runtimeCheckpoint: false,
+  };
 }
 
 function deferred<T>() {

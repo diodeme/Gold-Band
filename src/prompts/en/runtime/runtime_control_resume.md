@@ -1,1 +1,1 @@
-The user has chosen to resume the workflow. The ordinary conversation phase has ended. Continue the original task; the Runtime control requirements and output contract are active again.
+The user has chosen to return the current node to Runtime control. The current output contract, if any, is active again.

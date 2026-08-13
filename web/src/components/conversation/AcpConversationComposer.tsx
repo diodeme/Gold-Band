@@ -2,6 +2,7 @@ import {
   CircleStop,
   Loader2,
   Paperclip,
+  Play,
   Send,
 } from 'lucide-react';
 import type {
@@ -66,6 +67,9 @@ export interface AcpConversationComposerProps {
   onStop: () => void | Promise<void>;
   canSubmit: boolean;
   sendButtonBusy: boolean;
+  showRuntimeContinue: boolean;
+  runtimeContinueSubmitting: boolean;
+  onRuntimeContinue: () => void | Promise<void>;
   configBar: ReactNode;
   attachedQueueVisible: boolean;
   queueSubmit: boolean;
@@ -113,6 +117,9 @@ export function AcpConversationComposer({
   onStop,
   canSubmit,
   sendButtonBusy,
+  showRuntimeContinue,
+  runtimeContinueSubmitting,
+  onRuntimeContinue,
   configBar,
   attachedQueueVisible,
   queueSubmit,
@@ -221,12 +228,35 @@ export function AcpConversationComposer({
                   </Button>
                 </PromptInputAction>
               ) : null}
+              {showRuntimeContinue ? (
+                <PromptInputAction tooltip={t('acp.continueWorkflow')}>
+                  <Button
+                    type="button"
+                    className="h-8 gap-1.5 rounded-full px-3"
+                    size="sm"
+                    variant="secondary"
+                    disabled={runtimeContinueSubmitting}
+                    onClick={() => { void onRuntimeContinue(); }}
+                    data-acp-continue-workflow="true"
+                  >
+                    {runtimeContinueSubmitting ? (
+                      <Loader2 className="size-3.5 animate-spin" style={{ willChange: 'transform' }} />
+                    ) : (
+                      <Play className="size-3.5" />
+                    )}
+                    {runtimeContinueSubmitting
+                      ? t('acp.continueWorkflowStarting')
+                      : t('acp.continueWorkflow')}
+                  </Button>
+                </PromptInputAction>
+              ) : null}
               <PromptInputAction tooltip={queueSubmit ? t('acp.promptQueue.enqueue') : t('acp.send')}>
                 <Button
                   className="h-8 gap-1.5 rounded-full px-3"
                   size="sm"
                   disabled={!canSubmit}
                   onClick={onSubmit}
+                  data-acp-send="true"
                 >
                   {sendButtonBusy ? (
                     <Loader2 className="size-3.5 animate-spin" style={{ willChange: 'transform' }} />

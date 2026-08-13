@@ -38,6 +38,45 @@ afterEach(() => {
 });
 
 describe('ACP activity batch disclosure', () => {
+  it('renders the shared CSS ring only while the activity is live', async () => {
+    const events = [event({
+      id: 'thought',
+      kind: 'thoughtDelta',
+      content: 'Inspecting the current state',
+    })];
+    const liveProjection = buildAcpTimelineProjection(events, 'running');
+    const archivedProjection = buildAcpTimelineProjection(events, 'cancelled');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(React.createElement(ACPMessageList, {
+          timeline: liveProjection.timeline,
+          sessionStatus: 'running',
+          sending: false,
+        }));
+      });
+      const liveTrigger = container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]');
+      const liveRing = liveTrigger?.querySelector<HTMLElement>('[data-acp-processing-spinner]');
+      expect(liveRing?.tagName).toBe('SPAN');
+      expect(liveRing?.className).toContain('border-t-gold-running');
+      expect(liveTrigger?.querySelector('svg.animate-spin')).toBeNull();
+
+      await act(async () => {
+        root.render(React.createElement(ACPMessageList, {
+          timeline: archivedProjection.timeline,
+          sessionStatus: 'cancelled',
+          sending: false,
+        }));
+      });
+      expect(container.querySelector('[data-acp-processing-spinner]')).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('keeps a finalized file change set immediately after the turn activity batch', () => {
     const projection = buildAcpTimelineProjection([
       event({

@@ -596,7 +596,11 @@ export const desktopApi: RuntimeApi = {
     const result = await open({ multiple: true });
     if (!result) return [];
     const paths = Array.isArray(result) ? result : [result];
-    return invokeCommand('stat_attachment_files', { paths });
+    const files = await invokeCommand<import('./client').AttachmentFileRef[]>('stat_attachment_files', { paths });
+    return files.map((file) => ({
+      ...file,
+      previewUrl: file.previewUrl ? convertFileSrc(file.previewUrl, 'gold-band-preview') : null,
+    }));
   },
   materializeConversationAttachments(files) {
     return invokeCommand('materialize_conversation_attachments', { input: { files } });

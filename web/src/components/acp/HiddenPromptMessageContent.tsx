@@ -19,10 +19,7 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
   const { t } = useTranslation();
   const contentExpansion = useOptionalChatContainerContentExpansion();
   const parts = useMemo(() => parseGoldBandHiddenSections(content), [content]);
-  const displayParts = useMemo(() => [
-    ...parts.map((part, sourceIndex) => ({ part, sourceIndex })).filter(({ part }) => part.type === "hidden"),
-    ...parts.map((part, sourceIndex) => ({ part, sourceIndex })).filter(({ part }) => part.type === "visible"),
-  ], [parts]);
+  const displayParts = useMemo(() => projectHiddenPromptDisplayParts(parts), [parts]);
   const rootRef = useRef<HTMLDivElement>(null);
   const labelMeasureRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const visibleMeasureRefs = useRef<Array<HTMLDivElement | null>>([]);
@@ -182,7 +179,34 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
 }
 
 export function visiblePromptText(text: string, followsHiddenSection: boolean) {
-  return followsHiddenSection ? text.replace(/^[\r\n]+/, "") : text;
+  return followsHiddenSection
+    ? text.replace(/^(?:[\t ]*\r?\n)+/, "")
+    : text;
+}
+
+export function projectHiddenPromptDisplayParts(
+  parts: ReturnType<typeof parseGoldBandHiddenSections>,
+) {
+  const hiddenParts = parts
+    .map((part, sourceIndex) => ({ part, sourceIndex }))
+    .filter(({ part }) => part.type === "hidden");
+  const visibleText = parts
+    .filter((part) => part.type === "visible")
+    .map((part) => part.text)
+    .join("");
+  const normalizedVisibleText = visiblePromptText(
+    visibleText,
+    hiddenParts.length > 0,
+  );
+  return normalizedVisibleText
+    ? [
+        ...hiddenParts,
+        {
+          part: { type: "visible" as const, text: normalizedVisibleText },
+          sourceIndex: parts.length,
+        },
+      ]
+    : hiddenParts;
 }
 
 function HiddenPromptSection({

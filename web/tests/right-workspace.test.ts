@@ -13,6 +13,7 @@ import {
   gitFileComparisonWorkspaceResourceKey,
   rightWorkspaceReducer,
   scheduledTaskConfigWorkspaceResourceKey,
+  draftAttachmentWorkspaceResourceKey,
   type AgentTranscriptLocator,
   type FileWorkspaceResource,
   type RightWorkspaceResource,
@@ -81,6 +82,15 @@ describe('right workspace resource model', () => {
     expect(key).toBe('scheduled-task-config:draft:project-1');
     expect(state.tabs).toEqual([{ ...resource, title: 'Updated settings' }]);
     expect(state).toMatchObject({ activeTabKey: key, requestedOpen: true });
+  });
+
+  it('keys draft attachment previews by draft scope and stable attachment identity', () => {
+    expect(draftAttachmentWorkspaceResourceKey('draft:project-1', 'attachment-1')).toBe(
+      'draft-attachment:draft:project-1:attachment-1',
+    );
+    expect(draftAttachmentWorkspaceResourceKey('draft:project-2', 'attachment-1')).not.toBe(
+      draftAttachmentWorkspaceResourceKey('draft:project-1', 'attachment-1'),
+    );
   });
 
   it('closes the active tab to its adjacent tab and collapses after the last tab closes', () => {

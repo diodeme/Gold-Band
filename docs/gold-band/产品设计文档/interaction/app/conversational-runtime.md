@@ -392,6 +392,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 运行标题栏与 ACP session header 统一消费独立的 `content-header` token 并只保留轻量底部分隔线；四套主题当前都将该 token 映射为 `var(--sidebar)`，使标题栏与侧边栏组成连续应用框架，并与消息阅读区明确分层。保留独立 token 是为了未来可只改色板映射，不改变组件接口；标题栏不得增加独立卡片、投影或嵌套灰块。
 - 用户消息气泡使用独立的 `message-user` / `message-user-foreground` 语义 token，不复用 `primary` 混色。科技灰下采用 `#f3f3f3` 浅灰底与 `#202020` 深色正文，不显示可感知边框和投影；长消息仍应保持轻盈，不能形成大面积中灰实体面板。深色主题使用同源的中性高层 surface 与高对比文字。
 - assistant 自然语言正文直接显示在页面背景上，使用实色 `foreground`，不再包裹白色卡片、灰色边框或投影。工具、思考、代码块和控制输出仍可使用必要的结构化 surface，从而让主阅读路径保持高白度与高黑度。
+- Thought 使用低边界紧凑结构；展开正文最大高度为 `18rem`，超过后仅正文区域纵向滚动，保留主题滚动条、键盘焦点和 overscroll 边界。内部滚动不改变会话主视口的 canonical 贴底状态，也不自动追随流式内容抢走用户当前阅读位置。
 - ACP 会话主消息流、raw frames 面板和 prompt-kit 聊天滚动容器使用 Gold Band 主题化滚动条；滚动条颜色必须来自主题 token（主色、muted、surface），科技灰主题使用无彩石墨与中性 surface 混合，不回退为系统默认灰色，也不引入蓝灰色偏。
 - 主题源码契约测试必须在解析 CSS 前统一换行符，Windows CRLF 与 Linux LF 必须得到相同 token 验收结果；不得把工作区 checkout 的行尾格式误判为视觉回归。
 - Gold Band runtime prompt 中的 `<hidden data-gold-band-hidden="true">` 段在用户消息气泡内默认折叠展示，折叠块与可见 requirement/goal 同属一个 bubble；展开后展示隐藏原文，再次点击收起。折叠块使用当前文字色的极低透明 surface，不使用白色 `background` 在浅灰气泡内再造一层亮卡片。用户消息行建立 inline-size container，结构 token `--conversation-message-max-inline-size: 82cqi` 只定义消息气泡允许使用的最大测量宽度，不直接作为最终正文宽度。组件在这个上限内创建不可见的同字体测量副本，通过 `Range.getClientRects()` 读取每个实际排版行的宽度；折叠态最终宽度取隐藏标签完整宽度与所有可见正文行宽度的最大值，展开态再纳入已展开隐藏正文行宽度，并向上取整为稳定像素值。消息行 ResizeObserver、展开状态和字体加载完成都会触发重新测量，因此窗口变宽只会改变文本的真实换行结果，不会让气泡随容器比例无条件线性增长。隐藏区使用嵌套 grid stretch：根节点、Trigger 和 Content 均不声明 `w-full` 等百分比宽度；外层先应用测量后的最终宽度，内层单列 grid 与 Trigger 的 `minmax(0,1fr) auto` 两列布局再自动铺满。超长内容达到消息列上限后换行，不使用固定 `rem`/像素宽度猜测，也不使用 inline-size containment 排除可见区域的宽度贡献。该规则适用于 workflow new 和 workflow resume，并覆盖会话态与旧工作台复用的 ACPChatDialog；用户手动追问和 runtime repair 不注入 hidden runtime context。hidden 后面的可见片段只在展示层去掉开头换行，真实 prompt 事件内容不变。
@@ -428,7 +429,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 - 位于 composer 上方、AcpUsagePanel 下方
 - 默认收起，显示任务进度摘要（如 "2/4 · 当前任务名称"）
-- 展开后展示完整条目列表，每项包含状态 Badge 和内容
+- 展开后使用紧凑任务行展示完整条目列表；完成、进行中和待处理分别使用勾选、运行环和小号中性空心状态点，并辅以状态文案，禁止只依赖颜色或堆叠大号 Badge。面板摘要已经提供完成数，待处理行不得再显示序号圆环重复表达顺序。
 - 仅显示当前 branch 的 todo；Agent 内部 plan 只在对应右侧 Agent 会话中展示，不回落到父分支
 - 规范化边界为 plan 写入 `planOwnership = branch | unscoped`。只有 provider relation 或既有内部 branch 定位能够证明归属时才标记为 `branch`；缺少范围信息的 session-wide plan 标记为 `unscoped`，不得根据条目文本、事件邻近或 Agent 名称猜测归属
 - 普通且没有 Agent execution 的根会话可以展示 `unscoped` plan；一旦当前 session 存在 Agent execution，根会话必须 fail-closed 隐藏 `unscoped` plan，防止 provider 聚合的子 Agent Todo 平铺到主会话
@@ -456,6 +457,8 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 ## 工具调用参数展示
 
+- 工具调用默认使用低边界、无阴影的紧凑行，首行只承载操作名、单个关键参数 chip、状态和常显展开箭头；参数使用等宽字体与单行截断，完整输入输出仍在展开详情中查看。
+- 展开详情使用左侧细竖线表达从属关系，不再嵌套新的高对比卡片 surface；长路径、JSON 和命令继续在自身内容区换行或滚动。
 - 工具调用卡片展开后以有序列表展示工具输入参数
 - 参数按来源优先级提取：rawInput > 结构化 fields > title/locations 解析
 - 同标签参数保留多个不同值（如多个路径、多个查询条件）
@@ -485,6 +488,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - Direct ACP header 不展示“系统提示”按钮；Direct 的 system prompt 本就为空，不保留无效或禁用态入口。原始帧与其他诊断能力继续保留。
 - 消息、thought、plan、tool call、permission、elicitation、附件、raw frame、token、cost、context 和耗时继续复用现有 ACP/prompt-kit 管道。
 - composer 内的发送中、思考中、工具执行中、回复中、停止中和计时仍由 canonical lifecycle 驱动，不新增 Direct 专用 chat 组件。
+- Composer 运行态继续使用既有秒级 canonical 计时，当前动作与 session 累计耗时以紧凑同行展示；计时跟随状态栏正文的字体和字号，仅使用 `tabular-nums` 稳定数字宽度，各信息组通过既有间距区分，不增加装饰分隔点、高频前端 timer、文字 shimmer 或第二套 loading 生命周期。
 - completed run 上的 follow-up 仍可能存在实时 ACP prompt。后端必须读取 per-attempt `Starting / Running / CancelRequested` 活动状态；只有没有实时活动时，terminal runtime 才能压制磁盘残留的 stale `running` session snapshot。
 - 前端的 `sending / awaitingResponse / cancelling` 只覆盖命令往返窗口。页面切换或组件重挂载后，停止按钮、计时和 token 展示必须完全由后端 lifecycle/session snapshot 恢复；输入策略由同一 lifecycle 加 run mode capability 恢复，Direct active 可输入入队，Workflow/AUTO active 锁定。
 - prompt 写入 terminal session snapshot 前必须先将实时活动标记为 finished，避免终态事件到达后 UI 仍被旧活动状态锁定。

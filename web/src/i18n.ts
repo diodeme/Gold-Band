@@ -2121,6 +2121,8 @@ const resources = {
         fullRequirement: "Full Requirement",
         fullRequirementDescription: "View the complete task requirement.",
         copy: "Copy",
+        copyCode: "Copy code",
+        copied: "Copied",
         conversation: "Conversation",
         workbench: "Workbench",
         collapseSidebar: "Collapse sidebar",

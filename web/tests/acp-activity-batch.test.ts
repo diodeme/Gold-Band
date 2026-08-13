@@ -77,6 +77,45 @@ describe('ACP activity batch disclosure', () => {
     }
   });
 
+  it('bounds long thought details inside a keyboard-scrollable region', async () => {
+    const projection = buildAcpTimelineProjection([event({
+      id: 'long-thought',
+      kind: 'thoughtDelta',
+      content: 'Inspecting the current state.\n'.repeat(120),
+    })], 'completed');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(React.createElement(ACPMessageList, {
+          timeline: projection.timeline,
+          sessionStatus: 'completed',
+          sending: false,
+        }));
+      });
+
+      const activityTrigger = container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]');
+      await act(async () => {
+        activityTrigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      const thoughtTrigger = container.querySelectorAll<HTMLButtonElement>('[data-slot="collapsible-trigger"]')[1];
+      await act(async () => {
+        thoughtTrigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+
+      const scrollRegion = container.querySelector<HTMLElement>('[data-acp-thought-scroll-area="true"]');
+      expect(scrollRegion?.getAttribute('role')).toBe('region');
+      expect(scrollRegion?.getAttribute('tabindex')).toBe('0');
+      expect(scrollRegion?.className).toContain('max-h-72');
+      expect(scrollRegion?.className).toContain('overflow-y-auto');
+      expect(scrollRegion?.className).toContain('overscroll-contain');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('keeps a finalized file change set immediately after the turn activity batch', () => {
     const projection = buildAcpTimelineProjection([
       event({
@@ -151,10 +190,14 @@ describe('ACP activity batch disclosure', () => {
 
       const triggers = container.querySelectorAll<HTMLButtonElement>('[data-slot="collapsible-trigger"]');
       expect(triggers.length).toBeGreaterThanOrEqual(2);
+      const tool = container.querySelector<HTMLElement>('[data-prompt-kit-tool="true"]');
+      expect(tool?.dataset.toolVariant).toBe('audit');
+      expect(tool?.querySelector('[data-tool-summary="true"]')?.textContent).toContain('large.log');
       await act(async () => {
         triggers[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       });
       expect(outputReads).toBeGreaterThan(0);
+      expect(tool?.querySelector('[data-tool-detail="true"]')?.className).toContain('border-l');
     } finally {
       await act(async () => root.unmount());
     }

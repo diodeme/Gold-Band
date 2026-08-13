@@ -87,7 +87,7 @@ export function AcpSingleConfigMenu({
               <span className="block min-w-0">
                 <span className="block truncate font-medium">{option.name}</span>
                 {option.description ? (
-                  <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">
+                  <span className="mt-0.5 block whitespace-normal break-words text-ui-caption leading-4 text-muted-foreground">
                     {option.description}
                   </span>
                 ) : null}

@@ -3792,7 +3792,7 @@ function AcpManualCheckPanel({
   );
 }
 
-function AcpTodoPanel({
+export function AcpTodoPanel({
   entries,
   variant = "composer",
 }: {
@@ -3816,13 +3816,14 @@ function AcpTodoPanel({
 
   return (
     <Collapsible
+      data-acp-todo-panel="true"
       open={open}
       onOpenChange={setOpen}
       className={cn(
         "w-full",
         variant === "composer"
-          ? "border border-b-0 border-border/60 bg-card/60"
-          : "overflow-hidden rounded-lg bg-muted/20",
+          ? "border border-b-0 border-border/45 bg-transparent"
+          : "overflow-hidden rounded-lg border border-border/35 bg-transparent",
       )}
     >
       <CollapsibleTrigger asChild>
@@ -3849,22 +3850,52 @@ function AcpTodoPanel({
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden">
-        <div className="space-y-1 border-t border-border/35 px-3 pb-2 pt-2">
+        <div className="divide-y divide-border/25 border-t border-border/35 px-3 pb-1.5">
           {entries.map((entry, index) => (
-            <div className="flex min-w-0 items-start gap-2 text-xs" key={index}>
-              <Badge variant="secondary" className="shrink-0">
-                {entry.status
-                  ? displayStatus(t, entry.status)
-                  : (entry.priority ?? index + 1)}
-              </Badge>
-              <span className="min-w-0 break-words [overflow-wrap:anywhere]">
+            <div data-acp-todo-row="true" className="flex min-h-8 min-w-0 items-center gap-2 py-1 text-xs" key={index}>
+              <TodoStatusMark status={entry.status} />
+              <span className="min-w-0 flex-1 break-words text-foreground/90 [overflow-wrap:anywhere]">
                 {entry.content}
               </span>
+              {entry.status || entry.priority ? (
+                <span className="shrink-0 text-ui-caption text-muted-foreground">
+                  {entry.status ? displayStatus(t, entry.status) : entry.priority}
+                </span>
+              ) : null}
             </div>
           ))}
         </div>
       </CollapsibleContent>
     </Collapsible>
+  );
+}
+
+function TodoStatusMark({
+  status,
+}: {
+  status?: string;
+}) {
+  const normalized = status?.toLowerCase();
+  if (normalized === "completed" || normalized === "complete") {
+    return (
+      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-emerald-500/12 text-emerald-700 dark:text-emerald-300">
+        <Check className="size-3" aria-hidden="true" />
+      </span>
+    );
+  }
+  if (normalized === "in_progress" || normalized === "running") {
+    return (
+      <span className="flex size-5 shrink-0 items-center justify-center">
+        <AcpProcessingSpinner className="size-4" />
+      </span>
+    );
+  }
+  return (
+    <span
+      aria-hidden="true"
+      data-acp-todo-pending-mark="true"
+      className="mx-1.5 size-2 shrink-0 rounded-full border border-muted-foreground/55 bg-transparent"
+    />
   );
 }
 
@@ -4127,7 +4158,7 @@ export function ACPSessionHeader({
           <Bot aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
         )}
         <div className="flex min-w-0 items-baseline gap-1.5">
-          <span className="min-w-0 truncate text-[13px] font-medium leading-5 text-foreground/88">
+          <span className="min-w-0 truncate text-ui-compact font-medium leading-5 text-foreground/88">
             {session.adapterDisplayName ?? session.provider}
           </span>
           {session.sessionId ? (
@@ -4138,7 +4169,7 @@ export function ACPSessionHeader({
               <TooltipTrigger asChild>
                 <button
                   type="button"
-                  className="min-w-0 truncate rounded px-1 py-0 text-[10px] leading-5 text-muted-foreground/82 transition-colors hover:bg-muted/45 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                  className="min-w-0 truncate rounded px-1 py-0 text-ui-micro leading-5 text-muted-foreground/82 transition-colors hover:bg-muted/45 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                   aria-label={t("acp.copySessionId")}
                   onClick={handleCopySessionId}
                   onBlur={handleSessionIdTriggerDisengaged}
@@ -4155,7 +4186,7 @@ export function ACPSessionHeader({
               </TooltipContent>
             </Tooltip>
           ) : (
-            <span className="truncate text-[10px] leading-5 text-muted-foreground/82">
+            <span className="truncate text-ui-micro leading-5 text-muted-foreground/82">
               {t("acp.noSessionId")}
             </span>
           )}
@@ -4165,7 +4196,7 @@ export function ACPSessionHeader({
             <Button
               size="sm"
               variant="outline"
-              className="h-5.5 gap-1 border-border/60 bg-background/22 px-2 text-[10px] font-normal text-foreground/80 hover:bg-background/38"
+              className="h-5.5 gap-1 border-border/60 bg-background/22 px-2 text-ui-micro font-normal text-foreground/80 hover:bg-background/38"
               onClick={onOpenSystemPrompt}
               disabled={!hasSystemPrompt}
             >
@@ -4178,7 +4209,7 @@ export function ACPSessionHeader({
               size="sm"
               variant={rawActive ? "default" : "outline"}
               className={cn(
-                "h-5.5 gap-1 px-2 text-[10px] font-normal",
+                "h-5.5 gap-1 px-2 text-ui-micro font-normal",
                 rawActive
                   ? "bg-primary/18 text-foreground hover:bg-primary/24"
                   : "border-border/60 bg-background/22 text-foreground/80 hover:bg-background/38",
@@ -4431,7 +4462,7 @@ function AttemptSeparator({ event }: { event: AcpTimelineEvent }) {
   return (
     <div className="flex items-center gap-3 py-1 text-xs text-muted-foreground">
       <span className="h-px flex-1 bg-border/70" />
-      <span className="rounded-full border bg-background/90 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.12em]">
+      <span className="rounded-full border bg-background/90 px-3 py-1 font-mono text-ui-micro uppercase tracking-[0.12em]">
         {label}
       </span>
       <span className="h-px flex-1 bg-border/70" />
@@ -4528,7 +4559,7 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
           <span
             aria-hidden="true"
             className={cn(
-              "flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold",
+              "flex size-5 shrink-0 items-center justify-center rounded-full text-ui-caption font-semibold",
               running && "border-2 border-gold-running/30 border-t-gold-running text-transparent animate-spin motion-reduce:animate-none",
               !running && !interrupted && "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
               interrupted && "bg-destructive/10 text-destructive",
@@ -4620,7 +4651,7 @@ const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink
         {metricsSummary ? <span className="mt-0.5 block truncate text-xs text-muted-foreground">{metricsSummary}</span> : null}
       </span>
       <span className={cn(
-        'shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium',
+        'shrink-0 rounded-full px-2 py-0.5 text-ui-caption font-medium',
         statusTone === 'danger' && 'bg-destructive/10 text-destructive',
         statusTone === 'success' && 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
         statusTone === 'running' && 'bg-primary/10 text-primary',
@@ -5457,7 +5488,7 @@ const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewBut
             <ImageIcon className="size-5 text-blue-400" />
           </span>
         )}
-        <span className="absolute inset-x-0 bottom-0 truncate bg-background/78 px-1.5 py-1 text-[10px] font-medium text-foreground/80 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100">
+        <span className="absolute inset-x-0 bottom-0 truncate bg-background/78 px-1.5 py-1 text-ui-micro font-medium text-foreground/80 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100">
           {attachment.name}
         </span>
       </button>
@@ -5467,7 +5498,7 @@ const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewBut
   return (
     <button
       type="button"
-      className="inline-flex h-9 w-fit max-w-full shrink-0 items-center gap-1.5 rounded-full border border-border/60 bg-card/80 px-3 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="inline-flex h-9 w-fit max-w-full shrink-0 items-center gap-1.5 rounded-full border border-border/60 bg-card/80 px-3 text-ui-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       title={`${attachment.name} (${formatAttachmentSize(attachment.size)})`}
       onClick={() => onClick?.(attachment)}
     >
@@ -5514,7 +5545,7 @@ const ThoughtBlock = memo(function ThoughtBlock({
           "min-w-0 max-w-full overflow-hidden",
           compact
             ? "px-1.5 py-1"
-            : "rounded-xl border border-border/60 bg-muted/15 px-3.5 py-2 shadow-sm shadow-background/20",
+            : "rounded-lg border border-border/45 bg-transparent px-2.5 py-1.5",
         )}
       >
         <ChainOfThoughtStep
@@ -5545,11 +5576,19 @@ const ThoughtBlock = memo(function ThoughtBlock({
             </span>
           </ChainOfThoughtTrigger>
           <ChainOfThoughtContent animated={false} preserveMount={streaming}>
-            <ChainOfThoughtItem className="min-w-0 break-words text-muted-foreground [overflow-wrap:anywhere]">
-              <ChainOfThoughtText className="text-muted-foreground">
-                {event.content}
-              </ChainOfThoughtText>
-            </ChainOfThoughtItem>
+            <div
+              role="region"
+              aria-label={t("acp.thought")}
+              tabIndex={0}
+              data-acp-thought-scroll-area="true"
+              className="gold-themed-scrollbar max-h-72 min-w-0 overflow-y-auto overscroll-contain pr-2 outline-none [scrollbar-gutter:stable] focus-visible:ring-2 focus-visible:ring-ring/50"
+            >
+              <ChainOfThoughtItem className="min-w-0 break-words text-muted-foreground [overflow-wrap:anywhere]">
+                <ChainOfThoughtText className="text-muted-foreground">
+                  {event.content}
+                </ChainOfThoughtText>
+              </ChainOfThoughtItem>
+            </div>
           </ChainOfThoughtContent>
         </ChainOfThoughtStep>
       </ChainOfThought>
@@ -5700,20 +5739,20 @@ export function PermissionRequestCard({
               <ShieldQuestion className="size-4" />
             </span>
             <div className="min-w-0">
-              <div className="truncate text-[13px] font-semibold tracking-[-0.01em] text-foreground">
+              <div className="truncate text-ui-compact font-semibold tracking-[-0.01em] text-foreground">
                 {request.title}
               </div>
-              <div className="mt-0.5 truncate text-[11px] leading-4 text-muted-foreground">
+              <div className="mt-0.5 truncate text-ui-caption leading-4 text-muted-foreground">
                 {t("acp.permissionPending")}
               </div>
             </div>
           </div>
           {decisionSummary ? (
             <div className="ml-11 min-w-0 rounded-lg bg-muted/35 px-3 py-2">
-              <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+              <div className="mb-1 text-ui-micro font-medium uppercase tracking-[0.08em] text-muted-foreground">
                 {t("acp.toolParameters")}
               </div>
-              <div className="min-w-0 whitespace-pre-wrap break-all font-mono text-[11px] leading-5 text-foreground/85 [overflow-wrap:anywhere]">
+              <div className="min-w-0 whitespace-pre-wrap break-all font-mono text-ui-caption leading-5 text-foreground/85 [overflow-wrap:anywhere]">
                 {decisionSummary}
               </div>
             </div>
@@ -6047,7 +6086,7 @@ const RawFrameRow = memo(function RawFrameRow({
   return (
     <details
       onToggle={handleToggle}
-      className="group w-full min-w-0 max-w-full overflow-hidden rounded-xl border border-border/60 bg-card/50 text-[11px] leading-5 shadow-sm shadow-background/20 open:border-primary/20 open:bg-card/70 open:ring-1 open:ring-primary/10"
+      className="group w-full min-w-0 max-w-full overflow-hidden rounded-xl border border-border/60 bg-card/50 text-ui-caption leading-5 shadow-sm shadow-background/20 open:border-primary/20 open:bg-card/70 open:ring-1 open:ring-primary/10"
     >
       <summary className="flex w-full min-w-0 cursor-pointer list-none items-center gap-2 overflow-hidden px-3 py-2 text-muted-foreground outline-none transition-colors marker:hidden hover:bg-muted/20 focus-visible:bg-muted/20">
         <span className="shrink-0 select-none tabular-nums text-muted-foreground/80">
@@ -6059,18 +6098,18 @@ const RawFrameRow = memo(function RawFrameRow({
           </span>
         ) : null}
         {frame.direction ? (
-          <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+          <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-micro text-muted-foreground">
             {displayRawDirection(t, frame.direction)}
           </span>
         ) : null}
-        <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
+        <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-ui-micro text-primary">
           {displayRawKind(t, frame.kind)}
         </span>
         <span className="block min-w-0 flex-1 truncate text-foreground/75">
           {compact}
         </span>
         {frame.contentTruncated ? (
-          <span className="shrink-0 text-[10px] text-amber-600 dark:text-amber-300">
+          <span className="shrink-0 text-ui-micro text-amber-600 dark:text-amber-300">
             truncated
           </span>
         ) : null}

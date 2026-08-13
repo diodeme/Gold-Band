@@ -33,6 +33,9 @@ describe("AcpUsagePanel", () => {
     expect(html).toContain("拉起下一节点中");
     expect(html).toContain("acp.timingSession");
     expect(html).toContain("2m 21s");
+    expect(html).toContain("tabular-nums");
+    expect(html).not.toContain("font-mono");
+    expect(html).not.toContain("before:content-");
     expect(html).toContain("32.0K / 1.0M");
     expect(html).toContain("acp.usagePanel.input");
   });

@@ -1,6 +1,8 @@
 import type React from 'react';
 import { createContext, memo, useContext, useLayoutEffect, useRef } from 'react';
 import { FileCode2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { code } from '@streamdown/code';
 import {
   Block,
   defaultUrlTransform,
@@ -66,6 +68,12 @@ const markdownUrlTransform: NonNullable<StreamdownProps['urlTransform']> = (url,
   isLocalFileHref(url) ? url : defaultUrlTransform(url, key, node)
 );
 const markdownLinkSafety: NonNullable<StreamdownProps['linkSafety']> = { enabled: false };
+const markdownPlugins: NonNullable<StreamdownProps['plugins']> = { code };
+const markdownControls: NonNullable<StreamdownProps['controls']> = {
+  code: { copy: true, download: false },
+  table: false,
+  mermaid: false,
+};
 
 function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
   const handler = useContext(MarkdownResourceLinkContext);
@@ -137,15 +145,10 @@ const markdownComponents = {
   ol: ({ children }: { children?: React.ReactNode }) => <ol className="my-1.5 list-decimal space-y-1 pl-5 marker:text-muted-foreground">{children}</ol>,
   li: ({ children }: { children?: React.ReactNode }) => <li className="pl-1 leading-6">{children}</li>,
   blockquote: ({ children }: { children?: React.ReactNode }) => <blockquote className="my-2 border-l-2 border-primary/40 pl-3 text-muted-foreground">{children}</blockquote>,
-  code: ({ className, children, node: _node, ...props }: React.HTMLAttributes<HTMLElement> & { node?: unknown }) => (
+  inlineCode: ({ className, children, node: _node, ...props }: React.HTMLAttributes<HTMLElement> & { node?: unknown }) => (
     <code className={cn('rounded-md bg-muted/50 px-1.5 py-0.5 font-mono text-[length:var(--app-ui-code-font-size)] text-foreground', className)} {...props}>
       {children}
     </code>
-  ),
-  pre: ({ children }: { children?: React.ReactNode }) => (
-    <pre className="my-2 max-w-full overflow-x-auto rounded-xl border border-border/60 bg-muted/35 p-3 font-mono text-[length:var(--app-ui-code-font-size)] leading-5 text-foreground shadow-sm shadow-background/20 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-[inherit]">
-      {children}
-    </pre>
   ),
   table: ({ children }: { children?: React.ReactNode }) => (
     <div className="my-2 max-w-full overflow-x-auto rounded-xl border border-border/60">
@@ -175,6 +178,7 @@ function StreamingMarkdownBlock(props: BlockProps) {
 }
 
 export const Markdown = memo(function Markdown({ children, className, streaming = false }: MarkdownProps) {
+  const { t } = useTranslation();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const playbackRef = useRef<StreamingMarkdownPlayback | null>(null);
   const blockParserRef = useRef<ReturnType<typeof createIncrementalMarkdownBlockParser> | null>(null);
@@ -215,11 +219,17 @@ export const Markdown = memo(function Markdown({ children, className, streaming 
         BlockComponent={StreamingMarkdownBlock}
         className="space-y-2"
         components={markdownComponents}
-        controls={false}
+        controls={markdownControls}
         isAnimating={streaming}
+        lineNumbers={false}
         mode={streaming ? 'streaming' : 'static'}
         parseIncompleteMarkdown={streaming}
         parseMarkdownIntoBlocksFn={blockParserRef.current}
+        plugins={markdownPlugins}
+        translations={{
+          copied: t('common.copied'),
+          copyCode: t('common.copyCode'),
+        }}
         urlTransform={markdownUrlTransform}
         linkSafety={markdownLinkSafety}
       >

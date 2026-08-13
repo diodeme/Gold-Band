@@ -14,10 +14,12 @@ import {
 import { useTranslation } from "react-i18next";
 import {
   Bot,
+  Check,
   ChevronDown,
   CircleAlert,
   CircleStop,
   Clock,
+  Copy,
   FileText,
   Image as ImageIcon,
   ListTodo,
@@ -63,7 +65,12 @@ import {
 import { ConversationViewport } from "@/components/conversation/ConversationViewport";
 import { InterventionLayer } from "@/components/conversation/InterventionLayer";
 import { Markdown } from "@/components/prompt-kit/markdown";
-import { Message, MessageContent } from "@/components/prompt-kit/message";
+import {
+  Message,
+  MessageAction,
+  MessageActions,
+  MessageContent,
+} from "@/components/prompt-kit/message";
 import {
   Tool,
   type ToolLabels,
@@ -5107,7 +5114,7 @@ const MessageBubble = memo(function MessageBubble({
       ) : null}
       <div
         className={cn(
-          "min-w-0 max-w-[var(--conversation-message-max-inline-size)] space-y-1",
+          "group/message min-w-0 max-w-[var(--conversation-message-max-inline-size)] space-y-1",
           isUser && "flex flex-col items-end",
           nested && "w-full max-w-full",
         )}
@@ -5133,6 +5140,9 @@ const MessageBubble = memo(function MessageBubble({
               <Markdown streaming={streamingDraft}>{messageText}</Markdown>
             )}
           </MessageContent>
+        ) : null}
+        {quotableAgentMessage ? (
+          <AgentMessageCopyAction markdown={messageText} />
         ) : null}
         {runtimeControlParts.display ? (
           <RuntimeControlOutputCard
@@ -5205,6 +5215,57 @@ const MessageBubble = memo(function MessageBubble({
         <AcpAvatarWithTime tone="user" timestamp={event.timestamp} />
       ) : null}
     </Message>
+  );
+});
+
+const AgentMessageCopyAction = memo(function AgentMessageCopyAction({
+  markdown,
+}: {
+  markdown: string;
+}) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+  }, []);
+
+  const copyMarkdown = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(markdown);
+      setCopied(true);
+      if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = setTimeout(() => setCopied(false), 1_500);
+    } catch {
+      setCopied(false);
+    }
+  }, [markdown]);
+
+  const label = copied ? t("acp.markdownSourceCopied") : t("acp.copyMarkdownSource");
+  return (
+    <MessageActions
+      data-agent-message-actions="true"
+      className="min-h-7 px-1 opacity-100 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/message:opacity-100 group-focus-within/message:opacity-100"
+    >
+      <MessageAction tooltip={label} side="bottom">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-7 text-muted-foreground hover:bg-muted/45 hover:text-foreground"
+          aria-label={label}
+          data-agent-message-copy="true"
+          onClick={() => void copyMarkdown()}
+        >
+          {copied ? (
+            <Check className="size-3.5 text-emerald-600 dark:text-emerald-300" aria-hidden="true" />
+          ) : (
+            <Copy className="size-3.5" aria-hidden="true" />
+          )}
+        </Button>
+      </MessageAction>
+    </MessageActions>
   );
 });
 

@@ -203,7 +203,7 @@ function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu
                 <Icon className="size-3.5" />
                 <span className="min-w-0">
                   <span className="block font-medium">{option.label}</span>
-                  <span className="block truncate text-[10px] text-muted-foreground">{option.description}</span>
+                  <span className="block truncate text-ui-micro text-muted-foreground">{option.description}</span>
                 </span>
               </DropdownMenuItem>
             );

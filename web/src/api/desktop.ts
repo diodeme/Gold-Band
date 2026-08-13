@@ -359,8 +359,8 @@ export const desktopApi: RuntimeApi = {
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand('show_worker_ref', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
-  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) {
-    return invokeCommand('save_desktop_preferences', { theme, language, font, useLocalClaude, verboseLogging });
+  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, editorFont: DesktopFontPreference, uiFontSize: number, editorFontSize: number, useLocalClaude: boolean, verboseLogging: boolean) {
+    return invokeCommand('save_desktop_preferences', { theme, language, font, editorFont, uiFontSize, editorFontSize, useLocalClaude, verboseLogging });
   },
   saveDesktopAvatar(input) {
     return invokeCommand('save_desktop_avatar', { input });

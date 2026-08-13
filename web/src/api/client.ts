@@ -293,7 +293,7 @@ export interface RuntimeApi {
   showConversationAttachment(projectId: string, taskId: string, name: string): Promise<ContentVm>;
   showConversationMessageAttachment(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, path: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
-  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean): Promise<PreferencesVm>;
+  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, editorFont: DesktopFontPreference, uiFontSize: number, editorFontSize: number, useLocalClaude: boolean, verboseLogging: boolean): Promise<PreferencesVm>;
   saveDesktopAvatar(input: SaveDesktopAvatarInput): Promise<AvatarPreferencesVm>;
   selectRecentDesktopAvatar(kind: AvatarKind, avatarId: string): Promise<AvatarPreferencesVm>;
   saveDesktopAvatarShape(kind: AvatarKind, shape: AvatarShape): Promise<AvatarPreferencesVm>;

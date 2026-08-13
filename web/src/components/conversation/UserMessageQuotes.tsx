@@ -41,7 +41,7 @@ export function UserMessageQuotes({ quotes }: { quotes: readonly UserPromptQuote
           >
             {quotes.map((quote, index) => (
               <div key={quote.id} className="px-3 py-2.5">
-                <div className="mb-1 text-[11px] text-muted-foreground">
+                <div className="mb-1 text-ui-caption text-muted-foreground">
                   {t('acp.userQuoteLabel', { index: index + 1 })}
                 </div>
                 <div className="whitespace-pre-wrap break-words text-sm leading-5 [overflow-wrap:anywhere]">

@@ -159,7 +159,7 @@ export function RunModeProjectSelector({
               <SelectItem key={workspace.projectId} value={workspace.projectId}>
                 <span className="block min-w-0">
                   <span className="block truncate">{workspace.name}</span>
-                  <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{workspace.workspacePath}</span>
+                  <span className="mt-0.5 block truncate text-ui-caption text-muted-foreground">{workspace.workspacePath}</span>
                 </span>
               </SelectItem>
             ))}
@@ -1029,7 +1029,7 @@ export function RunModeManagementPage({
                         <SelectItem key={item.agentType} value={item.agentType} disabled={!selectable}>
                           <span className="block min-w-0">
                             <span className="block truncate">{item.displayName}</span>
-                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-[11px] text-destructive">{reason}</span> : null}
+                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-ui-caption text-destructive">{reason}</span> : null}
                           </span>
                         </SelectItem>
                       ))}
@@ -1045,7 +1045,7 @@ export function RunModeManagementPage({
                         <SelectItem key={item.agentType} value={item.agentType} disabled={!selectable}>
                           <span className="block min-w-0">
                             <span className="block truncate">{item.displayName}</span>
-                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-[11px] text-destructive">{reason}</span> : null}
+                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-ui-caption text-destructive">{reason}</span> : null}
                           </span>
                         </SelectItem>
                       ))}

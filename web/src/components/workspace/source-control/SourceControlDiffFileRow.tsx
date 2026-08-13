@@ -41,7 +41,7 @@ export function SourceControlDiffFileRow({
 export function DiffTypeIcon({ kind }: { kind: GitFileChangeKindVm }) {
   const presentation = diffTypePresentation(kind);
   return (
-    <span className={cn('flex size-4 shrink-0 items-center justify-center rounded text-[10px] font-semibold', presentation.className)} data-source-control-diff-type={presentation.label}>
+    <span className={cn('flex size-4 shrink-0 items-center justify-center rounded text-ui-micro font-semibold', presentation.className)} data-source-control-diff-type={presentation.label}>
       {presentation.label}
     </span>
   );
@@ -50,7 +50,7 @@ export function DiffTypeIcon({ kind }: { kind: GitFileChangeKindVm }) {
 export function DiffSummary({ addedLines, deletedLines }: { addedLines?: number | null; deletedLines?: number | null }) {
   if (addedLines == null && deletedLines == null) return null;
   return (
-    <span className="flex shrink-0 items-center gap-1.5 text-[10px] tabular-nums" data-source-control-diff-summary="true">
+    <span className="flex shrink-0 items-center gap-1.5 text-ui-micro tabular-nums" data-source-control-diff-summary="true">
       <span className="text-emerald-600 dark:text-emerald-400">+{addedLines ?? 0}</span>
       <span className="text-destructive">-{deletedLines ?? 0}</span>
     </span>

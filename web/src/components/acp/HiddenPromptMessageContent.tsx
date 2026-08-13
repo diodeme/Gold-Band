@@ -144,7 +144,7 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
                   tabIndex={-1}
                 >
                   <span className="font-medium">{label}</span>
-                  <span className="inline-flex items-center gap-1.5 text-[11px]">
+                  <span className="inline-flex items-center gap-1.5 text-ui-caption">
                     {t("acp.hiddenPromptCharacters", { count: part.text.length })}
                     <ChevronDown className="size-3.5" />
                   </span>
@@ -238,7 +238,7 @@ function HiddenPromptSection({
         <span className="min-w-0 truncate font-medium text-foreground/80">
           {label}
         </span>
-        <span className="inline-flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+        <span className="inline-flex shrink-0 items-center gap-1.5 text-ui-caption text-muted-foreground">
           {t("acp.hiddenPromptCharacters", { count: text.length })}
           <ChevronDown
             className={cn(

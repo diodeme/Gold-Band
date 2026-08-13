@@ -77,7 +77,7 @@ export function EditableConversationTitle({
           onClick={startEditing}
         >
           <h1 className="min-w-0 truncate text-sm font-semibold leading-6 text-foreground">{title}</h1>
-          {metadata ? <span className="shrink-0 text-[10px] text-muted-foreground/60">{metadata}</span> : null}
+          {metadata ? <span className="shrink-0 text-ui-micro text-muted-foreground/60">{metadata}</span> : null}
           {showEditIcon ? (
             <Pencil className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
           ) : null}

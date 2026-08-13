@@ -175,7 +175,7 @@ function QueueItem({
   const { t } = useTranslation();
   return (
     <div className="flex min-h-10 items-center gap-2 px-3 py-1.5" data-queue-item-id={item.id}>
-      <span className="w-4 shrink-0 text-center text-[11px] tabular-nums text-muted-foreground">
+      <span className="w-4 shrink-0 text-center text-ui-caption tabular-nums text-muted-foreground">
         {index + 1}
       </span>
       {editing ? (
@@ -192,7 +192,7 @@ function QueueItem({
             {item.content}
           </p>
           {item.attachmentCount > 0 || item.quoteCount > 0 ? (
-            <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+            <div className="mt-0.5 flex items-center gap-2 text-ui-caption text-muted-foreground">
               {item.quoteCount > 0 ? (
                 <span className="inline-flex items-center gap-1">
                   <MessageSquareQuote className="size-3" />

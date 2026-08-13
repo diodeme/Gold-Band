@@ -106,6 +106,21 @@ export const desktopFontOptions = [
   },
 ] as const satisfies readonly DesktopFontOption[];
 
+export const desktopEditorFontOptions = [
+  {
+    id: 'editor-default',
+    labelKey: 'settings.editorFontDefault',
+    descriptionKey: 'settings.editorFontDefaultDescription',
+    preview: 'const workflow = "AI";',
+    stack: '"JetBrains Mono", "SFMono-Regular", Consolas, monospace',
+  },
+] as const satisfies readonly DesktopFontOption[];
+
+export const desktopTypography = {
+  ui: { min: 12, max: 18, defaultValue: 14 },
+  editor: { min: 10, max: 18, defaultValue: 12 },
+} as const;
+
 export const desktopThemeGroups = {
   light: desktopThemeOptions.filter((theme) => theme.mode === 'light'),
   dark: desktopThemeOptions.filter((theme) => theme.mode === 'dark'),
@@ -185,6 +200,31 @@ export function applyFont(font: DesktopFontPreference) {
   const root = document.documentElement;
   root.dataset.font = desktopFontOptions.some((option) => option.id === font) ? font : 'local';
   root.style.setProperty('--app-font-sans', fontFamilyForPreference(font));
+}
+
+export function editorFontFamilyForPreference(font: DesktopFontPreference) {
+  return desktopEditorFontOptions.find((option) => option.id === font)?.stack ?? `${quoteFontFamily(font)}, "JetBrains Mono", "SFMono-Regular", Consolas, monospace`;
+}
+
+export function applyEditorFont(font: DesktopFontPreference) {
+  const root = document.documentElement;
+  root.dataset.editorFont = desktopEditorFontOptions.some((option) => option.id === font) ? font : 'local';
+  root.style.setProperty('--app-editor-font-family', editorFontFamilyForPreference(font));
+}
+
+export function normalizeTypographySize(value: number, kind: keyof typeof desktopTypography) {
+  const constraint = desktopTypography[kind];
+  if (!Number.isFinite(value)) return constraint.defaultValue;
+  return Math.min(constraint.max, Math.max(constraint.min, Math.round(value)));
+}
+
+export function applyTypographyPreferences(uiFontSize: number, editorFontSize: number) {
+  const root = document.documentElement;
+  const normalizedUiFontSize = normalizeTypographySize(uiFontSize, 'ui');
+  const normalizedEditorFontSize = normalizeTypographySize(editorFontSize, 'editor');
+  root.style.setProperty('--app-ui-font-size', `${normalizedUiFontSize}px`);
+  root.style.setProperty('--app-editor-font-size', `${normalizedEditorFontSize}px`);
+  return { uiFontSize: normalizedUiFontSize, editorFontSize: normalizedEditorFontSize };
 }
 
 function quoteFontFamily(font: string) {

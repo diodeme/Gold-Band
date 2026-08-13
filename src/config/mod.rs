@@ -149,6 +149,20 @@ pub enum DesktopLanguage {
 }
 
 pub type DesktopFontPreference = String;
+pub const DEFAULT_DESKTOP_UI_FONT_SIZE: u8 = 14;
+pub const DEFAULT_DESKTOP_EDITOR_FONT_SIZE: u8 = 12;
+pub const MIN_DESKTOP_UI_FONT_SIZE: u8 = 12;
+pub const MAX_DESKTOP_UI_FONT_SIZE: u8 = 18;
+pub const MIN_DESKTOP_EDITOR_FONT_SIZE: u8 = 10;
+pub const MAX_DESKTOP_EDITOR_FONT_SIZE: u8 = 18;
+
+pub fn normalize_desktop_ui_font_size(value: u8) -> u8 {
+    value.clamp(MIN_DESKTOP_UI_FONT_SIZE, MAX_DESKTOP_UI_FONT_SIZE)
+}
+
+pub fn normalize_desktop_editor_font_size(value: u8) -> u8 {
+    value.clamp(MIN_DESKTOP_EDITOR_FONT_SIZE, MAX_DESKTOP_EDITOR_FONT_SIZE)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
@@ -531,6 +545,9 @@ pub struct SettingsConfig {
     pub desktop_theme: Option<DesktopThemePreference>,
     pub desktop_language: Option<DesktopLanguage>,
     pub desktop_font: Option<DesktopFontPreference>,
+    pub desktop_editor_font: Option<DesktopFontPreference>,
+    pub desktop_ui_font_size: Option<u8>,
+    pub desktop_editor_font_size: Option<u8>,
     pub desktop_updater_url_override: Option<String>,
     /// DEPRECATED: 仅供旧 Workbench 单 workspace 启动与最近列表兼容使用。
     /// 新会话 UI 必须使用 `conversation_workspaces` / `last_conversation_workspace`，
@@ -1093,6 +1110,9 @@ pub struct RuntimeConfig {
     pub desktop_theme: DesktopThemePreference,
     pub desktop_language: DesktopLanguage,
     pub desktop_font: DesktopFontPreference,
+    pub desktop_editor_font: DesktopFontPreference,
+    pub desktop_ui_font_size: u8,
+    pub desktop_editor_font_size: u8,
     pub desktop_updater_url_override: Option<String>,
     pub desktop_updater_last_checked_at: Option<String>,
     pub desktop_update_badges: DesktopUpdateBadgeState,
@@ -1147,6 +1167,9 @@ impl Default for RuntimeConfig {
             desktop_theme: DesktopThemePreference::System,
             desktop_language: DesktopLanguage::ZhCn,
             desktop_font: "app-default".to_string(),
+            desktop_editor_font: "editor-default".to_string(),
+            desktop_ui_font_size: DEFAULT_DESKTOP_UI_FONT_SIZE,
+            desktop_editor_font_size: DEFAULT_DESKTOP_EDITOR_FONT_SIZE,
             desktop_updater_url_override: None,
             desktop_updater_last_checked_at: None,
             desktop_update_badges: DesktopUpdateBadgeState::default(),
@@ -1210,6 +1233,16 @@ impl RuntimeConfig {
         }
         if let Some(desktop_font) = &settings.desktop_font {
             self.desktop_font = desktop_font.clone();
+        }
+        if let Some(desktop_editor_font) = &settings.desktop_editor_font {
+            self.desktop_editor_font = desktop_editor_font.clone();
+        }
+        if let Some(desktop_ui_font_size) = settings.desktop_ui_font_size {
+            self.desktop_ui_font_size = normalize_desktop_ui_font_size(desktop_ui_font_size);
+        }
+        if let Some(desktop_editor_font_size) = settings.desktop_editor_font_size {
+            self.desktop_editor_font_size =
+                normalize_desktop_editor_font_size(desktop_editor_font_size);
         }
         self.desktop_updater_url_override = settings.desktop_updater_url_override.clone();
         if let Some(agents) = &settings.agents {
@@ -1372,10 +1405,11 @@ impl RuntimeConfig {
 mod tests {
     use super::{
         AcpAdapterConfig, ConsoleThemeName, ConversationDirectConfig, ConversationRunMode,
-        ConversationRunModeEntry, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
-        DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, ProjectAppConfig,
-        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
-        TurnFilesConfig, WorkspaceLayoutConfig, catalog_agent_default_config,
+        ConversationRunModeEntry, DEFAULT_DESKTOP_EDITOR_FONT_SIZE, DEFAULT_DESKTOP_UI_FONT_SIZE,
+        DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
+        MAX_DESKTOP_EDITOR_FONT_SIZE, MIN_DESKTOP_UI_FONT_SIZE, ManagedAgentConfig, ManagedAgentId,
+        ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
+        SystemPromptDelivery, TurnFilesConfig, WorkspaceLayoutConfig, catalog_agent_default_config,
     };
     use crate::agent_catalog::builtin_agent_catalog;
     use std::collections::BTreeMap;
@@ -1456,6 +1490,26 @@ mod tests {
         ));
         assert!(matches!(config.desktop_language, DesktopLanguage::ZhCn));
         assert_eq!(config.desktop_font, "app-default");
+        assert_eq!(config.desktop_editor_font, "editor-default");
+        assert_eq!(config.desktop_ui_font_size, DEFAULT_DESKTOP_UI_FONT_SIZE);
+        assert_eq!(
+            config.desktop_editor_font_size,
+            DEFAULT_DESKTOP_EDITOR_FONT_SIZE
+        );
+    }
+
+    #[test]
+    fn desktop_typography_preferences_are_bounded() {
+        let config = RuntimeConfig::default().apply_settings(&SettingsConfig {
+            desktop_ui_font_size: Some(3),
+            desktop_editor_font_size: Some(99),
+            ..SettingsConfig::default()
+        });
+        assert_eq!(config.desktop_ui_font_size, MIN_DESKTOP_UI_FONT_SIZE);
+        assert_eq!(
+            config.desktop_editor_font_size,
+            MAX_DESKTOP_EDITOR_FONT_SIZE
+        );
     }
 
     #[test]

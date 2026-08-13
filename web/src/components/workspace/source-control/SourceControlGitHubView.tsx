@@ -420,7 +420,7 @@ function GitHubDetail({
         <span className="min-w-0 flex-1 truncate text-xs font-medium" data-source-control-github-detail-title="true">#{detail.number} {detail.title}</span>
         <Button size="icon-xs" variant="ghost" onClick={() => void openExternalUrl(detail.url)} aria-label={t('sourceControl.openOnGitHub')}><ExternalLink className="size-3.5" /></Button>
       </div>
-      <div className="flex h-8 min-w-0 shrink-0 items-center gap-2 overflow-hidden border-b border-border/40 px-3 text-[10px] text-muted-foreground" data-source-control-github-detail-meta="true">
+      <div className="flex h-8 min-w-0 shrink-0 items-center gap-2 overflow-hidden border-b border-border/40 px-3 text-ui-micro text-muted-foreground" data-source-control-github-detail-meta="true">
         <Badge variant="outline" className="h-5 shrink-0">{detail.state}</Badge>
         <span className="max-w-24 min-w-0 truncate">{detail.author?.login}</span>
         {selection.kind === 'pr' ? <><span className="min-w-0 flex-1 truncate" data-source-control-github-detail-branches="true">{selection.detail.headRefName} → {selection.detail.baseRefName}</span><span className="shrink-0 text-emerald-600">+{selection.detail.additions}</span><span className="shrink-0 text-destructive">-{selection.detail.deletions}</span></> : null}
@@ -449,7 +449,7 @@ function GitHubDetail({
 }
 
 function GitHubListRow({ number, title, state, subtitle, labels, onClick }: { number: number; title: string; state: string; subtitle: string; labels: string[]; onClick: () => void }) {
-  return <button type="button" className="flex w-full min-w-0 max-w-full items-start gap-2 overflow-hidden px-3 py-2 text-left hover:bg-muted/40" onClick={onClick}><CircleDot className="mt-0.5 size-3.5 shrink-0 text-emerald-500" /><span className="min-w-0 flex-1 overflow-hidden"><span className="block truncate text-xs font-medium">{title}</span><span className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[10px] text-muted-foreground"><span className="shrink-0">#{number}</span><span className="shrink-0">{state}</span><span className="min-w-0 flex-1 truncate">{subtitle}</span>{labels.slice(0, 2).map((label) => <Badge key={label} variant="outline" className="h-4 max-w-24 shrink-0 truncate px-1 text-[9px]">{label}</Badge>)}</span></span></button>;
+  return <button type="button" className="flex w-full min-w-0 max-w-full items-start gap-2 overflow-hidden px-3 py-2 text-left hover:bg-muted/40" onClick={onClick}><CircleDot className="mt-0.5 size-3.5 shrink-0 text-emerald-500" /><span className="min-w-0 flex-1 overflow-hidden"><span className="block truncate text-xs font-medium">{title}</span><span className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-ui-micro text-muted-foreground"><span className="shrink-0">#{number}</span><span className="shrink-0">{state}</span><span className="min-w-0 flex-1 truncate">{subtitle}</span>{labels.slice(0, 2).map((label) => <Badge key={label} variant="outline" className="h-4 max-w-24 shrink-0 truncate px-1 text-ui-nano">{label}</Badge>)}</span></span></button>;
 }
 
 function GitHubState({ icon, text, description, action }: { icon?: ReactNode; text: string; description?: string; action?: ReactNode }) {

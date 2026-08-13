@@ -26,7 +26,7 @@ import type {
 import { FALLBACK_WORKSPACE_FILES } from './components/workspace/workspace-layout';
 import { createDefaultAvatarPreferences } from './lib/avatar';
 
-const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
+const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', editorFont: 'editor-default', uiFontSize: 14, editorFontSize: 12, useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
 export const mockAppInfo = {
   channel: 'default',
   feedbackEnabled: false,

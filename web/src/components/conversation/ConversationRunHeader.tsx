@@ -62,7 +62,7 @@ export function ConversationRunHeader({
         {!isDirect ? <Button
           variant="ghost"
           size="sm"
-          className="h-5.5 gap-1 px-1.5 text-[11px]"
+          className="h-5.5 gap-1 px-1.5 text-ui-caption"
           onClick={onToggleSessionSwitcher}
         >
           {selectedSessionLeaf ? (

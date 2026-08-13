@@ -475,6 +475,7 @@ export function ConversationComposer({
     <>
       <div
         data-attachment-dropzone="true"
+        data-conversation-composer="quick"
         className={CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName}
         {...dropZoneHandlers}
       >

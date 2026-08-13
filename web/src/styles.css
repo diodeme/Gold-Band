@@ -849,3 +849,11 @@
     transform: translateY(0);
   }
 }
+
+[data-conversation-composer="quick"] [data-composer-context-area="true"] {
+  padding-inline: 0;
+}
+
+[data-conversation-composer="acp"] [data-composer-context-area="true"] {
+  padding-inline: 0.75rem;
+}

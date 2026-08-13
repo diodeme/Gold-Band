@@ -86,6 +86,19 @@
 @theme inline {
   --font-sans: var(--app-font-sans);
   --font-mono: var(--app-font-mono);
+  --font-weight-medium: 400;
+  --font-weight-semibold: 500;
+  --font-weight-bold: 600;
+  --text-ui-nano: calc(var(--app-ui-font-size) * 0.642857);
+  --text-ui-micro: calc(var(--app-ui-font-size) * 0.714286);
+  --text-ui-caption: calc(var(--app-ui-font-size) * 0.785714);
+  --text-xs: calc(var(--app-ui-font-size) * 0.857143);
+  --text-ui-compact: calc(var(--app-ui-font-size) * 0.928571);
+  --text-sm: var(--app-ui-font-size);
+  --text-base: calc(var(--app-ui-font-size) * 1.142857);
+  --text-lg: calc(var(--app-ui-font-size) * 1.285714);
+  --text-xl: calc(var(--app-ui-font-size) * 1.428571);
+  --text-2xl: calc(var(--app-ui-font-size) * 1.714286);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -140,10 +153,10 @@
 
 .workspace-markdown-live-preview {
   --atomic-editor-measure: 78ch;
-  --atomic-editor-body-size: 0.875rem;
+  --atomic-editor-body-size: var(--app-editor-font-size);
   --atomic-editor-body-leading: 1.65;
-  --atomic-editor-font: "Gold Band MiSans", "MiSans", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
-  --atomic-editor-font-mono: var(--font-mono, ui-monospace, monospace);
+  --atomic-editor-font: var(--app-editor-font-family);
+  --atomic-editor-font-mono: var(--app-editor-font-family);
   --atomic-editor-fg: var(--foreground);
   --atomic-editor-fg-muted: var(--muted-foreground);
   --atomic-editor-fg-faint: color-mix(in srgb, var(--muted-foreground) 72%, transparent);
@@ -231,13 +244,13 @@
   padding: 0.5rem 0.75rem;
   color: var(--muted-foreground);
   font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
-  font-size: 0.75rem;
+  font-size: calc(var(--app-editor-font-size) * 0.857143);
 }
 
 .workspace-markdown-live-preview .cm-gold-band-markdown-remote-image-link {
   color: var(--atomic-editor-link);
   font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
-  font-size: 0.875rem;
+  font-size: var(--app-editor-font-size);
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, var(--atomic-editor-link) 45%, transparent);
   text-underline-offset: 0.16em;
@@ -256,7 +269,7 @@
 .workspace-markdown-live-preview .cm-gold-band-markdown-image-inline .cm-gold-band-markdown-image-placeholder {
   min-height: 1.75rem;
   padding: 0.2rem 0.5rem;
-  font-size: 0.72rem;
+  font-size: calc(var(--app-editor-font-size) * 0.82);
 }
 
 :root {
@@ -269,6 +282,10 @@
   color-scheme: dark;
   --app-font-sans: "Gold Band MiSans", "MiSans", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, sans-serif;
   --app-font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --app-editor-font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --app-ui-font-size: 14px;
+  --app-editor-font-size: 12px;
+  --app-ui-code-font-size: calc(var(--app-ui-font-size) * 0.857143);
   --background: #181818;
   --foreground: #e8e8e8;
   --title: #f5f5f5;
@@ -535,6 +552,7 @@
 
   body {
     @apply m-0 overflow-hidden bg-background font-sans text-foreground;
+    font-size: var(--app-ui-font-size);
   }
 
   #root {

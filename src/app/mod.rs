@@ -25,6 +25,7 @@ use crate::config::{
     DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
     ManagedAgentId, McpServerConfig, McpServerHealthResult, ProviderDiagnosticSnapshot,
     RuntimeConfig, RuntimeLogLevel, SettingsConfig, SkillMeta, SkillSource, StateConfig,
+    normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
 };
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
@@ -1343,35 +1344,28 @@ impl App {
         theme: DesktopThemePreference,
         language: DesktopLanguage,
         font: DesktopFontPreference,
+        editor_font: DesktopFontPreference,
+        ui_font_size: u8,
+        editor_font_size: u8,
+        use_local_claude: bool,
+        verbose_logging: bool,
     ) -> Result<SettingsConfig> {
         let mut settings = self.load_settings()?;
         settings.desktop_theme = Some(theme);
         settings.desktop_language = Some(language);
         settings.desktop_font = Some(font);
-        self.save_settings(&settings)?;
-        Ok(settings)
-    }
-
-    pub fn set_user_use_local_claude(&self, use_local_claude: bool) -> Result<SettingsConfig> {
-        let mut settings = self.load_settings()?;
+        settings.desktop_editor_font = Some(editor_font);
+        settings.desktop_ui_font_size = Some(normalize_desktop_ui_font_size(ui_font_size));
+        settings.desktop_editor_font_size =
+            Some(normalize_desktop_editor_font_size(editor_font_size));
         settings.use_local_claude = Some(use_local_claude);
-        self.save_settings(&settings)?;
-        Ok(settings)
-    }
-
-    pub fn set_user_log_level(&self, log_level: RuntimeLogLevel) -> Result<SettingsConfig> {
-        let mut settings = self.load_settings()?;
-        settings.log_level = Some(log_level);
-        self.save_settings(&settings)?;
-        Ok(settings)
-    }
-
-    pub fn set_user_verbose_logging(&self, enabled: bool) -> Result<SettingsConfig> {
-        self.set_user_log_level(if enabled {
+        settings.log_level = Some(if verbose_logging {
             RuntimeLogLevel::Debug
         } else {
             RuntimeLogLevel::Info
-        })
+        });
+        self.save_settings(&settings)?;
+        Ok(settings)
     }
 
     pub fn set_user_desktop_updater_url_override(
@@ -3881,7 +3875,7 @@ mod tests {
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
-        ProviderDiagnosticSnapshot, RuntimeConfig, catalog_agent_default_config,
+        ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel, catalog_agent_default_config,
     };
     use crate::domain::{
         NodeOutcome, NodeType, PauseReason, RoundTrigger, RunOutcome, RunStatus, SessionMode,
@@ -5674,16 +5668,27 @@ mod tests {
         app.set_user_desktop_preferences(
             DesktopThemePreference::Dark,
             DesktopLanguage::En,
+            "Microsoft YaHei UI".to_string(),
             "Fira Code".to_string(),
+            16,
+            13,
+            true,
+            true,
         )
         .unwrap();
-        app.set_user_use_local_claude(true).unwrap();
 
         let settings = app.load_settings().unwrap();
         assert_eq!(settings.desktop_theme, Some(DesktopThemePreference::Dark));
         assert_eq!(settings.desktop_language, Some(DesktopLanguage::En));
-        assert_eq!(settings.desktop_font, Some("Fira Code".to_string()));
+        assert_eq!(
+            settings.desktop_font,
+            Some("Microsoft YaHei UI".to_string())
+        );
+        assert_eq!(settings.desktop_editor_font, Some("Fira Code".to_string()));
+        assert_eq!(settings.desktop_ui_font_size, Some(16));
+        assert_eq!(settings.desktop_editor_font_size, Some(13));
         assert_eq!(settings.use_local_claude, Some(true));
+        assert!(matches!(settings.log_level, Some(RuntimeLogLevel::Debug)));
 
         let state = app.load_state().unwrap();
         assert!(state.desktop_updater_last_checked_at.is_none());

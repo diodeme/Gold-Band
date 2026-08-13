@@ -13,6 +13,9 @@ export interface PreferencesVm {
   theme: DesktopThemePreference;
   language: DesktopLanguage;
   font: DesktopFontPreference;
+  editorFont: DesktopFontPreference;
+  uiFontSize: number;
+  editorFontSize: number;
   useLocalClaude: boolean;
   verboseLogging: boolean;
   avatars: AvatarPreferencesVm;

@@ -69,7 +69,7 @@ export function ComposerContextArea({
         ))}
       </div>
       {error ? (
-        <div className="px-1 pt-1 text-[11px] leading-4 text-destructive" role="alert" aria-live="polite">
+        <div className="px-1 pt-1 text-ui-caption leading-4 text-destructive" role="alert" aria-live="polite">
           {error}
         </div>
       ) : null}

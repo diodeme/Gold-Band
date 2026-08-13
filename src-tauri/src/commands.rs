@@ -47,6 +47,7 @@ use camino::Utf8PathBuf;
 use gold_band::config::{
     AcpAdapterConfig, ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopFontPreference,
     DesktopLanguage, DesktopThemePreference, ManagedAgentConfig, ManagedAgentId,
+    normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
 };
 use gold_band::observability::set_runtime_log_level;
 use gold_band::provider::{
@@ -4863,6 +4864,9 @@ pub fn save_desktop_preferences(
     theme: DesktopThemePreference,
     language: DesktopLanguage,
     font: DesktopFontPreference,
+    editor_font: DesktopFontPreference,
+    ui_font_size: u8,
+    editor_font_size: u8,
     use_local_claude: bool,
     verbose_logging: bool,
 ) -> CommandResult<PreferencesVm> {
@@ -4873,12 +4877,19 @@ pub fn save_desktop_preferences(
         gold_band::acp::client::close_workspace_connections_bounded(&app.paths.repo_root)
             .map_err(command_error)?;
     }
-    app.set_user_desktop_preferences(theme, language, font.clone())
-        .map_err(command_error)?;
-    app.set_user_use_local_claude(use_local_claude)
-        .map_err(command_error)?;
+    let ui_font_size = normalize_desktop_ui_font_size(ui_font_size);
+    let editor_font_size = normalize_desktop_editor_font_size(editor_font_size);
     let settings = app
-        .set_user_verbose_logging(verbose_logging)
+        .set_user_desktop_preferences(
+            theme,
+            language,
+            font.clone(),
+            editor_font.clone(),
+            ui_font_size,
+            editor_font_size,
+            use_local_claude,
+            verbose_logging,
+        )
         .map_err(command_error)?;
     state
         .update_settings_config(&settings)
@@ -4889,6 +4900,9 @@ pub fn save_desktop_preferences(
         theme,
         language,
         font,
+        editor_font,
+        ui_font_size,
+        editor_font_size,
         use_local_claude,
         log_level,
         load_avatar_preferences(&app.paths.user_gold_band_dir()).map_err(avatar_command_error)?,

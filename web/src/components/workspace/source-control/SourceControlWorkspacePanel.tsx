@@ -195,7 +195,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
           <span className="min-w-0 flex-1 truncate text-sm font-medium">{snapshot.repository.currentBranch ?? t('sourceControl.detached')}</span>
           <SourceControlSyncActions snapshot={snapshot} busyActionKind={busyActionKind} locked={writeLocked} onOperation={startOperation} />
         </div>
-        {locked ? <div className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">{t('sourceControl.locked', { operation: snapshot.repository.lock.operation ?? '' })}</div> : null}
+        {locked ? <div className="mt-1 text-ui-caption text-amber-600 dark:text-amber-400">{t('sourceControl.locked', { operation: snapshot.repository.lock.operation ?? '' })}</div> : null}
         {activeOperation ? <SourceControlOperationStatus operation={activeOperation} onCancel={cancelOperation} onDismiss={dismissOperation} /> : null}
         {error ? <SourceControlError error={error} /> : null}
         {snapshot.status.operationInProgress?.kind === 'merge' || snapshot.status.operationInProgress?.kind === 'rebase'
@@ -276,7 +276,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
               className="mt-2 min-h-16 resize-y text-xs"
             />
             <div className="mt-2 flex items-center justify-between gap-2">
-              <span className="text-[11px] text-muted-foreground">{t('sourceControl.stagedCount', { count: snapshot.status.staged.length })}</span>
+              <span className="text-ui-caption text-muted-foreground">{t('sourceControl.stagedCount', { count: snapshot.status.staged.length })}</span>
               <Button
                 size="sm"
                 disabled={!canCommit || busy}
@@ -346,7 +346,7 @@ function SourceControlOperationStatus({ operation, onCancel, onDismiss }: {
     : t(`sourceControl.operationResults.${operation.status}`, { operation: operationName });
   return (
     <div
-      className={cn('mt-1 flex min-w-0 items-center gap-2 text-[11px]', failed ? 'text-destructive' : operation.status === 'succeeded' ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground')}
+      className={cn('mt-1 flex min-w-0 items-center gap-2 text-ui-caption', failed ? 'text-destructive' : operation.status === 'succeeded' ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground')}
       role={failed ? 'alert' : 'status'}
       aria-live="polite"
       data-source-control-operation-status={operation.status}
@@ -405,7 +405,7 @@ function SourceControlError({ error }: { error: GitOperationErrorVm }) {
   const { t } = useTranslation();
   const reason = typeof error.params.reason === 'string' ? error.params.reason.trim() : '';
   return (
-    <div className="mt-1 text-[11px] text-destructive" role="alert" aria-live="polite">
+    <div className="mt-1 text-ui-caption text-destructive" role="alert" aria-live="polite">
       <div>{t(`errors.${error.code}`, { ...error.params, defaultValue: t('sourceControl.operationFailed') })}</div>
       {reason ? <div className="mt-0.5 whitespace-pre-wrap break-words text-destructive/85">{reason}</div> : null}
     </div>
@@ -437,7 +437,7 @@ function ChangeGroup({
   return (
     <TooltipProvider>
     <section data-source-control-group={tone}>
-      <div className="flex h-7 items-center gap-2 px-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+      <div className="flex h-7 items-center gap-2 px-3 text-ui-caption font-medium uppercase tracking-wide text-muted-foreground">
         <span>{title}</span><span className="tabular-nums">{changes.length}</span>
       </div>
       {changes.map((change) => {

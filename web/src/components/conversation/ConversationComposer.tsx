@@ -765,7 +765,7 @@ export function ConversationComposer({
                         <SelectItem key={a.agentType} value={a.agentType} disabled={!selectable}>
                           <span className="block min-w-0">
                             <span className="block truncate">{a.displayName}</span>
-                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-[11px] text-destructive">{reason}</span> : null}
+                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-ui-caption text-destructive">{reason}</span> : null}
                           </span>
                         </SelectItem>
                       ))}

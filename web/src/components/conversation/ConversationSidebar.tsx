@@ -264,7 +264,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
           <div className="shrink-0 border-y border-border/55 py-1">
             <button
               type="button"
-              className="flex w-full items-center gap-1.5 px-1 py-0.75 text-left text-[14px] font-medium text-sidebar-foreground hover:text-sidebar-accent-foreground"
+              className="flex w-full items-center gap-1.5 px-1 py-0.75 text-left text-sm font-medium text-sidebar-foreground hover:text-sidebar-accent-foreground"
               onClick={togglePinnedCollapsed}
             >
               <ChevronDown className={cn('size-3 transition-transform', pinnedCollapsed && '-rotate-90')} />
@@ -279,7 +279,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                     <div key={`pinned-ws-${projectId}`}>
                       <button
                         type="button"
-                        className="flex w-full items-center gap-1.5 px-1 py-0.75 text-left text-[12px] font-semibold uppercase tracking-[0.12em] text-sidebar-foreground hover:text-sidebar-accent-foreground"
+                        className="flex w-full items-center gap-1.5 px-1 py-0.75 text-left text-xs font-semibold uppercase tracking-[0.12em] text-sidebar-foreground hover:text-sidebar-accent-foreground"
                         onClick={() => togglePinnedWorkspace(projectId)}
                       >
                         <ChevronDown className={cn('size-3 shrink-0 transition-transform', isWsCollapsed && '-rotate-90')} />
@@ -329,7 +329,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-0.75">
                   <button
                     type="button"
-                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[12px] font-semibold uppercase tracking-[0.12em] text-sidebar-foreground hover:text-sidebar-accent-foreground group-hover:pr-11"
+                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-xs font-semibold uppercase tracking-[0.12em] text-sidebar-foreground hover:text-sidebar-accent-foreground group-hover:pr-11"
                     onClick={() => toggleWorkspace(ws.projectId)}
                   >
                     <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
@@ -395,7 +395,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             {onAddWorkspace ? (
               <button
                 type="button"
-                className="mt-1.5 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[14px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                className="mt-1.5 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                 onClick={onAddWorkspace}
               >
                 <Plus className="size-3.5" />
@@ -687,7 +687,7 @@ function TaskRow({
         {editing ? (
           <input
             ref={editInputRef}
-            className="min-w-0 flex-1 rounded border border-primary/40 bg-background px-1 py-0 text-[13px] outline-none"
+            className="min-w-0 flex-1 rounded border border-primary/40 bg-background px-1 py-0 text-ui-compact outline-none"
             value={editValue}
             onChange={(e) => setEditValue(e.target.value)}
             onBlur={commitRename}
@@ -695,13 +695,13 @@ function TaskRow({
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-[13px]">
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-ui-compact">
             {task.scheduledTaskId ? <AlarmClock className="size-3 shrink-0 text-foreground" aria-label={t('scheduled.conversationMarker')} /> : null}
             <span className="truncate">{task.title}</span>
           </span>
         )}
         {relativeTime ? (
-          <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{relativeTime}</span>
+          <span className="shrink-0 text-ui-micro tabular-nums text-muted-foreground">{relativeTime}</span>
         ) : null}
       </div>
       <span className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 group-hover:flex group-hover:pointer-events-auto">
@@ -768,7 +768,7 @@ function TaskRow({
                   <span className={cn('size-1.5 shrink-0 rounded-full', color)} />
                   <span className="min-w-0 flex-1 truncate text-muted-foreground">{run.runId}</span>
                   {runTime ? (
-                    <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{runTime}</span>
+                    <span className="shrink-0 text-ui-micro tabular-nums text-muted-foreground">{runTime}</span>
                   ) : null}
                 </div>
               </RunStopMenu>
@@ -816,8 +816,8 @@ function SidebarButton({
     <Button
       variant="ghost"
       className={cn(
-        compact ? 'h-7 gap-2 justify-start rounded-md px-2 text-[14px] text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
-          : 'h-7 justify-start gap-2.5 rounded-lg px-2.5 text-[14px] text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+        compact ? 'h-7 gap-2 justify-start rounded-md px-2 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
+          : 'h-7 justify-start gap-2.5 rounded-lg px-2.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
         active && 'bg-sidebar-accent text-sidebar-accent-foreground',
       )}
       onClick={onClick}

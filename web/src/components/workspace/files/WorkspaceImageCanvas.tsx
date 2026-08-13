@@ -139,7 +139,7 @@ export const WorkspaceImageCanvas = memo(function WorkspaceImageCanvas({
           </TransformComponent>
         </div>
       </TransformWrapper>
-      <div ref={scaleLabelRef} className="shrink-0 border-t border-border/40 px-3 py-1 text-[10px] text-muted-foreground">100%</div>
+      <div ref={scaleLabelRef} className="shrink-0 border-t border-border/40 px-3 py-1 text-ui-micro text-muted-foreground">100%</div>
     </div>
   );
 });

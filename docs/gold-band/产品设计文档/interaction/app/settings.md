@@ -100,12 +100,18 @@
 
 ### 5.1 选项
 当前支持：
-- 应用内置默认字体（`app-default`）：优先使用内置 `Gold Band MiSans`，并在系统缺字时回退到 `MiSans`、`Microsoft YaHei UI`、`PingFang SC`、`Noto Sans CJK SC`、`Source Han Sans SC` 等系统字体，作为所有设备上的稳定默认值。
+- “界面 UI”内置默认字体（`app-default`）：优先使用内置 `Gold Band MiSans`，并在系统缺字时回退到 `MiSans`、`Microsoft YaHei UI`、`PingFang SC`、`Noto Sans CJK SC`、`Source Han Sans SC` 等系统字体。
+- “编辑器”内置默认字体（`editor-default`）：使用 `JetBrains Mono`，并回退到 `SFMono-Regular`、`Consolas` 等系统等宽字体。
 - 本机字体：从系统已安装字体枚举加载，用户可直接选择真实字体 family。
 
 ### 5.2 行为
-- 字体字段保存为 `desktopFont`，支持 `app-default`，以及真实本机字体 family 名称。
-- 设置页第一行只提供一个内置默认字体入口；第二行提供本机字体下拉列表，避免多预设卡片与长列表混排。
+- 字体区分为“界面 UI”和“编辑器”两个 shadcn Collapsible 展开栏；展开状态写入 `sessionStorage`，只在当前应用会话内记忆，不进入用户配置文件。
+- UI 字体保存为 `desktopFont`；编辑器字体保存为 `desktopEditorFont`。两者都支持各自默认值和真实本机字体 family 名称。
+- UI 基准字号默认 `14px`、允许 `12–18px`；编辑器字号默认 `12px`、允许 `10–18px`，步长均为 `1px`。输入时只更新根级 CSS 变量进行即时预览，失焦或点击恢复默认时才通过统一偏好接口持久化，禁止使用浏览器 zoom 或新增 localStorage 旁路。
+- UI 字号控制侧栏、设置页、聊天正文、Thought 与普通 Markdown，并通过派生 token 覆盖紧凑说明、徽标和时间等层级；聊天行内代码与代码块只切换等宽字形，字号继续从 UI 基准派生。
+- 编辑器字体和字号只覆盖所有 CodeMirror 文件查看/编辑、运行产物、Markdown 编辑器以及 Git/本轮 Diff；技术标识使用等宽字体不等同于消费编辑器字号。
+- 全局字重语义采用轻量层级：正文 `400`、常规强调 `400`、标题/强强调 `500`、最高强调 `600`。保留视觉层次，不按页面机械替换字重类，也不通过错配字体文件伪造较细字重。
+- 每个展开栏内部提供字号、内置默认字体入口和本机字体下拉列表，避免两个领域的设置混排。
 - 选择后立即应用到全局 UI 字体 token。
 - 字体切换必须覆盖导航栏、面包屑、任务 requirement 预览与完整需求正文等常规阅读文本；只有日志、代码块和工作图技术标识允许继续走 mono token。
 - Tauri 桌面端通过 `get_system_fonts` 枚举系统字体；浏览器调试模式优先使用 `queryLocalFonts()`，不可用时回退到常见系统字体探测。
@@ -139,7 +145,8 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 当前实现规则：
 - 主题字段保存为 `desktopTheme`，支持 `system`、`light`、`light-gray`、`dark`、`black`。
 - 语言字段保存为 `desktopLanguage`，支持 `zh-cn`、`en`。
-- 字体字段保存为 `desktopFont`，支持 `app-default`，以及真实本机字体 family 名称，默认 `app-default`。
+- UI 字体字段保存为 `desktopFont`，默认 `app-default`；编辑器字体字段保存为 `desktopEditorFont`，默认 `editor-default`；UI / 编辑器字号分别保存为 `desktopUiFontSize` / `desktopEditorFontSize`。
+- `save_desktop_preferences` 以单次设置文件 load/save 原子提交主题、语言、两套字体、两套字号、本地 Claude 和日志偏好；前端串行提交并按 latest-wins 更新 canonical 偏好，禁止清空 task/workflow/round 触发无关重载。
 - 主题使用 `Sync with OS` 开关 + 条件化主题摘要：未跟随系统时展示一个当前主题选择入口；跟随系统时展示浅色默认主题和深色默认主题两个选择入口，并分别打开过滤后的主题抽屉；语言使用下拉选择，选择后立即调用 `save_desktop_preferences` 保存并预览。
 - 首次启动默认主题为 `system`，系统浅色时解析到瓷白，系统深色时解析到石墨深色。
 - 2026-05-03 起设置页使用 Tailwind CSS v4 + shadcn/ui Card、Button、Select、Badge 等现成组件重构；主题和语言选择后立即保存并预览的行为不变。
@@ -165,6 +172,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 2026-05-07 起设置页从多张独立卡片收敛为一个主工作面，外观、字体、语言通过 section 与低对比分隔线组织；主题摘要、字体选项和本地字体预览降级为低对比选项行，避免盒中盒和浅黑色块过多。
 - 2026-05-25 起设置页改为三个 tab：语言进入通用，主题和字体进入个性化；高级页展示当前更新渠道、内置更新地址、有效更新地址，支持用户持久化覆盖更新地址、恢复内置地址和手动检查更新。2026-07-30 起原“外观”tab 正式更名为“个性化”，并新增头像设置。
 - 2026-07-30 个性化页顺序调整为“外观 / 字体 / 头像”；头像作为低频设置放在底部，Agent 与个人头像使用 48px 预览、短说明和紧凑形状按钮组成的响应式横向设置行，不再显示冗余“头像框”标签。
+- 2026-08-14 字体区新增 UI/代码基准字号设置与恢复默认入口，并将全局 `medium / semibold / bold` 语义由 `500 / 600 / 700` 校准为 `400 / 500 / 600`，从字体系统根部降低整体视觉重量；字号写入既有桌面偏好配置，应用启动时统一恢复根级 CSS 变量。
 - 头像系统的完整数据、存储、交互与会话展示规范见 [avatar-system.md](avatar-system.md)。
 - 设置页中的问号帮助入口（如“使用本地 Claude”“记录详细日志”“开启指标上报”）统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可展示说明文本；这些布尔开关统一采用“标题 + tips icon + switch”同一行布局，避免一部分开关右置、一部分行内导致对齐不一致；同时避免页面出现主题色 tooltip 与白底说明面板混用。
 - 更新能力使用 Tauri updater：`default` 渠道内置 GitHub Release `latest.json`，`wb` 渠道内置内网占位地址；两个渠道使用不同 updater public key，用户只能覆盖 URL，不能覆盖 public key，因此两个渠道不会通过改 URL 串包更新。default 渠道的安装包、签名和 `latest.json` 由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在并上传；该 workflow 可由 `main` push 自动触发，也可在 GitHub Actions 页面手动触发以补跑 release-please 主链路，release publish 后才对客户端 latest 检查可见。

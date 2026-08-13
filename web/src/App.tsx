@@ -107,7 +107,7 @@ import { resolveConversationWorkspaceRemovalTransition } from '@/lib/conversatio
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
-import { applyFont, applyTheme, resolveThemePreference, syncDesktopWindowSurface } from './theme';
+import { applyEditorFont, applyFont, applyTheme, applyTypographyPreferences, resolveThemePreference, syncDesktopWindowSurface } from './theme';
 import { useInterventionNotifications } from './lib/use-intervention-notifications';
 import { useScheduledNotifications } from './lib/use-scheduled-notifications';
 import { scheduledNotificationNavigation } from './lib/scheduled-task-notifications';
@@ -216,7 +216,7 @@ function findScheduledLinkedLeaf(
   return null;
 }
 
-const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
+const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', editorFont: 'editor-default', uiFontSize: 14, editorFontSize: 12, useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
 const defaultUpdaterSettings: UpdaterSettingsVm = {
   channel: 'default',
   builtInUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
@@ -486,6 +486,8 @@ export function App() {
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [loading, setLoading] = useState<VisibleRefreshMode | null>(null);
   const [busy, setBusy] = useState(false);
+  const preferenceSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const preferenceSaveGenerationRef = useRef(0);
   const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [gitRequirement, setGitRequirement] = useState<{
@@ -587,6 +589,14 @@ export function App() {
   useEffect(() => {
     applyFont(preferences.font);
   }, [preferences.font]);
+
+  useEffect(() => {
+    applyEditorFont(preferences.editorFont);
+  }, [preferences.editorFont]);
+
+  useEffect(() => {
+    applyTypographyPreferences(preferences.uiFontSize, preferences.editorFontSize);
+  }, [preferences.editorFontSize, preferences.uiFontSize]);
 
   useEffect(() => {
     if (typeof localStorage === 'undefined') return;
@@ -1477,33 +1487,23 @@ export function App() {
     }
   };
 
-  const onSavePreferences = async (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) => {
+  const onSavePreferences = (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, editorFont: DesktopFontPreference, uiFontSize: number, editorFontSize: number, useLocalClaude: boolean, verboseLogging: boolean) => {
+    const generation = ++preferenceSaveGenerationRef.current;
     setBusy(true);
-    try {
-      const saved = await saveDesktopPreferences(theme, language, font, useLocalClaude, verboseLogging);
-      setBootstrap((current) => current ? { ...current, preferences: saved } : {
-        repoRoot: '',
-        recentWorkspaces: [],
-        preferences: saved,
-        updaterSettings: defaultUpdaterSettings,
-        updateStatus: defaultUpdateStatus,
-        updateBadges: defaultUpdateBadges,
-        metricsSettings: defaultMetricsSettings,
-        clientVersion: '',
-        platform: 'unknown',
-        windowChrome: { frameStyle: 'native-compositor', nativeShadow: true },
-        appInfo: defaultAppInfo,
-        appConfig: defaultAppConfig,
-        needsWorkspace: false,
+    const save = preferenceSaveQueueRef.current
+      .catch(() => undefined)
+      .then(() => saveDesktopPreferences(theme, language, font, editorFont, uiFontSize, editorFontSize, useLocalClaude, verboseLogging))
+      .then((saved) => {
+        if (generation !== preferenceSaveGenerationRef.current) return;
+        setBootstrap((current) => current ? { ...current, preferences: saved } : current);
+      })
+      .catch((err) => {
+        if (generation === preferenceSaveGenerationRef.current) setError(displayAppError(t, err));
+      })
+      .finally(() => {
+        if (generation === preferenceSaveGenerationRef.current) setBusy(false);
       });
-      setTaskList(null);
-      setWorkflow(null);
-      setRoundDetail(null);
-    } catch (err) {
-      setError(displayAppError(t, err));
-    } finally {
-      setBusy(false);
-    }
+    preferenceSaveQueueRef.current = save;
   };
 
   const applyAvatarPreferences = useCallback((avatars: PreferencesVm['avatars']) => {

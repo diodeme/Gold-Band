@@ -1252,9 +1252,9 @@ export const browserApi: RuntimeApi = {
   showWorkerRef(_taskId: string, _runId: string, _roundId: string, _nodeId: string, attemptId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: attemptId, kind: 'worker-ref' });
   },
-  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) {
+  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, editorFont: DesktopFontPreference, uiFontSize: number, editorFontSize: number, useLocalClaude: boolean, verboseLogging: boolean) {
     const current = browserPreviewState.getPreferences();
-    const preferences = browserPreviewState.setPreferences({ ...current, theme, language, font, useLocalClaude, verboseLogging });
+    const preferences = browserPreviewState.setPreferences({ ...current, theme, language, font, editorFont, uiFontSize, editorFontSize, useLocalClaude, verboseLogging });
     return Promise.resolve(preferences);
   },
   saveDesktopAvatar(input) {

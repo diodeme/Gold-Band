@@ -92,7 +92,7 @@ export function SourceControlHistoryView({
   const list = (
     <section className="flex h-full min-h-0 flex-col" aria-label={t('sourceControl.commitList')}>
       {session.selectedCommitOids.size > 1 ? (
-        <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border/45 px-2 text-[11px] text-muted-foreground">
+        <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border/45 px-2 text-ui-caption text-muted-foreground">
           <span className="min-w-0 flex-1 truncate">{t('sourceControl.selectedCommitCount', { count: session.selectedCommitOids.size })}</span>
           <Button type="button" size="xs" variant="ghost" onClick={() => sourceControlStore.clearCommitSelection(resource.projectId, resource.workspacePath)}>
             <X className="size-3" />{t('common.clear')}
@@ -123,7 +123,7 @@ export function SourceControlHistoryView({
         <Button type="button" size="xs" variant="ghost" disabled={session.historyPage === 0 || busy} onClick={() => sourceControlStore.setHistoryPage(resource.projectId, resource.workspacePath, session.historyPage - 1)}>
           <ChevronLeft className="size-3" />{t('sourceControl.newerCommits')}
         </Button>
-        <span className="text-[10px] tabular-nums text-muted-foreground">{t('sourceControl.historyCurrentPage', { page: session.historyPage + 1 })}</span>
+        <span className="text-ui-micro tabular-nums text-muted-foreground">{t('sourceControl.historyCurrentPage', { page: session.historyPage + 1 })}</span>
         <Button type="button" size="xs" variant="ghost" disabled={!canShowOlderHistory || busy} onClick={showOlder}>
           {session.pendingAction?.kind === 'history-more' ? <LoaderCircle className="size-3 animate-spin" /> : null}
           {t('sourceControl.olderCommits')}<ChevronRight className="size-3" />
@@ -227,9 +227,9 @@ const CommitRow = memo(function CommitRow({ commit, selected, focused, runtimeLa
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-center gap-1.5">
               <span className="truncate text-xs font-medium">{commit.subject}</span>
-              {commit.runtimeCheckpoint ? <span className="shrink-0 rounded bg-primary/10 px-1 text-[9px] text-primary">{runtimeLabel}</span> : null}
+              {commit.runtimeCheckpoint ? <span className="shrink-0 rounded bg-primary/10 px-1 text-ui-nano text-primary">{runtimeLabel}</span> : null}
             </span>
-            <span className="mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground">
+            <span className="mt-0.5 flex items-center gap-2 text-ui-micro text-muted-foreground">
               <span className="font-mono">{commit.oid.slice(0, 8)}</span>
               <span className="truncate">{commit.author.name}</span>
               <span className="ml-auto shrink-0">{formatCommitTime(commit.author.timestamp)}</span>
@@ -276,7 +276,7 @@ function CommitReviewPanel({ resource, session, onOpenFile }: {
           <GitCommitHorizontal className="size-3.5" />
           <span>{t('sourceControl.commitReviewCount', { count: review.totals.commitCount })}</span>
         </div>
-        <div className="mt-1 flex gap-3 text-[10px] tabular-nums text-muted-foreground">
+        <div className="mt-1 flex gap-3 text-ui-micro tabular-nums text-muted-foreground">
           <span>{t('sourceControl.changedFileCount', { count: review.totals.fileCount })}</span>
         </div>
       </header>
@@ -297,7 +297,7 @@ function CommitReviewPanel({ resource, session, onOpenFile }: {
               onClick={() => onOpenFile(file, fileIndex)}
               className="px-2"
               pathDetail={(pathCounts.get(file.path) ?? 0) > 1
-                ? <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{file.afterOid.slice(0, 8)}</span>
+                ? <span className="shrink-0 font-mono text-ui-micro text-muted-foreground">{file.afterOid.slice(0, 8)}</span>
                 : null}
             />
           ))}

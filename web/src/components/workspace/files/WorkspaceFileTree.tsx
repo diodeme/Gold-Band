@@ -303,7 +303,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
           </TooltipContent>
         </Tooltip>
       </div>
-      {actionFailure ? <div className="pointer-events-none absolute right-2 top-12 z-20 rounded-md border border-destructive/20 bg-popover/95 px-2 py-1 text-[11px] text-destructive shadow-sm">{t(actionFailure === 'copy' ? 'workspace.filesPanel.pathCopyFailed' : 'workspace.filesPanel.fileManagerOpenFailed')}</div> : null}
+      {actionFailure ? <div className="pointer-events-none absolute right-2 top-12 z-20 rounded-md border border-destructive/20 bg-popover/95 px-2 py-1 text-ui-caption text-destructive shadow-sm">{t(actionFailure === 'copy' ? 'workspace.filesPanel.pathCopyFailed' : 'workspace.filesPanel.fileManagerOpenFailed')}</div> : null}
       <div ref={ref} className="min-h-0 flex-1 overflow-hidden p-1.5">
         {snapshot.status === 'loading' || snapshot.searchStatus === 'loading' ? (
           <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground"><LoaderCircle className="size-3.5 animate-spin" />{t('workspace.filesPanel.loading')}</div>
@@ -327,7 +327,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
                       }}
                     >
                       <Icon className="mt-0.5 size-3.5 shrink-0" />
-                      <span className="min-w-0"><span className="block truncate text-foreground">{entry.name}</span><span className="block truncate text-[10px]">{entry.relativePath}</span></span>
+                      <span className="min-w-0"><span className="block truncate text-foreground">{entry.name}</span><span className="block truncate text-ui-micro">{entry.relativePath}</span></span>
                     </button>
                   </ContextMenuTrigger>
                   <ContextMenuContent className="w-40 min-w-40 p-1" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
@@ -337,7 +337,7 @@ export function WorkspaceFileTree({ projectId, selectedPath, onOpenFile }: Works
               );
             })}
             {snapshot.searchStatus === 'ready' && searchEntries.length === 0 ? <p className="px-2 py-3 text-xs text-muted-foreground">{t('workspace.filesPanel.noSearchResults')}</p> : null}
-            {snapshot.searchResult?.truncated ? <p className="px-2 py-2 text-[11px] text-muted-foreground">{t('workspace.filesPanel.searchTruncated')}</p> : null}
+            {snapshot.searchResult?.truncated ? <p className="px-2 py-2 text-ui-caption text-muted-foreground">{t('workspace.filesPanel.searchTruncated')}</p> : null}
           </div>
         ) : (
           <TreeRowContext.Provider value={contextValue}>

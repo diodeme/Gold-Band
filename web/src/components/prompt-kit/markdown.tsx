@@ -138,12 +138,12 @@ const markdownComponents = {
   li: ({ children }: { children?: React.ReactNode }) => <li className="pl-1 leading-6">{children}</li>,
   blockquote: ({ children }: { children?: React.ReactNode }) => <blockquote className="my-2 border-l-2 border-primary/40 pl-3 text-muted-foreground">{children}</blockquote>,
   code: ({ className, children, node: _node, ...props }: React.HTMLAttributes<HTMLElement> & { node?: unknown }) => (
-    <code className={cn('rounded-md bg-muted/50 px-1.5 py-0.5 font-mono text-[0.86em] text-foreground', className)} {...props}>
+    <code className={cn('rounded-md bg-muted/50 px-1.5 py-0.5 font-mono text-[length:var(--app-ui-code-font-size)] text-foreground', className)} {...props}>
       {children}
     </code>
   ),
   pre: ({ children }: { children?: React.ReactNode }) => (
-    <pre className="my-2 max-w-full overflow-x-auto rounded-xl border border-border/60 bg-muted/35 p-3 font-mono text-xs leading-5 text-foreground shadow-sm shadow-background/20 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-[inherit]">
+    <pre className="my-2 max-w-full overflow-x-auto rounded-xl border border-border/60 bg-muted/35 p-3 font-mono text-[length:var(--app-ui-code-font-size)] leading-5 text-foreground shadow-sm shadow-background/20 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-[inherit]">
       {children}
     </pre>
   ),

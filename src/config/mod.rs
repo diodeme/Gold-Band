@@ -796,8 +796,6 @@ pub struct StateConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multica_runtime_ids: Option<std::collections::HashMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub multica_pending_issues: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multica_task_conversations:
         Option<std::collections::HashMap<String, MulticaTaskConversation>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1430,11 +1428,11 @@ mod tests {
     use super::{
         AcpAdapterConfig, ConsoleThemeName, ConversationDirectConfig, ConversationRunMode,
         ConversationRunModeEntry, DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference,
-        DesktopUpdateBadgeState, MANAGED_AGENT_PRESETS, ManagedAgentConfig, ManagedAgentId,
+        DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId,
         MulticaAccountRef, MulticaCompletedTask, MulticaTaskConversation, MulticaWorkspaceRef,
         ProjectAppConfig, RuntimeConfig,
         RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
-        TurnFilesConfig, WorkspaceLayoutConfig, catalog_agent_default_config, managed_agent_preset,
+        TurnFilesConfig, WorkspaceLayoutConfig, catalog_agent_default_config,
     };
     use crate::agent_catalog::builtin_agent_catalog;
     use std::collections::BTreeMap;

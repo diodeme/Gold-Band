@@ -100,7 +100,6 @@ export interface RemoteTaskVm {
   id: string;
   issueId: string | null;
   status: string;
-  retryable: boolean;
   workspaceId: string;
   title: string;
   /// claim 响应里解析出的需求正文（quick-create/chat/comment/autopilot/handoff 来源优先级取首个非空，无则 null）。
@@ -118,7 +117,6 @@ export interface RemoteConversationSidebarVm {
   workspaces: MulticaWorkspaceRefVm[];
   /// 该工作空间的全部远程任务（active queued/running + 终态 completed/failed）；终态行带 localTaskId/runId/projectId 可直达会话。
   tasksByWorkspace: Record<string, RemoteTaskVm[]>;
-  pinnedTasks: RemoteTaskVm[];
   lastActiveWorkspaceId: string | null;
   connected: boolean;
 }

@@ -33,6 +33,7 @@ import { MulticaRemoteTaskBoard } from '@/components/conversation/MulticaRemoteT
 import { MulticaAddWorkspaceDialog } from '@/components/conversation/MulticaAddWorkspaceDialog';
 import { cn } from '@/lib/utils';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
+import { useEventDrivenRefresh } from '@/lib/use-event-driven-refresh';
 import {
   cancelMulticaTask,
   connectMultica,
@@ -118,9 +119,9 @@ export function MulticaTaskManagementPage({
       .catch((err) => { if (mountRef.current) setError(displayAppError(t, err)); });
   }, [t]);
 
-  const refreshAll = useCallback(() => {
-    fetchTasks();
-    fetchSettings();
+  const refreshAll = useCallback((): Promise<void> => {
+    // 返回 Promise 供 useEventDrivenRefresh 做事件去重计时（in-flight + pending 合并）。
+    return Promise.all([fetchTasks(), fetchSettings()]).then(() => undefined);
   }, [fetchTasks, fetchSettings]);
 
   const handleManualRefresh = useCallback(() => {
@@ -130,17 +131,20 @@ export function MulticaTaskManagementPage({
     });
   }, [fetchTasks, fetchSettings]);
 
+  // mountRef 守卫卸载后的 setState（fetch 链异步 resolve 可能晚于 unmount）。
   useEffect(() => {
     mountRef.current = true;
-    refreshAll();
-    // 任务生命周期（multica-task-updated）+ 连接/工作空间配置变更（multica-settings-updated）
-    // 都触发 re-fetch：绑定/解绑/连接/断开在别处发起时，本页即时同步。
-    let unsubTask = () => {};
-    let unsubSettings = () => {};
-    subscribeMulticaTaskUpdates(() => refreshAll()).then((fn) => { unsubTask = fn; });
-    subscribeMulticaSettingsUpdates(() => refreshAll()).then((fn) => { unsubSettings = fn; });
-    return () => { mountRef.current = false; unsubTask(); unsubSettings(); };
-  }, [refreshAll]);
+    return () => { mountRef.current = false; };
+  }, []);
+
+  // 任务生命周期（multica-task-updated）+ 连接/工作空间配置变更（multica-settings-updated）
+  // 都触发 refreshAll；两通道经 useEventDrivenRefresh 合并去重（事件风暴→1 in-flight + 1 pending，
+  // 不再每事件双 fetch），并修复异步 unlisten 泄漏 + 解耦 refreshAll 身份变化（不再因 t 重订阅）。
+  useEventDrivenRefresh(
+    refreshAll,
+    [subscribeMulticaTaskUpdates, subscribeMulticaSettingsUpdates],
+    { refreshOnMount: true },
+  );
 
   const connected = vm?.connected ?? false;
   const workspaces = vm?.workspaces ?? [];

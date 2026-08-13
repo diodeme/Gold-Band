@@ -186,10 +186,9 @@ function baseVm(overrides: Partial<RemoteConversationSidebarVm> = {}): RemoteCon
     connected: true,
     workspaces: [],
     tasksByWorkspace: {},
-    pinnedTasks: [],
     lastActiveWorkspaceId: null,
     ...overrides,
-  } as RemoteConversationSidebarVm;
+  };
 }
 
 function baseSettings(overrides: Record<string, unknown> = {}) {
@@ -276,8 +275,8 @@ describe('MulticaTaskManagementPage (container)', () => {
       workspaces: [ws004, ws005],
       lastActiveWorkspaceId: 'ws-004',
       tasksByWorkspace: {
-        'ws-004': [{ id: 'rt-a', workspaceId: 'ws-004', title: 'Task A', status: 'queued', retryable: false } as RemoteTaskVm],
-        'ws-005': [{ id: 'rt-b', workspaceId: 'ws-005', title: 'Task B', status: 'queued', retryable: false } as RemoteTaskVm],
+        'ws-004': [{ id: 'rt-a', workspaceId: 'ws-004', title: 'Task A', status: 'queued' } as RemoteTaskVm],
+        'ws-005': [{ id: 'rt-b', workspaceId: 'ws-005', title: 'Task B', status: 'queued' } as RemoteTaskVm],
       },
     }));
     const { container } = await renderPage();
@@ -292,8 +291,8 @@ describe('MulticaTaskManagementPage (container)', () => {
       workspaces: [ws004, ws005],
       lastActiveWorkspaceId: 'ws-004',
       tasksByWorkspace: {
-        'ws-004': [{ id: 'rt-a', workspaceId: 'ws-004', title: 'Task A', status: 'queued', retryable: false } as RemoteTaskVm],
-        'ws-005': [{ id: 'rt-b', workspaceId: 'ws-005', title: 'Task B', status: 'queued', retryable: false } as RemoteTaskVm],
+        'ws-004': [{ id: 'rt-a', workspaceId: 'ws-004', title: 'Task A', status: 'queued' } as RemoteTaskVm],
+        'ws-005': [{ id: 'rt-b', workspaceId: 'ws-005', title: 'Task B', status: 'queued' } as RemoteTaskVm],
       },
     }));
     const { container } = await renderPage();
@@ -361,12 +360,12 @@ describe('MulticaTaskManagementPage (container)', () => {
       workspaces: [ws004],
       lastActiveWorkspaceId: 'ws-004',
       tasksByWorkspace: {
-        'ws-004': [{ id: 'rt-1', workspaceId: 'ws-004', title: 'Some task', status: 'queued', retryable: false } as RemoteTaskVm],
+        'ws-004': [{ id: 'rt-1', workspaceId: 'ws-004', title: 'Some task', status: 'queued' } as RemoteTaskVm],
       },
     }));
     // 任务详情回填需求正文（pending 列表只有 thread_name，正文仅任务详情里有）。
     getMulticaTaskRequirement.mockResolvedValue({
-      id: 'rt-1', issueId: null, status: 'queued', retryable: false,
+      id: 'rt-1', issueId: null, status: 'queued',
       workspaceId: 'ws-004', title: 'Some task', requirement: '远程任务需求正文', lastActivityAt: null,
     });
     const { container } = await renderPage(onSelectRun, onPrepareMulticaTask);
@@ -388,11 +387,11 @@ describe('MulticaTaskManagementPage (container)', () => {
       workspaces: [ws004],
       lastActiveWorkspaceId: 'ws-004',
       tasksByWorkspace: {
-        'ws-004': [{ id: 'rt-1', workspaceId: 'ws-004', title: 'Issue title', status: 'queued', retryable: false } as RemoteTaskVm],
+        'ws-004': [{ id: 'rt-1', workspaceId: 'ws-004', title: 'Issue title', status: 'queued' } as RemoteTaskVm],
       },
     }));
     getMulticaTaskRequirement.mockResolvedValue({
-      id: 'rt-1', issueId: 'issue-1', status: 'queued', retryable: true,
+      id: 'rt-1', issueId: 'issue-1', status: 'queued',
       workspaceId: 'ws-004', title: 'Issue title', requirement: null, lastActivityAt: null,
     });
     const { container } = await renderPage();
@@ -409,7 +408,7 @@ describe('MulticaTaskManagementPage (container)', () => {
       workspaces: [ws004],
       lastActiveWorkspaceId: 'ws-004',
       tasksByWorkspace: {
-        'ws-004': [{ id: 'rt-run', workspaceId: 'ws-004', title: 'In flight', status: 'running', retryable: false } as RemoteTaskVm],
+        'ws-004': [{ id: 'rt-run', workspaceId: 'ws-004', title: 'In flight', status: 'running' } as RemoteTaskVm],
       },
     }));
     cancelMulticaTask.mockResolvedValue(undefined);

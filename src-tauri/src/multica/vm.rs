@@ -1,7 +1,7 @@
 //! multica 远程任务展示 VM（开发设计 2.4 / line 650-658 TS 接口）。
 //!
 //! `RemoteTaskVm` / `RemoteConversationSidebarVm` 对齐 `ConversationSidebarVm` 形状
-//! （`workspaces` / `tasksByWorkspace` / `pinnedTasks` 键名一致），前端复用 ConversationSidebar
+//! （`workspaces` / `tasksByWorkspace` 键名一致），前端复用 ConversationSidebar
 //! 骨架直接渲染，TaskRow 零改复用。
 
 use std::collections::BTreeMap;
@@ -20,7 +20,6 @@ pub struct RemoteTaskVm {
     pub issue_id: Option<String>,
     /// `queued` | `running` | `completed` | `failed`（由 `normalize_remote_status` 归一）。
     pub status: String,
-    pub retryable: bool,
     pub workspace_id: String,
     pub title: String,
     pub last_activity_at: Option<String>,
@@ -42,48 +41,29 @@ pub struct RemoteTaskVm {
 /// - `tasks_by_workspace`：远程任务（active + 终态），按 workspace 分组（key = workspace id）。
 ///   终态行来自本地 `multica_completed_tasks` 历史，按 `workspace_id` 归入对应工作空间（改动六：
 ///   取代扁平全局「最近完成」桶，提升可读性；终态行带 `local_task_id`/`run_id`/`project_id` 可直达会话）。
-/// - `pinned_tasks`：本地失败回显（`multica_pending_issues`），retryable=true，不归属具体 workspace。
 /// - `connected`：未连接 → 前端显示空状态 + 连接入口（不另查 patSet）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteConversationSidebarVm {
     pub workspaces: Vec<MulticaWorkspaceRef>,
     pub tasks_by_workspace: BTreeMap<String, Vec<RemoteTaskVm>>,
-    pub pinned_tasks: Vec<RemoteTaskVm>,
     pub last_active_workspace_id: Option<String>,
     pub connected: bool,
 }
 
 impl RemoteTaskVm {
-    /// 远程 pending 列表行（可领取，retryable=false）。`workspace_id` 来自其所属 workspace。
+    /// 远程 pending 列表行（可领取）。`workspace_id` 来自其所属 workspace。
     pub fn from_pending(task: &RemoteTask, workspace_id: &str) -> Self {
-        Self::from_remote(task, workspace_id, false)
+        Self::from_remote(task, workspace_id)
     }
 
-    /// 任务详情行（claim-at-send 只读拉取 / claim 响应，retryable=false）。回填 `requirement`
+    /// 任务详情行（claim-at-send 只读拉取 / claim 响应）。回填 `requirement`
     /// （正文仅任务详情端点才有：pending 列表只给 thread_name）。read 与 claim 共用此构造——二者响应同构、
     /// 都带 requirement 来源字段；区别仅在调用时机（read 不改 server 状态、任务仍 queued；claim 置 dispatched）。
     pub fn from_detail(task: &RemoteTask, workspace_id: &str) -> Self {
-        let mut vm = Self::from_remote(task, workspace_id, false);
+        let mut vm = Self::from_remote(task, workspace_id);
         vm.requirement = task.requirement_text();
         vm
-    }
-
-    /// 失败回显行（`multica_pending_issues`，retryable=true）。`id` = issue_id（rerun 键）。
-    pub fn from_failed_issue(issue_id: &str) -> Self {
-        Self {
-            id: issue_id.to_string(),
-            issue_id: Some(issue_id.to_string()),
-            status: "failed".to_string(),
-            retryable: true,
-            workspace_id: String::new(),
-            title: issue_id.to_string(),
-            last_activity_at: None,
-            requirement: None,
-            local_task_id: None,
-            run_id: None,
-            project_id: None,
-        }
     }
 
     /// 终态回看行（`multica_completed_tasks` 本地历史，改动六）。`completed_at` → `last_activity_at`
@@ -95,7 +75,6 @@ impl RemoteTaskVm {
             issue_id: c.issue_id.clone(),
             // 本地历史 status 已是归一值（"completed" | "failed"），原样透传。
             status: c.status.clone(),
-            retryable: false,
             workspace_id: c.workspace_id.clone(),
             title: c
                 .title
@@ -121,7 +100,6 @@ impl RemoteTaskVm {
             id: remote_task_id.to_string(),
             issue_id: run.issue_id.clone(),
             status: "running".to_string(),
-            retryable: false,
             workspace_id: run.workspace_id.clone(),
             title: run
                 .title
@@ -136,12 +114,11 @@ impl RemoteTaskVm {
         }
     }
 
-    fn from_remote(task: &RemoteTask, workspace_id: &str, retryable: bool) -> Self {
+    fn from_remote(task: &RemoteTask, workspace_id: &str) -> Self {
         Self {
             id: task.id.clone(),
             issue_id: task.issue_id.clone(),
             status: normalize_remote_status(&task.status),
-            retryable,
             workspace_id: workspace_id.to_string(),
             // 兑现 client.rs 的兜底约定：thread_name 缺失/空白时用 task id 兜底，
             // 保证列表每行都有可辨识标签（即使 webank 未补全名字也不留空行）。
@@ -199,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn from_pending_maps_fields_and_marks_not_retryable() {
+    fn from_pending_maps_fields() {
         let task = RemoteTask {
             id: "t-1".into(),
             issue_id: Some("iss-1".into()),
@@ -220,7 +197,6 @@ mod tests {
         assert_eq!(vm.id, "t-1");
         assert_eq!(vm.issue_id.as_deref(), Some("iss-1"));
         assert_eq!(vm.status, "queued");
-        assert!(!vm.retryable);
         assert_eq!(vm.workspace_id, "ws-1");
         assert_eq!(vm.title, "Fix bug");
         // pending 列表无正文来源 → requirement 留 None（预填只在 claim 后才有）。
@@ -330,23 +306,11 @@ mod tests {
     }
 
     #[test]
-    fn from_failed_issue_marks_retryable_and_failed() {
-        let vm = RemoteTaskVm::from_failed_issue("iss-9");
-        assert_eq!(vm.id, "iss-9");
-        assert_eq!(vm.issue_id.as_deref(), Some("iss-9"));
-        assert_eq!(vm.status, "failed");
-        assert!(vm.retryable);
-        // 失败回显不归属具体 workspace（进 pinned_tasks，前端不按 workspace 分组）。
-        assert!(vm.workspace_id.is_empty());
-    }
-
-    #[test]
     fn remote_task_vm_serializes_camel_case_keys() {
         let vm = RemoteTaskVm {
             id: "t-1".into(),
             issue_id: Some("iss-1".into()),
             status: "queued".into(),
-            retryable: false,
             workspace_id: "ws-1".into(),
             title: "Fix bug".into(),
             last_activity_at: Some("2026-08-04T10:00:00Z".into()),
@@ -360,7 +324,6 @@ mod tests {
         assert_eq!(json["id"], "t-1");
         assert_eq!(json["issueId"], "iss-1");
         assert_eq!(json["status"], "queued");
-        assert_eq!(json["retryable"], false);
         assert_eq!(json["workspaceId"], "ws-1");
         assert_eq!(json["title"], "Fix bug");
         assert_eq!(json["lastActivityAt"], "2026-08-04T10:00:00Z");
@@ -369,6 +332,8 @@ mod tests {
         assert!(json["localTaskId"].is_null());
         assert!(json["runId"].is_null());
         assert!(json["projectId"].is_null());
+        // retryable / pinnedTasks 死管线已删（M1）：序列化结果不含这些键。
+        assert!(json.get("retryable").is_none());
     }
 
     #[test]
@@ -376,7 +341,6 @@ mod tests {
         let sidebar = RemoteConversationSidebarVm {
             workspaces: Vec::new(),
             tasks_by_workspace: BTreeMap::new(),
-            pinned_tasks: Vec::new(),
             last_active_workspace_id: Some("ws-1".into()),
             connected: true,
         };
@@ -384,7 +348,8 @@ mod tests {
         // 键名与 ConversationSidebarVm 一致（前端复用骨架，line 652-658）。
         assert!(json["workspaces"].is_array());
         assert!(json["tasksByWorkspace"].is_object());
-        assert!(json["pinnedTasks"].is_array());
+        // retryable / pinnedTasks 死管线已删（M1）：sidebar 不再含 pinnedTasks 键。
+        assert!(json.get("pinnedTasks").is_none());
         // 改动六：扁平「最近完成」桶已删，终态行并入 tasksByWorkspace 对应工作空间组。
         assert!(json.get("recentlyCompleted").is_none());
         assert_eq!(json["lastActiveWorkspaceId"], "ws-1");
@@ -409,7 +374,6 @@ mod tests {
         assert_eq!(vm.id, "rt-1");
         assert_eq!(vm.issue_id.as_deref(), Some("iss-1"));
         assert_eq!(vm.status, "completed"); // 本地历史 status 原样透传
-        assert!(!vm.retryable); // 终态行不可重试（重试走 pinned 失败回显）
         assert_eq!(vm.workspace_id, "ws-1");
         assert_eq!(vm.title, "Done thing");
         // completed_at → last_activity_at（前端复用既有时间渲染）。
@@ -448,7 +412,6 @@ mod tests {
         assert_eq!(vm.id, "remote-9");
         assert_eq!(vm.issue_id.as_deref(), Some("iss-9"));
         assert_eq!(vm.status, "running"); // 进行中固定标识
-        assert!(!vm.retryable); // 在跑不可重试（取消走 Cancel 按钮，不进 rerun）
         assert_eq!(vm.workspace_id, "ws-1");
         assert_eq!(vm.title, "In flight");
         // started_at → last_activity_at（在飞任务的「最近活动」即启动时刻）。

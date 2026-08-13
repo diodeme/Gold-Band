@@ -4,8 +4,9 @@
 //! - `NodeCompleted`：读 `worker-ref.json` 采 ACP session_id → `pin_task_session` + 落
 //!   `multica_task_conversations`（断点续跑依据）；session 变更才写（避免每节点重复 pin）。
 //! - `RunCompleted`：按 `RunOutcome` 穷举上报（Success→complete（complete 送达后再用 PAT 把关联
-//!   issue 流转到 done，接入方案 D2）/ Failure→fail+记 pending_issues / Killed→fail(timeout)，agent
-//!   真死；cancel 路径皆经 run_pause→Paused 从不产生 Killed，故无需 cancel-detection 上下文消歧）。
+//!   issue 流转到 done，接入方案 D2）+ completed 历史记 `completed` / Failure→fail + 历史记 `failed`
+//!   / Killed→fail(timeout)，agent 真死；cancel 路径皆经 run_pause→Paused 从不产生 Killed，故无需
+//!   cancel-detection 上下文消歧）。
 //! - `RunPaused`/`InterventionRequested`：**绝对不上报终态**（multica 继续 running，本地处理
 //!   elicitation/permission，开发设计 2.5 Paused 盲区）。
 //!
@@ -90,12 +91,14 @@ pub(crate) fn teardown_active_run(
     if let Ok(mut guard) = shared.lock() {
         guard.drop_active_run(remote_task_id);
     }
-    if let Ok(mut state) = home_app.load_state() {
-        if let Some(convs) = state.multica_task_conversations.as_mut() {
-            convs.remove(remote_task_id);
-        }
-        let _ = home_app.save_state(&state);
-    }
+    // 清断点续跑索引经 with_state 原子 RMW（防并发终态/取消收尾 lost-update）；dirty 由键是否存在决定。
+    let _ = home_app.with_state(|state| {
+        state
+            .multica_task_conversations
+            .as_mut()
+            .map(|convs| convs.remove(remote_task_id).is_some())
+            .unwrap_or(false)
+    });
 }
 
 /// 按 `RunOutcome` 分类终态动作（纯函数，开发设计 2.5 终态表）。
@@ -224,39 +227,42 @@ async fn handle_node_completed(
     let Some(context) = desktop_context(&app) else {
         return;
     };
-    // session 变更才落库 + pin（避免每节点重复 pin 同一 session）。
-    let mut state = match context.app().load_state() {
-        Ok(s) => s,
+    // session 变更才落库 + pin（避免每节点重复 pin 同一 session）。RMW 经 with_state 原子化，
+    // 防并发 NodeCompleted/RunCompleted 收尾 lost-update 覆盖此条 task_conversations。
+    let changed = match context.app().with_state(|state| {
+        let prev = state
+            .multica_task_conversations
+            .as_ref()
+            .and_then(|m| m.get(&remote_task_id))
+            .and_then(|c| c.session_id.as_deref());
+        if prev == Some(session_id.as_str()) {
+            return false; // session 未变 → 无需写/pin。
+        }
+        let mut conversations = state.multica_task_conversations.take().unwrap_or_default();
+        conversations.insert(
+            remote_task_id.clone(),
+            MulticaTaskConversation {
+                local_task_id: run.local_task_id,
+                local_run_id: run.local_run_id,
+                session_id: Some(session_id.clone()),
+                work_dir: if work_dir.is_empty() {
+                    None
+                } else {
+                    Some(work_dir.clone())
+                },
+            },
+        );
+        state.multica_task_conversations = Some(conversations);
+        true
+    }) {
+        Ok(c) => c,
         Err(e) => {
-            warn!(%e, "multica pin: load_state failed");
+            warn!(%e, "multica pin: state rmw failed");
             return;
         }
     };
-    let prev = state
-        .multica_task_conversations
-        .as_ref()
-        .and_then(|m| m.get(&remote_task_id))
-        .and_then(|c| c.session_id.clone());
-    if prev.as_deref() == Some(session_id.as_str()) {
-        return; // session 未变 → 无需重复 pin。
-    }
-    let mut conversations = state.multica_task_conversations.clone().unwrap_or_default();
-    conversations.insert(
-        remote_task_id.clone(),
-        MulticaTaskConversation {
-            local_task_id: run.local_task_id,
-            local_run_id: run.local_run_id,
-            session_id: Some(session_id.clone()),
-            work_dir: if work_dir.is_empty() {
-                None
-            } else {
-                Some(work_dir.clone())
-            },
-        },
-    );
-    state.multica_task_conversations = Some(conversations);
-    if let Err(e) = context.app().save_state(&state) {
-        warn!(%e, "multica pin: save_state failed");
+    if !changed {
+        return; // session 未变 → 无需 pin。
     }
     let Some(client) = multica_client(&context) else {
         return;
@@ -340,7 +346,7 @@ async fn handle_run_completed(
     emit_multica_task_updated(&app);
 }
 
-/// 终态本地收尾：移 active_runs + 清 task_conversations + 按 pending 调整失败回显。
+/// 终态本地收尾：移 active_runs + 清 task_conversations + 记 completed 历史快照（status 由 pending 决定）。
 fn finalize_terminal(
     app: &AppHandle,
     remote_task_id: &str,
@@ -355,56 +361,40 @@ fn finalize_terminal(
     let Some(context) = desktop_context(app) else {
         return;
     };
-    let mut state = match context.app().load_state() {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(%e, "multica finalize: load_state failed");
-            return;
-        }
-    };
-    // 清断点续跑索引（任务已终态，不再续跑此 remote task）。
-    if let Some(convs) = state.multica_task_conversations.as_mut() {
-        convs.remove(remote_task_id);
-    }
-    // 失败回显：Success 清除（重试成功）、Failure 记录（供 rerun）。
-    if let Some(issue) = run.issue_id.as_deref() {
-        let mut list = state.multica_pending_issues.clone().unwrap_or_default();
-        match pending {
-            PendingUpdate::ClearOnSuccess => list.retain(|i| i != issue),
-            PendingUpdate::AddOnFailure => {
-                if !list.iter().any(|i| i == issue) {
-                    list.push(issue.to_string());
-                }
-            }
-        }
-        state.multica_pending_issues = Some(list);
-    }
-    // 「最近完成」历史快照（Issue 3C）：active→completed，保留 remote↔local 链接供远程 tab 回看。
-    // task_conversations 此处已清（续跑语义不变），但 completed 历史独立常驻，供用户回看本地会话。
     let status = match pending {
         PendingUpdate::ClearOnSuccess => "completed",
         PendingUpdate::AddOnFailure => "failed",
     };
-    record_completed_task(
-        &mut state,
-        MulticaCompletedTask {
-            remote_task_id: remote_task_id.to_string(),
-            local_task_id: run.local_task_id.clone(),
-            local_run_id: run.local_run_id.clone(),
-            workspace_id: run.workspace_id.clone(),
-            local_project_id: run.local_project_id.clone(),
-            issue_id: run.issue_id.clone(),
-            status: status.to_string(),
-            title: run
-                .title
-                .clone()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| remote_task_id.to_string()),
-            completed_at: chrono::Utc::now().to_rfc3339(),
-        },
-    );
-    if let Err(e) = context.app().save_state(&state) {
-        warn!(%e, "multica finalize: save_state failed");
+    // 终态本地收尾经 with_state 原子 RMW（清 task_conversations + 记 completed 历史）；
+    // 防并发终态/取消收尾 lost-update（同一 remote 的 NodeCompleted 与 RunCompleted 并发 save 互不覆盖）。
+    if let Err(e) = context.app().with_state(|state| {
+        // 清断点续跑索引（任务已终态，不再续跑此 remote task）。
+        if let Some(convs) = state.multica_task_conversations.as_mut() {
+            convs.remove(remote_task_id);
+        }
+        // 「最近完成」历史快照（Issue 3C）：active→completed，保留 remote↔local 链接供远程 tab 回看。
+        // task_conversations 此处已清（续跑语义不变），但 completed 历史独立常驻，供用户回看本地会话。
+        record_completed_task(
+            state,
+            MulticaCompletedTask {
+                remote_task_id: remote_task_id.to_string(),
+                local_task_id: run.local_task_id.clone(),
+                local_run_id: run.local_run_id.clone(),
+                workspace_id: run.workspace_id.clone(),
+                local_project_id: run.local_project_id.clone(),
+                issue_id: run.issue_id.clone(),
+                status: status.to_string(),
+                title: run
+                    .title
+                    .clone()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| remote_task_id.to_string()),
+                completed_at: chrono::Utc::now().to_rfc3339(),
+            },
+        );
+        true
+    }) {
+        warn!(%e, "multica finalize: state rmw failed");
     }
 }
 
@@ -423,11 +413,11 @@ fn record_completed_task(state: &mut StateConfig, entry: MulticaCompletedTask) {
     }
 }
 
-/// 终态对失败回显（pending_issues）的处置。
+/// 终态对「最近完成」历史快照 status 的处置（success→completed / failure→failed）。
 enum PendingUpdate {
-    /// Success：清除该 issue 的失败回显（重试成功）。
+    /// Success：completed 历史记 `completed`。
     ClearOnSuccess,
-    /// Failure：记录该 issue 供用户 rerun。
+    /// Failure：completed 历史记 `failed`。
     AddOnFailure,
 }
 

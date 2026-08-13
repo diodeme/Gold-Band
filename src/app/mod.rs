@@ -137,6 +137,11 @@ pub(crate) fn attempt_runtime_state_lock(
             .collect()
     })[shard]
 }
+
+/// `StateConfig` RMW 串行锁分片数（与 `ATTEMPT_RUNTIME_STATE_LOCKS` 同模式：进程级 `OnceLock` 分片，
+/// 按 `repo_root` 取同一把锁）。
+const STATE_CONFIG_LOCK_SHARDS: usize = 32;
+static STATE_CONFIG_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
 pub use self::profiles::{
     ImportProfilesInput, ImportProfilesResult, ProfileCommandError, ProfileEntry, ProfileInput,
     ProfileList, ProfileScope,
@@ -1251,6 +1256,39 @@ impl App {
 
     pub fn save_state(&self, state: &StateConfig) -> Result<()> {
         write_json(&self.paths.user_state_file(), state)
+    }
+
+    /// 取本 `repo_root` 的 `StateConfig` 写入串行锁（同一 repo_root 的所有 `with_state` 调用复用一把锁）。
+    fn state_config_lock(&self) -> &'static Mutex<()> {
+        let mut hasher = DefaultHasher::new();
+        self.paths.repo_root.hash(&mut hasher);
+        let shard = hasher.finish() as usize % STATE_CONFIG_LOCK_SHARDS;
+        &STATE_CONFIG_LOCKS.get_or_init(|| {
+            (0..STATE_CONFIG_LOCK_SHARDS)
+                .map(|_| Mutex::new(()))
+                .collect()
+        })[shard]
+    }
+
+    /// 原子 read-modify-write `StateConfig`（per-repo_root 串行，防并发 lost-update）。
+    ///
+    /// 持锁期间 `load → update(&mut state) → 若 update 返回 true（dirty）则 save`。锁只覆盖文件 RMW，
+    /// **不含网络/长计算**（state-integrity §6 最小临界区）；`update` 为同步闭包，天然排除 async 网络。
+    /// 同一 `repo_root` 的并发 `with_state` 串行执行，杜绝「两任务各 load v0、各自 save、后写覆盖前写」。
+    ///
+    /// `update` 返回是否实际改动：`false` → 跳过 save（热路径如 bridge `NodeCompleted` 在 session 未变时
+    /// 不落盘）；返回值即该 dirty 标志，供调用方决定后续副作用（如是否发起 pin HTTP）。
+    pub fn with_state<F>(&self, update: F) -> Result<bool>
+    where
+        F: FnOnce(&mut StateConfig) -> bool,
+    {
+        let _guard = self.state_config_lock().lock().unwrap();
+        let mut state = self.load_state()?;
+        let dirty = update(&mut state);
+        if dirty {
+            self.save_state(&state)?;
+        }
+        Ok(dirty)
     }
 
     pub fn set_user_console_theme(&self, theme: ConsoleThemeName) -> Result<SettingsConfig> {
@@ -3826,7 +3864,8 @@ mod tests {
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
         ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
-        ProviderDiagnosticSnapshot, RuntimeConfig, catalog_agent_default_config,
+        MulticaCompletedTask, ProviderDiagnosticSnapshot, RuntimeConfig, StateConfig,
+        catalog_agent_default_config,
     };
     use crate::domain::{
         NodeOutcome, NodeType, PauseReason, RoundTrigger, RunOutcome, RunStatus, SessionMode,
@@ -5683,6 +5722,138 @@ mod tests {
         assert!(
             interview.output.is_none() && interview.success_condition.is_none(),
             "interview node must declare no output contract or success condition"
+        );
+    }
+
+    // ── with_state：原子 StateConfig RMW（state-integrity §6 最小临界区 + §9 回归验收）──────────
+
+    fn completed_entry(remote: &str) -> MulticaCompletedTask {
+        MulticaCompletedTask {
+            remote_task_id: remote.into(),
+            local_task_id: format!("task-{remote}"),
+            local_run_id: format!("run-{remote}"),
+            workspace_id: "ws-1".into(),
+            local_project_id: "proj-1".into(),
+            issue_id: None,
+            status: "completed".into(),
+            title: format!("title-{remote}"),
+            completed_at: "2026-08-13T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn with_state_persists_mutation_and_reports_dirty() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root);
+
+        let dirty = app
+            .with_state(|state| {
+                state.multica_completed_tasks.push(completed_entry("rt-1"));
+                true
+            })
+            .unwrap();
+
+        assert!(dirty, "dirty=true → 返回 true 且落盘");
+        let state = app.load_state().unwrap();
+        assert_eq!(state.multica_completed_tasks.len(), 1);
+        assert_eq!(state.multica_completed_tasks[0].remote_task_id, "rt-1");
+    }
+
+    #[test]
+    fn with_state_skips_save_when_not_dirty_and_reports_clean() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root);
+        // 先落一条种子。
+        app.with_state(|state| {
+            state.multica_completed_tasks.push(completed_entry("rt-seed"));
+            true
+        })
+        .unwrap();
+
+        // 未改不存（dirty=false）→ 磁盘上种子仍在，未被空 RMW 覆盖/清空。
+        let dirty = app.with_state(|_| false).unwrap();
+        assert!(!dirty, "dirty=false → 返回 false 且不落盘");
+
+        let state = app.load_state().unwrap();
+        assert_eq!(
+            state.multica_completed_tasks.len(),
+            1,
+            "未 dirty 的 with_state 不应清空或覆盖既有状态"
+        );
+        assert_eq!(state.multica_completed_tasks[0].remote_task_id, "rt-seed");
+    }
+
+    #[test]
+    fn with_state_reads_current_disk_state() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root);
+        let mut seed = StateConfig::default();
+        seed.multica_completed_tasks.push(completed_entry("rt-seed"));
+        app.save_state(&seed).unwrap();
+
+        let mut seen = None;
+        app.with_state(|state| {
+            seen = state
+                .multica_completed_tasks
+                .first()
+                .map(|c| c.remote_task_id.clone());
+            false
+        })
+        .unwrap();
+
+        assert_eq!(seen.as_deref(), Some("rt-seed"), "with_state 应加载磁盘当前状态");
+    }
+
+    /// 并发 RMW 不丢失写入（lost-update 回归）：N 个线程各 with_state 追加一条唯一条目，
+    /// 串行锁保证每条都落盘。无锁时多线程 load v0→push→save 会相互覆盖，最终条目数远小于 N。
+    #[test]
+    fn with_state_serializes_concurrent_rmw_no_lost_update() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        set_test_home(&repo_root);
+        // 主线程 App：初始化 home + state 文件，并在 join 后校验最终条目数。
+        let verifier = App::with_config_and_path_config(
+            repo_root.clone(),
+            RuntimeConfig::default(),
+            test_path_config(),
+        );
+        verifier.with_state(|_| false).unwrap(); // 确保 state 文件存在
+
+        const N: usize = 32;
+        let repo_root_arc = Arc::new(repo_root);
+        let handles: Vec<_> = (0..N)
+            .map(|i| {
+                let repo_root = Arc::clone(&repo_root_arc);
+                std::thread::spawn(move || {
+                    let app = App::with_config_and_path_config(
+                        (*repo_root).clone(),
+                        RuntimeConfig::default(),
+                        test_path_config(),
+                    );
+                    app.with_state(|state| {
+                        state.multica_completed_tasks.push(completed_entry(&format!("rt-{i}")));
+                        true
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let final_state = verifier.load_state().unwrap();
+        assert_eq!(
+            final_state.multica_completed_tasks.len(),
+            N,
+            "并发 RMW 不应丢失任何写入（lost-update）"
         );
     }
 }

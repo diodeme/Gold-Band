@@ -104,6 +104,7 @@ import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
 import { resetConversationComposerDraft } from '@/lib/conversation-composer-draft';
+import { useEventDrivenRefresh } from '@/lib/use-event-driven-refresh';
 import { GitRequirementDialog } from '@/components/git/GitRequirementDialog';
 import { resolveConversationWorkspaceRemovalTransition } from '@/lib/conversation-workspace-removal';
 import { WorkflowPage } from './pages/WorkflowPage';
@@ -1018,47 +1019,20 @@ export function App() {
   // multica 任务生命周期（claim/start/terminal）→ 同步本地侧栏：multica 启动会在本地工作空间
   // 创建会话任务、完成时更新状态。订阅 multica-task-updated 让本地侧栏即时反映这些变化
   // （对齐正常 createConversationRun 路径的手动 sidebar refresh，避免 multica 路径漏刷新）。
-  useEffect(() => {
-    if (!isTauriRuntime()) return undefined;
-    let active = true;
-    let refreshInFlight = false;
-    let refreshPending = false;
-
-    const refreshSidebar = async () => {
-      if (refreshInFlight) {
-        refreshPending = true;
-        return;
-      }
-      refreshInFlight = true;
+  // 复用 useEventDrivenRefresh：事件风暴去重 + 异步 unlisten 防泄漏 + 解耦 applyConversationSidebar
+  // 身份变化（不再因回调重建反复 listen）。refresh 经 ref 读最新值（闭包内 getConversationSidebar
+  // /applyConversationSidebar 随渲染刷新），best-effort 吞错。
+  useEventDrivenRefresh(
+    async () => {
       try {
         const sidebar = await getConversationSidebar();
-        if (active) applyConversationSidebar(sidebar);
+        applyConversationSidebar(sidebar);
       } catch {
-        // best-effort：事件驱动刷新失败不应阻断 UI，手动操作仍会触发正常刷新。
-      } finally {
-        refreshInFlight = false;
-        if (active && refreshPending) {
-          refreshPending = false;
-          void refreshSidebar();
-        }
+        // best-effort：事件驱动刷新失败不阻断 UI，手动操作仍会触发正常刷新。
       }
-    };
-
-    let unlisten: (() => void) | undefined;
-    void subscribeMulticaTaskUpdates(() => {
-      if (active) void refreshSidebar();
-    }).then((dispose) => {
-      if (active) {
-        unlisten = dispose;
-      } else {
-        dispose();
-      }
-    });
-    return () => {
-      active = false;
-      unlisten?.();
-    };
-  }, [applyConversationSidebar]);
+    },
+    [subscribeMulticaTaskUpdates],
+  );
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;

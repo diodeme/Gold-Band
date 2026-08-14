@@ -40,15 +40,14 @@
 左侧 Logo 下方显示当前 workspace 路径，并作为”切换工作空间”入口。
 
 规则：
-- 桌面端启动时优先恢复用户上次选择的 workspace。
-- 若无用户记忆，则从当前进程目录向上查找包含 `.gold-band/` 的项目根目录，避免 Tauri dev 从 `src-tauri/` 启动时误读子目录。
+- 桌面端启动上下文只从当前进程目录向上查找包含 `.git/` 或 `.gold-band/` 的项目根目录，避免 Tauri dev 从 `src-tauri/` 启动时误读子目录；该上下文只作为内部配置、诊断与旧 Workbench 的进程内 seed，不从用户设置恢复单一“当前 workspace”。
 - 用户可通过原生目录选择器打开新的 workspace；选择后立即刷新任务编排页面栈。
 - 桌面端原生目录选择器在主线程必须使用非阻塞调用；禁止在 workspace 选择链路使用 blocking dialog API，避免 macOS 上触发 event loop 卡死。
 - 最近使用 workspace 写入用户级本地偏好，不属于 task / run / round canonical state。
-- **新旧 UI 多工作空间职责分离**：旧 UI（工作台模式）仅维护单一全局 workspace（`DesktopContext.repo_root`），所有 task/run 操作均在该 workspace 下执行；新 UI（会话模式）以 `conversation_workspaces` 作为唯一工作空间列表，并以 `last_conversation_workspace` 记录最后活跃项。会话侧栏不得无条件注入 `DesktopContext.repo_root`；每次创建、追问、查看历史、权限处理、停止或附件读取都先用共享 resolver 将 `projectId` 解析为持久化工作空间，再用该路径构造 workspace-scoped `App.paths.repo_root`。
+- **新旧 UI 多工作空间职责分离**：旧 UI（工作台模式）只在当前进程内维护单一全局 workspace（`DesktopContext.repo_root`），所有 task/run 操作均在该 workspace 下执行；新 UI（会话模式）以 `conversation_workspaces` 作为唯一工作空间列表，并以 `last_conversation_workspace` 记录最后活跃项。会话侧边栏、命令和 Runtime 启动恢复不得无条件使用 `DesktopContext.repo_root`；每次创建、追问、查看历史、权限处理、停止、附件读取或恢复都先从持久化工作空间解析路径，再构造 workspace-scoped `App.paths.repo_root`。
 - **工作台观察期边界**：2026-07-22 起产品内隐藏 Workbench / Conversation 形态切换入口，桌面根路径默认进入 `/chat` 会话主页；旧工作台页面、路由与单 workspace 状态暂时保留，只允许通过显式 `/tasks`、`/agents`、`/contexts`、`/settings` 等 deep link 访问，不再读取历史 UI 模式偏好覆盖默认入口。
 - **持久化边界**：`recent_desktop_workspaces` 仅由旧 UI 管理（`choose_workspace` / `select_recent_workspace` / `remove_recent_workspace`）；`conversation_workspaces` 和 `last_conversation_workspace` 仅由新 UI 管理（`add_conversation_workspace` / 成功创建/重跑后的 `save_last_conversation_workspace` / `remove_conversation_workspace`）。新 UI 添加、查看或草稿选择 workspace 不污染旧 UI 最近列表。
-- **废弃字段边界**：`SettingsConfig.desktop_workspace` 已标记废弃，本阶段仅为旧 Workbench 的单 workspace 启动与最近列表兼容而保留，不删除、不新增消费方。会话 UI 的 workspace canonical state 只允许来自 `conversation_workspaces` 与 `last_conversation_workspace`；待旧 Workbench 删除时再一并移除该字段。
+- **废弃字段移除**：`SettingsConfig.desktop_workspace` 已删除，settings schema v5 在读取旧配置时移除磁盘上的 `desktopWorkspace`。旧 Workbench 仅保留 `recent_desktop_workspaces` 最近列表，不再持久化或恢复单一当前 workspace；会话 UI 与 Runtime 的 workspace canonical state 只允许来自 `conversation_workspaces`，`last_conversation_workspace` 只决定最近活跃项，不缩小启动恢复范围。
 - **旧状态迁移**：用户状态通过版本化 `stateSchemaVersion` 在桌面上下文初始化时迁移一次。迁移重新生成规范 `projectId`、按规范化路径去重，并同步重写会话运行模式、置顶和最后活跃引用；迁移成功后原子写回。版本已达当前值时不再扫描或写盘，避免每次启动重复修复。移除工作空间时必须把请求 ID、持久化 ID 与按 workspace 路径重算的 ID 作为同一身份的别名集合，统一清理 run mode、pin 和最后活跃引用，不能依赖当前操作系统是否大小写敏感。
 - **最近列表管理**：旧 UI workspace 选择页的最近列表每行提供打开与移除操作；移除只删除用户级 `recent_desktop_workspaces` 记录，不切换当前 workspace，不删除磁盘目录，也不影响新 UI 的 `conversation_workspaces`。当前正在使用的 workspace 不允许从最近列表移除；有效最近列表只剩一个 workspace 时也禁用移除，避免把工作台置入无当前 workspace 的状态。
 

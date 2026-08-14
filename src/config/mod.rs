@@ -549,10 +549,6 @@ pub struct SettingsConfig {
     pub desktop_ui_font_size: Option<u8>,
     pub desktop_editor_font_size: Option<u8>,
     pub desktop_updater_url_override: Option<String>,
-    /// DEPRECATED: 仅供旧 Workbench 单 workspace 启动与最近列表兼容使用。
-    /// 新会话 UI 必须使用 `conversation_workspaces` / `last_conversation_workspace`，
-    /// 不得新增对该字段的依赖；待旧 Workbench 删除时一并移除。
-    pub desktop_workspace: Option<String>,
     pub agents: Option<BTreeMap<ManagedAgentId, ManagedAgentConfig>>,
     pub use_local_claude: Option<bool>,
     pub desktop_metrics_enabled: Option<bool>,
@@ -565,7 +561,7 @@ pub struct SettingsConfig {
     pub context_servers: Option<Vec<McpServerConfig>>,
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 4;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 5;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
 const CURRENT_CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp@latest";
@@ -607,6 +603,10 @@ impl SettingsConfig {
         if version < 4 {
             migrate_scheduled_runtime_settings(settings);
             migrate_managed_agent_capabilities(settings)?;
+            migrated = true;
+        }
+        if version < 5 {
+            settings.remove("desktopWorkspace");
             migrated = true;
         }
         if migrated {
@@ -2076,7 +2076,10 @@ mod tests {
             .unwrap();
 
         assert!(migrated);
-        assert_eq!(settings.settings_schema_version.0, 4);
+        assert_eq!(
+            settings.settings_schema_version.0,
+            super::CURRENT_SETTINGS_SCHEMA_VERSION
+        );
         assert_eq!(settings.scheduled_keep_awake_enabled, Some(false));
         assert_eq!(
             settings.scheduled_completion_notifications_enabled,
@@ -2107,7 +2110,10 @@ mod tests {
             .unwrap();
 
         assert!(migrated);
-        assert_eq!(settings.settings_schema_version.0, 4);
+        assert_eq!(
+            settings.settings_schema_version.0,
+            super::CURRENT_SETTINGS_SCHEMA_VERSION
+        );
         assert_eq!(settings.scheduled_keep_awake_enabled, Some(true));
         assert_eq!(
             settings.scheduled_completion_notifications_enabled,
@@ -2122,6 +2128,29 @@ mod tests {
             SystemPromptDelivery::MetaAppend
         );
         assert!(!claude.external_session_sync_supported);
+    }
+
+    #[test]
+    fn settings_v4_removes_legacy_desktop_workspace() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 4,
+                "desktopWorkspace": "D:/Projects/legacy",
+                "desktopTheme": "dark"
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        assert_eq!(
+            settings.settings_schema_version.0,
+            super::CURRENT_SETTINGS_SCHEMA_VERSION
+        );
+        let persisted = serde_json::to_value(settings).unwrap();
+        assert!(persisted.get("desktopWorkspace").is_none());
+        assert_eq!(
+            persisted.get("desktopTheme"),
+            Some(&serde_json::json!("dark"))
+        );
     }
 
     #[test]

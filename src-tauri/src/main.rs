@@ -81,7 +81,7 @@ use metrics::start_heartbeat_polling;
 use notifications::send_scheduled_native_notification;
 use state::{DesktopContext, DesktopState};
 use tauri::Manager;
-use tracing::info;
+use tracing::{info, warn};
 use updater::{retry_pending_startup_install, start_update_polling};
 use workspace_files::{WorkspaceFileRuntime, WorkspaceFileWatchRuntime};
 
@@ -170,7 +170,29 @@ fn run() -> anyhow::Result<()> {
             scheduled_runtime::start(app.handle().clone())?;
             if let Ok(runtime_app) = state.app() {
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
-                let _ = runtime_app.recover_interrupted_running_sessions();
+            }
+            match state.recover_interrupted_conversation_workspaces() {
+                Ok(report) => {
+                    info!(
+                        workspace_count = report.workspace_count,
+                        recovered_run_count = report.recovered_run_count,
+                        skipped_workspace_count = report.skipped_workspace_count,
+                        failure_count = report.failures.len(),
+                        "conversation workspace startup recovery completed"
+                    );
+                    for failure in report.failures {
+                        warn!(
+                            workspace_path = %failure.workspace_path,
+                            error_code = failure.code,
+                            error = %failure.message,
+                            "conversation workspace startup recovery failed"
+                        );
+                    }
+                }
+                Err(error) => warn!(
+                    error = %error,
+                    "failed to load conversation workspaces for startup recovery"
+                ),
             }
             // Initialize SQLite search index (best-effort; failures are non-fatal).
             // On first run (empty DB), a background thread backfills existing tasks/sessions.

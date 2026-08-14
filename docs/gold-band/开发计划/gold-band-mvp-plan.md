@@ -1044,3 +1044,13 @@ attempt-001/
 - 并发与幂等：恢复 command 必须携带 execution revision，并在 attempt 状态短锁内校验完整 locator、完成结果和 manual-check 边界，再复用 per-run continue lease claim 新 execution generation。双击、迟到 revision 或已推进状态均拒绝重复执行。
 - 性能与复杂度：复用现有 workflow decision、attempt lock、lease 和状态模型，不新增抽象层、依赖、轮询、缓存或 repair checkpoint。节点边界仅增加常数次小型 JSON I/O，锁不跨 provider turn；数据规模和渲染范围不变，无需额外 benchmark。
 - 回归验收：核心单测固定 durable phase 单调合并、completed recovery 到 `$end` 不调用 provider、重复/过期请求拒绝；桌面 VM 测试固定两种互斥 continue kind；Web 生产构建与 composer 实际交互验证固定恢复按钮文案、位置和命令路由。
+
+---
+
+## 2026-08-14：多工作空间 Runtime 启动恢复
+
+- 根因修复：桌面启动恢复原先只调用 `DesktopContext.repo_root` 绑定的 `App`，把旧 Workbench 的单 workspace 启动状态误当成会话 Runtime 的恢复范围；当最近会话位于其他 `conversationWorkspaces` 时，磁盘上的 `running run + completed/success node` 不会收敛为可恢复暂停态。启动恢复现以 `conversationWorkspaces` 为唯一范围，按规范路径去重并逐 workspace 构造共享 lifecycle bus 的 scoped App。
+- 状态边界：删除 `SettingsConfig.desktop_workspace`，settings schema v5 一次性移除历史 `desktopWorkspace`。`DesktopContext.repo_root` 只由启动 cwd 决定并继续服务内部配置、诊断和旧 Workbench 进程内上下文；旧 Workbench 最近列表仍独立保留，不再写入“当前 workspace”。`lastConversationWorkspace` 只用于交互排序，不决定 Runtime 恢复范围。
+- 局部失败与恢复：不存在、空路径和重复 workspace 直接跳过；单 workspace 状态损坏记录 `runtime.workspace-recovery-failed` 后继续扫描其他 workspace。列表为空时 no-op，不回退扫描桌面上下文，避免 Runtime 背着用户扩张恢复范围。
+- 性能与过度设计：启动时执行一次 `O(W + Σ(tasks + runs))` 的本地目录和小 JSON 扫描，无网络、provider 调用、轮询、缓存、队列或常驻任务；复用现有 `App::with_repo_root`、canonical path 和 `recover_interrupted_running_sessions`，不增加新的 workspace registry 或并发模型。
+- 回归固化：桌面状态层接口测试覆盖非 DesktopContext workspace 的完成节点恢复、规范路径去重、单 workspace 失败隔离，以及空 `conversationWorkspaces` 不回退；配置迁移测试固定历史 `desktopWorkspace` 从 v4 settings 中删除，旧 Workbench 最近列表测试固定其独立职责。

@@ -4,6 +4,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  alignChatContainerViewportToBottomBeforePaint,
   ChatContainerContent,
   ChatContainerRoot,
   type ChatContainerContext,
@@ -67,6 +68,18 @@ afterEach(() => {
 });
 
 describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
+  it('aligns the initial followed viewport before the first paint', () => {
+    const viewport = {
+      clientHeight: 320,
+      scrollHeight: 1_120,
+      scrollTop: 0,
+    };
+
+    alignChatContainerViewportToBottomBeforePaint(viewport);
+
+    expect(viewport.scrollTop).toBe(800);
+  });
+
   it('reports only explicit wheel, keyboard, or scrollbar-pointer input as user scrolling', async () => {
     vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
     const contextRef = React.createRef<ChatContainerContext>();

@@ -29,6 +29,7 @@ import {
   Terminal,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { BrandLoadingState } from "@/components/BrandLoadingState";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -276,6 +277,8 @@ export interface AcpDirectSessionHeaderProps {
   onTitleChange?: (title: string) => void;
 }
 
+export type AcpInitialSessionQueryState = "loading" | "success" | "error";
+
 interface ACPChatDialogProps {
   session?: AcpSessionVm | null;
   sessionEstablished?: boolean;
@@ -305,6 +308,7 @@ interface ACPChatDialogProps {
   onSessionStopped?: () => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAtBottomChange?: (atBottom: boolean) => void;
+  onInitialSessionQueryStateChange?: (state: AcpInitialSessionQueryState) => void;
   allowEventOnlySessionShell?: boolean;
   showInitializingSessionShell?: boolean;
   usageCompact?: boolean;
@@ -554,6 +558,7 @@ interface AcpCachedResource {
   session?: AcpSessionVm;
   events?: AcpUiEventVm[];
   viewState?: AcpBranchViewState;
+  contentHydrated?: boolean;
 }
 
 const acpResourceStore = new BoundedLruCache<string, AcpCachedResource>(ACP_RESOURCE_CACHE_LIMIT);
@@ -569,6 +574,14 @@ export function restoreAcpSession(sessionKey: string) {
 
 export function storeAcpSession(sessionKey: string, session: AcpSessionVm) {
   storeAcpResourcePart(sessionKey, { session });
+}
+
+export function hasHydratedAcpSessionContent(sessionKey: string) {
+  return acpResourceStore.peek(sessionKey)?.contentHydrated === true;
+}
+
+export function markAcpSessionContentHydrated(sessionKey: string) {
+  storeAcpResourcePart(sessionKey, { contentHydrated: true });
 }
 
 export function restoreAcpBranchViewState(sessionKey: string) {
@@ -633,6 +646,29 @@ export function createAcpSessionCacheKey(
     nodeId,
     attemptId,
   ].join(":");
+}
+
+export function createAcpEventWindowCacheKey(input: {
+  cacheNamespace?: string | null;
+  taskId: string;
+  runId: string;
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  branchId?: string | null;
+  eventIdPrefix?: string | null;
+}) {
+  const sessionKey = createAcpSessionCacheKey(
+    input.cacheNamespace,
+    input.taskId,
+    input.runId,
+    input.roundId,
+    input.nodeId,
+    input.attemptId,
+  );
+  return `${sessionKey}:${input.outerNodeId ?? ""}:${input.outerAttemptId ?? ""}:${input.branchId ?? "root"}:${input.eventIdPrefix ?? ""}`;
 }
 
 function normalizeEventPageSize(value?: number) {
@@ -716,6 +752,7 @@ export function ACPChatDialog(
     onSessionStopped,
     onLifecycleSnapshot,
     onAtBottomChange,
+    onInitialSessionQueryStateChange,
     allowEventOnlySessionShell = true,
     showInitializingSessionShell = false,
     usageCompact,
@@ -764,7 +801,18 @@ export function ACPChatDialog(
     nodeId,
     attemptId,
   );
-  const eventWindowKey = `${sessionKey}:${outerNodeId ?? ""}:${outerAttemptId ?? ""}:${branchId}:${eventIdPrefix ?? ""}`;
+  const eventWindowKey = createAcpEventWindowCacheKey({
+    cacheNamespace,
+    taskId,
+    runId,
+    roundId,
+    nodeId,
+    attemptId,
+    outerNodeId,
+    outerAttemptId,
+    branchId,
+    eventIdPrefix,
+  });
   const sessionIdentity = eventWindowKey;
   const composerDraft = useAcpComposerDraft(eventWindowKey);
   const restoredSession = session ?? restoreAcpSession(eventWindowKey);
@@ -832,9 +880,13 @@ export function ACPChatDialog(
     order: "desc",
   });
   const [rawLoading, setRawLoading] = useState(false);
-  const [loadingInitialSession, setLoadingInitialSession] = useState(
-    !isAcpSessionReadyForInitialDisplay(restoredSession) && isTauriRuntime(),
-  );
+  const [initialSessionQueryState, setInitialSessionQueryState] = useState<
+    AcpInitialSessionQueryState
+  >(() => (
+    !isTauriRuntime() || hasHydratedAcpSessionContent(eventWindowKey)
+      ? "success"
+      : "loading"
+  ));
   const [sessionLoadError, setSessionLoadError] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [loadingLatest, setLoadingLatest] = useState(false);
@@ -923,6 +975,10 @@ export function ACPChatDialog(
   }, [componentInstanceId, sessionIdentity]);
 
   useEffect(() => {
+    onInitialSessionQueryStateChange?.(initialSessionQueryState);
+  }, [initialSessionQueryState, onInitialSessionQueryStateChange]);
+
+  useEffect(() => {
     if (controlledOptimisticEvents)
       setOptimisticEvents(controlledOptimisticEvents);
   }, [controlledOptimisticEvents]);
@@ -968,7 +1024,6 @@ export function ACPChatDialog(
       if (next) storeAcpSession(eventWindowKey, next);
       return next;
     });
-    if (isAcpSessionReadyForInitialDisplay(session)) setLoadingInitialSession(false);
     if (!session && identityChanged) {
       const restored = restoreAcpLoadedEvents(
         eventWindowKey,
@@ -1037,7 +1092,11 @@ export function ACPChatDialog(
       if (next) storeAcpSession(eventWindowKey, next);
       return next;
     });
-    setLoadingInitialSession(!isAcpSessionReadyForInitialDisplay(cachedSession) && isTauriRuntime());
+    setInitialSessionQueryState(
+      !isTauriRuntime() || hasHydratedAcpSessionContent(eventWindowKey)
+        ? "success"
+        : "loading",
+    );
     setSessionLoadError(null);
     loadedEventsRef.current = storedLoadedEvents;
     setLoadedEvents(storedLoadedEvents);
@@ -1523,7 +1582,6 @@ export function ACPChatDialog(
     setCurrentSession((current) =>
       sessionsEquivalent(current, normalized) ? current : normalized,
     );
-    if (isAcpSessionReadyForInitialDisplay(normalized)) setLoadingInitialSession(false);
     if (!normalized) return;
     setLoadedEvents((events) => {
       setHasNewerEvents(normalized.eventPage.hasNewer);
@@ -2000,13 +2058,16 @@ export function ACPChatDialog(
 
   useEffect(() => {
     if (sessionInitializationInterrupted || sessionInitializationFailed) {
-      setLoadingInitialSession(false);
+      setInitialSessionQueryState("success");
       return;
     }
     if (!isTauriRuntime()) {
-      setLoadingInitialSession(false);
+      setInitialSessionQueryState("success");
       return;
     }
+    const restoredHydratedContent = hasHydratedAcpSessionContent(eventWindowKey);
+    setInitialSessionQueryState(restoredHydratedContent ? "success" : "loading");
+    setSessionLoadError(null);
     let active = true;
     const replayCatchUpAbortController = new AbortController();
     let stopListening: (() => void) | null = null;
@@ -2136,6 +2197,7 @@ export function ACPChatDialog(
       });
       let retryAttempt = 0;
       let lastLoadError: unknown = null;
+      let initialFetchSucceeded = false;
       let snapshotHeadSeq = 0;
       while (active && sessionRefreshSeqRef.current === refreshSeq) {
         const requestTraceId = `${effectTraceId}:request-${retryAttempt + 1}`;
@@ -2182,10 +2244,11 @@ export function ACPChatDialog(
             lastLoadError = null;
             setSessionLoadError(null);
             applySessionUpdate(updated, "initial-fetch");
+            markAcpSessionContentHydrated(eventWindowKey);
             snapshotHeadSeq = Math.max(snapshotHeadSeq, acpSessionSnapshotHeadSeq(updated));
-            if (isAcpSessionReadyForInitialDisplay(updated)) {
-              break;
-            }
+            initialFetchSucceeded = true;
+            setInitialSessionQueryState("success");
+            break;
           }
         } catch (error) {
           logAcpSessionQueryTiming("request-error", requestTraceId, sessionIdentity, {
@@ -2204,6 +2267,19 @@ export function ACPChatDialog(
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
       if (active && sessionRefreshSeqRef.current === refreshSeq) {
+        if (!initialFetchSucceeded) {
+          if (restoredHydratedContent) {
+            setInitialSessionQueryState("success");
+            return;
+          }
+          setSessionLoadError(
+            lastLoadError
+              ? displayAppError(t, lastLoadError)
+              : t("acp.missingSessionReason"),
+          );
+          setInitialSessionQueryState("error");
+          return;
+        }
         let replay = readConversationBranchReplaySnapshot(branchLocator, branchId);
         let appliedReplayGeneration = -1;
         let catchUpRetryAttempt = 0;
@@ -2220,8 +2296,6 @@ export function ACPChatDialog(
             replayGeneration: replay.generation,
           }));
         }
-        setLoadingInitialSession(false);
-
         while (active && sessionRefreshSeqRef.current === refreshSeq) {
           replay = readConversationBranchReplaySnapshot(branchLocator, branchId);
           recordAcpStreamingDiagnostic("replay-catch-up", () => ({
@@ -2319,10 +2393,6 @@ export function ACPChatDialog(
             ? 0
             : catchUpRetryAttempt + 1;
         }
-      }
-      if (active && sessionRefreshSeqRef.current === refreshSeq) {
-        if (lastLoadError) setSessionLoadError(displayAppError(t, lastLoadError));
-        setLoadingInitialSession(false);
       }
     })();
     return () => {
@@ -3283,7 +3353,8 @@ export function ACPChatDialog(
     baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
     hasLiveSessionShell: Boolean(liveSessionShell),
     hasEstablishedSessionShell: Boolean(establishedSessionShell),
-    initialSessionLoading: loadingInitialSession,
+    initialSessionLoading: initialSessionQueryState === "loading",
+    initialSessionLoadFailed: initialSessionQueryState === "error",
     initializationFailed: sessionInitializationFailed,
     initializationInterrupted: sessionInitializationInterrupted,
     runtimeActive: runtimeActiveFromContext,
@@ -3614,17 +3685,7 @@ function AcpErrorState({ reason }: { reason: string }) {
 }
 
 function AcpLoadingState({ label }: { label: string }) {
-  return (
-    <div className="flex h-full min-h-0 items-center justify-center bg-background text-sm text-muted-foreground">
-      <div className="flex items-center gap-2">
-        <span
-          aria-hidden="true"
-          className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-gold-running/30 border-t-gold-running [animation-duration:900ms]"
-        />
-        <span>{label}</span>
-      </div>
-    </div>
-  );
+  return <BrandLoadingState label={label} />;
 }
 
 function AcpInterruptedState({ label }: { label: string }) {
@@ -4465,15 +4526,11 @@ function EmptyAcpState() {
 
 function AcpPendingTimelineState({ label }: { label: string }) {
   return (
-    <div className="flex min-h-[10rem] items-center justify-center text-sm text-muted-foreground">
-      <div className="flex items-center gap-2">
-        <span
-          aria-hidden="true"
-          className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-gold-running/30 border-t-gold-running [animation-duration:900ms]"
-        />
-        <span className="font-medium text-foreground">{label}...</span>
-      </div>
-    </div>
+    <BrandLoadingState
+      label={label}
+      className="min-h-[10rem]"
+      logoClassName="w-14"
+    />
   );
 }
 
@@ -7741,7 +7798,7 @@ function isAcpSessionReadyForInitialDisplay(session: AcpSessionVm | null | undef
       (session.branchId !== 'root' && Boolean(session.branchExecution)) ||
       isAcpInitialSessionReady(session) ||
       isAcpSessionDisplayableDuringInitialLoad(session) ||
-      isSessionTerminalStatus(session.status)
+      (isSessionTerminalStatus(session.status) && session.events.length > 0)
     ),
   );
 }

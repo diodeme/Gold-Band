@@ -6,6 +6,8 @@ import {
   applyAcpScrollAnchorCompensation,
   captureAcpBranchScrollState,
   captureAcpBranchViewState,
+  hasHydratedAcpSessionContent,
+  markAcpSessionContentHydrated,
   resetAcpResourceCache,
   restoreAcpBranchViewState,
   restoreAcpLoadedEvents,
@@ -94,6 +96,17 @@ describe('ACP branch view state cache', () => {
     }
     expect(restoreAcpSession('session-lru-0')).toBeNull();
     expect(restoreAcpSession('session-lru-12')?.branchId).toBe('agent-12');
+  });
+
+  it('distinguishes a hydrated content response from a cached session projection', () => {
+    storeAcpSession('hydration-session', session('agent-summary'));
+    expect(hasHydratedAcpSessionContent('hydration-session')).toBe(false);
+
+    markAcpSessionContentHydrated('hydration-session');
+    storeAcpSession('hydration-session', session('agent-refreshed-summary'));
+
+    expect(hasHydratedAcpSessionContent('hydration-session')).toBe(true);
+    expect(restoreAcpSession('hydration-session')?.branchId).toBe('agent-refreshed-summary');
   });
 
   it('evicts session, events, and view state atomically by resource key', () => {

@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -91,6 +92,12 @@ export function isChatContainerViewportAtBottom(
   )
 }
 
+export function alignChatContainerViewportToBottomBeforePaint(
+  viewport: Pick<HTMLElement, "clientHeight" | "scrollHeight" | "scrollTop">,
+) {
+  viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
+}
+
 function ChatContainerRoot({
   children,
   className,
@@ -170,6 +177,7 @@ function ChatContainerLifecycle({
   const nextContentExpansionTokenRef = useRef(0)
   const contentExpansionTokensRef = useRef<Set<number> | null>(null)
   const contentExpansionRestoreFrameRef = useRef<number | null>(null)
+  const initialViewportAlignedRef = useRef(false)
   const lastLayoutDiagnosticAtRef = useRef(0)
   const layoutDiagnosticRef = useRef({
     callbackCount: 0,
@@ -178,6 +186,14 @@ function ChatContainerLifecycle({
     longestCallbackMs: 0,
     maxHeightDelta: 0,
   })
+
+  useLayoutEffect(() => {
+    if (initialViewportAlignedRef.current || !initialFollowing) return
+    const viewport = scrollRef.current
+    if (!viewport) return
+    initialViewportAlignedRef.current = true
+    alignChatContainerViewportToBottomBeforePaint(viewport)
+  }, [initialFollowing, scrollRef])
   const lastFollowDiagnosticAtRef = useRef(0)
   const followDiagnosticRef = useRef({
     checkCount: 0,

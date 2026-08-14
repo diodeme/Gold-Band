@@ -1988,7 +1988,7 @@ fn prepare_runtime_control_prompt(attempt_dir: &Utf8Path, prompt: &mut PromptBun
         return Ok(());
     }
 
-    if prompt.runtime_control_resume_candidate
+    if prompt.runtime_control_intent == crate::provider::RuntimeControlIntent::Resume
         && let Some((source_transition_id, transition_id)) =
             crate::acp::control::prepare_workflow_continued(attempt_dir)?
     {
@@ -6118,7 +6118,7 @@ mod tests {
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
             turn_control_mode: TurnControlMode::NonRuntimeControlled,
-            runtime_control_resume_candidate: false,
+            runtime_control_intent: crate::provider::RuntimeControlIntent::Unchanged,
             runtime_control_transition_id: None,
             runtime_control_source_transition_id: None,
             runtime_control_transition_cause: None,
@@ -6139,6 +6139,27 @@ mod tests {
         assert_eq!(prompt.user_prompt, "clarify");
         assert!(prompt.runtime_control_transition_id.is_none());
         assert!(prompt.runtime_control_transition_cause.is_none());
+    }
+
+    #[test]
+    fn only_explicit_resume_intent_prepares_runtime_control_transition() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        crate::acp::control::mark_runtime_interrupted(&attempt_dir).unwrap();
+        let mut prompt = non_runtime_control_test_prompt("prompt-1");
+        prompt.turn_control_mode = TurnControlMode::RuntimeControlled;
+
+        super::prepare_runtime_control_prompt(&attempt_dir, &mut prompt).unwrap();
+        assert!(prompt.runtime_control_transition_id.is_none());
+        assert!(prompt.runtime_control_transition_cause.is_none());
+
+        prompt.runtime_control_intent = crate::provider::RuntimeControlIntent::Resume;
+        super::prepare_runtime_control_prompt(&attempt_dir, &mut prompt).unwrap();
+        assert!(prompt.runtime_control_transition_id.is_some());
+        assert_eq!(
+            prompt.runtime_control_transition_cause,
+            Some(crate::domain::TurnControlTransitionCause::WorkflowContinued)
+        );
     }
 
     use crate::acp::{
@@ -7878,7 +7899,7 @@ mod tests {
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
             turn_control_mode: TurnControlMode::RuntimeControlled,
-            runtime_control_resume_candidate: false,
+            runtime_control_intent: crate::provider::RuntimeControlIntent::Unchanged,
             runtime_control_transition_id: None,
             runtime_control_source_transition_id: None,
             runtime_control_transition_cause: None,
@@ -7909,7 +7930,7 @@ mod tests {
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
             turn_control_mode: TurnControlMode::RuntimeControlled,
-            runtime_control_resume_candidate: false,
+            runtime_control_intent: crate::provider::RuntimeControlIntent::Unchanged,
             runtime_control_transition_id: None,
             runtime_control_source_transition_id: None,
             runtime_control_transition_cause: None,
@@ -7938,7 +7959,7 @@ mod tests {
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
             turn_control_mode: TurnControlMode::RuntimeControlled,
-            runtime_control_resume_candidate: false,
+            runtime_control_intent: crate::provider::RuntimeControlIntent::Unchanged,
             runtime_control_transition_id: None,
             runtime_control_source_transition_id: None,
             runtime_control_transition_cause: None,

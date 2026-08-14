@@ -95,8 +95,11 @@ edge target 规则：
 
 ACP invocation 的 continue prompt state 由 runtime 统一决策，普通 workflow worker 与 AI-DYNAMIC 内部 worker / acceptance / merge 复用同一套规则：
 
+ACP 会话传输与 Runtime 控制权转换必须正交建模。`SessionMode` 只决定使用 `session/new` 还是 `session/resume`；它不能推导 prompt 语义，也不能作为恢复 Runtime 控制权的依据。invocation 另行携带 `RuntimeControlIntent::{Unchanged, Resume}`：只有用户显式触发“继续工作流”的 command 才设置 `Resume`，工作流 edge 的 `session=continue`、manual check 后推进和 AI-DYNAMIC 内部 session 继承一律保持 `Unchanged`。该 intent 仅存在于本次 invocation，不新增持久化状态或查询。
+
 - 新 session 使用 `RequirementTask`。
-- continue session 且用户没有显式输入时使用 `WorkflowResume`，发送 runtime 默认继续提示。
+- 工作流内部 continue session 使用 `WorkflowResume`，发送可见的 runtime 默认继续提示，但不得发送“用户已选择继续工作流”的隐藏提示，也不得提交 `WorkflowContinued` 控制游标。
+- 只有显式“继续工作流”入口使用 `RuntimeResume + RuntimeControlIntent::Resume`，发送隐藏恢复提示，并在 prompt 被接受后提交控制权转换。
 - continue session 且用户有显式输入时使用 `UserMessage`，只发送用户输入原文，不重新注入 hidden runtime context，也不包装 `# Goal` / `# 用户提示` / `# Task`。
 - runtime repair 使用 `RuntimeRepair` 覆盖普通 continue 决策。
 

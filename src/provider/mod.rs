@@ -188,6 +188,18 @@ pub enum UserPromptRenderMode {
     UserMessage,
 }
 
+/// Describes whether the accepted prompt must transfer an existing ACP turn
+/// from free conversation back to Runtime control. This is intentionally
+/// independent from `SessionMode`: resuming an ACP session does not imply a
+/// Runtime control transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeControlIntent {
+    #[default]
+    Unchanged,
+    Resume,
+}
+
 impl Default for UserPromptRenderMode {
     fn default() -> Self {
         Self::RequirementTask
@@ -200,7 +212,7 @@ pub struct WorkerInvocation {
     #[serde(default)]
     pub turn_control_mode: TurnControlMode,
     #[serde(default)]
-    pub runtime_control_resume_candidate: bool,
+    pub runtime_control_intent: RuntimeControlIntent,
     #[serde(default)]
     pub prompt_envelope: crate::dsl::PromptEnvelopeMode,
     pub execution_surface: PromptExecutionSurface,
@@ -462,7 +474,7 @@ pub struct PromptBundle {
     pub visibility: PromptVisibility,
     pub hidden_reason: Option<String>,
     pub turn_control_mode: TurnControlMode,
-    pub runtime_control_resume_candidate: bool,
+    pub runtime_control_intent: RuntimeControlIntent,
     pub runtime_control_transition_id: Option<String>,
     pub runtime_control_source_transition_id: Option<String>,
     pub runtime_control_transition_cause: Option<TurnControlTransitionCause>,
@@ -1600,7 +1612,7 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
             _ => None,
         },
         turn_control_mode: req.turn_control_mode,
-        runtime_control_resume_candidate: req.runtime_control_resume_candidate,
+        runtime_control_intent: req.runtime_control_intent,
         runtime_control_transition_id: None,
         runtime_control_source_transition_id: None,
         runtime_control_transition_cause: None,
@@ -1633,11 +1645,18 @@ fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String 
             .to_string(),
         UserPromptRenderMode::WorkflowResume | UserPromptRenderMode::RequirementTask => {
             let hidden_context = render_hidden_context(req);
-            let continue_goal = matches!(req.user_prompt_render_mode, UserPromptRenderMode::WorkflowResume).then(|| {
-                match req.runtime_context.language {
-                    crate::config::DesktopLanguage::ZhCn => "根据最新反馈进行调整，确保后续节点能够成功；如果当前节点有输出格式要求，仍然严格按 system prompt 中的输出约束输出。".to_string(),
-                    crate::config::DesktopLanguage::En => "Adjust according to the latest feedback and ensure downstream nodes can succeed. If this node has output format requirements, still strictly follow the output contract in the system prompt.".to_string(),
-                }
+            let continue_goal = matches!(
+                req.user_prompt_render_mode,
+                UserPromptRenderMode::WorkflowResume
+            )
+            .then(|| {
+                prompt_by_language(
+                    req.runtime_context.language,
+                    crate::prompts::RUNTIME_WORKFLOW_RESUME_ZH_CN,
+                    crate::prompts::RUNTIME_WORKFLOW_RESUME_EN,
+                )
+                .trim()
+                .to_string()
             });
 
             let content = render_template(
@@ -2290,7 +2309,7 @@ mod tests {
         WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
             turn_control_mode: TurnControlMode::RuntimeControlled,
-            runtime_control_resume_candidate: false,
+            runtime_control_intent: RuntimeControlIntent::Unchanged,
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
             execution_surface: PromptExecutionSurface::Workflow,
             profile: None,
@@ -2785,7 +2804,7 @@ mod tests {
         let mut req = WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
             turn_control_mode: TurnControlMode::RuntimeControlled,
-            runtime_control_resume_candidate: false,
+            runtime_control_intent: RuntimeControlIntent::Unchanged,
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
             execution_surface: PromptExecutionSurface::Workflow,
             profile: None,

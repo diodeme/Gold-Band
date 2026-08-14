@@ -18,7 +18,7 @@ use crate::prompts::PromptExecutionSurface;
 use crate::provider::{
     OutputEmissionMode, PromptArtifactRef, PromptAttachmentRef, PromptOutputContract,
     PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
-    ProviderRunStatus, StreamMode, UserPromptRenderMode, WorkerInvocation,
+    ProviderRunStatus, RuntimeControlIntent, StreamMode, UserPromptRenderMode, WorkerInvocation,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, WorkerRefState, validate_node_state,
@@ -611,7 +611,7 @@ pub(crate) fn build_worker_invocation(
         } else {
             TurnControlMode::RuntimeControlled
         },
-        runtime_control_resume_candidate: false,
+        runtime_control_intent: RuntimeControlIntent::Unchanged,
         prompt_envelope,
         execution_surface: PromptExecutionSurface::Workflow,
         profile,
@@ -687,7 +687,7 @@ pub(crate) fn execute_ai_node(
     resume_prompt_visibility: PromptVisibility,
     user_prompt_render_mode: UserPromptRenderMode,
     resume_input_attachment_paths: Vec<String>,
-    runtime_control_resume_candidate: bool,
+    runtime_control_intent: RuntimeControlIntent,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
 ) -> Result<NodeState> {
@@ -710,7 +710,7 @@ pub(crate) fn execute_ai_node(
         model_override,
         permission_mode_override,
     )?;
-    invocation.runtime_control_resume_candidate = runtime_control_resume_candidate;
+    invocation.runtime_control_intent = runtime_control_intent;
 
     progress(&format!(
         "calling provider for {}/{}/{}",

@@ -129,6 +129,23 @@ enum UserPromptRenderMode {
 - `UserMessage` 不再隐含 runtime continue；停止后的用户消息、Direct 消息、人工 check 追问和完成后追问都可以是 `UserMessage + NonRuntimeControlled`。
 - 点击“继续工作流”使用 `RuntimeResume + RuntimeControlled`；`WorkflowResume` 继续保留给工作流内部的普通 session 继承，不由 composer 消息隐式触发。
 
+### 4.4.1 ACP 会话续接与 Runtime 恢复正交化
+
+`SessionMode::{New, Continue}` 只描述 ACP transport 是否复用 session，不能推导 `UserPromptRenderMode` 或控制权变化。新增 invocation 级类型化意图：
+
+```rust
+enum RuntimeControlIntent {
+    Unchanged,
+    Resume,
+}
+```
+
+- 工作流 edge 的 `session: continue`、manual check 后推进、完成节点后的自动跳转和 AI-DYNAMIC 内部 session 继承使用 `WorkflowResume + Unchanged`。
+- 只有显式“继续工作流” command 构造 `RuntimeResume + Resume`；Runtime control cursor 也只消费这个意图。
+- `SessionMode::Continue -> RuntimeResume` 的隐式推导必须删除，调用点通过 `workflow_transition(...)` 与 `runtime_control_resume(...)` 两类类型化构造器声明来源。
+- `RuntimeControlIntent` 不写入 run/node 状态文件，只随 `WorkerInvocation -> PromptBundle` 传播，因此退出恢复仍由既有 lifecycle 与 ACP control cursor 决定。
+- workflow continue 的固定提示统一放入 `src/prompts/<language>/runtime/workflow_resume.md`；Runtime control resume 继续使用独立的 `runtime_control_resume.md`，两者不能复用。
+
 ### 4.5 控制模式切换事实与会话游标
 
 切换提示不能靠 `stop` 次数推断。最新切换直接记录为 ACP session metadata；被接受的 prompt event 同步携带该 metadata，形成可恢复的轻量会话游标：
@@ -426,6 +443,7 @@ Conversation VM 在外层仍 Running 且 phase 为 `PreparingWorkspace` 时，�
 7. 同 session prompt 串行继续复用现有 ACP prompt lock；stop 与 resume CAS 对 cursor 小文件的并发写入使用固定 64 路 attempt path 哈希短锁，避免新增会随 attempt 数增长并在热路径全表清理的锁注册表。该短锁不覆盖 provider 调用；固定 workflow 的 per-run starting lease 也只覆盖启动窗口，不持有全局 lifecycle 锁等待整个 Agent turn。不同 run、session 与 AI-DYNAMIC leaf 仍可并行执行。
 8. continue 启动握手使用单次进程内 channel 通知，不轮询磁盘；Running 落盘后立即释放 fixed per-run starting lease。失败 CAS 使用固定 64 路 attempt 状态短锁或既有 dynamic graph lock，只覆盖少量 JSON 状态收敛，不覆盖 provider turn，也不创建随历史 attempt 增长的锁对象。
 9. `PreparingWorkspace` 不增加轮询、后台任务或 Agent turn。每次 transition 只新增开始阶段的两次权威 JSON 原子写入与两次 session refresh；结束阶段复用本来就需要的完整 Graph 持久化。worktree Git 操作仍受既有全局 Git 锁串行化，不降低不同 Agent session 的并行度；同一 graph 的 stop/continue 等待临界区是有意的一致性约束。
+10. `RuntimeControlIntent` 是 invocation 内的固定大小枚举，只替换原 bool 判断；不增加磁盘读写、timeline 扫描、锁、轮询或 Agent turn。workflow resume 与显式 Runtime resume 只在构造 invocation 时分流一次，流式处理热路径不重复判断来源。
 
 按以上约束，普通 NonRuntime 消息相较旧实现减少一次 cursor 候选判断、一次 hidden 文本拼接及相应 token；主要成本只剩模式切换时的小型 metadata 和恢复后必要的控制 prompt，不存在随消息数线性增长的热路径扫描，也不降低不同 session 的并行度。
 

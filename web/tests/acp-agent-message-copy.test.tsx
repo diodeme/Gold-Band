@@ -86,6 +86,27 @@ describe('completed Agent message Markdown copy action', () => {
     }
   });
 
+  it('keeps completed Agent text and its action row compact without shrinking user bubble padding', async () => {
+    const { container, root } = await renderTimeline([
+      event({ id: 'assistant', seq: 1 }),
+      event({ id: 'user', seq: 2, kind: 'userTextDelta', content: '用户消息' }),
+    ]);
+    try {
+      const assistantContent = container.querySelector<HTMLElement>('[data-agent-quotable-text="true"]');
+      const actionRow = container.querySelector<HTMLElement>('[data-agent-message-actions="true"]');
+      const userContent = container.querySelector<HTMLElement>('[data-acp-message-row="user"] .bg-message-user');
+
+      expect(assistantContent?.classList.contains('pt-2')).toBe(true);
+      expect(assistantContent?.classList.contains('pb-0')).toBe(true);
+      expect(assistantContent?.classList.contains('py-3')).toBe(false);
+      expect(actionRow?.classList.contains('min-h-6')).toBe(true);
+      expect(actionRow?.querySelector('[data-agent-message-copy="true"]')?.classList.contains('size-6')).toBe(true);
+      expect(userContent?.classList.contains('py-3')).toBe(true);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('does not expose the action for user, failed, empty, or non-message timeline items', async () => {
     const { container, root } = await renderTimeline([
       event({ id: 'user', seq: 1, kind: 'userTextDelta' }),

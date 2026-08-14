@@ -21,8 +21,7 @@
 │ 标题：设置                                                     │
 ├──────────────────────────────────────────────────────────────┤
 │ 个性化                                                       │
-│   Sync with OS 开关                                           │
-│   设计风格：主题包预览卡网格                                    │
+│   设计风格：当前主题摘要；点击后在主题抽屉中选择                  │
 │   明暗模式：跟随系统 / 浅色 / 深色                              │
 │   视觉效果：仅主题声明质量档能力时展示                            │
 │                                                              │
@@ -43,15 +42,16 @@
 
 ### 4.1 选项
 当前支持：
-- Gold Band：默认设计风格，浅色为瓷白/雾灰/石墨层级，深色为无彩炭灰层级。
+- Gold Band：默认设计风格，采用类 OpenAI 的白/近黑编辑界面；浅色以纯白画布、墨黑主操作和青绿色焦点建立层级，深色以近黑画布、克制灰阶和同一青绿色焦点保持一致。
 - 技术中性：更克制的无彩工具风格，浅色与深色都只让业务状态使用彩色。
-- 玻璃拟态：浅色 Glass 与深色 Nocturne Glass，使用光井背景、无色透明表面和有限玻璃材质；额外提供完整效果与性能优先。
-- 新粗野主义：作为 Theme Contract 通用性样板，以高对比色、直角、硬边界、硬阴影和方形头像验证新增风格不需要修改设置页或业务组件。
+- 液态玻璃：浅色 Liquid Glass 与深色 Nocturne Glass，使用可被 backdrop 采样的黑白银灰光场、低不透明表面、方向性镜面高光和明暗内缘近似液态折射；完整效果保留液态层，性能优先关闭镜面层并降低采样成本。背景与主操作不得使用蓝色，彩色仅保留给业务状态。
+- 新粗野主义：以纸白/炭黑底、紧凑圆角、黑色主操作、单一珊瑚强调和有节制的硬投影表达克制的新粗野主义；禁止整屏高亮黄、所有容器统一粗边框或每个组件同时投影。
 - 明暗偏好独立为 `跟随系统 / 浅色 / 深色`；每个正式主题包必须同时提供浅色和深色，`跟随系统` 不跨主题包切换。
 
 ### 4.2 行为
 - 设置保存到本地用户偏好。
-- 点击主题包预览卡保存稳定 `themeId`，不会改变当前 `colorScheme` 偏好。
+- 设置页主体只展示当前生效主题摘要，并在摘要右侧保留明确的“选择主题”按钮；点击按钮使用 shadcn/ui Sheet 打开主题抽屉，完整主题包列表只在抽屉内展示。
+- 点击抽屉中的主题包预览卡保存稳定 `themeId`、关闭抽屉，且不会改变当前 `colorScheme` 偏好。
 - 选择 `跟随系统` 时只保存 `colorScheme = system`；操作系统变化只重新解析当前包的 light/dark，不写回偏好。
 - 视觉质量选择按 `themeId` 隔离记忆；切换到不声明该能力的主题时隐藏控件且不制造伪性能档。
 - 后端完成校验和原子持久化后返回 canonical `appearance + personalization`，前端以返回值收敛并应用根属性。
@@ -60,13 +60,18 @@
 ### 4.3 UI 形式
 设置页采用一个主工作面，内部用 section 和低对比分隔线组织外观、字体、语言，不再将每个设置组做成独立大卡片。
 
-外观区域使用主题包预览卡网格与两行紧凑选项：
+外观区域使用当前主题摘要与两行紧凑选项；完整主题网格采用右侧抽屉渐进披露：
 
 ```text
 外观
-  [ Gold Band ] [ 技术中性 ] [ 玻璃拟态 ] [ 新粗野主义 ]
+  [ 当前主题：Gold Band     当前生效              选择主题 ]
   明暗模式                                      [ 跟随系统 v ]
   视觉效果（仅支持的主题）                    [ 完整效果 v ]
+
+点击当前主题
+  主题抽屉
+    [ Gold Band ] [ 技术中性 ]
+    [ 液态玻璃 ] [ 新粗野主义 ]
 ```
 
 视觉规则：
@@ -77,11 +82,12 @@
 - 顶部 `通用 / 个性化 / 高级` 使用共享 shadcn Tabs 默认变体：tab track 必须使用 `secondary` surface，并以 `border` 语义的内描边与工作区分层；不得使用可能与浅色工作区同值的 `muted` 作为唯一背景。选中 tab 继续使用 `background` surface 与轻量阴影。该规则同时适用于项目中其他默认分段 Tabs，明确使用 `line` 或透明变体的场景除外。
 - 每个选项自身拥有胶囊边界，或 Tabs 容器已经显式提供边界时，必须使用共享 `bare` 变体清除默认 track、padding 和 ring；不得仅用 `bg-transparent` 覆盖背景而遗留外层内描边。Agent 胶囊选择器与 Round 详情胶囊 Tabs 均遵循该规则。
 - 文本选区由独立的 `text-selection` / `text-selection-foreground` 主题 token 管理，普通文本、Markdown、输入框和 composer 必须共享同一规则。两套深色使用可辨识的中灰选区与白色文字，不得继续复用与内容面接近的中性 `primary/30`；基础 Input 不再设置局部 selection 覆盖。
-- 瓷白遵循中性面优先：大面积背景使用白与中性灰建立层级，品牌靛蓝只用于主操作、选中态、焦点环和运行态；边框使用中性石墨透明度，不使用蓝色边框给整窗染色。
+- Gold Band 遵循中性面优先：大面积背景使用纯白与 `#fafafa / #f5f5f5` 建立层级，墨黑承担主操作，OpenAI Teal 只用于焦点、成功路径和少量强调；边框使用 `#e5e5e5` 发丝线，不用彩色边界给整窗染色。
 - 科技灰通过 `#ffffff` 主内容、`#f3f3f3` 侧栏、`#e7e7e7` 选中面和 `#e5e5e5` 边界建立层级；正文与主操作使用石墨灰，冷蓝只承担运行状态。禁止给文字、图标、边界或大面积 surface 注入蓝灰、暖黄、米色或古铜金色偏。
 - 科技灰文字层级固定为 `#171717` 深黑标题、`#2b2b2b` 正文、`#666666` 辅助信息和更浅的禁用/占位状态；欢迎语等页面视觉锚点必须使用 `title` token，不得使用带透明度的正文色替代。侧栏导航、分组标题和任务标题属于主要信息，统一消费 `sidebar-foreground = #171717`，只有时间、空状态等元信息使用 `muted-foreground = #666666`。主消息阅读区保持纯白，科技灰侧栏与会话标题栏共同使用 `#f3f3f3` 框架 surface。
 - 所有内置主题方案均保留独立 `content-header` 语义接口，让会话标题栏与侧边栏组成连续应用框架，并通过轻量底边界与消息阅读区分层；不得在标题栏额外包裹卡片、嵌套灰块或投影。
-- 设置 section 与主题卡网格按内容容器宽度响应：宽内容区最多三列，空间不足时逐级降为两列、单列；选项行允许标题和 Select 换行，但不得制造横向滚动或逐字纵排。
+- 当前主题摘要按设置内容区宽度响应；主题抽屉内的主题卡网格按抽屉容器宽度在两列与单列之间切换。选项行允许标题和 Select 换行，但不得制造横向滚动或逐字纵排。
+- Liquid Glass 的 Dialog 必须使用较高不透明度的 `popover` 表面并保留受限 blur/saturate、背景亮度/对比度、镜面高光和边缘阴影；不得复用低不透明度 card 造成背景文字直接穿透。非液态主题的 Dialog/Popover 保持主题包提供的实底表面。
 
 ---
 
@@ -133,11 +139,13 @@
 - 个性化权威字段为 `personalization`：`schemaVersion = 1`，显式保存两套排版以及 Agent / 个人头像图片与形状的 `source`。settings schema v7 一次性迁移旧字体、字号和头像选择；主题来源持续跟随当前主题，用户资产历史独立保留。
 - 内置 `builtin.gold-band`、`builtin.tech-neutral`、`builtin.glass`、`builtin.neo-brutalist` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。
 - 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。Glass 声明视觉质量能力并独立记忆完整效果/性能优先，其他主题不显示该设置。
-- 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
+- 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality / data-material-model`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
 - 共享 shadcn/ui、prompt-kit 与应用壳以稳定 `data-theme-role` 消费材质 recipe；主题卡在宽内容区三列，窄窗口自动单列。
 - 2026-08-14 基础主题包补全：Theme SDK 已生成可提交的 `runtime-theme.json`、`builtin-theme.css`、`asset-manifest.json`、Web Catalog 与 Rust Catalog；后端保存偏好从 Catalog 能力声明判断主题存在性和质量档，不再硬编码主题 ID。当前开发节点完成 Style Dictionary 构建、TypeScript/Vite 生产构建和 Rust desktop compile check；单元/接口与浏览器交互仍由后续测试、验收节点执行。
 - 2026-08-14 测试节点复验：Theme SDK 构建正例及缺失 token、alias 循环、非法 recipe、质量档越界负例 5/5 通过；Web 全量 1176/1176、Rust Catalog 2/2、旧外观迁移 2/2、偏好持久化与个性化迁移定向用例通过，生产构建和格式检查通过。内置浏览器实例不可用，仅确认 `/settings` HTTP 200，Glass 长会话视觉与 GPU 时间线仍未验收。
 - 2026-08-14 覆盖率工具链收敛：与 Vitest 同版本的 V8 coverage provider 作为固定开发依赖随 lockfile 安装，并提供统一 `web:test:coverage` 入口；后续测试节点不再临时修改依赖树，覆盖率结果仍必须以该节点实际执行为准。
+- 2026-08-14 液态材质模型：主题引擎新增 `solid / frosted / liquid` 封闭类型和 backdrop brightness/contrast、specular highlight、edge shadow 光学参数；Liquid Glass 1.3 使用 `liquid`，性能档关闭镜面层并降低额外光学增强，其他主题显式声明 `solid`。
+- 2026-08-14 三主题真实落地：Gold Band 1.1、Liquid Glass 1.3 与新粗野主义 1.1.1 均修改独立源 token、recipe 和 manifest 后重新生成 Web/Rust Catalog；Liquid Glass 1.3 移除蓝色底与蓝色交互染色，以黑白银灰光场、降低模糊半径、提高 backdrop 对比度和四向内缘高光强化玻璃透射；`subtle` 只应用边缘材质，`elevated` 才应用完整投影，业务组件与设置页不包含主题 ID 特判。
 
 MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri command `save_desktop_preferences` 保存用户偏好。
 
@@ -172,6 +180,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 2026-05-25 起设置页改为三个 tab：语言进入通用，主题和字体进入个性化；高级页展示当前更新渠道、内置更新地址、有效更新地址，支持用户持久化覆盖更新地址、恢复内置地址和手动检查更新。2026-07-30 起原“外观”tab 正式更名为“个性化”，并新增头像设置。
 - 2026-07-30 个性化页顺序调整为“外观 / 字体 / 头像”；头像作为低频设置放在底部，Agent 与个人头像使用 48px 预览、短说明和紧凑形状按钮组成的响应式横向设置行，不再显示冗余“头像框”标签。
 - 2026-08-14 字体区新增 UI/代码基准字号设置与恢复默认入口，并将全局 `medium / semibold / bold` 语义由 `500 / 600 / 700` 校准为 `400 / 500 / 600`，从字体系统根部降低整体视觉重量；字号写入既有桌面偏好配置，应用启动时统一恢复根级 CSS 变量。
+- UI 小字号统一使用 `text-ui-nano / micro / caption / compact` 排版 token，并随 `--app-ui-font-size` 缩放。共享 `cn()` 必须把这些 token 识别为字号类，使字号与 `text-foreground / text-muted-foreground` 等颜色类独立合并；Button、Badge、CommandItem 等 shadcn copy-in 组件不得因 class 合并丢失任一语义。
 - 头像系统的完整数据、存储、交互与会话展示规范见 [avatar-system.md](avatar-system.md)。
 - 设置页中的问号帮助入口（如“使用本地 Claude”“记录详细日志”“开启指标上报”）统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可展示说明文本；这些布尔开关统一采用“标题 + tips icon + switch”同一行布局，避免一部分开关右置、一部分行内导致对齐不一致；同时避免页面出现主题色 tooltip 与白底说明面板混用。
 - 更新能力使用 Tauri updater：`default` 渠道内置 GitHub Release `latest.json`，`wb` 渠道内置内网占位地址；两个渠道使用不同 updater public key，用户只能覆盖 URL，不能覆盖 public key，因此两个渠道不会通过改 URL 串包更新。default 渠道的安装包、签名和 `latest.json` 由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在并上传；该 workflow 可由 `main` push 自动触发，也可在 GitHub Actions 页面手动触发以补跑 release-please 主链路，release publish 后才对客户端 latest 检查可见。

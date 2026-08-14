@@ -1,6 +1,9 @@
 use std::collections::BTreeSet;
 
-use gold_band::theme::{ThemeCapability, ThemeVisualQuality, builtin_theme, builtin_theme_catalog};
+use gold_band::theme::{
+    ThemeCapability, ThemeMaterialModel, ThemeVisualQuality, builtin_theme,
+    builtin_theme_catalog,
+};
 
 #[test]
 fn rust_catalog_deserializes_every_generated_declarative_theme() {
@@ -51,6 +54,11 @@ fn rust_catalog_exposes_quality_capability_without_theme_id_special_cases() {
         .expect("quality capability should have profiles");
     assert_eq!(profiles.default, ThemeVisualQuality::Full);
     assert!(profiles.performance.blur < glass.schemes.dark.material.blur);
+    assert_eq!(
+        glass.schemes.light.material.model,
+        ThemeMaterialModel::Liquid
+    );
+    assert!(glass.schemes.light.material.backdrop_contrast > 100.0);
 
     assert!(
         !gold_band
@@ -58,6 +66,10 @@ fn rust_catalog_exposes_quality_capability_without_theme_id_special_cases() {
             .contains(&ThemeCapability::VisualQualityProfiles)
     );
     assert!(gold_band.visual_quality_profiles.is_none());
+    assert_eq!(
+        gold_band.schemes.light.material.model,
+        ThemeMaterialModel::Solid
+    );
     assert_ne!(neo_brutalist.recipes, gold_band.recipes);
     assert_ne!(
         neo_brutalist.schemes.light.semantic.primary,

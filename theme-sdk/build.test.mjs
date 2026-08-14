@@ -87,3 +87,15 @@ test('rejects visual-quality overrides outside the closed effect whitelist', asy
   assert.notEqual(result.status, 0);
   assert.match(`${result.stderr}\n${result.stdout}`, /additional properties|uiSize/u);
 });
+
+test('rejects an unknown material model', async () => {
+  const result = await withBuildFixture(async (directory) => {
+    const path = join(directory, 'themes', 'glass', 'tokens', 'light.tokens.json');
+    await updateJson(path, (tokens) => {
+      tokens.material.model.$value = 'plasma';
+    });
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}\n${result.stdout}`, /model|allowed values|liquid/u);
+});

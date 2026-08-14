@@ -1,5 +1,20 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-14：会话页文字层级与有效留白收敛
+
+- 根因：会话页的信息层级存在反转：workspace 分组标题小于其下会话项，顶部会话标题又大于正文；更根本的问题是消息、统计和 composer 横向铺满大屏剩余空间，阅读起点与行长随窗口无界增长。这是排版语义与内容宽度边界缺失，不是单个字号问题。
+- 实现：不删除信息、不改变入口和交互，基于现有 Tailwind/shadcn/prompt-kit 组件建立稳定层级：workspace 标题为 14px 半粗体，会话项为 13px，相对时间为 11px；顶部会话标题收敛为 14px 半粗体，run ID 为 11px。消息、运行统计和 composer 共用居中 56rem 阅读轨道，窄窗口自动退化为全宽并保留 20px 安全边距。消息间距保持 20px，侧栏继续用局部 margin 区分导航、置顶和 workspace。
+- 排版补充：workspace 标题、当前会话、普通会话与元信息分别使用 600/500/400/400 字重，层级不再只依赖字号。Streamdown 反引号行内内容改为与正文相同的 UI 字体、字号、字重和行高，只保留标签底色、圆角与内边距；fenced code block 继续使用等宽字体和 Shiki 高亮。
+- 验收：新增会话视觉层级契约测试并收紧侧栏、Streamdown 样式契约；定向 Vitest 共 5 个文件、25 项全部通过，TypeScript 与 Web 生产构建通过。内置浏览器在 1280px 与 900px 宽度下验证消息轨道、侧栏和 composer 无横向溢出，最终 workspace 标题计算样式为 14px / 600 / 20px；桌面客户端首页已确认 workspace 与会话项的层级改善，最终复验时客户端窗口已关闭，因此未擅自重启。行内代码的同字体、同字号、同字重、同上下文行高及 fenced code block 隔离由组件单元测试固化。
+- 性能与复杂度评审：仅修改静态 class 与既有 DOM 的排版，不新增 React state、Context、订阅、I/O、依赖、缓存或逐帧计算，不扩大数据加载和渲染范围；继续复用现有组件，无过度抽象，性能风险可忽略。
+
+## 2026-08-14：UI 小字号与文字颜色 class 合并修复
+
+- 根因：全局 `cn()` 直接使用 `tailwind-merge` 默认规则，默认规则无法判断项目自定义的 `text-ui-nano / micro / caption / compact` 属于字号，把它们误归入文字颜色组；当 Button、Badge、CommandItem 或条件 class 同时提供文字颜色时，小字号被删除并回退到组件基础字号，反向顺序还可能删除组件语义颜色。
+- 实现：在唯一 `cn()` 入口通过 `extendTailwindMerge` 把四个 UI 排版 token 注册到 `font-size` class group。业务组件不增加局部覆盖、不调整 class 顺序，现有和后续 shadcn/prompt-kit 消费路径统一恢复字号与颜色的正交合并。
+- 验收：新增接口单元测试覆盖四个 UI 字号与透明文字颜色共存、标准字号和 UI 字号按后写值覆盖、hover/dark 状态颜色与基础字号共存；继续执行 Web 类型检查、生产构建，并从桌面 WebView 读取会话头按钮的最终 class 与 computed style。
+- 性能与复杂度评审：只在模块初始化时创建一个扩展合并器，每次 `cn()` 增加四个静态候选匹配；不增加 React 状态、订阅、渲染、I/O、缓存或依赖，复杂度仍与 class token 数线性相关，无可感知性能风险，也没有为单个按钮引入补丁式分支。
+
 ## 2026-08-14：会话配置菜单选择生命周期修正
 
 - 根因：共享 ACP 单项配置菜单错误复用了复合菜单的选择保持打开策略；PromptInput 的交互后代识别只包含普通 `menuitem`，遗漏 Radix 单选项实际使用的 `menuitemradio`，Portal 点击冒泡后被误判为空白点击并聚焦输入框。
@@ -1064,6 +1079,11 @@ attempt-001/
 - 声明式包工具链：Gold Band、技术中性、Glass 与高差异验证用的新粗野主义均位于独立 `themes/*` 包；Theme SDK 使用 DTCG + Style Dictionary 解析 alias，使用 JSON Schema + Ajv 校验 manifest/runtime contract，并生成包级 runtime JSON、recipe CSS、asset manifest、Web Catalog 与 Rust Catalog。新粗野主义只通过新增包目录接入，没有修改设置页、业务组件或 Catalog 源码，证明契约不存在 Glass 特化。
 - 组件边界：Shell、标题栏、侧栏、shadcn Card/Input/Button/Dialog/Sheet/Popover、prompt-kit Composer 与右侧工作区通过稳定 theme role 消费材质变量，业务组件无具体主题 ID 分支。
 - Glass 样板：参考 `.external/styles/glassmorphism` 实现独立浅/深方案、光井背景、无色透明表面、方向性高光/暗缘、有限噪点和 reduced-motion；完整档 40–48px blur/180% saturate，性能档 16px/140% 并关闭噪点。
+- 液态玻璃模型：Theme Contract 将组件的 `flat / subtle / elevated` 层级与 `solid / frosted / liquid` 材质类型正交拆分；Glass 1.1 使用受限的 backdrop brightness/contrast、镜面高光和边缘内阴影近似 iOS 风格液态玻璃，其他主题由编译器补齐 `solid` 默认值。性能档关闭镜面层并复位光学增强，不引入 pointermove、RAF、Canvas、WebGL 或 SVG displacement filter。
+- 主题视觉边界修正：session 切换列表统一消费 `popover` role，Glass 使用毛玻璃、其余主题使用实底；Glass Dialog 使用较高不透明度 popover 毛玻璃，浅深主题默认 UI 字号改为 14px。设置页恢复为当前主题摘要，完整主题包列表仅在 shadcn Sheet 中展示。
 - 验证：本轮 Style Dictionary/Ajv 四包构建、TypeScript strict、Web 生产构建、`cargo fmt --check` 与 `cargo check -p gold-band-desktop` 通过。当前开发节点禁止编写或执行测试，也未执行浏览器交互；接口/契约回归与设置页深/浅/质量档、窄窗、生命周期和性能证据留待后续测试及验收节点。
 - 基础契约复验修正：Theme Contract 补齐 content header、会话消息/Composer/Activity/权限卡、工作区 Tab/资源头/文件树/编辑器和 Diff 三态的成对语义 token；技术中性主题恢复迁移前成功色、危险色和深色主按钮前景。
 - 个性化权威模型：settings schema v7 引入 `PersonalizationPreference`，将 UI / 编辑器字体与字号、Agent / 个人头像图片与形状分别保存为 `theme/local/custom/user` 来源。旧字体字号字段与头像仓库选择一次性迁移；头像仓库只保留资产历史，恢复操作不删除资源。
+- 液态玻璃增量验证：Theme SDK 6/6、主题引擎与主题选择定向 Web 用例 18/18、四包生成、TypeScript strict、Web 生产构建和 `git diff --check` 通过。当前执行环境未安装 Rust toolchain，新增的 Rust serde 默认值与主题契约用例已落库，但本轮无法复跑 rustfmt、`theme_contract` 和桌面 crate 检查；长会话视觉与 GPU 时间线仍按原计划补验。
+- 三主题源包落地：Gold Band 1.1 将默认蓝灰方案替换为类 OpenAI 白/近黑中性画布、墨黑主操作和单一青绿色焦点；Liquid Glass 1.3 采用黑白银灰光场与无彩主操作，通过更低的 blur、更高的 backdrop contrast、四向明暗内缘与镜面高光强化玻璃透射，并把普通 card 降为 `subtle`、editor 降为 `flat`；新粗野主义 1.1.1 移除整屏黄色与全容器重阴影，改为纸白/炭黑、珊瑚强调和仅在 composer/dialog/popover/sheet 使用的有界硬投影。Theme SDK 生成规则同步区分 `subtle` 边缘阴影与 `elevated` 完整投影，不新增业务分支、React 状态、资源请求或逐帧计算。
+- 最终验收：`npm run web:build`、Theme SDK 6/6、主题相关 Web 39/39、四个 runtime JSON 与 Web/Rust Catalog 一致性、`git diff --check` 均通过；浏览器真实设置页已逐一验证 Gold Band、Liquid Glass 与新粗野主义的切换和根材质参数，最终恢复 Gold Band。全量 Web test 受仓库现有 React 测试环境 `act is not a function` 批量失败阻断，不记为通过；本机无 Rust toolchain，因此 Rust 格式与契约测试本轮未执行。Glass 长会话 GPU 时间线仍保留为独立性能验收项。

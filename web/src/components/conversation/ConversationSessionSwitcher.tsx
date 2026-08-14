@@ -18,7 +18,7 @@ export function ConversationSessionSwitcher({
   onSelectSession,
 }: ConversationSessionSwitcherProps) {
   return (
-    <div className="w-64 rounded-xl border border-border/60 bg-card/60 p-2 shadow-sm">
+    <div data-theme-role="popover" className="w-64 rounded-xl border border-border/60 bg-popover p-2 text-popover-foreground shadow-sm">
       {tree.rounds.length === 0 ? (
         <div className="px-3 py-4 text-center text-xs text-muted-foreground">No sessions</div>
       ) : (

@@ -146,7 +146,7 @@ const markdownComponents = {
   li: ({ children }: { children?: React.ReactNode }) => <li className="pl-1 leading-6">{children}</li>,
   blockquote: ({ children }: { children?: React.ReactNode }) => <blockquote className="my-2 border-l-2 border-primary/40 pl-3 text-muted-foreground">{children}</blockquote>,
   inlineCode: ({ className, children, node: _node, ...props }: React.HTMLAttributes<HTMLElement> & { node?: unknown }) => (
-    <code className={cn('rounded-md bg-muted/50 px-1.5 py-0.5 font-mono text-[length:var(--app-ui-code-font-size)] text-foreground', className)} {...props}>
+    <code className={cn('rounded-md bg-muted/50 px-1.5 py-0.5 font-sans text-[1em] font-normal leading-[inherit] tracking-normal text-foreground', className)} {...props}>
       {children}
     </code>
   ),

@@ -131,7 +131,18 @@ async function resolveSchemeTokens(themeDirectory, scheme) {
     windowSurface: values.windowSurface,
     preview: values.preview,
     semantic: values.semantic,
-    material: values.material,
+    material: normalizeMaterial(values.material),
+  };
+}
+
+function normalizeMaterial(material) {
+  return {
+    model: 'solid',
+    backdropBrightness: 100,
+    backdropContrast: 100,
+    specularHighlight: 'none',
+    edgeShadow: '0 0 0 transparent',
+    ...material,
   };
 }
 
@@ -205,11 +216,16 @@ function compilePackageCss(themePackage) {
       .map(([name, value]) => `${semanticCssVariable(name)}:${value}`);
     declarations.push(
       `--radius:${scheme.material.radius}`,
+      `--gb-material-model:${scheme.material.model}`,
       `--gb-material-opacity:${scheme.material.surfaceOpacity}`,
       `--gb-material-border-highlight:${scheme.material.borderHighlight}`,
       `--gb-material-surface-overlay:${scheme.material.surfaceOverlay}`,
       `--gb-material-blur:${scheme.material.blur}px`,
       `--gb-material-saturate:${scheme.material.saturate}%`,
+      `--gb-material-backdrop-brightness:${scheme.material.backdropBrightness}%`,
+      `--gb-material-backdrop-contrast:${scheme.material.backdropContrast}%`,
+      `--gb-material-specular-highlight:${scheme.material.specularHighlight}`,
+      `--gb-material-edge-shadow:${scheme.material.edgeShadow}`,
       `--gb-material-shadow:${scheme.material.shadow}`,
       `--gb-theme-background-image:${scheme.material.backgroundImage}`,
       `--gb-theme-texture-opacity:${scheme.material.textureOpacity}`,
@@ -229,7 +245,7 @@ function compilePackageCss(themePackage) {
   );
   if (themePackage.visualQualityProfiles) {
     const performance = themePackage.visualQualityProfiles.performance;
-    blocks.push(`${themeSelector}[data-visual-quality='performance']{--gb-material-blur:${performance.blur}px;--gb-material-saturate:${performance.saturate}%;--gb-material-shadow:${performance.shadow};--gb-theme-texture-opacity:${performance.textureOpacity};--gb-theme-motion-duration:${performance.motionDuration}}`);
+    blocks.push(`${themeSelector}[data-visual-quality='performance']{--gb-material-blur:${performance.blur}px;--gb-material-saturate:${performance.saturate}%;--gb-material-backdrop-brightness:${performance.backdropBrightness ?? 100}%;--gb-material-backdrop-contrast:${performance.backdropContrast ?? 100}%;--gb-material-specular-highlight:${performance.specularHighlight ?? 'none'};--gb-material-edge-shadow:${performance.edgeShadow ?? '0 0 0 transparent'};--gb-material-shadow:${performance.shadow};--gb-theme-texture-opacity:${performance.textureOpacity};--gb-theme-motion-duration:${performance.motionDuration}}`);
   }
   for (const [role, recipe] of Object.entries(themePackage.recipes)) {
     const declarations = [
@@ -240,9 +256,11 @@ function compilePackageCss(themePackage) {
     if (role !== 'button') declarations.push('background-color:var(--gb-recipe-background)', 'color:var(--gb-recipe-foreground)', 'border-color:var(--gb-recipe-border)');
     if (recipe.material !== 'flat') {
       declarations.push(
-        'backdrop-filter:blur(var(--gb-material-blur)) saturate(var(--gb-material-saturate))',
-        '-webkit-backdrop-filter:blur(var(--gb-material-blur)) saturate(var(--gb-material-saturate))',
-        'box-shadow:var(--gb-material-shadow)',
+        'backdrop-filter:blur(var(--gb-material-blur)) saturate(var(--gb-material-saturate)) brightness(var(--gb-material-backdrop-brightness)) contrast(var(--gb-material-backdrop-contrast))',
+        '-webkit-backdrop-filter:blur(var(--gb-material-blur)) saturate(var(--gb-material-saturate)) brightness(var(--gb-material-backdrop-brightness)) contrast(var(--gb-material-backdrop-contrast))',
+        recipe.material === 'elevated'
+          ? 'box-shadow:var(--gb-material-shadow),var(--gb-material-edge-shadow)'
+          : 'box-shadow:var(--gb-material-edge-shadow)',
         'transition-duration:var(--gb-theme-motion-duration)',
         'transition-timing-function:var(--gb-theme-motion-easing)',
       );
@@ -251,6 +269,12 @@ function compilePackageCss(themePackage) {
       declarations.push('background-image:var(--gb-material-surface-overlay)');
     }
     blocks.push(`${themeSelector} [data-theme-role='${role}']{${declarations.join(';')}}`);
+  }
+  const opticalRoles = Object.entries(themePackage.recipes)
+    .filter(([, recipe]) => recipe.material !== 'flat')
+    .map(([role]) => `${themeSelector}[data-material-model='liquid'] [data-theme-role='${role}']`);
+  if (opticalRoles.length > 0) {
+    blocks.push(`${opticalRoles.join(',')}{background-image:var(--gb-material-specular-highlight),var(--gb-material-surface-overlay);background-blend-mode:screen,normal}`);
   }
   blocks.push(`${themeSelector}{--gb-theme-package-version:'${themePackage.version}'}`);
   blocks.push(`@media (prefers-reduced-motion:reduce){${themeSelector} [data-theme-role]{transition-duration:.01ms!important}}`);

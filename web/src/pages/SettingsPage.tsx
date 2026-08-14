@@ -24,6 +24,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { Check, ChevronDown, CircleHelp, Loader2, Pencil, RotateCcw, Save } from 'lucide-react';
 import { checkLocalClaude, getMetricsSettings, getSystemFonts, saveMetricsSettings } from '../api';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -103,6 +104,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   const [useLocalClaude, setUseLocalClaude] = useState(preferences.useLocalClaude);
   const [verboseLogging, setVerboseLogging] = useState(preferences.verboseLogging);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
+  const [themeSheetOpen, setThemeSheetOpen] = useState(false);
   const [typographyDisclosure, setTypographyDisclosure] = useState(initialTypographyDisclosure);
   const [updaterOverrideUrl, setUpdaterOverrideUrl] = useState(updaterSettings.overrideUrl ?? '');
   const [editingUpdaterUrl, setEditingUpdaterUrl] = useState(false);
@@ -186,6 +188,11 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     onSave(next, personalization, language, useLocalClaude, verboseLogging);
   };
 
+  const chooseThemeFromSheet = (themeId: string) => {
+    saveAppearance(appearanceWithTheme(appearance, themeId));
+    setThemeSheetOpen(false);
+  };
+
   const chooseLanguage = (value: DesktopLanguage) => {
     setLanguage(value);
     onSave(appearance, personalization, value, useLocalClaude, verboseLogging);
@@ -258,6 +265,8 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
 
   const effectiveAppearance = resolveAppearance(appearance);
   const currentTheme = getThemePackage(appearance.themeId);
+  const currentThemeSummary = themePackageSummaries.find(({ id }) => id === effectiveAppearance.themeId)
+    ?? themePackageSummaries[0];
   const defaultFontOption = desktopFontOptions[0];
   const selectedLocalFont = personalization.typography.ui.font.source === 'local' ? personalization.typography.ui.font.family : null;
   const defaultEditorFontOption = desktopEditorFontOptions[0];
@@ -305,17 +314,37 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
           <AppCard className="gap-0 overflow-hidden py-0">
             <SettingsSection title={t('settings.appearance')}>
               <div className="space-y-4">
-                <div className="grid gap-3 @4xl/settings-content:grid-cols-3">
-                  {themePackageSummaries.map((summary) => (
-                    <ThemePackageCard
-                      key={summary.id}
-                      summary={summary}
-                      selected={appearance.themeId === summary.id}
-                      scheme={effectiveAppearance.colorScheme}
-                      onSelect={() => saveAppearance(appearanceWithTheme(appearance, summary.id))}
-                    />
-                  ))}
-                </div>
+                <Sheet open={themeSheetOpen} onOpenChange={setThemeSheetOpen}>
+                  <CurrentThemeSummary
+                    summary={currentThemeSummary}
+                    scheme={effectiveAppearance.colorScheme}
+                  />
+                  <SheetContent
+                    className="overflow-hidden"
+                    resizeStorageKey="settings/theme-package-drawer"
+                    defaultSize={760}
+                    minSize={480}
+                    maxSize={980}
+                    closeLabel={t('common.close')}
+                  >
+                    <SheetHeader className="border-b px-5 py-4">
+                      <SheetTitle>{t('settings.themeDrawerTitle')}</SheetTitle>
+                    </SheetHeader>
+                    <div className="@container/theme-drawer min-h-0 flex-1 overflow-y-auto p-5">
+                      <div className="grid gap-3 @2xl/theme-drawer:grid-cols-2">
+                        {themePackageSummaries.map((summary) => (
+                          <ThemePackageCard
+                            key={summary.id}
+                            summary={summary}
+                            selected={appearance.themeId === summary.id}
+                            scheme={effectiveAppearance.colorScheme}
+                            onSelect={() => chooseThemeFromSheet(summary.id)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </SheetContent>
+                </Sheet>
                 <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-border/45 p-3">
                   <div className="min-w-0">
                     <div className="text-sm font-semibold">{t('settings.colorScheme')}</div>
@@ -671,6 +700,33 @@ interface ThemePackageCardProps {
   selected: boolean;
   scheme: 'light' | 'dark';
   onSelect: () => void;
+}
+
+function CurrentThemeSummary({ summary, scheme }: {
+  summary: (typeof themePackageSummaries)[number];
+  scheme: 'light' | 'dark';
+}) {
+  const { i18n, t } = useTranslation();
+  const language = i18n.resolvedLanguage?.startsWith('zh') ? 'zh-CN' : 'en';
+  return (
+    <div className="@container/theme-summary">
+      <div className="grid gap-3 rounded-lg border border-border/35 bg-transparent p-3 @lg/theme-summary:grid-cols-[auto_minmax(0,1fr)] @lg/theme-summary:items-center @xl/theme-summary:grid-cols-[auto_minmax(0,1fr)_auto]">
+        <TerminalPreview palette={summary.preview[scheme]} compact />
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">{t('settings.currentTheme')}</span>
+            <Badge variant="outline" className="px-1.5 py-0 text-ui-micro">{t('settings.activeTheme')}</Badge>
+          </div>
+          <div className="truncate text-base font-semibold text-foreground">{summary.name[language]}</div>
+        </div>
+        <SheetTrigger asChild>
+          <Button variant="outline" className="w-full @lg/theme-summary:col-span-2 @xl/theme-summary:col-span-1 @xl/theme-summary:w-auto">
+            {t('settings.chooseTheme')}
+          </Button>
+        </SheetTrigger>
+      </div>
+    </div>
+  );
 }
 
 function ThemePackageCard({ summary, selected, scheme, onSelect }: ThemePackageCardProps) {

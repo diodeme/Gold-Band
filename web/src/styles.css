@@ -324,12 +324,18 @@
 
 :root {
   --conversation-message-max-inline-size: 82cqi;
+  --conversation-content-rail-max-inline-size: 56rem;
   --workspace-divider: color-mix(in srgb, var(--sidebar-border) 70%, var(--gold-workspace));
+  --gb-material-model: solid;
   --gb-material-opacity: 1;
   --gb-material-border-highlight: transparent;
   --gb-material-surface-overlay: none;
   --gb-material-blur: 0px;
   --gb-material-saturate: 100%;
+  --gb-material-backdrop-brightness: 100%;
+  --gb-material-backdrop-contrast: 100%;
+  --gb-material-specular-highlight: none;
+  --gb-material-edge-shadow: 0 0 0 transparent;
   --gb-material-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
   --gb-theme-background-image: none;
   --gb-theme-texture-opacity: 0;

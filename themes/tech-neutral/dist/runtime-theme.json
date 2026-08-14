@@ -109,6 +109,11 @@
         "scrollbarThumbHover": "rgba(43,43,43,.26)"
       },
       "material": {
+        "model": "solid",
+        "backdropBrightness": 100,
+        "backdropContrast": 100,
+        "specularHighlight": "none",
+        "edgeShadow": "0 0 0 transparent",
         "radius": "0.625rem",
         "motionEasing": "ease-out",
         "surfaceOpacity": 1,
@@ -227,6 +232,11 @@
         "scrollbarThumbHover": "rgba(232,232,232,.32)"
       },
       "material": {
+        "model": "solid",
+        "backdropBrightness": 100,
+        "backdropContrast": 100,
+        "specularHighlight": "none",
+        "edgeShadow": "0 0 0 transparent",
         "radius": "0.625rem",
         "motionEasing": "ease-out",
         "surfaceOpacity": 1,

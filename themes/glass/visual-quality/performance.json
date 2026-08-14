@@ -1,7 +1,11 @@
 {
-  "blur": 16,
-  "saturate": 140,
-  "shadow": "0 8px 24px rgba(3,7,18,.26), inset 0 1px 0 rgba(255,255,255,.16)",
+  "blur": 12,
+  "saturate": 100,
+  "backdropBrightness": 100,
+  "backdropContrast": 112,
+  "specularHighlight": "none",
+  "edgeShadow": "inset 0 1px 0 rgba(255,255,255,.46), inset 0 -1px 0 rgba(0,0,0,.18)",
+  "shadow": "0 10px 28px rgba(0,0,0,.24), inset 0 1px 0 rgba(255,255,255,.34)",
   "textureOpacity": 0,
-  "motionDuration": "200ms"
+  "motionDuration": "180ms"
 }

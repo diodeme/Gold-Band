@@ -27,7 +27,7 @@
     "background": "card",
     "foreground": "card-foreground",
     "border": "border",
-    "material": "flat"
+    "material": "elevated"
   },
   "card": {
     "background": "card",
@@ -39,13 +39,13 @@
     "background": "card",
     "foreground": "card-foreground",
     "border": "border",
-    "material": "flat"
+    "material": "elevated"
   },
   "popover": {
     "background": "popover",
     "foreground": "card-foreground",
     "border": "border",
-    "material": "flat"
+    "material": "elevated"
   },
   "editor": {
     "background": "card",
@@ -57,7 +57,7 @@
     "background": "card",
     "foreground": "card-foreground",
     "border": "border",
-    "material": "flat"
+    "material": "elevated"
   },
   "input": {
     "background": "surface-low",

@@ -34,7 +34,7 @@ export function AcpUsagePanel({ usage, isRunning, compact, processingLabel, sess
   const breakdown = usage ? hasTokenBreakdown(usage) : false;
 
   return (
-    <div className={cn('px-1 text-xs text-muted-foreground', compact ? 'flex flex-wrap items-center gap-x-4 gap-y-0.5' : 'space-y-1', className)}>
+    <div className={cn('px-1 text-xs leading-4 text-muted-foreground/75', compact ? 'flex flex-wrap items-center gap-x-4 gap-y-1' : 'space-y-1', className)}>
       {/* Timing (compact mode, at the front) */}
       {showProcessing ? (
         <span className="flex items-center gap-1.5 font-medium text-foreground">

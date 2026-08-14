@@ -3386,7 +3386,10 @@ export function ACPChatDialog(
                   <AcpPendingTimelineState label={composerStatusLabel} />
                 </div>
               ) : (
-                <div className="space-y-3 px-5 py-3">
+                <div
+                  className="mx-auto w-full max-w-[var(--conversation-content-rail-max-inline-size)] space-y-5 px-5 py-5"
+                  data-acp-conversation-rail="timeline"
+                >
                   {timeline.map((item) => (
                     <div
                       key={timelineRenderKey(eventWindowKey, item)}
@@ -3479,8 +3482,12 @@ export function ACPChatDialog(
               <AcpTodoPanel entries={todoEntries} />
             </div>
           ) : null}
-          <div className="border-t px-4 pt-1.5 pb-1.5">
-            <AcpUsagePanel
+          <div className="border-t px-5 py-3">
+            <div
+              className="mx-auto w-full max-w-[var(--conversation-content-rail-max-inline-size)]"
+              data-acp-conversation-rail="composer"
+            >
+              <AcpUsagePanel
               usage={effective?.usage}
               isRunning={sessionActive || composerStatusActive}
               compact={usageCompact}
@@ -3488,7 +3495,7 @@ export function ACPChatDialog(
                 usageCompact && composerStatusActive ? composerStatusLabel : null
               }
               sessionSeconds={usageCompact ? composerSessionSeconds : null}
-              className="mb-1"
+              className="mb-2"
             />
             {!readOnly && showManualCheckActions ? (
               <AcpManualCheckPanel
@@ -3582,6 +3589,7 @@ export function ACPChatDialog(
                 queueSubmit={composerState.submitTarget === "queue-prompt"}
               />
             )}
+            </div>
           </div>
         </div>
       ) : null}
@@ -5059,7 +5067,7 @@ const AcpComposerStatus = memo(function AcpComposerStatus({
   const { t } = useTranslation();
   const label = processingLabel(t, kind);
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-2 px-3 pb-1 pt-2 text-xs text-muted-foreground">
+    <div className="flex min-w-0 flex-wrap items-center gap-2 px-3 pb-2 pt-3 text-xs leading-4 text-muted-foreground/75">
       {active ? (
         <>
         <AcpProcessingSpinner className="size-3.5" />

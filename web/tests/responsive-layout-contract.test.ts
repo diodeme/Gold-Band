@@ -94,15 +94,13 @@ describe('responsive desktop layout contracts', () => {
     expect(contextSource).toContain("returnToImportResult={profileImport.surface === 'editing'}");
   });
 
-  it('uses nested container widths for settings sections and theme cards', () => {
+  it('uses nested container widths for settings sections and the theme drawer', () => {
     expect(settingsSource).toContain('@container/settings-section');
     expect(settingsSource).toContain('@container/settings-content');
-    expect(settingsSource).toContain('@4xl/settings-content:grid-cols-3');
+    expect(settingsSource).toContain('@container/theme-drawer');
+    expect(settingsSource).toContain('@2xl/theme-drawer:grid-cols-2');
     expect(settingsSource).not.toContain('@container/theme-summary');
     expect(settingsSource).not.toContain('@xl/theme-summary:grid-cols-[auto_minmax(0,1fr)_auto]');
-    expect(settingsSource).not.toContain('@container/theme-drawer');
-    expect(settingsSource).not.toContain('@2xl/theme-drawer:grid-cols-2');
-    expect(settingsSource).not.toContain('@lg/theme-drawer:grid-cols-[72px_minmax(0,1fr)]');
     expect(settingsSource).not.toContain('flex min-h-32 gap-4');
     expect(settingsSource).not.toContain('md:grid-cols-2');
     expect(settingsSource).not.toContain('lg:grid-cols-[160px_minmax(0,1fr)]');

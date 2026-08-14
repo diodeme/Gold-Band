@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "contractVersion": 1,
   "id": "builtin.glass",
-  "version": "1.0.0",
+  "version": "1.3.0",
   "source": "builtin",
   "name": {
-    "zh-CN": "玻璃拟态",
-    "en": "Glass"
+    "zh-CN": "液态玻璃",
+    "en": "Liquid Glass"
   },
   "author": "Gold Band",
   "schemes": [

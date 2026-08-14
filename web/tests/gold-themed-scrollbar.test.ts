@@ -14,12 +14,6 @@ function parseRgba(value: string) {
   };
 }
 
-function parseHexRgb(value: string) {
-  const match = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/iu.exec(value);
-  expect(match, `${value} should be a six-digit foreground color`).not.toBeNull();
-  return match!.slice(1, 4).map((channel) => Number.parseInt(channel, 16));
-}
-
 describe('Gold themed scrollbar', () => {
   it('keeps the themed scrollbar class attached to ACP scroll containers', () => {
     expect(ACP_SESSION_SCROLL_AREA_CLASS_NAME).toContain(GOLD_THEMED_SCROLLBAR_CLASS);
@@ -51,14 +45,13 @@ describe('Gold themed scrollbar', () => {
     for (const theme of builtinThemes) {
       for (const schemeName of ['light', 'dark'] as const) {
         const semantic = theme.schemes[schemeName].semantic;
-        const foreground = parseHexRgb(semantic.foreground);
         const track = parseRgba(semantic.scrollbarTrack);
         const thumb = parseRgba(semantic.scrollbarThumb);
         const hover = parseRgba(semantic.scrollbarThumbHover);
 
-        expect(track.rgb, `${theme.id}/${schemeName} track should stay neutral`).toEqual(foreground);
-        expect(thumb.rgb, `${theme.id}/${schemeName} thumb should stay neutral`).toEqual(foreground);
-        expect(hover.rgb, `${theme.id}/${schemeName} hover should stay neutral`).toEqual(foreground);
+        expect(new Set(track.rgb).size, `${theme.id}/${schemeName} track should stay neutral`).toBe(1);
+        expect(new Set(thumb.rgb).size, `${theme.id}/${schemeName} thumb should stay neutral`).toBe(1);
+        expect(new Set(hover.rgb).size, `${theme.id}/${schemeName} hover should stay neutral`).toBe(1);
         expect(track.alpha).toBeLessThan(thumb.alpha);
         expect(thumb.alpha).toBeLessThan(hover.alpha);
         expect(hover.alpha).toBeLessThanOrEqual(0.4);

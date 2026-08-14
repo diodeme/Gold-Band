@@ -2,11 +2,11 @@
   "primitive": {
     "radius": {
       "$type": "string",
-      "$value": "0.625rem"
+      "$value": "0.75rem"
     },
     "motionEasing": {
       "$type": "string",
-      "$value": "ease-out"
+      "$value": "cubic-bezier(.16,1,.3,1)"
     }
   }
 }

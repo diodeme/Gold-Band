@@ -9,19 +9,19 @@
     "background": "sidebar",
     "foreground": "foreground",
     "border": "border",
-    "material": "elevated"
+    "material": "flat"
   },
   "sidebar": {
     "background": "sidebar",
     "foreground": "foreground",
     "border": "border",
-    "material": "elevated"
+    "material": "flat"
   },
   "panel": {
     "background": "card",
     "foreground": "card-foreground",
     "border": "border",
-    "material": "elevated"
+    "material": "flat"
   },
   "composer": {
     "background": "card",
@@ -33,7 +33,7 @@
     "background": "card",
     "foreground": "card-foreground",
     "border": "border",
-    "material": "elevated"
+    "material": "subtle"
   },
   "dialog": {
     "background": "card",
@@ -51,7 +51,7 @@
     "background": "card",
     "foreground": "foreground",
     "border": "border",
-    "material": "elevated"
+    "material": "flat"
   },
   "sheet": {
     "background": "card",
@@ -63,12 +63,12 @@
     "background": "surface-low",
     "foreground": "card-foreground",
     "border": "border",
-    "material": "subtle"
+    "material": "flat"
   },
   "button": {
     "background": "surface-high",
     "foreground": "card-foreground",
     "border": "border",
-    "material": "subtle"
+    "material": "flat"
   }
 }

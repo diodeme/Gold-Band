@@ -144,7 +144,6 @@ pub struct RightWorkspaceLayoutVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileWorkspaceLayoutVm {
-    pub preferred_width: u32,
     pub split_min_width: u32,
     pub tree_default_width: u32,
     pub tree_min_width: u32,
@@ -1237,7 +1236,6 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
                 default_width: right_workspace.default_width,
                 max_width: right_workspace.max_width,
                 file: FileWorkspaceLayoutVm {
-                    preferred_width: right_workspace.file.preferred_width,
                     split_min_width: right_workspace.file.split_min_width,
                     tree_default_width: right_workspace.file.tree_default_width,
                     tree_min_width: right_workspace.file.tree_min_width,
@@ -7801,7 +7799,6 @@ mod tests {
         assert_eq!(
             value["workspaceLayout"]["rightWorkspace"]["file"],
             json!({
-                "preferredWidth": 760,
                 "splitMinWidth": 500,
                 "treeDefaultWidth": 280,
                 "treeMinWidth": 200,

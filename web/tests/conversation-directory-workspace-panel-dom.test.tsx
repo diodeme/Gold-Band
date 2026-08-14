@@ -16,7 +16,7 @@ vi.mock('@/api', () => ({
 }));
 
 import { ConversationDirectoryWorkspacePanel } from '@/components/workspace/ConversationDirectoryWorkspacePanel';
-import { RightWorkspaceProvider, type ConversationDirectoryWorkspaceResource } from '@/components/workspace/right-workspace-context';
+import { RightWorkspaceProvider, useRightWorkspace, type ConversationDirectoryWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -54,7 +54,6 @@ class ControlledResizeObserver implements ResizeObserver {
 }
 
 const layout: FileWorkspaceLayoutVm = {
-  preferredWidth: 760,
   splitMinWidth: 500,
   treeDefaultWidth: 280,
   treeMinWidth: 200,
@@ -86,6 +85,14 @@ const artifact: WorkspaceDirectoryEntryVm = {
   byteLength: 42,
   modifiedAtNs: '1',
 };
+
+function WorkspaceWidthProbe({ onWidth }: { onWidth: (width: number) => void }) {
+  const workspace = useRightWorkspace();
+  React.useEffect(() => {
+    onWidth(workspace.width);
+  }, [onWidth, workspace.width]);
+  return null;
+}
 
 describe('conversation directory responsive tree lifecycle', () => {
   let panelWidth = 0;
@@ -174,6 +181,29 @@ describe('conversation directory responsive tree lifecycle', () => {
       expect(splitTree?.style.height).toBe('800px');
       expect(container.textContent).toContain('artifact.md');
       expect(apiMocks.listConversationDirectory).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('keeps the canonical right workspace width when the run directory opens', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const widths: number[] = [];
+
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider initialWidth={397}>
+            <WorkspaceWidthProbe onWidth={(width) => widths.push(width)} />
+            <ConversationDirectoryWorkspacePanel resource={resource} layout={layout} />
+          </RightWorkspaceProvider>,
+        );
+      });
+      await act(async () => { await Promise.resolve(); });
+
+      expect(widths).toEqual([397]);
     } finally {
       await act(async () => root.unmount());
     }

@@ -1170,7 +1170,6 @@ impl Default for WorkspaceLayoutConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileWorkspaceLayoutConfig {
-    pub preferred_width: u32,
     pub split_min_width: u32,
     pub tree_default_width: u32,
     pub tree_min_width: u32,
@@ -1179,7 +1178,6 @@ pub struct FileWorkspaceLayoutConfig {
 
 impl FileWorkspaceLayoutConfig {
     fn normalized(mut self, right_min_width: u32, right_max_width: u32) -> Self {
-        self.preferred_width = self.preferred_width.clamp(right_min_width, right_max_width);
         self.split_min_width = self.split_min_width.clamp(right_min_width, right_max_width);
         self.tree_min_width = self.tree_min_width.max(1).min(right_max_width);
         self.tree_max_width = self
@@ -1196,7 +1194,6 @@ impl FileWorkspaceLayoutConfig {
 impl Default for FileWorkspaceLayoutConfig {
     fn default() -> Self {
         Self {
-            preferred_width: 760,
             split_min_width: 500,
             tree_default_width: 280,
             tree_min_width: 220,
@@ -1951,7 +1948,6 @@ mod tests {
         assert_eq!(layout.right_workspace.min_width, 288);
         assert_eq!(layout.right_workspace.default_width, 440);
         assert_eq!(layout.right_workspace.max_width, 1440);
-        assert_eq!(layout.right_workspace.file.preferred_width, 760);
         assert_eq!(layout.conversation.center_min_width, 360);
         assert_eq!(layout.conversation.center_auto_collapse_width, 420);
         assert_eq!(layout.conversation.window_min_width, 480);

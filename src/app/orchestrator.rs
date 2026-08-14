@@ -58,12 +58,13 @@ use crate::prompts::{
     AI_DYNAMIC_SYSTEM_ZH_CN, AI_DYNAMIC_WORKFLOW_INVOCATION_EN,
     AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN, PromptExecutionSurface, RUNTIME_CONTROL_RESUME_EN,
     RUNTIME_CONTROL_RESUME_ZH_CN, RUNTIME_INVALID_OUTPUT_REPAIR_EN,
-    RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN, prompt_by_language, render as render_template,
+    RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN, RUNTIME_WORKFLOW_RESUME_EN, RUNTIME_WORKFLOW_RESUME_ZH_CN,
+    prompt_by_language, render as render_template,
 };
 use crate::provider::{
     OutputEmissionMode, PromptBundle, PromptHiddenSection, PromptOutputContract,
-    PromptRuntimeContext, PromptVisibility, ProviderRunResult, ProviderRunStatus, StreamMode,
-    UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
+    PromptRuntimeContext, PromptVisibility, ProviderRunResult, ProviderRunStatus,
+    RuntimeControlIntent, StreamMode, UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
     supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
@@ -150,6 +151,7 @@ struct AcpInvocationPromptState {
     resume_prompt_id: Option<String>,
     resume_prompt_visibility: PromptVisibility,
     user_prompt_render_mode: UserPromptRenderMode,
+    runtime_control_intent: RuntimeControlIntent,
     input_attachment_paths: Vec<String>,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
@@ -398,7 +400,7 @@ fn infer_dynamic_error_expected(code: &str, params: &serde_json::Value) -> Optio
     None
 }
 
-fn localized_continue_prompt(language: DesktopLanguage) -> String {
+fn localized_runtime_control_resume_prompt(language: DesktopLanguage) -> String {
     prompt_by_language(
         language,
         RUNTIME_CONTROL_RESUME_ZH_CN,
@@ -408,33 +410,59 @@ fn localized_continue_prompt(language: DesktopLanguage) -> String {
     .to_string()
 }
 
-fn default_user_prompt_render_mode_for_session(session_mode: SessionMode) -> UserPromptRenderMode {
-    match session_mode {
-        SessionMode::New => UserPromptRenderMode::RequirementTask,
-        SessionMode::Continue => UserPromptRenderMode::RuntimeResume,
-    }
+fn localized_workflow_resume_prompt(language: DesktopLanguage) -> String {
+    prompt_by_language(
+        language,
+        RUNTIME_WORKFLOW_RESUME_ZH_CN,
+        RUNTIME_WORKFLOW_RESUME_EN,
+    )
+    .trim()
+    .to_string()
 }
 
-fn acp_invocation_prompt_state(
-    language: DesktopLanguage,
-    session_mode: SessionMode,
-    continue_ref: Option<serde_json::Value>,
-) -> AcpInvocationPromptState {
-    AcpInvocationPromptState {
-        session_mode,
-        continue_ref,
-        resume_prompt: matches!(session_mode, SessionMode::Continue)
-            .then(|| localized_continue_prompt(language)),
-        resume_prompt_id: None,
-        resume_prompt_visibility: if matches!(session_mode, SessionMode::Continue) {
-            PromptVisibility::Hidden
-        } else {
-            PromptVisibility::Visible
-        },
-        user_prompt_render_mode: default_user_prompt_render_mode_for_session(session_mode),
-        input_attachment_paths: Vec::new(),
-        model_override: None,
-        permission_mode_override: None,
+impl AcpInvocationPromptState {
+    fn workflow_transition(
+        language: DesktopLanguage,
+        session_mode: SessionMode,
+        continue_ref: Option<serde_json::Value>,
+    ) -> Self {
+        let (resume_prompt, user_prompt_render_mode) = match session_mode {
+            SessionMode::New => (None, UserPromptRenderMode::RequirementTask),
+            SessionMode::Continue => (
+                Some(localized_workflow_resume_prompt(language)),
+                UserPromptRenderMode::WorkflowResume,
+            ),
+        };
+        Self {
+            session_mode,
+            continue_ref,
+            resume_prompt,
+            resume_prompt_id: None,
+            resume_prompt_visibility: PromptVisibility::Visible,
+            user_prompt_render_mode,
+            runtime_control_intent: RuntimeControlIntent::Unchanged,
+            input_attachment_paths: Vec::new(),
+            model_override: None,
+            permission_mode_override: None,
+        }
+    }
+
+    fn runtime_control_resume(
+        language: DesktopLanguage,
+        continue_ref: Option<serde_json::Value>,
+    ) -> Self {
+        Self {
+            session_mode: SessionMode::Continue,
+            continue_ref,
+            resume_prompt: Some(localized_runtime_control_resume_prompt(language)),
+            resume_prompt_id: None,
+            resume_prompt_visibility: PromptVisibility::Hidden,
+            user_prompt_render_mode: UserPromptRenderMode::RuntimeResume,
+            runtime_control_intent: RuntimeControlIntent::Resume,
+            input_attachment_paths: Vec::new(),
+            model_override: None,
+            permission_mode_override: None,
+        }
     }
 }
 
@@ -463,7 +491,7 @@ fn apply_continue_input_to_prompt_state(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn acp_invocation_prompt_state_for_continue_input(
+fn runtime_control_resume_prompt_state(
     language: DesktopLanguage,
     continue_ref: serde_json::Value,
     prompt: Option<String>,
@@ -472,8 +500,7 @@ fn acp_invocation_prompt_state_for_continue_input(
     model_override: Option<String>,
     permission_mode_override: Option<String>,
 ) -> AcpInvocationPromptState {
-    let mut state =
-        acp_invocation_prompt_state(language, SessionMode::Continue, Some(continue_ref));
+    let mut state = AcpInvocationPromptState::runtime_control_resume(language, Some(continue_ref));
     apply_continue_input_to_prompt_state(
         &mut state,
         prompt,
@@ -877,6 +904,7 @@ struct DynamicResumeOverride {
     permission_mode_override: Option<String>,
     user_prompt_render_mode: UserPromptRenderMode,
     prompt_visibility: PromptVisibility,
+    runtime_control_intent: RuntimeControlIntent,
     launch_signal: Option<mpsc::Sender<RuntimeContinueLaunch>>,
 }
 
@@ -1150,9 +1178,6 @@ fn run_continue_with_launch_signal(
             run.execution.phase,
             RuntimeExecutionPhase::StartingNode | RuntimeExecutionPhase::FinalizingArtifact
         );
-    let resumes_interrupted_runtime = claimed_runtime_resume
-        || (node.status == RunStatus::Paused
-            && run.pause_reason == Some(PauseReason::ProcessInterrupted));
     let ctx = ExecutionContext::for_run(task_id, &run.id)
         .with_round(round.id.clone())
         .with_node(node.node_id.clone())
@@ -1191,6 +1216,7 @@ fn run_continue_with_launch_signal(
         initial_resume_prompt,
         initial_resume_prompt_id,
         initial_user_prompt_render_mode,
+        initial_runtime_control_intent,
         initial_resume_input_attachment_paths,
         initial_parent_continue_prompt,
         initial_parent_continue_prompt_id,
@@ -1211,9 +1237,8 @@ fn run_continue_with_launch_signal(
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
                         .map(str::to_string);
-                    let mut prompt_state = acp_invocation_prompt_state(
+                    let mut prompt_state = AcpInvocationPromptState::runtime_control_resume(
                         app.config.desktop_language,
-                        SessionMode::Continue,
                         None,
                     );
                     apply_continue_input_to_prompt_state(
@@ -1231,6 +1256,7 @@ fn run_continue_with_launch_signal(
                         prompt_state.resume_prompt,
                         prompt_state.resume_prompt_id,
                         prompt_state.user_prompt_render_mode,
+                        prompt_state.runtime_control_intent,
                         prompt_state.input_attachment_paths,
                         parent_continue_prompt,
                         parent_continue_prompt_id,
@@ -1250,7 +1276,7 @@ fn run_continue_with_launch_signal(
                     .ok_or_else(|| {
                         anyhow::anyhow!("current attempt has no ACP continue reference")
                     })?;
-                    let prompt_state = acp_invocation_prompt_state_for_continue_input(
+                    let prompt_state = runtime_control_resume_prompt_state(
                         app.config.desktop_language,
                         continue_ref,
                         prompt,
@@ -1265,6 +1291,7 @@ fn run_continue_with_launch_signal(
                         prompt_state.resume_prompt,
                         prompt_state.resume_prompt_id,
                         prompt_state.user_prompt_render_mode,
+                        prompt_state.runtime_control_intent,
                         prompt_state.input_attachment_paths,
                         None,
                         None,
@@ -1282,6 +1309,7 @@ fn run_continue_with_launch_signal(
                 None,
                 None,
                 UserPromptRenderMode::RequirementTask,
+                RuntimeControlIntent::Unchanged,
                 Vec::new(),
                 None,
                 None,
@@ -1306,7 +1334,7 @@ fn run_continue_with_launch_signal(
         initial_resume_prompt_id,
         initial_user_prompt_render_mode,
         initial_resume_input_attachment_paths,
-        resumes_interrupted_runtime,
+        initial_runtime_control_intent,
         initial_parent_continue_prompt,
         initial_parent_continue_prompt_id,
         None,
@@ -1368,7 +1396,7 @@ fn run_continue_dynamic_inner(
         outer_attempt_id,
     ))?;
     let mut prompt_state =
-        acp_invocation_prompt_state(app.config.desktop_language, SessionMode::Continue, None);
+        AcpInvocationPromptState::runtime_control_resume(app.config.desktop_language, None);
     let explicit_prompt = prompt.trim().to_string();
     if !explicit_prompt.is_empty() {
         apply_continue_input_to_prompt_state(
@@ -1396,6 +1424,7 @@ fn run_continue_dynamic_inner(
         permission_mode_override,
         user_prompt_render_mode: prompt_state.user_prompt_render_mode,
         prompt_visibility: prompt_state.resume_prompt_visibility,
+        runtime_control_intent: prompt_state.runtime_control_intent,
         launch_signal: launch.take(),
     };
     let dispatch = {
@@ -1486,7 +1515,7 @@ fn run_continue_dynamic_inner(
         prompt_state.resume_prompt_id,
         prompt_state.user_prompt_render_mode,
         prompt_state.input_attachment_paths,
-        true,
+        prompt_state.runtime_control_intent,
         None,
         None,
         Some(resume_override),
@@ -1889,7 +1918,7 @@ pub(crate) fn run_recover_completed_background(
     persist_runtime_state(app, task_id, &run, &round, &next.node)?;
     let initial_run = run.clone();
     let fallback_node = next.node.clone();
-    let prompt_state = acp_invocation_prompt_state(
+    let prompt_state = AcpInvocationPromptState::workflow_transition(
         app.config.desktop_language,
         next.session_mode,
         next.continue_ref,
@@ -1914,7 +1943,7 @@ pub(crate) fn run_recover_completed_background(
                 prompt_state.resume_prompt_id,
                 prompt_state.user_prompt_render_mode,
                 prompt_state.input_attachment_paths,
-                false,
+                prompt_state.runtime_control_intent,
                 None,
                 None,
                 None,
@@ -2049,7 +2078,7 @@ pub(crate) fn submit_manual_check(
         decision,
         None,
     )? {
-        let prompt_state = acp_invocation_prompt_state(
+        let prompt_state = AcpInvocationPromptState::workflow_transition(
             app.config.desktop_language,
             next.session_mode,
             next.continue_ref,
@@ -2068,7 +2097,7 @@ pub(crate) fn submit_manual_check(
             prompt_state.resume_prompt_id,
             prompt_state.user_prompt_render_mode,
             prompt_state.input_attachment_paths,
-            false,
+            prompt_state.runtime_control_intent,
             None,
             None,
             None,
@@ -3209,7 +3238,7 @@ pub(crate) fn drive_from_node(
         None,
         UserPromptRenderMode::RequirementTask,
         Vec::new(),
-        false,
+        RuntimeControlIntent::Unchanged,
         None,
         None,
         None,
@@ -5788,8 +5817,11 @@ fn execute_dynamic_worker(
     } else {
         SessionMode::New
     };
-    let mut prompt_state =
-        acp_invocation_prompt_state(ctx.app.config.desktop_language, session_mode, continue_ref);
+    let mut prompt_state = AcpInvocationPromptState::workflow_transition(
+        ctx.app.config.desktop_language,
+        session_mode,
+        continue_ref,
+    );
     if let Some(resume) = ctx
         .resume_override
         .as_ref()
@@ -5801,9 +5833,8 @@ fn execute_dynamic_worker(
                 node.id
             )));
         };
-        prompt_state = acp_invocation_prompt_state(
+        prompt_state = AcpInvocationPromptState::runtime_control_resume(
             ctx.app.config.desktop_language,
-            SessionMode::Continue,
             Some(saved_continue_ref),
         );
         prompt_state.resume_prompt = Some(resume.prompt.clone());
@@ -5813,6 +5844,7 @@ fn execute_dynamic_worker(
         prompt_state.input_attachment_paths = resume.attachment_paths.clone();
         prompt_state.model_override = resume.model_override.clone();
         prompt_state.permission_mode_override = resume.permission_mode_override.clone();
+        prompt_state.runtime_control_intent = resume.runtime_control_intent;
     }
     let mut session_mode = prompt_state.session_mode;
     let mut continue_ref = prompt_state.continue_ref;
@@ -5821,6 +5853,7 @@ fn execute_dynamic_worker(
     let logical_prompt_id = logical_prompt_id(resume_prompt_id.clone());
     let mut resume_prompt_visibility = prompt_state.resume_prompt_visibility;
     let mut user_prompt_render_mode = prompt_state.user_prompt_render_mode;
+    let mut runtime_control_intent = prompt_state.runtime_control_intent;
     let resume_input_attachment_paths = prompt_state.input_attachment_paths;
     let resume_model_override = prompt_state.model_override;
     let resume_permission_mode_override = prompt_state.permission_mode_override;
@@ -5931,10 +5964,7 @@ fn execute_dynamic_worker(
                 node.id
             )
         })?;
-        invocation.runtime_control_resume_candidate = ctx
-            .resume_override
-            .as_ref()
-            .is_some_and(|resume| resume.node_id == node.id && resume.attempt_id == attempt_id);
+        invocation.runtime_control_intent = runtime_control_intent;
         dynamic_event_best_effort(
             ctx,
             "dynamic_worker_invocation_build_end",
@@ -6233,6 +6263,7 @@ fn execute_dynamic_worker(
                 ));
                 resume_prompt_visibility = PromptVisibility::Hidden;
                 user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
+                runtime_control_intent = RuntimeControlIntent::Unchanged;
                 node.status = DynamicNodeStatus::Running;
                 node.outcome = None;
                 node.finished_at = None;
@@ -6287,6 +6318,7 @@ fn execute_dynamic_worker(
                 });
                 resume_prompt_visibility = PromptVisibility::Hidden;
                 user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
+                runtime_control_intent = RuntimeControlIntent::Unchanged;
                 node.status = DynamicNodeStatus::Running;
                 node.outcome = None;
                 node.finished_at = None;
@@ -6376,8 +6408,11 @@ fn execute_dynamic_agent_stage(
     } else {
         SessionMode::New
     };
-    let mut prompt_state =
-        acp_invocation_prompt_state(ctx.app.config.desktop_language, session_mode, continue_ref);
+    let mut prompt_state = AcpInvocationPromptState::workflow_transition(
+        ctx.app.config.desktop_language,
+        session_mode,
+        continue_ref,
+    );
     if let Some(resume) = ctx
         .resume_override
         .as_ref()
@@ -6389,7 +6424,7 @@ fn execute_dynamic_agent_stage(
                 node.id
             )));
         };
-        prompt_state = acp_invocation_prompt_state_for_continue_input(
+        prompt_state = runtime_control_resume_prompt_state(
             ctx.app.config.desktop_language,
             saved_continue_ref,
             Some(resume.prompt.clone()),
@@ -6431,10 +6466,7 @@ fn execute_dynamic_agent_stage(
         prompt_state.model_override.clone(),
         prompt_state.permission_mode_override.clone(),
     )?;
-    invocation.runtime_control_resume_candidate = ctx
-        .resume_override
-        .as_ref()
-        .is_some_and(|resume| resume.node_id == node.id && resume.attempt_id == attempt_id);
+    invocation.runtime_control_intent = prompt_state.runtime_control_intent;
     dynamic_event_best_effort(
         ctx,
         "dynamic_worker_invocation_build_end",
@@ -9316,7 +9348,7 @@ fn build_dynamic_worker_invocation(
     let invocation = WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
         turn_control_mode: TurnControlMode::RuntimeControlled,
-        runtime_control_resume_candidate: false,
+        runtime_control_intent: RuntimeControlIntent::Unchanged,
         prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
         execution_surface: PromptExecutionSurface::AiDynamic,
         profile,
@@ -11053,7 +11085,7 @@ fn drive_from_node_with_initial_session(
     initial_resume_prompt_id: Option<String>,
     initial_user_prompt_render_mode: UserPromptRenderMode,
     initial_resume_input_attachment_paths: Vec<String>,
-    initial_runtime_control_resume_candidate: bool,
+    initial_runtime_control_intent: RuntimeControlIntent,
     parent_continue_prompt: Option<String>,
     parent_continue_prompt_id: Option<String>,
     dynamic_resume_override: Option<DynamicResumeOverride>,
@@ -11077,7 +11109,7 @@ fn drive_from_node_with_initial_session(
     };
     let mut user_prompt_render_mode = initial_user_prompt_render_mode;
     let mut resume_input_attachment_paths = initial_resume_input_attachment_paths;
-    let mut runtime_control_resume_candidate = initial_runtime_control_resume_candidate;
+    let mut runtime_control_intent = initial_runtime_control_intent;
     let mut model_override = initial_model_override;
     let mut permission_mode_override = initial_permission_mode_override;
     let mut invalid_output_repair_prompts = 0;
@@ -11227,7 +11259,7 @@ fn drive_from_node_with_initial_session(
                             resume_prompt_visibility,
                             user_prompt_render_mode,
                             resume_input_attachment_paths.clone(),
-                            runtime_control_resume_candidate,
+                            runtime_control_intent,
                             model_override.clone(),
                             permission_mode_override.clone(),
                         )
@@ -11334,7 +11366,7 @@ fn drive_from_node_with_initial_session(
                 ok => break ok,
             }
         };
-        runtime_control_resume_candidate = false;
+        runtime_control_intent = RuntimeControlIntent::Unchanged;
         if !attempt_execution_is_still_current_running(
             app,
             task_id,
@@ -11726,7 +11758,7 @@ fn drive_from_node_with_initial_session(
         )? {
             run.last_executed_node = Some(completed_snapshot);
             node = next.node;
-            let prompt_state = acp_invocation_prompt_state(
+            let prompt_state = AcpInvocationPromptState::workflow_transition(
                 app.config.desktop_language,
                 next.session_mode,
                 next.continue_ref,
@@ -11738,7 +11770,7 @@ fn drive_from_node_with_initial_session(
             resume_prompt_visibility = prompt_state.resume_prompt_visibility;
             resume_input_attachment_paths = prompt_state.input_attachment_paths;
             user_prompt_render_mode = prompt_state.user_prompt_render_mode;
-            runtime_control_resume_candidate = false;
+            runtime_control_intent = prompt_state.runtime_control_intent;
             model_override = prompt_state.model_override;
             permission_mode_override = prompt_state.permission_mode_override;
             invalid_output_repair_prompts = 0;
@@ -11790,6 +11822,53 @@ mod tests {
         assert_eq!(
             logical_prompt_id(Some("user-turn-001".to_string())),
             "user-turn-001"
+        );
+    }
+
+    #[test]
+    fn workflow_session_continue_does_not_claim_runtime_control_resume() {
+        let state = AcpInvocationPromptState::workflow_transition(
+            DesktopLanguage::ZhCn,
+            SessionMode::Continue,
+            Some(serde_json::json!({ "acpSessionId": "session-1" })),
+        );
+
+        assert_eq!(state.session_mode, SessionMode::Continue);
+        assert_eq!(
+            state.user_prompt_render_mode,
+            UserPromptRenderMode::WorkflowResume
+        );
+        assert_eq!(
+            state.runtime_control_intent,
+            RuntimeControlIntent::Unchanged
+        );
+        assert_eq!(state.resume_prompt_visibility, PromptVisibility::Visible);
+        assert!(
+            !state
+                .resume_prompt
+                .as_deref()
+                .unwrap_or_default()
+                .contains("用户已选择将当前节点重新交由 Runtime 控制")
+        );
+    }
+
+    #[test]
+    fn explicit_runtime_continue_owns_hidden_resume_prompt_and_control_intent() {
+        let state = AcpInvocationPromptState::runtime_control_resume(
+            DesktopLanguage::ZhCn,
+            Some(serde_json::json!({ "acpSessionId": "session-1" })),
+        );
+
+        assert_eq!(state.session_mode, SessionMode::Continue);
+        assert_eq!(
+            state.user_prompt_render_mode,
+            UserPromptRenderMode::RuntimeResume
+        );
+        assert_eq!(state.runtime_control_intent, RuntimeControlIntent::Resume);
+        assert_eq!(state.resume_prompt_visibility, PromptVisibility::Hidden);
+        assert_eq!(
+            state.resume_prompt.as_deref(),
+            Some("用户已选择将当前节点重新交由 Runtime 控制。当前输出契约（如有）重新生效。")
         );
     }
 
@@ -12423,6 +12502,7 @@ mod tests {
             prompt_id: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
+            runtime_control_intent: RuntimeControlIntent::Resume,
             attachment_paths: Vec::new(),
             model_override: None,
             permission_mode_override: None,
@@ -13841,7 +13921,9 @@ mod tests {
             dynamic_output_contract_for_node(&ctx, &graph, &node),
             SessionMode::Continue,
             Some(serde_json::json!({ "acpSessionId": "session-1" })),
-            Some(localized_continue_prompt(ctx.app.config.desktop_language)),
+            Some(localized_workflow_resume_prompt(
+                ctx.app.config.desktop_language,
+            )),
             None,
             PromptVisibility::Visible,
             UserPromptRenderMode::WorkflowResume,
@@ -14273,6 +14355,7 @@ mod tests {
             prompt_id: Some("prompt-morning".to_string()),
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
+            runtime_control_intent: RuntimeControlIntent::Resume,
             attachment_paths: Vec::new(),
             model_override: None,
             permission_mode_override: None,
@@ -14287,6 +14370,7 @@ mod tests {
             prompt_id: Some("prompt-night".to_string()),
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
+            runtime_control_intent: RuntimeControlIntent::Resume,
             attachment_paths: Vec::new(),
             model_override: None,
             permission_mode_override: None,
@@ -14531,6 +14615,7 @@ mod tests {
             prompt_id: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
+            runtime_control_intent: RuntimeControlIntent::Resume,
             attachment_paths: Vec::new(),
             model_override: None,
             permission_mode_override: None,
@@ -14681,6 +14766,7 @@ mod tests {
             prompt_id: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
+            runtime_control_intent: RuntimeControlIntent::Resume,
             attachment_paths: Vec::new(),
             model_override: None,
             permission_mode_override: None,
@@ -14755,6 +14841,7 @@ mod tests {
             prompt_id: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
+            runtime_control_intent: RuntimeControlIntent::Resume,
             attachment_paths: Vec::new(),
             model_override: None,
             permission_mode_override: None,
@@ -14802,6 +14889,7 @@ mod tests {
             prompt_id: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
+            runtime_control_intent: RuntimeControlIntent::Resume,
             attachment_paths: Vec::new(),
             model_override: None,
             permission_mode_override: None,
@@ -14860,6 +14948,7 @@ mod tests {
             prompt_id: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
+            runtime_control_intent: RuntimeControlIntent::Resume,
             attachment_paths: Vec::new(),
             model_override: None,
             permission_mode_override: None,
@@ -14907,6 +14996,7 @@ mod tests {
             prompt_id: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
+            runtime_control_intent: RuntimeControlIntent::Resume,
             attachment_paths: Vec::new(),
             model_override: None,
             permission_mode_override: None,
@@ -15163,6 +15253,7 @@ mod tests {
             prompt_id: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
+            runtime_control_intent: RuntimeControlIntent::Resume,
             attachment_paths: Vec::new(),
             model_override: None,
             permission_mode_override: None,
@@ -15493,6 +15584,7 @@ mod tests {
             prompt_id: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
+            runtime_control_intent: RuntimeControlIntent::Resume,
             attachment_paths: Vec::new(),
             model_override: None,
             permission_mode_override: None,

@@ -51,17 +51,35 @@ describe('ConversationPromptQueue', () => {
     return props;
   }
 
-  it('shows three FIFO items by default and expands the remaining items', async () => {
+  it('opens by default with a three-item preview and keeps the expanded item range across whole-panel collapse', async () => {
     await renderQueue();
 
+    const trigger = host.querySelector<HTMLButtonElement>('[data-queue-trigger="true"]');
+    expect(trigger).toBeTruthy();
+    expect(trigger?.getAttribute('aria-expanded')).toBe('true');
+    expect(trigger?.textContent).toContain('待发送');
+    expect(trigger?.textContent).toContain('5/10');
+    expect(host.querySelector('[data-testid="conversation-prompt-queue"]')?.className).toContain('bg-card');
+    expect(host.querySelector('[data-testid="conversation-prompt-queue"]')?.className).not.toContain('bg-muted/35');
     expect(host.querySelectorAll('[data-queue-item-id]')).toHaveLength(3);
     expect(host.textContent).toContain('queued prompt 1');
     expect(host.textContent).not.toContain('queued prompt 4');
 
-    const showMore = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('查看更多'));
-    expect(showMore).toBeTruthy();
+    const showMore = host.querySelector<HTMLButtonElement>('[data-queue-show-more="true"]');
+    expect(showMore?.textContent).toContain('查看更多');
+    expect(showMore?.getAttribute('aria-expanded')).toBe('false');
     await act(async () => showMore?.click());
+    expect(showMore?.getAttribute('aria-expanded')).toBe('true');
+    expect(showMore?.textContent).toContain('仅显示前 3 条');
+    expect(host.querySelectorAll('[data-queue-item-id]')).toHaveLength(5);
 
+    await act(async () => trigger?.click());
+    expect(trigger?.getAttribute('aria-expanded')).toBe('false');
+    expect(host.querySelectorAll('[data-queue-item-id]')).toHaveLength(0);
+    expect(host.textContent).not.toContain('queued prompt 1');
+
+    await act(async () => trigger?.click());
+    expect(trigger?.getAttribute('aria-expanded')).toBe('true');
     expect(host.querySelectorAll('[data-queue-item-id]')).toHaveLength(5);
     expect(host.textContent).toContain('queued prompt 5');
   });

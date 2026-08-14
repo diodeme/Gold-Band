@@ -3930,9 +3930,9 @@ export function AcpTodoPanel({
         "w-full",
         variant === "composer"
           ? cn(
-              "overflow-hidden border border-border bg-muted/35",
+              "overflow-hidden border border-border bg-card",
               attachedBelow ? "rounded-t-2xl border-b-0" : "rounded-2xl",
-              integratedInfoTab && "rounded-tl-none bg-card",
+              integratedInfoTab && "rounded-tl-none",
             )
           : "overflow-hidden rounded-lg border border-border/35 bg-transparent",
       )}

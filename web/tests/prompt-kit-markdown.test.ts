@@ -2,7 +2,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { isLocalFileHref, Markdown, proxyLocalFileLinks } from '@/components/prompt-kit/markdown';
-import { isDocumentAnchorHref, isExternalUrlHref } from '@/lib/file-link';
+import { isDocumentAnchorHref, isExternalUrlHref, parseLocalFileLinkTarget } from '@/lib/file-link';
 
 function renderedText(html: string) {
   return html.replace(/<[^>]+>/g, '');
@@ -18,6 +18,28 @@ describe('prompt-kit Markdown', () => {
     expect(isLocalFileHref('mailto:dev@example.com')).toBe(false);
     expect(isExternalUrlHref('https://github.com/diodeme/Gold-Band/releases')).toBe(true);
     expect(isDocumentAnchorHref('#')).toBe(true);
+  });
+
+  it('projects supported local file targets into compact visible locations', () => {
+    expect(parseLocalFileLinkTarget('D:/repo/src/client.rs:2727')).toMatchObject({
+      line: 2727,
+      column: null,
+      endLine: null,
+      displayText: ':2727',
+    });
+    expect(parseLocalFileLinkTarget('D:\\repo\\src\\client.rs:2727:8')).toMatchObject({
+      line: 2727,
+      column: 8,
+      endLine: null,
+      displayText: ':2727:8',
+    });
+    expect(parseLocalFileLinkTarget('file:///D:/repo/src/client.rs#L10-L20')).toMatchObject({
+      line: 10,
+      column: null,
+      endLine: 20,
+      displayText: ':10-20',
+    });
+    expect(parseLocalFileLinkTarget('src/client.rs')).toBeNull();
   });
 
   it('proxies only local Markdown destinations through the safe render URL', () => {

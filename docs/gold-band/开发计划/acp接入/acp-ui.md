@@ -186,6 +186,7 @@ ACP 专属组件只做协议事件映射和业务状态组合：
 - 实时 text/thought 累计快照继续使用 stable identity 的 latest-wins 单项缓冲和 125ms 合并窗口；普通 DOM `scroll` 不再视作用户交互，只有 wheel、滚动键或滚动条 pointer 输入开启 180ms quiet window。每批 pending 更新设 250ms 绝对发布 deadline，避免自动贴底或持续滚动把正文饿死到 `usageUpdate/session terminal` 才一次显示。
 - 消息视口的 scroll handler 每动画帧至多执行一次，只保存 O(1) 的滚动位置、贴底和分页状态；不得在滚动热路径遍历 `[data-acp-item-key]` 或逐项读取 `getBoundingClientRect()`。精确消息 anchor 在卸载/会话切换时捕获，prepend 历史继续使用独立 pagination anchor 补偿。
 - 前端回归覆盖：自动/布局 scroll 不触发 interaction quiet；wheel、键盘和滚动条输入会触发；持续交互仍受 pending deadline 限制；scroll 热路径不扫描消息 DOM；终态事件保持正文先 flush、生命周期后收敛。
+- 2026-08-15：补齐 Agent Markdown 本地文件链接的位置展示。继续复用 prompt-kit/Streamdown link override 与既有 Workspace 解析、定位链路，不修改后端 DTO 或 canonical target；展示层从 href 的 `:line[:column]`、`#Lline[-LendLine]` 后缀派生紧凑位置，并与文件名组成同字号、同字体、同字重、同颜色的连续 `文件名:位置` 文本，label 已含等价位置时不重复。接口回归覆盖 Windows/相对/file URI、行列、范围、无位置、点击参数不变、视觉分组和静态 Markdown/右侧工作区 render 隔离。
 - 流式 Markdown 移除 Gold Band 自制的 32ms visible-prefix RAF，改用 Streamdown 2.5 单文档实例的 `animated + isAnimating` renderer token，由 Gold Band 的唯一轻量 RAF 只沿 block cursor 释放严格连续的文档前缀；Gold Band 只管理 canonical snapshot、live target、会话 identity 和 token 播放索引，不判断未闭合 Markdown。回归固定：每条流式消息最多一个 RAF、streaming canonical 全文在 DOM、稳定 block 索引复用、settle 后旧消息静态完整、新消息独立动画、跨块文档语义保持，以及不同会话复用 provider event id 时 render key 隔离。
 
 ### 6.3 Thought / Reasoning

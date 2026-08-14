@@ -528,6 +528,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - `acp.raw.jsonl` 可独立滚动，因此 raw 修复只处理 baseline 时间之后的结果；不得用不完整的滚动窗口覆盖或降低已有 baseline。升级前的旧 attempt 若没有 `attempt*` 字段，以最后一轮字段建立不下降的迁移 baseline；这只是一次性持久化迁移，不改变 UI 禁止读取最后一轮字段的契约，也不承诺从已经滚掉的 raw 中还原不可得的历史轮次。
 - runtime 在同一 attempt 内重新创建、停止后继续或节点完成后追问时，从当前 attempt journal 恢复 `AcpAttemptTokenTotals` 后继续累加；保留中的 attached runtime 则在同一内存状态中继续累加。新 attempt 不继承旧 attempt totals，即使两者恢复的是同一个 Provider session。单轮响应缺少 `totalTokens` 但存在分项时，使用输入、输出、缓存读、缓存写的饱和加法计算该轮 total；缺失分项不清空既有累计值。
 - `AcpUsageVm.inputTokens / outputTokens / cachedReadTokens / cachedWriteTokens / totalTokens` 对聊天 UI 投影累计字段。timeline 中的 `usage_update` 只负责 `used / size / cost` 等上下文状态，不得用最近一轮 usage breakdown 覆盖累计字段。
+- 会话 composer 上方的信息栏按“当前运行状态、会话累计、上下文窗口”排列；运行状态只在活动时显示，不进入 `PromptInput`，也不再横向展示 `used / size` 数字或 Token 明细。圆环采用 24px 紧凑尺寸，中央只显示整数占用百分比的数值部分，不显示 `%`，避免短标签在内圈拥挤；触发器的无障碍标签仍读出完整百分比。进度弧按显示百分比分段并复用主题状态色：`<60%` 使用 `gold-success`，`60%–<75%` 使用 `gold-running` 作为信息提示，`75%–<90%` 使用 `gold-warning`，`≥90%` 使用 `gold-danger`，未知值使用 `muted-foreground`。该颜色只是基于现有 gauge 的辅助视觉投影，不代表 Provider 的真实 compaction 阈值；精确数字与无障碍标签仍是主信息。鼠标悬浮或键盘聚焦后通过项目 Tooltip 展示“占用 used / size”，不重复百分比，并逐行展示 Provider 已上报的输入、输出、缓存读、缓存写和总量。圆环直接消费当前 `AcpUsageVm` 投影，不新增轮询、定时器、缓存或第二份 usage 状态；普通 text/thought/tool 流式更新不得触发该信息栏重渲染。
 
 ## Agent 单轮回复通知
 

@@ -118,25 +118,147 @@ impl FromStr for ConsoleThemeName {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum DesktopThemePreference {
-    Light,
-    LightGray,
-    Dark,
-    Black,
+pub enum ColorSchemePreference {
     System,
+    Light,
+    Dark,
 }
 
-impl FromStr for DesktopThemePreference {
-    type Err = anyhow::Error;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VisualQuality {
+    Full,
+    Performance,
+}
 
-    fn from_str(value: &str) -> Result<Self> {
-        match value {
-            "light" => Ok(Self::Light),
-            "light-gray" => Ok(Self::LightGray),
-            "dark" => Ok(Self::Dark),
-            "black" => Ok(Self::Black),
-            "system" => Ok(Self::System),
-            _ => Err(anyhow!("unsupported desktop theme: {value}")),
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppearancePreference {
+    pub schema_version: u8,
+    pub theme_id: String,
+    pub color_scheme: ColorSchemePreference,
+    #[serde(default)]
+    pub visual_quality_by_theme: BTreeMap<String, VisualQuality>,
+}
+
+impl Default for AppearancePreference {
+    fn default() -> Self {
+        Self {
+            schema_version: 2,
+            theme_id: "builtin.gold-band".to_string(),
+            color_scheme: ColorSchemePreference::System,
+            visual_quality_by_theme: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "source",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum FontPreference {
+    Theme,
+    Local { family: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "source",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum FontSizePreference {
+    Theme,
+    Custom { px: u8 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "source",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum AvatarPreference {
+    Theme,
+    User { asset_id: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PersonalizationAvatarShape {
+    Circle,
+    Square,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "source",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum AvatarShapePreference {
+    Theme,
+    Custom { value: PersonalizationAvatarShape },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TypographyPreference {
+    pub font: FontPreference,
+    pub font_size: FontSizePreference,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TypographyPersonalization {
+    pub ui: TypographyPreference,
+    pub editor: TypographyPreference,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvatarPersonalization {
+    pub image: AvatarPreference,
+    pub shape: AvatarShapePreference,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvatarPersonalizationSet {
+    pub agent: AvatarPersonalization,
+    pub user: AvatarPersonalization,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonalizationPreference {
+    pub schema_version: u8,
+    pub typography: TypographyPersonalization,
+    pub avatars: AvatarPersonalizationSet,
+}
+
+impl Default for PersonalizationPreference {
+    fn default() -> Self {
+        let typography = || TypographyPreference {
+            font: FontPreference::Theme,
+            font_size: FontSizePreference::Theme,
+        };
+        let avatar = || AvatarPersonalization {
+            image: AvatarPreference::Theme,
+            shape: AvatarShapePreference::Theme,
+        };
+        Self {
+            schema_version: 1,
+            typography: TypographyPersonalization {
+                ui: typography(),
+                editor: typography(),
+            },
+            avatars: AvatarPersonalizationSet {
+                agent: avatar(),
+                user: avatar(),
+            },
         }
     }
 }
@@ -542,12 +664,9 @@ pub struct SettingsConfig {
     pub log_provider_command: Option<bool>,
     pub log_retention_days: Option<u64>,
     pub console_theme: Option<ConsoleThemeName>,
-    pub desktop_theme: Option<DesktopThemePreference>,
+    pub appearance: Option<AppearancePreference>,
+    pub personalization: Option<PersonalizationPreference>,
     pub desktop_language: Option<DesktopLanguage>,
-    pub desktop_font: Option<DesktopFontPreference>,
-    pub desktop_editor_font: Option<DesktopFontPreference>,
-    pub desktop_ui_font_size: Option<u8>,
-    pub desktop_editor_font_size: Option<u8>,
     pub desktop_updater_url_override: Option<String>,
     pub agents: Option<BTreeMap<ManagedAgentId, ManagedAgentConfig>>,
     pub use_local_claude: Option<bool>,
@@ -561,7 +680,7 @@ pub struct SettingsConfig {
     pub context_servers: Option<Vec<McpServerConfig>>,
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 5;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 7;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
 const CURRENT_CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp@latest";
@@ -606,7 +725,15 @@ impl SettingsConfig {
             migrated = true;
         }
         if version < 5 {
+            migrate_desktop_appearance(settings);
+            migrated = true;
+        }
+        if version < 6 {
             settings.remove("desktopWorkspace");
+            migrated = true;
+        }
+        if version < 7 {
+            migrate_desktop_personalization(settings);
             migrated = true;
         }
         if migrated {
@@ -619,6 +746,91 @@ impl SettingsConfig {
         let config = serde_json::from_value(value)?;
         Ok((config, migrated))
     }
+}
+
+fn migrate_desktop_appearance(settings: &mut serde_json::Map<String, serde_json::Value>) {
+    if settings.contains_key("appearance") {
+        settings.remove("desktopTheme");
+        return;
+    }
+    let legacy = settings
+        .remove("desktopTheme")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "system".to_string());
+    let (theme_id, color_scheme) = match legacy.as_str() {
+        "light" => ("builtin.gold-band", "light"),
+        "dark" => ("builtin.gold-band", "dark"),
+        "light-gray" => ("builtin.tech-neutral", "light"),
+        "black" => ("builtin.tech-neutral", "dark"),
+        _ => ("builtin.gold-band", "system"),
+    };
+    settings.insert(
+        "appearance".to_string(),
+        serde_json::json!({
+            "schemaVersion": 2,
+            "themeId": theme_id,
+            "colorScheme": color_scheme,
+            "visualQualityByTheme": {}
+        }),
+    );
+}
+
+fn migrate_desktop_personalization(settings: &mut serde_json::Map<String, serde_json::Value>) {
+    if settings.contains_key("personalization") {
+        settings.remove("desktopFont");
+        settings.remove("desktopEditorFont");
+        settings.remove("desktopUiFontSize");
+        settings.remove("desktopEditorFontSize");
+        return;
+    }
+    let ui_font = settings
+        .remove("desktopFont")
+        .and_then(|value| value.as_str().map(|family| family.trim().to_string()))
+        .filter(|value| !value.is_empty() && value != "app-default")
+        .map_or_else(
+            || serde_json::json!({ "source": "theme" }),
+            |family| serde_json::json!({ "source": "local", "family": family }),
+        );
+    let editor_font = settings
+        .remove("desktopEditorFont")
+        .and_then(|value| value.as_str().map(|family| family.trim().to_string()))
+        .filter(|value| !value.is_empty() && value != "editor-default")
+        .map_or_else(
+            || serde_json::json!({ "source": "theme" }),
+            |family| serde_json::json!({ "source": "local", "family": family }),
+        );
+    let ui_size = settings
+        .remove("desktopUiFontSize")
+        .and_then(|value| value.as_u64())
+        .map(|value| normalize_desktop_ui_font_size(value.min(u64::from(u8::MAX)) as u8))
+        .filter(|value| *value != DEFAULT_DESKTOP_UI_FONT_SIZE)
+        .map_or_else(
+            || serde_json::json!({ "source": "theme" }),
+            |px| serde_json::json!({ "source": "custom", "px": px }),
+        );
+    let editor_size = settings
+        .remove("desktopEditorFontSize")
+        .and_then(|value| value.as_u64())
+        .map(|value| normalize_desktop_editor_font_size(value.min(u64::from(u8::MAX)) as u8))
+        .filter(|value| *value != DEFAULT_DESKTOP_EDITOR_FONT_SIZE)
+        .map_or_else(
+            || serde_json::json!({ "source": "theme" }),
+            |px| serde_json::json!({ "source": "custom", "px": px }),
+        );
+    settings.insert(
+        "personalization".to_string(),
+        serde_json::json!({
+            "schemaVersion": 1,
+            "typography": {
+                "ui": { "font": ui_font, "fontSize": ui_size },
+                "editor": { "font": editor_font, "fontSize": editor_size }
+            },
+            "avatars": {
+                "agent": { "image": { "source": "theme" }, "shape": { "source": "theme" } },
+                "user": { "image": { "source": "theme" }, "shape": { "source": "theme" } }
+            }
+        }),
+    );
 }
 
 fn migrate_scheduled_runtime_settings(settings: &mut serde_json::Map<String, serde_json::Value>) {
@@ -1107,12 +1319,9 @@ pub struct RuntimeConfig {
     pub log_provider_command: bool,
     pub log_retention_days: u64,
     pub console_theme: ConsoleThemeName,
-    pub desktop_theme: DesktopThemePreference,
+    pub appearance: AppearancePreference,
+    pub personalization: PersonalizationPreference,
     pub desktop_language: DesktopLanguage,
-    pub desktop_font: DesktopFontPreference,
-    pub desktop_editor_font: DesktopFontPreference,
-    pub desktop_ui_font_size: u8,
-    pub desktop_editor_font_size: u8,
     pub desktop_updater_url_override: Option<String>,
     pub desktop_updater_last_checked_at: Option<String>,
     pub desktop_update_badges: DesktopUpdateBadgeState,
@@ -1164,12 +1373,9 @@ impl Default for RuntimeConfig {
             log_provider_command: true,
             log_retention_days: 30,
             console_theme: ConsoleThemeName::GoldBand,
-            desktop_theme: DesktopThemePreference::System,
+            appearance: AppearancePreference::default(),
+            personalization: PersonalizationPreference::default(),
             desktop_language: DesktopLanguage::ZhCn,
-            desktop_font: "app-default".to_string(),
-            desktop_editor_font: "editor-default".to_string(),
-            desktop_ui_font_size: DEFAULT_DESKTOP_UI_FONT_SIZE,
-            desktop_editor_font_size: DEFAULT_DESKTOP_EDITOR_FONT_SIZE,
             desktop_updater_url_override: None,
             desktop_updater_last_checked_at: None,
             desktop_update_badges: DesktopUpdateBadgeState::default(),
@@ -1225,24 +1431,14 @@ impl RuntimeConfig {
         if let Some(console_theme) = settings.console_theme {
             self.console_theme = console_theme;
         }
-        if let Some(desktop_theme) = settings.desktop_theme {
-            self.desktop_theme = desktop_theme;
+        if let Some(appearance) = &settings.appearance {
+            self.appearance = appearance.clone();
+        }
+        if let Some(personalization) = &settings.personalization {
+            self.personalization = personalization.clone();
         }
         if let Some(desktop_language) = settings.desktop_language {
             self.desktop_language = desktop_language;
-        }
-        if let Some(desktop_font) = &settings.desktop_font {
-            self.desktop_font = desktop_font.clone();
-        }
-        if let Some(desktop_editor_font) = &settings.desktop_editor_font {
-            self.desktop_editor_font = desktop_editor_font.clone();
-        }
-        if let Some(desktop_ui_font_size) = settings.desktop_ui_font_size {
-            self.desktop_ui_font_size = normalize_desktop_ui_font_size(desktop_ui_font_size);
-        }
-        if let Some(desktop_editor_font_size) = settings.desktop_editor_font_size {
-            self.desktop_editor_font_size =
-                normalize_desktop_editor_font_size(desktop_editor_font_size);
         }
         self.desktop_updater_url_override = settings.desktop_updater_url_override.clone();
         if let Some(agents) = &settings.agents {
@@ -1404,16 +1600,36 @@ impl RuntimeConfig {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpAdapterConfig, ConsoleThemeName, ConversationDirectConfig, ConversationRunMode,
-        ConversationRunModeEntry, DEFAULT_DESKTOP_EDITOR_FONT_SIZE, DEFAULT_DESKTOP_UI_FONT_SIZE,
-        DesktopAvailableUpdate, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
-        MAX_DESKTOP_EDITOR_FONT_SIZE, MIN_DESKTOP_UI_FONT_SIZE, ManagedAgentConfig, ManagedAgentId,
+        AcpAdapterConfig, AppearancePreference, ColorSchemePreference, ConsoleThemeName,
+        ConversationDirectConfig, ConversationRunMode, ConversationRunModeEntry,
+        DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState, FontPreference,
+        FontSizePreference, ManagedAgentConfig, ManagedAgentId, PersonalizationPreference,
         ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
-        SystemPromptDelivery, TurnFilesConfig, WorkspaceLayoutConfig, catalog_agent_default_config,
+        SystemPromptDelivery, TurnFilesConfig, VisualQuality, WorkspaceLayoutConfig,
+        catalog_agent_default_config,
     };
     use crate::agent_catalog::builtin_agent_catalog;
     use std::collections::BTreeMap;
     use std::str::FromStr;
+
+    fn custom_personalization(
+        ui_family: &str,
+        editor_family: &str,
+        ui_size: u8,
+        editor_size: u8,
+    ) -> PersonalizationPreference {
+        let mut personalization = PersonalizationPreference::default();
+        personalization.typography.ui.font = FontPreference::Local {
+            family: ui_family.to_string(),
+        };
+        personalization.typography.ui.font_size = FontSizePreference::Custom { px: ui_size };
+        personalization.typography.editor.font = FontPreference::Local {
+            family: editor_family.to_string(),
+        };
+        personalization.typography.editor.font_size =
+            FontSizePreference::Custom { px: editor_size };
+        personalization
+    }
 
     #[test]
     fn parses_console_theme_names() {
@@ -1450,26 +1666,22 @@ mod tests {
     #[test]
     fn parses_desktop_preferences() {
         assert!(matches!(
-            DesktopThemePreference::from_str("light").unwrap(),
-            DesktopThemePreference::Light
+            serde_json::from_str::<ColorSchemePreference>("\"light\"").unwrap(),
+            ColorSchemePreference::Light
         ));
         assert!(matches!(
-            DesktopThemePreference::from_str("light-gray").unwrap(),
-            DesktopThemePreference::LightGray
+            serde_json::from_str::<ColorSchemePreference>("\"dark\"").unwrap(),
+            ColorSchemePreference::Dark
         ));
         assert!(matches!(
-            DesktopThemePreference::from_str("dark").unwrap(),
-            DesktopThemePreference::Dark
+            serde_json::from_str::<ColorSchemePreference>("\"system\"").unwrap(),
+            ColorSchemePreference::System
         ));
         assert!(matches!(
-            DesktopThemePreference::from_str("black").unwrap(),
-            DesktopThemePreference::Black
+            serde_json::from_str::<VisualQuality>("\"performance\"").unwrap(),
+            VisualQuality::Performance
         ));
-        assert!(matches!(
-            DesktopThemePreference::from_str("system").unwrap(),
-            DesktopThemePreference::System
-        ));
-        assert!(DesktopThemePreference::from_str("light-warm").is_err());
+        assert!(serde_json::from_str::<ColorSchemePreference>("\"light-gray\"").is_err());
         assert!(matches!(
             DesktopLanguage::from_str("zh-cn").unwrap(),
             DesktopLanguage::ZhCn
@@ -1484,31 +1696,30 @@ mod tests {
     fn defaults_console_theme_to_gold_band() {
         let config = RuntimeConfig::default();
         assert!(matches!(config.console_theme, ConsoleThemeName::GoldBand));
-        assert!(matches!(
-            config.desktop_theme,
-            DesktopThemePreference::System
-        ));
+        assert_eq!(config.appearance, AppearancePreference::default());
         assert!(matches!(config.desktop_language, DesktopLanguage::ZhCn));
-        assert_eq!(config.desktop_font, "app-default");
-        assert_eq!(config.desktop_editor_font, "editor-default");
-        assert_eq!(config.desktop_ui_font_size, DEFAULT_DESKTOP_UI_FONT_SIZE);
-        assert_eq!(
-            config.desktop_editor_font_size,
-            DEFAULT_DESKTOP_EDITOR_FONT_SIZE
-        );
+        assert_eq!(config.personalization, PersonalizationPreference::default());
     }
 
     #[test]
-    fn desktop_typography_preferences_are_bounded() {
-        let config = RuntimeConfig::default().apply_settings(&SettingsConfig {
-            desktop_ui_font_size: Some(3),
-            desktop_editor_font_size: Some(99),
-            ..SettingsConfig::default()
-        });
-        assert_eq!(config.desktop_ui_font_size, MIN_DESKTOP_UI_FONT_SIZE);
+    fn legacy_desktop_typography_preferences_are_bounded_during_migration() {
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 6,
+                "desktopUiFontSize": 3,
+                "desktopEditorFontSize": 99
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        let personalization = settings.personalization.unwrap();
         assert_eq!(
-            config.desktop_editor_font_size,
-            MAX_DESKTOP_EDITOR_FONT_SIZE
+            personalization.typography.ui.font_size,
+            FontSizePreference::Custom { px: 12 }
+        );
+        assert_eq!(
+            personalization.typography.editor.font_size,
+            FontSizePreference::Custom { px: 18 }
         );
     }
 
@@ -1516,9 +1727,22 @@ mod tests {
     fn settings_config_roundtrips_json() {
         let settings = SettingsConfig {
             console_theme: Some(ConsoleThemeName::Nord),
-            desktop_theme: Some(DesktopThemePreference::Dark),
+            appearance: Some(AppearancePreference {
+                schema_version: 2,
+                theme_id: "builtin.glass".to_string(),
+                color_scheme: ColorSchemePreference::Dark,
+                visual_quality_by_theme: BTreeMap::from([(
+                    "builtin.glass".to_string(),
+                    VisualQuality::Performance,
+                )]),
+            }),
+            personalization: Some(custom_personalization(
+                "Microsoft YaHei UI",
+                "Fira Code",
+                16,
+                13,
+            )),
             desktop_language: Some(DesktopLanguage::En),
-            desktop_font: Some("Microsoft YaHei UI".to_string()),
             desktop_updater_url_override: Some("https://updates.example/latest.json".to_string()),
             log_level: Some(RuntimeLogLevel::Trace),
             ..SettingsConfig::default()
@@ -1526,15 +1750,9 @@ mod tests {
         let json = serde_json::to_string_pretty(&settings).unwrap();
         let roundtripped: SettingsConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtripped.console_theme, Some(ConsoleThemeName::Nord));
-        assert_eq!(
-            roundtripped.desktop_theme,
-            Some(DesktopThemePreference::Dark)
-        );
+        assert_eq!(roundtripped.appearance, settings.appearance);
+        assert_eq!(roundtripped.personalization, settings.personalization);
         assert_eq!(roundtripped.desktop_language, Some(DesktopLanguage::En));
-        assert_eq!(
-            roundtripped.desktop_font.as_deref(),
-            Some("Microsoft YaHei UI")
-        );
         assert!(matches!(
             roundtripped.log_level,
             Some(RuntimeLogLevel::Trace)
@@ -1596,17 +1814,31 @@ mod tests {
     fn apply_settings_overrides_defaults() {
         let config = RuntimeConfig::default().apply_settings(&SettingsConfig {
             console_theme: Some(ConsoleThemeName::Nord),
-            desktop_theme: Some(DesktopThemePreference::Dark),
+            appearance: Some(AppearancePreference {
+                schema_version: 2,
+                theme_id: "builtin.glass".to_string(),
+                color_scheme: ColorSchemePreference::Dark,
+                visual_quality_by_theme: BTreeMap::new(),
+            }),
+            personalization: Some(custom_personalization(
+                "Microsoft YaHei UI",
+                "Fira Code",
+                16,
+                13,
+            )),
             desktop_language: Some(DesktopLanguage::En),
-            desktop_font: Some("Microsoft YaHei UI".to_string()),
             desktop_updater_url_override: Some("https://updates.example/latest.json".to_string()),
             log_level: Some(RuntimeLogLevel::Trace),
             ..SettingsConfig::default()
         });
         assert_eq!(config.console_theme, ConsoleThemeName::Nord);
-        assert_eq!(config.desktop_theme, DesktopThemePreference::Dark);
+        assert_eq!(config.appearance.theme_id, "builtin.glass");
+        assert_eq!(config.appearance.color_scheme, ColorSchemePreference::Dark);
         assert_eq!(config.desktop_language, DesktopLanguage::En);
-        assert_eq!(config.desktop_font, "Microsoft YaHei UI");
+        assert_eq!(
+            config.personalization,
+            custom_personalization("Microsoft YaHei UI", "Fira Code", 16, 13)
+        );
         assert_eq!(
             config.desktop_updater_url_override.as_deref(),
             Some("https://updates.example/latest.json")
@@ -1690,9 +1922,9 @@ mod tests {
     fn empty_settings_keeps_defaults() {
         let config = RuntimeConfig::default().apply_settings(&SettingsConfig::default());
         assert_eq!(config.console_theme, ConsoleThemeName::GoldBand);
-        assert_eq!(config.desktop_theme, DesktopThemePreference::System);
+        assert_eq!(config.appearance, AppearancePreference::default());
         assert_eq!(config.desktop_language, DesktopLanguage::ZhCn);
-        assert_eq!(config.desktop_font, "app-default");
+        assert_eq!(config.personalization, PersonalizationPreference::default());
         assert!(matches!(config.log_level, RuntimeLogLevel::Info));
     }
 
@@ -1810,9 +2042,14 @@ mod tests {
     fn full_roundtrip_from_settings_and_state() {
         let settings = SettingsConfig {
             console_theme: Some(ConsoleThemeName::Nord),
-            desktop_theme: Some(DesktopThemePreference::Dark),
+            appearance: Some(AppearancePreference {
+                schema_version: 2,
+                theme_id: "builtin.tech-neutral".to_string(),
+                color_scheme: ColorSchemePreference::Dark,
+                visual_quality_by_theme: BTreeMap::new(),
+            }),
+            personalization: Some(custom_personalization("Fira Code", "Iosevka", 15, 13)),
             desktop_language: Some(DesktopLanguage::En),
-            desktop_font: Some("Fira Code".to_string()),
             desktop_updater_url_override: Some("https://updates.example/latest.json".to_string()),
             log_level: Some(RuntimeLogLevel::Trace),
             use_local_claude: Some(true),
@@ -1837,9 +2074,13 @@ mod tests {
             .apply_settings(&settings)
             .apply_state(&state);
         assert_eq!(config.console_theme, ConsoleThemeName::Nord);
-        assert_eq!(config.desktop_theme, DesktopThemePreference::Dark);
+        assert_eq!(config.appearance.theme_id, "builtin.tech-neutral");
+        assert_eq!(config.appearance.color_scheme, ColorSchemePreference::Dark);
         assert_eq!(config.desktop_language, DesktopLanguage::En);
-        assert_eq!(config.desktop_font, "Fira Code");
+        assert_eq!(
+            config.personalization,
+            custom_personalization("Fira Code", "Iosevka", 15, 13)
+        );
         assert!(matches!(config.log_level, RuntimeLogLevel::Trace));
         assert!(config.use_local_claude);
         assert_eq!(
@@ -2131,12 +2372,16 @@ mod tests {
     }
 
     #[test]
-    fn settings_v4_removes_legacy_desktop_workspace() {
+    fn settings_v5_removes_legacy_desktop_workspace() {
         let (settings, migrated) =
             SettingsConfig::from_json_value_with_migration(serde_json::json!({
-                "settingsSchemaVersion": 4,
+                "settingsSchemaVersion": 5,
                 "desktopWorkspace": "D:/Projects/legacy",
-                "desktopTheme": "dark"
+                "appearance": {
+                    "schemaVersion": 2,
+                    "themeId": "builtin.gold-band",
+                    "colorScheme": "dark"
+                }
             }))
             .unwrap();
 
@@ -2148,8 +2393,8 @@ mod tests {
         let persisted = serde_json::to_value(settings).unwrap();
         assert!(persisted.get("desktopWorkspace").is_none());
         assert_eq!(
-            persisted.get("desktopTheme"),
-            Some(&serde_json::json!("dark"))
+            persisted.pointer("/appearance/themeId"),
+            Some(&serde_json::json!("builtin.gold-band"))
         );
     }
 

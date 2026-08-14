@@ -1,22 +1,19 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, ConcreteDesktopTheme, DesktopFontPreference, DesktopLanguage, DesktopThemeMode, DesktopThemePreference, LocalClaudeStatusVm, MetricsSettingsVm, PreferencesVm, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm } from '../types';
+import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, ColorSchemePreference, DesktopFontPreference, DesktopLanguage, LocalClaudeStatusVm, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, VisualQuality } from '../types';
 import {
-  applyFont,
-  applyEditorFont,
-  applyTypographyPreferences,
-  applyTheme,
+  appearanceWithQuality,
+  appearanceWithTheme,
+  applyAppearance,
+  applyPersonalization,
   desktopFontOptions,
   desktopEditorFontOptions,
   desktopTypography,
-  desktopThemeGroups,
   fontFamilyForPreference,
   editorFontFamilyForPreference,
-  desktopThemeOptions,
-  preferredThemeForMode,
-  rememberConcreteThemePreference,
-  resolveThemePreference,
-  type DesktopThemeOption,
+  getThemePackage,
+  resolveAppearance,
+  themePackageSummaries,
   type DesktopFontOption,
   type ThemePreviewPalette,
 } from '../theme';
@@ -27,7 +24,6 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Check, ChevronDown, CircleHelp, Loader2, Pencil, RotateCcw, Save } from 'lucide-react';
 import { checkLocalClaude, getMetricsSettings, getSystemFonts, saveMetricsSettings } from '../api';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -37,10 +33,30 @@ import { formatLocalDateTime } from '@/lib/datetime';
 import { ScheduledRuntimeSettings } from '@/components/scheduled-tasks/ScheduledRuntimeSettings';
 import { AvatarSettings } from '@/components/settings/AvatarSettings';
 
-type ThemeDrawerMode = 'all' | DesktopThemeMode;
 type TypographySection = 'ui' | 'editor';
 
 const typographyDisclosureSessionKey = 'gold-band:settings:typography-disclosure:v1';
+
+function effectiveTypographySize(appearance: AppearancePreference, personalization: PersonalizationPreference, kind: TypographySection) {
+  const preference = personalization.typography[kind].fontSize;
+  if (preference.source === 'custom') return preference.px;
+  const preset = resolveAppearance(appearance).scheme.typography;
+  return kind === 'ui' ? preset.uiSize : preset.editorSize;
+}
+
+function withTypographySize(
+  personalization: PersonalizationPreference,
+  kind: TypographySection,
+  fontSize: PersonalizationPreference['typography']['ui']['fontSize'],
+): PersonalizationPreference {
+  return {
+    ...personalization,
+    typography: {
+      ...personalization.typography,
+      [kind]: { ...personalization.typography[kind], fontSize },
+    },
+  };
+}
 
 function initialTypographyDisclosure(): Record<TypographySection, boolean> {
   try {
@@ -63,10 +79,10 @@ interface SettingsPageProps {
   clientVersion: string;
   busy: boolean;
   initialTab?: 'general' | 'appearance' | 'advanced';
-  onSave: (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, editorFont: DesktopFontPreference, uiFontSize: number, editorFontSize: number, useLocalClaude: boolean, verboseLogging: boolean) => void;
+  onSave: (appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean) => void;
   onSaveAvatar: (input: SaveDesktopAvatarInput) => Promise<AvatarPreferencesVm | undefined>;
   onSelectRecentAvatar: (kind: AvatarKind, avatarId: string) => Promise<AvatarPreferencesVm | undefined>;
-  onSaveAvatarShape: (kind: AvatarKind, shape: AvatarShape) => Promise<AvatarPreferencesVm | undefined>;
+  onSaveAvatarShape: (kind: AvatarKind, shape: AvatarShape | null) => Promise<AvatarPreferencesVm | undefined>;
   onClearAvatar: (kind: AvatarKind) => Promise<AvatarPreferencesVm | undefined>;
   metricsSettings?: MetricsSettingsVm | null;
   onSaveMetricsSettings?: (enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) => Promise<MetricsSettingsVm | undefined>;
@@ -79,29 +95,24 @@ interface SettingsPageProps {
 
 export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, initialTab, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
   const { t } = useTranslation();
-  const [theme, setTheme] = useState(preferences.theme);
+  const [appearance, setAppearance] = useState(preferences.appearance);
+  const [personalization, setPersonalization] = useState(preferences.personalization);
   const [language, setLanguage] = useState(preferences.language);
-  const [font, setFont] = useState(preferences.font);
-  const [editorFont, setEditorFont] = useState(preferences.editorFont);
-  const [uiFontSize, setUiFontSize] = useState(preferences.uiFontSize);
-  const [editorFontSize, setEditorFontSize] = useState(preferences.editorFontSize);
+  const [uiFontSize, setUiFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui'));
+  const [editorFontSize, setEditorFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor'));
   const [useLocalClaude, setUseLocalClaude] = useState(preferences.useLocalClaude);
   const [verboseLogging, setVerboseLogging] = useState(preferences.verboseLogging);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
-  const [themeDrawerMode, setThemeDrawerMode] = useState<ThemeDrawerMode>('all');
-  const [themeSheetOpen, setThemeSheetOpen] = useState(false);
-  const [preferenceVersion, setPreferenceVersion] = useState(0);
   const [typographyDisclosure, setTypographyDisclosure] = useState(initialTypographyDisclosure);
   const [updaterOverrideUrl, setUpdaterOverrideUrl] = useState(updaterSettings.overrideUrl ?? '');
   const [editingUpdaterUrl, setEditingUpdaterUrl] = useState(false);
   const [activeTab, setActiveTab] = useState<'general' | 'appearance' | 'advanced'>(initialTab ?? 'general');
 
-  useEffect(() => setTheme(preferences.theme), [preferences.theme]);
+  useEffect(() => setAppearance(preferences.appearance), [preferences.appearance]);
+  useEffect(() => setPersonalization(preferences.personalization), [preferences.personalization]);
   useEffect(() => setLanguage(preferences.language), [preferences.language]);
-  useEffect(() => setFont(preferences.font), [preferences.font]);
-  useEffect(() => setEditorFont(preferences.editorFont), [preferences.editorFont]);
-  useEffect(() => setUiFontSize(preferences.uiFontSize), [preferences.uiFontSize]);
-  useEffect(() => setEditorFontSize(preferences.editorFontSize), [preferences.editorFontSize]);
+  useEffect(() => setUiFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui')), [preferences.appearance, preferences.personalization]);
+  useEffect(() => setEditorFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor')), [preferences.appearance, preferences.personalization]);
   useEffect(() => setUseLocalClaude(preferences.useLocalClaude), [preferences.useLocalClaude]);
   useEffect(() => setVerboseLogging(preferences.verboseLogging), [preferences.verboseLogging]);
   useEffect(() => setUpdaterOverrideUrl(updaterSettings.overrideUrl ?? ''), [updaterSettings.overrideUrl]);
@@ -168,66 +179,55 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     void onViewAdvanced();
   }, [activeTab, onViewAdvanced]);
 
-  const chooseTheme = (value: DesktopThemePreference) => {
-    if (value !== 'system') rememberConcreteThemePreference(value);
-    setTheme(value);
-    onSave(value, language, font, editorFont, uiFontSize, editorFontSize, useLocalClaude, verboseLogging);
-  };
-
-  const chooseConcreteThemeFromSheet = (value: ConcreteDesktopTheme) => {
-    rememberConcreteThemePreference(value);
-    setPreferenceVersion((version) => version + 1);
-    if (theme === 'system') {
-      applyTheme('system');
-      setTheme('system');
-      onSave('system', language, font, editorFont, uiFontSize, editorFontSize, useLocalClaude, verboseLogging);
-    } else {
-      setTheme(value);
-      onSave(value, language, font, editorFont, uiFontSize, editorFontSize, useLocalClaude, verboseLogging);
-    }
-    setThemeSheetOpen(false);
+  const saveAppearance = (next: AppearancePreference) => {
+    setAppearance(next);
+    applyAppearance(next);
+    applyPersonalization(personalization);
+    onSave(next, personalization, language, useLocalClaude, verboseLogging);
   };
 
   const chooseLanguage = (value: DesktopLanguage) => {
     setLanguage(value);
-    onSave(theme, value, font, editorFont, uiFontSize, editorFontSize, useLocalClaude, verboseLogging);
+    onSave(appearance, personalization, value, useLocalClaude, verboseLogging);
   };
 
   const chooseFont = (value: DesktopFontPreference) => {
-    setFont(value);
-    applyFont(value);
-    onSave(theme, language, value, editorFont, uiFontSize, editorFontSize, useLocalClaude, verboseLogging);
+    const next = { ...personalization, typography: { ...personalization.typography, ui: { ...personalization.typography.ui, font: value === desktopFontOptions[0].id ? { source: 'theme' as const } : { source: 'local' as const, family: value } } } };
+    setPersonalization(next);
+    applyPersonalization(next);
+    onSave(appearance, next, language, useLocalClaude, verboseLogging);
   };
 
   const chooseEditorFont = (value: DesktopFontPreference) => {
-    setEditorFont(value);
-    applyEditorFont(value);
-    onSave(theme, language, font, value, uiFontSize, editorFontSize, useLocalClaude, verboseLogging);
+    const next = { ...personalization, typography: { ...personalization.typography, editor: { ...personalization.typography.editor, font: value === desktopEditorFontOptions[0].id ? { source: 'theme' as const } : { source: 'local' as const, family: value } } } };
+    setPersonalization(next);
+    applyPersonalization(next);
+    onSave(appearance, next, language, useLocalClaude, verboseLogging);
   };
 
   const chooseTypographySize = (kind: 'ui' | 'editor', value: number) => {
-    const next = applyTypographyPreferences(
-      kind === 'ui' ? value : uiFontSize,
-      kind === 'editor' ? value : editorFontSize,
-    );
-    setUiFontSize(next.uiFontSize);
-    setEditorFontSize(next.editorFontSize);
-    onSave(theme, language, font, editorFont, next.uiFontSize, next.editorFontSize, useLocalClaude, verboseLogging);
+    const next = withTypographySize(personalization, kind, { source: 'custom', px: value });
+    setPersonalization(next);
+    setUiFontSize(effectiveTypographySize(appearance, next, 'ui'));
+    setEditorFontSize(effectiveTypographySize(appearance, next, 'editor'));
+    applyPersonalization(next);
+    onSave(appearance, next, language, useLocalClaude, verboseLogging);
   };
 
   const previewTypographySize = (kind: 'ui' | 'editor', value: number) => {
-    const next = applyTypographyPreferences(
-      kind === 'ui' ? value : uiFontSize,
-      kind === 'editor' ? value : editorFontSize,
-    );
-    setUiFontSize(next.uiFontSize);
-    setEditorFontSize(next.editorFontSize);
+    if (kind === 'ui') setUiFontSize(value); else setEditorFontSize(value);
+    applyPersonalization(withTypographySize(personalization, kind, { source: 'custom', px: value }));
   };
 
-  const openThemeDrawer = (mode: ThemeDrawerMode) => {
-    setThemeDrawerMode(mode);
-    setThemeSheetOpen(true);
+  const resetTypographySize = (kind: 'ui' | 'editor') => {
+    const next = withTypographySize(personalization, kind, { source: 'theme' });
+    setPersonalization(next);
+    setUiFontSize(effectiveTypographySize(appearance, next, 'ui'));
+    setEditorFontSize(effectiveTypographySize(appearance, next, 'editor'));
+    applyPersonalization(next);
+    onSave(appearance, next, language, useLocalClaude, verboseLogging);
   };
+
 
   const saveUpdaterOverride = async () => {
     const saved = await onSaveUpdaterSettings(updaterOverrideUrl);
@@ -256,18 +256,12 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     });
   };
 
-  const syncWithOs = theme === 'system';
-  const resolvedTheme = resolveThemePreference(theme);
-  const currentTheme = getThemeOption(resolvedTheme);
-  const preferredLightTheme = getThemeOption(preferredThemeForMode('light'));
-  const preferredDarkTheme = getThemeOption(preferredThemeForMode('dark'));
+  const effectiveAppearance = resolveAppearance(appearance);
+  const currentTheme = getThemePackage(appearance.themeId);
   const defaultFontOption = desktopFontOptions[0];
-  const usingBuiltInFont = font === defaultFontOption.id;
-  const selectedLocalFont = usingBuiltInFont ? null : font;
+  const selectedLocalFont = personalization.typography.ui.font.source === 'local' ? personalization.typography.ui.font.family : null;
   const defaultEditorFontOption = desktopEditorFontOptions[0];
-  const usingBuiltInEditorFont = editorFont === defaultEditorFontOption.id;
-  const selectedLocalEditorFont = usingBuiltInEditorFont ? null : editorFont;
-  void preferenceVersion;
+  const selectedLocalEditorFont = personalization.typography.editor.font.source === 'local' ? personalization.typography.editor.font.family : null;
 
   return (
     <Page flush className="flex flex-col">
@@ -310,82 +304,48 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
         <TabsContent value="appearance" className="m-0">
           <AppCard className="gap-0 overflow-hidden py-0">
             <SettingsSection title={t('settings.appearance')}>
-              <div className="flex flex-wrap items-start justify-between gap-4 py-2">
-                <div className="min-w-0 space-y-1">
-                  <div className="text-sm font-semibold">{t('settings.syncWithOs')}</div>
-                  <div className="text-xs text-muted-foreground">{t('settings.syncWithOsDescription')}</div>
+              <div className="space-y-4">
+                <div className="grid gap-3 @4xl/settings-content:grid-cols-3">
+                  {themePackageSummaries.map((summary) => (
+                    <ThemePackageCard
+                      key={summary.id}
+                      summary={summary}
+                      selected={appearance.themeId === summary.id}
+                      scheme={effectiveAppearance.colorScheme}
+                      onSelect={() => saveAppearance(appearanceWithTheme(appearance, summary.id))}
+                    />
+                  ))}
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={syncWithOs}
-                  className={cn(
-                    'relative h-6 w-11 shrink-0 overflow-hidden rounded-full border p-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-                    syncWithOs ? 'border-primary bg-primary' : 'border-border/70 bg-muted-foreground/20',
-                  )}
-                  onClick={() => chooseTheme(syncWithOs ? resolvedTheme : 'system')}
-                >
-                  <span
-                    className={cn(
-                      'block size-5 rounded-full bg-background shadow-sm transition-transform',
-                      syncWithOs && 'translate-x-5',
-                    )}
-                  />
-                </button>
+                <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-border/45 p-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold">{t('settings.colorScheme')}</div>
+                    <div className="text-xs text-muted-foreground">{t('settings.colorSchemeDescription')}</div>
+                  </div>
+                  <Select value={appearance.colorScheme} onValueChange={(value) => saveAppearance({ ...appearance, colorScheme: value as ColorSchemePreference })}>
+                    <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="system">{t('settings.schemeSystem')}</SelectItem>
+                      <SelectItem value="light">{t('settings.schemeLight')}</SelectItem>
+                      <SelectItem value="dark">{t('settings.schemeDark')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {currentTheme.visualQualityProfiles ? (
+                  <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-border/45 p-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold">{t('settings.visualQuality')}</div>
+                      <div className="text-xs text-muted-foreground">{t('settings.visualQualityDescription')}</div>
+                    </div>
+                    <Select value={effectiveAppearance.visualQuality} onValueChange={(value) => saveAppearance(appearanceWithQuality(appearance, value as VisualQuality))}>
+                      <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="full">{t('settings.visualQualityFull')}</SelectItem>
+                        <SelectItem value="performance">{t('settings.visualQualityPerformance')}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : null}
               </div>
-
-              <Sheet modal={false} open={themeSheetOpen} onOpenChange={setThemeSheetOpen}>
-                {syncWithOs ? (
-                  <div className="grid gap-3 @6xl/settings-content:grid-cols-2">
-                    <ThemeSummaryCard
-                      eyebrow={t('settings.lightDefaultTheme')}
-                      option={preferredLightTheme}
-                      active={resolvedTheme === preferredLightTheme.id}
-                      buttonLabel={t('settings.chooseLightTheme')}
-                      onOpen={() => openThemeDrawer('light')}
-                    />
-                    <ThemeSummaryCard
-                      eyebrow={t('settings.darkDefaultTheme')}
-                      option={preferredDarkTheme}
-                      active={resolvedTheme === preferredDarkTheme.id}
-                      buttonLabel={t('settings.chooseDarkTheme')}
-                      onOpen={() => openThemeDrawer('dark')}
-                    />
-                  </div>
-                ) : (
-                  <ThemeSummaryCard
-                    eyebrow={t('settings.currentTheme')}
-                    option={currentTheme}
-                    buttonLabel={t('settings.chooseTheme')}
-                    onOpen={() => openThemeDrawer('all')}
-                  />
-                )}
-                <SheetContent className="overflow-hidden" resizeStorageKey={`settings/theme-drawer/${themeDrawerMode ?? 'all'}`} defaultSize={760} minSize={560} maxSize={980} closeLabel={t('common.close')}>
-                  <SheetHeader className="border-b px-5 py-4">
-                    <SheetTitle>{themeDrawerMode === 'light' ? t('settings.chooseLightTheme') : themeDrawerMode === 'dark' ? t('settings.chooseDarkTheme') : t('settings.themeDrawerTitle')}</SheetTitle>
-                  </SheetHeader>
-                  <div className="@container/theme-drawer min-h-0 flex-1 overflow-y-auto px-5 pb-6 pt-2">
-                    {(themeDrawerMode === 'all' || themeDrawerMode === 'light') ? (
-                      <ThemeOptionGroup
-                        title={t('settings.lightThemes')}
-                        options={desktopThemeGroups.light}
-                        currentTheme={theme}
-                        resolvedTheme={resolvedTheme}
-                        onSelect={chooseConcreteThemeFromSheet}
-                      />
-                    ) : null}
-                    {(themeDrawerMode === 'all' || themeDrawerMode === 'dark') ? (
-                      <ThemeOptionGroup
-                        title={t('settings.darkThemes')}
-                        options={desktopThemeGroups.dark}
-                        currentTheme={theme}
-                        resolvedTheme={resolvedTheme}
-                        onSelect={chooseConcreteThemeFromSheet}
-                      />
-                    ) : null}
-                  </div>
-                </SheetContent>
-              </Sheet>
             </SettingsSection>
 
             <SettingsSection title={t('settings.typography')} divided>
@@ -404,7 +364,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                     max={desktopTypography.ui.max}
                     onChange={(value) => previewTypographySize('ui', value)}
                     onCommit={(value) => chooseTypographySize('ui', value)}
-                    onReset={() => chooseTypographySize('ui', desktopTypography.ui.defaultValue)}
+                    onReset={() => resetTypographySize('ui')}
                   />
                   <FontPreferenceSetting
                     defaultOption={defaultFontOption}
@@ -428,7 +388,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                     max={desktopTypography.editor.max}
                     onChange={(value) => previewTypographySize('editor', value)}
                     onCommit={(value) => chooseTypographySize('editor', value)}
-                    onReset={() => chooseTypographySize('editor', desktopTypography.editor.defaultValue)}
+                    onReset={() => resetTypographySize('editor')}
                   />
                   <FontPreferenceSetting
                     defaultOption={defaultEditorFontOption}
@@ -445,6 +405,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
             <SettingsSection title={t('settings.avatar.title')} divided>
               <AvatarSettings
                 preferences={preferences.avatars}
+                personalization={personalization.avatars}
                 busy={busy}
                 onSaveAvatar={onSaveAvatar}
                 onSelectRecentAvatar={onSelectRecentAvatar}
@@ -472,7 +433,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   onClick={() => {
                     const next = !useLocalClaude;
                     setUseLocalClaude(next);
-                    onSave(theme, language, font, editorFont, uiFontSize, editorFontSize, next, verboseLogging);
+                    onSave(appearance, personalization, language, next, verboseLogging);
                   }}
                 >
                   <span
@@ -500,7 +461,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   onClick={() => {
                     const next = !verboseLogging;
                     setVerboseLogging(next);
-                    onSave(theme, language, font, editorFont, uiFontSize, editorFontSize, useLocalClaude, next);
+                    onSave(appearance, personalization, language, useLocalClaude, next);
                   }}
                 >
                   <span
@@ -705,84 +666,30 @@ function SettingInfoTooltip({ content }: { content: string }) {
   );
 }
 
-interface ThemeSummaryCardProps {
-  eyebrow: string;
-  option: DesktopThemeOption;
-  active?: boolean;
-  buttonLabel: string;
-  onOpen: () => void;
-}
-
-function ThemeSummaryCard({ eyebrow, option, active = false, buttonLabel, onOpen }: ThemeSummaryCardProps) {
-  const { t } = useTranslation();
-  return (
-    <div className="@container/theme-summary">
-      <div className={cn('grid gap-3 rounded-lg border border-border/35 bg-transparent p-3 transition-colors @lg/theme-summary:grid-cols-[auto_minmax(0,1fr)] @lg/theme-summary:items-center @xl/theme-summary:grid-cols-[auto_minmax(0,1fr)_auto]', active && 'border-primary/45 bg-primary/[0.04]')}>
-        <TerminalPreview palette={option.preview} compact />
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted-foreground">{eyebrow}</span>
-            {active ? <Badge variant="outline" className="px-1.5 py-0 text-ui-micro">{t('settings.activeTheme')}</Badge> : null}
-          </div>
-          <div className="text-base font-semibold">{t(option.labelKey)}</div>
-        </div>
-        <Button variant="outline" className="w-full @lg/theme-summary:col-span-2 @xl/theme-summary:col-span-1 @xl/theme-summary:w-auto" onClick={onOpen}>{buttonLabel}</Button>
-      </div>
-    </div>
-  );
-}
-
-interface ThemeOptionGroupProps {
-  title: string;
-  options: readonly DesktopThemeOption[];
-  currentTheme: DesktopThemePreference;
-  resolvedTheme: ConcreteDesktopTheme;
-  onSelect: (theme: ConcreteDesktopTheme) => void;
-}
-
-function ThemeOptionGroup({ title, options, currentTheme, resolvedTheme, onSelect }: ThemeOptionGroupProps) {
-  return (
-    <section className="space-y-3 py-4">
-      <div className="text-sm font-semibold text-muted-foreground">{title}</div>
-      <div className="grid gap-3 @2xl/theme-drawer:grid-cols-2">
-        {options.map((option) => (
-          <ThemeOptionCard
-            key={option.id}
-            option={option}
-            selected={currentTheme === option.id}
-            synced={currentTheme === 'system' && resolvedTheme === option.id}
-            onSelect={() => onSelect(option.id)}
-          />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-interface ThemeOptionCardProps {
-  option: DesktopThemeOption;
+interface ThemePackageCardProps {
+  summary: (typeof themePackageSummaries)[number];
   selected: boolean;
-  synced: boolean;
+  scheme: 'light' | 'dark';
   onSelect: () => void;
 }
 
-function ThemeOptionCard({ option, selected, synced, onSelect }: ThemeOptionCardProps) {
-  const { t } = useTranslation();
-  const active = selected || synced;
+function ThemePackageCard({ summary, selected, scheme, onSelect }: ThemePackageCardProps) {
+  const { i18n, t } = useTranslation();
+  const language = i18n.resolvedLanguage?.startsWith('zh') ? 'zh-CN' : 'en';
   return (
     <button
       type="button"
-      aria-pressed={active}
+      aria-pressed={selected}
       className={cn(
-        'group flex min-w-0 items-center gap-4 rounded-xl border border-border/45 bg-card p-3 text-left transition-[background-color,border-color,box-shadow] hover:border-primary/35 hover:bg-accent/20 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        active && 'border-primary/45 bg-primary/[0.045] ring-1 ring-inset ring-primary/15',
+        'group flex min-w-0 flex-col gap-3 rounded-xl border border-border/45 bg-card p-3 text-left transition-[background-color,border-color,box-shadow] hover:border-primary/35 hover:bg-accent/20 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        selected && 'border-primary/45 bg-primary/[0.045] ring-1 ring-inset ring-primary/15',
       )}
       onClick={onSelect}
     >
-      <TerminalPreview palette={option.preview} />
-      <div className="flex min-w-0 flex-1 flex-col items-start justify-center gap-2">
-        <span className="truncate text-base font-semibold text-foreground">{t(option.labelKey)}</span>
-        {active ? (
+      <TerminalPreview palette={summary.preview[scheme]} compact />
+      <div className="flex min-w-0 w-full items-center justify-between gap-2">
+        <span className="truncate text-sm font-semibold text-foreground">{summary.name[language]}</span>
+        {selected ? (
           <span className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-ui-micro font-medium text-primary-foreground">
             <Check className="size-3" aria-hidden="true" />
             {t('settings.activeTheme')}
@@ -983,8 +890,4 @@ function TerminalPreview({ palette, compact = false }: { palette: ThemePreviewPa
       </div>
     </div>
   );
-}
-
-function getThemeOption(theme: ConcreteDesktopTheme): DesktopThemeOption {
-  return desktopThemeOptions.find((option) => option.id === theme) ?? desktopThemeOptions[0];
 }

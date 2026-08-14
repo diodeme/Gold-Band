@@ -1,0 +1,74 @@
+{
+  "shell": {
+    "background": "transparent",
+    "foreground": "foreground",
+    "border": "border",
+    "material": "flat"
+  },
+  "titlebar": {
+    "background": "sidebar",
+    "foreground": "foreground",
+    "border": "highlight",
+    "material": "subtle"
+  },
+  "sidebar": {
+    "background": "sidebar",
+    "foreground": "foreground",
+    "border": "highlight",
+    "material": "subtle"
+  },
+  "panel": {
+    "background": "card",
+    "foreground": "card-foreground",
+    "border": "highlight",
+    "material": "subtle"
+  },
+  "composer": {
+    "background": "card",
+    "foreground": "card-foreground",
+    "border": "highlight",
+    "material": "elevated"
+  },
+  "card": {
+    "background": "card",
+    "foreground": "card-foreground",
+    "border": "highlight",
+    "material": "elevated"
+  },
+  "dialog": {
+    "background": "card",
+    "foreground": "card-foreground",
+    "border": "highlight",
+    "material": "elevated"
+  },
+  "popover": {
+    "background": "popover",
+    "foreground": "card-foreground",
+    "border": "highlight",
+    "material": "elevated"
+  },
+  "editor": {
+    "background": "card",
+    "foreground": "foreground",
+    "border": "highlight",
+    "material": "subtle"
+  },
+  "sheet": {
+    "background": "card",
+    "foreground": "card-foreground",
+    "border": "highlight",
+    "material": "elevated"
+  },
+  "input": {
+    "background": "surface-low",
+    "foreground": "card-foreground",
+    "border": "highlight",
+    "material": "subtle"
+  },
+  "button": {
+    "background": "surface-high",
+    "foreground": "card-foreground",
+    "border": "highlight",
+    "material": "subtle"
+  }
+}

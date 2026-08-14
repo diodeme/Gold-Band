@@ -1,0 +1,30 @@
+{
+  "light": {
+    "typography": {
+      "uiFamily": "\"Gold Band MiSans\", \"MiSans\", \"Microsoft YaHei UI\", \"PingFang SC\", \"Noto Sans CJK SC\", \"Source Han Sans SC\", system-ui, sans-serif",
+      "uiSize": 15,
+      "editorFamily": "\"JetBrains Mono\", \"SFMono-Regular\", Consolas, monospace",
+      "editorSize": 12
+    },
+    "avatars": {
+      "agentShape": "circle",
+      "userShape": "circle",
+      "agentAsset": null,
+      "userAsset": null
+    }
+  },
+  "dark": {
+    "typography": {
+      "uiFamily": "\"Gold Band MiSans\", \"MiSans\", \"Microsoft YaHei UI\", \"PingFang SC\", \"Noto Sans CJK SC\", \"Source Han Sans SC\", system-ui, sans-serif",
+      "uiSize": 15,
+      "editorFamily": "\"JetBrains Mono\", \"SFMono-Regular\", Consolas, monospace",
+      "editorSize": 12
+    },
+    "avatars": {
+      "agentShape": "circle",
+      "userShape": "circle",
+      "agentAsset": null,
+      "userAsset": null
+    }
+  }
+}

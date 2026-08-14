@@ -3,25 +3,21 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ACP_RAW_SCROLL_AREA_CLASS_NAME, ACP_SESSION_SCROLL_AREA_CLASS_NAME } from '../src/components/acp/ACPChatDialog';
 import { GOLD_THEMED_SCROLLBAR_CLASS, goldThemedScrollbarClassName } from '../src/lib/themed-scrollbar';
+import { builtinThemes } from '../src/themes/builtin-themes';
 
-const THEME_SCROLLBAR_TOKENS = {
-  dark: { track: 4, thumb: 18, hover: 30 },
-  black: { track: 4, thumb: 20, hover: 32 },
-  light: { track: 3, thumb: 16, hover: 26 },
-  'light-gray': { track: 3, thumb: 16, hover: 26 },
-} as const;
+function parseRgba(value: string) {
+  const match = /^rgba\((\d+),(\d+),(\d+),(\d*\.?\d+)\)$/u.exec(value);
+  expect(match, `${value} should be an explicit bounded rgba color`).not.toBeNull();
+  return {
+    rgb: match!.slice(1, 4).map(Number),
+    alpha: Number(match![4]),
+  };
+}
 
-function getThemeBlock(styles: string, theme: keyof typeof THEME_SCROLLBAR_TOKENS) {
-  const normalizedStyles = styles.replace(/\r\n?/g, '\n');
-  const selector = theme === 'dark'
-    ? ":root,\n:root[data-theme='dark']"
-    : `:root[data-theme='${theme}']`;
-  const start = normalizedStyles.indexOf(`${selector} {`);
-  const end = normalizedStyles.indexOf('\n}', start);
-
-  expect(start).toBeGreaterThanOrEqual(0);
-  expect(end).toBeGreaterThan(start);
-  return normalizedStyles.slice(start, end);
+function parseHexRgb(value: string) {
+  const match = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/iu.exec(value);
+  expect(match, `${value} should be a six-digit foreground color`).not.toBeNull();
+  return match!.slice(1, 4).map((channel) => Number.parseInt(channel, 16));
 }
 
 describe('Gold themed scrollbar', () => {
@@ -52,24 +48,21 @@ describe('Gold themed scrollbar', () => {
   });
 
   it('keeps every theme scrollbar neutral and low contrast until hover', () => {
-    const styles = readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
+    for (const theme of builtinThemes) {
+      for (const schemeName of ['light', 'dark'] as const) {
+        const semantic = theme.schemes[schemeName].semantic;
+        const foreground = parseHexRgb(semantic.foreground);
+        const track = parseRgba(semantic.scrollbarTrack);
+        const thumb = parseRgba(semantic.scrollbarThumb);
+        const hover = parseRgba(semantic.scrollbarThumbHover);
 
-    for (const [theme, tokens] of Object.entries(THEME_SCROLLBAR_TOKENS)) {
-      const themeBlock = getThemeBlock(styles, theme as keyof typeof THEME_SCROLLBAR_TOKENS);
-
-      expect(themeBlock).toContain(
-        `--gold-scrollbar-track: color-mix(in srgb, var(--foreground) ${tokens.track}%, transparent);`,
-      );
-      expect(themeBlock).toContain(
-        `--gold-scrollbar-thumb: color-mix(in srgb, var(--foreground) ${tokens.thumb}%, transparent);`,
-      );
-      expect(themeBlock).toContain(
-        `--gold-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) ${tokens.hover}%, transparent);`,
-      );
-      expect(tokens.track).toBeLessThan(tokens.thumb);
-      expect(tokens.thumb).toBeLessThan(tokens.hover);
-      expect(themeBlock).not.toMatch(/--gold-scrollbar-(?:track|thumb|thumb-hover):[^;]*var\(--primary\)/);
-      expect(themeBlock).not.toMatch(/--gold-scrollbar-(?:track|thumb|thumb-hover):[^;]*var\(--muted-foreground\)/);
+        expect(track.rgb, `${theme.id}/${schemeName} track should stay neutral`).toEqual(foreground);
+        expect(thumb.rgb, `${theme.id}/${schemeName} thumb should stay neutral`).toEqual(foreground);
+        expect(hover.rgb, `${theme.id}/${schemeName} hover should stay neutral`).toEqual(foreground);
+        expect(track.alpha).toBeLessThan(thumb.alpha);
+        expect(thumb.alpha).toBeLessThan(hover.alpha);
+        expect(hover.alpha).toBeLessThanOrEqual(0.4);
+      }
     }
   });
 

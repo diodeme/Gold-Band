@@ -1,0 +1,12 @@
+{
+  "primitive": {
+    "radius": {
+      "$type": "string",
+      "$value": "0px"
+    },
+    "motionEasing": {
+      "$type": "string",
+      "$value": "linear"
+    }
+  }
+}

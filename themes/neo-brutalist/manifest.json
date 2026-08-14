@@ -1,0 +1,23 @@
+{
+  "$schema": "../../theme-sdk/schema/theme-manifest-v1.schema.json",
+  "schemaVersion": 1,
+  "contractVersion": 1,
+  "id": "builtin.neo-brutalist",
+  "version": "1.0.0",
+  "source": "builtin",
+  "name": {
+    "zh-CN": "新粗野主义",
+    "en": "Neo Brutalist"
+  },
+  "author": "Gold Band",
+  "schemes": [
+    "light",
+    "dark"
+  ],
+  "capabilities": [
+    "tokens",
+    "component-recipes",
+    "fonts",
+    "avatars"
+  ]
+}

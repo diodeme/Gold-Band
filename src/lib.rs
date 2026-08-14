@@ -24,3 +24,4 @@ pub mod runtime_error;
 pub mod scheduler;
 pub mod skill;
 pub mod storage;
+pub mod theme;

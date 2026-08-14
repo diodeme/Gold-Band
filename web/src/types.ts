@@ -1,6 +1,27 @@
-export type DesktopThemePreference = 'system' | 'light' | 'light-gray' | 'dark' | 'black';
-export type ConcreteDesktopTheme = Exclude<DesktopThemePreference, 'system'>;
-export type DesktopThemeMode = 'light' | 'dark';
+export type ColorSchemePreference = 'system' | 'light' | 'dark';
+export type ResolvedColorScheme = Exclude<ColorSchemePreference, 'system'>;
+export type VisualQuality = 'full' | 'performance';
+export interface AppearancePreference {
+  schemaVersion: 2;
+  themeId: string;
+  colorScheme: ColorSchemePreference;
+  visualQualityByTheme: Record<string, VisualQuality>;
+}
+export type FontPreference = { source: 'theme' } | { source: 'local'; family: string };
+export type FontSizePreference = { source: 'theme' } | { source: 'custom'; px: number };
+export type AvatarPreference = { source: 'theme' } | { source: 'user'; assetId: string };
+export type AvatarShapePreference = { source: 'theme' } | { source: 'custom'; value: AvatarShape };
+export interface PersonalizationPreference {
+  schemaVersion: 1;
+  typography: {
+    ui: { font: FontPreference; fontSize: FontSizePreference };
+    editor: { font: FontPreference; fontSize: FontSizePreference };
+  };
+  avatars: {
+    agent: { image: AvatarPreference; shape: AvatarShapePreference };
+    user: { image: AvatarPreference; shape: AvatarShapePreference };
+  };
+}
 export type DesktopFontPreference = string;
 export type DesktopLanguage = 'zh-cn' | 'en';
 export type AvatarKind = 'agent' | 'user';
@@ -10,12 +31,9 @@ export type DesktopWindowFrameStyle = 'native-compositor' | 'app-outline';
 export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'error';
 
 export interface PreferencesVm {
-  theme: DesktopThemePreference;
+  appearance: AppearancePreference;
+  personalization: PersonalizationPreference;
   language: DesktopLanguage;
-  font: DesktopFontPreference;
-  editorFont: DesktopFontPreference;
-  uiFontSize: number;
-  editorFontSize: number;
   useLocalClaude: boolean;
   verboseLogging: boolean;
   avatars: AvatarPreferencesVm;

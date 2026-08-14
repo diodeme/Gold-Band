@@ -25,9 +25,9 @@ import type {
   ResolveAppExitInput,
   PinRef,
   CreateTaskInput,
-  DesktopFontPreference,
   DesktopLanguage,
-  DesktopThemePreference,
+  PersonalizationPreference,
+  AppearancePreference,
   LocalClaudeStatusVm,
   LogPageVm,
   LogQueryInput,
@@ -37,7 +37,6 @@ import type {
   SkillListVm,
   PreferencesVm,
   AvatarKind,
-  AvatarPreferencesVm,
   AvatarShape,
   SaveDesktopAvatarInput,
   ImportProfilesResult,
@@ -294,11 +293,11 @@ export interface RuntimeApi {
   showConversationAttachment(projectId: string, taskId: string, name: string): Promise<ContentVm>;
   showConversationMessageAttachment(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, path: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
-  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, editorFont: DesktopFontPreference, uiFontSize: number, editorFontSize: number, useLocalClaude: boolean, verboseLogging: boolean): Promise<PreferencesVm>;
-  saveDesktopAvatar(input: SaveDesktopAvatarInput): Promise<AvatarPreferencesVm>;
-  selectRecentDesktopAvatar(kind: AvatarKind, avatarId: string): Promise<AvatarPreferencesVm>;
-  saveDesktopAvatarShape(kind: AvatarKind, shape: AvatarShape): Promise<AvatarPreferencesVm>;
-  clearDesktopAvatar(kind: AvatarKind): Promise<AvatarPreferencesVm>;
+  saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean): Promise<PreferencesVm>;
+  saveDesktopAvatar(input: SaveDesktopAvatarInput): Promise<PreferencesVm>;
+  selectRecentDesktopAvatar(kind: AvatarKind, avatarId: string): Promise<PreferencesVm>;
+  saveDesktopAvatarShape(kind: AvatarKind, shape: AvatarShape | null): Promise<PreferencesVm>;
+  clearDesktopAvatar(kind: AvatarKind): Promise<PreferencesVm>;
   saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
   updateNotificationAttention?(input: NotificationAttentionInput): Promise<void>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;

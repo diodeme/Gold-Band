@@ -1,0 +1,46 @@
+{
+  "material": {
+    "radius": {
+      "$type": "string",
+      "$value": "{primitive.radius}"
+    },
+    "motionEasing": {
+      "$type": "string",
+      "$value": "{primitive.motionEasing}"
+    }
+  },
+  "preview": {
+    "background": {
+      "$type": "color",
+      "$value": "{semantic.workspace}"
+    },
+    "surface": {
+      "$type": "color",
+      "$value": "{semantic.card}"
+    },
+    "border": {
+      "$type": "color",
+      "$value": "{semantic.border}"
+    },
+    "primary": {
+      "$type": "color",
+      "$value": "{semantic.primary}"
+    },
+    "foreground": {
+      "$type": "color",
+      "$value": "{semantic.foreground}"
+    },
+    "muted": {
+      "$type": "color",
+      "$value": "{semantic.mutedForeground}"
+    },
+    "success": {
+      "$type": "color",
+      "$value": "{semantic.success}"
+    },
+    "danger": {
+      "$type": "color",
+      "$value": "{semantic.danger}"
+    }
+  }
+}

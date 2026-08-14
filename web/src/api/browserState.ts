@@ -121,6 +121,21 @@ function cloneProfiles(profiles: ProfileVm[]): ProfileVm[] {
 function clonePreferences(preferences: PreferencesVm): PreferencesVm {
   return {
     ...preferences,
+    appearance: {
+      ...preferences.appearance,
+      visualQualityByTheme: { ...preferences.appearance.visualQualityByTheme },
+    },
+    personalization: {
+      ...preferences.personalization,
+      typography: {
+        ui: { font: { ...preferences.personalization.typography.ui.font }, fontSize: { ...preferences.personalization.typography.ui.fontSize } },
+        editor: { font: { ...preferences.personalization.typography.editor.font }, fontSize: { ...preferences.personalization.typography.editor.fontSize } },
+      },
+      avatars: {
+        agent: { image: { ...preferences.personalization.avatars.agent.image }, shape: { ...preferences.personalization.avatars.agent.shape } },
+        user: { image: { ...preferences.personalization.avatars.user.image }, shape: { ...preferences.personalization.avatars.user.shape } },
+      },
+    },
     avatars: {
       agent: {
         ...preferences.avatars.agent,

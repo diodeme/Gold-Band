@@ -1,0 +1,33 @@
+{
+  "$schema": "../../theme-sdk/schema/theme-manifest-v1.schema.json",
+  "schemaVersion": 1,
+  "contractVersion": 1,
+  "id": "builtin.glass",
+  "version": "1.0.0",
+  "source": "builtin",
+  "name": {
+    "zh-CN": "玻璃拟态",
+    "en": "Glass"
+  },
+  "author": "Gold Band",
+  "schemes": [
+    "light",
+    "dark"
+  ],
+  "capabilities": [
+    "tokens",
+    "component-recipes",
+    "fonts",
+    "avatars",
+    "textures",
+    "visual-quality-profiles"
+  ],
+  "visualQualityProfiles": {
+    "default": "full",
+    "supported": [
+      "full",
+      "performance"
+    ],
+    "performance": "visual-quality/performance.json"
+  }
+}

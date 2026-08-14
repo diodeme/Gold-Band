@@ -47,7 +47,7 @@
 - **新旧 UI 多工作空间职责分离**：旧 UI（工作台模式）只在当前进程内维护单一全局 workspace（`DesktopContext.repo_root`），所有 task/run 操作均在该 workspace 下执行；新 UI（会话模式）以 `conversation_workspaces` 作为唯一工作空间列表，并以 `last_conversation_workspace` 记录最后活跃项。会话侧边栏、命令和 Runtime 启动恢复不得无条件使用 `DesktopContext.repo_root`；每次创建、追问、查看历史、权限处理、停止、附件读取或恢复都先从持久化工作空间解析路径，再构造 workspace-scoped `App.paths.repo_root`。
 - **工作台观察期边界**：2026-07-22 起产品内隐藏 Workbench / Conversation 形态切换入口，桌面根路径默认进入 `/chat` 会话主页；旧工作台页面、路由与单 workspace 状态暂时保留，只允许通过显式 `/tasks`、`/agents`、`/contexts`、`/settings` 等 deep link 访问，不再读取历史 UI 模式偏好覆盖默认入口。
 - **持久化边界**：`recent_desktop_workspaces` 仅由旧 UI 管理（`choose_workspace` / `select_recent_workspace` / `remove_recent_workspace`）；`conversation_workspaces` 和 `last_conversation_workspace` 仅由新 UI 管理（`add_conversation_workspace` / 成功创建/重跑后的 `save_last_conversation_workspace` / `remove_conversation_workspace`）。新 UI 添加、查看或草稿选择 workspace 不污染旧 UI 最近列表。
-- **废弃字段移除**：`SettingsConfig.desktop_workspace` 已删除，settings schema v5 在读取旧配置时移除磁盘上的 `desktopWorkspace`。旧 Workbench 仅保留 `recent_desktop_workspaces` 最近列表，不再持久化或恢复单一当前 workspace；会话 UI 与 Runtime 的 workspace canonical state 只允许来自 `conversation_workspaces`，`last_conversation_workspace` 只决定最近活跃项，不缩小启动恢复范围。
+- **废弃字段移除**：`SettingsConfig.desktop_workspace` 已删除，settings schema v6 在读取旧配置时移除磁盘上的 `desktopWorkspace`。旧 Workbench 仅保留 `recent_desktop_workspaces` 最近列表，不再持久化或恢复单一当前 workspace；会话 UI 与 Runtime 的 workspace canonical state 只允许来自 `conversation_workspaces`，`last_conversation_workspace` 只决定最近活跃项，不缩小启动恢复范围。
 - **旧状态迁移**：用户状态通过版本化 `stateSchemaVersion` 在桌面上下文初始化时迁移一次。迁移重新生成规范 `projectId`、按规范化路径去重，并同步重写会话运行模式、置顶和最后活跃引用；迁移成功后原子写回。版本已达当前值时不再扫描或写盘，避免每次启动重复修复。移除工作空间时必须把请求 ID、持久化 ID 与按 workspace 路径重算的 ID 作为同一身份的别名集合，统一清理 run mode、pin 和最后活跃引用，不能依赖当前操作系统是否大小写敏感。
 - **最近列表管理**：旧 UI workspace 选择页的最近列表每行提供打开与移除操作；移除只删除用户级 `recent_desktop_workspaces` 记录，不切换当前 workspace，不删除磁盘目录，也不影响新 UI 的 `conversation_workspaces`。当前正在使用的 workspace 不允许从最近列表移除；有效最近列表只剩一个 workspace 时也禁用移除，避免把工作台置入无当前 workspace 的状态。
 
@@ -234,6 +234,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-08-09：macOS 发布采用单一可选凭证流水线。基础 bundle 配置使用 ad-hoc identity `-`；无 Apple 凭证时仍由 GitHub macOS runner 生成 arm64/x64 DMG，并对产出的 `.app` 执行 `codesign --verify --deep --strict`。凭证部分配置时立即失败，配置完整时由同一 `tauri-action` 接收证书、Developer ID、Apple ID、app-specific password 与 Team ID 完成签名和公证。下载页、安装器和应用内不增加未公证提示，产物名不增加 unsigned 后缀。
 - 2026-08-11：右侧工作区宽度恢复明确以全局 `rightWorkspace.width` 为唯一事实源。`react-resizable-panels` 的 `defaultSize` 只负责 Panel 首次注册；快速对话 draft、定时创建和会话详情的右栏每次从折叠转为 Dock 展示时，必须通过 Panel imperative `expand + resize(preferredWidth)` 应用同一持久化像素宽度。异步 preference hydrate 或文件工作区推荐宽度更新时同样局部同步当前 Panel；连续拖拽仍由组件库管理，只在用户完成事件持久化一次。
 - 2026-08-11：中间工作区顶边、左边与右侧工作区 separator 统一使用不透明语义色 `workspace-divider`。该 token 由当前主题的 `sidebar-border` 与 `gold-workspace` 预混合，禁止在不同底色上分别叠加半透明 `sidebar-border/70`，避免高 DPI 下横竖边线交点出现色阶断层。Dock 展示时，中间 Panel 与右侧 Panel 必须各自绘制同为 1 CSS px 的顶边，使边界连续横跨两个区域，separator 从顶边下方形成 T 形交点；separator 的 1px 布局宽度、4px 命中区和 hover 状态保持不变。
+- 2026-08-14：应用壳主题材质从手写 Glass 专用选择器迁到 Theme SDK 编译的包级 recipe CSS。Shell、标题栏、侧栏、工作区、Composer 与共享控件仍只暴露稳定 `data-theme-role`；新增合规主题包通过 DTCG token、封闭 recipe 和构建 Catalog 接入，不修改壳层 DOM、导航状态或 React 生命周期。
 
 ---
 

@@ -107,7 +107,7 @@ import { resolveConversationWorkspaceRemovalTransition } from '@/lib/conversatio
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
-import { applyEditorFont, applyFont, applyTheme, applyTypographyPreferences, resolveThemePreference, syncDesktopWindowSurface } from './theme';
+import { applyAppearance, applyPersonalization, defaultPersonalizationPreference, resolveAppearance, syncDesktopWindowSurface } from './theme';
 import { useInterventionNotifications } from './lib/use-intervention-notifications';
 import { useScheduledNotifications } from './lib/use-scheduled-notifications';
 import { scheduledNotificationNavigation } from './lib/scheduled-task-notifications';
@@ -170,9 +170,9 @@ import type {
   ConversationSidebarVm,
   CreateTaskInput,
   ProfileVm,
-  DesktopFontPreference,
   DesktopLanguage,
-  DesktopThemePreference,
+  AppearancePreference,
+  PersonalizationPreference,
   DesktopUiMode,
   MetricsSettingsVm,
   PreferencesVm,
@@ -216,7 +216,7 @@ function findScheduledLinkedLeaf(
   return null;
 }
 
-const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', editorFont: 'editor-default', uiFontSize: 14, editorFontSize: 12, useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
+const defaultPreferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
 const defaultUpdaterSettings: UpdaterSettingsVm = {
   channel: 'default',
   builtInUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
@@ -575,28 +575,20 @@ export function App() {
   const { t } = useTranslation();
 
   useEffect(() => {
-    applyTheme(preferences.theme);
-  }, [preferences.theme]);
+    applyAppearance(preferences.appearance);
+  }, [preferences.appearance]);
 
   useEffect(() => {
-    if (preferences.theme !== 'system') return undefined;
+    if (preferences.appearance.colorScheme !== 'system') return undefined;
     const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
-    const syncSystemTheme = () => applyTheme('system');
+    const syncSystemTheme = () => applyAppearance(preferences.appearance);
     colorScheme.addEventListener('change', syncSystemTheme);
     return () => colorScheme.removeEventListener('change', syncSystemTheme);
-  }, [preferences.theme]);
+  }, [preferences.appearance]);
 
   useEffect(() => {
-    applyFont(preferences.font);
-  }, [preferences.font]);
-
-  useEffect(() => {
-    applyEditorFont(preferences.editorFont);
-  }, [preferences.editorFont]);
-
-  useEffect(() => {
-    applyTypographyPreferences(preferences.uiFontSize, preferences.editorFontSize);
-  }, [preferences.editorFontSize, preferences.uiFontSize]);
+    applyPersonalization(preferences.personalization);
+  }, [preferences.personalization]);
 
   useEffect(() => {
     if (typeof localStorage === 'undefined') return;
@@ -609,7 +601,7 @@ export function App() {
     const revealWindow = async () => {
       const appWindow = getCurrentWindow();
       if (!windowRevealedRef.current) {
-        await syncDesktopWindowSurface(resolveThemePreference(preferences.theme));
+        await syncDesktopWindowSurface(resolveAppearance(preferences.appearance));
       }
       await syncDesktopWindowMinimum(
         appWindow,
@@ -631,7 +623,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeWorkspaceLayoutProfile, appConfig.workspaceLayout, bootstrap, preferences.theme]);
+  }, [activeWorkspaceLayoutProfile, appConfig.workspaceLayout, bootstrap, preferences.appearance]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -1487,12 +1479,12 @@ export function App() {
     }
   };
 
-  const onSavePreferences = (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, editorFont: DesktopFontPreference, uiFontSize: number, editorFontSize: number, useLocalClaude: boolean, verboseLogging: boolean) => {
+  const onSavePreferences = (appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean) => {
     const generation = ++preferenceSaveGenerationRef.current;
     setBusy(true);
     const save = preferenceSaveQueueRef.current
       .catch(() => undefined)
-      .then(() => saveDesktopPreferences(theme, language, font, editorFont, uiFontSize, editorFontSize, useLocalClaude, verboseLogging))
+      .then(() => saveDesktopPreferences(appearance, personalization, language, useLocalClaude, verboseLogging))
       .then((saved) => {
         if (generation !== preferenceSaveGenerationRef.current) return;
         setBootstrap((current) => current ? { ...current, preferences: saved } : current);
@@ -1506,59 +1498,57 @@ export function App() {
     preferenceSaveQueueRef.current = save;
   };
 
-  const applyAvatarPreferences = useCallback((avatars: PreferencesVm['avatars']) => {
-    setBootstrap((current) => current
-      ? { ...current, preferences: { ...current.preferences, avatars } }
-      : current);
+  const applySavedPreferences = useCallback((saved: PreferencesVm) => {
+    setBootstrap((current) => current ? { ...current, preferences: saved } : current);
   }, []);
 
   const onSaveAvatar = useCallback(async (input: SaveDesktopAvatarInput) => {
     setError(null);
     try {
-      const avatars = await saveDesktopAvatar(input);
-      applyAvatarPreferences(avatars);
-      return avatars;
+      const saved = await saveDesktopAvatar(input);
+      applySavedPreferences(saved);
+      return saved.avatars;
     } catch (err) {
       setError(displayAppError(t, err));
       return undefined;
     }
-  }, [applyAvatarPreferences, t]);
+  }, [applySavedPreferences, t]);
 
   const onSelectRecentAvatar = useCallback(async (kind: AvatarKind, avatarId: string) => {
     setError(null);
     try {
-      const avatars = await selectRecentDesktopAvatar(kind, avatarId);
-      applyAvatarPreferences(avatars);
-      return avatars;
+      const saved = await selectRecentDesktopAvatar(kind, avatarId);
+      applySavedPreferences(saved);
+      return saved.avatars;
     } catch (err) {
       setError(displayAppError(t, err));
       return undefined;
     }
-  }, [applyAvatarPreferences, t]);
+  }, [applySavedPreferences, t]);
 
-  const onSaveAvatarShape = useCallback(async (kind: AvatarKind, shape: AvatarShape) => {
+  const onSaveAvatarShape = useCallback(async (kind: AvatarKind, shape: AvatarShape | null) => {
     setError(null);
     try {
-      const avatars = await saveDesktopAvatarShape(kind, shape);
-      applyAvatarPreferences(avatars);
-      return avatars;
+      const saved = await saveDesktopAvatarShape(kind, shape);
+      applySavedPreferences(saved);
+      return saved.avatars;
     } catch (err) {
       setError(displayAppError(t, err));
       return undefined;
     }
-  }, [applyAvatarPreferences, t]);
+  }, [applySavedPreferences, t]);
 
   const onClearAvatar = useCallback(async (kind: AvatarKind) => {
     setError(null);
     try {
-      const avatars = await clearDesktopAvatar(kind);
-      applyAvatarPreferences(avatars);
-      return avatars;
+      const saved = await clearDesktopAvatar(kind);
+      applySavedPreferences(saved);
+      return saved.avatars;
     } catch (err) {
       setError(displayAppError(t, err));
       return undefined;
     }
-  }, [applyAvatarPreferences, t]);
+  }, [applySavedPreferences, t]);
 
   const onSaveUpdaterSettings = async (overrideUrl: string | null) => {
     setBusy(true);

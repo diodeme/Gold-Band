@@ -341,6 +341,7 @@
   --gb-theme-texture-opacity: 0;
   --gb-theme-motion-duration: 200ms;
   --gb-theme-motion-easing: ease-out;
+  --gb-loading-breathe-duration: 1800ms;
 }
 
 :root {
@@ -774,6 +775,32 @@
   }
   50% {
     opacity: 1;
+  }
+}
+
+.brand-loading-logo {
+  animation: brand-loading-breathe var(--gb-loading-breathe-duration) ease-in-out infinite;
+  transform-origin: center;
+  will-change: opacity, transform;
+}
+
+@keyframes brand-loading-breathe {
+  0%, 100% {
+    opacity: 0.42;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand-loading-logo {
+    animation: none;
+    opacity: 0.72;
+    transform: none;
+    will-change: auto;
   }
 }
 

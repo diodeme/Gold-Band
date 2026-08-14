@@ -3,7 +3,15 @@ import { useTranslation } from 'react-i18next';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
-import { ACPChatDialog, type AcpLifecycleSnapshot, type AcpRuntimeComposerContext } from '@/components/acp/ACPChatDialog';
+import {
+  ACPChatDialog,
+  createAcpEventWindowCacheKey,
+  hasHydratedAcpSessionContent,
+  type AcpInitialSessionQueryState,
+  type AcpLifecycleSnapshot,
+  type AcpRuntimeComposerContext,
+} from '@/components/acp/ACPChatDialog';
+import { BrandLoadingState } from '@/components/BrandLoadingState';
 import { ConversationRunHeader } from '@/components/conversation/ConversationRunHeader';
 import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
 import { confirmCloseConversationRunWorkspaceResource, ConversationRunWorkspaceResourcePanel } from '@/components/workspace/ConversationRunWorkspaceResourcePanel';
@@ -39,6 +47,16 @@ export function sessionBelongsToLeaf(session: AcpSessionVm | null | undefined, r
     ? normalizeSessionPath(`tasks/${run.taskId}/runs/${run.runId}/rounds/${leaf.roundId}/nodes/${leaf.outerNodeId}/${leaf.outerAttemptId}/dynamic/nodes/${leaf.nodeId}/${leaf.attemptId}`)
     : normalizeSessionPath(`tasks/${run.taskId}/runs/${run.runId}/rounds/${leaf.roundId}/nodes/${leaf.nodeId}/${leaf.attemptId}`);
   return cwd.endsWith(expected);
+}
+
+export function resolveConversationContentQueryState(
+  identity: string | null,
+  projection: { identity: string; state: AcpInitialSessionQueryState } | null,
+  hydrated: boolean,
+): AcpInitialSessionQueryState {
+  if (!identity) return 'success';
+  if (projection?.identity === identity) return projection.state;
+  return hydrated ? 'success' : 'loading';
 }
 
 function normalizeSessionPath(path: string) {
@@ -223,6 +241,34 @@ export function ConversationRunPage({
   const selectedOuterAttemptId = selectedLeaf?.outerAttemptId ?? null;
   const selectedRuntimeCode = selectedLeaf?.runtimeDisplay?.code ?? null;
   const showLaunchingSession = isRunning && !selectedLeaf;
+  const selectedContentIdentity = selectedLeaf
+    ? createAcpEventWindowCacheKey({
+        cacheNamespace: run.taskUuid ?? `${run.projectId}:${run.taskId}`,
+        taskId: run.taskId,
+        runId: run.runId,
+        roundId: selectedLeaf.roundId,
+        nodeId: selectedLeaf.nodeId,
+        attemptId: selectedLeaf.attemptId,
+        outerNodeId: selectedLeaf.outerNodeId,
+        outerAttemptId: selectedLeaf.outerAttemptId,
+      })
+    : null;
+  const [contentQueryProjection, setContentQueryProjection] = useState<{
+    identity: string;
+    state: AcpInitialSessionQueryState;
+  } | null>(null);
+  const selectedContentQueryState = resolveConversationContentQueryState(
+    selectedContentIdentity,
+    contentQueryProjection,
+    selectedContentIdentity
+      ? hasHydratedAcpSessionContent(selectedContentIdentity)
+      : false,
+  );
+  const showPageLoadingState = selectedContentQueryState === 'loading';
+  const handleInitialSessionQueryStateChange = useCallback((state: AcpInitialSessionQueryState) => {
+    if (!selectedContentIdentity) return;
+    setContentQueryProjection({ identity: selectedContentIdentity, state });
+  }, [selectedContentIdentity]);
 
   const conversationDirectoryEntry = useMemo<ConversationDirectoryWorkspaceEntry | null>(() => {
     if (!workspace.scopeKey || !selectedRoundId || !selectedNodeId || !selectedAttemptId) return null;
@@ -345,7 +391,8 @@ export function ConversationRunPage({
 
   return (
     <TooltipProvider>
-      <div className="flex h-full min-h-0 flex-col bg-background">
+      <div className="relative h-full min-h-0 bg-background">
+      <div className={`flex h-full min-h-0 flex-col bg-background ${showPageLoadingState ? 'invisible' : ''}`}>
         <div ref={headerAreaRef} className="shrink-0 relative">
           {!isDirect || !selectedLeaf ? <ConversationRunHeader
             run={run}
@@ -432,6 +479,7 @@ export function ConversationRunPage({
             turnFileCardPreviewLimit={appConfig.turnFiles.cardPreviewLimit}
             onLifecycleSnapshot={onLifecycleSnapshot}
             onAtBottomChange={handleAtBottomChange}
+            onInitialSessionQueryStateChange={handleInitialSessionQueryStateChange}
             allowEventOnlySessionShell={false}
             showInitializingSessionShell={selectedLeaf.current}
             runtimeComposerContext={runtimeComposerContext}
@@ -469,22 +517,24 @@ export function ConversationRunPage({
       </AlertDialog>
 
     </div>
+      {showPageLoadingState ? (
+        <BrandLoadingState
+          label={t('conversation.runtime.loadingSession')}
+          className="absolute inset-0"
+        />
+      ) : null}
+    </div>
     </TooltipProvider>
   );
 }
 
 function ConversationEmptySessionState({ label, active }: { label: string; active: boolean }) {
+  if (active) {
+    return <BrandLoadingState label={label} />;
+  }
   return (
     <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-      <div className="flex items-center gap-2">
-        {active ? (
-          <span
-            aria-hidden="true"
-            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-gold-running/30 border-t-gold-running [animation-duration:900ms]"
-          />
-        ) : null}
-        <span>{label}</span>
-      </div>
+      <span>{label}</span>
     </div>
   );
 }

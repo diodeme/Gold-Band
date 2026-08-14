@@ -66,6 +66,7 @@ import { WindowCloseCoordinator } from '@/components/WindowCloseCoordinator';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
+import { BrandLoadingState } from '@/components/BrandLoadingState';
 import i18n, { displayAppError, i18nLanguage } from './i18n';
 import {
   planConversationAcpRunUpdate,
@@ -137,12 +138,14 @@ import {
 } from '@/components/workspace/right-workspace-context';
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
 import {
+  beginConversationSessionSelection,
   conversationPageForIntervention,
   conversationPageMatchesRun,
-  resolvePresentedConversationPage,
+  isConversationRunNavigationLoading,
   shouldCommitConversationNavigation,
 } from '@/lib/conversation-navigation';
 import { preloadConversationTurnFileChangeSets } from '@/lib/turn-file-change-set-cache';
+import { ConversationRunCache } from '@/lib/conversation-run-cache';
 import {
   INITIAL_DESKTOP_WINDOW_MINIMUM_SYNC_STATE,
   syncDesktopWindowMinimum,
@@ -347,13 +350,11 @@ export function App() {
     () => new ConversationRunModePersistence(saveConversationRunMode),
   );
   const [conversationWorkspaceStore] = useState(() => new ConversationWorkspaceStore());
+  const [conversationRunCache] = useState(() => new ConversationRunCache());
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
   const conversationNavigationRequestRef = useRef(0);
-  const presentedConversationPage = useMemo(
-    () => resolvePresentedConversationPage(conversationPage, conversationRun),
-    [conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId],
-  );
+  const presentedConversationPage = conversationPage;
   const conversationSessionFollowRef = useRef<ConversationSessionFollowState>({
     mode: 'auto',
     selectedSessionKey: null,
@@ -389,9 +390,10 @@ export function App() {
         ...conversationSessionFollowRef.current,
         selectedSessionKey: merged.sessionTree.selectedSessionKey ?? null,
       };
+      conversationRunCache.store(merged);
       return merged;
     });
-  }, []);
+  }, [conversationRunCache]);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const activeWorkspaceIdRef = useRef<string | null>(null);
@@ -807,8 +809,7 @@ export function App() {
         const selectedSessionKey = conversationSessionKeyFromParts(leaf);
         return getConversationRun(projectId, taskId, runId, selectedSessionKey);
       })
-      .then(async (run) => {
-        await preloadConversationTurnFileChangeSets(run);
+      .then((run) => {
         if (cancelled || !shouldCommitConversationNavigation(
           requestId,
           conversationNavigationRequestRef.current,
@@ -819,6 +820,7 @@ export function App() {
           selectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
           preserveSelectedSession: false,
         });
+        void preloadConversationTurnFileChangeSets(run);
       })
       .catch((err: unknown) => {
         if (cancelled || requestId !== conversationNavigationRequestRef.current) return;
@@ -1289,6 +1291,12 @@ export function App() {
     });
     conversationSelectedSessionKeyRef.current = key;
     updateConversationSessionFollow('manual', key);
+    setConversationRun((current) => {
+      const base = current && conversationPageMatchesRun(runPage, current) ? current : run;
+      const next = beginConversationSessionSelection(base, key);
+      conversationRunRef.current = next;
+      return next;
+    });
     try {
       const switched = await switchConversationSession(
         targetProjectId,
@@ -1645,6 +1653,24 @@ export function App() {
 
   const onSelectConversation = (page: ConversationPage) => {
     setWorkspacePickerOpen(false);
+    if (conversationRunRef.current) {
+      conversationRunCache.store(conversationRunRef.current);
+    }
+    if (page.kind === 'conversation-run') {
+      const cached = conversationRunCache.restore(page);
+      const cachedMatchesLinkedTarget = !page.roundId || Boolean(
+        cached && findScheduledLinkedLeaf(cached.sessionTree, page.roundId, page.attemptId),
+      );
+      if (cached && cachedMatchesLinkedTarget) {
+        conversationRunRef.current = cached;
+        conversationSelectedSessionKeyRef.current = cached.sessionTree.selectedSessionKey ?? null;
+        conversationSessionFollowRef.current = {
+          ...conversationSessionFollowRef.current,
+          selectedSessionKey: cached.sessionTree.selectedSessionKey ?? null,
+        };
+        setConversationRun(cached);
+      }
+    }
     setConversationPage(page);
     if (page.kind === 'agents') {
       setPrimaryModule('agent-management');
@@ -1753,11 +1779,11 @@ export function App() {
         const task = tasks.find((t) => t.taskId === taskId);
         const runId = task?.latestRun?.runId;
         if (runId) {
-          setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
+          onSelectConversation({ kind: 'conversation-run', projectId, taskId, runId });
         }
       }}
       onConversationSelectRun={(projectId, taskId, runId) => {
-        setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
+        onSelectConversation({ kind: 'conversation-run', projectId, taskId, runId });
       }}
       onConversationPauseRun={onConversationPauseRun}
       onConversationRenameTask={(projectId, taskId, title) => {
@@ -2060,11 +2086,9 @@ export function App() {
       );
     }
     if (conversationPage.kind === 'conversation-run') {
-      if (!conversationRun || conversationRun.runId !== conversationPage.runId) {
+      if (isConversationRunNavigationLoading(conversationPage, conversationRun) || !conversationRun) {
         return (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            {t('common.loading')}
-          </div>
+          <BrandLoadingState label={t('conversation.runtime.loadingSession')} />
         );
       }
       return (
@@ -2112,6 +2136,12 @@ export function App() {
             const followMode: ConversationSessionFollowMode = followActive ? 'auto' : 'manual';
             conversationSelectedSessionKeyRef.current = key;
             updateConversationSessionFollow(followMode, key);
+            setConversationRun((current) => {
+              if (!current || !conversationPageMatchesRun(conversationPage, current)) return current;
+              const next = beginConversationSessionSelection(current, key);
+              conversationRunRef.current = next;
+              return next;
+            });
             switchConversationSession(
               conversationPage.projectId,
               conversationPage.taskId,

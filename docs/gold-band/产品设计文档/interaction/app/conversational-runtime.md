@@ -143,6 +143,7 @@
 - 当前选中 session 因 runtime 自然完成而从 active 变为 terminal 时，如果用户仍在底部且未手动切换，session auto-follow 进入 pending 状态；后续同一 run 的新 active child session 首次 live event 或 lifecycle-only active update 到达时可以切换过去。
 - 自动跟随分为两层：消息列表的贴底 pin 控制当前 session 内流式内容是否滚到最新；session auto-follow 控制是否随 workflow 切到新的 active session。用户滚回当前活跃 session 底部时，恢复贴底 pin 并恢复 session auto-follow；用户滚回历史/非活跃 session 底部时，只恢复当前消息贴底，不切换 session。
 - 消息列表贴底 pin 的事实来源必须是“用户滚动意图 + 滚动 viewport + 实际内容尺寸”组成的统一状态机。ACP 主消息区复用 prompt-kit `ChatContainer` / `use-stick-to-bottom`，由内容根节点 `ResizeObserver` 覆盖 timeline 更新、流式 Markdown presentation 帧、图片或折叠内容等真实布局增长；不得再把 `timeline` 变化当成唯一贴底触发器，也不得在业务组件中另存 `pinToBottomRef` 后重复写 `scrollTop = scrollHeight`。任意向上滚动输入都必须立即解除贴底锁，即使视口仍位于第三方组件定义的 bottom-near 阈值内；只有视口真正回到内容底部时才恢复锁，并通过同一 `onAtBottomChange` 信号驱动 session auto-follow。
+- `ChatContainer` 首次挂载且 follow 意图为 true 时，必须在包装层 `useLayoutEffect` 内使用真实 `scrollHeight - clientHeight` 同步完成首屏底部对齐，不得依赖第三方 `instant` 动画在首次 paint 后再收敛。缓存历史阅读位置的 DOM anchor/scrollTop 恢复继续在父层布局阶段覆盖默认贴底；业务页不得自行重复写底部位置。
 - 贴底 pin 的跟随意图由 Gold Band 的 `ChatContainer` 包装层持有，第三方组件的几何 `isAtBottom` 仅作为滚动执行状态，不能直接覆盖用户意图。没有 wheel、键盘、pointer/滚动条拖动或业务分页/分支恢复 `stopScroll()` 等明确退出信号时，浏览器布局引起的 scroll 与 ResizeObserver 回调竞态不得解除跟随；包装层必须在流式 Markdown 终态重排、turn 文件变更卡插入及其异步详情增高后恢复真实底部。外部 `stopScroll()` 必须统一进入 manual，外部 `scrollToBottom()` 则显式恢复 follow，避免分页锚点与自动贴底争夺滚动位置。
 - 用户在贴底状态主动展开 Activity、隐藏运行上下文等会显著增高的会话内披露内容时，滚动容器建立临时 disclosure 会话并暂停 follow，保持触发标题的 viewport 位置，让详情按文档流向下展开。多个同时打开的披露内容共享同一会话；关闭任意一个后只要实际 viewport 已到达底部就立即恢复贴底，无需等待其他内容收起；若始终未到底部，则最后一个收起时恢复。若展开前已经脱底，或展开期间发生 wheel、键盘、滚动条拖动及业务 `stopScroll()` 等明确滚动意图，则披露会话不得在收起时强拉到底部，但用户自己回到真实底部仍正常恢复。临时暂停和恢复必须由 `ChatContainer` 的共享 content-expansion context/hook 统一管理，各折叠组件只持有生命周期 token；不得为 Activity 等具体组件逐层透传专用回调，也不得直接读写 `scrollTop`。
 - 用户 prompt 内多个隐藏段应作为同一紧凑 disclosure 组投影到可见正文之前；隐藏段之间以及最后一个隐藏段与正文之间只保留组件 spacing token。解析器保留原始 prompt，展示层合并可见片段并清除隐藏段边界产生的前导空行，不能把模板换行渲染为额外 spacer，也不能改变发送给 provider 的原文。
@@ -560,9 +561,14 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 ## Prompt turn 文件变化
 
-- 会话之间的导航必须按完整 `projectId + taskId + runId` 身份作为一次呈现事务。用户选中目标后，当前聊天、composer 与右侧工作区继续共同消费旧会话 scope；目标 `ConversationRunVm` 与首屏最近的文件变更清单在后台准备完成后，才在同一次 React 提交中切换聊天与右栏 scope。不得先恢复目标右栏再保留旧消息，也不得把目标消息与旧右栏组合成可见中间帧。
-- 导航请求使用单调递增 request id；快速连续选择时只有最新请求且返回快照完整匹配目标身份才能提交，较慢的旧请求即使最后返回也必须丢弃。目标会话的实时订阅在首轮导航提交后才启动，避免 live refresh 绕过准备边界提前替换当前页面。
-- 文件变更详情继续通过独立受控接口读取，不扩充 Conversation 主 DTO。切换事务只并行预取当前 selected branch 时间线尾部最近 12 个 change set，并写入 96 项有界 LRU；`TurnFileChangesCard` 首次挂载同步读取该缓存，命中时首帧直接展示最终预览行。预取失败不阻断会话导航，卡片回到稳定占位与原接口错误处理。
+- 会话之间的导航必须按完整 `projectId + taskId + runId` 身份提交目标 locator。用户点击后立即切换侧边栏选中态、路由、主内容 scope 与右侧工作区 scope；旧会话正文不得继续占据主区域。目标 `ConversationRunVm` 尚未就绪时，主区域在最终内容位置展示品牌加载态；同一 run 内切换 session 时也先提交 `selectedSessionKey` 并清空不属于目标 locator 的旧 `selectedSession` 投影，再异步读取目标内容。
+- 侧边栏 task 行、run 行、搜索结果和通知跳转不得直接写 `conversationPage`，必须统一进入会话导航接口，由该边界在路由提交前保存当前 run 并恢复目标 run 缓存。任何旁路都会让缓存命中失效并重放全屏 loading。
+- 导航请求使用单调递增 request id；快速连续选择时只有最新请求且返回快照完整匹配目标身份才能提交，较慢的旧请求即使最后返回也必须丢弃。加载态是 locator 对应内容的 transient 投影，不持久化、不复制 canonical session 生命周期。目标会话的实时订阅在首轮目标快照提交后启动，避免旧响应覆盖新选择。
+- ACP 首屏状态只由当前完整 session locator 的首次 `getAcpSession` 正文请求生命周期决定：请求未完成时始终显示品牌加载态，成功后根据返回内容直接进入 timeline 或空态，失败则进入错误态。run/session tree、switch 摘要、本地缓存、session established 或 live shell 都不是该请求的完成信号，不得通过 session 终态、事件数量或摘要字段推测加载是否结束。
+- 已成功 hydrate 的 ACP 正文缓存是上条的明确例外：它必须使用完整 event-window identity 与仅由成功 `getAcpSession` 写入的运行期 `contentHydrated` 标记，不得由 summary/session prop/live event 伪造。命中时立即展示有界缓存内容并在后台 revalidate；刷新失败保留可用缓存，不回退到全屏 loading。
+- Conversation run 轻量摘要与 ACP event window 分别使用最多 12 项的内存 LRU，共用现有 canonical locator，不持久化。切回已访问会话时，run 与正文均命中才允许直接恢复完整页面；任一层未命中则保持单一连续的页面级品牌加载态，不先显示全屏 Logo、再切换为会话框架内第二个 Logo。
+- 会话、ACP 初始内容和运行中待首条消息统一复用品牌加载组件。组件只引用 `/logo.svg` 作为 Logo 真源，使用 `opacity + transform` 呼吸动画，并为 `prefers-reduced-motion` 停用动画；替换公共 Logo 资产后所有品牌加载态自动同步。
+- 文件变更详情继续通过独立受控接口读取，不扩充 Conversation 主 DTO。页面目标快照提交后再后台预取当前 selected branch 时间线尾部最近 12 个 change set，并写入 96 项有界 LRU；预取不属于导航关键路径，失败也不影响会话内容，`TurnFileChangesCard` 回到稳定占位与原接口错误处理。
 
 - 每个可见 prompt 使用稳定 `turnId/promptId`；hidden repair 继承最近可见 turn，不生成第二张用户可见文件卡。完成、失败和取消都会结算已经捕获的变化。
 - 文件变化的唯一事实源是当前 prompt 生命周期内 ACP `toolCall/toolCallUpdate` 的标准 `content[type=diff]`。运行时不扫描目录、不读取 live 文件、不调用 Git，也不按 write/edit/shell 等工具名猜测。

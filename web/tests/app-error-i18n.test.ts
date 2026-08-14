@@ -15,6 +15,11 @@ describe('app error i18n', () => {
     expect(i18n.t('runMode.autoSection', { lng: 'en' })).toBe('AUTO Mode');
   });
 
+  it('localizes the ACP attachment action', () => {
+    expect(i18n.t('acp.attachHint', { lng: 'zh-CN' })).toBe('添加附件');
+    expect(i18n.t('acp.attachHint', { lng: 'en' })).toBe('Attach files');
+  });
+
   it('renders active ACP prompt config-save guard as a user action', () => {
     const message = displayAppError(i18n.t.bind(i18n), {
       code: 'acp.active-prompt-blocks-config-save',

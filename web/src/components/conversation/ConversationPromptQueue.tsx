@@ -34,6 +34,8 @@ export interface ConversationPromptQueueProps {
   queue: ConversationPromptQueueVm;
   sessionActive: boolean;
   mutationPending: boolean;
+  attachedAbove?: boolean;
+  integratedInfoTab?: boolean;
   onEdit: (itemId: string, content: string) => void | Promise<void>;
   onUse: (itemId: string) => void | Promise<void>;
   onDelete: (itemId: string) => void | Promise<void>;
@@ -43,6 +45,8 @@ export function ConversationPromptQueue({
   queue,
   sessionActive,
   mutationPending,
+  attachedAbove = false,
+  integratedInfoTab = false,
   onEdit,
   onUse,
   onDelete,
@@ -83,7 +87,11 @@ export function ConversationPromptQueue({
     <Collapsible
       open={expanded}
       onOpenChange={setExpanded}
-      className="overflow-hidden rounded-t-2xl border border-b-0 border-border/70 bg-muted/35"
+      className={cn(
+        'overflow-hidden border border-b-0 border-border bg-muted/35',
+        attachedAbove ? 'rounded-none' : 'rounded-t-2xl',
+        integratedInfoTab && !attachedAbove && 'rounded-tl-none bg-card',
+      )}
       data-testid="conversation-prompt-queue"
     >
       <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs text-muted-foreground">

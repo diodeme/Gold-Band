@@ -24,7 +24,29 @@ describe('ACP todo panel', () => {
     expect(html).toContain('text-emerald-700');
     expect(html).toContain('data-acp-todo-pending-mark="true"');
     expect(html).toContain('size-2');
+    expect(html).toContain('rotate-180');
     expect(html).not.toContain('>3<');
     expect(html).toContain('high');
+  });
+
+  it('uses the queue surface in the composer stack without opening by default', () => {
+    const html = renderToStaticMarkup(createElement(AcpTodoPanel, {
+      entries: [{ content: 'Inspect repository', status: 'in_progress' }],
+    }));
+
+    expect(html).toContain('rounded-t-2xl');
+    expect(html).toContain('border-b-0');
+    expect(html).toContain('bg-muted/35');
+    expect(html).not.toContain('rotate-180');
+  });
+
+  it('closes its surface when a read-only branch has no composer below it', () => {
+    const html = renderToStaticMarkup(createElement(AcpTodoPanel, {
+      entries: [{ content: 'Inspect repository', status: 'completed' }],
+      attachedBelow: false,
+    }));
+
+    expect(html).toContain('rounded-2xl');
+    expect(html).not.toContain('border-b-0');
   });
 });

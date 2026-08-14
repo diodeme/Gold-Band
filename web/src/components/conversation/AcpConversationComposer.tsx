@@ -35,7 +35,6 @@ export interface AcpConversationComposerProps {
   onPromptChange: (value: string) => void;
   onSubmit: () => void;
   sending: boolean;
-  status: ReactNode;
   attachments: AttachmentItem[];
   quotes: readonly ComposerQuote[];
   contextError: string | null;
@@ -65,7 +64,6 @@ export interface AcpConversationComposerProps {
   fileInputRef: Ref<HTMLInputElement>;
   onFilesChange: ChangeEventHandler<HTMLInputElement>;
   onPickFiles: () => void | Promise<void>;
-  inputHint: string;
   canStop: boolean;
   stopInProgress: boolean;
   onStop: () => void | Promise<void>;
@@ -76,7 +74,8 @@ export interface AcpConversationComposerProps {
   runtimeContinueSubmitting: boolean;
   onRuntimeContinue: () => void | Promise<void>;
   configBar: ReactNode;
-  attachedQueueVisible: boolean;
+  attachedPanelVisible: boolean;
+  integratedInfoTab: boolean;
   queueSubmit: boolean;
 }
 
@@ -92,7 +91,6 @@ export function AcpConversationComposer({
   onPromptChange,
   onSubmit,
   sending,
-  status,
   attachments,
   quotes,
   contextError,
@@ -119,7 +117,6 @@ export function AcpConversationComposer({
   fileInputRef,
   onFilesChange,
   onPickFiles,
-  inputHint,
   canStop,
   stopInProgress,
   onStop,
@@ -130,7 +127,8 @@ export function AcpConversationComposer({
   runtimeContinueSubmitting,
   onRuntimeContinue,
   configBar,
-  attachedQueueVisible,
+  attachedPanelVisible,
+  integratedInfoTab,
   queueSubmit,
 }: AcpConversationComposerProps) {
   const { t } = useTranslation();
@@ -160,12 +158,13 @@ export function AcpConversationComposer({
           onValueChange={onPromptChange}
           onSubmit={onSubmit}
           isLoading={sending}
+          maxHeight={320}
           className={cn(
-            'bg-card/80 shadow-sm shadow-background/30 transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10',
-            attachedQueueVisible ? 'rounded-t-none rounded-b-2xl' : 'rounded-2xl',
+            'bg-card !shadow-none transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10',
+            attachedPanelVisible ? 'rounded-t-none rounded-b-2xl' : 'rounded-2xl',
+            integratedInfoTab && !attachedPanelVisible && 'rounded-tl-none',
           )}
         >
-          {status}
           <ComposerContextArea
             quotes={quotes}
             attachments={attachments}
@@ -176,7 +175,8 @@ export function AcpConversationComposer({
           />
           <PromptInputTextarea
             ref={textareaRef}
-            className="min-h-16 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
+            className="min-h-12 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
+            userResizable
             valuePrefix={committedSlashCommand?.prefix}
             leadingAdornment={committedSlashCommand ? (
               <SlashCommandInputTag
@@ -192,8 +192,8 @@ export function AcpConversationComposer({
             onDrop={onDrop}
             onPaste={onPaste}
           />
-          <div className="mt-2 flex items-center gap-2 px-2 pb-1 text-xs leading-4">
-            <div className="flex items-center gap-2">
+          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 px-2 py-2" data-acp-composer-command-bar="true">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -201,22 +201,20 @@ export function AcpConversationComposer({
                 className="hidden"
                 onChange={onFilesChange}
               />
-              <PromptInputAction tooltip={t('acp.attachHint') ?? 'Attach files'}>
+              <PromptInputAction tooltip={t('acp.attachHint')}>
                 <Button
                   className="size-7 rounded-full"
                   size="icon"
                   variant="ghost"
                   disabled={inputDisabled}
+                  aria-label={t('acp.attachHint')}
                   onClick={() => { void onPickFiles(); }}
                 >
                   <Paperclip className="size-3.5" />
                 </Button>
               </PromptInputAction>
-              <span className="text-muted-foreground/80">{inputHint}</span>
+              <div className="min-w-0 flex-1">{configBar}</div>
             </div>
-          </div>
-          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 border-t border-border/50 px-2 py-2" data-acp-composer-command-bar="true">
-            <div className="min-w-0 flex-1">{configBar}</div>
             <PromptInputActions className="ml-auto shrink-0 pl-2">
               {canStop ? (
                 <PromptInputAction tooltip={t('acp.stopHint')}>

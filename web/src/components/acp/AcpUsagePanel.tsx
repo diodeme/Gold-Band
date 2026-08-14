@@ -57,7 +57,7 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
   const tokenRows = usage == null ? [] : tokenUsageRows(usage);
   const showProcessing = Boolean(processingLabel);
   const showTiming = sessionSeconds != null;
-  const showContext = usage != null && (used != null || size != null || tokenRows.length > 0);
+  const showContext = hasAcpUsagePanelContent(usage);
 
   if (!showProcessing && !showTiming && !showContext) return null;
 
@@ -73,23 +73,24 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
         className,
       )}
       data-acp-session-info="true"
+      data-theme-role="composer"
     >
       {showProcessing ? (
-        <span className="flex items-center gap-1.5 font-medium text-foreground">
-          <AcpProcessingSpinner className="size-3.5" />
-          <span>{processingLabel}</span>
+        <span className="flex min-w-0 items-center gap-1.5 font-medium text-foreground">
+          <AcpProcessingSpinner className="size-3.5 shrink-0" />
+          <span className="truncate">{processingLabel}</span>
         </span>
       ) : null}
 
       {showTiming ? (
-        <span className="flex items-center gap-1.5">
+        <span className="flex shrink-0 items-center gap-1.5">
           <span className="text-muted-foreground/80">{t('acp.timingSession')}</span>
           <span className="tabular-nums text-foreground/80">{formatElapsed(sessionSeconds)}</span>
         </span>
       ) : null}
 
       {showContext ? (
-        <span className="flex items-center gap-1.5">
+        <span className="flex shrink-0 items-center gap-1.5">
           <span className="text-muted-foreground/80">{t('acp.usagePanel.contextWindow')}</span>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -152,6 +153,15 @@ export function contextUsageTone(
   if (percentage >= CONTEXT_USAGE_THRESHOLDS.warning) return 'warning';
   if (percentage >= CONTEXT_USAGE_THRESHOLDS.elevated) return 'elevated';
   return 'healthy';
+}
+
+export function hasAcpUsagePanelContent(
+  usage: AcpUsageVm | null | undefined,
+) {
+  if (usage == null) return false;
+  const used = usage.used != null && usage.used > 0 ? usage.used : null;
+  const size = usage.size != null && usage.size > 0 ? usage.size : null;
+  return used != null || size != null || tokenUsageRows(usage).length > 0;
 }
 
 function tokenUsageRows(usage: AcpUsageVm): Array<[string, number]> {

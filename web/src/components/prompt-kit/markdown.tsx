@@ -1,5 +1,5 @@
 import type React from 'react';
-import { createContext, memo, useContext, useLayoutEffect, useRef } from 'react';
+import { createContext, isValidElement, memo, useContext, useLayoutEffect, useRef } from 'react';
 import { FileCode2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { code } from '@streamdown/code';
@@ -12,7 +12,7 @@ import {
 } from 'streamdown';
 import { openExternalUrl } from '@/api';
 import { cn } from '@/lib/utils';
-import { isExternalUrlHref, isLocalFileHref } from '@/lib/file-link';
+import { isExternalUrlHref, isLocalFileHref, parseLocalFileLinkTarget } from '@/lib/file-link';
 import { createIncrementalMarkdownBlockParser } from '@/lib/incremental-markdown-blocks';
 import {
   createStreamingMarkdownPlayback,
@@ -64,6 +64,15 @@ function localHrefFromRenderedHref(href: string | undefined) {
   return isLocalFileHref(href) ? href : null;
 }
 
+function renderedLinkText(node: React.ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(renderedLinkText).join('');
+  if (isValidElement<{ children?: React.ReactNode }>(node)) {
+    return renderedLinkText(node.props.children);
+  }
+  return '';
+}
+
 const markdownUrlTransform: NonNullable<StreamdownProps['urlTransform']> = (url, key, node) => (
   isLocalFileHref(url) ? url : defaultUrlTransform(url, key, node)
 );
@@ -81,6 +90,13 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
   const local = Boolean(localHref);
   const enabledLocal = Boolean(handler && localHref);
   const external = Boolean(href && isExternalUrlHref(href));
+  const target = localHref ? parseLocalFileLinkTarget(localHref) : null;
+  const visibleLabel = target ? renderedLinkText(children).trim() : '';
+  const showTarget = Boolean(
+    target
+    && !visibleLabel.endsWith(target.displayText)
+    && !visibleLabel.endsWith(target.sourceSuffix),
+  );
   return (
     <a
       {...props}
@@ -108,7 +124,17 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
           : props.onClick}
     >
       {enabledLocal ? <FileCode2 className="size-[1em] shrink-0 self-center stroke-[2.35] text-gold-running" aria-hidden="true" /> : null}
-      {children}
+      <span className="min-w-0 [overflow-wrap:anywhere]">
+        {children}
+        {showTarget ? (
+          <span
+            className="whitespace-nowrap"
+            data-gb-file-link-target="true"
+          >
+            {target?.displayText}
+          </span>
+        ) : null}
+      </span>
     </a>
   );
 }

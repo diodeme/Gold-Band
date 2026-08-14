@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
@@ -1255,9 +1255,9 @@ export const browserApi: RuntimeApi = {
   showWorkerRef(_taskId: string, _runId: string, _roundId: string, _nodeId: string, attemptId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: attemptId, kind: 'worker-ref' });
   },
-  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, editorFont: DesktopFontPreference, uiFontSize: number, editorFontSize: number, useLocalClaude: boolean, verboseLogging: boolean) {
+  saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean) {
     const current = browserPreviewState.getPreferences();
-    const preferences = browserPreviewState.setPreferences({ ...current, theme, language, font, editorFont, uiFontSize, editorFontSize, useLocalClaude, verboseLogging });
+    const preferences = browserPreviewState.setPreferences({ ...current, appearance, personalization, language, useLocalClaude, verboseLogging });
     return Promise.resolve(preferences);
   },
   saveDesktopAvatar(input) {
@@ -1278,8 +1278,17 @@ export const browserApi: RuntimeApi = {
         recentAvatars,
       },
     };
-    browserPreviewState.setPreferences({ ...current, avatars });
-    return Promise.resolve(avatars);
+    const personalization = {
+      ...current.personalization,
+      avatars: {
+        ...current.personalization.avatars,
+        [input.kind]: {
+          image: { source: 'user' as const, assetId: id },
+          shape: { source: 'custom' as const, value: input.shape },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, avatars }));
   },
   selectRecentDesktopAvatar(kind, avatarId) {
     const current = browserPreviewState.getPreferences();
@@ -1294,17 +1303,33 @@ export const browserApi: RuntimeApi = {
         recentAvatars: [selected, ...profile.recentAvatars.filter((avatar) => avatar.id !== avatarId)],
       },
     };
-    browserPreviewState.setPreferences({ ...current, avatars });
-    return Promise.resolve(avatars);
+    const personalization = {
+      ...current.personalization,
+      avatars: {
+        ...current.personalization.avatars,
+        [kind]: { ...current.personalization.avatars[kind], image: { source: 'user' as const, assetId: avatarId } },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, avatars }));
   },
   saveDesktopAvatarShape(kind, shape) {
     const current = browserPreviewState.getPreferences();
+    const effectiveShape = shape ?? 'circle';
     const avatars = {
       ...current.avatars,
-      [kind]: { ...current.avatars[kind], shape },
+      [kind]: { ...current.avatars[kind], shape: effectiveShape },
     };
-    browserPreviewState.setPreferences({ ...current, avatars });
-    return Promise.resolve(avatars);
+    const personalization = {
+      ...current.personalization,
+      avatars: {
+        ...current.personalization.avatars,
+        [kind]: {
+          ...current.personalization.avatars[kind],
+          shape: shape === null ? { source: 'theme' as const } : { source: 'custom' as const, value: shape },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, avatars }));
   },
   clearDesktopAvatar(kind) {
     const current = browserPreviewState.getPreferences();
@@ -1312,8 +1337,14 @@ export const browserApi: RuntimeApi = {
       ...current.avatars,
       [kind]: { ...current.avatars[kind], selectedAvatarId: null },
     };
-    browserPreviewState.setPreferences({ ...current, avatars });
-    return Promise.resolve(avatars);
+    const personalization = {
+      ...current.personalization,
+      avatars: {
+        ...current.personalization.avatars,
+        [kind]: { ...current.personalization.avatars[kind], image: { source: 'theme' as const } },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, avatars }));
   },
   saveUpdaterSettings(overrideUrl: string | null) {
     const current = browserPreviewState.getUpdaterSettings();

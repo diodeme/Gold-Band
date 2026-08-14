@@ -417,8 +417,8 @@ export function showWorkerRef(taskId: string, runId: string, roundId: string, no
   return getRuntimeApi().showWorkerRef(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }
 
-export function saveDesktopPreferences(theme: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[0], language: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[1], font: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[2], editorFont: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[3], uiFontSize: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[4], editorFontSize: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[5], useLocalClaude: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[6], verboseLogging: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[7]) {
-  return getRuntimeApi().saveDesktopPreferences(theme, language, font, editorFont, uiFontSize, editorFontSize, useLocalClaude, verboseLogging);
+export function saveDesktopPreferences(appearance: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[0], personalization: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[1], language: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[2], useLocalClaude: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[3], verboseLogging: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[4]) {
+  return getRuntimeApi().saveDesktopPreferences(appearance, personalization, language, useLocalClaude, verboseLogging);
 }
 
 export function saveDesktopAvatar(input: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopAvatar']>[0]) {

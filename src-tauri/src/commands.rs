@@ -45,9 +45,10 @@ use std::{
 
 use camino::Utf8PathBuf;
 use gold_band::config::{
-    AcpAdapterConfig, ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopFontPreference,
-    DesktopLanguage, DesktopThemePreference, ManagedAgentConfig, ManagedAgentId,
-    normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
+    AcpAdapterConfig, AppearancePreference, AvatarPreference, AvatarShapePreference,
+    ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopLanguage, FontPreference,
+    FontSizePreference, ManagedAgentConfig, ManagedAgentId, PersonalizationAvatarShape,
+    PersonalizationPreference, normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
 };
 use gold_band::observability::set_runtime_log_level;
 use gold_band::provider::{
@@ -62,7 +63,7 @@ use uuid::Uuid;
 
 use crate::avatar::{
     AvatarKind, AvatarPreferencesVm, AvatarShape, SaveDesktopAvatarInput, clear_avatar,
-    load_avatar_preferences, save_avatar_image, save_avatar_shape, select_recent_avatar,
+    load_resolved_avatar_preferences, save_avatar_image, save_avatar_shape, select_recent_avatar,
 };
 use crate::conversation_workspace::workspace_entry_for_project;
 use crate::i18n::Translator;
@@ -4899,15 +4900,39 @@ pub fn show_worker_ref(
 #[tauri::command]
 pub fn save_desktop_preferences(
     state: State<'_, DesktopState>,
-    theme: DesktopThemePreference,
+    mut appearance: AppearancePreference,
+    personalization: PersonalizationPreference,
     language: DesktopLanguage,
-    font: DesktopFontPreference,
-    editor_font: DesktopFontPreference,
-    ui_font_size: u8,
-    editor_font_size: u8,
     use_local_claude: bool,
     verbose_logging: bool,
 ) -> CommandResult<PreferencesVm> {
+    if appearance.schema_version != 2 {
+        return Err(CommandErrorVm::new(
+            "theme.contract-version-unsupported",
+            serde_json::json!({ "schemaVersion": appearance.schema_version }),
+        ));
+    }
+    let theme_catalog = gold_band::theme::builtin_theme_catalog().map_err(|error| {
+        CommandErrorVm::new(error.code, serde_json::json!({ "detail": error.detail }))
+    })?;
+    if !theme_catalog
+        .iter()
+        .any(|theme| theme.id == appearance.theme_id)
+    {
+        return Err(CommandErrorVm::new(
+            "theme.active-package-missing",
+            serde_json::json!({ "themeId": appearance.theme_id }),
+        ));
+    }
+    let personalization = normalize_personalization_preference(personalization)?;
+    appearance.visual_quality_by_theme.retain(|theme_id, _| {
+        theme_catalog.iter().any(|theme| {
+            theme.id == *theme_id
+                && theme
+                    .capabilities
+                    .contains(&gold_band::theme::ThemeCapability::VisualQualityProfiles)
+        })
+    });
     let context = state.context().map_err(command_error)?;
     let app = context.app();
     if context.config.use_local_claude != use_local_claude {
@@ -4915,16 +4940,11 @@ pub fn save_desktop_preferences(
         gold_band::acp::client::close_workspace_connections_bounded(&app.paths.repo_root)
             .map_err(command_error)?;
     }
-    let ui_font_size = normalize_desktop_ui_font_size(ui_font_size);
-    let editor_font_size = normalize_desktop_editor_font_size(editor_font_size);
     let settings = app
         .set_user_desktop_preferences(
-            theme,
+            appearance.clone(),
+            personalization.clone(),
             language,
-            font.clone(),
-            editor_font.clone(),
-            ui_font_size,
-            editor_font_size,
             use_local_claude,
             verbose_logging,
         )
@@ -4935,25 +4955,79 @@ pub fn save_desktop_preferences(
     let log_level = settings.log_level.unwrap_or(context.config.log_level);
     set_runtime_log_level(log_level);
     Ok(preferences_vm(
-        theme,
+        appearance,
+        personalization.clone(),
         language,
-        font,
-        editor_font,
-        ui_font_size,
-        editor_font_size,
         use_local_claude,
         log_level,
-        load_avatar_preferences(&app.paths.user_gold_band_dir()).map_err(avatar_command_error)?,
+        load_resolved_avatar_preferences(&app.paths.user_gold_band_dir(), &personalization)
+            .map_err(avatar_command_error)?,
     ))
+}
+
+fn normalize_personalization_preference(
+    mut preference: PersonalizationPreference,
+) -> CommandResult<PersonalizationPreference> {
+    if preference.schema_version != 1 {
+        return Err(CommandErrorVm::new(
+            "personalization.contract-version-unsupported",
+            serde_json::json!({ "schemaVersion": preference.schema_version }),
+        ));
+    }
+    for typography in [
+        &mut preference.typography.ui,
+        &mut preference.typography.editor,
+    ] {
+        if let FontPreference::Local { family } = &mut typography.font {
+            *family = family.trim().to_string();
+            if family.is_empty() {
+                return Err(CommandErrorVm::new(
+                    "personalization.font-invalid",
+                    serde_json::json!({}),
+                ));
+            }
+        }
+    }
+    if let FontSizePreference::Custom { px } = &mut preference.typography.ui.font_size {
+        *px = normalize_desktop_ui_font_size(*px);
+    }
+    if let FontSizePreference::Custom { px } = &mut preference.typography.editor.font_size {
+        *px = normalize_desktop_editor_font_size(*px);
+    }
+    for avatar in [&preference.avatars.agent, &preference.avatars.user] {
+        if matches!(&avatar.image, AvatarPreference::User { asset_id } if asset_id.trim().is_empty())
+        {
+            return Err(CommandErrorVm::new(
+                "personalization.avatar-invalid",
+                serde_json::json!({}),
+            ));
+        }
+    }
+    Ok(preference)
 }
 
 #[tauri::command]
 pub fn save_desktop_avatar(
     state: State<'_, DesktopState>,
     input: SaveDesktopAvatarInput,
-) -> CommandResult<AvatarPreferencesVm> {
-    let app = state.context().map_err(command_error)?.app();
-    save_avatar_image(&app.paths.user_gold_band_dir(), input).map_err(avatar_command_error)
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    let kind = input.kind;
+    let shape = input.shape;
+    let avatars =
+        save_avatar_image(&app.paths.user_gold_band_dir(), input).map_err(avatar_command_error)?;
+    let profile = avatar_profile(&avatars, kind);
+    let asset_id = profile.selected_avatar_id.clone().ok_or_else(|| {
+        CommandErrorVm::new("personalization.avatar-invalid", serde_json::json!({}))
+    })?;
+    let mut personalization = context.config.personalization.clone();
+    let target = avatar_personalization_mut(&mut personalization, kind);
+    target.image = AvatarPreference::User { asset_id };
+    target.shape = AvatarShapePreference::Custom {
+        value: personalization_avatar_shape(shape),
+    };
+    persist_avatar_personalization(&state, &context, personalization)
 }
 
 #[tauri::command]
@@ -4961,29 +5035,103 @@ pub fn select_recent_desktop_avatar(
     state: State<'_, DesktopState>,
     kind: AvatarKind,
     avatar_id: String,
-) -> CommandResult<AvatarPreferencesVm> {
-    let app = state.context().map_err(command_error)?.app();
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
     select_recent_avatar(&app.paths.user_gold_band_dir(), kind, &avatar_id)
-        .map_err(avatar_command_error)
+        .map_err(avatar_command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    avatar_personalization_mut(&mut personalization, kind).image = AvatarPreference::User {
+        asset_id: avatar_id,
+    };
+    persist_avatar_personalization(&state, &context, personalization)
 }
 
 #[tauri::command]
 pub fn save_desktop_avatar_shape(
     state: State<'_, DesktopState>,
     kind: AvatarKind,
-    shape: AvatarShape,
-) -> CommandResult<AvatarPreferencesVm> {
-    let app = state.context().map_err(command_error)?.app();
-    save_avatar_shape(&app.paths.user_gold_band_dir(), kind, shape).map_err(avatar_command_error)
+    shape: Option<AvatarShape>,
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    if let Some(shape) = shape {
+        save_avatar_shape(&app.paths.user_gold_band_dir(), kind, shape)
+            .map_err(avatar_command_error)?;
+    }
+    let mut personalization = context.config.personalization.clone();
+    avatar_personalization_mut(&mut personalization, kind).shape =
+        shape.map_or(AvatarShapePreference::Theme, |value| {
+            AvatarShapePreference::Custom {
+                value: personalization_avatar_shape(value),
+            }
+        });
+    persist_avatar_personalization(&state, &context, personalization)
 }
 
 #[tauri::command]
 pub fn clear_desktop_avatar(
     state: State<'_, DesktopState>,
     kind: AvatarKind,
-) -> CommandResult<AvatarPreferencesVm> {
-    let app = state.context().map_err(command_error)?.app();
-    clear_avatar(&app.paths.user_gold_band_dir(), kind).map_err(avatar_command_error)
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    clear_avatar(&app.paths.user_gold_band_dir(), kind).map_err(avatar_command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    avatar_personalization_mut(&mut personalization, kind).image = AvatarPreference::Theme;
+    persist_avatar_personalization(&state, &context, personalization)
+}
+
+fn avatar_profile(
+    avatars: &AvatarPreferencesVm,
+    kind: AvatarKind,
+) -> &crate::avatar::AvatarProfileVm {
+    match kind {
+        AvatarKind::Agent => &avatars.agent,
+        AvatarKind::User => &avatars.user,
+    }
+}
+
+fn avatar_personalization_mut(
+    personalization: &mut PersonalizationPreference,
+    kind: AvatarKind,
+) -> &mut gold_band::config::AvatarPersonalization {
+    match kind {
+        AvatarKind::Agent => &mut personalization.avatars.agent,
+        AvatarKind::User => &mut personalization.avatars.user,
+    }
+}
+
+fn personalization_avatar_shape(shape: AvatarShape) -> PersonalizationAvatarShape {
+    match shape {
+        AvatarShape::Circle => PersonalizationAvatarShape::Circle,
+        AvatarShape::Square => PersonalizationAvatarShape::Square,
+    }
+}
+
+fn persist_avatar_personalization(
+    state: &DesktopState,
+    context: &crate::state::DesktopContext,
+    personalization: PersonalizationPreference,
+) -> CommandResult<PreferencesVm> {
+    let app = context.app();
+    let settings = app
+        .set_user_desktop_personalization(personalization.clone())
+        .map_err(command_error)?;
+    state
+        .update_settings_config(&settings)
+        .map_err(command_error)?;
+    let avatars =
+        load_resolved_avatar_preferences(&app.paths.user_gold_band_dir(), &personalization)
+            .map_err(avatar_command_error)?;
+    Ok(preferences_vm(
+        context.config.appearance.clone(),
+        personalization,
+        context.config.desktop_language,
+        context.config.use_local_claude,
+        context.config.log_level,
+        avatars,
+    ))
 }
 
 fn avatar_command_error(error: crate::avatar::AvatarError) -> CommandErrorVm {

@@ -23,7 +23,8 @@ describe('sidebar selected-state styles', () => {
       'utf8',
     );
 
-    expect(source).toContain('text-[14px] text-sidebar-foreground hover:bg-sidebar-accent');
+    expect(source).toContain('text-sm text-sidebar-foreground hover:bg-sidebar-accent');
+    expect(source).not.toContain('text-[14px] text-sidebar-foreground hover:bg-sidebar-accent');
     expect(source).toContain('tracking-[0.12em] text-sidebar-foreground');
     expect(source).toContain('tabular-nums text-muted-foreground');
   });

@@ -22,16 +22,15 @@
 ├──────────────────────────────────────────────────────────────┤
 │ 个性化                                                       │
 │   Sync with OS 开关                                           │
-│   未跟随系统：当前主题摘要 + 选择主题按钮                       │
-│   跟随系统：浅色默认主题 + 深色默认主题两个选择入口              │
-│   主题抽屉：按入口展示全部 / 仅浅色 / 仅深色主题                 │
+│   设计风格：主题包预览卡网格                                    │
+│   明暗模式：跟随系统 / 浅色 / 深色                              │
+│   视觉效果：仅主题声明质量档能力时展示                            │
 │                                                              │
 │ 字体                                                         │
-│   应用内置默认字体（MiSans）                                   │
-│   本机字体下拉列表                                             │
+│   界面 UI / 编辑器分别跟随主题或选择本机字体与自定义字号          │
 │                                                              │
 │ 头像                                                         │
-│   Agent / 个人紧凑设置行，最近头像、上传裁剪、圆形/方形头像框    │
+│   Agent / 个人紧凑设置行，主题头像、最近头像、上传裁剪与头像框    │
 │                                                              │
 │ 语言                                                         │
 │   语言选择：中文 / English                                    │
@@ -40,47 +39,39 @@
 
 ---
 
-## 4. 主题选择
+## 4. 主题包与外观选择
 
 ### 4.1 选项
 当前支持：
-- System / 跟随系统：由 `Sync with OS` 开关控制。
-- Light / 瓷白：瓷白主面、雾灰工作区、石墨文字与低饱和矿物靛蓝强调，作为默认浅色主题；蓝色不得大面积铺入页面底、侧栏和边框。
-- Light Gray / 科技灰：白色主内容、纯中性灰侧栏与选中面、石墨文字和无彩交互色；冷蓝只用于运行状态，呈现参考图中干净、克制的桌面工具质感。
-- Graphite Dark / 石墨深色：参考 Codex 桌面端，以 `#181818` 主内容、`#202020` 侧栏/标题栏、`#242424` 内容面、`#2d2d2d` 高层 surface、`#313131` 选中面建立无彩炭灰层级；蓝、绿、橙、红仅用于运行和语义状态。
-- Black / 终端黑：与石墨深色使用同一套无彩层级逻辑，但整体压暗为 `#111111 / #191919 / #1b1b1b / #252525 / #2d2d2d`，作为更安静的沉浸选项。
+- Gold Band：默认设计风格，浅色为瓷白/雾灰/石墨层级，深色为无彩炭灰层级。
+- 技术中性：更克制的无彩工具风格，浅色与深色都只让业务状态使用彩色。
+- 玻璃拟态：浅色 Glass 与深色 Nocturne Glass，使用光井背景、无色透明表面和有限玻璃材质；额外提供完整效果与性能优先。
+- 新粗野主义：作为 Theme Contract 通用性样板，以高对比色、直角、硬边界、硬阴影和方形头像验证新增风格不需要修改设置页或业务组件。
+- 明暗偏好独立为 `跟随系统 / 浅色 / 深色`；每个正式主题包必须同时提供浅色和深色，`跟随系统` 不跨主题包切换。
 
 ### 4.2 行为
 - 设置保存到本地用户偏好。
-- `Sync with OS` 开启时保存 `desktopTheme = system`，应用根据操作系统浅色/深色自动解析到用户最近选择过的对应模式主题；没有记忆时才回退到默认浅色或 Gold Band 深色。
-- `Sync with OS` 关闭时保存当前解析出的具体主题。
-- 点击任一主题预览卡会立即保存该具体主题，并记忆为该浅色/深色模式的首选变体，同时隐式关闭 `Sync with OS`。
+- 点击主题包预览卡保存稳定 `themeId`，不会改变当前 `colorScheme` 偏好。
+- 选择 `跟随系统` 时只保存 `colorScheme = system`；操作系统变化只重新解析当前包的 light/dark，不写回偏好。
+- 视觉质量选择按 `themeId` 隔离记忆；切换到不声明该能力的主题时隐藏控件且不制造伪性能档。
+- 后端完成校验和原子持久化后返回 canonical `appearance + personalization`，前端以返回值收敛并应用根属性。
 - 所有主题选择后立即预览，不需要重启。
 
 ### 4.3 UI 形式
 设置页采用一个主工作面，内部用 section 和低对比分隔线组织外观、字体、语言，不再将每个设置组做成独立大卡片。
 
-推荐使用顶部开关 + 当前主题摘要 + 抽屉式分组预览：
+外观区域使用主题包预览卡网格与两行紧凑选项：
 
 ```text
 外观
-  Sync with OS                                      ( on/off )
-
-  未跟随系统：
-    当前主题  [ terminal 预览 ]  终端黑              [ 选择主题 ]
-    -> 打开包含 Light + Dark 全部主题的抽屉
-
-  跟随系统：
-    浅色默认主题 [ terminal 预览 ] 瓷白              [ 选择浅色主题 ]
-    深色默认主题 [ terminal 预览 ] 终端黑            [ 选择深色主题 ]
-    -> 分别打开仅浅色 / 仅深色主题抽屉
+  [ Gold Band ] [ 技术中性 ] [ 玻璃拟态 ] [ 新粗野主义 ]
+  明暗模式                                      [ 跟随系统 v ]
+  视觉效果（仅支持的主题）                    [ 完整效果 v ]
 ```
 
 视觉规则：
-- 主题摘要默认是低对比选项行，不是完整卡片墙。
-- terminal-like 配色预览可以保留独立边界，因为它是内容预览，不是布局容器。
+- 主题卡只展示包名、当前明暗方案的视觉样本和明确选中态，不展示 token、目录或实现说明。
 - 当前选中主题只用 primary 低透明背景和弱边框强调，不使用重阴影或大面积色块。
-- 主题抽屉使用紧凑的视觉样本墙：分组标题位于卡片网格上方，容器达到双列阈值时同组两个主题并排，窄容器退回单列。主题卡只展示预览、名称和当前状态，不恢复说明文字。
 - 当前生效主题除轻量背景与边界外，还必须显示 `primary / primary-foreground` 配对的对勾状态胶囊；不能只依赖整张卡片边框让用户猜测选中项。
 - 所有主题都遵循同一布局层级，主题 token 只负责换色，不改变设置页结构。
 - 顶部 `通用 / 个性化 / 高级` 使用共享 shadcn Tabs 默认变体：tab track 必须使用 `secondary` surface，并以 `border` 语义的内描边与工作区分层；不得使用可能与浅色工作区同值的 `muted` 作为唯一背景。选中 tab 继续使用 `background` surface 与轻量阴影。该规则同时适用于项目中其他默认分段 Tabs，明确使用 `line` 或透明变体的场景除外。
@@ -89,10 +80,8 @@
 - 瓷白遵循中性面优先：大面积背景使用白与中性灰建立层级，品牌靛蓝只用于主操作、选中态、焦点环和运行态；边框使用中性石墨透明度，不使用蓝色边框给整窗染色。
 - 科技灰通过 `#ffffff` 主内容、`#f3f3f3` 侧栏、`#e7e7e7` 选中面和 `#e5e5e5` 边界建立层级；正文与主操作使用石墨灰，冷蓝只承担运行状态。禁止给文字、图标、边界或大面积 surface 注入蓝灰、暖黄、米色或古铜金色偏。
 - 科技灰文字层级固定为 `#171717` 深黑标题、`#2b2b2b` 正文、`#666666` 辅助信息和更浅的禁用/占位状态；欢迎语等页面视觉锚点必须使用 `title` token，不得使用带透明度的正文色替代。侧栏导航、分组标题和任务标题属于主要信息，统一消费 `sidebar-foreground = #171717`，只有时间、空状态等元信息使用 `muted-foreground = #666666`。主消息阅读区保持纯白，科技灰侧栏与会话标题栏共同使用 `#f3f3f3` 框架 surface。
-- 四套主题均保留独立 `content-header` 语义接口，但当前统一映射为 `var(--sidebar)`，让会话标题栏与侧边栏组成连续应用框架，并通过轻量底边界与消息阅读区分层；不得在标题栏额外包裹卡片、嵌套灰块或投影。未来需要拆分标题栏色阶时只调整主题映射，不修改组件消费路径。
-- 设置 section、主题摘要列表与主题抽屉必须按各自容器的实际宽度响应，禁止仅依据整窗 viewport breakpoint 升列。section 宽度不足时标题堆叠到内容上方；跟随系统的浅色/深色摘要只在内容容器足够容纳两个完整条目时双列，否则单列。
-- 单个主题摘要内部按自身宽度逐级切换：窄卡片使用“预览 → 名称 → 全宽操作”纵向结构，中等卡片使用“预览 + 名称 / 下方操作”，足够宽时才使用“预览 + 名称 + 操作”单行结构。主题名称下方不展示说明文字，任何宽度下名称都不得被压缩成逐字纵排。
-- 抽屉内主题卡与设置页主题摘要是两种不同密度：摘要承担打开抽屉的操作，抽屉卡直接承担选择；抽屉卡不得继续占满超宽单行，也不展示额外按钮。
+- 所有内置主题方案均保留独立 `content-header` 语义接口，让会话标题栏与侧边栏组成连续应用框架，并通过轻量底边界与消息阅读区分层；不得在标题栏额外包裹卡片、嵌套灰块或投影。
+- 设置 section 与主题卡网格按内容容器宽度响应：宽内容区最多三列，空间不足时逐级降为两列、单列；选项行允许标题和 Select 换行，但不得制造横向滚动或逐字纵排。
 
 ---
 
@@ -106,8 +95,8 @@
 
 ### 5.2 行为
 - 字体区分为“界面 UI”和“编辑器”两个 shadcn Collapsible 展开栏；展开状态写入 `sessionStorage`，只在当前应用会话内记忆，不进入用户配置文件。
-- UI 字体保存为 `desktopFont`；编辑器字体保存为 `desktopEditorFont`。两者都支持各自默认值和真实本机字体 family 名称。
-- UI 基准字号默认 `14px`、允许 `12–18px`；编辑器字号默认 `12px`、允许 `10–18px`，步长均为 `1px`。输入时只更新根级 CSS 变量进行即时预览，失焦或点击恢复默认时才通过统一偏好接口持久化，禁止使用浏览器 zoom 或新增 localStorage 旁路。
+- 字体与字号统一保存在 `PersonalizationPreference.typography`。界面 UI / 编辑器字体分别使用 `source: theme | local`，字号分别使用 `source: theme | custom`；不得通过值恰好等于 14/12 推断继承。
+- UI 基准字号允许 `12–18px`；编辑器字号允许 `10–18px`，步长均为 `1px`。输入时只更新根级 CSS 变量进行即时预览，失焦后保存 `source: custom`；点击恢复时保存 `source: theme` 并立即展示当前主题预设，禁止写死 14/12、使用浏览器 zoom 或新增 localStorage 旁路。
 - UI 字号控制侧栏、设置页、聊天正文、Thought 与普通 Markdown，并通过派生 token 覆盖紧凑说明、徽标和时间等层级；聊天行内代码与代码块只切换等宽字形，字号继续从 UI 基准派生。
 - 编辑器字体和字号只覆盖所有 CodeMirror 文件查看/编辑、运行产物、Markdown 编辑器以及 Git/本轮 Diff；技术标识使用等宽字体不等同于消费编辑器字号。
 - 全局字重语义采用轻量层级：正文 `400`、常规强调 `400`、标题/强强调 `500`、最高强调 `600`。保留视觉层次，不按页面机械替换字重类，也不通过错配字体文件伪造较细字重。
@@ -140,15 +129,25 @@
 
 ## 7. Tauri 2.x MVP 对应实现
 
+- 外观权威字段改为 `appearance`：`schemaVersion = 2`、稳定 `themeId`、`colorScheme = system | light | dark`、按主题隔离的 `visualQualityByTheme`。旧 `desktopTheme` 在 settings schema v5 一次性迁移后删除，不双写。
+- 个性化权威字段为 `personalization`：`schemaVersion = 1`，显式保存两套排版以及 Agent / 个人头像图片与形状的 `source`。settings schema v7 一次性迁移旧字体、字号和头像选择；主题来源持续跟随当前主题，用户资产历史独立保留。
+- 内置 `builtin.gold-band`、`builtin.tech-neutral`、`builtin.glass`、`builtin.neo-brutalist` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。
+- 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。Glass 声明视觉质量能力并独立记忆完整效果/性能优先，其他主题不显示该设置。
+- 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
+- 共享 shadcn/ui、prompt-kit 与应用壳以稳定 `data-theme-role` 消费材质 recipe；主题卡在宽内容区三列，窄窗口自动单列。
+- 2026-08-14 基础主题包补全：Theme SDK 已生成可提交的 `runtime-theme.json`、`builtin-theme.css`、`asset-manifest.json`、Web Catalog 与 Rust Catalog；后端保存偏好从 Catalog 能力声明判断主题存在性和质量档，不再硬编码主题 ID。当前开发节点完成 Style Dictionary 构建、TypeScript/Vite 生产构建和 Rust desktop compile check；单元/接口与浏览器交互仍由后续测试、验收节点执行。
+- 2026-08-14 测试节点复验：Theme SDK 构建正例及缺失 token、alias 循环、非法 recipe、质量档越界负例 5/5 通过；Web 全量 1176/1176、Rust Catalog 2/2、旧外观迁移 2/2、偏好持久化与个性化迁移定向用例通过，生产构建和格式检查通过。内置浏览器实例不可用，仅确认 `/settings` HTTP 200，Glass 长会话视觉与 GPU 时间线仍未验收。
+- 2026-08-14 覆盖率工具链收敛：与 Vitest 同版本的 V8 coverage provider 作为固定开发依赖随 lockfile 安装，并提供统一 `web:test:coverage` 入口；后续测试节点不再临时修改依赖树，覆盖率结果仍必须以该节点实际执行为准。
+
 MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri command `save_desktop_preferences` 保存用户偏好。
 
 当前实现规则：
-- 主题字段保存为 `desktopTheme`，支持 `system`、`light`、`light-gray`、`dark`、`black`。
+- 历史实现曾保存 `desktopTheme = system | light | light-gray | dark | black`，现仅由 v5 migration 读取并映射为主题包与明暗模式。
 - 语言字段保存为 `desktopLanguage`，支持 `zh-cn`、`en`。
-- UI 字体字段保存为 `desktopFont`，默认 `app-default`；编辑器字体字段保存为 `desktopEditorFont`，默认 `editor-default`；UI / 编辑器字号分别保存为 `desktopUiFontSize` / `desktopEditorFontSize`。
-- `save_desktop_preferences` 以单次设置文件 load/save 原子提交主题、语言、两套字体、两套字号、本地 Claude 和日志偏好；前端串行提交并按 latest-wins 更新 canonical 偏好，禁止清空 task/workflow/round 触发无关重载。
-- 主题使用 `Sync with OS` 开关 + 条件化主题摘要：未跟随系统时展示一个当前主题选择入口；跟随系统时展示浅色默认主题和深色默认主题两个选择入口，并分别打开过滤后的主题抽屉；语言使用下拉选择，选择后立即调用 `save_desktop_preferences` 保存并预览。
-- 首次启动默认主题为 `system`，系统浅色时解析到瓷白，系统深色时解析到石墨深色。
+- 旧 `desktopFont / desktopEditorFont / desktopUiFontSize / desktopEditorFontSize` 仅由 schema v7 migration 读取，迁移成功后删除；运行时和保存接口只消费 `personalization`。
+- `save_desktop_preferences` 以单次设置文件 load/save 原子提交 `appearance`、`personalization`、语言、本地 Claude 和日志偏好；前端串行提交并按 latest-wins 更新 canonical 偏好，禁止清空 task/workflow/round 触发无关重载。
+- 主题使用主题包卡片 + 明暗模式下拉；`system` 只在当前主题包内解析浅色/深色，声明视觉质量能力的主题额外显示质量档选择。选择后立即调用 `save_desktop_preferences` 保存并预览。
+- 首次启动默认 `themeId = builtin.gold-band`、`colorScheme = system`，系统明暗只改变该主题包的方案。
 - 2026-05-03 起设置页使用 Tailwind CSS v4 + shadcn/ui Card、Button、Select、Badge 等现成组件重构；主题和语言选择后立即保存并预览的行为不变。
 - 2026-05-07 起设置页移除标题副文案、范围提示卡片，以及外观/语言卡片中的辅助说明，页面仅保留主题与语言控件。
 - 2026-05-07 起主题选择器升级为 `Sync with OS` 开关 + 主题预览卡，浅色主题扩展为两个可选变体，并新增终端黑主题。

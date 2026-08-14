@@ -23,6 +23,7 @@ use gold_band::storage::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::avatar::{complete_legacy_avatar_personalization, legacy_avatar_personalization};
 use crate::conversation_workspace::migrate_conversation_workspace_state;
 use crate::updater::{UpdateInfoVm, UpdateStatusVm, initial_update_status};
 
@@ -1159,7 +1160,16 @@ fn nearest_parent_containing(start: &Utf8Path, marker: &str) -> Option<Utf8PathB
 }
 
 fn load_configs(paths: &GoldBandPaths) -> Result<(SettingsConfig, StateConfig)> {
-    let settings = load_settings_file(&paths.user_settings_file())?;
+    let mut settings = load_settings_file(&paths.user_settings_file())?;
+    if let Some(personalization) = settings.personalization.as_mut() {
+        let migrated = legacy_avatar_personalization(&paths.user_gold_band_dir(), personalization)
+            .map_err(|error| anyhow::anyhow!(error.code))?;
+        if migrated {
+            write_json(&paths.user_settings_file(), &settings)?;
+            complete_legacy_avatar_personalization(&paths.user_gold_band_dir())
+                .map_err(|error| anyhow::anyhow!(error.code))?;
+        }
+    }
     let state: StateConfig = read_json(&paths.user_state_file()).unwrap_or_default();
     Ok((settings, state))
 }

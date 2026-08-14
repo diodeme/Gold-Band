@@ -21,11 +21,10 @@ use crate::acp::commands::AcpCommandItem;
 use crate::acp::elicitation::cancel_pending_elicitation_requests;
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::{
-    ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
-    DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
-    ManagedAgentId, McpServerConfig, McpServerHealthResult, ProviderDiagnosticSnapshot,
-    RuntimeConfig, RuntimeLogLevel, SettingsConfig, SkillMeta, SkillSource, StateConfig,
-    normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
+    AppearancePreference, ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate,
+    DesktopLanguage, DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerConfig,
+    McpServerHealthResult, PersonalizationPreference, ProviderDiagnosticSnapshot, RuntimeConfig,
+    RuntimeLogLevel, SettingsConfig, SkillMeta, SkillSource, StateConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
@@ -1336,9 +1335,22 @@ impl App {
         Ok(settings)
     }
 
-    pub fn set_user_desktop_theme(&self, theme: DesktopThemePreference) -> Result<SettingsConfig> {
+    pub fn set_user_desktop_appearance(
+        &self,
+        appearance: AppearancePreference,
+    ) -> Result<SettingsConfig> {
         let mut settings = self.load_settings()?;
-        settings.desktop_theme = Some(theme);
+        settings.appearance = Some(appearance);
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn set_user_desktop_personalization(
+        &self,
+        personalization: PersonalizationPreference,
+    ) -> Result<SettingsConfig> {
+        let mut settings = self.load_settings()?;
+        settings.personalization = Some(personalization);
         self.save_settings(&settings)?;
         Ok(settings)
     }
@@ -1352,23 +1364,16 @@ impl App {
 
     pub fn set_user_desktop_preferences(
         &self,
-        theme: DesktopThemePreference,
+        appearance: AppearancePreference,
+        personalization: PersonalizationPreference,
         language: DesktopLanguage,
-        font: DesktopFontPreference,
-        editor_font: DesktopFontPreference,
-        ui_font_size: u8,
-        editor_font_size: u8,
         use_local_claude: bool,
         verbose_logging: bool,
     ) -> Result<SettingsConfig> {
         let mut settings = self.load_settings()?;
-        settings.desktop_theme = Some(theme);
+        settings.appearance = Some(appearance);
+        settings.personalization = Some(personalization);
         settings.desktop_language = Some(language);
-        settings.desktop_font = Some(font);
-        settings.desktop_editor_font = Some(editor_font);
-        settings.desktop_ui_font_size = Some(normalize_desktop_ui_font_size(ui_font_size));
-        settings.desktop_editor_font_size =
-            Some(normalize_desktop_editor_font_size(editor_font_size));
         settings.use_local_claude = Some(use_local_claude);
         settings.log_level = Some(if verbose_logging {
             RuntimeLogLevel::Debug
@@ -3899,8 +3904,10 @@ mod tests {
     };
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
-        ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
-        ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel, catalog_agent_default_config,
+        AppearancePreference, ColorSchemePreference, ConsoleThemeName, DesktopLanguage,
+        DesktopUpdateBadgeState, FontPreference, FontSizePreference, PersonalizationPreference,
+        ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel, VisualQuality,
+        catalog_agent_default_config,
     };
     use crate::domain::{
         NodeOutcome, NodeType, PauseReason, RoundTrigger, RunOutcome, RunStatus, SessionMode,
@@ -3919,6 +3926,7 @@ mod tests {
     use crate::runtime::{NodeState, RoundState, RunState, RuntimeExecutionPhase, TaskState};
     use crate::storage::{StoragePathConfig, read_json, sqlite::SearchIndex, write_json};
     use camino::Utf8PathBuf;
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
@@ -5737,28 +5745,42 @@ mod tests {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root.clone());
+        let mut personalization = PersonalizationPreference::default();
+        personalization.typography.ui.font = FontPreference::Local {
+            family: "Microsoft YaHei UI".to_string(),
+        };
+        personalization.typography.ui.font_size = FontSizePreference::Custom { px: 16 };
+        personalization.typography.editor.font = FontPreference::Local {
+            family: "Fira Code".to_string(),
+        };
+        personalization.typography.editor.font_size = FontSizePreference::Custom { px: 13 };
         app.set_user_desktop_preferences(
-            DesktopThemePreference::Dark,
+            AppearancePreference {
+                schema_version: 2,
+                theme_id: "builtin.glass".to_string(),
+                color_scheme: ColorSchemePreference::Dark,
+                visual_quality_by_theme: BTreeMap::from([(
+                    "builtin.glass".to_string(),
+                    VisualQuality::Performance,
+                )]),
+            },
+            personalization.clone(),
             DesktopLanguage::En,
-            "Microsoft YaHei UI".to_string(),
-            "Fira Code".to_string(),
-            16,
-            13,
             true,
             true,
         )
         .unwrap();
 
         let settings = app.load_settings().unwrap();
-        assert_eq!(settings.desktop_theme, Some(DesktopThemePreference::Dark));
-        assert_eq!(settings.desktop_language, Some(DesktopLanguage::En));
+        let appearance = settings.appearance.expect("appearance should persist");
+        assert_eq!(appearance.theme_id, "builtin.glass");
+        assert_eq!(appearance.color_scheme, ColorSchemePreference::Dark);
         assert_eq!(
-            settings.desktop_font,
-            Some("Microsoft YaHei UI".to_string())
+            appearance.visual_quality_by_theme.get("builtin.glass"),
+            Some(&VisualQuality::Performance)
         );
-        assert_eq!(settings.desktop_editor_font, Some("Fira Code".to_string()));
-        assert_eq!(settings.desktop_ui_font_size, Some(16));
-        assert_eq!(settings.desktop_editor_font_size, Some(13));
+        assert_eq!(settings.desktop_language, Some(DesktopLanguage::En));
+        assert_eq!(settings.personalization, Some(personalization));
         assert_eq!(settings.use_local_claude, Some(true));
         assert!(matches!(settings.log_level, Some(RuntimeLogLevel::Debug)));
 

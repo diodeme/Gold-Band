@@ -1,0 +1,7 @@
+{
+  "blur": 16,
+  "saturate": 140,
+  "shadow": "0 8px 24px rgba(3,7,18,.26), inset 0 1px 0 rgba(255,255,255,.16)",
+  "textureOpacity": 0,
+  "motionDuration": "200ms"
+}

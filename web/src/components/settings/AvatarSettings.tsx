@@ -2,8 +2,8 @@ import { lazy, Suspense, useRef, useState } from 'react';
 import type { Area, Point } from 'react-easy-crop';
 import 'react-easy-crop/react-easy-crop.css';
 import { useTranslation } from 'react-i18next';
-import { ImagePlus, Loader2, Maximize, Minus, UserRound } from 'lucide-react';
-import type { AvatarKind, AvatarPreferencesVm, AvatarProfileVm, AvatarShape, SaveDesktopAvatarInput } from '@/types';
+import { ImagePlus, Loader2, Maximize, Minus, RotateCcw, UserRound } from 'lucide-react';
+import type { AvatarKind, AvatarPreferencesVm, AvatarProfileVm, AvatarShape, PersonalizationPreference, SaveDesktopAvatarInput } from '@/types';
 import { AvatarDisplay } from '@/components/avatar/AvatarDisplay';
 import { Avatar, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -33,19 +33,21 @@ const Cropper = lazy(() => import('react-easy-crop'));
 
 interface AvatarSettingsProps {
   preferences: AvatarPreferencesVm;
+  personalization: PersonalizationPreference['avatars'];
   busy: boolean;
   onSaveAvatar: (input: SaveDesktopAvatarInput) => Promise<AvatarPreferencesVm | undefined>;
   onSelectRecentAvatar: (kind: AvatarKind, avatarId: string) => Promise<AvatarPreferencesVm | undefined>;
-  onSaveAvatarShape: (kind: AvatarKind, shape: AvatarShape) => Promise<AvatarPreferencesVm | undefined>;
+  onSaveAvatarShape: (kind: AvatarKind, shape: AvatarShape | null) => Promise<AvatarPreferencesVm | undefined>;
   onClearAvatar: (kind: AvatarKind) => Promise<AvatarPreferencesVm | undefined>;
 }
 
-export function AvatarSettings({ preferences, busy, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar }: AvatarSettingsProps) {
+export function AvatarSettings({ preferences, personalization, busy, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar }: AvatarSettingsProps) {
   return (
     <div className="grid gap-3 @5xl/settings-content:grid-cols-2">
       <AvatarEditor
         kind="agent"
         profile={preferences.agent}
+        shapePreference={personalization.agent.shape}
         busy={busy}
         onSaveAvatar={onSaveAvatar}
         onSelectRecentAvatar={onSelectRecentAvatar}
@@ -55,6 +57,7 @@ export function AvatarSettings({ preferences, busy, onSaveAvatar, onSelectRecent
       <AvatarEditor
         kind="user"
         profile={preferences.user}
+        shapePreference={personalization.user.shape}
         busy={busy}
         onSaveAvatar={onSaveAvatar}
         onSelectRecentAvatar={onSelectRecentAvatar}
@@ -68,6 +71,7 @@ export function AvatarSettings({ preferences, busy, onSaveAvatar, onSelectRecent
 interface AvatarEditorProps {
   kind: AvatarKind;
   profile: AvatarProfileVm;
+  shapePreference: PersonalizationPreference['avatars']['agent']['shape'];
   busy: boolean;
   onSaveAvatar: AvatarSettingsProps['onSaveAvatar'];
   onSelectRecentAvatar: AvatarSettingsProps['onSelectRecentAvatar'];
@@ -75,7 +79,7 @@ interface AvatarEditorProps {
   onClearAvatar: AvatarSettingsProps['onClearAvatar'];
 }
 
-function AvatarEditor({ kind, profile, busy, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar }: AvatarEditorProps) {
+function AvatarEditor({ kind, profile, shapePreference, busy, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar }: AvatarEditorProps) {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
   const [source, setSource] = useState<string | null>(null);
@@ -212,6 +216,19 @@ function AvatarEditor({ kind, profile, busy, onSaveAvatar, onSelectRecentAvatar,
       </div>
 
       <div className="col-start-2 flex flex-wrap gap-1.5 @xl/avatar-editor:col-start-3 @xl/avatar-editor:row-start-1">
+        {shapePreference.source === 'custom' ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-8 px-2.5"
+            disabled={disabled}
+            onClick={() => void updateProfile(() => onSaveAvatarShape(kind, null))}
+          >
+            <RotateCcw />
+            {t('settings.avatar.followThemeShape')}
+          </Button>
+        ) : null}
         <Button
           type="button"
           variant={profile.shape === 'circle' ? 'default' : 'outline'}

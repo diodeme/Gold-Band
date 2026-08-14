@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applyEditorFont, applyTypographyPreferences, desktopTypography, normalizeTypographySize } from '../src/theme';
+import { applyPersonalization, desktopTypography, normalizeTypographySize } from '../src/theme';
 
 describe('desktop typography preferences', () => {
   afterEach(() => {
@@ -22,11 +22,22 @@ describe('desktop typography preferences', () => {
     const setProperty = vi.fn();
     vi.stubGlobal('document', { documentElement: { dataset: {}, style: { setProperty } } });
 
-    expect(applyTypographyPreferences(15.6, 30)).toEqual({ uiFontSize: 16, editorFontSize: 18 });
-    expect(setProperty).toHaveBeenNthCalledWith(1, '--app-ui-font-size', '16px');
-    expect(setProperty).toHaveBeenNthCalledWith(2, '--app-editor-font-size', '18px');
-    applyEditorFont('Fira Code');
-    expect(setProperty).toHaveBeenNthCalledWith(3, '--app-editor-font-family', '"Fira Code", "JetBrains Mono", "SFMono-Regular", Consolas, monospace');
+    applyPersonalization({
+      schemaVersion: 1,
+      typography: {
+        ui: { font: { source: 'theme' }, fontSize: { source: 'custom', px: 15.6 } },
+        editor: { font: { source: 'local', family: 'Fira Code' }, fontSize: { source: 'custom', px: 30 } },
+      },
+      avatars: {
+        agent: { image: { source: 'theme' }, shape: { source: 'theme' } },
+        user: { image: { source: 'theme' }, shape: { source: 'theme' } },
+      },
+    });
+
+    expect(setProperty).toHaveBeenNthCalledWith(1, '--app-font-sans', 'var(--gb-theme-ui-font-family)');
+    expect(setProperty).toHaveBeenNthCalledWith(2, '--app-editor-font-family', '"Fira Code", var(--gb-theme-editor-font-family)');
+    expect(setProperty).toHaveBeenNthCalledWith(3, '--app-ui-font-size', '16px');
+    expect(setProperty).toHaveBeenNthCalledWith(4, '--app-editor-font-size', '18px');
   });
 
   it('keeps preview local and persists only committed input values', () => {

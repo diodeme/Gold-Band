@@ -10,17 +10,16 @@ const settingsSource = readFileSync(
 
 describe('theme drawer card contract', () => {
   it('uses a compact visual grid instead of stretching name-only themes across the drawer', () => {
-    expect(settingsSource).toContain('space-y-3 py-4');
-    expect(settingsSource).toContain('grid gap-3 @2xl/theme-drawer:grid-cols-2');
-    expect(settingsSource).toContain('group flex min-w-0 items-center gap-4 rounded-xl');
+    expect(settingsSource).toContain('grid gap-3 @4xl/settings-content:grid-cols-3');
+    expect(settingsSource).toContain('group flex min-w-0 flex-col gap-3 rounded-xl');
     expect(settingsSource).not.toContain('grid-cols-[72px_minmax(0,1fr)]');
     expect(settingsSource).not.toContain('min-h-32');
   });
 
   it('shows the effective theme with a semantic check badge', () => {
-    expect(settingsSource).toContain('const active = selected || synced');
-    expect(settingsSource).toContain('aria-pressed={active}');
+    expect(settingsSource).toContain('aria-pressed={selected}');
+    expect(settingsSource).toContain("selected && 'border-primary/45");
     expect(settingsSource).toContain('<Check className="size-3"');
-    expect(settingsSource).toContain('bg-primary px-2 py-0.5 text-[10px] font-medium text-primary-foreground');
+    expect(settingsSource).toContain('bg-primary px-2 py-0.5 text-ui-micro font-medium text-primary-foreground');
   });
 });

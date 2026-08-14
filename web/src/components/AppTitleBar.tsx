@@ -89,6 +89,7 @@ export function AppTitleBar({
     <header
       data-tauri-drag-region
       className="app-titlebar-drag-region flex h-11 shrink-0 select-none items-center bg-titlebar text-titlebar-foreground"
+      data-theme-role="titlebar"
     >
       <div className="flex items-center px-2.5">
         {hasLeadingInset ? <div aria-hidden="true" className={cn('shrink-0', policy.leadingInsetClassName)} /> : null}

@@ -12,8 +12,8 @@ use gold_band::acp::client::PromptActivity;
 use gold_band::acp::events::load_session_metadata;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
-    DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerState, RuntimeConfig,
+    AppearancePreference, DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState,
+    ManagedAgentConfig, ManagedAgentId, McpServerState, PersonalizationPreference, RuntimeConfig,
     RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
@@ -37,17 +37,14 @@ use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::avatar::{AvatarPreferencesVm, load_avatar_preferences};
+use crate::avatar::{AvatarPreferencesVm, load_resolved_avatar_preferences};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreferencesVm {
-    pub theme: DesktopThemePreference,
+    pub appearance: AppearancePreference,
+    pub personalization: PersonalizationPreference,
     pub language: DesktopLanguage,
-    pub font: DesktopFontPreference,
-    pub editor_font: DesktopFontPreference,
-    pub ui_font_size: u8,
-    pub editor_font_size: u8,
     pub use_local_claude: bool,
     pub verbose_logging: bool,
     pub avatars: AvatarPreferencesVm,
@@ -1176,23 +1173,17 @@ pub enum RoundSelectionInput {
 }
 
 pub fn preferences_vm(
-    theme: DesktopThemePreference,
+    appearance: AppearancePreference,
+    personalization: PersonalizationPreference,
     language: DesktopLanguage,
-    font: DesktopFontPreference,
-    editor_font: DesktopFontPreference,
-    ui_font_size: u8,
-    editor_font_size: u8,
     use_local_claude: bool,
     log_level: RuntimeLogLevel,
     avatars: AvatarPreferencesVm,
 ) -> PreferencesVm {
     PreferencesVm {
-        theme,
+        appearance,
+        personalization,
         language,
-        font,
-        editor_font,
-        ui_font_size,
-        editor_font_size,
         use_local_claude,
         verbose_logging: matches!(log_level, RuntimeLogLevel::Debug | RuntimeLogLevel::Trace),
         avatars,
@@ -1304,15 +1295,16 @@ pub fn bootstrap_vm(
         repo_root: app.paths.repo_root.to_string(),
         recent_workspaces,
         preferences: preferences_vm(
-            app.config.desktop_theme,
+            app.config.appearance.clone(),
+            app.config.personalization.clone(),
             app.config.desktop_language,
-            app.config.desktop_font.clone(),
-            app.config.desktop_editor_font.clone(),
-            app.config.desktop_ui_font_size,
-            app.config.desktop_editor_font_size,
             app.config.use_local_claude,
             app.config.log_level,
-            load_avatar_preferences(&app.paths.user_gold_band_dir()).unwrap_or_default(),
+            load_resolved_avatar_preferences(
+                &app.paths.user_gold_band_dir(),
+                &app.config.personalization,
+            )
+            .unwrap_or_default(),
         ),
         updater_settings: updater_settings(&app.config),
         metrics_settings: metrics_settings(&app.config),

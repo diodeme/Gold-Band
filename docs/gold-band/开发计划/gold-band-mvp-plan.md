@@ -1050,7 +1050,20 @@ attempt-001/
 ## 2026-08-14：多工作空间 Runtime 启动恢复
 
 - 根因修复：桌面启动恢复原先只调用 `DesktopContext.repo_root` 绑定的 `App`，把旧 Workbench 的单 workspace 启动状态误当成会话 Runtime 的恢复范围；当最近会话位于其他 `conversationWorkspaces` 时，磁盘上的 `running run + completed/success node` 不会收敛为可恢复暂停态。启动恢复现以 `conversationWorkspaces` 为唯一范围，按规范路径去重并逐 workspace 构造共享 lifecycle bus 的 scoped App。
-- 状态边界：删除 `SettingsConfig.desktop_workspace`，settings schema v5 一次性移除历史 `desktopWorkspace`。`DesktopContext.repo_root` 只由启动 cwd 决定并继续服务内部配置、诊断和旧 Workbench 进程内上下文；旧 Workbench 最近列表仍独立保留，不再写入“当前 workspace”。`lastConversationWorkspace` 只用于交互排序，不决定 Runtime 恢复范围。
+- 状态边界：删除 `SettingsConfig.desktop_workspace`，settings schema v6 一次性移除历史 `desktopWorkspace`。`DesktopContext.repo_root` 只由启动 cwd 决定并继续服务内部配置、诊断和旧 Workbench 进程内上下文；旧 Workbench 最近列表仍独立保留，不再写入“当前 workspace”。`lastConversationWorkspace` 只用于交互排序，不决定 Runtime 恢复范围。
 - 局部失败与恢复：不存在、空路径和重复 workspace 直接跳过；单 workspace 状态损坏记录 `runtime.workspace-recovery-failed` 后继续扫描其他 workspace。列表为空时 no-op，不回退扫描桌面上下文，避免 Runtime 背着用户扩张恢复范围。
 - 性能与过度设计：启动时执行一次 `O(W + Σ(tasks + runs))` 的本地目录和小 JSON 扫描，无网络、provider 调用、轮询、缓存、队列或常驻任务；复用现有 `App::with_repo_root`、canonical path 和 `recover_interrupted_running_sessions`，不增加新的 workspace registry 或并发模型。
-- 回归固化：桌面状态层接口测试覆盖非 DesktopContext workspace 的完成节点恢复、规范路径去重、单 workspace 失败隔离，以及空 `conversationWorkspaces` 不回退；配置迁移测试固定历史 `desktopWorkspace` 从 v4 settings 中删除，旧 Workbench 最近列表测试固定其独立职责。
+- 回归固化：桌面状态层接口测试覆盖非 DesktopContext workspace 的完成节点恢复、规范路径去重、单 workspace 失败隔离，以及空 `conversationWorkspaces` 不回退；配置迁移测试固定历史 `desktopWorkspace` 从 v5 settings 中删除，旧 Workbench 最近列表测试固定其独立职责。
+
+---
+
+## 2026-08-14：可扩展主题包基础能力与 Glass 样板
+
+- 根因修复：删除把具体色板与明暗混为 `desktopTheme` 的生产模型，引入版本化 `AppearancePreference`，以稳定 `themeId × colorScheme` 表达外观，并按主题隔离视觉质量偏好。settings schema v5 一次性迁移旧四配色，不保留双写或 localStorage 旁路。
+- 契约与运行时：新增封闭 Zod Theme Contract、Rust `serde` 镜像、内置 Catalog Map、resolver 和 root variable 应用器；Gold Band、技术中性、Glass 共用同一路径。后端保存接口从编译 Catalog 校验 schema/theme ID、按能力清理质量偏好并返回 canonical VM，不再维护主题 ID 白名单。
+- 声明式包工具链：Gold Band、技术中性、Glass 与高差异验证用的新粗野主义均位于独立 `themes/*` 包；Theme SDK 使用 DTCG + Style Dictionary 解析 alias，使用 JSON Schema + Ajv 校验 manifest/runtime contract，并生成包级 runtime JSON、recipe CSS、asset manifest、Web Catalog 与 Rust Catalog。新粗野主义只通过新增包目录接入，没有修改设置页、业务组件或 Catalog 源码，证明契约不存在 Glass 特化。
+- 组件边界：Shell、标题栏、侧栏、shadcn Card/Input/Button/Dialog/Sheet/Popover、prompt-kit Composer 与右侧工作区通过稳定 theme role 消费材质变量，业务组件无具体主题 ID 分支。
+- Glass 样板：参考 `.external/styles/glassmorphism` 实现独立浅/深方案、光井背景、无色透明表面、方向性高光/暗缘、有限噪点和 reduced-motion；完整档 40–48px blur/180% saturate，性能档 16px/140% 并关闭噪点。
+- 验证：本轮 Style Dictionary/Ajv 四包构建、TypeScript strict、Web 生产构建、`cargo fmt --check` 与 `cargo check -p gold-band-desktop` 通过。当前开发节点禁止编写或执行测试，也未执行浏览器交互；接口/契约回归与设置页深/浅/质量档、窄窗、生命周期和性能证据留待后续测试及验收节点。
+- 基础契约复验修正：Theme Contract 补齐 content header、会话消息/Composer/Activity/权限卡、工作区 Tab/资源头/文件树/编辑器和 Diff 三态的成对语义 token；技术中性主题恢复迁移前成功色、危险色和深色主按钮前景。
+- 个性化权威模型：settings schema v7 引入 `PersonalizationPreference`，将 UI / 编辑器字体与字号、Agent / 个人头像图片与形状分别保存为 `theme/local/custom/user` 来源。旧字体字号字段与头像仓库选择一次性迁移；头像仓库只保留资产历史，恢复操作不删除资源。

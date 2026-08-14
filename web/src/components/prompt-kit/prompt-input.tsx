@@ -138,6 +138,7 @@ function PromptInput({
           )}
           {...props}
           data-slot="prompt-input"
+          data-theme-role="composer"
         >
           {children}
         </div>

@@ -144,7 +144,7 @@ import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from "@/lib
 import { useAgentCommands } from "@/hooks/useAgentCommands";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { AcpAvatar, AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
-import { AcpUsagePanel } from "@/components/acp/AcpUsagePanel";
+import { AcpUsagePanel, hasAcpUsagePanelContent } from "@/components/acp/AcpUsagePanel";
 import { HiddenPromptMessageContent } from "@/components/acp/HiddenPromptMessageContent";
 import { AcpProcessingSpinner } from "@/components/acp/AcpProcessingSpinner";
 import { WorkspaceFileEditor } from "@/components/workspace/files/WorkspaceFileEditor";
@@ -1447,26 +1447,34 @@ export function ACPChatDialog(
   });
   const stopInProgress = composerState.stopInProgress;
   const composerInputDisabled = composerState.inputDisabled;
-  const composerStatusActive = composerState.statusActive;
   const composerSessionSeconds = useSessionTimingSeconds(
     effective?.timing,
     effective?.sessionElapsedSeconds ?? null,
     sessionActive && !effectiveSessionTerminal,
   );
   const composerProcessingKind: AcpProcessingKind = composerState.processingKind;
-  const showComposerStatus = composerState.showStatus || composerSessionSeconds != null;
+  const showComposerStatus = composerState.showStatus;
   const composerStatusLabel = processingLabel(t, composerProcessingKind);
-  const composerInputHint = composerHintText(
-    composerState,
-    composerStatusLabel,
-    t,
-  );
   const composerPlaceholder = composerPlaceholderText(composerState, t);
   const canSubmitPrompt = composerState.canSubmit;
   const promptQueue = localRuntimeLifecycle?.promptQueue
     ?? runtimeComposerContext?.lifecycle?.promptQueue
     ?? null;
   const promptQueueVisible = Boolean(promptQueue?.items.length);
+  const showComposerInfoPanel = showComposerStatus
+    || composerSessionSeconds != null
+    || hasAcpUsagePanelContent(effective?.usage);
+  const composerInfoTabTarget = !showComposerInfoPanel
+    ? null
+    : !readOnly && showManualCheckActions
+      ? "manual"
+      : todoEntries.length > 0
+        ? "todo"
+        : !readOnly && promptQueueVisible && promptQueue
+          ? "queue"
+          : !readOnly
+            ? "composer"
+            : null;
   const canStopSession = composerState.canStop;
   const sendButtonBusy = sending || waitingForOptimisticPrompt;
   const lastEvent = effectiveEvents.at(-1);
@@ -2759,7 +2767,12 @@ export function ACPChatDialog(
       return;
     }
     const effectivePrompt = serializeUserPromptSubmission(submission);
-    const optimisticEvent = optimisticUserEvent(draftContent, undefined, submittedQuotes);
+    const optimisticEvent = optimisticUserEvent(
+      draftContent,
+      undefined,
+      submittedQuotes,
+      latestCanonicalTimelinePosition(loadedEventsRef.current),
+    );
     const promptId = promptIdFromEvent(optimisticEvent);
     const detachedDraft = draftSnapshot && composerDraft.clearIfUnchanged(draftSnapshot)
       ? draftSnapshot
@@ -3547,32 +3560,31 @@ export function ACPChatDialog(
         ) : null}
       </div>
       {canvasMode === "chat" ? (
-        <div className="shrink-0 bg-background/95 backdrop-blur">
-          {todoEntries.length > 0 ? (
-            <div className="px-4">
-              <AcpTodoPanel entries={todoEntries} />
-            </div>
-          ) : null}
-          <div className="border-t px-5 py-3">
+        <div className="shrink-0 bg-background">
+          <div className="px-5 pt-1 pb-2">
             <div
-              className="mx-auto w-full max-w-[var(--conversation-content-rail-max-inline-size)]"
+              className="relative mx-auto w-full max-w-[var(--conversation-content-rail-max-inline-size)] [filter:drop-shadow(var(--gb-material-shadow))_drop-shadow(var(--gb-material-edge-shadow))]"
               data-acp-conversation-rail="composer"
             >
               <AcpUsagePanel
-              usage={effective?.usage}
-              isRunning={sessionActive || composerStatusActive}
-              compact={usageCompact}
-              processingLabel={
-                usageCompact && composerStatusActive ? composerStatusLabel : null
-              }
-              sessionSeconds={usageCompact ? composerSessionSeconds : null}
-              className="mb-2"
-            />
+                usage={effective?.usage}
+                processingLabel={showComposerStatus ? composerStatusLabel : null}
+                sessionSeconds={composerSessionSeconds}
+                className="absolute left-0 top-px z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full flex-nowrap gap-x-2 rounded-t-md border border-b-0 border-border bg-card py-0.5 pl-2.5 pr-3 !shadow-none before:pointer-events-none before:absolute before:-right-2.5 before:bottom-px before:size-2.5 before:rounded-bl-md before:shadow-[-3px_3px_0_3px_var(--card)] before:content-[''] after:pointer-events-none after:absolute after:-right-2.5 after:bottom-px after:size-2.5 after:rounded-bl-md after:border-b after:border-l after:border-border after:content-['']"
+              />
             {!readOnly && showManualCheckActions ? (
               <AcpManualCheckPanel
                 submitting={manualCheckSubmitting}
+                integratedInfoTab={composerInfoTabTarget === "manual"}
                 onSuccess={() => void submitManualDecision("success")}
                 onFailure={() => void submitManualDecision("failure")}
+              />
+            ) : null}
+            {todoEntries.length > 0 ? (
+              <AcpTodoPanel
+                entries={todoEntries}
+                attachedBelow={!readOnly}
+                integratedInfoTab={composerInfoTabTarget === "todo"}
               />
             ) : null}
             {!readOnly && promptQueueVisible && promptQueue ? (
@@ -3580,6 +3592,8 @@ export function ACPChatDialog(
                 queue={promptQueue}
                 sessionActive={sessionActive || stopInProgress}
                 mutationPending={queueMutationPending}
+                attachedAbove={todoEntries.length > 0}
+                integratedInfoTab={composerInfoTabTarget === "queue"}
                 onEdit={editQueuedPrompt}
                 onUse={useQueuedPrompt}
                 onDelete={deleteQueuedPrompt}
@@ -3589,6 +3603,7 @@ export function ACPChatDialog(
               <AcpExternalComposerState
                 kind={composerState.externalKind}
                 message={composerState.externalMessage ?? ""}
+                integratedInfoTab={composerInfoTabTarget === "composer"}
                 onAction={
                   composerState.externalKind === "invalid-workflow"
                     ? runtimeComposerContext?.onRepair
@@ -3601,13 +3616,6 @@ export function ACPChatDialog(
                 onPromptChange={setPrompt}
                 onSubmit={send}
                 sending={sending}
-                status={showComposerStatus && !usageCompact ? (
-                  <AcpComposerStatus
-                    kind={composerProcessingKind}
-                    active={composerStatusActive}
-                    sessionSeconds={composerSessionSeconds}
-                  />
-                ) : null}
                 attachments={pendingAttachments}
                 quotes={quotes}
                 contextError={composerContextError}
@@ -3637,7 +3645,6 @@ export function ACPChatDialog(
                 fileInputRef={fileInputRef}
                 onFilesChange={handleFilesFromInput}
                 onPickFiles={pickFiles}
-                inputHint={composerInputHint}
                 canStop={canStopSession}
                 stopInProgress={stopInProgress}
                 onStop={stopSession}
@@ -3656,7 +3663,8 @@ export function ACPChatDialog(
                     onPermissionModeChange={handleAcpSessionPermissionModeChange}
                   />
                 )}
-                attachedQueueVisible={promptQueueVisible}
+                attachedPanelVisible={promptQueueVisible || todoEntries.length > 0}
+                integratedInfoTab={composerInfoTabTarget === "composer"}
                 queueSubmit={composerState.submitTarget === "queue-prompt"}
               />
             )}
@@ -3785,17 +3793,20 @@ function AcpExternalComposerState({
   kind,
   message,
   onAction,
+  integratedInfoTab = false,
 }: {
   kind: "invalid-workflow" | "runtime-error";
   message: string;
   onAction?: () => void;
+  integratedInfoTab?: boolean;
 }) {
   const { t } = useTranslation();
   const isError = kind === "runtime-error";
   return (
     <div
       className={cn(
-        "flex min-w-0 items-center gap-3 rounded-2xl border px-5 py-4 shadow-sm shadow-background/20",
+        "flex min-w-0 items-center gap-3 rounded-2xl border px-5 py-4 shadow-none",
+        integratedInfoTab && "rounded-tl-none",
         isError
           ? "border-destructive/20 bg-destructive/5"
           : "border-amber-500/20 bg-amber-500/5",
@@ -3837,14 +3848,19 @@ function AcpManualCheckPanel({
   submitting,
   onSuccess,
   onFailure,
+  integratedInfoTab = false,
 }: {
   submitting: boolean;
   onSuccess: () => void;
   onFailure: () => void;
+  integratedInfoTab?: boolean;
 }) {
   const { t } = useTranslation();
   return (
-    <div className="mb-3 flex min-w-0 items-center gap-3 rounded-2xl border border-primary/20 bg-card/60 px-4 py-2.5 shadow-sm shadow-background/20">
+    <div className={cn(
+      "mb-3 flex min-w-0 items-center gap-3 rounded-2xl border border-primary/20 bg-card px-4 py-2.5 shadow-none",
+      integratedInfoTab && "rounded-tl-none",
+    )}>
       <div className="min-w-0 flex-1">
         <span className="text-sm font-semibold text-foreground">
           {t("acp.manualCheckPending")}
@@ -3882,9 +3898,13 @@ function AcpManualCheckPanel({
 export function AcpTodoPanel({
   entries,
   variant = "composer",
+  attachedBelow = true,
+  integratedInfoTab = false,
 }: {
   entries: AcpTodoEntry[];
   variant?: "composer" | "nested";
+  attachedBelow?: boolean;
+  integratedInfoTab?: boolean;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(variant === "nested");
@@ -3909,7 +3929,11 @@ export function AcpTodoPanel({
       className={cn(
         "w-full",
         variant === "composer"
-          ? "border border-b-0 border-border/45 bg-transparent"
+          ? cn(
+              "overflow-hidden border border-border bg-muted/35",
+              attachedBelow ? "rounded-t-2xl border-b-0" : "rounded-2xl",
+              integratedInfoTab && "rounded-tl-none bg-card",
+            )
           : "overflow-hidden rounded-lg border border-border/35 bg-transparent",
       )}
     >
@@ -3931,7 +3955,7 @@ export function AcpTodoPanel({
           <ChevronDown
             className={cn(
               "size-3.5 shrink-0 text-muted-foreground transition-transform",
-              !open && "rotate-180",
+              open && "rotate-180",
             )}
           />
         </Button>
@@ -5109,42 +5133,6 @@ const AssistantTimelineRow = memo(function AssistantTimelineRow({
       <div className="w-9 shrink-0" aria-hidden="true" />
       <div className="w-full min-w-0 max-w-[82%] flex-1">{children}</div>
     </Message>
-  );
-});
-
-const AcpComposerStatus = memo(function AcpComposerStatus({
-  kind,
-  active,
-  sessionSeconds,
-}: {
-  kind: AcpProcessingKind;
-  active: boolean;
-  sessionSeconds?: number | null;
-}) {
-  const { t } = useTranslation();
-  const label = processingLabel(t, kind);
-  return (
-    <div className="flex min-w-0 flex-wrap items-center gap-2 px-3 pb-2 pt-3 text-xs leading-4 text-muted-foreground/75">
-      {active ? (
-        <>
-        <AcpProcessingSpinner className="size-3.5" />
-          <span className="font-medium text-foreground">{label}</span>
-          {kind === "sending" ? (
-            <AnimatedEllipsis />
-          ) : null}
-        </>
-      ) : null}
-      {sessionSeconds != null ? (
-        <span className="flex items-center gap-1.5">
-          <span className="text-muted-foreground/80">
-            {t("acp.timingSession")}
-          </span>
-          <span className="tabular-nums text-foreground/80">
-            {formatElapsedDuration(sessionSeconds)}
-          </span>
-        </span>
-      ) : null}
-    </div>
   );
 });
 
@@ -6421,19 +6409,6 @@ function processingLabel(
   return t("acp.processing");
 }
 
-function composerHintText(
-  state: ReturnType<typeof deriveAcpRuntimeComposerState>,
-  statusLabel: string,
-  t: ReturnType<typeof useTranslation>["t"],
-) {
-  if (state.hintKind === "permission-pending") return t("acp.permissionPending");
-  if (state.hintKind === "stopping") return t("acp.stopping");
-  if (state.hintKind === "sending") return t("acp.sending");
-  if (state.hintKind === "status") return statusLabel;
-  if (state.hintKind === "message") return state.message && state.message !== "runtime-error" ? state.message : t("acp.promptInputHint");
-  return t("acp.promptInputHint");
-}
-
 function composerPlaceholderText(
   state: ReturnType<typeof deriveAcpRuntimeComposerState>,
   t: ReturnType<typeof useTranslation>["t"],
@@ -7510,7 +7485,7 @@ function isSessionElapsedProgressEvent(event: AcpUiEventVm) {
   ].includes(sessionUpdate ?? "");
 }
 
-function mergeOptimisticSession(
+export function mergeOptimisticSession(
   session: AcpSessionVm | null | undefined,
   optimisticEvents: AcpUiEventVm[],
 ): AcpSessionVm | null {
@@ -7519,7 +7494,21 @@ function mergeOptimisticSession(
     shouldMergeOptimisticEvent(session.events, event),
   );
   if (pending.length === 0) return session;
-  return { ...session, events: [...session.events, ...pending] };
+  const events = [...session.events];
+  for (const event of pending) {
+    const afterSeq = optimisticPromptAfterSeq(event);
+    if (afterSeq === null) {
+      events.push(event);
+      continue;
+    }
+    const insertAt = events.findIndex((candidate) => (
+      !isOptimisticEvent(candidate)
+      && timelineEventPosition(candidate) > afterSeq
+    ));
+    if (insertAt < 0) events.push(event);
+    else events.splice(insertAt, 0, event);
+  }
+  return { ...session, events };
 }
 
 function stabilizeAcpSessionTimingForDisplay(
@@ -8017,6 +8006,7 @@ export function optimisticUserEvent(
   content: string,
   promptId = createAcpPromptId(),
   quotes: import('@/types').UserPromptQuote[] = [],
+  afterSeq: number | null = null,
 ): AcpUiEventVm {
   const createdAt = Math.floor(Date.now() / 1000);
   return {
@@ -8030,9 +8020,24 @@ export function optimisticUserEvent(
       source: "goldBandPrompt",
       optimistic: true,
       promptId,
+      optimisticAfterSeq: afterSeq,
       ...(quotes.length > 0 ? { quotes } : {}),
     },
   };
+}
+
+function optimisticPromptAfterSeq(event: AcpUiEventVm) {
+  const value = rawObject(event.raw)?.optimisticAfterSeq;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function latestCanonicalTimelinePosition(events: AcpUiEventVm[]) {
+  let position: number | null = null;
+  for (const event of events) {
+    if (isOptimisticEvent(event)) continue;
+    position = Math.max(position ?? 0, timelineEventPosition(event));
+  }
+  return position;
 }
 
 function isOptimisticEvent(event: AcpUiEventVm) {

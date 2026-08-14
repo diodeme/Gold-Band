@@ -631,7 +631,6 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canStop).toBe(true);
     expect(state.showExternalState).toBe(false);
     expect(state.placeholderKind).toBe('runtime-controlled');
-    expect(state.hintKind).toBe('permission-pending');
     expect(state.showStatus).toBe(false);
   });
 
@@ -656,7 +655,6 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.composerLocked).toBe(false);
     expect(state.inputDisabled).toBe(false);
     expect(state.canSubmit).toBe(true);
-    expect(state.hintKind).toBe('permission-pending');
   });
 
   it('does not turn workflow outcome failure into runtime error', () => {
@@ -848,7 +846,6 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.processingKind).toBe('launching-next-node');
     expect(state.statusActive).toBe(false);
     expect(state.showStatus).toBe(false);
-    expect(state.hintKind).toBe('default');
   });
 
   it('keeps the node handoff visible for Workflow and AUTO runs', () => {

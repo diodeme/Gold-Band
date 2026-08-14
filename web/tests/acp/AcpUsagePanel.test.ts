@@ -5,6 +5,7 @@ import {
   AcpUsagePanel,
   contextUsagePercentage,
   contextUsageTone,
+  hasAcpUsagePanelContent,
 } from "../../src/components/acp/AcpUsagePanel";
 import { formatTokenCount } from "../../src/lib/format-token";
 
@@ -24,6 +25,14 @@ vi.mock("react-i18next", () => ({
 }));
 
 describe("AcpUsagePanel", () => {
+  it("reports whether the information tab has visible usage content", () => {
+    expect(hasAcpUsagePanelContent(null)).toBe(false);
+    expect(hasAcpUsagePanelContent({})).toBe(false);
+    expect(hasAcpUsagePanelContent({ used: 0, size: 0 })).toBe(false);
+    expect(hasAcpUsagePanelContent({ used: 1, size: 100 })).toBe(true);
+    expect(hasAcpUsagePanelContent({ totalTokens: 0 })).toBe(true);
+  });
+
   it("keeps only elapsed time and the context gauge in the session information bar", () => {
     const html = renderToStaticMarkup(
       createElement(AcpUsagePanel, {
@@ -41,6 +50,7 @@ describe("AcpUsagePanel", () => {
     );
 
     expect(html).toContain('data-acp-session-info="true"');
+    expect(html).toContain('data-theme-role="composer"');
     expect(html).toContain("acp.timingSession");
     expect(html).toContain("2m 21s");
     expect(html).toContain("tabular-nums");

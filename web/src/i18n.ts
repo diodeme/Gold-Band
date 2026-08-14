@@ -1535,7 +1535,7 @@ const resources = {
         thoughtLevel: "思考强度",
         unspecifiedThoughtLevel: "不指定",
         permissionMode: "权限",
-        promptInputHint: "Enter 发送，Shift+Enter 换行",
+        attachHint: "添加附件",
         send: "发送",
         promptQueue: {
           title: "待发送 {{count}}/{{max}}",
@@ -1647,6 +1647,7 @@ const resources = {
         },
         usagePanel: {
           contextWindow: "上下文窗口",
+          occupied: "占用",
           tokenUsage: "Token 用量",
           input: "输入",
           output: "输出",
@@ -3585,7 +3586,7 @@ const resources = {
         thoughtLevel: "Reasoning",
         unspecifiedThoughtLevel: "Unspecified",
         permissionMode: "Permission",
-        promptInputHint: "Enter to send, Shift+Enter for newline",
+        attachHint: "Attach files",
         send: "Send",
         promptQueue: {
           title: "Pending {{count}}/{{max}}",
@@ -3697,6 +3698,7 @@ const resources = {
         },
         usagePanel: {
           contextWindow: "Context Window",
+          occupied: "Used",
           tokenUsage: "Token Usage",
           input: "Input",
           output: "Output",

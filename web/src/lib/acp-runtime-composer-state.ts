@@ -32,14 +32,6 @@ export type AcpComposerPlaceholderKind =
   | 'stopping'
   | 'message';
 
-export type AcpComposerHintKind =
-  | 'default'
-  | 'permission-pending'
-  | 'stopping'
-  | 'sending'
-  | 'status'
-  | 'message';
-
 export interface AcpRuntimeComposerStateInput {
   lifecycle?: ConversationAttemptLifecycleVm | null;
   promptQueueEnabled?: boolean;
@@ -81,7 +73,6 @@ export interface AcpRuntimeComposerState {
   statusActive: boolean;
   showStatus: boolean;
   placeholderKind: AcpComposerPlaceholderKind;
-  hintKind: AcpComposerHintKind;
   message?: string | null;
 }
 
@@ -211,7 +202,6 @@ export function deriveAcpRuntimeComposerState(
     placeholderKind: directQueueFacet
       ? 'default'
       : placeholderKindForMode(input, mode, activePromptLocked),
-    hintKind: hintKindForMode(input, mode, statusActive, turnSubmitting),
     message: externalMessage,
   };
 }
@@ -375,20 +365,6 @@ function placeholderKindForMode(
   if (mode === 'stopping') return 'stopping';
   if (mode === 'invalid-workflow' || mode === 'runtime-error') return 'message';
   if (activePromptLocked) return 'runtime-controlled';
-  return 'default';
-}
-
-function hintKindForMode(
-  input: AcpRuntimeComposerStateInput,
-  mode: AcpComposerMode,
-  statusActive: boolean,
-  turnSubmitting: boolean,
-): AcpComposerHintKind {
-  if (input.waitingForPermission) return 'permission-pending';
-  if (mode === 'stopping') return 'stopping';
-  if (mode === 'invalid-workflow' || mode === 'runtime-error') return 'message';
-  if (turnSubmitting) return 'sending';
-  if (statusActive) return 'status';
   return 'default';
 }
 

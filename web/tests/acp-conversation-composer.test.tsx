@@ -17,7 +17,6 @@ function baseProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
     onPromptChange: vi.fn(),
     onSubmit: vi.fn(),
     sending: false,
-    status: null,
     attachments: [],
     quotes: [],
     contextError: null,
@@ -44,7 +43,6 @@ function baseProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
     fileInputRef: React.createRef<HTMLInputElement>(),
     onFilesChange: vi.fn(),
     onPickFiles: vi.fn(),
-    inputHint: '',
     canStop: false,
     stopInProgress: false,
     onStop: vi.fn(),
@@ -54,7 +52,8 @@ function baseProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
     runtimeContinueSubmitting: false,
     onRuntimeContinue: vi.fn(),
     configBar: null,
-    attachedQueueVisible: true,
+    attachedPanelVisible: true,
+    integratedInfoTab: false,
     queueSubmit: true,
     ...overrides,
   };
@@ -80,7 +79,7 @@ describe('AcpConversationComposer', () => {
   }
 
   it('does not render an empty attachment spacer between an attached queue and the prompt input', async () => {
-    await renderComposer({ attachments: [], attachedQueueVisible: true });
+    await renderComposer({ attachments: [], attachedPanelVisible: true });
 
     const composerRoot = host.querySelector('[data-conversation-composer="acp"]');
     expect(composerRoot?.querySelector('[data-acp-composer-attachment-row="true"]')).toBeNull();
@@ -100,6 +99,56 @@ describe('AcpConversationComposer', () => {
     expect(commandBar?.contains(continueButton)).toBe(true);
     expect(commandBar?.contains(sendButton)).toBe(true);
     expect(commandBar?.contains(config)).toBe(true);
+  });
+
+  it('places the localized attachment action before config and keeps the textarea user-resizable', async () => {
+    await renderComposer({ configBar: <span data-test-config="true">config</span> });
+
+    const commandBar = host.querySelector('[data-acp-composer-command-bar="true"]');
+    const attachmentButton = host.querySelector<HTMLButtonElement>('button[aria-label="添加附件"]');
+    const config = host.querySelector('[data-test-config="true"]');
+    const textarea = host.querySelector('textarea');
+    expect(attachmentButton).toBeTruthy();
+    expect(config).toBeTruthy();
+    expect(commandBar?.contains(attachmentButton)).toBe(true);
+    expect(attachmentButton?.compareDocumentPosition(config as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(textarea?.className).toContain('resize-y');
+    expect(textarea?.className).toContain('min-h-12');
+    expect(textarea?.style.maxHeight).toBe('320px');
+  });
+
+  it('does not reserve a standalone keyboard-hint row', async () => {
+    await renderComposer();
+
+    expect(host.textContent).not.toContain('Enter 发送');
+    expect(host.textContent).not.toContain('Shift+Enter');
+  });
+
+  it('keeps a drag-selected height as the local autosize minimum', async () => {
+    await renderComposer();
+
+    const textarea = host.querySelector<HTMLTextAreaElement>('textarea');
+    expect(textarea).toBeTruthy();
+    let height = 48;
+    vi.spyOn(textarea as HTMLTextAreaElement, 'getBoundingClientRect').mockImplementation(() => ({
+      x: 0,
+      y: 0,
+      width: 320,
+      height,
+      top: 0,
+      right: 320,
+      bottom: height,
+      left: 0,
+      toJSON: () => ({}),
+    }));
+
+    await act(async () => {
+      textarea?.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      height = 180;
+      window.dispatchEvent(new Event('pointerup'));
+    });
+
+    expect(textarea?.style.height).toBe('180px');
   });
 
   it('renders quotes and attachments inside the prompt input context area', async () => {

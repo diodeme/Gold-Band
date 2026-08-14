@@ -561,7 +561,6 @@ export function ConversationComposer({
               />
             </div>
           </SlashCommandMenu>
-          <span className="mt-1 text-xs text-muted-foreground">{t('acp.promptInputHint')}</span>
           <div
             data-slot="conversation-composer-toolbar"
             className={CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName}
@@ -583,6 +582,7 @@ export function ConversationComposer({
                 className="size-9 rounded-full border border-border/50 bg-gold-surface-high/25 text-muted-foreground hover:bg-gold-surface-high/55 hover:text-foreground"
                 onClick={() => { void pickFiles(); }}
                 disabled={busy || submittingAttachments}
+                aria-label={t('acp.attachHint')}
               >
                 <Paperclip className="size-4" />
               </Button>

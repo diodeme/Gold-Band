@@ -146,17 +146,48 @@ pub struct SemanticThemeTokens {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MaterialTokens {
+    #[serde(default)]
+    pub model: ThemeMaterialModel,
     pub surface_opacity: f64,
     pub border_highlight: String,
     pub surface_overlay: String,
     pub blur: f64,
     pub saturate: f64,
+    #[serde(default = "default_material_percentage")]
+    pub backdrop_brightness: f64,
+    #[serde(default = "default_material_percentage")]
+    pub backdrop_contrast: f64,
+    #[serde(default = "default_specular_highlight")]
+    pub specular_highlight: String,
+    #[serde(default = "default_edge_shadow")]
+    pub edge_shadow: String,
     pub shadow: String,
     pub radius: String,
     pub background_image: String,
     pub texture_opacity: f64,
     pub motion_duration: String,
     pub motion_easing: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemeMaterialModel {
+    #[default]
+    Solid,
+    Frosted,
+    Liquid,
+}
+
+fn default_material_percentage() -> f64 {
+    100.0
+}
+
+fn default_specular_highlight() -> String {
+    "none".to_string()
+}
+
+fn default_edge_shadow() -> String {
+    "0 0 0 transparent".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -268,6 +299,10 @@ pub struct ComponentRecipes {
 pub struct PerformanceMaterialOverrides {
     pub blur: f64,
     pub saturate: f64,
+    pub backdrop_brightness: Option<f64>,
+    pub backdrop_contrast: Option<f64>,
+    pub specular_highlight: Option<String>,
+    pub edge_shadow: Option<String>,
     pub shadow: String,
     pub texture_opacity: f64,
     pub motion_duration: String,

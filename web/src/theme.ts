@@ -90,17 +90,23 @@ export function applyAppearance(preference: AppearancePreference): EffectiveAppe
   root.dataset.theme = effective.themeId;
   root.dataset.colorScheme = effective.colorScheme;
   root.dataset.visualQuality = effective.visualQuality ?? 'full';
+  root.dataset.materialModel = effective.material.model;
   root.classList.toggle('dark', effective.colorScheme === 'dark');
   root.style.colorScheme = effective.colorScheme;
   for (const [key, value] of Object.entries(effective.scheme.semantic) as [keyof SemanticThemeTokens, string][]) {
     root.style.setProperty(semanticVariableNames[key], value);
   }
   root.style.setProperty('--radius', effective.material.radius);
+  root.style.setProperty('--gb-material-model', effective.material.model);
   root.style.setProperty('--gb-material-opacity', String(effective.material.surfaceOpacity));
   root.style.setProperty('--gb-material-border-highlight', effective.material.borderHighlight);
   root.style.setProperty('--gb-material-surface-overlay', effective.material.surfaceOverlay);
   root.style.setProperty('--gb-material-blur', `${effective.material.blur}px`);
   root.style.setProperty('--gb-material-saturate', `${effective.material.saturate}%`);
+  root.style.setProperty('--gb-material-backdrop-brightness', `${effective.material.backdropBrightness}%`);
+  root.style.setProperty('--gb-material-backdrop-contrast', `${effective.material.backdropContrast}%`);
+  root.style.setProperty('--gb-material-specular-highlight', effective.material.specularHighlight);
+  root.style.setProperty('--gb-material-edge-shadow', effective.material.edgeShadow);
   root.style.setProperty('--gb-material-shadow', effective.material.shadow);
   root.style.setProperty('--gb-theme-background-image', effective.material.backgroundImage);
   root.style.setProperty('--gb-theme-texture-opacity', String(effective.material.textureOpacity));

@@ -8,10 +8,10 @@ const expectedThemes = {
   light: {
     themeId: 'builtin.gold-band',
     colorScheme: 'light',
-    background: '#fafafb', surface: '#ffffff', workspace: '#f1f2f5', border: '#e1e3e9',
-    primary: '#5b6ba8', primaryForeground: '#ffffff', selection: '#cdd2e3',
-    selectionForeground: '#191c24', messageUser: '#f0f1f5', messageUserForeground: '#191c24',
-    foreground: '#191c24', muted: '#667085', success: '#16794b', danger: '#c93c48',
+    background: '#ffffff', surface: '#ffffff', workspace: '#ffffff', border: '#e5e5e5',
+    primary: '#0d0d0d', primaryForeground: '#ffffff', selection: '#d8efe8',
+    selectionForeground: '#0d0d0d', messageUser: '#f5f5f5', messageUserForeground: '#0d0d0d',
+    foreground: '#0d0d0d', muted: '#6e6e6e', success: '#0a7a5e', danger: '#c83237',
   },
   'light-gray': {
     themeId: 'builtin.tech-neutral',
@@ -24,10 +24,10 @@ const expectedThemes = {
   dark: {
     themeId: 'builtin.gold-band',
     colorScheme: 'dark',
-    background: '#181818', surface: '#242424', workspace: '#181818', border: '#333333',
-    primary: '#313131', primaryForeground: '#f5f5f5', selection: '#555555',
-    selectionForeground: '#ffffff', messageUser: '#2d2d2d', messageUserForeground: '#f2f2f2',
-    foreground: '#e8e8e8', muted: '#9a9a9a', success: '#59b68b', danger: '#df6b6b',
+    background: '#0f0f0f', surface: '#171717', workspace: '#0f0f0f', border: '#2b2b2b',
+    primary: '#f0f0f0', primaryForeground: '#0d0d0d', selection: '#155e4b',
+    selectionForeground: '#ffffff', messageUser: '#242424', messageUserForeground: '#f0f0f0',
+    foreground: '#f0f0f0', muted: '#9b9b9b', success: '#59b68b', danger: '#df6b6b',
   },
   black: {
     themeId: 'builtin.tech-neutral',
@@ -36,6 +36,22 @@ const expectedThemes = {
     primary: '#2d2d2d', primaryForeground: '#f2f2f2', selection: '#4d4d4d',
     selectionForeground: '#ffffff', messageUser: '#252525', messageUserForeground: '#f2f2f2',
     foreground: '#e8e8e8', muted: '#929292', success: '#59b68b', danger: '#df6b6b',
+  },
+  'editorial-light': {
+    themeId: 'builtin.neo-brutalist',
+    colorScheme: 'light',
+    background: '#f4f2ec', surface: '#fffefa', workspace: '#e8e6df', border: '#161616',
+    primary: '#161616', primaryForeground: '#ffffff', selection: '#ffd2c7',
+    selectionForeground: '#161616', messageUser: '#eae7de', messageUserForeground: '#161616',
+    foreground: '#161616', muted: '#5f5b52', success: '#157347', danger: '#c93838',
+  },
+  'editorial-dark': {
+    themeId: 'builtin.neo-brutalist',
+    colorScheme: 'dark',
+    background: '#151515', surface: '#202020', workspace: '#111111', border: '#77736b',
+    primary: '#f4f2ec', primaryForeground: '#161616', selection: '#ff6b4a',
+    selectionForeground: '#161616', messageUser: '#262626', messageUserForeground: '#f4f2ec',
+    foreground: '#f4f2ec', muted: '#b7b2a8', success: '#5cff8d', danger: '#ff5c5c',
   },
 } as const;
 
@@ -83,14 +99,15 @@ describe('desktop theme palettes', () => {
     expect(contrastRatio(palette.danger, palette.background)).toBeGreaterThanOrEqual(4.5);
   });
 
-  it('keeps the approved porcelain palette and technology-neutral package unchanged', () => {
+  it('keeps the OpenAI-like default direction and technology-neutral package distinct', () => {
     const light = getThemePackage('builtin.gold-band').schemes.light.semantic;
     const neutral = getThemePackage('builtin.tech-neutral').schemes.light.semantic;
     const dark = getThemePackage('builtin.gold-band').schemes.dark.semantic;
     const black = getThemePackage('builtin.tech-neutral').schemes.dark.semantic;
 
-    expect(light.background).toBe('#fafafb');
-    expect(light.primary).toBe('#5b6ba8');
+    expect(light.background).toBe('#ffffff');
+    expect(light.primary).toBe('#0d0d0d');
+    expect(light.ring).toBe('#10a37f');
     expect(neutral.sidebar).toBe('#f3f3f3');
     expect(neutral.sidebarForeground).toBe('#171717');
     expect(neutral.sidebarAccent).toBe('#e7e7e7');

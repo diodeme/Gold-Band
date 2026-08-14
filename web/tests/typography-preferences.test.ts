@@ -57,7 +57,7 @@ describe('desktop typography preferences', () => {
     expect(styles).toContain('--font-weight-bold: 600;');
   });
 
-  it('keeps editor typography isolated from chat code and covers all CodeMirror views', () => {
+  it('keeps editor typography isolated from chat inline labels and covers all CodeMirror views', () => {
     const editorTheme = fs.readFileSync(path.resolve(__dirname, '../src/components/workspace/files/editor-extensions.ts'), 'utf8');
     const markdown = fs.readFileSync(path.resolve(__dirname, '../src/components/prompt-kit/markdown.tsx'), 'utf8');
     const fileViewer = fs.readFileSync(path.resolve(__dirname, '../src/components/workspace/files/WorkspaceFileEditor.tsx'), 'utf8');
@@ -66,14 +66,16 @@ describe('desktop typography preferences', () => {
     expect(editorTheme).toContain("fontSize: 'var(--app-editor-font-size, 12px)'");
     expect(fileViewer).toContain('<CodeMirror');
     expect(diffViewer).toContain('unifiedMergeView({');
-    expect(markdown).toContain('var(--app-ui-code-font-size)');
+    expect(markdown).toContain('font-sans text-[1em] font-normal leading-[inherit] tracking-normal');
+    expect(markdown).not.toContain('var(--app-ui-code-font-size)');
     expect(markdown).not.toContain('var(--app-editor-font-size)');
   });
 
   it('uses UI-derived typography tokens in the conversation sidebar', () => {
     const sidebar = fs.readFileSync(path.resolve(__dirname, '../src/components/conversation/ConversationSidebar.tsx'), 'utf8');
     expect(sidebar).toContain('text-ui-compact');
-    expect(sidebar).toContain('text-ui-micro');
+    expect(sidebar).toContain('text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55');
+    expect(sidebar).not.toContain('text-ui-micro tabular-nums text-muted-foreground');
     expect(sidebar).not.toMatch(/text-\[(?:10|12|13|14)px\]/u);
   });
 

@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "contractVersion": 1,
   "id": "builtin.neo-brutalist",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "source": "builtin",
   "name": {
     "zh-CN": "新粗野主义",
-    "en": "Neo Brutalist"
+    "en": "Neo-Brutalism"
   },
   "author": "Gold Band",
   "schemes": [

@@ -33,10 +33,10 @@
     "background": "card",
     "foreground": "card-foreground",
     "border": "highlight",
-    "material": "elevated"
+    "material": "subtle"
   },
   "dialog": {
-    "background": "card",
+    "background": "popover",
     "foreground": "card-foreground",
     "border": "highlight",
     "material": "elevated"
@@ -51,7 +51,7 @@
     "background": "card",
     "foreground": "foreground",
     "border": "highlight",
-    "material": "subtle"
+    "material": "flat"
   },
   "sheet": {
     "background": "card",

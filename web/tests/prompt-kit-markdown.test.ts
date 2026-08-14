@@ -69,6 +69,16 @@ describe('prompt-kit Markdown', () => {
     expect(html).not.toContain('--sd-delay');
   });
 
+  it('renders inline code as a body-sized label instead of a smaller monospace fragment', () => {
+    const html = renderToStaticMarkup(createElement(Markdown, {
+      children: '运行 `npm run themes:build` 后继续。',
+    }));
+
+    expect(html).toContain('font-sans text-[1em] font-normal leading-[inherit] tracking-normal');
+    expect(html).toContain('rounded-md bg-muted/50 px-1.5 py-0.5');
+    expect(html).not.toContain('font-mono');
+  });
+
   it('renders backend-separated thought blocks without rewriting content', () => {
     const thought = '**Designing routes.**\n\n**Planning branches.**';
     const html = renderToStaticMarkup(createElement(Markdown, {

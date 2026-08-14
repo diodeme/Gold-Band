@@ -192,7 +192,7 @@ export function AcpConversationComposer({
             onDrop={onDrop}
             onPaste={onPaste}
           />
-          <div className="mt-1.5 flex items-center gap-2 px-2 pb-1">
+          <div className="mt-2 flex items-center gap-2 px-2 pb-1 text-xs leading-4">
             <div className="flex items-center gap-2">
               <input
                 ref={fileInputRef}
@@ -212,10 +212,10 @@ export function AcpConversationComposer({
                   <Paperclip className="size-3.5" />
                 </Button>
               </PromptInputAction>
-              <span className="text-xs text-muted-foreground">{inputHint}</span>
+              <span className="text-muted-foreground/80">{inputHint}</span>
             </div>
           </div>
-          <div className="flex min-w-0 flex-wrap items-center gap-2 border-t border-border/50 px-2 py-1.5" data-acp-composer-command-bar="true">
+          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 border-t border-border/50 px-2 py-2" data-acp-composer-command-bar="true">
             <div className="min-w-0 flex-1">{configBar}</div>
             <PromptInputActions className="ml-auto shrink-0 pl-2">
               {canStop ? (

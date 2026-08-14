@@ -6,10 +6,14 @@ import { getThemePackage } from '../src/theme';
 
 describe('desktop window surface', () => {
   it('maps every concrete theme to the workspace surface used during native resize', () => {
-    expect(getThemePackage('builtin.gold-band').schemes.light.windowSurface).toBe('#f1f2f5');
+    expect(getThemePackage('builtin.gold-band').schemes.light.windowSurface).toBe('#ffffff');
     expect(getThemePackage('builtin.tech-neutral').schemes.light.windowSurface).toBe('#ffffff');
-    expect(getThemePackage('builtin.gold-band').schemes.dark.windowSurface).toBe('#181818');
+    expect(getThemePackage('builtin.gold-band').schemes.dark.windowSurface).toBe('#0f0f0f');
     expect(getThemePackage('builtin.tech-neutral').schemes.dark.windowSurface).toBe('#111111');
+    expect(getThemePackage('builtin.glass').schemes.light.windowSurface).toBe('#c7c7ca');
+    expect(getThemePackage('builtin.glass').schemes.dark.windowSurface).toBe('#111113');
+    expect(getThemePackage('builtin.neo-brutalist').schemes.light.windowSurface).toBe('#e8e6df');
+    expect(getThemePackage('builtin.neo-brutalist').schemes.dark.windowSurface).toBe('#111111');
   });
 
   it('uses the Windows composition resize path and keeps the window hidden until the first themed frame', () => {

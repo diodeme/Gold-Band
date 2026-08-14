@@ -211,7 +211,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
       <>
         <aside className="flex min-h-0 h-full flex-col gap-0.5 bg-sidebar px-3 py-3 text-sidebar-foreground">
         {/* Quick actions */}
-        <div className="flex flex-col gap-0.5">
+        <div className="flex flex-col gap-1">
           <SidebarButton
             active={activeNavigationKey === 'quick-chat'}
             icon={<MessageSquare />}
@@ -225,7 +225,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
           />
         </div>
 
-        <Separator className="mx-1 my-0 opacity-45" />
+        <Separator className="mx-1 my-1.5 opacity-45" />
 
         {/* Navigation */}
         <div className="flex flex-col gap-1">
@@ -261,17 +261,17 @@ export const ConversationSidebar = memo(function ConversationSidebar({
 
         {/* Pinned section — fixed, collapsible, outside scroll */}
         {vm.pinnedTasks.length > 0 ? (
-          <div className="shrink-0 border-y border-border/55 py-1">
+          <div className="my-1.5 shrink-0 border-y border-border/55 py-2">
             <button
               type="button"
-              className="flex w-full items-center gap-1.5 px-1 py-0.75 text-left text-sm font-medium text-sidebar-foreground hover:text-sidebar-accent-foreground"
+              className="flex w-full items-center gap-1.5 px-1 py-1 text-left text-xs font-medium text-muted-foreground hover:text-sidebar-accent-foreground"
               onClick={togglePinnedCollapsed}
             >
               <ChevronDown className={cn('size-3 transition-transform', pinnedCollapsed && '-rotate-90')} />
               {t('conversation.sidebar.pinned')}
             </button>
             {!pinnedCollapsed ? (
-              <div>
+              <div className="mt-1 space-y-3">
                 {Object.entries(pinnedTasksByWorkspace).map(([projectId, tasks]) => {
                   const ws = workspacesByProjectId.get(projectId);
                   const isWsCollapsed = collapsedPinnedWorkspaces[projectId] ?? false;
@@ -279,7 +279,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                     <div key={`pinned-ws-${projectId}`}>
                       <button
                         type="button"
-                        className="flex w-full items-center gap-1.5 px-1 py-0.75 text-left text-xs font-semibold uppercase tracking-[0.12em] text-sidebar-foreground hover:text-sidebar-accent-foreground"
+                        className="flex w-full items-center gap-1.5 px-1 py-1 text-left text-sm font-bold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground"
                         onClick={() => togglePinnedWorkspace(projectId)}
                       >
                         <ChevronDown className={cn('size-3 shrink-0 transition-transform', isWsCollapsed && '-rotate-90')} />
@@ -318,18 +318,18 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             ) : null}
           </div>
         ) : (
-          <Separator className="mx-1 my-0.75 opacity-45" />
+          <Separator className="mx-1 my-1.5 opacity-45" />
         )}
 
         {/* Workspace sections — scrollable with sticky headers */}
         <ScrollArea className="min-h-0 flex-1">
-          <div className="pt-2.5">
+          <div className="pt-2">
             {vm.workspaces.map((ws) => (
-              <div key={ws.projectId} className="mb-2.5">
-                <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-0.75">
+              <div key={ws.projectId} className="mb-4">
+                <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1">
                   <button
                     type="button"
-                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-xs font-semibold uppercase tracking-[0.12em] text-sidebar-foreground hover:text-sidebar-accent-foreground group-hover:pr-11"
+                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-bold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-11"
                     onClick={() => toggleWorkspace(ws.projectId)}
                   >
                     <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
@@ -413,7 +413,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
 
 
         {/* Settings */}
-        <Separator className="mx-1 my-0.75 opacity-45" />
+        <Separator className="mx-1 my-1.5 opacity-45" />
         <SidebarButton icon={<Settings />} label={t('conversation.sidebar.settings')} onClick={() => onSelect({ kind: 'settings' })} />
         </aside>
 
@@ -664,8 +664,8 @@ function TaskRow({
   const taskRow = (
     <div
       className={cn(
-        'group relative flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer',
-        isActive ? 'bg-sidebar-accent/70' : 'hover:bg-sidebar-accent',
+        'group relative flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-sidebar-foreground/85 cursor-pointer',
+        isActive ? 'bg-sidebar-accent/70 font-semibold text-sidebar-accent-foreground' : 'hover:bg-sidebar-accent',
       )}
       onClick={handleRowClick}
     >
@@ -701,7 +701,7 @@ function TaskRow({
           </span>
         )}
         {relativeTime ? (
-          <span className="shrink-0 text-ui-micro tabular-nums text-muted-foreground">{relativeTime}</span>
+          <span className="shrink-0 text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55">{relativeTime}</span>
         ) : null}
       </div>
       <span className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 group-hover:flex group-hover:pointer-events-auto">
@@ -750,7 +750,7 @@ function TaskRow({
               >
                 <div
                   className={cn(
-                    'flex items-center gap-2 rounded-md px-2 py-1 cursor-pointer text-xs',
+                    'flex items-center gap-2 rounded-md px-2 py-1 cursor-pointer text-xs leading-4',
                     isConversationSidebarRunActive(activeRunKey, task.projectId, task.taskId, run.runId)
                       ? 'bg-sidebar-accent text-sidebar-accent-foreground'
                       : 'hover:bg-sidebar-accent',
@@ -766,9 +766,9 @@ function TaskRow({
                   }}
                 >
                   <span className={cn('size-1.5 shrink-0 rounded-full', color)} />
-                  <span className="min-w-0 flex-1 truncate text-muted-foreground">{run.runId}</span>
+                  <span className="min-w-0 flex-1 truncate text-muted-foreground/75">{run.runId}</span>
                   {runTime ? (
-                    <span className="shrink-0 text-ui-micro tabular-nums text-muted-foreground">{runTime}</span>
+                    <span className="shrink-0 tabular-nums text-muted-foreground/55">{runTime}</span>
                   ) : null}
                 </div>
               </RunStopMenu>

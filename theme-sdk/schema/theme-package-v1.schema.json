@@ -561,6 +561,13 @@
                 "motionEasing"
               ],
               "properties": {
+                "model": {
+                  "enum": [
+                    "solid",
+                    "frosted",
+                    "liquid"
+                  ]
+                },
                 "surfaceOpacity": {
                   "type": "number",
                   "minimum": 0,
@@ -582,6 +589,24 @@
                   "type": "number",
                   "minimum": 100,
                   "maximum": 200
+                },
+                "backdropBrightness": {
+                  "type": "number",
+                  "minimum": 80,
+                  "maximum": 120
+                },
+                "backdropContrast": {
+                  "type": "number",
+                  "minimum": 80,
+                  "maximum": 140
+                },
+                "specularHighlight": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "edgeShadow": {
+                  "type": "string",
+                  "minLength": 1
                 },
                 "shadow": {
                   "type": "string"
@@ -1156,6 +1181,13 @@
                 "motionEasing"
               ],
               "properties": {
+                "model": {
+                  "enum": [
+                    "solid",
+                    "frosted",
+                    "liquid"
+                  ]
+                },
                 "surfaceOpacity": {
                   "type": "number",
                   "minimum": 0,
@@ -1177,6 +1209,24 @@
                   "type": "number",
                   "minimum": 100,
                   "maximum": 200
+                },
+                "backdropBrightness": {
+                  "type": "number",
+                  "minimum": 80,
+                  "maximum": 120
+                },
+                "backdropContrast": {
+                  "type": "number",
+                  "minimum": 80,
+                  "maximum": 140
+                },
+                "specularHighlight": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "edgeShadow": {
+                  "type": "string",
+                  "minLength": 1
                 },
                 "shadow": {
                   "type": "string"
@@ -1851,6 +1901,24 @@
               "type": "number",
               "minimum": 100,
               "maximum": 160
+            },
+            "backdropBrightness": {
+              "type": "number",
+              "minimum": 80,
+              "maximum": 120
+            },
+            "backdropContrast": {
+              "type": "number",
+              "minimum": 80,
+              "maximum": 140
+            },
+            "specularHighlight": {
+              "type": "string",
+              "minLength": 1
+            },
+            "edgeShadow": {
+              "type": "string",
+              "minLength": 1
             },
             "shadow": {
               "type": "string"

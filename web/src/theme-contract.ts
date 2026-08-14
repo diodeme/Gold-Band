@@ -51,11 +51,16 @@ export const semanticThemeTokensSchema = z.object({
 }).strict();
 
 export const materialTokensSchema = z.object({
+  model: z.enum(['solid', 'frosted', 'liquid']).default('solid'),
   surfaceOpacity: z.number().min(0).max(1),
   borderHighlight: z.string(),
   surfaceOverlay: z.string(),
   blur: z.number().min(0).max(60),
   saturate: z.number().min(100).max(200),
+  backdropBrightness: z.number().min(80).max(120).default(100),
+  backdropContrast: z.number().min(80).max(140).default(100),
+  specularHighlight: z.string().default('none'),
+  edgeShadow: z.string().default('0 0 0 transparent'),
   shadow: z.string(),
   radius: z.string(),
   backgroundImage: z.string(),
@@ -92,6 +97,9 @@ const themeSchemeSchema = z.object({
 }).strict();
 const performanceOverridesSchema = z.object({
   blur: z.number().min(0).max(24), saturate: z.number().min(100).max(160),
+  backdropBrightness: z.number().min(80).max(120).optional(),
+  backdropContrast: z.number().min(80).max(140).optional(),
+  specularHighlight: z.string().optional(), edgeShadow: z.string().optional(),
   shadow: z.string(), textureOpacity: z.number().min(0).max(0.02),
   motionDuration: z.string(),
 }).strict();

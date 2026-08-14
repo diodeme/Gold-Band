@@ -2,7 +2,7 @@
   "light": {
     "typography": {
       "uiFamily": "\"Gold Band MiSans\", \"MiSans\", \"Microsoft YaHei UI\", \"PingFang SC\", \"Noto Sans CJK SC\", \"Source Han Sans SC\", system-ui, sans-serif",
-      "uiSize": 15,
+      "uiSize": 14,
       "editorFamily": "\"JetBrains Mono\", \"SFMono-Regular\", Consolas, monospace",
       "editorSize": 12
     },
@@ -16,7 +16,7 @@
   "dark": {
     "typography": {
       "uiFamily": "\"Gold Band MiSans\", \"MiSans\", \"Microsoft YaHei UI\", \"PingFang SC\", \"Noto Sans CJK SC\", \"Source Han Sans SC\", system-ui, sans-serif",
-      "uiSize": 15,
+      "uiSize": 14,
       "editorFamily": "\"JetBrains Mono\", \"SFMono-Regular\", Consolas, monospace",
       "editorSize": 12
     },

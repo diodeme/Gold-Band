@@ -2376,7 +2376,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_entry_does_not_implicitly_resolve_desktop_workspace() {
+    fn workspace_entry_does_not_implicitly_resolve_desktop_context() {
         let state = gold_band::config::StateConfig::default();
 
         let result = super::workspace_entry_for_project(&state, "desktop-workspace");

@@ -140,6 +140,8 @@
 - 侧边栏底部提供"添加工作空间"入口，通过系统目录选择器添加
 - 添加时校验不重复，已有历史对话的工作空间自动加载 task 列表
 - `conversationWorkspaces` 是会话模式工作空间列表的唯一事实源；侧边栏、搜索、运行模式、置顶和会话命令都只能解析该列表中的工作空间。`DesktopContext.repo_root` 仅用于桌面启动上下文和构造指定工作空间的 `App.paths.repo_root`，不得作为隐式工作空间注入侧边栏。
+- 桌面 Runtime 启动恢复必须遍历 `conversationWorkspaces` 的全部规范工作空间，而不是只扫描 `DesktopContext.repo_root` 或 `lastConversationWorkspace`。相同规范路径只扫描一次，单个工作空间损坏只记录结构化失败并继续其他工作空间；列表为空时不回退扫描桌面启动上下文。
+- 启动恢复只在桌面初始化时执行一次，逐 workspace 扫描 task/run 的 durable 状态并收敛仍为 running 的执行；不轮询、不缓存 workspace，也不调用 provider。复杂度为 `O(workspaces + Σ(tasks + runs))`，工作空间数量和本地历史规模下属于有界文件读取。
 - 工作空间身份由规范路径生成 `projectId`，Windows 下解析历史 ID 时忽略盘符/路径大小写；持久化迁移按规范化路径去重，并同步迁移 `lastConversationWorkspace`、`conversationRunModes` 和 `conversationPins`。若旧状态同时存在规范 key 与历史大小写 key，规范 key 的配置优先。
 - 用户状态使用 `stateSchemaVersion` 执行一次性迁移；达到当前版本后启动直接跳过迁移扫描和写盘。迁移函数同时保持幂等，重复调用不得继续改变状态。
 - `stateSchemaVersion` 是共享 `StateConfig` 数据契约的一部分，按 camelCase 持久化；历史 `state.json` 缺失该字段时反序列化为 `0`，零值不额外写盘。桌面迁移模块不得声明或维护第二份影子版本字段。

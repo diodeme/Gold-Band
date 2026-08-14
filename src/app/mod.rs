@@ -1419,14 +1419,7 @@ impl App {
         Ok(state)
     }
 
-    pub fn set_user_desktop_workspace(
-        &self,
-        workspace: &str,
-    ) -> Result<(SettingsConfig, StateConfig)> {
-        let mut settings = self.load_settings()?;
-        settings.desktop_workspace = Some(workspace.to_string());
-        self.save_settings(&settings)?;
-
+    pub fn record_user_recent_desktop_workspace(&self, workspace: &str) -> Result<StateConfig> {
         let mut state = self.load_state()?;
         state
             .recent_desktop_workspaces
@@ -1437,7 +1430,7 @@ impl App {
         state.recent_desktop_workspaces.truncate(8);
         self.save_state(&state)?;
 
-        Ok((settings, state))
+        Ok(state)
     }
 
     pub fn remove_user_recent_desktop_workspace(&self, workspace: &str) -> Result<StateConfig> {
@@ -5814,19 +5807,13 @@ mod tests {
     }
 
     #[test]
-    fn workspace_persists_to_both_files() {
+    fn workspace_selection_only_updates_legacy_recent_list() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root.clone());
-        app.set_user_desktop_workspace("D:/Projects/MyRepo")
+        app.record_user_recent_desktop_workspace("D:/Projects/MyRepo")
             .unwrap();
-
-        let settings = app.load_settings().unwrap();
-        assert_eq!(
-            settings.desktop_workspace.as_deref(),
-            Some("D:/Projects/MyRepo")
-        );
 
         let state = app.load_state().unwrap();
         assert!(
@@ -5842,9 +5829,12 @@ mod tests {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root.clone());
-        app.set_user_desktop_workspace("D:/Projects/A").unwrap();
-        app.set_user_desktop_workspace("D:/Projects/B").unwrap();
-        app.set_user_desktop_workspace("D:/Projects/A").unwrap();
+        app.record_user_recent_desktop_workspace("D:/Projects/A")
+            .unwrap();
+        app.record_user_recent_desktop_workspace("D:/Projects/B")
+            .unwrap();
+        app.record_user_recent_desktop_workspace("D:/Projects/A")
+            .unwrap();
 
         let state = app.load_state().unwrap();
         // A should be at position 0 (most recent), B at position 1, no duplicates
@@ -5859,16 +5849,16 @@ mod tests {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root.clone());
-        app.set_user_desktop_workspace("D:/Projects/A").unwrap();
-        app.set_user_desktop_workspace("D:/Projects/B").unwrap();
+        app.record_user_recent_desktop_workspace("D:/Projects/A")
+            .unwrap();
+        app.record_user_recent_desktop_workspace("D:/Projects/B")
+            .unwrap();
 
         let state = app
             .remove_user_recent_desktop_workspace("D:/Projects/A")
             .unwrap();
 
         assert_eq!(state.recent_desktop_workspaces, vec!["D:/Projects/B"]);
-        let settings = app.load_settings().unwrap();
-        assert_eq!(settings.desktop_workspace.as_deref(), Some("D:/Projects/B"));
     }
 
     #[test]
@@ -5878,7 +5868,7 @@ mod tests {
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root.clone());
         for i in 0..10 {
-            app.set_user_desktop_workspace(&format!("D:/Projects/Repo{i}"))
+            app.record_user_recent_desktop_workspace(&format!("D:/Projects/Repo{i}"))
                 .unwrap();
         }
 

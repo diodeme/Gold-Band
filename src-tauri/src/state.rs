@@ -43,13 +43,9 @@ impl DesktopContext {
     }
 
     pub fn from_workspace(repo_root: Utf8PathBuf) -> Result<Self> {
-        let paths = GoldBandPaths::new(repo_root.clone());
-        let (settings, _) = load_configs(&paths)?;
-        let needs_workspace = resolve_configured_workspace(&settings).is_none()
-            && find_workspace_root(&repo_root).is_none();
-        let repo_root = resolve_configured_workspace(&settings)
-            .or_else(|| find_workspace_root(&repo_root))
-            .unwrap_or(repo_root);
+        let resolved_repo_root = find_workspace_root(&repo_root);
+        let needs_workspace = resolved_repo_root.is_none();
+        let repo_root = resolved_repo_root.unwrap_or(repo_root);
         let paths = GoldBandPaths::new(repo_root.clone());
         let (settings, mut state) = load_configs(&paths)?;
         if migrate_conversation_workspace_state(
@@ -79,6 +75,21 @@ impl DesktopContext {
 }
 
 pub type AgentDiagnosticState = ProviderDiagnosticSnapshot;
+
+#[derive(Debug, Default)]
+pub struct ConversationWorkspaceRecoveryReport {
+    pub workspace_count: usize,
+    pub recovered_run_count: usize,
+    pub skipped_workspace_count: usize,
+    pub failures: Vec<ConversationWorkspaceRecoveryFailure>,
+}
+
+#[derive(Debug)]
+pub struct ConversationWorkspaceRecoveryFailure {
+    pub workspace_path: String,
+    pub code: &'static str,
+    pub message: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DoctorRetryPolicy {
@@ -309,6 +320,73 @@ impl DesktopState {
                     })
                     .collect())
             })))
+    }
+
+    pub fn recover_interrupted_conversation_workspaces(
+        &self,
+    ) -> Result<ConversationWorkspaceRecoveryReport> {
+        let context = self.context()?;
+        let base_app = self.app()?;
+        let persisted_state = base_app.load_state()?;
+        Self::recover_interrupted_conversation_workspaces_with_app(
+            &base_app,
+            context.config,
+            persisted_state,
+        )
+    }
+
+    #[cfg(test)]
+    fn recover_interrupted_conversation_workspaces_from_state(
+        &self,
+        persisted_state: StateConfig,
+    ) -> Result<ConversationWorkspaceRecoveryReport> {
+        let context = self.context()?;
+        let base_app = self.app()?;
+        Self::recover_interrupted_conversation_workspaces_with_app(
+            &base_app,
+            context.config,
+            persisted_state,
+        )
+    }
+
+    fn recover_interrupted_conversation_workspaces_with_app(
+        base_app: &App,
+        config: RuntimeConfig,
+        persisted_state: StateConfig,
+    ) -> Result<ConversationWorkspaceRecoveryReport> {
+        let mut seen_workspaces = BTreeSet::new();
+        let mut report = ConversationWorkspaceRecoveryReport::default();
+
+        for workspace in persisted_state.conversation_workspaces {
+            let workspace_path = workspace.workspace_path.trim();
+            if workspace_path.is_empty() {
+                report.skipped_workspace_count += 1;
+                continue;
+            }
+            let repo_root = Utf8PathBuf::from(workspace_path);
+            let paths = GoldBandPaths::new(repo_root.clone());
+            if !seen_workspaces.insert(paths.normalized_repo_root.clone()) {
+                report.skipped_workspace_count += 1;
+                continue;
+            }
+            if !repo_root.is_dir() {
+                report.skipped_workspace_count += 1;
+                continue;
+            }
+
+            report.workspace_count += 1;
+            let workspace_app = base_app.with_repo_root(repo_root, config.clone());
+            match workspace_app.recover_interrupted_running_sessions() {
+                Ok(recovered) => report.recovered_run_count += recovered.len(),
+                Err(error) => report.failures.push(ConversationWorkspaceRecoveryFailure {
+                    workspace_path: workspace_path.to_string(),
+                    code: "runtime.workspace-recovery-failed",
+                    message: format!("{error:#}"),
+                }),
+            }
+        }
+
+        Ok(report)
     }
 
     pub fn provider_diagnostic_snapshots(
@@ -937,7 +1015,8 @@ impl DesktopState {
             let repo_root = find_workspace_root(&repo_root).unwrap_or(repo_root);
             let app = App::with_config(repo_root.clone(), guard.config.clone());
             let workspace = repo_root.to_string();
-            let (settings, state) = app.set_user_desktop_workspace(&workspace)?;
+            let state = app.record_user_recent_desktop_workspace(&workspace)?;
+            let settings = app.load_settings()?;
             guard.repo_root = repo_root;
             guard.config = RuntimeConfig::default()
                 .apply_settings(&settings)
@@ -1064,16 +1143,6 @@ fn resolve_initial_workspace(cwd: &Utf8Path) -> Utf8PathBuf {
     find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
 }
 
-fn resolve_configured_workspace(settings: &SettingsConfig) -> Option<Utf8PathBuf> {
-    settings
-        .desktop_workspace
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(Utf8PathBuf::from)
-        .filter(|path| path.is_dir())
-}
-
 fn find_workspace_root(start: &Utf8Path) -> Option<Utf8PathBuf> {
     nearest_parent_containing(start, ".git")
         .or_else(|| nearest_parent_containing(start, active_storage_path_config().config_dir_name))
@@ -1110,6 +1179,9 @@ fn recent_workspaces(state: &StateConfig, repo_root: &Utf8Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gold_band::config::ConversationWorkspaceEntry;
+    use gold_band::domain::{NodeOutcome, NodeType, PauseReason, RoundTrigger, RunStatus, VERSION};
+    use gold_band::runtime::{NodeState, RoundState, RunState, RuntimeExecutionPhase, TaskState};
     use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
@@ -1134,6 +1206,184 @@ mod tests {
             needs_workspace: false,
         };
         (root, DesktopState::new(context))
+    }
+
+    fn conversation_workspace(path: &Utf8Path, project_id: &str) -> ConversationWorkspaceEntry {
+        ConversationWorkspaceEntry {
+            project_id: project_id.to_string(),
+            workspace_path: path.to_string(),
+            name: project_id.to_string(),
+            added_at: "2026-08-14T00:00:00Z".to_string(),
+        }
+    }
+
+    fn write_completed_attempt_with_running_run(app: &App) {
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-08-14T00:00:00Z".to_string(),
+            updated_at: "2026-08-14T00:00:01Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("worker".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+            execution: Default::default(),
+        };
+        let round = RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: "run-001".to_string(),
+            index: 1,
+            status: RunStatus::Running,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: "2026-08-14T00:00:00Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "worker".to_string(),
+            node_type: NodeType::Worker,
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Completed,
+            outcome: Some(NodeOutcome::Success),
+            started_at: "2026-08-14T00:00:00Z".to_string(),
+            finished_at: Some("2026-08-14T00:00:01Z".to_string()),
+            manual_check_pending: false,
+            runtime_execution_id: None,
+            resolved_config: Default::default(),
+            uuid: None,
+        };
+        write_json(
+            &app.paths.task_file("task-001"),
+            &TaskState::new("task-001"),
+        )
+        .unwrap();
+        write_json(&app.paths.run_file("task-001", "run-001"), &run).unwrap();
+        write_json(
+            &app.paths.round_file("task-001", "run-001", "round-001"),
+            &round,
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .node_file("task-001", "run-001", "round-001", "worker", "attempt-001"),
+            &node,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn startup_recovery_scans_every_conversation_workspace() {
+        let (root, state) = desktop_state();
+        let workspace_a = Utf8PathBuf::from_path_buf(root.path().join("workspace-a")).unwrap();
+        let workspace_b = Utf8PathBuf::from_path_buf(root.path().join("workspace-b")).unwrap();
+        std::fs::create_dir_all(workspace_a.as_std_path()).unwrap();
+        std::fs::create_dir_all(workspace_b.as_std_path()).unwrap();
+        let base_app = state.app().unwrap();
+        let persisted_state = StateConfig {
+            conversation_workspaces: vec![
+                conversation_workspace(&workspace_a, "workspace-a"),
+                conversation_workspace(&workspace_b, "workspace-b"),
+            ],
+            ..StateConfig::default()
+        };
+        let workspace_b_app =
+            base_app.with_repo_root(workspace_b.clone(), RuntimeConfig::default());
+        write_completed_attempt_with_running_run(&workspace_b_app);
+
+        let report = state
+            .recover_interrupted_conversation_workspaces_from_state(persisted_state)
+            .unwrap();
+
+        assert_eq!(report.workspace_count, 2);
+        assert_eq!(report.recovered_run_count, 1);
+        assert!(report.failures.is_empty());
+        let run = workspace_b_app.run_status("task-001", "run-001").unwrap();
+        let node: NodeState = read_json(&workspace_b_app.paths.node_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+        ))
+        .unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+        assert_eq!(run.execution.phase, RuntimeExecutionPhase::Paused);
+        assert_eq!(node.status, RunStatus::Completed);
+        assert_eq!(node.outcome, Some(NodeOutcome::Success));
+    }
+
+    #[test]
+    fn startup_recovery_deduplicates_and_isolates_conversation_workspaces() {
+        let (root, state) = desktop_state();
+        let broken = Utf8PathBuf::from_path_buf(root.path().join("broken-workspace")).unwrap();
+        let healthy = Utf8PathBuf::from_path_buf(root.path().join("healthy-workspace")).unwrap();
+        std::fs::create_dir_all(broken.as_std_path()).unwrap();
+        std::fs::create_dir_all(healthy.as_std_path()).unwrap();
+        let base_app = state.app().unwrap();
+        let persisted_state = StateConfig {
+            conversation_workspaces: vec![
+                conversation_workspace(&broken, "broken"),
+                conversation_workspace(&healthy, "healthy"),
+                conversation_workspace(&healthy, "healthy-alias"),
+            ],
+            ..StateConfig::default()
+        };
+
+        let broken_app = base_app.with_repo_root(broken, RuntimeConfig::default());
+        let broken_task = broken_app.paths.task_file("task-broken");
+        std::fs::create_dir_all(broken_task.parent().unwrap().as_std_path()).unwrap();
+        std::fs::write(broken_task.as_std_path(), "not json").unwrap();
+        let healthy_app = base_app.with_repo_root(healthy, RuntimeConfig::default());
+        write_completed_attempt_with_running_run(&healthy_app);
+
+        let report = state
+            .recover_interrupted_conversation_workspaces_from_state(persisted_state)
+            .unwrap();
+
+        assert_eq!(report.workspace_count, 2);
+        assert_eq!(report.skipped_workspace_count, 1);
+        assert_eq!(report.recovered_run_count, 1);
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.failures[0].code, "runtime.workspace-recovery-failed");
+        assert_eq!(
+            healthy_app
+                .run_status("task-001", "run-001")
+                .unwrap()
+                .status,
+            RunStatus::Paused
+        );
+    }
+
+    #[test]
+    fn startup_recovery_does_not_fallback_to_desktop_context_workspace() {
+        let (_root, state) = desktop_state();
+        let base_app = state.app().unwrap();
+        write_completed_attempt_with_running_run(&base_app);
+
+        let report = state
+            .recover_interrupted_conversation_workspaces_from_state(StateConfig::default())
+            .unwrap();
+
+        assert_eq!(report.workspace_count, 0);
+        assert_eq!(report.recovered_run_count, 0);
+        assert_eq!(
+            base_app.run_status("task-001", "run-001").unwrap().status,
+            RunStatus::Running
+        );
     }
 
     fn target() -> NotificationAttentionTarget<'static> {

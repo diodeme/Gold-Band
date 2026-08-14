@@ -45,8 +45,8 @@
 
 ### 输入区域
 
-- 会话壳、侧栏、阅读区与 prompt-kit composer 通过稳定主题角色消费主题包 recipe；不得在会话业务组件中根据 `themeId` 分支。Glass 使用根级光井背景与有限玻璃表面，消息历史本身不为每条消息创建独立全屏模糊合成层。
-- 会话标题中的 session 切换列表使用统一 `popover` 主题角色：Gold Band、技术中性、新粗野主义消费各自实底 popover，Glass 才消费带 blur 的半透明毛玻璃 popover；业务组件不得写固定透明度。
+- 会话壳、侧栏、阅读区与 prompt-kit composer 通过稳定主题角色消费主题包 recipe；不得在会话业务组件中根据 `themeId` 分支。
+- 会话标题中的 session 切换列表使用统一 `popover` 主题角色；当前 Gold Band 与技术中性均由各自包提供实底 popover，业务组件不得写固定透明度。
 - 主题、明暗或视觉质量切换只触发 CSS 样式重算，不读取会话数据、不重播 Markdown、不改变 composer 草稿、会话选中态或右侧工作区资源身份。
 1. 文本输入框：用户输入任意需求文本
    - 主页 composer 与会话追问统一复用 prompt-kit 自动尺寸输入能力，不维护独立的原生 textarea 高度逻辑。

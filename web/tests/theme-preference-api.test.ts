@@ -13,9 +13,9 @@ describe('theme preference API contract', () => {
   it('returns the canonical complete preference after saving theme, scheme, and quality together', async () => {
     const appearance: AppearancePreference = {
       schemaVersion: 2,
-      themeId: 'builtin.glass',
+      themeId: 'builtin.tech-neutral',
       colorScheme: 'dark',
-      visualQualityByTheme: { 'builtin.glass': 'performance' },
+      visualQualityByTheme: {},
     };
 
     const personalization: PersonalizationPreference = {
@@ -46,13 +46,13 @@ describe('theme preference API contract', () => {
     expect(saved.personalization.typography.ui).not.toBe(personalization.typography.ui);
   });
 
-  it('does not clear a theme quality choice when another theme becomes active', async () => {
+  it('roundtrips the default theme without manufacturing quality preferences', async () => {
     const saved = await browserApi.saveDesktopPreferences(
       {
         schemaVersion: 2,
         themeId: 'builtin.gold-band',
         colorScheme: 'system',
-        visualQualityByTheme: { 'builtin.glass': 'performance' },
+        visualQualityByTheme: {},
       },
       original.personalization,
       original.language,
@@ -61,6 +61,6 @@ describe('theme preference API contract', () => {
     );
 
     expect(saved.appearance.themeId).toBe('builtin.gold-band');
-    expect(saved.appearance.visualQualityByTheme).toEqual({ 'builtin.glass': 'performance' });
+    expect(saved.appearance.visualQualityByTheme).toEqual({});
   });
 });

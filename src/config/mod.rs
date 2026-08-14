@@ -1729,12 +1729,9 @@ mod tests {
             console_theme: Some(ConsoleThemeName::Nord),
             appearance: Some(AppearancePreference {
                 schema_version: 2,
-                theme_id: "builtin.glass".to_string(),
+                theme_id: "builtin.tech-neutral".to_string(),
                 color_scheme: ColorSchemePreference::Dark,
-                visual_quality_by_theme: BTreeMap::from([(
-                    "builtin.glass".to_string(),
-                    VisualQuality::Performance,
-                )]),
+                visual_quality_by_theme: BTreeMap::new(),
             }),
             personalization: Some(custom_personalization(
                 "Microsoft YaHei UI",
@@ -1816,7 +1813,7 @@ mod tests {
             console_theme: Some(ConsoleThemeName::Nord),
             appearance: Some(AppearancePreference {
                 schema_version: 2,
-                theme_id: "builtin.glass".to_string(),
+                theme_id: "builtin.tech-neutral".to_string(),
                 color_scheme: ColorSchemePreference::Dark,
                 visual_quality_by_theme: BTreeMap::new(),
             }),
@@ -1832,7 +1829,7 @@ mod tests {
             ..SettingsConfig::default()
         });
         assert_eq!(config.console_theme, ConsoleThemeName::Nord);
-        assert_eq!(config.appearance.theme_id, "builtin.glass");
+        assert_eq!(config.appearance.theme_id, "builtin.tech-neutral");
         assert_eq!(config.appearance.color_scheme, ColorSchemePreference::Dark);
         assert_eq!(config.desktop_language, DesktopLanguage::En);
         assert_eq!(

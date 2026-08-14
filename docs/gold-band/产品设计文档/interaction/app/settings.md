@@ -44,8 +44,6 @@
 当前支持：
 - Gold Band：默认设计风格，采用类 OpenAI 的白/近黑编辑界面；浅色以纯白画布、墨黑主操作和青绿色焦点建立层级，深色以近黑画布、克制灰阶和同一青绿色焦点保持一致。
 - 技术中性：更克制的无彩工具风格，浅色与深色都只让业务状态使用彩色。
-- 液态玻璃：浅色 Liquid Glass 与深色 Nocturne Glass，使用可被 backdrop 采样的黑白银灰光场、低不透明表面、方向性镜面高光和明暗内缘近似液态折射；完整效果保留液态层，性能优先关闭镜面层并降低采样成本。背景与主操作不得使用蓝色，彩色仅保留给业务状态。
-- 新粗野主义：以纸白/炭黑底、紧凑圆角、黑色主操作、单一珊瑚强调和有节制的硬投影表达克制的新粗野主义；禁止整屏高亮黄、所有容器统一粗边框或每个组件同时投影。
 - 明暗偏好独立为 `跟随系统 / 浅色 / 深色`；每个正式主题包必须同时提供浅色和深色，`跟随系统` 不跨主题包切换。
 
 ### 4.2 行为
@@ -71,7 +69,6 @@
 点击当前主题
   主题抽屉
     [ Gold Band ] [ 技术中性 ]
-    [ 液态玻璃 ] [ 新粗野主义 ]
 ```
 
 视觉规则：
@@ -87,7 +84,7 @@
 - 科技灰文字层级固定为 `#171717` 深黑标题、`#2b2b2b` 正文、`#666666` 辅助信息和更浅的禁用/占位状态；欢迎语等页面视觉锚点必须使用 `title` token，不得使用带透明度的正文色替代。侧栏导航、分组标题和任务标题属于主要信息，统一消费 `sidebar-foreground = #171717`，只有时间、空状态等元信息使用 `muted-foreground = #666666`。主消息阅读区保持纯白，科技灰侧栏与会话标题栏共同使用 `#f3f3f3` 框架 surface。
 - 所有内置主题方案均保留独立 `content-header` 语义接口，让会话标题栏与侧边栏组成连续应用框架，并通过轻量底边界与消息阅读区分层；不得在标题栏额外包裹卡片、嵌套灰块或投影。
 - 当前主题摘要按设置内容区宽度响应；主题抽屉内的主题卡网格按抽屉容器宽度在两列与单列之间切换。选项行允许标题和 Select 换行，但不得制造横向滚动或逐字纵排。
-- Liquid Glass 的 Dialog 必须使用较高不透明度的 `popover` 表面并保留受限 blur/saturate、背景亮度/对比度、镜面高光和边缘阴影；不得复用低不透明度 card 造成背景文字直接穿透。非液态主题的 Dialog/Popover 保持主题包提供的实底表面。
+- Dialog/Popover 必须消费主题包的稳定表面 recipe；当前两个内置主题均提供实底表面。未来引入透明材质主题时，必须保证弹层内容可读并重新完成明暗主题与背景穿透验收。
 
 ---
 
@@ -137,15 +134,14 @@
 
 - 外观权威字段改为 `appearance`：`schemaVersion = 2`、稳定 `themeId`、`colorScheme = system | light | dark`、按主题隔离的 `visualQualityByTheme`。旧 `desktopTheme` 在 settings schema v5 一次性迁移后删除，不双写。
 - 个性化权威字段为 `personalization`：`schemaVersion = 1`，显式保存两套排版以及 Agent / 个人头像图片与形状的 `source`。settings schema v7 一次性迁移旧字体、字号和头像选择；主题来源持续跟随当前主题，用户资产历史独立保留。
-- 内置 `builtin.gold-band`、`builtin.tech-neutral`、`builtin.glass`、`builtin.neo-brutalist` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。
-- 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。Glass 声明视觉质量能力并独立记忆完整效果/性能优先，其他主题不显示该设置。
+- 内置 `builtin.gold-band`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。
+- 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。当前两个内置主题均不声明视觉质量能力，因此不显示质量档控件。
 - 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality / data-material-model`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
 - 共享 shadcn/ui、prompt-kit 与应用壳以稳定 `data-theme-role` 消费材质 recipe；主题卡在宽内容区三列，窄窗口自动单列。
 - 2026-08-14 基础主题包补全：Theme SDK 已生成可提交的 `runtime-theme.json`、`builtin-theme.css`、`asset-manifest.json`、Web Catalog 与 Rust Catalog；后端保存偏好从 Catalog 能力声明判断主题存在性和质量档，不再硬编码主题 ID。当前开发节点完成 Style Dictionary 构建、TypeScript/Vite 生产构建和 Rust desktop compile check；单元/接口与浏览器交互仍由后续测试、验收节点执行。
-- 2026-08-14 测试节点复验：Theme SDK 构建正例及缺失 token、alias 循环、非法 recipe、质量档越界负例 5/5 通过；Web 全量 1176/1176、Rust Catalog 2/2、旧外观迁移 2/2、偏好持久化与个性化迁移定向用例通过，生产构建和格式检查通过。内置浏览器实例不可用，仅确认 `/settings` HTTP 200，Glass 长会话视觉与 GPU 时间线仍未验收。
+- 2026-08-14 测试节点复验：Theme SDK 构建正例及缺失 token、alias 循环、非法 recipe、质量档越界负例通过；Web、Rust Catalog、旧外观迁移、偏好持久化与个性化迁移定向用例覆盖当前主题契约。
 - 2026-08-14 覆盖率工具链收敛：与 Vitest 同版本的 V8 coverage provider 作为固定开发依赖随 lockfile 安装，并提供统一 `web:test:coverage` 入口；后续测试节点不再临时修改依赖树，覆盖率结果仍必须以该节点实际执行为准。
-- 2026-08-14 液态材质模型：主题引擎新增 `solid / frosted / liquid` 封闭类型和 backdrop brightness/contrast、specular highlight、edge shadow 光学参数；Liquid Glass 1.3 使用 `liquid`，性能档关闭镜面层并降低额外光学增强，其他主题显式声明 `solid`。
-- 2026-08-14 三主题真实落地：Gold Band 1.1、Liquid Glass 1.3 与新粗野主义 1.1.1 均修改独立源 token、recipe 和 manifest 后重新生成 Web/Rust Catalog；Liquid Glass 1.3 移除蓝色底与蓝色交互染色，以黑白银灰光场、降低模糊半径、提高 backdrop 对比度和四向内缘高光强化玻璃透射；`subtle` 只应用边缘材质，`elevated` 才应用完整投影，业务组件与设置页不包含主题 ID 特判。
+- 2026-08-14 内置主题收敛：删除 `builtin.glass` 与 `builtin.neo-brutalist` 的源包、运行时产物和选择入口，Catalog 只保留 Gold Band 与技术中性。退役或未知 `themeId` 由现有 resolver 统一规范化为 Gold Band，并清理不再受支持的质量档记录，不增加兼容主题或业务组件特判。
 
 MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri command `save_desktop_preferences` 保存用户偏好。
 

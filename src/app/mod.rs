@@ -5757,12 +5757,9 @@ mod tests {
         app.set_user_desktop_preferences(
             AppearancePreference {
                 schema_version: 2,
-                theme_id: "builtin.glass".to_string(),
+                theme_id: "builtin.tech-neutral".to_string(),
                 color_scheme: ColorSchemePreference::Dark,
-                visual_quality_by_theme: BTreeMap::from([(
-                    "builtin.glass".to_string(),
-                    VisualQuality::Performance,
-                )]),
+                visual_quality_by_theme: BTreeMap::new(),
             },
             personalization.clone(),
             DesktopLanguage::En,
@@ -5773,12 +5770,9 @@ mod tests {
 
         let settings = app.load_settings().unwrap();
         let appearance = settings.appearance.expect("appearance should persist");
-        assert_eq!(appearance.theme_id, "builtin.glass");
+        assert_eq!(appearance.theme_id, "builtin.tech-neutral");
         assert_eq!(appearance.color_scheme, ColorSchemePreference::Dark);
-        assert_eq!(
-            appearance.visual_quality_by_theme.get("builtin.glass"),
-            Some(&VisualQuality::Performance)
-        );
+        assert!(appearance.visual_quality_by_theme.is_empty());
         assert_eq!(settings.desktop_language, Some(DesktopLanguage::En));
         assert_eq!(settings.personalization, Some(personalization));
         assert_eq!(settings.use_local_claude, Some(true));

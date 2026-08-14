@@ -1,6 +1,4 @@
-use gold_band::config::{
-    CURRENT_SETTINGS_SCHEMA_VERSION, ColorSchemePreference, SettingsConfig, VisualQuality,
-};
+use gold_band::config::{CURRENT_SETTINGS_SCHEMA_VERSION, ColorSchemePreference, SettingsConfig};
 
 #[test]
 fn legacy_desktop_palettes_migrate_to_theme_id_and_color_scheme() {
@@ -50,11 +48,9 @@ fn canonical_appearance_wins_and_removes_the_legacy_field() {
         "desktopTheme": "dark",
         "appearance": {
             "schemaVersion": 2,
-            "themeId": "builtin.glass",
+            "themeId": "builtin.tech-neutral",
             "colorScheme": "light",
-            "visualQualityByTheme": {
-                "builtin.glass": "performance"
-            }
+            "visualQualityByTheme": {}
         }
     }))
     .expect("canonical appearance should survive migration");
@@ -64,12 +60,9 @@ fn canonical_appearance_wins_and_removes_the_legacy_field() {
         .appearance
         .as_ref()
         .expect("appearance should remain present");
-    assert_eq!(appearance.theme_id, "builtin.glass");
+    assert_eq!(appearance.theme_id, "builtin.tech-neutral");
     assert_eq!(appearance.color_scheme, ColorSchemePreference::Light);
-    assert_eq!(
-        appearance.visual_quality_by_theme.get("builtin.glass"),
-        Some(&VisualQuality::Performance)
-    );
+    assert!(appearance.visual_quality_by_theme.is_empty());
     let persisted = serde_json::to_value(settings).expect("migrated settings should serialize");
     assert!(persisted.get("desktopTheme").is_none());
 }

@@ -10,10 +10,6 @@ describe('desktop window surface', () => {
     expect(getThemePackage('builtin.tech-neutral').schemes.light.windowSurface).toBe('#ffffff');
     expect(getThemePackage('builtin.gold-band').schemes.dark.windowSurface).toBe('#0f0f0f');
     expect(getThemePackage('builtin.tech-neutral').schemes.dark.windowSurface).toBe('#111111');
-    expect(getThemePackage('builtin.glass').schemes.light.windowSurface).toBe('#c7c7ca');
-    expect(getThemePackage('builtin.glass').schemes.dark.windowSurface).toBe('#111113');
-    expect(getThemePackage('builtin.neo-brutalist').schemes.light.windowSurface).toBe('#e8e6df');
-    expect(getThemePackage('builtin.neo-brutalist').schemes.dark.windowSurface).toBe('#111111');
   });
 
   it('uses the Windows composition resize path and keeps the window hidden until the first themed frame', () => {

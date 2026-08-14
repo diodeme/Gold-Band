@@ -21,7 +21,8 @@ describe('conversation visual hierarchy contract', () => {
     const dialog = source('../src/components/acp/ACPChatDialog.tsx');
     const composer = source('../src/components/conversation/AcpConversationComposer.tsx');
 
-    expect(dialog).toContain('max-w-[var(--conversation-content-rail-max-inline-size)] space-y-5 px-5 py-5');
+    expect(dialog).toContain('max-w-[var(--conversation-content-rail-max-inline-size)] space-y-1 px-5 py-5');
+    expect(dialog).toContain('<div className="min-w-0 space-y-1">');
     expect(dialog).toContain('border-t px-5 py-3');
     expect(dialog).toContain('data-acp-conversation-rail="timeline"');
     expect(dialog).toContain('data-acp-conversation-rail="composer"');

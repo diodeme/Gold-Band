@@ -3458,7 +3458,7 @@ export function ACPChatDialog(
                 </div>
               ) : (
                 <div
-                  className="mx-auto w-full max-w-[var(--conversation-content-rail-max-inline-size)] space-y-5 px-5 py-5"
+                  className="mx-auto w-full max-w-[var(--conversation-content-rail-max-inline-size)] space-y-1 px-5 py-5"
                   data-acp-conversation-rail="timeline"
                 >
                   {timeline.map((item) => (
@@ -4498,7 +4498,7 @@ export function ACPMessageList({
   if (timeline.length === 0) return active ? null : <EmptyAcpState />;
 
   const content = (
-    <div className="min-w-0 space-y-4">
+    <div className="min-w-0 space-y-1">
       {timeline.map((item) => (
         <ACPTimelineItemRenderer
           key={timelineEventKey(item)}
@@ -5228,7 +5228,7 @@ const MessageBubble = memo(function MessageBubble({
       ) : null}
       <div
         className={cn(
-          "group/message min-w-0 max-w-[var(--conversation-message-max-inline-size)] space-y-1",
+          "group/message min-w-0 max-w-[var(--conversation-message-max-inline-size)] space-y-0.5",
           isUser && "flex flex-col items-end",
           nested && "w-full max-w-full",
         )}
@@ -5240,10 +5240,10 @@ const MessageBubble = memo(function MessageBubble({
             data-agent-message-key={quotableAgentMessage ? timelineEventKey(event) : undefined}
             variant={isUser ? "user" : "assistant"}
             className={cn(
-              "rounded-2xl px-4 py-3 text-sm leading-6 [overflow-wrap:anywhere]",
+              "rounded-2xl px-4 text-sm leading-6 [overflow-wrap:anywhere]",
               isUser
-                ? "w-fit max-w-full rounded-br-md shadow-none"
-                : "rounded-bl-md shadow-none",
+                ? "w-fit max-w-full rounded-br-md py-3 shadow-none"
+                : "rounded-bl-md pb-0 pt-2 shadow-none",
               failed &&
                 "!border !border-destructive/40 !bg-destructive/10 !text-destructive",
             )}
@@ -5360,14 +5360,14 @@ const AgentMessageCopyAction = memo(function AgentMessageCopyAction({
   return (
     <MessageActions
       data-agent-message-actions="true"
-      className="min-h-7 px-1 opacity-100 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/message:opacity-100 group-focus-within/message:opacity-100"
+      className="min-h-6 px-1 opacity-100 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/message:opacity-100 group-focus-within/message:opacity-100"
     >
       <MessageAction tooltip={label} side="bottom">
         <Button
           type="button"
           variant="ghost"
           size="icon"
-          className="size-7 text-muted-foreground hover:bg-muted/45 hover:text-foreground"
+          className="size-6 text-muted-foreground hover:bg-muted/45 hover:text-foreground"
           aria-label={label}
           data-agent-message-copy="true"
           onClick={() => void copyMarkdown()}

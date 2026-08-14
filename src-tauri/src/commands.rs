@@ -2532,7 +2532,7 @@ pub async fn stop_active_session(
 }
 
 #[tauri::command]
-pub fn submit_manual_check(
+pub async fn submit_manual_check(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -2554,9 +2554,30 @@ pub fn submit_manual_check(
             ));
         }
     };
-    app.submit_manual_check_background(&task_id, &run_id, &round_id, &node_id, &attempt_id, outcome)
-        .map(run_summary_vm)
-        .map_err(command_error)
+    let submission_lease = app
+        .reserve_manual_check_submission(&task_id, &run_id, &round_id, &node_id, &attempt_id)
+        .map_err(command_error)?;
+    let resumed_occurrence_id = resume_scheduled_interaction(
+        state.inner(),
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &attempt_id,
+    )
+    .await?;
+    let app = app.with_scheduled_occurrence_id(resumed_occurrence_id);
+    app.submit_manual_check_background(
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outcome,
+        submission_lease,
+    )
+    .map(run_summary_vm)
+    .map_err(command_error)
 }
 
 #[tauri::command]
@@ -5987,18 +6008,15 @@ pub async fn respond_elicitation(
 
     // Reclaim the durable scheduled occurrence before writing the response file.
     // The ACP waiter may resume immediately after the file is visible.
-    if let Ok(coordinator) = state.scheduler_coordinator() {
-        coordinator
-            .resume_attention(
-                app.paths.repo_root.clone(),
-                task_id.clone(),
-                run_id.clone(),
-                round_id.clone(),
-                attempt_id.clone(),
-            )
-            .await
-            .map_err(|error| command_error(anyhow::anyhow!(error.to_string())))?;
-    }
+    resume_scheduled_interaction(
+        state.inner(),
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &attempt_id,
+    )
+    .await?;
 
     let action = match action.as_str() {
         "accept" => ElicitationAction::Accept,
@@ -6079,6 +6097,72 @@ pub async fn respond_elicitation(
     );
 
     Ok(())
+}
+
+fn scheduled_attention_requires_coordinator(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    attempt_id: &str,
+) -> crate::scheduled_service::ScheduledServiceResult<bool> {
+    let database_path = app.paths.scheduler_db_path();
+    if !database_path.exists() {
+        return Ok(false);
+    }
+    let database = gold_band::scheduler::db::ScheduledTaskDatabase::open(database_path)
+        .map_err(crate::scheduled_service::ScheduledServiceError::from_database)?;
+    Ok(database
+        .find_attention_occurrence_by_links(task_id, run_id, round_id, attempt_id)
+        .map_err(crate::scheduled_service::ScheduledServiceError::from_database)?
+        .is_some())
+}
+
+async fn resume_scheduled_interaction(
+    state: &DesktopState,
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    attempt_id: &str,
+) -> CommandResult<Option<String>> {
+    let requires_coordinator =
+        scheduled_attention_requires_coordinator(app, task_id, run_id, round_id, attempt_id)
+            .map_err(|error| CommandErrorVm::new(error.code.to_string(), error.params))?;
+    if !requires_coordinator {
+        return Ok(None);
+    }
+
+    let coordinator = state.scheduler_coordinator().map_err(|_| {
+        CommandErrorVm::new(
+            gold_band::scheduler::occurrence::ScheduledErrorCode::CoordinatorUnavailable
+                .to_string(),
+            serde_json::json!({ "operation": "resume-attention" }),
+        )
+    })?;
+    coordinator
+        .resume_attention(
+            app.paths.repo_root.clone(),
+            task_id.to_string(),
+            run_id.to_string(),
+            round_id.to_string(),
+            attempt_id.to_string(),
+        )
+        .await
+        .map_err(|error| CommandErrorVm::new(error.code.to_string(), error.params))?
+        .ok_or_else(|| {
+            CommandErrorVm::new(
+                gold_band::scheduler::occurrence::ScheduledErrorCode::NotFound.to_string(),
+                serde_json::json!({
+                    "operation": "resume-attention",
+                    "taskId": task_id,
+                    "runId": run_id,
+                    "roundId": round_id,
+                    "attemptId": attempt_id,
+                }),
+            )
+        })
+        .map(Some)
 }
 
 fn open_path(path: &std::path::Path) -> Result<(), String> {
@@ -6593,6 +6677,108 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_attention_lookup_only_requires_coordinator_for_matching_occurrence() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let app = App::new(root);
+
+        assert!(
+            !scheduled_attention_requires_coordinator(
+                &app,
+                "task-1",
+                "run-1",
+                "round-1",
+                "attempt-1",
+            )
+            .unwrap()
+        );
+        assert!(!app.paths.scheduler_db_path().exists());
+
+        let database =
+            gold_band::scheduler::db::ScheduledTaskDatabase::open(app.paths.scheduler_db_path())
+                .unwrap();
+        let now = chrono::Utc::now();
+        let definition = gold_band::scheduler::ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "job-1",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::at(now + chrono::Duration::hours(1)),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        database
+            .create_job(&definition, Some(now + chrono::Duration::hours(1)))
+            .unwrap();
+        let occurrence = database
+            .create_or_get_occurrence_for_existing_job(
+                &app.paths.project_id,
+                definition.id(),
+                now,
+                gold_band::scheduler::occurrence::OccurrenceTriggerKind::Manual,
+            )
+            .unwrap()
+            .unwrap();
+        let owner_id = "owner-1";
+        database
+            .claim_occurrence(
+                &occurrence.id,
+                owner_id,
+                now,
+                now + chrono::Duration::minutes(5),
+            )
+            .unwrap();
+        database
+            .finish_occurrence(
+                &occurrence.id,
+                owner_id,
+                gold_band::scheduler::occurrence::OccurrenceStatus::AttentionRequired,
+                Some(gold_band::scheduler::occurrence::OccurrenceLinks {
+                    task_id: Some("task-1".to_string()),
+                    run_id: Some("run-1".to_string()),
+                    round_id: Some("round-1".to_string()),
+                    attempt_id: Some("attempt-1".to_string()),
+                }),
+                Some(gold_band::scheduler::occurrence::ScheduledError::new(
+                    gold_band::scheduler::occurrence::ScheduledErrorCode::UserInputRequired,
+                )),
+            )
+            .unwrap();
+
+        assert!(
+            scheduled_attention_requires_coordinator(
+                &app,
+                "task-1",
+                "run-1",
+                "round-1",
+                "attempt-1",
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn scheduled_attention_lookup_maps_database_failure_to_storage_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let app = App::new(root);
+        std::fs::create_dir_all(app.paths.scheduler_db_path()).unwrap();
+
+        let error = scheduled_attention_requires_coordinator(
+            &app,
+            "task-1",
+            "run-1",
+            "round-1",
+            "attempt-1",
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            gold_band::scheduler::occurrence::ScheduledErrorCode::StorageFailed
+        );
+    }
+
+    #[test]
     fn acp_session_update_serializes_lightweight_prompt_activity_and_terminal_clear() {
         let active = AcpSessionUpdatedEventVm {
             branch_id: None,
@@ -6730,7 +6916,6 @@ mod tests {
             read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
         assert_eq!(snapshot["status"], "cancelled");
         assert!(timeline_path.is_dir());
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

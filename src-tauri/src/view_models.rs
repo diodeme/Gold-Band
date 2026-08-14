@@ -7734,6 +7734,7 @@ mod tests {
     use camino::Utf8PathBuf;
     use gold_band::app::App;
     use serde_json::json;
+    use tempfile::tempdir;
 
     #[test]
     fn app_config_vm_exposes_workspace_layout_contract() {
@@ -8472,11 +8473,8 @@ mod tests {
 
     #[test]
     fn round_graph_connects_ai_dynamic_exit_to_next_workflow_node() {
-        let dir = std::env::temp_dir().join(format!(
-            "gold-band-dynamic-round-graph-test-{}",
-            std::process::id()
-        ));
-        let repo_root = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let directory = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
         let app = App::new(repo_root);
         seed_dynamic_round_graph_fixture(&app);
 
@@ -8517,8 +8515,6 @@ mod tests {
             dynamic_exit_sequence < accept_sequence,
             "AI-DYNAMIC exit should rank before the next workflow node"
         );
-
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

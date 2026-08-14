@@ -10,6 +10,7 @@ type SaveInput = Pick<
   ScheduledRuntimeSettingsVm,
   'keepAwakeEnabled' | 'completionNotificationsEnabled' | 'occurrenceRetentionDays'
 >;
+type SavePatch = Partial<SaveInput>;
 
 export function ScheduledRuntimeSettings() {
   const { t } = useTranslation();
@@ -18,30 +19,48 @@ export function ScheduledRuntimeSettings() {
     const cached = readScheduledRuntimeSettingsCache();
     return cached ? String(cached.occurrenceRetentionDays) : '';
   });
-  const retentionSynced = useRef(false);
+  const [retentionDirty, setRetentionDirty] = useState(false);
+  const [retentionError, setRetentionError] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
+  const settingsRef = useRef(settings);
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingSaveCountRef = useRef(0);
 
   // settings 首次到位后初始化保留天数输入框；后续后台刷新不覆盖用户编辑。
   useEffect(() => {
-    if (settings && !retentionSynced.current) {
+    settingsRef.current = settings;
+    if (settings && !retentionDirty) {
       setRetention(String(settings.occurrenceRetentionDays));
-      retentionSynced.current = true;
     }
-  }, [settings]);
+  }, [retentionDirty, settings]);
 
-  const save = async (next: SaveInput) => {
+  const save = (patch: SavePatch) => {
+    pendingSaveCountRef.current += 1;
     setSaving(true);
     setSaveError(false);
-    try {
-      const saved = await saveScheduledRuntimeSettings(next);
+    const operation = saveQueueRef.current.then(async () => {
+      const current = settingsRef.current;
+      if (!current) return;
+      const saved = await saveScheduledRuntimeSettings({
+        keepAwakeEnabled: patch.keepAwakeEnabled ?? current.keepAwakeEnabled,
+        completionNotificationsEnabled: patch.completionNotificationsEnabled ?? current.completionNotificationsEnabled,
+        occurrenceRetentionDays: patch.occurrenceRetentionDays ?? current.occurrenceRetentionDays,
+      });
+      settingsRef.current = saved;
       replace(saved);
-      setRetention(String(saved.occurrenceRetentionDays));
-    } catch {
-      setSaveError(true);
-    } finally {
-      setSaving(false);
-    }
+      if (patch.occurrenceRetentionDays !== undefined) {
+        setRetentionDirty(false);
+        setRetentionError(false);
+      }
+    });
+    saveQueueRef.current = operation.catch(() => undefined);
+    return operation
+      .catch(() => setSaveError(true))
+      .finally(() => {
+        pendingSaveCountRef.current -= 1;
+        if (pendingSaveCountRef.current === 0) setSaving(false);
+      });
   };
 
   if (!settings) {
@@ -70,11 +89,7 @@ export function ScheduledRuntimeSettings() {
           checked={settings.keepAwakeEnabled}
           disabled={saving}
           aria-label={t('scheduled.settings.keepAwake')}
-          onCheckedChange={(keepAwakeEnabled) => void save({
-            keepAwakeEnabled,
-            completionNotificationsEnabled: settings.completionNotificationsEnabled,
-            occurrenceRetentionDays: settings.occurrenceRetentionDays,
-          })}
+          onCheckedChange={(keepAwakeEnabled) => void save({ keepAwakeEnabled })}
         />
       </div>
       <div className="flex items-start justify-between gap-5 py-3">
@@ -86,11 +101,7 @@ export function ScheduledRuntimeSettings() {
           checked={settings.completionNotificationsEnabled}
           disabled={saving}
           aria-label={t('scheduled.settings.completionNotifications')}
-          onCheckedChange={(completionNotificationsEnabled) => void save({
-            keepAwakeEnabled: settings.keepAwakeEnabled,
-            completionNotificationsEnabled,
-            occurrenceRetentionDays: settings.occurrenceRetentionDays,
-          })}
+          onCheckedChange={(completionNotificationsEnabled) => void save({ completionNotificationsEnabled })}
         />
       </div>
       <div className="flex items-center justify-between gap-5 py-3">
@@ -98,29 +109,37 @@ export function ScheduledRuntimeSettings() {
           <span className="block text-sm font-medium">{t('scheduled.settings.retention')}</span>
           <span className="mt-1 block text-xs text-muted-foreground">{t('scheduled.settings.retentionDescription')}</span>
         </label>
-        <Input
-          id="scheduled-retention-days"
-          type="number"
-          min={1}
-          max={3650}
-          className="w-24"
-          value={retention}
-          disabled={saving}
-          onChange={(event) => setRetention(event.target.value)}
-          onBlur={() => {
-            const occurrenceRetentionDays = Number(retention);
-            if (!Number.isInteger(occurrenceRetentionDays) || occurrenceRetentionDays < 1 || occurrenceRetentionDays > 3650) {
-              setRetention(String(settings.occurrenceRetentionDays));
-              return;
-            }
-            if (occurrenceRetentionDays === settings.occurrenceRetentionDays) return;
-            void save({
-              keepAwakeEnabled: settings.keepAwakeEnabled,
-              completionNotificationsEnabled: settings.completionNotificationsEnabled,
-              occurrenceRetentionDays,
-            });
-          }}
-        />
+        <div className="flex flex-col items-end gap-1">
+          <Input
+            id="scheduled-retention-days"
+            type="number"
+            min={1}
+            max={3650}
+            aria-invalid={retentionError}
+            aria-describedby={retentionError ? 'scheduled-retention-error' : undefined}
+            className="w-24"
+            value={retention}
+            disabled={saving}
+            onChange={(event) => {
+              setRetention(event.target.value);
+              setRetentionDirty(true);
+              setRetentionError(false);
+            }}
+            onBlur={() => {
+              const occurrenceRetentionDays = Number(retention);
+              if (!Number.isInteger(occurrenceRetentionDays) || occurrenceRetentionDays < 1 || occurrenceRetentionDays > 3650) {
+                setRetentionError(true);
+                return;
+              }
+              if (occurrenceRetentionDays === settings.occurrenceRetentionDays) {
+                setRetentionDirty(false);
+                return;
+              }
+              void save({ occurrenceRetentionDays });
+            }}
+          />
+          {retentionError ? <span id="scheduled-retention-error" className="text-xs text-destructive">{t('scheduled.settings.retentionInvalid')}</span> : null}
+        </div>
       </div>
       {saveError ? <div className="py-2 text-xs text-destructive">{t('scheduled.settings.saveFailed')}</div> : null}
     </div>

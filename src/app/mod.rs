@@ -65,16 +65,20 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use self::ids::{generate_uuid, next_workflow_id, now_rfc3339_like, reserve_next_task_dir};
+pub use self::orchestrator::ManualCheckSubmissionLease;
 use self::orchestrator::{
     build_dynamic_prompt_bundle, dynamic_state_lock_for,
     launch_prepared_run_background as orchestrator_launch_prepared_run_background,
     pause_dynamic_leaf_runtime_state, pause_dynamic_leaf_runtime_state_if_active_execution,
-    prepare_run as orchestrator_prepare_run, run_continue as orchestrator_run_continue,
+    prepare_run as orchestrator_prepare_run,
+    reserve_manual_check_submission as orchestrator_reserve_manual_check_submission,
+    run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
     run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
     run_start_background as orchestrator_run_start_background,
     submit_manual_check as orchestrator_submit_manual_check,
     submit_manual_check_background as orchestrator_submit_manual_check_background,
+    validate_manual_check_submission as orchestrator_validate_manual_check_submission,
 };
 
 #[derive(Debug, Clone)]
@@ -776,6 +780,20 @@ pub struct App {
     pub lifecycle_bus: observability::RuntimeLifecycleBus,
     scheduled_occurrence_id: Option<String>,
     scheduled_task_context: Option<crate::provider::ScheduledTaskContextInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttemptRuntimePauseResult {
+    Converged,
+    Superseded,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AttemptRuntimePausePolicy<'a> {
+    CurrentAttempt,
+    ActiveExecution(&'a str),
+    ActiveAttemptWithoutExecution,
+    PausedManualCheck,
 }
 
 fn default_task_search_indexer() -> Arc<dyn Fn(&Utf8Path, &str) + Send + Sync> {
@@ -2810,7 +2828,13 @@ impl App {
         reason: PauseReason,
     ) -> Result<()> {
         self.pause_attempt_runtime_state_with_policy(
-            task_id, run_id, round_id, node_id, attempt_id, reason, false, None,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            reason,
+            AttemptRuntimePausePolicy::CurrentAttempt,
         )
         .map(|_| ())
     }
@@ -2825,7 +2849,7 @@ impl App {
         attempt_id: &str,
         execution_id: &str,
         reason: PauseReason,
-    ) -> Result<bool> {
+    ) -> Result<AttemptRuntimePauseResult> {
         self.pause_attempt_runtime_state_with_policy(
             task_id,
             run_id,
@@ -2833,8 +2857,49 @@ impl App {
             node_id,
             attempt_id,
             reason,
-            true,
-            Some(execution_id),
+            AttemptRuntimePausePolicy::ActiveExecution(execution_id),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pause_attempt_runtime_state_if_active_without_execution(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        reason: PauseReason,
+    ) -> Result<AttemptRuntimePauseResult> {
+        self.pause_attempt_runtime_state_with_policy(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            reason,
+            AttemptRuntimePausePolicy::ActiveAttemptWithoutExecution,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pause_attempt_runtime_state_if_paused_manual_check(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        reason: PauseReason,
+    ) -> Result<AttemptRuntimePauseResult> {
+        self.pause_attempt_runtime_state_with_policy(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            reason,
+            AttemptRuntimePausePolicy::PausedManualCheck,
         )
     }
 
@@ -2847,9 +2912,8 @@ impl App {
         node_id: &str,
         attempt_id: &str,
         reason: PauseReason,
-        require_active_attempt: bool,
-        expected_execution_id: Option<&str>,
-    ) -> Result<bool> {
+        policy: AttemptRuntimePausePolicy<'_>,
+    ) -> Result<AttemptRuntimePauseResult> {
         let state_lock =
             attempt_runtime_state_lock(self, task_id, run_id, round_id, node_id, attempt_id);
         let _guard = state_lock
@@ -2864,26 +2928,51 @@ impl App {
         } else {
             None
         };
-        if let Some(expected_execution_id) = expected_execution_id
+        let run_path = self.paths.run_file(task_id, run_id);
+        let mut run = if run_path.exists() {
+            Some(read_json::<RunState>(&run_path)?)
+        } else {
+            None
+        };
+        let locator_matches = run.as_ref().is_some_and(|run| {
+            run.current_round.as_deref() == Some(round_id)
+                && run.current_node.as_deref() == Some(node_id)
+                && run.current_attempt.as_deref() == Some(attempt_id)
+        });
+        let active_attempt = locator_matches
+            && run
+                .as_ref()
+                .is_some_and(|run| run.status == RunStatus::Running);
+        let paused_manual_check = locator_matches
+            && run
+                .as_ref()
+                .is_some_and(|run| run.status == RunStatus::Paused)
             && node
                 .as_ref()
-                .and_then(|node| node.runtime_execution_id.as_deref())
-                != Some(expected_execution_id)
-        {
-            return Ok(false);
-        }
-        let run_path = self.paths.run_file(task_id, run_id);
-        let mut active_attempt = false;
-        if run_path.exists() {
-            let mut run: RunState = read_json(&run_path)?;
-            active_attempt = run.status == RunStatus::Running
-                && run.current_round.as_deref() == Some(round_id)
-                && run.current_node.as_deref() == Some(node_id)
-                && run.current_attempt.as_deref() == Some(attempt_id);
-            if require_active_attempt && !active_attempt {
-                return Ok(false);
+                .is_some_and(|node| node.status == RunStatus::Paused && node.manual_check_pending);
+        let policy_matches = match policy {
+            AttemptRuntimePausePolicy::CurrentAttempt => true,
+            AttemptRuntimePausePolicy::ActiveExecution(expected_execution_id) => {
+                active_attempt
+                    && node
+                        .as_ref()
+                        .and_then(|node| node.runtime_execution_id.as_deref())
+                        == Some(expected_execution_id)
             }
-            if active_attempt {
+            AttemptRuntimePausePolicy::ActiveAttemptWithoutExecution => {
+                active_attempt
+                    && node
+                        .as_ref()
+                        .is_some_and(|node| node.runtime_execution_id.is_none())
+            }
+            AttemptRuntimePausePolicy::PausedManualCheck => paused_manual_check,
+        };
+        if !policy_matches {
+            return Ok(AttemptRuntimePauseResult::Superseded);
+        }
+
+        if let Some(run) = run.as_mut() {
+            if active_attempt || matches!(policy, AttemptRuntimePausePolicy::PausedManualCheck) {
                 run.status = RunStatus::Paused;
                 run.outcome = None;
                 run.pause_reason = Some(reason);
@@ -2891,8 +2980,6 @@ impl App {
                 validate_run_state(&run)?;
                 write_json(&run_path, &run)?;
             }
-        } else if require_active_attempt {
-            return Ok(false);
         }
 
         let round_path = self.paths.round_file(task_id, run_id, round_id);
@@ -2916,7 +3003,7 @@ impl App {
             }
         }
 
-        Ok(active_attempt)
+        Ok(AttemptRuntimePauseResult::Converged)
     }
 
     pub fn pause_dynamic_attempt_runtime_state(
@@ -3365,6 +3452,32 @@ impl App {
         )
     }
 
+    pub fn validate_manual_check_submission(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Result<()> {
+        orchestrator_validate_manual_check_submission(
+            self, task_id, run_id, round_id, node_id, attempt_id,
+        )
+    }
+
+    pub fn reserve_manual_check_submission(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Result<ManualCheckSubmissionLease> {
+        orchestrator_reserve_manual_check_submission(
+            self, task_id, run_id, round_id, node_id, attempt_id,
+        )
+    }
+
     pub fn submit_manual_check_background(
         &self,
         task_id: &str,
@@ -3373,9 +3486,10 @@ impl App {
         node_id: &str,
         attempt_id: &str,
         outcome: NodeOutcome,
+        lease: ManualCheckSubmissionLease,
     ) -> Result<RunState> {
         orchestrator_submit_manual_check_background(
-            self, task_id, run_id, round_id, node_id, attempt_id, outcome,
+            self, task_id, run_id, round_id, node_id, attempt_id, outcome, lease,
         )
     }
 
@@ -3806,9 +3920,9 @@ fn is_acp_session_active_status(status: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpLiveEventContext, AcpPromptLifecycleEvent, App, AutoTemplateStore, CreateTaskInput,
-        OwnedTaskDirectory, RuntimeLifecycleEvent, WorkflowTemplate, WorkflowTemplateStore,
-        next_auto_template_id,
+        AcpLiveEventContext, AcpPromptLifecycleEvent, App, AttemptRuntimePauseResult,
+        AutoTemplateStore, CreateTaskInput, OwnedTaskDirectory, RuntimeLifecycleEvent,
+        WorkflowTemplate, WorkflowTemplateStore, next_auto_template_id,
     };
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
@@ -3941,7 +4055,7 @@ mod tests {
         let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
         write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
 
-        assert!(
+        assert_eq!(
             app.pause_attempt_runtime_state_if_active_execution(
                 "task-001",
                 "run-001",
@@ -3951,7 +4065,8 @@ mod tests {
                 "execution-a",
                 PauseReason::RuntimeAbnormal,
             )
-            .unwrap()
+            .unwrap(),
+            AttemptRuntimePauseResult::Converged
         );
         let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
         assert_eq!(run.pause_reason, Some(PauseReason::RuntimeAbnormal));
@@ -3967,8 +4082,8 @@ mod tests {
         )
         .unwrap();
         write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-b"));
-        assert!(
-            !app.pause_attempt_runtime_state_if_active_execution(
+        assert_eq!(
+            app.pause_attempt_runtime_state_if_active_execution(
                 "task-001",
                 "run-001",
                 "round-001",
@@ -3977,7 +4092,8 @@ mod tests {
                 "execution-a",
                 PauseReason::RuntimeAbnormal,
             )
-            .unwrap()
+            .unwrap(),
+            AttemptRuntimePauseResult::Superseded
         );
         let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
         let node: NodeState = read_json(&app.paths.node_file(

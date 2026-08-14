@@ -307,7 +307,6 @@ export interface WorkspaceLayoutVm {
 }
 
 export interface FileWorkspaceLayoutVm {
-  preferredWidth: number;
   splitMinWidth: number;
   treeDefaultWidth: number;
   treeMinWidth: number;

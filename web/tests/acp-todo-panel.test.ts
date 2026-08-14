@@ -36,7 +36,8 @@ describe('ACP todo panel', () => {
 
     expect(html).toContain('rounded-t-2xl');
     expect(html).toContain('border-b-0');
-    expect(html).toContain('bg-muted/35');
+    expect(html).toContain('bg-card');
+    expect(html).not.toContain('bg-muted/35');
     expect(html).not.toContain('rotate-180');
   });
 

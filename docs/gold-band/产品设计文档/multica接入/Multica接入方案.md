@@ -382,7 +382,7 @@ multica.session-resume-failed   // 保留在码表但 M4-d 起不 emit（resume 
 `gold-band://multica-task-updated`、`gold-band://multica-runtime-status`。
 
 **channel config**（`configs/channels/*.json`，参考 metrics 四字段模式）：
-新增 `multicaBaseUrl`（API 地址，default 预填 `http://localhost:8080` 本地联调 / wb 预填企业 multica 地址）、`multicaAppUrl`（Web 前端地址，浏览器登录用，default 预填 `http://localhost:3000`）、`multicaEnabled` 默认开关（default/wb 均 `true`，零配置直连前提）。
+新增 `multicaBaseUrl`（API 地址，default 预填 `http://localhost:8080` 本地联调 / wb 预填 `http://maling.weoa.com:5005`，nginx 统一入口）、`multicaAppUrl`（Web 前端地址，浏览器登录用，default 预填 `http://localhost:3000` / wb 同 `http://maling.weoa.com:5005`，前后端同源）、`multicaEnabled` 默认开关（default/wb 均 `true`，零配置直连前提）。
 
 #### 3.2.6 登录、PAT 获取与 workspace 选择（首启链路）
 
@@ -1006,6 +1006,11 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **留（定点 allow）**：`SessionResumeFailed`（M4-d 保留码表、resume 改 silent fresh-fallback）；`RemoteTask.auth_token`（Option B 中介下不消费，订正失真注释）；`RemoteTask.prior_session_id`（parent_task_id 主路径）。
   - **错误码表订正**：删 `multica.workspace-empty`；`multica.session-resume-failed` 标注「保留码表但不 emit」。
   - **验证**：`cargo check` multica 零 warning（仅 main 既有 9 条非 multica）；`cargo test multica::` 83 过；tsc 零错；vitest 1124/1124。
+
+- [x] **M5-ar**（本轮）wb 渠道 multica 地址修正——默认端口 80 → nginx 统一入口 `:5005`（开发设计 §12.30）：
+  - **背景 / 根因**：跨机器部署连远程 multica（172.21.18.88，nginx 对外统一 `http://maling.weoa.com:5005`，前后端同源）。核查发现 `wb.json` 的 `multicaBaseUrl`/`multicaAppUrl` 仍是 `http://maling.weoa.com`（默认 80，过时）——渠道配置链路正确（json→build.rs 编译期 env→channel.rs），仅值滞后于服务端 nginx 端口；运行期不可改（connect 不收 URL、设置页区块已删、`save_multica_settings` 已删），须修正编译期值而非加运行期旁路。
+  - **方案（修正过时值）**：wb 渠道本属 maling 生态（appName MALING、updater/metrics/内置 MCP 均指向 maling.weoa.com），multica 地址同生态，直接把 `multicaBaseUrl`/`multicaAppUrl` 改为 `http://maling.weoa.com:5005`（前后端同入口，消除前端 API 地址硬编码 localhost 隐患、无 CORS）；`browser_login` 的 `cli_callback` 仍走 Gold-Band 本机 127.0.0.1，nginx 透传 multica 后端登录成功的 302，跨机器 connect 不受影响（§3.2.6）。服务端 nginx 入口已由用户确认就绪。
+  - **验证**：`GOLD_BAND_RELEASE_CHANNEL=wb cargo check -p gold-band-desktop` 绿——build.rs 正确解析 wb.json 新值、编译期 env 生效 `maling.weoa.com:5005`；default 渠道无回归。纯渠道配置值修正，无运行时逻辑变化、无性能影响。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

@@ -380,8 +380,8 @@ channel 字段是**编译期常量**（option_env!，参考 metrics 字段 chann
 
 | 字段 | DesktopChannelConfig（channel.rs:4-22） | default.json | wb.json |
 |---|---|---|---|
-| `multica_base_url` | `&'static str` | `http://localhost:8080` | 预填企业 multica API 地址 |
-| `multica_app_url` | `&'static str` | `http://localhost:3000` | 预填企业 multica Web 地址（浏览器登录页） |
+| `multica_base_url` | `&'static str` | `http://localhost:8080` | `http://maling.weoa.com:5005`（nginx 统一入口，见 §12.30） |
+| `multica_app_url` | `&'static str` | `http://localhost:3000` | `http://maling.weoa.com:5005`（前后端同源同入口） |
 | `multica_enabled` | `bool` | `true` | `true` |
 | `multica_toggle_locked` | `bool` | `false` | `true` |
 
@@ -1833,6 +1833,25 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 **验证**：`cargo check -p gold-band-desktop` 绿——**multica 零 warning**（仅 main 既有 9 条非 multica dead-code：`scheduled_task_vms_from_sources`/`task_uuid`/`title`/`task_has_active_execution*`/`provider_diagnostic_snapshots`/`refresh_agent_command_catalog_for_workspace`/`NodeMetricBatch` 可见性/`expected_windows_toast_auto_dismiss_seconds`/`normalize_multica_base_url` 未用 import 等，非本次引入）；`cargo test multica::` **83 测全过、0 失败**；`tsc -p web/tsconfig.build.json` 零错；vitest **1124/1124 全过**。
 
 **文件**：`src-tauri/src/multica/{error,state,bridge,client,commands,vm}.rs`（删 allow + retire + 定点 allow + 注释订正）、`web/src/i18n.ts`（删 workspace-empty + pin-session-failed zh/en）。
+
+---
+
+### 12.30 改动二十八：wb 渠道 multica 地址修正——默认端口 80 → nginx 统一入口 `:5005`（M5-ar，2026-08-13）
+
+**背景（跨机器部署）**：将 MALING 客户端打包到非开发机运行、连远程 multica（部署在 172.21.18.88，经 nginx 统一转发，对外入口 `http://maling.weoa.com:5005`，前端 `/login` 与后端 `/api/*` 同源同端口）。核查发现 `configs/channels/wb.json` 的 `multicaBaseUrl`/`multicaAppUrl` 仍是 `http://maling.weoa.com`（默认 80 端口，过时）——与服务端实际 nginx 入口不符，连不上。
+
+**根因（好设计、值过时）**：渠道配置链路本身正确（`configs/channels/wb.json` → `build.rs` 编译期 env → `channel.rs option_env!` → `config.rs multica_base_url/app_url`，且 `build.rs:146-157` 支持 env 覆盖 json），仅 multica 地址值滞后于服务端 nginx 端口调整。运行期不可改（`connect_multica` 不收 URL、设置页 multica 区块已移除、`save_multica_settings` 已删，见 §12.22/接入方案 §3.2.5），故必须修正编译期配置值而非加运行期旁路。
+
+**方案（修正过时值，非补丁）**：wb 渠道本就是 maling 生态（appName MALING、updater/metrics/内置 MCP 均指向 maling.weoa.com），multica 地址属同一生态，直接把过时默认端口修正为实际 nginx 入口：
+- `configs/channels/wb.json`：`multicaBaseUrl`/`multicaAppUrl` 由 `http://maling.weoa.com` → `http://maling.weoa.com:5005`。
+- 前后端同入口：`base_url`（API 根，client 拼 `/api/*`）与 `app_url`（浏览器登录页 `<app_url>/login`）同源，顺带消除「前端页面 API 地址硬编码 localhost」隐患（同源直接命中，无 CORS）。
+- `browser_login` 的 `cli_callback` 仍是 Gold-Band 本机 `127.0.0.1:<port>`，nginx 只透传 multica 后端登录成功的 302，跨机器 connect 不受影响（见接入方案 §3.2.6）。
+
+**部署前置（服务端，非本项目代码）**：multica 服务端经 nginx 对外统一 `maling.weoa.com:5005`，已由用户确认就绪；Gold-Band 侧无需关心 server 内部 5000/5050 监听细节。
+
+**验证**：`GOLD_BAND_RELEASE_CHANNEL=wb cargo check -p gold-band-desktop` 绿——build.rs 正确解析 wb.json 新值，编译期 env `GOLD_BAND_MULTICA_BASE_URL/APP_URL=http://maling.weoa.com:5005` 生效；default 渠道 `cargo check` 无回归。纯渠道配置值修正，无运行时逻辑变化，无性能影响（仅连接地址常量）。
+
+**文件**：`configs/channels/wb.json`（multica URL +端口 5005）；`开发设计.md` §2.2.4 表格 wb 列（泛描述 → 具体值）；`接入方案.md` §3.2.5 channel config 段（同）。
 
 ---
 

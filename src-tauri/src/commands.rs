@@ -2475,6 +2475,44 @@ pub async fn continue_conversation_runtime(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn recover_conversation_runtime(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    expected_revision: u64,
+) -> CommandResult<ConversationPromptSubmitVm> {
+    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(task_id, run_id, round_id, node_id, attempt_id, None, None);
+    let app = app.clone_for_background();
+    spawn_blocking_command(move || {
+        let run = app
+            .run_recover_completed_background(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+                expected_revision,
+            )
+            .map(run_summary_vm)
+            .map_err(command_error)?;
+        Ok(ConversationPromptSubmitVm {
+            kind: "runtime-recovery-started".to_string(),
+            session: None,
+            run: Some(run),
+            lifecycle: runtime_continue_started_lifecycle_for_locator(&app, &locator),
+        })
+    })
+    .await
+}
+
+#[tauri::command]
 pub fn pause_run(
     state: State<'_, DesktopState>,
     task_id: String,

@@ -243,18 +243,17 @@ impl RunState {
         phase: RuntimeExecutionPhase,
         locator: Option<RuntimeAttemptLocator>,
         updated_at: impl Into<String>,
-    ) {
+    ) -> std::result::Result<(), RuntimeLifecycleTransitionError> {
         RuntimeLifecycleStore::transition(self, phase, locator, updated_at)
-            .expect("Runtime execution transition must follow the domain state machine");
     }
 
     pub fn transition_current_execution(
         &mut self,
         phase: RuntimeExecutionPhase,
         updated_at: impl Into<String>,
-    ) {
+    ) -> std::result::Result<(), RuntimeLifecycleTransitionError> {
         let locator = self.current_execution_locator();
-        self.transition_execution(phase, locator, updated_at);
+        self.transition_execution(phase, locator, updated_at)
     }
 
     /// Deterministic one-time migration for run.json written before execution

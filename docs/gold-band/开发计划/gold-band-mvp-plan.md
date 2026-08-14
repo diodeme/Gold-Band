@@ -1034,3 +1034,13 @@ attempt-001/
 - 活动摘要与 composer/compact 用量栏复用同一个 CSS 边框圆环组件，统一 900ms transform 动画、`will-change` 与 reduced-motion 行为，不再让高频更新中的 Lucide SVG stroke spinner 参与重绘。
 - 同一 `activityStartSeq` 的活动摘要采用单调 `live -> archived` 展示生命周期。停止期间一旦归档，迟到的 active snapshot 不能把它重新投影为“正在操作”；后续新活动通过新的 start sequence 建立新 identity。
 - 回归验收覆盖隐藏段展示投影、CSS spinner 契约、活动摘要在 `running -> cancelled -> stale running` 序列中不复活，以及既有 Activity 披露/详情交互；聚焦 46 项 Web 测试和 Web 生产构建通过。该改动不新增 I/O、定时器、缓存或历史扫描，每次稳定合并仅作常数级 lifecycle 判断，渲染范围保持在当前活动行。
+
+---
+
+## 2026-08-14：完成节点转换中断恢复
+
+- 根因修复：provider 回调已经把 durable execution 推进到 `finalizing-artifact`，orchestrator 随后却用旧的 `starting-node` 内存快照覆盖并尝试非法转换。节点边界持久化现按相同 execution identity 合并更高 durable revision，provider 返回后也刷新权威 phase；生命周期转换错误改为结构化返回，不再以 panic 终止后台推进。正常完成继续自动执行现有 control decision。
+- 恢复契约：Workflow/AUTO 在 `process-interrupted / runtime-abnormal` 且当前节点为 `completed/success` 时投影独立的 `recover-completed-attempt` 能力。composer 在原“继续工作流”位置显示“恢复工作流”；点击后不重跑当前 provider，直接消费既有验证结果并进入下一节点或 `$end`。未完成 attempt 保持 `continue-current-attempt`；manual check、repair、验证失败和 ErrorBlocked 语义不变。
+- 并发与幂等：恢复 command 必须携带 execution revision，并在 attempt 状态短锁内校验完整 locator、完成结果和 manual-check 边界，再复用 per-run continue lease claim 新 execution generation。双击、迟到 revision 或已推进状态均拒绝重复执行。
+- 性能与复杂度：复用现有 workflow decision、attempt lock、lease 和状态模型，不新增抽象层、依赖、轮询、缓存或 repair checkpoint。节点边界仅增加常数次小型 JSON I/O，锁不跨 provider turn；数据规模和渲染范围不变，无需额外 benchmark。
+- 回归验收：核心单测固定 durable phase 单调合并、completed recovery 到 `$end` 不调用 provider、重复/过期请求拒绝；桌面 VM 测试固定两种互斥 continue kind；Web 生产构建与 composer 实际交互验证固定恢复按钮文案、位置和命令路由。

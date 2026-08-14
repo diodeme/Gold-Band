@@ -199,6 +199,7 @@ import {
   respondAcpPermission,
   respondElicitation,
   continueConversationRuntime,
+  recoverConversationRuntime,
   submitConversationPrompt,
   updateConversationQueuedPrompt,
   useConversationQueuedPrompt,
@@ -1296,7 +1297,8 @@ export function ACPChatDialog(
   const showManualCheckActions = manualCheckPending && !manualCheckResolved;
   const localLifecycle = localRuntimeLifecycle ?? runtimeComposerContext?.lifecycle;
   const showRuntimeContinueAction = Boolean(
-    localLifecycle?.continueKind === "action"
+    localLifecycle?.continueKind
+      && (localLifecycle.continueKind !== 'recover-completed-attempt' || localLifecycle.runtime.revision != null)
       && localLifecycle.runtime.continuable
       && !localLifecycle.runtime.active
       && localLifecycle.acp.liveTurnActivity === "idle",
@@ -3027,16 +3029,31 @@ export function ACPChatDialog(
     setRuntimeContinueError(null);
     setRuntimeContinueSubmitting(true);
     try {
-      const result = await continueConversationRuntime(
-        projectId,
-        taskId,
-        runId,
-        roundId,
-        nodeId,
-        attemptId,
-        outerNodeId,
-        outerAttemptId,
-      );
+      const recoveryRevision = localLifecycle?.runtime.revision;
+      let result;
+      if (localLifecycle?.continueKind === 'recover-completed-attempt') {
+        if (recoveryRevision == null) return;
+        result = await recoverConversationRuntime(
+            projectId,
+            taskId,
+            runId,
+            roundId,
+            nodeId,
+            attemptId,
+            recoveryRevision,
+          );
+      } else {
+        result = await continueConversationRuntime(
+            projectId,
+            taskId,
+            runId,
+            roundId,
+            nodeId,
+            attemptId,
+            outerNodeId,
+            outerAttemptId,
+          );
+      }
       if (result.lifecycle) {
         setLocalRuntimeLifecycle((current) =>
           mergeConversationAttemptLifecycle(current, result.lifecycle!),
@@ -3406,7 +3423,7 @@ export function ACPChatDialog(
                 ) : null}
                 {runtimeContinueError ? (
                   <AcpErrorBanner
-                    title={t("acp.continueWorkflowFailed")}
+                    title={t(localLifecycle?.continueKind === 'recover-completed-attempt' ? "acp.recoverWorkflowFailed" : "acp.continueWorkflowFailed")}
                     reason={runtimeContinueError}
                   />
                 ) : null}
@@ -3549,6 +3566,7 @@ export function ACPChatDialog(
                 canSubmit={canSubmitPrompt && !queueSubmitPending}
                 sendButtonBusy={composerState.submitTarget === "queue-prompt" ? queueSubmitPending : sendButtonBusy}
                 showRuntimeContinue={showRuntimeContinueAction}
+                runtimeContinueKind={localLifecycle?.continueKind ?? null}
                 runtimeContinueSubmitting={runtimeContinueSubmitting}
                 onRuntimeContinue={continueRuntime}
                 configBar={(

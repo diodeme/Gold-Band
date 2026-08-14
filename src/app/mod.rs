@@ -74,6 +74,7 @@ use self::orchestrator::{
     pause_dynamic_leaf_runtime_state, pause_dynamic_leaf_runtime_state_if_active_execution,
     prepare_run as orchestrator_prepare_run, run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
+    run_recover_completed_background as orchestrator_run_recover_completed_background,
     run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
     run_start_background as orchestrator_run_start_background,
     submit_manual_check as orchestrator_submit_manual_check,
@@ -819,6 +820,16 @@ pub fn is_run_continuable(run: &RunState) -> bool {
         && run.current_attempt.is_some()
 }
 
+pub fn is_completed_attempt_recoverable(run: &RunState, node: &NodeState) -> bool {
+    is_run_continuable(run)
+        && run.current_round.as_deref() == Some(node.round_id.as_str())
+        && run.current_node.as_deref() == Some(node.node_id.as_str())
+        && run.current_attempt.as_deref() == Some(node.attempt_id.as_str())
+        && node.status == RunStatus::Completed
+        && node.outcome == Some(NodeOutcome::Success)
+        && !node.manual_check_pending
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 struct ProfileUsageCounts {
     template_count: usize,
@@ -1082,7 +1093,7 @@ impl App {
             phase
         };
         run.updated_at = now_rfc3339_like();
-        run.transition_execution(phase, Some(locator), run.updated_at.clone());
+        run.transition_execution(phase, Some(locator), run.updated_at.clone())?;
         validate_run_state(&run)?;
         write_json(&self.paths.run_file(task_id, run_id), &run)?;
         Ok(run)
@@ -2839,7 +2850,7 @@ impl App {
             run.outcome = None;
             run.pause_reason = Some(reason);
             run.updated_at = now.clone();
-            run.transition_current_execution(RuntimeExecutionPhase::Paused, now.clone());
+            run.transition_current_execution(RuntimeExecutionPhase::Paused, now.clone())?;
             validate_run_state(&run)?;
             write_json(&self.paths.run_file(task_id, run_id), &run)?;
 
@@ -2959,7 +2970,7 @@ impl App {
                 run.outcome = None;
                 run.pause_reason = Some(reason);
                 run.updated_at = now.clone();
-                run.transition_current_execution(RuntimeExecutionPhase::Paused, now.clone());
+                run.transition_current_execution(RuntimeExecutionPhase::Paused, now.clone())?;
                 validate_run_state(&run)?;
                 write_json(&run_path, &run)?;
             }
@@ -3394,6 +3405,27 @@ impl App {
             attachment_paths,
             model_override,
             permission_mode_override,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_recover_completed_background(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        expected_revision: u64,
+    ) -> Result<RunState> {
+        orchestrator_run_recover_completed_background(
+            self,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            expected_revision,
         )
     }
 
@@ -4090,7 +4122,7 @@ mod tests {
             !super::state_access::persist_runtime_state_if_execution_current(
                 &app,
                 "task-001",
-                &stale_run,
+                &mut stale_run,
                 &stale_round,
                 &stale_node,
             )
@@ -4115,6 +4147,53 @@ mod tests {
         assert_eq!(durable_run.execution.revision, 2);
         assert_eq!(durable_node.status, RunStatus::Paused);
         assert_eq!(durable_node.runtime_execution_id, None);
+    }
+
+    #[test]
+    fn node_completion_preserves_newer_durable_execution_phase() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        let mut stale_run = app.run_status("task-001", "run-001").unwrap();
+        let round: RoundState =
+            read_json(&app.paths.round_file("task-001", "run-001", "round-001")).unwrap();
+        let mut node: NodeState = read_json(&app.paths.node_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+        ))
+        .unwrap();
+        let mut durable_run = stale_run.clone();
+        durable_run
+            .transition_current_execution(
+                RuntimeExecutionPhase::FinalizingArtifact,
+                "2026-08-10T00:00:02Z",
+            )
+            .unwrap();
+        write_json(&app.paths.run_file("task-001", "run-001"), &durable_run).unwrap();
+        node.status = RunStatus::Completed;
+        node.outcome = Some(NodeOutcome::Success);
+        node.finished_at = Some("2026-08-10T00:00:03Z".to_string());
+
+        assert!(
+            super::state_access::persist_runtime_state_if_execution_current(
+                &app,
+                "task-001",
+                &mut stale_run,
+                &round,
+                &node,
+            )
+            .unwrap()
+        );
+
+        let persisted: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(
+            persisted.execution.phase,
+            RuntimeExecutionPhase::FinalizingArtifact
+        );
+        assert_eq!(persisted.execution.revision, durable_run.execution.revision);
     }
 
     #[test]

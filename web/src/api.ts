@@ -160,6 +160,10 @@ export function continueConversationRuntime(projectId: string | null | undefined
   return getRuntimeApi().continueConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }
 
+export function recoverConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number) {
+  return getRuntimeApi().recoverConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision);
+}
+
 export function pauseRun(taskId: string, runId: string, projectId?: string | null) {
   return getRuntimeApi().pauseRun(taskId, runId, projectId);
 }

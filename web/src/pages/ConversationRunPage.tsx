@@ -216,28 +216,34 @@ export function ConversationRunPage({
   const isDirect = run.runMode === 'direct';
   const selectedLeaf = findSelectedLeaf(run);
   const selectedSessionKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
+  const selectedRoundId = selectedLeaf?.roundId ?? null;
+  const selectedNodeId = selectedLeaf?.nodeId ?? null;
+  const selectedAttemptId = selectedLeaf?.attemptId ?? null;
+  const selectedOuterNodeId = selectedLeaf?.outerNodeId ?? null;
+  const selectedOuterAttemptId = selectedLeaf?.outerAttemptId ?? null;
+  const selectedRuntimeCode = selectedLeaf?.runtimeDisplay?.code ?? null;
   const showLaunchingSession = isRunning && !selectedLeaf;
 
   const conversationDirectoryEntry = useMemo<ConversationDirectoryWorkspaceEntry | null>(() => {
-    if (!workspace.scopeKey || !selectedLeaf) return null;
+    if (!workspace.scopeKey || !selectedRoundId || !selectedNodeId || !selectedAttemptId) return null;
     return {
       kind: 'conversation-directory',
       scopeKey: workspace.scopeKey,
       title: t('workspace.runDirectory'),
-      description: selectedLeaf.runtimeDisplay?.code ?? null,
+      description: selectedRuntimeCode,
       attention: false,
       locator: {
         projectId: run.projectId,
         taskId: run.taskId,
         runId: run.runId,
-        roundId: selectedLeaf.roundId,
-        nodeId: selectedLeaf.nodeId,
-        attemptId: selectedLeaf.attemptId,
-        outerNodeId: selectedLeaf.outerNodeId,
-        outerAttemptId: selectedLeaf.outerAttemptId,
+        roundId: selectedRoundId,
+        nodeId: selectedNodeId,
+        attemptId: selectedAttemptId,
+        outerNodeId: selectedOuterNodeId,
+        outerAttemptId: selectedOuterAttemptId,
       },
     };
-  }, [run.projectId, run.runId, run.taskId, selectedLeaf, t, workspace.scopeKey]);
+  }, [run.projectId, run.runId, run.taskId, selectedAttemptId, selectedNodeId, selectedOuterAttemptId, selectedOuterNodeId, selectedRoundId, selectedRuntimeCode, t, workspace.scopeKey]);
 
   useEffect(() => {
     workspace.setConversationDirectoryEntry(conversationDirectoryEntry);

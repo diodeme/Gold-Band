@@ -208,4 +208,50 @@ describe('conversation directory responsive tree lifecycle', () => {
       await act(async () => root.unmount());
     }
   });
+
+  it('keeps an open directory context menu mounted across unrelated parent updates', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const Harness = ({ revision }: { revision: number }) => (
+      <div data-parent-revision={revision}>
+        <RightWorkspaceProvider initialWidth={397}>
+          <ConversationDirectoryWorkspacePanel resource={resource} layout={layout} />
+        </RightWorkspaceProvider>
+      </div>
+    );
+
+    try {
+      await act(async () => {
+        root.render(<Harness revision={1} />);
+      });
+      await act(async () => { await Promise.resolve(); });
+
+      const rowBefore = [...container.querySelectorAll('button')]
+        .find((button) => button.textContent?.includes(artifact.name));
+      expect(rowBefore).toBeDefined();
+      await act(async () => {
+        rowBefore?.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          clientX: 12,
+          clientY: 12,
+        }));
+      });
+      const menuBefore = document.querySelector('[data-slot="context-menu-content"]');
+      expect(menuBefore).not.toBeNull();
+
+      await act(async () => {
+        root.render(<Harness revision={2} />);
+      });
+
+      const rowAfter = [...container.querySelectorAll('button')]
+        .find((button) => button.textContent?.includes(artifact.name));
+      expect(rowAfter).toBe(rowBefore);
+      expect(document.querySelector('[data-slot="context-menu-content"]')).toBe(menuBefore);
+      expect(apiMocks.listConversationDirectory).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 });

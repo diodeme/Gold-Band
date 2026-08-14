@@ -8,6 +8,40 @@ use crate::storage::{read_json, write_json};
 use super::App;
 use super::attempt_runtime_state_lock;
 
+pub(crate) fn refresh_runtime_execution_if_current(
+    app: &App,
+    task_id: &str,
+    run: &mut RunState,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    expected_execution_id: Option<&str>,
+) -> Result<bool> {
+    let state_lock =
+        attempt_runtime_state_lock(app, task_id, &run.id, round_id, node_id, attempt_id);
+    let _guard = state_lock
+        .lock()
+        .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+    let durable_run: RunState = read_json(&app.paths.run_file(task_id, &run.id))?;
+    let durable_node: NodeState = read_json(
+        &app.paths
+            .node_file(task_id, &run.id, round_id, node_id, attempt_id),
+    )?;
+    if durable_run.status != crate::domain::RunStatus::Running
+        || durable_run.current_round.as_deref() != Some(round_id)
+        || durable_run.current_node.as_deref() != Some(node_id)
+        || durable_run.current_attempt.as_deref() != Some(attempt_id)
+        || durable_node.runtime_execution_id.as_deref() != expected_execution_id
+    {
+        return Ok(false);
+    }
+    if durable_run.execution.revision > run.execution.revision {
+        run.execution = durable_run.execution;
+        run.updated_at = durable_run.updated_at;
+    }
+    Ok(true)
+}
+
 pub(crate) fn current_attempt_state(
     app: &App,
     task_id: &str,
@@ -83,7 +117,7 @@ pub(crate) fn persist_runtime_state(
 pub(crate) fn persist_runtime_state_if_execution_current(
     app: &App,
     task_id: &str,
-    run: &RunState,
+    run: &mut RunState,
     round: &RoundState,
     node: &NodeState,
 ) -> Result<bool> {
@@ -108,6 +142,22 @@ pub(crate) fn persist_runtime_state_if_execution_current(
     let current: NodeState = read_json(&node_path)?;
     if current.runtime_execution_id.as_deref() != Some(execution_id) {
         return Ok(false);
+    }
+    let durable_run: RunState = read_json(&app.paths.run_file(task_id, &run.id))?;
+    if durable_run.status != crate::domain::RunStatus::Running
+        || durable_run.current_round != run.current_round
+        || durable_run.current_node != run.current_node
+        || durable_run.current_attempt != run.current_attempt
+        || durable_run.execution.locator != run.execution.locator
+    {
+        return Ok(false);
+    }
+    // Provider callbacks advance the authoritative durable execution phase.
+    // Preserve that monotonic phase/revision when the orchestrator commits the
+    // node result instead of overwriting it with its older in-memory snapshot.
+    if durable_run.execution.revision > run.execution.revision {
+        run.execution = durable_run.execution;
+        run.updated_at = durable_run.updated_at;
     }
     persist_runtime_state(app, task_id, run, round, node)?;
     Ok(true)

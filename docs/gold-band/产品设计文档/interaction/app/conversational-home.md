@@ -108,6 +108,15 @@
 ### 首次使用引导
 - 首次进入时若运行模式配置不完整，优先引导配置运行模式
 
+## 工作流中断与恢复
+
+- 正常节点完成后由 Runtime 自动消费该节点现有的验证结果并推进控制决策；无 artifact 的节点继续按其验证类型走既有结果读取，不要求补造产物。
+- 未完成节点因 `process-interrupted / runtime-abnormal` 暂停时，composer 操作区显示“继续工作流”，恢复当前 attempt 与 ACP session 的 Runtime 控制。
+- 当前节点已经 `completed/success`、但节点完成到工作流转换之间发生中断时，在同一互斥位置显示“恢复工作流”。该操作直接从已持久化的完成结果执行下一步控制决策，不重新调用当前节点 provider；若决策为 `$end` 则完成 run，否则进入下一节点。
+- “继续工作流”与“恢复工作流”语义和后端入口独立，不同时展示。manual check、artifact repair、验证失败和 `ErrorBlocked` 继续使用各自既有流程，不进入完成节点恢复分支。
+- Runtime execution 的 durable revision 是权威事实。provider 回调与 orchestrator 在节点边界写入时必须按同一 execution identity 单调合并 revision，旧内存快照不得覆盖更新的 phase。恢复请求携带 revision，并在 attempt 短锁与 per-run lease 内校验当前 locator，保证双击、迟到请求和并发状态变化不会重复推进。
+- 性能边界：正常完成和显式恢复只增加节点边界常数次小型状态 JSON 读取/写入，不新增轮询、历史扫描、缓存、队列或依赖；锁范围只覆盖当前 attempt 的校验与 claim，不跨下一节点执行。
+
 ## 侧边栏
 
 ### 结构

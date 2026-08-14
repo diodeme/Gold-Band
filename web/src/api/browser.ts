@@ -1078,6 +1078,9 @@ export const browserApi: RuntimeApi = {
   continueConversationRuntime(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve({ kind: 'runtime-continue-started', session: null, run: null, lifecycle: null });
   },
+  recoverConversationRuntime(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _expectedRevision) {
+    return Promise.reject(new Error('Browser preview does not execute workflow recovery.'));
+  },
   pauseRun(taskId: string, runId: string, _projectId?: string | null) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId, status: 'paused', pauseReason: 'process-interrupted', resumable: true });
   },

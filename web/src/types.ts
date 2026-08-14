@@ -2099,7 +2099,7 @@ export interface ConversationAttemptLifecycleVm {
   acp: ConversationAcpFacetVm;
   displayStatus: string;
   runtimeDisplay: RuntimeDisplayVm;
-  continueKind?: 'action' | null;
+  continueKind?: 'continue-current-attempt' | 'recover-completed-attempt' | null;
   composer: ConversationComposerVm;
   promptQueue?: ConversationPromptQueueVm | null;
 }

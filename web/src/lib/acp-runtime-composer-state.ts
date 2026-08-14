@@ -228,7 +228,7 @@ export function shouldKeepLocalRuntimeLifecycleOverride(
   if (incoming.composer.mode === 'runtime-error') return false;
   return (
     incoming.runtime.phase === 'paused' &&
-    incoming.continueKind === 'action' &&
+    Boolean(incoming.continueKind) &&
     incoming.composer.mode === 'normal'
   );
 }

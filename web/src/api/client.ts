@@ -162,7 +162,7 @@ export interface ScheduledOccurrenceUpdatedEventVm {
 }
 
 export interface ConversationPromptSubmitVm {
-  kind: 'acp-session' | 'runtime-continue-started' | 'queued' | 'rejected' | string;
+  kind: 'acp-session' | 'runtime-continue-started' | 'runtime-recovery-started' | 'queued' | 'rejected' | string;
   session?: AcpSessionVm | null;
   run?: RunSummaryVm | null;
   lifecycle?: ConversationAttemptLifecycleVm | null;
@@ -253,6 +253,7 @@ export interface RuntimeApi {
   startRun(taskId: string): Promise<RunSummaryVm>;
   continueRun(projectId: string | null | undefined, taskId: string, runId: string): Promise<RunSummaryVm>;
   continueConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptSubmitVm>;
+  recoverConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number): Promise<ConversationPromptSubmitVm>;
   pauseRun(taskId: string, runId: string, projectId?: string | null): Promise<RunSummaryVm>;
   stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ActiveSessionStopVm>;
   submitManualCheck(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure'): Promise<RunSummaryVm>;

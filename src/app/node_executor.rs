@@ -776,7 +776,7 @@ pub(crate) fn execute_ai_node(
             return Ok(());
         }
         durable_run.updated_at = super::ids::now_rfc3339_like();
-        durable_run.transition_current_execution(phase, durable_run.updated_at.clone());
+        durable_run.transition_current_execution(phase, durable_run.updated_at.clone())?;
         crate::runtime::validate_run_state(&durable_run)?;
         write_json(&run_path, &durable_run)
     };

@@ -1732,20 +1732,27 @@ fn is_runtime_continue_pause_reason(pause_reason: Option<&str>) -> bool {
 
 fn runtime_continue_kind(
     runtime_status: &str,
+    runtime_outcome: Option<&str>,
     pause_reason: Option<&str>,
     runtime_resumable: bool,
     manual_check_pending: bool,
     is_orchestrated: bool,
 ) -> Option<String> {
-    if !is_orchestrated
-        || manual_check_pending
-        || !runtime_resumable
-        || normalize_lifecycle_code(runtime_status) != "paused"
-    {
+    if !is_orchestrated || manual_check_pending || !runtime_resumable {
         return None;
     }
-    match pause_reason.map(normalize_lifecycle_code).as_deref() {
-        Some("process-interrupted" | "runtime-abnormal") => Some("action".to_string()),
+    if !matches!(
+        pause_reason.map(normalize_lifecycle_code).as_deref(),
+        Some("process-interrupted" | "runtime-abnormal")
+    ) {
+        return None;
+    }
+    match (
+        normalize_lifecycle_code(runtime_status).as_str(),
+        runtime_outcome.map(normalize_lifecycle_code).as_deref(),
+    ) {
+        ("paused", None) => Some("continue-current-attempt".to_string()),
+        ("completed", Some("success")) => Some("recover-completed-attempt".to_string()),
         _ => None,
     }
 }
@@ -1844,7 +1851,7 @@ fn composer_for_lifecycle(
         "stopping"
     } else if runtime_active || acp_active {
         "runtime-active"
-    } else if continue_kind == Some("action") {
+    } else if continue_kind.is_some() {
         "normal"
     } else if runtime_display.blocking_error {
         "runtime-error"
@@ -2004,6 +2011,7 @@ fn derive_conversation_attempt_lifecycle_with_facets(
     );
     let continue_kind = runtime_continue_kind(
         runtime_status,
+        runtime_outcome,
         pause_reason,
         runtime_resumable,
         manual_check_pending,
@@ -4210,12 +4218,37 @@ mod tests {
         assert_eq!(lifecycle.display_status, "paused");
         assert_eq!(lifecycle.runtime_display.tone, "warning");
         assert_eq!(lifecycle.runtime_display.icon, "pause");
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
+        assert_eq!(
+            lifecycle.continue_kind.as_deref(),
+            Some("continue-current-attempt")
+        );
         assert!(lifecycle.runtime.continuable);
         assert_eq!(lifecycle.runtime.phase, "paused");
         assert_eq!(lifecycle.composer.mode, "normal");
         assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
         assert!(!lifecycle.composer.lock_input);
+    }
+
+    #[test]
+    fn interrupted_completed_attempt_has_recovery_action() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("completed"),
+            None,
+            "completed",
+            Some("success"),
+            true,
+            Some("process-interrupted"),
+            true,
+            false,
+            true,
+        );
+
+        assert_eq!(
+            lifecycle.continue_kind.as_deref(),
+            Some("recover-completed-attempt")
+        );
+        assert!(lifecycle.runtime.continuable);
+        assert_eq!(lifecycle.composer.mode, "normal");
     }
 
     #[test]
@@ -4255,7 +4288,10 @@ mod tests {
         );
 
         assert_eq!(lifecycle.display_status, "paused");
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
+        assert_eq!(
+            lifecycle.continue_kind.as_deref(),
+            Some("continue-current-attempt")
+        );
         assert!(lifecycle.runtime.continuable);
         assert_eq!(
             lifecycle.runtime.pause_reason.as_deref(),
@@ -4390,7 +4426,10 @@ mod tests {
             lifecycle.runtime.pause_reason.as_deref(),
             Some("process-interrupted")
         );
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
+        assert_eq!(
+            lifecycle.continue_kind.as_deref(),
+            Some("continue-current-attempt")
+        );
         assert_eq!(lifecycle.composer.mode, "normal");
         assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
     }
@@ -4425,7 +4464,10 @@ mod tests {
             lifecycle.runtime.pause_reason.as_deref(),
             Some("process-interrupted")
         );
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
+        assert_eq!(
+            lifecycle.continue_kind.as_deref(),
+            Some("continue-current-attempt")
+        );
         assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
     }
 
@@ -4456,7 +4498,10 @@ mod tests {
         assert_eq!(lifecycle.runtime.status, "paused");
         assert_eq!(lifecycle.runtime.phase, "paused");
         assert_eq!(lifecycle.composer.processing_kind, "processing");
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
+        assert_eq!(
+            lifecycle.continue_kind.as_deref(),
+            Some("continue-current-attempt")
+        );
     }
 
     #[test]
@@ -4489,7 +4534,10 @@ mod tests {
             lifecycle.runtime.pause_reason.as_deref(),
             Some("runtime-abnormal")
         );
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("action"));
+        assert_eq!(
+            lifecycle.continue_kind.as_deref(),
+            Some("continue-current-attempt")
+        );
         assert_eq!(lifecycle.composer.mode, "normal");
         assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
         assert!(!lifecycle.composer.lock_input);

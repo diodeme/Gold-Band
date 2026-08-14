@@ -72,6 +72,7 @@ export interface AcpConversationComposerProps {
   canSubmit: boolean;
   sendButtonBusy: boolean;
   showRuntimeContinue: boolean;
+  runtimeContinueKind: 'continue-current-attempt' | 'recover-completed-attempt' | null;
   runtimeContinueSubmitting: boolean;
   onRuntimeContinue: () => void | Promise<void>;
   configBar: ReactNode;
@@ -125,6 +126,7 @@ export function AcpConversationComposer({
   canSubmit,
   sendButtonBusy,
   showRuntimeContinue,
+  runtimeContinueKind,
   runtimeContinueSubmitting,
   onRuntimeContinue,
   configBar,
@@ -235,7 +237,7 @@ export function AcpConversationComposer({
                 </PromptInputAction>
               ) : null}
               {showRuntimeContinue ? (
-                <PromptInputAction tooltip={t('acp.continueWorkflow')}>
+                <PromptInputAction tooltip={t(runtimeContinueKind === 'recover-completed-attempt' ? 'acp.recoverWorkflow' : 'acp.continueWorkflow')}>
                   <Button
                     type="button"
                     className="h-8 gap-1.5 rounded-full px-3"
@@ -251,8 +253,8 @@ export function AcpConversationComposer({
                       <Play className="size-3.5" />
                     )}
                     {runtimeContinueSubmitting
-                      ? t('acp.continueWorkflowStarting')
-                      : t('acp.continueWorkflow')}
+                      ? t(runtimeContinueKind === 'recover-completed-attempt' ? 'acp.recoverWorkflowStarting' : 'acp.continueWorkflowStarting')
+                      : t(runtimeContinueKind === 'recover-completed-attempt' ? 'acp.recoverWorkflow' : 'acp.continueWorkflow')}
                   </Button>
                 </PromptInputAction>
               ) : null}

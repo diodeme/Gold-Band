@@ -20,8 +20,8 @@
   "metricsApiKey": "",
   "multicaEnabled": true,
   "multicaToggleLocked": true,
-  "multicaBaseUrl": "http://maling.weoa.com",
-  "multicaAppUrl": "http://maling.weoa.com",
+  "multicaBaseUrl": "http://maling.weoa.com:5005",
+  "multicaAppUrl": "http://maling.weoa.com:5005",
   "builtinMcpServers": [
     {
       "id": "maling-code-graph",

@@ -150,10 +150,10 @@ pub struct ManualRunResult {
 
 #[derive(Debug, Clone)]
 pub enum SchedulerCommand {
-    JobCreated(ScheduledTaskDefinition),
-    JobUpdated(ScheduledTaskDefinition),
-    JobEnabled(ScheduledTaskDefinition),
-    JobDisabled(ScheduledTaskDefinition),
+    JobCreated(ScheduledJobRecord),
+    JobUpdated(ScheduledJobRecord),
+    JobEnabled(ScheduledJobRecord),
+    JobDisabled(ScheduledJobRecord),
     JobDeleted(ScheduledTaskDefinition),
 }
 
@@ -292,12 +292,13 @@ impl ScheduledTaskService {
         Ok((self.resolve_workspace)(project_id)?.workspace_name)
     }
 
-    pub fn list_occurrences(
+    pub fn list_occurrence_page(
         &self,
         project_id: &str,
         job_id: &str,
-        limit: usize,
-    ) -> ScheduledServiceResult<Vec<ScheduledOccurrence>> {
+        status: Option<gold_band::scheduler::occurrence::OccurrenceStatus>,
+        cursor: Option<&gold_band::scheduler::db::OccurrencePageCursor>,
+    ) -> ScheduledServiceResult<gold_band::scheduler::db::OccurrencePage> {
         let workspace = (self.resolve_workspace)(project_id)?;
         let resolved_project_id = workspace.app.paths.project_id.clone();
         let database = ScheduledTaskDatabase::open(workspace.app.paths.scheduler_db_path())
@@ -307,8 +308,40 @@ impl ScheduledTaskService {
             .map_err(ScheduledServiceError::from_database)?
             .ok_or_else(|| ScheduledServiceError::not_found(project_id, job_id))?;
         database
-            .list_occurrences(job_id, limit)
+            .list_occurrence_page(
+                job_id,
+                status,
+                cursor,
+                gold_band::scheduler::db::OCCURRENCE_HISTORY_PAGE_SIZE,
+            )
             .map_err(ScheduledServiceError::from_database)
+    }
+
+    pub fn occurrence_diagnostics(
+        &self,
+        project_id: &str,
+        job_id: &str,
+    ) -> ScheduledServiceResult<(u64, Vec<ScheduledOccurrence>)> {
+        let workspace = (self.resolve_workspace)(project_id)?;
+        let resolved_project_id = workspace.app.paths.project_id.clone();
+        let database = ScheduledTaskDatabase::open(workspace.app.paths.scheduler_db_path())
+            .map_err(ScheduledServiceError::from_database)?;
+        database
+            .get_job_definition(&resolved_project_id, job_id)
+            .map_err(ScheduledServiceError::from_database)?
+            .ok_or_else(|| ScheduledServiceError::not_found(project_id, job_id))?;
+        let run_count = database
+            .count_run_occurrences(job_id)
+            .map_err(ScheduledServiceError::from_database)?;
+        let page = database
+            .list_occurrence_page(
+                job_id,
+                None,
+                None,
+                gold_band::scheduler::db::OCCURRENCE_HISTORY_PAGE_SIZE,
+            )
+            .map_err(ScheduledServiceError::from_database)?;
+        Ok((run_count, page.items))
     }
 
     pub fn create(
@@ -432,7 +465,7 @@ impl ScheduledTaskService {
                 .map_err(ScheduledServiceError::from_database)
         })?;
         self.coordinator
-            .notify(SchedulerCommand::JobCreated(record.definition.clone()))?;
+            .notify(SchedulerCommand::JobCreated(record.clone()))?;
         let _ = workspace.workspace_name;
         Ok(record)
     }
@@ -654,7 +687,7 @@ impl ScheduledTaskService {
             }
         };
         self.coordinator
-            .notify(SchedulerCommand::JobUpdated(record.definition.clone()))?;
+            .notify(SchedulerCommand::JobUpdated(record.clone()))?;
         Ok(record)
     }
 
@@ -702,9 +735,9 @@ impl ScheduledTaskService {
             }
         };
         self.coordinator.notify(if enabled {
-            SchedulerCommand::JobEnabled(record.definition.clone())
+            SchedulerCommand::JobEnabled(record.clone())
         } else {
-            SchedulerCommand::JobDisabled(record.definition.clone())
+            SchedulerCommand::JobDisabled(record.clone())
         })?;
         Ok(record)
     }
@@ -761,32 +794,36 @@ struct DesktopScheduledCoordinator {
 
 impl ScheduledCoordinator for DesktopScheduledCoordinator {
     fn notify(&self, command: SchedulerCommand) -> ScheduledServiceResult<()> {
-        let (definition, runtime_command) = match command {
-            SchedulerCommand::JobCreated(definition) => {
-                let key = scheduled_job_key_for_definition(&self.app_handle, &definition)?;
+        let (definition, next_run_at, runtime_command) = match command {
+            SchedulerCommand::JobCreated(record) => {
+                let key = scheduled_job_key_for_definition(&self.app_handle, &record.definition)?;
                 (
-                    definition,
+                    record.definition,
+                    record.next_run_at,
                     crate::scheduled_runtime::SchedulerCommand::JobCreated { key },
                 )
             }
-            SchedulerCommand::JobUpdated(definition) => {
-                let key = scheduled_job_key_for_definition(&self.app_handle, &definition)?;
+            SchedulerCommand::JobUpdated(record) => {
+                let key = scheduled_job_key_for_definition(&self.app_handle, &record.definition)?;
                 (
-                    definition,
+                    record.definition,
+                    record.next_run_at,
                     crate::scheduled_runtime::SchedulerCommand::JobUpdated { key },
                 )
             }
-            SchedulerCommand::JobEnabled(definition) => {
-                let key = scheduled_job_key_for_definition(&self.app_handle, &definition)?;
+            SchedulerCommand::JobEnabled(record) => {
+                let key = scheduled_job_key_for_definition(&self.app_handle, &record.definition)?;
                 (
-                    definition,
+                    record.definition,
+                    record.next_run_at,
                     crate::scheduled_runtime::SchedulerCommand::JobEnabled { key },
                 )
             }
-            SchedulerCommand::JobDisabled(definition) => {
-                let key = scheduled_job_key_for_definition(&self.app_handle, &definition)?;
+            SchedulerCommand::JobDisabled(record) => {
+                let key = scheduled_job_key_for_definition(&self.app_handle, &record.definition)?;
                 (
-                    definition,
+                    record.definition,
+                    record.next_run_at,
                     crate::scheduled_runtime::SchedulerCommand::JobDisabled { key },
                 )
             }
@@ -794,6 +831,7 @@ impl ScheduledCoordinator for DesktopScheduledCoordinator {
                 let key = scheduled_job_key_for_definition(&self.app_handle, &definition)?;
                 (
                     definition,
+                    None,
                     crate::scheduled_runtime::SchedulerCommand::JobDeleted { key },
                 )
             }
@@ -813,7 +851,7 @@ impl ScheduledCoordinator for DesktopScheduledCoordinator {
             crate::scheduled_runtime::emit_scheduled_task_updated(
                 &self.app_handle,
                 &definition,
-                None,
+                next_run_at,
             );
         }
         Ok(())
@@ -1180,6 +1218,10 @@ mod tests {
         fn command_count(&self) -> usize {
             self.commands.lock().unwrap().len()
         }
+
+        fn last_command(&self) -> SchedulerCommand {
+            self.commands.lock().unwrap().last().unwrap().clone()
+        }
     }
 
     impl ScheduledCoordinator for CoordinatorSpy {
@@ -1352,6 +1394,21 @@ mod tests {
                 .join("inputs/report.txt")
                 .is_file()
         );
+    }
+
+    #[test]
+    fn create_notification_keeps_the_persisted_next_run_at() {
+        let fixture = Fixture::new();
+
+        let created = fixture.service.create(fixture.create_input()).unwrap();
+
+        match fixture.coordinator.last_command() {
+            SchedulerCommand::JobCreated(record) => {
+                assert_eq!(record.next_run_at, created.next_run_at);
+                assert!(record.next_run_at.is_some());
+            }
+            command => panic!("expected JobCreated, got {command:?}"),
+        }
     }
 
     #[test]

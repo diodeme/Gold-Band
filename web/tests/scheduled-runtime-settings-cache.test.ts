@@ -93,6 +93,22 @@ describe('scheduled runtime settings cache', () => {
       expect(readScheduledRuntimeSettingsCache()).toEqual(settings);
     });
 
+    it('does not let a late refresh overwrite a newer saved value', async () => {
+      const stale = makeSettings({ occurrenceRetentionDays: 30 });
+      const saved = makeSettings({ occurrenceRetentionDays: 90 });
+      let resolve!: (value: ScheduledRuntimeSettingsVm) => void;
+      mockedGet.mockReturnValue(new Promise<ScheduledRuntimeSettingsVm>((next) => {
+        resolve = next;
+      }));
+
+      const refresh = fetchScheduledRuntimeSettingsOnce();
+      writeScheduledRuntimeSettingsCache(saved, 2_000);
+      resolve(stale);
+
+      await expect(refresh).resolves.toEqual(saved);
+      expect(readScheduledRuntimeSettingsCache()).toEqual(saved);
+    });
+
     it('失败后清空飞行标记，允许后续重试', async () => {
       mockedGet.mockRejectedValueOnce(new Error('boom'));
       await expect(fetchScheduledRuntimeSettingsOnce()).rejects.toThrow('boom');

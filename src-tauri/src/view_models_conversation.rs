@@ -66,6 +66,13 @@ pub struct ScheduledOccurrenceVm {
     pub finished_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledOccurrencePageVm {
+    pub items: Vec<ScheduledOccurrenceVm>,
+    pub next_cursor: Option<String>,
+}
+
 impl ScheduledOccurrenceVm {
     pub fn from_occurrence(
         occurrence: &gold_band::scheduler::occurrence::ScheduledOccurrence,

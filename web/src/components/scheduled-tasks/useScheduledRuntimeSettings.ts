@@ -23,13 +23,17 @@ interface CacheState {
   value: ScheduledRuntimeSettingsVm | null;
   fetchedAt: number;
   inflight: Promise<ScheduledRuntimeSettingsVm> | null;
+  generation: number;
 }
 
 const state: CacheState = {
   value: null,
   fetchedAt: 0,
   inflight: null,
+  generation: 0,
 };
+
+const listeners = new Set<(value: ScheduledRuntimeSettingsVm) => void>();
 
 /**
  * 读取当前缓存的设置值（可能为 null）。纯函数，供组件初始化与单元测试使用。
@@ -52,8 +56,10 @@ export function writeScheduledRuntimeSettingsCache(
   value: ScheduledRuntimeSettingsVm,
   now: number = Date.now(),
 ): void {
+  state.generation += 1;
   state.value = value;
   state.fetchedAt = now;
+  listeners.forEach((listener) => listener(value));
 }
 
 /**
@@ -62,9 +68,13 @@ export function writeScheduledRuntimeSettingsCache(
  */
 export function fetchScheduledRuntimeSettingsOnce(): Promise<ScheduledRuntimeSettingsVm> {
   if (state.inflight) return state.inflight;
+  const fetchGeneration = state.generation;
   state.inflight = getScheduledRuntimeSettings()
     .then((value) => {
-      writeScheduledRuntimeSettingsCache(value);
+      if (state.generation !== fetchGeneration && state.value) return state.value;
+      state.value = value;
+      state.fetchedAt = Date.now();
+      listeners.forEach((listener) => listener(value));
       return value;
     })
     .finally(() => {
@@ -92,6 +102,8 @@ export function __resetScheduledRuntimeSettingsCache(): void {
   state.value = null;
   state.fetchedAt = 0;
   state.inflight = null;
+  state.generation = 0;
+  listeners.clear();
 }
 
 export interface UseScheduledRuntimeSettingsResult {
@@ -118,19 +130,27 @@ export function useScheduledRuntimeSettings(): UseScheduledRuntimeSettingsResult
 
   useEffect(() => {
     let active = true;
-    if (!isScheduledRuntimeSettingsStale()) return;
-    fetchScheduledRuntimeSettingsOnce()
-      .then((value) => {
-        if (!active) return;
-        setSettings(value);
-        setLoadError(false);
-      })
-      .catch(() => {
-        if (!active) return;
-        setLoadError(true);
-      });
+    const listener = (value: ScheduledRuntimeSettingsVm) => {
+      if (!active) return;
+      setSettings(value);
+      setLoadError(false);
+    };
+    listeners.add(listener);
+    if (isScheduledRuntimeSettingsStale()) {
+      fetchScheduledRuntimeSettingsOnce()
+        .then((value) => {
+          if (!active) return;
+          setSettings(value);
+          setLoadError(false);
+        })
+        .catch(() => {
+          if (!active) return;
+          setLoadError(true);
+        });
+    }
     return () => {
       active = false;
+      listeners.delete(listener);
     };
   }, []);
 

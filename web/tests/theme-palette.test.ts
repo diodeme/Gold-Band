@@ -37,22 +37,6 @@ const expectedThemes = {
     selectionForeground: '#ffffff', messageUser: '#252525', messageUserForeground: '#f2f2f2',
     foreground: '#e8e8e8', muted: '#929292', success: '#59b68b', danger: '#df6b6b',
   },
-  'editorial-light': {
-    themeId: 'builtin.neo-brutalist',
-    colorScheme: 'light',
-    background: '#f4f2ec', surface: '#fffefa', workspace: '#e8e6df', border: '#161616',
-    primary: '#161616', primaryForeground: '#ffffff', selection: '#ffd2c7',
-    selectionForeground: '#161616', messageUser: '#eae7de', messageUserForeground: '#161616',
-    foreground: '#161616', muted: '#5f5b52', success: '#157347', danger: '#c93838',
-  },
-  'editorial-dark': {
-    themeId: 'builtin.neo-brutalist',
-    colorScheme: 'dark',
-    background: '#151515', surface: '#202020', workspace: '#111111', border: '#77736b',
-    primary: '#f4f2ec', primaryForeground: '#161616', selection: '#ff6b4a',
-    selectionForeground: '#161616', messageUser: '#262626', messageUserForeground: '#f4f2ec',
-    foreground: '#f4f2ec', muted: '#b7b2a8', success: '#5cff8d', danger: '#ff5c5c',
-  },
 } as const;
 
 describe('desktop theme palettes', () => {

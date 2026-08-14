@@ -33,17 +33,38 @@ async function updateJson(path, update) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+async function addVisualQualityProfile(directory) {
+  const themeDirectory = join(directory, 'themes', 'gold-band');
+  await updateJson(join(themeDirectory, 'manifest.json'), (manifest) => {
+    manifest.capabilities.push('visual-quality-profiles');
+    manifest.visualQualityProfiles = {
+      default: 'full',
+      supported: ['full', 'performance'],
+      performance: 'visual-quality/performance.json',
+    };
+  });
+  await mkdir(join(themeDirectory, 'visual-quality'), { recursive: true });
+  await writeFile(join(themeDirectory, 'visual-quality', 'performance.json'), `${JSON.stringify({
+    blur: 0,
+    saturate: 100,
+    shadow: 'none',
+    textureOpacity: 0,
+    motionDuration: '0ms',
+  }, null, 2)}\n`, 'utf8');
+}
+
 test('builds every declarative package and discovers a package without application changes', async () => {
   const result = await withBuildFixture();
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, /Built 4 declarative theme packages/u);
-  assert.match(result.stdout, /builtin\.neo-brutalist/u);
+  assert.match(result.stdout, /Built 2 declarative theme packages/u);
+  assert.match(result.stdout, /builtin\.gold-band/u);
+  assert.match(result.stdout, /builtin\.tech-neutral/u);
 });
 
 test('rejects a package with a missing required semantic token', async () => {
   const result = await withBuildFixture(async (directory) => {
-    const path = join(directory, 'themes', 'glass', 'tokens', 'light.tokens.json');
+    const path = join(directory, 'themes', 'tech-neutral', 'tokens', 'light.tokens.json');
     await updateJson(path, (tokens) => delete tokens.semantic.editor);
   });
 
@@ -78,7 +99,8 @@ test('rejects arbitrary recipe fields', async () => {
 
 test('rejects visual-quality overrides outside the closed effect whitelist', async () => {
   const result = await withBuildFixture(async (directory) => {
-    const path = join(directory, 'themes', 'glass', 'visual-quality', 'performance.json');
+    await addVisualQualityProfile(directory);
+    const path = join(directory, 'themes', 'gold-band', 'visual-quality', 'performance.json');
     await updateJson(path, (quality) => {
       quality.uiSize = 12;
     });
@@ -90,7 +112,7 @@ test('rejects visual-quality overrides outside the closed effect whitelist', asy
 
 test('rejects an unknown material model', async () => {
   const result = await withBuildFixture(async (directory) => {
-    const path = join(directory, 'themes', 'glass', 'tokens', 'light.tokens.json');
+    const path = join(directory, 'themes', 'gold-band', 'tokens', 'light.tokens.json');
     await updateJson(path, (tokens) => {
       tokens.material.model.$value = 'plasma';
     });

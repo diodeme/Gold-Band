@@ -1,9 +1,6 @@
 use std::collections::BTreeSet;
 
-use gold_band::theme::{
-    ThemeCapability, ThemeMaterialModel, ThemeVisualQuality, builtin_theme,
-    builtin_theme_catalog,
-};
+use gold_band::theme::{ThemeMaterialModel, builtin_theme, builtin_theme_catalog};
 
 #[test]
 fn rust_catalog_deserializes_every_generated_declarative_theme() {
@@ -13,15 +10,10 @@ fn rust_catalog_deserializes_every_generated_declarative_theme() {
         .map(|theme| theme.id.as_str())
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(catalog.len(), 4);
+    assert_eq!(catalog.len(), 2);
     assert_eq!(
         ids,
-        BTreeSet::from([
-            "builtin.glass",
-            "builtin.gold-band",
-            "builtin.neo-brutalist",
-            "builtin.tech-neutral",
-        ])
+        BTreeSet::from(["builtin.gold-band", "builtin.tech-neutral"])
     );
     for theme in catalog {
         assert!(!theme.name.zh_cn.is_empty());
@@ -32,47 +24,37 @@ fn rust_catalog_deserializes_every_generated_declarative_theme() {
 }
 
 #[test]
-fn rust_catalog_exposes_quality_capability_without_theme_id_special_cases() {
-    let glass = builtin_theme("builtin.glass")
-        .expect("catalog should deserialize")
-        .expect("glass should be registered");
+fn rust_catalog_contains_only_the_supported_builtin_packages() {
     let gold_band = builtin_theme("builtin.gold-band")
         .expect("catalog should deserialize")
         .expect("safe fallback should be registered");
-    let neo_brutalist = builtin_theme("builtin.neo-brutalist")
+    let tech_neutral = builtin_theme("builtin.tech-neutral")
         .expect("catalog should deserialize")
-        .expect("declarative validation package should be registered");
+        .expect("technology-neutral theme should be registered");
 
-    assert!(
-        glass
-            .capabilities
-            .contains(&ThemeCapability::VisualQualityProfiles)
-    );
-    let profiles = glass
-        .visual_quality_profiles
-        .as_ref()
-        .expect("quality capability should have profiles");
-    assert_eq!(profiles.default, ThemeVisualQuality::Full);
-    assert!(profiles.performance.blur < glass.schemes.dark.material.blur);
-    assert_eq!(
-        glass.schemes.light.material.model,
-        ThemeMaterialModel::Liquid
-    );
-    assert!(glass.schemes.light.material.backdrop_contrast > 100.0);
-
-    assert!(
-        !gold_band
-            .capabilities
-            .contains(&ThemeCapability::VisualQualityProfiles)
-    );
     assert!(gold_band.visual_quality_profiles.is_none());
+    assert!(tech_neutral.visual_quality_profiles.is_none());
     assert_eq!(
         gold_band.schemes.light.material.model,
         ThemeMaterialModel::Solid
     );
-    assert_ne!(neo_brutalist.recipes, gold_band.recipes);
+    assert_eq!(
+        tech_neutral.schemes.light.material.model,
+        ThemeMaterialModel::Solid
+    );
+    assert_ne!(tech_neutral.recipes, gold_band.recipes);
     assert_ne!(
-        neo_brutalist.schemes.light.semantic.primary,
+        tech_neutral.schemes.light.semantic.primary,
         gold_band.schemes.light.semantic.primary
+    );
+    assert!(
+        builtin_theme("builtin.glass")
+            .expect("catalog should deserialize")
+            .is_none()
+    );
+    assert!(
+        builtin_theme("builtin.neo-brutalist")
+            .expect("catalog should deserialize")
+            .is_none()
     );
 }

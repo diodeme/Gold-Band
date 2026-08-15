@@ -29,8 +29,8 @@ await Promise.all([
   mkdir(dirname(rustCatalogPath), { recursive: true }),
 ]);
 await Promise.all([
-  writeJson(join(schemaRoot, 'theme-manifest-v1.schema.json'), themeManifestSchema),
-  writeJson(join(schemaRoot, 'theme-package-v1.schema.json'), runtimeThemeSchema),
+  writeJson(join(schemaRoot, 'theme-manifest-v2.schema.json'), themeManifestSchema),
+  writeJson(join(schemaRoot, 'theme-package-v2.schema.json'), runtimeThemeSchema),
 ]);
 
 const themeDirectories = (await readdir(themesRoot, { withFileTypes: true }))
@@ -102,6 +102,7 @@ async function buildTheme(themeDirectory) {
   };
   assertSchema(validateRuntimeTheme, themePackage, `${manifest.id} runtime package`);
   assertRecipeCoverage(themePackage);
+  assertFontStackUniqueness(themePackage);
 
   const dist = join(themeDirectory, 'dist');
   await mkdir(dist, { recursive: true });
@@ -231,10 +232,10 @@ function compilePackageCss(themePackage) {
       `--gb-theme-texture-opacity:${scheme.material.textureOpacity}`,
       `--gb-theme-motion-duration:${scheme.material.motionDuration}`,
       `--gb-theme-motion-easing:${scheme.material.motionEasing}`,
-      `--gb-theme-ui-font-family:${scheme.typography.uiFamily}`,
-      `--gb-theme-editor-font-family:${scheme.typography.editorFamily}`,
-      `--gb-theme-ui-font-size:${scheme.typography.uiSize}px`,
-      `--gb-theme-editor-font-size:${scheme.typography.editorSize}px`,
+      `--gb-theme-ui-font-family:${serializeFontStack(scheme.typography.ui)}`,
+      `--gb-theme-editor-font-family:${serializeFontStack(scheme.typography.editor)}`,
+      `--gb-theme-ui-font-size:${scheme.typography.ui.size}px`,
+      `--gb-theme-editor-font-size:${scheme.typography.editor.size}px`,
     );
     return `${themeSelector}[data-color-scheme='${schemeName}']{${declarations.join(';')}}`;
   });
@@ -279,6 +280,25 @@ function compilePackageCss(themePackage) {
   blocks.push(`${themeSelector}{--gb-theme-package-version:'${themePackage.version}'}`);
   blocks.push(`@media (prefers-reduced-motion:reduce){${themeSelector} [data-theme-role]{transition-duration:.01ms!important}}`);
   return blocks.join('\n');
+}
+
+function assertFontStackUniqueness(themePackage) {
+  for (const [schemeName, scheme] of Object.entries(themePackage.schemes)) {
+    for (const [kind, stack] of Object.entries(scheme.typography)) {
+      const normalized = stack.families.map((family) => family.toLocaleLowerCase());
+      if (new Set(normalized).size !== normalized.length) {
+        throw new Error(`${themePackage.id}: ${schemeName} ${kind} font families contain a case-insensitive duplicate`);
+      }
+    }
+  }
+}
+
+function serializeFontStack(stack) {
+  return [...stack.families.map(quoteFontFamily), stack.fallback].join(', ');
+}
+
+function quoteFontFamily(family) {
+  return `"${family.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
 }
 
 function semanticCssVariable(name) {

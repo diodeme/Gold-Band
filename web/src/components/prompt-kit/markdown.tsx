@@ -103,7 +103,7 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
       className={cn(
         'font-medium [overflow-wrap:anywhere] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-running/45',
         enabledLocal
-          ? 'mx-0.5 inline-flex items-center gap-1 rounded-sm bg-muted/45 px-1 py-px align-baseline text-foreground/90 no-underline transition-colors hover:bg-accent hover:text-accent-foreground'
+          ? 'mx-0.5 inline-flex items-center gap-1 rounded-sm bg-gold-surface-high px-1 py-px align-baseline text-foreground/90 no-underline transition-colors hover:bg-accent hover:text-accent-foreground'
           : 'text-gold-running underline decoration-gold-running/45 underline-offset-2 hover:decoration-gold-running',
         local && !handler && 'cursor-not-allowed opacity-60',
       )}
@@ -172,7 +172,7 @@ const markdownComponents = {
   li: ({ children }: { children?: React.ReactNode }) => <li className="pl-1 leading-6">{children}</li>,
   blockquote: ({ children }: { children?: React.ReactNode }) => <blockquote className="my-2 border-l-2 border-primary/40 pl-3 text-muted-foreground">{children}</blockquote>,
   inlineCode: ({ className, children, node: _node, ...props }: React.HTMLAttributes<HTMLElement> & { node?: unknown }) => (
-    <code className={cn('rounded-md bg-muted/50 px-1.5 py-0.5 font-sans text-[1em] font-normal leading-[inherit] tracking-normal text-foreground', className)} {...props}>
+    <code className={cn('rounded-md bg-gold-surface-high px-1.5 py-0.5 font-sans text-[1em] font-normal leading-[inherit] tracking-normal text-foreground', className)} {...props}>
       {children}
     </code>
   ),

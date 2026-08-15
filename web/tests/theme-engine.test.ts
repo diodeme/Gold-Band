@@ -258,6 +258,6 @@ describe('appearance resolver', () => {
     expect(properties.get('--gb-material-blur')).toBe(`${effective.material.blur}px`);
     expect(properties.get('--gb-material-backdrop-contrast')).toBe(`${effective.material.backdropContrast}%`);
     expect(properties.get('--gb-material-specular-highlight')).toBe(effective.material.specularHighlight);
-    expect(properties.get('--gb-theme-ui-font-size')).toBe(`${effective.scheme.typography.uiSize}px`);
+    expect(properties.get('--gb-theme-ui-font-size')).toBe(`${effective.scheme.typography.ui.size}px`);
   });
 });

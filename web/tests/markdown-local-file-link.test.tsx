@@ -30,7 +30,8 @@ describe('Markdown local file link routing', () => {
       const link = container.querySelector<HTMLAnchorElement>('a');
       expect(link, container.innerHTML).not.toBeNull();
       expect(link?.target).toBe('');
-      expect(link?.className).toContain('bg-muted/45');
+      expect(link?.className).toContain('bg-gold-surface-high');
+      expect(link?.className).not.toContain('bg-muted/45');
       expect(link?.className).not.toContain('border-gold-running');
       expect(link?.querySelector('svg')?.getAttribute('class')).toContain('text-gold-running');
       expect(link?.textContent).toBe('client.rs:2727');

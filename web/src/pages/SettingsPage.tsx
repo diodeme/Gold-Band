@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, ColorSchemePreference, DesktopFontPreference, DesktopLanguage, LocalClaudeStatusVm, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, VisualQuality } from '../types';
+import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, ColorSchemePreference, DesktopLanguage, LocalClaudeStatusVm, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, VisualQuality } from '../types';
 import {
   appearanceWithQuality,
   appearanceWithTheme,
@@ -9,10 +9,13 @@ import {
   desktopFontOptions,
   desktopEditorFontOptions,
   desktopTypography,
-  fontFamilyForPreference,
-  editorFontFamilyForPreference,
+  fontFamilyForStack,
+  editorFontFamilyForStack,
   getThemePackage,
   resolveAppearance,
+  normalizeFontFamilies,
+  moveFontFamily,
+  toggleFontFamily,
   themePackageSummaries,
   type DesktopFontOption,
   type ThemePreviewPalette,
@@ -22,15 +25,18 @@ import { Page, PageHeader } from '@/components/PageScaffold';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
-import { Check, ChevronDown, CircleHelp, Loader2, Pencil, RotateCcw, Save } from 'lucide-react';
+import { ArrowDown, ArrowUp, Check, ChevronsUpDown, ChevronDown, CircleHelp, Loader2, Pencil, RotateCcw, Save, X } from 'lucide-react';
 import { checkLocalClaude, getMetricsSettings, getSystemFonts, saveMetricsSettings } from '../api';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
+import { normalizeFontCatalogFamilies } from '@/lib/font-families';
 import { ScheduledRuntimeSettings } from '@/components/scheduled-tasks/ScheduledRuntimeSettings';
 import { AvatarSettings } from '@/components/settings/AvatarSettings';
 
@@ -42,7 +48,7 @@ function effectiveTypographySize(appearance: AppearancePreference, personalizati
   const preference = personalization.typography[kind].fontSize;
   if (preference.source === 'custom') return preference.px;
   const preset = resolveAppearance(appearance).scheme.typography;
-  return kind === 'ui' ? preset.uiSize : preset.editorSize;
+  return preset[kind].size;
 }
 
 function withTypographySize(
@@ -198,15 +204,8 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     onSave(appearance, personalization, value, useLocalClaude, verboseLogging);
   };
 
-  const chooseFont = (value: DesktopFontPreference) => {
-    const next = { ...personalization, typography: { ...personalization.typography, ui: { ...personalization.typography.ui, font: value === desktopFontOptions[0].id ? { source: 'theme' as const } : { source: 'local' as const, family: value } } } };
-    setPersonalization(next);
-    applyPersonalization(next);
-    onSave(appearance, next, language, useLocalClaude, verboseLogging);
-  };
-
-  const chooseEditorFont = (value: DesktopFontPreference) => {
-    const next = { ...personalization, typography: { ...personalization.typography, editor: { ...personalization.typography.editor, font: value === desktopEditorFontOptions[0].id ? { source: 'theme' as const } : { source: 'local' as const, family: value } } } };
+  const chooseFontStack = (kind: TypographySection, families: readonly string[]) => {
+    const next = withTypographyFontStack(personalization, kind, families);
     setPersonalization(next);
     applyPersonalization(next);
     onSave(appearance, next, language, useLocalClaude, verboseLogging);
@@ -268,9 +267,9 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   const currentThemeSummary = themePackageSummaries.find(({ id }) => id === effectiveAppearance.themeId)
     ?? themePackageSummaries[0];
   const defaultFontOption = desktopFontOptions[0];
-  const selectedLocalFont = personalization.typography.ui.font.source === 'local' ? personalization.typography.ui.font.family : null;
+  const selectedUiFonts = personalization.typography.ui.fontStack.source === 'custom' ? personalization.typography.ui.fontStack.families : [];
   const defaultEditorFontOption = desktopEditorFontOptions[0];
-  const selectedLocalEditorFont = personalization.typography.editor.font.source === 'local' ? personalization.typography.editor.font.family : null;
+  const selectedEditorFonts = personalization.typography.editor.fontStack.source === 'custom' ? personalization.typography.editor.fontStack.families : [];
 
   return (
     <Page flush className="flex flex-col">
@@ -398,9 +397,9 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   <FontPreferenceSetting
                     defaultOption={defaultFontOption}
                     installedFontOptions={installedFontOptions}
-                    selectedLocalFont={selectedLocalFont}
-                    sample="任务编排 / AI Workflow"
-                    onSelect={chooseFont}
+                    selectedFonts={selectedUiFonts}
+                    sample="Gold-Band / 优化 resume 会话 / 0123"
+                    onChange={(families) => chooseFontStack('ui', families)}
                   />
                 </TypographyDisclosure>
                 <TypographyDisclosure
@@ -422,9 +421,9 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   <FontPreferenceSetting
                     defaultOption={defaultEditorFontOption}
                     installedFontOptions={installedFontOptions}
-                    selectedLocalFont={selectedLocalEditorFont}
+                    selectedFonts={selectedEditorFonts}
                     sample={'const workflow = "AI";'}
-                    onSelect={chooseEditorFont}
+                    onChange={(families) => chooseFontStack('editor', families)}
                     monospace
                   />
                 </TypographyDisclosure>
@@ -702,6 +701,27 @@ interface ThemePackageCardProps {
   onSelect: () => void;
 }
 
+function withTypographyFontStack(
+  personalization: PersonalizationPreference,
+  kind: TypographySection,
+  families: readonly string[],
+): PersonalizationPreference {
+  const normalized = normalizeFontFamilies(families);
+  return {
+    ...personalization,
+    schemaVersion: 2,
+    typography: {
+      ...personalization.typography,
+      [kind]: {
+        ...personalization.typography[kind],
+        fontStack: normalized.length === 0
+          ? { source: 'theme' as const }
+          : { source: 'custom' as const, families: normalized },
+      },
+    },
+  };
+}
+
 function CurrentThemeSummary({ summary, scheme }: {
   summary: (typeof themePackageSummaries)[number];
   scheme: 'light' | 'dark';
@@ -865,17 +885,32 @@ function TypographyDisclosure({ title, description, open, onOpenChange, children
   );
 }
 
-function FontPreferenceSetting({ defaultOption, installedFontOptions, selectedLocalFont, sample, onSelect, monospace = false }: {
+function FontPreferenceSetting({ defaultOption, installedFontOptions, selectedFonts, sample, onChange, monospace = false }: {
   defaultOption: DesktopFontOption;
   installedFontOptions: string[];
-  selectedLocalFont: string | null;
+  selectedFonts: string[];
   sample: string;
-  onSelect: (font: DesktopFontPreference) => void;
+  onChange: (fonts: string[]) => void;
   monospace?: boolean;
 }) {
   const { t } = useTranslation();
-  const usingDefault = selectedLocalFont === null;
-  const family = monospace ? editorFontFamilyForPreference : fontFamilyForPreference;
+  const [open, setOpen] = useState(false);
+  const usingDefault = selectedFonts.length === 0;
+  const family = monospace ? editorFontFamilyForStack : fontFamilyForStack;
+  const availableFonts = useMemo(
+    () => normalizeFontCatalogFamilies([
+      ...(monospace ? [] : ['Inter Variable', 'Gold Band MiSans']),
+      ...installedFontOptions,
+      ...selectedFonts,
+    ]),
+    [installedFontOptions, monospace, selectedFonts],
+  );
+  const toggleFont = (font: string) => {
+    onChange(toggleFontFamily(selectedFonts, font));
+  };
+  const moveFont = (index: number, direction: -1 | 1) => {
+    onChange(moveFontFamily(selectedFonts, index, direction));
+  };
   return (
     <div className="space-y-3">
       <button
@@ -885,31 +920,80 @@ function FontPreferenceSetting({ defaultOption, installedFontOptions, selectedLo
           'w-full rounded-lg border border-border/45 bg-transparent p-3 text-left transition hover:border-primary/60 hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           usingDefault && 'border-primary/65 bg-primary/[0.07]',
         )}
-        onClick={() => onSelect(defaultOption.id)}
+        onClick={() => onChange([])}
       >
         <div className="text-sm font-semibold">{t(defaultOption.labelKey)}</div>
-        <FontPreviewSample sample={defaultOption.preview} fontFamily={defaultOption.stack} />
+        <FontPreviewSample sample={defaultOption.preview} fontFamily={monospace ? 'var(--gb-theme-editor-font-family)' : 'var(--gb-theme-ui-font-family)'} />
       </button>
-      <div className={cn('rounded-lg border border-border/35 bg-transparent p-3', selectedLocalFont && 'border-primary/45 bg-primary/[0.04]')}>
+      <div className={cn('rounded-lg border border-border/35 bg-transparent p-3', !usingDefault && 'border-primary/45 bg-primary/[0.04]')}>
         <div className="space-y-1">
           <div className="text-sm font-semibold">{t('settings.localFonts')}</div>
           <div className="text-xs text-muted-foreground">{t('settings.localFontsDescription', { count: installedFontOptions.length })}</div>
         </div>
-        <div className="relative mt-3">
-          <select
-            value={selectedLocalFont ?? ''}
-            className="h-10 w-full appearance-none rounded-md border border-border/45 bg-background px-3 pr-10 text-sm text-foreground shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60"
-            onChange={(event) => onSelect(event.target.value as DesktopFontPreference)}
-            disabled={installedFontOptions.length === 0}
-          >
-            <option value="" disabled>{t('settings.chooseLocalFont')}</option>
-            {installedFontOptions.map((font) => <option key={font} value={font}>{font}</option>)}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+        {selectedFonts.length > 0 ? (
+          <div className="mt-3 space-y-1.5" aria-label={t('settings.selectedFontStack')}>
+            {selectedFonts.map((font, index) => (
+              <div key={font} className="flex min-w-0 items-center gap-2 rounded-md border border-border/40 bg-background px-2 py-1.5">
+                <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-ui-caption tabular-nums text-muted-foreground">{index + 1}</span>
+                <span className="min-w-0 flex-1 truncate text-sm">{font}</span>
+                <FontStackAction label={t('settings.moveFontUp')} disabled={index === 0} onClick={() => moveFont(index, -1)}><ArrowUp /></FontStackAction>
+                <FontStackAction label={t('settings.moveFontDown')} disabled={index === selectedFonts.length - 1} onClick={() => moveFont(index, 1)}><ArrowDown /></FontStackAction>
+                <FontStackAction label={t('settings.removeFont')} onClick={() => toggleFont(font)}><X /></FontStackAction>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <div className="mt-3">
+          <Popover open={open} onOpenChange={setOpen}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" className="w-full justify-between font-normal" disabled={availableFonts.length === 0}>
+                {t('settings.chooseLocalFont')}
+                <ChevronsUpDown className="size-4 text-muted-foreground" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+              <Command>
+                <CommandInput placeholder={t('settings.searchFonts')} />
+                <CommandList>
+                  <CommandEmpty>{t('settings.noFontsFound')}</CommandEmpty>
+                  <CommandGroup>
+                    {availableFonts.map((font) => {
+                      const selected = selectedFonts.includes(font);
+                      return (
+                        <CommandItem key={font} value={font} onSelect={() => toggleFont(font)}>
+                          <Check className={cn('size-4', selected ? 'opacity-100' : 'opacity-0')} />
+                          <span className="truncate">{font}</span>
+                          {selected ? <span className="ml-auto text-ui-caption text-muted-foreground">{selectedFonts.indexOf(font) + 1}</span> : null}
+                        </CommandItem>
+                      );
+                    })}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
         </div>
-        {selectedLocalFont ? <FontPreviewSample sample={sample} fontFamily={family(selectedLocalFont)} /> : null}
+        {!usingDefault ? <FontPreviewSample sample={sample} fontFamily={family(selectedFonts)} /> : null}
       </div>
     </div>
+  );
+}
+
+function FontStackAction({ label, disabled = false, onClick, children }: {
+  label: string;
+  disabled?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button type="button" variant="ghost" size="icon" className="size-7 shrink-0" aria-label={label} disabled={disabled} onClick={onClick}>
+          {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   );
 }
 

@@ -46,9 +46,10 @@ use std::{
 use camino::Utf8PathBuf;
 use gold_band::config::{
     AcpAdapterConfig, AppearancePreference, AvatarPreference, AvatarShapePreference,
-    ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopLanguage, FontPreference,
-    FontSizePreference, ManagedAgentConfig, ManagedAgentId, PersonalizationAvatarShape,
-    PersonalizationPreference, normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
+    ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopLanguage, FontSizePreference,
+    FontStackPreference, MAX_FONT_FAMILY_CHARS, MAX_FONT_STACK_FAMILIES, ManagedAgentConfig,
+    ManagedAgentId, PersonalizationAvatarShape, PersonalizationPreference,
+    normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
 };
 use gold_band::observability::set_runtime_log_level;
 use gold_band::provider::{
@@ -4968,7 +4969,7 @@ pub fn save_desktop_preferences(
 fn normalize_personalization_preference(
     mut preference: PersonalizationPreference,
 ) -> CommandResult<PersonalizationPreference> {
-    if preference.schema_version != 1 {
+    if preference.schema_version != 2 {
         return Err(CommandErrorVm::new(
             "personalization.contract-version-unsupported",
             serde_json::json!({ "schemaVersion": preference.schema_version }),
@@ -4978,13 +4979,28 @@ fn normalize_personalization_preference(
         &mut preference.typography.ui,
         &mut preference.typography.editor,
     ] {
-        if let FontPreference::Local { family } = &mut typography.font {
-            *family = family.trim().to_string();
-            if family.is_empty() {
+        if let FontStackPreference::Custom { families } = &mut typography.font_stack {
+            if families.is_empty() || families.len() > MAX_FONT_STACK_FAMILIES {
                 return Err(CommandErrorVm::new(
-                    "personalization.font-invalid",
-                    serde_json::json!({}),
+                    "personalization.font-stack-invalid",
+                    serde_json::json!({ "count": families.len() }),
                 ));
+            }
+            let mut seen = HashSet::new();
+            for family in families.iter_mut() {
+                *family = family.trim().to_string();
+                if family.is_empty()
+                    || family.chars().count() > MAX_FONT_FAMILY_CHARS
+                    || family
+                        .chars()
+                        .any(|character| matches!(character, ',' | ';' | '{' | '}'))
+                    || !seen.insert(family.to_lowercase())
+                {
+                    return Err(CommandErrorVm::new(
+                        "personalization.font-stack-invalid",
+                        serde_json::json!({ "count": families.len() }),
+                    ));
+                }
             }
         }
     }
@@ -6956,6 +6972,37 @@ mod tests {
         });
 
         assert_ne!(worker_thread, caller_thread);
+    }
+
+    #[test]
+    fn personalization_font_stack_validation_preserves_order_and_rejects_invalid_input() {
+        let mut valid = PersonalizationPreference::default();
+        valid.typography.ui.font_stack = FontStackPreference::Custom {
+            families: vec![" Segoe UI ".to_string(), "Gold Band MiSans".to_string()],
+        };
+        let normalized = normalize_personalization_preference(valid).unwrap();
+        assert_eq!(
+            normalized.typography.ui.font_stack,
+            FontStackPreference::Custom {
+                families: vec!["Segoe UI".to_string(), "Gold Band MiSans".to_string()],
+            }
+        );
+
+        for families in [
+            vec![],
+            vec!["Segoe UI".to_string(), "segoe ui".to_string()],
+            vec!["bad,font".to_string()],
+            vec!["x".repeat(MAX_FONT_FAMILY_CHARS + 1)],
+        ] {
+            let mut invalid = PersonalizationPreference::default();
+            invalid.typography.ui.font_stack = FontStackPreference::Custom { families };
+            assert_eq!(
+                normalize_personalization_preference(invalid)
+                    .unwrap_err()
+                    .code,
+                "personalization.font-stack-invalid"
+            );
+        }
     }
 
     #[test]

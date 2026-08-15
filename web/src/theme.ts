@@ -1,8 +1,15 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { z } from 'zod';
 import { isTauriRuntime } from './api/shared';
-import type { AppearancePreference, DesktopFontPreference, PersonalizationPreference, ResolvedColorScheme, VisualQuality } from './types';
-import type { MaterialTokens, SemanticThemeTokens, ThemePackage, ThemeScheme } from './theme-contract';
+import type { AppearancePreference, PersonalizationPreference, ResolvedColorScheme, VisualQuality } from './types';
+import {
+  MAX_FONT_FAMILY_CODE_POINTS,
+  MAX_FONT_STACK_FAMILIES,
+  type MaterialTokens,
+  type SemanticThemeTokens,
+  type ThemePackage,
+  type ThemeScheme,
+} from './theme-contract';
 import { builtinThemes } from './themes/builtin-themes';
 
 export interface ThemePreviewPalette {
@@ -37,10 +44,10 @@ export const defaultAppearancePreference: AppearancePreference = {
   schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {},
 };
 export const defaultPersonalizationPreference: PersonalizationPreference = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   typography: {
-    ui: { font: { source: 'theme' }, fontSize: { source: 'theme' } },
-    editor: { font: { source: 'theme' }, fontSize: { source: 'theme' } },
+    ui: { fontStack: { source: 'theme' }, fontSize: { source: 'theme' } },
+    editor: { fontStack: { source: 'theme' }, fontSize: { source: 'theme' } },
   },
   avatars: {
     agent: { image: { source: 'theme' }, shape: { source: 'theme' } },
@@ -112,10 +119,10 @@ export function applyAppearance(preference: AppearancePreference): EffectiveAppe
   root.style.setProperty('--gb-theme-texture-opacity', String(effective.material.textureOpacity));
   root.style.setProperty('--gb-theme-motion-duration', effective.material.motionDuration);
   root.style.setProperty('--gb-theme-motion-easing', effective.material.motionEasing);
-  root.style.setProperty('--gb-theme-ui-font-family', effective.scheme.typography.uiFamily);
-  root.style.setProperty('--gb-theme-editor-font-family', effective.scheme.typography.editorFamily);
-  root.style.setProperty('--gb-theme-ui-font-size', `${effective.scheme.typography.uiSize}px`);
-  root.style.setProperty('--gb-theme-editor-font-size', `${effective.scheme.typography.editorSize}px`);
+  root.style.setProperty('--gb-theme-ui-font-family', serializeThemeFontStack(effective.scheme.typography.ui));
+  root.style.setProperty('--gb-theme-editor-font-family', serializeThemeFontStack(effective.scheme.typography.editor));
+  root.style.setProperty('--gb-theme-ui-font-size', `${effective.scheme.typography.ui.size}px`);
+  root.style.setProperty('--gb-theme-editor-font-size', `${effective.scheme.typography.editor.size}px`);
   void syncDesktopWindowSurface(effective);
   return effective;
 }
@@ -135,24 +142,58 @@ export function appearanceWithQuality(preference: AppearancePreference, quality:
   return { ...preference, visualQualityByTheme: { ...preference.visualQualityByTheme, [theme.id]: quality } };
 }
 
-export interface DesktopFontOption { id: DesktopFontPreference; labelKey: string; descriptionKey: string; preview: string; stack: string }
-export const desktopFontOptions = [{ id:'app-default',labelKey:'settings.fontDefault',descriptionKey:'settings.fontDefaultDescription',preview:'任务编排 / AI Workflow',stack:'"Gold Band MiSans", "MiSans", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, sans-serif' }] as const satisfies readonly DesktopFontOption[];
-export const desktopEditorFontOptions = [{ id:'editor-default',labelKey:'settings.editorFontDefault',descriptionKey:'settings.editorFontDefaultDescription',preview:'const workflow = "AI";',stack:'"JetBrains Mono", "SFMono-Regular", Consolas, monospace' }] as const satisfies readonly DesktopFontOption[];
+export interface DesktopFontOption { id: string; labelKey: string; descriptionKey: string; preview: string }
+export const desktopFontOptions = [{ id:'app-default',labelKey:'settings.fontDefault',descriptionKey:'settings.fontDefaultDescription',preview:'Gold-Band / 优化 resume 会话 / 0123' }] as const satisfies readonly DesktopFontOption[];
+export const desktopEditorFontOptions = [{ id:'editor-default',labelKey:'settings.editorFontDefault',descriptionKey:'settings.editorFontDefaultDescription',preview:'const workflow = "AI";' }] as const satisfies readonly DesktopFontOption[];
 export const desktopTypography = { ui:{min:12,max:18,defaultValue:14},editor:{min:10,max:18,defaultValue:12} } as const;
-export function fontFamilyForPreference(font: DesktopFontPreference) { return desktopFontOptions.some((option) => option.id === font) ? 'var(--gb-theme-ui-font-family)' : `${quoteFontFamily(font)}, var(--gb-theme-ui-font-family)`; }
-export function editorFontFamilyForPreference(font: DesktopFontPreference) { return desktopEditorFontOptions.some((option)=>option.id===font) ? 'var(--gb-theme-editor-font-family)' : `${quoteFontFamily(font)}, var(--gb-theme-editor-font-family)`; }
+export function fontFamilyForStack(families: readonly string[], fallbackVariable = 'var(--gb-theme-ui-font-family)') { return serializeCustomFontStack(families, fallbackVariable); }
+export function editorFontFamilyForStack(families: readonly string[]) { return serializeCustomFontStack(families, 'var(--gb-theme-editor-font-family)'); }
 export function normalizeTypographySize(value:number,kind:keyof typeof desktopTypography) { const constraint=desktopTypography[kind]; if(!Number.isFinite(value))return constraint.defaultValue; return Math.min(constraint.max,Math.max(constraint.min,Math.round(value))); }
 export function applyPersonalization(preference: PersonalizationPreference) {
   const root = document.documentElement;
-  const uiFont = preference.typography.ui.font;
-  const editorFont = preference.typography.editor.font;
+  const uiFont = preference.typography.ui.fontStack;
+  const editorFont = preference.typography.editor.fontStack;
   const uiFontSize = preference.typography.ui.fontSize;
   const editorFontSize = preference.typography.editor.fontSize;
   root.dataset.font = uiFont.source;
   root.dataset.editorFont = editorFont.source;
-  root.style.setProperty('--app-font-sans', uiFont.source === 'theme' ? 'var(--gb-theme-ui-font-family)' : `${quoteFontFamily(uiFont.family)}, var(--gb-theme-ui-font-family)`);
-  root.style.setProperty('--app-editor-font-family', editorFont.source === 'theme' ? 'var(--gb-theme-editor-font-family)' : `${quoteFontFamily(editorFont.family)}, var(--gb-theme-editor-font-family)`);
+  root.style.setProperty('--app-font-sans', uiFont.source === 'theme' ? 'var(--gb-theme-ui-font-family)' : fontFamilyForStack(uiFont.families));
+  root.style.setProperty('--app-editor-font-family', editorFont.source === 'theme' ? 'var(--gb-theme-editor-font-family)' : editorFontFamilyForStack(editorFont.families));
   root.style.setProperty('--app-ui-font-size', uiFontSize.source === 'theme' ? 'var(--gb-theme-ui-font-size)' : `${normalizeTypographySize(uiFontSize.px, 'ui')}px`);
   root.style.setProperty('--app-editor-font-size', editorFontSize.source === 'theme' ? 'var(--gb-theme-editor-font-size)' : `${normalizeTypographySize(editorFontSize.px, 'editor')}px`);
 }
-function quoteFontFamily(font:string) { return `"${font.replaceAll('"','\\"')}"`; }
+export function normalizeFontFamilies(families: readonly string[]) {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const family of families) {
+    const trimmed = family.trim();
+    const key = trimmed.toLocaleLowerCase();
+    if (!trimmed || Array.from(trimmed).length > MAX_FONT_FAMILY_CODE_POINTS || /[,;{}]/u.test(trimmed) || seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(trimmed);
+    if (normalized.length === MAX_FONT_STACK_FAMILIES) break;
+  }
+  return normalized;
+}
+export function toggleFontFamily(families: readonly string[], family: string) {
+  const normalized = normalizeFontFamilies(families);
+  const target = family.trim();
+  const index = normalized.findIndex((candidate) => candidate.toLocaleLowerCase() === target.toLocaleLowerCase());
+  return index >= 0
+    ? normalized.filter((_, candidateIndex) => candidateIndex !== index)
+    : normalizeFontFamilies([...normalized, target]);
+}
+export function moveFontFamily(families: readonly string[], index: number, direction: -1 | 1) {
+  const normalized = normalizeFontFamilies(families);
+  const target = index + direction;
+  if (index < 0 || index >= normalized.length || target < 0 || target >= normalized.length) return normalized;
+  [normalized[index], normalized[target]] = [normalized[target], normalized[index]];
+  return normalized;
+}
+function serializeCustomFontStack(families: readonly string[], fallbackVariable: string) {
+  return [...normalizeFontFamilies(families).map(quoteFontFamily), fallbackVariable].join(', ');
+}
+function serializeThemeFontStack(stack: { families: readonly string[]; fallback: string }) {
+  return [...normalizeFontFamilies(stack.families).map(quoteFontFamily), stack.fallback].join(', ');
+}
+function quoteFontFamily(font:string) { return `"${font.replaceAll('\\','\\\\').replaceAll('"','\\"')}"`; }

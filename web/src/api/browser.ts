@@ -5,6 +5,7 @@ import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
 import { browserPreviewState } from './browserState';
 import { localTimestamp, toRoundSelectionInput } from './shared';
 import { scheduledScheduleSpecFromInput } from '@/lib/scheduled-task-authoring';
+import { normalizeFontCatalogFamilies } from '@/lib/font-families';
 
 const browserFontCandidates = [
   'MiSans', 'Maple Mono NF CN', 'Microsoft YaHei UI', 'Microsoft YaHei', 'DengXian', 'DengXian Light', 'SimHei', 'SimSun', 'NSimSun', 'KaiTi', 'FangSong', 'YouYuan', 'LiSu', 'STXihei', 'STSong', 'STKaiti', 'STFangsong', 'PingFang SC', 'PingFang TC', 'PingFang HK', 'Hiragino Sans GB', 'Songti SC', 'Kaiti SC', 'Heiti SC', 'Heiti TC', 'Noto Sans CJK SC', 'Noto Sans CJK TC', 'Noto Sans SC', 'Noto Serif SC', 'Source Han Sans SC', 'Source Han Serif SC', 'Sarasa Gothic SC', 'LXGW WenKai', 'MiSans', 'HarmonyOS Sans SC', 'WenQuanYi Micro Hei', 'WenQuanYi Zen Hei', 'Segoe UI', 'Segoe UI Variable', 'Yu Gothic UI', 'Meiryo', 'Malgun Gothic', 'SF Pro Text', 'SF Pro Display', 'Inter', 'Roboto', 'Arial', 'Helvetica Neue', 'Helvetica', 'Ubuntu', 'Cantarell', 'DejaVu Sans', 'Liberation Sans',
@@ -157,6 +158,15 @@ function browserCompletedConversationRun(): ConversationRunVm {
     cwd: 'D:/Projects/code/ai/Gold-Band',
     status: 'completed',
     stopReason: 'end_turn',
+    usage: {
+      used: 25_400,
+      size: 258_400,
+      inputTokens: 18_760,
+      outputTokens: 2_140,
+      cachedReadTokens: 4_200,
+      cachedWriteTokens: 300,
+      totalTokens: 25_400,
+    },
     events: [
       {
         id: 'browser-user-prompt-052',
@@ -863,7 +873,7 @@ export const browserApi: RuntimeApi = {
     if (queriedFonts.length > 0) return queriedFonts;
     const detectedFonts = detectBrowserFonts(browserFontCandidates);
     if (detectedFonts.length > 0) return detectedFonts;
-    return normalizeFontFamilies(browserFontCandidates);
+    return normalizeFontCatalogFamilies(browserFontCandidates);
   },
   getAgentRegistry() {
     return Promise.resolve(mockAgentRegistry);
@@ -1921,7 +1931,7 @@ function detectBrowserFonts(candidates: readonly string[]) {
       return [family, context.measureText(sample).width] as const;
     }),
   );
-  return normalizeFontFamilies(
+  return normalizeFontCatalogFamilies(
     candidates.filter((family) => {
       const quoted = quoteFontFamily(family);
       if (document.fonts.check(`16px ${quoted}`)) {
@@ -1942,15 +1952,10 @@ async function queryBrowserLocalFonts() {
   }
   try {
     const fonts = await fontWindow.queryLocalFonts();
-    return normalizeFontFamilies(fonts.map((font) => font.family));
+    return normalizeFontCatalogFamilies(fonts.map((font) => font.family));
   } catch {
     return [];
   }
-}
-
-function normalizeFontFamilies(families: readonly string[]) {
-  const collator = new Intl.Collator(['zh-CN', 'en'], { sensitivity: 'base', numeric: true });
-  return Array.from(new Set(families.map((family) => family.trim()).filter(Boolean))).sort((left, right) => collator.compare(left, right));
 }
 
 function quoteFontFamily(family: string) {

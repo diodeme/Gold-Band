@@ -7,6 +7,9 @@ export const THEME_CAPABILITIES = [
   'visual-quality-profiles',
 ];
 
+export const MAX_FONT_STACK_FAMILIES = 16;
+export const MAX_FONT_FAMILY_CHARS = 128;
+
 export const SEMANTIC_TOKEN_NAMES = [
   'background', 'foreground', 'title', 'card', 'cardForeground', 'popover',
   'popoverForeground', 'primary', 'primaryForeground', 'secondary',
@@ -44,15 +47,15 @@ const localizedTextSchema = {
 
 export const themeManifestSchema = {
   $schema: 'http://json-schema.org/draft-07/schema#',
-  $id: 'https://gold-band.dev/schemas/theme-manifest-v1.schema.json',
-  title: 'Gold Band Theme Manifest v1',
+  $id: 'https://gold-band.dev/schemas/theme-manifest-v2.schema.json',
+  title: 'Gold Band Theme Manifest v2',
   type: 'object',
   additionalProperties: false,
   required: ['schemaVersion', 'contractVersion', 'id', 'version', 'source', 'name', 'author', 'schemes', 'capabilities'],
   properties: {
     $schema: { type: 'string' },
-    schemaVersion: { const: 1 },
-    contractVersion: { const: 1 },
+    schemaVersion: { const: 2 },
+    contractVersion: { const: 2 },
     id: { type: 'string', pattern: '^(builtin|user)\\.[a-z0-9][a-z0-9.-]*$' },
     version: { type: 'string', pattern: '^\\d+\\.\\d+\\.\\d+$' },
     source: { enum: ['builtin', 'user'] },
@@ -107,14 +110,25 @@ const materialSchema = {
   },
 };
 
+const fontStackSchema = (minimum, maximum, fallback) => ({
+  type: 'object', additionalProperties: false,
+  required: ['families', 'fallback', 'size'],
+  properties: {
+    families: {
+      type: 'array', minItems: 1, maxItems: MAX_FONT_STACK_FAMILIES, uniqueItems: true,
+      items: { type: 'string', minLength: 1, maxLength: MAX_FONT_FAMILY_CHARS, pattern: '^[^,;{}]+$' },
+    },
+    fallback: { const: fallback },
+    size: { type: 'number', minimum, maximum },
+  },
+});
+
 const typographySchema = {
   type: 'object', additionalProperties: false,
-  required: ['uiFamily', 'uiSize', 'editorFamily', 'editorSize'],
+  required: ['ui', 'editor'],
   properties: {
-    uiFamily: { type: 'string', minLength: 1 },
-    uiSize: { type: 'number', minimum: 12, maximum: 18 },
-    editorFamily: { type: 'string', minLength: 1 },
-    editorSize: { type: 'number', minimum: 10, maximum: 18 },
+    ui: fontStackSchema(12, 18, 'sans-serif'),
+    editor: fontStackSchema(10, 18, 'monospace'),
   },
 };
 
@@ -176,12 +190,12 @@ const schemeSchema = {
 
 export const runtimeThemeSchema = {
   $schema: 'http://json-schema.org/draft-07/schema#',
-  $id: 'https://gold-band.dev/schemas/theme-package-v1.schema.json',
-  title: 'Gold Band Runtime Theme Package v1',
+  $id: 'https://gold-band.dev/schemas/theme-package-v2.schema.json',
+  title: 'Gold Band Runtime Theme Package v2',
   type: 'object', additionalProperties: false,
   required: ['schemaVersion', 'contractVersion', 'id', 'version', 'source', 'name', 'author', 'capabilities', 'schemes', 'recipes'],
   properties: {
-    schemaVersion: { const: 1 }, contractVersion: { const: 1 },
+    schemaVersion: { const: 2 }, contractVersion: { const: 2 },
     id: themeManifestSchema.properties.id, version: themeManifestSchema.properties.version,
     source: themeManifestSchema.properties.source, name: localizedTextSchema,
     author: { type: 'string', minLength: 1 },

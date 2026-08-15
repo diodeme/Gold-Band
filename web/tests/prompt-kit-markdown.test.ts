@@ -97,7 +97,8 @@ describe('prompt-kit Markdown', () => {
     }));
 
     expect(html).toContain('font-sans text-[1em] font-normal leading-[inherit] tracking-normal');
-    expect(html).toContain('rounded-md bg-muted/50 px-1.5 py-0.5');
+    expect(html).toContain('rounded-md bg-gold-surface-high px-1.5 py-0.5');
+    expect(html).not.toContain('bg-muted/50');
     expect(html).not.toContain('font-mono');
   });
 

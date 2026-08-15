@@ -286,14 +286,14 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                     <div key={`pinned-ws-${projectId}`}>
                       <button
                         type="button"
-                        className="flex w-full items-center gap-1.5 px-1 py-1 text-left text-sm font-bold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground"
+                        className="flex w-full items-center gap-1.5 px-1 py-1 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground"
                         onClick={() => togglePinnedWorkspace(projectId)}
                       >
                         <ChevronDown className={cn('size-3 shrink-0 transition-transform', isWsCollapsed && '-rotate-90')} />
                         <span className="truncate">{ws?.name ?? projectId}</span>
                       </button>
                       {!isWsCollapsed ? (
-                        <div className="space-y-1">
+                        <div className="space-y-0.5">
                           {tasks.map((task) => (
                             <TaskRow
                               key={`pinned-${task.projectId}-${task.taskId}`}
@@ -335,7 +335,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1">
                   <button
                     type="button"
-                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-bold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-11"
+                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-11"
                     onClick={() => toggleWorkspace(ws.projectId)}
                   >
                     <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
@@ -365,7 +365,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                   </span>
                 </div>
                 {expandedWorkspaces[ws.projectId] ? (
-                  <div className="space-y-1">
+                  <div className="space-y-0.5">
                     {(vm.tasksByWorkspace[ws.projectId] ?? []).map((task) => (
                       <TaskRow
                         key={`${task.projectId}-${task.taskId}`}
@@ -670,8 +670,8 @@ function TaskRow({
   const taskRow = (
     <div
       className={cn(
-        'group relative flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-sidebar-foreground/85 cursor-pointer',
-        isActive ? 'bg-sidebar-accent/70 font-semibold text-sidebar-accent-foreground' : 'hover:bg-sidebar-accent',
+        'group relative flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-sidebar-foreground cursor-pointer',
+        isActive ? 'bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground' : 'hover:bg-sidebar-accent',
       )}
       onClick={handleRowClick}
     >
@@ -693,7 +693,7 @@ function TaskRow({
         {editing ? (
           <input
             ref={editInputRef}
-            className="min-w-0 flex-1 rounded border border-primary/40 bg-background px-1 py-0 text-ui-compact outline-none"
+            className="min-w-0 flex-1 rounded border border-primary/40 bg-background px-1 py-0 text-sm outline-none"
             value={editValue}
             onChange={(e) => setEditValue(e.target.value)}
             onBlur={commitRename}
@@ -701,7 +701,7 @@ function TaskRow({
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-ui-compact">
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-sm">
             {task.scheduledTaskId ? <AlarmClock className="size-3 shrink-0 text-foreground" aria-label={t('scheduled.conversationMarker')} /> : null}
             <span className="truncate">{task.title}</span>
           </span>

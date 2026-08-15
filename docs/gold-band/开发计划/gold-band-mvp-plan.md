@@ -10,9 +10,9 @@
 ## 2026-08-14：会话页文字层级与有效留白收敛
 
 - 根因：会话页的信息层级存在反转：workspace 分组标题小于其下会话项，顶部会话标题又大于正文；更根本的问题是消息、统计和 composer 横向铺满大屏剩余空间，阅读起点与行长随窗口无界增长。这是排版语义与内容宽度边界缺失，不是单个字号问题。
-- 实现：不删除信息、不改变入口和交互，基于现有 Tailwind/shadcn/prompt-kit 组件建立稳定层级：workspace 标题为 14px 半粗体，会话项为 13px，相对时间为 11px；顶部会话标题收敛为 14px 半粗体，run ID 为 11px。消息、运行统计和 composer 共用居中 56rem 阅读轨道，窄窗口自动退化为全宽并保留 20px 安全边距。消息间距保持 20px，侧栏继续用局部 margin 区分导航、置顶和 workspace。
-- 排版补充：workspace 标题、当前会话、普通会话与元信息分别使用 600/500/400/400 字重，层级不再只依赖字号。Streamdown 反引号行内内容改为与正文相同的 UI 字体、字号、字重和行高，只保留标签底色、圆角与内边距；fenced code block 继续使用等宽字体和 Shiki 高亮。
-- 验收：新增会话视觉层级契约测试并收紧侧栏、Streamdown 样式契约；定向 Vitest 共 5 个文件、25 项全部通过，TypeScript 与 Web 生产构建通过。内置浏览器在 1280px 与 900px 宽度下验证消息轨道、侧栏和 composer 无横向溢出，最终 workspace 标题计算样式为 14px / 600 / 20px；桌面客户端首页已确认 workspace 与会话项的层级改善，最终复验时客户端窗口已关闭，因此未擅自重启。行内代码的同字体、同字号、同字重、同上下文行高及 fenced code block 隔离由组件单元测试固化。
+- 实现：不删除信息、不改变入口和交互，基于现有 Tailwind/shadcn/prompt-kit 组件建立稳定层级：workspace 标题、侧栏会话标题与顶部会话标题统一消费主题 `text-sm` token（默认 14px），重命名输入保持同字号；相对时间和 run ID 使用元信息字号。置顶区与 workspace 区的会话间距统一收敛为 Tailwind `space-y-0.5`（默认 2px），行内 padding 与点击热区保持不变。消息、运行统计和 composer 共用居中 56rem 阅读轨道，窄窗口自动退化为全宽并保留 20px 安全边距。消息间距保持 20px，侧栏继续用局部 margin 区分导航、置顶和 workspace。
+- 排版补充：workspace 标题、当前会话与普通会话分别消费主题 `font-semibold / font-medium / font-normal`，当前 variable font 映射为 450 / 380 / 330；普通与选中会话标题统一使用完整 `sidebar-foreground`，不再用 85% 透明度制造额外的视觉变细，元信息继续使用 normal 字重与弱化色。视觉层级不只依赖字号，也不在组件中硬编码轴值。Streamdown 反引号行内内容改为与正文相同的 UI 字体、字号、字重和行高，只保留标签底色、圆角与内边距；fenced code block 继续使用等宽字体和 Shiki 高亮。
+- 验收：新增会话视觉层级契约测试并收紧侧栏、Streamdown 样式契约；契约固定侧栏会话标题与重命名输入使用主题 `text-sm`、两个会话列表使用 `space-y-0.5`，并禁止回退为任意像素字号。内置浏览器在正常与窄宽度下验证消息轨道、侧栏和 composer 无横向溢出，并核对主题字号变化后会话标题继续跟随。行内代码的同字体、同字号、同字重、同上下文行高及 fenced code block 隔离由组件单元测试固化。
 - 性能与复杂度评审：仅修改静态 class 与既有 DOM 的排版，不新增 React state、Context、订阅、I/O、依赖、缓存或逐帧计算，不扩大数据加载和渲染范围；继续复用现有组件，无过度抽象，性能风险可忽略。
 
 ## 2026-08-14：UI 小字号与文字颜色 class 合并修复
@@ -1092,3 +1092,32 @@ attempt-001/
 - 内置主题收敛：删除 `themes/glass` 与 `themes/neo-brutalist` 的源包和 dist，重新生成的 Web/Rust Catalog 只允许 `builtin.gold-band` 与 `builtin.tech-neutral`。设置页不保留旧卡片、隐藏入口、fallback 包或主题 ID 特判。
 - 状态收敛：现有前端 resolver 继续作为外观权威投影边界，遇到退役或未知 `themeId` 时回到 Gold Band，并同步删除无对应能力的 `visualQualityByTheme` 项；不新增 settings schema、双写或专用迁移分支。
 - 性能与过度设计：Catalog 从四包缩减为两包，构建与启动期静态数据、生成 CSS 和设置页卡片数量同步下降；运行时仍为固定数量根属性与 CSS variable 写入，无新增 I/O、状态订阅、缓存、队列或渲染分支。
+## 2026-08-15：会话 Markdown 行内标签对比度收敛
+
+- 根因：反引号行内代码与本地文件标签已经拥有正确的字体和标签结构，但组件在主题 `muted` 之上再次使用 45%–50% 透明度，与会话背景二次混合后边界接近消失；问题来自现有设计实现不完整，不是各主题色板都需要单独加深。
+- 实现：继续复用 prompt-kit/Streamdown copy-in 渲染器与现有 Theme SDK 语义 token，将两类行内标签统一改为直接消费 `surfaceHigh`；保留正文前景、圆角、间距和文件链接 hover 语义，不修改全局 `muted`，避免连带增强辅助区、禁用态和表格表面。
+- 验收：组件单元测试固定行内代码与本地文件标签不再消费透明 `muted`；分别验证 Gold Band 与技术中性主题的 light/dark 计算样式和视觉对比度，并执行 TypeScript、Web 生产构建与 diff 检查。
+- 性能与过度设计评审：仅替换两个静态 utility class，不新增 DOM、React state、Context、依赖、运行时颜色计算或主题特判；主题切换仍只触发 CSS 重算，不扩大 Markdown 渲染范围，无明显性能风险，也没有新增抽象。
+
+## 2026-08-15：内置主题默认字重收敛为 variable 330
+
+- 根因：两个内置主题原先共享 MiSans 静态字体家族，但正文直接使用 Regular 字形，长会话与高密度 UI 在浅色背景上形成偏黑、偏重的连续文本块；直接换成静态 Light 又会落到字体自身约 250 的字形而明显过细。问题是静态档位无法表达 Light 与 Regular 之间的目标，不应使用透明度、阴影或局部颜色补丁模拟中间字重。
+- 实现：以同版本、完整中文覆盖的 MiSans variable font 替换五份静态资产，将 Tailwind `font-normal / medium / semibold / bold` 映射为字体原生轴值 330 / 380 / 450 / 520，并让 body 使用 `font-normal`。字体 face 注册范围封顶 520，使应用最高强调为真实 Semibold，不提供 Bold 630；加入 Inter Variable 后继续共用同一套连续轴语义，不新增主题 ID 分支、设置字段或 React 运行时计算。
+- 验收：契约测试固定 variable 资源、330 基线、四级轴映射、body 基线和所有静态/Bold 资产退出；在两个内置主题的 light/dark 下检查正文、按钮、标题、`strong` 与行内代码的 computed font weight，并执行 Web 生产构建与 diff 检查。
+- 性能与过度设计评审：单个 variable TTF 约 20.0 MB，替换的四份 300–600 静态 WOFF2 合计约 19.6 MB，安装体积基本持平并把字体请求从多个 face 收敛为一个本地资源；代价是首次字体读取集中到单文件，需在桌面 WebView 的生产页面核对加载时长。无新增 React state、Context、订阅、缓存、队列或逐元素字重计算；现有一个连续轴已经覆盖真实需求，不再保留两套字体路径。
+
+## 2026-08-15：UI / 编辑器有序字体栈
+
+- 根因：单个 `family` 偏好无法同时表达“英文优先 Segoe UI、中文回退 MiSans”，把完整 CSS font-family 字符串交给主题或用户又会混淆数据与序列化边界。该问题来自字体模型的根本表达能力不足，需要升级 Theme Contract 和 personalization 数据结构，而不是在中英文节点上分别硬编码字体。
+- 数据与接口：Theme SDK / manifest / runtime package 升级到 v2，排版预设统一为 `{ families, fallback, size }`；personalization schema v2 使用 `fontStack: theme | custom { families }`，settings schema v8 破坏式删除 v1 单字体字段并恢复主题栈。前后端统一限制 1–16 个 family、128 Unicode 字符、大小写不敏感去重及 CSS 分隔符拒绝，保存接口返回 canonical 有序结果。
+- 交互与实现：设置页复用 shadcn `Popover + Command` 搜索多选，点击顺序即优先级；已选项支持再次点击取消、删除、上移和下移，清空后恢复主题。CSS 栈由统一序列化器生成，自定义 families 后继续追加主题变量作为兜底；浏览器原生 glyph fallback 负责中英文混排，不做逐字符 JavaScript 检测。
+- 主题资源包：Gold Band 与技术中性均以 `Inter Variable → Gold Band MiSans` 作为 UI 主路径，后接 MiSans、常见系统 CJK 字体与 `sans-serif`；Inter Variable 通过 Fontsource 随应用分发，不依赖系统安装，编辑器栈为 `JetBrains Mono → SFMono-Regular → Consolas → monospace`。生成 Catalog、CSS、JSON Schema 和包级 dist 同步更新。
+- 验收：Theme SDK 构建测试覆盖有序栈与重复 family 拒绝；Rust 配置迁移和保存接口测试覆盖顺序保留、空栈、重复、非法字符与超长 family；Vitest 固定规范化、追加/取消/重排、空栈恢复主题和 shadcn 组件契约，并执行 TypeScript、生产构建、Rust workspace check 与内置浏览器深链验收。
+- 性能与过度设计评审：每套栈上限 16 项，偏好变化仅规范化一个小数组并写一次根 CSS variable；系统字体仍只枚举一次，浏览器完成字形回退。未增加拖拽依赖、逐字符扫描、缓存、Context、队列或大范围 React 订阅，运行时复杂度与数据规模匹配，无需额外 benchmark。
+
+## 2026-08-15：混排字体协调与完整字体目录
+
+- 根因：Segoe UI 与 MiSans 仅共享 CSS 字重值，光学重量、字面比例和行框指标并不协调，拉丁字符与中文连续出现时仍有明显拼接感；字体选择器则把“系统字体目录”错误复用了最多 16 项的用户字体栈规范化函数，导致描述计数来自完整目录而渲染选项被截断。前者是默认主题资源不完整，后者是两个不同领域的数据边界混淆，均不采用组件局部补丁。
+- 数据与实现：新增无数量上限的字体目录规范化函数，仅做 trim、大小写不敏感去重和 locale 排序；Settings 与浏览器字体探测统一消费该目录函数，用户偏好仍由原有有界、保序规范化函数约束。两个内置主题改为随包分发的 `Inter Variable → Gold Band MiSans`，设置页也允许选择两套内置字体；继续复用 shadcn `Popover + Command`，不增加逐字符 JS 分流。
+- 接口回归：单元测试固定 100 项字体目录不被截断、自然排序与大小写去重，继续固定用户字体栈最多 16 项；Theme SDK 测试固定两个内置主题的 Inter / MiSans 顺序，生产构建必须包含 Fontsource variable font 资源。
+- 性能与过度设计评审：系统字体仅在设置页载入时对约百项数组执行一次 O(n) 去重与 O(n log n) 排序；99 项 Command 不需要虚拟化，没有新增状态、Context、缓存、队列或额外字体枚举。Fontsource 依靠 unicode-range 按需加载字集，正文仍由浏览器原生 fallback 完成；新增依赖只承担成熟字体资源的版本与打包管理，与实际跨平台一致性需求匹配。

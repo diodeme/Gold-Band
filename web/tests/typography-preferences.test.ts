@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applyPersonalization, desktopTypography, normalizeTypographySize } from '../src/theme';
+import { applyPersonalization, desktopTypography, moveFontFamily, normalizeFontFamilies, normalizeTypographySize, toggleFontFamily } from '../src/theme';
+import { normalizeFontCatalogFamilies } from '../src/lib/font-families';
 
 describe('desktop typography preferences', () => {
   afterEach(() => {
@@ -23,10 +24,10 @@ describe('desktop typography preferences', () => {
     vi.stubGlobal('document', { documentElement: { dataset: {}, style: { setProperty } } });
 
     applyPersonalization({
-      schemaVersion: 1,
+      schemaVersion: 2,
       typography: {
-        ui: { font: { source: 'theme' }, fontSize: { source: 'custom', px: 15.6 } },
-        editor: { font: { source: 'local', family: 'Fira Code' }, fontSize: { source: 'custom', px: 30 } },
+        ui: { fontStack: { source: 'theme' }, fontSize: { source: 'custom', px: 15.6 } },
+        editor: { fontStack: { source: 'custom', families: ['Fira Code', 'Consolas'] }, fontSize: { source: 'custom', px: 30 } },
       },
       avatars: {
         agent: { image: { source: 'theme' }, shape: { source: 'theme' } },
@@ -35,7 +36,7 @@ describe('desktop typography preferences', () => {
     });
 
     expect(setProperty).toHaveBeenNthCalledWith(1, '--app-font-sans', 'var(--gb-theme-ui-font-family)');
-    expect(setProperty).toHaveBeenNthCalledWith(2, '--app-editor-font-family', '"Fira Code", var(--gb-theme-editor-font-family)');
+    expect(setProperty).toHaveBeenNthCalledWith(2, '--app-editor-font-family', '"Fira Code", "Consolas", var(--gb-theme-editor-font-family)');
     expect(setProperty).toHaveBeenNthCalledWith(3, '--app-ui-font-size', '16px');
     expect(setProperty).toHaveBeenNthCalledWith(4, '--app-editor-font-size', '18px');
   });
@@ -50,11 +51,70 @@ describe('desktop typography preferences', () => {
     expect(source).not.toContain("localStorage.setItem(typographyDisclosureSessionKey");
   });
 
-  it('maps global weight semantics one step lighter without flattening hierarchy', () => {
+  it('uses the MiSans variable axis between Light and Regular and caps emphasis at Semibold', () => {
     const styles = fs.readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
-    expect(styles).toContain('--font-weight-medium: 400;');
-    expect(styles).toContain('--font-weight-semibold: 500;');
-    expect(styles).toContain('--font-weight-bold: 600;');
+    const fontDirectory = path.resolve(__dirname, '../public/fonts/misans');
+    expect(styles).toContain('src: url("/fonts/misans/MiSans-VF.ttf") format("truetype-variations");');
+    expect(styles).toContain('font-weight: 250 520;');
+    expect(styles).toContain('--font-weight-normal: 330;');
+    expect(styles).toContain('--font-weight-medium: 380;');
+    expect(styles).toContain('--font-weight-semibold: 450;');
+    expect(styles).toContain('--font-weight-bold: 520;');
+    expect(styles).toContain('@apply m-0 overflow-hidden bg-background font-sans font-normal text-foreground;');
+    expect(styles).not.toMatch(/MiSans-(?:Light|Regular|Medium|Semibold|Bold)\.woff2/u);
+    expect(styles).not.toContain('font-weight: 700;');
+    expect(fs.existsSync(path.join(fontDirectory, 'MiSans-VF.ttf'))).toBe(true);
+    expect(fs.existsSync(path.join(fontDirectory, 'MiSans-Light.woff2'))).toBe(false);
+    expect(fs.existsSync(path.join(fontDirectory, 'MiSans-Regular.woff2'))).toBe(false);
+    expect(fs.existsSync(path.join(fontDirectory, 'MiSans-Medium.woff2'))).toBe(false);
+    expect(fs.existsSync(path.join(fontDirectory, 'MiSans-Semibold.woff2'))).toBe(false);
+    expect(fs.existsSync(path.join(fontDirectory, 'MiSans-Bold.woff2'))).toBe(false);
+  });
+
+  it('bundles Inter Variable ahead of MiSans for coordinated Latin and CJK text', () => {
+    const main = fs.readFileSync(path.resolve(__dirname, '../src/main.tsx'), 'utf8');
+    const styles = fs.readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
+    const goldBandPreset = fs.readFileSync(path.resolve(__dirname, '../../themes/gold-band/presets.json'), 'utf8');
+    const techNeutralPreset = fs.readFileSync(path.resolve(__dirname, '../../themes/tech-neutral/presets.json'), 'utf8');
+    expect(main).toContain("import '@fontsource-variable/inter/wght.css';");
+    expect(styles).toContain('--app-font-sans: "Inter Variable", "Gold Band MiSans"');
+    expect(goldBandPreset).toContain('"families": ["Inter Variable", "Gold Band MiSans"');
+    expect(techNeutralPreset).toContain('"families": ["Inter Variable", "Gold Band MiSans"');
+  });
+
+  it('keeps the complete sorted font catalog separate from the bounded preference stack', () => {
+    const catalog = Array.from({ length: 100 }, (_, index) => `Font ${100 - index}`);
+    expect(normalizeFontCatalogFamilies([...catalog, ' font 1 ', 'FONT 2', ''])).toHaveLength(100);
+    expect(normalizeFontCatalogFamilies([' Zeta ', 'alpha', 'ALPHA', 'Font 10', 'Font 2'])).toEqual([
+      'alpha',
+      'Font 2',
+      'Font 10',
+      'Zeta',
+    ]);
+    expect(normalizeFontFamilies(catalog)).toHaveLength(16);
+  });
+
+  it('normalizes, toggles, and reorders an ordered font stack', () => {
+    expect(normalizeFontFamilies([' Segoe UI ', 'segoe ui', 'Gold Band MiSans', 'bad,font'])).toEqual(['Segoe UI', 'Gold Band MiSans']);
+    expect(normalizeFontFamilies(['x'.repeat(129), 'Segoe UI'])).toEqual(['Segoe UI']);
+    expect(toggleFontFamily(['Segoe UI'], 'Gold Band MiSans')).toEqual(['Segoe UI', 'Gold Band MiSans']);
+    expect(toggleFontFamily(['Segoe UI', 'Gold Band MiSans'], 'segoe ui')).toEqual(['Gold Band MiSans']);
+    expect(moveFontFamily(['Segoe UI', 'Gold Band MiSans'], 1, -1)).toEqual(['Gold Band MiSans', 'Segoe UI']);
+    expect(moveFontFamily(['Segoe UI', 'Gold Band MiSans'], 0, -1)).toEqual(['Segoe UI', 'Gold Band MiSans']);
+  });
+
+  it('uses the accessible shadcn font-stack selector and restores the theme for an empty stack', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../src/pages/SettingsPage.tsx'), 'utf8');
+    const selector = source.slice(source.indexOf('function FontPreferenceSetting'), source.indexOf('function FontStackAction'));
+    const stackProjection = source.slice(source.indexOf('function withTypographyFontStack'), source.indexOf('function CurrentThemeSummary'));
+    expect(selector).toContain('<Popover open={open} onOpenChange={setOpen}>');
+    expect(selector).toContain('<CommandItem');
+    expect(selector).toContain('normalizeFontCatalogFamilies([');
+    expect(selector).toContain('<FontStackAction');
+    expect(selector).not.toContain('<Select');
+    expect(selector).toContain('onClick={() => onChange([])}');
+    expect(stackProjection).toContain("? { source: 'theme' as const }");
+    expect(stackProjection).toContain(": { source: 'custom' as const, families: normalized }");
   });
 
   it('keeps editor typography isolated from chat inline labels and covers all CodeMirror views', () => {
@@ -73,7 +133,8 @@ describe('desktop typography preferences', () => {
 
   it('uses UI-derived typography tokens in the conversation sidebar', () => {
     const sidebar = fs.readFileSync(path.resolve(__dirname, '../src/components/conversation/ConversationSidebar.tsx'), 'utf8');
-    expect(sidebar).toContain('text-ui-compact');
+    expect(sidebar).toContain('truncate text-sm');
+    expect(sidebar).not.toContain('text-ui-compact');
     expect(sidebar).toContain('text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55');
     expect(sidebar).not.toContain('text-ui-micro tabular-nums text-muted-foreground');
     expect(sidebar).not.toMatch(/text-\[(?:10|12|13|14)px\]/u);

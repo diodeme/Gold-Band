@@ -69,9 +69,17 @@ export const materialTokensSchema = z.object({
   motionEasing: z.string(),
 }).strict();
 
+export const MAX_FONT_STACK_FAMILIES = 16;
+export const MAX_FONT_FAMILY_CODE_POINTS = 128;
+
+const fontStackPresetSchema = (minimum: number, maximum: number, fallback: 'sans-serif' | 'monospace') => z.object({
+  families: z.array(z.string().min(1).max(MAX_FONT_FAMILY_CODE_POINTS).regex(/^[^,;{}]+$/u)).min(1).max(MAX_FONT_STACK_FAMILIES),
+  fallback: z.literal(fallback),
+  size: z.number().min(minimum).max(maximum),
+}).strict();
 const typographyPresetSchema = z.object({
-  uiFamily: z.string(), uiSize: z.number().min(12).max(18),
-  editorFamily: z.string(), editorSize: z.number().min(10).max(18),
+  ui: fontStackPresetSchema(12, 18, 'sans-serif'),
+  editor: fontStackPresetSchema(10, 18, 'monospace'),
 }).strict();
 const avatarPresetSchema = z.object({
   agentShape: z.enum(['circle', 'square']), userShape: z.enum(['circle', 'square']),
@@ -105,7 +113,7 @@ const performanceOverridesSchema = z.object({
 }).strict();
 
 export const themePackageSchema = z.object({
-  schemaVersion: z.literal(1), contractVersion: z.literal(1), id: z.string().regex(/^(builtin|user)\.[a-z0-9][a-z0-9.-]*$/),
+  schemaVersion: z.literal(2), contractVersion: z.literal(2), id: z.string().regex(/^(builtin|user)\.[a-z0-9][a-z0-9.-]*$/),
   version: z.string().regex(/^\d+\.\d+\.\d+$/), source: z.enum(['builtin', 'user']),
   name: localizedTextSchema, author: z.string().optional(),
   capabilities: z.array(themeCapabilitySchema).min(2),

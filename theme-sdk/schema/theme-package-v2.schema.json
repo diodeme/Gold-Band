@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://gold-band.dev/schemas/theme-package-v1.schema.json",
-  "title": "Gold Band Runtime Theme Package v1",
+  "$id": "https://gold-band.dev/schemas/theme-package-v2.schema.json",
+  "title": "Gold Band Runtime Theme Package v2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -18,10 +18,10 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": 1
+      "const": 2
     },
     "contractVersion": {
-      "const": 1
+      "const": 2
     },
     "id": {
       "type": "string",
@@ -638,29 +638,71 @@
               "type": "object",
               "additionalProperties": false,
               "required": [
-                "uiFamily",
-                "uiSize",
-                "editorFamily",
-                "editorSize"
+                "ui",
+                "editor"
               ],
               "properties": {
-                "uiFamily": {
-                  "type": "string",
-                  "minLength": 1
+                "ui": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "families",
+                    "fallback",
+                    "size"
+                  ],
+                  "properties": {
+                    "families": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 16,
+                      "uniqueItems": true,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "pattern": "^[^,;{}]+$"
+                      }
+                    },
+                    "fallback": {
+                      "const": "sans-serif"
+                    },
+                    "size": {
+                      "type": "number",
+                      "minimum": 12,
+                      "maximum": 18
+                    }
+                  }
                 },
-                "uiSize": {
-                  "type": "number",
-                  "minimum": 12,
-                  "maximum": 18
-                },
-                "editorFamily": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "editorSize": {
-                  "type": "number",
-                  "minimum": 10,
-                  "maximum": 18
+                "editor": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "families",
+                    "fallback",
+                    "size"
+                  ],
+                  "properties": {
+                    "families": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 16,
+                      "uniqueItems": true,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "pattern": "^[^,;{}]+$"
+                      }
+                    },
+                    "fallback": {
+                      "const": "monospace"
+                    },
+                    "size": {
+                      "type": "number",
+                      "minimum": 10,
+                      "maximum": 18
+                    }
+                  }
                 }
               }
             },
@@ -1258,29 +1300,71 @@
               "type": "object",
               "additionalProperties": false,
               "required": [
-                "uiFamily",
-                "uiSize",
-                "editorFamily",
-                "editorSize"
+                "ui",
+                "editor"
               ],
               "properties": {
-                "uiFamily": {
-                  "type": "string",
-                  "minLength": 1
+                "ui": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "families",
+                    "fallback",
+                    "size"
+                  ],
+                  "properties": {
+                    "families": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 16,
+                      "uniqueItems": true,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "pattern": "^[^,;{}]+$"
+                      }
+                    },
+                    "fallback": {
+                      "const": "sans-serif"
+                    },
+                    "size": {
+                      "type": "number",
+                      "minimum": 12,
+                      "maximum": 18
+                    }
+                  }
                 },
-                "uiSize": {
-                  "type": "number",
-                  "minimum": 12,
-                  "maximum": 18
-                },
-                "editorFamily": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "editorSize": {
-                  "type": "number",
-                  "minimum": 10,
-                  "maximum": 18
+                "editor": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "families",
+                    "fallback",
+                    "size"
+                  ],
+                  "properties": {
+                    "families": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 16,
+                      "uniqueItems": true,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "pattern": "^[^,;{}]+$"
+                      }
+                    },
+                    "fallback": {
+                      "const": "monospace"
+                    },
+                    "size": {
+                      "type": "number",
+                      "minimum": 10,
+                      "maximum": 18
+                    }
+                  }
                 }
               }
             },

@@ -7,6 +7,7 @@ import '@/lib/acp-streaming-diagnostics';
 import { disposeAcpComposerDrafts } from '@/lib/acp-composer-draft';
 import { installDesktopPageZoomGuard } from '@/lib/desktop-page-zoom';
 import '@xyflow/react/dist/style.css';
+import '@fontsource-variable/inter/wght.css';
 import './styles.css';
 
 installUiErrorDiagnostics();

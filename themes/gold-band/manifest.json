@@ -1,7 +1,7 @@
 {
-  "$schema": "../../theme-sdk/schema/theme-manifest-v1.schema.json",
-  "schemaVersion": 1,
-  "contractVersion": 1,
+  "$schema": "../../theme-sdk/schema/theme-manifest-v2.schema.json",
+  "schemaVersion": 2,
+  "contractVersion": 2,
   "id": "builtin.gold-band",
   "version": "1.1.0",
   "source": "builtin",

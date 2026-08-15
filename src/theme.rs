@@ -192,11 +192,25 @@ fn default_edge_shadow() -> String {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeFontStackPreset {
+    pub families: Vec<String>,
+    pub fallback: ThemeGenericFontFamily,
+    pub size: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThemeGenericFontFamily {
+    #[serde(rename = "sans-serif")]
+    SansSerif,
+    #[serde(rename = "monospace")]
+    Monospace,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ThemeTypographyPreset {
-    pub ui_family: String,
-    pub ui_size: f64,
-    pub editor_family: String,
-    pub editor_size: f64,
+    pub ui: ThemeFontStackPreset,
+    pub editor: ThemeFontStackPreset,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

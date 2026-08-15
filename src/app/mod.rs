@@ -1350,7 +1350,7 @@ impl App {
         personalization: PersonalizationPreference,
     ) -> Result<SettingsConfig> {
         let mut settings = self.load_settings()?;
-        settings.personalization = Some(personalization);
+        settings.personalization = Some(personalization.normalized());
         self.save_settings(&settings)?;
         Ok(settings)
     }
@@ -1372,7 +1372,7 @@ impl App {
     ) -> Result<SettingsConfig> {
         let mut settings = self.load_settings()?;
         settings.appearance = Some(appearance);
-        settings.personalization = Some(personalization);
+        settings.personalization = Some(personalization.normalized());
         settings.desktop_language = Some(language);
         settings.use_local_claude = Some(use_local_claude);
         settings.log_level = Some(if verbose_logging {
@@ -3905,8 +3905,8 @@ mod tests {
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
         AppearancePreference, ColorSchemePreference, ConsoleThemeName, DesktopLanguage,
-        DesktopUpdateBadgeState, FontPreference, FontSizePreference, PersonalizationPreference,
-        ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel, VisualQuality,
+        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference,
+        PersonalizationPreference, ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel,
         catalog_agent_default_config,
     };
     use crate::domain::{
@@ -5746,12 +5746,12 @@ mod tests {
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root.clone());
         let mut personalization = PersonalizationPreference::default();
-        personalization.typography.ui.font = FontPreference::Local {
-            family: "Microsoft YaHei UI".to_string(),
+        personalization.typography.ui.font_stack = FontStackPreference::Custom {
+            families: vec!["Microsoft YaHei UI".to_string()],
         };
         personalization.typography.ui.font_size = FontSizePreference::Custom { px: 16 };
-        personalization.typography.editor.font = FontPreference::Local {
-            family: "Fira Code".to_string(),
+        personalization.typography.editor.font_stack = FontStackPreference::Custom {
+            families: vec!["Fira Code".to_string()],
         };
         personalization.typography.editor.font_size = FontSizePreference::Custom { px: 13 };
         app.set_user_desktop_preferences(

@@ -121,3 +121,19 @@ test('rejects an unknown material model', async () => {
   assert.notEqual(result.status, 0);
   assert.match(`${result.stderr}\n${result.stdout}`, /model|allowed values|liquid/u);
 });
+
+test('builds ordered font stacks and rejects duplicate families', async () => {
+  const built = await withBuildFixture();
+  assert.equal(built.status, 0, built.stderr || built.stdout);
+  const css = await readFile(join(repoRoot, 'web', 'src', 'themes', 'generated', 'builtin-themes.css'), 'utf8');
+  assert.match(css, /--gb-theme-ui-font-family:"Inter Variable", "Gold Band MiSans"/u);
+
+  const rejected = await withBuildFixture(async (directory) => {
+    const path = join(directory, 'themes', 'gold-band', 'presets.json');
+    await updateJson(path, (presets) => {
+      presets.light.typography.ui.families = ['Segoe UI', 'segoe ui'];
+    });
+  });
+  assert.notEqual(rejected.status, 0);
+  assert.match(`${rejected.stderr}\n${rejected.stdout}`, /unique|duplicate|families/u);
+});

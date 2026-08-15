@@ -7,22 +7,21 @@ export interface AppearancePreference {
   colorScheme: ColorSchemePreference;
   visualQualityByTheme: Record<string, VisualQuality>;
 }
-export type FontPreference = { source: 'theme' } | { source: 'local'; family: string };
+export type FontStackPreference = { source: 'theme' } | { source: 'custom'; families: string[] };
 export type FontSizePreference = { source: 'theme' } | { source: 'custom'; px: number };
 export type AvatarPreference = { source: 'theme' } | { source: 'user'; assetId: string };
 export type AvatarShapePreference = { source: 'theme' } | { source: 'custom'; value: AvatarShape };
 export interface PersonalizationPreference {
-  schemaVersion: 1;
+  schemaVersion: 2;
   typography: {
-    ui: { font: FontPreference; fontSize: FontSizePreference };
-    editor: { font: FontPreference; fontSize: FontSizePreference };
+    ui: { fontStack: FontStackPreference; fontSize: FontSizePreference };
+    editor: { fontStack: FontStackPreference; fontSize: FontSizePreference };
   };
   avatars: {
     agent: { image: AvatarPreference; shape: AvatarShapePreference };
     user: { image: AvatarPreference; shape: AvatarShapePreference };
   };
 }
-export type DesktopFontPreference = string;
 export type DesktopLanguage = 'zh-cn' | 'en';
 export type AvatarKind = 'agent' | 'user';
 export type AvatarShape = 'circle' | 'square';

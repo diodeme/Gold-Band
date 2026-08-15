@@ -5,6 +5,29 @@ It uses the DTCG token format, Style Dictionary for reference resolution, and JS
 closed runtime contract. Theme packages cannot contain JavaScript, HTML, arbitrary CSS, remote URLs,
 or executable extensions.
 
+Theme Contract v2 represents typography as ordered font data instead of a pre-serialized CSS string:
+
+```json
+{
+  "typography": {
+    "ui": {
+      "families": ["Inter Variable", "Gold Band MiSans"],
+      "fallback": "sans-serif",
+      "size": 14
+    },
+    "editor": {
+      "families": ["JetBrains Mono", "SFMono-Regular", "Consolas"],
+      "fallback": "monospace",
+      "size": 12
+    }
+  }
+}
+```
+
+Family order is significant. Each stack contains 1–16 unique names; a family is at most 128 characters
+and cannot contain CSS list or block delimiters (`,`, `;`, `{`, `}`). The compiler owns quoting and
+serialization, so packages must not embed generic fallbacks or comma-separated CSS in `families`.
+
 ## Authoring a package
 
 Copy an existing directory under `themes/` and change only package-owned files:

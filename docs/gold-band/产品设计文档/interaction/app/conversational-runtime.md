@@ -8,10 +8,11 @@
 
 上下文压缩属于 ACP 运行阶段，不是 assistant 普通消息：
 
+- 后端在唯一的 ACP session-update 归一化边界将 provider 信号投影为 `contextCompaction` canonical lifecycle，前端和 runtime 不按 Agent 类型、工具标题或自然语言关键词自行判断。ACP 正式 schema 尚未提供 compaction update；过渡期优先识别工具事件上的结构化 `_meta.contextCompaction`，并以同一 `toolCallId` 作为该 provider 生命周期的稳定身份；Claude-compatible adapter 仅保留对独立且全文精确等于 `Compacting...` / `Compacting completed.` 的控制消息兼容。普通正文提及这些文字、标题恰为 `Compact conversation` 但没有结构化 metadata 的工具调用均不得误判。未来 ACP `compaction_update` 进入正式 schema 后，由同一归一化边界优先消费标准事件并删除 provider 兼容入口，不改变内部 lifecycle 或前端组件。
 - 消息流使用无头像的轻量结构化行，保留 assistant 结构行的横向位置；不使用大卡片、嵌套面板或粗边框。
 - running 状态展示“正在压缩上下文”、压缩前占用、已耗时和不定进度动画；动画必须遵守 `prefers-reduced-motion`。
 - 运行超过 120 秒后展示“耗时较长，仍在等待 Agent”，但仍不得伪造失败或百分比。
-- completed 状态原位更新为“上下文压缩完成”和总耗时。压缩条目可以继续只展示压缩前占用与窗口上限；会话底部的“上下文窗口”在 runtime 观察到 reset 后首个有效正数时切换为 compact 后 ACP 当前上下文占用。reset 过程中的 `used=0` 不进入 UI，尚未获得有效值时保持上一次确认值或展示 `--`。
+- completed 状态原位更新为“上下文压缩完成”和总耗时。压缩条目可以继续只展示压缩前占用与窗口上限；会话底部的“上下文窗口”在 runtime 观察到 reset 后首个有效正数时切换为 compact 后 ACP 当前上下文占用。provider 若在 completed 信号前上报压缩后的较低正数 usage，runtime 只在 active compaction 内暂存最新候选，completed 到达后才原子确认并写入同一个 canonical item；interrupted 时丢弃候选。reset 过程中的 `used=0` 不进入 UI，尚未获得有效值时保持上一次确认值或展示 `--`。
 - interrupted 状态展示“上下文压缩已中断”，并由既有 ACP/runtime terminal 生命周期解除 composer 锁定。
 - composer 在 active compaction 期间将泛化 processing kind 切换为 `compacting`，文案为“正在压缩上下文”，停止按钮继续复用现有会话停止语义。
 - 状态变化使用 polite live region 提供无障碍播报。
@@ -34,6 +35,7 @@
 - ACP prompt 输出投影与 canonical timeline stream 的字符预算必须由生命周期状态同时持有累计字符数；每个新 chunk 只扫描自身一次并按 UTF-8 字符边界追加，禁止为检查上限反复遍历已经累计的完整字符串。该优化将“上限检查 + 有界字符串追加”步骤由最坏 O(n²) 收敛为整体 O(n)，不改变既有累计快照、字符上限、截断表现、artifact 候选段或 timeline 展示语义；runtime 从持久化 timeline 恢复开放 stream 时允许对已有内容执行一次字符计数，后续继续增量维护。
 - 桌面进程共享单一 `RuntimeLifecycleBus`，metrics、notifications、conversation-run-state 使用固定具名幂等订阅并只在 setup 注册一次；创建、重跑、继续与 prompt 路径不得重复挂载订阅。
 - 会话侧栏仅将活跃态动画绑定到既有身份/状态载体：进行中的 Workflow/AUTO run 使用 `gold-running` 蓝色圆点低强度呼吸；进行中的 Direct 会话让既有 Agent icon 低强度呼吸。动画必须遵守系统 reduced-motion 设置，禁止使用旋转外圈或标题文字动画；暂停保持既有黄色静态点，成功保持既有绿色静态点，失败保持既有红色静态点。
+- 会话侧栏的 workspace 标题与会话标题统一消费主题 `text-sm` UI 字号 token（默认 14px），不得为会话标题硬编码固定字号；会话标题进入重命名态后继续消费同一 token，避免编辑前后跳变。字重层级固定为 workspace `font-semibold`、选中会话 `font-medium`、普通会话 `font-normal`，由主题字重 token 映射为 450 / 380 / 330，不使用局部数值。普通与选中会话标题均使用完整 `sidebar-foreground` 语义色，不以透明度削弱正文；时间等元信息继续使用弱化色。置顶区与 workspace 区的相邻会话统一使用 Tailwind `space-y-0.5` 间距 token，在不缩小行内点击热区的前提下保持紧凑节奏。
 - AI-DYNAMIC 生命周期状态按领域分层持久化：每个 `DynamicNodeState` 自己持有结构化 `pauseReason` 与 `runtimeError`，`DynamicRunState.pauseReason` 只表示 graph 聚合结果。事件日志仅用于审计与诊断，不能作为 leaf 生命周期恢复的唯一事实源。
 - 并行 leaf 中一个节点异常、其他 sibling 仍运行时，graph 保持 `running`，异常 leaf 立即持久化自己的暂停原因和完整错误链；最后一个 active sibling 结束后，graph 按暂停 leaf 原因优先级聚合，不能统一降级为 `process-interrupted`。优先级为 `error-blocked > runtime-abnormal > permission-requested > waiting-for-user-input > process-interrupted`。
 - AI-DYNAMIC leaf 恢复时只清除目标 leaf 的 `pauseReason/runtimeError`，其他 paused sibling 的原因与错误必须保留。Conversation lifecycle、Session Switcher 与 workflow graph 优先读取 leaf 自身字段；仅对旧数据回退到 graph/run pause reason 或 ACP cancelled 快照。
@@ -403,7 +405,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 运行标题栏与 ACP session header 统一消费独立的 `content-header` token 并只保留轻量底部分隔线；四套主题当前都将该 token 映射为 `var(--sidebar)`，使标题栏与侧边栏组成连续应用框架，并与消息阅读区明确分层。保留独立 token 是为了未来可只改色板映射，不改变组件接口；标题栏不得增加独立卡片、投影或嵌套灰块。
 - 用户消息气泡使用独立的 `message-user` / `message-user-foreground` 语义 token，不复用 `primary` 混色。科技灰下采用 `#f3f3f3` 浅灰底与 `#202020` 深色正文，不显示可感知边框和投影；长消息仍应保持轻盈，不能形成大面积中灰实体面板。深色主题使用同源的中性高层 surface 与高对比文字。
 - assistant 自然语言正文直接显示在页面背景上，使用实色 `foreground`，不再包裹白色卡片、灰色边框或投影。工具、思考、代码块和控制输出仍可使用必要的结构化 surface，从而让主阅读路径保持高白度与高黑度。
-- 两个内置主题共享的默认 UI 字体家族保持 `Gold Band MiSans`，并由同版本 MiSans variable font 提供连续真实字重轴。无显式字重的排版基线固定为 300，位于该字体的 Light 250 与 Regular 330 之间；`font-medium / font-semibold / font-bold` 依次映射为 MiSans Medium 380、Demibold 450、Semibold 520，字体注册范围也封顶 520，不提供 Bold 630。正文、行内代码与使用 `font-normal` 的标签保持同一 300 基线，标题和 `strong` 继续通过 380–520 建立层级；不得用 opacity、阴影、伪粗体或静态 Light 冒充 300。
+- 两个内置主题共享 `Inter Variable → Gold Band MiSans` 的默认 UI 字体主路径，并由两套 variable font 提供连续真实字重轴。无显式字重的排版基线固定为 330；`font-medium / font-semibold / font-bold` 依次映射为 380、450、520，MiSans 注册范围封顶 520，不提供 Bold 630。正文、行内代码与使用 `font-normal` 的标签保持同一 330 基线，标题和 `strong` 继续通过 380–520 建立层级；不得用 opacity、阴影、伪粗体或静态 Light 冒充中间字重。
 - Thought 使用低边界紧凑结构；展开正文最大高度为 `18rem`，超过后仅正文区域纵向滚动，保留主题滚动条、键盘焦点和 overscroll 边界。内部滚动不改变会话主视口的 canonical 贴底状态，也不自动追随流式内容抢走用户当前阅读位置。
 - ACP 会话主消息流、raw frames 面板和 prompt-kit 聊天滚动容器使用 Gold Band 主题化滚动条；滚动条颜色必须来自主题 token（主色、muted、surface），科技灰主题使用无彩石墨与中性 surface 混合，不回退为系统默认灰色，也不引入蓝灰色偏。
 - 主题源码契约测试必须在解析 CSS 前统一换行符，Windows CRLF 与 Linux LF 必须得到相同 token 验收结果；不得把工作区 checkout 的行尾格式误判为视觉回归。

@@ -158,9 +158,44 @@ impl Default for AppearancePreference {
     rename_all = "kebab-case",
     rename_all_fields = "camelCase"
 )]
-pub enum FontPreference {
+pub enum FontStackPreference {
     Theme,
-    Local { family: String },
+    Custom { families: Vec<String> },
+}
+
+pub const MAX_FONT_STACK_FAMILIES: usize = 16;
+pub const MAX_FONT_FAMILY_CHARS: usize = 128;
+
+impl FontStackPreference {
+    pub fn normalized(self) -> Self {
+        let Self::Custom { families } = self else {
+            return Self::Theme;
+        };
+        let mut normalized = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for family in families {
+            let family = family.trim();
+            let key = family.to_lowercase();
+            if family.is_empty()
+                || family.chars().count() > MAX_FONT_FAMILY_CHARS
+                || family.contains([',', ';', '{', '}'])
+                || !seen.insert(key)
+            {
+                continue;
+            }
+            normalized.push(family.to_string());
+            if normalized.len() == MAX_FONT_STACK_FAMILIES {
+                break;
+            }
+        }
+        if normalized.is_empty() {
+            Self::Theme
+        } else {
+            Self::Custom {
+                families: normalized,
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,7 +241,7 @@ pub enum AvatarShapePreference {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TypographyPreference {
-    pub font: FontPreference,
+    pub font_stack: FontStackPreference,
     pub font_size: FontSizePreference,
 }
 
@@ -242,7 +277,7 @@ pub struct PersonalizationPreference {
 impl Default for PersonalizationPreference {
     fn default() -> Self {
         let typography = || TypographyPreference {
-            font: FontPreference::Theme,
+            font_stack: FontStackPreference::Theme,
             font_size: FontSizePreference::Theme,
         };
         let avatar = || AvatarPersonalization {
@@ -250,7 +285,7 @@ impl Default for PersonalizationPreference {
             shape: AvatarShapePreference::Theme,
         };
         Self {
-            schema_version: 1,
+            schema_version: 2,
             typography: TypographyPersonalization {
                 ui: typography(),
                 editor: typography(),
@@ -263,6 +298,15 @@ impl Default for PersonalizationPreference {
     }
 }
 
+impl PersonalizationPreference {
+    pub fn normalized(mut self) -> Self {
+        self.schema_version = 2;
+        self.typography.ui.font_stack = self.typography.ui.font_stack.normalized();
+        self.typography.editor.font_stack = self.typography.editor.font_stack.normalized();
+        self
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DesktopLanguage {
@@ -270,7 +314,6 @@ pub enum DesktopLanguage {
     En,
 }
 
-pub type DesktopFontPreference = String;
 pub const DEFAULT_DESKTOP_UI_FONT_SIZE: u8 = 14;
 pub const DEFAULT_DESKTOP_EDITOR_FONT_SIZE: u8 = 12;
 pub const MIN_DESKTOP_UI_FONT_SIZE: u8 = 12;
@@ -680,7 +723,7 @@ pub struct SettingsConfig {
     pub context_servers: Option<Vec<McpServerConfig>>,
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 7;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 8;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
 const CURRENT_CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp@latest";
@@ -736,6 +779,10 @@ impl SettingsConfig {
             migrate_desktop_personalization(settings);
             migrated = true;
         }
+        if version < 8 {
+            migrate_desktop_font_stacks(settings);
+            migrated = true;
+        }
         if migrated {
             settings.insert(
                 "settingsSchemaVersion".to_string(),
@@ -743,8 +790,44 @@ impl SettingsConfig {
             );
         }
 
-        let config = serde_json::from_value(value)?;
+        let mut config: Self = serde_json::from_value(value)?;
+        if let Some(personalization) = config.personalization.take() {
+            let normalized = personalization.clone().normalized();
+            if normalized != personalization {
+                migrated = true;
+            }
+            config.personalization = Some(normalized);
+        }
         Ok((config, migrated))
+    }
+}
+
+fn migrate_desktop_font_stacks(settings: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(personalization) = settings
+        .get_mut("personalization")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    personalization.insert("schemaVersion".to_string(), serde_json::json!(2));
+    let Some(typography) = personalization
+        .get_mut("typography")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    for section in ["ui", "editor"] {
+        let Some(preference) = typography
+            .get_mut(section)
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        preference.remove("font");
+        preference.insert(
+            "fontStack".to_string(),
+            serde_json::json!({ "source": "theme" }),
+        );
     }
 }
 
@@ -1599,8 +1682,8 @@ mod tests {
     use super::{
         AcpAdapterConfig, AppearancePreference, ColorSchemePreference, ConsoleThemeName,
         ConversationDirectConfig, ConversationRunMode, ConversationRunModeEntry,
-        DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState, FontPreference,
-        FontSizePreference, ManagedAgentConfig, ManagedAgentId, PersonalizationPreference,
+        DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState, FontSizePreference,
+        FontStackPreference, ManagedAgentConfig, ManagedAgentId, PersonalizationPreference,
         ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
         SystemPromptDelivery, TurnFilesConfig, VisualQuality, WorkspaceLayoutConfig,
         catalog_agent_default_config,
@@ -1616,12 +1699,12 @@ mod tests {
         editor_size: u8,
     ) -> PersonalizationPreference {
         let mut personalization = PersonalizationPreference::default();
-        personalization.typography.ui.font = FontPreference::Local {
-            family: ui_family.to_string(),
+        personalization.typography.ui.font_stack = FontStackPreference::Custom {
+            families: vec![ui_family.to_string()],
         };
         personalization.typography.ui.font_size = FontSizePreference::Custom { px: ui_size };
-        personalization.typography.editor.font = FontPreference::Local {
-            family: editor_family.to_string(),
+        personalization.typography.editor.font_stack = FontStackPreference::Custom {
+            families: vec![editor_family.to_string()],
         };
         personalization.typography.editor.font_size =
             FontSizePreference::Custom { px: editor_size };
@@ -1717,6 +1800,69 @@ mod tests {
         assert_eq!(
             personalization.typography.editor.font_size,
             FontSizePreference::Custom { px: 18 }
+        );
+    }
+
+    #[test]
+    fn font_stack_normalization_is_ordered_bounded_and_case_insensitive() {
+        let normalized = FontStackPreference::Custom {
+            families: vec![
+                " Segoe UI ".to_string(),
+                "segoe ui".to_string(),
+                "Gold Band MiSans".to_string(),
+                "bad,font".to_string(),
+            ],
+        }
+        .normalized();
+        assert_eq!(
+            normalized,
+            FontStackPreference::Custom {
+                families: vec!["Segoe UI".to_string(), "Gold Band MiSans".to_string()],
+            }
+        );
+        assert_eq!(
+            FontStackPreference::Custom { families: vec![] }.normalized(),
+            FontStackPreference::Theme
+        );
+    }
+
+    #[test]
+    fn settings_v8_replaces_single_font_fields_without_dual_reading() {
+        let defaults = PersonalizationPreference::default();
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 7,
+                "personalization": {
+                    "schemaVersion": 1,
+                    "typography": {
+                        "ui": {
+                            "font": { "source": "local", "family": "Segoe UI" },
+                            "fontSize": { "source": "custom", "px": 15 }
+                        },
+                        "editor": {
+                            "font": { "source": "local", "family": "Fira Code" },
+                            "fontSize": { "source": "theme" }
+                        }
+                    },
+                    "avatars": serde_json::to_value(defaults.avatars).unwrap()
+                }
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        let personalization = settings.personalization.unwrap();
+        assert_eq!(personalization.schema_version, 2);
+        assert_eq!(
+            personalization.typography.ui.font_stack,
+            FontStackPreference::Theme
+        );
+        assert_eq!(
+            personalization.typography.editor.font_stack,
+            FontStackPreference::Theme
+        );
+        assert_eq!(
+            personalization.typography.ui.font_size,
+            FontSizePreference::Custom { px: 15 }
         );
     }
 

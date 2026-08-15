@@ -209,9 +209,10 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   return (
     <TooltipProvider>
       <>
-        <aside className="flex min-h-0 h-full flex-col gap-0.5 bg-sidebar px-3 py-3 text-sidebar-foreground">
+        <aside className="flex min-h-0 h-full flex-col gap-0.5 bg-sidebar px-3 py-2.5 text-sidebar-foreground">
+        <div data-conversation-sidebar-region="fixed-navigation" className="shrink-0">
         {/* Quick actions */}
-        <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-0.5">
           <SidebarButton
             active={activeNavigationKey === 'quick-chat'}
             icon={<MessageSquare />}
@@ -225,10 +226,10 @@ export const ConversationSidebar = memo(function ConversationSidebar({
           />
         </div>
 
-        <Separator className="mx-1 my-1.5 opacity-45" />
+        <Separator className="mx-1 my-1 opacity-45" />
 
         {/* Navigation */}
-        <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-0.5">
           <SidebarButton
             compact
             active={activeNavigationKey === 'agents'}
@@ -254,17 +255,23 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             compact
             active={activeNavigationKey === 'scheduled-tasks'}
             icon={<AlarmClock />}
-            label="定时任务"
+            label={t('scheduled.management.title')}
             onClick={() => onSelect({ kind: 'scheduled-tasks' })}
           />
         </div>
+        </div>
 
-        {/* Pinned section — fixed, collapsible, outside scroll */}
+        {/* Pinned and workspace sections share the conversation scroll region. */}
+        <ScrollArea
+          data-conversation-sidebar-region="scrollable-conversations"
+          className="min-h-0 flex-1"
+        >
         {vm.pinnedTasks.length > 0 ? (
-          <div className="my-1.5 shrink-0 border-y border-border/55 py-2">
+          <div className="my-1.5 border-y border-border/55 py-2">
             <button
               type="button"
-              className="flex w-full items-center gap-1.5 px-1 py-1 text-left text-xs font-medium text-muted-foreground hover:text-sidebar-accent-foreground"
+              data-conversation-sidebar-heading="pinned"
+              className="sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1 text-left text-sm font-medium text-sidebar-foreground hover:text-sidebar-accent-foreground"
               onClick={togglePinnedCollapsed}
             >
               <ChevronDown className={cn('size-3 transition-transform', pinnedCollapsed && '-rotate-90')} />
@@ -322,7 +329,6 @@ export const ConversationSidebar = memo(function ConversationSidebar({
         )}
 
         {/* Workspace sections — scrollable with sticky headers */}
-        <ScrollArea className="min-h-0 flex-1">
           <div className="pt-2">
             {vm.workspaces.map((ws) => (
               <div key={ws.projectId} className="mb-4">
@@ -816,8 +822,8 @@ function SidebarButton({
     <Button
       variant="ghost"
       className={cn(
-        compact ? 'h-7 gap-2 justify-start rounded-md px-2 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
-          : 'h-7 justify-start gap-2.5 rounded-lg px-2.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+        compact ? 'h-6.5 gap-2 justify-start rounded-md px-2 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
+          : 'h-6.5 justify-start gap-2.5 rounded-lg px-2.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
         active && 'bg-sidebar-accent text-sidebar-accent-foreground',
       )}
       onClick={onClick}

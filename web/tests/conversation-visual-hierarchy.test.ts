@@ -69,4 +69,26 @@ describe('conversation visual hierarchy contract', () => {
     expect(sidebar).toContain('text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55');
     expect(sidebar).not.toContain('text-ui-micro tabular-nums text-muted-foreground');
   });
+
+  it('keeps navigation fixed while pinned and workspace sections share one compact scroll layout', () => {
+    const sidebar = source('../src/components/conversation/ConversationSidebar.tsx');
+    const fixedNavigation = sidebar.indexOf('data-conversation-sidebar-region="fixed-navigation"');
+    const scrollRegion = sidebar.indexOf('data-conversation-sidebar-region="scrollable-conversations"');
+    const pinnedSection = sidebar.indexOf('{vm.pinnedTasks.length > 0 ? (', scrollRegion);
+    const workspaceSection = sidebar.indexOf('{vm.workspaces.map((ws) => (', scrollRegion);
+    const scrollRegionEnd = sidebar.indexOf('</ScrollArea>', scrollRegion);
+
+    expect(fixedNavigation).toBeGreaterThan(-1);
+    expect(scrollRegion).toBeGreaterThan(fixedNavigation);
+    expect(pinnedSection).toBeGreaterThan(scrollRegion);
+    expect(workspaceSection).toBeGreaterThan(pinnedSection);
+    expect(scrollRegionEnd).toBeGreaterThan(workspaceSection);
+    expect(sidebar).toContain('flex flex-col gap-0.5');
+    expect(sidebar).toContain("compact ? 'h-6.5 gap-2");
+    expect(sidebar).toContain('data-conversation-sidebar-heading="pinned"');
+    expect(sidebar).toContain('sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar');
+    expect(sidebar).toContain('text-left text-sm font-medium text-sidebar-foreground');
+    expect(sidebar).not.toContain('text-left text-sm font-medium text-muted-foreground');
+    expect(sidebar).toContain("label={t('scheduled.management.title')}");
+  });
 });

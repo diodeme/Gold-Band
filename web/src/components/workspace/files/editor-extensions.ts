@@ -33,7 +33,7 @@ export const workspaceHighlightStyle = HighlightStyle.define([
   { tag: [tags.invalid, tags.deleted], color: 'var(--gold-danger)' },
   { tag: [tags.heading, tags.strong], color: 'var(--foreground)', fontWeight: '600' },
   { tag: tags.emphasis, fontStyle: 'italic' },
-  { tag: [tags.link, tags.url], color: 'var(--gold-running)', textDecoration: 'underline' },
+  { tag: [tags.link, tags.url], color: 'var(--link)', textDecoration: 'underline' },
 ]);
 
 export const workspaceSyntaxHighlighting = syntaxHighlighting(workspaceHighlightStyle);

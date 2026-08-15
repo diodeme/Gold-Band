@@ -25,7 +25,7 @@ export const SEMANTIC_TOKEN_NAMES = [
   'diffRemovedForeground', 'diffModified', 'diffModifiedForeground', 'sidebar',
   'sidebarForeground', 'sidebarPrimary', 'sidebarPrimaryForeground', 'sidebarAccent',
   'sidebarAccentForeground', 'sidebarBorder', 'sidebarRing', 'workspace', 'surfaceLow',
-  'surfaceHigh', 'lineSoft', 'windowOutline', 'windowEdgeShadow', 'running',
+  'surfaceHigh', 'lineSoft', 'windowOutline', 'windowEdgeShadow', 'link', 'running',
   'success', 'warning', 'danger', 'permission', 'titlebar', 'titlebarForeground',
   'titlebarMuted', 'titlebarBorder', 'titlebarHover', 'scrollbarTrack', 'scrollbarThumb',
   'scrollbarThumbHover',

@@ -11,7 +11,7 @@ const expectedThemes = {
     background: '#ffffff', surface: '#ffffff', workspace: '#ffffff', border: '#e5e5e5',
     primary: '#0d0d0d', primaryForeground: '#ffffff', selection: '#d8efe8',
     selectionForeground: '#0d0d0d', messageUser: '#f5f5f5', messageUserForeground: '#0d0d0d',
-    foreground: '#0d0d0d', muted: '#6e6e6e', success: '#0a7a5e', danger: '#c83237',
+    foreground: '#0d0d0d', muted: '#6e6e6e', link: '#0a7a5e', success: '#0a7a5e', danger: '#c83237',
   },
   'light-gray': {
     themeId: 'builtin.tech-neutral',
@@ -19,7 +19,7 @@ const expectedThemes = {
     background: '#ffffff', surface: '#ffffff', workspace: '#ffffff', border: '#e5e5e5',
     primary: '#2f2f2f', primaryForeground: '#ffffff', selection: '#d9d9d9',
     selectionForeground: '#202020', messageUser: '#f3f3f3', messageUserForeground: '#202020',
-    foreground: '#2b2b2b', muted: '#666666', success: '#2e7954', danger: '#c23b4a',
+    foreground: '#2b2b2b', muted: '#666666', link: '#46558f', success: '#2e7954', danger: '#c23b4a',
   },
   dark: {
     themeId: 'builtin.gold-band',
@@ -27,7 +27,7 @@ const expectedThemes = {
     background: '#0f0f0f', surface: '#171717', workspace: '#0f0f0f', border: '#2b2b2b',
     primary: '#f0f0f0', primaryForeground: '#0d0d0d', selection: '#155e4b',
     selectionForeground: '#ffffff', messageUser: '#242424', messageUserForeground: '#f0f0f0',
-    foreground: '#f0f0f0', muted: '#9b9b9b', success: '#59b68b', danger: '#df6b6b',
+    foreground: '#f0f0f0', muted: '#9b9b9b', link: '#7de2c1', success: '#59b68b', danger: '#df6b6b',
   },
   black: {
     themeId: 'builtin.tech-neutral',
@@ -35,7 +35,7 @@ const expectedThemes = {
     background: '#111111', surface: '#1b1b1b', workspace: '#111111', border: '#2b2b2b',
     primary: '#2d2d2d', primaryForeground: '#f2f2f2', selection: '#4d4d4d',
     selectionForeground: '#ffffff', messageUser: '#252525', messageUserForeground: '#f2f2f2',
-    foreground: '#e8e8e8', muted: '#929292', success: '#59b68b', danger: '#df6b6b',
+    foreground: '#e8e8e8', muted: '#929292', link: '#9bc4ff', success: '#59b68b', danger: '#df6b6b',
   },
 } as const;
 
@@ -58,6 +58,7 @@ describe('desktop theme palettes', () => {
       messageUserForeground: palette.messageUserForeground,
       foreground: palette.foreground,
       mutedForeground: palette.muted,
+      link: palette.link,
       success: palette.success,
       danger: palette.danger,
     });
@@ -79,6 +80,7 @@ describe('desktop theme palettes', () => {
     expect(contrastRatio(palette.primaryForeground, palette.primary)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(palette.selectionForeground, palette.selection)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(palette.messageUserForeground, palette.messageUser)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(palette.link, palette.background)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(palette.success, palette.background)).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(palette.danger, palette.background)).toBeGreaterThanOrEqual(4.5);
   });

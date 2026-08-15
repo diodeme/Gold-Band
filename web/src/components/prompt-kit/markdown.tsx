@@ -101,11 +101,12 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
     <a
       {...props}
       className={cn(
-        'font-medium [overflow-wrap:anywhere] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-running/45',
+        'font-medium [overflow-wrap:anywhere] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-link/45',
         enabledLocal
-          ? 'mx-0.5 inline-flex items-center gap-1 rounded-sm bg-gold-surface-high px-1 py-px align-baseline text-foreground/90 no-underline transition-colors hover:bg-accent hover:text-accent-foreground'
-          : 'text-gold-running underline decoration-gold-running/45 underline-offset-2 hover:decoration-gold-running',
-        local && !handler && 'cursor-not-allowed opacity-60',
+          ? 'mx-0.5 inline-flex items-center gap-1 rounded-sm align-baseline text-link no-underline decoration-link/45 underline-offset-2 transition-colors hover:underline hover:decoration-link'
+          : local
+            ? 'mx-0.5 inline-flex cursor-not-allowed items-center gap-1 rounded-sm align-baseline text-muted-foreground no-underline opacity-60'
+            : 'text-link underline decoration-link/45 underline-offset-2 hover:decoration-link',
       )}
       href={enabledLocal ? localHref ?? undefined : local ? undefined : href}
       target={local || external ? undefined : props.target}
@@ -123,7 +124,7 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
           }
           : props.onClick}
     >
-      {enabledLocal ? <FileCode2 className="size-[1em] shrink-0 self-center stroke-[2.35] text-gold-running" aria-hidden="true" /> : null}
+      {local ? <FileCode2 className="size-[0.9em] shrink-0 self-center stroke-[1.85]" aria-hidden="true" /> : null}
       <span className="min-w-0 [overflow-wrap:anywhere]">
         {children}
         {showTarget ? (

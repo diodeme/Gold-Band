@@ -163,6 +163,7 @@
   --color-gold-surface-low: var(--gold-surface-low);
   --color-gold-surface-high: var(--gold-surface-high);
   --color-gold-line-soft: var(--gold-line-soft);
+  --color-link: var(--link);
   --color-gold-running: var(--gold-running);
   --color-gold-success: var(--gold-success);
   --color-gold-warning: var(--gold-warning);
@@ -194,8 +195,8 @@
   --atomic-editor-accent: var(--gold-running);
   --atomic-editor-accent-bright: var(--gold-running);
   --atomic-editor-accent-soft: color-mix(in srgb, var(--gold-running) 42%, var(--background));
-  --atomic-editor-link: var(--gold-running);
-  --atomic-editor-link-hover: color-mix(in srgb, var(--gold-running) 72%, var(--foreground));
+  --atomic-editor-link: var(--link);
+  --atomic-editor-link-hover: color-mix(in srgb, var(--link) 72%, var(--foreground));
   --atomic-editor-code-bg: color-mix(in srgb, var(--gold-surface-high) 72%, var(--background));
   --atomic-editor-code-rail: color-mix(in srgb, var(--gold-running) 48%, var(--border));
 }
@@ -367,6 +368,7 @@
   --gold-line-soft: rgba(255, 255, 255, 0.08);
   --gold-window-outline: rgba(255, 255, 255, 0.3);
   --gold-window-edge-shadow: rgba(0, 0, 0, 0.2);
+  --link: #9bc4ff;
   --gold-running: #6aa9ff;
   --gold-success: #59b68b;
   --gold-warning: #d98547;

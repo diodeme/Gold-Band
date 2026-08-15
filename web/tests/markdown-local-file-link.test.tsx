@@ -30,10 +30,16 @@ describe('Markdown local file link routing', () => {
       const link = container.querySelector<HTMLAnchorElement>('a');
       expect(link, container.innerHTML).not.toBeNull();
       expect(link?.target).toBe('');
-      expect(link?.className).toContain('bg-gold-surface-high');
-      expect(link?.className).not.toContain('bg-muted/45');
-      expect(link?.className).not.toContain('border-gold-running');
-      expect(link?.querySelector('svg')?.getAttribute('class')).toContain('text-gold-running');
+      expect(link?.className).toContain('inline-flex');
+      expect(link?.className).toContain('font-medium');
+      expect(link?.className).toContain('text-link');
+      expect(link?.className).toContain('ring-link/45');
+      expect(link?.className).toContain('no-underline');
+      expect(link?.className).toContain('hover:underline');
+      expect(link?.className).not.toContain('bg-');
+      expect(link?.className).not.toContain('border-');
+      expect(link?.querySelector('svg')?.getAttribute('class')).toContain('size-[0.9em]');
+      expect(link?.querySelector('svg')?.getAttribute('class')).toContain('stroke-[1.85]');
       expect(link?.textContent).toBe('client.rs:2727');
       const target = link?.querySelector('[data-gb-file-link-target="true"]');
       expect(target?.textContent).toBe(':2727');
@@ -102,6 +108,10 @@ describe('Markdown local file link routing', () => {
       ));
       const link = container.querySelector<HTMLAnchorElement>('a');
       expect(link?.target).toBe('');
+      expect(link?.className).toContain('text-link');
+      expect(link?.className).toContain('underline');
+      expect(link?.className).not.toContain('inline-flex');
+      expect(link?.querySelector('svg')).toBeNull();
       expect(openLocalFile).not.toHaveBeenCalled();
       await act(async () => link?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })));
       expect(openExternalUrl).toHaveBeenCalledWith('https://example.com/file.rs:12');
@@ -119,6 +129,11 @@ describe('Markdown local file link routing', () => {
       const link = container.querySelector<HTMLAnchorElement>('a');
       expect(link?.getAttribute('href')).toBeNull();
       expect(link?.getAttribute('aria-disabled')).toBe('true');
+      expect(link?.className).toContain('inline-flex');
+      expect(link?.className).toContain('text-muted-foreground');
+      expect(link?.className).toContain('cursor-not-allowed');
+      expect(link?.className).not.toContain('bg-');
+      expect(link?.querySelector('svg')).not.toBeNull();
     } finally {
       await act(async () => root.unmount());
     }

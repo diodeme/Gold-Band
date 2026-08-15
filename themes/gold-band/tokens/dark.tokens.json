@@ -264,6 +264,10 @@
       "$type": "color",
       "$value": "rgba(0,0,0,.2)"
     },
+    "link": {
+      "$type": "color",
+      "$value": "#7de2c1"
+    },
     "running": {
       "$type": "color",
       "$value": "#6aa9ff"

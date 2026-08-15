@@ -177,7 +177,7 @@ function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFram
               <ShellNavButton active={active === 'settings'} href="/settings" icon={<Settings />} label={t('common.settings')} trailing={showSettingsUpdateDot ? <UpdateDot /> : null} onClick={() => onSelect('settings')} />
             </aside>
           </div>
-          <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden border-l border-t border-workspace-divider rounded-tl-2xl bg-gold-workspace">{children}</main>
+          <main className="relative z-10 flex min-w-0 flex-1 flex-col overflow-hidden rounded-tl-2xl border-l border-t border-workspace-divider bg-gold-workspace [box-shadow:var(--workspace-main-surface-shadow)]">{children}</main>
         </div>
       </div>
     </TooltipProvider>

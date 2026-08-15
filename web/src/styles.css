@@ -304,6 +304,10 @@
   --conversation-message-max-inline-size: 82cqi;
   --conversation-content-rail-max-inline-size: 56rem;
   --workspace-divider: color-mix(in srgb, var(--sidebar-border) 70%, var(--gold-workspace));
+  --workspace-main-surface-shadow:
+    0 0 16px color-mix(in srgb, var(--gold-window-edge-shadow) 85%, transparent),
+    var(--gb-material-shadow),
+    var(--gb-material-edge-shadow);
   --gb-material-model: solid;
   --gb-material-opacity: 1;
   --gb-material-border-highlight: transparent;

@@ -59,6 +59,27 @@ describe('App window shell style', () => {
     expect(shell).not.toContain('mouseup');
   });
 
+  it('elevates the shared main workspace surface with the composer material shadow', () => {
+    const styles = readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
+    const conversationShell = readFileSync(path.resolve(__dirname, '../src/components/workspace/WorkspaceShell.tsx'), 'utf8');
+    const workbenchShell = readFileSync(path.resolve(__dirname, '../src/components/Shell.tsx'), 'utf8');
+    const elevation = '[box-shadow:var(--workspace-main-surface-shadow)]';
+
+    expect(conversationShell).toContain(elevation);
+    expect(workbenchShell).toContain(elevation);
+    expect(conversationShell).toContain('className="min-h-0 flex-1 bg-sidebar !overflow-x-clip !overflow-y-visible"');
+    expect(conversationShell).toContain("'relative z-10 min-w-0 [box-shadow:var(--workspace-main-surface-shadow)]'");
+    expect(conversationShell).toContain("'relative z-10 border-t border-workspace-divider [box-shadow:var(--workspace-main-surface-shadow)]'");
+    expect(conversationShell).toContain("<main className={cn('relative flex h-full");
+    expect(conversationShell).not.toContain("<main className={cn('relative z-10");
+    expect(conversationShell).not.toContain('bg-gold-workspace [box-shadow:var(--workspace-main-surface-shadow)]');
+    expect(conversationShell).not.toContain("showLeft && 'rounded-tl-2xl border-l'");
+    expect(workbenchShell).toContain('relative z-10 flex min-w-0');
+    expect(styles).toContain('--workspace-main-surface-shadow:');
+    expect(styles).toMatch(/--workspace-main-surface-shadow:\s*0 0 16px color-mix\(in srgb, var\(--gold-window-edge-shadow\) 85%, transparent\),\s*var\(--gb-material-shadow\),\s*var\(--gb-material-edge-shadow\);/u);
+    expect(styles).not.toMatch(/--workspace-main-surface-shadow:[^;]*\d+px\s+\d+px/u);
+  });
+
   it('lets the panel group grow and shrink the right workspace without imperative resize feedback', () => {
     const shell = readFileSync(path.resolve(__dirname, '../src/components/workspace/WorkspaceShell.tsx'), 'utf8');
 

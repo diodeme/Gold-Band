@@ -490,7 +490,7 @@ function WorkspaceShellLayout({
         rightWorkspaceOpen={rightWorkspacePresented}
         onToggleRightWorkspace={rightWorkspaceAvailable ? toggleRightWorkspace : undefined}
       />
-      <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1 bg-sidebar" onLayoutChanged={saveWorkspaceLayout}>
+      <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1 bg-sidebar !overflow-x-clip !overflow-y-visible" onLayoutChanged={saveWorkspaceLayout}>
         <ResizablePanel
           panelRef={leftPanelRef}
           id="workspace-navigation"
@@ -535,10 +535,13 @@ function WorkspaceShellLayout({
         <ResizablePanel
           id="workspace-center"
           minSize={profile.centerMinWidth}
-          className="min-w-0"
+          className={cn(
+            'relative z-10 min-w-0 [box-shadow:var(--workspace-main-surface-shadow)]',
+            showLeft && 'rounded-tl-2xl',
+          )}
           groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-pixel-size' : 'preserve-relative-size'}
         >
-          <main className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-workspace-divider bg-gold-workspace', showLeft && 'rounded-tl-2xl border-l')}>
+          <main className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-workspace-divider bg-gold-workspace', showLeft && 'rounded-tl-2xl')}>
             {children}
           </main>
         </ResizablePanel>
@@ -569,7 +572,7 @@ function WorkspaceShellLayout({
           groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-relative-size' : 'preserve-pixel-size'}
           onResize={trackRightPanelSize}
           className={cn(
-            'border-t border-workspace-divider',
+            'relative z-10 border-t border-workspace-divider [box-shadow:var(--workspace-main-surface-shadow)]',
             !showRightDock && 'pointer-events-none overflow-hidden',
           )}
         >

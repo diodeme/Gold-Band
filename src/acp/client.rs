@@ -232,6 +232,38 @@ impl AcpUsageState {
         self.latest_prompt = recovery.latest_prompt;
     }
 
+    /// Carry the latest context-window gauge across Gold Band attempts that
+    /// continue the same provider session. Consumptive token totals and timing
+    /// intentionally remain owned by the current attempt.
+    fn inherit_continued_session_context(&mut self, continue_ref: Option<&Value>) {
+        let Some(continue_ref) = continue_ref else {
+            return;
+        };
+        let Some(expected_session_id) = continue_ref
+            .get("acpSessionId")
+            .or_else(|| continue_ref.get("sessionId"))
+            .and_then(Value::as_str)
+        else {
+            return;
+        };
+        let Some(snapshot_file) = continue_ref.get("snapshotFile").and_then(Value::as_str) else {
+            return;
+        };
+        let snapshot_path = Utf8Path::new(snapshot_file);
+        let Ok(metadata) = load_session_metadata(snapshot_path, None) else {
+            return;
+        };
+        if metadata.session_id.as_deref() != Some(expected_session_id) {
+            return;
+        }
+        if self.context.confirmed_used.is_none() {
+            self.context.confirmed_used = metadata.used_tokens.filter(|used| *used > 0);
+        }
+        if self.context.window_size.is_none() {
+            self.context.window_size = metadata.context_window_size.filter(|size| *size > 0);
+        }
+    }
+
     fn normalize_timeline_usage(&self, update: &mut Value) {
         let Some(object) = update.as_object_mut() else {
             return;
@@ -2696,6 +2728,8 @@ impl<'a> AcpRuntime<'a> {
         let desired_config_fingerprint =
             session_config_fingerprint(provider_id, &cwd, adapter_system_prompt, mcp_servers)?;
         self.attached_config_fingerprint = Some(desired_config_fingerprint);
+        self.usage
+            .inherit_continued_session_context(continue_ref.as_ref());
         let mut skipped_mcp_diagnostic_recorded = false;
         if let Some(session_id) = continue_ref
             .as_ref()
@@ -6458,6 +6492,96 @@ mod tests {
         assert_eq!(state.attempt_totals.output_tokens, Some(330));
         assert_eq!(state.attempt_totals.cached_read_tokens, Some(24_576));
         assert_eq!(state.attempt_totals.total_tokens, Some(41_416));
+    }
+
+    #[test]
+    fn continued_session_inherits_only_context_gauge_from_previous_attempt_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let snapshot_path = temp.path().join("acp.snapshot.json");
+        std::fs::write(
+            &snapshot_path,
+            serde_json::to_vec_pretty(&json!({
+                "adapterId": "npx",
+                "adapterDisplayName": "Codex",
+                "cwd": ".",
+                "sessionId": "session-1",
+                "availability": "established",
+                "latestTurnStatus": "completed",
+                "restored": true,
+                "stopReason": "end_turn",
+                "capabilities": {},
+                "usedTokens": 38_223,
+                "contextWindowSize": 1_000_000,
+                "attemptInputTokens": 9_000,
+                "attemptOutputTokens": 500,
+                "attemptTotalTokens": 9_500,
+                "createdAt": "1Z",
+                "updatedAt": "2Z"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut usage = AcpUsageState::default();
+        usage.inherit_continued_session_context(Some(&json!({
+            "acpSessionId": "session-1",
+            "snapshotFile": snapshot_path.to_string_lossy()
+        })));
+
+        assert_eq!(usage.context.confirmed_used, Some(38_223));
+        assert_eq!(usage.context.window_size, Some(1_000_000));
+        assert_eq!(usage.attempt_totals.input_tokens, None);
+        assert_eq!(usage.attempt_totals.output_tokens, None);
+        assert_eq!(usage.attempt_totals.total_tokens, None);
+        assert_eq!(usage.latest_prompt.total_tokens, None);
+
+        let mut current_usage = AcpUsageState::from_prior(
+            PriorAttemptMetrics {
+                used_tokens: Some(41_008),
+                context_window_size: Some(2_000_000),
+                ..Default::default()
+            },
+            None,
+        );
+        current_usage.inherit_continued_session_context(Some(&json!({
+            "acpSessionId": "session-1",
+            "snapshotFile": snapshot_path.to_string_lossy()
+        })));
+        assert_eq!(current_usage.context.confirmed_used, Some(41_008));
+        assert_eq!(current_usage.context.window_size, Some(2_000_000));
+    }
+
+    #[test]
+    fn continued_session_context_rejects_a_snapshot_for_another_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let snapshot_path = temp.path().join("acp.snapshot.json");
+        std::fs::write(
+            &snapshot_path,
+            serde_json::to_vec_pretty(&json!({
+                "adapterId": "npx",
+                "adapterDisplayName": "Codex",
+                "cwd": ".",
+                "sessionId": "session-other",
+                "availability": "established",
+                "latestTurnStatus": "completed",
+                "restored": true,
+                "stopReason": "end_turn",
+                "capabilities": {},
+                "usedTokens": 38_223,
+                "contextWindowSize": 1_000_000,
+                "createdAt": "1Z",
+                "updatedAt": "2Z"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut usage = AcpUsageState::default();
+        usage.inherit_continued_session_context(Some(&json!({
+            "acpSessionId": "session-1",
+            "snapshotFile": snapshot_path.to_string_lossy()
+        })));
+
+        assert_eq!(usage.context.confirmed_used, None);
+        assert_eq!(usage.context.window_size, None);
     }
 
     #[test]
